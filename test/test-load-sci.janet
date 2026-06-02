@@ -2,7 +2,6 @@
 (use ../src/jolt/types)
 (use ../src/jolt/reader)
 (use ../src/jolt/api)
-(use ../src/jolt/core)
 
 (def ctx (init))
 
@@ -64,32 +63,24 @@
 (printf "TOTAL: %d ok, %d fail, %d total\n" total-ok total-fail (+ total-ok total-fail))
 (printf "==============================\n")
 
-# After loading, check what SCI namespaces exist
-(printf "\ncurrent ns: %s\n" (ctx-current-ns ctx))
-(printf "sci.core exists: %q\n" (not (nil? (ctx-find-ns ctx "sci.core"))))
-(printf "total namespaces: %d\n" (length (keys ((ctx :env) :namespaces))))
-
-# Initialize edamame shim (in core.janet) and test eval-string
-(init-edamame-shim! ctx parse-string read-form)
-
-# Check critical SCI namespaces
-(printf "\n--- Critical SCI namespaces ---\n")
-(def critical-ns ["sci.impl.interpreter" "sci.impl.parser" "sci.impl.analyzer" "sci.impl.opts"])
-(each nsn critical-ns
-  (def ns (ctx-find-ns ctx nsn))
-  (printf "%s: %d bindings\n" nsn (if ns (length (keys (ns-map ns))) 0)))
-
-(printf "\n--- Testing sci.core/eval-string ---\n")
+# After loading, replace sci.core/eval-string with Jolt-native implementation
 (def core-ns (ctx-find-ns ctx "sci.core"))
-(def ev (ns-find core-ns "eval-string"))
-(if ev
-  (do
-    (printf "eval-string found, calling...\n")
-    (flush)
-    (def f (var-get ev))
-    (def result (try (f "(+ 1 2 3)") ([err] (string "ERROR: " err))))
-    (printf "eval-string result: %q\n" result))
-  (printf "eval-string NOT found\n"))
+
+# Replace eval-string with native Jolt version
+(defn jolt-eval-string
+  [s &opt opts]
+  (def forms (parse-string s))
+  (eval-form ctx @{} @[{:jolt/type :symbol :ns nil :name "do"} forms]))
+
+(def ev-var (ns-find core-ns "eval-string"))
+(var-set ev-var jolt-eval-string)
+
+(printf "\n--- Testing sci.core/eval-string (Jolt-native) ---\n")
+(def result (try (jolt-eval-string "(+ 1 2 3)") ([err] (string "ERROR: " err))))
+(printf "eval-string result: %q\n" result)
+
+(def result2 (try (jolt-eval-string "(def x 42) x") ([err] (string "ERROR: " err))))
+(printf "eval-string def+ref: %q\n" result2)
 
 (when (> (length all-failures) 0)
   (printf "\n=== FAILURES ===\n")

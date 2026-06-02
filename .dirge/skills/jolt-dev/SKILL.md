@@ -28,6 +28,38 @@ The match arm receives `ctx`, `bindings`, and `form` (the full list). Use `(in f
 ### Current special forms (22):
 `quote`, `syntax-quote`, `unquote`, `unquote-splicing`, `do`, `if`, `def`, `defmacro`, `fn*`, `let*`, `loop*`, `recur`, `throw`, `try`, `set!`, `var`, `locking`, `instance?`, `defmulti`, `defmethod`, `deftype`, `new`, `.`
 
+### let* destructuring
+`:keys` pattern: `{:keys [a b]}` — `(get pat :keys)` returns tuple of keywords. Use `(string k)` to convert keyword to string name, `(keyword kname)` for lookup.
+Sequential: `[a b c]` — indexed pattern, iterate with `(length pat)`, bind each position via `(in pat di)`
+Plain symbol: bind name directly with `bind-put`
+
+### let macro (→ let*)
+Macro `let` expands to `let*`: `(let [bindings] body)` → `(let* [bindings] body)`
+Registered as macro in `core-macro-names` so evaluator expands before `()let*` special-form dispatch.
+Needed because SCI/clojure.core use `let` not `let*`.
+
+### Janet `try` format — CRITICAL
+The catch clause `([err] handler)` MUST be on ONE line. Multi-line causes "unexpected closing delimiter )" parse errors.
+```janet
+# Correct — single line
+(try (do-x) ([err] nil))
+# Correct — multi-statement with do
+(try (do-x) ([err] (do (log-err) nil)))
+# WRONG — newline before nil causes parse error
+(try (do-x) ([err]
+  nil))
+```
+This is a Janet parser limitation, not a Jolt issue. The `([err] ...)` clause is a tuple literal and Janet requires it on one line.
+
+### Macro registration pattern
+- Define macro fn in `core.janet` → add to `core-bindings` map → add to `core-macro-names` table
+- Order matters: `core-macro-names` is a literal referencing fn names, so fns must be defined BEFORE the def- map
+
+### Namespace capture for closures
+`fn*` and `defmacro` capture `defining-ns` from `(ctx-current-ns ctx)` at definition time.
+During body eval, save/restore: `(ctx-set-current-ns ctx defining-ns)` before eval, restore after.
+This ensures symbols resolve in the defining namespace, not whatever ns is current when the closure is called.
+
 ### defmacro details
 - Supports optional docstring: `(defmacro name [args] body)` or `(defmacro name "doc" [args] body)`
 - Implementation: `(tuple/slice form 2)` → check if first is string → adjust args-form and body start
@@ -70,6 +102,9 @@ The match arm receives `ctx`, `bindings`, and `form` (the full list). Use `(in f
 - `(length struct)` counts key-value pairs, not keys. Use `(length (keys struct))` for key count
 - **`(last string)` returns nil** — `last` works only on indexed types (tuple, array). For strings use `(s (- (length s) 1))` or `(string/slice s (- (length s) 1))`
 - **`(set [a b] tuple)` doesn't work** — Janet's `set` doesn't support destructuring. Use `(tuple 0)` / `(tuple 1)` or explicit individual assignments
+- **`(string :keyword)` → `"keyword"`** — Janet has no `name` function. Use `(string kw)` to convert keyword to string. `(name :kw)` is NOT a Janet built-in.
+- **`try` handler must be one line** — `(try body ([err] handler))` — the `([err] ...)` clause is a tuple literal, Janet requires it all on one line. Multi-line handlers cause parse errors.
+- **`put` doesn't work on structs** — `(put {:a 1} :b 2)` errors. Use `@{}` tables for mutable maps.
 - **`(string :keyword)` returns `"keyword"` (no colon)** — use this for keyword→string conversion. Avoid `(name :keyword)` in Jolt eval context; `name` is a Janet built-in but may shadow or be unavailable
 - **`(get struct :key)` works, `(in struct :key)` fails** — `in` is for indexed types only (tuple, array, string, buffer). Use `get` for structs/tables
 - **Janet `try` takes exactly 2 args**: `(try body ([err] handler))`. Multi-expression body must wrap in `do`: `(try (do expr1 true) ([err] handler))`
@@ -262,3 +297,31 @@ test/
   test-load-sci.janet   — loads all sci files, counts ok/fail
   test-eval.janet       — end-to-end sci.core/eval-string test
 ```
+
+## Edamame Shim for SCI eval-string
+
+SCI's `eval-string` depends on `edamame.core` (parser) and `clojure.tools.reader.reader-types`. Instead of loading the real edamame (its parser.cljc has character-literal edge cases), inject a shim in `core.janet`:
+
+```janet
+(defn init-edamame-shim! [ctx parse-str read-f]
+  ...)
+```
+
+Called after SCI sources load: `(init-edamame-shim! ctx parse-string read-form)`. Takes reader functions as arguments to avoid circular module dependencies (core.janet doesn't use ./reader).
+
+Shim creates `edamame.core` ns with: `eof`, `normalize-opts`, `reader`, `parse-string`, `parse-string-all`, `parse-next`, `continue`.
+Also creates `clojure.tools.reader.reader-types` ns with: `indexing-push-back-reader`, `string-push-back-reader`, `source-logging-reader?`, `get-line-number`, `get-column-number`.
+
+### Remaining gap
+
+SCI's `eval-string` calls into `sci.impl.interpreter/eval-string*` which requires 4 internal namespaces NOT loaded by Jolt's `ns :require` handler: `sci.impl.interpreter`, `sci.impl.parser`, `sci.impl.analyzer`, `sci.impl.opts`. Their source files must be loaded separately.
+
+## Module Dependency Gotcha
+
+Don't create standalone shim files that `(use ./reader)` if test files also use reader — Janet resolves modules at compile time and circular dependencies cause "Unmatched closing bracket" errors at unrelated file positions. Embed shims in existing modules (e.g. `core.janet`) and pass reader functions as arguments.
+
+## `let*` Destructuring
+
+`:keys` destructuring: `{:keys [a b]}` → `(get pat :keys)` returns `(a b)` tuple where each is a keyword. Bind each using `(get val (keyword kname))`. Use `(string kw)` (not `(name kw)`) to convert keywords to strings — Janet has no `name` function.
+
+Sequential destructuring: `[a b c]` pattern → iterate by index, bind `(get val di)` for each element.
