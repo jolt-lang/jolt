@@ -2,6 +2,7 @@
 # Clojure-compatible core functions for the Jolt interpreter.
 
 (use ./types)
+(use ./phm)
 
 # ============================================================
 # Predicates
@@ -16,7 +17,7 @@
 (defn core-keyword? [x] (keyword? x))
 (defn core-symbol? [x] (and (struct? x) (= :symbol (x :jolt/type))))
 (defn core-vector? [x] (tuple? x))
-(defn core-map? [x] (struct? x))
+(defn core-map? [x] (or (phm? x) (struct? x)))
 (defn core-seq? [x] (or (array? x) (tuple? x)))
 (defn core-coll? [x] (or (array? x) (tuple? x) (struct? x)))
 
@@ -32,8 +33,9 @@
 
 (defn core-empty? [coll]
   (if (nil? coll) true
-    (if (struct? coll) (= 0 (length (keys coll)))
-      (= 0 (length coll)))))
+    (if (phm? coll) (= 0 (coll :cnt))
+      (if (struct? coll) (= 0 (length (keys coll)))
+        (= 0 (length coll))))))
 
 (defn core-every? [pred coll]
   (var result true)
@@ -80,8 +82,11 @@
       (var ok true)
       (var i 0)
       (while (and ok (< i (dec (length args))))
-        (if (not (deep= (args i) (args (+ i 1))))
-          (set ok false))
+        (let [a (args i) b (args (+ i 1))]
+          (set ok
+            (if (phm? a)
+              (deep= (phm-to-struct a) (if (phm? b) (phm-to-struct b) b))
+              (if (phm? b) (deep= a (phm-to-struct b)) (deep= a b)))))
         (++ i))
       ok)))
 
@@ -120,35 +125,28 @@
         result))))
 
 (defn core-assoc [m & kvs]
-  (var result @{})
-  (when m
-    (each k (if (struct? m) (keys m) (keys (table ;(pairs m))))
-      (put result k (get m k))))
-  (var i 0)
-  (while (< i (length kvs))
-    (let [k (kvs i) v (kvs (+ i 1))]
-      (put result k v)
-      (+= i 2)))
-  (if (struct? m) (table/to-struct result) result))
+  (if (phm? m)
+    (do (var result m) (var i 0) (while (< i (length kvs)) (set result (phm-assoc result (kvs i) (kvs (+ i 1)))) (+= i 2)) result)
+    (do (var result @{}) (when m (each k (if (struct? m) (keys m) (keys (table ;(pairs m)))) (put result k (get m k))))
+      (var i 0) (while (< i (length kvs)) (let [k (kvs i) v (kvs (+ i 1))] (put result k v) (+= i 2)))
+      (if (struct? m) (table/to-struct result) result))))
 
 (defn core-dissoc [m & ks]
-  (var result @{})
-  (each k (keys m)
-    (var in-ks false)
-    (each k2 ks
-      (if (deep= k k2) (do (set in-ks true) (break))))
-    (if (not in-ks) (put result k (m k))))
-  (if (struct? m) (table/to-struct result) result))
+  (if (phm? m)
+    (do (var result m) (each k ks (set result (phm-dissoc result k))) result)
+    (do (var result @{}) (each k (keys m) (var in-ks false) (each k2 ks (if (deep= k k2) (do (set in-ks true) (break)))) (if (not in-ks) (put result k (m k))))
+      (if (struct? m) (table/to-struct result) result))))
 
 (defn core-get [m k &opt default]
   (default default nil)
   (if (nil? m) default
-    (if (or (struct? m) (table? m))
-      (let [v (m k)]
-        (if (nil? v) default v))
-      (if (and (or (tuple? m) (array? m)) (number? k) (>= k 0) (< k (length m)))
-        (in m k)
-        default))))
+    (if (phm? m) (phm-get m k default)
+      (if (or (struct? m) (table? m))
+        (let [v (m k)]
+          (if (nil? v) default v))
+        (if (and (or (tuple? m) (array? m)) (number? k) (>= k 0) (< k (length m)))
+          (in m k)
+          default)))))
 
 (defn core-get-in [m ks &opt default]
   (default default nil)
@@ -161,13 +159,14 @@
   (if (nil? current) default current))
 
 (defn core-contains? [coll key]
-  (if (struct? coll) (not (nil? (coll key)))
-    (if (table? coll) (not (nil? (coll key)))
-      (if (or (tuple? coll) (array? coll))
-        (and (number? key) (>= key 0) (< key (length coll)))
-        false))))
+  (if (phm? coll) (let [b (get (coll :buckets) (phm-hash-key key))] (if b (phm-bucket-contains? b key) false))
+    (if (struct? coll) (not (nil? (coll key)))
+      (if (table? coll) (not (nil? (coll key)))
+        (if (or (tuple? coll) (array? coll))
+          (and (number? key) (>= key 0) (< key (length coll)))
+          false)))))
 
-(def core-count length)
+(defn core-count [coll] (if (phm? coll) (coll :cnt) (length coll)))
 
 (defn core-first [coll]
   (if (or (nil? coll) (= 0 (length coll))) nil
@@ -194,10 +193,11 @@
 (defn core-seq [coll]
   (if (or (nil? coll) (and (or (tuple? coll) (array? coll)) (= 0 (length coll))))
     nil
-    (if (tuple? coll) (tuple/slice coll)
-      (if (string? coll) (map |(string/from-bytes $) (string/bytes coll))
-        (if (struct? coll) (tuple ;(keys coll))
-          coll)))))
+    (if (phm? coll) (tuple ;(phm-entries coll))
+      (if (tuple? coll) (tuple/slice coll)
+        (if (string? coll) (map |(string/from-bytes $) (string/bytes coll))
+          (if (struct? coll) (tuple ;(keys coll))
+            coll))))))
 
 (defn core-vec [coll]
   (if (tuple? coll) coll
@@ -219,24 +219,23 @@
         to))))
 
 (defn core-merge [& maps]
-  (var result (struct))
-  (each m maps
-    (set result (merge result m)))
-  result)
+  (if (phm? (first maps))
+    (do (var result (first maps)) (var mi 1) (while (< mi (length maps)) (let [m (maps mi)] (each k (if (phm? m) (keys (phm-to-struct m)) (keys m)) (set result (phm-assoc result k (if (phm? m) (phm-get m k) (m k))))) (++ mi))) result)
+    (do (var result (struct)) (each m maps (set result (merge result m))) result)))
 
 (defn core-merge-with [f & maps]
-  (var result @{})
-  (each m maps
-    (each k (keys m)
-      (let [existing (result k)]
-        (put result k (if (nil? existing) (m k) (f existing (m k)))))))
-  (table/to-struct result))
+  (if (phm? (first maps))
+    (do (var result (first maps)) (var mi 1) (while (< mi (length maps)) (let [m (maps mi)]
+      (each k (if (phm? m) (keys (phm-to-struct m)) (keys m)) (let [existing (phm-get result k)
+                                   val (if (phm? m) (phm-get m k) (m k))]
+        (set result (phm-assoc result k (if (nil? existing) val (f existing val)))))) (++ mi))) result)
+    (do (var result @{}) (each m maps (each k (if (phm? m) (keys (phm-to-struct m)) (keys m)) (let [existing (result k)] (put result k (if (nil? existing) (m k) (f existing (m k))))))) (table/to-struct result))))
 
 (defn core-keys [m]
-  (tuple ;(keys m)))
+  (if (phm? m) (tuple ;(keys (phm-to-struct m))) (tuple ;(keys m))))
 
 (defn core-vals [m]
-  (tuple ;(map |(m $) (keys m))))
+  (if (phm? m) (do (def s (phm-to-struct m)) (tuple ;(map |(s $) (keys s)))) (tuple ;(map |(m $) (keys m)))))
 
 (defn core-select-keys [m ks]
   (var result @{})
@@ -508,13 +507,7 @@
 # ============================================================
 
 (defn core-vector [& xs] (tuple ;xs))
-(defn core-hash-map [& kvs]
-  (var result @{})
-  (var i 0)
-  (while (< i (length kvs))
-    (put result (kvs i) (kvs (+ i 1)))
-    (+= i 2))
-  (table/to-struct result))
+(defn core-hash-map [& kvs] (make-phm kvs))
 
 (defn core-array-map [& kvs]
   (var result @{})

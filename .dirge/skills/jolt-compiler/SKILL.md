@@ -113,12 +113,28 @@ Note: `def` IS handled by the compiler (compiles to Janet `def`, since macros ar
 
 ## eval-string dispatch (compile mode)
 
-```janet
-(if (or (= head-name "defmacro") (= head-name "ns")
-        (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
-        (= head-name "require") (= head-name "in-ns"))
-  (eval-form ctx @{} form)     ; interpret
-  (compile-and-eval form ctx)) ; compile
+When `:compile?` is true, everything goes through the compiler EXCEPT stateful forms. Phase 0 fix: bare symbols and tuples also go through compile path (not just arrays).
+
+Stateful forms (always use interpreter):
+`defmacro`, `ns`, `deftype`, `defmulti`, `defmethod`, `require`, `in-ns`, `syntax-quote`, `set!`, `var`, `.`, `new`
+
+Note: `def` is handled by the compiler — macros like `defn` expand to `(def name (fn* ...))` and `def` emits Janet `def`.
+
+## compile-and-eval def/defn interning
+
+`compile-and-eval` interns `def`/`defn`/`defn-` results in the Jolt namespace via `ns-intern` so the interpreter can resolve bare symbols later. Without this, `(defn foo [x] x)` creates the Janet global but `foo` as a bare symbol can't be found by the interpreter.
+
+## Quote in data-structure emitter
+
+Don't re-analyze quoted forms. Use `raw-form->janet` to pass Jolt reader forms through verbatim to Janet's `quote`. raw-form->janet now handles namespace-qualified symbols: `{:ns "foo" :name "bar"}` → `foo/bar` Janet symbol.
+
+## Remaining ops (interpreter only)
+
+`syntax-quote`, `set!`, `deftype`, `defmulti`, `defmethod`, `var`, `.`, `new` — these are stateful or complex and always use the interpreter path even in compile mode.
+
+## Binding macro (Phase 1)
+
+`core-binding` macro generates `(let [frame {var1 var1-obj var2 var2-obj ...}] (push-thread-bindings frame) (try (do body...) (finally (pop-thread-bindings))))`. Call forms inside the macro expansion MUST use `@[...]` arrays, not tuples — the evaluator treats tuples as literal vectors.
 
 ## Adding a new op
 
@@ -129,9 +145,15 @@ Note: `def` IS handled by the compiler (compiles to Janet `def`, since macros ar
 5. Add `core-fn-values` entry (Janet string name → actual fn value)
 6. Add tests in `test/compiler-test.janet`
 
+## Phase 1: Var/Namespace system
+
+- `types.janet`: `all-ns`, `remove-ns`, `create-ns`, `the-ns`, `ns-interns`, `ns-aliases`, `ns-imports-fn`
+- `core.janet`: `core-binding` macro + `core-push-thread-bindings`/`core-pop-thread-bindings`
+- `evaluator.janet`: ns accessor special forms, ns form extended with `:require`/`:refer`, `:use`, `:refer-clojure`/`:exclude`, `:import` clauses
+
 ## Test files
 
-- `test/compiler-test.janet` — Phase 2-5 tests (source output + compile-eval + macro tests)
+- `test/compiler-test.janet` — Phase 2-5 + Phase 0-1 tests (source output + compile-eval + macro + ns + defn tests)
 - `test/phase6-final.janet` — Phase 6 comprehensive compile-mode tests (47 assertions)
 
 Run: `janet test/compiler-test.janet` or `janet test/phase6-final.janet` or `jpm test`

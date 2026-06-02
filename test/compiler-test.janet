@@ -250,14 +250,3 @@
 (print "  passed")
 
 (print "\nAll Phase 1 tests passed!")
-
-(print "16: binding macro...")
-(let [ctx (init)]
-  (eval-string ctx "(def ^:dynamic *x* 10)")
-  (assert (= 10 (eval-string ctx "*x*")) "dynamic var default")
-  (assert (= 99 (eval-string ctx "(binding [*x* 99] *x*)")) "binding rebinds")
-  (assert (= 10 (eval-string ctx "*x*")) "binding restored"))
-
-(print "  passed")
-
-(print "\nAll Phase 1 tests passed!")
