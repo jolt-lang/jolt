@@ -2,6 +2,7 @@
 (use ../src/jolt/types)
 (use ../src/jolt/reader)
 (use ../src/jolt/api)
+(use ../src/jolt/core)
 
 (def ctx (init))
 
@@ -62,6 +63,33 @@
 (printf "\n==============================\n")
 (printf "TOTAL: %d ok, %d fail, %d total\n" total-ok total-fail (+ total-ok total-fail))
 (printf "==============================\n")
+
+# After loading, check what SCI namespaces exist
+(printf "\ncurrent ns: %s\n" (ctx-current-ns ctx))
+(printf "sci.core exists: %q\n" (not (nil? (ctx-find-ns ctx "sci.core"))))
+(printf "total namespaces: %d\n" (length (keys ((ctx :env) :namespaces))))
+
+# Initialize edamame shim (in core.janet) and test eval-string
+(init-edamame-shim! ctx parse-string read-form)
+
+# Check critical SCI namespaces
+(printf "\n--- Critical SCI namespaces ---\n")
+(def critical-ns ["sci.impl.interpreter" "sci.impl.parser" "sci.impl.analyzer" "sci.impl.opts"])
+(each nsn critical-ns
+  (def ns (ctx-find-ns ctx nsn))
+  (printf "%s: %d bindings\n" nsn (if ns (length (keys (ns-map ns))) 0)))
+
+(printf "\n--- Testing sci.core/eval-string ---\n")
+(def core-ns (ctx-find-ns ctx "sci.core"))
+(def ev (ns-find core-ns "eval-string"))
+(if ev
+  (do
+    (printf "eval-string found, calling...\n")
+    (flush)
+    (def f (var-get ev))
+    (def result (try (f "(+ 1 2 3)") ([err] (string "ERROR: " err))))
+    (printf "eval-string result: %q\n" result))
+  (printf "eval-string NOT found\n"))
 
 (when (> (length all-failures) 0)
   (printf "\n=== FAILURES ===\n")
