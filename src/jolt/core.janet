@@ -687,6 +687,30 @@
   @[{:jolt/type :symbol :ns nil :name "if"} not-form
     @[{:jolt/type :symbol :ns nil :name "do"} ;body]])
 
+(defn core-and
+  "Macro: (and) -> true, (and x) -> x, (and x y ...) -> (if x (and y ...) x)"
+  [& exprs]
+  (if (= 0 (length exprs)) true
+    (if (= 1 (length exprs)) (first exprs)
+      @[{:jolt/type :symbol :ns nil :name "let*"}
+        @[{:jolt/type :symbol :ns nil :name "and__x"} (first exprs)]
+        @[{:jolt/type :symbol :ns nil :name "if"}
+          {:jolt/type :symbol :ns nil :name "and__x"}
+          @[{:jolt/type :symbol :ns nil :name "and"} ;(tuple/slice exprs 1)]
+          {:jolt/type :symbol :ns nil :name "and__x"}]])))
+
+(defn core-or
+  "Macro: (or) -> nil, (or x) -> x, (or x y ...) -> (let [or__x x] (if or__x or__x (or y ...)))"
+  [& exprs]
+  (if (= 0 (length exprs)) nil
+    (if (= 1 (length exprs)) (first exprs)
+      @[{:jolt/type :symbol :ns nil :name "let*"}
+        @[{:jolt/type :symbol :ns nil :name "or__x"} (first exprs)]
+        @[{:jolt/type :symbol :ns nil :name "if"}
+          {:jolt/type :symbol :ns nil :name "or__x"}
+          {:jolt/type :symbol :ns nil :name "or__x"}
+          @[{:jolt/type :symbol :ns nil :name "or"} ;(tuple/slice exprs 1)]]])))
+
 (defn core-if-let
   "Macro: (if-let [binding val-expr] then else?)"
   [bindings then-form & else-forms]
@@ -766,8 +790,23 @@
       (each b body (array/push fn-form b))
       @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])))
 
-# defn- stub — expands to defn
-(defn core-defn- [& args] @[{:jolt/type :symbol :ns nil :name "do"}])
+# defn- — same as defn (private not enforced in Jolt)
+(defn core-defn- [fn-name & rest]
+  # Multi-arity if rest starts with list of [args] pairs
+  (if (and (> (length rest) 0) (array? (first rest)) (indexed? (first (first rest))))
+    (let [pairs rest]
+      (def fn-form @[])
+      (array/push fn-form {:jolt/type :symbol :ns nil :name "fn*"})
+      (each pair pairs (array/push fn-form pair))
+      @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])
+    # Single-arity: (defn- name [args] body...)
+    (let [args-form (first rest)
+          body (tuple/slice rest 1)]
+      (def fn-form @[])
+      (array/push fn-form {:jolt/type :symbol :ns nil :name "fn*"})
+      (array/push fn-form args-form)
+      (each b body (array/push fn-form b))
+      @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])))
 
 # Hierarchy stubs for sci bootstrap
 (def core-derive (fn [& args] nil))
@@ -860,6 +899,15 @@
   [bindings & body]
   (def result @[])
   (array/push result {:jolt/type :symbol :ns nil :name "let*"})
+  (array/push result bindings)
+  (each b body (array/push result b))
+  result)
+
+(defn core-loop
+  "Macro: (loop [bindings] body) → (loop* [bindings] body)"
+  [bindings & body]
+  (def result @[])
+  (array/push result {:jolt/type :symbol :ns nil :name "loop*"})
   (array/push result bindings)
   (each b body (array/push result b))
   result)
@@ -1020,6 +1068,8 @@
     "reset!" core-reset!
     "swap!" core-swap!
     "not" core-not
+    "and" core-and
+    "or" core-or
     "when" core-when
     "when-not" core-when-not
     "if-let" core-if-let
@@ -1037,6 +1087,7 @@
     "declare" core-declare
     "fn" core-fn
     "let" core-let
+    "loop" core-loop
     "defprotocol" core-defprotocol
     "extend-type" core-extend-type
     "extend-protocol" core-extend-protocol
@@ -1078,7 +1129,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true})
+  @{"and" true "or" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true})
 
 (def init-core!
   (fn [& args]

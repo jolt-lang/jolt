@@ -496,7 +496,7 @@
     "locking" (eval-form ctx bindings (in form 2))
     "instance?" (let [type-sym (in form 1)
                       val (eval-form ctx bindings (in form 2))]
-                  (if (and (struct? val) (get val :jolt/deftype))
+                  (if (get val :jolt/deftype)
                     (let [type-tag (val :jolt/deftype)
                           type-name (type-sym :name)]
                       (or (= type-tag type-name)
@@ -588,19 +588,28 @@
             (apply ctor args))
     "." (let [target (eval-form ctx bindings (in form 1))
               member-sym (in form 2)
-              member-name (member-sym :name)]
+              member-name (member-sym :name)
+              field-name (if (and (> (length member-name) 0) (= "-" (string/slice member-name 0 1)))
+                          (string/slice member-name 1)
+                          member-name)]
           (if (> (length form) 3)
             # method call: (. obj method args...)
             (let [args (map |(eval-form ctx bindings $) (tuple/slice form 3))]
               (if (target :jolt/deftype)
-                (let [method-key (keyword member-name)]
+                (let [method-key (keyword field-name)]
                   (apply (get target method-key) target ;args))
-                (error (string "Cannot call method " member-name " on non-deftype"))))
+                (error (string "Cannot call method " field-name " on non-deftype"))))
             # field access: (. obj field)
-            (get target (keyword member-name))))
+            (get target (keyword field-name))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]
+        # Handle .-fieldName accessor: (.-cnt obj) → (. obj -cnt)
+        (if (and (> (length sym-name) 1) (= (string/slice sym-name 0 2) ".-")
+                 (> (length form) 1))
+          (let [field-name (string/slice sym-name 2)
+                target (eval-form ctx bindings (in form 1))]
+            (get target (keyword field-name)))
         # Handle ClassName. constructor syntax
         (if (and (> (length sym-name) 0) (= (sym-name (- (length sym-name) 1)) 46))
           (let [type-name (string/slice sym-name 0 (- (length sym-name) 1))
@@ -615,7 +624,7 @@
                 (eval-form ctx bindings (apply macro-fn args)))
               (let [f (eval-form ctx bindings first-form)
                     args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
-                (apply f args))))))
+                (apply f args)))))))
       (let [f (eval-form ctx bindings first-form)
             args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
         (if (function? f)
