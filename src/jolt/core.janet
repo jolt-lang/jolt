@@ -87,6 +87,11 @@
 
 (defn core-not= [& args] (not (apply core-= args)))
 
+(defn core-< [a b] (< a b))
+(defn core-> [a b] (> a b))
+(defn core-<= [a b] (<= a b))
+(defn core->= [a b] (>= a b))
+
 # ============================================================
 # Collections
 # ============================================================
@@ -978,6 +983,10 @@
     "min" core-min
     "=" core-=
     "not=" core-not=
+    "<" core-<
+    ">" core->
+    "<=" core-<=
+    ">=" core->=
     "conj" core-conj
     "assoc" core-assoc
     "dissoc" core-dissoc
