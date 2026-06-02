@@ -76,6 +76,7 @@
   (let [ns-sym (in spec 0)
         ns-name (sym-name-str ns-sym)]
     (var alias nil)
+    (var refer-syms nil)
     (var i 1)
     (let [slen (length spec)]
       (while (< i slen)
@@ -85,11 +86,22 @@
               (def alias-sym (in spec (+ i 1)))
               (set alias (alias-sym :name))
               (set i slen))
-            (++ i)))))
+            (if (or (= item :refer) (and (struct? item) (= :symbol (item :jolt/type)) (= "refer" (item :name))))
+              (do
+                (set refer-syms (in spec (+ i 1)))
+                (set i slen))
+              (++ i))))))
     (ctx-find-ns ctx ns-name)
     (when alias
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))]
         (ns-import current-ns alias ns-name)))
+    (when refer-syms
+      (let [source-ns (ctx-find-ns ctx ns-name)
+            target-ns (ctx-find-ns ctx (ctx-current-ns ctx))]
+        (each refer-sym refer-syms
+          (let [name (if (struct? refer-sym) (refer-sym :name) refer-sym)
+                v (ns-find source-ns name)]
+            (when v (ns-intern target-ns name (var-get v)))))))
     nil))
 
 (defn- bind-put
@@ -283,26 +295,75 @@
                clauses (tuple/slice form 2)]
            (ctx-set-current-ns ctx ns-name)
            (ctx-find-ns ctx ns-name)
-           (var result nil)
-           (var i 0)
-           (let [clen (length clauses)]
-             (while (< i clen)
-               (let [clause (in clauses i)]
-                 (if (and (array? clause) (> (length clause) 0) (= :require (first clause)))
-                   (let [specs (tuple/slice clause 1)
-                         slen (length specs)]
-                     (var j 0)
-                      (while (< j slen)
-                        (let [s (in specs j)]
-                          (when s (eval-require ctx s)))
-                       (++ j))
-                     (set i (+ i 1)))
-                   (do (set result clause) (++ i))))))
+            (var result nil)
+            (var i 0)
+            (let [clen (length clauses)]
+              (while (< i clen)
+                (let [clause (in clauses i)
+                      head (if (and (array? clause) (> (length clause) 0)) (first clause) nil)]
+                  (if (nil? head)
+                    (do (set result clause) (++ i))
+                    (match head
+                      :require (let [specs (tuple/slice clause 1)
+                                     slen (length specs)]
+                                 (var j 0)
+                                 (while (< j slen)
+                                   (let [s (in specs j)]
+                                     (when s (eval-require ctx s)))
+                                   (++ j))
+                                 (set i (+ i 1)))
+                      :use (let [specs (tuple/slice clause 1)
+                                 slen (length specs)]
+                             (var j 0)
+                             (while (< j slen)
+                               (let [s (in specs j)
+                                     ns-sym (if (array? s) (in s 0) s)
+                                     ns-name (sym-name-str ns-sym)
+                                     source-ns (ctx-find-ns ctx ns-name)
+                                     target-ns (ctx-find-ns ctx ns-name)]
+                                 (loop [[sym v] :pairs (source-ns :mappings)]
+                                   (ns-intern target-ns sym (var-get v))))
+                               (++ j))
+                             (set i (+ i 1)))
+                      :refer-clojure (let [spec (in clause 1)]
+                                       (when (and (array? spec) (= (first spec) :exclude))
+                                         (let [ns (ctx-find-ns ctx ns-name)]
+                                           (each sym (tuple/slice spec 1)
+                                             (ns-unmap ns (if (struct? sym) (sym :name) sym)))))
+                                       (set i (+ i 1)))
+                      :import (let [specs (tuple/slice clause 1)
+                                    slen (length specs)]
+                                (var j 0)
+                                (while (< j slen)
+                                  (let [class-spec (in specs j)
+                                        class-name (if (struct? class-spec) (class-spec :name) (string class-spec))
+                                        last-dot (do
+                                                  (var idx -1)
+                                                  (var pos 0)
+                                                  (while (< pos (length class-name))
+                                                    (if (= (class-name pos) 46) (set idx pos))
+                                                    (++ pos))
+                                                  idx)
+                                        short-name (if (>= last-dot 0)
+                                                    (string/slice class-name (+ last-dot 1))
+                                                    class-name)]
+                                    (ns-import (ctx-find-ns ctx ns-name) short-name class-name))
+                                  (++ j))
+                                (set i (+ i 1)))
+                      (do (set result clause) (++ i)))))))
            result)
     "require" (let [spec (eval-form ctx bindings (in form 1))]
                  (if (and (tuple? spec) (> (length spec) 0))
                    (eval-require ctx spec)
                    (error "require expects a vector spec")))
+    "all-ns" (all-ns ctx)
+    "the-ns" (the-ns ctx)
+    "create-ns" (create-ns ctx (sym-name-str (in form 1)))
+    "remove-ns" (remove-ns ctx (sym-name-str (in form 1)))
+    "ns-interns" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :mappings))
+    "ns-aliases" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :aliases))
+    "ns-imports" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :imports))
+    "ns-resolve" (ns-resolve (ctx-find-ns ctx (ctx-current-ns ctx)) (in form 1))
     "in-ns" (let [ns-name (sym-name-str (in form 1))]
               (ctx-set-current-ns ctx ns-name)
               (ctx-find-ns ctx ns-name)

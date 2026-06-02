@@ -784,6 +784,31 @@
   (array/push result sym)
   result)
 
+(defn core-push-thread-bindings [b] (push-thread-bindings b))
+(defn core-pop-thread-bindings [] (pop-thread-bindings))
+
+(defn core-binding
+  "Macro: (binding [var val ...] body...)"
+  [bindings & body]
+  (def frame-pairs @[])
+  (var i 0)
+  (let [n (length bindings)]
+    (while (< i n)
+      (array/push frame-pairs
+        [{:jolt/type :symbol :ns nil :name "var"} (in bindings i)])
+      (array/push frame-pairs (in bindings (+ i 1)))
+      (+= i 2)))
+  (def hm-form (tuple ;(array/insert frame-pairs 0
+    {:jolt/type :symbol :ns nil :name "hash-map"})))
+  @[{:jolt/type :symbol :ns nil :name "let"}
+    [{:jolt/type :symbol :ns nil :name "frame"} hm-form]
+    {:jolt/type :symbol :ns nil :name "push-thread-bindings"}
+    {:jolt/type :symbol :ns nil :name "frame"}
+    {:jolt/type :symbol :ns nil :name "try"}
+    [{:jolt/type :symbol :ns nil :name "do"} ;body]
+    [{:jolt/type :symbol :ns nil :name "finally"}
+     {:jolt/type :symbol :ns nil :name "pop-thread-bindings"}]])
+
 (defn core-defn
   "Macro: (defn name [args] body) or (defn name ([args] body)...) 
   -> (def name (fn* ...) )"
@@ -1136,6 +1161,9 @@
     "avoid-method-too-large" core-avoid-method-too-large
     "qualified-symbol?" core-qualified-symbol?
     "meta" core-meta
+    "binding" core-binding
+    "push-thread-bindings" core-push-thread-bindings
+    "pop-thread-bindings" core-pop-thread-bindings
     # Dynamic vars — stubs for SCI bootstrap
     "*unchecked-math*" false
     "*clojure-version*" @{:major 1 :minor 11 :incremental 0 :qualifier nil}
@@ -1148,7 +1176,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true})
+  @{"and" true "or" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true})
 
 (def init-core!
   (fn [& args]

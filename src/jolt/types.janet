@@ -277,3 +277,45 @@
   "Set the current namespace symbol."
   [ctx ns-sym]
   (put (ctx :env) :current-ns ns-sym))
+
+(defn all-ns
+  "Return a list of all namespaces in the context."
+  [ctx]
+  (let [namespaces (get (ctx :env) :namespaces)
+        result @[]]
+    (loop [[_ ns] :pairs namespaces]
+      (array/push result ns))
+    result))
+
+(defn remove-ns
+  "Remove a namespace from the context by name string."
+  [ctx ns-name]
+  (put (get (ctx :env) :namespaces) ns-name nil) nil)
+
+(defn create-ns
+  "Create a new namespace."
+  [ctx ns-name]
+  (ctx-find-ns ctx ns-name))
+
+(defn the-ns
+  "Return the current namespace object."
+  [ctx]
+  (ctx-find-ns ctx (ctx-current-ns ctx)))
+
+(defn ns-interns
+  "Return the map of all interned vars in the current namespace."
+  [ctx]
+  (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
+    (ns :mappings)))
+
+(defn ns-aliases
+  "Return the alias map of the current namespace."
+  [ctx]
+  (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
+    (ns :aliases)))
+
+(defn ns-imports-fn
+  "Return the import map of the current namespace."
+  [ctx]
+  (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
+    (ns :imports)))

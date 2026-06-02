@@ -223,3 +223,30 @@
 (print "  passed")
 
 (print "\nAll compiler tests passed!")
+
+# ============================================================
+# 14. Phase 1: ns accessors + ns form extensions
+# ============================================================
+(print "14: ns accessors...")
+(use ../src/jolt/api)
+
+(let [ctx (init)]
+  (eval-string ctx "(ns mytest.core)")
+  (def ns-list (eval-string ctx "(all-ns)"))
+  (assert (> (length ns-list) 0) "all-ns returns namespaces")
+  # create-ns
+  (eval-string ctx "(create-ns mytest.extra)")
+  (def all (eval-string ctx "(all-ns)"))
+  (assert (> (length all) 1) "create-ns adds namespace"))
+
+(print "  passed")
+
+(print "15: ns form extensions...")
+(let [ctx (init)]
+  # ns with :require + :refer
+  (eval-string ctx "(ns test.ns-ext (:require [clojure.core :refer [inc +]]))")
+  (assert (= 2 (eval-string ctx "(inc 1)")) "refer inc works"))
+
+(print "  passed")
+
+(print "\nAll Phase 1 tests passed!")
