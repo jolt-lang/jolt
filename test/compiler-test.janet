@@ -201,3 +201,25 @@
 (print "  passed")
 
 (print "\nAll compiler Phase 5 tests passed!")
+
+# ============================================================
+# 13. defn/def integration (Phase 0 fix)
+# ============================================================
+(print "13: defn/def integration...")
+(use ../src/jolt/api)
+
+(let [ctx (init {:compile? true})]
+  # defn produces a resolvable var
+  (eval-string ctx "(defn identity-fn [x] x)")
+  (assert (= 1 (eval-string ctx "(identity-fn 1)")) "defn works")
+  (let [f (eval-string ctx "identity-fn")]
+    (assert (function? f) "bare defn symbol returns fn"))
+
+  # def produces a resolvable var
+  (eval-string ctx "(def answer 42)")
+  (assert (= 42 (eval-string ctx "answer")) "def bare symbol")
+  (assert (= 43 (eval-string ctx "(inc answer)")) "def in call"))
+
+(print "  passed")
+
+(print "\nAll compiler tests passed!")

@@ -49,19 +49,27 @@
   [ctx s]
   (let [compile? (get (ctx :env) :compile?)
         form (parse-string s)]
-    (if (and compile? (array? form))
-      (let [first-form (first form)
-            head-name (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
-                       (first-form :name)
-                       nil)
-            stateful? (or (= head-name "defmacro") (= head-name "ns")
-                          (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
-                          (= head-name "require") (= head-name "in-ns")
-                          (= head-name "syntax-quote") (= head-name "set!")
-                          (= head-name "var") (= head-name ".") (= head-name "new"))]
-        (if stateful?
-          (eval-form ctx @{} form)
-          (compile-and-eval form ctx)))
+    (if compile?
+      (if (array? form)
+        # Lists: check for stateful forms
+        (let [first-form (first form)
+              head-name (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
+                         (first-form :name)
+                         nil)
+              stateful? (or (= head-name "defmacro") (= head-name "ns")
+                            (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
+                            (= head-name "require") (= head-name "in-ns")
+                            (= head-name "syntax-quote") (= head-name "set!")
+                            (= head-name "var") (= head-name ".") (= head-name "new"))]
+          (if stateful?
+            (eval-form ctx @{} form)
+            (compile-and-eval form ctx)))
+        # Bare symbols and other non-literal forms: also compile
+        (if (or (and (struct? form) (= :symbol (form :jolt/type)))
+                (tuple? form))
+          (compile-and-eval form ctx)
+          (eval-form ctx @{} form)))
+      # No compile flag: always interpret
       (eval-form ctx @{} form))))
 
 (defn eval-string*

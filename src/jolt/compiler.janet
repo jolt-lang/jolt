@@ -831,6 +831,18 @@
   (emit-expr (analyze-form form @{} ctx)))
 
 (defn compile-and-eval
-  "Compile a Clojure form and evaluate it as Janet."
+  "Compile a Clojure form and evaluate it as Janet.
+  For def/defn forms, interns the result in the Jolt namespace
+  so the interpreter can resolve it later."
   [form ctx]
-  (eval (compile-ast form ctx)))
+  (def result (eval (compile-ast form ctx)))
+  # Intern def/defn results in Jolt namespace for interpreter resolution
+  (when (and ctx (array? form) (> (length form) 0)
+             (struct? (first form)) (= :symbol ((first form) :jolt/type)))
+    (def head-name ((first form) :name))
+    (when (or (= head-name "def") (= head-name "defn") (= head-name "defn-"))
+      (def name-sym (in form 1))
+      (def name (if (struct? name-sym) (name-sym :name) name-sym))
+      (def ns (ctx-find-ns ctx (ctx-current-ns ctx)))
+      (ns-intern ns name result)))
+  result)
