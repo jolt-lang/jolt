@@ -43,3 +43,26 @@ Both tables must be updated together when adding core fns. Missing entries = sil
 ## `set!` Field Mutation Reader Quirk
 
 `(set! (.-x obj) val)` parses as array with `.-x` symbol head — not as standalone `.-x` symbol. Check for this case before the `(. obj -field)` shorthand.
+
+## Janet `cond` Requires `true` Guard for Catch-All
+
+A bare expression in the last position of `cond` is treated as a **test** clause (not body). Use `true` as the test:
+
+```janet
+(cond (nil? x) (buf "nil") (number? x) (buf (string x)) true (buf (string x)))
+```
+
+Without `true`, the last expression executes as a side-effect test between branches. Hit us in buffer-based write-value — raw tuple addresses leaked into REPL output.
+
+## Janet `cond` Requires `true` Guard for Catch-All
+
+A bare expression in the last position of `cond` is treated as a **test** clause (not body). It executes between other branches as a side-effect test. Use `true` as the test to make it a proper catch-all:
+
+```janet
+(cond
+  (nil? x) (buf "nil")
+  (number? x) (buf (string x))
+  true (buf (string x)))  ; ← `true` required
+```
+
+Without `true`, `(push-str buf (string v))` in the last position leaked raw tuple addresses into REPL output.

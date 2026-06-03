@@ -1243,6 +1243,17 @@
     "str" core-str
     "name" core-name
     "subs" core-subs
+    "str-trim" string/trim
+    "str-upper" string/ascii-upper
+    "str-lower" string/ascii-lower
+    "str-find" string/find
+    "str-replace" string/replace
+    "str-replace-all" string/replace-all
+    "str-reverse-b" string/reverse
+    "str-join" string/join
+    "str-split" string/split
+    "str-triml" string/triml
+    "str-trimr" string/trimr
     "print" core-print
     "println" core-println
     "pr" core-pr

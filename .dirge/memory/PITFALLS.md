@@ -1,7 +1,5 @@
-Janet `break` does NOT work inside `let` — it only breaks from loops (`while`, `loop`). When searching for a key in a bucket and needing to return a value, use `(var found nil)` + `(set found val) (break)` pattern then check `found` after the loop. Same for `break nil` in bucket-dissoc: capture index in a var, break, then construct result after loop.
-§
-Keywords containing `#` (like `:#inst`, `:#uuid`) are invalid Janet literal syntax. Use dynamic table construction: `(let [dr @{}] (put dr (keyword "#inst") fn) dr)` instead of `@{:#inst fn}`. This hit us in types.janet make-ctx :data-readers initialization.
-§
-PHM/Set internal metadata keys (`:jolt/deftype`, `:cnt`, `:buckets`, `:_meta`, `:jolt/type`, `:phm`) leak into `pairs`/`keys` iteration. Must filter them in core fns like merge, merge-with, keys, vals, and in print-rendering code. `core-merge` without filtering produced corrupted PHMs with metadata as entries. Commit `9c44021` fixed this for merge; `c366963` for print-value.
-§
 Janet's `case` for multi-arity dispatch: `(defn f [& args] (case (length args) 1 ... 2 ...))`. Used in core-derive, core-isa?, core-ancestors, core-descendants because Janet doesn't support Clojure-style `([arg1] body1) ([arg1 arg2] body2)` multi-arity defn syntax.
+§
+Janet's boolean function doesn't exist — use (if x true false). Janet's defn doesn't support Clojure-style multi-arity syntax ([args] body) — use [& args] with case (length args) dispatch. fn? exists as Janet builtin (not Jolt core fn) — use (or (function? x) (cfunction? x)) in tests.
+§
+Janet's `cond` treats the last position as a test clause, NOT a catch-all body. A bare expression like `(push-str buf val)` in the last position runs as a test (always truthy, but executed for side effects between other cond clauses). Use `true (push-str buf val)` to make it a proper catch-all body. Hit us in buffer-based write-value — raw tuple addresses leaked into output because `(push-str buf (string v))` ran as a test clause between other branches.
