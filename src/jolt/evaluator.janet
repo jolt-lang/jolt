@@ -2,6 +2,7 @@
 # Direct interpreter for Clojure forms on Janet.
 
 (use ./types)
+(use ./phm)
 
 (defn- sym-name?
   [sym-s name-str]
@@ -18,7 +19,8 @@
       (= name "deftype") (= name "new") (= name ".")
       (= name "var-get") (= name "var-set") (= name "var?")
       (= name "alter-var-root") (= name "find-var") (= name "intern")
-      (= name "alter-meta!") (= name "reset-meta!")))
+      (= name "alter-meta!") (= name "reset-meta!")
+      (= name "disj") (= name "set?")))
 
 (var eval-form nil)
 
@@ -602,6 +604,12 @@
                    val (eval-form ctx bindings (in form 3))
                    ns (ctx-find-ns ctx (if (struct? ns-name) (ns-name :name) ns-name))]
                (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val))
+    "disj" (let [s (eval-form ctx bindings (in form 1))
+                 ks (map |(eval-form ctx bindings $) (tuple/slice form 2))]
+             (if (set? s)
+               (apply phs-disj s ks)
+               (error "disj expects a set")))
+    "set?" (set? (eval-form ctx bindings (in form 1)))
     "locking" (eval-form ctx bindings (in form 2))
     "instance?" (let [type-sym (in form 1)
                       val (eval-form ctx bindings (in form 2))]
@@ -785,6 +793,8 @@
     (struct? form)
     (if (= :symbol (form :jolt/type))
       (resolve-sym ctx bindings form)
+      (if (= :jolt/set (form :jolt/type))
+        (apply make-phs (form :value))
       (if (= :jolt/tagged (form :jolt/type))
         (let [tag (form :tag)
               data-readers (get (ctx :env) :data-readers)
@@ -794,7 +804,7 @@
             (error (string "No reader function for tag " tag))))
       (if (get form :jolt/type)
         (error (string "Unexpected tagged form: " (form :jolt/type)))
-        form)))
+        form))))
     (array? form)
     (if (= 0 (length form))
       @[]

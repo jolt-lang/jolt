@@ -98,6 +98,12 @@
     (++ bi))
   (table/to-struct result))
 
+(defn phm-count [m] (m :cnt))
+
+(defn phm-contains? [m k]
+  (let [bucket (get (m :buckets) (phm-hash-key k))]
+    (if bucket (phm-bucket-contains? bucket k) false)))
+
 (defn make-phm [&opt kvs]
   (default kvs nil)
   (var m @{:jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
@@ -106,3 +112,85 @@
     (var i 0) (var n (length kvs))
     (while (< i n) (set m (phm-assoc m (kvs i) (kvs (+ i 1)))) (+= i 2)))
   m)
+
+# ============================================================
+# LazySeq — realize-once lazy sequence
+# ============================================================
+
+(defn lazy-seq?
+  "Check if x is a LazySeq."
+  [x]
+  (and (table? x) (= :jolt/lazy-seq (x :jolt/type))))
+
+(defn- realize-ls
+  "Force a LazySeq. Returns the realized value, caching it."
+  [ls]
+  (if (get ls :realized)
+    (ls :val)
+    (let [v ((ls :fn))
+          vf (if (lazy-seq? v) (realize-ls v) v)]
+      (put ls :realized true)
+      (put ls :val vf)
+      vf)))
+
+(defn ls-first [ls]
+  (let [val (realize-ls ls)]
+    (if (nil? val) nil
+      (if (and (indexed? val) (> (length val) 0)) (in val 0) nil))))
+
+(defn ls-rest [ls]
+  (let [val (realize-ls ls)]
+    (if (nil? val) nil
+      (if (indexed? val) (if (tuple? val) (tuple/slice val 1) (array/slice val 1)) nil))))
+
+(defn ls-seq [ls]
+  (let [val (realize-ls ls)]
+    (when val (if (tuple? val) (tuple/slice val) (if (array? val) (array/slice val) val)))))
+
+(defn ls-count [ls]
+  (let [val (realize-ls ls)]
+    (if (nil? val) 0 (length val))))
+
+(defn make-lazy-seq [thunk]
+  @{:jolt/type :jolt/lazy-seq :fn thunk :realized false :val nil})
+
+# ============================================================
+# PersistentHashSet — backed by PersistentHashMap
+# ============================================================
+
+(defn set?
+  "Check if x is a PersistentHashSet."
+  [x]
+  (and (table? x) (= :jolt/set (x :jolt/type))))
+
+(defn make-phs [& xs]
+  "Create a PersistentHashSet from items."
+  (var m (make-phm))
+  (each x xs (set m (phm-assoc m x true)))
+  @{:jolt/type :jolt/set :phm m :cnt (phm-count m)})
+
+(defn phs-conj [s & xs]
+  (var m (s :phm))
+  (each x xs (set m (phm-assoc m x true)))
+  @{:jolt/type :jolt/set :phm m :cnt (phm-count m)})
+
+(defn phs-disj [s & xs]
+  (var m (s :phm))
+  (each x xs (set m (phm-dissoc m x)))
+  @{:jolt/type :jolt/set :phm m :cnt (phm-count m)})
+
+(defn phs-contains? [s x]
+  (phm-contains? (s :phm) x))
+
+(defn phs-count [s]
+  (s :cnt))
+
+(defn phs-empty? [s]
+  (= 0 (s :cnt)))
+
+(defn phs-seq [s]
+  (tuple ;(keys (phm-to-struct (s :phm)))))
+
+(defn phs-get [s x &opt default]
+  (default default nil)
+  (if (phm-contains? (s :phm) x) x default))

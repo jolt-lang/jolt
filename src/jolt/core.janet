@@ -33,9 +33,10 @@
 
 (defn core-empty? [coll]
   (if (nil? coll) true
-    (if (phm? coll) (= 0 (coll :cnt))
-      (if (struct? coll) (= 0 (length (keys coll)))
-        (= 0 (length coll))))))
+    (if (set? coll) (= 0 (coll :cnt))
+      (if (phm? coll) (= 0 (coll :cnt))
+        (if (struct? coll) (= 0 (length (keys coll)))
+          (= 0 (length coll)))))))
 
 (defn core-every? [pred coll]
   (var result true)
@@ -103,10 +104,8 @@
 
 (defn core-conj [coll & xs]
   (if (tuple? coll)
-    # vector: add to end
     (tuple/slice (tuple ;(array/concat (array/slice coll) xs)))
     (if (array? coll)
-      # list: add to front (reverse xs, push each)
       (do
         (var result coll)
         (var i 0)
@@ -114,15 +113,25 @@
           (set result (array/insert result 0 (xs i)))
           (++ i))
         result)
-      # struct/map: add [k v] pairs
-      (do
-        (var result coll)
-        (var i 0)
-        (while (< i (length xs))
-          (let [pair (xs i)]
-            (set result (merge result {(pair 0) (pair 1)})))
-          (++ i))
-        result))))
+      (if (set? coll)
+        (apply phs-conj coll xs)
+        (if (phm? coll)
+          (do
+            (var result coll)
+            (var i 0)
+            (while (< i (length xs))
+              (let [pair (xs i)]
+                (set result (phm-assoc result (pair 0) (pair 1))))
+              (++ i))
+            result)
+          (do
+            (var result coll)
+            (var i 0)
+            (while (< i (length xs))
+              (let [pair (xs i)]
+                (set result (merge result {(pair 0) (pair 1)})))
+              (++ i))
+            result))))))
 
 (defn core-assoc [m & kvs]
   (if (phm? m)
@@ -140,13 +149,14 @@
 (defn core-get [m k &opt default]
   (default default nil)
   (if (nil? m) default
-    (if (phm? m) (phm-get m k default)
-      (if (or (struct? m) (table? m))
-        (let [v (m k)]
-          (if (nil? v) default v))
-        (if (and (or (tuple? m) (array? m)) (number? k) (>= k 0) (< k (length m)))
-          (in m k)
-          default)))))
+    (if (set? m) (phs-get m k default)
+      (if (phm? m) (phm-get m k default)
+        (if (or (struct? m) (table? m))
+          (let [v (m k)]
+            (if (nil? v) default v))
+          (if (and (or (tuple? m) (array? m)) (number? k) (>= k 0) (< k (length m)))
+            (in m k)
+            default))))))
 
 (defn core-get-in [m ks &opt default]
   (default default nil)
@@ -159,28 +169,33 @@
   (if (nil? current) default current))
 
 (defn core-contains? [coll key]
-  (if (phm? coll) (let [b (get (coll :buckets) (phm-hash-key key))] (if b (phm-bucket-contains? b key) false))
-    (if (struct? coll) (not (nil? (coll key)))
-      (if (table? coll) (not (nil? (coll key)))
-        (if (or (tuple? coll) (array? coll))
-          (and (number? key) (>= key 0) (< key (length coll)))
-          false)))))
+  (if (set? coll) (phs-contains? coll key)
+    (if (phm? coll) (let [b (get (coll :buckets) (phm-hash-key key))] (if b (phm-bucket-contains? b key) false))
+      (if (struct? coll) (not (nil? (coll key)))
+        (if (table? coll) (not (nil? (coll key)))
+          (if (or (tuple? coll) (array? coll))
+            (and (number? key) (>= key 0) (< key (length coll)))
+            false))))))
 
 (defn core-count [coll]
-  (if (phm? coll) (coll :cnt)
-    (if (and (table? coll) (get coll :jolt/deftype)) (- (length (keys coll)) 1)
-      (length coll))))
+  (if (lazy-seq? coll) (ls-count coll)
+    (if (set? coll) (coll :cnt)
+      (if (phm? coll) (coll :cnt)
+        (if (and (table? coll) (get coll :jolt/deftype)) (- (length (keys coll)) 1)
+          (length coll))))))
 
 (defn core-first [coll]
-  (if (or (nil? coll) (= 0 (length coll))) nil
-    (in coll 0)))
+  (if (lazy-seq? coll) (ls-first coll)
+    (if (or (nil? coll) (= 0 (length coll))) nil
+      (in coll 0))))
 
 (defn core-rest [coll]
-  (if (or (nil? coll) (= 0 (length coll)))
-    @[]
-    (if (tuple? coll)
-      (tuple/slice coll 1)
-      (array/slice coll 1))))
+  (if (lazy-seq? coll) (ls-rest coll)
+    (if (or (nil? coll) (= 0 (length coll)))
+      @[]
+      (if (tuple? coll)
+        (tuple/slice coll 1)
+        (array/slice coll 1)))))
 
 (defn core-next [coll]
   (let [r (core-rest coll)]
@@ -196,11 +211,13 @@
 (defn core-seq [coll]
   (if (or (nil? coll) (and (or (tuple? coll) (array? coll)) (= 0 (length coll))))
     nil
-    (if (phm? coll) (tuple ;(phm-entries coll))
-      (if (tuple? coll) (tuple/slice coll)
-        (if (string? coll) (map |(string/from-bytes $) (string/bytes coll))
-          (if (struct? coll) (tuple ;(keys coll))
-            coll))))))
+    (if (lazy-seq? coll) (ls-seq coll)
+      (if (set? coll) (phs-seq coll)
+        (if (phm? coll) (tuple ;(phm-entries coll))
+          (if (tuple? coll) (tuple/slice coll)
+            (if (string? coll) (map |(string/from-bytes $) (string/bytes coll))
+              (if (struct? coll) (tuple ;(keys coll))
+                coll))))))))
 
 (defn core-vec [coll]
   (if (tuple? coll) coll
@@ -445,6 +462,19 @@
     (++ i))
   result))
 
+(defn core-iterate [f x]
+  "Macro: (iterate f x) → lazy infinite sequence x, (f x), (f (f x)), ..."
+  (def sym-x (gensym "x"))
+  (def sym-f (gensym "f"))
+  @[{:jolt/type :symbol :ns nil :name "lazy-seq"}
+    @[{:jolt/type :symbol :ns nil :name "let*"}
+      @[sym-x x sym-f f]
+      @[{:jolt/type :symbol :ns nil :name "cons"}
+        sym-x
+        @[{:jolt/type :symbol :ns nil :name "iterate"}
+          sym-f
+          @[{:jolt/type :symbol :ns nil :name sym-f} sym-x]]]]])
+
 (defn core-repeatedly [n f]
   (var result @[])
   (var i 0)
@@ -522,9 +552,15 @@
   (table/to-struct result))
 
 (defn core-hash-set [& xs]
-  (var result @{})
-  (each x xs (put result x true))
-  {:jolt/type :jolt/set :value (tuple ;(keys result))})
+  (apply make-phs xs))
+
+(defn core-set? [x] (set? x))
+(defn core-disj [s & ks]
+  (if (set? s) (apply phs-disj s ks) (error "disj expects a set")))
+
+(defn core-lazy-seq [& body]
+  @[{:jolt/type :symbol :ns nil :name "make-lazy-seq"}
+    @[{:jolt/type :symbol :ns nil :name "fn*"} [] ;body]])
 
 (defn core-set [coll]
   (apply core-hash-set (if (tuple? coll) (array/slice coll) coll)))
@@ -1104,6 +1140,7 @@
     "partition-by" core-partition-by
     "range" core-range
     "repeat" core-repeat
+    "iterate" core-iterate
     "repeatedly" core-repeatedly
     "identity" core-identity
     "constantly" core-constantly
@@ -1118,6 +1155,10 @@
     "hash-set" core-hash-set
     "set" core-set
     "list" core-list
+    "set?" core-set?
+    "disj" core-disj
+    "lazy-seq" core-lazy-seq
+    "make-lazy-seq" make-lazy-seq
     "str" core-str
     "name" core-name
     "subs" core-subs
@@ -1229,7 +1270,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true})
+  @{"and" true "or" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true "lazy-seq" true})
 
 (def init-core!
   (fn [& args]

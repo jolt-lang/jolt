@@ -1,7 +1,6 @@
 # jolt-compiler
-# Jolt Compiler
 
-Source-to-source Clojure→Janet compiler. Two-phase: analyze-form (classify + macro expand) → emit-ast (generate).
+Jolt Compiler — Clojure→Janet source compiler with data-structure emission path.
 
 ## Architecture
 
@@ -29,17 +28,6 @@ emit-core-symbol-expr → (get core-fn-values janet-name)
 
 Source-to-source (`compile-form` + `emit-ast`) still exists for debugging but is NOT used by `compile-and-eval`.
 
-## Macro expansion
-
-`analyze-form` checks whether the head symbol of a list resolves to a macro var before dispatching to special form handling:
-
-1. Look up symbol in current ns → core ns via `resolve-macro`
-2. If `var-macro?` is true, call `(var-get macro-var)` to get the fn
-3. `(apply macro-fn (tuple/slice form 1))` to expand
-4. `(analyze-form expanded ...)` to re-analyze the result
-
-Macros expand at analyze time, before emission. `defn` expands to `(def name (fn* ...))`, `when` to `(if test (do ...) nil)`, etc.
-
 ## Symbol classification (in analyze-form)
 
 Order: qualified ns → local binding → core-symbol → bare symbol
@@ -51,18 +39,19 @@ Order: qualified ns → local binding → core-symbol → bare symbol
     → :symbol)
 ```
 
-core-renames MUST match actual fn names: `"-"` → `"core-sub"` (not `"core--"`), `"not"` → `"core-not"`. Verify against `core.janet` bindings.
+## core-renames vs core-fn-values
 
-## core-fn-values
+core-renames maps Clojure name strings → Janet function name strings (used by both emitter paths).
+core-fn-values maps Janet function name strings → actual function values (used by data-structure emitter only).
 
-Maps Janet string names to actual function values. Must be kept in sync with core-renames. When adding a new core fn, update BOTH tables.
+MUST keep both in sync. When adding a new core fn, update BOTH.
+**Missing entries → symbol treated as unknown global, returns nil.**
 
-Functions that need special mapping (name differs):
+Key name mappings:
+- `"-"` → `"core-sub"` (NOT `"core--"`)
 - `"apply"` → `apply` (Janet built-in)
-- `"-"` → `"core-sub"` (not `core--`)
 - `"some"` → `core-some?` (shared with `core-some?`)
 - `"pr-str"` → `core-str` (alias)
-- `"nth"` → `core-nth` (separate function, added in Phase 6)
 - `"list"` → `core-list`, `"name"` → `core-name`, `"subs"` → `core-subs`
 
 ## Loop/recur compilation
@@ -76,62 +65,53 @@ Functions that need special mapping (name differs):
 
 `recur` saves `:loop-name` in the AST (looked up from bindings `:jolt/current-loop`), then `emit-recur-expr` rewrites to `(loop-name arg1 arg2...)`.
 
-In the string emitter, recur similarly emits `(loop-name arg ...)`.
-
 ## Throw/try compilation
 
 - `throw` → `(error val)` in Janet
-- `try/catch` → `(try body ([err] handler-body))` — NOTE: Janet uses `([sym] handler)` format, NOT `(catch sym handler)`
-- `try/finally` → appends do-block after catch clause in the Janet tuple
+- `try/catch` → `(try body ([err] handler-body))` — Janet uses `([sym] handler)` format
+
+## emi-vector-expr critical fix
+
+**Bare tuples in Janet eval are function calls**: `[1 2 3]` tries to call `1` as a function. Always emit `['tuple ...]` or `(tuple ...)`.
 
 ## Quote in data-structure emitter
 
-Don't re-analyze quoted forms. Use `raw-form->janet` to pass Jolt reader forms through verbatim to Janet's `quote`:
+Use `raw-form->janet` to pass Jolt reader forms through verbatim to Janet's `quote`:
 ```
 (emit-quote-expr expr) → ['quote (raw-form->janet expr)]
 ```
-raw-form->janet converts symbols to Janet symbols, arrays/tuples recursively.
+raw-form->janet converts Jolt symbols to Janet symbols, recursively for arrays/tuples.
 
-## Remaining ops (interpreter only)
+## make-symbol fix (reader.janet)
 
-`syntax-quote`, `set!`, `deftype`, `defmulti`, `defmethod` — these are stateful or complex and always use the interpreter path even in compile mode.
+`/` at position 0 means unqualified symbol. Use `(if (and slash (> slash 0)) ...)` — only split on `/` when it's not at the start.
 
-## deftype in interpreter (eval-list arm)
+## :data-readers key construction
 
-deftype creates a constructor function returning a Janet table with `:jolt/deftype` key (`"ns.TypeName"`). Evaluator `set!` handles `(.-field obj)` field mutation (reader creates `(. -field obj)` array form). `instance?` checks `:jolt/deftype` tag. defrecord macro in core.janet emits `(do (deftype Name [fields]) (def ->Name ...) (def map->Name ...))`.
-
-## Stateful forms (must use interpreter, NOT compiler)
-
-These forms modify context state and cannot be compiled:
-- `defmacro`, `ns`, `deftype`, `defmulti`, `defmethod`, `require`, `in-ns`
-- `syntax-quote`, `set!`, `var`, `.`, `new`
-
-Note: `def` IS handled by the compiler (compiles to Janet `def`, since macros are expanded at analyze time).
+`:data-readers` uses dynamic table construction because `:#inst` is invalid Janet keyword literal syntax (`:#` triggers reader macro):
+```janet
+:data-readers (let [dr @{}]
+                (put dr (keyword "#inst") (fn [s] s))
+                (put dr (keyword "#uuid") (fn [s] s))
+                dr)
+```
 
 ## eval-string dispatch (compile mode)
 
 ```janet
 (if (or (= head-name "defmacro") (= head-name "ns")
         (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
-        (= head-name "require") (= head-name "in-ns")
-        (= head-name "syntax-quote") (= head-name "set!")
-        (= head-name "var") (= head-name ".") (= head-name "new"))
+        (= head-name "require") (= head-name "in-ns"))
   (eval-form ctx @{} form)     ; interpret
   (compile-and-eval form ctx)) ; compile
 ```
 
-## Adding a new op
-
-1. Add `analyze-form` match arm for the special form
-2. Add `emit-ast` match arm (source string path)
-3. Add `emit-expr` match arm (data structure path)
-4. Add `core-renames` entry if it's a core fn (name → Janet string name)
-5. Add `core-fn-values` entry (Janet string name → actual fn value)
-6. Add tests in `test/compiler-test.janet`
-
 ## Test files
 
-- `test/compiler-test.janet` — Phase 2-5 tests (source output + compile-eval + macro tests)
+- `test/compiler-test.janet` — Phases 0-4 tests (source output + compile-eval + macro tests)
 - `test/phase6-final.janet` — Phase 6 comprehensive compile-mode tests (47 assertions)
+- `test/phase5-test.janet` — Phase 5 multimethod + hierarchy tests
+- `test/phase6-test.janet` — Phase 6 reader extension tests
+- `test/hash-map-test.janet` — Phase 2 PersistentHashMap tests
 
-Run: `janet test/compiler-test.janet` or `janet test/phase6-final.janet` or `jpm test`
+Run: `janet test/<file>.janet` or `jpm test`

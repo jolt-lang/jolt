@@ -1,9 +1,18 @@
-Test files: test/phase6-final.janet (47 tests, 58 assertions — collections, math, predicates, comparison, seq ops, special forms, macros, complex nesting). Phase 1 tests appended to test/compiler-test.janet (ns accessors, ns form extensions). All 317 tests pass.
+Jolt Compiler Architecture (Phases 1-6, dfa9874→1de109f): Two-phase — analyze-form (Clojure form → annotated AST) → emit-ast (→ Janet source string) or emit-expr (→ Janet data structures for eval). analyze-form takes [form bindings &opt ctx]; ctx needed for macro expansion. Symbol classification: bindings first (:local), then core-renames (:core-symbol), then plain (:symbol). Two emitter paths: string (compile-form) and data structures (compile-ast). Core fn values resolved via core-fn-values table. compile-and-eval takes [form ctx]; pass nil for no macro ctx.
+
+Key naming/facts:
+- Clojure - → core-sub (NOT core--)
+- core-nth did not exist — had to add both the function and core-bindings entry
+- Missing from core-renames early: fn?, list, name, subs
+- Bare tuples in Janet eval → treated as function calls. Always emit (tuple ...) or ['tuple ...]
+- make-symbol: / at position 0 means unqualified symbol (was parsing empty ns)
+- raw-form->janet converter for quote: don't re-analyze quoted forms, pass through verbatim
+- emit-try-expr: Janet format is (try body ([err] handler)) not (try body (catch sym handler))
+- Loop compilation: (do (var _loop_N nil) (set _loop_N (fn [params] body)) (_loop_N init-vals...))
+- Recur compilation: rewrites to (loop-name arg1 arg2...) via :loop-name in AST
+
+eval-string dispatch: When :compile? true, stateful forms (defmacro, ns, deftype, defmulti, defmethod, require, in-ns) use interpreter. All others (def, macros like defn) go through compile-and-eval. Macros expanded at analyze time via resolve-macro.
+
+Remaining: syntax-quote, set! compiler support. deftype/defmulti/defmethod routed to interpreter.
 §
-Phase 3 (Var system): find-var (ctx-based, resolve-q/nq symbol), alter-meta!, reset-meta!, var-get/var-set/var?/alter-var-root all in types.janet + evaluator dispatch arms + core-bindings wrappers. core-meta fixed: (var? x) branch → var-meta, struct? branch → :meta. 10 tests pass.
-§
-Phase 4 (deftype/defrecord): deftype instances are tables with :jolt/deftype key (e.g. "user.Point"). Field access via (. obj field), mutation via (set! (.-field obj) val) — reader parses .-field as (. -field obj) in array form. core-map? recognizes table+deftype. core-count skips :jolt/deftype key. core-defrecord emits (deftype ...) + ->TypeName arrow factory + map->TypeName factory (deferred). 11 tests pass including record equality. 317 total, 0 fail.
-§
-Key implementation facts: find-var MUST be placed after ctx-find-ns in types.janet (forward-reference). intern dispatch arm needs eval-form on args. core-meta: check (var? x) before (struct? x) — var-meta returns metadata for vars. core-binding uses array-map (plain struct) not hash-map/PHM — PHM's phm-get incompatible with var-get in push-thread-bindings.
-§
-Phase 5 (Multimethods + hierarchy): Not yet started. defmulti/defmethod exist in evaluator.janet (lines 611-656) but are routed to interpreter in compile mode. core-derive, core-isa?, core-ancestors, core-descendants are stubs in core.janet.
+Janet gotchas: (1) `parse` returns `[form, consumed-count]`, NOT `[form, error?]` — use parser/new→consume→eof→produce pipeline. (2) `:#inst` is invalid keyword literal — use `(keyword "#inst")` dynamically. (3) Janet `case` works for multi-arity simulation when `defn ([] body) ([x] body)` fails. (4) Bare tuples in eval are function calls — always use `['tuple ...]`. (5) Core `-` maps to `core-sub` NOT `core--`.
