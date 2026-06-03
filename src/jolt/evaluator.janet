@@ -586,6 +586,11 @@
                     (apply alter-meta! v f args))
     "reset-meta!" (reset-meta! (eval-form ctx bindings (in form 1))
                                 (eval-form ctx bindings (in form 2)))
+    "intern" (let [ns-name (eval-form ctx bindings (in form 1))
+                   sym-name (eval-form ctx bindings (in form 2))
+                   val (eval-form ctx bindings (in form 3))
+                   ns (ctx-find-ns ctx (if (struct? ns-name) (ns-name :name) ns-name))]
+               (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val))
     "locking" (eval-form ctx bindings (in form 2))
     "instance?" (let [type-sym (in form 1)
                       val (eval-form ctx bindings (in form 2))]
