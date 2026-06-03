@@ -5,6 +5,7 @@
 (use ./types)
 
 (def ctx (init))
+(ctx-set-current-ns ctx "user")
 
 (defn read-line [prompt]
   (prin prompt)
@@ -87,16 +88,19 @@
 
 (set print-value (fn [v]
   (cond
-    (nil? v) (print "nil")
-    (= true v) (print "true")
-    (= false v) (print "false")
-    (number? v) (print v)
-    (string? v) (print v)
-    (keyword? v) (prin ":") (print (string v))
+    (nil? v) (prin "nil")
+    (= true v) (prin "true")
+    (= false v) (prin "false")
+    (number? v) (prin v)
+    (string? v) (prin v)
+    (keyword? v) (prin ":") (prin (string v))
+    (and (struct? v) (= :symbol (get v :jolt/type)))
+    (let [ns (get v :ns) name (get v :name)]
+      (if ns (prin ns "/" name) (prin name)))
     (and (table? v) (= :jolt/var (v :jolt/type)))
-    (printf "#'%s/%s" (ctx-current-ns ctx) ((var-name v) :name))
+    (prin "#'" (ctx-current-ns ctx) "/" ((var-name v) :name))
     (or (tuple? v) (array? v) (struct? v) (table? v))
-    (print-collection v)
+    (do (print-collection v) (print))
     (print v))))
 
 (defn main [&]
