@@ -196,7 +196,7 @@
 (defn core-rest [coll]
   (if (lazy-seq? coll) (ls-rest coll)
     (if (or (nil? coll) (= 0 (length coll)))
-      @[]
+      nil
       (if (tuple? coll)
         (tuple/slice coll 1)
         (array/slice coll 1)))))
@@ -616,6 +616,20 @@
 
 (def core-print print)
 (def core-println (fn [& xs] (apply print xs) (print "\n") nil))
+
+(defn core-pr-str [& xs]
+  "Returns a string representation of xs suitable for reading."
+  (var buf @"")
+  (var first? true)
+  (each x xs
+    (if first? (set first? false) (buffer/push buf " "))
+    (if (nil? x) (buffer/push buf "nil")
+      (= true x) (buffer/push buf "true")
+      (= false x) (buffer/push buf "false")
+      (keyword? x) (do (buffer/push buf ":") (buffer/push buf (string x)))
+      (string? x) (do (buffer/push buf "\"") (buffer/push buf x) (buffer/push buf "\""))
+      (buffer/push buf (string x))))
+  (string buf))
 
 (defn core-pr [& xs]
   (var i 0)
