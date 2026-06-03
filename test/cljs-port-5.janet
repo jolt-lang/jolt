@@ -8,14 +8,15 @@
 (print "  ok")
 (print "23: metadata...")
 (let [ctx (init)]
-  (ct-eval ctx "(def ^:dynamic *dyn5* 42)")
-  (assert (= true (ct-eval ctx "(var-dynamic? (var *dyn5*))")) "dynamic metadata")
+  (ct-eval ctx "(def ^:dynamic *dyn* 42)")
+  (assert (= true (ct-eval ctx "(var-dynamic? (var *dyn*))")) "dynamic metadata")
   (assert (= 1 (ct-eval ctx "(:a (with-meta {:a 1} {:c 3}))")) "with-meta preserves"))
 (print "  ok")
 (print "24: function composition...")
 (let [ctx (init)]
   (assert (= true (ct-eval ctx "((complement odd?) 2)")) "complement")
   (assert (= 5 (ct-eval ctx "((constantly 5) :anything)")) "constantly")
-  (assert (= true (ct-eval ctx "((every-pred number? even?) 4)")) "every-pred true"))
+  (assert (= true (ct-eval ctx "((every-pred number? even?) 4)")) "every-pred")
+  (assert (= ":hello" (ct-eval ctx "(pr-str :hello)")) "pr-str keyword"))
 (print "  ok")
 (print "\nAll CLJS Ported Part 5 tests passed!")

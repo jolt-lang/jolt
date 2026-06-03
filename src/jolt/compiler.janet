@@ -218,7 +218,7 @@
     (put t "core-mod" core-mod)
     (put t "core-apply" apply)
     (put t "core-some" core-some?)
-    (put t "core-pr-str" core-str)
+    (put t "core-pr-str" core-pr-str)
     (put t "core-nth" core-nth)
     (put t "core-list" core-list)
     (put t "core-name" core-name)
