@@ -947,9 +947,6 @@
     @[{:jolt/type :symbol :ns nil :name "def"} arrow-sym arrow-body]
     @[{:jolt/type :symbol :ns nil :name "def"} map-sym map-body]])
 
-# prefer-method stub — multimethod preference ordering
-(defn core-prefer-method [multifn dispatch-val & dispatch-vals]
-  nil)
 
 # resolve stub — returns nil (symbols not found in Jolt's clojure.core)
 (defn core-resolve [sym] nil)
@@ -1201,8 +1198,6 @@
     "IllegalStateException" core-IllegalStateException
     "definterface" core-definterface
     "defrecord" core-defrecord
-    "comment" core-comment
-    "prefer-method" core-prefer-method
     "resolve" core-resolve
     "update" core-update
     "copy-core-var" core-copy-core-var
