@@ -19,6 +19,7 @@
 (print "30: #? reader conditionals...")
 (let [ctx (init)]
   (assert (= :yes (ct-eval ctx "#?(:clj :yes :cljs :no)")) "#? selects :clj")
+  (assert (= :yes (ct-eval ctx "#?(:cljs :no :default :yes)")) "#? :default fallback")
   (assert (= nil (ct-eval ctx "#?(:cljs :no)")) "#? nil on no match"))
 (print "  passed")
 
@@ -26,6 +27,8 @@
 (let [ctx (init)]
   (assert (= [1 2 3] (ct-eval ctx "[#?@(:clj [1 2 3] :cljs [4 5 6])]"))
           "#?@ splices :clj")
+  (assert (= [99] (ct-eval ctx "[#?@(:cljs [1] :default [99])]"))
+          "#?@ :default fallback")
   (assert (= [] (ct-eval ctx "[#?@(:cljs [1 2])]"))
           "#?@ nothing on no match"))
 (print "  passed")

@@ -299,6 +299,15 @@
               (set result (in form (+ i 1)))
               (set i (length form)))
             (++ i)))
+        # Fallback to :default if :clj not matched
+        (when (nil? result)
+          (set i 0)
+          (while (< i (length form))
+            (if (= (in form i) :default)
+              (do
+                (set result (in form (+ i 1)))
+                (set i (length form)))
+              (++ i))))
         (if splice?
           # #?@ splicing: resolve :clj branch, wrap for splice
           (let [items (if (nil? result)
