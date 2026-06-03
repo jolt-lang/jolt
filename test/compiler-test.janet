@@ -268,6 +268,8 @@
   (assert (= 2 (eval-string ctx "(do (alter-var-root (var a-var-test) inc) (var-get (var a-var-test)))")) "alter-var-root")
   (eval-string ctx "(def fv-var-test :found)")
   (assert (= :found (eval-string ctx "(var-get (find-var 'fv-var-test))")) "find-var")
+  (eval-string ctx "(intern (the-ns) 'iv-var-test 77)")
+  (assert (= 77 (eval-string ctx "iv-var-test")) "intern")
   (eval-string ctx "(def ^:dynamic *dv* 1)")
   (assert (= 99 (eval-string ctx "(binding [*dv* 99] *dv*)")) "dynamic binding"))
 (print "  passed")

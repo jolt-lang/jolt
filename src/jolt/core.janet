@@ -788,6 +788,8 @@
 (defn core-alter-meta! [v f & args] (apply alter-meta! v f args))
 (defn core-reset-meta! [v meta] (reset-meta! v meta))
 
+(defn core-intern [ns-name sym-name val] val)
+
 (defn core-binding
   "Macro: (binding [var val ...] body...)
   Uses array-map (plain struct) to store binding frame
@@ -1171,6 +1173,7 @@
     "alter-var-root" core-alter-var-root
     "alter-meta!" core-alter-meta!
     "reset-meta!" core-reset-meta!
+    "intern" core-intern
     "binding" core-binding
     "push-thread-bindings" core-push-thread-bindings
     "pop-thread-bindings" core-pop-thread-bindings
