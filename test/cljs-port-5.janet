@@ -1,0 +1,21 @@
+(use ../src/jolt/api)
+(defn ct-eval [ctx s] (eval-string ctx s))
+(print "=== CLJS Ported Part 5 ===")
+(print "22: destructuring...")
+(let [ctx (init)]
+  (assert (= 1 (ct-eval ctx "(let [[x] [1 2 3]] x)")) "seq destructure")
+  (assert (= 2 (ct-eval ctx "(let [[_ y] [1 2 3]] y)")) "seq destructure rest")
+  (assert (= [2 3] (ct-eval ctx "(let [[_ & r] [1 2 3]] r)")) "seq destructure & rest")
+  (assert (= 1 (ct-eval ctx "(let [{:keys [a]} {:a 1 :b 2}] a)")) "map :keys"))
+(print "  ok")
+(print "23: metadata...")
+(let [ctx (init)]
+  (ct-eval ctx "(def ^:dynamic *dyn* 42)")
+  (assert (= true (ct-eval ctx "(var-dynamic? (var *dyn*))")) "dynamic metadata"))
+(print "  ok")
+(print "24: function composition...")
+(let [ctx (init)]
+  (assert (= true (ct-eval ctx "((complement odd?) 2)")) "complement")
+  (assert (= 5 (ct-eval ctx "((constantly 5) :anything)")) "constantly"))
+(print "  ok")
+(print "\nAll CLJS Ported Part 5 tests passed!")

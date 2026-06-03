@@ -1,14 +1,12 @@
 (use ../src/jolt/api)
 (defn ct-eval [ctx s] (eval-string ctx s))
 (print "=== CLJS Ported Part 2 ===")
-
 (print "12: atoms...")
 (let [ctx (init)]
   (assert (= 0 (ct-eval ctx "(deref (atom 0))")) "deref")
   (assert (= 1 (ct-eval ctx "(let [a (atom 0)] (swap! a inc) (deref a))")) "swap!")
   (assert (= true (ct-eval ctx "(atom? (atom 0))")) "atom?"))
 (print "  ok")
-
 (print "13: special forms...")
 (let [ctx (init)]
   (assert (= 30 (ct-eval ctx "(let [x 10 y 20] (+ x y))")) "let")
@@ -18,7 +16,6 @@
   (assert (= 3 (ct-eval ctx "(loop [x 0] (if (< x 3) (recur (inc x)) x))")) "loop")
   (assert (= "caught" (ct-eval ctx "(try (throw 42) (catch Exception e \"caught\"))")) "try catch"))
 (print "  ok")
-
 (print "14: macros...")
 (let [ctx (init)]
   (ct-eval ctx "(defn add [a b] (+ a b))")
@@ -28,7 +25,6 @@
   (assert (= 1 (ct-eval ctx "(or 1 2 3)")) "or")
   (assert (= 49 (ct-eval ctx "((fn [x] (* x x)) 7)")) "fn"))
 (print "  ok")
-
 (print "15: constructors...")
 (let [ctx (init)]
   (assert (= 3 (ct-eval ctx "(count (vector 1 2 3))")) "vector count")
@@ -36,5 +32,41 @@
   (assert (= 3 (ct-eval ctx "(count (hash-set 1 2 3))")) "hash-set count")
   (assert (= 3 (ct-eval ctx "(count (zipmap [:a :b :c] [1 2 3]))")) "zipmap count"))
 (print "  ok")
-
+(print "16: printing...")
+(let [ctx (init)]
+  (assert (= "hello" (ct-eval ctx "(str \"hello\")")) "str")
+  (assert (= "42" (ct-eval ctx "(str 42)")) "str number")
+  (assert (= "a" (ct-eval ctx "(name :a)")) "name"))
+(print "  ok")
+(print "17: apply...")
+(let [ctx (init)]
+  (assert (= 3 (ct-eval ctx "(apply + [1 2])")) "apply +")
+  (assert (= 3 (ct-eval ctx "(apply max [1 3 2])")) "apply max"))
+(print "  ok")
+(print "18: equality...")
+(let [ctx (init)]
+  (assert (= true (ct-eval ctx "(= {:a 1 :b 2} {:b 2 :a 1})")) "map order-independent")
+  (assert (= false (ct-eval ctx "(= {:a 1} {:a 2})")) "map different values")
+  (assert (= true (ct-eval ctx "(= [1 2 3] (quote (1 2 3)))")) "vector = list"))
+(print "  ok")
+(print "19: higher-order...")
+(let [ctx (init)]
+  (assert (= 3 (ct-eval ctx "((comp inc inc) 1)")) "comp")
+  (assert (function? (ct-eval ctx "(partial + 1 2)")) "partial returns fn")
+  (assert (= 3 (ct-eval ctx "(identity 3)")) "identity"))
+(print "  ok")
+(print "20: seq edge cases...")
+(let [ctx (init)]
+  (assert (= nil (ct-eval ctx "(seq [])")) "seq empty")
+  (assert (= 1 (ct-eval ctx "(first [1 2 3])")) "first vector"))
+(print "  ok")
+(print "21: atoms extended...")
+(let [ctx (init)]
+  (ct-eval ctx "(def a (atom 10))")
+  (assert (= 10 (ct-eval ctx "(deref a)")) "deref")
+  (ct-eval ctx "(reset! a 42)")
+  (assert (= 42 (ct-eval ctx "(deref a)")) "reset!")
+  (ct-eval ctx "(swap! a inc)")
+  (assert (= 43 (ct-eval ctx "(deref a)")) "swap! inc"))
+(print "  ok")
 (print "\nAll CLJS Ported Part 2 tests passed!")
