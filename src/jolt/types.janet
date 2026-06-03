@@ -154,9 +154,13 @@
   visited)
 
 (defn ancestors
-  "Return a set of ancestors for a tag in the given hierarchy."
+  "Return all transitive ancestors of a tag in the given hierarchy."
   [h tag]
-  (let [a (get (h :ancestors) tag)] (if a a @[])))
+  (let [visited (ancestors* h tag @{})]
+    (var result @[])
+    (loop [[k _] :pairs visited]
+      (when (not= k tag) (array/push result k)))
+    result))
 
 (defn descendants
   "Return the descendants of a tag in the given hierarchy."
@@ -309,7 +313,11 @@
               :class->opts @{}
               :current-ns "user"
               :compile? compile?
-              :compiled-cache @{}}
+              :compiled-cache @{}
+              :data-readers (let [dr @{}]
+                              (put dr (keyword "#inst") (fn [s] s))
+                              (put dr (keyword "#uuid") (fn [s] s))
+                              dr)}
         # create the user namespace via a partial context
         _ (ctx-find-ns {:env env} "user")]
     # initialize from opts

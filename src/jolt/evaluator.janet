@@ -785,9 +785,16 @@
     (struct? form)
     (if (= :symbol (form :jolt/type))
       (resolve-sym ctx bindings form)
+      (if (= :jolt/tagged (form :jolt/type))
+        (let [tag (form :tag)
+              data-readers (get (ctx :env) :data-readers)
+              reader-fn (if data-readers (get data-readers tag))]
+          (if reader-fn
+            (reader-fn (form :form))
+            (error (string "No reader function for tag " tag))))
       (if (get form :jolt/type)
         (error (string "Unexpected tagged form: " (form :jolt/type)))
-        form))
+        form)))
     (array? form)
     (if (= 0 (length form))
       @[]
