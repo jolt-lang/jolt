@@ -130,23 +130,25 @@
 
 (defn realize-ls
   "Force a LazySeq cell. Returns nil (empty) or [first-val, rest-thunk].
-  If the thunk returns another lazy-seq, recursively realize it."
+  If the thunk returns another lazy-seq, recursively realize it.
+  Detects self-referencing cycles by setting :realized before calling thunk."
   [ls]
   (if (get ls :realized)
     (ls :val)
-    (let [raw ((ls :fn))
-          v (if (lazy-seq? raw) (realize-ls raw) raw)]
+    (do
       (put ls :realized true)
-      (put ls :val v)
-      v)))
+      (let [raw ((ls :fn))
+            v (if (lazy-seq? raw) (realize-ls raw) raw)]
+        (put ls :val v)
+        v))))
 
 (defn ls-first [ls]
   (let [cell (realize-ls ls)]
-    (if (nil? cell) nil (in cell 0))))
+    (if (or (nil? cell) (= 0 (length cell))) nil (in cell 0))))
 
 (defn ls-rest [ls]
   (let [cell (realize-ls ls)]
-    (if (nil? cell) nil
+    (if (or (nil? cell) (= 0 (length cell))) nil
       (let [rt (in cell 1)]
         (if (nil? rt) nil (make-lazy-seq rt))))))
 

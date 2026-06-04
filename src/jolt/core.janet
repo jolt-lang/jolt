@@ -462,21 +462,33 @@
 
 (defn core-concat [& colls]
   "Lazy concatenation — returns a lazy-seq that yields elements one at a time.
-  Supports self-referencing sequences like fib-seq."
-  (var cs (if (tuple? colls) (array/slice colls) colls))
-  (var cur nil)
-  (defn next-cell []
-    (var cell (coll->cells cur))
-    (while (and (nil? cell) (not (nil? cs)) (> (length cs) 0))
-      (set cur (in cs 0))
-      (set cs (array/slice cs 1))
-      (set cell (coll->cells cur)))
-    (if (nil? cell) nil
-      @[(in cell 0)
+  Fully functional: each rest thunk captures its own state, so multiple access
+  paths (e.g. fib-seq used simultaneously in (rest fib-seq) and fib-seq) work
+  without shared-mutable-state corruption."
+  (defn step [cs]
+    "Return a thunk that produces nil (end) or @[value, rest-thunk]."
+    (if (= 0 (length cs))
+      (fn [] nil)
+      (let [c (in cs 0)
+            remaining (array/slice cs 1)]
         (fn []
-          (set cur (in cell 1))
-          (next-cell))]))
-  (make-lazy-seq next-cell))
+          (let [cell (coll->cells c)]
+            (if (nil? cell)
+              ((step remaining))
+              (let [value (in cell 0)
+                    rest-fn (in cell 1)]
+                @[value
+                  (fn []
+                    (if (nil? rest-fn)
+                      ((step remaining))
+                      (let [new-cs (array/new-filled (+ 1 (length remaining)) nil)]
+                        (put new-cs 0 rest-fn)
+                        (var i 0)
+                        (while (< i (length remaining))
+                          (put new-cs (+ i 1) (in remaining i))
+                          (++ i))
+                        ((step new-cs)))))])))))))
+  (make-lazy-seq (step (if (tuple? colls) (array/slice colls) colls))))
 
 (defn core-reverse [coll]
   (if (nil? coll) @[]
