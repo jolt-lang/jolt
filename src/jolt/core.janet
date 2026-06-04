@@ -326,15 +326,30 @@
 # ============================================================
 
 
+(defn- seq-done?
+  "True when cursor c (a lazy-seq or a concrete collection) is exhausted.
+  Uses cell realization for lazy-seqs so nil elements don't end the seq early."
+  [c]
+  (if (lazy-seq? c)
+    (let [cell (realize-ls c)]
+      (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell))))
+    (or (nil? c) (= 0 (length c)))))
+
 (defn core-map [f & colls]
   (if (= 1 (length colls))
-    # Single-collection: eagerly realized
-    (let [c (realize-for-iteration (colls 0))
-          result (do
-                   (var res @[])
-                   (each x c (array/push res (f x)))
-                   res)]
-      (if (tuple? c) (tuple/slice (tuple ;result)) result))
+    (let [coll (colls 0)]
+      (if (lazy-seq? coll)
+        # Lazy input: stay lazy so infinite/self-referential seqs work.
+        (do
+          (defn mstep [c]
+            (fn []
+              (if (seq-done? c) nil
+                @[(f (core-first c)) (mstep (core-rest c))])))
+          (make-lazy-seq (mstep coll)))
+        # Concrete collection: eager (preserves tuple/array representation).
+        (let [c (if (set? coll) (phs-seq coll) coll)
+              result (do (var res @[]) (each x c (array/push res (f x))) res)]
+          (if (tuple? c) (tuple/slice (tuple ;result)) result))))
     # Multi-collection: lazy-seq with per-element independent state
     (let [init-cs (array/new-filled (length colls) nil)
           init-idxs (array/new-filled (length colls) 0)
@@ -383,7 +398,7 @@
 
 (defn core-filter [pred coll]
   (var result @[])
-  (each x (if (set? coll) (phs-seq coll) coll)
+  (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
     (if (pred x) (array/push result x)))
   (if (tuple? coll) (tuple/slice (tuple ;result)) result))
 
@@ -394,7 +409,7 @@
   (fn [& args]
     (case (length args)
       2 (let [f (args 0) coll (args 1)
-              coll (if (set? coll) (phs-seq coll) coll)]
+              coll (if (set? coll) (phs-seq coll) (realize-for-iteration coll))]
           (if (= 0 (length coll))
             (f)
             (do
@@ -405,7 +420,7 @@
                 (++ i))
               acc)))
       3 (let [f (args 0) val (args 1) coll (args 2)
-              coll (if (set? coll) (phs-seq coll) coll)]
+              coll (if (set? coll) (phs-seq coll) (realize-for-iteration coll))]
           (var acc val)
           (each x coll (set acc (f acc x)))
           acc)
@@ -637,15 +652,20 @@
 
 (def core-range
   (fn [& args]
-    (let [start (if (> (length args) 1) (args 0) 0)
-          end (if (> (length args) 1) (args 1) (args 0))
-          step (if (> (length args) 2) (args 2) 1)]
-      (var result @[])
-      (var i start)
-      (while (if (pos? step) (< i end) (> i end))
-        (array/push result i)
-        (+= i step))
-      (tuple/slice (tuple ;result)))))
+    (if (= 0 (length args))
+      # (range) — infinite lazy sequence 0, 1, 2, ...
+      (do
+        (defn rstep [i] (fn [] @[i (rstep (+ i 1))]))
+        (make-lazy-seq (rstep 0)))
+      (let [start (if (> (length args) 1) (args 0) 0)
+            end (if (> (length args) 1) (args 1) (args 0))
+            step (if (> (length args) 2) (args 2) 1)]
+        (var result @[])
+        (var i start)
+        (while (if (pos? step) (< i end) (> i end))
+          (array/push result i)
+          (+= i step))
+        (tuple/slice (tuple ;result))))))
 
 (def core-repeat (fn [n x]
   (var result @[])
@@ -656,17 +676,9 @@
   result))
 
 (defn core-iterate [f x]
-  "Macro: (iterate f x) → lazy infinite sequence x, (f x), (f (f x)), ..."
-  (def sym-x (gensym "x"))
-  (def sym-f (gensym "f"))
-  @[{:jolt/type :symbol :ns nil :name "lazy-seq"}
-    @[{:jolt/type :symbol :ns nil :name "let*"}
-      @[sym-x x sym-f f]
-      @[{:jolt/type :symbol :ns nil :name "cons"}
-        sym-x
-        @[{:jolt/type :symbol :ns nil :name "iterate"}
-          sym-f
-          @[{:jolt/type :symbol :ns nil :name sym-f} sym-x]]]]])
+  "Lazy infinite sequence x, (f x), (f (f x)), ..."
+  (defn istep [v] (fn [] @[v (istep (f v))]))
+  (make-lazy-seq (istep x)))
 
 (defn core-repeatedly [n f]
   (var result @[])

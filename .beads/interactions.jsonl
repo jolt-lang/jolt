@@ -1,2 +1,4 @@
 {"id":"int-621ea914","kind":"field_change","created_at":"2026-06-04T17:50:54.012588Z","actor":"Yogthos","issue_id":"jolt-x8s","extra":{"field":"status","new_value":"closed","old_value":"open"}}
 {"id":"int-978620fa","kind":"field_change","created_at":"2026-06-04T17:59:35.53184Z","actor":"Yogthos","issue_id":"jolt-lp5","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-11c77978","kind":"field_change","created_at":"2026-06-04T18:06:01.464313Z","actor":"Yogthos","issue_id":"jolt-tws","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-2eef7613","kind":"field_change","created_at":"2026-06-04T18:06:02.544998Z","actor":"Yogthos","issue_id":"jolt-wec","extra":{"field":"status","new_value":"closed","old_value":"open"}}
