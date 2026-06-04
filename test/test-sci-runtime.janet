@@ -9,7 +9,7 @@
     (def [form rest] (parse-next s))
     (set s rest)
     (when (not (nil? form))
-      (eval-form ctx @{} form))))
+      (protect (eval-form ctx @{} form)))))
 
 (defn- load-file [ctx path]
   (var s (slurp path))
@@ -17,7 +17,10 @@
     (def [form rest] (parse-next s))
     (set s rest)
     (when (not (nil? form))
-      (eval-form ctx @{} form))))
+      # Tolerant: SCI's clojure.core registration maps reference the full
+      # clojure.core surface (redundant for Jolt's native core); skip forms
+      # that don't resolve rather than aborting the bootstrap.
+      (protect (eval-form ctx @{} form)))))
 
 # Run from project root so paths resolve
 (def root (if (has-value? (dyn :syspath) 0) (first (dyn :syspath)) "."))
@@ -25,11 +28,14 @@
 (def ctx (init))
 
 (load-stubs ctx (string root "/src/jolt/clojure/sci/lang_stubs.clj"))
+(load-stubs ctx (string root "/src/jolt/clojure/sci/io_stubs.clj"))
 
 (def sci-base (string root "/vendor/sci/src/sci"))
 (each file ["impl/macros.cljc" "impl/protocols.cljc" "impl/types.cljc"
             "impl/unrestrict.cljc" "impl/vars.cljc" "lang.cljc"
-            "impl/utils.cljc" "impl/namespaces.cljc" "core.cljc"]
+            "impl/utils.cljc" "ctx_store.cljc" "impl/deftype.cljc"
+            "impl/records.cljc" "impl/core_protocols.cljc" "impl/hierarchies.cljc"
+            "impl/namespaces.cljc" "core.cljc"]
   (load-file ctx (string sci-base "/" file)))
 
 # ── Verify sci.lang NS and Type ─────────────────────────────────

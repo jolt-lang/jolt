@@ -998,13 +998,12 @@
                  (var-get v))
     "defmethod" (let [mm-sym (in form 1)
                       dispatch-val (eval-form ctx bindings (in form 2))
-                      arg-vec (in form 3)
-                      body (tuple/slice form 4)
-                      # Extract names, handling metadata-wrapped symbols
-                      extract-name (fn [arg]
-                                     (let [arg (unwrap-meta-name arg)]
-                                       (arg :name)))
-                      arg-names (tuple/slice (map extract-name arg-vec))
+                      # (defmethod mm dispatch [args] body...) — single-arity, or
+                      # (defmethod mm dispatch ([args] body)...) — multi-arity.
+                      # Build a fn* form and evaluate it (reuses arity dispatch
+                      # and destructuring).
+                      impl (eval-form ctx bindings
+                             @[{:jolt/type :symbol :ns nil :name "fn*"} ;(tuple/slice form 3)])
                       mm-var (resolve-var ctx bindings mm-sym)
                       # Auto-create multimethod if it doesn't exist
                       mm-var (if mm-var mm-var
@@ -1013,18 +1012,7 @@
                                  (def v (ns-intern ns (mm-sym :name) dummy-fn))
                                  (put v :jolt/methods @{})
                                  v))
-                      methods (get mm-var :jolt/methods)
-                      impl (fn [& args]
-                             (var new-bindings @{})
-                             (table/setproto new-bindings bindings)
-                             (var i 0)
-                             (each a arg-names
-                                (bind-put new-bindings a (args i))
-                               (++ i))
-                             (var result nil)
-                             (each bf body
-                               (set result (eval-form ctx new-bindings bf)))
-                             result)]
+                      methods (get mm-var :jolt/methods)]
                   (put methods dispatch-val impl)
                   mm-var)
     "prefer-method" (let [mm-arg (in form 1)
@@ -1182,7 +1170,12 @@
             (error (string "No reader function for tag " tag))))
       (if (get form :jolt/type)
         (error (string "Unexpected tagged form: " (form :jolt/type)))
-        form)))))
+        # plain map literal: evaluate keys and values
+        (let [kvs @[]]
+          (each k (keys form)
+            (array/push kvs (eval-form ctx bindings k))
+            (array/push kvs (eval-form ctx bindings (get form k))))
+          (struct ;kvs)))))))
     (array? form)
     (if (= 0 (length form))
       @[]

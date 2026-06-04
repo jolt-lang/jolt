@@ -2100,7 +2100,7 @@
 # copy-var stubs for sci.impl.copy-vars (used by sci.impl.namespaces)
 (defn core-copy-core-var [sym] nil)
 (defn core-copy-var [sym & args] nil)
-(defn core-macrofy [sym fn] fn)
+(defn core-macrofy [sym fn & more] fn)
 (defn core-new-var [sym & args] nil)
 (defn core-avoid-method-too-large [& args] @{})
 

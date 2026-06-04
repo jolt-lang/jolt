@@ -18,6 +18,7 @@
   (printf "  Loaded %d stub forms\n" count))
 
 (load-stubs ctx "src/jolt/clojure/sci/lang_stubs.clj")
+(load-stubs ctx "src/jolt/clojure/sci/io_stubs.clj")
 
 (defn load-file [ctx path]
   (var s (slurp path))
@@ -55,6 +56,11 @@
   ["impl/vars.cljc" nil]
   ["lang.cljc" nil]
   ["impl/utils.cljc" nil]
+  ["ctx_store.cljc" nil]
+  ["impl/deftype.cljc" nil]
+  ["impl/records.cljc" nil]
+  ["impl/core_protocols.cljc" nil]
+  ["impl/hierarchies.cljc" nil]
   ["impl/namespaces.cljc" nil]
   ["core.cljc" nil]
 ])

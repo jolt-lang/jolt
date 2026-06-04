@@ -276,6 +276,13 @@
    ["alternation"       "\"dog\"" "(re-find #\"cat|dog\" \"a dog cat\")"]
    ["str/replace $1"    "\"he[ll]o\"" "(do (require (quote [clojure.string :as s])) (s/replace \"hello\" #\"(l+)\" \"[$1]\"))"]
    ["str/replace regex" "\"X-X\"" "(do (require (quote [clojure.string :as s])) (s/replace \"a-b\" #\"[a-z]\" \"X\"))"]
+
+   ### ==== map literals evaluate their values ====
+   ["map literal expr"  "{:a 3}"   "{:a (+ 1 2)}"]
+   ["map literal var"   "{:k 5}"   "(let [x 5] {:k x})"]
+   ["map literal nested" "{:a {:b 2}}" "(let [y 2] {:a {:b y}})"]
+   ["map literal keyfn"  "{:x 1}"  "(let [k :x] {k 1})"]
+   ["map literal in fn"  "6"       "(do (defn mk [a b] {:sum (+ a b)}) (:sum (mk 2 4)))"]
   ])
 
 (var pass 0)
