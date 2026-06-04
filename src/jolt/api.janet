@@ -11,6 +11,7 @@
 (defn- load-persistent-structures
   "Load immutable persistent data structures and swap clojure.core bindings."
   [ctx]
+  (def saved-ns (ctx-current-ns ctx))
   (def source (slurp "src/jolt/clojure/lang/persistent_vector.clj"))
   (var cur source)
   (while (> (length (string/trim cur)) 0)
@@ -18,11 +19,17 @@
     (set cur rest)
     (when (not (nil? form))
       (eval-form ctx @{} form)))
-  (let [core-ns (ctx-find-ns ctx "clojure.core")
-        pv-ns (ctx-find-ns ctx "jolt.lang.persistent-vector")]
-    (ns-intern core-ns "vec" (var-get (ns-find pv-ns "vector")))
-    (ns-intern core-ns "vector" (var-get (ns-find pv-ns "vector")))
-    (ns-intern core-ns "vector?" (var-get (ns-find pv-ns "vector?")))))
+  # Vectors are represented as Janet tuples throughout core; bind vec/vector/
+  # vector? to the tuple-based implementations so literals (`[...]`) and the
+  # constructors share one representation. The PersistentVector namespace stays
+  # loaded for code that wants it explicitly via jolt.lang.persistent-vector.
+  (let [core-ns (ctx-find-ns ctx "clojure.core")]
+    (ns-intern core-ns "vec" core-vec)
+    (ns-intern core-ns "vector" core-vector)
+    (ns-intern core-ns "vector?" core-vector?))
+  # Restore the namespace: loading the PV file above left current-ns set to
+  # jolt.lang.persistent-vector, which would shadow clojure.core bindings.
+  (ctx-set-current-ns ctx saved-ns))
 
 (defn init
   "Create a new Jolt evaluation context.

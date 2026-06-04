@@ -49,7 +49,7 @@
   and deftype/record values implementing IFn. `args` is an array."
   [ctx f args]
   (cond
-    (function? f) (apply f args)
+    (or (function? f) (cfunction? f)) (apply f args)
     (keyword? f) (coll-lookup (get args 0) f (get args 1))
     (and (struct? f) (= :symbol (f :jolt/type)))
       (coll-lookup (get args 0) f (get args 1))
@@ -66,11 +66,11 @@
     (and (table? f) (get f :jolt/deftype))
       (let [ifn-fn (find-protocol-method ctx (get f :jolt/deftype) "IFn" "-invoke")]
         (if ifn-fn (apply ifn-fn f args)
-          (if (get f :jolt/protocol-methods)
-            (let [invoke-fn (get (f :jolt/protocol-methods) :-invoke)]
-              (if invoke-fn (apply invoke-fn f args)
-                (error (string "Cannot call " (type f) " as a function"))))
-            (error (string "Cannot call " (type f) " as a function")))))
+          (if (and (get f :jolt/protocol-methods) (get (f :jolt/protocol-methods) :-invoke))
+            (apply (get (f :jolt/protocol-methods) :-invoke) f args)
+            # No IFn impl: fall back to map-like field access, e.g. (point :x)
+            (let [v (get f (get args 0) :jolt/not-found)]
+              (if (= v :jolt/not-found) (get args 1) v)))))
     (and (table? f) (get f :jolt/protocol-methods))
       (let [invoke-fn (get (f :jolt/protocol-methods) :-invoke)]
         (if invoke-fn (apply invoke-fn f args)

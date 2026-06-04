@@ -86,13 +86,19 @@
 # Comparison
 # ============================================================
 
+(defn- norm-for-= [x]
+  "Realize a lazy-seq to a tuple so it compares as a Clojure sequence."
+  (if (lazy-seq? x)
+    (let [s (ls-seq x)] (if (nil? s) [] (tuple/slice (tuple ;s))))
+    x))
+
 (defn core-= [& args]
   (if (< (length args) 2) true
     (do
       (var ok true)
       (var i 0)
       (while (and ok (< i (dec (length args))))
-        (let [a (args i) b (args (+ i 1))]
+        (let [a (norm-for-= (args i)) b (norm-for-= (args (+ i 1)))]
           (set ok
             (if (and (tuple? a) (array? b))
               (deep= a (tuple/slice (tuple ;b)))
@@ -232,24 +238,54 @@
               (if (struct? coll) (tuple ;(keys coll))
                 coll))))))))
 
+(defn realize-for-iteration [c]
+  "If c is a lazy-seq, traverse and return all its elements as an array.
+  Otherwise return c as-is. Warning: will loop on infinite lazy-seqs.
+  Correctly handles nil elements (terminates on the empty cell, not on nil)."
+  (if (lazy-seq? c)
+    (do
+      (var items @[])
+      (var cur c)
+      (var go true)
+      (while go
+        (let [cell (realize-ls cur)]
+          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+            (set go false)
+            (do
+              (array/push items (in cell 0))
+              (let [rt (in cell 1)]
+                (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
+      items)
+    c))
+
 (defn core-vec [coll]
-  (if (tuple? coll) coll
-    (if (array? coll) (tuple ;coll)
-      (if (struct? coll) (tuple ;(map |(in (kvs coll) (+ (* $ 2) 1)) (range (/ (length (kvs coll)) 2))))
-        (tuple)))))
+  (let [coll (realize-for-iteration coll)]
+    (if (tuple? coll) coll
+      (if (array? coll) (tuple ;coll)
+        (if (struct? coll) (tuple ;(map |(in (kvs coll) (+ (* $ 2) 1)) (range (/ (length (kvs coll)) 2))))
+          (if (string? coll) (tuple ;(map |(string/from-bytes $) (string/bytes coll)))
+            (tuple)))))))
 
 (defn core-into [to from]
-  (if (tuple? to)
-    (tuple/slice (tuple ;(array/concat (array/slice to) (if (tuple? from) from (array/slice from)))))
-    (if (array? to)
-      (array/concat to from)
-      (if (struct? to)
+  (let [items (realize-for-iteration from)]
+    (cond
+      # map target: each item is a [k v] pair (or map entry) to assoc
+      (or (phm? to) (struct? to) (and (table? to) (get to :jolt/deftype)))
         (do
           (var result to)
-          (each [k v] (pairs from)
-            (set result (merge result {k v})))
+          (each item items
+            (set result (core-assoc result (in item 0) (in item 1))))
           result)
-        to))))
+      # list target (jolt lists are arrays): conj prepends -> reversed order
+      (array? to)
+        (do
+          (var result (array/slice to))
+          (each x items (array/insert result 0 x))
+          result)
+      # vector target (jolt vectors are tuples): conj appends
+      (tuple? to)
+        (tuple/slice (tuple ;(array/concat (array/slice to) (array/slice items))))
+      to)))
 
 (defn core-merge [& maps]
   (if (phm? (first maps))
@@ -289,18 +325,6 @@
 # Sequence operations
 # ============================================================
 
-(defn- realize-for-iteration [c]
-  "If c is a lazy-seq, traverse and return all elements as an array.
-  Otherwise return c as-is. Warning: will loop on infinite lazy-seqs."
-  (if (lazy-seq? c)
-    (do
-      (var items @[])
-      (var cur c)
-      (while (not (nil? (ls-first cur)))
-        (array/push items (ls-first cur))
-        (set cur (ls-rest cur)))
-      items)
-    c))
 
 (defn core-map [f & colls]
   (if (= 1 (length colls))
