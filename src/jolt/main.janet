@@ -3,6 +3,7 @@
 
 (use ./api)
 (use ./types)
+(use ./phm)
 
 (def ctx (init))
 (ctx-set-current-ns ctx "user")
@@ -32,21 +33,26 @@
           (++ i)))
       (push-str buf "]"))
 
-    # LazySeq — realize and print as a list
+    # LazySeq — realize the cell chain and print as a list. Capped to avoid
+    # hanging on infinite sequences; prints "..." when truncated.
     (and (table? v) (= :jolt/lazy-seq (v :jolt/type)))
     (do
-      (def val (if (get v :realized) (v :val) (let [vf ((v :fn))] (put v :realized true) (put v :val vf) vf)))
-      (if (nil? val)
-        (push-str buf "()")
-        (do
-          (push-str buf "(")
-          (var i 0)
-          (let [n (length val)]
-            (while (< i n)
-              (write-value (in val i) buf)
-              (when (< (+ i 1) n) (push-str buf " "))
-              (++ i)))
-          (push-str buf ")"))))
+      (push-str buf "(")
+      (var cur v)
+      (var i 0)
+      (var go true)
+      (while (and go (< i 1000))
+        (let [cell (realize-ls cur)]
+          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+            (set go false)
+            (do
+              (when (> i 0) (push-str buf " "))
+              (write-value (in cell 0) buf)
+              (++ i)
+              (let [rt (in cell 1)]
+                (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
+      (when (and go (>= i 1000)) (push-str buf " ..."))
+      (push-str buf ")"))
 
     (array? v)
     (do
@@ -119,7 +125,7 @@
         (push-str buf (string ns "/" name))
         (push-str buf name)))
     (and (table? v) (= :jolt/var (v :jolt/type)))
-    (push-str buf (string "#'" (ctx-current-ns ctx) "/" ((var-name v) :name)))
+    (push-str buf (string "#'" (ctx-current-ns ctx) "/" (var-name v)))
     (or (tuple? v) (array? v) (struct? v) (table? v))
     (write-collection v buf)
     true (push-str buf (string v)))))

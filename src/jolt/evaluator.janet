@@ -485,7 +485,8 @@
             (bind-root v val)
             (when dynamic?
               (put v :dynamic true))
-            (var-get v))
+            # def returns the var (Clojure semantics); REPL prints #'ns/name
+            v)
     "defmacro" (let [name-sym (in form 1)
                      rest-form (tuple/slice form 2)
                      # optional docstring
