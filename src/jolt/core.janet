@@ -48,6 +48,9 @@
     (pvec? c) (pv->array c)
     (plist? c) (pl->array c)
     (set? c) (phs-seq c)
+    (phm? c) (phm-entries c)
+    # struct map literal (no :jolt/type marker — not a symbol/char) -> entries
+    (and (struct? c) (nil? (get c :jolt/type))) (map (fn [k] (tuple k (get c k))) (keys c))
     (lazy-seq? c)
     (do
       (var items @[])
@@ -400,6 +403,10 @@
     (lazy-seq? coll) (ls-first coll)
     (pvec? coll) (if (= 0 (pv-count coll)) nil (pv-nth coll 0))
     (plist? coll) (if (pl-empty? coll) nil (pl-first coll))
+    # maps and sets: first of their seq (an entry / element)
+    (phm? coll) (let [e (phm-entries coll)] (if (= 0 (length e)) nil (in e 0)))
+    (set? coll) (let [s (phs-seq coll)] (if (= 0 (length s)) nil (in s 0)))
+    (struct? coll) (let [ks (keys coll)] (if (= 0 (length ks)) nil (tuple (in ks 0) (get coll (in ks 0)))))
     (or (nil? coll) (= 0 (length coll))) nil
     (string? coll) (make-char (in coll 0))
     (in coll 0)))
@@ -438,7 +445,7 @@
     (phm? coll) (tuple ;(phm-entries coll))
     (tuple? coll) (tuple/slice coll)
     (string? coll) (if (= 0 (length coll)) nil (tuple ;(map make-char (string/bytes coll))))
-    (struct? coll) (tuple ;(keys coll))
+    (struct? coll) (tuple ;(map (fn [k] (tuple k (get coll k))) (keys coll)))
     coll))
 
 (defn core-vec [coll]
@@ -2656,6 +2663,109 @@
   (var parts @[]) (each x xs (array/push parts (str-render-one x)))
   (string (string/join parts " ") "\n"))
 
+# ============================================================
+# Additional clojure.core functions
+# ============================================================
+
+(defn- intval? [x] (and (number? x) (= x (math/floor x))))
+
+# Forcing lazy seqs
+(defn core-doall [a & rest]
+  (let [coll (if (= 0 (length rest)) a (in rest 0))]
+    (realize-for-iteration coll) coll))
+(defn core-dorun [a & rest]
+  (let [coll (if (= 0 (length rest)) a (in rest 0))]
+    (realize-for-iteration coll) nil))
+(defn core-run! [f coll]
+  (each x (realize-for-iteration coll) (f x)) nil)
+
+(defn core-tree-seq [branch? children root]
+  (def out @[])
+  (defn walk [node]
+    (array/push out node)
+    (when (truthy? (branch? node))
+      (each c (realize-for-iteration (children node)) (walk c))))
+  (walk root)
+  (tuple ;out))
+
+# Map entries (represented as 2-element vectors)
+(defn core-key [e] (core-nth e 0))
+(defn core-val [e] (core-nth e 1))
+(defn core-map-entry? [x] (and (or (pvec? x) (tuple? x)) (= 2 (core-count x))))
+
+(defn core-rand-nth [coll]
+  (let [c (realize-for-iteration coll)]
+    (in c (math/floor (* (math/random) (length c))))))
+
+(defn core-replicate [n x] (tuple ;(map (fn [_] x) (range n))))
+
+(defn core-bounded-count [n coll]
+  (let [c (realize-for-iteration coll)] (min n (length c))))
+
+(defn core-counted? [x]
+  (or (pvec? x) (plist? x) (phm? x) (set? x) (tuple? x) (array? x) (string? x)))
+(defn core-reversible? [x] (or (pvec? x) (tuple? x) (array? x)))
+(defn core-seqable? [x]
+  (or (nil? x) (tuple? x) (array? x) (pvec? x) (plist? x) (phm? x) (set? x)
+      (struct? x) (lazy-seq? x) (string? x)
+      (and (table? x) (or (get x :jolt/type) (get x :jolt/deftype)))))
+
+# Numeric predicates (Jolt has no ratios/bigdec, so those are always false)
+(defn core-nat-int? [x] (and (intval? x) (>= x 0)))
+(defn core-pos-int? [x] (and (intval? x) (> x 0)))
+(defn core-neg-int? [x] (and (intval? x) (< x 0)))
+(defn core-double? [x] (and (number? x) (not (intval? x))))
+(defn core-float? [x] (and (number? x) (not (intval? x))))
+(defn core-ratio? [x] false)
+(defn core-decimal? [x] false)
+(defn core-rational? [x] (intval? x))
+(defn core-numerator [x] x)
+(defn core-denominator [x] 1)
+
+(defn core-list* [& args]
+  (let [n (length args)]
+    (if (= 0 n) nil
+      (let [head (array/slice args 0 (- n 1))
+            tail (realize-for-iteration (in args (- n 1)))]
+        (var r (if (array? tail) tail (array ;tail)))
+        (var i (- (length head) 1))
+        (while (>= i 0) (set r (pl-cons (in head i) r)) (-- i))
+        r))))
+
+(def- special-syms
+  {"if" true "do" true "let*" true "fn*" true "quote" true "var" true "def" true
+   "loop*" true "recur" true "throw" true "try" true "catch" true "finally" true
+   "new" true "set!" true "." true "monitor-enter" true "monitor-exit" true})
+(defn core-special-symbol? [x]
+  (and (core-symbol? x) (= true (get special-syms (x :name)))))
+
+(defn core-record? [x] (and (table? x) (not (nil? (get x :jolt/deftype)))))
+
+# Promise: single-threaded box backed by an atom (deref returns nil until set).
+(defn core-promise [] (core-atom nil))
+(defn core-deliver [p v] (core-reset! p v) p)
+
+(defn core-comparator [pred]
+  (fn [a b] (cond (truthy? (pred a b)) -1 (truthy? (pred b a)) 1 true 0)))
+(defn core-completing [rf & cf]
+  (let [c (if (> (length cf) 0) (in cf 0) (fn [x] x))]
+    (fn [& a] (case (length a) 0 (rf) 1 (c (in a 0)) (rf (in a 0) (in a 1))))))
+(defn core-keyword-identical? [a b] (= a b))
+(defn core-object? [x] false)
+(defn core-tagged-literal [tag form] @{:jolt/type :jolt/tagged-literal :tag tag :form form})
+(defn core-ensure-reduced [x] (if (core-reduced? x) x (core-reduced x)))
+(defn core-halt-when [pred & rest]
+  (let [retf (if (> (length rest) 0) (in rest 0) nil)]
+    (fn [rf]
+      (fn [& a]
+        (case (length a)
+          0 (rf)
+          1 (rf (in a 0))
+          (if (truthy? (pred (in a 1)))
+            (core-reduced (if retf (retf (rf (in a 0)) (in a 1)) (in a 1)))
+            (rf (in a 0) (in a 1))))))))
+(defn core-re-groups [m] (error "re-groups: stateful matchers are not supported in Jolt"))
+
 (def- core-bindings
   "Map of symbol name → function for all core functions."
   @{"nil?" core-nil?
@@ -2744,6 +2854,43 @@
     "reduce" core-reduce
     "apply" core-apply
     "second" core-second
+    "doall" core-doall
+    "dorun" core-dorun
+    "run!" core-run!
+    "tree-seq" core-tree-seq
+    "key" core-key
+    "val" core-val
+    "map-entry?" core-map-entry?
+    "rand-nth" core-rand-nth
+    "replicate" core-replicate
+    "bounded-count" core-bounded-count
+    "counted?" core-counted?
+    "reversible?" core-reversible?
+    "seqable?" core-seqable?
+    "nat-int?" core-nat-int?
+    "pos-int?" core-pos-int?
+    "neg-int?" core-neg-int?
+    "double?" core-double?
+    "float?" core-float?
+    "ratio?" core-ratio?
+    "decimal?" core-decimal?
+    "rational?" core-rational?
+    "numerator" core-numerator
+    "denominator" core-denominator
+    "list*" core-list*
+    "special-symbol?" core-special-symbol?
+    "record?" core-record?
+    "promise" core-promise
+    "deliver" core-deliver
+    "comparator" core-comparator
+    "completing" core-completing
+    "keyword-identical?" core-keyword-identical?
+    "object?" core-object?
+    "tagged-literal" core-tagged-literal
+    "ensure-reduced" core-ensure-reduced
+    "unreduced" core-unreduced
+    "halt-when" core-halt-when
+    "re-groups" core-re-groups
     "ffirst" core-ffirst
     "nfirst" core-nfirst
     "fnext" core-fnext
