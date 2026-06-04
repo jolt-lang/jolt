@@ -1453,43 +1453,39 @@
         @[{:jolt/type :symbol :ns nil :name "pop-thread-bindings"}]]]])
 
 
+(defn- defn->def
+  "Shared expansion for defn/defn-: (name doc-string? attr-map? params body...)
+  or (name doc-string? attr-map? ([params] body)... attr-map?) -> (def name (fn* ...))."
+  [fn-name rest]
+  (var items (array/slice rest))
+  # strip optional docstring
+  (when (and (> (length items) 0) (string? (first items)))
+    (set items (array/slice items 1)))
+  # strip optional attr-map (a map literal, i.e. struct/table that isn't a symbol)
+  (when (and (> (length items) 0)
+             (let [x (first items)]
+               (and (or (struct? x) (table? x))
+                    (not (and (struct? x) (= :symbol (get x :jolt/type)))))))
+    (set items (array/slice items 1)))
+  (def fn-form @[{:jolt/type :symbol :ns nil :name "fn*"}])
+  (if (and (> (length items) 0) (array? (first items)) (indexed? (first (first items))))
+    # multi-arity: each remaining item is an ([params] body...) clause
+    (each pair items (array/push fn-form pair))
+    # single-arity: items = [params-vector body...]
+    (do
+      (array/push fn-form (first items))
+      (each b (tuple/slice items 1) (array/push fn-form b))))
+  @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])
+
 (defn core-defn
-  "Macro: (defn name [args] body) or (defn name ([args] body)...) 
-  -> (def name (fn* ...) )"
+  "Macro: (defn name doc-string? attr-map? [args] body...) (or multi-arity)
+  -> (def name (fn* ...))"
   [fn-name & rest]
-  # Multi-arity if rest starts with list of [args] pairs
-  (if (and (> (length rest) 0) (array? (first rest)) (indexed? (first (first rest))))
-    (let [pairs rest]
-      (def fn-form @[])
-      (array/push fn-form {:jolt/type :symbol :ns nil :name "fn*"})
-      (each pair pairs (array/push fn-form pair))
-      @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])
-    # Single-arity: (defn name [args] body...)
-    (let [args-form (first rest)
-          body (tuple/slice rest 1)]
-      (def fn-form @[])
-      (array/push fn-form {:jolt/type :symbol :ns nil :name "fn*"})
-      (array/push fn-form args-form)
-      (each b body (array/push fn-form b))
-      @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])))
+  (defn->def fn-name rest))
 
 # defn- — same as defn (private not enforced in Jolt)
 (defn core-defn- [fn-name & rest]
-  # Multi-arity if rest starts with list of [args] pairs
-  (if (and (> (length rest) 0) (array? (first rest)) (indexed? (first (first rest))))
-    (let [pairs rest]
-      (def fn-form @[])
-      (array/push fn-form {:jolt/type :symbol :ns nil :name "fn*"})
-      (each pair pairs (array/push fn-form pair))
-      @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])
-    # Single-arity: (defn- name [args] body...)
-    (let [args-form (first rest)
-          body (tuple/slice rest 1)]
-      (def fn-form @[])
-      (array/push fn-form {:jolt/type :symbol :ns nil :name "fn*"})
-      (array/push fn-form args-form)
-      (each b body (array/push fn-form b))
-      @[{:jolt/type :symbol :ns nil :name "def"} fn-name fn-form])))
+  (defn->def fn-name rest))
 
 # Hierarchy stubs for sci bootstrap
 (def core-make-hierarchy make-hierarchy)

@@ -59,6 +59,44 @@
    ["into map pairs"     "{:a 1 :b 2}"      "(into {} [[:a 1] [:b 2]])"]
    ["into map onto map"  "{:a 1 :b 2 :c 3}" "(into {:a 1} [[:b 2] [:c 3]])"]
    ["into list"          "(quote (3 2 1))"  "(into (list) [1 2 3])"]
+
+   ### ---- HIGH: destructuring ----
+   ["destr nested seq"   "[1 2 3]"   "(let [[a [b c]] [1 [2 3]]] [a b c])"]
+   ["destr rest+as"      "[1 (quote (2 3)) [1 2 3]]" "(let [[a & r :as all] [1 2 3]] [a r all])"]
+   ["destr map :keys"    "[1 2]"     "(let [{:keys [a b]} {:a 1 :b 2}] [a b])"]
+   ["destr map :or"      "[1 99]"    "(let [{:keys [a b] :or {b 99}} {:a 1}] [a b])"]
+   ["destr map :strs"    "[1 2]"     "(let [{:strs [a b]} {\"a\" 1 \"b\" 2}] [a b])"]
+   ["destr map :as"      "[1 {:a 1}]" "(let [{:keys [a] :as m} {:a 1}] [a m])"]
+   ["destr nested map"   "5"         "(let [{{:keys [x]} :pos} {:pos {:x 5}}] x)"]
+   ["destr fn-param seq" "7"         "((fn [[a b]] (+ a b)) [3 4])"]
+   ["destr fn-param map" "3"         "((fn [{:keys [a b]}] (+ a b)) {:a 1 :b 2})"]
+   ["destr let map key"  "1"         "(let [{a :a} {:a 1}] a)"]
+
+   ### ---- HIGH: update / assoc-in on map literals ----
+   ["update inc"         "{:a 2}"            "(update {:a 1} :a inc)"]
+   ["update extra args"  "{:a 111}"          "(update {:a 1} :a + 10 100)"]
+   ["update-in"          "{:a {:b 2}}"        "(update-in {:a {:b 1}} [:a :b] inc)"]
+   ["assoc-in"           "{:a {:b 1 :c 2}}"   "(assoc-in {:a {:b 1}} [:a :c] 2)"]
+   ["assoc-in create"    "{:a {:b 1}}"        "(assoc-in {} [:a :b] 1)"]
+   ["update-in fnil"     "{:a {:b 1}}"        "(update-in {} [:a :b] (fnil inc 0))"]
+   ["get-in"             "1"                  "(get-in {:a {:b {:c 1}}} [:a :b :c])"]
+
+   ### ---- HIGH: str semantics ----
+   ["str nil empty"      "\"\""       "(str nil)"]
+   ["str concat nil"     "\"a1\""     "(str \"a\" 1 nil)"]
+   ["str keyword"        "\":b\""     "(str :b)"]
+   ["str symbol"         "\"foo\""    "(str (quote foo))"]
+   ["str mixed"          "\"a:b1\""   "(str \"a\" :b 1)"]
+   ["str seq"            "\"[1 2 3]\"" "(str [1 2 3])"]
+
+   ### ---- HIGH: dispatch ----
+   ["multimethod"        "9"   "(do (defmulti area :shape) (defmethod area :sq [s] (* (:s s) (:s s))) (area {:shape :sq :s 3}))"]
+   ["multimethod default" ":def" "(do (defmulti f identity) (defmethod f :default [x] :def) (f 99))"]
+   ["protocol on record" "16"  "(do (defprotocol Sh (ar [s])) (defrecord Sq [side] Sh (ar [_] (* side side))) (ar (->Sq 4)))"]
+   ["reify dispatch"     "42"  "(do (defprotocol P (m [_])) (m (reify P (m [_] 42))))"]
+
+   ### ---- HIGH: aliased namespace calls ----
+   ["require :as alias"  "\"1,2,3\"" "(do (require (quote [clojure.string :as s])) (s/join \",\" [1 2 3]))"]
   ])
 
 (var pass 0)

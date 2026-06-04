@@ -271,6 +271,135 @@
   (if rest-name (array/push all rest-name))
   {:fixed (tuple/slice (tuple ;fixed)) :rest rest-name :all (tuple/slice (tuple ;all))})
 
+# ============================================================
+# Destructuring (Clojure-compatible, recursive)
+# ============================================================
+
+(defn- parse-params
+  "Parse a parameter vector into raw patterns: {:fixed [pat...] :rest pat-or-nil}.
+  Unlike parse-arg-names, patterns are kept intact (not flattened) so they can
+  be destructured against the corresponding argument."
+  [args-form]
+  (var fixed @[])
+  (var rest-pat nil)
+  (var i 0)
+  (while (< i (length args-form))
+    (let [a (in args-form i)]
+      (if (and (struct? a) (= :symbol (a :jolt/type)) (= "&" (a :name)))
+        (do (+= i 1)
+            (when (< i (length args-form)) (set rest-pat (in args-form i)))
+            (+= i 1))
+        (do (array/push fixed a) (+= i 1)))))
+  {:fixed (tuple/slice (tuple ;fixed)) :rest rest-pat})
+
+(defn- d-realize
+  "Realize a lazy-seq to an array for positional destructuring; pass others through."
+  [val]
+  (if (lazy-seq? val)
+    (do
+      (var items @[]) (var cur val) (var go true)
+      (while go
+        (let [cell (realize-ls cur)]
+          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+            (set go false)
+            (do (array/push items (in cell 0))
+                (let [rt (in cell 1)]
+                  (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
+      items)
+    val))
+
+(defn- d-get
+  "Look up key k in a map-like value (phm/struct/table/nil)."
+  [m k]
+  (cond
+    (phm? m) (phm-get m k)
+    (or (struct? m) (table? m)) (get m k)
+    true nil))
+
+(defn- find-or-default
+  "Find the :or default expression for binding name nm, or :jolt/none."
+  [or-map nm]
+  (var result :jolt/none)
+  (when or-map
+    (each k (keys or-map)
+      (when (and (struct? k) (= :symbol (k :jolt/type)) (= nm (k :name)))
+        (set result (get or-map k)))))
+  result)
+
+(var destructure-bind nil)
+(set destructure-bind
+  (fn dbind [ctx bindings pat val]
+    (cond
+      # plain symbol
+      (and (struct? pat) (= :symbol (pat :jolt/type)))
+        (bind-put bindings (pat :name) val)
+      # sequential pattern (vector of sub-patterns)
+      (indexed? pat)
+        (let [rv (d-realize val)
+              seqable? (indexed? rv)]
+          (var di 0) (var vi 0)
+          (def n (length pat))
+          (while (< di n)
+            (let [elem (in pat di)]
+              (cond
+                # & rest
+                (and (struct? elem) (= :symbol (elem :jolt/type)) (= "&" (elem :name)))
+                  (do
+                    # rest binds a seq (jolt list = array), per Clojure semantics
+                    (destructure-bind ctx bindings (in pat (+ di 1))
+                      (if (and seqable? (< vi (length rv)))
+                        (array/slice (if (tuple? rv) (array/slice rv) rv) vi)
+                        @[]))
+                    (set di (+ di 2)))
+                # :as whole
+                (= elem :as)
+                  (do
+                    (destructure-bind ctx bindings (in pat (+ di 1)) val)
+                    (set di (+ di 2)))
+                # positional element
+                true
+                  (do
+                    (destructure-bind ctx bindings elem
+                      (if (and seqable? (< vi (length rv))) (in rv vi) nil))
+                    (+= di 1) (+= vi 1))))))
+      # map pattern (struct/table that isn't a symbol)
+      (or (struct? pat) (table? pat))
+        (do
+          (def or-map (get pat :or))
+          (def as-sym (get pat :as))
+          (when as-sym (destructure-bind ctx bindings as-sym val))
+          # :keys (keyword lookup), :strs (string lookup), :syms (symbol lookup)
+          (each spec [[:keys (fn [nm] (keyword nm))]
+                      [:strs (fn [nm] nm)]
+                      [:syms (fn [nm] {:jolt/type :symbol :ns nil :name nm})]]
+            (let [kw (in spec 0) keyf (in spec 1) names (get pat kw)]
+              (when (and names (indexed? names))
+                (each s names
+                  (let [nm (if (and (struct? s) (= :symbol (s :jolt/type))) (s :name) (string s))
+                        v (d-get val (keyf nm))
+                        v (if (nil? v)
+                            (let [d (find-or-default or-map nm)]
+                              (if (= d :jolt/none) nil (eval-form ctx bindings d)))
+                            v)]
+                    (bind-put bindings nm v))))))
+          # direct {local-pattern key-expr} entries (local may itself be a
+          # nested vector/map pattern). Special keys are keywords; skip them.
+          (each k (keys pat)
+            (when (not (keyword? k))
+              (let [key-val (eval-form ctx bindings (get pat k))
+                    v (d-get val key-val)]
+                (if (and (struct? k) (= :symbol (k :jolt/type)))
+                  # symbol target: apply :or default if missing
+                  (let [nm (k :name)
+                        v (if (nil? v)
+                            (let [d (find-or-default or-map nm)]
+                              (if (= d :jolt/none) nil (eval-form ctx bindings d)))
+                            v)]
+                    (bind-put bindings nm v))
+                  # nested pattern target
+                  (destructure-bind ctx bindings k v))))))
+      true (error (string "Unsupported destructuring pattern: " (string/format "%q" pat))))))
+
 # Dispatch a special form by its string name.
 (defn- unwrap-meta-name
   "Recursively unwrap (with-meta sym meta) forms to extract the underlying symbol.
@@ -444,20 +573,20 @@
                (each pair pairs
                  (let [args-form (in pair 0)
                        body (tuple/slice pair 1)
-                       arg-info (parse-arg-names args-form)
-                       fixed-names (arg-info :fixed)
-                       rest-name (arg-info :rest)
-                       n-fixed (length fixed-names)]
+                       param-info (parse-params args-form)
+                       fixed-pats (param-info :fixed)
+                       rest-pat (param-info :rest)
+                       n-fixed (length fixed-pats)]
                    (put arities n-fixed
                         (fn [& fn-args]
                           (var fn-bindings @{})
                           (table/setproto fn-bindings bindings)
                           (var i 0)
-                          (each arg-name fixed-names
-                            (bind-put fn-bindings arg-name (fn-args i))
+                          (each pat fixed-pats
+                            (destructure-bind ctx fn-bindings pat (fn-args i))
                             (++ i))
-                          (when rest-name
-                            (put fn-bindings rest-name (tuple/slice fn-args i)))
+                          (when rest-pat
+                            (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
                           (put fn-bindings :jolt/loop-fn self)
                           # Use defining namespace for symbol resolution
                           (def saved-ns (ctx-current-ns ctx))
@@ -477,20 +606,20 @@
              # Single-arity: (fn* [args] body...)
              (let [args-form (in form 1)
                    body (tuple/slice form 2)
-                   arg-info (parse-arg-names args-form)
-                   fixed-names (arg-info :fixed)
-                   rest-name (arg-info :rest)
+                   param-info (parse-params args-form)
+                   fixed-pats (param-info :fixed)
+                   rest-pat (param-info :rest)
                    defining-ns (ctx-current-ns ctx)]
                (var self nil)
                (set self (fn [& fn-args]
                  (var fn-bindings @{})
                  (table/setproto fn-bindings bindings)
                  (var i 0)
-                 (each arg-name fixed-names
-                   (bind-put fn-bindings arg-name (fn-args i))
+                 (each pat fixed-pats
+                   (destructure-bind ctx fn-bindings pat (fn-args i))
                    (++ i))
-                 (when rest-name
-                   (put fn-bindings rest-name (tuple/slice fn-args i)))
+                 (when rest-pat
+                   (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
                  (put fn-bindings :jolt/loop-fn self)
                  # Use defining namespace for symbol resolution
                  (def saved-ns (ctx-current-ns ctx))
@@ -510,35 +639,7 @@
                 (while (< i len)
                   (let [pat (bind-vec i)]
                     (def val (eval-form ctx new-bindings (bind-vec (+ i 1))))
-                    # Handle destructuring patterns
-                    (if (struct? pat)
-                      (let [keys-vec (get pat :keys)]
-                        (if (and keys-vec (indexed? keys-vec))
-                          (each k keys-vec
-                            (def kname (if (keyword? k) (string k) (k :name)))
-                            (bind-put new-bindings kname (get val (keyword kname))))
-                          (bind-put new-bindings (pat :name) val)))
-                        (if (indexed? pat)
-                        # Sequential destructuring (vector pattern)
-                        (do
-                          (var di 0)
-                          (while (< di (length pat))
-                            (let [inner-pat (in pat di)]
-                              (if (and (struct? inner-pat) (= :symbol (inner-pat :jolt/type)) (= "&" (inner-pat :name)))
-                                # & rest: next element gets (drop di val)
-                                (do
-                                  (+= di 1)
-                                  (when (< di (length pat))
-                                    (let [rest-pat (in pat di)]
-                                      (bind-put new-bindings
-                                        (if (struct? rest-pat) (rest-pat :name) rest-pat)
-                                        (tuple/slice val di)))))
-                                (if (struct? inner-pat)
-                                  (bind-put new-bindings (inner-pat :name) (get val di))
-                                  (bind-put new-bindings inner-pat (get val di)))))
-                            (+= di 1)))
-                        # Plain symbol binding
-                        (bind-put new-bindings (pat :name) val)))
+                    (destructure-bind ctx new-bindings pat val)
                     (+= i 2))))
              (var result nil)
              (each body-form body
