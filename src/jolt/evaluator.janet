@@ -28,6 +28,55 @@
 
 (var eval-form nil)
 
+(defn- coll-lookup
+  "Clojure `get` semantics over a jolt collection, used for collection-as-IFn."
+  [coll k default]
+  (cond
+    (phm? coll) (phm-get coll k default)
+    (set? coll) (if (phs-contains? coll k) k default)
+    (or (tuple? coll) (array? coll))
+      (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length coll)))
+        (in coll k) default)
+    (or (struct? coll) (table? coll))
+      (let [v (get coll k :jolt/not-found)]
+        (if (= v :jolt/not-found) default v))
+    (nil? coll) default
+    default))
+
+(defn jolt-invoke
+  "Apply f to already-evaluated args. Handles real functions and Clojure's
+  IFn collections: vectors (index lookup), maps/sets/keywords/symbols (get),
+  and deftype/record values implementing IFn. `args` is an array."
+  [ctx f args]
+  (cond
+    (function? f) (apply f args)
+    (keyword? f) (coll-lookup (get args 0) f (get args 1))
+    (and (struct? f) (= :symbol (f :jolt/type)))
+      (coll-lookup (get args 0) f (get args 1))
+    (phm? f) (phm-get f (get args 0) (get args 1))
+    (set? f) (if (phs-contains? f (get args 0)) (get args 0) (get args 1))
+    (or (tuple? f) (array? f))
+      (let [k (get args 0)]
+        (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length f)))
+          (in f k)
+          (error (string "Index " k " out of bounds for vector of length " (length f)))))
+    (struct? f)
+      (let [v (get f (get args 0) :jolt/not-found)]
+        (if (= v :jolt/not-found) (get args 1) v))
+    (and (table? f) (get f :jolt/deftype))
+      (let [ifn-fn (find-protocol-method ctx (get f :jolt/deftype) "IFn" "-invoke")]
+        (if ifn-fn (apply ifn-fn f args)
+          (if (get f :jolt/protocol-methods)
+            (let [invoke-fn (get (f :jolt/protocol-methods) :-invoke)]
+              (if invoke-fn (apply invoke-fn f args)
+                (error (string "Cannot call " (type f) " as a function"))))
+            (error (string "Cannot call " (type f) " as a function")))))
+    (and (table? f) (get f :jolt/protocol-methods))
+      (let [invoke-fn (get (f :jolt/protocol-methods) :-invoke)]
+        (if invoke-fn (apply invoke-fn f args)
+          (error (string "Cannot call " (type f) " as a function"))))
+    (error (string "Cannot call " (type f) " as a function"))))
+
 (defn- syntax-quote*
   [ctx bindings form]
   (cond
@@ -893,22 +942,10 @@
                 (eval-form ctx bindings (apply macro-fn args)))
               (let [f (eval-form ctx bindings first-form)
                     args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
-                (apply f args)))))))
+                (jolt-invoke ctx f args)))))))
       (let [f (eval-form ctx bindings first-form)
             args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
-        (if (function? f)
-          (apply f args)
-          (if (keyword? f)
-            (get (first args) f)
-            (if (and (table? f) (get f :jolt/deftype))
-              (let [ifn-fn (find-protocol-method ctx (get f :jolt/deftype) "IFn" "-invoke")]
-                (if ifn-fn (apply ifn-fn f args)
-                  (if (get f :jolt/protocol-methods)
-                    (let [invoke-fn (get (f :jolt/protocol-methods) :-invoke)]
-                      (if invoke-fn (apply invoke-fn f args)
-                        (error (string "Cannot call " (type f) " as a function"))))
-                    (error (string "Cannot call " (type f) " as a function")))))
-              (error (string "Cannot call " (type f) " as a function")))))))))
+        (jolt-invoke ctx f args)))))
 
 (set eval-form (fn [ctx bindings form]
   (cond

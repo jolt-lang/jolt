@@ -1,0 +1,87 @@
+# Clojure conformance harness (phase 1: extracted assertion pairs).
+#
+# Each case is [name expected-clj actual-clj]. The harness evaluates the
+# single Clojure program  (= <expected> <actual>)  inside a fresh jolt ctx
+# and asserts it returns boolean true. Comparison therefore uses jolt's OWN
+# `=`, which implements Clojure sequential/collection equality -- so results
+# reflect real Clojure semantics rather than Janet-level identity.
+#
+# `actual` may be a multi-form body; wrap such cases in (do ...).
+#
+# Source of truth: ~/src/clojure/test/clojure/test_clojure/*.clj
+# These pairs are hand-extracted from those files (and canonical idioms)
+# until a minimal clojure.test lets us load the real files directly.
+
+(use ../src/jolt/api)
+
+(def cases
+  [
+   ### ---- CRITICAL: lazy sequences ----
+   ["self-ref lazy-cat fib"
+    "(quote (0 1 1 2 3 5 8 13 21 34))"
+    "(do (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq))) (take 10 fib-seq))"]
+   ["self-ref lazy-seq ones"
+    "(quote (1 1 1 1 1))"
+    "(do (def ones (lazy-seq (cons 1 ones))) (take 5 ones))"]
+   ["self-ref lazy-seq nats"
+    "(quote (0 1 2 3 4))"
+    "(do (def nats (lazy-cat [0] (map inc nats))) (take 5 nats))"]
+
+   ### ---- CRITICAL: multi-collection map ----
+   ["map two colls"        "(quote (11 22 33))"      "(map + [1 2 3] [10 20 30])"]
+   ["map three colls"      "(quote (12 24 36))"      "(map + [1 2 3] [10 20 30] [1 2 3])"]
+   ["map uneven (shortest)" "(quote ([1 :a] [2 :b]))" "(map vector [1 2 3] [:a :b])"]
+   ["map over range+vec"   "(quote (1 3 5))"         "(map + (range 3) [1 2 3])"]
+   ["map fn list arg"      "(quote (2 3 4))"         "(map inc (list 1 2 3))"]
+
+   ### ---- CRITICAL: iterate / infinite seqs ----
+   ["iterate"        "(quote (0 1 2 3 4))"  "(take 5 (iterate inc 0))"]
+   ["iterate double" "(quote (1 2 4 8 16))" "(take 5 (iterate (fn [x] (* 2 x)) 1))"]
+   ["range over inf map" "(quote (1 2 3))"  "(take 3 (map inc (range)))"]
+   ["count of take"  "100"                  "(count (take 100 (range)))"]
+   ["last of take"   "5"                    "(last (take 5 (iterate inc 1)))"]
+
+   ### ---- CRITICAL: collections as IFn ----
+   ["vector as fn"  ":b"  "([:a :b :c] 1)"]
+   ["map as fn"     "1"   "({:a 1} :a)"]
+   ["map as fn miss" "nil" "({:a 1} :z)"]
+   ["map as fn default" "99" "({:a 1} :z 99)"]
+   ["set as fn"     "2"   "(#{1 2 3} 2)"]
+   ["set as fn miss" "nil" "(#{1 2 3} 9)"]
+   ["keyword as fn" "1"   "(:a {:a 1})"]
+   ["map fn over coll" "(quote (1 3))" "(map {:a 1 :b 3} [:a :b])"]
+
+   ### ---- CRITICAL: vec / into over lazy + maps ----
+   ["vec of map-result"  "[2 3 4]"          "(vec (map inc [1 2 3]))"]
+   ["vec of range"       "[0 1 2 3 4]"      "(vec (range 5))"]
+   ["into vec"           "[1 2 3 4 5 6]"    "(into [1 2 3] [4 5 6])"]
+   ["into vec from lazy" "[2 3 4]"          "(into [] (map inc [1 2 3]))"]
+   ["into map pairs"     "{:a 1 :b 2}"      "(into {} [[:a 1] [:b 2]])"]
+   ["into map onto map"  "{:a 1 :b 2 :c 3}" "(into {:a 1} [[:b 2] [:c 3]])"]
+   ["into list"          "(quote (3 2 1))"  "(into (list) [1 2 3])"]
+  ])
+
+(var pass 0)
+(def fails @[])
+(each [name expected actual] cases
+  (def ctx (init))
+  (def prog (string "(= " expected " " actual ")"))
+  (def res (protect (eval-string ctx prog)))
+  (cond
+    (not= (res 0) true)
+    (array/push fails [name "ERROR" (string (res 1))])
+    (= (res 1) true)
+    (++ pass)
+    # not equal: re-eval actual alone to show what we got
+    (let [got (protect (eval-string (init) actual))]
+      (array/push fails [name "MISMATCH"
+                         (string "want=" expected
+                                 " got=" (if (= (got 0) true) (string/format "%q" (got 1)) (string "ERR:" (got 1))))]))))
+
+(printf "\n=== CONFORMANCE: %d/%d passed ===" pass (length cases))
+(unless (empty? fails)
+  (print "\n--- Failures ---")
+  (each [name kind detail] fails
+    (printf "[%s] %s: %s" kind name detail)))
+(print)
+(when (pos? (length fails)) (os/exit 1))
