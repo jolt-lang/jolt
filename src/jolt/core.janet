@@ -31,6 +31,10 @@
 (defn core-even? [n] (= 0 (% n 2)))
 (defn core-odd? [n] (not= 0 (% n 2)))
 
+(defn core-integer? [x] (and (number? x) (= x (math/floor x))))
+(defn core-boolean? [x] (or (= x true) (= x false)))
+(defn core-list? [x] (and (array? x) (not (get x :jolt/type))))
+
 (defn core-empty? [coll]
   (if (nil? coll) true
     (if (set? coll) (= 0 (coll :cnt))
@@ -73,6 +77,10 @@
 
 (defn core-max [& args] (apply max args))
 (defn core-min [& args] (apply min args))
+
+(defn core-abs [x] (if (neg? x) (- 0 x) x))
+(defn core-rand [] (math/random))
+(defn core-rand-int [n] (math/floor (* (math/random) n)))
 
 # ============================================================
 # Comparison
@@ -210,11 +218,8 @@
     (if (= 0 (length r)) nil r)))
 
 (defn core-cons [x coll]
-  (if (nil? coll)
-    @[x]
-    (if (tuple? coll)
-      (tuple/slice (tuple ;(array/insert (array/slice coll) 0 x)))
-      (array/insert coll 0 x))))
+  "Returns a lazy-seq compatible cons cell [first, rest-thunk]."
+  @[x (fn [] coll)])
 
 (defn core-seq [coll]
   (if (or (nil? coll) (and (or (tuple? coll) (array? coll)) (= 0 (length coll))))
@@ -284,10 +289,27 @@
 # Sequence operations
 # ============================================================
 
+(defn- realize-for-iteration [c]
+  "If c is a lazy-seq, traverse and return all elements as an array.
+  Otherwise return c as-is. Warning: will loop on infinite lazy-seqs."
+  (if (lazy-seq? c)
+    (do
+      (var items @[])
+      (var cur c)
+      (while (not (nil? (ls-first cur)))
+        (array/push items (ls-first cur))
+        (set cur (ls-rest cur)))
+      items)
+    c))
+
 (defn core-map [f & colls]
-  (let [first-coll (colls 0)
+  (let [realized (map realize-for-iteration colls)
+        first-coll (realized 0)
         result (if (= 1 (length colls))
-                 (array ;(map f first-coll))
+                 (do
+                   (var res @[])
+                   (each x first-coll (array/push res (f x)))
+                   res)
                  (do
                    (var res @[])
                    (var idxs @{})
@@ -297,7 +319,7 @@
                      (var args @[])
                      (var i 0)
                      (while (< i (length colls))
-                       (let [c (colls i) j (idxs i)]
+                       (let [c (realized i) j (idxs i)]
                          (if (>= j (length c))
                            (do (set done true) (break))
                            (array/push args (c j))))
@@ -341,19 +363,37 @@
       (error "Wrong number of args passed to: reduce"))))
 
 (defn core-take [n coll]
-  (var result @[])
-  (var i 0)
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (while (and (< i n) (< i (length c)))
-    (array/push result (c i))
-    (++ i))
-  (if (tuple? c) (tuple/slice (tuple ;result)) result))
+  (if (lazy-seq? coll)
+    (do
+      (var result @[])
+      (var cur coll)
+      (var i 0)
+      (while (and (< i n) (not (nil? (ls-first cur))))
+        (array/push result (ls-first cur))
+        (set cur (ls-rest cur))
+        (++ i))
+      result)
+    (do
+      (var result @[])
+      (var i 0)
+      (while (and (< i n) (< i (length coll)))
+        (array/push result (coll i))
+        (++ i))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))
 
 (defn core-drop [n coll]
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (if (tuple? c)
-    (tuple/slice c (min n (length c)))
-    (array/slice c (min n (length c)))))
+  (if (lazy-seq? coll)
+    (do
+      (var cur coll)
+      (var i 0)
+      (while (and (< i n) (ls-first cur))
+        (set cur (ls-rest cur))
+        (++ i))
+      (if (nil? (ls-first cur)) nil cur))
+    (do
+      (if (tuple? coll)
+        (tuple/slice coll (min n (length coll)))
+        (array/slice coll (min n (length coll)))))))
 
 (defn core-take-while [pred coll]
   (var result @[])
@@ -370,54 +410,130 @@
     (tuple/slice c start)
     (array/slice c start)))
 
+(defn coll->cells [c]
+  "Convert a seqable to lazy-seq cell chain: nil or [first, rest-thunk].
+  If the value is a function, call it and use the result.
+  If the result is already a cell (array of [val, function]), return it directly."
+  (if (nil? c) nil
+    (if (function? c)
+      (let [r (c)]
+        (if (and (indexed? r) (= 2 (length r)) (function? (in r 1)))
+          r
+          (coll->cells r)))
+      (if (lazy-seq? c) (realize-ls c)
+        (if (indexed? c)
+          (if (= 0 (length c)) nil
+            (let [f (in c 0)
+                  rest (if (> (length c) 1)
+                         (if (tuple? c) (tuple/slice c 1) (array/slice c 1))
+                         nil)]
+              @[f (fn [] (coll->cells rest))]))
+          nil)))))
+
 (defn core-concat [& colls]
-  (var result @[])
-  (each c colls
-    (def c-realized (if (lazy-seq? c) (realize-ls c) c))
-    (each x c-realized (array/push result x)))
-  result)
+  "Lazy concatenation — returns a lazy-seq that yields elements one at a time.
+  Supports self-referencing sequences like fib-seq."
+  (var cs (if (tuple? colls) (array/slice colls) colls))
+  (var cur nil)
+  (defn next-cell []
+    (var cell (coll->cells cur))
+    (while (and (nil? cell) (not (nil? cs)) (> (length cs) 0))
+      (set cur (in cs 0))
+      (set cs (array/slice cs 1))
+      (set cell (coll->cells cur)))
+    (if (nil? cell) nil
+      @[(in cell 0)
+        (fn []
+          (set cur (in cell 1))
+          (next-cell))]))
+  (make-lazy-seq next-cell))
 
 (defn core-reverse [coll]
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (var result @[])
-  (var i (dec (length c)))
-  (while (>= i 0)
-    (array/push result (c i))
-    (-- i))
-  (if (tuple? c) (tuple/slice (tuple ;result)) result))
+  (if (nil? coll) @[]
+  (if (lazy-seq? coll)
+    (do
+      (var result @[])
+      (var cur coll)
+      (while (not (nil? (ls-first cur)))
+        (array/push result (ls-first cur))
+        (set cur (ls-rest cur)))
+      (var reversed @[])
+      (var i (dec (length result)))
+      (while (>= i 0)
+        (array/push reversed (in result i))
+        (-- i))
+      reversed)
+    (do
+      (var result @[])
+      (var i (dec (length coll)))
+      (while (>= i 0)
+        (array/push result (coll i))
+        (-- i))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result)))))
 
 (defn core-nth
   "Return the nth element of a sequential collection."
   [coll idx &opt default]
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (if (and (>= idx 0) (< idx (length c)))
-    (in c idx)
-    (if (nil? default)
-      (error (string "Index " idx " out of bounds, length: " (length c)))
-      default)))
+  (if (lazy-seq? coll)
+    (do
+      (var cur coll)
+      (var i 0)
+      (while (and (< i idx) (ls-first cur))
+        (set cur (ls-rest cur))
+        (++ i))
+      (if (ls-first cur) (ls-first cur)
+        (if (nil? default)
+          (error (string "Index " idx " out of bounds"))
+          default)))
+    (do
+      (var c (if (lazy-seq? coll) (realize-ls coll) coll))
+      (if (and (>= idx 0) (< idx (length c)))
+        (in c idx)
+        (if (nil? default)
+          (error (string "Index " idx " out of bounds, length: " (length c)))
+          default)))))
 
 (defn core-sort [coll]
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (let [arr (if (tuple? c) (array/slice c) c)
-        sorted (sort arr)]
-    (if (tuple? c) (tuple/slice (tuple ;sorted)) sorted)))
+  (if (nil? coll) @[]
+  (if (lazy-seq? coll)
+    (do
+      (var items @[])
+      (var cur coll)
+      (while (not (nil? (ls-first cur)))
+        (array/push items (ls-first cur))
+        (set cur (ls-rest cur)))
+      (sort items))
+    (let [arr (if (tuple? coll) (array/slice coll) coll)
+          sorted (sort arr)]
+      (if (tuple? coll) (tuple/slice (tuple ;sorted)) sorted)))))
 
 (defn core-sort-by [keyfn coll]
+  (if (nil? coll) (break @[]))
   (var c (if (lazy-seq? coll) (realize-ls coll) coll))
   (let [arr (if (tuple? c) (array/slice c) c)
         sorted (sort-by keyfn arr)]
     (if (tuple? c) (tuple/slice (tuple ;sorted)) sorted)))
 
 (defn core-distinct [coll]
-  (var seen @{})
-  (var result @[])
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (each x c
-    (if (nil? (seen x))
-      (do
-        (put seen x true)
-        (array/push result x))))
-  (if (tuple? c) (tuple/slice (tuple ;result)) result))
+  (if (nil? coll) @[]
+  (if (lazy-seq? coll)
+    (do
+      (var seen @{})
+      (var result @[])
+      (var cur coll)
+      (while (not (nil? (ls-first cur)))
+        (let [x (ls-first cur)]
+          (if (nil? (seen x))
+            (do (put seen x true) (array/push result x))))
+        (set cur (ls-rest cur)))
+      result)
+    (do
+      (var seen @{})
+      (var result @[])
+      (each x coll
+        (if (nil? (seen x))
+          (do (put seen x true) (array/push result x))))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result)))))
 
 (defn core-group-by [f coll]
   (var result @{})
@@ -590,15 +706,18 @@
 
 (defn core-lazy-seq [& body]
   @[{:jolt/type :symbol :ns nil :name "make-lazy-seq"}
-    @[{:jolt/type :symbol :ns nil :name "fn*"} [] ;body]])
+    @[{:jolt/type :symbol :ns nil :name "fn*"} []
+      @[{:jolt/type :symbol :ns nil :name "coll->cells"}
+        @[{:jolt/type :symbol :ns nil :name "do"} ;body]]]])
 
 (defn core-lazy-cat [& colls]
-  "Macro: (lazy-cat & colls) — concatenate lazy sequences, wrapping each coll in lazy-seq."
-  (def result @[])
-  (array/push result {:jolt/type :symbol :ns nil :name "concat"})
+  "Macro: (lazy-cat & colls) — concatenate lazy sequences, wrapping each coll in lazy-seq.
+  concat is now lazy, so no outer make-lazy-seq wrapping is needed."
+  (def concat-form @[])
+  (array/push concat-form {:jolt/type :symbol :ns nil :name "concat"})
   (each c colls
-    (array/push result @[{:jolt/type :symbol :ns nil :name "lazy-seq"} c]))
-  result)
+    (array/push concat-form @[{:jolt/type :symbol :ns nil :name "lazy-seq"} c]))
+  concat-form)
 
 (defn core-set [coll]
   (apply core-hash-set (if (tuple? coll) (array/slice coll) coll)))
@@ -727,31 +846,102 @@
 # Atom
 # ============================================================
 
-(defn core-atom [val]
-  @{:jolt/type :jolt/atom :value val :watches @{}})
+(defn core-atom
+  "Create an atom. Accepts optional :validator fn and :meta map."
+  [val & opts]
+  (var atm @{:jolt/type :jolt/atom :value val :watches @{} :validator nil})
+  (var i 0)
+  (while (< i (length opts))
+    (case (opts i)
+      :validator (put atm :validator (opts (+ i 1)))
+      :meta (let [m (opts (+ i 1))]
+              (var meta-tab @{})
+              (each k (keys m) (put meta-tab k (get m k)))
+              (table/setproto atm meta-tab)
+              (put atm :jolt/meta m)))
+    (+= i 2))
+  atm)
 
 (defn core-atom? [x]
   (and (table? x) (= :jolt/atom (x :jolt/type))))
 
 (defn core-deref [ref]
   (cond
-    # Jolt atom
     (and (table? ref) (= :jolt/atom (ref :jolt/type)))
     (ref :value)
-    # Jolt var (from types.janet)
     (and (table? ref) (= :jolt/var (ref :jolt/type)))
     (ref :root)
-    # default: return as-is
     ref))
 
+(defn- atom-validate
+  "Call validator on atm. Returns the value if valid, errors otherwise."
+  [atm val]
+  (let [v (atm :validator)]
+    (if v
+      (if (v val) val
+        (error "Validator rejected value"))
+      val)))
+
+(defn- atom-notify-watches
+  [atm old-val new-val]
+  (loop [[k w] :pairs (atm :watches)]
+    (w k atm old-val new-val)))
+
 (defn core-reset! [atm val]
-  (put atm :value val)
-  val)
+  (let [old-val (atm :value)]
+    (atom-validate atm val)
+    (put atm :value val)
+    (atom-notify-watches atm old-val val)
+    val))
 
 (defn core-swap! [atm f & args]
-  (let [new-val (apply f (atm :value) args)]
-    (put atm :value new-val)
-    new-val))
+  (var old-val (atm :value))
+  (var new-val (apply f old-val args))
+  (atom-validate atm new-val)
+  (put atm :value new-val)
+  (atom-notify-watches atm old-val new-val)
+  new-val)
+
+(defn core-reset-vals! [atm val]
+  (let [old-val (atm :value)]
+    (atom-validate atm val)
+    (put atm :value val)
+    (atom-notify-watches atm old-val val)
+    [old-val val]))
+
+(defn core-swap-vals! [atm f & args]
+  (var old-val (atm :value))
+  (var new-val (apply f old-val args))
+  (atom-validate atm new-val)
+  (put atm :value new-val)
+  (atom-notify-watches atm old-val new-val)
+  [old-val new-val])
+
+(defn core-compare-and-set! [atm old-val new-val]
+  (if (= old-val (atm :value))
+    (do
+      (atom-validate atm new-val)
+      (put atm :value new-val)
+      (atom-notify-watches atm old-val new-val)
+      true)
+    false))
+
+(defn core-set-validator! [atm validator-fn]
+  (put atm :validator validator-fn)
+  nil)
+
+(defn core-get-validator [atm]
+  (atm :validator))
+
+(defn core-add-watch [atm key watch-fn]
+  (let [watches (atm :watches)]
+    (put watches key watch-fn)
+    atm))
+
+(defn core-remove-watch [atm key]
+  (let [watches (atm :watches)]
+    (put watches key nil)
+    atm))
 
 # ============================================================
 # Threading macros (as regular functions? No, as macros in Clojure)
@@ -772,6 +962,53 @@
   (def n (get gensym_counter :val))
   (put gensym_counter :val (+ n 1))
   {:jolt/type :symbol :ns nil :name (string prefix-string n)})
+
+(defn core-cond
+  "Macro: (cond test1 expr1 test2 expr2 ... :else default)
+   -> (if test1 expr1 (if test2 expr2 ...))"
+  [& clauses]
+  (defn build [cls]
+    (if (= 0 (length cls))
+      nil
+      (let [t (first cls)]
+        (if (= :else t)
+          (if (> (length cls) 1) (in cls 1) nil)
+          (if (< (length cls) 2)
+            (error "cond requires an even number of forms")
+            (let [e (in cls 1)]
+              @[{:jolt/type :symbol :ns nil :name "if"}
+                t e
+                (build (tuple/slice cls 2))]))))))
+  (build clauses))
+
+(defn core-case
+  "Macro: (case expr val1 result1 ... default)
+   Supports single values, lists of values (one-of-many), and symbols."
+  [expr & clauses]
+  (def g (gensym))
+  (defn make-const [c]
+    (if (and (struct? c) (= :symbol (c :jolt/type)))
+      @[{:jolt/type :symbol :ns nil :name "quote"} c]
+      c))
+  (defn make-test [c]
+    (if (array? c)
+      (let [or-args @[{:jolt/type :symbol :ns nil :name "or"}]]
+        (each v c
+          (array/push or-args @[{:jolt/type :symbol :ns nil :name "="} g (make-const v)]))
+        or-args)
+      @[{:jolt/type :symbol :ns nil :name "="} g (make-const c)]))
+  (defn build [cls]
+    (if (= 0 (length cls))
+      nil
+      (if (= 1 (length cls))
+        (first cls)
+        (let [c (first cls)
+              r (first (tuple/slice cls 1))]
+          @[{:jolt/type :symbol :ns nil :name "if"}
+            (make-test c)
+            r
+            (build (tuple/slice cls 2))]))))
+  @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses)])
 
 (defn core-when
   "Macro: (when test & body) -> (if test (do body...))"
@@ -871,6 +1108,243 @@
       (array/push result @[{:jolt/type :symbol :ns nil :name "."} sym f])))
   (array/push result sym)
   result)
+
+(defn core-if-not
+  "Macro: (if-not test then else?) -> (if (not test) then else?)"
+  [test then-form & else-forms]
+  @[{:jolt/type :symbol :ns nil :name "if"}
+    @[{:jolt/type :symbol :ns nil :name "not"} test]
+    then-form
+    ;else-forms])
+
+(defn core-when-first
+  "Macro: (when-first [sym coll] & body) -> (when-let [sym (first coll)] body...)"
+  [bindings & body]
+  (def sym (in bindings 0))
+  (def coll-form (in bindings 1))
+  @[{:jolt/type :symbol :ns nil :name "when-let"}
+    @[sym @[{:jolt/type :symbol :ns nil :name "first"} coll-form]]
+    ;body])
+
+(defn core-condp
+  "Macro: (condp pred expr clause1 val1 ... default)"
+  [pred expr & clauses]
+  (def g (gensym))
+  (defn build [cls]
+    (if (= 0 (length cls))
+      nil
+      (if (= 1 (length cls))
+        (first cls)
+        (let [c (first cls)
+              v (first (tuple/slice cls 1))]
+          @[{:jolt/type :symbol :ns nil :name "if"}
+            (if (and (struct? c) (= :symbol (c :jolt/type)) (= ":>>" (c :name)))
+              @[v g]
+              @[pred c g])
+            v
+            (build (tuple/slice cls 2))]))))
+  @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses)])
+
+(defn core-dotimes
+  "Macro: (dotimes [sym n] & body) -> loop from 0 to n-1"
+  [bindings & body]
+  (def sym (in bindings 0))
+  (def n-form (in bindings 1))
+  (def i (gensym))
+  @[{:jolt/type :symbol :ns nil :name "let*"}
+    @[i n-form]
+    @[{:jolt/type :symbol :ns nil :name "loop*"}
+      @[sym 0]
+      @[{:jolt/type :symbol :ns nil :name "if"}
+        @[{:jolt/type :symbol :ns nil :name "<"} sym i]
+        @[{:jolt/type :symbol :ns nil :name "do"}
+          ;body
+          @[{:jolt/type :symbol :ns nil :name "recur"}
+            @[{:jolt/type :symbol :ns nil :name "inc"} sym]]]
+        nil]]])
+
+(defn core-while
+  "Macro: (while test & body) -> loop while test is truthy"
+  [test & body]
+  @[{:jolt/type :symbol :ns nil :name "loop*"}
+    @[]
+    @[{:jolt/type :symbol :ns nil :name "when"}
+      test
+      @[{:jolt/type :symbol :ns nil :name "do"} ;body]
+      @[{:jolt/type :symbol :ns nil :name "recur"}]]])
+
+(defn core-for
+  "Macro: (for [binding-form coll :when test :let [bindings]] body)
+   List comprehension. Basic support for :when and :let."
+  [bindings body]
+  (defn parse-groups [bvec]
+    (var groups @[])
+    (var i 0)
+    (while (< i (length bvec))
+      (def bind (bvec i))
+      (def coll (bvec (+ i 1)))
+      (def mods @[])
+      (+= i 2)
+      (while (and (< i (length bvec)) (keyword? (bvec i)))
+        (case (bvec i)
+          :when (do (array/push mods @[{:jolt/type :symbol :ns nil :name "when"} (bvec (+ i 1))]) (+= i 2))
+          :let (do (array/push mods @[{:jolt/type :symbol :ns nil :name "let"} (bvec (+ i 1))]) (+= i 2))
+          :while (do (+= i 2))
+          (do (+= i 1))))
+      (array/push groups @[bind coll mods]))
+    groups)
+  (defn wrap-mods [mods inner-form]
+    (if (= 0 (length mods))
+      inner-form
+      (let [m (in mods (- (length mods) 1))
+            rest-mods (array/slice mods 0 (- (length mods) 1))
+            kind (get (m 0) :name)]
+        (wrap-mods rest-mods
+          (if (= kind "when")
+            @[{:jolt/type :symbol :ns nil :name "if"} (m 1)
+              @[{:jolt/type :symbol :ns nil :name "list"} inner-form] @[]]
+            @[{:jolt/type :symbol :ns nil :name "let*"} (m 1) inner-form])))))
+  (defn build [group-idx groups]
+    (if (>= group-idx (length groups))
+      body
+      (let [g (in groups group-idx)
+            my-bind (in g 0)
+            my-coll (in g 1)
+            my-mods (in g 2)
+            inner (build (+ group-idx 1) groups)
+            inner-form (wrap-mods my-mods inner)
+            is-last (= group-idx (- (length groups) 1))
+            has-mods (> (length my-mods) 0)]
+        (if (and is-last (not has-mods))
+          @[{:jolt/type :symbol :ns nil :name "map"}
+            @[{:jolt/type :symbol :ns nil :name "fn"} [my-bind] inner-form]
+            my-coll]
+          @[{:jolt/type :symbol :ns nil :name "mapcat"}
+            @[{:jolt/type :symbol :ns nil :name "fn"} [my-bind] inner-form]
+            my-coll]))))
+  (if (>= (length bindings) 2)
+    (build 0 (parse-groups bindings))
+    body))
+
+(defn core-thread-first
+  "Macro: (-> x & forms) — thread first"
+  [x & forms]
+  (if (= 0 (length forms)) x
+    (let [f (first forms)
+          rest-forms (tuple/slice forms 1)]
+      (if (array? f)
+        (apply core-thread-first [(let [arr (array/slice f)]
+                         (array/insert arr 1 x)
+                         arr) ;rest-forms])
+        (apply core-thread-first [@[f x] ;rest-forms])))))
+
+(defn core-thread-last
+  "Macro: (->> x & forms) — thread last"
+  [x & forms]
+  (if (= 0 (length forms)) x
+    (let [f (first forms)
+          rest-forms (tuple/slice forms 1)]
+      (if (array? f)
+        (apply core-thread-last [(let [arr (array/slice f)]
+                          (array/push arr x)
+                          arr) ;rest-forms])
+        (apply core-thread-last [@[f x] ;rest-forms])))))
+
+(defn core-some->
+  "Macro: (some-> expr & forms) — thread first, stop at nil"
+  [expr & forms]
+  (if (= 0 (length forms)) expr
+    (let [f (first forms)
+          rest-forms (tuple/slice forms 1)]
+      @[{:jolt/type :symbol :ns nil :name "let*"}
+        @[{:jolt/type :symbol :ns nil :name "some->__x"} expr]
+        @[{:jolt/type :symbol :ns nil :name "if"}
+          @[{:jolt/type :symbol :ns nil :name "some?"}
+            {:jolt/type :symbol :ns nil :name "some->__x"}]
+          @[{:jolt/type :symbol :ns nil :name "let*"}
+            @[{:jolt/type :symbol :ns nil :name "some->__x"}
+              (if (array? f)
+                (let [arr (array/slice f)]
+                  (array/insert arr 1 {:jolt/type :symbol :ns nil :name "some->__x"})
+                  arr)
+                @[f {:jolt/type :symbol :ns nil :name "some->__x"}])]
+            (apply core-some-> [{:jolt/type :symbol :ns nil :name "some->__x"} ;rest-forms])]
+          nil]])))
+
+(defn core-some->>
+  "Macro: (some->> expr & forms) — thread last, stop at nil"
+  [expr & forms]
+  (if (= 0 (length forms)) expr
+    (let [f (first forms)
+          rest-forms (tuple/slice forms 1)]
+      @[{:jolt/type :symbol :ns nil :name "let*"}
+        @[{:jolt/type :symbol :ns nil :name "some->__x"} expr]
+        @[{:jolt/type :symbol :ns nil :name "if"}
+          @[{:jolt/type :symbol :ns nil :name "some?"}
+            {:jolt/type :symbol :ns nil :name "some->__x"}]
+          @[{:jolt/type :symbol :ns nil :name "let*"}
+            @[{:jolt/type :symbol :ns nil :name "some->__x"}
+              (if (array? f)
+                (let [arr (array/slice f)]
+                  (array/push arr {:jolt/type :symbol :ns nil :name "some->__x"})
+                  arr)
+                @[f {:jolt/type :symbol :ns nil :name "some->__x"}])]
+            (apply core-some->> [{:jolt/type :symbol :ns nil :name "some->__x"} ;rest-forms])]
+          nil]])))
+
+(defn core-cond->
+  "Macro: (cond-> expr test form ...) — thread first only when test is true"
+  [expr & clauses]
+  (def g (gensym))
+  (defn build [cls result-form]
+    (if (= 0 (length cls))
+      result-form
+      (let [t (first cls)
+            f (in cls 1)
+            f-call (if (array? f)
+                     (let [arr (array/slice f)]
+                       (array/insert arr 1 result-form)
+                       arr)
+                     @[f result-form])]
+        (build (tuple/slice cls 2)
+               @[{:jolt/type :symbol :ns nil :name "if"}
+                 t
+                 f-call
+                 result-form]))))
+  @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses g)])
+
+(defn core-cond->>
+  "Macro: (cond->> expr test form ...) — thread last only when test is true"
+  [expr & clauses]
+  (def g (gensym))
+  (defn build [cls result-form]
+    (if (= 0 (length cls))
+      result-form
+      (let [t (first cls)
+            f (in cls 1)
+            f-call (if (array? f)
+                     (let [arr (array/slice f)]
+                       (array/push arr result-form)
+                       arr)
+                     @[f result-form])]
+        (build (tuple/slice cls 2)
+               @[{:jolt/type :symbol :ns nil :name "if"}
+                 t
+                 f-call
+                 result-form]))))
+  @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses g)])
+
+(defn core-as->
+  "Macro: (as-> expr name & forms) — bind name to expr, thread through forms"
+  [expr name & forms]
+  (defn build [fs acc]
+    (if (= 0 (length fs))
+      acc
+      (let [f (first fs)]
+        @[{:jolt/type :symbol :ns nil :name "let*"}
+          @[name acc]
+          (build (tuple/slice fs 1) f)])))
+  (build forms expr))
 
 (defn core-push-thread-bindings [b] (push-thread-bindings b))
 (defn core-pop-thread-bindings [] (pop-thread-bindings))
@@ -1228,6 +1702,9 @@
     "neg?" core-neg?
     "even?" core-even?
     "odd?" core-odd?
+    "integer?" core-integer?
+    "boolean?" core-boolean?
+    "list?" core-list?
     "empty?" core-empty?
     "every?" core-every?
     "+" core-+
@@ -1241,6 +1718,9 @@
     "quot" core-quot
     "max" core-max
     "min" core-min
+    "abs" core-abs
+    "rand" core-rand
+    "rand-int" core-rand-int
     "=" core-=
     "not=" core-not=
     "<" core-<
@@ -1308,6 +1788,7 @@
     "disj" core-disj
     "lazy-seq" core-lazy-seq
     "lazy-cat" core-lazy-cat
+    "coll->cells" coll->cells
     "make-lazy-seq" make-lazy-seq
     "str" core-str
     "name" core-name
@@ -1357,16 +1838,38 @@
     "deref" core-deref
     "reset!" core-reset!
     "swap!" core-swap!
+    "swap-vals!" core-swap-vals!
+    "reset-vals!" core-reset-vals!
+    "compare-and-set!" core-compare-and-set!
+    "set-validator!" core-set-validator!
+    "get-validator" core-get-validator
+    "add-watch" core-add-watch
+    "remove-watch" core-remove-watch
     "not" core-not
     "and" core-and
     "or" core-or
+    "cond" core-cond
+    "case" core-case
+    "for" core-for
     "when" core-when
     "when-not" core-when-not
+    "if-not" core-if-not
+    "when-first" core-when-first
     "if-let" core-if-let
     "when-let" core-when-let
     "if-some" core-if-some
     "when-some" core-when-some
     "doto" core-doto
+    "condp" core-condp
+    "dotimes" core-dotimes
+    "while" core-while
+    "->" core-thread-first
+    "->>" core-thread-last
+    "some->" core-some->
+    "some->>" core-some->>
+    "cond->" core-cond->
+    "cond->>" core-cond->>
+    "as->" core-as->
     "defn" core-defn
     "defn-" core-defn-
     "derive" core-derive
@@ -1434,7 +1937,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true "lazy-seq" true "lazy-cat" true})
+  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true "lazy-seq" true "lazy-cat" true "if-not" true "when-first" true "condp" true "dotimes" true "while" true "some->" true "some->>" true "cond->" true "cond->>" true "as->" true "->" true "->>" true})
 
 (def init-core!
   (fn [& args]

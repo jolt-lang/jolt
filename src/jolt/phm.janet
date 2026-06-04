@@ -114,45 +114,61 @@
   m)
 
 # ============================================================
-# LazySeq — realize-once lazy sequence
+# LazySeq — cell-by-cell lazy sequence (Clojure-compatible)
 # ============================================================
+# Model: thunk returns nil (empty) or [first-val, rest-thunk] pair.
+# Each step produces one element + thunk for the rest.
+# Supports self-referencing sequences like fib-seq.
 
 (defn lazy-seq?
   "Check if x is a LazySeq."
   [x]
   (and (table? x) (= :jolt/lazy-seq (x :jolt/type))))
 
+(defn make-lazy-seq [thunk]
+  @{:jolt/type :jolt/lazy-seq :fn thunk :realized false :val nil})
+
 (defn realize-ls
-  "Force a LazySeq. Returns the realized value, caching it."
+  "Force a LazySeq cell. Returns nil (empty) or [first-val, rest-thunk]."
   [ls]
   (if (get ls :realized)
     (ls :val)
-    (let [v ((ls :fn))
-          vf (if (lazy-seq? v) (realize-ls v) v)]
+    (let [v ((ls :fn))]
       (put ls :realized true)
-      (put ls :val vf)
-      vf)))
+      (put ls :val v)
+      v)))
 
 (defn ls-first [ls]
-  (let [val (realize-ls ls)]
-    (if (nil? val) nil
-      (if (and (indexed? val) (> (length val) 0)) (in val 0) nil))))
+  (let [cell (realize-ls ls)]
+    (if (nil? cell) nil (in cell 0))))
 
 (defn ls-rest [ls]
-  (let [val (realize-ls ls)]
-    (if (nil? val) nil
-      (if (indexed? val) (if (tuple? val) (tuple/slice val 1) (array/slice val 1)) nil))))
+  (let [cell (realize-ls ls)]
+    (if (nil? cell) nil
+      (let [rt (in cell 1)]
+        (if (nil? rt) nil (make-lazy-seq rt))))))
 
 (defn ls-seq [ls]
-  (let [val (realize-ls ls)]
-    (when val (if (tuple? val) (tuple/slice val) (if (array? val) (array/slice val) val)))))
+  (var result @[])
+  (var cur ls)
+  (while (not (nil? cur))
+    (let [cell (realize-ls cur)]
+      (if (nil? cell) (break))
+      (array/push result (in cell 0))
+      (let [rt (in cell 1)]
+        (set cur (if (nil? rt) nil (make-lazy-seq rt))))))
+  (if (= 0 (length result)) nil result))
 
 (defn ls-count [ls]
-  (let [val (realize-ls ls)]
-    (if (nil? val) 0 (length val))))
-
-(defn make-lazy-seq [thunk]
-  @{:jolt/type :jolt/lazy-seq :fn thunk :realized false :val nil})
+  (var cnt 0)
+  (var cur ls)
+  (while (not (nil? cur))
+    (let [cell (realize-ls cur)]
+      (if (nil? cell) (break))
+      (++ cnt)
+      (let [rt (in cell 1)]
+        (set cur (if (nil? rt) nil (make-lazy-seq rt))))))
+  cnt)
 
 # ============================================================
 # PersistentHashSet — backed by PersistentHashMap

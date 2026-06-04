@@ -261,14 +261,16 @@
              (if (> (length form) 3) (eval-form ctx bindings (in form 3)) nil)))
     "def" (let [raw-name (in form 1)
                 name-sym (unwrap-meta-name raw-name)
-                val (eval-form ctx bindings (in form 2))
                 # Check for ^:dynamic metadata
                 dynamic? (and (array? raw-name) (> (length raw-name) 0)
                              (sym-name? (first raw-name) "with-meta")
                              (= :dynamic (last raw-name)))
                 ns-name (ctx-current-ns ctx)
-                ns (ctx-find-ns ctx ns-name)]
-            (def v (ns-intern ns (name-sym :name) val))
+                ns (ctx-find-ns ctx ns-name)
+                # Create var first (unbound) so self-referencing defs resolve
+                v (ns-intern ns (name-sym :name))
+                val (eval-form ctx bindings (in form 2))]
+            (bind-root v val)
             (when dynamic?
               (put v :dynamic true))
             (var-get v))

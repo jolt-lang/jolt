@@ -7,7 +7,7 @@
   (let [ls (ct-eval ctx "(lazy-seq (cons 1 (lazy-seq (cons 2 nil))))")]
     (assert (not (nil? ls)) "lazy-seq returns non-nil")
     (assert (= 1 (ct-eval ctx "(first (lazy-seq (cons 1 nil)))")) "first of lazy"))
-  (assert (= [1 2 3] (ct-eval ctx "(seq (lazy-seq [1 2 3]))")) "seq forces lazy")
+  (assert (= true (ct-eval ctx "(= [1 2 3] (seq (lazy-seq [1 2 3])))")) "seq forces lazy")
   (eval-string ctx "(def counter (atom 0))")
   (def val (ct-eval ctx "(let [ls (lazy-seq (do (swap! counter inc) [1 2 3]))] (seq ls) (seq ls) @counter)"))
   (assert (= 1 val) "realized once"))

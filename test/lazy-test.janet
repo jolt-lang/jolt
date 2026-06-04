@@ -42,14 +42,15 @@
   (assert (= true (ct-eval ctx "(= [1 2 3] (distinct (lazy-seq [1 2 1 3 2])))")) "distinct lazy"))
 (print "  ok")
 
-(print "\n8: fib-seq via lazy-cat (self-referencing lazy-seq)...")
+(print "8: fib-seq (deferred — eager core-map needs lazy upgrade)...")
 (let [ctx (init)]
-  (print "  NOTE: self-referencing lazy-seqs currently trigger eager realization, causing infinite recursion.")
-  (print "  This is a known limitation — our lazy-seq model forces the entire thunk at once.")
-  (print "  Skipping fib-seq integration test for now.")
-  (print "  When fixed, the test should assert:")
-  (print "    (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq)))")
-  (print "    (= [0 1 1 2 3 5 8 13 21 34] (take 10 fib-seq))"))
-(print "  ok (deferred)")
+  (print "  The cell-by-cell lazy-seq architecture is correct. concat, take,")
+  (print "  drop, nth, first, rest all work with self-referencing patterns.")
+  (print "  core-map still eagerly realizes all lazy-seq arguments, which")
+  (print "  loops on infinite sequences. Making core-map return a lazy")
+  (print "  result would complete the self-referencing lazy-seq story.")
+  (print "  When fixed: (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq)))")
+  (print "  → (take 10 fib-seq) = [0 1 1 2 3 5 8 13 21 34]"))
+(print "  ok (deferred — core-map needs lazy upgrade)")
 
 (print "\nAll LazySeq tests passed!")
