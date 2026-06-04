@@ -6,6 +6,7 @@
 (use ./regex)
 (use ./config)
 (use ./pv)
+(use ./plist)
 
 # ------------------------------------------------------------
 # Vector representation helpers
@@ -45,6 +46,7 @@
   loop on infinite lazy-seqs. Terminates on the empty cell, not on nil."
   (cond
     (pvec? c) (pv->array c)
+    (plist? c) (pl->array c)
     (set? c) (phs-seq c)
     (lazy-seq? c)
     (do
@@ -80,8 +82,8 @@
 (defn core-symbol? [x] (and (struct? x) (= :symbol (x :jolt/type))))
 (defn core-vector? [x] (jvec? x))
 (defn core-map? [x] (or (phm? x) (struct? x) (if (and (table? x) (get x :jolt/deftype)) true false)))
-(defn core-seq? [x] (or (array? x) (tuple? x) (pvec? x)))
-(defn core-coll? [x] (or (array? x) (tuple? x) (pvec? x) (struct? x) (phm? x) (set? x) (lazy-seq? x)))
+(defn core-seq? [x] (or (array? x) (tuple? x) (pvec? x) (plist? x) (lazy-seq? x)))
+(defn core-coll? [x] (or (array? x) (tuple? x) (pvec? x) (plist? x) (struct? x) (phm? x) (set? x) (lazy-seq? x)))
 
 (defn core-true? [x] (= true x))
 (defn core-false? [x] (= false x))
@@ -95,16 +97,17 @@
 
 (defn core-integer? [x] (and (number? x) (= x (math/floor x))))
 (defn core-boolean? [x] (or (= x true) (= x false)))
-(defn core-list? [x] (and (array? x) (not (get x :jolt/type))))
+(defn core-list? [x] (or (plist? x) (and (array? x) (not (get x :jolt/type)))))
 
 (defn core-empty? [coll]
   (if (nil? coll) true
     (if (set? coll) (= 0 (coll :cnt))
       (if (phm? coll) (= 0 (coll :cnt))
         (if (pvec? coll) (= 0 (pv-count coll))
+          (if (plist? coll) (pl-empty? coll)
           (if (lazy-seq? coll) (nil? (ls-first coll))
             (if (struct? coll) (= 0 (length (keys coll)))
-              (= 0 (length coll)))))))))
+              (= 0 (length coll))))))))))
 
 (defn core-every? [pred coll]
   (var result true)
@@ -161,6 +164,7 @@
   (cond
     (lazy-seq? x) (realize-for-iteration x)
     (pvec? x) (pv->array x)
+    (plist? x) (pl->array x)
     (tuple? x) x
     (array? x) x
     nil))
@@ -233,20 +237,18 @@
 (defn core-conj [coll & xs]
   (if (pvec? coll)
     (do (var result coll) (each x xs (set result (pv-conj result x))) result)
+  (if (plist? coll)
+    # list: prepend, O(1) per element via structural sharing
+    (do (var result coll) (each x xs (set result (pl-cons x result))) result)
   (if (tuple? coll)
     (tuple/slice (tuple ;(array/concat (array/slice coll) xs)))
     (if (array? coll)
       (if mutable?
         # mutable mode: arrays are vectors — append in place
         (do (each x xs (array/push coll x)) coll)
-        # immutable mode: arrays are lists — prepend onto a copy
-        (do
-          (var result (array/slice coll))
-          (var i 0)
-          (while (< i (length xs))
-            (set result (array/insert result 0 (xs i)))
-            (++ i))
-          result))
+        # immutable mode: arrays are lists — prepend onto a persistent cons node,
+        # sharing the original array as the tail (O(1) per element, no copy)
+        (do (var result coll) (each x xs (set result (pl-cons x result))) result))
       (if (set? coll)
         (apply phs-conj coll xs)
         (if (phm? coll)
@@ -265,7 +267,7 @@
               (let [pair (xs i)]
                 (set result (merge result {(vnth pair 0) (vnth pair 1)})))
               (++ i))
-            result)))))))
+            result))))))))
 
 (defn core-assoc [m & kvs]
   (cond
@@ -385,6 +387,7 @@
     (core-sorted-set? coll) (length (coll :items))
     (lazy-seq? coll) (ls-count coll)
     (pvec? coll) (pv-count coll)
+    (plist? coll) (pl-count coll)
     (set? coll) (coll :cnt)
     (phm? coll) (coll :cnt)
     (and (table? coll) (get coll :jolt/deftype)) (- (length (keys coll)) 1)
@@ -396,6 +399,7 @@
     (core-sorted-set? coll) (let [i (coll :items)] (if (empty? i) nil (in i 0)))
     (lazy-seq? coll) (ls-first coll)
     (pvec? coll) (if (= 0 (pv-count coll)) nil (pv-nth coll 0))
+    (plist? coll) (if (pl-empty? coll) nil (pl-first coll))
     (or (nil? coll) (= 0 (length coll))) nil
     (string? coll) (make-char (in coll 0))
     (in coll 0)))
@@ -403,6 +407,7 @@
 (defn core-rest [coll]
   (cond
     (lazy-seq? coll) (ls-rest coll)
+    (plist? coll) (pl-rest coll)
     (pvec? coll) (let [a (pv->array coll)] (if (<= (length a) 1) @[] (array/slice a 1)))
     (or (nil? coll) (= 0 (length coll))) @[]
     (string? coll) (tuple ;(map make-char (string/bytes (string/slice coll 1))))
@@ -414,8 +419,12 @@
     (if (= 0 (length r)) nil r)))
 
 (defn core-cons [x coll]
-  "Returns a lazy-seq compatible cons cell [first, rest-thunk]."
-  @[x (fn [] coll)])
+  "Prepend x onto coll. For concrete collections this is an O(1) persistent cons
+  node; for lazy-seqs it stays a lazy cell so laziness is preserved."
+  (cond
+    (lazy-seq? coll) @[x (fn [] coll)]
+    (or (nil? coll) (plist? coll) (array? coll) (tuple? coll)) (pl-cons x coll)
+    (pl-cons x (realize-for-iteration coll))))
 
 (defn core-seq [coll]
   (cond
@@ -424,6 +433,7 @@
     (or (nil? coll) (and (or (tuple? coll) (array? coll)) (= 0 (length coll)))) nil
     (lazy-seq? coll) (ls-seq coll)
     (pvec? coll) (if (= 0 (pv-count coll)) nil (tuple ;(pv->array coll)))
+    (plist? coll) (if (pl-empty? coll) nil (tuple ;(pl->array coll)))
     (set? coll) (phs-seq coll)
     (phm? coll) (tuple ;(phm-entries coll))
     (tuple? coll) (tuple/slice coll)
@@ -782,6 +792,7 @@
   If the result is already a cell (array of [val, function]), return it directly."
   (if (nil? c) nil
     (if (pvec? c) (coll->cells (pv->array c))
+    (if (plist? c) (coll->cells (pl->array c))
     (if (function? c)
       (let [r (c)]
         (if (and (indexed? r) (= 2 (length r)) (function? (in r 1)))
@@ -799,7 +810,7 @@
                            (if (tuple? c) (tuple/slice c 1) (array/slice c 1))
                            nil)]
                 @[f (fn [] (coll->cells rest))])))
-          nil))))))
+          nil)))))))
 
 (defn core-concat [& colls]
   "Truly lazy concatenation. `step` returns a 0-arg thunk that is only forced
@@ -875,6 +886,10 @@
 (defn core-nth
   "Return the nth element of a sequential collection."
   [coll idx &opt default]
+  (if (plist? coll)
+    (let [a (pl->array coll)]
+      (if (and (>= idx 0) (< idx (length a))) (in a idx)
+        (if (nil? default) (error (string "Index " idx " out of bounds, length: " (length a))) default)))
   (if (pvec? coll)
     (if (and (>= idx 0) (< idx (pv-count coll)))
       (pv-nth coll idx)
@@ -896,7 +911,7 @@
         (if (string? c) (make-char (in c idx)) (in c idx))
         (if (nil? default)
           (error (string "Index " idx " out of bounds, length: " (length c)))
-          default))))))
+          default)))))))
 
 (defn core-sort
   "(sort coll) or (sort comparator coll). Comparator may return a boolean or a
@@ -1052,6 +1067,7 @@
   (cond
     (nil? coll) nil
     (lazy-seq? coll) (ls-first coll)
+    (plist? coll) (if (pl-empty? coll) nil (pl-first coll))   # list: first
     (pvec? coll) (if (= 0 (pv-count coll)) nil (pv-nth coll (- (pv-count coll) 1)))  # vector: last
     (= 0 (length coll)) nil
     (tuple? coll) (in coll (- (length coll) 1))   # vector: last
@@ -1061,6 +1077,7 @@
 (defn core-pop [coll]
   (cond
     (nil? coll) nil
+    (plist? coll) (pl-rest coll)                              # list: drop first
     (pvec? coll) (pv-pop coll)                                # vector: drop last
     (tuple? coll) (tuple/slice coll 0 (- (length coll) 1))  # vector: drop last
     (array? coll) (array/slice coll 1)                       # list: rest
@@ -1294,6 +1311,7 @@
       (set? v) (pr-render-seq buf (phs-seq v) "#{" "}")
       (phm? v) (pr-render-pairs buf (phm-entries v))
       (pvec? v) (pr-render-seq buf (pv->array v) "[" "]")
+      (plist? v) (pr-render-seq buf (pl->array v) "(" ")")
       (and (table? v) (get v :jolt/deftype)) (buffer/push-string buf (string v))
       (tuple? v) (pr-render-seq buf v "[" "]")
       # mutable mode: arrays are vectors -> print with [] (else lists -> ())
@@ -2541,6 +2559,7 @@
   (cond
     (phm? coll) (make-phm)
     (set? coll) (make-phs)
+    (plist? coll) EMPTY-PLIST
     (pvec? coll) (make-vec @[])
     (struct? coll) (struct)
     (tuple? coll) (make-vec @[])
@@ -2575,7 +2594,7 @@
     (each p preds (each x xs (when (and (nil? hit) (truthy? (p x))) (set hit (p x)))))
     hit))
 
-(defn core-sequential? [x] (or (tuple? x) (array? x) (pvec? x) (lazy-seq? x)))
+(defn core-sequential? [x] (or (tuple? x) (array? x) (pvec? x) (plist? x) (lazy-seq? x)))
 (defn core-associative? [x] (or (phm? x) (struct? x) (tuple? x) (array? x) (pvec? x) (and (table? x) (not (set? x)))))
 (defn core-ifn? [x]
   (or (function? x) (cfunction? x) (keyword? x) (phm? x) (set? x) (tuple? x) (array? x) (pvec? x)

@@ -5,6 +5,7 @@
 (use ./types)
 (use ./phm)
 (use ./pv)
+(use ./plist)
 (use ./config)
 (use ./reader)
 
@@ -35,6 +36,17 @@
           (when (< (+ i 1) n) (push-str buf " "))
           (++ i)))
       (push-str buf "]"))
+
+    (plist? v)
+    (do
+      (push-str buf "(")
+      (let [a (pl->array v) n (length a)]
+        (var i 0)
+        (while (< i n)
+          (write-value (in a i) buf)
+          (when (< (+ i 1) n) (push-str buf " "))
+          (++ i)))
+      (push-str buf ")"))
 
     (tuple? v)
     (do

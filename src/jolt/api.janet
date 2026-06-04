@@ -3,6 +3,7 @@
 
 (use ./types)
 (use ./pv)
+(use ./plist)
 (use ./reader)
 (use ./evaluator)
 (use ./core)
@@ -17,6 +18,7 @@
   [x]
   (cond
     (pvec? x) (tuple ;(map normalize-pvecs (pv->array x)))
+    (plist? x) (tuple ;(map normalize-pvecs (pl->array x)))
     (tuple? x) (tuple ;(map normalize-pvecs x))
     (array? x) (tuple ;(map normalize-pvecs x))
     x))

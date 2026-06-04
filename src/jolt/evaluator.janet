@@ -4,6 +4,7 @@
 (use ./types)
 (use ./phm)
 (use ./pv)
+(use ./plist)
 (use ./config)
 (use ./reader)
 (use ./regex)
@@ -374,6 +375,7 @@
   "Realize a lazy-seq to an array for positional destructuring; pass others through."
   [val]
   (if (pvec? val) (pv->array val)
+  (if (plist? val) (pl->array val)
   (if (lazy-seq? val)
     (do
       (var items @[]) (var cur val) (var go true)
@@ -385,7 +387,7 @@
                 (let [rt (in cell 1)]
                   (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
       items)
-    val)))
+    val))))
 
 (defn- d-get
   "Look up key k in a map-like value (phm/struct/table/nil)."
@@ -510,6 +512,7 @@
     (keyword? obj) ["Keyword" "Object"]
     (and (struct? obj) (= :jolt/char (get obj :jolt/type))) ["Character" "Object"]
     (and (struct? obj) (= :symbol (get obj :jolt/type))) ["Symbol" "Object"]
+    (plist? obj) ["PersistentList" "IPersistentList" "IPersistentCollection" "ISeq" "Object"]
     (or (tuple? obj) (array? obj) (pvec? obj)) ["PersistentVector" "IPersistentVector" "IPersistentCollection" "ISeq" "Object"]
     (or (function? obj) (cfunction? obj)) ["IFn" "Fn" "Object"]
     (nil? obj) ["nil" "Object"]

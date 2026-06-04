@@ -1,14 +1,16 @@
 (use ../src/jolt/types)
 (use ../src/jolt/pv)
+(use ../src/jolt/plist)
 (use ../src/jolt/reader)
 (use ../src/jolt/evaluator)
 (use ../src/jolt/core)
 
 # Normalize jolt collection results to Janet tuples so Janet-level deep=/= can
-# compare against tuple literals regardless of the (pvec) representation.
+# compare against tuple literals regardless of the (pvec/plist) representation.
 (defn norm [x]
   (cond
     (pvec? x) (tuple ;(map norm (pv->array x)))
+    (plist? x) (tuple ;(map norm (pl->array x)))
     (tuple? x) (tuple ;(map norm x))
     (array? x) (tuple ;(map norm x))
     x))

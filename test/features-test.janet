@@ -118,6 +118,15 @@
    ["for :let"           "(quote (1 4 9))" "(for [x [1 2 3] :let [sq (* x x)]] sq)"]
    ["for :while"         "(quote (0 1 2))" "(for [x (range 10) :while (< x 3)] x)"]
 
+   ### 13b. Persistent lists — O(1) conj-prepend, immutable, value semantics
+   ["list conj prepends" "(quote (0 1 2 3))" "(conj (list 1 2 3) 0)"]
+   ["list conj multi"    "(quote (:c :b :a))" "(conj (quote ()) :a :b :c)"]
+   ["list immutable"     "true"            "(let [l (list 1 2 3) l2 (conj l 9)] (and (= l (quote (1 2 3))) (= l2 (quote (9 1 2 3)))))"]
+   ["list? after conj"   "true"            "(list? (conj (list 1 2) 0))"]
+   ["list = vector elts" "true"            "(= (quote (1 2 3)) [1 2 3])"]
+   ["reduce conj list"   "(quote (2 1 0))" "(reduce conj (list) (range 3))"]
+   ["cons onto list"     "(quote (0 1 2 3))" "(cons 0 (list 1 2 3))"]
+
    ### 14. Janet interop
    ["interop method"     "\"v=41\""    "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)"]
    ["interop field"      "41"          "(.-value {:value 41})"]

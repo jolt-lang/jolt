@@ -12,7 +12,7 @@
 
 # Baseline: the number of pass-tests Jolt currently handles. Raise this as Jolt
 # gains features so regressions (a previously-passing test breaking) are caught.
-(def baseline 119)
+(def baseline 120)
 
 # Tests that loop forever under Jolt's eager evaluation (skipped to avoid hangs;
 # tracked as known gaps — variadic-recur arity selection and var-quote calls).
