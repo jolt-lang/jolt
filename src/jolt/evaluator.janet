@@ -458,6 +458,7 @@
     "unquote" (error "Unquote not valid outside of syntax-quote")
     "unquote-splicing" (error "Unquote-splicing not valid outside of syntax-quote")
     "eval" (eval-form ctx bindings (eval-form ctx bindings (in form 1)))
+    "read-string" (parse-string (eval-form ctx bindings (in form 1)))
     "do" (do
            (var result nil)
            (var i 1)

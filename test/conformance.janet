@@ -97,6 +97,28 @@
 
    ### ---- HIGH: aliased namespace calls ----
    ["require :as alias"  "\"1,2,3\"" "(do (require (quote [clojure.string :as s])) (s/join \",\" [1 2 3]))"]
+
+   ### ---- MED: missing core fns ----
+   ["peek vec"        "3"             "(peek [1 2 3])"]
+   ["peek list"       "1"             "(peek (list 1 2 3))"]
+   ["pop vec"         "[1 2]"         "(pop [1 2 3])"]
+   ["pop list"        "(quote (2 3))" "(pop (list 1 2 3))"]
+   ["subvec"          "[2 3]"         "(subvec [1 2 3 4 5] 1 3)"]
+   ["subvec to-end"   "[3 4 5]"       "(subvec [1 2 3 4 5] 2)"]
+   ["reduce-kv"       "{:a 2 :b 3}"   "(reduce-kv (fn [m k v] (assoc m k (inc v))) {} {:a 1 :b 2})"]
+   ["cycle"           "(quote (1 2 3 1 2 3 1))" "(take 7 (cycle [1 2 3]))"]
+   ["partition-all"   "(quote ((1 2) (3 4) (5)))" "(partition-all 2 [1 2 3 4 5])"]
+   ["reductions"      "(quote (1 3 6 10))" "(reductions + [1 2 3 4])"]
+   ["reductions init" "(quote (0 1 3 6))" "(reductions + 0 [1 2 3])"]
+   ["dedupe"          "(quote (1 2 3 1))" "(dedupe [1 1 2 3 3 1])"]
+   ["keep-indexed"    "(quote (:b :d))" "(keep-indexed (fn [i x] (if (odd? i) x)) [:a :b :c :d])"]
+   ["map-indexed"     "(quote ([0 :a] [1 :b]))" "(map-indexed (fn [i x] [i x]) [:a :b])"]
+   ["trampoline"      ":done"         "(do (defn a [n] (if (zero? n) :done (fn [] (a (dec n))))) (trampoline a 5))"]
+   ["format"          "\"1-x\""       "(format \"%d-%s\" 1 \"x\")"]
+   ["read-string"     "(quote (+ 1 2))" "(read-string \"(+ 1 2)\")"]
+   ["letfn mutual"    "true"          "(letfn [(ev? [n] (if (= n 0) true (od? (dec n)))) (od? [n] (if (= n 0) false (ev? (dec n))))] (ev? 10))"]
+   ["doseq side"      "[1 2 3]"       "(do (def a (atom [])) (doseq [x [1 2 3]] (swap! a conj x)) @a)"]
+   ["doseq nested"    "4"             "(do (def c (atom 0)) (doseq [x [1 2] y [10 20]] (swap! c inc)) @c)"]
   ])
 
 (var pass 0)
