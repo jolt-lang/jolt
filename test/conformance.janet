@@ -119,6 +119,12 @@
    ["letfn mutual"    "true"          "(letfn [(ev? [n] (if (= n 0) true (od? (dec n)))) (od? [n] (if (= n 0) false (ev? (dec n))))] (ev? 10))"]
    ["doseq side"      "[1 2 3]"       "(do (def a (atom [])) (doseq [x [1 2 3]] (swap! a conj x)) @a)"]
    ["doseq nested"    "4"             "(do (def c (atom 0)) (doseq [x [1 2] y [10 20]] (swap! c inc)) @c)"]
+
+   ### ---- MED: lazy filter / take-while over infinite seqs ----
+   ["lazy filter inf"     "(quote (1 3 5 7 9))" "(take 5 (filter odd? (range)))"]
+   ["lazy take-while inf" "(quote (0 1 2 3 4))" "(take-while (fn [x] (< x 5)) (range))"]
+   ["lazy remove inf"     "(quote (0 2 4 6 8))" "(take 5 (remove odd? (range)))"]
+   ["filter finite"       "(quote (2 4))"       "(filter even? [1 2 3 4 5])"]
   ])
 
 (var pass 0)

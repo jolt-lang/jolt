@@ -434,10 +434,23 @@
       (make-lazy-seq (step init-cs init-idxs init-reals)))))
 
 (defn core-filter [pred coll]
-  (var result @[])
-  (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
-    (if (pred x) (array/push result x)))
-  (if (tuple? coll) (tuple/slice (tuple ;result)) result))
+  (if (lazy-seq? coll)
+    # lazy input -> lazy output (supports infinite seqs)
+    (do
+      (defn fstep [c]
+        (fn []
+          (var cur c) (var hit nil) (var found false)
+          (while (and (not found) (not (seq-done? cur)))
+            (let [x (core-first cur)]
+              (if (pred x) (do (set hit @[x (core-rest cur)]) (set found true))
+                (set cur (core-rest cur)))))
+          (if found @[(in hit 0) (fstep (in hit 1))] nil)))
+      (make-lazy-seq (fstep coll)))
+    (do
+      (var result @[])
+      (each x (if (set? coll) (phs-seq coll) coll)
+        (if (pred x) (array/push result x)))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))
 
 (defn core-remove [pred coll]
   (core-filter (fn [x] (not (pred x))) coll))
@@ -497,10 +510,18 @@
         (array/slice coll (min n (length coll)))))))
 
 (defn core-take-while [pred coll]
-  (var result @[])
-  (each x coll
-    (if (pred x) (array/push result x) (break)))
-  (if (tuple? coll) (tuple/slice (tuple ;result)) result))
+  (if (lazy-seq? coll)
+    (do
+      (var result @[]) (var cur coll) (var go true)
+      (while (and go (not (seq-done? cur)))
+        (let [x (core-first cur)]
+          (if (pred x) (do (array/push result x) (set cur (core-rest cur)))
+            (set go false))))
+      result)
+    (do
+      (var result @[])
+      (each x coll (if (pred x) (array/push result x) (break)))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))
 
 (defn core-drop-while [pred coll]
   (var c (if (lazy-seq? coll) (realize-ls coll) coll))
