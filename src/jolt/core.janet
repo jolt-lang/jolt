@@ -158,7 +158,7 @@
 (defn core-assoc [m & kvs]
   (if (phm? m)
     (do (var result m) (var i 0) (while (< i (length kvs)) (set result (phm-assoc result (kvs i) (kvs (+ i 1)))) (+= i 2)) result)
-    (do (var result @{}) (when m (each k (if (struct? m) (keys m) (keys (table ;(pairs m)))) (put result k (get m k))))
+    (do (var result @{}) (when m (each k (keys m) (put result k (get m k))))
       (var i 0) (while (< i (length kvs)) (let [k (kvs i) v (kvs (+ i 1))] (put result k v) (+= i 2)))
       (if (struct? m) (table/to-struct result) result))))
 
@@ -1650,9 +1650,34 @@
 
 # update — works on both structs and tables
 (defn core-update [m k f & args]
-  (let [current (get m k)
-        new-val (apply f current args)]
-    (put m k new-val)))
+  (core-assoc m k (apply f (core-get m k) args)))
+
+(defn- ks-rest [ks]
+  (if (tuple? ks) (tuple/slice ks 1) (array/slice ks 1)))
+
+(defn core-assoc-in [m ks v]
+  (let [k (in ks 0)]
+    (if (<= (length ks) 1)
+      (core-assoc m k v)
+      (let [sub (core-get m k)]
+        (core-assoc m k (core-assoc-in (if (nil? sub) {} sub) (ks-rest ks) v))))))
+
+(defn core-update-in [m ks f & args]
+  (let [k (in ks 0)]
+    (if (<= (length ks) 1)
+      (core-assoc m k (apply f (core-get m k) args))
+      (let [sub (core-get m k)]
+        (core-assoc m k (apply core-update-in (if (nil? sub) {} sub) (ks-rest ks) f args))))))
+
+(defn core-fnil [f & defaults]
+  (fn [& args]
+    (def new-args (array/slice args))
+    (var i 0)
+    (each d defaults
+      (when (and (< i (length new-args)) (nil? (in new-args i)))
+        (put new-args i d))
+      (++ i))
+    (apply f new-args)))
 
 # copy-var stubs for sci.impl.copy-vars (used by sci.impl.namespaces)
 (defn core-copy-core-var [sym] nil)
@@ -2025,6 +2050,9 @@
     "comment" core-comment
     "resolve" core-resolve
     "update" core-update
+    "update-in" core-update-in
+    "assoc-in" core-assoc-in
+    "fnil" core-fnil
     "copy-core-var" core-copy-core-var
     "copy-var" core-copy-var
     "macrofy" core-macrofy
