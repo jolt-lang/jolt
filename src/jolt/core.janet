@@ -1277,6 +1277,10 @@
 # ============================================================
 
 (def core-int (fn [x] (if (core-char? x) (x :ch) (math/trunc x))))
+(def core-long (fn [x] (if (core-char? x) (x :ch) (math/trunc x))))
+(def core-double (fn [x] (* 1.0 (if (core-char? x) (x :ch) x))))
+(def core-float core-double)
+(def core-num (fn [x] (if (core-char? x) (x :ch) x)))
 (defn core-char [x]
   "(char code-or-char) -> a character value."
   (cond
@@ -2617,6 +2621,10 @@
     "unsigned-bit-shift-right" core-unsigned-bit-shift-right
     # Integer coercion / unchecked math
     "int" core-int
+    "long" core-long
+    "double" core-double
+    "float" core-float
+    "num" core-num
     "char" core-char
     "char?" core-char?
     "unchecked-inc" core-unchecked-inc

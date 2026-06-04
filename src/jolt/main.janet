@@ -163,6 +163,18 @@
   (write-value v buf)
   (print (string buf)))
 
+(defn- err-message [err]
+  (cond
+    (string? err) err
+    (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
+      (let [v (get err :value)] (if (string? v) v (string/format "%q" v)))
+    (string/format "%q" err)))
+
+(defn- report-error [err fib]
+  (eprint "Error: " (err-message err))
+  # Janet-level stack trace of where evaluation failed
+  (when fib (debug/stacktrace fib "")))
+
 (defn- run-repl []
   (print "Jolt — Clojure on Janet")
   (print "Type (exit) to quit.\n")
@@ -188,7 +200,7 @@
                   (set pending "")
                   (try
                     (print-value (eval-string ctx input))
-                    ([err] (eprint "Error: " err))))))))))))
+                    ([err fib] (report-error err fib))))))))))))
 
 (defn- set-command-line-args [argv]
   # bind clojure.core/*command-line-args* to a vector of the remaining args
@@ -203,14 +215,14 @@
     (let [src (slurp path)]
       (try
         (load-string ctx src)
-        ([err] (eprint "Error: " err) (os/exit 1))))))
+        ([err fib] (report-error err fib) (os/exit 1))))))
 
 (defn- run-eval [expr argv]
   (set-command-line-args argv)
   (try
     (let [v (load-string ctx expr)]
       (when (not (nil? v)) (print-value v)))
-    ([err] (eprint "Error: " err) (os/exit 1))))
+    ([err fib] (report-error err fib) (os/exit 1))))
 
 (defn- print-help []
   (print "Jolt — a Clojure interpreter on Janet\n")

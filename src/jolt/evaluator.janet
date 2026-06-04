@@ -79,8 +79,28 @@
           (error (string "Cannot call " (type f) " as a function"))))
     (error (string "Cannot call " (type f) " as a function"))))
 
+(defn- sq-symbol
+  "Resolve a symbol inside syntax-quote. `foo#` becomes a stable auto-gensym
+  (per-expansion, via gsmap); special forms and clojure.core names are left
+  unqualified (they resolve via the core fallback); other symbols are qualified
+  to the current namespace so they resolve when the macro is used elsewhere."
+  [ctx form gsmap]
+  (if (nil? (form :ns))
+    (let [nm (form :name)]
+      (cond
+        (string/has-suffix? "#" nm)
+          (or (get gsmap nm)
+              (let [g {:jolt/type :symbol :ns nil
+                       :name (string (string/slice nm 0 -2) "__" (string (gensym)) "__auto")}]
+                (put gsmap nm g) g))
+        (special-symbol? nm) form
+        (ns-find (ctx-find-ns ctx "clojure.core") nm) form
+        {:jolt/type :symbol :ns (ctx-current-ns ctx) :name nm}))
+    form))
+
 (defn- syntax-quote*
-  [ctx bindings form]
+  [ctx bindings form &opt gsmap]
+  (default gsmap @{})
   (cond
     (and (array? form) (> (length form) 0) (sym-name? (first form) "unquote"))
     (eval-form ctx bindings (in form 1))
@@ -89,29 +109,26 @@
     (or (number? form) (string? form) (keyword? form) (nil? form) (= true form) (= false form))
     form
     (and (struct? form) (= :symbol (form :jolt/type)))
-    (if (nil? (form :ns))
-      (if (special-symbol? (form :name)) form
-        {:jolt/type :symbol :ns (ctx-current-ns ctx) :name (form :name)})
-      form)
+    (sq-symbol ctx form gsmap)
     (tuple? form)
     (do (var result @[]) (var i 0) (while (< i (length form))
       (let [item (in form i)]
         (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
           (each v (eval-form ctx bindings (in item 1)) (array/push result v))
-          (array/push result (syntax-quote* ctx bindings item))))
+          (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) (tuple ;result))
     (array? form)
     (do (var result @[]) (var i 0) (while (< i (length form))
       (let [item (in form i)]
         (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
           (each v (eval-form ctx bindings (in item 1)) (array/push result v))
-          (array/push result (syntax-quote* ctx bindings item))))
+          (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) result)
     (and (struct? form) (get form :jolt/type)) form
     (struct? form)
     (do (var kvs @[]) (each k (keys form)
-      (array/push kvs (syntax-quote* ctx bindings k))
-      (array/push kvs (syntax-quote* ctx bindings (get form k)))) (struct ;kvs))
+      (array/push kvs (syntax-quote* ctx bindings k gsmap))
+      (array/push kvs (syntax-quote* ctx bindings (get form k) gsmap))) (struct ;kvs))
     form))
 
 (defn resolve-var
@@ -1097,8 +1114,19 @@
                             (error (string "Cannot call non-function " field-name " on " (type target)))))
                         (error (string "Cannot call non-function " field-name " on " (type target))))))
                   (error (string "Cannot call method " field-name " on " (type target))))))
-            # field access: (. obj field) — works on tables, structs, and deftypes
-            (get target (keyword field-name))))
+            # (. obj member) with no extra args: a symbol member naming a
+            # function is a zero-arg method call (receiver passed as self);
+            # a keyword or `-field` member is plain field access.
+            (let [v (get target (keyword field-name))]
+              (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type))
+                       (not (string/has-prefix? "-" member-name)))
+                (cond
+                  (or (function? v) (cfunction? v)) (v target)
+                  # value stored as an unevaluated fn* form: compile then call
+                  (array? v) (let [f (eval-form ctx bindings v)]
+                               (if (or (function? f) (cfunction? f)) (f target) f))
+                  v)
+                v))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]

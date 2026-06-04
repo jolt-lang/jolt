@@ -185,9 +185,9 @@
 (defn exception-demo []
   (println "\n--- Exception Handling ---")
   (try
-    (/ 1 0)
-    (catch ArithmeticException e
-      (println (str "Caught exception: " (.getMessage e))))
+    (throw (ex-info "something broke" {:code 42}))
+    (catch :default e
+      (println (str "Caught: " (ex-message e) " " (pr-str (ex-data e)))))
     (finally
       (println "Finally block executed."))))
 
@@ -203,14 +203,21 @@
 
 ;; 13. Clojure's core.async? Not pure Clojure, skip.
 
-;; 14. Java interop (still pure Clojure)
-(defn java-interop-demo []
-  (println "\n--- Java Interop ---")
-  (def now (java.util.Date.))
-  (println (str "Current date: " (.toString now)))
-  (def sb (StringBuilder. "Hello"))
-  (.append sb " Clojure!")
-  (println (str "StringBuilder: " (.toString sb))))
+;; 14. Janet host interop — Jolt runs on Janet, so host interop is Janet-style:
+;;     `.` dispatches on a table/struct (the receiver is passed as the first
+;;     arg), and Janet's standard library is reachable through jolt.interop.
+(defn janet-interop-demo []
+  (println "\n--- Janet Interop ---")
+  ;; Method-style call on a Janet table: self is passed as the first argument.
+  (def counter {:value 41
+                :describe (fn [self] (str "counter = " (:value self)))})
+  (println (str "Method call:  " (. counter describe)))
+  ;; Field access sugar: (.-k m) is (. m :k)
+  (println (str "Field access: " (.-value counter)))
+  ;; Reach Janet's standard library through jolt.interop.
+  (require '[jolt.interop :as j])
+  (println (str "Janet type:   " (j/janet-type [1 2 3])))
+  (println (str "Table keys:   " (pr-str (j/janet-table-keys {:a 1 :b 2})))))
 
 ;; ---------- Main entry point ----------
 (defn -main []
@@ -227,7 +234,7 @@
   (threading-demo)
   (exception-demo)
   (for-demo)
-  (java-interop-demo)
+  (janet-interop-demo)
   (println "\n=== Demo Complete ==="))
 
 ;; Run if executed as script
