@@ -15,3 +15,4 @@
 {"id":"int-5ddb241f","kind":"field_change","created_at":"2026-06-04T18:57:27.904474Z","actor":"Yogthos","issue_id":"jolt-7dy","extra":{"field":"status","new_value":"deferred","old_value":"open"}}
 {"id":"int-9a5516da","kind":"field_change","created_at":"2026-06-04T19:41:39.048731Z","actor":"Yogthos","issue_id":"jolt-4zg","extra":{"field":"status","new_value":"closed","old_value":"open"}}
 {"id":"int-b700eb9e","kind":"field_change","created_at":"2026-06-04T19:48:03.780728Z","actor":"Yogthos","issue_id":"jolt-l8f","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-700a80a8","kind":"field_change","created_at":"2026-06-04T19:56:36.343102Z","actor":"Yogthos","issue_id":"jolt-7dy","extra":{"field":"status","new_value":"closed","old_value":"deferred"}}

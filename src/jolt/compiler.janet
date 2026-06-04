@@ -6,6 +6,7 @@
 
 (use ./types)
 (use ./core)
+(use ./phm)
 
 (def- core-renames
   @{"+" "core-+"
@@ -504,7 +505,12 @@
       {:op :vector :items items})
 
     (struct? form)
-    {:op :map :form form}
+    (cond
+      (= :jolt/set (form :jolt/type))
+        {:op :set :items (map |(analyze-form $ bindings ctx) (form :value))}
+      (= :jolt/char (form :jolt/type))
+        {:op :const :val form}
+      {:op :map :form form})
 
     {:op :const :val form}))
 
@@ -642,6 +648,11 @@
 
 (defn- emit-map-str [form buf] (buffer/push buf (string form)))
 
+(defn- emit-set-str [items buf]
+  (buffer/push buf "(make-phs")
+  (each it items (buffer/push buf " ") (emit-ast it buf))
+  (buffer/push buf ")"))
+
 (defn- raw-form->janet
   "Convert a Jolt reader form to a Janet data structure for quoting."
   [form]
@@ -689,6 +700,7 @@
       :invoke (emit-invoke-str (ast :fn) (ast :args) buf)
       :vector (emit-vector-str (ast :items) buf)
       :map (emit-map-str (ast :form) buf)
+      :set (emit-set-str (ast :items) buf)
       :quote (emit-quote-str (ast :expr) buf)
       (buffer/push buf (string "/* unhandled op: " (ast :op) " */")))))
 
@@ -779,7 +791,9 @@
   (tuple/slice (tuple ;exprs)))
 
 (defn- emit-invoke-expr [f-ast args]
-  (def exprs @[(emit-expr f-ast)])
+  # Embed the jolt-call function value directly (like core symbols) so compiled
+  # invocations dispatch real fns AND IFn collections at runtime.
+  (def exprs @[jolt-call (emit-expr f-ast)])
   (each arg args (array/push exprs (emit-expr arg)))
   (tuple/slice (tuple ;exprs)))
 
@@ -789,6 +803,9 @@
   (tuple/slice (tuple ;exprs)))
 
 (defn- emit-map-expr [form] form)
+
+(defn- emit-set-expr [items]
+  (tuple/slice (tuple make-phs ;(map emit-expr items))))
 
 (defn- emit-quote-expr [expr]
   ['quote (raw-form->janet expr)])
@@ -813,6 +830,7 @@
       :invoke (emit-invoke-expr (ast :fn) (ast :args))
       :vector (emit-vector-expr (ast :items))
       :map (emit-map-expr (ast :form))
+      :set (emit-set-expr (ast :items))
       :quote (emit-quote-expr (ast :expr))
       (error (string "Unhandled op: " (ast :op))))))
 

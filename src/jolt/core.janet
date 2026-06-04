@@ -255,6 +255,25 @@
             (in m k)
             default))))))
 
+# Runtime invoke dispatch for COMPILED code (interpreter uses evaluator's
+# jolt-invoke). Handles real functions plus Clojure IFn collections.
+(defn jolt-call [f & args]
+  (cond
+    (or (function? f) (cfunction? f)) (apply f args)
+    (keyword? f) (core-get (get args 0) f (get args 1))
+    (and (struct? f) (= :symbol (f :jolt/type))) (core-get (get args 0) f (get args 1))
+    (phm? f) (phm-get f (get args 0) (get args 1))
+    (set? f) (if (phs-contains? f (get args 0)) (get args 0) (get args 1))
+    (or (tuple? f) (array? f))
+      (let [k (get args 0)]
+        (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length f)))
+          (in f k)
+          (error (string "Index " k " out of bounds for vector of length " (length f)))))
+    (or (struct? f) (and (table? f) (get f :jolt/deftype)))
+      (let [v (get f (get args 0) :jolt/not-found)]
+        (if (= v :jolt/not-found) (get args 1) v))
+    (error (string "Cannot call " (type f) " as a function"))))
+
 (defn core-get-in [m ks &opt default]
   (default default nil)
   (var current m)
