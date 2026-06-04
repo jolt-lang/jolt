@@ -2,7 +2,7 @@
 (use ../src/jolt/reader)
 (use ../src/jolt/evaluator)
 
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 
 (defn load-clj [ctx filepath]
   (def source (slurp filepath))

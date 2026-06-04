@@ -3,7 +3,7 @@
 
 (use ../src/jolt/api)
 
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 
 # Helper: compare via Clojure = which handles PHM
 (defn clj= [ctx a b]

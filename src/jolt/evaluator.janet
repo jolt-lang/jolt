@@ -3,6 +3,8 @@
 
 (use ./types)
 (use ./phm)
+(use ./pv)
+(use ./config)
 (use ./reader)
 (use ./regex)
 
@@ -36,6 +38,9 @@
   (cond
     (phm? coll) (phm-get coll k default)
     (set? coll) (if (phs-contains? coll k) k default)
+    (pvec? coll)
+      (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (pv-count coll)))
+        (pv-nth coll k) default)
     (or (tuple? coll) (array? coll))
       (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length coll)))
         (in coll k) default)
@@ -57,6 +62,11 @@
       (coll-lookup (get args 0) f (get args 1))
     (phm? f) (phm-get f (get args 0) (get args 1))
     (set? f) (if (phs-contains? f (get args 0)) (get args 0) (get args 1))
+    (pvec? f)
+      (let [k (get args 0)]
+        (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (pv-count f)))
+          (pv-nth f k)
+          (error (string "Index " k " out of bounds for vector of length " (pv-count f)))))
     (or (tuple? f) (array? f))
       (let [k (get args 0)]
         (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length f)))
@@ -114,14 +124,16 @@
     (do (var result @[]) (var i 0) (while (< i (length form))
       (let [item (in form i)]
         (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
-          (each v (eval-form ctx bindings (in item 1)) (array/push result v))
+          (let [sv (eval-form ctx bindings (in item 1))]
+            (each v (if (pvec? sv) (pv->array sv) sv) (array/push result v)))
           (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) (tuple ;result))
     (array? form)
     (do (var result @[]) (var i 0) (while (< i (length form))
       (let [item (in form i)]
         (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
-          (each v (eval-form ctx bindings (in item 1)) (array/push result v))
+          (let [sv (eval-form ctx bindings (in item 1))]
+            (each v (if (pvec? sv) (pv->array sv) sv) (array/push result v)))
           (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) result)
     (and (struct? form) (get form :jolt/type)) form
@@ -361,6 +373,7 @@
 (defn- d-realize
   "Realize a lazy-seq to an array for positional destructuring; pass others through."
   [val]
+  (if (pvec? val) (pv->array val)
   (if (lazy-seq? val)
     (do
       (var items @[]) (var cur val) (var go true)
@@ -372,7 +385,7 @@
                 (let [rt (in cell 1)]
                   (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
       items)
-    val))
+    val)))
 
 (defn- d-get
   "Look up key k in a map-like value (phm/struct/table/nil)."
@@ -497,7 +510,7 @@
     (keyword? obj) ["Keyword" "Object"]
     (and (struct? obj) (= :jolt/char (get obj :jolt/type))) ["Character" "Object"]
     (and (struct? obj) (= :symbol (get obj :jolt/type))) ["Symbol" "Object"]
-    (or (tuple? obj) (array? obj)) ["PersistentVector" "IPersistentVector" "IPersistentCollection" "ISeq" "Object"]
+    (or (tuple? obj) (array? obj) (pvec? obj)) ["PersistentVector" "IPersistentVector" "IPersistentCollection" "ISeq" "Object"]
     (or (function? obj) (cfunction? obj)) ["IFn" "Fn" "Object"]
     (nil? obj) ["nil" "Object"]
     ["Object"]))
@@ -667,8 +680,9 @@
                                 (set i (+ i 1)))
                       (do (set result clause) (++ i)))))))
            result)
-    "require" (let [spec (eval-form ctx bindings (in form 1))]
-                 (if (and (tuple? spec) (> (length spec) 0))
+    "require" (let [spec0 (eval-form ctx bindings (in form 1))
+                    spec (if (pvec? spec0) (pv->array spec0) spec0)]
+                 (if (and (indexed? spec) (> (length spec) 0))
                    (eval-require ctx spec)
                    (error "require expects a vector spec")))
     "all-ns" (all-ns ctx)
@@ -997,7 +1011,7 @@
                       "clojure.lang.Volatile" (and (table? val) (= :jolt/volatile (val :jolt/type)))
                       "clojure.lang.Delay" (and (table? val) (= :jolt/delay (val :jolt/type)))
                       "clojure.lang.IPersistentMap" (or (phm? val) (struct? val))
-                      "clojure.lang.IPersistentVector" (tuple? val)
+                      "clojure.lang.IPersistentVector" (or (tuple? val) (pvec? val))
                       "clojure.lang.IPersistentSet" (set? val)
                       "Object" true
                       false)))
@@ -1203,7 +1217,9 @@
     (keyword? form) form
     (bytes? form) form
     (buffer? form) form
-    (tuple? form) (tuple/slice (map |(eval-form ctx bindings $) form))
+    (tuple? form)
+      (let [els (map |(eval-form ctx bindings $) form)]
+        (if mutable? (array ;els) (pv-from-indexed els)))
     (struct? form)
     (if (= :symbol (form :jolt/type))
       (resolve-sym ctx bindings form)

@@ -2,34 +2,25 @@
 # High-level interface for the Clojure-on-Janet interpreter.
 
 (use ./types)
+(use ./pv)
 (use ./reader)
 (use ./evaluator)
 (use ./core)
 (use ./compiler)
 (use ./loader)
 
-(defn- load-persistent-structures
-  "Load immutable persistent data structures and swap clojure.core bindings."
-  [ctx]
-  (def saved-ns (ctx-current-ns ctx))
-  (def source (slurp "src/jolt/clojure/lang/persistent_vector.clj"))
-  (var cur source)
-  (while (> (length (string/trim cur)) 0)
-    (def [form rest] (parse-next cur))
-    (set cur rest)
-    (when (not (nil? form))
-      (eval-form ctx @{} form)))
-  # Vectors are represented as Janet tuples throughout core; bind vec/vector/
-  # vector? to the tuple-based implementations so literals (`[...]`) and the
-  # constructors share one representation. The PersistentVector namespace stays
-  # loaded for code that wants it explicitly via jolt.lang.persistent-vector.
-  (let [core-ns (ctx-find-ns ctx "clojure.core")]
-    (ns-intern core-ns "vec" core-vec)
-    (ns-intern core-ns "vector" core-vector)
-    (ns-intern core-ns "vector?" core-vector?))
-  # Restore the namespace: loading the PV file above left current-ns set to
-  # jolt.lang.persistent-vector, which would shadow clojure.core bindings.
-  (ctx-set-current-ns ctx saved-ns))
+(defn normalize-pvecs
+  "Deep-convert any sequential (pvec/tuple/array) to a Janet tuple. Test helper
+  so Janet-level `=`/deep= can compare jolt collection results against Janet
+  tuple literals regardless of representation — mirroring Clojure, where vectors
+  and lists with the same elements are equal."
+  [x]
+  (cond
+    (pvec? x) (tuple ;(map normalize-pvecs (pv->array x)))
+    (tuple? x) (tuple ;(map normalize-pvecs x))
+    (array? x) (tuple ;(map normalize-pvecs x))
+    x))
+
 
 (defn init
   "Create a new Jolt evaluation context.
@@ -39,12 +30,11 @@
     :compile?   — enable compilation of Clojure forms to Janet"
   [&opt opts]
   (default opts {})
-  (let [ctx (make-ctx opts)
-        mutable? (get opts :mutable?)]
+  (let [ctx (make-ctx opts)]
+    # Collection representation (persistent vs mutable) is selected at BUILD time
+    # via JOLT_MUTABLE (see config.janet); init-core! registers vec/vector/conj/
+    # etc. that produce the mode-appropriate values, so nothing extra to load.
     (init-core! ctx)
-    (if mutable?
-      nil
-      (load-persistent-structures ctx))
     ctx))
 
 (defn eval-string

@@ -1,5 +1,5 @@
 (use ../src/jolt/api)
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 (print "CLJS Core Ported Tests")
 
 (print "1: metadata on maps...")

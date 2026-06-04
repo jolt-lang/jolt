@@ -121,7 +121,8 @@
    ### 14. Janet interop
    ["interop method"     "\"v=41\""    "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)"]
    ["interop field"      "41"          "(.-value {:value 41})"]
-   ["interop janet-type" ":tuple"      "(do (require '[jolt.interop :as j]) (j/janet-type [1 2 3]))"]
+   # vectors are persistent vectors (Janet tables); lists are Janet arrays
+   ["interop janet-type" ":array"      "(do (require '[jolt.interop :as j]) (j/janet-type (list 1 2 3)))"]
   ])
 
 (each [label expected actual] cases (check label expected actual))

@@ -4,6 +4,8 @@
 (use ./api)
 (use ./types)
 (use ./phm)
+(use ./pv)
+(use ./config)
 (use ./reader)
 
 (def ctx (init))
@@ -23,6 +25,17 @@
 
 (defn- write-collection [v buf]
   (cond
+    (pvec? v)
+    (do
+      (push-str buf "[")
+      (let [a (pv->array v) n (pv-count v)]
+        (var i 0)
+        (while (< i n)
+          (write-value (in a i) buf)
+          (when (< (+ i 1) n) (push-str buf " "))
+          (++ i)))
+      (push-str buf "]"))
+
     (tuple? v)
     (do
       (push-str buf "[")
@@ -57,14 +70,15 @@
 
     (array? v)
     (do
-      (push-str buf "(")
+      # mutable mode: arrays are vectors -> [] ; immutable: arrays are lists -> ()
+      (push-str buf (if mutable? "[" "("))
       (var i 0)
       (let [n (length v)]
         (while (< i n)
           (write-value (in v i) buf)
           (when (< (+ i 1) n) (push-str buf " "))
           (++ i)))
-      (push-str buf ")"))
+      (push-str buf (if mutable? "]" ")")))
 
     (and (table? v) (= :jolt/set (v :jolt/type)))
     (do

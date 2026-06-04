@@ -1,6 +1,6 @@
 # Phase 5: Multimethods + Hierarchy Tests
 (use ../src/jolt/api)
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 
 # 22. Hierarchy
 (print "22: hierarchy...")

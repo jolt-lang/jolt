@@ -1,6 +1,6 @@
 # Ported from clojure/test_clojure/atoms.clj + systematic atom tests
 (use ../src/jolt/api)
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 
 (print "Ported Atom Tests")
 

@@ -20,7 +20,7 @@
 (print "3: eval-string with core fns...")
 (let [ctx (init)]
   (assert (= true (eval-string ctx "(nil? nil)")) "nil?")
-  (assert (deep= [2 3 4] (eval-string ctx "(map inc [1 2 3])")) "map+inc")
+  (assert (deep= [2 3 4] (normalize-pvecs (eval-string ctx "(map inc [1 2 3])"))) "map+inc")
   (assert (= 6 (eval-string ctx "(reduce + [1 2 3])")) "reduce"))
 (print "  passed")
 

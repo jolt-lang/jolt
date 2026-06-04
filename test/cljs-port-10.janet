@@ -1,5 +1,5 @@
 (use ../src/jolt/api)
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 (print "=== CLJS Ported Part 10 ===")
 
 (print "43: when/when-not...")

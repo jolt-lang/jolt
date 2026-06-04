@@ -1,6 +1,6 @@
 (use ../src/jolt/api)
 
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 
 (print "Phase 6: comprehensive compile-mode tests...")
 (let [ctx (init {:compile? true})]

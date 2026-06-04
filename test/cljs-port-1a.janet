@@ -1,5 +1,5 @@
 (use ../src/jolt/api)
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 (print "=== CLJS Ported Part 1 ===")
 (print "1: core math...")
 (let [ctx (init)]

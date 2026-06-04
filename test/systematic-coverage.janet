@@ -1,6 +1,6 @@
 # Systematic coverage tests for Clojure language features
 (use ../src/jolt/api)
-(defn ct-eval [ctx s] (eval-string ctx s))
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
 
 (print "Systematic Coverage Tests")
 

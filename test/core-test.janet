@@ -1,7 +1,17 @@
 (use ../src/jolt/types)
+(use ../src/jolt/pv)
 (use ../src/jolt/reader)
 (use ../src/jolt/evaluator)
 (use ../src/jolt/core)
+
+# Normalize jolt collection results to Janet tuples so Janet-level deep=/= can
+# compare against tuple literals regardless of the (pvec) representation.
+(defn norm [x]
+  (cond
+    (pvec? x) (tuple ;(map norm (pv->array x)))
+    (tuple? x) (tuple ;(map norm x))
+    (array? x) (tuple ;(map norm x))
+    x))
 
 # Helper: create a fresh bootstrapped context
 (defn make-boot-ctx []
@@ -12,7 +22,7 @@
 # Helper: parse + eval
 (defn eval-str [ctx s]
   (let [form (parse-string s)]
-    (eval-form ctx @{} form)))
+    (norm (eval-form ctx @{} form))))
 
 (print "1: predicates...")
 (let [ctx (make-boot-ctx)]
