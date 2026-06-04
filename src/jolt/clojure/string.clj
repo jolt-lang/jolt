@@ -121,3 +121,13 @@
    (let [sub (subs s 0 from) r (str-reverse-b sub) sval (str-reverse-b value)
          idx (str-find sval r)]
      (when idx (inc (- from (+ idx (count value))))))))
+
+(defn re-quote-replacement
+  "Escape special characters (backslash and dollar) in a regex replacement
+  string so it is used literally rather than interpreted."
+  [replacement]
+  (apply str
+    (map (fn [ch]
+           (let [c (str ch)]
+             (if (or (= c "\\") (= c "$")) (str "\\" c) c)))
+         (seq replacement))))

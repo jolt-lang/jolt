@@ -727,6 +727,28 @@
           dropped (array/slice c (min n (length c)))]
       (if (jvec? coll) (make-vec dropped) dropped))))))
 
+(defn core-second [coll] (core-first (core-rest coll)))
+(defn core-ffirst [coll] (core-first (core-first coll)))
+(defn core-nfirst [coll] (core-next (core-first coll)))
+(defn core-fnext [coll] (core-first (core-next coll)))
+(defn core-nnext [coll] (core-next (core-next coll)))
+
+(defn core-last [coll]
+  (let [c (realize-for-iteration coll)]
+    (if (= 0 (length c)) nil (in c (- (length c) 1)))))
+
+(defn core-drop-last [a & rest]
+  (let [n (if (= 0 (length rest)) 1 a)
+        coll (if (= 0 (length rest)) a (in rest 0))
+        c (realize-for-iteration coll)
+        end (max 0 (- (length c) n))]
+    (tuple ;(array/slice c 0 end))))
+
+(defn core-take-last [n coll]
+  (let [c (realize-for-iteration coll)
+        start (max 0 (- (length c) n))]
+    (if (= 0 (length c)) nil (tuple ;(array/slice c start)))))
+
 (defn core-take-while [pred & rest]
  (if (= 0 (length rest)) (td-take-while pred)
   (let [coll (in rest 0)]
@@ -1112,6 +1134,27 @@
   "Returns true if x is a symbol with a namespace."
   (and (struct? x) (= :symbol (x :jolt/type)) (not (nil? (x :ns)))))
 
+(defn core-simple-symbol? [x]
+  (and (struct? x) (= :symbol (x :jolt/type)) (nil? (x :ns))))
+(defn core-qualified-keyword? [x]
+  (and (keyword? x) (not (nil? (string/find "/" (string x))))))
+(defn core-simple-keyword? [x]
+  (and (keyword? x) (nil? (string/find "/" (string x)))))
+(defn core-ident? [x] (or (core-keyword? x) (core-symbol? x)))
+(defn core-qualified-ident? [x]
+  (or (core-qualified-symbol? x) (core-qualified-keyword? x)))
+(defn core-simple-ident? [x]
+  (or (core-simple-symbol? x) (core-simple-keyword? x)))
+# Jolt has no inst/uri/uuid host types, so these are always false; inst-ms has
+# nothing valid to read.
+(defn core-inst? [x] false)
+(defn core-inst-ms [x] (error "Not an instant (no inst type in Jolt)"))
+(defn core-uri? [x] false)
+(defn core-uuid? [x] false)
+(defn core-bytes? [x] (buffer? x))
+(defn core-tagged-literal? [x]
+  (and (table? x) (= :jolt/tagged-literal (get x :jolt/type))))
+
 (defn core-meta [x]
   "Returns the metadata of x, or nil."
   (if (var? x) (var-meta x)
@@ -1384,6 +1427,11 @@
 (def core-bit-not (fn [a] (bnot a)))
 (def core-bit-shift-left (fn [x n] (blshift x n)))
 (def core-bit-shift-right (fn [x n] (brshift x n)))
+(def core-bit-clear (fn [x n] (band x (bnot (blshift 1 n)))))
+(def core-bit-set (fn [x n] (bor x (blshift 1 n))))
+(def core-bit-flip (fn [x n] (bxor x (blshift 1 n))))
+(def core-bit-test (fn [x n] (not= 0 (band x (blshift 1 n)))))
+(def core-bit-and-not (fn [a b] (band a (bnot b))))
 (def core-unsigned-bit-shift-right (fn [x n] (brushift x n)))
 
 # ============================================================
@@ -2023,6 +2071,10 @@
     1 @[]
     2 (let [[h tag] args] (descendants h tag))))
 (def core-underive underive)
+(def core-get-method (fn [mm-var dispatch-val]
+  (let [methods (get mm-var :jolt/methods)]
+    (or (get methods dispatch-val) (get methods :default)))))
+(def core-methods (fn [mm-var] (get mm-var :jolt/methods)))
 (def core-remove-method (fn [mm-var dispatch-val]
   (let [methods (get mm-var :jolt/methods)]
     (put methods dispatch-val nil) mm-var)))
@@ -2672,6 +2724,14 @@
     "remove" core-remove
     "reduce" core-reduce
     "apply" core-apply
+    "second" core-second
+    "ffirst" core-ffirst
+    "nfirst" core-nfirst
+    "fnext" core-fnext
+    "nnext" core-nnext
+    "last" core-last
+    "drop-last" core-drop-last
+    "take-last" core-take-last
     "interpose" core-interpose
     "mapcat" core-mapcat
     "some" core-some-search
@@ -2803,6 +2863,11 @@
     "bit-not" core-bit-not
     "bit-shift-left" core-bit-shift-left
     "bit-shift-right" core-bit-shift-right
+    "bit-clear" core-bit-clear
+    "bit-set" core-bit-set
+    "bit-flip" core-bit-flip
+    "bit-test" core-bit-test
+    "bit-and-not" core-bit-and-not
     "unsigned-bit-shift-right" core-unsigned-bit-shift-right
     # Integer coercion / unchecked math
     "int" core-int
@@ -2863,6 +2928,8 @@
     "descendants" core-descendants
     "make-hierarchy" core-make-hierarchy
     "underive" core-underive
+    "get-method" core-get-method
+    "methods" core-methods
     "remove-method" core-remove-method
     "remove-all-methods" core-remove-all-methods
     "prefer-method" core-prefer-method
@@ -2901,6 +2968,18 @@
     "new-var" core-new-var
     "avoid-method-too-large" core-avoid-method-too-large
     "qualified-symbol?" core-qualified-symbol?
+    "simple-symbol?" core-simple-symbol?
+    "qualified-keyword?" core-qualified-keyword?
+    "simple-keyword?" core-simple-keyword?
+    "ident?" core-ident?
+    "qualified-ident?" core-qualified-ident?
+    "simple-ident?" core-simple-ident?
+    "inst?" core-inst?
+    "inst-ms" core-inst-ms
+    "uri?" core-uri?
+    "uuid?" core-uuid?
+    "bytes?" core-bytes?
+    "tagged-literal?" core-tagged-literal?
     "meta" core-meta
     "var-get" core-var-get
     "var-set" core-var-set
