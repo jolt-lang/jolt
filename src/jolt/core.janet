@@ -303,34 +303,62 @@
     c))
 
 (defn core-map [f & colls]
-  (let [realized (map realize-for-iteration colls)
-        first-coll (realized 0)
-        result (if (= 1 (length colls))
-                 (do
+  (if (= 1 (length colls))
+    # Single-collection: eagerly realized (common case, fine for most uses)
+    (let [c (realize-for-iteration (colls 0))
+          result (do
                    (var res @[])
-                   (each x first-coll (array/push res (f x)))
-                   res)
-                 (do
-                   (var res @[])
-                   (var idxs @{})
-                   (each _ first-coll (array/push idxs 0))
-                   (var done false)
-                   (while (not done)
-                     (var args @[])
-                     (var i 0)
-                     (while (< i (length colls))
-                       (let [c (realized i) j (idxs i)]
-                         (if (>= j (length c))
-                           (do (set done true) (break))
-                           (array/push args (c j))))
-                       (++ i))
-                     (if (not done) (array/push res (apply f args)))
-                     (var k 0)
-                     (while (< k (length colls))
-                       (set (idxs k) (+ (idxs k) 1))
-                       (++ k)))
-                   res))]
-    (if (tuple? first-coll) (tuple/slice (tuple ;result)) result)))
+                   (each x c (array/push res (f x)))
+                   res)]
+      (if (tuple? c) (tuple/slice (tuple ;result)) result))
+    # Multi-collection: return a lazy-seq
+    (let [n (length colls)
+          cursors (array/new-filled n nil)
+          idxs (array/new-filled n 0)
+          realized (array/new-filled n nil)]
+      # Initialize: detect lazy-seqs vs realized collections  
+      (var i 0)
+      (while (< i n)
+        (let [coll (colls i)]
+          (if (lazy-seq? coll)
+            (put cursors i coll)
+            (do
+              (put realized i coll)
+              (put cursors i nil))))
+        (++ i))
+      # Helper: get next element from collection i, advancing state.
+      # Returns the element or nil if exhausted.
+      (defn next-elem [i]
+        (let [cur (cursors i)
+              ridx (idxs i)]
+          (if (not (nil? cur))
+            (let [val (ls-first cur)]
+              (if (nil? val) nil
+                (do
+                  (put cursors i (ls-rest cur))
+                  (put idxs i (+ ridx 1))
+                  val)))
+            (let [coll (realized i)]
+              (if (nil? coll)
+                (let [rc (realize-for-iteration (colls i))]
+                  (put realized i rc)
+                  (if (>= ridx (length rc)) nil
+                    (do (put idxs i (+ ridx 1)) (rc ridx))))
+                (if (>= ridx (length coll)) nil
+                  (do (put idxs i (+ ridx 1)) (coll ridx))))))))
+      # Build a lazy-seq of mapped results
+      (defn build-cell []
+        (var args @[])
+        (var i 0)
+        (while (< i n)
+          (let [v (next-elem i)]
+            (if (nil? v) (break nil))
+            (array/push args v))
+          (++ i))
+        (if (= (length args) n)
+          @[(apply f args) (fn [] (build-cell))]
+          nil))
+      (make-lazy-seq build-cell))))
 
 (defn core-filter [pred coll]
   (var result @[])
@@ -423,11 +451,13 @@
       (if (lazy-seq? c) (realize-ls c)
         (if (indexed? c)
           (if (= 0 (length c)) nil
-            (let [f (in c 0)
-                  rest (if (> (length c) 1)
-                         (if (tuple? c) (tuple/slice c 1) (array/slice c 1))
-                         nil)]
-              @[f (fn [] (coll->cells rest))]))
+            (if (and (= 2 (length c)) (function? (in c 1)))
+              c  # already a cell [val, rest-thunk]
+              (let [f (in c 0)
+                    rest (if (> (length c) 1)
+                           (if (tuple? c) (tuple/slice c 1) (array/slice c 1))
+                           nil)]
+                @[f (fn [] (coll->cells rest))])))
           nil)))))
 
 (defn core-concat [& colls]

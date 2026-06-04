@@ -129,11 +129,13 @@
   @{:jolt/type :jolt/lazy-seq :fn thunk :realized false :val nil})
 
 (defn realize-ls
-  "Force a LazySeq cell. Returns nil (empty) or [first-val, rest-thunk]."
+  "Force a LazySeq cell. Returns nil (empty) or [first-val, rest-thunk].
+  If the thunk returns another lazy-seq, recursively realize it."
   [ls]
   (if (get ls :realized)
     (ls :val)
-    (let [v ((ls :fn))]
+    (let [raw ((ls :fn))
+          v (if (lazy-seq? raw) (realize-ls raw) raw)]
       (put ls :realized true)
       (put ls :val v)
       v)))
