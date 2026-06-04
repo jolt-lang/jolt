@@ -243,6 +243,20 @@
    ["pr-str char"       "\"\\\\a\"" "(pr-str \\a)"]
    ["chars in vec"      "[\\a \\b]" "[\\a \\b]"]
    ["apply str chars"   "\"hi\"" "(apply str [\\h \\i])"]
+
+   ### ==== transducers ====
+   ["transduce map"     "9"     "(transduce (map inc) + 0 [1 2 3])"]
+   ["transduce comp"    "12"    "(transduce (comp (map inc) (filter even?)) + 0 [1 2 3 4 5])"]
+   ["transduce conj"    "[2 3 4]" "(transduce (map inc) conj [] [1 2 3])"]
+   ["into xform"        "[2 3 4]" "(into [] (map inc) [1 2 3])"]
+   ["into comp xform"   "[1 9 25]" "(into [] (comp (filter odd?) (map (fn [x] (* x x)))) [1 2 3 4 5])"]
+   ["into take xform"   "[0 1 2]" "(into [] (take 3) (range 100))"]
+   ["sequence xform"    "(quote (2 3 4))" "(sequence (map inc) [1 2 3])"]
+   ["transduce no-init" "6"     "(transduce (map inc) + [0 1 2])"]
+   ["transduce drop"    "[3 4 5]" "(into [] (drop 2) [1 2 3 4 5])"]
+   ["transduce remove"  "[1 3 5]" "(into [] (remove even?) [1 2 3 4 5])"]
+   ["transduce take-while" "[1 2]" "(into [] (take-while (fn [x] (< x 3))) [1 2 3 4 1])"]
+   ["transduce map-indexed" "[[0 :a] [1 :b]]" "(into [] (map-indexed (fn [i x] [i x])) [:a :b])"]
   ])
 
 (var pass 0)

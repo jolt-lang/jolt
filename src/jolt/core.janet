@@ -346,26 +346,15 @@
           (if (string? coll) (tuple ;(map |(string/from-bytes $) (string/bytes coll)))
             (tuple)))))))
 
-(defn core-into [to from]
-  (let [items (realize-for-iteration from)]
-    (cond
-      # map target: each item is a [k v] pair (or map entry) to assoc
-      (or (phm? to) (struct? to) (and (table? to) (get to :jolt/deftype)))
-        (do
-          (var result to)
-          (each item items
-            (set result (core-assoc result (in item 0) (in item 1))))
-          result)
-      # list target (jolt lists are arrays): conj prepends -> reversed order
-      (array? to)
-        (do
-          (var result (array/slice to))
-          (each x items (array/insert result 0 x))
-          result)
-      # vector target (jolt vectors are tuples): conj appends
-      (tuple? to)
-        (tuple/slice (tuple ;(array/concat (array/slice to) (array/slice items))))
-      to)))
+(defn- into-conj [to items]
+  (cond
+    (or (phm? to) (struct? to) (and (table? to) (get to :jolt/deftype)))
+      (do (var result to)
+        (each item items (set result (core-assoc result (in item 0) (in item 1))))
+        result)
+    (array? to) (do (var result (array/slice to)) (each x items (array/insert result 0 x)) result)
+    (tuple? to) (tuple/slice (tuple ;(array/concat (array/slice to) (array/slice items))))
+    to))
 
 (defn core-merge [& maps]
   (if (phm? (first maps))
@@ -402,9 +391,86 @@
   (table/to-struct result))
 
 # ============================================================
-# Sequence operations
+# Transducers
 # ============================================================
+# A transducer is (fn [rf] rf') where rf' is a reducing fn with arities
+# []=init, [acc]=complete, [acc x]=step. map/filter/take/... return a
+# transducer when called with no collection.
 
+(defn core-reduced [x] @{:jolt/type :jolt/reduced :val x})
+(defn core-reduced? [x] (and (table? x) (= :jolt/reduced (x :jolt/type))))
+(defn core-unreduced [x] (if (core-reduced? x) (x :val) x))
+(defn- ensure-reduced [x] (if (core-reduced? x) x (core-reduced x)))
+
+(defn td-map [f]
+  (fn [rf] (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0)) (rf (a 0) (f (a 1)))))))
+(defn td-filter [pred]
+  (fn [rf] (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                       (if (truthy? (pred (a 1))) (rf (a 0) (a 1)) (a 0))))))
+(defn td-remove [pred] (td-filter (fn [x] (not (pred x)))))
+(defn td-keep [f]
+  (fn [rf] (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                       (let [v (f (a 1))] (if (nil? v) (a 0) (rf (a 0) v)))))))
+(defn td-take [n]
+  (fn [rf]
+    (var left n)
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                (if (<= left 0) (core-reduced (a 0))
+                  (let [r (rf (a 0) (a 1))] (set left (dec left))
+                    (if (<= left 0) (ensure-reduced r) r)))))))
+(defn td-drop [n]
+  (fn [rf]
+    (var left n)
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                (if (> left 0) (do (set left (dec left)) (a 0)) (rf (a 0) (a 1)))))))
+(defn td-take-while [pred]
+  (fn [rf]
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                (if (truthy? (pred (a 1))) (rf (a 0) (a 1)) (core-reduced (a 0)))))))
+(defn td-drop-while [pred]
+  (fn [rf]
+    (var dropping true)
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                (do (when (and dropping (not (truthy? (pred (a 1))))) (set dropping false))
+                  (if dropping (a 0) (rf (a 0) (a 1))))))))
+(defn td-map-indexed [f]
+  (fn [rf]
+    (var i -1)
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0)) (do (++ i) (rf (a 0) (f i (a 1))))))))
+
+(defn- transduce-reduce
+  "Reduce coll with reducing fn rf and seed init, honoring `reduced`."
+  [rf init coll]
+  (var acc init) (var stop false)
+  (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
+    (when (not stop)
+      (set acc (rf acc x))
+      (when (core-reduced? acc) (set acc (acc :val)) (set stop true))))
+  acc)
+
+(defn core-transduce
+  "(transduce xform f coll) or (transduce xform f init coll)."
+  [xform f & rest]
+  (let [has-init (= 2 (length rest))
+        init (if has-init (in rest 0) (f))
+        coll (if has-init (in rest 1) (in rest 0))
+        rf (xform f)]
+    (rf (transduce-reduce rf init coll))))
+
+(defn core-into
+  "(into to from) or (into to xform from)."
+  [to & rest]
+  (if (= 2 (length rest))
+    (let [xform (in rest 0) from (in rest 1)]
+      (core-transduce xform (fn [& a] (case (length a) 0 to 1 (a 0) (core-conj (a 0) (a 1)))) to from))
+    (into-conj to (realize-for-iteration (in rest 0)))))
+
+(defn core-sequence
+  "(sequence coll) or (sequence xform coll) — eager here (returns a seq/tuple)."
+  [a & rest]
+  (if (= 0 (length rest))
+    (core-seq a)
+    (tuple ;(core-transduce a (fn [& x] (case (length x) 0 @[] 1 (x 0) (do (array/push (x 0) (x 1)) (x 0)))) @[] (in rest 0)))))
 
 (defn- seq-done?
   "True when cursor c (a lazy-seq or a concrete collection) is exhausted.
@@ -416,6 +482,8 @@
     (or (nil? c) (= 0 (length c)))))
 
 (defn core-map [f & colls]
+  (if (= 0 (length colls))
+    (td-map f)   # transducer arity
   (if (= 1 (length colls))
     (let [coll (colls 0)]
       (if (lazy-seq? coll)
@@ -474,10 +542,12 @@
           (if (and ok (= (length args) (length cs)))
             @[(apply f args) (step next-cs next-idxs next-reals)]
             nil)))
-      (make-lazy-seq (step init-cs init-idxs init-reals)))))
+      (make-lazy-seq (step init-cs init-idxs init-reals))))))
 
-(defn core-filter [pred coll]
-  (if (lazy-seq? coll)
+(defn core-filter [pred & rest]
+  (if (= 0 (length rest)) (td-filter pred)
+   (let [coll (in rest 0)]
+   (if (lazy-seq? coll)
     # lazy input -> lazy output (supports infinite seqs)
     (do
       (defn fstep [c]
@@ -493,13 +563,11 @@
       (var result @[])
       (each x (if (set? coll) (phs-seq coll) coll)
         (if (pred x) (array/push result x)))
-      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))))
 
-(defn core-remove [pred coll]
-  (core-filter (fn [x] (not (pred x))) coll))
-
-(defn core-reduced [x] @{:jolt/type :jolt/reduced :val x})
-(defn core-reduced? [x] (and (table? x) (= :jolt/reduced (x :jolt/type))))
+(defn core-remove [pred & rest]
+  (if (= 0 (length rest)) (td-remove pred)
+    (core-filter (fn [x] (not (pred x))) (in rest 0))))
 
 (def core-reduce
   (fn [& args]
@@ -524,7 +592,9 @@
           acc)
       (error "Wrong number of args passed to: reduce"))))
 
-(defn core-take [n coll]
+(defn core-take [n & rest]
+ (if (= 0 (length rest)) (td-take n)
+  (let [coll (in rest 0)]
   (if (lazy-seq? coll)
     (do
       (var result @[])
@@ -541,9 +611,11 @@
       (while (and (< i n) (< i (length coll)))
         (array/push result (coll i))
         (++ i))
-      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))))
 
-(defn core-drop [n coll]
+(defn core-drop [n & rest]
+ (if (= 0 (length rest)) (td-drop n)
+  (let [coll (in rest 0)]
   (if (lazy-seq? coll)
     (do
       (var cur coll)
@@ -555,9 +627,11 @@
     (do
       (if (tuple? coll)
         (tuple/slice coll (min n (length coll)))
-        (array/slice coll (min n (length coll)))))))
+        (array/slice coll (min n (length coll)))))))))
 
-(defn core-take-while [pred coll]
+(defn core-take-while [pred & rest]
+ (if (= 0 (length rest)) (td-take-while pred)
+  (let [coll (in rest 0)]
   (if (lazy-seq? coll)
     (do
       (var result @[]) (var cur coll) (var go true)
@@ -569,16 +643,18 @@
     (do
       (var result @[])
       (each x coll (if (pred x) (array/push result x) (break)))
-      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))
+      (if (tuple? coll) (tuple/slice (tuple ;result)) result))))))
 
-(defn core-drop-while [pred coll]
-  (var c (if (lazy-seq? coll) (realize-ls coll) coll))
-  (var start 0)
-  (while (and (< start (length c)) (pred (c start)))
-    (++ start))
-  (if (tuple? c)
-    (tuple/slice c start)
-    (array/slice c start)))
+(defn core-drop-while [pred & rest]
+ (if (= 0 (length rest)) (td-drop-while pred)
+  (let [coll (in rest 0)
+        c (if (lazy-seq? coll) (realize-ls coll) coll)]
+    (var start 0)
+    (while (and (< start (length c)) (pred (c start)))
+      (++ start))
+    (if (tuple? c)
+      (tuple/slice c start)
+      (array/slice c start)))))
 
 (defn coll->cells [c]
   "Convert a seqable to lazy-seq cell chain: nil or [first, rest-thunk].
@@ -799,11 +875,12 @@
     (each x c (let [v (f i x)] (when (not (nil? v)) (array/push result v))) (++ i))
     (tuple/slice (tuple ;result))))
 
-(defn core-map-indexed [f coll]
-  (let [c (realize-for-iteration coll) result @[]]
-    (var i 0)
-    (each x c (array/push result (f i x)) (++ i))
-    (tuple/slice (tuple ;result))))
+(defn core-map-indexed [f & rest]
+  (if (= 0 (length rest)) (td-map-indexed f)
+    (let [c (realize-for-iteration (in rest 0)) result @[]]
+      (var i 0)
+      (each x c (array/push result (f i x)) (++ i))
+      (tuple/slice (tuple ;result)))))
 
 (defn core-cycle [coll]
   (let [c (realize-for-iteration coll)]
@@ -2384,6 +2461,10 @@
     "reduce" core-reduce
     "every-pred" core-every-pred
     "find" core-find
+    "transduce" core-transduce
+    "sequence" core-sequence
+    "eduction" core-sequence
+    "unreduced" core-unreduced
     "keyword" core-keyword
     "symbol" core-symbol
     "namespace" core-namespace
