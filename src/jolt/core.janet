@@ -2069,6 +2069,18 @@
       @[{:jolt/type :symbol :ns nil :name "for"} bindings for-body]]
     nil])
 
+# assert — (assert x) / (assert x message). Throws when x is falsy.
+(defn core-assert [x & more]
+  (def msg-form
+    (if (> (length more) 0)
+      (first more)
+      (let [b @""] (pr-render b x) (string "Assert failed: " (string b)))))
+  @[{:jolt/type :symbol :ns nil :name "if"}
+    x
+    nil
+    @[{:jolt/type :symbol :ns nil :name "throw"}
+      @[{:jolt/type :symbol :ns nil :name "ex-info"} msg-form {}]]])
+
 # resolve stub — returns nil (symbols not found in Jolt's clojure.core)
 (defn core-resolve [sym] nil)
 
@@ -2481,6 +2493,7 @@
     "format" core-format
     "letfn" core-letfn
     "doseq" core-doseq
+    "assert" core-assert
     "first" core-first
     "rest" core-rest
     "next" core-next
@@ -2746,7 +2759,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true "lazy-seq" true "lazy-cat" true "if-not" true "when-first" true "condp" true "dotimes" true "while" true "some->" true "some->>" true "cond->" true "cond->>" true "as->" true "->" true "->>" true "letfn" true "doseq" true "delay" true})
+  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "if-let" true "when-let" true "if-some" true "when-some" true "doto" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "comment" true "binding" true "lazy-seq" true "lazy-cat" true "if-not" true "when-first" true "condp" true "dotimes" true "while" true "some->" true "some->>" true "cond->" true "cond->>" true "as->" true "->" true "->>" true "letfn" true "doseq" true "delay" true "assert" true})
 
 (def init-core!
   (fn [& args]

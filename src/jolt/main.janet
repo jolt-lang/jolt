@@ -167,7 +167,11 @@
   (cond
     (string? err) err
     (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
-      (let [v (get err :value)] (if (string? v) v (string/format "%q" v)))
+      (err-message (get err :value))
+    (and (or (table? err) (struct? err)) (= :jolt/ex-info (get err :jolt/type)))
+      (let [m (get err :message) d (get err :data)]
+        (if (and d (not (empty? d))) (string m " " (string/format "%q" d)) (string m)))
+    (string? err) err
     (string/format "%q" err)))
 
 (defn- report-error [err fib]
