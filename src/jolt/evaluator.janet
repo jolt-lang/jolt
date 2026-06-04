@@ -745,6 +745,7 @@
                  (when rest-pat
                    (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
                  (put fn-bindings :jolt/loop-fn self)
+                 (when fn-name (bind-put fn-bindings fn-name self))
                  # Use defining namespace for symbol resolution
                  (def saved-ns (ctx-current-ns ctx))
                  (ctx-set-current-ns ctx defining-ns)
@@ -753,7 +754,7 @@
                    (set result (eval-form ctx fn-bindings body-form)))
                  (ctx-set-current-ns ctx saved-ns)
                  result))
-              self))
+              self)))
     "let*" (let [bind-vec (in form 1)
                   body (tuple/slice form 2)]
               (var new-bindings @{})
