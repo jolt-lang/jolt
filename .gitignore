@@ -1,6 +1,7 @@
 build/
 .clj-kondo/
 .dirge/
+.claude/
 .lsp/
 test/_*.janet
 

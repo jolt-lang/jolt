@@ -683,7 +683,11 @@
               (ctx-set-current-ns ctx ns-name)
               (ctx-find-ns ctx ns-name)
               nil)
-    "fn*" (if (array? (in form 1))
+    "fn*" (let [# optional name: (fn* name [args] ...) / (fn* name ([args] ...)...)
+                named? (and (struct? (in form 1)) (= :symbol ((in form 1) :jolt/type)))
+                fn-name (if named? ((in form 1) :name) nil)
+                form (if named? (array/concat @[(in form 0)] (tuple/slice form 2)) form)]
+          (if (array? (in form 1))
              # Multi-arity: (fn* ([args] body...) ([args] body...)...)
              (let [pairs (tuple/slice form 1)
                    arities @{}
@@ -707,6 +711,7 @@
                           (when rest-pat
                             (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
                           (put fn-bindings :jolt/loop-fn self)
+                          (when fn-name (bind-put fn-bindings fn-name self))
                           # Use defining namespace for symbol resolution
                           (def saved-ns (ctx-current-ns ctx))
                           (ctx-set-current-ns ctx defining-ns)
