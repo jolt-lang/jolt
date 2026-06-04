@@ -131,11 +131,12 @@
 (defn realize-ls
   "Force a LazySeq cell. Returns nil (empty) or [first-val, rest-thunk].
   If the thunk returns another lazy-seq, recursively realize it.
-  Detects self-referencing cycles by setting :realized before calling thunk."
+  Uses :jolt/pending sentinel to detect self-referencing cycles."
   [ls]
   (if (get ls :realized)
     (ls :val)
     (do
+      (put ls :val :jolt/pending)
       (put ls :realized true)
       (let [raw ((ls :fn))
             v (if (lazy-seq? raw) (realize-ls raw) raw)]
@@ -144,7 +145,7 @@
 
 (defn ls-first [ls]
   (let [cell (realize-ls ls)]
-    (if (or (nil? cell) (= 0 (length cell))) nil (in cell 0))))
+    (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell))) nil (in cell 0))))
 
 (defn ls-rest [ls]
   (let [cell (realize-ls ls)]
