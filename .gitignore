@@ -3,3 +3,8 @@ build/
 .dirge/
 .lsp/
 test/_*.janet
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
