@@ -37,4 +37,10 @@
   (def p (eval-string ctx "(clojure.test/n-pass)"))
   (def f (eval-string ctx "(clojure.test/n-fail)"))
   (def e (eval-string ctx "(clojure.test/n-error)"))
-  (printf "%d %d %d" (if (number? p) p 0) (if (number? f) f 0) (if (number? e) e 0)))
+  # A "dump" 2nd arg (or SUITE_DUMP env) also prints each failure/error message
+  # (one DUMP line each) for triage.
+  (when (or (os/getenv "SUITE_DUMP") (= "dump" (get (dyn :args) 2)))
+    (eval-string ctx "(doseq [m (clojure.test/failures)] (println (str \"DUMP \" m)))"))
+  # Counts on a sentinel line so parsers find it even if a test body printed to
+  # stdout (e.g. with-out-str / println-str tests).
+  (printf "@@COUNTS %d %d %d" (if (number? p) p 0) (if (number? f) f 0) (if (number? e) e 0)))

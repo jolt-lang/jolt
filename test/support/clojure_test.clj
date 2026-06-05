@@ -79,7 +79,7 @@
 ;; Run every deftest registered since the last reset, isolating crashes.
 (defn run-registered []
   (doseq [t @registry]
-    (try (t) (catch :default e (clojure.test/err! "deftest crashed"))))
+    (try (t) (catch :default e (clojure.test/err! (str "deftest crashed: " (clojure.core/ex-message e))))))
   nil)
 
 ;; clojure.test entry points the suite may call — no-ops; the Janet runner
@@ -96,10 +96,12 @@
 ;; Gate a test on whether its target var exists in this dialect. Jolt only
 ;; implements a subset of clojure.core, so unimplemented fns get skipped
 ;; cleanly rather than erroring.
+;; Skips silently (no stdout) so the worker's stdout stays just the count line;
+;; an unimplemented var simply contributes no assertions.
 (defmacro when-var-exists [var-sym & body]
   (if (resolve var-sym)
     `(do ~@body)
-    `(println "SKIP -" '~var-sym)))
+    nil))
 
 ;; `(thrown? body)` — true iff evaluating body throws. The suite always uses
 ;; the single-arg (no exception-class) form via this portability helper.

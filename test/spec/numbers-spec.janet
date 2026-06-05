@@ -72,6 +72,24 @@
   ["int? ##Inf false"   "false"  "(int? ##Inf)"]
   ["pos-int? ##Inf"     "false"  "(pos-int? ##Inf)"])
 
+# Numeric literal syntaxes. Jolt has no true bignum/ratio/bigdec types, so the
+# N (bigint) and M (bigdec) suffixes read as the plain number, ratios as the
+# double quotient; radix integers (NrDDD) are parsed by base.
+(defspec "numbers / literal syntax"
+  ["bigint suffix N"    "42"     "42N"]
+  ["bigint zero"        "0"      "0N"]
+  ["bigdec suffix M"    "1.5"    "1.5M"]
+  ["bigdec int M"       "0"      "0.0M"]
+  ["ratio -> double"    "0.5"    "1/2"]
+  ["ratio 3/4"          "0.75"   "3/4"]
+  ["neg ratio"          "-0.5"   "-1/2"]
+  ["radix binary"       "10"     "2r1010"]
+  ["radix hex-ish"      "255"    "16rFF"]
+  ["radix base36"       "35"     "36rZ"]
+  ["hex"                "255"    "0xFF"]
+  ["exponent"           "1000.0" "1e3"]
+  ["exponent neg"       "0.015"  "1.5e-2"])
+
 (defspec "numbers / bit-ops & math"
   ["bit-and"            "4"      "(bit-and 12 6)"]
   ["bit-or"             "14"     "(bit-or 12 6)"]

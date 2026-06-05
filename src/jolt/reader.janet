@@ -159,41 +159,78 @@
     (read-fractional s pos (+ end 1))
     end))
 
+# Value of an alphanumeric digit for radix parsing (0-9, a-z/A-Z = 10-35).
+(defn- radix-digit-val [c]
+  (cond
+    (and (>= c 48) (<= c 57)) (- c 48)       # 0-9
+    (and (>= c 97) (<= c 122)) (+ 10 (- c 97)) # a-z
+    (and (>= c 65) (<= c 90)) (+ 10 (- c 65))  # A-Z
+    nil))
+(defn- read-alnum [s pos end]
+  (if (and (< end (length s)) (not (nil? (radix-digit-val (s end)))))
+    (read-alnum s pos (+ end 1))
+    end))
+(defn- read-exponent
+  "If s[end] is e/E (optionally with sign) followed by digits, return the index
+  past the exponent; else end."
+  [s end]
+  (let [len (length s)]
+    (if (and (< end len) (or (= (s end) 101) (= (s end) 69)))   # e / E
+      (let [p (if (and (< (+ end 1) len) (or (= (s (+ end 1)) 43) (= (s (+ end 1)) 45))) (+ end 2) (+ end 1))
+            de (read-digits s p p)]
+        (if (> de p) de end))
+      end)))
+
+# Jolt has no true bignum/ratio types (see README): an integer/float literal
+# suffixed N (bigint) or M (bigdec) reads as the plain number, a ratio a/b reads
+# as the double quotient, and radixed integers (2r101, 16rFF) are parsed by base.
 (defn read-number [s pos]
   (var start pos)      # start is mutable for sign handling
   (var neg false)
-  
+  (def len (length s))
   # optional sign
-  (if (and (< pos (length s)) (= (s pos) 45))
+  (if (and (< pos len) (= (s pos) 45))
     (do (set start (+ pos 1)) (set neg true)))
-  
+
   (let [pos start
-        hex? (and (< (+ pos 1) (length s))
-                  (= (s pos) 48) (= (s (+ pos 1)) 120))
-        start (if hex? (+ pos 2) pos)
-        end (if hex?
-              (read-hex-digits s start start)
-              (read-digits s start start))]
-    (if (= end start) (error (string "Expected number at " pos)))
-    
-    # check for fractional part
-    (if (and (not hex?)
-             (< end (length s))
-             (= (s end) 46))
-      (let [frac-start (+ end 1)
-            frac-end (read-fractional s frac-start frac-start)]
-        (if (= frac-end frac-start) (error "Expected digit after ."))
-        (let [num-str (string/slice s start frac-end)
-              val (scan-number num-str)]
-          [(if neg (- val) val) frac-end]))
-      
-      # integer or hex
-      (let [num-str (string/slice s start end)
-            val (if hex?
-                  (string/format "0x%s" num-str)
-                  num-str)
-            val (scan-number val)]
-        [(if neg (- val) val) end]))))
+        hex? (and (< (+ pos 1) len)
+                  (= (s pos) 48) (or (= (s (+ pos 1)) 120) (= (s (+ pos 1)) 88)))]  # 0x / 0X
+    (if hex?
+      (let [hs (+ pos 2) he (read-hex-digits s hs hs)]
+        (if (= he hs) (error (string "Expected hex digits at " pos)))
+        (let [he2 (if (and (< he len) (= (s he) 78)) (+ he 1) he)   # trailing N
+              val (scan-number (string "0x" (string/slice s hs he)))]
+          [(if neg (- val) val) he2]))
+      (let [iend (read-digits s pos pos)]
+        (if (= iend pos) (error (string "Expected number at " pos)))
+        (cond
+          # radix integer: <base>r<digits>, e.g. 2r1010, 16rFF, 36rZ
+          (and (< iend len) (or (= (s iend) 114) (= (s iend) 82)))
+            (let [base (scan-number (string/slice s pos iend))
+                  ds (+ iend 1)
+                  de (read-alnum s ds ds)]
+              (if (= de ds) (error (string "Expected radix digits at " ds)))
+              (var acc 0)
+              (var i ds)
+              (while (< i de) (set acc (+ (* acc base) (radix-digit-val (s i)))) (++ i))
+              [(if neg (- acc) acc) de])
+          # ratio: <int>/<int> (only when a digit follows the slash)
+          (and (< (+ iend 1) len) (= (s iend) 47) (digit? (s (+ iend 1))))
+            (let [ds (+ iend 1) de (read-digits s ds ds)
+                  numr (scan-number (string/slice s pos iend))
+                  den (scan-number (string/slice s ds de))]
+              [(if neg (- (/ numr den)) (/ numr den)) de])
+          # fractional and/or exponent, optional trailing N/M
+          (let [frac-end (if (and (< iend len) (= (s iend) 46))
+                           (let [fs (+ iend 1) fe (read-fractional s fs fs)]
+                             (if (= fe fs) (error "Expected digit after .")) fe)
+                           iend)
+                exp-end (read-exponent s frac-end)
+                val (scan-number (string/slice s start exp-end))
+                # consume a trailing N (bigint) or M (bigdec) suffix
+                fin (if (and (< exp-end len) (or (= (s exp-end) 78) (= (s exp-end) 77)))
+                      (+ exp-end 1) exp-end)]
+            [(if neg (- val) val) fin]))))))
 
 (defn read-list [s pos]
   # pos is at opening paren

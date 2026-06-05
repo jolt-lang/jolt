@@ -18,9 +18,9 @@
 
 # Baseline: assertions Jolt currently passes across the suite. Raise as Jolt
 # improves so a regression (previously-passing assertion breaking) is caught.
-(def baseline-pass 1900)
+(def baseline-pass 3450)
 # A file is "clean" when it ran with zero failures AND zero errors.
-(def baseline-clean-files 22)
+(def baseline-clean-files 38)
 # Per-file wall-clock budget (seconds). Normal files finish in well under 1s;
 # this only fires on infinite-sequence hangs.
 (def per-file-timeout 6)
@@ -55,11 +55,15 @@
   (if (and ok data) (string data) nil))
 
 (defn- parse-counts [s]
-  # s is "pass fail error"
-  (def parts (string/split " " (string/trim s)))
-  (if (= 3 (length parts))
-    [(scan-number (parts 0)) (scan-number (parts 1)) (scan-number (parts 2))]
-    nil))
+  # Find the "@@COUNTS p f e" sentinel line (a test body may have printed other
+  # lines to stdout, e.g. with-out-str tests).
+  (var result nil)
+  (each line (string/split "\n" s)
+    (when (string/has-prefix? "@@COUNTS " line)
+      (let [parts (string/split " " (string/trim line))]
+        (when (= 4 (length parts))
+          (set result [(scan-number (parts 1)) (scan-number (parts 2)) (scan-number (parts 3))])))))
+  result)
 
 (if (not (os/stat suite-dir))
     (print "clojure-test-suite: ~/src/clojure-test-suite not present — skipped")
