@@ -35,7 +35,10 @@ jobs:
       - name: Install jpm
         run: |
           git clone --depth 1 https://github.com/janet-lang/jpm.git /tmp/jpm
-          sudo janet /tmp/jpm/bootstrap.janet
+          # bootstrap.janet resolves jpm/cli.janet relative to the cwd, so it
+          # must run from inside the jpm checkout.
+          cd /tmp/jpm
+          sudo janet bootstrap.janet
 
       - name: Janet version
         run: janet -v

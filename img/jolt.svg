@@ -1,0 +1,54 @@
+<svg viewBox="0 0 512 512" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <!-- High-energy tri-color gradient -->
+                <linearGradient id="joltEnergy" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#FFDD00" />
+                    <stop offset="50%" stop-color="#FF5500" />
+                    <stop offset="100%" stop-color="#FF0055" />
+                </linearGradient>
+
+                <!-- Subtle neon glow filter -->
+                <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+                    <feGaussianBlur stdDeviation="16" result="blur" />
+                    <feComponentTransfer in="blur" result="glow">
+                        <feFuncA type="linear" slope="0.4" />
+                    </feComponentTransfer>
+                    <feMerge>
+                        <feMergeNode in="glow" />
+                        <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                </filter>
+            </defs>
+
+            <!-- Translate group to perfectly center the asymmetric shape in the canvas -->
+            <g transform="translate(65, -20)" filter="url(#neonGlow)">
+                
+                <!-- 
+                  Main J-Bolt Shape 
+                  Plotted to combine the heavy top bar of a 'J' with the offset jagged cuts of a lightning strike
+                -->
+                <path d="
+                    M 140 100 
+                    L 360 100 
+                    L 260 250 
+                    L 340 250 
+                    L 180 450 
+                    L 220 310 
+                    L 140 310 
+                    L 220 180 
+                    L 140 180 
+                    Z" 
+                    fill="url(#joltEnergy)" 
+                />
+
+                <!-- Trailing speed fragment 1 (Top) -->
+                <path d="M 70 100 L 120 100 L 95 140 L 45 140 Z" fill="url(#joltEnergy)" opacity="0.9" />
+                
+                <!-- Trailing speed fragment 2 (Middle) -->
+                <path d="M 50 180 L 100 180 L 75 220 L 25 220 Z" fill="url(#joltEnergy)" opacity="0.75" />
+                
+                <!-- Trailing speed fragment 3 (Bottom) -->
+                <path d="M 80 260 L 110 260 L 85 300 L 55 300 Z" fill="url(#joltEnergy)" opacity="0.6" />
+
+            </g>
+        </svg>
