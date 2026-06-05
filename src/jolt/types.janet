@@ -120,9 +120,19 @@
   (if (not (nil? result)) result (v :root)))
 
 (defn var-set
-  "Set the root binding of a var."
+  "Set a var's value. If the var has a thread-local binding on the stack, update
+  the innermost frame that binds it (matching Clojure, where var-set targets the
+  current binding); otherwise set the root."
   [v val]
-  (put v :root val))
+  (var i (dec (length binding-stack)))
+  (var done false)
+  (while (and (not done) (>= i 0))
+    (let [frame (in binding-stack i)]
+      (if (not (nil? (get frame v)))
+        (do (put binding-stack i (merge frame {v val})) (set done true))
+        (-- i))))
+  (unless done (put v :root val))
+  val)
 
 (defn alter-var-root
   "Atomically alter the root binding of v by applying f to current value plus args."

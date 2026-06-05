@@ -25,4 +25,8 @@
   ["ex-cause"            "true"
    "(let [c (ex-info \"root\" {})] (= c (ex-cause (ex-info \"outer\" {} c))))"]
   ["propagates to outer"  "\"inner\""
-   "(try (try (throw (ex-info \"inner\" {})) (finally nil)) (catch :default e (ex-message e)))"])
+   "(try (try (throw (ex-info \"inner\" {})) (finally nil)) (catch :default e (ex-message e)))"]
+  ["catch binds thrown value" "42"
+   "(try (throw 42) (catch :default e e))"]
+  ["rethrow preserves ex"  "\"inner\""
+   "(try (try (throw (ex-info \"inner\" {})) (catch :default e (throw e))) (catch :default e (ex-message e)))"])

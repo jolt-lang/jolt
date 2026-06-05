@@ -11,7 +11,8 @@
   ["defn defines fn"    "3"        "(do (defn f [x] (inc x)) (f 2))"]
   ["def with docstring" "7"        "(do (def d \"a doc\" 7) d)"]
   ["dynamic var binding" "2"       "(do (def ^:dynamic *x* 1) (binding [*x* 2] *x*))"]
-  ["binding restores"    "1"       "(do (def ^:dynamic *y* 1) (binding [*y* 9] nil) *y*)"])
+  ["binding restores"    "1"       "(do (def ^:dynamic *y* 1) (binding [*y* 9] nil) *y*)"]
+  ["var-set in binding"  "5"       "(do (def ^:dynamic *z* 1) (binding [*z* 0] (var-set (var *z*) 5) *z*))"])
 
 (defspec "namespaces / ns operations"
   ["in-ns switches"     "true"     "(do (in-ns 'my.ns) (symbol? 'x))"]

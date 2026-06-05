@@ -857,7 +857,14 @@
                 ([err]
                  (var new-bindings @{})
                  (table/setproto new-bindings bindings)
-                 (put new-bindings (catch-sym :name) err)
+                 # bind the originally-thrown value (unwrap the :jolt/exception
+                 # envelope) so (catch ... e (throw e)) rethrows the same value
+                 # rather than nesting another envelope
+                 (def caught
+                   (if (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
+                     (get err :value)
+                     err))
+                 (put new-bindings (catch-sym :name) caught)
                  (var result nil)
                  (each cb catch-body
                    (set result (eval-form ctx new-bindings cb)))
