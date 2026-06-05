@@ -201,7 +201,16 @@
         (or sa sb) false
         # sets
         (or (set? a) (set? b))
-          (if (and (set? a) (set? b)) (deep= (phs-to-struct a) (phs-to-struct b)) false)
+          # value-based: same size and every element of a is value-equal to some
+          # element of b (so #{ {:a 1} } equals #{ (hash-map :a 1) } regardless of
+          # the elements' underlying representations)
+          (if (and (set? a) (set? b) (= (a :cnt) (b :cnt)))
+            (let [eb (phs-seq b)]
+              (var ok true)
+              (each x (phs-seq a)
+                (unless (some (fn [y] (jolt-equal? x y)) eb) (set ok false)))
+              ok)
+            false)
         # maps: compare key/value pairs recursively, order-independent
         true
           (let [pa (eq-map-pairs a) pb (eq-map-pairs b)]
@@ -388,6 +397,7 @@
 
 (defn core-count [coll]
   (cond
+    (nil? coll) 0
     (core-sorted-map? coll) (length (keys (coll :map)))
     (core-sorted-set? coll) (length (coll :items))
     (lazy-seq? coll) (ls-count coll)
@@ -1125,26 +1135,30 @@
           (+= i step))
         (tuple/slice (tuple ;result))))))
 
-(def core-repeat (fn [n x]
-  (var result @[])
-  (var i 0)
-  (while (< i n)
-    (array/push result x)
-    (++ i))
-  result))
+(defn core-repeat
+  "(repeat x) -> infinite lazy seq of x; (repeat n x) -> n copies of x."
+  [a & rest]
+  (if (= 0 (length rest))
+    (do (defn rstep [] (fn [] @[a (rstep)])) (make-lazy-seq (rstep)))
+    (let [n a x (in rest 0)]
+      (var result @[]) (var i 0)
+      (while (< i n) (array/push result x) (++ i))
+      result)))
 
 (defn core-iterate [f x]
   "Lazy infinite sequence x, (f x), (f (f x)), ..."
   (defn istep [v] (fn [] @[v (istep (f v))]))
   (make-lazy-seq (istep x)))
 
-(defn core-repeatedly [n f]
-  (var result @[])
-  (var i 0)
-  (while (< i n)
-    (array/push result (f))
-    (++ i))
-  result)
+(defn core-repeatedly
+  "(repeatedly f) -> infinite lazy seq of (f) calls; (repeatedly n f) -> n calls."
+  [a & rest]
+  (if (= 0 (length rest))
+    (do (defn rstep [] (fn [] @[(a) (rstep)])) (make-lazy-seq (rstep)))
+    (let [n a f (in rest 0)]
+      (var result @[]) (var i 0)
+      (while (< i n) (array/push result (f)) (++ i))
+      result)))
 
 # ============================================================
 # Higher-order functions
