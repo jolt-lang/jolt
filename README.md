@@ -107,6 +107,11 @@ Tests are organized in three layers:
 are `["label" expected actual]`, compared with Jolt's own `=`) plus
 `expect=`/`expect-throws` for unit tests.
 
+The syntactic half of the contract — the surface syntax the reader accepts — is
+specified as an EBNF grammar in [`doc/grammar.ebnf`](doc/grammar.ebnf), with
+Jolt-vs-Clojure deviations noted inline. `test/spec/reader-syntax-spec.janet`
+exercises it.
+
 ## License
 
 [Eclipse Public License 1.0](https://opensource.org/licenses/EPL-1.0)

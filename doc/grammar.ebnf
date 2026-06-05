@@ -1,0 +1,150 @@
+(* ===========================================================================
+   Jolt reader grammar (EBNF)
+   ===========================================================================
+
+   This grammar specifies the surface syntax accepted by Jolt's reader
+   (src/jolt/reader.janet) — the text that `read`/`parse-string`/`load-string`
+   turn into data/forms. It is the syntactic half of Jolt's contract; the
+   behavioural half lives in test/spec/. Where Jolt diverges from Clojure the
+   difference is called out in a comment.
+
+   Notation (ISO-ish EBNF):
+     =           definition          |   alternation
+     ,           concatenation       ( )  grouping
+     [ x ]       optional (0 or 1)   { x }  repetition (0 or more)
+     "x" 'x'     terminal            (* *)  comment
+     ? x ?       informal/char-class terminal
+
+   A source file is a sequence of forms; evaluation is form-by-form.
+   =========================================================================== *)
+
+file            = { ws | form } ;
+
+(* --------------------------------------------------------------------------
+   Whitespace, separators and comments
+   -------------------------------------------------------------------------- *)
+
+ws              = { whitespace-char | comment | discard } ;
+whitespace-char = " " | "\t" | "\n" | "\r" | "," ;   (* comma is whitespace *)
+comment         = ";" , { ? any char except "\n" ? } , [ "\n" ] ;
+discard         = "#_" , ws , form ;                 (* read then drop next form *)
+
+(* --------------------------------------------------------------------------
+   Forms
+   -------------------------------------------------------------------------- *)
+
+form            = scalar
+                | collection
+                | reader-macro
+                | dispatch ;
+
+scalar          = nil | boolean | number | string | character
+                | keyword | symbol ;
+
+collection      = list | vector | map ;
+
+(* --------------------------------------------------------------------------
+   Atoms / scalars
+   -------------------------------------------------------------------------- *)
+
+nil             = "nil" ;
+boolean         = "true" | "false" ;
+
+(* Numbers: decimal integer, hexadecimal integer, or decimal float, each with
+   an optional leading sign. No ratios, radix (NrXXX), BigInt (N) or BigDecimal
+   (M) suffixes, octal, or exponents — Jolt numbers are Janet ints/doubles. *)
+number          = [ sign ] , ( hex-int | float | integer ) ;
+sign            = "+" | "-" ;
+integer         = digit , { digit } ;
+hex-int         = "0x" , hex-digit , { hex-digit } ;
+float           = digit , { digit } , "." , digit , { digit } ;
+digit           = "0".."9" ;
+hex-digit       = digit | "a".."f" | "A".."F" ;
+
+(* Strings: double-quoted with backslash escapes. *)
+string          = '"' , { string-char } , '"' ;
+string-char     = ? any char except '"' and "\" ? | escape ;
+escape          = "\" , ( "n" | "t" | "r" | "\" | '"' | ? other ? ) ;
+
+(* Characters: \x, a named char, or \uNNNN / \oNNN. *)
+character       = "\" , ( char-name | ? any single char ? ) ;
+char-name       = "newline" | "space" | "tab" | "return"
+                | "formfeed" | "backspace" | "nul"
+                | "u" , hex-digit , hex-digit , hex-digit , hex-digit
+                | "o" , octal-digit , { octal-digit } ;
+octal-digit     = "0".."7" ;
+
+(* Keywords: :name, :ns/name, or auto-resolved ::name. *)
+keyword         = "::" , sym-token            (* auto-resolved to current ns *)
+                | ":" , sym-token ;
+
+(* Symbols: a token of symbol-constituent chars not parsed as a number. A "/"
+   separates an optional namespace from the name. *)
+symbol          = sym-token ;
+sym-token       = sym-start , { sym-constituent } ;
+sym-start       = sym-constituent - ( digit ) ;     (* not a leading digit *)
+sym-constituent = letter | digit
+                | "*" | "+" | "!" | "_" | "-" | "?" | "." | "<" | ">"
+                | "=" | "&" | "|" | "$" | "%" | "/" ;
+letter          = "a".."z" | "A".."Z" ;
+
+(* --------------------------------------------------------------------------
+   Collections
+   -------------------------------------------------------------------------- *)
+
+list            = "(" , { ws | form } , ")" ;   (* -> a Clojure list *)
+vector          = "[" , { ws | form } , "]" ;   (* -> a persistent vector *)
+map             = "{" , { ws | map-entry } , "}" ;
+map-entry       = form , ws , form ;            (* an even number of forms *)
+
+(* --------------------------------------------------------------------------
+   Reader macros (prefix sugar). Each expands to a 2-element form
+   (op operand), e.g. 'x -> (quote x), @a -> (deref a).
+   -------------------------------------------------------------------------- *)
+
+reader-macro    = quote | syntax-quote | unquote | unquote-splice
+                | deref | metadata ;
+
+quote           = "'"  , form ;        (* (quote form)            *)
+syntax-quote    = "`"  , form ;        (* (syntax-quote form)     *)
+unquote-splice  = "~@" , form ;        (* (unquote-splicing form) *)
+unquote         = "~"  , form ;        (* (unquote form)          *)
+deref           = "@"  , form ;        (* (deref form)            *)
+metadata        = "^"  , meta-form , ws , form ;   (* attach metadata to form *)
+meta-form       = map | keyword | symbol | string ;
+
+(* --------------------------------------------------------------------------
+   Dispatch forms — introduced by "#".
+   -------------------------------------------------------------------------- *)
+
+dispatch        = set
+                | anon-fn
+                | var-quote
+                | regex
+                | reader-conditional
+                | discard            (* #_form — see Whitespace above *)
+                | tagged-literal ;
+
+set             = "#{" , { ws | form } , "}" ;     (* a persistent set *)
+
+(* Anonymous function. %, %1.. are positional params; %& is the rest param. *)
+anon-fn         = "#(" , { ws | form } , ")" ;     (* -> (fn* [..] body) *)
+anon-arg        = "%" | "%" , digit , { digit } | "%&" ;
+
+var-quote       = "#'" , symbol ;                  (* (var symbol) *)
+
+(* Regex literal -> a Janet PEG-backed regex value.
+   Supported: groups, greedy/lazy quantifiers, (?:..), lookahead (?=..)/(?!..),
+   alternation, anchors ^ $ \b \B, classes, (?i). NOT: lookbehind,
+   backreferences, named groups. *)
+regex           = '#"' , { ? any char except '"' ? | "\" , ? any char ? } , '"' ;
+
+(* Reader conditional. Jolt reads as the :clj platform; #?@ splices a sequence. *)
+reader-conditional
+                = "#?@" , "(" , { ws | feature , ws , form } , ")"
+                | "#?"  , "(" , { ws | feature , ws , form } , ")" ;
+feature         = ":clj" | ":cljs" | ":default" | keyword ;
+
+(* Tagged literal: #tag form. Built-in tags include #inst and #uuid; others
+   dispatch to a registered data-reader (else error). *)
+tagged-literal  = "#" , symbol , ws , form ;
