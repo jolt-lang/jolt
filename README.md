@@ -116,6 +116,27 @@ specified as an EBNF grammar in [`doc/grammar.ebnf`](doc/grammar.ebnf), with
 Jolt-vs-Clojure deviations noted inline. `test/spec/reader-syntax-spec.janet`
 exercises it.
 
+### clojure-test-suite conformance
+
+The [clojure-test-suite](https://github.com/lread/clojure-test-suite) battery
+runs ~3700 assertions green. The assertions that remain failing are all
+accounted for by the platform/design differences above, not by missing
+behavior:
+
+- **No bignum/ratio/BigDecimal** — `bigint`/`numerator`/`denominator`/`bigdec`,
+  the `big-int?`/auto-promotion checks, and the `2N`/`1/2`/`1.0M` literals read
+  but don't carry those exact types.
+- **Integer/float identity** — Janet represents `1` and `1.0` identically, so
+  `quot`/`rem`/`mod`'s `double?`/`int?` result-type assertions and many
+  `float?`/`double?` cases can't distinguish them (`(str 0.0)` is `"0"`).
+- **64-bit integers / Unicode** — `bit-and` etc. on full-width 64-bit constants
+  lose precision (doubles), and `subs`/`count` work on bytes, not code points.
+- **Leniency** — where Clojure throws on a malformed call (bad-shape `conj!`,
+  arithmetic on non-numbers, out-of-range indices), Jolt is mostly permissive,
+  so the suite's `thrown?` assertions for those don't fire.
+- **Eager seqs** — `map`/`filter`/`range` return vectors, so `seq?`/`vector?`/
+  `sequential?` of their results differ, and sorts aren't guaranteed stable.
+
 ## License
 
 [Eclipse Public License 1.0](https://opensource.org/licenses/EPL-1.0)
