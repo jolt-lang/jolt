@@ -149,7 +149,12 @@
   [ctx bindings sym-s]
   (let [name (sym-s :name) ns (sym-s :ns)]
     (if (not (nil? ns))
-      (let [target-ns (ctx-find-ns ctx ns)] (ns-find target-ns name))
+      # Resolve ns aliases (e.g. `p/thrown?` where `p` is a require :as alias)
+      # so that aliased macros are recognized as macros, matching resolve-sym.
+      (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))
+            aliased-ns (ns-import-lookup current-ns ns)
+            target-ns (ctx-find-ns ctx (or aliased-ns ns))]
+        (ns-find target-ns name))
       (if (get bindings name) nil
         (let [current-ns (ctx-current-ns ctx)
               ns (ctx-find-ns ctx current-ns)
@@ -222,7 +227,11 @@
         (each refer-sym refer-syms
           (let [name (if (struct? refer-sym) (refer-sym :name) refer-sym)
                 v (ns-find source-ns name)]
-            (when v (ns-intern target-ns name (var-get v)))))))
+            (when v
+              # Preserve macro-ness: a referred macro must stay a macro, so copy
+              # the :macro flag onto the interned var (not just its value).
+              (let [nv (ns-intern target-ns name (var-get v))]
+                (when (get v :macro) (put nv :macro true))))))))
     nil))
 
 (defn- bind-put
