@@ -87,9 +87,25 @@ Supported and Clojure-compatible: chars as a distinct type, lazy/infinite sequen
 ## Test
 
 ```
-jpm test                       # full test suite
-janet test/conformance.janet   # Clojure-conformance battery
+jpm test                                    # full suite (recurses test/)
+janet test/spec/sequences-spec.janet        # a single spec
+janet test/integration/conformance-test.janet
 ```
+
+Tests are organized in three layers:
+
+- **`test/spec/`** — the contract. Black-box, behavior-defining tables (one file
+  per public API area) that collectively pin down Jolt's defined behavior. This
+  is the authoritative description of what Jolt promises.
+- **`test/integration/`** — cross-cutting and regression batteries: the Clojure
+  conformance suite, SCI bootstrap/runtime loading, jank conformance, and ported
+  Clojure/CLJS test batches (`test/integration/ports/`).
+- **`test/unit/`** — white-box tests for individual components (reader,
+  evaluator, types, persistent collections, regex, compiler).
+
+`test/support/harness.janet` provides the shared `defspec` table runner (cases
+are `["label" expected actual]`, compared with Jolt's own `=`) plus
+`expect=`/`expect-throws` for unit tests.
 
 ## License
 

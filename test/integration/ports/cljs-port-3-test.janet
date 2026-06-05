@@ -1,0 +1,32 @@
+(use ../../../src/jolt/api)
+(defn ct-eval [ctx s] (normalize-pvecs (eval-string ctx s)))
+(print "=== CLJS Ported Part 3 ===")
+(print "16: destructuring...")
+(let [ctx (init)]
+  (assert (= 1 (ct-eval ctx "(let [[x] [1 2 3]] x)")) "seq destructure")
+  (assert (= 2 (ct-eval ctx "(let [[_ y] [1 2 3]] y)")) "seq destructure rest")
+  (assert (= 3 (ct-eval ctx "(let [[_ _ z] [1 2 3]] z)")) "seq destructure last"))
+(print "  passed")
+(print "17: set operations...")
+(let [ctx (init)]
+  (assert (= true (ct-eval ctx "(set? #{1 2 3})")) "set?")
+  (assert (= 3 (ct-eval ctx "(count #{1 2 3})")) "set count")
+  (assert (= true (ct-eval ctx "(contains? #{1 2} 1)")) "contains? set")
+  (assert (= 1 (ct-eval ctx "(get #{1 2 3} 1)")) "get set"))
+(print "  passed")
+(print "18: reader literals...")
+(let [ctx (init)]
+  (assert (= [1 2 3] (ct-eval ctx "[1 2 3]")) "vector literal")
+  (assert (= {:a 1} (ct-eval ctx "{:a 1}")) "map literal")
+  (assert (= true (ct-eval ctx "true")) "true literal")
+  (assert (= nil (ct-eval ctx "nil")) "nil literal")
+  (assert (= 42 (ct-eval ctx "42")) "number literal"))
+(print "  passed")
+(print "19: syntax-quote...")
+(let [ctx (init)]
+  (assert (= true (ct-eval ctx "(= '(1 2 3) '(1 2 3))")) "sq basic list"))
+(print "  passed")
+(print "20: walk...")
+(print "  skipped (clojure.walk needs IFn protocol)")
+
+(print "\nAll CLJS Ported Part 3 tests passed!")
