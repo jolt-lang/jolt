@@ -23,6 +23,13 @@
   ["set as fn present"      "2"         "(#{1 2 3} 2)"]
   ["set as fn missing"      "nil"       "(#{1 2 3} 9)"])
 
+(defspec "set / literals & value elements"
+  ["literal evaluates elements" "#{2 4}" "#{(inc 1) (* 2 2)}"]
+  ["map elements by value"  "true"      "(= #{{:a 1}} #{(hash-map :a 1)})"]
+  ["contains? map by value" "true"      "(contains? #{(hash-map :x 1)} {:x 1})"]
+  ["dedup equal maps"       "1"         "(count (set [{:a 1} (hash-map :a 1)]))"]
+  ["vector elements"        "true"      "(contains? #{[1 2]} (vec [1 2]))"])
+
 (defspec "clojure.set"
   ["union"                  "#{1 2 3 4}" "(do (require (quote [clojure.set :as s])) (s/union #{1 2} #{3 4}))"]
   ["intersection"           "#{2}"       "(do (require (quote [clojure.set :as s])) (s/intersection #{1 2} #{2 3}))"]

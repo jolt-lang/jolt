@@ -1295,7 +1295,8 @@
       (if (= :jolt/char (form :jolt/type))
         form
       (if (= :jolt/set (form :jolt/type))
-        (apply make-phs (form :value))
+        # evaluate each element (set literals like #{(inc 1)} must compute)
+        (apply make-phs (map |(eval-form ctx bindings $) (form :value)))
       (if (= :jolt/tagged (form :jolt/type))
         (let [tag (form :tag)
               data-readers (get (ctx :env) :data-readers)
@@ -1312,7 +1313,19 @@
           (each k (keys form)
             (array/push kvs (eval-form ctx bindings k))
             (array/push kvs (eval-form ctx bindings (get form k))))
-          (struct ;kvs)))))))
+          # If any key is a collection (a Janet table/array — phm/pvec/plist/
+          # record/list), a Janet struct would key it by identity; use a phm so
+          # such keys compare by value.
+          (var coll-key false)
+          (var ki 0)
+          (while (< ki (length kvs))
+            (let [kk (in kvs ki)] (when (or (table? kk) (array? kk)) (set coll-key true)))
+            (+= ki 2))
+          (if coll-key
+            (do (var m (make-phm)) (var j 0)
+                (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2))
+                m)
+            (struct ;kvs))))))))
     (array? form)
     (if (= 0 (length form))
       @[]

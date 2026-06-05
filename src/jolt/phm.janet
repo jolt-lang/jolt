@@ -7,27 +7,44 @@
   (and (table? x)
        (= "jolt.lang.persistent-hash-map.PersistentHashMap" (x :jolt/deftype))))
 
+# Keys are hashed and compared by VALUE. Scalars (keywords/strings/numbers) are
+# value-hashable in Janet already, but collection keys (a phm/pvec/plist map or
+# vector) are Janet tables hashed by identity — so they're canonicalized to a
+# value-hashable struct/tuple first. `canonicalize-key` is injected by core (which
+# knows the pvec/plist/phm types); phm stays dependency-free. Keys are still
+# *stored* as-is, so retrieval and iteration return the original key objects.
+(var canonicalize-key nil)
+(defn set-canonicalize-key!
+  "Install the value-canonicalizer for collection keys (called by core)."
+  [f]
+  (set canonicalize-key f))
+(defn- ck [k]
+  (if (and canonicalize-key (or (table? k) (struct? k) (array? k) (tuple? k)))
+    (canonicalize-key k)
+    k))
+(defn- key= [a b] (= (ck a) (ck b)))
+
 (defn phm-hash-key [k]
-  (if (nil? k) 0 (mod (hash k) bucket-count)))
+  (if (nil? k) 0 (mod (hash (ck k)) bucket-count)))
 
 (defn- phm-bucket-find [bucket k]
   (var i 0) (var n (length bucket)) (var found nil)
   (while (< i n)
-    (if (= k (in bucket i)) (do (set found (in bucket (+ i 1))) (break)))
+    (if (key= k (in bucket i)) (do (set found (in bucket (+ i 1))) (break)))
     (+= i 2))
   found)
 
 (defn phm-bucket-contains? [bucket k]
   (var i 0) (var n (length bucket)) (var found false)
   (while (< i n)
-    (if (= k (in bucket i)) (do (set found true) (break)))
+    (if (key= k (in bucket i)) (do (set found true) (break)))
     (+= i 2))
   found)
 
 (defn- phm-bucket-assoc [bucket k v]
   (var i 0) (var n (length bucket)) (var found-i nil)
   (while (< i n)
-    (if (= k (in bucket i)) (do (set found-i i) (break)))
+    (if (key= k (in bucket i)) (do (set found-i i) (break)))
     (+= i 2))
   (if (not (nil? found-i))
     (let [nb @[]] (var j 0)
@@ -39,7 +56,7 @@
 (defn- phm-bucket-dissoc [bucket k]
   (var i 0) (var n (length bucket)) (var found-i nil)
   (while (< i n)
-    (if (= k (in bucket i)) (do (set found-i i) (break)))
+    (if (key= k (in bucket i)) (do (set found-i i) (break)))
     (+= i 2))
   (if (nil? found-i) bucket
     (if (= n 2) nil

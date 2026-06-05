@@ -40,6 +40,25 @@
   [xs]
   (if mutable? (array ;xs) (pv-from-indexed xs)))
 
+# Canonicalize a collection key/element to a value-hashable Janet struct/tuple so
+# the PHM/PHS treat value-equal maps/vectors as the same key (Janet hashes tables
+# by identity otherwise). Installed into phm via set-canonicalize-key!.
+(var canon-key nil)
+(set canon-key
+  (fn [k]
+    (cond
+      (pvec? k) (tuple ;(map canon-key (pv->array k)))
+      (plist? k) (tuple ;(map canon-key (pl->array k)))
+      (set? k) (do (def t @{}) (each e (phs-seq k) (put t (canon-key e) true)) (table/to-struct t))
+      (phm? k) (do (def t @{}) (each pair (phm-entries k) (put t (canon-key (in pair 0)) (canon-key (in pair 1)))) (table/to-struct t))
+      (and (table? k) (get k :jolt/deftype))
+        (do (def t @{}) (each kk (keys k) (when (not= kk :jolt/deftype) (put t kk (canon-key (get k kk))))) (table/to-struct t))
+      (struct? k) (do (def t @{}) (each kk (keys k) (put t (canon-key kk) (canon-key (get k kk)))) (table/to-struct t))
+      (array? k) (tuple ;(map canon-key k))
+      (tuple? k) (tuple ;(map canon-key k))
+      k)))
+(set-canonicalize-key! canon-key)
+
 (defn realize-for-iteration [c]
   "Normalize a seqable to a Janet array/tuple for iteration: pvec -> array,
   set -> seq, lazy-seq -> realized array; others pass through. Warning: will
@@ -306,9 +325,20 @@
             (if (= idx (length result)) (array/push result v) (put result idx v)))
           (+= i 2))
         (if (tuple? m) (tuple/slice (tuple ;result)) result))
-    (do (var result @{}) (when m (each k (keys m) (put result k (get m k))))
-      (var i 0) (while (< i (length kvs)) (let [k (kvs i) v (kvs (+ i 1))] (put result k v) (+= i 2)))
-      (if (struct? m) (table/to-struct result) result))))
+    # map (struct/table). If any key is a collection, a Janet struct/table keys
+    # it by identity — promote to a phm so such keys compare by value.
+    (let [coll-key (do (var c false) (var i 0)
+                     (while (< i (length kvs))
+                       (when (let [k (in kvs i)] (or (table? k) (array? k))) (set c true))
+                       (+= i 2)) c)]
+      (if coll-key
+        (do (var result (make-phm))
+            (when m (each k (keys m) (set result (phm-assoc result k (get m k)))))
+            (var i 0) (while (< i (length kvs)) (set result (phm-assoc result (in kvs i) (in kvs (+ i 1)))) (+= i 2))
+            result)
+        (do (var result @{}) (when m (each k (keys m) (put result k (get m k))))
+          (var i 0) (while (< i (length kvs)) (let [k (kvs i) v (kvs (+ i 1))] (put result k v) (+= i 2)))
+          (if (struct? m) (table/to-struct result) result))))))
 
 (defn core-dissoc [m & ks]
   (if (phm? m)
@@ -985,18 +1015,19 @@
       (if (jvec? coll) (make-vec result) result)))))
 
 (defn core-group-by [f coll]
-  (var result @{})
-  (var c (realize-for-iteration coll))
-  (each x c
+  # phm base so collection keys group by value
+  (var result (make-phm))
+  (each x (realize-for-iteration coll)
     (let [k (f x)]
-      (put result k (array/push (core-get result k @[]) x))))
+      (set result (phm-assoc result k (array/push (phm-get result k @[]) x)))))
   result)
 
 (defn core-frequencies [coll]
-  (var result @{})
+  # phm base so collection elements are counted by value
+  (var result (make-phm))
   (each x (realize-for-iteration coll)
-    (put result x (+ 1 (get result x 0))))
-  (table/to-struct result))
+    (set result (phm-assoc result x (+ 1 (phm-get result x 0)))))
+  result)
 
 (defn core-partition
   "(partition n coll) or (partition n step coll). Only complete partitions of

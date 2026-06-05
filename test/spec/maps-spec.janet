@@ -54,3 +54,11 @@
   ["count of nil map"       "0"               "(count nil)"]
   ["get from nil"           "nil"             "(get nil :a)"]
   ["immutability"           "true"            "(let [m {:a 1} n (assoc m :b 2)] (and (= m {:a 1}) (= n {:a 1 :b 2})))"])
+
+(defspec "map / collection keys (by value)"
+  ["vector key literal"     ":v"              "(get {[1 2] :v} [1 2])"]
+  ["map key literal"        ":v"              "(get {(hash-map :a 1) :v} {:a 1})"]
+  ["assoc vector key"       ":v"              "(get (assoc {} [1 2] :v) [1 2])"]
+  ["key across repr"        ":v"              "(get (assoc {} (vec [1 2]) :v) [1 2])"]
+  ["frequencies of maps"    "2"               "(get (frequencies [{:a 1} (hash-map :a 1)]) {:a 1})"]
+  ["group-by collection key" "1"              "(count (group-by identity [{:a 1} (hash-map :a 1)]))"])

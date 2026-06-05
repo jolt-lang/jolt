@@ -101,6 +101,15 @@
         (write-value k buf))
       (push-str buf "}"))
 
+    (phm? v)
+    (do
+      (push-str buf "{")
+      (var first? true)
+      (each pair (phm-entries v)
+        (if first? (set first? false) (push-str buf ", "))
+        (write-value (in pair 0) buf) (push-str buf " ") (write-value (in pair 1) buf))
+      (push-str buf "}"))
+
     (and (table? v) (= :jolt/regex (v :jolt/type)))
     (do (push-str buf "#\"") (push-str buf (v :source)) (push-str buf "\""))
 
