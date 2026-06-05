@@ -118,3 +118,14 @@
   ["map a map"          "[1 nil 2]"      "(map {:a 1 :b 2} [:a :z :b])"]
   ["take-nth transducer" "[0 2 4 6 8]"   "(into [] (take-nth 2) (range 10))"]
   ["interpose transducer" "[1 :x 2]"     "(into [] (interpose :x) [1 2])"])
+
+# conj edge cases: 0-arg, conj onto nil (builds a list), conj a map into a map.
+(defspec "seq / conj edge cases"
+  ["conj no args"       "[]"        "(conj)"]
+  ["conj nil one"       "[3]"       "(conj nil 3)"]
+  ["conj nil many"      "[2 1]"     "(conj nil 1 2)"]
+  ["conj vector"        "[1 2 3]"   "(conj [1 2] 3)"]
+  ["conj list prepend"  "[0 1 2]"   "(conj '(1 2) 0)"]
+  ["conj map + map"     "{:a 0, :b 1}" "(conj {:a 0} {:b 1})"]
+  ["conj map + pair"    "{:a 0, :b 1}" "(conj {:a 0} [:b 1])"]
+  ["conj map merge wins" "{:a 2}"   "(conj {:a 0} {:a 1} {:a 2})"])

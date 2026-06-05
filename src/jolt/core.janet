@@ -283,7 +283,16 @@
 # Collections
 # ============================================================
 
-(defn core-conj [coll & xs]
+# Is x a map value (for conj/merge semantics: conj-ing a map merges its entries)?
+(defn- map-value? [x]
+  (or (phm? x) (and (struct? x) (nil? (get x :jolt/type)))))
+
+(defn core-conj [& args]
+  (if (= 0 (length args)) (make-vec @[])        # (conj) -> []
+  (let [coll (first args) xs (tuple/slice args 1)]
+  (if (nil? coll)
+    # conj onto nil builds a list (prepends): (conj nil 1 2) -> (2 1)
+    (do (var result nil) (each x xs (set result (pl-cons x result))) result)
   (if (pvec? coll)
     (do (var result coll) (each x xs (set result (pv-conj result x))) result)
   (if (plist? coll)
@@ -303,20 +312,20 @@
         (if (phm? coll)
           (do
             (var result coll)
-            (var i 0)
-            (while (< i (length xs))
-              (let [pair (xs i)]
-                (set result (phm-assoc result (vnth pair 0) (vnth pair 1))))
-              (++ i))
+            (each x xs
+              (if (map-value? x)
+                # conj a map -> merge its entries
+                (each k (if (phm? x) (keys (phm-to-struct x)) (keys x))
+                  (set result (phm-assoc result k (if (phm? x) (phm-get x k) (in x k)))))
+                (set result (phm-assoc result (vnth x 0) (vnth x 1)))))
             result)
           (do
             (var result coll)
-            (var i 0)
-            (while (< i (length xs))
-              (let [pair (xs i)]
-                (set result (merge result {(vnth pair 0) (vnth pair 1)})))
-              (++ i))
-            result))))))))
+            (each x xs
+              (if (map-value? x)
+                (set result (merge result (if (phm? x) (phm-to-struct x) x)))
+                (set result (merge result {(vnth x 0) (vnth x 1)}))))
+            result)))))))))))
 
 (defn core-assoc [m & kvs]
   (cond
