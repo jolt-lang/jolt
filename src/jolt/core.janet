@@ -620,15 +620,38 @@
     (var i -1)
     (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0)) (do (++ i) (rf (a 0) (f i (a 1))))))))
 
+(defn- reduce-with-reduced
+  "Reduce coll with reducing fn rf and seed init, honoring `reduced`. Steps lazy
+  seqs one cell at a time so a reducing fn that returns `reduced` (e.g. the
+  `take`/`take-while` transducers) can short-circuit over an INFINITE seq instead
+  of realizing it eagerly. Returns the final (unwrapped) accumulator."
+  [rf init coll]
+  (var acc init)
+  (if (lazy-seq? coll)
+    (do
+      (var cur coll) (var go true)
+      (while go
+        (let [cell (realize-ls cur)]
+          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+            (set go false)
+            (do
+              (set acc (rf acc (in cell 0)))
+              (if (core-reduced? acc)
+                (do (set acc (acc :val)) (set go false))
+                (let [rt (in cell 1)]
+                  (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))))
+    (do
+      (var stop false)
+      (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
+        (when (not stop)
+          (set acc (rf acc x))
+          (when (core-reduced? acc) (set acc (acc :val)) (set stop true))))))
+  acc)
+
 (defn- transduce-reduce
   "Reduce coll with reducing fn rf and seed init, honoring `reduced`."
   [rf init coll]
-  (var acc init) (var stop false)
-  (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
-    (when (not stop)
-      (set acc (rf acc x))
-      (when (core-reduced? acc) (set acc (acc :val)) (set stop true))))
-  acc)
+  (reduce-with-reduced rf init coll))
 
 (defn core-transduce
   "(transduce xform f coll) or (transduce xform f init coll)."
@@ -755,24 +778,22 @@
 (def core-reduce
   (fn [& args]
     (case (length args)
-      2 (let [f (args 0) coll (args 1)
-              coll (if (set? coll) (phs-seq coll) (realize-for-iteration coll))]
-          (if (= 0 (length coll))
-            (f)
-            (do
-              (var acc (coll 0))
-              (var i 1)
-              (while (< i (length coll))
-                (set acc (f acc (coll i)))
-                (if (core-reduced? acc) (do (set acc (acc :val)) (set i (length coll))) (++ i)))
-              acc)))
-      3 (let [f (args 0) val (args 1) coll (args 2)
-              coll (if (set? coll) (phs-seq coll) (realize-for-iteration coll))]
-          (var acc val) (var i 0)
-          (while (< i (length coll))
-            (set acc (f acc (in coll i)))
-            (if (core-reduced? acc) (do (set acc (acc :val)) (set i (length coll))) (++ i)))
-          acc)
+      # 2-arg: seed is the first element; reduce over the rest. Lazy seqs are
+      # stepped incrementally (via reduce-with-reduced) so `reduced` can
+      # short-circuit an infinite seq rather than realizing it.
+      2 (let [f (args 0) coll (args 1)]
+          (if (lazy-seq? coll)
+            (let [cell (realize-ls coll)]
+              (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+                (f)
+                (let [rt (in cell 1)]
+                  (if (nil? rt) (in cell 0)
+                    (reduce-with-reduced f (in cell 0) (make-lazy-seq rt))))))
+            (let [c (if (set? coll) (phs-seq coll) (realize-for-iteration coll))]
+              (if (= 0 (length c)) (f)
+                (reduce-with-reduced f (in c 0) (array/slice c 1))))))
+      3 (let [f (args 0) val (args 1) coll (args 2)]
+          (reduce-with-reduced f val coll))
       (error "Wrong number of args passed to: reduce"))))
 
 (defn core-take [n & rest]
