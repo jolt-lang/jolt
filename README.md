@@ -119,7 +119,7 @@ exercises it.
 
 ### clojure-test-suite conformance
 
-The [clojure-test-suite](https://github.com/lread/clojure-test-suite) battery
+The [clojure-test-suite](https://github.com/jank-lang/clojure-test-suite) battery
 runs ~3900 assertions green. Jolt validates its arguments like Clojure —
 arithmetic on non-numbers, comparisons against `nil`, out-of-range indices,
 malformed `conj!`/`assoc!`/`merge`, and non-seqable `first`/`seq`/`vec` all
