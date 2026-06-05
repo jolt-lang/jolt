@@ -1,0 +1,63 @@
+# Specification: numbers & arithmetic.
+(use ../support/harness)
+
+(defspec "numbers / arithmetic"
+  ["add"                "6"      "(+ 1 2 3)"]
+  ["add zero args"      "0"      "(+)"]
+  ["subtract"           "5"      "(- 10 3 2)"]
+  ["negate"             "-5"     "(- 5)"]
+  ["multiply"           "24"     "(* 2 3 4)"]
+  ["multiply zero args" "1"      "(*)"]
+  ["divide"             "2"      "(/ 10 5)"]
+  ["divide to fraction" "0.5"    "(/ 1 2)"]
+  ["inc"                "6"      "(inc 5)"]
+  ["dec"                "4"      "(dec 5)"]
+  ["quot"               "3"      "(quot 10 3)"]
+  ["rem"                "1"      "(rem 10 3)"]
+  ["mod"                "2"      "(mod -1 3)"]
+  ["rem negative"       "-1"     "(rem -1 3)"]
+  ["max"                "9"      "(max 3 9 1)"]
+  ["min"                "1"      "(min 3 9 1)"]
+  ["abs"                "5"      "(abs -5)"]
+  ["promoting + alias"  "3"      "(+' 1 2)"]
+  ["inc' alias"         "6"      "(inc' 5)"])
+
+(defspec "numbers / comparison"
+  ["less than"          "true"   "(< 1 2 3)"]
+  ["less than false"    "false"  "(< 1 3 2)"]
+  ["greater than"       "true"   "(> 3 2 1)"]
+  ["<="                 "true"   "(<= 1 1 2)"]
+  [">="                 "true"   "(>= 3 3 2)"]
+  ["= numbers"          "true"   "(= 2 2)"]
+  ["= different"        "false"  "(= 2 3)"]
+  ["== numeric"         "true"   "(== 2 2)"]
+  ["not="               "true"   "(not= 1 2)"]
+  ["compare less"       "-1"     "(compare 1 2)"]
+  ["compare equal"      "0"      "(compare 1 1)"]
+  ["compare greater"    "1"      "(compare 2 1)"])
+
+(defspec "numbers / predicates"
+  ["zero?"              "true"   "(zero? 0)"]
+  ["pos?"               "true"   "(pos? 5)"]
+  ["neg?"               "true"   "(neg? -5)"]
+  ["even?"              "true"   "(even? 4)"]
+  ["odd?"               "true"   "(odd? 3)"]
+  ["number?"            "true"   "(number? 5)"]
+  ["number? false"      "false"  "(number? :a)"]
+  ["int?"               "true"   "(int? 5)"]
+  ["pos-int?"           "true"   "(pos-int? 5)"]
+  ["neg-int?"           "true"   "(neg-int? -5)"]
+  ["nat-int? zero"      "true"   "(nat-int? 0)"]
+  ["nat-int? neg"       "false"  "(nat-int? -1)"]
+  ["ratio? false"       "false"  "(ratio? 5)"])
+
+(defspec "numbers / bit-ops & math"
+  ["bit-and"            "4"      "(bit-and 12 6)"]
+  ["bit-or"             "14"     "(bit-or 12 6)"]
+  ["bit-xor"            "10"     "(bit-xor 12 6)"]
+  ["bit-shift-left"     "8"      "(bit-shift-left 1 3)"]
+  ["bit-shift-right"    "2"      "(bit-shift-right 8 2)"]
+  ["bit-set"            "8"      "(bit-set 0 3)"]
+  ["bit-clear"          "13"     "(bit-clear 15 1)"]
+  ["bit-test true"      "true"   "(bit-test 4 2)"]
+  ["bigint 64-bit"      "\"9000000000\"" "(str (bigint 9000000000))"])

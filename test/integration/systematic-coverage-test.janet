@@ -42,7 +42,8 @@
   (assert (= true (ct-eval ctx "(set? #{1 2})")) "set?")
   (assert (= false (ct-eval ctx "(set? [1 2])")) "set? false")
   (assert (= true (ct-eval ctx "(seq? '(1 2))")) "seq? list")
-  (assert (= true (ct-eval ctx "(seq? [1 2])")) "seq? vector")
+  # vectors are not ISeq in Clojure — (seq? [1 2]) is false
+  (assert (= false (ct-eval ctx "(seq? [1 2])")) "seq? vector is false")
   (assert (= true (ct-eval ctx "(coll? [1 2])")) "coll? vec")
   (assert (= true (ct-eval ctx "(coll? '(1 2))")) "coll? list")
   (assert (= true (ct-eval ctx "(coll? {})")) "coll? map")

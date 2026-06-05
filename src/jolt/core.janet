@@ -87,7 +87,9 @@
 (defn core-symbol? [x] (and (struct? x) (= :symbol (x :jolt/type))))
 (defn core-vector? [x] (jvec? x))
 (defn core-map? [x] (or (phm? x) (struct? x) (if (and (table? x) (get x :jolt/deftype)) true false)))
-(defn core-seq? [x] (or (array? x) (tuple? x) (pvec? x) (plist? x) (lazy-seq? x)))
+# seq? is true only for actual sequences (lists, lazy-seqs) — NOT vectors, which
+# are not ISeq in Clojure. (A Janet array represents a Clojure list/seq result.)
+(defn core-seq? [x] (or (array? x) (plist? x) (lazy-seq? x)))
 (defn core-coll? [x] (or (array? x) (tuple? x) (pvec? x) (plist? x) (struct? x) (phm? x) (set? x) (lazy-seq? x)))
 
 (defn core-true? [x] (= true x))
@@ -239,10 +241,17 @@
 
 (defn core-not= [& args] (not (apply core-= args)))
 
-(defn core-< [a b] (< a b))
-(defn core-> [a b] (> a b))
-(defn core-<= [a b] (<= a b))
-(defn core->= [a b] (>= a b))
+# Comparisons are variadic: (< a b c) means a < b < c.
+(defn- chain-cmp [op xs]
+  (var ok true) (var i 0)
+  (while (and ok (< i (dec (length xs))))
+    (unless (op (in xs i) (in xs (+ i 1))) (set ok false))
+    (++ i))
+  ok)
+(defn core-< [& xs] (chain-cmp < xs))
+(defn core-> [& xs] (chain-cmp > xs))
+(defn core-<= [& xs] (chain-cmp <= xs))
+(defn core->= [& xs] (chain-cmp >= xs))
 
 # ============================================================
 # Collections

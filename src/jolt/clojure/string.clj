@@ -108,24 +108,23 @@
          s)))
 
 (defn index-of
-  
+  "0-based index of the first occurrence of value in s, or nil."
   ([s value]
-   (let [idx (str-find value s)]
-     (when idx (inc idx))))
+   (str-find value s))
   ([s value from]
    (let [idx (str-find value (subs s from))]
-     (when idx (+ from (inc idx))))))
+     (when idx (+ from idx)))))
 
 (defn last-index-of
   
   ([s value]
    (let [r (str-reverse-b s) sval (str-reverse-b value)
          idx (str-find sval r)]
-     (when idx (inc (- (count s) (+ idx (count value)))))))
+     (when idx (- (count s) (+ idx (count value))))))
   ([s value from]
    (let [sub (subs s 0 from) r (str-reverse-b sub) sval (str-reverse-b value)
          idx (str-find sval r)]
-     (when idx (inc (- from (+ idx (count value))))))))
+     (when idx (- from (+ idx (count value)))))))
 
 (defn re-quote-replacement
   "Escape special characters (backslash and dollar) in a regex replacement
