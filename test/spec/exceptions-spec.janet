@@ -17,6 +17,12 @@
   ["catch value of body" "5"
    "(try (+ 2 3) (catch :default e 0))"])
 
+(defspec "exceptions / assert"
+  ["assert true -> ok"   ":ok"    "(do (assert true) :ok)"]
+  ["assert expr -> ok"   ":ok"    "(do (assert (= 1 1)) :ok)"]
+  ["assert false throws" :throws  "(assert false)"]
+  ["assert nil throws"   :throws  "(assert nil)"])
+
 (defspec "exceptions / ex-info"
   ["ex-message"          "\"oops\""  "(ex-message (ex-info \"oops\" {}))"]
   ["ex-data"             "{:k 1}"    "(ex-data (ex-info \"oops\" {:k 1}))"]

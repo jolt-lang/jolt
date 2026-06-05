@@ -21,7 +21,8 @@
   ["add-watch fires"    "1"      "(let [a (atom 0) seen (atom 0)] (add-watch a :k (fn [k r o n] (reset! seen 1))) (reset! a 5) @seen)"]
   ["remove-watch"       "0"      "(let [a (atom 0) seen (atom 0)] (add-watch a :k (fn [k r o n] (swap! seen inc))) (remove-watch a :k) (reset! a 5) @seen)"]
   ["set-validator! ok"  "5"      "(let [a (atom 0)] (set-validator! a number?) (reset! a 5) @a)"]
-  ["set-validator! rejects" :throws "(let [a (atom 0)] (set-validator! a pos?) (reset! a -1))"])
+  ["set-validator! rejects" :throws "(let [a (atom 0)] (set-validator! a pos?) (reset! a -1))"]
+  ["get-validator"      "true"   "(let [a (atom 0)] (set-validator! a number?) (fn? (get-validator a)))"])
 
 (defspec "state / volatiles & delays"
   ["volatile! deref"    "0"      "(let [v (volatile! 0)] @v)"]
