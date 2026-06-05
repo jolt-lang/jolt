@@ -103,3 +103,18 @@
   ["take cycle"             "[1 2 1 2 1]" "(take 5 (cycle [1 2]))"]
   ["take repeatedly"        "3"           "(count (take 3 (repeatedly (fn [] 1))))"]
   ["take-last of range"     "[8 9]"       "(take-last 2 (range 10))"])
+
+# Clojure IFn values used as the function arg to higher-order fns: a keyword or
+# symbol looks up a key, a set tests membership, a map looks up a key.
+(defspec "seq / IFn values as functions"
+  ["map keyword"        "[1 2 3]"        "(map :a [{:a 1} {:a 2} {:a 3}])"]
+  ["filter keyword"     "[{:ok true}]"   "(filter :ok [{:ok true} {:ok false}])"]
+  ["remove keyword"     "[{:ok false}]"  "(remove :ok [{:ok true} {:ok false}])"]
+  ["sort-by keyword"    "[{:a 1} {:a 2} {:a 3}]" "(sort-by :a [{:a 3} {:a 1} {:a 2}])"]
+  ["sort-by key + cmp"  "[{:a 3} {:a 2} {:a 1}]" "(sort-by :a > [{:a 3} {:a 1} {:a 2}])"]
+  ["filter set"         "[2 4]"          "(filter #{2 4} [1 2 3 4 5])"]
+  ["remove set"         "[1 3 5]"        "(remove #{2 4} [1 2 3 4 5])"]
+  ["group-by keyword"   "{1 [{:n 1}], 2 [{:n 2}]}" "(group-by :n [{:n 1} {:n 2}])"]
+  ["map a map"          "[1 nil 2]"      "(map {:a 1 :b 2} [:a :z :b])"]
+  ["take-nth transducer" "[0 2 4 6 8]"   "(into [] (take-nth 2) (range 10))"]
+  ["interpose transducer" "[1 :x 2]"     "(into [] (interpose :x) [1 2])"])

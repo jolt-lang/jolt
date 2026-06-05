@@ -69,6 +69,8 @@
   set -> seq, lazy-seq -> realized array; others pass through. Warning: will
   loop on infinite lazy-seqs. Terminates on the empty cell, not on nil."
   (cond
+    # nil is an empty seq in Clojure — iterating it yields nothing.
+    (nil? c) @[]
     (pvec? c) (pv->array c)
     (plist? c) (pl->array c)
     (set? c) (phs-seq c)
@@ -432,6 +434,19 @@
             (and (number? key) (>= key 0) (< key (length coll)))
             false))))))))
 
+# Coerce a Clojure IFn value to a Janet-callable fn for higher-order fns
+# (map/filter/sort-by/group-by/...). Janet functions pass through; a keyword or
+# symbol becomes a key lookup, a map a key lookup, a set a membership test — so
+# (map :k coll), (sort-by :k coll), (filter a-set coll) work.
+(defn- as-fn [f]
+  (cond
+    (or (function? f) (cfunction? f)) f
+    (keyword? f) (fn [x &opt d] (core-get x f d))
+    (core-symbol? f) (fn [x &opt d] (core-get x f d))
+    (phm? f) (fn [k &opt d] (core-get f k d))
+    (set? f) (fn [x &opt d] (if (core-contains? f x) x d))
+    true f))
+
 # Sorted collections — minimal: backed by a struct (map) / sorted array (set),
 # ordered by key/element on read. Defined early so seq/count/get can dispatch.
 (defn core-sorted-map? [x] (and (table? x) (= :jolt/sorted-map (x :jolt/type))))
@@ -709,6 +724,7 @@
     (or (nil? c) (= 0 (length c)))))
 
 (defn core-map [f & colls]
+  (def f (as-fn f))
   (if (= 0 (length colls))
     (td-map f)   # transducer arity
   (if (= 1 (length colls))
@@ -773,6 +789,7 @@
       (make-lazy-seq (step init-cs init-idxs init-reals))))))
 
 (defn core-filter [pred & rest]
+  (def pred (as-fn pred))
   (if (= 0 (length rest)) (td-filter pred)
    (let [coll (in rest 0)]
    (if (lazy-seq? coll)
@@ -794,6 +811,7 @@
       (if (jvec? coll) (make-vec result) result))))))
 
 (defn core-remove [pred & rest]
+  (def pred (as-fn pred))
   (if (= 0 (length rest)) (td-remove pred)
     (core-filter (fn [x] (not (pred x))) (in rest 0))))
 
@@ -877,6 +895,7 @@
     (if (= 0 (length c)) nil (tuple ;(array/slice c start)))))
 
 (defn core-take-while [pred & rest]
+ (def pred (as-fn pred))
  (if (= 0 (length rest)) (td-take-while pred)
   (let [coll (in rest 0)]
   (if (lazy-seq? coll)
@@ -893,6 +912,7 @@
       (if (jvec? coll) (make-vec result) result))))))
 
 (defn core-drop-while [pred & rest]
+ (def pred (as-fn pred))
  (if (= 0 (length rest)) (td-drop-while pred)
   (let [coll (in rest 0)
         c (realize-for-iteration coll)]
@@ -1046,12 +1066,21 @@
           (sort arr))
         (tuple/slice (tuple ;arr))))))
 
-(defn core-sort-by [keyfn coll]
-  (if (nil? coll) (break @[]))
-  (var c (realize-for-iteration coll))
-  (let [arr (if (tuple? c) (array/slice c) c)
-        sorted (sort-by keyfn arr)]
-    (if (tuple? c) (tuple/slice (tuple ;sorted)) sorted)))
+# (sort-by keyfn coll) or (sort-by keyfn comparator coll). The comparator (when
+# given) compares the KEYS and may return a boolean or a Clojure-style number.
+(defn core-sort-by [keyfn & rest]
+  (def keyfn (as-fn keyfn))
+  (let [has-cmp (> (length rest) 1)
+        coll (if has-cmp (in rest 1) (first rest))]
+    (if (nil? coll) (tuple)
+      (let [c (realize-for-iteration coll)
+            arr (if (tuple? c) (array/slice c) (array/slice c))]
+        (if has-cmp
+          (let [cmp (first rest)]
+            (sort arr (fn [x y] (let [r (cmp (keyfn x) (keyfn y))]
+                                  (if (number? r) (< r 0) (truthy? r))))))
+          (sort-by keyfn arr))
+        (tuple/slice (tuple ;arr))))))
 
 (defn core-distinct [coll]
   (if (nil? coll) @[]
@@ -1075,6 +1104,7 @@
       (if (jvec? coll) (make-vec result) result)))))
 
 (defn core-group-by [f coll]
+  (def f (as-fn f))
   # phm base so collection keys group by value
   (var result (make-phm))
   (each x (realize-for-iteration coll)
@@ -1105,6 +1135,7 @@
     result))
 
 (defn core-partition-by [f coll]
+  (def f (as-fn f))
   (var result @[])
   (var part @[])
   (var last-k nil)
@@ -2339,7 +2370,10 @@
   (let [[h tag] (if (= 1 (length args)) [the-global-hierarchy (in args 0)] args)
         p (get (h :parents) tag)]
     (if p (make-phs p) (make-phs))))
-(def core-underive underive)
+(defn core-underive [& args]
+  (case (length args)
+    2 (let [[tag parent] args] (underive the-global-hierarchy tag parent) nil)
+    3 (let [[h tag parent] args] (underive h tag parent))))
 (def core-get-method (fn [mm-var dispatch-val]
   (let [methods (get mm-var :jolt/methods)]
     (or (get methods dispatch-val) (get methods :default)))))
@@ -2749,10 +2783,17 @@
     (while (and (< i (length c)) (truthy? (pred (in c i)))) (++ i))
     [(tuple/slice (tuple ;(array/slice c 0 i))) (tuple/slice (tuple ;(array/slice c i)))]))
 
-(defn core-take-nth [n coll]
-  (let [c (realize-for-iteration coll) r @[]]
-    (var i 0) (while (< i (length c)) (array/push r (in c i)) (+= i n))
-    (tuple/slice (tuple ;r))))
+(defn- td-take-nth [n]
+  (fn [rf]
+    (var i 0)
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                (let [keep (= 0 (mod i n))] (++ i)
+                  (if keep (rf (a 0) (a 1)) (a 0)))))))
+(defn core-take-nth [n & rest]
+  (if (= 0 (length rest)) (td-take-nth n)
+    (let [c (realize-for-iteration (in rest 0)) r @[]]
+      (var i 0) (while (< i (length c)) (array/push r (in c i)) (+= i n))
+      (tuple/slice (tuple ;r)))))
 
 (defn core-nthrest [coll n]
   (let [c (realize-for-iteration coll)]
@@ -2766,10 +2807,12 @@
     (if (<= (length c) 1) nil (tuple/slice (tuple ;(array/slice c 0 (- (length c) 1)))))))
 
 (defn core-filterv [pred coll]
+  (def pred (as-fn pred))
   (let [r @[]] (each x (realize-for-iteration coll) (when (truthy? (pred x)) (array/push r x)))
     (make-vec r)))
 
 (defn core-mapv [f & colls]
+  (def f (as-fn f))
   (let [r @[]]
     (if (= 1 (length colls))
       (each x (realize-for-iteration (colls 0)) (array/push r (f x)))
@@ -2778,15 +2821,23 @@
         (var i 0) (while (< i n) (array/push r (apply f (map (fn [c] (in c i)) cs))) (++ i))))
     (make-vec r)))
 
-(defn core-interpose [sep coll]
-  (let [items (realize-for-iteration coll) r @[]]
-    (var first? true)
-    (each x items (if first? (set first? false) (array/push r sep)) (array/push r x))
-    (tuple ;r)))
+(defn- td-interpose [sep]
+  (fn [rf]
+    (var started false)
+    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
+                (if started (rf (rf (a 0) sep) (a 1))
+                  (do (set started true) (rf (a 0) (a 1))))))))
+(defn core-interpose [sep & rest]
+  (if (= 0 (length rest)) (td-interpose sep)
+    (let [items (realize-for-iteration (in rest 0)) r @[]]
+      (var first? true)
+      (each x items (if first? (set first? false) (array/push r sep)) (array/push r x))
+      (tuple ;r))))
 
 (defn core-some-search
   "(some pred coll) — first truthy (pred x), else nil."
   [pred coll]
+  (def pred (as-fn pred))
   (var result nil)
   (each x (realize-for-iteration coll)
     (let [r (pred x)] (when (truthy? r) (set result r) (break))))
@@ -2795,6 +2846,7 @@
 (defn core-keep
   "(keep f coll) — (f x) for each x, dropping nils. (keep f) is a transducer."
   [f & rest]
+  (def f (as-fn f))
   (if (= 0 (length rest))
     (td-keep f)
     (let [r @[]]
@@ -2873,20 +2925,28 @@
   (each x xs (if (get seen x) (set ok false) (put seen x true)))
   ok)
 
+# With a single item, Clojure returns it WITHOUT calling f. On ties, the last
+# extremal item wins (>=/<= update), matching Clojure.
 (defn core-min-key [f & xs]
-  (var best (first xs)) (var bestv (f best))
-  (each x (array/slice xs 1) (let [v (f x)] (when (< v bestv) (set best x) (set bestv v))))
-  best)
+  (def f (as-fn f))
+  (if (= 1 (length xs)) (first xs)
+    (do (var best (first xs)) (var bestv (f best))
+        (each x (array/slice xs 1) (let [v (f x)] (when (<= v bestv) (set best x) (set bestv v))))
+        best)))
 
 (defn core-max-key [f & xs]
-  (var best (first xs)) (var bestv (f best))
-  (each x (array/slice xs 1) (let [v (f x)] (when (> v bestv) (set best x) (set bestv v))))
-  best)
+  (def f (as-fn f))
+  (if (= 1 (length xs)) (first xs)
+    (do (var best (first xs)) (var bestv (f best))
+        (each x (array/slice xs 1) (let [v (f x)] (when (>= v bestv) (set best x) (set bestv v))))
+        best)))
 
 (defn core-not-every? [pred coll]
+  (def pred (as-fn pred))
   (not (do (var ok true) (each x (realize-for-iteration coll) (when (not (truthy? (pred x))) (set ok false))) ok)))
 
 (defn core-not-any? [pred coll]
+  (def pred (as-fn pred))
   (do (var none true) (each x (realize-for-iteration coll) (when (truthy? (pred x)) (set none false))) none))
 
 (defn core-vary-meta [obj f & args]
