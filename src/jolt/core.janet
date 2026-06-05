@@ -346,12 +346,20 @@
     (phm? m)
       (do (var result m) (var i 0) (while (< i (length kvs)) (set result (phm-assoc result (kvs i) (kvs (+ i 1)))) (+= i 2)) result)
     (pvec? m)
-      (do (var result m) (var i 0) (while (< i (length kvs)) (set result (pv-assoc result (kvs i) (kvs (+ i 1)))) (+= i 2)) result)
+      (do (var result m) (var i 0)
+        (while (< i (length kvs))
+          (let [idx (kvs i)]
+            (when (not (and (number? idx) (= idx (math/floor idx)) (>= idx 0) (<= idx (pv-count result))))
+              (error (string "Index " idx " out of bounds for assoc on a vector of length " (pv-count result))))
+            (set result (pv-assoc result idx (kvs (+ i 1)))))
+          (+= i 2)) result)
     # vector: assoc by integer index (appending at count is allowed); stays a vector
     (or (tuple? m) (array? m))
       (do (var result (array/slice m)) (var i 0)
         (while (< i (length kvs))
           (let [idx (kvs i) v (kvs (+ i 1))]
+            (when (not (and (number? idx) (= idx (math/floor idx)) (>= idx 0) (<= idx (length result))))
+              (error (string "Index " idx " out of bounds for assoc on a vector of length " (length result))))
             (if (= idx (length result)) (array/push result v) (put result idx v)))
           (+= i 2))
         (if (tuple? m) (tuple/slice (tuple ;result)) result))
@@ -371,8 +379,15 @@
           (if (struct? m) (table/to-struct result) result))))))
 
 (defn core-dissoc [m & ks]
-  (if (phm? m)
-    (do (var result m) (each k ks (set result (phm-dissoc result k))) result)
+  (cond
+    (nil? m) nil
+    (phm? m) (do (var result m) (each k ks (set result (phm-dissoc result k))) result)
+    # reject clearly non-map values (scalars, sequences, sets, symbol/char structs)
+    (or (number? m) (string? m) (buffer? m) (keyword? m) (boolean? m)
+        (pvec? m) (plist? m) (tuple? m) (array? m) (set? m) (core-transient? m)
+        (and (struct? m) (get m :jolt/type)))
+      (error (string "dissoc requires a map, got " (type m)))
+    # struct map / sorted-map / record / meta-wrapped map
     (do (var result @{}) (each k (keys m) (var in-ks false) (each k2 ks (if (deep= k k2) (do (set in-ks true) (break)))) (if (not in-ks) (put result k (m k))))
       (if (struct? m) (table/to-struct result) result))))
 
@@ -498,7 +513,9 @@
     (set? coll) (coll :cnt)
     (phm? coll) (coll :cnt)
     (and (table? coll) (get coll :jolt/deftype)) (- (length (keys coll)) 1)
-    (length coll)))
+    (or (string? coll) (buffer? coll) (struct? coll) (tuple? coll) (array? coll)) (length coll)
+    # count is undefined on scalars (numbers/keywords/symbols/booleans/chars)
+    (error (string "count not supported on " (type coll)))))
 
 (defn core-first [coll]
   (cond
@@ -1264,8 +1281,15 @@
     (error (string "pop not supported on " (type coll)))))
 
 (defn core-subvec [v start &opt end]
-  (let [a (vview v)]
-    (make-vec (tuple/slice a start (if (nil? end) (length a) end)))))
+  (when (not (or (pvec? v) (tuple? v) (array? v)))
+    (error (string "subvec requires a vector, got " (type v))))
+  (let [a (vview v)
+        e (if (nil? end) (length a) end)]
+    (when (not (and (number? start) (number? e)
+                    (= start (math/floor start)) (= e (math/floor e))
+                    (>= start 0) (<= start e) (<= e (length a))))
+      (error (string "subvec indices out of range: " start " " e " (length " (length a) ")")))
+    (make-vec (tuple/slice a start e))))
 
 (defn core-trampoline [f & args]
   (var result (apply f args))
@@ -2992,6 +3016,7 @@
 # extremal item wins (>=/<= update), matching Clojure.
 (defn core-min-key [f & xs]
   (def f (as-fn f))
+  (when (= 0 (length xs)) (error "min-key requires at least one value"))
   (if (= 1 (length xs)) (first xs)
     (do (var best (first xs)) (var bestv (f best))
         (each x (array/slice xs 1) (let [v (f x)] (when (<= v bestv) (set best x) (set bestv v))))
@@ -2999,6 +3024,7 @@
 
 (defn core-max-key [f & xs]
   (def f (as-fn f))
+  (when (= 0 (length xs)) (error "max-key requires at least one value"))
   (if (= 1 (length xs)) (first xs)
     (do (var best (first xs)) (var bestv (f best))
         (each x (array/slice xs 1) (let [v (f x)] (when (>= v bestv) (set best x) (set bestv v))))
@@ -3193,8 +3219,10 @@
 (defn core-rational? [x] (intval? x))
 (defn core-infinite? [x] (and (number? x) (= (math/abs x) math/inf)))
 (defn core-NaN? [x] (and (number? x) (not= x x)))
-(defn core-numerator [x] x)
-(defn core-denominator [x] 1)
+# Jolt has no ratio type, so numerator/denominator have no valid input (Clojure
+# requires a Ratio and throws otherwise).
+(defn core-numerator [x] (error "numerator requires a ratio (Jolt has no ratios)"))
+(defn core-denominator [x] (error "denominator requires a ratio (Jolt has no ratios)"))
 
 (defn core-list* [& args]
   (let [n (length args)]

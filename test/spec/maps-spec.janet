@@ -71,3 +71,23 @@
   ["key across repr"        ":v"              "(get (assoc {} (vec [1 2]) :v) [1 2])"]
   ["frequencies of maps"    "2"               "(get (frequencies [{:a 1} (hash-map :a 1)]) {:a 1})"]
   ["group-by collection key" "1"              "(count (group-by identity [{:a 1} (hash-map :a 1)]))"])
+
+# Strictness: assoc bounds-checks vector indices; dissoc requires a map;
+# count rejects scalars; numerator/denominator have no ratio type.
+(defspec "map / strictness (throws like Clojure)"
+  ["assoc vec out of bounds" :throws "(assoc [0 1 2] 4 4)"]
+  ["assoc vec negative"      :throws "(assoc [] -1 0)"]
+  ["assoc vec at count ok"   "[1 2 3]" "(assoc [1 2] 2 3)"]
+  ["dissoc on number"        :throws "(dissoc 42 :a)"]
+  ["dissoc on vector"        :throws "(dissoc [1 2] 0)"]
+  ["dissoc on set"           :throws "(dissoc #{:a} :a)"]
+  ["dissoc nil ok"           "nil"   "(dissoc nil :a)"]
+  ["count on number"         :throws "(count 1)"]
+  ["count on keyword"        :throws "(count :a)"]
+  ["count string ok"         "3"     "(count \"abc\")"]
+  ["numerator throws"        :throws "(numerator 1)"]
+  ["denominator throws"      :throws "(denominator 2)"]
+  ["subvec out of range"     :throws "(subvec [0 1 2 3] 1 5)"]
+  ["subvec start>end"        :throws "(subvec [0 1 2 3] 3 2)"]
+  ["subvec ok"               "[1 2]" "(subvec [0 1 2 3] 1 3)"]
+  ["min-key empty"           :throws "(apply min-key identity [])"])
