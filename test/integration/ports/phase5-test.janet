@@ -6,9 +6,10 @@
 (print "22: hierarchy...")
 (let [ctx (init)]
   (assert (= true (ct-eval ctx "(map? (make-hierarchy))")) "make-hierarchy returns map")
-  # 2-arity derive/isa? just returns nil/false (no global hierarchy)
+  # 2-arity derive/isa? use the global hierarchy
   (ct-eval ctx "(derive ::square ::shape)")
-  (assert (= false (ct-eval ctx "(isa? ::square ::shape)")) "isa? 2-arity always false"))
+  (assert (= true (ct-eval ctx "(isa? ::square ::shape)")) "isa? 2-arity via global hierarchy")
+  (assert (= true (ct-eval ctx "(isa? ::square ::square)")) "isa? reflexive"))
 (print "  passed")
 
 # 23. Multimethods — basic dispatch

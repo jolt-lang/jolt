@@ -2226,24 +2226,28 @@
 (defn core-derive
   [& args]
   (case (length args)
-    2 (let [[tag parent] args] (derive* (make-hierarchy) tag parent))
+    2 (let [[tag parent] args] (derive* the-global-hierarchy tag parent) nil)
     3 (let [[h tag parent] args] (derive* h tag parent))))
 (defn core-isa?
   [& args]
   (case (length args)
-    1 false
-    2 false
+    2 (let [[child parent] args] (isa? the-global-hierarchy child parent))
     3 (let [[h child parent] args] (isa? h child parent))))
 (defn core-ancestors
   [& args]
   (case (length args)
-    1 @[]
-    2 (let [[h tag] args] (ancestors h tag))))
+    1 (apply make-phs (ancestors the-global-hierarchy (in args 0)))
+    2 (let [[h tag] args] (apply make-phs (ancestors h tag)))))
 (defn core-descendants
   [& args]
   (case (length args)
-    1 @[]
-    2 (let [[h tag] args] (descendants h tag))))
+    1 (apply make-phs (descendants the-global-hierarchy (in args 0)))
+    2 (let [[h tag] args] (apply make-phs (descendants h tag)))))
+(defn core-parents
+  [& args]
+  (let [[h tag] (if (= 1 (length args)) [the-global-hierarchy (in args 0)] args)
+        p (get (h :parents) tag)]
+    (if p (make-phs p) (make-phs))))
 (def core-underive underive)
 (def core-get-method (fn [mm-var dispatch-val]
   (let [methods (get mm-var :jolt/methods)]
@@ -2583,17 +2587,23 @@
 
 (def core-extend (fn [& args] nil))
 
-(defn core-reify [proto-sym & impls]
+(defn core-reify [& forms]
+  # forms interleaves protocol-name symbols with method specs (name [args] body);
+  # collect every method spec (a list), tracking the first protocol for the tag.
   (def result @[{:jolt/type :symbol :ns nil :name "do"}])
   (def methods @{})
+  (var proto-sym nil)
   (var i 0)
-  (while (< i (length impls))
-    (let [method-spec (impls i)]
-      (def method-name (method-spec 0))
-      (def arg-vec (method-spec 1))
-      (def body (tuple/slice method-spec 2))
-      (put methods (keyword (if (struct? method-name) (method-name :name) method-name)) @{:fn* true :args arg-vec :body body})
-      (+= i 2)))
+  (while (< i (length forms))
+    (def elem (in forms i))
+    (if (and (struct? elem) (= :symbol (elem :jolt/type)))
+      (do (when (nil? proto-sym) (set proto-sym elem)) (++ i))
+      (let [method-name (in elem 0)
+            arg-vec (in elem 1)
+            body (tuple/slice elem 2)]
+        (put methods (keyword (if (struct? method-name) (method-name :name) method-name))
+             @{:fn* true :args arg-vec :body body})
+        (++ i))))
   (array/push result @[
     {:jolt/type :symbol :ns nil :name "make-reified"}
     proto-sym
@@ -3487,6 +3497,7 @@
     "defn-" core-defn-
     "derive" core-derive
     "isa?" core-isa?
+    "parents" core-parents
     "ancestors" core-ancestors
     "descendants" core-descendants
     "make-hierarchy" core-make-hierarchy

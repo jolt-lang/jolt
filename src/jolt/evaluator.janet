@@ -29,7 +29,8 @@
       (= name "disj") (= name "set?")
       (= name "satisfies?")
       (= name "protocol-dispatch") (= name "register-method") (= name "make-reified")
-      (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")))
+      (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")
+      (= name "get-method") (= name "methods")))
 
 (var eval-form nil)
 
@@ -1045,14 +1046,14 @@
                                     method (get methods dv)]
                                 (if method
                                   (apply method args)
-                                  # hierarchy-based match
-                                  (let [found (if hierarchy
-                                                (do (var f nil) (var i 0)
-                                                  (let [ks (keys methods)]
-                                                    (while (and (nil? f) (< i (length ks)))
-                                                      (if (isa? hierarchy dv (ks i)) (set f (get methods (ks i))))
-                                                      (++ i))) f)
-                                                nil)]
+                                  # hierarchy-based match (explicit :hierarchy or
+                                  # the global hierarchy from derive)
+                                  (let [h (or hierarchy the-global-hierarchy)
+                                        found (do (var f nil) (var i 0)
+                                                (let [ks (keys methods)]
+                                                  (while (and (nil? f) (< i (length ks)))
+                                                    (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
+                                                    (++ i))) f)]
                                     (if found (apply found args)
                                       # fall back to the method registered under the default key
                                       (let [dm (get methods default-key)]
@@ -1103,11 +1104,29 @@
                                    (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers)))]
                      (put prefs dispatch-val-a dispatch-val-b)
                      mm-var)
-    "remove-method" (let [mm-var (eval-form ctx bindings (in form 1))
+    # A multimethod's methods live on its VAR, but the value is the dispatch fn;
+    # so resolve the var from the symbol rather than evaluating it.
+    "get-method" (let [mm-arg (in form 1)
+                       mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
+                                (resolve-var ctx bindings mm-arg)
+                                (eval-form ctx bindings mm-arg))
+                       dispatch-val (eval-form ctx bindings (in form 2))]
+                   (when mm-var
+                     (let [methods (get mm-var :jolt/methods)]
+                       (or (get methods dispatch-val) (get methods :default)))))
+    "methods" (let [mm-arg (in form 1)
+                    mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
+                             (resolve-var ctx bindings mm-arg)
+                             (eval-form ctx bindings mm-arg))]
+                (and mm-var (get mm-var :jolt/methods)))
+    "remove-method" (let [mm-arg (in form 1)
+                          mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
+                                   (resolve-var ctx bindings mm-arg)
+                                   (eval-form ctx bindings mm-arg))
                           dispatch-val (eval-form ctx bindings (in form 2))]
-                     (if mm-var
+                     (when mm-var
                        (let [methods (get mm-var :jolt/methods)]
-                         (put methods dispatch-val nil)))
+                         (when methods (put methods dispatch-val nil))))
                      mm-var)
     "remove-all-methods" (let [mm-var (eval-form ctx bindings (in form 1))]
                           (if mm-var

@@ -148,6 +148,10 @@
   []
   {:parents @{} :descendants @{} :ancestors @{}})
 
+# The global hierarchy used by the 1/2-arg derive/isa?/parents/ancestors/
+# descendants and by multimethod dispatch when no explicit hierarchy is given.
+(def the-global-hierarchy (make-hierarchy))
+
 (defn derive*
   "Add a parent relationship to a hierarchy."
   [h tag parent]
