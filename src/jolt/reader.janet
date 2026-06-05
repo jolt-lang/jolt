@@ -303,14 +303,15 @@
         f))
     (def replaced (replace-pct form))
     (def arg-names @[])
-    # Sort %1 %2 %3 ..., then %, then %&
-    (def sorted-keys (sort (keys arg-map)))
-    (each k sorted-keys
+    # Positional params %, %1, %2, ... in order; %& becomes a `& rest` param.
+    (def pos-keys (sort (filter |(not= $ "%&") (keys arg-map))))
+    (each k pos-keys
       (array/push arg-names {:jolt/type :symbol :ns nil :name (get arg-map k)}))
+    (when (get arg-map "%&")
+      (array/push arg-names (sym "&"))
+      (array/push arg-names {:jolt/type :symbol :ns nil :name (get arg-map "%&")}))
     (def result @[(sym "fn*")])
-    (if (> (length arg-names) 0)
-      (array/push result (tuple ;arg-names))
-      (array/push result (tuple)))  # no args
+    (array/push result (tuple ;arg-names))
     (array/push result replaced)
     [result new-pos]))
 

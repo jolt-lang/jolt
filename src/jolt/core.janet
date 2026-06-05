@@ -2432,7 +2432,11 @@
       @[{:jolt/type :symbol :ns nil :name "ex-info"} msg-form {}]]])
 
 # resolve stub — returns nil (symbols not found in Jolt's clojure.core)
-(defn core-resolve [sym] nil)
+(defn core-resolve [sym] nil)  # shadowed by the resolve special form (needs ctx)
+(defn core-ns-name [ns]
+  # ns object -> its name as a symbol (works whether ns is a table/struct/phm)
+  (let [nm (core-get ns :name)]
+    (if nm {:jolt/type :symbol :ns nil :name (string nm)} nil)))
 
 # update — works on both structs and tables
 (defn core-update [m k f & args]
@@ -3532,6 +3536,7 @@
     "defrecord" core-defrecord
     "comment" core-comment
     "resolve" core-resolve
+    "ns-name" core-ns-name
     "update" core-update
     "update-in" core-update-in
     "assoc-in" core-assoc-in

@@ -10,14 +10,14 @@
 
 (print "1: in-ns...")
 (let [ctx (make-ctx)]
-  (def form (parse-string "(in-ns my.app)"))
+  (def form (parse-string "(in-ns 'my.app)"))
   (eval-form ctx @{} form)
   (assert (= "my.app" (ctx-current-ns ctx)) "in-ns switches namespace"))
 (print "  passed")
 
 (print "2: def in different namespace...")
 (let [ctx (make-ctx)]
-  (eval-form ctx @{} (parse-string "(in-ns my.app)"))
+  (eval-form ctx @{} (parse-string "(in-ns 'my.app)"))
   (eval-form ctx @{} (parse-string "(def x 42)"))
   (let [ns (ctx-find-ns ctx "my.app")
         v (ns-find ns "x")]

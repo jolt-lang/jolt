@@ -580,8 +580,12 @@
                 ns (ctx-find-ns ctx ns-name)
                 # Create var first (unbound) so self-referencing defs resolve
                 v (ns-intern ns (name-sym :name))
-                val (eval-form ctx bindings (in form 2))]
+                # (def name docstring value): docstring is form 2, value form 3
+                has-doc (and (> (length form) 3) (string? (in form 2)))
+                val (eval-form ctx bindings (in form (if has-doc 3 2)))]
             (bind-root v val)
+            (when has-doc
+              (put v :meta (merge (or (get v :meta) {}) {:doc (in form 2)})))
             (when dynamic?
               (put v :dynamic true))
             # def returns the var (Clojure semantics); REPL prints #'ns/name
@@ -695,10 +699,19 @@
     "ns-aliases" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :aliases))
     "ns-imports" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :imports))
     "ns-resolve" (ns-resolve (ctx-find-ns ctx (ctx-current-ns ctx)) (in form 1))
-    "in-ns" (let [ns-name (sym-name-str (in form 1))]
-              (ctx-set-current-ns ctx ns-name)
+    "in-ns" (let [sym (eval-form ctx bindings (in form 1))
+                  ns-name (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym))]
               (ctx-find-ns ctx ns-name)
+              (ctx-set-current-ns ctx ns-name)
               nil)
+    "resolve" (let [sym (eval-form ctx bindings (in form 1))]
+                (if (and (struct? sym) (= :symbol (sym :jolt/type)))
+                  (let [r (protect (resolve-var ctx bindings sym))]
+                    (if (= (r 0) true) (r 1) nil))
+                  nil))
+    "find-ns" (let [sym (eval-form ctx bindings (in form 1))
+                    nm (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym))]
+                (get (get (ctx :env) :namespaces) nm))
     "fn*" (let [# optional name: (fn* name [args] ...) / (fn* name ([args] ...)...)
                 named? (and (struct? (in form 1)) (= :symbol ((in form 1) :jolt/type)))
                 fn-name (if named? ((in form 1) :name) nil)
