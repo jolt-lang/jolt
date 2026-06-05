@@ -12,8 +12,15 @@
   ["namespaced keyword" "true"      "(= :a/b :a/b)"]
   ["char"               "\\a"       "\\a"]
   ["char newline"       "true"      "(= \\newline (first \"\\n\"))"]
-  ["ratio not supported but reads ints" "3" "3"]
   ["hex literal"        "255"       "0xff"]
+  ["hex uppercase"      "31"        "0X1F"]
+  ["bigint suffix N"    "42"        "42N"]
+  ["bigdec suffix M"    "1.5"       "1.5M"]
+  ["ratio -> double"    "0.75"      "3/4"]
+  ["radix integer"     "255"        "16rFF"]
+  ["exponent"           "1500.0"    "1.5e3"]
+  ["symbolic Infinity"  "true"      "(infinite? ##Inf)"]
+  ["symbolic NaN"       "true"      "(NaN? ##NaN)"]
   ["symbol via quote"   "'foo"       "'foo"])
 
 (defspec "reader / collection literals"

@@ -11,16 +11,21 @@ Three layers:
 
 ## Current State
 
+Tests are organized in three layers (see the README "Test" section):
+`test/spec/` (the black-box contract), `test/integration/` (cross-cutting and
+external-suite regression batteries), and `test/unit/` (white-box component
+tests). `jpm test` is green.
+
 | Metric | Value |
 |--------|-------|
-| Total tests | 317 |
-| Passing | 317 |
-| Failing | 0 |
-| CLJS ported test files | 16 (1/1a/1b/2/3/3b/4/5/6/7/8/9/10/test + test-sci-runtime + eval-test) |
-| Total assertions | 440 across 31 test files |
-| Source lines | ~5,800 (7 core .janet files) |
+| Spec contract | ~1,000 cases across 24 `test/spec/` files |
+| Integration batteries | 12 (conformance, SCI bootstrap/runtime, jank, clojure-test-suite, compile-mode, API, systematic-coverage) |
+| Unit tests | 9 files (reader, evaluator, types, collections, regex, compiler) |
+| Clojure conformance | 218/218 |
+| clojure-test-suite | ~3,920 assertions pass (remainder are documented platform/design divergences) |
+| Source lines | ~8,600 (`src/jolt/*.janet`; core.janet ~4,000) |
 | SCI source files loading | 9/9 |
-| New features | `eval` special form, `with-meta` core binding, `var-dynamic?` core binding, `load-string` API, `^:dynamic` def handler |
+| Reader literals | full numeric syntax (`N`/`M`/ratio/radix/exponent/`##Inf`); see `doc/grammar.ebnf` |
 
 ## Phase Plan
 
