@@ -56,6 +56,11 @@
   ([s re limit]
    (vec (take limit (str-split re s)))))
 
+(defn split-lines
+  "Split s on \\n or \\r\\n, returning a vector of lines."
+  [s]
+  (vec (str-split #"\r?\n" s)))
+
 (defn starts-with?
   
   [s substr]

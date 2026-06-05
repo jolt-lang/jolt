@@ -201,18 +201,16 @@
     (var refer-syms nil)
     (var i 1)
     (let [slen (length spec)]
+      # Scan ALL options — a spec may carry both :as and :refer, e.g.
+      # [clojure.string :as str :refer [blank?]]; don't stop at the first.
       (while (< i slen)
         (let [item (in spec i)]
-          (if (or (= item :as) (and (struct? item) (= :symbol (item :jolt/type)) (= "as" (item :name))))
-            (do
-              (def alias-sym (in spec (+ i 1)))
-              (set alias (alias-sym :name))
-              (set i slen))
-            (if (or (= item :refer) (and (struct? item) (= :symbol (item :jolt/type)) (= "refer" (item :name))))
-              (do
-                (set refer-syms (in spec (+ i 1)))
-                (set i slen))
-              (++ i))))))
+          (cond
+            (or (= item :as) (and (struct? item) (= :symbol (item :jolt/type)) (= "as" (item :name))))
+              (do (set alias ((in spec (+ i 1)) :name)) (+= i 2))
+            (or (= item :refer) (and (struct? item) (= :symbol (item :jolt/type)) (= "refer" (item :name))))
+              (do (set refer-syms (in spec (+ i 1))) (+= i 2))
+            (++ i)))))
     (maybe-require-ns ctx ns-name)
     (when alias
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))]

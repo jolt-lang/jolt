@@ -2812,6 +2812,36 @@
 (defn core-proxy-call-with-super [f proxy meth] (f))
 (defn core-proxy-mappings [proxy] {})
 (defn core-update-proxy [proxy mappings] proxy)
+(defn core-numeric= [& args]
+  (if (< (length args) 2) true
+    (do (var ok true) (var i 0)
+      (while (and ok (< i (dec (length args))))
+        (unless (= (in args i) (in args (+ i 1))) (set ok false)) (++ i))
+      ok)))
+(defn core-print-str [& xs]
+  (var parts @[]) (each x xs (array/push parts (str-render-one x)))
+  (string/join parts " "))
+(defn core-memfn [& args] (error "memfn: JVM method handles are not supported in Jolt"))
+(defn core-seq-to-map-for-destructuring [s]
+  # used by {:keys [...]} destructuring over a seq of k/v pairs
+  (if (core-sequential? s)
+    (let [items (realize-for-iteration s) m @{}]
+      (var i 0)
+      (while (< (+ i 1) (length items)) (put m (in items i) (in items (+ i 1))) (+= i 2))
+      (table/to-struct m))
+    s))
+(defn core-eduction [& args]
+  # (eduction xform* coll): apply the composed transducers eagerly to coll
+  (let [n (length args)
+        coll (in args (- n 1))
+        xforms (array/slice args 0 (- n 1))
+        xform (if (= 0 (length xforms)) (fn [rf] rf) (apply core-comp xforms))]
+    (core-into (make-vec @[]) xform coll)))
+(defn core->Eduction [xform coll] (core-into (make-vec @[]) xform coll))
+(defn core-proxy-super [& args] (error "proxy-super: JVM proxies are not supported in Jolt"))
+(defn core-construct-proxy [c & args] (error "construct-proxy: not supported in Jolt"))
+(defn core-init-proxy [proxy mappings] proxy)
+(defn core-get-proxy-class [& interfaces] (error "get-proxy-class: not supported in Jolt"))
 (defn core-undefined? [x] false)
 
 (def- char-escapes
@@ -3014,6 +3044,13 @@
     "/" core-/
     "inc" core-inc
     "dec" core-dec
+    # auto-promoting variants — Jolt numbers don't overflow, so these are the
+    # same as their non-quoted counterparts
+    "+'" core-+
+    "-'" core-sub
+    "*'" core-*
+    "inc'" core-inc
+    "dec'" core-dec
     "mod" core-mod
     "rem" core-rem
     "quot" core-quot
@@ -3338,6 +3375,16 @@
     "proxy-call-with-super" core-proxy-call-with-super
     "proxy-mappings" core-proxy-mappings
     "update-proxy" core-update-proxy
+    "==" core-numeric=
+    "print-str" core-print-str
+    "memfn" core-memfn
+    "seq-to-map-for-destructuring" core-seq-to-map-for-destructuring
+    "eduction" core-eduction
+    "->Eduction" core->Eduction
+    "proxy-super" core-proxy-super
+    "construct-proxy" core-construct-proxy
+    "init-proxy" core-init-proxy
+    "get-proxy-class" core-get-proxy-class
     "undefined?" core-undefined?
     "char-escape-string" core-char-escape-string
     "char-name-string" core-char-name-string

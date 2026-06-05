@@ -19,6 +19,12 @@
 
 (load-stubs ctx "src/jolt/clojure/sci/lang_stubs.clj")
 (load-stubs ctx "src/jolt/clojure/sci/io_stubs.clj")
+(load-stubs ctx "src/jolt/clojure/sci/host_stubs.clj")
+
+# namespaces.cljc copies vars out of Jolt's own clojure.string/set/walk/edn, so
+# make sure those are loaded before it runs.
+(each lib ["clojure.string" "clojure.set" "clojure.walk" "clojure.edn"]
+  (protect (eval-form ctx @{} (first (parse-next (string "(require '[" lib "])"))))))
 
 (defn load-file [ctx path]
   (var s (slurp path))
