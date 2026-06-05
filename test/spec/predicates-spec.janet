@@ -34,6 +34,12 @@
   ["sequential? vector" "true"   "(sequential? [1])"]
   ["associative? map"   "true"   "(associative? {:a 1})"]
   ["associative? vec"   "true"   "(associative? [1])"]
+  ["associative? list"  "false"  "(associative? '(1 2))"]
+  ["associative? set"   "false"  "(associative? #{1})"]
+  ["reversible? vec"    "true"   "(reversible? [1 2])"]
+  ["reversible? list"   "false"  "(reversible? '(1 2))"]
+  ["reversible? smap"   "true"   "(reversible? (sorted-map :a 1))"]
+  ["reversible? hmap"   "false"  "(reversible? (hash-map :a 1))"]
   ["indexed? vector"    "true"   "(indexed? [1])"]
   ["counted? vector"    "true"   "(counted? [1])"])
 

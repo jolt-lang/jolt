@@ -1023,6 +1023,7 @@
 (defn core-nth
   "Return the nth element of a sequential collection."
   [coll idx &opt default]
+  (if (nil? coll) default      # (nth nil i) -> nil / default, never throws
   (if (core-transient? coll)
     (let [a (coll :arr)] (if (and (>= idx 0) (< idx (length a))) (in a idx) default))
   (if (plist? coll)
@@ -1050,7 +1051,7 @@
         (if (string? c) (make-char (in c idx)) (in c idx))
         (if (nil? default)
           (error (string "Index " idx " out of bounds, length: " (length c)))
-          default))))))))
+          default)))))))))
 
 (defn core-sort
   "(sort coll) or (sort comparator coll). Comparator may return a boolean or a
@@ -1908,7 +1909,10 @@
   [expr & clauses]
   (def g (gensym))
   (defn make-const [c]
-    (if (and (struct? c) (= :symbol (c :jolt/type)))
+    # case constants are literals, never evaluated: quote symbols and list
+    # literals (read as arrays) so e.g. `sym` and a wrapped list `(a b c)` match
+    # by value rather than resolving/calling.
+    (if (or (and (struct? c) (= :symbol (c :jolt/type))) (array? c))
       @[{:jolt/type :symbol :ns nil :name "quote"} c]
       c))
   (defn make-test [c]
@@ -2565,6 +2569,7 @@
 
 # update — works on both structs and tables
 (defn core-update [m k f & args]
+  (def f (as-fn f))
   (core-assoc m k (apply f (core-get m k) args)))
 
 (defn- ks-rest [ks]
@@ -2914,7 +2919,11 @@
     hit))
 
 (defn core-sequential? [x] (or (tuple? x) (array? x) (pvec? x) (plist? x) (lazy-seq? x)))
-(defn core-associative? [x] (or (phm? x) (struct? x) (tuple? x) (array? x) (pvec? x) (and (table? x) (not (set? x)))))
+# Associative = maps and (real) vectors only. pvec is a literal/built vector;
+# tuples and lists are seq results, not associative.
+(defn core-associative? [x]
+  (or (pvec? x) (phm? x) (core-sorted-map? x)
+      (and (struct? x) (nil? (get x :jolt/type)))))
 (defn core-ifn? [x]
   (or (function? x) (cfunction? x) (keyword? x) (phm? x) (set? x) (tuple? x) (array? x) (pvec? x)
       (and (struct? x) (= :symbol (x :jolt/type)))))
@@ -3109,7 +3118,8 @@
 
 (defn core-counted? [x]
   (or (pvec? x) (plist? x) (phm? x) (set? x) (tuple? x) (array? x) (string? x)))
-(defn core-reversible? [x] (or (pvec? x) (tuple? x) (array? x)))
+# Reversible (supports rseq) = vectors and sorted collections.
+(defn core-reversible? [x] (or (pvec? x) (core-sorted-map? x) (core-sorted-set? x)))
 (defn core-seqable? [x]
   (or (nil? x) (tuple? x) (array? x) (pvec? x) (plist? x) (phm? x) (set? x)
       (struct? x) (lazy-seq? x) (string? x)

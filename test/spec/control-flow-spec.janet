@@ -15,7 +15,12 @@
   ["condp"              "\"two\"" "(condp = 2 1 \"one\" 2 \"two\" \"other\")"]
   ["case"               ":b"     "(case 2 1 :a 2 :b :default)"]
   ["case default"       ":d"     "(case 9 1 :a 2 :b :d)"]
-  ["case multi"         ":ab"    "(case 2 (1 2) :ab 3 :c)"])
+  ["case multi"         ":ab"    "(case 2 (1 2) :ab 3 :c)"]
+  ["case symbol const"  ":s"     "(case 'foo foo :s :default)"]
+  ["case vector const"  ":v"     "(case [1 2] [1 2] :v :default)"]
+  ["case map const"     ":m"     "(case {:a 1} {:a 1} :m :default)"]
+  ["case list const"    ":l"     "(case '(a b) (quote (a b)) :l :default)"]
+  ["case keyword"       ":k"     "(case :x :x :k :default)"])
 
 (defspec "control / logic"
   ["and all true"       "3"      "(and 1 2 3)"]
