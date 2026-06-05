@@ -55,9 +55,15 @@
 # Run thunk (a jolt 0-arg closure, directly callable) in a fiber; return a
 # buffered(1) channel that conveys its value once, then closes. A nil result
 # just closes. Buffered(1) so a fire-and-forget go leaves no parked fiber.
+#
+# The dynamic-var bindings in effect at spawn time are conveyed into the fiber
+# (Clojure binding conveyance): we snapshot them here (on the spawning fiber)
+# and install a private copy inside the new fiber before running the body.
 (defn async-go-spawn [thunk]
+  (def snap (snapshot-bindings))
   (def w (async-chan 1))
   (ev/go (fn []
+           (install-bindings snap)
            (def res (protect (thunk)))
            (when (and (in res 0) (not (nil? (in res 1))))
              (async-give w (in res 1)))

@@ -53,3 +53,19 @@
    "99" (a "(<! (go (try (<! (go 99)) (catch :default e -1))))")]
   ["<! inside a nested fn called in a go"
    "7"  (a "(def c (chan)) (go (>! c 7)) (<! (go ((fn [] (<! c)))))")])
+
+# Dynamic-var binding conveyance (Phase 2): a go block sees the dynamic bindings
+# in effect when it was spawned, concurrent go blocks don't interleave, and a
+# go block's own binding shadows the conveyed one.
+(defn- d [body] (string "(do " REQ "(def ^:dynamic *x* 0) " body ")"))
+(defspec "core.async / binding conveyance"
+  ["go conveys the binding"
+   "10" (d "(<! (binding [*x* 10] (go (<! (timeout 5)) *x*)))")]
+  ["concurrent go blocks isolated"
+   "[:a :b]"
+   (d "(def ra (binding [*x* :a] (go (<! (timeout 20)) *x*))) (def rb (binding [*x* :b] (go (<! (timeout 5)) *x*))) [(<! ra) (<! rb)]")]
+  ["binding doesn't leak to root"
+   "0" (d "(<! (binding [*x* 99] (go (<! (timeout 5))))) *x*")]
+  ["go's own binding shadows conveyed"
+   ":inner"
+   (d "(<! (binding [*x* :outer] (go (binding [*x* :inner] (<! (timeout 5)) *x*))))")])

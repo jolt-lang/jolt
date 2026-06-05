@@ -40,17 +40,36 @@
 # Var
 # ============================================================
 
-(def- binding-stack @[])  # stack of {var → value} tables for thread-local bindings
+# Dynamic-var binding stack. Stored fiber-locally (via Janet's dyn), so that
+# concurrent go blocks — each a Janet fiber — don't interleave each other's
+# dynamic bindings, and a go block conveys the bindings in effect when it was
+# spawned (see snapshot-bindings/install-bindings). Each fiber lazily gets its
+# own array on first use.
+(defn cur-binding-stack []
+  (or (dyn :jolt/binding-stack)
+      (let [s @[]] (setdyn :jolt/binding-stack s) s)))
 
 (defn push-thread-bindings
   "Push a frame of dynamic var bindings. Takes a struct of var→value."
   [bindings]
-  (array/push binding-stack bindings))
+  (array/push (cur-binding-stack) bindings))
 
 (defn pop-thread-bindings
   "Pop the most recent frame of dynamic var bindings."
   []
-  (array/pop binding-stack))
+  (array/pop (cur-binding-stack)))
+
+(defn snapshot-bindings
+  "Shallow copy of the current binding stack (frames are immutable value maps).
+  Captured by a go block at spawn time for binding conveyance."
+  []
+  (array/slice (cur-binding-stack)))
+
+(defn install-bindings
+  "Install a snapshot as this fiber's binding stack (a fresh copy, so the
+  fiber's own push/pop/var-set don't mutate the snapshot's frames array)."
+  [snap]
+  (setdyn :jolt/binding-stack (array/slice snap)))
 
 (defn make-var
   "Create a new Jolt Var.
@@ -107,10 +126,11 @@
   Otherwise return the root binding."
   [v]
   # walk binding stack top-down for this var
+  (def bs (cur-binding-stack))
   (var result nil)
-  (var i (dec (length binding-stack)))
+  (var i (dec (length bs)))
   (while (>= i 0)
-    (let [frame (in binding-stack i)
+    (let [frame (in bs i)
           val (get frame v)]
       (if (not (nil? val))
         (do
@@ -124,12 +144,13 @@
   the innermost frame that binds it (matching Clojure, where var-set targets the
   current binding); otherwise set the root."
   [v val]
-  (var i (dec (length binding-stack)))
+  (def bs (cur-binding-stack))
+  (var i (dec (length bs)))
   (var done false)
   (while (and (not done) (>= i 0))
-    (let [frame (in binding-stack i)]
+    (let [frame (in bs i)]
       (if (not (nil? (get frame v)))
-        (do (put binding-stack i (merge frame {v val})) (set done true))
+        (do (put bs i (merge frame {v val})) (set done true))
         (-- i))))
   (unless done (put v :root val))
   val)
