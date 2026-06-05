@@ -119,9 +119,11 @@ exercises it.
 ### clojure-test-suite conformance
 
 The [clojure-test-suite](https://github.com/lread/clojure-test-suite) battery
-runs ~3700 assertions green. The assertions that remain failing are all
-accounted for by the platform/design differences above, not by missing
-behavior:
+runs ~3900 assertions green. Jolt validates its arguments like Clojure —
+arithmetic on non-numbers, comparisons against `nil`, out-of-range indices,
+malformed `conj!`/`assoc!`/`merge`, and non-seqable `first`/`seq`/`vec` all
+throw. The assertions that remain failing are accounted for by the
+platform/design differences above, not by missing behavior:
 
 - **No bignum/ratio/BigDecimal** — `bigint`/`numerator`/`denominator`/`bigdec`,
   the `big-int?`/auto-promotion checks, and the `2N`/`1/2`/`1.0M` literals read
@@ -131,11 +133,10 @@ behavior:
   `float?`/`double?` cases can't distinguish them (`(str 0.0)` is `"0"`).
 - **64-bit integers / Unicode** — `bit-and` etc. on full-width 64-bit constants
   lose precision (doubles), and `subs`/`count` work on bytes, not code points.
-- **Leniency** — where Clojure throws on a malformed call (bad-shape `conj!`,
-  arithmetic on non-numbers, out-of-range indices), Jolt is mostly permissive,
-  so the suite's `thrown?` assertions for those don't fire.
 - **Eager seqs** — `map`/`filter`/`range` return vectors, so `seq?`/`vector?`/
   `sequential?` of their results differ, and sorts aren't guaranteed stable.
+- **Map entries** — a map entry is an ordinary 2-vector, so `key`/`val` accept
+  any 2-vector and a few `thrown?` cases for non-entries don't fire.
 
 ## License
 
