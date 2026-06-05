@@ -34,10 +34,27 @@
 
 (var eval-form nil)
 
+# A transient is a tagged mutable table @{:jolt/type :jolt/transient :kind ...}.
+(defn- jolt-transient? [x]
+  (and (table? x) (= :jolt/transient (get x :jolt/type))))
+
+# Read-only lookup over a transient (vector index / map key / set membership),
+# mirroring core-get. Map/set backing tables are keyed by the same canon used
+# by phm, so canonicalize collection keys here too.
+(defn- transient-lookup [t k default]
+  (case (t :kind)
+    :vector (let [a (t :arr)]
+              (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length a)))
+                (in a k) default))
+    :map (let [e (get (t :tbl) (canon k))] (if (nil? e) default (in e 1)))
+    :set (if (nil? (get (t :tbl) (canon k))) default k)
+    default))
+
 (defn- coll-lookup
   "Clojure `get` semantics over a jolt collection, used for collection-as-IFn."
   [coll k default]
   (cond
+    (jolt-transient? coll) (transient-lookup coll k default)
     (phm? coll) (phm-get coll k default)
     (set? coll) (if (phs-contains? coll k) k default)
     (pvec? coll)
@@ -59,6 +76,7 @@
   [ctx f args]
   (cond
     (or (function? f) (cfunction? f)) (apply f args)
+    (jolt-transient? f) (transient-lookup f (get args 0) (get args 1))
     (keyword? f) (coll-lookup (get args 0) f (get args 1))
     (and (struct? f) (= :symbol (f :jolt/type)))
       (coll-lookup (get args 0) f (get args 1))

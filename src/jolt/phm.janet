@@ -22,6 +22,11 @@
   (if (and canonicalize-key (or (table? k) (struct? k) (array? k) (tuple? k)))
     (canonicalize-key k)
     k))
+(defn canon
+  "Public canonicalizer: maps a key to its value-hashable form (identity for
+  scalars). Used by callers that index the same canonicalized tables phm uses
+  (e.g. transient maps/sets)."
+  [k] (ck k))
 (defn- key= [a b] (= (ck a) (ck b)))
 
 (defn phm-hash-key [k]

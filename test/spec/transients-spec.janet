@@ -44,3 +44,35 @@
    "(let [v [1 2 3] _ (persistent! (conj! (transient v) 4))] (= v [1 2 3]))"]
   ["source map unchanged"    "true"
    "(let [m {:a 1} _ (persistent! (assoc! (transient m) :b 2))] (= m {:a 1}))"])
+
+# Transients are invokable for read-only lookup, like their persistent forms.
+(defspec "transient / invokable lookup"
+  ["vector index"        "20"   "((transient [10 20 30]) 1)"]
+  ["map key as fn"       "7"    "((transient {:x 7}) :x)"]
+  ["map key default"     "99"   "((transient {:x 7}) :z 99)"]
+  ["keyword on transient" "7"   "(:x (transient {:x 7}))"]
+  ["set membership"      "2"    "((transient #{1 2 3}) 2)"]
+  ["set miss default"    ":no"  "((transient #{1 2 3}) 42 :no)"]
+  ["collection key"      ":v"   "((transient {[1 2] :v}) [1 2])"])
+
+# assoc! (unlike assoc) accepts an odd arg count — a missing final value is nil.
+# (A struct literal can't express an explicit nil value, so assert via contains?.)
+(defspec "transient / assoc! odd args"
+  ["odd arg key present"  "true"
+   "(contains? (persistent! (assoc! (transient {}) :a 1 :b)) :b)"]
+  ["odd arg value is nil" "true"
+   "(nil? (get (persistent! (assoc! (transient {}) :a 1 :b)) :b))"]
+  ["odd arg keeps prior"  "1"
+   "(get (persistent! (assoc! (transient {}) :a 1 :b)) :a)"]
+  ["vector odd arg"       "[9 nil]"
+   "(persistent! (apply assoc! (transient []) [0 9 1]))"])
+
+# Using a transient after persistent! (or popping an empty one) throws.
+(defspec "transient / invalidation"
+  ["conj! after persistent!" :throws
+   "(let [t (transient [])] (persistent! t) (conj! t 1))"]
+  ["assoc! after persistent!" :throws
+   "(let [t (transient {})] (persistent! t) (assoc! t :a 1))"]
+  ["persistent! twice"       :throws
+   "(let [t (transient [])] (persistent! t) (persistent! t))"]
+  ["pop! empty"              :throws "(pop! (transient []))"])

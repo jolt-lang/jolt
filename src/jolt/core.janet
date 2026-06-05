@@ -3129,7 +3129,13 @@
     (array? coll) @{:jolt/type :jolt/transient :kind :vector :arr (array/slice coll)}
     (error (string "Don't know how to create a transient from " (type coll)))))
 
+# A transient is invalidated by persistent!; using it afterwards is a bug.
+(defn- tr-check-active! [t]
+  (when (get t :jolt/persistent)
+    (error "Transient used after persistent! call")))
+
 (defn- tr-conj! [t x]
+  (tr-check-active! t)
   (case (t :kind)
     :vector (array/push (t :arr) x)
     :set    (put (t :tbl) (canon-key x) x)
@@ -3137,6 +3143,7 @@
   t)
 
 (defn- tr-assoc! [t k v]
+  (tr-check-active! t)
   (case (t :kind)
     :vector (let [a (t :arr)] (if (= k (length a)) (array/push a v) (put a k v)))
     :map    (put (t :tbl) (canon-key k) @[k v])
@@ -3149,31 +3156,42 @@
     (apply core-conj t xs)))           # lenient fallback for a persistent coll
 
 (defn core-assoc! [t & kvs]
+  # Unlike assoc, assoc! accepts an ODD number of args — a missing final value
+  # is taken as nil (so (get kvs (+ i 1)) rather than (in ...), which would
+  # error on the dangling key).
   (if (core-transient? t)
-    (do (var i 0) (while (< i (length kvs)) (tr-assoc! t (in kvs i) (in kvs (+ i 1))) (+= i 2)) t)
+    (do (var i 0) (while (< i (length kvs)) (tr-assoc! t (in kvs i) (get kvs (+ i 1))) (+= i 2)) t)
     (apply core-assoc t kvs)))
 
 (defn core-dissoc! [t & ks]
   (if (core-transient? t)
-    (do (each k ks (put (t :tbl) (canon-key k) nil)) t)
+    (do (tr-check-active! t) (each k ks (put (t :tbl) (canon-key k) nil)) t)
     (apply core-dissoc t ks)))
 
 (defn core-disj! [t & xs]
   (if (core-transient? t)
-    (do (each x xs (put (t :tbl) (canon-key x) nil)) t)
+    (do (tr-check-active! t) (each x xs (put (t :tbl) (canon-key x) nil)) t)
     (apply core-disj t xs)))
 
 (defn core-pop! [t]
   (if (core-transient? t)
-    (do (array/pop (t :arr)) t)
+    (do (tr-check-active! t)
+        (when (= 0 (length (t :arr))) (error "Can't pop empty vector"))
+        (array/pop (t :arr)) t)
     (core-pop t)))
 
 (defn core-persistent! [t]
   (if (core-transient? t)
-    (case (t :kind)
-      :vector (make-vec (t :arr))
-      :set (do (var s (make-phs)) (each [_ e] (pairs (t :tbl)) (set s (phs-conj s e))) s)
-      :map (do (var m (make-phm)) (each [_ pair] (pairs (t :tbl)) (set m (phm-assoc m (in pair 0) (in pair 1)))) m))
+    (do
+      (tr-check-active! t)
+      (def result
+        (case (t :kind)
+          :vector (make-vec (t :arr))
+          :set (do (var s (make-phs)) (each [_ e] (pairs (t :tbl)) (set s (phs-conj s e))) s)
+          :map (do (var m (make-phm)) (each [_ pair] (pairs (t :tbl)) (set m (phm-assoc m (in pair 0) (in pair 1)))) m)))
+      # Invalidate: any further bang op (or a second persistent!) now throws.
+      (put t :jolt/persistent true)
+      result)
     t))
 
 # Unchecked arithmetic — Jolt numbers don't overflow, so these are plain ops.
