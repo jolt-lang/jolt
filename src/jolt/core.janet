@@ -49,6 +49,8 @@
     (plist? c) (pl->array c)
     (set? c) (phs-seq c)
     (phm? c) (phm-entries c)
+    # byte array (Janet buffer) -> array of byte values
+    (buffer? c) (let [a @[]] (each x c (array/push a x)) a)
     # struct map literal (no :jolt/type marker — not a symbol/char) -> entries
     (and (struct? c) (nil? (get c :jolt/type))) (map (fn [k] (tuple k (get c k))) (keys c))
     (lazy-seq? c)
@@ -441,6 +443,7 @@
     (lazy-seq? coll) (ls-seq coll)
     (pvec? coll) (if (= 0 (pv-count coll)) nil (tuple ;(pv->array coll)))
     (plist? coll) (if (pl-empty? coll) nil (tuple ;(pl->array coll)))
+    (buffer? coll) (if (= 0 (length coll)) nil (let [a @[]] (each x coll (array/push a x)) (tuple ;a)))
     (set? coll) (phs-seq coll)
     (phm? coll) (tuple ;(phm-entries coll))
     (tuple? coll) (tuple/slice coll)
@@ -1428,19 +1431,141 @@
   (string buf))
 
 # ============================================================
-# Array primitives (needed for persistent data structures)
+# Java-style arrays — backed by Janet's C primitives. Byte arrays use Janet
+# buffers (contiguous, O(1) indexed get/put — genuinely fast); object and
+# numeric arrays use Janet arrays. aget/aset/alength/aclone work over both.
 # ============================================================
 
-(def core-alength (fn [arr] (length arr)))
-(def core-aget (fn [arr idx] (in arr idx)))
-(def core-aset (fn [arr idx val] (put arr idx val) val))
-(def core-aclone (fn [arr] (array/slice arr 0)))
-(def core-object-array (fn [size] (array/new-filled size nil)))
-(def core-int-array (fn [size] (array/new-filled size 0)))
-(def core-to-array (fn [coll]
-  (def arr @[])
-  (each x (realize-for-iteration coll) (array/push arr x))
-  arr))
+(defn core-alength [arr] (length arr))
+
+(defn core-aget [arr & idxs]
+  # multi-dim: aget arr i j ... walks nested arrays
+  (var v arr) (each i idxs (set v (in v i))) v)
+
+(defn core-aset [arr & more]
+  # (aset arr i v) or (aset arr i j ... v): last arg is the value
+  (let [n (length more) val (in more (- n 1))]
+    (var target arr) (var k 0)
+    (while (< k (- n 2)) (set target (in target (in more k))) (++ k))
+    (put target (in more (- n 2)) val) val))
+
+(defn core-aclone [arr]
+  (if (buffer? arr) (buffer/slice arr) (array/slice arr)))
+
+# Numeric / object arrays: (T-array size) | (T-array size init) | (T-array seq)
+(defn- make-num-array [a rest init]
+  (if (number? a)
+    (array/new-filled a (if (> (length rest) 0) (in rest 0) init))
+    (array ;(realize-for-iteration a))))
+(defn core-object-array [a & rest] (make-num-array a rest nil))
+(defn core-int-array [a & rest] (make-num-array a rest 0))
+(defn core-long-array [a & rest] (make-num-array a rest 0))
+(defn core-short-array [a & rest] (make-num-array a rest 0))
+(defn core-double-array [a & rest] (make-num-array a rest 0))
+(defn core-float-array [a & rest] (make-num-array a rest 0))
+(defn core-char-array [a & rest] (make-num-array a rest (make-char 0)))
+(defn core-boolean-array [a & rest] (make-num-array a rest false))
+
+# Byte arrays — Janet buffers (each element a 0..255 byte).
+(defn core-byte-array [a & rest]
+  (if (number? a)
+    (buffer/new-filled a (band (if (> (length rest) 0) (in rest 0) 0) 0xff))
+    (let [b (buffer/new 0)]
+      (each x (realize-for-iteration a) (buffer/push-byte b (band x 0xff)))
+      b)))
+
+(defn core-aset-byte [arr i v] (put arr i (band v 0xff)) v)
+(defn core-aset-int [arr i v] (put arr i v) v)
+(defn core-aset-long [arr i v] (put arr i v) v)
+(defn core-aset-short [arr i v] (put arr i v) v)
+(defn core-aset-double [arr i v] (put arr i v) v)
+(defn core-aset-float [arr i v] (put arr i v) v)
+(defn core-aset-char [arr i v] (put arr i v) v)
+(defn core-aset-boolean [arr i v] (put arr i v) v)
+
+(defn core-make-array [a & rest]
+  # (make-array len) or (make-array type len ...); ignore the type tag
+  (let [len (if (number? a) a (in rest 0))] (array/new-filled len nil)))
+
+(defn core-into-array [a & rest]
+  (let [s (if (> (length rest) 0) (in rest 0) a)]
+    (array ;(realize-for-iteration s))))
+
+(defn core-to-array [coll]
+  (def arr @[]) (each x (realize-for-iteration coll) (array/push arr x)) arr)
+(defn core-to-array-2d [coll]
+  (def arr @[]) (each row (realize-for-iteration coll) (array/push arr (core-to-array row))) arr)
+
+# Array-element casts — identity on arrays; `bytes` coerces to a byte buffer.
+(defn core-bytes [x] (if (buffer? x) x (core-byte-array x)))
+(defn core-booleans [x] x)
+(defn core-ints [x] x)
+(defn core-longs [x] x)
+(defn core-shorts [x] x)
+(defn core-doubles [x] x)
+(defn core-floats [x] x)
+(defn core-chars [x] x)
+
+# Scalar numeric coercions
+(defn core-byte [x] (let [b (band (math/trunc x) 0xff)] (if (>= b 128) (- b 256) b)))
+(defn core-short [x] (let [s (band (math/trunc x) 0xffff)] (if (>= s 0x8000) (- s 0x10000) s)))
+(defn core-unchecked-byte [x] (band (math/trunc x) 0xff))
+(defn core-unchecked-short [x] (band (math/trunc x) 0xffff))
+(defn core-unchecked-char [x] (band (math/trunc x) 0xffff))
+(defn core-unchecked-float [x] (* 1.0 x))
+(defn core-unchecked-double [x] (* 1.0 x))
+
+# 64-bit integers (Janet int/s64 — C-backed)
+(defn core-bigint [x] (int/s64 x))
+(defn core-biginteger [x] (int/s64 x))
+(defn core-bigdec [x] (* 1.0 x))   # no BigDecimal; use a double
+
+# Chunked seqs — Jolt does not chunk, so these are simple eager equivalents.
+(defn core-chunk-buffer [capacity] @[])
+(defn core-chunk-append [b x] (array/push b x) b)
+(defn core-chunk [b] b)
+(defn core-chunked-seq? [x] false)
+(defn core-chunk-first [s] (core-first s))
+(defn core-chunk-rest [s] (core-rest s))
+(defn core-chunk-next [s] (core-next s))
+(defn core-chunk-cons [chunk rest] (core-concat (realize-for-iteration chunk) rest))
+
+# More clojure.core: real implementations backed by existing Jolt machinery.
+(defn core-boolean [x] (if x true false))
+(defn core-cat [rf]
+  (fn [& a]
+    (case (length a)
+      0 (rf) 1 (rf (a 0))
+      (do (var acc (a 0)) (each x (realize-for-iteration (a 1)) (set acc (rf acc x))) acc))))
+(defn core-disj! [s & ks] (apply core-disj s ks))
+(defn core-rationalize [x] x)
+(defn core-random-sample [prob & rest]
+  (if (= 0 (length rest))
+    (core-filter (fn [_] (< (math/random) prob)))
+    (core-filter (fn [_] (< (math/random) prob)) (in rest 0))))
+(defn core-reader-conditional [form splicing?]
+  @{:jolt/type :jolt/reader-conditional :form form :splicing? splicing?})
+(defn core-reader-conditional? [x]
+  (and (table? x) (= :jolt/reader-conditional (get x :jolt/type))))
+(defn core-sorted-map-by [cmp & kvs] (apply core-sorted-map kvs))
+(defn core-sorted-set-by [cmp & xs] (apply core-sorted-set xs))
+(defn core-array-seq [arr & _] (core-seq arr))
+(defn core-seque [& args] (in args (- (length args) 1)))
+(defn core-supers [x] (make-phs))
+(defn core-class [x]
+  (cond
+    (nil? x) nil (number? x) "java.lang.Number" (string? x) "java.lang.String"
+    (boolean? x) "java.lang.Boolean" (keyword? x) "clojure.lang.Keyword"
+    (function? x) "clojure.lang.IFn" (buffer? x) "[B"
+    (string (type x))))
+(defn core-clojure-version [] "1.11.0-jolt")
+(defn core-munge [s]
+  (string/replace-all "-" "_" (string s)))
+(defn core-namespace-munge [s]
+  (string/replace-all "-" "_" (string s)))
+(defn core-test [v]
+  (let [t (and (core-meta v) (get (core-meta v) :test))]
+    (if t (do (t) :ok) :no-test)))
 
 # ============================================================
 # Bit operations (needed for persistent data structures)  
@@ -3081,14 +3206,75 @@
     "pr" core-pr
     "prn" core-prn
     "pr-str" core-pr-str
-    # Array primitives (for persistent data structures)
+    # Java-style arrays (buffers for bytes, arrays otherwise)
     "alength" core-alength
     "aget" core-aget
     "aset" core-aset
     "aclone" core-aclone
     "object-array" core-object-array
     "int-array" core-int-array
+    "long-array" core-long-array
+    "short-array" core-short-array
+    "double-array" core-double-array
+    "float-array" core-float-array
+    "char-array" core-char-array
+    "boolean-array" core-boolean-array
+    "byte-array" core-byte-array
+    "aset-byte" core-aset-byte
+    "aset-int" core-aset-int
+    "aset-long" core-aset-long
+    "aset-short" core-aset-short
+    "aset-double" core-aset-double
+    "aset-float" core-aset-float
+    "aset-char" core-aset-char
+    "aset-boolean" core-aset-boolean
+    "make-array" core-make-array
+    "into-array" core-into-array
     "to-array" core-to-array
+    "to-array-2d" core-to-array-2d
+    "bytes" core-bytes
+    "booleans" core-booleans
+    "ints" core-ints
+    "longs" core-longs
+    "shorts" core-shorts
+    "doubles" core-doubles
+    "floats" core-floats
+    "chars" core-chars
+    "byte" core-byte
+    "short" core-short
+    "unchecked-byte" core-unchecked-byte
+    "unchecked-short" core-unchecked-short
+    "unchecked-char" core-unchecked-char
+    "unchecked-float" core-unchecked-float
+    "unchecked-double" core-unchecked-double
+    "bigint" core-bigint
+    "biginteger" core-biginteger
+    "bigdec" core-bigdec
+    "chunk-buffer" core-chunk-buffer
+    "chunk-append" core-chunk-append
+    "chunk" core-chunk
+    "chunked-seq?" core-chunked-seq?
+    "chunk-first" core-chunk-first
+    "chunk-rest" core-chunk-rest
+    "chunk-next" core-chunk-next
+    "chunk-cons" core-chunk-cons
+    "boolean" core-boolean
+    "cat" core-cat
+    "disj!" core-disj!
+    "rationalize" core-rationalize
+    "random-sample" core-random-sample
+    "reader-conditional" core-reader-conditional
+    "reader-conditional?" core-reader-conditional?
+    "sorted-map-by" core-sorted-map-by
+    "sorted-set-by" core-sorted-set-by
+    "array-seq" core-array-seq
+    "seque" core-seque
+    "supers" core-supers
+    "class" core-class
+    "clojure-version" core-clojure-version
+    "munge" core-munge
+    "namespace-munge" core-namespace-munge
+    "test" core-test
     # Bit operations
     "bit-and" core-bit-and
     "bit-or" core-bit-or
