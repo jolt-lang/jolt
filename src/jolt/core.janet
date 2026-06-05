@@ -1424,6 +1424,16 @@
 # syntax. Used by both pr-str (readable) and str (collection elements).
 (var pr-render nil)
 
+# Format a number the way Clojure prints it: infinity and NaN have named forms
+# (Janet renders them "inf"/"-inf"/"nan").
+(defn- fmt-number [v]
+  (cond
+    (not (number? v)) (string v)
+    (= v math/inf) "Infinity"
+    (= v (- math/inf)) "-Infinity"
+    (not= v v) "NaN"
+    (string v)))
+
 (defn- pr-render-seq [buf items open close]
   (buffer/push-string buf open)
   (var first true)
@@ -1458,7 +1468,7 @@
                              12 "formfeed" 8 "backspace" 0 "nul"
                              (char->string v))))
       (regex? v) (do (buffer/push-string buf "#\"") (buffer/push-string buf (v :source)) (buffer/push-string buf "\""))
-      (number? v) (buffer/push-string buf (string v))
+      (number? v) (buffer/push-string buf (fmt-number v))
       (and (struct? v) (= :symbol (v :jolt/type)))
         (buffer/push-string buf (if (v :ns) (string (v :ns) "/" (v :name)) (v :name)))
       (core-sorted-map? v) (pr-render-pairs buf (sorted-map-entries v))
@@ -1489,7 +1499,7 @@
     (keyword? v) (string ":" (string v))
     (and (struct? v) (= :symbol (v :jolt/type)))
       (if (v :ns) (string (v :ns) "/" (v :name)) (v :name))
-    (number? v) (string v)
+    (number? v) (fmt-number v)
     (= true v) "true"
     (= false v) "false"
     (let [buf @""] (pr-render buf v) (string buf))))

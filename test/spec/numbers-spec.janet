@@ -90,6 +90,13 @@
   ["exponent"           "1000.0" "1e3"]
   ["exponent neg"       "0.015"  "1.5e-2"])
 
+(defspec "numbers / printing of inf & nan"
+  ["str Infinity"       "\"Infinity\""  "(str ##Inf)"]
+  ["str -Infinity"      "\"-Infinity\"" "(str ##-Inf)"]
+  ["str NaN"            "\"NaN\""       "(str ##NaN)"]
+  ["pr-str Infinity"    "\"Infinity\""  "(pr-str ##Inf)"]
+  ["inf inside coll"    "\"[Infinity]\"" "(str [##Inf])"])
+
 (defspec "numbers / bit-ops & math"
   ["bit-and"            "4"      "(bit-and 12 6)"]
   ["bit-or"             "14"     "(bit-or 12 6)"]

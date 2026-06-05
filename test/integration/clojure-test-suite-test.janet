@@ -18,7 +18,7 @@
 
 # Baseline: assertions Jolt currently passes across the suite. Raise as Jolt
 # improves so a regression (previously-passing assertion breaking) is caught.
-(def baseline-pass 3660)
+(def baseline-pass 3680)
 # A file is "clean" when it ran with zero failures AND zero errors.
 (def baseline-clean-files 45)
 # Per-file wall-clock budget (seconds). Normal files finish in well under 1s;
