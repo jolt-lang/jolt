@@ -149,7 +149,7 @@ Tests are organized in three layers:
   is the authoritative description of what Jolt promises.
 - **`test/integration/`** — cross-cutting and regression batteries: the Clojure
   conformance suite, SCI bootstrap/runtime loading, jank conformance, the
-  cross-dialect [clojure-test-suite](https://github.com/lread/clojure-test-suite)
+  cross-dialect [clojure-test-suite]((https://github.com/jank-lang/clojure-test-suite)
   (run via a minimal `clojure.test` shim against `~/src/clojure-test-suite`, if
   present, and baseline-guarded), compile-mode tests, the library API, and a
   broad systematic-coverage net.
