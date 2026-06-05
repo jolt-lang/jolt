@@ -135,8 +135,6 @@ platform/design differences above, not by missing behavior:
   lose precision (doubles), and `subs`/`count` work on bytes, not code points.
 - **Eager seqs** — `map`/`filter`/`range` return vectors, so `seq?`/`vector?`/
   `sequential?` of their results differ, and sorts aren't guaranteed stable.
-- **Map entries** — a map entry is an ordinary 2-vector, so `key`/`val` accept
-  any 2-vector and a few `thrown?` cases for non-entries don't fire.
 
 ## License
 
