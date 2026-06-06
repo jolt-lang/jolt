@@ -8,7 +8,8 @@
   ["with-meta on map"     "{:doc \"x\"}" "(meta (with-meta {:k 1} {:doc \"x\"}))"]
   ["vary-meta"            "{:a 2}"     "(meta (vary-meta (with-meta [1] {:a 1}) update :a inc))"]
   ["meta reader ^"        "{:tag :int}" "(meta ^{:tag :int} [1 2])"]
-  ["with-meta on fn ok"   "true"       "(fn? (with-meta inc {:a 1}))"])
+  ["with-meta on fn ok"   "true"       "(fn? (with-meta inc {:a 1}))"]
+  ["with-meta nil clears" "nil"        "(meta (with-meta [1 2 3] nil))"])
 
 (defspec "metadata / type hints"
   # ^Type / ^:kw / ^"str" on a symbol attach as metadata and are otherwise inert:

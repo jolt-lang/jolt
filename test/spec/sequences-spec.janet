@@ -43,6 +43,8 @@
   ["map"                    "[2 3 4]"      "(map inc [1 2 3])"]
   ["map two colls"          "[5 7 9]"      "(map + [1 2 3] [4 5 6])"]
   ["map stops at shortest"  "[5 7]"        "(map + [1 2] [4 5 6])"]
+  # nil elements are values, not end-of-seq: multi-coll map must not truncate.
+  ["map keeps nil elements" "[[1 :a] [nil :b] [3 nil]]" "(map vector [1 nil 3] [:a :b nil])"]
   ["map-indexed"            "[[0 :a] [1 :b]]" "(map-indexed vector [:a :b])"]
   ["mapv"                   "[2 3 4]"      "(mapv inc [1 2 3])"]
   ["filter"                 "[2 4]"        "(filter even? [1 2 3 4])"]
