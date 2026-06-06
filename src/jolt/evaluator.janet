@@ -1185,27 +1185,38 @@
                                       (+= i 2))) h)
                       ns (ctx-find-ns ctx (ctx-current-ns ctx))
                       methods @{}
+                      # Cache for hierarchy-resolved dispatch values: the isa? walk
+                      # over every method key is the expensive path (derive-based
+                      # dispatch). Direct (get methods dv) hits stay uncached (already
+                      # fast). Cleared in place when methods/prefs change (defmethod,
+                      # prefer-method, remove-method, …) so a redef can't be hidden.
+                      dispatch-cache @{}
                       mm-fn (fn [& args]
                               (let [dv (apply dispatch-fn args)
                                     method (get methods dv)]
                                 (if method
                                   (apply method args)
-                                  # hierarchy-based match (explicit :hierarchy or
-                                  # the global hierarchy from derive)
-                                  (let [h (or hierarchy the-global-hierarchy)
-                                        found (do (var f nil) (var i 0)
-                                                (let [ks (keys methods)]
-                                                  (while (and (nil? f) (< i (length ks)))
-                                                    (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
-                                                    (++ i))) f)]
-                                    (if found (apply found args)
-                                      # fall back to the method registered under the default key
-                                      (let [dm (get methods default-key)]
-                                        (if dm (apply dm args)
-                                          (error (string "No method in multimethod "
-                                                         (name-sym :name) " for dispatch value: " dv)))))))))]
+                                  (let [cached (get dispatch-cache dv)]
+                                    (if cached
+                                      (apply cached args)
+                                      # hierarchy-based match (explicit :hierarchy or
+                                      # the global hierarchy from derive)
+                                      (let [h (or hierarchy the-global-hierarchy)
+                                            found (do (var f nil) (var i 0)
+                                                    (let [ks (keys methods)]
+                                                      (while (and (nil? f) (< i (length ks)))
+                                                        (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
+                                                        (++ i))) f)]
+                                        (if found
+                                          (do (put dispatch-cache dv found) (apply found args))
+                                          # fall back to the method registered under the default key
+                                          (let [dm (get methods default-key)]
+                                            (if dm (apply dm args)
+                                              (error (string "No method in multimethod "
+                                                             (name-sym :name) " for dispatch value: " dv))))))))))) ]
                  (def v (ns-intern ns (name-sym :name) mm-fn))
                  (put v :jolt/methods methods)
+                 (put v :jolt/dispatch-cache dispatch-cache)
                  (put v :jolt/default default-key)
                  (when hierarchy (put v :jolt/hierarchy hierarchy))
                  (var-get v))
@@ -1230,6 +1241,8 @@
                       methods (or (get mm-var :jolt/methods)
                                   (let [m @{}] (put mm-var :jolt/methods m) m))]
                   (put methods dispatch-val impl)
+                  (let [dc (get mm-var :jolt/dispatch-cache)]
+                    (when dc (each k (keys dc) (put dc k nil))))
                   mm-var)
     "prefer-method" (let [mm-arg (in form 1)
                           mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
@@ -1247,6 +1260,8 @@
                           prefs (or (get mm-var :jolt/prefers)
                                    (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers)))]
                      (put prefs dispatch-val-a dispatch-val-b)
+                     (let [dc (get mm-var :jolt/dispatch-cache)]
+                       (when dc (each k (keys dc) (put dc k nil))))
                      mm-var)
     # A multimethod's methods live on its VAR, but the value is the dispatch fn;
     # so resolve the var from the symbol rather than evaluating it.
@@ -1270,11 +1285,15 @@
                           dispatch-val (eval-form ctx bindings (in form 2))]
                      (when mm-var
                        (let [methods (get mm-var :jolt/methods)]
-                         (when methods (put methods dispatch-val nil))))
+                         (when methods (put methods dispatch-val nil)))
+                       (let [dc (get mm-var :jolt/dispatch-cache)]
+                         (when dc (each k (keys dc) (put dc k nil)))))
                      mm-var)
     "remove-all-methods" (let [mm-var (eval-form ctx bindings (in form 1))]
-                          (if mm-var
-                            (put mm-var :jolt/methods @{}))
+                          (when mm-var
+                            (put mm-var :jolt/methods @{})
+                            (let [dc (get mm-var :jolt/dispatch-cache)]
+                              (when dc (each k (keys dc) (put dc k nil)))))
                           mm-var)
     "deftype" (let [raw-name (in form 1)
                     type-name (unwrap-meta-name raw-name)

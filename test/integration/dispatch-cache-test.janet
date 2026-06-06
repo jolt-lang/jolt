@@ -28,6 +28,24 @@
   (check (string mode " other class") (eval-string ctx "(m \"hi\")") "s:hi")
   (check (string mode " number after other-class extend") (eval-string ctx "(m 3)") 103))
 
+# Multimethod hierarchy-fallback cache (jolt-g8w): the isa? walk result for a
+# dispatch value is cached; defmethod/remove-method must invalidate it.
+(each mode [{:compile? true} {} {:aot-core? false}]
+  (def ctx (init mode))
+  (eval-string ctx "(derive ::circle ::shape)")
+  (eval-string ctx "(derive ::square ::shape)")
+  (eval-string ctx "(defmulti area identity)")
+  (eval-string ctx "(defmethod area ::shape [_] :generic)")
+  (check (string mode " mm hierarchy") (eval-string ctx "(area ::circle)") :generic)
+  (check (string mode " mm cache hit") (eval-string ctx "(area ::circle)") :generic)
+  # adding a more specific method must invalidate the cached hierarchy result
+  (eval-string ctx "(defmethod area ::circle [_] :specific)")
+  (check (string mode " mm sees new method") (eval-string ctx "(area ::circle)") :specific)
+  (check (string mode " mm other still hierarchy") (eval-string ctx "(area ::square)") :generic)
+  # removing it must re-expose the hierarchy fallback
+  (eval-string ctx "(remove-method area ::circle)")
+  (check (string mode " mm sees removal") (eval-string ctx "(area ::circle)") :generic))
+
 (if (pos? failures)
   (do (printf "dispatch-cache: %d failure(s)" failures) (os/exit 1))
   (print "dispatch-cache: all cases passed (compile, interpret, aot-core off)"))
