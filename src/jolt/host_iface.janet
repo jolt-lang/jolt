@@ -51,6 +51,29 @@
 # Compile-time environment
 # ---------------------------------------------------------------------------
 
+# Names the analyzer must NOT treat as a function call: interpreter special forms
+# plus definitional/host macros the compiler doesn't lower. The analyzer handles
+# a subset (quote/if/do/def/fn*/let*/loop*/recur/throw/try) and falls back to the
+# interpreter for the rest. Kept in sync with evaluator/special-symbol? and
+# compiler/uncompilable-heads.
+(def- special-names
+  (let [t @{}]
+    (each n ["quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
+             "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
+             "locking" "eval" "instance?" "defmulti" "defmethod" "deftype" "new"
+             "." "var-get" "var-set" "var?" "alter-var-root" "find-var" "intern"
+             "alter-meta!" "reset-meta!" "disj" "set?" "satisfies?"
+             "protocol-dispatch" "register-method" "make-reified" "prefer-method"
+             "remove-method" "remove-all-methods" "get-method" "methods"
+             "read-string" "macroexpand-1" "defonce" "ns" "in-ns" "require"
+             "import" "use" "refer" "defrecord" "defprotocol" "definterface"
+             "reify" "proxy" "extend-type" "extend-protocol" "extend" "gen-class"
+             "monitor-enter" "monitor-exit" "binding" "letfn"]
+      (put t n true))
+    t))
+
+(defn h-special? [name] (if (get special-names name) true false))
+
 (defn h-current-ns [ctx] (ctx-current-ns ctx))
 
 (defn h-macro? [ctx sym]
@@ -92,8 +115,8 @@
    "list?" h-list? "vector?" h-vector? "map?" h-map? "set?" h-set? "char?" h-char?
    "literal?" h-literal? "elements" h-elements "vector-items" h-vector-items
    "map-pairs" h-map-pairs "set-items" h-set-items
-   "current-ns" h-current-ns "macro?" h-macro? "expand-1" h-expand-1
-   "resolve-global" h-resolve-global "intern!" h-intern!})
+   "special?" h-special? "current-ns" h-current-ns "macro?" h-macro?
+   "expand-1" h-expand-1 "resolve-global" h-resolve-global "intern!" h-intern!})
 
 (defn install! [ctx]
   (def ns (ctx-find-ns ctx "jolt.host"))

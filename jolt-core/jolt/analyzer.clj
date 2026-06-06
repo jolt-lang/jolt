@@ -100,14 +100,21 @@
 
 (defn- analyze-symbol [ctx form locals]
   (let [nm (h/sym-name form) ns (h/sym-ns form)]
-    (if (and (nil? ns) (contains? locals nm))
-      (ir/local nm)
-      (let [r (h/resolve-global ctx form)]
-        (case (:kind r)
-          :var (ir/var-ref (:ns r) (:name r))
-          :host (ir/host-ref (:name r))
-          ;; unresolved: a forward reference in the current ns; resolved at call time
-          (ir/var-ref (h/current-ns ctx) nm))))))
+    (cond
+      ;; local (only unqualified)
+      (and (nil? ns) (contains? locals nm)) (ir/local nm)
+      ;; qualified: must resolve to a var, else interpret (handles janet/…,
+      ;; Math/…, and any host interop the back end doesn't model).
+      ns (let [r (h/resolve-global ctx form)]
+           (if (= :var (:kind r))
+             (ir/var-ref (:ns r) (:name r))
+             (uncompilable (str "qualified ref " ns "/" nm))))
+      :else (let [r (h/resolve-global ctx form)]
+              (case (:kind r)
+                :var (ir/var-ref (:ns r) (:name r))
+                :host (ir/host-ref (:name r))
+                ;; unresolved: forward reference in the current ns (resolved at call time)
+                (ir/var-ref (h/current-ns ctx) nm))))))
 
 (defn- analyze-list [ctx form locals]
   (let [items (vec (h/elements form))]
@@ -119,6 +126,9 @@
         (cond
           (and hname (not shadowed) (contains? handled hname))
             (analyze-special ctx hname items locals)
+          ;; A special form the analyzer doesn't compile -> interpreter.
+          (and hname (not shadowed) (h/special? hname))
+            (uncompilable (str "special form " hname))
           (and (h/sym? head) (not shadowed) (h/macro? ctx head))
             (analyze ctx (h/expand-1 ctx form) locals)
           :else
@@ -136,6 +146,8 @@
      (h/map? form) (ir/map-node (mapv (fn [p] [(analyze ctx (first p) locals)
                                                (analyze ctx (second p) locals)])
                                       (h/map-pairs form)))
-     (h/set? form) (ir/set-node (mapv #(analyze ctx % locals) (h/set-items form)))
+     (h/set? form) (uncompilable "set literal")
      (h/list? form) (analyze-list ctx form locals)
-     :else (ir/const form))))
+     ;; Anything else (tagged literals like #"regex"/#inst, unknown shapes) is
+     ;; host-specific or not a value the back end can embed — interpret it.
+     :else (uncompilable "unsupported form"))))

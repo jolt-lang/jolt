@@ -136,6 +136,12 @@
   ((var-get av) ctx form))
 
 (defn compile-and-eval
-  "Self-hosted compile path: analyze (portable Clojure) -> IR -> Janet -> eval."
+  "Self-hosted compile path: analyze (portable Clojure) -> IR -> Janet -> eval.
+  Hybrid: only the compile step (analyze+emit) is guarded — a form the analyzer
+  can't handle throws and falls back to the interpreter; runtime errors in
+  compiled code propagate (no double-eval, no hidden errors)."
   [ctx form]
-  (eval (emit-ir ctx (analyze-form ctx form)) (comp/ctx-janet-env ctx)))
+  (def compiled (protect (emit-ir ctx (analyze-form ctx form))))
+  (if (compiled 0)
+    (eval (compiled 1) (comp/ctx-janet-env ctx))
+    (eval-form ctx @{} form)))
