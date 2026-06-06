@@ -8,5 +8,6 @@
 ;; already interned by init-core! (and on other overlay fns defined above it).
 
 (defn ffirst [coll] (first (first coll)))
+(defn nfirst [coll] (next (first coll)))
 (defn fnext  [coll] (first (next coll)))
 (defn nnext  [coll] (next (next coll)))

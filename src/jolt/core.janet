@@ -940,8 +940,7 @@
       (if (jvec? coll) (make-vec dropped) dropped))))))
 
 (defn core-second [coll] (core-first (core-rest coll)))
-(defn core-nfirst [coll] (core-next (core-first coll)))
-# ffirst / fnext / nnext now live in the Clojure overlay (jolt-core/clojure/core.clj).
+# ffirst / nfirst / fnext / nnext now live in the Clojure overlay (jolt-core/clojure/core.clj).
 
 (defn core-last [coll]
   (let [c (realize-for-iteration coll)]
@@ -3807,7 +3806,6 @@
     "ex-cause" core-ex-cause
     "prefers" core-prefers
     "random-uuid" core-random-uuid
-    "nfirst" core-nfirst
     "last" core-last
     "drop-last" core-drop-last
     "take-last" core-take-last

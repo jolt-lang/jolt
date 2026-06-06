@@ -81,6 +81,7 @@
   (let [ctx (init opts)]
     (defn ev [s] (normalize-pvecs (eval-one ctx (parse-string s))))
     (assert (= 1 (ev "(ffirst [[1 2] [3 4]])")) "ffirst")
+    (assert (= [2] (ev "(nfirst [[1 2] [3 4]])")) "nfirst")
     (assert (= 2 (ev "(fnext [1 2 3])")) "fnext")
     (assert (= [3 4] (ev "(nnext [1 2 3 4])")) "nnext")))
 
