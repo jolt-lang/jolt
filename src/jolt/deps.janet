@@ -8,12 +8,15 @@
 # jpm is loaded lazily (require, not import) so it's needed only at resolve time
 # (dev/build), never embedded in the shipped binary.
 
-# A typical deps.edn is also valid Janet data, so we read it with Janet's parser.
-# (EDN-only forms — #{} sets, tagged literals, namespaced maps — aren't handled;
-# deps.edn rarely uses them in :deps/:paths.)
+(import ./reader :as reader)
+
+# Read deps.edn with Jolt's reader (not Janet's parse) so EDN `;` line comments
+# are handled. It returns plain Janet data — structs with keyword keys, tuples —
+# which we walk directly. (#{} sets and tagged literals aren't expected in the
+# :deps/:paths we read.)
 (defn read-edn [path]
   (when (os/stat path)
-    (try (parse (slurp path)) ([_] nil))))
+    (try (reader/parse-string (slurp path)) ([_] nil))))
 
 (defn- jpm-fn [mod sym]
   (get-in (require mod) [sym :value]))

@@ -30,3 +30,24 @@
   ["doseq destructure"  "12"     "(let [s (atom 0)] (doseq [[k v] {:a 4 :b 8}] (swap! s (fn [x] (+ x v)))) @s)"]
   ["for destructure"    "[3 7]"  "(for [[a b] [[1 2] [3 4]]] (+ a b))"]
   ["& rest in fn"       "[2 3]"  "((fn [a & more] more) 1 2 3)"])
+
+(defspec "destructure / associative extras"
+  [":strs"              "7"      "(let [{:strs [a]} {\"a\" 7}] a)"]
+  [":syms"              "8"      "(let [{:syms [a]} {(quote a) 8}] a)"]
+  ["namespaced :keys"   "3"      "(let [{:keys [x/y]} {:x/y 3}] y)"]
+  ["namespaced :syms"   "4"      "(let [{:syms [p/q]} {(quote p/q) 4}] q)"])
+
+(defspec "destructure / keyword args (& {:keys})"
+  ["fn kwargs"          "[1 2]"  "(do (defn f [& {:keys [a b]}] [a b]) (f :a 1 :b 2))"]
+  ["fn kwargs + fixed"  "[0 5]"  "(do (defn g [x & {:keys [a]}] [x a]) (g 0 :a 5))"]
+  ["fn kwargs :or"      "9"      "(do (defn h [& {:keys [a] :or {a 9}}] a) (h))"]
+  ["fn kwargs trailing map" "7"  "(do (defn k [& {:keys [a]}] a) (k {:a 7}))"])
+
+(defspec "destructure / macro params"
+  ["macro & [a & more :as all]"
+   "[1 [2 3] [1 2 3]]"
+   "(do (defmacro m [& [a & more :as all]] (list (quote quote) [a (vec more) (vec all)])) (m 1 2 3))"]
+  ["macro fixed destructure" "[2 1]"
+   "(do (defmacro mm [[a b]] (list (quote quote) [b a])) (mm [1 2]))"]
+  ["macro & {:keys}" "5"
+   "(do (defmacro mk [& {:keys [x]}] (list (quote quote) x)) (mk :x 5))"])

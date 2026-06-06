@@ -162,3 +162,21 @@ feature         = ":clj" | ":cljs" | ":default" | keyword ;
 (* Tagged literal: #tag form. Built-in tags include #inst and #uuid; others
    dispatch to a registered data-reader (else error). *)
 tagged-literal  = "#" , symbol , ws , form ;
+
+(* ── Destructuring (semantics, not reader syntax) ────────────────────────────
+   The reader produces plain vectors and maps; the binding forms (let, fn, loop,
+   doseq, for, defmacro params, …) interpret them as destructuring patterns:
+
+     binding        = symbol | seq-binding | map-binding ;
+     seq-binding    = "[" , { binding } , [ "&" , binding ] , [ ":as" , symbol ] , "]" ;
+     map-binding    = "{" , { binding , form           (* {local key} *)
+                            | ":keys" , "[" {symbol} "]"   (* x or ns/x  *)
+                            | ":strs" , "[" {symbol} "]"
+                            | ":syms" , "[" {symbol} "]"
+                            | ":or"   , map                (* defaults   *)
+                            | ":as"   , symbol } , "}" ;
+
+   A symbol in :keys/:syms may be namespaced (x/y): the namespaced key is looked
+   up but the local is the bare name (y). Destructuring a *sequence* with a
+   map-binding treats it as keyword args (alternating k v, or a trailing map) —
+   this is the fn/macro `[& {:keys [...]}]` form. *)

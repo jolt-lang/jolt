@@ -504,30 +504,49 @@
                     (+= di 1) (+= vi 1))))))
       # map pattern (struct/table that isn't a symbol)
       (or (struct? pat) (table? pat))
-        (do
+        (let [rv (d-realize val)
+              # Destructuring a sequential value as a map treats it as kwargs:
+              # alternating k/v pairs, or a single trailing map (Clojure's
+              # `[& {:keys ...}]`). A real map value is used as-is.
+              mval (if (and (indexed? rv) (not (or (struct? rv) (table? rv))))
+                     (if (and (= 1 (length rv))
+                              (let [e (in rv 0)] (or (struct? e) (table? e) (phm? e))))
+                       (in rv 0)
+                       (let [m @{}]
+                         (var i 0)
+                         (while (< (+ i 1) (length rv))
+                           (put m (in rv i) (in rv (+ i 1)))
+                           (+= i 2))
+                         m))
+                     val)]
           (def or-map (get pat :or))
           (def as-sym (get pat :as))
-          (when as-sym (destructure-bind ctx bindings as-sym val))
-          # :keys (keyword lookup), :strs (string lookup), :syms (symbol lookup)
-          (each spec [[:keys (fn [nm] (keyword nm))]
-                      [:strs (fn [nm] nm)]
-                      [:syms (fn [nm] {:jolt/type :symbol :ns nil :name nm})]]
-            (let [kw (in spec 0) keyf (in spec 1) names (get pat kw)]
+          (when as-sym (destructure-bind ctx bindings as-sym mval))
+          # :keys (keyword), :strs (string), :syms (symbol). A namespaced symbol
+          # in :keys/:syms (x/y) looks up the namespaced key but binds local y.
+          (each spec [[:keys :kw] [:strs :str] [:syms :sym]]
+            (let [kw (in spec 0) kind (in spec 1) names (get pat kw)]
               (when (and names (indexed? names))
                 (each s names
-                  (let [nm (if (and (struct? s) (= :symbol (s :jolt/type))) (s :name) (string s))
-                        v (d-get val (keyf nm))
+                  (let [sym? (and (struct? s) (= :symbol (s :jolt/type)))
+                        local (if sym? (s :name) (string s))
+                        nsp (and sym? (s :ns))
+                        key (case kind
+                              :kw (keyword (if nsp (string nsp "/" local) local))
+                              :str local
+                              :sym {:jolt/type :symbol :ns nsp :name local})
+                        v (d-get mval key)
                         v (if (nil? v)
-                            (let [d (find-or-default or-map nm)]
+                            (let [d (find-or-default or-map local)]
                               (if (= d :jolt/none) nil (eval-form ctx bindings d)))
                             v)]
-                    (bind-put bindings nm v))))))
+                    (bind-put bindings local v))))))
           # direct {local-pattern key-expr} entries (local may itself be a
           # nested vector/map pattern). Special keys are keywords; skip them.
           (each k (keys pat)
             (when (not (keyword? k))
               (let [key-val (eval-form ctx bindings (get pat k))
-                    v (d-get val key-val)]
+                    v (d-get mval key-val)]
                 (if (and (struct? k) (= :symbol (k :jolt/type)))
                   # symbol target: apply :or default if missing
                   (let [nm (k :name)
@@ -663,20 +682,22 @@
                      has-doc? (and (> (length rest-form) 0) (string? (first rest-form)))
                      args-form (if has-doc? (in rest-form 1) (first rest-form))
                      body (tuple/slice rest-form (if has-doc? 2 1))
-                     arg-info (parse-arg-names args-form)
-                     fixed-names (arg-info :fixed)
-                     rest-name (arg-info :rest)
+                     param-info (parse-params args-form)
+                     fixed-pats (param-info :fixed)
+                     rest-pat (param-info :rest)
                      defining-ns (ctx-current-ns ctx)]
                  (def macro-fn (fn [& macro-args]
                    (var new-bindings @{})
                    (table/setproto new-bindings bindings)
                    (put new-bindings "&env" @{})  # implicit &env for macro bodies (table — nil-safe)
                    (var i 0)
-                   (each a fixed-names
-                     (bind-put new-bindings a (macro-args i))
+                   # Destructure macro params (like fn), so [& [a & more :as all]]
+                   # and {:keys …} rest forms work in macro arglists.
+                   (each pat fixed-pats
+                     (destructure-bind ctx new-bindings pat (macro-args i))
                      (++ i))
-                   (when rest-name
-                     (put new-bindings rest-name (tuple/slice macro-args i)))
+                   (when rest-pat
+                     (destructure-bind ctx new-bindings rest-pat (tuple/slice macro-args i)))
                    # Use defining namespace for symbol resolution
                    (def saved-ns (ctx-current-ns ctx))
                    (ctx-set-current-ns ctx defining-ns)
