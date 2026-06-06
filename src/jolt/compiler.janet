@@ -338,21 +338,26 @@
           {:op :local :name name}
           (if (and (not (special-form? name)) (get core-renames name))
             {:op :core-symbol :name name :janet-name (get core-renames name)}
-            # A global reference: resolve the Jolt var cell now and compile a
-            # deref through it, so redefinition is visible to compiled callers
-            # (Janet early-binds plain symbols). Resolution mirrors the
-            # interpreter's resolve-var — current ns (which also holds refers),
-            # then clojure.core — so unqualified core fns resolve to their real
-            # var rather than a fresh empty one. Only a genuinely-undefined name
-            # interns a pending cell in the current ns (forward refs; the getter
-            # derefs at call time, so a later def fills it in). No ctx -> plain
-            # symbol.
+            # A global reference. Resolution mirrors the interpreter's resolve-sym
+            # so compiled and interpreted code agree:
+            #   1. a jolt var in the current ns (which also holds refers) or
+            #      clojure.core -> deref through the cell, so redefinition is
+            #      visible to compiled callers (Janet early-binds plain symbols);
+            #   2. otherwise a binding in the runtime/Janet env (resolve-sym's own
+            #      fallback — this is how int?, type, etc. resolve) -> emit it
+            #      directly;
+            #   3. otherwise a forward reference -> intern a pending cell whose
+            #      getter derefs at call time, once a later def fills it in.
+            # No ctx -> plain symbol.
             (if ctx
               (let [cur-ns (ctx-find-ns ctx (ctx-current-ns ctx))
                     cell (or (ns-find cur-ns name)
-                             (ns-find (ctx-find-ns ctx "clojure.core") name)
-                             (ns-intern cur-ns name))]
-                {:op :var :name name :var cell})
+                             (ns-find (ctx-find-ns ctx "clojure.core") name))]
+                (cond
+                  cell {:op :var :name name :var cell}
+                  (get jolt-runtime-env (symbol name))
+                    {:op :core-symbol :name name :janet-name name}
+                  {:op :var :name name :var (ns-intern cur-ns name)}))
               {:op :symbol :name name})))))
 
     (array? form)
