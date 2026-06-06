@@ -91,11 +91,10 @@ already does path-based namespace lookup — we widen it from one root to a few.
 
 jpm stays the build tool for the Jolt binary; this lives beside it and *calls
 into* `jpm/pm` for the git/cache work (import the module at dev/build time — jpm
-is always present then; the shipped binary doesn't need it). Open question:
-whether to depend on jpm's internal `pm` functions (not a stable public API) or
-shell `git` ourselves into the same cache layout. Reusing `pm` is less code and
-shares jpm's cache; shelling git is ~15 lines and avoids the internal-API risk.
-Leaning toward reusing `pm` first.
+is always present then; the shipped binary doesn't need it). **Decision: reuse
+`jpm/pm`** (`resolve-bundle` + `download-bundle`, after `jpm/config/load-default`)
+rather than shelling `git` ourselves — less code, and it shares jpm's cache. The
+internal-API risk is acceptable since it's only used at dev/build time.
 
 ## Limitations
 
@@ -107,10 +106,11 @@ Leaning toward reusing `pm` first.
 
 ## Plan
 
-1. **Loader roots.** Generalize `maybe-require-ns` to search an ordered root list
-   and try `.clj` + `.cljc`; add a `JOLT_PATH`/`--path` to set roots by hand.
-   Point it at a checked-out lib's `src` and load it. Independently testable,
-   unblocks the rest.
+1. **Loader roots.** *(done)* `maybe-require-ns` now searches an ordered root
+   list (`ctx.env :source-paths`, stdlib first) trying `.clj` then `.cljc`;
+   `init` adds roots from the `:paths` opt and `JOLT_PATH` (colon-separated).
+   Verified loading a real lib (medley) from an added root. See
+   `test/integration/deps-loader-test.janet`.
 2. **Resolve git deps via jpm.** Read `deps.edn`, resolve `:git/*` (+
    `:local/root`) through `jpm/pm` into `jpm_tree/.cache`, recurse for transitive
    git deps, register the roots. `jolt deps` to resolve/print; auto on startup
