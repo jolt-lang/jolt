@@ -98,7 +98,25 @@
   (assert (= 1 (ct-eval ctx "(:a {:a 1})")) "keyword as fn")
   (assert (= 1 (ct-eval ctx "({:a 1} :a)")) "map as fn")
   (assert (= 2 (ct-eval ctx "(#{1 2 3} 2)")) "set as fn")
-  (assert (= true (ct-eval ctx "(= [1 2] [1 2])")) "= is value equality, not core-= bypass"))
+  (assert (= true (ct-eval ctx "(= [1 2] [1 2])")) "= is value equality, not core-= bypass")
+
+  # Phase 2: hybrid fallback. Forms the compiler can't compile (destructuring,
+  # multi-arity, named fns) interpret instead of erroring or miscompiling. The
+  # result is the same — compilation is a transparent speedup.
+  (print "  hybrid fallback (destructuring / multi-arity)...")
+  (assert (= 3 (ct-eval ctx "(let [[a b] [1 2]] (+ a b))")) "vector destructuring let")
+  (assert (= 6 (ct-eval ctx "(let [{:keys [x y z]} {:x 1 :y 2 :z 3}] (+ x y z))")) "map destructuring let")
+  (assert (= 3 (ct-eval ctx "((fn [[a b]] (+ a b)) [1 2])")) "destructuring fn param")
+  (assert (= 5 (ct-eval ctx "(let [[a & more] [1 2 3 4 5]] (+ a (count more)))")) "rest destructuring")
+  (ct-eval ctx "(defn arity ([a] a) ([a b] (+ a b)))")
+  (assert (= 5 (ct-eval ctx "(arity 5)")) "multi-arity 1")
+  (assert (= 7 (ct-eval ctx "(arity 3 4)")) "multi-arity 2")
+  (assert (= 10 (ct-eval ctx "((fn self [n] (if (zero? n) 0 (+ n (self (dec n))))) 4)")) "named fn recursion")
+  (assert (= 6 (ct-eval ctx "(loop [[x & xs] [1 2 3] acc 0] (if x (recur xs (+ acc x)) acc))")) "destructuring loop binding")
+  # A runtime error in compiled code must propagate, not silently fall back to a
+  # second (interpreted) evaluation.
+  (assert (= :threw (try (do (ct-eval ctx "(inc nil)") :no-throw) ([_] :threw)))
+          "runtime error in compiled code propagates"))
 
 # Context isolation: a def in one compiled context is invisible in another. With
 # var-indirection each context has its own var cells, so b's `secret` is a

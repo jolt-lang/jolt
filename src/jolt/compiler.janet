@@ -352,6 +352,19 @@
 # Analyzer
 # ============================================================
 
+(defn- plain-symbol?
+  "A bare Clojure symbol (not a destructuring pattern). `&` counts — it's the
+  varargs marker, which the emitter passes straight through to Janet."
+  [x]
+  (and (struct? x) (= :symbol (x :jolt/type))))
+
+(defn- uncompilable
+  "Signal that the compiler can't (yet) handle this form. eval-one catches this
+  and falls back to the interpreter, which handles every form correctly. Throwing
+  here — rather than miscompiling — is what makes the hybrid path sound."
+  [reason]
+  (error (string "jolt/uncompilable: " reason)))
+
 (defn analyze-form
   "Analyze a Clojure form and return an AST node with :op key.
   Takes bindings (table) and optional ctx (for macro expansion)."
@@ -449,6 +462,15 @@
                     {:op :def :name name-sym :var cell
                      :init (analyze-form (in form 2) bindings ctx)})
             "fn*" (let [params (in form 1)
+                        _ (do
+                            # Named fns put a symbol at position 1; multi-arity
+                            # puts a list of clauses. Both, plus destructuring
+                            # params, fall back to the interpreter.
+                            (when (plain-symbol? params) (uncompilable "named fn"))
+                            (unless (tuple? params) (uncompilable "multi-arity fn"))
+                            (each p params
+                              (unless (plain-symbol? p)
+                                (uncompilable "destructuring fn params"))))
                         body-bindings (do
                                         (var bb @{})
                                         (loop [[k v] :pairs bindings] (put bb k v))
@@ -472,7 +494,9 @@
                                          (let [n (length bind-vec)]
                                            (while (< i n)
                                              (let [sym-s (in bind-vec i)
-                                                   name (if (struct? sym-s) (sym-s :name) sym-s)
+                                                   _ (unless (plain-symbol? sym-s)
+                                                       (uncompilable "destructuring let binding"))
+                                                   name (sym-s :name)
                                                    val-form (if (< (+ i 1) n) (in bind-vec (+ i 1)) nil)
                                                    val-ast (if val-form (analyze-form val-form bindings ctx) {:op :const :val nil})]
                                                (array/push pairs {:name name :init val-ast})
@@ -501,7 +525,9 @@
                                           (let [n (length bind-vec)]
                                             (while (< i n)
                                               (let [sym-s (in bind-vec i)
-                                                    name (if (struct? sym-s) (sym-s :name) sym-s)
+                                                    _ (unless (plain-symbol? sym-s)
+                                                        (uncompilable "destructuring loop binding"))
+                                                    name (sym-s :name)
                                                     val-form (if (< (+ i 1) n) (in bind-vec (+ i 1)) nil)
                                                     val-ast (if val-form (analyze-form val-form bindings ctx) {:op :const :val nil})]
                                                 (array/push pairs {:name name :init val-ast})
@@ -926,3 +952,10 @@
   named-fn rewrite needed."
   [form ctx]
   (eval (compile-ast form ctx) (ctx-janet-env ctx)))
+
+(defn eval-compiled
+  "Evaluate an already-compiled Janet form (the result of compile-ast) in the
+  context's compiled env. Split out from compile-and-eval so callers can guard
+  the compile step alone — see eval-one's hybrid fallback."
+  [compiled ctx]
+  (eval compiled (ctx-janet-env ctx)))
