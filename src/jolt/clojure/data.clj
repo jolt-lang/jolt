@@ -44,18 +44,15 @@
   "Diff associative things a and b, comparing only keys in ks."
   [a b ks]
   (reduce
-   ;; mapv (eager) rather than the reference's (doall (map …)): jolt's
-   ;; multi-collection map is lazy and doesn't force reliably as a reduce
-   ;; accumulator here.
-   (fn [diff1 diff2] (mapv merge diff1 diff2))
+   (fn [diff1 diff2] (doall (map merge diff1 diff2)))
    [nil nil nil]
-   (mapv (partial diff-associative-key a b) ks)))
+   (map (partial diff-associative-key a b) ks)))
 
 (defn- diff-sequential [a b]
-  (vec (mapv vectorize (diff-associative
-                        (if (vector? a) a (vec a))
-                        (if (vector? b) b (vec b))
-                        (range (max (count a) (count b)))))))
+  (vec (map vectorize (diff-associative
+                       (if (vector? a) a (vec a))
+                       (if (vector? b) b (vec b))
+                       (range (max (count a) (count b)))))))
 
 (defn- diff-set [a b]
   [(not-empty (set/difference a b))

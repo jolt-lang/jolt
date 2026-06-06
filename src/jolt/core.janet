@@ -834,12 +834,15 @@
           (while (< i (length cs))
             (let [cur (in cs i) ridx (in idxs i) real (in reals i)]
               (if (not (nil? cur))
-                (let [val (ls-first cur)]
-                  (if (nil? val) (do (set ok false) (break))
-                    (do (array/push args val)
+                # Detect exhaustion with seq-done?, NOT (nil? (ls-first)): a
+                # lazy-seq can legitimately contain nil elements, and treating the
+                # first nil as end-of-seq truncates (e.g. mapping over a previous
+                # map result that holds nils).
+                (if (seq-done? cur) (do (set ok false) (break))
+                    (do (array/push args (ls-first cur))
                         (put next-cs i (ls-rest cur))
                         (put next-idxs i (+ ridx 1))
-                        (put next-reals i nil))))
+                        (put next-reals i nil)))
                 (let [c (if (nil? real)
                           (let [rc (realize-for-iteration (in colls i))]
                             (put next-reals i rc) rc)
