@@ -29,7 +29,11 @@
 
 (defn invoke [f args] {:op :invoke :fn f :args args})
 
-(defn def-node [ns name init] {:op :def :ns ns :name name :init init})
+;; meta is the var metadata (e.g. {:dynamic true} / {:redef true}) the back end
+;; applies to the cell; nil when the def name carried none.
+(defn def-node
+  ([ns name init] {:op :def :ns ns :name name :init init :meta nil})
+  ([ns name init meta] {:op :def :ns ns :name name :init init :meta meta}))
 
 (defn let-node [bindings body] {:op :let :bindings bindings :body body})
 

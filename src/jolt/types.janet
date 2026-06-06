@@ -375,10 +375,19 @@
   [&opt opts]
   (default opts nil)
   (let [compile? (if opts (get opts :compile?) false)
+        # Direct-linking (call-site/unit property, like Clojure). :aot-core?
+        # (default true; JOLT_AOT_CORE=0 disables) compiles the core tiers +
+        # compiler with direct-linking on. :direct-linking? is the per-unit flag
+        # the back end reads while emitting; it defaults to the user-code setting
+        # (off unless opted in) and load-core-overlay! flips it on around core.
+        aot-core? (let [o (if opts (get opts :aot-core?) nil)]
+                    (if (nil? o) (not (= "0" (os/getenv "JOLT_AOT_CORE"))) o))
         env @{:namespaces @{}
               :class->opts @{}
               :current-ns "user"
               :compile? compile?
+              :aot-core? aot-core?
+              :direct-linking? (if opts (get opts :direct-linking?) nil)
               # Ordered roots searched (after the stdlib) to resolve a namespace
               # to a .clj/.cljc file. jolt-core holds the portable Clojure layer
               # (analyzer/IR/core); deps.edn resolution appends dep src dirs.

@@ -24,8 +24,34 @@
   (or (get cell :jolt/setter)
       (let [s (fn [v] (bind-root cell v) cell)] (put cell :jolt/setter s) s)))
 
+# Setter that also applies def metadata to the var (so ^:dynamic / ^:redef /
+# ^:private survive compilation, matching the interpreter's def). Not memoized:
+# the meta is specific to this def site.
+(defn- var-setter-meta [cell meta]
+  (fn [v]
+    (bind-root cell v)
+    (put cell :meta (merge (or (cell :meta) {}) meta))
+    (when (get meta :dynamic) (put cell :dynamic true))
+    cell))
+
 (defn- cell-for [ctx ns-name nm]
   (ns-intern (ctx-find-ns ctx ns-name) nm))
+
+# Direct-linking decision (call-site/unit property, Clojure-style). A var
+# reference compiles to its embedded value (direct) iff:
+#   - the compiling unit has direct-linking on (env :direct-linking?),
+#   - the target opts in (NOT ^:redef / ^:dynamic — those force indirect),
+#   - the target is already defined AND its root is a Janet function.
+# The function? guard is essential: embedding a non-function value (a jolt
+# collection/symbol) into the emitted form would make Janet evaluate it AS code.
+# So we direct-link exactly the call-optimization case; everything else stays
+# indirect (live var deref → redefinable). Default user/REPL units: flag off,
+# so all user calls are indirect and redefinable with no annotation.
+(defn- direct-var? [ctx cell]
+  (and (get (ctx :env) :direct-linking?)
+       (not (cell :dynamic))
+       (not (let [m (cell :meta)] (and m (get m :redef))))
+       (function? (cell :root))))
 
 # Fresh Janet symbol for back-end-introduced bindings (arity dispatch). NOT
 # Janet's `gensym` — `(use ./core)` shadows it with Jolt's, which returns a jolt
@@ -186,14 +212,20 @@
       :const (node :val)
       :local (symbol (node :name))
       :host (symbol (node :name))
-      :var (tuple (var-getter (cell-for ctx (node :ns) (node :name))))
+      :var (let [cell (cell-for ctx (node :ns) (node :name))]
+             (if (direct-var? ctx cell)
+               (cell :root)                          # direct link: embed the fn value
+               (tuple (var-getter cell))))           # indirect: live, redefinable
       :if ['if (emit ctx (node :test)) (emit ctx (node :then)) (emit ctx (node :else))]
       :do (emit-seq ctx node)
       :loop (emit-loop ctx node)
       :recur (emit-recur ctx node)
       :try (emit-try ctx node)
       :throw ['error (emit ctx (node :expr))]
-      :def (tuple (var-setter (cell-for ctx (node :ns) (node :name))) (emit ctx (node :init)))
+      :def (let [cell (cell-for ctx (node :ns) (node :name))
+                 meta (node :meta)]
+             (tuple (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))
+                    (emit ctx (node :init))))
       :let (emit-let ctx node)
       :fn (emit-fn ctx node)
       :invoke (emit-invoke ctx node)

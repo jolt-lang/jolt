@@ -22,7 +22,7 @@
                                form-literal? form-elements form-vec-items
                                form-map-pairs form-special? compile-ns
                                form-macro? form-expand-1 resolve-global
-                               host-intern!]]))
+                               form-sym-meta host-intern!]]))
 
 (declare analyze)
 
@@ -140,7 +140,7 @@
                 nm (form-sym-name name-sym)
                 cur (compile-ns ctx)]
             (host-intern! ctx cur nm)
-            (def-node cur nm (analyze ctx (nth items 2) env)))
+            (def-node cur nm (analyze ctx (nth items 2) env) (form-sym-meta name-sym)))
     "let*" (let [bvec (vec (form-vec-items (nth items 1)))
                  r (analyze-bindings ctx bvec env)]
              (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))

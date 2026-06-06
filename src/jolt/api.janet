@@ -51,14 +51,22 @@
   "Load the Clojure portion of clojure.core in dependency-ordered tiers. See
   core-tiers and jolt-core/clojure/core/."
   [ctx]
-  (def compile? (get (ctx :env) :compile?))
+  (def env (ctx :env))
+  (def compile? (get env :compile?))
+  # Core compiles with direct-linking on when :aot-core? (so core->core calls
+  # are direct). The flag is restored to the user-code default afterward, so
+  # user/REPL code stays indirect and fully redefinable.
+  (def user-dl (get env :direct-linking?))
+  (def core-dl (get env :aot-core?))
   (def saved (ctx-current-ns ctx))
   (ctx-set-current-ns ctx "clojure.core")
   (each tier core-tiers
     (when-let [src (get stdlib-embed/sources (tier :ns))]
+      (put env :direct-linking? core-dl)
       (if (and compile? (tier :kernel))
         (backend/bootstrap-load-source ctx "clojure.core" src)
         (eval-overlay-source ctx src))))
+  (put env :direct-linking? user-dl)
   (ctx-set-current-ns ctx saved))
 
 (defn init

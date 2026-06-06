@@ -29,6 +29,10 @@
 (defn h-sym? [form] (and (struct? form) (= :symbol (form :jolt/type))))
 (defn h-sym-name [form] (form :name))
 (defn h-sym-ns [form] (form :ns))
+# Reader metadata on a symbol (e.g. ^:dynamic / ^:redef / ^:private on a def
+# name). Returns the meta map or nil. Lets the analyzer carry def metadata that
+# the back end applies to the var — without it, compiled defs drop all var meta.
+(defn h-sym-meta [form] (form :meta))
 
 (defn h-list? [form] (array? form))          # a call / list (reader: array)
 (defn h-vector? [form] (tuple? form))        # a vector literal (reader: tuple)
@@ -133,6 +137,7 @@
 # intercepting them as the value-level predicates.
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
+   "form-sym-meta" h-sym-meta
    "form-list?" h-list? "form-vec?" h-vector? "form-map?" h-map?
    "form-set?" h-set? "form-char?" h-char? "form-literal?" h-literal?
    "form-elements" h-elements "form-vec-items" h-vector-items
