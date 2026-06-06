@@ -1532,6 +1532,25 @@
     (pr-render buf (in pair 1)))
   (buffer/push-string buf "}"))
 
+(defn- name-of
+  "Extract a plain name string from a string, symbol struct, or a namespace/var
+  table (reading its :name) — never recurses into the cyclic ns structure."
+  [x]
+  (cond
+    (nil? x) nil
+    (string? x) x
+    (and (struct? x) (= :symbol (get x :jolt/type))) (x :name)
+    (or (struct? x) (table? x)) (name-of (get x :name))
+    (string x)))
+
+(defn- var-display
+  "Render a Jolt var as #'ns/name. A var's :meta/:ns refs are cyclic, so this
+  reads only its :name and :ns name — printing the var's pairs would loop."
+  [v]
+  (let [nm (name-of (v :name))
+        ns (name-of (v :ns))]
+    (if ns (string "#'" ns "/" nm) (string "#'" nm))))
+
 (set pr-render
   (fn [buf v]
     (cond
@@ -1551,6 +1570,7 @@
       (number? v) (buffer/push-string buf (fmt-number v))
       (and (struct? v) (= :symbol (v :jolt/type)))
         (buffer/push-string buf (if (v :ns) (string (v :ns) "/" (v :name)) (v :name)))
+      (and (table? v) (= :jolt/var (get v :jolt/type))) (buffer/push-string buf (var-display v))
       (core-sorted-map? v) (pr-render-pairs buf (sorted-map-entries v))
       (core-sorted-set? v) (pr-render-seq buf (v :items) "#{" "}")
       (lazy-seq? v) (pr-render-seq buf (realize-for-iteration v) "(" ")")
@@ -1580,6 +1600,7 @@
     (keyword? v) (string ":" (string v))
     (and (struct? v) (= :symbol (v :jolt/type)))
       (if (v :ns) (string (v :ns) "/" (v :name)) (v :name))
+    (and (table? v) (= :jolt/var (get v :jolt/type))) (var-display v)
     (number? v) (fmt-number v)
     (= true v) "true"
     (= false v) "false"

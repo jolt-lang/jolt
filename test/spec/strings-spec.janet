@@ -13,6 +13,11 @@
   ["string? true"       "true"       "(string? \"x\")"]
   ["pr-str vector"      "\"[1 2 3]\"" "(pr-str [1 2 3])"]
   ["pr-str quotes str"  "\"\\\"hi\\\"\"" "(pr-str \"hi\")"]
+  # a var's :meta/:ns refs are cyclic — pr-str/str render it as #'ns/name
+  # rather than recursing into (and looping on) the var's fields.
+  ["pr-str of a var"    "\"#'user/vv\"" "(pr-str (def vv 1))"]
+  ["str of a var"       "\"#'user/ww\"" "(str (def ww 2))"]
+  ["pr-str of a defn"   "\"#'user/gg\"" "(pr-str (defn gg [x] x))"]
   ["seq of string"      "[\\a \\b]"  "(seq \"ab\")"])
 
 (defspec "clojure.string"

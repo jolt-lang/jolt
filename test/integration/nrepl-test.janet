@@ -64,6 +64,14 @@
 (check "ns field reported"
   "(some #(get % \"ns\") (jolt.nrepl/client-eval c \"(+ 1 1)\" s))" "user")
 
+# in-ns switches the session ns, and it persists to the next eval
+(check "in-ns switches ns"
+  "(some #(get % \"ns\") (jolt.nrepl/client-eval c \"(in-ns (quote foo.bar))\" s))" "foo.bar")
+(check "ns persists across evals"
+  "(some #(get % \"ns\") (jolt.nrepl/client-eval c \"(+ 2 2)\" s))" "foo.bar")
+# explicit :ns on the message overrides
+(ev "(jolt.nrepl/request c {\"op\" \"eval\" \"code\" \"(+ 1 1)\" \"session\" s \"ns\" \"user\"})")
+
 # eval error -> eval-error status, and the connection keeps working afterward
 (check "eval error status"
   "(boolean (some #(let [st (get % \"status\")] (and (sequential? st) (some (fn [x] (= \"eval-error\" x)) st))) (jolt.nrepl/client-eval c \"(/ 1 :z)\" s)))"

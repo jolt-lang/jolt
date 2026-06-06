@@ -90,15 +90,12 @@
 ; regardless of the ambient ns.
 (defn- eval-in-ns [ns-str form]
   (in-ns (symbol ns-str))
-  (let [result (try {:val (eval form) :ns (:name (the-ns))}
+  ; Bind the value before reading the ns: jolt evaluates map-literal values
+  ; right-to-left, so the result ns must be captured *after* eval runs any in-ns.
+  (let [result (try (let [v (eval form)] {:val v :ns (:name (the-ns))})
                     (catch Throwable e {:err e :ns (:name (the-ns))}))]
     (in-ns 'jolt.nrepl)
     result))
-
-; pr-str on a var loops forever on its cyclic ns refs, so render vars (def/defn
-; results) ourselves as #'ns/name rather than printing them.
-(defn- render-value [v ns-str]
-  (if (var? v) (str "#'" ns-str "/" (get v :name)) (pr-str v)))
 
 (defn- eval-handler [server msg send!]
   ; current-ns is global ctx state shared by all fibers, so set the eval ns
@@ -122,7 +119,7 @@
               (flush-out)
               (swap! server assoc :eval-ns ns)
               (when err (throw err))
-              (respond {"ns" ns "value" (render-value val ns)})
+              (respond {"ns" ns "value" (pr-str val)})
               (recur (next forms) ns))))
         (janet/setdyn :out old-out)
         (respond {"status" ["done"]}))
