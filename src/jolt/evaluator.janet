@@ -611,9 +611,13 @@
 (defn- eval-list
   [ctx bindings form]
   (def first-form (first form))
-  # Safe name extraction: non-symbol heads (e.g. keywords) fall through to default
+  # Safe name extraction: non-symbol heads (e.g. keywords) fall through to default.
+  # A head qualified to a NON-core namespace (e.g. clojure.edn/read-string) must
+  # resolve to that var, not the like-named clojure.core special form — so only
+  # unqualified or clojure.core-qualified heads dispatch as special forms.
   (def name (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
-              (first-form :name)
+              (let [ns (first-form :ns)]
+                (if (or (nil? ns) (= ns "clojure.core")) (first-form :name) nil))
               nil))
   (match name
     "quote" (in form 1)

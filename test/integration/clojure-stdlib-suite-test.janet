@@ -12,9 +12,10 @@
   [["clojure/walk_test/walk.cljc"            34 true]
    ["clojure/zip_test/zip.cljc"              33 true]
    ["clojure/data_test/diff.cljc"            61 true]
-   # clojure.edn is still a stub (no opts/:eof arity, broken set/nil handling);
-   # tracked separately. Guard its current passing subset so it can't regress.
-   ["clojure/edn_test/read_string.cljc"      43 false]])
+   # clojure.edn now reads via clojure.core/read-string with opts/:eof + nil/blank
+   # handling. The remaining 3 fails are sets (the reader yields a set FORM, not a
+   # constructed set) and #uuid — tracked in jolt-b7y. Guard the passing subset.
+   ["clojure/edn_test/read_string.cljc"      47 false]])
 
 (def root "test/clojure-stdlib")
 (def per-file-timeout 6)
