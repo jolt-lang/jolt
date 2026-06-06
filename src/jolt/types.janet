@@ -86,6 +86,10 @@
                  :name name
                  :root init-val
                  :meta m
+                 # Generation: bumped on every root change (redefinition). Call
+                 # sites / dispatch caches keyed on this can detect a redef and
+                 # invalidate; direct-linked (sealed) sites can detect staleness.
+                 :gen 0
                  :dynamic (if meta (get meta :dynamic) false)
                  :macro (if meta (get meta :macro) false)
                  :ns (if meta (get meta :ns) nil)}]
@@ -152,14 +156,16 @@
       (if (not (nil? (get frame v)))
         (do (put bs i (merge frame {v val})) (set done true))
         (-- i))))
-  (unless done (put v :root val))
+  (unless done (do (put v :root val) (put v :gen (+ 1 (or (v :gen) 0)))))
   val)
 
 (defn alter-var-root
   "Atomically alter the root binding of v by applying f to current value plus args."
   [v f & args]
   (let [new-val (f (v :root) ;args)]
-    (put v :root new-val)))
+    (put v :root new-val)
+    (put v :gen (+ 1 (or (v :gen) 0)))
+    new-val))
 
 (defn alter-meta!
   "Atomically update a var's metadata via (apply f args)."
@@ -244,14 +250,18 @@
       :name (v :name)
       :root (v :root)
       :meta new-meta
+      :gen (or (v :gen) 0)
       :dynamic (v :dynamic)
       :macro (v :macro)
       :ns (v :ns)}))
 
 (defn bind-root
-  "Set the root binding (internal, same as var-set)."
+  "Set the root binding and bump the var's generation (the redefinition
+  chokepoint: def, ns-intern-with-val, and the root-set paths all route here)."
   [v val]
-  (put v :root val))
+  (put v :root val)
+  (put v :gen (+ 1 (or (v :gen) 0)))
+  val)
 
 # ============================================================
 # Namespace
