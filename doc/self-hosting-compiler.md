@@ -26,12 +26,25 @@ prior art, the constraints we verified, and a recommended path.
   tree-walking interpreter (`evaluator.janet`); ~1k lines of **Clojure** are the
   stdlib (`clojure.string/set/walk/…`, `jolt.*`). So the language is mostly in
   the host, inverted from the Clojure-in-Clojure ideal.
-- The interpreter (`eval-form`) is the live, complete path.
-- There's an opt-in compiler (`compiler.janet`): `analyze-form` (reader form →
-  AST tagged with `:op`) → `emit` (AST → Janet form) → Janet `compile`/`eval`.
-  Phases 1–2 are done (per-context env so defs persist and resolve; native
-  arithmetic ops + direct calls — recursive `fib(30)` ≈ 0.08 s). Phase 3
-  (destructuring, multi-arity, hybrid fallback) is open.
+- The interpreter (`eval-form`) is the complete reference path.
+- The compiler (`compiler.janet`) — `analyze-form` (reader form → `:op` AST) →
+  `emit` (AST → Janet form) → Janet `compile`/`eval` — is now **on by default**
+  in the shipped runtime (`JOLT_INTERPRET=1` opts out). It is a *hybrid*: forms
+  it can't compile correctly throw `jolt/uncompilable` and fall back to the
+  interpreter (`loader/eval-toplevel`), so results always match the interpreter.
+  Validated at parity — conformance 218/218 under both interpret and compile, and
+  the clojure-test-suite under compile passes 3932 (vs the 3913 interpreter
+  baseline) across ~4.6k assertions.
+- Done so far: var-indirection (globals deref through var cells, so compiled code
+  is REPL-redefinable); hybrid fallback; compilation of multi-arity / named /
+  variadic fns and `recur` inside `fn`; map and vector literal compilation
+  (mode-correct via `make-vec` / `build-map-literal`); resolution that mirrors
+  the interpreter (current ns → `clojure.core` → Janet-env fallback); and AOT
+  (`aot.janet`) that marshals a compiled namespace to a Janet bytecode image
+  against the baked-in runtime dictionary and loads it back.
+- Still open — the actual self-hosting: the compiler and most of `clojure.core`
+  are still Janet. Rewriting them in Clojure (compiled by Jolt) is the remaining
+  Clojure-in-Clojure work.
 
 ## What the host gives us (verified)
 
@@ -130,23 +143,28 @@ coverage incrementally, and de-risks the self-hosting bootstrap.
 `def` updates the root; protocol/multimethod dispatch stays dynamic. Direct
 linking is opt-in, never the default, so the REPL is always live.
 
-## A staged path (maps onto the existing beads)
+## A staged path
 
-1. **Var-indirection in the emitter** *(new, foundational — do before more
-   compiler work)*. Compile global refs as var-cell derefs; verify a compiled
-   `defn` is redefinable at the REPL. Without this, more compiler coverage just
-   bakes in more early-binding to undo later.
-2. **Hybrid fallback + finish coverage** (`jolt-1bj`, Phase 3): per-form fallback
-   to `eval-form`; then compile destructuring, multi-arity/variadic, and the
-   remaining forms as optimizations on top of the always-correct fallback.
-3. **Self-host the compiler.** Rewrite `compiler.janet` as Clojure (`jolt.compiler`)
-   that Jolt compiles. Now the compiler is part of the language it compiles.
-4. **Shrink the kernel / core-in-Clojure.** Move `clojure.core` from Janet to
-   Clojure incrementally, leaving only the minimal kernel in Janet. Each moved
-   piece is compiled by the previous stage — the language building itself.
-5. **Compile-by-default + AOT** (`jolt-7j9`, Phase 4): once the hybrid path is
-   robust, flip compilation on by default; ship AOT images via `make-image`.
+1. **Var-indirection in the emitter** — *done*. Global refs compile as var-cell
+   derefs, so a compiled `defn` is redefinable at the REPL.
+2. **Hybrid fallback + coverage** (`jolt-1bj`) — *done*. Forms the compiler can't
+   compile throw `jolt/uncompilable` and fall back to the interpreter, so compile
+   mode is always correct. Covered: multi-arity/named/variadic fns, `recur` in
+   `fn`, map/vector literals, and resolution matching the interpreter. (One
+   optimization left: compile destructuring via a shared `destructure` expander
+   instead of falling back — `jolt-7dl`.)
+5. **Compile-by-default + AOT** (`jolt-7j9`) — *done, done out of order*. Once the
+   hybrid path was validated at parity, compilation was flipped on by default and
+   AOT images (`aot.janet`) landed. Done before 3–4 because it's the runtime
+   payoff and only needed the hybrid path to be correct, not self-hosting.
+3. **Self-host the compiler** (`jolt-lcn`) — *open*. Rewrite `compiler.janet` as
+   Clojure (`jolt.compiler`) that Jolt compiles. Now the compiler is part of the
+   language it compiles.
+4. **Shrink the kernel / core-in-Clojure** (`jolt-uqi`) — *open*. Move
+   `clojure.core` from Janet to Clojure incrementally, each piece compiled by the
+   previous stage — the language building itself — leaving a minimal Janet kernel.
 
-The ordering matters: var-indirection first (correctness for redefinition), then
-the hybrid fallback (correctness for coverage), then self-hosting and kernel
-shrinking (the Clojure-in-Clojure payoff), then default-on + AOT.
+What remains (3 and 4) is the actual Clojure-in-Clojure rewrite: the largest part
+of the work and where the "language builds itself" payoff lives. The correctness
+and runtime foundations it needs — redefinable compiled code, an always-correct
+hybrid path, compile-by-default, and AOT — are now in place.

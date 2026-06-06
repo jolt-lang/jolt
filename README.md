@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/jolt-lang/jolt/actions/workflows/tests.yml/badge.svg)](https://github.com/jolt-lang/jolt/actions/workflows/tests.yml)
 
-A Clojure interpreter running on [Janet](https://janet-lang.org). Jolt reads Clojure source, evaluates it with an interpreter written in pure Janet, and ships a Clojure-compatible standard library. The goal is a Janet-hosted [SCI](https://github.com/borkdude/sci) runtime — a minimal bootstrap that loads SCI's Clojure source as its standard library.
+A Clojure implementation on [Janet](https://janet-lang.org). Jolt reads Clojure source and, by default, compiles each form to native Janet bytecode — falling back to a tree-walking interpreter for forms the compiler doesn't handle, so results always match the interpreter. It ships a Clojure-compatible standard library. The goal is a Janet-hosted [SCI](https://github.com/borkdude/sci)-style runtime with a minimal bootstrap.
 
 ## Build
 
@@ -61,51 +61,48 @@ hello 42
 
 ### Evaluation pipeline: interpreted and compiled
 
-Every form Jolt evaluates passes through one router (`eval-one`), which decides
-*per form* whether to tree-walk it or compile it to Janet. There are two modes:
+Every form passes through one router (`loader/eval-toplevel`) that decides *per
+form* whether to tree-walk it or compile it to Janet bytecode. The shipped
+runtime **compiles by default**; set `JOLT_INTERPRET=1` to force the interpreter.
 
-**Interpreted (default).** Without `:compile?`, every form is evaluated by the
-tree-walking interpreter (`eval-form`). This is the live, fully-featured path:
-all of Clojure's semantics — macros, multimethods, protocols, dynamic vars,
-lazy seqs, destructuring — go through here.
+**Hybrid, always correct.** The compiler is incomplete by design: a form it can't
+compile correctly throws `jolt/uncompilable`, and the router falls back to the
+tree-walking interpreter (`eval-form`) for that form. So the result *always*
+matches the interpreter — compilation is a transparent speedup, never a semantic
+change. Only the compile step is guarded; runtime errors in compiled code
+propagate normally (no double-evaluation, no hidden errors).
 
-**Compiled (`:compile? true`).** With compilation enabled, the router splits each
-top-level form two ways:
+What compiles: `def`/`defn`, multi-arity / named / variadic fns, `recur` (in
+`loop` and directly in `fn`), `let`/`if`/`do`/`try`/`throw`/`quote`, map and
+vector literals, and calls. What falls back to the interpreter: context-modifying
+and definitional forms (`ns`, `defmacro`, `deftype`, `defprotocol`,
+`defmulti`/`defmethod`, `reify`, `require`, `binding`, …), destructuring, regex
+literals, and the handful of interpreter-only special forms.
 
-- **Context-modifying forms always interpret.** `ns`, `defmacro`, `deftype`,
-  `defmulti`/`defmethod`, `require`, `in-ns`, `set!`, `var`, `.`, `new`, `eval`,
-  and syntax-quote mutate the evaluation context (namespaces, the macro table,
-  type/method registries, dynamic vars), so they are routed to the interpreter
-  unchanged.
-- **Everything else compiles to Janet.** The form is macro-expanded, lowered to
-  a Janet AST, and `eval`'d in a **per-context Janet environment**. `def`/`defn`
-  bindings live in that environment so they persist and resolve across forms
-  (and self-recurse via a named-fn rewrite); hot numeric primitives
-  (`+ - * < > <= >=`) emit native Janet ops so the JIT-free Janet VM runs them at
-  full speed; and function calls compile to direct Janet calls (keyword/map/set
-  in call position still dispatch through the IFn runtime).
-
-The two paths **share one context.** Compiled `def`/`defn` results are both
-evaluated into the Janet environment *and* interned into the Jolt namespace, so
-an interpreted form can call a compiled function and vice-versa within the same
-context — which is what makes the always-interpret carve-out above safe.
+**Live redefinition.** Compiled global references deref through Jolt **var cells**
+(Janet early-binds plain symbols, which would freeze redefinition), so redefining
+a `def`/`defn` at the REPL is visible to already-compiled callers — Clojure's var
+model. Hot numeric primitives (`+ - * < > <= >=`) emit native Janet ops, and
+calls compile to direct Janet calls.
 
 ```janet
 (def ctx (init {:compile? true}))
 (eval-string ctx "(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))")
-(eval-string ctx "(fib 30)")   ; → 832040, fast
+(eval-string ctx "(fib 30)")   ; → 832040, native Janet bytecode
 ```
 
-For compute-heavy code the compiled path is dramatically faster — recursive
-`fib(30)` runs in ~0.08 s compiled vs ~50 s interpreted (≈600×), at native Janet
-speed.
+For compute-heavy code the compiled path is dramatically faster than tree-walking,
+at native Janet speed.
 
-Compile mode is opt-in and still maturing. The numeric-op inlining relaxes the
-strict non-number checks (e.g. `(< nil 1)` doesn't throw), and constructs the
-compiler doesn't yet handle currently **error** rather than transparently
-falling back to the interpreter — a per-form hybrid fallback (compile what we
-can, interpret the rest) is the next step toward making compilation safe to
-turn on by default.
+**Validated at parity.** The conformance suite passes 218/218 under *both*
+interpreter and compiler (`conformance-test.janet` runs both in CI), and the full
+clojure-test-suite under compilation matches the interpreter baseline across
+~4.6k assertions — evidence the hybrid path doesn't diverge.
+
+**AOT.** `aot.janet` marshals a compiled namespace to a Janet bytecode image
+(`save-ns`) and loads it back into a fresh context (`load-ns-image`), skipping
+parse/analyze/emit/compile on reload. Core fns are referenced by name against the
+baked-in runtime; only user bytecode and var cells are serialized.
 
 ## Host interop
 
