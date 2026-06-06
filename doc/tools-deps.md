@@ -1,154 +1,122 @@
-# Loading Clojure libraries via deps.edn
+# Loading Clojure libraries via deps.edn (git deps, on jpm)
 
-Research notes on letting Jolt consume `deps.edn` so a project can pull real
-Clojure libraries and `(require ...)` them. This documents what works today, what
-it would take, and a recommended path. Nothing here is implemented yet.
+Research notes for letting a Jolt project pull pure-Clojure libraries through a
+`deps.edn` and `(require ...)` them. Scope is deliberately narrow:
 
-## Goal
+- **git deps only** — no Maven/`~/.m2` resolution.
+- **pure `clj`/`cljc`** — anything needing the JVM (Java interop, host classes)
+  won't load or run, and that's expected.
+- **no classpath machinery** — we just need `require` to find a dep's namespaces
+  at dev time (REPL) so they can be compiled into the image at build time.
+- **piggyback on jpm** — reuse jpm's existing git fetch + cache; don't write a
+  package manager.
 
-Given a `deps.edn` like
+Nothing here is implemented yet. Everything below was verified against the
+installed jpm and a real lib (medley).
 
-```clojure
-{:paths ["src"]
- :deps  {medley/medley {:mvn/version "1.0.0"}
-         some/gitlib    {:git/url "https://..." :git/sha "..."}}}
-```
+## How jpm handles dependencies today
 
-run `jolt` in that directory and have `(require '[medley.core :as m])` find and
-load the library's source from the resolved dependency, the same way the stdlib
-is loaded today.
+jpm's package code lives in `/opt/homebrew/lib/janet/jpm/pm.janet`. The relevant
+pieces:
 
-## What works today
+- **`resolve-bundle`** normalizes a dep spec to `{:url :tag :type :shallow}`. It
+  accepts a table (`:url`/`:repo`, and `:tag`/`:sha`/`:commit`/`:ref`) or a
+  `"url::type::tag"` string. So a deps.edn `{:git/url … :git/sha …}` maps onto it
+  directly.
+- **`download-bundle url :git tag shallow`** clones into a cache dir and returns
+  the path. The cache is `(find-cache)` = `<modpath>/.cache`, and the per-dep
+  directory is a deterministic id: `git_<tag>_<sanitized-url>`. Under the hood
+  `download-git-bundle` does `git init` + `remote add origin` + fetch + reset to
+  the tag/sha (plus submodules). Pure git — **no build step**.
+- **`bundle-install`** is the part we *don't* want: after downloading it does
+  `(require-jpm "./project.janet")` and runs build/install rules. A Clojure lib
+  has no `project.janet`, so this would fail. The clone/cache half
+  (`download-bundle`) is cleanly separable from this build half.
 
-- **Jolt reads EDN.** `(read-string (slurp "deps.edn"))` parses a deps.edn into a
-  Jolt map — no extra parser needed.
-- **Library source ships in the jars.** Maven Clojure jars contain the `.clj` /
-  `.cljc` source at namespace-matching paths (e.g. `medley/core.cljc`,
-  `msgpack/core.clj`), not just compiled `.class` files. So we never need a JVM
-  to *run* the code — only to fetch/resolve it, and even that is optional (below).
-- **Jolt can run real library source.** Loading `medley/core.cljc` straight from
-  its jar works: `(medley.core/abs -5)` → `5`, `(medley.core/find-first odd? …)`
-  → `5`. Some functions hit features Jolt doesn't fully support yet — coverage is
-  per-function, not all-or-nothing.
-- **The real resolver is on the box.** `clojure`, `clj`, and `mvn` are installed,
-  with `~/.m2` and `~/.gitlibs` populated. `clojure -Spath` already prints the
-  fully-resolved, transitive classpath (dirs + jars).
+So jpm already gives us git resolution + a content-addressed cache for free; we
+just skip its build phase.
 
-## What's missing
-
-The loader is single-rooted. `evaluator.janet/ns->path` hardcodes:
+### Verified
 
 ```janet
-(string "src/jolt/" (dots->slashes (dashes->underscores ns)) ".clj")
+(import jpm/config :as cfg)
+(import jpm/pm :as pm)
+(cfg/load-default)                 ; sets gitpath, cache defaults, etc.
+(setdyn :modpath "<project>/jpm_tree")   ; where the cache lives
+(def s (pm/resolve-bundle {:url "https://github.com/weavejester/medley"
+                           :tag "1.0.0" :shallow true}))
+(pm/download-bundle (s :url) (s :type) (s :tag) (s :shallow))
+;; => "<modpath>/.cache/git_1.0.0_https___github.com_weavejester_medley"
+;; with source at <that>/src/medley/core.cljc
 ```
 
-and `maybe-require-ns` loads exactly that one path if it exists. To load deps we
-need:
+`cfg/load-default` is required — calling `download-bundle` without jpm's config
+dyns set fails in its `shell` helper.
 
-1. **A classpath** — a list of source roots searched in order, not one fixed
-   prefix. Roots = `:paths` from deps.edn + each resolved dependency's source.
-2. **`.cljc` support** — try `foo/bar.cljc` as well as `foo/bar.clj` (most libs
-   ship `.cljc` or `.clj`; the loader only tries `.clj` today).
-3. **`ns`-form handling on load.** Stdlib files have no `ns` form, so
-   `maybe-require-ns` sets the current ns manually before loading. Library files
-   *do* have `(ns ...)`. Both already work in practice (the `ns` form re-asserts
-   the namespace), but the loader should not assume "no ns form."
+And the source loads and runs in Jolt: `(medley.core/abs -5)` → `5`,
+`(medley.core/find-first odd? [2 4 5])` → `5` (coverage is per-function; a few
+hit interpreter gaps, which is fine).
 
-## Resolving dependencies — three options
+## The shape
 
-The hard part is turning coordinates into local source roots. Maven resolution
-(transitive deps, version conflict resolution, POM parsing) is real work; git
-deps are comparatively easy.
+1. **Resolve.** Read `deps.edn`, take the `:deps` whose specs are git
+   (`:git/url` + `:git/sha`/`:git/tag`). For each, `resolve-bundle` +
+   `download-bundle` into the project's `jpm_tree/.cache`. Read each cloned
+   dep's own `deps.edn` and recurse for transitive git deps. (`:local/root`
+   deps are even simpler — just a path, no fetch.)
+2. **Collect source roots.** A dep's source dirs are its deps.edn `:paths`
+   (default `["src"]`), so a root is `<clone-dir>/<path>`. The result is just an
+   ordered list of directories — not a classpath abstraction, a list of roots.
+3. **Teach the loader the roots.** `evaluator.janet/ns->path` currently hardcodes
+   `src/jolt/<ns>.clj`. Generalize `maybe-require-ns` to, after the stdlib path,
+   search each dep root for `<ns>.clj` then `<ns>.cljc`. `src/jolt/` stays first
+   so the stdlib always wins. (Two small changes: a root list in the ctx, and
+   trying `.cljc`.)
+4. **Dev vs build.**
+   - *Dev:* on REPL/CLI start, if `deps.edn` is present, resolve once (cache keyed
+     on a hash of deps.edn so it's a no-op when unchanged) and register the roots.
+     `(require '[medley.core])` then just works.
+   - *Build:* the dep namespaces a project actually uses get compiled into the
+     image the same way the embedded `jolt.nrepl` source is today — load them at
+     build time so the shipped binary needs neither the deps nor jpm.
 
-### A. Shell out to the Clojure CLI (recommended first cut)
+## Why this fits "no classpath"
 
-Run `clojure -Spath` (optionally `-Sdeps`/aliases) in the project dir, capture
-the `:`-separated classpath, then:
+We never construct a Java-style classpath or deal with jar extraction, ordering
+semantics, or version conflict resolution. Resolution is a tree walk over git
+deps; "the classpath" is just the list of `src` dirs of the clones. The loader
+already does path-based namespace lookup — we widen it from one root to a few.
 
-- directory entries → add directly as source roots;
-- jar entries → extract `*.clj` / `*.cljc` into a cache dir
-  (`.jolt/classpath/<sha>/`) with `unzip`/`jar` (both present; Janet has no
-  built-in zip) and add the cache dir as a root.
+## Integration with jpm
 
-Pros: reuses the canonical resolver, so transitive deps, exclusions, aliases, and
-version conflict resolution are all correct and match what JVM Clojure sees. Tiny
-amount of code.
+jpm stays the build tool for the Jolt binary; this lives beside it and *calls
+into* `jpm/pm` for the git/cache work (import the module at dev/build time — jpm
+is always present then; the shipped binary doesn't need it). Open question:
+whether to depend on jpm's internal `pm` functions (not a stable public API) or
+shell `git` ourselves into the same cache layout. Reusing `pm` is less code and
+shares jpm's cache; shelling git is ~15 lines and avoids the internal-API risk.
+Leaning toward reusing `pm` first.
 
-Cons: requires the Clojure CLI (hence a JVM) *at resolve time*. Runtime stays
-JVM-free. We'd cache the result so resolution only reruns when `deps.edn`
-changes.
+## Limitations
 
-### B. Jolt-native resolver
+- Pure `clj`/`cljc` only. JVM interop, host classes, and unimplemented
+  `clojure.core` corners fail — expected, not a goal.
+- Per-function coverage: a namespace can load with most functions working and a
+  few not.
+- Source only; compiled `.class` files (if any in a git dep) are ignored.
 
-Parse `deps.edn` ourselves and resolve:
+## Plan
 
-- `:git/url` + `:git/sha` → `git clone`/checkout into a cache (this is roughly
-  what jpm already does for Janet git deps — see "jpm" below);
-- `:mvn/version` → download the POM + jar from Maven Central over HTTP, parse the
-  POM for transitive deps, resolve versions.
-
-Pros: no JVM dependency at all; self-contained.
-
-Cons: reimplementing Maven resolution (POM transitive graph, `:exclusions`,
-nearest-wins version selection) is the bulk of tools.deps and easy to get subtly
-wrong. Large effort.
-
-### C. Hybrid
-
-Native path for `:paths` and `:git/*` deps (cheap, no JVM); shell to `clojure
--Spath` only when `:mvn/*` deps are present. Gives a JVM-free experience for
-git-only / local projects and correct Maven resolution when needed.
-
-## Where jpm fits
-
-jpm builds the Jolt binary and manages *Janet* packages; it has no Maven/Clojure
-notion, so deps.edn support sits beside jpm rather than inside it. Two useful
-touch points:
-
-- jpm already fetches and caches **git** repositories for Janet deps — the same
-  machinery (or `~/.gitlibs`) can back option B/C's git-dep handling, so we don't
-  write a git cache from scratch.
-- A project-level `jpm` rule (in `project.janet`) could run resolution as a build
-  step and write a classpath file, for projects that want deps resolved at build
-  time rather than first run.
-
-But the primary integration is at the Jolt runtime/CLI, not jpm: see below.
-
-## Proposed shape
-
-- **Classpath in the context.** Add a `:classpath` (ordered list of roots) to the
-  ctx env. `ns->path` becomes "search each root for `foo/bar.clj` then
-  `foo/bar.cljc`", with `src/jolt/` always first so the stdlib wins.
-- **Resolution step.** On startup (or via `jolt deps`), if `deps.edn` exists,
-  resolve it to roots (option A to start) and set `:classpath`. Cache keyed on a
-  hash of `deps.edn` so it's a no-op when unchanged.
-- **Config knobs.** `JOLT_CLASSPATH` env / `--classpath` flag to set roots
-  directly (bypassing resolution), mirroring how `JOLT_MUTABLE` works.
-
-## Limitations (set expectations)
-
-- **JVM-only libraries don't run.** Anything depending on Java interop, host
-  classes, or `clojure.core` features Jolt lacks will fail to load or fail at a
-  call. Target audience is pure-`clj`/`cljc` libraries.
-- **Coverage is per-function.** As the medley probe showed, a namespace can load
-  and have most functions work while a few hit unimplemented core behavior.
-- **No AOT/`.class` execution** — ever. We only consume source from the
-  classpath; compiled classes in jars are ignored.
-- Macro/protocol/reader-conditional support is whatever the Jolt interpreter
-  already provides (reader conditionals `#?` are supported, which is why `.cljc`
-  loads).
-
-## Recommended plan (phased)
-
-1. **Loader classpath.** Generalize `ns->path`/`maybe-require-ns` to search an
-   ordered root list and try `.clj` + `.cljc`. Add `JOLT_CLASSPATH`/`--classpath`.
-   No resolution yet — point it at a directory of source by hand and load a lib.
-   (Unblocks everything; independently testable.)
-2. **deps.edn → classpath via `clojure -Spath` (option A).** Resolve, extract
-   jar source to a cache, set the classpath. `jolt deps` to resolve/print;
-   auto-resolve on startup when `deps.edn` is present.
-3. **Native git deps (toward option C).** Resolve `:git/*` (and `:local/root`)
-   without the JVM, falling back to the CLI only for `:mvn/*`.
-4. **Conformance pass.** Pull a handful of popular pure-`cljc` libs, see what
-   loads/runs, and use the failures to drive interpreter gaps — same loop as the
+1. **Loader roots.** Generalize `maybe-require-ns` to search an ordered root list
+   and try `.clj` + `.cljc`; add a `JOLT_PATH`/`--path` to set roots by hand.
+   Point it at a checked-out lib's `src` and load it. Independently testable,
+   unblocks the rest.
+2. **Resolve git deps via jpm.** Read `deps.edn`, resolve `:git/*` (+
+   `:local/root`) through `jpm/pm` into `jpm_tree/.cache`, recurse for transitive
+   git deps, register the roots. `jolt deps` to resolve/print; auto on startup
+   when `deps.edn` exists.
+3. **Build-time compile-in.** Fold the used dep namespaces into the image at
+   build (as with embedded `jolt.nrepl`).
+4. **Conformance.** Pull a few popular pure-`cljc` git libs, see what loads/runs,
+   and drive interpreter gaps from the failures — same loop as the
    clojure-test-suite battery.
