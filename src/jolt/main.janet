@@ -300,11 +300,17 @@
   (eval-string ctx (string "(jolt.nrepl/start-server! {:host \"" host "\" :port " port "})"))
   # Editors auto-discover the port from this file (nREPL convention).
   (spit ".nrepl-port" (string port))
+  # Remove .nrepl-port on exit — on a clean unwind (defer) and on Ctrl-C/SIGTERM
+  # (signal handlers). A hard SIGKILL can't be caught, so it may still be left.
+  (def cleanup (fn [&] (protect (os/rm ".nrepl-port"))))
+  (os/sigaction :int (fn [&] (cleanup) (os/exit 0)) true)
+  (os/sigaction :term (fn [&] (cleanup) (os/exit 0)) true)
   (print "Jolt nREPL server started on " host ":" port)
   (print "Wrote .nrepl-port — connect your editor; Ctrl-C to stop.")
   (flush)
   # Keep the main fiber alive so the event loop serves connections.
-  (forever (ev/sleep 60)))
+  (defer (cleanup)
+    (forever (ev/sleep 60))))
 
 (defn- print-version []
   (print "jolt v" jolt-version))
