@@ -185,12 +185,24 @@
   [sym-s]
   (if (sym-s :ns) (string (sym-s :ns) "/" (sym-s :name)) (sym-s :name)))
 
-(defn- ns->path
-  "Map a namespace name to its Jolt stdlib source path (dots->dirs, dashes->_)."
+(defn- ns->relpath
+  "Namespace name to its file-relative path (dots->dirs, dashes->_), no extension."
   [ns-name]
-  (string "src/jolt/"
-          (string/replace-all "." "/" (string/replace-all "-" "_" ns-name))
-          ".clj"))
+  (string/replace-all "." "/" (string/replace-all "-" "_" ns-name)))
+
+(defn- find-ns-file
+  "Search the context's source roots (stdlib first, then deps.edn dirs) for the
+  namespace's source, trying .clj then .cljc. Returns the path or nil."
+  [ctx ns-name]
+  (let [rel (ns->relpath ns-name)
+        roots (or (get (ctx :env) :source-paths) @["src/jolt"])]
+    (var found nil)
+    (each root roots
+      (each ext [".clj" ".cljc"]
+        (when (nil? found)
+          (let [p (string root "/" rel ext)]
+            (when (os/stat p) (set found p))))))
+    found))
 
 (defn- load-ns-file
   "Parse and evaluate every form in a .clj file in the given context."
@@ -202,17 +214,18 @@
     (when (not (nil? f)) (eval-form ctx @{} f))))
 
 (defn- maybe-require-ns
-  "If namespace ns-name isn't populated yet and a stdlib source file exists,
-  load it. Restores the current namespace afterwards (the file's `ns` form
+  "If namespace ns-name isn't populated yet and source for it exists on the
+  context's source roots, load it. Restores the current namespace afterwards (a
+  library's own `ns` form, or our manual switch for ns-form-less stdlib files,
   changes it). No-op for already-loaded namespaces."
   [ctx ns-name]
   (let [ns (ctx-find-ns ctx ns-name)]
     (when (and (= 0 (length (ns :mappings))) (not= ns-name "clojure.core"))
-      (let [path (ns->path ns-name)]
-        (when (os/stat path)
+      (let [path (find-ns-file ctx ns-name)]
+        (when path
           (let [saved (ctx-current-ns ctx)]
-            # Jolt stdlib files have no `ns` form; switch into the target ns so
-            # their defs intern there, then restore.
+            # Stdlib files have no `ns` form, so switch into the target ns first
+            # (their defs intern there); a library's own `ns` form overrides this.
             (ctx-set-current-ns ctx ns-name)
             (load-ns-file ctx path)
             (ctx-set-current-ns ctx saved)))))))

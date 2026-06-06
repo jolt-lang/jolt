@@ -366,6 +366,9 @@
               :class->opts @{}
               :current-ns "user"
               :compile? compile?
+              # Ordered roots searched (after the stdlib) to resolve a namespace
+              # to a .clj/.cljc file. deps.edn resolution appends dep src dirs.
+              :source-paths @["src/jolt"]
               :compiled-cache @{}
               :type-registry @{}
               :data-readers (let [dr @{}]

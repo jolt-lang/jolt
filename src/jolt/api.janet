@@ -30,10 +30,17 @@
   opts may contain:
     :namespaces — map of {ns-name → {sym → value, ...}, ...}
     :mutable?   — use Janet mutable data structures instead of persistent
-    :compile?   — enable compilation of Clojure forms to Janet"
+    :compile?   — enable compilation of Clojure forms to Janet
+    :paths      — extra source roots to search for namespaces (after the stdlib)"
   [&opt opts]
   (default opts {})
   (let [ctx (make-ctx opts)]
+    # Extra source roots: opts :paths, then JOLT_PATH (colon-separated). These are
+    # searched after the stdlib so (require ...) finds deps.edn-resolved libs.
+    (let [roots (get (ctx :env) :source-paths)]
+      (each p (get opts :paths []) (array/push roots p))
+      (when-let [jp (os/getenv "JOLT_PATH")]
+        (each p (string/split ":" jp) (when (> (length p) 0) (array/push roots p)))))
     # Collection representation (persistent vs mutable) is selected at BUILD time
     # via JOLT_MUTABLE (see config.janet); init-core! registers vec/vector/conj/
     # etc. that produce the mode-appropriate values, so nothing extra to load.

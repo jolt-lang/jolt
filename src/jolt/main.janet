@@ -309,6 +309,12 @@
   (def args (or (dyn :args) @[]))            # @["jolt" arg1 arg2 ...]
   (def argv (if (> (length args) 1) (array/slice args 1) @[]))
   (ctx-set-current-ns ctx "user")
+  # JOLT_PATH must be applied at runtime: this `ctx` is built into the image at
+  # build time, so its source-paths can't capture the runtime environment.
+  # `jolt-deps` sets JOLT_PATH to the resolved deps.edn source roots.
+  (when-let [jp (os/getenv "JOLT_PATH")]
+    (each p (string/split ":" jp)
+      (when (> (length p) 0) (array/push (get (ctx :env) :source-paths) p))))
   (cond
     (empty? argv) (run-repl)
     (or (= (argv 0) "-h") (= (argv 0) "--help")) (print-help)

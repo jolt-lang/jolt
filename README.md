@@ -10,16 +10,13 @@ A Clojure interpreter running on [Janet](https://janet-lang.org). Jolt reads Clo
 git clone https://github.com/jolt-lang/jolt.git
 cd jolt
 git submodule update --init   # pulls vendor/sci
-jpm build                     # compiles build/jolt
+jpm build                     # builds build/jolt and build/jolt-deps
 ```
 
-Requires `jpm` and a recent Janet — developed and CI-tested against **1.41**. The
-futures and core.async layers rely on Janet's threaded `ev/` channels (`ev/thread`,
-`ev/thread-chan`), so an older Janet may not run the full suite.
-
-`jpm build` doesn't always detect source changes — run `jpm clean && jpm build`
-after editing `src/` to be sure `build/jolt` is current. The test suite (`jpm
-test`) runs against the source directly, so it never goes stale.
+Requires `jpm` and a recent Janet (CI-tested against 1.41). See
+[doc/building-and-deps.md](doc/building-and-deps.md) for build details, the
+`jpm clean` caveat, how namespaces are resolved (`JOLT_PATH`), and pulling
+Clojure libraries from a `deps.edn` with the `jolt-deps` tool.
 
 ## Run
 
