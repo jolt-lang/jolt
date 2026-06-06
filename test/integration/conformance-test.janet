@@ -13,6 +13,8 @@
 # until a minimal clojure.test lets us load the real files directly.
 
 (use ../../src/jolt/api)
+(import ../../src/jolt/backend :as selfhost)
+(use ../../src/jolt/reader)
 
 (def cases
   [
@@ -303,18 +305,24 @@
 # cases run under both the interpreter and the compiler: results must match real
 # Clojure semantics either way, so the compile path (hybrid: hot compiles,
 # unsupported forms fall back to the interpreter) must not diverge.
-(defn- run-cases [opts]
+# mode: {} interpret, {:compile? true} bootstrap compiler, {:selfhost true} the
+# self-hosted pipeline (portable Clojure analyzer -> IR -> Janet back end).
+(defn- run-cases [mode]
+  (def selfhost? (get mode :selfhost))
+  (def init-opts (if selfhost? {} mode))
+  (defn ev [ctx prog]
+    (if selfhost? (selfhost/compile-and-eval ctx (parse-string prog)) (eval-string ctx prog)))
   (def fails @[])
   (each [name expected actual] cases
-    (def ctx (init opts))
+    (def ctx (init init-opts))
     (def prog (string "(= " expected " " actual ")"))
-    (def res (protect (eval-string ctx prog)))
+    (def res (protect (ev ctx prog)))
     (cond
       (not= (res 0) true)
       (array/push fails [name "ERROR" (string (res 1))])
       (= (res 1) true)
       nil
-      (let [got (protect (eval-string (init opts) actual))]
+      (let [got (protect (ev (init init-opts) actual))]
         (array/push fails [name "MISMATCH"
                            (string "want=" expected
                                    " got=" (if (= (got 0) true) (string/format "%q" (got 1)) (string "ERR:" (got 1))))]))))
@@ -331,6 +339,9 @@
 (report "interpret" interp-fails)
 (def compile-fails (run-cases {:compile? true}))
 (report "compile" compile-fails)
+(def selfhost-fails (run-cases {:selfhost true}))
+(report "self-host" selfhost-fails)
 (print)
-(when (or (pos? (length interp-fails)) (pos? (length compile-fails)))
+(when (or (pos? (length interp-fails)) (pos? (length compile-fails))
+          (pos? (length selfhost-fails)))
   (os/exit 1))
