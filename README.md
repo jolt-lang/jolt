@@ -1,5 +1,7 @@
 # Jolt
 
+[![tests](https://github.com/yogthos/jolt/actions/workflows/tests.yml/badge.svg)](https://github.com/yogthos/jolt/actions/workflows/tests.yml)
+
 A Clojure interpreter running on [Janet](https://janet-lang.org). Jolt reads Clojure source, evaluates it with an interpreter written in pure Janet, and ships a Clojure-compatible standard library. The goal is a Janet-hosted [SCI](https://github.com/borkdude/sci) runtime — a minimal bootstrap that loads SCI's Clojure source as its standard library.
 
 ## Build
@@ -11,7 +13,13 @@ git submodule update --init   # pulls vendor/sci
 jpm build                     # compiles build/jolt
 ```
 
-Requires Janet ≥ 1.36 and `jpm`.
+Requires `jpm` and a recent Janet — developed and CI-tested against **1.41**. The
+futures and core.async layers rely on Janet's threaded `ev/` channels (`ev/thread`,
+`ev/thread-chan`), so an older Janet may not run the full suite.
+
+`jpm build` doesn't always detect source changes — run `jpm clean && jpm build`
+after editing `src/` to be sure `build/jolt` is current. The test suite (`jpm
+test`) runs against the source directly, so it never goes stale.
 
 ## Run
 
