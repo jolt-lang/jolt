@@ -435,6 +435,9 @@
             "fn*" (analyze-fn form bindings ctx)
             "let*" (let [bind-vec (in form 1)
                          body-exprs (tuple/slice form 2)
+                         # Accumulate scope as we go so a later binding's init can
+                         # reference an earlier binding (sequential let scoping).
+                         acc (do (var bb @{}) (loop [[k v] :pairs bindings] (put bb k v)) bb)
                          binding-pairs (do
                                          (var pairs @[])
                                          (var i 0)
@@ -445,16 +448,12 @@
                                                        (uncompilable "destructuring let binding"))
                                                    name (sym-s :name)
                                                    val-form (if (< (+ i 1) n) (in bind-vec (+ i 1)) nil)
-                                                   val-ast (if val-form (analyze-form val-form bindings ctx) {:op :const :val nil})]
+                                                   val-ast (if val-form (analyze-form val-form acc ctx) {:op :const :val nil})]
                                                (array/push pairs {:name name :init val-ast})
+                                               (put acc name :jolt/local)
                                                (+= i 2))))
                                          pairs)
-                         body-bindings (do
-                                         (var bb @{})
-                                         (loop [[k v] :pairs bindings] (put bb k v))
-                                         (each bp binding-pairs
-                                           (put bb (bp :name) :jolt/local))
-                                         bb)
+                         body-bindings acc
                          analyzed-body (map |(analyze-form $ body-bindings ctx) body-exprs)
                          n-body (length analyzed-body)]
                      {:op :let
@@ -466,6 +465,7 @@
                               (first analyzed-body))})
             "loop*" (let [bind-vec (in form 1)
                           loop-name (make-loop-name)
+                          acc (do (var bb @{}) (loop [[k v] :pairs bindings] (put bb k v)) bb)
                           binding-pairs (do
                                           (var pairs @[])
                                           (var i 0)
@@ -476,8 +476,9 @@
                                                         (uncompilable "destructuring loop binding"))
                                                     name (sym-s :name)
                                                     val-form (if (< (+ i 1) n) (in bind-vec (+ i 1)) nil)
-                                                    val-ast (if val-form (analyze-form val-form bindings ctx) {:op :const :val nil})]
+                                                    val-ast (if val-form (analyze-form val-form acc ctx) {:op :const :val nil})]
                                                 (array/push pairs {:name name :init val-ast})
+                                                (put acc name :jolt/local)
                                                 (+= i 2))))
                                           pairs)
                           param-names (map |($ :name) binding-pairs)
