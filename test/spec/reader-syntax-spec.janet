@@ -12,6 +12,12 @@
   ["namespaced keyword" "true"      "(= :a/b :a/b)"]
   ["char"               "\\a"       "\\a"]
   ["char newline"       "true"      "(= \\newline (first \"\\n\"))"]
+  # single non-symbol chars are one-char literals (\{ \( \, \% etc.)
+  ["char open-brace"    "123"       "(int \\{)"]
+  ["char open-paren"    "40"        "(int \\()"]
+  ["char comma"         "44"        "(int \\,)"]
+  ["char percent"      "37"        "(int \\%)"]
+  ["char unicode"       "65"        "(int \\u0041)"]
   ["hex literal"        "255"       "0xff"]
   ["hex uppercase"      "31"        "0X1F"]
   ["bigint suffix N"    "42"        "42N"]

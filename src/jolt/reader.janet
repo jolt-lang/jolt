@@ -314,9 +314,15 @@
 
 (defn read-char [s pos]
   # pos is at backslash; produce a char value directly (self-evaluating)
-  (let [end (read-char-name-end s (+ pos 1))
-        char-name (string/slice s (+ pos 1) end)]
-    [(char-from-name char-name) end]))
+  (when (>= (+ pos 1) (length s))
+    (error "unexpected end of input after \\"))
+  (let [end (read-char-name-end s (+ pos 1))]
+    (if (= end (+ pos 1))
+      # The char right after \ isn't a symbol char (e.g. \{ \( \, \% \" ): it's a
+      # one-character literal of that character itself.
+      [(make-char (s (+ pos 1))) (+ pos 2)]
+      (let [char-name (string/slice s (+ pos 1) end)]
+        [(char-from-name char-name) end]))))
 
 (defn read-anon-fn [s pos]
   # pos is at #, next char is (

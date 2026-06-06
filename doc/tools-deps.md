@@ -86,8 +86,9 @@ env read would be frozen at build).
   libs and reports load/run status (network-gated behind `JOLT_CONFORMANCE=1`, so
   CI stays offline). First run:
   - `medley` — loads and runs.
-  - `cuerdas` — fails to load: the reader rejects a char/literal it uses
-    (`Unsupported character: \`). A genuine reader gap to chase.
+  - `cuerdas` — now loads (it used `\{`, a one-char literal the reader rejected;
+    fixed). A function (`kebab`) still hits a separate runtime gap — a smaller,
+    per-function issue rather than a whole-namespace failure.
   - `stuartsierra/dependency` — `Long/MAX_VALUE`: JVM interop, so out of scope
     (it isn't actually pure-`cljc`).
 
