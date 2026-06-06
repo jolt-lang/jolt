@@ -10,7 +10,10 @@
   Coverage grows toward compiler.janet; unsupported forms throw :jolt/uncompilable
   so the caller falls back to the interpreter (the hybrid contract).
 
-  `env` carries lexical state: {:locals #{names} :recur recur-target-name|nil}."
+  `env` carries lexical state: {:locals #{names} :recur recur-target-name|nil}.
+  Definitions are ordered so only `analyze` (mutually recursive) is forward
+  declared — the bootstrap compiles forward refs through var cells, but keeping
+  them to one keeps the compiled namespace simple."
   (:require [jolt.ir :refer [const local var-ref host-ref if-node do-node invoke
                              def-node let-node fn-node vector-node map-node
                              quote-node throw-node]]
@@ -21,7 +24,7 @@
                                form-macro? form-expand-1 resolve-global
                                host-intern!]]))
 
-(declare analyze analyze-fn analyze-try)
+(declare analyze)
 
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"})
@@ -57,62 +60,6 @@
               init (analyze ctx (nth bvec (inc i)) env)]
           (recur (+ i 2) (add-locals env [nm]) (conj pairs [nm init]))))
       [pairs env])))
-
-(defn- analyze-special [ctx op items env]
-  (case op
-    "quote" (quote-node (second items))
-    "if" (if-node (analyze ctx (nth items 1) env)
-                  (analyze ctx (nth items 2) env)
-                  (if (> (count items) 3)
-                    (analyze ctx (nth items 3) env)
-                    (const nil)))
-    "do" (analyze-seq ctx (rest items) env)
-    "throw" (throw-node (analyze ctx (nth items 1) env))
-    "def" (let [name-sym (nth items 1)
-                nm (form-sym-name name-sym)
-                cur (compile-ns ctx)]
-            (host-intern! ctx cur nm)
-            (def-node cur nm (analyze ctx (nth items 2) env)))
-    "let*" (let [bvec (vec (form-vec-items (nth items 1)))
-                 r (analyze-bindings ctx bvec env)]
-             (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))
-    "loop*" (let [bvec (vec (form-vec-items (nth items 1)))
-                  rname (gen-name "loop")
-                  r (analyze-bindings ctx bvec env)
-                  env** (with-recur (second r) rname)]
-              {:op :loop :recur-name rname :bindings (first r)
-               :body (analyze-seq ctx (drop 2 items) env**)})
-    "recur" (let [rt (:recur env)]
-              (when-not rt (uncompilable "recur outside loop/fn"))
-              {:op :recur :recur-name rt
-               :args (mapv #(analyze ctx % env) (rest items))})
-    "try" (analyze-try ctx items env)
-    "fn*" (analyze-fn ctx items env)
-    (uncompilable (str "special form " op))))
-
-(defn- analyze-try [ctx items env]
-  (let [clauses (rest items)
-        body (atom [])
-        catch-sym (atom nil)
-        catch-body (atom nil)
-        finally-body (atom nil)]
-    (doseq [c clauses]
-      (let [head (when (form-list? c) (first (vec (form-elements c))))
-            hname (when (and head (form-sym? head)) (form-sym-name head))]
-        (cond
-          (= hname "catch")
-            (let [cl (vec (form-elements c))]
-              (reset! catch-sym (form-sym-name (nth cl 2)))
-              (reset! catch-body (drop 3 cl)))
-          (= hname "finally")
-            (reset! finally-body (rest (vec (form-elements c))))
-          :else (swap! body conj c))))
-    {:op :try
-     :body (analyze-seq ctx @body env)
-     :catch-sym @catch-sym
-     :catch-body (when @catch-body
-                   (analyze-seq ctx @catch-body (add-locals env [@catch-sym])))
-     :finally (when @finally-body (analyze-seq ctx @finally-body env))}))
 
 (defn- parse-params [pvec]
   (loop [i 0 fixed [] rest-name nil]
@@ -151,6 +98,62 @@
                            (analyze-arity ctx (first cl) (rest cl) env fn-name)))
                        rest-items))
       :else (uncompilable "fn: bad params"))))
+
+(defn- analyze-try [ctx items env]
+  (let [clauses (rest items)
+        body (atom [])
+        catch-sym (atom nil)
+        catch-body (atom nil)
+        finally-body (atom nil)]
+    (doseq [c clauses]
+      (let [head (when (form-list? c) (first (vec (form-elements c))))
+            hname (when (and head (form-sym? head)) (form-sym-name head))]
+        (cond
+          (= hname "catch")
+            (let [cl (vec (form-elements c))]
+              (reset! catch-sym (form-sym-name (nth cl 2)))
+              (reset! catch-body (drop 3 cl)))
+          (= hname "finally")
+            (reset! finally-body (rest (vec (form-elements c))))
+          :else (swap! body conj c))))
+    {:op :try
+     :body (analyze-seq ctx @body env)
+     :catch-sym @catch-sym
+     :catch-body (when @catch-body
+                   (analyze-seq ctx @catch-body (add-locals env [@catch-sym])))
+     :finally (when @finally-body (analyze-seq ctx @finally-body env))}))
+
+(defn- analyze-special [ctx op items env]
+  (case op
+    "quote" (quote-node (second items))
+    "if" (if-node (analyze ctx (nth items 1) env)
+                  (analyze ctx (nth items 2) env)
+                  (if (> (count items) 3)
+                    (analyze ctx (nth items 3) env)
+                    (const nil)))
+    "do" (analyze-seq ctx (rest items) env)
+    "throw" (throw-node (analyze ctx (nth items 1) env))
+    "def" (let [name-sym (nth items 1)
+                nm (form-sym-name name-sym)
+                cur (compile-ns ctx)]
+            (host-intern! ctx cur nm)
+            (def-node cur nm (analyze ctx (nth items 2) env)))
+    "let*" (let [bvec (vec (form-vec-items (nth items 1)))
+                 r (analyze-bindings ctx bvec env)]
+             (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))
+    "loop*" (let [bvec (vec (form-vec-items (nth items 1)))
+                  rname (gen-name "loop")
+                  r (analyze-bindings ctx bvec env)
+                  env** (with-recur (second r) rname)]
+              {:op :loop :recur-name rname :bindings (first r)
+               :body (analyze-seq ctx (drop 2 items) env**)})
+    "recur" (let [rt (:recur env)]
+              (when-not rt (uncompilable "recur outside loop/fn"))
+              {:op :recur :recur-name rt
+               :args (mapv #(analyze ctx % env) (rest items))})
+    "try" (analyze-try ctx items env)
+    "fn*" (analyze-fn ctx items env)
+    (uncompilable (str "special form " op))))
 
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]

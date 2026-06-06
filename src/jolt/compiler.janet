@@ -421,9 +421,11 @@
             "do" (let [all-statements (array/slice form 1)
                        n (length all-statements)
                        analyzed (map |(analyze-form $ bindings ctx) all-statements)]
-                   {:op :do
-                    :statements (array/slice analyzed 0 (- n 1))
-                    :ret (in analyzed (- n 1))})
+                   (if (= n 0)
+                     {:op :const :val nil}   # (do) -> nil
+                     {:op :do
+                      :statements (array/slice analyzed 0 (- n 1))
+                      :ret (in analyzed (- n 1))}))
             "if" {:op :if
                   :test (analyze-form (in form 1) bindings ctx)
                   :then (analyze-form (in form 2) bindings ctx)
@@ -434,9 +436,11 @@
                         nm (if (struct? name-sym) (name-sym :name) (string name-sym))
                         # Create/find the var cell first so a recursive init body
                         # self-references the same cell.
-                        cell (when ctx (ns-intern (ctx-find-ns ctx (ctx-current-ns ctx)) nm))]
+                        cell (when ctx (ns-intern (ctx-find-ns ctx (ctx-current-ns ctx)) nm))
+                        # (def x) with no init (declare) -> nil.
+                        init-form (if (> (length form) 2) (in form 2) nil)]
                     {:op :def :name name-sym :var cell
-                     :init (analyze-form (in form 2) bindings ctx)})
+                     :init (analyze-form init-form bindings ctx)})
             "fn*" (analyze-fn form bindings ctx)
             "let*" (let [bind-vec (in form 1)
                          body-exprs (tuple/slice form 2)

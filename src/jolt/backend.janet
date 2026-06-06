@@ -107,12 +107,37 @@
 (defn- direct-call? [fnode]
   (case (fnode :op) :var true :local true :fn true :host true false))
 
+# Hot primitives emitted as native Janet ops (host-specific optimization): a
+# call to clojure.core/+ etc. becomes (+ …) rather than a var deref + variadic
+# core fn. Matches numeric semantics; relaxes the non-number checks (a documented
+# perf-mode divergence, same as the bootstrap's core-renames).
+(def- native-ops
+  {"+" '+ "-" '- "*" '* "<" '< ">" '> "<=" '<= ">=" '>= "inc" '++ "dec" '--})
+
+(defn- native-op
+  "If fnode is a clojure.core ref (or host ref) to a native-op primitive, return
+  the Janet op symbol, else nil. inc/dec are unary so only at arity 1."
+  [fnode nargs]
+  (def nm (case (fnode :op)
+            :var (when (= "clojure.core" (fnode :ns)) (fnode :name))
+            :host (fnode :name)
+            nil))
+  (def op (and nm (get native-ops nm)))
+  (cond
+    (nil? op) nil
+    (and (or (= op '++) (= op '--)) (not= nargs 1)) nil
+    op))
+
 (defn- emit-invoke [ctx node]
-  (def f (emit ctx (node :fn)))
   (def args (map |(emit ctx $) (vview (node :args))))
-  (if (direct-call? (node :fn))
-    (tuple f ;args)
-    (tuple jolt-call f ;args)))
+  (def nop (native-op (node :fn) (length args)))
+  (cond
+    nop (case nop
+          '++ ['+ (in args 0) 1]
+          '-- ['- (in args 0) 1]
+          (tuple nop ;args))
+    (direct-call? (node :fn)) (tuple (emit ctx (node :fn)) ;args)
+    (tuple jolt-call (emit ctx (node :fn)) ;args)))
 
 (defn- emit-vector [ctx node]
   (def items (map |(emit ctx $) (vview (node :items))))
@@ -170,8 +195,11 @@
       (set s (in parsed 1))
       (def f (in parsed 0))
       (when (not (nil? f))
-        (def c (protect (comp/compile-ast f ctx)))
-        (if (c 0) (comp/eval-compiled (c 1) ctx) (eval-form ctx @{} f))))
+        # Guard BOTH compile and the Janet-compile-of-emitted step: a form whose
+        # emitted Janet is invalid (e.g. a bad splice) falls back to interpreted
+        # definition rather than killing the whole load.
+        (def r (protect (comp/eval-compiled (comp/compile-ast f ctx) ctx)))
+        (unless (r 0) (eval-form ctx @{} f))))
     (ctx-set-current-ns ctx saved)))
 
 (defn- ensure-analyzer [ctx]
