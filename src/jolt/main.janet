@@ -14,6 +14,8 @@
 # stdlib .clj files otherwise load cwd-relative.
 (def nrepl-clj-source (try (slurp "src/jolt/jolt/nrepl.clj") ([_] nil)))
 
+(def jolt-version "0.1.0")
+
 (def ctx (init))
 (ctx-set-current-ns ctx "user")
 
@@ -285,25 +287,58 @@
         (ctx-set-current-ns ctx saved)))))
 
 (defn- run-nrepl [argv]
-  (def port (if (> (length argv) 0) (scan-number (argv 0)) 7888))
+  # addr is [host:]port; bare number is a port. Default 127.0.0.1:7888.
+  (def addr (get argv 0))
+  (var host "127.0.0.1")
+  (var port 7888)
+  (when addr
+    (if-let [i (string/find ":" addr)]
+      (do (when (> i 0) (set host (string/slice addr 0 i)))
+          (set port (scan-number (string/slice addr (+ i 1)))))
+      (set port (scan-number addr))))
   (ensure-nrepl-loaded)
-  (eval-string ctx (string "(jolt.nrepl/start-server! {:port " port "})"))
+  (eval-string ctx (string "(jolt.nrepl/start-server! {:host \"" host "\" :port " port "})"))
   # Editors auto-discover the port from this file (nREPL convention).
   (spit ".nrepl-port" (string port))
-  (print "Jolt nREPL server started on port " port)
+  (print "Jolt nREPL server started on " host ":" port)
   (print "Wrote .nrepl-port — connect your editor; Ctrl-C to stop.")
   (flush)
   # Keep the main fiber alive so the event loop serves connections.
   (forever (ev/sleep 60)))
 
+(defn- print-version []
+  (print "jolt v" jolt-version))
+
+(defn- run-main [ns-name argv]
+  (when (nil? ns-name) (eprint "Error: -m/--main requires a namespace") (os/exit 1))
+  (set-command-line-args argv)
+  (try
+    (do
+      (load-string ctx (string "(require '[" ns-name "])"))
+      (load-string ctx (string "(apply " ns-name "/-main *command-line-args*)")))
+    ([err fib] (report-error err fib) (os/exit 1))))
+
 (defn- print-help []
   (print "Jolt — a Clojure interpreter on Janet\n")
-  (print "Usage:")
-  (print "  jolt                 Start a REPL")
-  (print "  jolt FILE.clj [args] Run a Clojure file (binds *command-line-args*)")
-  (print "  jolt -e EXPR [args]  Evaluate EXPR and print the result")
-  (print "  jolt nrepl [port]    Start an nREPL server (default port 7888)")
-  (print "  jolt -h | --help     Show this help"))
+  (print "Usage: jolt [opt] [args]\n")
+  (print "  (no args), repl       Start a REPL")
+  (print "  FILE [args]           Run a Clojure file (binds *command-line-args*, *file*)")
+  (print "  -                     Run a program read from stdin")
+  (print "  -e, --eval EXPR       Evaluate EXPR and print the result")
+  (print "  -f, --file FILE       Run a Clojure file")
+  (print "  -m, --main NS [args]  Require NS and call its -main with the remaining args")
+  (print "  nrepl-server [addr]   Start an nREPL server (addr = [host:]port, default 7888)")
+  (print "                          (aliases: --nrepl-server, nrepl)")
+  (print "  --version, version    Print the Jolt version")
+  (print "  -h, --help, help      Show this help\n")
+  (print "Dependencies (deps.edn) are handled by the separate jolt-deps tool."))
+
+(def- help-flags    {"-h" true "--help" true "help" true "-?" true})
+(def- version-flags {"--version" true "version" true})
+(def- nrepl-flags   {"nrepl-server" true "--nrepl-server" true "nrepl" true})
+(def- eval-flags    {"-e" true "--eval" true})
+(def- file-flags    {"-f" true "--file" true})
+(def- main-flags    {"-m" true "--main" true})
 
 (defn main [&]
   (def args (or (dyn :args) @[]))            # @["jolt" arg1 arg2 ...]
@@ -317,8 +352,12 @@
       (when (> (length p) 0) (array/push (get (ctx :env) :source-paths) p))))
   (cond
     (empty? argv) (run-repl)
-    (or (= (argv 0) "-h") (= (argv 0) "--help")) (print-help)
-    (= (argv 0) "nrepl") (run-nrepl (array/slice argv 1))
-    (= (argv 0) "-e") (run-eval (get argv 1 "") (array/slice argv 2))
+    (help-flags (argv 0)) (print-help)
+    (version-flags (argv 0)) (print-version)
+    (= (argv 0) "repl") (run-repl)
+    (nrepl-flags (argv 0)) (run-nrepl (array/slice argv 1))
+    (eval-flags (argv 0)) (run-eval (get argv 1 "") (array/slice argv 2))
+    (file-flags (argv 0)) (run-file (get argv 1) (array/slice argv 2))
+    (main-flags (argv 0)) (run-main (get argv 1) (array/slice argv 2))
     (= (argv 0) "-") (run-file "/dev/stdin" (array/slice argv 1))
     (run-file (argv 0) (array/slice argv 1))))

@@ -21,10 +21,13 @@ Clojure libraries from a `deps.edn` with the `jolt-deps` tool.
 ## Run
 
 ```
-build/jolt                 # start a REPL
-build/jolt file.clj [args] # run a file (binds *command-line-args* and *file*)
-build/jolt -e EXPR [args]  # evaluate EXPR and print the result
-build/jolt -h              # help
+build/jolt                     # start a REPL
+build/jolt file.clj [args]     # run a file (binds *command-line-args* and *file*)
+build/jolt -e EXPR [args]      # evaluate EXPR and print the result
+build/jolt -m NS [args]        # require NS and call its -main
+build/jolt nrepl-server [addr] # start an nREPL server ([host:]port, default 7888)
+build/jolt --version           # print the version
+build/jolt -h | --help         # help
 ```
 
 The REPL accumulates multi-line forms until they balance:
@@ -152,8 +155,9 @@ written in Clojure on top of the `janet.net/*` bridge. Start a server from the
 CLI — it writes `.nrepl-port` so editors (CIDER, Calva, …) auto-connect:
 
 ```bash
-jolt nrepl          # listen on 127.0.0.1:7888, write .nrepl-port
-jolt nrepl 12345    # choose a port
+jolt nrepl-server               # listen on 127.0.0.1:7888, write .nrepl-port
+jolt nrepl-server 12345         # choose a port
+jolt nrepl-server 0.0.0.0:12345 # choose host and port  (alias: nrepl)
 ```
 
 Supported ops: `clone`, `describe`, `eval`, `load-file`, `close`, `ls-sessions`,
