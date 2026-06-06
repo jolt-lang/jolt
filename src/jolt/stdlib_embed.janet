@@ -30,4 +30,6 @@
   (let [acc @{}]
     (collect "src/jolt/clojure" "clojure/" acc)
     (collect "src/jolt/jolt" "jolt/" acc)
+    # Portable Clojure core (analyzer/IR/…): jolt-core/jolt/foo.clj -> jolt.foo
+    (collect "jolt-core" "" acc)
     acc))

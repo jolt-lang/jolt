@@ -370,8 +370,9 @@
               :current-ns "user"
               :compile? compile?
               # Ordered roots searched (after the stdlib) to resolve a namespace
-              # to a .clj/.cljc file. deps.edn resolution appends dep src dirs.
-              :source-paths @["src/jolt"]
+              # to a .clj/.cljc file. jolt-core holds the portable Clojure layer
+              # (analyzer/IR/core); deps.edn resolution appends dep src dirs.
+              :source-paths @["jolt-core" "src/jolt"]
               :compiled-cache @{}
               :type-registry @{}
               :data-readers (let [dr @{}]
