@@ -74,4 +74,14 @@
   (eval-one ctx (parse-string "(+ 1 2)"))
   (assert (zero? (length ((ctx-find-ns ctx "jolt.analyzer") :mappings))) "analyzer NOT loaded when interpreting"))
 
+# clojure.core overlay: fns moved from core.janet to jolt-core/clojure/core.clj
+# load into clojure.core at init and work the same compiled or interpreted.
+(print "clojure.core overlay (Clojure-defined core fns)...")
+(each opts [{:compile? true} {}]
+  (let [ctx (init opts)]
+    (defn ev [s] (normalize-pvecs (eval-one ctx (parse-string s))))
+    (assert (= 1 (ev "(ffirst [[1 2] [3 4]])")) "ffirst")
+    (assert (= 2 (ev "(fnext [1 2 3])")) "fnext")
+    (assert (= [3 4] (ev "(nnext [1 2 3 4])")) "nnext")))
+
 (print "self-host pipeline passed!")

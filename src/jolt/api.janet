@@ -27,6 +27,21 @@
     x))
 
 
+(defn- load-core-overlay!
+  "Load the Clojure portion of clojure.core (embedded jolt-core/clojure/core.clj)
+  into the clojure.core namespace, routed through eval-toplevel like any other
+  source (compiled when :compile?, interpreted otherwise)."
+  [ctx]
+  (when-let [src (get stdlib-embed/sources "clojure.core")]
+    (def saved (ctx-current-ns ctx))
+    (ctx-set-current-ns ctx "clojure.core")
+    (var s src)
+    (while (> (length (string/trim s)) 0)
+      (def [form rest] (parse-next s))
+      (set s rest)
+      (when (not (nil? form)) (eval-toplevel ctx form)))
+    (ctx-set-current-ns ctx saved)))
+
 (defn init
   "Create a new Jolt evaluation context.
   opts may contain:
@@ -57,6 +72,11 @@
     (install-async! ctx)
     # Host contract (ns jolt.host): the seam the portable jolt-core compiler calls.
     (host/install! ctx)
+    # Clojure portion of clojure.core (jolt-core/clojure/core.clj): fns expressed
+    # in plain Clojure on top of the Janet primitives interned above. Loaded into
+    # clojure.core and compiled by the self-hosted pipeline (or interpreted when
+    # :compile? is off). Phase 4 kernel-shrink seam — see that file.
+    (load-core-overlay! ctx)
     ctx))
 
 (defn eval-one
