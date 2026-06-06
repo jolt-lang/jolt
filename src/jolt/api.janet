@@ -55,44 +55,12 @@
     (install-async! ctx)
     ctx))
 
-# Stateful / context-modifying forms always use the interpreter (they mutate
-# the context: namespaces, macros, types, multimethods, dynamic vars, …).
-(defn- stateful-head? [head-name]
-  (or (= head-name "defmacro") (= head-name "ns")
-      (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
-      (= head-name "require") (= head-name "in-ns")
-      (= head-name "syntax-quote") (= head-name "set!")
-      (= head-name "var") (= head-name ".") (= head-name "new")
-      (= head-name "eval")))
-
-# Hybrid compile path: try to compile the form, fall back to the interpreter for
-# anything the compiler can't (yet) handle. Only the compile step is guarded —
-# runtime errors in compiled code propagate, so we never double-eval side effects
-# or hide real errors behind a fallback. The interpreter handles every form, so
-# the result is always correct; compilation is a transparent speedup.
-(defn- try-compile-eval [ctx form]
-  (let [compiled (protect (compile-ast form ctx))]
-    (if (compiled 0)
-      (eval-compiled (compiled 1) ctx)
-      (eval-form ctx @{} form))))
-
 (defn eval-one
-  "Evaluate a single already-parsed form, routing to the compiler when the
-  context has :compile? enabled (stateful forms always interpret; forms the
-  compiler can't handle fall back to the interpreter)."
+  "Evaluate a single already-parsed form. Routing (compile when :compile? is set,
+  stateful forms interpret, interpreter fallback for forms the compiler can't
+  handle) lives in loader/eval-toplevel so load-ns and eval-one stay in sync."
   [ctx form]
-  (if (get (ctx :env) :compile?)
-    (if (array? form)
-      (let [first-form (first form)
-            head-name (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
-                        (first-form :name) nil)]
-        (if (stateful-head? head-name)
-          (eval-form ctx @{} form)
-          (try-compile-eval ctx form)))
-      (if (or (and (struct? form) (= :symbol (form :jolt/type))) (tuple? form))
-        (try-compile-eval ctx form)
-        (eval-form ctx @{} form)))
-    (eval-form ctx @{} form)))
+  (eval-toplevel ctx form))
 
 (defn eval-string
   "Evaluate a Clojure source string in a Jolt context.
