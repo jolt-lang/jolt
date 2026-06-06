@@ -204,33 +204,37 @@
             (when (os/stat p) (set found p))))))
     found))
 
-(defn- load-ns-file
-  "Parse and evaluate every form in a .clj file in the given context."
-  [ctx path]
-  (var s (slurp path))
+(defn- load-ns-source
+  "Parse and evaluate every form of a namespace's source in the given context."
+  [ctx src]
+  (var s src)
   (while (> (length (string/trim s)) 0)
     (def [f r] (parse-next s))
     (set s r)
     (when (not (nil? f)) (eval-form ctx @{} f))))
 
 (defn- maybe-require-ns
-  "If namespace ns-name isn't populated yet and source for it exists on the
-  context's source roots, load it. Restores the current namespace afterwards (a
-  library's own `ns` form, or our manual switch for ns-form-less stdlib files,
-  changes it). No-op for already-loaded namespaces."
+  "If namespace ns-name isn't populated yet, load its source — from a file on the
+  context's source roots, else from the stdlib baked into the image. Restores the
+  current namespace afterwards (a library's own `ns` form, or our manual switch
+  for ns-form-less stdlib files, changes it). No-op for already-loaded namespaces."
   [ctx ns-name]
   (let [ns (ctx-find-ns ctx ns-name)]
     (when (and (= 0 (length (ns :mappings))) (not= ns-name "clojure.core"))
-      (let [path (find-ns-file ctx ns-name)]
-        (when path
+      (let [path (find-ns-file ctx ns-name)
+            embedded (get (get (ctx :env) :embedded-sources @{}) ns-name)
+            stdlib? (not (nil? embedded))]
+        (when (or path embedded)
           (let [saved (ctx-current-ns ctx)]
             # Stdlib files have no `ns` form, so switch into the target ns first
             # (their defs intern there); a library's own `ns` form overrides this.
             (ctx-set-current-ns ctx ns-name)
-            (load-ns-file ctx path)
+            (if path (load-ns-source ctx (slurp path)) (load-ns-source ctx embedded))
             # Record load order for tooling (uberscript): a dependency finishes
-            # loading before the file that required it, so this is topological.
-            (when-let [lf (get (ctx :env) :loaded-files)] (array/push lf path))
+            # loading before its requirer, so this is topological. Skip the
+            # baked-in stdlib — it's part of the runtime, not something to bundle.
+            (when (and path (not stdlib?))
+              (when-let [lf (get (ctx :env) :loaded-files)] (array/push lf path)))
             (ctx-set-current-ns ctx saved)))))))
 
 (defn- eval-require

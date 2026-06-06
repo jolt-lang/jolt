@@ -13,7 +13,11 @@ jpm build
 
 This produces two executables under `build/`:
 
-- **`jolt`** — the runtime: REPL, file/expr runner, nREPL server.
+- **`jolt`** — the runtime: REPL, file/expr runner, nREPL server. The whole `.clj`
+  standard library (`clojure.string`/`set`/`walk`/`edn`/`zip`, `jolt.http`/
+  `interop`/`shell`/`nrepl`) is baked into this binary at build time, so it loads
+  from any directory — the build artifact is self-contained. (`clojure.core` is
+  built into the runtime in Janet and auto-referred, so it's always available.)
 - **`jolt-deps`** — a separate tool that resolves a `deps.edn` (see below). It
   sits beside the runtime the way `jpm` sits beside `janet`; the runtime itself
   knows nothing about deps.edn.
@@ -36,6 +40,10 @@ come from:
 - `JOLT_PATH` — a colon-separated list of directories (like a classpath), applied
   at runtime;
 - the `:paths` option to `init` when embedding Jolt as a library.
+
+If a namespace isn't found on any root, the loader falls back to the stdlib baked
+into the binary — that's how `clojure.string` and friends resolve when you run
+the binary outside the source tree.
 
 So you can point Jolt at a directory of Clojure source with no deps machinery at
 all:

@@ -9,11 +9,6 @@
 (use ./config)
 (use ./reader)
 
-# Embed the Clojure nREPL source at build time (cwd is the repo during `jpm
-# build`), so `jolt nrepl` is self-contained and works from any directory — the
-# stdlib .clj files otherwise load cwd-relative.
-(def nrepl-clj-source (try (slurp "src/jolt/jolt/nrepl.clj") ([_] nil)))
-
 (def jolt-version "0.1.0")
 
 (def ctx (init))
@@ -276,15 +271,8 @@
     ([err fib] (report-error err fib) (os/exit 1))))
 
 (defn- ensure-nrepl-loaded []
-  # Prefer a normal require (running from the repo); otherwise load the source
-  # embedded at build time into the jolt.nrepl namespace.
-  (eval-string ctx "(require '[jolt.nrepl])")
-  (let [ns (ctx-find-ns ctx "jolt.nrepl")]
-    (when (and (or (nil? ns) (= 0 (length (ns :mappings)))) nrepl-clj-source)
-      (let [saved (ctx-current-ns ctx)]
-        (ctx-set-current-ns ctx "jolt.nrepl")
-        (load-string ctx nrepl-clj-source)
-        (ctx-set-current-ns ctx saved)))))
+  # jolt.nrepl is part of the baked-in stdlib, so require finds it anywhere.
+  (eval-string ctx "(require '[jolt.nrepl])"))
 
 (defn- run-nrepl [argv]
   # addr is [host:]port; bare number is a port. Default 127.0.0.1:7888.

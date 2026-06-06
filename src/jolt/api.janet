@@ -10,6 +10,7 @@
 (use ./compiler)
 (use ./loader)
 (use ./async)
+(import ./stdlib_embed :as stdlib-embed)
 
 (defn normalize-pvecs
   "Deep-convert any sequential (pvec/tuple/array) to a Janet tuple. Test helper
@@ -35,6 +36,10 @@
   [&opt opts]
   (default opts {})
   (let [ctx (make-ctx opts)]
+    # The .clj stdlib (clojure.string, jolt.http, …) baked into the image at build
+    # time, so it loads from any directory; the loader falls back to this when a
+    # namespace isn't found on disk. (See stdlib-embed.)
+    (put (ctx :env) :embedded-sources stdlib-embed/sources)
     # Extra source roots: opts :paths, then JOLT_PATH (colon-separated). These are
     # searched after the stdlib so (require ...) finds deps.edn-resolved libs.
     (let [roots (get (ctx :env) :source-paths)]
