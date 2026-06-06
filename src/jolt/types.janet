@@ -373,7 +373,6 @@
               # to a .clj/.cljc file. jolt-core holds the portable Clojure layer
               # (analyzer/IR/core); deps.edn resolution appends dep src dirs.
               :source-paths @["jolt-core" "src/jolt"]
-              :compiled-cache @{}
               :type-registry @{}
               :data-readers (let [dr @{}]
                               (put dr (keyword "#inst") (fn [s] s))
