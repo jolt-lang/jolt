@@ -49,11 +49,42 @@
     (array/push binds (emit ctx (in p 1))))
   ['let (tuple/slice binds) (emit ctx (node :body))])
 
+# A named Janet fn whose name is the arity's recur target, so recur is a
+# self-call (Janet tail-calls it).
 (defn- emit-arity-fn [ctx ar]
   (def ps @[])
   (each pn (vview (ar :params)) (array/push ps (symbol pn)))
   (when (ar :rest) (array/push ps '&) (array/push ps (symbol (ar :rest))))
-  ['fn (tuple/slice ps) (emit ctx (ar :body))])
+  (if (ar :recur-name)
+    ['fn (symbol (ar :recur-name)) (tuple/slice ps) (emit ctx (ar :body))]
+    ['fn (tuple/slice ps) (emit ctx (ar :body))]))
+
+(defn- emit-loop [ctx node]
+  (def L (symbol (node :recur-name)))
+  (def params @[])
+  (def inits @[])
+  (each pair (vview (node :bindings))
+    (def p (vview pair))
+    (array/push params (symbol (in p 0)))
+    (array/push inits (emit ctx (in p 1))))
+  ['do
+   ['var L nil]
+   ['set L ['fn (tuple/slice params) (emit ctx (node :body))]]
+   (tuple/slice (array/concat @[L] inits))])
+
+(defn- emit-recur [ctx node]
+  (tuple/slice (array/concat @[(symbol (node :recur-name))]
+                            (map |(emit ctx $) (vview (node :args))))))
+
+(defn- emit-try [ctx node]
+  (def core
+    (if (node :catch-sym)
+      ['try (emit ctx (node :body))
+       [[(symbol (node :catch-sym))] (emit ctx (node :catch-body))]]
+      (emit ctx (node :body))))
+  (if (node :finally)
+    ['defer (emit ctx (node :finally)) core]
+    core))
 
 (defn- emit-fn [ctx node]
   (def arities (vview (node :arities)))
@@ -104,6 +135,9 @@
       :var (tuple (var-getter (cell-for ctx (node :ns) (node :name))))
       :if ['if (emit ctx (node :test)) (emit ctx (node :then)) (emit ctx (node :else))]
       :do (emit-seq ctx node)
+      :loop (emit-loop ctx node)
+      :recur (emit-recur ctx node)
+      :try (emit-try ctx node)
       :throw ['error (emit ctx (node :expr))]
       :def (tuple (var-setter (cell-for ctx (node :ns) (node :name))) (emit ctx (node :init)))
       :let (emit-let ctx node)

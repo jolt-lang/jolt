@@ -42,6 +42,14 @@
   (assert (= 7 (ce ctx "(arity 3 4)")) "multi-arity 2")
   (assert (= 15 (ce ctx "(arity 1 2 3 4 5)")) "multi-arity variadic")
 
+  # loop / recur
+  (assert (= 15 (ce ctx "(loop [i 0 acc 0] (if (< i 6) (recur (inc i) (+ acc i)) acc))")) "loop/recur")
+  # recur directly in a fixed-arity fn
+  (assert (= 15 (ce ctx "((fn [n acc] (if (zero? n) acc (recur (dec n) (+ acc n)))) 5 0)")) "recur in fn")
+  # try / catch / finally
+  (assert (= "caught" (ce ctx "(try (throw 42) (catch Exception e \"caught\"))")) "try/catch")
+  (assert (= 7 (ce ctx "(try 7 (finally 0))")) "try/finally")
+
   # higher-order + nesting
   (assert (= 15 (ce ctx "(reduce + (map inc [0 1 2 3 4]))")) "reduce+map"))
 
