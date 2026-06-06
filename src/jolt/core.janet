@@ -939,11 +939,11 @@
           dropped (array/slice c (min n (length c)))]
       (if (jvec? coll) (make-vec dropped) dropped))))))
 
-(defn core-second [coll] (core-first (core-rest coll)))
-# ffirst / nfirst / fnext / nnext / last / butlast now live in the Clojure overlay
-# (jolt-core/clojure/core.clj). second stays here — the self-hosted compiler
-# (analyzer.clj) calls it, so it must exist as a Janet primitive before the
-# overlay (which the compiler compiles) loads.
+# ffirst/nfirst/fnext/nnext/last/butlast (seq tier) and second/peek/subvec/mapv/
+# update (kernel tier) now live in the Clojure clojure.core tiers under
+# jolt-core/clojure/core/. The kernel tier is bootstrap-compiled before the
+# self-hosted analyzer is built, so the structural fns the analyzer uses come
+# from Clojure, not Janet — see api/load-core-overlay! and core/00-kernel.clj.
 
 (defn core-drop-last [a & rest]
   (let [n (if (= 0 (length rest)) 1 a)
@@ -1277,17 +1277,9 @@
     (indexed? m) (do (var i 0) (each x m (set acc (f acc i x)) (++ i))))
   acc)
 
-# peek/pop are defined only on stacks (vectors -> last end, lists -> front);
-# Clojure throws on sets/maps/seqs/strings/scalars.
-(defn core-peek [coll]
-  (cond
-    (nil? coll) nil
-    (plist? coll) (if (pl-empty? coll) nil (pl-first coll))   # list: first
-    (pvec? coll) (if (= 0 (pv-count coll)) nil (pv-nth coll (- (pv-count coll) 1)))  # vector: last
-    (tuple? coll) (if (= 0 (length coll)) nil (in coll (- (length coll) 1)))   # vector: last
-    (array? coll) (if (= 0 (length coll)) nil (in coll 0))   # list: first
-    (error (string "peek not supported on " (type coll)))))
-
+# pop is defined only on stacks (vectors -> last end, lists -> front); Clojure
+# throws on sets/maps/seqs/strings/scalars. (peek lives in the Clojure kernel
+# tier — core/00-kernel.clj.)
 (defn core-pop [coll]
   (cond
     (nil? coll) nil
@@ -1297,22 +1289,7 @@
     (array? coll) (if (= 0 (length coll)) (error "Can't pop empty list") (array/slice coll 1))
     (error (string "pop not supported on " (type coll)))))
 
-# Clojure coerces subvec indices with (int ...): floats truncate and NaN -> 0;
-# only non-numbers and out-of-range values throw.
-(defn- subvec-idx [x]
-  (cond
-    (not (number? x)) (error "subvec index must be a number")
-    (not= x x) 0           # NaN -> 0
-    (math/trunc x)))
-(defn core-subvec [v start &opt end]
-  (when (not (or (pvec? v) (tuple? v) (array? v)))
-    (error (string "subvec requires a vector, got " (type v))))
-  (let [a (vview v)
-        s (subvec-idx start)
-        e (if (nil? end) (length a) (subvec-idx end))]
-    (when (not (and (>= s 0) (<= s e) (<= e (length a))))
-      (error (string "subvec indices out of range: " s " " e " (length " (length a) ")")))
-    (make-vec (tuple/slice a s e))))
+# subvec lives in the Clojure kernel tier — core/00-kernel.clj.
 
 (defn core-trampoline [f & args]
   (var result (apply f args))
@@ -2758,11 +2735,8 @@
   (let [nm (core-get ns :name)]
     (if nm {:jolt/type :symbol :ns nil :name (string nm)} nil)))
 
-# update — works on both structs and tables
-(defn core-update [m k f & args]
-  (def f (as-fn f))
-  (core-assoc m k (apply f (core-get m k) args)))
-
+# update lives in the Clojure kernel tier — core/00-kernel.clj. update-in stays
+# (it's recursive and has internal callers).
 (defn- ks-rest [ks]
   (if (tuple? ks) (tuple/slice ks 1) (array/slice ks 1)))
 
@@ -3102,15 +3076,7 @@
   (let [r @[]] (each x (realize-for-iteration coll) (when (truthy? (pred x)) (array/push r x)))
     (make-vec r)))
 
-(defn core-mapv [f & colls]
-  (def f (as-fn f))
-  (let [r @[]]
-    (if (= 1 (length colls))
-      (each x (realize-for-iteration (colls 0)) (array/push r (f x)))
-      (let [cs (map realize-for-iteration colls)
-            n (min ;(map length cs))]
-        (var i 0) (while (< i n) (array/push r (apply f (map (fn [c] (in c i)) cs))) (++ i))))
-    (make-vec r)))
+# mapv lives in the Clojure kernel tier — core/00-kernel.clj.
 
 (defn- td-interpose [sep]
   (fn [rf]
@@ -3699,9 +3665,7 @@
     "map-indexed" core-map-indexed
     "cycle" core-cycle
     "reduce-kv" core-reduce-kv
-    "peek" core-peek
     "pop" core-pop
-    "subvec" core-subvec
     "trampoline" core-trampoline
     "format" core-format
     "letfn" core-letfn
@@ -3726,7 +3690,6 @@
     "remove" core-remove
     "reduce" core-reduce
     "apply" core-apply
-    "second" core-second
     "doall" core-doall
     "dorun" core-dorun
     "run!" core-run!
@@ -3829,7 +3792,6 @@
     "nthrest" core-nthrest
     "nthnext" core-nthnext
     "filterv" core-filterv
-    "mapv" core-mapv
     "empty" core-empty
     "not-empty" core-not-empty
     "rseq" core-rseq
@@ -4117,7 +4079,6 @@
     "comment" core-comment
     "resolve" core-resolve
     "ns-name" core-ns-name
-    "update" core-update
     "update-in" core-update-in
     "assoc-in" core-assoc-in
     "fnil" core-fnil

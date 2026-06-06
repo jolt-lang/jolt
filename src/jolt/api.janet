@@ -10,6 +10,7 @@
 (use ./compiler)
 (use ./loader)
 (use ./async)
+(import ./backend :as backend)
 (import ./stdlib_embed :as stdlib-embed)
 (import ./host_iface :as host)
 
@@ -27,20 +28,38 @@
     x))
 
 
+# Ordered clojure.core tiers (embedded jolt-core/clojure/core/NN-*.clj). Each tier
+# may reference only the Janet seed + earlier tiers. A :kernel tier holds the
+# structural fns the self-hosted compiler itself uses (second/peek/subvec/mapv/
+# update); in compile mode it must be bootstrap-compiled into clojure.core BEFORE
+# the analyzer is built (the analyzer depends on it), so it bypasses the
+# self-hosted pipeline. Non-kernel tiers route through eval-toplevel like any
+# source (compiled when :compile?, interpreted otherwise — the analyzer, built
+# lazily on the first such form, sees the kernel tier already in place).
+(def- core-tiers
+  [{:ns "clojure.core.00-kernel" :kernel true}
+   {:ns "clojure.core.10-seq"    :kernel false}])
+
+(defn- eval-overlay-source [ctx src]
+  (var s src)
+  (while (> (length (string/trim s)) 0)
+    (def [form rest] (parse-next s))
+    (set s rest)
+    (when (not (nil? form)) (eval-toplevel ctx form))))
+
 (defn- load-core-overlay!
-  "Load the Clojure portion of clojure.core (embedded jolt-core/clojure/core.clj)
-  into the clojure.core namespace, routed through eval-toplevel like any other
-  source (compiled when :compile?, interpreted otherwise)."
+  "Load the Clojure portion of clojure.core in dependency-ordered tiers. See
+  core-tiers and jolt-core/clojure/core/."
   [ctx]
-  (when-let [src (get stdlib-embed/sources "clojure.core")]
-    (def saved (ctx-current-ns ctx))
-    (ctx-set-current-ns ctx "clojure.core")
-    (var s src)
-    (while (> (length (string/trim s)) 0)
-      (def [form rest] (parse-next s))
-      (set s rest)
-      (when (not (nil? form)) (eval-toplevel ctx form)))
-    (ctx-set-current-ns ctx saved)))
+  (def compile? (get (ctx :env) :compile?))
+  (def saved (ctx-current-ns ctx))
+  (ctx-set-current-ns ctx "clojure.core")
+  (each tier core-tiers
+    (when-let [src (get stdlib-embed/sources (tier :ns))]
+      (if (and compile? (tier :kernel))
+        (backend/bootstrap-load-source ctx "clojure.core" src)
+        (eval-overlay-source ctx src))))
+  (ctx-set-current-ns ctx saved))
 
 (defn init
   "Create a new Jolt evaluation context.

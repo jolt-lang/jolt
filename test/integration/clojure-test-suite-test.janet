@@ -25,7 +25,11 @@
 # running thread (Janet OS threads can't be interrupted), so `(deref (future
 # (sleep 1)))` re-raises the unresolved-`Thread/sleep` error — a documented
 # platform gap, not a regression in any previously-working behavior.
-(def baseline-pass 3913)
+# Raised 3913 -> 3916 with the staged-bootstrap kernel tier: the evaluator now
+# restores current-ns when a fn throws across a try boundary (a leaked ns used to
+# break referred-symbol resolution after a caught error), and subvec's index
+# coercion (NaN/float/ratio) is faithful — net +3.
+(def baseline-pass 3916)
 # A file is "clean" when it ran with zero failures AND zero errors.
 (def baseline-clean-files 45)
 # Per-file wall-clock budget (seconds). Normal files finish in well under 1s;

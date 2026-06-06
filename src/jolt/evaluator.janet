@@ -929,7 +929,14 @@
               (error {:jolt/type :jolt/exception :value val}))
     "try" (let [body-form (in form 1)
                 clauses (tuple/slice form 2)
-                n (length clauses)]
+                n (length clauses)
+                # current-ns is dynamic state. The interpreter rebinds it to a
+                # fn's defining ns while that fn runs and restores it on normal
+                # return, but a fn that THROWS unwinds past its own restore — so
+                # the ns can leak. try is the unwind boundary: restore the ns that
+                # was current at try entry before running catch/finally, so caught
+                # code (and the harness's is/thrown?) sees the right namespace.
+                try-ns (ctx-current-ns ctx)]
             (var catch-sym nil)
             (var catch-body nil)
             (var finally-body nil)
@@ -952,6 +959,7 @@
               (try
                 (eval-form ctx bindings body-form)
                 ([err]
+                 (ctx-set-current-ns ctx try-ns)
                  (var new-bindings @{})
                  (table/setproto new-bindings bindings)
                  # bind the originally-thrown value (unwrap the :jolt/exception
@@ -974,6 +982,7 @@
                     (run-finally finally-body)
                     result)
                   ([err]
+                   (ctx-set-current-ns ctx try-ns)
                    (run-finally finally-body)
                    (error err)))
                 (eval-form ctx bindings body-form))))

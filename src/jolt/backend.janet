@@ -209,32 +209,53 @@
 
 # --- pipeline wiring (the self-hosted compile path) ---
 
-# Compile-load a jolt-core namespace via the bootstrap so it runs as native
-# bytecode. The analyzer uses unqualified referred names (jolt.host form-* + the
-# IR ctors), so the bootstrap's plain :var path compiles it. Stateful forms (the
-# ns/require) fall back to the interpreter. Source from the embedded stdlib map.
+# Bootstrap-compile a source string into target-ns: each form is compiled via the
+# bootstrap (native Janet) compiler and its defs interned in target-ns. This is
+# the stage-1 builder — it runs BEFORE the self-hosted analyzer exists, so it's
+# how both the compiler namespaces (jolt.ir/jolt.analyzer) and the clojure.core
+# kernel tier (the structural fns the analyzer itself calls) get built. The
+# analyzer uses unqualified referred names (jolt.host form-* + IR ctors), so the
+# bootstrap's plain :var path compiles it; stateful forms fall back to interp.
+(defn bootstrap-load-source [ctx target-ns src]
+  (def saved (ctx-current-ns ctx))
+  (ctx-set-current-ns ctx target-ns)
+  (var s src)
+  (while (> (length (string/trim s)) 0)
+    (def parsed (r/parse-next s))
+    (set s (in parsed 1))
+    (def f (in parsed 0))
+    (when (not (nil? f))
+      # Guard BOTH compile and the Janet-compile-of-emitted step: a form whose
+      # emitted Janet is invalid (e.g. a bad splice) falls back to interpreted
+      # definition rather than killing the whole load.
+      (def r (protect (comp/eval-compiled (comp/compile-ast f ctx) ctx)))
+      (unless (r 0) (eval-form ctx @{} f))))
+  (ctx-set-current-ns ctx saved))
+
+# Compile-load an embedded jolt-core namespace by name (source from the stdlib map).
 (defn- compile-load [ctx ns-name]
   (def src (get (get (ctx :env) :embedded-sources @{}) ns-name))
-  (when src
-    (def saved (ctx-current-ns ctx))
-    (ctx-set-current-ns ctx ns-name)
-    (var s src)
-    (while (> (length (string/trim s)) 0)
-      (def parsed (r/parse-next s))
-      (set s (in parsed 1))
-      (def f (in parsed 0))
-      (when (not (nil? f))
-        # Guard BOTH compile and the Janet-compile-of-emitted step: a form whose
-        # emitted Janet is invalid (e.g. a bad splice) falls back to interpreted
-        # definition rather than killing the whole load.
-        (def r (protect (comp/eval-compiled (comp/compile-ast f ctx) ctx)))
-        (unless (r 0) (eval-form ctx @{} f))))
-    (ctx-set-current-ns ctx saved)))
+  (when src (bootstrap-load-source ctx ns-name src)))
+
+# Build the self-hosted compiler (IR ctors + analyzer) via the bootstrap. The
+# analyzer's references to clojure.core fns it uses (second/peek/subvec/mapv/
+# update) resolve to whatever is interned in clojure.core at this point — so the
+# kernel tier must already be loaded (see api/load-core-overlay!).
+(defn- build-compiler! [ctx]
+  (compile-load ctx "jolt.ir")
+  (compile-load ctx "jolt.analyzer"))
 
 (defn- ensure-analyzer [ctx]
   (when (= 0 (length ((ctx-find-ns ctx "jolt.analyzer") :mappings)))
-    (compile-load ctx "jolt.ir")
-    (compile-load ctx "jolt.analyzer")))
+    (build-compiler! ctx)))
+
+(defn rebuild-compiler!
+  "Recompile the self-hosted compiler (jolt.ir + jolt.analyzer) against the
+  CURRENT clojure.core. The fractal turn: once a core tier supplies Clojure
+  definitions the compiler itself uses, rebuilding makes the compiler run on
+  them. Idempotent; re-interns the compiler namespaces over the existing cells."
+  [ctx]
+  (build-compiler! ctx))
 
 (defn analyze-form
   "Run the portable Clojure analyzer (jolt.analyzer/analyze) on a reader form,
