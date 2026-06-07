@@ -60,10 +60,6 @@
 ;; pending cells (matching the prior Janet macro).
 (defmacro declare [& syms] `(do))
 
-;; fn -> fn*: the analyzer treats fn* as the primitive (it handles params, &-rest,
-;; multi-arity); fn is just the public spelling.
-(defmacro fn [& args] `(fn* ~@args))
-
 ;; let desugars destructuring patterns to plain bindings (via destructure) so the
 ;; COMPILER sees only plain symbols — analyze-bindings rejects patterns as
 ;; uncompilable, relying on this macro to have expanded them. (The interpreter
@@ -73,12 +69,63 @@
 (defmacro let [bindings & body]
   `(let* ~(destructure bindings) ~@body))
 
-;; loop -> loop* with raw bindings (matching the prior Janet macro). loop can't
-;; pre-destructure like let: that would change the binding count and break recur's
-;; arity. The interpreter destructures loop* directly; for destructuring loops the
-;; compiler falls back (a pre-existing limitation).
+;; loop binds destructuring forms like let, but recur must target the loop* vars,
+;; whose count can't change. So (matching Clojure): gensym one loop var per binding,
+;; loop* over those, and destructure them via an inner let each iteration; an outer
+;; let establishes the destructured names so later inits can see them. Plain loops
+;; (no patterns) pass straight through to loop*.
 (defmacro loop [bindings & body]
-  `(loop* ~bindings ~@body))
+  (let [d (destructure bindings)]
+    (if (= d bindings)
+      `(loop* ~bindings ~@body)
+      (let [bs (take-nth 2 bindings)
+            vs (take-nth 2 (drop 1 bindings))
+            gs (map (fn [b] (if (symbol? b) b (symbol (str (gensym))))) bs)
+            outer (reduce (fn [acc t]
+                            (let [b (nth t 0) v (nth t 1) g (nth t 2)]
+                              (if (symbol? b) (conj (conj acc g) v)
+                                  (conj (conj (conj (conj acc g) v) b) g))))
+                          [] (map vector bs vs gs))
+            inner (reduce (fn [acc t] (conj (conj acc (nth t 0)) (nth t 1)))
+                          [] (map vector bs gs))
+            loopv (reduce (fn [acc g] (conj (conj acc g) g)) [] gs)]
+        ;; splice via [~@..] so the binding vectors are tuple forms, not pvecs.
+        `(let [~@outer] (loop* [~@loopv] (let [~@inner] ~@body)))))))
+
+;; fn: desugar destructuring params to plain symbols + a body let (matching
+;; Clojure's maybe-destructured), so fn* only ever sees plain params (the compiler's
+;; analyze-fn requires that). Plain params pass through untouched. Handles an
+;; optional name and single- or multi-arity. md/mk are fn* (not fn) to avoid a cycle.
+;; md walks a param seq, replacing non-symbol patterns with gensyms and recording
+;; [pattern gensym] let-bindings; mk turns one arity (params . body) into a rewritten
+;; arity. Output: single arity splices the arity's elements straight into fn*; multi
+;; arity splices the rewritten clauses.
+(defmacro fn [& raw]
+  (let [nm (if (symbol? (first raw)) (first raw) nil)
+        aftn (if nm (next raw) raw)
+        md (fn* go [ps nps lets]
+             (if (seq ps)
+               (if (symbol? (first ps))
+                 (go (next ps) (conj nps (first ps)) lets)
+                 ;; bare (gensym) here is Janet's (a Janet symbol the destructurer
+                 ;; rejects); round-trip through str for a jolt symbol.
+                 (let [g (symbol (str (gensym)))]
+                   (go (next ps) (conj nps g) (conj (conj lets (first ps)) g))))
+               [nps lets]))
+        mk (fn* [sig]
+             (let [r (md (seq (first sig)) [] [])]
+               (if (empty? (nth r 1))
+                 sig
+                 ;; build the params/let vectors via [~@..] so they are tuple forms
+                 ;; (the accumulators are plain seqs, the wrong representation).
+                 (let [pv `[~@(nth r 0)]
+                       lv `[~@(nth r 1)]]
+                   `(~pv (let ~lv ~@(rest sig)))))))]
+    (if (vector? (first aftn))
+      (let [a (mk aftn)]
+        (if nm `(fn* ~nm ~@a) `(fn* ~@a)))
+      (let [as (vec (map mk aftn))]
+        (if nm `(fn* ~nm ~@as) `(fn* ~@as))))))
 
 ;; defn: drop an optional leading docstring and attr-map, then (def name (fn* ...)).
 ;; Both single- and multi-arity reduce to (fn* ~@body) — fn* takes either a params
