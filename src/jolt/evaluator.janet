@@ -1432,6 +1432,24 @@
             args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
         (jolt-invoke ctx f args)))))
 
+# Build a map value from an array of evaluated [k v k v ...]. A phm (not a Janet
+# struct) is used when a key is a collection (value-based hashing) OR a key/value
+# is nil (Janet structs drop nil; phm preserves it, matching Clojure). The common
+# scalar/nil-free case stays a struct.
+(defn- map-needs-phm? [kvs]
+  (var need false) (var i 0)
+  (while (< i (length kvs))
+    (let [k (in kvs i) v (in kvs (+ i 1))]
+      (when (or (table? k) (array? k) (nil? k) (nil? v)) (set need true) (break)))
+    (+= i 2))
+  need)
+
+(defn- build-eval-map [kvs]
+  (if (map-needs-phm? kvs)
+    (do (var m (make-phm)) (var j 0)
+        (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2)) m)
+    (struct ;kvs)))
+
 (set eval-form (fn [ctx bindings form]
   (cond
     (nil? form) nil
@@ -1467,19 +1485,15 @@
           (each k (keys form)
             (array/push kvs (eval-form ctx bindings k))
             (array/push kvs (eval-form ctx bindings (get form k))))
-          # If any key is a collection (a Janet table/array — phm/pvec/plist/
-          # record/list), a Janet struct would key it by identity; use a phm so
-          # such keys compare by value.
-          (var coll-key false)
-          (var ki 0)
-          (while (< ki (length kvs))
-            (let [kk (in kvs ki)] (when (or (table? kk) (array? kk)) (set coll-key true)))
-            (+= ki 2))
-          (if coll-key
-            (do (var m (make-phm)) (var j 0)
-                (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2))
-                m)
-            (struct ;kvs))))))))
+          (build-eval-map kvs)))))))
+    # A phm map-literal FORM (reader emits one for {:a nil} etc., which a struct
+    # would have dropped): evaluate its key/value forms and rebuild, preserving nil.
+    (phm? form)
+    (let [kvs @[]]
+      (each e (phm-entries form)
+        (array/push kvs (eval-form ctx bindings (in e 0)))
+        (array/push kvs (eval-form ctx bindings (in e 1))))
+      (build-eval-map kvs))
     (array? form)
     (if (= 0 (length form))
       @[]

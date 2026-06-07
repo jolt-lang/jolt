@@ -21,6 +21,7 @@
 (use ./types)
 (use ./evaluator)
 (use ./core)
+(import ./phm :as phm)
 
 # ---------------------------------------------------------------------------
 # Form introspection
@@ -36,7 +37,12 @@
 
 (defn h-list? [form] (array? form))          # a call / list (reader: array)
 (defn h-vector? [form] (tuple? form))        # a vector literal (reader: tuple)
-(defn h-map? [form] (and (struct? form) (nil? (form :jolt/type))))
+# A map-literal form is a plain struct, or a phm when the reader preserved a nil
+# key/value (Janet structs drop nil). Sets/chars/symbols are tagged structs (have
+# :jolt/type); phm carries :jolt/deftype, distinct from those.
+(defn h-map? [form]
+  (or (and (struct? form) (nil? (form :jolt/type)))
+      (phm/phm? form)))
 (defn h-set? [form] (and (struct? form) (= :jolt/set (form :jolt/type))))
 (defn h-char? [form] (and (struct? form) (= :jolt/char (form :jolt/type))))
 
@@ -48,7 +54,9 @@
 (defn h-elements [form] (make-vec form))
 (defn h-vector-items [form] (make-vec form))
 (defn h-map-pairs [form]
-  (make-vec (map (fn [k] (make-vec [k (get form k)])) (keys form))))
+  (if (phm/phm? form)
+    (make-vec (map (fn [e] (make-vec [(in e 0) (in e 1)])) (phm/phm-entries form)))
+    (make-vec (map (fn [k] (make-vec [k (get form k)])) (keys form)))))
 (defn h-set-items [form] (make-vec (form :value)))
 
 # ---------------------------------------------------------------------------

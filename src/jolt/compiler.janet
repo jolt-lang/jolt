@@ -1004,12 +1004,15 @@
 # collection, in which case a phm so the key compares by value. Embedded as a
 # function constant in emitted code (functions marshal by reference).
 (defn build-map-literal [& kvs]
-  (var coll-key false)
+  # phm (not a Janet struct) when a key is a collection (value-based hashing) or a
+  # key/value is nil (structs drop nil; phm preserves it, matching Clojure).
+  (var need-phm false)
   (var ki 0)
   (while (< ki (length kvs))
-    (let [kk (in kvs ki)] (when (or (table? kk) (array? kk)) (set coll-key true)))
+    (let [kk (in kvs ki) vv (in kvs (+ ki 1))]
+      (when (or (table? kk) (array? kk) (nil? kk) (nil? vv)) (set need-phm true)))
     (+= ki 2))
-  (if coll-key
+  (if need-phm
     (do (var m (make-phm)) (var j 0)
         (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2))
         m)

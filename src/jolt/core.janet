@@ -370,11 +370,14 @@
             (if (= idx (length result)) (array/push result v) (put result idx v)))
           (+= i 2))
         (if (tuple? m) (tuple/slice (tuple ;result)) result))
-    # map (struct/table). If any key is a collection, a Janet struct/table keys
-    # it by identity — promote to a phm so such keys compare by value.
+    # map (struct/table). Promote to a phm when any new key is a collection (a
+    # Janet struct/table would key it by identity) or any new key/value is nil (a
+    # struct drops nil; phm preserves it, matching Clojure). m itself is a struct
+    # here (phm handled above), so only the new kvs can introduce these.
     (let [coll-key (do (var c false) (var i 0)
                      (while (< i (length kvs))
-                       (when (let [k (in kvs i)] (or (table? k) (array? k))) (set c true))
+                       (let [k (in kvs i) v (in kvs (+ i 1))]
+                         (when (or (table? k) (array? k) (nil? k) (nil? v)) (set c true)))
                        (+= i 2)) c)]
       (if coll-key
         (do (var result (make-phm))
