@@ -30,15 +30,22 @@
 (defn invoke [f args] {:op :invoke :fn f :args args})
 
 ;; meta is the var metadata (e.g. {:dynamic true} / {:redef true}) the back end
-;; applies to the cell; nil when the def name carried none.
+;; applies to the cell; absent when the def name carried none.
 (defn def-node
-  ([ns name init] {:op :def :ns ns :name name :init init :meta nil})
-  ([ns name init meta] {:op :def :ns ns :name name :init init :meta meta}))
+  ([ns name init] {:op :def :ns ns :name name :init init})
+  ([ns name init meta]
+   (if meta
+     {:op :def :ns ns :name name :init init :meta meta}
+     {:op :def :ns ns :name name :init init})))
 
 (defn let-node [bindings body] {:op :let :bindings bindings :body body})
 
-;; A fn is one or more arities. Each arity: {:params [..] :rest name|nil :body ir}.
-(defn fn-node [name arities] {:op :fn :name name :arities arities})
+;; A fn is one or more arities. Each arity: {:params [..] :body ir}, plus :rest
+;; name when variadic. :name is absent for an anonymous fn.
+(defn fn-node [name arities]
+  (if name
+    {:op :fn :name name :arities arities}
+    {:op :fn :arities arities}))
 
 (defn vector-node [items] {:op :vector :items items})
 (defn map-node [pairs] {:op :map :pairs pairs})

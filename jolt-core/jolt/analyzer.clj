@@ -38,7 +38,7 @@
     (swap! gensym-counter inc)
     (str "_r$" prefix n)))
 
-(defn- empty-env [] {:locals #{} :recur nil})
+(defn- empty-env [] {:locals #{}})
 (defn- local? [env nm] (contains? (:locals env) nm))
 (defn- add-locals [env names] (update env :locals #(reduce conj % names)))
 (defn- with-recur [env name] (assoc env :recur name))
@@ -82,9 +82,12 @@
         ;; is a self-call carrying the rest seq directly — Clojure semantics.
         rname (gen-name "arity")
         names (cond-> (vec fixed) rst (conj rst) fn-name (conj fn-name))
-        env* (-> (add-locals env names) (with-recur rname))]
-    {:params fixed :rest rst :recur-name rname
-     :body (analyze-seq ctx body env*)}))
+        env* (-> (add-locals env names) (with-recur rname))
+        arity {:params fixed :recur-name rname
+               :body (analyze-seq ctx body env*)}]
+    ;; :rest only when variadic — an absent :rest reads back nil, same as before,
+    ;; but keeps a fixed arity a nil-free struct rather than a phm.
+    (if rst (assoc arity :rest rst) arity)))
 
 (defn- analyze-fn [ctx items env]
   (let [named (form-sym? (nth items 1))
