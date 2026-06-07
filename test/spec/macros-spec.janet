@@ -54,4 +54,14 @@
   ["when-first"          "20"     "(when-first [x [10 20 30]] (* x 2))"]
   ["when-first empty"    "nil"    "(when-first [x []] :body)"]
   ["when-first nil coll" "nil"    "(when-first [x nil] :body)"]
-  ["when-first range"    "0"      "(when-first [x (range 5)] x)"])
+  ["when-first range"    "0"      "(when-first [x (range 5)] x)"]
+  ["cond->> threads"     "12"     "(cond->> 5 true (+ 1) false (* 100) true (* 2))"]
+  ["cond->> skip"        "10"     "(cond->> 10 false (+ 1))"]
+  ["assert pass"         ":ok"    "(do (assert (= 1 1)) :ok)"]
+  ["assert throws"       ":threw" "(try (assert (= 1 2)) (catch :default e :threw))"]
+  ["assert message"      "\"nope\"" "(try (assert false \"nope\") (catch :default e (ex-message e)))"]
+  ["delay value"         "42"     "(deref (delay 42))"]
+  ["delay forces once"   "1"      "(let [c (atom 0) d (delay (swap! c inc))] @d @d @c)"]
+  ["future deref"        "9"      "(deref (future (* 3 3)))"]
+  ["letfn simple"        "25"     "(letfn [(sq [x] (* x x))] (sq 5))"]
+  ["letfn mutual"        "true"   "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 8))"])

@@ -1929,10 +1929,6 @@
     false))
 
 # future macro: (future body...) -> (future-call (fn* [] body...))
-(defn core-future [& body]
-  @[{:jolt/type :symbol :ns nil :name "future-call"}
-    @[{:jolt/type :symbol :ns nil :name "fn*"} [] ;body]])
-
 (defn core-deref [ref & opts]
   (cond
     (and (table? ref) (= :jolt/atom (ref :jolt/type)))
@@ -2275,27 +2271,6 @@
                  result-form]))))
   @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses g)])
 
-(defn core-cond->>
-  "Macro: (cond->> expr test form ...) — thread last only when test is true"
-  [expr & clauses]
-  (def g (gensym))
-  (defn build [cls result-form]
-    (if (= 0 (length cls))
-      result-form
-      (let [t (first cls)
-            f (in cls 1)
-            f-call (if (array? f)
-                     (let [arr (array/slice f)]
-                       (array/push arr result-form)
-                       arr)
-                     @[f result-form])]
-        (build (tuple/slice cls 2)
-               @[{:jolt/type :symbol :ns nil :name "if"}
-                 t
-                 f-call
-                 result-form]))))
-  @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses g)])
-
 (defn core-push-thread-bindings [b] (push-thread-bindings b))
 (defn core-pop-thread-bindings [] (pop-thread-bindings))
 
@@ -2462,10 +2437,6 @@
     # Clojure's realized? is only defined on IPending; reject anything else.
     (error (string "realized? not supported on " (type x)))))
 
-# delay macro: (delay body...) -> (make-delay (fn* [] body...))
-(defn core-delay [& body]
-  @[{:jolt/type :symbol :ns nil :name "make-delay"}
-    @[{:jolt/type :symbol :ns nil :name "fn*"} [] ;body]])
 
 # Proxy stub — returns nil form (macro, args not evaluated)
 (defn core-proxy [& args] nil)
@@ -2548,16 +2519,6 @@
 # letfn — mutually-recursive local fns. Expands to let* of fn* bindings; jolt
 # closures capture the (shared, mutable) bindings table, so forward references
 # between the fns resolve at call time.
-(defn core-letfn [specs & body]
-  (def binds @[])
-  (each spec specs
-    (let [fname (spec 0)
-          rest (tuple/slice spec 1)]
-      (array/push binds fname)
-      # rest is either ([args] body...) for single-arity or a list of
-      # ([args] body) clauses for multi-arity; (fn* ;rest) handles both.
-      (array/push binds @[{:jolt/type :symbol :ns nil :name "fn*"} ;rest])))
-  @[{:jolt/type :symbol :ns nil :name "let*"} (tuple/slice (tuple ;binds)) ;body])
 
 # doseq — like `for` but eager and returns nil. Reuse `for`, force realization
 # with `count`, discard the result.
@@ -2569,16 +2530,6 @@
     nil])
 
 # assert — (assert x) / (assert x message). Throws when x is falsy.
-(defn core-assert [x & more]
-  (def msg-form
-    (if (> (length more) 0)
-      (first more)
-      (let [b @""] (pr-render b x) (string "Assert failed: " (string b)))))
-  @[{:jolt/type :symbol :ns nil :name "if"}
-    x
-    nil
-    @[{:jolt/type :symbol :ns nil :name "throw"}
-      @[{:jolt/type :symbol :ns nil :name "ex-info"} msg-form {}]]])
 
 # resolve stub — returns nil (symbols not found in Jolt's clojure.core)
 (defn core-resolve [sym] nil)  # shadowed by the resolve special form (needs ctx)
@@ -3383,9 +3334,7 @@
     "pop" core-pop
     "trampoline" core-trampoline
     "format" core-format
-    "letfn" core-letfn
     "doseq" core-doseq
-    "assert" core-assert
     "first" core-first
     "rest" core-rest
     "next" core-next
@@ -3424,7 +3373,6 @@
     "record?" core-record?
     "promise" core-promise
     "deliver" core-deliver
-    "future" core-future
     "future-call" core-future-call
     "future?" core-future?
     "future-done?" core-future-done?
@@ -3499,7 +3447,6 @@
     "realized?" core-realized?
     "delay?" core-delay?
     "make-delay" core-make-delay
-    "delay" core-delay
     "take" core-take
     "drop" core-drop
     "take-while" core-take-while
@@ -3702,7 +3649,6 @@
     "->" core-thread-first
     "->>" core-thread-last
     "cond->" core-cond->
-    "cond->>" core-cond->>
     "defn" core-defn
     "defn-" core-defn-
     "derive" core-derive
@@ -3784,7 +3730,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "when-let" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "binding" true "lazy-seq" true "lazy-cat" true "condp" true "cond->" true "cond->>" true "->" true "->>" true "letfn" true "doseq" true "delay" true "assert" true "future" true})
+  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "when-let" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "binding" true "lazy-seq" true "lazy-cat" true "condp" true "cond->" true "->" true "->>" true "doseq" true})
 
 (def init-core!
   (fn [& args]

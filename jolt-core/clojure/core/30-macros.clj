@@ -82,3 +82,27 @@
   (let [g (fresh-sym)
         steps (map (fn [f] `(if (nil? ~g) nil (->> ~g ~f))) forms)]
     `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
+
+;; cond-> stays in Janet (the compiler uses it); cond->> (thread-last) is safe.
+(defmacro cond->> [expr & clauses]
+  (let [g (fresh-sym)
+        steps (map (fn [pair] `(if ~(first pair) (->> ~g ~(second pair)) ~g))
+                   (partition 2 clauses))]
+    `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
+
+(defmacro assert [x & [message]]
+  (let [msg (if message message (str "Assert failed: " (pr-str x)))]
+    `(when-not ~x (throw (ex-info ~msg {})))))
+
+(defmacro delay [& body]
+  `(make-delay (fn [] ~@body)))
+
+(defmacro future [& body]
+  `(future-call (fn [] ~@body)))
+
+;; Build the fn* form via a template (a reader-list array): cons/list in a macro
+;; body produce a plist the evaluator can't call as a form.
+(defmacro letfn [fnspecs & body]
+  (let [binds (reduce (fn [acc spec] (conj (conj acc (first spec)) `(fn* ~@(rest spec))))
+                      [] fnspecs)]
+    `(let* [~@binds] ~@body)))
