@@ -107,6 +107,15 @@
                       [] fnspecs)]
     `(let* [~@binds] ~@body)))
 
+;; Dynamic binding: install a thread-binding frame of var->value (array-map keeps
+;; var-get happy, unlike a phm), restore on exit.
+(defmacro binding [bindings & body]
+  (let [pairs (reduce (fn [acc p] (conj (conj acc `(var ~(first p))) (second p)))
+                      [] (partition 2 bindings))]
+    `(let* [frame# (array-map ~@pairs)]
+       (push-thread-bindings frame#)
+       (try (do ~@body) (finally (pop-thread-bindings))))))
+
 ;; condp: clauses are test-expr result-expr, or test-expr :>> result-fn (calls
 ;; result-fn on the truthy (pred test-expr value)); a lone trailing expr is the
 ;; default. The recursive emit builds a nested if chain.

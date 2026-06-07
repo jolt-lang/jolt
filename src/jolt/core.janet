@@ -2264,31 +2264,6 @@
 
 (defn core-intern [ns-name sym-name val] val)
 
-(defn core-binding
-  "Macro: (binding [var val ...] body...)
-  Uses array-map (plain struct) to store binding frame
-  to avoid PHM get() incompatibility with var-get."
-  [bindings & body]
-  (def frame-pairs @[])
-  (var i 0)
-  (let [n (length bindings)]
-    (while (< i n)
-      (array/push frame-pairs
-        @[{:jolt/type :symbol :ns nil :name "var"} (in bindings i)])
-      (array/push frame-pairs (in bindings (+ i 1)))
-      (+= i 2)))
-  (def hm-form (array/insert frame-pairs 0
-    {:jolt/type :symbol :ns nil :name "array-map"}))
-  @[{:jolt/type :symbol :ns nil :name "let*"}
-    [{:jolt/type :symbol :ns nil :name "frame"} hm-form]
-    @[{:jolt/type :symbol :ns nil :name "push-thread-bindings"}
-      {:jolt/type :symbol :ns nil :name "frame"}]
-    @[{:jolt/type :symbol :ns nil :name "try"}
-      @[{:jolt/type :symbol :ns nil :name "do"} ;body]
-      @[{:jolt/type :symbol :ns nil :name "finally"}
-        @[{:jolt/type :symbol :ns nil :name "pop-thread-bindings"}]]]])
-
-
 (defn- defn->def
   "Shared expansion for defn/defn-: (name doc-string? attr-map? params body...)
   or (name doc-string? attr-map? ([params] body)... attr-map?) -> (def name (fn* ...))."
@@ -3695,7 +3670,6 @@
     "alter-meta!" core-alter-meta!
     "reset-meta!" core-reset-meta!
     "intern" core-intern
-    "binding" core-binding
     "push-thread-bindings" core-push-thread-bindings
     "pop-thread-bindings" core-pop-thread-bindings
     # Dynamic vars — stubs for SCI bootstrap
@@ -3710,7 +3684,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "when-let" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "binding" true "lazy-seq" true "lazy-cat" true "cond->" true "->" true "->>" true "doseq" true})
+  @{"and" true "or" true "cond" true "case" true "for" true "when" true "when-not" true "when-let" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "lazy-seq" true "lazy-cat" true "cond->" true "->" true "->>" true "doseq" true})
 
 (def init-core!
   (fn [& args]

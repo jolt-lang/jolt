@@ -68,4 +68,7 @@
   ["condp match"         ":two"   "(condp = 2 1 :one 2 :two 3 :three)"]
   ["condp default"       ":else"  "(condp = 9 1 :one 2 :two :else)"]
   ["condp :>> form"      "\"got 2\"" "(condp some [1 2 3] #{0 9} :>> (fn [x] (str \"got \" x)) #{2 6} :>> (fn [x] (str \"got \" x)))"]
-  ["condp no match"      ":threw" "(try (condp = 9 1 :one) (catch :default e :threw))"])
+  ["condp no match"      ":threw" "(try (condp = 9 1 :one) (catch :default e :threw))"]
+  ["binding rebinds"     "99"     "(do (def ^:dynamic *bx* 10) (binding [*bx* 99] *bx*))"]
+  ["binding restores"    "10"     "(do (def ^:dynamic *by* 10) (binding [*by* 99] *by*) *by*)"]
+  ["binding seen by fn"  "7"      "(do (def ^:dynamic *bz* 0) (defn rdz [] *bz*) (binding [*bz* 7] (rdz)))"])
