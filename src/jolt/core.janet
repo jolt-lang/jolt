@@ -2160,16 +2160,21 @@
           {:jolt/type :symbol :ns nil :name "or__x"}
           @[{:jolt/type :symbol :ns nil :name "or"} ;(tuple/slice exprs 1)]]])))
 
+# if-let / when-let / if-some / when-some bind the name ONLY in the then/body
+# branch — the else branch must see the surrounding scope, not the binding (so
+# (let [x 5] (if-let [x nil] x x)) returns 5, like Clojure). Achieved with a fresh
+# temp around the if; the name is rebound to the temp inside the taken branch only.
+(defn- sym* [name] {:jolt/type :symbol :ns nil :name name})
+
 (defn core-if-let
   "Macro: (if-let [binding val-expr] then else?)"
   [bindings then-form & else-forms]
   (def form-sym (in bindings 0))
   (def val-form (in bindings 1))
-  @[{:jolt/type :symbol :ns nil :name "let*"}
-    @[form-sym val-form]
-    @[{:jolt/type :symbol :ns nil :name "if"}
-      form-sym
-      then-form
+  (def temp (gensym "if_let__"))
+  @[(sym* "let*") @[temp val-form]
+    @[(sym* "if") temp
+      @[(sym* "let*") @[form-sym temp] then-form]
       ;else-forms]])
 
 (defn core-when-let
@@ -2177,22 +2182,21 @@
   [bindings & body]
   (def form-sym (in bindings 0))
   (def val-form (in bindings 1))
-  @[{:jolt/type :symbol :ns nil :name "let*"}
-    @[form-sym val-form]
-    @[{:jolt/type :symbol :ns nil :name "when"}
-      form-sym
-      ;body]])
+  (def temp (gensym "when_let__"))
+  @[(sym* "let*") @[temp val-form]
+    @[(sym* "if") temp
+      @[(sym* "let*") @[form-sym temp] @[(sym* "do") ;body]]
+      nil]])
 
 (defn core-if-some
   "Macro: (if-some [binding val-expr] then else?)"
   [bindings then-form & else-forms]
   (def form-sym (in bindings 0))
   (def val-form (in bindings 1))
-  @[{:jolt/type :symbol :ns nil :name "let*"}
-    @[form-sym val-form]
-    @[{:jolt/type :symbol :ns nil :name "if"}
-      @[{:jolt/type :symbol :ns nil :name "some?"} form-sym]
-      then-form
+  (def temp (gensym "if_some__"))
+  @[(sym* "let*") @[temp val-form]
+    @[(sym* "if") @[(sym* "some?") temp]
+      @[(sym* "let*") @[form-sym temp] then-form]
       ;else-forms]])
 
 (defn core-when-some
@@ -2200,11 +2204,11 @@
   [bindings & body]
   (def form-sym (in bindings 0))
   (def val-form (in bindings 1))
-  @[{:jolt/type :symbol :ns nil :name "let*"}
-    @[form-sym val-form]
-    @[{:jolt/type :symbol :ns nil :name "when"}
-      @[{:jolt/type :symbol :ns nil :name "some?"} form-sym]
-      ;body]])
+  (def temp (gensym "when_some__"))
+  @[(sym* "let*") @[temp val-form]
+    @[(sym* "if") @[(sym* "some?") temp]
+      @[(sym* "let*") @[form-sym temp] @[(sym* "do") ;body]]
+      nil]])
 
 (defn core-doto
   "Macro: (doto obj (method args)...) → let obj, call methods, return obj"

@@ -122,13 +122,16 @@
   ([f] (completing f identity))
   ([f cf] (fn ([] (f)) ([x] (cf x)) ([x y] (f x y)))))
 
-;; Canonical loop form: short-circuits on an empty/nil coll before examining n
-;; (so (nthrest nil n) is nil without a number check), matching Clojure.
+;; Matches Clojure exactly: n<=0 returns coll unchanged; for n>0 the walk yields
+;; (seq xs), and an exhausted/nil walk falls back to () via (or ... ()) — so
+;; (nthrest nil 100) is () (not nil), while (nthrest nil 0) is nil.
 (defn nthrest [coll n]
-  (loop [n n xs coll]
-    (if (and (pos? n) (seq xs))
-      (recur (dec n) (rest xs))
-      xs)))
+  (if (pos? n)
+    (or (loop [n n xs coll]
+          (let [s (and (pos? n) (seq xs))]
+            (if s (recur (dec n) (rest s)) (seq xs))))
+        (list))
+    coll))
 
 (defn abs [x] (if (neg? x) (- 0 x) x))
 
