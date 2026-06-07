@@ -655,10 +655,11 @@
     (do (var result @{}) (each m maps (each k (if (phm? m) (keys (phm-to-struct m)) (keys m)) (let [existing (result k)] (put result k (if (nil? existing) (m k) (f existing (m k))))))) (table/to-struct result))))
 
 (defn core-keys [m]
-  (if (phm? m) (tuple ;(keys (phm-to-struct m))) (tuple ;(keys m))))
+  # phm-entries (not phm-to-struct) so keys mapped to nil values are not dropped.
+  (if (phm? m) (tuple ;(map |(in $ 0) (phm-entries m))) (tuple ;(keys m))))
 
 (defn core-vals [m]
-  (if (phm? m) (do (def s (phm-to-struct m)) (tuple ;(map |(s $) (keys s)))) (tuple ;(map |(m $) (keys m)))))
+  (if (phm? m) (tuple ;(map |(in $ 1) (phm-entries m))) (tuple ;(map |(m $) (keys m)))))
 
 (defn core-select-keys [m ks]
   (var result @{})

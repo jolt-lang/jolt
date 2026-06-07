@@ -72,7 +72,11 @@
 (defn phm-get [m k &opt default]
   (default default nil)
   (let [bucket (get (m :buckets) (phm-hash-key k))]
-    (if bucket (let [v (phm-bucket-find bucket k)] (if (nil? v) default v)) default)))
+    # presence-check, not nil-of-value: a key mapped to nil is still present,
+    # so return nil (not the default) when the key exists with a nil value.
+    (if (and bucket (phm-bucket-contains? bucket k))
+      (phm-bucket-find bucket k)
+      default)))
 
 (defn phm-assoc [m k v]
   (let [cnt (m :cnt) idx (phm-hash-key k)
