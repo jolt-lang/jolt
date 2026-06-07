@@ -34,6 +34,22 @@
 
 (var eval-form nil)
 
+# Compile hook for macro expanders: set by the api to (fn [ctx args-form body] ->
+# compiled-janet-fn | nil). When set and the body is compilable (no &env/&form,
+# analyzer available), defmacro uses the compiled expander instead of the
+# interpreted closure — macro expansion at native speed, zero runtime cost.
+(var macro-compile-hook nil)
+
+(defn- form-uses-sym? [form nm]
+  (cond
+    (and (struct? form) (= :symbol (form :jolt/type))) (= nm (form :name))
+    (or (array? form) (tuple? form))
+    (do (var found false) (each x form (when (form-uses-sym? x nm) (set found true) (break))) found)
+    (and (struct? form) (nil? (form :jolt/type)))
+    (do (var found false) (each k (keys form)
+          (when (or (form-uses-sym? k nm) (form-uses-sym? (get form k) nm)) (set found true) (break))) found)
+    false))
+
 # A transient is a tagged mutable table @{:jolt/type :jolt/transient :kind ...}.
 (defn- jolt-transient? [x]
   (and (table? x) (= :jolt/transient (get x :jolt/type))))
@@ -737,7 +753,7 @@
                      fixed-pats (param-info :fixed)
                      rest-pat (param-info :rest)
                      defining-ns (ctx-current-ns ctx)]
-                 (def macro-fn (fn [& macro-args]
+                 (def interp-fn (fn [& macro-args]
                    (var new-bindings @{})
                    (table/setproto new-bindings bindings)
                    (put new-bindings "&env" @{})  # implicit &env for macro bodies (table — nil-safe)
@@ -757,6 +773,14 @@
                      (set result (eval-form ctx new-bindings bf)))
                    (ctx-set-current-ns ctx saved-ns)
                    result))
+                 # Prefer a COMPILED expander (native-speed expansion, zero runtime
+                 # cost). Skip when the body uses &env/&form (the compiled fn has no
+                 # such params) — those fall back to the interpreted closure.
+                 (def uses-env (or (form-uses-sym? body "&env") (form-uses-sym? body "&form")))
+                 (def compiled-fn
+                   (when (and macro-compile-hook (not uses-env))
+                     (macro-compile-hook ctx args-form body)))
+                 (def macro-fn (or compiled-fn interp-fn))
                   (let [ns-name (ctx-current-ns ctx)
                        ns (ctx-find-ns ctx ns-name)]
                    (def v (ns-intern ns (name-sym :name) macro-fn))

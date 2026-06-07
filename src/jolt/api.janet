@@ -14,6 +14,15 @@
 (import ./stdlib_embed :as stdlib-embed)
 (import ./host_iface :as host)
 
+# A defmacro expander compiles to a native fn (built as (fn* args body...) and run
+# through the self-hosted pipeline) so macro expansion is compiled, zero runtime
+# cost — instead of an interpreted closure. Returns nil (interpreted fallback) when
+# the analyzer isn't built yet or the body isn't compilable.
+(set macro-compile-hook
+  (fn [ctx args-form body]
+    (backend/try-compile-fn ctx
+      (array/concat @[{:jolt/type :symbol :ns nil :name "fn*"} args-form] body))))
+
 (defn normalize-pvecs
   "Deep-convert any sequential (pvec/tuple/array) to a Janet tuple. Test helper
   so Janet-level `=`/deep= can compare jolt collection results against Janet

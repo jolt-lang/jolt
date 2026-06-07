@@ -341,3 +341,17 @@
   (if (compiled 0)
     (eval (compiled 1) (comp/ctx-janet-env ctx))
     (eval-form ctx @{} form)))
+
+(defn analyzer-built? [ctx]
+  (> (length ((ctx-find-ns ctx "jolt.analyzer") :mappings)) 0))
+
+(defn try-compile-fn
+  "Compile a fn* form to a native Janet fn via the self-hosted pipeline, or nil if
+  it can't be compiled (analyzer not yet built, or the body isn't compilable).
+  Used to compile macro expanders for native-speed expansion."
+  [ctx fn-form]
+  (when (analyzer-built? ctx)
+    (def compiled (protect (emit-ir ctx (analyze-form ctx fn-form))))
+    (when (compiled 0)
+      (def r (protect (eval (compiled 1) (comp/ctx-janet-env ctx))))
+      (when (r 0) (r 1)))))
