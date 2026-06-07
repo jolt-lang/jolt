@@ -11,3 +11,27 @@
 
 (defmacro when [test & body]
   `(if ~test (do ~@body)))
+
+(defmacro when-not [test & body]
+  `(if (not ~test) (do ~@body)))
+
+(defmacro and [& exprs]
+  (if (empty? exprs)
+    true
+    (if (empty? (rest exprs))
+      (first exprs)
+      `(let* [and# ~(first exprs)] (if and# (and ~@(rest exprs)) and#)))))
+
+(defmacro or [& exprs]
+  (if (empty? exprs)
+    nil
+    (if (empty? (rest exprs))
+      (first exprs)
+      `(let* [or# ~(first exprs)] (if or# or# (or ~@(rest exprs)))))))
+
+;; :else (any truthy value) is just a test, so no special case — (if :else e ...)
+;; takes e.
+(defmacro cond [& clauses]
+  (if (empty? clauses)
+    nil
+    `(if ~(first clauses) ~(nth clauses 1) (cond ~@(drop 2 clauses)))))

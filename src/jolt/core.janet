@@ -2062,24 +2062,6 @@
   (put gensym_counter :val (+ n 1))
   {:jolt/type :symbol :ns nil :name (string prefix-string n)})
 
-(defn core-cond
-  "Macro: (cond test1 expr1 test2 expr2 ... :else default)
-   -> (if test1 expr1 (if test2 expr2 ...))"
-  [& clauses]
-  (defn build [cls]
-    (if (= 0 (length cls))
-      nil
-      (let [t (first cls)]
-        (if (= :else t)
-          (if (> (length cls) 1) (in cls 1) nil)
-          (if (< (length cls) 2)
-            (error "cond requires an even number of forms")
-            (let [e (in cls 1)]
-              @[{:jolt/type :symbol :ns nil :name "if"}
-                t e
-                (build (tuple/slice cls 2))]))))))
-  (build clauses))
-
 (defn core-case
   "Macro: (case expr val1 result1 ... default)
    Supports single values, lists of values (one-of-many), and symbols."
@@ -2112,37 +2094,6 @@
             (build (tuple/slice cls 2))]))))
   @[{:jolt/type :symbol :ns nil :name "let*"} @[g expr] (build clauses)])
 
-
-(defn core-when-not
-  "Macro: (when-not test & body) -> (when (not test) & body)"
-  [test & body]
-  (def not-form @[{:jolt/type :symbol :ns nil :name "not"} test])
-  @[{:jolt/type :symbol :ns nil :name "if"} not-form
-    @[{:jolt/type :symbol :ns nil :name "do"} ;body]])
-
-(defn core-and
-  "Macro: (and) -> true, (and x) -> x, (and x y ...) -> (if x (and y ...) x)"
-  [& exprs]
-  (if (= 0 (length exprs)) true
-    (if (= 1 (length exprs)) (first exprs)
-      @[{:jolt/type :symbol :ns nil :name "let*"}
-        @[{:jolt/type :symbol :ns nil :name "and__x"} (first exprs)]
-        @[{:jolt/type :symbol :ns nil :name "if"}
-          {:jolt/type :symbol :ns nil :name "and__x"}
-          @[{:jolt/type :symbol :ns nil :name "and"} ;(tuple/slice exprs 1)]
-          {:jolt/type :symbol :ns nil :name "and__x"}]])))
-
-(defn core-or
-  "Macro: (or) -> nil, (or x) -> x, (or x y ...) -> (let [or__x x] (if or__x or__x (or y ...)))"
-  [& exprs]
-  (if (= 0 (length exprs)) nil
-    (if (= 1 (length exprs)) (first exprs)
-      @[{:jolt/type :symbol :ns nil :name "let*"}
-        @[{:jolt/type :symbol :ns nil :name "or__x"} (first exprs)]
-        @[{:jolt/type :symbol :ns nil :name "if"}
-          {:jolt/type :symbol :ns nil :name "or__x"}
-          {:jolt/type :symbol :ns nil :name "or__x"}
-          @[{:jolt/type :symbol :ns nil :name "or"} ;(tuple/slice exprs 1)]]])))
 
 # if-let / when-let / if-some / when-some bind the name ONLY in the then/body
 # branch — the else branch must see the surrounding scope, not the binding (so
@@ -3609,12 +3560,8 @@
     "add-watch" core-add-watch
     "remove-watch" core-remove-watch
     "not" core-not
-    "and" core-and
-    "or" core-or
-    "cond" core-cond
     "case" core-case
     "for" core-for
-    "when-not" core-when-not
     "when-let" core-when-let
     "->" core-thread-first
     "->>" core-thread-last
@@ -3699,7 +3646,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"and" true "or" true "cond" true "case" true "for" true "when-not" true "when-let" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "lazy-seq" true "lazy-cat" true "cond->" true "->" true "->>" true "doseq" true})
+  @{"case" true "for" true "when-let" true "defn" true "defn-" true "declare" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "lazy-seq" true "lazy-cat" true "cond->" true "->" true "->>" true "doseq" true})
 
 (def init-core!
   (fn [& args]
