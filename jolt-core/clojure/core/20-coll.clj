@@ -192,3 +192,24 @@
 
 ;; No ratio type on Jolt, so rationalize is identity.
 (defn rationalize [x] x)
+
+;; Eager dedupe of consecutive equal elements (Jolt has no transducer arity yet).
+(defn dedupe [coll]
+  (let [c (vec coll)]
+    (if (empty? c)
+      []
+      (loop [prev (first c) xs (rest c) out [(first c)]]
+        (if (seq xs)
+          (let [x (first xs)]
+            (recur x (rest xs) (if (= x prev) out (conj out x))))
+          out)))))
+
+;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs:
+;; builds a map from consecutive pairs, dropping a trailing unpaired element.
+(defn seq-to-map-for-destructuring [s]
+  (if (sequential? s)
+    (loop [m {} xs (seq s)]
+      (if (and xs (next xs))
+        (recur (assoc m (first xs) (second xs)) (next (next xs)))
+        m))
+    s))

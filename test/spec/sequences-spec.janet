@@ -244,4 +244,7 @@
   ["flatten scalar -> empty"   "[]"     "(flatten 5)"]
   ["interleave"                "[1 :a 2 :b]" "(interleave [1 2 3] [:a :b])"]
   ["interleave empty"          "[]"     "(interleave)"]
-  ["rationalize identity"      "5"      "(rationalize 5)"])
+  ["rationalize identity"      "5"      "(rationalize 5)"]
+  ["dedupe consecutive"        "[1 2 3 1]" "(dedupe [1 1 2 2 3 1 1])"]
+  ["dedupe empty"              "[]"     "(dedupe [])"]
+  ["dedupe no dups"            "[1 2 3]" "(dedupe [1 2 3])"])

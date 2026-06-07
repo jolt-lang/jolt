@@ -1254,14 +1254,6 @@
       (+= i n))
     result))
 
-(defn core-dedupe [coll]
-  (let [c (realize-for-iteration coll) result @[]]
-    (var prev :jolt/none)
-    (each x c
-      (when (or (= prev :jolt/none) (not (deep= x prev)))
-        (array/push result x))
-      (set prev x))
-    (tuple/slice (tuple ;result))))
 
 (defn core-keep-indexed [f coll]
   (let [c (realize-for-iteration coll) result @[]]
@@ -3210,14 +3202,6 @@
   (var parts @[]) (each x xs (array/push parts (str-render-one x)))
   (string/join parts " "))
 (defn core-memfn [& args] (error "memfn: JVM method handles are not supported in Jolt"))
-(defn core-seq-to-map-for-destructuring [s]
-  # used by {:keys [...]} destructuring over a seq of k/v pairs
-  (if (core-sequential? s)
-    (let [items (realize-for-iteration s) m @{}]
-      (var i 0)
-      (while (< (+ i 1) (length items)) (put m (in items i) (in items (+ i 1))) (+= i 2))
-      (table/to-struct m))
-    s))
 (defn core-eduction [& args]
   # (eduction xform* coll): apply the composed transducers eagerly to coll
   (let [n (length args)
@@ -3540,7 +3524,6 @@
     "contains?" core-contains?
     "count" core-count
     "partition-all" core-partition-all
-    "dedupe" core-dedupe
     "keep-indexed" core-keep-indexed
     "map-indexed" core-map-indexed
     "cycle" core-cycle
@@ -3805,7 +3788,6 @@
     "==" core-numeric=
     "print-str" core-print-str
     "memfn" core-memfn
-    "seq-to-map-for-destructuring" core-seq-to-map-for-destructuring
     "eduction" core-eduction
     "->Eduction" core->Eduction
     "proxy-super" core-proxy-super
