@@ -60,6 +60,10 @@
 ;; pending cells (matching the prior Janet macro).
 (defmacro declare [& syms] `(do))
 
+;; fn -> fn*: the analyzer treats fn* as the primitive (it handles params, &-rest,
+;; multi-arity); fn is just the public spelling.
+(defmacro fn [& args] `(fn* ~@args))
+
 ;; A fresh jolt symbol inside a macro body (a bare (gensym) returns a Janet symbol
 ;; the destructurer rejects). This defn compiles fine: by the time a tier triggers
 ;; the analyzer build the kernel is in place (the build is gated until then).

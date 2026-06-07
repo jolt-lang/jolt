@@ -2354,14 +2354,6 @@
 
 # declare macro — accepts symbols, does nothing (forward declaration)
 
-(defn core-fn
-  "Macro: (fn [args] body) → (fn* [args] body)"
-  [& args]
-  (def result @[])
-  (array/push result {:jolt/type :symbol :ns nil :name "fn*"})
-  (each a args (array/push result a))
-  result)
-
 # --- Destructuring expansion (Clojure's `destructure`) -----------------------
 # Expands a binding vector containing destructuring patterns into a plain binding
 # vector (alternating plain-symbol / init-form), using nth/nthnext/get. Shared by
@@ -3432,7 +3424,6 @@
     "remove-all-methods" core-remove-all-methods
     "prefer-method" core-prefer-method
     "Object" core-Object
-    "fn" core-fn
     "let" core-let
     "loop" core-loop
     "defprotocol" core-defprotocol
@@ -3496,7 +3487,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"when-let" true "defn" true "defn-" true "fn" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "lazy-seq" true "lazy-cat" true})
+  @{"when-let" true "defn" true "defn-" true "let" true "loop" true "defrecord" true "defprotocol" true "extend-type" true "extend-protocol" true "extend" true "reify" true "proxy" true "definterface" true "lazy-seq" true "lazy-cat" true})
 
 (def init-core!
   (fn [& args]
