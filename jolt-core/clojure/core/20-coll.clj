@@ -75,3 +75,21 @@
 (defn qualified-ident? [x] (or (qualified-symbol? x) (qualified-keyword? x)))
 
 (defn simple-ident? [x] (or (simple-symbol? x) (simple-keyword? x)))
+
+;; Jolt has no ratio or bigdecimal types, so these are constants / reduce to int?.
+(defn ratio? [x] false)
+(defn decimal? [x] false)
+(defn rational? [x] (int? x))
+(defn nat-int? [x] (and (int? x) (>= x 0)))
+(defn neg-int? [x] (and (int? x) (neg? x)))
+(defn pos-int? [x] (and (int? x) (pos? x)))
+
+(defn replicate [n x] (map (fn [_] x) (range n)))
+
+(defn take-last [n coll]
+  (let [c (vec coll) len (count c)]
+    (when (pos? len) (subvec c (max 0 (- len n))))))
+
+(defn drop-last
+  ([coll] (drop-last 1 coll))
+  ([n coll] (let [c (vec coll)] (subvec c 0 (max 0 (- (count c) n))))))

@@ -1001,18 +1001,6 @@
 # self-hosted analyzer is built, so the structural fns the analyzer uses come
 # from Clojure, not Janet — see api/load-core-overlay! and core/00-kernel.clj.
 
-(defn core-drop-last [a & rest]
-  (let [n (if (= 0 (length rest)) 1 a)
-        coll (if (= 0 (length rest)) a (in rest 0))
-        c (realize-for-iteration coll)
-        end (max 0 (- (length c) n))]
-    (tuple ;(array/slice c 0 end))))
-
-(defn core-take-last [n coll]
-  (let [c (realize-for-iteration coll)
-        start (max 0 (- (length c) n))]
-    (if (= 0 (length c)) nil (tuple ;(array/slice c start)))))
-
 (defn core-take-while [pred & rest]
  (def pred (as-fn pred))
  (if (= 0 (length rest)) (td-take-while pred)
@@ -3376,8 +3364,6 @@
   (let [c (realize-for-iteration coll)]
     (in c (math/floor (* (math/random) (length c))))))
 
-(defn core-replicate [n x] (tuple ;(map (fn [_] x) (range n))))
-
 (defn core-bounded-count [n coll]
   (let [c (realize-for-iteration coll)] (min n (length c))))
 
@@ -3390,15 +3376,10 @@
       (struct? x) (lazy-seq? x) (string? x)
       (and (table? x) (or (get x :jolt/type) (get x :jolt/deftype)))))
 
-# Numeric predicates (Jolt has no ratios/bigdec, so those are always false)
-(defn core-nat-int? [x] (and (intval? x) (>= x 0)))
-(defn core-pos-int? [x] (and (intval? x) (> x 0)))
-(defn core-neg-int? [x] (and (intval? x) (< x 0)))
+# Numeric predicates (Jolt has no ratios/bigdec). nat-int?/pos-int?/neg-int?/
+# ratio?/decimal?/rational? live in the Clojure collection tier (core/20-coll.clj).
 (defn core-double? [x] (and (number? x) (not (intval? x))))
 (defn core-float? [x] (and (number? x) (not (intval? x))))
-(defn core-ratio? [x] false)
-(defn core-decimal? [x] false)
-(defn core-rational? [x] (intval? x))
 (defn core-infinite? [x] (and (number? x) (= (math/abs x) math/inf)))
 (defn core-NaN? [x] (if (number? x) (not= x x) (error "NaN? requires a number")))
 # Jolt has no ratio type, so numerator/denominator have no valid input (Clojure
@@ -3683,19 +3664,12 @@
     "val" core-val
     "map-entry?" core-map-entry?
     "rand-nth" core-rand-nth
-    "replicate" core-replicate
     "bounded-count" core-bounded-count
     "counted?" core-counted?
     "reversible?" core-reversible?
     "seqable?" core-seqable?
-    "nat-int?" core-nat-int?
-    "pos-int?" core-pos-int?
-    "neg-int?" core-neg-int?
     "double?" core-double?
     "float?" core-float?
-    "ratio?" core-ratio?
-    "decimal?" core-decimal?
-    "rational?" core-rational?
     "infinite?" core-infinite?
     "NaN?" core-NaN?
     "numerator" core-numerator
@@ -3749,8 +3723,6 @@
     "ex-cause" core-ex-cause
     "prefers" core-prefers
     "random-uuid" core-random-uuid
-    "drop-last" core-drop-last
-    "take-last" core-take-last
     "interpose" core-interpose
     "mapcat" core-mapcat
     "some" core-some-search
