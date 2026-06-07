@@ -83,7 +83,6 @@
         steps (map (fn [f] `(if (nil? ~g) nil (->> ~g ~f))) forms)]
     `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
 
-;; cond-> stays in Janet (the compiler uses it); cond->> (thread-last) is safe.
 (defmacro cond->> [expr & clauses]
   (let [g (fresh-sym)
         steps (map (fn [pair] `(if ~(first pair) (->> ~g ~(second pair)) ~g))
@@ -137,8 +136,7 @@
 
 ;; --- protocols, records, types ---------------------------------------------
 ;; These emit Jolt's protocol/type special forms (protocol-dispatch,
-;; register-method, make-reified, deftype). The :jolt/protocol value built by
-;; defprotocol is an opaque tagged struct — it self-evaluates (see eval-form).
+;; register-method, make-reified, deftype).
 
 ;; Group a flat seq that starts with a head symbol followed by its list specs
 ;; into [[head spec spec ...] ...] runs. Used by extend-protocol and defrecord.
@@ -217,3 +215,13 @@
        (def ~arrow (fn* ~fields (~dot ~@fields)))
        (def ~mapf (fn* [~m] (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))))
        ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body)))))
+
+;; --- laziness --------------------------------------------------------------
+;; lazy-seq defers its body: make-lazy-seq holds a thunk that, when forced,
+;; realizes the body to cells. lazy-cat wraps each coll in a lazy-seq and concats
+;; (concat is itself lazy, so no outer wrapping needed).
+(defmacro lazy-seq [& body]
+  `(make-lazy-seq (fn* [] (coll->cells (do ~@body)))))
+
+(defmacro lazy-cat [& colls]
+  `(concat ~@(map (fn [c] `(lazy-seq ~c)) colls)))

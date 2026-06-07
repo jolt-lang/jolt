@@ -1466,21 +1466,6 @@
 (defn core-disj [s & ks]
   (if (set? s) (apply phs-disj s ks) (error "disj expects a set")))
 
-(defn core-lazy-seq [& body]
-  @[{:jolt/type :symbol :ns nil :name "make-lazy-seq"}
-    @[{:jolt/type :symbol :ns nil :name "fn*"} []
-      @[{:jolt/type :symbol :ns nil :name "coll->cells"}
-        @[{:jolt/type :symbol :ns nil :name "do"} ;body]]]])
-
-(defn core-lazy-cat [& colls]
-  "Macro: (lazy-cat & colls) — concatenate lazy sequences, wrapping each coll in lazy-seq.
-  concat is now lazy, so no outer make-lazy-seq wrapping is needed."
-  (def concat-form @[])
-  (array/push concat-form {:jolt/type :symbol :ns nil :name "concat"})
-  (each c colls
-    (array/push concat-form @[{:jolt/type :symbol :ns nil :name "lazy-seq"} c]))
-  concat-form)
-
 (defn core-set [coll]
   (apply core-hash-set (realize-for-iteration coll)))
 
@@ -3026,8 +3011,6 @@
     "list" core-list
     "set?" core-set?
     "disj" core-disj
-    "lazy-seq" core-lazy-seq
-    "lazy-cat" core-lazy-cat
     "coll->cells" coll->cells
     "make-lazy-seq" make-lazy-seq
     "str" core-str
@@ -3255,7 +3238,7 @@
 (defn core-macro-names
   "Set of core binding names that are macros."
   []
-  @{"when-let" true "lazy-seq" true "lazy-cat" true})
+  @{"when-let" true})
 
 (def init-core!
   (fn [& args]
