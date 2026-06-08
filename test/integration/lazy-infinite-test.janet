@@ -47,7 +47,7 @@
    ["first filter even? drop range"       "4"                     "(first (filter even? (drop 3 (range))))"]
    ["take 3 remove odd? range"            "(quote (0 2 4))"       "(take 3 (remove odd? (range)))"]
    ["take 3 drop-while <5 range"          "(quote (5 6 7))"       "(take 3 (drop-while (fn [x] (< x 5)) (range)))"]
-   # interleave stays eager in overlay (lazy-seq macro breaks compile mode).
+    # interleave stays eager in overlay (lazy-seq macro breaks compile mode).
    # ["take 4 interleave range iterate"     "(quote (0 10 1 11))"   "(take 4 (interleave (range) (iterate inc 10)))"]
    ["take 3 partition 2 range"            "(quote ((0 1) (2 3) (4 5)))" "(take 3 (partition 2 (range)))"]
    ["take 3 partition-all 2 range"        "(quote ((0 1) (2 3) (4 5)))" "(take 3 (partition-all 2 (range)))"]
@@ -60,6 +60,25 @@
    ["take 3 take-nth 2 range"             "(quote (0 2 4))"       "(take 3 (take-nth 2 (range)))"]
    ["take 3 interpose :x range"           "(quote (0 :x 1))"       "(take 3 (interpose :x (range)))"]
    ["take 3 map vector range iterate"     "(quote ([0 100] [1 101] [2 102]))" "(take 3 (map vector (range) (iterate inc 100)))"]
+
+   # §6.3 Laziness counter tests — each reads exactly N elements for take N
+   ["LAZY map"            "3"  "(do (def c (atom 0)) (take 3 (map (fn [x] (swap! c inc) x) (range))) @c)"]
+   ["LAZY filter"         "6"  "(do (def c (atom 0)) (take 3 (filter (fn [x] (swap! c inc) (odd? x)) (range))) @c)"]
+   ["LAZY remove"         "6"  "(do (def c (atom 0)) (take 3 (remove (fn [x] (swap! c inc) (even? x)) (range))) @c)"]
+   ["LAZY take-while"     "6"  "(do (def c (atom 0)) (dorun (take-while (fn [x] (swap! c inc) (< x 5)) (range))) @c)"]
+   ["LAZY drop-while"     "6"  "(do (def c (atom 0)) (take 3 (drop-while (fn [x] (swap! c inc) (< x 5)) (range))) @c)"]
+   ["LAZY distinct"       "4"  "(do (def c (atom 0)) (take 3 (distinct (map (fn [x] (swap! c inc) x) (cycle [1 2 1 3 1])))) @c)"]
+   ["LAZY take-nth"       "7"  "(do (def c (atom 0)) (take 3 (take-nth 2 (map (fn [x] (swap! c inc) x) (range)))) @c)"]
+   ["LAZY map-indexed"    "3"  "(do (def c (atom 0)) (take 3 (map-indexed (fn [i x] (swap! c inc) [i x]) (range))) @c)"]
+   ["LAZY keep"           "6"  "(do (def c (atom 0)) (take 3 (keep (fn [x] (swap! c inc) (if (odd? x) x nil)) (range))) @c)"]
+   ["LAZY keep-indexed"   "6"  "(do (def c (atom 0)) (take 3 (keep-indexed (fn [i x] (swap! c inc) (if (odd? i) x)) (range))) @c)"]
+   ["LAZY interpose"      "2"  "(do (def c (atom 0)) (take 3 (interpose :x (map (fn [x] (swap! c inc) x) (range)))) @c)"]
+   ["LAZY partition"      "6"  "(do (def c (atom 0)) (take 3 (partition 2 (map (fn [x] (swap! c inc) x) (range)))) @c)"]
+   ["LAZY partition-all"  "6"  "(do (def c (atom 0)) (take 3 (partition-all 2 (map (fn [x] (swap! c inc) x) (range)))) @c)"]
+   ["LAZY mapcat"         "3"  "(do (def c (atom 0)) (take 6 (mapcat (fn [x] (swap! c inc) [x x]) (range))) @c)"]
+   ["LAZY dedupe"         "9"  "(do (def c (atom 0)) (take 5 (dedupe (map (fn [x] (swap! c inc) x) (cycle [1 1 2 2])))) @c)"]
+   ["LAZY repeated inc"   "3"  "(do (def c (atom 0)) (take 3 (map (fn [x] (swap! c inc) x) (iterate inc 0))) @c)"]
+
    # Already-working cases (guard against regression)
    ["take 5 iterate inc"                  "(quote (0 1 2 3 4))"   "(take 5 (iterate inc 0))"]
    ["take 3 range"                        "(quote (0 1 2))"       "(take 3 (range))"]

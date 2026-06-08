@@ -420,8 +420,8 @@ target: 0 (or near-0) timeouts and a meaningfully higher baseline.
 
 ## 7. Done criteria
 
-- All §6.2 infinite-seq cases return correct values under the deadline (0 hangs). ✅ Done — 22/22
-- §6.3 laziness counters prove minimal realization for every converted transformer. ⚠ deferred — tests not written
+- All §6.2 infinite-seq cases return correct values under the deadline (0 hangs). ✅ Done — 21/21
+- §6.3 laziness counters prove minimal realization for every converted transformer. ✅ Done — 16 counter tests added, all pass
 - Conformance 229+×3, fixpoint, self-host, sci-bootstrap all green. ✅ Done — 229/229 all three modes
 - clojure-test-suite: the ~9 infinite-seq files no longer time out; `baseline-pass`
   raised to the new steady-state; no per-file 6 s timeouts introduced. ✅ Done — 3971 pass
