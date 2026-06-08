@@ -1405,6 +1405,10 @@
 
 
 (defn core-rand-int [n] (math/floor (* (math/random) n)))
+(defn core-trampoline [f & args]
+  (var result (apply f args))
+  (while (function? result) (set result (result)))
+  result)
 (def core-format (fn [fmt & args] (string/format fmt ;args)))
 
 # ============================================================
