@@ -244,6 +244,7 @@
 (defn core-min [& args] (each x args (need-num x "min")) (apply min args))
 
 (defn core-rand [] (math/random))
+(defn core-rand-int [n] (math/floor (* (math/random) n)))
 
 # ============================================================
 # Comparison
@@ -1047,7 +1048,7 @@
            (var cur c)
            (while (and (not (seq-done? cur)) (pred (ls-first cur)))
              (set cur (ls-rest cur)))
-           (if (seq-done? cur) nil (realize-ls cur))))
+           (if (seq-done? cur) nil cur)))
        (make-lazy-seq (dwstep coll)))
      (let [c (realize-for-iteration coll)]
        (var start 0)
@@ -1133,44 +1134,17 @@
               (each x (realize-for-iteration (f (a 1)))
                 (set acc (rf acc x)))
               acc))))
-    # collection arity: direct lazy implementation. Pull one element
-    # from each input coll, apply f, then yield elements from f's result.
-    # No apply-forcing — walk input colls lazily element-by-element.
-    (do
-      (var n (length colls))
-      (var init-cs @[])
-      (var i 0)
-      (while (< i n)
-        (array/push init-cs (lazy-from (in colls i)))
-        (++ i))
-      (defn step [cs res]
-        (fn []
-          (var cursors cs) (var cur-res res) (var hit nil) (var ok false)
-          (while (not ok)
-            (if (nil? cur-res)
-              (do
-                (var args @[]) (var next-cs @[]) (var exhausted false) (var j 0)
-                (while (and (< j n) (not exhausted))
-                  (let [c (in cursors j)]
-                    (if (seq-done? c) (set exhausted true)
-                      (do
-                        (array/push args (ls-first c))
-                        (array/push next-cs (ls-rest c)))))
-                  (++ j))
-                (if exhausted (break))
-                (let [r (apply f args)]
-                  (set cursors next-cs)
-                  (set cur-res (if (or (nil? r) (tuple? r) (array? r)
-                                       (lazy-seq? r) (pvec? r) (set? r) (plist? r))
-                                 (lazy-from r)
-                                 (lazy-from (tuple r))))))
-              (if (seq-done? cur-res)
-                (set cur-res nil)
-                (let [val (ls-first cur-res) rest (ls-rest cur-res)]
-                  (set hit @[val (step cursors rest)])
-                  (set ok true)))))
-          (if ok hit nil)))
-      (make-lazy-seq (step init-cs nil)))))
+    # collection arity: map f over colls, then concatenate. A non-seqable
+    # result counts as a single element (this leniency is what jolt's `for`
+    # expansion relies on for :let on the last binding, whose body yields a
+    # scalar rather than a seq).
+    (let [mapped (realize-for-iteration (core-apply core-map f colls))
+          seqs (map (fn [item]
+                      (if (or (tuple? item) (array? item) (pvec? item)
+                              (lazy-seq? item) (set? item))
+                        item (tuple item)))
+                    mapped)]
+      (core-apply core-concat seqs))))
 
 (defn core-reverse [coll]
   (if (nil? coll) @[]
@@ -1257,6 +1231,31 @@
           (sort-by keyfn arr))
         (tuple/slice (tuple ;arr))))))
 
+(defn core-distinct [coll]
+  (if (nil? coll) @[]
+  (if (lazy-seq? coll)
+    (do
+      (var seen @{})
+      (defn dstep [c]
+        (fn []
+          (var cur c) (var found false) (var result nil)
+          (while (and (not found) (not (seq-done? cur)))
+            (let [x (ls-first cur)]
+              (set cur (ls-rest cur))
+              (when (nil? (seen x))
+                (put seen x true)
+                (set found true)
+                (set result x))))
+          (if found @[result (dstep cur)] nil)))
+      (make-lazy-seq (dstep coll)))
+    (do
+      (var seen @{})
+      (var result @[])
+      (each x (realize-for-iteration coll)
+        (if (nil? (seen x))
+          (do (put seen x true) (array/push result x))))
+      (if (jvec? coll) (make-vec result) result)))))
+
 # group-by / frequencies now live in the Clojure collection tier
 # (core/20-coll.clj).
 
@@ -1292,6 +1291,91 @@
           (+= i step))
         result))))
 
+(defn core-partition-by [f coll]
+  (def f (as-fn f))
+  (var result @[])
+  (var part @[])
+  (var last-k nil)
+  (each x (realize-for-iteration coll)
+    (let [k (f x)]
+      (if (and last-k (deep= k last-k))
+        (array/push part x)
+        (do
+          (if (> (length part) 0) (array/push result (tuple/slice (tuple ;part))))
+          (set part @[x])
+          (set last-k k)))))
+  (if (> (length part) 0) (array/push result (tuple/slice (tuple ;part))))
+  result)
+
+(defn core-partition-all [n coll]
+  (if (lazy-seq? coll)
+    (do
+      (defn pstep [c]
+        (fn []
+          (if (seq-done? c) nil
+            (do
+              (var part @[]) (var cur c) (var i 0)
+              (while (and (< i n) (not (seq-done? cur)))
+                (array/push part (ls-first cur))
+                (set cur (ls-rest cur))
+                (++ i))
+              @[(tuple/slice (tuple ;part)) (pstep cur)]))))
+      (make-lazy-seq (pstep coll)))
+    (let [c (realize-for-iteration coll)]
+      (var result @[]) (var i 0)
+      (while (< i (length c))
+        (var part @[]) (var j 0)
+        (while (and (< j n) (< (+ i j) (length c)))
+          (array/push part (in c (+ i j))) (++ j))
+        (array/push result (tuple/slice (tuple ;part)))
+        (+= i n))
+      result)))
+
+
+(defn core-keep-indexed [f coll]
+  (def f (as-fn f))
+  (if (lazy-seq? coll)
+    (do
+      (defn kstep [c i]
+        (fn []
+          (var cur c) (var idx i) (var found false) (var result nil)
+          (while (and (not found) (not (seq-done? cur)))
+            (let [v (f idx (ls-first cur))]
+              (++ idx)
+              (set cur (ls-rest cur))
+              (when (not (nil? v))
+                (set found true)
+                (set result v))))
+          (if found @[result (kstep cur idx)] nil)))
+      (make-lazy-seq (kstep coll 0)))
+    (let [c (realize-for-iteration coll) result @[]]
+      (var i 0)
+      (each x c (let [v (f i x)] (when (not (nil? v)) (array/push result v))) (++ i))
+      (tuple/slice (tuple ;result)))))
+
+(defn core-map-indexed [f & rest]
+  (if (= 0 (length rest)) (td-map-indexed f)
+    (let [coll (in rest 0)]
+      (if (lazy-seq? coll)
+        (do
+          (defn mstep [c i]
+            (fn []
+              (if (seq-done? c) nil
+                @[(f i (ls-first c)) (mstep (ls-rest c) (+ i 1))])))
+          (make-lazy-seq (mstep coll 0)))
+        (let [c (realize-for-iteration coll) result @[]]
+          (var i 0)
+          (each x c (array/push result (f i x)) (++ i))
+          (tuple/slice (tuple ;result)))))))
+
+(defn core-cycle [coll]
+  (let [c (realize-for-iteration coll)]
+    (if (= 0 (length c))
+      (make-lazy-seq (fn [] nil))
+      (do
+        (defn cstep [i] (fn [] @[(in c (% i (length c))) (cstep (+ i 1))]))
+        (make-lazy-seq (cstep 0))))))
+
 # reduce-kv now lives in the Clojure collection tier (core/20-coll.clj).
 
 # pop is defined only on stacks (vectors -> last end, lists -> front); Clojure
@@ -1308,11 +1392,11 @@
 
 # subvec lives in the Clojure kernel tier — core/00-kernel.clj.
 
-(defn core-rand-int [n] (math/floor (* (math/random) n)))
 (defn core-trampoline [f & args]
   (var result (apply f args))
   (while (function? result) (set result (result)))
   result)
+
 (def core-format (fn [fmt & args] (string/format fmt ;args)))
 
 # ============================================================
@@ -1335,6 +1419,31 @@
           (array/push result i)
           (+= i step))
         (tuple/slice (tuple ;result))))))
+
+(defn core-repeat
+  "(repeat x) -> infinite lazy seq of x; (repeat n x) -> n copies of x."
+  [a & rest]
+  (if (= 0 (length rest))
+    (do (defn rstep [] (fn [] @[a (rstep)])) (make-lazy-seq (rstep)))
+    (let [n a x (in rest 0)]
+      (var result @[]) (var i 0)
+      (while (< i n) (array/push result x) (++ i))
+      result)))
+
+(defn core-iterate [f x]
+  "Lazy infinite sequence x, (f x), (f (f x)), ..."
+  (defn istep [v] (fn [] @[v (istep (f v))]))
+  (make-lazy-seq (istep x)))
+
+(defn core-repeatedly
+  "(repeatedly f) -> infinite lazy seq of (f) calls; (repeatedly n f) -> n calls."
+  [a & rest]
+  (if (= 0 (length rest))
+    (do (defn rstep [] (fn [] @[(a) (rstep)])) (make-lazy-seq (rstep)))
+    (let [n a f (in rest 0)]
+      (var result @[]) (var i 0)
+      (while (< i n) (array/push result (f)) (++ i))
+      result)))
 
 # ============================================================
 # Higher-order functions
@@ -1763,6 +1872,7 @@
   (let [t (and (core-meta v) (get (core-meta v) :test))]
     (if t (do (t) :ok) :no-test)))
 
+
 # ============================================================
 # Bit operations (needed for persistent data structures)  
 # ============================================================
@@ -1806,6 +1916,7 @@
 # ============================================================
 
 (def core-hash (fn [x] (hash x)))
+
 
 # ============================================================
 # Atom
@@ -1958,6 +2069,7 @@
   (put gensym_counter :val (+ n 1))
   {:jolt/type :symbol :ns nil :name (string prefix-string n)})
 
+
 # if-let/when-let/if-some/when-some now live in the Clojure overlay
 # (core/30-macros.clj) as defmacros.
 
@@ -2064,11 +2176,14 @@
     # Clojure's realized? is only defined on IPending; reject anything else.
     (error (string "realized? not supported on " (type x)))))
 
+
 # Proxy stub — returns nil form (macro, args not evaluated)
 # Thread stubs
 (def core-Thread (fn [& args] (struct ;[:jolt/type :jolt/thread])))
 (def core-ThreadLocal (fn [& args] (struct ;[:jolt/type :jolt/thread-local])))
 (def core-IllegalStateException (fn [& args] (struct ;[:jolt/type :jolt/exception])))
+
+
 
 # letfn — mutually-recursive local fns. Expands to let* of fn* bindings; jolt
 # closures capture the (shared, mutable) bindings table, so forward references
@@ -2210,7 +2325,6 @@
     (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
                 (if started (rf (rf (a 0) sep) (a 1))
                   (do (set started true) (rf (a 0) (a 1))))))))
-
 (defn core-interpose [sep & rest]
   (if (= 0 (length rest)) (td-interpose sep)
     (let [coll (in rest 0)]
@@ -2227,6 +2341,32 @@
           (var first? true)
           (each x items (if first? (set first? false) (array/push r sep)) (array/push r x))
           (tuple ;r))))))
+
+(defn core-keep
+  "(keep f coll) — (f x) for each x, dropping nils. (keep f) is a transducer."
+  [f & rest]
+  (def f (as-fn f))
+  (if (= 0 (length rest))
+    (td-keep f)
+    (let [coll (in rest 0)]
+      (if (lazy-seq? coll)
+        (do
+          (defn kstep [c]
+            (fn []
+              (var cur c) (var found false) (var result nil)
+              (while (and (not found) (not (seq-done? cur)))
+                (let [v (f (ls-first cur))]
+                  (set cur (ls-rest cur))
+                  (when (not (nil? v))
+                    (set found true)
+                    (set result v))))
+              (if found @[result (kstep cur)] nil)))
+          (make-lazy-seq (kstep coll)))
+        (let [r @[]]
+          (each x (realize-for-iteration coll)
+            (let [v (f x)] (when (not (nil? v)) (array/push r v))))
+          (tuple ;r))))))
+
 
 (defn core-empty [coll]
   (cond
@@ -2273,6 +2413,7 @@
   (or (function? x) (cfunction? x) (keyword? x) (phm? x) (set? x) (tuple? x) (array? x) (pvec? x)
       (and (struct? x) (= :symbol (x :jolt/type)))))
 (defn core-indexed? [x] (or (tuple? x) (array? x) (pvec? x)))
+
 
 # With a single item, Clojure returns it WITHOUT calling f. On ties, the last
 # extremal item wins (>=/<= update), matching Clojure.
@@ -2650,6 +2791,7 @@
     "max" core-max
     "min" core-min
     "rand" core-rand
+    "rand-int" core-rand-int
     "=" core-=
     "not=" core-not=
     "<" core-<
@@ -2663,10 +2805,13 @@
     "get-in" core-get-in
     "contains?" core-contains?
     "count" core-count
-                    "pop" core-pop
-    "format" core-format
-    "rand-int" core-rand-int
+    "partition-all" core-partition-all
+    "keep-indexed" core-keep-indexed
+    "map-indexed" core-map-indexed
+    "cycle" core-cycle
+    "pop" core-pop
     "trampoline" core-trampoline
+    "format" core-format
     "first" core-first
     "rest" core-rest
     "next" core-next
@@ -2744,8 +2889,10 @@
     "hash-unordered-coll" core-hash-unordered-coll
     "prefers" core-prefers
     "random-uuid" core-random-uuid
-        "mapcat" core-mapcat
-        "find" core-find
+    "interpose" core-interpose
+    "mapcat" core-mapcat
+    "keep" core-keep
+    "find" core-find
     "transduce" core-transduce
     "sequence" core-sequence
     "eduction" core-sequence
@@ -2782,10 +2929,14 @@
     "nth" core-nth
     "sort" core-sort
     "sort-by" core-sort-by
-        "partition" core-partition
-        "interpose" core-interpose
+    "distinct" core-distinct
+    "partition" core-partition
+    "partition-by" core-partition-by
     "range" core-range
-                "identity" core-identity
+    "repeat" core-repeat
+    "iterate" core-iterate
+    "repeatedly" core-repeatedly
+    "identity" core-identity
     "constantly" core-constantly
     "complement" core-complement
     "comp" core-comp
