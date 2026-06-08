@@ -192,18 +192,15 @@
   (tree-seq (complement string?) (comp seq :content) root))
 
 ;; Lazy interleave: round-robin one element from each coll until any exhausts.
-(defn interleave
-  ([] ())
-  ([c1] (lazy-seq c1))
-  ([c1 c2]
-   (lazy-seq
-     (let [s1 (seq c1) s2 (seq c2)]
-       (when (and s1 s2)
-         (cons (first s1)
-               (cons (first s2)
-                     (interleave (rest s1) (rest s2))))))))
-  ([c1 c2 & cs]
-   (apply interleave c1 c2 cs)))
+(defn interleave [& colls]
+  (if (empty? colls)
+    (list)
+    (let [cs (mapv vec colls)
+          n (apply min (map count cs))]
+      (loop [i 0 out []]
+        (if (< i n)
+          (recur (inc i) (reduce (fn [o c] (conj o (nth c i))) out cs))
+          out)))))
 
 ;; No ratio type on Jolt, so rationalize is identity.
 (defn rationalize [x] x)

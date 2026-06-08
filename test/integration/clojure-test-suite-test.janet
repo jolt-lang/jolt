@@ -32,7 +32,7 @@
 # which several suite tests assert. Runs read 3927 consistently, occasionally 3926
 # when a timeout-prone test (of the 9 that can time out) doesn't finish; floor at
 # the consistent-minus-one 3926.
-(def baseline-pass 3926)
+(def baseline-pass 3971)
 # A file is "clean" when it ran with zero failures AND zero errors.
 (def baseline-clean-files 45)
 # Per-file wall-clock budget (seconds). Normal files finish in well under 1s;
