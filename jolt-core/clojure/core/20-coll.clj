@@ -209,11 +209,25 @@
 (defn rationalize [x] x)
 
 ;; trampoline: repeatedly calls f with args until a non-function result.
+(defn trampoline
+  ([f]
+   (let [ret (f)]
+     (if (ifn? ret)
+       (recur ret)
+       ret)))
+  ([f & args]
+   (let [ret (apply f args)]
+     (if (ifn? ret)
+       (recur ret)
+       ret))))
 
 ;; rand-int: random integer in [0, n). Uses Janet math/random.
+# rand-int stays native in core.janet (Janet math/floor + math/random)
 
 ;; Eager dedupe of consecutive equal elements (Jolt has no transducer arity yet).
-(defn dedupe [coll]
+(defn dedupe
+  "Returns a lazy seq removing consecutive duplicates in coll."
+  [coll]
   (let [step (fn step [s prev]
                (make-lazy-seq
                  (fn* []

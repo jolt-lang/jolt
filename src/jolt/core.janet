@@ -1404,10 +1404,7 @@
 # subvec lives in the Clojure kernel tier — core/00-kernel.clj.
 
 
-(defn core-trampoline [f & args]
-  (var result (apply f args))
-  (while (function? result) (set result (result)))
-  result)
+(defn core-rand-int [n] (math/floor (* (math/random) n)))
 (def core-format (fn [fmt & args] (string/format fmt ;args)))
 
 # ============================================================

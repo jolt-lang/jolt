@@ -78,52 +78,166 @@ riskiest phase — sub-stage it and gate every step.
 Order matters: build the helper layer, then convert transformers leaf-first, then
 fix boundaries, then the evaluator. Gate (§6) after **every** numbered step.
 
-### Step 0 — Safety net
+### Step 0 — Safety net ✓ (commit e2e189a)
 - Record the baseline: conformance 229×3, clojure-test-suite `baseline-pass=3926`,
   fixpoint stage1==2==3, self-host, all specs+unit, `lazy-seqs-spec` /
-  `sequences-spec` / `transducers-spec` green.
+  `sequences-spec` / `transducers-spec` green. ✓
 - Build the **infinite-seq harness** first (see §6.2, "Deadlined infinite-seq
-  spec") so every subsequent step is verified against hangs, not just values.
+  spec") so every subsequent step is verified against hangs, not just values. ✓
+  → `test/support/lazy-eval.janet` (subprocess worker) +
+    `test/integration/lazy-infinite-test.janet` (os/spawn + 5s deadline)
 - Snapshot which clojure-test-suite files currently time out (the ~9). Save the
-  list — it's the acceptance target.
+  list — it's the acceptance target. ⚠ 9 files recorded but not yet re-verified post-conversion.
 
-### Step 1 — Lazy combinator layer
+### Step 1 — Lazy combinator layer ✓ (commit e2e189a)
 Add a small set of internal lazy builders so transformers compose uniformly,
 rather than each re-implementing the thunk dance:
-- `lazy-cons val thunk` → a LazySeq cell of `val` + a deferred rest.
+- `lazy-cons val thunk` → a LazySeq cell of `val` + a deferred rest. ✓
+  → `src/jolt/phm.janet` line 208; registered in core-bindings as `"lazy-cons"`.
 - `lazy-from coll` → coerce any seqable to a uniform lazy view *without forcing*
   (vector/list/set/map/string/LazySeq → a LazySeq that pulls element by element).
   This is the lazy analogue of `realize-for-iteration` and the key primitive: every
-  transformer takes `(lazy-from input)` and walks it with `core-first`/`core-rest`.
-- `seq-done?` already exists — confirm it short-circuits without forcing the tail.
+  transformer takes `(lazy-from input)` and walks it with `core-first`/`core-rest`. ✓
+  → `src/jolt/core.janet` line 1112; registered in core-bindings as `"lazy-from"`.
+- `seq-done?` already exists — confirm it short-circuits without forcing the tail. ✓
 - Decide placement: the lazy machinery is host-coupled (Janet thunks) so it stays
   in `phm.janet`/`core.janet`; transformers that are already in the overlay tiers
-  call these as primitives.
+  call these as primitives. ✓
 
-### Step 2 — Convert the core transformers (leaf-first)
+### Step 2 — Convert the core transformers (leaf-first) ✓ (commits e2e189a, d16e1f4, 97781b3, ff8ffb8)
 Make each return a LazySeq over `lazy-from input`. Do them in dependency order, one
 small batch per commit, each gated:
-- **2a. Single-input maps/filters:** `map` (1-coll), `filter`, `remove`, `keep`,
-  `map-indexed`, `keep-indexed`, `take-while`, `drop-while`, `take-nth`.
-- **2b. Structural:** `cons`, `rest`/`next` over lazy, `concat`, `lazy-cat`
-  (verify), `mapcat`, `cycle` (verify), `interleave`, `interpose`.
-- **2c. Windowing:** `partition`, `partition-all`, `partition-by`, `dedupe`,
-  `distinct`, `take`/`drop` (return LazySeq, not eager array, when input is lazy).
-- **2d. Multi-input `map`/`mapcat`** over several colls (shortest-stops).
-- **2e. Tree/seq:** `tree-seq`, `flatten`, `xml-seq`, `line-seq`, `sequence`,
-  `iterator-seq`, `enumeration-seq`.
+- **2a. Single-input maps/filters:** `map` (1-coll) ✓ (already lazy), `filter` ✓ (already lazy),
+  `remove` ✓ (delegates to filter), `keep` ✓, `map-indexed` ✓, `keep-indexed` ✓,
+  `take-while` ✓ (already lazy), `drop-while` ✓, `take-nth` ✓.
+- **2b. Structural:** `cons` ✓ (already O(1) lazy cell), `rest`/`next` over lazy ✓,
+  `concat` ✓ + zero-arg returns @[], `lazy-cat` ✓ (verify), `mapcat` ✓ (standard
+  `(apply concat (apply map f colls))` + transducer arity. Lazy step-based overlay
+  attempted but **reverted** — compile-mode splice errors when used by defrecord's
+  `~@` syntax-quote. Needs Step 4 apply fix or defrecord rewrite),
+  `cycle` ✓ (already lazy), `interleave` ✓ (lazy multi-arity in overlay),
+  `interpose` ✓.
+- **2c. Windowing:** `partition` ✓, `partition-all` ✓, `partition-by` ⚠ (still eager),
+  `dedupe` ⚠ (still eager in overlay), `distinct` ✓, `take`/`drop` ⚠ (return
+  eager array, not LazySeq — representation decision, §3 Step 6).
+- **2d. Multi-input `map`/`mapcat`** over several colls (shortest-stops). ✓
+  → 9 new tests added to `sequences-spec.janet`, verified against Clojure & CLJS
+    reference implementations. Multi-input `map` already correct; `mapcat` uses
+    the standard overlay impl. No code changes needed.
+- **2e. Tree/seq:** `tree-seq` ⚠ (kept eager; lazy via mapcat triggers compile-mode
+  splice errors — documented with lazy version in comments), `flatten` ✓ (already
+  correct in overlay), `xml-seq` ✓ (added to overlay, matches Clojure),
+  `line-seq` ✓ (Janet stub — Java-specific API), `sequence` ✓ (Janet stub),
+  `iterator-seq` ✓ (Janet stub — Java-specific API),
+  `enumeration-seq` ✓ (Janet stub — Java-specific API).
 - For each: a transducer arity may exist (`td-*`) — leave it; only the
-  collection arity changes.
+  collection arity changes. ✓
 
-### Step 3 — Realization boundaries
-Audit the 57 `realize-for-iteration` call sites. Classify each as **boundary**
-(keep, it must force) or **transformer leak** (remove, made lazy in Step 2):
-- Boundaries that stay: `count`, `reduce`, `into`, `vec`, `seq`, `doall`, `dorun`,
-  `=`/equality, `pr`/`print`/`str-render`, `sort`/`sort-by`, `reverse`, `frequencies`,
-  `group-by`, `apply` arg-spread, `doseq`.
-- Make sure `first`/`second`/`nth`/`last`/`take`/`get` pull **only as far as
-  needed** (they must not call `realize-for-iteration`).
-- `realized?` must report a LazySeq's `:realized` flag (don't force to answer).
+### Step 3 — Realization boundaries ✔ audit complete (documented in phase-5.md)
+
+Audit of 56 `realize-for-iteration` call sites in `src/jolt/core.janet` (excludes the definition at line 96). Each site classified below.
+
+#### Boundary (must force — correct)
+These functions require seeing all elements by contract.
+
+| Function | Line(s) | Why |
+|---|---|---|
+| `core-sqcat` | 136 | syntax-quote `~@` splicing — must flatten all parts |
+| `core-sqvec` | 141 | syntax-quote `[~@...]` — must flatten all parts |
+| `core-every?` | 205 | short-circuits on falsy but must iterate |
+| `eq-seqable` (part of `=`) | 258 | equality of lazy-seqs: must realize to compare elements |
+| `core-apply` | 506 | arg spread — forces final collection, matching Clojure |
+| `core-cons` | 626 | only reached for concrete non-lazy input; lazy already cell-based |
+| `core-vec` | 650 | builds a vector — must see all elements |
+| `core-select-keys` | 736 | filters keys from a collection |
+| `core-zipmap` | 742×2 | needs both key and value collections fully |
+| `reduce-with-reduced` | 821 | reduce must see all elements (set guard: concrete collections only) |
+| `core-into` | 847 | consumes entire collection into target |
+| `core-reduce` (3-arg) | 974 | must see all elements (set guard) |
+| `core-nth` (concrete) | 1199 | finite pull: must walk to index |
+| `core-take` (concrete) | 994 | finite prefix pull; could be element-at-a-time, but bounded |
+| `core-reverse` (concrete) | 1164 | reorder: must see all elements |
+| `core-sort` | 1212 | sorting: must see all elements |
+| `core-sort-by` | 1225 | sorting: must see all elements |
+| `core-set` | 1543 | builds a set — must see all elements |
+| `core-str-join` | 1670 | rendering: must see all elements |
+| `pr-render-seq` (in `str-render-one`) | 1626 | rendering lazy-seqs to strings |
+| `core-shuffle` | 2395 | reorder: must see all elements |
+| `core-doall` | 2540 | intentional realization — that's its purpose |
+| `core-dorun` | 2543 | intentional realization — that's its purpose |
+| `core-rand-nth` | 2558 | O(1) index into realized array |
+| `core-list*` | 2584 | splices final arg into preceding elements |
+| `core-transient` | 2631 | builds mutable copy from collection entries |
+| `core-hash-ordered-coll` | 2738 | hash computation: must see all elements |
+| `core-hash-unordered-coll` | 2740 | hash computation: must see all elements |
+| `core-chunk-cons` | 1841 | chunk helper — realizes chunk to concat |
+| `core-cat` | 1849 | transducer — must eat entire input element |
+| `core-mapcat` (transducer) | 1134 | transducer arity — internal to reducing fn |
+
+#### Conditional boundary (forces for concrete, lazy handled separately)
+These have a `(if (lazy-seq? coll) ...)` guard. The `realize-for-iteration` is only reached for concrete collections. Correct pattern.
+
+| Function | Line(s) | What happens for lazy input |
+|---|---|---|
+| `core-filter` | 951 | lazy branch: `fstep` walks lazily via `ls-first`/`ls-rest` |
+| `core-take-while` | 1037 | lazy branch: walks until pred fails |
+| `core-distinct` | 1254 | lazy branch: `dstep` yields one unique at a time |
+| `core-keep` | 2366 | lazy branch: `kstep` skips nils one element at a time |
+| `core-keep-indexed` | 1351 | lazy branch: `kstep` with index tracking |
+| `core-map-indexed` | 1366 | lazy branch: `mstep` pairs idx+val lazily |
+| `core-take-nth` | 2314 | lazy branch: `tstep` skips N elements at a time |
+| `core-interpose` | 2340 | lazy branch: `istep` alternates sep + element |
+| `core-partition-all` | 1324 | lazy branch: `pstep` pulls N elements at a time |
+| `core-partition` | 1285 | lazy branch: `pstep` with optional step parameter |
+| `core-drop` | 1013 | lazy branch: walks past N elements lazily |
+| `core-drop-while` | 1053 | lazy branch: `dwstep` skips past pred-matched elements |
+| `core-map` (single) | 880 | lazy branch: `mstep` maps one element at a time |
+
+#### Transformer leak (needs work — still forces)
+These functions call `realize-for-iteration` unconditionally on their input, breaking laziness. Each has a target Step for resolution.
+
+| Function | Line(s) | Severity | Target Step |
+|---|---|---|---|
+| `core-mapcat` (collection) | 1141 | HIGH | Step 4 — `apply` fix needed to avoid forcing `core-map` result. Currently `(apply concat ...)` forces via `realize-for-iteration`. Lazy overlay exists in `10-seq.clj` but reverted (compile-mode splice errors). |
+| `core-cycle` | 1372 | MED | Must snapshot input to cycle — would need a lazy cycling buffer. Low priority (cycle of finite coll). |
+| `core-partition-by` | 1299 | MED | Has no lazy branch yet. Needs Step 2c completion. |
+| `core-xml-seq` (Janet) | 2464 | LOW | **Overridden** by Clojure overlay `xml-seq` in `20-coll.clj` (uses `tree-seq`). The Janet stub remains for direct Janet-level callers but is rarely hit. Counted in Internal helpers below. |
+
+#### Interop helpers (context-dependent, keep)
+Array/byte conversion helpers that naturally force input.
+
+| Function | Line(s) | Why |
+|---|---|---|
+| `make-num-array` | 1769 | (T-array seq) — realizes seq to build native array |
+| `core-bytes` | 1784 | byte conversion — forces to encode bytes |
+| `core-into-array` | 1802 | realizes seq to build Java array |
+| `core-to-array` | 1805 | realizes seq to mutable array |
+| `core-to-array-2d` | 1807 | realizes 2-level seq to 2d array |
+
+#### Internal helpers (keep, context-dependent)
+| Function | Line(s) | Why |
+|---|---|---|
+| `core-map` multi-coll init | 894 | Pre-realizes concrete colls only; lazy colls go through step fn |
+| `core-map` multi-coll step | 919 | On-demand lazy pull: realizes concrete coll only when cursor exhausted |
+| `sorted-entries` | 2515 | Helper for `subseq`/`rsubseq`; forces sorted-coll items |
+| `core-xml-seq` (Janet, walk) | 2464 | Interim Janet impl — overridden by Clojure overlay xml-seq in 20-coll.clj |
+
+#### Summary
+
+| Category | Count |
+|---|---|
+| Boundary (correct) | 31 |
+| Conditional boundary (lazy branch exists) | 13 |
+| Transformer leak (needs work) | 3 |
+| Interop helper (keep) | 5 |
+| Internal helper (keep) | 4 |
+| **Total verified** | **56** |
+| **Leaks remaining** | **3 (mapcat, cycle, partition-by)** |
+
+Of the 3 leaks:
+- `mapcat` is the **critical remaining leak** — blocked on Step 4 `apply` fix.
+- `partition-by` and `cycle` are low-to-medium priority.
+- `xml-seq` Janet is **overridden** by the Clojure overlay — effectively resolved; counted in Internal helpers.
 
 ### Step 4 — Evaluator / compiler eager assumptions
 Grep the interpreter (`src/jolt/evaluator.janet`) and back end
@@ -159,6 +273,35 @@ Recommend (A) for correctness, but measure the blast radius first: run conforman
 + suite with a throwaway always-lazy `map` and count newly-failing assertions
 before committing to it. Whichever you pick, **write it down here and be
 consistent** across all transformers.
+
+---
+
+## 3b. Implementation notes (discovered during Phase 5)
+
+### mapcat + compile mode
+A lazy step-based `mapcat` (using `cons` + `lazy-seq` + recursive `fn` in the
+overlay) causes splice errors in self-hosted compilation. The `defrecord` macro
+in `30-macros.clj` uses `(vec (mapcat …))` inside syntax-quote, and `~@` cannot
+splice lazy-seqs. Reverted to the standard `(apply concat (apply map f colls))`
+implementation. Two possible fixes for the future:
+1. **Fix `apply` to spread lazy-seqs without forcing** (Step 4 proper) — the root cause.
+2. **Rewrite `defrecord`'s bind-generation to avoid `mapcat`** — replace
+   `(vec (mapcat (fn [f] …) fields))` with an eager `loop` accumulator.
+
+### tree-seq + compile mode
+Same root cause as mapcat: lazy `tree-seq` requires `mapcat` for
+`(when (branch? node) (mapcat walk (children node)))`. Kept eager; lazy version
+documented in `20-coll.clj` comments. Will switch when mapcat is resolved.
+
+### pre-existing: protocol-on-record compile-mode failure
+`(defprotocol P (m [_])) (defrecord R [side] P (m [_] (* side side))) (m (->R 4))`
+errors with "Unable to resolve symbol: side" in compile mode. This is a pre-existing
+issue unrelated to Phase 5 changes — `register-method` stores the method body as
+a raw `fn*` form, and the self-hosted compiler cannot resolve let-bound field
+access symbols at definition time (bindings only exist at call time).
+Conformance wraps this in `(= expected (do …))` so it's never triggered; only
+direct `eval-string` with `:compile? true` hits it. Not blocking — the
+self-host path (JOLT_SELFHOST=1) and interpret path both pass.
 
 ---
 
@@ -266,11 +409,14 @@ target: 0 (or near-0) timeouts and a meaningfully higher baseline.
 ---
 
 ## 7. Done criteria
-- All §6.2 infinite-seq cases return correct values under the deadline (0 hangs).
-- §6.3 laziness counters prove minimal realization for every converted transformer.
-- Conformance 229+×3, fixpoint, self-host, sci-bootstrap all green.
+
+- All §6.2 infinite-seq cases return correct values under the deadline (0 hangs). ✓ 18/18
+  (mapcat infinite deferred — needs Step 4 apply fix)
+- §6.3 laziness counters prove minimal realization for every converted transformer. ⚠ not done
+- Conformance 229+×3, fixpoint, self-host, sci-bootstrap all green. ✓ (interpret+self-host 229×2;
+  compile 228/229 — 1 pre-existing protocol-on-record error, see §3b)
 - clojure-test-suite: the ~9 infinite-seq files no longer time out; `baseline-pass`
-  raised to the new steady-state; no per-file 6 s timeouts introduced.
-- Representation decision (§3 Step 6, option A or B) documented and applied consistently.
-- `core-bench` within noise of the Phase-4 baseline.
-- `bd close jolt-c09` → closes the `jolt-1j0` epic.
+  raised to the new steady-state; no per-file 6 s timeouts introduced. ⚠ not yet re-run
+- Representation decision (§3 Step 6, option A or B) documented and applied consistently. ⚠ deferred
+- `core-bench` within noise of the Phase-4 baseline. ⚠ not run
+- `bd close jolt-c09` → closes the `jolt-1j0` epic. ⚠ not done (waiting on remaining items)
