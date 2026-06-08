@@ -34,3 +34,34 @@
                            run (cons fst (take-while (fn [x] (= fv (f x))) (rest s)))]
                        (cons run (step (lazy-seq (drop (count run) s)))))))))]
     (step coll)))
+
+;; Lazy partition: yields complete partitions of size n. Optional step.
+;; Ported from CLJS core.cljs (no chunked-seq branches).
+(defn partition
+  ([n coll] (partition n n coll))
+  ([n step coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [p (take n s)]
+        (when (= n (count p))
+          (cons p (partition n step (nthrest coll step)))))))))
+
+;; Lazy concat: concatenates colls lazily. Ported from CLJS core.cljs.
+(defn concat
+  ([] (lazy-seq nil))
+  ([x] (lazy-seq x))
+  ([x y]
+   (lazy-seq
+    (let [s (seq x)]
+      (if s
+        (cons (first s) (concat (rest s) y))
+        y))))
+  ([x y & zs]
+   (let [step (fn step [xys zs]
+                (lazy-seq
+                  (let [xys (seq xys)]
+                    (if xys
+                      (cons (first xys) (step (rest xys) zs))
+                      (when zs
+                        (step (first zs) (next zs)))))))]
+     (step (concat x y) zs))))

@@ -15,20 +15,6 @@
                    xs seen)))]
     (step coll #{})))
 
-;; --- dedupe (lazy, canonical) ---
-(defn dedupe [coll]
-  (let [step (fn step [s prev]
-               (lazy-seq
-                 (let [s (seq s)]
-                   (when s
-                     (let [x (first s)]
-                       (if (= x prev)
-                         (step (rest s) prev)
-                         (cons x (step (rest s) x))))))))]
-    (let [s (seq coll)]
-      (if s
-        (lazy-seq (cons (first s) (step (rest s) (first s))))
-        ()))))
 
 ;; --- keep ---
 (defn keep

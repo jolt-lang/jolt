@@ -1292,27 +1292,6 @@
           (+= i step))
         result))))
 
-(defn core-keep-indexed [f coll]
-  (def f (as-fn f))
-  (if (lazy-seq? coll)
-    (do
-      (defn kstep [c i]
-        (fn []
-          (var cur c) (var idx i) (var found false) (var result nil)
-          (while (and (not found) (not (seq-done? cur)))
-            (let [v (f idx (ls-first cur))]
-              (++ idx)
-              (set cur (ls-rest cur))
-              (when (not (nil? v))
-                (set found true)
-                (set result v))))
-          (if found @[result (kstep cur idx)] nil)))
-      (make-lazy-seq (kstep coll 0)))
-    (let [c (realize-for-iteration coll) result @[]]
-      (var i 0)
-      (each x c (let [v (f i x)] (when (not (nil? v)) (array/push result v))) (++ i))
-      (tuple/slice (tuple ;result)))))
-
 (defn core-map-indexed [f & rest]
   (if (= 0 (length rest)) (td-map-indexed f)
     (let [coll (in rest 0)]
@@ -1343,7 +1322,6 @@
     (error (string "pop not supported on " (type coll)))))
 
 # subvec lives in the Clojure kernel tier — core/00-kernel.clj.
-
 
 (defn core-rand-int [n] (math/floor (* (math/random) n)))
 (defn core-trampoline [f & args]
@@ -1815,7 +1793,6 @@
   (let [t (and (core-meta v) (get (core-meta v) :test))]
     (if t (do (t) :ok) :no-test)))
 
-
 # ============================================================
 # Bit operations (needed for persistent data structures)  
 # ============================================================
@@ -1859,7 +1836,6 @@
 # ============================================================
 
 (def core-hash (fn [x] (hash x)))
-
 
 # ============================================================
 # Atom
@@ -2012,7 +1988,6 @@
   (put gensym_counter :val (+ n 1))
   {:jolt/type :symbol :ns nil :name (string prefix-string n)})
 
-
 # if-let/when-let/if-some/when-some now live in the Clojure overlay
 # (core/30-macros.clj) as defmacros.
 
@@ -2119,14 +2094,11 @@
     # Clojure's realized? is only defined on IPending; reject anything else.
     (error (string "realized? not supported on " (type x)))))
 
-
 # Proxy stub — returns nil form (macro, args not evaluated)
 # Thread stubs
 (def core-Thread (fn [& args] (struct ;[:jolt/type :jolt/thread])))
 (def core-ThreadLocal (fn [& args] (struct ;[:jolt/type :jolt/thread-local])))
 (def core-IllegalStateException (fn [& args] (struct ;[:jolt/type :jolt/exception])))
-
-
 
 # letfn — mutually-recursive local fns. Expands to let* of fn* bindings; jolt
 # closures capture the (shared, mutable) bindings table, so forward references
@@ -2269,49 +2241,6 @@
                 (if started (rf (rf (a 0) sep) (a 1))
                   (do (set started true) (rf (a 0) (a 1))))))))
 
-(defn core-interpose [sep & rest]
-  (if (= 0 (length rest)) (td-interpose sep)
-    (let [coll (in rest 0)]
-      (if (lazy-seq? coll)
-        (do
-          (defn istep [c need-sep]
-            (fn []
-              (if (seq-done? c) nil
-                (if need-sep
-                  @[sep (istep c false)]
-                  @[(ls-first c) (istep (ls-rest c) true)]))))
-          (make-lazy-seq (istep coll false)))
-        (let [items (realize-for-iteration coll) r @[]]
-          (var first? true)
-          (each x items (if first? (set first? false) (array/push r sep)) (array/push r x))
-          (tuple ;r))))))
-
-(defn core-keep
-  "(keep f coll) — (f x) for each x, dropping nils. (keep f) is a transducer."
-  [f & rest]
-  (def f (as-fn f))
-  (if (= 0 (length rest))
-    (td-keep f)
-    (let [coll (in rest 0)]
-      (if (lazy-seq? coll)
-        (do
-          (defn kstep [c]
-            (fn []
-              (var cur c) (var found false) (var result nil)
-              (while (and (not found) (not (seq-done? cur)))
-                (let [v (f (ls-first cur))]
-                  (set cur (ls-rest cur))
-                  (when (not (nil? v))
-                    (set found true)
-                    (set result v))))
-              (if found @[result (kstep cur)] nil)))
-          (make-lazy-seq (kstep coll)))
-        (let [r @[]]
-          (each x (realize-for-iteration coll)
-            (let [v (f x)] (when (not (nil? v)) (array/push r v))))
-          (tuple ;r))))))
-
-
 (defn core-empty [coll]
   (cond
     (phm? coll) (make-phm)
@@ -2357,7 +2286,6 @@
   (or (function? x) (cfunction? x) (keyword? x) (phm? x) (set? x) (tuple? x) (array? x) (pvec? x)
       (and (struct? x) (= :symbol (x :jolt/type)))))
 (defn core-indexed? [x] (or (tuple? x) (array? x) (pvec? x)))
-
 
 # With a single item, Clojure returns it WITHOUT calling f. On ties, the last
 # extremal item wins (>=/<= update), matching Clojure.
