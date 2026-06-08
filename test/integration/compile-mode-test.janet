@@ -98,12 +98,44 @@
   (assert (= 1 (ct-eval ctx "(:a {:a 1})")) "keyword as fn")
   (assert (= 1 (ct-eval ctx "({:a 1} :a)")) "map as fn")
   (assert (= 2 (ct-eval ctx "(#{1 2 3} 2)")) "set as fn")
-  (assert (= true (ct-eval ctx "(= [1 2] [1 2])")) "= is value equality, not core-= bypass"))
+  (assert (= true (ct-eval ctx "(= [1 2] [1 2])")) "= is value equality, not core-= bypass")
 
-# Context isolation: a def in one compiled context is invisible in another.
+  # Phase 2: hybrid fallback. Forms the compiler can't compile (destructuring,
+  # multi-arity, named fns) interpret instead of erroring or miscompiling. The
+  # result is the same — compilation is a transparent speedup.
+  (print "  hybrid fallback (destructuring / multi-arity)...")
+  (assert (= 3 (ct-eval ctx "(let [[a b] [1 2]] (+ a b))")) "vector destructuring let")
+  (assert (= 6 (ct-eval ctx "(let [{:keys [x y z]} {:x 1 :y 2 :z 3}] (+ x y z))")) "map destructuring let")
+  (assert (= 3 (ct-eval ctx "((fn [[a b]] (+ a b)) [1 2])")) "destructuring fn param")
+  (assert (= 5 (ct-eval ctx "(let [[a & more] [1 2 3 4 5]] (+ a (count more)))")) "rest destructuring")
+  (ct-eval ctx "(defn arity ([a] a) ([a b] (+ a b)) ([a b & more] (apply + a b more)))")
+  (assert (= 5 (ct-eval ctx "(arity 5)")) "multi-arity 1")
+  (assert (= 7 (ct-eval ctx "(arity 3 4)")) "multi-arity 2")
+  (assert (= 15 (ct-eval ctx "(arity 1 2 3 4 5)")) "multi-arity variadic clause")
+  (assert (= 10 (ct-eval ctx "((fn self [n] (if (zero? n) 0 (+ n (self (dec n))))) 4)")) "named fn recursion")
+  # recur directly inside a fn (not a loop) — re-enters the fn's arity. Compiles
+  # to a self-call; was previously broken under compilation.
+  (assert (= 15 (ct-eval ctx "((fn [n acc] (if (zero? n) acc (recur (dec n) (+ acc n)))) 5 0)")) "recur in fn")
+  (assert (= 3 (ct-eval ctx "((fn cnt [acc & xs] (if (seq xs) (recur (inc acc) (rest xs)) acc)) 0 :a :b :c)")) "recur into variadic arity")
+  (assert (= 6 (ct-eval ctx "(loop [[x & xs] [1 2 3] acc 0] (if x (recur xs (+ acc x)) acc))")) "destructuring loop binding")
+  # A runtime error in compiled code must propagate, not silently fall back to a
+  # second (interpreted) evaluation.
+  (assert (= :threw (try (do (ct-eval ctx "(inc nil)") :no-throw) ([_] :threw)))
+          "runtime error in compiled code propagates"))
+
+# Context isolation: a def in one compiled context is invisible in another. With
+# var-indirection each context has its own var cells, so b's `secret` is a
+# distinct, unbound var (nil) rather than a's 7.
 (let [a (init {:compile? true}) b (init {:compile? true})]
   (eval-string a "(def secret 7)")
   (assert (= 7 (ct-eval a "secret")) "def visible in its own ctx")
-  (assert (not ((protect (ct-eval b "secret")) 0)) "def isolated to its ctx"))
+  (assert (nil? (ct-eval b "secret")) "def isolated to its ctx"))
+
+# Redefinition is visible to already-compiled callers (var-indirection).
+(let [c (init {:compile? true})]
+  (eval-string c "(defn g [] 1)")
+  (eval-string c "(defn calls-g [] (g))")
+  (eval-string c "(defn g [] 2)")
+  (assert (= 2 (ct-eval c "(calls-g)")) "compiled caller sees redefined global"))
 
 (print "\nAll Phase 6 tests passed!")

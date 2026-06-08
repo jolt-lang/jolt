@@ -1,0 +1,43 @@
+(when-let [requires (resolve 'clojure.main/repl-requires)] (clojure.core/apply clojure.core/require @requires))
+clj꞉user꞉> 
+(defn read
+  [reader]
+  (let [line ((get (dyn :current-env) (symbol "file/read")) reader :line)]
+    (when line
+      (read-string line))))
+clj꞉user꞉> 
+(defn foo [])
+clj꞉user꞉> 
+(foo)
+clj꞉user꞉> 
+(defn foo [x]
+  (into (range 10) [x]))
+clj꞉user꞉> 
+(foo)
+; expected integer key for tuple in range [0, 0), got 0
+clj꞉user꞉> 
+(foo 10)
+clj꞉user꞉> 
+(foo "a")
+clj꞉user꞉> 
+(foo :a)
+clj꞉user꞉> 
+(sh "ls")
+; Unable to resolve symbol: sh
+clj꞉user꞉> 
+(jolt/sh "ls")
+; Unable to resolve symbol: jolt/sh
+clj꞉user꞉> 
+(defn sh
+  [& args]
+  (let [cmd (apply str (interpose " " args))
+        result (os/shell cmd)]
+    {:exit (result 0) :out (result 1) :err (result 2)}))
+clj꞉user꞉> 
+(defn shell
+  [& args]
+  (:out (apply sh args)))
+clj꞉user꞉> 
+(sh "ls")
+; Unable to resolve symbol: os/shell
+clj꞉user꞉> 

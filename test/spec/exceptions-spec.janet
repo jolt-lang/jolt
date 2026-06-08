@@ -35,4 +35,7 @@
   ["catch binds thrown value" "42"
    "(try (throw 42) (catch :default e e))"]
   ["rethrow preserves ex"  "\"inner\""
-   "(try (try (throw (ex-info \"inner\" {})) (catch :default e (throw e))) (catch :default e (ex-message e)))"])
+   "(try (try (throw (ex-info \"inner\" {})) (catch :default e (throw e))) (catch :default e (ex-message e)))"]
+  ["ex-data on non-ex"    "nil"       "(ex-data 42)"]
+  ["ex-cause on non-ex"   "nil"       "(ex-cause {:k 1})"]
+  ["ex-message of string" "\"hi\""    "(ex-message \"hi\")"])

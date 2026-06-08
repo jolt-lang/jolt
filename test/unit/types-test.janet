@@ -40,6 +40,21 @@
   (assert (deep= {:name 'x :private true} (var-meta v2)) "with-meta merges meta")
   (assert (= 42 (var-get v2)) "with-meta preserves root binding"))
 
+# generation counter — bumps on every root change (substrate for direct-link
+# staleness detection and redefinition-aware dispatch caches)
+(let [v (make-var 'g 1)]
+  (assert (= 0 (v :gen)) "fresh var starts at generation 0")
+  (bind-root v 2)
+  (assert (= 1 (v :gen)) "bind-root bumps generation")
+  (var-set v 3)
+  (assert (= 2 (v :gen)) "var-set (root) bumps generation")
+  (alter-var-root v inc)
+  (assert (= 3 (v :gen)) "alter-var-root bumps generation")
+  (assert (= 4 (var-get v)) "value still tracks through gen bumps"))
+(let [v (make-var 'g 1)
+      v2 (with-meta v {:doc "x"})]
+  (assert (= (v :gen) (v2 :gen)) "with-meta carries generation"))
+
 # var with namespace
 (let [ns (make-ns 'my.ns)
       v (make-var 'my.ns/x 1 {:ns ns})]

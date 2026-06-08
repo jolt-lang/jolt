@@ -86,6 +86,10 @@
                  :name name
                  :root init-val
                  :meta m
+                 # Generation: bumped on every root change (redefinition). Call
+                 # sites / dispatch caches keyed on this can detect a redef and
+                 # invalidate; direct-linked (sealed) sites can detect staleness.
+                 :gen 0
                  :dynamic (if meta (get meta :dynamic) false)
                  :macro (if meta (get meta :macro) false)
                  :ns (if meta (get meta :ns) nil)}]
@@ -125,19 +129,25 @@
   "Deref the var. If the var is dynamic and has a thread-local binding, return that.
   Otherwise return the root binding."
   [v]
-  # walk binding stack top-down for this var
+  # Fast path: no dynamic bindings are active (the common case — the stack is
+  # only non-empty inside a `binding` block), so the value is just the root. This
+  # is the hot path for every global deref; skip building the walk otherwise.
   (def bs (cur-binding-stack))
-  (var result nil)
-  (var i (dec (length bs)))
-  (while (>= i 0)
-    (let [frame (in bs i)
-          val (get frame v)]
-      (if (not (nil? val))
-        (do
-          (set result (if (var? val) (var-get val) val))
-          (set i -1))
-        (-- i))))
-  (if (not (nil? result)) result (v :root)))
+  (if (= 0 (length bs))
+    (v :root)
+    # walk binding stack top-down for this var
+    (do
+      (var result nil)
+      (var i (dec (length bs)))
+      (while (>= i 0)
+        (let [frame (in bs i)
+              val (get frame v)]
+          (if (not (nil? val))
+            (do
+              (set result (if (var? val) (var-get val) val))
+              (set i -1))
+            (-- i))))
+      (if (not (nil? result)) result (v :root)))))
 
 (defn var-set
   "Set a var's value. If the var has a thread-local binding on the stack, update
@@ -152,14 +162,16 @@
       (if (not (nil? (get frame v)))
         (do (put bs i (merge frame {v val})) (set done true))
         (-- i))))
-  (unless done (put v :root val))
+  (unless done (do (put v :root val) (put v :gen (+ 1 (or (v :gen) 0)))))
   val)
 
 (defn alter-var-root
   "Atomically alter the root binding of v by applying f to current value plus args."
   [v f & args]
   (let [new-val (f (v :root) ;args)]
-    (put v :root new-val)))
+    (put v :root new-val)
+    (put v :gen (+ 1 (or (v :gen) 0)))
+    new-val))
 
 (defn alter-meta!
   "Atomically update a var's metadata via (apply f args)."
@@ -244,14 +256,18 @@
       :name (v :name)
       :root (v :root)
       :meta new-meta
+      :gen (or (v :gen) 0)
       :dynamic (v :dynamic)
       :macro (v :macro)
       :ns (v :ns)}))
 
 (defn bind-root
-  "Set the root binding (internal, same as var-set)."
+  "Set the root binding and bump the var's generation (the redefinition
+  chokepoint: def, ns-intern-with-val, and the root-set paths all route here)."
   [v val]
-  (put v :root val))
+  (put v :root val)
+  (put v :gen (+ 1 (or (v :gen) 0)))
+  val)
 
 # ============================================================
 # Namespace
@@ -297,7 +313,10 @@
         (when (not (nil? val))
           (bind-root existing val))
         existing)
-      (let [v (make-var sym val {:ns ns :name sym})]
+      # Store the namespace *name*, not the ns table: a back-pointer to the ns
+      # would make the var cyclic (ns -> mappings -> var -> ns), and the compiler
+      # embeds var cells as constants, which can't be cyclic.
+      (let [v (make-var sym val {:ns (get ns :name) :name sym})]
         (put mappings sym v)
         v))))
 
@@ -362,14 +381,23 @@
   [&opt opts]
   (default opts nil)
   (let [compile? (if opts (get opts :compile?) false)
+        # Direct-linking (call-site/unit property, like Clojure). :aot-core?
+        # (default true; JOLT_AOT_CORE=0 disables) compiles the core tiers +
+        # compiler with direct-linking on. :direct-linking? is the per-unit flag
+        # the back end reads while emitting; it defaults to the user-code setting
+        # (off unless opted in) and load-core-overlay! flips it on around core.
+        aot-core? (let [o (if opts (get opts :aot-core?) nil)]
+                    (if (nil? o) (not (= "0" (os/getenv "JOLT_AOT_CORE"))) o))
         env @{:namespaces @{}
               :class->opts @{}
               :current-ns "user"
               :compile? compile?
+              :aot-core? aot-core?
+              :direct-linking? (if opts (get opts :direct-linking?) nil)
               # Ordered roots searched (after the stdlib) to resolve a namespace
-              # to a .clj/.cljc file. deps.edn resolution appends dep src dirs.
-              :source-paths @["src/jolt"]
-              :compiled-cache @{}
+              # to a .clj/.cljc file. jolt-core holds the portable Clojure layer
+              # (analyzer/IR/core); deps.edn resolution appends dep src dirs.
+              :source-paths @["jolt-core" "src/jolt"]
               :type-registry @{}
               :data-readers (let [dr @{}]
                               (put dr (keyword "#inst") (fn [s] s))
@@ -472,12 +500,15 @@
 (defn register-protocol-method
   "Register a protocol method implementation for a type."
   [ctx type-tag protocol-name method-name fn]
-  (let [registry (get (ctx :env) :type-registry)
+  (let [env (ctx :env)
+        registry (get env :type-registry)
         type-impls (or (get registry type-tag)
                       (do (put registry type-tag @{}) (get registry type-tag)))
         proto-impls (or (get type-impls protocol-name)
                        (do (put type-impls protocol-name @{}) (get type-impls protocol-name)))]
-    (put proto-impls method-name fn)))
+    (put proto-impls method-name fn)
+    # Bump the registry generation so any dispatch cache keyed on it invalidates.
+    (put env :type-registry-gen (+ 1 (or (get env :type-registry-gen) 0)))))
 
 (defn find-protocol-method
   "Find a protocol method implementation for a type."

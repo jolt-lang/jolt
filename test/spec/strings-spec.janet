@@ -48,3 +48,8 @@
   ["subs end past len"  :throws    "(subs \"abcde\" 1 6)"]
   ["subs nil start"     :throws    "(subs \"abcde\" nil 2)"]
   ["subs on nil"        :throws    "(subs nil 1 2)"])
+
+(defspec "string / namespace-munge"
+  ["hyphens to underscores" "\"a_b_c\"" "(namespace-munge \"a-b-c\")"]
+  ["from a symbol"          "\"foo_bar\"" "(namespace-munge (quote foo-bar))"]
+  ["no hyphens unchanged"   "\"ok\""    "(namespace-munge \"ok\")"])

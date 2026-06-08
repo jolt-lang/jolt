@@ -13,6 +13,8 @@
 # until a minimal clojure.test lets us load the real files directly.
 
 (use ../../src/jolt/api)
+(import ../../src/jolt/backend :as selfhost)
+(use ../../src/jolt/reader)
 
 (def cases
   [
@@ -60,6 +62,30 @@
    ["into map onto map"  "{:a 1 :b 2 :c 3}" "(into {:a 1} [[:b 2] [:c 3]])"]
    ["into list"          "(quote (3 2 1))"  "(into (list) [1 2 3])"]
 
+   ### ---- Option A: lazy transformers return seqs, not vectors ----
+   # map/filter/take/take-while over a concrete vector yield a lazy seq, matching
+   # Clojure: (seq? (map ...)) is true, (vector? (map ...)) is false.
+   ["map vec is seq"      "true"   "(seq? (map inc [1 2 3]))"]
+   ["map vec not vector"  "false"  "(vector? (map inc [1 2 3]))"]
+   ["filter vec is seq"   "true"   "(seq? (filter odd? [1 2 3]))"]
+   ["take vec is seq"     "true"   "(seq? (take 2 [1 2 3]))"]
+   ["map over set"        "true"   "(= #{2 3 4} (set (map inc #{1 2 3})))"]
+   ["filter over map ev"  "(quote ([:b 2]))" "(filter (fn [[k v]] (> v 1)) {:a 1 :b 2})"]
+   # cons of cons over a lazy tail must not leak the rest-thunk
+   ["cons cons lazy"      "(quote (1 2 3))" "(cons 1 (cons 2 (lazy-seq (cons 3 nil))))"]
+   ["juxt fns in vec"     "[1 3]"  "((juxt first last) [1 2 3])"]
+   ["last of lazy take"   "5"      "(last (take 5 (iterate inc 1)))"]
+   ["next empty lazy"     "nil"    "(next (take 1 [1]))"]
+   # drop/distinct/partition/map-indexed/take-nth/interpose/keep are lazy too
+   ["drop vec is seq"     "true"   "(seq? (drop 1 [1 2 3]))"]
+   ["distinct vec is seq" "true"   "(seq? (distinct [1 1 2]))"]
+   ["map-indexed is seq"  "true"   "(seq? (map-indexed vector [1 2]))"]
+   ["partition vec lazy"  "(quote ((1 2) (3 4)))" "(partition 2 [1 2 3 4 5])"]
+   # nth over a lazy seq must not treat a false/nil element as end-of-seq
+   ["nth lazy false elem" "false"  "(nth (map identity [false 1 2]) 0)"]
+   ["nth lazy past false" "2"      "(nth (drop 1 (list false 1 2)) 1)"]
+   ["cond-> false clause" "2"      "(cond-> 1 true inc false inc)"]
+
    ### ---- HIGH: destructuring ----
    ["destr nested seq"   "[1 2 3]"   "(let [[a [b c]] [1 [2 3]]] [a b c])"]
    ["destr rest+as"      "[1 (quote (2 3)) [1 2 3]]" "(let [[a & r :as all] [1 2 3]] [a r all])"]
@@ -106,6 +132,7 @@
    ["subvec"          "[2 3]"         "(subvec [1 2 3 4 5] 1 3)"]
    ["subvec to-end"   "[3 4 5]"       "(subvec [1 2 3 4 5] 2)"]
    ["reduce-kv"       "{:a 2 :b 3}"   "(reduce-kv (fn [m k v] (assoc m k (inc v))) {} {:a 1 :b 2})"]
+   ["reduce-kv vector idx" "(quote ([0 :a] [1 :b]))" "(reduce-kv (fn [a i v] (conj a [i v])) [] [:a :b])"]
 
    ### ---- iterating maps yields entries ----
    ["map over map"      "true"  "(= #{1 2} (set (map val {:a 1 :b 2})))"]
@@ -125,6 +152,20 @@
    ["reductions"      "(quote (1 3 6 10))" "(reductions + [1 2 3 4])"]
    ["reductions init" "(quote (0 1 3 6))" "(reductions + 0 [1 2 3])"]
    ["dedupe"          "(quote (1 2 3 1))" "(dedupe [1 1 2 3 3 1])"]
+   # partition-by with a strict pred (odd?) — guards jolt-r81: a lazy overlay fn
+   # whose lazy-seq leaked its expansion in compile mode passed a non-int to odd?.
+   ["partition-by odd?" "(quote ((1 1) (2) (3 3)))" "(partition-by odd? [1 1 2 3 3])"]
+   ["reductions inf"  "(quote (0 1 3 6))" "(take 4 (reductions + (range)))"]
+   ["tree-seq strict" "10"  "(reduce + 0 (filter (complement coll?) (tree-seq coll? seq [1 [2 [3 4]]])))"]
+   # nil/collection case-constants past the point where Option A's lazy `drop`
+   # made the case macro's (empty? (drop 2 cls)) hit a nil-first lazy seq.
+   ["case nil + default" "[:nilr :def]" "(let [f (fn [x] (case x 1 :one nil :nilr :def))] [(f nil) (f 9)])"]
+   ["case collection consts" "[:v :m :s]" "(let [f (fn [x] (case x [1 2] :v {:a 1} :m #{3} :s :def))] [(f [1 2]) (f {:a 1}) (f #{3})])"]
+   # a lazy seq whose first element is nil is non-empty (seq/empty?/reverse)
+   ["seq of nil-first"   "true"  "(boolean (seq (cons nil (list 1))))"]
+   ["reverse nil elem"   "[2 nil 1]" "(vec (reverse (list 1 nil 2)))"]
+   # lazy transformer over a non-seqable scalar throws (matches Clojure)
+   ["map non-seqable throws" "true" "(try (doall (map inc 5)) false (catch Throwable _ true))"]
    ["keep-indexed"    "(quote (:b :d))" "(keep-indexed (fn [i x] (if (odd? i) x)) [:a :b :c :d])"]
    ["map-indexed"     "(quote ([0 :a] [1 :b]))" "(map-indexed (fn [i x] [i x]) [:a :b])"]
    ["trampoline"      ":done"         "(do (defn a [n] (if (zero? n) :done (fn [] (a (dec n))))) (trampoline a 5))"]
@@ -271,6 +312,10 @@
    ["transduce remove"  "[1 3 5]" "(into [] (remove even?) [1 2 3 4 5])"]
    ["transduce take-while" "[1 2]" "(into [] (take-while (fn [x] (< x 3))) [1 2 3 4 1])"]
    ["transduce map-indexed" "[[0 :a] [1 :b]]" "(into [] (map-indexed (fn [i x] [i x])) [:a :b])"]
+   ["partition-all xform"   "[[1 2] [3 4] [5]]" "(into [] (partition-all 2) [1 2 3 4 5])"]
+   ["partition-all xform comp" "[2 2 1]" "(into [] (comp (partition-all 2) (map count)) [1 2 3 4 5])"]
+   ["partition-by xform"    "[[1 1] [2 4] [5]]" "(into [] (partition-by odd?) [1 1 2 4 5])"]
+   ["partition-by xform reduced" "[[1 1] [2 4]]" "(into [] (comp (partition-by odd?) (take 2)) [1 1 2 4 5 5])"]
 
    ### ==== regex (capturing groups, backtracking, flags, lookahead) ====
    ["re-find groups"    "[\"12-34\" \"12\" \"34\"]" "(re-find #\"(\\d+)-(\\d+)\" \"x12-34y\")"]
@@ -297,29 +342,64 @@
    ["map literal nested" "{:a {:b 2}}" "(let [y 2] {:a {:b y}})"]
    ["map literal keyfn"  "{:x 1}"  "(let [k :x] {k 1})"]
    ["map literal in fn"  "6"       "(do (defn mk [a b] {:sum (+ a b)}) (:sum (mk 2 4)))"]
+
+   ### ---- overlay migration (jolt-1j0): run in all 3 modes ----
+   # if-let/when-let bind only in the taken branch (else sees outer scope)
+   ["if-let else outer scope" "5"   "(let [x 5] (if-let [x nil] :then x))"]
+   ["if-some else outer"     "5"    "(let [x 5] (if-some [x nil] :then x))"]
+   ["when-let body multi"    "14"   "(when-let [x 7] (inc x) (* x 2))"]
+   # nthrest returns () (not nil) for an exhausted n>0 walk; coll for n<=0
+   ["nthrest exhausted"      "(quote ())"  "(nthrest nil 100)"]
+   ["nthrest n=0 keeps coll" "[1 2 3]"     "(nthrest [1 2 3] 0)"]
+   ["nthnext surprising nil" "nil"         "(nthnext nil nil)"]
+   # distinct? compares by value
+   ["distinct? equal colls"  "false" "(distinct? [1 2] [1 2])"]
+   ["not-any?"               "true"  "(not-any? even? [1 3 5])"]
+   ["take-last"              "[3 4]" "(take-last 2 [1 2 3 4])"]
+   ["replace nil val"        "[1 nil 3]" "(replace {2 nil} [1 2 3])"]
   ])
 
-(var pass 0)
-(def fails @[])
-(each [name expected actual] cases
-  (def ctx (init))
-  (def prog (string "(= " expected " " actual ")"))
-  (def res (protect (eval-string ctx prog)))
-  (cond
-    (not= (res 0) true)
-    (array/push fails [name "ERROR" (string (res 1))])
-    (= (res 1) true)
-    (++ pass)
-    # not equal: re-eval actual alone to show what we got
-    (let [got (protect (eval-string (init) actual))]
-      (array/push fails [name "MISMATCH"
-                         (string "want=" expected
-                                 " got=" (if (= (got 0) true) (string/format "%q" (got 1)) (string "ERR:" (got 1))))]))))
+# Run every case under a given context factory and return the failures. The same
+# cases run under both the interpreter and the compiler: results must match real
+# Clojure semantics either way, so the compile path (hybrid: hot compiles,
+# unsupported forms fall back to the interpreter) must not diverge.
+# mode: {} interpret, {:compile? true} bootstrap compiler, {:selfhost true} the
+# self-hosted pipeline (portable Clojure analyzer -> IR -> Janet back end).
+(defn- run-cases [mode]
+  (def selfhost? (get mode :selfhost))
+  (def init-opts (if selfhost? {} mode))
+  (defn ev [ctx prog]
+    (if selfhost? (selfhost/compile-and-eval ctx (parse-string prog)) (eval-string ctx prog)))
+  (def fails @[])
+  (each [name expected actual] cases
+    (def ctx (init init-opts))
+    (def prog (string "(= " expected " " actual ")"))
+    (def res (protect (ev ctx prog)))
+    (cond
+      (not= (res 0) true)
+      (array/push fails [name "ERROR" (string (res 1))])
+      (= (res 1) true)
+      nil
+      (let [got (protect (ev (init init-opts) actual))]
+        (array/push fails [name "MISMATCH"
+                           (string "want=" expected
+                                   " got=" (if (= (got 0) true) (string/format "%q" (got 1)) (string "ERR:" (got 1))))]))))
+  fails)
 
-(printf "\n=== CONFORMANCE: %d/%d passed ===" pass (length cases))
-(unless (empty? fails)
-  (print "\n--- Failures ---")
-  (each [name kind detail] fails
-    (printf "[%s] %s: %s" kind name detail)))
+(defn- report [label fails]
+  (printf "=== CONFORMANCE (%s): %d/%d passed ===" label (- (length cases) (length fails)) (length cases))
+  (unless (empty? fails)
+    (print "--- Failures ---")
+    (each [name kind detail] fails
+      (printf "[%s] %s: %s" kind name detail))))
+
+(def interp-fails (run-cases {}))
+(report "interpret" interp-fails)
+(def compile-fails (run-cases {:compile? true}))
+(report "compile" compile-fails)
+(def selfhost-fails (run-cases {:selfhost true}))
+(report "self-host" selfhost-fails)
 (print)
-(when (pos? (length fails)) (os/exit 1))
+(when (or (pos? (length interp-fails)) (pos? (length compile-fails))
+          (pos? (length selfhost-fails)))
+  (os/exit 1))

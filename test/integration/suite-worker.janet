@@ -5,6 +5,7 @@
 (use ../../src/jolt/api)
 (use ../../src/jolt/reader)
 (use ../../src/jolt/evaluator)
+(import ../../src/jolt/backend :as selfhost)
 
 (defn- parse-forms [src]
   (var s src) (def fs @[]) (var go true)
@@ -19,8 +20,21 @@
 (def path (get (dyn :args) 1))
 
 (when path
-  (def ctx (init))
-  (each f (parse-forms (slurp "test/support/clojure_test.clj")) (eval-form ctx @{} f))
+  # JOLT_COMPILE=1 runs the suite through the compile path (hybrid: hot forms
+  # compile, unsupported forms fall back to the interpreter) so the whole battery
+  # validates compile-mode correctness against the same baseline.
+  (def compile? (= "1" (os/getenv "JOLT_COMPILE")))
+  # JOLT_SELFHOST=1 routes each form through the self-hosted pipeline (the
+  # portable Clojure analyzer + Janet back end, hybrid with interpreter fallback)
+  # so the whole battery validates the self-hosted compiler against the baseline.
+  (def selfhost? (= "1" (os/getenv "JOLT_SELFHOST")))
+  (def ctx (init (if compile? {:compile? true} {})))
+  (defn run-form [f]
+    (cond
+      selfhost? (selfhost/compile-and-eval ctx f)
+      compile? (eval-one ctx f)
+      (eval-form ctx @{} f)))
+  (each f (parse-forms (slurp "test/support/clojure_test.clj")) (run-form f))
 
   # Pre-load the suite's own clojure.core-test.number-range helper ns if present
   # (35 files require it for r/max-int, r/max-double, … — its :default branches are
@@ -29,10 +43,10 @@
   (let [dir (string/slice path 0 (- (length path) (length (last (string/split "/" path)))))
         nr (string dir "number_range.cljc")]
     (when (os/stat nr)
-      (each f (parse-forms (slurp nr)) (protect (eval-form ctx @{} f)))))
+      (each f (parse-forms (slurp nr)) (protect (run-form f)))))
 
   (eval-string ctx "(clojure.test/reset-report!)")
-  (each form (parse-forms (slurp path)) (protect (eval-form ctx @{} form)))
+  (each form (parse-forms (slurp path)) (protect (run-form form)))
   (protect (eval-string ctx "(clojure.test/run-registered)"))
   (def p (eval-string ctx "(clojure.test/n-pass)"))
   (def f (eval-string ctx "(clojure.test/n-fail)"))

@@ -1,20 +1,20 @@
 # clojure-test-suite conformance: runs the external, cross-dialect
-# clojure-test-suite (https://github.com/lread/clojure-test-suite, EPL) against
-# Jolt and asserts the number of passing per-function test files stays at/above
-# a baseline. Like the jank battery, this does NOT vendor the suite — it
-# references ~/src/clojure-test-suite if present and SKIPS cleanly when absent.
+# clojure-test-suite (jank-lang fork) against Jolt and asserts the number of
+# passing per-function test files stays at/above a baseline. The suite is a git
+# submodule at vendor/clojure-test-suite (CI checks it out via submodules:
+# recursive). The test SKIPS cleanly only if the submodule isn't initialized
+# (run `git submodule update --init`).
 #
 # Each suite file is a `clojure.test` namespace (one per clojure.core/string
 # function). A minimal clojure.test + portability shim (test/support/clojure_test.clj)
 # lets Jolt load them; `when-var-exists` auto-skips fns Jolt doesn't implement.
 #
 # Files are run in a one-shot worker subprocess (test/integration/suite-worker.janet)
-# under a wall-clock deadline. Some suite tests build infinite sequences
-# (cycle/range/transducers-over-infinite) that Jolt's eager evaluator can't
-# truncate and so HANG rather than fail; the deadline contains them — a timed-out
-# file is reported as :timeout and contributes nothing, no manual skip-list needed.
+# under a wall-clock deadline. A few suite tests build infinite sequences that an
+# uncompilable/eager path can't truncate and so HANG rather than fail; the
+# deadline contains them — a timed-out file contributes nothing, no skip-list.
 
-(def suite-dir (string (os/getenv "HOME") "/src/clojure-test-suite/test/clojure"))
+(def suite-dir "vendor/clojure-test-suite/test/clojure")
 
 # Baseline: assertions Jolt currently passes across the suite. Raise as Jolt
 # improves so a regression (previously-passing assertion breaking) is caught.
@@ -25,12 +25,30 @@
 # running thread (Janet OS threads can't be interrupted), so `(deref (future
 # (sleep 1)))` re-raises the unresolved-`Thread/sleep` error — a documented
 # platform gap, not a regression in any previously-working behavior.
-(def baseline-pass 3913)
+# Raised 3913 -> 3916 with the staged-bootstrap kernel tier (ns-restore-on-throw
+# + faithful subvec coercion), then 3916 -> 3919 moving juxt/every-pred/some-fn to
+# Clojure (the canonical defs are more correct than the prior Janet ones). Raised
+# 3919 -> 3926 preserving nil map values (jolt-c7h): a nil value is a present key,
+# which several suite tests assert. Runs read 3927 consistently, occasionally 3926
+# when a timeout-prone test (of the 9 that can time out) doesn't finish; floor at
+# the consistent-minus-one 3926.
+# Raised 3971 -> 3981 with Option A full laziness (jolt-fng): transformers return
+# lazy seqs, lazy interleave stops timing out, and the lazy-seq nil-element +
+# non-seqable-input fixes (case/seq/reverse/empty? over nil-first lazy seqs;
+# lazy-from throws on non-seqable like Clojure) recovered + extended the suite.
+# clean files 45 -> 66 (Option A makes seq?/vector? results match Clojure across
+# many cross-dialect files). Stable across runs.
+(def baseline-pass 3981)
 # A file is "clean" when it ran with zero failures AND zero errors.
-(def baseline-clean-files 45)
-# Per-file wall-clock budget (seconds). Normal files finish in well under 1s;
-# this only fires on infinite-sequence hangs.
-(def per-file-timeout 6)
+(def baseline-clean-files 66)
+# Per-file wall-clock budget (seconds). Normal files finish in well under 1s, so
+# this normally only fires on genuinely-infinite-sequence hangs. It's an env var
+# (JOLT_SUITE_TIMEOUT) so CI — whose runners are slower than a dev machine — can
+# give slow-but-finite files generous headroom without timing them out (which
+# would drop total-pass below the baseline and flake CI red). Default 6 locally.
+(def per-file-timeout
+  (let [e (os/getenv "JOLT_SUITE_TIMEOUT")]
+    (or (and e (scan-number e)) 6)))
 
 (defn- walk [dir acc]
   (each e (os/dir dir)
@@ -73,7 +91,7 @@
   result)
 
 (if (not (os/stat suite-dir))
-    (print "clojure-test-suite: ~/src/clojure-test-suite not present — skipped")
+    (print "clojure-test-suite: vendor/clojure-test-suite not initialized — skipped (run: git submodule update --init)")
     (do
       (def progress? (os/getenv "SUITE_PROGRESS"))
       (def files (sort (walk suite-dir @[])))

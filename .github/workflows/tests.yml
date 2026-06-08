@@ -10,10 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JANET_VERSION: v1.41.2   # bump to match the version Jolt is developed against
+      # Per-file deadline for the clojure-test-suite battery. Finite files finish
+      # in well under 1s; the genuinely-infinite ones get killed at any deadline.
+      # A generous value gives slow CI runners headroom so a sub-second file
+      # spiking doesn't time out and drop total-pass below the baseline.
+      JOLT_SUITE_TIMEOUT: "20"
     steps:
       - uses: actions/checkout@v4
         with:
-          # vendor/sci is needed by the SCI bootstrap/runtime integration tests.
+          # Submodules: vendor/sci (SCI bootstrap/runtime tests) and
+          # vendor/clojure-test-suite (the cross-dialect conformance battery,
+          # asserted against a baseline by clojure-test-suite-test.janet).
           submodules: recursive
 
       - name: Cache Janet build

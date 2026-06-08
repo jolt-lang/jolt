@@ -24,7 +24,12 @@
   ["count"                  "3"         "(count [1 2 3])"]
   ["contains? index"        "true"      "(contains? [:a :b] 1)"]
   ["contains? past end"     "false"     "(contains? [:a] 3)"]
-  ["vector as fn"           ":b"        "([:a :b :c] 1)"])
+  ["vector as fn"           ":b"        "([:a :b :c] 1)"]
+  # An IFn collection held in a binding (not just a literal) must dispatch as IFn,
+  # not as a host call: applies to vectors, keywords, and meta-bearing vectors.
+  ["vector-in-local as fn"  "20"        "(let [v [10 20 30]] (v 1))"]
+  ["keyword-in-local as fn" "7"         "(let [k :a] (k {:a 7}))"]
+  ["meta vector as fn"      "10"        "((with-meta [10 20] {:k 1}) 0)"])
 
 (defspec "vector / update (persistent)"
   ["conj appends"           "[1 2 3]"   "(conj [1 2] 3)"]

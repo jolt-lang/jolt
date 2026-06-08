@@ -44,6 +44,22 @@
   ["if-some zero"       "1"      "(if-some [x 0] (inc x) :none)"]
   ["when-some nil"      "nil"    "(when-some [x nil] x)"])
 
+# Regression: if-let/when-let/if-some/when-some bind the name ONLY in the
+# then/body branch. The else branch (and a falsy when-let body, which there is
+# none of) must see the surrounding scope, not the binding — so the else of
+# (let [x 5] (if-let [x nil] ...)) sees x=5, like Clojure. (Previously the macros
+# wrapped the whole `if` in the binding's let*, leaking it into the else.)
+(defspec "control / conditional-binding scope"
+  ["if-let else sees outer"    "5"   "(let [x 5] (if-let [x nil] :then x))"]
+  ["if-let then binds"         "7"   "(let [x 5] (if-let [x 7] x :else))"]
+  ["if-some else sees outer"   "5"   "(let [x 5] (if-some [x nil] :then x))"]
+  ["if-some binds false"       "false" "(if-some [x false] x :else)"]
+  ["when-let else via or"      "5"   "(let [x 5] (or (when-let [x nil] x) x))"]
+  ["when-let multi-form body"  "14"  "(when-let [x 7] (inc x) (* x 2))"]
+  ["if-let in fn param"        "9"   "((fn [xs] (if-let [xs nil] :then xs)) 9)"]
+  ["when-some binds zero"      "1"   "(when-some [x 0] (inc x))"]
+  ["if-let evals test once"    "1"   "(let [c (atom 0)] (if-let [v (do (swap! c inc) :v)] @c :none))"])
+
 (defspec "control / iteration"
   ["dotimes side-effect" "5"     "(let [a (atom 0)] (dotimes [i 5] (swap! a inc)) @a)"]
   ["while"              "5"      "(let [a (atom 0)] (while (< @a 5) (swap! a inc)) @a)"]
@@ -52,8 +68,15 @@
   ["for :when"          "[0 2 4]" "(for [x (range 6) :when (even? x)] x)"]
   ["for :while"         "[0 1 2]" "(for [x (range 10) :while (< x 3)] x)"]
   ["for :let"           "[0 1 4]" "(for [x (range 3) :let [sq (* x x)]] sq)"]
+  ["for :let+:when"     "[4 6 8]" "(for [x (range 5) :let [y (* x 2)] :when (> y 3)] y)"]
+  ["for multi :when"    "[[1 :a] [1 :b]]" "(for [x [0 1] :when (odd? x) y [:a :b]] [x y])"]
+  ["for destructure"    "[3 7]"   "(for [[a b] [[1 2] [3 4]]] (+ a b))"]
   ["doseq side-effect"  "6"      "(let [a (atom 0)] (doseq [x [1 2 3]] (swap! a (fn [v] (+ v x)))) @a)"]
-  ["doseq nested"       "4"      "(let [c (atom 0)] (doseq [x [1 2] y [10 20]] (swap! c inc)) @c)"])
+  ["doseq nested"       "4"      "(let [c (atom 0)] (doseq [x [1 2] y [10 20]] (swap! c inc)) @c)"]
+  ["doseq :when"        "[1 3]"  "(let [a (atom [])] (doseq [x [1 2 3] :when (odd? x)] (swap! a conj x)) @a)"]
+  ["doseq :while"       "6"      "(let [a (atom 0)] (doseq [x (range 10) :while (< x 4)] (swap! a + x)) @a)"]
+  ["doseq :let"         "[0 1 4]" "(let [a (atom [])] (doseq [x (range 3) :let [sq (* x x)]] (swap! a conj sq)) @a)"]
+  ["doseq returns nil"  "nil"    "(doseq [x [1 2 3]] x)"])
 
 (defspec "control / threading"
   ["->"                 "6"      "(-> 1 inc (+ 4))"]

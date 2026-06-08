@@ -115,3 +115,32 @@
   ["subvec float trunc"  "[0]"    "(subvec [0 1 2] 0.5 1.33)"]
   ["subvec NaN start"    "[0 1 2]" "(subvec [0 1 2] ##NaN 3)"]
   ["subvec NaN end"      "[]"     "(subvec [0 1 2] 0 ##NaN)"])
+
+# A nil value is a PRESENT key in Clojure (distinct from a missing key); Janet
+# structs drop nil, so jolt builds these maps as a phm. Tested via literals (the
+# reader path) and the construction/op surface, in every spec mode.
+(defspec "map / nil values preserved"
+  ["literal contains"      "true"   "(contains? {:b nil} :b)"]
+  ["literal not= empty"    "false"  "(= {:b nil} {})"]
+  ["literal get nil"       "nil"    "(get {:b nil} :b :x)"]
+  ["literal keys incl nil" "true"   "(= #{:a :b} (set (keys {:a nil :b 1})))"]
+  ["literal count"         "2"      "(count {:a nil :b 1})"]
+  ["literal vals incl nil" "2"      "(count (vals {:a nil :b 1}))"]
+  ["eval values w/ nil"    "3"      "(:a {:a (+ 1 2) :b nil})"]
+  ["nil key present"       "true"   "(contains? {nil :v} nil)"]
+  ["assoc nil present"     "true"   "(contains? (assoc {:a 1} :b nil) :b)"]
+  ["assoc nil get"         "nil"    "(get (assoc {:a 1} :b nil) :b :x)"]
+  ["assoc overwrite nil"   "nil"    "(get (assoc {:a 1} :a nil) :a :x)"]
+  ["hash-map nil"          "true"   "(contains? (hash-map :b nil) :b)"]
+  ["merge new nil"         "true"   "(contains? (merge {:a 1} {:b nil}) :b)"]
+  ["merge overwrite nil"   "nil"    "(get (merge {:a 1} {:a nil}) :a :x)"]
+  ["merge-with present nil" "true"  "(= [nil 1] (get (merge-with (fn [a b] [a b]) {:a nil} {:a 1}) :a))"]
+  ["into nil val"          "true"   "(contains? (into {} [[:a nil]]) :a)"]
+  ["conj map nil"          "true"   "(contains? (conj {:x 1} {:a nil}) :a)"]
+  ["zipmap nil"            "true"   "(contains? (zipmap [:a] [nil]) :a)"]
+  ["select-keys nil"       "true"   "(contains? (select-keys {:a nil} [:a]) :a)"]
+  ["get-in present nil"    "nil"    "(get-in {:a nil} [:a] :x)"]
+  ["get-in through nil"    ":x"     "(get-in {:a nil} [:a :b] :x)"]
+  ["dissoc keeps nil"      "true"   "(contains? (dissoc {:a nil :b 1} :b) :a)"]
+  ["reduce-kv sees nil"    "true"   "(= #{:a :b} (reduce-kv (fn [acc k v] (conj acc k)) #{} {:a nil :b 2}))"]
+  ["nil-free stays fast"   "true"   "(= {:a 1 :b 2} {:b 2 :a 1})"])

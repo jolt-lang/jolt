@@ -34,6 +34,30 @@
 
 (var eval-form nil)
 
+# Macro expansion cache (interpreter): a macro CALL form expands ONCE and the
+# result is reused — macroexpansion is a compile-time step with zero runtime cost,
+# the proper Lisp model. Keyed by the call form's identity (a fn body re-evaluates
+# the same form arrays each call). Also gives compile-once gensym semantics (a
+# foo# auto-gensym is fixed across calls, unlike per-call re-expansion). Cleared
+# when a macro is (re)defined so stale expansions don't linger.
+(def macro-cache @{})
+
+# Compile hook for macro expanders: set by the api to (fn [ctx args-form body] ->
+# compiled-janet-fn | nil). When set and the body is compilable (no &env/&form,
+# analyzer available), defmacro uses the compiled expander instead of the
+# interpreted closure — macro expansion at native speed, zero runtime cost.
+(var macro-compile-hook nil)
+
+(defn- form-uses-sym? [form nm]
+  (cond
+    (and (struct? form) (= :symbol (form :jolt/type))) (= nm (form :name))
+    (or (array? form) (tuple? form))
+    (do (var found false) (each x form (when (form-uses-sym? x nm) (set found true) (break))) found)
+    (and (struct? form) (nil? (form :jolt/type)))
+    (do (var found false) (each k (keys form)
+          (when (or (form-uses-sym? k nm) (form-uses-sym? (get form k) nm)) (set found true) (break))) found)
+    false))
+
 # A transient is a tagged mutable table @{:jolt/type :jolt/transient :kind ...}.
 (defn- jolt-transient? [x]
   (and (table? x) (= :jolt/transient (get x :jolt/type))))
@@ -128,6 +152,25 @@
         {:jolt/type :symbol :ns (ctx-current-ns ctx) :name nm}))
     form))
 
+(defn- d-realize
+  "Realize a lazy-seq to an array for positional destructuring / splicing; pass
+  others (pvec/plist coerced to array, everything else unchanged)."
+  [val]
+  (if (pvec? val) (pv->array val)
+  (if (plist? val) (pl->array val)
+  (if (lazy-seq? val)
+    (do
+      (var items @[]) (var cur val) (var go true)
+      (while go
+        (let [cell (realize-ls cur)]
+          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+            (set go false)
+            (do (array/push items (in cell 0))
+                (let [rt (in cell 1)]
+                  (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
+      items)
+    val))))
+
 (defn- syntax-quote*
   [ctx bindings form &opt gsmap]
   (default gsmap @{})
@@ -145,7 +188,7 @@
       (let [item (in form i)]
         (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
           (let [sv (eval-form ctx bindings (in item 1))]
-            (each v (if (pvec? sv) (pv->array sv) sv) (array/push result v)))
+            (each v (d-realize sv) (array/push result v)))
           (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) (tuple ;result))
     (array? form)
@@ -153,7 +196,7 @@
       (let [item (in form i)]
         (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
           (let [sv (eval-form ctx bindings (in item 1))]
-            (each v (if (pvec? sv) (pv->array sv) sv) (array/push result v)))
+            (each v (d-realize sv) (array/push result v)))
           (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) result)
     (and (struct? form) (get form :jolt/type)) form
@@ -162,6 +205,49 @@
       (array/push kvs (syntax-quote* ctx bindings k gsmap))
       (array/push kvs (syntax-quote* ctx bindings (get form k) gsmap))) (struct ;kvs))
     form))
+
+# Syntax-quote LOWERING: instead of evaluating a `(...) form to a value (what
+# syntax-quote* does), produce equivalent CONSTRUCTION CODE so a backtick body is
+# plain compilable code (read -> macroexpand -> compile, zero runtime cost).
+# Mirrors syntax-quote*/sq-symbol exactly; the canonical algorithm is
+# tools.reader's syntax-quote*/expand-list. List forms build via __sqcat (-> array),
+# vectors via __sqvec (-> tuple), maps via __sqmap; symbols become (quote resolved);
+# ~ leaves the expr in place, ~@ passes the seq straight to __sqcat for splicing.
+(defn- sqsym* [nm] {:jolt/type :symbol :ns nil :name nm})
+
+(var syntax-quote-lower nil)
+
+(defn- sq-lower-part [ctx item gsmap]
+  (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
+    (in item 1)
+    @[(sqsym* "__sq1") (syntax-quote-lower ctx item gsmap)]))
+
+(set syntax-quote-lower
+  (fn syntax-quote-lower [ctx form &opt gsmap]
+    (default gsmap @{})
+    (cond
+      (and (array? form) (> (length form) 0) (sym-name? (first form) "unquote"))
+      (in form 1)
+      (and (array? form) (> (length form) 0) (sym-name? (first form) "unquote-splicing"))
+      (error "~@ used outside of a list or vector in syntax-quote")
+      (or (number? form) (string? form) (keyword? form) (nil? form) (= true form) (= false form))
+      form
+      (and (struct? form) (= :symbol (form :jolt/type)))
+      @[(sqsym* "quote") (sq-symbol ctx form gsmap)]
+      (array? form)
+      (array/concat @[(sqsym* "__sqcat")] (map (fn [it] (sq-lower-part ctx it gsmap)) form))
+      (tuple? form)
+      (array/concat @[(sqsym* "__sqvec")] (map (fn [it] (sq-lower-part ctx it gsmap)) form))
+      # tagged structs (sets/chars): syntax-quote* returns them as-is (no recursion)
+      (and (struct? form) (get form :jolt/type))
+      @[(sqsym* "quote") form]
+      (struct? form)
+      (do (var parts @[(sqsym* "__sqmap")])
+          (each k (keys form)
+            (array/push parts (syntax-quote-lower ctx k gsmap))
+            (array/push parts (syntax-quote-lower ctx (get form k) gsmap)))
+          parts)
+      @[(sqsym* "quote") form])))
 
 (defn resolve-var
   [ctx bindings sym-s]
@@ -430,24 +516,6 @@
         (do (array/push fixed a) (+= i 1)))))
   {:fixed (tuple/slice (tuple ;fixed)) :rest rest-pat})
 
-(defn- d-realize
-  "Realize a lazy-seq to an array for positional destructuring; pass others through."
-  [val]
-  (if (pvec? val) (pv->array val)
-  (if (plist? val) (pl->array val)
-  (if (lazy-seq? val)
-    (do
-      (var items @[]) (var cur val) (var go true)
-      (while go
-        (let [cell (realize-ls cur)]
-          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
-            (set go false)
-            (do (array/push items (in cell 0))
-                (let [rt (in cell 1)]
-                  (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))))))
-      items)
-    val))))
-
 (defn- d-get
   "Look up key k in a map-like value (phm/struct/table/nil)."
   [m k]
@@ -482,14 +550,24 @@
           (while (< di n)
             (let [elem (in pat di)]
               (cond
-                # & rest
-                (and (struct? elem) (= :symbol (elem :jolt/type)) (= "&" (elem :name)))
-                  (do
-                    # rest binds a seq (jolt list = array), per Clojure semantics
-                    (destructure-bind ctx bindings (in pat (+ di 1))
-                      (if (and seqable? (< vi (length rv)))
-                        (array/slice (if (tuple? rv) (array/slice rv) rv) vi)
-                        @[]))
+                 # & rest
+                 (and (struct? elem) (= :symbol (elem :jolt/type)) (= "&" (elem :name)))
+                   (do
+                     # rest binds a seq (jolt list = array), per Clojure semantics.
+                     # For lazy-seqs, preserve laziness: walk vi steps via ls-rest
+                     # instead of slicing the eagerly-realized array.
+                     (destructure-bind ctx bindings (in pat (+ di 1))
+                       (if (lazy-seq? val)
+                         (do
+                           (var c val) (var i 0)
+                           (while (< i vi)
+                             (let [nxt (ls-rest c)]
+                               (if (nil? nxt) (break)
+                                 (do (set c nxt) (++ i)))))
+                           c)
+                         (if (and seqable? (< vi (length rv)))
+                           (array/slice (if (tuple? rv) (array/slice rv) rv) vi)
+                           @[])))
                     (set di (+ di 2)))
                 # :as whole
                 (= elem :as)
@@ -611,12 +689,20 @@
 (defn- eval-list
   [ctx bindings form]
   (def first-form (first form))
-  # Safe name extraction: non-symbol heads (e.g. keywords) fall through to default
+  # Safe name extraction: non-symbol heads (e.g. keywords) fall through to default.
+  # A head qualified to a NON-core namespace (e.g. clojure.edn/read-string) must
+  # resolve to that var, not the like-named clojure.core special form — so only
+  # unqualified or clojure.core-qualified heads dispatch as special forms.
   (def name (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
-              (first-form :name)
+              (let [ns (first-form :ns)]
+                (if (or (nil? ns) (= ns "clojure.core")) (first-form :name) nil))
               nil))
   (match name
     "quote" (in form 1)
+    # Interpreter builds the form directly (self-contained, no core dependency).
+    # The COMPILE path instead lowers syntax-quote to construction code (via
+    # syntax-quote-lower) so a backtick body is compilable; the two are kept in
+    # sync and cross-checked by conformance (interpret vs compile modes).
     "syntax-quote" (syntax-quote* ctx bindings (in form 1))
     "unquote" (error "Unquote not valid outside of syntax-quote")
     "unquote-splicing" (error "Unquote-splicing not valid outside of syntax-quote")
@@ -686,7 +772,7 @@
                      fixed-pats (param-info :fixed)
                      rest-pat (param-info :rest)
                      defining-ns (ctx-current-ns ctx)]
-                 (def macro-fn (fn [& macro-args]
+                 (def interp-fn (fn [& macro-args]
                    (var new-bindings @{})
                    (table/setproto new-bindings bindings)
                    (put new-bindings "&env" @{})  # implicit &env for macro bodies (table — nil-safe)
@@ -706,10 +792,20 @@
                      (set result (eval-form ctx new-bindings bf)))
                    (ctx-set-current-ns ctx saved-ns)
                    result))
+                 # Prefer a COMPILED expander (native-speed expansion, zero runtime
+                 # cost). Skip when the body uses &env/&form (the compiled fn has no
+                 # such params) — those fall back to the interpreted closure.
+                 (def uses-env (or (form-uses-sym? body "&env") (form-uses-sym? body "&form")))
+                 (def compiled-fn
+                   (when (and macro-compile-hook (not uses-env))
+                     (macro-compile-hook ctx args-form body)))
+                 (def macro-fn (or compiled-fn interp-fn))
                   (let [ns-name (ctx-current-ns ctx)
                        ns (ctx-find-ns ctx ns-name)]
                    (def v (ns-intern ns (name-sym :name) macro-fn))
                    (put v :macro true)
+                   # A (re)defined macro invalidates any cached expansions.
+                   (table/clear macro-cache)
                    (var-get v)))
     "ns" (let [raw-name (in form 1)
                name-sym (unwrap-meta-name raw-name)
@@ -810,15 +906,20 @@
                    arities @{}
                    defining-ns (ctx-current-ns ctx)]
                (var self nil)
+               # The (single) variadic clause is dispatched separately: it handles
+               # any arg count >= its fixed count. Storing it in `arities` by
+               # fixed-count would collide with a same-fixed-count fixed clause and
+               # only match that exact count.
+               (var variadic-fn nil)
+               (var variadic-min 0)
                (each pair pairs
                  (let [args-form (in pair 0)
                        body (tuple/slice pair 1)
                        param-info (parse-params args-form)
                        fixed-pats (param-info :fixed)
                        rest-pat (param-info :rest)
-                       n-fixed (length fixed-pats)]
-                   (put arities n-fixed
-                        (fn [& fn-args]
+                       n-fixed (length fixed-pats)
+                       f (fn [& fn-args]
                           (var fn-bindings @{})
                           (table/setproto fn-bindings bindings)
                           (var i 0)
@@ -836,12 +937,16 @@
                           (each body-form body
                             (set result (eval-form ctx fn-bindings body-form)))
                           (ctx-set-current-ns ctx saved-ns)
-                          result))))
+                          result)]
+                   (if rest-pat
+                     (do (set variadic-fn f) (set variadic-min n-fixed))
+                     (put arities n-fixed f))))
                (set self (fn [& fn-args]
                  (let [n (length fn-args)
                        f (get arities n)]
-                   (if f
-                     (apply f fn-args)
+                   (cond
+                     f (apply f fn-args)
+                     (and variadic-fn (>= n variadic-min)) (apply variadic-fn fn-args)
                      (error (string "Wrong number of args (" n ") passed to fn"))))))
                self)
              # Single-arity: (fn* [args] body...)
@@ -920,7 +1025,14 @@
               (error {:jolt/type :jolt/exception :value val}))
     "try" (let [body-form (in form 1)
                 clauses (tuple/slice form 2)
-                n (length clauses)]
+                n (length clauses)
+                # current-ns is dynamic state. The interpreter rebinds it to a
+                # fn's defining ns while that fn runs and restores it on normal
+                # return, but a fn that THROWS unwinds past its own restore — so
+                # the ns can leak. try is the unwind boundary: restore the ns that
+                # was current at try entry before running catch/finally, so caught
+                # code (and the harness's is/thrown?) sees the right namespace.
+                try-ns (ctx-current-ns ctx)]
             (var catch-sym nil)
             (var catch-body nil)
             (var finally-body nil)
@@ -943,6 +1055,7 @@
               (try
                 (eval-form ctx bindings body-form)
                 ([err]
+                 (ctx-set-current-ns ctx try-ns)
                  (var new-bindings @{})
                  (table/setproto new-bindings bindings)
                  # bind the originally-thrown value (unwrap the :jolt/exception
@@ -965,6 +1078,7 @@
                     (run-finally finally-body)
                     result)
                   ([err]
+                   (ctx-set-current-ns ctx try-ns)
                    (run-finally finally-body)
                    (error err)))
                 (eval-form ctx bindings body-form))))
@@ -1051,12 +1165,30 @@
                               (let [fn (find-protocol-method ctx type-tag proto-name method-name)]
                                 (if fn (apply fn obj rest-args)
                                   (error (string "No method " method-name " in " proto-name " for " type-tag))))
-                              # host value: try candidate host type-tags (Long/String/Object/...)
-                              (let [cands (value-host-tags obj)]
-                                (var found nil)
-                                (each tag cands
-                                  (when (nil? found)
-                                    (set found (find-protocol-method ctx tag proto-name method-name))))
+                              # host value: try candidate host type-tags (Long/String/Object/...).
+                              # Generation-guarded inline cache: the candidate
+                              # walk (array alloc + up to ~15 registry lookups) is
+                              # the same for every value of a given host class, so
+                              # cache (most-specific-tag, proto, method) -> fn,
+                              # invalidated when the registry generation bumps.
+                              (let [env (ctx :env)
+                                    reg-gen (or (get env :type-registry-gen) 0)
+                                    pc (let [c (get env :proto-dispatch-cache)]
+                                         (if (and c (= (c :gen) reg-gen)) c
+                                           (let [n @{:gen reg-gen :map @{}}]
+                                             (put env :proto-dispatch-cache n) n)))
+                                    cands (value-host-tags obj)
+                                    ckey [(first cands) proto-name method-name]
+                                    cached (get (pc :map) ckey)
+                                    found (if (nil? cached)
+                                            (let [f (do (var r nil)
+                                                      (each tag cands
+                                                        (when (nil? r)
+                                                          (set r (find-protocol-method ctx tag proto-name method-name))))
+                                                      r)]
+                                              (put (pc :map) ckey (if f f :jolt/none))
+                                              f)
+                                            (if (= cached :jolt/none) nil cached))]
                                 (if found (apply found obj rest-args)
                                   (error (string "No dispatch for " method-name " on " (type obj))))))))
     "register-method" (let [type-sym (in form 1)
@@ -1149,27 +1281,38 @@
                                       (+= i 2))) h)
                       ns (ctx-find-ns ctx (ctx-current-ns ctx))
                       methods @{}
+                      # Cache for hierarchy-resolved dispatch values: the isa? walk
+                      # over every method key is the expensive path (derive-based
+                      # dispatch). Direct (get methods dv) hits stay uncached (already
+                      # fast). Cleared in place when methods/prefs change (defmethod,
+                      # prefer-method, remove-method, …) so a redef can't be hidden.
+                      dispatch-cache @{}
                       mm-fn (fn [& args]
                               (let [dv (apply dispatch-fn args)
                                     method (get methods dv)]
                                 (if method
                                   (apply method args)
-                                  # hierarchy-based match (explicit :hierarchy or
-                                  # the global hierarchy from derive)
-                                  (let [h (or hierarchy the-global-hierarchy)
-                                        found (do (var f nil) (var i 0)
-                                                (let [ks (keys methods)]
-                                                  (while (and (nil? f) (< i (length ks)))
-                                                    (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
-                                                    (++ i))) f)]
-                                    (if found (apply found args)
-                                      # fall back to the method registered under the default key
-                                      (let [dm (get methods default-key)]
-                                        (if dm (apply dm args)
-                                          (error (string "No method in multimethod "
-                                                         (name-sym :name) " for dispatch value: " dv)))))))))]
+                                  (let [cached (get dispatch-cache dv)]
+                                    (if cached
+                                      (apply cached args)
+                                      # hierarchy-based match (explicit :hierarchy or
+                                      # the global hierarchy from derive)
+                                      (let [h (or hierarchy the-global-hierarchy)
+                                            found (do (var f nil) (var i 0)
+                                                    (let [ks (keys methods)]
+                                                      (while (and (nil? f) (< i (length ks)))
+                                                        (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
+                                                        (++ i))) f)]
+                                        (if found
+                                          (do (put dispatch-cache dv found) (apply found args))
+                                          # fall back to the method registered under the default key
+                                          (let [dm (get methods default-key)]
+                                            (if dm (apply dm args)
+                                              (error (string "No method in multimethod "
+                                                             (name-sym :name) " for dispatch value: " dv))))))))))) ]
                  (def v (ns-intern ns (name-sym :name) mm-fn))
                  (put v :jolt/methods methods)
+                 (put v :jolt/dispatch-cache dispatch-cache)
                  (put v :jolt/default default-key)
                  (when hierarchy (put v :jolt/hierarchy hierarchy))
                  (var-get v))
@@ -1194,6 +1337,8 @@
                       methods (or (get mm-var :jolt/methods)
                                   (let [m @{}] (put mm-var :jolt/methods m) m))]
                   (put methods dispatch-val impl)
+                  (let [dc (get mm-var :jolt/dispatch-cache)]
+                    (when dc (each k (keys dc) (put dc k nil))))
                   mm-var)
     "prefer-method" (let [mm-arg (in form 1)
                           mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
@@ -1211,6 +1356,8 @@
                           prefs (or (get mm-var :jolt/prefers)
                                    (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers)))]
                      (put prefs dispatch-val-a dispatch-val-b)
+                     (let [dc (get mm-var :jolt/dispatch-cache)]
+                       (when dc (each k (keys dc) (put dc k nil))))
                      mm-var)
     # A multimethod's methods live on its VAR, but the value is the dispatch fn;
     # so resolve the var from the symbol rather than evaluating it.
@@ -1234,11 +1381,15 @@
                           dispatch-val (eval-form ctx bindings (in form 2))]
                      (when mm-var
                        (let [methods (get mm-var :jolt/methods)]
-                         (when methods (put methods dispatch-val nil))))
+                         (when methods (put methods dispatch-val nil)))
+                       (let [dc (get mm-var :jolt/dispatch-cache)]
+                         (when dc (each k (keys dc) (put dc k nil)))))
                      mm-var)
     "remove-all-methods" (let [mm-var (eval-form ctx bindings (in form 1))]
-                          (if mm-var
-                            (put mm-var :jolt/methods @{}))
+                          (when mm-var
+                            (put mm-var :jolt/methods @{})
+                            (let [dc (get mm-var :jolt/dispatch-cache)]
+                              (when dc (each k (keys dc) (put dc k nil)))))
                           mm-var)
     "deftype" (let [raw-name (in form 1)
                     type-name (unwrap-meta-name raw-name)
@@ -1363,15 +1514,38 @@
             (apply ctor args))
           (let [v (resolve-var ctx bindings first-form)]
             (if (and v (var-macro? v))
-              (let [macro-fn (var-get v)
-                    args (tuple/slice form 1)]
-                (eval-form ctx bindings (apply macro-fn args)))
+              # Expand once (cached by call-form identity), then evaluate the
+              # macro-free expansion with the current bindings each call.
+              (let [cached (in macro-cache form)]
+                (if (not (nil? cached))
+                  (eval-form ctx bindings cached)
+                  (let [expanded (apply (var-get v) (tuple/slice form 1))]
+                    (put macro-cache form expanded)
+                    (eval-form ctx bindings expanded))))
               (let [f (eval-form ctx bindings first-form)
                     args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
                 (jolt-invoke ctx f args)))))))
       (let [f (eval-form ctx bindings first-form)
             args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
         (jolt-invoke ctx f args)))))
+
+# Build a map value from an array of evaluated [k v k v ...]. A phm (not a Janet
+# struct) is used when a key is a collection (value-based hashing) OR a key/value
+# is nil (Janet structs drop nil; phm preserves it, matching Clojure). The common
+# scalar/nil-free case stays a struct.
+(defn- map-needs-phm? [kvs]
+  (var need false) (var i 0)
+  (while (< i (length kvs))
+    (let [k (in kvs i) v (in kvs (+ i 1))]
+      (when (or (table? k) (array? k) (nil? k) (nil? v)) (set need true) (break)))
+    (+= i 2))
+  need)
+
+(defn- build-eval-map [kvs]
+  (if (map-needs-phm? kvs)
+    (do (var m (make-phm)) (var j 0)
+        (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2)) m)
+    (struct ;kvs)))
 
 (set eval-form (fn [ctx bindings form]
   (cond
@@ -1408,19 +1582,15 @@
           (each k (keys form)
             (array/push kvs (eval-form ctx bindings k))
             (array/push kvs (eval-form ctx bindings (get form k))))
-          # If any key is a collection (a Janet table/array — phm/pvec/plist/
-          # record/list), a Janet struct would key it by identity; use a phm so
-          # such keys compare by value.
-          (var coll-key false)
-          (var ki 0)
-          (while (< ki (length kvs))
-            (let [kk (in kvs ki)] (when (or (table? kk) (array? kk)) (set coll-key true)))
-            (+= ki 2))
-          (if coll-key
-            (do (var m (make-phm)) (var j 0)
-                (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2))
-                m)
-            (struct ;kvs))))))))
+          (build-eval-map kvs)))))))
+    # A phm map-literal FORM (reader emits one for {:a nil} etc., which a struct
+    # would have dropped): evaluate its key/value forms and rebuild, preserving nil.
+    (phm? form)
+    (let [kvs @[]]
+      (each e (phm-entries form)
+        (array/push kvs (eval-form ctx bindings (in e 0)))
+        (array/push kvs (eval-form ctx bindings (in e 1))))
+      (build-eval-map kvs))
     (array? form)
     (if (= 0 (length form))
       @[]

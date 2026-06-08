@@ -91,13 +91,16 @@
     "complement" "core-complement"
     "constantly" "core-constantly"
     "memoize" "core-memoize"
-    "some" "core-some"
     "range" "core-range"
     "take" "core-take"
     "drop" "core-drop"
     "take-while" "core-take-while"
     "drop-while" "core-drop-while"
+    "interpose" "core-interpose"
     "nth" "core-nth"
+    "mapcat" "core-mapcat"
+    "apply" "core-apply"
+    "trampoline" "core-trampoline"
     "list" "core-list"
     "name" "core-name"
     "subs" "core-subs"
@@ -139,6 +142,42 @@
       (= name "defmulti") (= name "defmethod") (= name "locking")
       (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")))
 
+# Forms the compiler can't compile correctly: definitional/stateful special
+# forms and macros that mutate the context or build runtime values the emitter
+# doesn't model (types, protocols, multimethods, dynamic binding, host interop).
+# analyze-form throws uncompilable on these so the enclosing top-level form falls
+# back to the interpreter — which handles them — instead of silently miscompiling.
+# (Top-level occurrences are usually routed straight to the interpreter by
+# loader/stateful-head?; this also covers them nested inside compiled forms.)
+(def- uncompilable-heads
+  (let [t @{}]
+    # Interpreter special forms the compiler does NOT itself implement (it
+    # handles quote/do/if/def/fn*/let*/loop*/recur/throw/try). Kept in sync with
+    # eval-form's special-form match in evaluator.janet.
+    (each n ["syntax-quote" "unquote" "unquote-splicing" "eval" "read-string"
+             "macroexpand-1" "defonce" "defmacro" "deftype" "defmulti"
+             "defmethod" "prefer-method" "remove-method" "remove-all-methods"
+             "get-method" "methods" "register-method" "protocol-dispatch"
+             "make-reified" "satisfies?" "instance?" "set!" "var" "var-get"
+             "var-set" "var?" "in-ns" "ns" "require" "create-ns" "remove-ns"
+             "find-ns" "all-ns" "the-ns" "find-var" "intern" "resolve"
+             "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
+             "alter-var-root" "alter-meta!" "reset-meta!" "locking" "new"
+             "disj" "set?"
+             # Definitional/host macros that mutate context or build runtime
+             # values the emitter doesn't model.
+             "defrecord" "defprotocol" "definterface" "reify" "proxy"
+             "extend-type" "extend-protocol" "extend" "gen-class" "import"
+             "use" "refer" "monitor-enter" "monitor-exit" "binding" "."
+             # letfn needs all its fns in scope simultaneously (mutual
+             # recursion); the sequential let* the compiler would build can't
+             # express that, so interpret it.
+             "letfn"]
+      (put t n true))
+    t))
+
+(defn- uncompilable-head? [name] (get uncompilable-heads name))
+
 # ============================================================
 # Macro resolution
 # ============================================================
@@ -149,7 +188,12 @@
     (let [name (sym-s :name)
           ns-sym (sym-s :ns)]
       (if ns-sym
-        (let [target-ns (ctx-find-ns ctx ns-sym)
+        # Resolve :as aliases (e.g. (t/is …) where t aliases clojure.test) so
+        # aliased macros are recognized as macros — matching the interpreter's
+        # resolve-var — rather than miscompiled as a value ref to the macro var.
+        (let [cur (ctx-find-ns ctx (ctx-current-ns ctx))
+              aliased (ns-import-lookup cur ns-sym)
+              target-ns (ctx-find-ns ctx (or aliased ns-sym))
               v (ns-find target-ns name)]
           (if (and v (var-macro? v)) v))
         (let [current-ns-name (ctx-current-ns ctx)
@@ -161,106 +205,21 @@
                   cv (ns-find core-ns name)]
               (if (and cv (var-macro? cv)) cv))))))))
 
-# ============================================================
-# Core function value lookup
-# ============================================================
-
-(def- core-fn-values
-  (let [t @{}]
-    (put t "core-+" core-+)
-    (put t "core-sub" core-sub)
-    (put t "core-*" core-*)
-    (put t "core-/" core-/)
-    (put t "core-inc" core-inc)
-    (put t "core-dec" core-dec)
-    (put t "core-=" core-=)
-    (put t "core-not=" core-not=)
-    (put t "core-<" core-<)
-    (put t "core->" core->)
-    (put t "core-<=" core-<=)
-    (put t "core->=" core->=)
-    (put t "core-nil?" core-nil?)
-    (put t "core-not" core-not)
-    (put t "core-some?" core-some?)
-    (put t "core-string?" core-string?)
-    (put t "core-number?" core-number?)
-    (put t "core-fn?" core-fn?)
-    (put t "core-keyword?" core-keyword?)
-    (put t "core-symbol?" core-symbol?)
-    (put t "core-vector?" core-vector?)
-    (put t "core-map?" core-map?)
-    (put t "core-seq?" core-seq?)
-    (put t "core-coll?" core-coll?)
-    (put t "core-true?" core-true?)
-    (put t "core-false?" core-false?)
-    (put t "core-identical?" core-identical?)
-    (put t "core-zero?" core-zero?)
-    (put t "core-pos?" core-pos?)
-    (put t "core-neg?" core-neg?)
-    (put t "core-even?" core-even?)
-    (put t "core-odd?" core-odd?)
-    (put t "core-empty?" core-empty?)
-    (put t "core-every?" core-every?)
-    (put t "core-first" core-first)
-    (put t "core-rest" core-rest)
-    (put t "core-next" core-next)
-    (put t "core-cons" core-cons)
-    (put t "core-conj" core-conj)
-    (put t "core-assoc" core-assoc)
-    (put t "core-dissoc" core-dissoc)
-    (put t "core-get" core-get)
-    (put t "core-get-in" core-get-in)
-    (put t "core-contains?" core-contains?)
-    (put t "core-count" core-count)
-    (put t "core-seq" core-seq)
-    (put t "core-vec" core-vec)
-    (put t "core-map" core-map)
-    (put t "core-filter" core-filter)
-    (put t "core-remove" core-remove)
-    (put t "core-reduce" core-reduce)
-    (put t "core-str" core-str)
-    (put t "core-prn" core-prn)
-    (put t "core-println" core-println)
-    (put t "core-print" core-print)
-    (put t "core-identity" core-identity)
-    (put t "core-comp" core-comp)
-    (put t "core-partial" core-partial)
-    (put t "core-complement" core-complement)
-    (put t "core-constantly" core-constantly)
-    (put t "core-memoize" core-memoize)
-    (put t "core-range" core-range)
-    (put t "core-take" core-take)
-    (put t "core-drop" core-drop)
-    (put t "core-take-while" core-take-while)
-    (put t "core-drop-while" core-drop-while)
-    (put t "core-reverse" core-reverse)
-    (put t "core-into" core-into)
-    (put t "core-merge" core-merge)
-    (put t "core-merge-with" core-merge-with)
-    (put t "core-keys" core-keys)
-    (put t "core-vals" core-vals)
-    (put t "core-zipmap" core-zipmap)
-    (put t "core-select-keys" core-select-keys)
-    (put t "core-max" core-max)
-    (put t "core-min" core-min)
-    (put t "core-quot" core-quot)
-    (put t "core-rem" core-rem)
-    (put t "core-mod" core-mod)
-    (put t "core-apply" apply)
-    (put t "core-some" core-some?)
-    (put t "core-pr-str" core-pr-str)
-    (put t "core-nth" core-nth)
-    (put t "core-list" core-list)
-    (put t "core-name" core-name)
-    (put t "core-subs" core-subs)
-    t))
-
 # Loop counter for generating unique loop function names
 (var loop-counter 0)
 
 (defn- make-loop-name
   []
   (let [name (string "_loop_" loop-counter)]
+    (++ loop-counter)
+    name))
+
+(defn- make-gensym
+  "A fresh, collision-proof Janet symbol name for compiler-introduced bindings
+  (recur targets, arity-dispatch arg vectors). The leading `_jolt$` can't appear
+  in a Clojure source symbol, so these never shadow user names."
+  [prefix]
+  (let [name (string "_jolt$" prefix "_" loop-counter)]
     (++ loop-counter)
     name))
 
@@ -352,6 +311,24 @@
 # Analyzer
 # ============================================================
 
+(defn- plain-symbol?
+  "A bare Clojure symbol (not a destructuring pattern). `&` counts — it's the
+  varargs marker, which the emitter passes straight through to Janet."
+  [x]
+  (and (struct? x) (= :symbol (x :jolt/type))))
+
+(defn- uncompilable
+  "Signal that the compiler can't (yet) handle this form. eval-one catches this
+  and falls back to the interpreter, which handles every form correctly. Throwing
+  here — rather than miscompiling — is what makes the hybrid path sound."
+  [reason]
+  (error (string "jolt/uncompilable: " reason)))
+
+# fn* analysis is large enough (optional self-name, multi-arity, varargs, recur
+# targets) to live in its own helper. Forward-declared so the fn* case in
+# analyze-form can call it; defined after analyze-form (which it recurses into).
+(var analyze-fn nil)
+
 (defn analyze-form
   "Analyze a Clojure form and return an AST node with :op key.
   Takes bindings (table) and optional ctx (for macro expansion)."
@@ -370,13 +347,35 @@
           {:op :local :name name}
           (if (and (not (special-form? name)) (get core-renames name))
             {:op :core-symbol :name name :janet-name (get core-renames name)}
-            {:op :symbol :name name}))))
+            # A global reference. Resolution mirrors the interpreter's resolve-sym
+            # so compiled and interpreted code agree:
+            #   1. a jolt var in the current ns (which also holds refers) or
+            #      clojure.core -> deref through the cell, so redefinition is
+            #      visible to compiled callers (Janet early-binds plain symbols);
+            #   2. otherwise a binding in the runtime/Janet env (resolve-sym's own
+            #      fallback — this is how int?, type, etc. resolve) -> emit it
+            #      directly;
+            #   3. otherwise a forward reference -> intern a pending cell whose
+            #      getter derefs at call time, once a later def fills it in.
+            # No ctx -> plain symbol.
+            (if ctx
+              (let [cur-ns (ctx-find-ns ctx (ctx-current-ns ctx))
+                    cell (or (ns-find cur-ns name)
+                             (ns-find (ctx-find-ns ctx "clojure.core") name))]
+                (cond
+                  cell {:op :var :name name :var cell}
+                  (get jolt-runtime-env (symbol name))
+                    {:op :core-symbol :name name :janet-name name}
+                  {:op :var :name name :var (ns-intern cur-ns name)}))
+              {:op :symbol :name name})))))
 
     (array? form)
     (let [first-form (first form)
           head-name (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
                      (first-form :name)
                      nil)]
+      (when (and head-name (uncompilable-head? head-name))
+        (uncompilable head-name))
       # Macro expansion
       (if (and ctx head-name
                (not (special-form? head-name))
@@ -426,54 +425,48 @@
             "do" (let [all-statements (array/slice form 1)
                        n (length all-statements)
                        analyzed (map |(analyze-form $ bindings ctx) all-statements)]
-                   {:op :do
-                    :statements (array/slice analyzed 0 (- n 1))
-                    :ret (in analyzed (- n 1))})
+                   (if (= n 0)
+                     {:op :const :val nil}   # (do) -> nil
+                     {:op :do
+                      :statements (array/slice analyzed 0 (- n 1))
+                      :ret (in analyzed (- n 1))}))
             "if" {:op :if
                   :test (analyze-form (in form 1) bindings ctx)
                   :then (analyze-form (in form 2) bindings ctx)
                   :else (if (> (length form) 3)
                          (analyze-form (in form 3) bindings ctx)
                          {:op :const :val nil})}
-            "def" {:op :def
-                   :name (in form 1)
-                   :init (analyze-form (in form 2) bindings ctx)}
-            "fn*" (let [params (in form 1)
-                        body-bindings (do
-                                        (var bb @{})
-                                        (loop [[k v] :pairs bindings] (put bb k v))
-                                        (each p params
-                                          (put bb (if (struct? p) (p :name) p) :jolt/local))
-                                        bb)
-                        body-exprs (tuple/slice form 2)
-                        analyzed-body (map |(analyze-form $ body-bindings ctx) body-exprs)
-                        n-body (length analyzed-body)]
-                    {:op :fn :params params
-                     :body (if (> n-body 1)
-                             {:op :do
-                              :statements (array/slice analyzed-body 0 (- n-body 1))
-                              :ret (last analyzed-body)}
-                             (first analyzed-body))})
+            "def" (let [name-sym (in form 1)
+                        nm (if (struct? name-sym) (name-sym :name) (string name-sym))
+                        # Create/find the var cell first so a recursive init body
+                        # self-references the same cell.
+                        cell (when ctx (ns-intern (ctx-find-ns ctx (ctx-current-ns ctx)) nm))
+                        # (def x) with no init (declare) -> nil.
+                        init-form (if (> (length form) 2) (in form 2) nil)]
+                    {:op :def :name name-sym :var cell
+                     :init (analyze-form init-form bindings ctx)})
+            "fn*" (analyze-fn form bindings ctx)
             "let*" (let [bind-vec (in form 1)
                          body-exprs (tuple/slice form 2)
+                         # Accumulate scope as we go so a later binding's init can
+                         # reference an earlier binding (sequential let scoping).
+                         acc (do (var bb @{}) (loop [[k v] :pairs bindings] (put bb k v)) bb)
                          binding-pairs (do
                                          (var pairs @[])
                                          (var i 0)
                                          (let [n (length bind-vec)]
                                            (while (< i n)
                                              (let [sym-s (in bind-vec i)
-                                                   name (if (struct? sym-s) (sym-s :name) sym-s)
+                                                   _ (unless (plain-symbol? sym-s)
+                                                       (uncompilable "destructuring let binding"))
+                                                   name (sym-s :name)
                                                    val-form (if (< (+ i 1) n) (in bind-vec (+ i 1)) nil)
-                                                   val-ast (if val-form (analyze-form val-form bindings ctx) {:op :const :val nil})]
+                                                   val-ast (if val-form (analyze-form val-form acc ctx) {:op :const :val nil})]
                                                (array/push pairs {:name name :init val-ast})
+                                               (put acc name :jolt/local)
                                                (+= i 2))))
                                          pairs)
-                         body-bindings (do
-                                         (var bb @{})
-                                         (loop [[k v] :pairs bindings] (put bb k v))
-                                         (each bp binding-pairs
-                                           (put bb (bp :name) :jolt/local))
-                                         bb)
+                         body-bindings acc
                          analyzed-body (map |(analyze-form $ body-bindings ctx) body-exprs)
                          n-body (length analyzed-body)]
                      {:op :let
@@ -485,16 +478,20 @@
                               (first analyzed-body))})
             "loop*" (let [bind-vec (in form 1)
                           loop-name (make-loop-name)
+                          acc (do (var bb @{}) (loop [[k v] :pairs bindings] (put bb k v)) bb)
                           binding-pairs (do
                                           (var pairs @[])
                                           (var i 0)
                                           (let [n (length bind-vec)]
                                             (while (< i n)
                                               (let [sym-s (in bind-vec i)
-                                                    name (if (struct? sym-s) (sym-s :name) sym-s)
+                                                    _ (unless (plain-symbol? sym-s)
+                                                        (uncompilable "destructuring loop binding"))
+                                                    name (sym-s :name)
                                                     val-form (if (< (+ i 1) n) (in bind-vec (+ i 1)) nil)
-                                                    val-ast (if val-form (analyze-form val-form bindings ctx) {:op :const :val nil})]
+                                                    val-ast (if val-form (analyze-form val-form acc ctx) {:op :const :val nil})]
                                                 (array/push pairs {:name name :init val-ast})
+                                                (put acc name :jolt/local)
                                                 (+= i 2))))
                                           pairs)
                           param-names (map |($ :name) binding-pairs)
@@ -534,9 +531,93 @@
         {:op :set :items (map |(analyze-form $ bindings ctx) (form :value))}
       (= :jolt/char (form :jolt/type))
         {:op :const :val form}
-      {:op :map :form form})
+      # Tagged literals (#"regex", data readers) need runtime construction the
+      # compiler doesn't model — interpret them.
+      (form :jolt/type)
+        (uncompilable (string "tagged literal " (form :jolt/type)))
+      # Plain map literal: keys and values are expressions to evaluate.
+      {:op :map
+       :pairs (map (fn [k] [(analyze-form k bindings ctx)
+                            (analyze-form (get form k) bindings ctx)])
+                   (keys form))})
 
     {:op :const :val form}))
+
+(defn- parse-fn-params
+  "Split a param vector into fixed param names and an optional rest name. Only
+  plain symbols are handled here; destructuring params signal uncompilable so the
+  whole fn falls back to the interpreter."
+  [params]
+  (unless (tuple? params) (uncompilable "fn params not a vector"))
+  (def fixed @[])
+  (var rest-name nil)
+  (var i 0)
+  (def n (length params))
+  (while (< i n)
+    (def p (in params i))
+    (unless (plain-symbol? p) (uncompilable "destructuring fn params"))
+    (if (= "&" (p :name))
+      (do
+        (++ i)
+        (when (< i n)
+          (def r (in params i))
+          (unless (plain-symbol? r) (uncompilable "destructuring fn rest param"))
+          (set rest-name (r :name)))
+        (++ i))
+      (do (array/push fixed (p :name)) (++ i))))
+  {:fixed (tuple/slice fixed) :rest rest-name})
+
+(set analyze-fn
+  (fn analyze-fn [form bindings ctx]
+    # (fn* name? params-or-clauses...) where a clause is (params body...).
+    (def named? (plain-symbol? (in form 1)))
+    (def fn-name (when named? ((in form 1) :name)))
+    (def idx (if named? 2 1))
+    (def first-clause (in form idx))
+    # Single arity: a param vector at idx. Multi arity: each remaining element is
+    # an (params body...) list.
+    (def raw-clauses
+      (cond
+        (tuple? first-clause) [[first-clause (tuple/slice form (+ idx 1))]]
+        (array? first-clause) (map |[(in $ 0) (tuple/slice $ 1)] (tuple/slice form idx))
+        (uncompilable "fn: unexpected param shape")))
+    (def multi (> (length raw-clauses) 1))
+    # Public name: the symbol the fn binds to itself. Single-arity fns recur
+    # straight into this name; multi-arity fns recur into a per-arity inner fn so
+    # recur stays in its own arity rather than re-dispatching.
+    (def outer-name (or fn-name (make-gensym "fn")))
+    (def arities
+      (map
+        (fn [clause]
+          (def pinfo (parse-fn-params (in clause 0)))
+          (def fixed (pinfo :fixed))
+          (def rest-name (pinfo :rest))
+          (def recur-name
+            (if (and (not multi) (not rest-name)) outer-name (make-gensym "arity")))
+          (def body-bindings
+            (do
+              (var bb @{})
+              (loop [[k v] :pairs bindings] (put bb k v))
+              (when fn-name (put bb fn-name :jolt/local))
+              (each pn fixed (put bb pn :jolt/local))
+              (when rest-name (put bb rest-name :jolt/local))
+              (put bb :jolt/current-loop recur-name)
+              bb))
+          (def body-exprs (in clause 1))
+          (def analyzed (map |(analyze-form $ body-bindings ctx) body-exprs))
+          (def n-body (length analyzed))
+          {:param-names fixed
+           :rest-name rest-name
+           :n-fixed (length fixed)
+           :recur-name recur-name
+           :body (cond
+                   (= 0 n-body) {:op :const :val nil}
+                   (= 1 n-body) (first analyzed)
+                   {:op :do
+                    :statements (array/slice analyzed 0 (- n-body 1))
+                    :ret (last analyzed)})})
+        raw-clauses))
+    {:op :fn :name outer-name :fn-name fn-name :multi multi :arities arities}))
 
 # ============================================================
 # Emitter — AST → Janet source string
@@ -575,16 +656,32 @@
   (buffer/push buf "(def ") (buffer/push buf (name-sym :name))
   (buffer/push buf " ") (emit-ast init buf) (buffer/push buf ")"))
 
-(defn- emit-fn-str [params body buf]
-  (buffer/push buf "(fn [")
+(defn- emit-arity-str [ar buf]
+  (buffer/push buf "[")
   (var i 0)
-  (let [n (length params)]
+  (let [n (length (ar :param-names))]
     (while (< i n)
-      (let [p (in params i)]
-        (buffer/push buf (if (struct? p) (p :name) (string p))))
-      (when (< (+ i 1) n) (buffer/push buf " "))
+      (buffer/push buf (in (ar :param-names) i))
+      (when (or (< (+ i 1) n) (ar :rest-name)) (buffer/push buf " "))
       (++ i)))
-  (buffer/push buf "] ") (emit-ast body buf) (buffer/push buf ")"))
+  (when (ar :rest-name)
+    (buffer/push buf "& ") (buffer/push buf (ar :rest-name)))
+  (buffer/push buf "] ")
+  (emit-ast (ar :body) buf))
+
+# Debug/source rendering. Single arity matches the original `(fn [params] body)`
+# shape; multi-arity renders each arity as a clause. This path is for inspection
+# (compile-string); the data emitter is the one that actually runs.
+(defn- emit-fn-str [ast buf]
+  (def arities (ast :arities))
+  (if (ast :multi)
+    (do
+      (buffer/push buf "(fn")
+      (each ar arities
+        (buffer/push buf " (") (emit-arity-str ar buf) (buffer/push buf ")"))
+      (buffer/push buf ")"))
+    (do
+      (buffer/push buf "(fn ") (emit-arity-str (first arities) buf) (buffer/push buf ")"))))
 
 (defn- emit-let-str [binding-pairs body buf]
   (buffer/push buf "(let [")
@@ -670,7 +767,12 @@
       (++ i)))
   (buffer/push buf "]"))
 
-(defn- emit-map-str [form buf] (buffer/push buf (string form)))
+(defn- emit-map-str [pairs buf]
+  (buffer/push buf "(build-map-literal")
+  (each [k v] pairs
+    (buffer/push buf " ") (emit-ast k buf)
+    (buffer/push buf " ") (emit-ast v buf))
+  (buffer/push buf ")"))
 
 (defn- emit-set-str [items buf]
   (buffer/push buf "(make-phs")
@@ -709,13 +811,14 @@
     (match (ast :op)
       :const (emit-const-str (ast :val) buf)
       :symbol (emit-symbol-str (ast :name) buf)
+      :var (emit-symbol-str (ast :name) buf)
       :local (emit-local-str (ast :name) buf)
       :core-symbol (emit-core-symbol-str (ast :janet-name) buf)
       :qualified-symbol (emit-qualified-symbol-str (ast :ns) (ast :name) buf)
       :do (emit-do-str (ast :statements) (ast :ret) buf)
       :if (emit-if-str (ast :test) (ast :then) (ast :else) buf)
       :def (emit-def-str (ast :name) (ast :init) buf)
-      :fn (emit-fn-str (ast :params) (ast :body) buf)
+      :fn (emit-fn-str ast buf)
       :let (emit-let-str (ast :binding-pairs) (ast :body) buf)
       :throw (emit-throw-str (ast :val) buf)
       :try (emit-try-str (ast :body) (ast :catch-sym) (ast :catch-body) (ast :finally-body) buf)
@@ -723,7 +826,7 @@
       :recur (emit-recur-str (ast :args) (ast :loop-name) buf)
       :invoke (emit-invoke-str (ast :fn) (ast :args) buf)
       :vector (emit-vector-str (ast :items) buf)
-      :map (emit-map-str (ast :form) buf)
+      :map (emit-map-str (ast :pairs) buf)
       :set (emit-set-str (ast :items) buf)
       :quote (emit-quote-str (ast :expr) buf)
       (buffer/push buf (string "/* unhandled op: " (ast :op) " */")))))
@@ -746,8 +849,12 @@
 (defn- emit-core-symbol-expr [janet-name]
   (if (get native-ops janet-name)
     (symbol janet-name)
-    (or (get core-fn-values janet-name)
-        (error (string "Core fn not found: " janet-name)))))
+    # Resolve the core-* function value from the compiler's runtime env (where
+    # `(use ./core)` bound them all) rather than a hand-maintained table that can
+    # drift out of sync. A name with no binding falls back to the interpreter.
+    (let [b (get jolt-runtime-env (symbol janet-name))]
+      (if b (b :value)
+        (uncompilable (string "core fn not found: " janet-name))))))
 
 (defn- emit-qualified-symbol-expr [ns name]
   (error (string "Cannot eval qualified symbol at compile time: " ns "/" name)))
@@ -768,11 +875,62 @@
 (defn- emit-def-expr [name-sym init]
   ['def (symbol (name-sym :name)) (emit-expr init)])
 
-(defn- emit-fn-expr [params body]
-  (def param-syms @[])
-  (each p params
-    (array/push param-syms (symbol (if (struct? p) (p :name) p))))
-  ['fn (tuple/slice (tuple ;param-syms)) (emit-expr body)])
+# Var-indirection: a global reference derefs its cell at call time, and a def
+# sets the same cell's root and returns it (Clojure's #'var). Janet COPIES table
+# constants when compiling but references functions, so we embed memoized
+# getter/setter CLOSURES over the cell (by reference) rather than the cell itself.
+(defn- var-getter [cell]
+  (or (get cell :jolt/getter)
+      (let [g (fn [] (var-get cell))] (put cell :jolt/getter g) g)))
+(defn- var-setter [cell]
+  (or (get cell :jolt/setter)
+      (let [s (fn [v] (bind-root cell v) cell)] (put cell :jolt/setter s) s)))
+(defn- emit-var-expr [cell] (tuple (var-getter cell)))
+(defn- emit-def-var-expr [cell init] (tuple (var-setter cell) (emit-expr init)))
+
+# An arity compiles to a named Janet fn whose name is its recur target — a
+# recur is just a self-call (Janet tail-calls it). The rest param is an ordinary
+# param holding a seq (not Janet `&`), so `(recur fixed... rest-seq)` works the
+# way Clojure recur into a variadic arity does.
+(defn- emit-arity-fn [ar]
+  (def ps @[])
+  (each pn (ar :param-names) (array/push ps (symbol pn)))
+  (when (ar :rest-name) (array/push ps (symbol (ar :rest-name))))
+  ['fn (symbol (ar :recur-name)) (tuple/slice ps) (emit-expr (ar :body))])
+
+# Invoke an arity's fn with the actual args pulled out of the dispatch vector:
+# fixed params by index, rest as a tuple slice.
+(defn- emit-arity-invoke [ar jargs]
+  (def call @[(emit-arity-fn ar)])
+  (for i 0 (ar :n-fixed) (array/push call ['in jargs i]))
+  (when (ar :rest-name) (array/push call ['tuple/slice jargs (ar :n-fixed)]))
+  (tuple/slice call))
+
+(defn- emit-fn-expr [ast]
+  (def arities (ast :arities))
+  (cond
+    # Single fixed arity — the common, hot case. Emit the arity fn directly
+    # (its name is the public name and the recur target); no dispatch overhead.
+    (and (not (ast :multi)) (not ((first arities) :rest-name)))
+      (emit-arity-fn (first arities))
+    # Single variadic arity: a thin wrapper collects the call's args so the rest
+    # seq can be built, then hands off to the arity fn.
+    (not (ast :multi))
+      (let [jargs (symbol (make-gensym "args"))]
+        ['fn (symbol (ast :name)) ['& jargs] (emit-arity-invoke (first arities) jargs)])
+    # Multi-arity: dispatch on arg count. Fixed arities match exactly; the (one)
+    # variadic arity matches >= its fixed count and goes last.
+    (let [jargs (symbol (make-gensym "args"))
+          n-sym (symbol (make-gensym "n"))
+          cond-form @['cond]]
+      (each ar arities
+        (if (ar :rest-name)
+          (array/push cond-form ['>= n-sym (ar :n-fixed)])
+          (array/push cond-form ['= n-sym (ar :n-fixed)]))
+        (array/push cond-form (emit-arity-invoke ar jargs)))
+      (array/push cond-form ['error "Wrong number of args passed to fn"])
+      ['fn (symbol (ast :name)) ['& jargs]
+       ['let [n-sym ['length jargs]] (tuple/slice cond-form)]])))
 
 (defn- emit-let-expr [binding-pairs body]
   (def bind-tuple @[])
@@ -828,7 +986,7 @@
   # only when the head is a keyword/collection literal in call position (an IFn
   # that needs runtime lookup), e.g. (:k m) or ({:a 1} :a).
   (def direct (case (f-ast :op)
-                :core-symbol true :symbol true :local true
+                :core-symbol true :symbol true :var true :local true
                 :qualified-symbol true :fn true
                 false))
   (def f (emit-expr f-ast))
@@ -836,12 +994,40 @@
   (each arg args (array/push exprs (emit-expr arg)))
   (tuple/slice (tuple ;exprs)))
 
+# A vector literal builds a mode-appropriate jolt vector (pvec when immutable,
+# array when mutable) via make-vec — the same constructor the interpreter uses —
+# so compiled and interpreted vectors share one representation. (Emitting a bare
+# Janet tuple diverged: type-strict ops like rseq reject tuples.)
 (defn- emit-vector-expr [items]
-  (def exprs @['tuple])
-  (each item items (array/push exprs (emit-expr item)))
-  (tuple/slice (tuple ;exprs)))
+  (def t @['tuple])
+  (each item items (array/push t (emit-expr item)))
+  [make-vec (tuple/slice t)])
 
-(defn- emit-map-expr [form] form)
+# Build a jolt map literal from evaluated alternating k/v args, mirroring the
+# interpreter (eval-form's map-literal case): a Janet struct unless a key is a
+# collection, in which case a phm so the key compares by value. Embedded as a
+# function constant in emitted code (functions marshal by reference).
+(defn build-map-literal [& kvs]
+  # phm (not a Janet struct) when a key is a collection (value-based hashing) or a
+  # key/value is nil (structs drop nil; phm preserves it, matching Clojure).
+  (var need-phm false)
+  (var ki 0)
+  (while (< ki (length kvs))
+    (let [kk (in kvs ki) vv (in kvs (+ ki 1))]
+      (when (or (table? kk) (array? kk) (nil? kk) (nil? vv)) (set need-phm true)))
+    (+= ki 2))
+  (if need-phm
+    (do (var m (make-phm)) (var j 0)
+        (while (< j (length kvs)) (set m (phm-assoc m (in kvs j) (in kvs (+ j 1)))) (+= j 2))
+        m)
+    (struct ;kvs)))
+
+(defn- emit-map-expr [pairs]
+  (def call @[build-map-literal])
+  (each [k v] pairs
+    (array/push call (emit-expr k))
+    (array/push call (emit-expr v)))
+  (tuple/slice call))
 
 (defn- emit-set-expr [items]
   (tuple/slice (tuple make-phs ;(map emit-expr items))))
@@ -854,13 +1040,15 @@
     (match (ast :op)
       :const (emit-const-expr (ast :val))
       :symbol (emit-symbol-expr (ast :name))
+      :var (emit-var-expr (ast :var))
       :local (emit-local-expr (ast :name))
       :core-symbol (emit-core-symbol-expr (ast :janet-name))
       :qualified-symbol (emit-qualified-symbol-expr (ast :ns) (ast :name))
       :do (emit-do-expr (ast :statements) (ast :ret))
       :if (emit-if-expr (ast :test) (ast :then) (ast :else))
-      :def (emit-def-expr (ast :name) (ast :init))
-      :fn (emit-fn-expr (ast :params) (ast :body))
+      :def (if (ast :var) (emit-def-var-expr (ast :var) (ast :init))
+             (emit-def-expr (ast :name) (ast :init)))
+      :fn (emit-fn-expr ast)
       :let (emit-let-expr (ast :binding-pairs) (ast :body))
       :throw (emit-throw-expr (ast :val))
       :try (emit-try-expr (ast :body) (ast :catch-sym) (ast :catch-body) (ast :finally-body))
@@ -868,7 +1056,7 @@
       :recur (emit-recur-expr (ast :args) (ast :loop-name))
       :invoke (emit-invoke-expr (ast :fn) (ast :args))
       :vector (emit-vector-expr (ast :items))
-      :map (emit-map-expr (ast :form))
+      :map (emit-map-expr (ast :pairs))
       :set (emit-set-expr (ast :items))
       :quote (emit-quote-expr (ast :expr))
       (error (string "Unhandled op: " (ast :op))))))
@@ -893,30 +1081,17 @@
   (emit-expr (analyze-form form @{} ctx)))
 
 (defn compile-and-eval
-  "Compile a Clojure form and evaluate it as Janet, in the context's persistent
-  Janet env (so compiled def/defn bindings resolve across forms). For def/defn
-  forms, also interns the result in the Jolt namespace so the interpreter can
-  resolve it later."
+  "Compile a Clojure form and evaluate it as Janet. Globals resolve through Jolt
+  var cells (see analyze-form/:var), so compiled def/defn results are visible to
+  the interpreter (the cell is the namespace var), recursion self-references the
+  cell, and redefinition is seen by compiled callers — no separate interning or
+  named-fn rewrite needed."
   [form ctx]
-  (def env (ctx-janet-env ctx))
-  (def def-form? (and ctx (array? form) (> (length form) 0)
-                      (struct? (first form)) (= :symbol ((first form) :jolt/type))
-                      (let [h ((first form) :name)] (or (= h "def") (= h "defn") (= h "defn-")))))
-  (def def-name (when def-form?
-                  (let [name-sym (in form 1)] (if (struct? name-sym) (name-sym :name) name-sym))))
-  (var compiled (compile-ast form ctx))
-  # Name the fn after the def so a recursive body self-references lexically
-  # ((def f (fn [..] (f ..))) -> (def f (fn f [..] (f ..)))); the anonymous form
-  # can't resolve f at compile time.
-  (when (and def-name (indexed? compiled) (= 3 (length compiled))
-             (= 'def (in compiled 0))
-             (indexed? (in compiled 2)) (= 'fn (in (in compiled 2) 0))
-             (indexed? (in (in compiled 2) 1)))   # 3rd elem is (fn [params] ...)
-    (let [f (in compiled 2)]
-      (set compiled [(in compiled 0) (in compiled 1)
-                     [(in f 0) (symbol def-name) ;(tuple/slice f 1)]])))
-  (def result (eval compiled env))
-  # Also intern def/defn results in the Jolt namespace for interpreter resolution.
-  (when def-name
-    (ns-intern (ctx-find-ns ctx (ctx-current-ns ctx)) def-name result))
-  result)
+  (eval (compile-ast form ctx) (ctx-janet-env ctx)))
+
+(defn eval-compiled
+  "Evaluate an already-compiled Janet form (the result of compile-ast) in the
+  context's compiled env. Split out from compile-and-eval so callers can guard
+  the compile step alone — see eval-one's hybrid fallback."
+  [compiled ctx]
+  (eval compiled (ctx-janet-env ctx)))

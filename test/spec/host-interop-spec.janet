@@ -31,3 +31,10 @@
   ["janet-type string"  ":string"   "(do (require (quote [jolt.interop :as j])) (j/janet-type \"x\"))"]
   ["janet-type number"  ":number"   "(do (require (quote [jolt.interop :as j])) (j/janet-type 1))"]
   ["janet-type keyword" ":keyword"  "(do (require (quote [jolt.interop :as j])) (j/janet-type :a))"])
+
+(defspec "interop / arrays (aget/aset/alength)"
+  ["alength"            "3"      "(alength (object-array [1 2 3]))"]
+  ["aget"               "20"     "(aget (object-array [10 20 30]) 1)"]
+  ["aset returns val"   "9"      "(aset (object-array [1 2 3]) 1 9)"]
+  ["aset mutates"       "[7 2 3]" "(let [a (object-array [1 2 3])] (aset a 0 7) (vec a))"]
+  ["aget 2d"            "4"      "(aget (to-array-2d [[1 2] [3 4]]) 1 1)"])

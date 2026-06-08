@@ -24,7 +24,12 @@
 
 (defn rename-keys
   [map kmap]
-  (reduce (fn [m [old new]] (if (contains? m old) (assoc m new (get m old) old nil) m)) map kmap))
+  (reduce (fn [m [old new]]
+            (if (contains? map old)
+              (assoc m new (get map old))
+              m))
+          (apply dissoc map (keys kmap))
+          kmap))
 
 (defn map-invert
   [m]

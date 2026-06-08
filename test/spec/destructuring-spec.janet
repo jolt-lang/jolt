@@ -35,13 +35,25 @@
   [":strs"              "7"      "(let [{:strs [a]} {\"a\" 7}] a)"]
   [":syms"              "8"      "(let [{:syms [a]} {(quote a) 8}] a)"]
   ["namespaced :keys"   "3"      "(let [{:keys [x/y]} {:x/y 3}] y)"]
-  ["namespaced :syms"   "4"      "(let [{:syms [p/q]} {(quote p/q) 4}] q)"])
+  ["namespaced :syms"   "4"      "(let [{:syms [p/q]} {(quote p/q) 4}] q)"]
+  # :keys also accepts keyword elements ({:keys [:a :b]}), binding bare locals.
+  ["keyword :keys"      "3"      "(let [{:keys [:a :b]} {:a 1 :b 2}] (+ a b))"]
+  ["keyword :keys ns"   "3"      "(let [{:keys [:x/y]} {:x/y 3}] y)"])
 
 (defspec "destructure / keyword args (& {:keys})"
   ["fn kwargs"          "[1 2]"  "(do (defn f [& {:keys [a b]}] [a b]) (f :a 1 :b 2))"]
   ["fn kwargs + fixed"  "[0 5]"  "(do (defn g [x & {:keys [a]}] [x a]) (g 0 :a 5))"]
   ["fn kwargs :or"      "9"      "(do (defn h [& {:keys [a] :or {a 9}}] a) (h))"]
   ["fn kwargs trailing map" "7"  "(do (defn k [& {:keys [a]}] a) (k {:a 7}))"])
+
+(defspec "destructure / fn params & loop"
+  ["fn vector param"    "7"      "((fn [[a b]] (+ a b)) [3 4])"]
+  ["fn map param"       "30"     "((fn [{:keys [x y]}] (* x y)) {:x 5 :y 6})"]
+  ["fn :or param"       "7"      "((fn [{:keys [x] :or {x 7}}] x) {})"]
+  ["fn multi-arity destr" "15"   "((fn ([[a]] a) ([[a] b] (+ a b))) [10] 5)"]
+  ["loop vector binding" "[4 2]" "(loop [[a b] [1 2] n 0] (if (< n 3) (recur [(inc a) b] (inc n)) [a b]))"]
+  ["loop map binding"   "4"      "(loop [{:keys [v]} {:v 1} n 0] (if (< n 2) (recur {:v (* v 2)} (inc n)) v))"]
+  ["loop init sees destr" "[1 2 3]" "(loop [[a b] [1 2] c (+ a b)] [a b c])"])
 
 (defspec "destructure / macro params"
   ["macro & [a & more :as all]"

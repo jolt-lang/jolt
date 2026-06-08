@@ -9,6 +9,7 @@
 #   Sets #{1 2}     → tagged struct {:jolt/type :jolt/set :value [1 2]}
 
 (use ./types)
+(import ./phm :as phm)
 
 # Forward declaration for mutual recursion
 (var read-form nil)
@@ -266,6 +267,16 @@
               (read-vec-items s new-pos (array/push items form))))))))
   (read-vec-items s (+ pos 1) @[]))
 
+# A map-literal form. Janet structs drop nil keys/values, so when a key or value
+# is nil (e.g. {:a nil}) build a phm — it preserves nil, matching Clojure. The
+# common nil-free case stays a struct: fast, and what the downstream map-form
+# handling (evaluator/analyzer) already expects. Collection keys are left to
+# eval-time construction (build-map-literal/eval-form), which phm-ifies them.
+(defn- reader-map [kvs]
+  (var has-nil false) (var i 0)
+  (while (< i (length kvs)) (when (nil? (in kvs i)) (set has-nil true) (break)) (++ i))
+  (if has-nil (phm/make-phm kvs) (struct ;kvs)))
+
 (defn read-map [s pos]
   # pos is at opening brace
   (defn read-kvs [s pos kvs]
@@ -273,7 +284,7 @@
       (if (>= pos (length s))
         (error "Unterminated map"))
       (if (= (s pos) 125) # }
-        [(struct ;kvs) (+ pos 1)]
+        [(reader-map kvs) (+ pos 1)]
         (let [[key new-pos] (read-form s pos)]
           (if (and (struct? key) (= :jolt/skip (key :jolt/type)))
             (read-kvs s new-pos kvs)
