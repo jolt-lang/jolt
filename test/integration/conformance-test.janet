@@ -76,6 +76,15 @@
    ["juxt fns in vec"     "[1 3]"  "((juxt first last) [1 2 3])"]
    ["last of lazy take"   "5"      "(last (take 5 (iterate inc 1)))"]
    ["next empty lazy"     "nil"    "(next (take 1 [1]))"]
+   # drop/distinct/partition/map-indexed/take-nth/interpose/keep are lazy too
+   ["drop vec is seq"     "true"   "(seq? (drop 1 [1 2 3]))"]
+   ["distinct vec is seq" "true"   "(seq? (distinct [1 1 2]))"]
+   ["map-indexed is seq"  "true"   "(seq? (map-indexed vector [1 2]))"]
+   ["partition vec lazy"  "(quote ((1 2) (3 4)))" "(partition 2 [1 2 3 4 5])"]
+   # nth over a lazy seq must not treat a false/nil element as end-of-seq
+   ["nth lazy false elem" "false"  "(nth (map identity [false 1 2]) 0)"]
+   ["nth lazy past false" "2"      "(nth (drop 1 (list false 1 2)) 1)"]
+   ["cond-> false clause" "2"      "(cond-> 1 true inc false inc)"]
 
    ### ---- HIGH: destructuring ----
    ["destr nested seq"   "[1 2 3]"   "(let [[a [b c]] [1 [2 3]]] [a b c])"]

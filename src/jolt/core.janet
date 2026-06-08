@@ -1035,17 +1035,15 @@
 (defn core-drop [n & rest]
  (if (= 0 (length rest)) (td-drop n)
   (let [coll (in rest 0)]
-  (if (lazy-seq? coll)
-    (do
-      (var cur coll)
-      (var i 0)
-      (while (and (< i n) (ls-first cur))
-        (set cur (ls-rest cur))
-        (++ i))
-      (if (nil? (ls-first cur)) nil cur))
-    (let [c (realize-for-iteration coll)
-          dropped (array/slice c (min n (length c)))]
-      (if (jvec? coll) (make-vec dropped) dropped))))))
+    # Option A: lazy drop — skip n (forcing only those), return the lazy tail.
+    (make-lazy-seq
+      (fn []
+        (var cur (lazy-from coll))
+        (var i 0)
+        (while (and (< i n) (not (seq-done? cur)))
+          (set cur (core-rest cur))
+          (++ i))
+        (coll->cells cur))))))
 
 # ffirst/nfirst/fnext/nnext/last/butlast (seq tier) and second/peek/subvec/mapv/
 # update (kernel tier) now live in the Clojure clojure.core tiers under
@@ -1207,13 +1205,16 @@
       (pv-nth coll idx)
       (oob (pv-count coll)))
   (if (lazy-seq? coll)
-    (do
-      (var cur coll)
-      (var i 0)
-      (while (and (< i idx) (ls-first cur))
-        (set cur (ls-rest cur))
-        (++ i))
-      (if (ls-first cur) (ls-first cur) (oob idx)))
+    # Walk with seq-done?, NOT (ls-first cur): a lazy element may legitimately be
+    # false or nil, which truthiness would mistake for end-of-seq.
+    (if (< idx 0) (oob 0)
+      (do
+        (var cur coll)
+        (var i 0)
+        (while (and (< i idx) (not (seq-done? cur)))
+          (set cur (core-rest cur))
+          (++ i))
+        (if (seq-done? cur) (oob i) (core-first cur))))
     (do
       (var c (realize-for-iteration coll))
       (if (and (>= idx 0) (< idx (length c)))
@@ -1251,29 +1252,20 @@
         (tuple/slice (tuple ;arr))))))
 
 (defn core-distinct [coll]
-  (if (nil? coll) @[]
-  (if (lazy-seq? coll)
-    (do
-      (var seen @{})
-      (defn dstep [c]
-        (fn []
-          (var cur c) (var found false) (var result nil)
-          (while (and (not found) (not (seq-done? cur)))
-            (let [x (ls-first cur)]
-              (set cur (ls-rest cur))
-              (when (nil? (seen x))
-                (put seen x true)
-                (set found true)
-                (set result x))))
-          (if found @[result (dstep cur)] nil)))
-      (make-lazy-seq (dstep coll)))
-    (do
-      (var seen @{})
-      (var result @[])
-      (each x (realize-for-iteration coll)
-        (if (nil? (seen x))
-          (do (put seen x true) (array/push result x))))
-      (if (jvec? coll) (make-vec result) result)))))
+  # Option A: always lazy. seen-set is captured once and shared across the chain.
+  (let [seen @{}]
+    (defn dstep [c]
+      (fn []
+        (var cur c) (var found false) (var result nil)
+        (while (and (not found) (not (seq-done? cur)))
+          (let [x (core-first cur)]
+            (set cur (core-rest cur))
+            (when (nil? (seen x))
+              (put seen x true)
+              (set found true)
+              (set result x))))
+        (if found @[result (dstep cur)] nil)))
+    (make-lazy-seq (dstep (lazy-from coll)))))
 
 # group-by / frequencies now live in the Clojure collection tier
 # (core/20-coll.clj).
@@ -1285,30 +1277,21 @@
   (let [has-step (> (length rest) 1)
         step (if has-step (first rest) n)
         coll (if has-step (in rest 1) (first rest))]
-    (if (lazy-seq? coll)
-      (do
-        (defn pstep [c]
-          (fn []
-            (if (seq-done? c) nil
-              (do
-                (var part @[]) (var cur c) (var i 0)
-                (while (and (< i n) (not (seq-done? cur)))
-                  (array/push part (ls-first cur))
-                  (set cur (ls-rest cur))
-                  (++ i))
-                (if (= i n)
-                  (let [next-cur (if (= step n) cur (core-drop (- step n) cur))]
-                    @[(tuple/slice (tuple ;part)) (pstep next-cur)])
-                  nil)))))
-        (make-lazy-seq (pstep coll)))
-      (let [c (realize-for-iteration coll)]
-        (var result @[]) (var i 0)
-        (while (<= (+ i n) (length c))
-          (var part @[]) (var j 0)
-          (while (< j n) (array/push part (in c (+ i j))) (++ j))
-          (array/push result (tuple/slice (tuple ;part)))
-          (+= i step))
-        result))))
+    # Option A: always lazy.
+    (defn pstep [c]
+      (fn []
+        (if (seq-done? c) nil
+          (do
+            (var part @[]) (var cur c) (var i 0)
+            (while (and (< i n) (not (seq-done? cur)))
+              (array/push part (core-first cur))
+              (set cur (core-rest cur))
+              (++ i))
+            (if (= i n)
+              (let [next-cur (if (= step n) cur (lazy-from (core-drop (- step n) cur)))]
+                @[(tuple/slice (tuple ;part)) (pstep next-cur)])
+              nil)))))
+    (make-lazy-seq (pstep (lazy-from coll)))))
 
 (defn core-partition-by [f coll]
   (def f (as-fn f))
@@ -1327,65 +1310,45 @@
   result)
 
 (defn core-partition-all [n coll]
-  (if (lazy-seq? coll)
-    (do
-      (defn pstep [c]
-        (fn []
-          (if (seq-done? c) nil
-            (do
-              (var part @[]) (var cur c) (var i 0)
-              (while (and (< i n) (not (seq-done? cur)))
-                (array/push part (ls-first cur))
-                (set cur (ls-rest cur))
-                (++ i))
-              @[(tuple/slice (tuple ;part)) (pstep cur)]))))
-      (make-lazy-seq (pstep coll)))
-    (let [c (realize-for-iteration coll)]
-      (var result @[]) (var i 0)
-      (while (< i (length c))
-        (var part @[]) (var j 0)
-        (while (and (< j n) (< (+ i j) (length c)))
-          (array/push part (in c (+ i j))) (++ j))
-        (array/push result (tuple/slice (tuple ;part)))
-        (+= i n))
-      result)))
+  # Option A: always lazy.
+  (defn pstep [c]
+    (fn []
+      (if (seq-done? c) nil
+        (do
+          (var part @[]) (var cur c) (var i 0)
+          (while (and (< i n) (not (seq-done? cur)))
+            (array/push part (core-first cur))
+            (set cur (core-rest cur))
+            (++ i))
+          @[(tuple/slice (tuple ;part)) (pstep cur)]))))
+  (make-lazy-seq (pstep (lazy-from coll))))
 
 
 (defn core-keep-indexed [f coll]
   (def f (as-fn f))
-  (if (lazy-seq? coll)
-    (do
-      (defn kstep [c i]
-        (fn []
-          (var cur c) (var idx i) (var found false) (var result nil)
-          (while (and (not found) (not (seq-done? cur)))
-            (let [v (f idx (ls-first cur))]
-              (++ idx)
-              (set cur (ls-rest cur))
-              (when (not (nil? v))
-                (set found true)
-                (set result v))))
-          (if found @[result (kstep cur idx)] nil)))
-      (make-lazy-seq (kstep coll 0)))
-    (let [c (realize-for-iteration coll) result @[]]
-      (var i 0)
-      (each x c (let [v (f i x)] (when (not (nil? v)) (array/push result v))) (++ i))
-      (tuple/slice (tuple ;result)))))
+  # Option A: always lazy.
+  (defn kstep [c i]
+    (fn []
+      (var cur c) (var idx i) (var found false) (var result nil)
+      (while (and (not found) (not (seq-done? cur)))
+        (let [v (f idx (core-first cur))]
+          (++ idx)
+          (set cur (core-rest cur))
+          (when (not (nil? v))
+            (set found true)
+            (set result v))))
+      (if found @[result (kstep cur idx)] nil)))
+  (make-lazy-seq (kstep (lazy-from coll) 0)))
 
 (defn core-map-indexed [f & rest]
   (if (= 0 (length rest)) (td-map-indexed f)
     (let [coll (in rest 0)]
-      (if (lazy-seq? coll)
-        (do
-          (defn mstep [c i]
-            (fn []
-              (if (seq-done? c) nil
-                @[(f i (ls-first c)) (mstep (ls-rest c) (+ i 1))])))
-          (make-lazy-seq (mstep coll 0)))
-        (let [c (realize-for-iteration coll) result @[]]
-          (var i 0)
-          (each x c (array/push result (f i x)) (++ i))
-          (tuple/slice (tuple ;result)))))))
+      # Option A: always lazy.
+      (defn mstep [c i]
+        (fn []
+          (if (seq-done? c) nil
+            @[(f i (core-first c)) (mstep (core-rest c) (+ i 1))])))
+      (make-lazy-seq (mstep (lazy-from coll) 0)))))
 
 (defn core-cycle [coll]
   (let [c (realize-for-iteration coll)]
@@ -2321,18 +2284,14 @@
 (defn core-take-nth [n & rest]
   (if (= 0 (length rest)) (td-take-nth n)
     (let [coll (in rest 0)]
-      (if (lazy-seq? coll)
-        (do
-          (defn tstep [c]
-            (fn []
-              (if (seq-done? c) nil
-                (let [drop-n (core-drop n c)]
-                  (if (seq-done? drop-n) @[(ls-first c) nil]
-                    @[(ls-first c) (tstep drop-n)])))))
-          (make-lazy-seq (tstep coll)))
-        (let [c (realize-for-iteration coll) r @[]]
-          (var i 0) (while (< i (length c)) (array/push r (in c i)) (+= i n))
-          (tuple/slice (tuple ;r)))))))
+      # Option A: always lazy.
+      (defn tstep [c]
+        (fn []
+          (if (seq-done? c) nil
+            (let [drop-n (lazy-from (core-drop n c))]
+              (if (seq-done? drop-n) @[(core-first c) nil]
+                @[(core-first c) (tstep drop-n)])))))
+      (make-lazy-seq (tstep (lazy-from coll))))))
 
 # filterv now lives in the Clojure collection tier (core/20-coll.clj).
 
@@ -2347,19 +2306,14 @@
 (defn core-interpose [sep & rest]
   (if (= 0 (length rest)) (td-interpose sep)
     (let [coll (in rest 0)]
-      (if (lazy-seq? coll)
-        (do
-          (defn istep [c need-sep]
-            (fn []
-              (if (seq-done? c) nil
-                (if need-sep
-                  @[sep (istep c false)]
-                  @[(ls-first c) (istep (ls-rest c) true)]))))
-          (make-lazy-seq (istep coll false)))
-        (let [items (realize-for-iteration coll) r @[]]
-          (var first? true)
-          (each x items (if first? (set first? false) (array/push r sep)) (array/push r x))
-          (tuple ;r))))))
+      # Option A: always lazy.
+      (defn istep [c need-sep]
+        (fn []
+          (if (seq-done? c) nil
+            (if need-sep
+              @[sep (istep c false)]
+              @[(core-first c) (istep (core-rest c) true)]))))
+      (make-lazy-seq (istep (lazy-from coll) false)))))
 
 (defn core-keep
   "(keep f coll) — (f x) for each x, dropping nils. (keep f) is a transducer."
@@ -2368,23 +2322,18 @@
   (if (= 0 (length rest))
     (td-keep f)
     (let [coll (in rest 0)]
-      (if (lazy-seq? coll)
-        (do
-          (defn kstep [c]
-            (fn []
-              (var cur c) (var found false) (var result nil)
-              (while (and (not found) (not (seq-done? cur)))
-                (let [v (f (ls-first cur))]
-                  (set cur (ls-rest cur))
-                  (when (not (nil? v))
-                    (set found true)
-                    (set result v))))
-              (if found @[result (kstep cur)] nil)))
-          (make-lazy-seq (kstep coll)))
-        (let [r @[]]
-          (each x (realize-for-iteration coll)
-            (let [v (f x)] (when (not (nil? v)) (array/push r v))))
-          (tuple ;r))))))
+      # Option A: always lazy.
+      (defn kstep [c]
+        (fn []
+          (var cur c) (var found false) (var result nil)
+          (while (and (not found) (not (seq-done? cur)))
+            (let [v (f (core-first cur))]
+              (set cur (core-rest cur))
+              (when (not (nil? v))
+                (set found true)
+                (set result v))))
+          (if found @[result (kstep cur)] nil)))
+      (make-lazy-seq (kstep (lazy-from coll))))))
 
 
 (defn core-empty [coll]
