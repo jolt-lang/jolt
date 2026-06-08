@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/jolt-lang/jolt/actions/workflows/tests.yml/badge.svg)](https://github.com/jolt-lang/jolt/actions/workflows/tests.yml)
 
-A Clojure implementation on [Janet](https://janet-lang.org). Jolt reads Clojure source and, by default, compiles each form to native Janet bytecode — falling back to a tree-walking interpreter for forms the compiler doesn't handle, so results always match the interpreter. It ships a Clojure-compatible standard library. The goal is a Janet-hosted [SCI](https://github.com/borkdude/sci)-style runtime with a minimal bootstrap.
+A Clojure implementation on top of [Janet](https://janet-lang.org). Jolt reads Clojure source and, by default, compiles each form to native Janet bytecode — falling back to a tree-walking interpreter for forms the compiler doesn't handle, so results always match the interpreter. It ships a Clojure-compatible standard library. The goal is a Janet-hosted [SCI](https://github.com/borkdude/sci)-style runtime with a minimal bootstrap.
 
 ## Build
 
