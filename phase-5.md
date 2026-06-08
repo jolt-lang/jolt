@@ -286,9 +286,11 @@ lacked**, and it works — all gates green (conformance 246×3, lazy-infinite
 - Transformers always route concrete input through `lazy-from` + the lazy step
   machinery (dropping the eager `(if (jvec? coll) (make-vec …))` branch).
 
-All transformers are lazy in interpret/compile/self-host. `interleave`,
-`reductions`, and `tree-seq` use **letfn-bound** recursion to avoid the
-compile-mode self-recursive-lazy-seq overlay bug (jolt-r81).
+All transformers are lazy in interpret/compile/self-host, using canonical
+recursive Clojure forms. (jolt-r81 — a compile-mode leak where lazy overlay fns
+returned the `lazy-seq` macro expansion as data — was root-fixed by moving
+`lazy-seq`/`lazy-cat` to the 00-syntax tier so they're registered before the
+seq/coll tiers that use them compile.)
 
 ---
 
