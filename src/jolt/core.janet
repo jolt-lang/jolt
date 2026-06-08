@@ -1257,31 +1257,6 @@
           (sort-by keyfn arr))
         (tuple/slice (tuple ;arr))))))
 
-(defn core-distinct [coll]
-  (if (nil? coll) @[]
-  (if (lazy-seq? coll)
-    (do
-      (var seen @{})
-      (defn dstep [c]
-        (fn []
-          (var cur c) (var found false) (var result nil)
-          (while (and (not found) (not (seq-done? cur)))
-            (let [x (ls-first cur)]
-              (set cur (ls-rest cur))
-              (when (nil? (seen x))
-                (put seen x true)
-                (set found true)
-                (set result x))))
-          (if found @[result (dstep cur)] nil)))
-      (make-lazy-seq (dstep coll)))
-    (do
-      (var seen @{})
-      (var result @[])
-      (each x (realize-for-iteration coll)
-        (if (nil? (seen x))
-          (do (put seen x true) (array/push result x))))
-      (if (jvec? coll) (make-vec result) result)))))
-
 # group-by / frequencies now live in the Clojure collection tier
 # (core/20-coll.clj).
 
@@ -1316,32 +1291,6 @@
           (array/push result (tuple/slice (tuple ;part)))
           (+= i step))
         result))))
-
-
-(defn core-partition-all [n coll]
-  (if (lazy-seq? coll)
-    (do
-      (defn pstep [c]
-        (fn []
-          (if (seq-done? c) nil
-            (do
-              (var part @[]) (var cur c) (var i 0)
-              (while (and (< i n) (not (seq-done? cur)))
-                (array/push part (ls-first cur))
-                (set cur (ls-rest cur))
-                (++ i))
-              @[(tuple/slice (tuple ;part)) (pstep cur)]))))
-      (make-lazy-seq (pstep coll)))
-    (let [c (realize-for-iteration coll)]
-      (var result @[]) (var i 0)
-      (while (< i (length c))
-        (var part @[]) (var j 0)
-        (while (and (< j n) (< (+ i j) (length c)))
-          (array/push part (in c (+ i j))) (++ j))
-        (array/push result (tuple/slice (tuple ;part)))
-        (+= i n))
-      result)))
-
 
 (defn core-keep-indexed [f coll]
   (def f (as-fn f))
@@ -1378,14 +1327,6 @@
           (var i 0)
           (each x c (array/push result (f i x)) (++ i))
           (tuple/slice (tuple ;result)))))))
-
-(defn core-cycle [coll]
-  (let [c (realize-for-iteration coll)]
-    (if (= 0 (length c))
-      (make-lazy-seq (fn [] nil))
-      (do
-        (defn cstep [i] (fn [] @[(in c (% i (length c))) (cstep (+ i 1))]))
-        (make-lazy-seq (cstep 0))))))
 
 # reduce-kv now lives in the Clojure collection tier (core/20-coll.clj).
 
@@ -1431,16 +1372,6 @@
           (array/push result i)
           (+= i step))
         (tuple/slice (tuple ;result))))))
-
-(defn core-repeat
-  "(repeat x) -> infinite lazy seq of x; (repeat n x) -> n copies of x."
-  [a & rest]
-  (if (= 0 (length rest))
-    (do (defn rstep [] (fn [] @[a (rstep)])) (make-lazy-seq (rstep)))
-    (let [n a x (in rest 0)]
-      (var result @[]) (var i 0)
-      (while (< i n) (array/push result x) (++ i))
-      result)))
 
 (defn core-iterate [f x]
   "Lazy infinite sequence x, (f x), (f (f x)), ..."
@@ -2337,6 +2268,7 @@
     (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
                 (if started (rf (rf (a 0) sep) (a 1))
                   (do (set started true) (rf (a 0) (a 1))))))))
+
 (defn core-interpose [sep & rest]
   (if (= 0 (length rest)) (td-interpose sep)
     (let [coll (in rest 0)]
@@ -2816,11 +2748,7 @@
     "get-in" core-get-in
     "contains?" core-contains?
     "count" core-count
-    "partition-all" core-partition-all
-    "keep-indexed" core-keep-indexed
-    "map-indexed" core-map-indexed
-    "cycle" core-cycle
-    "pop" core-pop
+                    "pop" core-pop
     "format" core-format
     "rand-int" core-rand-int
     "trampoline" core-trampoline
@@ -2901,10 +2829,8 @@
     "hash-unordered-coll" core-hash-unordered-coll
     "prefers" core-prefers
     "random-uuid" core-random-uuid
-    "interpose" core-interpose
-    "mapcat" core-mapcat
-    "keep" core-keep
-    "find" core-find
+        "mapcat" core-mapcat
+        "find" core-find
     "transduce" core-transduce
     "sequence" core-sequence
     "eduction" core-sequence
@@ -2941,13 +2867,10 @@
     "nth" core-nth
     "sort" core-sort
     "sort-by" core-sort-by
-    "distinct" core-distinct
-    "partition" core-partition
+        "partition" core-partition
+        "interpose" core-interpose
     "range" core-range
-    "repeat" core-repeat
-    "iterate" core-iterate
-    "repeatedly" core-repeatedly
-    "identity" core-identity
+                "identity" core-identity
     "constantly" core-constantly
     "complement" core-complement
     "comp" core-comp

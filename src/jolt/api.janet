@@ -50,7 +50,8 @@
    {:ns "clojure.core.00-kernel" :kernel true}
    {:ns "clojure.core.10-seq"    :kernel false}
    {:ns "clojure.core.20-coll"   :kernel false}
-   {:ns "clojure.core.30-macros" :kernel false}])
+   {:ns "clojure.core.30-macros" :kernel false}
+   {:ns "clojure.core.40-lazy"   :kernel false}])
 
 (defn- eval-overlay-source [ctx src]
   (var s src)

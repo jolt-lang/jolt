@@ -96,6 +96,7 @@
     "drop" "core-drop"
     "take-while" "core-take-while"
     "drop-while" "core-drop-while"
+    "interpose" "core-interpose"
     "nth" "core-nth"
     "mapcat" "core-mapcat"
     "apply" "core-apply"
