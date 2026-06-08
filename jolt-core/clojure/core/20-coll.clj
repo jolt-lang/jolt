@@ -213,3 +213,15 @@
         (recur (assoc m (first xs) (second xs)) (next (next xs)))
         m))
     s))
+
+;; Phase 4 (jolt-1j0): host-coupled fns that are pure logic over existing core
+;; primitives, so they need no new jolt.host surface.
+
+;; vary-meta: f applied to obj's metadata (+ extra args), reattached. meta and
+;; with-meta are the irreducible host primitives; vary-meta is just their compose.
+(defn vary-meta [obj f & args]
+  (with-meta obj (apply f (meta obj) args)))
+
+;; namespace-munge: Clojure namespace name -> legal Java package name (- -> _).
+(defn namespace-munge [s]
+  (apply str (map (fn [c] (if (= c \-) \_ c)) (seq (str s)))))

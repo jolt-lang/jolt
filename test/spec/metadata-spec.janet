@@ -7,6 +7,7 @@
   ["with-meta preserves value" "true" "(= [1 2 3] (with-meta [1 2 3] {:a 1}))"]
   ["with-meta on map"     "{:doc \"x\"}" "(meta (with-meta {:k 1} {:doc \"x\"}))"]
   ["vary-meta"            "{:a 2}"     "(meta (vary-meta (with-meta [1] {:a 1}) update :a inc))"]
+  ["vary-meta extra args" "{:a 1 :b 2}" "(meta (vary-meta (with-meta [1] {:a 1}) assoc :b 2))"]
   ["meta reader ^"        "{:tag :int}" "(meta ^{:tag :int} [1 2])"]
   ["with-meta on fn ok"   "true"       "(fn? (with-meta inc {:a 1}))"]
   ["with-meta nil clears" "nil"        "(meta (with-meta [1 2 3] nil))"])

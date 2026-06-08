@@ -1805,8 +1805,6 @@
 (defn core-clojure-version [] "1.11.0-jolt")
 (defn core-munge [s]
   (string/replace-all "-" "_" (string s)))
-(defn core-namespace-munge [s]
-  (string/replace-all "-" "_" (string s)))
 (defn core-test [v]
   (let [t (and (core-meta v) (get (core-meta v) :test))]
     (if t (do (t) :ok) :no-test)))
@@ -2375,8 +2373,8 @@
 # keys must be numbers (NaN allowed) — like Clojure, which compares them with </>.
 # min-key / max-key now live in the Clojure collection tier (core/20-coll.clj).
 
-(defn core-vary-meta [obj f & args]
-  (let [m (core-meta obj)] (core-with-meta obj (apply f m args))))
+# vary-meta / namespace-munge now live in the Clojure collection tier
+# (core/20-coll.clj) — pure compositions of meta/with-meta and str/map.
 
 # Exceptions (ex-info / ex-data / ex-message)
 (defn core-ex-info [msg data & more]
@@ -2876,7 +2874,6 @@
     "associative?" core-associative?
     "ifn?" core-ifn?
     "indexed?" core-indexed?
-    "vary-meta" core-vary-meta
     "ex-info" core-ex-info
     "ex-data" core-ex-data
     "ex-message" core-ex-message
@@ -3009,7 +3006,6 @@
     "class" core-class
     "clojure-version" core-clojure-version
     "munge" core-munge
-    "namespace-munge" core-namespace-munge
     "test" core-test
     "enumeration-seq" core-enumeration-seq
     "iterator-seq" core-iterator-seq
