@@ -191,7 +191,10 @@
 (defn xml-seq [root]
   (tree-seq (complement string?) (comp seq :content) root))
 
-;; Lazy interleave: round-robin one element from each coll until any exhausts.
+;; Eager interleave: round-robin one element from each coll until any exhausts.
+;; A lazy version (canonical Clojure cons-recursion) hits the same compile-mode
+;; overlay bug as reductions/tree-seq — a self-recursive lazy-seq leaks its macro
+;; expansion under :compile? (see jolt-r81). Eager until that's fixed.
 (defn interleave [& colls]
   (if (empty? colls)
     (list)
