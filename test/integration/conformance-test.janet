@@ -152,6 +152,11 @@
    ["reductions"      "(quote (1 3 6 10))" "(reductions + [1 2 3 4])"]
    ["reductions init" "(quote (0 1 3 6))" "(reductions + 0 [1 2 3])"]
    ["dedupe"          "(quote (1 2 3 1))" "(dedupe [1 1 2 3 3 1])"]
+   # partition-by with a strict pred (odd?) — guards jolt-r81: a lazy overlay fn
+   # whose lazy-seq leaked its expansion in compile mode passed a non-int to odd?.
+   ["partition-by odd?" "(quote ((1 1) (2) (3 3)))" "(partition-by odd? [1 1 2 3 3])"]
+   ["reductions inf"  "(quote (0 1 3 6))" "(take 4 (reductions + (range)))"]
+   ["tree-seq strict" "10"  "(reduce + 0 (filter (complement coll?) (tree-seq coll? seq [1 [2 [3 4]]])))"]
    ["keep-indexed"    "(quote (:b :d))" "(keep-indexed (fn [i x] (if (odd? i) x)) [:a :b :c :d])"]
    ["map-indexed"     "(quote ([0 :a] [1 :b]))" "(map-indexed (fn [i x] [i x]) [:a :b])"]
    ["trampoline"      ":done"         "(do (defn a [n] (if (zero? n) :done (fn [] (a (dec n))))) (trampoline a 5))"]

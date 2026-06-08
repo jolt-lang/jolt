@@ -219,11 +219,8 @@
        ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body)))))
 
 ;; --- laziness --------------------------------------------------------------
-;; lazy-seq defers its body: make-lazy-seq holds a thunk that, when forced,
-;; realizes the body to cells. lazy-cat wraps each coll in a lazy-seq and concats
-;; (concat is itself lazy, so no outer wrapping needed).
-(defmacro lazy-seq [& body]
-  `(make-lazy-seq (fn* [] (coll->cells (do ~@body)))))
-
-(defmacro lazy-cat [& colls]
-  `(concat ~@(map (fn [c] `(lazy-seq ~c)) colls)))
+;; lazy-seq / lazy-cat moved to the 00-syntax tier: the seq/coll tiers (10-seq,
+;; 20-coll) use lazy-seq, and in compile mode a tier's forms are compiled as it
+;; loads — so the macro must be registered BEFORE those tiers, else (lazy-seq …)
+;; compiles as a call to the macro-as-function and leaks its expansion at runtime
+;; (jolt-r81). They only need seed fns (make-lazy-seq/coll->cells/concat).

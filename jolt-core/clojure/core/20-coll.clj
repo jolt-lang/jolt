@@ -151,9 +151,7 @@
 (defn comparator [pred]
   (fn [a b] (cond (pred a b) -1 (pred b a) 1 :else 0)))
 
-;; Lazy: the running accumulators, one at a time (matches Clojure). Recursion is
-;; letfn-bound (NOT top-level self-call) so the lazy-seq body compiles cleanly in
-;; the overlay — see jolt-r81.
+;; Lazy: the running accumulators, one at a time (matches Clojure).
 (defn reductions
   ([f coll]
    (lazy-seq
@@ -162,22 +160,19 @@
          (reductions f (first s) (rest s))
          (list (f))))))
   ([f init coll]
-   (letfn [(step [acc s]
-             (cons acc
-                   (lazy-seq
-                     (let [s (seq s)]
-                       (when s
-                         (step (f acc (first s)) (rest s)))))))]
-     (step init coll))))
+   (cons init
+         (lazy-seq
+           (when-let [s (seq coll)]
+             (reductions f (f init (first s)) (rest s)))))))
 
-;; Lazy pre-order DFS (matches Clojure). letfn-bound walk (not (fn walk …)) so it
-;; compiles cleanly in the overlay under :compile? — see jolt-r81.
+;; Lazy pre-order DFS (matches Clojure): node, then its children's walks spliced
+;; via the (now lazy) mapcat.
 (defn tree-seq [branch? children root]
-  (letfn [(walk [node]
-            (lazy-seq
-              (cons node
-                    (when (branch? node)
-                      (mapcat walk (children node))))))]
+  (let [walk (fn walk [node]
+               (lazy-seq
+                 (cons node
+                       (when (branch? node)
+                         (mapcat walk (children node))))))]
     (walk root)))
 
 ;; Canonical flatten via tree-seq: the leaves (non-sequential nodes) in order.
@@ -190,28 +185,22 @@
   (tree-seq (complement string?) (comp seq :content) root))
 
 ;; Lazy interleave: round-robin one element from each coll until any exhausts.
-;; letfn-bound recursion (not top-level self-call) so the lazy-seq body compiles
-;; cleanly in the overlay — see jolt-r81.
 (defn interleave
   ([] ())
   ([c1] (lazy-seq c1))
   ([c1 c2]
-   (letfn [(step [s1 s2]
-             (lazy-seq
-               (let [s1 (seq s1) s2 (seq s2)]
-                 (when (and s1 s2)
-                   (cons (first s1)
-                         (cons (first s2)
-                               (step (rest s1) (rest s2))))))))]
-     (step c1 c2)))
+   (lazy-seq
+     (let [s1 (seq c1) s2 (seq c2)]
+       (when (and s1 s2)
+         (cons (first s1)
+               (cons (first s2)
+                     (interleave (rest s1) (rest s2))))))))
   ([c1 c2 & cs]
-   (letfn [(step [ss]
-             (lazy-seq
-               (let [ss (map seq ss)]
-                 (when (every? identity ss)
-                   (concat (map first ss)
-                           (step (map rest ss)))))))]
-     (step (list* c1 c2 cs)))))
+   (lazy-seq
+     (let [ss (map seq (list* c1 c2 cs))]
+       (when (every? identity ss)
+         (concat (map first ss)
+                 (apply interleave (map rest ss))))))))
 
 ;; No ratio type on Jolt, so rationalize is identity.
 (defn rationalize [x] x)

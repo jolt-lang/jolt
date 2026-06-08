@@ -330,3 +330,16 @@
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if temp# (let [~form temp#] ~@body) nil))))
+
+;; lazy-seq / lazy-cat live here (not 30-macros) because the seq/coll tiers use
+;; them and compile-as-they-load: the macro must be registered before those tiers
+;; or (lazy-seq …) compiles to a call of the macro-as-function and leaks its
+;; expansion at runtime (jolt-r81). They use only seed fns (make-lazy-seq/
+;; coll->cells/concat) + map, all available from the start.
+;; lazy-seq defers its body: make-lazy-seq holds a thunk that realizes the body
+;; to cells when forced. lazy-cat wraps each coll in a lazy-seq and concats.
+(defmacro lazy-seq [& body]
+  `(make-lazy-seq (fn* [] (coll->cells (do ~@body)))))
+
+(defmacro lazy-cat [& colls]
+  `(concat ~@(map (fn [c] `(lazy-seq ~c)) colls)))
