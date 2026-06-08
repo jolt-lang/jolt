@@ -223,16 +223,19 @@
 ;; Eager dedupe of consecutive equal elements (Jolt has no transducer arity yet).
 (defn dedupe [coll]
   (let [step (fn step [s prev]
-               (lazy-seq
-                 (let [s (seq s)]
-                   (when s
-                     (let [x (first s)]
-                       (if (= x prev)
-                         (step (rest s) prev)
-                         (cons x (step (rest s) x))))))))]
+               (make-lazy-seq
+                 (fn* []
+                   (let [s (seq s)]
+                     (if s
+                       (let [x (first s)]
+                         (if (= x prev)
+                           (coll->cells (step (rest s) prev))
+                           (coll->cells (cons x (step (rest s) x)))))
+                       nil)))))]
     (let [s (seq coll)]
       (if s
-        (cons (first s) (step (rest s) (first s)))
+        (make-lazy-seq
+          (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
         ()))))
 
 ;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs:
