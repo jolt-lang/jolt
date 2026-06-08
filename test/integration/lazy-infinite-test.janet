@@ -50,6 +50,8 @@
    ["take 4 interleave range iterate"     "(quote (0 10 1 11))"   "(take 4 (interleave (range) (iterate inc 10)))"]
    ["take 4 reductions + range"           "(quote (0 1 3 6))"     "(take 4 (reductions + (range)))"]
    ["take 3 tree-seq infinite"            "(quote (0 0 0))"       "(take 3 (tree-seq (fn [_] true) (fn [n] [n]) 0))"]
+   ["every? short-circuits on inf"        "false"                 "(every? pos? (range))"]
+   ["not-every? short-circuits on inf"    "true"                  "(not-every? pos? (range))"]
    ["take 3 partition 2 range"            "(quote ((0 1) (2 3) (4 5)))" "(take 3 (partition 2 (range)))"]
    ["take 3 partition-all 2 range"        "(quote ((0 1) (2 3) (4 5)))" "(take 3 (partition-all 2 (range)))"]
    ["take 3 map-indexed vector range"     "(quote ([0 0] [1 1] [2 2]))" "(take 3 (map-indexed vector (range)))"]

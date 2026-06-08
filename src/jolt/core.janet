@@ -201,10 +201,26 @@
               (= 0 (length coll))))))))))
 
 (defn core-every? [pred coll]
-  (var result true)
-  (each x (realize-for-iteration coll)
-    (if (not (pred x)) (do (set result false) (break))))
-  result)
+  # Short-circuit on the first false — and pull lazily so an infinite seq with an
+  # early false (e.g. (every? pos? (range))) returns rather than hanging. Walks
+  # cells via realize-ls directly (core-first/lazy-from are defined later).
+  (if (lazy-seq? coll)
+    (do
+      (var cur coll) (var result true) (var go true)
+      (while (and result go)
+        (let [cell (realize-ls cur)]
+          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
+            (set go false)
+            (if (pred (in cell 0))
+              (let [rt (in cell 1)]
+                (if (nil? rt) (set go false) (set cur (make-lazy-seq rt))))
+              (set result false)))))
+      result)
+    (do
+      (var result true)
+      (each x (realize-for-iteration coll)
+        (if (not (pred x)) (do (set result false) (break))))
+      result)))
 
 # ============================================================
 # Math — Clojure semantics (variadic, / with one arg = reciprocal)
