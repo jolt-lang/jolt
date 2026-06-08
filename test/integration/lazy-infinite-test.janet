@@ -47,8 +47,9 @@
    ["first filter even? drop range"       "4"                     "(first (filter even? (drop 3 (range))))"]
    ["take 3 remove odd? range"            "(quote (0 2 4))"       "(take 3 (remove odd? (range)))"]
    ["take 3 drop-while <5 range"          "(quote (5 6 7))"       "(take 3 (drop-while (fn [x] (< x 5)) (range)))"]
-    # interleave stays eager in overlay (lazy-seq macro breaks compile mode).
-   # ["take 4 interleave range iterate"     "(quote (0 10 1 11))"   "(take 4 (interleave (range) (iterate inc 10)))"]
+   ["take 4 interleave range iterate"     "(quote (0 10 1 11))"   "(take 4 (interleave (range) (iterate inc 10)))"]
+   ["take 4 reductions + range"           "(quote (0 1 3 6))"     "(take 4 (reductions + (range)))"]
+   ["take 3 tree-seq infinite"            "(quote (0 0 0))"       "(take 3 (tree-seq (fn [_] true) (fn [n] [n]) 0))"]
    ["take 3 partition 2 range"            "(quote ((0 1) (2 3) (4 5)))" "(take 3 (partition 2 (range)))"]
    ["take 3 partition-all 2 range"        "(quote ((0 1) (2 3) (4 5)))" "(take 3 (partition-all 2 (range)))"]
    ["take 3 map-indexed vector range"     "(quote ([0 0] [1 1] [2 2]))" "(take 3 (map-indexed vector (range)))"]
