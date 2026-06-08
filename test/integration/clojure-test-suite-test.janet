@@ -1,20 +1,20 @@
 # clojure-test-suite conformance: runs the external, cross-dialect
-# clojure-test-suite (https://github.com/lread/clojure-test-suite, EPL) against
-# Jolt and asserts the number of passing per-function test files stays at/above
-# a baseline. Like the jank battery, this does NOT vendor the suite — it
-# references ~/src/clojure-test-suite if present and SKIPS cleanly when absent.
+# clojure-test-suite (jank-lang fork) against Jolt and asserts the number of
+# passing per-function test files stays at/above a baseline. The suite is a git
+# submodule at vendor/clojure-test-suite (CI checks it out via submodules:
+# recursive). The test SKIPS cleanly only if the submodule isn't initialized
+# (run `git submodule update --init`).
 #
 # Each suite file is a `clojure.test` namespace (one per clojure.core/string
 # function). A minimal clojure.test + portability shim (test/support/clojure_test.clj)
 # lets Jolt load them; `when-var-exists` auto-skips fns Jolt doesn't implement.
 #
 # Files are run in a one-shot worker subprocess (test/integration/suite-worker.janet)
-# under a wall-clock deadline. Some suite tests build infinite sequences
-# (cycle/range/transducers-over-infinite) that Jolt's eager evaluator can't
-# truncate and so HANG rather than fail; the deadline contains them — a timed-out
-# file is reported as :timeout and contributes nothing, no manual skip-list needed.
+# under a wall-clock deadline. A few suite tests build infinite sequences that an
+# uncompilable/eager path can't truncate and so HANG rather than fail; the
+# deadline contains them — a timed-out file contributes nothing, no skip-list.
 
-(def suite-dir (string (os/getenv "HOME") "/src/clojure-test-suite/test/clojure"))
+(def suite-dir "vendor/clojure-test-suite/test/clojure")
 
 # Baseline: assertions Jolt currently passes across the suite. Raise as Jolt
 # improves so a regression (previously-passing assertion breaking) is caught.
@@ -86,7 +86,7 @@
   result)
 
 (if (not (os/stat suite-dir))
-    (print "clojure-test-suite: ~/src/clojure-test-suite not present — skipped")
+    (print "clojure-test-suite: vendor/clojure-test-suite not initialized — skipped (run: git submodule update --init)")
     (do
       (def progress? (os/getenv "SUITE_PROGRESS"))
       (def files (sort (walk suite-dir @[])))

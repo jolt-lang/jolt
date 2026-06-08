@@ -13,7 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # vendor/sci is needed by the SCI bootstrap/runtime integration tests.
+          # Submodules: vendor/sci (SCI bootstrap/runtime tests) and
+          # vendor/clojure-test-suite (the cross-dialect conformance battery,
+          # asserted against a baseline by clojure-test-suite-test.janet).
           submodules: recursive
 
       - name: Cache Janet build
