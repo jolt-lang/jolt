@@ -2822,6 +2822,8 @@
     "cycle" core-cycle
     "pop" core-pop
     "format" core-format
+    "rand-int" core-rand-int
+    "trampoline" core-trampoline
     "first" core-first
     "rest" core-rest
     "next" core-next
