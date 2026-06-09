@@ -250,6 +250,9 @@
                # reference (a bare table in arg position would be re-evaluated as
                # a constructor — deep-copying it, and any atom in :root, each call).
                (tuple var-get (tuple 'quote cell))))
+      # (var x): the var object itself (not its value) — the embedded cell, by
+      # reference. binding keys its thread-binding frame on this exact cell.
+      :the-var (tuple 'quote (cell-for ctx (node :ns) (node :name)))
       :if ['if (emit ctx (node :test)) (emit ctx (node :then)) (emit ctx (node :else))]
       :do (emit-seq ctx node)
       :loop (emit-loop ctx node)

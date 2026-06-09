@@ -16,6 +16,10 @@
 ;; A global var reference, by name. The back end resolves it to a host var.
 (defn var-ref [ns name] {:op :var :ns ns :name name})
 
+;; The var object itself — (var x) / #'x. Unlike var-ref (which derefs), the back
+;; end emits the embedded var cell so `binding`'s thread-binding frame can key on it.
+(defn the-var [ns name] {:op :the-var :ns ns :name name})
+
 ;; A runtime primitive (cons, +, get, apply, …) the back end maps to the host RT.
 (defn rt [name] {:op :rt :name name})
 

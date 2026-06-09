@@ -17,7 +17,7 @@
       (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
       (= head-name "require") (= head-name "in-ns")
       (= head-name "set!")
-      (= head-name "var") (= head-name ".") (= head-name "new")
+      (= head-name ".") (= head-name "new")
       (= head-name "eval")))
 
 (defn- form-head-name [form]

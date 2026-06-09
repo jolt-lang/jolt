@@ -71,7 +71,7 @@
 (def- special-names
   (let [t @{}]
     (each n ["quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
-             "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
+             "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!"
              "locking" "eval" "instance?" "defmulti" "defmethod" "deftype" "new"
              "." "var-get" "var-set" "var?" "alter-var-root" "find-var" "intern"
              "alter-meta!" "reset-meta!" "satisfies?"
@@ -89,7 +89,7 @@
              "gen-class"
              # letfn stays: its let* expansion needs letrec semantics (mutual
              # recursion between the fns), which compiled sequential let* lacks.
-             "monitor-enter" "monitor-exit" "binding" "letfn"]
+             "monitor-enter" "monitor-exit" "letfn"]
       (put t n true))
     t))
 

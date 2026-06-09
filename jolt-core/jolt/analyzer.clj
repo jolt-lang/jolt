@@ -14,7 +14,7 @@
   Definitions are ordered so only `analyze` (mutually recursive) is forward
   declared — the bootstrap compiles forward refs through var cells, but keeping
   them to one keeps the compiled namespace simple."
-  (:require [jolt.ir :refer [const local var-ref host-ref if-node do-node invoke
+  (:require [jolt.ir :refer [const local var-ref the-var host-ref if-node do-node invoke
                              def-node let-node fn-node vector-node map-node set-node
                              quote-node throw-node]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
@@ -28,7 +28,7 @@
 
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
-    "syntax-quote"})
+    "syntax-quote" "var"})
 
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
@@ -163,6 +163,11 @@
     ;; Lower the backtick to construction code (zero runtime cost), then analyze
     ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.
     "syntax-quote" (analyze ctx (form-syntax-quote-lower ctx (second items)) env)
+    "var" (let [sym (second items)
+                r (resolve-global ctx sym)]
+            (if (= :var (:kind r))
+              (the-var (:ns r) (:name r))
+              (uncompilable (str "var of non-var " (form-sym-name sym)))))
     (uncompilable (str "special form " op))))
 
 (defn- analyze-symbol [ctx form env]
