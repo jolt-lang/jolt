@@ -230,6 +230,12 @@
     (array/push args (emit ctx (in p 1))))
   (tuple/slice args))
 
+# A set literal: build (make-phs e1 e2 …) so each element is evaluated at runtime
+# then the persistent set is constructed — mirrors compiler.janet's emit-set-expr.
+(defn- emit-set [ctx node]
+  (def items (map |(emit ctx $) (vview (node :items))))
+  (tuple/slice (array/concat @[phm/make-phs] items)))
+
 (set emit
   (fn emit [ctx raw]
     (def node (norm-node raw))
@@ -259,6 +265,7 @@
       :invoke (emit-invoke ctx node)
       :vector (emit-vector ctx node)
       :map (emit-map ctx node)
+      :set (emit-set ctx node)
       :quote ['quote (node :form)]
       (error (string "backend: unhandled op " (node :op))))))
 

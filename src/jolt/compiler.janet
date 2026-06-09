@@ -163,7 +163,6 @@
              "find-ns" "all-ns" "the-ns" "find-var" "intern" "resolve"
              "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
              "alter-var-root" "alter-meta!" "reset-meta!" "locking" "new"
-             "disj" "set?"
              # Definitional/host macros that mutate context or build runtime
              # values the emitter doesn't model.
              "defrecord" "defprotocol" "definterface" "reify" "proxy"

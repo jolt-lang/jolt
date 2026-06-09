@@ -74,7 +74,7 @@
              "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
              "locking" "eval" "instance?" "defmulti" "defmethod" "deftype" "new"
              "." "var-get" "var-set" "var?" "alter-var-root" "find-var" "intern"
-             "alter-meta!" "reset-meta!" "disj" "set?" "satisfies?"
+             "alter-meta!" "reset-meta!" "satisfies?"
              "protocol-dispatch" "register-method" "make-reified" "prefer-method"
              "remove-method" "remove-all-methods" "get-method" "methods"
              # ns-management forms dispatched by the interpreter (not core vars)

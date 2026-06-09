@@ -3,17 +3,26 @@
 ;;
 ;; Each fn ported from CLJS core.cljs, stripped of chunked-seq branches.
 
-;; --- distinct ---
-(defn distinct [coll]
-  (let [step (fn step [xs seen]
-               (lazy-seq
-                 ((fn [[f :as xs] seen]
-                    (when-let [s (seq xs)]
-                      (if (contains? seen f)
-                        (recur (rest s) seen)
-                        (cons f (step (rest s) (conj seen f))))))
-                   xs seen)))]
-    (step coll #{})))
+;; --- distinct --- (transducer + lazy collection arity; value-based dedup)
+(defn distinct
+  ([]
+   (fn [rf]
+     (let [seen (volatile! #{})]
+       (fn ([] (rf)) ([result] (rf result))
+         ([result input]
+          (if (contains? @seen input)
+            result
+            (do (vswap! seen conj input) (rf result input))))))))
+  ([coll]
+   (let [step (fn step [xs seen]
+                (lazy-seq
+                  ((fn [[f :as xs] seen]
+                     (when-let [s (seq xs)]
+                       (if (contains? seen f)
+                         (recur (rest s) seen)
+                         (cons f (step (rest s) (conj seen f))))))
+                    xs seen)))]
+     (step coll #{}))))
 
 
 ;; --- keep ---
@@ -76,7 +85,9 @@
         (cstep 0)))
     ()))
 
-;; --- repeatedly ---
+;; --- repeatedly --- ((f) throws on a non-fn; (take n …) throws on a non-number
+;; count — both now enforced in the seed (jolt-call / core-take), so the canonical
+;; CLJ form matches the repeatedly.cljc exception cases.)
 (defn repeatedly
   ([f] (lazy-seq (cons (f) (repeatedly f))))
   ([n f] (take n (repeatedly f))))
@@ -91,10 +102,39 @@
   (lazy-seq (cons x (iterate f (f x)))))
 
 
-;; --- partition-all ---
+;; --- partition-all --- (transducer + [n coll] + [n step coll])
+;; The collection arities realize EXACTLY n per chunk via a first/rest loop and
+;; continue from the advanced cursor (not a re-drop / nthrest), so they realize
+;; minimally — matching the Janet pstep the §6.3 laziness counters were written
+;; against. (A take/nthrest form is correct but over-realizes.)
 (defn partition-all
-  ([n coll] (partition-all n n coll))
+  ([n]
+   (fn [rf]
+     (let [a (volatile! [])]
+       (fn
+         ([] (rf))
+         ([result]
+          (let [result (if (zero? (count @a))
+                         result
+                         (let [v @a] (vreset! a []) (unreduced (rf result v))))]
+            (rf result)))
+         ([result input]
+          (vswap! a conj input)
+          (if (= n (count @a))
+            (let [v @a] (vreset! a []) (rf result v))
+            result))))))
+  ([n coll]
+   (letfn [(go [s]
+             (lazy-seq
+               (when (seq s)
+                 (loop [i 0 chunk [] cur s]
+                   (if (and (< i n) (seq cur))
+                     (recur (inc i) (conj chunk (first cur)) (rest cur))
+                     (cons chunk (go cur)))))))]
+     (go coll)))
   ([n step coll]
-   (lazy-seq
-    (when-let [s (seq coll)]
-      (cons (take n s) (partition-all n step (nthrest coll step)))))))
+   (letfn [(go [s]
+             (lazy-seq
+               (when (seq s)
+                 (cons (take n s) (go (nthrest s step))))))]
+     (go coll))))

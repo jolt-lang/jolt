@@ -15,12 +15,12 @@
   declared — the bootstrap compiles forward refs through var cells, but keeping
   them to one keeps the compiled namespace simple."
   (:require [jolt.ir :refer [const local var-ref host-ref if-node do-node invoke
-                             def-node let-node fn-node vector-node map-node
+                             def-node let-node fn-node vector-node map-node set-node
                              quote-node throw-node]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
                                form-vec? form-map? form-set? form-char?
                                form-literal? form-elements form-vec-items
-                               form-map-pairs form-special? compile-ns
+                               form-map-pairs form-set-items form-special? compile-ns
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower]]))
 
@@ -207,6 +207,6 @@
      (form-map? form) (map-node (mapv (fn [p] [(analyze ctx (first p) env)
                                               (analyze ctx (second p) env)])
                                      (form-map-pairs form)))
-     (form-set? form) (uncompilable "set literal")
+     (form-set? form) (set-node (mapv #(analyze ctx % env) (form-set-items form)))
      (form-list? form) (analyze-list ctx form env)
      :else (uncompilable "unsupported form"))))

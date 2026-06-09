@@ -26,7 +26,6 @@
       (= name "var-get") (= name "var-set") (= name "var?")
       (= name "alter-var-root") (= name "find-var") (= name "intern")
       (= name "alter-meta!") (= name "reset-meta!")
-      (= name "disj") (= name "set?")
       (= name "satisfies?")
       (= name "protocol-dispatch") (= name "register-method") (= name "make-reified")
       (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")
@@ -116,7 +115,9 @@
         (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length f)))
           (in f k)
           (error (string "Index " k " out of bounds for vector of length " (length f)))))
-    (struct? f)
+    # Map literal only (struct with no :jolt/type). A tagged struct (char/etc.)
+    # is not callable — symbols are handled above; chars fall through to the error.
+    (and (struct? f) (nil? (get f :jolt/type)))
       (let [v (get f (get args 0) :jolt/not-found)]
         (if (= v :jolt/not-found) (get args 1) v))
     (and (table? f) (get f :jolt/deftype))
@@ -1140,12 +1141,8 @@
                    val (eval-form ctx bindings (in form 3))
                    ns (ctx-find-ns ctx (if (struct? ns-name) (ns-name :name) ns-name))]
                (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val))
-    "disj" (let [s (eval-form ctx bindings (in form 1))
-                 ks (map |(eval-form ctx bindings $) (tuple/slice form 2))]
-             (if (set? s)
-               (apply phs-disj s ks)
-               (error "disj expects a set")))
-    "set?" (set? (eval-form ctx bindings (in form 1)))
+    # set?/disj are plain clojure.core fns now (core-set?/core-disj) — no longer
+    # special-cased here, the analyzer, or compiler.janet (jolt-g3h).
     "protocol-dispatch" (let [proto-sym (in form 1)
                                method-sym (in form 2)
                                obj (eval-form ctx bindings (in form 3))

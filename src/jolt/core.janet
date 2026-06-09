@@ -508,7 +508,10 @@
         (if (and (number? k) (= k (math/floor k)) (>= k 0) (< k (length f)))
           (in f k)
           (error (string "Index " k " out of bounds for vector of length " (length f)))))
-    (or (struct? f) (and (table? f) (get f :jolt/deftype)))
+    # Map literal (struct with no :jolt/type marker) or a record: callable as a
+    # key lookup. A TAGGED struct (char/etc.) is NOT a fn — symbols are handled
+    # above; everything else with a :jolt/type falls through to the error.
+    (or (and (struct? f) (nil? (get f :jolt/type))) (and (table? f) (get f :jolt/deftype)))
       (let [v (get f (get args 0) :jolt/not-found)]
         (if (= v :jolt/not-found) (get args 1) v))
     (error (string "Cannot call " (type f) " as a function"))))
@@ -804,9 +807,7 @@
   (fn [rf] (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
                        (if (truthy? (pred (a 1))) (rf (a 0) (a 1)) (a 0))))))
 (defn td-remove [pred] (td-filter (fn [x] (not (pred x)))))
-(defn td-keep [f]
-  (fn [rf] (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
-                       (let [v (f (a 1))] (if (nil? v) (a 0) (rf (a 0) v)))))))
+# td-keep removed: keep (incl its transducer arity) lives in core/40-lazy.clj.
 (defn td-take [n]
   (fn [rf]
     (var left n)
@@ -829,31 +830,11 @@
     (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
                 (do (when (and dropping (not (truthy? (pred (a 1))))) (set dropping false))
                   (if dropping (a 0) (rf (a 0) (a 1))))))))
-(defn td-map-indexed [f]
-  (fn [rf]
-    (var i -1)
-    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0)) (do (++ i) (rf (a 0) (f i (a 1))))))))
+# td-map-indexed removed: map-indexed (incl transducer arity) lives in core/40-lazy.clj.
 
 # Stateful windowing transducers. The 1-arg (completion) arity flushes a partial
 # trailing window before delegating to rf's completion; matches Clojure.
-(defn td-partition-all [n]
-  (fn [rf]
-    (var buf @[])
-    (fn [& a]
-      (case (length a)
-        0 (rf)
-        1 (let [result (if (= 0 (length buf)) (a 0)
-                         (let [v (tuple/slice (tuple ;buf))]
-                           (set buf @[])
-                           (core-unreduced (rf (a 0) v))))]
-            (rf result))
-        (do
-          (array/push buf (a 1))
-          (if (= n (length buf))
-            (let [v (tuple/slice (tuple ;buf))]
-              (set buf @[])
-              (rf (a 0) v))
-            (a 0)))))))
+# td-partition-all removed: partition-all (incl transducer arity) lives in core/40-lazy.clj.
 
 # partition-by's transducer arity lives with its (lazy) collection arity in the
 # overlay (10-seq tier), written in Clojure with volatiles.
@@ -1113,6 +1094,9 @@
       (error "Wrong number of args passed to: reduce"))))
 
 (defn core-take [n & rest]
+ # n is a count — reject non-numbers (e.g. a char/string) like Clojure, rather
+ # than letting Janet's >= silently compare mixed types.
+ (unless (number? n) (error (string "take: n must be a number, got " (type n))))
  (if (= 0 (length rest)) (td-take n)
   (let [coll (in rest 0)]
     # Option A: lazy take (returns a seq, not a vector, even over a vector).
@@ -1342,22 +1326,7 @@
           (sort-by keyfn arr))
         (tuple/slice (tuple ;arr))))))
 
-(defn core-distinct [coll]
-  # Option A: always lazy. seen-set is captured once and shared across the chain.
-  (let [seen @{}]
-    (defn dstep [c]
-      (fn []
-        (var cur c) (var found false) (var result nil)
-        (while (and (not found) (not (seq-done? cur)))
-          (let [x (core-first cur)]
-            (set cur (core-rest cur))
-            (when (nil? (seen x))
-              (put seen x true)
-              (set found true)
-              (set result x))))
-        (if found @[result (dstep cur)] nil)))
-    (make-lazy-seq (dstep (lazy-from coll)))))
-
+# distinct now lives in the Clojure lazy tier (core/40-lazy.clj).
 # group-by / frequencies now live in the Clojure collection tier
 # (core/20-coll.clj).
 
@@ -1384,72 +1353,13 @@
               nil)))))
     (make-lazy-seq (pstep (lazy-from coll)))))
 
-(defn core-partition-by [f coll]
-  (def f (as-fn f))
-  (var result @[])
-  (var part @[])
-  (var last-k nil)
-  (each x (realize-for-iteration coll)
-    (let [k (f x)]
-      (if (and last-k (deep= k last-k))
-        (array/push part x)
-        (do
-          (if (> (length part) 0) (array/push result (tuple/slice (tuple ;part))))
-          (set part @[x])
-          (set last-k k)))))
-  (if (> (length part) 0) (array/push result (tuple/slice (tuple ;part))))
-  result)
+# partition-by now lives in the Clojure seq tier (core/10-seq.clj).
 
-(defn core-partition-all [n & rest]
- (if (= 0 (length rest)) (td-partition-all n)
-  (let [coll (in rest 0)]
-  # Option A: always lazy.
-  (defn pstep [c]
-    (fn []
-      (if (seq-done? c) nil
-        (do
-          (var part @[]) (var cur c) (var i 0)
-          (while (and (< i n) (not (seq-done? cur)))
-            (array/push part (core-first cur))
-            (set cur (core-rest cur))
-            (++ i))
-          @[(tuple/slice (tuple ;part)) (pstep cur)]))))
-  (make-lazy-seq (pstep (lazy-from coll))))))
+# partition-all now lives in the Clojure lazy tier (core/40-lazy.clj).
 
 
-(defn core-keep-indexed [f coll]
-  (def f (as-fn f))
-  # Option A: always lazy.
-  (defn kstep [c i]
-    (fn []
-      (var cur c) (var idx i) (var found false) (var result nil)
-      (while (and (not found) (not (seq-done? cur)))
-        (let [v (f idx (core-first cur))]
-          (++ idx)
-          (set cur (core-rest cur))
-          (when (not (nil? v))
-            (set found true)
-            (set result v))))
-      (if found @[result (kstep cur idx)] nil)))
-  (make-lazy-seq (kstep (lazy-from coll) 0)))
-
-(defn core-map-indexed [f & rest]
-  (if (= 0 (length rest)) (td-map-indexed f)
-    (let [coll (in rest 0)]
-      # Option A: always lazy.
-      (defn mstep [c i]
-        (fn []
-          (if (seq-done? c) nil
-            @[(f i (core-first c)) (mstep (core-rest c) (+ i 1))])))
-      (make-lazy-seq (mstep (lazy-from coll) 0)))))
-
-(defn core-cycle [coll]
-  (let [c (realize-for-iteration coll)]
-    (if (= 0 (length c))
-      (make-lazy-seq (fn [] nil))
-      (do
-        (defn cstep [i] (fn [] @[(in c (% i (length c))) (cstep (+ i 1))]))
-        (make-lazy-seq (cstep 0))))))
+# keep-indexed / map-indexed / cycle now live in the Clojure lazy tier
+# (core/40-lazy.clj).
 
 # reduce-kv now lives in the Clojure collection tier (core/20-coll.clj).
 
@@ -1495,30 +1405,9 @@
           (+= i step))
         (tuple/slice (tuple ;result))))))
 
-(defn core-repeat
-  "(repeat x) -> infinite lazy seq of x; (repeat n x) -> n copies of x."
-  [a & rest]
-  (if (= 0 (length rest))
-    (do (defn rstep [] (fn [] @[a (rstep)])) (make-lazy-seq (rstep)))
-    (let [n a x (in rest 0)]
-      (var result @[]) (var i 0)
-      (while (< i n) (array/push result x) (++ i))
-      result)))
+# repeat / iterate now live in the Clojure lazy tier (core/40-lazy.clj).
 
-(defn core-iterate [f x]
-  "Lazy infinite sequence x, (f x), (f (f x)), ..."
-  (defn istep [v] (fn [] @[v (istep (f v))]))
-  (make-lazy-seq (istep x)))
-
-(defn core-repeatedly
-  "(repeatedly f) -> infinite lazy seq of (f) calls; (repeatedly n f) -> n calls."
-  [a & rest]
-  (if (= 0 (length rest))
-    (do (defn rstep [] (fn [] @[(a) (rstep)])) (make-lazy-seq (rstep)))
-    (let [n a f (in rest 0)]
-      (var result @[]) (var i 0)
-      (while (< i n) (array/push result (f)) (++ i))
-      result)))
+# repeatedly now lives in the Clojure lazy tier (core/40-lazy.clj).
 
 # ============================================================
 # Higher-order functions
@@ -2408,26 +2297,7 @@
               @[(core-first c) (istep (core-rest c) true)]))))
       (make-lazy-seq (istep (lazy-from coll) false)))))
 
-(defn core-keep
-  "(keep f coll) — (f x) for each x, dropping nils. (keep f) is a transducer."
-  [f & rest]
-  (def f (as-fn f))
-  (if (= 0 (length rest))
-    (td-keep f)
-    (let [coll (in rest 0)]
-      # Option A: always lazy.
-      (defn kstep [c]
-        (fn []
-          (var cur c) (var found false) (var result nil)
-          (while (and (not found) (not (seq-done? cur)))
-            (let [v (f (core-first cur))]
-              (set cur (core-rest cur))
-              (when (not (nil? v))
-                (set found true)
-                (set result v))))
-          (if found @[result (kstep cur)] nil)))
-      (make-lazy-seq (kstep (lazy-from coll))))))
-
+# keep now lives in the Clojure lazy tier (core/40-lazy.clj).
 
 (defn core-empty [coll]
   (cond
@@ -2517,14 +2387,7 @@
 # Iterator/enumeration seqs — Jolt has no Java iterators, so adapt to plain seq.
 (defn core-enumeration-seq [x] (core-seq x))
 (defn core-iterator-seq [x] (core-seq x))
-(defn core-xml-seq [root]
-  (def out @[])
-  (defn walk [n]
-    (array/push out n)
-    (when (and (core-map? n) (core-contains? n :content))
-      (each c (realize-for-iteration (core-get n :content)) (walk c))))
-  (walk root)
-  (tuple ;out))
+# xml-seq now lives in the Clojure collection tier (core/20-coll.clj).
 (defn core-line-seq [rdr]
   (if (string? rdr) (core-seq (string/split "\n" rdr)) nil))
 (defn core-re-matcher [re s] @{:jolt/type :jolt/matcher :re re :s s :pos 0})
@@ -2866,10 +2729,6 @@
     "get-in" core-get-in
     "contains?" core-contains?
     "count" core-count
-    "partition-all" core-partition-all
-    "keep-indexed" core-keep-indexed
-    "map-indexed" core-map-indexed
-    "cycle" core-cycle
     "pop" core-pop
     "trampoline" core-trampoline
     "format" core-format
@@ -2952,7 +2811,6 @@
     "random-uuid" core-random-uuid
     "interpose" core-interpose
     "mapcat" core-mapcat
-    "keep" core-keep
     "find" core-find
     "transduce" core-transduce
     "sequence" core-sequence
@@ -2990,13 +2848,8 @@
     "nth" core-nth
     "sort" core-sort
     "sort-by" core-sort-by
-    "distinct" core-distinct
     "partition" core-partition
-    "partition-by" core-partition-by
     "range" core-range
-    "repeat" core-repeat
-    "iterate" core-iterate
-    "repeatedly" core-repeatedly
     "identity" core-identity
     "constantly" core-constantly
     "complement" core-complement
@@ -3103,7 +2956,6 @@
     "test" core-test
     "enumeration-seq" core-enumeration-seq
     "iterator-seq" core-iterator-seq
-    "xml-seq" core-xml-seq
     "line-seq" core-line-seq
     "re-matcher" core-re-matcher
     "bean" core-bean
