@@ -42,13 +42,20 @@
    "(def answer 42)" "(map inc [1 2 3])" "(reduce + 0 [1 2 3])"
    "(get {:a 1} :a)" "(vec (range 5))"
    # set?/disj are plain fns now, not special forms (jolt-g3h)
-   "(set? #{1 2})" "(disj #{1 2 3} 2)"])
+   "(set? #{1 2})" "(disj #{1 2 3} 2)"
+   # Stage 2 (jolt-eaa): stateful forms moved onto the compile path. (binding only
+   # compiles over an INTERNED var; the built-in dynamic vars aren't interned yet,
+   # so it's exercised end-to-end in the state spec instead.)
+   "(require (quote [clojure.string :as s]))" "(in-ns (quote foo.bar))"
+   "(defprotocol P (m [x]))" "(extend-type Long P (m [x] x))"
+   "(reify P (m [this] 1))" "(var map)"])
 
 # --- Intentional fallback (sanity sample): these SHOULD punt to the interpreter.
-# Not the frozen set (that's Task 2) — just a few to confirm the boundary holds
-# in the punt direction so the harness can't pass by compiling everything.
+# Shrinking as Stage 2 (jolt-eaa) moves stateful forms onto the compile path
+# (require/in-ns/protocols/binding now compile). The remaining frozen/uncompiled
+# set keeps the harness honest in the punt direction.
 (def must-punt
-  ["(ns foo.bar)" "(defmacro m [x] x)" "(require (quote [clojure.string]))"
+  ["(ns foo.bar)" "(defmacro m [x] x)" "(deftype T [a])"
    "(set! *warn-on-reflection* true)" "(letfn [(f [n] (g n)) (g [n] (f n))] (f 1))"])
 
 (var fails @[])

@@ -82,7 +82,8 @@
              # ns-management forms dispatched by the interpreter (not core vars)
              "create-ns" "remove-ns" "find-ns" "all-ns" "the-ns" "resolve"
              "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
-             "read-string" "macroexpand-1" "defonce" "ns" "in-ns" "require"
+             # require/in-ns are now clojure.core fns (compile as plain invokes).
+             "read-string" "macroexpand-1" "defonce" "ns"
              "import" "use" "refer" "defrecord"
              # defprotocol/extend-type/extend-protocol/reify now expand to plain
              # def + protocol-dispatch/register-method/make-reified invokes.

@@ -2,21 +2,28 @@
 (use ../../src/jolt/types)
 (use ../../src/jolt/evaluator)
 
+# in-ns/require are now ordinary clojure.core fns (Stage 2 jolt-eaa), interned by
+# install-stateful-fns! — api/init does this; a bare make-ctx must do it too.
+(defn- fresh-ctx []
+  (let [ctx (make-ctx)]
+    (install-stateful-fns! ctx)
+    ctx))
+
 # Helper: parse and eval in a fresh ctx
 (defn eval-str [s]
-  (let [ctx (make-ctx)
+  (let [ctx (fresh-ctx)
         form (parse-string s)]
     (eval-form ctx @{} form)))
 
 (print "1: in-ns...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   (def form (parse-string "(in-ns 'my.app)"))
   (eval-form ctx @{} form)
   (assert (= "my.app" (ctx-current-ns ctx)) "in-ns switches namespace"))
 (print "  passed")
 
 (print "2: def in different namespace...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   (eval-form ctx @{} (parse-string "(in-ns 'my.app)"))
   (eval-form ctx @{} (parse-string "(def x 42)"))
   (let [ns (ctx-find-ns ctx "my.app")
@@ -25,13 +32,13 @@
 (print "  passed")
 
 (print "3: ns form...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   (eval-form ctx @{} (parse-string "(ns my.lib)"))
   (assert (= "my.lib" (ctx-current-ns ctx)) "ns sets current namespace"))
 (print "  passed")
 
 (print "4: ns with require...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   # Set up a namespace with some vars
   (let [other-ns (ctx-find-ns ctx "other.lib")]
     (ns-intern other-ns "f" (fn [x] (inc x))))
@@ -46,7 +53,7 @@
 (print "  passed")
 
 (print "5: require form (standalone)...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   (eval-form ctx @{} (parse-string "(require '[other.lib :as o])"))
   (let [ns (ctx-find-ns ctx "user")
         aliased (ns-import-lookup ns "o")]
@@ -54,7 +61,7 @@
 (print "  passed")
 
 (print "6: qualified symbol via alias...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   # Set up target ns
   (let [target (ctx-find-ns ctx "other.lib")]
     (ns-intern target "f" (fn [x] (inc x))))
@@ -68,7 +75,7 @@
 (print "  passed")
 
 (print "7: require then use alias...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   # Set up target ns
   (let [target (ctx-find-ns ctx "math.lib")]
     (ns-intern target "add" (fn [a b] (+ a b))))
@@ -79,7 +86,7 @@
 (print "  passed")
 
 (print "8: ns form requires multiple...")
-(let [ctx (make-ctx)]
+(let [ctx (fresh-ctx)]
   (let [ns1 (ctx-find-ns ctx "a.lib")]
     (ns-intern ns1 "f" (fn [x] (inc x))))
   (let [ns2 (ctx-find-ns ctx "b.lib")]

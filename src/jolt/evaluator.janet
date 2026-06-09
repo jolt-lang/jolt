@@ -751,6 +751,27 @@
   (each p pairs (put (obj :jolt/protocol-methods) (in p 0) (in p 1)))
   obj)
 
+(defn require-impl
+  "(require '[ns :as a :refer [...]] ...) — load + alias/refer each spec. A fn, so
+  the args (quoted specs) arrive evaluated. Varargs (Clojure-compatible); each spec
+  is a vector. eval-require does the namespace load + alias/refer into current-ns."
+  [ctx & specs]
+  (each spec specs
+    (let [s (if (pvec? spec) (pv->array spec) spec)]
+      (if (and (indexed? s) (> (length s) 0))
+        (eval-require ctx s)
+        (error "require expects a vector spec"))))
+  nil)
+
+(defn in-ns-impl
+  "(in-ns 'foo) — switch the current namespace (creating it if needed). A fn; the
+  quoted symbol arrives evaluated."
+  [ctx sym]
+  (def ns-name (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym)))
+  (ctx-find-ns ctx ns-name)
+  (ctx-set-current-ns ctx ns-name)
+  nil)
+
 (defn install-stateful-fns!
   "Intern ctx-capturing closures for the stateful primitives into clojure.core, so
   both the interpreter and the compiler reach them as ordinary fns. Called by
@@ -766,6 +787,8 @@
       (register-method-impl ctx type-name proto-name method-name f)))
   (ns-intern core "make-reified"
     (fn [proto-name methods-map] (make-reified-impl ctx proto-name methods-map)))
+  (ns-intern core "require" (fn [& specs] (require-impl ctx ;specs)))
+  (ns-intern core "in-ns" (fn [sym] (in-ns-impl ctx sym)))
   core)
 
 # Dispatch a special form by its string name.
@@ -972,11 +995,8 @@
                                 (set i (+ i 1)))
                       (do (set result clause) (++ i)))))))
            result)
-    "require" (let [spec0 (eval-form ctx bindings (in form 1))
-                    spec (if (pvec? spec0) (pv->array spec0) spec0)]
-                 (if (and (indexed? spec) (> (length spec) 0))
-                   (eval-require ctx spec)
-                   (error "require expects a vector spec")))
+    # require / in-ns are now ordinary clojure.core fns (install-stateful-fns!) —
+    # no special-form arm; they compile + interpret as plain invokes.
     "all-ns" (all-ns ctx)
     "the-ns" (the-ns ctx)
     "create-ns" (create-ns ctx (sym-name-str (in form 1)))
@@ -985,11 +1005,6 @@
     "ns-aliases" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :aliases))
     "ns-imports" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :imports))
     "ns-resolve" (ns-resolve (ctx-find-ns ctx (ctx-current-ns ctx)) (in form 1))
-    "in-ns" (let [sym (eval-form ctx bindings (in form 1))
-                  ns-name (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym))]
-              (ctx-find-ns ctx ns-name)
-              (ctx-set-current-ns ctx ns-name)
-              nil)
     "resolve" (let [sym (eval-form ctx bindings (in form 1))]
                 (if (and (struct? sym) (= :symbol (sym :jolt/type)))
                   (let [r (protect (resolve-var ctx bindings sym))]

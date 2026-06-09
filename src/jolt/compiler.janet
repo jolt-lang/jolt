@@ -159,7 +159,7 @@
              "defmethod" "prefer-method" "remove-method" "remove-all-methods"
              "get-method" "methods"
              "satisfies?" "instance?" "set!" "var" "var-get"
-             "var-set" "var?" "in-ns" "ns" "require" "create-ns" "remove-ns"
+             "var-set" "var?" "ns" "create-ns" "remove-ns"
              "find-ns" "all-ns" "the-ns" "find-var" "intern" "resolve"
              "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
              "alter-var-root" "alter-meta!" "reset-meta!" "locking" "new"
