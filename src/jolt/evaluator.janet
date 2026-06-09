@@ -27,7 +27,6 @@
       (= name "alter-var-root") (= name "find-var") (= name "intern")
       (= name "alter-meta!") (= name "reset-meta!")
       (= name "satisfies?")
-      (= name "make-reified")
       (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")
       (= name "get-method") (= name "methods")))
 
@@ -742,6 +741,16 @@
   (def type-tag (if host host (string (ctx-current-ns ctx) "." type-name)))
   (register-protocol-method ctx type-tag proto-name method-name f))
 
+(defn make-reified-impl [ctx proto-name methods-map]
+  # methods-map is the EVALUATED {keyword fn} map (a phm when compiled, a struct/
+  # table when interpreted) — the fn* literals are already fns, just store them.
+  (def obj @{:jolt/deftype (string "reified-" proto-name) :jolt/protocol-methods @{}})
+  (def pairs (if (phm? methods-map)
+               (phm-entries methods-map)
+               (map (fn [k] [k (get methods-map k)]) (keys methods-map))))
+  (each p pairs (put (obj :jolt/protocol-methods) (in p 0) (in p 1)))
+  obj)
+
 (defn install-stateful-fns!
   "Intern ctx-capturing closures for the stateful primitives into clojure.core, so
   both the interpreter and the compiler reach them as ordinary fns. Called by
@@ -755,6 +764,8 @@
   (ns-intern core "register-method"
     (fn [type-name proto-name method-name f]
       (register-method-impl ctx type-name proto-name method-name f)))
+  (ns-intern core "make-reified"
+    (fn [proto-name methods-map] (make-reified-impl ctx proto-name methods-map)))
   core)
 
 # Dispatch a special form by its string name.
@@ -1240,23 +1251,10 @@
                (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val))
     # set?/disj are plain clojure.core fns now (core-set?/core-disj) — no longer
     # special-cased here, the analyzer, or compiler.janet (jolt-g3h).
-    # protocol-dispatch / register-method are now ordinary clojure.core fns
-    # (install-stateful-fns!) — the defprotocol/extend-type macros call them with
-    # name STRINGS, so they compile + interpret as plain invokes (no special arm).
-    "make-reified" (let [proto-sym (in form 1)
-                         methods-map (eval-form ctx bindings (in form 2))
-                         proto-name (proto-sym :name)
-                         reified-tag (string "reified-" proto-name)]
-                    (def obj @{:jolt/deftype reified-tag :jolt/protocol-methods @{}})
-                    (loop [[k v] :pairs methods-map]
-                      (let [fn-value (if (and (table? v) (get v :fn*))
-                                     (let [args-vec (get v :args)
-                                           body-forms (get v :body)]
-                                       (eval-form ctx @{}
-                                   @[{:jolt/type :symbol :ns nil :name "fn*"} args-vec ;body-forms]))
-                                     v)]
-                        (put (obj :jolt/protocol-methods) k fn-value)))
-                    obj)
+    # protocol-dispatch / register-method / make-reified are now ordinary
+    # clojure.core fns (install-stateful-fns!) — the defprotocol/extend-type/reify
+    # macros call them with name STRINGS, so they compile + interpret as plain
+    # invokes (no special-form arms).
     "satisfies?" (let [proto-sym (eval-form ctx bindings (in form 1))
                        obj (eval-form ctx bindings (in form 2))
                        type-tag (if (and (table? obj) (get obj :jolt/deftype))

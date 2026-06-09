@@ -75,18 +75,18 @@
              "locking" "eval" "instance?" "defmulti" "defmethod" "deftype" "new"
              "." "var-get" "var-set" "var?" "alter-var-root" "find-var" "intern"
              "alter-meta!" "reset-meta!" "satisfies?"
-             # protocol-dispatch/register-method are now clojure.core fns (compile
-             # as plain invokes); only make-reified is still a special.
-             "make-reified" "prefer-method"
+             # protocol-dispatch/register-method/make-reified are now clojure.core
+             # fns (compile as plain invokes).
+             "prefer-method"
              "remove-method" "remove-all-methods" "get-method" "methods"
              # ns-management forms dispatched by the interpreter (not core vars)
              "create-ns" "remove-ns" "find-ns" "all-ns" "the-ns" "resolve"
              "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
              "read-string" "macroexpand-1" "defonce" "ns" "in-ns" "require"
              "import" "use" "refer" "defrecord"
-             # defprotocol/extend-type/extend-protocol now expand to plain
-             # def + protocol-dispatch/register-method invokes — let them compile.
-             "reify" "gen-class"
+             # defprotocol/extend-type/extend-protocol/reify now expand to plain
+             # def + protocol-dispatch/register-method/make-reified invokes.
+             "gen-class"
              # letfn stays: its let* expansion needs letrec semantics (mutual
              # recursion between the fns), which compiled sequential let* lacks.
              "monitor-enter" "monitor-exit" "binding" "letfn"]

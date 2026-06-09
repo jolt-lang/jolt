@@ -187,13 +187,13 @@
 ;; definterface is JVM-only; bind the name to an empty marker.
 (defmacro definterface [name-sym & body] `(def ~name-sym {}))
 
-;; Build a method map {kw (fn* ...)} as an embedded map literal — make-reified
-;; evaluates it (the fn* forms become fns) via build-eval-map, which yields a
-;; struct it can iterate; a (hash-map ...) call would instead yield a phm it can't.
+;; make-reified is a fn (clojure.core); the method map {kw (fn* ...)} is an
+;; ordinary map literal that evaluates to {keyword fn}, and the protocol NAME is
+;; passed as a string (not the symbol) so the call compiles as a plain invoke.
 (defmacro reify [& forms]
   (loop [items (seq forms) proto nil methods {}]
     (if (empty? items)
-      `(make-reified ~proto ~methods)
+      `(make-reified ~(name proto) ~methods)
       (let [x (first items)]
         (if (symbol? x)
           (recur (rest items) (if proto proto x) methods)
