@@ -157,7 +157,7 @@
     (each n ["syntax-quote" "unquote" "unquote-splicing" "eval" "read-string"
              "macroexpand-1" "defonce" "defmacro" "deftype" "defmulti"
              "defmethod" "prefer-method" "remove-method" "remove-all-methods"
-             "get-method" "methods" "register-method" "protocol-dispatch"
+             "get-method" "methods"
              "make-reified" "satisfies?" "instance?" "set!" "var" "var-get"
              "var-set" "var?" "in-ns" "ns" "require" "create-ns" "remove-ns"
              "find-ns" "all-ns" "the-ns" "find-var" "intern" "resolve"

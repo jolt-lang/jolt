@@ -161,12 +161,18 @@
        (def ~pname (make-protocol ~(name pname) ~methods))
        ~@(map (fn [sig]
                 `(def ~(first sig)
-                   (fn* [this# & rest#] (protocol-dispatch ~pname ~(first sig) this# rest#))))
+                   ;; protocol-dispatch is a fn (clojure.core); pass the protocol /
+                   ;; method NAMES as strings (not the symbols) so it compiles as a
+                   ;; plain invoke rather than evaluating the symbols as vars.
+                   (fn* [this# & rest#]
+                     (protocol-dispatch ~(name pname) ~(name (first sig)) this# rest#))))
               sigs))))
 
 (defmacro extend-type [tsym psym & impls]
+  ;; register-method is a fn (clojure.core); pass type/protocol/method NAMES as
+  ;; strings (not the symbols) so the call compiles as a plain invoke.
   `(do ~@(map (fn [spec]
-                `(register-method ~tsym ~psym ~(first spec)
+                `(register-method ~(name tsym) ~(name psym) ~(name (first spec))
                                   (fn* ~(nth spec 1) ~@(drop 2 spec))))
               impls)))
 

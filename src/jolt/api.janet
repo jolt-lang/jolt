@@ -136,6 +136,10 @@
     (install-async! ctx)
     # Host contract (ns jolt.host): the seam the portable jolt-core compiler calls.
     (host/install! ctx)
+    # Stateful primitives as ctx-capturing clojure.core fns (protocol-dispatch,
+    # register-method, …) — so the protocol macros compile to plain invokes. Must
+    # precede the overlay (its defprotocol/extend-type expansions call these).
+    (install-stateful-fns! ctx)
     # Clojure portion of clojure.core (jolt-core/clojure/core.clj): fns expressed
     # in plain Clojure on top of the Janet primitives interned above. Loaded into
     # clojure.core and compiled by the self-hosted pipeline (or interpreted when

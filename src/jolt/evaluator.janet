@@ -27,7 +27,7 @@
       (= name "alter-var-root") (= name "find-var") (= name "intern")
       (= name "alter-meta!") (= name "reset-meta!")
       (= name "satisfies?")
-      (= name "protocol-dispatch") (= name "register-method") (= name "make-reified")
+      (= name "make-reified")
       (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")
       (= name "get-method") (= name "methods")))
 
@@ -690,6 +690,73 @@
     (nil? obj) ["nil" "Object"]
     ["Object"]))
 
+# ---------------------------------------------------------------------------
+# Stateful primitives as ordinary fns (Stage 2 jolt-eaa). These mutate/read the
+# per-ctx protocol registry, so they need ctx. They're interned into clojure.core
+# as closures over ctx (install-stateful-fns!), which makes them resolve + COMPILE
+# as plain :var invokes — the back end embeds the per-ctx var cell, and the closure
+# captures ctx so a compiled protocol dispatcher works even when called later.
+# Both the interpreter and compiled code call these same closures; there is no
+# longer a special-form handler for them. proto/method/type names arrive as
+# STRINGS (the defprotocol/extend-type macros pass (name sym), not the symbol).
+(defn protocol-dispatch-impl [ctx proto-name method-name obj rest-args]
+  (def type-tag (if (and (table? obj) (get obj :jolt/deftype))
+                  (get obj :jolt/deftype)
+                  (if (get obj :jolt/protocol-methods) (get obj :jolt/deftype))))
+  (if (and (table? obj) (get obj :jolt/protocol-methods))
+    (let [reified-fns (get obj :jolt/protocol-methods)
+          f (get reified-fns (keyword method-name))]
+      (if f (apply f obj rest-args)
+        (error (string "No reified method " method-name " for " type-tag))))
+    (if type-tag
+      (let [f (find-protocol-method ctx type-tag proto-name method-name)]
+        (if f (apply f obj rest-args)
+          (error (string "No method " method-name " in " proto-name " for " type-tag))))
+      # host value: try candidate host type-tags (Long/String/Object/...), with a
+      # generation-guarded inline cache (same walk for every value of a host class).
+      (let [env (ctx :env)
+            reg-gen (or (get env :type-registry-gen) 0)
+            pc (let [c (get env :proto-dispatch-cache)]
+                 (if (and c (= (c :gen) reg-gen)) c
+                   (let [n @{:gen reg-gen :map @{}}]
+                     (put env :proto-dispatch-cache n) n)))
+            cands (value-host-tags obj)
+            ckey [(first cands) proto-name method-name]
+            cached (get (pc :map) ckey)
+            found (if (nil? cached)
+                    (let [f (do (var r nil)
+                              (each tag cands
+                                (when (nil? r)
+                                  (set r (find-protocol-method ctx tag proto-name method-name))))
+                              r)]
+                      (put (pc :map) ckey (if f f :jolt/none))
+                      f)
+                    (if (= cached :jolt/none) nil cached))]
+        (if found (apply found obj rest-args)
+          (error (string "No dispatch for " method-name " on " (type obj))))))))
+
+(defn register-method-impl [ctx type-name proto-name method-name f]
+  # host types register under a bare canonical tag; deftype/record names stay
+  # namespace-qualified to the ns the (extend-)type form runs in.
+  (def host (canonical-host-tag type-name))
+  (def type-tag (if host host (string (ctx-current-ns ctx) "." type-name)))
+  (register-protocol-method ctx type-tag proto-name method-name f))
+
+(defn install-stateful-fns!
+  "Intern ctx-capturing closures for the stateful primitives into clojure.core, so
+  both the interpreter and the compiler reach them as ordinary fns. Called by
+  api/init after init-core! and before the overlay loads (the protocol macros
+  expand to calls of these)."
+  [ctx]
+  (def core (ctx-find-ns ctx "clojure.core"))
+  (ns-intern core "protocol-dispatch"
+    (fn [proto-name method-name obj rest-args]
+      (protocol-dispatch-impl ctx proto-name method-name obj rest-args)))
+  (ns-intern core "register-method"
+    (fn [type-name proto-name method-name f]
+      (register-method-impl ctx type-name proto-name method-name f)))
+  core)
+
 # Dispatch a special form by its string name.
 (defn- unwrap-meta-name
   "Recursively unwrap (with-meta sym meta) forms to extract the underlying symbol.
@@ -1173,64 +1240,9 @@
                (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val))
     # set?/disj are plain clojure.core fns now (core-set?/core-disj) — no longer
     # special-cased here, the analyzer, or compiler.janet (jolt-g3h).
-    "protocol-dispatch" (let [proto-sym (in form 1)
-                               method-sym (in form 2)
-                               obj (eval-form ctx bindings (in form 3))
-                               rest-args (eval-form ctx bindings (in form 4))
-                               type-tag (if (and (table? obj) (get obj :jolt/deftype))
-                                        (get obj :jolt/deftype)
-                                        (if (get obj :jolt/protocol-methods)
-                                          (get obj :jolt/deftype)))
-                               proto-name (proto-sym :name)
-                               method-name (method-sym :name)]
-                          (if (and (table? obj) (get obj :jolt/protocol-methods))
-                            (let [reified-fns (get obj :jolt/protocol-methods)
-                                  fn (get reified-fns (keyword method-name))]
-                              (if fn (apply fn obj rest-args)
-                                (error (string "No reified method " method-name " for " type-tag))))
-                            (if type-tag
-                              (let [fn (find-protocol-method ctx type-tag proto-name method-name)]
-                                (if fn (apply fn obj rest-args)
-                                  (error (string "No method " method-name " in " proto-name " for " type-tag))))
-                              # host value: try candidate host type-tags (Long/String/Object/...).
-                              # Generation-guarded inline cache: the candidate
-                              # walk (array alloc + up to ~15 registry lookups) is
-                              # the same for every value of a given host class, so
-                              # cache (most-specific-tag, proto, method) -> fn,
-                              # invalidated when the registry generation bumps.
-                              (let [env (ctx :env)
-                                    reg-gen (or (get env :type-registry-gen) 0)
-                                    pc (let [c (get env :proto-dispatch-cache)]
-                                         (if (and c (= (c :gen) reg-gen)) c
-                                           (let [n @{:gen reg-gen :map @{}}]
-                                             (put env :proto-dispatch-cache n) n)))
-                                    cands (value-host-tags obj)
-                                    ckey [(first cands) proto-name method-name]
-                                    cached (get (pc :map) ckey)
-                                    found (if (nil? cached)
-                                            (let [f (do (var r nil)
-                                                      (each tag cands
-                                                        (when (nil? r)
-                                                          (set r (find-protocol-method ctx tag proto-name method-name))))
-                                                      r)]
-                                              (put (pc :map) ckey (if f f :jolt/none))
-                                              f)
-                                            (if (= cached :jolt/none) nil cached))]
-                                (if found (apply found obj rest-args)
-                                  (error (string "No dispatch for " method-name " on " (type obj))))))))
-    "register-method" (let [type-sym (in form 1)
-                            proto-sym (in form 2)
-                            method-sym (in form 3)
-                            fn (eval-form ctx bindings (in form 4))
-                            ns-name (ctx-current-ns ctx)
-                            type-name (type-sym :name)
-                            host (canonical-host-tag type-name)
-                            # host types register under a bare canonical tag;
-                            # deftype/record names stay namespace-qualified
-                            type-tag (if host host (string ns-name "." type-name))
-                            proto-name (proto-sym :name)
-                            method-name (method-sym :name)]
-                       (register-protocol-method ctx type-tag proto-name method-name fn))
+    # protocol-dispatch / register-method are now ordinary clojure.core fns
+    # (install-stateful-fns!) — the defprotocol/extend-type macros call them with
+    # name STRINGS, so they compile + interpret as plain invokes (no special arm).
     "make-reified" (let [proto-sym (in form 1)
                          methods-map (eval-form ctx bindings (in form 2))
                          proto-name (proto-sym :name)
