@@ -102,11 +102,24 @@
                    (vloop 0 0 (conj (conj acc g) init)))
                (map? pat)
                  (let* [g (symbol (str (gensym)))
+                        gm (symbol (str (gensym)))
+                        ;; kwargs: a map pattern may bind against the sequential rest
+                        ;; of a fn — (& {:keys [...]}) — which is a seq of alternating
+                        ;; k/v args, or a single trailing map. Coerce like Clojure (and
+                        ;; like the interpreter's destructure-bind, so interpret/compile
+                        ;; agree): a sequential value with one map element is that map,
+                        ;; otherwise (apply hash-map). A real map value is used as-is, so
+                        ;; ordinary map destructuring is unaffected. g holds init once;
+                        ;; gm is the coerced map every lookup (and :as) reads from.
+                        coerce `(if (sequential? ~g)
+                                  (if (and (= 1 (count ~g)) (map? (first ~g)))
+                                    (first ~g)
+                                    (apply hash-map ~g))
+                                  ~g)
                         or-map (get pat :or)
                         as-sym (get pat :as)
-                        base (if as-sym
-                               (conj (conj (conj (conj acc g) init) as-sym) g)
-                               (conj (conj acc g) init))
+                        bound (conj (conj (conj (conj acc g) init) gm) coerce)
+                        base (if as-sym (conj (conj bound as-sym) gm) bound)
                         group
                           (fn* [a kw kind]
                             (let* [names (get pat kw)]
@@ -125,8 +138,8 @@
                                            fo (find-or or-map local)]
                                       (conj (conj aa (symbol local))
                                             (if (nth fo 0)
-                                              `(get ~g ~keyform ~(nth fo 1))
-                                              `(get ~g ~keyform)))))
+                                              `(get ~gm ~keyform ~(nth fo 1))
+                                              `(get ~gm ~keyform)))))
                                   a names)
                                 a)))
                         g1 (group base :keys :kw)
@@ -135,7 +148,7 @@
                    (reduce (fn* [a k]
                              (if (keyword? k)
                                a
-                               (proc k `(get ~g ~(get pat k)) a)))
+                               (proc k `(get ~gm ~(get pat k)) a)))
                            g3 (keys pat)))
                :else (throw (str "unsupported destructuring pattern"))))
          ploop
@@ -212,8 +225,11 @@
       (let [as (vec (map mk aftn))]
         (if nm `(fn* ~nm ~@as) `(fn* ~@as))))))
 
-;; defn: drop an optional leading docstring and attr-map, then (def name (fn* ...)).
-;; Both single- and multi-arity reduce to (fn* ~@body) — fn* takes either a params
+;; defn: drop an optional leading docstring and attr-map, then (def name (fn ...)).
+;; Emits the fn MACRO (not the fn* primitive) so destructuring params desugar — fn*
+;; requires plain symbols (like Clojure). Unnamed (as before): self-recursion
+;; resolves through the def'd var, so this only adds the desugaring step.
+;; Both single- and multi-arity reduce to (fn ~@body) — fn takes either a params
 ;; vector + body or a sequence of ([params] body) clauses, so no arity branching is
 ;; needed. (map? is true for symbol forms too, so guard the attr-map with symbol?.)
 ;; Defined before fresh-sym below, which is a defn-.
@@ -221,7 +237,7 @@
   (let [body (if (and (seq body) (string? (first body))) (rest body) body)
         body (if (and (seq body) (map? (first body)) (not (symbol? (first body))))
                (rest body) body)]
-    `(def ~fn-name (fn* ~@body))))
+    `(def ~fn-name (fn ~@body))))
 
 ;; Jolt doesn't enforce privacy, so defn- is just defn (matching how Clojure's own
 ;; defn- delegates to defn with :private metadata).

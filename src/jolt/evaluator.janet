@@ -517,6 +517,21 @@
         (do (array/push fixed a) (+= i 1)))))
   {:fixed (tuple/slice (tuple ;fixed)) :rest rest-pat})
 
+(defn- plain-sym? [p] (and (struct? p) (= :symbol (p :jolt/type))))
+
+(defn- require-symbol-params
+  "fn* is a primitive: its params must be plain symbols. The fn/defn MACROS desugar
+  destructuring into plain params + a body let before emitting fn*, so fn* never
+  legitimately sees a pattern — matching Clojure, where (fn* [[a b]] ...) is the
+  compile error 'fn params must be Symbols'. Enforcing it here keeps the interpreter
+  consistent with the self-hosted analyzer (which also requires plain fn* params)
+  and with Clojure, instead of leniently destructuring a form Clojure rejects."
+  [param-info]
+  (each p (param-info :fixed)
+    (unless (plain-sym? p) (error "fn params must be Symbols")))
+  (let [r (param-info :rest)]
+    (when (and r (not (plain-sym? r))) (error "fn params must be Symbols"))))
+
 (defn- d-get
   "Look up key k in a map-like value (phm/struct/table/nil)."
   [m k]
@@ -805,6 +820,14 @@
                        ns (ctx-find-ns ctx ns-name)]
                    (def v (ns-intern ns (name-sym :name) macro-fn))
                    (put v :macro true)
+                   # Stash the expander source so backend/recompile-macros! can
+                   # compile it once the analyzer is alive (staged bootstrap): a
+                   # macro defined WHILE the analyzer is still being built gets an
+                   # interpreted closure now, a compiled expander later. uses-env
+                   # macros stay interpreted (the compiled fn* has no &env/&form).
+                   (put v :macro-src @[args-form body])
+                   (put v :macro-uses-env uses-env)
+                   (when compiled-fn (put v :macro-compiled true))
                    # A (re)defined macro invalidates any cached expansions.
                    (table/clear macro-cache)
                    (var-get v)))
@@ -917,6 +940,7 @@
                  (let [args-form (in pair 0)
                        body (tuple/slice pair 1)
                        param-info (parse-params args-form)
+                       _ (require-symbol-params param-info)
                        fixed-pats (param-info :fixed)
                        rest-pat (param-info :rest)
                        n-fixed (length fixed-pats)
@@ -954,6 +978,7 @@
              (let [args-form (in form 1)
                    body (tuple/slice form 2)
                    param-info (parse-params args-form)
+                   _ (require-symbol-params param-info)
                    fixed-pats (param-info :fixed)
                    rest-pat (param-info :rest)
                    defining-ns (ctx-current-ns ctx)]
@@ -986,6 +1011,9 @@
               (let [len (length bind-vec)]
                 (while (< i len)
                   (let [pat (bind-vec i)]
+                    # let* is a primitive (the let macro desugars destructuring);
+                    # its binding names must be plain symbols, as in Clojure.
+                    (unless (plain-sym? pat) (error "Bad binding form, expected symbol"))
                     (def val (eval-form ctx new-bindings (bind-vec (+ i 1))))
                     (destructure-bind ctx new-bindings pat val)
                     (+= i 2))))
@@ -999,8 +1027,10 @@
                   patterns @[]]
               (var i 0)
               (while (< i (length bind-vec))
+                # loop* is a primitive (the loop macro desugars destructuring);
+                # its binding names must be plain symbols, as in Clojure.
+                (unless (plain-sym? (bind-vec i)) (error "Bad binding form, expected symbol"))
                 (array/push init-vals (eval-form ctx bindings (bind-vec (+ i 1))))
-                # keep the binding form (symbol OR destructuring pattern)
                 (array/push patterns (bind-vec i))
                 (+= i 2))
               (var loop-fn nil)

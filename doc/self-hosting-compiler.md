@@ -150,9 +150,11 @@ linking is opt-in, never the default, so the REPL is always live.
 2. **Hybrid fallback + coverage** (`jolt-1bj`) — *done*. Forms the compiler can't
    compile throw `jolt/uncompilable` and fall back to the interpreter, so compile
    mode is always correct. Covered: multi-arity/named/variadic fns, `recur` in
-   `fn`, map/vector literals, and resolution matching the interpreter. (One
-   optimization left: compile destructuring via a shared `destructure` expander
-   instead of falling back — `jolt-7dl`.)
+   `fn`, map/vector literals, and resolution matching the interpreter.
+   Destructuring compiles via the shared `destructure` expander: the `fn`/`let`/
+   `loop`/`defn` macros desugar to plain-symbol `fn*`/`let*`/`loop*`, so it no
+   longer falls back — and the primitives reject patterns outright, matching
+   Clojure (`jolt-f79`).
 5. **Compile-by-default + AOT** (`jolt-7j9`) — *done, done out of order*. Once the
    hybrid path was validated at parity, compilation was flipped on by default and
    AOT images (`aot.janet`) landed. Done before 3–4 because it's the runtime

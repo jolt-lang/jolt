@@ -81,8 +81,10 @@
              "create-ns" "remove-ns" "find-ns" "all-ns" "the-ns" "resolve"
              "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
              "read-string" "macroexpand-1" "defonce" "ns" "in-ns" "require"
-             "import" "use" "refer" "defrecord" "defprotocol" "definterface"
-             "reify" "proxy" "extend-type" "extend-protocol" "extend" "gen-class"
+             "import" "use" "refer" "defrecord" "defprotocol"
+             "reify" "extend-type" "extend-protocol" "gen-class"
+             # letfn stays: its let* expansion needs letrec semantics (mutual
+             # recursion between the fns), which compiled sequential let* lacks.
              "monitor-enter" "monitor-exit" "binding" "letfn"]
       (put t n true))
     t))

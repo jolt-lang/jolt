@@ -372,3 +372,49 @@
     (when (compiled 0)
       (def r (protect (eval (compiled 1) (comp/ctx-janet-env ctx))))
       (when (r 0) (r 1)))))
+
+# Wrap expanders in the `fn` MACRO, not the `fn*` primitive: `fn` desugars a
+# destructured macro arglist (`[a & [b]]`, `[& {:keys [x]}]`) before lowering,
+# whereas raw fn* punts on a destructuring rest param.
+(def- fn-sym {:jolt/type :symbol :ns nil :name "fn"})
+
+(defn recompile-macros!
+  "Staged-bootstrap second pass: once the self-hosted analyzer is alive, replace
+  every interpreted macro expander with a COMPILED one. The early macros (00-syntax
+  etc.) are defined WHILE the analyzer is still being bootstrapped, so their
+  expanders can't compile yet (the analyzer they'd compile through doesn't exist) —
+  defmacro gives them an interpreted closure as a build-time crutch and stashes the
+  source on the var (:macro-src). This pass compiles that source through the now-live
+  analyzer and rebinds the var, so by steady state no macro expansion is interpreted
+  — mirroring how a self-hosting compiler recompiles its seed once it can.
+
+  Idempotent: a var compiled once is marked :macro-compiled and skipped (so the
+  refer of a core macro into another ns, or a later rebuild, costs nothing). A macro
+  whose body uses &env/&form keeps its interpreted closure (the compiled fn* has no
+  such params). Returns the number of expanders compiled this pass."
+  [ctx]
+  (var n 0)
+  (each ns (all-ns ctx)
+    (each v (ns :mappings)
+      (when (and (var? v) (var-macro? v)
+                 (v :macro-src) (not (v :macro-compiled))
+                 (not (v :macro-uses-env)))
+        (def [args-form body] (v :macro-src))
+        (def compiled
+          (try-compile-fn ctx (array/concat @[fn-sym args-form] body)))
+        (when compiled
+          (bind-root v compiled)
+          (put v :macro-compiled true)
+          (++ n)))))
+  n)
+
+(defn ensure-macros-compiled!
+  "Called once the overlay is fully loaded (api/load-core-overlay!): in compile
+  mode, ensure the analyzer is built, then run the staged macro-recompile pass so
+  the early (interpreted-during-bootstrap) macro expanders become compiled. No-op
+  in interpreter mode (no analyzer, macros stay interpreted by design) and cheap to
+  call again (recompile-macros! skips already-compiled vars)."
+  [ctx]
+  (when (get (ctx :env) :compile?)
+    (ensure-analyzer ctx)
+    (when (analyzer-built? ctx) (recompile-macros! ctx))))

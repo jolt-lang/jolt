@@ -55,6 +55,20 @@
   ["loop map binding"   "4"      "(loop [{:keys [v]} {:v 1} n 0] (if (< n 2) (recur {:v (* v 2)} (inc n)) v))"]
   ["loop init sees destr" "[1 2 3]" "(loop [[a b] [1 2] c (+ a b)] [a b c])"])
 
+# fn*/let*/loop* are PRIMITIVES: their binding forms must be plain symbols, exactly
+# as in Clojure ("fn params must be Symbols" / "Bad binding form, expected symbol").
+# Destructuring lives in the fn/let/loop/defn MACROS, which desugar to plain
+# primitives — so the interpreter and the self-hosted analyzer agree (neither
+# destructures fn*), and nothing silently falls back to a lenient interpreter path.
+(defspec "destructure / primitives reject patterns (jolt-f79)"
+  ["fn* fixed pattern"  :throws  "((fn* [[a b]] a) [1 2])"]
+  ["fn* rest pattern"   :throws  "((fn* [a & [b]] b) 1 2 3)"]
+  ["let* pattern"       :throws  "(let* [[a b] [1 2]] a)"]
+  ["loop* pattern"      :throws  "(loop* [[a b] [1 2]] a)"]
+  # the macros still desugar the same patterns to plain primitives:
+  ["fn desugars"        "[1 2]"  "((fn [[a b]] [a b]) [1 2])"]
+  ["let desugars"       "[1 2]"  "(let [[a b] [1 2]] [a b])"])
+
 (defspec "destructure / macro params"
   ["macro & [a & more :as all]"
    "[1 [2 3] [1 2 3]]"

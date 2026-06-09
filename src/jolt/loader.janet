@@ -9,12 +9,14 @@
 # Stateful / context-modifying forms always interpret: they mutate the context
 # (namespaces, macros, types, multimethods, dynamic vars, …) in ways the compiler
 # doesn't model. Kept here so the compile/interpret routing lives in one place,
-# used by both load-ns and the public eval-one.
+# used by both load-ns and the public eval-one. Shrinking toward the frozen
+# host-coupled set (Stage 2 jolt-eaa): forms move off this list as they gain a
+# compile path; syntax-quote already compiles via the analyzer's `handled` set.
 (defn- stateful-head? [head-name]
   (or (= head-name "defmacro") (= head-name "ns")
       (= head-name "deftype") (= head-name "defmulti") (= head-name "defmethod")
       (= head-name "require") (= head-name "in-ns")
-      (= head-name "syntax-quote") (= head-name "set!")
+      (= head-name "set!")
       (= head-name "var") (= head-name ".") (= head-name "new")
       (= head-name "eval")))
 

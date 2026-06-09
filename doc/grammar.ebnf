@@ -164,8 +164,11 @@ feature         = ":clj" | ":cljs" | ":default" | keyword ;
 tagged-literal  = "#" , symbol , ws , form ;
 
 (* ── Destructuring (semantics, not reader syntax) ────────────────────────────
-   The reader produces plain vectors and maps; the binding forms (let, fn, loop,
-   doseq, for, defmacro params, …) interpret them as destructuring patterns:
+   The reader produces plain vectors and maps; the binding MACROS (let, fn, loop,
+   doseq, for, defmacro params, …) interpret them as destructuring patterns. The
+   PRIMITIVES they desugar to — fn*, let*, loop* — take plain symbols ONLY (a
+   non-symbol binding is an error, as in Clojure: "fn params must be Symbols" /
+   "Bad binding form, expected symbol"). The grammar of a pattern:
 
      binding        = symbol | seq-binding | map-binding ;
      seq-binding    = "[" , { binding } , [ "&" , binding ] , [ ":as" , symbol ] , "]" ;
