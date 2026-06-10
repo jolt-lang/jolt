@@ -154,19 +154,20 @@
     # Interpreter special forms the compiler does NOT itself implement (it
     # handles quote/do/if/def/fn*/let*/loop*/recur/throw/try). Kept in sync with
     # eval-form's special-form match in evaluator.janet.
-    (each n ["syntax-quote" "unquote" "unquote-splicing" "eval" "read-string"
-             "macroexpand-1" "defonce" "defmacro" "deftype" "defmulti"
-             "defmethod" "prefer-method" "remove-method" "remove-all-methods"
-             "get-method" "methods"
+    (each n ["syntax-quote" "unquote" "unquote-splicing" "eval"
+             # read-string/macroexpand-1/defonce/satisfies?/instance?/locking and
+             # the multimethod table ops are core fns / overlay macros now
+             # (Stage 2 tier 6c) — plain invokes / macro-expanded, no punt.
+             "defmacro" "deftype" "defmulti" "defmethod"
              # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta!/
              # find-var/intern are plain clojure.core fns now (core-bindings +
              # install-stateful-fns!) — ordinary invokes, no punt (Stage 2 tier 6).
              # create-ns/remove-ns/find-ns/all-ns/the-ns/resolve/ns-resolve/
              # ns-aliases/ns-imports/ns-interns are ctx-capturing core fns now
              # (tier 6b) — ordinary invokes, no punt.
-             "satisfies?" "instance?" "set!" "var"
+             "set!" "var"
              "ns" "in-ns" "require"
-             "locking" "new"
+             "new"
              # Definitional/host macros that mutate context or build runtime
              # values the emitter doesn't model.
              "defrecord" "defprotocol" "definterface" "reify" "proxy"

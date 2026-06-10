@@ -19,16 +19,16 @@
       (= name "unquote-splicing") (= name "do") (= name "if")
       (= name "def") (= name "defmacro") (= name "fn*") (= name "let*") (= name "loop*")
       (= name "recur") (= name "throw") (= name "try")
-      (= name "set!") (= name "var") (= name "locking")
+      (= name "set!") (= name "var")
       (= name "eval")
-      (= name "instance?")
       (= name "new") (= name ".")
       # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta! are plain
       # clojure.core fns (core-bindings); find-var/intern are ctx-capturing fns
       # (install-stateful-fns!) — no longer special forms (Stage 2 tier 6).
-      (= name "satisfies?")
-      (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")
-      (= name "get-method") (= name "methods")))
+      # locking/instance?/satisfies?/defonce/read-string/macroexpand-1 and the
+      # multimethod table ops are overlay macros / clojure.core fns now
+      # (Stage 2 tier 6c) — not special forms.
+      ))
 
 (var eval-form nil)
 
@@ -1006,6 +1006,111 @@
   # refer: bring another ns's public vars into the current ns. Reuses use-impl's
   # refer-all behavior; the :only/:exclude/:rename filters are not yet honored.
   (ns-intern core "refer" (fn [ns-sym & filters] (use-impl ctx ns-sym)))
+  # --- dispatch-table / type fns (Stage 2 tier 6c) ------------------------
+  # A multimethod's method table lives on its VAR (the value is the dispatch
+  # closure), so the overlay macros pass the NAME quoted — the defmulti/
+  # defmethod pattern — and these resolve the var. prefer-method auto-creates
+  # a missing multimethod (matching the prior interpreter arm).
+  (def mm-var-of (fn [mm-sym auto-create?]
+    (def r (protect (resolve-var ctx @{} mm-sym)))
+    (def found (if (r 0) (r 1) nil))
+    (if found
+      found
+      (when auto-create?
+        (def ns (ctx-find-ns ctx (ctx-current-ns ctx)))
+        (def nv (ns-intern ns (mm-sym :name) (fn [& args] nil)))
+        (put nv :jolt/methods @{})
+        nv))))
+  (def clear-dispatch-cache! (fn [mm-var]
+    (let [dc (get mm-var :jolt/dispatch-cache)]
+      (when dc (each k (keys dc) (put dc k nil))))))
+  (ns-intern core "prefer-method-setup"
+    (fn [mm-sym dval-a dval-b]
+      (def mm-var (mm-var-of mm-sym true))
+      (def prefs (or (get mm-var :jolt/prefers)
+                     (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers))))
+      (put prefs dval-a dval-b)
+      (clear-dispatch-cache! mm-var)
+      mm-var))
+  (ns-intern core "remove-method-setup"
+    (fn [mm-sym dval]
+      (def mm-var (mm-var-of mm-sym false))
+      (when mm-var
+        (let [methods (get mm-var :jolt/methods)]
+          (when methods (put methods dval nil)))
+        (clear-dispatch-cache! mm-var))
+      mm-var))
+  (ns-intern core "remove-all-methods-setup"
+    (fn [mm-sym]
+      (def mm-var (mm-var-of mm-sym false))
+      (when mm-var
+        (put mm-var :jolt/methods @{})
+        (clear-dispatch-cache! mm-var))
+      mm-var))
+  (ns-intern core "get-method-setup"
+    (fn [mm-sym dval]
+      (def mm-var (mm-var-of mm-sym false))
+      (when mm-var
+        (let [methods (get mm-var :jolt/methods)]
+          (or (get methods dval) (get methods :default))))))
+  (ns-intern core "methods-setup"
+    (fn [mm-sym]
+      (def mm-var (mm-var-of mm-sym false))
+      (and mm-var (get mm-var :jolt/methods))))
+  # satisfies?: evaluated protocol value + instance (matches the prior arm).
+  (ns-intern core "satisfies?"
+    (fn [proto obj]
+      (def type-tag (if (and (table? obj) (get obj :jolt/deftype))
+                      (get obj :jolt/deftype)
+                      (if (get obj :jolt/protocol-methods)
+                        (get obj :jolt/deftype))))
+      (if type-tag
+        (let [pn (proto :name)
+              pn-str (if (struct? pn) (pn :name) pn)]
+          (type-satisfies? ctx type-tag pn-str))
+        false)))
+  # instance?: the overlay macro passes the TYPE NAME quoted (class names don't
+  # evaluate to values on jolt); the value arg arrives evaluated.
+  (ns-intern core "instance-check"
+    (fn [type-sym val]
+      (if (get val :jolt/deftype)
+        (let [type-tag (val :jolt/deftype)
+              type-name (type-sym :name)]
+          (or (= type-tag type-name)
+              (and (> (length type-tag) (length type-name))
+                   (= (string/slice type-tag (- (length type-tag) (length type-name)))
+                      type-name))))
+        (match (type-sym :name)
+          "Number" (number? val)
+          "java.lang.Number" (number? val)
+          "Long" (number? val)
+          "java.lang.Long" (number? val)
+          "Integer" (number? val)
+          "Double" (number? val)
+          "String" (string? val)
+          "java.lang.String" (string? val)
+          "Boolean" (or (= true val) (= false val))
+          "Keyword" (keyword? val)
+          "clojure.lang.Atom" (and (table? val) (= :jolt/atom (val :jolt/type)))
+          "clojure.lang.Volatile" (and (table? val) (= :jolt/volatile (val :jolt/type)))
+          "clojure.lang.Delay" (and (table? val) (= :jolt/delay (val :jolt/type)))
+          "clojure.lang.IPersistentMap" (or (phm? val) (struct? val))
+          "clojure.lang.IPersistentVector" (or (tuple? val) (pvec? val))
+          "clojure.lang.IPersistentSet" (set? val)
+          "Object" true
+          false))))
+  # Reader / expansion as plain fns: read-string parses one form; macroexpand-1
+  # expands a (quoted, already-evaluated) call form once via its macro var.
+  (ns-intern core "read-string" (fn [s] (parse-string s)))
+  (ns-intern core "macroexpand-1"
+    (fn [the-form]
+      (if (and (array? the-form) (> (length the-form) 0)
+               (struct? (first the-form)) (= :symbol ((first the-form) :jolt/type)))
+        (let [v (resolve-var ctx @{} (first the-form))]
+          (if (and v (var-macro? v))
+            (apply (var-get v) (tuple/slice the-form 1))
+            the-form))
+        the-form)))
   core)
 
 # Dispatch a special form by its string name.
@@ -1041,22 +1146,8 @@
     "unquote" (error "Unquote not valid outside of syntax-quote")
     "unquote-splicing" (error "Unquote-splicing not valid outside of syntax-quote")
     "eval" (eval-form ctx bindings (eval-form ctx bindings (in form 1)))
-    "read-string" (parse-string (eval-form ctx bindings (in form 1)))
-    "defonce" (let [name-sym (unwrap-meta-name (in form 1))
-                    ns (ctx-find-ns ctx (ctx-current-ns ctx))
-                    existing (ns-find ns (name-sym :name))]
-                (if (and existing (not (nil? (get existing :root))))
-                  existing
-                  (eval-form ctx bindings @[{:jolt/type :symbol :ns nil :name "def"}
-                                            (in form 1) (in form 2)])))
-    "macroexpand-1" (let [the-form (eval-form ctx bindings (in form 1))]
-                      (if (and (array? the-form) (> (length the-form) 0)
-                               (struct? (first the-form)) (= :symbol ((first the-form) :jolt/type)))
-                        (let [v (resolve-var ctx bindings (first the-form))]
-                          (if (and v (var-macro? v))
-                            (apply (var-get v) (tuple/slice the-form 1))
-                            the-form))
-                        the-form))
+    # read-string/macroexpand-1 are ctx-capturing clojure.core fns and defonce
+    # an overlay macro now (Stage 2 tier 6c) — no special-form arms.
     "do" (do
            (var result nil)
            (var i 1)
@@ -1409,100 +1500,9 @@
     # clojure.core fns (install-stateful-fns!) — the defprotocol/extend-type/reify
     # macros call them with name STRINGS, so they compile + interpret as plain
     # invokes (no special-form arms).
-    "satisfies?" (let [proto-sym (eval-form ctx bindings (in form 1))
-                       obj (eval-form ctx bindings (in form 2))
-                       type-tag (if (and (table? obj) (get obj :jolt/deftype))
-                                (get obj :jolt/deftype)
-                                (if (get obj :jolt/protocol-methods)
-                                  (get obj :jolt/deftype)))]
-                  (if type-tag
-                    (let [pn (proto-sym :name)
-                          pn-str (if (struct? pn) (pn :name) pn)]
-                      (type-satisfies? ctx type-tag pn-str))
-                    false))
-    "locking" (eval-form ctx bindings (in form 2))
-    "instance?" (let [type-sym (in form 1)
-                      val (eval-form ctx bindings (in form 2))]
-                  (if (get val :jolt/deftype)
-                    (let [type-tag (val :jolt/deftype)
-                          type-name (type-sym :name)]
-                      (or (= type-tag type-name)
-                          (and (> (length type-tag) (length type-name))
-                               (= (string/slice type-tag (- (length type-tag) (length type-name)))
-                                  type-name))))
-                    (match (type-sym :name)
-                      "Number" (number? val)
-                      "java.lang.Number" (number? val)
-                      "Long" (number? val)
-                      "java.lang.Long" (number? val)
-                      "Integer" (number? val)
-                      "Double" (number? val)
-                      "String" (string? val)
-                      "java.lang.String" (string? val)
-                      "Boolean" (or (= true val) (= false val))
-                      "Keyword" (keyword? val)
-                      "clojure.lang.Atom" (and (table? val) (= :jolt/atom (val :jolt/type)))
-                      "clojure.lang.Volatile" (and (table? val) (= :jolt/volatile (val :jolt/type)))
-                      "clojure.lang.Delay" (and (table? val) (= :jolt/delay (val :jolt/type)))
-                      "clojure.lang.IPersistentMap" (or (phm? val) (struct? val))
-                      "clojure.lang.IPersistentVector" (or (tuple? val) (pvec? val))
-                      "clojure.lang.IPersistentSet" (set? val)
-                      "Object" true
-                      false)))
-    # defmulti / defmethod are now macros (30-macros) over defmulti-setup /
-    # defmethod-setup (ctx-capturing clojure.core fns) — they compile as plain
-    # invokes; no special-form arms. defmethod's impl is a compiled (fn …).
-    "prefer-method" (let [mm-arg (in form 1)
-                          mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
-                                  (resolve-var ctx bindings mm-arg)
-                                  (eval-form ctx bindings mm-arg))
-                          # Auto-create multimethod if it doesn't exist
-                          mm-var (if mm-var mm-var
-                                   (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))
-                                         dummy-fn (fn [& args] nil)]
-                                     (def v (ns-intern ns (mm-arg :name) dummy-fn))
-                                     (put v :jolt/methods @{})
-                                     v))
-                          dispatch-val-a (eval-form ctx bindings (in form 2))
-                          dispatch-val-b (eval-form ctx bindings (in form 3))
-                          prefs (or (get mm-var :jolt/prefers)
-                                   (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers)))]
-                     (put prefs dispatch-val-a dispatch-val-b)
-                     (let [dc (get mm-var :jolt/dispatch-cache)]
-                       (when dc (each k (keys dc) (put dc k nil))))
-                     mm-var)
-    # A multimethod's methods live on its VAR, but the value is the dispatch fn;
-    # so resolve the var from the symbol rather than evaluating it.
-    "get-method" (let [mm-arg (in form 1)
-                       mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
-                                (resolve-var ctx bindings mm-arg)
-                                (eval-form ctx bindings mm-arg))
-                       dispatch-val (eval-form ctx bindings (in form 2))]
-                   (when mm-var
-                     (let [methods (get mm-var :jolt/methods)]
-                       (or (get methods dispatch-val) (get methods :default)))))
-    "methods" (let [mm-arg (in form 1)
-                    mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
-                             (resolve-var ctx bindings mm-arg)
-                             (eval-form ctx bindings mm-arg))]
-                (and mm-var (get mm-var :jolt/methods)))
-    "remove-method" (let [mm-arg (in form 1)
-                          mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
-                                   (resolve-var ctx bindings mm-arg)
-                                   (eval-form ctx bindings mm-arg))
-                          dispatch-val (eval-form ctx bindings (in form 2))]
-                     (when mm-var
-                       (let [methods (get mm-var :jolt/methods)]
-                         (when methods (put methods dispatch-val nil)))
-                       (let [dc (get mm-var :jolt/dispatch-cache)]
-                         (when dc (each k (keys dc) (put dc k nil)))))
-                     mm-var)
-    "remove-all-methods" (let [mm-var (eval-form ctx bindings (in form 1))]
-                          (when mm-var
-                            (put mm-var :jolt/methods @{})
-                            (let [dc (get mm-var :jolt/dispatch-cache)]
-                              (when dc (each k (keys dc) (put dc k nil)))))
-                          mm-var)
+    # satisfies?/instance?/locking and the multimethod table ops
+    # (prefer-method/remove-method/remove-all-methods/get-method/methods) are
+    # clojure.core fns / overlay macros now (Stage 2 tier 6c) — no special arms.
     # deftype is now a macro (30-macros) over make-deftype-ctor + extend-type —
     # compiles as a plain (do …); no special-form arm.
     "new" (let [type-sym (in form 1)

@@ -64,7 +64,13 @@
    "(the-ns (quote clojure.core))" "(ns-interns (quote clojure.core))"
    "(ns-aliases (quote user))" "(ns-imports (quote user))"
    "(ns-resolve (quote clojure.core) (quote map))" "(resolve (quote map))"
-   "(refer (quote clojure.string))"])
+   "(refer (quote clojure.string))"
+   # Stage 2 tier 6c: dispatch-table ops + misc compile as macros/plain invokes
+   "(prefer-method mf :a :b)" "(remove-method mf :a)" "(remove-all-methods mf)"
+   "(get-method mf :a)" "(methods mf)"
+   "(satisfies? P 5)" "(instance? String \"x\")" "(locking :x 1)"
+   "(defonce fz-once 1)" "(read-string \"[1 2]\")"
+   "(macroexpand-1 (quote (when true 1)))"])
 
 # --- Intentional fallback (sanity sample): these SHOULD punt to the interpreter.
 # The remaining frozen/uncompiled set keeps the harness honest in the punt

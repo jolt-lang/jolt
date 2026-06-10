@@ -100,14 +100,17 @@
 (print "  passed")
 
 (print "13: locking...")
-# locking is a no-op in single-threaded Janet — just executes body
-(assert (= 42 (eval-str "(locking :lock 42)")) "locking returns body result")
+# locking/instance? are overlay macros now (Stage 2 tier 6c) — they need the
+# full env (init loads the overlay), not a bare make-ctx.
+(let [ctx (init)]
+  (assert (= 42 (eval-string ctx "(locking :lock 42)")) "locking returns body result"))
 (print "  passed")
 
 (print "14: instance?...")
 # instance? checks type
-(assert (= true (eval-str "(instance? Number 42)")) "instance? Number matches number")
-(assert (= false (eval-str "(instance? Number \"hello\")")) "instance? Number doesn't match string")
+(let [ctx (init)]
+  (assert (= true (eval-string ctx "(instance? Number 42)")) "instance? Number matches number")
+  (assert (= false (eval-string ctx "(instance? Number \"hello\")")) "instance? Number doesn't match string"))
 (print "  passed")
 
 (print "15: defmulti/defmethod...")
