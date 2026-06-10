@@ -156,6 +156,21 @@
    ["resolve + call"     "3"     "((var-get (resolve (quote inc))) 2)"]
    ["resolve absent"     "nil"   "(resolve (quote no-such-sym-xyz))"]
 
+   ### ---- dispatch-table ops + misc as macros/fns (Stage 2 tier 6c) ----
+   ["get-method + call"  "1"     "(do (defmulti t6f :k) (defmethod t6f :a [x] 1) ((get-method t6f :a) {:k :a}))"]
+   ["remove-method"      "nil"   "(do (defmulti t6g :k) (defmethod t6g :b [x] 2) (remove-method t6g :b) (get (methods t6g) :b))"]
+   ["remove-all-methods" "nil"   "(do (defmulti t6h :k) (defmethod t6h :c [x] 3) (remove-all-methods t6h) (get (methods t6h) :c))"]
+   # NOTE: dispatch does not yet CONSULT prefers in ambiguous isa dispatch
+   # (jolt-bug filed) — this asserts prefer-method records the preference.
+   ["prefer-method records" ":shape" "(do (defmulti t6p identity) (prefer-method t6p :rect :shape) (get (get (var t6p) :jolt/prefers) :rect))"]
+   ["instance? deftype"  "true"  "(do (deftype T6i [a]) (instance? T6i (->T6i 1)))"]
+   ["instance? String"   "true"  "(instance? String \"s\")"]
+   ["locking evals body" "3"     "(locking :anything (+ 1 2))"]
+   ["locking evals monitor" "[3 1]" "(let [a (atom 0)] [(locking (swap! a inc) 3) @a])"]
+   ["defonce keeps first" "5"    "(do (defonce d6o 5) (defonce d6o 9) d6o)"]
+   ["read-string + eval" "3"     "(eval (read-string \"(+ 1 2)\"))"]
+   ["macroexpand-1 when" "2"     "(count (rest (macroexpand-1 (quote (when true 1)))))"]
+
    ### ---- HIGH: aliased namespace calls ----
    ["require :as alias"  "\"1,2,3\"" "(do (require (quote [clojure.string :as s])) (s/join \",\" [1 2 3]))"]
    ["ns form + alias"    "\"HI\""  "(do (ns my.a (:require [clojure.string :as s])) (s/upper-case \"hi\"))"]

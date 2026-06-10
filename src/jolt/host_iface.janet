@@ -73,20 +73,19 @@
     (each n ["quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
              "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!"
              # defmulti/defmethod/deftype now compile (macros over *-setup fns).
-             "locking" "eval" "instance?" "new"
+             "eval" "new"
              # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta! are
              # plain core fns; find-var/intern are ctx-capturing core fns — all
              # compile as ordinary invokes now (Stage 2 tier 6).
-             "." "satisfies?"
-             # protocol-dispatch/register-method/make-reified are now clojure.core
-             # fns (compile as plain invokes).
-             "prefer-method"
-             "remove-method" "remove-all-methods" "get-method" "methods"
+             "."
+             # satisfies?/instance?/locking/defonce/read-string/macroexpand-1 and
+             # the multimethod table ops (prefer-method/remove-method/
+             # remove-all-methods/get-method/methods) are clojure.core fns /
+             # overlay macros now (Stage 2 tier 6c) — ordinary invokes.
              # create-ns/remove-ns/find-ns/all-ns/the-ns/resolve/ns-resolve/
              # ns-aliases/ns-imports/ns-interns/refer are ctx-capturing
              # clojure.core fns now (compile as plain invokes — tier 6b), like
              # ns/require/in-ns/use/import/refer-clojure before them.
-             "read-string" "macroexpand-1" "defonce"
              # defprotocol/extend-type/extend-protocol/reify/defrecord now expand to
              # plain def + protocol-dispatch/register-method/make-reified/deftype.
              "gen-class"

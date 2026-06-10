@@ -27,6 +27,42 @@
 (defmacro defmethod [mm dispatch-val & fn-tail]
   `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)))
 
+;; Multimethod table ops (tier 6c): a multimethod's method table lives on its
+;; VAR (the value is just the dispatch closure), so these pass the name quoted
+;; to ctx-capturing setups — the same shape as defmulti/defmethod above.
+(defmacro prefer-method [mm dval-a dval-b]
+  `(prefer-method-setup (quote ~mm) ~dval-a ~dval-b))
+
+(defmacro remove-method [mm dval]
+  `(remove-method-setup (quote ~mm) ~dval))
+
+(defmacro remove-all-methods [mm]
+  `(remove-all-methods-setup (quote ~mm)))
+
+(defmacro get-method [mm dval]
+  `(get-method-setup (quote ~mm) ~dval))
+
+(defmacro methods [mm]
+  `(methods-setup (quote ~mm)))
+
+;; instance?: class names don't evaluate to values on jolt, so the type arg is
+;; passed quoted to the ctx-capturing checker; the value evaluates normally.
+(defmacro instance? [t x]
+  `(instance-check (quote ~t) ~x))
+
+;; Single-threaded host: evaluate the monitor expr (for its effects, matching
+;; Clojure's evaluation order) and the body — no lock to take.
+(defmacro locking [x & body]
+  `(do ~x ~@body))
+
+;; defonce: define name only if it isn't already bound to a non-nil root;
+;; returns the existing var untouched otherwise (matching the prior arm).
+(defmacro defonce [name expr]
+  `(let [v# (resolve (quote ~name))]
+     (if (and v# (some? (var-get v#)))
+       v#
+       (def ~name ~expr))))
+
 ;; Single arglist (Jolt defmacro is single-arity); the optional else defaults nil
 ;; via rest-destructuring.
 (defmacro if-not [test then & [else]]
