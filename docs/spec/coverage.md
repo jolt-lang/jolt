@@ -3,14 +3,14 @@
 Generated 2026-06-10 by `tools/spec_coverage.py` — do not edit by hand.
 
 Surface: **694** clojure.core vars (ClojureDocs export; 648 with
-community examples). jolt interns 534 of them.
+community examples). jolt interns 550 of them.
 
 | Status | Count | Meaning |
 |---|---|---|
-| implemented+tested | 380 | in jolt and exercised by spec/conformance |
-| implemented-untested | 154 | in jolt, no direct test — spec entries will add them |
+| implemented+tested | 397 | in jolt and exercised by spec/conformance |
+| implemented-untested | 153 | in jolt, no direct test — spec entries will add them |
 | resolvable-not-interned | 22 | works in code but invisible to ns introspection (conformance finding) |
-| missing-portable | 35 | portable semantics, jolt lacks it — implementation gap |
+| missing-portable | 19 | portable semantics, jolt lacks it — implementation gap |
 | special-form | 13 | specified in §3, not a library var |
 | dynamic-var | 29 | classification needed: portable default vs host-dependent |
 | agents-taps | 22 | out of scope pending concurrency design note |
@@ -103,7 +103,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `agent-errors` | agents-taps |  |
 | `aget` | implemented+tested | ✓ |
 | `alength` | implemented+tested | ✓ |
-| `alias` | missing-portable | ✓ |
+| `alias` | implemented+tested | ✓ |
 | `all-ns` | implemented-untested | ✓ |
 | `alter` | stm-refs | ✓ |
 | `alter-meta!` | implemented+tested | ✓ |
@@ -390,7 +390,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `long-array` | implemented-untested | ✓ |
 | `longs` | implemented-untested | ✓ |
 | `loop` | implemented+tested | ✓ |
-| `macroexpand` | missing-portable | ✓ |
+| `macroexpand` | implemented+tested | ✓ |
 | `macroexpand-1` | implemented+tested | ✓ |
 | `make-array` | implemented-untested | ✓ |
 | `make-hierarchy` | implemented+tested | ✓ |
@@ -423,7 +423,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `neg-int?` | implemented+tested | ✓ |
 | `neg?` | implemented+tested | ✓ |
 | `new` | special-form | ✓ |
-| `newline` | missing-portable | ✓ |
+| `newline` | implemented+tested | ✓ |
 | `next` | implemented+tested | ✓ |
 | `nfirst` | implemented-untested | ✓ |
 | `nil?` | implemented+tested | ✓ |
@@ -434,15 +434,15 @@ UNVERIFIED field; that column will be added as entries land.
 | `not-every?` | implemented+tested | ✓ |
 | `not=` | implemented+tested | ✓ |
 | `ns` | implemented+tested | ✓ |
-| `ns-aliases` | implemented-untested | ✓ |
+| `ns-aliases` | implemented+tested | ✓ |
 | `ns-imports` | implemented-untested | ✓ |
 | `ns-interns` | implemented-untested | ✓ |
 | `ns-map` | implemented-untested | ✓ |
 | `ns-name` | implemented+tested | ✓ |
-| `ns-publics` | missing-portable | ✓ |
+| `ns-publics` | implemented+tested | ✓ |
 | `ns-refers` | missing-portable | ✓ |
 | `ns-resolve` | implemented+tested | ✓ |
-| `ns-unalias` | missing-portable | ✓ |
+| `ns-unalias` | implemented+tested | ✓ |
 | `ns-unmap` | implemented-untested | ✓ |
 | `nth` | implemented+tested | ✓ |
 | `nthnext` | implemented+tested | ✓ |
@@ -454,16 +454,16 @@ UNVERIFIED field; that column will be added as entries land.
 | `odd?` | implemented+tested | ✓ |
 | `or` | implemented+tested | ✓ |
 | `parents` | implemented+tested | ✓ |
-| `parse-boolean` | missing-portable | ✓ |
-| `parse-double` | missing-portable | ✓ |
-| `parse-long` | missing-portable | ✓ |
+| `parse-boolean` | implemented+tested | ✓ |
+| `parse-double` | implemented+tested | ✓ |
+| `parse-long` | implemented+tested | ✓ |
 | `parse-uuid` | implemented+tested | ✓ |
 | `partial` | implemented+tested | ✓ |
 | `partition` | implemented+tested | ✓ |
 | `partition-all` | implemented+tested | ✓ |
 | `partition-by` | implemented+tested | ✓ |
-| `partitionv` | missing-portable |  |
-| `partitionv-all` | missing-portable |  |
+| `partitionv` | implemented+tested |  |
+| `partitionv-all` | implemented+tested |  |
 | `pcalls` | jvm-specific | ✓ |
 | `peek` | implemented+tested | ✓ |
 | `persistent!` | implemented+tested | ✓ |
@@ -611,7 +611,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `spit` | implemented-untested | ✓ |
 | `split-at` | implemented+tested | ✓ |
 | `split-with` | implemented+tested | ✓ |
-| `splitv-at` | missing-portable |  |
+| `splitv-at` | implemented+tested |  |
 | `str` | implemented+tested | ✓ |
 | `stream-into!` | jvm-specific |  |
 | `stream-reduce!` | jvm-specific |  |
@@ -640,7 +640,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `the-ns` | implemented+tested | ✓ |
 | `thread-bound?` | missing-portable | ✓ |
 | `throw` | special-form | ✓ |
-| `time` | missing-portable | ✓ |
+| `time` | implemented+tested | ✓ |
 | `to-array` | implemented-untested | ✓ |
 | `to-array-2d` | implemented+tested | ✓ |
 | `trampoline` | implemented+tested | ✓ |
@@ -678,9 +678,9 @@ UNVERIFIED field; that column will be added as entries land.
 | `unsigned-bit-shift-right` | implemented-untested | ✓ |
 | `update` | implemented+tested | ✓ |
 | `update-in` | implemented+tested | ✓ |
-| `update-keys` | missing-portable | ✓ |
+| `update-keys` | implemented+tested | ✓ |
 | `update-proxy` | implemented-untested | ✓ |
-| `update-vals` | missing-portable | ✓ |
+| `update-vals` | implemented+tested | ✓ |
 | `uri?` | implemented-untested | ✓ |
 | `use` | implemented+tested | ✓ |
 | `uuid?` | implemented+tested | ✓ |
@@ -714,8 +714,8 @@ UNVERIFIED field; that column will be added as entries land.
 | `with-open` | missing-portable | ✓ |
 | `with-out-str` | implemented+tested | ✓ |
 | `with-precision` | missing-portable | ✓ |
-| `with-redefs` | missing-portable | ✓ |
-| `with-redefs-fn` | missing-portable | ✓ |
+| `with-redefs` | implemented+tested | ✓ |
+| `with-redefs-fn` | implemented+tested | ✓ |
 | `xml-seq` | implemented-untested | ✓ |
 | `zero?` | implemented+tested | ✓ |
 | `zipmap` | implemented+tested | ✓ |

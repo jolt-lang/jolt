@@ -144,3 +144,14 @@
   ["dissoc keeps nil"      "true"   "(contains? (dissoc {:a nil :b 1} :b) :a)"]
   ["reduce-kv sees nil"    "true"   "(= #{:a :b} (reduce-kv (fn [acc k v] (conj acc k)) #{} {:a nil :b 2}))"]
   ["nil-free stays fast"   "true"   "(= {:a 1 :b 2} {:b 2 :a 1})"])
+
+# Clojure 1.11 map transformers.
+(defspec "map / update-keys & update-vals (1.11)"
+  ["update-keys"        "{\"a\" 1, \"b\" 2}" "(update-keys {:a 1 :b 2} name)"]
+  ["update-keys empty"  "{}"      "(update-keys {} inc)"]
+  ["update-keys nil"    "{}"      "(update-keys nil str)"]
+  ["update-keys collide last wins" "1" "(count (update-keys {:a 1 :b 2} (fn [_] :k)))"]
+  ["update-vals"        "{:a 2, :b 3}" "(update-vals {:a 1 :b 2} inc)"]
+  ["update-vals empty"  "{}"      "(update-vals {} inc)"]
+  ["update-vals nil"    "{}"      "(update-vals nil inc)"]
+  ["update-vals keeps keys" "[:a :b]" "(sort (keys (update-vals {:a 1 :b 2} inc)))"])

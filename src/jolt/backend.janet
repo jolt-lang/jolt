@@ -351,15 +351,24 @@
   # jolt.analyzer), and the interpreter rebinds current-ns to a fn's defining ns
   # while it runs — so h/current-ns must read this instead of ctx-current-ns.
   (put (ctx :env) :compile-ns (ctx-current-ns ctx))
+  (def saved-ns (ctx-current-ns ctx))
   (def av (ns-find (ctx-find-ns ctx "jolt.analyzer") "analyze"))
   # Pre-kernel bootstrap: ensure-analyzer is gated until the kernel tier loads
   # (see api/load-core-overlay!), so a compile request from an earlier tier (e.g.
   # 00-syntax's destructure defn) finds no analyzer. That fallback is DESIGNED —
   # route it through the sanctioned punt channel rather than crashing on a nil var.
-  (unless av (error "jolt/uncompilable: analyzer not built (pre-kernel bootstrap)"))
-  (def r ((var-get av) ctx form))
+  (unless av
+    (put (ctx :env) :compile-ns nil)
+    (error "jolt/uncompilable: analyzer not built (pre-kernel bootstrap)"))
+  # The analyzer runs INTERPRETED; the interpreter rebinds current-ns to a fn's
+  # defining ns (jolt.analyzer) while it runs and only restores on normal return.
+  # A punt THROWS out of those frames, leaking jolt.analyzer as current-ns (and
+  # :compile-ns stayed set) — the fallback interpretation then resolves user vars
+  # against the wrong ns. Restore both on every exit.
+  (def r (protect ((var-get av) ctx form)))
   (put (ctx :env) :compile-ns nil)
-  r)
+  (ctx-set-current-ns ctx saved-ns)
+  (if (r 0) (r 1) (error (r 1))))
 
 # The analyzer's deliberate punt signal — (uncompilable why) throws the string
 # "jolt/uncompilable: <why>". Anything else escaping the compile step is an

@@ -134,3 +134,26 @@
   ["rand n in [0,n)"    "true" "(let [r (rand 10)] (and (>= r 0) (< r 10)))"]
   ["rand-nth member"    "true" "(contains? #{:a :b :c} (rand-nth [:a :b :c]))"]
   ["rand-nth single"    ":x"   "(rand-nth [:x])"])
+
+# Clojure 1.11 string->scalar parsers: nil on malformed, throw on non-string.
+(defspec "numbers / parse fns (1.11)"
+  ["parse-long"          "42"     "(parse-long \"42\")"]
+  ["parse-long negative" "-7"     "(parse-long \"-7\")"]
+  ["parse-long plus"     "7"      "(parse-long \"+7\")"]
+  ["parse-long float nil" "nil"   "(parse-long \"1.5\")"]
+  ["parse-long hex nil"  "nil"    "(parse-long \"0x10\")"]
+  ["parse-long empty nil" "nil"   "(parse-long \"\")"]
+  ["parse-long junk nil" "nil"    "(parse-long \"12ab\")"]
+  ["parse-long throws"   :throws  "(parse-long 42)"]
+  ["parse-double"        "1.5"    "(parse-double \"1.5\")"]
+  ["parse-double int"    "4.0"    "(parse-double \"4\")"]
+  ["parse-double sci"    "1500.0" "(parse-double \"1.5e3\")"]
+  ["parse-double neg"    "-0.5"   "(parse-double \"-0.5\")"]
+  ["parse-double junk"   "nil"    "(parse-double \"abc\")"]
+  ["parse-double trail"  "nil"    "(parse-double \"1.5x\")"]
+  ["parse-double throws" :throws  "(parse-double :k)"]
+  ["parse-boolean true"  "true"   "(parse-boolean \"true\")"]
+  ["parse-boolean false" "false"  "(parse-boolean \"false\")"]
+  ["parse-boolean case"  "nil"    "(parse-boolean \"True\")"]
+  ["parse-boolean junk"  "nil"    "(parse-boolean \"yes\")"]
+  ["parse-boolean throws" :throws "(parse-boolean true)"])

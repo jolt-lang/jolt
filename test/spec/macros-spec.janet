@@ -72,3 +72,16 @@
   ["binding rebinds"     "99"     "(do (def ^:dynamic *bx* 10) (binding [*bx* 99] *bx*))"]
   ["binding restores"    "10"     "(do (def ^:dynamic *by* 10) (binding [*by* 99] *by*) *by*)"]
   ["binding seen by fn"  "7"      "(do (def ^:dynamic *bz* 0) (defn rdz [] *bz*) (binding [*bz* 7] (rdz)))"])
+
+# time returns the body value (the timing line goes to *out*); with-redefs
+# temporarily rebinds var roots and restores on exit (even on throw);
+# macroexpand expands repeatedly until the head is no longer a macro.
+(defspec "macros / time, with-redefs, macroexpand"
+  ["time returns value"  "3"      "(time (+ 1 2))"]
+  ["with-redefs rebinds" "42"     "(do (defn wr-f [] 1) (with-redefs [wr-f (fn [] 42)] (wr-f)))"]
+  ["with-redefs restores" "1"     "(do (defn wr-g [] 1) (with-redefs [wr-g (fn [] 42)]) (wr-g))"]
+  ["with-redefs restores on throw" "1"
+   "(do (defn wr-h [] 1) (try (with-redefs [wr-h (fn [] 42)] (throw (ex-info \"x\" {}))) (catch :default e nil)) (wr-h))"]
+  ["with-redefs-fn"      "42"     "(do (defn wr-i [] 1) (with-redefs-fn {(var wr-i) (fn [] 42)} (fn [] (wr-i))))"]
+  ["macroexpand full"    "true"   "(let [e (macroexpand (quote (when-not false 1)))] (= (quote if) (first e)))"]
+  ["macroexpand non-macro" "[1 2]" "(macroexpand (quote [1 2]))"])
