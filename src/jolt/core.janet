@@ -214,7 +214,6 @@
   (and (number? x) (= x x)
        (< x math/inf) (> x (- math/inf))
        (= x (math/floor x))))
-(defn core-boolean? [x] (or (= x true) (= x false)))
 (defn core-list? [x] (or (plist? x) (and (array? x) (not (get x :jolt/type)))))
 
 (defn core-empty? [coll]
@@ -1459,15 +1458,6 @@
 # pop is defined only on stacks (vectors -> last end, lists -> front); Clojure
 # throws on sets/maps/seqs/strings/scalars. (peek lives in the Clojure kernel
 # tier — core/00-kernel.clj.)
-(defn core-pop [coll]
-  (cond
-    (nil? coll) nil
-    (plist? coll) (if (pl-empty? coll) (error "Can't pop empty list") (pl-rest coll))
-    (pvec? coll) (if (= 0 (pv-count coll)) (error "Can't pop empty vector") (pv-pop coll))
-    (tuple? coll) (if (= 0 (length coll)) (error "Can't pop empty vector") (tuple/slice coll 0 (- (length coll) 1)))
-    (array? coll) (if (= 0 (length coll)) (error "Can't pop empty list") (array/slice coll 1))
-    (error (string "pop not supported on " (type coll)))))
-
 # subvec lives in the Clojure kernel tier — core/00-kernel.clj.
 
 (defn core-trampoline [f & args]
@@ -1513,16 +1503,6 @@
 (defn core-complement [f]
   (fn [& args] (not (apply f args))))
 
-(defn core-qualified-symbol? [x]
-  "Returns true if x is a symbol with a namespace."
-  (and (struct? x) (= :symbol (x :jolt/type)) (not (nil? (x :ns)))))
-
-(defn core-simple-symbol? [x]
-  (and (struct? x) (= :symbol (x :jolt/type)) (nil? (x :ns))))
-(defn core-qualified-keyword? [x]
-  (and (keyword? x) (not (nil? (string/find "/" (string x))))))
-(defn core-simple-keyword? [x]
-  (and (keyword? x) (nil? (string/find "/" (string x)))))
 # Jolt has no inst/uri/uuid host types, so these are always false; inst-ms has
 # nothing valid to read.
 (defn core-inst? [x] false)
@@ -2087,10 +2067,6 @@
     (case (length a)
       0 (rf) 1 (rf (a 0))
       (do (var acc (a 0)) (each x (realize-for-iteration (a 1)) (set acc (rf acc x))) acc))))
-(defn core-random-sample [prob & rest]
-  (if (= 0 (length rest))
-    (core-filter (fn [_] (< (math/random) prob)))
-    (core-filter (fn [_] (< (math/random) prob)) (in rest 0))))
 (defn core-reader-conditional [form splicing?]
   @{:jolt/type :jolt/reader-conditional :form form :splicing? splicing?})
 # reader-conditional? now lives in the Clojure collection tier (tagged-value predicate).
@@ -2413,21 +2389,6 @@
 # Delays — created lazily by the `delay` macro; forced once via force/deref.
 (defn core-make-delay [thunk] @{:jolt/type :jolt/delay :fn thunk :realized false :val nil})
 (defn core-delay? [x] (and (table? x) (= :jolt/delay (x :jolt/type))))
-(defn core-force [x]
-  (if (core-delay? x)
-    (if (x :realized) (x :val)
-      (let [v ((x :fn))] (put x :val v) (put x :realized true) v))
-    x))
-(defn core-realized? [x]
-  (cond
-    (core-delay? x) (x :realized)
-    (core-future? x) (truthy? (x :cached))
-    (lazy-seq? x) (truthy? (x :realized))
-    (and (table? x) (= :jolt/atom (x :jolt/type))) true
-    # Clojure's realized? is only defined on IPending; reject anything else.
-    (error (string "realized? not supported on " (type x)))))
-
-
 # Proxy stub — returns nil form (macro, args not evaluated)
 # Thread stubs
 (def core-Thread (fn [& args] (struct ;[:jolt/type :jolt/thread])))
@@ -2504,12 +2465,6 @@
 # ============================================================
 # Additional clojure.core functions (conformance batch)
 # ============================================================
-
-(defn core-find [m k]
-  (cond
-    (phm? m) (if (phm-contains? m k) [k (phm-get m k)] nil)
-    (or (struct? m) (table? m)) (let [v (get m k :jolt/nf)] (if (= v :jolt/nf) nil [k v]))
-    nil))
 
 (defn core-keyword
   "(keyword name) or (keyword ns name). Namespaced keywords are `:ns/name`.
@@ -2621,18 +2576,11 @@
 
 # some-fn now lives in the Clojure collection tier (core/20-coll.clj).
 
-(defn core-sequential? [x] (or (tuple? x) (array? x) (pvec? x) (plist? x) (lazy-seq? x)))
 # Associative = maps and (real) vectors only. pvec is a literal/built vector;
 # tuples and lists are seq results, not associative.
-(defn core-associative? [x]
-  (or (pvec? x) (phm? x) (core-sorted-map? x)
-      (and (struct? x) (nil? (get x :jolt/type)))))
 (defn core-ifn? [x]
   (or (function? x) (cfunction? x) (keyword? x) (phm? x) (set? x) (tuple? x) (array? x) (pvec? x)
       (and (struct? x) (= :symbol (x :jolt/type)))))
-(defn core-indexed? [x] (or (tuple? x) (array? x) (pvec? x)))
-
-
 # With a single item, Clojure returns it WITHOUT calling f. On ties, the last
 # extremal item wins (>=/<= update), matching Clojure.
 # Clojure's min-key/max-key: the 2-arg base compares with strict < / > (so the
@@ -2666,11 +2614,6 @@
     (re-replace-first pat s repl)
     (string/replace pat repl s)))
 
-(defn core-prn-str [& xs] (string (apply core-pr-str xs) "\n"))
-(defn core-println-str [& xs]
-  (var parts @[]) (each x xs (array/push parts (str-render-one x)))
-  (string (string/join parts " ") "\n"))
-
 # Iterator/enumeration seqs — Jolt has no Java iterators, so adapt to plain seq.
 (defn core-enumeration-seq [x] (core-seq x))
 (defn core-iterator-seq [x] (core-seq x))
@@ -2692,9 +2635,6 @@
       (while (and ok (< i (dec (length args))))
         (unless (= (in args i) (in args (+ i 1))) (set ok false)) (++ i))
       ok)))
-(defn core-print-str [& xs]
-  (var parts @[]) (each x xs (array/push parts (str-render-one x)))
-  (string/join parts " "))
 (defn core-memfn [& args] (error "memfn: JVM method handles are not supported in Jolt"))
 (defn core-eduction [& args]
   # (eduction xform* coll): apply the composed transducers eagerly to coll
@@ -2746,13 +2686,6 @@
 (defn- intval? [x] (and (number? x) (< (math/abs x) math/inf) (= x (math/floor x))))
 
 # Forcing lazy seqs
-(defn core-doall [a & rest]
-  (let [coll (if (= 0 (length rest)) a (in rest 0))]
-    (realize-for-iteration coll) coll))
-(defn core-dorun [a & rest]
-  (let [coll (if (= 0 (length rest)) a (in rest 0))]
-    (realize-for-iteration coll) nil))
-
 # Map entries (represented as 2-element vectors)
 # key/val require a map entry (a 2-element vector/tuple in Jolt); Clojure throws
 # otherwise. (Jolt can't distinguish a 2-vector from a real MapEntry.)
@@ -2765,38 +2698,13 @@
 (defn core-val [e] (if (entry-like? e) (in e 1) (error "val requires a map entry")))
 (defn core-map-entry? [x] (entry-like? x))
 
-(defn core-rand-nth [coll]
-  (let [c (realize-for-iteration coll)]
-    (in c (math/floor (* (math/random) (length c))))))
-
-(defn core-counted? [x]
-  (or (pvec? x) (plist? x) (phm? x) (set? x) (tuple? x) (array? x) (string? x)))
 # Reversible (supports rseq) = vectors and sorted collections.
-(defn core-reversible? [x] (or (pvec? x) (core-sorted-map? x) (core-sorted-set? x)))
-(defn core-seqable? [x]
-  (or (nil? x) (tuple? x) (array? x) (pvec? x) (plist? x) (phm? x) (set? x)
-      (struct? x) (lazy-seq? x) (string? x)
-      (and (table? x) (or (get x :jolt/type) (get x :jolt/deftype)))))
-
 # Numeric predicates (Jolt has no ratios/bigdec). nat-int?/pos-int?/neg-int?/
 # ratio?/decimal?/rational? live in the Clojure collection tier (core/20-coll.clj).
-(defn core-double? [x] (and (number? x) (not (intval? x))))
-(defn core-float? [x] (and (number? x) (not (intval? x))))
-(defn core-infinite? [x] (and (number? x) (= (math/abs x) math/inf)))
 # Jolt has no ratio type, so numerator/denominator have no valid input (Clojure
 # requires a Ratio and throws otherwise).
 (defn core-numerator [x] (error "numerator requires a ratio (Jolt has no ratios)"))
 (defn core-denominator [x] (error "denominator requires a ratio (Jolt has no ratios)"))
-
-(defn core-list* [& args]
-  (let [n (length args)]
-    (if (= 0 n) nil
-      (let [head (array/slice args 0 (- n 1))
-            tail (realize-for-iteration (in args (- n 1)))]
-        (var r (if (array? tail) tail (array ;tail)))
-        (var i (- (length head) 1))
-        (while (>= i 0) (set r (pl-cons (in head i) r)) (-- i))
-        r))))
 
 (def- special-syms
   {"if" true "do" true "let*" true "fn*" true "quote" true "var" true "def" true
@@ -3007,7 +2915,6 @@
     "even?" core-even?
     "odd?" core-odd?
     "integer?" core-integer?
-    "boolean?" core-boolean?
     "list?" core-list?
     "empty?" core-empty?
     "every?" core-every?
@@ -3044,7 +2951,6 @@
     "get-in" core-get-in
     "contains?" core-contains?
     "count" core-count
-    "pop" core-pop
     "trampoline" core-trampoline
     "format" core-format
     "first" core-first
@@ -3071,21 +2977,11 @@
     "remove" core-remove
     "reduce" core-reduce
     "apply" core-apply
-    "doall" core-doall
-    "dorun" core-dorun
     "key" core-key
     "val" core-val
     "map-entry?" core-map-entry?
-    "rand-nth" core-rand-nth
-    "counted?" core-counted?
-    "reversible?" core-reversible?
-    "seqable?" core-seqable?
-    "double?" core-double?
-    "float?" core-float?
-    "infinite?" core-infinite?
     "numerator" core-numerator
     "denominator" core-denominator
-    "list*" core-list*
     "special-symbol?" core-special-symbol?
     "promise" core-promise
     "deliver" core-deliver
@@ -3144,7 +3040,6 @@
     "parse-uuid" core-parse-uuid
     "interpose" core-interpose
     "mapcat" core-mapcat
-    "find" core-find
     "transduce" core-transduce
     "sequence" core-sequence
     "eduction" core-sequence
@@ -3161,16 +3056,9 @@
     "empty" core-empty
     "rseq" core-rseq
     "shuffle" core-shuffle
-    "sequential?" core-sequential?
-    "associative?" core-associative?
     "ifn?" core-ifn?
-    "indexed?" core-indexed?
     "ex-info" core-ex-info
-    "prn-str" core-prn-str
-    "println-str" core-println-str
     "__with-out-str" core-with-out-str
-    "force" core-force
-    "realized?" core-realized?
     "delay?" core-delay?
     "make-delay" core-make-delay
     "take" core-take
@@ -3277,7 +3165,6 @@
     "boolean" core-boolean
     "cat" core-cat
     "disj!" core-disj!
-    "random-sample" core-random-sample
     "reader-conditional" core-reader-conditional
     "sorted-map-by" core-sorted-map-by
     "sorted-set-by" core-sorted-set-by
@@ -3299,7 +3186,6 @@
     "proxy-mappings" core-proxy-mappings
     "update-proxy" core-update-proxy
     "==" core-numeric=
-    "print-str" core-print-str
     "memfn" core-memfn
     "eduction" core-eduction
     "->Eduction" core->Eduction
@@ -3374,10 +3260,6 @@
     "macrofy" core-macrofy
     "new-var" core-new-var
     "avoid-method-too-large" core-avoid-method-too-large
-    "qualified-symbol?" core-qualified-symbol?
-    "simple-symbol?" core-simple-symbol?
-    "qualified-keyword?" core-qualified-keyword?
-    "simple-keyword?" core-simple-keyword?
     "inst?" core-inst?
     "inst-ms" core-inst-ms
     "uri?" core-uri?

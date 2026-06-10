@@ -180,6 +180,101 @@
 (defn file-seq [root]
   (tree-seq __dir? __list-dir root))
 
+;; --- Stage 3 tier shrink: pure-over-core leaves moved off the Janet seed ----
+
+;; Representation predicates over the overlay's own predicates (no Janet reps).
+(defn sequential? [x] (or (vector? x) (seq? x)))
+(defn associative? [x] (or (map? x) (vector? x)))
+(defn counted? [x]
+  (or (vector? x) (map? x) (set? x) (list? x) (string? x)))
+(defn indexed? [x] (vector? x))
+(defn reversible? [x] (or (vector? x) (sorted? x)))
+(defn seqable? [x]
+  (or (nil? x) (coll? x) (string? x)))
+
+(defn boolean? [x] (or (true? x) (false? x)))
+(defn double? [x] (and (number? x) (not (integer? x))))
+(defn float? [x] (double? x))
+(defn infinite? [x] (and (number? x) (or (= x ##Inf) (= x ##-Inf))))
+
+(defn qualified-keyword? [x] (and (keyword? x) (some? (namespace x))))
+(defn simple-keyword? [x] (and (keyword? x) (nil? (namespace x))))
+(defn qualified-symbol? [x] (and (symbol? x) (some? (namespace x))))
+(defn simple-symbol? [x] (and (symbol? x) (nil? (namespace x))))
+
+;; find: the map entry [k v] when k is present (nil values included), nil
+;; otherwise. contains? gives vectors-by-index for free, matching Clojure.
+(defn find [m k]
+  (when (contains? m k) [k (get m k)]))
+
+;; realized?: defined on the pending types only (delay/lazy-seq/future read
+;; their realization slot; promises/atoms always-realized), error otherwise.
+(defn realized? [x]
+  (cond
+    (delay? x) (boolean (get x :realized))
+    (future? x) (boolean (get x :cached))
+    (= :jolt/lazy-seq (get x :jolt/type)) (boolean (get x :realized))
+    (atom? x) true
+    :else (throw (str "realized? not supported on: " x))))
+
+(defn force [x] (if (delay? x) (deref x) x))
+
+;; pop: vectors drop the last element, lists/seqs the first; empty pops throw.
+(defn pop [coll]
+  (cond
+    (nil? coll) nil
+    (vector? coll)
+      (if (zero? (count coll)) (throw "Can't pop empty vector")
+        (subvec coll 0 (dec (count coll))))
+    (seq? coll)
+      (if (nil? (seq coll)) (throw "Can't pop empty list")
+        (rest coll))
+    :else (throw (str "pop not supported on: " coll))))
+
+;; doall/dorun: realization boundaries. dorun walks (optionally at most n
+;; steps — the Janet seed version ignored n); doall walks then returns coll.
+(defn dorun
+  ([coll]
+   (loop [s (seq coll)]
+     (when s (recur (next s)))))
+  ([n coll]
+   (loop [n n s (seq coll)]
+     (when (and s (pos? n)) (recur (dec n) (next s))))))
+
+(defn doall
+  ([coll] (dorun coll) coll)
+  ([n coll] (dorun n coll) coll))
+
+;; list*: cons the leading args onto the final seq argument.
+(defn list*
+  ([args] (seq args))
+  ([a args] (cons a args))
+  ([a b args] (cons a (cons b args)))
+  ([a b c args] (cons a (cons b (cons c args))))
+  ([a b c d & more]
+   (cons a (cons b (cons c (cons d (spread more)))))))
+
+;; spread: (spread [1 2 [3 4]]) => (1 2 3 4) — list*'s variadic helper
+;; (private in Clojure; defined after use is fine, vars resolve at call time).
+(defn- spread [arglist]
+  (cond
+    (nil? arglist) nil
+    (nil? (next arglist)) (seq (first arglist))
+    :else (cons (first arglist) (spread (next arglist)))))
+
+;; print-str family: print/println/prn into a captured *out*.
+(defn print-str [& xs] (__with-out-str (fn* [] (apply print xs))))
+(defn println-str [& xs] (__with-out-str (fn* [] (apply println xs))))
+(defn prn-str [& xs] (__with-out-str (fn* [] (apply prn xs))))
+
+;; Random selection over the host rand primitives.
+(defn rand-nth [coll]
+  (let [v (vec coll)] (nth v (rand-int (count v)))))
+
+(defn random-sample
+  ([prob] (filter (fn [_] (< (rand) prob))))
+  ([prob coll] (filter (fn [_] (< (rand) prob)) coll)))
+
 (defn comparator [pred]
   (fn [a b] (cond (pred a b) -1 (pred b a) 1 :else 0)))
 
