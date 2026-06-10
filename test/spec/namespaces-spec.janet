@@ -35,3 +35,10 @@
   ["require clojure.walk" "{:a 2}" "(do (require '[clojure.walk :as w]) (w/postwalk (fn [x] (if (number? x) (inc x) x)) {:a 1}))"]
   ["walk keywordize-keys" "{:a 1}" "(do (require '[clojure.walk :as w]) (w/keywordize-keys {\"a\" 1}))"]
   ["walk stringify-keys" "true"    "(do (require '[clojure.walk :as w]) (= {\"a\" 1} (w/stringify-keys {:a 1})))"])
+
+(defspec "namespaces / alias, ns-unalias, ns-publics"
+  ["alias + use"        "\"1,2\"" "(do (require (quote clojure.string)) (alias (quote st) (quote clojure.string)) (st/join \",\" [1 2]))"]
+  ["ns-unalias removes" "true"
+   "(do (require (quote clojure.string)) (alias (quote st2) (quote clojure.string)) (ns-unalias (quote user) (quote st2)) (nil? (get (ns-aliases (quote user)) (quote st2))))"]
+  ["ns-publics has var" "true"  "(do (def npv 1) (some? (get (ns-publics (quote user)) (quote npv))))"]
+  ["newline returns nil" "nil"  "(newline)"])

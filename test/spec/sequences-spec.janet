@@ -261,3 +261,15 @@
   ["dedupe consecutive"        "[1 2 3 1]" "(dedupe [1 1 2 2 3 1 1])"]
   ["dedupe empty"              "[]"     "(dedupe [])"]
   ["dedupe no dups"            "[1 2 3]" "(dedupe [1 2 3])"])
+
+# Clojure 1.11 vector-returning partition/split variants.
+(defspec "seq / partitionv & splitv-at (1.11)"
+  ["partitionv"         "[[1 2] [3 4]]"  "(partitionv 2 [1 2 3 4 5])"]
+  ["partitionv elems are vectors" "true" "(every? vector? (partitionv 2 [1 2 3 4]))"]
+  ["partitionv step"    "[[1 2] [3 4]]"  "(partitionv 2 2 [1 2 3 4 5])"]
+  ["partitionv pad"     "[[1 2] [3 :p]]" "(partitionv 2 2 [:p] [1 2 3])"]
+  ["partitionv-all"     "[[1 2] [3]]"    "(partitionv-all 2 [1 2 3])"]
+  ["partitionv-all vectors" "true"       "(every? vector? (partitionv-all 2 [1 2 3]))"]
+  ["splitv-at"          "[[1 2] [3 4]]"  "(splitv-at 2 [1 2 3 4])"]
+  ["splitv-at first is vector" "true"    "(vector? (first (splitv-at 2 [1 2 3])))"]
+  ["splitv-at past end" "[[1 2] []]"     "(splitv-at 5 [1 2])"])

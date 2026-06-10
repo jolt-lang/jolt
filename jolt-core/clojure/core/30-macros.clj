@@ -57,6 +57,22 @@
 
 ;; defonce: define name only if it isn't already bound to a non-nil root;
 ;; returns the existing var untouched otherwise (matching the prior arm).
+;; time: evaluate expr, print the elapsed wall-clock, return the value.
+;; current-time-ms is the host's monotonic clock.
+(defmacro time [expr]
+  `(let [start# (current-time-ms)
+         ret# ~expr]
+     (println (str "Elapsed time: " (- (current-time-ms) start#) " msecs"))
+     ret#))
+
+;; with-redefs: temporary root rebinding, restored on exit (incl. throw).
+;; Builds (hash-map (var n1) v1 ...) — a call form, since map-literal forms
+;; can't carry call forms as keys.
+(defmacro with-redefs [bindings & body]
+  (let [pairs (reduce (fn [acc p] (conj (conj acc `(var ~(first p))) (second p)))
+                      [] (partition 2 bindings))]
+    `(with-redefs-fn (hash-map ~@pairs) (fn [] ~@body))))
+
 (defmacro defonce [name expr]
   `(let [v# (resolve (quote ~name))]
      (if (and v# (some? (var-get v#)))

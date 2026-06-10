@@ -1409,12 +1409,15 @@
 # (core/20-coll.clj).
 
 (defn core-partition
-  "(partition n coll) or (partition n step coll). Only complete partitions of
-  size n are kept (use partition-all to keep the trailing remainder)."
+  "(partition n coll), (partition n step coll), or (partition n step pad coll).
+  Only complete partitions of size n are kept; with pad, the final partial
+  partition is padded from pad (possibly to fewer than n if pad runs out)."
   [n & rest]
-  (let [has-step (> (length rest) 1)
-        step (if has-step (first rest) n)
-        coll (if has-step (in rest 1) (first rest))]
+  (let [argc (length rest)
+        step (if (>= argc 2) (first rest) n)
+        pad  (if (>= argc 3) (in rest 1) nil)
+        has-pad (>= argc 3)
+        coll (case argc 1 (first rest) 2 (in rest 1) 3 (in rest 2))]
     # Option A: always lazy.
     (defn pstep [c]
       (fn []
@@ -1425,9 +1428,16 @@
               (array/push part (core-first cur))
               (set cur (core-rest cur))
               (++ i))
-            (if (= i n)
+            (cond
+              (= i n)
               (let [next-cur (if (= step n) cur (lazy-from (core-drop (- step n) cur)))]
                 @[(tuple/slice (tuple ;part)) (pstep next-cur)])
+              # partial final partition: pad it (last partition, then stop)
+              (and has-pad (> i 0))
+              (do
+                (each x (realize-for-iteration pad)
+                  (when (< (length part) n) (array/push part x)))
+                @[(tuple/slice (tuple ;part)) (fn [] nil)])
               nil)))))
     (make-lazy-seq (pstep (lazy-from coll)))))
 
@@ -1774,6 +1784,44 @@
   (apply core-print xs)
   (prin "\n")
   nil)
+
+(defn core-newline [] (prin "\n") nil)
+
+# Clojure 1.11 string->scalar parsers: nil on malformed input, throw on a
+# non-string. Validation is strict (scan-number alone accepts 0x10 etc.).
+(defn- parse-arg-str [s who]
+  (if (or (string? s) (buffer? s)) (string s)
+    (error (string who " requires a string, got " (type s)))))
+
+(defn core-parse-long [s]
+  (def str* (parse-arg-str s "parse-long"))
+  (def n (length str*))
+  (def start (if (and (> n 0) (or (= 43 (in str* 0)) (= 45 (in str* 0)))) 1 0))
+  (if (and (> n start)
+           (do (var ok true)
+               (for i start n (when (or (< (in str* i) 48) (> (in str* i) 57)) (set ok false)))
+               ok))
+    (scan-number str*)
+    nil))
+
+(defn core-parse-double [s]
+  (def str* (parse-arg-str s "parse-double"))
+  # strict float shape: [+-] digits [. digits] [eE [+-] digits] — at least one
+  # digit overall; "Infinity"/"-Infinity"/"NaN" accepted like the reference.
+  (cond
+    (= str* "Infinity") math/inf
+    (= str* "-Infinity") (- math/inf)
+    (= str* "NaN") math/nan
+    (do
+      (def pat (peg/compile ~(sequence (opt (set "+-")) (choice (sequence (some :d) (opt (sequence "." (any :d)))) (sequence "." (some :d))) (opt (sequence (set "eE") (opt (set "+-")) (some :d))) -1)))
+      (if (peg/match pat str*) (scan-number str*) nil))))
+
+(defn core-parse-boolean [s]
+  (def str* (parse-arg-str s "parse-boolean"))
+  (case str* "true" true "false" false nil))
+
+# Host time source for the `time` macro (monotonic, milliseconds).
+(defn core-current-time-ms [] (* 1000 (os/clock :monotonic)))
 
 # Capture *out*: run thunk with Janet's :out dynamic bound to a buffer, so all
 # print/println/pr/prn output (which go through `prin` -> (dyn :out)) is collected
@@ -2942,6 +2990,11 @@
     "hash-unordered-coll" core-hash-unordered-coll
     "prefers" core-prefers
     "random-uuid" core-random-uuid
+    "parse-long" core-parse-long
+    "parse-double" core-parse-double
+    "parse-boolean" core-parse-boolean
+    "newline" core-newline
+    "current-time-ms" core-current-time-ms
     "parse-uuid" core-parse-uuid
     "interpose" core-interpose
     "mapcat" core-mapcat

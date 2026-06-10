@@ -177,6 +177,22 @@
    ["parse-uuid case ="   "true"  "(= (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\") (parse-uuid \"B6883C0A-0342-4007-9966-BC2DFA6B109E\"))"]
    ["parse-uuid bad nil"  "nil"   "(parse-uuid \"df0993\")"]
    ["uuid as map key"     ":v"    "(get {(parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\") :v} (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"]
+
+   ### ---- 1.11 additions + ns fns (spec 35-var batch A) ----
+   ["parse-long"         "42"    "(parse-long \"42\")"]
+   ["parse-long bad"     "nil"   "(parse-long \"4.2\")"]
+   ["parse-double"       "1500.0" "(parse-double \"1.5e3\")"]
+   ["parse-boolean"      "true"  "(parse-boolean \"true\")"]
+   ["update-keys"        "{\"a\" 1}" "(update-keys {:a 1} name)"]
+   ["update-vals"        "{:a 2}" "(update-vals {:a 1} inc)"]
+   ["partitionv pad"     "[[1 2] [3 :p]]" "(partitionv 2 2 [:p] [1 2 3])"]
+   ["partition pad"      "[[0 1 2 3] [4 5 6 7] [8 9 :a]]" "(partition 4 4 [:a] (range 10))"]
+   ["splitv-at"          "[[1 2] [3 4]]" "(splitv-at 2 [1 2 3 4])"]
+   ["with-redefs"        "[42 1]" "(do (defn cwr [] 1) [(with-redefs [cwr (fn [] 42)] (cwr)) (cwr)])"]
+   ["time returns value" "3"     "(time (+ 1 2))"]
+   ["macroexpand"        "true"  "(= (quote if) (first (macroexpand (quote (when-not false 1)))))"]
+   ["require bare symbol" "\"a,b\"" "(do (require (quote clojure.string)) (clojure.string/join \",\" [\"a\" \"b\"]))"]
+   ["ns-publics lookup"  "true"  "(do (def cnp 7) (some? (get (ns-publics (quote user)) (quote cnp))))"]
    ["macroexpand-1 when" "2"     "(count (rest (macroexpand-1 (quote (when true 1)))))"]
 
    ### ---- HIGH: aliased namespace calls ----

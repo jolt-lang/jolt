@@ -784,13 +784,14 @@
 (defn require-impl
   "(require '[ns :as a :refer [...]] ...) — load + alias/refer each spec. A fn, so
   the args (quoted specs) arrive evaluated. Varargs (Clojure-compatible); each spec
-  is a vector. eval-require does the namespace load + alias/refer into current-ns."
+  is a vector [ns & opts] or a bare ns symbol (treated as [ns])."
   [ctx & specs]
   (each spec specs
     (let [s (if (pvec? spec) (pv->array spec) spec)]
-      (if (and (indexed? s) (> (length s) 0))
-        (eval-require ctx s)
-        (error "require expects a vector spec"))))
+      (cond
+        (and (indexed? s) (> (length s) 0)) (eval-require ctx s)
+        (and (struct? s) (= :symbol (s :jolt/type))) (eval-require ctx @[s])
+        (error "require expects a vector spec or a namespace symbol"))))
   nil)
 
 (defn in-ns-impl
@@ -1102,15 +1103,47 @@
   # Reader / expansion as plain fns: read-string parses one form; macroexpand-1
   # expands a (quoted, already-evaluated) call form once via its macro var.
   (ns-intern core "read-string" (fn [s] (parse-string s)))
-  (ns-intern core "macroexpand-1"
+  (def expand-1 (fn [the-form]
+    (if (and (array? the-form) (> (length the-form) 0)
+             (struct? (first the-form)) (= :symbol ((first the-form) :jolt/type)))
+      (let [v (resolve-var ctx @{} (first the-form))]
+        (if (and v (var-macro? v))
+          (apply (var-get v) (tuple/slice the-form 1))
+          the-form))
+      the-form)))
+  (ns-intern core "macroexpand-1" expand-1)
+  # macroexpand: expand repeatedly until the head is no longer a macro (the
+  # form's SUBFORMS are not expanded, matching Clojure).
+  (ns-intern core "macroexpand"
     (fn [the-form]
-      (if (and (array? the-form) (> (length the-form) 0)
-               (struct? (first the-form)) (= :symbol ((first the-form) :jolt/type)))
-        (let [v (resolve-var ctx @{} (first the-form))]
-          (if (and v (var-macro? v))
-            (apply (var-get v) (tuple/slice the-form 1))
-            the-form))
-        the-form)))
+      (var cur the-form)
+      (var nxt (expand-1 cur))
+      (while (not= cur nxt) (set cur nxt) (set nxt (expand-1 cur)))
+      cur))
+  # alias/ns-unalias: alias bookkeeping is currently split (require :as writes
+  # the string-keyed :imports table that resolution reads; :aliases is the
+  # introspection table ns-aliases reads) — write/remove BOTH until unified.
+  (ns-intern core "alias"
+    (fn [alias-sym ns-sym]
+      (def cur (ctx-find-ns ctx (ctx-current-ns ctx)))
+      (ns-import cur (alias-sym :name) (ns-sym :name))
+      (ns-add-alias cur alias-sym (ctx-find-ns ctx (ns-sym :name)))
+      nil))
+  (ns-intern core "ns-unalias"
+    (fn [ns-d alias-sym]
+      (def ns (ns-or-current ns-d))
+      (put (ns :imports) (alias-sym :name) nil)
+      (put (ns :aliases) alias-sym nil)
+      nil))
+  # ns-publics: {symbol -> var} (jolt has no private vars, so publics = interns).
+  # Keys are symbol structs (value-hashed), matching Clojure's symbol keys.
+  (ns-intern core "ns-publics"
+    (fn [&opt ns-d]
+      (def ns (ns-or-current ns-d))
+      (var m (make-phm))
+      (loop [[nm v] :pairs (ns :mappings)]
+        (set m (phm-assoc m {:jolt/type :symbol :ns nil :name nm} v)))
+      m))
   core)
 
 # Dispatch a special form by its string name.

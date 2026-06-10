@@ -287,6 +287,46 @@
 (defn tagged-literal? [x]     (= (get x :jolt/type) :jolt/tagged-literal))
 (defn record? [x]             (some? (get x :jolt/deftype)))
 (defn uuid? [x]               (= (get x :jolt/type) :jolt/uuid))
+
+;; Clojure 1.11 map transformers. PHM base so transformed keys canonicalize
+;; (collisions: last entry in seq order wins, matching the reference).
+(defn update-keys [m f]
+  (reduce-kv (fn [acc k v] (assoc acc (f k) v)) (hash-map) m))
+
+(defn update-vals [m f]
+  (reduce-kv (fn [acc k v] (assoc acc k (f v))) (hash-map) m))
+
+;; Vector-returning partition variants (1.11): lazy seqs OF vectors.
+(defn partitionv
+  ([n coll] (map vec (partition n coll)))
+  ([n step coll] (map vec (partition n step coll)))
+  ([n step pad coll] (map vec (partition n step pad coll))))
+
+(defn partitionv-all
+  ([n coll] (map vec (partition-all n coll)))
+  ([n step coll] (map vec (partition-all n step coll))))
+
+;; First part a vector, rest a seq — matching the reference implementation.
+(defn splitv-at [n coll]
+  [(vec (take n coll)) (drop n coll)])
+
+;; with-redefs-fn: temporarily set each var's root to the mapped value, run
+;; the thunk, restore the saved roots even on throw. The with-redefs macro
+;; (30-macros) builds the {var val} map from names.
+(defn with-redefs-fn [binding-map func]
+  (let [vars (vec (keys binding-map))
+        saved (mapv var-get vars)]
+    (doseq [v vars] (var-set v (get binding-map v)))
+    (try
+      (func)
+      (finally
+        ;; loop/recur, not dotimes: dotimes is a 30-macros macro and this tier
+        ;; compiles before it exists (a forward ref would resolve to the macro
+        ;; fn at runtime and mis-apply it).
+        (loop [i 0]
+          (when (< i (count vars))
+            (var-set (nth vars i) (nth saved i))
+            (recur (inc i))))))))
 ;; Jolt has no chunked seqs (Phase 5 territory), so this is always false.
 (defn chunked-seq? [x] false)
 
