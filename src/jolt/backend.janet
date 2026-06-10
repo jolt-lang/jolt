@@ -230,11 +230,25 @@
 # core fn. Matches numeric semantics; relaxes the non-number checks (a documented
 # perf-mode divergence, same as the bootstrap's core-renames).
 (def- native-ops
-  {"+" '+ "-" '- "*" '* "<" '< ">" '> "<=" '<= ">=" '>= "inc" '++ "dec" '--})
+  {"+" '+ "-" '- "*" '* "/" '/ "<" '< ">" '> "<=" '<= ">=" '>=
+   "inc" '++ "dec" '--
+   # verified semantic parity with the jolt fns (incl. negative operands):
+   # mod is floored, rem (janet %) truncates, / is variadic with (/ x) -> 1/x.
+   # quot is deliberately ABSENT: janet div floors where Clojure truncates.
+   "mod" 'mod "rem" '%
+   # jolt's bit fns are 2-arg (unlike Clojure's variadic), so these emit native
+   # only at exactly the arity the interpreted fn accepts; bit-not is unary.
+   "bit-and" 'band "bit-or" 'bor "bit-xor" 'bxor
+   "bit-shift-left" 'blshift "bit-shift-right" 'brshift "bit-not" 'bnot})
+
+(def- unary-ops {'++ true '-- true 'bnot true})
+(def- binary-ops {'mod true '% true 'band true 'bor true 'bxor true
+                  'blshift true 'brshift true})
 
 (defn- native-op
   "If fnode is a clojure.core ref (or host ref) to a native-op primitive, return
-  the Janet op symbol, else nil. inc/dec are unary so only at arity 1."
+  the Janet op symbol, else nil — only at an arity where the janet op and the
+  jolt fn agree."
   [fnode nargs]
   (def nm (case (fnode :op)
             :var (when (= "clojure.core" (fnode :ns)) (fnode :name))
@@ -243,7 +257,8 @@
   (def op (and nm (get native-ops nm)))
   (cond
     (nil? op) nil
-    (and (or (= op '++) (= op '--)) (not= nargs 1)) nil
+    (and (get unary-ops op) (not= nargs 1)) nil
+    (and (get binary-ops op) (not= nargs 2)) nil
     op))
 
 (defn- emit-invoke [ctx node]

@@ -119,6 +119,16 @@
    ["update-in fnil"     "{:a {:b 1}}"        "(update-in {} [:a :b] (fnil inc 0))"]
    ["get-in"             "1"                  "(get-in {:a {:b {:c 1}}} [:a :b :c])"]
 
+   ### ---- native-op parity (compile emits janet ops at guarded arities) ----
+   ["native mod floored"   "2"   "(mod -7 3)"]
+   ["native rem truncated" "-1"  "(rem -7 3)"]
+   ["native unary div"     "0.5" "(/ 2)"]
+   ["native chained div"   "1"   "(/ 6 3 2)"]
+   ["native bit-and"       "8"   "(bit-and 12 10)"]
+   ["native bit-xor"       "6"   "(bit-xor 12 10)"]
+   ["native bit-not"       "-6"  "(bit-not 5)"]
+   ["native shifts"        "[16 2]" "[(bit-shift-left 4 2) (bit-shift-right 8 2)]"]
+
    ### ---- HIGH: str semantics ----
    ["str nil empty"      "\"\""       "(str nil)"]
    ["str concat nil"     "\"a1\""     "(str \"a\" 1 nil)"]
