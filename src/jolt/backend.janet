@@ -286,10 +286,25 @@
       :var (let [cell (cell-for ctx (node :ns) (node :name))]
              (if (direct-var? ctx cell)
                (cell :root)                          # direct link: embed the fn value
-               # Indirect: live deref. Quote the cell so it's embedded by
-               # reference (a bare table in arg position would be re-evaluated as
-               # a constructor — deep-copying it, and any atom in :root, each call).
-               (tuple var-get (tuple 'quote cell))))
+               # Indirect: live deref, with the var-get FN CALL inlined away
+               # (jolt-8sq): a non-dynamic var's value is always its root, so
+               # the common case is two native table ops + a branch instead of
+               # a function call. Dynamic vars take the full var-get (thread-
+               # binding walk). The cell is quoted so it's embedded by
+               # reference (a bare table in arg position would be re-evaluated
+               # as a constructor — deep-copying it, and any atom in :root,
+               # each call). Redefinition stays live: :root is read per call.
+               # The :dynamic check must be PER CALL, not at emit: a
+               # (def ^:dynamic x) in the same compiled unit marks the cell
+               # dynamic only when the def RUNS, after this site was emitted —
+               # the same reason JVM Clojure's Var.deref() checks the
+               # thread-bound bit on every call. Non-dynamic vars (the vast
+               # majority) pay two native table ops + a branch instead of a
+               # function call.
+               (let [qcell (tuple 'quote cell)]
+                 ['if ['in qcell :dynamic]
+                   (tuple var-get qcell)
+                   ['in qcell :root]])))
       # (var x): the var object itself (not its value) — the embedded cell, by
       # reference. binding keys its thread-binding frame on this exact cell.
       :the-var (tuple 'quote (cell-for ctx (node :ns) (node :name)))
