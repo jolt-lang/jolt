@@ -371,6 +371,78 @@
           (put namespaces ns-sym ns)
           ns))))
 
+# Instant value: an immutable tagged struct keyed by epoch milliseconds, so
+# equality and map-key hashing are by INSTANT (offset-normalized): two #inst
+# literals with different offsets denoting the same moment are =.
+(defn make-inst [ms]
+  {:jolt/type :jolt/inst :ms ms})
+
+(defn parse-inst
+  "Parse an RFC3339 timestamp with Clojure's partial defaults
+  (yyyy[-MM[-dd[Thh[:mm[:ss[.fff]]]]]][Z|+hh:mm|-hh:mm]) to an inst value.
+  Errors on a malformed timestamp."
+  [ts]
+  (def pat (peg/compile
+    ~(sequence
+       (capture (repeat 4 :d))                                   # year
+       (opt (sequence "-" (capture (repeat 2 :d))))               # month
+       (opt (sequence "-" (capture (repeat 2 :d))))               # day
+       (opt (sequence "T" (capture (repeat 2 :d))                 # hour
+                      (opt (sequence ":" (capture (repeat 2 :d))  # min
+                        (opt (sequence ":" (capture (repeat 2 :d)) # sec
+                          (opt (sequence "." (capture (some :d)))))))))) # frac
+       (opt (choice (capture "Z")
+                    (sequence (capture (set "+-")) (capture (repeat 2 :d))
+                              ":" (capture (repeat 2 :d)))))
+       -1)))
+  (def m (peg/match pat ts))
+  (when (nil? m) (error (string "Unrecognized #inst timestamp: " ts)))
+  # captures arrive positionally; classify by shape: digits runs + offset parts.
+  (var year nil) (var month 1) (var day 1)
+  (var hh 0) (var mm 0) (var ss 0) (var frac "0")
+  (var off-sign nil) (var off-h 0) (var off-m 0)
+  (var i 0)
+  (def fields @[:year :month :day :hh :mm :ss])
+  (var fi 0)
+  (while (< i (length m))
+    (def part (in m i))
+    (cond
+      (= part "Z") nil
+      (or (= part "+") (= part "-"))
+        (do (set off-sign part)
+            (set off-h (scan-number (in m (+ i 1))))
+            (set off-m (scan-number (in m (+ i 2))))
+            (+= i 2))
+      # fractional seconds arrive right after :ss was filled
+      (and (>= fi 6))
+        (set frac part)
+      (do
+        (def v (scan-number part))
+        (case (in fields fi)
+          :year (set year v) :month (set month v) :day (set day v)
+          :hh (set hh v) :mm (set mm v) :ss (set ss v))
+        (++ fi)))
+    (++ i))
+  (when (nil? year) (error (string "Unrecognized #inst timestamp: " ts)))
+  (def base-s (os/mktime {:year year :month (- month 1) :month-day (- day 1)
+                          :hours hh :minutes mm :seconds ss}))
+  # fractional part -> milliseconds (truncate beyond 3 digits)
+  (def frac3 (string/slice (string frac "000") 0 3))
+  (def ms-frac (scan-number frac3))
+  (def off-s (* (if (= off-sign "-") -1 1) (+ (* off-h 3600) (* off-m 60))))
+  (make-inst (- (+ (* base-s 1000) ms-frac) (* off-s 1000))))
+
+(defn inst->rfc3339
+  "Canonical print form: yyyy-MM-ddThh:mm:ss.fff-00:00 (UTC, like Clojure)."
+  [inst]
+  (def ms (inst :ms))
+  (def s (math/floor (/ ms 1000)))
+  (def frac (- ms (* s 1000)))
+  (def d (os/date s))
+  (string/format "%04d-%02d-%02dT%02d:%02d:%02d.%03d-00:00"
+                 (d :year) (+ 1 (d :month)) (+ 1 (d :month-day))
+                 (d :hours) (d :minutes) (d :seconds) frac))
+
 # UUID value: an immutable tagged struct. Lowercased at construction so
 # equality and map-key hashing are case-insensitive by value (struct equality),
 # matching Clojure (java.util.UUID equality / cljs UUID).
@@ -406,7 +478,7 @@
               :source-paths @["jolt-core" "src/jolt"]
               :type-registry @{}
               :data-readers (let [dr @{}]
-                              (put dr (keyword "#inst") (fn [s] s))
+                              (put dr (keyword "#inst") (fn [s] (parse-inst s)))
                               (put dr (keyword "#uuid") (fn [s] (make-uuid s)))
                               dr)}
         # create the user namespace via a partial context

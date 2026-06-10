@@ -287,6 +287,12 @@
 (defn tagged-literal? [x]     (= (get x :jolt/type) :jolt/tagged-literal))
 (defn record? [x]             (some? (get x :jolt/deftype)))
 (defn uuid? [x]               (= (get x :jolt/type) :jolt/uuid))
+(defn inst? [x]               (= (get x :jolt/type) :jolt/inst))
+
+;; inst-ms: epoch milliseconds of an instant; throws on a non-inst (Clojure
+;; protocol behavior).
+(defn inst-ms [x]
+  (if (inst? x) (get x :ms) (throw (str "inst-ms requires an inst, got: " x))))
 
 ;; Clojure 1.11 map transformers. PHM base so transformed keys canonicalize
 ;; (collisions: last entry in seq order wins, matching the reference).

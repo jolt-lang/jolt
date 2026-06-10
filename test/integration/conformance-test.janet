@@ -193,6 +193,13 @@
    ["macroexpand"        "true"  "(= (quote if) (first (macroexpand (quote (when-not false 1)))))"]
    ["require bare symbol" "\"a,b\"" "(do (require (quote clojure.string)) (clojure.string/join \",\" [\"a\" \"b\"]))"]
    ["ns-publics lookup"  "true"  "(do (def cnp 7) (some? (get (ns-publics (quote user)) (quote cnp))))"]
+
+   ### ---- #inst + syntax-quote literal collapse (spec 2.4/2.3) ----
+   ["inst? + inst-ms"    "0"     "(inst-ms #inst \"1970-01-01T00:00:00Z\")"]
+   ["inst partial = full" "true" "(= #inst \"2020\" #inst \"2020-01-01T00:00:00Z\")"]
+   ["inst offset normalized" "true" "(= #inst \"2020-01-01T01:00:00+01:00\" #inst \"2020-01-01T00:00:00Z\")"]
+   ["sq literal collapse" "true" "(= \"meow\" ```\"meow\")"]
+   ["sq number collapse"  "42"   "``42"]
    ["macroexpand-1 when" "2"     "(count (rest (macroexpand-1 (quote (when true 1)))))"]
 
    ### ---- HIGH: aliased namespace calls ----

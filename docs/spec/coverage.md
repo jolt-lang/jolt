@@ -7,8 +7,8 @@ community examples). jolt interns 550 of them.
 
 | Status | Count | Meaning |
 |---|---|---|
-| implemented+tested | 397 | in jolt and exercised by spec/conformance |
-| implemented-untested | 153 | in jolt, no direct test — spec entries will add them |
+| implemented+tested | 399 | in jolt and exercised by spec/conformance |
+| implemented-untested | 151 | in jolt, no direct test — spec entries will add them |
 | resolvable-not-interned | 22 | works in code but invisible to ns introspection (conformance finding) |
 | missing-portable | 19 | portable semantics, jolt lacks it — implementation gap |
 | special-form | 13 | specified in §3, not a library var |
@@ -345,9 +345,9 @@ UNVERIFIED field; that column will be added as entries land.
 | `indexed?` | implemented+tested | ✓ |
 | `infinite?` | implemented+tested | ✓ |
 | `init-proxy` | implemented-untested | ✓ |
-| `inst-ms` | implemented-untested | ✓ |
+| `inst-ms` | implemented+tested | ✓ |
 | `inst-ms*` | missing-portable |  |
-| `inst?` | implemented-untested | ✓ |
+| `inst?` | implemented+tested | ✓ |
 | `instance?` | implemented+tested | ✓ |
 | `int` | implemented+tested | ✓ |
 | `int-array` | implemented-untested | ✓ |

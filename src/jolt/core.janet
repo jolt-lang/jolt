@@ -1678,6 +1678,9 @@
       (and (struct? v) (= :jolt/uuid (v :jolt/type)))
         (do (buffer/push-string buf "#uuid \"") (buffer/push-string buf (v :str))
             (buffer/push-string buf "\""))
+      (and (struct? v) (= :jolt/inst (v :jolt/type)))
+        (do (buffer/push-string buf "#inst \"") (buffer/push-string buf (inst->rfc3339 v))
+            (buffer/push-string buf "\""))
       (and (table? v) (= :jolt/var (get v :jolt/type))) (buffer/push-string buf (var-display v))
       (core-sorted-map? v) (pr-render-pairs buf (sorted-map-entries v))
       (core-sorted-set? v) (pr-render-seq buf (v :items) "#{" "}")
@@ -1709,6 +1712,7 @@
     (and (struct? v) (= :symbol (v :jolt/type)))
       (if (v :ns) (string (v :ns) "/" (v :name)) (v :name))
     (and (struct? v) (= :jolt/uuid (v :jolt/type))) (v :str)
+    (and (struct? v) (= :jolt/inst (v :jolt/type))) (inst->rfc3339 v)
     (and (table? v) (= :jolt/var (get v :jolt/type))) (var-display v)
     (number? v) (fmt-number v)
     (= true v) "true"

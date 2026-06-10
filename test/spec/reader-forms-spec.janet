@@ -63,3 +63,18 @@
   ["var-quote qualified" "true"  "(= (var clojure.core/str) #'clojure.core/str)"]
   ["gensym stable in template" "true" "(let [syms `[meow# meow#]] (= (first syms) (second syms)))"]
   ["gensym fresh across templates" "false" "(= `meow# `meow#)"])
+
+# Spec 02-reader S25: syntax-quote of a self-evaluating literal is the literal
+# (read-time collapse), so adjacent/nested backticks over literals are inert.
+(defspec "reader / syntax-quote literal collapse (spec 2.4 S25)"
+  ["string once"        "true"  "(= \"meow\" `\"meow\")"]
+  ["string nested"      "true"  "(= \"meow\" ``\"meow\")"]
+  ["string triple"      "true"  "(= \"meow\" ```\"meow\")"]
+  ["number nested"      "true"  "(= 42 ``42)"]
+  ["keyword nested"     "true"  "(= :k ``:k)"]
+  ["nil nested"         "true"  "(nil? ``nil)"]
+  ["char nested"        "true"  "(= \\a ``\\a)"]
+  ["bool nested"        "true"  "(= true ``true)"]
+  # collapse must NOT apply to symbols (they qualify) or collections (templates)
+  ["symbol still qualifies" "true" "(= (quote clojure.core/map) `map)"]
+  ["vector still templates" "true" "(= [1 2] `[1 ~(inc 1)])"])

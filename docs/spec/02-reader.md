@@ -1,7 +1,7 @@
 # §2 The Reader (Lexical Syntax)
 
 **Status**: token grammar drafted; reader-macro catalog complete with
-normative entries; syntax-quote section carries two open divergences.
+normative entries; #inst and literal-collapse divergences resolved.
 Conformance: jolt `reader-forms-spec` + `reader-syntax-spec` (granularity
 model: jank's per-construct corpus, 62 files under
 `test/jank/{reader-macro,syntax-quote}` — adapted rows cited per entry).
@@ -150,9 +150,12 @@ false; `(NaN? ##NaN)` is true.
   read value. An unknown tag MUST be a read error (jank
   `fail-unsupported-tag`).
 - Built-in tags every implementation MUST provide: `#uuid "…"` → a UUID
-  value (§9 `parse-uuid` semantics — round-trips through printing), `#inst
-  "…"` → an instant (representation host-classified; ⚠ jolt currently reads
-  `#inst` as its bare string — divergence, filed).
+  value (§9 `parse-uuid` semantics — round-trips through printing), and
+  `#inst "…"` → an instant value: RFC3339 with partial-timestamp defaults
+  (`#inst "2020"` ≡ `#inst "2020-01-01T00:00:00.000-00:00"`), equality by
+  instant (offset-normalized), `inst?`/`inst-ms` (epoch milliseconds), printed
+  canonically as `#inst "yyyy-MM-ddThh:mm:ss.fff-00:00"` and round-tripping. A
+  malformed timestamp MUST be an error.
 
 **Conformance** (2.3): jolt `reader-forms-spec` "#() (% %N %&)" + new rows
 (symbolic values, stacked discard, conditionals); `uuid-spec` reader-literal
@@ -176,10 +179,11 @@ resolution:
   value; `~'sym` is the idiom for an intentionally-unqualified symbol.
 - S24. Syntax-quote distributes through collection literals (vectors, maps,
   sets) — qualification and unquoting apply inside them.
-- S25. Nested syntax-quotes expand recursively (quasiquote semantics); a
-  syntax-quoted self-evaluating literal is the literal: `(= "meow"
-  ```"meow")` is true. ⚠ jolt currently fails S25 (filed) — UNVERIFIED
-  pending the fix.
+- S25. A syntax-quoted self-evaluating literal is the literal, collapsed at
+  read time — so nested/adjacent backticks over literals are inert:
+  `(= "meow" ```"meow")` is true. General nested syntax-quote over symbols
+  and collections expands recursively (quasiquote semantics) — that general
+  case remains UNVERIFIED pending dedicated conformance rows.
 
 **Conformance**: jolt `reader-forms-spec` "syntax-quote" (gensym, unquote,
 splice) + conformance "syntax-quote fully-qualifies"; jank

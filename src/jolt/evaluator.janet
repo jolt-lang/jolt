@@ -1652,9 +1652,9 @@
       (resolve-sym ctx bindings form)
       (if (= :jolt/char (form :jolt/type))
         form
-      # a UUID value flowing back through eval (macro expansion, eval of a read
-      # form) is a self-evaluating literal, like chars.
-      (if (= :jolt/uuid (form :jolt/type))
+      # a UUID/inst value flowing back through eval (macro expansion, eval of a
+      # read form) is a self-evaluating literal, like chars.
+      (if (or (= :jolt/uuid (form :jolt/type)) (= :jolt/inst (form :jolt/type)))
         form
       (if (= :jolt/set (form :jolt/type))
         # evaluate each element (set literals like #{(inc 1)} must compute)

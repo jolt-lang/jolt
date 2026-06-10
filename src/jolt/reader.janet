@@ -492,9 +492,23 @@
             [form new-pos] (read-form s end)]
         [{:jolt/type :jolt/tagged :tag (keyword tag) :form form} new-pos]))))
 
+(defn- self-evaluating-literal?
+  "True for forms syntax-quote passes through unchanged: strings, numbers,
+  booleans, nil, keywords, and character literals. NOT symbols (they qualify)
+  or collections (they template)."
+  [form]
+  (or (nil? form) (= true form) (= false form) (number? form)
+      (string? form) (buffer? form) (keyword? form)
+      (and (struct? form) (= :jolt/char (form :jolt/type)))))
+
 (defn read-quote [s pos new-pos token-sym]
   (let [[form final-pos] (read-form s new-pos)]
-    [(array token-sym form) final-pos]))
+    # Spec 02-reader S25: syntax-quote of a self-evaluating literal is the
+    # literal, collapsed at READ time (matching Clojure's reader) — so nested
+    # backticks over literals are inert: ```"meow" reads as "meow".
+    (if (and (= "syntax-quote" (token-sym :name)) (self-evaluating-literal? form))
+      [form final-pos]
+      [(array token-sym form) final-pos])))
 
 (defn- meta-form->map
   "Normalize a metadata reader form (Clojure semantics): a symbol or string is a
