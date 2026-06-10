@@ -9,7 +9,10 @@
   ["set? true"              "true"      "(set? #{1})"]
   ["set? false on vector"   "false"     "(set? [1])"]
   ["count dedups"           "3"         "(count (set [1 1 2 3]))"]
-  ["equality order-indep"   "true"      "(= #{1 2 3} #{3 2 1})"])
+  ["equality order-indep"   "true"      "(= #{1 2 3} #{3 2 1})"]
+  # jolt-h86: into-conj had no set branch and returned the set unchanged
+  ["into set"               "#{:a :b}"  "(into #{} [:a :b])"]
+  ["into non-empty set"     "#{1 2 3}"  "(into #{1} [2 3 2])"])
 
 (defspec "set / operations"
   ["conj adds"              "#{1 2 3}"  "(conj #{1 2} 3)"]

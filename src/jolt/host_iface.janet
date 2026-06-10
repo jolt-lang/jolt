@@ -162,9 +162,22 @@
 # table so callers can thread; overlay wrappers return the Clojure-meaningful value.
 (defn h-ref-put! [tab key val] (put tab key val) tab)
 
+# Runtime host primitive: mint a fresh tagged host table — the value-layer
+# constructor the overlay uses to define host-dispatched values (sorted colls).
+# Fields are attached with ref-put!.
+(defn h-tagged-table [kw] @{:jolt/type kw})
+
+# Raw field read on a host table, BYPASSING collection semantics. The overlay
+# needs this to read its own wrappers' fields: plain (get sorted-coll k) is the
+# comparator lookup (it dispatches back into the overlay), so reading :entries
+# with it would recurse forever.
+(defn h-ref-get [tab key] (get tab key))
+
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
    "ref-put!" h-ref-put!
+   "ref-get" h-ref-get
+   "tagged-table" h-tagged-table
    "form-sym-meta" h-sym-meta
    "form-list?" h-list? "form-vec?" h-vector? "form-map?" h-map?
    "form-set?" h-set? "form-char?" h-char? "form-literal?" h-literal?
