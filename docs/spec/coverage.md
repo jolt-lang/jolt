@@ -9,7 +9,7 @@ community examples). jolt interns 564 of them.
 |---|---|---|
 | implemented+tested | 564 | in jolt and exercised by spec/conformance |
 | implemented-untested | 0 | in jolt, no direct test — spec entries will add them |
-| resolvable-not-interned | 1 | works in code but invisible to ns introspection (conformance finding) |
+| resolvable-not-interned | 0 | works in code but invisible to ns introspection (conformance finding) |
 | missing-portable | 0 | portable semantics, jolt lacks it — implementation gap |
 | special-form | 15 | specified in §3, not a library var |
 | dynamic-var | 29 | classification needed: portable default vs host-dependent |

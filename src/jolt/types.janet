@@ -279,7 +279,7 @@
   (or (ns-find ns sym)
       (let [qualified? (sym? sym)]
         (when qualified?
-          # qualified symbol: look up via alias
+          # qualified symbol: look up via alias (string-keyed store)
           (let [alias-ns (get (ns :aliases) (sym :ns))]
             (when alias-ns
               (ns-find alias-ns (sym :name))))))))
@@ -295,9 +295,16 @@
   (get (ns :imports) class-name))
 
 (defn ns-add-alias
-  "Add an alias from alias-sym to target-ns."
-  [ns alias-sym target-ns]
-  (put (ns :aliases) alias-sym target-ns))
+  "Add an alias: alias-name (string) -> target ns NAME (string). The ONE alias
+  store (jolt-ark): resolution and ns-aliases both read it; :imports is class
+  imports only."
+  [ns alias-name target-ns-name]
+  (put (ns :aliases) alias-name target-ns-name))
+
+(defn ns-alias-lookup
+  "The target ns NAME for alias-name, or nil."
+  [ns alias-name]
+  (get (ns :aliases) alias-name))
 
 # ============================================================
 # Context

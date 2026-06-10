@@ -53,3 +53,21 @@
    "(do (require (quote [clojure.string :as s9])) (try (s9/join nil nil nil) (catch Exception e nil)) (s9/upper-case \"a\"))"]
   ["*ns* restored after throw" "\"user\""
    "(do (require (quote [clojure.walk :as w9])) (try (w9/postwalk nil nil nil) (catch Exception e nil)) (str *ns*))"])
+
+# Alias bookkeeping is unified (jolt-ark): one string-keyed :aliases store,
+# read by resolution AND ns-aliases (which presents Clojure's
+# {alias-symbol -> namespace} shape); :imports holds class imports only.
+(defspec "namespaces / unified alias store"
+  ["require :as registers the alias" "1"
+   "(do (require (quote [clojure.string :as st1])) (count (filter (fn [[a n]] (= (str a) \"st1\")) (ns-aliases))))"]
+  ["aliased call resolves"  "\"A\""
+   "(do (require (quote [clojure.string :as st2])) (st2/upper-case \"a\"))"]
+  ["alias fn registers + resolves" "\"B\""
+   "(do (require (quote [clojure.string])) (alias (quote st3) (quote clojure.string)) (st3/upper-case \"b\"))"]
+  ["alias fn visible to ns-aliases" "true"
+   "(do (require (quote [clojure.string])) (alias (quote st4) (quote clojure.string)) (pos? (count (filter (fn [[a n]] (= (str a) \"st4\")) (ns-aliases)))))"]
+  ["ns-unalias removes both views" "[0 false]"
+   "(do (require (quote [clojure.string :as st5])) (ns-unalias (quote user) (quote st5)) [(count (filter (fn [[a n]] (= (str a) \"st5\")) (ns-aliases))) (boolean (resolve (quote st5/upper-case)))])"]
+  ["ns-resolve through alias" "true"
+   "(do (require (quote [clojure.string :as st6])) (var? (ns-resolve (quote user) (quote st6/upper-case))))"]
+  ["empty ns-aliases is a map" "true" "(map? (ns-aliases (quote clojure.core)))"])

@@ -286,7 +286,7 @@
       # aliased ref like g/foo wouldn't resolve mid-compile. Same ns h-current-ns uses.
       (let [cur-name (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx))
             current-ns (ctx-find-ns ctx cur-name)
-            aliased-ns (ns-import-lookup current-ns ns)
+            aliased-ns (or (ns-alias-lookup current-ns ns) (ns-import-lookup current-ns ns))
             target-ns (ctx-find-ns ctx (or aliased-ns ns))]
         (ns-find target-ns name))
       (if (get bindings name) nil
@@ -374,7 +374,7 @@
     (maybe-require-ns ctx ns-name)
     (when alias
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))]
-        (ns-import current-ns alias ns-name)))
+        (ns-add-alias current-ns alias ns-name)))
     (when refer-syms
       (let [source-ns (ctx-find-ns ctx ns-name)
             target-ns (ctx-find-ns ctx (ctx-current-ns ctx))]
@@ -436,7 +436,7 @@
         (if (nil? v) (error (string "Unsupported Thread member: Thread/" name)) v))
     (if (not (nil? ns))
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))
-            aliased-ns (ns-import-lookup current-ns ns)
+            aliased-ns (or (ns-alias-lookup current-ns ns) (ns-import-lookup current-ns ns))
             target-ns (ctx-find-ns ctx (or aliased-ns ns))
             v (and target-ns (ns-find target-ns name))]
         (if v (var-get v)
@@ -1026,7 +1026,14 @@
   # interns/imports return a jolt MAP (struct), not the live host table — so
   # count/seq/keys work on them, and callers can't mutate the ns through them.
   (ns-intern core "ns-interns" (fn [&opt x] (table/to-struct ((ns-or-current x) :mappings))))
-  (ns-intern core "ns-aliases" (fn [&opt x] ((ns-or-current x) :aliases)))
+  # {alias-symbol -> namespace object}, Clojure's shape, from the string store.
+  (ns-intern core "ns-aliases"
+    (fn [&opt x]
+      (def ns (ns-or-current x))
+      (def out @{})
+      (eachp [a target] (ns :aliases)
+        (put out {:jolt/type :symbol :ns nil :name a} (ctx-find-ns ctx target)))
+      (table/to-struct out)))
   (ns-intern core "ns-imports" (fn [&opt x] (table/to-struct ((ns-or-current x) :imports))))
   # (ns-resolve ns sym) -> the var or nil. Unqualified syms look in ns's own
   # mappings; ns-qualified syms resolve through ns's aliases. (types/ns-resolve
@@ -1038,8 +1045,9 @@
       (def nm (if (struct? sym) (sym :name) (string sym)))
       (def nsp (if (struct? sym) (sym :ns) nil))
       (if nsp
-        (let [alias-ns (get (ns :aliases) nsp)]
-          (when alias-ns (ns-find alias-ns nm)))
+        (let [target (or (ns-alias-lookup ns nsp) nsp)
+              target-ns (ctx-find-ns ctx target)]
+          (when target-ns (ns-find target-ns nm)))
         (ns-find ns nm))))
   (ns-intern core "resolve"
     (fn [sym]
@@ -1185,20 +1193,18 @@
       (var nxt (expand-1 cur))
       (while (not= cur nxt) (set cur nxt) (set nxt (expand-1 cur)))
       cur))
-  # alias/ns-unalias: alias bookkeeping is currently split (require :as writes
-  # the string-keyed :imports table that resolution reads; :aliases is the
-  # introspection table ns-aliases reads) — write/remove BOTH until unified.
+  # alias bookkeeping is UNIFIED (jolt-ark): :aliases (alias-name string ->
+  # ns-name string) is the one store, read by resolution and ns-aliases;
+  # :imports holds class imports only.
   (ns-intern core "alias"
     (fn [alias-sym ns-sym]
       (def cur (ctx-find-ns ctx (ctx-current-ns ctx)))
-      (ns-import cur (alias-sym :name) (ns-sym :name))
-      (ns-add-alias cur alias-sym (ctx-find-ns ctx (ns-sym :name)))
+      (ns-add-alias cur (alias-sym :name) (ns-sym :name))
       nil))
   (ns-intern core "ns-unalias"
     (fn [ns-d alias-sym]
       (def ns (ns-or-current ns-d))
-      (put (ns :imports) (alias-sym :name) nil)
-      (put (ns :aliases) alias-sym nil)
+      (put (ns :aliases) (alias-sym :name) nil)
       nil))
   # ns-publics: {symbol -> var} (jolt has no private vars, so publics = interns).
   # Keys are symbol structs (value-hashed), matching Clojure's symbol keys.

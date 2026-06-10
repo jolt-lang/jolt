@@ -47,7 +47,7 @@
   (assert (= "my.app" (ctx-current-ns ctx)) "ns with require sets current namespace")
   # Alias should be registered
   (let [ns (ctx-find-ns ctx "my.app")
-        aliased (ns-import-lookup ns "o")]
+        aliased (ns-alias-lookup ns "o")]
     (assert (= "other.lib" aliased) "alias o -> other.lib registered")))
 (print "  passed")
 
@@ -55,7 +55,7 @@
 (let [ctx (fresh-ctx)]
   (eval-form ctx @{} (parse-string "(require '[other.lib :as o])"))
   (let [ns (ctx-find-ns ctx "user")
-        aliased (ns-import-lookup ns "o")]
+        aliased (ns-alias-lookup ns "o")]
     (assert (= "other.lib" aliased) "standalone require registers alias")))
 (print "  passed")
 

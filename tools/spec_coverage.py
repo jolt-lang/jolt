@@ -54,7 +54,9 @@ for f in glob.glob('test/spec/*.janet') + ['test/integration/conformance-test.ja
 
 # --- classification ---------------------------------------------------------
 SPECIAL = {'catch','finally','do','def','defmacro','fn','if','let','loop','quote',
-           'recur','throw','try','var','new','set!','monitor-enter','monitor-exit'}
+           'recur','throw','try','var','new','set!','monitor-enter','monitor-exit',
+           # '.' is the interop special form — (resolve '.) is nil on the JVM too
+           '.'}
 AGENTS = {'agent','send','send-off','send-via','await','await-for','await1',
           'agent-error','agent-errors','clear-agent-errors','error-handler',
           'error-mode','set-agent-send-executor!','set-agent-send-off-executor!',
@@ -105,7 +107,7 @@ community examples). jolt interns {len(jolt & set(core))} of them.
 |---|---|---|
 | implemented+tested | {counts['implemented+tested']} | in jolt and exercised by spec/conformance |
 | implemented-untested | {counts['implemented-untested']} | in jolt, no direct test — spec entries will add them |
-| resolvable-not-interned | {len((resolvable - interned) & set(core))} | works in code but invisible to ns introspection (conformance finding) |
+| resolvable-not-interned | {len((resolvable - interned) & set(core) - SPECIAL)} | works in code but invisible to ns introspection (conformance finding) |
 | missing-portable | {counts['missing-portable']} | portable semantics, jolt lacks it — implementation gap |
 | special-form | {counts['special-form']} | specified in §3, not a library var |
 | dynamic-var | {counts['dynamic-var']} | classification needed: portable default vs host-dependent |
