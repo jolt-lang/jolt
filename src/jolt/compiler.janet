@@ -161,16 +161,20 @@
              # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta!/
              # find-var/intern are plain clojure.core fns now (core-bindings +
              # install-stateful-fns!) — ordinary invokes, no punt (Stage 2 tier 6).
+             # create-ns/remove-ns/find-ns/all-ns/the-ns/resolve/ns-resolve/
+             # ns-aliases/ns-imports/ns-interns are ctx-capturing core fns now
+             # (tier 6b) — ordinary invokes, no punt.
              "satisfies?" "instance?" "set!" "var"
-             "ns" "in-ns" "require" "create-ns" "remove-ns"
-             "find-ns" "all-ns" "the-ns" "resolve"
-             "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
+             "ns" "in-ns" "require"
              "locking" "new"
              # Definitional/host macros that mutate context or build runtime
              # values the emitter doesn't model.
              "defrecord" "defprotocol" "definterface" "reify" "proxy"
              "extend-type" "extend-protocol" "extend" "gen-class" "import"
-             "use" "refer" "monitor-enter" "monitor-exit" "binding" "."
+             # refer is a ctx-capturing core fn now (tier 6b); use stays — the
+             # bootstrap compiles analyzer.clj/ir.clj, whose ns/use forms must
+             # fall back to the interpreter that expands the ns macro.
+             "use" "monitor-enter" "monitor-exit" "binding" "."
              # letfn needs all its fns in scope simultaneously (mutual
              # recursion); the sequential let* the compiler would build can't
              # express that, so interpret it.

@@ -57,7 +57,14 @@
    "(var-get (var map))" "(var? (var map))" "(var-set (var map) map)"
    "(alter-var-root (var map) identity)" "(find-var (quote clojure.core/map))"
    "(intern (quote user) (quote tier6-sym) 42)"
-   "(alter-meta! (var map) assoc :k 1)" "(reset-meta! (var map) {})"])
+   "(alter-meta! (var map) assoc :k 1)" "(reset-meta! (var map) {})"
+   # Stage 2 tier 6b: ns-introspection fns are ordinary invokes now
+   "(find-ns (quote clojure.core))" "(create-ns (quote t6.created))"
+   "(remove-ns (quote t6.created))" "(count (all-ns))"
+   "(the-ns (quote clojure.core))" "(ns-interns (quote clojure.core))"
+   "(ns-aliases (quote user))" "(ns-imports (quote user))"
+   "(ns-resolve (quote clojure.core) (quote map))" "(resolve (quote map))"
+   "(refer (quote clojure.string))"])
 
 # --- Intentional fallback (sanity sample): these SHOULD punt to the interpreter.
 # The remaining frozen/uncompiled set keeps the harness honest in the punt

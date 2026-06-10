@@ -146,6 +146,16 @@
    ["alter-var-root rest args" "11" "(do (def avr 1) (alter-var-root (var avr) + 4 6) avr)"]
    ["alter-meta! + meta" "7"     "(do (def amv 1) (alter-meta! (var amv) assoc :k 7) (:k (meta (var amv))))"]
 
+   ### ---- ns introspection fns as ordinary invokes (Stage 2 tier 6b) ----
+   ["find-ns + ns-name"  "(quote clojure.core)" "(ns-name (find-ns (quote clojure.core)))"]
+   ["find-ns absent"     "nil"   "(find-ns (quote no.such.ns))"]
+   ["create-ns + find"   "true"  "(do (create-ns (quote made.ns)) (some? (find-ns (quote made.ns))))"]
+   ["remove-ns"          "nil"   "(do (create-ns (quote gone.ns)) (remove-ns (quote gone.ns)) (find-ns (quote gone.ns)))"]
+   ["the-ns of symbol"   "(quote user)" "(ns-name (the-ns (quote user)))"]
+   ["ns-resolve + call"  "3"     "((var-get (ns-resolve (quote clojure.core) (quote inc))) 2)"]
+   ["resolve + call"     "3"     "((var-get (resolve (quote inc))) 2)"]
+   ["resolve absent"     "nil"   "(resolve (quote no-such-sym-xyz))"]
+
    ### ---- HIGH: aliased namespace calls ----
    ["require :as alias"  "\"1,2,3\"" "(do (require (quote [clojure.string :as s])) (s/join \",\" [1 2 3]))"]
    ["ns form + alias"    "\"HI\""  "(do (ns my.a (:require [clojure.string :as s])) (s/upper-case \"hi\"))"]

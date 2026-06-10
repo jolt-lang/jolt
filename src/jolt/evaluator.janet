@@ -957,6 +957,55 @@
     (fn [ns-name sym-name &opt val]
       (def ns (ctx-find-ns ctx (if (struct? ns-name) (ns-name :name) ns-name)))
       (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val)))
+  # --- ns introspection (Stage 2 tier 6b) — evaluated-arg Clojure semantics.
+  # A namespace designator is an ns object (passes through) or a symbol/string
+  # naming one. find-ns is a pure lookup (nil when absent); create-ns creates
+  # (ctx-find-ns is create-on-demand). The optional-arg forms default to the
+  # current ns, preserving the prior 0-arg interpreter behavior.
+  (def ns-name-of (fn [x]
+    (cond
+      (and (struct? x) (= :symbol (x :jolt/type))) (x :name)
+      (string? x) x
+      (keyword? x) (string x)
+      nil)))
+  (def ns-of (fn [x]
+    (if (and (table? x) (not (nil? (x :mappings))))
+      x
+      (let [nm (ns-name-of x)]
+        (if nm (get (get (ctx :env) :namespaces) nm) nil)))))
+  (def ns-or-current (fn [x]
+    (if (nil? x)
+      (ctx-find-ns ctx (ctx-current-ns ctx))
+      (or (ns-of x) (error (string "No namespace: " (ns-name-of x)))))))
+  (ns-intern core "find-ns" (fn [x] (ns-of x)))
+  (ns-intern core "create-ns" (fn [x] (ctx-find-ns ctx (ns-name-of x))))
+  (ns-intern core "remove-ns" (fn [x] (remove-ns ctx (ns-name-of x))))
+  (ns-intern core "all-ns" (fn [] (all-ns ctx)))
+  (ns-intern core "the-ns" (fn [&opt x] (ns-or-current x)))
+  (ns-intern core "ns-interns" (fn [&opt x] ((ns-or-current x) :mappings)))
+  (ns-intern core "ns-aliases" (fn [&opt x] ((ns-or-current x) :aliases)))
+  (ns-intern core "ns-imports" (fn [&opt x] ((ns-or-current x) :imports)))
+  # (ns-resolve ns sym) -> the var or nil. Unqualified syms look in ns's own
+  # mappings; ns-qualified syms resolve through ns's aliases. (types/ns-resolve
+  # keys ns-find with the symbol struct instead of its name string, so it never
+  # finds anything — do the lookup here.)
+  (ns-intern core "ns-resolve"
+    (fn [ns-d sym]
+      (def ns (ns-or-current ns-d))
+      (def nm (if (struct? sym) (sym :name) (string sym)))
+      (def nsp (if (struct? sym) (sym :ns) nil))
+      (if nsp
+        (let [alias-ns (get (ns :aliases) nsp)]
+          (when alias-ns (ns-find alias-ns nm)))
+        (ns-find ns nm))))
+  (ns-intern core "resolve"
+    (fn [sym]
+      (when (and (struct? sym) (= :symbol (sym :jolt/type)))
+        (def r (protect (resolve-var ctx @{} sym)))
+        (if (r 0) (r 1) nil))))
+  # refer: bring another ns's public vars into the current ns. Reuses use-impl's
+  # refer-all behavior; the :only/:exclude/:rename filters are not yet honored.
+  (ns-intern core "refer" (fn [ns-sym & filters] (use-impl ctx ns-sym)))
   core)
 
 # Dispatch a special form by its string name.
@@ -1105,22 +1154,11 @@
     # special-form arm; an (ns ...) head falls through to the macro-expansion path.
     # require / in-ns are now ordinary clojure.core fns (install-stateful-fns!) —
     # no special-form arm; they compile + interpret as plain invokes.
-    "all-ns" (all-ns ctx)
-    "the-ns" (the-ns ctx)
-    "create-ns" (create-ns ctx (sym-name-str (in form 1)))
-    "remove-ns" (remove-ns ctx (sym-name-str (in form 1)))
-    "ns-interns" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :mappings))
-    "ns-aliases" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :aliases))
-    "ns-imports" (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))] (ns :imports))
-    "ns-resolve" (ns-resolve (ctx-find-ns ctx (ctx-current-ns ctx)) (in form 1))
-    "resolve" (let [sym (eval-form ctx bindings (in form 1))]
-                (if (and (struct? sym) (= :symbol (sym :jolt/type)))
-                  (let [r (protect (resolve-var ctx bindings sym))]
-                    (if (= (r 0) true) (r 1) nil))
-                  nil))
-    "find-ns" (let [sym (eval-form ctx bindings (in form 1))
-                    nm (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym))]
-                (get (get (ctx :env) :namespaces) nm))
+    # all-ns/the-ns/create-ns/remove-ns/ns-interns/ns-aliases/ns-imports/
+    # ns-resolve/resolve/find-ns/refer are ctx-capturing clojure.core fns now
+    # (install-stateful-fns!) with evaluated-arg Clojure semantics — they fall
+    # through to the function-call default and compile as plain invokes
+    # (Stage 2 tier 6b).
     "fn*" (let [# optional name: (fn* name [args] ...) / (fn* name ([args] ...)...)
                 named? (and (struct? (in form 1)) (= :symbol ((in form 1) :jolt/type)))
                 fn-name (if named? ((in form 1) :name) nil)

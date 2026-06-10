@@ -82,13 +82,11 @@
              # fns (compile as plain invokes).
              "prefer-method"
              "remove-method" "remove-all-methods" "get-method" "methods"
-             # ns-management forms dispatched by the interpreter (not core vars)
-             "create-ns" "remove-ns" "find-ns" "all-ns" "the-ns" "resolve"
-             "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
-             # ns/require/in-ns/use/import/refer-clojure are now clojure.core
-             # fns/macros (compile as plain invokes / expand to them).
+             # create-ns/remove-ns/find-ns/all-ns/the-ns/resolve/ns-resolve/
+             # ns-aliases/ns-imports/ns-interns/refer are ctx-capturing
+             # clojure.core fns now (compile as plain invokes — tier 6b), like
+             # ns/require/in-ns/use/import/refer-clojure before them.
              "read-string" "macroexpand-1" "defonce"
-             "refer"
              # defprotocol/extend-type/extend-protocol/reify/defrecord now expand to
              # plain def + protocol-dispatch/register-method/make-reified/deftype.
              "gen-class"
