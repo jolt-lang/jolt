@@ -208,7 +208,12 @@
 (defn core-even? [n] (= 0 (% (need-int n "even?") 2)))
 (defn core-odd? [n] (not= 0 (% (need-int n "odd?") 2)))
 
-(defn core-integer? [x] (and (number? x) (= x (math/floor x))))
+# Finite integral number: NaN and the infinities are NOT integers (floor of
+# inf is inf, so the naive floor check wrongly accepted them).
+(defn core-integer? [x]
+  (and (number? x) (= x x)
+       (< x math/inf) (> x (- math/inf))
+       (= x (math/floor x))))
 (defn core-boolean? [x] (or (= x true) (= x false)))
 (defn core-list? [x] (or (plist? x) (and (array? x) (not (get x :jolt/type)))))
 
@@ -1827,6 +1832,74 @@
 # Host time source for the `time` macro (monotonic, milliseconds).
 (defn core-current-time-ms [] (* 1000 (os/clock :monotonic)))
 
+# Clojure compare: a total order over comparable values. nil sorts first;
+# numbers numerically; strings/keywords lexically; symbols by ns then name;
+# booleans false<true; chars by codepoint; vectors by length then elementwise;
+# uuids by canonical string; insts by epoch ms. Cross-type comparison throws
+# (like Clojure's ClassCastException).
+(var core-compare nil)
+(set core-compare (fn ccompare [a b]
+  (defn cmp3 [x y] (cond (< x y) -1 (> x y) 1 0))
+  (cond
+    (and (nil? a) (nil? b)) 0
+    (nil? a) -1
+    (nil? b) 1
+    (and (number? a) (number? b)) (cmp3 a b)
+    (and (or (string? a) (buffer? a)) (or (string? b) (buffer? b)))
+      (cmp3 (string a) (string b))
+    (and (keyword? a) (keyword? b)) (cmp3 (string a) (string b))
+    (and (core-symbol? a) (core-symbol? b))
+      (let [r (cmp3 (string (or (a :ns) "")) (string (or (b :ns) "")))]
+        (if (= 0 r) (cmp3 (a :name) (b :name)) r))
+    (and (boolean? a) (boolean? b))
+      (cond (= a b) 0 (= a false) -1 1)
+    (and (core-char? a) (core-char? b)) (cmp3 (a :ch) (b :ch))
+    (and (struct? a) (= :jolt/uuid (get a :jolt/type))
+         (struct? b) (= :jolt/uuid (get b :jolt/type)))
+      (cmp3 (a :str) (b :str))
+    (and (struct? a) (= :jolt/inst (get a :jolt/type))
+         (struct? b) (= :jolt/inst (get b :jolt/type)))
+      (cmp3 (a :ms) (b :ms))
+    (and (jvec? a) (jvec? b))
+      (let [la (vcount a) lb (vcount b)]
+        (if (not= la lb)
+          (cmp3 la lb)
+          (do
+            (var r 0) (var i 0)
+            (while (and (= r 0) (< i la))
+              (set r (ccompare (vnth a i) (vnth b i)))
+              (++ i))
+            r)))
+    (error (string "Cannot compare " (type a) " with " (type b))))))
+
+# Clojure type: the :type metadata when present, else the value's type. With no
+# class objects on this host, the "class" is a symbol: a deftype/record value
+# yields its type tag symbol; everything else a taxonomy keyword
+# (host-classified — see spec coverage).
+(defn core-type [x]
+  (def m (core-meta x))
+  (def override (and m (core-get m :type)))
+  (if (not (nil? override))
+    override
+    (cond
+      (and (table? x) (get x :jolt/deftype))
+        {:jolt/type :symbol :ns nil :name (get x :jolt/deftype)}
+      (nil? x) nil
+      (boolean? x) :boolean
+      (number? x) :number
+      (or (string? x) (buffer? x)) :string
+      (keyword? x) :keyword
+      (core-symbol? x) :symbol
+      (core-char? x) :char
+      (and (struct? x) (get x :jolt/type)) (get x :jolt/type)
+      (jvec? x) :vector
+      (core-map? x) :map
+      (set? x) :set
+      (core-seq? x) :seq
+      (or (function? x) (cfunction? x)) :fn
+      (table? x) (or (get x :jolt/type) :table)
+      :else (keyword (type x)))))
+
 # Capture *out*: run thunk with Janet's :out dynamic bound to a buffer, so all
 # print/println/pr/prn output (which go through `prin` -> (dyn :out)) is collected
 # and returned as a string. The with-out-str macro (overlay) wraps a body thunk.
@@ -2994,6 +3067,10 @@
     "hash-unordered-coll" core-hash-unordered-coll
     "prefers" core-prefers
     "random-uuid" core-random-uuid
+    "gensym" gensym
+    "int?" core-integer?
+    "compare" core-compare
+    "type" core-type
     "parse-long" core-parse-long
     "parse-double" core-parse-double
     "parse-boolean" core-parse-boolean

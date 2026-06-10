@@ -12,10 +12,11 @@
       {:jolt/type :symbol :ns nil :name name})))
 
 # Helper: parse and eval
+# init, not bare make-ctx: with the implicit Janet root-env fallback removed
+# (Stage 3), a context without clojure.core interned can't resolve inc/+/etc.
+(def- shared-ctx (init))
 (defn eval-str [s]
-  (let [ctx (make-ctx)
-        form (parse-string s)]
-    (eval-form ctx @{} form)))
+  (eval-form shared-ctx @{} (parse-string s)))
 
 (print "1: literals...")
 (assert (= 42 (eval-str "42")) "integer")

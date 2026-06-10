@@ -148,6 +148,9 @@
 
 (defn keyword-identical? [a b] (= a b))
 
+;; Clojure 1.9: true for ANY argument incl. nil (used as a spec predicate).
+(defn any? [x] true)
+
 (defn comparator [pred]
   (fn [a b] (cond (pred a b) -1 (pred b a) 1 :else 0)))
 

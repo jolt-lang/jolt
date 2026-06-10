@@ -470,12 +470,10 @@
                             class-name (string/slice name (+ last-dot 1))]
                         (let [target-ns (ctx-find-ns ctx class-ns) tv (ns-find target-ns class-name)]
                           (if tv (var-get tv) tv)))
-                      # Fall back to Janet's global environment
-                      (let [root-env (fiber/getenv (fiber/current))
-                            entry (in root-env (symbol name))]
-                        (if (not (nil? entry))
-                          (if (table? entry) (entry :value) entry)
-                          (error (string "Unable to resolve symbol: " name))))))))))))))))
+                      # No implicit Janet fallback (Stage 3): an unresolved
+                      # Clojure symbol is an error. Host access is the explicit
+                      # janet/ prefix above.
+                      (error (string "Unable to resolve symbol: " name))))))))))))))
 
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.

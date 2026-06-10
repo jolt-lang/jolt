@@ -7,7 +7,7 @@
 
 (defn janet-type
   [x]
-  (type x))
+  (janet/type x))
 
 (defn janet-describe
   [x]
