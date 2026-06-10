@@ -732,3 +732,31 @@
   ([x y & more] (reduce min (min x y) more)))
 
 (defn reverse [coll] (reduce conj (list) coll))
+
+;; --- Phase 2 leaf batch 3 (jolt-ded) -----------------------------------------
+
+;; An empty coll of the same category; sorted colls keep their comparator (the
+;; value's own :empty op). Strings and scalars are nil, as in Clojure; a lazy
+;; seq empties to () (the old kernel fn returned a host table for it).
+(defn empty [coll]
+  (cond
+    (nil? coll) nil
+    (sorted? coll) ((get (jolt.host/ref-get coll :ops) :empty) coll)
+    (map? coll) {}
+    (set? coll) #{}
+    (vector? coll) []
+    (coll? coll) ()
+    :else nil))
+
+(defn assoc-in [m [k & ks] v]
+  (if ks
+    (assoc m k (assoc-in (get m k) ks v))
+    (assoc m k v)))
+
+(defn update-in [m ks f & args]
+  (let [up (fn up [m ks f args]
+             (let [[k & ks] ks]
+               (if ks
+                 (assoc m k (up (get m k) ks f args))
+                 (assoc m k (apply f (get m k) args)))))]
+    (up m ks f args)))

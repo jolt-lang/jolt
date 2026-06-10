@@ -102,3 +102,35 @@
   ["reverse"            "(quote (3 2 1))" "(reverse [1 2 3])"]
   ["reverse empty"      "()"       "(reverse nil)"]
   ["conj nil onto map"  "{:a 1}"   "(conj {:a 1} nil)"])
+
+# Phase 2 leaf batch 3 (jolt-ded): empty/assoc-in/update-in (20-coll) and
+# interpose/take-nth (40-lazy, with canonical transducer arities). keys/vals/
+# empty? are expander-coupled (00-syntax macros call them) and stay in the
+# seed until the fast macro-expansion path lands.
+(defspec "clojure.core / leaf batch 3"
+  ["empty vector"        "[]"        "(empty [1 2])"]
+  ["empty list"          "()"        "(empty (list 1))"]
+  ["empty map"           "{}"        "(empty {:a 1})"]
+  ["empty set"           "#{}"       "(empty #{1})"]
+  ["empty nil"           "nil"       "(empty nil)"]
+  ["empty string"        "nil"       "(empty \"abc\")"]
+  ["empty lazy is ()"    "()"        "(empty (map inc [1 2]))"]
+  ["empty sorted keeps cmp" "[3 1]"  "(vec (seq (into (empty (sorted-set-by > 1 2)) [1 3])))"]
+  ["assoc-in"            "{:a {:b 1}}" "(assoc-in {} [:a :b] 1)"]
+  ["assoc-in deep"       "{:a {:b {:c 2}}}" "(assoc-in {:a {:b {:c 1}}} [:a :b :c] 2)"]
+  ["assoc-in keeps siblings" "{:a {:b 1 :c 2}}" "(assoc-in {:a {:b 1}} [:a :c] 2)"]
+  ["assoc-in vector idx" "[1 9]"     "(assoc-in [1 2] [1] 9)"]
+  ["assoc-in nested vec" "[{:a 9}]"  "(assoc-in [{:a 1}] [0 :a] 9)"]
+  ["update-in"           "{:a {:b 2}}" "(update-in {:a {:b 1}} [:a :b] inc)"]
+  ["update-in extra args" "{:a {:b 111}}" "(update-in {:a {:b 1}} [:a :b] + 10 100)"]
+  ["update-in fnil"      "{:a {:b 1}}" "(update-in {} [:a :b] (fnil inc 0))"]
+  ["update-in single key" "{:a 2}"   "(update-in {:a 1} [:a] inc)"]
+  ["interpose"           "(quote (1 :s 2 :s 3))" "(interpose :s [1 2 3])"]
+  ["interpose empty"     "()"        "(interpose :s [])"]
+  ["interpose one"       "(quote (1))" "(interpose :s [1])"]
+  ["interpose is lazy"   "(quote (0 :s 1))" "(take 3 (interpose :s (range)))"]
+  ["interpose xform"     "[\"a\" \",\" \"b\"]" "(vec (sequence (interpose \",\") [\"a\" \"b\"]))"]
+  ["take-nth"            "(quote (1 3 5))" "(take-nth 2 [1 2 3 4 5 6])"]
+  ["take-nth lazy"       "(quote (0 3 6))" "(take 3 (take-nth 3 (range)))"]
+  ["take-nth xform"      "[1 3 5]"   "(vec (sequence (take-nth 2) [1 2 3 4 5 6]))"]
+  ["take-nth into"       "[1 4]"     "(into [] (take-nth 3) [1 2 3 4 5])"])

@@ -138,3 +138,40 @@
                (when (seq s)
                  (cons (take n s) (go (nthrest s step))))))]
      (go coll))))
+
+;; --- Phase 2 leaf batch 3 (jolt-ded): canonical lazy + transducer arities ----
+
+(defn interpose
+  ([sep]
+   (fn [rf]
+     (let [started (volatile! false)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (if (deref started)
+            (let [sepr (rf result sep)]
+              (if (reduced? sepr)
+                sepr
+                (rf sepr input)))
+            (do (vreset! started true)
+                (rf result input))))))))
+  ([sep coll]
+   (drop 1 (interleave (repeat sep) coll))))
+
+(defn take-nth
+  ([n]
+   (fn [rf]
+     (let [iv (volatile! -1)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [i (vswap! iv inc)]
+            (if (zero? (rem i n))
+              (rf result input)
+              result)))))))
+  ([n coll]
+   (lazy-seq
+     (when-let [s (seq coll)]
+       (cons (first s) (take-nth n (drop n s)))))))

@@ -2251,19 +2251,10 @@
 (defn- ks-rest [ks]
   (if (tuple? ks) (tuple/slice ks 1) (array/slice ks 1)))
 
-(defn core-assoc-in [m ks v]
-  (let [ks (vview ks) k (in ks 0)]
-    (if (<= (length ks) 1)
-      (core-assoc m k v)
-      (let [sub (core-get m k)]
-        (core-assoc m k (core-assoc-in (if (nil? sub) {} sub) (ks-rest ks) v))))))
+# assoc-in / update-in now live in the Clojure collection tier (canonical
+# recursive ports).
 
-(defn core-update-in [m ks f & args]
-  (let [ks (vview ks) k (in ks 0)]
-    (if (<= (length ks) 1)
-      (core-assoc m k (apply f (core-get m k) args))
-      (let [sub (core-get m k)]
-        (core-assoc m k (apply core-update-in (if (nil? sub) {} sub) (ks-rest ks) f args))))))
+
 
 # fnil now lives in the Clojure collection tier (core/20-coll.clj), with
 # Clojure's canonical 2/3/4-arity (patch the first 1-3 args only).
@@ -2329,61 +2320,21 @@
         {:jolt/type :symbol :ns ns :name nm})
     (error "symbol expects 1 or 2 args")))
 
-(defn- td-take-nth [n]
-  (fn [rf]
-    (var i 0)
-    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
-                (let [keep (= 0 (mod i n))] (++ i)
-                  (if keep (rf (a 0) (a 1)) (a 0)))))))
-(defn core-take-nth [n & rest]
-  (if (= 0 (length rest)) (td-take-nth n)
-    (let [coll (in rest 0)]
-      # Option A: always lazy.
-      (defn tstep [c]
-        (fn []
-          (if (seq-done? c) nil
-            (let [drop-n (lazy-from (core-drop n c))]
-              (if (seq-done? drop-n) @[(core-first c) nil]
-                @[(core-first c) (tstep drop-n)])))))
-      (make-lazy-seq (tstep (lazy-from coll))))))
+# (take-nth's transducer arity lives in the overlay now.)
+
 
 # filterv now lives in the Clojure collection tier (core/20-coll.clj).
 
 # mapv lives in the Clojure kernel tier — core/00-kernel.clj.
 
-(defn- td-interpose [sep]
-  (fn [rf]
-    (var started false)
-    (fn [& a] (case (length a) 0 (rf) 1 (rf (a 0))
-                (if started (rf (rf (a 0) sep) (a 1))
-                  (do (set started true) (rf (a 0) (a 1))))))))
-(defn core-interpose [sep & rest]
-  (if (= 0 (length rest)) (td-interpose sep)
-    (let [coll (in rest 0)]
-      # Option A: always lazy.
-      (defn istep [c need-sep]
-        (fn []
-          (if (seq-done? c) nil
-            (if need-sep
-              @[sep (istep c false)]
-              @[(core-first c) (istep (core-rest c) true)]))))
-      (make-lazy-seq (istep (lazy-from coll) false)))))
+# (interpose's transducer arity lives in the overlay now.)
+# interpose / take-nth now live in the Clojure lazy tier (core/40-lazy.clj),
+# with the canonical transducer arities.
 
 # keep now lives in the Clojure lazy tier (core/40-lazy.clj).
 
-(defn core-empty [coll]
-  (cond
-    # an empty sorted coll of the same kind, KEEPING the comparator (Clojure)
-    (core-sorted? coll) ((sorted-op coll :empty) coll)
-    (phm? coll) (make-phm)
-    (set? coll) (make-phs)
-    (plist? coll) EMPTY-PLIST
-    (pvec? coll) (make-vec @[])
-    (struct? coll) (struct)
-    (tuple? coll) (make-vec @[])
-    (array? coll) @[]
-    (table? coll) @{}
-    nil))
+# empty now lives in the Clojure collection tier (core/20-coll.clj); a lazy
+# seq empties to () there (this fn returned a host table for it).
 
 # not-empty now lives in the Clojure collection tier (core/20-coll.clj).
 
@@ -2840,7 +2791,6 @@
     "newline" core-newline
     "current-time-ms" core-current-time-ms
     "parse-uuid" core-parse-uuid
-    "interpose" core-interpose
     "mapcat" core-mapcat
     "transduce" core-transduce
     "sequence" core-sequence
@@ -2851,8 +2801,6 @@
     "namespace" core-namespace
     "reduced" core-reduced
     "reduced?" core-reduced?
-    "take-nth" core-take-nth
-    "empty" core-empty
     "rseq" core-rseq
     "shuffle" core-shuffle
     "ifn?" core-ifn?
@@ -3030,8 +2978,6 @@
     "ThreadLocal" core-ThreadLocal
     "IllegalStateException" core-IllegalStateException
     "resolve" core-resolve
-    "update-in" core-update-in
-    "assoc-in" core-assoc-in
     "copy-core-var" core-copy-core-var
     "copy-var" core-copy-var
     "macrofy" core-macrofy
