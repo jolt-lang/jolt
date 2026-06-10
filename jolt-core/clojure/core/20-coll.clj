@@ -592,3 +592,41 @@
         target (reduce (fn [t k] (nth t k)) arr (take (- n 2) idxs+val))]
     (jolt.host/ref-put! target (nth idxs+val (- n 2)) val)
     val))
+
+;; --- Phase 2 leaf batch (jolt-ded): fn combinators + host-free stubs ---------
+
+(defn complement
+  "Takes a fn f and returns a fn that takes the same arguments as f, has the
+  same effects, if any, and returns the opposite truth value."
+  [f]
+  (fn [& args] (not (apply f args))))
+
+;; Canonical Clojure fnil: patches only the FIRST 1-3 arguments (the old Janet
+;; kernel patched every position it had a default for, which Clojure does not).
+(defn fnil
+  ([f x]
+   (fn [a & args] (apply f (if (nil? a) x a) args)))
+  ([f x y]
+   (fn [a b & args] (apply f (if (nil? a) x a) (if (nil? b) y b) args)))
+  ([f x y z]
+   (fn [a b c & args]
+     (apply f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c) args))))
+
+(defn clojure-version [] "1.11.0-jolt")
+
+;; Jolt numbers are doubles; no BigDecimal, no ratios.
+(defn bigdec [x] (* 1.0 x))
+(defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
+(defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
+
+;; No class hierarchy on the Janet host.
+(defn supers [x] #{})
+
+;; The kernel's munge only rewrote dashes; kept as-is for parity.
+(defn munge [s] (str-replace-all "-" "_" (str s)))
+
+(defn test
+  "Calls the :test fn from v's metadata; :ok if it runs, :no-test if absent."
+  [v]
+  (let [t (:test (meta v))]
+    (if t (do (t) :ok) :no-test)))
