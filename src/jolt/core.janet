@@ -2313,36 +2313,6 @@
 # intern is a ctx-capturing clojure.core fn now (install-stateful-fns!).
 
 # Hierarchy stubs for sci bootstrap
-(def core-make-hierarchy make-hierarchy)
-(defn core-derive
-  [& args]
-  (case (length args)
-    2 (let [[tag parent] args] (derive* the-global-hierarchy tag parent) nil)
-    3 (let [[h tag parent] args] (derive* h tag parent))))
-(defn core-isa?
-  [& args]
-  (case (length args)
-    2 (let [[child parent] args] (isa? the-global-hierarchy child parent))
-    3 (let [[h child parent] args] (isa? h child parent))))
-(defn core-ancestors
-  [& args]
-  (case (length args)
-    1 (apply make-phs (ancestors the-global-hierarchy (in args 0)))
-    2 (let [[h tag] args] (apply make-phs (ancestors h tag)))))
-(defn core-descendants
-  [& args]
-  (case (length args)
-    1 (apply make-phs (descendants the-global-hierarchy (in args 0)))
-    2 (let [[h tag] args] (apply make-phs (descendants h tag)))))
-(defn core-parents
-  [& args]
-  (let [[h tag] (if (= 1 (length args)) [the-global-hierarchy (in args 0)] args)
-        p (get (h :parents) tag)]
-    (if p (make-phs p) (make-phs))))
-(defn core-underive [& args]
-  (case (length args)
-    2 (let [[tag parent] args] (underive the-global-hierarchy tag parent) nil)
-    3 (let [[h tag parent] args] (underive h tag parent))))
 (def core-get-method (fn [mm-var dispatch-val]
   (let [methods (get mm-var :jolt/methods)]
     (or (get methods dispatch-val) (get methods :default)))))
@@ -3229,13 +3199,6 @@
     "reset!" core-reset!
     "swap!" core-swap!
     "not" core-not
-    "derive" core-derive
-    "isa?" core-isa?
-    "parents" core-parents
-    "ancestors" core-ancestors
-    "descendants" core-descendants
-    "make-hierarchy" core-make-hierarchy
-    "underive" core-underive
     "get-method" core-get-method
     "methods" core-methods
     "remove-method" core-remove-method

@@ -865,6 +865,7 @@
       h))
   (def ns (ctx-find-ns ctx (ctx-current-ns ctx)))
   (def methods @{})
+  (def isa-cache @[nil])
   (def dispatch-cache @{})
   (def mm-fn
     (fn [& args]
@@ -875,11 +876,24 @@
           (let [cached (get dispatch-cache dv)]
             (if cached
               (apply cached args)
-              (let [h (or hierarchy the-global-hierarchy)
+              # isa? is the OVERLAY's (the hierarchy system is pure Clojure now,
+              # stage 3); resolve its var lazily, once. A :hierarchy option is an
+              # atom (deref per dispatch, like Clojure's var) or a plain map.
+              (let [isa-fn (do
+                             (when (nil? (isa-cache 0))
+                               (put isa-cache 0
+                                    (var-get (ns-find (ctx-find-ns ctx "clojure.core") "isa?"))))
+                             (isa-cache 0))
+                    h (if hierarchy
+                        (if (and (table? hierarchy) (= :jolt/atom (get hierarchy :jolt/type)))
+                          (hierarchy :value)
+                          hierarchy)
+                        nil)
                     found (do (var f nil) (var i 0)
                             (let [ks (keys methods)]
                               (while (and (nil? f) (< i (length ks)))
-                                (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
+                                (if (if h (isa-fn h dv (in ks i)) (isa-fn dv (in ks i)))
+                                  (set f (get methods (in ks i))))
                                 (++ i)))
                             f)]
                 (if found
