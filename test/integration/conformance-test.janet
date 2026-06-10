@@ -200,6 +200,13 @@
    ["inst offset normalized" "true" "(= #inst \"2020-01-01T01:00:00+01:00\" #inst \"2020-01-01T00:00:00Z\")"]
    ["sq literal collapse" "true" "(= \"meow\" ```\"meow\")"]
    ["sq number collapse"  "42"   "``42"]
+
+   ### ---- stage 3: proper vars replace the Janet root-env leak ----
+   ["compare total order" "[-1 0 1]" "[(compare nil 1) (compare :a :a) (compare \"b\" \"a\")]"]
+   ["compare vectors"     "-1"    "(compare [1 2] [1 3])"]
+   ["gensym jolt symbol"  "true"  "(symbol? (gensym))"]
+   ["any? anything"       "true"  "(and (any? nil) (any? 1) (any? :k))"]
+   ["int? excludes Inf"   "false" "(int? ##Inf)"]
    ["macroexpand-1 when" "2"     "(count (rest (macroexpand-1 (quote (when true 1)))))"]
 
    ### ---- HIGH: aliased namespace calls ----

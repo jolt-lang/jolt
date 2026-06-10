@@ -157,3 +157,30 @@
   ["not-empty full"    "[1]"    "(not-empty [1])"]
   ["not-empty empty"   "nil"    "(not-empty [])"]
   ["not-empty string"  "nil"    "(not-empty \"\")"])
+
+# Stage 3 turn 2a: the implicit Janet root-env fallback is GONE — these are now
+# proper interned clojure.core vars with Clojure semantics (compare's total
+# order, meta-aware type, any?, gensym returning jolt symbols).
+(defspec "predicates / compare, type, any? (stage 3)"
+  ["compare ="          "0"     "(compare 1 1)"]
+  ["compare <"          "-1"    "(compare 1 2)"]
+  ["compare nil first"  "-1"    "(compare nil 1)"]
+  ["compare nil nil"    "0"     "(compare nil nil)"]
+  ["compare strings"    "-1"    "(compare \"a\" \"b\")"]
+  ["compare keywords"   "-1"    "(compare :a :b)"]
+  ["compare symbols"    "-1"    "(compare (quote a) (quote b))"]
+  ["compare bools"      "-1"    "(compare false true)"]
+  ["compare vec length" "-1"    "(compare [1 2] [1 2 3])"]
+  ["compare vec elems"  "-1"    "(compare [1 2] [1 3])"]
+  ["compare cross-type throws" :throws "(compare 1 \"a\")"]
+  ["sort with compare"  "[nil 1 3]" "(sort compare [3 nil 1])"]
+  ["type meta override" ":custom" "(type (with-meta [1] {:type :custom}))"]
+  ["type of record"     "true"  "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))"]
+  ["any? value"         "true"  "(any? 5)"]
+  ["any? nil"           "true"  "(any? nil)"]
+  ["gensym is symbol"   "true"  "(symbol? (gensym))"]
+  ["gensym prefix"      "true"  "(do (require (quote [clojure.string :as s])) (s/starts-with? (str (gensym \"p_\")) \"p_\"))"]
+  ["gensym distinct"    "false" "(= (gensym) (gensym))"]
+  ["int? Inf false"     "false" "(int? ##Inf)"]
+  ["integer? Inf false" "false" "(integer? ##Inf)"]
+  ["integer? NaN false" "false" "(integer? ##NaN)"])

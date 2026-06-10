@@ -43,7 +43,7 @@
 # Raised 4004 -> 4034 / clean 66 -> 67 porting partition-all + repeatedly to the
 # overlay, which required fixing two leniencies (a char is not callable; take
 # validates its count) — correct beyond those fns, so the suite rose broadly.
-(def baseline-pass 4470)
+(def baseline-pass 4532)
 # A file is "clean" when it ran with zero failures AND zero errors.
 (def baseline-clean-files 86)
 # Per-file wall-clock budget (seconds). Normal files finish in well under 1s, so
