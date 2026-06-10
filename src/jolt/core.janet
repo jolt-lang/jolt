@@ -1485,8 +1485,7 @@
 
 (def core-constantly (fn [x] (fn [& _] x)))
 
-(defn core-complement [f]
-  (fn [& args] (not (apply f args))))
+# complement now lives in the Clojure collection tier (core/20-coll.clj).
 
 # Jolt has no inst/uri/uuid host types, so these are always false; inst-ms has
 # nothing valid to read.
@@ -2034,7 +2033,7 @@
 # 64-bit integers (Janet int/s64 — C-backed)
 (defn core-bigint [x] (int/s64 x))
 (defn core-biginteger [x] (int/s64 x))
-(defn core-bigdec [x] (* 1.0 x))   # no BigDecimal; use a double
+# bigdec now lives in the Clojure collection tier (no BigDecimal: a double).
 
 # Chunked seqs — Jolt does not chunk, so these are simple eager equivalents.
 (defn core-chunk-buffer [capacity] @[])
@@ -2060,19 +2059,15 @@
 # semantics) now live in the Clojure sorted tier (core/25-sorted.clj).
 (defn core-array-seq [arr & _] (core-seq arr))
 (defn core-seque [& args] (in args (- (length args) 1)))
-(defn core-supers [x] (make-phs))
+# supers now lives in the Clojure collection tier (no class hierarchy: #{}).
 (defn core-class [x]
   (cond
     (nil? x) nil (number? x) "java.lang.Number" (string? x) "java.lang.String"
     (boolean? x) "java.lang.Boolean" (keyword? x) "clojure.lang.Keyword"
     (function? x) "clojure.lang.IFn" (buffer? x) "[B"
     (string (type x))))
-(defn core-clojure-version [] "1.11.0-jolt")
-(defn core-munge [s]
-  (string/replace-all "-" "_" (string s)))
-(defn core-test [v]
-  (let [t (and (core-meta v) (get (core-meta v) :test))]
-    (if t (do (t) :ok) :no-test)))
+# clojure-version / munge / test now live in the Clojure collection tier
+# (core/20-coll.clj).
 
 
 # ============================================================
@@ -2375,15 +2370,8 @@
       (let [sub (core-get m k)]
         (core-assoc m k (apply core-update-in (if (nil? sub) {} sub) (ks-rest ks) f args))))))
 
-(defn core-fnil [f & defaults]
-  (fn [& args]
-    (def new-args (array/slice args))
-    (var i 0)
-    (each d defaults
-      (when (and (< i (length new-args)) (nil? (in new-args i)))
-        (put new-args i d))
-      (++ i))
-    (apply f new-args)))
+# fnil now lives in the Clojure collection tier (core/20-coll.clj), with
+# Clojure's canonical 2/3/4-arity (patch the first 1-3 args only).
 
 # copy-var stubs for sci.impl.copy-vars (used by sci.impl.namespaces)
 (defn core-copy-core-var [sym] nil)
@@ -2637,8 +2625,8 @@
 # ratio?/decimal?/rational? live in the Clojure collection tier (core/20-coll.clj).
 # Jolt has no ratio type, so numerator/denominator have no valid input (Clojure
 # requires a Ratio and throws otherwise).
-(defn core-numerator [x] (error "numerator requires a ratio (Jolt has no ratios)"))
-(defn core-denominator [x] (error "denominator requires a ratio (Jolt has no ratios)"))
+# numerator / denominator now live in the Clojure collection tier (Jolt has
+# no ratios; they throw, as on a non-ratio in Clojure).
 
 (def- special-syms
   {"if" true "do" true "let*" true "fn*" true "quote" true "var" true "def" true
@@ -2914,8 +2902,6 @@
     "key" core-key
     "val" core-val
     "map-entry?" core-map-entry?
-    "numerator" core-numerator
-    "denominator" core-denominator
     "special-symbol?" core-special-symbol?
     "promise" core-promise
     "deliver" core-deliver
@@ -3005,7 +2991,6 @@
     "range" core-range
     "identity" core-identity
     "constantly" core-constantly
-    "complement" core-complement
     "comp" core-comp
     "partial" core-partial
     "memoize" core-memoize
@@ -3085,7 +3070,6 @@
     "unchecked-double" core-unchecked-double
     "bigint" core-bigint
     "biginteger" core-biginteger
-    "bigdec" core-bigdec
     "chunk-buffer" core-chunk-buffer
     "chunk-append" core-chunk-append
     "chunk" core-chunk
@@ -3099,11 +3083,7 @@
     "reader-conditional" core-reader-conditional
     "array-seq" core-array-seq
     "seque" core-seque
-    "supers" core-supers
     "class" core-class
-    "clojure-version" core-clojure-version
-    "munge" core-munge
-    "test" core-test
     "enumeration-seq" core-enumeration-seq
     "iterator-seq" core-iterator-seq
     "re-matcher" core-re-matcher
@@ -3173,7 +3153,6 @@
     "resolve" core-resolve
     "update-in" core-update-in
     "assoc-in" core-assoc-in
-    "fnil" core-fnil
     "copy-core-var" core-copy-core-var
     "copy-var" core-copy-var
     "macrofy" core-macrofy

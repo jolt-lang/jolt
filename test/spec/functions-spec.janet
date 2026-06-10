@@ -35,3 +35,22 @@
   ["some-fn"            "true"   "((some-fn even? neg?) 3 4)"]
   ["memoize"            "2"      "(do (def c (atom 0)) (def f (memoize (fn [x] (swap! c inc) x))) (f 1) (f 1) (f 2) @c)"]
   ["trampoline"         "10"     "(trampoline (fn f [n acc] (if (zero? n) acc (fn [] (f (dec n) (+ acc 2))))) 5 0)"])
+
+# Phase 2 leaf batch (jolt-ded): moved from the Janet seed to 20-coll.clj.
+(defspec "clojure.core / leaf batch (complement fnil munge etc.)"
+  ["complement true"     "true"     "((complement pos?) -1)"]
+  ["complement false"    "false"    "((complement pos?) 1)"]
+  ["complement multi"    "true"     "((complement <) 3 2)"]
+  ["fnil patches nil"    "1"        "((fnil inc 0) nil)"]
+  ["fnil passes non-nil" "6"        "((fnil inc 0) 5)"]
+  ["fnil two defaults"   "8"        "((fnil + 1 2) nil nil 5)"]
+  ["fnil only first 3"   "[:a :b :c nil]" "((fnil vector :a :b :c) nil nil nil nil)"]
+  ["fnil in update"      "{:k 1}"   "(update {} :k (fnil inc 0))"]
+  ["clojure-version"     "true"     "(string? (clojure-version))"]
+  ["bigdec"              "3"        "(bigdec 3)"]
+  ["numerator throws"    :throws    "(numerator 1)"]
+  ["denominator throws"  :throws    "(denominator 1)"]
+  ["supers empty set"    "#{}"      "(supers 1)"]
+  ["munge dashes"        "\"a_b\""  "(munge \"a-b\")"]
+  ["munge symbol"        "\"x_y\""  "(munge (quote x-y))"]
+  ["test no-test"        ":no-test" "(test (quote foo))"])

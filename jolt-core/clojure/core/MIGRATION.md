@@ -69,6 +69,17 @@ test, rather than preserving the bug.
   would recurse). GOTCHA for future attached-ops ports: inside the overlay,
   NEVER read your own wrapper's fields with `get`.
 
+- **Leaf batch (jolt-ded)** — complement, fnil (canonical 2/3/4-arity: patch
+  the first 1-3 args only, unlike the old patch-everything kernel fn),
+  clojure-version, bigdec, numerator, denominator, supers, munge, test moved
+  to 20-coll.clj.
+- ***in* reader family (jolt-0d9)** — *in*, read-line, read, with-in-str,
+  line-seq in a new `50-io.clj` tier over two seed seams (__stdin-read-line,
+  __parse-next). GOTCHAS: a map LITERAL with :jolt/type as a key parses as a
+  tagged form (don't tag overlay value maps); a leftover seed stub holding the
+  same name breaks direct-linked overlay self-recursion (line-seq bound to the
+  stub's root and truncated after one element) — delete the stub first.
+
 ## MOVABLE candidates (Phase 2 worklist, 193)
 >Eduction NaN? abs aclone alength ancestors array-map array-seq assoc! associative? bean bigdec bigint biginteger boolean boolean? booleans byte bytes bytes? cat char char-escape-string char-name-string char? chars chunk chunk-append chunk-buffer chunk-cons chunk-first chunk-next chunk-rest chunked-seq? class clojure-version comparator compare-and-set! completing conj! counted? decimal? deliver denominator derive descendants destructure disj disj! dissoc! distinct? doall dorun double? doubles drop-last eduction empty ensure-reduced enumeration-seq ex-cause ex-data ex-info ex-info? ex-message find float? floats force halt-when hash-combine hash-map hash-ordered-coll hash-set hash-unordered-coll ident? ifn? indexed? infinite? inst-ms inst? integer? ints isa? iterator-seq key keyword keyword-identical? list* list? longs macrofy map-entry? memfn munge nat-int? neg-int? not-any? not-every? nthnext nthrest numerator numeric= object? parents persistent! pop pop! pos-int? pr prefers println-str prn-str promise qualified-ident? qualified-keyword? qualified-symbol? rand rand-nth random-sample ratio? rational? rationalize re-groups re-matcher record? reduce-kv reduced reduced? reductions replace replicate resolve reversible? rseq rsubseq run! seq-to-map-for-destructuring seque set set? short shorts shuffle simple-ident? simple-keyword? simple-symbol? some-search sort sort-by sorted-map sorted-map-by sorted-map? sorted-set sorted-set-by sorted-set? special-symbol? split-at split-with str-join str-replace-all str-replace-first str-split subseq supers symbol tagged-literal tagged-literal? take-last test transduce unchecked-add unchecked-byte unchecked-char unchecked-dec unchecked-divide-int unchecked-double unchecked-float unchecked-inc unchecked-int unchecked-multiply unchecked-negate unchecked-remainder-int unchecked-short unchecked-subtract undefined? underive uri? uuid? val vector volatile! volatile? xml-seq
 
