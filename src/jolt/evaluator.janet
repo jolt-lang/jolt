@@ -1619,6 +1619,10 @@
       (resolve-sym ctx bindings form)
       (if (= :jolt/char (form :jolt/type))
         form
+      # a UUID value flowing back through eval (macro expansion, eval of a read
+      # form) is a self-evaluating literal, like chars.
+      (if (= :jolt/uuid (form :jolt/type))
+        form
       (if (= :jolt/set (form :jolt/type))
         # evaluate each element (set literals like #{(inc 1)} must compute)
         (apply make-phs (map |(eval-form ctx bindings $) (form :value)))
@@ -1638,7 +1642,7 @@
           (each k (keys form)
             (array/push kvs (eval-form ctx bindings k))
             (array/push kvs (eval-form ctx bindings (get form k))))
-          (build-eval-map kvs)))))))
+          (build-eval-map kvs))))))))
     # A phm map-literal FORM (reader emits one for {:a nil} etc., which a struct
     # would have dropped): evaluate its key/value forms and rebuild, preserving nil.
     (phm? form)
