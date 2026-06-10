@@ -76,7 +76,7 @@ independent execution paths) and in the cross-dialect clojure-test-suite.
 | § | File | Status |
 |---|---|---|
 | 1 | `01-evaluation.md` | planned |
-| 2 | `02-reader.md` | planned (first: jank's reader corpus gives conformance shape) |
+| 2 | `02-reader.md` | **drafted** (grammar + reader-macro catalog; 2 divergences open) |
 | 3 | `03-special-forms.md` | **exemplars written** (`if`, `let*`); catalog complete |
 | 4 | `04-data-types.md` | planned (numeric-tower design note required) |
 | 5 | `05-sequences.md` | planned (laziness contract from jolt Phase-5 work) |

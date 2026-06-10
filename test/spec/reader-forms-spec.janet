@@ -48,3 +48,18 @@
   # jolt-edb (fixed): ~/~@ inside set literals.
   ["splice in set"   "#{0 1 2 3}" "(let [b [0] a [1 2 3] e []] `#{~@e ~@a ~@b})"]
   ["unquote in set"  "#{5 9}"   "(let [x 5] `#{~x 9})"])
+
+# Spec 02-reader S17/S19/S18/S13a/S22: discard, symbolic values, conditionals,
+# var-quote identity, gensym stability (jank corpus derived).
+(defspec "reader / discard, symbolic values, conditionals (spec 2.3)"
+  ["discard simple"      "2"     "(do #_1 2)"]
+  ["discard in vector"   "[1 3]" "[1 #_2 3]"]
+  ["discard stacks"      "3"     "(do #_ #_ 1 2 3)"]
+  ["##Inf"               "true"  "(= ##Inf (/ 1.0 0.0))"]
+  ["##-Inf"              "true"  "(= ##-Inf (/ -1.0 0.0))"]
+  ["##NaN not self-equal" "false" "(= ##NaN ##NaN)"]
+  ["##NaN is NaN?"       "true"  "(NaN? ##NaN)"]
+  ["conditional :default reachable" "2" "#?(:no-such-dialect 1 :default 2)"]
+  ["var-quote qualified" "true"  "(= (var clojure.core/str) #'clojure.core/str)"]
+  ["gensym stable in template" "true" "(let [syms `[meow# meow#]] (= (first syms) (second syms)))"]
+  ["gensym fresh across templates" "false" "(= `meow# `meow#)"])

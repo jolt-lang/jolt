@@ -1,0 +1,190 @@
+# §2 The Reader (Lexical Syntax)
+
+**Status**: token grammar drafted; reader-macro catalog complete with
+normative entries; syntax-quote section carries two open divergences.
+Conformance: jolt `reader-forms-spec` + `reader-syntax-spec` (granularity
+model: jank's per-construct corpus, 62 files under
+`test/jank/{reader-macro,syntax-quote}` — adapted rows cited per entry).
+
+The reader maps a stream of characters to *forms* (data). Reading is
+independent of evaluation: every form the reader produces is a value of the
+language (§4), and `read-string` exposes the reader as a function. Evaluation
+of forms is §1's concern; only `quote`-family reader macros reference it here.
+
+## 2.1 Tokens
+
+Whitespace is space, tab, newline, return, **and comma** (`,` is whitespace —
+S1). A `;` begins a comment to end of line (S2). Tokens:
+
+```
+form        := literal | symbol | keyword | list | vector | map | set
+             | reader-macro-form
+list        := '(' form* ')'
+vector      := '[' form* ']'
+map         := '{' (form form)* '}'
+literal     := nil | boolean | number | string | character
+nil         := 'nil'        boolean := 'true' | 'false'
+```
+
+- S3. A map literal MUST contain an even number of forms; duplicate keys
+  MUST be an error at read time.
+- S4. A set literal (`#{…}`, §2.3) with duplicate elements MUST be an error
+  at read time.
+
+### Numbers
+
+```
+integer  := ['+'|'-'] (digits | '0' [xX] hexdigits | '0' octdigits | radixR digits)
+float    := ['+'|'-'] digits '.' digits? exponent? | ['+'|'-'] digits exponent
+ratio    := ['+'|'-'] digits '/' digits            ; host-numeric-tower (§4 note)
+exponent := [eE] ['+'|'-'] digits
+```
+
+- S5. Trailing `N` (BigInt) and `M` (BigDecimal) suffixes are part of the
+  grammar; their value semantics are the §4 numeric-tower question.
+  Implementations without those towers SHOULD read them as the nearest
+  numeric type and MUST document the choice.
+
+### Symbols and keywords
+
+```
+symbol   := name | ns '/' name        ; '/' alone names the division fn
+keyword  := ':' name | ':' ns '/' name | '::' name | '::' alias '/' name
+```
+
+- S6. Symbol constituent characters: alphanumerics and `* + ! - _ ' ? < > =
+  . $ & %` (with `%` and `&` further constrained inside `#()`); a symbol
+  MUST NOT begin with a digit; `.` and `/` have positional restrictions.
+- S7. `::kw` MUST resolve to the current namespace at *read* time
+  (`::k` in ns `user` reads as `:user/k`); `::alias/k` resolves the alias or
+  MUST be a read error if the alias does not exist.
+
+### Strings and characters
+
+- S8. Strings are `"…"` with escapes `\" \\ \n \t \r \b \f \uNNNN \oNNN`.
+- S9. Character literals: `\c`, the named set `\newline \space \tab
+  \return \backspace \formfeed`, unicode `\uNNNN`, octal `\oNNN`.
+
+**Conformance** (2.1): jolt `reader-syntax-spec` "dispatch & sugar";
+clojure-test-suite reader files; jank `form/*` literal dirs. S3/S4 duplicate
+checks → UNVERIFIED (rows to add).
+
+## 2.2 Quote-family reader macros
+
+| Sugar | Reads as | |
+|---|---|---|
+| `'form` | `(quote form)` | S10 |
+| `@form` | `(deref form)` | S11 |
+| `^meta form` | form with metadata attached (see below) | S12 |
+| `#'sym` | `(var sym)` | S13 |
+| `` `form `` | syntax-quote (§2.4) | |
+| `~form`, `~@form` | unquote / unquote-splicing — only within syntax-quote (S14: MUST error outside) | |
+
+- S12a. `^:kw form` ≡ `^{:kw true} form`; `^Sym form` ≡ `^{:tag Sym} form`;
+  `^"str"` ≡ `^{:tag "str"} form`. Multiple `^` stack, rightmost innermost,
+  merged left-over-right.
+- S13a. `#'ns/sym` MUST denote the same var as `(var ns/sym)`:
+  `(= (var clojure.core/str) #'clojure.core/str)` is true.
+
+**Conformance**: jolt `reader-forms-spec` "var-quote #'", "metadata ^",
+"syntax-quote"; jank `var-quote/pass-qualified.jank`, `metadata/*`.
+
+## 2.3 Dispatch (`#`) reader macros
+
+| Form | Meaning | Entry |
+|---|---|---|
+| `#{…}` | set literal | S4 above |
+| `#"…"` | regex literal — reads to a regex value; escaping is regex-level, not string-level (single `\d`) | S15 |
+| `#(…)` | anonymous fn | S16 below |
+| `#_form` | discard | S17 below |
+| `#?(…)` / `#?@(…)` | reader conditional (+splicing) | S18 below |
+| `##Inf ##-Inf ##NaN` | symbolic floats | S19 |
+| `#tag form` | tagged literal | S20 below |
+| `#! …` | shebang comment line (implementations SHOULD accept) | |
+
+### S16 — anonymous function `#(…)`
+
+- `#(body)` reads as `(fn [args…] (body))` with parameters derived from the
+  `%`-symbols appearing in body: `%`≡`%1`, `%n` positional, `%&` the rest
+  parameter. Arity = highest `%n` mentioned (plus rest if `%&`).
+- `#()` literals MUST NOT nest.
+
+```clojure
+(#(+ %1 %2) 1 2)            ;=> 3
+(apply #(apply + %&) [1 2 3]) ;=> 6
+(map #(* % %) [1 2])        ;=> (1 4)
+```
+
+### S17 — discard `#_`
+
+- `#_form` reads and discards the next form entirely (it is never evaluated).
+- Discards compose: `#_ #_ a b` discards two following forms.
+- `#_` inside collection literals removes the element: `[1 #_2 3]` ⇒ `[1 3]`.
+
+### S18 — reader conditionals
+
+- `#?(:feat₁ f₁ :feat₂ f₂ …)` reads as the form of the first feature key the
+  platform satisfies, else nothing. `:default` matches any platform.
+  `#?@(…)` splices a sequential form into the surrounding context.
+- Feature keys are implementation-defined; each implementation MUST document
+  its feature set. ⚠ jolt currently satisfies `:clj` (inheriting JVM branches
+  in `.cljc` files) — under review; the portable convention is
+  *own-key + `:default`*.
+- Reader conditionals MUST be an error outside `.cljc`-style reading unless
+  the implementation documents otherwise.
+
+### S19 — symbolic values
+
+`##Inf`, `##-Inf`, `##NaN` read as the IEEE-754 values. `(= ##NaN ##NaN)` is
+false; `(NaN? ##NaN)` is true.
+
+### S20 — tagged literals
+
+- `#tag form`: the reader resolves `tag` in the data-reader table and MUST
+  apply the reader function to the *read* form, yielding its result as the
+  read value. An unknown tag MUST be a read error (jank
+  `fail-unsupported-tag`).
+- Built-in tags every implementation MUST provide: `#uuid "…"` → a UUID
+  value (§9 `parse-uuid` semantics — round-trips through printing), `#inst
+  "…"` → an instant (representation host-classified; ⚠ jolt currently reads
+  `#inst` as its bare string — divergence, filed).
+
+**Conformance** (2.3): jolt `reader-forms-spec` "#() (% %N %&)" + new rows
+(symbolic values, stacked discard, conditionals); `uuid-spec` reader-literal
+group; jank `reader-macro/{function,regex,uuid,symbolic-value}/*`,
+`fail-unsupported-tag.jank`.
+
+## 2.4 Syntax-quote
+
+Syntax-quote (`` ` ``) is read-level template construction with namespace
+resolution:
+
+- S21. Inside syntax-quote, an unqualified symbol that resolves in
+  `clojure.core` MUST be qualified to `clojure.core/sym`; a symbol resolving
+  through a namespace alias MUST be qualified to the aliased namespace; an
+  unresolved symbol MUST be qualified to the current namespace. Special-form
+  names stay bare.
+- S22. `sym#` generates a fresh symbol, stable *within one syntax-quote
+  template* (all `sym#` in the same template denote the same generated
+  symbol; distinct templates generate distinct symbols).
+- S23. `~form` inserts the value of `form`; `~@form` splices a sequential
+  value; `~'sym` is the idiom for an intentionally-unqualified symbol.
+- S24. Syntax-quote distributes through collection literals (vectors, maps,
+  sets) — qualification and unquoting apply inside them.
+- S25. Nested syntax-quotes expand recursively (quasiquote semantics); a
+  syntax-quoted self-evaluating literal is the literal: `(= "meow"
+  ```"meow")` is true. ⚠ jolt currently fails S25 (filed) — UNVERIFIED
+  pending the fix.
+
+**Conformance**: jolt `reader-forms-spec` "syntax-quote" (gensym, unquote,
+splice) + conformance "syntax-quote fully-qualifies"; jank
+`syntax-quote/{pass-gensym,pass-namespace-resolution,pass-resolve-alias,
+unquote,unquote-splice}/*`. S25 → UNVERIFIED.
+
+## 2.5 What the reader is not
+
+The reader performs **no macroexpansion and no evaluation** (tagged-literal
+reader functions are the deliberate exception, S20). Forms read identically
+whether or not they will be evaluated; `read-string` of any printable value
+`v` followed by evaluation yields a value equal to `v` for the
+self-evaluating types (§4 print/read round-trip contract).
