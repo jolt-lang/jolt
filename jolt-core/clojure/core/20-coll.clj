@@ -180,6 +180,81 @@
 (defn file-seq [root]
   (tree-seq __dir? __list-dir root))
 
+;; --- Ad-hoc hierarchies (stage 3) — Clojure's canonical pure-map port. -----
+;; A hierarchy is {:parents {tag #{parents}} :ancestors {tag #{all}} 
+;; :descendants {tag #{all}}}. The 3-arity forms are PURE; the 1/2-arity forms
+;; operate on the private global hierarchy atom. Multimethod dispatch
+;; (evaluator defmulti-setup) calls isa? through the interned var.
+
+(defn make-hierarchy []
+  {:parents {} :descendants {} :ancestors {}})
+
+(def ^:private global-hierarchy (atom (make-hierarchy)))
+
+(defn isa?
+  ([child parent] (isa? (deref global-hierarchy) child parent))
+  ([h child parent]
+   (or (= child parent)
+       (contains? (get (get h :ancestors) child #{}) parent)
+       (and (vector? parent) (vector? child)
+            (= (count parent) (count child))
+            (loop [ret true i 0]
+              (if (or (not ret) (= i (count parent)))
+                ret
+                (recur (isa? h (nth child i) (nth parent i)) (inc i))))))))
+
+(defn parents
+  ([tag] (parents (deref global-hierarchy) tag))
+  ([h tag] (not-empty (get (get h :parents) tag))))
+
+(defn ancestors
+  ([tag] (ancestors (deref global-hierarchy) tag))
+  ([h tag] (not-empty (get (get h :ancestors) tag))))
+
+(defn descendants
+  ([tag] (descendants (deref global-hierarchy) tag))
+  ([h tag] (not-empty (get (get h :descendants) tag))))
+
+(defn derive
+  ([tag parent] (swap! global-hierarchy derive tag parent) nil)
+  ([h tag parent]
+   (let [tp (get h :parents)
+         td (get h :descendants)
+         ta (get h :ancestors)
+         tf (fn [m source sources target targets]
+              (reduce (fn [ret k]
+                        (assoc ret k
+                               (reduce conj (get targets k #{})
+                                       (cons target (get targets target)))))
+                      m (cons source (get sources source))))]
+     (or
+      (when-not (contains? (get tp tag #{}) parent)
+        (when (contains? (get ta tag #{}) parent)
+          (throw (str tag " already has " parent " as ancestor")))
+        (when (contains? (get ta parent #{}) tag)
+          (throw (str "Cyclic derivation: " parent " has " tag " as ancestor")))
+        {:parents (assoc tp tag (conj (get tp tag #{}) parent))
+         :ancestors (tf ta tag td parent ta)
+         :descendants (tf td parent ta tag td)})
+      h))))
+
+(defn underive
+  ([tag parent] (swap! global-hierarchy underive tag parent) nil)
+  ([h tag parent]
+   (let [parent-map (get h :parents)
+         childs-parents (if (get parent-map tag)
+                          (disj (get parent-map tag) parent)
+                          #{})
+         new-parents (if (not-empty childs-parents)
+                       (assoc parent-map tag childs-parents)
+                       (dissoc parent-map tag))
+         deriv-seq (mapcat (fn [e] (cons (key e) (interpose (key e) (val e))))
+                           (seq new-parents))]
+     (if (contains? (get parent-map tag #{}) parent)
+       (reduce (fn [p [t pr]] (derive p t pr))
+               (make-hierarchy) (partition 2 deriv-seq))
+       h))))
+
 ;; --- Stage 3 tier shrink: pure-over-core leaves moved off the Janet seed ----
 
 ;; Representation predicates over the overlay's own predicates (no Janet reps).
