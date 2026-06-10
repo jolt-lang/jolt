@@ -296,13 +296,36 @@
                   (if (seq? c)
                     `(or ~@(map (fn [v] `(= ~g ~(mk-const v))) c))
                     `(= ~g ~(mk-const c))))
+        ;; Collect test constants pairwise (so a trailing unpaired default is
+        ;; excluded), flattening list/or-group tests into individual constants.
+        ;; seed-only fns (reduce/conj/first/rest/drop/empty?/seq?) — analyzer.clj
+        ;; uses case during its own build, before some/distinct load.
+        collect (fn* collect [cls acc]
+                  (if (or (empty? cls) (empty? (rest cls)))
+                    acc
+                    (let [t (first cls)
+                          acc (if (seq? t) (reduce conj acc t) (conj acc t))]
+                      (collect (drop 2 cls) acc))))
+        ;; first duplicate constant, wrapped in [x] (so a duplicate nil is detected);
+        ;; nil = none. Clojure rejects duplicate case constants at compile time.
+        first-dup (fn* fd [items seen]
+                    (if (empty? items)
+                      nil
+                      (let [x (first items)]
+                        (if (reduce (fn [f s] (or f (= s x))) false seen)
+                          [x]
+                          (fd (rest items) (conj seen x))))))
+        dup (first-dup (collect clauses []) [])
         build (fn build [cls]
                 (if (empty? cls)
-                  nil
+                  ;; no clause matched and no default — Clojure throws here.
+                  `(throw (ex-info (str "No matching clause: " ~g) {}))
                   (if (empty? (rest cls))
                     (first cls)
                     `(if ~(mk-test (first cls)) ~(nth cls 1) ~(build (drop 2 cls))))))]
-    `(let* [~g ~expr] ~(build clauses))))
+    (if dup
+      (throw (str "Duplicate case test constant: " (first dup)))
+      `(let* [~g ~expr] ~(build clauses)))))
 
 ;; for: list comprehension, desugared to nested map/mapcat over the binding colls.
 ;; Per binding group: :when wraps the inner form in (if test (list inner) []) so

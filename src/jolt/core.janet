@@ -144,6 +144,12 @@
 # Map builder: parts are alternating k v (no splicing in map syntax-quote).
 (defn core-sqmap [& parts] (kvs->map (array ;parts)))
 
+# Set builder: like core-sqvec but yields a set, so `#{~@a} splices into a set.
+(defn core-sqset [& parts]
+  (def r @[])
+  (each p parts (each x (realize-for-iteration p) (array/push r x)))
+  (apply make-phs r))
+
 # ============================================================
 # Predicates
 # ============================================================
@@ -2742,6 +2748,7 @@
     "__sqcat" core-sqcat
     "__sqvec" core-sqvec
     "__sqmap" core-sqmap
+    "__sqset" core-sqset
     "into" core-into
     "merge" core-merge
     "merge-with" core-merge-with

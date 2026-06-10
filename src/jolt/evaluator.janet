@@ -135,9 +135,10 @@
 
 (defn- sq-symbol
   "Resolve a symbol inside syntax-quote. `foo#` becomes a stable auto-gensym
-  (per-expansion, via gsmap); special forms and clojure.core names are left
-  unqualified (they resolve via the core fallback); other symbols are qualified
-  to the current namespace so they resolve when the macro is used elsewhere."
+  (per-expansion, via gsmap); special forms are left unqualified; a clojure.core
+  name is fully qualified to clojure.core/ (matching Clojure, for hygiene); other
+  symbols are qualified to the current namespace so they resolve when the macro is
+  used elsewhere."
   [ctx form gsmap]
   (if (nil? (form :ns))
     (let [nm (form :name)]
@@ -199,6 +200,15 @@
             (each v (d-realize sv) (array/push result v)))
           (array/push result (syntax-quote* ctx bindings item gsmap))))
       (++ i)) result)
+    # set literal: lower each element (processing ~/~@) and rebuild a set.
+    (and (struct? form) (= :jolt/set (form :jolt/type)))
+    (do (var result @[])
+      (each item (form :value)
+        (if (and (array? item) (> (length item) 0) (sym-name? (first item) "unquote-splicing"))
+          (let [sv (eval-form ctx bindings (in item 1))]
+            (each v (d-realize sv) (array/push result v)))
+          (array/push result (syntax-quote* ctx bindings item gsmap))))
+      (make-phs ;result))
     (and (struct? form) (get form :jolt/type)) form
     (struct? form)
     (do (var kvs @[]) (each k (keys form)
@@ -238,7 +248,10 @@
       (array/concat @[(sqsym* "__sqcat")] (map (fn [it] (sq-lower-part ctx it gsmap)) form))
       (tuple? form)
       (array/concat @[(sqsym* "__sqvec")] (map (fn [it] (sq-lower-part ctx it gsmap)) form))
-      # tagged structs (sets/chars): syntax-quote* returns them as-is (no recursion)
+      # set literal: lower each element (so ~/~@ are processed) and rebuild a set.
+      (and (struct? form) (= :jolt/set (form :jolt/type)))
+      (array/concat @[(sqsym* "__sqset")] (map (fn [it] (sq-lower-part ctx it gsmap)) (form :value)))
+      # other tagged structs (chars): returned as-is (no recursion)
       (and (struct? form) (get form :jolt/type))
       @[(sqsym* "quote") form]
       (struct? form)
@@ -1188,13 +1201,20 @@
     "loop*" (let [bind-vec (in form 1)
                   body (tuple/slice form 2)
                   init-vals @[]
-                  patterns @[]]
+                  patterns @[]
+                  # Inits are evaluated sequentially in an accumulating scope (like
+                  # let*), so a later init can reference an earlier binding —
+                  # matching Clojure's loop.
+                  seq-bindings @{}]
+              (table/setproto seq-bindings bindings)
               (var i 0)
               (while (< i (length bind-vec))
                 # loop* is a primitive (the loop macro desugars destructuring);
                 # its binding names must be plain symbols, as in Clojure.
                 (unless (plain-sym? (bind-vec i)) (error "Bad binding form, expected symbol"))
-                (array/push init-vals (eval-form ctx bindings (bind-vec (+ i 1))))
+                (def v (eval-form ctx seq-bindings (bind-vec (+ i 1))))
+                (bind-put seq-bindings ((bind-vec i) :name) v)
+                (array/push init-vals v)
                 (array/push patterns (bind-vec i))
                 (+= i 2))
               (var loop-fn nil)

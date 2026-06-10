@@ -338,36 +338,54 @@
 (defn read-anon-fn [s pos]
   # pos is at #, next char is (
   (let [[form new-pos] (read-form s (+ pos 1))]
-    # Collect % arg references and rename them to gensyms
-    (var arg-map @{})
+    # Positional index of a %-symbol name: % and %1 are both 1, %N is N, %& is the
+    # rest param (:rest); anything else is not a positional (nil). The fixed arity
+    # is the MAX index used (Clojure semantics: #(do %2 %&) -> [p1 p2 & rest], so
+    # unused lower positions still get a placeholder param and %& starts after %2).
+    (defn- pct-index [nm]
+      (cond
+        (= nm "%") 1
+        (= nm "%&") :rest
+        (and (> (length nm) 1) (= "%" (string/slice nm 0 1)))
+          (let [n (scan-number (string/slice nm 1))]
+            (if (and n (= n (math/floor n)) (>= n 1)) n nil))
+        nil))
+    # Pass 1: max positional index + whether %& is used.
+    (var max-n 0)
+    (var has-rest false)
+    (defn- scan-pct [f]
+      (cond
+        (and (struct? f) (= :symbol (f :jolt/type)))
+          (let [i (pct-index (f :name))]
+            (cond (= i :rest) (set has-rest true)
+                  (and i (> i max-n)) (set max-n i)))
+        (or (array? f) (tuple? f)) (each x f (scan-pct x))
+        nil))
+    (scan-pct form)
+    # One canonical gensym per slot 1..max-n (placeholders for unused), plus rest.
+    (def slot-syms @{})
+    (var i 1)
+    (while (<= i max-n) (put slot-syms i (sym (string (gensym)))) (++ i))
+    (def rest-sym (if has-rest (sym (string (gensym))) nil))
+    # Pass 2: replace each %-symbol with its slot's gensym.
     (defn- replace-pct [f]
       (cond
         (and (struct? f) (= :symbol (f :jolt/type)))
-        (let [nm (f :name)]
-          (if (and (> (length nm) 0) (= "%" (string/slice nm 0 1)))
-            (let [existing (get arg-map nm)]
-              (if existing
-                {:jolt/type :symbol :ns nil :name existing}
-                (let [gen (gensym)]
-                  (put arg-map nm (string gen))
-                  {:jolt/type :symbol :ns nil :name (string gen)})))
-            f))
+          (let [idx (pct-index (f :name))]
+            (cond (= idx :rest) rest-sym
+                  idx (get slot-syms idx)
+                  f))
         (array? f) (array ;(map replace-pct f))
         (tuple? f) (tuple ;(map replace-pct f))
         f))
     (def replaced (replace-pct form))
     (def arg-names @[])
-    # Positional params %, %1, %2, ... in order; %& becomes a `& rest` param.
-    (def pos-keys (sort (filter |(not= $ "%&") (keys arg-map))))
-    (each k pos-keys
-      (array/push arg-names {:jolt/type :symbol :ns nil :name (get arg-map k)}))
-    (when (get arg-map "%&")
+    (set i 1)
+    (while (<= i max-n) (array/push arg-names (get slot-syms i)) (++ i))
+    (when has-rest
       (array/push arg-names (sym "&"))
-      (array/push arg-names {:jolt/type :symbol :ns nil :name (get arg-map "%&")}))
-    (def result @[(sym "fn*")])
-    (array/push result (tuple ;arg-names))
-    (array/push result replaced)
-    [result new-pos]))
+      (array/push arg-names rest-sym))
+    [@[(sym "fn*") (tuple ;arg-names) replaced] new-pos]))
 
 (defn read-reader-conditional [s pos]
   # pos is at #, next char is ? or ?@
@@ -479,8 +497,10 @@
       # position (params, lets, bodies) — the evaluator reads :name and ignores
       # :meta. This is what makes type hints "parse and otherwise do nothing".
       [(struct ;(kvs form) :meta (merge (or (form :meta) {}) m)) new-pos2]
-      # Map metadata or non-symbol targets keep the runtime with-meta form.
-      [(array (sym "with-meta") form meta-form) new-pos2])))
+      # Non-symbol targets (collections etc.) keep a runtime with-meta form. Use the
+      # NORMALIZED metadata map (:kw -> {:kw true}, tag -> {:tag …}); a map-literal
+      # meta-form (m is nil) is already a map, so pass it through.
+      [(array (sym "with-meta") form (if m m meta-form)) new-pos2])))
 
 (defn read-until-newline [s pos]
   (if (or (>= pos (length s)) (= (s pos) 10))

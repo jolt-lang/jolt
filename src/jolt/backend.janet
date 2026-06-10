@@ -108,15 +108,20 @@
 (defn- emit-loop [ctx node]
   (def L (symbol (node :recur-name)))
   (def params @[])
-  (def inits @[])
+  # Initial inits bind SEQUENTIALLY (a later init can reference an earlier binding,
+  # like let / Clojure's loop) — emit them in a Janet `let`, then enter the recur
+  # target L with those values, rather than computing all inits in the outer scope.
+  (def let-binds @[])
   (each pair (vview (node :bindings))
     (def p (vview pair))
-    (array/push params (symbol (in p 0)))
-    (array/push inits (emit ctx (in p 1))))
+    (def sym (symbol (in p 0)))
+    (array/push params sym)
+    (array/push let-binds sym)
+    (array/push let-binds (emit ctx (in p 1))))
   ['do
    ['var L nil]
    ['set L ['fn (tuple/slice params) (emit ctx (node :body))]]
-   (tuple/slice (array/concat @[L] inits))])
+   ['let (tuple/slice let-binds) (tuple/slice (array/concat @[L] params))]])
 
 (defn- emit-recur [ctx node]
   (tuple/slice (array/concat @[(symbol (node :recur-name))]
