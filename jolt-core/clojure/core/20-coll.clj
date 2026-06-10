@@ -286,6 +286,7 @@
 (defn reader-conditional? [x] (= (get x :jolt/type) :jolt/reader-conditional))
 (defn tagged-literal? [x]     (= (get x :jolt/type) :jolt/tagged-literal))
 (defn record? [x]             (some? (get x :jolt/deftype)))
+(defn uuid? [x]               (= (get x :jolt/type) :jolt/uuid))
 ;; Jolt has no chunked seqs (Phase 5 territory), so this is always false.
 (defn chunked-seq? [x] false)
 

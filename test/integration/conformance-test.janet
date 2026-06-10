@@ -169,6 +169,14 @@
    ["locking evals monitor" "[3 1]" "(let [a (atom 0)] [(locking (swap! a inc) 3) @a])"]
    ["defonce keeps first" "5"    "(do (defonce d6o 5) (defonce d6o 9) d6o)"]
    ["read-string + eval" "3"     "(eval (read-string \"(+ 1 2)\"))"]
+
+   ### ---- uuid (jolt-6s2) ----
+   ["random-uuid is uuid" "true"  "(uuid? (random-uuid))"]
+   ["uuid str 36"         "36"    "(count (str (random-uuid)))"]
+   ["parse-uuid round"    "\"b6883c0a-0342-4007-9966-bc2dfa6b109e\"" "(str (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"]
+   ["parse-uuid case ="   "true"  "(= (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\") (parse-uuid \"B6883C0A-0342-4007-9966-BC2DFA6B109E\"))"]
+   ["parse-uuid bad nil"  "nil"   "(parse-uuid \"df0993\")"]
+   ["uuid as map key"     ":v"    "(get {(parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\") :v} (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"]
    ["macroexpand-1 when" "2"     "(count (rest (macroexpand-1 (quote (when true 1)))))"]
 
    ### ---- HIGH: aliased namespace calls ----

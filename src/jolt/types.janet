@@ -371,6 +371,12 @@
           (put namespaces ns-sym ns)
           ns))))
 
+# UUID value: an immutable tagged struct. Lowercased at construction so
+# equality and map-key hashing are case-insensitive by value (struct equality),
+# matching Clojure (java.util.UUID equality / cljs UUID).
+(defn make-uuid [s]
+  {:jolt/type :jolt/uuid :str (string/ascii-lower s)})
+
 (defn make-ctx
   "Create a new evaluation context.
   (make-ctx)       — empty context with 'user namespace
@@ -401,7 +407,7 @@
               :type-registry @{}
               :data-readers (let [dr @{}]
                               (put dr (keyword "#inst") (fn [s] s))
-                              (put dr (keyword "#uuid") (fn [s] s))
+                              (put dr (keyword "#uuid") (fn [s] (make-uuid s)))
                               dr)}
         # create the user namespace via a partial context
         _ (ctx-find-ns {:env env} "user")]

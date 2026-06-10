@@ -1497,7 +1497,7 @@
 (defn core-inst? [x] false)
 (defn core-inst-ms [x] (error "Not an instant (no inst type in Jolt)"))
 (defn core-uri? [x] false)
-(defn core-uuid? [x] false)
+# uuid? now lives in the Clojure collection tier (tagged-value predicate).
 (defn core-bytes? [x] (buffer? x))
 # tagged-literal? now lives in the Clojure collection tier (tagged-value predicate).
 
@@ -1649,6 +1649,9 @@
       (number? v) (buffer/push-string buf (fmt-number v))
       (and (struct? v) (= :symbol (v :jolt/type)))
         (buffer/push-string buf (if (v :ns) (string (v :ns) "/" (v :name)) (v :name)))
+      (and (struct? v) (= :jolt/uuid (v :jolt/type)))
+        (do (buffer/push-string buf "#uuid \"") (buffer/push-string buf (v :str))
+            (buffer/push-string buf "\""))
       (and (table? v) (= :jolt/var (get v :jolt/type))) (buffer/push-string buf (var-display v))
       (core-sorted-map? v) (pr-render-pairs buf (sorted-map-entries v))
       (core-sorted-set? v) (pr-render-seq buf (v :items) "#{" "}")
@@ -1679,6 +1682,7 @@
     (keyword? v) (string ":" (string v))
     (and (struct? v) (= :symbol (v :jolt/type)))
       (if (v :ns) (string (v :ns) "/" (v :name)) (v :name))
+    (and (struct? v) (= :jolt/uuid (v :jolt/type))) (v :str)
     (and (table? v) (= :jolt/var (get v :jolt/type))) (var-display v)
     (number? v) (fmt-number v)
     (= true v) "true"
@@ -2749,10 +2753,38 @@
 
 (defn core-prefers [mm-var] (or (get mm-var :jolt/prefers) {}))
 
-(defn core-random-uuid []
-  (defn hx [n] (string/format "%x" (math/floor (* (math/random) n))))
-  (string (hx 0x10000) (hx 0x10000) "-" (hx 0x10000) "-4" (hx 0x1000)
-          "-" (hx 0x1000) "-" (hx 0x10000) (hx 0x10000) (hx 0x10000)))
+(defn core-random-uuid
+  "A random version-4 UUID value: zero-padded hex groups (8-4-4-4-12), version
+  nibble 4, variant nibble 8-b (RFC 4122)."
+  []
+  (defn hx4 [] (string/format "%04x" (math/floor (* (math/random) 0x10000))))
+  (defn hx3 [] (string/format "%03x" (math/floor (* (math/random) 0x1000))))
+  (def variant (string/format "%x" (+ 8 (math/floor (* (math/random) 4)))))
+  (make-uuid (string (hx4) (hx4) "-" (hx4) "-4" (hx3)
+                     "-" variant (hx3) "-" (hx4) (hx4) (hx4))))
+
+(defn- hex-digit? [c]
+  (or (and (>= c 48) (<= c 57))      # 0-9
+      (and (>= c 97) (<= c 102))     # a-f
+      (and (>= c 65) (<= c 70))))    # A-F
+
+(defn core-parse-uuid
+  "(parse-uuid s) -> the UUID, or nil when s is not a canonical 8-4-4-4-12 hex
+  UUID string. Throws when s is not a string (Clojure 1.11)."
+  [s]
+  (when (not (or (string? s) (buffer? s)))
+    (error (string "parse-uuid requires a string, got " (type s))))
+  (def dash-at {8 true 13 true 18 true 23 true})
+  (if (and (= 36 (length s))
+           (do
+             (var ok true)
+             (for i 0 36
+               (if (get dash-at i)
+                 (when (not= 45 (in s i)) (set ok false))    # 45 = "-"
+                 (when (not (hex-digit? (in s i))) (set ok false))))
+             ok))
+    (make-uuid s)
+    nil))
 
 (def- core-bindings
   "Map of symbol name → function for all core functions."
@@ -2894,6 +2926,7 @@
     "hash-unordered-coll" core-hash-unordered-coll
     "prefers" core-prefers
     "random-uuid" core-random-uuid
+    "parse-uuid" core-parse-uuid
     "interpose" core-interpose
     "mapcat" core-mapcat
     "find" core-find
@@ -3133,7 +3166,6 @@
     "inst?" core-inst?
     "inst-ms" core-inst-ms
     "uri?" core-uri?
-    "uuid?" core-uuid?
     "bytes?" core-bytes?
     "meta" core-meta
     "var-get" core-var-get
