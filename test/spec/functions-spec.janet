@@ -162,3 +162,22 @@
   ["char-name space"      "\"space\"" "(char-name-string \\space)"]
   ["char-name newline"    "\"newline\"" "(char-name-string \\newline)"]
   ["char-name none"       "nil"       "(char-name-string \\a)"])
+
+# recur into a VARIADIC fn arity binds the LAST recur arg directly as the
+# rest seq (Clojure: recur to a variadic head takes n-fixed + 1 args, no
+# re-collection). The interpreter used to re-enter through the varargs
+# collector, wrapping the seq in a fresh 1-element rest list — xs never
+# emptied and the loop hung (jolt-4df).
+(defspec "functions / recur into variadic arity"
+  ["counts rest via recur"  "3"
+   "((fn cnt [acc & xs] (if (seq xs) (recur (inc acc) (rest xs)) acc)) 0 :a :b :c)"]
+  ["zero-fixed variadic"    "4"
+   "((fn f [& xs] (if (< (count xs) 4) (recur (cons :x xs)) (count xs))) :a)"]
+  ["rest empties to nil"    "(quote (:done))"
+   "((fn f [& xs] (if xs (recur (next xs)) (list :done))) 1 2)"]
+  ["multi-arity variadic recur" "6"
+   "((fn ma ([a] a) ([a & xs] (if (seq xs) (recur (+ a (first xs)) (rest xs)) a))) 1 2 3)"]
+  ["recur passes nil rest"  ":empty"
+   "((fn f [acc & xs] (if (seq xs) (recur acc (rest xs)) :empty)) 0 1)"]
+  ["fixed-arity recur untouched" "10"
+   "((fn f [n acc] (if (pos? n) (recur (dec n) (+ acc 2)) acc)) 5 0)"])

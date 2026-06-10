@@ -1407,16 +1407,16 @@
                        fixed-pats (param-info :fixed)
                        rest-pat (param-info :rest)
                        n-fixed (length fixed-pats)
-                       f (fn [& fn-args]
-                          (var fn-bindings @{})
-                          (table/setproto fn-bindings bindings)
-                          (var i 0)
-                          (each pat fixed-pats
-                            (destructure-bind ctx fn-bindings pat (fn-args i))
-                            (++ i))
-                          (when rest-pat
-                            (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
-                          (put fn-bindings :jolt/loop-fn self)
+                       # recur-entry: where (recur ...) re-enters THIS arity. For
+                       # a fixed arity it's the dispatcher (exact count re-selects
+                       # it). For the VARIADIC arity, recur takes n-fixed + 1 args
+                       # with the LAST bound DIRECTLY as the rest seq (Clojure) —
+                       # re-entering through the varargs collector would wrap it
+                       # in a fresh 1-element rest list and the seq never empties
+                       # (the jolt-4df hang).
+                       recur-entry-box @[nil]
+                       run-clause (fn [fn-bindings]
+                          (put fn-bindings :jolt/loop-fn (in recur-entry-box 0))
                           (when fn-name (bind-put fn-bindings fn-name self))
                           # Use defining namespace for symbol resolution
                           (def saved-ns (ctx-current-ns ctx))
@@ -1429,10 +1429,33 @@
                           (each body-form body
                             (set result (eval-form ctx fn-bindings body-form)))
                           (ctx-set-current-ns ctx saved-ns)
-                          result)]
+                          result)
+                       f (fn [& fn-args]
+                          (var fn-bindings @{})
+                          (table/setproto fn-bindings bindings)
+                          (var i 0)
+                          (each pat fixed-pats
+                            (destructure-bind ctx fn-bindings pat (fn-args i))
+                            (++ i))
+                          (when rest-pat
+                            (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
+                          (run-clause fn-bindings))]
                    (if rest-pat
-                     (do (set variadic-fn f) (set variadic-min n-fixed))
-                     (put arities n-fixed f))))
+                     (do
+                       (put recur-entry-box 0
+                            (fn [& recur-args]
+                              (var fn-bindings @{})
+                              (table/setproto fn-bindings bindings)
+                              (var i 0)
+                              (each pat fixed-pats
+                                (destructure-bind ctx fn-bindings pat (recur-args i))
+                                (++ i))
+                              (destructure-bind ctx fn-bindings rest-pat (get recur-args i))
+                              (run-clause fn-bindings)))
+                       (set variadic-fn f) (set variadic-min n-fixed))
+                     (do
+                       (put recur-entry-box 0 (fn [& recur-args] (apply self recur-args)))
+                       (put arities n-fixed f)))))
                (set self (fn [& fn-args]
                  (let [n (length fn-args)
                        f (get arities n)]
@@ -1450,16 +1473,9 @@
                    rest-pat (param-info :rest)
                    defining-ns (ctx-current-ns ctx)]
                (var self nil)
-               (set self (fn [& fn-args]
-                 (var fn-bindings @{})
-                 (table/setproto fn-bindings bindings)
-                 (var i 0)
-                 (each pat fixed-pats
-                   (destructure-bind ctx fn-bindings pat (fn-args i))
-                   (++ i))
-                 (when rest-pat
-                   (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
-                 (put fn-bindings :jolt/loop-fn self)
+               (var recur-entry nil)
+               (def run-body (fn [fn-bindings]
+                 (put fn-bindings :jolt/loop-fn recur-entry)
                  (when fn-name (bind-put fn-bindings fn-name self))
                  # Use defining namespace for symbol resolution
                  (def saved-ns (ctx-current-ns ctx))
@@ -1473,6 +1489,32 @@
                    (set result (eval-form ctx fn-bindings body-form)))
                  (ctx-set-current-ns ctx saved-ns)
                  result))
+               (set self (fn [& fn-args]
+                 (var fn-bindings @{})
+                 (table/setproto fn-bindings bindings)
+                 (var i 0)
+                 (each pat fixed-pats
+                   (destructure-bind ctx fn-bindings pat (fn-args i))
+                   (++ i))
+                 (when rest-pat
+                   (destructure-bind ctx fn-bindings rest-pat (tuple/slice fn-args i)))
+                 (run-body fn-bindings)))
+               # recur re-enters here: for a variadic fn it takes n-fixed + 1
+               # args, the LAST bound DIRECTLY as the rest seq (Clojure) — going
+               # back through the varargs collector wrapped the seq in a fresh
+               # 1-element rest list, so it never emptied (the jolt-4df hang).
+               (set recur-entry
+                 (if rest-pat
+                   (fn [& recur-args]
+                     (var fn-bindings @{})
+                     (table/setproto fn-bindings bindings)
+                     (var i 0)
+                     (each pat fixed-pats
+                       (destructure-bind ctx fn-bindings pat (recur-args i))
+                       (++ i))
+                     (destructure-bind ctx fn-bindings rest-pat (get recur-args i))
+                     (run-body fn-bindings))
+                   self))
               self)))
     "let*" (let [bind-vec (in form 1)
                   body (tuple/slice form 2)]
