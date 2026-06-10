@@ -42,9 +42,15 @@ jolt = interned | resolvable
 
 # --- 3. what the tests exercise --------------------------------------------
 tested = set()
-sym = re.compile(r'\(([a-zA-Z*+!?<>=_-][a-zA-Z0-9*+!?<>=_./-]*)')
+test_text = ''
+# A var counts as tested when its name appears as a WHOLE TOKEN anywhere in
+# the test sources (assertions live inside strings, so call-position-only
+# matching missed *1, +', ., .., /, and bare transducer refs like cat).
+SYMCHARS = r"\w*+!?<>=_.'/-"
+def token_re(name):
+    return re.compile('(?<![' + re.escape(SYMCHARS) + '])' + re.escape(name) + '(?![' + re.escape(SYMCHARS) + '])')
 for f in glob.glob('test/spec/*.janet') + ['test/integration/conformance-test.janet']:
-    tested |= set(sym.findall(open(f).read()))
+    test_text += open(f).read()
 
 # --- classification ---------------------------------------------------------
 SPECIAL = {'catch','finally','do','def','defmacro','fn','if','let','loop','quote',
@@ -72,7 +78,7 @@ JVM = {'class','class?','cast','bases','supers','compile','add-classpath',
 
 def classify(n):
     if n in jolt:
-        return 'implemented+tested' if n in tested else 'implemented-untested'
+        return 'implemented+tested' if token_re(n).search(test_text) else 'implemented-untested'
     if re.match(r'^\*.*\*$', n): return 'dynamic-var'
     if n in SPECIAL: return 'special-form'
     if n in AGENTS:  return 'agents-taps'

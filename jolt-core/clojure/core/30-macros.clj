@@ -295,6 +295,43 @@
                      (protocol-dispatch ~(name pname) ~(name (first sig)) this# rest#))))
               sigs))))
 
+;; Member threading: (.. x f g) => (. (. x f) g); a parenthesized member
+;; carries args. Canonical Clojure shape, single-arity defmacro.
+(defmacro .. [x form & more]
+  (let [step (if (seq? form)
+               `(. ~x ~(first form) ~@(rest form))
+               `(. ~x ~form))]
+    (if (seq more)
+      `(.. ~step ~@more)
+      step)))
+
+;; True when atype's methods were registered for this protocol (via extend /
+;; extend-type). Tags are canonical host names or ns-qualified record names,
+;; so a bare record name also matches its "ns.Name" tag.
+(defn extends? [protocol atype]
+  (let [want (name atype)
+        dotted (str "." want)
+        dlen (count dotted)]
+    (boolean (some (fn [t]
+                     (let [tn (name t)]
+                       (or (= tn want)
+                           (and (> (count tn) dlen)
+                                (= (subs tn (- (count tn) dlen)) dotted)))))
+                   (extenders protocol)))))
+
+;; extend, the FUNCTION (extend-type's runtime sibling): protocol + method-map
+;; pairs, methods registered under the type's (canonicalized) name — so
+;; (extend 'String P {:m (fn [x] ...)}) dispatches exactly like extend-type.
+(defn extend [atype & proto+mmaps]
+  (loop [s (seq proto+mmaps)]
+    (when s
+      (let [proto (first s)
+            mmap (second s)
+            pname (name (get proto :name))]
+        (doseq [[k f] mmap]
+          (register-method (name atype) pname (name k) f)))
+      (recur (nnext s)))))
+
 (defmacro extend-type [tsym psym & impls]
   ;; register-method is a fn (clojure.core); pass type/protocol/method NAMES as
   ;; strings (not the symbols) so the call compiles as a plain invoke.
@@ -308,7 +345,7 @@
               (group-by-head type-impls))))
 
 ;; extend (the fn form) is not supported — stub to nil, as before.
-(defmacro extend [& args] nil)
+;; extend is a real FUNCTION now — defined above extend-type.
 ;; JVM proxies are unsupported.
 (defmacro proxy [& args] nil)
 ;; definterface is JVM-only; bind the name to an empty marker.

@@ -7,9 +7,9 @@ community examples). jolt interns 564 of them.
 
 | Status | Count | Meaning |
 |---|---|---|
-| implemented+tested | 433 | in jolt and exercised by spec/conformance |
-| implemented-untested | 131 | in jolt, no direct test — spec entries will add them |
-| resolvable-not-interned | 2 | works in code but invisible to ns introspection (conformance finding) |
+| implemented+tested | 564 | in jolt and exercised by spec/conformance |
+| implemented-untested | 0 | in jolt, no direct test — spec entries will add them |
+| resolvable-not-interned | 1 | works in code but invisible to ns introspection (conformance finding) |
 | missing-portable | 0 | portable semantics, jolt lacks it — implementation gap |
 | special-form | 15 | specified in §3, not a library var |
 | dynamic-var | 29 | classification needed: portable default vs host-dependent |
@@ -26,28 +26,28 @@ UNVERIFIED field; that column will be added as entries land.
 | Var | Status | ClojureDocs examples |
 |---|---|---|
 | `*` | implemented+tested | ✓ |
-| `*'` | implemented-untested | ✓ |
-| `*1` | implemented-untested | ✓ |
-| `*2` | implemented-untested | ✓ |
-| `*3` | implemented-untested | ✓ |
+| `*'` | implemented+tested | ✓ |
+| `*1` | implemented+tested | ✓ |
+| `*2` | implemented+tested | ✓ |
+| `*3` | implemented+tested | ✓ |
 | `*agent*` | dynamic-var | ✓ |
 | `*allow-unresolved-vars*` | dynamic-var | ✓ |
 | `*assert*` | dynamic-var | ✓ |
-| `*clojure-version*` | implemented-untested | ✓ |
+| `*clojure-version*` | implemented+tested | ✓ |
 | `*command-line-args*` | dynamic-var | ✓ |
 | `*compile-files*` | dynamic-var | ✓ |
 | `*compile-path*` | dynamic-var | ✓ |
 | `*compiler-options*` | dynamic-var | ✓ |
 | `*data-readers*` | dynamic-var | ✓ |
 | `*default-data-reader-fn*` | dynamic-var | ✓ |
-| `*e` | implemented-untested | ✓ |
+| `*e` | implemented+tested | ✓ |
 | `*err*` | dynamic-var | ✓ |
 | `*file*` | dynamic-var | ✓ |
 | `*flush-on-newline*` | dynamic-var |  |
 | `*fn-loader*` | dynamic-var |  |
-| `*in*` | implemented-untested |  |
+| `*in*` | implemented+tested |  |
 | `*math-context*` | dynamic-var |  |
-| `*ns*` | implemented-untested | ✓ |
+| `*ns*` | implemented+tested | ✓ |
 | `*out*` | dynamic-var | ✓ |
 | `*print-dup*` | dynamic-var | ✓ |
 | `*print-length*` | dynamic-var | ✓ |
@@ -60,26 +60,26 @@ UNVERIFIED field; that column will be added as entries land.
 | `*repl*` | dynamic-var |  |
 | `*source-path*` | dynamic-var | ✓ |
 | `*suppress-read*` | dynamic-var |  |
-| `*unchecked-math*` | implemented-untested | ✓ |
+| `*unchecked-math*` | implemented+tested | ✓ |
 | `*use-context-classloader*` | dynamic-var | ✓ |
 | `*verbose-defrecords*` | dynamic-var |  |
 | `*warn-on-reflection*` | dynamic-var | ✓ |
 | `+` | implemented+tested | ✓ |
-| `+'` | implemented-untested | ✓ |
+| `+'` | implemented+tested | ✓ |
 | `-` | implemented+tested | ✓ |
-| `-'` | implemented-untested | ✓ |
+| `-'` | implemented+tested | ✓ |
 | `->` | implemented+tested | ✓ |
 | `->>` | implemented+tested | ✓ |
 | `->ArrayChunk` | jvm-specific |  |
-| `->Eduction` | implemented-untested |  |
+| `->Eduction` | implemented+tested |  |
 | `->Vec` | jvm-specific |  |
 | `->VecNode` | jvm-specific |  |
 | `->VecSeq` | jvm-specific |  |
 | `-cache-protocol-fn` | jvm-specific |  |
 | `-reset-methods` | jvm-specific |  |
-| `.` | implemented-untested | ✓ |
-| `..` | implemented-untested | ✓ |
-| `/` | implemented-untested | ✓ |
+| `.` | implemented+tested | ✓ |
+| `..` | implemented+tested | ✓ |
+| `/` | implemented+tested | ✓ |
 | `<` | implemented+tested | ✓ |
 | `<=` | implemented+tested | ✓ |
 | `=` | implemented+tested | ✓ |
@@ -94,7 +94,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `Throwable->map` | jvm-specific | ✓ |
 | `abs` | implemented+tested | ✓ |
 | `accessor` | jvm-specific | ✓ |
-| `aclone` | implemented-untested | ✓ |
+| `aclone` | implemented+tested | ✓ |
 | `add-classpath` | jvm-specific | ✓ |
 | `add-tap` | agents-taps | ✓ |
 | `add-watch` | implemented+tested | ✓ |
@@ -104,7 +104,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `aget` | implemented+tested | ✓ |
 | `alength` | implemented+tested | ✓ |
 | `alias` | implemented+tested | ✓ |
-| `all-ns` | implemented-untested | ✓ |
+| `all-ns` | implemented+tested | ✓ |
 | `alter` | stm-refs | ✓ |
 | `alter-meta!` | implemented+tested | ✓ |
 | `alter-var-root` | implemented+tested | ✓ |
@@ -117,14 +117,14 @@ UNVERIFIED field; that column will be added as entries land.
 | `array-map` | implemented+tested | ✓ |
 | `as->` | implemented+tested | ✓ |
 | `aset` | implemented+tested | ✓ |
-| `aset-boolean` | implemented-untested | ✓ |
-| `aset-byte` | implemented-untested | ✓ |
-| `aset-char` | implemented-untested | ✓ |
-| `aset-double` | implemented-untested | ✓ |
-| `aset-float` | implemented-untested | ✓ |
-| `aset-int` | implemented-untested | ✓ |
-| `aset-long` | implemented-untested | ✓ |
-| `aset-short` | implemented-untested | ✓ |
+| `aset-boolean` | implemented+tested | ✓ |
+| `aset-byte` | implemented+tested | ✓ |
+| `aset-char` | implemented+tested | ✓ |
+| `aset-double` | implemented+tested | ✓ |
+| `aset-float` | implemented+tested | ✓ |
+| `aset-int` | implemented+tested | ✓ |
+| `aset-long` | implemented+tested | ✓ |
+| `aset-short` | implemented+tested | ✓ |
 | `assert` | implemented+tested | ✓ |
 | `assoc` | implemented+tested | ✓ |
 | `assoc!` | implemented+tested | ✓ |
@@ -135,16 +135,16 @@ UNVERIFIED field; that column will be added as entries land.
 | `await-for` | agents-taps | ✓ |
 | `await1` | agents-taps |  |
 | `bases` | jvm-specific | ✓ |
-| `bean` | implemented-untested | ✓ |
+| `bean` | implemented+tested | ✓ |
 | `bigdec` | implemented+tested | ✓ |
 | `bigint` | implemented+tested | ✓ |
-| `biginteger` | implemented-untested | ✓ |
+| `biginteger` | implemented+tested | ✓ |
 | `binding` | implemented+tested | ✓ |
 | `bit-and` | implemented+tested | ✓ |
-| `bit-and-not` | implemented-untested | ✓ |
+| `bit-and-not` | implemented+tested | ✓ |
 | `bit-clear` | implemented+tested | ✓ |
-| `bit-flip` | implemented-untested | ✓ |
-| `bit-not` | implemented-untested | ✓ |
+| `bit-flip` | implemented+tested | ✓ |
+| `bit-not` | implemented+tested | ✓ |
 | `bit-or` | implemented+tested | ✓ |
 | `bit-set` | implemented+tested | ✓ |
 | `bit-shift-left` | implemented+tested | ✓ |
@@ -152,37 +152,37 @@ UNVERIFIED field; that column will be added as entries land.
 | `bit-test` | implemented+tested | ✓ |
 | `bit-xor` | implemented+tested | ✓ |
 | `boolean` | implemented+tested | ✓ |
-| `boolean-array` | implemented-untested | ✓ |
+| `boolean-array` | implemented+tested | ✓ |
 | `boolean?` | implemented+tested | ✓ |
-| `booleans` | implemented-untested | ✓ |
-| `bound-fn` | implemented-untested | ✓ |
+| `booleans` | implemented+tested | ✓ |
+| `bound-fn` | implemented+tested | ✓ |
 | `bound-fn*` | implemented+tested | ✓ |
 | `bound?` | implemented+tested | ✓ |
 | `bounded-count` | implemented+tested | ✓ |
 | `butlast` | implemented+tested | ✓ |
-| `byte` | implemented-untested | ✓ |
-| `byte-array` | implemented-untested | ✓ |
-| `bytes` | implemented-untested | ✓ |
-| `bytes?` | implemented-untested | ✓ |
+| `byte` | implemented+tested | ✓ |
+| `byte-array` | implemented+tested | ✓ |
+| `bytes` | implemented+tested | ✓ |
+| `bytes?` | implemented+tested | ✓ |
 | `case` | implemented+tested | ✓ |
 | `cast` | jvm-specific | ✓ |
-| `cat` | implemented-untested | ✓ |
+| `cat` | implemented+tested | ✓ |
 | `catch` | special-form | ✓ |
 | `char` | implemented+tested | ✓ |
-| `char-array` | implemented-untested | ✓ |
+| `char-array` | implemented+tested | ✓ |
 | `char-escape-string` | implemented+tested | ✓ |
 | `char-name-string` | implemented+tested | ✓ |
 | `char?` | implemented+tested | ✓ |
-| `chars` | implemented-untested | ✓ |
-| `chunk` | implemented-untested | ✓ |
-| `chunk-append` | implemented-untested | ✓ |
-| `chunk-buffer` | implemented-untested | ✓ |
-| `chunk-cons` | implemented-untested | ✓ |
-| `chunk-first` | implemented-untested | ✓ |
-| `chunk-next` | implemented-untested | ✓ |
-| `chunk-rest` | implemented-untested | ✓ |
+| `chars` | implemented+tested | ✓ |
+| `chunk` | implemented+tested | ✓ |
+| `chunk-append` | implemented+tested | ✓ |
+| `chunk-buffer` | implemented+tested | ✓ |
+| `chunk-cons` | implemented+tested | ✓ |
+| `chunk-first` | implemented+tested | ✓ |
+| `chunk-next` | implemented+tested | ✓ |
+| `chunk-rest` | implemented+tested | ✓ |
 | `chunked-seq?` | implemented+tested | ✓ |
-| `class` | implemented-untested | ✓ |
+| `class` | implemented+tested | ✓ |
 | `class?` | jvm-specific | ✓ |
 | `clear-agent-errors` | agents-taps |  |
 | `clojure-version` | implemented+tested | ✓ |
@@ -205,7 +205,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `conj!` | implemented+tested | ✓ |
 | `cons` | implemented+tested | ✓ |
 | `constantly` | implemented+tested | ✓ |
-| `construct-proxy` | implemented-untested | ✓ |
+| `construct-proxy` | implemented+tested | ✓ |
 | `contains?` | implemented+tested | ✓ |
 | `count` | implemented+tested | ✓ |
 | `counted?` | implemented+tested | ✓ |
@@ -213,14 +213,14 @@ UNVERIFIED field; that column will be added as entries land.
 | `create-struct` | jvm-specific | ✓ |
 | `cycle` | implemented+tested | ✓ |
 | `dec` | implemented+tested | ✓ |
-| `dec'` | implemented-untested | ✓ |
+| `dec'` | implemented+tested | ✓ |
 | `decimal?` | implemented+tested | ✓ |
 | `declare` | implemented+tested | ✓ |
 | `dedupe` | implemented+tested | ✓ |
 | `def` | special-form | ✓ |
 | `default-data-readers` | jvm-specific | ✓ |
 | `definline` | jvm-specific |  |
-| `definterface` | implemented-untested | ✓ |
+| `definterface` | implemented+tested | ✓ |
 | `defmacro` | special-form | ✓ |
 | `defmethod` | implemented+tested | ✓ |
 | `defmulti` | implemented+tested | ✓ |
@@ -232,13 +232,13 @@ UNVERIFIED field; that column will be added as entries land.
 | `defstruct` | jvm-specific | ✓ |
 | `deftype` | implemented+tested | ✓ |
 | `delay` | implemented+tested | ✓ |
-| `delay?` | implemented-untested | ✓ |
+| `delay?` | implemented+tested | ✓ |
 | `deliver` | implemented+tested | ✓ |
 | `denominator` | implemented+tested | ✓ |
 | `deref` | implemented+tested | ✓ |
 | `derive` | implemented+tested | ✓ |
 | `descendants` | implemented+tested | ✓ |
-| `destructure` | implemented-untested | ✓ |
+| `destructure` | implemented+tested | ✓ |
 | `disj` | implemented+tested | ✓ |
 | `disj!` | implemented+tested | ✓ |
 | `dissoc` | implemented+tested | ✓ |
@@ -252,10 +252,10 @@ UNVERIFIED field; that column will be added as entries land.
 | `dosync` | stm-refs | ✓ |
 | `dotimes` | implemented+tested | ✓ |
 | `doto` | implemented+tested | ✓ |
-| `double` | implemented-untested | ✓ |
-| `double-array` | implemented-untested | ✓ |
+| `double` | implemented+tested | ✓ |
+| `double-array` | implemented+tested | ✓ |
 | `double?` | implemented+tested | ✓ |
-| `doubles` | implemented-untested | ✓ |
+| `doubles` | implemented+tested | ✓ |
 | `drop` | implemented+tested | ✓ |
 | `drop-last` | implemented+tested | ✓ |
 | `drop-while` | implemented+tested | ✓ |
@@ -263,8 +263,8 @@ UNVERIFIED field; that column will be added as entries land.
 | `empty` | implemented+tested | ✓ |
 | `empty?` | implemented+tested | ✓ |
 | `ensure` | stm-refs | ✓ |
-| `ensure-reduced` | implemented-untested | ✓ |
-| `enumeration-seq` | implemented-untested | ✓ |
+| `ensure-reduced` | implemented+tested | ✓ |
+| `enumeration-seq` | implemented+tested | ✓ |
 | `error-handler` | agents-taps | ✓ |
 | `error-mode` | agents-taps | ✓ |
 | `eval` | implemented+tested | ✓ |
@@ -275,11 +275,11 @@ UNVERIFIED field; that column will be added as entries land.
 | `ex-data` | implemented+tested | ✓ |
 | `ex-info` | implemented+tested | ✓ |
 | `ex-message` | implemented+tested | ✓ |
-| `extend` | implemented-untested | ✓ |
+| `extend` | implemented+tested | ✓ |
 | `extend-protocol` | implemented+tested | ✓ |
 | `extend-type` | implemented+tested | ✓ |
 | `extenders` | implemented+tested | ✓ |
-| `extends?` | implemented-untested | ✓ |
+| `extends?` | implemented+tested | ✓ |
 | `false?` | implemented+tested | ✓ |
 | `ffirst` | implemented+tested | ✓ |
 | `file-seq` | implemented+tested | ✓ |
@@ -294,10 +294,10 @@ UNVERIFIED field; that column will be added as entries land.
 | `find-var` | implemented+tested | ✓ |
 | `first` | implemented+tested | ✓ |
 | `flatten` | implemented+tested | ✓ |
-| `float` | implemented-untested | ✓ |
-| `float-array` | implemented-untested | ✓ |
+| `float` | implemented+tested | ✓ |
+| `float-array` | implemented+tested | ✓ |
 | `float?` | implemented+tested | ✓ |
-| `floats` | implemented-untested | ✓ |
+| `floats` | implemented+tested | ✓ |
 | `flush` | implemented+tested | ✓ |
 | `fn` | implemented+tested | ✓ |
 | `fn?` | implemented+tested | ✓ |
@@ -308,7 +308,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `format` | implemented+tested | ✓ |
 | `frequencies` | implemented+tested | ✓ |
 | `future` | implemented+tested | ✓ |
-| `future-call` | implemented-untested | ✓ |
+| `future-call` | implemented+tested | ✓ |
 | `future-cancel` | implemented+tested | ✓ |
 | `future-cancelled?` | implemented+tested | ✓ |
 | `future-done?` | implemented+tested | ✓ |
@@ -319,17 +319,17 @@ UNVERIFIED field; that column will be added as entries land.
 | `get` | implemented+tested | ✓ |
 | `get-in` | implemented+tested | ✓ |
 | `get-method` | implemented+tested | ✓ |
-| `get-proxy-class` | implemented-untested | ✓ |
+| `get-proxy-class` | implemented+tested | ✓ |
 | `get-thread-bindings` | implemented+tested | ✓ |
 | `get-validator` | implemented+tested | ✓ |
 | `group-by` | implemented+tested | ✓ |
-| `halt-when` | implemented-untested | ✓ |
-| `hash` | implemented-untested | ✓ |
-| `hash-combine` | implemented-untested | ✓ |
+| `halt-when` | implemented+tested | ✓ |
+| `hash` | implemented+tested | ✓ |
+| `hash-combine` | implemented+tested | ✓ |
 | `hash-map` | implemented+tested | ✓ |
-| `hash-ordered-coll` | implemented-untested | ✓ |
+| `hash-ordered-coll` | implemented+tested | ✓ |
 | `hash-set` | implemented+tested | ✓ |
-| `hash-unordered-coll` | implemented-untested | ✓ |
+| `hash-unordered-coll` | implemented+tested | ✓ |
 | `ident?` | implemented+tested | ✓ |
 | `identical?` | implemented+tested | ✓ |
 | `identity` | implemented+tested | ✓ |
@@ -341,29 +341,29 @@ UNVERIFIED field; that column will be added as entries land.
 | `import` | implemented+tested | ✓ |
 | `in-ns` | implemented+tested | ✓ |
 | `inc` | implemented+tested | ✓ |
-| `inc'` | implemented-untested | ✓ |
+| `inc'` | implemented+tested | ✓ |
 | `indexed?` | implemented+tested | ✓ |
 | `infinite?` | implemented+tested | ✓ |
-| `init-proxy` | implemented-untested | ✓ |
+| `init-proxy` | implemented+tested | ✓ |
 | `inst-ms` | implemented+tested | ✓ |
 | `inst-ms*` | implemented+tested |  |
 | `inst?` | implemented+tested | ✓ |
 | `instance?` | implemented+tested | ✓ |
 | `int` | implemented+tested | ✓ |
-| `int-array` | implemented-untested | ✓ |
+| `int-array` | implemented+tested | ✓ |
 | `int?` | implemented+tested | ✓ |
 | `integer?` | implemented+tested | ✓ |
 | `interleave` | implemented+tested | ✓ |
 | `intern` | implemented+tested | ✓ |
 | `interpose` | implemented+tested | ✓ |
 | `into` | implemented+tested | ✓ |
-| `into-array` | implemented-untested | ✓ |
-| `ints` | implemented-untested | ✓ |
+| `into-array` | implemented+tested | ✓ |
+| `ints` | implemented+tested | ✓ |
 | `io!` | stm-refs | ✓ |
 | `isa?` | implemented+tested | ✓ |
 | `iterate` | implemented+tested | ✓ |
 | `iteration` | jvm-specific | ✓ |
-| `iterator-seq` | implemented-untested | ✓ |
+| `iterator-seq` | implemented+tested | ✓ |
 | `juxt` | implemented+tested | ✓ |
 | `keep` | implemented+tested | ✓ |
 | `keep-indexed` | implemented+tested | ✓ |
@@ -386,13 +386,13 @@ UNVERIFIED field; that column will be added as entries land.
 | `load-string` | implemented+tested | ✓ |
 | `loaded-libs` | jvm-specific | ✓ |
 | `locking` | implemented+tested | ✓ |
-| `long` | implemented-untested | ✓ |
-| `long-array` | implemented-untested | ✓ |
-| `longs` | implemented-untested | ✓ |
+| `long` | implemented+tested | ✓ |
+| `long-array` | implemented+tested | ✓ |
+| `longs` | implemented+tested | ✓ |
 | `loop` | implemented+tested | ✓ |
 | `macroexpand` | implemented+tested | ✓ |
 | `macroexpand-1` | implemented+tested | ✓ |
-| `make-array` | implemented-untested | ✓ |
+| `make-array` | implemented+tested | ✓ |
 | `make-hierarchy` | implemented+tested | ✓ |
 | `map` | implemented+tested | ✓ |
 | `map-entry?` | implemented+tested | ✓ |
@@ -402,7 +402,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `mapv` | implemented+tested | ✓ |
 | `max` | implemented+tested | ✓ |
 | `max-key` | implemented+tested | ✓ |
-| `memfn` | implemented-untested | ✓ |
+| `memfn` | implemented+tested | ✓ |
 | `memoize` | implemented+tested | ✓ |
 | `merge` | implemented+tested | ✓ |
 | `merge-with` | implemented+tested | ✓ |
@@ -425,7 +425,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `new` | special-form | ✓ |
 | `newline` | implemented+tested | ✓ |
 | `next` | implemented+tested | ✓ |
-| `nfirst` | implemented-untested | ✓ |
+| `nfirst` | implemented+tested | ✓ |
 | `nil?` | implemented+tested | ✓ |
 | `nnext` | implemented+tested | ✓ |
 | `not` | implemented+tested | ✓ |
@@ -435,8 +435,8 @@ UNVERIFIED field; that column will be added as entries land.
 | `not=` | implemented+tested | ✓ |
 | `ns` | implemented+tested | ✓ |
 | `ns-aliases` | implemented+tested | ✓ |
-| `ns-imports` | implemented-untested | ✓ |
-| `ns-interns` | implemented-untested | ✓ |
+| `ns-imports` | implemented+tested | ✓ |
+| `ns-interns` | implemented+tested | ✓ |
 | `ns-map` | implemented+tested | ✓ |
 | `ns-name` | implemented+tested | ✓ |
 | `ns-publics` | implemented+tested | ✓ |
@@ -470,18 +470,18 @@ UNVERIFIED field; that column will be added as entries land.
 | `pmap` | jvm-specific | ✓ |
 | `pop` | implemented+tested | ✓ |
 | `pop!` | implemented+tested | ✓ |
-| `pop-thread-bindings` | implemented-untested |  |
+| `pop-thread-bindings` | implemented+tested |  |
 | `pos-int?` | implemented+tested | ✓ |
 | `pos?` | implemented+tested | ✓ |
 | `pr` | implemented+tested | ✓ |
 | `pr-str` | implemented+tested | ✓ |
 | `prefer-method` | implemented+tested | ✓ |
-| `prefers` | implemented-untested | ✓ |
+| `prefers` | implemented+tested | ✓ |
 | `primitives-classnames` | jvm-specific | ✓ |
 | `print` | implemented+tested | ✓ |
 | `print-ctor` | jvm-specific | ✓ |
-| `print-dup` | implemented-untested | ✓ |
-| `print-method` | implemented-untested | ✓ |
+| `print-dup` | implemented+tested | ✓ |
+| `print-method` | implemented+tested | ✓ |
 | `print-simple` | jvm-specific | ✓ |
 | `print-str` | implemented+tested | ✓ |
 | `printf` | implemented+tested | ✓ |
@@ -490,12 +490,12 @@ UNVERIFIED field; that column will be added as entries land.
 | `prn` | implemented+tested | ✓ |
 | `prn-str` | implemented+tested | ✓ |
 | `promise` | implemented+tested | ✓ |
-| `proxy` | implemented-untested | ✓ |
-| `proxy-call-with-super` | implemented-untested |  |
-| `proxy-mappings` | implemented-untested | ✓ |
+| `proxy` | implemented+tested | ✓ |
+| `proxy-call-with-super` | implemented+tested |  |
+| `proxy-mappings` | implemented+tested | ✓ |
 | `proxy-name` | jvm-specific |  |
-| `proxy-super` | implemented-untested | ✓ |
-| `push-thread-bindings` | implemented-untested |  |
+| `proxy-super` | implemented+tested | ✓ |
+| `push-thread-bindings` | implemented+tested |  |
 | `pvalues` | jvm-specific | ✓ |
 | `qualified-ident?` | implemented+tested | ✓ |
 | `qualified-keyword?` | implemented+tested | ✓ |
@@ -505,15 +505,15 @@ UNVERIFIED field; that column will be added as entries land.
 | `rand` | implemented+tested | ✓ |
 | `rand-int` | implemented+tested | ✓ |
 | `rand-nth` | implemented+tested | ✓ |
-| `random-sample` | implemented-untested | ✓ |
+| `random-sample` | implemented+tested | ✓ |
 | `random-uuid` | implemented+tested | ✓ |
 | `range` | implemented+tested | ✓ |
 | `ratio?` | implemented+tested | ✓ |
 | `rational?` | implemented+tested | ✓ |
 | `rationalize` | implemented+tested | ✓ |
 | `re-find` | implemented+tested | ✓ |
-| `re-groups` | implemented-untested | ✓ |
-| `re-matcher` | implemented-untested | ✓ |
+| `re-groups` | implemented+tested | ✓ |
+| `re-matcher` | implemented+tested | ✓ |
 | `re-matches` | implemented+tested | ✓ |
 | `re-pattern` | implemented+tested | ✓ |
 | `re-seq` | implemented+tested | ✓ |
@@ -521,7 +521,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `read+string` | implemented+tested | ✓ |
 | `read-line` | implemented+tested | ✓ |
 | `read-string` | implemented+tested | ✓ |
-| `reader-conditional` | implemented-untested | ✓ |
+| `reader-conditional` | implemented+tested | ✓ |
 | `reader-conditional?` | implemented+tested | ✓ |
 | `realized?` | implemented+tested | ✓ |
 | `record?` | implemented+tested | ✓ |
@@ -537,7 +537,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `ref-min-history` | stm-refs | ✓ |
 | `ref-set` | stm-refs | ✓ |
 | `refer` | implemented+tested | ✓ |
-| `refer-clojure` | implemented-untested | ✓ |
+| `refer-clojure` | implemented+tested | ✓ |
 | `reify` | implemented+tested | ✓ |
 | `release-pending-sends` | agents-taps | ✓ |
 | `rem` | implemented+tested | ✓ |
@@ -554,7 +554,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `require` | implemented+tested | ✓ |
 | `requiring-resolve` | jvm-specific | ✓ |
 | `reset!` | implemented+tested | ✓ |
-| `reset-meta!` | implemented-untested | ✓ |
+| `reset-meta!` | implemented+tested | ✓ |
 | `reset-vals!` | implemented+tested | ✓ |
 | `resolve` | implemented+tested | ✓ |
 | `rest` | implemented+tested | ✓ |
@@ -572,10 +572,10 @@ UNVERIFIED field; that column will be added as entries land.
 | `send-off` | agents-taps | ✓ |
 | `send-via` | agents-taps | ✓ |
 | `seq` | implemented+tested | ✓ |
-| `seq-to-map-for-destructuring` | implemented-untested | ✓ |
+| `seq-to-map-for-destructuring` | implemented+tested | ✓ |
 | `seq?` | implemented+tested | ✓ |
 | `seqable?` | implemented+tested | ✓ |
-| `seque` | implemented-untested | ✓ |
+| `seque` | implemented+tested | ✓ |
 | `sequence` | implemented+tested | ✓ |
 | `sequential?` | implemented+tested | ✓ |
 | `set` | implemented+tested | ✓ |
@@ -586,9 +586,9 @@ UNVERIFIED field; that column will be added as entries land.
 | `set-error-mode!` | agents-taps | ✓ |
 | `set-validator!` | implemented+tested | ✓ |
 | `set?` | implemented+tested | ✓ |
-| `short` | implemented-untested | ✓ |
-| `short-array` | implemented-untested | ✓ |
-| `shorts` | implemented-untested | ✓ |
+| `short` | implemented+tested | ✓ |
+| `short-array` | implemented+tested | ✓ |
+| `shorts` | implemented+tested | ✓ |
 | `shuffle` | implemented+tested | ✓ |
 | `shutdown-agents` | agents-taps | ✓ |
 | `simple-ident?` | implemented+tested | ✓ |
@@ -607,7 +607,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `sorted-set` | implemented+tested | ✓ |
 | `sorted-set-by` | implemented+tested | ✓ |
 | `sorted?` | implemented+tested | ✓ |
-| `special-symbol?` | implemented-untested | ✓ |
+| `special-symbol?` | implemented+tested | ✓ |
 | `spit` | implemented+tested | ✓ |
 | `split-at` | implemented+tested | ✓ |
 | `split-with` | implemented+tested | ✓ |
@@ -641,7 +641,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `thread-bound?` | implemented+tested | ✓ |
 | `throw` | special-form | ✓ |
 | `time` | implemented+tested | ✓ |
-| `to-array` | implemented-untested | ✓ |
+| `to-array` | implemented+tested | ✓ |
 | `to-array-2d` | implemented+tested | ✓ |
 | `trampoline` | implemented+tested | ✓ |
 | `transduce` | implemented+tested | ✓ |
@@ -650,38 +650,38 @@ UNVERIFIED field; that column will be added as entries land.
 | `true?` | implemented+tested | ✓ |
 | `try` | special-form | ✓ |
 | `type` | implemented+tested | ✓ |
-| `unchecked-add` | implemented-untested | ✓ |
-| `unchecked-add-int` | implemented-untested | ✓ |
-| `unchecked-byte` | implemented-untested | ✓ |
-| `unchecked-char` | implemented-untested |  |
-| `unchecked-dec` | implemented-untested | ✓ |
-| `unchecked-dec-int` | implemented-untested | ✓ |
-| `unchecked-divide-int` | implemented-untested | ✓ |
-| `unchecked-double` | implemented-untested | ✓ |
-| `unchecked-float` | implemented-untested | ✓ |
-| `unchecked-inc` | implemented-untested | ✓ |
-| `unchecked-inc-int` | implemented-untested | ✓ |
-| `unchecked-int` | implemented-untested | ✓ |
-| `unchecked-long` | implemented-untested | ✓ |
-| `unchecked-multiply` | implemented-untested | ✓ |
-| `unchecked-multiply-int` | implemented-untested |  |
-| `unchecked-negate` | implemented-untested | ✓ |
-| `unchecked-negate-int` | implemented-untested | ✓ |
-| `unchecked-remainder-int` | implemented-untested |  |
-| `unchecked-short` | implemented-untested | ✓ |
-| `unchecked-subtract` | implemented-untested | ✓ |
-| `unchecked-subtract-int` | implemented-untested | ✓ |
+| `unchecked-add` | implemented+tested | ✓ |
+| `unchecked-add-int` | implemented+tested | ✓ |
+| `unchecked-byte` | implemented+tested | ✓ |
+| `unchecked-char` | implemented+tested |  |
+| `unchecked-dec` | implemented+tested | ✓ |
+| `unchecked-dec-int` | implemented+tested | ✓ |
+| `unchecked-divide-int` | implemented+tested | ✓ |
+| `unchecked-double` | implemented+tested | ✓ |
+| `unchecked-float` | implemented+tested | ✓ |
+| `unchecked-inc` | implemented+tested | ✓ |
+| `unchecked-inc-int` | implemented+tested | ✓ |
+| `unchecked-int` | implemented+tested | ✓ |
+| `unchecked-long` | implemented+tested | ✓ |
+| `unchecked-multiply` | implemented+tested | ✓ |
+| `unchecked-multiply-int` | implemented+tested |  |
+| `unchecked-negate` | implemented+tested | ✓ |
+| `unchecked-negate-int` | implemented+tested | ✓ |
+| `unchecked-remainder-int` | implemented+tested |  |
+| `unchecked-short` | implemented+tested | ✓ |
+| `unchecked-subtract` | implemented+tested | ✓ |
+| `unchecked-subtract-int` | implemented+tested | ✓ |
 | `underive` | implemented+tested | ✓ |
 | `unquote` | jvm-specific | ✓ |
 | `unquote-splicing` | jvm-specific | ✓ |
 | `unreduced` | implemented+tested | ✓ |
-| `unsigned-bit-shift-right` | implemented-untested | ✓ |
+| `unsigned-bit-shift-right` | implemented+tested | ✓ |
 | `update` | implemented+tested | ✓ |
 | `update-in` | implemented+tested | ✓ |
 | `update-keys` | implemented+tested | ✓ |
-| `update-proxy` | implemented-untested | ✓ |
+| `update-proxy` | implemented+tested | ✓ |
 | `update-vals` | implemented+tested | ✓ |
-| `uri?` | implemented-untested | ✓ |
+| `uri?` | implemented+tested | ✓ |
 | `use` | implemented+tested | ✓ |
 | `uuid?` | implemented+tested | ✓ |
 | `val` | implemented+tested | ✓ |
@@ -716,6 +716,6 @@ UNVERIFIED field; that column will be added as entries land.
 | `with-precision` | implemented+tested | ✓ |
 | `with-redefs` | implemented+tested | ✓ |
 | `with-redefs-fn` | implemented+tested | ✓ |
-| `xml-seq` | implemented-untested | ✓ |
+| `xml-seq` | implemented+tested | ✓ |
 | `zero?` | implemented+tested | ✓ |
 | `zipmap` | implemented+tested | ✓ |

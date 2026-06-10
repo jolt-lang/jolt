@@ -1402,7 +1402,12 @@
 
 # every-pred now lives in the Clojure collection tier (core/20-coll.clj).
 
-(def core-comp
+# Public comp lives in the overlay now (20-coll) — its stages can be any jolt
+# IFn (keyword/map/set/vector), which raw Janet calls mishandle ((comp seq
+# :content) returned nil: janet keyword-apply is not jolt invoke). This
+# private composer remains ONLY for the transducer machinery below, where the
+# stages are always real fns.
+(def- td-comp
   (fn [& fs]
     (case (length fs)
       0 identity
@@ -1852,7 +1857,10 @@
 # below stay native (they build the mutable backing).
 
 (defn core-aclone [arr]
-  (if (buffer? arr) (buffer/slice arr) (array/slice arr)))
+  (cond
+    (buffer? arr) (buffer/slice arr)
+    (pvec? arr) (array ;(pv->array arr))
+    (array/slice arr)))
 
 # Numeric / object arrays: (T-array size) | (T-array size init) | (T-array seq)
 (defn- make-num-array [a rest init]
@@ -2284,7 +2292,7 @@
 
 (def core-satisfies? (fn [proto-sym obj] false))
 
-(def core-extends? (fn [& args] false))
+# extends? is a real overlay fn now (30-macros, over extenders).
 (def core-implements? (fn [& args] false))
 (def core-type->str (fn [& args] ""))
 
@@ -2419,7 +2427,7 @@
   (let [n (length args)
         coll (in args (- n 1))
         xforms (array/slice args 0 (- n 1))
-        xform (if (= 0 (length xforms)) (fn [rf] rf) (apply core-comp xforms))]
+        xform (if (= 0 (length xforms)) (fn [rf] rf) (apply td-comp xforms))]
     (core-into (make-vec @[]) xform coll)))
 (defn core->Eduction [xform coll] (core-into (make-vec @[]) xform coll))
 (defn core-proxy-super [& args] (error "proxy-super: JVM proxies are not supported in Jolt"))
@@ -2800,7 +2808,6 @@
     "range" core-range
     "identity" core-identity
     "constantly" core-constantly
-    "comp" core-comp
     "vector" core-vector
     "hash-map" core-hash-map
     "array-map" core-array-map
@@ -2948,7 +2955,6 @@
     "Object" core-Object
     "make-protocol" core-make-protocol
     "satisfies?" core-satisfies?
-    "extends?" core-extends?
     "implements?" core-implements?
     "type->str" core-type->str
     "volatile!" core-volatile!

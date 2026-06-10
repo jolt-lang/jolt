@@ -821,3 +821,20 @@
 ;; The raw Inst protocol method; jolt insts have one representation, so it is
 ;; inst-ms itself.
 (defn inst-ms* [i] (inst-ms i))
+
+;; Canonical comp — here rather than the seed so each stage is invoked with
+;; jolt call semantics: (comp seq :content) works because the keyword stage
+;; goes through IFn dispatch (raw Janet keyword application does not).
+(defn comp
+  ([] identity)
+  ([f] f)
+  ([f g]
+   ;; fixed arities first (Clojure's own shape): the 1-arg path — every
+   ;; map/filter stage — is two direct calls, no rest-seq, no apply.
+   (fn
+     ([] (f (g)))
+     ([x] (f (g x)))
+     ([x y] (f (g x y)))
+     ([x y z] (f (g x y z)))
+     ([x y z & args] (f (apply g x y z args)))))
+  ([f g & fs] (reduce comp (comp f g) fs)))

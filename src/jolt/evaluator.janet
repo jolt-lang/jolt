@@ -417,12 +417,23 @@
     "PI" math/pi "E" math/e
     "random" (fn [&] (math/random))})
 
+# Thread statics (the JVM shapes portable code actually uses). sleep parks the
+# CURRENT thread's event loop — inside a future body that's the worker OS
+# thread (ev/spawn-thread gives each worker its own loop), so a sleeping
+# future doesn't block the parent.
+(def- thread-statics
+  {"sleep" (fn [ms] (ev/sleep (/ ms 1000)) nil)
+   "yield" (fn [] (ev/sleep 0) nil)})
+
 (defn- resolve-sym
   [ctx bindings sym-s]
   (let [name (sym-s :name) ns (sym-s :ns)]
     (if (= ns "Math")
       (let [v (get math-statics name)]
         (if (nil? v) (error (string "Unsupported Math member: Math/" name)) v))
+    (if (= ns "Thread")
+      (let [v (get thread-statics name)]
+        (if (nil? v) (error (string "Unsupported Thread member: Thread/" name)) v))
     (if (not (nil? ns))
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))
             aliased-ns (ns-import-lookup current-ns ns)
@@ -472,8 +483,7 @@
                       # No implicit Janet fallback (Stage 3): an unresolved
                       # Clojure symbol is an error. Host access is the explicit
                       # janet/ prefix above.
-                      (error (string "Unable to resolve symbol: " name))))))))))))))
-
+                      (error (string "Unable to resolve symbol: " name)))))))))))))))
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.
   Returns {:fixed [names...] :rest name-or-nil :all [names...]}"
@@ -1013,9 +1023,11 @@
   (ns-intern core "remove-ns" (fn [x] (remove-ns ctx (ns-name-of x))))
   (ns-intern core "all-ns" (fn [] (all-ns ctx)))
   (ns-intern core "the-ns" (fn [&opt x] (ns-or-current x)))
-  (ns-intern core "ns-interns" (fn [&opt x] ((ns-or-current x) :mappings)))
+  # interns/imports return a jolt MAP (struct), not the live host table — so
+  # count/seq/keys work on them, and callers can't mutate the ns through them.
+  (ns-intern core "ns-interns" (fn [&opt x] (table/to-struct ((ns-or-current x) :mappings))))
   (ns-intern core "ns-aliases" (fn [&opt x] ((ns-or-current x) :aliases)))
-  (ns-intern core "ns-imports" (fn [&opt x] ((ns-or-current x) :imports)))
+  (ns-intern core "ns-imports" (fn [&opt x] (table/to-struct ((ns-or-current x) :imports))))
   # (ns-resolve ns sym) -> the var or nil. Unqualified syms look in ns's own
   # mappings; ns-qualified syms resolve through ns's aliases. (types/ns-resolve
   # keys ns-find with the symbol struct instead of its name string, so it never
@@ -1678,8 +1690,10 @@
           (let [field-name (string/slice sym-name 2)
                 target (eval-form ctx bindings (in form 1))]
             (get target (keyword field-name)))
-        # Handle ClassName. constructor syntax
-        (if (and (> (length sym-name) 0) (= (sym-name (- (length sym-name) 1)) 46))
+        # Handle ClassName. constructor syntax (".." is the member-threading
+        # macro, not a constructor named ".")
+        (if (and (> (length sym-name) 1) (not= sym-name "..")
+                 (= (sym-name (- (length sym-name) 1)) 46))
           (let [type-name (string/slice sym-name 0 (- (length sym-name) 1))
                 type-sym {:jolt/type :symbol :ns (first-form :ns) :name type-name}
                 ctor (eval-form ctx bindings type-sym)

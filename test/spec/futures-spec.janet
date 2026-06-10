@@ -16,7 +16,13 @@
   ["future returns a map"      "{:a 1}"  "(deref (future {:a 1}))"]
   ["deref is cached/idempotent" "[2 2]"  "(let [f (future (+ 1 1))] [(deref f) (deref f)])"]
   ["timed deref of ready future" "42"    "(let [f (future 42)] (deref f) (deref f 1000 :nope))"]
-  ["body error re-raised on deref" :throws "(deref (future (throw \"boom\")))"])
+  ["body error re-raised on deref" :throws "(deref (future (throw \"boom\")))"]
+  # Thread/sleep parks the WORKER's own event loop (each future thread has one),
+  # so a sleeping future doesn't block the parent — and timed deref can fire.
+  ["timed deref times out"     ":timed-out" "(deref (future (do (Thread/sleep 300) :late)) 10 :timed-out)"]
+  ["Thread/sleep in body"      ":slept"     "(deref (future (do (Thread/sleep 5) :slept)))"]
+  ["timed-out future still completes" ":late"
+   "(let [f (future (do (Thread/sleep 30) :late))] (deref f 5 :early) (deref f))"])
 
 (defspec "clojure.core / futures — predicates"
   ["future? true"             "true"  "(future? (future 1))"]
