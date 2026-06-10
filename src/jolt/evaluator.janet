@@ -23,9 +23,9 @@
       (= name "eval")
       (= name "instance?")
       (= name "new") (= name ".")
-      (= name "var-get") (= name "var-set") (= name "var?")
-      (= name "alter-var-root") (= name "find-var") (= name "intern")
-      (= name "alter-meta!") (= name "reset-meta!")
+      # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta! are plain
+      # clojure.core fns (core-bindings); find-var/intern are ctx-capturing fns
+      # (install-stateful-fns!) — no longer special forms (Stage 2 tier 6).
       (= name "satisfies?")
       (= name "prefer-method") (= name "remove-method") (= name "remove-all-methods")
       (= name "get-method") (= name "methods")))
@@ -950,6 +950,13 @@
   (ns-intern core "defmulti-setup" (fn [name-sym dispatch & opts] (defmulti-setup ctx name-sym dispatch ;opts)))
   (ns-intern core "defmethod-setup" (fn [mm-sym dval impl] (defmethod-setup ctx mm-sym dval impl)))
   (ns-intern core "make-deftype-ctor" (fn [name-sym field-kws] (make-deftype-ctor-impl ctx name-sym field-kws)))
+  # Var/namespace lookups that need the ctx (the rest of the var fns — var-get/
+  # var-set/var?/alter-var-root/alter-meta!/reset-meta! — are plain core-bindings).
+  (ns-intern core "find-var" (fn [sym] (find-var ctx sym)))
+  (ns-intern core "intern"
+    (fn [ns-name sym-name &opt val]
+      (def ns (ctx-find-ns ctx (if (struct? ns-name) (ns-name :name) ns-name)))
+      (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val)))
   core)
 
 # Dispatch a special form by its string name.
@@ -1354,24 +1361,10 @@
     "var" (let [target-sym (in form 1)
                  v (resolve-var ctx bindings target-sym)]
              (if v v (error (string "Unable to resolve var: " (sym-name-str target-sym) " in var"))))
-    "var-get" (var-get (eval-form ctx bindings (in form 1)))
-    "var-set" (var-set (eval-form ctx bindings (in form 1))
-                       (eval-form ctx bindings (in form 2)))
-    "var?" (var? (eval-form ctx bindings (in form 1)))
-    "alter-var-root" (alter-var-root (eval-form ctx bindings (in form 1))
-                                      (eval-form ctx bindings (in form 2)))
-    "find-var" (find-var ctx (eval-form ctx bindings (in form 1)))
-    "alter-meta!" (let [v (eval-form ctx bindings (in form 1))
-                         f (eval-form ctx bindings (in form 2))
-                         args (map |(eval-form ctx bindings $) (tuple/slice form 3))]
-                    (apply alter-meta! v f args))
-    "reset-meta!" (reset-meta! (eval-form ctx bindings (in form 1))
-                                (eval-form ctx bindings (in form 2)))
-    "intern" (let [ns-name (eval-form ctx bindings (in form 1))
-                   sym-name (eval-form ctx bindings (in form 2))
-                   val (eval-form ctx bindings (in form 3))
-                   ns (ctx-find-ns ctx (if (struct? ns-name) (ns-name :name) ns-name))]
-               (ns-intern ns (if (struct? sym-name) (sym-name :name) sym-name) val))
+    # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta! are plain
+    # clojure.core fns; find-var/intern are ctx-capturing clojure.core fns
+    # (install-stateful-fns!) — they fall through to the function-call default
+    # and compile as ordinary invokes (Stage 2 tier 6).
     # set?/disj are plain clojure.core fns now (core-set?/core-disj) — no longer
     # special-cased here, the analyzer, or compiler.janet (jolt-g3h).
     # protocol-dispatch / register-method / make-reified are now ordinary

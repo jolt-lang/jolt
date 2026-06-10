@@ -158,11 +158,14 @@
              "macroexpand-1" "defonce" "defmacro" "deftype" "defmulti"
              "defmethod" "prefer-method" "remove-method" "remove-all-methods"
              "get-method" "methods"
-             "satisfies?" "instance?" "set!" "var" "var-get"
-             "var-set" "var?" "ns" "in-ns" "require" "create-ns" "remove-ns"
-             "find-ns" "all-ns" "the-ns" "find-var" "intern" "resolve"
+             # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta!/
+             # find-var/intern are plain clojure.core fns now (core-bindings +
+             # install-stateful-fns!) — ordinary invokes, no punt (Stage 2 tier 6).
+             "satisfies?" "instance?" "set!" "var"
+             "ns" "in-ns" "require" "create-ns" "remove-ns"
+             "find-ns" "all-ns" "the-ns" "resolve"
              "ns-resolve" "ns-aliases" "ns-imports" "ns-interns"
-             "alter-var-root" "alter-meta!" "reset-meta!" "locking" "new"
+             "locking" "new"
              # Definitional/host macros that mutate context or build runtime
              # values the emitter doesn't model.
              "defrecord" "defprotocol" "definterface" "reify" "proxy"

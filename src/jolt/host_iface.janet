@@ -74,8 +74,10 @@
              "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!"
              # defmulti/defmethod/deftype now compile (macros over *-setup fns).
              "locking" "eval" "instance?" "new"
-             "." "var-get" "var-set" "var?" "alter-var-root" "find-var" "intern"
-             "alter-meta!" "reset-meta!" "satisfies?"
+             # var-get/var-set/var?/alter-var-root/alter-meta!/reset-meta! are
+             # plain core fns; find-var/intern are ctx-capturing core fns — all
+             # compile as ordinary invokes now (Stage 2 tier 6).
+             "." "satisfies?"
              # protocol-dispatch/register-method/make-reified are now clojure.core
              # fns (compile as plain invokes).
              "prefer-method"

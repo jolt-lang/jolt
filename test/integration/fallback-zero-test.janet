@@ -52,7 +52,12 @@
    "(reify P (m [this] 1))" "(var map)"
    # Stage 2 tier 5: type/dispatch definitional forms compile too
    "(deftype Pt [x y])" "(deftype Sq [s] P (m [this] s))"
-   "(defrecord Rec [a b])" "(defmulti mf :k)" "(defmethod mf :a [x] x)"])
+   "(defrecord Rec [a b])" "(defmulti mf :k)" "(defmethod mf :a [x] x)"
+   # Stage 2 tier 6: var fns are ordinary invokes now
+   "(var-get (var map))" "(var? (var map))" "(var-set (var map) map)"
+   "(alter-var-root (var map) identity)" "(find-var (quote clojure.core/map))"
+   "(intern (quote user) (quote tier6-sym) 42)"
+   "(alter-meta! (var map) assoc :k 1)" "(reset-meta! (var map) {})"])
 
 # --- Intentional fallback (sanity sample): these SHOULD punt to the interpreter.
 # The remaining frozen/uncompiled set keeps the harness honest in the punt

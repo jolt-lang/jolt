@@ -138,6 +138,14 @@
    ["deftype inline methods" "7" "(do (defprotocol Pi (mi [x])) (deftype Ti [v] Pi (mi [x] v)) (mi (->Ti 7)))"]
    ["deftype two protocols"  "[1 2]" "(do (defprotocol Pa (ma [x])) (defprotocol Pb (mb [x])) (deftype Tab [a b] Pa (ma [x] a) Pb (mb [x] b)) (let [t (->Tab 1 2)] [(ma t) (mb t)]))"]
 
+   ### ---- var fns as ordinary invokes (Stage 2 tier 6) ----
+   ["var-get + call"     "2"     "((var-get (var inc)) 1)"]
+   ["var? true"          "true"  "(var? (var map))"]
+   ["var? false"         "false" "(var? 5)"]
+   ["intern + find-var"  "41"    "(do (intern (quote user) (quote iv) 41) (var-get (find-var (quote user/iv))))"]
+   ["alter-var-root rest args" "11" "(do (def avr 1) (alter-var-root (var avr) + 4 6) avr)"]
+   ["alter-meta! + meta" "7"     "(do (def amv 1) (alter-meta! (var amv) assoc :k 7) (:k (meta (var amv))))"]
+
    ### ---- HIGH: aliased namespace calls ----
    ["require :as alias"  "\"1,2,3\"" "(do (require (quote [clojure.string :as s])) (s/join \",\" [1 2 3]))"]
    ["ns form + alias"    "\"HI\""  "(do (ns my.a (:require [clojure.string :as s])) (s/upper-case \"hi\"))"]
