@@ -16,7 +16,7 @@ jobs:
       # spiking doesn't time out and drop total-pass below the baseline.
       JOLT_SUITE_TIMEOUT: "20"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Submodules: vendor/sci (SCI bootstrap/runtime tests) and
           # vendor/clojure-test-suite (the cross-dialect conformance battery,
@@ -25,7 +25,7 @@ jobs:
 
       - name: Cache Janet build
         id: cache-janet
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/janet
           key: janet-${{ env.JANET_VERSION }}-${{ runner.os }}
