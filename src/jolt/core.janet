@@ -2566,8 +2566,8 @@
 (defn core-enumeration-seq [x] (core-seq x))
 (defn core-iterator-seq [x] (core-seq x))
 # xml-seq now lives in the Clojure collection tier (core/20-coll.clj).
-(defn core-line-seq [rdr]
-  (if (string? rdr) (core-seq (string/split "\n" rdr)) nil))
+# line-seq now lives in the Clojure IO tier (core/50-io.clj), over the reader
+# protocol of the *in* family.
 (defn core-re-matcher [re s] @{:jolt/type :jolt/matcher :re re :s s :pos 0})
 
 # JVM reflection / proxies — not applicable on a Janet host; resolve-only.
@@ -3106,7 +3106,6 @@
     "test" core-test
     "enumeration-seq" core-enumeration-seq
     "iterator-seq" core-iterator-seq
-    "line-seq" core-line-seq
     "re-matcher" core-re-matcher
     "bean" core-bean
     "print-method" core-print-method

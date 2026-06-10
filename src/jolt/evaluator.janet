@@ -1122,6 +1122,20 @@
   # Reader / expansion as plain fns: read-string parses one form; macroexpand-1
   # expands a (quoted, already-evaluated) call form once via its macro var.
   (ns-intern core "read-string" (fn [s] (parse-string s)))
+  # The *in* reader family's host seams. __stdin-read-line: one line from real
+  # stdin, newline stripped, nil at EOF. __parse-next: one form off a string ->
+  # [form rest-of-string], nil when only whitespace remains. *in*, read-line,
+  # read, with-in-str, and line-seq are Clojure over these (core/50-io.clj).
+  (ns-intern core "__stdin-read-line"
+    (fn []
+      (let [l (file/read stdin :line)]
+        (if (nil? l) nil
+          (let [s (string l)]
+            (if (string/has-suffix? "\n" s) (string/slice s 0 -2) s))))))
+  (ns-intern core "__parse-next"
+    (fn [s]
+      (if (= 0 (length (string/trim s))) nil
+        (let [r (parse-next s)] (tuple (r 0) (r 1))))))
   (def expand-1 (fn [the-form]
     (if (and (array? the-form) (> (length the-form) 0)
              (struct? (first the-form)) (= :symbol ((first the-form) :jolt/type)))
