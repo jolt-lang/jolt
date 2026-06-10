@@ -1112,6 +1112,15 @@
           the-form))
       the-form)))
   (ns-intern core "macroexpand-1" expand-1)
+  # Apply a registered data reader to an already-read form (EDN built-in tags
+  # #uuid/#inst and any registered reader). Throws on an unknown tag.
+  (ns-intern core "__read-tagged"
+    (fn [tag form]
+      (def data-readers (get (ctx :env) :data-readers))
+      (def reader-fn (if data-readers (get data-readers tag)))
+      (if reader-fn
+        (reader-fn form)
+        (error (string "No reader function for tag " tag)))))
   # macroexpand: expand repeatedly until the head is no longer a macro (the
   # form's SUBFORMS are not expanded, matching Clojure).
   (ns-intern core "macroexpand"

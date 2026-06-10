@@ -10,10 +10,15 @@
 ;; maps/vectors/lists. (Lists stay lists — EDN never evaluates them as code.)
 (defn- edn->value [x]
   (cond
-    (and (map? x) (= :jolt/set (get x :jolt/type))) (set (map edn->value (get x :value)))
-    ;; Only untagged structs are real maps; symbols/chars/tagged literals are also
-    ;; struct? (=> map?) but carry a :jolt/type and must pass through unchanged.
-    (and (map? x) (nil? (get x :jolt/type)))
+    ;; Reader FORMS are detected by :jolt/type tag, never by map? — strict map?
+    ;; (correctly) excludes tagged structs, so the old (and (map? x) ...) guard
+    ;; would skip them.
+    (= :jolt/set (get x :jolt/type)) (set (map edn->value (get x :value)))
+    ;; EDN built-in tagged elements (#uuid/#inst, plus registered readers):
+    ;; apply the data reader to the read form (no evaluation involved).
+    (= :jolt/tagged (get x :jolt/type))
+      (__read-tagged (get x :tag) (edn->value (get x :form)))
+    (map? x)
       (into {} (map (fn [e] [(edn->value (key e)) (edn->value (val e))]) x))
     (vector? x) (mapv edn->value x)
     (seq? x) (map edn->value x)

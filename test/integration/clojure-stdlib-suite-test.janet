@@ -15,7 +15,7 @@
    # clojure.edn reads via clojure.core/read-string (opts/:eof + nil/blank) and
    # constructs set/nested values. Only #uuid remains (no real uuid type) —
    # jolt-b7y. Guard the passing subset.
-   ["clojure/edn_test/read_string.cljc"      49 false]])
+   ["clojure/edn_test/read_string.cljc"      50 false]])
 
 (def root "test/clojure-stdlib")
 (def per-file-timeout 6)
