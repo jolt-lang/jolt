@@ -408,11 +408,20 @@
         # (off unless opted in) and load-core-overlay! flips it on around core.
         aot-core? (let [o (if opts (get opts :aot-core?) nil)]
                     (if (nil? o) (not (= "0" (os/getenv "JOLT_AOT_CORE"))) o))
+        # Macro expanders compile in EVERY mode (macros are ordinary compiled
+        # fns, as in Clojure) — including interpret mode, where evaluation stays
+        # interpreted but expansion runs native. :compile-macros? false (or
+        # JOLT_INTERPRET_MACROS=1) opts back into the fully-interpreted oracle.
+        compile-macros? (let [o (if opts (get opts :compile-macros?) nil)]
+                          (if (nil? o)
+                            (not (= "1" (os/getenv "JOLT_INTERPRET_MACROS")))
+                            o))
         env @{:namespaces @{}
               :class->opts @{}
               :current-ns "user"
               :compile? compile?
               :aot-core? aot-core?
+              :compile-macros? compile-macros?
               :direct-linking? (if opts (get opts :direct-linking?) nil)
               # Ordered roots searched (after the stdlib) to resolve a namespace
               # to a .clj/.cljc file. jolt-core holds the portable Clojure layer

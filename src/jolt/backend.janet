@@ -510,12 +510,16 @@
   n)
 
 (defn ensure-macros-compiled!
-  "Called once the overlay is fully loaded (api/load-core-overlay!): in compile
-  mode, ensure the analyzer is built, then run the staged macro-recompile pass so
-  the early (interpreted-during-bootstrap) macro expanders become compiled. No-op
-  in interpreter mode (no analyzer, macros stay interpreted by design) and cheap to
-  call again (recompile-macros! skips already-compiled vars)."
+  "Called once the overlay is fully loaded (api/load-core-overlay!): ensure the
+  analyzer is built, then run the staged macro-recompile pass so the early
+  (interpreted-during-bootstrap) macro expanders become compiled. Runs in EVERY
+  mode — macro expansion is compiled code even when evaluation is interpreted
+  (in interpret mode the tiers load fast interpreted, then this one pass builds
+  the analyzer and compiles all stashed expanders; the analyzer itself stays
+  interpreted there). :compile-macros? false (JOLT_INTERPRET_MACROS=1) skips it,
+  keeping the fully-interpreted oracle. Cheap to call again (recompile-macros!
+  skips already-compiled vars)."
   [ctx]
-  (when (get (ctx :env) :compile?)
+  (when (get (ctx :env) :compile-macros?)
     (ensure-analyzer ctx)
     (when (analyzer-built? ctx) (recompile-macros! ctx))))
