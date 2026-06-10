@@ -82,7 +82,8 @@
    ["macroexpand-1"      "true"        "(do (defmacro mm [x] (list 'inc x)) (= '(inc 5) (macroexpand-1 '(mm 5))))"]
    ["gensym distinct"    "false"       "(= (gensym) (gensym))"]
    ["syntax-quote splice" "[1 2 3]" "(let [xs [1 2 3]] `[~@xs])"]
-   ["syntax-quote unquote" "(quote (+ 1 5))" "(let [x 5] `(+ 1 ~x))"]
+   # syntax-quote fully-qualifies resolved core symbols to clojure.core/ (jolt-265).
+   ["syntax-quote unquote" "(quote (clojure.core/+ 1 5))" "(let [x 5] `(+ 1 ~x))"]
 
    ### 8. Recursion
    ["recursion fact"     "120"         "(do (defn fact [n] (if (<= n 1) 1 (* n (fact (dec n))))) (fact 5))"]

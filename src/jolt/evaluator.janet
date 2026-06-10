@@ -149,7 +149,8 @@
                        :name (string (string/slice nm 0 -2) "__" (string (gensym)) "__auto")}]
                 (put gsmap nm g) g))
         (special-symbol? nm) form
-        (ns-find (ctx-find-ns ctx "clojure.core") nm) form
+        (ns-find (ctx-find-ns ctx "clojure.core") nm)
+          {:jolt/type :symbol :ns "clojure.core" :name nm}
         {:jolt/type :symbol :ns (ctx-current-ns ctx) :name nm}))
     form))
 
@@ -266,9 +267,13 @@
   [ctx bindings sym-s]
   (let [name (sym-s :name) ns (sym-s :ns)]
     (if (not (nil? ns))
-      # Resolve ns aliases (e.g. `p/thrown?` where `p` is a require :as alias)
-      # so that aliased macros are recognized as macros, matching resolve-sym.
-      (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))
+      # Resolve ns aliases (e.g. `p/thrown?` where `p` is a require :as alias) so
+      # aliased refs/macros resolve. During compilation the analyzer (interpreted,
+      # in jolt.analyzer) rebinds ctx-current-ns to its own ns, so look up the alias
+      # against the COMPILE ns (:compile-ns, the user's ns) when set — otherwise an
+      # aliased ref like g/foo wouldn't resolve mid-compile. Same ns h-current-ns uses.
+      (let [cur-name (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx))
+            current-ns (ctx-find-ns ctx cur-name)
             aliased-ns (ns-import-lookup current-ns ns)
             target-ns (ctx-find-ns ctx (or aliased-ns ns))]
         (ns-find target-ns name))

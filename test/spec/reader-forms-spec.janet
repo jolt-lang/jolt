@@ -38,12 +38,12 @@
   ["gensym distinct" "true"   "(not= `meow# `meow#)"]
   ["gensym stable"   "true"   "(let [s `[meow# meow#]] (= (first s) (second s)))"]
   ["qualifies unresolved" "(quote user/foo)" "`foo"]
+  # jolt-265 (fixed): resolved core symbols fully-qualify to clojure.core/.
+  ["qualifies core sym" "(quote clojure.core/str)" "`str"]
   ["unquote value"   "[1 2 3]" "(let [a [1 2 3]] `~a)"]
-  # functional: the syntax-quoted call evaluates correctly. (jolt-265: core syms are
-  # left bare rather than qualified to clojure.core/ — full qualification breaks the
-  # standalone uberscript's ns macro, so it's deferred; they still resolve at eval.)
-  ["unquote call evals" "6" "(let [a 5] (eval `(+ ~a 1)))"]
-  ["splice call evals" "6"  "(let [a [1 2 3]] (eval `(+ ~@a)))"]
+  ["unquote in call" "(quote (clojure.core/str [1 2 3]))" "(let [a [1 2 3]] `(str ~a))"]
+  ["splice empty"    "(quote (clojure.core/str))" "(let [e []] `(str ~@e))"]
+  ["splice values"   "(quote (clojure.core/str 1 2 3))" "(let [a [1 2 3]] `(str ~@a))"]
   ["splice in vector" "[1 2 3 0 1 2 3]" "(let [b [0] a [1 2 3] e []] `[~@e ~@a ~@b ~@a ~@e])"]
   # jolt-edb (fixed): ~/~@ inside set literals.
   ["splice in set"   "#{0 1 2 3}" "(let [b [0] a [1 2 3] e []] `#{~@e ~@a ~@b})"]
