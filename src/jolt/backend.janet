@@ -352,20 +352,36 @@
   # while it runs — so h/current-ns must read this instead of ctx-current-ns.
   (put (ctx :env) :compile-ns (ctx-current-ns ctx))
   (def av (ns-find (ctx-find-ns ctx "jolt.analyzer") "analyze"))
+  # Pre-kernel bootstrap: ensure-analyzer is gated until the kernel tier loads
+  # (see api/load-core-overlay!), so a compile request from an earlier tier (e.g.
+  # 00-syntax's destructure defn) finds no analyzer. That fallback is DESIGNED —
+  # route it through the sanctioned punt channel rather than crashing on a nil var.
+  (unless av (error "jolt/uncompilable: analyzer not built (pre-kernel bootstrap)"))
   (def r ((var-get av) ctx form))
   (put (ctx :env) :compile-ns nil)
   r)
 
+# The analyzer's deliberate punt signal — (uncompilable why) throws the string
+# "jolt/uncompilable: <why>". Anything else escaping the compile step is an
+# unexpected compiler error, not a punt.
+(defn- uncompilable-error? [err]
+  (and (or (string? err) (buffer? err))
+       (string/has-prefix? "jolt/uncompilable" (string err))))
+
 (defn compile-and-eval
   "Self-hosted compile path: analyze (portable Clojure) -> IR -> Janet -> eval.
-  Hybrid: only the compile step (analyze+emit) is guarded — a form the analyzer
-  can't handle throws and falls back to the interpreter; runtime errors in
-  compiled code propagate (no double-eval, no hidden errors)."
+  The interpreter fallback is DELIBERATE-ONLY (Stage 2): only an analyzer punt
+  (jolt/uncompilable — the curated stateful/letrec set) falls back; any other
+  compile-step error is a compiler bug and propagates rather than being silently
+  hidden by interpretation. Runtime errors in compiled code propagate as before
+  (no double-eval, no hidden errors)."
   [ctx form]
   (def compiled (protect (emit-ir ctx (analyze-form ctx form))))
   (if (compiled 0)
     (eval (compiled 1) (comp/ctx-janet-env ctx))
-    (eval-form ctx @{} form)))
+    (if (uncompilable-error? (compiled 1))
+      (eval-form ctx @{} form)
+      (error (compiled 1)))))
 
 (defn analyzer-built? [ctx]
   (> (length ((ctx-find-ns ctx "jolt.analyzer") :mappings)) 0))
