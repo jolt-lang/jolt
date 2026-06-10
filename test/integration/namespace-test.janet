@@ -1,13 +1,12 @@
 (use ../../src/jolt/reader)
 (use ../../src/jolt/types)
 (use ../../src/jolt/evaluator)
+(import ../../src/jolt/api :as api)
 
-# in-ns/require are now ordinary clojure.core fns (Stage 2 jolt-eaa), interned by
-# install-stateful-fns! — api/init does this; a bare make-ctx must do it too.
-(defn- fresh-ctx []
-  (let [ctx (make-ctx)]
-    (install-stateful-fns! ctx)
-    ctx))
+# ns/in-ns/require/use are overlay macros + clojure.core fns now (Stage 2 jolt-eaa),
+# so these interpreter tests need the full env (init loads the overlay + installs
+# the stateful fns), not a bare make-ctx.
+(defn- fresh-ctx [] (api/init))
 
 # Helper: parse and eval in a fresh ctx
 (defn eval-str [s]

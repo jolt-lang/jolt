@@ -72,7 +72,8 @@
   (let [t @{}]
     (each n ["quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
              "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!"
-             "locking" "eval" "instance?" "defmulti" "defmethod" "deftype" "new"
+             # defmulti/defmethod/deftype now compile (macros over *-setup fns).
+             "locking" "eval" "instance?" "new"
              "." "var-get" "var-set" "var?" "alter-var-root" "find-var" "intern"
              "alter-meta!" "reset-meta!" "satisfies?"
              # protocol-dispatch/register-method/make-reified are now clojure.core
@@ -85,9 +86,9 @@
              # ns/require/in-ns/use/import/refer-clojure are now clojure.core
              # fns/macros (compile as plain invokes / expand to them).
              "read-string" "macroexpand-1" "defonce"
-             "refer" "defrecord"
-             # defprotocol/extend-type/extend-protocol/reify now expand to plain
-             # def + protocol-dispatch/register-method/make-reified invokes.
+             "refer"
+             # defprotocol/extend-type/extend-protocol/reify/defrecord now expand to
+             # plain def + protocol-dispatch/register-method/make-reified/deftype.
              "gen-class"
              # letfn stays: its let* expansion needs letrec semantics (mutual
              # recursion between the fns), which compiled sequential let* lacks.

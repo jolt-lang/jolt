@@ -12,6 +12,16 @@
 
 (defmacro comment [& body] nil)
 
+;; defmulti/defmethod are sugar over defmulti-setup/defmethod-setup (ctx-capturing
+;; clojure.core fns) so they compile as plain invokes. name/mm are passed quoted;
+;; the dispatch fn, options, and dispatch value evaluate normally, and the method
+;; body becomes a compiled (fn …).
+(defmacro defmulti [name dispatch & opts]
+  `(defmulti-setup (quote ~name) ~dispatch ~@opts))
+
+(defmacro defmethod [mm dispatch-val & fn-tail]
+  `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)))
+
 ;; Single arglist (Jolt defmacro is single-arity); the optional else defaults nil
 ;; via rest-destructuring.
 (defmacro if-not [test then & [else]]
@@ -149,6 +159,37 @@
               (conj (pop acc) (conj (peek acc) x))))
           [] items))
 
+;; deftype is sugar over make-deftype-ctor (a ctx-capturing clojure.core fn that
+;; bakes the ns-qualified type tag at def time) plus extend-type for any inline
+;; protocol methods — so it compiles as a plain (do …). Each method body sees the
+;; type's fields, bound from the instance (the method's first param), matching
+;; Clojure's deftype scope. defrecord (below) expands to a bodyless (deftype …) and
+;; handles its own methods, so this also serves the no-body case.
+(defmacro deftype [tname fields & body]
+  ;; strip ^meta off the type name and fields (the reader yields a (with-meta sym m)
+  ;; form for e.g. (deftype ^{:doc …} Foo …)), so (name …) sees a bare symbol.
+  (let [unwrap (fn [x] (if (and (seq? x) (symbol? (first x)) (= "with-meta" (name (first x))))
+                         (second x) x))
+        tname (unwrap tname)
+        fields (map unwrap fields)
+        arrow (symbol (str "->" (name tname)))
+        ;; a seq of field keywords; spliced into a vector LITERAL below ([~@…]) so
+        ;; the analyzer sees a vector form, not a runtime pvec value.
+        field-kws (map (fn [f] (keyword (name f))) fields)
+        impl (fn [proto specs]
+               `(extend-type ~tname ~proto
+                  ~@(map (fn [spec]
+                           (let [argv (nth spec 1)
+                                 inst (first argv)
+                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
+                             `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
+                         specs)))]
+    `(do
+       (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws]))
+       (def ~arrow ~tname)
+       ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body))
+       ~tname)))
+
 ;; The protocol value is built by make-protocol (a fn call) rather than an embedded
 ;; tagged map literal: the interpreter would otherwise self-evaluate such a struct
 ;; instead of evaluating its fields. methods is a {kw {:name str}} map (only :name
@@ -203,7 +244,6 @@
 
 (defmacro defrecord [name-sym fields & body]
   (let [tn (name name-sym)
-        dot (symbol (str tn "."))
         arrow (symbol (str "->" tn))
         mapf (symbol (str "map->" tn))
         m (fresh-sym)
@@ -219,8 +259,9 @@
                              `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
                          specs)))]
     `(do
+       ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
+       ;; so defrecord compiles too. map->name builds via that ctor.
        (deftype ~name-sym ~fields)
-       (def ~arrow (fn* ~fields (~dot ~@fields)))
        (def ~mapf (fn* [~m] (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))))
        ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body)))))
 

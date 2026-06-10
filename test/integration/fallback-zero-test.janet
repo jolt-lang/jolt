@@ -49,14 +49,16 @@
    "(require (quote [clojure.string :as s]))" "(in-ns (quote foo.bar))"
    "(ns foo.bar (:require [clojure.string :as s]))"
    "(defprotocol P (m [x]))" "(extend-type Long P (m [x] x))"
-   "(reify P (m [this] 1))" "(var map)"])
+   "(reify P (m [this] 1))" "(var map)"
+   # Stage 2 tier 5: type/dispatch definitional forms compile too
+   "(deftype Pt [x y])" "(deftype Sq [s] P (m [this] s))"
+   "(defrecord Rec [a b])" "(defmulti mf :k)" "(defmethod mf :a [x] x)"])
 
 # --- Intentional fallback (sanity sample): these SHOULD punt to the interpreter.
-# Shrinking as Stage 2 (jolt-eaa) moves stateful forms onto the compile path
-# (require/in-ns/protocols/binding now compile). The remaining frozen/uncompiled
-# set keeps the harness honest in the punt direction.
+# The remaining frozen/uncompiled set keeps the harness honest in the punt
+# direction: defmacro + set! (frozen host-coupled), and letfn (needs letrec IR).
 (def must-punt
-  ["(defmacro m [x] x)" "(deftype T [a])"
+  ["(defmacro m [x] x)"
    "(set! *warn-on-reflection* true)" "(letfn [(f [n] (g n)) (g [n] (f n))] (f 1))"])
 
 (var fails @[])

@@ -21,8 +21,8 @@
       (= name "recur") (= name "throw") (= name "try")
       (= name "set!") (= name "var") (= name "locking")
       (= name "eval")
-      (= name "instance?") (= name "defmulti") (= name "defmethod")
-      (= name "deftype") (= name "new") (= name ".")
+      (= name "instance?")
+      (= name "new") (= name ".")
       (= name "var-get") (= name "var-set") (= name "var?")
       (= name "alter-var-root") (= name "find-var") (= name "intern")
       (= name "alter-meta!") (= name "reset-meta!")
@@ -816,6 +816,87 @@
         (ns-unmap ns (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym))))))
   nil)
 
+(defn defmulti-setup
+  "(defmulti name dispatch & opts) — intern a multimethod var. A fn; name arrives
+  quoted, dispatch + opts (:default key, :hierarchy h) arrive evaluated. The
+  defmulti macro is the thin wrapper. Builds the dispatch closure over the method
+  table (shared with the var's :jolt/methods so defmethod adds to it)."
+  [ctx name-sym dispatch-raw & opts]
+  (def dispatch-fn (if (keyword? dispatch-raw) (fn [x] (get x dispatch-raw)) dispatch-raw))
+  (def default-key
+    (do (var dv :default) (var i 0)
+      (while (< i (length opts))
+        (if (= :default (in opts i)) (do (set dv (in opts (+ i 1))) (set i (length opts))) (+= i 2)))
+      dv))
+  (def hierarchy
+    (do (var h nil) (var i 0)
+      (while (< i (length opts))
+        (if (= :hierarchy (in opts i)) (do (set h (in opts (+ i 1))) (set i (length opts))) (+= i 2)))
+      h))
+  (def ns (ctx-find-ns ctx (ctx-current-ns ctx)))
+  (def methods @{})
+  (def dispatch-cache @{})
+  (def mm-fn
+    (fn [& args]
+      (let [dv (apply dispatch-fn args)
+            method (get methods dv)]
+        (if method
+          (apply method args)
+          (let [cached (get dispatch-cache dv)]
+            (if cached
+              (apply cached args)
+              (let [h (or hierarchy the-global-hierarchy)
+                    found (do (var f nil) (var i 0)
+                            (let [ks (keys methods)]
+                              (while (and (nil? f) (< i (length ks)))
+                                (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
+                                (++ i)))
+                            f)]
+                (if found
+                  (do (put dispatch-cache dv found) (apply found args))
+                  (let [dm (get methods default-key)]
+                    (if dm (apply dm args)
+                      (error (string "No method in multimethod " (name-sym :name)
+                                     " for dispatch value: " dv))))))))))))
+  (def v (ns-intern ns (name-sym :name) mm-fn))
+  (put v :jolt/methods methods)
+  (put v :jolt/dispatch-cache dispatch-cache)
+  (put v :jolt/default default-key)
+  (when hierarchy (put v :jolt/hierarchy hierarchy))
+  (var-get v))
+
+(defn defmethod-setup
+  "(defmethod mm dispatch-val impl) — add a method to a multimethod. A fn; mm
+  arrives quoted, dispatch-val evaluated, impl is the COMPILED method fn (the
+  defmethod macro builds (fn …)). Auto-creates the multimethod if it's missing."
+  [ctx mm-sym dispatch-val impl]
+  (def mm-var
+    (or (resolve-var ctx @{} mm-sym)
+        (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
+          (def v (ns-intern ns (mm-sym :name) (fn [& args] nil)))
+          (put v :jolt/methods @{})
+          v)))
+  (def methods (or (get mm-var :jolt/methods) (let [m @{}] (put mm-var :jolt/methods m) m)))
+  (put methods dispatch-val impl)
+  (let [dc (get mm-var :jolt/dispatch-cache)]
+    (when dc (each k (keys dc) (put dc k nil))))
+  mm-var)
+
+(defn make-deftype-ctor-impl
+  "Build a deftype constructor closure. The ns-qualified type tag is baked at
+  definition time (this runs during the deftype's (def …), in the type's ns), so
+  instances carry a stable tag matching what extend-type registers methods under.
+  field-kws is the [:f1 :f2 …] keyword vector; the ctor maps positional args to
+  those keys. A ctx-capturing closure (make-deftype-ctor) is the public handle."
+  [ctx type-name-sym field-kws]
+  (def type-tag (string (ctx-current-ns ctx) "." (type-name-sym :name)))
+  (def kws (d-realize field-kws))
+  (fn [& args]
+    (var inst @{:jolt/deftype type-tag})
+    (var i 0)
+    (each kw kws (put inst kw (in args i)) (++ i))
+    inst))
+
 (defn install-stateful-fns!
   "Intern ctx-capturing closures for the stateful primitives into clojure.core, so
   both the interpreter and the compiler reach them as ordinary fns. Called by
@@ -836,6 +917,9 @@
   (ns-intern core "use" (fn [& specs] (use-impl ctx ;specs)))
   (ns-intern core "import" (fn [& specs] (import-impl ctx ;specs)))
   (ns-intern core "refer-clojure" (fn [& args] (refer-clojure-impl ctx ;args)))
+  (ns-intern core "defmulti-setup" (fn [name-sym dispatch & opts] (defmulti-setup ctx name-sym dispatch ;opts)))
+  (ns-intern core "defmethod-setup" (fn [mm-sym dval impl] (defmethod-setup ctx mm-sym dval impl)))
+  (ns-intern core "make-deftype-ctor" (fn [name-sym field-kws] (make-deftype-ctor-impl ctx name-sym field-kws)))
   core)
 
 # Dispatch a special form by its string name.
@@ -1297,88 +1381,9 @@
                       "clojure.lang.IPersistentSet" (set? val)
                       "Object" true
                       false)))
-    "defmulti" (let [name-sym (in form 1)
-                      dispatch-fn (do
-                                    (def raw (eval-form ctx bindings (in form 2)))
-                                    (if (keyword? raw)
-                                      (fn [x] (get x raw))
-                                      raw))
-                      # Parse options: :default dispatch-key (defaults to :default)
-                      # and :hierarchy h
-                      opts (tuple/slice form 3)
-                      default-key (do
-                                    (var dv :default) (var i 0)
-                                    (while (< i (length opts))
-                                      (if (= :default (in opts i))
-                                        (do (set dv (in opts (+ i 1))) (set i (length opts)))
-                                        (+= i 2))) dv)
-                      hierarchy (do
-                                  (var h nil) (var i 0)
-                                  (while (< i (length opts))
-                                    (if (= :hierarchy (in opts i))
-                                      (do (set h (eval-form ctx bindings (in opts (+ i 1)))) (set i (length opts)))
-                                      (+= i 2))) h)
-                      ns (ctx-find-ns ctx (ctx-current-ns ctx))
-                      methods @{}
-                      # Cache for hierarchy-resolved dispatch values: the isa? walk
-                      # over every method key is the expensive path (derive-based
-                      # dispatch). Direct (get methods dv) hits stay uncached (already
-                      # fast). Cleared in place when methods/prefs change (defmethod,
-                      # prefer-method, remove-method, …) so a redef can't be hidden.
-                      dispatch-cache @{}
-                      mm-fn (fn [& args]
-                              (let [dv (apply dispatch-fn args)
-                                    method (get methods dv)]
-                                (if method
-                                  (apply method args)
-                                  (let [cached (get dispatch-cache dv)]
-                                    (if cached
-                                      (apply cached args)
-                                      # hierarchy-based match (explicit :hierarchy or
-                                      # the global hierarchy from derive)
-                                      (let [h (or hierarchy the-global-hierarchy)
-                                            found (do (var f nil) (var i 0)
-                                                    (let [ks (keys methods)]
-                                                      (while (and (nil? f) (< i (length ks)))
-                                                        (if (isa? h dv (in ks i)) (set f (get methods (in ks i))))
-                                                        (++ i))) f)]
-                                        (if found
-                                          (do (put dispatch-cache dv found) (apply found args))
-                                          # fall back to the method registered under the default key
-                                          (let [dm (get methods default-key)]
-                                            (if dm (apply dm args)
-                                              (error (string "No method in multimethod "
-                                                             (name-sym :name) " for dispatch value: " dv))))))))))) ]
-                 (def v (ns-intern ns (name-sym :name) mm-fn))
-                 (put v :jolt/methods methods)
-                 (put v :jolt/dispatch-cache dispatch-cache)
-                 (put v :jolt/default default-key)
-                 (when hierarchy (put v :jolt/hierarchy hierarchy))
-                 (var-get v))
-    "defmethod" (let [mm-sym (in form 1)
-                      dispatch-val (eval-form ctx bindings (in form 2))
-                      # (defmethod mm dispatch [args] body...) — single-arity, or
-                      # (defmethod mm dispatch ([args] body)...) — multi-arity.
-                      # Build a fn* form and evaluate it (reuses arity dispatch
-                      # and destructuring).
-                      impl (eval-form ctx bindings
-                             @[{:jolt/type :symbol :ns nil :name "fn*"} ;(tuple/slice form 3)])
-                      mm-var (resolve-var ctx bindings mm-sym)
-                      # Auto-create multimethod if it doesn't exist
-                      mm-var (if mm-var mm-var
-                               (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))
-                                     dummy-fn (fn [& args] nil)]
-                                 (def v (ns-intern ns (mm-sym :name) dummy-fn))
-                                 (put v :jolt/methods @{})
-                                 v))
-                      # The resolved var may be a plain fn (e.g. a copy-core-var'd
-                      # print-method) with no method table yet — initialize one.
-                      methods (or (get mm-var :jolt/methods)
-                                  (let [m @{}] (put mm-var :jolt/methods m) m))]
-                  (put methods dispatch-val impl)
-                  (let [dc (get mm-var :jolt/dispatch-cache)]
-                    (when dc (each k (keys dc) (put dc k nil))))
-                  mm-var)
+    # defmulti / defmethod are now macros (30-macros) over defmulti-setup /
+    # defmethod-setup (ctx-capturing clojure.core fns) — they compile as plain
+    # invokes; no special-form arms. defmethod's impl is a compiled (fn …).
     "prefer-method" (let [mm-arg (in form 1)
                           mm-var (if (and (struct? mm-arg) (= :symbol (mm-arg :jolt/type)))
                                   (resolve-var ctx bindings mm-arg)
@@ -1430,64 +1435,8 @@
                             (let [dc (get mm-var :jolt/dispatch-cache)]
                               (when dc (each k (keys dc) (put dc k nil)))))
                           mm-var)
-    "deftype" (let [raw-name (in form 1)
-                    type-name (unwrap-meta-name raw-name)
-                    fields-vec (in form 2)
-                    field-names (map 
-                      (fn [f]
-                        # Handle ^:meta and ^Type annotations — extract the actual name
-                        (let [f (unwrap-meta-name f)]
-                          (if (and (struct? f) (= :symbol (f :jolt/type)))
-                            (keyword (f :name))
-                            (error (string "Unsupported deftype field: " (string f))))))
-                      fields-vec)
-                    ns-name (ctx-current-ns ctx)
-                    type-tag (string ns-name "." (type-name :name))]
-                (defn ctor [& args]
-                  (var inst @{:jolt/deftype type-tag})
-                  (var i 0)
-                  (each fn field-names
-                    (put inst fn (args i))
-                    (++ i))
-                  inst)
-                (let [ns (ctx-find-ns ctx ns-name)
-                      ctor-name (type-name :name)
-                      arrow-name (string "->" ctor-name)]
-                  (ns-intern ns ctor-name ctor)
-                  (ns-intern ns arrow-name ctor)
-                  # Process inline protocol/interface methods (like defrecord):
-                  #   (deftype T [fs] Proto (m [this] body) Proto2 (m2 [this] body))
-                  # Emit one extend-type per protocol, wrapping each method body in a
-                  # let that binds the type's fields from the instance (first param),
-                  # matching Clojure's field-in-scope semantics.
-                  (let [body (tuple/slice form 3)
-                        field-syms (map unwrap-meta-name fields-vec)]
-                    (var bi 0)
-                    (while (< bi (length body))
-                      (def elem (in body bi))
-                      (if (and (struct? elem) (= :symbol (elem :jolt/type)))
-                        (let [proto-sym elem
-                              et @[{:jolt/type :symbol :ns nil :name "extend-type"} type-name proto-sym]]
-                          (++ bi)
-                          (while (and (< bi (length body))
-                                      (not (and (struct? (in body bi)) (= :symbol ((in body bi) :jolt/type)))))
-                            (let [spec (in body bi)
-                                  mname (in spec 0)
-                                  argv (in spec 1)
-                                  mbody (tuple/slice spec 2)
-                                  instance (in argv 0)
-                                  field-binds @[]
-                                  _ (each f field-syms
-                                      (array/push field-binds f)
-                                      (array/push field-binds @[{:jolt/type :symbol :ns nil :name "get"}
-                                                                instance (keyword (f :name))]))
-                                  wrapped @[{:jolt/type :symbol :ns nil :name "let"}
-                                            (tuple/slice (tuple ;field-binds)) ;mbody]]
-                              (array/push et @[mname argv wrapped]))
-                            (++ bi))
-                          (eval-form ctx bindings et))
-                        (++ bi))))
-                  (var-get (ns-intern ns ctor-name))))
+    # deftype is now a macro (30-macros) over make-deftype-ctor + extend-type —
+    # compiles as a plain (do …); no special-form arm.
     "new" (let [type-sym (in form 1)
                 args (map |(eval-form ctx bindings $) (tuple/slice form 2))
                 ctor (eval-form ctx bindings type-sym)]
