@@ -445,3 +445,13 @@
 
 (defmacro lazy-cat [& colls]
   `(concat ~@(map (fn [c] `(lazy-seq ~c)) colls)))
+
+;; not= here (not 20-coll): the kernel tier uses it, and the kernel
+;; bootstrap-compiles right after this file loads. Canonical Clojure arities.
+(defn not=
+  ([x] false)
+  ([x y] (not (= x y)))
+  ([x y & more] (not (apply = x y more))))
+
+;; unreduced here: the seq tier's reduce machinery unwraps with it.
+(defn unreduced [x] (if (reduced? x) (deref x) x))

@@ -28,6 +28,19 @@
   ["eduction"           "[2 3 4]"   "(into [] (eduction (map inc) [1 2 3]))"]
   ["completing"         "9"        "(transduce (map inc) (completing +) 0 [1 2 3])"])
 
+# halt-when replaces the WHOLE reduction result with the halting input (or
+# with (retf acc input)) — Clojure's ::halt map protocol, unwrapped by the
+# transducer's completion arity.
+(defspec "transducers / halt-when"
+  ["halt returns the halting input" "7"
+   "(transduce (halt-when (fn [x] (> x 5))) conj [1 2 7 3])"]
+  ["no halt is a plain reduction" "[1 2 3]"
+   "(transduce (halt-when (fn [x] (> x 5))) conj [1 2 3])"]
+  ["retf combines acc and input" "[[1 2] 7]"
+   "(transduce (halt-when (fn [x] (> x 5)) (fn [r i] [r i])) conj [1 2 7 3])"]
+  ["halt-when through into" "3"
+   "(into [] (halt-when odd?) [2 4 3 6])"])
+
 # A `take`/`take-while` transducer returns `reduced`, which must short-circuit
 # the reduction so transducing over an INFINITE seq terminates rather than
 # realizing it eagerly.

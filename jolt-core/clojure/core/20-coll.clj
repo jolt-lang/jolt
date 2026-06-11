@@ -6,6 +6,23 @@
 ;; Same migration rule as the seq tier (see 10-seq.clj): not in core-renames, no
 ;; internal Janet callers, not used by the self-hosted compiler.
 
+;; Tiny leaves first — fns below in this tier (and 25-sorted) use them.
+(defn identity [x] x)
+
+(defn constantly [x] (fn [& args] x))
+
+;; neg? throws on non-numbers via <, as Clojure's Numbers.isNeg does.
+(defn neg? [x] (< x 0))
+
+;; even?/odd? accept any integral number (jolt has one number type, so 2.0
+;; counts) and throw otherwise — Clojure's IllegalArgumentException wording.
+(defn even? [n]
+  (if (integer? n)
+    (zero? (rem n 2))
+    (throw (str "Argument must be an integer: " n))))
+
+(defn odd? [n] (not (even? n)))
+
 ;; Base is (hash-map), not the {} literal: a literal map is a struct that doesn't
 ;; canonicalize collection keys across representations (a {:a 1} literal vs
 ;; (hash-map :a 1) key), whereas a PHM does — so counting/grouping by collection
@@ -372,6 +389,17 @@
   ([keyfn coll] (sort-by keyfn compare coll))
   ([keyfn comp coll]
    (sort (fn [x y] (comp (keyfn x) (keyfn y))) coll)))
+
+;; parse-uuid: nil unless s is a canonical 8-4-4-4-12 hex UUID string; throws
+;; on a non-string (Clojure 1.11). __make-uuid is the host constructor for the
+;; tagged value (overlay source can't write :jolt/type map literals — the
+;; reader treats them as tagged forms).
+(defn parse-uuid [s]
+  (if (string? s)
+    (when (re-matches
+           #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" s)
+      (__make-uuid s))
+    (throw (str "parse-uuid requires a string, got: " s))))
 
 ;; Version-4 UUID (RFC 4122): zero-padded hex groups 8-4-4-4-12, version
 ;; nibble 4, variant 8-b — built over rand-int and validated by parse-uuid.
@@ -882,3 +910,65 @@
 ;; num: Clojure coerces to java.lang.Number; jolt just checks.
 (defn num [x]
   (if (number? x) x (throw (str "num requires a number, got: " x))))
+
+;; == numeric equality: 1-arity is trivially true without inspecting the value
+;; (Clojure's shape); 2+ args must be numbers, as Numbers.equiv throws.
+(defn ==
+  ([x] true)
+  ([x y]
+   (if (and (number? x) (number? y))
+     (= x y)
+     (throw (str "Cannot cast to number: " (if (number? x) y x)))))
+  ([x y & more]
+   (if (== x y)
+     (apply == y more)
+     false)))
+
+;; ensure-reduced / halt-when: canonical Clojure. halt-when smuggles the halt
+;; value through reduce in a ::halt-keyed map and unwraps it in the completion
+;; arity, so the halt REPLACES the whole reduction result.
+(defn ensure-reduced [x] (if (reduced? x) x (reduced x)))
+
+(defn halt-when
+  ([pred] (halt-when pred nil))
+  ([pred retf]
+   (fn [rf]
+     (fn
+       ([] (rf))
+       ([result]
+        (if (and (map? result) (contains? result ::halt))
+          (get result ::halt)
+          (rf result)))
+       ([result input]
+        (if (pred input)
+          (reduced (hash-map ::halt (if retf (retf (rf result) input) input)))
+          (rf result input)))))))
+
+;; parse-boolean: exact "true"/"false" only; nil on anything else, throw on a
+;; non-string (Clojure 1.11).
+(defn parse-boolean [s]
+  (if (string? s)
+    (cond (= s "true") true (= s "false") false :else nil)
+    (throw (str "parse-boolean requires a string, got: " s))))
+
+(defn newline [] (print "\n") nil)
+
+;; seque: jolt is single-threaded eager here — the queue is a no-op and the
+;; coll passes through.
+(defn seque
+  ([s] s)
+  ([n-or-q s] s))
+
+(defn array-seq [arr & _] (seq arr))
+
+(defn to-array-2d [coll] (to-array (map to-array coll)))
+
+;; Masking integer coercions (not aliases): byte/short wrap to their width.
+;; unchecked-char keeps jolt's historical NUMBER result (Clojure returns a
+;; char) — the char wrapper is a different value type here. int handles chars,
+;; so (unchecked-byte \a) works as on the JVM.
+(defn unchecked-byte [x] (bit-and (int x) 0xff))
+(defn unchecked-short [x] (bit-and (int x) 0xffff))
+(defn unchecked-char [x] (bit-and (int x) 0xffff))
+(defn unchecked-float [x] (double x))
+(defn unchecked-double [x] (double x))

@@ -231,9 +231,7 @@
 
 (defn core-zero? [x] (= (need-num x "zero?") 0))
 (defn core-pos? [x] (> (need-num x "pos?") 0))
-(defn core-neg? [x] (< (need-num x "neg?") 0))
-(defn core-even? [n] (= 0 (% (need-int n "even?") 2)))
-(defn core-odd? [n] (not= 0 (% (need-int n "odd?") 2)))
+# neg? / even? / odd? live in the Clojure collection tier (core/20-coll.clj).
 
 # Finite integral number: NaN and the infinities are NOT integers (floor of
 # inf is inf, so the naive floor check wrongly accepted them).
@@ -401,7 +399,7 @@
         (++ i))
       ok)))
 
-(defn core-not= [& args] (not (apply core-= args)))
+# not= lives in the syntax tier (core/00-syntax.clj) — the kernel uses it.
 
 # Comparisons are variadic: (< a b c) means a < b < c.
 (defn- chain-cmp [op opname xs]
@@ -818,7 +816,7 @@
 
 (defn core-reduced [x] @{:jolt/type :jolt/reduced :val x})
 (defn core-reduced? [x] (and (table? x) (= :jolt/reduced (x :jolt/type))))
-(defn core-unreduced [x] (if (core-reduced? x) (x :val) x))
+# unreduced lives in the syntax tier (core/00-syntax.clj) over reduced?/deref.
 (defn- ensure-reduced [x] (if (core-reduced? x) x (core-reduced x)))
 
 (defn td-map [f]
@@ -1402,9 +1400,7 @@
 # Higher-order functions
 # ============================================================
 
-(def core-identity (fn [x] x))
-
-(def core-constantly (fn [x] (fn [& _] x)))
+# identity / constantly live in the Clojure collection tier (core/20-coll.clj).
 
 # complement now lives in the Clojure collection tier (core/20-coll.clj).
 
@@ -1686,7 +1682,7 @@
   (prin "\n")
   nil)
 
-(defn core-newline [] (prin "\n") nil)
+# newline lives in the Clojure collection tier (core/20-coll.clj).
 
 # Clojure 1.11 string->scalar parsers: nil on malformed input, throw on a
 # non-string. Validation is strict (scan-number alone accepts 0x10 etc.).
@@ -1717,9 +1713,7 @@
       (def pat (peg/compile ~(sequence (opt (set "+-")) (choice (sequence (some :d) (opt (sequence "." (any :d)))) (sequence "." (some :d))) (opt (sequence (set "eE") (opt (set "+-")) (some :d))) -1)))
       (if (peg/match pat str*) (scan-number str*) nil))))
 
-(defn core-parse-boolean [s]
-  (def str* (parse-arg-str s "parse-boolean"))
-  (case str* "true" true "false" false nil))
+# parse-boolean lives in the Clojure collection tier (core/20-coll.clj).
 
 # Host time source for the `time` macro (monotonic, milliseconds).
 (defn core-current-time-ms [] (* 1000 (os/clock :monotonic)))
@@ -1933,8 +1927,7 @@
 
 (defn core-to-array [coll]
   (def arr @[]) (each x (realize-for-iteration coll) (array/push arr x)) arr)
-(defn core-to-array-2d [coll]
-  (def arr @[]) (each row (realize-for-iteration coll) (array/push arr (core-to-array row))) arr)
+# to-array-2d lives in the Clojure collection tier (core/20-coll.clj).
 
 # Array-element casts — identity on arrays; `bytes` coerces to a byte buffer.
 (defn core-bytes [x] (if (buffer? x) x (core-byte-array x)))
@@ -1949,11 +1942,8 @@
 # Scalar numeric coercions
 (defn core-byte [x] (let [b (band (math/trunc x) 0xff)] (if (>= b 128) (- b 256) b)))
 (defn core-short [x] (let [s (band (math/trunc x) 0xffff)] (if (>= s 0x8000) (- s 0x10000) s)))
-(defn core-unchecked-byte [x] (band (math/trunc x) 0xff))
-(defn core-unchecked-short [x] (band (math/trunc x) 0xffff))
-(defn core-unchecked-char [x] (band (math/trunc x) 0xffff))
-(defn core-unchecked-float [x] (* 1.0 x))
-(defn core-unchecked-double [x] (* 1.0 x))
+# The masking unchecked-byte/short/char and float/double coercions live in
+# the Clojure collection tier (core/20-coll.clj).
 
 # 64-bit integers (Janet int/s64 — C-backed)
 (defn core-bigint [x] (int/s64 x))
@@ -1982,8 +1972,7 @@
 # reader-conditional? now lives in the Clojure collection tier (tagged-value predicate).
 # sorted-map-by / sorted-set-by (and all other sorted-coll constructors and
 # semantics) now live in the Clojure sorted tier (core/25-sorted.clj).
-(defn core-array-seq [arr & _] (core-seq arr))
-(defn core-seque [& args] (in args (- (length args) 1)))
+# array-seq / seque live in the Clojure collection tier (core/20-coll.clj).
 # supers now lives in the Clojure collection tier (no class hierarchy: #{}).
 (defn core-class [x]
   (cond
@@ -2429,13 +2418,8 @@
 (defn core-proxy-call-with-super [f proxy meth] (f))
 (defn core-proxy-mappings [proxy] {})
 (defn core-update-proxy [proxy mappings] proxy)
-(defn core-numeric= [& args]
-  (if (< (length args) 2) true
-    (do (var ok true) (var i 0)
-      (while (and ok (< i (dec (length args))))
-        (unless (= (in args i) (in args (+ i 1))) (set ok false)) (++ i))
-      ok)))
-(defn core-memfn [& args] (error "memfn: JVM method handles are not supported in Jolt"))
+# == lives in the Clojure collection tier (core/20-coll.clj); memfn is an
+# overlay macro (core/30-macros.clj) over the .method call sugar.
 (defn core-eduction [& args]
   # (eduction xform* coll): apply the composed transducers eagerly to coll
   (let [n (length args)
@@ -2505,17 +2489,8 @@
 (defn core-deliver [p v] (core-reset! p v) p)
 
 (defn core-tagged-literal [tag form] @{:jolt/type :jolt/tagged-literal :tag tag :form form})
-(defn core-ensure-reduced [x] (if (core-reduced? x) x (core-reduced x)))
-(defn core-halt-when [pred & rest]
-  (let [retf (if (> (length rest) 0) (in rest 0) nil)]
-    (fn [rf]
-      (fn [& a]
-        (case (length a)
-          0 (rf)
-          1 (rf (in a 0))
-          (if (truthy? (pred (in a 1)))
-            (core-reduced (if retf (retf (rf (in a 0)) (in a 1)) (in a 1)))
-            (rf (in a 0) (in a 1))))))))
+# ensure-reduced / halt-when live in the Clojure collection tier
+# (core/20-coll.clj) — halt-when is the canonical ::halt-map version there.
 (defn core-re-groups [m] (error "re-groups: stateful matchers are not supported in Jolt"))
 
 # Transients — real mutable scratch collections backed by Janet's native arrays
@@ -2640,28 +2615,8 @@
 
 
 
-(defn- hex-digit? [c]
-  (or (and (>= c 48) (<= c 57))      # 0-9
-      (and (>= c 97) (<= c 102))     # a-f
-      (and (>= c 65) (<= c 70))))    # A-F
-
-(defn core-parse-uuid
-  "(parse-uuid s) -> the UUID, or nil when s is not a canonical 8-4-4-4-12 hex
-  UUID string. Throws when s is not a string (Clojure 1.11)."
-  [s]
-  (when (not (or (string? s) (buffer? s)))
-    (error (string "parse-uuid requires a string, got " (type s))))
-  (def dash-at {8 true 13 true 18 true 23 true})
-  (if (and (= 36 (length s))
-           (do
-             (var ok true)
-             (for i 0 36
-               (if (get dash-at i)
-                 (when (not= 45 (in s i)) (set ok false))    # 45 = "-"
-                 (when (not (hex-digit? (in s i))) (set ok false))))
-             ok))
-    (make-uuid s)
-    nil))
+# parse-uuid lives in the Clojure collection tier (core/20-coll.clj) over
+# re-matches + the __make-uuid host constructor (types.janet).
 
 (def- core-bindings
   "Map of symbol name → function for all core functions."
@@ -2678,9 +2633,6 @@
     "identical?" core-identical?
     "zero?" core-zero?
     "pos?" core-pos?
-    "neg?" core-neg?
-    "even?" core-even?
-    "odd?" core-odd?
     "integer?" core-integer?
     "list?" core-list?
     "every?" core-every?
@@ -2695,7 +2647,6 @@
     "quot" core-quot
     "rand" core-rand
     "=" core-=
-    "not=" core-not=
     "<" core-<
     ">" core->
     "<=" core-<=
@@ -2733,9 +2684,6 @@
     "future?" core-future?
     "future-cancel" core-future-cancel
     "tagged-literal" core-tagged-literal
-    "ensure-reduced" core-ensure-reduced
-    "unreduced" core-unreduced
-    "halt-when" core-halt-when
     "re-groups" core-re-groups
     "transient" core-transient
     "transient?" core-transient?
@@ -2748,6 +2696,7 @@
     "hash-ordered-coll" core-hash-ordered-coll
     "hash-unordered-coll" core-hash-unordered-coll
     "gensym" gensym
+    "__make-uuid" make-uuid
     "compare" core-compare
     "type" core-type
     "slurp" core-slurp
@@ -2759,10 +2708,7 @@
     "__list-dir" core-list-dir
     "parse-long" core-parse-long
     "parse-double" core-parse-double
-    "parse-boolean" core-parse-boolean
-    "newline" core-newline
     "current-time-ms" core-current-time-ms
-    "parse-uuid" core-parse-uuid
     "mapcat" core-mapcat
     "transduce" core-transduce
     "sequence" core-sequence
@@ -2785,8 +2731,6 @@
     "sort" core-sort
     "partition" core-partition
     "range" core-range
-    "identity" core-identity
-    "constantly" core-constantly
     "vector" core-vector
     "hash-map" core-hash-map
     "array-map" core-array-map
@@ -2845,7 +2789,6 @@
     "make-array" core-make-array
     "into-array" core-into-array
     "to-array" core-to-array
-    "to-array-2d" core-to-array-2d
     "bytes" core-bytes
     "booleans" core-booleans
     "ints" core-ints
@@ -2856,11 +2799,6 @@
     "chars" core-chars
     "byte" core-byte
     "short" core-short
-    "unchecked-byte" core-unchecked-byte
-    "unchecked-short" core-unchecked-short
-    "unchecked-char" core-unchecked-char
-    "unchecked-float" core-unchecked-float
-    "unchecked-double" core-unchecked-double
     "bigint" core-bigint
     "biginteger" core-biginteger
     "chunk-buffer" core-chunk-buffer
@@ -2874,8 +2812,6 @@
     "cat" core-cat
     "disj!" core-disj!
     "reader-conditional" core-reader-conditional
-    "array-seq" core-array-seq
-    "seque" core-seque
     "class" core-class
     "enumeration-seq" core-enumeration-seq
     "iterator-seq" core-iterator-seq
@@ -2886,8 +2822,6 @@
     "proxy-call-with-super" core-proxy-call-with-super
     "proxy-mappings" core-proxy-mappings
     "update-proxy" core-update-proxy
-    "==" core-numeric=
-    "memfn" core-memfn
     "eduction" core-eduction
     "->Eduction" core->Eduction
     "proxy-super" core-proxy-super

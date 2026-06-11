@@ -407,3 +407,10 @@
 ;; loads — so the macro must be registered BEFORE those tiers, else (lazy-seq …)
 ;; compiles as a call to the macro-as-function and leaks its expansion at runtime
 ;; (jolt-r81). They only need seed fns (make-lazy-seq/coll->cells/concat).
+
+;; memfn: a fn wrapping a method call, (memfn toUpperCase) => #(.toUpperCase %).
+;; The method symbol is rewritten to jolt's .method call sugar; extra arg names
+;; become fn params, as in Clojure.
+(defmacro memfn [method-name & args]
+  `(fn [target# ~@args]
+     (~(symbol (str "." (name method-name))) target# ~@args)))

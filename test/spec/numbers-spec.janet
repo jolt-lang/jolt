@@ -192,3 +192,15 @@
   ["num passes a number through" "5"   "(num 5)"]
   ["num on a double"        "5.5" "(num 5.5)"]
   ["num throws on non-number" :throws "(num \"x\")"])
+
+# == is numeric equality: single arg is trivially true (Clojure's 1-arity
+# never inspects the value); 2+ args must be numbers.
+(defspec "numbers / == numeric equality"
+  ["== single arg"          "true"  "(== :a)"]
+  ["== equal"               "true"  "(== 2 2)"]
+  ["== unequal"             "false" "(== 2 3)"]
+  ["== chained"             "true"  "(== 2 2 2)"]
+  ["== chained unequal"     "false" "(== 2 2 3)"]
+  ["== int and double"      "true"  "(== 1 1.0)"]
+  ["== throws on non-number" :throws "(== 1 :a)"]
+  ["== throws on two keywords" :throws "(== :a :a)"])
