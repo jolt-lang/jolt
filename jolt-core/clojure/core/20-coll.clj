@@ -17,6 +17,25 @@
 ;; even?/odd? stay in the seed: (filter even? ...) is idiomatic-hot and the
 ;; overlay versions cost an extra call layer per element (seq-pipe bench 4x).
 
+;; Variadic bit ops — canonical Clojure arities folding the binary host op
+;; (__bit-* seams). 2-arg call sites still compile to the native janet op via
+;; the backend's native-ops table, so the binary fast path is unchanged.
+(defn bit-and
+  ([x y] (__bit-and x y))
+  ([x y & more] (reduce __bit-and (__bit-and x y) more)))
+
+(defn bit-or
+  ([x y] (__bit-or x y))
+  ([x y & more] (reduce __bit-or (__bit-or x y) more)))
+
+(defn bit-xor
+  ([x y] (__bit-xor x y))
+  ([x y & more] (reduce __bit-xor (__bit-xor x y) more)))
+
+(defn bit-and-not
+  ([x y] (__bit-and-not x y))
+  ([x y & more] (reduce __bit-and-not (__bit-and-not x y) more)))
+
 ;; The printing family, over two host seams: __write (push a string to *out*)
 ;; and __pr-str1 (render ONE value readably). The renderer itself stays host —
 ;; it's representation-coupled (pvec/phm/phs/sorted internals) and shared with

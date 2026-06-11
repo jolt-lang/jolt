@@ -17,7 +17,10 @@
    "<" < ">" > "<=" <= ">=" >= "=" =
    "inc" inc "dec" dec
    "mod" mod "rem" rem "quot" quot
-   "bit-and" bit-and "bit-or" bit-or "bit-xor" bit-xor})
+   ;; the __bit-* seams: the PUBLIC bit fns are 20-coll variadic shells now,
+   ;; which don't exist yet when this ns loads. Folding stays 2-arg (a 3+-arg
+   ;; constant call throws arity inside the fold and is left for runtime).
+   "bit-and" __bit-and "bit-or" __bit-or "bit-xor" __bit-xor})
 
 (defn- const? [n] (= :const (get n :op)))
 (defn- const-num? [n] (and (const? n) (number? (get n :val))))

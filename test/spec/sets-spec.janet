@@ -43,3 +43,16 @@
   ["join"                   "#{{:a 1, :b 2, :c 3}}" "(do (require (quote [clojure.set :as s])) (s/join #{{:a 1 :b 2}} #{{:b 2 :c 3}}))"]
   ["map-invert"             "{1 :a}"     "(do (require (quote [clojure.set :as s])) (s/map-invert {:a 1}))"]
   ["rename-keys"            "{:b 1}"     "(do (require (quote [clojure.set :as s])) (s/rename-keys {:a 1} {:a :b}))"])
+
+# set? recognizes every set representation (jolt-dpn: sorted sets are tagged
+# tables the host set? predicate missed).
+(defspec "set / set? across representations"
+  ["literal"        "true"  "(set? #{1})"]
+  ["empty literal"  "true"  "(set? #{})"]
+  ["sorted-set"     "true"  "(set? (sorted-set 1 2))"]
+  ["sorted-set-by"  "true"  "(set? (sorted-set-by > 1 2))"]
+  ["empty sorted"   "true"  "(set? (sorted-set))"]
+  ["map is not"     "false" "(set? {})"]
+  ["vector is not"  "false" "(set? [1])"]
+  ["coll? still true" "true" "(coll? (sorted-set 1))"]
+  ["ifn? sorted-set" "true" "(ifn? (sorted-set 1))"])

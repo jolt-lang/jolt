@@ -81,3 +81,12 @@
   ["call literal fn" "1"      "((fn* [] 1))"]
   ["call nested"     "6"      "(+ ((fn* [] 1)) ((fn* [] 2)) ((fn* [] 3)))"]
   ["call nil"        :throws  "(nil)"])
+
+# if takes two or three argument forms — anything else is a compile-time
+# error (spec 03-special-forms X1).
+(defspec "forms / if arity (X1)"
+  ["bare if throws"      :throws "(if)"]
+  ["one-arg if throws"   :throws "(if true)"]
+  ["four-arg if throws"  :throws "(if true 1 2 3)"]
+  ["two-arg if ok"       "nil"   "(if false 1)"]
+  ["three-arg if ok"     "2"     "(if false 1 2)"])

@@ -1450,7 +1450,8 @@
 (defn core-hash-set [& xs]
   (apply make-phs xs))
 
-(defn core-set? [x] (set? x))
+# sorted sets are tagged tables the host set? predicate misses (jolt-dpn)
+(defn core-set? [x] (or (set? x) (core-sorted-set? x)))
 (defn core-disj [s & ks]
   (cond
     (core-sorted-set? s) ((sorted-op s :disj) s ks)
@@ -2782,9 +2783,9 @@
     "init-proxy" core-init-proxy
     "get-proxy-class" core-get-proxy-class
     # Bit operations
-    "bit-and" core-bit-and
-    "bit-or" core-bit-or
-    "bit-xor" core-bit-xor
+    "__bit-and" core-bit-and
+    "__bit-or" core-bit-or
+    "__bit-xor" core-bit-xor
     "bit-not" core-bit-not
     "bit-shift-left" core-bit-shift-left
     "bit-shift-right" core-bit-shift-right
@@ -2792,7 +2793,7 @@
     "bit-set" core-bit-set
     "bit-flip" core-bit-flip
     "bit-test" core-bit-test
-    "bit-and-not" core-bit-and-not
+    "__bit-and-not" core-bit-and-not
     "unsigned-bit-shift-right" core-unsigned-bit-shift-right
     # Integer coercion / unchecked math
     "int" core-int

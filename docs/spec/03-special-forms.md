@@ -66,7 +66,8 @@ reference; it differs from Scheme.
 
 S1–S3, E1–E2 → jolt `forms-spec` "if/do/def" group; truthiness group in
 `truthiness-spec`; clojure-test-suite `core_test/if.cljc`. S4 → `forms-spec`
-fn/loop recur cases. X1 → UNVERIFIED (arity-error case to add).
+fn/loop recur cases. X1 → `forms-spec` "if arity (X1)" (0/1/4-arg forms throw
+in both the analyzer and the interpreter).
 
 ---
 

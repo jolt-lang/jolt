@@ -133,11 +133,15 @@
 (defn- analyze-special [ctx op items env]
   (case op
     "quote" (quote-node (second items))
-    "if" (if-node (analyze ctx (nth items 1) env)
-                  (analyze ctx (nth items 2) env)
-                  (if (> (count items) 3)
-                    (analyze ctx (nth items 3) env)
-                    (const nil)))
+    "if" (do
+           ;; 2 or 3 argument forms only (spec 03-special-forms X1)
+           (when (or (< (count items) 3) (> (count items) 4))
+             (throw (str "Wrong number of args (" (dec (count items)) ") passed to: if")))
+           (if-node (analyze ctx (nth items 1) env)
+                    (analyze ctx (nth items 2) env)
+                    (if (> (count items) 3)
+                      (analyze ctx (nth items 3) env)
+                      (const nil))))
     "do" (analyze-seq ctx (rest items) env)
     "throw" (throw-node (analyze ctx (nth items 1) env))
     "def" (let [name-sym (nth items 1)]

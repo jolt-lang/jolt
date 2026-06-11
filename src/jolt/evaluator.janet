@@ -1531,10 +1531,14 @@
                (set result (eval-form ctx bindings (in form i)))
                (++ i)))
            result)
-    "if" (let [test-val (eval-form ctx bindings (in form 1))]
-           (if (and (not (nil? test-val)) (not (= false test-val)))
-             (eval-form ctx bindings (in form 2))
-             (if (> (length form) 3) (eval-form ctx bindings (in form 3)) nil)))
+    "if" (do
+           # 2 or 3 argument forms only (spec 03-special-forms X1)
+           (when (or (< (length form) 3) (> (length form) 4))
+             (error (string "Wrong number of args (" (dec (length form)) ") passed to: if")))
+           (let [test-val (eval-form ctx bindings (in form 1))]
+             (if (and (not (nil? test-val)) (not (= false test-val)))
+               (eval-form ctx bindings (in form 2))
+               (if (> (length form) 3) (eval-form ctx bindings (in form 3)) nil))))
     "def" (let [raw-name (in form 1)
                 name-sym (unwrap-meta-name raw-name)
                 # Metadata on the name: keyword/type-hint metadata rides on the

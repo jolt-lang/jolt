@@ -204,3 +204,17 @@
   ["== int and double"      "true"  "(== 1 1.0)"]
   ["== throws on non-number" :throws "(== 1 :a)"]
   ["== throws on two keywords" :throws "(== :a :a)"])
+
+# Variadic bit ops (canonical Clojure arities: binary host op folded over the
+# rest). Shift/clear/set/flip/test stay 2-arg, as in Clojure.
+(defspec "numbers / variadic bit ops"
+  ["bit-and 2"        "4"  "(bit-and 12 6)"]
+  ["bit-and 3"        "4"  "(bit-and 12 6 7)"]
+  ["bit-and 4"        "0"  "(bit-and 12 6 7 3)"]
+  ["bit-or 3"         "7"  "(bit-or 1 2 4)"]
+  ["bit-xor 3"        "7"  "(bit-xor 1 2 4)"]
+  ["bit-xor folds left" "1" "(bit-xor 5 6 2)"]
+  ["bit-and-not 2"    "8"  "(bit-and-not 12 6)"]
+  ["bit-and-not 3"    "8"  "(bit-and-not 12 6 3)"]
+  ["bit-and single arg throws" :throws "(bit-and 5)"]
+  ["bit-or keeps binary fast path" "3" "(bit-or 1 2)"])
