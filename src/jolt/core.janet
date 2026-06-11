@@ -1888,7 +1888,13 @@
 (defn core-short-array [a & rest] (make-num-array a rest 0))
 (defn core-double-array [a & rest] (make-num-array a rest 0))
 (defn core-float-array [a & rest] (make-num-array a rest 0))
-(defn core-char-array [a & rest] (make-num-array a rest (make-char 0)))
+(defn core-char-array [a & rest]
+  # JVM char-array also accepts a STRING/char-seq (char[] of its characters) —
+  # selmer's parse-str does (char-array template).
+  (cond
+    (string? a) (map make-char (string/bytes a))
+    (buffer? a) (map make-char (string/bytes (string a)))
+    (make-num-array a rest (make-char 0))))
 (defn core-boolean-array [a & rest] (make-num-array a rest false))
 
 # Byte arrays — Janet buffers (each element a 0..255 byte).

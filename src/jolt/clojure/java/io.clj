@@ -12,16 +12,36 @@
 
 (defn as-file [x] (str x))
 
-(defn reader [x] (janet.file/open (str x) :r))
+(defn reader [x]
+  (cond
+    ;; already a reader (java.io shim or janet file handle) — pass through,
+    ;; like the JVM's io/reader on a Reader
+    (= :jolt/jio-string-reader (get x :jolt/type)) x
+    (= :jolt/url (get x :jolt/type)) (java.io.StringReader. (janet/slurp (.getPath x)))
+    (= :core/file (janet/type x)) x
+    (sequential? x) (java.io.StringReader. (apply str x))   ; char[] → in-memory reader
+    ;; a path: an in-memory reader over the file's content — gives the
+    ;; java.io.Reader surface (.read/.mark/.reset) plus line-seq's
+    ;; :read-line-fn, which a raw janet file handle has neither of
+    :else (java.io.StringReader. (janet/slurp (str x)))))
 (defn writer [x] (janet.file/open (str x) :w))
 (defn input-stream [x] (reader x))
 (defn output-stream [x] (writer x))
 
 (defn resource
-  "Returns a slurp-able path for `path` if it exists, else nil. (Clojure returns
-  a URL; a path works the same with slurp here, since there's no classpath.)"
+  "Returns a slurp-able path for `path` if it exists, else nil. (Clojure
+  returns a classpath URL; here the loader's source roots play the classpath
+  role — the bare path is tried first, then path under each root.)"
   [path]
-  (let [p (str path)] (when (janet.os/stat p) p)))
+  (let [p (str path)]
+    (if (janet.os/stat p)
+      p
+      (loop [roots (seq (__source-roots))]
+        (when roots
+          (let [cand (str (first roots) "/" p)]
+            (if (janet.os/stat cand)
+              cand
+              (recur (next roots)))))))))
 
 (defn delete-file
   ([f] (delete-file f false))

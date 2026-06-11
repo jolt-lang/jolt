@@ -560,6 +560,17 @@
         (when proto-impls
           (get proto-impls method-name))))))
 
+(defn find-method-any-protocol
+  "Find a method implementation for a type, searching every protocol it
+  implements (dot calls name the method but not the protocol)."
+  [ctx type-tag method-name]
+  (let [type-impls (get (get (ctx :env) :type-registry) type-tag)]
+    (when type-impls
+      (var r nil)
+      (eachp [_ proto-impls] type-impls
+        (when (nil? r) (set r (get proto-impls method-name))))
+      r)))
+
 (defn type-satisfies?
   "Check if a type satisfies a protocol."
   [ctx type-tag protocol-name]

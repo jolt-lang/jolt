@@ -12,6 +12,7 @@
 (import ./backend :as backend)
 (import ./stdlib_embed :as stdlib-embed)
 (import ./host_iface :as host)
+(import ./javatime)   # java.time shims register into the evaluator at load
 
 # A defmacro expander compiles to a native fn (built as (fn args body...) and run
 # through the self-hosted pipeline) so macro expansion is COMPILED code, zero runtime

@@ -9,6 +9,10 @@
 (use ./reader)
 (use ./regex)
 
+# The env this module was loaded under — proto-chains to the Janet root env;
+# the janet/* interop bridge falls back to it inside env-less fibers.
+(def- module-load-env (fiber/getenv (fiber/current)))
+
 (defn- sym-name?
   [sym-s name-str]
   (and (struct? sym-s) (= :symbol (sym-s :jolt/type)) (= name-str (sym-s :name))))
@@ -378,13 +382,21 @@
     (when refer-syms
       (let [source-ns (ctx-find-ns ctx ns-name)
             target-ns (ctx-find-ns ctx (ctx-current-ns ctx))]
-        (each refer-sym refer-syms
-          (let [name (if (struct? refer-sym) (refer-sym :name) refer-sym)
-                v (ns-find source-ns name)]
-            (when v
-              # Share the SOURCE var (the Clojure model): macro-ness travels with
-              # it and source-ns redefinitions propagate to the referer.
-              (put (target-ns :mappings) name v))))))
+        (if (or (= refer-syms :all)
+                (and (struct? refer-syms) (= :symbol (refer-syms :jolt/type))
+                     (= "all" (refer-syms :name))))
+          # :refer :all — share EVERY var (this used to each over the :all
+          # keyword itself and silently refer nothing; selmer's
+          # [selmer.util :refer :all] left *tag-open* & co unresolved)
+          (eachp [nm v] (source-ns :mappings)
+            (put (target-ns :mappings) nm v))
+          (each refer-sym refer-syms
+            (let [name (if (struct? refer-sym) (refer-sym :name) refer-sym)
+                  v (ns-find source-ns name)]
+              (when v
+                # Share the SOURCE var (the Clojure model): macro-ness travels with
+                # it and source-ns redefinitions propagate to the referer.
+                (put (target-ns :mappings) name v)))))))
     nil))
 
 (defn- bind-put
@@ -430,13 +442,36 @@
   # realtime clock (sub-ms float epoch seconds) — os/time is whole seconds,
   # which quantized every elapsed-time measurement to 1000ms.
   {"currentTimeMillis" (fn [] (math/floor (* 1000 (os/clock :realtime))))
-   "nanoTime" (fn [] (math/floor (* 1e9 (os/clock :monotonic))))})
+   "nanoTime" (fn [] (math/floor (* 1e9 (os/clock :monotonic))))
+   "getProperty" (fn [k &opt dflt]
+                   (case k
+                     "os.name" (case (os/which)
+                                 :windows "Windows" :macos "Mac OS X" "Linux")
+                     "line.separator" "\n"
+                     "file.separator" "/"
+                     "user.dir" (os/cwd)
+                     "user.home" (os/getenv "HOME")
+                     "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")
+                     dflt))
+   "getenv" (fn [&opt k] (if k (os/getenv k) (os/environ)))})
 
 # Long statics: sentinels portable code compares against. jolt numbers are
 # doubles, so these are the f64 approximations.
 (def- long-statics
   {"MAX_VALUE" 9223372036854775807
    "MIN_VALUE" -9223372036854775808})
+
+# Pluggable host-class shims (java.time etc. register here at module load):
+#   class-statics: "ClassName" -> {"member" value-or-fn}   (Foo/bar resolution)
+#   tagged-methods: :jolt/tag -> {"method" (fn [self args...])}   ((.m obj) dispatch)
+(def class-statics @{})
+(def tagged-methods @{})
+(defn register-class-statics! [class-name tbl] (put class-statics class-name tbl))
+(defn register-tagged-methods! [tag tbl] (put tagged-methods tag tbl))
+# Constructor shims: (ClassName. args) resolves ClassName as a value, so the
+# ctor fns are interned as clojure.core vars at init (install-stateful-fns!).
+(def class-ctors @{})
+(defn register-class-ctor! [nm f] (put class-ctors nm f))
 
 # java.lang.String method surface for clj-compat interop: (.toLowerCase s),
 # (.indexOf s x), ... — the methods portable cljc libraries actually call.
@@ -451,6 +486,21 @@
    "toLowerCase" (fn [s] (string/ascii-lower s))
    "toUpperCase" (fn [s] (string/ascii-upper s))
    "trim"        (fn [s] (string/trim s))
+   # file-path surface: io/file returns plain path strings, so the java.io.File
+   # / java.net.URL methods selmer's template cache calls land here
+   "toURI"       (fn [s] s)
+   "toURL"       (fn [s] s)
+   "getPath"     (fn [s] s)
+   "getName"     (fn [s] (if-let [i (string/find "/" (string/reverse s))]
+                           (string/slice s (- (length s) i)) s))
+   "exists"      (fn [s] (not (nil? (os/stat s))))
+   "lastModified" (fn [s] (if-let [st (os/stat s)] (math/floor (* 1000 (st :modified))) 0))
+   # JVM String.split takes a REGEX string; trailing empties dropped like the JVM
+   "split"       (fn [s re &opt limit]
+                   (def parts (re-split (re-pattern re) s))
+                   (while (and (> (length parts) 0) (= "" (last parts)))
+                     (array/pop parts))
+                   parts)
    "length"      (fn [s] (length s))
    "isEmpty"     (fn [s] (= 0 (length s)))
    "charAt"      (fn [s i] {:jolt/type :jolt/char :ch (s i)})
@@ -487,6 +537,9 @@
     (if (= ns "Long")
       (let [v (get long-statics name)]
         (if (nil? v) (error (string "Unsupported Long member: Long/" name)) v))
+    (if (get class-statics ns)
+      (let [v (get (get class-statics ns) name)]
+        (if (nil? v) (error (string "Unsupported member: " ns "/" name)) v))
     (if (not (nil? ns))
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))
             aliased-ns (or (ns-alias-lookup current-ns ns) (ns-import-lookup current-ns ns))
@@ -502,11 +555,19 @@
           # the interop boundary visible at the call site.
           (if (or (= ns "janet") (string/has-prefix? "janet." ns))
             (let [jname (if (= ns "janet") name (string (string/slice ns 6) "/" name))
-                  entry (in (fiber/getenv (fiber/current)) (symbol jname))]
+                  # worker fibers may carry no env (fiber/new without :e inherit)
+                  # — fall back to the env captured at module load
+                  entry (in (or (fiber/getenv (fiber/current)) module-load-env)
+                            (symbol jname))]
               (if (not (nil? entry))
                 (if (table? entry) (entry :value) entry)
                 (error (string "Unable to resolve Janet symbol: " jname))))
-            (error (string "Unable to resolve symbol: " ns "/" name)))))
+            # syntax-quote ns-qualifies bare class names inside macros
+            # (selmer.util/StringBuilder); class names never belong to an ns —
+            # fall back to the constructor / statics shims before giving up.
+            (if-let [ctor (in class-ctors name)]
+              ctor
+              (error (string "Unable to resolve symbol: " ns "/" name))))))
       # Use :jolt/not-found sentinel to distinguish nil binding from absent binding
       (let [local (get bindings name :jolt/not-found-1)
             local (if (= local :jolt/not-found-1) (binding-get bindings name) local)]
@@ -536,7 +597,7 @@
                       # No implicit Janet fallback (Stage 3): an unresolved
                       # Clojure symbol is an error. Host access is the explicit
                       # janet/ prefix above.
-                      (error (string "Unable to resolve symbol: " name)))))))))))))))))
+                      (error (string "Unable to resolve symbol: " name))))))))))))))))))
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.
   Returns {:fixed [names...] :rest name-or-nil :all [names...]}"
@@ -887,15 +948,30 @@
   qualified name in the current ns. A fn; quoted class symbols arrive evaluated."
   [ctx & class-specs]
   (def ns (ctx-find-ns ctx (ctx-current-ns ctx)))
+  (defn sym-name [x] (if (and (struct? x) (= :symbol (x :jolt/type))) (x :name) (string x)))
+  (defn import-one [class-name &opt pkg]
+    (def last-dot (do (var idx -1) (var pos 0)
+                    (while (< pos (length class-name))
+                      (when (= (class-name pos) 46) (set idx pos)) (++ pos))
+                    idx))
+    (def short-name (if (>= last-dot 0) (string/slice class-name (+ last-dot 1)) class-name))
+    (def pkg-name (cond pkg pkg (>= last-dot 0) (string/slice class-name 0 last-dot) nil))
+    (ns-import ns short-name class-name)
+    # a deftype "class" lives as a ctor var in its defining jolt ns — share it
+    # (the JVM import makes (TextNode. ...) resolvable; this is our analog)
+    (when pkg-name
+      (when-let [src-ns (get ((ctx :env) :namespaces) pkg-name)
+                 v (ns-find src-ns short-name)]
+        (put (ns :mappings) short-name v))))
   (each class-spec class-specs
-    (let [class-name (if (and (struct? class-spec) (= :symbol (class-spec :jolt/type)))
-                       (class-spec :name) (string class-spec))
-          last-dot (do (var idx -1) (var pos 0)
-                     (while (< pos (length class-name))
-                       (when (= (class-name pos) 46) (set idx pos)) (++ pos))
-                     idx)
-          short-name (if (>= last-dot 0) (string/slice class-name (+ last-dot 1)) class-name)]
-      (ns-import ns short-name class-name)))
+    (if (or (array? class-spec) (tuple? class-spec)
+            (and (table? class-spec) (= :jolt/pvec (class-spec :jolt/type))))
+      # vector spec: [pkg Class1 Class2 ...]
+      (let [items (if (table? class-spec) (pv->array class-spec) class-spec)
+            pkg (sym-name (in items 0))]
+        (for i 1 (length items)
+          (import-one (string pkg "." (sym-name (in items i))) pkg)))
+      (import-one (sym-name class-spec))))
   nil)
 
 (defn refer-clojure-impl
@@ -1240,6 +1316,28 @@
           "java.util.regex.Pattern" (and (table? val) (= :jolt/regex (val :jolt/type)))
           "Character" (and (struct? val) (= :jolt/char (get val :jolt/type)))
           "java.lang.Character" (and (struct? val) (= :jolt/char (get val :jolt/type)))
+          # java.time shims (javatime.janet); #inst IS java.util.Date in Clojure
+          "java.util.Date" (and (struct? val) (= :jolt/inst (get val :jolt/type)))
+          "Date" (and (struct? val) (= :jolt/inst (get val :jolt/type)))
+          "Instant" (and (table? val) (= :jolt/instant (get val :jolt/type)))
+          "java.time.Instant" (and (table? val) (= :jolt/instant (get val :jolt/type)))
+          "LocalDateTime" (and (table? val) (= :jolt/local-dt (get val :jolt/type)))
+          "java.time.LocalDateTime" (and (table? val) (= :jolt/local-dt (get val :jolt/type)))
+          "ZonedDateTime" (and (table? val) (= :jolt/zoned-dt (get val :jolt/type)))
+          "java.time.ZonedDateTime" (and (table? val) (= :jolt/zoned-dt (get val :jolt/type)))
+          "LocalTime" false
+          "LocalDate" false
+          "java.sql.Time" false
+          "java.sql.Timestamp" false
+          "java.sql.Date" false
+          "DateTimeFormatter" (and (table? val) (= :jolt/dt-formatter (get val :jolt/type)))
+          "URL" (and (table? val) (= :jolt/url (get val :jolt/type)))
+          "java.net.URL" (and (table? val) (= :jolt/url (get val :jolt/type)))
+          # JVM char[] class — (Class/forName "[C"); jolt char arrays are Janet
+          # arrays of char structs
+          "[C" (and (array? val)
+                    (or (= 0 (length val))
+                        (and (struct? (val 0)) (= :jolt/char ((val 0) :jolt/type)))))
           "clojure.lang.Atom" (and (table? val) (= :jolt/atom (val :jolt/type)))
           "clojure.lang.Volatile" (and (table? val) (= :jolt/volatile (val :jolt/type)))
           "clojure.lang.Delay" (and (table? val) (= :jolt/delay (val :jolt/type)))
@@ -1255,6 +1353,12 @@
   # stdin, newline stripped, nil at EOF. __parse-next: one form off a string ->
   # [form rest-of-string], nil when only whitespace remains. *in*, read-line,
   # read, with-in-str, and line-seq are Clojure over these (core/50-io.clj).
+  # The loader's registered source roots (the closest thing to a classpath) —
+  # io/resource searches these for relative resource paths.
+  # registered constructor shims (StringReader., StringBuilder., ...)
+  (eachp [nm f] class-ctors (ns-intern core nm f))
+  (ns-intern core "__source-roots"
+    (fn [] (tuple ;(get (ctx :env) :source-paths))))
   (ns-intern core "__stdin-read-line"
     (fn []
       (let [l (file/read stdin :line)]
@@ -1815,9 +1919,26 @@
                   (if m
                     (m (string target) ;args)
                     (error (string "Unsupported String method ." field-name))))
+              # registered shim objects (java.time etc.): tag-keyed method tables
+              (if (and (or (table? target) (struct? target))
+                       (get tagged-methods (get target :jolt/type)))
+                (let [m (get (get tagged-methods (get target :jolt/type)) field-name)]
+                  (if m
+                    (m target ;args)
+                    (error (string "Unsupported method ." field-name " on " (string (get target :jolt/type))))))
               (if (target :jolt/deftype)
-                (let [method-key (keyword field-name)]
-                  (apply (get target method-key) target ;args))
+                # deftype/reify methods live in the protocol registry (or the
+                # instance's reified-fns table), not on the instance
+                (let [method-key (keyword field-name)
+                      own (get target method-key)
+                      reified (get (get target :jolt/protocol-methods) method-key)
+                      m (cond
+                          (or (function? own) (cfunction? own)) own
+                          (or (function? reified) (cfunction? reified)) reified
+                          (find-method-any-protocol ctx (target :jolt/deftype) field-name))]
+                  (if m
+                    (apply m target args)
+                    (error (string "No method ." field-name " on " (target :jolt/deftype)))))
                 # Janet-native interop: try field lookup + call
                 (if (or (table? target) (struct? target))
                   (let [method (get target (keyword field-name))]
@@ -1830,7 +1951,7 @@
                             (method-fn target ;args)
                             (error (string "Cannot call non-function " field-name " on " (type target)))))
                         (error (string "Cannot call non-function " field-name " on " (type target))))))
-                  (error (string "Cannot call method " field-name " on " (type target)))))))
+                  (error (string "Cannot call method " field-name " on " (type target))))))))
             # (. obj member) with no extra args: a symbol member naming a
             # function is a zero-arg method call (receiver passed as self);
             # a keyword or `-field` member is plain field access. Strings get
@@ -1840,16 +1961,26 @@
                 (if m
                   (m (string target))
                   (error (string "Unsupported String method ." field-name))))
+            (if (and (or (table? target) (struct? target))
+                     (get tagged-methods (get target :jolt/type))
+                     (get (get tagged-methods (get target :jolt/type)) field-name))
+              ((get (get tagged-methods (get target :jolt/type)) field-name) target)
             (let [v (get target (keyword field-name))]
               (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type))
                        (not (string/has-prefix? "-" member-name)))
                 (cond
                   (or (function? v) (cfunction? v)) (v target)
+                  # zero-arg deftype/reify method via the protocol registry
+                  (and (table? target) (target :jolt/deftype))
+                    (let [reified (get (get target :jolt/protocol-methods) (keyword field-name))
+                          m (if (or (function? reified) (cfunction? reified)) reified
+                              (find-method-any-protocol ctx (target :jolt/deftype) field-name))]
+                      (if m (m target) v))
                   # value stored as an unevaluated fn* form: compile then call
                   (array? v) (let [f (eval-form ctx bindings v)]
                                (if (or (function? f) (cfunction? f)) (f target) f))
                   v)
-                v)))))
+                v))))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]

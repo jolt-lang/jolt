@@ -52,8 +52,12 @@
 
 ;; instance?: class names don't evaluate to values on jolt, so the type arg is
 ;; passed quoted to the ctx-capturing checker; the value evaluates normally.
+;; A LIST in type position is a class-valued expression (e.g. Selmer's
+;; (Class/forName "[C")) — evaluate it instead.
 (defmacro instance? [t x]
-  `(instance-check (quote ~t) ~x))
+  (if (seq? t)
+    `(instance-check ~t ~x)
+    `(instance-check (quote ~t) ~x)))
 
 ;; Single-threaded host: evaluate the monitor expr (for its effects, matching
 ;; Clojure's evaluation order) and the body — no lock to take.

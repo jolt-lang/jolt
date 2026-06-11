@@ -61,3 +61,51 @@
   [".equalsIgnoreCase" "true" "(.equalsIgnoreCase \"AbC\" \"aBc\")"]
   ["Long/MAX_VALUE" "true"    "(pos? Long/MAX_VALUE)"]
   ["unsupported method throws" :throws "(.frobnicate \"abc\")"])
+
+# java.time shims (jolt-ea7): epoch-ms backed values + a DateTimeFormatter
+# pattern subset — the surface Selmer's date filters drive. Formatting uses
+# the HOST's local timezone, so rows assert structure, not wall-clock values.
+(defspec "interop / java.time shims"
+  ["ofPattern formats #inst"    "true"
+   "(string? (.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\"))"]
+  ["pattern shape"              "true"
+   "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}\" (.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\")))"]
+  ["month name + ampm"          "true"
+   "(boolean (re-matches #\"[A-Z][a-z]{2} \\d{1,2}, 2020 \\d{1,2}:\\d{2} [AP]M\" (.format (DateTimeFormatter/ofPattern \"MMM d, yyyy h:mm a\") #inst \"2020-03-05T13:45:30Z\")))"]
+  ["quoted literal"             "true"
+   "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\" (.format DateTimeFormatter/ISO_LOCAL_DATE_TIME #inst \"2020-03-05T13:45:30Z\")))"]
+  ["localized style"            "true"
+   "(string? (.format (DateTimeFormatter/ofLocalizedDate FormatStyle/MEDIUM) #inst \"2020-03-05T13:45:30Z\"))"]
+  ["withLocale chain"           "true"
+   "(string? (.format (.withLocale (DateTimeFormatter/ofPattern \"yyyy\") (java.util.Locale. \"en\")) #inst \"2020-01-01T00:00:00Z\"))"]
+  ["fix-date chain"             "true"
+   "(instance? LocalDateTime (-> #inst \"2020-03-05T13:45:30Z\" (.toInstant) (.atZone (ZoneId/systemDefault)) (.toLocalDateTime)))"]
+  ["inst is java.util.Date"     "true"  "(instance? java.util.Date #inst \"2020-01-01T00:00:00Z\")"]
+  ["Instant instance"           "true"  "(instance? java.time.Instant (Instant/ofEpochMilli 0))"]
+  ["getTime epoch ms"           "0"     "(.getTime #inst \"1970-01-01T00:00:00Z\")"]
+  ["toEpochMilli round trip"    "1234"  "(.toEpochMilli (Instant/ofEpochMilli 1234))"]
+  ["Instant/now is current"     "true"  "(> (.toEpochMilli (Instant/now)) 1500000000000)"]
+  ["sql types are not"          "false" "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")"])
+
+# java.io / java.lang shims that carry Selmer's char-by-char template reader.
+(defspec "interop / StringReader & StringBuilder"
+  ["StringReader read"     "[97 98 -1]"
+   "(let [r (java.io.StringReader. \"ab\")] [(.read r) (.read r) (.read r)])"]
+  ["mark/reset"            "[97 97]"
+   "(let [r (StringReader. \"ab\")] (.mark r 1) [(.read r) (do (.reset r) (.read r))])"]
+  ["StringBuilder append"  "\"ab1\""
+   "(.toString (-> (StringBuilder.) (.append \"a\") (.append \\b) (.append 1)))"]
+  ["capacity arg is not content" "\"x\""
+   "(.toString (.append (StringBuilder. 16) \"x\"))"]
+  ["setLength truncates"   "\"ab\""
+   "(let [sb (StringBuilder.)] (.append sb \"abcd\") (.setLength sb 2) (.toString sb))"]
+  ["char-array of string"  "true"
+   "(instance? (Class/forName \"[C\") (char-array \"ab\"))"]
+  ["reader over char[]"    "97"
+   "(do (require (quote clojure.java.io)) (.read (clojure.java.io/reader (char-array \"abc\"))))"]
+  ["line-seq over file reader" "[\"a\" \"b\"]"
+   "(do (require (quote clojure.java.io)) (janet/spit \"/tmp/jolt-lineseq-spec.txt\" \"a\\nb\\n\") (vec (line-seq (clojure.java.io/reader \"/tmp/jolt-lineseq-spec.txt\"))))"]
+  ["with-open closes shim" "97"
+   "(with-open [r (StringReader. \"a\")] (.read r))"]
+  ["vector :import shares deftype ctor" "\"hi!\""
+   "(do (ns spec.nodea) (defprotocol SpecP (spec-pm [this])) (deftype SpecTN [t] SpecP (spec-pm [this] (str t \"!\"))) (ns spec.nodeb (:import [spec.nodea SpecTN])) (.spec-pm (SpecTN. \"hi\")))"])
