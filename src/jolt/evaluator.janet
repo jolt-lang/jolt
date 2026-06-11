@@ -172,8 +172,11 @@
 
 (defn- d-realize
   "Realize a lazy-seq to an array for positional destructuring / splicing; pass
-  others (pvec/plist coerced to array, everything else unchanged)."
+  others (pvec/plist coerced to array, everything else unchanged). nil is an
+  empty seq, as everywhere in Clojure — ~@nil splices nothing (an interpreted
+  macro's empty & rest binds nil, which used to blow up `each`)."
   [val]
+  (if (nil? val) @[]
   (if (pvec? val) (pv->array val)
   (if (plist? val) (pl->array val)
   (if (lazy-seq? val)
@@ -187,7 +190,7 @@
                 (let [rt (in cell 1)]
                   (if (nil? rt) (set go false) (set cur (ls-rest-cached cur rt))))))))
       items)
-    val))))
+    val)))))
 
 (defn- syntax-quote*
   [ctx bindings form &opt gsmap]

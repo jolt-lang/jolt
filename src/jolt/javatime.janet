@@ -171,6 +171,11 @@
   @{:jolt/type :jolt/string-builder
     :buf (cond (nil? init) @"" (number? init) (buffer/new init) (buffer init))})
 
+(defn make-string-writer []
+  @{:jolt/type :jolt/writer :buf @"" :sink nil})
+(defn make-out-writer []
+  @{:jolt/type :jolt/writer :buf nil :sink prin})
+
 (defn- render-piece [x]
   (cond
     (nil? x) "null"
@@ -216,6 +221,24 @@
       "reset" (fn [self] (put self :pos (or (self :marked) 0)) nil)
       "skip" (fn [self n] (put self :pos (min (length (self :s)) (+ (self :pos) n))) n)
       "close" (fn [self] nil)})
+  # java.io.Writer / StringWriter — the print-method protocol surface
+  # (jolt-g1r). A writer either pushes to a sink fn (stdout/custom) or
+  # accumulates in a buffer (StringWriter). write/append coerce chars the
+  # same way StringBuilder does.
+  (register-tagged-methods! :jolt/writer
+    @{"write"    (fn [self x]
+                   (if (self :sink)
+                     ((self :sink) (render-piece x))
+                     (buffer/push-string (self :buf) (render-piece x)))
+                   nil)
+      "append"   (fn [self x]
+                   (if (self :sink)
+                     ((self :sink) (render-piece x))
+                     (buffer/push-string (self :buf) (render-piece x)))
+                   self)
+      "flush"    (fn [self] nil)
+      "close"    (fn [self] nil)
+      "toString" (fn [self] (string (or (self :buf) "")))})
   (register-tagged-methods! :jolt/string-builder
     @{"append" (fn [self x] (buffer/push (self :buf) (render-piece x)) self)
       "toString" (fn [self] (string (self :buf)))
@@ -238,6 +261,8 @@
     (register-class-ctor! nm string-reader))
   (each nm ["StringBuilder" "java.lang.StringBuilder"]
     (register-class-ctor! nm string-builder))
+  (each nm ["StringWriter" "java.io.StringWriter"]
+    (register-class-ctor! nm make-string-writer))
   # java.net.URL: enough for selmer's template cache — file: URLs only.
   # A protocol-less spec throws (selmer catches MalformedURLException and
   # prepends file:///), and getPath hands back a stat-able filesystem path.

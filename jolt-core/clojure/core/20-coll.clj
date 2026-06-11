@@ -1064,9 +1064,7 @@
 
 (defn special-symbol? [s] (contains? special-syms s))
 
-;; Printer hooks are inert until print-method is a real multimethod (jolt-g1r).
-(defn print-method [x writer] nil)
-(defn print-dup [x writer] nil)
+;; print-method / print-dup are real multimethods in the io tier (50-io.clj).
 
 ;; JVM proxies don't exist on a Janet host: the read-only surface is inert,
 ;; the constructive surface throws (matching the prior seed stubs).

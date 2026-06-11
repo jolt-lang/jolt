@@ -127,3 +127,32 @@
       (let [line ((:read-line-fn rdr))]
         (when line
           (cons line (line-seq rdr)))))))
+
+;; --- print-method (jolt-g1r) ------------------------------------------------
+;; Canonical dispatch (clojure/core.clj 3693): the :type metadata when it's a
+;; keyword, else the value's type. On jolt, type is the keyword tag for
+;; builtins and the deftype name SYMBOL for records — so a record method is
+;; (defmethod print-method 'ns.Type [r w] ...) (class names aren't values
+;; here, the quoted full name is the dispatch value).
+;;
+;; The :default renders through the host's fast printer. The host renderer
+;; calls BACK into this table for records (the api wires the hook after the
+;; overlay loads), so a record method fires nested inside collections too.
+;; Builtin overrides (e.g. a :number method) fire only when print-method is
+;; called directly — pr/pr-str keep the native fast path for builtins (a
+;; documented jolt divergence).
+(defmulti print-method (fn [x writer]
+                         (let [t (get (meta x) :type)]
+                           (if (keyword? t) t (type x)))))
+
+(defmethod print-method :default [o w]
+  (.write w (__pr-str1 o))
+  nil)
+
+;; print-dup: jolt has one print representation, so dup routes to print-method
+;; (as Clojure's default does for most types).
+(defmulti print-dup (fn [x writer]
+                      (let [t (get (meta x) :type)]
+                        (if (keyword? t) t (type x)))))
+
+(defmethod print-dup :default [o w] (print-method o w))

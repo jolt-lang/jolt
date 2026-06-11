@@ -67,3 +67,31 @@
   ["pr writes no newline" "\"\\\\a\"" "(with-out-str (pr \\a))"]
   ["print nil arg"      "\"\""        "(with-out-str (print nil))"]
   ["prn keyword"        "\":k\\n\""   "(with-out-str (prn :k))"])
+
+# print-method is a real multimethod (jolt-g1r): canonical dispatch on
+# (:type meta) keyword else (type x); records print as #ns.Type{...} by
+# default, and a user (defmethod print-method 'ns.Type ...) overrides record
+# rendering everywhere — top level AND nested, through pr/prn/pr-str — via
+# the host renderer's callback. Builtin overrides apply only on direct
+# print-method calls (documented divergence; pr keeps the native fast path).
+(defspec "io / print-method multimethod"
+  ["records print canonically" "\"#user.Pt{:x 1, :y 2}\""
+   "(do (defrecord Pt [x y]) (pr-str (->Pt 1 2)))"]
+  ["records nested in colls" "\"[#user.Pt{:x 1, :y 2}]\""
+   "(do (defrecord Pt [x y]) (pr-str [(->Pt 1 2)]))"]
+  ["defmethod overrides a record, top level" "\"<3,4>\""
+   "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (pr-str (->Pt 3 4)))"]
+  ["defmethod fires nested in a map" "\"{:p <5,6>}\""
+   "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (pr-str {:p (->Pt 5 6)}))"]
+  ["defmethod fires through prn" "\"[<1,2>]\\n\""
+   "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (with-out-str (prn [(->Pt 1 2)])))"]
+  ["direct call uses :default" "\"42\""
+   "(let [w (StringWriter.)] (print-method 42 w) (.toString w))"]
+  ["direct builtin override" "\"#42#\""
+   "(do (defmethod print-method :number [n w] (.write w (str \"#\" n \"#\"))) (let [w (StringWriter.)] (print-method 42 w) (.toString w)))"]
+  ["print-dup routes to print-method" "\"[1 2]\""
+   "(let [w (StringWriter.)] (print-dup [1 2] w) (.toString w))"]
+  ["StringWriter accumulates" "\"ab\""
+   "(let [w (StringWriter.)] (.write w \"a\") (.append w \\b) (.toString w))"]
+  ["methods table inspectable" "true"
+   "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] r) (contains? (methods print-method) (quote user.Pt)))"])

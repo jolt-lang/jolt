@@ -1477,6 +1477,14 @@
   (def n (ns :name))
   (if (and (struct? n) (= :symbol (get n :jolt/type))) (n :name) (string n)))
 
+# print-method callback (jolt-g1r): set by api/init AFTER the overlay loads,
+# to a (fn [v emit] handled?) that looks for a USER-registered print-method
+# multimethod entry for v's dispatch value and renders through it (emit takes
+# string pieces). The renderer consults it only on the record/tagged
+# fallthrough, so built-in rendering pays nothing.
+(var print-method-cb nil)
+(defn set-print-method-cb! [f] (set print-method-cb f))
+
 (def- pr-char-escapes
   {34 "\\\"" 92 "\\\\" 10 "\\n" 9 "\\t" 13 "\\r" 12 "\\f" 8 "\\b"})
 (var pr-render nil)
@@ -1577,7 +1585,15 @@
       (and (table? v) (= :jolt/chan (get v :jolt/type))) (buffer/push-string buf "#<channel>")
       (pvec? v) (pr-render-seq buf (pv->array v) "[" "]")
       (plist? v) (pr-render-seq buf (pl->array v) "(" ")")
-      (and (table? v) (get v :jolt/deftype)) (buffer/push-string buf (string v))
+      (and (table? v) (get v :jolt/deftype))
+        (if (and print-method-cb (print-method-cb v (fn [piece] (buffer/push-string buf piece))))
+          nil
+          # Clojure's record syntax: #ns.Type{:k v, ...} (fields only, the
+          # deftype tag elided). This used to print the raw janet table.
+          (do
+            (buffer/push-string buf (string "#" (get v :jolt/deftype)))
+            (pr-render-pairs buf
+              (filter (fn [pair] (not= :jolt/deftype (in pair 0))) (pairs v)))))
       (tuple? v) (pr-render-seq buf v "[" "]")
       # mutable mode: arrays are vectors -> print with [] (else lists -> ())
       (array? v) (if mutable? (pr-render-seq buf v "[" "]") (pr-render-seq buf v "(" ")"))
@@ -2820,6 +2836,26 @@
   lives in the Clojure overlay (clojure.core.*-syntax / *-macros tiers)."
   []
   @{})
+
+# Wire the print-method callback once the overlay (and its print-method
+# multimethod) exists: the renderer's record fallthrough consults the methods
+# table on the var; only a USER-registered method fires — the multimethod's
+# :default would bounce straight back into the renderer.
+(defn install-print-method-cb! [ctx]
+  (def core-ns (ctx-find-ns ctx "clojure.core"))
+  (def pm-var (ns-find core-ns "print-method"))
+  (when pm-var
+    (set-print-method-cb!
+      (fn [v emit]
+        (def methods (get pm-var :jolt/methods))
+        (when methods
+          (def mt (core-meta v))
+          (def t (and mt (core-get mt :type)))
+          (def dval (if (keyword? t) t (core-type v)))
+          (def m (get methods dval))
+          (when m
+            (m v @{:jolt/type :jolt/writer :sink emit})
+            true))))))
 
 (def init-core!
   (fn [& args]

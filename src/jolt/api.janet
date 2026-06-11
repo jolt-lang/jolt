@@ -119,7 +119,10 @@
   # was still being built, so their expanders are interpreted closures. Now that the
   # full overlay + analyzer are in place, recompile those expanders to native code —
   # by steady state no macro expansion runs interpreted (no-op in interpreter mode).
-  (backend/ensure-macros-compiled! ctx))
+  (backend/ensure-macros-compiled! ctx)
+  # print-method's record hook: only wirable once the overlay multimethod
+  # exists (50-io tier), so it rides the end of overlay load.
+  (install-print-method-cb! ctx))
 
 (defn init
   "Create a new Jolt evaluation context.
