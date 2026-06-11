@@ -1560,13 +1560,9 @@
                              10 "newline" 32 "space" 9 "tab" 13 "return"
                              12 "formfeed" 8 "backspace" 0 "nul"
                              (char->string v))))
-      (regex? v) (do (buffer/push-string buf "#\"") (buffer/push-string buf (v :source)) (buffer/push-string buf "\""))
       (number? v) (buffer/push-string buf (fmt-number v))
       (and (struct? v) (= :symbol (v :jolt/type)))
         (buffer/push-string buf (if (v :ns) (string (v :ns) "/" (v :name)) (v :name)))
-      (and (struct? v) (= :jolt/uuid (v :jolt/type)))
-        (do (buffer/push-string buf "#uuid \"") (buffer/push-string buf (v :str))
-            (buffer/push-string buf "\""))
       (and (struct? v) (= :jolt/inst (v :jolt/type)))
         (do (buffer/push-string buf "#inst \"") (buffer/push-string buf (inst->rfc3339 v))
             (buffer/push-string buf "\""))
@@ -1581,8 +1577,6 @@
       (lazy-seq? v) (pr-render-seq buf (realize-for-iteration v) "(" ")")
       (set? v) (pr-render-seq buf (phs-seq v) "#{" "}")
       (phm? v) (pr-render-pairs buf (phm-entries v))
-      (core-transient? v) (buffer/push-string buf (string "#<transient " (v :kind) ">"))
-      (and (table? v) (= :jolt/chan (get v :jolt/type))) (buffer/push-string buf "#<channel>")
       (pvec? v) (pr-render-seq buf (pv->array v) "[" "]")
       (plist? v) (pr-render-seq buf (pl->array v) "(" ")")
       (and (table? v) (get v :jolt/deftype))
@@ -1597,6 +1591,15 @@
       (tuple? v) (pr-render-seq buf v "[" "]")
       # mutable mode: arrays are vectors -> print with [] (else lists -> ())
       (array? v) (if mutable? (pr-render-seq buf v "[" "]") (pr-render-seq buf v "(" ")"))
+      # Any remaining TAGGED value dispatches through print-method when the
+      # hook is wired: the io tier owns the cold renderings (uuid, regex,
+      # transient, channel — branches that used to live here), and user
+      # defmethods on any :jolt/* tag fire from inside nested values. Before
+      # the overlay loads (init-time error messages) these fall through to
+      # the raw pairs view below.
+      (and print-method-cb (get v :jolt/type)
+           (print-method-cb v (fn [piece] (buffer/push-string buf piece))))
+        nil
       (struct? v) (pr-render-pairs buf (pairs v))
       (table? v) (pr-render-pairs buf (pairs v))
       true (buffer/push-string buf (string v)))))

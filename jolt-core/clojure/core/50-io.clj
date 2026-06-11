@@ -156,3 +156,24 @@
                         (if (keyword? t) t (type x)))))
 
 (defmethod print-dup :default [o w] (print-method o w))
+
+;; Cold tagged-type renderings, migrated from the host renderer (the hot
+;; types — numbers, strings, symbols, collections — stay native). Each is the
+;; exact output the host branch produced.
+(defmethod print-method :jolt/uuid [u w]
+  (.write w (str "#uuid \"" (get u :str) "\""))
+  nil)
+
+(defmethod print-method :jolt/regex [re w]
+  (.write w (str "#\"" (get re :source) "\""))
+  nil)
+
+;; a transient's get IS the dispatched collection lookup — read the wrapper's
+;; own :kind field with the host accessor (same trap as sorted colls).
+(defmethod print-method :jolt/transient [t w]
+  (.write w (str "#<transient " (name (jolt.host/ref-get t :kind)) ">"))
+  nil)
+
+(defmethod print-method :jolt/chan [c w]
+  (.write w "#<channel>")
+  nil)

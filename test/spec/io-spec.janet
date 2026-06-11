@@ -95,3 +95,20 @@
    "(let [w (StringWriter.)] (.write w \"a\") (.append w \\b) (.toString w))"]
   ["methods table inspectable" "true"
    "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] r) (contains? (methods print-method) (quote user.Pt)))"])
+
+# Cold tagged-type printing now lives in io-tier defmethods (the host
+# renderer dispatches any remaining :jolt/* tagged value through the
+# print-method hook). Outputs unchanged from the old host branches; any
+# tagged type is now user-overridable, atoms included.
+(defspec "io / cold tagged types via print-method"
+  ["uuid"           "\"#uuid \\\"b6883c0a-0342-4007-9966-bc2dfa6b109e\\\"\""
+   "(pr-str (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"]
+  ["uuid nested"    "\"[#uuid \\\"b6883c0a-0342-4007-9966-bc2dfa6b109e\\\"]\""
+   "(pr-str [(parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\")])"]
+  ["regex"          "\"#\\\"a+b\\\"\""  "(pr-str #\"a+b\")"]
+  ["transient vector" "\"#<transient vector>\"" "(pr-str (transient [1]))"]
+  ["transient map"  "\"#<transient map>\""      "(pr-str (transient {:a 1}))"]
+  ["atom override fires nested" "\"{:a #atom[7]}\""
+   "(do (defmethod print-method :jolt/atom [a w] (.write w (str \"#atom[\" (deref a) \"]\"))) (pr-str {:a (atom 7)}))"]
+  ["uuid through str unchanged" "\"b6883c0a-0342-4007-9966-bc2dfa6b109e\""
+   "(str (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"])
