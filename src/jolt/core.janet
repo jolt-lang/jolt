@@ -1408,10 +1408,8 @@
 
 # complement now lives in the Clojure collection tier (core/20-coll.clj).
 
-# Jolt has no inst/uri/uuid host types, so these are always false; inst-ms has
-# nothing valid to read.
-(defn core-inst? [x] false)
-(defn core-inst-ms [x] (error "Not an instant (no inst type in Jolt)"))
+# inst?/inst-ms live in the Clojure collection tier (core/20-coll.clj).
+# Jolt has no uri host type, so uri? is always false.
 (defn core-uri? [x] false)
 # uuid? now lives in the Clojure collection tier (tagged-value predicate).
 (defn core-bytes? [x] (buffer? x))
@@ -2211,20 +2209,8 @@
 
 # intern is a ctx-capturing clojure.core fn now (install-stateful-fns!).
 
-# Hierarchy stubs for sci bootstrap
-(def core-get-method (fn [mm-var dispatch-val]
-  (let [methods (get mm-var :jolt/methods)]
-    (or (get methods dispatch-val) (get methods :default)))))
-(def core-methods (fn [mm-var] (get mm-var :jolt/methods)))
-(def core-remove-method (fn [mm-var dispatch-val]
-  (let [methods (get mm-var :jolt/methods)]
-    (put methods dispatch-val nil) mm-var)))
-(def core-remove-all-methods (fn [mm-var]
-  (put mm-var :jolt/methods @{}) mm-var))
-(defn core-prefer-method [mm-var dispatch-val-a dispatch-val-b]
-  (let [prefs (or (get mm-var :jolt/prefers)
-                 (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers)))]
-    (put prefs dispatch-val-a dispatch-val-b) mm-var))
+# get-method/methods/remove-method/remove-all-methods/prefer-method are
+# overlay macros (core/30-macros.clj) over the evaluator's *-setup fns.
 
 (defn core-with-meta [obj meta]
   # Functions and scalars can't carry metadata in Jolt's model — return as-is
@@ -2814,8 +2800,6 @@
     "mapcat" core-mapcat
     "transduce" core-transduce
     "sequence" core-sequence
-    "eduction" core-sequence
-    "unreduced" core-unreduced
     "keyword" core-keyword
     "symbol" core-symbol
     "namespace" core-namespace
@@ -2965,10 +2949,6 @@
     "num" core-num
     "char" core-char
     "char?" core-char?
-    "unchecked-inc" core-unchecked-inc
-    "unchecked-dec" core-unchecked-dec
-    "unchecked-add" core-unchecked-add
-    "unchecked-subtract" core-unchecked-subtract
     # Hash
     "hash" core-hash
     "atom" core-atom
@@ -2976,11 +2956,6 @@
     "reset!" core-reset!
     "swap!" core-swap!
     "not" core-not
-    "get-method" core-get-method
-    "methods" core-methods
-    "remove-method" core-remove-method
-    "remove-all-methods" core-remove-all-methods
-    "prefer-method" core-prefer-method
     "Object" core-Object
     "make-protocol" core-make-protocol
     "satisfies?" core-satisfies?
@@ -2998,8 +2973,6 @@
     "__local-var" core-local-var
     "__close" core-close-resource
     "avoid-method-too-large" core-avoid-method-too-large
-    "inst?" core-inst?
-    "inst-ms" core-inst-ms
     "uri?" core-uri?
     "bytes?" core-bytes?
     "meta" core-meta

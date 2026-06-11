@@ -1301,7 +1301,10 @@
     (fn [mm-sym]
       (def mm-var (mm-var-of mm-sym false))
       (when mm-var
-        (put mm-var :jolt/methods @{})
+        # clear IN PLACE: the dispatch closure captured this table at defmulti
+        # time, so swapping in a fresh one leaves dispatch seeing stale methods
+        (let [methods (get mm-var :jolt/methods)]
+          (when methods (each k (keys methods) (put methods k nil))))
         (clear-dispatch-cache! mm-var))
       mm-var))
   (ns-intern core "prefers-setup"
@@ -1317,7 +1320,13 @@
   (ns-intern core "methods-setup"
     (fn [mm-sym]
       (def mm-var (mm-var-of mm-sym false))
-      (and mm-var (get mm-var :jolt/methods))))
+      (when mm-var
+        # a jolt map, not the live host table (and phm so vector dispatch
+        # values look up by value, same reason build-eval-map promotes)
+        (var m (make-phm))
+        (let [tbl (get mm-var :jolt/methods)]
+          (when tbl (each k (keys tbl) (set m (phm-assoc m k (get tbl k))))))
+        m)))
   # satisfies?: evaluated protocol value + instance (matches the prior arm).
   (ns-intern core "satisfies?"
     (fn [proto obj]

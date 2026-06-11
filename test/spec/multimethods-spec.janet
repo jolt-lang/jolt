@@ -15,7 +15,15 @@
   ["get-method"         "\"one\""
    "(do (defmulti f identity) (defmethod f 1 [_] \"one\") ((get-method f 1) 1))"]
   ["remove-method"      :throws
-   "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (remove-method f 1) (f 1))"])
+   "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (remove-method f 1) (f 1))"]
+  ["methods"            "\"one\""
+   "(do (defmulti f identity) (defmethod f 1 [_] \"one\") ((get (methods f) 1) 1))"]
+  ["methods count"      "2"
+   "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f 2 [_] \"two\") (count (methods f)))"]
+  ["remove-all-methods" :throws
+   "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f 2 [_] \"two\") (remove-all-methods f) (f 1))"]
+  ["remove-all-methods empties the table" "0"
+   "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (remove-all-methods f) (count (methods f)))"])
 
 (defspec "multimethods / hierarchies"
   ["derive + isa?"      "true"   "(do (derive ::child ::parent) (isa? ::child ::parent))"]
