@@ -157,3 +157,38 @@
   ["parse-boolean case"  "nil"    "(parse-boolean \"True\")"]
   ["parse-boolean junk"  "nil"    "(parse-boolean \"yes\")"]
   ["parse-boolean throws" :throws "(parse-boolean true)"])
+
+# Jolt numbers don't overflow, so the auto-promoting (') and unchecked
+# variants are aliases of the checked ops (overlay defs, core/20-coll.clj).
+(defspec "numbers / promoting & unchecked aliases"
+  ["+'"                     "3"   "(+' 1 2)"]
+  ["-'"                     "3"   "(-' 5 2)"]
+  ["*'"                     "12"  "(*' 3 4)"]
+  ["inc'"                   "6"   "(inc' 5)"]
+  ["dec'"                   "4"   "(dec' 5)"]
+  ["unchecked-add"          "5"   "(unchecked-add 2 3)"]
+  ["unchecked-add-int"      "5"   "(unchecked-add-int 2 3)"]
+  ["unchecked-subtract"     "3"   "(unchecked-subtract 5 2)"]
+  ["unchecked-subtract-int" "3"   "(unchecked-subtract-int 5 2)"]
+  ["unchecked-multiply"     "12"  "(unchecked-multiply 3 4)"]
+  ["unchecked-multiply-int" "12"  "(unchecked-multiply-int 3 4)"]
+  ["unchecked-negate"       "-5"  "(unchecked-negate 5)"]
+  ["unchecked-negate-int"   "-5"  "(unchecked-negate-int 5)"]
+  ["unchecked-inc"          "2"   "(unchecked-inc 1)"]
+  ["unchecked-inc-int"      "2"   "(unchecked-inc-int 1)"]
+  ["unchecked-dec"          "0"   "(unchecked-dec 1)"]
+  ["unchecked-dec-int"      "0"   "(unchecked-dec-int 1)"]
+  ["unchecked-divide-int"   "3"   "(unchecked-divide-int 7 2)"]
+  ["unchecked-divide-int negative truncates toward zero" "-3" "(unchecked-divide-int -7 2)"]
+  ["unchecked-divide-int by zero throws" :throws "(unchecked-divide-int 1 0)"]
+  ["unchecked-remainder-int" "1"  "(unchecked-remainder-int 7 2)"]
+  ["unchecked-remainder-int negative" "-1" "(unchecked-remainder-int -7 2)"]
+  ["unchecked-int truncates" "3"  "(unchecked-int 3.7)"]
+  ["unchecked-int negative"  "-3" "(unchecked-int -3.7)"]
+  ["unchecked-long"          "3"  "(unchecked-long 3.7)"]
+  ["int? on integer"        "true"  "(int? 5)"]
+  ["int? on double"         "false" "(int? 5.5)"]
+  ["int? on non-number"     "false" "(int? \"5\")"]
+  ["num passes a number through" "5"   "(num 5)"]
+  ["num on a double"        "5.5" "(num 5.5)"]
+  ["num throws on non-number" :throws "(num \"x\")"])

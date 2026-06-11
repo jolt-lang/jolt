@@ -848,3 +848,37 @@
 ;; there, so vector? can't separate them and lists read as ifn?.
 (defn ifn? [x]
   (or (fn? x) (keyword? x) (symbol? x) (map? x) (set? x) (vector? x) (var? x)))
+
+;; Auto-promoting (') and unchecked arithmetic. Jolt numbers don't overflow,
+;; so all of these are the checked ops; fixed arities mirror Clojure's
+;; signatures. unchecked-divide-int goes through quot, so dividing by zero
+;; throws as on the JVM (the old seed fn silently truncated infinity).
+(def +' +)
+(def -' -)
+(def *' *)
+(def inc' inc)
+(def dec' dec)
+(defn unchecked-add [x y] (+ x y))
+(defn unchecked-subtract [x y] (- x y))
+(defn unchecked-multiply [x y] (* x y))
+(defn unchecked-negate [x] (- x))
+(defn unchecked-inc [x] (+ x 1))
+(defn unchecked-dec [x] (- x 1))
+(def unchecked-add-int unchecked-add)
+(def unchecked-subtract-int unchecked-subtract)
+(def unchecked-multiply-int unchecked-multiply)
+(def unchecked-negate-int unchecked-negate)
+(def unchecked-inc-int unchecked-inc)
+(def unchecked-dec-int unchecked-dec)
+(defn unchecked-divide-int [x y] (quot x y))
+(defn unchecked-remainder-int [x y] (rem x y))
+(defn unchecked-int [x] (int x))
+(def unchecked-long unchecked-int)
+
+;; int? is integer? on jolt: one number type, so fixed-precision and
+;; arbitrary-precision integers coincide.
+(defn int? [x] (integer? x))
+
+;; num: Clojure coerces to java.lang.Number; jolt just checks.
+(defn num [x]
+  (if (number? x) x (throw (str "num requires a number, got: " x))))

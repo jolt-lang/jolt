@@ -2020,7 +2020,8 @@
 (def core-long (fn [x] (if (core-char? x) (x :ch) (math/trunc x))))
 (def core-double (fn [x] (* 1.0 (if (core-char? x) (x :ch) x))))
 (def core-float core-double)
-(def core-num (fn [x] (if (number? x) x (error (string "num requires a number, got " (type x))))))
+# num and the unchecked-*/promoting-' arithmetic live in the Clojure
+# collection tier (core/20-coll.clj) — jolt numbers don't overflow.
 (defn core-char [x]
   "(char code-or-char) -> a character value."
   (cond
@@ -2028,10 +2029,6 @@
     (number? x) (make-char (math/trunc x))
     (string? x) (make-char (in x 0))
     (error "char expects a number or character")))
-(def core-unchecked-inc (fn [x] (+ x 1)))
-(def core-unchecked-dec (fn [x] (- x 1)))
-(def core-unchecked-add (fn [& xs] (+ ;xs)))
-(def core-unchecked-subtract (fn [& xs] (- ;xs)))
 
 # ============================================================
 # Hash
@@ -2626,15 +2623,8 @@
     (error "persistent! requires a transient")))
 
 # Unchecked arithmetic — Jolt numbers don't overflow, so these are plain ops.
-(defn core-unchecked-add [a b] (+ a b))
-(defn core-unchecked-subtract [a b] (- a b))
-(defn core-unchecked-multiply [a b] (* a b))
-(defn core-unchecked-negate [a] (- a))
-(defn core-unchecked-inc [a] (+ a 1))
-(defn core-unchecked-dec [a] (- a 1))
-(defn core-unchecked-divide-int [a b] (math/trunc (/ a b)))
-(defn core-unchecked-remainder-int [a b] (% a b))
-(defn core-unchecked-int [a] (math/trunc a))
+# unchecked-* arithmetic lives in the Clojure collection tier
+# (core/20-coll.clj); only the masking byte/short/char coercions remain above.
 
 # Hashing helpers
 # Hashes are masked to 24 bits at each step so intermediate products stay within
@@ -2700,13 +2690,6 @@
     "/" core-/
     "inc" core-inc
     "dec" core-dec
-    # auto-promoting variants — Jolt numbers don't overflow, so these are the
-    # same as their non-quoted counterparts
-    "+'" core-+
-    "-'" core-sub
-    "*'" core-*
-    "inc'" core-inc
-    "dec'" core-dec
     "mod" core-mod
     "rem" core-rem
     "quot" core-quot
@@ -2761,27 +2744,10 @@
     "assoc!" core-assoc!
     "dissoc!" core-dissoc!
     "pop!" core-pop!
-    "unchecked-add" core-unchecked-add
-    "unchecked-add-int" core-unchecked-add
-    "unchecked-subtract" core-unchecked-subtract
-    "unchecked-subtract-int" core-unchecked-subtract
-    "unchecked-multiply" core-unchecked-multiply
-    "unchecked-multiply-int" core-unchecked-multiply
-    "unchecked-negate" core-unchecked-negate
-    "unchecked-negate-int" core-unchecked-negate
-    "unchecked-inc" core-unchecked-inc
-    "unchecked-inc-int" core-unchecked-inc
-    "unchecked-dec" core-unchecked-dec
-    "unchecked-dec-int" core-unchecked-dec
-    "unchecked-divide-int" core-unchecked-divide-int
-    "unchecked-remainder-int" core-unchecked-remainder-int
-    "unchecked-int" core-unchecked-int
-    "unchecked-long" core-unchecked-int
     "hash-combine" core-hash-combine
     "hash-ordered-coll" core-hash-ordered-coll
     "hash-unordered-coll" core-hash-unordered-coll
     "gensym" gensym
-    "int?" core-integer?
     "compare" core-compare
     "type" core-type
     "slurp" core-slurp
@@ -2946,7 +2912,6 @@
     "long" core-long
     "double" core-double
     "float" core-float
-    "num" core-num
     "char" core-char
     "char?" core-char?
     # Hash
