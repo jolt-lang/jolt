@@ -291,15 +291,29 @@
             (if (and (struct? key) (= :jolt/splice (key :jolt/type)))
               (read-kvs s new-pos (array/concat kvs (key :items)))
               (let [pos (skip-whitespace s new-pos)
-                    [val new-pos2] (read-form s pos)]
-                (if (and (struct? val) (= :jolt/skip (val :jolt/type)))
-                  (read-kvs s new-pos2 kvs)
-                  (if (and (struct? val) (= :jolt/splice (val :jolt/type)))
+                    # The VALUE slot must skip comments/#_ while KEEPING the
+                    # pending key: dropping both (the old behavior) desynced
+                    # the kv pairing — {:a ; comment\n 1} read 1 as the next
+                    # KEY and the closing } landed in value position
+                    # ("Unmatched closing brace", jolt-ou8 / Selmer deps.edn).
+                    [val new-pos2]
+                    (do
+                      (var vp pos)
+                      (var v nil)
+                      (var looking true)
+                      (while looking
+                        (def [f np] (read-form s vp))
+                        (set vp np)
+                        (if (and (struct? f) (= :jolt/skip (f :jolt/type)))
+                          (set vp (skip-whitespace s np))
+                          (do (set v f) (set looking false))))
+                      [v vp])]
+                (if (and (struct? val) (= :jolt/splice (val :jolt/type)))
                     # Only push key if splice contributes items
                     (if (> (length (val :items)) 0)
                       (do (array/push kvs key) (read-kvs s new-pos2 (array/concat kvs (val :items))))
                       (read-kvs s new-pos2 kvs))
-                    (read-kvs s new-pos2 (-> kvs (array/push key) (array/push val))))))))))))
+                    (read-kvs s new-pos2 (-> kvs (array/push key) (array/push val)))))))))))
   (read-kvs s (+ pos 1) @[]))
 
 (defn read-set [s pos]

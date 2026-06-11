@@ -184,3 +184,19 @@
   ["int? Inf false"     "false" "(int? ##Inf)"]
   ["integer? Inf false" "false" "(integer? ##Inf)"]
   ["integer? NaN false" "false" "(integer? ##NaN)"])
+
+# ifn? is the canonical IFn set (jolt-1vx): lists are NOT IFn.
+(defspec "predicates / ifn?"
+  ["fn"        "true"  "(ifn? inc)"]
+  ["keyword"   "true"  "(ifn? :k)"]
+  ["symbol"    "true"  "(ifn? (quote s))"]
+  ["map"       "true"  "(ifn? {})"]
+  ["sorted map" "true" "(ifn? (sorted-map))"]
+  ["set"       "true"  "(ifn? #{1})"]
+  ["vector"    "true"  "(ifn? [1])"]
+  ["var"       "true"  "(ifn? (var first))"]
+  ["list NOT"  "false" "(ifn? (list 1 2))"]
+  ["lazy NOT"  "false" "(ifn? (map inc [1]))"]
+  ["string NOT" "false" "(ifn? \"s\")"]
+  ["number NOT" "false" "(ifn? 5)"]
+  ["nil NOT"   "false" "(ifn? nil)"])

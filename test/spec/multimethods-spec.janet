@@ -30,3 +30,19 @@
    "(do (defmulti classify :type :default :other) (defmethod classify :a [_] :alpha) (defmethod classify :other [_] :unknown) (classify {:type :zzz}))"]
   ["explicit :hierarchy"  "\"a\""
    "(do (def h (derive (make-hierarchy) ::dog ::animal)) (defmulti snd identity :hierarchy h) (defmethod snd ::animal [_] \"a\") (snd ::dog))"])
+
+# prefer-method breaks isa-dispatch ties; ambiguity without a preference is
+# an ERROR (jolt-heo — this used to silently take an arbitrary method).
+(defspec "multimethods / prefer-method"
+  ["preference picks the winner" ":rect"
+   "(do (derive :p/sq :p/rect) (derive :p/sq :p/shape) (defmulti pm1 identity) (defmethod pm1 :p/rect [x] :rect) (defmethod pm1 :p/shape [x] :shape) (prefer-method pm1 :p/rect :p/shape) (pm1 :p/sq))"]
+  ["reverse preference" ":shape"
+   "(do (derive :q/sq :q/rect) (derive :q/sq :q/shape) (defmulti pm2 identity) (defmethod pm2 :q/rect [x] :rect) (defmethod pm2 :q/shape [x] :shape) (prefer-method pm2 :q/shape :q/rect) (pm2 :q/sq))"]
+  ["ambiguity throws" :throws
+   "(do (derive :r/sq :r/rect) (derive :r/sq :r/shape) (defmulti pm3 identity) (defmethod pm3 :r/rect [x] :rect) (defmethod pm3 :r/shape [x] :shape) (pm3 :r/sq))"]
+  ["isa dominance needs no preference" ":child"
+   "(do (derive :s/c :s/p) (defmulti pm4 identity) (defmethod pm4 :s/c [x] :child) (defmethod pm4 :s/p [x] :parent) (pm4 :s/c))"]
+  ["prefers map shape" "true"
+   "(do (defmulti pm5 identity) (defmethod pm5 :a [x] 1) (defmethod pm5 :b [x] 2) (prefer-method pm5 :a :b) (contains? (get (prefers pm5) :a) :b))"]
+  ["exact match needs no preference" ":exact"
+   "(do (derive :t/sq :t/rect) (defmulti pm6 identity) (defmethod pm6 :t/sq [x] :exact) (defmethod pm6 :t/rect [x] :parent) (pm6 :t/sq))"])

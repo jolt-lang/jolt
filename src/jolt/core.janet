@@ -2379,9 +2379,8 @@
 
 # Associative = maps and (real) vectors only. pvec is a literal/built vector;
 # tuples and lists are seq results, not associative.
-(defn core-ifn? [x]
-  (or (function? x) (cfunction? x) (keyword? x) (phm? x) (set? x) (tuple? x) (array? x) (pvec? x)
-      (and (struct? x) (= :symbol (x :jolt/type)))))
+# ifn? now lives in the Clojure collection tier — canonical IFn set (fns,
+# keywords, symbols, maps, sets, vectors, vars); lists are NOT IFn.
 # With a single item, Clojure returns it WITHOUT calling f. On ties, the last
 # extremal item wins (>=/<= update), matching Clojure.
 # Clojure's min-key/max-key: the 2-arg base compares with strict < / > (so the
@@ -2644,7 +2643,7 @@
 (defn core-hash-unordered-coll [coll]
   (var h 0) (each x (realize-for-iteration coll) (set h (band (+ h (h24 x)) 0xffffff))) h)
 
-(defn core-prefers [mm-var] (or (get mm-var :jolt/prefers) {}))
+# prefers is a macro over prefers-setup now (the store lives on the VAR).
 
 
 
@@ -2778,7 +2777,6 @@
     "hash-combine" core-hash-combine
     "hash-ordered-coll" core-hash-ordered-coll
     "hash-unordered-coll" core-hash-unordered-coll
-    "prefers" core-prefers
     "gensym" gensym
     "int?" core-integer?
     "compare" core-compare
@@ -2807,7 +2805,6 @@
     "reduced" core-reduced
     "reduced?" core-reduced?
     "rseq" core-rseq
-    "ifn?" core-ifn?
     "ex-info" core-ex-info
     "__with-out-str" core-with-out-str
     "delay?" core-delay?

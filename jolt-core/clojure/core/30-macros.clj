@@ -45,6 +45,11 @@
 (defmacro methods [mm]
   `(methods-setup (quote ~mm)))
 
+;; prefers reads the store off the VAR (the multifn value can't carry it) —
+;; same symbol-passing shape as the other multimethod table ops.
+(defmacro prefers [mm]
+  `(prefers-setup (quote ~mm)))
+
 ;; instance?: class names don't evaluate to values on jolt, so the type arg is
 ;; passed quoted to the ctx-capturing checker; the value evaluates normally.
 (defmacro instance? [t x]

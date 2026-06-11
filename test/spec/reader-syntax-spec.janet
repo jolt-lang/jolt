@@ -58,3 +58,15 @@
   ["tagged literal var" "true"      "(var? #'+)"]
   ["deref sugar"        "5"         "(let [a (atom 5)] @a)"]
   ["meta sugar"         "{:t 1}"    "(meta ^{:t 1} [])"])
+
+# Comments and #_ discards in a map's VALUE slot keep the pending key
+# (jolt-ou8: dropping both desynced kv pairing — Selmer's deps.edn, with a
+# "; for development (REPL, etc)" comment between key and value, read its
+# closing brace in value position: 'Unmatched closing brace').
+(defspec "reader / comments inside maps"
+  ["comment in value slot"   "{:a 1}"  "{:a ; note\n 1}"]
+  ["comment before key"      "{:a 1}"  "{; lead\n :a 1}"]
+  ["comment between entries" "{:a 1 :b 2}" "{:a 1 ; mid\n :b 2}"]
+  ["discard in value slot"   "{:a 1}"  "{:a #_9 1}"]
+  ["comment with parens"     "{:a {:b 1}}" "{:a ; dev (REPL, etc)\n {:b 1}}"]
+  ["nested with comments"    "{:x {:y 2}}" "{:x ; outer\n {:y ; inner\n 2}}"])

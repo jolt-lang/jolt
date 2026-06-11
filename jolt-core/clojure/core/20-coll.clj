@@ -838,3 +838,10 @@
      ([x y z] (f (g x y z)))
      ([x y z & args] (f (apply g x y z args)))))
   ([f g & fs] (reduce comp (comp f g) fs)))
+
+;; Canonical IFn set (jolt-1vx): fns, keywords, symbols, maps (sorted incl.),
+;; sets, vectors, and vars — NOT lists ((ifn? '(1 2)) is false in Clojure).
+;; Mutable-mode caveat: vectors and lists share the array representation
+;; there, so vector? can't separate them and lists read as ifn?.
+(defn ifn? [x]
+  (or (fn? x) (keyword? x) (symbol? x) (map? x) (set? x) (vector? x) (var? x)))
