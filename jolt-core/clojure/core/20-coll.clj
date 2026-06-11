@@ -528,15 +528,21 @@
           (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
         ()))))
 
-;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs:
-;; builds a map from consecutive pairs, dropping a trailing unpaired element.
+;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs —
+;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):
+;; even pairs build a map (later keys win, as createAsIfByAssoc), a SINGLE
+;; element is returned as-is (the trailing-map calling convention), and an
+;; unpaired key past pairs throws. The old jolt version silently dropped the
+;; trailing element, losing (f {:b 2}) kwargs calls.
 (defn seq-to-map-for-destructuring [s]
-  (if (sequential? s)
+  (if (next s)
     (loop [m {} xs (seq s)]
-      (if (and xs (next xs))
-        (recur (assoc m (first xs) (second xs)) (next (next xs)))
+      (if xs
+        (if (next xs)
+          (recur (assoc m (first xs) (second xs)) (nnext xs))
+          (throw (str "No value supplied for key: " (first xs))))
         m))
-    s))
+    (if (seq s) (first s) {})))
 
 ;; Phase 4 (jolt-1j0): host-coupled fns that are pure logic over existing core
 ;; primitives, so they need no new jolt.host surface.

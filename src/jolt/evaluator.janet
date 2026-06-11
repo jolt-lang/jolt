@@ -1730,7 +1730,8 @@
                    (cond
                      f (apply f fn-args)
                      (and variadic-fn (>= n variadic-min)) (apply variadic-fn fn-args)
-                     (error (string "Wrong number of args (" n ") passed to fn"))))))
+                     (error (string "Wrong number of args (" n ") passed to: "
+                                    (or fn-name "fn")))))))
                self)
              # Single-arity: (fn* [args] body...)
              (let [args-form (in form 1)
@@ -1757,7 +1758,16 @@
                    (set result (eval-form ctx fn-bindings body-form)))
                  (ctx-set-current-ns ctx saved-ns)
                  result))
+               (def n-fixed (length fixed-pats))
                (set self (fn [& fn-args]
+                 # ArityException semantics (jolt-6xn): a fixed arity takes
+                 # exactly its params, a variadic one at least its fixed params.
+                 # The compiled path enforces this natively (janet fn arity);
+                 # this keeps the interpreter oracle in agreement.
+                 (def n (length fn-args))
+                 (when (if rest-pat (< n n-fixed) (not= n n-fixed))
+                   (error (string "Wrong number of args (" n ") passed to: "
+                                  (or fn-name "fn"))))
                  (var fn-bindings @{})
                  (table/setproto fn-bindings bindings)
                  (var i 0)
