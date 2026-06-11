@@ -183,10 +183,18 @@
     (and (not multi) (not ((first arities) :rest)))
     (emit-arity-fn ctx (first arities))
     # Single variadic arity: a thin wrapper collects the call's args so the rest
-    # seq can be built, then hands off to the arity fn.
+    # seq can be built, then hands off to the arity fn. Fewer args than the
+    # fixed params is an arity error (jolt-6xn) — without the guard the fixed
+    # binds fell off the end of the args tuple with a raw index error.
     (not multi)
-    (let [jargs (gsym)]
-      ['fn ['& jargs] (emit-arity-invoke ctx (first arities) jargs)])
+    (let [jargs (gsym)
+          ar (first arities)
+          nfixed (length (vview (ar :params)))]
+      ['fn ['& jargs]
+       ['if ['< ['length jargs] nfixed]
+        ['error ['string "Wrong number of args (" ['length jargs] ") passed to: "
+                 (or (node :name) "fn")]]
+        (emit-arity-invoke ctx ar jargs)]])
     # Multi-arity: dispatch on arg count. Fixed arities match exactly; the (one)
     # variadic arity matches >= its fixed count.
     (let [jargs (gsym)
@@ -196,7 +204,8 @@
         (def nfixed (length (vview (ar :params))))
         (array/push cf (if (ar :rest) [>= nsym nfixed] [= nsym nfixed]))
         (array/push cf (emit-arity-invoke ctx ar jargs)))
-      (array/push cf ['error "wrong number of args passed to fn"])
+      (array/push cf ['error ['string "Wrong number of args (" nsym ") passed to: "
+                              (or (node :name) "fn")]])
       ['fn ['& jargs]
        ['do ['def nsym ['length jargs]] (tuple/slice cf)]])))
 

@@ -194,3 +194,24 @@
   ["one extra"          "'(2)"   "((fn [a & r] r) 1 2)"]
   ["rest destructure with no args" ":nil"
    "((fn [& [a]] (if a :truthy :nil)))"])
+
+# Arity enforcement (jolt-6xn): fixed arities throw on any mismatch, variadic
+# arities on fewer than the fixed params — Clojure's ArityException, in both
+# the interpreter and the compiled path.
+(defspec "functions / arity enforcement"
+  ["fixed extra args"      :throws "((fn [x] x) 1 2)"]
+  ["fixed missing args"    :throws "((fn [x y] x) 1)"]
+  ["fixed zero of one"     :throws "((fn [x] x))"]
+  ["named defn extra"      :throws "(do (defn af1 [x] x) (af1 1 2))"]
+  ["overlay fn extra"      :throws "(identity 1 2)"]
+  ["through apply"         :throws "(apply (fn [x] x) [1 2])"]
+  ["through update"        :throws "(update {:k 1} :k identity 1 2 3 4)"]
+  ["variadic below min"    :throws "((fn [x & r] x))"]
+  ["variadic at min"       "nil"   "((fn [x & r] r) 1)"]
+  ["variadic above min"    "(quote (2 3))" "((fn [x & r] r) 1 2 3)"]
+  ["multi-arity no match"  :throws "((fn ([x] x) ([x y] y)) 1 2 3)"]
+  ["multi-arity variadic below min" :throws "((fn ([x] x) ([x y & r] r)))"]
+  ["destructured param counts as one" "3" "((fn [[a b] c] c) [1 2] 3)"]
+  ["destructured extra throws" :throws "((fn [[a b]] a) [1 2] [3 4])"]
+  ["hof exact arity ok"    "[2 4]" "(mapv (fn [x] (* 2 x)) [1 2])"]
+  ["zero-arity fn ok"      "7"     "((fn [] 7))"])

@@ -22,6 +22,11 @@ A transient is a tagged Janet table wrapping a *native* mutable host value
   key for the rebuilt persistent map.
 - transient set — `:kind :set :tbl TABLE` mapping `canon-key(x)` → `x`.
 
+`transient` accepts pvecs, mutable-build arrays, tuples (reader vectors and
+map entries — added in the seed-shrink rounds so `(into [] (first {:a 1}))`
+works through the vector fast path), sets, phms, and untagged struct maps.
+Sorted collections are rejected, as on the JVM (not editable).
+
 The bang ops (`conj!`, `assoc!`, `dissoc!`, `disj!`, `pop!`) mutate that host
 value in place and return the transient — O(1) per op (amortized for array
 push). `persistent!` rebuilds a persistent value from the host value and
