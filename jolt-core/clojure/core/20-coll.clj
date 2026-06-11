@@ -14,14 +14,8 @@
 ;; neg? throws on non-numbers via <, as Clojure's Numbers.isNeg does.
 (defn neg? [x] (< x 0))
 
-;; even?/odd? accept any integral number (jolt has one number type, so 2.0
-;; counts) and throw otherwise — Clojure's IllegalArgumentException wording.
-(defn even? [n]
-  (if (integer? n)
-    (zero? (rem n 2))
-    (throw (str "Argument must be an integer: " n))))
-
-(defn odd? [n] (not (even? n)))
+;; even?/odd? stay in the seed: (filter even? ...) is idiomatic-hot and the
+;; overlay versions cost an extra call layer per element (seq-pipe bench 4x).
 
 ;; Base is (hash-map), not the {} literal: a literal map is a struct that doesn't
 ;; canonicalize collection keys across representations (a {:a 1} literal vs
@@ -569,6 +563,7 @@
 (defn record? [x]             (some? (get x :jolt/deftype)))
 (defn uuid? [x]               (= (get x :jolt/type) :jolt/uuid))
 (defn inst? [x]               (= (get x :jolt/type) :jolt/inst))
+(defn char? [x]               (= (get x :jolt/type) :jolt/char))
 
 ;; inst-ms: epoch milliseconds of an instant; throws on a non-inst (Clojure
 ;; protocol behavior).

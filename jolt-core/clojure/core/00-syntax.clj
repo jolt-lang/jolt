@@ -14,6 +14,35 @@
 ;; (backend/recompile-defns!) once the analyzer is alive — same lifecycle as
 ;; the defmacro expanders.
 
+;; zero?/pos?/every? live HERE (not 20-coll): empty? below calls zero?, and
+;; the self-hosted analyzer — compiled right after the kernel tier — uses all
+;; three. Raw def+fn* per the file constraint. zero? checks number? itself
+;; (= doesn't throw); pos? inherits throwing from >.
+(def zero?
+  (fn* zero? [x]
+    (if (number? x)
+      (= x 0)
+      (throw (str "zero? requires a number, got: " x)))))
+
+;; pos? checks number? explicitly: this tier is recompiled by the staged pass,
+;; where a bare (> x 0) emits the native janet op that happily orders strings
+;; (the documented native-ops relaxation) — the guard keeps Clojure's throw.
+(def pos?
+  (fn* pos? [x]
+    (if (number? x)
+      (> x 0)
+      (throw (str "pos? requires a number, got: " x)))))
+
+;; Canonical every?: short-circuits on the first falsey result, so infinite
+;; seqs with an early counterexample terminate.
+(def every?
+  (fn* every? [pred coll]
+    (if (nil? (seq coll))
+      true
+      (if (pred (first coll))
+        (recur pred (next coll))
+        false))))
+
 ;; empty?/keys/vals live HERE (not 20-coll) because the expanders below call
 ;; them at expansion time, which first happens during the kernel-tier compile.
 ;; empty? keeps O(1) dispatch for counted things; only the lazy/list fallback

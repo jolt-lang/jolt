@@ -290,3 +290,20 @@
    "(loop [xs (seq (vec (range 20000))) n 0] (if xs (recur (next xs) (inc n)) n))"]
   ["mapv scales (50k linear)"  "50000" "(count (mapv inc (vec (range 50000))))"]
   ["nested walk"               "[2 3]" "(vec (rest (mapv inc [0 1 2])))"])
+
+# rest/next over sets, maps, and sorted colls used to fall into the indexed
+# fall-through and walk the wrapper table's internal fields ((next #{1 2})
+# was (nil nil)) — exposed when the canonical every? started seq-walking.
+(defspec "sequences / rest & next over set-like colls"
+  ["next of set"        "true"  "(let [n (next #{1 2})] (and (= 1 (count n)) (contains? #{1 2} (first n))))"]
+  ["rest of set count"  "1"     "(count (rest #{1 2}))"]
+  ["next of singleton set" "nil" "(next #{1})"]
+  ["rest of empty set"  "0"     "(count (rest #{}))"]
+  ["next of map"        "true"  "(let [n (next {:a 1 :b 2})] (and (= 1 (count n)) (map-entry? (first n))))"]
+  ["next of singleton map" "nil" "(next {:a 1})"]
+  ["rest of sorted-set" "(quote (2 3))" "(rest (sorted-set 3 1 2))"]
+  ["next of sorted-map" "(quote ([2 :b]))" "(next (sorted-map 1 :a 2 :b))"]
+  ["every? over set"    "true"  "(every? pos? #{1 2 3})"]
+  ["every? over set false" "false" "(every? odd? #{1 2})"]
+  ["every? over sorted-set" "true" "(every? pos? (sorted-set 1 2 3))"]
+  ["every? over map entries" "true" "(every? map-entry? (seq {:a 1 :b 2}))"])

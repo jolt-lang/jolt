@@ -43,7 +43,10 @@
 # Raised 4004 -> 4034 / clean 66 -> 67 porting partition-all + repeatedly to the
 # overlay, which required fixing two leniencies (a char is not callable; take
 # validates its count) — correct beyond those fns, so the suite rose broadly.
-(def baseline-pass 4660)
+# Raised 4660 -> 4695 (observed 4703) after the seed-shrink rounds: rest/next
+# over sets/maps/sorted colls fixed (they walked the wrapper table's internal
+# fields), canonical halt-when/==/memfn. Margin covers rand-based suite jitter.
+(def baseline-pass 4695)
 # A file is "clean" when it ran with zero failures AND zero errors.
 (def baseline-clean-files 88)
 # Per-file wall-clock budget (seconds). Normal files finish in well under 1s, so

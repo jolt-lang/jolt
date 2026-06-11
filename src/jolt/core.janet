@@ -229,9 +229,12 @@
   (if (and (number? x) (= x x) (< (if (< x 0) (- x) x) math/inf) (= x (math/floor x))) x
     (error (string op " requires an integer"))))
 
-(defn core-zero? [x] (= (need-num x "zero?") 0))
-(defn core-pos? [x] (> (need-num x "pos?") 0))
-# neg? / even? / odd? live in the Clojure collection tier (core/20-coll.clj).
+# zero? / pos? live in the syntax tier (core/00-syntax.clj) — empty? and the
+# analyzer use them; neg? lives in the collection tier (20-coll.clj).
+# even?/odd? are PERF-WALL residents: (filter even? ...) is idiomatic and the
+# overlay versions cost an extra call layer per element (seq-pipe bench 4x).
+(defn core-even? [n] (= 0 (% (need-int n "even?") 2)))
+(defn core-odd? [n] (not= 0 (% (need-int n "odd?") 2)))
 
 # Finite integral number: NaN and the infinities are NOT integers (floor of
 # inf is inf, so the naive floor check wrongly accepted them).
@@ -244,27 +247,8 @@
 # empty? now lives in the syntax tier (core/00-syntax.clj): the expanders
 # call it, so it must exist before the kernel tier compiles.
 
-(defn core-every? [pred coll]
-  # Short-circuit on the first false — and pull lazily so an infinite seq with an
-  # early false (e.g. (every? pos? (range))) returns rather than hanging. Walks
-  # cells via realize-ls directly (core-first/lazy-from are defined later).
-  (if (lazy-seq? coll)
-    (do
-      (var cur coll) (var result true) (var go true)
-      (while (and result go)
-        (let [cell (realize-ls cur)]
-          (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell)))
-            (set go false)
-            (if (pred (in cell 0))
-              (let [rt (in cell 1)]
-                (if (nil? rt) (set go false) (set cur (ls-rest-cached cur rt))))
-              (set result false)))))
-      result)
-    (do
-      (var result true)
-      (each x (realize-for-iteration coll)
-        (if (not (pred x)) (do (set result false) (break))))
-      result)))
+# every? lives in the syntax tier (core/00-syntax.clj) — the analyzer uses it;
+# the canonical seq/first/next walk short-circuits lazy seqs the same way.
 
 # ============================================================
 # Math — Clojure semantics (variadic, / with one arg = reciprocal)
@@ -711,6 +695,8 @@
     # Indexed collections: an O(1) lazy view from index 1 (Clojure: rest of a
     # vector is a seq, not a vector). Slicing per step made first/rest loops
     # over concrete collections O(n^2) — a 20k rest-loop took two seconds.
+    # These stay ABOVE the set/map branches: rest-of-vector is every seq loop's
+    # hot path and must not pay the wrapper-tag checks.
     (pvec? coll) (let [a (pv->array coll)]
                    (if (<= (length a) 1) @[]
                      (make-lazy-seq (fn [] (indexed-cells a 1)))))
@@ -718,6 +704,16 @@
     (string? coll) (tuple ;(map make-char (string/bytes (string/slice coll 1))))
     (tuple? coll) (if (<= (length coll) 1) @[]
                     (make-lazy-seq (fn [] (indexed-cells coll 1))))
+    # Sets, maps and sorted colls rest via their seq. Without these branches
+    # they fell into the indexed fall-through, which walked the wrapper table's
+    # INTERNAL fields — (next #{1 2}) was (nil nil) until the canonical every?
+    # started seq-walking sets (seed-shrink round 4).
+    (set? coll) (if (= 0 (coll :cnt)) @[] (core-rest (phs-seq coll)))
+    (phm? coll) (if (= 0 (coll :cnt)) @[] (core-rest (tuple ;(phm-entries coll))))
+    (core-sorted? coll) (core-rest ((sorted-op coll :seq) coll))
+    # plain struct maps (untagged literals) rest via entries too
+    (and (struct? coll) (nil? (get coll :jolt/type)))
+      (core-rest (tuple ;(map-entries-of coll)))
     (if (<= (length coll) 1) @[]
       (make-lazy-seq (fn [] (indexed-cells coll 1))))))
 
@@ -2631,17 +2627,16 @@
     "seq?" core-seq?
     "coll?" core-coll?
     "identical?" core-identical?
-    "zero?" core-zero?
-    "pos?" core-pos?
     "integer?" core-integer?
     "list?" core-list?
-    "every?" core-every?
     "+" core-+
     "-" core-sub
     "*" core-*
     "/" core-/
     "inc" core-inc
     "dec" core-dec
+    "even?" core-even?
+    "odd?" core-odd?
     "mod" core-mod
     "rem" core-rem
     "quot" core-quot
@@ -2847,7 +2842,6 @@
     "double" core-double
     "float" core-float
     "char" core-char
-    "char?" core-char?
     # Hash
     "hash" core-hash
     "atom" core-atom

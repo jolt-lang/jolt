@@ -205,3 +205,25 @@
   ["string NOT" "false" "(ifn? \"s\")"]
   ["number NOT" "false" "(ifn? 5)"]
   ["nil NOT"   "false" "(ifn? nil)"])
+
+# zero?/pos? throw on non-numbers (Numbers.isZero/isPos), as in Clojure;
+# every? short-circuits on the first falsey pred result, so an infinite seq
+# with an early counterexample terminates. char? is the tagged-value check.
+(defspec "predicates / numeric guards & every? (overlay moves)"
+  ["zero? zero"          "true"   "(zero? 0)"]
+  ["zero? nonzero"       "false"  "(zero? 3)"]
+  ["zero? throws"        :throws  "(zero? :a)"]
+  ["zero? throws on nil" :throws  "(zero? nil)"]
+  ["pos? positive"       "true"   "(pos? 2)"]
+  ["pos? zero"           "false"  "(pos? 0)"]
+  ["pos? throws"         :throws  "(pos? \"x\")"]
+  ["neg? throws"         :throws  "(neg? \"x\")"]
+  ["every? all pass"     "true"   "(every? odd? [1 3 5])"]
+  ["every? one fails"    "false"  "(every? odd? [1 2 5])"]
+  ["every? vacuous"      "true"   "(every? odd? [])"]
+  ["every? nil coll"     "true"   "(every? odd? nil)"]
+  ["every? infinite short-circuit" "false" "(every? pos? (range))"]
+  ["char? char"          "true"   "(char? \\x)"]
+  ["char? string"        "false"  "(char? \"x\")"]
+  ["char? number"        "false"  "(char? 97)"]
+  ["char? nil"           "false"  "(char? nil)"])
