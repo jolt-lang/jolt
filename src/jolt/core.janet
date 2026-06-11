@@ -1729,7 +1729,17 @@
 (defn core-current-time-ms [] (* 1000 (os/clock :monotonic)))
 
 # Host IO (host-classified in the spec): path-based slurp/spit, *out* flush.
-(defn core-slurp [path] (string (slurp path)))
+# Opts (:encoding ...) are accepted and ignored — everything is UTF-8 here.
+# Reader shims (java.io.StringReader / PushbackReader / anything carrying
+# :s + :pos) DRAIN instead of opening a file: Ring middleware slurps request
+# bodies, and the jolt Ring adapter hands those over as StringReaders.
+(defn core-slurp [src & opts]
+  (cond
+    (and (table? src) (string? (get src :s)) (number? (get src :pos)))
+      (let [s (src :s) p (src :pos)]
+        (put src :pos (length s))
+        (string/slice s p))
+    (string (slurp src))))
 
 (defn core-spit [path content & opts]
   (def append? (do (var a false) (var i 0)

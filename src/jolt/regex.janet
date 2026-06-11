@@ -414,6 +414,17 @@
         (do (buffer/push-string buf (string/from-bytes c)) (++ i)))))
   (string buf))
 
+(defn- replacement-for
+  "One match's replacement text. A string replacement gets $N expansion; a FN
+  replacement (Clojure: fn of the match — string, or [whole g1 ...] when the
+  pattern has groups) is called and its result used literally."
+  [replacement g ngroups]
+  (cond
+    (string? replacement) (expand-replacement replacement g)
+    (or (function? replacement) (cfunction? replacement))
+      (string (replacement (groups->result g ngroups)))
+    (string replacement)))
+
 (defn re-replace-all [re s replacement]
   (def re (re-pattern re))
   (def buf @"") (var pos 0) (var last 0)
@@ -421,7 +432,7 @@
     (def g (match-at re s pos))
     (if (and g (> (length (in g 0)) 0))
       (do (buffer/push-string buf (string/slice s last pos))
-          (buffer/push-string buf (if (string? replacement) (expand-replacement replacement g) replacement))
+          (buffer/push-string buf (replacement-for replacement g (re :ngroups)))
           (set pos (+ pos (length (in g 0))))
           (set last pos))
       (++ pos)))
@@ -439,6 +450,6 @@
   (if done
     (let [[p g] done]
       (string (string/slice s 0 p)
-              (if (string? replacement) (expand-replacement replacement g) replacement)
+              (replacement-for replacement g (re :ngroups))
               (string/slice s (+ p (length (in g 0))))))
     s))

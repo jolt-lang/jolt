@@ -163,3 +163,26 @@
    "(do (defprotocol Ps (ps [x])) (extend-protocol Ps Map (ps [m] :map) Object (ps [o] :obj)) (ps (sorted-map 1 2)))"]
   ["reduce over reified IReduceInit" "42"
    "(reduce + 0 (reify clojure.lang.IReduceInit (reduce [_ f init] (f (f init 40) 2))))"])
+
+# ring-core enablement, part 2: class-name symbols evaluate to canonical
+# class-name strings (so class-dispatch defmultis match), ctor sugar still
+# constructs, type-hinted param vectors parse, slurp drains reader shims,
+# str/replace takes fn replacements, and int needles are char codes.
+(defspec "host-interop / class tokens & readers"
+  ["class name evaluates to canonical string" "\"java.lang.String\"" "String"]
+  ["dispatch-only class name" "\"java.io.InputStream\"" "InputStream"]
+  ["(class x) matches the token" "true" "(= String (class \"abc\"))"]
+  ["defmulti on class dispatches" ":str"
+   "(do (defmulti cm (fn [x] (class x))) (defmethod cm String [x] :str) (cm \"a\"))"]
+  ["defmethod on nil dispatch value" ":nil"
+   "(do (defmulti cn (fn [x] (class x))) (defmethod cn nil [x] :nil) (defmethod cn String [x] :str) (cn nil))"]
+  ["ctor sugar still constructs" "\"x\"" "(.toString (StringBuilder. \"x\"))"]
+  ["return-hinted defn parses" "7" "(do (defn- hb ^bytes [b] b) (hb 7))"]
+  ["hinted multi-arity parses" ":two" "((fn ([x] :one) (^String [x y] :two)) 1 2)"]
+  ["slurp drains a StringReader" "\"a=1\"" "(slurp (StringReader. \"a=1\"))"]
+  ["slurp accepts :encoding opts" "\"b\"" "(slurp (StringReader. \"b\") :encoding \"UTF-8\")"]
+  ["replace with fn replacement is literal" "\"$0\""
+   "(do (require (quote [clojure.string :as s9])) (s9/replace \"x\" #\".\" (fn [m] \"$0\")))"]
+  ["replace fn gets group vector" "\"v=k\""
+   "(do (require (quote [clojure.string :as s9])) (s9/replace \"k=v\" #\"(\\w+)=(\\w+)\" (fn [[_ k v]] (str v \"=\" k))))"]
+  ["indexOf int needle is a char code" "1" "(.indexOf \"a=b\" 61)"])

@@ -281,7 +281,11 @@
                      # non-ctx value, so check the shape, not just the throw.
                      (when (and (r 0) (ctx? (r 1)))
                        (r 1))))]
-      (or loaded
+      (or (when loaded
+            # per-PROCESS wiring an image restore skips: the renderer's
+            # print-method hook lives in module state, not the marshaled ctx
+            (install-print-method-cb! loaded)
+            loaded)
           (let [ctx (init opts)
                 tmp (string path "." (os/getpid) ".tmp")]
             # Atomic publish so concurrent cold starts never see a torn image.
