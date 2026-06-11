@@ -129,8 +129,9 @@
   ["delay? true"   "true" "(delay? (delay 1))"]
   ["delay? false"  "false" "(delay? 1)"]
   ["future-call"   "42" "(deref (future-call (fn [] 42)))"]
-  [". member resolves nil" "nil" "(. \"abc\" count)"]
-  [".. threads members" "nil" "(.. \"abc\" count)"])
+  [". calls String surface" "3" "(. \"abc\" length)"]
+  [".. threads members" "\"ABC\"" "(.. \"abc\" toUpperCase)"]
+  ["unknown String member throws" :throws "(. \"abc\" frobnicate)"])
 
 (defspec "untested / protocols: extend + extends?"
   ["extend registers" ":str"

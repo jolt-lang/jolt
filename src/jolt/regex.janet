@@ -40,6 +40,40 @@
     (chr "S") '(if-not (set " \t\n\r\f\v") 1)
     nil))
 
+# Unicode property classes \p{...} (jolt-xlp), mapped onto the byte PEGs:
+# ASCII exactly; any high byte (>= 0x80, i.e. inside a UTF-8 sequence) counts
+# as a LETTER byte — so ^\p{L}+$ accepts UTF-8 words, while \p{N}/\p{Z}
+# stay ASCII-only. Lu/Ll are ASCII (case is byte-based throughout this
+# engine). Unknown property names error at compile.
+(defn- prop-frag [name]
+  (case name
+    "L"  '(choice (range "az" "AZ") (range "\x80\xFF"))
+    "Lu" '(range "AZ")
+    "Ll" '(range "az")
+    "N"  '(range "09")
+    "Nd" '(range "09")
+    "Z"  '(set " ")
+    "Zs" '(set " ")
+    "P"  '(set "!\"#%&'()*,-./:;?@[\\]_{}")
+    "Ps" '(set "([{")
+    "Pe" '(set ")]}")
+    "Alpha" '(choice (range "az" "AZ") (range "\x80\xFF"))
+    "Digit" '(range "09")
+    nil))
+
+# At s[i] = backslash: if this is \p{Name} / \P{Name}, return [peg-frag end-i]
+# (end-i past the closing brace), else nil.
+(defn- parse-prop [s i]
+  (def pc (get s (+ i 1)))
+  (when (and (or (= pc (chr "p")) (= pc (chr "P")))
+             (= (get s (+ i 2)) (chr "{")))
+    (def close (string/find "}" s (+ i 3)))
+    (unless close (error "regex: unterminated \\p{...}"))
+    (def nm (string/slice s (+ i 3) close))
+    (def frag (prop-frag nm))
+    (unless frag (error (string "regex: unsupported property class \\p{" nm "}")))
+    [(if (= pc (chr "P")) ~(if-not ,frag 1) frag) (+ close 1)]))
+
 (defn- esc-byte [c]
   (case c
     (chr "n") 10 (chr "t") 9 (chr "r") 13 (chr "f") 12 (chr "v") 11 (chr "0") 0
@@ -66,12 +100,14 @@
                              "lower" '(range "az")
                              '(set "")))
           (set i (+ close 2)))
-      # escape inside class
+      # escape inside class — \p{...} first (multi-char), then 2-char escapes
       (= (s i) (chr "\\"))
-        (let [c (s (+ i 1)) p (pred-frag c)]
-          (if p (array/push alts p)
-            (array/push alts ~(set ,(string/from-bytes (esc-byte c)))))
-          (set i (+ i 2)))
+        (if-let [pr (parse-prop s i)]
+          (do (array/push alts (pr 0)) (set i (pr 1)))
+          (let [c (s (+ i 1)) p (pred-frag c)]
+            (if p (array/push alts p)
+              (array/push alts ~(set ,(string/from-bytes (esc-byte c)))))
+            (set i (+ i 2))))
       # range a-z
       (and (< (+ i 2) (length s)) (= (s (+ i 1)) (chr "-")) (not= (s (+ i 2)) (chr "]")))
         (do
@@ -139,13 +175,15 @@
     (= c (chr "."))
       (do (++ (st :pos)) {:op :any :dotall (st :dotall)})
     (= c (chr "\\"))
-      (let [nc (s (+ (st :pos) 1)) p (pred-frag nc)]
-        (+= (st :pos) 2)
-        (cond
-          p {:op :pred :peg p}
-          (= nc (chr "b")) {:op :anchor :kind :wordb}
-          (= nc (chr "B")) {:op :anchor :kind :nwordb}
-          {:op :char :b (esc-byte nc) :ci ci}))
+      (if-let [pr (parse-prop s (st :pos))]
+        (do (set (st :pos) (pr 1)) {:op :pred :peg (pr 0)})
+        (let [nc (s (+ (st :pos) 1)) p (pred-frag nc)]
+          (+= (st :pos) 2)
+          (cond
+            p {:op :pred :peg p}
+            (= nc (chr "b")) {:op :anchor :kind :wordb}
+            (= nc (chr "B")) {:op :anchor :kind :nwordb}
+            {:op :char :b (esc-byte nc) :ci ci})))
     (= c (chr "^")) (do (++ (st :pos)) {:op :anchor :kind :start})
     (= c (chr "$")) (do (++ (st :pos)) {:op :anchor :kind :end})
     (do (++ (st :pos)) {:op :char :b c :ci ci})))

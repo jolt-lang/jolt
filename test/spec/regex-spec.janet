@@ -31,3 +31,19 @@
   ["split on regex"   "[\"a\" \"b\" \"c\"]" "(do (require '[clojure.string :as s]) (s/split \"a1b2c\" #\"\\d\"))"]
   ["replace regex"    "\"X-X\"" "(do (require '[clojure.string :as s]) (s/replace \"a-b\" #\"[a-z]\" \"X\"))"]
   ["replace $1"       "\"[a][b]\"" "(do (require '[clojure.string :as s]) (s/replace \"ab\" #\"([a-z])\" \"[$1]\"))"])
+
+# Unicode property classes (jolt-xlp), byte-PEG approximation: ASCII exact,
+# any high byte (inside a UTF-8 sequence) counts as a LETTER for \p{L}.
+# Acceptance target was cuerdas (kebab/snake/capital now pass conformance).
+(defspec "regex / \\p property classes"
+  ["p{L} ascii"      "\"hello\"" `(re-matches #"^\p{L}+$" "hello")`]
+  ["p{L} utf-8"      "true"      `(boolean (re-matches #"^\p{L}+$" "héllo"))`]
+  ["p{L} rejects digits" "false" `(boolean (re-matches #"^\p{L}+$" "ab1"))`]
+  ["p{N}"            "(quote (\"12\" \"345\"))" `(re-seq #"\p{N}+" "a12b345")`]
+  ["P{N} negation"   "\"abc\""   `(re-matches #"^\P{N}+$" "abc")`]
+  ["inside class"    "\"a-1_b\"" `(re-matches #"^[\p{N}\p{L}_-]+$" "a-1_b")`]
+  ["p{Lu}/p{Ll}"     "\"aB\""    `(re-matches #"^\p{Ll}\p{Lu}$" "aB")`]
+  ["p{Z} space"      "\"  \""    `(re-matches #"(?u)^[\s\p{Z}]+$" "  ")`]
+  ["p{Ps}/p{Pe}"     "\"(x)\""   `(re-matches #"^\p{Ps}x\p{Pe}$" "(x)")`]
+  ["(?u) accepted"   "\"hi\""    `(re-matches #"(?u)^hi$" "hi")`]
+  ["unknown class throws" :throws `(re-pattern "\p{Greek}")`])

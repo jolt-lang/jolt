@@ -38,3 +38,26 @@
   ["aset returns val"   "9"      "(aset (object-array [1 2 3]) 1 9)"]
   ["aset mutates"       "[7 2 3]" "(let [a (object-array [1 2 3])] (aset a 0 7) (vec a))"]
   ["aget 2d"            "4"      "(aget (to-array-2d [[1 2] [3 4]]) 1 1)"])
+
+# java.lang.String surface + .method sugar (clj-compat: what portable cljc
+# libraries call — landed for the cuerdas acceptance run). ASCII case mapping.
+(defspec "interop / String methods"
+  [".toLowerCase"   "\"hi\""  "(.toLowerCase \"HI\")"]
+  [".toUpperCase"   "\"HI\""  "(.toUpperCase \"hi\")"]
+  ["dot-form"       "\"hi\""  "(. \"HI\" toLowerCase)"]
+  [".trim"          "\"x\""   "(.trim \"  x  \")"]
+  [".length"        "3"       "(.length \"abc\")"]
+  [".isEmpty"       "[true false]" "[(.isEmpty \"\") (.isEmpty \"a\")]"]
+  [".indexOf hit"   "1"       "(.indexOf \"abc\" \"b\")"]
+  [".indexOf miss is -1" "-1" "(.indexOf \"abc\" \"z\")"]
+  [".lastIndexOf"   "3"       "(.lastIndexOf \"abab\" \"b\")"]
+  [".substring"     "\"bc\""  "(.substring \"abc\" 1)"]
+  [".substring end" "\"b\""   "(.substring \"abc\" 1 2)"]
+  [".startsWith"    "true"    "(.startsWith \"abc\" \"ab\")"]
+  [".endsWith"      "true"    "(.endsWith \"abc\" \"bc\")"]
+  [".contains"      "true"    "(.contains \"abc\" \"b\")"]
+  [".replace"       "\"axc\"" "(.replace \"abc\" \"b\" \"x\")"]
+  [".charAt"        "\\b"     "(.charAt \"abc\" 1)"]
+  [".equalsIgnoreCase" "true" "(.equalsIgnoreCase \"AbC\" \"aBc\")"]
+  ["Long/MAX_VALUE" "true"    "(pos? Long/MAX_VALUE)"]
+  ["unsupported method throws" :throws "(.frobnicate \"abc\")"])

@@ -7,6 +7,11 @@
 (use ../../src/jolt/api)
 (use ../../src/jolt/types)
 (import ../../src/jolt/deps :as deps)
+(use ../../src/jolt/reader)
+# deps are clj/cljc libraries by definition (the jolt-dw4 premise): read them
+# under clj-compat features so their #?(:clj ...) branches resolve (spec
+# 02-reader S18 — features are a property of the loading context).
+(reader-features-set! ["jolt" "clj" "default"])
 
 (unless (os/getenv "JOLT_CONFORMANCE")
   (print "deps-conformance: set JOLT_CONFORMANCE=1 to run (needs network) — skipped")

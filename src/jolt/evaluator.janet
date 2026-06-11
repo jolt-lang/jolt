@@ -432,6 +432,46 @@
   {"currentTimeMillis" (fn [] (math/floor (* 1000 (os/clock :realtime))))
    "nanoTime" (fn [] (math/floor (* 1e9 (os/clock :monotonic))))})
 
+# Long statics: sentinels portable code compares against. jolt numbers are
+# doubles, so these are the f64 approximations.
+(def- long-statics
+  {"MAX_VALUE" 9223372036854775807
+   "MIN_VALUE" -9223372036854775808})
+
+# java.lang.String method surface for clj-compat interop: (.toLowerCase s),
+# (.indexOf s x), ... — the methods portable cljc libraries actually call.
+# Case mapping is ASCII (the whole engine is byte-based); indexOf returns -1
+# on miss, as on the JVM.
+(defn- str-needle [x]
+  (if (and (struct? x) (= :jolt/char (get x :jolt/type)))
+    (string/from-bytes (x :ch))
+    (string x)))
+(def- string-methods
+  {"toString"    (fn [s] s)
+   "toLowerCase" (fn [s] (string/ascii-lower s))
+   "toUpperCase" (fn [s] (string/ascii-upper s))
+   "trim"        (fn [s] (string/trim s))
+   "length"      (fn [s] (length s))
+   "isEmpty"     (fn [s] (= 0 (length s)))
+   "charAt"      (fn [s i] {:jolt/type :jolt/char :ch (s i)})
+   "codePointAt" (fn [s i] (s i))
+   "indexOf"     (fn [s x &opt from] (or (string/find (str-needle x) s (or from 0)) -1))
+   "lastIndexOf" (fn [s x]
+                   (let [n (str-needle x)]
+                     (var found -1) (var i 0)
+                     (while (< i (length s))
+                       (let [f (string/find n s i)]
+                         (if f (do (set found f) (set i (+ f 1))) (set i (length s)))))
+                     found))
+   "substring"   (fn [s start &opt end] (string/slice s start end))
+   "startsWith"  (fn [s p] (string/has-prefix? p s))
+   "endsWith"    (fn [s p] (string/has-suffix? p s))
+   "contains"    (fn [s sub] (not (nil? (string/find (str-needle sub) s))))
+   "concat"      (fn [s o] (string s o))
+   "replace"     (fn [s a b] (string/replace-all (str-needle a) (str-needle b) s))
+   "compareTo"   (fn [s o] (cond (< s o) -1 (> s o) 1 0))
+   "equalsIgnoreCase" (fn [s o] (= (string/ascii-lower s) (string/ascii-lower (string o))))})
+
 (defn- resolve-sym
   [ctx bindings sym-s]
   (let [name (sym-s :name) ns (sym-s :ns)]
@@ -444,6 +484,9 @@
     (if (= ns "System")
       (let [v (get system-statics name)]
         (if (nil? v) (error (string "Unsupported System member: System/" name)) v))
+    (if (= ns "Long")
+      (let [v (get long-statics name)]
+        (if (nil? v) (error (string "Unsupported Long member: Long/" name)) v))
     (if (not (nil? ns))
       (let [current-ns (ctx-find-ns ctx (ctx-current-ns ctx))
             aliased-ns (or (ns-alias-lookup current-ns ns) (ns-import-lookup current-ns ns))
@@ -493,7 +536,7 @@
                       # No implicit Janet fallback (Stage 3): an unresolved
                       # Clojure symbol is an error. Host access is the explicit
                       # janet/ prefix above.
-                      (error (string "Unable to resolve symbol: " name))))))))))))))))
+                      (error (string "Unable to resolve symbol: " name)))))))))))))))))
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.
   Returns {:fixed [names...] :rest name-or-nil :all [names...]}"
@@ -1192,6 +1235,11 @@
           "java.lang.String" (string? val)
           "Boolean" (or (= true val) (= false val))
           "Keyword" (keyword? val)
+          # regex patterns (cuerdas-style (instance? Pattern x) checks)
+          "Pattern" (and (table? val) (= :jolt/regex (val :jolt/type)))
+          "java.util.regex.Pattern" (and (table? val) (= :jolt/regex (val :jolt/type)))
+          "Character" (and (struct? val) (= :jolt/char (get val :jolt/type)))
+          "java.lang.Character" (and (struct? val) (= :jolt/char (get val :jolt/type)))
           "clojure.lang.Atom" (and (table? val) (= :jolt/atom (val :jolt/type)))
           "clojure.lang.Volatile" (and (table? val) (= :jolt/volatile (val :jolt/type)))
           "clojure.lang.Delay" (and (table? val) (= :jolt/delay (val :jolt/type)))
@@ -1762,6 +1810,11 @@
           (if (> (length form) 3)
             # method call: (. obj method args...)
             (let [args (map |(eval-form ctx bindings $) (tuple/slice form 3))]
+              (if (or (string? target) (buffer? target))
+                (let [m (get string-methods field-name)]
+                  (if m
+                    (m (string target) ;args)
+                    (error (string "Unsupported String method ." field-name))))
               (if (target :jolt/deftype)
                 (let [method-key (keyword field-name)]
                   (apply (get target method-key) target ;args))
@@ -1777,10 +1830,16 @@
                             (method-fn target ;args)
                             (error (string "Cannot call non-function " field-name " on " (type target)))))
                         (error (string "Cannot call non-function " field-name " on " (type target))))))
-                  (error (string "Cannot call method " field-name " on " (type target))))))
+                  (error (string "Cannot call method " field-name " on " (type target)))))))
             # (. obj member) with no extra args: a symbol member naming a
             # function is a zero-arg method call (receiver passed as self);
-            # a keyword or `-field` member is plain field access.
+            # a keyword or `-field` member is plain field access. Strings get
+            # the java.lang.String surface (clj-compat: (.toLowerCase s) ...).
+            (if (or (string? target) (buffer? target))
+              (let [m (get string-methods field-name)]
+                (if m
+                  (m (string target))
+                  (error (string "Unsupported String method ." field-name))))
             (let [v (get target (keyword field-name))]
               (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type))
                        (not (string/has-prefix? "-" member-name)))
@@ -1790,7 +1849,7 @@
                   (array? v) (let [f (eval-form ctx bindings v)]
                                (if (or (function? f) (cfunction? f)) (f target) f))
                   v)
-                v))))
+                v)))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]
@@ -1800,6 +1859,18 @@
           (let [field-name (string/slice sym-name 2)
                 target (eval-form ctx bindings (in form 1))]
             (get target (keyword field-name)))
+        # (.method obj args...) sugar -> (. obj method args...): desugar and
+        # re-enter the dot special form (which holds the String surface, the
+        # deftype method path, and the map-fn fallback).
+        (if (and (> (length sym-name) 1)
+                 (= (string/slice sym-name 0 1) ".")
+                 (not= sym-name "..")
+                 (> (length form) 1))
+          (eval-form ctx bindings
+                     (array/concat @[{:jolt/type :symbol :ns nil :name "."}
+                                     (in form 1)
+                                     {:jolt/type :symbol :ns nil :name (string/slice sym-name 1)}]
+                                   (tuple/slice form 2)))
         # Handle ClassName. constructor syntax (".." is the member-threading
         # macro, not a constructor named ".")
         (if (and (> (length sym-name) 1) (not= sym-name "..")
@@ -1821,7 +1892,7 @@
                     (eval-form ctx bindings expanded))))
               (let [f (eval-form ctx bindings first-form)
                     args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
-                (jolt-invoke ctx f args)))))))
+                (jolt-invoke ctx f args))))))))
       (let [f (eval-form ctx bindings first-form)
             args (map |(eval-form ctx bindings $) (tuple/slice form 1))]
         (jolt-invoke ctx f args)))))
