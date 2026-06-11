@@ -140,3 +140,26 @@
    "(string? (get (into {} (map (fn [[k v]] [k v]) (System/getenv))) \"HOME\"))"]
   ["System/getProperties"  "true"
    "(string? (get (System/getProperties) \"os.name\"))"])
+
+# ring-core enablement (host shims + protocol/reduce fixes): the java.net /
+# java.util surface ring.util.codec needs, extend-protocol on Map and nil,
+# and reduce over a reified clojure.lang.IReduceInit.
+(defspec "host-interop / ring-codec surface"
+  ["URLEncoder www form"   "\"a+b%3Dc\"" "(URLEncoder/encode \"a b=c\")"]
+  ["URLDecoder www form"   "\"a b=c\""   "(URLDecoder/decode \"a+b%3Dc\" (Charset/forName \"UTF-8\"))"]
+  ["url round trip"        "\"x &=%?\""  "(URLDecoder/decode (URLEncoder/encode \"x &=%?\"))"]
+  ["Base64 encode"         "\"aGVsbG8=\"" "(String. (.encode (Base64/getEncoder) (.getBytes \"hello\")))"]
+  ["Base64 round trip"     "\"hello\""   "(String. (.decode (Base64/getDecoder) (String. (.encode (Base64/getEncoder) (.getBytes \"hello\")))))"]
+  ["Integer radix + byteValue" "-1"      "(.byteValue (Integer/valueOf \"ff\" 16))"]
+  ["Integer parseInt"      "255"         "(Integer/parseInt \"ff\" 16)"]
+  ["StringTokenizer"       "[\"a=1\" \"b=2\"]" "(let [t (StringTokenizer. \"a=1&b=2\" \"&\")] [(.nextToken t) (.nextToken t)])"]
+  ["MapEntry key/val"      "[:a 1]"      "(let [e (MapEntry. :a 1)] [(key e) (val e)])"]
+  ["String ctor from bytes" "\"hi\""     "(String. (.getBytes \"hi\"))"]
+  ["extend-protocol Map"   ":map"
+   "(do (defprotocol Pe (pe [x])) (extend-protocol Pe Map (pe [m] :map) Object (pe [o] :obj)) (pe {:a 1}))"]
+  ["extend-protocol nil"   ":nil"
+   "(do (defprotocol Pn (pn [x])) (extend-protocol Pn nil (pn [n] :nil) Object (pn [o] :obj)) (pn nil))"]
+  ["extend-protocol Map covers sorted" ":map"
+   "(do (defprotocol Ps (ps [x])) (extend-protocol Ps Map (ps [m] :map) Object (ps [o] :obj)) (ps (sorted-map 1 2)))"]
+  ["reduce over reified IReduceInit" "42"
+   "(reduce + 0 (reify clojure.lang.IReduceInit (reduce [_ f init] (f (f init 40) 2))))"])

@@ -263,6 +263,131 @@
     (register-class-ctor! nm string-builder))
   (each nm ["StringWriter" "java.io.StringWriter"]
     (register-class-ctor! nm make-string-writer))
+  # --- java.net / java.util surface for ring-codec (ring-core enablement) ---
+  # URLEncoder/URLDecoder: www-form-urlencoded (space <-> +, %XX bytes,
+  # [A-Za-z0-9.*_-] literal). Charset args are accepted and ignored beyond
+  # the name (everything is UTF-8 bytes here).
+  (defn- url-unreserved? [b]
+    (or (and (>= b 48) (<= b 57)) (and (>= b 65) (<= b 90))
+        (and (>= b 97) (<= b 122)) (= b 46) (= b 42) (= b 95) (= b 45)))
+  (defn- url-encode-www [s & _]
+    (def out @"")
+    (each b (string/bytes (string s))
+      (cond
+        (url-unreserved? b) (buffer/push-byte out b)
+        (= b 32) (buffer/push-string out "+")
+        (buffer/push-string out (string/format "%%%02X" b))))
+    (string out))
+  (defn- hexv [b]
+    (cond (and (>= b 48) (<= b 57)) (- b 48)
+          (and (>= b 65) (<= b 70)) (- b 55)
+          (and (>= b 97) (<= b 102)) (- b 87)
+          (error "URLDecoder: malformed escape")))
+  (defn- url-decode-www [s & _]
+    (def bytes (string/bytes (string s)))
+    (def n (length bytes))
+    (def out @"")
+    (var i 0)
+    (while (< i n)
+      (def b (in bytes i))
+      (cond
+        (= b 43) (do (buffer/push-string out " ") (++ i))
+        (= b 37) (if (< (+ i 2) n)
+                   (do (buffer/push-byte out (+ (* 16 (hexv (in bytes (+ i 1)))) (hexv (in bytes (+ i 2)))))
+                       (+= i 3))
+                   (error "URLDecoder: incomplete escape"))
+        (do (buffer/push-byte out b) (++ i))))
+    (string out))
+  (each nm ["URLEncoder" "java.net.URLEncoder"]
+    (register-class-statics! nm @{"encode" url-encode-www}))
+  (each nm ["URLDecoder" "java.net.URLDecoder"]
+    (register-class-statics! nm @{"decode" url-decode-www}))
+  (each nm ["Charset" "java.nio.charset.Charset"]
+    (register-class-statics! nm @{"forName" (fn [nm*] @{:jolt/type :jolt/charset :name nm*})}))
+  # Base64 (RFC 4648): encoder/decoder singletons with encode/decode methods.
+  (def- b64-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+  (defn- b64-encode [bs]
+    (def bytes (if (bytes? bs) bs (string bs)))
+    (def n (length bytes))
+    (def out @"")
+    (var i 0)
+    (while (< i n)
+      (def b0 (in bytes i))
+      (def b1 (if (< (+ i 1) n) (in bytes (+ i 1))))
+      (def b2 (if (< (+ i 2) n) (in bytes (+ i 2))))
+      (buffer/push-byte out (in b64-alphabet (brshift b0 2)))
+      (buffer/push-byte out (in b64-alphabet (bor (blshift (band b0 3) 4) (brshift (or b1 0) 4))))
+      (buffer/push-string out (if (nil? b1) "=" (string/from-bytes (in b64-alphabet (bor (blshift (band b1 0xf) 2) (brshift (or b2 0) 6))))))
+      (buffer/push-string out (if (nil? b2) "=" (string/from-bytes (in b64-alphabet (band b2 0x3f)))))
+      (+= i 3))
+    (string out))
+  (def- b64-rev (do (def t @{}) (eachp [i c] b64-alphabet (put t c i)) t))
+  (defn- b64-decode [s]
+    (def cleaned (string/replace-all "=" "" (string s)))
+    (def out @"")
+    (var acc 0) (var bits 0)
+    (each c (string/bytes cleaned)
+      (def v (get b64-rev c))
+      (when (nil? v) (error "Base64: illegal character"))
+      (set acc (bor (blshift acc 6) v))
+      (+= bits 6)
+      (when (>= bits 8)
+        (-= bits 8)
+        (buffer/push-byte out (band (brshift acc bits) 0xff))))
+    out)
+  (register-tagged-methods! :jolt/base64-encoder @{"encode" (fn [self bs] (b64-encode bs)) "encodeToString" (fn [self bs] (b64-encode bs))})
+  (register-tagged-methods! :jolt/base64-decoder @{"decode" (fn [self s] (b64-decode s))})
+  (each nm ["Base64" "java.util.Base64"]
+    (register-class-statics! nm
+      @{"getEncoder" (fn [] @{:jolt/type :jolt/base64-encoder})
+        "getDecoder" (fn [] @{:jolt/type :jolt/base64-decoder})}))
+  # Integer statics: valueOf with optional radix. Returns a plain number —
+  # byteValue/intValue live on the number method surface in the evaluator.
+  (register-class-statics! "Integer"
+    @{"valueOf" (fn [x &opt radix]
+                  (cond
+                    (number? x) x
+                    (nil? radix) (or (scan-number (string x)) (error (string "NumberFormatException: " x)))
+                    (= radix 16) (or (scan-number (string "16r" x)) (error (string "NumberFormatException: " x)))
+                    (= radix 8) (or (scan-number (string "8r" x)) (error (string "NumberFormatException: " x)))
+                    (= radix 2) (or (scan-number (string "2r" x)) (error (string "NumberFormatException: " x)))
+                    (error (string "Integer/valueOf: unsupported radix " radix))))
+      "parseInt" (fn [x &opt radix]
+                   (or (scan-number (string (case radix 16 "16r" 8 "8r" 2 "2r" "") x))
+                       (error (string "NumberFormatException: " x))))
+      "MAX_VALUE" 2147483647
+      "MIN_VALUE" -2147483648})
+  # StringTokenizer: eager split on any delimiter char, empty tokens skipped.
+  (defn- tokenize [s delims]
+    (def dset @{})
+    (each b (string/bytes delims) (put dset b true))
+    (def toks @[])
+    (def cur @"")
+    (each b (string/bytes (string s))
+      (if (get dset b)
+        (when (> (length cur) 0) (array/push toks (string cur)) (buffer/clear cur))
+        (buffer/push-byte cur b)))
+    (when (> (length cur) 0) (array/push toks (string cur)))
+    toks)
+  (register-tagged-methods! :jolt/string-tokenizer
+    @{"hasMoreTokens" (fn [self] (< (self :pos) (length (self :toks))))
+      "countTokens"   (fn [self] (- (length (self :toks)) (self :pos)))
+      "nextToken"     (fn [self]
+                        (if (< (self :pos) (length (self :toks)))
+                          (let [t (in (self :toks) (self :pos))]
+                            (put self :pos (+ 1 (self :pos))) t)
+                          (error "NoSuchElementException")))})
+  (each nm ["StringTokenizer" "java.util.StringTokenizer"]
+    (register-class-ctor! nm (fn [s &opt delims]
+                               @{:jolt/type :jolt/string-tokenizer
+                                 :toks (tokenize s (or delims " \t\n\r\f"))
+                                 :pos 0})))
+  # clojure.lang.MapEntry: a 2-tuple, jolt's map-entry representation.
+  (each nm ["MapEntry" "clojure.lang.MapEntry"]
+    (register-class-ctor! nm (fn [k v] [k v])))
+  # (String. bytes) / (String. bytes charset): UTF-8 bytes to string.
+  (each nm ["String" "java.lang.String"]
+    (register-class-ctor! nm (fn [x &opt charset] (string x))))
   # java.net.URL: enough for selmer's template cache — file: URLs only.
   # A protocol-less spec throws (selmer catches MalformedURLException and
   # prepends file:///), and getPath hands back a stat-able filesystem path.

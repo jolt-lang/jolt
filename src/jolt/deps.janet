@@ -177,7 +177,12 @@
         (put seen k spec)
         (def dir
           (cond
-            (and (dictionary? spec) (get spec :git/url)) (clone-git spec)
+            (and (dictionary? spec) (get spec :git/url))
+              # :deps/root (tools.deps): the project lives in a subdirectory
+              # of the repo — monorepos like ring-clojure/ring.
+              (let [cloned (clone-git spec)
+                    root (get spec :deps/root)]
+                (if root (string cloned "/" root) cloned))
             (and (dictionary? spec) (get spec :local/root))
               (let [lr (get spec :local/root)]
                 (if (string/has-prefix? "/" lr) lr (string base-dir "/" lr)))

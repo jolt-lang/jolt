@@ -1108,7 +1108,13 @@
               (if (= 0 (length c)) (f)
                 (reduce-with-reduced f (in c 0) (array/slice c 1))))))
       3 (let [f (args 0) val (args 1) coll (args 2)]
-          (reduce-with-reduced f val coll))
+          # reify clojure.lang.IReduceInit: the reified value carries its own
+          # reduce — call it (ring.util.codec's tokenizer reduces this way)
+          (if-let [m (and (table? coll)
+                          (get coll :jolt/protocol-methods)
+                          (get (get coll :jolt/protocol-methods) :reduce))]
+            (m coll f val)
+            (reduce-with-reduced f val coll)))
       (error "Wrong number of args passed to: reduce"))))
 
 (defn core-take [n & rest]

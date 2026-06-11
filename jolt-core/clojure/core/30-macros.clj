@@ -252,8 +252,9 @@
 ;; Group a flat seq that starts with a head symbol followed by its list specs
 ;; into [[head spec spec ...] ...] runs. Used by extend-protocol and defrecord.
 (defn- group-by-head [items]
+  ;; nil is a valid extension head (extend-protocol P ... nil (m [x] ...)).
   (reduce (fn [acc x]
-            (if (symbol? x)
+            (if (or (symbol? x) (nil? x))
               (conj acc [x])
               (conj (pop acc) (conj (peek acc) x))))
           [] items))
@@ -347,9 +348,10 @@
 
 (defmacro extend-type [tsym psym & impls]
   ;; register-method is a fn (clojure.core); pass type/protocol/method NAMES as
-  ;; strings (not the symbols) so the call compiles as a plain invoke.
+  ;; strings (not the symbols) so the call compiles as a plain invoke. A nil
+  ;; type extends on nil values (the host tag is the string "nil").
   `(do ~@(map (fn [spec]
-                `(register-method ~(name tsym) ~(name psym) ~(name (first spec))
+                `(register-method ~(if (nil? tsym) "nil" (name tsym)) ~(name psym) ~(name (first spec))
                                   (fn* ~(nth spec 1) ~@(drop 2 spec))))
               impls)))
 

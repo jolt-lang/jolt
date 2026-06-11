@@ -13,6 +13,18 @@
 # the janet/* interop bridge falls back to it inside env-less fibers.
 (def- module-load-env (fiber/getenv (fiber/current)))
 
+# spork/http (pure-janet, jpm-installed) reaches the jolt layer as
+# janet.spork.http/* through the janet.* bridge below — the Ring adapter
+# (examples/ring-app) builds its server on it. SOFT: jolt works without
+# spork; only code touching janet.spork.http/* needs it installed.
+(let [r (protect (require "spork/http"))]
+  (when (r 0)
+    (eachp [sym entry] (r 1)
+      (when (and (symbol? sym) (table? entry))
+        # root-env: the bridge resolves against the RUNTIME fiber env (which
+        # protos to the root env), not this module's env
+        (put root-env (symbol "spork.http/" sym) entry)))))
+
 (defn- sym-name?
   [sym-s name-str]
   (and (struct? sym-s) (= :symbol (sym-s :jolt/type)) (= name-str (sym-s :name))))
@@ -510,8 +522,19 @@
   (if (and (struct? x) (= :jolt/char (get x :jolt/type)))
     (string/from-bytes (x :ch))
     (string x)))
+# java.lang.Number surface (ring-codec: (.byteValue (Integer/valueOf s 16))).
+(def- number-methods
+  {"byteValue"   (fn [n] (let [b (band (math/trunc n) 0xff)] (if (> b 127) (- b 256) b)))
+   "shortValue"  (fn [n] (let [v (band (math/trunc n) 0xffff)] (if (> v 32767) (- v 65536) v)))
+   "intValue"    (fn [n] (math/trunc n))
+   "longValue"   (fn [n] (math/trunc n))
+   "floatValue"  (fn [n] (* 1.0 n))
+   "doubleValue" (fn [n] (* 1.0 n))
+   "toString"    (fn [n &opt radix] (if (= radix 16) (string/format "%x" (math/trunc n)) (string n)))})
+
 (def- string-methods
-  {"toString"    (fn [s] s)
+  {"getBytes"    (fn [s &opt charset] (buffer s))
+   "toString"    (fn [s] s)
    "toLowerCase" (fn [s] (string/ascii-lower s))
    "toUpperCase" (fn [s] (string/ascii-upper s))
    "trim"        (fn [s] (string/trim s))
@@ -846,7 +869,10 @@
    "Keyword" true "Symbol" true "Object" true "IFn" true "Fn" true
    "PersistentVector" true "PersistentList" true "PersistentHashMap" true
    "PersistentHashSet" true "IPersistentMap" true "IPersistentVector" true
-   "IPersistentSet" true "IPersistentCollection" true "ISeq" true "Atom" true "nil" true})
+   "IPersistentSet" true "IPersistentCollection" true "ISeq" true "Atom" true "nil" true
+   # java.util interfaces + seq types ring & friends extend on
+   "Map" true "Set" true "List" true "Collection" true "LazySeq" true
+   "APersistentMap" true})
 
 (defn- canonical-host-tag
   "If type-name names a host type (optionally java.*/clojure.lang.* qualified),
@@ -869,7 +895,17 @@
     (keyword? obj) ["Keyword" "Object"]
     (and (struct? obj) (= :jolt/char (get obj :jolt/type))) ["Character" "Object"]
     (and (struct? obj) (= :symbol (get obj :jolt/type))) ["Symbol" "Object"]
-    (plist? obj) ["PersistentList" "IPersistentList" "IPersistentCollection" "ISeq" "Object"]
+    (plist? obj) ["PersistentList" "IPersistentList" "IPersistentCollection" "ISeq" "List" "Collection" "Object"]
+    (lazy-seq? obj) ["LazySeq" "ISeq" "IPersistentCollection" "Collection" "Object"]
+    # maps: phm / plain struct / sorted / records — java.util.Map covers them
+    # all in ring-style extend-protocol clauses
+    (or (phm? obj)
+        (and (struct? obj) (nil? (get obj :jolt/type)))
+        (and (table? obj) (or (get obj :jolt/deftype)
+                              (= :jolt/sorted-map (get obj :jolt/type)))))
+      ["PersistentHashMap" "APersistentMap" "IPersistentMap" "Map" "IPersistentCollection" "Object"]
+    (or (set? obj) (and (table? obj) (= :jolt/sorted-set (get obj :jolt/type))))
+      ["PersistentHashSet" "IPersistentSet" "Set" "IPersistentCollection" "Object"]
     (or (tuple? obj) (array? obj) (pvec? obj)) ["PersistentVector" "IPersistentVector" "IPersistentCollection" "ISeq" "Object"]
     (or (function? obj) (cfunction? obj)) ["IFn" "Fn" "Object"]
     (nil? obj) ["nil" "Object"]
@@ -1996,6 +2032,8 @@
                   (if m
                     (m (string target) ;args)
                     (error (string "Unsupported String method ." field-name))))
+              (if (and (number? target) (get number-methods field-name))
+                ((get number-methods field-name) target ;args)
               # registered shim objects (java.time etc.): tag-keyed method tables
               (if (and (or (table? target) (struct? target))
                        (get tagged-methods (get target :jolt/type)))
@@ -2028,7 +2066,7 @@
                             (method-fn target ;args)
                             (error (string "Cannot call non-function " field-name " on " (type target)))))
                         (error (string "Cannot call non-function " field-name " on " (type target))))))
-                  (error (string "Cannot call method " field-name " on " (type target))))))))
+                  (error (string "Cannot call method " field-name " on " (type target)))))))))
             # (. obj member) with no extra args: a symbol member naming a
             # function is a zero-arg method call (receiver passed as self);
             # a keyword or `-field` member is plain field access. Strings get
@@ -2038,6 +2076,8 @@
                 (if m
                   (m (string target))
                   (error (string "Unsupported String method ." field-name))))
+            (if (and (number? target) (get number-methods field-name))
+              ((get number-methods field-name) target)
             (if (and (or (table? target) (struct? target))
                      (get tagged-methods (get target :jolt/type))
                      (get (get tagged-methods (get target :jolt/type)) field-name))
@@ -2057,7 +2097,7 @@
                   (array? v) (let [f (eval-form ctx bindings v)]
                                (if (or (function? f) (cfunction? f)) (f target) f))
                   v)
-                v))))))
+                v)))))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]
