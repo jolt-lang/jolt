@@ -63,3 +63,15 @@
   ["reduce empty calls f"       "0"   "(reduce + [])"]
   ["reduce with-init"           "16"  "(reduce + 10 [1 2 3])"]
   ["reduce reduced immediate"   ":x"  "(reduce (fn [a x] (reduced :x)) :init [1 2 3])"])
+
+# into/transduce/eduction are overlay fns now (seed-shrink round 5): into
+# takes a transient fast path for vectors and preserves metadata; eduction
+# stays eager (documented divergence).
+(defspec "transducers / into & eduction (overlay)"
+  ["into list prepends"  "(quote (4 3 1 2))" "(into (quote (1 2)) [3 4])"]
+  ["into sorted-map"     "{1 :a, 2 :b}" "(into (sorted-map) [[2 :b] [1 :a]])"]
+  ["into from map entry" "[:a 1]"  "(into [] (first {:a 1}))"]
+  ["into xform on map"   "{:a 2}"  "(into {} (map (fn [e] [(key e) (inc (val e))])) {:a 1})"]
+  ["eduction multiple xforms" "[4]" "(into [] (eduction (filter odd?) (map inc) [2 3 4]))"]
+  ["->Eduction"          "[2 3]"   "(->Eduction (map inc) [1 2])"]
+  ["transduce no init uses (f)" "5" "(transduce (map inc) + [1 2])"])

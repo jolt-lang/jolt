@@ -1423,21 +1423,7 @@
 # :content) returned nil: janet keyword-apply is not jolt invoke). This
 # private composer remains ONLY for the transducer machinery below, where the
 # stages are always real fns.
-(def- td-comp
-  (fn [& fs]
-    (case (length fs)
-      0 identity
-      1 (fs 0)
-      2 (let [f (fs 0) g (fs 1)] (fn [& args] (f (apply g args))))
-      (let [f (last fs)
-            gs (array/slice fs 0 (dec (length fs)))]
-        (fn [& args]
-          (var result (apply (last gs) args))
-          (var i (- (length gs) 2))
-          (while (>= i 0)
-            (set result ((gs i) result))
-            (-- i))
-          (f result))))))
+# (td-comp is gone: eduction — its last caller — lives in the overlay now.)
 
 # partial now lives in the Clojure collection tier (canonical arities).
 
@@ -2416,14 +2402,7 @@
 (defn core-update-proxy [proxy mappings] proxy)
 # == lives in the Clojure collection tier (core/20-coll.clj); memfn is an
 # overlay macro (core/30-macros.clj) over the .method call sugar.
-(defn core-eduction [& args]
-  # (eduction xform* coll): apply the composed transducers eagerly to coll
-  (let [n (length args)
-        coll (in args (- n 1))
-        xforms (array/slice args 0 (- n 1))
-        xform (if (= 0 (length xforms)) (fn [rf] rf) (apply td-comp xforms))]
-    (core-into (make-vec @[]) xform coll)))
-(defn core->Eduction [xform coll] (core-into (make-vec @[]) xform coll))
+# eduction / ->Eduction live in the Clojure collection tier (core/20-coll.clj).
 (defn core-proxy-super [& args] (error "proxy-super: JVM proxies are not supported in Jolt"))
 (defn core-construct-proxy [c & args] (error "construct-proxy: not supported in Jolt"))
 (defn core-init-proxy [proxy mappings] proxy)
@@ -2508,6 +2487,8 @@
         @{:jolt/type :jolt/transient :kind :map :tbl t})
     # mutable-build arrays (vectors/lists) — copy into a transient vector
     (array? coll) @{:jolt/type :jolt/transient :kind :vector :arr (array/slice coll)}
+    # tuples (reader vectors / map entries) are vectors too
+    (tuple? coll) @{:jolt/type :jolt/transient :kind :vector :arr (array ;coll)}
     (error (string "Don't know how to create a transient from " (type coll)))))
 
 # A transient is invalidated by persistent!; using it afterwards is a bug.
@@ -2705,7 +2686,6 @@
     "parse-double" core-parse-double
     "current-time-ms" core-current-time-ms
     "mapcat" core-mapcat
-    "transduce" core-transduce
     "sequence" core-sequence
     "keyword" core-keyword
     "symbol" core-symbol
@@ -2817,8 +2797,6 @@
     "proxy-call-with-super" core-proxy-call-with-super
     "proxy-mappings" core-proxy-mappings
     "update-proxy" core-update-proxy
-    "eduction" core-eduction
-    "->Eduction" core->Eduction
     "proxy-super" core-proxy-super
     "construct-proxy" core-construct-proxy
     "init-proxy" core-init-proxy

@@ -967,3 +967,26 @@
 (defn unchecked-char [x] (bit-and (int x) 0xffff))
 (defn unchecked-float [x] (double x))
 (defn unchecked-double [x] (double x))
+
+;; --- transduce / into / eduction (seed-shrink round 5) ---------------------
+;; Canonical transduce: build the stacked rf once, reduce (which honors
+;; `reduced` and steps lazy seqs incrementally), then run the completion arity.
+(defn transduce
+  ([xform f coll] (transduce xform f (f) coll))
+  ([xform f init coll]
+   (let [xf (xform f)]
+     (xf (reduce xf init coll)))))
+
+;; into stays in the seed: it's perf-wall hot (the into-vec bench pays ~11%
+;; through the overlay call layers — same lesson as even?/odd? in round 4).
+
+;; eduction is EAGER on jolt (documented divergence, as before): the composed
+;; xforms applied to coll, realized into a vector.
+(defn eduction [& args]
+  (let [coll (last args)
+        xforms (butlast args)]
+    (if xforms
+      (into [] (apply comp xforms) coll)
+      (into [] coll))))
+
+(defn ->Eduction [xform coll] (into [] xform coll))
