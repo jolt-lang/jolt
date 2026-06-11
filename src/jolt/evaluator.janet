@@ -887,6 +887,8 @@
   (def methods @{})
   (def isa-cache @[nil])
   (def dispatch-cache @{})
+  # the prefers table, shared with the var (prefer-method-setup mutates it)
+  (def v-box @[nil])
   (def mm-fn
     (fn [& args]
       (let [dv (apply dispatch-fn args)
@@ -909,13 +911,39 @@
                           (hierarchy :value)
                           hierarchy)
                         nil)
-                    found (do (var f nil) (var i 0)
-                            (let [ks (keys methods)]
-                              (while (and (nil? f) (< i (length ks)))
-                                (if (if h (isa-fn h dv (in ks i)) (isa-fn dv (in ks i)))
-                                  (set f (get methods (in ks i))))
-                                (++ i)))
-                            f)]
+                    # Collect EVERY isa-matching method key, then pick the
+                    # dominant one: x dominates y when x is prefer-method'd
+                    # over y (direct preference) or (isa? x y). Two matches
+                    # with no dominant is an ambiguity ERROR, as in Clojure —
+                    # this used to silently take whichever key the table
+                    # yielded first, ignoring prefer-method (jolt-heo).
+                    found (do
+                            (def matches @[])
+                            (each k (keys methods)
+                              (when (if h (isa-fn h dv k) (isa-fn dv k))
+                                (array/push matches k)))
+                            (defn pref? [x y]
+                              (def px (get (or (get v-box 0) @{}) x))
+                              (and px (not (nil? (get px y)))))
+                            (defn dom? [x y]
+                              (or (pref? x y) (if h (isa-fn h x y) (isa-fn x y))))
+                            (case (length matches)
+                              0 nil
+                              1 (get methods (in matches 0))
+                              (do
+                                (var best (in matches 0))
+                                (var i 1)
+                                (while (< i (length matches))
+                                  (when (dom? (in matches i) best) (set best (in matches i)))
+                                  (++ i))
+                                (var amb nil)
+                                (each k matches
+                                  (when (and (nil? amb) (not (deep= k best)) (not (dom? best k)))
+                                    (set amb k)))
+                                (when amb
+                                  (error (string "Multiple methods in multimethod '" (name-sym :name)
+                                                 "' match dispatch value — neither is preferred")))
+                                (get methods best))))]
                 (if found
                   (do (put dispatch-cache dv found) (apply found args))
                   (let [dm (get methods default-key)]
@@ -923,6 +951,11 @@
                       (error (string "No method in multimethod " (name-sym :name)
                                      " for dispatch value: " dv))))))))))))
   (def v (ns-intern ns (name-sym :name) mm-fn))
+  # pre-create the prefers store so the dispatch closure and
+  # prefer-method-setup share one table
+  (def prefs-tbl (or (get v :jolt/prefers)
+                     (do (put v :jolt/prefers @{}) (get v :jolt/prefers))))
+  (put v-box 0 prefs-tbl)
   (put v :jolt/methods methods)
   (put v :jolt/dispatch-cache dispatch-cache)
   (put v :jolt/default default-key)
@@ -1090,7 +1123,10 @@
       (def mm-var (mm-var-of mm-sym true))
       (def prefs (or (get mm-var :jolt/prefers)
                      (do (put mm-var :jolt/prefers @{}) (mm-var :jolt/prefers))))
-      (put prefs dval-a dval-b)
+      # {x -> {y true ...}}: x is preferred over each y (Clojure's {x #{y}})
+      (def sub (or (get prefs dval-a)
+                   (do (put prefs dval-a @{}) (get prefs dval-a))))
+      (put sub dval-b true)
       (clear-dispatch-cache! mm-var)
       mm-var))
   (ns-intern core "remove-method-setup"
@@ -1108,6 +1144,10 @@
         (put mm-var :jolt/methods @{})
         (clear-dispatch-cache! mm-var))
       mm-var))
+  (ns-intern core "prefers-setup"
+    (fn [mm-sym]
+      (def mm-var (mm-var-of mm-sym false))
+      (or (and mm-var (get mm-var :jolt/prefers)) {})))
   (ns-intern core "get-method-setup"
     (fn [mm-sym dval]
       (def mm-var (mm-var-of mm-sym false))
