@@ -178,7 +178,15 @@
   (let [op (get node :op)]
     (cond
       (= op :local) (let [r (get env (get node :name))]
-                      (if r r node))
+                      ;; carry the param's ^:struct hint onto a let-bound fresh
+                      ;; local, so lookups inside the inlined body keep the bare
+                      ;; (no-guard) path (jolt-dad). The param hint asserts the
+                      ;; arg is a struct; inlining doesn't change that contract.
+                      (if r
+                        (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
+                          (assoc r :hint (get node :hint))
+                          r)
+                        node))
       (= op :if) (assoc node
                         :test (subst (get node :test) env)
                         :then (subst (get node :then) env)

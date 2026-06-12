@@ -39,10 +39,20 @@
     (swap! gensym-counter inc)
     (str "_r$" prefix n)))
 
-(defn- empty-env [] {:locals #{}})
+(defn- empty-env [] {:locals #{} :hints {}})
 (defn- local? [env nm] (contains? (:locals env) nm))
 (defn- add-locals [env names] (update env :locals #(reduce conj % names)))
 (defn- with-recur [env name] (assoc env :recur name))
+
+;; Type hints (jolt-dad). The reader keeps ^hint metadata on the binding symbol;
+;; we recognize ^:struct, which asserts the value is a plain struct/record map so
+;; a constant-keyword lookup can skip the :jolt/type guard and emit a bare get.
+;; Other hints parse and are ignored, as before.
+(defn- hint-of [sym]
+  (let [m (form-sym-meta sym)]
+    (when (and m (get m :struct)) :struct)))
+(defn- add-hint [env nm h]
+  (if h (assoc env :hints (assoc (:hints env) nm h)) env))
 
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
@@ -59,20 +69,25 @@
         (when-not (form-sym? bsym) (uncompilable "destructuring binding"))
         (let [nm (form-sym-name bsym)
               init (analyze ctx (nth bvec (inc i)) env)]
-          (recur (+ i 2) (add-locals env [nm]) (conj pairs [nm init]))))
+          (recur (+ i 2) (add-hint (add-locals env [nm]) nm (hint-of bsym))
+                 (conj pairs [nm init]))))
       [pairs env])))
 
 (defn- parse-params [pvec]
-  (loop [i 0 fixed [] rest-name nil]
+  ;; :hints is a vector of [name hint] pairs (vector, not a map, so the caller
+  ;; folds it with a plain reduce — no reduce-over-map in the kernel subset).
+  (loop [i 0 fixed [] rest-name nil hints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p) (uncompilable "destructuring fn param"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
             (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
-            (recur (+ i 2) fixed (form-sym-name r)))
-          (recur (inc i) (conj fixed (form-sym-name p)) rest-name)))
-      {:fixed fixed :rest rest-name})))
+            (recur (+ i 2) fixed (form-sym-name r) hints))
+          (let [nm (form-sym-name p) h (hint-of p)]
+            (recur (inc i) (conj fixed nm) rest-name
+                   (if h (conj hints [nm h]) hints)))))
+      {:fixed fixed :rest rest-name :hints hints})))
 
 (defn- analyze-arity [ctx pvec body env fn-name]
   (let [pp (parse-params (vec (form-vec-items pvec)))
@@ -88,7 +103,8 @@
         ;; keeps recur targets unique per compilation unit.
         rname (gen-name (str (compile-ns ctx) "/" (or fn-name "fn") "--"))
         names (cond-> (vec fixed) rst (conj rst) fn-name (conj fn-name))
-        env* (-> (add-locals env names) (with-recur rname))
+        env0 (-> (add-locals env names) (with-recur rname))
+        env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
         arity {:params fixed :recur-name rname
                :body (analyze-seq ctx body env*)}]
     ;; :rest only when variadic — an absent :rest reads back nil, same as before,
@@ -190,7 +206,8 @@
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
-      (and (nil? ns) (local? env nm)) (local nm)
+      (and (nil? ns) (local? env nm))
+        (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
       ns (let [r (resolve-global ctx form)]
            (if (= :var (:kind r))
              (var-ref (:ns r) (:name r))

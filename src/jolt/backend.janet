@@ -331,6 +331,13 @@
          (>= 2 (length args) 1))
     (let [k (fnode :val)
           m-expr (in args 0)
+          # ^:struct hint (jolt-dad): the subject IR local asserts a plain
+          # struct/record map, so skip the :jolt/type guard entirely and emit a
+          # bare get (~20ns vs ~36ns guarded). Programmer-asserted, like a
+          # Clojure type hint — a lie just makes the raw get return the wrong
+          # thing, same contract as ^String. Only for a :local subject.
+          subj (norm-node (in (vview (node :args)) 0))
+          hinted (and (= :local (subj :op)) (= :struct (subj :hint)))
           # when the subject is already a janet symbol (a local), read it
           # directly — the guard + lookup both reference it, and locals are
           # immutable reads, so no rebinding let is needed (saves a binding
@@ -338,13 +345,13 @@
           m (if (symbol? m-expr) m-expr (jsym))
           wrap (fn [body] (if (symbol? m-expr) body ['let [m m-expr] body]))]
       (if (= 1 (length args))
-        (wrap ['if ['get m :jolt/type] (tuple core-get m k) ['get m k]])
+        (let [fast ['get m k]]
+          (wrap (if hinted fast ['if ['get m :jolt/type] (tuple core-get m k) fast])))
         (let [d-expr (in args 1)
               d (if (symbol? d-expr) d-expr (jsym))
               v (jsym)
-              body ['if ['get m :jolt/type]
-                    (tuple core-get m k d)
-                    ['let [v ['get m k]] ['if ['nil? v] d v]]]
+              fast ['let [v ['get m k]] ['if ['nil? v] d v]]
+              body (if hinted fast ['if ['get m :jolt/type] (tuple core-get m k d) fast])
               body (if (symbol? d-expr) body ['let [d d-expr] body])]
           (wrap body))))
     (direct-call? ctx fnode) (tuple (emit ctx fnode) ;args)
