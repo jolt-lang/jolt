@@ -295,7 +295,15 @@
 ;; instead of evaluating its fields. methods is a {kw {:name str}} map (only :name
 ;; is consulted). Each method is a thin dispatch fn over protocol-dispatch.
 (defmacro defprotocol [pname & sigs]
-  (let [methods (reduce (fn [m sig]
+  ;; Clojure's defprotocol takes an optional docstring and leading keyword
+  ;; options (:extend-via-metadata true, honeysql uses it) before the method
+  ;; signatures — drop them (metadata extension is a JVM dispatch detail).
+  (let [sigs (loop [s sigs]
+               (cond
+                 (string? (first s))  (recur (rest s))
+                 (keyword? (first s)) (recur (rest (rest s)))
+                 :else s))
+        methods (reduce (fn [m sig]
                           (assoc m (keyword (name (first sig))) {:name (name (first sig))}))
                         {} sigs)]
     `(do
