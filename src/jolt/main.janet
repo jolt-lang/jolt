@@ -491,6 +491,15 @@
   # nothing. Re-read it here so the env wins in the running process.
   (when-let [jf (os/getenv "JOLT_FEATURES")]
     (reader-features-set! (filter |(> (length $) 0) (string/split "," jf))))
+  # JOLT_DIRECT_LINK, same story: :direct-linking?/:inline? are baked into ctx at
+  # build time (init runs during the jpm compile). Re-read here so a running
+  # process can opt user code into direct-linking + inlining (jolt-87f, the
+  # AOT-escape-analysis passes). Core is already compiled into the image; this
+  # only affects user code compiled at runtime. Off by default — user code stays
+  # fully redefinable unless asked otherwise.
+  (when (= "1" (os/getenv "JOLT_DIRECT_LINK"))
+    (put (ctx :env) :direct-linking? true)
+    (put (ctx :env) :inline? true))
   (cond
     (empty? argv) (run-repl)
     (help-flags (argv 0)) (print-help)

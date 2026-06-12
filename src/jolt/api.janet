@@ -213,6 +213,12 @@
             (when (not (nil? form)) (set result (eval-toplevel ctx form))))
           result))
       (ns-intern core "eval" (fn [form] (eval-toplevel ctx form))))
+    # Init is done: core + the self-hosted compiler are loaded with :inline? off
+    # (so they compiled exactly as before). Flip inlining on for subsequent
+    # user-code compilation iff user direct-linking is on (JOLT_DIRECT_LINK=1) —
+    # the inline pass only inlines targets that won't be redefined, the same
+    # safety the direct-linking flag asserts (jolt-87f).
+    (put (ctx :env) :inline? (if (get (ctx :env) :direct-linking?) true false))
     ctx))
 
 # --- Context snapshot/fork (cheap isolated copies) --------------------------
@@ -290,14 +296,16 @@
   # Opts land in the key via their printed form; an opt that prints unstably
   # (e.g. a closure in :namespaces) just degrades to a cache miss, never to a
   # wrong hit. Runtime knobs that shape the ctx outside opts ride along too.
-  (def key (string/format "%q|%q|%q|%q|%q|%q|%q"
+  (def key (string/format "%q|%q|%q|%q|%q|%q|%q|%q|%q"
                           (string janet/version "-" janet/build)
                           opts
                           (os/getenv "JOLT_PATH")
                           (os/getenv "JOLT_MUTABLE")
                           (os/getenv "JOLT_AOT_CORE")
                           (os/getenv "JOLT_FEATURES")
-                          (os/getenv "JOLT_INTERPRET_MACROS")))
+                          (os/getenv "JOLT_INTERPRET_MACROS")
+                          (os/getenv "JOLT_DIRECT_LINK")
+                          (os/getenv "JOLT_NO_IR_PASSES")))
   (string dir "/jolt-ctx-" (band h 0x7FFFFFFF) "-" len "-" (band (hash key) 0x7FFFFFFF) ".jimg"))
 
 (defn init-cached

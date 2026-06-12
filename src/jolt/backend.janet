@@ -62,6 +62,24 @@
 (defn- norm-node [n]
   (if (phm/phm? n) (phm/phm-to-struct n) n))
 
+# Inline registry (jolt-87f). When a defn of a SINGLE FIXED-ARITY fn compiles
+# under :inline?, stash its body IR on the var cell so the inline pass
+# (jolt.passes) can splice it into callers. Eligibility beyond single-fixed-arity
+# (body grammar, size budget) is decided by the pass, which walks the body to
+# alpha-rename it anyway. Skip ^:redef / ^:dynamic (those vars stay redefinable,
+# so a call to them must not be inlined). The stash is {:params [..] :body <ir>}.
+(defn- inline-stash! [ctx cell node]
+  (when (get (ctx :env) :inline?)
+    (def init (norm-node (node :init)))
+    (def meta (node :meta))
+    (when (and (= :fn (init :op))
+               (not (and meta (or (get meta :redef) (get meta :dynamic)))))
+      (def arities (vview (init :arities)))
+      (when (= 1 (length arities))
+        (def ar (norm-node (in arities 0)))
+        (unless (ar :rest)
+          (put cell :inline-ir {:params (ar :params) :body (ar :body)}))))))
+
 # Var late-binding: reads go through `(var-get cell)` with the cell embedded as a
 # constant, so compiled code sees redefinition (Janet early-binds plain symbols)
 # — var-get reads the cell's root live. Writes go through a memoized setter.
@@ -444,6 +462,7 @@
       :throw ['error (emit ctx (node :expr))]
       :def (let [cell (cell-for ctx (node :ns) (node :name))
                  meta (node :meta)]
+             (inline-stash! ctx cell node)
              (tuple (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))
                     (emit ctx (node :init))))
       :let (emit-let ctx node)
@@ -556,7 +575,7 @@
   (def pv (unless (= "1" (os/getenv "JOLT_NO_IR_PASSES"))
             (ns-find (ctx-find-ns ctx "jolt.passes") "run-passes")))
   (if pv
-    (let [pr (protect ((var-get pv) (r 1)))]
+    (let [pr (protect ((var-get pv) (r 1) ctx))]
       # the pass runs interpreted; a throw inside it unwinds past the
       # interpreter's ns restores — put the compile ns back either way, or
       # the REST of this compilation resolves in jolt.passes

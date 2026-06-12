@@ -194,6 +194,31 @@
 # with it would recurse forever.
 (defn h-ref-get [tab key] (get tab key))
 
+# ---------------------------------------------------------------------------
+# Inline registry (jolt-87f, Route 1 AOT escape analysis). The inline pass
+# (jolt.passes) is portable Clojure and can't read Janet var cells, so it asks
+# the host whether a given global is inline-eligible and, if so, for its body IR.
+# ---------------------------------------------------------------------------
+
+# Is inlining enabled for the unit currently being compiled? :inline? is OFF for
+# all of init (core tiers + self-hosted compiler recompile) and flipped on at the
+# end of init to the user direct-linking setting, so core compiles exactly as
+# before (const-fold only) and only opted-in user code inlines.
+(defn h-inline-enabled? [ctx] (if (get (ctx :env) :inline?) true false))
+
+# The stashed inline body for global ns/name, or nil. Returns it only when the
+# target is inline-SAFE: a defined var that won't be redefined (not ^:redef /
+# ^:dynamic) and that carries a stashed :inline-ir (set by the back end when the
+# var's defn compiled as a small, side-effect-bounded fn). The stash is
+# {:params [name ...] :body <ir>} — a single fixed arity.
+(defn h-inline-ir [ctx ns-name nm]
+  (when (get (ctx :env) :inline?)
+    (def cell (let [n (ctx-find-ns ctx ns-name)] (and n (ns-find n nm))))
+    (when (and cell (table? cell)
+               (not (cell :dynamic))
+               (not (let [m (cell :meta)] (and m (get m :redef)))))
+      (cell :inline-ir))))
+
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
    "ref-put!" h-ref-put!
@@ -207,7 +232,8 @@
    "form-special?" h-special? "compile-ns" h-current-ns "form-macro?" h-macro?
    "form-expand-1" h-expand-1 "resolve-global" h-resolve-global
    "form-syntax-quote-lower" h-syntax-quote-lower
-   "host-intern!" h-intern!})
+   "host-intern!" h-intern!
+   "inline-enabled?" h-inline-enabled? "inline-ir" h-inline-ir})
 
 (defn install! [ctx]
   (def ns (ctx-find-ns ctx "jolt.host"))

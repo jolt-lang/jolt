@@ -429,7 +429,20 @@
               :compile? compile?
               :aot-core? aot-core?
               :compile-macros? compile-macros?
-              :direct-linking? (if opts (get opts :direct-linking?) nil)
+              # User-code direct-linking default (off unless opted in), the
+              # apples-to-apples analog of jank's -Odirect-call / Clojure's
+              # :direct-linking. JOLT_DIRECT_LINK=1 turns it on for user units;
+              # this is also the gate the inline pass reads (a call is only
+              # inline-safe when the callee won't be redefined). load-core-overlay!
+              # still flips core to :aot-core? around the tiers and restores this.
+              :direct-linking? (let [o (if opts (get opts :direct-linking?) nil)]
+                                 (if (nil? o) (= "1" (os/getenv "JOLT_DIRECT_LINK")) o))
+              # Inline + scalar-replacement passes (jolt-87f). OFF for all of init
+              # (core load + self-hosted compiler recompile), so core/bootstrap
+              # compile exactly as before; api/init flips it on to the user
+              # direct-linking setting AFTER init, so only opted-in user code
+              # inlines. The inline pass also reads this (via host/inline-enabled?).
+              :inline? false
               # Ordered roots searched (after the stdlib) to resolve a namespace
               # to a .clj/.cljc file. jolt-core holds the portable Clojure layer
               # (analyzer/IR/core); deps.edn resolution appends dep src dirs.
