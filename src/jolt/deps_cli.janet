@@ -34,13 +34,28 @@
 (defn- roots [aliases]
   (if (os/stat "deps.edn") (deps/resolve-deps-cached "deps.edn" nil aliases) @[]))
 
+(defn- jolt-bin
+  "The jolt executable: $JOLT_BIN, else the `jolt` sitting NEXT TO this
+  jolt-deps binary (the pair is built together — running a checkout's
+  build/jolt-deps by path must not pick up some other jolt, or fail when
+  none is on PATH), else `jolt` from PATH."
+  []
+  (or (os/getenv "JOLT_BIN")
+      (let [self (or (first (dyn :args)) (dyn :executable))
+            slashes (when self (string/find-all "/" self))
+            dir (when (and slashes (> (length slashes) 0))
+                  (string/slice self 0 (last slashes)))
+            sibling (when dir (string dir "/jolt"))]
+        (when (and sibling (os/stat sibling)) sibling))
+      "jolt"))
+
 (defn- exec-jolt [aliases extra-args]
   # Set JOLT_PATH in our own env and let the child inherit it (os/execute's env
   # arg isn't honored here; inheriting is reliable).
   (def rs (string/join (roots aliases) ":"))
   (def existing (os/getenv "JOLT_PATH"))
   (os/setenv "JOLT_PATH" (if (and existing (> (length existing) 0)) (string rs ":" existing) rs))
-  (os/execute [(os/getenv "JOLT_BIN" "jolt") ;extra-args] :p))
+  (os/execute [(jolt-bin) ;extra-args] :p))
 
 (defn- usage []
   (print "usage: jolt-deps [-A:alias[:alias]] [path | run FILE [args] | repl | -e EXPR [args]]")
