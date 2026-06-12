@@ -305,7 +305,24 @@
 (defn- reader-map [kvs]
   (var has-nil false) (var i 0)
   (while (< i (length kvs)) (when (nil? (in kvs i)) (set has-nil true) (break)) (++ i))
-  (if has-nil (phm/make-phm kvs) (struct ;kvs)))
+  # Source order rides along out-of-band (jolt-p3c): struct iteration is hash
+  # order, but Clojure evaluates literal entries left to right. A struct
+  # PROTOTYPE carries it without changing the form's map behavior (keys/kvs/
+  # length ignore protos; jolt-equal? compares maps structurally); the phm rep
+  # (nil key/value present) gets a plain extra field.
+  (if has-nil
+    (let [m (phm/make-phm kvs)]
+      (put m :jolt/kv-order (tuple/slice kvs))
+      m)
+    (struct/with-proto (struct :jolt/kv-order (tuple/slice kvs)) ;kvs)))
+
+(defn form-kv-order
+  "Source-ordered [k v k v ...] tuple of a map FORM (nil for maps built at
+  runtime, which carry no reader order)."
+  [form]
+  (cond
+    (struct? form) (get (struct/getproto form) :jolt/kv-order)
+    (table? form) (get form :jolt/kv-order)))
 
 (defn read-map [s pos]
   # pos is at opening brace

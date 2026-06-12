@@ -261,9 +261,15 @@
       (make-phs ;result))
     (and (struct? form) (get form :jolt/type)) form
     (struct? form)
-    (do (var kvs @[]) (each k (keys form)
-      (array/push kvs (syntax-quote* ctx bindings k gsmap))
-      (array/push kvs (syntax-quote* ctx bindings (get form k) gsmap))) (struct ;kvs))
+    (do (var kvs @[])
+      (def order (form-kv-order form))
+      (if order
+        (each x order (array/push kvs (syntax-quote* ctx bindings x gsmap)))
+        (each k (keys form)
+          (array/push kvs (syntax-quote* ctx bindings k gsmap))
+          (array/push kvs (syntax-quote* ctx bindings (get form k) gsmap))))
+      # keep carrying source order through nested syntax-quote (jolt-p3c)
+      (struct/with-proto (struct :jolt/kv-order (tuple/slice kvs)) ;kvs))
     form))
 
 # Syntax-quote LOWERING: instead of evaluating a `(...) form to a value (what
@@ -306,9 +312,12 @@
       @[(sqsym* "quote") form]
       (struct? form)
       (do (var parts @[(sqsym* "__sqmap")])
-          (each k (keys form)
-            (array/push parts (syntax-quote-lower ctx k gsmap))
-            (array/push parts (syntax-quote-lower ctx (get form k) gsmap)))
+          (def order (form-kv-order form))
+          (if order
+            (each x order (array/push parts (syntax-quote-lower ctx x gsmap)))
+            (each k (keys form)
+              (array/push parts (syntax-quote-lower ctx k gsmap))
+              (array/push parts (syntax-quote-lower ctx (get form k) gsmap))))
           parts)
       @[(sqsym* "quote") form])))
 
@@ -2353,19 +2362,26 @@
             (error (string "No reader function for tag " tag))))
       (if (get form :jolt/type)
         (error (string "Unexpected tagged form: " (form :jolt/type)))
-        # plain map literal: evaluate keys and values
-        (let [kvs @[]]
-          (each k (keys form)
-            (array/push kvs (eval-form ctx bindings k))
-            (array/push kvs (eval-form ctx bindings (get form k))))
+        # plain map literal: evaluate keys and values in SOURCE order when
+        # the reader order rides along (jolt-p3c), hash order otherwise
+        (let [kvs @[]
+              order (form-kv-order form)]
+          (if order
+            (each x order (array/push kvs (eval-form ctx bindings x)))
+            (each k (keys form)
+              (array/push kvs (eval-form ctx bindings k))
+              (array/push kvs (eval-form ctx bindings (get form k)))))
           (build-eval-map kvs))))))))
     # A phm map-literal FORM (reader emits one for {:a nil} etc., which a struct
     # would have dropped): evaluate its key/value forms and rebuild, preserving nil.
     (phm? form)
-    (let [kvs @[]]
-      (each e (phm-entries form)
-        (array/push kvs (eval-form ctx bindings (in e 0)))
-        (array/push kvs (eval-form ctx bindings (in e 1))))
+    (let [kvs @[]
+          order (form-kv-order form)]
+      (if order
+        (each x order (array/push kvs (eval-form ctx bindings x)))
+        (each e (phm-entries form)
+          (array/push kvs (eval-form ctx bindings (in e 0)))
+          (array/push kvs (eval-form ctx bindings (in e 1)))))
       (build-eval-map kvs))
     (array? form)
     (if (= 0 (length form))

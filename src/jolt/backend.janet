@@ -330,6 +330,22 @@
               body (if (symbol? d-expr) body ['let [d d-expr] body])]
           (wrap body))))
     (direct-call? ctx fnode) (tuple (emit ctx fnode) ;args)
+    # Local callee (closure param, let-bound fn, defn self-name): inline the
+    # function check so the overwhelmingly-common function case is a direct
+    # janet call with no variadic arg-tuple packing — jolt-call only handles
+    # the IFn-collection leftovers (jank's dynamic_call removal, jolt-507).
+    # The callee is rebound to a reserved _fp$ symbol first: a raw jolt local
+    # name in janet CALL-HEAD position resolves against janet's macro table
+    # before the lexical upvalue, so a local named like a janet core macro
+    # (clojure.core/repeat's self-name vs janet's repeat macro) would expand
+    # as that macro. Argument positions (the old jolt-call shape, the rebind
+    # here) never consult the macro table, so the rebind is safe.
+    (= :local (fnode :op))
+    (let [fsym (jsym)]
+      ['let [fsym (emit ctx fnode)]
+       ['if ['function? fsym]
+        (tuple fsym ;args)
+        (tuple jolt-call fsym ;args)]])
     (tuple jolt-call (emit ctx fnode) ;args)))
 
 (defn- emit-vector [ctx node]

@@ -169,7 +169,17 @@
   (tuple/slice r))
 
 # Map builder: parts are alternating k v (no splicing in map syntax-quote).
-(defn core-sqmap [& parts] (kvs->map (array ;parts)))
+(defn core-sqmap [& parts]
+  # A syntax-quoted map template is Clojure's array-map case: construction
+  # order is source order and must survive into the built map, which usually
+  # becomes a FORM whose entries the evaluator walks (jolt-p3c). Same
+  # carriers as the reader: struct prototype / phm field.
+  (def kvs (array ;parts))
+  (def m (kvs->map kvs))
+  (cond
+    (struct? m) (struct/with-proto (struct :jolt/kv-order (tuple/slice kvs)) ;kvs)
+    (table? m) (do (put m :jolt/kv-order (tuple/slice kvs)) m)
+    m))
 
 # Set builder: like core-sqvec but yields a set, so `#{~@a} splices into a set.
 (defn core-sqset [& parts]

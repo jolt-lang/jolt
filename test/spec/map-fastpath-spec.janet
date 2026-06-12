@@ -35,10 +35,16 @@
   ["collection key"   ":v"            "(get {[1 2] :v} [1 2])"]
   ["collection value-equal key" ":v"  "(get {[1 2] :v} (vector 1 2))"]
   ["computed key"     "1"             "(get {(keyword \"a\") 1} :a)"]
-  # NOTE: entry ORDER is reader-hash order today, not source order (Clojure
-  # evaluates array-map literals left-to-right) — pinned loosely; see jolt-p3c
-  ["values evaluate exactly once each" "[1 2 3]"
-   "(do (def log (atom [])) {:a (swap! log conj 1) :b (swap! log conj 2) :c (swap! log conj 3)} (vec (sort (deref log))))"]
+  # jolt-p3c: literal entries evaluate left to right in SOURCE order (the
+  # reader carries [k v ...] order on a struct prototype / phm field)
+  ["values evaluate in source order" "[1 2 3]"
+   "(do (def log (atom [])) {:a (swap! log conj 1) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))"]
+  ["keys evaluate before their values, pairwise" "[:k1 :v1 :k2 :v2]"
+   "(do (def log (atom [])) {(do (swap! log conj :k1) :a) (do (swap! log conj :v1) 1) (do (swap! log conj :k2) :b) (do (swap! log conj :v2) 2)} (deref log))"]
+  ["source order with a nil value (phm form)" "[1 2 3]"
+   "(do (def log (atom [])) {:a (do (swap! log conj 1) nil) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))"]
+  ["source order through syntax-quote" "[1 2]"
+   "(do (def log (atom [])) (defmacro m-p3c [] `{:a ~(list 'swap! 'log 'conj 1) :b ~(list 'swap! 'log 'conj 2)}) (m-p3c) (deref log))"]
   ["count"            "3"             "(count {:a 1 :b 2 :c 3})"]
   ["equality with phm" "true"         "(= {:a 1 :b 2} (assoc {:a 1} :b 2))"]
   ["keys work after assoc" "2"        "(:b (assoc {:a 1 :b 2} :c 3))"]
@@ -55,3 +61,14 @@
   ["PI"          "true"             "(< 3.14 clojure.math/PI 3.15)"]
   ["require + alias" "5"            "(do (require '[clojure.math :as m]) (long (m/hypot 3 4)))"]
   ["as a value"  "[1 2]"            "(mapv (comp long clojure.math/sqrt) [1 4])"])
+
+# jolt-507: a jolt local in janet CALL-HEAD position must not resolve as a
+# janet core macro of the same name (repeat/seq/loop are janet macros). The
+# emitter rebinds local callees to reserved _fp$ symbols.
+(defspec "calls / locals named like janet macros"
+  ["local fn named repeat"  "[1 1]"    "(let [repeat (fn [x] [x x])] (repeat 1))"]
+  ["local fn named seq"     ":end"     "((fn seq [n] (if (pos? n) (seq (dec n)) :end)) 2)"]
+  ["local fn named loop2"   "[2 1]"    "(let [with (fn [a b] [b a])] (with 1 2))"]
+  ["overlay repeat self-call (regression)" "(quote (0 0 0))" "(take 3 (repeat 0))"]
+  ["closure param called"   "42"       "((fn [f] (f 41)) inc)"]
+  ["param holding a keyword (IFn leftover)" "1" "((fn [f] (f {:a 1})) :a)"])

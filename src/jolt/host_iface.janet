@@ -22,6 +22,7 @@
 (use ./evaluator)
 (use ./core)
 (import ./phm :as phm)
+(import ./reader :as rdr)
 
 # ---------------------------------------------------------------------------
 # Form introspection
@@ -54,7 +55,18 @@
 (defn h-elements [form] (make-vec form))
 (defn h-vector-items [form] (make-vec form))
 (defn h-map-pairs [form]
-  (if (phm/phm? form)
+  # reader forms carry source order (jolt-p3c) — Clojure evaluates literal
+  # entries left to right; hash order only for constructed maps
+  (def order (rdr/form-kv-order form))
+  (cond
+    order
+    (do (def out @[])
+        (var i 0)
+        (while (< i (length order))
+          (array/push out (make-vec [(in order i) (in order (+ i 1))]))
+          (+= i 2))
+        (make-vec out))
+    (phm/phm? form)
     (make-vec (map (fn [e] (make-vec [(in e 0) (in e 1)])) (phm/phm-entries form)))
     (make-vec (map (fn [k] (make-vec [k (get form k)])) (keys form)))))
 (defn h-set-items [form] (make-vec (form :value)))
