@@ -880,10 +880,27 @@
                   (if (nil? rt) (set go false) (set cur (ls-rest-cached cur rt))))))))))
     (do
       (var stop false)
-      (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
-        (when (not stop)
-          (set acc (rf acc x))
-          (when (core-reduced? acc) (set acc (acc :val)) (set stop true))))))
+      (cond
+        # Indexed colls iterate in place — realize-for-iteration would copy a
+        # pvec into a fresh array (alloc + pv-nth per element) on EVERY
+        # reduce call, which dominates tight reduce-over-vector loops
+        # (jolt-4vr). Also breaks at `reduced` instead of scanning the tail.
+        (pvec? coll)
+        (do (def n (pv-count coll)) (var i 0)
+            (while (and (< i n) (not stop))
+              (set acc (rf acc (pv-nth coll i)))
+              (when (core-reduced? acc) (set acc (acc :val)) (set stop true))
+              (++ i)))
+        (or (tuple? coll) (array? coll))
+        (do (def n (length coll)) (var i 0)
+            (while (and (< i n) (not stop))
+              (set acc (rf acc (in coll i)))
+              (when (core-reduced? acc) (set acc (acc :val)) (set stop true))
+              (++ i)))
+        (each x (if (set? coll) (phs-seq coll) (realize-for-iteration coll))
+          (when (not stop)
+            (set acc (rf acc x))
+            (when (core-reduced? acc) (set acc (acc :val)) (set stop true)))))))
   acc)
 
 (defn- transduce-reduce

@@ -124,6 +124,35 @@
   # exists (50-io tier), so it rides the end of overlay load.
   (install-print-method-cb! ctx))
 
+# clojure.math (Clojure 1.11) backed directly by Janet's math natives
+# (jolt-h79). The vars hold plain Janet functions, so compiled calls
+# direct-link — unlike Math/sqrt interop forms, which are in the frozen
+# interpret-only punt set (~5us/call vs ~30ns here). Installed as a
+# populated namespace, so (require '[clojure.math :as m]) is a no-op pass.
+(defn- install-clojure-math! [ctx]
+  (def ns (ctx-find-ns ctx "clojure.math"))
+  (def fns
+    {"sqrt" math/sqrt "cbrt" math/cbrt "pow" math/pow
+     "exp" math/exp "expm1" math/expm1
+     "log" math/log "log10" math/log10 "log1p" math/log1p
+     "sin" math/sin "cos" math/cos "tan" math/tan
+     "asin" math/asin "acos" math/acos "atan" math/atan "atan2" math/atan2
+     "sinh" math/sinh "cosh" math/cosh "tanh" math/tanh
+     "floor" math/floor "ceil" math/ceil "rint" math/round
+     "round" (fn cm-round [x] (math/round x))
+     "signum" (fn cm-signum [x] (cond (< x 0) -1.0 (> x 0) 1.0 0.0))
+     "to-degrees" (fn cm-to-degrees [r] (/ (* r 180.0) math/pi))
+     "to-radians" (fn cm-to-radians [d] (/ (* d math/pi) 180.0))
+     "hypot" (fn cm-hypot [a b] (math/sqrt (+ (* a a) (* b b))))
+     "floor-div" (fn cm-floor-div [a b] (math/floor (/ a b)))
+     "floor-mod" (fn cm-floor-mod [a b] (mod a b))
+     "E" math/e "PI" math/pi})
+  (eachp [nm f] fns (ns-intern ns nm f))
+  # mark loaded so maybe-require-ns never goes looking for a source file
+  (def loaded (or (get (ctx :env) :loaded-namespaces)
+                  (let [t @{}] (put (ctx :env) :loaded-namespaces t) t)))
+  (put loaded "clojure.math" true))
+
 (defn init
   "Create a new Jolt evaluation context.
   opts may contain:
@@ -154,6 +183,7 @@
     (install-async! ctx)
     # Host contract (ns jolt.host): the seam the portable jolt-core compiler calls.
     (host/install! ctx)
+    (install-clojure-math! ctx)
     # require/maybe-require-ns route loaded namespaces through the loader's
     # compile-or-interpret eval-toplevel (the evaluator can't import the loader
     # — that would be circular — so it reads this hook). Without it, required

@@ -106,6 +106,11 @@
   [coll k default]
   (cond
     (jolt-transient? coll) (transient-lookup coll k default)
+    # sorted colls are tables — without this arm they fell into the raw
+    # table-get branch and (:k (sorted-map ...)) was always nil (jolt-4vr spec)
+    (and (table? coll) (or (= :jolt/sorted-map (coll :jolt/type))
+                           (= :jolt/sorted-set (coll :jolt/type))))
+      ((get (coll :ops) :get) coll k default)
     (phm? coll) (phm-get coll k default)
     (set? coll) (if (phs-contains? coll k) k default)
     (pvec? coll)

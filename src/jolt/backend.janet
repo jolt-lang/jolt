@@ -250,9 +250,16 @@
    # jolt's bit fns are 2-arg (unlike Clojure's variadic), so these emit native
    # only at exactly the arity the interpreted fn accepts; bit-not is unary.
    "bit-and" 'band "bit-or" 'bor "bit-xor" 'bxor
-   "bit-shift-left" 'blshift "bit-shift-right" 'brshift "bit-not" 'bnot})
+   "bit-shift-left" 'blshift "bit-shift-right" 'brshift "bit-not" 'bnot
+   # janet min/max are variadic with Clojure's numeric semantics; nil?/some?
+   # lower to janet's fastfun = / not= against nil (pure opcodes), and `not`
+   # to janet not — all hot in predicate-heavy loops (jolt-4vr). Same
+   # documented numbers-only relaxation as the arithmetic ops above.
+   "min" 'min "max" 'max
+   "nil?" 'jolt-nil? "some?" 'jolt-some? "not" 'not})
 
-(def- unary-ops {'++ true '-- true 'bnot true})
+(def- unary-ops {'++ true '-- true 'bnot true
+                 'jolt-nil? true 'jolt-some? true 'not true})
 (def- binary-ops {'mod true '% true 'band true 'bor true 'bxor true
                   'blshift true 'brshift true})
 
@@ -270,7 +277,14 @@
     (nil? op) nil
     (and (get unary-ops op) (not= nargs 1)) nil
     (and (get binary-ops op) (not= nargs 2)) nil
+    (and (or (= op 'min) (= op 'max)) (= nargs 0)) nil
     op))
+
+# Janet-level gensym for the inline fast paths: (use ./core) shadows janet's
+# gensym with jolt's (which returns a jolt symbol STRUCT — useless as a janet
+# binding target). _fp$ mirrors the reserved _r$ compiler prefix.
+(var- fp-counter 0)
+(defn- jsym [] (symbol "_fp$" (++ fp-counter)))
 
 (defn- emit-invoke [ctx node]
   (def fnode (norm-node (node :fn)))
@@ -280,7 +294,41 @@
     nop (case nop
           '++ ['+ (in args 0) 1]
           '-- ['- (in args 0) 1]
+          'jolt-nil? ['= nil (in args 0)]
+          'jolt-some? ['not= nil (in args 0)]
           (tuple nop ;args))
+    # (:kw m) / (:kw m default) — inline the lookup (jank-style, jolt-4vr).
+    # The guard is (get m :jolt/type): janet compiles `get` to an opcode
+    # (~17ns) where a struct?-style cfunction predicate costs ~85ns/lookup.
+    # :jolt/type is a reserved key — user map literals can't contain it (the
+    # reader treats such maps as tagged forms) — and every table-backed rep
+    # that must NOT be raw-indexed carries it (phm — tagged for this guard —
+    # sorted, transient, pvec, atoms, lazy-seqs), so a non-nil tag routes to
+    # core-get's full semantics. Everything else (structs = literal maps,
+    # records with direct field keys, nil, janet arrays, scalars) gets janet
+    # `get` semantics, which match core-get for keyword keys. Structs never
+    # store nil values (nil values force the phm rep), so present-but-nil
+    # can't be confused with missing on the fast arm.
+    (and (= :const (fnode :op)) (keyword? (fnode :val))
+         (>= 2 (length args) 1))
+    (let [k (fnode :val)
+          m-expr (in args 0)
+          # when the subject is already a janet symbol (a local), read it
+          # directly — the guard + lookup both reference it, and locals are
+          # immutable reads, so no rebinding let is needed (saves a binding
+          # per lookup in exactly the hottest shape, (:k local))
+          m (if (symbol? m-expr) m-expr (jsym))
+          wrap (fn [body] (if (symbol? m-expr) body ['let [m m-expr] body]))]
+      (if (= 1 (length args))
+        (wrap ['if ['get m :jolt/type] (tuple core-get m k) ['get m k]])
+        (let [d-expr (in args 1)
+              d (if (symbol? d-expr) d-expr (jsym))
+              v (jsym)
+              body ['if ['get m :jolt/type]
+                    (tuple core-get m k d)
+                    ['let [v ['get m k]] ['if ['nil? v] d v]]]
+              body (if (symbol? d-expr) body ['let [d d-expr] body])]
+          (wrap body))))
     (direct-call? ctx fnode) (tuple (emit ctx fnode) ;args)
     (tuple jolt-call (emit ctx fnode) ;args)))
 
@@ -289,12 +337,50 @@
   (tuple make-vec (tuple/slice (array/concat @['tuple] items))))
 
 (defn- emit-map [ctx node]
-  (def args @[build-map-literal])
-  (each pair (vview (node :pairs))
-    (def p (vview pair))
-    (array/push args (emit ctx (in p 0)))
-    (array/push args (emit ctx (in p 1))))
-  (tuple/slice args))
+  (def pairs (vview (node :pairs)))
+  # Fast path (jolt-4vr): when every key is a scalar const (keyword/string/
+  # number/bool — never a collection, so value-hashing can't be needed from
+  # the keys), construct the Janet struct inline with one nil-check per
+  # value instead of calling variadic build-map-literal and re-scanning the
+  # kvs at runtime. A nil value still falls back to the phm rep (Clojure
+  # keeps nil entries; structs drop them).
+  (var fast (> (length pairs) 0))
+  (each pair pairs
+    (def k (norm-node (in (vview pair) 0)))
+    (def kv (get k :val))
+    (unless (and (= :const (k :op))
+                 (or (keyword? kv) (string? kv) (number? kv) (boolean? kv)))
+      (set fast false)))
+  (if fast
+    (do
+      (def binds @[])
+      (def skvs @['struct])
+      (def phm-args @[build-map-literal])
+      (def truthy @['and])
+      (each pair pairs
+        (def p (vview pair))
+        (def kk ((norm-node (in p 0)) :val))
+        (def vs (jsym))
+        (array/push binds vs)
+        (array/push binds (emit ctx (in p 1)))
+        (array/push truthy vs)
+        (array/push skvs kk) (array/push skvs vs)
+        (array/push phm-args kk) (array/push phm-args vs))
+      # `and` is pure branch opcodes, so the all-truthy common case pays no
+      # predicate calls at all. nil OR false values (rare) drop to
+      # build-map-literal, which re-checks nil properly (false values come
+      # back out on the struct arm there; nil values get the phm rep).
+      ['let (tuple/slice binds)
+       ['if (tuple/slice truthy)
+        (tuple/slice skvs)
+        (tuple/slice phm-args)]])
+    (do
+      (def args @[build-map-literal])
+      (each pair pairs
+        (def p (vview pair))
+        (array/push args (emit ctx (in p 0)))
+        (array/push args (emit ctx (in p 1))))
+      (tuple/slice args))))
 
 # A set literal: build (make-phs e1 e2 …) so each element is evaluated at runtime
 # then the persistent set is constructed — mirrors compiler.janet's emit-set-expr.

@@ -121,7 +121,7 @@
     (def grown (if (> new-cnt (* 2 nbuckets))
                  (rehash new-buckets (* 2 nbuckets))
                  new-buckets))
-    @{:jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
+    @{:jolt/type :jolt/phm :jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
       :cnt new-cnt :buckets grown :_meta (m :_meta)}))
 
 (defn phm-dissoc [m k]
@@ -135,7 +135,7 @@
             (var bi 0)
             (while (< bi nbuckets)
               (put new-buckets bi (if (= bi idx) new-bucket (get (m :buckets) bi))) (++ bi))
-            @{:jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
+            @{:jolt/type :jolt/phm :jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
               :cnt new-cnt :buckets new-buckets :_meta (m :_meta)})))
       m)))
 
@@ -167,7 +167,7 @@
 
 (defn make-phm [&opt kvs]
   (default kvs nil)
-  (var m @{:jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
+  (var m @{:jolt/type :jolt/phm :jolt/deftype "jolt.lang.persistent-hash-map.PersistentHashMap"
            :cnt 0 :buckets (array/new-filled initial-buckets nil) :_meta nil})
   (when kvs
     (var i 0) (var n (length kvs))
