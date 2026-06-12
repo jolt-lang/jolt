@@ -138,7 +138,12 @@ function expecting a tuple needs an explicit conversion. The `jolt.interop`,
 
 This bridge is what makes networking (and everything else in Janet's stdlib)
 available to ordinary Clojure — for example, `jolt.nrepl` (below) is plain
-Clojure over `janet.net/*`.
+Clojure over `janet.net/*`. Jolt also vendors
+[spork/http](https://janet-lang.org/spork/api/http.html) into its binary
+(`vendor/spork/http.janet`, MIT), reachable as `janet.spork.http/*` — the
+`jolt.http` client and the Ring adapter in
+[examples/ring-app](https://github.com/jolt-lang/examples/tree/main/ring-app)
+are built on it. No `jpm install spork` required.
 
 ```clojure
 (require '[jolt.interop :as j])
