@@ -293,6 +293,13 @@
 (defmacro fn [& raw]
   (let [nm (if (symbol? (first raw)) (first raw) nil)
         aftn (if nm (next raw) raw)
+        ;; a return-type hint (defn f ^bytes [x] ...) reaches us as a
+        ;; (with-meta [x] {:tag ...}) FORM in params position — unwrap it
+        ;; (the hint means nothing on jolt; ring-codec carries several).
+        unhint (fn* [x]
+                 (if (if (seq? x) (= 'with-meta (first x)) false)
+                   (nth x 1)
+                   x))
         md (fn* go [ps nps lets]
              (if (seq ps)
                (if (symbol? (first ps))
@@ -303,15 +310,21 @@
                    (go (next ps) (conj nps g) (conj (conj lets (first ps)) g))))
                [nps lets]))
         mk (fn* [sig]
-             (let [r (md (seq (first sig)) [] [])]
-               (if (empty? (nth r 1))
+             (let [ps (unhint (first sig))
+                   hinted (not (= ps (first sig)))
+                   r (md (seq ps) [] [])]
+               (if (if (empty? (nth r 1)) (not hinted) false)
                  sig
                  ;; build the params/let vectors via [~@..] so they are tuple forms
                  ;; (the accumulators are plain seqs, the wrong representation).
+                 ;; A hinted-but-undestructured arity also rebuilds, to shed the
+                 ;; with-meta wrapper without changing the clause representation.
                  (let [pv `[~@(nth r 0)]
                        lv `[~@(nth r 1)]]
-                   `(~pv (let ~lv ~@(rest sig)))))))]
-    (if (vector? (first aftn))
+                   (if (empty? (nth r 1))
+                     `(~pv ~@(rest sig))
+                     `(~pv (let ~lv ~@(rest sig))))))))]
+    (if (vector? (unhint (first aftn)))
       (let [a (mk aftn)]
         (if nm `(fn* ~nm ~@a) `(fn* ~@a)))
       (let [as (vec (map mk aftn))]
