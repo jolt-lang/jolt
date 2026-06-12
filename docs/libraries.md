@@ -12,6 +12,10 @@ Libraries confirmed to load and pass their conformance checks on Jolt
   on the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring-app)'s
   spork/http adapter
 * [ring-codec](https://github.com/ring-clojure/ring-codec)
+* [reitit-core](https://github.com/metosin/reitit) — data-driven routing; the
+  reitit.Trie Java class is mirrored in Clojure by
+  [jolt-lang/router](https://github.com/jolt-lang/router). Load with
+  `JOLT_FEATURES` including `clj`.
 * [honeysql](https://github.com/seancorfield/honeysql) — full formatter + helpers
   (select/insert/update/delete/joins/:inline), loaded unmodified from git
 * [clojure.jdbc](https://github.com/yogthos/clojure.jdbc) — as [jolt-lang/db](https://github.com/jolt-lang/db)'s

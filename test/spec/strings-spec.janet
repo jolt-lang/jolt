@@ -53,3 +53,12 @@
   ["hyphens to underscores" "\"a_b_c\"" "(namespace-munge \"a-b-c\")"]
   ["from a symbol"          "\"foo_bar\"" "(namespace-munge (quote foo-bar))"]
   ["no hyphens unchanged"   "\"ok\""    "(namespace-munge \"ok\")"])
+
+# (get s i) indexes a string and returns the char, like Clojure (nth already
+# did; get did not — reitit's path parser relies on it).
+(defspec "strings / get indexes a string"
+  ["get returns the char"  "true"  "(= (get \"a:b\" 1) \\:)"]
+  ["get first char"        "\\a"    "(get \"abc\" 0)"]
+  ["get out of range nil"  "nil"   "(get \"abc\" 9)"]
+  ["get negative nil"      "nil"   "(get \"abc\" -1)"]
+  ["get default honored"   ":none" "(get \"abc\" 9 :none)"])

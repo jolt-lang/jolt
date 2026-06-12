@@ -563,9 +563,14 @@
         (if (or (struct? m) (table? m))
           (let [v (m k)]
             (if (nil? v) default v))
-          (if (and (or (tuple? m) (array? m)) (number? k) (>= k 0) (< k (length m)))
-            (in m k)
-            default)))))))))
+        (if (and (or (tuple? m) (array? m)) (number? k) (>= k 0) (< k (length m)))
+          (in m k)
+        # Clojure's get indexes strings too (returns the char) — reitit's path
+        # parser relies on (get path i). nth already did; get did not, so
+        # (get "a:b" 1) was nil.
+        (if (and (or (string? m) (buffer? m)) (number? k) (>= k 0) (< k (length m)))
+          (make-char (in m k))
+          default))))))))))
 
 # Runtime invoke dispatch for COMPILED code (interpreter uses evaluator's
 # jolt-invoke). Handles real functions plus Clojure IFn collections.

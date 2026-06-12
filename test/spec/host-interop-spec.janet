@@ -199,3 +199,27 @@
    "(do (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" \"HOME\") (let [e (System/getenv)] (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" nil) (and (contains? (set (keys e)) \"HOME\") (= 1 (count (keys e))))))"]
   ["no allowlist: unfiltered live reads" "true"
    "(string? (System/getenv \"HOME\"))"])
+
+# Host-class shim registration exposed to Clojure (reitit.Trie mirror, etc.):
+# statics resolve as (Class/method ...), ctors as (Class. ...), and registered
+# tag methods dispatch. Also: .getMessage on an exception/string, HashMap.
+(defspec "host-interop / exception + HashMap shims"
+  ["getMessage on a thrown string" "\"boom\""
+   "(try (throw \"boom\") (catch Throwable e (.getMessage e)))"]
+  ["getMessage on ex-info" "\"bad\""
+   "(try (throw (ex-info \"bad\" {})) (catch Throwable e (.getMessage e)))"]
+  ["HashMap get" "2"
+   "(let [m (HashMap. {:a 1 :b 2})] (.get m :b))"]
+  ["HashMap put + size" "2"
+   "(let [m (HashMap. {})] (.put m :x 1) (.put m :y 2) (.size m))"])
+
+# Reader-feature toggle exposed to Clojure (scoped clj-lib loading): a
+# namespace can load a clj-targeted library under :clj without forcing the
+# whole process — set features, require, restore.
+(defspec "host-interop / reader-feature toggle"
+  ["features default to jolt+default" "true"
+   "(contains? (set (__reader-features)) \"jolt\")"]
+  ["set + read back" "true"
+   "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\" \"jolt\" \"default\"]) (def r (contains? (set (__reader-features)) \"clj\")) (__reader-features-set! prev) r)"]
+  ["restore returns to default" "false"
+   "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\"]) (__reader-features-set! prev) (contains? (set (__reader-features)) \"clj\"))"])

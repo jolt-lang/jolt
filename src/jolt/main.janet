@@ -379,6 +379,13 @@
   (when-let [jp (os/getenv "JOLT_PATH")]
     (each p (string/split ":" jp)
       (when (> (length p) 0) (array/push (get (ctx :env) :source-paths) p))))
+  # JOLT_FEATURES, likewise, must be applied at runtime: reader-features-set!
+  # runs at module load, which for a baked binary is BUILD time — so a process
+  # that sets JOLT_FEATURES (e.g. to read a clj-targeted lib's :clj branches)
+  # would otherwise be ignored, and unmatched #?(...) forms silently splice to
+  # nothing. Re-read it here so the env wins in the running process.
+  (when-let [jf (os/getenv "JOLT_FEATURES")]
+    (reader-features-set! (filter |(> (length $) 0) (string/split "," jf))))
   (cond
     (empty? argv) (run-repl)
     (help-flags (argv 0)) (print-help)

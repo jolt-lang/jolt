@@ -596,12 +596,25 @@
    "doubleValue" (fn [n] (* 1.0 n))
    "toString"    (fn [n &opt radix] (if (= radix 16) (string/format "%x" (math/trunc n)) (string n)))})
 
+# Universal java.lang.Object / exception / persistent-collection methods that
+# reitit's :clj branches call on non-string targets: (.getMessage e),
+# (.assoc m k v), (.get m k). Consulted in the method-dispatch fallthrough.
+(def- object-methods
+  {"getMessage"  (fn [e] (cond (and (table? e) (= :jolt/ex-info (get e :jolt/type))) (get e :message)
+                               (string? e) e
+                               (string e)))
+   "getCause"    (fn [e] (and (table? e) (get e :cause)))
+   "toString"    (fn [x] (string x))
+   "equals"      (fn [a b] (deep= a b))
+   "hashCode"    (fn [x] (hash x))})
+
 (def- string-methods
   {"getBytes"    (fn [s &opt charset] (buffer s))
    "toString"    (fn [s] s)
    "toLowerCase" (fn [s] (string/ascii-lower s))
    "toUpperCase" (fn [s] (string/ascii-upper s))
    "trim"        (fn [s] (string/trim s))
+   "intern"      (fn [s] s)
    # file-path surface: io/file returns plain path strings, so the java.io.File
    # / java.net.URL methods selmer's template cache calls land here
    "toURI"       (fn [s] s)
@@ -1294,6 +1307,30 @@
       (register-method-impl ctx type-name proto-name method-name f)))
   (ns-intern core "make-reified"
     (fn [proto-name methods-map] (make-reified-impl ctx proto-name methods-map)))
+  # Host-class shim registration, exposed to Clojure so a library can mirror a
+  # Java class jolt doesn't ship (e.g. reitit.Trie). __register-class-statics!
+  # makes (Class/method ...) resolve; __register-class-methods! makes (.method
+  # tagged-value ...) dispatch; __register-class-ctor! makes (Class. ...) build.
+  # Reader-conditional feature toggle, exposed to Clojure so a namespace can
+  # load a clj-targeted library (e.g. reitit, under :clj) WITHOUT forcing the
+  # whole process to :clj — set features, require the lib, restore. Returns the
+  # previous feature set (a list of name strings) for restoration.
+  (ns-intern core "__reader-features"
+    (fn [] (tuple ;(map (fn [k] (string k)) (keys reader-features)))))
+  (ns-intern core "__reader-features-set!"
+    (fn [names]
+      # names arrives as a jolt vector (pvec) or list — coerce to a janet array
+      (def arr (cond (pvec? names) (pv->array names)
+                     (or (tuple? names) (array? names)) names
+                     @[names]))
+      (reader-features-set! (map (fn [n] (if (keyword? n) n (string n))) arr))
+      nil))
+  (ns-intern core "__register-class-statics!"
+    (fn [nm tbl] (register-class-statics! nm tbl) nil))
+  (ns-intern core "__register-class-methods!"
+    (fn [tag tbl] (register-tagged-methods! tag tbl) nil))
+  (ns-intern core "__register-class-ctor!"
+    (fn [nm f] (register-class-ctor! nm f) (ns-intern core nm (class-value-for nm)) nil))
   (ns-intern core "require" (fn [& specs] (require-impl ctx ;specs)))
   (ns-intern core "in-ns" (fn [sym] (in-ns-impl ctx sym)))
   (ns-intern core "use" (fn [& specs] (use-impl ctx ;specs)))
@@ -2114,9 +2151,14 @@
                 (let [m (get string-methods field-name)]
                   (if m
                     (m (string target) ;args)
-                    (error (string "Unsupported String method ." field-name))))
+                    (if-let [om (get object-methods field-name)]
+                      (om (string target) ;args)
+                      (error (string "Unsupported String method ." field-name)))))
               (if (and (number? target) (get number-methods field-name))
                 ((get number-methods field-name) target ;args)
+              (if (and (get object-methods field-name)
+                       (not (and (table? target) (get tagged-methods (get target :jolt/type)))))
+                ((get object-methods field-name) target ;args)
               # registered shim objects (java.time etc.): tag-keyed method tables
               (if (and (or (table? target) (struct? target))
                        (get tagged-methods (get target :jolt/type)))
@@ -2149,7 +2191,7 @@
                             (method-fn target ;args)
                             (error (string "Cannot call non-function " field-name " on " (type target)))))
                         (error (string "Cannot call non-function " field-name " on " (type target))))))
-                  (error (string "Cannot call method " field-name " on " (type target)))))))))
+                  (error (string "Cannot call method " field-name " on " (type target))))))))))
             # (. obj member) with no extra args: a symbol member naming a
             # function is a zero-arg method call (receiver passed as self);
             # a keyword or `-field` member is plain field access. Strings get
@@ -2158,9 +2200,15 @@
               (let [m (get string-methods field-name)]
                 (if m
                   (m (string target))
-                  (error (string "Unsupported String method ." field-name))))
+                  (if-let [om (get object-methods field-name)]
+                    (om (string target))
+                    (error (string "Unsupported String method ." field-name)))))
             (if (and (number? target) (get number-methods field-name))
               ((get number-methods field-name) target)
+            (if (and (get object-methods field-name)
+                     (not (and (table? target) (get tagged-methods (get target :jolt/type))
+                               (get (get tagged-methods (get target :jolt/type)) field-name))))
+              ((get object-methods field-name) target)
             (if (and (or (table? target) (struct? target))
                      (get tagged-methods (get target :jolt/type))
                      (get (get tagged-methods (get target :jolt/type)) field-name))
@@ -2180,7 +2228,7 @@
                   (array? v) (let [f (eval-form ctx bindings v)]
                                (if (or (function? f) (cfunction? f)) (f target) f))
                   v)
-                v)))))))
+                v))))))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]
