@@ -48,3 +48,11 @@
    "(do (deftype P [n]) (.-n (P. 5)))"]
   ["dot ctor + method"    "5"
    "(do (defprotocol G (val-of [_])) (deftype P [n] G (val-of [_] n)) (val-of (P. 5)))"])
+
+# defprotocol accepts Clojure's optional docstring + leading keyword options
+# before the signatures (honeysql: :extend-via-metadata true).
+(defspec "protocols / defprotocol options"
+  ["docstring + option + method" ":hi"
+   "(do (defprotocol Pdoc \"docs\" :extend-via-metadata true (greet [x])) (extend-protocol Pdoc String (greet [s] :hi)) (greet \"x\"))"]
+  ["option only" "3"
+   "(do (defprotocol Popt :extend-via-metadata true (plus2 [x])) (extend-protocol Popt Long (plus2 [n] (+ n 2))) (plus2 1))"])
