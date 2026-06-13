@@ -72,16 +72,21 @@
   (when (get (ctx :env) :inline?)
     (def init (norm-node (node :init)))
     (def meta (node :meta))
-    (when (and (= :fn (init :op))
-               (not (and meta (or (get meta :redef) (get meta :dynamic)))))
-      (def arities (vview (init :arities)))
-      (when (= 1 (length arities))
-        (def ar (norm-node (in arities 0)))
-        (unless (ar :rest)
-          (put cell :inline-ir {:params (ar :params) :body (ar :body)})
-          # jolt-767: stash the whole (post-pass) :def IR so the inter-procedural
-          # pass can re-infer its body with discovered param types and re-emit it.
-          (put cell :infer-ir node))))))
+    (def redefable (and meta (or (get meta :redef) (get meta :dynamic))))
+    (cond
+      redefable nil
+      (= :fn (init :op))
+      (let [arities (vview (init :arities))]
+        (when (= 1 (length arities))
+          (def ar (norm-node (in arities 0)))
+          (unless (ar :rest)
+            (put cell :inline-ir {:params (ar :params) :body (ar :body)})
+            # jolt-767: stash the whole (post-pass) :def IR so the inter-procedural
+            # pass can re-infer its body with discovered param types and re-emit it.
+            (put cell :infer-ir node))))
+      # a non-fn def: stash so the pass can infer its VALUE type (jolt-d6u), e.g.
+      # a color table used via rand-nth — its element type flows to lookups.
+      true (put cell :infer-ir node))))
 
 # Var late-binding: reads go through `(var-get cell)` with the cell embedded as a
 # constant, so compiled code sees redefinition (Janet early-binds plain symbols)
@@ -759,12 +764,21 @@
 # Recompiled bodies are semantically identical to the guarded ones, so this is
 # correct regardless of recompile order; order only affects how far a direct-
 # linked call propagates the faster callee.
-(defn- itype-join [a b] (cond (nil? a) b (nil? b) a (= a b) a :any))
+(defn- itype-join [a b]
+  (cond
+    (nil? a) b
+    (nil? b) a
+    (= a b) a
+    # compound vector types {:vec ELEM} join element-wise (jolt-d6u)
+    (and (struct? a) (struct? b) (in a :vec) (in b :vec))
+    (struct :vec (itype-join (in a :vec) (in b :vec)))
+    :any))
 
 (defn infer-unit!
   [ctx ns-name]
   (def pns (ctx-find-ns ctx "jolt.passes"))
   (def f-set-rtenv (and pns (ns-find pns "set-rtenv!")))
+  (def f-set-vtypes (and pns (ns-find pns "set-vtypes!")))
   (def f-infer-body (and pns (ns-find pns "infer-body")))
   (def f-reinfer (and pns (ns-find pns "reinfer-def")))
   (def f-reset-esc (and pns (ns-find pns "reset-escapes!")))
@@ -772,28 +786,34 @@
   (def ns (ctx-find-ns ctx ns-name))
   (def report @{})
   (when (and ns f-set-rtenv f-infer-body f-reinfer f-reset-esc f-get-esc)
-    # gather single-fixed-arity fns with a stashed :def
+    # gather single-fixed-arity fns AND non-fn defs that stashed a :def IR
     (def fns @[])
+    (def defs @[])
     (def by-key @{})
+    (def vtypes @{})   # var VALUE types: fns -> :truthy (non-nil), defs -> inferred
     (each nm (keys (ns :mappings))
       (def v (get (ns :mappings) nm))
       (when (and (table? v) (get v :infer-ir))
         (def d (norm-node (get v :infer-ir)))
         (def init (norm-node (d :init)))
-        (when (= :fn (init :op))
-          (def ars (vview (init :arities)))
-          (when (= 1 (length ars))
-            (def ar (norm-node (in ars 0)))
-            (unless (ar :rest)
-              (def pv (vview (ar :params)))
-              (def rec @{:key (string ns-name "/" nm) :cell v :def d
-                         :params (ar :params) :body (ar :body)
-                         :np (length pv) :pt (array/new-filled (length pv)) :ret nil})
-              (array/push fns rec)
-              (put by-key (rec :key) rec))))))
-    (when (> (length fns) 0)
+        (def key (string ns-name "/" nm))
+        (if (= :fn (init :op))
+          (let [ars (vview (init :arities))]
+            (when (= 1 (length ars))
+              (def ar (norm-node (in ars 0)))
+              (unless (ar :rest)
+                (def pv (vview (ar :params)))
+                (def rec @{:key key :cell v :def d :params (ar :params) :body (ar :body)
+                           :np (length pv) :pt (array/new-filled (length pv)) :ret nil})
+                (array/push fns rec)
+                (put by-key key rec)
+                # a fn value is non-nil -> :truthy (sealed root in opt mode)
+                (put vtypes key :truthy))))
+          # non-fn def: its value type is inferred from its init (jolt-d6u)
+          (array/push defs @{:key key :init (d :init) :vt nil}))))
+    (when (or (> (length fns) 0) (> (length defs) 0))
       ((var-get f-reset-esc))
-      # --- param/return-type fixpoint (chaotic iteration to the LEAST fixpoint) ---
+      # --- param/return/value-type fixpoint (chaotic iteration to LEAST fixpoint) ---
       # Param types are RECOMPUTED FRESH each iteration, not accumulated: :any is
       # the lattice top, so a join with an early-iteration :any (a caller whose own
       # params weren't typed yet) would poison the result permanently. Recomputing
@@ -802,7 +822,8 @@
       (var changed true) (var iter 0)
       (while (and changed (< iter 16))
         ((var-get f-set-rtenv) prev-rt)
-        # type every body once under current param types; stash ret + calls
+        ((var-get f-set-vtypes) vtypes)
+        # type every fn body once under current param types; stash ret + calls
         (each f fns
           (def tenv @{})
           (def pv (vview (f :params)))
@@ -810,6 +831,9 @@
           (def res (vview ((var-get f-infer-body) (f :body) tenv)))
           (put f :tret (in res 0))
           (put f :tcalls (in res 2)))
+        # infer each def's VALUE type from its init
+        (each dv defs
+          (put dv :tvt (in (vview ((var-get f-infer-body) (dv :init) @{})) 0)))
         # recompute param types FRESH (start at bottom = nil) from this round's calls
         (def newpt @{})
         (each f fns (put newpt (f :key) (array/new-filled (f :np))))
@@ -832,24 +856,51 @@
           (put f :pt np)
           (put f :ret (f :tret))
           (when (f :tret) (put nrt (f :key) (f :tret))))
+        (each dv defs
+          (when (not= (dv :tvt) (dv :vt)) (set changed true))
+          (put dv :vt (dv :tvt))
+          (when (dv :tvt) (put vtypes (dv :key) (dv :tvt))))
         (set prev-rt nrt)
         (++ iter))
       # --- escaped fns: var used as a value -> params untrustworthy -> skip ---
       (def esc @{})
       (each k (vview ((var-get f-get-esc))) (put esc k true))
-      # --- re-infer + re-emit each fn with concrete param types seeded ---
-      (each f fns
+      # install the FINAL return + value types so reinfer-def sees them
+      (def final-rt @{})
+      (each f fns (when (f :ret) (put final-rt (f :key) (f :ret))))
+      ((var-get f-set-rtenv) final-rt)
+      ((var-get f-set-vtypes) vtypes)
+      # --- re-emit the WHOLE unit, callees first (jolt-d6u) -------------------
+      # Re-inference alone only rebinds a fn's own var, but the hot path runs
+      # through callee bodies INLINED / direct-linked into callers at first
+      # compile. Re-emitting in callee-first (reverse-topological) order makes
+      # each caller re-embed its now-recompiled callees, and re-infers its body
+      # (typing locals via return inference) — so the specialization propagates,
+      # and a call site compiled AFTER this pass (the -e entry) links the whole
+      # recompiled chain. Every fn is re-emitted, not just those with concrete
+      # params, so the embedding refreshes even where a fn gained no param type.
+      (def order @[])
+      (def seen @{})
+      (defn visit [k]
+        (unless (get seen k)
+          (put seen k true)
+          (def f (get by-key k))
+          (when f
+            (each c (vview (f :tcalls)) (visit (in (vview c) 0)))
+            (array/push order f))))
+      (each f fns (visit (f :key)))
+      (each f order
         (put report (f :key) (f :pt))
+        (def ptmap @{})
+        # escaped fn: its param types are untrustworthy (callers not all visible),
+        # so re-emit it WITHOUT seeding params (still re-embeds recompiled callees).
         (unless (get esc (f :key))
-          (def ptmap @{})
-          (var concrete false)
           (def pv (vview (f :params)))
           (for i 0 (f :np)
             (def t (in (f :pt) i))
-            (when (and t (not= t :any)) (set concrete true) (put ptmap (in pv i) t)))
-          (when concrete
-            (def def2 ((var-get f-reinfer) (f :def) ptmap))
-            (protect (eval (emit-ir ctx def2) (ctx-janet-env ctx))))))))
+            (when (and t (not= t :any)) (put ptmap (in pv i) t))))
+        (def def2 ((var-get f-reinfer) (f :def) ptmap))
+        (protect (eval (emit-ir ctx def2) (ctx-janet-env ctx))))))
   report)
 
 (defn ensure-macros-compiled!

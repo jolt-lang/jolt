@@ -716,15 +716,25 @@
 ;; dynamic guard in place. Sound by construction: a concrete type is assigned
 ;; only when proven, so a wrong bare get is impossible.
 ;;
-;; Lattice values: :struct-map (raw-get-safe), :phm-map, :vector, :set, :truthy
-;; (a provably non-nil/non-false scalar — numbers, strings, keywords), :any (top).
-(defn- join [a b] (if (= a b) a :any))
+;; Lattice values: :struct-map (raw-get-safe), :phm-map, :set, :truthy (a
+;; provably non-nil/non-false scalar), :any (top), and a PARAMETRIC vector type
+;; {:vec ELEM} (jolt-d6u, Phase 3) carrying its element type so a reduce/map
+;; closure over it can type its element param. {:vec ELEM} is a small struct, so
+;; it compares by value on both the Clojure and the Janet (orchestrator) side.
+(defn- velem [t] (get t :vec))
+(defn- vec-type? [t] (some? (velem t)))
+(defn- mk-vec [t] {:vec (if t t :any)})
+(defn- join [a b]
+  (cond
+    (= a b) a
+    (and (vec-type? a) (vec-type? b)) (mk-vec (join (velem a) (velem b)))
+    :else :any))
 (defn- struct-safe? [t] (= t :struct-map))
 ;; a value whose type guarantees it is neither nil nor false — the back end only
 ;; builds a struct (vs a phm) when every value is truthy, so a map literal is a
-;; struct only when all its values have a truthy type.
+;; struct only when all its values have a truthy type. Collections are non-nil.
 (defn- truthy-type? [t]
-  (or (= t :truthy) (= t :struct-map) (= t :phm-map) (= t :vector) (= t :set)))
+  (or (= t :truthy) (= t :struct-map) (= t :phm-map) (= t :set) (vec-type? t)))
 
 (def ^:private truthy-ret-fns
   #{"+" "-" "*" "/" "inc" "dec" "mod" "rem" "quot" "min" "max" "abs"
@@ -739,6 +749,14 @@
 (def ^:private rtenv-box (atom {}))   ;; "ns/name" -> inferred return type
 (def ^:private calls-box (atom []))   ;; collected [ "ns/name" [arg-types...] ]
 (def ^:private escapes-box (atom #{})) ;; var-keys used as a VALUE (not a call head)
+;; jolt-d6u: a var reference's VALUE type — a fn var is :truthy (non-nil), a def
+;; var carries its inferred init type (e.g. a color table -> {:vec :struct-map}).
+;; The orchestrator populates this from sealed (opt-mode) cell roots + def inits.
+(def ^:private vtype-box (atom {}))   ;; "ns/name" -> value type
+
+;; fns that RETURN an element of their (first) collection arg, so a lookup on the
+;; result of (rand-nth coll-of-structs) etc. types as the element.
+(def ^:private elem-fns #{"rand-nth" "first" "peek" "last" "nth" "fnext" "second"})
 
 (defn- var-key [fnode] (str (get fnode :ns) "/" (get fnode :name)))
 
@@ -750,13 +768,43 @@
                     (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
                               (cond (nil? nm) :any
                                     (contains? truthy-ret-fns nm) :truthy
-                                    (contains? vector-ret-fns nm) :vector
+                                    (contains? vector-ret-fns nm) (mk-vec :any)
                                     :else :any))))
       (= op :host) (let [nm (get fnode :name)]
                      (cond (contains? truthy-ret-fns nm) :truthy
-                           (contains? vector-ret-fns nm) :vector
+                           (contains? vector-ret-fns nm) (mk-vec :any)
                            :else :any))
       :else :any)))
+
+(declare infer)
+
+;; HOFs that apply their fn arg to the ELEMENTS of a collection (jolt-d6u,
+;; Phase 3). :epos is which param of the fn receives an element. reduce is
+;; handled separately (its arity changes the coll position, and its closure
+;; also takes an accumulator).
+(def ^:private hof-table
+  {"map" {:epos 0} "mapv" {:epos 0} "filter" {:epos 0} "filterv" {:epos 0}
+   "keep" {:epos 0} "remove" {:epos 0} "run!" {:epos 0} "mapcat" {:epos 0}})
+
+(defn- infer-fn-seeded
+  "Infer a fn-literal passed to a HOF, seeding the given params to element/accum
+  types (seeds: param-index -> type), other params :any, captured locals from
+  tenv. Returns [ret-type node'] — ret is the lub of arity tail types, used to
+  type the HOF result (e.g. reduce's accumulator, mapv's element)."
+  [node seeds tenv]
+  (let [res (mapv (fn [a]
+                    (let [params (get a :params)
+                          pe (reduce (fn [e i]
+                                       (assoc e (nth params i)
+                                              (let [s (get seeds i)] (if s s :any))))
+                                     tenv (range (count params)))
+                          pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
+                          br (infer (get a :body) pe)]
+                      [(nth br 0) (assoc a :body (nth br 1))]))
+                  (get node :arities))
+        rets (mapv (fn [r] (nth r 0)) res)
+        ret (if (empty? rets) :any (reduce join (first rets) (rest rets)))]
+    [ret (assoc node :arities (mapv (fn [r] (nth r 1)) res))]))
 
 (defn- infer
   "Returns [type node'] — the inferred type of node and node with struct-safe
@@ -782,7 +830,10 @@
                 :struct-map :any)]
         [t (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))])
       (= op :vector)
-      [:vector (assoc node :items (mapv (fn [x] (nth (infer x tenv) 1)) (get node :items)))]
+      (let [irs (mapv (fn [x] (infer x tenv)) (get node :items))
+            ets (mapv (fn [r] (nth r 0)) irs)
+            el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
+        [(mk-vec el) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
       (= op :set)
       [:set (assoc node :items (mapv (fn [x] (nth (infer x tenv) 1)) (get node :items)))]
       (= op :if)
@@ -799,17 +850,68 @@
       [:any (assoc node :expr (nth (infer (get node :expr) tenv) 1))]
       ;; a :var reached HERE is in value position (an arg, a let init, ...), not
       ;; a call head — so the fn it names escapes and its params can't be inferred.
-      (= op :var) (do (swap! escapes-box conj (var-key node)) [:any node])
+      ;; Its VALUE type comes from vtype-box (a fn is :truthy, a def carries its
+      ;; inferred type); unknown -> :any.
+      (= op :var) (do (swap! escapes-box conj (var-key node))
+                      [(let [vt (get @vtype-box (var-key node))] (if vt vt :any)) node])
       (= op :invoke)
       (let [fnode (get node :fn)
             iscall-var (= :var (get fnode :op))
-            ;; a :var in call-head position is a call, NOT an escape — so don't
-            ;; route it through infer (which would record it as escaped).
-            fnode' (if iscall-var fnode (nth (infer fnode tenv) 1))
-            ares (mapv (fn [a] (infer a tenv)) (get node :args))]
-        (when iscall-var
-          (swap! calls-box conj [(var-key fnode) (mapv (fn [r] (nth r 0)) ares)]))
-        [(call-ret-type fnode) (assoc node :fn fnode' :args (mapv (fn [r] (nth r 1)) ares))])
+            cn (when (and iscall-var (= "clojure.core" (get fnode :ns))) (get fnode :name))
+            args (get node :args)
+            n (count args)]
+        (cond
+          ;; reduce over a typed vector with a fn-literal (jolt-d6u): seed the
+          ;; closure's accumulator (param 0) to the init type and its element
+          ;; (param 1) to the vector's element type, so its body — and any calls
+          ;; it makes — see those types.
+          (and (= cn "reduce") (>= n 2) (= :fn (get (nth args 0) :op)))
+          (let [three (>= n 3)
+                coll-r (infer (nth args (if three 2 1)) tenv)
+                init-r (when three (infer (nth args 1) tenv))
+                et (let [ct (nth coll-r 0)] (if (vec-type? ct) (velem ct) :any))
+                init-t (if init-r (nth init-r 0) :any)
+                fn-r (infer-fn-seeded (nth args 0) {0 init-t 1 et} tenv)]
+            [(join init-t (nth fn-r 0))
+             (assoc node :args (if three
+                                 [(nth fn-r 1) (nth init-r 1) (nth coll-r 1)]
+                                 [(nth fn-r 1) (nth coll-r 1)]))])
+          ;; map/mapv/filter/... over a typed vector with a fn-literal: seed the
+          ;; fn's element param; mapv/filterv produce a typed vector.
+          (and cn (get hof-table cn) (>= n 2) (= :fn (get (nth args 0) :op)))
+          (let [coll-r (infer (nth args 1) tenv)
+                et (let [ct (nth coll-r 0)] (if (vec-type? ct) (velem ct) :any))
+                fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv)
+                rt (cond (= cn "mapv") (mk-vec (nth fn-r 0))
+                         (= cn "filterv") (mk-vec et)
+                         :else :any)]
+            [rt (assoc node :args [(nth fn-r 1) (nth coll-r 1)])])
+          ;; conj/into: track the element type of a vector being grown.
+          (and (or (= cn "conj") (= cn "into")) (>= n 1))
+          (let [ares (mapv (fn [a] (infer a tenv)) args)
+                base (nth (nth ares 0) 0)
+                rest-ts (mapv (fn [r] (nth r 0)) (rest ares))
+                rt (cond
+                     (and (= cn "conj") (vec-type? base))
+                     (mk-vec (reduce join (velem base) rest-ts))
+                     (and (= cn "into") (vec-type? base) (= 2 n) (vec-type? (nth rest-ts 0)))
+                     (mk-vec (join (velem base) (velem (nth rest-ts 0))))
+                     :else (call-ret-type fnode))]
+            [rt (assoc node :args (mapv (fn [r] (nth r 1)) ares))])
+          ;; everything else: type args, collect the call (var callee), use the
+          ;; declared/estimated return type. range produces a numeric vector.
+          :else
+          (let [fnode' (if iscall-var fnode (nth (infer fnode tenv) 1))
+                ares (mapv (fn [a] (infer a tenv)) args)]
+            (when iscall-var
+              (swap! calls-box conj [(var-key fnode) (mapv (fn [r] (nth r 0)) ares)]))
+            [(cond
+               (= cn "range") (mk-vec :truthy)
+               ;; element-returning fn over a typed vector -> the element type
+               (and cn (contains? elem-fns cn) (> n 0))
+               (let [a0 (nth (nth ares 0) 0)] (if (vec-type? a0) (velem a0) :any))
+               :else (call-ret-type fnode))
+             (assoc node :fn fnode' :args (mapv (fn [r] (nth r 1)) ares))])))
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [te (nth acc 0) binds (nth acc 1)
@@ -853,6 +955,11 @@
   "Install the current return-type estimates (a map \"ns/name\" -> type) used to
   type call results during the fixpoint."
   [m] (reset! rtenv-box m))
+
+(defn set-vtypes!
+  "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy
+  (non-nil), def vars carry their inferred init type (jolt-d6u)."
+  [m] (reset! vtype-box m))
 
 (defn reset-escapes! [] (reset! escapes-box #{}))
 (defn collected-escapes [] (vec @escapes-box))
