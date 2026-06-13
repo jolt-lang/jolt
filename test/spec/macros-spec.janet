@@ -93,3 +93,16 @@
   ["docstring + arity"    "15"  "(do (defmacro th \"triple\" ([x] (list (quote *) x 3))) (th 5))"]
   ["^{:map} name meta"    "7"   "(do (defmacro ^{:private true} pm [] 7) (pm))"]
   ["multi-form body"      "6"   "(do (defmacro mb ([a b] (list (quote +) a b))) (mb 2 4))"])
+
+# Multi-arity defmacro (dispatch on arg count) and the docstring + attr-map +
+# params form — both needed to run real Clojure macros, e.g.
+# clojure.tools.logging/log (4 arities) and its level macros (jolt-q8l, jolt-qnr).
+(defspec "macros / defmacro multi-arity & attr-map"
+  ["multi-arity 1"   "6"  "(do (defmacro ma ([a] (list (quote +) a 1)) ([a b] (list (quote +) a b))) (ma 5))"]
+  ["multi-arity 2"   "5"  "(do (defmacro ma ([a] (list (quote +) a 1)) ([a b] (list (quote +) a b))) (ma 2 3))"]
+  ["arity delegates" "[:d nil 9]"
+   "(do (defmacro lg ([m] `(lg :d nil ~m)) ([l t m] (list (quote vector) l t m))) (lg 9))"]
+  ["doc + attr-map + params" "10"
+   "(do (defmacro am \"doc\" {:arglists (quote ([x]))} [x] (list (quote inc) x)) (am 9))"]
+  ["doc + attr-map + variadic" "6"
+   "(do (defmacro vg \"d\" {:arglists (quote ([& a]))} [& xs] `(+ ~@xs)) (vg 1 2 3))"])

@@ -259,8 +259,12 @@
   ["file-seq finds files"  "true"
    "(do (require '[clojure.java.io :as io]) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))"])
 
-# clojure.tools.logging shim (jolt-nzg): the macro surface works, debug/trace
-# are suppressed (no-op nil) by default, and the impl protocol layer is present.
+# The REAL clojure.tools.logging (vendored verbatim) runs on jolt: a jolt
+# clojure.tools.logging.impl backend (stderr LoggerFactory) plus host shims
+# (agent/send-off, clojure.lang.LockingTransaction/isRunning, a clojure.pprint
+# subset, clojure.string/trim-newline) and the defmacro/syntax-quote/ns fixes.
+# These cases assert the public API behaves; the level rows return nil because
+# the real level macros return the (nil) result of log* when enabled.
 (defspec "host-interop / clojure.tools.logging"
   ["info returns nil"   "nil"  "(do (require '[clojure.tools.logging :as log]) (log/info \"hi\" 42))"]
   ["debug suppressed"   "nil"  "(do (require '[clojure.tools.logging :as log]) (log/debug \"x\"))"]
@@ -269,4 +273,20 @@
   ["enabled? debug"     "false" "(do (require '[clojure.tools.logging :as log]) (log/enabled? :debug))"]
   ["spy returns value"  "3"    "(do (require '[clojure.tools.logging :as log]) (log/spy :info (+ 1 2)))"]
   ["impl factory name"  "\"jolt/stderr\""
-   "(do (require '[clojure.tools.logging.impl :as impl]) (impl/name (impl/find-factory)))"])
+   "(do (require '[clojure.tools.logging.impl :as impl]) (impl/name (impl/find-factory)))"]
+  # vars that exist only in the real library (not in a hand-rolled shim)
+  ["real lib *tx-agent-levels*" "#{:info :warn}"
+   "(do (require '[clojure.tools.logging :as log]) log/*tx-agent-levels*)"]
+  ["real lib log-capture! present" "true"
+   "(do (require '[clojure.tools.logging :as log]) (fn? log/log-capture!))"]
+  ["real lib spyf present" "true"
+   "(do (require '[clojure.tools.logging :as log]) (boolean (resolve 'log/spyf)))"])
+
+# Host shims that let the real clojure.tools.logging load: no STM (a transaction
+# is never running) and a minimal clojure.pprint (used by spy).
+(defspec "host-interop / logging host shims"
+  ["LockingTransaction/isRunning" "false" "(clojure.lang.LockingTransaction/isRunning)"]
+  ["pprint writes value"  "\"[1 2 3]\\n\""
+   "(do (require '[clojure.pprint :as pp]) (with-out-str (pp/pprint [1 2 3])))"]
+  ["with-pprint-dispatch runs body" "42"
+   "(do (require '[clojure.pprint :as pp]) (pp/with-pprint-dispatch pp/code-dispatch 42))"])

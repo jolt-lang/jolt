@@ -198,7 +198,16 @@
         {:jolt/type :symbol
          :ns (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx))
          :name nm}))
-    form))
+    # Alias-qualified (impl/foo): resolve the alias to its target namespace so the
+    # emitted symbol resolves at the macro's USE site, which has no such alias
+    # (jolt-9av). Matches Clojure's syntax-quote. A real ns name (not an alias)
+    # has no entry and is left as written.
+    (let [cur (ctx-find-ns ctx (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx)))
+          target (and cur (or (ns-alias-lookup cur (form :ns))
+                              (ns-import-lookup cur (form :ns))))]
+      (if target
+        {:jolt/type :symbol :ns target :name (form :name)}
+        form))))
 
 (defn- d-realize
   "Realize a lazy-seq to an array for positional destructuring / splicing; pass
@@ -1828,36 +1837,56 @@
     "defmacro" (let [# ^{:map} metadata on the name reads as a (with-meta sym …)
                      # form (jolt-8w2); unwrap to the bare symbol like def does.
                      name-sym (unwrap-meta-name (in form 1))
-                     rest-form (tuple/slice form 2)
-                     # optional docstring
-                     has-doc? (and (> (length rest-form) 0) (string? (first rest-form)))
-                     raw-args (if has-doc? (in rest-form 1) (first rest-form))
-                     raw-body (tuple/slice rest-form (if has-doc? 2 1))
-                     # arity-clause form: (defmacro name ([params] body...)) — like
-                     # fn/defn. In a code form a vector literal is a tuple and a list
-                     # is an array, so a params vector reads as a tuple while an arity
-                     # clause reads as a list (array): unwrap its params + body. Single
-                     # arity only (what real macros use); a multi-arity macro takes the
-                     # first clause.
-                     arity-clause? (array? raw-args)
-                     args-form (if arity-clause? (first raw-args) raw-args)
-                     body (if arity-clause? (tuple/slice raw-args 1) raw-body)
-                     param-info (parse-params args-form)
-                     fixed-pats (param-info :fixed)
-                     rest-pat (param-info :rest)
+                     after-name (tuple/slice form 2)
+                     # Skip an optional leading docstring (string) then an optional
+                     # attr-map (a struct that is not a symbol — a map literal reads
+                     # as a struct), matching defn. Real macros use both, e.g.
+                     # (defmacro info "doc" {:arglists '(...)} [& args] …).
+                     a1 (if (and (> (length after-name) 0) (string? (first after-name)))
+                          (tuple/slice after-name 1) after-name)
+                     after-meta (if (and (> (length a1) 0)
+                                         (struct? (first a1))
+                                         (not= :symbol (get (first a1) :jolt/type)))
+                                  (tuple/slice a1 1) a1)
+                     # What remains is either a params VECTOR (tuple) + body, or one
+                     # or more arity CLAUSES (each a list, i.e. a janet array). Build
+                     # a uniform arity list [{:params … :body …} …].
+                     multi? (and (> (length after-meta) 0) (array? (first after-meta)))
+                     arities (if multi?
+                               (map (fn [cl] {:params (first cl) :body (tuple/slice cl 1)})
+                                    after-meta)
+                               @[{:params (first after-meta) :body (tuple/slice after-meta 1)}])
                      defining-ns (ctx-current-ns ctx)]
                  (def interp-fn (fn [& macro-args]
+                   (def n (length macro-args))
+                   # Pick the arity: an exact fixed-count match wins; otherwise the
+                   # first variadic arity that accepts n args (Clojure fn dispatch).
+                   (var chosen nil)
+                   (each ar arities
+                     (def pi (parse-params (ar :params)))
+                     (when (and (nil? chosen) (not (pi :rest)) (= n (length (pi :fixed))))
+                       (set chosen [pi (ar :body)])))
+                   (when (nil? chosen)
+                     (each ar arities
+                       (def pi (parse-params (ar :params)))
+                       (when (and (nil? chosen) (pi :rest) (>= n (length (pi :fixed))))
+                         (set chosen [pi (ar :body)]))))
+                   (when (nil? chosen)
+                     (error (string "no matching arity for macro " (name-sym :name)
+                                    " (" n " args)")))
+                   (def pi (chosen 0))
+                   (def body (chosen 1))
                    (var new-bindings @{})
                    (table/setproto new-bindings bindings)
                    (put new-bindings "&env" @{})  # implicit &env for macro bodies (table — nil-safe)
                    (var i 0)
                    # Destructure macro params (like fn), so [& [a & more :as all]]
                    # and {:keys …} rest forms work in macro arglists.
-                   (each pat fixed-pats
+                   (each pat (pi :fixed)
                      (destructure-bind ctx new-bindings pat (macro-args i))
                      (++ i))
-                   (when rest-pat
-                     (destructure-bind ctx new-bindings rest-pat (rest-args-val macro-args i)))
+                   (when (pi :rest)
+                     (destructure-bind ctx new-bindings (pi :rest) (rest-args-val macro-args i)))
                    # Use defining namespace for symbol resolution
                    (def saved-ns (ctx-current-ns ctx))
                    (ctx-set-current-ns ctx defining-ns)
@@ -1870,12 +1899,20 @@
                      (set result (eval-form ctx new-bindings bf)))
                    (ctx-set-current-ns ctx saved-ns)
                    result))
-                 # Prefer a COMPILED expander (native-speed expansion, zero runtime
-                 # cost). Skip when the body uses &env/&form (the compiled fn has no
-                 # such params) — those fall back to the interpreted closure.
-                 (def uses-env (or (form-uses-sym? body "&env") (form-uses-sym? body "&form")))
+                 # A COMPILED expander (native-speed) is only built for the
+                 # single-arity case (the compile hook + recompile path take one
+                 # [args body]); multi-arity macros use the interpreted expander.
+                 (def single? (= 1 (length arities)))
+                 (def args-form (and single? ((first arities) :params)))
+                 (def body (and single? ((first arities) :body)))
+                 (def uses-env (do (var u false)
+                                   (each ar arities
+                                     (when (or (form-uses-sym? (ar :body) "&env")
+                                               (form-uses-sym? (ar :body) "&form"))
+                                       (set u true)))
+                                   u))
                  (def compiled-fn
-                   (when (and macro-compile-hook (not uses-env))
+                   (when (and macro-compile-hook single? (not uses-env))
                      (macro-compile-hook ctx args-form body)))
                  (def macro-fn (or compiled-fn interp-fn))
                   (let [ns-name (ctx-current-ns ctx)
@@ -1886,8 +1923,10 @@
                    # compile it once the analyzer is alive (staged bootstrap): a
                    # macro defined WHILE the analyzer is still being built gets an
                    # interpreted closure now, a compiled expander later. uses-env
-                   # macros stay interpreted (the compiled fn* has no &env/&form).
-                   (put v :macro-src @[args-form body])
+                   # macros stay interpreted (the compiled fn* has no &env/&form);
+                   # multi-arity macros keep the interpreted dispatch (no single
+                   # [args body] to recompile).
+                   (when single? (put v :macro-src @[args-form body]))
                    (put v :macro-uses-env uses-env)
                    (when compiled-fn (put v :macro-compiled true))
                    # A (re)defined macro invalidates any cached expansions.
@@ -2412,8 +2451,11 @@
       (if (= :jolt/char (form :jolt/type))
         form
       # a UUID/inst value flowing back through eval (macro expansion, eval of a
-      # read form) is a self-evaluating literal, like chars.
-      (if (or (= :jolt/uuid (form :jolt/type)) (= :jolt/inst (form :jolt/type)))
+      # read form) is a self-evaluating literal, like chars. A namespace object
+      # does too: `~*ns*` in a syntax-quote (clojure.tools.logging) splices the
+      # live ns into the expansion.
+      (if (or (= :jolt/uuid (form :jolt/type)) (= :jolt/inst (form :jolt/type))
+              (= :jolt/namespace (form :jolt/type)))
         form
       (if (= :jolt/set (form :jolt/type))
         # evaluate each element (set literals like #{(inc 1)} must compute)

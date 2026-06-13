@@ -37,3 +37,12 @@
 (defspec "state / promises"
   ["promise deliver"    "5"      "(let [p (promise)] (deliver p 5) @p)"]
   ["promise undelivered" "nil"   "(let [p (promise)] @p)"])
+
+# Minimal synchronous agent shim (jolt has no thread pool/STM) — enough for
+# libraries that hold an agent without depending on async dispatch.
+(defspec "state / agents (synchronous shim)"
+  ["agent deref"     "0"  "(deref (agent 0))"]
+  ["agent with opts" "0"  "(deref (agent 0 :error-mode :continue))"]
+  ["send-off applies" "5" "(let [a (agent 0)] (send-off a + 5) (deref a))"]
+  ["send applies"     "7" "(let [a (agent 1)] (send a + 6) (deref a))"]
+  ["agent-error nil"  "nil" "(agent-error (agent 0))"])

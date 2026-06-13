@@ -542,6 +542,9 @@
   # (resources/<dir>). getSystemClassLoader yields the same stub.
   (each nm ["ClassLoader" "java.lang.ClassLoader"]
     (register-class-statics! nm @{"getSystemClassLoader" (fn [] @{:jolt/type :jolt/classloader})}))
+  # No STM on jolt: a transaction is never running, so logging libraries that
+  # gate agent-vs-direct on it (clojure.tools.logging/log*) always log directly.
+  (register-class-statics! "clojure.lang.LockingTransaction" @{"isRunning" (fn [] false)})
   (register-tagged-methods! :jolt/classloader
     @{"getResource" (fn [self path] nil)
       "getResources" (fn [self path] nil)

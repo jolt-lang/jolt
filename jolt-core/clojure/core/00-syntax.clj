@@ -110,7 +110,12 @@
 ;; then. Its body resolves fn/map/reduce/cond at EXPANSION time, by which point all
 ;; of 00-syntax has loaded, so using them here is fine.
 (defmacro ns [nm & clauses]
-  (let [calls (reduce
+  ;; ^{:map} metadata on the ns name reads as a (with-meta sym {...}) form, not an
+  ;; annotated symbol (jolt-8w2). Real libraries put :author/:doc there
+  ;; (clojure.tools.logging), so unwrap to the bare symbol; jolt does not track
+  ;; namespace metadata, so the map is dropped.
+  (let [nm (if (and (seq? nm) (= 'with-meta (first nm))) (second nm) nm)
+        calls (reduce
                 (fn [acc clause]
                   (if (seq? clause)
                     (let [head (first clause) args (rest clause)]

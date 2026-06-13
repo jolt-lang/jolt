@@ -495,6 +495,25 @@
    # ns (jolt-9pu — it used to see an empty table).
    ["cross-ns methods visible" "[:sql]"
     "(do (ns cf.mm) (defmulti ext identity) (defmethod ext :default [_] :d) (defn allk [] (vec (for [[k v] (methods ext) :when (not= k :default)] k))) (ns cf.mmi) (defmethod cf.mm/ext :sql [_] :s) (in-ns (quote user)) (cf.mm/allk))"]
+
+   ### ---- defmacro surface + syntax-quote/ns (enabling real clojure libs) ----
+   # multi-arity defmacro (clojure.tools.logging/log has 4 arities)
+   ["defmacro multi-arity" "[6 5 6]"
+    "(do (defmacro mar ([a] (list (quote +) a 1)) ([a b] (list (quote +) a b)) ([a b c] (list (quote +) a b c))) [(mar 5) (mar 2 3) (mar 1 2 3)])"]
+   # defmacro with docstring AND attr-map before the params (every tools.logging
+   # level macro is shaped this way)
+   ["defmacro doc + attr-map" "10"
+    "(do (defmacro mam \"doc\" {:arglists (quote ([x]))} [x] (list (quote inc) x)) (mam 9))"]
+   # syntax-quote resolves a namespace ALIAS to its target ns, so a macro's
+   # template resolves at the USE site (jolt-9av)
+   ["syntax-quote resolves alias" "\"HI\""
+    "(do (ns sq.lib (:require [clojure.string :as s])) (defmacro up [x] `(s/upper-case ~x)) (in-ns (quote user)) (sq.lib/up \"hi\"))"]
+   # ^{:map} metadata on an ns name (jolt-8w2): the ns name is the bare symbol
+   ["ns name with ^{:map} meta" "5"
+    "(do (ns ^{:author \"a\" :doc \"d\"} nm.meta) (def q 5) (in-ns (quote user)) nm.meta/q)"]
+   # ~*ns* splices the live namespace object into a template (it self-evaluates)
+   ["unquote *ns* in template" "true"
+    "(do (defmacro cur-ns [] `(str ~*ns*)) (string? (cur-ns)))"]
   ])
 
 # Run every case under a given context factory and return the failures. The same
