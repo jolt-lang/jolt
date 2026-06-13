@@ -817,7 +817,11 @@
       [(let [v (get node :val)] (if (or (nil? v) (= false v)) :any :truthy)) node]
       (= op :local)
       (let [t (get tenv (get node :name))]
-        [(if t t :any) (if (struct-safe? t) (assoc node :hint :struct) node)])
+        [(if t t :any)
+         (cond
+           (struct-safe? t) (assoc node :hint :struct)
+           (vec-type? t) (assoc node :hint :vector)
+           :else node)])
       (= op :map)
       (let [res (mapv (fn [pr]
                         (let [kr (infer (nth pr 0) tenv)

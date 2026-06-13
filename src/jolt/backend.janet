@@ -13,6 +13,7 @@
 (use ./evaluator)
 (import ./reader :as r)
 (import ./phm :as phm)
+(import ./pv :as pv)
 
 # The IR is portable data; reading its representation is a host-layer concern.
 # Most nodes are Janet structs (raw-readable), but a node carrying a nil-valued
@@ -320,6 +321,16 @@
     :host (= "get" (fnode :name))
     false))
 
+# Is fnode a reference to clojure.core/<name> (or host <name>)?
+(defn- core-head? [fnode name]
+  (case (fnode :op)
+    :var (and (= "clojure.core" (fnode :ns)) (= name (fnode :name)))
+    :host (= name (fnode :name))
+    false))
+
+# Is this IR node a :local the inference proved to be a vector ({:vec ...})?
+(defn- vec-hinted? [n] (and (= :local (n :op)) (= :vector (n :hint))))
+
 # Shared emit for a constant-keyword map lookup — both (:kw m [d]) and
 # (get m :kw [d]). subj-node is the subject's IR node (carries the type hint),
 # m-expr its emitted form, k the keyword, d-expr the emitted default or nil.
@@ -394,6 +405,15 @@
     (emit-kw-lookup (norm-node (in argnodes 0)) (in args 0)
                     ((norm-node (in argnodes 1)) :val)
                     (when (= 3 (length args)) (in args 2)))
+    # (count v) on an inferred vector -> pv-count, skipping core-count's dispatch
+    # chain (jolt-d6u, Phase 2). Sound: a {:vec ...}-typed value is a pvec.
+    (and (core-head? fnode "count") (= 1 (length args)) (vec-hinted? (norm-node (in argnodes 0))))
+    (tuple pv/pv-count (in args 0))
+    # (nth v i default) on an inferred vector -> pv-nth. Only the 3-ARG form: the
+    # 2-arg nth ERRORS on out-of-bounds where pv-nth returns nil, so specializing
+    # it would change semantics; the 3-arg default matches pv-nth exactly.
+    (and (core-head? fnode "nth") (= 3 (length args)) (vec-hinted? (norm-node (in argnodes 0))))
+    (tuple pv/pv-nth (in args 0) (in args 1) (in args 2))
     (direct-call? ctx fnode) (tuple (emit ctx fnode) ;args)
     # Local callee (closure param, let-bound fn, defn self-name): inline the
     # function check so the overwhelmingly-common function case is a direct
