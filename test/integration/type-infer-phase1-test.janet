@@ -29,11 +29,12 @@
 (def report (backend/infer-unit! ctx "p1"))
 
 # --- the fixpoint computed the right param types -----------------------------
-# rd's param v flows from mk's struct-map result (mk inlines to a struct literal
-# in drv) and stays struct across the recursive self-call -> :struct-map
-(assert (= :struct-map (in (get report "p1/rd") 0)) (string "rd param v: " (in (get report "p1/rd") 0)))
+# rd's param v flows from mk's struct result (mk inlines to a struct literal in
+# drv) and stays struct across the recursive self-call -> a {:struct ...} type
+(defn struct-type? [t] (truthy? (get t :struct)))
+(assert (struct-type? (in (get report "p1/rd") 0)) (string "rd param v: " (in (get report "p1/rd") 0)))
 # esc escaped (passed to mapv) -> param stays unknown (:any / nil), NOT struct
-(assert (not= :struct-map (in (get report "p1/esc") 0)) "escaping fn param not inferred struct")
+(assert (not (struct-type? (in (get report "p1/esc") 0))) "escaping fn param not inferred struct")
 
 # --- the seeded re-inference drops the guard for a struct param --------------
 # (on a FRESH analysis, since infer-unit! re-stashes the already-specialized body)
@@ -42,7 +43,7 @@
 (def rd-def (backend/analyze-form ctx (reader/parse-string "(defn rdx [v n] (if (< n 1) (:r v) (rdx v (dec n))))")))
 (defn guards-seeded [ptmap]
   (length (string/find-all ":jolt/type" (string/format "%p" (backend/emit-ir ctx ((types/var-get reinfer) rd-def ptmap))))))
-(assert (= 0 (guards-seeded @{"v" :struct-map})) "struct param -> bare lookup")
+(assert (= 0 (guards-seeded @{"v" {:struct {}}})) "struct param -> bare lookup")
 (assert (= 1 (guards-seeded @{})) "no param type -> guard kept")
 
 # --- correctness: recompiled unit still computes the same --------------------

@@ -21,13 +21,13 @@
 
 # a reduce closure's element param gets the vector's element type
 (def red "(defn f [coll] (reduce (fn [acc h] (+ acc (:r h))) 0 coll))")
-(assert (= 0 (guards red @{"coll" {:vec :struct-map}})) "reduce element typed -> bare lookup in closure")
+(assert (= 0 (guards red @{"coll" {:vec {:struct {}}}})) "reduce element typed -> bare lookup in closure")
 (assert (= 1 (guards red @{"coll" {:vec :any}})) "reduce over vector of unknown -> guard kept")
 (assert (= 1 (guards red @{})) "untyped coll -> guard kept")
 
 # mapv over a vector-of-structs types the closure element too
 (def mp "(defn g [coll] (mapv (fn [h] (:r h)) coll))")
-(assert (= 0 (guards mp @{"coll" {:vec :struct-map}})) "mapv element typed -> bare lookup")
+(assert (= 0 (guards mp @{"coll" {:vec {:struct {}}}})) "mapv element typed -> bare lookup")
 (assert (= 1 (guards mp @{"coll" {:vec :any}})) "mapv over unknown element -> guard")
 
 # element type is DERIVED, not just seeded: a vector literal of structs, reduced

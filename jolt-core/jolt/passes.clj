@@ -716,27 +716,72 @@
 ;; dynamic guard in place. Sound by construction: a concrete type is assigned
 ;; only when proven, so a wrong bare get is impossible.
 ;;
-;; Lattice values: :struct-map (raw-get-safe), :phm-map, :set, :truthy (a
-;; provably non-nil/non-false scalar), :any (top), and a PARAMETRIC vector type
-;; {:vec ELEM} (jolt-d6u, Phase 3) carrying its element type so a reduce/map
-;; closure over it can type its element param. {:vec ELEM} is a small struct, so
-;; it compares by value on both the Clojure and the Janet (orchestrator) side.
+;; Recursive STRUCTURAL types (RFC 0005). A type mirrors the data tree:
+;;   compound: {:struct {field -> T}}  (raw-get-safe map, field types)
+;;             {:vec T}                (vector of T)
+;;             {:set T}                (set of T)
+;;   scalar:   :num :str :kw :truthy   (all provably non-nil/non-false)
+;;             :phm                    (persistent hash map; NOT raw-get-safe)
+;;   :any (top), nil (bottom, identity for join).
+;; Compound types are small jolt maps, so they compare by value on both the
+;; Clojure and the Janet (orchestrator) side. struct/vec/set use distinct keys so
+;; a type is recognised by which key it carries.
+;; (get t :KEY) is nil for a keyword type and the child for a compound, so a
+;; compound is detected by some? — no map?/contains? needed.
 (defn- velem [t] (get t :vec))
+(defn- selem [t] (get t :set))
+(defn- sfields [t] (get t :struct))
 (defn- vec-type? [t] (some? (velem t)))
+(defn- set-type? [t] (some? (selem t)))
+(defn- struct-type? [t] (some? (sfields t)))
 (defn- mk-vec [t] {:vec (if t t :any)})
-(defn- join [a b]
+(defn- mk-set [t] {:set (if t t :any)})
+(defn- mk-struct [fs] {:struct fs})
+(declare join-t)
+(defn- merge-fields
+  "Per-field join of two field maps (a key in only one side joins with :any)."
+  [fa fb]
+  (let [m1 (reduce (fn [m k] (assoc m k (join-t (get fa k :any) (get fb k :any)))) {} (keys fa))]
+    (reduce (fn [m k] (if (get m k) m (assoc m k (join-t (get fa k :any) (get fb k :any))))) m1 (keys fb))))
+(defn- join-t [a b]
   (cond
     (= a b) a
-    (and (vec-type? a) (vec-type? b)) (mk-vec (join (velem a) (velem b)))
+    (nil? a) b
+    (nil? b) a
+    (and (struct-type? a) (struct-type? b)) (mk-struct (merge-fields (sfields a) (sfields b)))
+    (and (vec-type? a) (vec-type? b)) (mk-vec (join-t (velem a) (velem b)))
+    (and (set-type? a) (set-type? b)) (mk-set (join-t (selem a) (selem b)))
     :else :any))
-(defn- struct-safe? [t] (= t :struct-map))
-;; a value whose type guarantees it is neither nil nor false — the back end only
-;; builds a struct (vs a phm) when every value is truthy, so a map literal is a
-;; struct only when all its values have a truthy type. Collections are non-nil.
+(defn- join [a b] (join-t a b))
+;; depth cap (RFC 0005): truncate a type below depth d to :any, so recursive data
+;; can't make an infinite type and the inter-procedural fixpoint stays finite.
+(def ^:private type-depth 4)
+(defn- cap [t d]
+  (cond
+    (<= d 0) (if (or (struct-type? t) (vec-type? t) (set-type? t)) :any t)
+    (struct-type? t) (mk-struct (reduce (fn [m k] (assoc m k (cap (get (sfields t) k) (dec d))))
+                                        {} (keys (sfields t))))
+    (vec-type? t) (mk-vec (cap (velem t) (dec d)))
+    (set-type? t) (mk-set (cap (selem t) (dec d)))
+    :else t))
+;; raw-get-safe (a Janet struct / record): a struct type. The field type of key
+;; k, if known, else :any.
+(defn- struct-safe? [t] (struct-type? t))
+(defn- field-type [t k] (if (struct-type? t) (get (sfields t) k :any) :any))
+;; tag a node (any expression, not just a :local) so the back end can specialize
+;; a lookup whose SUBJECT is that node — this is what makes nested access work:
+;; (:direction ray) is tagged struct, so (:r (:direction ray)) drops its guard.
+(defn- mark-hint [node h] (assoc node :hint h))
+;; a value provably neither nil nor false — the back end only builds a struct
+;; (vs a phm) when every value is non-nil/non-false, so a map literal is a struct
+;; only when all its values have such a type. Collections are non-nil.
 (defn- truthy-type? [t]
-  (or (= t :truthy) (= t :struct-map) (= t :phm-map) (= t :set) (vec-type? t)))
+  (or (= t :num) (= t :str) (= t :kw) (= t :truthy) (= t :phm)
+      (struct-type? t) (vec-type? t) (set-type? t)))
 
-(def ^:private truthy-ret-fns
+;; core fns whose result is a number (so it is non-nil/non-false and, for the
+;; success-type checker, provably numeric).
+(def ^:private num-ret-fns
   #{"+" "-" "*" "/" "inc" "dec" "mod" "rem" "quot" "min" "max" "abs"
     "bit-and" "bit-or" "bit-xor" "count"})
 (def ^:private vector-ret-fns #{"vec" "vector" "mapv" "filterv" "subvec"})
@@ -767,11 +812,11 @@
       (= op :var) (let [r (get @rtenv-box (var-key fnode))]
                     (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
                               (cond (nil? nm) :any
-                                    (contains? truthy-ret-fns nm) :truthy
+                                    (contains? num-ret-fns nm) :num
                                     (contains? vector-ret-fns nm) (mk-vec :any)
                                     :else :any))))
       (= op :host) (let [nm (get fnode :name)]
-                     (cond (contains? truthy-ret-fns nm) :truthy
+                     (cond (contains? num-ret-fns nm) :num
                            (contains? vector-ret-fns nm) (mk-vec :any)
                            :else :any))
       :else :any)))
@@ -814,7 +859,13 @@
   (let [op (get node :op)]
     (cond
       (= op :const)
-      [(let [v (get node :val)] (if (or (nil? v) (= false v)) :any :truthy)) node]
+      [(let [v (get node :val)]
+         (cond (number? v) :num
+               (string? v) :str
+               (keyword? v) :kw
+               (or (nil? v) (= false v)) :any   ; nil/false are not struct-eligible
+               :else :truthy))                  ; true, char, ... -> non-nil
+       node]
       (= op :local)
       (let [t (get tenv (get node :name))]
         [(if t t :any)
@@ -823,23 +874,29 @@
            (vec-type? t) (assoc node :hint :vector)
            :else node)])
       (= op :map)
-      (let [res (mapv (fn [pr]
+      (let [pairs (get node :pairs)
+            res (mapv (fn [pr]
                         (let [kr (infer (nth pr 0) tenv)
                               vr (infer (nth pr 1) tenv)]
-                          [(nth kr 1) (nth vr 1) (nth vr 0)]))
-                      (get node :pairs))
-            t (if (and (> (count res) 0)
-                       (every? (fn [pr] (scalar-const? (nth pr 0))) (get node :pairs))
-                       (every? (fn [r] (truthy-type? (nth r 2))) res))
-                :struct-map :any)]
+                          [(nth kr 1) (nth vr 1) (nth vr 0) (get (nth pr 0) :val)]))
+                      pairs)
+            struct? (and (> (count res) 0)
+                         (every? (fn [pr] (scalar-const? (nth pr 0))) pairs)
+                         (every? (fn [r] (truthy-type? (nth r 2))) res))
+            t (if struct?
+                (cap (mk-struct (reduce (fn [m r] (assoc m (nth r 3) (nth r 2))) {} res)) type-depth)
+                :any)]
         [t (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))])
       (= op :vector)
       (let [irs (mapv (fn [x] (infer x tenv)) (get node :items))
             ets (mapv (fn [r] (nth r 0)) irs)
             el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
-        [(mk-vec el) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
+        [(cap (mk-vec el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
       (= op :set)
-      [:set (assoc node :items (mapv (fn [x] (nth (infer x tenv) 1)) (get node :items)))]
+      (let [irs (mapv (fn [x] (infer x tenv)) (get node :items))
+            ets (mapv (fn [r] (nth r 0)) irs)
+            el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
+        [(cap (mk-set el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
       (= op :if)
       (let [tr (infer (get node :test) tenv)
             thn (infer (get node :then) tenv)
@@ -865,6 +922,29 @@
             args (get node :args)
             n (count args)]
         (cond
+          ;; (:k m) / (:k m default): the result is m's field type, and if m is a
+          ;; struct the subject is tagged so the back end drops the guard — this
+          ;; types nested access end to end (RFC 0005).
+          (and (= :const (get fnode :op)) (keyword? (get fnode :val)) (>= n 1) (<= n 2))
+          (let [mr (infer (nth args 0) tenv)
+                mt (nth mr 0)
+                msub (if (struct-safe? mt) (mark-hint (nth mr 1) :struct) (nth mr 1))
+                ft (field-type mt (get fnode :val))
+                dr (when (= n 2) (infer (nth args 1) tenv))]
+            [(if dr (join ft (nth dr 0)) ft)
+             (assoc node :args (if dr [msub (nth dr 1)] [msub]))])
+          ;; (get m :k [default]): same, when the key is a constant keyword.
+          (and (or (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)) (= "get" (get fnode :name)))
+                   (and (= :host (get fnode :op)) (= "get" (get fnode :name))))
+               (>= n 2) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
+          (let [mr (infer (nth args 0) tenv)
+                mt (nth mr 0)
+                msub (if (struct-safe? mt) (mark-hint (nth mr 1) :struct) (nth mr 1))
+                kr (infer (nth args 1) tenv)
+                ft (field-type mt (get (nth args 1) :val))
+                dr (when (= n 3) (infer (nth args 2) tenv))]
+            [(if dr (join ft (nth dr 0)) ft)
+             (assoc node :args (if dr [msub (nth kr 1) (nth dr 1)] [msub (nth kr 1)]))])
           ;; reduce over a typed vector with a fn-literal (jolt-d6u): seed the
           ;; closure's accumulator (param 0) to the init type and its element
           ;; (param 1) to the vector's element type, so its body — and any calls
@@ -910,7 +990,7 @@
             (when iscall-var
               (swap! calls-box conj [(var-key fnode) (mapv (fn [r] (nth r 0)) ares)]))
             [(cond
-               (= cn "range") (mk-vec :truthy)
+               (= cn "range") (mk-vec :num)
                ;; element-returning fn over a typed vector -> the element type
                (and cn (contains? elem-fns cn) (> n 0))
                (let [a0 (nth (nth ares 0) 0)] (if (vec-type? a0) (velem a0) :any))
@@ -964,6 +1044,11 @@
   "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy
   (non-nil), def vars carry their inferred init type (jolt-d6u)."
   [m] (reset! vtype-box m))
+
+(defn join-types
+  "Public structural join (lub), used by the orchestrator's fixpoint so param/
+  return types join field-wise/element-wise instead of collapsing to :any."
+  [a b] (join-t a b))
 
 (defn reset-escapes! [] (reset! escapes-box #{}))
 (defn collected-escapes [] (vec @escapes-box))

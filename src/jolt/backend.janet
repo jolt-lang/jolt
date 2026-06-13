@@ -342,7 +342,11 @@
 #   - hinted + JOLT_CHECK_HINTS: keep the guard but THROW on the tagged arm, so a
 #     lying hint surfaces a clear error (dev aid; off by default, no perf cost).
 (defn- emit-kw-lookup [subj-node m-expr k d-expr]
-  (def hinted (and subj-node (= :local (subj-node :op)) (= :struct (subj-node :hint))))
+  # the subject is a struct (raw-get-safe) when hinted so — by an explicit
+  # ^:struct/^Record hint on a local, OR by inference tagging ANY subject
+  # expression it proved to be a struct (jolt-d6u/RFC 0005), which is what lets
+  # nested access like (:r (:direction ray)) drop its guard.
+  (def hinted (and subj-node (= :struct (subj-node :hint))))
   (def checked (and hinted (os/getenv "JOLT_CHECK_HINTS")))
   (def m (if (symbol? m-expr) m-expr (jsym)))
   (def wrap (fn [body] (if (symbol? m-expr) body ['let [m m-expr] body])))
@@ -799,13 +803,14 @@
   (def pns (ctx-find-ns ctx "jolt.passes"))
   (def f-set-rtenv (and pns (ns-find pns "set-rtenv!")))
   (def f-set-vtypes (and pns (ns-find pns "set-vtypes!")))
+  (def f-join (and pns (ns-find pns "join-types")))
   (def f-infer-body (and pns (ns-find pns "infer-body")))
   (def f-reinfer (and pns (ns-find pns "reinfer-def")))
   (def f-reset-esc (and pns (ns-find pns "reset-escapes!")))
   (def f-get-esc (and pns (ns-find pns "collected-escapes")))
   (def ns (ctx-find-ns ctx ns-name))
   (def report @{})
-  (when (and ns f-set-rtenv f-infer-body f-reinfer f-reset-esc f-get-esc)
+  (when (and ns f-set-rtenv f-set-vtypes f-join f-infer-body f-reinfer f-reset-esc f-get-esc)
     # gather single-fixed-arity fns AND non-fn defs that stashed a :def IR
     (def fns @[])
     (def defs @[])
@@ -865,7 +870,7 @@
               (def callee (get by-key (in cv 0)))
               (def ats (vview (in cv 1)))
               (def lim (min (length ats) (callee :np)))
-              (for i 0 lim (put npa i (itype-join (in npa i) (in ats i)))))))
+              (for i 0 lim (put npa i ((var-get f-join) (in npa i) (in ats i)))))))
         # commit + detect change
         (set changed false)
         (def nrt @{})
