@@ -223,3 +223,50 @@
    "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\" \"jolt\" \"default\"]) (def r (contains? (set (__reader-features)) \"clj\")) (__reader-features-set! prev) r)"]
   ["restore returns to default" "false"
    "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\"]) (__reader-features-set! prev) (contains? (set (__reader-features)) \"clj\"))"])
+
+# JVM class shims migratus relies on. Exception constructors resolve as bare
+# class symbols (jolt-6xk) and carry a message; Character/Thread/Long statics;
+# java.sql.Timestamp is the millis number; SimpleDateFormat formats UTC.
+(defspec "host-interop / migratus class shims"
+  ["Exception. message"        "\"boom\""
+   "(try (throw (Exception. \"boom\")) (catch Throwable e (.getMessage e)))"]
+  ["IllegalArgumentException."  "\"bad\""
+   "(try (throw (IllegalArgumentException. \"bad\")) (catch Exception e (.getMessage e)))"]
+  ["InterruptedException."      "\"stop\""
+   "(try (throw (InterruptedException. \"stop\")) (catch Throwable e (.getMessage e)))"]
+  ["Character/isUpperCase"      "true"   "(Character/isUpperCase \\A)"]
+  ["Character/isLowerCase"      "true"   "(Character/isLowerCase \\a)"]
+  ["Character/isUpperCase neg"  "false"  "(Character/isUpperCase \\a)"]
+  ["Thread/interrupted"         "false"  "(Thread/interrupted)"]
+  ["Long/valueOf"               "42"     "(Long/valueOf \"42\")"]
+  ["Timestamp is millis"        "1000"   "(.getTime (java.util.Date. (java.sql.Timestamp. 1000)))"]
+  ["SimpleDateFormat UTC"       "\"19700101000000\""
+   "(let [f (doto (java.text.SimpleDateFormat. \"yyyyMMddHHmmss\") (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))] (.format f (java.util.Date. 0)))"])
+
+# java.io.File model (jolt-hjw): io/file builds a value that answers
+# (instance? File _) so migratus's File-vs-jar branch takes the filesystem path;
+# the method surface and a File-aware file-seq back it; str/slurp coerce to path.
+(defspec "host-interop / java.io.File"
+  ["instance? File"      "true"   "(do (require '[clojure.java.io :as io]) (instance? java.io.File (io/file \"/a/b\")))"]
+  ["str is the path"     "\"/a/b\"" "(do (require '[clojure.java.io :as io]) (str (io/file \"/a/b\")))"]
+  ["getName"             "\"c.txt\"" "(do (require '[clojure.java.io :as io]) (.getName (io/file \"/a/b/c.txt\")))"]
+  ["getPath joins"       "\"/a/b\"" "(do (require '[clojure.java.io :as io]) (.getPath (io/file \"/a\" \"b\")))"]
+  ["isDirectory of repo dir" "true" "(do (require '[clojure.java.io :as io]) (.isDirectory (io/file \"docs\")))"]
+  ["isFile of repo file" "true"    "(do (require '[clojure.java.io :as io]) (.isFile (io/file \"project.janet\")))"]
+  ["exists is false off-disk" "false" "(do (require '[clojure.java.io :as io]) (.exists (io/file \"/no/such/path/xyz\")))"]
+  ["file-seq yields File values" "true"
+   "(do (require '[clojure.java.io :as io]) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"docs\"))))"]
+  ["file-seq finds files"  "true"
+   "(do (require '[clojure.java.io :as io]) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))"])
+
+# clojure.tools.logging shim (jolt-nzg): the macro surface works, debug/trace
+# are suppressed (no-op nil) by default, and the impl protocol layer is present.
+(defspec "host-interop / clojure.tools.logging"
+  ["info returns nil"   "nil"  "(do (require '[clojure.tools.logging :as log]) (log/info \"hi\" 42))"]
+  ["debug suppressed"   "nil"  "(do (require '[clojure.tools.logging :as log]) (log/debug \"x\"))"]
+  ["debug skips args"   "0"    "(do (require '[clojure.tools.logging :as log]) (let [a (atom 0)] (log/debug (reset! a 9)) @a))"]
+  ["enabled? info"      "true" "(do (require '[clojure.tools.logging :as log]) (log/enabled? :info))"]
+  ["enabled? debug"     "false" "(do (require '[clojure.tools.logging :as log]) (log/enabled? :debug))"]
+  ["spy returns value"  "3"    "(do (require '[clojure.tools.logging :as log]) (log/spy :info (+ 1 2)))"]
+  ["impl factory name"  "\"jolt/stderr\""
+   "(do (require '[clojure.tools.logging.impl :as impl]) (impl/name (impl/find-factory)))"])

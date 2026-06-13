@@ -177,3 +177,13 @@
   ["empty? lazy nil elem" "false"     "(empty? (cons nil nil))"]
   ["empty? sorted"   "[true false]"   "[(empty? (sorted-map)) (empty? (sorted-set 1))]"]
   ["empty? number throws" :throws     "(empty? 5)"])
+
+# (assoc nil k v) yields a real immutable map, not a raw host table, so
+# assoc-in into absent keys nests countable/seqable maps (jolt-w4s).
+(defspec "map / assoc on nil"
+  ["assoc nil is a map"        "{:a 1}" "(assoc nil :a 1)"]
+  ["count of assoc nil"        "1"      "(count (assoc nil :a 1))"]
+  ["assoc-in nested countable" "1"      "(count (:a (assoc-in {} [:a :b] 1)))"]
+  ["assoc-in deep get"         "9"      "(get-in (assoc-in {} [:a :b :c] 9) [:a :b :c])"]
+  ["seq over assoc-nil map"    ":a"     "(ffirst (seq (assoc nil :a 1)))"]
+  ["keys of assoc-nil map"     "[:a]"   "(vec (keys (assoc nil :a 1)))"])

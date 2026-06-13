@@ -65,9 +65,11 @@
 
 (defmacro spy
   "Evaluate expr, log it at the given level (default :debug) as expr => value,
-  and return the value."
-  ([expr] `(spy :debug ~expr))
-  ([level expr]
-   `(let [a# ~expr]
-      (logp ~level (print-str '~expr "=>" (pr-str a#)))
-      a#)))
+  and return the value. Single variadic arity (jolt defmacro takes only the
+  first clause of a multi-arity macro), dispatching on arg count."
+  [& args]
+  (let [level (if (= 1 (count args)) :debug (first args))
+        expr  (if (= 1 (count args)) (first args) (second args))]
+    `(let [a# ~expr]
+       (logp ~level (print-str '~expr "=>" (pr-str a#)))
+       a#)))

@@ -85,3 +85,11 @@
   ["with-redefs-fn"      "42"     "(do (defn wr-i [] 1) (with-redefs-fn {(var wr-i) (fn [] 42)} (fn [] (wr-i))))"]
   ["macroexpand full"    "true"   "(let [e (macroexpand (quote (when-not false 1)))] (= (quote if) (first e)))"]
   ["macroexpand non-macro" "[1 2]" "(macroexpand (quote [1 2]))"])
+
+# defmacro accepts the arity-clause form (defmacro name ([params] body...)), a
+# leading docstring, and ^{:map} metadata on the name (jolt-whp, jolt-8w2).
+(defspec "macros / defmacro arity-clause & name metadata"
+  ["arity-clause form"    "10"  "(do (defmacro tw ([x] (list (quote *) x 2))) (tw 5))"]
+  ["docstring + arity"    "15"  "(do (defmacro th \"triple\" ([x] (list (quote *) x 3))) (th 5))"]
+  ["^{:map} name meta"    "7"   "(do (defmacro ^{:private true} pm [] 7) (pm))"]
+  ["multi-form body"      "6"   "(do (defmacro mb ([a b] (list (quote +) a b))) (mb 2 4))"])

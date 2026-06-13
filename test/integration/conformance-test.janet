@@ -462,6 +462,39 @@
    ["not-any?"               "true"  "(not-any? even? [1 3 5])"]
    ["take-last"              "[3 4]" "(take-last 2 [1 2 3 4])"]
    ["replace nil val"        "[1 nil 3]" "(replace {2 nil} [1 2 3])"]
+
+   ### ---- migratus enablement: def/defmacro/defmulti forms, assoc, try, ns ----
+   # (def name docstring value): the value is the 3rd form, not the docstring
+   # (jolt-6ym — the analyzer used to bind the docstring as the value).
+   ["def 3-arg docstring"     "42"   "(do (def dd \"the doc\" 42) dd)"]
+   ["def docstring value type" "true" "(do (def ds \"doc\" [1 2]) (vector? ds))"]
+   # ^{:map} metadata on a def/defn name reads as a with-meta form (jolt-8w2);
+   # def/defn/defmacro unwrap it instead of choking.
+   ["def ^{:map} name"        "5"    "(do (def ^{:private true} mmv 5) mmv)"]
+   ["defn ^{:map} name"       "25"   "(do (defn ^{:private true} sqf [x] (* x x)) (sqf 5))"]
+   # defmacro arity-clause form (jolt-whp) and a leading docstring (with-store shape)
+   ["defmacro arity-clause"   "10"   "(do (defmacro m2c ([x] (list (quote *) x 2))) (m2c 5))"]
+   ["defmacro doc + arity"    "30"   "(do (defmacro m3c \"doc\" ([x] (list (quote *) x 3))) (* (m3c 5) 2))"]
+   # defmulti drops a leading docstring (jolt-es4 — it used to be the dispatch fn)
+   ["defmulti docstring"      "\"A\"" "(do (defmulti gmm \"the doc\" identity) (defmethod gmm :a [_] \"A\") (gmm :a))"]
+   # (assoc nil k v) yields a real map (jolt-w4s); assoc-in nests real maps
+   ["assoc nil is a map"      "1"    "(count (assoc nil :a 1))"]
+   ["assoc-in nested is a map" "1"   "(count (:a (assoc-in {} [:a :b] 1)))"]
+   ["assoc-in deep get"       "9"    "(get-in (assoc-in {} [:a :b :c] 9) [:a :b :c])"]
+   # try: a multi-form body and finally that runs on the SUCCESS path with a
+   # catch present (jolt-0z9 — body forms past the first were dropped and
+   # finally was skipped on success).
+   ["try multi-body last"     "3"    "(try 1 2 3 (catch :default e 0))"]
+   ["try finally on ok+catch" "9"    "(let [a (atom 0)] (try 1 2 (catch :default e :c) (finally (reset! a 9))) @a)"]
+   ["try finally on throw"    "9"    "(let [a (atom 0)] (try (throw (ex-info \"x\" {})) (catch :default e nil) (finally (reset! a 9))) @a)"]
+   # current-ns is restored after a caught throw (jolt-96m): the alias/ns seen by
+   # code after the catch is the one at the catch site, not the thrower's.
+   ["ns restored after catch" "\"user\""
+    "(do (ns cf.boom) (defn bz [] (throw (Exception. \"e\"))) (in-ns (quote user)) (try (cf.boom/bz) (catch :default e nil)) (str *ns*))"]
+   # methods sees cross-ns defmethods through a bare multifn ref in its defining
+   # ns (jolt-9pu — it used to see an empty table).
+   ["cross-ns methods visible" "[:sql]"
+    "(do (ns cf.mm) (defmulti ext identity) (defmethod ext :default [_] :d) (defn allk [] (vec (for [[k v] (methods ext) :when (not= k :default)] k))) (ns cf.mmi) (defmethod cf.mm/ext :sql [_] :s) (in-ns (quote user)) (cf.mm/allk))"]
   ])
 
 # Run every case under a given context factory and return the failures. The same
