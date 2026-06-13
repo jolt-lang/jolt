@@ -591,7 +591,11 @@
     "StringReader" "java.io.StringReader" "StringWriter" "java.io.StringWriter"
     "StringBuilder" "java.lang.StringBuilder"
     "StringTokenizer" "java.util.StringTokenizer"
-    "Charset" "java.nio.charset.Charset" "Base64" "java.util.Base64"})
+    "Charset" "java.nio.charset.Charset" "Base64" "java.util.Base64"
+    "Exception" "java.lang.Exception"
+    "IllegalArgumentException" "java.lang.IllegalArgumentException"
+    "InterruptedException" "java.lang.InterruptedException"
+    "Throwable" "java.lang.Throwable"})
 (defn- class-value-for
   "The value a class-name symbol evaluates to: its canonical name string."
   [nm]
@@ -678,7 +682,10 @@
    "endsWith"    (fn [s p] (string/has-suffix? p s))
    "contains"    (fn [s sub] (not (nil? (string/find (str-needle sub) s))))
    "concat"      (fn [s o] (string s o))
-   "replace"     (fn [s a b] (string/replace-all (str-needle a) (str-needle b) s))
+    "replace"     (fn [s a b] (string/replace-all (str-needle a) (str-needle b) s))
+    "replaceAll"  (fn [s regex replacement] (re-replace-all (re-pattern regex) s replacement))
+    "replaceFirst" (fn [s regex replacement] (re-replace-first (re-pattern regex) s replacement))
+    "matches"     (fn [s regex] (not (nil? (re-matches (re-pattern regex) s))))
    "compareTo"   (fn [s o] (cond (< s o) -1 (> s o) 1 0))
    "equalsIgnoreCase" (fn [s o] (= (string/ascii-lower s) (string/ascii-lower (string o))))})
 
@@ -765,7 +772,9 @@
                       # No implicit Janet fallback (Stage 3): an unresolved
                       # Clojure symbol is an error. Host access is the explicit
                       # janet/ prefix above.
-                      (error (string "Unable to resolve symbol: " name " in this context"))))))))))))))))))
+                      (if (or (in class-ctors name) (get class-canonical-names name))
+                        (class-value-for name)
+                        (error (string "Unable to resolve symbol: " name " in this context")))))))))))))))))))
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.
   Returns {:fixed [names...] :rest name-or-nil :all [names...]}"

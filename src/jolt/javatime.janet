@@ -6,6 +6,7 @@
 # install call — adding another java.* shim follows the same shape.
 
 (use ./evaluator)
+(use ./regex)
 (import ./phm)
 
 (defn- chr [s] (get s 0))
@@ -442,7 +443,45 @@
         (or (scan-number (string/trim (string v)))
             (error (string "NumberFormatException: For input string: \"" v "\""))))))
   (each nm ["Locale" "java.util.Locale"]
-    (register-class-ctor! nm (fn [id &opt _country] @{:jolt/type :jolt/locale :id (string id)}))))
+    (register-class-ctor! nm (fn [id &opt _country] @{:jolt/type :jolt/locale :id (string id)})))
+  # java.util.regex.Pattern statics: Pattern/compile, Pattern/quote, Pattern/MULTILINE.
+  # Pattern/compile returns jolt's native :jolt/regex compiled value so that
+  # str/replace, re-matches, .split etc accept it transparently.
+  (defn- pattern-quote [s]
+    (def meta "\\.[]{}()*+-?^$|&")
+    (def buf @"")
+    (var i 0)
+    (while (< i (length s))
+      (def c (s i))
+      (if (string/find (string/from-bytes c) meta)
+        (buffer/push buf (chr "\\")))
+      (buffer/push buf (string/from-bytes c))
+      (++ i))
+    (string buf))
+  (def pattern-multiline 8)
+  (each nm ["Pattern" "java.util.regex.Pattern"]
+    (register-class-statics! nm
+      @{"compile" (fn [s &opt flags]
+                    (if (and flags (= (band flags pattern-multiline) pattern-multiline))
+                      (re-pattern (string "(?m)" s))
+                      (re-pattern s)))
+        "quote" (fn [s] (pattern-quote s))
+        "MULTILINE" pattern-multiline}))
+  # .split on compiled regex values: delegates to re-split, drops trailing empties
+  (register-tagged-methods! :jolt/regex
+    @{"split" (fn [self s &opt limit]
+                (def parts (re-split self s))
+                (while (and (> (length parts) 0) (= "" (last parts)))
+                  (array/pop parts))
+                parts)})
+  # JVM exception constructors: (Exception. msg), (IllegalArgumentException. msg),
+  # (InterruptedException. msg). Return the message string so getMessage works.
+  (each nm ["Exception" "java.lang.Exception"]
+    (register-class-ctor! nm (fn [msg] (string msg))))
+  (each nm ["IllegalArgumentException" "java.lang.IllegalArgumentException"]
+    (register-class-ctor! nm (fn [msg] (string msg))))
+  (each nm ["InterruptedException" "java.lang.InterruptedException"]
+    (register-class-ctor! nm (fn [msg] (string msg)))))
 
 (install!)
 (install-io!)
