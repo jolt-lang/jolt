@@ -67,7 +67,10 @@
    "(refer (quote clojure.string))"
    # Stage 2 tier 6c: dispatch-table ops + misc compile as macros/plain invokes
    "(prefer-method mf :a :b)" "(remove-method mf :a)" "(remove-all-methods mf)"
-   "(get-method mf :a)" "(methods mf)"
+   # get-method/methods take the multimethod VALUE (Clojure semantics), so the
+   # arg must resolve — use a real multifn (print-method) rather than the
+   # never-defined mf the isolated analyzer can't resolve.
+   "(get-method print-method :default)" "(methods print-method)"
    "(satisfies? P 5)" "(instance? String \"x\")" "(locking :x 1)"
    "(defonce fz-once 1)" "(read-string \"[1 2]\")"
    "(macroexpand-1 (quote (when true 1)))"])
