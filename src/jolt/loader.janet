@@ -112,7 +112,7 @@
   (load-ns ctx filepath) → namespace symbol string"
   [ctx filepath]
   (def source (slurp filepath))
-  (when (checker-enabled?)
+  (when (or (checker-enabled?) (get (ctx :env) :inline?))
     (track-positions! true)
     (put (ctx :env) :tc-source source)
     (put (ctx :env) :tc-file filepath))

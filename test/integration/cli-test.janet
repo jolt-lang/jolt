@@ -118,6 +118,31 @@
            r)
        (has "could not find method"))
 
+# --- success checker default-on in direct-link, off in plain builds ----------
+# A provably-wrong defn (never called, so no runtime error): the checker is the
+# only thing that can flag it. Plain build = silent (no dev regression);
+# direct-link build = warns by default (free piggyback on inference).
+(def tcw (string (or (os/getenv "TMPDIR") "/tmp") "/jolt-tcwarn-" (os/time) ".clj"))
+(spit tcw "(ns tcw)\n\n(defn unused [s]\n  (inc \"definitely-not-a-number\"))\n")
+(check "plain build does not run the checker (no regression)"
+       (run-err tcw)
+       (fn [s] (nil? (string/find "type error" s))))
+(check "direct-link build warns by default (free checking)"
+       (do (os/setenv "JOLT_DIRECT_LINK" "1")
+           (def r (run-err tcw))
+           (os/setenv "JOLT_DIRECT_LINK" nil)
+           r)
+       (fn [s] (and (string/find "type error" s)
+                    (string/find "requires a number" s))))
+(check "JOLT_TYPE_CHECK=off disables it even in direct-link"
+       (do (os/setenv "JOLT_DIRECT_LINK" "1")
+           (os/setenv "JOLT_TYPE_CHECK" "off")
+           (def r (run-err tcw))
+           (os/setenv "JOLT_DIRECT_LINK" nil)
+           (os/setenv "JOLT_TYPE_CHECK" nil)
+           r)
+       (fn [s] (nil? (string/find "type error" s))))
+
 (if (> fails 0)
   (error (string "cli-test: " fails " failing check(s)"))
   (print "\nAll CLI tests passed!"))

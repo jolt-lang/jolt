@@ -377,7 +377,7 @@
   (def toplevel (get (ctx :env) :toplevel-eval))
   # a require runs nested inside an outer file's eval; save/restore the outer
   # checker source so its later forms still convert offsets correctly (jolt-fqy)
-  (def checking (checker-enabled?))
+  (def checking (or (checker-enabled?) (get (ctx :env) :inline?)))
   (def saved-src (and checking (get (ctx :env) :tc-source)))
   (def saved-file (and checking (get (ctx :env) :tc-file)))
   (when checking

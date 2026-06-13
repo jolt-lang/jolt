@@ -369,8 +369,10 @@
   Returns the result of the last form evaluated."
   [ctx s &opt file]
   (default file "<eval>")
-  # record form positions so the checker can report file:line:col (jolt-fqy)
-  (when (checker-enabled?)
+  # record form positions so the checker can report file:line:col (jolt-fqy).
+  # The checker is on when JOLT_TYPE_CHECK selects it, OR by default in
+  # direct-link builds (where it piggybacks on inference for free).
+  (when (or (checker-enabled?) (get (ctx :env) :inline?))
     (track-positions! true)
     (put (ctx :env) :tc-source s)
     (put (ctx :env) :tc-file file))

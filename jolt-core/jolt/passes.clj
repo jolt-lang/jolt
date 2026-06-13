@@ -1311,6 +1311,21 @@
                           (get fnode :arities))))
       def-node)))
 
+;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
+;; one inference pass for specialization; turning checking? on during it makes
+;; the success checker nearly free there (no extra traversal — just the
+;; per-call error-domain predicates). The back end sets the mode before
+;; run-passes and reads take-diags! after. It checks the POST-optimization IR,
+;; which matches what the optimized program actually evaluates (scalar-replace
+;; only drops provably-pure code, an accepted opt-mode divergence).
+(def ^:private check-mode-box (atom {:on false :strict false}))
+(defn set-check-mode!
+  "Enable/disable checking during the next run-passes inference (direct-link)."
+  [on strict?] (reset! check-mode-box {:on (if on true false) :strict (if strict? true false)}))
+(defn take-diags!
+  "Diagnostics accumulated by the last checking run-passes; clears the buffer."
+  [] (let [d (vec @diag-box)] (reset! diag-box []) d))
+
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form. When
   inlining is enabled for the unit (user code under direct-linking, jolt-87f),
@@ -1327,5 +1342,15 @@
                   (if (and @dirty (< i 8))
                     (recur (inc i) n2)
                     n2)))]
-      (infer-top opt))
+      ;; specialization inference, optionally also emitting success diagnostics
+      (if (get @check-mode-box :on)
+        (do (reset! diag-box [])
+            (reset! checking-box #{})
+            (reset! strict-box (get @check-mode-box :strict))
+            (reset! checking? true)
+            (let [r (infer-top opt)]
+              (reset! checking? false)
+              (reset! strict-box false)
+              r))
+        (infer-top opt)))
     (const-fold node)))

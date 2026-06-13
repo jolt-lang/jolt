@@ -613,13 +613,32 @@
   [ctx]
   (build-compiler! ctx))
 
-(defn type-check!
-  "Success-type check the analyzed IR (RFC 0006). Looks up jolt.passes/check-form
-  (absent during pre-passes bootstrap -> no-op), runs it protected so a checker
-  bug never breaks compilation, then reports each diagnostic per strictness:
+(defn- report-diags!
+  "Render and emit success-type diagnostics (RFC 0006) at the given strictness:
   `warn` prints to stderr, `error` throws (failing this form's compilation).
-  Because the checker only fires on PROVABLY-wrong code, a correct program has
-  nothing to report under either level.
+  file:line:col when the diagnostic carries an offset and the source is on the
+  env (jolt-fqy); else the ns."
+  [ctx diags strictness ns]
+  (def src (get (ctx :env) :tc-source))
+  (def file (or (get (ctx :env) :tc-file) (and ns (string ns))))
+  (each d diags
+    (def off (get d :pos))
+    (def loc
+      (if (and off src)
+        (let [lc (r/line-col src off)]
+          (string (or file "?") ":" (in lc 0) ":" (in lc 1)))
+        (string "in " (if ns (string ns) "?"))))
+    (def msg (string "type error " loc ": " (get d :msg)))
+    (if (= strictness "error")
+      (error msg)
+      (eprint "  " msg))))
+
+(defn type-check!
+  "Decoupled success-type check (RFC 0006): run jolt.passes/check-form as its OWN
+  inference pass over `ir` and report. Used in NON-direct-link builds, where the
+  optimization inference doesn't run — so checking costs a separate pass. (In
+  direct-link builds checking piggybacks on run-passes' inference instead, near
+  free; see analyze-form.) Protected so a checker bug never breaks compilation.
 
   JOLT_TYPE_CHECK_USER (an orthogonal opt-in knob, jolt-zo1) additionally
   reports calls to user functions whose concrete argument types provably make
@@ -633,23 +652,7 @@
     (when (r 0)
       (def diags (if (pv/pvec? (r 1)) (pv/pv->array (r 1)) (r 1)))
       (when (and diags (> (length diags) 0))
-        # source + file for offset -> line:col (jolt-fqy). The loader stashes the
-        # current file's source + path on the env when checking is on.
-        (def src (get (ctx :env) :tc-source))
-        (def file (or (get (ctx :env) :tc-file) (and ns (string ns))))
-        (each d diags
-          (def off (get d :pos))
-          # precise: file:line:col of the offending form when its offset and the
-          # source are both available; else the ns (no worse than before)
-          (def loc
-            (if (and off src)
-              (let [lc (r/line-col src off)]
-                (string (or file "?") ":" (in lc 0) ":" (in lc 1)))
-              (string "in " (if ns (string ns) "?"))))
-          (def msg (string "type error " loc ": " (get d :msg)))
-          (if (= strictness "error")
-            (error msg)
-            (eprint "  " msg)))))))
+        (report-diags! ctx diags strictness ns)))))
 
 (defn analyze-form
   "Run the portable Clojure analyzer (jolt.analyzer/analyze) on a reader form,
@@ -683,6 +686,21 @@
   # Resolved lazily; absent during the pre-passes bootstrap window.
   (def pv (unless (= "1" (os/getenv "JOLT_NO_IR_PASSES"))
             (ns-find (ctx-find-ns ctx "jolt.passes") "run-passes")))
+  # Success-type checking level (RFC 0006). JOLT_TYPE_CHECK wins when set;
+  # otherwise it defaults to `warn` in direct-link builds — where the
+  # optimization inference already runs, so checking piggybacks on it for nearly
+  # free — and stays OFF for plain REPL/dev builds (no inference -> no free ride;
+  # opt in with JOLT_TYPE_CHECK there). (jolt audit)
+  (def tc (os/getenv "JOLT_TYPE_CHECK"))
+  (def tc-off (or (= tc "off") (= tc "0")))
+  (def direct-link? (if (get (ctx :env) :inline?) true false))
+  (def level (cond tc-off nil tc tc direct-link? "warn" true nil))
+  (def uenv (os/getenv "JOLT_TYPE_CHECK_USER"))
+  (def strict? (and uenv (not= uenv "0") (not= uenv "off") true))
+  # piggyback: check DURING run-passes' inference (direct-link, the cheap path)
+  (def piggyback? (and level direct-link? pv true))
+  (def scm (and piggyback? (ns-find (ctx-find-ns ctx "jolt.passes") "set-check-mode!")))
+  (when scm ((var-get scm) true strict?))
   (def result
     (if pv
       (let [pr (protect ((var-get pv) (r 1) ctx))]
@@ -692,13 +710,19 @@
         (ctx-set-current-ns ctx saved-ns)
         (if (pr 0) (pr 1) (r 1)))
       (r 1)))
-  # Success-type check (RFC 0006), decoupled from specialization: runs whenever
-  # JOLT_TYPE_CHECK is warn/error, regardless of :inline?. Read at runtime so it
-  # needs no rebuild. The analyzed IR (r 1) carries no specialization; the
-  # checker does its own inference.
-  (def tc (os/getenv "JOLT_TYPE_CHECK"))
-  (when (and tc (not= tc "off") (not= tc "0"))
-    (type-check! ctx (r 1) tc saved-ns))
+  (when scm ((var-get scm) false false))
+  (cond
+    # direct-link: collect the diagnostics infer-top emitted and report them
+    piggyback?
+    (let [td (ns-find (ctx-find-ns ctx "jolt.passes") "take-diags!")]
+      (when td
+        (def raw ((var-get td)))
+        (def diags (if (pv/pvec? raw) (pv/pv->array raw) raw))
+        (when (and diags (> (length diags) 0))
+          (report-diags! ctx diags level saved-ns))))
+    # plain build with checking explicitly requested: a separate inference pass
+    (and level (not direct-link?))
+    (type-check! ctx (r 1) level saved-ns))
   result)
 
 # The analyzer's deliberate punt signal — (uncompilable why) throws the string
