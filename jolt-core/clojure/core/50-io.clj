@@ -177,3 +177,30 @@
 (defmethod print-method :jolt/chan [c w]
   (.write w "#<channel>")
   nil)
+
+;; Minimal synchronous agent shim. jolt has no thread pool or STM, so this is
+;; enough for libraries that hold an agent but don't depend on asynchronous
+;; dispatch (e.g. clojure.tools.logging's *logging-agent*, which only sends from
+;; within a transaction — never the case here, so it always logs directly). An
+;; agent is an atom; send/send-off apply the action immediately. NOT concurrent.
+(defn agent
+  "Creates an agent (an atom on jolt — synchronous, no async dispatch)."
+  [state & _opts]
+  (atom state))
+
+(defn send-off
+  "Apply (action state & args) to the agent's state immediately; return the agent."
+  [a f & args]
+  (apply swap! a f args)
+  a)
+
+(defn send
+  "Like send-off on jolt (no separate thread pool)."
+  [a f & args]
+  (apply swap! a f args)
+  a)
+
+(defn agent-error
+  "jolt agents never enter an error state."
+  [_a]
+  nil)

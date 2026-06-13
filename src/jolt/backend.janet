@@ -191,11 +191,25 @@
   (tuple/slice (array/concat @[(symbol (node :recur-name))]
                             (map |(emit ctx $) (vview (node :args))))))
 
+# Var-cell read of a clojure.core fn, as ((in 'cell :root) args...) — the same
+# live-root call the :var emit uses, for the ns get/set helpers below.
+(defn- core-fn-call [ctx nm & args]
+  (def cell (cell-for ctx "clojure.core" nm))
+  (tuple (tuple 'in (tuple 'quote cell) :root) ;args))
+
 (defn- emit-try [ctx node]
   (def core
     (if (node :catch-sym)
-      ['try (emit ctx (node :body))
-       [[(symbol (node :catch-sym))] (emit ctx (node :catch-body))]]
+      # Restore current-ns in the catch: a caught throw from an INTERPRETED fn
+      # leaves ctx-current-ns set to that fn's defining ns (it can't restore on
+      # unwind), which then breaks alias resolution in the catching ns. Snapshot
+      # the ns at try entry, reset it on catch (mirrors the interpreter's try).
+      (let [saved (gsym)]
+        ['let [saved (core-fn-call ctx "__current-ns")]
+         ['try (emit ctx (node :body))
+          [[(symbol (node :catch-sym))]
+           ['do (core-fn-call ctx "__set-current-ns!" saved)
+            (emit ctx (node :catch-body))]]]])
       (emit ctx (node :body))))
   (if (node :finally)
     ['defer (emit ctx (node :finally)) core]

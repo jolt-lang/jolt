@@ -123,9 +123,12 @@ deref           = "@"  , form ;        (* (deref form)            *)
 metadata        = "^"  , meta-form , ws , form ;   (* attach metadata to form *)
 meta-form       = map | keyword | symbol | string ;
 (* Normalized like Clojure: a symbol or string is a type hint -> {:tag ...};
-   a keyword -> {keyword true}; a map is used as-is. On a symbol the metadata
-   rides on the symbol (it stays a bare symbol, so a hint like ^String is
-   transparent in params/lets/bodies); other targets use a runtime with-meta. *)
+   a keyword -> {keyword true}; a map is used as-is. A keyword/symbol/string
+   meta-form on a symbol rides ON the symbol (it stays a bare symbol, so a hint
+   like ^String is transparent in params/lets/bodies). A MAP meta-form routes
+   through a runtime (with-meta form ...) even on a symbol (jolt-8w2), so a name
+   with ^{:map} metadata reads as a form, not a bare symbol — def/defn/defmacro/ns
+   unwrap that to the bare name (and attach the metadata). *)
 
 (* --------------------------------------------------------------------------
    Dispatch forms — introduced by "#".

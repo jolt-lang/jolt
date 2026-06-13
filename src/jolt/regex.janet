@@ -144,23 +144,29 @@
                                   (let [inner (parse-alt st)] (+= (st :pos) 1) {:op :look :neg false :item inner}))
               (= k (chr "!")) (do (+= (st :pos) 3)
                                   (let [inner (parse-alt st)] (+= (st :pos) 1) {:op :look :neg true :item inner}))
-              # inline flags (?i) / (?i:...) — set case-insensitive
+               # inline flags (?i) / (?m) / (?im:...) etc.
               (do
                 (var j (+ (st :pos) 2))
                 (var seti false)
+                (var setm false)
                 (while (and (< j (length s)) (not= (s j) (chr ")")) (not= (s j) (chr ":")))
                   (when (= (s j) (chr "i")) (set seti true))
+                  (when (= (s j) (chr "m")) (set setm true))
                   (++ j))
                 (if (= (s j) (chr ":"))
                   (do (set (st :pos) (+ j 1))
-                      (def saved (st :ci))
+                      (def savedci (st :ci))
+                      (def savedml (st :ml))
                       (when seti (set (st :ci) true))
+                      (when setm (set (st :ml) true))
                       (def inner (parse-alt st))
-                      (set (st :ci) saved)
+                      (set (st :ci) savedci)
+                      (set (st :ml) savedml)
                       (+= (st :pos) 1)
                       {:op :ncgroup :item inner})
-                  (do (set (st :pos) (+ j 1))   # (?i) — flag for rest of pattern
+                  (do (set (st :pos) (+ j 1))   # (?i) / (?m) — flag for rest of pattern
                       (when seti (set (st :ci) true))
+                      (when setm (set (st :ml) true))
                       {:op :seq :items @[]})))))
           # capturing group
           (let [n (++ (st :ngroup))]
@@ -235,9 +241,9 @@
   (if (= 1 (length branches)) (branches 0) {:op :alt :items branches})))
 
 (defn- parse [source]
-  (def st @{:s source :pos 0 :ngroup 0 :ci false :dotall false})
+  (def st @{:s source :pos 0 :ngroup 0 :ci false :ml false :dotall false})
   (def ast (parse-alt st))
-  [ast (st :ngroup)])
+  [ast (st :ngroup) (st :ml)])
 
 # ============================================================
 # Emit: AST -> PEG grammar (continuation passing)
@@ -250,7 +256,7 @@
     ~(set ,(string/from-bytes (lower-b b) (upper-b b)))
     ~(set ,(string/from-bytes b))))
 
-(defn- make-emitter [grammar]
+(defn- make-emitter [grammar ml]
   (var ctr 0)
   (defn fresh [] (++ ctr) (keyword (string "r" ctr)))
   (var emit nil)
@@ -304,8 +310,12 @@
               ~(sequence (not ,(emit (ast :item) 0)) ,k)
               ~(sequence (not (not ,(emit (ast :item) 0))) ,k))
       :anchor (case (ast :kind)
-                :start ~(sequence (not (look -1 1)) ,k)
-                :end ~(sequence (not 1) ,k)
+                :start (if ml
+                         ~(sequence (choice (not (look -1 1)) (look -1 "\n")) ,k)
+                         ~(sequence (not (look -1 1)) ,k))
+                :end (if ml
+                       ~(sequence (choice (not 1) (not (not "\n"))) ,k)
+                       ~(sequence (not 1) ,k))
                 :wordb ~(sequence (choice (sequence (look -1 ,word-frag) (not ,word-frag))
                                           (sequence (not (look -1 ,word-frag)) (not (not ,word-frag))))
                                   ,k)
@@ -317,9 +327,9 @@
   emit)
 
 (defn compile-regex [source]
-  (def [ast ngroups] (parse source))
+  (def [ast ngroups ml] (parse source))
   (def grammar @{})
-  (def emit (make-emitter grammar))
+  (def emit (make-emitter grammar ml))
   # group 0 = whole match: mark start, body, mark end
   (def body (emit ast ~(sequence (/ (position) ,(fn [p] [0 :e p])) 0)))
   (put grammar :main ~(sequence (/ (position) ,(fn [p] [0 :s p])) ,body))

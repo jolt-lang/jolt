@@ -519,7 +519,11 @@
 ;; via the host dir primitives. Paths (strings), not File objects. (Lives below
 ;; tree-seq: forward references are analysis errors now — jolt-2o7.3.)
 (defn file-seq [root]
-  (tree-seq __dir? __list-dir root))
+  (if (__file? root)
+    ;; java.io.File tree: walk via the File method surface so leaves are File
+    ;; values callers can invoke .isFile/.getName/slurp on (jolt-hjw).
+    (tree-seq (fn [f] (.isDirectory f)) (fn [f] (seq (.listFiles f))) root)
+    (tree-seq __dir? __list-dir root)))
 
 ;; Canonical flatten via tree-seq: the leaves (non-sequential nodes) in order.
 ;; Flattens lists too (sequential?), matching Clojure/CLJS.

@@ -47,3 +47,18 @@
   ["p{Ps}/p{Pe}"     "\"(x)\""   `(re-matches #"^\p{Ps}x\p{Pe}$" "(x)")`]
   ["(?u) accepted"   "\"hi\""    `(re-matches #"(?u)^hi$" "hi")`]
   ["unknown class throws" :throws `(re-pattern "\p{Greek}")`])
+
+# java.util.regex.Pattern statics (jolt-47b): compile returns jolt's native
+# regex value (so .split / str-ops accept it), MULTILINE maps to (?m), quote
+# escapes metachars. Plus the regex String methods migratus uses.
+(defspec "regex / Pattern statics & String regex methods"
+  ["Pattern/compile is a regex" "true" "(regex? (Pattern/compile \"a.c\"))"]
+  ["compiled .split"     "[\"a\" \"b\" \"c\"]" "(.split (Pattern/compile \",\") \"a,b,c\")"]
+  ["str/replace w/ Pattern" "\"ab\"" "(do (require '[clojure.string :as s]) (s/replace \"a1b2\" (Pattern/compile \"[0-9]\") \"\"))"]
+  ["Pattern/MULTILINE ^"  "true"  "(boolean (re-find (Pattern/compile \"^x\" Pattern/MULTILINE) \"y\\nx\"))"]
+  ["Pattern/quote literal" "true" "(boolean (re-find (re-pattern (Pattern/quote \"a.c\")) \"za.cy\"))"]
+  ["Pattern/quote not meta" "false" "(boolean (re-find (re-pattern (Pattern/quote \"a.c\")) \"zabcy\"))"]
+  [".matches whole string" "true"  "(.matches \"abc\" \"a.c\")"]
+  [".matches partial -> false" "false" "(.matches \"abcd\" \"a.c\")"]
+  [".replaceAll regex"   "\"a-b-c\"" "(.replaceAll \"a_b_c\" \"_\" \"-\")"]
+  [".replaceFirst regex" "\"a-b_c\"" "(.replaceFirst \"a_b_c\" \"_\" \"-\")"])

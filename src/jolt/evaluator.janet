@@ -198,7 +198,16 @@
         {:jolt/type :symbol
          :ns (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx))
          :name nm}))
-    form))
+    # Alias-qualified (impl/foo): resolve the alias to its target namespace so the
+    # emitted symbol resolves at the macro's USE site, which has no such alias
+    # (jolt-9av). Matches Clojure's syntax-quote. A real ns name (not an alias)
+    # has no entry and is left as written.
+    (let [cur (ctx-find-ns ctx (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx)))
+          target (and cur (or (ns-alias-lookup cur (form :ns))
+                              (ns-import-lookup cur (form :ns))))]
+      (if target
+        {:jolt/type :symbol :ns target :name (form :name)}
+        form))))
 
 (defn- d-realize
   "Realize a lazy-seq to an array for positional destructuring / splicing; pass
@@ -526,7 +535,9 @@
 # future doesn't block the parent.
 (def- thread-statics
   {"sleep" (fn [ms] (ev/sleep (/ ms 1000)) nil)
-   "yield" (fn [] (ev/sleep 0) nil)})
+   "yield" (fn [] (ev/sleep 0) nil)
+   "interrupted" (fn [] false)
+   "currentThread" (fn [] @{:jolt/type :jolt/thread :id "main"})})
 
 # System statics (wall/monotonic clocks — what portable timing code uses).
 (def- system-statics
@@ -583,7 +594,12 @@
                  (def n (scan-number (string/trim (string s)) (or radix 10)))
                  (if (and n (= n (math/floor n)))
                    n
-                   (error (string "NumberFormatException: For input string: \"" s "\""))))})
+                   (error (string "NumberFormatException: For input string: \"" s "\""))))
+   "valueOf" (fn [s &opt radix]
+               (def n (scan-number (string/trim (string s)) (or radix 10)))
+               (if (and n (= n (math/floor n)))
+                 n
+                 (error (string "NumberFormatException: For input string: \"" s "\""))))})
 
 # Pluggable host-class shims (java.time etc. register here at module load):
 #   class-statics: "ClassName" -> {"member" value-or-fn}   (Foo/bar resolution)
@@ -611,7 +627,11 @@
     "StringReader" "java.io.StringReader" "StringWriter" "java.io.StringWriter"
     "StringBuilder" "java.lang.StringBuilder"
     "StringTokenizer" "java.util.StringTokenizer"
-    "Charset" "java.nio.charset.Charset" "Base64" "java.util.Base64"})
+    "Charset" "java.nio.charset.Charset" "Base64" "java.util.Base64"
+    "Exception" "java.lang.Exception"
+    "IllegalArgumentException" "java.lang.IllegalArgumentException"
+    "InterruptedException" "java.lang.InterruptedException"
+    "Throwable" "java.lang.Throwable"})
 (defn- class-value-for
   "The value a class-name symbol evaluates to: its canonical name string."
   [nm]
@@ -698,7 +718,10 @@
    "endsWith"    (fn [s p] (string/has-suffix? p s))
    "contains"    (fn [s sub] (not (nil? (string/find (str-needle sub) s))))
    "concat"      (fn [s o] (string s o))
-   "replace"     (fn [s a b] (string/replace-all (str-needle a) (str-needle b) s))
+    "replace"     (fn [s a b] (string/replace-all (str-needle a) (str-needle b) s))
+    "replaceAll"  (fn [s regex replacement] (re-replace-all (re-pattern regex) s replacement))
+    "replaceFirst" (fn [s regex replacement] (re-replace-first (re-pattern regex) s replacement))
+    "matches"     (fn [s regex] (not (nil? (re-matches (re-pattern regex) s))))
    "compareTo"   (fn [s o] (cond (< s o) -1 (> s o) 1 0))
    "equalsIgnoreCase" (fn [s o] (= (string/ascii-lower s) (string/ascii-lower (string o))))})
 
@@ -785,7 +808,9 @@
                       # No implicit Janet fallback (Stage 3): an unresolved
                       # Clojure symbol is an error. Host access is the explicit
                       # janet/ prefix above.
-                      (error (string "Unable to resolve symbol: " name " in this context"))))))))))))))))))
+                      (if (or (in class-ctors name) (get class-canonical-names name))
+                        (class-value-for name)
+                        (error (string "Unable to resolve symbol: " name " in this context")))))))))))))))))))
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.
   Returns {:fixed [names...] :rest name-or-nil :all [names...]}"
@@ -1201,6 +1226,13 @@
         (ns-unmap ns (if (and (struct? sym) (= :symbol (sym :jolt/type))) (sym :name) (string sym))))))
   nil)
 
+# Multimethod value -> its var. methods/get-method take the multimethod VALUE
+# (Clojure semantics) and recover the var (hence :jolt/methods) through this,
+# which works from a compiled fn in any namespace — resolving the symbol at call
+# time in the current ns did not (a bare multifn ref in its defining ns saw an
+# empty table once defmethods lived in other namespaces; migratus hit this).
+(def multi-registry @{})
+
 (defn defmulti-setup
   "(defmulti name dispatch & opts) — intern a multimethod var. A fn; name arrives
   quoted, dispatch + opts (:default key, :hierarchy h) arrive evaluated. The
@@ -1296,6 +1328,7 @@
   (put v :jolt/dispatch-cache dispatch-cache)
   (put v :jolt/default default-key)
   (when hierarchy (put v :jolt/hierarchy hierarchy))
+  (put multi-registry mm-fn v)
   (var-get v))
 
 (defn defmethod-setup
@@ -1305,9 +1338,11 @@
   [ctx mm-sym dispatch-val impl]
   (def mm-var
     (or (resolve-var ctx @{} mm-sym)
-        (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
-          (def v (ns-intern ns (mm-sym :name) (fn [& args] nil)))
+        (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))
+              stub (fn [& args] nil)]
+          (def v (ns-intern ns (mm-sym :name) stub))
           (put v :jolt/methods @{})
+          (put multi-registry stub v)
           v)))
   (def methods (or (get mm-var :jolt/methods) (let [m @{}] (put mm-var :jolt/methods m) m)))
   # nil is a legal dispatch value (ring's body-string keys a method on it);
@@ -1339,6 +1374,12 @@
   expand to calls of these)."
   [ctx]
   (def core (ctx-find-ns ctx "clojure.core"))
+  # current-ns get/set for compiled code (emit-try restores the ns on a caught
+  # throw — an interpreted fn that throws leaves ctx-current-ns set to its
+  # defining ns, since it can't restore on unwind; the interpreted try already
+  # repairs this, the compiled try did not, leaking the ns past a catch).
+  (ns-intern core "__current-ns" (fn [] (ctx-current-ns ctx)))
+  (ns-intern core "__set-current-ns!" (fn [ns-sym] (ctx-set-current-ns ctx ns-sym) nil))
   (ns-intern core "protocol-dispatch"
     (fn [proto-name method-name obj rest-args]
       (protocol-dispatch-impl ctx proto-name method-name obj rest-args)))
@@ -1474,8 +1515,10 @@
       found
       (when auto-create?
         (def ns (ctx-find-ns ctx (ctx-current-ns ctx)))
-        (def nv (ns-intern ns (mm-sym :name) (fn [& args] nil)))
+        (def stub (fn [& args] nil))
+        (def nv (ns-intern ns (mm-sym :name) stub))
         (put nv :jolt/methods @{})
+        (put multi-registry stub nv)
         nv))))
   (def clear-dispatch-cache! (fn [mm-var]
     (let [dc (get mm-var :jolt/dispatch-cache)]
@@ -1514,16 +1557,21 @@
     (fn [mm-sym]
       (def mm-var (mm-var-of mm-sym false))
       (or (and mm-var (get mm-var :jolt/prefers)) {})))
+  # methods/get-method receive the multimethod VALUE (Clojure semantics): map it
+  # back to its var via multi-registry. A symbol arg still works (mm-var-of), for
+  # any caller that passes one.
+  (def mm-var-of-val (fn [mm]
+    (if (function? mm) (get multi-registry mm) (mm-var-of mm false))))
   (ns-intern core "get-method-setup"
-    (fn [mm-sym dval]
+    (fn [mm dval]
       (def dval (if (nil? dval) :jolt/nil-sentinel dval))
-      (def mm-var (mm-var-of mm-sym false))
+      (def mm-var (mm-var-of-val mm))
       (when mm-var
         (let [methods (get mm-var :jolt/methods)]
           (or (get methods dval) (get methods :default))))))
   (ns-intern core "methods-setup"
-    (fn [mm-sym]
-      (def mm-var (mm-var-of mm-sym false))
+    (fn [mm]
+      (def mm-var (mm-var-of-val mm))
       (when mm-var
         # a jolt map, not the live host table (and phm so vector dispatch
         # values look up by value, same reason build-eval-map promotes)
@@ -1587,6 +1635,15 @@
           "DateTimeFormatter" (and (table? val) (= :jolt/dt-formatter (get val :jolt/type)))
           "URL" (and (table? val) (= :jolt/url (get val :jolt/type)))
           "java.net.URL" (and (table? val) (= :jolt/url (get val :jolt/type)))
+          # next.jdbc host shim: a wrapped jdbc.core connection (core.janet).
+          # migratus's do-commands only runs SQL through its (instance? Connection)
+          # branch, so the wrapped conn must answer true here.
+          "Connection" (and (table? val) (= :jolt/jdbc-conn (get val :jolt/type)))
+          "java.sql.Connection" (and (table? val) (= :jolt/jdbc-conn (get val :jolt/type)))
+          # java.io.File model (jolt-hjw): io/file and (File. …) build :jolt/file,
+          # so migratus's (instance? File migration-dir) takes the filesystem path.
+          "File" (and (table? val) (= :jolt/file (get val :jolt/type)))
+          "java.io.File" (and (table? val) (= :jolt/file (get val :jolt/type)))
           # JVM char[] class — (Class/forName "[C"); jolt char arrays are Janet
           # arrays of char structs
           "[C" (and (array? val)
@@ -1797,28 +1854,59 @@
                   (put v :dynamic true))
                 # def returns the var (Clojure semantics); REPL prints #'ns/name
                 v)))
-    "defmacro" (let [name-sym (in form 1)
-                     rest-form (tuple/slice form 2)
-                     # optional docstring
-                     has-doc? (and (> (length rest-form) 0) (string? (first rest-form)))
-                     args-form (if has-doc? (in rest-form 1) (first rest-form))
-                     body (tuple/slice rest-form (if has-doc? 2 1))
-                     param-info (parse-params args-form)
-                     fixed-pats (param-info :fixed)
-                     rest-pat (param-info :rest)
+    "defmacro" (let [# ^{:map} metadata on the name reads as a (with-meta sym …)
+                     # form (jolt-8w2); unwrap to the bare symbol like def does.
+                     name-sym (unwrap-meta-name (in form 1))
+                     after-name (tuple/slice form 2)
+                     # Skip an optional leading docstring (string) then an optional
+                     # attr-map (a struct that is not a symbol — a map literal reads
+                     # as a struct), matching defn. Real macros use both, e.g.
+                     # (defmacro info "doc" {:arglists '(...)} [& args] …).
+                     a1 (if (and (> (length after-name) 0) (string? (first after-name)))
+                          (tuple/slice after-name 1) after-name)
+                     after-meta (if (and (> (length a1) 0)
+                                         (struct? (first a1))
+                                         (not= :symbol (get (first a1) :jolt/type)))
+                                  (tuple/slice a1 1) a1)
+                     # What remains is either a params VECTOR (tuple) + body, or one
+                     # or more arity CLAUSES (each a list, i.e. a janet array). Build
+                     # a uniform arity list [{:params … :body …} …].
+                     multi? (and (> (length after-meta) 0) (array? (first after-meta)))
+                     arities (if multi?
+                               (map (fn [cl] {:params (first cl) :body (tuple/slice cl 1)})
+                                    after-meta)
+                               @[{:params (first after-meta) :body (tuple/slice after-meta 1)}])
                      defining-ns (ctx-current-ns ctx)]
                  (def interp-fn (fn [& macro-args]
+                   (def n (length macro-args))
+                   # Pick the arity: an exact fixed-count match wins; otherwise the
+                   # first variadic arity that accepts n args (Clojure fn dispatch).
+                   (var chosen nil)
+                   (each ar arities
+                     (def pi (parse-params (ar :params)))
+                     (when (and (nil? chosen) (not (pi :rest)) (= n (length (pi :fixed))))
+                       (set chosen [pi (ar :body)])))
+                   (when (nil? chosen)
+                     (each ar arities
+                       (def pi (parse-params (ar :params)))
+                       (when (and (nil? chosen) (pi :rest) (>= n (length (pi :fixed))))
+                         (set chosen [pi (ar :body)]))))
+                   (when (nil? chosen)
+                     (error (string "no matching arity for macro " (name-sym :name)
+                                    " (" n " args)")))
+                   (def pi (chosen 0))
+                   (def body (chosen 1))
                    (var new-bindings @{})
                    (table/setproto new-bindings bindings)
                    (put new-bindings "&env" @{})  # implicit &env for macro bodies (table — nil-safe)
                    (var i 0)
                    # Destructure macro params (like fn), so [& [a & more :as all]]
                    # and {:keys …} rest forms work in macro arglists.
-                   (each pat fixed-pats
+                   (each pat (pi :fixed)
                      (destructure-bind ctx new-bindings pat (macro-args i))
                      (++ i))
-                   (when rest-pat
-                     (destructure-bind ctx new-bindings rest-pat (rest-args-val macro-args i)))
+                   (when (pi :rest)
+                     (destructure-bind ctx new-bindings (pi :rest) (rest-args-val macro-args i)))
                    # Use defining namespace for symbol resolution
                    (def saved-ns (ctx-current-ns ctx))
                    (ctx-set-current-ns ctx defining-ns)
@@ -1831,12 +1919,20 @@
                      (set result (eval-form ctx new-bindings bf)))
                    (ctx-set-current-ns ctx saved-ns)
                    result))
-                 # Prefer a COMPILED expander (native-speed expansion, zero runtime
-                 # cost). Skip when the body uses &env/&form (the compiled fn has no
-                 # such params) — those fall back to the interpreted closure.
-                 (def uses-env (or (form-uses-sym? body "&env") (form-uses-sym? body "&form")))
+                 # A COMPILED expander (native-speed) is only built for the
+                 # single-arity case (the compile hook + recompile path take one
+                 # [args body]); multi-arity macros use the interpreted expander.
+                 (def single? (= 1 (length arities)))
+                 (def args-form (and single? ((first arities) :params)))
+                 (def body (and single? ((first arities) :body)))
+                 (def uses-env (do (var u false)
+                                   (each ar arities
+                                     (when (or (form-uses-sym? (ar :body) "&env")
+                                               (form-uses-sym? (ar :body) "&form"))
+                                       (set u true)))
+                                   u))
                  (def compiled-fn
-                   (when (and macro-compile-hook (not uses-env))
+                   (when (and macro-compile-hook single? (not uses-env))
                      (macro-compile-hook ctx args-form body)))
                  (def macro-fn (or compiled-fn interp-fn))
                   (let [ns-name (ctx-current-ns ctx)
@@ -1847,8 +1943,10 @@
                    # compile it once the analyzer is alive (staged bootstrap): a
                    # macro defined WHILE the analyzer is still being built gets an
                    # interpreted closure now, a compiled expander later. uses-env
-                   # macros stay interpreted (the compiled fn* has no &env/&form).
-                   (put v :macro-src @[args-form body])
+                   # macros stay interpreted (the compiled fn* has no &env/&form);
+                   # multi-arity macros keep the interpreted dispatch (no single
+                   # [args body] to recompile).
+                   (when single? (put v :macro-src @[args-form body]))
                    (put v :macro-uses-env uses-env)
                    (when compiled-fn (put v :macro-compiled true))
                    # A (re)defined macro invalidates any cached expansions.
@@ -2065,9 +2163,20 @@
                   (apply loop-fn args))))
     "throw" (let [val (eval-form ctx bindings (in form 1))]
               (error {:jolt/type :jolt/exception :value val}))
-    "try" (let [body-form (in form 1)
-                clauses (tuple/slice form 2)
-                n (length clauses)
+    "try" (let [# The body is EVERY form between `try` and the first catch/finally
+                # clause (not just form 1 — a multi-form body before the clauses,
+                # e.g. (try (foo) (bar) (catch …)), dropped all but the first).
+                forms (tuple/slice form 1)
+                clause? (fn [c]
+                          (and (array? c) (> (length c) 0)
+                               (struct? (first c)) (= :symbol ((first c) :jolt/type))
+                               (or (= "catch" ((first c) :name))
+                                   (= "finally" ((first c) :name)))))
+                split (do (var k 0)
+                          (while (and (< k (length forms)) (not (clause? (in forms k)))) (++ k))
+                          k)
+                body-forms (tuple/slice forms 0 split)
+                clauses (tuple/slice forms split)
                 # current-ns is dynamic state. The interpreter rebinds it to a
                 # fn's defining ns while that fn runs and restores it on normal
                 # return, but a fn that THROWS unwinds past its own restore — so
@@ -2078,52 +2187,49 @@
             (var catch-sym nil)
             (var catch-body nil)
             (var finally-body nil)
-            (var i 0)
-            (while (< i n)
-              (let [clause (in clauses i)]
-                (if (and (array? clause) (> (length clause) 0))
-                  (let [head (first clause)]
-                    (if (and (struct? head) (= :symbol (head :jolt/type)))
-                      (match (head :name)
-                        "catch" (do
-                          (set catch-sym (in clause 2))
-                          (set catch-body (tuple/slice clause 3)))
-                        "finally" (set finally-body (tuple/slice clause 1)))))))
-              (++ i))
-            (defn run-finally [f]
-              (when f
-                (each fb f (eval-form ctx bindings fb))))
-            (if catch-sym
-              (try
-                (eval-form ctx bindings body-form)
-                ([err]
-                 (ctx-set-current-ns ctx try-ns)
-                 (var new-bindings @{})
-                 (table/setproto new-bindings bindings)
-                 # bind the originally-thrown value (unwrap the :jolt/exception
-                 # envelope) so (catch ... e (throw e)) rethrows the same value
-                 # rather than nesting another envelope
-                 (def caught
-                   (if (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
-                     (get err :value)
-                     err))
-                 (put new-bindings (catch-sym :name) caught)
-                 (var result nil)
-                 (each cb catch-body
-                   (set result (eval-form ctx new-bindings cb)))
-                 (run-finally finally-body)
-                 result))
-              (if finally-body
+            (each clause clauses
+              (when (and (array? clause) (> (length clause) 0))
+                (let [head (first clause)]
+                  (when (and (struct? head) (= :symbol (head :jolt/type)))
+                    (match (head :name)
+                      "catch" (do
+                        (set catch-sym (in clause 2))
+                        (set catch-body (tuple/slice clause 3)))
+                      "finally" (set finally-body (tuple/slice clause 1)))))))
+            (defn eval-body []
+              (var result nil)
+              (each bf body-forms (set result (eval-form ctx bindings bf)))
+              result)
+            (defn run-finally []
+              (when finally-body
+                (each fb finally-body (eval-form ctx bindings fb))))
+            (defn run-protected []
+              (if catch-sym
                 (try
-                  (do
-                    (def result (eval-form ctx bindings body-form))
-                    (run-finally finally-body)
-                    result)
+                  (eval-body)
                   ([err]
                    (ctx-set-current-ns ctx try-ns)
-                   (run-finally finally-body)
-                   (error err)))
-                (eval-form ctx bindings body-form))))
+                   (var new-bindings @{})
+                   (table/setproto new-bindings bindings)
+                   # bind the originally-thrown value (unwrap the :jolt/exception
+                   # envelope) so (catch … e (throw e)) rethrows the same value
+                   # rather than nesting another envelope
+                   (def caught
+                     (if (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
+                       (get err :value)
+                       err))
+                   (put new-bindings (catch-sym :name) caught)
+                   (var result nil)
+                   (each cb catch-body
+                     (set result (eval-form ctx new-bindings cb)))
+                   result))
+                # no catch: restore the ns on an unwinding error, then re-raise
+                (try (eval-body) ([err] (ctx-set-current-ns ctx try-ns) (error err)))))
+            # finally ALWAYS runs (success, caught error, or rethrow) — defer so it
+            # fires even if a catch body throws. Without a finally, just run.
+            (if finally-body
+              (defer (run-finally) (run-protected))
+              (run-protected)))
     "set!" (let [target (in form 1)
                   val (eval-form ctx bindings (in form 2))]
               # Handle (set! (.-field obj) val) — .-field shorthand as a list
@@ -2365,8 +2471,11 @@
       (if (= :jolt/char (form :jolt/type))
         form
       # a UUID/inst value flowing back through eval (macro expansion, eval of a
-      # read form) is a self-evaluating literal, like chars.
-      (if (or (= :jolt/uuid (form :jolt/type)) (= :jolt/inst (form :jolt/type)))
+      # read form) is a self-evaluating literal, like chars. A namespace object
+      # does too: `~*ns*` in a syntax-quote (clojure.tools.logging) splices the
+      # live ns into the expansion.
+      (if (or (= :jolt/uuid (form :jolt/type)) (= :jolt/inst (form :jolt/type))
+              (= :jolt/namespace (form :jolt/type)))
         form
       (if (= :jolt/set (form :jolt/type))
         # evaluate each element (set literals like #{(inc 1)} must compute)

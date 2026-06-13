@@ -135,3 +135,17 @@
            (let [c (str ch)]
              (if (or (= c "\\") (= c "$")) (str "\\" c) c)))
          (seq replacement))))
+
+;; Ported from clojure.string/trim-newline (CharSequence interop replaced with
+;; portable count/subs). Removes all trailing \n or \r characters.
+(defn trim-newline
+  "Removes all trailing newline \\n or return \\r characters from
+  string.  Similar to Perl's chomp."
+  [s]
+  (loop [index (count s)]
+    (if (zero? index)
+      ""
+      (let [c (subs s (dec index) index)]
+        (if (or (= c "\n") (= c "\r"))
+          (recur (dec index))
+          (subs s 0 index))))))

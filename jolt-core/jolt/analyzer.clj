@@ -182,9 +182,16 @@
             (when (< (count items) 3)
               (uncompilable "def with no init"))
             (let [nm (form-sym-name name-sym)
-                  cur (compile-ns ctx)]
+                  cur (compile-ns ctx)
+                  ;; (def name docstring value): docstring is form 2, value form 3.
+                  ;; Matches the interpreter; without this the docstring was taken
+                  ;; as the value and the real init dropped (jolt-6ym).
+                  has-doc (and (> (count items) 3) (string? (nth items 2)))
+                  val-form (nth items (if has-doc 3 2))
+                  base-meta (or (form-sym-meta name-sym) {})
+                  node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
               (host-intern! ctx cur nm)
-              (def-node cur nm (analyze ctx (nth items 2) env) (form-sym-meta name-sym))))
+              (def-node cur nm (analyze ctx val-form env) node-meta)))
     "let*" (let [bvec (vec (form-vec-items (nth items 1)))
                  r (analyze-bindings ctx bvec env)]
              (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))

@@ -54,3 +54,17 @@
    "(do (defmulti pm5 identity) (defmethod pm5 :a [x] 1) (defmethod pm5 :b [x] 2) (prefer-method pm5 :a :b) (contains? (get (prefers pm5) :a) :b))"]
   ["exact match needs no preference" ":exact"
    "(do (derive :t/sq :t/rect) (defmulti pm6 identity) (defmethod pm6 :t/sq [x] :exact) (defmethod pm6 :t/rect [x] :parent) (pm6 :t/sq))"])
+
+# defmulti drops a leading docstring/attr-map (jolt-es4 — it used to be taken as
+# the dispatch fn). methods/get-method take the multimethod VALUE and recover
+# the table, so a bare multifn ref works even when defmethods live elsewhere
+# (jolt-9pu).
+(defspec "multimethods / docstring & value-based table ops"
+  ["defmulti docstring"   "\"A\""
+   "(do (defmulti gd \"the dispatcher\" identity) (defmethod gd :a [_] \"A\") (gd :a))"]
+  ["defmulti doc+default" "\"d\""
+   "(do (defmulti gx \"doc\" identity) (defmethod gx :default [_] \"d\") (gx :anything))"]
+  ["methods on value"     "2"
+   "(do (defmulti gm identity) (defmethod gm 1 [_] :one) (defmethod gm 2 [_] :two) (count (methods gm)))"]
+  ["get-method on value"  "true"
+   "(do (defmulti gg identity) (defmethod gg :a [_] :x) (fn? (get-method gg :a)))"])

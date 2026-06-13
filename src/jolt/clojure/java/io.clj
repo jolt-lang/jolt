@@ -6,11 +6,13 @@
 ; …) won't work, but file/reader/writer/resource/copy/slurp do.
 
 (defn file
-  "A file path. With a parent and child, joins them with '/'."
-  ([path] (str path))
-  ([parent child] (str parent "/" child)))
+  "A java.io.File. With a parent and child, joins them with '/'. Returns a
+  :jolt/file value (instance? File true) with the File method surface; str/slurp
+  and io/reader coerce it back to its path."
+  ([path] (__make-file path))
+  ([parent child] (__make-file parent child)))
 
-(defn as-file [x] (str x))
+(defn as-file [x] (if (__file? x) x (__make-file x)))
 
 (defn reader [x]
   (cond

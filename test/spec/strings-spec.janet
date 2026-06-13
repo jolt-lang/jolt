@@ -62,3 +62,11 @@
   ["get out of range nil"  "nil"   "(get \"abc\" 9)"]
   ["get negative nil"      "nil"   "(get \"abc\" -1)"]
   ["get default honored"   ":none" "(get \"abc\" 9 :none)"])
+
+# clojure.string/trim-newline (ported from clojure.string): strips trailing \n/\r.
+(defspec "clojure.string / trim-newline"
+  ["trailing newline"   "\"x\""  "(do (require (quote [clojure.string :as s])) (s/trim-newline \"x\\n\"))"]
+  ["trailing \\r\\n"      "\"x\""  "(do (require (quote [clojure.string :as s])) (s/trim-newline \"x\\r\\n\"))"]
+  ["no trailing"        "\"ab\"" "(do (require (quote [clojure.string :as s])) (s/trim-newline \"ab\"))"]
+  ["only newlines"      "\"\""   "(do (require (quote [clojure.string :as s])) (s/trim-newline \"\\n\\n\"))"]
+  ["interior kept"      "\"a\\nb\"" "(do (require (quote [clojure.string :as s])) (s/trim-newline \"a\\nb\\n\"))"])

@@ -21,8 +21,15 @@
 ;; clojure.core fns) so they compile as plain invokes. name/mm are passed quoted;
 ;; the dispatch fn, options, and dispatch value evaluate normally, and the method
 ;; body becomes a compiled (fn …).
-(defmacro defmulti [name dispatch & opts]
-  `(defmulti-setup (quote ~name) ~dispatch ~@opts))
+;; Clojure allows (defmulti name docstring? attr-map? dispatch-fn & options);
+;; drop a leading docstring and/or attr-map so the dispatch fn isn't mistaken for
+;; one (migratus's multimethods carry docstrings).
+(defmacro defmulti [name & args]
+  (let [args (if (string? (first args)) (rest args) args)
+        args (if (and (map? (first args)) (not (symbol? (first args)))) (rest args) args)
+        dispatch (first args)
+        opts (rest args)]
+    `(defmulti-setup (quote ~name) ~dispatch ~@opts)))
 
 (defmacro defmethod [mm dispatch-val & fn-tail]
   `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)))
@@ -39,11 +46,14 @@
 (defmacro remove-all-methods [mm]
   `(remove-all-methods-setup (quote ~mm)))
 
+;; methods/get-method take the multimethod VALUE (Clojure semantics); the setup
+;; maps it back to its var via the registry, so a bare multifn ref works from a
+;; compiled fn in any namespace (jolt multimethod table-visibility fix).
 (defmacro get-method [mm dval]
-  `(get-method-setup (quote ~mm) ~dval))
+  `(get-method-setup ~mm ~dval))
 
 (defmacro methods [mm]
-  `(methods-setup (quote ~mm)))
+  `(methods-setup ~mm))
 
 ;; prefers reads the store off the VAR (the multifn value can't carry it) —
 ;; same symbol-passing shape as the other multimethod table ops.
