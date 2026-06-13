@@ -1345,6 +1345,12 @@
   expand to calls of these)."
   [ctx]
   (def core (ctx-find-ns ctx "clojure.core"))
+  # current-ns get/set for compiled code (emit-try restores the ns on a caught
+  # throw — an interpreted fn that throws leaves ctx-current-ns set to its
+  # defining ns, since it can't restore on unwind; the interpreted try already
+  # repairs this, the compiled try did not, leaking the ns past a catch).
+  (ns-intern core "__current-ns" (fn [] (ctx-current-ns ctx)))
+  (ns-intern core "__set-current-ns!" (fn [ns-sym] (ctx-set-current-ns ctx ns-sym) nil))
   (ns-intern core "protocol-dispatch"
     (fn [proto-name method-name obj rest-args]
       (protocol-dispatch-impl ctx proto-name method-name obj rest-args)))
@@ -2098,9 +2104,20 @@
                   (apply loop-fn args))))
     "throw" (let [val (eval-form ctx bindings (in form 1))]
               (error {:jolt/type :jolt/exception :value val}))
-    "try" (let [body-form (in form 1)
-                clauses (tuple/slice form 2)
-                n (length clauses)
+    "try" (let [# The body is EVERY form between `try` and the first catch/finally
+                # clause (not just form 1 — a multi-form body before the clauses,
+                # e.g. (try (foo) (bar) (catch …)), dropped all but the first).
+                forms (tuple/slice form 1)
+                clause? (fn [c]
+                          (and (array? c) (> (length c) 0)
+                               (struct? (first c)) (= :symbol ((first c) :jolt/type))
+                               (or (= "catch" ((first c) :name))
+                                   (= "finally" ((first c) :name)))))
+                split (do (var k 0)
+                          (while (and (< k (length forms)) (not (clause? (in forms k)))) (++ k))
+                          k)
+                body-forms (tuple/slice forms 0 split)
+                clauses (tuple/slice forms split)
                 # current-ns is dynamic state. The interpreter rebinds it to a
                 # fn's defining ns while that fn runs and restores it on normal
                 # return, but a fn that THROWS unwinds past its own restore — so
@@ -2111,52 +2128,49 @@
             (var catch-sym nil)
             (var catch-body nil)
             (var finally-body nil)
-            (var i 0)
-            (while (< i n)
-              (let [clause (in clauses i)]
-                (if (and (array? clause) (> (length clause) 0))
-                  (let [head (first clause)]
-                    (if (and (struct? head) (= :symbol (head :jolt/type)))
-                      (match (head :name)
-                        "catch" (do
-                          (set catch-sym (in clause 2))
-                          (set catch-body (tuple/slice clause 3)))
-                        "finally" (set finally-body (tuple/slice clause 1)))))))
-              (++ i))
-            (defn run-finally [f]
-              (when f
-                (each fb f (eval-form ctx bindings fb))))
-            (if catch-sym
-              (try
-                (eval-form ctx bindings body-form)
-                ([err]
-                 (ctx-set-current-ns ctx try-ns)
-                 (var new-bindings @{})
-                 (table/setproto new-bindings bindings)
-                 # bind the originally-thrown value (unwrap the :jolt/exception
-                 # envelope) so (catch ... e (throw e)) rethrows the same value
-                 # rather than nesting another envelope
-                 (def caught
-                   (if (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
-                     (get err :value)
-                     err))
-                 (put new-bindings (catch-sym :name) caught)
-                 (var result nil)
-                 (each cb catch-body
-                   (set result (eval-form ctx new-bindings cb)))
-                 (run-finally finally-body)
-                 result))
-              (if finally-body
+            (each clause clauses
+              (when (and (array? clause) (> (length clause) 0))
+                (let [head (first clause)]
+                  (when (and (struct? head) (= :symbol (head :jolt/type)))
+                    (match (head :name)
+                      "catch" (do
+                        (set catch-sym (in clause 2))
+                        (set catch-body (tuple/slice clause 3)))
+                      "finally" (set finally-body (tuple/slice clause 1)))))))
+            (defn eval-body []
+              (var result nil)
+              (each bf body-forms (set result (eval-form ctx bindings bf)))
+              result)
+            (defn run-finally []
+              (when finally-body
+                (each fb finally-body (eval-form ctx bindings fb))))
+            (defn run-protected []
+              (if catch-sym
                 (try
-                  (do
-                    (def result (eval-form ctx bindings body-form))
-                    (run-finally finally-body)
-                    result)
+                  (eval-body)
                   ([err]
                    (ctx-set-current-ns ctx try-ns)
-                   (run-finally finally-body)
-                   (error err)))
-                (eval-form ctx bindings body-form))))
+                   (var new-bindings @{})
+                   (table/setproto new-bindings bindings)
+                   # bind the originally-thrown value (unwrap the :jolt/exception
+                   # envelope) so (catch … e (throw e)) rethrows the same value
+                   # rather than nesting another envelope
+                   (def caught
+                     (if (and (or (table? err) (struct? err)) (= :jolt/exception (get err :jolt/type)))
+                       (get err :value)
+                       err))
+                   (put new-bindings (catch-sym :name) caught)
+                   (var result nil)
+                   (each cb catch-body
+                     (set result (eval-form ctx new-bindings cb)))
+                   result))
+                # no catch: restore the ns on an unwinding error, then re-raise
+                (try (eval-body) ([err] (ctx-set-current-ns ctx try-ns) (error err)))))
+            # finally ALWAYS runs (success, caught error, or rethrow) — defer so it
+            # fires even if a catch body throws. Without a finally, just run.
+            (if finally-body
+              (defer (run-finally) (run-protected))
+              (run-protected)))
     "set!" (let [target (in form 1)
                   val (eval-form ctx bindings (in form 2))]
               # Handle (set! (.-field obj) val) — .-field shorthand as a list

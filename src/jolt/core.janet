@@ -1747,7 +1747,9 @@
 (defn core-jdbc-conn-raw [x]
   (if (and (table? x) (= :jolt/jdbc-conn (get x :jolt/type))) (get x :raw) x))
 (defn core-jdbc-make-stmt [w]
-  @{:jolt/type :jolt/jdbc-stmt :exec (get w :exec) :cmds @[]})
+  # :close lets with-open close the statement (core-close-resource calls :close);
+  # nothing to release — executeBatch already ran the commands.
+  @{:jolt/type :jolt/jdbc-stmt :exec (get w :exec) :cmds @[] :close (fn [] nil)})
 
 # java.io.File model (jolt-hjw). io/file and (File. …) build a tagged :jolt/file
 # value so (instance? File x) works and migratus's File-vs-jar branching takes
