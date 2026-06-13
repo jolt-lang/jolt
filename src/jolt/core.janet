@@ -1724,6 +1724,26 @@
 # the __write / __pr-str1 host seams; str-render-one stays for core-str.
 (defn core-write [s] (prin s) nil)
 
+(defn core-eprint [s] (eprint s) nil)
+(defn core-eprintf [fmt & args] (eprintf fmt ;args) nil)
+
+# next.jdbc host shims (the db library's next.jdbc compat layer builds on these).
+# A connection is a tagged table wrapping a jdbc.core conn (:raw) plus clj
+# callbacks: :exec runs one SQL string in the transaction (so the janet-side
+# Statement.executeBatch can run SQL without a janet->clj call), :close closes
+# the underlying conn, :product is the JDBC database product name. instance?
+# Connection (evaluator) and the :jolt/jdbc-conn tagged methods (javatime) key
+# off this shape.
+(defn core-jdbc-wrap-conn [raw exec closef product]
+  @{:jolt/type :jolt/jdbc-conn :raw raw :exec exec :close closef
+    :product product :closed @[false]})
+# Robust unwrap: a wrapped conn -> its :raw; anything else passes through (so the
+# next.jdbc fns accept either a wrapped conn or a bare jdbc.core conn/spec).
+(defn core-jdbc-conn-raw [x]
+  (if (and (table? x) (= :jolt/jdbc-conn (get x :jolt/type))) (get x :raw) x))
+(defn core-jdbc-make-stmt [w]
+  @{:jolt/type :jolt/jdbc-stmt :exec (get w :exec) :cmds @[]})
+
 # newline lives in the Clojure collection tier (core/20-coll.clj).
 
 # Clojure 1.11 string->scalar parsers: nil on malformed input, throw on a
@@ -2706,6 +2726,11 @@
     "hash-unordered-coll" core-hash-unordered-coll
     "gensym" gensym
     "__write" core-write
+    "__eprint" core-eprint
+    "__eprintf" core-eprintf
+    "__jdbc-wrap-conn" core-jdbc-wrap-conn
+    "__jdbc-conn-raw" core-jdbc-conn-raw
+    "__jdbc-make-stmt" core-jdbc-make-stmt
     "__pr-str1" core-pr-str1
     "__make-uuid" make-uuid
     "compare" core-compare

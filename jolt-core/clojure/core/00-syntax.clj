@@ -341,10 +341,14 @@
 (defmacro defn [fn-name & body]
   (let [body (if (and (seq body) (string? (first body))) (rest body) body)
         body (if (and (seq body) (map? (first body)) (not (symbol? (first body))))
-               (rest body) body)]
+               (rest body) body)
+        ;; ^{:map} metadata on the name reads as a (with-meta sym …) form, not an
+        ;; annotated symbol (jolt-8w2). def attaches the metadata, but fn needs a
+        ;; bare symbol, so unwrap it for the fn name.
+        fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))]
     ;; pass the name through to fn: the compiled fn's janet name carries it,
     ;; so stack traces read app.deep/level3 instead of a gensym (jolt-2o7.1)
-    `(def ~fn-name (fn ~fn-name ~@body))))
+    `(def ~fn-name (fn ~fn-only-name ~@body))))
 
 ;; Jolt doesn't enforce privacy, so defn- is just defn (matching how Clojure's own
 ;; defn- delegates to defn with :private metadata).

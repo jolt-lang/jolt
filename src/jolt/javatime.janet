@@ -536,7 +536,34 @@
   # Thread stub: getContextClassLoader returns a stub so migratus jar/create code
   # that walks Thread/currentThread doesn't crash.
   (register-tagged-methods! :jolt/thread
-    @{"getContextClassLoader" (fn [self] @{:jolt/type :jolt/classloader})}))
+    @{"getContextClassLoader" (fn [self] @{:jolt/type :jolt/classloader})})
+  # next.jdbc host shims (paired with the __jdbc-* builtins in core.janet and the
+  # instance? Connection case in evaluator.janet). The wrapped connection carries
+  # a clj :exec callback (run one SQL string) and a :close callback.
+  # java.sql.Timestamp: migratus builds (Timestamp. millis) for the applied
+  # column; represent it as the millis number so it stores and sorts directly.
+  (each nm ["Timestamp" "java.sql.Timestamp"]
+    (register-class-ctor! nm (fn [ms] ms)))
+  (register-tagged-methods! :jolt/jdbc-conn
+    @{"setAutoCommit" (fn [self _] self)
+      "isClosed" (fn [self] (get (get self :closed) 0))
+      "close" (fn [self]
+                (unless (get (get self :closed) 0)
+                  ((get self :close))
+                  (put (get self :closed) 0 true))
+                nil)
+      "getMetaData" (fn [self] @{:jolt/type :jolt/jdbc-meta :product (get self :product)})})
+  (register-tagged-methods! :jolt/jdbc-meta
+    @{"getDatabaseProductName" (fn [self] (get self :product))})
+  # Statement batch: addBatch accumulates SQL strings, executeBatch runs each via
+  # the connection's clj :exec callback (which executes inside the transaction).
+  (register-tagged-methods! :jolt/jdbc-stmt
+    @{"addBatch" (fn [self sql] (array/push (get self :cmds) sql) nil)
+      "executeBatch" (fn [self]
+                       (def out @[])
+                       (each c (get self :cmds) (array/push out ((get self :exec) c)))
+                       out)
+      "close" (fn [self] nil)}))
 
 (install!)
 (install-io!)

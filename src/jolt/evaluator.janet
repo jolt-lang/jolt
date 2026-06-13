@@ -1583,6 +1583,11 @@
           "DateTimeFormatter" (and (table? val) (= :jolt/dt-formatter (get val :jolt/type)))
           "URL" (and (table? val) (= :jolt/url (get val :jolt/type)))
           "java.net.URL" (and (table? val) (= :jolt/url (get val :jolt/type)))
+          # next.jdbc host shim: a wrapped jdbc.core connection (core.janet).
+          # migratus's do-commands only runs SQL through its (instance? Connection)
+          # branch, so the wrapped conn must answer true here.
+          "Connection" (and (table? val) (= :jolt/jdbc-conn (get val :jolt/type)))
+          "java.sql.Connection" (and (table? val) (= :jolt/jdbc-conn (get val :jolt/type)))
           # JVM char[] class — (Class/forName "[C"); jolt char arrays are Janet
           # arrays of char structs
           "[C" (and (array? val)
@@ -1793,12 +1798,23 @@
                   (put v :dynamic true))
                 # def returns the var (Clojure semantics); REPL prints #'ns/name
                 v)))
-    "defmacro" (let [name-sym (in form 1)
+    "defmacro" (let [# ^{:map} metadata on the name reads as a (with-meta sym …)
+                     # form (jolt-8w2); unwrap to the bare symbol like def does.
+                     name-sym (unwrap-meta-name (in form 1))
                      rest-form (tuple/slice form 2)
                      # optional docstring
                      has-doc? (and (> (length rest-form) 0) (string? (first rest-form)))
-                     args-form (if has-doc? (in rest-form 1) (first rest-form))
-                     body (tuple/slice rest-form (if has-doc? 2 1))
+                     raw-args (if has-doc? (in rest-form 1) (first rest-form))
+                     raw-body (tuple/slice rest-form (if has-doc? 2 1))
+                     # arity-clause form: (defmacro name ([params] body...)) — like
+                     # fn/defn. In a code form a vector literal is a tuple and a list
+                     # is an array, so a params vector reads as a tuple while an arity
+                     # clause reads as a list (array): unwrap its params + body. Single
+                     # arity only (what real macros use); a multi-arity macro takes the
+                     # first clause.
+                     arity-clause? (array? raw-args)
+                     args-form (if arity-clause? (first raw-args) raw-args)
+                     body (if arity-clause? (tuple/slice raw-args 1) raw-body)
                      param-info (parse-params args-form)
                      fixed-pats (param-info :fixed)
                      rest-pat (param-info :rest)
