@@ -787,14 +787,16 @@
   (def pv (unless (= "1" (os/getenv "JOLT_NO_IR_PASSES"))
             (ns-find (ctx-find-ns ctx "jolt.passes") "run-passes")))
   # Success-type checking level (RFC 0006). JOLT_TYPE_CHECK wins when set;
-  # otherwise it defaults to `warn` in direct-link builds — where the
-  # optimization inference already runs, so checking piggybacks on it for nearly
-  # free — and stays OFF for plain REPL/dev builds (no inference -> no free ride;
-  # opt in with JOLT_TYPE_CHECK there). (jolt audit)
+  # otherwise it defaults to `warn` in a direct-link build, where the inference
+  # already runs so checking piggybacks for nearly free — EXCEPT when direct-
+  # linking was auto-enabled by a casual program run (:direct-link-auto?), which
+  # shouldn't spam type warnings. Stays OFF for plain REPL/dev builds too; opt in
+  # anywhere with JOLT_TYPE_CHECK. (jolt audit)
   (def tc (os/getenv "JOLT_TYPE_CHECK"))
   (def tc-off (or (= tc "off") (= tc "0")))
   (def direct-link? (if (get (ctx :env) :inline?) true false))
-  (def level (cond tc-off nil tc tc direct-link? "warn" true nil))
+  (def auto-dl? (if (get (ctx :env) :direct-link-auto?) true false))
+  (def level (cond tc-off nil tc tc (and direct-link? (not auto-dl?)) "warn" true nil))
   (def uenv (os/getenv "JOLT_TYPE_CHECK_USER"))
   (def strict? (and uenv (not= uenv "0") (not= uenv "off") true))
   # piggyback: check DURING run-passes' inference (direct-link, the cheap path)

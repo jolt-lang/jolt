@@ -433,7 +433,10 @@
       # whole-program (jolt-t34): every unit is loaded now — run the one closed-
       # world fixpoint over all of them before -main, so cross-ns types propagate
       (when (get (ctx :env) :whole-program?)
-        (when-let [ip (get (ctx :env) :infer-program!)] (protect (ip ctx))))
+        (when-let [ip (get (ctx :env) :infer-program!)] (protect (ip ctx)))
+        # the batch pass is done — a namespace required later (inside -main) now
+        # falls back to per-ns inference instead of being deferred and never run.
+        (put (ctx :env) :infer-program-done? true))
       (load-string ctx (string "(apply " ns-name "/-main *command-line-args*)")))
     ([err fib] (report-error err fib) (os/exit 1))))
 
@@ -475,6 +478,14 @@
   (print "  uberscript OUT -m NS  Bundle NS + its required namespaces into one .clj")
   (print "  --version, version    Print the Jolt version")
   (print "  -h, --help, help      Show this help\n")
+  (print "Running a program (a file, -m/-M) direct-links and optimizes by default;")
+  (print "the repl, -e, and nrepl-server stay open so you can redefine vars.")
+  (print "Environment:")
+  (print "  JOLT_NO_DIRECT_LINK=1   keep a program run open/redefinable (no optimization)")
+  (print "  JOLT_NO_WHOLE_PROGRAM=1 direct-link but skip the cross-namespace pass")
+  (print "  JOLT_DIRECT_LINK=1      force direct-linking on (e.g. for -e)")
+  (print "  JOLT_WHOLE_PROGRAM=1    force the whole-program pass on")
+  (print "  JOLT_INTERPRET=1        run the tree-walking interpreter\n")
   (print "Dependencies (deps.edn) are handled by the separate jolt-deps tool."))
 
 (def- help-flags    {"-h" true "--help" true "help" true "-?" true})
@@ -501,25 +512,51 @@
   # nothing. Re-read it here so the env wins in the running process.
   (when-let [jf (os/getenv "JOLT_FEATURES")]
     (reader-features-set! (filter |(> (length $) 0) (string/split "," jf))))
-  # JOLT_DIRECT_LINK, same story: :direct-linking?/:inline? are baked into ctx at
-  # build time (init runs during the jpm compile). Re-read here so a running
-  # process can opt user code into direct-linking + inlining (jolt-87f, the
-  # AOT-escape-analysis passes). Core is already compiled into the image; this
-  # only affects user code compiled at runtime. Off by default — user code stays
-  # fully redefinable unless asked otherwise.
-  (when (= "1" (os/getenv "JOLT_DIRECT_LINK"))
-    (put (ctx :env) :direct-linking? true)
-    (put (ctx :env) :inline? true))
-  # Recompute the shape gates from the runtime env (the baked ctx computed them
-  # at build time, before JOLT_DIRECT_LINK/JOLT_SHAPE were set here). jolt-t34:
-  # :shapes? = shape-recs active (records), on with direct-linking; :map-shapes? =
-  # also shape generic maps (opt-in JOLT_SHAPE).
+  # Linking default depends on the run MODE. Running a PROGRAM (a file, -f, -m/-M,
+  # stdin) is a closed world — all code is loaded, then it executes to completion
+  # — so it direct-links by default: user code gets inlining + shapes + the type
+  # inference's specialization (jolt-87f). INTERACTIVE modes (repl, -e, the nREPL
+  # server) stay indirect/open so redefinition works — direct-linking would seal
+  # callers against a redef. Explicit env always wins: JOLT_NO_DIRECT_LINK forces
+  # the open path even for a program run (runtime redefinition / hot-reload),
+  # JOLT_DIRECT_LINK forces it on even for -e. Core is already compiled into the
+  # image; this only governs user code compiled at runtime.
+  (def open-mode?
+    (or (empty? argv)
+        (help-flags (argv 0)) (version-flags (argv 0))
+        (= (argv 0) "repl") (nrepl-flags (argv 0)) (eval-flags (argv 0))
+        (= (argv 0) "uberscript")))
+  (def main-entry? (and (not (empty? argv)) (main-flags (argv 0))))
+  (def dl-forced
+    (cond (os/getenv "JOLT_NO_DIRECT_LINK") :off
+          (= "1" (os/getenv "JOLT_DIRECT_LINK")) :on
+          :none))
+  (def dl (case dl-forced :off false :on true (not open-mode?)))
+  (put (ctx :env) :direct-linking? dl)
+  (put (ctx :env) :inline? dl)
+  # Mark direct-linking that was AUTO-enabled by the run mode (vs explicitly
+  # requested). The success checker (RFC 0006) rides on the inference for free,
+  # but a casual program run shouldn't spam type warnings just because it now
+  # direct-links — so the checker's default-on is suppressed in the auto case
+  # (JOLT_TYPE_CHECK still opts in). API/build callers never set this flag, so an
+  # explicit :direct-linking? there keeps the checker as before. See backend.
+  (put (ctx :env) :direct-link-auto? (and dl (= dl-forced :none)))
+  # Shape gates, recomputed from the runtime env (the baked ctx computed them at
+  # build time). :shapes? = shape-recs active (records), on with direct-linking;
+  # :map-shapes? = also shape generic maps (opt-in JOLT_SHAPE).
   (put (ctx :env) :shapes?
-    (and (get (ctx :env) :direct-linking?) (not (os/getenv "JOLT_NO_SHAPE"))))
+    (and dl (not (os/getenv "JOLT_NO_SHAPE"))))
   (put (ctx :env) :map-shapes?
     (and (os/getenv "JOLT_SHAPE") (not (os/getenv "JOLT_NO_SHAPE"))))
+  # Whole-program (closed-world cross-namespace inference) auto-enables for a
+  # -m/-M program entry under direct-linking — that's the point where every
+  # require is done and -main is about to run. JOLT_WHOLE_PROGRAM forces it on in
+  # other direct-linked modes; JOLT_NO_WHOLE_PROGRAM opts out. Namespaces required
+  # later (inside -main) fall back to per-ns inference (see loader).
   (put (ctx :env) :whole-program?
-    (and (os/getenv "JOLT_WHOLE_PROGRAM") (get (ctx :env) :direct-linking?)))
+    (and dl
+         (not (os/getenv "JOLT_NO_WHOLE_PROGRAM"))
+         (or main-entry? (os/getenv "JOLT_WHOLE_PROGRAM"))))
   (cond
     (empty? argv) (run-repl)
     (help-flags (argv 0)) (print-help)

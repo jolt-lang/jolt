@@ -163,6 +163,63 @@ wrong specialization is therefore impossible. The inter-procedural part keeps
 the closed-world (optimization-mode) assumption already adopted, which is sound
 under whole-program / source-distribution compilation.
 
+## Compilation modes and defaults
+
+Direct-linking — and the inference and specialization it enables — is the
+**default for running a program** and stays **off for interactive work**, chosen
+by the CLI run mode rather than a global opt-in flag:
+
+| mode | linking | whole-program |
+|---|---|---|
+| `-m` / `-M NS` (program entry) | direct (default) | **auto** (closed world) |
+| `FILE` / `-f` / stdin (`-`) | direct (default) | no (per-namespace) |
+| `repl`, `-e`, `nrepl-server` | indirect / open | no |
+
+A program run is a closed world — every namespace is required, then the code
+runs to completion — so it direct-links: user code gets inlining, record shapes,
+and the inference's specialization. A `-m` / `-M` entry is the exact point where
+all requires are done and `-main` is about to run, so the whole-program
+cross-namespace pass (below) runs there automatically. Interactive modes stay
+open: a REPL, `-e`, and the nREPL server must let you redefine vars — which
+direct-linking seals against — so they keep the indirect, live-deref path.
+
+Env overrides, all winning over the mode default:
+
+- `JOLT_NO_DIRECT_LINK=1` — force the open/indirect path even for a program run
+  (runtime redefinition, hot-reload, self-modifying code).
+- `JOLT_NO_WHOLE_PROGRAM=1` — keep direct-linking but skip the whole-program
+  pass (per-namespace inference only).
+- `JOLT_DIRECT_LINK=1` — force direct-linking on even in an interactive mode.
+- `JOLT_WHOLE_PROGRAM=1` — force the whole-program pass on in any direct-linked
+  mode.
+- `JOLT_NO_SHAPE=1` — disable the record/shape representation under direct-linking.
+
+What direct-linking gives up is what Clojure's `:direct-linking` and jank's
+`-Odirect-call` give up: a direct call embeds its callee, so redefining the
+callee is not seen by already-compiled callers. Whole-program additionally
+const-links stable vars (data defs, record types, `^:redef`), extending the same
+trade. That is why the interactive modes stay open and the opt-outs exist.
+
+### Cross-namespace inference
+
+Per-namespace inference (a `FILE` run, or any namespace under
+`JOLT_NO_WHOLE_PROGRAM`) types a function's parameters from the call sites it can
+see **within that namespace**. A function whose record parameter is supplied by a
+caller in *another* namespace is left `:any`, its field reads keep the guard, and
+the values derived from it widen — so a decomposed program is markedly slower
+than the same code in one namespace (measured at ~3.7× on the ray tracer split
+across five namespaces). The information exists in the program; per-namespace
+compilation just can't see a caller in a not-yet-loaded namespace. Two ways to
+supply it:
+
+1. **Whole-program** (auto for `-m` / `-M`) runs one closed-world inference
+   fixpoint over every loaded namespace before `-main`, typing each parameter
+   from its call sites wherever they live. Namespaces required later (inside
+   `-main`) fall back to per-namespace inference.
+2. **Parameter type hints** (`^RecordType`, RFC 0004) declare the type directly,
+   so it also works in the open world — REPL, library code that must be fast for
+   any caller, and hot-reloading servers — where the world cannot be closed.
+
 ## Relationship to Hindley-Milner and soft typing
 
 This is HM-shaped with two deliberate departures, which is the textbook

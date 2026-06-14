@@ -455,10 +455,13 @@
             # (a failure here must not break loading). Hook installed by the api to
             # avoid an evaluator->backend circular import.
             (when (get (ctx :env) :inline?)
-              (if (get (ctx :env) :whole-program?)
+              (if (and (get (ctx :env) :whole-program?)
+                       (not (get (ctx :env) :infer-program-done?)))
                 # whole-program (jolt-t34): defer — record the ns and run ONE
                 # fixpoint over all units later (the closed-world pass sees every
-                # caller, so cross-ns param types propagate)
+                # caller, so cross-ns param types propagate). Once that batch pass
+                # has run (infer-program-done?), a ns loaded later — a lazy require
+                # inside -main — can't join it, so fall back to per-ns inference.
                 (let [lst (or (get (ctx :env) :inferred-nses)
                               (let [a @[]] (put (ctx :env) :inferred-nses a) a))]
                   (array/push lst ns-name))

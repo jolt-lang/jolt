@@ -81,6 +81,33 @@ The same machinery covers both `(:k m)` and `(get m :k [default])` when the key
 is a constant keyword. A `get` with a variable, numeric, or string key falls
 through to `core-get` unchanged.
 
+## Record hints across namespaces, and as inference seeds
+
+A `^RecordType` hint does two things beyond dropping the lookup guard.
+
+**It carries the specific type, not just "a struct".** The guard-skip only needs
+to know the value is raw-get-safe (`:struct`), but the structural inference (RFC
+0005) wants the actual record type so a field read gets the field's type —
+`(:origin ray)` on a `^Ray ray` is a `Vec3`, not `:any`. A record hint on a
+parameter is resolved to the record's constructor key and used to **seed the
+inference's parameter type**. That is what keeps a record parameter's reads typed
+across a namespace boundary *without* whole-program inference (RFC 0005,
+"Cross-namespace inference") — the open-world counterpart to the whole-program
+pass. Hinting only the public entry point is not enough; the hint has to be on
+the function where the hot reads actually happen.
+
+**It resolves across namespaces.** A hint may name a record defined in another
+namespace, in either spelling — `^Vec3` where the type is `:refer`-ed, or
+`^v/Vec3` where the namespace is `:as`-aliased. Resolution (`record-ctor-key` in
+`src/jolt/host_iface.janet`, backed by `record-hint-ctor-key` in
+`src/jolt/evaluator.janet`) runs against the *compile* namespace and maps the
+type to its home constructor key through a constructor-value index — keyed by the
+constructor value, not a var's namespace, so a `:refer`-interned var (whose
+namespace is the referring one) still resolves home. The reader keeps a tag's
+namespace qualifier (`^v/Vec3` → `"v/Vec3"`, not `"Vec3"`) so the aliased
+spelling has something to resolve. Both `defrecord` field hints and function
+parameter hints use this resolution.
+
 ## Soundness and the checked mode
 
 An accurate hint is correctness-preserving by construction: for a struct or

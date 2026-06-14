@@ -39,7 +39,9 @@
 
 (if (not (os/stat jolt))
   (print "whole-program: SKIP (no build/jolt — run from source)")
-  (let [per-ns (run "")
+  # -m now auto-enables whole-program under direct-linking, so the per-ns
+  # baseline must explicitly opt out to exercise the per-namespace path.
+  (let [per-ns (run "JOLT_NO_WHOLE_PROGRAM=1 ")
         whole  (run "JOLT_WHOLE_PROGRAM=1 ")]
     (printf "  per-ns:        %s" per-ns)
     (printf "  whole-program: %s" whole)

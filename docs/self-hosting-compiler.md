@@ -141,7 +141,10 @@ coverage incrementally, and de-risks the self-hosting bootstrap.
 
 **Live flexibility.** Vars stay first-class cells; compiled code derefs them;
 `def` updates the root; protocol/multimethod dispatch stays dynamic. Direct
-linking is opt-in, never the default, so the REPL is always live.
+linking seals a call against redefinition, so the interactive modes — the REPL,
+`-e`, the nREPL server — always stay live (indirect). Running a *program* (a
+file, `-m`/`-M`) direct-links by default, since it's a closed world; opt back out
+with `JOLT_NO_DIRECT_LINK`. (See RFC 0005, "Compilation modes and defaults".)
 
 ## A staged path
 

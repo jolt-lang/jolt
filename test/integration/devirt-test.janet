@@ -25,7 +25,9 @@
          "           (mapv area [(->Rect 2 3) (->Circ 2)])))\n"))       # heterogeneous: [6 12]
   (def out (string dir "/out.txt"))
   (def jbin (string (os/cwd) "/" jolt))
-  (def cmd (string (if whole? "JOLT_WHOLE_PROGRAM=1 " "")
+  # -m auto-enables whole-program under direct-linking now, so the per-ns case
+  # (whole? false) must explicitly opt out to test the dispatched/per-ns path.
+  (def cmd (string (if whole? "JOLT_WHOLE_PROGRAM=1 " "JOLT_NO_WHOLE_PROGRAM=1 ")
                    "JOLT_DIRECT_LINK=1 JOLT_PATH=" dir " " jbin " -m dv > " out " 2>&1"))
   (os/execute ["sh" "-c" cmd] :p)
   (string/trimr (slurp out)))
