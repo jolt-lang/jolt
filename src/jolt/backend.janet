@@ -937,7 +937,12 @@
     :any))
 
 (defn infer-unit!
-  [ctx ns-name]
+  # ns-names-arg is one ns-name (per-namespace pass, the default) or a LIST of
+  # ns-names (whole-program pass, jolt-t34): gathering all units into ONE fixpoint
+  # propagates param types across namespace boundaries, which the per-ns pass
+  # can't (a fn's callers in another ns aren't visible when its own ns is typed).
+  [ctx ns-names-arg]
+  (def ns-names (if (indexed? ns-names-arg) ns-names-arg [ns-names-arg]))
   (def pns (ctx-find-ns ctx "jolt.passes"))
   (def f-set-rtenv (and pns (ns-find pns "set-rtenv!")))
   (def f-set-vtypes (and pns (ns-find pns "set-vtypes!")))
@@ -948,34 +953,37 @@
   (def f-set-rshapes (and pns (ns-find pns "set-record-shapes!")))   # jolt-t34
   (def f-set-mshapes (and pns (ns-find pns "set-map-shapes!")))      # jolt-t34
   (def f-get-esc (and pns (ns-find pns "collected-escapes")))
-  (def ns (ctx-find-ns ctx ns-name))
   (def report @{})
-  (when (and ns f-set-rtenv f-set-vtypes f-join f-infer-body f-reinfer f-reset-esc f-get-esc)
-    # gather single-fixed-arity fns AND non-fn defs that stashed a :def IR
+  (when (and f-set-rtenv f-set-vtypes f-join f-infer-body f-reinfer f-reset-esc f-get-esc)
+    # gather single-fixed-arity fns AND non-fn defs that stashed a :def IR, across
+    # every ns in ns-names (one ns for the per-unit pass, all for whole-program)
     (def fns @[])
     (def defs @[])
     (def by-key @{})
     (def vtypes @{})   # var VALUE types: fns -> :truthy (non-nil), defs -> inferred
-    (each nm (keys (ns :mappings))
-      (def v (get (ns :mappings) nm))
-      (when (and (table? v) (get v :infer-ir))
-        (def d (norm-node (get v :infer-ir)))
-        (def init (norm-node (d :init)))
-        (def key (string ns-name "/" nm))
-        (if (= :fn (init :op))
-          (let [ars (vview (init :arities))]
-            (when (= 1 (length ars))
-              (def ar (norm-node (in ars 0)))
-              (unless (ar :rest)
-                (def pv (vview (ar :params)))
-                (def rec @{:key key :cell v :def d :params (ar :params) :body (ar :body)
-                           :np (length pv) :pt (array/new-filled (length pv)) :ret nil})
-                (array/push fns rec)
-                (put by-key key rec)
-                # a fn value is non-nil -> :truthy (sealed root in opt mode)
-                (put vtypes key :truthy))))
-          # non-fn def: its value type is inferred from its init (jolt-d6u)
-          (array/push defs @{:key key :init (d :init) :vt nil}))))
+    (each ns-name ns-names
+      (def ns (ctx-find-ns ctx ns-name))
+      (when ns
+        (each nm (keys (ns :mappings))
+          (def v (get (ns :mappings) nm))
+          (when (and (table? v) (get v :infer-ir))
+            (def d (norm-node (get v :infer-ir)))
+            (def init (norm-node (d :init)))
+            (def key (string ns-name "/" nm))
+            (if (= :fn (init :op))
+              (let [ars (vview (init :arities))]
+                (when (= 1 (length ars))
+                  (def ar (norm-node (in ars 0)))
+                  (unless (ar :rest)
+                    (def pv (vview (ar :params)))
+                    (def rec @{:key key :cell v :def d :params (ar :params) :body (ar :body)
+                               :np (length pv) :pt (array/new-filled (length pv)) :ret nil})
+                    (array/push fns rec)
+                    (put by-key key rec)
+                    # a fn value is non-nil -> :truthy (sealed root in opt mode)
+                    (put vtypes key :truthy))))
+              # non-fn def: its value type is inferred from its init (jolt-d6u)
+              (array/push defs @{:key key :init (d :init) :vt nil}))))))
     (when (or (> (length fns) 0) (> (length defs) 0))
       ((var-get f-reset-esc))
       # jolt-t34: feed record-ctor shapes + the map-shaping flag to the inference
@@ -1070,6 +1078,19 @@
         (def def2 ((var-get f-reinfer) (f :def) ptmap))
         (protect (eval (emit-ir ctx def2) (ctx-janet-env ctx))))))
   report)
+
+(defn infer-program!
+  "Whole-program closed-world pass (jolt-t34, opt-in JOLT_WHOLE_PROGRAM): run ONE
+  inference fixpoint over every user namespace at once, so param types propagate
+  across namespace boundaries (the per-ns pass can't see a fn's callers in other
+  units). Sound only under the closed-world assumption — direct-linking, no later
+  eval/redefinition — which the flag asserts. The recorded ns list is in load
+  (topological) order; the fixpoint is order-independent but re-emit is callee-
+  first regardless."
+  [ctx]
+  (def nses (get (ctx :env) :inferred-nses))
+  (when (and nses (> (length nses) 0))
+    (infer-unit! ctx nses)))
 
 (defn ensure-macros-compiled!
   "Called once the overlay is fully loaded (api/load-core-overlay!): ensure the

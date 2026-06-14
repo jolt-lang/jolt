@@ -430,6 +430,10 @@
   (try
     (do
       (load-string ctx (string "(require '[" ns-name "])"))
+      # whole-program (jolt-t34): every unit is loaded now — run the one closed-
+      # world fixpoint over all of them before -main, so cross-ns types propagate
+      (when (get (ctx :env) :whole-program?)
+        (when-let [ip (get (ctx :env) :infer-program!)] (protect (ip ctx))))
       (load-string ctx (string "(apply " ns-name "/-main *command-line-args*)")))
     ([err fib] (report-error err fib) (os/exit 1))))
 
@@ -514,6 +518,8 @@
     (and (get (ctx :env) :direct-linking?) (not (os/getenv "JOLT_NO_SHAPE"))))
   (put (ctx :env) :map-shapes?
     (and (os/getenv "JOLT_SHAPE") (not (os/getenv "JOLT_NO_SHAPE"))))
+  (put (ctx :env) :whole-program?
+    (and (os/getenv "JOLT_WHOLE_PROGRAM") (get (ctx :env) :direct-linking?)))
   (cond
     (empty? argv) (run-repl)
     (help-flags (argv 0)) (print-help)

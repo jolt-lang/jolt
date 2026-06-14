@@ -455,8 +455,15 @@
             # (a failure here must not break loading). Hook installed by the api to
             # avoid an evaluator->backend circular import.
             (when (get (ctx :env) :inline?)
-              (when-let [iu (get (ctx :env) :infer-unit!)]
-                (protect (iu ctx ns-name))))
+              (if (get (ctx :env) :whole-program?)
+                # whole-program (jolt-t34): defer — record the ns and run ONE
+                # fixpoint over all units later (the closed-world pass sees every
+                # caller, so cross-ns param types propagate)
+                (let [lst (or (get (ctx :env) :inferred-nses)
+                              (let [a @[]] (put (ctx :env) :inferred-nses a) a))]
+                  (array/push lst ns-name))
+                (when-let [iu (get (ctx :env) :infer-unit!)]
+                  (protect (iu ctx ns-name)))))
             # Record load order for tooling (uberscript): a dependency finishes
             # loading before its requirer, so this is topological. Skip the
             # baked-in stdlib — it's part of the runtime, not something to bundle.

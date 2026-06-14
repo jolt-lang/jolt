@@ -193,6 +193,7 @@
     # after a unit finishes loading (optimization mode only). Installed here to
     # avoid an evaluator->backend circular import.
     (put (ctx :env) :infer-unit! backend/infer-unit!)
+    (put (ctx :env) :infer-program! backend/infer-program!)   # jolt-t34 whole-program
     # Stateful primitives as ctx-capturing clojure.core fns (protocol-dispatch,
     # register-method, …) — so the protocol macros compile to plain invokes. Must
     # precede the overlay (its defprotocol/extend-type expansions call these).
@@ -233,6 +234,12 @@
       (and (get (ctx :env) :direct-linking?) (not (os/getenv "JOLT_NO_SHAPE"))))
     (put (ctx :env) :map-shapes?
       (and (os/getenv "JOLT_SHAPE") (not (os/getenv "JOLT_NO_SHAPE"))))
+    # Whole-program (Stalin) mode (jolt-t34): opt-in, closed-world. Defers the
+    # per-ns inference and runs one fixpoint over all units at the end (main, or a
+    # harness calling infer-program!). Needs direct-linking (the closed-world
+    # assumption); slow/memory-heavy builds are the documented trade-off.
+    (put (ctx :env) :whole-program?
+      (and (os/getenv "JOLT_WHOLE_PROGRAM") (get (ctx :env) :direct-linking?)))
     ctx))
 
 # --- Context snapshot/fork (cheap isolated copies) --------------------------
