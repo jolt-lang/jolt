@@ -8,6 +8,7 @@
 (use ./plist)
 (use ./config)
 (use ./reader)
+(import ./core :as jcore)
 
 (def jolt-version "0.1.0")
 
@@ -17,7 +18,9 @@
 # result always matches the interpreter; see backend.janet / loader/eval-toplevel).
 # Set JOLT_INTERPRET=1 to force the tree-walking interpreter (debugging / A-B).
 (def compile-default? (not (= "1" (os/getenv "JOLT_INTERPRET"))))
-(def ctx (init {:compile? compile-default?}))
+# A var, not a def: a -m run may replace it with a forked deps-image ctx that
+# already has every dependency compiled (see run-main / the deps image cache).
+(var ctx (init {:compile? compile-default?}))
 (ctx-set-current-ns ctx "user")
 
 (defn read-line [prompt]
@@ -424,19 +427,77 @@
 (defn- print-version []
   (print "jolt v" jolt-version))
 
+# --- Deps image cache: compile the dependencies ONCE -------------------------
+# The baked binary loads core in ~10ms (it's marshaled in), but a program still
+# re-compiles ALL of its dependency namespaces (reitit, ring, …) from source on
+# every run — seconds of analyzer->IR->emit that never change between runs. Like
+# Clojure's AOT or Stalin's compile-once model, snapshot the ctx AFTER the
+# require chain and reuse it: the first run compiles + caches, later runs fork
+# the image (~10ms) and skip compilation entirely. The key includes the jolt
+# version, entry ns, source roots, and the compile flags; the image carries a
+# manifest of every loaded source file's mtime, so any source edit (app or dep)
+# invalidates it. JOLT_NO_DEPS_CACHE=1 disables.
+(defn- deps-image-path [ns-name]
+  (def dir (or (os/getenv "JOLT_IMAGE_CACHE_DIR") (os/getenv "TMPDIR") "/tmp"))
+  (def env (ctx :env))
+  (def key (string/format "%q|%q|%q|%q|%q|%q|%q|%q"
+                          jolt-version ns-name (os/getenv "JOLT_PATH")
+                          (get env :direct-linking?) (get env :inline?)
+                          (get env :shapes?) (get env :whole-program?)
+                          (os/getenv "JOLT_FEATURES")))
+  (string dir "/jolt-deps-" (band (hash key) 0x7FFFFFFF) ".jimg"))
+
+(defn- manifest-of [files]
+  (def m @{})
+  (each f files (when-let [st (os/stat f)] (put m f (st :modified))))
+  m)
+
+(defn- manifest-current? [manifest]
+  (var ok true)
+  (eachp [f mt] manifest
+    (def st (os/stat f))
+    (unless (and st (= (st :modified) mt)) (set ok false)))
+  ok)
+
+(defn- try-load-deps-image [path]
+  (when (and (not (os/getenv "JOLT_NO_DEPS_CACHE")) (os/stat path))
+    (def r (protect (fork (slurp path))))
+    (when (and (r 0) (ctx? (r 1)))
+      (def c (r 1))
+      (def manifest (get (c :env) :deps-manifest))
+      (when (and manifest (manifest-current? manifest))
+        # per-process wiring an image restore must redo (module state, not in the
+        # marshaled ctx) — same as init-cached does for the core image.
+        (jcore/install-print-method-cb! c)
+        c))))
+
+(defn- save-deps-image [c path]
+  (unless (os/getenv "JOLT_NO_DEPS_CACHE")
+    (put (c :env) :deps-manifest (manifest-of (or (get (c :env) :loaded-files) @[])))
+    (def tmp (string path "." (os/getpid) ".tmp"))
+    (when (protect (spit tmp (snapshot c)))
+      (protect (os/rename tmp path)))))
+
 (defn- run-main [ns-name argv]
   (when (nil? ns-name) (eprint "Error: -m/--main requires a namespace") (os/exit 1))
   (set-command-line-args argv)
   (try
     (do
-      (load-string ctx (string "(require '[" ns-name "])"))
-      # whole-program (jolt-t34): every unit is loaded now — run the one closed-
-      # world fixpoint over all of them before -main, so cross-ns types propagate
-      (when (get (ctx :env) :whole-program?)
-        (when-let [ip (get (ctx :env) :infer-program!)] (protect (ip ctx)))
-        # the batch pass is done — a namespace required later (inside -main) now
-        # falls back to per-ns inference instead of being deferred and never run.
-        (put (ctx :env) :infer-program-done? true))
+      (def path (deps-image-path ns-name))
+      (if-let [cached (try-load-deps-image path)]
+        # cache hit: every dependency is already compiled in the image
+        (do (set ctx cached) (ctx-set-current-ns ctx "user"))
+        # cache miss: compile the requires, then snapshot for next time. Track the
+        # loaded files for the manifest.
+        (do
+          (put (ctx :env) :loaded-files @[])
+          (load-string ctx (string "(require '[" ns-name "])"))
+          # whole-program (jolt-t34): every unit is loaded now — run the one
+          # closed-world fixpoint over all of them before -main.
+          (when (get (ctx :env) :whole-program?)
+            (when-let [ip (get (ctx :env) :infer-program!)] (protect (ip ctx)))
+            (put (ctx :env) :infer-program-done? true))
+          (save-deps-image ctx path)))
       (load-string ctx (string "(apply " ns-name "/-main *command-line-args*)")))
     ([err fib] (report-error err fib) (os/exit 1))))
 
@@ -533,7 +594,17 @@
           :none))
   (def dl (case dl-forced :off false :on true (not open-mode?)))
   (put (ctx :env) :direct-linking? dl)
-  (put (ctx :env) :inline? dl)
+  # Inference / specialization (inlining + scalar replacement + structural type
+  # inference + the per-namespace re-emit fixpoint) is the EXPENSIVE part — like
+  # Stalin's whole-program analysis or a Clojure AOT pass, it belongs at BUILD
+  # time or behind an explicit opt-in, not paid on every program startup. Direct-
+  # linking (cheap compile-time call resolution; FASTER startup + calls, per
+  # Clojure's :direct-linking) does not need it. So default it OFF and turn it on
+  # with JOLT_OPTIMIZE (or an explicit JOLT_DIRECT_LINK, which signals a fully
+  # optimized build). The native build bakes an optimized image once.
+  (def optimize? (and dl (truthy? (or (os/getenv "JOLT_OPTIMIZE")
+                                       (= "1" (os/getenv "JOLT_DIRECT_LINK"))))))
+  (put (ctx :env) :inline? optimize?)
   # Mark direct-linking that was AUTO-enabled by the run mode (vs explicitly
   # requested). The success checker (RFC 0006) rides on the inference for free,
   # but a casual program run shouldn't spam type warnings just because it now
@@ -554,7 +625,7 @@
   # other direct-linked modes; JOLT_NO_WHOLE_PROGRAM opts out. Namespaces required
   # later (inside -main) fall back to per-ns inference (see loader).
   (put (ctx :env) :whole-program?
-    (and dl
+    (and optimize?
          (not (os/getenv "JOLT_NO_WHOLE_PROGRAM"))
          (or main-entry? (os/getenv "JOLT_WHOLE_PROGRAM"))))
   (cond
