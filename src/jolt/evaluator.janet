@@ -629,6 +629,20 @@
 # ctor fns are interned as clojure.core vars at init (install-stateful-fns!).
 (def class-ctors @{})
 (defn register-class-ctor! [nm f] (put class-ctors nm f))
+
+# java.util.Iterator shim: (.iterator coll) gives a jolt iterator over any
+# seqable, with (.hasNext it) / (.next it). Some Clojure libs (e.g. hiccup's
+# iterate!) loop with the Java Iterator protocol; this makes that work over jolt
+# collections. The realizer (core/realize-for-iteration, which handles every
+# collection type) is late-bound because core loads after this file.
+(var coll-realizer nil)
+(defn set-coll-realizer! [f] (set coll-realizer f))
+(register-tagged-methods! :jolt/iterator
+  @{"hasNext" (fn [self] (< (self :pos) (length (self :items))))
+    "next"    (fn [self]
+                (def x (in (self :items) (self :pos)))
+                (put self :pos (+ 1 (self :pos)))
+                x)})
 # Class names evaluate to their CANONICAL NAME STRING — the same value
 # core-class returns — so (defmethod m String ...) keys match a
 # (defmulti m (comp class :body)) dispatch (ring.util.request does this).
@@ -694,7 +708,11 @@
    "getCause"    (fn [e] (and (table? e) (get e :cause)))
    "toString"    (fn [x] (string x))
    "equals"      (fn [a b] (deep= a b))
-   "hashCode"    (fn [x] (hash x))})
+   "hashCode"    (fn [x] (hash x))
+   # (.iterator coll) -> a jolt iterator (see :jolt/iterator above). Materializes
+   # the collection to an indexable array via the late-bound core realizer.
+   "iterator"    (fn [coll] @{:jolt/type :jolt/iterator :pos 0
+                              :items (if coll-realizer (coll-realizer coll) @[])})})
 
 (def- string-methods
   {"getBytes"    (fn [s &opt charset] (buffer s))

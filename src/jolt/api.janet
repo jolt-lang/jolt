@@ -14,6 +14,11 @@
 (import ./host_iface :as host)
 (import ./javatime)   # java.time shims register into the evaluator at load
 
+# Wire core's collection realizer into the evaluator's (.iterator coll) shim —
+# late-bound here because the evaluator loads before core. Makes Java-Iterator-
+# style loops (e.g. hiccup's iterate!) work over any jolt collection.
+(set-coll-realizer! realize-for-iteration)
+
 # A defmacro expander compiles to a native fn (built as (fn args body...) and run
 # through the self-hosted pipeline) so macro expansion is COMPILED code, zero runtime
 # cost — instead of an interpreted closure, mirroring Clojure (macros are ordinary
