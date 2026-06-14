@@ -1381,7 +1381,8 @@
   # the IR names the call head. Harmless when records aren't shaped (sidx gated).
   (let [rs (or (get (ctx :env) :record-shapes)
                (let [t @{}] (put (ctx :env) :record-shapes t) t))]
-    (put rs (string (ctx-current-ns ctx) "/->" (type-name-sym :name)) (tuple ;kws)))
+    (put rs (string (ctx-current-ns ctx) "/->" (type-name-sym :name))
+         {:fields (tuple ;kws) :type type-tag}))
   # Records are shape-recs when shapes are active (:shapes? = direct-link, where
   # the inference proves the reads) — the whole field-access pipeline handles
   # them; otherwise the original :jolt/deftype tables. Read at ctor-BUILD time so
@@ -1409,6 +1410,16 @@
   (ns-intern core "protocol-dispatch"
     (fn [proto-name method-name obj rest-args]
       (protocol-dispatch-impl ctx proto-name method-name obj rest-args)))
+  # Devirtualization registry (jolt-41m): defprotocol calls this at load so the
+  # inference can recognize a protocol-method call site. Maps the method's
+  # var-key "ns/method" -> [proto-name method-name].
+  (ns-intern core "register-protocol-methods!"
+    (fn [proto-name method-names]
+      (def reg (or (get (ctx :env) :protocol-methods)
+                   (let [t @{}] (put (ctx :env) :protocol-methods t) t)))
+      (def ns (ctx-current-ns ctx))
+      (each m (d-realize method-names) (put reg (string ns "/" m) (tuple proto-name m)))
+      nil))
   (ns-intern core "extenders"
     (fn [proto]
       # All type-tags whose registry entry implements this protocol, as symbols

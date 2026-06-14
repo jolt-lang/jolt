@@ -318,6 +318,9 @@
                         {} sigs)]
     `(do
        (def ~pname (make-protocol ~(name pname) ~methods))
+       ;; register method var-keys for devirtualization (jolt-41m); the inference
+       ;; reads this (via infer-unit!) to resolve a protocol call on a known record
+       (register-protocol-methods! ~(name pname) [~@(map (fn [s] (name (first s))) sigs)])
        ~@(map (fn [sig]
                 `(def ~(first sig)
                    ;; protocol-dispatch is a fn (clojure.core); pass the protocol /

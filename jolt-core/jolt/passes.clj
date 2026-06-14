@@ -881,6 +881,9 @@
 ;; struct of this shape, so field reads on the result bare-index — declared
 ;; shapes are clean fuel: a lookup, not fragile inference.
 (def ^:private record-shapes-box (atom {}))
+;; jolt-41m: protocol-method registry "ns/method" -> [proto method], for
+;; devirtualizing a protocol call whose receiver is a known record type.
+(def ^:private protocol-methods-box (atom {}))
 ;; jolt-t34: whether to shape generic const-key MAP literals (opt-in, JOLT_SHAPE).
 ;; Records are shaped regardless; maps only when this is on.
 (def ^:private map-shapes-box (atom false))
@@ -909,9 +912,11 @@
       (= op :var) (let [rs (get @record-shapes-box (var-key fnode))]
                     (if rs
                       ;; record ctor -> struct of declared shape (jolt-t34); :shape
-                      ;; is the DECLARED field order, which the back end indexes by
-                      (assoc (mk-struct (reduce (fn [m k] (assoc m k :any)) {} rs))
-                             :shape (vec rs))
+                      ;; is the DECLARED field order the back end indexes by, and
+                      ;; :type is the record tag (for devirtualizing protocol calls)
+                      (let [fields (get rs :fields)]
+                        (assoc (mk-struct (reduce (fn [m k] (assoc m k :any)) {} fields))
+                               :shape (vec fields) :type (get rs :type)))
                       (let [r (get @rtenv-box (var-key fnode))]
                         (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
                                   (cond (nil? nm) :any
@@ -1116,13 +1121,23 @@
                 (when (and @strict-box iscall-var)
                   (let [k (var-key fnode) usig (get @user-sig-box k)]
                     (when usig (check-user-call k usig ats pos))))))
-            [(cond
-               (= cn "range") (mk-vec :num)
-               ;; element-returning fn over a typed vector -> the element type
-               (and cn (contains? elem-fns cn) (> n 0))
-               (let [a0 (nth (nth ares 0) 0)] (if (vec-type? a0) (velem a0) :any))
-               :else (call-ret-type fnode))
-             (assoc node :fn fnode' :args (mapv (fn [r] (nth r 1)) ares))])))
+            ;; devirtualization (jolt-41m): a protocol-method call whose receiver
+            ;; (arg 0) is a known record type resolves to a direct method call.
+            ;; Annotate the node with [type-tag proto method]; the back end looks
+            ;; up the impl at emit time and calls it directly, skipping the
+            ;; registry dispatch (~19x cheaper than protocol-dispatch).
+            (let [pm (and iscall-var (get @protocol-methods-box (var-key fnode)))
+                  rtype (when (and pm (pos? n)) (get (nth (nth ares 0) 0) :type))
+                  base (assoc node :fn fnode' :args (mapv (fn [r] (nth r 1)) ares))]
+              [(cond
+                 (= cn "range") (mk-vec :num)
+                 ;; element-returning fn over a typed vector -> the element type
+                 (and cn (contains? elem-fns cn) (> n 0))
+                 (let [a0 (nth (nth ares 0) 0)] (if (vec-type? a0) (velem a0) :any))
+                 :else (call-ret-type fnode))
+               (if rtype
+                 (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
+                 base)]))))
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [te (nth acc 0) binds (nth acc 1)
@@ -1330,6 +1345,7 @@
 ;; jolt-t34: install record-ctor shapes ("ns/->Name" -> [field-kw ...]) and the
 ;; map-shaping flag (opt-in JOLT_SHAPE), both read by infer.
 (defn set-record-shapes! [m] (reset! record-shapes-box (or m {})))
+(defn set-protocol-methods! [m] (reset! protocol-methods-box (or m {})))
 (defn set-map-shapes! [b] (reset! map-shapes-box (boolean b)))
 
 (defn set-vtypes!

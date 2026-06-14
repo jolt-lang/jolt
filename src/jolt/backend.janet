@@ -417,7 +417,16 @@
   (def args (map |(emit ctx $) (vview (node :args))))
   (def nop (native-op fnode (length args)))
   (def argnodes (vview (node :args)))
+  # devirtualization (jolt-41m): the inference proved this is a protocol call on a
+  # known record type. Resolve the method impl at COMPILE time and emit a direct
+  # call to it, skipping the runtime protocol-dispatch registry walk. The impl is
+  # embedded as a constant fn value in the call head.
+  (def dvt (node :devirt-type))
+  (def devirt-impl
+    (when dvt (find-protocol-method ctx dvt (node :devirt-proto) (node :devirt-method))))
   (cond
+    devirt-impl (tuple devirt-impl ;args)
+
     nop (case nop
           '++ ['+ (in args 0) 1]
           '-- ['- (in args 0) 1]
@@ -952,6 +961,7 @@
   (def f-reset-esc (and pns (ns-find pns "reset-escapes!")))
   (def f-set-rshapes (and pns (ns-find pns "set-record-shapes!")))   # jolt-t34
   (def f-set-mshapes (and pns (ns-find pns "set-map-shapes!")))      # jolt-t34
+  (def f-set-pmethods (and pns (ns-find pns "set-protocol-methods!"))) # jolt-41m
   (def f-get-esc (and pns (ns-find pns "collected-escapes")))
   (def report @{})
   (when (and f-set-rtenv f-set-vtypes f-join f-infer-body f-reinfer f-reset-esc f-get-esc)
@@ -989,6 +999,8 @@
       # jolt-t34: feed record-ctor shapes + the map-shaping flag to the inference
       (when f-set-rshapes ((var-get f-set-rshapes) (or (get (ctx :env) :record-shapes) @{})))
       (when f-set-mshapes ((var-get f-set-mshapes) (get (ctx :env) :map-shapes?)))
+      # jolt-41m: feed the protocol-method registry for devirtualization
+      (when f-set-pmethods ((var-get f-set-pmethods) (or (get (ctx :env) :protocol-methods) @{})))
       # --- param/return/value-type fixpoint (chaotic iteration to LEAST fixpoint) ---
       # Param types are RECOMPUTED FRESH each iteration, not accumulated: :any is
       # the lattice top, so a join with an early-iteration :any (a caller whose own
