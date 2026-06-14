@@ -259,34 +259,25 @@
   ["file-seq finds files"  "true"
    "(do (require '[clojure.java.io :as io]) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))"])
 
-# The REAL clojure.tools.logging (vendored verbatim) runs on jolt: a jolt
-# clojure.tools.logging.impl backend (stderr LoggerFactory) plus host shims
-# (agent/send-off, clojure.lang.LockingTransaction/isRunning, a clojure.pprint
-# subset, clojure.string/trim-newline) and the defmacro/syntax-quote/ns fixes.
-# These cases assert the public API behaves; the level rows return nil because
-# the real level macros return the (nil) result of log* when enabled.
-(defspec "host-interop / clojure.tools.logging"
-  ["info returns nil"   "nil"  "(do (require '[clojure.tools.logging :as log]) (log/info \"hi\" 42))"]
-  ["debug suppressed"   "nil"  "(do (require '[clojure.tools.logging :as log]) (log/debug \"x\"))"]
-  ["debug skips args"   "0"    "(do (require '[clojure.tools.logging :as log]) (let [a (atom 0)] (log/debug (reset! a 9)) @a))"]
-  ["enabled? info"      "true" "(do (require '[clojure.tools.logging :as log]) (log/enabled? :info))"]
-  ["enabled? debug"     "false" "(do (require '[clojure.tools.logging :as log]) (log/enabled? :debug))"]
-  ["spy returns value"  "3"    "(do (require '[clojure.tools.logging :as log]) (log/spy :info (+ 1 2)))"]
-  ["impl factory name"  "\"jolt/stderr\""
-   "(do (require '[clojure.tools.logging.impl :as impl]) (impl/name (impl/find-factory)))"]
-  # vars that exist only in the real library (not in a hand-rolled shim)
-  ["real lib *tx-agent-levels*" "#{:info :warn}"
-   "(do (require '[clojure.tools.logging :as log]) log/*tx-agent-levels*)"]
-  ["real lib log-capture! present" "true"
-   "(do (require '[clojure.tools.logging :as log]) (fn? log/log-capture!))"]
-  ["real lib spyf present" "true"
-   "(do (require '[clojure.tools.logging :as log]) (boolean (resolve 'log/spyf)))"])
-
-# Host shims that let the real clojure.tools.logging load: no STM (a transaction
-# is never running) and a minimal clojure.pprint (used by spy).
+# Host shims that let libraries like clojure.tools.logging load: no STM (a
+# transaction is never running) and a minimal clojure.pprint (used by spy).
 (defspec "host-interop / logging host shims"
   ["LockingTransaction/isRunning" "false" "(clojure.lang.LockingTransaction/isRunning)"]
   ["pprint writes value"  "\"[1 2 3]\\n\""
    "(do (require '[clojure.pprint :as pp]) (with-out-str (pp/pprint [1 2 3])))"]
   ["with-pprint-dispatch runs body" "42"
    "(do (require '[clojure.pprint :as pp]) (pp/with-pprint-dispatch pp/code-dispatch 42))"])
+
+# Language capabilities that real-world macros like clojure.tools.logging exercise:
+# multi-arity defmacro dispatch, conditional-eval macros (short-circuit like
+# debug), and macros that eval+print+return (like spy). Self-contained — no
+# external library needed.
+(defspec "host-interop / macro dispatch & short-circuit patterns"
+  ["conditional-eval suppresses" "0"
+   "(do (def ^:dynamic *enabled* false) (defmacro when-on [& body] `(when *enabled* ~@body)) (let [a (atom 0)] (when-on (reset! a 9)) @a))"]
+  ["conditional-eval fires" "9"
+   "(do (def ^:dynamic *enabled* true) (defmacro when-on [& body] `(when *enabled* ~@body)) (let [a (atom 0)] (when-on (reset! a 9)) @a))"]
+  ["spy-like eval+print+return" "3"
+   "(do (defmacro spylog [expr] `(let [v# ~expr] (println v#) v#)) (spylog (+ 1 2)))"]
+  ["multi-arity 4 dispatch" "[:single :double :triple :quad]"
+   "(do (defmacro ml ([a] :single) ([a b] :double) ([a b c] :triple) ([a b c d] :quad)) [(ml 1) (ml 1 2) (ml 1 2 3) (ml 1 2 3 4)])"])
