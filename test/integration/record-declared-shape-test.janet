@@ -29,7 +29,13 @@
    ["record? true"        "(do (defrecord Rd [x y]) (record? (->Rd 1 2)))"]
    ["record vs map not="  "(do (defrecord Re [x y]) (not (= (->Re 1 2) {:x 1 :y 2})))"]
    ["assoc keeps type"    "(do (defrecord Rf [x y]) (record? (assoc (->Rf 1 2) :x 9)))"]
-   ["pr declared order"   "(do (defrecord Rg [b a c]) (= \"#user.Rg{:b 10, :a 20, :c 30}\" (pr-str (->Rg 10 20 30))))"]])
+   ["pr declared order"   "(do (defrecord Rg [b a c]) (= \"#user.Rg{:b 10, :a 20, :c 30}\" (pr-str (->Rg 10 20 30))))"]
+   # a record shape-rec is a Janet tuple, but a record is NOT a vector/sequential
+   # in Clojure — else map-destructuring it takes the kwargs coerce path and
+   # corrupts (reitit router crash, jolt-14k).
+   ["vector? record false"     "(do (defrecord Rh [x y]) (not (vector? (->Rh 1 2))))"]
+   ["sequential? record false" "(do (defrecord Ri [x y]) (not (sequential? (->Ri 1 2))))"]
+   ["destructure record :or"   "(do (defrecord Rj [a b c d e]) (let [{:keys [a e] :or {a 0}} (->Rj 1 2 3 4 5)] (= 6 (+ a e))))"]])
 
 (each [label prog] cases
   (check label (eval-string dl prog) true))

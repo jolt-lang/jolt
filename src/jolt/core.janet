@@ -204,7 +204,12 @@
 (defn core-fn? [x] (or (function? x) (cfunction? x)))
 (defn core-keyword? [x] (keyword? x))
 (defn core-symbol? [x] (and (struct? x) (= :symbol (x :jolt/type))))
-(defn core-vector? [x] (jvec? x))
+# A record shape-rec is a Janet tuple (jvec? true), but a record is NOT a vector
+# in Clojure — `(vector? record)` is false, and so is `(sequential? record)`.
+# Excluding it here keeps map-destructuring of a record off the `& {:keys}` kwargs
+# coerce path (which does `(apply hash-map x)` for a sequential x). jvec? itself
+# stays as-is for internal representation dispatch.
+(defn core-vector? [x] (and (jvec? x) (not (shape-rec? x))))
 # map? is STRICT: a plain struct map literal, a phm, a sorted map, or a record.
 # Tagged structs (symbols/chars/uuids — anything with :jolt/type) are VALUES,
 # not maps. (sorted-map? is defined later, so the table check is inlined.)
