@@ -884,6 +884,27 @@
 ;; jolt-41m: protocol-method registry "ns/method" -> [proto method], for
 ;; devirtualizing a protocol call whose receiver is a known record type.
 (def ^:private protocol-methods-box (atom {}))
+
+;; jolt-3ko: build a record's struct TYPE from its registry entry, resolving each
+;; field's declared type hint. A field tagged with a record type (its ctor-key)
+;; recurses, so a Vec3 stored in a Ray field reads back as Vec3 — not :any —
+;; which is what lets nested-record code prove its reads. Depth-bounded so a
+;; self/cyclic-referencing record type can't loop.
+(declare record-type-from-entry)
+(defn- field-type-from-tag [tag depth]
+  (cond
+    (or (nil? tag) (<= depth 0)) :any
+    (= tag "num") :num
+    :else (let [e (get @record-shapes-box tag)]
+            (if e (record-type-from-entry e depth) :any))))
+(defn- record-type-from-entry [rs depth]
+  (let [fields (get rs :fields)
+        tags (get rs :tags)
+        fmap (reduce (fn [m i]
+                       (assoc m (nth fields i)
+                              (field-type-from-tag (when tags (nth tags i)) (dec depth))))
+                     {} (range (count fields)))]
+    (assoc (mk-struct fmap) :shape (vec fields) :type (get rs :type))))
 ;; jolt-t34: whether to shape generic const-key MAP literals (opt-in, JOLT_SHAPE).
 ;; Records are shaped regardless; maps only when this is on.
 (def ^:private map-shapes-box (atom false))
@@ -912,11 +933,10 @@
       (= op :var) (let [rs (get @record-shapes-box (var-key fnode))]
                     (if rs
                       ;; record ctor -> struct of declared shape (jolt-t34); :shape
-                      ;; is the DECLARED field order the back end indexes by, and
-                      ;; :type is the record tag (for devirtualizing protocol calls)
-                      (let [fields (get rs :fields)]
-                        (assoc (mk-struct (reduce (fn [m k] (assoc m k :any)) {} fields))
-                               :shape (vec fields) :type (get rs :type)))
+                      ;; is the DECLARED field order the back end indexes by, :type
+                      ;; the record tag (devirt), and field types come from the
+                      ;; declared hints so nested records stay typed (jolt-3ko)
+                      (record-type-from-entry rs type-depth)
                       (let [r (get @rtenv-box (var-key fnode))]
                         (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
                                   (cond (nil? nm) :any

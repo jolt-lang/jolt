@@ -286,6 +286,15 @@
         ;; a seq of field keywords; spliced into a vector LITERAL below ([~@…]) so
         ;; the analyzer sees a vector form, not a runtime pvec value.
         field-kws (map (fn [f] (keyword (name f))) fields)
+        ;; per-field TYPE HINT (jolt-3ko): ^Vec3 origin -> "Vec3" (a record type
+        ;; name), ^:num x -> "num", else nil. Lets the inference know a field's
+        ;; exact type up front, so reading it back carries that type (not :any) —
+        ;; the key to fast nested-record code. Spliced as a vector literal too.
+        field-tags (map (fn [f] (let [mt (meta f)]
+                                  (cond (and mt (:tag mt)) (:tag mt)
+                                        (and mt (:num mt)) "num"
+                                        :else nil)))
+                        fields)
         impl (fn [proto specs]
                `(extend-type ~tname ~proto
                   ~@(map (fn [spec]
@@ -295,7 +304,7 @@
                              `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
                          specs)))]
     `(do
-       (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws]))
+       (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags]))
        (def ~arrow ~tname)
        ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body))
        ~tname)))

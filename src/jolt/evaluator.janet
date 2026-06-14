@@ -1372,17 +1372,30 @@
   instances carry a stable tag matching what extend-type registers methods under.
   field-kws is the [:f1 :f2 …] keyword vector; the ctor maps positional args to
   those keys. A ctx-capturing closure (make-deftype-ctor) is the public handle."
-  [ctx type-name-sym field-kws]
+  [ctx type-name-sym field-kws &opt field-tags]
   (def type-tag (string (ctx-current-ns ctx) "." (type-name-sym :name)))
   (def kws (d-realize field-kws))
+  # per-field type hints (jolt-3ko): a tuple parallel to kws — "Vec3" (a record
+  # type name), "num", or nil. The inference resolves these to the field's exact
+  # type so reading a field back carries it (a nested record stays typed).
+  (def tags (if field-tags (d-realize field-tags) (array/new-filled (length kws))))
   # jolt-t34: register this record's ctor return shape (DECLARED field order) so
   # the inference types (->Name ...) as a struct of these fields and field reads
   # on the result bare-index. Keyed by the ctor var-key "ns/->Name" to match how
   # the IR names the call head. Harmless when records aren't shaped (sidx gated).
   (let [rs (or (get (ctx :env) :record-shapes)
-               (let [t @{}] (put (ctx :env) :record-shapes t) t))]
+               (let [t @{}] (put (ctx :env) :record-shapes t) t))
+        # resolve a record-typed hint ("Vec3") to its ctor-key ("ns/->Vec3") so
+        # the inference resolves it with a direct lookup. "num" stays as-is; an
+        # unresolved name (cross-ns / not-yet-defined) stays bare -> :any.
+        resolved (map (fn [t]
+                        (cond (nil? t) nil
+                              (= t "num") "num"
+                              (let [ck (string (ctx-current-ns ctx) "/->" t)]
+                                (if (get rs ck) ck t))))
+                      tags)]
     (put rs (string (ctx-current-ns ctx) "/->" (type-name-sym :name))
-         {:fields (tuple ;kws) :type type-tag}))
+         {:fields (tuple ;kws) :type type-tag :tags (tuple ;resolved)}))
   # Records are shape-recs when shapes are active (:shapes? = direct-link, where
   # the inference proves the reads) — the whole field-access pipeline handles
   # them; otherwise the original :jolt/deftype tables. Read at ctor-BUILD time so
@@ -1467,7 +1480,7 @@
   (ns-intern core "refer-clojure" (fn [& args] (refer-clojure-impl ctx ;args)))
   (ns-intern core "defmulti-setup" (fn [name-sym dispatch & opts] (defmulti-setup ctx name-sym dispatch ;opts)))
   (ns-intern core "defmethod-setup" (fn [mm-sym dval impl] (defmethod-setup ctx mm-sym dval impl)))
-  (ns-intern core "make-deftype-ctor" (fn [name-sym field-kws] (make-deftype-ctor-impl ctx name-sym field-kws)))
+  (ns-intern core "make-deftype-ctor" (fn [name-sym field-kws &opt field-tags] (make-deftype-ctor-impl ctx name-sym field-kws field-tags)))
   # Var/namespace lookups that need the ctx (the rest of the var fns — var-get/
   # var-set/var?/alter-var-root/alter-meta!/reset-meta! — are plain core-bindings).
   (ns-intern core "find-var" (fn [sym] (find-var ctx sym)))
