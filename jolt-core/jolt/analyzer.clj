@@ -23,7 +23,7 @@
                                form-map-pairs form-set-items form-special? compile-ns
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower
-                               record-type? form-position]]))
+                               record-type? record-ctor-key form-position]]))
 
 (declare analyze)
 
@@ -61,6 +61,16 @@
 (defn- add-hint [env nm h]
   (if h (assoc env :hints (assoc (:hints env) nm h)) env))
 
+;; The resolved record ctor-key ("ns/->Name") for a ^Type param hint, or nil.
+;; Unlike hint-of (which collapses any record hint to the coarse :struct guard-
+;; skip marker), this carries the SPECIFIC record type — cross-namespace aware —
+;; so the inference can seed the param's type and read its fields shaped/typed,
+;; not just :any (the lever for a typed multi-namespace program without whole-
+;; program inference).
+(defn- phint-of [ctx sym]
+  (let [m (form-sym-meta sym)]
+    (when m (let [t (get m :tag)] (when t (record-ctor-key ctx t))))))
+
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
         n (count v)]
@@ -83,18 +93,21 @@
 (defn- parse-params [ctx pvec]
   ;; :hints is a vector of [name hint] pairs (vector, not a map, so the caller
   ;; folds it with a plain reduce — no reduce-over-map in the kernel subset).
-  (loop [i 0 fixed [] rest-name nil hints []]
+  ;; :phints is the parallel vector of [name ctor-key] for record param hints,
+  ;; carrying the specific type for the inference to seed.
+  (loop [i 0 fixed [] rest-name nil hints [] phints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p) (uncompilable "destructuring fn param"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
             (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
-            (recur (+ i 2) fixed (form-sym-name r) hints))
-          (let [nm (form-sym-name p) h (hint-of ctx p)]
+            (recur (+ i 2) fixed (form-sym-name r) hints phints))
+          (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)]
             (recur (inc i) (conj fixed nm) rest-name
-                   (if h (conj hints [nm h]) hints)))))
-      {:fixed fixed :rest rest-name :hints hints})))
+                   (if h (conj hints [nm h]) hints)
+                   (if ph (conj phints [nm ph]) phints)))))
+      {:fixed fixed :rest rest-name :hints hints :phints phints})))
 
 (defn- analyze-arity [ctx pvec body env fn-name]
   (let [pp (parse-params ctx (vec (form-vec-items pvec)))
@@ -113,7 +126,10 @@
         env0 (-> (add-locals env names) (with-recur rname))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
         arity {:params fixed :recur-name rname
-               :body (analyze-seq ctx body env*)}]
+               :body (analyze-seq ctx body env*)}
+        ;; carry record param hints (name -> ctor-key) for the inference to seed
+        ;; the param type; only when present so a hintless arity stays a struct.
+        arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)]
     ;; :rest only when variadic — an absent :rest reads back nil, same as before,
     ;; but keeps a fixed arity a nil-free struct rather than a phm.
     (if rst (assoc arity :rest rst) arity)))

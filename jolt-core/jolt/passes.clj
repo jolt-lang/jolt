@@ -1425,7 +1425,20 @@
     (if (= :fn (get fnode :op))
       (assoc def-node :init
              (assoc fnode :arities
-                    (mapv (fn [a] (assoc a :body (nth (infer (get a :body) ptmap) 1)))
+                    (mapv (fn [a]
+                            ;; seed declared record param hints (:phints, name ->
+                            ;; ctor-key) so a record param is typed even with no
+                            ;; inferred caller type — the open-world / cross-ns
+                            ;; case. An inferred type in ptmap wins (it's at least
+                            ;; as precise), so this only fills the gaps.
+                            (let [pt (reduce (fn [m pr]
+                                               (let [nm (nth pr 0)
+                                                     e (get @record-shapes-box (nth pr 1))]
+                                                 (if (and e (not (contains? m nm)))
+                                                   (assoc m nm (record-type-from-entry e type-depth))
+                                                   m)))
+                                             ptmap (get a :phints))]
+                              (assoc a :body (nth (infer (get a :body) pt) 1))))
                           (get fnode :arities))))
       def-node)))
 

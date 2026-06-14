@@ -613,7 +613,14 @@
   [meta-form]
   (cond
     (keyword? meta-form) {meta-form true}
-    (and (struct? meta-form) (= :symbol (meta-form :jolt/type))) {:tag (meta-form :name)}
+    # A symbol tag keeps its namespace qualifier (^t/Ray -> "t/Ray", not "Ray") so
+    # an aliased/qualified record hint resolves through the ns's aliases the same
+    # way a bare referred one does; dropping it silently mis-hinted across
+    # namespaces. Bare symbols (^Ray, ^String) are unchanged.
+    (and (struct? meta-form) (= :symbol (meta-form :jolt/type)))
+    {:tag (if (meta-form :ns)
+            (string (meta-form :ns) "/" (meta-form :name))
+            (meta-form :name))}
     (string? meta-form) {:tag meta-form}
     nil))
 

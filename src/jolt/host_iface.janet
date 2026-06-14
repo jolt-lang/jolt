@@ -228,12 +228,16 @@
 # presence is the marker. Lets the analyzer resolve a ^Record type hint to the
 # struct fast path: record instances are tables tagged :jolt/deftype (NOT
 # :jolt/type), so a raw keyword get is correct for them (jolt-94n).
+(defn h-record-ctor-key [ctx name]
+  # The home ctor key ("ns/->Name") for a ^Type hint, resolving cross-ns
+  # (referred/aliased) records too — nil if `name` is not a known record type.
+  (record-hint-ctor-key ctx name))
+
 (defn h-record-type? [ctx name]
-  (def ctor (string "->" name))
-  (def cns (ctx-find-ns ctx (h-current-ns ctx)))
-  (if (or (and cns (ns-find cns ctor))
-          (ns-find (ctx-find-ns ctx "clojure.core") ctor))
-    true false))
+  # A ^Type hint names a record iff it resolves to a ctor key (local OR cross-ns,
+  # via record-hint-ctor-key — so a referred/aliased foreign record is recognized,
+  # not just one whose ->Name happens to be interned in the current ns).
+  (if (record-hint-ctor-key ctx name) true false))
 
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
@@ -250,7 +254,8 @@
    "form-syntax-quote-lower" h-syntax-quote-lower
    "host-intern!" h-intern!
    "inline-enabled?" h-inline-enabled? "inline-ir" h-inline-ir
-   "record-type?" h-record-type? "form-position" h-form-position})
+   "record-type?" h-record-type? "form-position" h-form-position
+   "record-ctor-key" h-record-ctor-key})
 
 (defn install! [ctx]
   (def ns (ctx-find-ns ctx "jolt.host"))

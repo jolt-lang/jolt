@@ -1366,6 +1366,50 @@
     (when dc (each k (keys dc) (put dc k nil))))
   mm-var)
 
+(defn- hint-cross-ns-key
+  "Resolve a record-typed field hint (\"Vec3\", \"v/Vec3\", \"rt.vec/Vec3\") to the
+  home namespace's ctor key (\"rt.vec/->Vec3\") when the type is defined in a
+  DIFFERENT namespace and referred/aliased into the one being defined. The local
+  current-ns/->Type lookup misses those; this resolves the hint name through the
+  ns's :refer/:as bindings to the type var, then maps its root ctor value back to
+  the home key via the ctor-value index. Using the ctor VALUE, not the var's :ns,
+  is what makes :refer work — a :refer re-interns a fresh var whose :ns is the
+  referring ns, but its root is the same shared ctor closure. nil if unresolved."
+  [ctx t cix]
+  # Resolve against the COMPILE ns (the user ns being analyzed), not ctx-current-ns
+  # — during compilation the analyzer rebinds ctx-current-ns to jolt.analyzer, so a
+  # bare referred name would otherwise miss. Qualified alias/Name resolves the alias
+  # against the compile ns; a bare name looks up the compile ns's own mappings
+  # (which include :refer-interned vars).
+  (def cur-name (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx)))
+  (def cur-ns (ctx-find-ns ctx cur-name))
+  (def slash (string/find "/" t))
+  (def v (when cur-ns
+           (if slash
+             (let [a (string/slice t 0 slash) nm (string/slice t (inc slash))
+                   home (or (ns-alias-lookup cur-ns a) (ns-import-lookup cur-ns a))]
+               (when home (ns-find (ctx-find-ns ctx home) nm)))
+             (ns-find cur-ns t))))
+  (when (and v (table? v)) (get cix (v :root))))
+
+(defn record-hint-ctor-key
+  "Resolve a record-type hint NAME (as written on a ^Type field/param — bare,
+  aliased, or fully qualified) to its home ctor key in the record-shapes registry
+  (\"rt.vec/->Vec3\"), or nil if it is not a known record type. Local
+  current-ns/->Name wins; otherwise cross-ns via the ctor-value index. Public so
+  the analyzer (through jolt.host) can type a ^Type PARAM hint exactly as a field
+  hint resolves, which is what carries a record param's type across a namespace
+  boundary without whole-program inference."
+  [ctx name]
+  (def rs (get (ctx :env) :record-shapes))
+  (when rs
+    (def cur (or (get (ctx :env) :compile-ns) (ctx-current-ns ctx)))
+    (def local (string cur "/->" name))
+    (if (get rs local)
+      local
+      (let [cix (get (ctx :env) :record-ctor-index)]
+        (when cix (hint-cross-ns-key ctx name cix))))))
+
 (defn make-deftype-ctor-impl
   "Build a deftype constructor closure. The ns-qualified type tag is baked at
   definition time (this runs during the deftype's (def …), in the type's ns), so
@@ -1379,33 +1423,44 @@
   # type name), "num", or nil. The inference resolves these to the field's exact
   # type so reading a field back carries it (a nested record stays typed).
   (def tags (if field-tags (d-realize field-tags) (array/new-filled (length kws))))
+  # The ctor closure itself. Built FIRST so it can be indexed by value below.
+  # Records are shape-recs when shapes are active (:shapes? = direct-link, where
+  # the inference proves the reads) — the whole field-access pipeline handles
+  # them; otherwise the original :jolt/deftype tables. Read at ctor-BUILD time so
+  # a type is consistently one representation or the other.
+  (def the-ctor
+    (if (get (ctx :env) :shapes?)
+      (fn [& args] (make-record type-tag kws args))
+      (fn [& args]
+        (var inst @{:jolt/deftype type-tag})
+        (var i 0) (each kw kws (put inst kw (in args i)) (++ i))
+        inst)))
   # jolt-t34: register this record's ctor return shape (DECLARED field order) so
   # the inference types (->Name ...) as a struct of these fields and field reads
   # on the result bare-index. Keyed by the ctor var-key "ns/->Name" to match how
   # the IR names the call head. Harmless when records aren't shaped (sidx gated).
   (let [rs (or (get (ctx :env) :record-shapes)
                (let [t @{}] (put (ctx :env) :record-shapes t) t))
+        # ctor-value index: maps each ctor closure to its rs key, so a ^Type hint
+        # in another namespace can resolve home through the type var's root value
+        # (jolt-3ko cross-ns hints; see hint-cross-ns-key).
+        cix (or (get (ctx :env) :record-ctor-index)
+                (let [t @{}] (put (ctx :env) :record-ctor-index t) t))
         # resolve a record-typed hint ("Vec3") to its ctor-key ("ns/->Vec3") so
-        # the inference resolves it with a direct lookup. "num" stays as-is; an
-        # unresolved name (cross-ns / not-yet-defined) stays bare -> :any.
+        # the inference resolves it with a direct lookup. "num" stays as-is; a
+        # local def wins; else try cross-ns resolution; an unresolved name (not a
+        # known record type) stays bare -> :any.
         resolved (map (fn [t]
                         (cond (nil? t) nil
                               (= t "num") "num"
                               (let [ck (string (ctx-current-ns ctx) "/->" t)]
-                                (if (get rs ck) ck t))))
+                                (if (get rs ck) ck
+                                  (or (hint-cross-ns-key ctx t cix) t)))))
                       tags)]
     (put rs (string (ctx-current-ns ctx) "/->" (type-name-sym :name))
-         {:fields (tuple ;kws) :type type-tag :tags (tuple ;resolved)}))
-  # Records are shape-recs when shapes are active (:shapes? = direct-link, where
-  # the inference proves the reads) — the whole field-access pipeline handles
-  # them; otherwise the original :jolt/deftype tables. Read at ctor-BUILD time so
-  # a type is consistently one representation or the other.
-  (if (get (ctx :env) :shapes?)
-    (fn [& args] (make-record type-tag kws args))
-    (fn [& args]
-      (var inst @{:jolt/deftype type-tag})
-      (var i 0) (each kw kws (put inst kw (in args i)) (++ i))
-      inst)))
+         {:fields (tuple ;kws) :type type-tag :tags (tuple ;resolved)})
+    (put cix the-ctor (string (ctx-current-ns ctx) "/->" (type-name-sym :name))))
+  the-ctor)
 
 (defn install-stateful-fns!
   "Intern ctx-capturing closures for the stateful primitives into clojure.core, so
