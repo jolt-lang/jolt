@@ -2361,8 +2361,6 @@
 # with `count`, discard the result.
 # assert — (assert x) / (assert x message). Throws when x is falsy.
 
-# resolve stub — returns nil (symbols not found in Jolt's clojure.core)
-(defn core-resolve [sym] nil)  # shadowed by the resolve special form (needs ctx)
 # ns-name now lives in the Clojure collection tier (pure over get + symbol).
 
 # update lives in the Clojure kernel tier — core/00-kernel.clj. update-in stays
@@ -2409,11 +2407,8 @@
     :name {:jolt/type :symbol :ns nil :name name-str}
     :methods methods})
 
-(def core-satisfies? (fn [proto-sym obj] false))
-
 # extends? is a real overlay fn now (30-macros, over extenders).
 (def core-implements? (fn [& args] false))
-(def core-type->str (fn [& args] ""))
 
 # ============================================================
 # Additional clojure.core functions (conformance batch)
@@ -2936,14 +2931,13 @@
     "not" core-not
     "Object" core-Object
     "make-protocol" core-make-protocol
-    "satisfies?" core-satisfies?
+    # satisfies?/resolve are interned by install-stateful-fns! (ctx-capturing);
+    # type->str was an inert SCI stub with no callers.
     "implements?" core-implements?
-    "type->str" core-type->str
     "volatile!" core-volatile!
     "Thread" core-Thread
     "ThreadLocal" core-ThreadLocal
     "IllegalStateException" core-IllegalStateException
-    "resolve" core-resolve
     "copy-core-var" core-copy-core-var
     "copy-var" core-copy-var
     "macrofy" core-macrofy

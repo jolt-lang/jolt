@@ -833,7 +833,6 @@
 ;; tag a node (any expression, not just a :local) so the back end can specialize
 ;; a lookup whose SUBJECT is that node — this is what makes nested access work:
 ;; (:direction ray) is tagged struct, so (:r (:direction ray)) drops its guard.
-(defn- mark-hint [node h] (assoc node :hint h))
 ;; tag a lookup subject as a struct, carrying the complete shape when known
 ;; (so the back end bare-indexes) — jolt-t34
 (defn- mark-struct [node t]

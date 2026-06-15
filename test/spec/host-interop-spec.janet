@@ -107,6 +107,8 @@
    "(do (require (quote clojure.java.io)) (janet/spit \"/tmp/jolt-lineseq-spec.txt\" \"a\\nb\\n\") (vec (line-seq (clojure.java.io/reader \"/tmp/jolt-lineseq-spec.txt\"))))"]
   ["with-open closes shim" "97"
    "(with-open [r (StringReader. \"a\")] (.read r))"]
+  ["File.toURL methods read it back" "\"file:/tmp/x\""
+   "(do (require (quote clojure.java.io)) (.toString (.toURL (clojure.java.io/file \"/tmp/x\"))))"]
   ["vector :import shares deftype ctor" "\"hi!\""
    "(do (ns spec.nodea) (defprotocol SpecP (spec-pm [this])) (deftype SpecTN [t] SpecP (spec-pm [this] (str t \"!\"))) (ns spec.nodeb (:import [spec.nodea SpecTN])) (.spec-pm (SpecTN. \"hi\")))"])
 

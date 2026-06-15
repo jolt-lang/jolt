@@ -605,7 +605,7 @@
       (string? form) (buffer? form) (keyword? form)
       (and (struct? form) (= :jolt/char (form :jolt/type)))))
 
-(defn read-quote [s pos new-pos token-sym]
+(defn read-quote [s new-pos token-sym]
   (let [[form final-pos] (read-form s new-pos)]
     # Spec 02-reader S25: syntax-quote of a self-evaluating literal is the
     # literal, collapsed at READ time (matching Clojure's reader) — so nested
@@ -702,21 +702,21 @@
           
           # quote
           (= c 39)
-          (read-quote s pos (+ pos 1) (sym "quote"))
-          
+          (read-quote s (+ pos 1) (sym "quote"))
+
           # syntax-quote / backtick
           (= c 96)
-          (read-quote s pos (+ pos 1) (sym "syntax-quote"))
-          
+          (read-quote s (+ pos 1) (sym "syntax-quote"))
+
           # unquote ~
           (= c 126)
           (if (and (< (+ pos 1) (length s)) (= (s (+ pos 1)) 64))
-            (read-quote s pos (+ pos 2) (sym "unquote-splicing"))
-            (read-quote s pos (+ pos 1) (sym "unquote")))
-          
+            (read-quote s (+ pos 2) (sym "unquote-splicing"))
+            (read-quote s (+ pos 1) (sym "unquote")))
+
           # deref
           (= c 64)
-          (read-quote s pos (+ pos 1) (sym "deref"))
+          (read-quote s (+ pos 1) (sym "deref"))
           
           # metadata
           (= c 94)
