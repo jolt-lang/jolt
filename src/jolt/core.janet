@@ -1778,7 +1778,7 @@
 # callbacks: :exec runs one SQL string in the transaction (so the janet-side
 # Statement.executeBatch can run SQL without a janet->clj call), :close closes
 # the underlying conn, :product is the JDBC database product name. instance?
-# Connection (evaluator) and the :jolt/jdbc-conn tagged methods (javatime) key
+# Connection (evaluator) and the :jolt/jdbc-conn tagged methods (host_interop) key
 # off this shape.
 (defn core-jdbc-wrap-conn [raw exec closef product]
   @{:jolt/type :jolt/jdbc-conn :raw raw :exec exec :close closef
@@ -1794,7 +1794,7 @@
 
 # java.io.File model (jolt-hjw). io/file and (File. …) build a tagged :jolt/file
 # value so (instance? File x) works and migratus's File-vs-jar branching takes
-# the filesystem path. The File method surface + nio glob live in javatime; here
+# the filesystem path. The File method surface + nio glob live in host_interop; here
 # are the constructor/predicate builtins and the path coercion str/slurp use.
 (defn core-file-path
   "The path string of a :jolt/file, or (string x) for anything else."
