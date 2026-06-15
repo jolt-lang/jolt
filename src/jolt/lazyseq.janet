@@ -3,7 +3,11 @@
 # Model: a thunk returns nil (empty) or a [first-val, rest-thunk] pair; each
 # step produces one element + a thunk for the rest. Supports self-referencing
 # sequences like fib-seq. Self-contained (janet builtins only) — the Clojure
-# seq layer (core.janet) and the interpreter build on these primitives.
+# seq layer (core_coll.janet) and the interpreter build on these primitives.
+#
+# REP vs API: this file is ONLY the lazy-cell representation (ls-* primitives).
+# The Clojure-facing seq ops (first/rest/seq/cons/count dispatch, realization)
+# live in core_coll.janet, branching on `:jolt/type :jolt/lazy-seq`.
 #
 # Extracted from phm.janet (jolt-bvek): a lazy sequence has nothing to do with
 # hash maps; both were tagged tables, which is why they shared a file.

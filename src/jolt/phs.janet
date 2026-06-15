@@ -1,6 +1,11 @@
 # PersistentHashSet — a set backed by a PersistentHashMap (members are keys
 # mapped to true). Extracted from phm.janet (jolt-bvek) so phm.janet is purely
 # the hash map; the set is a thin layer over it.
+#
+# REP vs API: this file is ONLY the set representation (phs-* primitives). The
+# Clojure-facing set ops (conj/disj/contains?/count/seq dispatch, set-as-fn
+# membership) live in core_coll.janet / core_types.janet, branching on
+# `:jolt/type :jolt/set`.
 
 (use ./phm)
 

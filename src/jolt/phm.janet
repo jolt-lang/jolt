@@ -5,6 +5,12 @@
 # ~12-entry linear scan per get (the jolt-s3y map-read regression). The bucket
 # count is derived from (length (m :buckets)), so marshaled images from before
 # this change keep working.
+#
+# REP vs API: this file is ONLY the hash-map representation (phm-* primitives).
+# The Clojure-facing map ops (assoc/dissoc/get/conj/count/seq dispatch, nil-key
+# handling, merge) live in core_coll.janet / core_types.janet, which recognize
+# phm by its `:jolt/deftype` string. PersistentHashSet is layered on top in
+# phs.janet; LazySeq (historically here) now lives in lazyseq.janet.
 
 (def- initial-buckets 8)
 

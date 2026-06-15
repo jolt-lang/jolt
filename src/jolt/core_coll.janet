@@ -1,5 +1,11 @@
 # Jolt Core — collections, transducers, seqs, HOFs, constructors
 # Extracted from core.janet (jolt-nma8, phase 2b split).
+#
+# REP vs API: this file holds the Clojure-facing collection ops and dispatches
+# on `:jolt/type` over the internal persistent structures, whose representations
+# live elsewhere: persistent vector → pv.janet, list → plist.janet, hash map →
+# phm.janet, set → phs.janet, lazy seq → lazyseq.janet. Grep a structure's file
+# header for the primitive (pv-*/pl-*/phm-*/phs-*/ls-*) it exposes.
 
 (use ./types)
 (use ./phm)
@@ -535,6 +541,10 @@
   [rf init coll]
   (reduce-with-reduced rf init coll))
 
+# SEED-TWIN: transduce is overlay-public (jolt-core/clojure/core/20-coll.clj);
+# this seed copy is NOT registered in core-bindings. It survives only as the
+# helper core-into calls below — user `transduce` resolves to the overlay. The
+# asymmetry with `into` (seed-public) is intentional; docs/seed-overlay-registry.md.
 (defn core-transduce
   "(transduce xform f coll) or (transduce xform f init coll)."
   [xform f & rest]
