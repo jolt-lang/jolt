@@ -376,14 +376,24 @@
           (register-method (name atype) pname (name k) f)))
       (recur (nnext s)))))
 
-(defmacro extend-type [tsym psym & impls]
+(defmacro extend-type [tsym & body]
   ;; register-method is a fn (clojure.core); pass type/protocol/method NAMES as
   ;; strings (not the symbols) so the call compiles as a plain invoke. A nil
   ;; type extends on nil values (the host tag is the string "nil").
-  `(do ~@(map (fn [spec]
-                `(register-method ~(if (nil? tsym) "nil" (name tsym)) ~(name psym) ~(name (first spec))
-                                  (fn* ~(nth spec 1) ~@(drop 2 spec))))
-              impls)))
+  ;; `body` is one or more protocols, each followed by its method specs:
+  ;; (extend-type T P1 (m1 [_] ..) P2 (m2 [_] ..)) — a bare symbol switches the
+  ;; current protocol (like reify), so multiple protocols extend in one form.
+  (let [tname (if (nil? tsym) "nil" (name tsym))]
+    (loop [items (seq body) proto nil forms []]
+      (if (empty? items)
+        `(do ~@forms)
+        (let [x (first items)]
+          (if (symbol? x)
+            (recur (rest items) (name x) forms)
+            (recur (rest items) proto
+                   (conj forms
+                         `(register-method ~tname ~proto ~(name (first x))
+                                           (fn ~(nth x 1) ~@(drop 2 x)))))))))))
 
 (defmacro extend-protocol [psym & type-impls]
   `(do ~@(map (fn [g] `(extend-type ~(first g) ~psym ~@(rest g)))
@@ -400,15 +410,18 @@
 ;; ordinary map literal that evaluates to {keyword fn}, and the protocol NAME is
 ;; passed as a string (not the symbol) so the call compiles as a plain invoke.
 (defmacro reify [& forms]
-  (loop [items (seq forms) proto nil methods {}]
+  ;; a reify can implement SEVERAL protocols; collect them all (each bare symbol
+  ;; switches the current protocol, like extend-type) and pass every protocol name
+  ;; to make-reified so (instance? Proto r)/satisfies? recognise all of them.
+  (loop [items (seq forms) protos [] methods {}]
     (if (empty? items)
-      `(make-reified ~(name proto) ~methods)
+      `(make-reified ~methods ~@(vec (map name protos)))
       (let [x (first items)]
         (if (symbol? x)
-          (recur (rest items) (if proto proto x) methods)
-          (recur (rest items) proto
+          (recur (rest items) (conj protos x) methods)
+          (recur (rest items) protos
                  (assoc methods (keyword (name (first x)))
-                        `(fn* ~(nth x 1) ~@(drop 2 x)))))))))
+                        `(fn ~(nth x 1) ~@(drop 2 x)))))))))
 
 (defmacro defrecord [name-sym fields & body]
   (let [tn (name name-sym)

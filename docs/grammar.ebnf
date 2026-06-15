@@ -109,7 +109,7 @@ map-entry       = form , ws , form ;            (* an even number of forms *)
 
 (* --------------------------------------------------------------------------
    Reader macros (prefix sugar). Each expands to a 2-element form
-   (op operand), e.g. 'x -> (quote x), @a -> (deref a).
+   (op operand), e.g. 'x -> (quote x), @a -> (clojure.core/deref a).
    -------------------------------------------------------------------------- *)
 
 reader-macro    = quote | syntax-quote | unquote | unquote-splice
@@ -119,7 +119,8 @@ quote           = "'"  , form ;        (* (quote form)            *)
 syntax-quote    = "`"  , form ;        (* (syntax-quote form)     *)
 unquote-splice  = "~@" , form ;        (* (unquote-splicing form) *)
 unquote         = "~"  , form ;        (* (unquote form)          *)
-deref           = "@"  , form ;        (* (deref form)            *)
+deref           = "@"  , form ;        (* (clojure.core/deref form) — qualified, *)
+                                       (* so it derefs even where deref is shadowed *)
 metadata        = "^"  , meta-form , ws , form ;   (* attach metadata to form *)
 meta-form       = map | keyword | symbol | string ;
 (* Normalized like Clojure: a symbol or string is a type hint -> {:tag ...};

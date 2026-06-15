@@ -637,6 +637,12 @@
 # collection type) is late-bound because core loads after this file.
 (var coll-realizer nil)
 (defn set-coll-realizer! [f] (set coll-realizer f))
+# Late-bound (wired in api): routes a Java collection-interop method call
+# (.nth/.count/.valAt/.seq …) on a jolt persistent collection to the clojure.core
+# equivalent. Returns :jolt/ci-none when it doesn't apply. Lets clj-targeted libs
+# (malli) that use .nth/.count on vectors/maps in their :clj branches work.
+(var coll-interop nil)
+(defn set-coll-interop! [f] (set coll-interop f))
 (register-tagged-methods! :jolt/iterator
   @{"hasNext" (fn [self] (< (self :pos) (length (self :items))))
     "next"    (fn [self]
@@ -663,10 +669,18 @@
     "IllegalArgumentException" "java.lang.IllegalArgumentException"
     "InterruptedException" "java.lang.InterruptedException"
     "Throwable" "java.lang.Throwable"})
+# A class used as a VALUE should evaluate to what (clojure.core/type instance)
+# returns for its instances, so a registry keyed by class (e.g. malli's
+# class-schemas) matches a value's (type ...). For jolt's native tagged types the
+# class maps to its :jolt/type keyword — Pattern <-> a compiled regex.
+(def- class-value-overrides
+  @{"Pattern" :jolt/regex "java.util.regex.Pattern" :jolt/regex})
 (defn- class-value-for
-  "The value a class-name symbol evaluates to: its canonical name string."
+  "The value a class-name symbol evaluates to: a type override, else its canonical
+  name string."
   [nm]
-  (or (get class-canonical-names nm)
+  (or (get class-value-overrides nm)
+      (get class-canonical-names nm)
       # qualified already, or unknown: the name itself is the token
       nm))
 (defn- ctor-for-class-token
@@ -811,7 +825,7 @@
             # syntax-quote ns-qualifies bare class names inside macros
             # (selmer.util/StringBuilder); class names never belong to an ns —
             # fall back to the constructor / statics shims before giving up.
-            (if (or (in class-ctors name) (get class-canonical-names name))
+            (if (or (in class-ctors name) (get class-canonical-names name) (get class-value-overrides name))
               (class-value-for name)
               (error (string "Unable to resolve symbol: " ns "/" name))))))
       # Use :jolt/not-found sentinel to distinguish nil binding from absent binding
@@ -843,7 +857,7 @@
                       # No implicit Janet fallback (Stage 3): an unresolved
                       # Clojure symbol is an error. Host access is the explicit
                       # janet/ prefix above.
-                      (if (or (in class-ctors name) (get class-canonical-names name))
+                      (if (or (in class-ctors name) (get class-canonical-names name) (get class-value-overrides name))
                         (class-value-for name)
                         (error (string "Unable to resolve symbol: " name " in this context")))))))))))))))))))
 (defn- parse-arg-names
@@ -1161,10 +1175,16 @@
   (def type-tag (if host host (string (ctx-current-ns ctx) "." type-name)))
   (register-protocol-method ctx type-tag proto-name method-name f))
 
-(defn make-reified-impl [ctx proto-name methods-map]
+(defn make-reified-impl [ctx methods-map & rest-args]
   # methods-map is the EVALUATED {keyword fn} map (a phm when compiled, a struct/
   # table when interpreted) — the fn* literals are already fns, just store them.
-  (def obj @{:jolt/deftype (string "reified-" proto-name) :jolt/protocol-methods @{}})
+  # proto-names are the (short) names of every protocol the reify implements.
+  (def proto-names (if (and (= 1 (length rest-args)) (indexed? (in rest-args 0)))
+                     (in rest-args 0)        # wiring passed the rest tuple as one arg
+                     rest-args))
+  (def obj @{:jolt/deftype (string "reified-" (if (> (length proto-names) 0) (in proto-names 0) ""))
+             :jolt/protocols (tuple ;proto-names)
+             :jolt/protocol-methods @{}})
   (def pairs (if (phm? methods-map)
                (phm-entries methods-map)
                (map (fn [k] [k (get methods-map k)]) (keys methods-map))))
@@ -1524,7 +1544,7 @@
     (fn [type-name proto-name method-name f]
       (register-method-impl ctx type-name proto-name method-name f)))
   (ns-intern core "make-reified"
-    (fn [proto-name methods-map] (make-reified-impl ctx proto-name methods-map)))
+    (fn [methods-map & proto-names] (make-reified-impl ctx methods-map proto-names)))
   # Host-class shim registration, exposed to Clojure so a library can mirror a
   # Java class jolt doesn't ship (e.g. reitit.Trie). __register-class-statics!
   # makes (Class/method ...) resolve; __register-class-methods! makes (.method
@@ -1726,7 +1746,14 @@
           (or (= type-tag type-name)
               (and (> (length type-tag) (length type-name))
                    (= (string/slice type-tag (- (length type-tag) (length type-name)))
-                      type-name))))
+                      type-name))
+              # instance? of a PROTOCOL works like satisfies?: a reify implementing
+              # it is an instance. The reify records every protocol it implements
+              # (short names); (instance? a.b.Proto x) passes a qualified name, so
+              # match by short name against any of them. (malli relies on this.)
+              (let [protos (if (table? val) (get val :jolt/protocols))
+                    tn-short (last (string/split "." type-name))]
+                (and protos (truthy? (some (fn [p] (= (last (string/split "." p)) tn-short)) protos))))))
         (match (type-sym :name)
           "Number" (number? val)
           "java.lang.Number" (number? val)
@@ -2473,7 +2500,10 @@
                           (if (or (function? method-fn) (cfunction? method-fn))
                             (method-fn target ;args)
                             (error (string "Cannot call non-function " field-name " on " (type target)))))
-                        (error (string "Cannot call non-function " field-name " on " (type target))))))
+                        (let [r (if coll-interop (coll-interop target field-name args) :jolt/ci-none)]
+                          (if (= r :jolt/ci-none)
+                            (error (string "Cannot call non-function " field-name " on " (type target)))
+                            r)))))
                   (error (string "Cannot call method " field-name " on " (type target))))))))))
             # (. obj member) with no extra args: a symbol member naming a
             # function is a zero-arg method call (receiver passed as self);
@@ -2496,6 +2526,10 @@
                      (get tagged-methods (get target :jolt/type))
                      (get (get tagged-methods (get target :jolt/type)) field-name))
               ((get (get tagged-methods (get target :jolt/type)) field-name) target)
+            # zero-arg Java collection interop (.count/.seq/… on a jolt collection)
+            # before field lookup — coll-interop returns :jolt/ci-none if not its kind
+            (let [ci (if coll-interop (coll-interop target field-name @[]) :jolt/ci-none)]
+             (if (not= ci :jolt/ci-none) ci
             (let [v (if (record-tag target)
                       (coll-lookup target (keyword field-name) nil)
                       (get target (keyword field-name)))]
@@ -2513,7 +2547,7 @@
                   (array? v) (let [f (eval-form ctx bindings v)]
                                (if (or (function? f) (cfunction? f)) (f target) f))
                   v)
-                v))))))))
+                v))))))))))
     # default: function application — check for macros
     (if (and (struct? first-form) (= :symbol (first-form :jolt/type)))
       (let [sym-name (first-form :name)]

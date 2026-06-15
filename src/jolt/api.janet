@@ -13,11 +13,47 @@
 (import ./stdlib_embed :as stdlib-embed)
 (import ./host_iface :as host)
 (import ./javatime)   # java.time shims register into the evaluator at load
+(import ./phm :as mphm)
 
 # Wire core's collection realizer into the evaluator's (.iterator coll) shim —
 # late-bound here because the evaluator loads before core. Makes Java-Iterator-
 # style loops (e.g. hiccup's iterate!) work over any jolt collection.
 (set-coll-realizer! realize-for-iteration)
+
+# clj-targeted libraries call JVM collection-builder statics in their :clj
+# branches; malli's entry parser uses these. Map them to jolt's own builders.
+# createOwning takes ownership of an object array -> a vector. createWithCheck
+# builds a map and throws on duplicate keys (malli catches that to report them);
+# detect a dup by the built map being smaller than the kv array implies.
+(register-class-statics! "LazilyPersistentVector"
+  @{"createOwning" (fn [arr] (make-vec arr))})
+(register-class-statics! "PersistentArrayMap"
+  @{"createWithCheck"
+    (fn [arr]
+      (def m (mphm/make-phm arr))
+      (if (= (* 2 (mphm/phm-count m)) (length arr)) m
+        (error "PersistentArrayMap: duplicate key")))})
+
+# Java collection-interop methods on jolt persistent collections — clj-targeted
+# libraries (malli) call .nth/.count/.valAt on vectors/maps in their :clj
+# branches. Route to the clojure.core equivalent; :jolt/ci-none means "not mine".
+(set-coll-interop!
+  (fn [target name args]
+    (if-not (or (pvec? target) (mphm/phm? target) (plist? target) (mphm/lazy-seq? target)
+                (and (table? target) (= :jolt/set (get target :jolt/type)))
+                (shape-rec? target)                                    # map-as-tuple record
+                (and (struct? target) (nil? (get target :jolt/type)))) # plain map literal
+      :jolt/ci-none   # only jolt persistent collections / maps — never records/reifies
+    (cond
+      (= name "nth")     (if (>= (length args) 2) (core-nth target (in args 0) (in args 1))
+                                                  (core-nth target (in args 0)))
+      (= name "count")   (core-count target)
+      (or (= name "valAt") (= name "get"))
+                         (if (>= (length args) 2) (core-get target (in args 0) (in args 1))
+                                                  (core-get target (in args 0)))
+      (= name "seq")     (core-seq target)
+      (= name "containsKey") (core-contains? target (in args 0))
+      :jolt/ci-none))))
 
 # A defmacro expander compiles to a native fn (built as (fn args body...) and run
 # through the self-hosted pipeline) so macro expansion is COMPILED code, zero runtime

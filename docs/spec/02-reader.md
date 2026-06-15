@@ -74,12 +74,16 @@ checks → UNVERIFIED (rows to add).
 | Sugar | Reads as | |
 |---|---|---|
 | `'form` | `(quote form)` | S10 |
-| `@form` | `(deref form)` | S11 |
+| `@form` | `(clojure.core/deref form)` | S11 |
 | `^meta form` | form with metadata attached (see below) | S12 |
 | `#'sym` | `(var sym)` | S13 |
 | `` `form `` | syntax-quote (§2.4) | |
 | `~form`, `~@form` | unquote / unquote-splicing — only within syntax-quote (S14: MUST error outside) | |
 
+- S11. `@form` reads as `(clojure.core/deref form)` — the operator is the
+  fully-qualified `clojure.core/deref`, not a bare `deref`, so `@x` still
+  dereferences in a namespace that excludes and rebinds `deref`
+  (`(ns … (:refer-clojure :exclude [deref]))`), matching Clojure.
 - S12a. `^:kw form` ≡ `^{:kw true} form`; `^Sym form` ≡ `^{:tag Sym} form`;
   `^"str"` ≡ `^{:tag "str"} form`. Multiple `^` stack, rightmost innermost,
   merged left-over-right.
@@ -117,6 +121,10 @@ checks → UNVERIFIED (rows to add).
 - `#(body)` reads as `(fn [args…] (body))` with parameters derived from the
   `%`-symbols appearing in body: `%`≡`%1`, `%n` positional, `%&` the rest
   parameter. Arity = highest `%n` mentioned (plus rest if `%&`).
+- The `%`-symbols are collected from the WHOLE body, recursing through every
+  nested form including vector, map and set literals — `#(assoc {} :k %)`,
+  `#(hash-set % %2)` and `#(get {:t %} :t)` all see their `%`s. (A reader that
+  scanned only call forms would miscompile `#(identity {:text %})` as a 0-arg fn.)
 - `#()` literals MUST NOT nest.
 
 ```clojure
