@@ -295,6 +295,15 @@
                                         (and mt (:num mt)) "num"
                                         :else nil)))
                         fields)
+        ;; per-field MUTABILITY (jolt-c3q): ^:unsynchronized-mutable / ^:volatile-
+        ;; mutable marks a field set!-able. A type with any mutable field opts out
+        ;; of the immutable shape-rec layout and uses the mutable table form, so
+        ;; set! can mutate it (the ctor reads this vector). Spliced as a literal.
+        field-muts (map (fn [f] (let [mt (meta f)]
+                                  (if (and mt (or (:unsynchronized-mutable mt)
+                                                  (:volatile-mutable mt)))
+                                    true false)))
+                        fields)
         impl (fn [proto specs]
                `(extend-type ~tname ~proto
                   ~@(map (fn [spec]
@@ -304,7 +313,7 @@
                              `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
                          specs)))]
     `(do
-       (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags]))
+       (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
        (def ~arrow ~tname)
        ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body))
        ~tname)))

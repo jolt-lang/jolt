@@ -385,20 +385,26 @@
   instances carry a stable tag matching what extend-type registers methods under.
   field-kws is the [:f1 :f2 …] keyword vector; the ctor maps positional args to
   those keys. A ctx-capturing closure (make-deftype-ctor) is the public handle."
-  [ctx type-name-sym field-kws &opt field-tags]
+  [ctx type-name-sym field-kws &opt field-tags field-muts]
   (def type-tag (string (ctx-current-ns ctx) "." (type-name-sym :name)))
   (def kws (d-realize field-kws))
   # per-field type hints (jolt-3ko): a tuple parallel to kws — "Vec3" (a record
   # type name), "num", or nil. The inference resolves these to the field's exact
   # type so reading a field back carries it (a nested record stays typed).
   (def tags (if field-tags (d-realize field-tags) (array/new-filled (length kws))))
+  # jolt-c3q: a type with any ^:unsynchronized-mutable / ^:volatile-mutable field
+  # is set!-able, so it CAN'T be an immutable shape-rec tuple. Such a type uses
+  # the mutable :jolt/deftype table form regardless of :shapes? (set! mutates it,
+  # field reads route through the tagged-table path), and is NOT registered as a
+  # shape so the inference never emits a bare-index read against the table.
+  (def mutable? (and field-muts (some |(identity $) (d-realize field-muts))))
   # The ctor closure itself. Built FIRST so it can be indexed by value below.
   # Records are shape-recs when shapes are active (:shapes? = direct-link, where
   # the inference proves the reads) — the whole field-access pipeline handles
-  # them; otherwise the original :jolt/deftype tables. Read at ctor-BUILD time so
-  # a type is consistently one representation or the other.
+  # them; otherwise (or when mutable) the original :jolt/deftype tables. Read at
+  # ctor-BUILD time so a type is consistently one representation or the other.
   (def the-ctor
-    (if (get (ctx :env) :shapes?)
+    (if (and (get (ctx :env) :shapes?) (not mutable?))
       (fn [& args] (make-record type-tag kws args))
       (fn [& args]
         (var inst @{:jolt/deftype type-tag})
@@ -408,7 +414,9 @@
   # the inference types (->Name ...) as a struct of these fields and field reads
   # on the result bare-index. Keyed by the ctor var-key "ns/->Name" to match how
   # the IR names the call head. Harmless when records aren't shaped (sidx gated).
-  (let [rs (or (get (ctx :env) :record-shapes)
+  # Skipped for mutable types — they're tables, not shape-recs (jolt-c3q).
+  (unless mutable?
+   (let [rs (or (get (ctx :env) :record-shapes)
                (let [t @{}] (put (ctx :env) :record-shapes t) t))
         # ctor-value index: maps each ctor closure to its rs key, so a ^Type hint
         # in another namespace can resolve home through the type var's root value
@@ -428,7 +436,7 @@
                       tags)]
     (put rs (string (ctx-current-ns ctx) "/->" (type-name-sym :name))
          {:fields (tuple ;kws) :type type-tag :tags (tuple ;resolved)})
-    (put cix the-ctor (string (ctx-current-ns ctx) "/->" (type-name-sym :name))))
+    (put cix the-ctor (string (ctx-current-ns ctx) "/->" (type-name-sym :name)))))
   the-ctor)
 
 (defn install-stateful-fns!
@@ -504,7 +512,7 @@
   (ns-intern core "refer-clojure" (fn [& args] (refer-clojure-impl ctx ;args)))
   (ns-intern core "defmulti-setup" (fn [name-sym dispatch & opts] (defmulti-setup ctx name-sym dispatch ;opts)))
   (ns-intern core "defmethod-setup" (fn [mm-sym dval impl] (defmethod-setup ctx mm-sym dval impl)))
-  (ns-intern core "make-deftype-ctor" (fn [name-sym field-kws &opt field-tags] (make-deftype-ctor-impl ctx name-sym field-kws field-tags)))
+  (ns-intern core "make-deftype-ctor" (fn [name-sym field-kws &opt field-tags field-muts] (make-deftype-ctor-impl ctx name-sym field-kws field-tags field-muts)))
   # Var/namespace lookups that need the ctx (the rest of the var fns — var-get/
   # var-set/var?/alter-var-root/alter-meta!/reset-meta! — are plain core-bindings).
   (ns-intern core "find-var" (fn [sym] (find-var ctx sym)))
