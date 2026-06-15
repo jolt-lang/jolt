@@ -12,6 +12,7 @@
 (import ./backend :as backend)
 (import ./stdlib_embed :as stdlib-embed)
 (import ./host_iface :as host)
+(import ./config :as config)
 # Host interop: JVM class/method shims + collection interop (.iterator/.nth/...)
 # register into the evaluator at module load. See src/jolt/host_interop.janet.
 (import ./host_interop)
@@ -318,22 +319,10 @@
   (def [h len] (source-fingerprint))
   # Opts land in the key via their printed form; an opt that prints unstably
   # (e.g. a closure in :namespaces) just degrades to a cache miss, never to a
-  # wrong hit. Runtime knobs that shape the ctx outside opts ride along too.
-  (def key (string/format "%q|%q|%q|%q|%q|%q|%q|%q|%q|%q|%q|%q"
-                          (string janet/version "-" janet/build)
-                          opts
-                          (os/getenv "JOLT_PATH")
-                          (os/getenv "JOLT_MUTABLE")
-                          (os/getenv "JOLT_AOT_CORE")
-                          (os/getenv "JOLT_FEATURES")
-                          (os/getenv "JOLT_INTERPRET_MACROS")
-                          (os/getenv "JOLT_DIRECT_LINK")
-                          (os/getenv "JOLT_NO_IR_PASSES")
-                          (os/getenv "JOLT_CHECK_HINTS")
-                          # :shapes? is baked into the image; key on every input
-                          # to it so a cache hit never carries a wrong shape state
-                          (os/getenv "JOLT_SHAPE")
-                          (os/getenv "JOLT_NO_SHAPE")))
+  # wrong hit. Every ctx-shaping env var rides along via config/ctx-cache-key —
+  # one canonical list shared with the deps-image key (jolt-q5ql), so a new knob
+  # can't be added to one key and forgotten in the other.
+  (def key (config/ctx-cache-key [:janet (string janet/version "-" janet/build) :opts opts]))
   (string dir "/jolt-ctx-" (band h 0x7FFFFFFF) "-" len "-" (band (hash key) 0x7FFFFFFF) ".jimg"))
 
 (defn init-cached
