@@ -24,7 +24,7 @@
 # Every env var that shapes the built/optimized ctx. Both image caches key on
 # this exact list, so adding a knob here updates every cache key at once.
 (def ctx-shaping-env-vars
-  ["JOLT_PATH" "JOLT_MUTABLE" "JOLT_AOT_CORE" "JOLT_FEATURES"
+  ["JOLT_PATH" "JOLT_APP_PATHS" "JOLT_MUTABLE" "JOLT_AOT_CORE" "JOLT_FEATURES"
    "JOLT_INTERPRET" "JOLT_INTERPRET_MACROS" "JOLT_DIRECT_LINK"
    "JOLT_NO_DIRECT_LINK" "JOLT_OPTIMIZE" "JOLT_WHOLE_PROGRAM"
    "JOLT_NO_WHOLE_PROGRAM" "JOLT_SHAPE" "JOLT_NO_SHAPE"

@@ -256,6 +256,21 @@
         (spit cache-file (string/format "%j" {:key key :roots roots}))
         roots))))
 
+(defn project-source-roots
+  "The project's OWN source roots — its deps.edn :paths plus any alias
+  :extra-paths, joined to cwd — as opposed to dependency roots. These are the
+  'app' namespaces: the runtime scopes the whole-program inference fixpoint to
+  them (JOLT_APP_PATHS) so a dep-heavy app's startup doesn't re-infer every
+  transitive dependency namespace (jolt-87e)."
+  [deps-edn-path &opt aliases]
+  (def out @[])
+  (when (os/stat deps-edn-path)
+    (def edn (load-config deps-edn-path))
+    (def extra (combine-aliases edn aliases))
+    (each r (src-roots (os/cwd) edn) (array/push out r))
+    (each pp (extra :extra-paths) (array/push out (string (os/cwd) "/" pp))))
+  out)
+
 # --- :tasks (the honest subset of babashka's) ----------------------------------
 # A STRING task is a shell command. A MAP task carries :main-opts (jolt args —
 # `-e "(...)"` covers expression tasks) and an optional :doc. Babashka-style

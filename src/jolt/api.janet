@@ -177,6 +177,16 @@
       (each p (get opts :paths []) (array/push roots p))
       (when-let [jp (os/getenv "JOLT_PATH")]
         (each p (string/split ":" jp) (when (> (length p) 0) (array/push roots p)))))
+    # App source roots (jolt-87e): the project's own roots (opts :app-paths, then
+    # JOLT_APP_PATHS from jolt-deps). The whole-program inference fixpoint is
+    # scoped to namespaces loaded from these — deps load-infer per-ns instead.
+    # Empty => no app/dep distinction, so whole-program covers every namespace
+    # (a bare program run with no deps.edn keeps its old behavior).
+    (let [aps @[]]
+      (each p (get opts :app-paths []) (array/push aps p))
+      (when-let [jap (os/getenv "JOLT_APP_PATHS")]
+        (each p (string/split ":" jap) (when (> (length p) 0) (array/push aps p))))
+      (put (ctx :env) :app-source-paths aps))
     # Collection representation (persistent vs mutable) is selected at BUILD time
     # via JOLT_MUTABLE (see config.janet); init-core! registers vec/vector/conj/
     # etc. that produce the mode-appropriate values, so nothing extra to load.
