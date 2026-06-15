@@ -15,6 +15,7 @@
 (use ./pv)
 (use ./plist)
 (use ./types)
+(use ./lazyseq)
 (import ./phm)
 
 (defn- chr [s] (get s 0))
@@ -791,7 +792,7 @@
   # clojure.core equivalent. :jolt/ci-none means "not a collection method here".
   (set-coll-interop!
     (fn [target name args]
-      (if-not (or (pvec? target) (phm/phm? target) (plist? target) (phm/lazy-seq? target)
+      (if-not (or (pvec? target) (phm/phm? target) (plist? target) (lazy-seq? target)
                   (and (table? target) (= :jolt/set (get target :jolt/type)))
                   (shape-rec? target)                                    # map-as-tuple record
                   (and (struct? target) (nil? (get target :jolt/type)))) # plain map literal
