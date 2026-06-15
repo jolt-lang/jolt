@@ -37,3 +37,17 @@ Libraries confirmed to load and pass their conformance checks on Jolt
   migration ids are 14-digit timestamps, and the janet-lang/sqlite3 driver
   currently truncates INTEGER columns to 32 bits, so completion tracking needs
   the one-line upstream fix (`sqlite3_column_int64`); ids under 2^31 work as is.
+* [malli](https://github.com/metosin/malli) — data schema validation, on the
+  [malli-app example](https://github.com/jolt-lang/examples/tree/main/malli-app).
+  `m/validate` and `m/explain` work across the vocabulary (predicates, `:int`/
+  `:string`/`:keyword`, `:map` incl. nested + optional, `:vector`, `:tuple`,
+  `:enum`, `:maybe`, `:and`/`:or`, `:re`, bounded int/string). Load with
+  `JOLT_FEATURES` including `clj` (malli's `.cljc` keys class-schemas off the
+  `:clj` reader-conditional branches).
+* [markdown-clj](https://github.com/yogthos/markdown-clj) — Markdown → HTML, on the
+  [markdown-app example](https://github.com/jolt-lang/examples/tree/main/markdown-app).
+  Renders headings, emphasis, inline code, links, lists, tables, strikethrough.
+* [hiccup](https://github.com/weavejester/hiccup) — HTML from Clojure data, on the
+  [hiccup-app example](https://github.com/jolt-lang/examples/tree/main/hiccup-app).
+  Element tags, attribute maps, nested elements, and `for` comprehensions; its
+  `html` macro pre-compiles the markup (a good compiler stress test).
