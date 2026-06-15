@@ -441,13 +441,11 @@
 # invalidates it. JOLT_NO_DEPS_CACHE=1 disables.
 (defn- deps-image-path [ns-name]
   (def dir (or (os/getenv "JOLT_IMAGE_CACHE_DIR") (os/getenv "TMPDIR") "/tmp"))
-  (def env (ctx :env))
-  (def key (string/format "%q|%q|%q|%q|%q|%q|%q|%q|%q"
-                          jolt-version ns-name (os/getenv "JOLT_PATH")
-                          (get env :direct-linking?) (get env :inline?)
-                          (get env :shapes?) (get env :map-shapes?)
-                          (get env :whole-program?)
-                          (os/getenv "JOLT_FEATURES")))
+  # Key on the jolt version + entry ns + every ctx-shaping env var (ctx-cache-key,
+  # jolt-q5ql): the run-mode flags this image bakes are all derived from those
+  # vars, so keying on the canonical list can't miss one the way the old
+  # hand-built positional key could.
+  (def key (ctx-cache-key [:jolt-version jolt-version :ns ns-name]))
   (string dir "/jolt-deps-" (band (hash key) 0x7FFFFFFF) ".jimg"))
 
 (defn- manifest-of [files]
@@ -591,46 +589,12 @@
         (= (argv 0) "repl") (nrepl-flags (argv 0)) (eval-flags (argv 0))
         (= (argv 0) "uberscript")))
   (def main-entry? (and (not (empty? argv)) (main-flags (argv 0))))
-  (def dl-forced
-    (cond (os/getenv "JOLT_NO_DIRECT_LINK") :off
-          (= "1" (os/getenv "JOLT_DIRECT_LINK")) :on
-          :none))
-  (def dl (case dl-forced :off false :on true (not open-mode?)))
-  (put (ctx :env) :direct-linking? dl)
-  # Inference / specialization (inlining + scalar replacement + structural type
-  # inference + the per-namespace re-emit fixpoint) is the EXPENSIVE part — like
-  # Stalin's whole-program analysis or a Clojure AOT pass, it belongs at BUILD
-  # time or behind an explicit opt-in, not paid on every program startup. Direct-
-  # linking (cheap compile-time call resolution; FASTER startup + calls, per
-  # Clojure's :direct-linking) does not need it. So default it OFF and turn it on
-  # with JOLT_OPTIMIZE (or an explicit JOLT_DIRECT_LINK, which signals a fully
-  # optimized build). The native build bakes an optimized image once.
-  (def optimize? (and dl (truthy? (or (os/getenv "JOLT_OPTIMIZE")
-                                       (= "1" (os/getenv "JOLT_DIRECT_LINK"))))))
-  (put (ctx :env) :inline? optimize?)
-  # Mark direct-linking that was AUTO-enabled by the run mode (vs explicitly
-  # requested). The success checker (RFC 0006) rides on the inference for free,
-  # but a casual program run shouldn't spam type warnings just because it now
-  # direct-links — so the checker's default-on is suppressed in the auto case
-  # (JOLT_TYPE_CHECK still opts in). API/build callers never set this flag, so an
-  # explicit :direct-linking? there keeps the checker as before. See backend.
-  (put (ctx :env) :direct-link-auto? (and dl (= dl-forced :none)))
-  # Shape gates, recomputed from the runtime env (the baked ctx computed them at
-  # build time). :shapes? = shape-recs active (records), on with direct-linking;
-  # :map-shapes? = also shape generic maps (opt-in JOLT_SHAPE).
-  (put (ctx :env) :shapes?
-    (and dl (not (os/getenv "JOLT_NO_SHAPE"))))
-  (put (ctx :env) :map-shapes?
-    (and (os/getenv "JOLT_SHAPE") (not (os/getenv "JOLT_NO_SHAPE"))))
-  # Whole-program (closed-world cross-namespace inference) auto-enables for a
-  # -m/-M program entry under direct-linking — that's the point where every
-  # require is done and -main is about to run. JOLT_WHOLE_PROGRAM forces it on in
-  # other direct-linked modes; JOLT_NO_WHOLE_PROGRAM opts out. Namespaces required
-  # later (inside -main) fall back to per-ns inference (see loader).
-  (put (ctx :env) :whole-program?
-    (and optimize?
-         (not (os/getenv "JOLT_NO_WHOLE_PROGRAM"))
-         (or main-entry? (os/getenv "JOLT_WHOLE_PROGRAM"))))
+  # Run-mode policy lives in config/resolve-run-mode now (jolt-q5ql) — unit-
+  # testable without the CLI, and the same canonical knob list backs the cache
+  # keys. Install the resolved knobs onto the runtime env (the baked ctx computed
+  # them at build time; a program run recomputes from the live env).
+  (let [mode (resolve-run-mode open-mode? main-entry?)]
+    (eachp [k v] mode (put (ctx :env) k v)))
   (cond
     (empty? argv) (run-repl)
     (help-flags (argv 0)) (print-help)
