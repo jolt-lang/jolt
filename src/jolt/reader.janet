@@ -456,6 +456,10 @@
             (cond (= i :rest) (set has-rest true)
                   (and i (> i max-n)) (set max-n i)))
         (or (array? f) (tuple? f)) (each x f (scan-pct x))
+        # set literal form — scan its elements (#(... #{%} ...))
+        (and (struct? f) (= :jolt/set (f :jolt/type))) (each x (f :value) (scan-pct x))
+        # map literal form — scan its keys AND values (#(... {:k %} ...))
+        (not (nil? (form-kv-order f))) (each x (form-kv-order f) (scan-pct x))
         nil))
     (scan-pct form)
     # One canonical gensym per slot 1..max-n (placeholders for unused), plus rest.
@@ -473,6 +477,10 @@
                   f))
         (array? f) (array ;(map replace-pct f))
         (tuple? f) (tuple ;(map replace-pct f))
+        (and (struct? f) (= :jolt/set (f :jolt/type)))
+          {:jolt/type :jolt/set :value (tuple ;(map replace-pct (f :value)))}
+        (not (nil? (form-kv-order f)))
+          (reader-map (array ;(map replace-pct (form-kv-order f))))
         f))
     (def replaced (replace-pct form))
     (def arg-names @[])

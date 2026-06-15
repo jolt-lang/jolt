@@ -176,7 +176,9 @@
     :buf (cond (nil? init) @"" (number? init) (buffer/new init) (buffer init))})
 
 (defn make-string-writer []
-  @{:jolt/type :jolt/writer :buf @"" :sink nil})
+  # :close lets with-open close the writer (core-close-resource calls :close);
+  # it's a no-op so .toString after with-open still sees the buffer.
+  @{:jolt/type :jolt/writer :buf @"" :sink nil :close (fn [] nil)})
 (defn make-out-writer []
   @{:jolt/type :jolt/writer :buf nil :sink prin})
 
@@ -185,6 +187,12 @@
     (nil? x) "null"
     (and (struct? x) (= :jolt/char (get x :jolt/type))) (string/from-bytes (x :ch))
     (string x)))
+
+# Writer.write(int) writes the CHAR for that code (unlike StringBuilder.append(int),
+# which appends the int's digits). jolt chars are bytes, so this round-trips UTF-8
+# byte-for-byte with readLine.
+(defn- writer-piece [x]
+  (if (number? x) (string/from-bytes (math/trunc x)) (render-piece x)))
 
 # Read one unit from any reader-ish value: our shims dispatch through their
 # tagged "read"; a janet core/file reads one byte. -1 at EOF.
@@ -221,6 +229,7 @@
                  (let [b ((self :s) (self :pos))]
                    (put self :pos (+ 1 (self :pos)))
                    b)))
+      "readLine" (fn [self] ((self :read-line-fn)))
       "mark" (fn [self &opt limit] (put self :marked (self :pos)) nil)
       "reset" (fn [self] (put self :pos (or (self :marked) 0)) nil)
       "skip" (fn [self n] (put self :pos (min (length (self :s)) (+ (self :pos) n))) n)
@@ -232,8 +241,8 @@
   (register-tagged-methods! :jolt/writer
     @{"write"    (fn [self x]
                    (if (self :sink)
-                     ((self :sink) (render-piece x))
-                     (buffer/push-string (self :buf) (render-piece x)))
+                     ((self :sink) (writer-piece x))
+                     (buffer/push-string (self :buf) (writer-piece x)))
                    nil)
       "append"   (fn [self x]
                    (if (self :sink)

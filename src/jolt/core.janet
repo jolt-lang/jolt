@@ -1237,7 +1237,11 @@
              (set cur (ls-rest cur)))
            (if (seq-done? cur) nil (realize-ls cur))))
        (make-lazy-seq (dwstep coll)))
-     (let [c (realize-for-iteration coll)]
+     # A string iterates as a seq of chars in Clojure; realize-for-iteration
+     # passes strings through, so char-seq it here (as take-while/remove do) —
+     # otherwise pred sees raw bytes and array/slice rejects the string.
+     (let [c0 (realize-for-iteration coll)
+           c (if (string? c0) (map make-char (string/bytes c0)) c0)]
        (var start 0)
        (while (and (< start (length c)) (pred (c start)))
          (++ start))

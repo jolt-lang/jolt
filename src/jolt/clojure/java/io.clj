@@ -26,7 +26,13 @@
     ;; java.io.Reader surface (.read/.mark/.reset) plus line-seq's
     ;; :read-line-fn, which a raw janet file handle has neither of
     :else (java.io.StringReader. (janet/slurp (str x)))))
-(defn writer [x] (janet.file/open (str x) :w))
+(defn writer [x]
+  (cond
+    ;; already a Writer/StringWriter shim — pass through, like the JVM's
+    ;; io/writer on a Writer (markdown-clj's md-to-html writes into a StringWriter)
+    (= :jolt/writer (get x :jolt/type)) x
+    (= :core/file (janet/type x)) x          ; already a janet file handle
+    :else (janet.file/open (str x) :w)))     ; a path
 (defn input-stream [x] (reader x))
 (defn output-stream [x] (writer x))
 

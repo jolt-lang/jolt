@@ -397,7 +397,9 @@
         (array/push out (groups->result g (re :ngroups)))
         (set pos (+ pos (max 1 (length whole)))))
       (++ pos)))
-  out)
+  # Clojure's re-seq is nil (not an empty seq) when there are no matches, so
+  # `(if-let [m (re-seq ...)] ...)` works — an empty seq would be truthy.
+  (if (= 0 (length out)) nil out))
 
 (defn re-split [re s]
   (def re (re-pattern re))
