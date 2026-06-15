@@ -39,4 +39,13 @@
 # broader matrix; this pins a couple end-to-end)
 (assert (= 6 (api/eval-string ctx "(+ 1 2 3)")) "folded eval")
 (assert (= :yes (api/eval-string ctx "(if (< 1 2) :yes :no)")) "folded if eval")
+
+# Folding reaches into every op's children via map-ir-children (phase 3a) — it is
+# now total, so a constant nested in a fn arity / loop / try body folds too
+# (const-fold previously passed :try through unfolded). Sound: folding preserves
+# runtime results regardless of position, so these eval end-to-end (3-mode
+# conformance covers the broader matrix).
+(assert (= 3 ((api/eval-string ctx "(fn [x] (+ 1 2))") 0)) "folded fn arity body eval")
+(assert (= 10 (api/eval-string ctx "(loop [i 0] (if (< i (* 2 5)) (recur (inc i)) i))")) "folded loop eval")
+(assert (= 5 (api/eval-string ctx "(try (+ 2 3) (catch Throwable e 0))")) "folded try eval")
 (print "IR passes passed!")
