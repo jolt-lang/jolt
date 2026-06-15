@@ -39,25 +39,26 @@
 (defn- hash-idx [m k]
   (if (nil? k) 0 (mod (hash (ck k)) (length (m :buckets)))))
 
-(defn- phm-bucket-find [bucket k]
-  (var i 0) (var n (length bucket)) (var found nil)
+# Index of key k in a bucket (entries are stored stride-2: k v k v ...), or nil.
+# The single scan all the bucket ops share — keeping it one place stops the
+# stride logic drifting between them.
+(defn- bucket-index-of [bucket k]
+  (var i 0) (def n (length bucket)) (var found nil)
   (while (< i n)
-    (if (key= k (in bucket i)) (do (set found (in bucket (+ i 1))) (break)))
+    (if (key= k (in bucket i)) (do (set found i) (break)))
     (+= i 2))
   found)
+
+(defn- phm-bucket-find [bucket k]
+  (let [i (bucket-index-of bucket k)]
+    (if i (in bucket (+ i 1)) nil)))
 
 (defn phm-bucket-contains? [bucket k]
-  (var i 0) (var n (length bucket)) (var found false)
-  (while (< i n)
-    (if (key= k (in bucket i)) (do (set found true) (break)))
-    (+= i 2))
-  found)
+  (not (nil? (bucket-index-of bucket k))))
 
 (defn- phm-bucket-assoc [bucket k v]
-  (var i 0) (var n (length bucket)) (var found-i nil)
-  (while (< i n)
-    (if (key= k (in bucket i)) (do (set found-i i) (break)))
-    (+= i 2))
+  (def n (length bucket))
+  (def found-i (bucket-index-of bucket k))
   (if (not (nil? found-i))
     (let [nb @[]] (var j 0)
       (while (< j n) (array/push nb (if (= j (+ found-i 1)) v (in bucket j))) (++ j)) nb)
@@ -66,10 +67,8 @@
       (array/push nb k) (array/push nb v) nb)))
 
 (defn- phm-bucket-dissoc [bucket k]
-  (var i 0) (var n (length bucket)) (var found-i nil)
-  (while (< i n)
-    (if (key= k (in bucket i)) (do (set found-i i) (break)))
-    (+= i 2))
+  (def n (length bucket))
+  (def found-i (bucket-index-of bucket k))
   (if (nil? found-i) bucket
     (if (= n 2) nil
       (let [nb @[]] (var j 0)
@@ -82,12 +81,8 @@
     # Single pass with a presence flag (not nil-of-value): a key mapped to nil
     # is still present, so return nil (not the default) when it exists.
     (if bucket
-      (do
-        (var i 0) (var n (length bucket)) (var result default)
-        (while (< i n)
-          (if (key= k (in bucket i)) (do (set result (in bucket (+ i 1))) (break)))
-          (+= i 2))
-        result)
+      (let [i (bucket-index-of bucket k)]
+        (if i (in bucket (+ i 1)) default))
       default)))
 
 # Rehash every entry of `buckets` into a fresh array of `nb` buckets.

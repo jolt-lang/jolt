@@ -298,39 +298,35 @@
                       (+ exp-end 1) exp-end)]
             [(if neg (- val) val) fin]))))))
 
-(defn read-list [s pos]
-  # pos is at opening paren
-  (defn read-list-items [s pos items]
+# Read forms until `close` (a byte), returning [items end-pos]. Shared by the
+# list/vector/set readers: skip #_ discards and splice #?@ items uniformly, so the
+# skip/splice handling can't drift between them (it did once). The map reader
+# keeps its own loop — its key/value pairing needs a different value-slot scan.
+(defn read-delimited [s start-pos close err]
+  (defn read-items [s pos items]
     (let [pos (skip-whitespace s pos)]
       (if (>= pos (length s))
-        (reader-error "Unterminated list" pos))
-      (if (= (s pos) 41) # )
+        (reader-error err pos))
+      (if (= (s pos) close)
         [items (+ pos 1)]
         (let [[form new-pos] (read-form s pos)]
           # skip #_ discarded forms
           (if (and (struct? form) (= :jolt/skip (form :jolt/type)))
-            (read-list-items s new-pos items)
-            # splice #?@ items into the list
+            (read-items s new-pos items)
+            # splice #?@ items into the collection
             (if (and (struct? form) (= :jolt/splice (form :jolt/type)))
-              (read-list-items s new-pos (array/concat items (form :items)))
-              (read-list-items s new-pos (array/push items form))))))))
-  (read-list-items s (+ pos 1) @[]))
+              (read-items s new-pos (array/concat items (form :items)))
+              (read-items s new-pos (array/push items form))))))))
+  (read-items s start-pos @[]))
+
+(defn read-list [s pos]
+  # pos is at opening paren
+  (read-delimited s (+ pos 1) 41 "Unterminated list"))  # )
 
 (defn read-vector [s pos]
   # pos is at opening bracket
-  (defn read-vec-items [s pos items]
-    (let [pos (skip-whitespace s pos)]
-      (if (>= pos (length s))
-        (reader-error "Unterminated vector" pos))
-      (if (= (s pos) 93) # ]
-        [(tuple/slice (tuple ;items)) (+ pos 1)]
-        (let [[form new-pos] (read-form s pos)]
-          (if (and (struct? form) (= :jolt/skip (form :jolt/type)))
-            (read-vec-items s new-pos items)
-            (if (and (struct? form) (= :jolt/splice (form :jolt/type)))
-              (read-vec-items s new-pos (array/concat items (form :items)))
-              (read-vec-items s new-pos (array/push items form))))))))
-  (read-vec-items s (+ pos 1) @[]))
+  (let [[items end] (read-delimited s (+ pos 1) 93 "Unterminated vector")]  # ]
+    [(tuple/slice (tuple ;items)) end]))
 
 # A map-literal form. Janet structs drop nil keys/values, so when a key or value
 # is nil (e.g. {:a nil}) build a phm — it preserves nil, matching Clojure. The
@@ -400,19 +396,8 @@
 
 (defn read-set [s pos]
   # pos is at #, next char is {
-  (defn read-set-items [s pos items]
-    (let [pos (skip-whitespace s pos)]
-      (if (>= pos (length s))
-        (reader-error "Unterminated set" pos))
-      (if (= (s pos) 125) # }
-        [{:jolt/type :jolt/set :value (tuple/slice (tuple ;items))} (+ pos 1)]
-        (let [[form new-pos] (read-form s pos)]
-          (if (and (struct? form) (= :jolt/skip (form :jolt/type)))
-            (read-set-items s new-pos items)
-            (if (and (struct? form) (= :jolt/splice (form :jolt/type)))
-              (read-set-items s new-pos (array/concat items (form :items)))
-              (read-set-items s new-pos (array/push items form))))))))
-  (read-set-items s (+ pos 2) @[]))
+  (let [[items end] (read-delimited s (+ pos 2) 125 "Unterminated set")]  # }
+    [{:jolt/type :jolt/set :value (tuple/slice (tuple ;items))} end]))
 
 (defn read-char-name-end [s pos]
   (if (and (< pos (length s)) (symbol-char? (s pos)))
