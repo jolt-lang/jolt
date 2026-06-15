@@ -98,4 +98,12 @@
     (if (= 0 (length form))
       @[]
       (eval-list ctx bindings form))
+    # A non-array ISeq used as a form is a CALL too (jolt-2rx): cons/concat/list
+    # and ~@ build a plist or lazy-seq (list?/seq? true, array? false) — without
+    # this they fell through to self-eval, so (eval (cons '+ '(1 2))) returned the
+    # list as data instead of 3, and macro output containing such subforms never
+    # evaluated. d-realize coerces to the element array; an empty list self-evals.
+    (or (plist? form) (lazy-seq? form))
+    (let [arr (d-realize form)]
+      (if (= 0 (length arr)) form (eval-list ctx bindings arr)))
     form)))

@@ -1,12 +1,18 @@
 ; Jolt Standard Library: clojure.walk
 ; Tree walking for Clojure data structures.
-; Simplified: uses vector? and map? predicates (no list? or seq?).
 
 (defn walk
   [inner outer form]
   (cond
+    ; vectors/maps first so seq? can't swallow them (a vector is not seq? on
+    ; jolt, but keep the concrete branches authoritative)
     (vector? form) (outer (vec (map inner form)))
     (map? form) (outer (into (empty form) (map inner form)))
+    ; lists rebuild as lists, other seqs (incl. macro/template output: cons/
+    ; concat/lazy-seq) walk too — without this, postwalk-replace silently no-op'd
+    ; a quoted list, breaking clojure.template/apply-template (jolt-khk)
+    (list? form) (outer (apply list (map inner form)))
+    (seq? form) (outer (map inner form))
     :else (outer form)))
 
 (defn postwalk

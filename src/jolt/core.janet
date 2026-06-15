@@ -306,7 +306,15 @@
           (def m (get methods dval))
           (when m
             (m v @{:jolt/type :jolt/writer :sink emit})
-            true))))))
+            true)))))
+  # A record/deftype's own Object/toString (jolt-rt6n): str routes records here
+  # so a deftype with (toString [_] ...) renders via it instead of the data repr.
+  (set-record-tostring-cb!
+    (fn [v]
+      (def tag (record-tag v))
+      (when tag
+        (def m (find-method-any-protocol ctx tag "toString"))
+        (when m (m v))))))
 
 (def init-core!
   (fn [& args]
