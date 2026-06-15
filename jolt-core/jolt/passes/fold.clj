@@ -3,7 +3,8 @@
   Bottom-up numeric folding + dead-branch removal, total over node :ops (unknown
   ops pass through with folded children). Portable Clojure: kernel-tier fns +
   seed primitives only — it loads with the compiler namespaces, before the later
-  core tiers.")
+  core tiers."
+  (:require [jolt.ir :refer [map-ir-children]]))
 
 ;; Folding computes with THE ACTUAL jolt fns, so a folded result matches what
 ;; the unfolded code would produce at runtime by construction. Conservative:
@@ -38,14 +39,15 @@
   (let [op (get node :op)]
     (cond
       (= op :invoke)
-      (let [f (const-fold (get node :fn))
-            args (mapv const-fold (get node :args))
-            ff (fold-fn f)
+      ;; fold children first, then this call if the fn is foldable over consts
+      (let [n (map-ir-children const-fold node)
+            ff (fold-fn (get n :fn))
+            args (get n :args)
             folded (when (and ff (pos? (count args)) (every? const-num? args))
                      (try
                        {:op :const :val (apply ff (mapv (fn [a] (get a :val)) args))}
                        (catch Exception e nil)))]
-        (or folded (assoc node :fn f :args args)))
+        (or folded n))
 
       (= op :if)
       (let [t (const-fold (get node :test))]
@@ -59,41 +61,9 @@
                  :then (const-fold (get node :then))
                  :else (const-fold (get node :else)))))
 
-      (= op :do)
-      (assoc node
-             :statements (mapv const-fold (get node :statements))
-             :ret (const-fold (get node :ret)))
-
-      ;; let/loop bindings are [name-string init-ir] PAIRS (see
-      ;; analyzer/analyze-bindings), not maps.
-      (= op :let)
-      (assoc node
-             :bindings (mapv (fn [b] [(nth b 0) (const-fold (nth b 1))])
-                             (get node :bindings))
-             :body (const-fold (get node :body)))
-
-      (= op :loop)
-      (assoc node
-             :bindings (mapv (fn [b] [(nth b 0) (const-fold (nth b 1))])
-                             (get node :bindings))
-             :body (const-fold (get node :body)))
-
-      (= op :recur)
-      (assoc node :args (mapv const-fold (get node :args)))
-
-      (= op :fn)
-      (assoc node
-             :arities (mapv (fn [a] (assoc a :body (const-fold (get a :body))))
-                            (get node :arities)))
-
-      (= op :def)    (assoc node :init (const-fold (get node :init)))
-      (= op :throw)  (assoc node :expr (const-fold (get node :expr)))
-      (= op :vector) (assoc node :items (mapv const-fold (get node :items)))
-      (= op :set)    (assoc node :items (mapv const-fold (get node :items)))
-      (= op :map)    (assoc node :pairs (mapv (fn [pr] (mapv const-fold pr)) (get node :pairs)))
-
-      ;; leaves and anything this pass doesn't know: unchanged
-      :else node)))
+      ;; every other op: fold each child (let/loop bindings are [name init]
+      ;; pairs, handled by the combinator)
+      :else (map-ir-children const-fold node))))
 
 ;; A const node whose value is a scalar literal (kw/str/num/bool). Shared by the
 ;; scalar-replace pass (jolt.passes.inline) and the collection-type inference

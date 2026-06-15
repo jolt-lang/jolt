@@ -4,6 +4,7 @@
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir]]
+            [jolt.ir :refer [map-ir-children]]
             [jolt.passes.fold :refer [scalar-const?]]))
 
 ;; ---------------------------------------------------------------------------
@@ -85,22 +86,9 @@
                           (assoc r :hint (get node :hint))
                           r)
                         node))
-      (= op :if) (assoc node
-                        :test (subst (get node :test) env)
-                        :then (subst (get node :then) env)
-                        :else (subst (get node :else) env))
-      (= op :do) (assoc node
-                        :statements (mapv (fn [s] (subst s env)) (get node :statements))
-                        :ret (subst (get node :ret) env))
-      (= op :throw) (assoc node :expr (subst (get node :expr) env))
-      (= op :invoke) (assoc node
-                            :fn (subst (get node :fn) env)
-                            :args (mapv (fn [a] (subst a env)) (get node :args)))
-      (= op :vector) (assoc node :items (mapv (fn [x] (subst x env)) (get node :items)))
-      (= op :set) (assoc node :items (mapv (fn [x] (subst x env)) (get node :items)))
-      (= op :map) (assoc node :pairs (mapv (fn [pr] [(subst (nth pr 0) env)
-                                                     (subst (nth pr 1) env)])
-                                           (get node :pairs)))
+      ;; :let alpha-renames each binder to a fresh name, threading the extended
+      ;; env left-to-right — sequential scope the uniform combinator can't model,
+      ;; so it stays explicit.
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [e (nth acc 0)
@@ -112,8 +100,10 @@
                         [env []]
                         (get node :bindings))]
         (assoc node :bindings (nth res 1) :body (subst (get node :body) (nth res 0))))
-      ;; :const :var :host :the-var :quote — no locals to substitute
-      :else node)))
+      ;; every other op substitutes env uniformly into its children. Inline
+      ;; bodies only contain safe ops (see safe-op?), so loop/recur/fn/def/try
+      ;; never reach here; the combinator handles them harmlessly regardless.
+      :else (map-ir-children (fn [c] (subst c env)) node))))
 
 (defn- trivial-arg? [n]
   ;; safe to substitute directly (immutable, free to duplicate): a local read or
@@ -201,41 +191,10 @@
 (defn inline-node
   "Bottom-up: inline children first, then attempt to inline this node."
   [node ctx]
-  (let [op (get node :op)]
-    (cond
-      (= op :invoke)
-      (try-inline (assoc node
-                         :fn (inline-node (get node :fn) ctx)
-                         :args (mapv (fn [a] (inline-node a ctx)) (get node :args)))
-                  ctx)
-      (= op :if) (assoc node
-                        :test (inline-node (get node :test) ctx)
-                        :then (inline-node (get node :then) ctx)
-                        :else (inline-node (get node :else) ctx))
-      (= op :do) (assoc node
-                        :statements (mapv (fn [s] (inline-node s ctx)) (get node :statements))
-                        :ret (inline-node (get node :ret) ctx))
-      (= op :let) (assoc node
-                         :bindings (mapv (fn [b] [(nth b 0) (inline-node (nth b 1) ctx)]) (get node :bindings))
-                         :body (inline-node (get node :body) ctx))
-      (= op :loop) (assoc node
-                          :bindings (mapv (fn [b] [(nth b 0) (inline-node (nth b 1) ctx)]) (get node :bindings))
-                          :body (inline-node (get node :body) ctx))
-      (= op :recur) (assoc node :args (mapv (fn [a] (inline-node a ctx)) (get node :args)))
-      (= op :fn) (assoc node :arities (mapv (fn [a] (assoc a :body (inline-node (get a :body) ctx)))
-                                            (get node :arities)))
-      (= op :def) (assoc node :init (inline-node (get node :init) ctx))
-      (= op :throw) (assoc node :expr (inline-node (get node :expr) ctx))
-      (= op :vector) (assoc node :items (mapv (fn [x] (inline-node x ctx)) (get node :items)))
-      (= op :set) (assoc node :items (mapv (fn [x] (inline-node x ctx)) (get node :items)))
-      (= op :map) (assoc node :pairs (mapv (fn [pr] [(inline-node (nth pr 0) ctx)
-                                                     (inline-node (nth pr 1) ctx)])
-                                           (get node :pairs)))
-      (= op :try) (assoc node
-                         :body (inline-node (get node :body) ctx)
-                         :catch-body (when (get node :catch-body) (inline-node (get node :catch-body) ctx))
-                         :finally (when (get node :finally) (inline-node (get node :finally) ctx)))
-      :else node)))
+  (if (= :invoke (get node :op))
+    ;; inline children first, then attempt to splice this call
+    (try-inline (map-ir-children (fn [c] (inline-node c ctx)) node) ctx)
+    (map-ir-children (fn [c] (inline-node c ctx)) node)))
 
 ;; ---------------------------------------------------------------------------
 ;; flatten-lets: (let [a (let [b X] Y) ..] body) -> (let [b X a Y ..] body).
@@ -256,40 +215,11 @@
           binds))
 
 (defn flatten-lets [node]
-  (let [op (get node :op)]
-    (cond
-      (= op :let) (assoc node
-                         :bindings (flatten-let-bindings
-                                    (mapv (fn [b] [(nth b 0) (flatten-lets (nth b 1))]) (get node :bindings)))
-                         :body (flatten-lets (get node :body)))
-      (= op :if) (assoc node
-                        :test (flatten-lets (get node :test))
-                        :then (flatten-lets (get node :then))
-                        :else (flatten-lets (get node :else)))
-      (= op :do) (assoc node
-                        :statements (mapv flatten-lets (get node :statements))
-                        :ret (flatten-lets (get node :ret)))
-      (= op :throw) (assoc node :expr (flatten-lets (get node :expr)))
-      (= op :invoke) (assoc node
-                            :fn (flatten-lets (get node :fn))
-                            :args (mapv flatten-lets (get node :args)))
-      (= op :vector) (assoc node :items (mapv flatten-lets (get node :items)))
-      (= op :set) (assoc node :items (mapv flatten-lets (get node :items)))
-      (= op :map) (assoc node :pairs (mapv (fn [pr] [(flatten-lets (nth pr 0))
-                                                     (flatten-lets (nth pr 1))])
-                                           (get node :pairs)))
-      (= op :loop) (assoc node
-                          :bindings (mapv (fn [b] [(nth b 0) (flatten-lets (nth b 1))]) (get node :bindings))
-                          :body (flatten-lets (get node :body)))
-      (= op :recur) (assoc node :args (mapv flatten-lets (get node :args)))
-      (= op :fn) (assoc node :arities (mapv (fn [a] (assoc a :body (flatten-lets (get a :body))))
-                                            (get node :arities)))
-      (= op :def) (assoc node :init (flatten-lets (get node :init)))
-      (= op :try) (assoc node
-                         :body (flatten-lets (get node :body))
-                         :catch-body (when (get node :catch-body) (flatten-lets (get node :catch-body)))
-                         :finally (when (get node :finally) (flatten-lets (get node :finally))))
-      :else node)))
+  (if (= :let (get node :op))
+    ;; flatten children first, then hoist any let-valued binding inits
+    (let [n (map-ir-children flatten-lets node)]
+      (assoc n :bindings (flatten-let-bindings (get n :bindings))))
+    (map-ir-children flatten-lets node)))
 
 ;; ---------------------------------------------------------------------------
 ;; scalar-replace (AOT escape analysis). A map allocation whose ONLY use is
@@ -485,42 +415,13 @@
   guarantees (via local-escapes?) that nm is never rebound here and appears only
   as a lookup subject, so no shadowing logic is needed."
   [node nm mapnode]
-  (let [op (get node :op)
-        k (lookup-key node nm)]
-    (cond
-      k (map-val mapnode k)
-      (= op :if) (assoc node
-                        :test (subst-lookup (get node :test) nm mapnode)
-                        :then (subst-lookup (get node :then) nm mapnode)
-                        :else (subst-lookup (get node :else) nm mapnode))
-      (= op :do) (assoc node
-                        :statements (mapv (fn [s] (subst-lookup s nm mapnode)) (get node :statements))
-                        :ret (subst-lookup (get node :ret) nm mapnode))
-      (= op :throw) (assoc node :expr (subst-lookup (get node :expr) nm mapnode))
-      (= op :invoke) (assoc node
-                            :fn (subst-lookup (get node :fn) nm mapnode)
-                            :args (mapv (fn [a] (subst-lookup a nm mapnode)) (get node :args)))
-      (= op :vector) (assoc node :items (mapv (fn [x] (subst-lookup x nm mapnode)) (get node :items)))
-      (= op :set) (assoc node :items (mapv (fn [x] (subst-lookup x nm mapnode)) (get node :items)))
-      (= op :map) (assoc node :pairs (mapv (fn [pr] [(subst-lookup (nth pr 0) nm mapnode)
-                                                     (subst-lookup (nth pr 1) nm mapnode)])
-                                           (get node :pairs)))
-      (= op :let) (assoc node
-                         :bindings (mapv (fn [b] [(nth b 0) (subst-lookup (nth b 1) nm mapnode)]) (get node :bindings))
-                         :body (subst-lookup (get node :body) nm mapnode))
-      ;; the caller's escape check guarantees nm is not rebound in these, so we
-      ;; recurse uniformly — leaving any lookup of nm un-substituted would dangle.
-      (= op :recur) (assoc node :args (mapv (fn [a] (subst-lookup a nm mapnode)) (get node :args)))
-      (= op :loop) (assoc node
-                          :bindings (mapv (fn [b] [(nth b 0) (subst-lookup (nth b 1) nm mapnode)]) (get node :bindings))
-                          :body (subst-lookup (get node :body) nm mapnode))
-      (= op :fn) (assoc node :arities (mapv (fn [a] (assoc a :body (subst-lookup (get a :body) nm mapnode)))
-                                            (get node :arities)))
-      (= op :try) (assoc node
-                         :body (subst-lookup (get node :body) nm mapnode)
-                         :catch-body (when (get node :catch-body) (subst-lookup (get node :catch-body) nm mapnode))
-                         :finally (when (get node :finally) (subst-lookup (get node :finally) nm mapnode)))
-      :else node)))
+  (let [k (lookup-key node nm)]
+    (if k
+      (map-val mapnode k)
+      ;; the caller's escape check guarantees nm is never rebound below, so we
+      ;; recurse uniformly into every child — leaving any lookup of nm
+      ;; un-substituted would dangle.
+      (map-ir-children (fn [c] (subst-lookup c nm mapnode)) node))))
 
 (defn- fold-kw-literal
   "(a) (:k {:k a ..}) -> a (siblings pure)."
@@ -566,36 +467,8 @@
   [node]
   (let [op (get node :op)]
     (cond
-      (= op :invoke)
-      (fold-kw-literal (assoc node
-                              :fn (scalar-replace (get node :fn))
-                              :args (mapv scalar-replace (get node :args))))
-      (= op :let)
-      (elim-let-maps (assoc node
-                            :bindings (mapv (fn [b] [(nth b 0) (scalar-replace (nth b 1))]) (get node :bindings))
-                            :body (scalar-replace (get node :body))))
-      (= op :if) (assoc node
-                        :test (scalar-replace (get node :test))
-                        :then (scalar-replace (get node :then))
-                        :else (scalar-replace (get node :else)))
-      (= op :do) (assoc node
-                        :statements (mapv scalar-replace (get node :statements))
-                        :ret (scalar-replace (get node :ret)))
-      (= op :throw) (assoc node :expr (scalar-replace (get node :expr)))
-      (= op :vector) (assoc node :items (mapv scalar-replace (get node :items)))
-      (= op :set) (assoc node :items (mapv scalar-replace (get node :items)))
-      (= op :map) (assoc node :pairs (mapv (fn [pr] [(scalar-replace (nth pr 0))
-                                                     (scalar-replace (nth pr 1))])
-                                           (get node :pairs)))
-      (= op :loop) (assoc node
-                          :bindings (mapv (fn [b] [(nth b 0) (scalar-replace (nth b 1))]) (get node :bindings))
-                          :body (scalar-replace (get node :body)))
-      (= op :recur) (assoc node :args (mapv scalar-replace (get node :args)))
-      (= op :fn) (assoc node :arities (mapv (fn [a] (assoc a :body (scalar-replace (get a :body))))
-                                            (get node :arities)))
-      (= op :def) (assoc node :init (scalar-replace (get node :init)))
-      (= op :try) (assoc node
-                         :body (scalar-replace (get node :body))
-                         :catch-body (when (get node :catch-body) (scalar-replace (get node :catch-body)))
-                         :finally (when (get node :finally) (scalar-replace (get node :finally))))
-      :else node)))
+      ;; (a) fold (:k {:k a ..}) at invokes, after scalar-replacing children
+      (= op :invoke) (fold-kw-literal (map-ir-children scalar-replace node))
+      ;; (b) drop a non-escaping const-key-map let binding, after children
+      (= op :let) (elim-let-maps (map-ir-children scalar-replace node))
+      :else (map-ir-children scalar-replace node))))

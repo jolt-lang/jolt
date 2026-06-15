@@ -59,3 +59,56 @@
 (defn throw-node [expr] {:op :throw :expr expr})
 
 (defn op [node] (:op node))
+
+;; ---------------------------------------------------------------------------
+;; Structural recursion over IR child nodes (jolt-26dm / phase 3a).
+;;
+;; A tree-rewriting pass recurses into each op's child NODE positions and
+;; rebuilds the node; this combinator does that one place, so the per-op child
+;; layout is single-sourced and adding an op is a one-site change here (was: an
+;; edit to every walk). `(map-ir-children f node)` returns node with f applied to
+;; each child IR node — re-applied per element for seq positions (:args/:items/
+;; :statements), per value for :map pairs, per init for :let/:loop bindings, and
+;; per arity :body for :fn. Non-node positions (binding NAMES, fn :params/:rest,
+;; the :op tag, :ns/:name/:val) are left intact. Leaf ops and any op with no
+;; child nodes pass through unchanged, so walks built on this are TOTAL over the
+;; op set (an unknown op recurses nowhere rather than being silently dropped).
+;;
+;; Uses cond/=/get only — same constructs as the passes that consume it, so it
+;; loads at the same compiler tier with no new macro dependency.
+(defn map-ir-children [f node]
+  (let [op (get node :op)]
+    (cond
+      (= op :if)     (assoc node :test (f (get node :test))
+                                 :then (f (get node :then))
+                                 :else (f (get node :else)))
+      (= op :do)     (assoc node :statements (mapv f (get node :statements))
+                                 :ret (f (get node :ret)))
+      (= op :throw)  (assoc node :expr (f (get node :expr)))
+      (= op :invoke) (assoc node :fn (f (get node :fn))
+                                 :args (mapv f (get node :args)))
+      (= op :vector) (assoc node :items (mapv f (get node :items)))
+      (= op :set)    (assoc node :items (mapv f (get node :items)))
+      (= op :map)    (assoc node :pairs (mapv (fn [pr] [(f (nth pr 0)) (f (nth pr 1))])
+                                              (get node :pairs)))
+      (= op :let)    (assoc node :bindings (mapv (fn [b] [(nth b 0) (f (nth b 1))])
+                                                 (get node :bindings))
+                                 :body (f (get node :body)))
+      (= op :loop)   (assoc node :bindings (mapv (fn [b] [(nth b 0) (f (nth b 1))])
+                                                 (get node :bindings))
+                                 :body (f (get node :body)))
+      (= op :recur)  (assoc node :args (mapv f (get node :args)))
+      (= op :fn)     (assoc node :arities (mapv (fn [a] (assoc a :body (f (get a :body))))
+                                                (get node :arities)))
+      (= op :def)    (assoc node :init (f (get node :init)))
+      ;; :catch-body / :finally are optional; recurse them only when PRESENT.
+      ;; Assoc'ing them nil-when-absent would turn the node into a phm (jolt's
+      ;; nil-valued-key representation) and force backend densification — so we
+      ;; preserve the node's shape and never introduce a nil key.
+      (= op :try)
+      (let [n (assoc node :body (f (get node :body)))
+            n (if (get node :catch-body) (assoc n :catch-body (f (get node :catch-body))) n)
+            n (if (get node :finally) (assoc n :finally (f (get node :finally))) n)]
+        n)
+      ;; :const :local :var :host :the-var :rt :quote — no child nodes
+      :else node)))
