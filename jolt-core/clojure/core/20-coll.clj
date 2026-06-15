@@ -343,10 +343,6 @@
 ;; qualified-/simple- keyword?/symbol? moved above qualified-ident? (forward
 ;; references are analysis errors now — jolt-2o7.3).
 
-;; find: the map entry [k v] when k is present (nil values included), nil
-;; otherwise. contains? gives vectors-by-index for free, matching Clojure.
-(defn find [m k]
-  (when (contains? m k) [k (get m k)]))
 
 ;; realized?: defined on the pending types only (delay/lazy-seq/future read
 ;; Tagged-value predicates. The constructors (atom/volatile!/...) stay in Janet,

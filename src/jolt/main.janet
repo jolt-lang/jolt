@@ -440,10 +440,11 @@
 (defn- deps-image-path [ns-name]
   (def dir (or (os/getenv "JOLT_IMAGE_CACHE_DIR") (os/getenv "TMPDIR") "/tmp"))
   (def env (ctx :env))
-  (def key (string/format "%q|%q|%q|%q|%q|%q|%q|%q"
+  (def key (string/format "%q|%q|%q|%q|%q|%q|%q|%q|%q"
                           jolt-version ns-name (os/getenv "JOLT_PATH")
                           (get env :direct-linking?) (get env :inline?)
-                          (get env :shapes?) (get env :whole-program?)
+                          (get env :shapes?) (get env :map-shapes?)
+                          (get env :whole-program?)
                           (os/getenv "JOLT_FEATURES")))
   (string dir "/jolt-deps-" (band (hash key) 0x7FFFFFFF) ".jimg"))
 

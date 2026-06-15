@@ -59,8 +59,7 @@
   [p]
   (if (or (= 0 (get p :count)) (nil? (get p :rest)))
     @[]
-    (let [r (get p :rest)]
-      (if (plist? r) r r))))
+    (get p :rest)))
 
 (defn pl-from-indexed
   "Build a plist from a Janet array/tuple, preserving order. O(n)."

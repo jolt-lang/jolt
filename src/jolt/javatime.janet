@@ -513,7 +513,7 @@
   (register-class-statics! "java.util.TimeZone"
     @{"getTimeZone" (fn [id] (make-tz id))})
   # java.text.SimpleDateFormat: minimal formatter supporting y M d H m s tokens.
-  (defn- pad2 [n] (if (< n 10) (string "0" n) (string n)))
+  # (pad2 is the module-level helper above.)
   (defn- sdf-format [pattern ms utc?]
     (def d (os/date (math/floor (/ ms 1000)) (not utc?)))
     (def out @"")
@@ -627,7 +627,7 @@
                  (when (= :directory (os/stat p :mode)) (os/dir p))))
       "toPath" (fn [self] @{:jolt/type :jolt/nio-path :s (get self :path)})
       "toURI" (fn [self] (string "file:" (jfile-abs (get self :path))))
-      "toURL" (fn [self] @{:jolt/type :jolt/url :url (string "file:" (jfile-abs (get self :path)))})
+      "toURL" (fn [self] @{:jolt/type :jolt/url :spec (string "file:" (jfile-abs (get self :path)))})
       "delete" (fn [self] (let [r (protect (os/rm (get self :path)))] (truthy? (r 0))))
       "mkdir" (fn [self] (truthy? ((protect (os/mkdir (get self :path))) 0)))
       "mkdirs" (fn [self] (truthy? ((protect (os/mkdir (get self :path))) 0)))

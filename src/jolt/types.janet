@@ -524,12 +524,6 @@
   (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
     (ns :aliases)))
 
-(defn ns-imports-fn
-  "Return the import map of the current namespace."
-  [ctx]
-  (let [ns (ctx-find-ns ctx (ctx-current-ns ctx))]
-    (ns :imports)))
-
 (defn find-var
   "Resolve a symbol to a var in the current context.
   Looks in current namespace first, then clojure.core."
@@ -652,7 +646,6 @@
     (let [t @{}] (each kk (desc :jolt/shape) (put t kk (shape-get rec kk nil))) (put t k v) (table/to-struct t))))
 (defn shape-count [rec] (- (length rec) 1))
 (defn shape-contains? [rec k] (not (nil? (get ((in rec 0) :idx) k))))
-(defn shape-vals [rec] (tuple/slice rec 1))
 # a struct snapshot of a shape-rec — the reusable bridge for ops that already
 # handle structs (dissoc, vals, seq, equality, print, ...) without per-op code
 (defn shape->struct [rec]
