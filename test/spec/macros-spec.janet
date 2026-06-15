@@ -24,7 +24,14 @@
   ["gensym unique"      "false"
    "(= (gensym) (gensym))"]
   ["gensym# in template" "true"
-   "(do (defmacro m [] `(let [x# 1] x#)) (= 1 (m)))"])
+   "(do (defmacro m [] `(let [x# 1] x#)) (= 1 (m)))"]
+  # An #() lambda written inside a syntax-quote: its generated params must not be
+  # qualified to the ns (a qualified symbol is not a valid param). hiccup's
+  # compiler emits `(let [sb# ..] (run! #(.append sb# %) ..)) (jolt-nkx).
+  ["#() inside syntax-quote" "[2 4 6]"
+   "(do (defmacro m [] `(mapv #(* % 2) [1 2 3])) (m))"]
+  ["#() + auto-gensym share in template" "\"ab\""
+   "(do (defmacro m [] `(let [sb# (StringBuilder.)] (mapv #(.append sb# %) [\"a\" \"b\"]) (.toString sb#))) (m))"])
 
 # Core macros ported from Janet to the Clojure overlay (jolt-1j0 phase 3,
 # jolt-core/clojure/core/30-macros.clj).

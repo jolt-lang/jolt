@@ -125,6 +125,11 @@ checks → UNVERIFIED (rows to add).
   nested form including vector, map and set literals — `#(assoc {} :k %)`,
   `#(hash-set % %2)` and `#(get {:t %} :t)` all see their `%`s. (A reader that
   scanned only call forms would miscompile `#(identity {:text %})` as a 0-arg fn.)
+- The synthesized parameters are auto-gensyms (their names carry the `#` suffix,
+  like Clojure's `p1__N#`), so an `#()` written inside a syntax-quote survives:
+  the params are mapped consistently and left unqualified rather than being
+  qualified to the current namespace (a qualified symbol is not a valid
+  parameter). E.g. ``  `(map #(inc %) xs) `` expands correctly inside a macro.
 - `#()` literals MUST NOT nest.
 
 ```clojure
