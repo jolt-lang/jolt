@@ -534,12 +534,14 @@
   (print "  uberscript OUT -m NS  Bundle NS + its required namespaces into one .clj")
   (print "  --version, version    Print the Jolt version")
   (print "  -h, --help, help      Show this help\n")
-  (print "Running a program (a file, -m/-M) direct-links and optimizes by default;")
-  (print "the repl, -e, and nrepl-server stay open so you can redefine vars.")
+  (print "Running a program (a file, -m/-M) direct-links by default; type inference")
+  (print "and specialization are opt-in via JOLT_OPTIMIZE (the cost is paid once, then")
+  (print "cached). The repl, -e, and nrepl-server stay open so you can redefine vars.")
   (print "Environment:")
+  (print "  JOLT_OPTIMIZE=1         type-infer + specialize (whole-program over app nses)")
   (print "  JOLT_NO_DIRECT_LINK=1   keep a program run open/redefinable (no optimization)")
   (print "  JOLT_NO_WHOLE_PROGRAM=1 direct-link but skip the cross-namespace pass")
-  (print "  JOLT_DIRECT_LINK=1      force direct-linking on (e.g. for -e)")
+  (print "  JOLT_DIRECT_LINK=1      force direct-linking + optimization on (e.g. for -e)")
   (print "  JOLT_WHOLE_PROGRAM=1    force the whole-program pass on")
   (print "  JOLT_INTERPRET=1        run the tree-walking interpreter\n")
   (print "Dependencies (deps.edn) are handled by the separate jolt-deps tool."))
@@ -561,6 +563,15 @@
   (when-let [jp (os/getenv "JOLT_PATH")]
     (each p (string/split ":" jp)
       (when (> (length p) 0) (array/push (get (ctx :env) :source-paths) p))))
+  # JOLT_APP_PATHS (jolt-87e), likewise applied at runtime: the project's own
+  # source roots, set by jolt-deps. Whole-program inference is scoped to
+  # namespaces under these (deps compile at default cost), so a dep-heavy app's
+  # optimize-mode startup doesn't re-infer every transitive dependency. Read here
+  # for the same baked-at-build-time reason as JOLT_PATH above.
+  (let [aps @[]]
+    (when-let [jap (os/getenv "JOLT_APP_PATHS")]
+      (each p (string/split ":" jap) (when (> (length p) 0) (array/push aps p))))
+    (put (ctx :env) :app-source-paths aps))
   # JOLT_FEATURES, likewise, must be applied at runtime: reader-features-set!
   # runs at module load, which for a baked binary is BUILD time — so a process
   # that sets JOLT_FEATURES (e.g. to read a clj-targeted lib's :clj branches)

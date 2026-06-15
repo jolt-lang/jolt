@@ -55,6 +55,12 @@
   (def rs (string/join (roots aliases) ":"))
   (def existing (os/getenv "JOLT_PATH"))
   (os/setenv "JOLT_PATH" (if (and existing (> (length existing) 0)) (string rs ":" existing) rs))
+  # The project's OWN source roots (jolt-87e): the runtime scopes whole-program
+  # inference to namespaces under these, inferring deps per-ns at load instead of
+  # re-inferring every transitive dep in one fixpoint. Absent => the runtime
+  # treats all namespaces as app (whole-program over everything, as before).
+  (when (os/stat "deps.edn")
+    (os/setenv "JOLT_APP_PATHS" (string/join (deps/project-source-roots "deps.edn" aliases) ":")))
   (os/execute [(jolt-bin) ;extra-args] :p))
 
 (defn- usage []

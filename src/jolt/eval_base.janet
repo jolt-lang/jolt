@@ -421,6 +421,21 @@
         (when (not= (last chain) file) (array/push chain file))
         (propagate err fib))))))
 
+# jolt-87e: is a namespace loaded from `path` part of the APP (vs a dependency)?
+# True when its file sits under one of the declared app source roots
+# (:app-source-paths, from JOLT_APP_PATHS / jolt-deps). When NO app roots are
+# declared (a bare program run, or jolt invoked without jolt-deps), everything
+# counts as app so whole-program covers the whole program exactly as before.
+# Only app namespaces defer into the one whole-program fixpoint; dependency
+# namespaces infer per-ns at load, so a dep-heavy app's startup doesn't re-infer
+# hundreds of transitive dependency namespaces in a single closed-world pass.
+(defn- app-source-ns?
+  [ctx path]
+  (def roots (get (ctx :env) :app-source-paths))
+  (if (or (nil? roots) (empty? roots))
+    true
+    (and path (truthy? (some |(string/has-prefix? $ path) roots)))))
+
 (defn maybe-require-ns
   "If namespace ns-name isn't populated yet, load its source — from a file on the
   context's source roots, else from the stdlib baked into the image. Restores the
@@ -445,29 +460,52 @@
           (error (string "Could not locate " ns-name
                          " on the context's source paths (JOLT_PATH / :paths)")))
         (when (or path embedded)
-          (let [saved (ctx-current-ns ctx)]
+          (let [saved (ctx-current-ns ctx)
+                # jolt-87e: is this an app namespace, or a dependency/library? Only
+                # the app is the closed world the whole-program optimizer reasons
+                # over; dependencies are open-world libraries.
+                app? (app-source-ns? ctx path)
+                # Whole-program optimize is active for this load.
+                wp-active? (and (get (ctx :env) :inline?)
+                                (get (ctx :env) :whole-program?)
+                                (not (get (ctx :env) :infer-program-done?)))
+                # A dependency under whole-program optimize compiles at DEFAULT
+                # cost: :inline? off for its load, so the per-form inline +
+                # inference passes — the bulk of optimize-mode startup — don't run
+                # over hundreds of library forms. (Direct-linking + shape-recs stay
+                # on, exactly like a non-optimized direct-link build.) This is what
+                # makes JOLT_OPTIMIZE viable on dep-heavy apps; the app's own nses
+                # below keep full optimization. (jolt-87e)
+                dep-cheap? (and wp-active? (not app?))
+                saved-inline (get (ctx :env) :inline?)]
             # Stdlib files have no `ns` form, so switch into the target ns first
             # (their defs intern there); a library's own `ns` form overrides this.
             (ctx-set-current-ns ctx ns-name)
+            (when dep-cheap? (put (ctx :env) :inline? false))
             (if path
               (load-ns-source ctx (slurp path) path)
               (load-ns-source ctx embedded (string ns-name " (stdlib)")))
+            (when dep-cheap? (put (ctx :env) :inline? saved-inline))
             # Inter-procedural collection-type inference (jolt-767): once the whole
             # unit is loaded, run the closed-world fixpoint + recompile so param-
             # dependent lookups specialize. Only in optimization mode; best-effort
             # (a failure here must not break loading). Hook installed by the api to
             # avoid an evaluator->backend circular import.
             (when (get (ctx :env) :inline?)
-              (if (and (get (ctx :env) :whole-program?)
-                       (not (get (ctx :env) :infer-program-done?)))
-                # whole-program (jolt-t34): defer — record the ns and run ONE
-                # fixpoint over all units later (the closed-world pass sees every
-                # caller, so cross-ns param types propagate). Once that batch pass
-                # has run (infer-program-done?), a ns loaded later — a lazy require
-                # inside -main — can't join it, so fall back to per-ns inference.
+              (cond
+                # whole-program (jolt-t34), APP namespace: defer — record the ns and
+                # run ONE fixpoint over all app units later (the closed-world pass
+                # sees every caller, so cross-ns param types propagate).
+                (and wp-active? app?)
                 (let [lst (or (get (ctx :env) :inferred-nses)
                               (let [a @[]] (put (ctx :env) :inferred-nses a) a))]
                   (array/push lst ns-name))
+                # whole-program, DEPENDENCY namespace (jolt-87e): nothing to do —
+                # it compiled cheaply above (no inference to run or defer).
+                wp-active?
+                nil
+                # per-ns mode (whole-program off), or a lazy require AFTER the batch
+                # ran: infer this unit on its own.
                 (when-let [iu (get (ctx :env) :infer-unit!)]
                   (protect (iu ctx ns-name)))))
             # Record load order for tooling (uberscript): a dependency finishes
