@@ -690,6 +690,11 @@
 (defn- build-compiler! [ctx]
   (compile-load ctx "jolt.ir")
   (compile-load ctx "jolt.analyzer")
+  # jolt.passes is split into three weakly-coupled namespaces; load them in
+  # dependency order (fold is the base) before the façade requires them.
+  (compile-load ctx "jolt.passes.fold")
+  (compile-load ctx "jolt.passes.inline")
+  (compile-load ctx "jolt.passes.types")
   (compile-load ctx "jolt.passes"))
 
 (defn- ensure-analyzer [ctx]
