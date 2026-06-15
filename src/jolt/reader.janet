@@ -448,10 +448,15 @@
         nil))
     (scan-pct form)
     # One canonical gensym per slot 1..max-n (placeholders for unused), plus rest.
+    # Param names carry a trailing `#` (auto-gensym suffix, matching Clojure's
+    # `p1__N#`) so a #() written inside a syntax-quote survives: sq-symbol treats
+    # `#`-suffixed names as auto-gensyms (mapped consistently, left unqualified)
+    # rather than qualifying them to the current ns — a qualified symbol is not a
+    # valid fn param. Harmless outside a backtick (just a regular symbol name).
     (def slot-syms @{})
     (var i 1)
-    (while (<= i max-n) (put slot-syms i (sym (string (gensym)))) (++ i))
-    (def rest-sym (if has-rest (sym (string (gensym))) nil))
+    (while (<= i max-n) (put slot-syms i (sym (string (gensym) "#"))) (++ i))
+    (def rest-sym (if has-rest (sym (string (gensym) "#")) nil))
     # Pass 2: replace each %-symbol with its slot's gensym.
     (defn- replace-pct [f]
       (cond
