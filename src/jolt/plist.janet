@@ -12,6 +12,10 @@
 #
 # `:rest` may be a plain array/tuple so `(conj some-list x)` needn't copy the
 # original list — the node just references it. pl->array materializes the chain.
+#
+# REP vs API: this file is ONLY the cons-list representation (pl-* primitives).
+# The Clojure-facing list/seq ops (conj/cons/first/rest/count/seq dispatch) live
+# in core_coll.janet, which branches on `:jolt/type :jolt/plist`.
 
 (defn plist? [x]
   (and (table? x) (= :jolt/plist (get x :jolt/type))))

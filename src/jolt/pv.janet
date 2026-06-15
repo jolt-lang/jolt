@@ -11,6 +11,11 @@
 #     :tail  tail}      a tuple of up to 32 trailing elements (append fast-path)
 #
 # Trie nodes are immutable tuples so unchanged subtrees are shared by identity.
+#
+# REP vs API: this file is ONLY the trie representation (pv-* primitives). The
+# Clojure-facing vector ops (nth/conj/assoc/subvec, the count/seq/first/rest
+# dispatch, and tuple↔pvec polymorphism) live in core_coll.janet /
+# core_types.janet, which dispatch on `:jolt/type :jolt/pvec`.
 
 (def- bits 5)
 (def- width 32)         # 2^bits

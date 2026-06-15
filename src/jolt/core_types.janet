@@ -50,6 +50,10 @@
 # Sorted-coll tag checks + entries view, defined this early because canon-key,
 # empty?, and jolt-equal? (all below) need them. The sorted-coll SEMANTICS are
 # pure Clojure (core/25-sorted.clj); see the dispatch section further down.
+# SEED-TWIN: sorted-map?/sorted-set?/sorted? also live in the overlay
+# (jolt-core/clojure/core/25-sorted.clj); the overlay copies are the public ones
+# (NOT in core-bindings). These seed copies exist only for earlier-tier seed
+# dispatch. Change both copies together — docs/seed-overlay-registry.md.
 (defn core-sorted-map? [x] (and (table? x) (= :jolt/sorted-map (x :jolt/type))))
 (defn core-sorted-set? [x] (and (table? x) (= :jolt/sorted-set (x :jolt/type))))
 (defn core-sorted? [x] (or (core-sorted-map? x) (core-sorted-set? x)))
@@ -194,6 +198,9 @@
 # Predicates
 # ============================================================
 
+# SEED-TWIN: char? is also defined in the overlay (jolt-core/clojure/core/
+# 20-coll.clj) and the overlay copy is the public one (NOT in core-bindings).
+# This seed copy is internal type dispatch only. docs/seed-overlay-registry.md.
 (defn core-char? [x] (and (struct? x) (= :jolt/char (x :jolt/type))))
 (defn char-code [c] (c :ch))
 (defn char->string [c] (string/from-bytes (c :ch)))
