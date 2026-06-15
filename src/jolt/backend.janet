@@ -32,6 +32,14 @@
 # var-get/tuple-slice/...) and jolt runtime helpers resolve by name.
 (def jolt-runtime-env (curenv))
 
+# Janet's `in` accessor as an embedded VALUE (jolt-fjb1). The back end uses `in`
+# to index cells/shape-recs/arg tuples in code it EMITS. Emitting the bare symbol
+# `in` is unhygienic: a user local named `in` (malli's explainer binds `[value in
+# acc]`) shadows it in the surrounding scope, so the generated `(in cell :root)`
+# would call the user's value as a function — "<table> called with 2 arguments".
+# Embedding the function value (as with jolt-call/core-get) can't be shadowed.
+(def- jin in)
+
 (defn ctx-janet-env
   "Lazily create/cache a per-context Janet environment for compiled code: a child
   of the runtime env (so core fns resolve) that holds this context's user defs.
@@ -193,7 +201,7 @@
 (defn- emit-arity-invoke [ctx ar jargs]
   (def nfixed (length (vview (ar :params))))
   (def call @[(emit-arity-fn ctx ar)])
-  (for i 0 nfixed (array/push call ['in jargs i]))
+  (for i 0 nfixed (array/push call [jin jargs i]))
   # empty rest binds to NIL, not () — (f) with [& r] gives r = nil in Clojure
   (when (ar :rest)
     (array/push call ['if ['> ['length jargs] nfixed] ['tuple/slice jargs nfixed]]))
@@ -225,7 +233,7 @@
 # live-root call the :var emit uses, for the ns get/set helpers below.
 (defn- core-fn-call [ctx nm & args]
   (def cell (cell-for ctx "clojure.core" nm))
-  (tuple (tuple 'in (tuple 'quote cell) :root) ;args))
+  (tuple (tuple jin (tuple 'quote cell) :root) ;args))
 
 (defn- emit-try [ctx node]
   (def core
@@ -420,11 +428,11 @@
   # NOT gated on compile-time shapes — core is baked without the flag but still
   # receives user shape-recs, so this must hold in baked core too. (jolt-t34)
   (defn get-or-shape [getexpr]
-    (if sidx ['in m sidx]
+    (if sidx [jin m sidx]
       (let [pos (jsym)]
         ['if ['and ['tuple? m] ['struct? ['get m 0]]]
           ['let [pos ['get [['get m 0] :idx] k]]
-            ['if ['nil? pos] (tuple core-get m k nil) ['in m ['+ 1 pos]]]]
+            ['if ['nil? pos] (tuple core-get m k nil) [jin m ['+ 1 pos]]]]
           getexpr])))
   (if (nil? d-expr)
     (let [fast (get-or-shape ['get m k])]
@@ -632,9 +640,9 @@
                # majority) pay two native table ops + a branch instead of a
                # function call.
                (let [qcell (tuple 'quote cell)]
-                 ['if ['in qcell :dynamic]
+                 ['if [jin qcell :dynamic]
                    (tuple var-get qcell)
-                   ['in qcell :root]]))))
+                   [jin qcell :root]]))))
       # (var x): the var object itself (not its value) — the embedded cell, by
       # reference. binding keys its thread-binding frame on this exact cell.
       :the-var (tuple 'quote (cell-for ctx (node :ns) (node :name)))
