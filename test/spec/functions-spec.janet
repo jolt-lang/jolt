@@ -11,7 +11,13 @@
   ["variadic with fixed" "[1 [2 3]]" "(do (defn f [a & xs] [a xs]) (f 1 2 3))"]
   ["closure captures"   "8"      "(do (defn adder [n] (fn [x] (+ x n))) ((adder 5) 3))"]
   ["recursion"          "120"    "(do (defn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) (fact 5))"]
-  ["named fn self-ref"  "120"    "((fn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) 5)"])
+  ["named fn self-ref"  "120"    "((fn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) 5)"]
+  # A param whose name collides with a Janet builtin the back end emits in
+  # generated code (here `in`, used to deref vars / index shape-recs) must not
+  # shadow it — malli's explainer binds `[value in acc]` (jolt-fjb1).
+  ["param named `in`"   "1"       "((fn [in] (first in)) [1 2 3])"]
+  ["param `in` via core fn" "3"   "((fn [in] (count in)) [1 2 3])"]
+  ["local `in` in let body" "2"   "(let [in [2 3]] (first in))"])
 
 (defspec "functions / application"
   ["apply"              "6"      "(apply + [1 2 3])"]

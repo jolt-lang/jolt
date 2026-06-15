@@ -58,6 +58,19 @@
 (let [ctx (init {:compile? true :aot-core? false})]
   (check "aot-core off still correct" (eval-string ctx "(last [1 2 3])") 3))
 
+# 6. Redefining a record with REORDERED fields must rebind the ctor (jolt-wf4).
+#    deftype expands to (do (def R (make-deftype-ctor ...)) (def ->R R) ...): the
+#    `->R` alias references R in the SAME compiled unit. Direct-link embeds a var's
+#    root as a compile-time constant, but R's redefined root hasn't RUN yet when
+#    that unit compiles — so ->R must NOT seal to R's stale (pre-redef) ctor.
+(let [ctx (init {:compile? true :direct-linking? true})]
+  (eval-string ctx "(defrecord R [x a])")
+  (eval-string ctx "(defrecord R [a x])")
+  (check "record field-reorder redefine: :a reads the new layout"
+         (eval-string ctx "(:a (->R 10 20))") 10)
+  (check "record field-reorder redefine: :x reads the new layout"
+         (eval-string ctx "(:x (->R 10 20))") 20))
+
 (if (pos? failures)
   (do (printf "direct-linking: %d failure(s)" failures) (os/exit 1))
   (print "direct-linking: all matrix cases passed"))
