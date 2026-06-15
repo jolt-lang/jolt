@@ -245,7 +245,7 @@
       (and (os/getenv "JOLT_WHOLE_PROGRAM") (get (ctx :env) :direct-linking?)))
     ctx))
 
-# --- Context snapshot/fork (cheap isolated copies) --------------------------
+# --- Context snapshot/fork + disk image (AOT context image) ------------------
 #
 # init is expensive (~50 ms interpreted, ~900 ms compiled: tier loading, analyzer
 # build, macro recompilation). For workloads that need MANY isolated contexts —
@@ -253,6 +253,12 @@
 # and fork cheap deep copies (~2 ms) from it via Janet marshal/unmarshal. A fork
 # shares nothing mutable with the original: defs, protocol extensions, hierarchy
 # changes, atom states in one fork are invisible to the others.
+#
+# load-ctx-image/save-ctx-image add the disk layer (fork->validate->rewire load,
+# atomic save) shared by init-cached and main's deps-image cache (jolt-q5ql) —
+# the callers differ only in the validity predicate. They live here (not a
+# separate module) because Janet's `use` doesn't transitively re-export, and the
+# snapshot/fork they build on are already api's and consumed via (use ./api).
 #
 # The reverse-lookup dicts must be built from root-env (cfunctions and abstract
 # values from the Janet runtime marshal by reference through them) BEFORE any ctx
@@ -273,8 +279,30 @@
   [snap]
   (unmarshal snap image-load-dict))
 
-# --- Disk-cached init (AOT context image) ------------------------------------
-#
+(defn load-ctx-image
+  "Load a marshaled ctx image from `path`: fork it, verify it really is a ctx (a
+  corrupt image can unmarshal to a non-ctx value), run the optional `valid?`
+  predicate (e.g. a source-mtime check), and replay the per-PROCESS module-state
+  wiring an image restore skips by calling `(rewire! ctx)` (the print-method hook
+  lives in module state, not the marshaled ctx). Returns the ctx, or nil if the
+  file is absent, unreadable, not a ctx, or fails `valid?`."
+  [path rewire! &opt valid?]
+  (when (os/stat path)
+    (def r (protect (fork (slurp path))))
+    (when (and (r 0) (ctx? (r 1)) (or (nil? valid?) (valid? (r 1))))
+      (def c (r 1))
+      (when rewire! (rewire! c))
+      c)))
+
+(defn save-ctx-image
+  "Atomically write ctx's marshaled image to `path` (write a pid-tagged tmp file
+  then rename) so concurrent cold starts never observe a torn image. Best-effort:
+  a failed write/rename is swallowed (the next run just rebuilds)."
+  [ctx path]
+  (def tmp (string path "." (os/getpid) ".tmp"))
+  (when (protect (spit tmp (snapshot ctx)))
+    (protect (os/rename tmp path))))
+
 # init in compile mode is ~2.4 s (tier loading, analyzer self-compile, macro
 # recompilation) — paid by every PROCESS that builds a ctx from source, e.g.
 # each `jpm test` file. init-cached pays it once: the built ctx is snapshotted
@@ -334,23 +362,12 @@
   (default opts {})
   (if (or (= "1" (os/getenv "JOLT_NO_IMAGE_CACHE")) (nil? (src-dir)))
     (init opts)
-    (let [path (image-cache-path opts)
-          loaded (when (os/stat path)
-                   (let [r (protect (fork (slurp path)))]
-                     # unmarshal of a corrupt image can also "succeed" with a
-                     # non-ctx value, so check the shape, not just the throw.
-                     (when (and (r 0) (ctx? (r 1)))
-                       (r 1))))]
-      (or (when loaded
-            # per-PROCESS wiring an image restore skips: the renderer's
-            # print-method hook lives in module state, not the marshaled ctx
-            (install-print-method-cb! loaded)
-            loaded)
-          (let [ctx (init opts)
-                tmp (string path "." (os/getpid) ".tmp")]
-            # Atomic publish so concurrent cold starts never see a torn image.
-            (when (protect (spit tmp (snapshot ctx)))
-              (protect (os/rename tmp path)))
+    (let [path (image-cache-path opts)]
+      # The source-fingerprint is already in the path, so any cached image at
+      # this path is valid — no extra predicate, just the per-process rewiring.
+      (or (load-ctx-image path install-print-method-cb!)
+          (let [ctx (init opts)]
+            (save-ctx-image ctx path)
             ctx)))))
 
 (defn eval-one
