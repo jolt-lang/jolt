@@ -167,12 +167,22 @@
           (= hname "finally")
             (reset! finally-body (rest (vec (form-elements c))))
           :else (swap! body conj c))))
-    {:op :try
-     :body (analyze-seq ctx @body env)
-     :catch-sym @catch-sym
-     :catch-body (when @catch-body
-                   (analyze-seq ctx @catch-body (add-locals env [@catch-sym])))
-     :finally (when @finally-body (analyze-seq ctx @finally-body env))}))
+    ;; Add :catch-sym/:catch-body/:finally ONLY when present (same discipline as
+    ;; the arity :rest key above). Assoc'ing them nil-when-absent would give the
+    ;; node a nil-valued key, which makes it a phm in jolt's map representation
+    ;; and forces the back end to densify it (norm-node) before reading :op — the
+    ;; map-nil-representation trap Phase 2 cleaned up for def/fn/arity nodes. The
+    ;; back end reads each key with a nil-safe (node :k) and gates on it, so an
+    ;; absent key is indistinguishable from a present-nil one.
+    (let [n {:op :try :body (analyze-seq ctx @body env)}
+          n (if @catch-body
+              (assoc n :catch-sym @catch-sym
+                       :catch-body (analyze-seq ctx @catch-body (add-locals env [@catch-sym])))
+              n)
+          n (if @finally-body
+              (assoc n :finally (analyze-seq ctx @finally-body env))
+              n)]
+      n)))
 
 (defn- analyze-special [ctx op items env]
   (case op
