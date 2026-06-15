@@ -3,6 +3,7 @@
 
 (use ./types)
 (use ./phm)
+(use ./phs)
 (use ./lazyseq)
 (use ./regex)
 (use ./config)
