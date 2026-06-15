@@ -3,6 +3,7 @@
 
 (use ./types)
 (use ./phm)
+(use ./phs)
 (use ./lazyseq)
 (use ./pv)
 (use ./plist)

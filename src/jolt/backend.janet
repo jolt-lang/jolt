@@ -13,6 +13,7 @@
 (use ./evaluator)
 (import ./reader :as r)
 (import ./phm :as phm)
+(import ./phs :as phs)
 (import ./pv :as pv)
 
 # The IR is portable data; reading its representation is a host-layer concern.
@@ -584,7 +585,7 @@
 # then the persistent set is constructed — mirrors compiler.janet's emit-set-expr.
 (defn- emit-set [ctx node]
   (def items (map |(emit ctx $) (vview (node :items))))
-  (tuple/slice (array/concat @[phm/make-phs] items)))
+  (tuple/slice (array/concat @[phs/make-phs] items)))
 
 (set emit
   (fn emit [ctx raw]
