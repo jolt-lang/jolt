@@ -409,13 +409,19 @@
   (register-tagged-methods! :jolt/hashmap
     @{"get"         (fn [self k] (get (self :tbl) k))
       "put"         (fn [self k v] (put (self :tbl) k v) v)
+      "putAll"      (fn [self m] (each pair (hm-entries m) (put (self :tbl) (in pair 0) (in pair 1))) nil)
       "containsKey" (fn [self k] (not (nil? (get (self :tbl) k))))
       "size"        (fn [self] (length (self :tbl)))})
   (each nm ["HashMap" "java.util.HashMap"]
+    # java.util.HashMap constructors: (), (initialCapacity), (initialCapacity,
+    # loadFactor) all start empty; (Map m) copies entries. A numeric first arg is
+    # a capacity (sizing hint we ignore), not content.
     (register-class-ctor! nm
-      (fn [&opt init]
+      (fn [& args]
         (def tbl @{})
-        (when init (each pair (hm-entries init) (put tbl (in pair 0) (in pair 1))))
+        (def init (if (> (length args) 0) (in args 0) nil))
+        (when (and init (not (number? init)))
+          (each pair (hm-entries init) (put tbl (in pair 0) (in pair 1))))
         @{:jolt/type :jolt/hashmap :tbl tbl})))
   (each nm ["MapEntry" "clojure.lang.MapEntry"]
     (register-class-ctor! nm (fn [k v] [k v])))

@@ -42,6 +42,12 @@
    "(do (defprotocol P (m [_])) (defrecord R [] P (m [_] 1)) (satisfies? P (->R)))"]
   ["satisfies? false"     "false"
    "(do (defprotocol P (m [_])) (defrecord R []) (satisfies? P (->R)))"]
+  ["satisfies? reify"     "true"
+   "(do (defprotocol P (m [_])) (satisfies? P (reify P (m [_] 1))))"]
+  ["satisfies? reify multi-protocol" "[true true]"
+   "(do (defprotocol P (m [_])) (defprotocol Q (n [_])) (let [r (reify P (m [_] 1) Q (n [_] 2))] [(satisfies? P r) (satisfies? Q r)]))"]
+  ["satisfies? reify other proto" "false"
+   "(do (defprotocol P (m [_])) (defprotocol Q (n [_])) (satisfies? Q (reify P (m [_] 1))))"]
   ["instance? record"     "true"
    "(do (defrecord R [a]) (instance? R (->R 1)))"]
   ["dot constructor"      "5"

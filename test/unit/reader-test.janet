@@ -80,7 +80,9 @@
         "unquote")
 (assert (deep= @[(sym "unquote-splicing") (sym "x")] (parse-string "~@x"))
         "unquote-splicing")
-(assert (deep= @[(sym "deref") (sym "x")] (parse-string "@x"))
+# @x reads as the QUALIFIED clojure.core/deref (like Clojure) so it derefs even
+# where a ns excludes/rebinds `deref` (e.g. malli).
+(assert (deep= @[(sym "clojure.core/deref") (sym "x")] (parse-string "@x"))
         "deref shorthand")
 
 # Metadata: a keyword/symbol/string hint on a symbol attaches to the symbol's

@@ -714,9 +714,11 @@
             (read-quote s (+ pos 2) (sym "unquote-splicing"))
             (read-quote s (+ pos 1) (sym "unquote")))
 
-          # deref
+          # deref — @x is (clojure.core/deref x), QUALIFIED like Clojure, so it
+          # still derefs even where a ns shadows `deref` (malli excludes and
+          # redefines clojure.core/deref for its own schema-deref).
           (= c 64)
-          (read-quote s (+ pos 1) (sym "deref"))
+          (read-quote s (+ pos 1) (sym "clojure.core/deref"))
           
           # metadata
           (= c 94)
