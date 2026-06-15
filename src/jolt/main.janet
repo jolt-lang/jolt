@@ -4,6 +4,7 @@
 (use ./api)
 (use ./types)
 (use ./phm)
+(use ./lazyseq)
 (use ./pv)
 (use ./plist)
 (use ./config)
