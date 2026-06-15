@@ -530,6 +530,20 @@
 # keyed off `has-args` so behavior is identical (note: the object-methods guard
 # checks `table?` only, while tagged dispatch checks table-or-struct — both kept
 # verbatim from the original arms).
+# A record's own implementation of `field-name` (its instance fn, a reified fn,
+# or a protocol method from the type registry), or nil. A deftype/defrecord
+# method must win over the generic object-methods table — e.g. a custom
+# (Object (toString [_] ...)) over the default toString (jolt-rt6n).
+(defn- record-member [ctx target field-name]
+  (when (record-tag target)
+    (let [mk (keyword field-name)
+          own (get target mk)
+          reified (get (get target :jolt/protocol-methods) mk)]
+      (cond
+        (or (function? own) (cfunction? own)) own
+        (or (function? reified) (cfunction? reified)) reified
+        (find-method-any-protocol ctx (record-tag target) field-name)))))
+
 (defn dispatch-member [ctx bindings target member-raw member-name field-name args has-args]
   (cond
     # java.lang.String surface for string/buffer targets
@@ -543,13 +557,16 @@
     # numeric methods
     (and (number? target) (get number-methods field-name))
       ((get number-methods field-name) target ;args)
-    # universal object methods — skipped when a shim tag-table owns the member.
+    # universal object methods — skipped when a shim tag-table owns the member,
+    # OR when the target is a record that implements the member itself (so a
+    # deftype's own toString/equals/hashCode wins over the generic one, jolt-rt6n).
     # Call form defers to tagged dispatch whenever a tag-table exists; bare form
     # only when the tag-table actually carries this member, so zero-arg
     # toString/hashCode still reach object-methods on shim objects.
     (and (get object-methods field-name)
          (not (and (table? target) (get tagged-methods (get target :jolt/type))
-                   (or has-args (get (get tagged-methods (get target :jolt/type)) field-name)))))
+                   (or has-args (get (get tagged-methods (get target :jolt/type)) field-name))))
+         (not (record-member ctx target field-name)))
       ((get object-methods field-name) target ;args)
     # registered shim objects (java.time etc.): tag-keyed method tables
     (and (or (table? target) (struct? target))

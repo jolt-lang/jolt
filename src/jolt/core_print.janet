@@ -31,6 +31,13 @@
 (var print-method-cb nil)
 (defn set-print-method-cb! [f] (set print-method-cb f))
 
+# Late-bound hook to a record's custom Object/toString (jolt-rt6n). Returns the
+# string a deftype's (toString [_] ...) produces, or nil when the type defines
+# none. core can't reach the ctx type-registry directly, so install-print-method-cb!
+# wires this per-ctx. str routes records through it; the data repr is the fallback.
+(var record-tostring-cb nil)
+(defn set-record-tostring-cb! [f] (set record-tostring-cb f))
+
 (def- pr-char-escapes
   {34 "\\\"" 92 "\\\\" 10 "\\n" 9 "\\t" 13 "\\r" 12 "\\f" 8 "\\b"})
 (var pr-render nil)
@@ -180,7 +187,11 @@
     (number? v) (fmt-number v)
     (= true v) "true"
     (= false v) "false"
-    (let [buf @""] (pr-render buf v) (string buf))))
+    # a record/deftype with a custom Object/toString renders via it (Clojure's
+    # str/.toString semantics); plain records fall through to the data repr.
+    (if-let [s (and record-tostring-cb (record-tag v) (record-tostring-cb v))]
+      s
+      (let [buf @""] (pr-render buf v) (string buf)))))
 
 (defn core-str [& xs]
   (if (= 0 (length xs)) ""
