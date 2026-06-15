@@ -9,6 +9,25 @@
   ["field access .-"    "41"        "(.-value {:value 41})"]
   ["dot field keyword"  "41"        "(. {:value 41} :value)"])
 
+# Both `.` arms share one dispatch-member helper (jolt-eos3). These rows lock the
+# behaviors where the call form (args) and the bare form (zero-arg) diverge in
+# their tails: zero-arg coll-interop vs with-arg coll-interop, and record/deftype
+# zero-arg methods vs methods-with-args vs `-field` field access.
+(defspec "interop / dot dispatch arms"
+  ["zero-arg coll-interop .count"   "3"      "(.count [1 2 3])"]
+  ["zero-arg coll-interop .seq"     "[1 2]"  "(.seq [1 2])"]
+  ["explicit dot zero-arg interop"  "3"      "(. [1 2 3] count)"]
+  ["with-arg coll-interop .nth"     "2"      "(.nth [1 2 3] 1)"]
+  ["record zero-arg method"         "10"
+   "(do (defprotocol Pd (gm [this])) (defrecord Rd [x] Pd (gm [this] (* 2 x))) (.gm (->Rd 5)))"]
+  ["record method with args"        "15"
+   "(do (defprotocol Pa (am [this y])) (defrecord Ra [x] Pa (am [this y] (+ x y))) (.am (->Ra 5) 10))"]
+  ["deftype method with args"       "7"
+   "(do (defprotocol Pq (qq [this y])) (deftype Tq [x] Pq (qq [this y] (+ x y))) (.qq (Tq. 3) 4))"]
+  ["record -field is field access"  "7"
+   "(do (defrecord Rf [x]) (.-x (->Rf 7)))"]
+  ["object-method with args .equals" "true" "(.equals \"a\" \"a\")"])
+
 # The `janet` namespace segment is the explicit Janet-stdlib bridge added for
 # the networking layer (and used by jolt.nrepl). `janet/<name>` resolves a Janet
 # root binding; `janet.<module>/<name>` resolves a module binding. The boundary

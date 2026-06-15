@@ -519,113 +519,121 @@
                   ctor (if (string? ctor) (or (ctor-for-class-token ctor) ctor) ctor)]
               (apply ctor args)))
 
+# Member dispatch shared by the two `.` forms (jolt-eos3). `args` is the
+# (possibly empty) tuple of already-evaluated arguments; `has-args` is true for
+# the call form `(. obj method arg...)` and false for the bare form
+# `(. obj member)`. The two forms agree on the string/number/object/tagged-shim
+# dispatch chain (single-sourced here, so an interop change touches one place)
+# but diverge in the tail: the call form tries record → native-field →
+# coll-interop(args); the bare form tries zero-arg coll-interop → field /
+# zero-arg method. The guards that differed between the old copy-pasted arms are
+# keyed off `has-args` so behavior is identical (note: the object-methods guard
+# checks `table?` only, while tagged dispatch checks table-or-struct — both kept
+# verbatim from the original arms).
+(defn dispatch-member [ctx bindings target member-raw member-name field-name args has-args]
+  (cond
+    # java.lang.String surface for string/buffer targets
+    (or (string? target) (buffer? target))
+      (let [m (get string-methods field-name)]
+        (if m
+          (m (string target) ;args)
+          (if-let [om (get object-methods field-name)]
+            (om (string target) ;args)
+            (error (string "Unsupported String method ." field-name)))))
+    # numeric methods
+    (and (number? target) (get number-methods field-name))
+      ((get number-methods field-name) target ;args)
+    # universal object methods — skipped when a shim tag-table owns the member.
+    # Call form defers to tagged dispatch whenever a tag-table exists; bare form
+    # only when the tag-table actually carries this member, so zero-arg
+    # toString/hashCode still reach object-methods on shim objects.
+    (and (get object-methods field-name)
+         (not (and (table? target) (get tagged-methods (get target :jolt/type))
+                   (or has-args (get (get tagged-methods (get target :jolt/type)) field-name)))))
+      ((get object-methods field-name) target ;args)
+    # registered shim objects (java.time etc.): tag-keyed method tables
+    (and (or (table? target) (struct? target))
+         (get tagged-methods (get target :jolt/type))
+         (or has-args (get (get tagged-methods (get target :jolt/type)) field-name)))
+      (let [m (get (get tagged-methods (get target :jolt/type)) field-name)]
+        (if m
+          (m target ;args)
+          (error (string "Unsupported method ." field-name " on " (string (get target :jolt/type))))))
+    # --- divergent tail ---
+    has-args
+      # (. obj method args...): record protocol dispatch, else native field/method
+      (if (record-tag target)
+        # deftype/reify methods live in the protocol registry (or the instance's
+        # reified-fns table), not on the instance. get is safe on a shape-rec
+        # tuple (returns nil for the method/protocol keys).
+        (let [method-key (keyword field-name)
+              own (get target method-key)
+              reified (get (get target :jolt/protocol-methods) method-key)
+              m (cond
+                  (or (function? own) (cfunction? own)) own
+                  (or (function? reified) (cfunction? reified)) reified
+                  (find-method-any-protocol ctx (record-tag target) field-name))]
+          (if m
+            (apply m target args)
+            (error (string "No method ." field-name " on " (record-tag target)))))
+        # Janet-native interop: try field lookup + call
+        (if (or (table? target) (struct? target))
+          (let [method (get target (keyword field-name))]
+            (if (or (function? method) (cfunction? method))
+              (method target ;args)
+              # If stored as fn* form (array), compile to function then call
+              (if (array? method)
+                (let [method-fn (eval-form ctx bindings method)]
+                  (if (or (function? method-fn) (cfunction? method-fn))
+                    (method-fn target ;args)
+                    (error (string "Cannot call non-function " field-name " on " (type target)))))
+                (let [r (if coll-interop (coll-interop target field-name args) :jolt/ci-none)]
+                  (if (= r :jolt/ci-none)
+                    (error (string "Cannot call non-function " field-name " on " (type target)))
+                    r)))))
+          (error (string "Cannot call method " field-name " on " (type target)))))
+    # (. obj member) with no extra args: a symbol member naming a function is a
+    # zero-arg method call (receiver passed as self); a keyword or `-field`
+    # member is plain field access.
+    true
+      # zero-arg Java collection interop (.count/.seq/… on a jolt collection)
+      # before field lookup — coll-interop returns :jolt/ci-none if not its kind
+      (let [ci (if coll-interop (coll-interop target field-name @[]) :jolt/ci-none)]
+        (if (not= ci :jolt/ci-none) ci
+          (let [v (if (record-tag target)
+                    (coll-lookup target (keyword field-name) nil)
+                    (get target (keyword field-name)))]
+            (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type))
+                     (not (string/has-prefix? "-" member-name)))
+              (cond
+                (or (function? v) (cfunction? v)) (v target)
+                # zero-arg deftype/reify method via the protocol registry
+                (record-tag target)
+                  (let [reified (get (get target :jolt/protocol-methods) (keyword field-name))
+                        m (if (or (function? reified) (cfunction? reified)) reified
+                            (find-method-any-protocol ctx (record-tag target) field-name))]
+                    (if m (m target) v))
+                # value stored as an unevaluated fn* form: compile then call
+                (array? v) (let [f (eval-form ctx bindings v)]
+                             (if (or (function? f) (cfunction? f)) (f target) f))
+                v)
+              v))))))
+
 (defn eval-dot [ctx bindings form]
   (let [target (eval-form ctx bindings (in form 1))
-                member-raw (in form 2)
-                # Resolve member name: symbols have :name, keywords use string, strings as-is
-                member-name (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type)))
-                             (member-raw :name)
-                             (if (keyword? member-raw)
-                               (string member-raw)
-                               member-raw))
-                field-name (if (and (string? member-name) (> (length member-name) 0) (= "-" (string/slice member-name 0 1)))
-                            (string/slice member-name 1)
-                            member-name)]
-            (if (> (length form) 3)
-              # method call: (. obj method args...)
-              (let [args (map |(eval-form ctx bindings $) (tuple/slice form 3))]
-                (if (or (string? target) (buffer? target))
-                  (let [m (get string-methods field-name)]
-                    (if m
-                      (m (string target) ;args)
-                      (if-let [om (get object-methods field-name)]
-                        (om (string target) ;args)
-                        (error (string "Unsupported String method ." field-name)))))
-                (if (and (number? target) (get number-methods field-name))
-                  ((get number-methods field-name) target ;args)
-                (if (and (get object-methods field-name)
-                         (not (and (table? target) (get tagged-methods (get target :jolt/type)))))
-                  ((get object-methods field-name) target ;args)
-                # registered shim objects (java.time etc.): tag-keyed method tables
-                (if (and (or (table? target) (struct? target))
-                         (get tagged-methods (get target :jolt/type)))
-                  (let [m (get (get tagged-methods (get target :jolt/type)) field-name)]
-                    (if m
-                      (m target ;args)
-                      (error (string "Unsupported method ." field-name " on " (string (get target :jolt/type))))))
-                (if (record-tag target)
-                  # deftype/reify methods live in the protocol registry (or the
-                  # instance's reified-fns table), not on the instance. get is safe
-                  # on a shape-rec tuple (returns nil for the method/protocol keys).
-                  (let [method-key (keyword field-name)
-                        own (get target method-key)
-                        reified (get (get target :jolt/protocol-methods) method-key)
-                        m (cond
-                            (or (function? own) (cfunction? own)) own
-                            (or (function? reified) (cfunction? reified)) reified
-                            (find-method-any-protocol ctx (record-tag target) field-name))]
-                    (if m
-                      (apply m target args)
-                      (error (string "No method ." field-name " on " (record-tag target)))))
-                  # Janet-native interop: try field lookup + call
-                  (if (or (table? target) (struct? target))
-                    (let [method (get target (keyword field-name))]
-                      (if (or (function? method) (cfunction? method))
-                        (method target ;args)
-                        # If stored as fn* form (array), compile to function then call
-                        (if (array? method)
-                          (let [method-fn (eval-form ctx bindings method)]
-                            (if (or (function? method-fn) (cfunction? method-fn))
-                              (method-fn target ;args)
-                              (error (string "Cannot call non-function " field-name " on " (type target)))))
-                          (let [r (if coll-interop (coll-interop target field-name args) :jolt/ci-none)]
-                            (if (= r :jolt/ci-none)
-                              (error (string "Cannot call non-function " field-name " on " (type target)))
-                              r)))))
-                    (error (string "Cannot call method " field-name " on " (type target))))))))))
-              # (. obj member) with no extra args: a symbol member naming a
-              # function is a zero-arg method call (receiver passed as self);
-              # a keyword or `-field` member is plain field access. Strings get
-              # the java.lang.String surface (clj-compat: (.toLowerCase s) ...).
-              (if (or (string? target) (buffer? target))
-                (let [m (get string-methods field-name)]
-                  (if m
-                    (m (string target))
-                    (if-let [om (get object-methods field-name)]
-                      (om (string target))
-                      (error (string "Unsupported String method ." field-name)))))
-              (if (and (number? target) (get number-methods field-name))
-                ((get number-methods field-name) target)
-              (if (and (get object-methods field-name)
-                       (not (and (table? target) (get tagged-methods (get target :jolt/type))
-                                 (get (get tagged-methods (get target :jolt/type)) field-name))))
-                ((get object-methods field-name) target)
-              (if (and (or (table? target) (struct? target))
-                       (get tagged-methods (get target :jolt/type))
-                       (get (get tagged-methods (get target :jolt/type)) field-name))
-                ((get (get tagged-methods (get target :jolt/type)) field-name) target)
-              # zero-arg Java collection interop (.count/.seq/… on a jolt collection)
-              # before field lookup — coll-interop returns :jolt/ci-none if not its kind
-              (let [ci (if coll-interop (coll-interop target field-name @[]) :jolt/ci-none)]
-               (if (not= ci :jolt/ci-none) ci
-              (let [v (if (record-tag target)
-                        (coll-lookup target (keyword field-name) nil)
-                        (get target (keyword field-name)))]
-                (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type))
-                         (not (string/has-prefix? "-" member-name)))
-                  (cond
-                    (or (function? v) (cfunction? v)) (v target)
-                    # zero-arg deftype/reify method via the protocol registry
-                    (record-tag target)
-                      (let [reified (get (get target :jolt/protocol-methods) (keyword field-name))
-                            m (if (or (function? reified) (cfunction? reified)) reified
-                                (find-method-any-protocol ctx (record-tag target) field-name))]
-                        (if m (m target) v))
-                    # value stored as an unevaluated fn* form: compile then call
-                    (array? v) (let [f (eval-form ctx bindings v)]
-                                 (if (or (function? f) (cfunction? f)) (f target) f))
-                    v)
-                  v)))))))))))
+        member-raw (in form 2)
+        # Resolve member name: symbols have :name, keywords use string, strings as-is
+        member-name (if (and (struct? member-raw) (= :symbol (member-raw :jolt/type)))
+                      (member-raw :name)
+                      (if (keyword? member-raw)
+                        (string member-raw)
+                        member-raw))
+        field-name (if (and (string? member-name) (> (length member-name) 0) (= "-" (string/slice member-name 0 1)))
+                     (string/slice member-name 1)
+                     member-name)
+        has-args (> (length form) 3)
+        args (if has-args (map |(eval-form ctx bindings $) (tuple/slice form 3)) @[])]
+    (dispatch-member ctx bindings target member-raw member-name field-name args has-args)))
 
 (defn eval-list
   [ctx bindings form]
