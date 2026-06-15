@@ -534,90 +534,6 @@
     (set t (table/getproto t)))
   result)
 
-(def- math-statics
-  @{"sqrt" math/sqrt "pow" math/pow "floor" math/floor "ceil" math/ceil
-    "abs" (fn [x] (if (< x 0) (- x) x))
-    "round" (fn [x] (math/round x))
-    "sin" math/sin "cos" math/cos "tan" math/tan
-    "asin" math/asin "acos" math/acos "atan" math/atan
-    "log" math/log "log10" math/log10 "exp" math/exp
-    "max" (fn [a b] (if (> a b) a b)) "min" (fn [a b] (if (< a b) a b))
-    "signum" (fn [x] (cond (< x 0) -1.0 (> x 0) 1.0 0.0))
-    "PI" math/pi "E" math/e
-    "random" (fn [&] (math/random))})
-
-# Thread statics (the JVM shapes portable code actually uses). sleep parks the
-# CURRENT thread's event loop — inside a future body that's the worker OS
-# thread (ev/spawn-thread gives each worker its own loop), so a sleeping
-# future doesn't block the parent.
-(def- thread-statics
-  {"sleep" (fn [ms] (ev/sleep (/ ms 1000)) nil)
-   "yield" (fn [] (ev/sleep 0) nil)
-   "interrupted" (fn [] false)
-   "currentThread" (fn [] @{:jolt/type :jolt/thread :id "main"})})
-
-# System statics (wall/monotonic clocks — what portable timing code uses).
-(def- system-statics
-  # realtime clock (sub-ms float epoch seconds) — os/time is whole seconds,
-  # which quantized every elapsed-time measurement to 1000ms.
-  {"currentTimeMillis" (fn [] (math/floor (* 1000 (os/clock :realtime))))
-   "nanoTime" (fn [] (math/floor (* 1e9 (os/clock :monotonic))))
-   "getProperty" (fn [k &opt dflt]
-                   (case k
-                     "os.name" (case (os/which)
-                                 :windows "Windows" :macos "Mac OS X" "Linux")
-                     "line.separator" "\n"
-                     "file.separator" "/"
-                     "user.dir" (os/cwd)
-                     "user.home" (os/getenv "HOME")
-                     "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")
-                     dflt))
-   # JOLT_BAKE_ENV_ALLOWLIST (jolt-s3j): during an image bake (jpm build of a
-   # native executable, set by the project's build.sh) the env snapshot that
-   # libraries like config.core capture at load gets MARSHALED INTO THE BINARY
-   # — GitHub push protection once flagged real API tokens inside an example's
-   # build output. With the var set, System/getenv serves only the listed
-   # comma-separated names (single-var reads of unlisted names return nil), so
-   # nothing secret can bake. Unset (the normal runtime case), reads are live
-   # and unfiltered.
-   "getenv" (fn [&opt k]
-              (def allow (os/getenv "JOLT_BAKE_ENV_ALLOWLIST"))
-              (if (nil? allow)
-                (if k (os/getenv k) (os/environ))
-                (let [names (string/split "," allow)
-                      ok @{}]
-                  (each n names (put ok (string/trim n) true))
-                  (if k
-                    (when (get ok k) (os/getenv k))
-                    (let [e (os/environ) out @{}]
-                      (eachp [ek ev] e (when (get ok ek) (put out ek ev)))
-                      out)))))
-   # the property subset getProperty serves, as an iterable map
-   "getProperties" (fn []
-                     {"os.name" (case (os/which)
-                                  :windows "Windows" :macos "Mac OS X" "Linux")
-                      "line.separator" "\n"
-                      "file.separator" "/"
-                      "user.dir" (os/cwd)
-                      "user.home" (or (os/getenv "HOME") "")
-                      "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")})})
-
-# Long statics: sentinels portable code compares against. jolt numbers are
-# doubles, so these are the f64 approximations.
-(def- long-statics
-  {"MAX_VALUE" 9223372036854775807
-   "MIN_VALUE" -9223372036854775808
-   "parseLong" (fn [s &opt radix]
-                 (def n (scan-number (string/trim (string s)) (or radix 10)))
-                 (if (and n (= n (math/floor n)))
-                   n
-                   (error (string "NumberFormatException: For input string: \"" s "\""))))
-   "valueOf" (fn [s &opt radix]
-               (def n (scan-number (string/trim (string s)) (or radix 10)))
-               (if (and n (= n (math/floor n)))
-                 n
-                 (error (string "NumberFormatException: For input string: \"" s "\""))))})
-
 # Pluggable host-class shims (java.time etc. register here at module load):
 #   class-statics: "ClassName" -> {"member" value-or-fn}   (Foo/bar resolution)
 #   tagged-methods: :jolt/tag -> {"method" (fn [self args...])}   ((.m obj) dispatch)
@@ -777,18 +693,8 @@
 (defn- resolve-sym
   [ctx bindings sym-s]
   (let [name (sym-s :name) ns (sym-s :ns)]
-    (if (= ns "Math")
-      (let [v (get math-statics name)]
-        (if (nil? v) (error (string "Unsupported Math member: Math/" name)) v))
-    (if (= ns "Thread")
-      (let [v (get thread-statics name)]
-        (if (nil? v) (error (string "Unsupported Thread member: Thread/" name)) v))
-    (if (= ns "System")
-      (let [v (get system-statics name)]
-        (if (nil? v) (error (string "Unsupported System member: System/" name)) v))
-    (if (= ns "Long")
-      (let [v (get long-statics name)]
-        (if (nil? v) (error (string "Unsupported Long member: Long/" name)) v))
+    # Math/Thread/System/Long and every other class resolve through the generic
+    # class-statics registry (host_interop registers them at load); no special-case.
     (if (get class-statics ns)
       (let [v (get (get class-statics ns) name)]
         (if (nil? v) (error (string "Unsupported member: " ns "/" name)) v))
@@ -859,7 +765,7 @@
                       # janet/ prefix above.
                       (if (or (in class-ctors name) (get class-canonical-names name) (get class-value-overrides name))
                         (class-value-for name)
-                        (error (string "Unable to resolve symbol: " name " in this context")))))))))))))))))))
+                        (error (string "Unable to resolve symbol: " name " in this context")))))))))))))))
 (defn- parse-arg-names
   "Parse a parameter vector, handling & rest args.
   Returns {:fixed [names...] :rest name-or-nil :all [names...]}"
@@ -1778,7 +1684,7 @@
           "java.util.regex.Pattern" (and (table? val) (= :jolt/regex (val :jolt/type)))
           "Character" (and (struct? val) (= :jolt/char (get val :jolt/type)))
           "java.lang.Character" (and (struct? val) (= :jolt/char (get val :jolt/type)))
-          # java.time shims (javatime.janet); #inst IS java.util.Date in Clojure
+          # java.time shims (host_interop.janet); #inst IS java.util.Date in Clojure
           "java.util.Date" (and (struct? val) (= :jolt/inst (get val :jolt/type)))
           "Date" (and (struct? val) (= :jolt/inst (get val :jolt/type)))
           "Instant" (and (table? val) (= :jolt/instant (get val :jolt/type)))

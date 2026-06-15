@@ -1,15 +1,109 @@
-# java.time shims (jolt-ea7): the surface Selmer's date filters use, backed
-# by epoch milliseconds (the same representation as :jolt/inst). Local time
-# means the HOST's local time (os/date with local=true); zones beyond the
-# system default are not modeled. Registered through the evaluator's
-# class-statics / tagged-methods registries, so this module is data plus an
-# install call — adding another java.* shim follows the same shape.
+# Host interop: the JVM class/method surface that portable cljc libraries call,
+# emulated over jolt values — java.time, java.io, java.util, java.net, java.lang
+# (Math/System/Thread/Long/...), java.sql and a few clojure.lang shims, plus the
+# wiring that lets Java-style collection interop (.iterator/.nth/.count) and
+# malli's collection-builder statics work over jolt collections.
+#
+# Everything registers through the evaluator's class-statics / tagged-methods /
+# class-ctors registries, so each shim is data + an install call: adding a
+# `(SomeClass. ...)` ctor or a `.someMethod` follows the same shape. This is the
+# one home for host shims (jolt-jx5l); the registry machinery stays in evaluator.
 
 (use ./evaluator)
 (use ./regex)
+(use ./core)
+(use ./pv)
+(use ./plist)
+(use ./types)
 (import ./phm)
 
 (defn- chr [s] (get s 0))
+
+# --- java.lang static surfaces (Math/Thread/System/Long) ----------------------
+# Registered through the generic class-statics registry below, same as every
+# other class — there is no special-case dispatch (jolt-jx5l).
+(def- math-statics
+  @{"sqrt" math/sqrt "pow" math/pow "floor" math/floor "ceil" math/ceil
+    "abs" (fn [x] (if (< x 0) (- x) x))
+    "round" (fn [x] (math/round x))
+    "sin" math/sin "cos" math/cos "tan" math/tan
+    "asin" math/asin "acos" math/acos "atan" math/atan
+    "log" math/log "log10" math/log10 "exp" math/exp
+    "max" (fn [a b] (if (> a b) a b)) "min" (fn [a b] (if (< a b) a b))
+    "signum" (fn [x] (cond (< x 0) -1.0 (> x 0) 1.0 0.0))
+    "PI" math/pi "E" math/e
+    "random" (fn [&] (math/random))})
+
+# sleep parks the CURRENT thread's event loop — inside a future body that's the
+# worker OS thread (ev/spawn-thread gives each worker its own loop), so a
+# sleeping future doesn't block the parent.
+(def- thread-statics
+  {"sleep" (fn [ms] (ev/sleep (/ ms 1000)) nil)
+   "yield" (fn [] (ev/sleep 0) nil)
+   "interrupted" (fn [] false)
+   "currentThread" (fn [] @{:jolt/type :jolt/thread :id "main"})})
+
+# wall/monotonic clocks + properties/env (what portable timing/config code uses).
+(def- system-statics
+  # realtime clock (sub-ms float epoch seconds) — os/time is whole seconds,
+  # which quantized every elapsed-time measurement to 1000ms.
+  {"currentTimeMillis" (fn [] (math/floor (* 1000 (os/clock :realtime))))
+   "nanoTime" (fn [] (math/floor (* 1e9 (os/clock :monotonic))))
+   "getProperty" (fn [k &opt dflt]
+                   (case k
+                     "os.name" (case (os/which)
+                                 :windows "Windows" :macos "Mac OS X" "Linux")
+                     "line.separator" "\n"
+                     "file.separator" "/"
+                     "user.dir" (os/cwd)
+                     "user.home" (os/getenv "HOME")
+                     "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")
+                     dflt))
+   # JOLT_BAKE_ENV_ALLOWLIST (jolt-s3j): during an image bake (jpm build of a
+   # native executable, set by the project's build.sh) the env snapshot that
+   # libraries like config.core capture at load gets MARSHALED INTO THE BINARY
+   # — GitHub push protection once flagged real API tokens inside an example's
+   # build output. With the var set, System/getenv serves only the listed
+   # comma-separated names (single-var reads of unlisted names return nil), so
+   # nothing secret can bake. Unset (the normal runtime case), reads are live
+   # and unfiltered.
+   "getenv" (fn [&opt k]
+              (def allow (os/getenv "JOLT_BAKE_ENV_ALLOWLIST"))
+              (if (nil? allow)
+                (if k (os/getenv k) (os/environ))
+                (let [names (string/split "," allow)
+                      ok @{}]
+                  (each n names (put ok (string/trim n) true))
+                  (if k
+                    (when (get ok k) (os/getenv k))
+                    (let [e (os/environ) out @{}]
+                      (eachp [ek ev] e (when (get ok ek) (put out ek ev)))
+                      out)))))
+   # the property subset getProperty serves, as an iterable map
+   "getProperties" (fn []
+                     {"os.name" (case (os/which)
+                                  :windows "Windows" :macos "Mac OS X" "Linux")
+                      "line.separator" "\n"
+                      "file.separator" "/"
+                      "user.dir" (os/cwd)
+                      "user.home" (or (os/getenv "HOME") "")
+                      "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")})})
+
+# sentinels portable code compares against. jolt numbers are doubles, so these
+# are the f64 approximations.
+(def- long-statics
+  {"MAX_VALUE" 9223372036854775807
+   "MIN_VALUE" -9223372036854775808
+   "parseLong" (fn [s &opt radix]
+                 (def n (scan-number (string/trim (string s)) (or radix 10)))
+                 (if (and n (= n (math/floor n)))
+                   n
+                   (error (string "NumberFormatException: For input string: \"" s "\""))))
+   "valueOf" (fn [s &opt radix]
+               (def n (scan-number (string/trim (string s)) (or radix 10)))
+               (if (and n (= n (math/floor n)))
+                 n
+                 (error (string "NumberFormatException: For input string: \"" s "\""))))})
 
 # --- values -------------------------------------------------------------------
 
@@ -112,6 +206,11 @@
 # --- registration --------------------------------------------------------------
 
 (defn install! []
+  # java.lang statics through the generic registry (no resolve-sym special-case).
+  (register-class-statics! "Math" math-statics)
+  (register-class-statics! "Thread" thread-statics)
+  (register-class-statics! "System" system-statics)
+  (register-class-statics! "Long" long-statics)
   (def fs (fn [style] @{:jolt/type :jolt/format-style :style style}))
   (register-class-statics! "FormatStyle"
     @{"SHORT" (fs :short) "MEDIUM" (fs :medium) "LONG" (fs :long) "FULL" (fs :full)})
@@ -670,5 +769,44 @@
   (register-tagged-methods! :jolt/nio-matcher
     @{"matches" (fn [self path] (glob-matches? (get self :glob) (get path :s)))}))
 
+# Collection interop: wires the evaluator's late-bound hooks to core's
+# collection ops so Java-style interop works over jolt values (moved here from
+# api — jolt-jx5l). Late-bound because the evaluator loads before core.
+(defn install-collections! []
+  # (.iterator coll) -> a jolt iterator over any seqable (hiccup's iterate!).
+  (set-coll-realizer! realize-for-iteration)
+  # clj-targeted libs build collections via JVM statics in their :clj branches;
+  # malli's entry parser uses these. createOwning takes ownership of an object
+  # array -> a vector; createWithCheck builds a map and throws on duplicate keys
+  # (malli catches that), detected by the built map being smaller than the kvs.
+  (register-class-statics! "LazilyPersistentVector"
+    @{"createOwning" (fn [arr] (make-vec arr))})
+  (register-class-statics! "PersistentArrayMap"
+    @{"createWithCheck"
+      (fn [arr]
+        (def m (phm/make-phm arr))
+        (if (= (* 2 (phm/phm-count m)) (length arr)) m
+          (error "PersistentArrayMap: duplicate key")))})
+  # .nth/.count/.valAt/.get/.seq/.containsKey on a jolt collection -> the
+  # clojure.core equivalent. :jolt/ci-none means "not a collection method here".
+  (set-coll-interop!
+    (fn [target name args]
+      (if-not (or (pvec? target) (phm/phm? target) (plist? target) (phm/lazy-seq? target)
+                  (and (table? target) (= :jolt/set (get target :jolt/type)))
+                  (shape-rec? target)                                    # map-as-tuple record
+                  (and (struct? target) (nil? (get target :jolt/type)))) # plain map literal
+        :jolt/ci-none
+      (cond
+        (= name "nth")     (if (>= (length args) 2) (core-nth target (in args 0) (in args 1))
+                                                    (core-nth target (in args 0)))
+        (= name "count")   (core-count target)
+        (or (= name "valAt") (= name "get"))
+                           (if (>= (length args) 2) (core-get target (in args 0) (in args 1))
+                                                    (core-get target (in args 0)))
+        (= name "seq")     (core-seq target)
+        (= name "containsKey") (core-contains? target (in args 0))
+        :jolt/ci-none)))))
+
 (install!)
 (install-io!)
+(install-collections!)
