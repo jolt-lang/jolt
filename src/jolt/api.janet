@@ -326,6 +326,22 @@
       (when (not (empty? idxs))
         (string/slice api-module-file 0 (last idxs))))))
 
+# Every .janet seed file under `dir`, RECURSIVELY (src/jolt/ has subdirs now —
+# interop/), keyed by repo-relative path so files in different dirs don't alias.
+# Sorted for a stable fingerprint. Non-recursive (os/dir) would silently miss a
+# subdir edit and serve a stale image — the map-nil-style footgun, for the cache.
+(defn- janet-sources-under [dir]
+  (def acc @[])
+  (defn- walk [d prefix]
+    (each name (sorted (os/dir d))
+      (def full (string d "/" name))
+      (def rel (string prefix name))
+      (case (os/stat full :mode)
+        :directory (walk full (string rel "/"))
+        :file (when (string/has-suffix? ".janet" name) (array/push acc [rel full])))))
+  (walk dir "")
+  acc)
+
 (defn- source-fingerprint
   "Hash + total length of every source a fresh init depends on. Two numbers, so
   a 32-bit hash collision alone can't alias two different source trees."
@@ -335,9 +351,8 @@
     (buffer/push buf k "\x00" (get stdlib-embed/sources k) "\x00"))
   (def dir (src-dir))
   (when dir
-    (each f (sorted (os/dir dir))
-      (when (string/has-suffix? ".janet" f)
-        (buffer/push buf f "\x00" (slurp (string dir "/" f)) "\x00"))))
+    (each [rel full] (janet-sources-under dir)
+      (buffer/push buf rel "\x00" (slurp full) "\x00")))
   [(hash (string buf)) (length buf)])
 
 (defn- image-cache-path [opts]
