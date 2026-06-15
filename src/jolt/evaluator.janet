@@ -1725,16 +1725,24 @@
         (let [tbl (get mm-var :jolt/methods)]
           (when tbl (each k (keys tbl) (set m (phm-assoc m k (get tbl k))))))
         m)))
-  # satisfies?: evaluated protocol value + instance (matches the prior arm).
+  # satisfies?: evaluated protocol value + instance. Recognizes a reify the same
+  # way instance? does — by the protocols it records on itself (a reify's methods
+  # are instance-local, so they aren't in the global type registry that
+  # type-satisfies? consults).
   (ns-intern core "satisfies?"
     (fn [proto obj]
+      (def pn (proto :name))
+      (def pn-str (if (struct? pn) (pn :name) pn))
+      (def protos (if (table? obj) (get obj :jolt/protocols)))
       (def type-tag (or (record-tag obj)
                         (if (and (table? obj) (get obj :jolt/protocol-methods))
                           (get obj :jolt/deftype))))
-      (if type-tag
-        (let [pn (proto :name)
-              pn-str (if (struct? pn) (pn :name) pn)]
-          (type-satisfies? ctx type-tag pn-str))
+      (cond
+        (and protos (string? pn-str)
+             (truthy? (some (fn [p] (= (last (string/split "." p))
+                                       (last (string/split "." pn-str))))
+                            protos))) true
+        type-tag (type-satisfies? ctx type-tag pn-str)
         false)))
   # instance?: the overlay macro passes the TYPE NAME quoted (class names don't
   # evaluate to values on jolt); the value arg arrives evaluated.
