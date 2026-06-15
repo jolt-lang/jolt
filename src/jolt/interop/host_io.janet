@@ -288,6 +288,12 @@
   # (String. bytes) / (String. bytes charset): UTF-8 bytes to string.
   (each nm ["String" "java.lang.String"]
     (register-class-ctor! nm (fn [x &opt charset] (string x))))
+  # String statics. valueOf(Object) yields "null" for nil, else toString —
+  # hiccup's compiler emits (String/valueOf (or arg "")) to stringify attribute
+  # values; core-str gives jolt's str semantics for keywords/numbers/etc.
+  (each nm ["String" "java.lang.String"]
+    (register-class-statics! nm
+      @{"valueOf" (fn [x &opt off cnt] (if (nil? x) "null" (core-str x)))}))
   # java.net.URL: enough for selmer's template cache — file: URLs only.
   # A protocol-less spec throws (selmer catches MalformedURLException and
   # prepends file:///), and getPath hands back a stat-able filesystem path.

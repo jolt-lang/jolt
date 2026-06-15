@@ -707,6 +707,10 @@
           "Double" (number? val)
           "String" (string? val)
           "java.lang.String" (string? val)
+          # String implements CharSequence — malli's :re validator gates on
+          # (instance? CharSequence x) before matching (jolt-ltwk).
+          "CharSequence" (string? val)
+          "java.lang.CharSequence" (string? val)
           "Boolean" (or (= true val) (= false val))
           "Keyword" (keyword? val)
           # regex patterns (cuerdas-style (instance? Pattern x) checks)

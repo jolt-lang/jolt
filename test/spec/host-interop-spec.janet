@@ -79,6 +79,14 @@
   [".charAt"        "\\b"     "(.charAt \"abc\" 1)"]
   [".equalsIgnoreCase" "true" "(.equalsIgnoreCase \"AbC\" \"aBc\")"]
   ["Long/MAX_VALUE" "true"    "(pos? Long/MAX_VALUE)"]
+  # String/valueOf static (jolt-nkx): hiccup stringifies attribute values with it.
+  ["String/valueOf num"  "\"42\""   "(String/valueOf 42)"]
+  ["String/valueOf str"  "\"hi\""   "(String/valueOf \"hi\")"]
+  ["String/valueOf kw"   "\":k\""   "(String/valueOf :k)"]
+  ["String/valueOf nil"  "\"null\"" "(String/valueOf nil)"]
+  # String implements CharSequence (malli's :re gates on it, jolt-ltwk).
+  ["instance? CharSequence" "true"  "(instance? CharSequence \"aaa\")"]
+  ["instance? CharSequence non-str" "false" "(instance? CharSequence 42)"]
   ["unsupported method throws" :throws "(.frobnicate \"abc\")"])
 
 # java.time shims (jolt-ea7): epoch-ms backed values + a DateTimeFormatter
