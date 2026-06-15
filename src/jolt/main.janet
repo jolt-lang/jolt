@@ -461,23 +461,17 @@
   ok)
 
 (defn- try-load-deps-image [path]
-  (when (and (not (os/getenv "JOLT_NO_DEPS_CACHE")) (os/stat path))
-    (def r (protect (fork (slurp path))))
-    (when (and (r 0) (ctx? (r 1)))
-      (def c (r 1))
-      (def manifest (get (c :env) :deps-manifest))
-      (when (and manifest (manifest-current? manifest))
-        # per-process wiring an image restore must redo (module state, not in the
-        # marshaled ctx) — same as init-cached does for the core image.
-        (jcore/install-print-method-cb! c)
-        c))))
+  (unless (os/getenv "JOLT_NO_DEPS_CACHE")
+    # load-ctx-image forks + validates + rewires (shared with init-cached, jolt-q5ql);
+    # the deps-specific validity check is the source-mtime manifest.
+    (load-ctx-image path jcore/install-print-method-cb!
+                (fn [c] (let [m (get (c :env) :deps-manifest)]
+                          (and m (manifest-current? m)))))))
 
 (defn- save-deps-image [c path]
   (unless (os/getenv "JOLT_NO_DEPS_CACHE")
     (put (c :env) :deps-manifest (manifest-of (or (get (c :env) :loaded-files) @[])))
-    (def tmp (string path "." (os/getpid) ".tmp"))
-    (when (protect (spit tmp (snapshot c)))
-      (protect (os/rename tmp path)))))
+    (save-ctx-image c path)))
 
 (defn- run-main [ns-name argv]
   (when (nil? ns-name) (eprint "Error: -m/--main requires a namespace") (os/exit 1))
