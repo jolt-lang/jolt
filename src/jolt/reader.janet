@@ -792,3 +792,38 @@
     (set s rest*)
     (when (not (nil? form)) (array/push out [form form-line])))
   out)
+
+(defn parse-all-spans
+  "Parse every top-level form of source, returning an array of
+  [form abs-start abs-end] where abs-start is the byte offset of the form's
+  first non-trivia char and abs-end is just past it (leading whitespace/comment
+  trivia is excluded). Lets a caller reconstruct source by slicing verbatim —
+  used by `jolt uberscript`'s dead-code elimination to drop a defn's exact byte
+  span without re-printing (so formatting and reader macros survive)."
+  [source &opt file]
+  (def out @[])
+  (var s source)
+  (while (> (length (string/trim s)) 0)
+    (def base (- (length source) (length s)))
+    (var i 0)
+    (def n (length s))
+    (var scanning true)
+    (while (and scanning (< i n))
+      (def c (in s i))
+      (cond
+        (or (= c (chr "\n")) (= c (chr " ")) (= c (chr "\t")) (= c (chr "\r")) (= c (chr ","))) (++ i)
+        (= c (chr ";")) (while (and (< i n) (not= (in s i) (chr "\n"))) (++ i))
+        (set scanning false)))
+    (def [form rest*]
+      (try (parse-next s)
+        ([err fib]
+          (if (reader-error? err)
+            (error (format-reader-error
+                     {:jolt/type :jolt/reader-error :msg (err :msg)
+                      :pos (+ base (err :pos))}
+                     source file))
+            (propagate err fib)))))
+    (def consumed (- (length s) (length rest*)))
+    (set s rest*)
+    (when (not (nil? form)) (array/push out [form (+ base i) (+ base consumed)])))
+  out)
