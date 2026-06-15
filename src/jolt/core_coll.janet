@@ -36,70 +36,59 @@
   [coll op]
   (get (coll :ops) op))
 
+# Merge conj items onto a map receiver. assoc1 is phm-assoc for a phm receiver,
+# map-assoc1 for a struct/host-table receiver — the only thing that differs
+# between the two map-conj paths.
+(defn- conj-into-map [coll xs assoc1]
+  (var result coll)
+  (each x xs
+    (cond
+      # conj nil onto a map is a no-op (Clojure)
+      (nil? x) nil
+      # conj a map -> merge its entries
+      (map-value? x)
+      (each e (map-entries-of x) (set result (assoc1 result (in e 0) (in e 1))))
+      # a [k v] entry: exactly a 2-element vector (Clojure throws otherwise — and
+      # merge inherits this strictness through conj)
+      (and (or (pvec? x) (tuple? x) (array? x)) (= 2 (vcount x)))
+      (set result (assoc1 result (vnth x 0) (vnth x 1)))
+      (error "Vector arg to map conj must be a pair")))
+  result)
+
+# Dispatch is on :jolt/type via one case (the type is fetched once and the arm
+# calls the concrete op directly) rather than a chain of (and (table? x) (= ..))
+# predicates — same hot-path cost as the predicate chain for the common types,
+# one place per op. Host values (tuple/array/nil) and tuple-based shape-recs
+# carry no :jolt/type and stay in the per-op fallback.
 (defn core-conj [& args]
   (if (= 0 (length args)) (make-vec @[])        # (conj) -> []
   (let [coll (first args) xs (tuple/slice args 1)]
-  (if (nil? coll)
-    # conj onto nil builds a list (prepends): (conj nil 1 2) -> (2 1)
-    (do (var result nil) (each x xs (set result (pl-cons x result))) result)
-  (if (core-sorted? coll)
-    ((sorted-op coll :conj) coll xs)
-  (if (pvec? coll)
-    (do (var result coll) (each x xs (set result (pv-conj result x))) result)
-  (if (plist? coll)
-    # list: prepend, O(1) per element via structural sharing
-    (do (var result coll) (each x xs (set result (pl-cons x result))) result)
-  (if (tuple? coll)
-    (tuple/slice (tuple ;(array/concat (array/slice coll) xs)))
-    (if (array? coll)
-      (if mutable?
-        # mutable mode: arrays are vectors — append in place
-        (do (each x xs (array/push coll x)) coll)
-        # immutable mode: arrays are lists — prepend onto a persistent cons node,
-        # sharing the original array as the tail (O(1) per element, no copy)
-        (do (var result coll) (each x xs (set result (pl-cons x result))) result))
-      (if (set? coll)
-        (apply phs-conj coll xs)
-        # conj onto a seq prepends (Clojure: a Cons cell). Without this branch a
-        # lazy-seq fell into the MAP fallback below — clojure.data/diff relies on
-        # (conj seq x) via set/union over (keys m), which is now a lazy seq.
-        (if (lazy-seq? coll)
-          (do (var result coll)
-            (each x xs (set result (pl-cons x (realize-for-iteration result))))
-            result)
-        (if (phm? coll)
-          (do
-            (var result coll)
-            (each x xs
-              (cond
-                # conj nil onto a map is a no-op (Clojure)
-                (nil? x) nil
-                (map-value? x)
-                # conj a map -> merge its entries
-                (each e (map-entries-of x)
-                  (set result (phm-assoc result (in e 0) (in e 1))))
-                # a [k v] entry: exactly a 2-element vector (Clojure throws
-                # otherwise — and merge inherits this strictness through conj)
-                (and (or (pvec? x) (tuple? x) (array? x)) (= 2 (vcount x)))
-                (set result (phm-assoc result (vnth x 0) (vnth x 1)))
-                (error "Vector arg to map conj must be a pair")))
-            result)
-          (do
-            (var result coll)
-            (each x xs
-              (cond
-                # conj nil onto a map is a no-op (Clojure)
-                (nil? x) nil
-                (map-value? x)
-                # conj a map -> merge its entries
-                (each e (map-entries-of x)
-                  (set result (map-assoc1 result (in e 0) (in e 1))))
-                # a [k v] entry: exactly a 2-element vector (Clojure throws
-                # otherwise — and merge inherits this strictness through conj)
-                (and (or (pvec? x) (tuple? x) (array? x)) (= 2 (vcount x)))
-                (set result (map-assoc1 result (vnth x 0) (vnth x 1)))
-                (error "Vector arg to map conj must be a pair")))
-            result)))))))))))))
+    (if (table? coll)
+      (case (get coll :jolt/type)
+        :jolt/pvec (do (var r coll) (each x xs (set r (pv-conj r x))) r)
+        :jolt/phm  (conj-into-map coll xs phm-assoc)
+        # list: prepend, O(1) per element via structural sharing
+        :jolt/plist (do (var r coll) (each x xs (set r (pl-cons x r))) r)
+        # conj onto a seq prepends (Clojure: a Cons cell)
+        :jolt/lazy-seq (do (var r coll) (each x xs (set r (pl-cons x (realize-for-iteration r)))) r)
+        :jolt/set (apply phs-conj coll xs)
+        :jolt/sorted-map ((sorted-op coll :conj) coll xs)
+        :jolt/sorted-set ((sorted-op coll :conj) coll xs)
+        # other tables (raw host table / deftype instance) conj like a map
+        (conj-into-map coll xs map-assoc1))
+      (cond
+        # conj onto nil builds a list (prepends): (conj nil 1 2) -> (2 1)
+        (nil? coll) (do (var r nil) (each x xs (set r (pl-cons x r))) r)
+        (tuple? coll) (tuple/slice (tuple ;(array/concat (array/slice coll) xs)))
+        (array? coll)
+          (if mutable?
+            # mutable mode: arrays are vectors — append in place
+            (do (each x xs (array/push coll x)) coll)
+            # immutable mode: arrays are lists — prepend onto a persistent cons
+            # node, sharing the original array as the tail (O(1) per element)
+            (do (var r coll) (each x xs (set r (pl-cons x r))) r))
+        # struct map literal: merge entries
+        (conj-into-map coll xs map-assoc1))))))
 
 (defn core-assoc [m & kvs]
   (when (odd? (length kvs))
@@ -280,20 +269,26 @@
 # the collection fns (conj/assoc/get/contains?/…) can branch on them.
 
 (defn core-count [coll]
-  (cond
-    (nil? coll) 0
-    (shape-rec? coll) (shape-count coll)
-    (core-transient? coll) (length (if (= :vector (coll :kind)) (coll :arr) (coll :tbl)))
-    (core-sorted? coll) ((sorted-op coll :count) coll)
-    (lazy-seq? coll) (ls-count coll)
-    (pvec? coll) (pv-count coll)
-    (plist? coll) (pl-count coll)
-    (set? coll) (coll :cnt)
-    (phm? coll) (coll :cnt)
-    (and (table? coll) (get coll :jolt/deftype)) (- (length (keys coll)) 1)
-    (or (string? coll) (buffer? coll) (struct? coll) (tuple? coll) (array? coll)) (length coll)
-    # count is undefined on scalars (numbers/keywords/symbols/booleans/chars)
-    (error (string "count not supported on " (type coll)))))
+  (if (table? coll)
+    (case (get coll :jolt/type)
+      :jolt/pvec (pv-count coll)
+      :jolt/phm (coll :cnt)
+      :jolt/plist (pl-count coll)
+      :jolt/set (coll :cnt)
+      :jolt/lazy-seq (ls-count coll)
+      :jolt/sorted-map ((sorted-op coll :count) coll)
+      :jolt/sorted-set ((sorted-op coll :count) coll)
+      :jolt/transient (length (if (= :vector (coll :kind)) (coll :arr) (coll :tbl)))
+      # other tables: a deftype record instance counts its fields; a raw host
+      # table is unsupported (matches the original — seq handles it, count never did)
+      (if (get coll :jolt/deftype) (- (length (keys coll)) 1)
+        (error (string "count not supported on " (type coll)))))
+    (cond
+      (nil? coll) 0
+      (shape-rec? coll) (shape-count coll)          # shape-recs are tuples, not tables
+      (or (string? coll) (buffer? coll) (struct? coll) (tuple? coll) (array? coll)) (length coll)
+      # count is undefined on scalars (numbers/keywords/symbols/booleans/chars)
+      (error (string "count not supported on " (type coll))))))
 
 (defn core-first [coll]
   (cond
@@ -375,31 +370,34 @@
     (pl-cons x (realize-for-iteration coll))))
 
 (defn core-seq [coll]
-  (cond
-    (shape-rec? coll) (tuple ;(map (fn [k] (tuple k (shape-get coll k nil))) (shape-keys coll)))
-    (core-sorted? coll) ((sorted-op coll :seq) coll)
-    (or (nil? coll) (and (or (tuple? coll) (array? coll)) (= 0 (length coll)))) nil
-    # Cell-based emptiness, NOT (nil? (ls-first)): a lazy-seq whose first element
-    # is legitimately nil is non-empty, so (seq (cons nil ...)) must not be nil.
-    (lazy-seq? coll) (let [cell (realize-ls coll)]
+  (if (table? coll)
+    (case (get coll :jolt/type)
+      :jolt/pvec (if (= 0 (pv-count coll)) nil (tuple ;(pv->array coll)))
+      # empty maps/sets seq to nil, as in Clojure ((seq {}) is nil, not ())
+      :jolt/phm (if (= 0 (coll :cnt)) nil (tuple ;(phm-entries coll)))
+      :jolt/plist (if (pl-empty? coll) nil (tuple ;(pl->array coll)))
+      # Cell-based emptiness, NOT (nil? (ls-first)): a lazy-seq whose first
+      # element is legitimately nil is non-empty, so (seq (cons nil ...)) is not nil.
+      :jolt/lazy-seq (let [cell (realize-ls coll)]
                        (if (or (nil? cell) (= :jolt/pending cell) (= 0 (length cell))) nil coll))
-    (pvec? coll) (if (= 0 (pv-count coll)) nil (tuple ;(pv->array coll)))
-    (plist? coll) (if (pl-empty? coll) nil (tuple ;(pl->array coll)))
-    (buffer? coll) (if (= 0 (length coll)) nil (let [a @[]] (each x coll (array/push a x)) (tuple ;a)))
-    # empty maps/sets seq to nil, as in Clojure ((seq {}) is nil, not ())
-    (set? coll) (if (= 0 (coll :cnt)) nil (phs-seq coll))
-    (phm? coll) (if (= 0 (coll :cnt)) nil (tuple ;(phm-entries coll)))
-    (tuple? coll) (tuple/slice coll)
-    (string? coll) (if (= 0 (length coll)) nil (tuple ;(map make-char (string/bytes coll))))
-    (struct? coll) (if (= 0 (length coll)) nil (tuple ;(map (fn [k] (tuple k (get coll k))) (keys coll))))
-    (array? coll) (tuple ;coll)
-    (and (table? coll) (get coll :jolt/deftype)) coll
-    # raw host table (System/getenv result) seqs like a map: kv entries
-    (and (table? coll) (nil? (get coll :jolt/type)))
-      (if (= 0 (length coll)) nil
-        (tuple ;(map (fn [k] (tuple k (get coll k))) (keys coll))))
-    # scalars/functions aren't seqable
-    (error (string "seq not supported on " (type coll)))))
+      :jolt/set (if (= 0 (coll :cnt)) nil (phs-seq coll))
+      :jolt/sorted-map ((sorted-op coll :seq) coll)
+      :jolt/sorted-set ((sorted-op coll :seq) coll)
+      # deftype instance seqs as itself; raw host table (System/getenv) as kv map
+      (if (get coll :jolt/deftype) coll
+        (if (= 0 (length coll)) nil
+          (tuple ;(map (fn [k] (tuple k (get coll k))) (keys coll))))))
+    (cond
+      # shape-recs are tuples — must precede the tuple? branch
+      (shape-rec? coll) (tuple ;(map (fn [k] (tuple k (shape-get coll k nil))) (shape-keys coll)))
+      (nil? coll) nil
+      (buffer? coll) (if (= 0 (length coll)) nil (let [a @[]] (each x coll (array/push a x)) (tuple ;a)))
+      (tuple? coll) (if (= 0 (length coll)) nil (tuple/slice coll))
+      (string? coll) (if (= 0 (length coll)) nil (tuple ;(map make-char (string/bytes coll))))
+      (struct? coll) (if (= 0 (length coll)) nil (tuple ;(map (fn [k] (tuple k (get coll k))) (keys coll))))
+      (array? coll) (if (= 0 (length coll)) nil (tuple ;coll))
+      # scalars/functions aren't seqable
+      (error (string "seq not supported on " (type coll))))))
 
 (defn core-vec [coll]
   (when (not (or (nil? coll) (core-coll? coll) (string? coll)))
