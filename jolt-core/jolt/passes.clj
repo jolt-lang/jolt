@@ -39,5 +39,7 @@
                   (if (and @dirty (< i 8))
                     (recur (inc i) n2)
                     n2)))]
-      (run-inference opt))
+      ;; a final const-fold after inference propagates any predicate folded to a
+      ;; constant (jolt-wcw), collapsing the `if` it gates to the taken branch.
+      (const-fold (run-inference opt)))
     (const-fold node)))

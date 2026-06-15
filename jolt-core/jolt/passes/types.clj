@@ -249,6 +249,38 @@
                            :else :any))
       :else :any)))
 
+;; Predicate folding (jolt-wcw): a type predicate whose argument's type is
+;; PROVEN folds to a compile-time boolean. Only the precise tags are folded —
+;; :num/:str/:kw mean exactly that scalar, and a record carries its defrecord
+;; :type tag. NOT folded: vector?/set?/map?, because the :vec tag conflates a
+;; real vector with a range/seq (so vector? could be wrong) — left for when the
+;; lattice distinguishes them. :any and :truthy carry no structural info (a
+;; value known only non-nil could be any concrete type), so every predicate is
+;; unknown on them. nil?/some? fold because every concrete type here is
+;; provably non-nil.
+(def ^:private fold-preds
+  #{"number?" "string?" "keyword?" "record?" "nil?" "some?"})
+(defn- record-t? [t] (and (struct-type? t) (some? (get t :type))))
+(defn- pred-on [pname t]
+  (cond
+    (or (= t :any) (= t :truthy)) nil
+    ;; a bounded scalar union folds only when every member agrees
+    (union-type? t)
+    (let [vs (map (fn [m] (pred-on pname m)) (umembers t))]
+      (if (and (seq vs) (not (nil? (first vs))) (apply = vs)) (first vs) nil))
+    :else
+    (case pname
+      "number?"  (= t :num)
+      "string?"  (= t :str)
+      "keyword?" (= t :kw)
+      "record?"  (record-t? t)
+      "nil?"     false
+      "some?"    true
+      nil)))
+;; Side-effect-free node whose evaluation can be dropped when its predicate
+;; folds away (a wider purity analysis can broaden this later).
+(defn- pure-node? [n] (let [op (get n :op)] (or (= op :const) (= op :local))))
+
 (declare infer)
 
 ;; HOFs that apply their fn arg to the ELEMENTS of a collection (jolt-d6u,
@@ -355,6 +387,17 @@
             args (get node :args)
             n (count args)]
         (cond
+          ;; predicate folding (jolt-wcw): a type predicate over a single,
+          ;; side-effect-free argument whose type PROVES the answer becomes a
+          ;; boolean constant — eliminating the call, and (once const-fold runs
+          ;; after inference) collapsing any `if` it gates. Falls through to the
+          ;; normal call path when the answer isn't provable or the arg is impure.
+          (and iscall-var (contains? fold-preds cn) (= n 1))
+          (let [ar (infer (nth args 0) tenv)
+                v (pred-on cn (nth ar 0))]
+            (if (and (not (nil? v)) (pure-node? (nth ar 1)))
+              [:any {:op :const :val v}]
+              [(call-ret-type fnode) (assoc node :args [(nth ar 1)])]))
           ;; (:k m) / (:k m default): the result is m's field type, and if m is a
           ;; struct the subject is tagged so the back end drops the guard — this
           ;; types nested access end to end (RFC 0005).
