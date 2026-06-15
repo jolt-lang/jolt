@@ -120,10 +120,21 @@
 # So we direct-link exactly the call-optimization case; everything else stays
 # indirect (live var deref → redefinable). Default user/REPL units: flag off,
 # so all user calls are indirect and redefinable with no annotation.
+# A var DEF'd earlier as a sibling in the current compilation unit can't be
+# direct-linked/const-linked: its embedded root is the value from BEFORE this
+# unit runs, but the unit's own (def …) rebinds it first — so a later reference
+# in the same unit (e.g. deftype's `(def ->R R)` alias after `(def R …)`) would
+# capture the stale pre-redef root (jolt-wf4). Self-reference inside a def's own
+# init is unaffected: the cell is registered only AFTER its init is emitted, so a
+# fn body's recursive call still direct-links (and runs after the def completes).
+(defn- unit-redefined? [ctx cell]
+  (let [ud (get (ctx :env) :unit-defs)] (and ud (get ud cell) true)))
+
 (defn- direct-var? [ctx cell]
   (and (get (ctx :env) :direct-linking?)
        (not (cell :dynamic))
        (not (let [m (cell :meta)] (and m (get m :redef))))
+       (not (unit-redefined? ctx cell))
        (let [r (cell :root)] (or (function? r) (cfunction? r)))))
 
 # Whole-program constant-linking (closed world): under JOLT_WHOLE_PROGRAM every
@@ -141,6 +152,7 @@
   (and (get (ctx :env) :whole-program?)
        (get (ctx :env) :direct-linking?)
        (not (cell :dynamic))
+       (not (unit-redefined? ctx cell))
        (not (nil? (cell :root)))))
 
 # Fresh Janet symbol for back-end-introduced bindings (arity dispatch). NOT
@@ -633,10 +645,15 @@
       :try (emit-try ctx node)
       :throw ['error (emit ctx (node :expr))]
       :def (let [cell (cell-for ctx (node :ns) (node :name))
-                 meta (node :meta)]
+                 meta (node :meta)
+                 setter (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))]
              (inline-stash! ctx cell node)
-             (tuple (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))
-                    (emit ctx (node :init))))
+             # Emit the init BEFORE marking the cell unit-defined, so a recursive
+             # self-reference in the init still direct-links; a LATER sibling
+             # reference in this unit then sees it as redefined (jolt-wf4).
+             (let [init-form (emit ctx (node :init))]
+               (when-let [ud (get (ctx :env) :unit-defs)] (put ud cell true))
+               (tuple setter init-form)))
       :let (emit-let ctx node)
       :fn (emit-fn ctx node)
       :invoke (emit-invoke ctx node)
@@ -649,6 +666,10 @@
 (defn emit-ir
   "IR node -> Janet form (public entry for the back end)."
   [ctx node]
+  # Fresh per-unit set of vars (re)defined in THIS top-level form, so a sibling
+  # reference to one can't direct-link to its pre-redef root (jolt-wf4). Scoped
+  # to one emit pass; each compile-and-eval / re-emit call is its own unit.
+  (when (table? (get ctx :env)) (put (ctx :env) :unit-defs @{}))
   (emit ctx node))
 
 # --- pipeline wiring (the self-hosted compile path) ---
