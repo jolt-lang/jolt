@@ -156,9 +156,34 @@
   out)
 
 (defn pv-from-indexed [xs]
-  # Build a pvec from any Janet-indexed collection (tuple/array).
-  (var pv EMPTY)
+  # Build a pvec from any Janet-indexed collection (tuple/array) by constructing
+  # the trie BOTTOM-UP in one pass, instead of n incremental pv-conj calls (each
+  # of which allocated a pv wrapper and copied the tail). The structure produced
+  # is identical to the incremental one — tail-offset(n) = ((n-1)>>5)<<5 is
+  # exactly the trie/tail split, so leaf-for/nth/conj/assoc all read it the same.
+  # This is the bulk path behind vec/mapv/into-a-vector (jolt-5vsp collections).
   (def n (length xs))
-  (var i 0)
-  (while (< i n) (set pv (pv-conj pv (in xs i))) (++ i))
-  pv)
+  (if (<= n width)
+    # everything fits in the tail (matches EMPTY's shift)
+    (make-pv n bits empty-node (tuple/slice xs))
+    (let [tail-len (+ 1 (mod (- n 1) width))
+          trie-count (- n tail-len)                 # = tail-offset(n), a multiple of width
+          tail (tuple/slice xs trie-count n)]
+      # value leaves: full 32-element tuples over [0, trie-count)
+      (def leaves @[])
+      (var i 0)
+      (while (< i trie-count)
+        (array/push leaves (tuple/slice xs i (+ i width)))
+        (set i (+ i width)))
+      # group nodes 32-wide, bottom-up, until <=32 remain; that becomes the root
+      (var level leaves)
+      (var shift bits)
+      (while (> (length level) width)
+        (def parent @[])
+        (var j 0)
+        (while (< j (length level))
+          (array/push parent (tuple/slice level j (min (length level) (+ j width))))
+          (set j (+ j width)))
+        (set level parent)
+        (set shift (+ shift bits)))
+      (make-pv n shift (tuple/slice level) tail))))

@@ -52,3 +52,18 @@
   ["large vector nth"       "1500"      "(nth (vec (range 2000)) 1500)"]
   ["large vector count"     "2000"      "(count (vec (range 2000)))"]
   ["large conj immutable"   "true"      "(let [v (vec (range 1000)) w (conj v :end)] (and (= 1000 (count v)) (= 1001 (count w))))"])
+
+# vec/into build the pvec trie BOTTOM-UP in one pass (pv-from-indexed, jolt-5vsp
+# collections). Exercise the structure transitions: 32 (tail full), 33 (first
+# trie leaf), 1024 (root full at shift 5), 1025 (root grows to shift 10) — and
+# that a conj/assoc after a bulk build still lands and reads back.
+(defspec "vector / bulk build boundaries"
+  ["count at 1025"          "1025"  "(count (vec (range 1025)))"]
+  ["into = vec at 1025"     "true"  "(= (vec (range 1025)) (into [] (range 1025)))"]
+  ["nth at leaf boundary"   "32"    "(nth (vec (range 1025)) 32)"]
+  ["nth at root boundary"   "1024"  "(nth (vec (range 1025)) 1024)"]
+  ["vec=into at 33"         "true"  "(= (vec (range 33)) (into [] (range 33)))"]
+  ["conj after bulk 1024"   "1025"  "(count (conj (vec (range 1024)) :x))"]
+  ["conj-after reads back"  ":x"    "(nth (conj (vec (range 1024)) :x) 1024)"]
+  ["assoc into bulk vec"    "9"     "(nth (assoc (vec (range 1025)) 1000 9) 1000)"]
+  ["into onto non-empty"    "[0 1 2 0 1]" "(into (vec (range 3)) (range 2))"])
