@@ -57,10 +57,14 @@
 (defn core-sorted-map? [x] (and (table? x) (= :jolt/sorted-map (x :jolt/type))))
 (defn core-sorted-set? [x] (and (table? x) (= :jolt/sorted-set (x :jolt/type))))
 (defn core-sorted? [x] (or (core-sorted-map? x) (core-sorted-set? x)))
-# The :entries vector as a Janet array (entries are jolt vectors: pvecs in
-# immutable mode, arrays in mutable mode) — for the seed's printers/equality.
+# The comparator-ordered entries as a Janet array (entries are jolt vectors:
+# pvecs in immutable mode, arrays in mutable mode) — for the seed's printers/
+# equality. Materialized from the red-black tree via the coll's own :entries op
+# (jolt-0hbr); the old sorted-VECTOR rep is read directly as a fallback.
 (defn sorted-entries-arr [coll]
-  (let [e (coll :entries)] (if (pvec? e) (pv->array e) e)))
+  (def ef (let [ops (coll :ops)] (and ops (ops :entries))))
+  (def e (if ef (ef coll) (coll :entries)))
+  (if (pvec? e) (pv->array e) e))
 
 # Lazy cell chain over an indexed (tuple/array) collection, walking by INDEX —
 # O(1) per step. Slicing the remainder per step (the old shape) made every
