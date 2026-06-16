@@ -14,6 +14,16 @@
 (def dirty (atom false))   ;; read/reset by the run-passes fixpoint (jolt.passes)
 (defn- mark! [] (reset! dirty true))
 
+;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), fed
+;; per unit by run-passes (set-rec-shapes!) before the fixpoint so scalar-replace
+;; can recognize a (->Rec ..) call and map its positional args to declared fields
+;; — the record analogue of the inline keys a map literal already carries in the
+;; IR (jolt-15jq).
+(def ^:private rec-shapes (atom {}))
+(defn set-rec-shapes!
+  "Install the record-ctor shape registry the record fold consults (jolt-15jq)."
+  [m] (reset! rec-shapes (or m {})))
+
 (def ^:private fresh-counter (atom 0))
 (defn- fresh [base]
   (let [n @fresh-counter]
@@ -244,10 +254,16 @@
       (= op :host) (contains? pure-fns (get f :name))
       :else false)))
 
+;; forward ref: a record ctor (allocating an immutable struct from its args) is
+;; side-effect-free, so pure? treats (->Rec pure-args..) as pure — which lets a
+;; nested record (a Ray holding a Vec3) fold bottom-up (jolt-15jq).
+(declare ctor-shape)
+
 (defn- pure?
   "Conservative: true only for expressions with no side effects that are safe to
-  duplicate or discard. A var/host ref is a pure read; an invoke is pure only
-  for a known-pure fn (arithmetic, comparison, keyword lookup, get)."
+  duplicate or discard. A var/host ref is a pure read; an invoke is pure for a
+  known-pure fn (arithmetic, comparison, keyword lookup, get) or a record
+  constructor (an immutable struct alloc) whose args are themselves pure."
   [node]
   (let [op (get node :op)]
     (cond
@@ -263,7 +279,8 @@
       (= op :vector) (every? pure? (get node :items))
       (= op :set) (every? pure? (get node :items))
       (= op :map) (every? (fn [pr] (and (pure? (nth pr 0)) (pure? (nth pr 1)))) (get node :pairs))
-      (= op :invoke) (and (pure-fn? (get node :fn)) (every? pure? (get node :args)))
+      (= op :invoke) (and (or (pure-fn? (get node :fn)) (ctor-shape node))
+                          (every? pure? (get node :args)))
       :else false)))
 
 (defn- const-key-map? [node]
@@ -410,46 +427,136 @@
       (= op :def) (local-escapes? (get node :init) nm)
       :else true)))
 
-(defn- subst-lookup
-  "Replace every (:k nm)/(get nm :k) in node with the map value at k. The caller
-  guarantees (via local-escapes?) that nm is never rebound here and appears only
-  as a lookup subject, so no shadowing logic is needed."
-  [node nm mapnode]
+;; --- record constructors as foldable struct sources (jolt-15jq) -------------
+;; A record ctor (->Rec a b ..) is a positional struct: the registry maps its
+;; ctor key ("ns/->Name", exactly how the IR names the call head) to the DECLARED
+;; field order. A field read on a non-escaping ctor folds to the matching arg,
+;; just as (:k {:k a ..}) folds to a. Two soundness differences from maps:
+;;   - the ctor's args are duplicated/discarded, so they must be pure (like map
+;;     vals), and the arg count must equal the field count (a positional call);
+;;   - a record answers the virtual :jolt/deftype key with its type tag and any
+;;     other non-field key with nil — neither is a positional arg, so we only
+;;     fold DECLARED-field reads and keep the allocation otherwise.
+
+(defn- ctor-shape
+  "If node is a record-constructor :invoke (its :fn a :var whose ns/name is a
+  registered ctor key, with arg count matching the declared field count), return
+  that record's shape entry; else nil."
+  [node]
+  (if (= :invoke (get node :op))
+    (let [f (get node :fn)]
+      (if (= :var (get f :op))
+        (let [rs (get @rec-shapes (str (get f :ns) "/" (get f :name)))]
+          (if (and rs (= (count (get rs :fields)) (count (get node :args))))
+            rs
+            nil))
+        nil))
+    nil))
+
+(defn- ctor-all-args-pure? [node] (every? pure? (get node :args)))
+
+(defn- field-index
+  "Index of scalar key k in the declared field tuple fields, or nil."
+  [fields k]
+  (let [n (count fields)]
+    (loop [i 0]
+      (if (< i n)
+        (if (= (nth fields i) k) i (recur (inc i)))
+        nil))))
+
+(defn- ctor-val
+  "The positional arg IR at declared field k of record ctor node (shape rs). Only
+  called for a key known to be a field, so the index is always present."
+  [ctor rs k]
+  (nth (get ctor :args) (field-index (get rs :fields) k)))
+
+(defn- collect-keys!
+  "Accumulate (into atom acc) every constant-keyword lookup key applied to local
+  nm in node. The caller has proven (via local-escapes?) that nm appears only as
+  a lookup subject and is never rebound, so a uniform recursion suffices: at a
+  lookup of nm we record the key and stop (its subject is nm itself); elsewhere
+  we recurse into children."
+  [node nm acc]
   (let [k (lookup-key node nm)]
     (if k
-      (map-val mapnode k)
+      (swap! acc conj k)
+      (map-ir-children (fn [c] (collect-keys! c nm acc) c) node))))
+
+(defn- lookups-all-fields?
+  "True if every lookup of nm across nodes uses a declared field in fields — the
+  record-only guard that keeps a :jolt/deftype/unknown-key read (not a positional
+  arg) from being folded to the wrong value."
+  [nodes nm fields]
+  (every? (fn [node]
+            (let [acc (atom #{})]
+              (collect-keys! node nm acc)
+              (every? (fn [k] (field-index fields k)) @acc)))
+          nodes))
+
+(defn- src-val
+  "Field value at k from a foldable struct source — a const-key map (absent key
+  -> nil, struct-map semantics) or a record ctor (k is always a declared field
+  here, guaranteed by lookups-all-fields?)."
+  [src k]
+  (if (= :map (get src :op))
+    (map-val src k)
+    (ctor-val src (ctor-shape src) k)))
+
+(defn- subst-lookup
+  "Replace every (:k nm)/(get nm :k) in node with the source value at k. The
+  caller guarantees (via local-escapes?) that nm is never rebound here and
+  appears only as a lookup subject, so no shadowing logic is needed."
+  [node nm src]
+  (let [k (lookup-key node nm)]
+    (if k
+      (src-val src k)
       ;; the caller's escape check guarantees nm is never rebound below, so we
       ;; recurse uniformly into every child — leaving any lookup of nm
       ;; un-substituted would dangle.
-      (map-ir-children (fn [c] (subst-lookup c nm mapnode)) node))))
+      (map-ir-children (fn [c] (subst-lookup c nm src)) node))))
 
 (defn- fold-kw-literal
-  "(a) (:k {:k a ..}) -> a (siblings pure)."
+  "(a) (:k <source>) -> the value at k. <source> is a const-key pure map
+  ((:k {:k a ..}) -> a) or a pure record ctor ((:k (->Rec a ..)) -> the arg for
+  field k). Siblings are duplicated/discarded, so all must be pure; a record
+  lookup folds only for a declared field."
   [node]
   (let [f (get node :fn) args (get node :args)]
     (if (and (= :const (get f :op)) (keyword? (get f :val)) (= 1 (count args)))
-      (let [m (nth args 0)]
+      (let [m (nth args 0) k (get f :val)]
         (if (and (= :map (get m :op)) (const-key-map? m) (all-vals-pure? m))
-          (do (mark!) (map-val m (get f :val)))
-          node))
+          (do (mark!) (map-val m k))
+          (let [rs (ctor-shape m)]
+            (if (and rs (ctor-all-args-pure? m) (field-index (get rs :fields) k))
+              (do (mark!) (ctor-val m rs k))
+              node))))
       node)))
 
-(defn- elim-let-maps
-  "(b) Drop the first non-escaping let binding whose init is a pure const-key map
-  literal, substituting its field lookups into the remaining bindings and body.
-  Fixpoint re-runs us for the rest, so one elimination per call keeps it simple."
+(defn- elim-let-structs
+  "(b) Drop the first non-escaping let binding whose init is a foldable struct
+  source — a pure const-key map literal or a pure record ctor — substituting its
+  field reads into the remaining bindings and body. Fixpoint re-runs us for the
+  rest, so one elimination per call keeps it simple. For a record every lookup
+  of the binding must hit a declared field, else we keep the allocation."
   [node]
   (let [binds (get node :bindings) n (count binds) body (get node :body)]
     (loop [i 0]
       (if (< i n)
-        (let [b (nth binds i) nm (nth b 0) init (nth b 1)]
-          (if (and (= :map (get init :op)) (const-key-map? init) (all-vals-pure? init)
+        (let [b (nth binds i) nm (nth b 0) init (nth b 1)
+              ismap (and (= :map (get init :op)) (const-key-map? init) (all-vals-pure? init))
+              rs (when (not ismap) (ctor-shape init))
+              isrec (and rs (ctor-all-args-pure? init))]
+          (if (and (or ismap isrec)
                    (not (any-binding-named? (subvec binds (inc i) n) nm))
                    (not (loop [j (inc i)]
                           (if (< j n)
                             (if (local-escapes? (nth (nth binds j) 1) nm) true (recur (inc j)))
                             false)))
-                   (not (local-escapes? body nm)))
+                   (not (local-escapes? body nm))
+                   (or ismap
+                       (lookups-all-fields?
+                         (conj (mapv (fn [bb] (nth bb 1)) (subvec binds (inc i) n)) body)
+                         nm (get rs :fields))))
             (let [head (subvec binds 0 i)
                   tail (mapv (fn [bb] [(nth bb 0) (subst-lookup (nth bb 1) nm init)])
                              (subvec binds (inc i) n))
@@ -467,8 +574,8 @@
   [node]
   (let [op (get node :op)]
     (cond
-      ;; (a) fold (:k {:k a ..}) at invokes, after scalar-replacing children
+      ;; (a) fold (:k <map|ctor>) at invokes, after scalar-replacing children
       (= op :invoke) (fold-kw-literal (map-ir-children scalar-replace node))
-      ;; (b) drop a non-escaping const-key-map let binding, after children
-      (= op :let) (elim-let-maps (map-ir-children scalar-replace node))
+      ;; (b) drop a non-escaping foldable-struct let binding, after children
+      (= op :let) (elim-let-structs (map-ir-children scalar-replace node))
       :else (map-ir-children scalar-replace node))))

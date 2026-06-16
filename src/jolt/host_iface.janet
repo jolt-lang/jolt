@@ -239,6 +239,13 @@
   # not just one whose ->Name happens to be interned in the current ns).
   (if (record-hint-ctor-key ctx name) true false))
 
+# The record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag ..}),
+# or an empty table. Lets scalar-replace (jolt-15jq) recognize a (->Rec ..) call
+# and map its positional args to the declared field order — the record analogue
+# of the inline map-literal keys the map fold already sees in the IR.
+(defn h-record-shapes [ctx]
+  (or (get (ctx :env) :record-shapes) @{}))
+
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
    "ref-put!" h-ref-put!
@@ -255,7 +262,7 @@
    "host-intern!" h-intern!
    "inline-enabled?" h-inline-enabled? "inline-ir" h-inline-ir
    "record-type?" h-record-type? "form-position" h-form-position
-   "record-ctor-key" h-record-ctor-key})
+   "record-ctor-key" h-record-ctor-key "record-shapes" h-record-shapes})
 
 (defn install! [ctx]
   (def ns (ctx-find-ns ctx "jolt.host"))
