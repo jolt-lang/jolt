@@ -1023,6 +1023,7 @@
   (def f-set-rshapes (and pns (ns-find pns "set-record-shapes!")))   # jolt-t34
   (def f-set-mshapes (and pns (ns-find pns "set-map-shapes!")))      # jolt-t34
   (def f-set-pmethods (and pns (ns-find pns "set-protocol-methods!"))) # jolt-41m
+  (def f-phint-seed (and pns (ns-find pns "phint-seed")))            # jolt-3ko
   (def f-get-esc (and pns (ns-find pns "collected-escapes")))
   (def report @{})
   (when (and f-set-rtenv f-set-vtypes f-join f-infer-body f-reinfer f-reset-esc f-get-esc)
@@ -1048,7 +1049,8 @@
                   (unless (ar :rest)
                     (def pv (vview (ar :params)))
                     (def rec @{:key key :cell v :def d :params (ar :params) :body (ar :body)
-                               :np (length pv) :pt (array/new-filled (length pv)) :ret nil})
+                               :phints (ar :phints) :np (length pv)
+                               :pt (array/new-filled (length pv)) :ret nil})
                     (array/push fns rec)
                     (put by-key key rec)
                     # a fn value is non-nil -> :truthy (sealed root in opt mode)
@@ -1060,6 +1062,13 @@
       # jolt-t34: feed record-ctor shapes + the map-shaping flag to the inference
       (when f-set-rshapes ((var-get f-set-rshapes) (or (get (ctx :env) :record-shapes) @{})))
       (when f-set-mshapes ((var-get f-set-mshapes) (get (ctx :env) :map-shapes?)))
+      # jolt-3ko: resolve each fn's declared ^Record param hints to positional
+      # type seeds (needs the registry above). Seeded as a param-type FLOOR in the
+      # fixpoint so a hinted param propagates its (field-read) types to callees
+      # during inference, not only at the final re-emit.
+      (when f-phint-seed
+        (each f fns
+          (put f :phint-types (vview ((var-get f-phint-seed) (f :params) (or (f :phints) []))))))
       # jolt-41m: feed the protocol-method registry for devirtualization
       (when f-set-pmethods ((var-get f-set-pmethods) (or (get (ctx :env) :protocol-methods) @{})))
       # --- param/return/value-type fixpoint (chaotic iteration to LEAST fixpoint) ---
@@ -1083,9 +1092,17 @@
         # infer each def's VALUE type from its init
         (each dv defs
           (put dv :tvt (in (vview ((var-get f-infer-body) (dv :init) @{})) 0)))
-        # recompute param types FRESH (start at bottom = nil) from this round's calls
+        # recompute param types FRESH (start at bottom) from this round's calls.
+        # Bottom is nil, EXCEPT a declared ^Record hint seeds its slot as a floor
+        # (jolt-3ko) — a fixed declared type can't poison the fixpoint the way an
+        # early-iteration :any would, and it lets a hinted param propagate to its
+        # callees even when it has no callers of its own.
         (def newpt @{})
-        (each f fns (put newpt (f :key) (array/new-filled (f :np))))
+        (each f fns
+          (def npa (array/new-filled (f :np)))
+          (def phts (f :phint-types))
+          (when phts (for i 0 (f :np) (when (in phts i) (put npa i (in phts i)))))
+          (put newpt (f :key) npa))
         (each f fns
           (each c (vview (f :tcalls))
             (def cv (vview c))
