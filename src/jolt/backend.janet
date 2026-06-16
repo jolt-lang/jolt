@@ -208,27 +208,76 @@
     (array/push call ['if ['> ['length jargs] nfixed] ['tuple/slice jargs nfixed]]))
   (tuple/slice call))
 
+# A tail loop lowers to a Janet `while` + state vars (jolt-v28u), NOT a
+# self-recursive closure called once per iteration — that paid a fn frame + arg
+# bind every iteration, which the jolt-5vsp spike localized as the ENTIRE ~1.43x
+# jolt-over-hand-Janet gap on compute loops. Shape:
+#   (let [b0 init0] (let [b1 init1] ...   ; sequential inits (later sees earlier)
+#     (do (var $b0 b0) (var $b1 b1) ...    ; state carried across iterations
+#         (var flag true) (var result nil)
+#         (while flag
+#           (set flag false)
+#           (let [b0 $b0 b1 $b1 ...]        ; FRESH immutable per-iteration binding
+#             (set result <body>)))          ; a tail recur sets the $vars + flag
+#         result)))
+# The per-iteration `let` is load-bearing, not cosmetic: a closure built in the
+# body must capture THIS iteration's value (Clojure semantics), and Janet closures
+# capture vars BY REFERENCE — close over a shared mutable var and every closure
+# sees the final value ([3 3 3]). Rebinding into an immutable `let` each iteration
+# restores per-iteration capture ([0 1 2]). recur reads the immutable bi and writes
+# $bi, so the read/write sets are disjoint and cross-referencing args (swap, fib)
+# need no temps.
 (defn- emit-loop [ctx node]
-  (def L (symbol (node :recur-name)))
-  (def params @[])
-  # Initial inits bind SEQUENTIALLY (a later init can reference an earlier binding,
-  # like let / Clojure's loop) — emit them in a Janet `let`, then enter the recur
-  # target L with those values, rather than computing all inits in the outer scope.
-  (def let-binds @[])
+  (def recur-name (node :recur-name))
+  (def syms @[])     # loop binding names (source symbols), read by the body
+  (def state @[])    # fresh vars carrying each binding across iterations
+  (def inits @[])
   (each pair (vview (node :bindings))
     (def p (vview pair))
-    (def sym (symbol (in p 0)))
-    (array/push params sym)
-    (array/push let-binds sym)
-    (array/push let-binds (emit ctx (in p 1))))
-  ['do
-   ['var L nil]
-   ['set L ['fn (tuple/slice params) (emit ctx (node :body))]]
-   ['let (tuple/slice let-binds) (tuple/slice (array/concat @[L] params))]])
+    (array/push syms (symbol (in p 0)))
+    (array/push state (gsym))
+    (array/push inits (emit ctx (in p 1))))
+  (def flag (gsym))
+  (def result (gsym))
+  # Register this loop so its recurs lower to state-var sets (emit-recur looks it
+  # up by recur-name); restore any prior binding after the body (nil removes it).
+  (def frames (or (get (ctx :env) :loop-frames)
+                  (let [t @{}] (put (ctx :env) :loop-frames t) t)))
+  (def prev (get frames recur-name))
+  (put frames recur-name {:state state :flag flag})
+  (def body (emit ctx (node :body)))
+  (put frames recur-name prev)
+  (def per-iter @[])
+  (for i 0 (length syms) (array/push per-iter (syms i) (state i)))
+  (def block @['do])
+  (for i 0 (length syms) (array/push block ['var (state i) (syms i)]))
+  (array/push block ['var flag true] ['var result nil])
+  (array/push block ['while flag
+                     ['set flag false]
+                     ['let (tuple/slice per-iter) ['set result body]]])
+  (array/push block result)
+  (var form (tuple/slice block))
+  (for ri 0 (length syms)
+    (def i (- (length syms) 1 ri))
+    (set form ['let [(syms i) (inits i)] form]))
+  form)
 
 (defn- emit-recur [ctx node]
-  (tuple/slice (array/concat @[(symbol (node :recur-name))]
-                            (map |(emit ctx $) (vview (node :args))))))
+  (def recur-name (node :recur-name))
+  (def frame (get (get (ctx :env) :loop-frames @{}) recur-name))
+  (if frame
+    # while-lowered loop: write each state var from its recur arg (args read the
+    # immutable iteration bindings — disjoint from the $vars, so no clobber), then
+    # raise the continue flag. The `do` yields the flag value, discarded in tail.
+    (let [args (map |(emit ctx $) (vview (node :args)))
+          block @['do]]
+      (for i 0 (length (frame :state))
+        (array/push block ['set ((frame :state) i) (args i)]))
+      (array/push block ['set (frame :flag) true])
+      (tuple/slice block))
+    # fn-arity recur: a self-call the Janet runtime tail-calls (unchanged path).
+    (tuple/slice (array/concat @[(symbol recur-name)]
+                              (map |(emit ctx $) (vview (node :args)))))))
 
 # Var-cell read of a clojure.core fn, as ((in 'cell :root) args...) — the same
 # live-root call the :var emit uses, for the ns get/set helpers below.
