@@ -1,0 +1,98 @@
+# Lever 1 — Native codegen (jolt-IR → C): feasibility spike
+
+**Epic:** jolt-5vsp · **Date:** 2026-06-16
+**Predecessor:** the localization spike (`docs/foundational-runtime-spike-results.md`)
+showed the 15.4× mandelbrot floor is ~70% Janet-VM floor (only native codegen
+moves it) + ~30% loop-lowering (cheap backend fix, jolt-v28u). This spike probes
+**lever 1's ceiling and the incremental hot-fn-in-C strategy** before committing
+to a backend.
+
+All legs return the identical result (3288753 at n=200). Numbers are means of 3
+after warmup; the dev machine swaps, so treat these as orders-of-magnitude (the
+≈ vs JVM call is robust; ±2ms is noise).
+
+## The native-C ceiling — it beats JVM
+
+Native mandelbrot built as a Janet native module (`spike/native/mandel.c`):
+
+| Leg | mean | vs jolt (219ms) | vs JVM (14.2ms) |
+|---|---|---|---|
+| **native-C whole run** (pure C, no Janet in loop) | **~10–12 ms** | **~18–22× faster** | **faster than JVM** |
+| Janet loop → C hot-fn (forward crossing) | ~11–13 ms | ~18× faster | ≈ JVM |
+| C loop → `janet_call` bytecode (reverse crossing) | ~152 ms | ~no better | ~11× slower |
+| *(reference)* jolt-compiled | 219 ms | — | 15.4× |
+| *(reference)* JVM Clojure | 14.2 ms | — | 1.0× |
+
+**Verdict: lever 1 is validated and its ceiling is excellent.** Compiling the hot
+compute path to C makes it ~18–22× faster than today's jolt and *edges out JVM
+Clojure* — native code has no VM-dispatch floor at all. This is the only lever
+that touches the ~10.8× Janet-VM floor, and the payoff is the full gap.
+
+## The crossing-direction rule (the key strategic finding)
+
+The boundary cost is wildly asymmetric:
+
+- **Forward (bytecode → C): nearly free.** A Janet bytecode loop calling a C
+  hot-fn n² (=40 000) times runs at ~11–13 ms — within ~15% of pure C. So you can
+  compile just the *inner* hot fn to C and capture ~95% of the win while the outer
+  loop stays bytecode. **Incremental adoption works.**
+- **Reverse (C → `janet_call` → bytecode): ~3.5 µs/call.** A C fn calling a
+  bytecode helper per iteration runs at ~152 ms — *no better than jolt today*. The
+  `janet_call` cost (entering the VM/fiber per call) dominates.
+
+**Design constraint → compile leaf-first / whole-hot-cluster.** A fn is a
+profitable C-compilation candidate only if its hot path calls **nothing that stays
+in bytecode** — only primitives or other C-compiled fns. Cross the boundary only at
+*cold* edges. For mandelbrot, `count-point` is a leaf (calls only arithmetic
+primitives) → the ideal first target; compiling it alone captures the win
+(forward crossing), but a half-compiled hybrid that `janet_call`s back per
+iteration buys nothing.
+
+## The dynamic-compile path works (no jpm needed)
+
+jolt's compile model is dynamic (analyze → IR → Janet → eval at runtime). Native
+codegen fits the same shape: a `.so` compiled with a **plain `cc` invocation**
+(no jpm/project.janet) loads at runtime via `require` and runs at full native
+speed (verified: `run-c(200)` correct, 13.5 ms cold).
+
+```
+cc -shared -fPIC -O2 -I/opt/homebrew/include -undefined dynamic_lookup \
+   mandel.c -o mandel.so          # macOS; Linux drops -undefined dynamic_lookup
+(require "path/to/mandel")          # loads at runtime, cfunctions callable
+```
+
+So the native tier mirrors today's interpret/compile hybrid: emit C for a hot
+fn → shell to `cc` → `require` the `.so` → bytecode callers call into it via the
+(cheap, forward) native-module call path. Caching keyed by fn-source-hash mirrors
+the existing ctx image cache.
+
+## Toolchain confirmed (this machine)
+
+- `janet.h` present (`/opt/homebrew/include/janet.h`, Janet 1.41.2).
+- `jpm declare-native` builds a `.so` cleanly.
+- Direct `cc` (no jpm) builds a loadable `.so`.
+- C API used: `janet_getnumber/getinteger`, `janet_wrap_number`, `janet_fixarity`,
+  `janet_getfunction`, `janet_call`, `janet_cfuns`, `JANET_MODULE_ENTRY`.
+
+## Open questions for the implementation (next beads)
+
+1. **IR→C for the numeric subset.** Translate jolt IR → C for proven-double
+   arithmetic + tail `loop`/`recur` (count-point's shape). The native-arith type
+   proof (jolt-3pl) that already gates native *Janet* arith is the same proof that
+   gates C unboxing — reuse it. Start narrow: unbox doubles at entry, primitive
+   ops inline, rebox at exit; bail to bytecode for any unsupported form.
+2. **Boundary policy.** Non-primitive args stay Janet values (no unbox);
+   per-iteration calls allowed only to other C-compiled fns. Encode the
+   leaf-first/cluster rule as the compile-candidate predicate.
+3. **Trigger + cache.** AOT at build/first-run vs lazy JIT on hot fns; `.so`
+   cache keyed by source hash + flags (add to `ctx-shaping-env-vars` /
+   image-cache machinery if it becomes a ctx knob).
+4. **Coverage.** Closures/upvalues, multi-arity, `recur` across the C boundary,
+   portability of `cc` flags per platform.
+
+## Artifacts (`spike/native/`)
+
+- `mandel.c` — native mandelbrot: `run-c` (pure C), `count-point-c` (leaf cfn),
+  `run-callback` (C loop → `janet_call` back, the reverse-crossing probe)
+- `project.janet` — `declare-native` build
+- `bench-native.janet` — the three-leg benchmark + harness
