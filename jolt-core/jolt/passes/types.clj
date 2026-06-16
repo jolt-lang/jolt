@@ -111,8 +111,14 @@
       ;; still bare-index (jolt-t34 R2). cap recurses into fields, so a nested
       ;; shaped value (a vec3 inside a hit-info) keeps its own :shape too.
       (let [capped (mk-struct (reduce (fn [m k] (assoc m k (cap (get (sfields t) k) (dec d))))
-                                      {} (keys (sfields t))))]
-        (if (get t :shape) (assoc capped :shape (get t :shape)) capped))
+                                      {} (keys (sfields t))))
+            ;; the record :type tag (and :shape) are independent of field-value
+            ;; depth, so they survive truncation — a record read from a deep
+            ;; container keeps its identity, so devirtualization (jolt-41m),
+            ;; record? folding, and the record fast path still fire on it.
+            capped (if (get t :shape) (assoc capped :shape (get t :shape)) capped)
+            capped (if (get t :type) (assoc capped :type (get t :type)) capped)]
+        capped)
     (vec-type? t) (mk-vec (cap (velem t) (dec d)))
     (set-type? t) (mk-set (cap (selem t) (dec d)))
     :else t))
