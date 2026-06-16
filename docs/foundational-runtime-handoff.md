@@ -85,7 +85,16 @@ Every other axis adds structural overhead **on top** of that floor.
    (jolt-4x9 element types + jolt-t6r). Helps dispatch. Bounded ceiling (still
    bytecode underneath).
 
-## START HERE — the spike (do this before committing to any lever)
+## START HERE — the spike (DONE — see results)
+
+**The spike ran 2026-06-16. Results: `docs/foundational-runtime-spike-results.md`.**
+Outcome in one line: the 15.4× floor decomposes into a **Janet-VM floor ≈10.8×
+JVM** (the dominant ~70%; only native codegen / lever 1 moves it) plus a **jolt
+loop-lowering ≈1.43×** on top (cheap backend win — `loop`/`recur` is lowered to a
+recursive closure called per iteration; emit Janet `while`+`var`/`set` instead;
+bead **jolt-v28u**). Janet numbers are already unboxed (not a lever). Next: the
+lever-1 jolt-IR→C spike for one hot fn (confirm Janet's incremental native-module
+path first). The original spike instructions are preserved below for context.
 
 **Localize the 15× floor.** Build three `mandelbrot` implementations and compare:
 
