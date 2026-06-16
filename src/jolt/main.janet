@@ -133,13 +133,14 @@
     (and (table? v) (= :jolt/regex (v :jolt/type)))
     (do (push-str buf "#\"") (push-str buf (v :source)) (push-str buf "\""))
 
-    # sorted colls: their comparator-ordered :entries vector (a pvec in
-    # immutable mode, an array in mutable mode) is all the printer reads.
+    # sorted colls: their comparator-ordered entries, materialized from the
+    # red-black tree via the value's own :entries op (jolt-0hbr), is all the
+    # printer reads.
     (and (table? v) (= :jolt/sorted-map (v :jolt/type)))
     (do
       (push-str buf "{")
       (var first? true)
-      (each e (let [es (v :entries)] (if (pvec? es) (pv->array es) es))
+      (each e (let [ef (let [o (v :ops)] (and o (o :entries))) es (if ef (ef v) (v :entries))] (if (pvec? es) (pv->array es) es))
         (if first? (set first? false) (push-str buf ", "))
         (write-value (if (pvec? e) (pv-nth e 0) (in e 0)) buf)
         (push-str buf " ")
@@ -150,7 +151,7 @@
     (do
       (push-str buf "#{")
       (var first? true)
-      (each x (let [es (v :entries)] (if (pvec? es) (pv->array es) es))
+      (each x (let [ef (let [o (v :ops)] (and o (o :entries))) es (if ef (ef v) (v :entries))] (if (pvec? es) (pv->array es) es))
         (if first? (set first? false) (push-str buf " "))
         (write-value x buf))
       (push-str buf "}"))
