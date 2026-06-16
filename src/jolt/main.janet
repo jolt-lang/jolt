@@ -11,6 +11,7 @@
 (use ./config)
 (use ./reader)
 (import ./core :as jcore)
+(import ./deps :as deps)
 
 (def jolt-version "0.1.0")
 
@@ -622,6 +623,14 @@
   (print "  uberscript OUT -m NS  Bundle NS + its required namespaces into one .clj")
   (print "  --version, version    Print the Jolt version")
   (print "  -h, --help, help      Show this help\n")
+  (print "Dependencies (deps.edn, git + :local deps — resolved into JOLT_PATH):")
+  (print "  -M:a[:b] [args]       Run the alias(es) :main-opts ++ args")
+  (print "  -A:a[:b] CMD [args]   Run CMD (repl/-m/nrepl-server/…) with the alias paths")
+  (print "  run FILE [args]       Run FILE with deps.edn resolved")
+  (print "  path                  Print the resolved source roots (':'-joined)")
+  (print "  tasks                 List :tasks from deps.edn")
+  (print "  task NAME [args]      Run a :tasks entry (shell string or :main-opts)")
+  (print "  A deps.edn in the working dir is auto-resolved for repl/-m/-e/nrepl-server/FILE.\n")
   (print "Running a program (a file, -m/-M) direct-links by default; type inference")
   (print "and specialization are opt-in via JOLT_OPTIMIZE (the cost is paid once, then")
   (print "cached). The repl, -e, and nrepl-server stay open so you can redefine vars.")
@@ -632,7 +641,7 @@
   (print "  JOLT_DIRECT_LINK=1      force direct-linking + optimization on (e.g. for -e)")
   (print "  JOLT_WHOLE_PROGRAM=1    force the whole-program pass on")
   (print "  JOLT_INTERPRET=1        run the tree-walking interpreter\n")
-  (print "Dependencies (deps.edn) are handled by the separate jolt-deps tool."))
+  (print "  JOLT_PATH=dir1:dir2     extra source roots (set automatically by deps resolution)"))
 
 (def- help-flags    {"-h" true "--help" true "help" true "-?" true})
 (def- version-flags {"--version" true "version" true})
@@ -641,13 +650,94 @@
 (def- file-flags    {"-f" true "--file" true})
 (def- main-flags    {"-m" true "--main" true})
 
+# --- deps.edn integration (the old jolt-deps tool, folded in) ----------------
+# The runtime stays deps-agnostic: it reads source roots from JOLT_PATH (applied
+# in `main`, below). This layer resolves a deps.edn into those roots IN-PROCESS,
+# so a single `jolt` binary both resolves dependencies and runs code. ./deps
+# loads jpm (git fetch + cache) lazily — only at an actual resolve — so a run
+# with no deps.edn never pulls it in, and an app baked from its own entry (which
+# imports jolt/api, not this CLI) never links the resolver at all.
+
+(defn- parse-alias-flag
+  ``"-A:dev:test" / "-M:dev" -> [:dev :test].``
+  [arg]
+  (map keyword (filter |(not= "" $) (string/split ":" (string/slice arg 2)))))
+
+(defn- deps-roots [aliases]
+  (if (os/stat "deps.edn") (deps/resolve-deps-cached "deps.edn" nil aliases) @[]))
+
+(defn- set-deps-env! [aliases]
+  # Prepend the resolved roots to any existing JOLT_PATH; `main` (below) applies
+  # them to the ctx source-paths. JOLT_APP_PATHS scopes whole-program inference
+  # to the project's own namespaces — deps load-infer per-ns instead (jolt-87e).
+  (def rs (string/join (deps-roots aliases) ":"))
+  (def existing (os/getenv "JOLT_PATH"))
+  (os/setenv "JOLT_PATH" (if (and existing (> (length existing) 0)) (string rs ":" existing) rs))
+  (when (os/stat "deps.edn")
+    (os/setenv "JOLT_APP_PATHS" (string/join (deps/project-source-roots "deps.edn" aliases) ":"))))
+
+(defn- resolve-deps-argv
+  ``Resolve deps.edn (when relevant) and de-sugar the deps subcommands into a
+  plain runtime argv that `main` then dispatches on. The pure deps queries
+  (path/tasks/task) print and exit. A runnable command resolves a deps.edn in
+  cwd when one is present — so `jolt repl` / `-m` / `nrepl-server` pick up the
+  project and its dependencies — and is a no-op (resolver untouched) with none.``
+  [argv]
+  # leading -A:alias flags apply to whatever command follows
+  (var aliases nil)
+  (var rest argv)
+  (while (string/has-prefix? "-A" (or (get rest 0) ""))
+    (set aliases (array/concat (or aliases @[]) (parse-alias-flag (get rest 0))))
+    (set rest (array/slice rest 1)))
+  (def cmd (get rest 0))
+  (cond
+    # pure deps queries — produce output and exit, never start the runtime
+    (= cmd "path")
+      (do (print (string/join (deps-roots aliases) ":")) (os/exit 0))
+    (= cmd "tasks")
+      (do (each row (deps/tasks "deps.edn")
+            (print (row 0) (if (row 1) (string "\t" (row 1)) "")))
+          (os/exit 0))
+    (= cmd "task")
+      (let [name (get rest 1)
+            spec (when name (deps/task-spec "deps.edn" name))]
+        (cond
+          (nil? name) (do (eprint "jolt: task needs a name") (os/exit 1))
+          (nil? spec) (do (eprint "jolt: no such task: " name) (os/exit 1))
+          (= :shell (spec :type))
+            (os/exit (os/execute ["sh" "-c" (string/join [(spec :cmd) ;(array/slice rest 2)] " ")] :p))
+          (do (set-deps-env! aliases)
+              (array/concat @[] (spec :argv) (array/slice rest 2)))))
+    # -M:aliases — resolve and run the alias's :main-opts ++ extra args
+    (and cmd (string/has-prefix? "-M" cmd))
+      (let [als (array/concat (or aliases @[]) (parse-alias-flag cmd))
+            mo (deps/alias-main-opts "deps.edn" als)]
+        (if mo
+          (do (set-deps-env! als) (array/concat @[] mo (array/slice rest 1)))
+          (do (eprint "jolt: no :main-opts in alias(es) " (string/format "%j" (map string als)))
+              (os/exit 1))))
+    # explicit `run FILE` — resolve, then run the file
+    (= cmd "run")
+      (do (set-deps-env! aliases) (array/slice rest 1))
+    # any runnable command: resolve a deps.edn if present (or if -A forced it);
+    # help/version never resolve, and with no deps.edn + no -A the resolver and
+    # jpm are never touched.
+    (and (not (help-flags cmd)) (not (version-flags cmd))
+         (or aliases (os/stat "deps.edn")))
+      (do (set-deps-env! aliases) rest)
+    # nothing deps-related — argv unchanged
+    true rest))
+
 (defn main [&]
   (def args (or (dyn :args) @[]))            # @["jolt" arg1 arg2 ...]
-  (def argv (if (> (length args) 1) (array/slice args 1) @[]))
+  # Resolve deps.edn + de-sugar deps subcommands (jolt-deps folded in): sets
+  # JOLT_PATH/JOLT_APP_PATHS in our env (read just below) and rewrites argv to a
+  # plain runtime command. A no-deps invocation passes through untouched.
+  (def argv (resolve-deps-argv (if (> (length args) 1) (array/slice args 1) @[])))
   (ctx-set-current-ns ctx "user")
   # JOLT_PATH must be applied at runtime: this `ctx` is built into the image at
   # build time, so its source-paths can't capture the runtime environment.
-  # `jolt-deps` sets JOLT_PATH to the resolved deps.edn source roots.
+  # resolve-deps-argv (above) sets it from the resolved deps.edn source roots.
   (when-let [jp (os/getenv "JOLT_PATH")]
     (each p (string/split ":" jp)
       (when (> (length p) 0) (array/push (get (ctx :env) :source-paths) p))))

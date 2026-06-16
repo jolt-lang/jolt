@@ -9,8 +9,9 @@
   :name "jolt"
   :entry "src/jolt/main.janet")
 
-# Separate tool (like jpm beside janet): resolves deps.edn into Jolt source
-# roots. The jolt runtime stays deps-agnostic — it just reads JOLT_PATH.
+# Deprecated shim kept for back-compat: deps.edn resolution is built into `jolt`
+# now (the CLI front-end resolves into JOLT_PATH in-process; the runtime core
+# stays deps-agnostic). Forwards to `jolt`; prefer `jolt -M:…` / `jolt path`.
 (declare-executable
   :name "jolt-deps"
   :entry "src/jolt/deps_cli.janet")

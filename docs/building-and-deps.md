@@ -11,16 +11,22 @@ git submodule update --init   # vendor/sci (used by the SCI bootstrap tests)
 jpm build
 ```
 
-This produces two executables under `build/`:
+This produces `build/jolt` — one binary that is both the runtime (REPL,
+file/expr runner, nREPL server) and the dependency front-end (`deps.edn`
+resolution, see below). The whole `.clj` standard library
+(`clojure.string`/`set`/`walk`/`edn`/`zip`, `jolt.http`/`interop`/`shell`/
+`nrepl`) is baked in at build time, so it loads from any directory — the artifact
+is self-contained. (`clojure.core` is built into the runtime in Janet and
+auto-referred, so it's always available.)
 
-- **`jolt`** — the runtime: REPL, file/expr runner, nREPL server. The whole `.clj`
-  standard library (`clojure.string`/`set`/`walk`/`edn`/`zip`, `jolt.http`/
-  `interop`/`shell`/`nrepl`) is baked into this binary at build time, so it loads
-  from any directory — the build artifact is self-contained. (`clojure.core` is
-  built into the runtime in Janet and auto-referred, so it's always available.)
-- **`jolt-deps`** — a separate tool that resolves a `deps.edn` (see below). It
-  sits beside the runtime the way `jpm` sits beside `janet`; the runtime itself
-  knows nothing about deps.edn.
+The runtime **core** stays deps-agnostic: it only reads source roots from
+`JOLT_PATH`. Dependency resolution lives in a separate CLI front-end module
+(`src/jolt/deps.janet`) that the `jolt` entry point calls *before* running your
+code, and that lazily loads `jpm` (for git fetch + cache) only when it actually
+resolves. So a run with no `deps.edn` never touches the resolver, and an app
+baked from its own entry — which imports `jolt/api`, not the CLI — never links
+it at all. (`build/` also contains a `jolt-deps` shim that just forwards to
+`jolt` so old scripts keep working; prefer calling `jolt` directly.)
 
 Needs `jpm` and a recent Janet — developed and CI-tested against **1.41**. The
 futures and core.async layers use Janet's threaded `ev/` channels (`ev/thread`,
@@ -54,23 +60,24 @@ JOLT_PATH=/path/to/lib/src build/jolt myfile.clj
 
 ## Dependencies via deps.edn
 
-`jolt-deps` reads a `deps.edn` in the current directory, fetches its
-dependencies, and runs `jolt` with the resolved source directories on
-`JOLT_PATH`.
+`jolt` reads a `deps.edn` in the current directory, fetches its dependencies,
+and puts the resolved source directories on `JOLT_PATH` for the run. A `deps.edn`
+in the working dir is **auto-resolved** for the runnable commands (`repl`, `-m`,
+`-e`, `nrepl-server`, a `FILE`); the explicit subcommands below also work
+anywhere:
 
 ```bash
-jolt-deps path             # print the resolved roots (':'-joined)
-jolt-deps run FILE [args]  # resolve, then run `jolt FILE …`
-jolt-deps repl             # resolve, then start a REPL
-jolt-deps -e EXPR [args]   # resolve, then evaluate EXPR
-jolt-deps -A:dev path      # include the :dev alias's extra paths/deps
-jolt-deps -M:test [args]   # run the :test alias's :main-opts through jolt
-jolt-deps tasks            # list :tasks from deps.edn
-jolt-deps task NAME [args] # run a task
+jolt -M:test [args]   # run the :test alias's :main-opts (the usual entry)
+jolt -A:dev repl      # run a command with the :dev alias's extra paths/deps
+jolt run FILE [args]  # resolve, then run FILE
+jolt path             # print the resolved roots (':'-joined)
+jolt tasks            # list :tasks from deps.edn
+jolt task NAME [args] # run a task
 ```
 
-`jolt-deps` launches the `jolt` binary it finds on `PATH` (override with
-`$JOLT_BIN`).
+So, for example, to start an nREPL server that loads a project and its deps,
+add `:aliases {:nrepl {:main-opts ["nrepl-server"]}}` to `deps.edn` and run
+`jolt -M:nrepl` (or just `jolt nrepl-server`, which auto-resolves the `deps.edn`).
 
 Example `deps.edn`:
 
@@ -82,7 +89,7 @@ Example `deps.edn`:
 ```
 
 ```bash
-jolt-deps run -m myapp.main
+jolt run -m myapp.main
 ```
 
 ### What's supported
@@ -102,8 +109,8 @@ jolt-deps run -m myapp.main
   with the project winning.
 - **tasks** — `:tasks {clean "rm -rf target" test {:doc "run the suite"
   :main-opts ["-e" "(run-tests)"]}}`. A string task is a shell command; a map
-  task runs jolt with its `:main-opts`. `jolt-deps tasks` lists, `jolt-deps
-  task NAME` runs.
+  task runs jolt with its `:main-opts`. `jolt tasks` lists, `jolt task NAME`
+  runs.
 
 Conflicts resolve the tools.deps way: resolution is breadth-first, so a
 top-level coordinate always beats a transitive one for the same lib, and
@@ -124,14 +131,14 @@ hash of the project `deps.edn` + the user `deps.edn` + the selected aliases.
 
 ### Bundling into one file
 
-`jolt uberscript OUT.clj -m NS` (or `jolt-deps uberscript …`, which resolves deps
-first) bundles `NS` and every namespace it requires — your code plus its
-dependencies — into a single `.clj` in dependency order, ending with a call to
-`NS/-main`. The result runs on a plain `jolt` with no `JOLT_PATH`, no deps
-fetched, and no jpm:
+`jolt uberscript OUT.clj -m NS` bundles `NS` and every namespace it requires —
+your code plus its dependencies — into a single `.clj` in dependency order,
+ending with a call to `NS/-main`. Run it from a project dir and the `deps.edn`
+is resolved first, so dependency namespaces are on the path to bundle. The
+result runs on a plain `jolt` with no `JOLT_PATH`, no deps fetched, and no jpm:
 
 ```bash
-jolt-deps uberscript app.clj -m myapp.main
+jolt uberscript app.clj -m myapp.main
 jolt app.clj arg1 arg2
 ```
 

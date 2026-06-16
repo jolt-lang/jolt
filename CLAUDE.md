@@ -54,7 +54,7 @@ bd close <id>         # Complete work
 ## Build & Test
 
 ```bash
-jpm build              # build/jolt + build/jolt-deps (ctx baked at build time)
+jpm build              # build/jolt (one binary; ctx baked at build time)
 jpm test               # FULL gate — recursive over test/ (spec, unit, integration, bench)
 janet test/spec/<f>.janet            # one spec file
 janet test/integration/conformance-test.janet   # 3-mode conformance (interpret/compile/self-host)

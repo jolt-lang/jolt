@@ -11,8 +11,13 @@ Scope, decided up front:
   "the classpath" is an ordered list of source directories.
 - **piggyback on jpm** — reuse jpm's git fetch + cache; don't write a package
   manager.
-- **separate tool** — resolution lives in `jolt-deps`, beside the runtime, the
-  way `jpm` sits beside `janet`. The `jolt` runtime knows nothing about deps.edn.
+- **deps-agnostic runtime core** — resolution is a CLI front-end concern, not a
+  runtime one. The `jolt` *runtime* knows nothing about deps.edn; it only reads
+  source roots from `JOLT_PATH`. The `jolt` *CLI* resolves a deps.edn into that
+  env var before running, in a module (`deps.janet`) that loads `jpm` lazily.
+  (This was a separate `jolt-deps` binary originally; it was folded into `jolt`
+  for a single-binary UX — the code boundary stayed, only the executable merged.
+  A back-compat `jolt-deps` shim still ships and forwards to `jolt`.)
 
 ## How jpm handles dependencies
 
@@ -70,9 +75,15 @@ The loader (`evaluator.janet/find-ns-file`) resolves a namespace by searching th
 context's `:source-paths` in order (the stdlib `src/jolt` first), trying `<ns>.clj`
 then `<ns>.cljc`. Extra roots come from `JOLT_PATH` or `init`'s `:paths` option.
 
-`jolt-deps` (`src/jolt/deps_cli.janet`, its own `declare-executable`) ties it
-together: it resolves the roots and runs the `jolt` binary with them on
-`JOLT_PATH`. The runtime's only dependency interface is that env var.
+The `jolt` CLI (`src/jolt/main.janet`, `resolve-deps-argv`) ties it together: on
+a deps subcommand — or any runnable command in a directory that has a `deps.edn`
+— it resolves the roots, sets `JOLT_PATH`/`JOLT_APP_PATHS`, and de-sugars the
+argv into a plain runtime command (`-M:alias` → the alias `:main-opts`, `run
+FILE` → `FILE`, …) that the normal dispatch then runs. `main.janet` imports
+`deps.janet`, so the resolver ships in the `jolt` binary; but `deps.janet` loads
+`jpm` lazily, and the runtime modules (`api`/`backend`/RT) never import it, so an
+app baked from its own `jolt/api` entry doesn't link it. The runtime's only
+dependency interface remains that one env var.
 
 `jolt uberscript` bundles a namespace and everything it requires into one
 standalone `.clj`. It requires the entry namespace and uses the order in which
@@ -111,8 +122,7 @@ a regex feature like Unicode property classes (`\p{…}`).
 ## Janet dependencies: `:jpm/module`
 
 A jolt project can depend on janet libraries. jpm owns their installation;
-`deps.edn` declares the requirement and `jolt-deps` verifies it at resolve
-time:
+`deps.edn` declares the requirement and `jolt` verifies it at resolve time:
 
 ```clojure
 :deps {janet/spork-http {:jpm/module "spork/http"
@@ -121,8 +131,8 @@ time:
 
 - `:jpm/module` — the janet module path that must be importable.
 - `:jpm/install` (optional) — the jpm package to install when it isn't;
-  `jolt-deps` runs `jpm install <name>` once, then re-checks. Without it the
-  resolve fails with the install hint.
+  `jolt` runs `jpm install <name>` once, then re-checks. Without it the resolve
+  fails with the install hint.
 
 A `:jpm/module` dep contributes no source roots. At runtime the `janet.*`
 interop bridge autoloads the module on first reference

@@ -10,13 +10,14 @@ A Clojure implementation on top of [Janet](https://janet-lang.org). Jolt reads C
 git clone https://github.com/jolt-lang/jolt.git
 cd jolt
 git submodule update --init   # pulls vendor/sci and vendor/clojure-test-suite
-jpm build                     # builds build/jolt and build/jolt-deps
+jpm build                     # builds build/jolt (one binary)
 ```
 
 Requires `jpm` and a recent Janet (CI-tested against 1.41). See
 [docs/building-and-deps.md](docs/building-and-deps.md) for build details, the
 `jpm clean` caveat, how namespaces are resolved (`JOLT_PATH`), and pulling
-Clojure libraries from a `deps.edn` with the `jolt-deps` tool.
+Clojure libraries from a `deps.edn` (resolved by `jolt` itself — `jolt -M:…`,
+`jolt run`, `jolt path`).
 
 ## Run
 
@@ -163,6 +164,11 @@ jolt nrepl-server               # listen on 127.0.0.1:7888, write .nrepl-port
 jolt nrepl-server 12345         # choose a port
 jolt nrepl-server 0.0.0.0:12345 # choose host and port  (alias: nrepl)
 ```
+
+In a project with a `deps.edn`, `jolt nrepl-server` auto-resolves it, so the
+server starts with the project and its dependencies on the path — connect your
+editor, then `(require 'your.app)`. (Equivalently, add `:aliases {:nrepl
+{:main-opts ["nrepl-server"]}}` and run `jolt -M:nrepl`.)
 
 Supported ops: `clone`, `describe`, `eval`, `load-file`, `close`, `ls-sessions`,
 `interrupt` (acknowledged; an in-flight eval can't actually be interrupted), and
