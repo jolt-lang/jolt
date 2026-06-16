@@ -74,6 +74,28 @@ the existing ctx image cache.
 - C API used: `janet_getnumber/getinteger`, `janet_wrap_number`, `janet_fixarity`,
   `janet_getfunction`, `janet_call`, `janet_cfuns`, `JANET_MODULE_ENTRY`.
 
+## Status: wired into the compile path (JOLT_CGEN, opt-in)
+
+`src/jolt/cgen.janet` (IR→C translator) is wired into the backend's `:def` emit
+via `cgen-root`, gated behind **`JOLT_CGEN=1`** (off by default; needs
+direct-linking). When on, a plain defn of a numeric-leaf fn is compiled to C at
+def time and the cfunction installed as the var root — so direct-linked callers
+embed native code. The fn is NOT inline-stashed when cgen fires (callers must
+call the C fn, not inline the bytecode body). `^:redef`/`^:dynamic` defns stay
+bytecode.
+
+The leaf-first rule emerges for free: `run` calls `count-point` (a user var, not
+a native-op), so `run` isn't a numeric leaf and stays bytecode — calling the
+native `count-point` over the cheap forward crossing.
+
+**Measured end-to-end (`jolt -m mandelbrot 200`): 224 ms → 12.4 ms, ~18×**, with
+the correct result — matching the spike's native-C ceiling. The default gate
+(cgen off) is unchanged. Tests: `test/integration/cgen-pipeline-test.janet`.
+
+Known limitation: building *core* with `JOLT_CGEN=1` would try to cgen core
+numeric-leaf fns into the cached ctx image, where embedded cfunctions may not
+serialize — keep cgen for app/user code until image-cache interaction is handled.
+
 ## Open questions for the implementation (next beads)
 
 1. **IR→C for the numeric subset.** Translate jolt IR → C for proven-double

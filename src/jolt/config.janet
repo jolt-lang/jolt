@@ -28,7 +28,7 @@
    "JOLT_INTERPRET" "JOLT_INTERPRET_MACROS" "JOLT_DIRECT_LINK"
    "JOLT_NO_DIRECT_LINK" "JOLT_OPTIMIZE" "JOLT_WHOLE_PROGRAM"
    "JOLT_NO_WHOLE_PROGRAM" "JOLT_SHAPE" "JOLT_NO_SHAPE"
-   "JOLT_NO_IR_PASSES" "JOLT_CHECK_HINTS"])
+   "JOLT_NO_IR_PASSES" "JOLT_CHECK_HINTS" "JOLT_CGEN"])
 
 (defn ctx-cache-key
   "Build a disk-cache key from labeled prefix pairs plus the value of every
@@ -69,4 +69,8 @@
    :map-shapes? (and (os/getenv "JOLT_SHAPE") (not (os/getenv "JOLT_NO_SHAPE")))
    :whole-program? (and optimize?
                         (not (os/getenv "JOLT_NO_WHOLE_PROGRAM"))
-                        (or main-entry? (os/getenv "JOLT_WHOLE_PROGRAM")))})
+                        (or main-entry? (os/getenv "JOLT_WHOLE_PROGRAM")))
+   # Native codegen (jolt-ihdp): compile numeric-leaf fns to C at def time and
+   # install the cfunction as the var root, so callers direct-link to native
+   # code. Opt-in (cc latency per fn); needs direct-linking so callers embed it.
+   :cgen? (and dl (= "1" (os/getenv "JOLT_CGEN")))})

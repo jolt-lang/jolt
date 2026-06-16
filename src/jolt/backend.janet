@@ -12,6 +12,7 @@
 (use ./core)
 (use ./evaluator)
 (import ./reader :as r)
+(import ./cgen :as cgen)
 (import ./phm :as phm)
 (import ./phs :as phs)
 (import ./pv :as pv)
@@ -607,6 +608,20 @@
   (def items (map |(emit ctx $) (vview (node :items))))
   (tuple/slice (array/concat @[phs/make-phs] items)))
 
+# Native codegen hook (jolt-ihdp). Under :cgen?, a plain defn of a numeric-leaf
+# fn is compiled to C and the resulting cfunction installed as the var root, so
+# direct-linked callers embed native code. Returns the cfunction or nil (not a
+# candidate / redefable / toolchain absent / cc failed -> normal bytecode path).
+# Skip ^:redef / ^:dynamic: those must stay redefinable bytecode.
+(defn- cgen-root [ctx node]
+  (when (get (ctx :env) :cgen?)
+    (def meta (node :meta))
+    (def redefable (and meta (or (get meta :redef) (get meta :dynamic))))
+    (when (and (not redefable) (cgen/numeric-leaf? (node :init)))
+      (def r (protect (cgen/compile-fn (node :init)
+                                       {:name (string (node :ns) "_" (node :name))})))
+      (and (r 0) (r 1)))))
+
 (set emit
   (fn emit [ctx raw]
     (def node (norm-node raw))
@@ -654,14 +669,23 @@
       :throw ['error (emit ctx (node :expr))]
       :def (let [cell (cell-for ctx (node :ns) (node :name))
                  meta (node :meta)
-                 setter (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))]
-             (inline-stash! ctx cell node)
-             # Emit the init BEFORE marking the cell unit-defined, so a recursive
-             # self-reference in the init still direct-links; a LATER sibling
-             # reference in this unit then sees it as redefined (jolt-wf4).
-             (let [init-form (emit ctx (node :init))]
-               (when-let [ud (get (ctx :env) :unit-defs)] (put ud cell true))
-               (tuple setter init-form)))
+                 setter (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))
+                 cfn (cgen-root ctx node)]
+             # cgen path: install the native cfunction as the root and DON'T
+             # inline-stash — callers must call the C fn, not inline the bytecode
+             # body (which would bypass the native version). Otherwise the normal
+             # bytecode path: stash for inlining, emit the init.
+             (if cfn
+               (do (when-let [ud (get (ctx :env) :unit-defs)] (put ud cell true))
+                   (tuple setter cfn))
+               (do (inline-stash! ctx cell node)
+                   # Emit the init BEFORE marking the cell unit-defined, so a
+                   # recursive self-reference in the init still direct-links; a
+                   # LATER sibling reference in this unit then sees it as
+                   # redefined (jolt-wf4).
+                   (let [init-form (emit ctx (node :init))]
+                     (when-let [ud (get (ctx :env) :unit-defs)] (put ud cell true))
+                     (tuple setter init-form)))))
       :let (emit-let ctx node)
       :fn (emit-fn ctx node)
       :invoke (emit-invoke ctx node)
