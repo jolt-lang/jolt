@@ -11,6 +11,10 @@
 (use ./reader)
 (use ./regex)
 
+# Host PNG encoder, exposed to the overlay as `janet.png/encode` / `janet.png/write`
+# (resolved through module-load-env below). Pure Janet, no jolt deps.
+(import ./png :prefix "png/")
+
 
 # The env this module was loaded under — proto-chains to the Janet root env;
 # the janet/* interop bridge falls back to it inside env-less fibers.
