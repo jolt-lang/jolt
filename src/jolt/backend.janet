@@ -614,13 +614,34 @@
 # candidate / redefable / toolchain absent / cc failed -> normal bytecode path).
 # Skip ^:redef / ^:dynamic: those must stay redefinable bytecode.
 (defn- cgen-root [ctx node]
-  (when (get (ctx :env) :cgen?)
+  (def env (ctx :env))
+  (def meta (node :meta))
+  (def redefable (and meta (or (get meta :redef) (get meta :dynamic))))
+  (when (not redefable)
+    (def prebuilt (get env :cgen-prebuilt))
+    (def qn (string (node :ns) "/" (node :name)))
+    (cond
+      # AOT deploy: install the build-time-compiled cfunction as the root (no cc).
+      # Same timing as the JIT path, so callers compiled later direct-link to it.
+      (and prebuilt (get prebuilt qn)) (get prebuilt qn)
+      # JIT: compile to C now (runs cc).
+      (and (get env :cgen?) (cgen/numeric-leaf? (node :init)))
+      (let [r (protect (cgen/compile-fn (node :init) {:name (string (node :ns) "_" (node :name))}))]
+        (and (r 0) (r 1))))))
+
+# Build-time collection (jolt-a7ds): under :cgen-collect?, record each numeric-
+# leaf defn's full fn IR (with its ns/name) so an AOT driver can compile them all
+# into one native module. Does NOT swap the root — the app still loads as bytecode
+# during collection; the native version is wired at the later deploy run.
+(defn- cgen-collect! [ctx node]
+  (def env (ctx :env))
+  (when (get env :cgen-collect?)
     (def meta (node :meta))
     (def redefable (and meta (or (get meta :redef) (get meta :dynamic))))
     (when (and (not redefable) (cgen/numeric-leaf? (node :init)))
-      (def r (protect (cgen/compile-fn (node :init)
-                                       {:name (string (node :ns) "_" (node :name))})))
-      (and (r 0) (r 1)))))
+      (def coll (or (get env :cgen-collected)
+                    (let [a @[]] (put env :cgen-collected a) a)))
+      (array/push coll {:ns (node :ns) :name (node :name) :ir (node :init)}))))
 
 (set emit
   (fn emit [ctx raw]
@@ -670,6 +691,7 @@
       :def (let [cell (cell-for ctx (node :ns) (node :name))
                  meta (node :meta)
                  setter (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))
+                 _ (cgen-collect! ctx node)
                  cfn (cgen-root ctx node)]
              # cgen path: install the native cfunction as the root and DON'T
              # inline-stash — callers must call the C fn, not inline the bytecode

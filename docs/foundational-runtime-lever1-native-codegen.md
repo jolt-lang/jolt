@@ -96,6 +96,28 @@ Known limitation: building *core* with `JOLT_CGEN=1` would try to cgen core
 numeric-leaf fns into the cached ctx image, where embedded cfunctions may not
 serialize — keep cgen for app/user code until image-cache interaction is handled.
 
+## Build-time AOT: native speed without a toolchain on the target (jolt-a7ds)
+
+The JIT path above runs `cc` at runtime. The AOT path moves compilation to build
+time so the deploy target needs no `cc`/`janet.h`:
+
+- **Build phase** (`:cgen-collect?`, needs cc): loading the app records every
+  numeric-leaf defn's IR; `cgen/aot-build` compiles them all into ONE native
+  module (`gen-c-module`) and `write-manifest` persists `{sopath, [{ns name sym}]}`.
+- **Deploy phase** (`:cgen-prebuilt`, NO cc): `cgen/load-aot` loads the prebuilt
+  `.so` (via the `native` builtin — no compiler) into a qname→cfunction map; the
+  backend's `:def` hook installs each as the var root with the same timing as the
+  JIT path, so callers direct-link to native code.
+
+**Proven** (`spike/native/aot-demo.janet`, two processes): build with cc, then
+deploy with `cc` removed from PATH → `count-point` is still native, mandelbrot =
+3288753 at **12.4 ms** (full 18×). Test: `test/integration/cgen-aot-test.janet`.
+
+This removes the runtime-toolchain dependency — the core of the deployment story.
+What remains for a literal single binary: fuse the prebuilt `.so` + manifest into
+the `jpm`-built executable (declare-native/static-lib link + an uberscript-style
+source bundle), so it ships as one file instead of an exe + sidecar `.so`.
+
 ## Open questions for the implementation (next beads)
 
 1. **IR→C for the numeric subset.** Translate jolt IR → C for proven-double
