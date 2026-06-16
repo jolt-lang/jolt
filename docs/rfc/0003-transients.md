@@ -53,7 +53,7 @@ are identical (O(n) total either way) with a better constant in the loop and a
 worse constant at the two edges. The pattern transients exist for — batch
 construction — is fully served. What is NOT served is transient-editing a
 *large* collection to change a few keys: that's O(n) in Jolt vs O(log n) in
-Clojure, because `transient` flattens the pvec trie / phm buckets into a
+Clojure, because `transient` flattens the pvec trie / phm HAMT into a
 native array/table and `persistent!` rebuilds them.
 
 **No thread-ownership check.** JVM Clojure ≥1.7 also dropped the owner-thread
@@ -110,7 +110,9 @@ tiers as ordinary migration batches.
 - pvec is already a 32-way trie with structural sharing (pv.janet), so
   Clojure-style O(1) `transient`/`persistent!` via editable nodes is a real
   option for vectors — an internal change behind the same surface, not a
-  semantics change. phm is bucket-based copy-on-write; the same trick applies
-  if it ever becomes a HAMT.
+  semantics change. phm is now a HAMT with structural sharing too (jolt-684u),
+  and sorted maps/sets are a red-black tree (jolt-0hbr), so the same editable-
+  node trick is open for those as well — the transient surface here is still the
+  copy-to-native-table flatten.
 - `transient?` (Jolt extension, useful in tests) stays; Clojure has no public
   predicate, so it must not leak into portability-sensitive code.
