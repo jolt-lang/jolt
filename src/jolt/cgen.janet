@@ -214,30 +214,51 @@
        (= 0 (os/execute ["cc" "--version"] :px
                         {:out (file/open "/dev/null" :w) :err (file/open "/dev/null" :w)}))))
 
+(defn- mkdirs [path]
+  (def parts (filter |(not (empty? $)) (string/split "/" path)))
+  (var acc (if (string/has-prefix? "/" path) "" "."))
+  (each p parts (set acc (string acc "/" p)) (os/mkdir acc)))
+
+(defn- cache-dir []
+  # Persistent across runs (like the ctx image cache, which also defaults to
+  # TMPDIR). Override with JOLT_CGEN_CACHE_DIR.
+  (string (or (os/getenv "JOLT_CGEN_CACHE_DIR") (os/getenv "TMPDIR") "/tmp") "/jolt-cgen"))
+
+(defn- cc-compile [cpath sopath]
+  # macOS needs -undefined dynamic_lookup so the module's janet_* refs resolve
+  # against the host at load time; ELF (Linux/BSD) resolves them then anyway.
+  (def cmd @["cc" "-shared" "-fPIC" "-O2" (string "-I" (header-dir))])
+  (when (= :macos (os/which)) (array/push cmd "-undefined") (array/push cmd "dynamic_lookup"))
+  (array/push cmd cpath "-o" sopath)
+  (def r (os/execute cmd :p))
+  (unless (= 0 r) (error (string "cgen: cc failed (" r ") for " cpath))))
+
 (defn compile-fn
   "Compile a numeric-leaf fn IR to a native Janet cfunction. Returns the
   cfunction, or nil if ir isn't a candidate or the toolchain is unavailable.
-  opts: :dir (build dir, default \"build/cgen\"), :name (C identifier base).
-  cc errors propagate (a compiler crash is a cgen bug, not a punt)."
+  opts: :dir (cache dir, default a persistent jolt-cgen under TMPDIR), :name (C
+  identifier base). The .so is content-addressed by a hash of the generated C +
+  the Janet ABI + platform, so cc only runs on the first build of a given fn;
+  later runs (same source) reuse the cached .so. JOLT_CGEN_NO_CACHE=1 forces a
+  rebuild. cc errors propagate (a compiler crash is a cgen bug, not a punt)."
   [ir &opt opts]
   (default opts {})
   (when (and (numeric-leaf? ir) (header-dir))
-    (def dir (get opts :dir "build/cgen"))
     (def c-name (sanitize (get opts :name "jolt_cfn")))
-    (os/mkdir dir)
     (def src (gen-c-fn ir c-name))
-    (def cpath (string dir "/" c-name ".c"))
-    (def sopath (string dir "/" c-name ".so"))
-    (spit cpath src)
-    # macOS needs -undefined dynamic_lookup so the module's janet_* refs resolve
-    # against the host at load time; ELF (Linux/BSD) resolves them then anyway.
-    (def mac? (= :macos (os/which)))
-    (def cmd @["cc" "-shared" "-fPIC" "-O2" (string "-I" (header-dir))])
-    (when mac? (array/push cmd "-undefined") (array/push cmd "dynamic_lookup"))
-    (array/push cmd cpath "-o" sopath)
-    (def r (os/execute cmd :p))
-    (unless (= 0 r) (error (string "cgen: cc failed (" r ") for " cpath)))
-    (def abs (if (= (in sopath 0) (chr "/")) sopath (string (os/cwd) "/" sopath)))
+    # content address: the C (semantics + symbol name) + ABI + platform fully
+    # determine the .so, so a matching cache entry is always valid.
+    (def stamp (string src "|" janet/version "-" janet/build "|" (os/which)))
+    (def key (string (band (hash stamp) 0x7FFFFFFF) "-" (length src)))
+    (def dir (get opts :dir (cache-dir)))
+    (mkdirs dir)
+    (def base (string dir "/cg-" key))
+    (def sopath (string base ".so"))
+    (def abs (if (string/has-prefix? "/" sopath) sopath (string (os/cwd) "/" sopath)))
+    (unless (and (not (os/getenv "JOLT_CGEN_NO_CACHE")) (os/stat abs))
+      (def cpath (string base ".c"))
+      (spit cpath src)
+      (cc-compile cpath sopath))
     (def env @{})
     (native abs env)
     ((get env (symbol c-name)) :value)))
