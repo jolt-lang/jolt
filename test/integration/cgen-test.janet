@@ -41,6 +41,9 @@
 # --- behavioral equivalence (only where the toolchain is present) ---
 (if (cgen/toolchain-available?)
   (do
+    # start from a clean cache dir so the content-addressed-file count is exact
+    (when (os/stat "build/cgen-test")
+      (each f (os/dir "build/cgen-test") (os/rm (string "build/cgen-test/" f))))
     (api/eval-string ctx count-point-src)
     (def bc-cp (api/eval-string ctx "count-point"))   # the compiled/interpreted fn
     (def c-cp (cgen/compile-fn (ir-of count-point-src)
@@ -63,7 +66,19 @@
           (set acc (+ acc a)) (++ y))
         acc)
       (check "C and bytecode agree on the full n=80 grid total"
-             (= (grid-total c-cp 80) (grid-total bc-cp 80)))))
+             (= (grid-total c-cp 80) (grid-total bc-cp 80)))
+
+      # caching: the .so is content-addressed, so a second compile of the same
+      # fn reuses it. Drop the generated .c (keep the .so) then recompile: a
+      # cache hit loads the existing .so without needing cc/source again.
+      (def cache-files (filter |(string/has-suffix? ".so" $) (os/dir "build/cgen-test")))
+      (check "produced a content-addressed .so" (= 1 (length cache-files)))
+      (each f (os/dir "build/cgen-test")
+        (when (string/has-suffix? ".c" f) (os/rm (string "build/cgen-test/" f))))
+      (def c-cp2 (cgen/compile-fn (ir-of count-point-src)
+                                  {:dir "build/cgen-test" :name "count_point_test"}))
+      (check "cache hit recompiles without the source .c"
+             (and (callable? c-cp2) (= (c-cp2 -0.5 0.0 200) 200)))))
   (print "  (toolchain absent — skipping behavioral equivalence)"))
 
 (if (= 0 failures)
