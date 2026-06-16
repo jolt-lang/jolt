@@ -55,9 +55,17 @@
 (defn core-with-meta [obj meta]
   # Functions and scalars can't carry metadata in Jolt's model — return as-is
   # rather than crashing (Clojure attaches meta only to IObj values).
-  (if (or (function? obj) (cfunction? obj) (number? obj) (boolean? obj)
-          (nil? obj) (string? obj) (keyword? obj) (buffer? obj))
+  (cond
+    (or (function? obj) (cfunction? obj) (number? obj) (boolean? obj)
+        (nil? obj) (string? obj) (keyword? obj) (buffer? obj))
     obj
+    # Symbols carry metadata IN-PLACE in their struct's :meta field (this is how
+    # the reader attaches ^hint and keeps symbol? true — see reader/read-meta).
+    # The table-proto path below would make (symbol? (with-meta sym ..)) false and
+    # break destructuring/hint reading, so keep a symbol a symbol.
+    (and (struct? obj) (= :symbol (obj :jolt/type)))
+    (struct ;(kvs obj) :meta meta)
+    true
     (do
       (var new-obj @{})
       (each k (keys obj)

@@ -526,11 +526,21 @@
       [:any (assoc node :args (mapv (fn [a] (nth (infer a tenv) 1)) (get node :args)))]
       (= op :fn)
       ;; a closure inherits the enclosing tenv so CAPTURED locals keep their
-      ;; types (e.g. a reduce closure that calls (f captured-struct ...)); its own
-      ;; params/rest shadow to :any (unknown until Phase 1 types them via callers).
+      ;; types (e.g. a reduce closure that calls (f captured-struct ...)). Its own
+      ;; params shadow to :any UNLESS a param carries a ^Record declared hint
+      ;; (:phints, name -> ctor-key) — then seed it to that record type so field
+      ;; reads off it bare-index per-form, not only under whole-program. This is
+      ;; what makes a protocol method's `this` (hinted by defrecord/extend-type)
+      ;; read its fields without the runtime tag guard (jolt-3ko).
       [:any (assoc node :arities
                    (mapv (fn [a]
-                           (let [pe (reduce (fn [e p] (assoc e p :any)) tenv (get a :params))
+                           (let [phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
+                                             {} (get a :phints))
+                                 pe (reduce (fn [e p]
+                                              (assoc e p
+                                                     (let [ent (get @record-shapes-box (get phm p))]
+                                                       (if ent (record-type-from-entry ent type-depth) :any))))
+                                            tenv (get a :params))
                                  pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)]
                              (assoc a :body (nth (infer (get a :body) pe) 1))))
                          (get node :arities)))]
