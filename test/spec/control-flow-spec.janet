@@ -60,6 +60,23 @@
   ["when-some binds zero"      "1"   "(when-some [x 0] (inc x))"]
   ["if-let evals test once"    "1"   "(let [c (atom 0)] (if-let [v (do (swap! c inc) :v)] @c :none))"])
 
+# Regression: loop/recur lowering (jolt-v28u). The backend lowers tail loop/recur
+# to a Janet while + state vars with a fresh per-iteration `let` rebinding of the
+# loop names. The let rebinding is load-bearing: a closure created in the body
+# must capture THAT iteration's value (Clojure semantics), not a shared mutable
+# var — Janet closures capture vars by reference, so a naive while+var would give
+# [3 3 3]. recur reads the (immutable) iteration bindings and writes the state
+# vars, so cross-referencing args don't clobber (swap, fib).
+(defspec "control / loop lowering (jolt-v28u)"
+  ["closure captures per-iter binding" "[0 1 2]"
+   "(mapv (fn [g] (g)) (loop [i 0 fs []] (if (< i 3) (recur (inc i) (conj fs (fn [] i))) fs)))"]
+  ["fib via loop"          "55"     "(loop [a 0 b 1 i 0] (if (= i 10) a (recur b (+ a b) (inc i))))"]
+  ["recur args no clobber" "[2 1]"  "(loop [a 1 b 2 n 0] (if (= n 1) [a b] (recur b a (inc n))))"]
+  ["nested loops"          "9"      "(loop [i 0 s 0] (if (= i 3) s (recur (inc i) (loop [j 0 t s] (if (= j 3) t (recur (inc j) (inc t)))))))"]
+  ["loop sequential init"  "12"     "(loop [a 1 b (+ a 10)] (+ a b))"]
+  ["recur through let"     "6"      "(loop [i 0 acc 0] (let [x (* i 2)] (if (< i 3) (recur (inc i) (+ acc x)) acc)))"]
+  ["fn-arity recur intact" "15"     "((fn f [n acc] (if (zero? n) acc (recur (dec n) (+ acc n)))) 5 0)"])
+
 (defspec "control / iteration"
   ["dotimes side-effect" "5"     "(let [a (atom 0)] (dotimes [i 5] (swap! a inc)) @a)"]
   ["while"              "5"      "(let [a (atom 0)] (while (< @a 5) (swap! a inc)) @a)"]
