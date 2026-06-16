@@ -114,9 +114,40 @@ deploy with `cc` removed from PATH → `count-point` is still native, mandelbrot
 3288753 at **12.4 ms** (full 18×). Test: `test/integration/cgen-aot-test.janet`.
 
 This removes the runtime-toolchain dependency — the core of the deployment story.
-What remains for a literal single binary: fuse the prebuilt `.so` + manifest into
-the `jpm`-built executable (declare-native/static-lib link + an uberscript-style
-source bundle), so it ships as one file instead of an exe + sidecar `.so`.
+
+### The literal single binary (`jolt cgen-build`, done)
+
+`src/jolt/cgen_build.janet` + the `jolt cgen-build -m NS -o OUT` CLI fuse the
+native code into the executable, so an app ships as ONE static file — no sidecar
+`.so`, no toolchain to run. The driver:
+
+1. loads the app with `:cgen-collect?` to get its numeric-leaf fns + the source
+   files loaded (the uberscript-style bundle);
+2. emits `cg.c` (one native module of those fns via `cgen/gen-c-module`) + a
+   positional manifest;
+3. stages a build dir: `src`/`jolt-core` symlinks into the jolt tree, `cg.c`, the
+   app bundle, and an entry that bakes the runtime, installs the native fns as var
+   roots (`:cgen-prebuilt`), and runs `-main`;
+4. runs `jpm build` there — `declare-native` builds `cg.a`, `declare-executable`
+   static-links it into the final exe (jpm's `create-executable` marshals the
+   module's cfunctions and calls its static entry at startup).
+
+Build needs `cc` + `jpm`; the result needs neither. Proven end-to-end:
+`test/integration/cgen-build-test.janet` builds the mandelbrot fixture, runs it
+from a clean dir with no `src/` and no `cg.so`, and gets the right total at native
+speed (the count-point leaf is the linked cfunction).
+
+Build mechanics that bit (codified in `cgen_build.janet`): `stdlib_embed` slurps
+`.clj` relative to cwd, so the build runs in a dir mirroring the repo layout (the
+symlinks); jpm hardcodes `./project.janet` and sets `syspath = modpath`; the
+executable's dofile imports `cg` and static-links `cg.a`, neither ordered nor
+release-built by default, so the deps are wired explicitly; cleanup must `lstat`
+(never follow the tree symlinks). The inner build runs `--workers=1` so it doesn't
+saturate cores inside the parallel test gate.
+
+Open follow-ups (filed): widen the cgen grammar (jolt-l1l4) so more of an app's
+hot fns qualify; hot-fn auto-detection (jolt-qx70) to drop the manual collect;
+DCE on the bundled source (the uberscript path already does it).
 
 ## Open questions for the implementation (next beads)
 

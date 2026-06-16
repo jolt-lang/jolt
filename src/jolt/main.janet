@@ -12,6 +12,7 @@
 (use ./reader)
 (import ./core :as jcore)
 (import ./deps :as deps)
+(import ./cgen_build :as cgen-build)
 
 (def jolt-version "0.1.0")
 
@@ -613,6 +614,28 @@
   (print "Wrote " out " (" (length files) " namespace(s)"
          (if (and dce-ok (> dropped 0)) (string ", " dropped " dead fn(s) dropped") "") ")"))
 
+(defn- run-cgen-build [argv]
+  # jolt cgen-build -m NS -o OUT [--keep]: fuse the app's hot numeric-leaf fns
+  # (compiled to native code) + the app source into one static executable.
+  (var main-ns nil)
+  (var out nil)
+  (var keep false)
+  (var i 0)
+  (while (< i (length argv))
+    (def a (argv i))
+    (cond
+      (or (= a "-m") (= a "--main")) (do (set main-ns (get argv (+ i 1))) (+= i 2))
+      (or (= a "-o") (= a "--out")) (do (set out (get argv (+ i 1))) (+= i 2))
+      (= a "--keep") (do (set keep true) (++ i))
+      (++ i)))
+  (when (or (nil? main-ns) (nil? out))
+    (eprint "Usage: jolt cgen-build -m NS -o OUT [--keep]")
+    (os/exit 1))
+  (try
+    (let [r (cgen-build/build-app {:main main-ns :out out :keep keep})]
+      (print "Wrote " (r :out) " (" (r :native-count) " native fn(s) linked)"))
+    ([err fib] (report-error err fib) (os/exit 1))))
+
 (defn- print-help []
   (print "Jolt — a Clojure interpreter on Janet\n")
   (print "Usage: jolt [opt] [args]\n")
@@ -625,6 +648,8 @@
   (print "  nrepl-server [addr]   Start an nREPL server (addr = [host:]port, default 7888)")
   (print "                          (aliases: --nrepl-server, nrepl)")
   (print "  uberscript OUT -m NS  Bundle NS + its required namespaces into one .clj")
+  (print "  cgen-build -m NS -o OUT  Build NS into a single static binary (hot fns")
+  (print "                          compiled to native code, no toolchain to run)")
   (print "  --version, version    Print the Jolt version")
   (print "  -h, --help, help      Show this help\n")
   (print "Dependencies (deps.edn, git + :local deps — resolved into JOLT_PATH):")
@@ -796,5 +821,6 @@
             rest (array/slice argv 2)
             mi (or (index-of "-m" rest) (index-of "--main" rest))]
         (run-uberscript out (if mi (get rest (+ mi 1)) nil)))
+    (= (argv 0) "cgen-build") (run-cgen-build (array/slice argv 1))
     (= (argv 0) "-") (run-file "/dev/stdin" (array/slice argv 1))
     (run-file (argv 0) (array/slice argv 1))))
