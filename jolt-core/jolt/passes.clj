@@ -34,6 +34,10 @@
   [node ctx]
   (if (inline-enabled? ctx)
     (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold (jolt-15jq)
+          ;; resolve ^Record param hints (incl. defrecord/extend-type method
+          ;; `this`) to bare field reads per-form, not only under whole-program
+          ;; (jolt-3ko). Same shapes the inline pass uses.
+          _ (set-record-shapes! (record-shapes ctx))
           opt (loop [i 0 n (const-fold node)]
                 (reset! dirty false)
                 (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]

@@ -445,8 +445,12 @@
                   ~@(map (fn [spec]
                            (let [argv (nth spec 1)
                                  inst (first argv)
+                                 ;; hint `this` with the record type so the inference
+                                 ;; types it (jolt-3ko) and its field reads bare-index
+                                 ;; instead of going through the runtime tag guard.
+                                 hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
                                  binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
-                             `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
+                             `(~(first spec) ~hinted (let [~@binds] ~@(drop 2 spec)))))
                          specs)))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
