@@ -427,7 +427,12 @@
       (do (var result to)
         (each item items (set result (core-assoc result (vnth item 0) (vnth item 1))))
         result)
-    (pvec? to) (do (var result to) (each x items (set result (pv-conj result x))) result)
+    # Accumulate into a native array and bulk-build the pvec ONCE (pv-from-indexed),
+    # instead of an immutable pv-conj per element (each allocating a wrapper +
+    # copying the tail). This is the transient-style fast path for into-a-vector.
+    (pvec? to) (let [arr (array/slice (pv->array to))]
+                 (each x items (array/push arr x))
+                 (make-vec arr))
     (array? to) (if mutable?
                   (do (each x items (array/push to x)) to)               # vector: append
                   (do (var result (array/slice to)) (each x items (array/insert result 0 x)) result))  # list: prepend
