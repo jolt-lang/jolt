@@ -187,3 +187,24 @@
   ["assoc-in deep get"         "9"      "(get-in (assoc-in {} [:a :b :c] 9) [:a :b :c])"]
   ["seq over assoc-nil map"    ":a"     "(ffirst (seq (assoc nil :a 1)))"]
   ["keys of assoc-nil map"     "[:a]"   "(vec (keys (assoc nil :a 1)))"])
+
+# into {} / frequencies / group-by bulk-build the HAMT in one pass from a native
+# pairs/table accumulator (phm-from-pairs), instead of an assoc per element
+# (jolt-5vsp collections). Cross the bin(<=16)/array-node(>=17) promotion and a
+# size that grows the trie a level; check dedup (last-wins), nil keys, and that
+# assoc/dissoc after a bulk build still land. The structure is identical to the
+# incremental builder (validated in the PR), so reads agree.
+(defspec "map / bulk build boundaries"
+  ["into = incr at 17"   "true" "(= (into {} (map (fn [i] [i (* i 2)]) (range 17))) (reduce (fn [m p] (assoc m (first p) (second p))) {} (map (fn [i] [i (* i 2)]) (range 17))))"]
+  ["into = incr at 1000" "true" "(= (into {} (map (fn [i] [i (* i 2)]) (range 1000))) (reduce (fn [m p] (assoc m (first p) (second p))) {} (map (fn [i] [i (* i 2)]) (range 1000))))"]
+  ["into count 1000"     "1000" "(count (into {} (map (fn [i] [i i]) (range 1000))))"]
+  ["into reads back"     "999"  "(get (into {} (map (fn [i] [i (* i 3)]) (range 1000))) 333)"]
+  ["into onto non-empty" "9"    "(get (into {:a 1} [[:a 9] [:b 2]]) :a)"]
+  ["into dup last wins"  "9"    "(get (into {} [[:k 1] [:k 9]]) :k)"]
+  ["into nil key"        ":x"   "(get (into {} [[nil :x] [:a 1]]) nil)"]
+  ["assoc after bulk"    "7"    "(get (assoc (into {} (map (fn [i] [i i]) (range 100))) :new 7) :new)"]
+  ["dissoc after bulk"   "nil"  "(get (dissoc (into {} (map (fn [i] [i i]) (range 100))) 50) 50)"]
+  ["frequencies count"   "3"    "(get (frequencies [1 2 2 1 2 1]) 1)"]
+  ["frequencies coll-key" "2"   "(get (frequencies [[1 2] [1 2] [3 4]]) [1 2])"]
+  ["group-by bucket"     "[1 3 5]" "(get (group-by odd? (range 1 6)) true)"]
+  ["hash-map bulk = incr" "true" "(= (apply hash-map (mapcat (fn [i] [i i]) (range 50))) (reduce (fn [m i] (assoc m i i)) {} (range 50)))"])

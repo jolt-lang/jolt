@@ -56,3 +56,18 @@
   ["vector is not"  "false" "(set? [1])"]
   ["coll? still true" "true" "(coll? (sorted-set 1))"]
   ["ifn? sorted-set" "true" "(ifn? (sorted-set 1))"])
+
+# set / into #{} bulk-build the backing HAMT in one pass (phs-from-seq), instead
+# of a phs-conj per element (jolt-5vsp collections). Cross the promotion
+# boundary, check dedup, collection members, and conj after a bulk build.
+(defspec "set / bulk build boundaries"
+  ["set dedup count"   "3"    "(count (set [1 1 2 3 3 2]))"]
+  ["set big count"     "1000" "(count (set (range 1000)))"]
+  ["into #{} count"    "500"  "(count (into #{} (range 500)))"]
+  ["into #{} onto base" "3"   "(count (into #{:a} [:a :b :c]))"]
+  ["set contains"      "true" "(contains? (set (range 1000)) 777)"]
+  ["set missing"       "false" "(contains? (set (range 1000)) 5000)"]
+  ["set coll members"  "true" "(contains? (set [[1 2] [3 4]]) [1 2])"]
+  ["conj after bulk"   "true" "(contains? (conj (set (range 100)) :x) :x)"]
+  ["disj after bulk"   "false" "(contains? (disj (set (range 100)) 50) 50)"]
+  ["set = literal"     "true" "(= #{0 1 2} (set (range 3)))"])
