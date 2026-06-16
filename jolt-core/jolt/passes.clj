@@ -17,7 +17,7 @@
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
             [jolt.passes.types :refer [run-inference
-                                       check-form infer-body reinfer-def
+                                       check-form infer-body reinfer-def phint-seed
                                        set-rtenv! set-vtypes! join-types
                                        set-record-shapes! set-map-shapes! set-protocol-methods!
                                        reset-escapes! collected-escapes

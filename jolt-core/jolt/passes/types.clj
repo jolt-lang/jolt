@@ -791,6 +791,24 @@
                           (get fnode :arities))))
       def-node)))
 
+(defn phint-seed
+  "Positional declared-hint type seeds for a fn arity. Given the param-name
+  vector and the arity's :phints (a seq of [name ctor-key] pairs), return a
+  vector parallel to params whose slot i is the resolved record TYPE of that
+  param's ^Record hint (via the record-shapes registry), or nil. The
+  whole-program fixpoint seeds these as a param-type FLOOR so a declared hint
+  propagates to a fn's callees DURING inference — not only at the final re-emit
+  (reinfer-def). Without it a hinted param with no callers stays :any through the
+  fixpoint, so a field read off it (e.g. (:origin ^Ray r)) never tells a shared
+  callee its arg is a Vec3 (jolt-3ko)."
+  [params phints]
+  (let [m (reduce (fn [acc pr] (assoc acc (nth pr 0) (nth pr 1))) {} phints)]
+    (mapv (fn [nm]
+            (let [ck (get m nm)
+                  e (and ck (get @record-shapes-box ck))]
+              (when e (record-type-from-entry e type-depth))))
+          params)))
+
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
 ;; one inference pass for specialization; turning checking? on during it makes
 ;; the success checker nearly free there (no extra traversal — just the
