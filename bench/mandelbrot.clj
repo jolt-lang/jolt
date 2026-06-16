@@ -7,7 +7,8 @@
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
 ;;   jolt -m mandelbrot 1000     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)
-(ns mandelbrot)
+(ns mandelbrot
+  (:require [jolt.png :as png]))
 
 (defn count-point [cr ci cap]
   (loop [i 0 zr 0.0 zi 0.0]
@@ -31,7 +32,36 @@
           (recur (inc y) (+ acc row)))
         acc))))
 
-(defn -main [& args]
+;; --- PNG demo (jolt.png) --------------------------------------------------
+;; Render a real picture of the set, reusing count-point as the kernel. `render`
+;; is a separate -main subcommand so the numeric-arg bench path is untouched.
+
+(defn- color
+  "Escape-iteration count -> RGB. In-set points (n>=cap) are black; faster
+  escapes run through a warm gradient."
+  [n cap]
+  (if (>= n cap)
+    [0 0 0]
+    (let [t (/ (double n) cap)]
+      [(int (* 255 (min 1.0 (* 3.0 t))))
+       (int (* 255 (min 1.0 (max 0.0 (* 3.0 (- t 0.33))))))
+       (int (* 255 (min 1.0 (max 0.0 (* 3.0 (- t 0.66))))))])))
+
+(defn render!
+  "Render a size×size view of the Mandelbrot set to a PNG at path."
+  [path size]
+  (let [w size h size cap 1000
+        img (png/image w h)]
+    (doseq [py (range h)]
+      (doseq [px (range w)]
+        (let [cr (- (* 3.5 (/ (double px) w)) 2.5)        ; real ∈ [-2.5, 1.0]
+              ci (- (* 2.8 (/ (double py) h)) 1.4)        ; imag ∈ [-1.4, 1.4]
+              [r g b] (color (count-point cr ci cap) cap)]
+          (png/put! img r g b))))
+    (png/write img w h path)
+    (println "wrote" path (str w "×" h ", cap " cap))))
+
+(defn- run-bench [args]
   (let [n (if (seq args) (Integer/parseInt (first args)) 1000)]
     (dotimes [_ 2] (run (quot n 2)))                     ; warmup
     (let [runs 3
@@ -46,3 +76,9 @@
       (println "mandelbrot n" n "result" (second (first times)))
       (println "runs:" (mapv (fn [t] (/ (Math/round (* t 10.0)) 10.0)) mss))
       (println "mean:" (/ (Math/round (* mean 10.0)) 10.0) "ms"))))
+
+(defn -main [& args]
+  (if (= (first args) "render")
+    (render! (or (second args) "mandelbrot.png")
+             (if (nth args 2 nil) (Integer/parseInt (nth args 2)) 600))
+    (run-bench args)))
