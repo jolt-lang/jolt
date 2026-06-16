@@ -14,7 +14,7 @@
 (print "Scalar-replace of records (jolt-15jq)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns srr)")
 (api/eval-string ctx "(defrecord V3 [r g b])")
 

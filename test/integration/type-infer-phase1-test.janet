@@ -12,7 +12,7 @@
 (print "Type inference Phase 1 (jolt-767)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns p1)")
 # closed-world unit. mk is small (inlined away). rd is RECURSIVE, so it survives
 # inlining and is called via its var — exactly the shape (big/recursive fn with

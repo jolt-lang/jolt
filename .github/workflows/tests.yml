@@ -54,4 +54,7 @@ jobs:
         run: jpm build
 
       - name: Run tests
-        run: jpm test
+        # Parallel runner (same file set as `jpm test`, across CPU workers).
+        # The executable is built in the previous step, so binary-spawning tests
+        # don't skip.
+        run: janet run-tests.janet

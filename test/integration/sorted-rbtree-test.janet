@@ -8,7 +8,7 @@
 (print "sorted-map/set red-black tree (jolt-0hbr)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (defn ev [s] (api/eval-string ctx s))
 
 (var fails 0)

@@ -10,7 +10,7 @@
 (print "Inline + scalar replacement (jolt-87f)...")
 
 # A ctx with inlining ON (independent of the build-time JOLT_DIRECT_LINK).
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (put (ctx :env) :direct-linking? true)
 (put (ctx :env) :inline? true)
 (api/eval-string ctx "(ns rt)")

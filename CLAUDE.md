@@ -55,10 +55,11 @@ bd close <id>         # Complete work
 
 ```bash
 jpm build              # build/jolt (one binary; ctx baked at build time)
-jpm test               # FULL gate — recursive over test/ (spec, unit, integration, bench)
+jpm build; janet run-tests.janet   # FULL gate, PARALLEL (across CPU workers) — build first so binary-spawning tests don't skip; JOLT_TEST_JOBS overrides worker count, -v shows all output
+jpm test               # FULL gate, serial (same file set; slower — recursive over test/)
 janet test/spec/<f>.janet            # one spec file
 janet test/integration/conformance-test.janet   # 3-mode conformance (interpret/compile/self-host)
-janet test/bench/core-bench.janet    # bench — compare back-to-back vs main, never absolute
+JOLT_BENCH=1 janet test/bench/core-bench.janet   # bench (opt-in; skipped in the gate) — back-to-back vs main, never absolute
 ```
 
 **Run the gate with a REAL exit code.** `jpm test | grep ...` reports grep's
