@@ -297,10 +297,83 @@
 
 (defn phm-count [m] (m :cnt))
 
+# --- bulk bottom-up build (jolt-5vsp collections) ---------------------------
+# Build the HAMT in one pass from a native array of entries, instead of n
+# incremental phm-assoc calls (each of which rebuilt the O(log32 n) path with
+# fresh arrays AND allocated a fresh map wrapper). The structure produced is
+# IDENTICAL to the incremental one: the trie shape is a function of the key set
+# (hash-partitioned, with the same bin<=16 / array-node>=17 promotion threshold
+# at each level), so nth/lookup/assoc/without/each read it unchanged. Only a
+# hash-collision node's internal order is insertion-dependent, and we preserve
+# insertion order there too. Validated against phm-assoc across the size and
+# branching boundaries (see the throwaway script in the PR).
+#
+# Entries are @[h key val] triples (h = khash key). build-node takes a non-empty
+# group all destined for the same parent slot and returns its node.
+(defn- all-same-hash? [entries]
+  (def h0 (in (in entries 0) 0))
+  (var same true) (var i 1) (def L (length entries))
+  (while (< i L) (when (not= (in (in entries i) 0) h0) (set same false) (break)) (++ i))
+  same)
+
+(defn- build-node [entries shift]
+  (if (and (> (length entries) 1) (all-same-hash? entries))
+    # all keys share a full 32-bit hash -> collision node (insertion order)
+    (let [arr (array)]
+      (each e entries (array/push arr (in e 1)) (array/push arr (in e 2)))
+      [:hcn (in (in entries 0) 0) (length entries) arr])
+    # partition by the 5-bit mask at this level; iterate slots 0..31 ascending
+    # so the bin arr / array-node slots land in canonical (bidx) order.
+    (let [groups @{}]
+      (each e entries
+        (def m (mask (in e 0) shift))
+        (if-let [g (in groups m)] (array/push g e) (put groups m @[e])))
+      (def occupied (array))
+      (var i 0) (while (< i 32) (when (in groups i) (array/push occupied i)) (++ i))
+      (def s (length occupied))
+      (if (>= s 17)
+        # array-node: every occupied slot is a sub-node (a lone key becomes its
+        # own single-key bin node at shift+5, matching the expand path).
+        (let [slots (array/new-filled 32 nil)]
+          (each m occupied (put slots m (build-node (in groups m) (+ shift 5))))
+          [:an s slots])
+        # bitmap-indexed node: lone key -> leaf pair, group -> nil + sub-node.
+        (let [arr (array)]
+          (var bitmap 0)
+          (each m occupied
+            (def g (in groups m))
+            (set bitmap (bor bitmap (blshift 1 m)))
+            (if (= 1 (length g))
+              (do (array/push arr (in (in g 0) 1)) (array/push arr (in (in g 0) 2)))
+              (do (array/push arr nil) (array/push arr (build-node g (+ shift 5))))))
+          [:bin bitmap arr])))))
+
+(defn phm-from-pairs [pairs &opt meta]
+  "Bulk-build a phm from an indexed collection of native [k v] pairs. Duplicate
+  keys follow assoc semantics (last value wins, first-seen key object kept). The
+  caller must pass native tuples/arrays (phm stays free of the value layer)."
+  (default meta nil)
+  (def entries @[])
+  (def seen @{})              # canon-key -> index into entries (dedup)
+  (var has-nil false) (var nil-val nil)
+  (each p pairs
+    (def k (in p 0)) (def v (in p 1))
+    (if (nil? k)
+      (do (set has-nil true) (set nil-val v))
+      (let [c (ck k)]
+        (if-let [idx (in seen c)]
+          (put (in entries idx) 2 v)                      # last value wins
+          (do (put seen c (length entries))
+              (array/push entries @[(khash k) k v]))))))
+  (def cnt (+ (length entries) (if has-nil 1 0)))
+  (def root (if (= 0 (length entries)) nil (build-node entries 0)))
+  (mk cnt root has-nil nil-val meta))
+
 (defn make-phm [&opt kvs]
   (default kvs nil)
-  (var m (mk 0 nil false nil nil))
-  (when kvs
-    (var i 0) (def n (length kvs))
-    (while (< i n) (set m (phm-assoc m (kvs i) (kvs (+ i 1)))) (+= i 2)))
-  m)
+  (if (or (nil? kvs) (= 0 (length kvs)))
+    (mk 0 nil false nil nil)
+    # pair up the flat [k0 v0 k1 v1 ...] array and bulk-build
+    (let [pairs (array) n (length kvs)]
+      (var i 0) (while (< i n) (array/push pairs [(in kvs i) (in kvs (+ i 1))]) (+= i 2))
+      (phm-from-pairs pairs))))

@@ -427,8 +427,12 @@
       (def result
         (case (t :kind)
           :vector (make-vec (t :arr))
-          :set (do (var s (make-phs)) (each [_ e] (pairs (t :tbl)) (set s (phs-conj s e))) s)
-          :map (do (var m (make-phm)) (each [_ pair] (pairs (t :tbl)) (set m (phm-assoc m (in pair 0) (in pair 1)))) m)))
+          # The transient already deduped into a native table; bulk-build the
+          # persistent value ONCE (bottom-up HAMT) instead of folding a phm-assoc
+          # per entry. This is the lever behind every transient-based builder
+          # (frequencies/group-by/set/into) — jolt-5vsp collections.
+          :set (phs-from-seq (values (t :tbl)))
+          :map (phm-from-pairs (values (t :tbl)))))
       # Invalidate: any further bang op (or a second persistent!) now throws.
       (put t :jolt/persistent true)
       result)

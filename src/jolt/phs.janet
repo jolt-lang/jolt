@@ -14,11 +14,19 @@
   [x]
   (and (table? x) (= :jolt/set (x :jolt/type))))
 
+(defn phs-from-seq [xs]
+  "Bulk-build a PersistentHashSet from an indexed collection of members. Members
+  back a phm as keys mapped to true, so the bulk HAMT builder (phm-from-pairs,
+  which dedups by canonical key) gives set semantics in one pass instead of an
+  immutable phm-assoc per element."
+  (def pairs @[])
+  (each x xs (array/push pairs [x true]))
+  (def m (phm-from-pairs pairs))
+  @{:jolt/type :jolt/set :phm m :cnt (phm-count m)})
+
 (defn make-phs [& xs]
   "Create a PersistentHashSet from items."
-  (var m (make-phm))
-  (each x xs (set m (phm-assoc m x true)))
-  @{:jolt/type :jolt/set :phm m :cnt (phm-count m)})
+  (phs-from-seq xs))
 
 (defn phs-conj [s & xs]
   (var m (s :phm))

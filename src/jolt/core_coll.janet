@@ -421,9 +421,43 @@
       (string? coll) (make-vec (map |(string/from-bytes $) (string/bytes coll)))
       (make-vec @[]))))
 
+# Bulk-build a map value from a native array of [k v] pairs, mirroring
+# core-assoc's struct-vs-phm choice: stay a small Janet struct (the
+# PersistentArrayMap analog) when every key is a scalar, there is no nil key or
+# value, and the distinct count is within the threshold; otherwise bulk-build
+# the HAMT once (phm-from-pairs). Used by into-a-struct-map (jolt-5vsp).
+(defn- bulk-map-from-pairs [pairs]
+  (var promote false)
+  (def t @{})
+  (each p pairs
+    (def k (vnth p 0)) (def v (vnth p 1))
+    (if (or (table? k) (array? k) (nil? k) (nil? v))
+      (set promote true)
+      (put t k v)))                                  # scalar keys: last-wins
+  (if (or promote (> (length t) map-array-threshold))
+    (phm-from-pairs pairs)
+    (table/to-struct t)))
+
 (defn- into-conj [to items]
   (cond
-    (or (phm? to) (struct? to) (and (table? to) (get to :jolt/deftype)))
+    # into onto an existing phm stays a phm: accumulate its entries + the new
+    # [k v] items and bulk-build the HAMT ONCE (phm-from-pairs, last-value-wins),
+    # instead of a phm-assoc per element. jolt-5vsp collections.
+    (phm? to)
+      (let [acc (array)]
+        (each e (phm-entries to) (array/push acc e))
+        (each item items (array/push acc [(vnth item 0) (vnth item 1)]))
+        (phm-from-pairs acc))
+    # into onto a plain map struct (e.g. the {} literal): same one-pass build,
+    # but keep the small-scalar-map-stays-a-struct rule (bulk-map-from-pairs) so
+    # the representation matches the incremental assoc-onto-a-struct path.
+    (and (struct? to) (nil? (get to :jolt/type)))
+      (let [acc (array)]
+        (each e (pairs to) (array/push acc e))
+        (each item items (array/push acc [(vnth item 0) (vnth item 1)]))
+        (bulk-map-from-pairs acc))
+    # Other map-likes (sorted maps, deftype records): fold core-assoc.
+    (or (struct? to) (and (table? to) (get to :jolt/deftype)))
       (do (var result to)
         (each item items (set result (core-assoc result (vnth item 0) (vnth item 1))))
         result)
@@ -437,7 +471,13 @@
                   (do (each x items (array/push to x)) to)               # vector: append
                   (do (var result (array/slice to)) (each x items (array/insert result 0 x)) result))  # list: prepend
     (tuple? to) (tuple/slice (tuple ;(array/concat (array/slice to) (array/slice items))))
-    # everything else conj-able (sets, sorted colls): fold conj — previously
+    # hash-set target: accumulate existing members + new items and bulk-build the
+    # backing HAMT ONCE (phs-from-seq), instead of a phs-conj per element.
+    (set? to) (let [acc (array)]
+                (each x (phs-seq to) (array/push acc x))
+                (each x items (array/push acc x))
+                (phs-from-seq acc))
+    # everything else conj-able (sorted colls): fold conj — previously
     # this fell through to `to` unchanged, silently dropping all elements
     # ((into #{} [:a :b]) was #{}, jolt-h86)
     (do (var result to) (each x items (set result (core-conj result x))) result)))

@@ -64,15 +64,18 @@
 
 (defn println [& xs] (apply print xs) (__write "\n") nil)
 
-;; Base is (hash-map), not the {} literal: a literal map is a struct that doesn't
-;; canonicalize collection keys across representations (a {:a 1} literal vs
-;; (hash-map :a 1) key), whereas a PHM does — so counting/grouping by collection
-;; value needs the PHM base (the prior Janet impl used make-phm for this reason).
+;; Transient accumulation (canonical JVM form): assoc! into a native-backed
+;; scratch table per element, then persistent! bulk-builds the HAMT once —
+;; instead of a fresh persistent assoc (full trie-path rebuild) per element.
+;; A transient map canonicalizes collection keys (it is canon-keyed, like a
+;; PHM), so counting/grouping by collection value still works across map reps.
 (defn frequencies [coll]
-  (reduce (fn [counts x] (assoc counts x (inc (get counts x 0)))) (hash-map) coll))
+  (persistent!
+    (reduce (fn [counts x] (assoc! counts x (inc (get counts x 0)))) (transient {}) coll)))
 
 (defn group-by [f coll]
-  (reduce (fn [ret x] (let [k (f x)] (assoc ret k (conj (get ret k []) x)))) (hash-map) coll))
+  (persistent!
+    (reduce (fn [ret x] (let [k (f x)] (assoc! ret k (conj (get ret k []) x)))) (transient {}) coll)))
 
 (defn not-empty [coll]
   (if (or (nil? coll) (zero? (count coll))) nil coll))
