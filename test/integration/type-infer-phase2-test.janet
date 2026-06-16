@@ -8,7 +8,7 @@
 (import ../../src/jolt/reader :as reader)
 (print "Type inference Phase 2 (vector ops)...")
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns p2)")
 (def reinfer (types/var-get (types/ns-find (types/ctx-find-ns ctx "jolt.passes") "reinfer-def")))
 (defn estr [src ptmap]

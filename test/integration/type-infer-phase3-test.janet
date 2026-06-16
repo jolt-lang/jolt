@@ -10,7 +10,7 @@
 (print "Type inference Phase 3 (jolt-d6u)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns p3)")
 (def pns (types/ctx-find-ns ctx "jolt.passes"))
 (def reinfer (types/var-get (types/ns-find pns "reinfer-def")))

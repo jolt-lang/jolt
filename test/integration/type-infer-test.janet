@@ -15,7 +15,7 @@
 (print "Type inference Phase 0 (jolt-6sr)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns ti)")
 
 (defn guards [src]

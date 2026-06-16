@@ -3,7 +3,8 @@
 # Times representative core operations end-to-end (compile path) so a phase that
 # moves fns from native Janet to the self-hosted Clojure overlay can be checked
 # for regressions. Same programs before/after a phase -> relative delta is the
-# migration's perf impact. Run: janet test/bench/core-bench.janet
+# migration's perf impact. Run: JOLT_BENCH=1 janet test/bench/core-bench.janet
+# (skipped under `jpm test` — it asserts nothing; see main).
 #
 # Each program carries its own internal iteration so the measured work dominates
 # parse/compile overhead. Reports the min of N runs (least noisy).
@@ -32,6 +33,13 @@
   best)
 
 (defn main [&]
+  # `jpm test` recurses test/ and would run this every gate, but it's a manual
+  # perf tool that asserts nothing (just reports timings) — so skip it unless
+  # opted in with JOLT_BENCH=1. Keeps ~35s of unasserted benchmark work out of
+  # the correctness gate (same pattern as suite-worker's no-arg no-op).
+  (unless (os/getenv "JOLT_BENCH")
+    (print "core-bench: SKIP (set JOLT_BENCH=1 to run)")
+    (os/exit 0))
   (def ctx (api/init {:compile? true}))
   (print "bench (compile mode), min of " runs " runs, ms:")
   (var total 0)

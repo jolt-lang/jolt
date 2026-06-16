@@ -13,7 +13,7 @@
 (print "Type hints (jolt-94n)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")  # inline on, so hint-through-inline is exercised
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns sh)")
 (api/eval-string ctx "(defrecord Vec3r [r g b])")
 (each s ["(defn v3 [r g b] {:r r :g g :b b})"

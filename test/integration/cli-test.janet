@@ -1,14 +1,19 @@
-# Smoke-test the command-line flags by running main.janet from source (no build
-# needed, so it can't go stale).
+# Smoke-test the command-line flags. Prefer the built binary (baked ctx, ~20ms
+# startup); from-source is ~8s cold per invocation, and with ~20 invocations this
+# file dominated the (parallel) gate's wall clock. Falls back to running
+# main.janet from source when there's no binary, so an unbuilt tree still works —
+# the gate (`jpm build && janet run-tests.janet`) builds first, so it's fresh.
+(def- jolt-cmd
+  (if (os/stat "build/jolt") ["build/jolt"] ["janet" "src/jolt/main.janet"]))
 
 (defn- run [& args]
-  (def p (os/spawn ["janet" "src/jolt/main.janet" ;args] :p {:out :pipe :err :pipe}))
+  (def p (os/spawn [;jolt-cmd ;args] :p {:out :pipe :err :pipe}))
   (def out (:read (p :out) :all))
   (os/proc-wait p)
   (string (or out "")))
 
 (defn- run-err [& args]
-  (def p (os/spawn ["janet" "src/jolt/main.janet" ;args] :p {:out :pipe :err :pipe}))
+  (def p (os/spawn [;jolt-cmd ;args] :p {:out :pipe :err :pipe}))
   (def err (:read (p :err) :all))
   (os/proc-wait p)
   (string (or err "")))

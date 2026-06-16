@@ -13,7 +13,7 @@
 (print "Predicate folding (jolt-wcw)...")
 
 (os/setenv "JOLT_DIRECT_LINK" "1")
-(def ctx (api/init {:compile? true}))
+(def ctx (api/init-cached {:compile? true}))
 (api/eval-string ctx "(ns pf)")
 
 (defn code [src]
