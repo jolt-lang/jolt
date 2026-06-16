@@ -73,9 +73,32 @@
   (persistent!
     (reduce (fn [counts x] (assoc! counts x (inc (get counts x 0)))) (transient {}) coll)))
 
+;; Buckets are transient vectors, not persistent ones: the JVM form rebuilds the
+;; bucket's persistent vector per element (conj (get ret k []) x), an O(log n)
+;; trie path-rebuild + alloc per element — so a coarse grouping (few large
+;; buckets) is bound on that conj, not the map build. Push onto a per-bucket
+;; native array (O(1)) instead, then bulk-build the persistent map ONCE.
+;; Distinct keys are recorded in a side vector so the buckets can be frozen in
+;; place (no second map rebuild). A bucket's FIRST element is stored as a cheap
+;; persistent [x]; only the second element promotes it to a transient — so an
+;; all-singletons grouping pays no transient alloc and matches the old cost,
+;; while any bucket that actually grows rides the O(1) push.
 (defn group-by [f coll]
-  (persistent!
-    (reduce (fn [ret x] (let [k (f x)] (assoc! ret k (conj (get ret k []) x)))) (transient {}) coll)))
+  (let [tm (transient {})
+        ks (reduce (fn [ks x]
+                     (let [k (f x)
+                           b (get tm k)]
+                       (if (nil? b)
+                         (do (assoc! tm k [x]) (conj! ks k))
+                         (if (vector? b)
+                           (do (assoc! tm k (conj! (transient b) x)) ks)
+                           (do (conj! b x) ks)))))
+                   (transient []) coll)]
+    (reduce (fn [_ k]
+              (let [b (get tm k)]
+                (if (vector? b) nil (assoc! tm k (persistent! b)))))
+            nil (persistent! ks))
+    (persistent! tm)))
 
 (defn not-empty [coll]
   (if (or (nil? coll) (zero? (count coll))) nil coll))

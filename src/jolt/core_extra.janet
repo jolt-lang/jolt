@@ -343,7 +343,7 @@
     (or (phm? coll) (and (struct? coll) (nil? (get coll :jolt/type))))
       (let [t @{}]
         (each pair (realize-for-iteration coll)
-          (put t (canon-key (in pair 0)) @[(in pair 0) (in pair 1)]))
+          (put t (tbl-key (in pair 0)) @[(in pair 0) (in pair 1)]))
         @{:jolt/type :jolt/transient :kind :map :tbl t})
     # mutable-build arrays (vectors/lists) — copy into a transient vector
     (array? coll) @{:jolt/type :jolt/transient :kind :vector :arr (array/slice coll)}
@@ -365,11 +365,11 @@
               # a [k v] pair (map-entry / 2-vector)
               (and (or (pvec? x) (tuple? x) (array? x))
                    (= 2 (if (pvec? x) (pv-count x) (length x))))
-                (put (t :tbl) (canon-key (vnth x 0)) @[(vnth x 0) (vnth x 1)])
+                (put (t :tbl) (tbl-key (vnth x 0)) @[(vnth x 0) (vnth x 1)])
               # a map: merge all its entries
               (or (phm? x) (and (struct? x) (nil? (get x :jolt/type))))
                 (each e (map-entries-of x)
-                  (put (t :tbl) (canon-key (in e 0)) @[(in e 0) (in e 1)]))
+                  (put (t :tbl) (tbl-key (in e 0)) @[(in e 0) (in e 1)]))
               (error "conj! on a transient map requires a [key value] pair or a map")))
   t)
 
@@ -380,7 +380,7 @@
               (when (not (and (number? k) (= k (math/floor k)) (>= k 0) (<= k (length a))))
                 (error (string "Index " k " out of bounds for assoc! on a transient vector of length " (length a))))
               (if (= k (length a)) (array/push a v) (put a k v)))
-    :map    (put (t :tbl) (canon-key k) @[k v])
+    :map    (put (t :tbl) (tbl-key k) @[k v])
     (error "assoc! expects a transient vector or map"))
   t)
 
@@ -405,7 +405,7 @@
 
 (defn core-dissoc! [t & ks]
   (if (and (core-transient? t) (= :map (t :kind)))
-    (do (tr-check-active! t) (each k ks (put (t :tbl) (canon-key k) nil)) t)
+    (do (tr-check-active! t) (each k ks (put (t :tbl) (tbl-key k) nil)) t)
     (error "dissoc! requires a transient map")))
 
 (defn core-disj! [t & xs]

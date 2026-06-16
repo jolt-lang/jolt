@@ -96,6 +96,14 @@
       k)))
 (set-canonicalize-key! canon-key)
 
+# Janet tables silently drop a nil key (put/get with nil is a no-op), but Clojure
+# maps allow a nil key. The transient map keys its native table by canon-key, and
+# canon-key returns nil only for nil input — so route nil to a unique sentinel.
+# The sentinel is a fresh mutable table; canon-key never produces one, so it can't
+# collide with the canon-key of any real key. (phm keeps its own has-nil slot.)
+(def tbl-nil-key @{})
+(defn tbl-key [k] (if (nil? k) tbl-nil-key (canon-key k)))
+
 # All [k v] entries of a map (struct or phm), nil-valued keys included. Use this
 # instead of (keys (phm-to-struct m)) — phm-to-struct drops keys whose value is
 # nil, which is exactly what Clojure maps must keep.

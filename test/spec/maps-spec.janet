@@ -206,5 +206,21 @@
   ["dissoc after bulk"   "nil"  "(get (dissoc (into {} (map (fn [i] [i i]) (range 100))) 50) 50)"]
   ["frequencies count"   "3"    "(get (frequencies [1 2 2 1 2 1]) 1)"]
   ["frequencies coll-key" "2"   "(get (frequencies [[1 2] [1 2] [3 4]]) [1 2])"]
+  # nil is a legal map key, but a Janet table drops a nil key — the transient
+  # map (canon-keyed table) used to silently lose the nil-key entry, so
+  # group-by/frequencies/assoc dropped the whole nil bucket. tbl-key routes nil
+  # to a sentinel; phm keeps its own has-nil slot.
+  ["frequencies nil key" "2"    "(get (frequencies [nil nil 1]) nil)"]
+  ["group-by nil key"  "[nil nil]" "(get (group-by identity [nil nil 1]) nil)"]
+  ["group-by nil count"  "2"    "(count (group-by identity [nil nil 1]))"]
+  ["transient nil key"   ":x"  "(let [t (transient {})] (assoc! t nil :x) (get (persistent! t) nil))"]
+  ["transient nil get"   "true" "(let [t (transient {})] (assoc! t nil :x) (contains? t nil))"]
+  ["transient nil dissoc" ":gone" "(let [t (transient {})] (assoc! t nil :x) (dissoc! t nil) (get (persistent! t) nil :gone))"]
+  # group-by buckets are built on transient vectors (O(1) push) and frozen once,
+  # rather than an O(log n) persistent conj per element. Result is identical:
+  # bucket contents and order match the persistent build across a coarse
+  # grouping (few large buckets — the case bound on the per-bucket conj).
   ["group-by bucket"     "[1 3 5]" "(get (group-by odd? (range 1 6)) true)"]
+  ["group-by big bucket" "true" "(= (group-by even? (range 200)) {true (vec (filter even? (range 200))) false (vec (filter odd? (range 200)))})"]
+  ["group-by order"      "[0 3 6 9]" "(get (group-by (fn [x] (mod x 3)) (range 10)) 0)"]
   ["hash-map bulk = incr" "true" "(= (apply hash-map (mapcat (fn [i] [i i]) (range 50))) (reduce (fn [m i] (assoc m i i)) {} (range 50)))"])
