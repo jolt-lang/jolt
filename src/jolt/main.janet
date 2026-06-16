@@ -477,7 +477,6 @@
 
 (defn- run-main [ns-name argv]
   (when (nil? ns-name) (eprint "Error: -m/--main requires a namespace") (os/exit 1))
-  (set-command-line-args argv)
   (try
     (do
       (def path (deps-image-path ns-name))
@@ -495,6 +494,10 @@
             (when-let [ip (get (ctx :env) :infer-program!)] (protect (ip ctx)))
             (put (ctx :env) :infer-program-done? true))
           (save-deps-image ctx path)))
+      # Bind *command-line-args* on the FINAL ctx, AFTER any cache swap: a cache
+      # hit replaces ctx with the saved image, which carries the args baked when
+      # it was saved — the current run's argv must win (jolt-4mui).
+      (set-command-line-args argv)
       (load-string ctx (string "(apply " ns-name "/-main *command-line-args*)")))
     ([err fib] (report-error err fib) (os/exit 1))))
 
