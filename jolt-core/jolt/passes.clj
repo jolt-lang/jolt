@@ -13,9 +13,9 @@
   :refer, so jolt.passes stays the only namespace the back end imports.
 
   Portable Clojure: kernel-tier fns + seed primitives only."
-  (:require [jolt.host :refer [inline-enabled?]]
+  (:require [jolt.host :refer [inline-enabled? record-shapes]]
             [jolt.passes.fold :refer [const-fold]]
-            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty]]
+            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
             [jolt.passes.types :refer [run-inference
                                        check-form infer-body reinfer-def
                                        set-rtenv! set-vtypes! join-types
@@ -33,7 +33,8 @@
   type is proven. Otherwise (core + bootstrap) just const-fold, as before."
   [node ctx]
   (if (inline-enabled? ctx)
-    (let [opt (loop [i 0 n (const-fold node)]
+    (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold (jolt-15jq)
+          opt (loop [i 0 n (const-fold node)]
                 (reset! dirty false)
                 (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
                   (if (and @dirty (< i 8))
