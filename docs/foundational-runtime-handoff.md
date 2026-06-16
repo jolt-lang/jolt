@@ -85,16 +85,36 @@ Every other axis adds structural overhead **on top** of that floor.
    (jolt-4x9 element types + jolt-t6r). Helps dispatch. Bounded ceiling (still
    bytecode underneath).
 
-## START HERE — the spike (DONE — see results)
+## STATUS (2026-06-16) — lever 1 (native codegen) built and working
 
-**The spike ran 2026-06-16. Results: `docs/foundational-runtime-spike-results.md`.**
-Outcome in one line: the 15.4× floor decomposes into a **Janet-VM floor ≈10.8×
-JVM** (the dominant ~70%; only native codegen / lever 1 moves it) plus a **jolt
-loop-lowering ≈1.43×** on top (cheap backend win — `loop`/`recur` is lowered to a
-recursive closure called per iteration; emit Janet `while`+`var`/`set` instead;
-bead **jolt-v28u**). Janet numbers are already unboxed (not a lever). Next: the
-lever-1 jolt-IR→C spike for one hot fn (confirm Janet's incremental native-module
-path first). The original spike instructions are preserved below for context.
+The spike ran and lever 1 is now implemented. Full writeups:
+`docs/foundational-runtime-spike-results.md` (floor localization) and
+`docs/foundational-runtime-lever1-native-codegen.md` (native codegen).
+
+Done (all merged to main, PRs #143–#148):
+- **Floor localized:** the 15.4× decomposes into a **Janet-VM floor ≈10.8× JVM**
+  (only native codegen moves it) + a **jolt loop-lowering ≈1.43×** (cheap backend
+  win, bead **jolt-v28u**). Janet numbers are already unboxed (not a lever).
+- **Native codegen (jolt-ihdp, CLOSED):** `src/jolt/cgen.janet` translates
+  numeric-leaf fns (numeric in/out, native-op arithmetic + loop/recur/if/let/do)
+  to C. Wired into the backend `:def` emit under **`JOLT_CGEN=1`** (opt-in). The
+  `.so` is content-addressed + cached. **mandelbrot 224ms → 12.4ms (~18×)**,
+  beats JVM. Leaf-first falls out free (callers stay bytecode, call native fn).
+- **Build-time AOT (jolt-a7ds, partial):** `:cgen-collect?` records leaf fns at
+  build, `aot-build` compiles them into one `.so` + manifest; `:cgen-prebuilt` +
+  `load-aot` install them at deploy with **no cc** (proven with cc off PATH).
+
+Open work under epic jolt-5vsp:
+- **jolt-a7ds** — fuse the prebuilt `.so` + manifest into the `jpm` exe for a
+  literal single binary (+ a `jolt cgen-build -m app` CLI). The heaviest piece;
+  into jpm executable-build, not the compiler.
+- **jolt-v28u** — `while`-loop lowering for tail `recur` (cheap ~30%, independent
+  of cgen; helps ALL loops, not just cgen candidates).
+- **jolt-l1l4** — widen cgen numeric grammar (mod/rem/bit-ops/min/max, mixed fns).
+- **jolt-qx70** — hot-fn auto-detection (drop the global `JOLT_CGEN` knob).
+- Lever 2 (GC-pressure) and lever 3 (deeper devirt) — untouched; see below.
+
+The original spike instructions are preserved below for context.
 
 **Localize the 15× floor.** Build three `mandelbrot` implementations and compare:
 
