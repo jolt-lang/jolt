@@ -19,6 +19,12 @@
 # Collections
 # ============================================================
 
+# Small maps are Janet structs (native, O(1) get) but assoc copies them whole
+# (O(n)); past this many entries a map promotes to the phm HAMT (O(log n) assoc)
+# so incremental building isn't O(n^2). Mirrors cljs PersistentArrayMap's
+# HASHMAP-THRESHOLD (jolt-684u).
+(def- map-array-threshold 8)
+
 # Is x a map value (for conj/merge semantics: conj-ing a map merges its entries)?
 (defn- map-value? [x]
   (or (phm? x) (and (struct? x) (nil? (get x :jolt/type)))))
@@ -124,16 +130,21 @@
             (if (= idx (length result)) (array/push result v) (put result idx v)))
           (+= i 2))
         (if (tuple? m) (tuple/slice (tuple ;result)) result))
-    # map (struct/table). Promote to a phm when any new key is a collection (a
-    # Janet struct/table would key it by identity) or any new key/value is nil (a
-    # struct drops nil; phm preserves it, matching Clojure). m itself is a struct
-    # here (phm handled above), so only the new kvs can introduce these.
+    # map (struct/table). Promote to a phm when (a) any new key is a collection
+    # (a Janet struct/table would key it by identity) or any new key/value is nil
+    # (a struct drops nil; phm preserves it), or (b) the result would exceed the
+    # small-map threshold — a Janet struct copies wholesale on assoc (O(n)), so a
+    # growing map must ride the phm HAMT (O(log n)) past ~8 entries. Mirrors cljs
+    # PersistentArrayMap -> PersistentHashMap (jolt-684u). m is a struct here
+    # (phm handled above), so only the current size + new kvs matter.
     (let [coll-key (do (var c false) (var i 0)
                      (while (< i (length kvs))
                        (let [k (in kvs i) v (in kvs (+ i 1))]
                          (when (or (table? k) (array? k) (nil? k) (nil? v)) (set c true)))
-                       (+= i 2)) c)]
-      (if coll-key
+                       (+= i 2)) c)
+          promote (or coll-key
+                      (> (+ (if m (length m) 0) (/ (length kvs) 2)) map-array-threshold))]
+      (if promote
         (do (var result (make-phm))
             (when m (each k (keys m) (set result (phm-assoc result k (get m k)))))
             (var i 0) (while (< i (length kvs)) (set result (phm-assoc result (in kvs i) (in kvs (+ i 1)))) (+= i 2))
