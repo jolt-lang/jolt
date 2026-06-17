@@ -207,6 +207,23 @@
     (ok (string "arity: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3h) prelude mode (inc 3d): emitting clojure.core ITSELF, a core->core ref must
+#   lower to a runtime var-deref instead of being rejected as "out of subset".
+#   `frequencies` is a core fn but not a native-op, so it exercises the switch.
+(let [ir (backend/analyze-form ctx (in (r/parse-next "(fn [x] (frequencies x))") 0))]
+  # subset mode (the default): a non-native core ref is rejected at emit time.
+  (ok "prelude: subset mode rejects non-native core ref"
+      (let [r (protect (emit/emit ir))] (not (r 0))))
+  # prelude mode: the same ref lowers to (var-deref "clojure.core" "frequencies").
+  (emit/set-prelude-mode! true)
+  (def scm (protect (emit/emit ir)))
+  (emit/set-prelude-mode! false)
+  (ok "prelude: mode lowers non-native core ref to var-deref"
+      (and (scm 0)
+           (string/find "var-deref" (scm 1))
+           (string/find "frequencies" (scm 1)))
+      (string/format "%p" scm)))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

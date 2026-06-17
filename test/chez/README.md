@@ -54,6 +54,27 @@ cases pass**, 0 divergences; 2036/2655 out of subset (await clojure.core on Chez
 a rest-arg lambda (the Scheme rest list is coerced to a jolt seq, nil when empty),
 which is the gating lift for emitting the clojure.core tiers as a prelude.
 
+## Phase 1 — clojure.core prelude emission (inc 3d, jolt-ocvi)
+The `-e`-capable jolt-chez path: emit the clojure.core tiers
+(`jolt-core/clojure/core/NN-*.clj`) through the same analyzer → emit pipeline as a
+Scheme PRELUDE of `def-var!` forms, so user code's `(var-deref "clojure.core" …)`
+resolves the fn at runtime. `emit/set-prelude-mode!` flips a switch: in the default
+(subset) mode a non-native `clojure.core` ref is rejected ("out of subset"); in
+prelude mode it lowers to a runtime `var-deref` so core fns chain through each
+other. Host interop (`:host`) and unhandled IR ops still error in both modes —
+those are the real gaps that need a hand-written RT shim or new emit support.
+
+`core-prelude-probe.janet` (gated behind `JOLT_CHEZ_PRELUDE=1`) measures reach and
+catalogs the gaps; macros are skipped (analyze-time only, not a runtime value):
+
+    JOLT_CHEZ_PRELUDE=1 janet test/chez/core-prelude-probe.janet
+
+Baseline: **303/355 non-macro core forms emit** to Scheme. Remaining 52 gaps:
+`:throw` (29, the big one — needs an exception model), `:quote` (8, needs RT
+symbols/lists), `:try` (2), Java host interop `.write`/`.isDirectory` (6, io tier),
+`letfn` (4), `declare`/def-no-init (2), one edge (`parse-uuid`). Each is a clean
+next-increment target. The probe has a regression floor (raise it as gaps close).
+
 Prior, inc 3b (seq tier + dynamic IFn, jolt-5pso): 595/595 compiled, 0 divergences,
 2060/2655 out of subset. The seq tier brought up a list/lazy-seq type with
 first/rest/next/seq/cons/list, map/filter/reduce/into/remove,

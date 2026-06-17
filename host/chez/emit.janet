@@ -85,6 +85,16 @@
     (and arity-ok (not (arity-ok nargs))) nil
     op))
 
+# PRELUDE MODE (inc 3d). The default (subset) mode rejects any clojure.core ref
+# that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
+# When emitting clojure.core ITSELF as a Scheme prelude, core fns reference each
+# other constantly; those refs must lower to `var-deref` (resolved at runtime
+# from the prelude's own def-var! forms) instead of being rejected. Host interop
+# (:host) and unhandled IR ops still error in both modes — those are the real
+# gaps that need a hand-written RT shim.
+(var- prelude-mode? false)
+(defn set-prelude-mode! [on] (set prelude-mode? on))
+
 (var- recur-target nil)
 # Munged local names known to hold a procedure (a named fn's self-recursion name).
 # Calls to these stay DIRECT; any other :local callee routes through jolt-invoke
@@ -252,7 +262,7 @@
     (= kind :keyword) (string "(jolt-get " (first args) " " (emit fnode) default ")")
     # (coll k [default]) -> (jolt-get coll k [default])
     (= kind :coll) (string "(jolt-get " (emit fnode) " " (first args) default ")")
-    (stdlib-var? fnode)
+    (and (stdlib-var? fnode) (not prelude-mode?))
     (errorf "emit: unsupported stdlib fn `%s/%s` (no core on Chez yet)" (get fnode :ns) (get fnode :name))
     (= :host (get fnode :op))
     (errorf "emit: unsupported host call `%s` (no host interop on Chez yet)" (get fnode :name))
@@ -275,7 +285,7 @@
     :var   (let [core-proc (and (= "clojure.core" (get node :ns)) (get core-value-procs (get node :name)))]
              (cond
                core-proc core-proc
-               (stdlib-var? node)
+               (and (stdlib-var? node) (not prelude-mode?))
                (errorf "emit: unsupported stdlib ref `%s/%s` (no core on Chez yet)" (get node :ns) (get node :name))
                (string "(var-deref " (string/format "%j" (get node :ns)) " "
                        (string/format "%j" (get node :name)) ")")))
