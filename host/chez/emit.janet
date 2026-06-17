@@ -29,12 +29,22 @@
    "<" "<" ">" ">" "<=" "<=" ">=" ">="
    "=" "jolt=" "inc" "jolt-inc" "dec" "jolt-dec" "not" "jolt-not"
    "min" "min" "max" "max"
-   "mod" "modulo" "rem" "remainder" "quot" "quotient"})
+   "mod" "modulo" "rem" "remainder" "quot" "quotient"
+   # persistent-collection leaf ops (jolt-wgbz) -> rt prims in collections.ss
+   "vector" "jolt-vector" "hash-map" "jolt-hash-map" "hash-set" "jolt-hash-set"
+   "conj" "jolt-conj" "get" "jolt-get" "nth" "jolt-nth" "count" "jolt-count"
+   "assoc" "jolt-assoc" "dissoc" "jolt-dissoc" "contains?" "jolt-contains?"
+   "empty?" "jolt-empty?" "peek" "jolt-peek" "pop" "jolt-pop"})
 
-# Unary ops only legal at arity 1; binary at arity 2. Others (arith/compare) are
-# variadic in both Scheme and jolt, so any arity is fine.
-(def- unary-ops {"inc" true "dec" true "not" true})
-(def- binary-ops {"mod" true "rem" true "quot" true})
+# Per-op arity gate: only lower when the Scheme prim and the jolt fn agree at
+# this arity. Ops absent from the table are variadic (arith/compare/=, the
+# collection constructors, conj/assoc/dissoc) and legal at any arity.
+(def- op-arity
+  {"inc" |(= $ 1) "dec" |(= $ 1) "not" |(= $ 1)
+   "count" |(= $ 1) "empty?" |(= $ 1) "peek" |(= $ 1) "pop" |(= $ 1)
+   "mod" |(= $ 2) "rem" |(= $ 2) "quot" |(= $ 2) "contains?" |(= $ 2)
+   "get" |(or (= $ 2) (= $ 3)) "nth" |(or (= $ 2) (= $ 3))
+   "assoc" |(and (>= $ 3) (odd? $)) "dissoc" |(>= $ 1) "conj" |(>= $ 1)})
 
 # If fnode is a clojure.core (or host) ref to a native-op primitive, return the
 # Scheme op string — only at an arity where the Scheme op and the jolt fn agree.
@@ -44,10 +54,10 @@
             :host (get fnode :name)
             nil))
   (def op (and nm (get native-ops nm)))
+  (def arity-ok (get op-arity nm))
   (cond
     (nil? op) nil
-    (and (get unary-ops nm) (not= nargs 1)) nil
-    (and (get binary-ops nm) (not= nargs 2)) nil
+    (and arity-ok (not (arity-ok nargs))) nil
     op))
 
 (var- recur-target nil)
@@ -74,6 +84,15 @@
                     s
                     (string s ".0")))
     (string? v) (string/format "%j" v)   # quoted+escaped string literal
+    # keyword literal -> (keyword ns name); ns is everything before the first "/"
+    (keyword? v) (let [s (string v) idx (string/find "/" s)]
+                   (if (and idx (> idx 0))
+                     (string "(keyword " (string/format "%j" (string/slice s 0 idx)) " "
+                             (string/format "%j" (string/slice s (inc idx))) ")")
+                     (string "(keyword #f " (string/format "%j" s) ")")))
+    # jolt char value {:ch <codepoint> :jolt/type :jolt/char}
+    (and (struct? v) (= :jolt/char (get v :jolt/type)))
+    (string "(integer->char " (get v :ch) ")")
     (errorf "emit-const: unsupported literal %p" v)))
 
 (defn- emit-binding [b]
@@ -136,16 +155,37 @@
 (defn- stdlib-var? [n]
   (and (= :var (get n :op)) (string/has-prefix? "clojure." (or (get n :ns) ""))))
 
+# jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg
+# (so (< :kw) is true), but Scheme's < demands a number even there — special-case.
+(def- cmp1-ops {"<" true ">" true "<=" true ">=" true})
+
+# IFn dispatch for a LITERAL callee (Clojure's "value as fn"): a keyword looks
+# itself up in its arg ((:k m) = (get m :k)); a map/set/vector literal looks up
+# its arg ((m :k) = (get m :k)). The general dynamic case — a local/var holding a
+# keyword — is runtime IFn dispatch, a later increment, and stays out of subset.
+(defn- ifn-kind [fnode]
+  (case (get fnode :op)
+    :const (when (keyword? (get fnode :val)) :keyword)
+    :map :coll :set :coll :vector :coll
+    nil))
+
 (defn- emit-invoke [node]
   (def fnode (nn (get node :fn)))
   (def args (map emit (vv (get node :args))))
   (def nop (native-op fnode (length args)))
+  (def kind (ifn-kind fnode))
+  (def default (if (> (length args) 1) (string " " (in args 1)) ""))
   (cond
     # zero-arg + / * : Scheme's identity is the EXACT 0 / 1, but jolt models every
     # number as a double, so emit the flonum identity to keep (= 0 (+)) true.
     (and nop (empty? args) (= nop "+")) "0.0"
     (and nop (empty? args) (= nop "*")) "1.0"
+    (and nop (= 1 (length args)) (get cmp1-ops nop)) (string "(begin " (first args) " #t)")
     nop (string "(" nop " " (string/join args " ") ")")
+    # (:k coll [default]) -> (jolt-get coll :k [default])
+    (= kind :keyword) (string "(jolt-get " (first args) " " (emit fnode) default ")")
+    # (coll k [default]) -> (jolt-get coll k [default])
+    (= kind :coll) (string "(jolt-get " (emit fnode) " " (first args) default ")")
     (stdlib-var? fnode)
     (errorf "emit: unsupported stdlib fn `%s/%s` (no core on Chez yet)" (get fnode :ns) (get fnode :name))
     (= :host (get fnode :op))
@@ -172,6 +212,15 @@
                    (if (empty? (vv (get node :statements))) "" " ")
                    (emit (get node :ret)) ")")
     :invoke (emit-invoke node)
+    # collection literals -> rt constructors (collections.ss)
+    :vector (string "(jolt-vector " (string/join (map emit (vv (get node :items))) " ") ")")
+    :set    (string "(jolt-hash-set " (string/join (map emit (vv (get node :items))) " ") ")")
+    :map   (let [flat @[]]
+             (each p (vv (get node :pairs))
+               (def p (vv p))
+               (array/push flat (emit (get p 0)))
+               (array/push flat (emit (get p 1))))
+             (string "(jolt-hash-map " (string/join flat " ") ")"))
     :let   (emit-let node)
     :loop  (emit-loop node)
     :recur (emit-recur node)

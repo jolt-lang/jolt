@@ -25,6 +25,17 @@
 (def oracle-ctx (api/init {:compile? true}))
 (defn oracle [src] (string (api/load-string oracle-ctx src)))
 
+# Canonical CLI oracle (the run-corpus gate's boundary): collection values don't
+# round-trip through (string value) — they need jolt's real `-e` printer. Take
+# the last non-empty stdout line, exactly like run-corpus.janet.
+(defn cli-oracle [src]
+  (def proc (os/spawn ["build/jolt" "-e" src] :p {:out :pipe :err :pipe}))
+  (def out (ev/read (proc :out) 0x100000))
+  (ev/read (proc :err) 0x100000)
+  (os/proc-wait proc)
+  (def lines (filter (fn [l] (not (empty? l))) (string/split "\n" (string/trim (if out (string out) "")))))
+  (if (empty? lines) "" (last lines)))
+
 (def ctx (d/make-ctx))
 
 # 1) constant-folded arithmetic: (+ 1 2) -> the analyzer folds to const 3.
@@ -72,6 +83,43 @@
                    ["#() shorthand" "(#(+ %1 %2) 1 2)"]]
   (let [[code out err] (d/run-on-chez ctx src)]
     (ok label (and (= code 0) (= out (oracle src))) (string "chez=" out " janet=" (oracle src) " | " err))))
+
+# 3c) persistent collections (jolt-wgbz): vector/map/set literals + leaf ops.
+#   Maps/sets print in jolt's INTERNAL hash order, which a Scheme HAMT won't
+#   reproduce — so unordered cases are checked via `(= ...)` (prints true/false,
+#   exactly how the run-corpus gate compares them), and only ORDERED vectors are
+#   compared by printed form. Parity is still vs the Janet oracle in both shapes.
+(each src [# ordered: direct printed-form parity
+           "[1 2 3]"
+           "(conj [1 2] 3)"
+           "(count [1 2 3])"
+           "(nth [10 20 30] 1)"
+           "(get [10 20 30] 0)"
+           "(peek [1 2 3])"
+           "(pop [1 2 3])"
+           # unordered / boolean: equality-wrapped, order-independent
+           "(= {:a 1 :b 2} {:b 2 :a 1})"
+           "(= {:a 1 :b 2} (assoc {:a 1} :b 2))"
+           "(= 1 (get {:a 1} :a))"
+           "(= 2 (count {:a 1 :b 2}))"
+           "(= 99 (get {:a 1} :z 99))"
+           "(= {:a 1} (dissoc {:a 1 :b 2} :b))"
+           "(= #{1 2 3} (conj #{1 2} 3))"
+           "(= #{1 2} (conj #{1 2} 2))"
+           "(contains? #{1 2} 1)"
+           "(contains? #{1 2} 9)"
+           "(contains? {:a 1} :a)"
+           "(empty? [])"
+           "(empty? [1])"
+           "(empty? {})"
+           "(= [1 2] [1 2])"
+           "(= [1 2] [1 3])"
+           "(= #{1 2} #{2 1})"
+           "(= {1 2} {1 3})"]
+  (let [[code out err] (d/run-on-chez ctx src)
+        want (cli-oracle src)]
+    (ok (string "coll: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
 
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the

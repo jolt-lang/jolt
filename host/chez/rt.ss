@@ -11,6 +11,7 @@
 ;; Emitted programs do `(load "host/chez/rt.ss")`; this loads values.ss in turn.
 
 (load "host/chez/values.ss")
+(load "host/chez/collections.ss")
 
 ;; --- rt arithmetic / logic shims (named in emit.janet's native-ops) ----------
 (define (jolt-inc x) (+ x 1))
@@ -41,7 +42,17 @@
       (number->string (exact x))
       (number->string x)))
 
-;; Minimal pr-str for the program's final value (full printer is Phase 2).
+;; Program-final-value printer. jolt's `-e` prints in str-style: strings raw (no
+;; quotes), chars as `\c`/`\newline`, collections recursively. NOTE: maps/sets
+;; render in HAMT-iteration order, which does NOT match the Janet host's order —
+;; so unordered values are compared via `=` (true/false), not printed form.
+;; The full canonical printer is Phase 2.
+(define (jolt-str-join strs)
+  (cond ((null? strs) "") ((null? (cdr strs)) (car strs))
+        (else (string-append (car strs) " " (jolt-str-join (cdr strs))))))
+(define (jolt-char->string c)
+  (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
+                        ((#\return) "return") (else (string c)))))
 (define (jolt-pr-str x)
   (cond
     ((jolt-nil? x) "nil")
@@ -49,4 +60,16 @@
     ((eq? x #f) "false")
     ((number? x) (jolt-num->string x))
     ((string? x) x)
+    ((char? x) (jolt-char->string x))
+    ((keyword? x) (let ((ns (keyword-t-ns x)))
+                    (if ns (string-append ":" ns "/" (keyword-t-name x)) (string-append ":" (keyword-t-name x)))))
+    ((jolt-symbol? x) (let ((ns (symbol-t-ns x)))
+                        (if (or (jolt-nil? ns) (not ns) (eq? ns '())) (symbol-t-name x)
+                            (string-append ns "/" (symbol-t-name x)))))
+    ((pvec? x) (let ((acc '())) (let loop ((i (fx- (pvec-count x) 1)))
+                 (when (fx>=? i 0) (set! acc (cons (jolt-pr-str (pvec-nth-d x i jolt-nil)) acc)) (loop (fx- i 1))))
+                 (string-append "[" (jolt-str-join acc) "]")))
+    ((pset? x) (string-append "#{" (jolt-str-join (pset-fold x (lambda (e a) (cons (jolt-pr-str e) a)) '())) "}"))
+    ((pmap? x) (string-append "{" (jolt-str-join
+                 (pmap-fold x (lambda (k v a) (cons (string-append (jolt-pr-str k) " " (jolt-pr-str v)) a)) '())) "}"))
     (else (format "~a" x))))

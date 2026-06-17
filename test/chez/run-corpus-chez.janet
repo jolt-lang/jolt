@@ -27,9 +27,21 @@
       (seq [i :range [0 (length corpus) stride]] (in corpus i)))
     corpus))
 
+# Known subset divergences: cases that compile but need a feature beyond the
+# current increment. Dynamic IFn dispatch — a keyword/vector held in a LOCAL or
+# var then called as a fn ((let [k :a] (k m))) — is runtime dispatch on the
+# invoke mechanism, deferred to the IFn/protocol increment. The STATIC literal
+# forms ((:a m), ({:a 1} :a)) ARE supported. Allowlisted by label; the gate fails
+# only on a NEW divergence.
+(def known-divergences
+  {"param holding a keyword (IFn leftover)" true
+   "vector-in-local as fn" true
+   "keyword-in-local as fn" true})
+
 (def ctx (d/make-ctx))
 (var compiled 0) (var pass 0) (var out-of-subset 0)
 (def diverged @[])
+(def known-hit @[])
 
 (each row cases
   (def {:expected e :actual a :label l} row)
@@ -44,15 +56,17 @@
         (++ out-of-subset)
         (let [[code out] res]
           (++ compiled)
+          (defn record-div [m] (if (known-divergences l) (array/push known-hit l) (array/push diverged [l m])))
           (cond
-            (not= code 0) (array/push diverged [l (string "exit " code)])
+            (not= code 0) (record-div (string "exit " code))
             (= out "true") (++ pass)
-            (array/push diverged [l (string "got " out)])))))))
+            (record-div (string "got " out))))))))
 
-(printf "\nChez subset parity: %d/%d compiled cases pass  (%d/%d corpus out of subset)"
-        pass compiled out-of-subset (length cases))
+(printf "\nChez subset parity: %d/%d compiled cases pass  (%d/%d out of subset, %d known divergences)"
+        pass compiled out-of-subset (length cases) (length known-hit))
 (when (> (length diverged) 0)
-  (printf "%d divergence(s) within the compiled subset:" (length diverged))
+  (printf "%d NEW divergence(s) within the compiled subset:" (length diverged))
   (each [l m] (slice diverged 0 (min 25 (length diverged)))
     (printf "  [%s] %s" l m)))
 (flush)
+(os/exit (if (> (length diverged) 0) 1 0))

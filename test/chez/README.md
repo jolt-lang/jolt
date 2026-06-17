@@ -48,9 +48,17 @@ compile-time signal) and are counted "out of subset", not as divergences.
 
     JOLT_CHEZ_CORPUS=1 janet test/chez/run-corpus-chez.janet
 
-Baseline (2026-06-17): **182/182 compiled cases pass, 0 divergences**; 2473/2655
-out of subset (await core on Chez). It's a slow report (a Chez subprocess per
-case), so it's gated behind `JOLT_CHEZ_CORPUS` out of the default suite, like the
-benches. `test/chez/emit-test.janet` is the fast Phase-1 unit gate (real
-analyzer → Chez parity for fib/mandelbrot + regressions); both skip cleanly when
+Baseline after inc 3a (persistent collections, jolt-wgbz): **433/436 compiled
+cases pass**, 3 known divergences, 0 NEW; 2219/2655 out of subset (await the seq
+tier + core on Chez). The 3 known divergences are dynamic IFn dispatch — a
+keyword/vector held in a LOCAL and called as a fn (`(let [k :a] (k m))`); the
+STATIC literal forms (`(:a m)`, `({:a 1} :a)`) are supported. They're
+allowlisted in the probe; it exits non-zero on a NEW divergence.
+
+(Prior, inc 2 baseline: 182/182 compiled, 0 divergences, 2473 out of subset.)
+
+It's a slow report (a Chez subprocess per case), so it's gated behind
+`JOLT_CHEZ_CORPUS` out of the default suite, like the benches.
+`test/chez/emit-test.janet` is the fast Phase-1 unit gate (real analyzer → Chez
+parity for fib/mandelbrot + collections + regressions); both skip cleanly when
 `chez` isn't on PATH.

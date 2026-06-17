@@ -56,6 +56,8 @@
     ((and (char? a) (char? b)) (char=? a b))
     ((and (string? a) (string? b)) (string=? a b))
     ((and (boolean? a) (boolean? b)) (eq? a b))
+    ;; collections: forward to collections.ss (loaded after this file by rt.ss).
+    ((and (jolt-coll? a) (jolt-coll? b)) (jolt-coll=? a b))
     (else (eq? a b))))
 (define (jolt= a . rest)
   (let loop ((a a) (rest rest))
@@ -78,4 +80,5 @@
     ((string? x) (string-hash x))
     ((char? x) (char->integer x))
     ((boolean? x) (if x 1 2))
+    ((jolt-coll? x) (jolt-coll-hash x))   ; forward to collections.ss
     (else (equal-hash x))))
