@@ -205,6 +205,8 @@
 (defn jolt-call [f & args]
   (cond
     (or (function? f) (cfunction? f)) (apply f args)
+    # a var is callable as its current value (Clojure vars implement IFn)
+    (var? f) (apply jolt-call (var-get f) args)
     (shape-rec? f) (core-get f (get args 0) (get args 1))
     (keyword? f) (core-get (get args 0) f (get args 1))
     (and (struct? f) (= :symbol (f :jolt/type))) (core-get (get args 0) f (get args 1))
@@ -454,12 +456,18 @@
     (and (struct? to) (nil? (get to :jolt/type)))
       (let [acc (array)]
         (each e (pairs to) (array/push acc e))
-        (each item items (array/push acc [(vnth item 0) (vnth item 1)]))
+        # each item is either a [k v] pair OR a map whose entries are merged
+        # (Clojure: (into {} [{:a 1} {:b 2}]) => {:a 1 :b 2})
+        (each item items
+          (if (map-value? item)
+            (each e (map-entries-of item) (array/push acc e))
+            (array/push acc [(vnth item 0) (vnth item 1)])))
         (bulk-map-from-pairs acc))
-    # Other map-likes (sorted maps, deftype records): fold core-assoc.
+    # Other map-likes (sorted maps, deftype records): fold core-conj (handles
+    # both [k v] pairs and map items).
     (or (struct? to) (and (table? to) (get to :jolt/deftype)))
       (do (var result to)
-        (each item items (set result (core-assoc result (vnth item 0) (vnth item 1))))
+        (each item items (set result (core-conj result item)))
         result)
     # Accumulate into a native array and bulk-build the pvec ONCE (pv-from-indexed),
     # instead of an immutable pv-conj per element (each allocating a wrapper +

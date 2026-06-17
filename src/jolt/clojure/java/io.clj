@@ -14,6 +14,11 @@
 
 (defn as-file [x] (if (__file? x) x (__make-file x)))
 
+(defn as-url
+  "Coerce `x` to a java.net.URL value (a :jolt/url). Strings are parsed."
+  [x]
+  (if (= :jolt/url (get x :jolt/type)) x (java.net.URL. (str x))))
+
 (defn reader [x]
   (cond
     ;; already a reader (java.io shim or janet file handle) — pass through,
@@ -68,7 +73,23 @@
         (when-not (janet.os/stat parent) (janet.os/mkdir parent))))))
 
 (defn copy
-  "Copy from a path/handle `in` to a path/handle `out`."
-  [in out]
-  (let [content (if (string? in) (slurp in) (janet.file/read in :all))]
-    (if (string? out) (spit out content) (janet.file/write out content))))
+  "Copy from `in` to `out`. A value carrying a truthy `:jolt/output-stream`
+  marker is treated as a java.io OutputStream (write via its .write); a
+  `:jolt/input-stream` source is pumped through its .read. This lets host-shim
+  libraries (e.g. jolt-lang/http-client's byte streams) participate without core
+  knowing their concrete types. Falls back to the original path/handle copy."
+  [in out & opts]
+  (cond
+    (get out :jolt/output-stream)
+    (if (get in :jolt/input-stream)
+      (let [buf (byte-array 8192)]
+        (loop []
+          (let [n (.read in buf 0 8192)]
+            (when (not= -1 n)
+              (.write out buf 0 n)
+              (recur)))))
+      ;; in is a byte-array / string
+      (.write out in))
+    :else
+    (let [content (if (string? in) (slurp in) (janet.file/read in :all))]
+      (if (string? out) (spit out content) (janet.file/write out content)))))

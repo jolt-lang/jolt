@@ -124,6 +124,9 @@
 # supers now lives in the Clojure collection tier (no class hierarchy: #{}).
 (defn core-class [x]
   (cond
+    # typed throwables carry their JVM class name (host_net's HTTP/SSL shims):
+    # (class e) -> "java.net.SocketTimeoutException" so (= ClassSym (class e)) holds
+    (and (table? x) (get x :class)) (get x :class)
     (nil? x) nil (number? x) "java.lang.Number" (string? x) "java.lang.String"
     (boolean? x) "java.lang.Boolean" (keyword? x) "clojure.lang.Keyword"
     (function? x) "clojure.lang.IFn" (buffer? x) "[B"

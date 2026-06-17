@@ -13,6 +13,7 @@
 
 # Forward declaration for mutual recursion
 (var read-form nil)
+(var read-meta nil)  # forward decl: read-dispatch (#^) calls it before its defn below
 
 # Source-position tracking for the success checker (jolt-fqy). When enabled, the
 # reader records each LIST form's absolute start offset (lists are the forms that
@@ -571,6 +572,7 @@
       (= c 95) (let [[_ new-pos] (read-form s (+ pos 2))]  # #_
                   [{:jolt/type :jolt/skip} new-pos])
       (= c 39) (read-var-quote s pos)      # #'
+      (= c 94) (read-meta s (+ pos 1))     # #^ — deprecated metadata reader macro (= ^)
       (= c 34) (read-regex s pos)          # #"regex
       (= c 35)                             # ## symbolic value: ##Inf ##-Inf ##NaN
         (let [end (read-symbol-name s (+ pos 2) (+ pos 2))
@@ -622,7 +624,7 @@
     (string? meta-form) {:tag meta-form}
     nil))
 
-(defn read-meta [s pos]
+(set read-meta (fn read-meta [s pos]
   # pos is at ^
   (let [[meta-form new-pos] (read-form s (+ pos 1))
         [form new-pos2] (read-form s new-pos)
@@ -636,7 +638,7 @@
       # Non-symbol targets (collections etc.) keep a runtime with-meta form. Use the
       # NORMALIZED metadata map (:kw -> {:kw true}, tag -> {:tag …}); a map-literal
       # meta-form (m is nil) is already a map, so pass it through.
-      [(array (sym "with-meta") form (if m m meta-form)) new-pos2])))
+      [(array (sym "with-meta") form (if m m meta-form)) new-pos2]))))
 
 (defn read-until-newline [s pos]
   (if (or (>= pos (length s)) (= (s pos) 10))

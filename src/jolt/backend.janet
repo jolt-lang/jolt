@@ -292,12 +292,15 @@
       # leaves ctx-current-ns set to that fn's defining ns (it can't restore on
       # unwind), which then breaks alias resolution in the catching ns. Snapshot
       # the ns at try entry, reset it on catch (mirrors the interpreter's try).
-      (let [saved (gsym)]
+      (let [saved (gsym) raw (gsym)]
         ['let [saved (core-fn-call ctx "__current-ns")]
          ['try (emit ctx (node :body))
-          [[(symbol (node :catch-sym))]
+          [[raw]
            ['do (core-fn-call ctx "__set-current-ns!" saved)
-            (emit ctx (node :catch-body))]]]])
+            # bind the catch symbol to the UNWRAPPED value (mirrors the
+            # interpreter), so an interpreted throw's envelope doesn't leak here.
+            ['let [(symbol (node :catch-sym)) (core-fn-call ctx "__unwrap-ex" raw)]
+             (emit ctx (node :catch-body))]]]]])
       (emit ctx (node :body))))
   (if (node :finally)
     ['defer (emit ctx (node :finally)) core]

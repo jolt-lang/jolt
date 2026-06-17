@@ -140,6 +140,9 @@
   [ctx f args]
   (cond
     (or (function? f) (cfunction? f)) (apply f args)
+    # a var is callable as its current value (Clojure vars implement IFn) —
+    # e.g. (wrap-request #'core/request) threads the var as the base client
+    (var? f) (jolt-invoke ctx (var-get f) args)
     (jolt-transient? f) (transient-lookup f (get args 0) (get args 1))
     # a record shape-rec is callable: IFn impl if it has one, else map-like
     # field access. A plain (non-record) shape-rec is just field access.
