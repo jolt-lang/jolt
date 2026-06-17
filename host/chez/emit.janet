@@ -152,28 +152,58 @@
   (unless recur-target (error "emit: recur outside a loop/fn target"))
   (string "(" recur-target " " (string/join (map emit (vv (get node :args))) " ") ")"))
 
-(defn- emit-fn [node]
-  (def arities (map nn (vv (get node :arities))))
-  (when (not= 1 (length arities)) (error "emit: multi-arity fn not in this increment"))
-  (def a (first arities))
-  (when (get a :rest) (error "emit: variadic fn not in this increment"))
+# One arity -> a Scheme lambda param-list + a named-let-wrapped body. The named
+# let lets fn-level `recur` rebind this arity's params. A variadic arity takes a
+# Scheme rest arg (proper list) and the let binding coerces it to a jolt seq
+# (nil when empty — Clojure's rest semantics; list->cseq already does this); recur
+# carries the rest seq directly, and the named let's init only runs on first
+# entry, so the coercion isn't re-applied on a recur.
+(defn- emit-arity-clause [a]
   (def params (map munge (vv (get a :params))))
-  # wrap the body in a named let so fn-level `recur` rebinds the params
+  (def restp (when-let [r (get a :rest)] (munge r)))
   (def label (fresh-label "fnrec"))
   (def prev recur-target)
   (set recur-target label)
-  # a named fn binds its own name as a known-procedure local in the body, so
-  # self-calls emit directly rather than via the jolt-invoke fallback.
+  (def body (emit (get a :body)))
+  (set recur-target prev)
+  (def paramlist
+    (cond
+      # only a rest param: Scheme formals are the bare symbol, not `( . xs)`
+      (and restp (empty? params)) restp
+      restp (string "(" (string/join params " ") " . " restp ")")
+      (string "(" (string/join params " ") ")")))
+  (def binds
+    (if restp
+      [;(map (fn [p] (string "(" p " " p ")")) params)
+       (string "(" restp " (list->cseq " restp "))")]
+      (map (fn [p] (string "(" p " " p ")")) params)))
+  [paramlist (string "(let " label " (" (string/join binds " ") ") " body ")")])
+
+(defn- emit-fn [node]
+  (def arities (map nn (vv (get node :arities))))
+  # a named fn binds its own name as a known-procedure local across ALL arities,
+  # so self-calls (to any arity) emit directly rather than via jolt-invoke; the
+  # case-lambda value dispatches on argument count.
   (def self (when-let [nm (get node :name)] (munge nm)))
   (def had-self (and self (get known-procs self)))
   (when self (put known-procs self true))
-  (def body (emit (get a :body)))
+  # Restore known-procs even when a body is uncompilable: a throw mid-emit must
+  # not leak this fn's name into the module global, or a LATER case binding the
+  # same name to a keyword/coll would emit a direct call to a non-procedure
+  # (runtime crash). The corpus probe shares one emit state across all cases, so
+  # this leak is order-dependent and otherwise invisible in single-case tests.
+  (def clauses
+    (try (map emit-arity-clause arities)
+      ([err fib]
+        (unless had-self (when self (put known-procs self nil)))
+        (propagate err fib))))
   (unless had-self (when self (put known-procs self nil)))
-  (set recur-target prev)
   (def lambda
-    (string "(lambda (" (string/join params " ") ") "
-            "(let " label " (" (string/join (map (fn [p] (string "(" p " " p ")")) params) " ") ") "
-            body "))"))
+    (if (= 1 (length clauses))
+      (let [[pl body] (first clauses)] (string "(lambda " pl " " body ")"))
+      (string "(case-lambda "
+              (string/join (map (fn [c] (string "(" (get c 0) " " (get c 1) ")")) clauses) " ")
+              ")")))
   # A named fn (defn / (fn self [..])) references itself by name — the analyzer
   # binds that name as a :local in the body. letrec makes the name visible to the
   # lambda so self-calls resolve (recur stays a separate self-call to the arity).

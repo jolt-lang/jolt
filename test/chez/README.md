@@ -48,13 +48,19 @@ compile-time signal) and are counted "out of subset", not as divergences.
 
     JOLT_CHEZ_CORPUS=1 janet test/chez/run-corpus-chez.janet
 
-Baseline after inc 3b (seq tier + dynamic IFn, jolt-5pso): **595/595 compiled
-cases pass**, 0 divergences; 2060/2655 out of subset (await clojure.core on Chez).
-The seq tier brought up a list/lazy-seq type with first/rest/next/seq/cons/list,
-map/filter/reduce/into/remove, range/take/drop/concat/apply, keys/vals, and
-nth/peek/pop over seqs; dynamic IFn dispatch (a keyword/vector/coll held in a
-local and called as a fn) now routes through the `jolt-invoke` fallback, closing
-the 3 ex-known divergences. The probe exits non-zero on any NEW divergence.
+Baseline after inc 3c (multi-arity + variadic fns, jolt-gret): **619/619 compiled
+cases pass**, 0 divergences; 2036/2655 out of subset (await clojure.core on Chez).
+`emit-fn` now lowers multi-arity fns to a Scheme `case-lambda` and variadic fns to
+a rest-arg lambda (the Scheme rest list is coerced to a jolt seq, nil when empty),
+which is the gating lift for emitting the clojure.core tiers as a prelude.
+
+Prior, inc 3b (seq tier + dynamic IFn, jolt-5pso): 595/595 compiled, 0 divergences,
+2060/2655 out of subset. The seq tier brought up a list/lazy-seq type with
+first/rest/next/seq/cons/list, map/filter/reduce/into/remove,
+range/take/drop/concat/apply, keys/vals, and nth/peek/pop over seqs; dynamic IFn
+dispatch (a keyword/vector/coll held in a local and called as a fn) routes through
+the `jolt-invoke` fallback, closing the 3 ex-known divergences. The probe exits
+non-zero on any NEW divergence.
 
 (Prior, inc 3a: 433/436 compiled, 3 known IFn divergences, 2219 out of subset.
 Inc 2: 182/182 compiled, 0 divergences, 2473 out of subset.)

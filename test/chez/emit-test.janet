@@ -185,6 +185,28 @@
     (ok (string "seq=: " src) (and (= code 0) (= out "true"))
         (string "chez=" out " | " err))))
 
+# 3g) multi-arity + variadic fns (inc 3c): case-lambda dispatch, a Scheme rest
+#   arg collected into a jolt seq (nil when empty), recur within an arity and a
+#   self-call across arities. Value parity vs the CLI oracle.
+(each src ["((fn ([x] (* x 2)) ([x y] (+ x y))) 5)"
+           "((fn ([x] (* x 2)) ([x y] (+ x y))) 3 4)"
+           "(defn g ([x] x) ([x y] (+ x y))) (g 10)"
+           "(defn g ([x] x) ([x y] (+ x y))) (g 10 20)"
+           "(defn h [a & more] (count more)) (h 1 2 3 4)"
+           # empty rest is nil (Clojure): count 0, first nil (prints "")
+           "(defn h [a & more] (count more)) (h 1)"
+           "(defn h [a & more] (first more)) (h 1)"
+           "(defn h [a & more] (first more)) (h 1 2 3)"
+           "(defn h [a & more] (reduce + a more)) (h 1 2 3 4)"
+           "(defn h [a & more] (reduce + a more)) (apply h [1 2 3 4])"
+           # self-call from one arity to another, then recur within it
+           "(defn f ([n] (f n 0)) ([n acc] (if (zero? n) acc (recur (- n 1) (+ acc n))))) (f 5)"
+           "((fn r [& xs] (if (seq xs) (+ (first xs) (apply r (rest xs))) 0)) 1 2 3)"]
+  (let [[code out err] (d/run-on-chez ctx src)
+        want (cli-oracle src)]
+    (ok (string "arity: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.
