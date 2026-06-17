@@ -56,5 +56,12 @@
 (ok "hash 1 != 1.0"     (not (= (jolt-hash 1) (jolt-hash 1.0))))
 (ok "hash str stable"   (= (jolt-hash "abc") (jolt-hash "abc")))
 
+;; regression: keyword intern key must not collide across ns/name boundary
+(ok "kw no boundary collide" (not (eq? (keyword "a" "b/c") (keyword "a/b" "c"))))
+;; regression: jolt-hash must not throw on non-finite floats
+(ok "hash +inf ok" (number? (jolt-hash +inf.0)))
+(ok "hash +nan ok"  (number? (jolt-hash +nan.0)))
+(ok "hash inf != exact" (not (= (jolt-hash +inf.0) (jolt-hash 0))))
+
 (printf "values-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (> fails 0) 1 0))

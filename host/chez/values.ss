@@ -23,7 +23,9 @@
 ;; --- keywords: interned so identity works; optional namespace ----------------
 (define-record-type keyword-t (fields ns name khash) (nongenerative keyword-v1))
 (define keyword-table (make-hashtable string-hash string=?))
-(define (keyword-intern-key ns name) (string-append (or ns "") "/" name))
+;; NUL separator can't occur in a keyword ns/name, so the intern key is
+;; unambiguous (a "/" separator would collide ns="a" name="b/c" with ns="a/b").
+(define (keyword-intern-key ns name) (string-append (or ns "") "\x0;" name))
 (define (keyword ns name)
   (let ((k (keyword-intern-key ns name)))
     (or (hashtable-ref keyword-table k #f)
@@ -67,7 +69,12 @@
     ((jolt-nil? x) 0)
     ((keyword-t? x) (keyword-t-khash x))
     ((symbol-t? x) (equal-hash (cons (symbol-t-ns x) (symbol-t-name x))))
-    ((number? x) (if (exact? x) (equal-hash x) (equal-hash (cons 'inexact (inexact->exact x)))))
+    ;; distinguish inexact from exact (1 and 1.0 are not jolt=); guard non-finite
+    ;; (inexact->exact would error on NaN/inf)
+    ((number? x) (if (exact? x) (equal-hash x)
+                     (if (and (flonum? x) (or (nan? x) (infinite? x)))
+                         (equal-hash (cons 'inexact (number->string x)))
+                         (equal-hash (cons 'inexact (inexact->exact x))))))
     ((string? x) (string-hash x))
     ((char? x) (char->integer x))
     ((boolean? x) (if x 1 2))
