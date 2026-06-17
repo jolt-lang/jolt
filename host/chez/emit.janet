@@ -138,6 +138,35 @@
     (string "(integer->char " (get v :ch) ")")
     (errorf "emit-const: unsupported literal %p" v)))
 
+# Quoted literals (jolt-u8j7). A :quote node's :form is the RAW reader form (a
+# Janet value): scalars are Janet natives, a symbol is {:jolt/type :symbol …}, a
+# list is an array, a vector a tuple, a map a struct/phm, a set a tagged struct.
+# Reconstruct each as the matching Chez RT constructor — the runtime value of a
+# quote is just that literal data (the interpreter returns the reader form
+# verbatim; the Janet backend Janet-quotes it; here we rebuild it on the RT).
+(var emit-quoted nil)
+(defn- emit-quoted-map [m]
+  (def flat @[])
+  (eachp [k v] m (array/push flat (emit-quoted k)) (array/push flat (emit-quoted v)))
+  (string "(jolt-hash-map " (string/join flat " ") ")"))
+(set emit-quoted (fn emit-quoted [form]
+  (cond
+    # scalars emit-const already lowers (nil/bool/number/string/keyword/char)
+    (or (nil? form) (boolean? form) (number? form) (string? form) (keyword? form))
+    (emit-const form)
+    (and (struct? form) (= :symbol (get form :jolt/type)))
+    (let [ns (get form :ns)]
+      (string "(jolt-symbol " (if ns (string/format "%j" ns) "#f") " "
+              (string/format "%j" (get form :name)) ")"))
+    (and (struct? form) (= :jolt/char (get form :jolt/type))) (emit-const form)
+    (and (struct? form) (= :jolt/set (get form :jolt/type)))
+    (string "(jolt-hash-set " (string/join (map emit-quoted (get form :value)) " ") ")")
+    (array? form) (string "(jolt-list " (string/join (map emit-quoted form) " ") ")")
+    (tuple? form) (string "(jolt-vector " (string/join (map emit-quoted form) " ") ")")
+    (phm/phm? form) (emit-quoted-map (phm/phm-to-struct form))
+    (or (struct? form) (table? form)) (emit-quoted-map form)
+    (errorf "emit-quoted: unsupported quoted form %p" form))))
+
 (defn- emit-binding [b]
   (def b (vv b))
   (string "(" (munge (get b 0)) " " (emit (get b 1)) ")"))
@@ -331,6 +360,7 @@
     :recur (emit-recur node)
     :throw (string "(jolt-throw " (emit (get node :expr)) ")")
     :try   (emit-try node)
+    :quote (emit-quoted (get node :form))
     :fn    (emit-fn node)
     :def   (string "(def-var! " (string/format "%j" (get node :ns)) " "
                    (string/format "%j" (get node :name)) " " (emit (get node :init)) ")")

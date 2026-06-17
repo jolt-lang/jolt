@@ -107,11 +107,15 @@
 ;; map / filter / reduce / into / remove + range / take / concat / apply
 ;; ============================================================================
 (define (any-nil? seqs) (and (pair? seqs) (or (jolt-nil? (car seqs)) (any-nil? (cdr seqs)))))
+;; An EMPTY seq result is () (jolt-empty-list), NOT nil — Clojure's (map f []) is
+;; an empty seq, so (= () (map f [])) is true and (nil? (map f [])) is false.
+;; jolt-empty-list seqs back to nil, so it stays a valid lazy-tail terminator for
+;; the non-empty case (printing / seq= / reduce all walk via jolt-seq).
 (define (map-seq f s)
-  (if (jolt-nil? s) jolt-nil
+  (if (jolt-nil? s) jolt-empty-list
       (cseq-lazy (jolt-invoke f (seq-first s)) (lambda () (map-seq f (jolt-seq (seq-more s)))))))
 (define (map-seq* f seqs)              ; multi-collection map; stops at the shortest
-  (if (any-nil? seqs) jolt-nil
+  (if (any-nil? seqs) jolt-empty-list
       (cseq-lazy (apply jolt-invoke f (map seq-first seqs))
                  (lambda () (map-seq* f (map (lambda (s) (jolt-seq (seq-more s))) seqs))))))
 (define (jolt-map f . colls)
@@ -121,7 +125,7 @@
 
 (define (filter-seq pred s keep)
   (let loop ((s s))
-    (cond ((jolt-nil? s) jolt-nil)
+    (cond ((jolt-nil? s) jolt-empty-list)   ; empty result is () (see map-seq)
           ((eq? keep (jolt-truthy? (jolt-invoke pred (seq-first s))))
            (cseq-lazy (seq-first s) (lambda () (filter-seq pred (jolt-seq (seq-more s)) keep))))
           (else (loop (jolt-seq (seq-more s)))))))

@@ -152,6 +152,9 @@
   {:suite "exceptions / try-catch" :label "finally runs on ok" :expected "2" :actual "(let [a (atom 0)] (try 2 (finally (reset! a 9))) )"}
   {:suite "exceptions / try-catch" :label "finally runs on throw" :expected "9" :actual "(let [a (atom 0)] (try (throw (ex-info \"x\" {})) (catch :default e nil) (finally (reset! a 9))) @a)"}
   {:suite "exceptions / try-catch" :label "catch value of body" :expected "5" :actual "(try (+ 2 3) (catch :default e 0))"}
+  {:suite "exceptions / try-catch" :label "malformed catch: non-symbol binding" :expected :throws :actual "(try 1 (catch e (* e 10)))"}
+  {:suite "exceptions / try-catch" :label "malformed catch: literal binding" :expected :throws :actual "(try 1 (catch e 5))"}
+  {:suite "exceptions / try-catch" :label "malformed catch: too short" :expected :throws :actual "(try 1 (catch Exception))"}
   {:suite "exceptions / assert" :label "assert true -> ok" :expected ":ok" :actual "(do (assert true) :ok)"}
   {:suite "exceptions / assert" :label "assert expr -> ok" :expected ":ok" :actual "(do (assert (= 1 1)) :ok)"}
   {:suite "exceptions / assert" :label "assert false throws" :expected :throws :actual "(assert false)"}

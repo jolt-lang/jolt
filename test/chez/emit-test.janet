@@ -236,6 +236,29 @@
   (ok "throw: uncaught exits non-zero" (not= code 0)
       (string "code=" code " out=" out)))
 
+# 3j) quoted literals (inc 3f): a :quote node reconstructs the reader form as RT
+#   values — symbols, lists, vectors, maps, sets, nested. Value parity vs the CLI.
+(each src ["'foo"
+           "'foo/bar"
+           "':kw"
+           "'(1 2 3)"
+           "'[1 2 3]"
+           "'(a b c)"
+           "'{:a 1}"
+           "'(1 (2 3) 4)"
+           "(first '(10 20 30))"
+           "(count '[1 2 3])"
+           "(rest '(1 2 3))"
+           "(= 'foo 'foo)"
+           "(= 'a 'b)"
+           "(map inc '(1 2 3))"
+           "(conj '[1 2] 3)"
+           "(get '{:a 7} :a)"]
+  (let [[code out err] (d/run-on-chez ctx src)
+        want (cli-oracle src)]
+    (ok (string "quote: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 3h) prelude mode (inc 3d): emitting clojure.core ITSELF, a core->core ref must
 #   lower to a runtime var-deref instead of being rejected as "out of subset".
 #   `frequencies` is a core fn but not a native-op, so it exercises the switch.
