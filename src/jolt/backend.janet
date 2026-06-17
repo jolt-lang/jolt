@@ -781,6 +781,9 @@
       # punt to the interpreter, exactly as the analyzer used to before producing
       # a :host-call node (the Chez back end lowers it instead).
       :host-call (error "jolt/uncompilable: host method call")
+      # regex literal: the back end doesn't compile patterns — punt to the
+      # interpreter (the seed compiles #"…" to a Janet PEG). Chez emits jolt-regex.
+      :regex (error "jolt/uncompilable: regex literal")
       (error (string "backend: unhandled op " (node :op))))))
 
 (defn emit-ir

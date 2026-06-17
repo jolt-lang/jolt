@@ -369,6 +369,11 @@
     :throw (string "(jolt-throw " (emit (get node :expr)) ")")
     :try   (emit-try node)
     :quote (emit-quoted (get node :form))
+    # regex literal #"…" -> a jolt-regex value (regex.ss compiles the source via
+    # the vendored irregex). %j quotes+escapes the source; a backslash in the
+    # pattern becomes \\ in the Scheme string literal -> the 1-char backslash
+    # irregex expects (same escaping emit-const uses for strings).
+    :regex (string "(jolt-regex " (string/format "%j" (get node :source)) ")")
     # host interop (jolt-0kf5): (.method target arg*) -> (jolt-host-call "method"
     # target arg*). Only the methods the RT dispatcher (rt.ss) actually shims are
     # IN the subset; any other method is out of subset (a clean emit-time reject,

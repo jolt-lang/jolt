@@ -79,6 +79,11 @@
     (unless (hashtable-ref var-table k #f)
       (hashtable-set! var-table k (make-var-cell ns name jolt-unbound)))))
 
+;; regex (jolt-i0s3): defines regex-t + the re-* fns (def-var!'d into
+;; clojure.core), so it loads after def-var! and before the printer below (which
+;; renders a regex-t as #"source").
+(load "host/chez/regex.ss")
+
 ;; --- jolt number printing ----------------------------------------------------
 ;; jolt models every number as a Clojure double: integer-valued values print
 ;; without a ".0" (the Janet host prints (* 1.0 5) as "5", (/ 1 2) as "0.5").
@@ -115,6 +120,7 @@
     ((jolt-symbol? x) (let ((ns (symbol-t-ns x)))
                         (if (or (jolt-nil? ns) (not ns) (eq? ns '())) (symbol-t-name x)
                             (string-append ns "/" (symbol-t-name x)))))
+    ((regex-t? x) (string-append "#\"" (regex-t-source x) "\""))
     ((pvec? x) (let ((acc '())) (let loop ((i (fx- (pvec-count x) 1)))
                  (when (fx>=? i 0) (set! acc (cons (jolt-pr-str (pvec-nth-d x i jolt-nil)) acc)) (loop (fx- i 1))))
                  (string-append "[" (jolt-str-join acc) "]")))

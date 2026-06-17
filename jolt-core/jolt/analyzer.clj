@@ -21,6 +21,7 @@
                                form-vec? form-map? form-set? form-char?
                                form-literal? form-elements form-vec-items
                                form-map-pairs form-set-items form-special? compile-ns
+                               form-regex? form-regex-source
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key form-position]]))
@@ -355,4 +356,8 @@
                                      (form-map-pairs form)))
      (form-set? form) (set-node (mapv #(analyze ctx % env) (form-set-items form)))
      (form-list? form) (analyze-list ctx form env)
+     ;; regex literal #"…" -> a :regex IR node (leaf). The Janet back end punts it
+     ;; (interpreter compiles via the seed PEG engine); the Chez back end emits a
+     ;; jolt-regex value over the vendored irregex.
+     (form-regex? form) {:op :regex :source (form-regex-source form)}
      :else (uncompilable "unsupported form"))))

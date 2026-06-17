@@ -300,6 +300,42 @@
   (ok "runtime .isDirectory \"/\" = true" (and (= code 0) (= out "true"))
       (string "chez=" out " | " err)))
 
+# 3m) regex (jolt-i0s3): the #"…" literal lowers to a jolt-regex value over the
+#   vendored irregex; re-pattern/re-matches/re-find/re-seq/regex? are def-var!'d
+#   into clojure.core (not subset native-ops — irregex's Unicode/property
+#   semantics differ from the seed's byte-PEG), so they resolve in PRELUDE mode,
+#   the path the assembled prelude takes. Parity vs the CLI oracle on standard
+#   PCRE patterns both engines agree on.
+(defn run-prelude [src]
+  (emit/set-prelude-mode! true)
+  (def r (protect (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0)))))
+  (emit/set-prelude-mode! false)
+  (if (not (r 0)) [:emit-err (r 1) ""]
+    (do
+      (spit "/tmp/chez-regex-prelude.ss" (emit/program @[] (r 1)))
+      (def proc (os/spawn ["chez" "--script" "/tmp/chez-regex-prelude.ss"] :p {:out :pipe :err :pipe}))
+      (def out (ev/read (proc :out) 0x100000))
+      (def err (ev/read (proc :err) 0x100000))
+      [(os/proc-wait proc) (string/trim (if out (string out) "")) (string/trim (if err (string err) ""))])))
+
+# bare #"…" literal runs in plain subset mode (the :regex node needs no core fn).
+(each src ["#\"\\d+\"" "(do #\"a.c\")"]
+  (let [[code out err] (d/run-on-chez ctx src) want (cli-oracle src)]
+    (ok (string "regex literal: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+# re-* surface via prelude mode (def-var!'d fns), parity vs the CLI oracle.
+(each src ["(re-matches #\"\\d+\" \"123\")"
+           "(re-matches #\"\\d+\" \"12a\")"
+           "(re-find #\"\\d+\" \"abc123def\")"
+           "(re-find #\"([a-z])(\\d)\" \"--a1--\")"
+           "(re-seq #\"\\d+\" \"a1b22c333\")"
+           "(regex? #\"\\d+\")"
+           "(re-matches #\"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\" \"550e8400-e29b-41d4-a716-446655440000\")"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "regex: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 3h) prelude mode (inc 3d): emitting clojure.core ITSELF, a core->core ref must
 #   lower to a runtime var-deref instead of being rejected as "out of subset".
 #   `frequencies` is a core fn but not a native-op, so it exercises the switch.

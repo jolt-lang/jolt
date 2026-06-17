@@ -72,19 +72,21 @@ catalogs the gaps; macros are skipped (analyze-time only, not a runtime value):
 
     JOLT_CHEZ_PRELUDE=1 janet test/chez/core-prelude-probe.janet
 
-Baseline after inc 3h (host-interop method calls): **354/355 non-macro core forms
-emit** to Scheme (was 348 at inc 3g, 342 at inc 3f). A `.method` call now analyzes
-to a `:host-call` IR node; the Chez emitter lowers it to a `jolt-host-call`
-dispatch for the methods the RT shims — `.write` → port `display`, `.isDirectory`
-→ `file-directory?`, `.listFiles` → `directory-list` — closing the io tier's
-print-method defmethods and `file-seq` (now 20/20). Any other method is out of
-subset (a clean emit-time reject, so it can't masquerade as a compiled-but-broken
-divergence); the Janet back end punts ALL `:host-call` to the interpreter. Prior
-incs: `:quote` reconstructs the raw reader form as RT constructors; `:throw` →
-`jolt-throw`, `:try` → `guard` + `dynamic-wind`, `ex-info` native-op; `letfn` →
-`letrec*`; `declare`/def-no-init → a reserved var cell. Remaining 1 gap: the regex
-literal in `parse-uuid` (needs a regex engine on Chez — see jolt issue). The probe
-has a regression floor (354).
+Baseline after inc 3i (regex): **355/355 non-macro core forms emit** to Scheme —
+the whole non-macro clojure.core now lowers. inc 3i closed the last gap, the regex
+literal in `parse-uuid`: a `#"…"` literal lowers to a `:regex` IR node and the Chez
+emitter emits a `jolt-regex` value over **vendored irregex** (Alex Shinn, BSD,
+`vendor/irregex` submodule) — a portable Scheme regex with PCRE/Java-style string
+patterns. `re-pattern`/`re-matches`/`re-find`/`re-seq`/`regex?` are `def-var!`'d
+into clojure.core (`host/chez/regex.ss`); they stay OUT of the subset native-ops
+(irregex's Unicode/property-class semantics differ from the seed's byte-PEG
+approximation), so they resolve in prelude mode — the path the assembled prelude
+takes — without dragging engine-difference divergences into the subset corpus. The
+Janet back end punts `:regex` to the interpreter (the seed compiles `#"…"` to a
+Janet PEG). Prior incs: inc 3h `.method` → `:host-call` (`jolt-host-call` for
+`.write`/`.isDirectory`/`.listFiles`); `:quote`, `:throw`, `:try`, `ex-info`,
+`letfn` → `letrec*`, `declare`/def-no-init → reserved var cell. The probe has a
+regression floor (355) — every non-macro core form must keep emitting.
 
 Prior, inc 3b (seq tier + dynamic IFn, jolt-5pso): 595/595 compiled, 0 divergences,
 2060/2655 out of subset. The seq tier brought up a list/lazy-seq type with

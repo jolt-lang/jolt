@@ -46,6 +46,13 @@
       (phm/phm? form)))
 (defn h-set? [form] (and (struct? form) (= :jolt/set (form :jolt/type))))
 (defn h-char? [form] (and (struct? form) (= :jolt/char (form :jolt/type))))
+# A regex literal #"…" reads as a tagged form {:jolt/type :jolt/tagged :tag :regex
+# :form "source"}. The analyzer lowers it to a :regex IR node (Chez emits a
+# jolt-regex value; the Janet back end punts to the interpreter, which compiles it
+# via the seed PEG engine).
+(defn h-regex? [form]
+  (and (struct? form) (= :jolt/tagged (form :jolt/type)) (= :regex (form :tag))))
+(defn h-regex-source [form] (form :form))
 
 (defn h-literal? [form]
   (or (nil? form) (boolean? form) (number? form) (string? form)
@@ -254,6 +261,7 @@
    "form-sym-meta" h-sym-meta
    "form-list?" h-list? "form-vec?" h-vector? "form-map?" h-map?
    "form-set?" h-set? "form-char?" h-char? "form-literal?" h-literal?
+   "form-regex?" h-regex? "form-regex-source" h-regex-source
    "form-elements" h-elements "form-vec-items" h-vector-items
    "form-map-pairs" h-map-pairs "form-set-items" h-set-items
    "form-special?" h-special? "compile-ns" h-current-ns "form-macro?" h-macro?
