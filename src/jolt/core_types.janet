@@ -73,6 +73,19 @@
   (if (>= i (length t)) nil
     @[(in t i) (fn [] (indexed-cells t (+ i 1)))]))
 
+# A nil element/key/value nested in a collection used AS a map key would be
+# dropped when canon-key re-keys a native Janet table (a Janet struct can't hold a
+# nil key or value), so #{nil 1} would canonicalize like #{1} and collide as a key
+# (jolt-zcm9). Box a nested nil to a marker. It must be VALUE-hashable: the
+# canonical struct becomes a long-lived phm key whose hash has to survive the
+# marshal/snapshot/fork that init-cached uses, so an identity-hashed mutable table
+# (like the transient sentinel below) won't do — its hash isn't preserved across
+# unmarshal. An interned keyword hashes by content. Collision risk is only a real
+# element equal to this exact keyword — the same negligible class as canon-key's
+# existing set/map struct aliasing.
+(def canon-nil (keyword "jolt.lang/canonical-nil"))
+(defn- canon-box [c] (if (nil? c) canon-nil c))
+
 # Canonicalize a collection key/element to a value-hashable Janet struct/tuple so
 # the PHM/PHS treat value-equal maps/vectors as the same key (Janet hashes tables
 # by identity otherwise). Installed into phm via set-canonicalize-key!.
@@ -82,33 +95,32 @@
     (cond
       (pvec? k) (tuple ;(map canon-key (pv->array k)))
       (plist? k) (tuple ;(map canon-key (pl->array k)))
-      (set? k) (do (def t @{}) (each e (phs-seq k) (put t (canon-key e) true)) (table/to-struct t))
-      (phm? k) (do (def t @{}) (each pair (phm-entries k) (put t (canon-key (in pair 0)) (canon-key (in pair 1)))) (table/to-struct t))
+      (set? k) (do (def t @{}) (each e (phs-seq k) (put t (canon-box (canon-key e)) true)) (table/to-struct t))
+      (phm? k) (do (def t @{}) (each pair (phm-entries k) (put t (canon-box (canon-key (in pair 0))) (canon-box (canon-key (in pair 1))))) (table/to-struct t))
       # sorted colls canonicalize like their unsorted counterparts, so
       # (get {(sorted-map :a 1) :hit} {:a 1}) finds the key
-      (core-sorted-map? k) (do (def t @{}) (each e (sorted-entries-arr k) (put t (canon-key (vnth e 0)) (canon-key (vnth e 1)))) (table/to-struct t))
-      (core-sorted-set? k) (do (def t @{}) (each x (sorted-entries-arr k) (put t (canon-key x) true)) (table/to-struct t))
+      (core-sorted-map? k) (do (def t @{}) (each e (sorted-entries-arr k) (put t (canon-box (canon-key (vnth e 0))) (canon-box (canon-key (vnth e 1))))) (table/to-struct t))
+      (core-sorted-set? k) (do (def t @{}) (each x (sorted-entries-arr k) (put t (canon-box (canon-key x)) true)) (table/to-struct t))
       (and (table? k) (get k :jolt/deftype))
-        (do (def t @{}) (each kk (keys k) (when (not= kk :jolt/deftype) (put t kk (canon-key (get k kk))))) (table/to-struct t))
-      (struct? k) (do (def t @{}) (each kk (keys k) (put t (canon-key kk) (canon-key (get k kk)))) (table/to-struct t))
+        (do (def t @{}) (each kk (keys k) (when (not= kk :jolt/deftype) (put t kk (canon-box (canon-key (get k kk)))))) (table/to-struct t))
+      (struct? k) (do (def t @{}) (each kk (keys k) (put t (canon-box (canon-key kk)) (canon-box (canon-key (get k kk))))) (table/to-struct t))
       (array? k) (tuple ;(map canon-key k))
       (tuple? k) (tuple ;(map canon-key k))
       k)))
 (set-canonicalize-key! canon-key)
 
 # Janet tables silently drop a nil key (put/get with nil is a no-op), but Clojure
-# maps allow a nil key. The transient map keys its native table by canon-key, and
-# canon-key returns nil only for nil input — so route nil to a unique sentinel.
-# The sentinel is a fresh mutable table; canon-key never produces one, so it can't
-# collide with the canon-key of any real key. (phm keeps its own has-nil slot.)
+# maps allow a nil key. The transient map/set keys its native table by canon-key,
+# which returns nil only for nil input — so route nil to a unique sentinel. This
+# one is a fresh mutable table (canon-key never produces one, so no collision); it
+# is fine here because a transient's native table is built and consumed within one
+# operation and never crosses a marshal boundary, so identity hashing is stable.
 (def tbl-nil-key @{})
 (defn tbl-key [k] (if (nil? k) tbl-nil-key (canon-key k)))
 
-# A transient SET stores `(tbl-key x) -> x`, i.e. the member IS the table value.
-# A nil member can't be a Janet table value either (put with a nil value drops
-# the entry), so box nil as the same sentinel and unbox on read-back. The
-# sentinel is a fresh table canon-key never produces, so it can't collide with a
-# real member.
+# A transient SET stores `(tbl-key x) -> x`, i.e. the member IS the table value. A
+# nil member can't be a Janet table value either (put with a nil value drops the
+# entry), so box nil as the same sentinel and unbox on read-back.
 (defn tbl-box [x] (if (nil? x) tbl-nil-key x))
 (defn tbl-unbox [v] (if (= v tbl-nil-key) nil v))
 
