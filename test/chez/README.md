@@ -1,0 +1,38 @@
+# Chez port — Phase 0 test contract harness
+
+The host-neutral correctness gate for the Chez re-host (epic jolt-cf1q). The
+spec corpus is data, so the SAME contract validates every host.
+
+## Files
+- `extract-corpus.janet` — parses `test/spec/*.janet` `(defspec …)` tables as
+  data and writes `corpus.edn` (2655 `[label expected actual]` cases). The file
+  is valid as BOTH EDN (a future Chez-jolt runner) and Janet data (the runner
+  below). Regenerate: `janet test/chez/extract-corpus.janet`.
+- `corpus.edn` — the extracted contract (generated; checked in for convenience).
+- `run-corpus.janet` — drives a TARGET jolt binary, one fresh subprocess per case
+  (fresh ctx = per-case isolation), checking `(= expected actual)` prints `true`
+  at the CLI, or that a `:throws` case exits non-zero. Pluggable target:
+  - `janet test/chez/run-corpus.janet`                    # default build/jolt
+  - `JOLT_BIN=build/jolt-chez janet test/chez/run-corpus.janet`   # Phase 1+
+  - `JOLT_CORPUS_LIMIT=400 …`                              # every-Nth stride, fast
+- `known-divergences.edn` — allowlist of cases that diverge at the CLI boundary.
+  The gate fails only on a NEW divergence; known ones are reported but tolerated.
+- `values-test.ss` / `../../host/chez/values.ss` — Phase 0a value model + tests.
+
+## The reference baseline (2026-06-17, Janet `build/jolt`, compile mode)
+2641/2655 pass; 14 known divergences. They split into:
+- **interpret-vs-compile leniency** — `:throws` cases where interpret mode raises
+  but compile mode returns (`< nil`, `> with nil`, `neg? keyword`, `max`/`min-key`
+  on non-numbers). Several are also non-canonical vs JVM Clojure.
+- **invoke-collection-as-fn** — the `transient / invokable lookup` suite invokes
+  transients/collections as fns (`((transient {:x 7}) :x)`); compile mode (and
+  JVM Clojure) reject it.
+- **`xml-seq walks`** — one structural case.
+
+The compile-only Chez host (JVM-canonical oracle) should MATCH OR FIX these. The
+gate's job is to catch *regressions* the port introduces, not to bless these.
+
+## Why the CLI boundary
+The runner tests through `jolt -e`, exactly how the Chez host will be exercised —
+not the in-process `eval-string` the Janet `defspec` harness uses. The two differ
+on a handful of cases (the allowlist), and the CLI boundary is the portable one.
