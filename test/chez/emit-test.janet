@@ -121,6 +121,70 @@
     (ok (string "coll: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3d) dynamic IFn dispatch (inc 3b): a keyword/vector/coll held in a LOCAL (let
+#   binding or fn param) and called as a fn. The 3 ex-known-divergences. The
+#   callee is a :local that's NOT the fn's self-name, so emit routes it through
+#   the jolt-invoke fallback (procedure? -> apply; keyword/coll -> lookup).
+(each [src want] [["(let [v [10 20 30]] (v 1))" "20"]
+                  ["(let [k :a] (k {:a 7}))" "7"]
+                  ["((fn [f] (f {:a 1})) :a)" "1"]]
+  (let [[code out err] (d/run-on-chez ctx src)]
+    (ok (string "ifn: " src) (and (= code 0) (= out want))
+        (string "chez=" out " want=" want " | " err))))
+
+# 3e) seq tier (inc 3b): jolt list type, first/rest/next/seq/cons/list, lazy-seq
+#   (range/take over an infinite seq), map/filter/reduce/into/remove, keys/vals.
+#   Lists and lazy seqs print as (...) and are sequential-= to vectors. Ordered
+#   shapes -> printed-form parity vs the CLI oracle.
+(each src ["(first [1 2 3])"
+           "(rest [1 2 3])"
+           "(rest [1])"
+           "(rest [])"
+           "(next [1 2 3])"
+           "(next [1])"
+           "(cons 0 [1 2 3])"
+           "(cons 1 nil)"
+           "(list 1 2 3)"
+           "(list)"
+           "(seq [])"
+           "(conj (list 2 3) 1)"
+           "(conj nil 1 2)"
+           "(map inc [1 2 3])"
+           "(map + [1 2 3] [10 20 30])"
+           "(map :a [{:a 1} {:a 2}])"
+           "(filter even? [1 2 3 4])"
+           "(remove even? [1 2 3 4])"
+           "(reduce + 0 [1 2 3])"
+           "(reduce + [1 2 3])"
+           "(reduce + (map inc (range 4)))"
+           "(into [] [1 2 3])"
+           "(into [1] (list 2 3))"
+           "(take 3 (range))"
+           "(reverse [1 2 3])"
+           "(apply + [1 2 3])"
+           "(count (map inc [1 2 3]))"]
+  (let [[code out err] (d/run-on-chez ctx src)
+        want (cli-oracle src)]
+    (ok (string "seq: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+# 3f) seq tier — unordered / cross-type, equality-wrapped (prints true/false):
+#   keys/vals order is HAMT order, into-map / into-set unordered; sequential =
+#   across vector and list.
+(each src ["(= 2 (count (keys {:a 1 :b 2})))"
+           "(= 3 (reduce + (vals {:a 1 :b 2})))"
+           "(= {:a 1 :b 2} (into {} [[:a 1] [:b 2]]))"
+           "(= #{1 2 3} (into #{} [1 2 3]))"
+           "(= [1 2 3] (list 1 2 3))"
+           "(= [1 2 3] (map inc [0 1 2]))"
+           # jolt returns a vector for (seq vec) / bounded (range); Chez returns a
+           # Clojure-canonical lazy seq. Values are sequential-=, printed forms differ.
+           "(= [1 2 3] (seq [1 2 3]))"
+           "(= [0 1 2 3 4] (range 5))"]
+  (let [[code out err] (d/run-on-chez ctx src)]
+    (ok (string "seq=: " src) (and (= code 0) (= out "true"))
+        (string "chez=" out " | " err))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

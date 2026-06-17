@@ -56,7 +56,11 @@
     ((and (char? a) (char? b)) (char=? a b))
     ((and (string? a) (string? b)) (string=? a b))
     ((and (boolean? a) (boolean? b)) (eq? a b))
-    ;; collections: forward to collections.ss (loaded after this file by rt.ss).
+    ;; sequential (vector / list / lazy seq) compare element-wise, cross-type:
+    ;; (= [1 2 3] (list 1 2 3)) is true. Forward to seq.ss (loaded by rt.ss).
+    ((and (jolt-sequential? a) (jolt-sequential? b)) (seq=? a b))
+    ((or (jolt-sequential? a) (jolt-sequential? b)) #f)
+    ;; other collections (map/set): forward to collections.ss.
     ((and (jolt-coll? a) (jolt-coll? b)) (jolt-coll=? a b))
     (else (eq? a b))))
 (define (jolt= a . rest)
@@ -80,5 +84,6 @@
     ((string? x) (string-hash x))
     ((char? x) (char->integer x))
     ((boolean? x) (if x 1 2))
-    ((jolt-coll? x) (jolt-coll-hash x))   ; forward to collections.ss
+    ((jolt-sequential? x) (seq-hash x)) ; vector/list/seq hash alike (forward to seq.ss)
+    ((jolt-coll? x) (jolt-coll-hash x))   ; map/set; forward to collections.ss
     (else (equal-hash x))))

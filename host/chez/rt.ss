@@ -12,6 +12,7 @@
 
 (load "host/chez/values.ss")
 (load "host/chez/collections.ss")
+(load "host/chez/seq.ss")
 
 ;; --- rt arithmetic / logic shims (named in emit.janet's native-ops) ----------
 (define (jolt-inc x) (+ x 1))
@@ -53,6 +54,10 @@
 (define (jolt-char->string c)
   (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
                         ((#\return) "return") (else (string c)))))
+;; Program-final printer: jolt's `-e` is str-style at the top level, where a
+;; bare nil renders as the empty string (a nil ELEMENT inside a collection still
+;; prints "nil", which jolt-pr-str handles).
+(define (jolt-final-str x) (if (jolt-nil? x) "" (jolt-pr-str x)))
 (define (jolt-pr-str x)
   (cond
     ((jolt-nil? x) "nil")
@@ -72,4 +77,10 @@
     ((pset? x) (string-append "#{" (jolt-str-join (pset-fold x (lambda (e a) (cons (jolt-pr-str e) a)) '())) "}"))
     ((pmap? x) (string-append "{" (jolt-str-join
                  (pmap-fold x (lambda (k v a) (cons (string-append (jolt-pr-str k) " " (jolt-pr-str v)) a)) '())) "}"))
+    ;; lists / cons / lazy seqs all print as (...) — forces a finite seq.
+    ((empty-list-t? x) "()")
+    ((cseq? x) (string-append "(" (jolt-str-join
+                 (let loop ((s x) (acc '()))
+                   (if (jolt-nil? s) (reverse acc)
+                       (loop (jolt-seq (seq-more s)) (cons (jolt-pr-str (seq-first s)) acc))))) ")"))
     (else (format "~a" x))))

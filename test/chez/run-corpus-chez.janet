@@ -28,15 +28,13 @@
     corpus))
 
 # Known subset divergences: cases that compile but need a feature beyond the
-# current increment. Dynamic IFn dispatch — a keyword/vector held in a LOCAL or
-# var then called as a fn ((let [k :a] (k m))) — is runtime dispatch on the
-# invoke mechanism, deferred to the IFn/protocol increment. The STATIC literal
-# forms ((:a m), ({:a 1} :a)) ARE supported. Allowlisted by label; the gate fails
-# only on a NEW divergence.
+# current increment. None as of inc 3b — dynamic IFn dispatch (a keyword/vector
+# held in a LOCAL then called as a fn, (let [k :a] (k m))) now routes through the
+# jolt-invoke fallback, and the seq tier closed the rest. Add a label here if a
+# future increment surfaces a case that compiles but needs deferred semantics;
+# the gate fails only on a NEW (un-allowlisted) divergence.
 (def known-divergences
-  {"param holding a keyword (IFn leftover)" true
-   "vector-in-local as fn" true
-   "keyword-in-local as fn" true})
+  {})
 
 (def ctx (d/make-ctx))
 (var compiled 0) (var pass 0) (var out-of-subset 0)

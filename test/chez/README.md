@@ -48,14 +48,16 @@ compile-time signal) and are counted "out of subset", not as divergences.
 
     JOLT_CHEZ_CORPUS=1 janet test/chez/run-corpus-chez.janet
 
-Baseline after inc 3a (persistent collections, jolt-wgbz): **433/436 compiled
-cases pass**, 3 known divergences, 0 NEW; 2219/2655 out of subset (await the seq
-tier + core on Chez). The 3 known divergences are dynamic IFn dispatch — a
-keyword/vector held in a LOCAL and called as a fn (`(let [k :a] (k m))`); the
-STATIC literal forms (`(:a m)`, `({:a 1} :a)`) are supported. They're
-allowlisted in the probe; it exits non-zero on a NEW divergence.
+Baseline after inc 3b (seq tier + dynamic IFn, jolt-5pso): **595/595 compiled
+cases pass**, 0 divergences; 2060/2655 out of subset (await clojure.core on Chez).
+The seq tier brought up a list/lazy-seq type with first/rest/next/seq/cons/list,
+map/filter/reduce/into/remove, range/take/drop/concat/apply, keys/vals, and
+nth/peek/pop over seqs; dynamic IFn dispatch (a keyword/vector/coll held in a
+local and called as a fn) now routes through the `jolt-invoke` fallback, closing
+the 3 ex-known divergences. The probe exits non-zero on any NEW divergence.
 
-(Prior, inc 2 baseline: 182/182 compiled, 0 divergences, 2473 out of subset.)
+(Prior, inc 3a: 433/436 compiled, 3 known IFn divergences, 2219 out of subset.
+Inc 2: 182/182 compiled, 0 divergences, 2473 out of subset.)
 
 It's a slow report (a Chez subprocess per case), so it's gated behind
 `JOLT_CHEZ_CORPUS` out of the default suite, like the benches.

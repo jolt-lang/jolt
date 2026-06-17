@@ -34,7 +34,24 @@
    "vector" "jolt-vector" "hash-map" "jolt-hash-map" "hash-set" "jolt-hash-set"
    "conj" "jolt-conj" "get" "jolt-get" "nth" "jolt-nth" "count" "jolt-count"
    "assoc" "jolt-assoc" "dissoc" "jolt-dissoc" "contains?" "jolt-contains?"
-   "empty?" "jolt-empty?" "peek" "jolt-peek" "pop" "jolt-pop"})
+   "empty?" "jolt-empty?" "peek" "jolt-peek" "pop" "jolt-pop"
+   # seq tier (jolt-5pso) -> rt prims in seq.ss
+   "first" "jolt-first" "rest" "jolt-rest" "next" "jolt-next" "seq" "jolt-seq"
+   "cons" "jolt-cons" "list" "jolt-list" "reverse" "jolt-reverse" "last" "jolt-last"
+   "map" "jolt-map" "filter" "jolt-filter" "remove" "jolt-remove"
+   "reduce" "jolt-reduce" "into" "jolt-into" "concat" "jolt-concat" "apply" "jolt-apply"
+   "range" "jolt-range" "take" "jolt-take" "drop" "jolt-drop"
+   "keys" "jolt-keys" "vals" "jolt-vals"
+   "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
+   "zero?" "jolt-zero?" "identity" "jolt-identity"})
+
+# Value-position resolution for a clojure.core ref passed AS A VALUE (to map /
+# filter / reduce / apply). Each native-op already names a usable Scheme
+# procedure; arithmetic is the exception — Scheme's +/-/*// return EXACT results
+# for exact/zero-arg inputs, breaking the all-double model in higher-order use,
+# so value-position arithmetic routes to the flonum-coercing rt wrappers.
+(def- core-value-procs
+  (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"}))
 
 # Per-op arity gate: only lower when the Scheme prim and the jolt fn agree at
 # this arity. Ops absent from the table are variadic (arith/compare/=, the
@@ -44,7 +61,15 @@
    "count" |(= $ 1) "empty?" |(= $ 1) "peek" |(= $ 1) "pop" |(= $ 1)
    "mod" |(= $ 2) "rem" |(= $ 2) "quot" |(= $ 2) "contains?" |(= $ 2)
    "get" |(or (= $ 2) (= $ 3)) "nth" |(or (= $ 2) (= $ 3))
-   "assoc" |(and (>= $ 3) (odd? $)) "dissoc" |(>= $ 1) "conj" |(>= $ 1)})
+   "assoc" |(and (>= $ 3) (odd? $)) "dissoc" |(>= $ 1) "conj" |(>= $ 1)
+   # seq tier arities the shims support
+   "first" |(= $ 1) "rest" |(= $ 1) "next" |(= $ 1) "seq" |(= $ 1)
+   "reverse" |(= $ 1) "last" |(= $ 1) "keys" |(= $ 1) "vals" |(= $ 1)
+   "even?" |(= $ 1) "odd?" |(= $ 1) "pos?" |(= $ 1) "neg?" |(= $ 1)
+   "zero?" |(= $ 1) "identity" |(= $ 1)
+   "cons" |(= $ 2) "filter" |(= $ 2) "remove" |(= $ 2) "into" |(= $ 2)
+   "take" |(= $ 2) "drop" |(= $ 2) "map" |(>= $ 2) "apply" |(>= $ 2)
+   "reduce" |(or (= $ 2) (= $ 3)) "range" |(and (>= $ 0) (<= $ 3))})
 
 # If fnode is a clojure.core (or host) ref to a native-op primitive, return the
 # Scheme op string — only at an arity where the Scheme op and the jolt fn agree.
@@ -61,6 +86,10 @@
     op))
 
 (var- recur-target nil)
+# Munged local names known to hold a procedure (a named fn's self-recursion name).
+# Calls to these stay DIRECT; any other :local callee routes through jolt-invoke
+# (dynamic IFn dispatch) — keeps the fib self-call off the invoke fallback.
+(def- known-procs @{})
 (var- gensym-n 0)
 (defn- fresh-label [prefix] (string prefix (++ gensym-n)))
 
@@ -133,7 +162,13 @@
   (def label (fresh-label "fnrec"))
   (def prev recur-target)
   (set recur-target label)
+  # a named fn binds its own name as a known-procedure local in the body, so
+  # self-calls emit directly rather than via the jolt-invoke fallback.
+  (def self (when-let [nm (get node :name)] (munge nm)))
+  (def had-self (and self (get known-procs self)))
+  (when self (put known-procs self true))
   (def body (emit (get a :body)))
+  (unless had-self (when self (put known-procs self nil)))
   (set recur-target prev)
   (def lambda
     (string "(lambda (" (string/join params " ") ") "
@@ -161,8 +196,9 @@
 
 # IFn dispatch for a LITERAL callee (Clojure's "value as fn"): a keyword looks
 # itself up in its arg ((:k m) = (get m :k)); a map/set/vector literal looks up
-# its arg ((m :k) = (get m :k)). The general dynamic case — a local/var holding a
-# keyword — is runtime IFn dispatch, a later increment, and stays out of subset.
+# its arg ((m :k) = (get m :k)). This static lowering avoids the jolt-invoke
+# dispatch overhead; the dynamic case (a local holding a keyword/coll/fn) routes
+# through jolt-invoke in the emit-invoke fallback below.
 (defn- ifn-kind [fnode]
   (case (get fnode :op)
     :const (when (keyword? (get fnode :val)) :keyword)
@@ -190,6 +226,10 @@
     (errorf "emit: unsupported stdlib fn `%s/%s` (no core on Chez yet)" (get fnode :ns) (get fnode :name))
     (= :host (get fnode :op))
     (errorf "emit: unsupported host call `%s` (no host interop on Chez yet)" (get fnode :name))
+    # a :local callee that isn't a known procedure (a let/param binding holding a
+    # keyword/coll/fn) -> dynamic IFn dispatch. Excludes the named-fn self-call.
+    (and (= :local (get fnode :op)) (not (get known-procs (munge (get fnode :name)))))
+    (string "(jolt-invoke " (emit fnode) " " (string/join args " ") ")")
     (string "(" (emit fnode) " " (string/join args " ") ")")))
 
 (set emit (fn emit [node]
@@ -198,12 +238,17 @@
     :const (emit-const (get node :val))
     :local (munge (get node :name))
     # late-bound var: read the cell's current root at use time. A value-position
-    # ref to a stdlib var (e.g. passing `inc` to (map inc xs)) needs a real fn,
-    # which native-op lowering doesn't provide — so it's out of subset regardless.
-    :var   (if (stdlib-var? node)
-             (errorf "emit: unsupported stdlib ref `%s/%s` (no core on Chez yet)" (get node :ns) (get node :name))
-             (string "(var-deref " (string/format "%j" (get node :ns)) " "
-                     (string/format "%j" (get node :name)) ")"))
+    # ref to a clojure.core fn the RT provides (e.g. passing `inc`/`even?`/`:k` to
+    # (map inc xs)) lowers to the RT procedure — native-ops names a real Scheme
+    # procedure for each. Any OTHER stdlib var (clojure.string, an unimplemented
+    # core fn) has no impl on Chez yet, so it's out of subset.
+    :var   (let [core-proc (and (= "clojure.core" (get node :ns)) (get core-value-procs (get node :name)))]
+             (cond
+               core-proc core-proc
+               (stdlib-var? node)
+               (errorf "emit: unsupported stdlib ref `%s/%s` (no core on Chez yet)" (get node :ns) (get node :name))
+               (string "(var-deref " (string/format "%j" (get node :ns)) " "
+                       (string/format "%j" (get node :name)) ")")))
     :host  (errorf "emit: unsupported host ref `%s` (no host interop on Chez yet)" (get node :name))
     :if    (string "(if (jolt-truthy? " (emit (get node :test)) ") "
                    (emit (get node :then)) " " (emit (get node :else)) ")")
@@ -237,4 +282,4 @@
     "(import (chezscheme))\n"
     "(load \"host/chez/rt.ss\")\n"
     (string/join forms-scheme "\n") "\n"
-    "(printf \"~a\\n\" (jolt-pr-str " final "))\n"))
+    "(printf \"~a\\n\" (jolt-final-str " final "))\n"))

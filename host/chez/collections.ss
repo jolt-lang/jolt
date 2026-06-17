@@ -192,6 +192,9 @@
 (define (jolt-conj1 coll x)
   (cond ((pvec? coll) (pvec-conj coll x))   ; nil is a valid vector/set element
         ((pset? coll) (pset-conj coll x))
+        ;; a list/seq conjs by PREPENDING (seq.ss: cseq / empty-list)
+        ((cseq? coll) (cseq-realized x coll))
+        ((empty-list-t? coll) (cseq-realized x jolt-nil))
         ((pmap? coll)
          (cond ((jolt-nil? x) coll)                                   ; (conj m nil) = m
                ((pmap? x) (pmap-fold x (lambda (k v m) (pmap-assoc m k v)) coll))   ; merge
@@ -199,11 +202,10 @@
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
                (else (error 'conj "conj on a map expects a [k v] pair or a map"))))
         (else (error 'conj "unsupported collection"))))
-;; (conj nil a b ...) builds a list in Clojure, conj prepending -> (b a). We have
-;; no list type until inc 3b; a reversed pvec is = to that list (sequential =).
+;; (conj nil a b ...) builds a list in Clojure, conj prepending -> (b a).
 (define (jolt-conj coll . xs)
   (if (jolt-nil? coll)
-      (make-pvec (list->vector (reverse xs)))
+      (fold-left jolt-conj1 jolt-empty-list xs)
       (fold-left jolt-conj1 coll xs)))
 
 (define jolt-get
@@ -225,11 +227,13 @@
                              (if (and (fx>=? i 0) (fx<? i (vector-length v))) (vector-ref v i)
                                  (error 'nth "index out of bounds"))))
              ((string? coll) (string-ref coll i))
+             ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))
              (else (error 'nth "unsupported collection")))))
     ((coll i d)
      (let ((i (->idx i)))
        (cond ((pvec? coll) (pvec-nth-d coll i d))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d))
+             ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #t d))
              (else d))))))
 
 ;; jolt models every number as a double, so a count is a flonum — else
@@ -241,6 +245,9 @@
           ((pset? coll) (pset-count coll))
           ((string? coll) (string-length coll))
           ((jolt-nil? coll) 0)
+          ((empty-list-t? coll) 0)
+          ((cseq? coll) (let loop ((s coll) (n 0))   ; walk (forces a finite seq)
+                          (if (jolt-nil? s) n (loop (jolt-seq (seq-more s)) (fx+ n 1)))))
           (else (error 'count "uncountable")))))
 
 (define (jolt-assoc1 coll k v)
@@ -272,12 +279,19 @@
         ((pmap? coll) (fx=? 0 (pmap-cnt coll)))
         ((pset? coll) (fx=? 0 (pset-count coll)))
         ((string? coll) (fx=? 0 (string-length coll)))
+        ((empty-list-t? coll) #t)
+        ((cseq? coll) #f)                            ; a cseq is non-empty by construction
         (else (error 'empty? "unsupported collection"))))
 
 (define (jolt-peek coll)
-  (cond ((pvec? coll) (pvec-peek coll)) ((jolt-nil? coll) jolt-nil) (else (error 'peek "unsupported collection"))))
+  (cond ((pvec? coll) (pvec-peek coll))
+        ((or (cseq? coll) (empty-list-t? coll)) (jolt-first coll))   ; list peek = first
+        ((jolt-nil? coll) jolt-nil) (else (error 'peek "unsupported collection"))))
 (define (jolt-pop coll)
-  (cond ((pvec? coll) (pvec-pop coll)) (else (error 'pop "unsupported collection"))))
+  (cond ((pvec? coll) (pvec-pop coll))
+        ((cseq? coll) (jolt-rest coll))                              ; list pop = rest
+        ((empty-list-t? coll) (error 'pop "can't pop empty list"))
+        (else (error 'pop "unsupported collection"))))
 
 ;; ============================================================================
 ;; equality / hash hooks called from values.ss (jolt=2 / jolt-hash)
