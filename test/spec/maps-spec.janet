@@ -72,6 +72,20 @@
   ["frequencies of maps"    "2"               "(get (frequencies [{:a 1} (hash-map :a 1)]) {:a 1})"]
   ["group-by collection key" "1"              "(count (group-by identity [{:a 1} (hash-map :a 1)]))"])
 
+# A nil element/key/value INSIDE a collection used as a map key must survive key
+# canonicalization — it used to be dropped, so the nil-containing collection
+# collided with the nil-free one (jolt-zcm9).
+(defspec "map / nil inside a collection key (jolt-zcm9)"
+  ["set key w/ nil distinct"   "2"     "(count {#{nil 1} :a, #{1} :b})"]
+  ["set key w/ nil neg lookup" "nil"   "(get {#{nil 1} :a} #{1})"]
+  ["set key w/ nil pos lookup" ":a"    "(get {#{nil 1} :a} #{nil 1})"]
+  ["set key just nil distinct" "false" "(= {#{nil} :x} {#{} :x})"]
+  ["map nil-value key distinct" "2"    "(count {{:a nil} 1, {} 2})"]
+  ["map nil-value key neg"     "nil"   "(get {{:a nil} 1} {})"]
+  ["map nil-value key pos"     "1"     "(get {{:a nil} 1} {:a nil})"]
+  ["map nil-key key distinct"  "2"     "(count {{nil :a} 1, {} 2})"]
+  ["map nil-key key pos"       "1"     "(get {{nil :a} 1} {nil :a})"])
+
 # Strictness: assoc bounds-checks vector indices; dissoc requires a map;
 # count rejects scalars; numerator/denominator have no ratio type.
 (defspec "map / strictness (throws like Clojure)"
