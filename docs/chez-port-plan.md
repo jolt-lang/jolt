@@ -123,11 +123,11 @@ The port must account for jolt's interop surface, which is layered:
 
 - **`janet.*` bridge** — the general Clojure->Janet escape hatch (`janet/get`,
   `janet/struct`, `janet.ev/sleep`, `janet.net/close`, `janet.spork.http/*`),
-  used mostly in demo glue. On Chez this becomes a `host.*`/Chez bridge over
-  `foreign-procedure`. OPEN DESIGN QUESTION: the bridge namespace is host-named,
-  so app code that calls `janet.*` directly is host-coupled (cf. cljs `js/*`).
-  Decide: rename to a neutral `host.*`, or accept per-host interop namespaces
-  behind reader conditionals.
+  used mostly in demo glue. DECIDED (2026-06-17): rename the bridge to a
+  **neutral `host.*`** namespace (not `janet.*`/`chez.*`), so app interop code is
+  host-portable; each host implements `host.*` over its own FFI (Janet FFI today,
+  Chez `foreign-procedure` tomorrow). The legacy `janet.*` aliases stay as
+  deprecated shims during migration.
 - **FFI-backed shim libraries** — the genuine C interop. `jolt-lang/http-client`
   implements `java.net` + TLS + gzip as host shims **over Janet FFI**, backing
   clj-http-lite's `:clj` branch. On Chez these are reimplemented over Chez FFI
@@ -137,6 +137,18 @@ The port must account for jolt's interop surface, which is layered:
 - **`:jpm/module` Janet-native deps** — `spork/http` (server), `ring-janet-
   adapter`. No Chez equivalent: provide a Scheme/Chez-FFI HTTP server or treat
   these as test-only fixtures.
+- **Native-library dependencies in deps.edn** (DECIDED 2026-06-17). C-interop
+  shims need shared libraries (libcurl, openssl/libssl, zlib) that CANNOT be
+  pulled from git like Clojure libs. Add a `:native` dep form so a project can
+  *declare* what it needs, e.g.
+  `{:native/lib "curl" :native/min-version "7.0" :native/header "curl/curl.h"}`.
+  The resolver doesn't fetch them, but: (a) it surfaces the requirement to the
+  user (and can suggest the install command per platform), and (b) the
+  loader/`foreign-procedure` layer probes for the `.so`/`.dylib` at load and, if
+  absent, raises a precise error — "missing native library: libcurl (declared by
+  jolt-lang/http-client); install with `brew install curl`" — instead of a raw
+  dlopen failure. Symmetric with `:jpm/module`'s "verify importable, hint to
+  install" pattern.
 - **Host-neutral pieces that port for free** — Java-class mirror shims (pure
   Clojure) and `JOLT_FEATURES` reader conditionals.
 
