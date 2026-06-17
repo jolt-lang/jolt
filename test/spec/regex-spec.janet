@@ -62,3 +62,22 @@
   [".matches partial -> false" "false" "(.matches \"abcd\" \"a.c\")"]
   [".replaceAll regex"   "\"a-b-c\"" "(.replaceAll \"a_b_c\" \"_\" \"-\")"]
   [".replaceFirst regex" "\"a-b_c\"" "(.replaceFirst \"a_b_c\" \"_\" \"-\")"])
+
+(defspec "regex / bounded quantifiers (jolt-3xur)"
+  ["exact {n}"        "\"aaa\""  "(re-matches #\"a{3}\" \"aaa\")"]
+  ["range {n,m} max"  "\"aaaa\"" "(re-find #\"a{2,4}\" \"aaaaa\")"]
+  ["zero lower {0,n}" "\"aa\""   "(re-find #\"a{0,3}\" \"aa\")"]
+  ["{n,} unbounded"   "\"aaaa\"" "(re-find #\"a{2,}\" \"aaaa\")"]
+  # nested bounded quantifiers must not blow up the PEG compiler — this used to
+  # expand to ~2^61 nodes and hang at compile time.
+  ["nested bounds compile" "true"
+   "(boolean (re-matches #\"[a-z](?:[a-z]{0,61}[a-z])?(?:-[a-z]{0,61}[a-z])*\" \"abc-def\"))"])
+
+(defspec "regex / backreferences (jolt-xtss)"
+  ["repeated char"      "true"   "(boolean (re-find #\"(.)\\1\" \"abba\"))"]
+  ["no repeat = nil"    "nil"    "(re-find #\"(.)\\1\" \"abc\")"]
+  ["thematic-break run" "true"   "(boolean (re-matches #\"([-*_])\\1\\1\" \"---\"))"]
+  ["mismatched run"     "nil"    "(re-matches #\"([-*_])\\1\\1\" \"-*_\")"]
+  ["repeated word"      "[\"the the\" \"the\"]" "(re-find #\"(\\w+) \\1\" \"say the the word\")"]
+  ["group still captures" "[\"x=x\" \"x\"]" "(re-matches #\"(\\w+)=\\1\" \"x=x\")"]
+  ["html tag pair"      "true"   "(boolean (re-matches #\"<(\\w+)>.*</\\1>\" \"<b>hi</b>\"))"])

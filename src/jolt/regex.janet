@@ -8,8 +8,10 @@
 # Supported: literals, `.`, char classes `[...]`/`[^...]` (ranges, POSIX,
 # `\d \w \s` etc.), quantifiers `* + ? {n} {n,} {n,m}` (greedy + lazy `?`),
 # groups `(...)` (numbered), non-capturing `(?:...)`, lookahead `(?=...)`/`(?!...)`,
-# alternation `|`, anchors `^ $ \b \B`, escapes, inline flag `(?i)`.
-# Not supported: lookbehind, backreferences, named groups (rare; documented).
+# alternation `|`, anchors `^ $ \b \B`, escapes, inline flag `(?i)`, and
+# single-digit backreferences `\1`..`\9` (a backreferenced group matches
+# possessively — no backtracking back into it; rare in practice).
+# Not supported: lookbehind, named groups (rare; documented).
 
 (defn- chr [s] (get s 0))
 (defn regex? [x] (and (table? x) (= :jolt/regex (x :jolt/type))))
@@ -189,6 +191,10 @@
             p {:op :pred :peg p}
             (= nc (chr "b")) {:op :anchor :kind :wordb}
             (= nc (chr "B")) {:op :anchor :kind :nwordb}
+            # \1..\9 backreference (single digit) — record the referenced group so
+            # the emitter knows to tag-capture its text
+            (and (>= nc (chr "1")) (<= nc (chr "9")))
+              (let [n (- nc (chr "0"))] (put (st :refs) n true) {:op :backref :n n})
             {:op :char :b (esc-byte nc) :ci ci})))
     (= c (chr "^")) (do (++ (st :pos)) {:op :anchor :kind :start})
     (= c (chr "$")) (do (++ (st :pos)) {:op :anchor :kind :end})
@@ -241,9 +247,9 @@
   (if (= 1 (length branches)) (branches 0) {:op :alt :items branches})))
 
 (defn- parse [source]
-  (def st @{:s source :pos 0 :ngroup 0 :ci false :ml false :dotall false})
+  (def st @{:s source :pos 0 :ngroup 0 :ci false :ml false :dotall false :refs @{}})
   (def ast (parse-alt st))
-  [ast (st :ngroup) (st :ml)])
+  [ast (st :ngroup) (st :ml) (st :refs)])
 
 # ============================================================
 # Emit: AST -> PEG grammar (continuation passing)
@@ -256,7 +262,7 @@
     ~(set ,(string/from-bytes (lower-b b) (upper-b b)))
     ~(set ,(string/from-bytes b))))
 
-(defn- make-emitter [grammar ml]
+(defn- make-emitter [grammar ml refs]
   (var ctr 0)
   (defn fresh [] (++ ctr) (keyword (string "r" ctr)))
   (var emit nil)
@@ -292,19 +298,38 @@
                                             ~(choice ,(emit item (keyword r)) ,k)
                                             ~(choice ,k ,(emit item (keyword r)))))
                            (keyword r))
-                         (do (var acc k) (var c (- hi lo))
+                         # Each optional level is its OWN grammar rule that
+                         # references the previous level by name. Inlining instead
+                         # (choice (emit item acc) acc) duplicates `acc` per level,
+                         # so {0,n} built a structure the PEG compiler expanded to
+                         # 2^n nodes and hung (jolt-3xur). Naming keeps it O(n).
+                         (do (def kr (fresh)) (put grammar kr k)
+                             (var acc (keyword kr)) (var c (- hi lo))
                              (while (> c 0)
-                               (set acc (if greedy ~(choice ,(emit item acc) ,acc)
-                                                   ~(choice ,acc ,(emit item acc))))
+                               (let [r (fresh)]
+                                 (put grammar r (if greedy ~(choice ,(emit item acc) ,acc)
+                                                          ~(choice ,acc ,(emit item acc))))
+                                 (set acc (keyword r)))
                                (-- c))
                              acc)))
              (var acc tail) (var c lo)
              (while (> c 0) (set acc (emit item acc)) (-- c))
              acc)
       :group (let [n (ast :n)]
-               ~(sequence (/ (position) ,(fn [p] [n :s p]))
-                          ,(emit (ast :item)
-                                 ~(sequence (/ (position) ,(fn [p] [n :e p])) ,k))))
+               (if (and refs (refs n))
+                 # backreferenced group: also capture its text under tag :gN so a
+                 # later \N can (backmatch). The item runs with just the end-marker
+                 # as its continuation, so it matches POSSESSIVELY — backtracking
+                 # INTO a backreferenced group isn't supported (rare; the usual
+                 # (x)...\1 patterns don't need it).
+                 (let [tag (keyword (string "g" n))]
+                   ~(sequence (/ (position) ,(fn [p] [n :s p]))
+                              (<- ,(emit (ast :item) ~(/ (position) ,(fn [p] [n :e p]))) ,tag)
+                              ,k))
+                 ~(sequence (/ (position) ,(fn [p] [n :s p]))
+                            ,(emit (ast :item)
+                                   ~(sequence (/ (position) ,(fn [p] [n :e p])) ,k)))))
+      :backref ~(sequence (backmatch ,(keyword (string "g" (ast :n)))) ,k)
       :ncgroup (emit (ast :item) k)
       :look (if (ast :neg)
               ~(sequence (not ,(emit (ast :item) 0)) ,k)
@@ -327,9 +352,9 @@
   emit)
 
 (defn compile-regex [source]
-  (def [ast ngroups ml] (parse source))
+  (def [ast ngroups ml refs] (parse source))
   (def grammar @{})
-  (def emit (make-emitter grammar ml))
+  (def emit (make-emitter grammar ml refs))
   # group 0 = whole match: mark start, body, mark end
   (def body (emit ast ~(sequence (/ (position) ,(fn [p] [0 :e p])) 0)))
   (put grammar :main ~(sequence (/ (position) ,(fn [p] [0 :s p])) ,body))
@@ -354,8 +379,11 @@
   (def starts (array/new-filled (+ ngroups 1)))
   (def ends (array/new-filled (+ ngroups 1)))
   (each m marks
-    (let [n (m 0)]
-      (if (= (m 1) :s) (put starts n (m 2)) (put ends n (m 2)))))
+    # backreferenced groups also leave a tagged TEXT capture (a string) on the
+    # stack — skip those; only the [n :s/:e pos] position tuples carry group spans
+    (when (indexed? m)
+      (let [n (m 0)]
+        (if (= (m 1) :s) (put starts n (m 2)) (put ends n (m 2))))))
   (def groups (array/new-filled (+ ngroups 1)))
   (var n 0)
   (while (<= n ngroups)
@@ -401,10 +429,14 @@
   # `(if-let [m (re-seq ...)] ...)` works — an empty seq would be truthy.
   (if (= 0 (length out)) nil out))
 
-(defn re-split [re s]
+(defn re-split [re s &opt limit]
+  # limit (Java Pattern.split n>0): at most `limit` parts — stop after limit-1
+  # splits and keep the rest of the string as the final unsplit part. nil/<=0
+  # splits at every match.
   (def re (re-pattern re))
+  (def lim (if (and limit (> limit 0)) limit nil))
   (def out @[]) (var pos 0) (var last 0)
-  (while (<= pos (length s))
+  (while (and (<= pos (length s)) (or (nil? lim) (< (length out) (dec lim))))
     (def g (match-at re s pos))
     (if (and g (> (length (in g 0)) 0))
       (do (array/push out (string/slice s last pos))
