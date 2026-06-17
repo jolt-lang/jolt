@@ -51,10 +51,16 @@
   (str-reverse-b s))
 
 (defn split
-  ([s re]
-   (vec (str-split re s)))
+  ([s re] (split s re 0))
   ([s re limit]
-   (vec (take limit (str-split re s)))))
+   ;; Java Pattern.split semantics: limit > 0 caps the parts (trailing empties
+   ;; kept); limit < 0 splits fully and keeps trailing empties; limit 0 (the
+   ;; default) splits fully then drops trailing empty strings — but a no-match
+   ;; result ([input], the only 1-element case) is returned as-is.
+   (let [parts (vec (str-split re s (if (pos? limit) limit nil)))]
+     (if (and (zero? limit) (> (count parts) 1))
+       (loop [v parts] (if (and (seq v) (= "" (peek v))) (recur (pop v)) v))
+       parts))))
 
 (defn split-lines
   "Split s on \\n or \\r\\n, returning a vector of lines."

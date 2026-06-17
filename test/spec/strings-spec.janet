@@ -20,6 +20,22 @@
   ["pr-str of a defn"   "\"#'user/gg\"" "(pr-str (defn gg [x] x))"]
   ["seq of string"      "[\\a \\b]"  "(seq \"ab\")"])
 
+(defspec "string as a seqable of chars (jolt-dl4s)"
+  ["vec of string"       "[\\a \\b]" "(vec \"ab\")"]
+  ["into [] of string"   "[\\a \\b]" "(into [] \"ab\")"]
+  ["set of string"       "true"      "(= #{\\a \\b} (set \"ab\"))"]
+  ["into #{} of string"  "true"      "(= #{\\a \\b} (into #{} \"ab\"))"]
+  ["set dedups chars"    "2"         "(count (set \"aab\"))"]
+  ["mapv over string"    "[\\a \\b]" "(mapv identity \"ab\")"])
+
+(defspec "clojure.string / split limit (jolt-ik3a)"
+  ["neg keeps trailing"  "[\"a\" \"\" \"\"]" "(do (require (quote [clojure.string :as s])) (s/split \"a,,\" #\",\" -1))"]
+  ["zero trims trailing" "[\"a\"]"           "(do (require (quote [clojure.string :as s])) (s/split \"a,,\" #\",\" 0))"]
+  ["omitted trims"       "[\"a\"]"           "(do (require (quote [clojure.string :as s])) (s/split \"a,,\" #\",\"))"]
+  ["positive caps parts" "[\"a\" \"b,c\"]"   "(do (require (quote [clojure.string :as s])) (s/split \"a,b,c\" #\",\" 2))"]
+  ["empty string"        "[\"\"]"            "(do (require (quote [clojure.string :as s])) (s/split \"\" #\",\"))"]
+  ["interior empties kept" "[\"a\" \"\" \"b\"]" "(do (require (quote [clojure.string :as s])) (s/split \"a,,b\" #\",\"))"])
+
 (defspec "clojure.string"
   ["join"               "\"a,b,c\""  "(do (require (quote [clojure.string :as s])) (s/join \",\" [\"a\" \"b\" \"c\"]))"]
   ["join no sep"        "\"abc\""    "(do (require (quote [clojure.string :as s])) (s/join [\"a\" \"b\" \"c\"]))"]

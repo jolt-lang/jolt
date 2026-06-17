@@ -167,6 +167,9 @@
     (phm? c) (phm-entries c)
     # sorted colls iterate their comparator-ordered entries/elements
     (core-sorted? c) (sorted-entries-arr c)
+    # a string is a seqable of CHARS in Clojure (not bytes/1-char strings) — mirror
+    # core-seq so vec/set/into over a string agree with seq (jolt-dl4s)
+    (string? c) (tuple ;(map make-char (string/bytes c)))
     # byte array (Janet buffer) -> array of byte values
     (buffer? c) (let [a @[]] (each x c (array/push a x)) a)
     # struct map literal (no :jolt/type marker — not a symbol/char) -> entries

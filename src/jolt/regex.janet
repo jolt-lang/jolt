@@ -292,10 +292,18 @@
                                             ~(choice ,(emit item (keyword r)) ,k)
                                             ~(choice ,k ,(emit item (keyword r)))))
                            (keyword r))
-                         (do (var acc k) (var c (- hi lo))
+                         # Each optional level is its OWN grammar rule that
+                         # references the previous level by name. Inlining instead
+                         # (choice (emit item acc) acc) duplicates `acc` per level,
+                         # so {0,n} built a structure the PEG compiler expanded to
+                         # 2^n nodes and hung (jolt-3xur). Naming keeps it O(n).
+                         (do (def kr (fresh)) (put grammar kr k)
+                             (var acc (keyword kr)) (var c (- hi lo))
                              (while (> c 0)
-                               (set acc (if greedy ~(choice ,(emit item acc) ,acc)
-                                                   ~(choice ,acc ,(emit item acc))))
+                               (let [r (fresh)]
+                                 (put grammar r (if greedy ~(choice ,(emit item acc) ,acc)
+                                                          ~(choice ,acc ,(emit item acc))))
+                                 (set acc (keyword r)))
                                (-- c))
                              acc)))
              (var acc tail) (var c lo)
@@ -401,10 +409,14 @@
   # `(if-let [m (re-seq ...)] ...)` works — an empty seq would be truthy.
   (if (= 0 (length out)) nil out))
 
-(defn re-split [re s]
+(defn re-split [re s &opt limit]
+  # limit (Java Pattern.split n>0): at most `limit` parts — stop after limit-1
+  # splits and keep the rest of the string as the final unsplit part. nil/<=0
+  # splits at every match.
   (def re (re-pattern re))
+  (def lim (if (and limit (> limit 0)) limit nil))
   (def out @[]) (var pos 0) (var last 0)
-  (while (<= pos (length s))
+  (while (and (<= pos (length s)) (or (nil? lim) (< (length out) (dec lim))))
     (def g (match-at re s pos))
     (if (and g (> (length (in g 0)) 0))
       (do (array/push out (string/slice s last pos))

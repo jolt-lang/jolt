@@ -247,10 +247,16 @@
 # (core/20-coll.clj) — pure over get on the tagged value the constructor builds.
 
 # String split/replace that accept either a literal string or a regex value.
-(defn core-str-split [pat s]
+(defn core-str-split [pat s &opt limit]
   (if (regex? pat)
-    (re-split pat s)
-    (string/split pat s)))
+    (re-split pat s limit)
+    (let [parts (string/split pat s)]
+      # literal separator: a positive limit caps the part count; rejoin the tail
+      # with the (constant) separator to recover the unsplit remainder.
+      (if (and limit (> limit 0) (> (length parts) limit))
+        (array/push (array/slice parts 0 (- limit 1))
+                    (string/join (array/slice parts (- limit 1)) pat))
+        parts))))
 (defn core-str-replace-all [pat repl s]
   (if (regex? pat)
     (re-replace-all pat s repl)

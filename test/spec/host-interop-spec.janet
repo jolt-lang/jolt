@@ -159,6 +159,8 @@
    "[(Boolean/parseBoolean \"true\") (Boolean/parseBoolean \"false\") (Boolean/parseBoolean \"yes\")]"]
   ["System/getenv is a map" "true"
    "(string? (get (System/getenv) \"HOME\"))"]
+  # registered, so (System/exit n) resolves; actual exit verified via subprocess
+  ["System/exit resolves" "true" "(fn? System/exit)"]
   # NOT every? alone — it held vacuously while seq over a raw host table
   # yielded nothing, hiding that read-system-env came back empty
   ["getenv entries destructure (non-empty)" "true"

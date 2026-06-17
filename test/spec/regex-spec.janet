@@ -62,3 +62,13 @@
   [".matches partial -> false" "false" "(.matches \"abcd\" \"a.c\")"]
   [".replaceAll regex"   "\"a-b-c\"" "(.replaceAll \"a_b_c\" \"_\" \"-\")"]
   [".replaceFirst regex" "\"a-b_c\"" "(.replaceFirst \"a_b_c\" \"_\" \"-\")"])
+
+(defspec "regex / bounded quantifiers (jolt-3xur)"
+  ["exact {n}"        "\"aaa\""  "(re-matches #\"a{3}\" \"aaa\")"]
+  ["range {n,m} max"  "\"aaaa\"" "(re-find #\"a{2,4}\" \"aaaaa\")"]
+  ["zero lower {0,n}" "\"aa\""   "(re-find #\"a{0,3}\" \"aa\")"]
+  ["{n,} unbounded"   "\"aaaa\"" "(re-find #\"a{2,}\" \"aaaa\")"]
+  # nested bounded quantifiers must not blow up the PEG compiler — this used to
+  # expand to ~2^61 nodes and hang at compile time.
+  ["nested bounds compile" "true"
+   "(boolean (re-matches #\"[a-z](?:[a-z]{0,61}[a-z])?(?:-[a-z]{0,61}[a-z])*\" \"abc-def\"))"])

@@ -418,7 +418,7 @@
       (array? coll) (make-vec coll)
       (tuple? coll) (make-vec coll)
       (struct? coll) (make-vec (map |(in (kvs coll) (+ (* $ 2) 1)) (range (/ (length (kvs coll)) 2))))
-      (string? coll) (make-vec (map |(string/from-bytes $) (string/bytes coll)))
+      (string? coll) (make-vec (map make-char (string/bytes coll)))
       (make-vec @[]))))
 
 # Bulk-build a map value from a native array of [k v] pairs, mirroring

@@ -82,7 +82,9 @@
                       "file.separator" "/"
                       "user.dir" (os/cwd)
                       "user.home" (or (os/getenv "HOME") "")
-                      "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")})})
+                      "java.io.tmpdir" (or (os/getenv "TMPDIR") "/tmp")})
+   # terminate the process with the given status code
+   "exit" (fn [&opt status] (os/exit (if (nil? status) 0 status)))})
 
 # sentinels portable code compares against. jolt numbers are doubles, so these
 # are the f64 approximations.
