@@ -276,6 +276,23 @@
               (uncompilable (str "var of non-var " (form-sym-name sym)))))
     (uncompilable (str "special form " op))))
 
+;; Host interop method call (jolt-0kf5). `(.method target arg*)` — a head that
+;; starts with "." but not ".-" (field access stays punted). Analyzes to a
+;; :host-call node; the Janet back end punts it at emit (no interop model -> the
+;; interpreter runs it), the Chez back end lowers it to a jolt-host-call dispatch.
+(defn- method-head? [nm]
+  (and (> (count nm) 1)
+       (= "." (subs nm 0 1))
+       (not (= "-" (subs nm 1 2)))))
+
+(defn- analyze-host-call [ctx hname items env]
+  (when (< (count items) 2)
+    (throw (str "Malformed member expression, expecting (.method target ...): " hname)))
+  {:op :host-call
+   :method (subs hname 1)
+   :target (analyze ctx (nth items 1) env)
+   :args (mapv #(analyze ctx % env) (drop 2 items))})
+
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
@@ -311,6 +328,8 @@
         (cond
           (and hname (not shadowed) (contains? handled hname))
             (analyze-special ctx hname items env)
+          (and hname (not shadowed) (method-head? hname))
+            (analyze-host-call ctx hname items env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
           (and (form-sym? head) (not shadowed) (form-macro? ctx head))

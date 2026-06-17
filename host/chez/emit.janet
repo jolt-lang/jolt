@@ -283,6 +283,10 @@
 (defn- stdlib-var? [n]
   (and (= :var (get n :op)) (string/has-prefix? "clojure." (or (get n :ns) ""))))
 
+# Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
+# call on any other method is out of subset until shimmed — keep this in sync.
+(def- supported-host-methods {"write" true "isDirectory" true "listFiles" true})
+
 # jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg
 # (so (< :kw) is true), but Scheme's < demands a number even there — special-case.
 (def- cmp1-ops {"<" true ">" true "<=" true ">=" true})
@@ -365,6 +369,18 @@
     :throw (string "(jolt-throw " (emit (get node :expr)) ")")
     :try   (emit-try node)
     :quote (emit-quoted (get node :form))
+    # host interop (jolt-0kf5): (.method target arg*) -> (jolt-host-call "method"
+    # target arg*). Only the methods the RT dispatcher (rt.ss) actually shims are
+    # IN the subset; any other method is out of subset (a clean emit-time reject,
+    # like an unimplemented stdlib fn), so it doesn't masquerade as a compiled-but-
+    # broken divergence. The Janet back end punts ALL :host-call to the interpreter.
+    :host-call (let [m (get node :method)]
+                 (unless (get supported-host-methods m)
+                   (errorf "emit: unsupported host method `.%s` (no Chez shim yet)" m))
+                 (let [target (emit (get node :target))
+                       args (map emit (vv (get node :args)))]
+                   (string "(jolt-host-call " (string/format "%j" m) " "
+                           target (if (empty? args) "" (string " " (string/join args " "))) ")")))
     :fn    (emit-fn node)
     # (def name) with no init (declare): reserve the var cell (declare-var!
     # doesn't clobber an existing root) so a forward reference resolves.

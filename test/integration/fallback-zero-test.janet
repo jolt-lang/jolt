@@ -92,7 +92,11 @@
 #                       gains a letrec lowering.
 #   eval              — compile-and-run entry (also loader stateful-head?)
 #   . / new / Foo. /  — thin host-interop heads the back end doesn't model
-#   .method
+#   .method           — analyzes to a :host-call IR node now (inc 3h), but the
+#                       Janet back end punts it at emit (no interop model). The
+#                       Chez back end DOES lower it (jolt-host-call). Same shape as
+#                       letfn: compiles on Chez, interprets on Janet.
+#   .-field           — field access stays punted at analyze (form-special?)
 #   gen-class, monitor-enter, monitor-exit — JVM-compat stubs
 # Growing this list is a REGRESSION: a new punt means the compiler lost
 # coverage. Shrinking it (e.g. letfn via letrec IR) is progress — move the
@@ -102,7 +106,9 @@
    "(set! *warn-on-reflection* true)"
    "(letfn [(f [n] (g n)) (g [n] (f n))] (f 1))"
    "(eval (quote (+ 1 2)))"
-   "(.method obj)"
+   # .method analyzes to :host-call now; a resolvable target ("x") makes it punt
+   # at EMIT (the interop reason), not at analyze (an unresolved target).
+   "(.toUpperCase \"x\")"
    "(.-field obj)"
    "(new Foo 1)"
    "(Foo. 1)"

@@ -39,6 +39,20 @@
                  jolt-kw-data data
                  jolt-kw-cause (if (null? more) jolt-nil (car more))))
 
+;; --- host interop (jolt-0kf5) ------------------------------------------------
+;; (.method target arg*) lowers to (jolt-host-call "method" target arg*). JVM
+;; interop has no general Chez analog, but the few methods jolt-core's io tier
+;; calls map onto Chez equivalents: a writer's .write is a port display; a File's
+;; .isDirectory / .listFiles work over a path string (Chez has no File type, so
+;; file-seq's File branch is unreachable here — these keep the forms honest). An
+;; unsupported method raises rather than silently returning nil.
+(define (jolt-host-call method target . args)
+  (cond
+    ((string=? method "write") (display (car args) target) jolt-nil)
+    ((string=? method "isDirectory") (if (file-directory? target) #t #f))
+    ((string=? method "listFiles") (list->cseq (directory-list target)))
+    (else (error 'jolt-host-call (string-append "unsupported host method: ." method)))))
+
 ;; --- var cells: late-bound global roots (Clojure vars) -----------------------
 ;; A var is a mutable cell keyed by "ns/name". A `:def` sets the root; a `:var`
 ;; reference reads it at use time (late binding), so a forward/mutually-recursive

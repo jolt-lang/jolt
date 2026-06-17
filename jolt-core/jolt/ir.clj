@@ -101,6 +101,8 @@
       (= op :fn)     (assoc node :arities (mapv (fn [a] (assoc a :body (f (get a :body))))
                                                 (get node :arities)))
       (= op :def)    (assoc node :init (f (get node :init)))
+      (= op :host-call) (assoc node :target (f (get node :target))
+                                    :args (mapv f (get node :args)))
       ;; :catch-body / :finally are optional; recurse them only when PRESENT.
       ;; Assoc'ing them nil-when-absent would turn the node into a phm (jolt's
       ;; nil-valued-key representation) and force backend densification — so we

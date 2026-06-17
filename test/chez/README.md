@@ -72,16 +72,19 @@ catalogs the gaps; macros are skipped (analyze-time only, not a runtime value):
 
     JOLT_CHEZ_PRELUDE=1 janet test/chez/core-prelude-probe.janet
 
-Baseline after inc 3f (quoted literals): **342/355 non-macro core forms emit** to
-Scheme (was 334 at inc 3e, 303 at inc 3d). A `:quote` node reconstructs the raw
-reader form as RT constructor calls — symbol → `jolt-symbol`, list → `jolt-list`,
-vector → `jolt-vector`, map/set → `jolt-hash-map`/`jolt-hash-set`, scalars via
-`emit-const`. Prior: `:throw` → `jolt-throw` (Scheme `raise` of the raw jolt
-value); `:try` → `guard` (catch, class dropped → catch-all) + `dynamic-wind`
-(finally); `ex-info` native-op building the tagged jolt map, so the tier
-ex-data/ex-message/ex-cause read it over `get` for free. Remaining 13 gaps: Java
-host interop `.write`/`.isDirectory` (6, io tier), `letfn` (4), `declare`/
-def-no-init (2), one edge (`parse-uuid`). The probe has a regression floor.
+Baseline after inc 3h (host-interop method calls): **354/355 non-macro core forms
+emit** to Scheme (was 348 at inc 3g, 342 at inc 3f). A `.method` call now analyzes
+to a `:host-call` IR node; the Chez emitter lowers it to a `jolt-host-call`
+dispatch for the methods the RT shims — `.write` → port `display`, `.isDirectory`
+→ `file-directory?`, `.listFiles` → `directory-list` — closing the io tier's
+print-method defmethods and `file-seq` (now 20/20). Any other method is out of
+subset (a clean emit-time reject, so it can't masquerade as a compiled-but-broken
+divergence); the Janet back end punts ALL `:host-call` to the interpreter. Prior
+incs: `:quote` reconstructs the raw reader form as RT constructors; `:throw` →
+`jolt-throw`, `:try` → `guard` + `dynamic-wind`, `ex-info` native-op; `letfn` →
+`letrec*`; `declare`/def-no-init → a reserved var cell. Remaining 1 gap: the regex
+literal in `parse-uuid` (needs a regex engine on Chez — see jolt issue). The probe
+has a regression floor (354).
 
 Prior, inc 3b (seq tier + dynamic IFn, jolt-5pso): 595/595 compiled, 0 divergences,
 2060/2655 out of subset. The seq tier brought up a list/lazy-seq type with

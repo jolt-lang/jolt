@@ -777,6 +777,10 @@
       :map (emit-map ctx node)
       :set (emit-set ctx node)
       :quote ['quote (node :form)]
+      # host interop (.method target ...): the back end doesn't model interop —
+      # punt to the interpreter, exactly as the analyzer used to before producing
+      # a :host-call node (the Chez back end lowers it instead).
+      :host-call (error "jolt/uncompilable: host method call")
       (error (string "backend: unhandled op " (node :op))))))
 
 (defn emit-ir

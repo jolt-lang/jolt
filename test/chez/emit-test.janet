@@ -281,6 +281,25 @@
     (ok (string "letfn/declare: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3l) host interop method calls (inc 3h). (.method target arg*) analyzes to a
+#   :host-call IR node and lowers to a jolt-host-call dispatch. The Janet back end
+#   PUNTS these (no interop model -> interpreter); the Chez RT shims the methods
+#   jolt-core's io tier uses: .write -> display to a port, .isDirectory ->
+#   file-directory?, .listFiles -> directory-list. Interop has no portable oracle
+#   (the Janet host models it differently), so these are emit-shape checks plus one
+#   deterministic runtime probe (the root "/" is always a directory).
+(each [label src needle]
+  [["emit .write -> jolt-host-call" "(fn [w x] (.write w x))" "jolt-host-call"]
+   ["emit .write keeps method name" "(fn [w x] (.write w x))" "\"write\""]
+   ["emit .isDirectory -> jolt-host-call" "(fn [f] (.isDirectory f))" "isDirectory"]
+   ["emit .listFiles -> jolt-host-call" "(fn [f] (.listFiles f))" "listFiles"]]
+  (let [scm (protect (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0))))]
+    (ok label (and (scm 0) (string/find needle (scm 1))) (string/format "%p" scm))))
+
+(let [[code out err] (d/run-on-chez ctx "(.isDirectory \"/\")")]
+  (ok "runtime .isDirectory \"/\" = true" (and (= code 0) (= out "true"))
+      (string "chez=" out " | " err)))
+
 # 3h) prelude mode (inc 3d): emitting clojure.core ITSELF, a core->core ref must
 #   lower to a runtime var-deref instead of being rejected as "out of subset".
 #   `frequencies` is a core fn but not a native-op, so it exercises the switch.
