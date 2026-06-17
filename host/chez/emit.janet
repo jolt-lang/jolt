@@ -43,7 +43,10 @@
    "range" "jolt-range" "take" "jolt-take" "drop" "jolt-drop"
    "keys" "jolt-keys" "vals" "jolt-vals"
    "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
-   "zero?" "jolt-zero?" "identity" "jolt-identity"})
+   "zero?" "jolt-zero?" "identity" "jolt-identity"
+   # exceptions (jolt-vcsl): ex-info builds the tagged map; ex-data/ex-message/
+   # ex-cause are pure-over-get Clojure tier fns (no native-op needed).
+   "ex-info" "jolt-ex-info"})
 
 # Value-position resolution for a clojure.core ref passed AS A VALUE (to map /
 # filter / reduce / apply). Each native-op already names a usable Scheme
@@ -69,7 +72,8 @@
    "zero?" |(= $ 1) "identity" |(= $ 1)
    "cons" |(= $ 2) "filter" |(= $ 2) "remove" |(= $ 2) "into" |(= $ 2)
    "take" |(= $ 2) "drop" |(= $ 2) "map" |(>= $ 2) "apply" |(>= $ 2)
-   "reduce" |(or (= $ 2) (= $ 3)) "range" |(and (>= $ 0) (<= $ 3))})
+   "reduce" |(or (= $ 2) (= $ 3)) "range" |(and (>= $ 0) (<= $ 3))
+   "ex-info" |(or (= $ 2) (= $ 3))})
 
 # If fnode is a clojure.core (or host) ref to a native-op primitive, return the
 # Scheme op string — only at an arity where the Scheme op and the jolt fn agree.
@@ -168,6 +172,22 @@
 # (nil when empty — Clojure's rest semantics; list->cseq already does this); recur
 # carries the rest seq directly, and the named let's init only runs on first
 # entry, so the coercion isn't re-applied on a recur.
+# try/catch/finally (jolt-vcsl). throw raises the jolt value RAW (jolt-throw =
+# Scheme `raise`), mirroring the Janet COMPILED backend (which does `(error v)`,
+# no :jolt/exception envelope) — so catch binds the value directly, no unwrap.
+# catch lowers to `guard` with an `else` clause (catch-all: the IR drops the
+# class), finally to `dynamic-wind`'s after-thunk (runs on success, catch, and
+# escape — Clojure finally semantics). Both keys are optional on the node.
+(defn- emit-try [node]
+  (def core
+    (if-let [cs (get node :catch-sym)]
+      (string "(guard (" (munge cs) " (else " (emit (get node :catch-body)) ")) "
+              (emit (get node :body)) ")")
+      (emit (get node :body))))
+  (if-let [fin (get node :finally)]
+    (string "(dynamic-wind (lambda () #f) (lambda () " core ") (lambda () " (emit fin) "))")
+    core))
+
 (defn- emit-arity-clause [a]
   (def params (map munge (vv (get a :params))))
   (def restp (when-let [r (get a :rest)] (munge r)))
@@ -309,6 +329,8 @@
     :let   (emit-let node)
     :loop  (emit-loop node)
     :recur (emit-recur node)
+    :throw (string "(jolt-throw " (emit (get node :expr)) ")")
+    :try   (emit-try node)
     :fn    (emit-fn node)
     :def   (string "(def-var! " (string/format "%j" (get node :ns)) " "
                    (string/format "%j" (get node :name)) " " (emit (get node :init)) ")")

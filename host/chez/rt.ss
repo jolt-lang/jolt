@@ -20,6 +20,25 @@
 ;; jolt `not`: only nil and false are falsey.
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 
+;; --- exceptions (jolt-vcsl) --------------------------------------------------
+;; throw raises the jolt value RAW (no envelope), like the Janet compiled back
+;; end; catch (emitted as `guard`) binds it directly. Chez `raise` accepts any
+;; object, so a thrown number/map/ex-info all work; uncaught -> non-zero exit.
+(define (jolt-throw v) (raise v))
+;; ex-info builds the tagged map {:jolt/type :jolt/ex-info :message :data :cause}
+;; — a real jolt-hash-map, so the ex-data/ex-message/ex-cause tier fns read it
+;; via jolt-get for free. Arity 2 (msg data) or 3 (msg data cause).
+(define jolt-kw-ex-type (keyword "jolt" "type"))
+(define jolt-kw-ex-info (keyword "jolt" "ex-info"))
+(define jolt-kw-message (keyword #f "message"))
+(define jolt-kw-data (keyword #f "data"))
+(define jolt-kw-cause (keyword #f "cause"))
+(define (jolt-ex-info msg data . more)
+  (jolt-hash-map jolt-kw-ex-type jolt-kw-ex-info
+                 jolt-kw-message msg
+                 jolt-kw-data data
+                 jolt-kw-cause (if (null? more) jolt-nil (car more))))
+
 ;; --- var cells: late-bound global roots (Clojure vars) -----------------------
 ;; A var is a mutable cell keyed by "ns/name". A `:def` sets the root; a `:var`
 ;; reference reads it at use time (late binding), so a forward/mutually-recursive

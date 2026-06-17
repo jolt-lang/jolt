@@ -48,11 +48,12 @@ compile-time signal) and are counted "out of subset", not as divergences.
 
     JOLT_CHEZ_CORPUS=1 janet test/chez/run-corpus-chez.janet
 
-Baseline after inc 3c (multi-arity + variadic fns, jolt-gret): **619/619 compiled
-cases pass**, 0 divergences; 2036/2655 out of subset (await clojure.core on Chez).
-`emit-fn` now lowers multi-arity fns to a Scheme `case-lambda` and variadic fns to
-a rest-arg lambda (the Scheme rest list is coerced to a jolt seq, nil when empty),
-which is the gating lift for emitting the clojure.core tiers as a prelude.
+Baseline after inc 3e (throw/try + ex-info): **632/632 compiled cases pass**, 0
+divergences; 2023/2655 out of subset (await clojure.core on Chez). Inc 3c
+(multi-arity + variadic fns) brought this to 619/619 — `emit-fn` lowers
+multi-arity fns to a Scheme `case-lambda` and variadic fns to a rest-arg lambda
+(the Scheme rest list is coerced to a jolt seq, nil when empty); inc 3e's
+throw/try/ex-info support pulled 13 more corpus cases into the subset.
 
 ## Phase 1 — clojure.core prelude emission (inc 3d, jolt-ocvi)
 The `-e`-capable jolt-chez path: emit the clojure.core tiers
@@ -69,10 +70,14 @@ catalogs the gaps; macros are skipped (analyze-time only, not a runtime value):
 
     JOLT_CHEZ_PRELUDE=1 janet test/chez/core-prelude-probe.janet
 
-Baseline: **303/355 non-macro core forms emit** to Scheme. Remaining 52 gaps:
-`:throw` (29, the big one — needs an exception model), `:quote` (8, needs RT
-symbols/lists), `:try` (2), Java host interop `.write`/`.isDirectory` (6, io tier),
-`letfn` (4), `declare`/def-no-init (2), one edge (`parse-uuid`). Each is a clean
+Baseline after inc 3e (throw/try + ex-info): **334/355 non-macro core forms emit**
+to Scheme (was 303 at inc 3d). `:throw` lowers to `jolt-throw` (Scheme `raise` of
+the raw jolt value, like the Janet compiled back end); `:try` lowers to `guard`
+(catch, class dropped → catch-all) + `dynamic-wind` (finally); `ex-info` is a
+native-op building the tagged jolt map, so the ex-data/ex-message/ex-cause tier
+fns read it over `get` for free. Remaining 21 gaps: `:quote` (8, needs RT
+symbols/lists), Java host interop `.write`/`.isDirectory` (6, io tier), `letfn`
+(4), `declare`/def-no-init (2), one edge (`parse-uuid`). Each is a clean
 next-increment target. The probe has a regression floor (raise it as gaps close).
 
 Prior, inc 3b (seq tier + dynamic IFn, jolt-5pso): 595/595 compiled, 0 divergences,

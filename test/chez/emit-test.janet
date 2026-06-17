@@ -207,6 +207,35 @@
     (ok (string "arity: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3i) throw / try / catch / finally + ex-info (inc 3e). Value parity vs the CLI
+#   oracle for caught throws; an uncaught throw must exit non-zero.
+(each src [# jolt catch syntax is (catch Class binding body); the class is dropped
+           # in the IR (catch-all). catch binds the thrown value raw.
+           "(try (throw 42) (catch Exception e e))"
+           "(try (+ 1 (throw 7)) (catch Exception e (* e 10)))"
+           # finally runs and its value is discarded (try returns the body value)
+           "(try 5 (finally 99))"
+           "(try (throw 3) (catch Exception e (+ e 1)) (finally 99))"
+           # body value passes through when nothing throws
+           "(try (+ 2 3) (catch Exception e :nope))"
+           # ex-info builds a real jolt map: read message/data via get (native-op)
+           "(get (ex-info \"boom\" {:a 1}) :message)"
+           "(get (ex-info \"boom\" {:a 1}) :data)"
+           "(try (throw (ex-info \"boom\" {:a 1})) (catch Exception e (get e :message)))"
+           "(try (throw (ex-info \"boom\" {:a 7})) (catch Exception e (get (get e :data) :a)))"
+           # nested try: inner rethrows, outer catches
+           "(try (try (throw 1) (catch Exception e (throw (+ e 1)))) (catch Exception e (* e 100)))"]
+  (let [[code out err] (d/run-on-chez ctx src)
+        want (cli-oracle src)]
+    (ok (string "throw/try: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+# an uncaught throw aborts the program (non-zero exit) — matches the corpus
+# `:throws` semantics (interpret/compile both bail).
+(let [[code out err] (d/run-on-chez ctx "(throw (ex-info \"unhandled\" {}))")]
+  (ok "throw: uncaught exits non-zero" (not= code 0)
+      (string "code=" code " out=" out)))
+
 # 3h) prelude mode (inc 3d): emitting clojure.core ITSELF, a core->core ref must
 #   lower to a runtime var-deref instead of being rejected as "out of subset".
 #   `frequencies` is a core fn but not a native-op, so it exercises the switch.

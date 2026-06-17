@@ -98,7 +98,7 @@
 
 # Regression floor (raise it as new IR ops / RT shims land, like the suite
 # baseline). Fails if prelude emit reach drops below the recorded baseline.
-(def reach-floor 303)
+(def reach-floor 334)
 (when (< compiled reach-floor)
   (printf "REGRESSION: prelude emit reach %d < floor %d" compiled reach-floor)
   (os/exit 1))
