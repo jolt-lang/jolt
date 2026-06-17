@@ -115,6 +115,35 @@ on) vs what MOVES into portable Clojure:
 - Chez parity + perf confirmed -> remove `src/jolt/*.janet` seed. jolt-core
   unchanged. Janet becomes a historical/alternate host proving portability.
 
+## Host interop & the examples acceptance corpus
+
+The `../examples` repo holds real jolt apps with real git deps + C interop; they
+are the **end-to-end acceptance gate** complementing the unit-level spec corpus.
+The port must account for jolt's interop surface, which is layered:
+
+- **`janet.*` bridge** — the general Clojure->Janet escape hatch (`janet/get`,
+  `janet/struct`, `janet.ev/sleep`, `janet.net/close`, `janet.spork.http/*`),
+  used mostly in demo glue. On Chez this becomes a `host.*`/Chez bridge over
+  `foreign-procedure`. OPEN DESIGN QUESTION: the bridge namespace is host-named,
+  so app code that calls `janet.*` directly is host-coupled (cf. cljs `js/*`).
+  Decide: rename to a neutral `host.*`, or accept per-host interop namespaces
+  behind reader conditionals.
+- **FFI-backed shim libraries** — the genuine C interop. `jolt-lang/http-client`
+  implements `java.net` + TLS + gzip as host shims **over Janet FFI**, backing
+  clj-http-lite's `:clj` branch. On Chez these are reimplemented over Chez FFI
+  (libcurl/openssl/zlib or native sockets); the `java.*`-facing API is unchanged.
+  Also in scope: `jolt-lang/db`, `jolt-lang/logging`, and `jolt-lang/router`
+  (mirrors `reitit.Trie`; verify whether it carries native code).
+- **`:jpm/module` Janet-native deps** — `spork/http` (server), `ring-janet-
+  adapter`. No Chez equivalent: provide a Scheme/Chez-FFI HTTP server or treat
+  these as test-only fixtures.
+- **Host-neutral pieces that port for free** — Java-class mirror shims (pure
+  Clojure) and `JOLT_FEATURES` reader conditionals.
+
+Sequencing: the interop bridge mechanism is part of the Phase-1 shim, but the
+FFI-backed libraries land in **Phase 4** (downstream of core parity), validated
+by running the examples end-to-end. Tracked as a dedicated epic child.
+
 ## Beads reconciliation
 
 - **Closed (obsolete — Janet bytecode-VM / cgen / Janet-dispatch mechanisms Chez
