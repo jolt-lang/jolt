@@ -162,6 +162,12 @@
         (cond
           (= hname "catch")
             (let [cl (vec (form-elements c))]
+              ;; (catch class binding body*) — binding (3rd elem) MUST be a symbol.
+              ;; Validate eagerly (plain throw, NOT uncompilable, so it's a real
+              ;; error rather than a compile->interpret punt) instead of letting
+              ;; form-sym-name crash on a non-symbol.
+              (when (or (< (count cl) 3) (not (form-sym? (nth cl 2))))
+                (throw "Unable to parse catch clause; expected (catch class binding body*)"))
               (reset! catch-sym (form-sym-name (nth cl 2)))
               (reset! catch-body (drop 3 cl)))
           (= hname "finally")

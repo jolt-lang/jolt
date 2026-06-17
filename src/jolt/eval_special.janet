@@ -435,6 +435,13 @@
                     (when (and (struct? head) (= :symbol (head :jolt/type)))
                       (match (head :name)
                         "catch" (do
+                          # (catch class binding body*) — binding (3rd elem) must
+                          # be a symbol. Validate up front (even when the body
+                          # never throws) so a malformed clause is a clean error,
+                          # not a silent nil or an internal crash when caught.
+                          (let [b (when (>= (length clause) 3) (in clause 2))]
+                            (unless (and b (struct? b) (= :symbol (b :jolt/type)))
+                              (error "Unable to parse catch clause; expected (catch class binding body*)")))
                           (set catch-sym (in clause 2))
                           (set catch-body (tuple/slice clause 3)))
                         "finally" (set finally-body (tuple/slice clause 1)))))))

@@ -15,7 +15,12 @@
   ["finally runs on throw" "9"
    "(let [a (atom 0)] (try (throw (ex-info \"x\" {})) (catch :default e nil) (finally (reset! a 9))) @a)"]
   ["catch value of body" "5"
-   "(try (+ 2 3) (catch :default e 0))"])
+   "(try (+ 2 3) (catch :default e 0))"]
+  # a malformed catch clause (binding not a symbol, or clause too short) is a
+  # clean error, not a silent nil or an internal crash (jolt-kg6p).
+  ["malformed catch: non-symbol binding" :throws  "(try 1 (catch e (* e 10)))"]
+  ["malformed catch: literal binding"    :throws  "(try 1 (catch e 5))"]
+  ["malformed catch: too short"          :throws  "(try 1 (catch Exception))"])
 
 (defspec "exceptions / assert"
   ["assert true -> ok"   ":ok"    "(do (assert true) :ok)"]
