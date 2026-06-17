@@ -43,6 +43,10 @@
 ;; A var is a mutable cell keyed by "ns/name". A `:def` sets the root; a `:var`
 ;; reference reads it at use time (late binding), so a forward/mutually-recursive
 ;; reference resolves to whatever the cell holds when the call actually runs.
+;; declare / (def name) with no init reserves a cell holding this placeholder
+;; until the real def overwrites it (a forward reference resolves to the cell, and
+;; correct code never reads it before the binding def runs).
+(define jolt-unbound (string->symbol "#<jolt-unbound>"))
 (define-record-type var-cell (fields ns name (mutable root)) (nongenerative var-cell-v1))
 (define var-table (make-hashtable string-hash string=?))
 (define (jolt-var ns name)
@@ -53,6 +57,13 @@
           c))))
 (define (var-deref ns name) (var-cell-root (jolt-var ns name)))
 (define (def-var! ns name v) (var-cell-root-set! (jolt-var ns name) v) v)
+;; declare / (def name) with no init: reserve the cell ONLY if absent. An
+;; existing root is left intact — Clojure's (def x) with no init does not clobber
+;; a prior binding (do (def x 7) (def x) x) => 7.
+(define (declare-var! ns name)
+  (let ((k (string-append ns "/" name)))
+    (unless (hashtable-ref var-table k #f)
+      (hashtable-set! var-table k (make-var-cell ns name jolt-unbound)))))
 
 ;; --- jolt number printing ----------------------------------------------------
 ;; jolt models every number as a Clojure double: integer-valued values print

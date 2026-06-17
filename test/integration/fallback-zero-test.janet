@@ -21,8 +21,13 @@
 (def ctx (init-cached))
 
 (defn- analyzes? [s]
-  # true if the analyzer produced IR (compiled), false if it punted/uncompilable.
-  (def r (protect (backend/analyze-form ctx (parse-string s))))
+  # true if the form COMPILES end to end (analyzer IR + back end emit), false if
+  # it punts to the interpreter. Checks emit-ir too, not just analyze-form: letfn
+  # and (def x) with no init now ANALYZE to IR, but the Janet back end punts them
+  # at emit time (sequential let* can't express mutual recursion; an unbound var
+  # is not a compiled value) — so analyze-form alone would miss the real
+  # compile-vs-interpret decision that compile-and-eval makes.
+  (def r (protect (backend/emit-ir ctx (backend/analyze-form ctx (parse-string s)))))
   (and (r 0) true))
 
 # --- Must compile: pure, non-stateful value production. NONE may punt. ---
@@ -80,8 +85,11 @@
 #   defmacro          — definitional host seam (the EXPANDERS are compiled;
 #                       see backend/recompile-macros!)
 #   set!              — host var-cell mutation special
-#   letfn             — needs letrec IR (sequential let* can't express mutual
-#                       recursion); permanent-interpret unless the IR gains it
+#   letfn             — analyzes to a :letrec IR node now (inc 3g), but the Janet
+#                       back end still punts it at emit: its sequential let* can't
+#                       express the mutual recursion. The Chez back end DOES
+#                       compile it (letrec*). Janet stays interpret until emit-let
+#                       gains a letrec lowering.
 #   eval              — compile-and-run entry (also loader stateful-head?)
 #   . / new / Foo. /  — thin host-interop heads the back end doesn't model
 #   .method

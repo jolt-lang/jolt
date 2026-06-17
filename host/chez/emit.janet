@@ -171,8 +171,12 @@
   (def b (vv b))
   (string "(" (munge (get b 0)) " " (emit (get b 1)) ")"))
 
+# letfn lowers to a :let flagged :letrec (mutually-recursive named local fns):
+# Scheme `letrec*` binds them so each sees its siblings (and itself), which a
+# sequential let* can't. A plain let uses let* (Clojure let binds sequentially).
 (defn- emit-let [node]
-  (string "(let* (" (string/join (map emit-binding (vv (get node :bindings))) " ") ") "
+  (def kw (if (get node :letrec) "letrec*" "let*"))
+  (string "(" kw " (" (string/join (map emit-binding (vv (get node :bindings))) " ") ") "
           (emit (get node :body)) ")"))
 
 (defn- emit-loop [node]
@@ -362,8 +366,13 @@
     :try   (emit-try node)
     :quote (emit-quoted (get node :form))
     :fn    (emit-fn node)
-    :def   (string "(def-var! " (string/format "%j" (get node :ns)) " "
-                   (string/format "%j" (get node :name)) " " (emit (get node :init)) ")")
+    # (def name) with no init (declare): reserve the var cell (declare-var!
+    # doesn't clobber an existing root) so a forward reference resolves.
+    :def   (if (get node :no-init)
+             (string "(declare-var! " (string/format "%j" (get node :ns)) " "
+                     (string/format "%j" (get node :name)) ")")
+             (string "(def-var! " (string/format "%j" (get node :ns)) " "
+                     (string/format "%j" (get node :name)) " " (emit (get node :init)) ")"))
     (errorf "emit: unhandled op %p" (get node :op)))))
 
 # Wrap emitted top-level forms into a runnable Chez program: load the RT, then

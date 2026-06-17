@@ -179,6 +179,11 @@
   (tuple/slice out))
 
 (defn- emit-let [ctx node]
+  # letfn lowers to a :let flagged :letrec (mutually-recursive bindings). A
+  # compiled sequential Janet let can't forward-ref a sibling, so punt to the
+  # interpreter (the deliberate uncompilable channel) — its shared mutable env
+  # gives the letrec semantics. The Chez back end compiles it directly (letrec*).
+  (when (node :letrec) (error "jolt/uncompilable: letfn"))
   (def binds @[])
   (each pair (vview (node :bindings))
     (def p (vview pair))
@@ -740,7 +745,12 @@
       :recur (emit-recur ctx node)
       :try (emit-try ctx node)
       :throw ['error (emit ctx (node :expr))]
-      :def (let [cell (cell-for ctx (node :ns) (node :name))
+      :def (do
+             # (def name) with no init (declare): no compiled value to install —
+             # punt to the interpreter, which interns a genuinely-unbound var
+             # (compiling it to nil would diverge: reading an unbound var throws).
+             (when (node :no-init) (error "jolt/uncompilable: def with no init"))
+             (let [cell (cell-for ctx (node :ns) (node :name))
                  meta (node :meta)
                  setter (if (and meta (not (empty? meta))) (var-setter-meta cell meta) (var-setter cell))
                  _ (cgen-collect! ctx node)
@@ -759,7 +769,7 @@
                    # redefined (jolt-wf4).
                    (let [init-form (emit ctx (node :init))]
                      (when-let [ud (get (ctx :env) :unit-defs)] (put ud cell true))
-                     (tuple setter init-form)))))
+                     (tuple setter init-form))))))
       :let (emit-let ctx node)
       :fn (emit-fn ctx node)
       :invoke (emit-invoke ctx node)

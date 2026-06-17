@@ -48,13 +48,14 @@ compile-time signal) and are counted "out of subset", not as divergences.
 
     JOLT_CHEZ_CORPUS=1 janet test/chez/run-corpus-chez.janet
 
-Baseline after inc 3f (quoted literals): **664/664 compiled cases pass**, 0
-divergences; 1994/2658 out of subset (await clojure.core on Chez). Inc 3e
+Baseline after inc 3g (letfn + declare): **672/672 compiled cases pass**, 0
+divergences; 1986/2658 out of subset (await clojure.core on Chez). Inc 3e
 (throw/try + ex-info) was 632/632; inc 3f's quote support + a seq.ss fix (empty
-`map`/`filter` results are `()` not nil, matching Clojure) pulled 32 more corpus
-cases into the subset. `emit-fn` lowers multi-arity fns to a Scheme `case-lambda`
-and variadic fns to a rest-arg lambda (rest list coerced to a jolt seq, nil when
-empty).
+`map`/`filter` results are `()` not nil, matching Clojure) reached 664/664; inc 3g
+(letfn -> Scheme `letrec*`, declare/def-no-init -> a reserved var cell) pulled 8
+more corpus cases into the subset. `emit-fn` lowers multi-arity fns to a Scheme
+`case-lambda` and variadic fns to a rest-arg lambda (rest list coerced to a jolt
+seq, nil when empty).
 
 ## Phase 1 — clojure.core prelude emission (inc 3d, jolt-ocvi)
 The `-e`-capable jolt-chez path: emit the clojure.core tiers

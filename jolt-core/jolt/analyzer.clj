@@ -29,7 +29,7 @@
 
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
-    "syntax-quote" "var"})
+    "syntax-quote" "var" "letfn"})
 
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
@@ -190,6 +190,27 @@
               n)]
       n)))
 
+;; letfn: (letfn [(name [params] body*)...] body*). The named local fns are
+;; MUTUALLY recursive, so bind every name into the env BEFORE analyzing any spec
+;; — each spec then resolves its siblings (and itself) as locals. Emitted as a
+;; :let flagged :letrec so the back ends know the bindings forward-reference each
+;; other: Chez lowers it to `letrec*`; the Janet back end punts to the
+;; interpreter (its shared mutable env already gives the letrec semantics that a
+;; compiled sequential let* lacks — the reason letfn was uncompilable before).
+(defn- analyze-letfn [ctx items env]
+  (let [specs (vec (form-vec-items (nth items 1)))
+        names (mapv #(form-sym-name (first (vec (form-elements %)))) specs)
+        env* (add-locals env names)
+        binds (mapv (fn [spec]
+                      (let [cl (vec (form-elements spec))]
+                        ;; analyze as a named fn (items[1] = the name): self- and
+                        ;; sibling-calls resolve, the fn carries its own name.
+                        [(form-sym-name (first cl))
+                         (analyze-fn ctx (vec (cons (first cl) cl)) env*)]))
+                    specs)]
+    {:op :let :letrec true :bindings binds
+     :body (analyze-seq ctx (drop 2 items) env*)}))
+
 (defn- analyze-special [ctx op items env]
   (case op
     "quote" (quote-node (second items))
@@ -210,20 +231,25 @@
             ;; the whole def (it unwraps the name and merges the meta).
             (when-not (form-sym? name-sym)
               (uncompilable "def name with map metadata"))
-            ;; (def name) with no init (declare) just interns — interpreter's job
-            (when (< (count items) 3)
-              (uncompilable "def with no init"))
-            (let [nm (form-sym-name name-sym)
-                  cur (compile-ns ctx)
-                  ;; (def name docstring value): docstring is form 2, value form 3.
-                  ;; Matches the interpreter; without this the docstring was taken
-                  ;; as the value and the real init dropped (jolt-6ym).
-                  has-doc (and (> (count items) 3) (string? (nth items 2)))
-                  val-form (nth items (if has-doc 3 2))
-                  base-meta (or (form-sym-meta name-sym) {})
-                  node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
-              (host-intern! ctx cur nm)
-              (def-node cur nm (analyze ctx val-form env) node-meta)))
+            (if (< (count items) 3)
+              ;; (def name) with no init (declare): intern + reserve the cell so a
+              ;; forward reference resolves. The back ends key on :no-init — Chez
+              ;; def-var!s an unbound placeholder; the Janet back end punts to the
+              ;; interpreter, which interns a genuinely-unbound var.
+              (let [nm (form-sym-name name-sym) cur (compile-ns ctx)]
+                (host-intern! ctx cur nm)
+                {:op :def :ns cur :name nm :no-init true})
+              (let [nm (form-sym-name name-sym)
+                    cur (compile-ns ctx)
+                    ;; (def name docstring value): docstring is form 2, value form 3.
+                    ;; Matches the interpreter; without this the docstring was taken
+                    ;; as the value and the real init dropped (jolt-6ym).
+                    has-doc (and (> (count items) 3) (string? (nth items 2)))
+                    val-form (nth items (if has-doc 3 2))
+                    base-meta (or (form-sym-meta name-sym) {})
+                    node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
+                (host-intern! ctx cur nm)
+                (def-node cur nm (analyze ctx val-form env) node-meta))))
     "let*" (let [bvec (vec (form-vec-items (nth items 1)))
                  r (analyze-bindings ctx bvec env)]
              (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))
@@ -238,6 +264,7 @@
               {:op :recur :recur-name rt
                :args (mapv #(analyze ctx % env) (rest items))})
     "try" (analyze-try ctx items env)
+    "letfn" (analyze-letfn ctx items env)
     "fn*" (analyze-fn ctx items env)
     ;; Lower the backtick to construction code (zero runtime cost), then analyze
     ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.

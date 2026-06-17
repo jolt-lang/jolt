@@ -259,6 +259,28 @@
     (ok (string "quote: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3k) letfn + declare/def-no-init (inc 3g). letfn lowers to a Scheme `letrec*`
+#   (mutual recursion between the named local fns — a plain let* can't forward-
+#   ref a sibling). declare/(def x) with no init pre-creates the var cell so a
+#   forward reference resolves; the real def runs before any call.
+(each src [# single local fn
+           "(letfn [(twice [x] (* x 2))] (twice 5))"
+           # self-recursion within a local fn
+           "(letfn [(fact [n] (if (zero? n) 1 (* n (fact (dec n)))))] (fact 5))"
+           # MUTUAL recursion — the letrec semantics a sequential let* lacks
+           "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 10))"
+           "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (od? 7))"
+           # local fn passed to a higher-order fn
+           "(letfn [(sq [x] (* x x))] (map sq [1 2 3]))"
+           # declare + forward reference (the canonical mutually-recursive top-level use)
+           "(declare is-ev) (defn is-od [n] (if (zero? n) false (is-ev (dec n)))) (defn is-ev [n] (if (zero? n) true (is-od (dec n)))) (is-ev 10)"
+           # declare then redefine: the real def overwrites the reserved cell
+           "(declare foo) (def foo 10) foo"]
+  (let [[code out err] (d/run-on-chez ctx src)
+        want (cli-oracle src)]
+    (ok (string "letfn/declare: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 3h) prelude mode (inc 3d): emitting clojure.core ITSELF, a core->core ref must
 #   lower to a runtime var-deref instead of being rejected as "out of subset".
 #   `frequencies` is a core fn but not a native-op, so it exercises the switch.
