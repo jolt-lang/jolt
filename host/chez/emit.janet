@@ -1,29 +1,64 @@
 # Phase 1 — jolt IR -> Chez Scheme emitter (jolt-cf1q.2).
 #
 # The new back end: consumes the SAME host-neutral IR (jolt.ir, see
-# jolt-core/jolt/ir.clj) the analyzer produces and the Janet backend consumes,
-# but emits Scheme source text instead of Janet. `host/compile` (Chez `eval`)
-# turns that into a procedure. This increment covers the pure-functional subset
-# (const/local/var/rt/if/do/let/fn/invoke/def/loop/recur) — enough to run
-# fib/mandelbrot-shaped code through the REAL IR. Globals are early-bound here;
-# var-cell late binding is the next increment.
+# jolt-core/jolt/ir.clj) the live analyzer produces and the Janet backend
+# consumes, but emits Scheme source text instead of Janet. `host/compile` (Chez
+# `eval`) turns that into a procedure. Covers the pure-functional + numeric
+# subset (const/local/var/host/if/do/let/fn/invoke/def/loop/recur) — enough to
+# run fib/mandelbrot-shaped code through the REAL analyzer.
 #
-# IR nodes are plain :op-tagged structs/tables (keyword keys), matching ir.clj.
+# IR access mirrors the Janet backend: live IR fields are jolt VALUES — vectors
+# are persistent (pv), and a nil-valued node densifies to a phm. `nn`/`vv` below
+# normalize both into Janet structs/arrays, so the same code drives hand-built
+# IR (the unit tests) and live analyzer output (the driver).
 
-(def rt-map
-  # jolt RT primitive name -> Scheme. = is the exactness-aware jolt= from
-  # values.ss; inc/dec/quot get preamble shims. Arithmetic/compare are native.
+(import ../../src/jolt/pv :as pv)
+(import ../../src/jolt/phm :as phm)
+
+# Normalize a node (phm -> struct) and a vector field (pvec -> array view); both
+# pass plain Janet values through untouched, so hand-built IR still works.
+(defn- nn [n] (if (phm/phm? n) (phm/phm-to-struct n) n))
+(defn- vv [x] (if (pv/pvec? x) (pv/pv->array x) x))
+
+# Hot clojure.core primitives lowered to native Scheme, mirroring the Janet
+# backend's native-ops (documented numbers-only relaxation). `=` is the
+# exactness-aware jolt= from values.ss; inc/dec/not are rt shims; mod/rem/quot
+# map to Scheme's (correct: Scheme has all three, unlike Janet which lacked quot).
+(def- native-ops
   {"+" "+" "-" "-" "*" "*" "/" "/"
    "<" "<" ">" ">" "<=" "<=" ">=" ">="
-   "=" "jolt=" "inc" "jolt-inc" "dec" "jolt-dec"
-   "mod" "modulo" "quot" "quotient" "rem" "remainder"})
+   "=" "jolt=" "inc" "jolt-inc" "dec" "jolt-dec" "not" "jolt-not"
+   "min" "min" "max" "max"
+   "mod" "modulo" "rem" "remainder" "quot" "quotient"})
+
+# Unary ops only legal at arity 1; binary at arity 2. Others (arith/compare) are
+# variadic in both Scheme and jolt, so any arity is fine.
+(def- unary-ops {"inc" true "dec" true "not" true})
+(def- binary-ops {"mod" true "rem" true "quot" true})
+
+# If fnode is a clojure.core (or host) ref to a native-op primitive, return the
+# Scheme op string — only at an arity where the Scheme op and the jolt fn agree.
+(defn- native-op [fnode nargs]
+  (def nm (case (get fnode :op)
+            :var (when (= "clojure.core" (get fnode :ns)) (get fnode :name))
+            :host (get fnode :name)
+            nil))
+  (def op (and nm (get native-ops nm)))
+  (cond
+    (nil? op) nil
+    (and (get unary-ops nm) (not= nargs 1)) nil
+    (and (get binary-ops nm) (not= nargs 2)) nil
+    op))
 
 (var- recur-target nil)
 (var- gensym-n 0)
 (defn- fresh-label [prefix] (string prefix (++ gensym-n)))
 
-# MVP: jolt local/var names are valid Scheme identifiers (inc, even?, + all are).
-(defn- munge [name] name)
+# Most jolt names are already valid Scheme identifiers (inc, even?, +, ->str all
+# are — Scheme allows ! $ % & * + - . / : < = > ? @ ^ _ ~). The one that isn't is
+# `#`, which jolt auto-gensyms use as a suffix (e.g. p1__0000X4# from #(...)
+# shorthand) — `#` starts a datum in Scheme, so replace it with `_`.
+(defn- munge [name] (string/replace-all "#" "_" name))
 
 (var emit nil)   # forward declaration (mutual recursion with the helpers below)
 
@@ -31,76 +66,126 @@
   (cond
     (nil? v) "jolt-nil"
     (boolean? v) (if v "#t" "#f")
-    (number? v) (string v)
+    # jolt models every number as a double (no ratios/bignums; see reader.janet).
+    # Emit flonums so arithmetic matches the Janet host and Chez doesn't fall into
+    # exploding exact rationals (mandelbrot). Integer-valued -> append ".0".
+    (number? v) (let [s (string v)]
+                  (if (or (string/find "." s) (string/find "e" s) (string/find "n" s))
+                    s
+                    (string s ".0")))
     (string? v) (string/format "%j" v)   # quoted+escaped string literal
     (errorf "emit-const: unsupported literal %p" v)))
 
 (defn- emit-binding [b]
+  (def b (vv b))
   (string "(" (munge (get b 0)) " " (emit (get b 1)) ")"))
 
 (defn- emit-let [node]
-  (string "(let* (" (string/join (map emit-binding (get node :bindings)) " ") ") "
+  (string "(let* (" (string/join (map emit-binding (vv (get node :bindings))) " ") ") "
           (emit (get node :body)) ")"))
 
 (defn- emit-loop [node]
   (def label (fresh-label "loop"))
-  (def bs (string/join (map emit-binding (get node :bindings)) " "))
+  (def pairs (map vv (vv (get node :bindings))))
+  (def names (map |(munge (get $ 0)) pairs))
+  # inits are evaluated in the OUTER scope (recur-target unchanged) and, like
+  # Clojure loop/let, SEQUENTIALLY — a later init sees earlier bindings. Scheme's
+  # named `let` binds in parallel, so wrap a sequential let* around the loop.
+  (def inits (map |(emit (get $ 1)) pairs))
+  (def seq-bs (string/join (map (fn [n i] (string "(" n " " i ")")) names inits) " "))
+  (def rebinds (string/join (map (fn [n] (string "(" n " " n ")")) names) " "))
   (def prev recur-target)
   (set recur-target label)
   (def body (emit (get node :body)))
   (set recur-target prev)
-  (string "(let " label " (" bs ") " body ")"))
+  (string "(let* (" seq-bs ") (let " label " (" rebinds ") " body "))"))
 
 (defn- emit-recur [node]
   (unless recur-target (error "emit: recur outside a loop/fn target"))
-  (string "(" recur-target " " (string/join (map emit (get node :args)) " ") ")"))
+  (string "(" recur-target " " (string/join (map emit (vv (get node :args))) " ") ")"))
 
 (defn- emit-fn [node]
-  (def arities (get node :arities))
+  (def arities (map nn (vv (get node :arities))))
   (when (not= 1 (length arities)) (error "emit: multi-arity fn not in this increment"))
   (def a (first arities))
   (when (get a :rest) (error "emit: variadic fn not in this increment"))
-  (def params (map munge (get a :params)))
+  (def params (map munge (vv (get a :params))))
   # wrap the body in a named let so fn-level `recur` rebinds the params
   (def label (fresh-label "fnrec"))
   (def prev recur-target)
   (set recur-target label)
   (def body (emit (get a :body)))
   (set recur-target prev)
-  (string "(lambda (" (string/join params " ") ") "
-          "(let " label " (" (string/join (map (fn [p] (string "(" p " " p ")")) params) " ") ") "
-          body "))"))
+  (def lambda
+    (string "(lambda (" (string/join params " ") ") "
+            "(let " label " (" (string/join (map (fn [p] (string "(" p " " p ")")) params) " ") ") "
+            body "))"))
+  # A named fn (defn / (fn self [..])) references itself by name — the analyzer
+  # binds that name as a :local in the body. letrec makes the name visible to the
+  # lambda so self-calls resolve (recur stays a separate self-call to the arity).
+  (if-let [nm (get node :name)]
+    (let [m (munge nm)] (string "(letrec ((" m " " lambda ")) " m ")"))
+    lambda))
+
+# The Clojure stdlib (clojure.core, clojure.math, clojure.string, …) and host
+# interop (Math/sqrt etc.) have no implementation on Chez yet (Phase 2+). A
+# reference to one — except a clojure.core call lowered to a native op — is
+# genuinely uncompilable here. Reject it at emit time (a clean "out of subset"
+# signal) rather than emitting a var-deref that resolves to nil and fails
+# confusingly at runtime.
+(defn- stdlib-var? [n]
+  (and (= :var (get n :op)) (string/has-prefix? "clojure." (or (get n :ns) ""))))
+
+(defn- emit-invoke [node]
+  (def fnode (nn (get node :fn)))
+  (def args (map emit (vv (get node :args))))
+  (def nop (native-op fnode (length args)))
+  (cond
+    # zero-arg + / * : Scheme's identity is the EXACT 0 / 1, but jolt models every
+    # number as a double, so emit the flonum identity to keep (= 0 (+)) true.
+    (and nop (empty? args) (= nop "+")) "0.0"
+    (and nop (empty? args) (= nop "*")) "1.0"
+    nop (string "(" nop " " (string/join args " ") ")")
+    (stdlib-var? fnode)
+    (errorf "emit: unsupported stdlib fn `%s/%s` (no core on Chez yet)" (get fnode :ns) (get fnode :name))
+    (= :host (get fnode :op))
+    (errorf "emit: unsupported host call `%s` (no host interop on Chez yet)" (get fnode :name))
+    (string "(" (emit fnode) " " (string/join args " ") ")")))
 
 (set emit (fn emit [node]
+  (def node (nn node))
   (case (get node :op)
     :const (emit-const (get node :val))
     :local (munge (get node :name))
-    :var   (munge (get node :name))           # early-bound (MVP)
-    :rt    (or (get rt-map (get node :name))
-               (errorf "emit: unmapped rt primitive %s" (get node :name)))
-    :host  (get node :name)
+    # late-bound var: read the cell's current root at use time. A value-position
+    # ref to a stdlib var (e.g. passing `inc` to (map inc xs)) needs a real fn,
+    # which native-op lowering doesn't provide — so it's out of subset regardless.
+    :var   (if (stdlib-var? node)
+             (errorf "emit: unsupported stdlib ref `%s/%s` (no core on Chez yet)" (get node :ns) (get node :name))
+             (string "(var-deref " (string/format "%j" (get node :ns)) " "
+                     (string/format "%j" (get node :name)) ")"))
+    :host  (errorf "emit: unsupported host ref `%s` (no host interop on Chez yet)" (get node :name))
     :if    (string "(if (jolt-truthy? " (emit (get node :test)) ") "
                    (emit (get node :then)) " " (emit (get node :else)) ")")
     :do    (string "(begin "
-                   (string/join (map emit (get node :statements)) " ")
-                   (if (empty? (get node :statements)) "" " ")
+                   (string/join (map emit (vv (get node :statements))) " ")
+                   (if (empty? (vv (get node :statements))) "" " ")
                    (emit (get node :ret)) ")")
-    :invoke (string "(" (emit (get node :fn)) " "
-                    (string/join (map emit (get node :args)) " ") ")")
+    :invoke (emit-invoke node)
     :let   (emit-let node)
     :loop  (emit-loop node)
     :recur (emit-recur node)
     :fn    (emit-fn node)
-    :def   (string "(define " (munge (get node :name)) " " (emit (get node :init)) ")")
+    :def   (string "(def-var! " (string/format "%j" (get node :ns)) " "
+                   (string/format "%j" (get node :name)) " " (emit (get node :init)) ")")
     (errorf "emit: unhandled op %p" (get node :op)))))
 
-# Wrap emitted top-level forms into a runnable Chez program: preamble (value
-# model + rt shims) then the forms, then print `final` (a Scheme expr string).
+# Wrap emitted top-level forms into a runnable Chez program: load the RT, then
+# the def forms, then print `final` (an emitted Scheme expr string) via jolt's
+# number/value printing.
 (defn program [forms-scheme final]
   (string
     "(import (chezscheme))\n"
-    "(load \"host/chez/values.ss\")\n"
-    "(define (jolt-inc x) (+ x 1))\n"
-    "(define (jolt-dec x) (- x 1))\n"
+    "(load \"host/chez/rt.ss\")\n"
     (string/join forms-scheme "\n") "\n"
-    "(printf \"~a\\n\" " final ")\n"))
+    "(printf \"~a\\n\" (jolt-pr-str " final "))\n"))

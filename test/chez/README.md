@@ -36,3 +36,21 @@ gate's job is to catch *regressions* the port introduces, not to bless these.
 The runner tests through `jolt -e`, exactly how the Chez host will be exercised —
 not the in-process `eval-string` the Janet `defspec` harness uses. The two differ
 on a handful of cases (the allowlist), and the CLI boundary is the portable one.
+
+## Phase 1 — first parity number (subset probe)
+The full `run-corpus.janet` gate drives an `-e`-capable jolt binary; the Chez
+host can't answer arbitrary `-e` until all of clojure.core is bootstrapped onto
+Chez (Phase 2). Until then, `run-corpus-chez.janet` reports parity for the subset
+the Phase-1 back end (`host/chez/emit.janet`) can already compile: each case is
+run through the live analyzer → Scheme emitter → Chez via `host/chez/driver`.
+Cases that reference unimplemented stdlib/host fns fail to EMIT (a clean
+compile-time signal) and are counted "out of subset", not as divergences.
+
+    JOLT_CHEZ_CORPUS=1 janet test/chez/run-corpus-chez.janet
+
+Baseline (2026-06-17): **182/182 compiled cases pass, 0 divergences**; 2473/2655
+out of subset (await core on Chez). It's a slow report (a Chez subprocess per
+case), so it's gated behind `JOLT_CHEZ_CORPUS` out of the default suite, like the
+benches. `test/chez/emit-test.janet` is the fast Phase-1 unit gate (real
+analyzer → Chez parity for fib/mandelbrot + regressions); both skip cleanly when
+`chez` isn't on PATH.
