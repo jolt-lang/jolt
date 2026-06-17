@@ -48,7 +48,12 @@
   (= 0 (s :cnt)))
 
 (defn phs-seq [s]
-  (tuple ;(keys (phm-to-struct (s :phm)))))
+  # phm-to-struct drops a nil member (a Janet struct can't hold a nil key), so
+  # re-attach it from the phm's has-nil slot. Keep the struct-key order for the
+  # non-nil members so set printing stays stable.
+  (def m (s :phm))
+  (def ks (keys (phm-to-struct m)))
+  (if (phm-has-nil? m) (tuple nil ;ks) (tuple ;ks)))
 
 (defn phs-get [s x &opt default]
   (default default nil)
