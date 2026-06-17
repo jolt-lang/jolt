@@ -682,6 +682,12 @@
         false)))
   # instance?: the overlay macro passes the TYPE NAME quoted (class names don't
   # evaluate to values on jolt); the value arg arrives evaluated.
+  # Generic hook so an external host-shim library (e.g. jolt-lang/http-client)
+  # can teach instance? about its own shim types without editing core. Each hook
+  # is (fn [class-name val] -> truthy|nil); consulted when no built-in matches.
+  (var instance-check-hooks @[])
+  (ns-intern core "__register-instance-check!"
+    (fn [f] (array/push instance-check-hooks f) nil))
   (ns-intern core "instance-check"
     (fn [type-sym val]
       (if (record-tag val)
@@ -756,10 +762,21 @@
           "clojure.lang.IPersistentVector" (or (tuple? val) (pvec? val))
           "clojure.lang.IPersistentSet" (set? val)
           "Object" true
-          false))))
+          # no built-in match — consult library-registered instance? hooks
+          (do (var r false)
+              (each h instance-check-hooks
+                (when (h (type-sym :name) val) (set r true) (break)))
+              r)))))
   # Reader / expansion as plain fns: read-string parses one form; macroexpand-1
   # expands a (quoted, already-evaluated) call form once via its macro var.
   (ns-intern core "read-string" (fn [s] (parse-string s)))
+  # Strip the interpreter's {:jolt/type :jolt/exception :value v} throw envelope.
+  # Compiled catch uses this so a caught value matches what the interpreter binds
+  # (interpreted throw wraps; compiled throw raises raw) — keeps (class e) /
+  # ex-message / catch consistent across the compiled⇄interpreted boundary.
+  (ns-intern core "__unwrap-ex"
+    (fn [e] (if (and (or (table? e) (struct? e)) (= :jolt/exception (get e :jolt/type)))
+              (get e :value) e)))
   # The *in* reader family's host seams. __stdin-read-line: one line from real
   # stdin, newline stripped, nil at EOF. __parse-next: one form off a string ->
   # [form rest-of-string], nil when only whitespace remains. *in*, read-line,

@@ -182,6 +182,9 @@
     (and (struct? v) (= :jolt/inst (v :jolt/type))) (inst->rfc3339 v)
     # a java.io.File renders as its path (Clojure's File.toString)
     (and (table? v) (= :jolt/file (get v :jolt/type))) (get v :path)
+    # (str pattern) -> raw regex source (no #"" delimiters), so libraries that
+    # compose patterns via (re-pattern (str p1 ...)) work (Pattern.toString).
+    (and (table? v) (= :jolt/regex (get v :jolt/type))) (get v :source)
     (= :jolt/namespace (get v :jolt/type)) (ns-display-name v)
     (and (table? v) (= :jolt/var (get v :jolt/type))) (var-display v)
     (number? v) (fmt-number v)

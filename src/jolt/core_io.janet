@@ -104,6 +104,8 @@
       (let [s (src :s) p (src :pos)]
         (put src :pos (length s))
         (string/slice s p))
+    # a byte-array / buffer body: bytes already in hand, just stringify
+    (buffer? src) (string src)
     (string (slurp src))))
 
 (defn core-spit [path content & opts]
