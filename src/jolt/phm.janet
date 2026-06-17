@@ -297,6 +297,8 @@
 
 (defn phm-count [m] (m :cnt))
 
+(defn phm-has-nil? [m] (truthy? (m :has-nil)))
+
 # --- bulk bottom-up build (jolt-5vsp collections) ---------------------------
 # Build the HAMT in one pass from a native array of entries, instead of n
 # incremental phm-assoc calls (each of which rebuilt the O(log32 n) path with

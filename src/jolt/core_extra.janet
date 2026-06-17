@@ -338,7 +338,7 @@
     (pvec? coll)
       @{:jolt/type :jolt/transient :kind :vector :arr (pv->array coll)}
     (set? coll)
-      (let [t @{}] (each e (phs-seq coll) (put t (canon-key e) e))
+      (let [t @{}] (each e (phs-seq coll) (put t (tbl-key e) (tbl-box e)))
         @{:jolt/type :jolt/transient :kind :set :tbl t})
     (or (phm? coll) (and (struct? coll) (nil? (get coll :jolt/type))))
       (let [t @{}]
@@ -360,7 +360,7 @@
   (tr-check-active! t)
   (case (t :kind)
     :vector (array/push (t :arr) x)
-    :set    (put (t :tbl) (canon-key x) x)
+    :set    (put (t :tbl) (tbl-key x) (tbl-box x))
     :map    (cond
               # a [k v] pair (map-entry / 2-vector)
               (and (or (pvec? x) (tuple? x) (array? x))
@@ -410,7 +410,7 @@
 
 (defn core-disj! [t & xs]
   (if (and (core-transient? t) (= :set (t :kind)))
-    (do (tr-check-active! t) (each x xs (put (t :tbl) (canon-key x) nil)) t)
+    (do (tr-check-active! t) (each x xs (put (t :tbl) (tbl-key x) nil)) t)
     (error "disj! requires a transient set")))
 
 (defn core-pop! [t]
@@ -431,7 +431,7 @@
           # persistent value ONCE (bottom-up HAMT) instead of folding a phm-assoc
           # per entry. This is the lever behind every transient-based builder
           # (frequencies/group-by/set/into) — jolt-5vsp collections.
-          :set (phs-from-seq (values (t :tbl)))
+          :set (phs-from-seq (map tbl-unbox (values (t :tbl))))
           :map (phm-from-pairs (values (t :tbl)))))
       # Invalidate: any further bang op (or a second persistent!) now throws.
       (put t :jolt/persistent true)

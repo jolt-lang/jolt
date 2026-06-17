@@ -104,6 +104,14 @@
 (def tbl-nil-key @{})
 (defn tbl-key [k] (if (nil? k) tbl-nil-key (canon-key k)))
 
+# A transient SET stores `(tbl-key x) -> x`, i.e. the member IS the table value.
+# A nil member can't be a Janet table value either (put with a nil value drops
+# the entry), so box nil as the same sentinel and unbox on read-back. The
+# sentinel is a fresh table canon-key never produces, so it can't collide with a
+# real member.
+(defn tbl-box [x] (if (nil? x) tbl-nil-key x))
+(defn tbl-unbox [v] (if (= v tbl-nil-key) nil v))
+
 # All [k v] entries of a map (struct or phm), nil-valued keys included. Use this
 # instead of (keys (phm-to-struct m)) — phm-to-struct drops keys whose value is
 # nil, which is exactly what Clojure maps must keep.

@@ -33,6 +33,27 @@
   ["dedup equal maps"       "1"         "(count (set [{:a 1} (hash-map :a 1)]))"]
   ["vector elements"        "true"      "(contains? #{[1 2]} (vec [1 2]))"])
 
+(defspec "set / nil element (jolt-bn2p)"
+  # canon-key returns nil for nil and Janet tables drop a nil key, so a nil
+  # member used to be silently lost while count/contains? disagreed.
+  ["set keeps nil"            "2"     "(count (set [nil 1 nil]))"]
+  ["contains? nil true"       "true"  "(contains? (set [nil 1]) nil)"]
+  ["contains? nil false"      "false" "(contains? #{1} nil)"]
+  ["seq includes nil"         "true"  "(some nil? (seq (set [nil 1])))"]
+  ["disj nil"                 "#{1}"  "(disj (set [nil 1]) nil)"]
+  ["disj nil count"           "1"     "(count (disj (set [nil 1]) nil))"]
+  ["conj nil count"           "2"     "(count (conj #{1} nil))"]
+  ["conj nil contains?"       "true"  "(contains? (conj #{1} nil) nil)"]
+  ["into #{} keeps nil"       "2"     "(count (into #{} [nil 1]))"]
+  ["into #{} contains? nil"   "true"  "(contains? (into #{} [nil 1]) nil)"]
+  ["into keeps existing nil"  "true"  "(contains? (into #{nil} [1]) nil)"]
+  # transient set path: tr-conj!/persistent!/disj!/contains?
+  ["transient conj! nil"      "2"     "(count (persistent! (conj! (transient #{}) nil 1)))"]
+  ["transient contains? nil"  "true"  "(contains? (persistent! (conj! (transient #{}) nil 1)) nil)"]
+  ["transient disj! nil cnt"  "1"     "(count (persistent! (disj! (conj! (transient #{}) nil 1) nil)))"]
+  ["transient disj! removes"  "false" "(contains? (persistent! (disj! (conj! (transient #{}) nil 1) nil)) nil)"]
+  ["transient of set w/ nil"  "true"  "(contains? (persistent! (transient (set [nil 1]))) nil)"])
+
 (defspec "clojure.set"
   ["union"                  "#{1 2 3 4}" "(do (require (quote [clojure.set :as s])) (s/union #{1 2} #{3 4}))"]
   ["intersection"           "#{2}"       "(do (require (quote [clojure.set :as s])) (s/intersection #{1 2} #{2 3}))"]
