@@ -129,9 +129,9 @@
 # Regression floor (inc 3j baseline): raise as runtime gaps close, like the probe
 # reach-floor and the suite baseline. The gate fails if parity drops below it, or
 # on any NEW (un-allowlisted) divergence — a real Chez correctness regression.
-# Full-corpus baseline: inc 3j 1220/2497; inc 3k (converters) 1326. Strided runs
-# scale the floor down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1326")))
+# Full-corpus baseline: inc 3j 1220/2497; 3k (converters) 1326; 3l (transients)
+# 1382. Strided runs scale the floor down.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1382")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

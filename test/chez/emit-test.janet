@@ -427,6 +427,46 @@
     (ok (string "conv: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3q) transients (jolt-kl2l): transient/persistent!/conj!/assoc!/dissoc!/disj!/
+#   pop! as copy-on-write over the persistent collections (host/chez/transients.ss),
+#   plus persistent disj. get/count/contains? see THROUGH a transient (frequencies
+#   and group-by do (get tm k) on a transient map). vector? on a transient vector
+#   is false. Map/set print order isn't canonical, so assert via get/count/contains?.
+(each src ["(persistent! (conj! (transient []) 1 2 3))"
+           "(count (conj! (conj! (transient []) 1) 2))"
+           "(get (assoc! (transient {}) :a 5) :a)"
+           "(get (transient {:x 9}) :x)"
+           "(contains? (assoc! (transient {}) :k 1) :k)"
+           "(count (persistent! (dissoc! (assoc! (assoc! (transient {}) :a 1) :b 2) :a)))"
+           "(vector? (transient []))"
+           "(persistent! (pop! (conj! (transient [1 2 3]) 4)))"
+           "(count (persistent! (disj! (transient #{1 2 3}) 2)))"
+           "(contains? (disj #{1 2 3} 2) 2)"
+           "(count (disj #{1 2 3} 2))"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "transient: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+# frequencies/group-by/into are OVERLAY fns built on transients — they need the
+# full assembled prelude, so exercise them end-to-end through the jolt-chez -e
+# binary (which loads rt.ss + the prelude). This doubles as a smoke test of the
+# assembled -e-capable jolt-chez itself.
+(defn run-jolt-chez [src]
+  (def proc (os/spawn ["bin/jolt-chez" "-e" src] :p {:out :pipe :err :pipe}))
+  (def out (ev/read (proc :out) 0x100000))
+  (def err (ev/read (proc :err) 0x100000))
+  [(os/proc-wait proc) (string/trim (if out (string out) "")) (string/trim (if err (string err) ""))])
+(when (os/stat "bin/jolt-chez")
+  (each src ["(get (frequencies [1 1 2 3 3 3]) 3)"
+             "(get (frequencies [:a :b :a]) :a)"
+             "(get (group-by even? [1 2 3 4 5]) true)"
+             "(count (get (group-by even? (range 10)) false))"
+             "(into [] (range 5))"
+             "(count (into #{} [1 2 2 3]))"]
+    (let [[code out err] (run-jolt-chez src) want (cli-oracle src)]
+      (ok (string "jolt-chez -e: " src) (and (= code 0) (= out want))
+          (string "chez=" out " janet=" want " | " err)))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

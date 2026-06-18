@@ -149,3 +149,8 @@
 ;; double/gensym — host-coupled seed natives def-var!'d into clojure.core. Loaded
 ;; LAST because `str` reuses jolt-pr-str (defined just above).
 (load "host/chez/converters.ss")
+
+;; transients (jolt-kl2l): copy-on-write transient collections + persistent disj;
+;; extends get/count/contains? to see through a transient. After collections.ss
+;; (the persistent ops it delegates to).
+(load "host/chez/transients.ss")

@@ -104,21 +104,25 @@ corpus case with all of core present, bucketing the result —
     JOLT_CHEZ_PRELUDE_CORPUS=1 janet test/chez/run-corpus-prelude.janet
     JOLT_CORPUS_LIMIT=200 …    (every-Nth stride, fast)
 
-Parity baseline: inc 3j **1220/2497**; inc 3k (converters, jolt-t6cr) **1326/2497**,
-0 NEW divergences (13 allowlisted: dynamic vars `*ns*`/`*clojure-version*`/
-`*unchecked-math*`, var/`*ns*` rendering, class names, eval-order, with-open — all
-deferred Phase-2 / dynamic-var gaps). inc 3k added `host/chez/converters.ss`:
-`str`/`subs`/`vec`/`keyword`/`symbol`/`compare`/`int`/`double`/`gensym` (seed natives,
-matching `core_print.janet`/`core_io.janet` semantics — `str` reuses the printer,
-`compare` is the 3-way port, the symbol no-ns sentinel is `#f` to match emit's
-quoted-symbol lowering so `(= 'x (symbol "x"))` holds).
+Parity baseline: inc 3j **1220/2497**; 3k (converters, jolt-t6cr) **1326**;
+3l (transients, jolt-kl2l) **1382/2497**, 0 NEW divergences (13 allowlisted:
+dynamic vars `*ns*`/`*clojure-version*`/`*unchecked-math*`, var/`*ns*` rendering,
+class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
+- inc 3k `host/chez/converters.ss`: `str`/`subs`/`vec`/`keyword`/`symbol`/`compare`/
+  `int`/`double`/`gensym` (seed natives — `str` reuses the printer, `compare` is the
+  3-way port, the symbol no-ns sentinel is `#f` to match emit's quoted-symbol
+  lowering so `(= 'x (symbol "x"))` holds).
+- inc 3l `host/chez/transients.ss`: `transient`/`persistent!`/`conj!`/`assoc!`/
+  `dissoc!`/`disj!`/`pop!` as copy-on-write over the persistent collections (correct
+  semantics, no in-place perf), plus persistent `disj`. `get`/`count`/`contains?`
+  are redefined to see THROUGH a transient (frequencies/group-by do `(get tm k)` on a
+  transient map); `vector?` on a transient vector is false, which group-by relies on.
 
 The remaining buckets are the punch-list the next increments chase: ~360 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of
-the analyzer's subset) and ~800 runtime crashes, dominated by core fns calling
-host-coupled seed natives with no Chez shim yet (transients — inc 3l jolt-kl2l),
-plus smaller buckets (`##Inf`/`##NaN` literals → unbound `inf`/`nan`, seq-prim
-transducer arities — inc 3m jolt-q3w8; multimethod dispatch — Phase 2 jolt-9ls5).
+the analyzer's subset) and ~740 runtime crashes, including `##Inf`/`##NaN` literals →
+unbound `inf`/`nan` and seq-prim transducer arities (inc 3m jolt-q3w8), multimethod
+dispatch (Phase 2 jolt-9ls5), and more host-coupled natives without a shim.
 
 Two host shims landed with the prelude. `host/chez/atoms.ss`: atom/deref/swap!/
 reset! (+ compare-and-set!/swap-vals!/reset-vals!) — host-coupled mutable cells the
