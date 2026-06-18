@@ -312,8 +312,11 @@
   (emit/set-prelude-mode! false)
   (if (not (r 0)) [:emit-err (r 1) ""]
     (do
-      (spit "/tmp/chez-regex-prelude.ss" (emit/program @[] (r 1)))
-      (def proc (os/spawn ["chez" "--script" "/tmp/chez-regex-prelude.ss"] :p {:out :pipe :err :pipe}))
+      # PID-unique path: two emit-test processes (or a foreground -e) must not
+      # read each other's half-written program file.
+      (def path (string "/tmp/chez-prelude-" (os/getpid) ".ss"))
+      (spit path (emit/program @[] (r 1)))
+      (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))
       (def out (ev/read (proc :out) 0x100000))
       (def err (ev/read (proc :err) 0x100000))
       [(os/proc-wait proc) (string/trim (if out (string out) "")) (string/trim (if err (string err) ""))])))
@@ -396,6 +399,32 @@
            "(namespace :a/b)" "(namespace :x)"]
   (let [[code out err] (run-prelude src) want (cli-oracle src)]
     (ok (string "pred: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+# 3p) converters + string ops (jolt-t6cr): str/subs/vec/keyword/symbol/compare/
+#   int/double/gensym are host-coupled seed natives (host/chez/converters.ss),
+#   def-var!'d into clojure.core, resolved in prelude mode. Semantics match the
+#   seed (str-render-one for str, the 3-way core-compare, truncating int). Parity
+#   vs the CLI oracle.
+(each src ["(str)" "(str \"a\")" "(str \"a\" \"b\" \"c\")" "(str 1 2)"
+           "(str :k)" "(str nil)" "(str \"x\" nil \"y\")" "(str \\a)"
+           "(str 'sym)" "(str [1 2])" "(str (* 1.0 5))"
+           "(subs \"hello\" 1)" "(subs \"hello\" 1 3)"
+           "(vec (list 1 2 3))" "(vec (range 3))" "(vec \"ab\")" "(count (vec (range 4)))"
+           "(keyword \"foo\")" "(keyword \"ns\" \"bar\")" "(keyword 'sym)"
+           "(name (keyword \"a\" \"b\"))" "(namespace (keyword \"a\" \"b\"))"
+           "(symbol \"x\")" "(str (symbol \"ns\" \"y\"))" "(name (symbol \"z\"))"
+           "(compare 1 2)" "(compare 2 1)" "(compare 1 1)" "(compare \"a\" \"b\")"
+           "(compare :a :b)" "(compare [1 2] [1 3])" "(compare nil nil)" "(compare nil 1)"
+           "(int 3.7)" "(int \\A)" "(double 5)" "(double \\A)"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "conv: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+# gensym uses a per-process counter, so only the PREFIX is stable across the
+# Chez run vs the Janet oracle; the numeric suffix legitimately differs.
+(each src ["(symbol? (gensym))" "(subs (name (gensym \"foo_\")) 0 4)" "(string? (name (gensym)))"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "conv: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to

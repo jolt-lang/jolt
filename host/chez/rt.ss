@@ -144,3 +144,8 @@
                    (if (jolt-nil? s) (reverse acc)
                        (loop (jolt-seq (seq-more s)) (cons (jolt-pr-str (seq-first s)) acc))))) ")"))
     (else (format "~a" x))))
+
+;; converters + string ops (jolt-t6cr): str/subs/vec/keyword/symbol/compare/int/
+;; double/gensym — host-coupled seed natives def-var!'d into clojure.core. Loaded
+;; LAST because `str` reuses jolt-pr-str (defined just above).
+(load "host/chez/converters.ss")
