@@ -556,6 +556,33 @@
       (ok (string "transducer -e: " src) (and (= code 0) (= out want))
           (string "chez=" out " janet=" want " | " err)))))
 
+# 3u) misc seq/regex gaps (jolt-y1zq): 0-arg (conj) -> []; 0-arg (conj!) -> a
+#   fresh transient vector; nth sees through a transient; and irregex \p{...} /
+#   \P{...} unicode property classes translate to the seed's ASCII char classes
+#   (regex.ss). Deferred: the assoc!-odd-args seed quirk (non-Clojure, trailing key
+#   gets nil) and clojure.math/PI (missing ns). \p/conj!/nth run in run-prelude;
+#   halt-when (overlay, exercises conj 0-arg as the transduce init) via the binary.
+(each src ["(= [] (conj))" "(= [1] (conj nil 1))"
+           "(= [] (persistent! (conj!)))"
+           "(= 2 (nth (transient [1 2 3]) 1))"
+           "(re-matches #\"^\\p{L}+$\" \"hello\")"
+           "(boolean (re-matches #\"^\\p{L}+$\" \"ab1\"))"
+           "(re-seq #\"\\p{N}+\" \"a12b345\")"
+           "(re-matches #\"^\\P{N}+$\" \"abc\")"
+           "(re-matches #\"^\\p{Ll}\\p{Lu}$\" \"aB\")"
+           "(re-matches #\"^\\p{Ps}x\\p{Pe}$\" \"(x)\")"
+           # \p{} INSIDE a [...] class emits the class content, not a nested [...]
+           "(= \"  \" (re-matches #\"(?u)^[\\s\\p{Z}]+$\" \"  \"))"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "y1zq: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+(when (os/stat "bin/jolt-chez")
+  (each src ["(= 7 (transduce (halt-when (fn [x] (> x 5))) conj [1 2 7 3]))"
+             "(= [1 2 3] (transduce (halt-when (fn [x] (> x 5))) conj [1 2 3]))"]
+    (let [[code out err] (run-jolt-chez src) want (cli-oracle src)]
+      (ok (string "y1zq -e: " src) (and (= code 0) (= out want))
+          (string "chez=" out " janet=" want " | " err)))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

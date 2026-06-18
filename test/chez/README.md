@@ -145,6 +145,24 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
   `jolt-into`. The `td-*` factories are ported from the seed (core_coll.janet); a
   `reduced` step stops the fold via reduce-seq's short-circuit. `transduce`/`comp`/
   `completing` are overlay and compose over these for free.
+- inc 3p misc seq/regex gaps (jolt-y1zq): 0-arg `(conj)` -> `[]`, 0-arg `(conj!)` ->
+  a fresh transient vector, `nth` sees through a transient (like get/count/contains?),
+  and irregex `\p{...}`/`\P{...}` property classes translate to the seed's ASCII char
+  classes (regex.ss; `\p{L}`->`[a-zA-Z]`, `\p{N}`->`[0-9]`, `\p{Ps}`->`[([{]`, …) —
+  ASCII-only (the seed counts UTF-8 high bytes as letters, which a Unicode-char Scheme
+  string can't reproduce; the corpus tests ASCII, where they agree) and
+  `clojure.math/PI` (missing ns).
+
+  Two pre-existing bugs surfaced here and are tracked (not replicated):
+  - **jolt-x0os** (Chez emit) — a non-ASCII string literal emits an invalid Chez hex
+    escape (`(str "héllo")` -> "read: invalid character \\ in string hex escape"). This
+    is why `p{L} utf-8` still crashes (the `\p{L}` translation is correct and matches
+    non-ASCII, but the input string can't be emitted). A crash, not a divergence.
+  - **jolt-ea9k** (seed) — `assoc!` on a transient accepts ODD args and assigns nil to
+    the trailing key (plain `assoc` correctly throws; Clojure's `assoc!` throws too).
+    The Chez host throws (Clojure-correct), so the 4 `odd arg …` corpus rows — which
+    encode the seed's lenient behavior — sit in the crash bucket until the seed is
+    fixed and those spec rows are updated to `:throws`.
 
 The remaining buckets are the punch-list the next increments chase: ~361 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of

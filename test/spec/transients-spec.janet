@@ -57,6 +57,10 @@
 
 # assoc! (unlike assoc) accepts an odd arg count — a missing final value is nil.
 # (A struct literal can't express an explicit nil value, so assert via contains?.)
+# KNOWN BUG (jolt-ea9k): this leniency is non-Clojure — Clojure's assoc! throws on
+# odd args, as does jolt's own plain assoc. These rows encode the buggy behavior;
+# when the seed is fixed to throw, update them to :throws. The Chez host already
+# throws (Clojure-correct), so these sit in its crash bucket until then.
 (defspec "transient / assoc! odd args"
   ["odd arg key present"  "true"
    "(contains? (persistent! (assoc! (transient {}) :a 1 :b)) :b)"]

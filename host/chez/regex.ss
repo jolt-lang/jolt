@@ -34,10 +34,67 @@
       (apply %chez-error args)))
 (load "vendor/irregex/irregex.scm")
 
+;; Unicode property classes \p{...} (jolt-y1zq): irregex's string syntax has no
+;; \p{...}, so translate the ones the seed's byte-PEG maps (src/jolt/regex.janet
+;; prop-frag) to ASCII char classes before compiling. ASCII-only — the seed counts
+;; UTF-8 high bytes as letters for \p{L}, which a Unicode-char Scheme string can't
+;; reproduce byte-for-byte; the corpus tests ASCII inputs, where they agree. An
+;; unmapped name is left as-is (irregex errors, as before — no new behavior). The
+;; ORIGINAL source is kept for printing; only the compiled pattern is translated.
+(define (prop-class name)
+  (cond
+    ;; L/Alpha: ASCII letters + any non-ASCII codepoint (the seed counts UTF-8 high
+    ;; bytes as letters, so ^\p{L}+$ accepts accented words). N/Z stay ASCII-only,
+    ;; matching the seed's byte-PEG.
+    ((or (string=? name "L") (string=? name "Alpha")) "a-zA-Z\\x80-\\x{10FFFF}")
+    ((string=? name "Lu") "A-Z")
+    ((string=? name "Ll") "a-z")
+    ((or (string=? name "N") (string=? name "Nd") (string=? name "Digit")) "0-9")
+    ((or (string=? name "Z") (string=? name "Zs")) " ")
+    ((string=? name "Ps") "([{")
+    ((string=? name "Pe") ")\\]}")
+    (else #f)))
+;; Tracks whether the cursor is inside a [...] char class: a \p{X} there emits the
+;; class CONTENT (the seed inlines it), standalone it emits a wrapping [X]. Escapes
+;; (\[, \]) don't toggle the class. \P (negation) only wraps when standalone.
+(define (translate-prop-classes src)
+  (let ((len (string-length src)) (out (open-output-string)))
+    (let loop ((i 0) (in-class #f))
+      (if (fx>=? i len)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (cond
+              ;; \p{Name} / \P{Name}
+              ((and (char=? c #\\) (fx<? (fx+ i 2) len)
+                    (let ((p (string-ref src (fx+ i 1)))) (or (char=? p #\p) (char=? p #\P)))
+                    (char=? (string-ref src (fx+ i 2)) #\{))
+               (let* ((close (let scan ((j (fx+ i 3)))
+                               (cond ((fx>=? j len) #f)
+                                     ((char=? (string-ref src j) #\}) j)
+                                     (else (scan (fx+ j 1))))))
+                      (cls (and close (prop-class (substring src (fx+ i 3) close)))))
+                 (cond
+                   ((not cls) (write-char c out) (loop (fx+ i 1) in-class))
+                   (in-class (display cls out) (loop (fx+ close 1) in-class))
+                   (else
+                    (display "[" out)
+                    (when (char=? (string-ref src (fx+ i 1)) #\P) (display "^" out))
+                    (display cls out) (display "]" out)
+                    (loop (fx+ close 1) in-class)))))
+              ;; any other escape: copy the pair verbatim, don't toggle class state
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (write-char c out) (write-char (string-ref src (fx+ i 1)) out)
+               (loop (fx+ i 2) in-class))
+              ((and (not in-class) (char=? c #\[))
+               (write-char c out) (loop (fx+ i 1) #t))
+              ((and in-class (char=? c #\]))
+               (write-char c out) (loop (fx+ i 1) #f))
+              (else (write-char c out) (loop (fx+ i 1) in-class))))))))
+
 ;; A jolt regex value: the source string (for printing / str) + the compiled
 ;; irregex. regex? recognizes it; the printer renders #"source".
 (define-record-type regex-t (fields source irx) (nongenerative jolt-regex-v1))
-(define (jolt-regex source) (make-regex-t source (irregex source)))
+(define (jolt-regex source) (make-regex-t source (irregex (translate-prop-classes source))))
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
 

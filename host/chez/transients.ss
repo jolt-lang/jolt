@@ -23,10 +23,14 @@
   (jolt-transient-active-set! t #f)
   (jolt-transient-coll t))
 
-(define (jolt-conj! t . xs)
-  (jolt-trans-check t "conj!")
-  (jolt-transient-coll-set! t (apply jolt-conj (jolt-transient-coll t) xs))
-  t)
+;; (conj!) with no args -> a fresh transient vector (Clojure); otherwise mutate t.
+(define (jolt-conj! . args)
+  (if (null? args)
+      (jolt-transient-new (jolt-vector))
+      (let ((t (car args)) (xs (cdr args)))
+        (jolt-trans-check t "conj!")
+        (jolt-transient-coll-set! t (apply jolt-conj (jolt-transient-coll t) xs))
+        t)))
 ;; (assoc! t k v & kvs): variadic like Clojure (jolt-assoc already folds pairs).
 (define (jolt-assoc! t . kvs)
   (jolt-trans-check t "assoc!")
@@ -63,6 +67,11 @@
 (set! jolt-count (lambda (coll) (%prev-jolt-count (jolt-deref-transient coll))))
 (define %prev-jolt-contains? jolt-contains?)
 (set! jolt-contains? (lambda (coll k) (%prev-jolt-contains? (jolt-deref-transient coll) k)))
+(define %prev-jolt-nth jolt-nth)
+(set! jolt-nth
+  (case-lambda
+    ((coll i) (%prev-jolt-nth (jolt-deref-transient coll) i))
+    ((coll i d) (%prev-jolt-nth (jolt-deref-transient coll) i d))))
 
 (def-var! "clojure.core" "transient" jolt-transient-new)
 (def-var! "clojure.core" "persistent!" jolt-persistent!)

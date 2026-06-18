@@ -202,11 +202,14 @@
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
                (else (error 'conj "conj on a map expects a [k v] pair or a map"))))
         (else (error 'conj "unsupported collection"))))
-;; (conj nil a b ...) builds a list in Clojure, conj prepending -> (b a).
-(define (jolt-conj coll . xs)
-  (if (jolt-nil? coll)
-      (fold-left jolt-conj1 jolt-empty-list xs)
-      (fold-left jolt-conj1 coll xs)))
+;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
+(define (jolt-conj . args)
+  (if (null? args)
+      (jolt-vector)
+      (let ((coll (car args)) (xs (cdr args)))
+        (if (jolt-nil? coll)
+            (fold-left jolt-conj1 jolt-empty-list xs)
+            (fold-left jolt-conj1 coll xs)))))
 
 (define jolt-get
   (case-lambda
