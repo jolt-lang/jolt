@@ -70,14 +70,20 @@
           (hashtable-set! var-table k c)
           c))))
 (define (var-deref ns name) (var-cell-root (jolt-var ns name)))
-(define (def-var! ns name v) (var-cell-root-set! (jolt-var ns name) v) v)
+;; def-var! / declare-var! return the VAR CELL, not the value — Clojure's `def`
+;; evaluates to #'ns/name (a first-class var), so (var? (def x 1)) is true and
+;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
+;; return, so this is transparent there.
+(define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) c))
 ;; declare / (def name) with no init: reserve the cell ONLY if absent. An
 ;; existing root is left intact — Clojure's (def x) with no init does not clobber
-;; a prior binding (do (def x 7) (def x) x) => 7.
+;; a prior binding (do (def x 7) (def x) x) => 7. Returns the cell either way.
 (define (declare-var! ns name)
   (let ((k (string-append ns "/" name)))
-    (unless (hashtable-ref var-table k #f)
-      (hashtable-set! var-table k (make-var-cell ns name jolt-unbound)))))
+    (or (hashtable-ref var-table k #f)
+        (let ((c (make-var-cell ns name jolt-unbound)))
+          (hashtable-set! var-table k c)
+          c))))
 
 ;; regex (jolt-i0s3): defines regex-t + the re-* fns (def-var!'d into
 ;; clojure.core), so it loads after def-var! and before the printer below (which
@@ -217,3 +223,14 @@
 ;; the transduce/sequence entry points over into-xform/reduce-seq. After
 ;; natives-seq.ss (into-xform), seq.ss (reduce-seq) + atoms.ss (deref).
 (load "host/chez/natives-xform.ss")
+
+;; vars as first-class objects (jolt-n7rz, Phase 2): var?/var-get/deref/invoke/=/
+;; pr-str over the rt.ss var-cell. After natives-xform.ss (chains deref) + the
+;; printers. emit lowers :the-var to (jolt-var ns name).
+(load "host/chez/vars.ss")
+
+;; misc scalar natives (jolt-cf1q.3): UUID (random-uuid/parse-uuid/uuid?), format/
+;; printf, tagged-literal, bigint. After the printers + converters (str/pr-str of
+;; a uuid). Overlay names (uuid?/random-uuid/parse-uuid/tagged-literal?) re-asserted
+;; in post-prelude.ss.
+(load "host/chez/natives-misc.ss")

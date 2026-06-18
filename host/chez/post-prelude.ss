@@ -19,3 +19,12 @@
 (def-var! "clojure.core" "vreset!" jolt-vreset!)
 (def-var! "clojure.core" "vswap!" jolt-vswap!)
 (def-var! "clojure.core" "volatile?" jolt-volatile-pred?)
+;; bound?: the overlay reads (get v :root) — nil on a Chez var-cell record, so it
+;; would wrongly report every var unbound. Native version (defined in vars.ss).
+(def-var! "clojure.core" "bound?" jolt-bound?)
+;; uuid?/random-uuid/parse-uuid/tagged-literal? are overlay (read :jolt/type or
+;; build tagged tables) — re-assert the native versions (defined in natives-misc.ss).
+(def-var! "clojure.core" "uuid?" jolt-uuid-pred?)
+(def-var! "clojure.core" "random-uuid" jolt-random-uuid)
+(def-var! "clojure.core" "parse-uuid" jolt-parse-uuid)
+(def-var! "clojure.core" "tagged-literal?" jolt-tagged-literal-pred?)

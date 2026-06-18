@@ -61,12 +61,9 @@
    "inf inside coll" true
    # Phase 2 inc B (jolt-9zhh) made pr-str run; these now render via the readable
    # FALLBACK instead of the seed's print-method / var semantics — separate gaps:
-   #   - def returns the VALUE on Chez, not the var (#'ns/name) — def-returns-var
-   #     is a later increment; (pr-str (def x 1)) -> "1" not "#'user/x"
    #   - a custom (defmethod print-method ...) isn't consulted by the Chez printer
    #     (print-method multimethod integration is deferred)
-   "pr-str of a var" true
-   "pr-str of a defn" true
+   # (pr-str of a var / defn now PASS — inc I made def return the var #'ns/name.)
    "atom override fires nested" true
    # Phase 2 inc D (jolt-jgoc) made records run; pr-str of a record uses the
    # built-in #ns.Name{...} form, not a user (defmethod print-method 'ns.Name …)
@@ -74,7 +71,14 @@
    "defmethod overrides a record, top level" true
    "defmethod fires nested in a map" true
    "defmethod fires through prn" true
-   "methods table inspectable" true})
+   "methods table inspectable" true
+   # Phase 2 inc I (jolt-n7rz) made (var x)/#'x emit + the static var ops run; a
+   # var's def-time metadata (^:private / ^Type tag / docstring) isn't captured on
+   # the Chez var-cell yet, so (meta (var v)) is nil — var-metadata capture is a
+   # later increment.
+   "^:private on var" true
+   "^Type tag on var" true
+   "(def name doc val) doc" true})
 
 (def ctx (d/make-ctx))
 
@@ -180,8 +184,13 @@
 # existing into-xform/reduce-seq — unblocks (sequence xform coll), (transduce
 # xform f coll), and the stateful transducer xforms take-nth/map-indexed/
 # partition-by that drive a volatile) 1898.
+# Phase 2 inc I (jolt-n7rz: first-class vars — emit :the-var to the rt.ss var-cell
+# + var?/var-get/deref/invoke/=/pr-str + bound?; def now RETURNS the var (#'ns/name)
+# matching Clojure, which also un-allowlists pr-str-of-var/defn) and inc J
+# (jolt-snry: scalar natives — UUID random-uuid/parse-uuid/uuid?, format/printf,
+# tagged-literal, bigint) 1951.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1898")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1951")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

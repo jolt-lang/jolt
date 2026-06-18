@@ -429,6 +429,9 @@
                (string "(var-deref " (chez-str-lit (get node :ns)) " "
                        (chez-str-lit (get node :name)) ")")))
     :host  (errorf "emit: unsupported host ref `%s` (no host interop on Chez yet)" (get node :name))
+    # (var x) / #'x -> the var cell itself (the rt.ss var-cell, a first-class var
+    # object). var?/var-get/deref/invoke/= operate on it (vars.ss).
+    :the-var (string "(jolt-var " (chez-str-lit (get node :ns)) " " (chez-str-lit (get node :name)) ")")
     :if    (let [test (get node :test)
                  t (if (returns-scheme-bool? test) (emit test)
                        (string "(jolt-truthy? " (emit test) ")"))]
