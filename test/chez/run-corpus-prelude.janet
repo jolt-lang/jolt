@@ -163,8 +163,10 @@
 # Phase 2 inc D (jolt-jgoc: records + protocols — defrecord/deftype/defprotocol/
 # extend-type/reify; jrec type + protocol registry/dispatch; emit routes record
 # .method dot-calls to runtime dispatch) 1701.
+# Phase 2 inc E (jolt-rkbc: meta / with-meta over an identity-keyed side-table +
+# symbol reader-meta carried through quote emit) 1723.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1701")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1723")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

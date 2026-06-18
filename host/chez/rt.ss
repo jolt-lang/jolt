@@ -193,6 +193,10 @@
 ;; transients).
 (load "host/chez/records.ss")
 
+;; metadata (jolt-rkbc, Phase 2 inc E): meta / with-meta over an identity-keyed
+;; side-table. After records.ss (jrec) + the collection ctors it copies.
+(load "host/chez/natives-meta.ss")
+
 ;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the seed
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
 (load "host/chez/dynamic-vars.ss")

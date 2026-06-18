@@ -201,9 +201,14 @@
     (or (nil? form) (boolean? form) (number? form) (string? form) (keyword? form))
     (emit-const form)
     (and (struct? form) (= :symbol (get form :jolt/type)))
-    (let [ns (get form :ns)]
-      (string "(jolt-symbol " (if ns (chez-str-lit ns) "#f") " "
-              (chez-str-lit (get form :name)) ")"))
+    (let [ns (get form :ns)
+          m (get form :meta)]
+      (if (and m (not (nil? m)) (> (length m) 0))
+        # carry reader metadata (^:foo bar) onto the quoted symbol so (meta 'x) sees it
+        (string "(jolt-symbol/meta " (if ns (chez-str-lit ns) "#f") " "
+                (chez-str-lit (get form :name)) " " (emit-quoted m) ")")
+        (string "(jolt-symbol " (if ns (chez-str-lit ns) "#f") " "
+                (chez-str-lit (get form :name)) ")")))
     (and (struct? form) (= :jolt/char (get form :jolt/type))) (emit-const form)
     (and (struct? form) (= :jolt/set (get form :jolt/type)))
     (string "(jolt-hash-set " (string/join (map emit-quoted (get form :value)) " ") ")")
