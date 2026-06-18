@@ -55,21 +55,15 @@
   ["set miss default"    ":no"  "((transient #{1 2 3}) 42 :no)"]
   ["collection key"      ":v"   "((transient {[1 2] :v}) [1 2])"])
 
-# assoc! (unlike assoc) accepts an odd arg count — a missing final value is nil.
-# (A struct literal can't express an explicit nil value, so assert via contains?.)
-# KNOWN BUG (jolt-ea9k): this leniency is non-Clojure — Clojure's assoc! throws on
-# odd args, as does jolt's own plain assoc. These rows encode the buggy behavior;
-# when the seed is fixed to throw, update them to :throws. The Chez host already
-# throws (Clojure-correct), so these sit in its crash bucket until then.
-(defspec "transient / assoc! odd args"
-  ["odd arg key present"  "true"
-   "(contains? (persistent! (assoc! (transient {}) :a 1 :b)) :b)"]
-  ["odd arg value is nil" "true"
-   "(nil? (get (persistent! (assoc! (transient {}) :a 1 :b)) :b))"]
-  ["odd arg keeps prior"  "1"
-   "(get (persistent! (assoc! (transient {}) :a 1 :b)) :a)"]
-  ["vector odd arg"       "[9 nil]"
-   "(persistent! (apply assoc! (transient []) [0 9 1]))"])
+# assoc! requires an even key/val arg count, like assoc and Clojure's assoc!: a
+# dangling key with no value throws (jolt-ea9k fixed the former lenient
+# nil-fill, which was non-Clojure and inconsistent with jolt's own plain assoc).
+(defspec "transient / assoc! odd args throw"
+  ["map dangling key"   :throws "(persistent! (assoc! (transient {}) :a 1 :b))"]
+  ["map lone key"       :throws "(persistent! (assoc! (transient {}) :a))"]
+  ["vector dangling"    :throws "(persistent! (apply assoc! (transient []) [0 9 1]))"]
+  ["even args still ok" "true"
+   "(= {:a 1, :b 2} (persistent! (assoc! (transient {}) :a 1 :b 2)))"])
 
 # Using a transient after persistent! (or popping an empty one) throws.
 (defspec "transient / invalidation"

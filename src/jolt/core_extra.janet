@@ -402,11 +402,13 @@
         (error "conj! requires a transient")))))
 
 (defn core-assoc! [t & kvs]
-  # Unlike assoc, assoc! accepts an ODD number of args — a missing final value
-  # is taken as nil (so (get kvs (+ i 1)) rather than (in ...), which would
-  # error on the dangling key).
+  # assoc! requires an even key/val count, like assoc and Clojure's assoc! — a
+  # dangling key with no value throws (jolt-ea9k: the former lenient nil-fill
+  # was non-Clojure and inconsistent with jolt's own plain assoc).
+  (when (odd? (length kvs))
+    (error "assoc! expects an even number of key/value arguments"))
   (if (core-transient? t)
-    (do (var i 0) (while (< i (length kvs)) (tr-assoc! t (in kvs i) (get kvs (+ i 1))) (+= i 2)) t)
+    (do (var i 0) (while (< i (length kvs)) (tr-assoc! t (in kvs i) (in kvs (+ i 1))) (+= i 2)) t)
     (error "assoc! requires a transient")))
 
 (defn core-dissoc! [t & ks]

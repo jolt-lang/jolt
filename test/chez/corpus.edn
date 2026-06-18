@@ -2348,10 +2348,10 @@
   {:suite "transient / invokable lookup" :label "set membership" :expected "2" :actual "((transient #{1 2 3}) 2)"}
   {:suite "transient / invokable lookup" :label "set miss default" :expected ":no" :actual "((transient #{1 2 3}) 42 :no)"}
   {:suite "transient / invokable lookup" :label "collection key" :expected ":v" :actual "((transient {[1 2] :v}) [1 2])"}
-  {:suite "transient / assoc! odd args" :label "odd arg key present" :expected "true" :actual "(contains? (persistent! (assoc! (transient {}) :a 1 :b)) :b)"}
-  {:suite "transient / assoc! odd args" :label "odd arg value is nil" :expected "true" :actual "(nil? (get (persistent! (assoc! (transient {}) :a 1 :b)) :b))"}
-  {:suite "transient / assoc! odd args" :label "odd arg keeps prior" :expected "1" :actual "(get (persistent! (assoc! (transient {}) :a 1 :b)) :a)"}
-  {:suite "transient / assoc! odd args" :label "vector odd arg" :expected "[9 nil]" :actual "(persistent! (apply assoc! (transient []) [0 9 1]))"}
+  {:suite "transient / assoc! odd args throw" :label "map dangling key" :expected :throws :actual "(persistent! (assoc! (transient {}) :a 1 :b))"}
+  {:suite "transient / assoc! odd args throw" :label "map lone key" :expected :throws :actual "(persistent! (assoc! (transient {}) :a))"}
+  {:suite "transient / assoc! odd args throw" :label "vector dangling" :expected :throws :actual "(persistent! (apply assoc! (transient []) [0 9 1]))"}
+  {:suite "transient / assoc! odd args throw" :label "even args still ok" :expected "true" :actual "(= {:a 1, :b 2} (persistent! (assoc! (transient {}) :a 1 :b 2)))"}
   {:suite "transient / invalidation" :label "conj! after persistent!" :expected :throws :actual "(let [t (transient [])] (persistent! t) (conj! t 1))"}
   {:suite "transient / invalidation" :label "assoc! after persistent!" :expected :throws :actual "(let [t (transient {})] (persistent! t) (assoc! t :a 1))"}
   {:suite "transient / invalidation" :label "persistent! twice" :expected :throws :actual "(let [t (transient [])] (persistent! t) (persistent! t))"}
