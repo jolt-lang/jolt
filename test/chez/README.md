@@ -163,6 +163,28 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
     The Chez host throws (Clojure-correct), so the 4 `odd arg …` corpus rows — which
     encode the seed's lenient behavior — sit in the crash bucket until the seed is
     fixed and those spec rows are updated to `:throws`.
+- inc 3q multimethod dispatch + late-bind (jolt-9ls5, Phase 2): `host/chez/
+  multimethods.ss` implements the multimethod runtime — `defmulti`/`defmethod`
+  expand to `defmulti-setup`/`defmethod-setup` calls (+ `get-method`/`methods`/
+  `remove-method`/`prefer-method`/`prefers`). A `jolt-multifn` record carries its
+  dispatch fn and a `jolt=`-keyed method table; `jolt-invoke` dispatches it (exact
+  match, then isa?/hierarchy with `prefer-method`, then `:default`), reusing the
+  overlay's `isa?`/`derive`/`make-hierarchy`. The multifn's ns is set via a runtime
+  `chez-current-ns` (default "user"; the prelude load sets "clojure.core").
+
+  Two emit-side changes made this work:
+  - **late-bind** (`:late-bind-unresolved?` ctx flag, default OFF): `defmulti`
+    expands to a bare-symbol setup *call*, so the analyzer doesn't intern the name
+    and a forward reference (`(area …)` after `(defmulti area …)` in one form) was
+    "Unable to resolve symbol". The strict compiler punts these to the interpreter;
+    the Chez back end has none, so the flag makes an unresolved symbol lower to a
+    `var-ref` against the compile ns — the open-world semantics of `-e`. Set only by
+    the Chez `make-ctx`/`jolt-chez`; the main compiler keeps its strict behavior.
+  - a `:var` call head now routes through `jolt-invoke` (not a direct application),
+    since a late-bound var can hold a multifn (or a keyword/coll IFn), not just a
+    procedure. Transparent for procedures; the hot self-recursive call is a `:local`
+    known-proc, so it stays direct. (Class-based dispatch — `(class x)`/`String` — is
+    deferred; it needs the deftype/class subsystem.)
 
 The remaining buckets are the punch-list the next increments chase: ~361 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of

@@ -29,8 +29,13 @@
   (and (r 0) (zero? (r 1))))
 
 (defn make-ctx []
-  "A compile-mode jolt ctx (the analyzer pipeline is only built under :compile?)."
-  (api/init {:compile? true}))
+  "A compile-mode jolt ctx (the analyzer pipeline is only built under :compile?).
+  Late-bind unresolved symbols: the Chez back end has no interpreter to punt to,
+  so a forward reference to a runtime-interned var (defmulti/defmethod's setup
+  call) lowers to a var-deref instead of failing to compile (jolt-9ls5)."
+  (def ctx (api/init {:compile? true}))
+  (put (get ctx :env) :late-bind-unresolved? true)
+  ctx)
 
 (defn- parse-all [src]
   (def out @[])
@@ -138,10 +143,15 @@
   (string
     "(import (chezscheme))\n"
     "(load \"host/chez/rt.ss\")\n"
+    # the prelude's defmultis (print-method/print-dup) must land in clojure.core,
+    # not the default user ns (jolt-9ls5); set the multimethod current-ns around
+    # the prelude load, then restore it to user for the program form.
+    "(set-chez-ns! \"clojure.core\")\n"
     "(load " (string/format "%j" prelude-path) ")\n"
     # native-wins overrides for overlay predicates that read :jolt/type (char?,
     # atom?) — must load AFTER the prelude's own def-var! to take effect.
     "(load \"host/chez/post-prelude.ss\")\n"
+    "(set-chez-ns! \"user\")\n"
     "(printf \"~a\\n\" (jolt-final-str " final-scm "))\n"))
 
 (defn eval-e-with-prelude

@@ -24,7 +24,7 @@
                                form-regex? form-regex-source
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower
-                               record-type? record-ctor-key form-position]]))
+                               record-type? record-ctor-key form-position late-bind?]]))
 
 (declare analyze)
 
@@ -317,7 +317,13 @@
                 ;; (defmulti's setup call) legitimately reference the var they
                 ;; are about to create when nested in a non-top-level do. Real
                 ;; forward references want (declare ...), as in Clojure.
-                (uncompilable (str "Unable to resolve symbol: " nm " in this context")))))))
+                ;; Under late-bind? (the Chez back end, which has no interpreter
+                ;; to punt to) an unresolved symbol instead lowers to a var-ref
+                ;; against the compile ns — resolved at runtime, the open-world
+                ;; semantics of -e — so defmulti/defmethod forward references work.
+                (if (late-bind? ctx)
+                  (var-ref (compile-ns ctx) nm)
+                  (uncompilable (str "Unable to resolve symbol: " nm " in this context"))))))))
 
 (defn- analyze-list [ctx form env]
   (let [items (vec (form-elements form))]

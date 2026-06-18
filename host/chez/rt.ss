@@ -165,3 +165,8 @@
 ;; reduced/reduced?/identical? — seed-native fns the overlay assumes are core
 ;; natives. Over the seq layer + jolt-compare, so loaded after converters.ss.
 (load "host/chez/natives-seq.ss")
+
+;; multimethods (jolt-9ls5): defmulti/defmethod dispatch runtime. Needs jolt-invoke
+;; (seq.ss), jolt=/key-hash/jolt-hash-map (collections.ss), jolt-atom? (atoms.ss),
+;; jolt-pr-str (above), and the var-cell machinery — so loaded last.
+(load "host/chez/multimethods.ss")

@@ -39,6 +39,9 @@
     (os/exit 2))
   (def src (in args 1))
   (def ctx (api/init-cached {:compile? true}))
+  # late-bind unresolved symbols (no interpreter to punt to) so defmulti/defmethod
+  # forward references lower to a var-deref (jolt-9ls5), matching d/make-ctx.
+  (put (get ctx :env) :late-bind-unresolved? true)
   (def prelude-path (ensure-prelude ctx))
   (def [code out err] (d/eval-e-with-prelude ctx src prelude-path))
   (when (= code :emit-err)

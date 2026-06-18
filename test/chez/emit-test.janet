@@ -583,6 +583,32 @@
       (ok (string "y1zq -e: " src) (and (= code 0) (= out want))
           (string "chez=" out " janet=" want " | " err)))))
 
+# 3v) multimethod dispatch (jolt-9ls5): defmulti/defmethod expand to
+#   defmulti-setup/defmethod-setup (+ get-method/methods/remove-method/
+#   prefer-method/prefers); host/chez/multimethods.ss provides the runtime. A
+#   jolt-multifn record carries its dispatch fn + method table; jolt-invoke
+#   dispatches it (direct match, then isa?/hierarchy + prefers, then :default).
+#   Dispatch uses the overlay isa?/derive/make-hierarchy, so these need the full
+#   prelude -> the -e binary. (Class-based dispatch — (class x)/String — is
+#   deferred; it needs the deftype/class subsystem.)
+(when (os/stat "bin/jolt-chez")
+  (each src ["(= \"two\" (do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f 2 [_] \"two\") (f 2)))"
+             "(= \"circle\" (do (defmulti area :shape) (defmethod area :circle [_] \"circle\") (area {:shape :circle})))"
+             "(= \"other\" (do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f :default [_] \"other\") (f 99)))"
+             "(= 5 (do (defmulti g (fn [a b] a)) (defmethod g :add [_ b] b) (g :add 5)))"
+             "(= :is-shape (do (derive :hsq :hshape) (defmulti hmm identity) (defmethod hmm :hshape [_] :is-shape) (hmm :hsq)))"
+             "(= :parent (do (def hh (atom (derive (make-hierarchy) :c :p))) (defmulti cmm identity :hierarchy hh) (defmethod cmm :p [_] :parent) (cmm :c)))"
+             "(= :exact (do (derive :de1 :de2) (defmulti emm identity) (defmethod emm :de2 [_] :parent) (defmethod emm :de1 [_] :exact) (emm :de1)))"
+             "(= \"one\" (do (defmulti f identity) (defmethod f 1 [_] \"one\") ((get-method f 1) 1)))"
+             "(= \"one\" (do (defmulti f identity) (defmethod f 1 [_] \"one\") ((get (methods f) 1) 1)))"
+             "(= 2 (do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f 2 [_] \"two\") (count (methods f))))"]
+    (let [[code out err] (run-jolt-chez src) want (cli-oracle src)]
+      (ok (string "multimethod: " src) (and (= code 0) (= out want))
+          (string "chez=" out " janet=" want " | " err))))
+  # no-match throws (exits non-zero), like the corpus :throws row.
+  (let [[code out err] (run-jolt-chez "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (f 99))")]
+    (ok "multimethod: no match throws" (not= code 0) (string "code=" code))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

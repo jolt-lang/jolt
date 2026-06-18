@@ -171,6 +171,14 @@
   (ns-intern (ctx-find-ns ctx ns-name) nm)
   nil)
 
+# Open-world (late-binding) analysis: when set on the ctx env, an unresolved
+# symbol emits a var-ref against the compile ns (resolved at runtime) instead of
+# punting to the interpreter. The Chez back end (host/chez/driver) sets it: it has
+# no interpreter to punt to, and a forward reference to a runtime-interned var
+# (e.g. defmulti's setup call) must lower to a var-deref. Off everywhere else, so
+# the normal compiler keeps its strict 'Unable to resolve symbol' behavior.
+(defn h-late-bind? [ctx] (truthy? (get (ctx :env) :late-bind-unresolved?)))
+
 # ---------------------------------------------------------------------------
 # Installation: bind these fns as vars in the `jolt.host` namespace so jolt-core
 # can call them. Idempotent per context.
@@ -270,7 +278,8 @@
    "host-intern!" h-intern!
    "inline-enabled?" h-inline-enabled? "inline-ir" h-inline-ir
    "record-type?" h-record-type? "form-position" h-form-position
-   "record-ctor-key" h-record-ctor-key "record-shapes" h-record-shapes})
+   "record-ctor-key" h-record-ctor-key "record-shapes" h-record-shapes
+   "late-bind?" h-late-bind?})
 
 (defn install! [ctx]
   (def ns (ctx-find-ns ctx "jolt.host"))

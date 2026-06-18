@@ -331,6 +331,13 @@
     # keyword/coll/fn) -> dynamic IFn dispatch. Excludes the named-fn self-call.
     (and (= :local (get fnode :op)) (not (get known-procs (munge (get fnode :name)))))
     (string "(jolt-invoke " (emit fnode) " " (string/join args " ") ")")
+    # a late-bound :var call head can hold a plain procedure OR a non-applicable
+    # value the RT dispatches (a multimethod record, a keyword/coll IFn) — route it
+    # through jolt-invoke so all of those work. Transparent for a procedure
+    # (jolt-invoke just applies it); the hot self-recursive call is a :local
+    # known-proc above, so it stays a direct call.
+    (= :var (get fnode :op))
+    (string "(jolt-invoke " (emit fnode) " " (string/join args " ") ")")
     (string "(" (emit fnode) " " (string/join args " ") ")")))
 
 (set emit (fn emit [node]
