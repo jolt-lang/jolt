@@ -10,22 +10,33 @@ tunable via WPO + stripped boot + AOT-under-petite.
 
 This plan is built around two north stars beyond raw speed:
 
-1. **Minimal host shim.** Every line that stays in Scheme is a line we failed to
-   self-host. The port is the forcing function for jolt-tzo/uqi/lcn: shrink the
-   Scheme seed to the irreducible primitive set, push everything else into
-   portable Clojure (`jolt-core/`).
+1. **Zero Janet — Chez is the sole substrate** (revised 2026-06-18). The goal is
+   not a minimal Janet shim that coexists with Chez; it is to rip Janet out
+   entirely and rely on Chez going forward. Two things must move off Janet: the
+   **runtime** (a hand-written Chez Scheme RT replaces the Janet value layer /
+   vars / evaluator) and the **compiler**. The compiler is the subtle part: the
+   analyzer/IR are already portable Clojure, but today they *execute on the Janet
+   host*, and the IR->Scheme emitter + driver are *Janet code* (`host/chez/
+   emit.janet`), so the current `clojure.core` prelude is a Janet cross-compile.
+   The end state requires Chez-jolt to run the analyzer itself and the emitter to
+   become portable Clojure — so Chez-jolt compiles its own `clojure.core` AND the
+   analyzer from source, with no Janet in the loop (the bootstrap fixpoint). Then
+   both `src/jolt/*.janet` and `host/chez/*.janet` are deleted. Every line that
+   stays in Scheme is hand-written Chez RT, not Janet; the forcing function for
+   jolt-tzo/uqi/lcn still applies (push logic into `jolt-core/`).
 2. **Tests are the contract.** The spec/conformance corpus is host-neutral data
    (`[name expected-clj actual-clj]` triples compared via jolt's own `=`). It is
    the acceptance gate for "the port is correct" — Chez-jolt must pass the same
    corpus the Janet host passes, with no regression to the clojure-test-suite
    baseline.
 
-## The minimal host shim (target end-state)
+## The Chez host RT vs portable Clojure (target end-state)
 
-What MUST be Scheme (the irreducible primitive layer the self-hosted core rests
-on) vs what MOVES into portable Clojure:
+What MUST be hand-written Chez Scheme (the irreducible primitive layer the
+self-hosted core rests on) vs what MOVES into portable Clojure. Nothing here is
+Janet — this is the split *after* Janet is gone:
 
-### Stays in Scheme (the shim)
+### Stays in Scheme (the Chez host RT)
 - **Value primitives that can't bottom out in Clojure without circularity:**
   the `nil` sentinel (distinct from `#f` and `'()` — the classic Lisp-on-Lisp
   trap), keyword/symbol records (Clojure symbols carry ns + meta), char/string
@@ -45,9 +56,11 @@ on) vs what MOVES into portable Clojure:
 ### Moves into portable Clojure (`jolt-core/`)
 - **The reader** (text -> forms). CLJS self-hosts its reader; ours can too. ~33KB
   of Janet leaves the host. Not hot.
-- **Analyzer + IR + passes** — already portable Clojure. No change.
-- **The backend emitter** — its LOGIC becomes Clojure that emits Scheme forms as
-  data; only `host/compile` crosses the seam.
+- **Analyzer + IR + passes** — already portable Clojure source; the change is
+  that they must EXECUTE on Chez-jolt, not on the Janet host (Phase 3).
+- **The backend emitter** — today it is Janet (`host/chez/emit.janet`); its LOGIC
+  becomes portable Clojure (`jolt.backend-scheme`) that emits Scheme forms as
+  data, so it runs on Chez. Only `host/compile` (Chez `eval`) crosses the seam.
 - **macros + clojure.core** — finish the jolt-uqi/tzo migration (most already
   Clojure).
 - **Protocol/multimethod dispatch logic** — over the host tag primitive.
@@ -98,10 +111,17 @@ on) vs what MOVES into portable Clojure:
   the Chez RT. Gate: spec + conformance + clojure-test-suite parity with the
   Janet baseline.
 
-**Phase 3 — Self-host expansion (shrink the shim)**
-- Move the reader into jolt-core. Continue core-* leaf migration (jolt-uqi/ded/
-  tzo, now targeting Chez). Drop the tree-walking interpreter. Gate: shim equals
-  the documented minimal set; parity holds.
+**Phase 3 — Self-host the compiler on Chez** (the no-Janet spine)
+- Rewrite the IR->Scheme emitter from Janet (`host/chez/emit.janet` + `driver.
+  janet`) into portable Clojure in jolt-core (a `jolt.backend-scheme` target);
+  folds jolt-lcn. Move the reader into jolt-core. Stand up Chez compile-from-
+  source: Chez-jolt reads the `.clj` tiers, runs the analyzer *executing on Chez*
+  (not Janet), emits Scheme, evals — replacing the Janet cross-compile of the
+  prelude. Bootstrap fixpoint: Chez-jolt compiles `clojure.core` AND the analyzer
+  from source with no Janet in the loop; verify stage2==stage3 emitted forms.
+  Drop the tree-walking interpreter. Continue core-* leaf migration (jolt-uqi/
+  ded/tzo). Gate: Chez-jolt builds itself from source, full corpus parity holds,
+  zero Janet invoked.
 
 **Phase 4 — Deployment & optimization modes** (the "optimize specific cases" lever)
 - Wire `JOLT_WHOLE_PROGRAM`/direct-link to emit specialized Scheme (fl*/fx*),
@@ -111,9 +131,12 @@ on) vs what MOVES into portable Clojure:
   collections/binary-trees (the GC axes); size + memory measured vs spike
   baseline.
 
-**Phase 5 — Retire the Janet host**
-- Chez parity + perf confirmed -> remove `src/jolt/*.janet` seed. jolt-core
-  unchanged. Janet becomes a historical/alternate host proving portability.
+**Phase 5 — Delete the Janet host** (single substrate)
+- Chez self-hosts + parity + perf confirmed -> delete both `src/jolt/*.janet`
+  (the seed) and `host/chez/*.janet` (the Janet emitter/driver, now superseded by
+  the Clojure `jolt.backend-scheme`). Chez is the only substrate; no alternate
+  host retained. jolt-core unchanged. Oracle stays the spec corpus + JVM Clojure.
+  Net: one host, no Janet, no cross-compile.
 
 ## Host interop & the examples acceptance corpus
 
