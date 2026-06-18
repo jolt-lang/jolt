@@ -8,7 +8,9 @@
 ;; seed predicates are simply absent here for now.
 
 (define (jolt-map? x) (pmap? x))
-(define (jolt-vector? x) (pvec? x))
+;; a map entry is a pvec under the hood but is NOT vector? (matches Clojure's
+;; MapEntry — jolt-agw6); the public vector? predicate excludes it.
+(define (jolt-vector? x) (and (pvec? x) (not (pvec-ent x))))
 (define (jolt-set? x) (pset? x))
 (define (jolt-seq? x) (or (cseq? x) (empty-list-t? x)))
 (define (jolt-coll-pred? x)

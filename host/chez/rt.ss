@@ -166,6 +166,11 @@
 ;; natives. Over the seq layer + jolt-compare, so loaded after converters.ss.
 (load "host/chez/natives-seq.ss")
 
+;; collection constructors + rand (jolt-agw6, Phase 2 inc A): bind the public
+;; clojure.core names hash-map/hash-set/array-map/set/rand to the existing
+;; pmap/pset ctors. After collections.ss (the ctors) + seq.ss (seq->list).
+(load "host/chez/natives-coll.ss")
+
 ;; multimethods (jolt-9ls5): defmulti/defmethod dispatch runtime. Needs jolt-invoke
 ;; (seq.ss), jolt=/key-hash/jolt-hash-map (collections.ss), jolt-atom? (atoms.ss),
 ;; jolt-pr-str (above), and the var-cell machinery — so loaded last.

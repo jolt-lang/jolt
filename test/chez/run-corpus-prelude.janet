@@ -139,8 +139,10 @@
 # 3q (multimethod dispatch + late-bind) 1530; 3r (dynamic-var constants) 1532;
 # 3x (non-ASCII string literals, jolt-x0os) + 3y (seed assoc! odd-args -> :throws,
 # jolt-ea9k) 1534 (total evaluated drops as the 3 odd-arg rows become :throws).
+# Phase 2 inc A (jolt-agw6: collection ctors set/hash-map/hash-set/array-map +
+# rand + real map entries / key / val / map-entry?) 1593.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1534")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1593")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

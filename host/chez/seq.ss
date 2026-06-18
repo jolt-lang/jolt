@@ -52,7 +52,7 @@
     ((empty-list-t? x) jolt-nil)
     ((cseq? x) x)
     ((pvec? x) (vec->seq x 0))
-    ((pmap? x) (list->cseq (pmap-fold x (lambda (k v a) (cons (jolt-vector k v) a)) '())))
+    ((pmap? x) (list->cseq (pmap-fold x (lambda (k v a) (cons (make-map-entry k v) a)) '())))
     ((pset? x) (list->cseq (pset-fold x cons '())))
     ((string? x) (str->seq x 0))
     (else (error 'seq "not seqable" x))))

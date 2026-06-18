@@ -37,9 +37,20 @@
 ;; ============================================================================
 ;; persistent vector — copy-on-write over a Scheme vector
 ;; ============================================================================
-(define-record-type pvec (fields v) (nongenerative chez-pvec-v1))
+;; A pvec carries an `ent` flag: #t marks a MAP ENTRY (the [k v] pair seq'd out
+;; of a map). A map entry equals its [k v] vector and walks like one (nth/count/
+;; seq/=/hash/print all read only `v`), but is NOT `vector?` and IS `map-entry?`
+;; — matching Clojure's MapEntry (jolt-agw6). The flag defaults #f, so every
+;; existing `(make-pvec v)` builds a plain vector; modifying an entry (conj/assoc)
+;; likewise yields a plain vector.
+(define-record-type pvec
+  (fields v ent)
+  (protocol (lambda (new) (case-lambda ((v) (new v #f)) ((v e) (new v e)))))
+  (nongenerative chez-pvec-v1))
 (define empty-pvec (make-pvec (vector)))
 (define (jolt-vector . xs) (make-pvec (list->vector xs)))
+(define (make-map-entry k v) (make-pvec (vector k v) #t))
+(define (jolt-map-entry? x) (and (pvec? x) (pvec-ent x) #t))
 (define (pvec-count p) (vector-length (pvec-v p)))
 ;; jolt models every number as a double, so vector indices arrive as flonums —
 ;; coerce an integer-valued index to a Scheme fixnum before bounds math.
