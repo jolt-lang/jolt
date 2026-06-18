@@ -488,6 +488,44 @@
     (ok (string "numedge: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3s) seq-native shims + reduced (jolt-y6mv): the dominant prelude-parity crash
+#   bucket was 'apply jolt-nil' — core fns calling seed-native seq fns with no Chez
+#   shim. host/chez/natives-seq.ss shims the safe, high-value ones (mapcat/
+#   take-while/drop-while/partition collection arities, sort) over the seq layer,
+#   plus reduced/reduced? (reduce short-circuits on a reduced; deref unwraps it)
+#   and identical?. They lower to var-deref in prelude mode. Asserted as
+#   (= expected (expr)) -> "true" so seq-vs-vector equality (not print form) is the
+#   contract, exactly like the corpus gate.
+(each src [# reduced
+           "(reduced? (reduced 1))" "(reduced? 1)" "(deref (reduced 9))"
+           "(reduce (fn [a x] (if (> a 2) (reduced a) (+ a x))) 0 [1 2 3 4 5])"
+           "(= [1 1 2 2] (mapcat (fn [x] [x x]) [1 2]))"
+           "(= [1 3 2 4] (mapcat vector [1 2] [3 4]))"
+           "(= [1 2 3] (mapcat identity [[1 2] [3]]))"
+           "(= () (mapcat vector [] [1 2]))"
+           "(= [1 2] (take-while (fn [x] (< x 3)) [1 2 3 1]))"
+           "(= [3 1] (drop-while (fn [x] (< x 3)) [1 2 3 1]))"
+           "(= () (take-while pos? []))"
+           "(= [[1 2] [3 4]] (partition 2 [1 2 3 4 5]))"
+           "(= [[1 2] [4 5]] (partition 2 3 [1 2 3 4 5 6]))"
+           "(= [[1 2] [3 :p]] (partition 2 2 [:p] [1 2 3]))"
+           "(= [1 2 3] (sort [3 1 2]))"
+           "(= [3 2 1] (sort > [1 3 2]))"
+           "(= [nil 1 3] (sort compare [3 nil 1]))"
+           "(= () (sort []))"
+           "(identical? :a :a)" "(identical? :a :b)"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "seq-native: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+# reduce-kv honors reduced is an OVERLAY fn over the native reduce — exercise it
+# end-to-end through the assembled -e binary.
+(when (os/stat "bin/jolt-chez")
+  (each src ["(= [:a] (reduce-kv (fn [a i v] (if (= i 1) (reduced a) (conj a v))) [] [:a :b :c]))"
+             "(= 9 (unreduced (reduced 9)))" "(= 9 (unreduced 9))"]
+    (let [[code out err] (run-jolt-chez src) want (cli-oracle src)]
+      (ok (string "seq-native -e: " src) (and (= code 0) (= out want))
+          (string "chez=" out " janet=" want " | " err)))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

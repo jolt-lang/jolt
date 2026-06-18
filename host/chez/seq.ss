@@ -30,6 +30,11 @@
 (define-record-type empty-list-t (fields) (nongenerative empty-list-v1))
 (define jolt-empty-list (make-empty-list-t))
 
+;; reduced (jolt-y6mv): a box a reducing fn returns to stop reduce early. The
+;; reduce machinery below unwraps it; (deref a-reduced) / unreduced also read it.
+;; reduced?/reduced are def-var!'d into clojure.core in natives-seq.ss.
+(define-record-type jolt-reduced (fields val) (nongenerative jolt-reduced-v1))
+
 ;; ============================================================================
 ;; jolt-seq — coerce a seqable to a non-empty seq, or jolt-nil when empty
 ;; ============================================================================
@@ -132,8 +137,14 @@
 (define (jolt-filter pred coll) (filter-seq pred (jolt-seq coll) #t))
 (define (jolt-remove pred coll) (filter-seq pred (jolt-seq coll) #f))
 
+;; honors `reduced`: a reducing fn that returns (reduced x) stops the fold and
+;; unwraps to x (so does a reduced INIT). Checked at entry, so the value returned
+;; by the last step is unwrapped on the next turn before the seq is consulted.
 (define (reduce-seq f acc s)
-  (if (jolt-nil? s) acc (reduce-seq f (jolt-invoke f acc (seq-first s)) (jolt-seq (seq-more s)))))
+  (cond
+    ((jolt-reduced? acc) (jolt-reduced-val acc))
+    ((jolt-nil? s) acc)
+    (else (reduce-seq f (jolt-invoke f acc (seq-first s)) (jolt-seq (seq-more s))))))
 (define jolt-reduce
   (case-lambda
     ((f coll) (let ((s (jolt-seq coll)))

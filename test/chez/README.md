@@ -124,12 +124,27 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
   `inf`/`-inf`/`nan` and `str` renders `Infinity`/`-Infinity`/`NaN` (Clojure). Plus
   variadic `assoc!`. (`str` of inf *inside a collection* still wants the long form —
   the Phase-2 recursive str renderer — so `[inf inside coll]` is allowlisted.)
+- inc 3n `host/chez/natives-seq.ss` (jolt-y6mv): the dominant prelude-parity crash
+  bucket was `apply non-procedure jolt-nil` — core fns calling seed-native seq fns
+  (`src/jolt/core_coll.janet`) that have no Chez shim, so `var-deref` yields
+  jolt-nil. A static scan of the assembled prelude found 52 referenced-but-undefined
+  `clojure.core` names; this increment shims the safe, high-value seq fns: `mapcat`/
+  `take-while`/`drop-while`/`partition` (collection arities — the 1-arg transducer
+  forms are jolt-kxsr), `sort` (compare default; a comparator may return a 3-way
+  number or a boolean less-than), and `reduced`/`reduced?` — a `jolt-reduced` record
+  in `seq.ss` that `reduce` short-circuits on and `deref` unwraps (so `unreduced`
+  works). `identical?` = `jolt=` (the seed's definition). `list?` was deferred: a
+  Chez lazy seq and a list are both `cseq`, so it can't be told apart without a
+  distinct list type (a real divergence risk).
 
-The remaining buckets are the punch-list the next increments chase: ~360 emit-fail
-(genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of
-the analyzer's subset) and ~715 runtime crashes — more host-coupled natives without a
-shim, transducer arities (jolt-kxsr), `cdr`-on-`()` and `\p{}` regex classes
-(jolt-y1zq), and multimethod dispatch (Phase 2 jolt-9ls5).
+The remaining buckets are the punch-list the next increments chase (at 1467/2497):
+~361 emit-fail (genuine host interop — qualified Java/Janet refs, runtime
+`defmacro`/`eval`, out of the analyzer's subset) and ~655 runtime crashes — still
+~590 `apply jolt-nil` (more host-coupled natives without a shim: `meta`/`with-meta`,
+`format`, the `clojure.string` natives, bit ops, `var`/`volatile`/`future`/
+thread-binding ops), the transducer arities (jolt-kxsr — 1-arg `filter`/`map`/`take`/
+`take-while` + 3-arg `into`), `cdr`-on-`()` and `\p{}` regex classes (jolt-y1zq), and
+multimethod dispatch (Phase 2 jolt-9ls5).
 
 Two host shims landed with the prelude. `host/chez/atoms.ss`: atom/deref/swap!/
 reset! (+ compare-and-set!/swap-vals!/reset-vals!) — host-coupled mutable cells the

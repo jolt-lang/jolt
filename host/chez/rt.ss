@@ -160,3 +160,8 @@
 ;; extends get/count/contains? to see through a transient. After collections.ss
 ;; (the persistent ops it delegates to).
 (load "host/chez/transients.ss")
+
+;; seq-native shims (jolt-y6mv): mapcat/take-while/drop-while/partition/sort +
+;; reduced/reduced?/identical? — seed-native fns the overlay assumes are core
+;; natives. Over the seq layer + jolt-compare, so loaded after converters.ss.
+(load "host/chez/natives-seq.ss")

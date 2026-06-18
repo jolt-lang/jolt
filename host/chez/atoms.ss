@@ -17,10 +17,13 @@
 ;; (watches/validators are overlay features layered via jolt.host/ref-put!).
 (define (jolt-atom-new v . _opts) (make-jolt-atom v))
 
+;; deref reads an atom; it also unwraps a `reduced` (Clojure @(reduced x) => x,
+;; which the overlay's `unreduced` relies on). The reduced record is in seq.ss.
 (define (jolt-deref x)
-  (if (jolt-atom? x)
-      (jolt-atom-val x)
-      (error #f "deref: unsupported reference type" x)))
+  (cond
+    ((jolt-atom? x) (jolt-atom-val x))
+    ((jolt-reduced? x) (jolt-reduced-val x))
+    (else (error #f "deref: unsupported reference type" x))))
 
 ;; (swap! a f arg*) -> (reset! a (f @a arg*)); f is invoked through jolt-invoke
 ;; (a jolt fn value, keyword, or invokable collection).
