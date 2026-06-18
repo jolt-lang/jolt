@@ -82,6 +82,16 @@
 ;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
 ;; return, so this is transparent there.
 (define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
+;; var def-time metadata (jolt-zikh): the :def emit passes the def's reader meta
+;; (^:private / ^Type tag / docstring -> {:doc}) here, stored in an eq side-table
+;; keyed by the cell. jolt-meta (natives-meta.ss) merges it onto {:ns :name},
+;; which it derives from the cell — so EVERY var (plain def, native-op, declare)
+;; reports {:ns :name} like Clojure, with the user meta layered on when present.
+(define var-meta-table (make-eq-hashtable))
+(define jolt-kw-var-ns (keyword #f "ns"))
+(define jolt-kw-var-name (keyword #f "name"))
+(define (def-var-with-meta! ns name v m)
+  (let ((c (def-var! ns name v))) (hashtable-set! var-meta-table c m) c))
 ;; declare / (def name) with no init: reserve the cell ONLY if absent. An
 ;; existing root is left intact — Clojure's (def x) with no init does not clobber
 ;; a prior binding (do (def x 7) (def x) x) => 7. Returns the cell either way.

@@ -218,6 +218,15 @@
     (or (struct? form) (table? form)) (emit-quoted-map form)
     (errorf "emit-quoted: unsupported quoted form %p" form))))
 
+# A def's :meta is a jolt map value (Janet struct/table or phm). Non-empty?
+# (a plain def carries {} — keep it on the lean def-var! path).
+(defn- jmeta-nonempty? [m]
+  (cond
+    (nil? m) false
+    (phm/phm? m) (> (length (phm/phm-to-struct m)) 0)
+    (or (struct? m) (table? m)) (> (length m) 0)
+    false))
+
 (defn- emit-binding [b]
   (def b (vv b))
   (string "(" (munge (get b 0)) " " (emit (get b 1)) ")"))
@@ -481,9 +490,16 @@
     :fn    (emit-fn node)
     # (def name) with no init (declare): reserve the var cell (declare-var!
     # doesn't clobber an existing root) so a forward reference resolves.
-    :def   (if (get node :no-init)
+    # A def with non-empty reader metadata (^:private / ^Type tag / docstring ->
+    # {:doc}) lowers to def-var-with-meta! so (meta (var x)) sees it (jolt-zikh).
+    :def   (cond
+             (get node :no-init)
              (string "(declare-var! " (chez-str-lit (get node :ns)) " "
                      (chez-str-lit (get node :name)) ")")
+             (jmeta-nonempty? (get node :meta))
+             (string "(def-var-with-meta! " (chez-str-lit (get node :ns)) " "
+                     (chez-str-lit (get node :name)) " " (emit (get node :init)) " "
+                     (emit-quoted (get node :meta)) ")")
              (string "(def-var! " (chez-str-lit (get node :ns)) " "
                      (chez-str-lit (get node :name)) " " (emit (get node :init)) ")"))
     (errorf "emit: unhandled op %p" (get node :op)))))

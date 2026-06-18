@@ -12,6 +12,13 @@
 (define (jolt-meta x)
   (cond
     ((symbol-t? x) (let ((m (symbol-t-meta x))) (if (jolt-nil? m) jolt-nil m)))
+    ;; a var's meta is {:ns :name} (derived from the cell) + any def-time user
+    ;; meta from rt.ss's var-meta-table (jolt-zikh).
+    ((var-cell? x)
+     (let ((user (hashtable-ref var-meta-table x #f)))
+       (jolt-assoc (if user user (jolt-hash-map))
+                   jolt-kw-var-ns (var-cell-ns x)
+                   jolt-kw-var-name (var-cell-name x))))
     ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jrec? x) (procedure? x))
      (hashtable-ref meta-table x jolt-nil))
     (else jolt-nil)))

@@ -69,14 +69,9 @@
    "defmethod overrides a record, top level" true
    "defmethod fires nested in a map" true
    "defmethod fires through prn" true
-   "methods table inspectable" true
-   # Phase 2 inc I (jolt-n7rz) made (var x)/#'x emit + the static var ops run; a
-   # var's def-time metadata (^:private / ^Type tag / docstring) isn't captured on
-   # the Chez var-cell yet, so (meta (var v)) is nil — var-metadata capture is a
-   # later increment.
-   "^:private on var" true
-   "^Type tag on var" true
-   "(def name doc val) doc" true})
+   # var def-time metadata (^:private / ^Type tag / docstring) is now captured on
+   # the Chez var-cell (jolt-zikh), so those three cases pass.
+   "methods table inspectable" true})
 
 (def ctx (d/make-ctx))
 
@@ -190,8 +185,11 @@
 # jolt-yxqm (namespace value model — find-ns/ns-name/all-ns/resolve/ns-publics/
 # in-ns/*ns* over the var-table + a jns ns value; native-op var cells so
 # (resolve '+) is a var; *ns* bound to the user ns) 1969.
+# jolt-zikh (var def-time metadata — :def emit passes reader meta to
+# def-var-with-meta!; (meta (var v)) is {:ns :name} + ^:private/^Type tag/
+# docstring) 1972.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1969")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1972")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

@@ -20,7 +20,7 @@
   (each f ["host/chez/emit.janet" "host/chez/driver.janet" "host/chez/rt.ss"
            "host/chez/values.ss" "host/chez/collections.ss" "host/chez/seq.ss"
            "host/chez/atoms.ss" "host/chez/predicates.ss" "host/chez/regex.ss"
-           "host/chez/ns.ss" "host/chez/post-prelude.ss"]
+           "host/chez/ns.ss" "host/chez/post-prelude.ss" "host/chez/natives-meta.ss"]
     (array/push parts (slurp f)))
   (string/slice (string (hash (string/join parts))) 0))
 
