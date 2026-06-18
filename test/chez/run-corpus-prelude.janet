@@ -193,8 +193,10 @@
 # bound-fn*/get-thread-bindings/alter-var-root; var-deref + jolt-var-get chained
 # onto the stack. Also fixed seq? to recognize a lazy-seq, which unblocked
 # with-in-str/line-seq) 2000.
+# jolt-fmm4 ((type x) — :type meta override, record ns-qualified class-name
+# symbol, total value->taxonomy keyword mapping) 2002.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2000")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2002")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

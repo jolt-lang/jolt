@@ -44,3 +44,68 @@
 
 (def-var! "clojure.core" "meta" jolt-meta)
 (def-var! "clojure.core" "with-meta" jolt-with-meta)
+
+;; (type x) — Clojure's (or (:type (meta x)) (class x)). With no JVM classes the
+;; "class" is a host taxonomy: a record yields its ns-qualified class-name SYMBOL
+;; (user.TyR), everything else a keyword (:number/:vector/:seq/…). Mirrors the
+;; seed's core-type (src/jolt/core_io.janet). MUST be total — a non-record value
+;; falling through to a crash would read as a divergence, not the right keyword.
+;; Forward refs (jolt-lazyseq?, the sorted-htable / wrapper predicates) all bind by
+;; call time (every host .ss loads before any user expr runs).
+(define ty-kw-type (keyword #f "type"))           ; the :type meta key
+(define ty-kw-jtype (keyword "jolt" "type"))       ; tagged-map discriminator (ex-info)
+(define ty-number (keyword #f "number"))
+(define ty-string (keyword #f "string"))
+(define ty-keyword (keyword #f "keyword"))
+(define ty-symbol (keyword #f "symbol"))
+(define ty-boolean (keyword #f "boolean"))
+(define ty-char (keyword #f "char"))
+(define ty-vector (keyword #f "vector"))
+(define ty-map (keyword #f "map"))
+(define ty-set (keyword #f "set"))
+(define ty-seq (keyword #f "seq"))
+(define ty-fn (keyword #f "fn"))
+(define ty-atom (keyword "jolt" "atom"))
+(define ty-volatile (keyword "jolt" "volatile"))
+(define ty-regex (keyword "jolt" "regex"))
+(define ty-var (keyword "jolt" "var"))
+(define ty-transient (keyword "jolt" "transient"))
+(define ty-uuid (keyword "jolt" "uuid"))
+(define ty-sorted-set (keyword "jolt" "sorted-set"))
+(define ty-object (keyword #f "object"))
+
+(define (jolt-type x)
+  (let* ((m (jolt-meta x))
+         (override (if (jolt-nil? m) jolt-nil (jolt-get m ty-kw-type jolt-nil))))
+    (cond
+      ((not (jolt-nil? override)) override)            ; :type meta wins
+      ;; record -> ns.Name symbol. No-ns sentinel is #f (not jolt-nil) so it = the
+      ;; overlay's (symbol (str t)) — jolt= compares the ns field with equal?.
+      ((jrec? x) (jolt-symbol #f (jrec-tag x)))
+      ((jolt-nil? x) jolt-nil)
+      ((boolean? x) ty-boolean)
+      ((number? x) ty-number)
+      ((string? x) ty-string)
+      ((keyword? x) ty-keyword)
+      ((symbol-t? x) ty-symbol)
+      ((char? x) ty-char)
+      ;; host wrappers — match the seed's :jolt/* tags (checked before the
+      ;; collection arms; none of these are pvec/pmap/pset).
+      ((jolt-atom? x) ty-atom)
+      ((jvol? x) ty-volatile)
+      ((jolt-regex? x) ty-regex)
+      ((var-cell? x) ty-var)
+      ((jolt-transient? x) ty-transient)
+      ((juuid? x) ty-uuid)
+      ((htable-sorted-set? x) ty-sorted-set)
+      ((htable-sorted-map? x) ty-map)
+      ;; collections — pvec INCLUDES map entries (:vector, like the seed's jvec?).
+      ((pvec? x) ty-vector)
+      ((pmap? x)                                        ; a :jolt/type-tagged map (ex-info) -> its tag
+       (let ((t (jolt-get x ty-kw-jtype jolt-nil))) (if (jolt-nil? t) ty-map t)))
+      ((pset? x) ty-set)
+      ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)) ty-seq)
+      ((procedure? x) ty-fn)
+      (else ty-object))))
+
+(def-var! "clojure.core" "type" jolt-type)

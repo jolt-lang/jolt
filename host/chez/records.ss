@@ -286,9 +286,9 @@
               (let ((s (jrec-pr v))) (substring s 1 (string-length s)))))
         (%r-str-render-one v))))
 
-;; NOTE: `type` is not shimmed on Chez yet (nil); a record-aware override here
-;; would turn non-record (type x) crashes into divergences. Deferred to a `type`
-;; increment with proper class names.
+;; `type` lives in natives-meta.ss (jolt-fmm4): it needs jolt-meta for the :type
+;; override and a total value->taxonomy mapping, so it sits with meta — a record
+;; yields (jolt-symbol #f (jrec-tag x)), the ns.Name class-name symbol.
 
 (def-var! "clojure.core" "make-deftype-ctor" make-deftype-ctor)
 (def-var! "clojure.core" "make-protocol" make-protocol)
