@@ -13,6 +13,11 @@
     ((string? v) v)
     ((char? v) (string v))
     ((regex-t? v) (regex-t-source v))
+    ;; str/print render the infinities and NaN long-form (Clojure .toString),
+    ;; unlike the -e printer's inf/-inf/nan.
+    ((and (flonum? v) (fl= v +inf.0)) "Infinity")
+    ((and (flonum? v) (fl= v -inf.0)) "-Infinity")
+    ((and (flonum? v) (not (fl= v v))) "NaN")
     (else (jolt-pr-str v))))
 (define (jolt-str . xs)
   (let loop ((xs xs) (acc '()))

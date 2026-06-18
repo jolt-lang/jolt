@@ -54,7 +54,12 @@
    "*ns* user" true
    "str of a var" true
    "*clojure-version* major" true
-   "*unchecked-math*" true})
+   "*unchecked-math*" true
+   # (str [##Inf]) wants "[Infinity]" but the Chez -e printer (jolt-pr-str, which
+   # str falls back to for collections) renders inf as "inf" — str needs a
+   # recursive long-form renderer, the Phase-2 canonical printer. Top-level
+   # (str ##Inf) -> "Infinity" already works (jolt-str-render-one).
+   "inf inside coll" true})
 
 (def ctx (d/make-ctx))
 
@@ -130,8 +135,8 @@
 # reach-floor and the suite baseline. The gate fails if parity drops below it, or
 # on any NEW (un-allowlisted) divergence — a real Chez correctness regression.
 # Full-corpus baseline: inc 3j 1220/2497; 3k (converters) 1326; 3l (transients)
-# 1382. Strided runs scale the floor down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1382")))
+# 1382; 3m (numeric-edge emit + variadic assoc!) 1407. Strided runs scale down.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1407")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

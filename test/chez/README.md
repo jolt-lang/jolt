@@ -105,7 +105,8 @@ corpus case with all of core present, bucketing the result —
     JOLT_CORPUS_LIMIT=200 …    (every-Nth stride, fast)
 
 Parity baseline: inc 3j **1220/2497**; 3k (converters, jolt-t6cr) **1326**;
-3l (transients, jolt-kl2l) **1382/2497**, 0 NEW divergences (13 allowlisted:
+3l (transients, jolt-kl2l) **1382**; 3m (numeric-edge emit + variadic assoc!,
+jolt-q3w8) **1407/2497**, 0 NEW divergences (14 allowlisted:
 dynamic vars `*ns*`/`*clojure-version*`/`*unchecked-math*`, var/`*ns*` rendering,
 class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
 - inc 3k `host/chez/converters.ss`: `str`/`subs`/`vec`/`keyword`/`symbol`/`compare`/
@@ -118,11 +119,17 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
   are redefined to see THROUGH a transient (frequencies/group-by do `(get tm k)` on a
   transient map); `vector?` on a transient vector is false, which group-by relies on.
 
+- inc 3m: `##Inf`/`##-Inf`/`##NaN` emitted to bare `inf`/`nan` (unbound in Chez);
+  emit-const now lowers them to `+inf.0`/`-inf.0`/`+nan.0`, the `-e` printer renders
+  `inf`/`-inf`/`nan` and `str` renders `Infinity`/`-Infinity`/`NaN` (Clojure). Plus
+  variadic `assoc!`. (`str` of inf *inside a collection* still wants the long form —
+  the Phase-2 recursive str renderer — so `[inf inside coll]` is allowlisted.)
+
 The remaining buckets are the punch-list the next increments chase: ~360 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of
-the analyzer's subset) and ~740 runtime crashes, including `##Inf`/`##NaN` literals →
-unbound `inf`/`nan` and seq-prim transducer arities (inc 3m jolt-q3w8), multimethod
-dispatch (Phase 2 jolt-9ls5), and more host-coupled natives without a shim.
+the analyzer's subset) and ~715 runtime crashes — more host-coupled natives without a
+shim, transducer arities (jolt-kxsr), `cdr`-on-`()` and `\p{}` regex classes
+(jolt-y1zq), and multimethod dispatch (Phase 2 jolt-9ls5).
 
 Two host shims landed with the prelude. `host/chez/atoms.ss`: atom/deref/swap!/
 reset! (+ compare-and-set!/swap-vals!/reset-vals!) — host-coupled mutable cells the

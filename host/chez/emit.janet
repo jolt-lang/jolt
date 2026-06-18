@@ -122,10 +122,14 @@
     # jolt models every number as a double (no ratios/bignums; see reader.janet).
     # Emit flonums so arithmetic matches the Janet host and Chez doesn't fall into
     # exploding exact rationals (mandelbrot). Integer-valued -> append ".0".
-    (number? v) (let [s (string v)]
-                  (if (or (string/find "." s) (string/find "e" s) (string/find "n" s))
-                    s
-                    (string s ".0")))
+    # ##Inf/##-Inf/##NaN: Janet stringifies these as inf/-inf/nan, which are
+    # unbound symbols in Chez — emit Chez's flonum literals instead.
+    (number? v) (cond
+                  (= v math/inf) "+inf.0"
+                  (= v (- math/inf)) "-inf.0"
+                  (not= v v) "+nan.0"
+                  (let [s (string v)]
+                    (if (or (string/find "." s) (string/find "e" s)) s (string s ".0"))))
     (string? v) (string/format "%j" v)   # quoted+escaped string literal
     # keyword literal -> (keyword ns name); ns is everything before the first "/"
     (keyword? v) (let [s (string v) idx (string/find "/" s)]

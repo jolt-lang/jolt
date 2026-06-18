@@ -467,6 +467,27 @@
       (ok (string "jolt-chez -e: " src) (and (= code 0) (= out want))
           (string "chez=" out " janet=" want " | " err)))))
 
+# 3r) numeric-edge literals (jolt-q3w8): ##Inf/##-Inf/##NaN emitted to bare
+#   inf/nan (unbound on Chez) — fix emit-const to +inf.0/-inf.0/+nan.0, the
+#   -e printer to inf/-inf/nan, and str to Infinity/-Infinity/NaN (Clojure).
+#   Value/print cases are pure literals -> subset path (d/run-on-chez).
+(each src ["(< 5 ##Inf)" "(> 5 ##-Inf)" "(= ##Inf ##Inf)"
+           "##Inf" "##-Inf" "##NaN" "[##Inf]" "[##NaN ##-Inf]"]
+  (let [[code out err] (d/run-on-chez ctx src) want (cli-oracle src)]
+    (ok (string "numedge: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+# str of inf/nan needs the prelude (str is a converter shim).
+(each src ["(str ##Inf)" "(str ##-Inf)" "(str ##NaN)"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "numedge: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+# variadic assoc! (jolt-q3w8): (assoc! t k v & kvs).
+(each src ["(count (persistent! (assoc! (transient {}) :a 1 :b 2 :c 3)))"
+           "(get (persistent! (assoc! (transient {}) :a 1 :b 2)) :b)"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "numedge: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.

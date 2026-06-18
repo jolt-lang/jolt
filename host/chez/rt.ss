@@ -98,9 +98,15 @@
 ;; jolt models every number as a Clojure double: integer-valued values print
 ;; without a ".0" (the Janet host prints (* 1.0 5) as "5", (/ 1 2) as "0.5").
 (define (jolt-num->string x)
-  (if (and (rational? x) (integer? x))
-      (number->string (exact x))
-      (number->string x)))
+  (cond
+    ;; the -e / element printer renders the infinities and NaN as inf/-inf/nan
+    ;; (Chez's number->string gives +inf.0 etc.); the str/print family uses the
+    ;; long "Infinity"/"NaN" forms (see jolt-str-render-one in converters.ss).
+    ((and (flonum? x) (fl= x +inf.0)) "inf")
+    ((and (flonum? x) (fl= x -inf.0)) "-inf")
+    ((and (flonum? x) (not (fl= x x))) "nan")
+    ((and (rational? x) (integer? x)) (number->string (exact x)))
+    (else (number->string x))))
 
 ;; Program-final-value printer. jolt's `-e` prints in str-style: strings raw (no
 ;; quotes), chars as `\c`/`\newline`, collections recursively. NOTE: maps/sets

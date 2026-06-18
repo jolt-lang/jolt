@@ -27,9 +27,10 @@
   (jolt-trans-check t "conj!")
   (jolt-transient-coll-set! t (apply jolt-conj (jolt-transient-coll t) xs))
   t)
-(define (jolt-assoc! t k v)
+;; (assoc! t k v & kvs): variadic like Clojure (jolt-assoc already folds pairs).
+(define (jolt-assoc! t . kvs)
   (jolt-trans-check t "assoc!")
-  (jolt-transient-coll-set! t (jolt-assoc (jolt-transient-coll t) k v))
+  (jolt-transient-coll-set! t (apply jolt-assoc (jolt-transient-coll t) kvs))
   t)
 (define (jolt-dissoc! t . ks)
   (jolt-trans-check t "dissoc!")
