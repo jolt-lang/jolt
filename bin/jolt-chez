@@ -1,0 +1,7 @@
+#!/bin/sh
+# -e-capable jolt-chez launcher (jolt-9ziu). Runs from the repo root so the
+# assembled prelude can load host/chez/rt.ss by relative path.
+#   JOLT_BIN=bin/jolt-chez janet test/chez/run-corpus.janet
+root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$root" || exit 1
+exec janet host/chez/jolt-chez.janet "$@"

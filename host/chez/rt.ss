@@ -84,6 +84,16 @@
 ;; renders a regex-t as #"source").
 (load "host/chez/regex.ss")
 
+;; atoms (jolt-9ziu): host-coupled mutable cells; def-var!'d into clojure.core
+;; (atom/deref/swap!/reset! + the compare/vals kernel). Loads after def-var! and
+;; jolt-invoke (seq.ss) / jolt= (values.ss) / jolt-vector (collections.ss).
+(load "host/chez/atoms.ss")
+
+;; type predicates + simple accessors (jolt-9ziu): seed natives the overlay
+;; assumes (map?/vector?/nil?/number?/.../name/namespace), def-var!'d into
+;; clojure.core. Loads after the value-model record predicates they wrap.
+(load "host/chez/predicates.ss")
+
 ;; --- jolt number printing ----------------------------------------------------
 ;; jolt models every number as a Clojure double: integer-valued values print
 ;; without a ".0" (the Janet host prints (* 1.0 5) as "5", (/ 1 2) as "0.5").

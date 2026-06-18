@@ -88,6 +88,48 @@ Janet PEG). Prior incs: inc 3h `.method` → `:host-call` (`jolt-host-call` for
 `letfn` → `letrec*`, `declare`/def-no-init → reserved var cell. The probe has a
 regression floor (355) — every non-macro core form must keep emitting.
 
+## Phase 1 — the assembled prelude: -e-capable jolt-chez (inc 3j, jolt-9ziu)
+Once the whole non-macro clojure.core emits (inc 3i), the milestone is to ASSEMBLE
+it: `driver/emit-core-prelude` emits every non-macro core form across the
+dependency-ordered tiers as a `def-var!` (prelude mode), concatenated into a
+Scheme prelude. `bin/jolt-chez -e EXPR` loads `rt.ss` + that prelude + a
+post-prelude override, emits the user expression in prelude mode, and runs it on
+Chez — an `-e`-capable jolt-chez (analysis on Janet, execution on Chez). The
+prelude is cached on disk keyed by a fingerprint of the core sources + the RT.
+
+`run-corpus-prelude.janet` is the full parity gate this opens (the prelude-backed
+sibling of `run-corpus-chez.janet`): it assembles the prelude once, then runs every
+corpus case with all of core present, bucketing the result —
+
+    JOLT_CHEZ_PRELUDE_CORPUS=1 janet test/chez/run-corpus-prelude.janet
+    JOLT_CORPUS_LIMIT=200 …    (every-Nth stride, fast)
+
+First parity baseline (inc 3j): **1220/2497** evaluated cases pass, 0 NEW
+divergences (10 allowlisted: dynamic vars `*ns*`/`*clojure-version*`/`*unchecked-math*`,
+class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
+The remaining buckets are the punch-list the next increments chase: ~360 emit-fail
+(genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of
+the analyzer's subset) and ~900 runtime crashes, dominated by core fns calling
+host-coupled seed natives with no Chez shim yet (`str`/`format`/`vec`/transients —
+inc 3k/3l, jolt-t6cr/jolt-kl2l), plus smaller buckets (`##Inf`/`##NaN` literals →
+unbound `inf`/`nan`, seq-prim transducer arities — inc 3m jolt-q3w8; multimethod
+dispatch — Phase 2 jolt-9ls5).
+
+Two host shims landed with the prelude. `host/chez/atoms.ss`: atom/deref/swap!/
+reset! (+ compare-and-set!/swap-vals!/reset-vals!) — host-coupled mutable cells the
+overlay assumes are native; needed at the prelude's LOAD time
+(`global-hierarchy = (atom (make-hierarchy))`). `host/chez/predicates.ss`: the type
+predicates + `name`/`namespace`/`boolean` the overlay assumes are seed natives
+(`nil?`/`number?`/`string?`/`map?`/`vector?`/`set?`/`seq?`/`coll?`/`fn?`/…), matching
+the seed's strict semantics. `host/chez/post-prelude.ss` re-asserts `char?`/`atom?`
+AFTER the prelude — the overlay implements those two by reading a value's
+`:jolt/type` key (a Janet-host assumption that's false for Chez-native chars/atoms),
+and its `def-var!` would otherwise clobber the correct native shims.
+
+The 8 print-method/print-dup `defmulti`/`defmethod` forms (50-io) can't LOAD yet
+(no multimethod runtime on Chez — Phase 2); a silent load guard in the assembled
+prelude lets the rest load and turns them into lazy gaps.
+
 Prior, inc 3b (seq tier + dynamic IFn, jolt-5pso): 595/595 compiled, 0 divergences,
 2060/2655 out of subset. The seq tier brought up a list/lazy-seq type with
 first/rest/next/seq/cons/list, map/filter/reduce/into/remove,

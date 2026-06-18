@@ -353,6 +353,51 @@
            (string/find "frequencies" (scm 1)))
       (string/format "%p" scm)))
 
+# 3n) atoms (jolt-9ziu): atom/deref/swap!/reset! are host-coupled (stay in the
+#   Janet seed, no overlay def-var!), so the Chez host needs an RT shim
+#   (host/chez/atoms.ss). They lower to var-deref in prelude mode. The hierarchy
+#   machinery (global-hierarchy = (atom (make-hierarchy))) needs `atom` at the
+#   prelude's LOAD time, so this is a load blocker, not just a lazy gap. swap!
+#   invokes its fn through jolt-invoke; compare-and-set!/swap-vals!/reset-vals!
+#   are overlay fns that compose the native kernel.
+(each src ["(deref (atom 42))"
+           "@(atom 99)"
+           "(let [a (atom 0)] (reset! a 7) (deref a))"
+           "(let [a (atom 0)] (swap! a inc) (swap! a inc) (deref a))"
+           "(let [a (atom 10)] (swap! a + 5) (deref a))"
+           "(let [a (atom 1)] (reset! a 2) [(deref a) @a])"
+           "(let [a (atom 0)] (compare-and-set! a 0 5) (deref a))"
+           "(let [a (atom 0)] (compare-and-set! a 9 5) (deref a))"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "atom: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+# 3o) type predicates + name/namespace (jolt-9ziu): seed natives the overlay
+#   assumes; the Chez host shims them (host/chez/predicates.ss) and def-var!s them
+#   into clojure.core, so they resolve in prelude mode. Semantics match the seed
+#   (core_types.janet): map?/vector?/set? strict over the persistent records,
+#   seq? only for real sequences, coll? the union. Parity vs the CLI oracle.
+(each src ["(nil? nil)" "(nil? 0)"
+           "(number? 3)" "(number? :a)" "(string? \"x\")" "(string? 1)"
+           "(integer? 3)" "(integer? 3.5)"
+           "(symbol? 'x)" "(keyword? :x)" "(keyword? 'x)"
+           "(map? {:a 1})" "(map? [1 2])"
+           "(vector? [1 2])" "(vector? '(1 2))"
+           "(set? #{1 2})" "(set? [1])"
+           # NB: (seq? (seq [1 2])) is true on Chez (Clojure-correct — a seq IS a
+           # seq) but the seed oracle returns false (non-canonical), so it's not a
+           # like-for-like cli-oracle comparison; the corpus encodes the canonical
+           # value, where Chez agrees. Test seq? on the unambiguous cases here.
+           "(seq? [1 2])" "(seq? '(1 2))"
+           "(coll? [1])" "(coll? {:a 1})" "(coll? 3)"
+           "(fn? inc)" "(fn? 3)"
+           "(boolean nil)" "(boolean 5)"
+           "(name :foo)" "(name 'bar)" "(name \"baz\")"
+           "(namespace :a/b)" "(namespace :x)"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "pred: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.
