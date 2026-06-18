@@ -176,8 +176,12 @@
 # referential lazy-cat (fib) stays productive. Unblocks repeat/iterate/cycle/
 # dedupe/take-nth/keep/interpose/reductions/map-indexed/distinct/interleave/
 # tree-seq->flatten/partition-all/lazy-cat) 1886.
+# Phase 2 inc H (jolt-xjx6: native volatiles (jvol) + sequence/transduce over the
+# existing into-xform/reduce-seq — unblocks (sequence xform coll), (transduce
+# xform f coll), and the stateful transducer xforms take-nth/map-indexed/
+# partition-by that drive a volatile) 1898.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1886")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1898")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

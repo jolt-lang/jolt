@@ -66,6 +66,16 @@
   (def final-scm (emit/emit (backend/analyze-form ctx (in forms (- n 1)))))
   (emit/program def-scm final-scm))
 
+# Drain a pipe to EOF. A single (ev/read pipe N) can return BEFORE the child has
+# flushed everything — a program with a stdout side effect (newline/print) flushes
+# in two writes, and the first ev/read sometimes catches only the first chunk, so
+# the trailing real value is lost (intermittent gate divergence). Loop until EOF.
+(defn- drain [pipe]
+  (def b @"")
+  (var c (ev/read pipe 0x10000))
+  (while c (buffer/push b c) (set c (ev/read pipe 0x10000)))
+  (string b))
+
 (defn run-on-chez
   "Compile `src` and run it on Chez; returns [exit-code stdout stderr]."
   [ctx src &opt scheme-out]
@@ -73,10 +83,10 @@
   (def path (or scheme-out "/tmp/chez-jolt-prog.ss"))
   (spit path prog)
   (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))
-  (def out (ev/read (proc :out) 0x100000))
-  (def err (ev/read (proc :err) 0x100000))
+  (def out (drain (proc :out)))
+  (def err (drain (proc :err)))
   (def code (os/proc-wait proc))
-  [code (string/trim (if out (string out) "")) (string/trim (if err (string err) ""))])
+  [code (string/trim out) (string/trim err)])
 
 # --- clojure.core prelude assembly (jolt-9ziu) --------------------------------
 # The -e-capable jolt-chez path: emit EVERY non-macro clojure.core form across
@@ -172,7 +182,7 @@
           path (or scheme-out (string "/tmp/jolt-chez-e-" (os/getpid) ".ss"))]
       (spit path prog)
       (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))
-      (def out (ev/read (proc :out) 0x100000))
-      (def err (ev/read (proc :err) 0x100000))
+      (def out (drain (proc :out)))
+      (def err (drain (proc :err)))
       (def code (os/proc-wait proc))
-      [code (string/trim (if out (string out) "")) (string/trim (if err (string err) ""))])))
+      [code (string/trim out) (string/trim err)])))

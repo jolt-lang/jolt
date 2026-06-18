@@ -13,3 +13,9 @@
 ;; override.)
 (def-var! "clojure.core" "char?" jolt-char-pred?)
 (def-var! "clojure.core" "atom?" jolt-atom?)
+;; volatiles: a Chez volatile is a jvol record, but the overlay vreset!/vswap!/
+;; volatile? drive it via jolt.host/ref-put!+get / :jolt/type (tagged-table only).
+;; Override with the native versions (defined in natives-xform.ss).
+(def-var! "clojure.core" "vreset!" jolt-vreset!)
+(def-var! "clojure.core" "vswap!" jolt-vswap!)
+(def-var! "clojure.core" "volatile?" jolt-volatile-pred?)

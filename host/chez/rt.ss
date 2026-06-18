@@ -212,3 +212,8 @@
 ;; iterate/cycle/dedupe/take-nth/keep/interpose/reductions/tree-seq/lazy-cat).
 ;; Loaded LAST so %ls-seq captures the fully-extended (sorted-aware) jolt-seq.
 (load "host/chez/lazy-bridge.ss")
+
+;; volatiles + sequence / transduce (jolt-xjx6, Phase 2): native volatile boxes +
+;; the transduce/sequence entry points over into-xform/reduce-seq. After
+;; natives-seq.ss (into-xform), seq.ss (reduce-seq) + atoms.ss (deref).
+(load "host/chez/natives-xform.ss")
