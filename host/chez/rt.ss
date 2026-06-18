@@ -166,10 +166,20 @@
 ;; natives. Over the seq layer + jolt-compare, so loaded after converters.ss.
 (load "host/chez/natives-seq.ss")
 
+;; readable printer + output seams (jolt-9zhh, Phase 2 inc B): __pr-str1/__write/
+;; __with-out-str/__eprint/__eprintf — the host seams the overlay print family
+;; (pr-str/pr/prn/print/println/*-str) is built on. After converters.ss (uses
+;; jolt-pr-str/jolt-str-join) + seq.ss (jolt-invoke).
+(load "host/chez/printing.ss")
+
 ;; collection constructors + rand (jolt-agw6, Phase 2 inc A): bind the public
 ;; clojure.core names hash-map/hash-set/array-map/set/rand to the existing
 ;; pmap/pset ctors. After collections.ss (the ctors) + seq.ss (seq->list).
 (load "host/chez/natives-coll.ss")
+
+;; bit ops + parse-long/parse-double (jolt-cf1q.3 inc C): host-coupled scalar
+;; seed natives over the all-flonum number model.
+(load "host/chez/natives-num.ss")
 
 ;; multimethods (jolt-9ls5): defmulti/defmethod dispatch runtime. Needs jolt-invoke
 ;; (seq.ss), jolt=/key-hash/jolt-hash-map (collections.ss), jolt-atom? (atoms.ss),
