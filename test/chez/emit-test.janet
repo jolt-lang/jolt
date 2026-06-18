@@ -76,6 +76,24 @@
   (ok "mandelbrot run(40) parity" (and (= code 0) (= out (oracle src)))
       (string "chez=" out " janet=" (oracle src) " | " err)))
 
+# 3a2) truthy? elision (jolt-nkcb): an :if test that provably yields a Scheme
+#   boolean (native comparison/not, or a boolean const) needs no jolt-truthy?
+#   wrapper — (if (jolt-truthy? (< a b)) …) === (if (< a b) …). Sound because
+#   jolt-truthy? of #t/#f is identity. The hot fib/mandelbrot tests are all
+#   comparisons, so this is a direct ceiling lever. Inspect the emitted Scheme.
+(defn- emit-scm [src] (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0))))
+(each [label src wrapped?] [["if < elides wrapper"   "(fn [n] (if (< n 2) 1 2))"      false]
+                            ["if > elides wrapper"   "(fn [n] (if (> n 2) 1 2))"      false]
+                            ["if = elides wrapper"   "(fn [n] (if (= n 2) 1 2))"      false]
+                            ["if <= elides wrapper"  "(fn [n] (if (<= n 2) 1 2))"     false]
+                            ["if not elides wrapper" "(fn [x] (if (not x) 1 2))"      false]
+                            ["if true const elides"  "(fn [] (if true 1 2))"          false]
+                            ["if local keeps wrapper" "(fn [x] (if x 1 2))"           true]
+                            ["if + keeps wrapper"    "(fn [n] (if (+ n 1) 1 2))"      true]]
+  (let [scm (emit-scm src) has (truthy? (string/find "jolt-truthy?" scm))]
+    (ok (string "truthy elision: " label) (= has wrapped?)
+        (string "wrapped?=" has " want " wrapped? " | " scm))))
+
 # 3b) regressions found via the corpus probe:
 #   - loop binds SEQUENTIALLY (Scheme named-let is parallel); b must see a.
 #   - #(...) shorthand gensyms params with a trailing `#` (invalid in Scheme).
@@ -642,8 +660,10 @@
 
 
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
-#    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
-#    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.
+#    track against the spike ceiling (hand-Scheme fixnum fib ~5ms). Informational
+#    — the truthy? wrapper is now elided (jolt-nkcb); the residual gap is jolt's
+#    all-flonum number model vs the spike's fixnum fib (typed fl*/fx* = Phase 4).
+#    The full timed bench (fib + mandelbrot vs ceilings) is bench-pipeline.janet.
 (let [fib-ir (backend/analyze-form ctx (in (r/parse-next "(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))") 0))
       fib-scm (emit/emit fib-ir)
       timed (string "(import (chezscheme))\n(load \"host/chez/rt.ss\")\n"

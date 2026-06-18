@@ -196,6 +196,16 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
   lenient nil-fill was non-Clojure and inconsistent with the seed's own `assoc`. The 4
   `assoc! odd args` spec rows became 3 `:throws` + 1 even-args positive; corpus.edn
   regenerated. The Chez host already threw, so this only realigns the corpus contract.
+- Phase 1 close-out (jolt-nkcb): truthy? elision + end-to-end compute bench. `emit.janet`
+  now drops the redundant `jolt-truthy?` wrapper on an `:if` test that provably yields a
+  Scheme boolean (a native comparison/`not`, or a boolean const) — sound because
+  `jolt-truthy?` of `#t`/`#f` is identity; the hot fib/mandelbrot tests are all
+  comparisons, so this is a direct ceiling lever (fib 30 end-to-end 24.0 -> 14.4 ms).
+  `bench-pipeline.janet` (JOLT_CHEZ_BENCH=1, opt-in) times fib(30) + mandelbrot(200)
+  through the real pipeline vs the spike ceiling: mandelbrot 87 ms runs AT the
+  generic-flonum ceiling (98 ms); fib is 2x its hand-flonum ceiling, the residual being
+  jolt's all-double number model (typed fl*/fx* emission = Phase 4). Compile-only is
+  total for the compute subset (every form emits; Chez has no interpreter fallback).
 
 The remaining buckets are the punch-list the next increments chase: ~361 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of

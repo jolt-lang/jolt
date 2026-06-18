@@ -382,6 +382,27 @@
     (string "(jolt-invoke " (emit fnode) " " (string/join args " ") ")")
     (string "(" (emit fnode) " " (string/join args " ") ")")))
 
+# Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
+# :if test built from them needs no jolt-truthy? wrapper (jolt-nkcb). Comparisons
+# and `not` are #t/#f; the numeric/collection predicates bottom out in fx=?/>/etc.
+(def- bool-returning-ops
+  {"<" true "<=" true ">" true ">=" true "jolt=" true "jolt-not" true
+   "jolt-even?" true "jolt-odd?" true "jolt-pos?" true "jolt-neg?" true
+   "jolt-zero?" true "jolt-empty?" true "jolt-contains?" true})
+
+# Does this IR node emit to an expression that yields a Scheme boolean? Used to
+# drop the redundant jolt-truthy? on an :if test — sound because jolt-truthy? of
+# #t/#f is the identity. Conservative: only a boolean const or an :invoke that
+# lowers to a bool-returning native op (any other shape keeps the wrapper).
+(defn- returns-scheme-bool? [node]
+  (def node (nn node))
+  (cond
+    (and (= :const (get node :op)) (boolean? (get node :val))) true
+    (= :invoke (get node :op))
+    (let [nop (native-op (nn (get node :fn)) (length (vv (get node :args))))]
+      (truthy? (and nop (get bool-returning-ops nop))))
+    false))
+
 (set emit (fn emit [node]
   (def node (nn node))
   (case (get node :op)
@@ -400,8 +421,10 @@
                (string "(var-deref " (chez-str-lit (get node :ns)) " "
                        (chez-str-lit (get node :name)) ")")))
     :host  (errorf "emit: unsupported host ref `%s` (no host interop on Chez yet)" (get node :name))
-    :if    (string "(if (jolt-truthy? " (emit (get node :test)) ") "
-                   (emit (get node :then)) " " (emit (get node :else)) ")")
+    :if    (let [test (get node :test)
+                 t (if (returns-scheme-bool? test) (emit test)
+                       (string "(jolt-truthy? " (emit test) ")"))]
+             (string "(if " t " " (emit (get node :then)) " " (emit (get node :else)) ")"))
     :do    (string "(begin "
                    (string/join (map emit (vv (get node :statements))) " ")
                    (if (empty? (vv (get node :statements))) "" " ")

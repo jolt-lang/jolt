@@ -84,6 +84,28 @@ is clearly worse: ~2.5x Janet's fixed footprint. Trades RAM for speed.
 - **Size: fine** (~1.3-1.8x base, ~2-3x full; single-digit MB).
 - **Memory: the cost** (~2.5x fixed baseline).
 
+## Phase 1 — real-pipeline measurement (2026-06-18)
+
+The numbers above are hand-translated Scheme (the substrate ceiling). Phase 1
+(jolt-cf1q.2) ran the SAME benches end to end through the real pipeline (Clojure
+source -> Janet-hosted analyzer -> IR -> Scheme emitter -> Chez compile), timed
+in-process (`test/chez/bench-pipeline.janet`, Chez startup excluded):
+
+| bench               | real pipeline | ceiling (this run)        | gap = Phase 4 lever |
+|---------------------|---------------|---------------------------|---------------------|
+| fib 30 (flonum)     | 14.4 ms       | 7.1 ms hand-flonum        | 2.0x dispatch/var   |
+| fib 30 (vs fixnum)  | 14.4 ms       | 5.2 ms fixnum             | all-double model    |
+| mandelbrot 200      | 87.3 ms       | 98.1 ms generic-flonum    | AT/below ceiling    |
+| mandelbrot 200 typed| 87.3 ms       | 13.4 ms typed fl*/fx*     | typed emit (Phase 4)|
+
+Findings: (1) **compile-only is total** for the compute subset — every form
+emits, no interpreter fallback (Chez has none). (2) Mandelbrot through the real
+pipeline runs AT the generic-flonum ceiling (87 vs 98 ms) — the substrate ceiling
+is reached end-to-end. (3) The fib residual is jolt's all-double number model
+(the spike's 5.2 ms fib is fixnum); closing it to the 13.4 ms / fixnum ceiling is
+the typed fl*/fx* emission Phase 4 owns. Eliding the redundant `jolt-truthy?`
+wrapper on boolean-test `if`s (jolt-nkcb) cut fib 24.0 -> 14.4 ms.
+
 ## NOT yet measured (needs the RT port — the real project, not a spike)
 
 - collections / binary-trees: these hit persistent collections + GC. Chez's GC
