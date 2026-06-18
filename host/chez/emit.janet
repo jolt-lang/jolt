@@ -385,7 +385,10 @@
     # known-proc above, so it stays a direct call.
     (= :var (get fnode :op))
     (string "(jolt-invoke " (emit fnode) " " (string/join args " ") ")")
-    (string "(" (emit fnode) " " (string/join args " ") ")")))
+    # a computed callee (an :invoke / :if / :do expression) can yield ANY IFn —
+    # a procedure, but also a coll/keyword/multimethod (e.g. ((sorted-map …) k)).
+    # Route through jolt-invoke: transparent for a procedure, correct for the rest.
+    (string "(jolt-invoke " (emit fnode) " " (string/join args " ") ")")))
 
 # Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
 # :if test built from them needs no jolt-truthy? wrapper (jolt-nkcb). Comparisons

@@ -165,8 +165,13 @@
 # .method dot-calls to runtime dispatch) 1701.
 # Phase 2 inc E (jolt-rkbc: meta / with-meta over an identity-keyed side-table +
 # symbol reader-meta carried through quote emit) 1723.
+# Phase 2 inc F (jolt-0zoy: jolt.host/tagged-table/ref-put!/ref-get over a Chez
+# mutable htable + the 25-sorted tier routed through each value's :ops table —
+# sorted-map/sorted-set/subseq/rsubseq + sorted equality; unblocks sorted? and
+# every fn that calls it: empty/ifn?/reversible?/map?/set?/coll?. Also an emit fix
+# routing a computed call operator ((sorted-map …) k) through jolt-invoke) 1837.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1723")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1837")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

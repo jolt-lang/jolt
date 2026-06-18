@@ -200,3 +200,9 @@
 ;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the seed
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
 (load "host/chez/dynamic-vars.ss")
+
+;; host tables + sorted collections (jolt-0zoy, Phase 2): jolt.host/tagged-table/
+;; ref-put!/ref-get + the 25-sorted tier's runtime (sorted-map/sorted-set routed
+;; through their :ops table). Loaded LAST — wraps the jrec-extended dispatchers
+;; (records.ss), jolt-disj (transients.ss), and value-host-tags (records.ss).
+(load "host/chez/host-table.ss")
