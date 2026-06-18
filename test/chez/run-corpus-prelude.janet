@@ -53,8 +53,7 @@
    "str of *ns*" true
    "*ns* user" true
    "str of a var" true
-   "*clojure-version* major" true
-   "*unchecked-math*" true
+   # *clojure-version* / *unchecked-math* now bound by dynamic-vars.ss (inc 3r)
    # (str [##Inf]) wants "[Infinity]" but the Chez -e printer (jolt-pr-str, which
    # str falls back to for collections) renders inf as "inf" — str needs a
    # recursive long-form renderer, the Phase-2 canonical printer. Top-level
@@ -137,8 +136,9 @@
 # Full-corpus baseline: inc 3j 1220/2497; 3k (converters) 1326; 3l (transients)
 # 1382; 3m (numeric-edge emit + variadic assoc!) 1407; 3n (seq-native shims +
 # reduced) 1467; 3o (transducer arities) 1493; 3p (misc seq/regex gaps) 1506;
-# 3q (multimethod dispatch + late-bind) 1530. Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1530")))
+# 3q (multimethod dispatch + late-bind) 1530; 3r (dynamic-var constants) 1532.
+# Strided runs scale down.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1532")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

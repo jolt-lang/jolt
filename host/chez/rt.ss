@@ -170,3 +170,7 @@
 ;; (seq.ss), jolt=/key-hash/jolt-hash-map (collections.ss), jolt-atom? (atoms.ss),
 ;; jolt-pr-str (above), and the var-cell machinery — so loaded last.
 (load "host/chez/multimethods.ss")
+
+;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the seed
+;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
+(load "host/chez/dynamic-vars.ss")

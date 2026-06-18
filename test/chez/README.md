@@ -185,6 +185,11 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
     procedure. Transparent for procedures; the hot self-recursive call is a `:local`
     known-proc, so it stays direct. (Class-based dispatch — `(class x)`/`String` — is
     deferred; it needs the deftype/class subsystem.)
+- inc 3r dynamic-var constants (jolt-9ls5): `host/chez/dynamic-vars.ss` binds the seed
+  natives `*clojure-version*` (the `{:major 1 :minor 11 …}` map) and `*unchecked-math*`
+  (false), removing their two parity allowlist entries. `*ns*` is deferred (jolt-b4kl):
+  it needs a namespace value that is not a map (`map?` false) yet answers
+  `(get ns :name)` for the overlay `ns-name`, plus `str`/`find-ns` support.
 
 The remaining buckets are the punch-list the next increments chase: ~361 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of

@@ -609,6 +609,18 @@
   (let [[code out err] (run-jolt-chez "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (f 99))")]
     (ok "multimethod: no match throws" (not= code 0) (string "code=" code))))
 
+# 3w) dynamic-var constants (jolt-9ls5): *clojure-version* (a map) and
+#   *unchecked-math* (false) are seed natives, def-var!'d by host/chez/dynamic-vars.ss.
+#   (*ns* needs a namespace value with get-see-through and map?=false — deferred.)
+# (map? *clojure-version*) is intentionally NOT asserted: the seed stores it as a
+# mutable table, so its map? is false (a seed quirk); Chez models it as a real map
+# (map? true). Not a corpus contract, so the divergence is moot.
+(each src ["(= 1 (:major *clojure-version*))" "(= 11 (:minor *clojure-version*))"
+           "(= false *unchecked-math*)"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "dynvar: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.
