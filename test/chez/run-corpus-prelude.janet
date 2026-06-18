@@ -67,7 +67,14 @@
    #     (print-method multimethod integration is deferred)
    "pr-str of a var" true
    "pr-str of a defn" true
-   "atom override fires nested" true})
+   "atom override fires nested" true
+   # Phase 2 inc D (jolt-jgoc) made records run; pr-str of a record uses the
+   # built-in #ns.Name{...} form, not a user (defmethod print-method 'ns.Name …)
+   # — the printer doesn't consult the print-method multimethod yet (deferred).
+   "defmethod overrides a record, top level" true
+   "defmethod fires nested in a map" true
+   "defmethod fires through prn" true
+   "methods table inspectable" true})
 
 (def ctx (d/make-ctx))
 
@@ -153,8 +160,11 @@
 # Phase 2 inc B (jolt-9zhh: readable printer + __pr-str1/__write/__with-out-str
 # -> pr-str/pr/prn/print/println/*-str family) + inc C (bit ops + parse-long/
 # parse-double) 1652.
+# Phase 2 inc D (jolt-jgoc: records + protocols — defrecord/deftype/defprotocol/
+# extend-type/reify; jrec type + protocol registry/dispatch; emit routes record
+# .method dot-calls to runtime dispatch) 1701.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1652")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1701")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

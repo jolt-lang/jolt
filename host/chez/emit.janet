@@ -455,13 +455,18 @@
     # IN the subset; any other method is out of subset (a clean emit-time reject,
     # like an unimplemented stdlib fn), so it doesn't masquerade as a compiled-but-
     # broken divergence. The Janet back end punts ALL :host-call to the interpreter.
-    :host-call (let [m (get node :method)]
-                 (unless (get supported-host-methods m)
-                   (errorf "emit: unsupported host method `.%s` (no Chez shim yet)" m))
-                 (let [target (emit (get node :target))
-                       args (map emit (vv (get node :args)))]
+    :host-call (let [m (get node :method)
+                     target (emit (get node :target))
+                     args (map emit (vv (get node :args)))]
+                 (if (get supported-host-methods m)
                    (string "(jolt-host-call " (chez-str-lit m) " "
-                           target (if (empty? args) "" (string " " (string/join args " "))) ")")))
+                           target (if (empty? args) "" (string " " (string/join args " "))) ")")
+                   # a non-shimmed method: dispatch at runtime by the target's type
+                   # — a record/reify protocol method (jolt-jgoc). On a non-record
+                   # host value this errors (was an emit-fail before, so no new
+                   # divergence), but it lets (.protoMethod record …) compile.
+                   (string "(record-method-dispatch " target " " (chez-str-lit m)
+                           " (jolt-vector" (if (empty? args) "" (string " " (string/join args " "))) "))")))
     :fn    (emit-fn node)
     # (def name) with no init (declare): reserve the var cell (declare-var!
     # doesn't clobber an existing root) so a forward reference resolves.

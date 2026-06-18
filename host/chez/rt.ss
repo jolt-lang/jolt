@@ -186,6 +186,13 @@
 ;; jolt-pr-str (above), and the var-cell machinery — so loaded last.
 (load "host/chez/multimethods.ss")
 
+;; records + protocols (jolt-jgoc, Phase 2 inc D): defrecord/deftype/defprotocol/
+;; extend-type/reify. A jrec record type set!-extended into the collection
+;; dispatchers + a protocol registry. After multimethods.ss (chez-current-ns) and
+;; the dispatchers/printers it wraps (collections/seq/values/converters/printing/
+;; transients).
+(load "host/chez/records.ss")
+
 ;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the seed
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
 (load "host/chez/dynamic-vars.ss")
