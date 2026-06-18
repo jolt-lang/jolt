@@ -61,27 +61,34 @@
 ;; until the real def overwrites it (a forward reference resolves to the cell, and
 ;; correct code never reads it before the binding def runs).
 (define jolt-unbound (string->symbol "#<jolt-unbound>"))
-(define-record-type var-cell (fields ns name (mutable root)) (nongenerative var-cell-v1))
+;; `defined?` distinguishes a genuinely interned var (def / declare / a native-op
+;; cell) from a cell lazily materialised by a forward `var-deref` / `(var x)` on a
+;; not-yet-defined name — `resolve` returns the cell iff defined? (jolt-yxqm).
+;; ns-unmap clears it. Avoids the (def x nil) edge of probing the root.
+(define-record-type var-cell (fields ns name (mutable root) (mutable defined?)) (nongenerative var-cell-v2))
 (define var-table (make-hashtable string-hash string=?))
 (define (jolt-var ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
-        (let ((c (make-var-cell ns name jolt-nil)))
+        (let ((c (make-var-cell ns name jolt-nil #f)))
           (hashtable-set! var-table k c)
           c))))
+;; non-creating lookup (resolve / find-var / ns-unmap): #f when absent, so a
+;; probe never interns an empty cell.
+(define (var-cell-lookup ns name) (hashtable-ref var-table (string-append ns "/" name) #f))
 (define (var-deref ns name) (var-cell-root (jolt-var ns name)))
 ;; def-var! / declare-var! return the VAR CELL, not the value — Clojure's `def`
 ;; evaluates to #'ns/name (a first-class var), so (var? (def x 1)) is true and
 ;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
 ;; return, so this is transparent there.
-(define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) c))
+(define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
 ;; declare / (def name) with no init: reserve the cell ONLY if absent. An
 ;; existing root is left intact — Clojure's (def x) with no init does not clobber
 ;; a prior binding (do (def x 7) (def x) x) => 7. Returns the cell either way.
 (define (declare-var! ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
-        (let ((c (make-var-cell ns name jolt-unbound)))
+        (let ((c (make-var-cell ns name jolt-unbound #t)))  ; declared => interned/resolvable
           (hashtable-set! var-table k c)
           c))))
 
@@ -234,3 +241,10 @@
 ;; a uuid). Overlay names (uuid?/random-uuid/parse-uuid/tagged-literal?) re-asserted
 ;; in post-prelude.ss.
 (load "host/chez/natives-misc.ss")
+
+;; namespaces (jolt-yxqm, Phase 2): the namespace value model — find-ns/ns-name/
+;; all-ns/the-ns/create-ns/in-ns/ns-publics/ns-map/ns-interns/ns-aliases/resolve/
+;; find-var/ns-unmap/*ns*, over the var-table + chez-current-ns. Loaded LAST: needs
+;; var-cell + var-cell-defined?, jolt-symbol/jolt-hash-map/jolt-assoc, chez-current-ns
+;; (multimethods.ss), list->cseq (seq.ss), and the fully-patched printers (vars.ss).
+(load "host/chez/ns.ss")

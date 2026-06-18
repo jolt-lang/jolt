@@ -28,3 +28,6 @@
 (def-var! "clojure.core" "random-uuid" jolt-random-uuid)
 (def-var! "clojure.core" "parse-uuid" jolt-parse-uuid)
 (def-var! "clojure.core" "tagged-literal?" jolt-tagged-literal-pred?)
+;; ns-name: the overlay reads (get ns :name) — nil on a jns namespace record.
+;; Native version (defined in ns.ss) returns the namespace's name symbol.
+(def-var! "clojure.core" "ns-name" jolt-ns-name)

@@ -49,10 +49,8 @@
    "keys evaluate before their values, pairwise" true
    "source order with a nil value (phm form)" true
    "close on throw" true
-   "ns-name of *ns*" true
-   "str of *ns*" true
-   "*ns* user" true
-   "str of a var" true
+   # *ns* now a namespace value (jolt-yxqm): str/ns-name of *ns* + the var str
+   # case ("ns-name of *ns*" / "str of *ns*" / "*ns* user" / "str of a var") pass.
    # *clojure-version* / *unchecked-math* now bound by dynamic-vars.ss (inc 3r)
    # (str [##Inf]) wants "[Infinity]" but the Chez -e printer (jolt-pr-str, which
    # str falls back to for collections) renders inf as "inf" — str needs a
@@ -189,8 +187,11 @@
 # matching Clojure, which also un-allowlists pr-str-of-var/defn) and inc J
 # (jolt-snry: scalar natives — UUID random-uuid/parse-uuid/uuid?, format/printf,
 # tagged-literal, bigint) 1951.
+# jolt-yxqm (namespace value model — find-ns/ns-name/all-ns/resolve/ns-publics/
+# in-ns/*ns* over the var-table + a jns ns value; native-op var cells so
+# (resolve '+) is a var; *ns* bound to the user ns) 1969.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1951")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1969")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
