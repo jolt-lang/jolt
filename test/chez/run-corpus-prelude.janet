@@ -188,8 +188,13 @@
 # jolt-zikh (var def-time metadata — :def emit passes reader meta to
 # def-var-with-meta!; (meta (var v)) is {:ns :name} + ^:private/^Type tag/
 # docstring) 1972.
+# jolt-2o7x (dynamic var binding — the per-thread binding stack +
+# binding/with-bindings*/var-set/thread-bound?/with-local-vars/with-redefs/
+# bound-fn*/get-thread-bindings/alter-var-root; var-deref + jolt-var-get chained
+# onto the stack. Also fixed seq? to recognize a lazy-seq, which unblocked
+# with-in-str/line-seq) 2000.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1972")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2000")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

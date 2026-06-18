@@ -258,3 +258,10 @@
 ;; var-cell + var-cell-defined?, jolt-symbol/jolt-hash-map/jolt-assoc, chez-current-ns
 ;; (multimethods.ss), list->cseq (seq.ss), and the fully-patched printers (vars.ss).
 (load "host/chez/ns.ss")
+
+;; dynamic var binding (jolt-2o7x, Phase 2): the per-thread binding stack +
+;; push/pop/get-thread-bindings/__thread-bound?/var-set/alter-var-root/__local-var.
+;; Chains var-deref (rt.ss) and jolt-var-get (vars.ss) onto the stack, so a `binding`
+;; frame is seen by every var read. Loaded LAST: needs the fully-extended var-read
+;; paths + jolt-hash-map/pmap-fold/pmap-assoc (collections.ss).
+(load "host/chez/dyn-binding.ss")

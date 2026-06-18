@@ -74,5 +74,14 @@
 (define %ls-str-render-one jolt-str-render-one)
 (set! jolt-str-render-one (lambda (x) (if (jolt-lazyseq? x) (%ls-str-render-one (jolt-seq x)) (%ls-str-render-one x))))
 
+;; seq? — a lazy seq IS a seq (predicates.ss's jolt-seq? predates the lazyseq
+;; record). Unlike the native-op dispatchers above (called via a direct top-level
+;; reference, so the set! is enough), seq? is reached through var-deref, which
+;; reads the var-cell root — so the patched closure must be re-def-var!'d, not just
+;; set!. (Exposed once dynamic binding let with-in-str/line-seq reach seq?.)
+(define %ls-seq? jolt-seq?)
+(set! jolt-seq? (lambda (x) (or (jolt-lazyseq? x) (%ls-seq? x))))
+(def-var! "clojure.core" "seq?" jolt-seq?)
+
 (def-var! "clojure.core" "make-lazy-seq" jolt-make-lazy-seq)
 (def-var! "clojure.core" "coll->cells" jolt-coll->cells)
