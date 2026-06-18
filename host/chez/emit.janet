@@ -115,6 +115,48 @@
 
 (var emit nil)   # forward declaration (mutual recursion with the helpers below)
 
+# A Chez string literal (jolt-x0os). Janet's %j renders a non-ASCII char as raw
+# UTF-8 bytes (\xC3\xA9) and a control char / DEL as \xHH with NO terminating
+# semicolon — both forms Chez's reader rejects ("invalid character \ in string
+# hex escape"). Emit a Chez string where every byte outside printable ASCII
+# becomes a codepoint hex escape \x<cp>; (UTF-8 decoded for multibyte) and the
+# named escapes (\n \t \r \" \\) match what both readers accept. For pure
+# printable ASCII this is byte-identical to %j.
+(defn- utf8-cp [s i]
+  # decode the UTF-8 sequence starting at byte i -> [codepoint byte-length]
+  (def b (in s i))
+  (cond
+    (< b 0x80) [b 1]
+    (= (band b 0xE0) 0xC0) [(bor (blshift (band b 0x1F) 6)
+                                 (band (in s (+ i 1)) 0x3F)) 2]
+    (= (band b 0xF0) 0xE0) [(bor (blshift (band b 0x0F) 12)
+                                 (blshift (band (in s (+ i 1)) 0x3F) 6)
+                                 (band (in s (+ i 2)) 0x3F)) 3]
+    (= (band b 0xF8) 0xF0) [(bor (blshift (band b 0x07) 18)
+                                 (blshift (band (in s (+ i 1)) 0x3F) 12)
+                                 (blshift (band (in s (+ i 2)) 0x3F) 6)
+                                 (band (in s (+ i 3)) 0x3F)) 4]
+    [b 1]))   # malformed lead byte: pass through one byte
+(defn- chez-str-lit [s]
+  (def out @"\"")
+  (def n (length s))
+  (var i 0)
+  (while (< i n)
+    (def b (in s i))
+    (cond
+      (= b 0x22) (do (buffer/push-string out "\\\"") (++ i))
+      (= b 0x5C) (do (buffer/push-string out "\\\\") (++ i))
+      (= b 0x0A) (do (buffer/push-string out "\\n") (++ i))
+      (= b 0x09) (do (buffer/push-string out "\\t") (++ i))
+      (= b 0x0D) (do (buffer/push-string out "\\r") (++ i))
+      (and (>= b 0x20) (< b 0x7F)) (do (buffer/push-byte out b) (++ i))
+      (< b 0x80) (do (buffer/push-string out (string/format "\\x%x;" b)) (++ i))
+      (let [[cp len] (utf8-cp s i)]
+        (buffer/push-string out (string/format "\\x%x;" cp))
+        (+= i len))))
+  (buffer/push-string out "\"")
+  (string out))
+
 (defn- emit-const [v]
   (cond
     (nil? v) "jolt-nil"
@@ -130,13 +172,13 @@
                   (not= v v) "+nan.0"
                   (let [s (string v)]
                     (if (or (string/find "." s) (string/find "e" s)) s (string s ".0"))))
-    (string? v) (string/format "%j" v)   # quoted+escaped string literal
+    (string? v) (chez-str-lit v)   # quoted+escaped string literal
     # keyword literal -> (keyword ns name); ns is everything before the first "/"
     (keyword? v) (let [s (string v) idx (string/find "/" s)]
                    (if (and idx (> idx 0))
-                     (string "(keyword " (string/format "%j" (string/slice s 0 idx)) " "
-                             (string/format "%j" (string/slice s (inc idx))) ")")
-                     (string "(keyword #f " (string/format "%j" s) ")")))
+                     (string "(keyword " (chez-str-lit (string/slice s 0 idx)) " "
+                             (chez-str-lit (string/slice s (inc idx))) ")")
+                     (string "(keyword #f " (chez-str-lit s) ")")))
     # jolt char value {:ch <codepoint> :jolt/type :jolt/char}
     (and (struct? v) (= :jolt/char (get v :jolt/type)))
     (string "(integer->char " (get v :ch) ")")
@@ -160,8 +202,8 @@
     (emit-const form)
     (and (struct? form) (= :symbol (get form :jolt/type)))
     (let [ns (get form :ns)]
-      (string "(jolt-symbol " (if ns (string/format "%j" ns) "#f") " "
-              (string/format "%j" (get form :name)) ")"))
+      (string "(jolt-symbol " (if ns (chez-str-lit ns) "#f") " "
+              (chez-str-lit (get form :name)) ")"))
     (and (struct? form) (= :jolt/char (get form :jolt/type))) (emit-const form)
     (and (struct? form) (= :jolt/set (get form :jolt/type)))
     (string "(jolt-hash-set " (string/join (map emit-quoted (get form :value)) " ") ")")
@@ -355,8 +397,8 @@
                core-proc core-proc
                (and (stdlib-var? node) (not prelude-mode?))
                (errorf "emit: unsupported stdlib ref `%s/%s` (no core on Chez yet)" (get node :ns) (get node :name))
-               (string "(var-deref " (string/format "%j" (get node :ns)) " "
-                       (string/format "%j" (get node :name)) ")")))
+               (string "(var-deref " (chez-str-lit (get node :ns)) " "
+                       (chez-str-lit (get node :name)) ")")))
     :host  (errorf "emit: unsupported host ref `%s` (no host interop on Chez yet)" (get node :name))
     :if    (string "(if (jolt-truthy? " (emit (get node :test)) ") "
                    (emit (get node :then)) " " (emit (get node :else)) ")")
@@ -381,10 +423,10 @@
     :try   (emit-try node)
     :quote (emit-quoted (get node :form))
     # regex literal #"…" -> a jolt-regex value (regex.ss compiles the source via
-    # the vendored irregex). %j quotes+escapes the source; a backslash in the
-    # pattern becomes \\ in the Scheme string literal -> the 1-char backslash
-    # irregex expects (same escaping emit-const uses for strings).
-    :regex (string "(jolt-regex " (string/format "%j" (get node :source)) ")")
+    # the vendored irregex). chez-str-lit quotes+escapes the source; a backslash
+    # in the pattern becomes \\ in the Scheme string literal -> the 1-char
+    # backslash irregex expects (same escaping emit-const uses for strings).
+    :regex (string "(jolt-regex " (chez-str-lit (get node :source)) ")")
     # host interop (jolt-0kf5): (.method target arg*) -> (jolt-host-call "method"
     # target arg*). Only the methods the RT dispatcher (rt.ss) actually shims are
     # IN the subset; any other method is out of subset (a clean emit-time reject,
@@ -395,16 +437,16 @@
                    (errorf "emit: unsupported host method `.%s` (no Chez shim yet)" m))
                  (let [target (emit (get node :target))
                        args (map emit (vv (get node :args)))]
-                   (string "(jolt-host-call " (string/format "%j" m) " "
+                   (string "(jolt-host-call " (chez-str-lit m) " "
                            target (if (empty? args) "" (string " " (string/join args " "))) ")")))
     :fn    (emit-fn node)
     # (def name) with no init (declare): reserve the var cell (declare-var!
     # doesn't clobber an existing root) so a forward reference resolves.
     :def   (if (get node :no-init)
-             (string "(declare-var! " (string/format "%j" (get node :ns)) " "
-                     (string/format "%j" (get node :name)) ")")
-             (string "(def-var! " (string/format "%j" (get node :ns)) " "
-                     (string/format "%j" (get node :name)) " " (emit (get node :init)) ")"))
+             (string "(declare-var! " (chez-str-lit (get node :ns)) " "
+                     (chez-str-lit (get node :name)) ")")
+             (string "(def-var! " (chez-str-lit (get node :ns)) " "
+                     (chez-str-lit (get node :name)) " " (emit (get node :init)) ")"))
     (errorf "emit: unhandled op %p" (get node :op)))))
 
 # Wrap emitted top-level forms into a runnable Chez program: load the RT, then

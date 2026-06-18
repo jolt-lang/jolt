@@ -136,9 +136,11 @@
 # Full-corpus baseline: inc 3j 1220/2497; 3k (converters) 1326; 3l (transients)
 # 1382; 3m (numeric-edge emit + variadic assoc!) 1407; 3n (seq-native shims +
 # reduced) 1467; 3o (transducer arities) 1493; 3p (misc seq/regex gaps) 1506;
-# 3q (multimethod dispatch + late-bind) 1530; 3r (dynamic-var constants) 1532.
+# 3q (multimethod dispatch + late-bind) 1530; 3r (dynamic-var constants) 1532;
+# 3x (non-ASCII string literals, jolt-x0os) + 3y (seed assoc! odd-args -> :throws,
+# jolt-ea9k) 1534 (total evaluated drops as the 3 odd-arg rows become :throws).
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1532")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1534")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

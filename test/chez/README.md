@@ -153,16 +153,7 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
   string can't reproduce; the corpus tests ASCII, where they agree) and
   `clojure.math/PI` (missing ns).
 
-  Two pre-existing bugs surfaced here and are tracked (not replicated):
-  - **jolt-x0os** (Chez emit) — a non-ASCII string literal emits an invalid Chez hex
-    escape (`(str "héllo")` -> "read: invalid character \\ in string hex escape"). This
-    is why `p{L} utf-8` still crashes (the `\p{L}` translation is correct and matches
-    non-ASCII, but the input string can't be emitted). A crash, not a divergence.
-  - **jolt-ea9k** (seed) — `assoc!` on a transient accepts ODD args and assigns nil to
-    the trailing key (plain `assoc` correctly throws; Clojure's `assoc!` throws too).
-    The Chez host throws (Clojure-correct), so the 4 `odd arg …` corpus rows — which
-    encode the seed's lenient behavior — sit in the crash bucket until the seed is
-    fixed and those spec rows are updated to `:throws`.
+  Two pre-existing bugs surfaced here, since fixed (inc 3x / 3y below).
 - inc 3q multimethod dispatch + late-bind (jolt-9ls5, Phase 2): `host/chez/
   multimethods.ss` implements the multimethod runtime — `defmulti`/`defmethod`
   expand to `defmulti-setup`/`defmethod-setup` calls (+ `get-method`/`methods`/
@@ -190,6 +181,21 @@ class names, eval-order, with-open — all deferred Phase-2 / dynamic-var gaps).
   (false), removing their two parity allowlist entries. `*ns*` is deferred (jolt-b4kl):
   it needs a namespace value that is not a map (`map?` false) yet answers
   `(get ns :name)` for the overlay `ns-name`, plus `str`/`find-ns` support.
+- inc 3x non-ASCII string literals (jolt-x0os): `emit.janet`'s `chez-str-lit` replaces
+  the `%j` string encoder. Janet's `%j` renders a non-ASCII char as raw UTF-8 bytes
+  (`\xC3\xA9`) and a control char / DEL as `\xHH` with NO terminating semicolon — both
+  forms Chez's reader rejects. `chez-str-lit` UTF-8-decodes each char and emits a
+  codepoint hex escape `\x<cp>;` (`é`->`\xe9;`, `日`->`\x65e5;`), keeping `\n`/`\t`/`\r`/
+  `\"`/`\\` and being byte-identical to `%j` for printable ASCII. Applied to every
+  string-content site (string/keyword/symbol/var-name/regex-source). This unblocks the
+  `p{L} utf-8` corpus case (the `\p{L}` translation was already correct). Note: `count`/
+  `subs`/`nth` over a multibyte string index by BYTES in the seed but by codepoints on
+  Chez — a separate semantic gap, not addressed here.
+- inc 3y seed assoc! odd-args (jolt-ea9k): `core-assoc!` (src/jolt/core_extra.janet) now
+  throws on an odd key/val count, like plain `assoc` and Clojure's `assoc!` — the former
+  lenient nil-fill was non-Clojure and inconsistent with the seed's own `assoc`. The 4
+  `assoc! odd args` spec rows became 3 `:throws` + 1 even-args positive; corpus.edn
+  regenerated. The Chez host already threw, so this only realigns the corpus contract.
 
 The remaining buckets are the punch-list the next increments chase: ~361 emit-fail
 (genuine host interop — qualified Java/Janet refs, runtime `defmacro`/`eval`, out of

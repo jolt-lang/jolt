@@ -621,6 +621,26 @@
     (ok (string "dynvar: " src) (and (= code 0) (= out want))
         (string "chez=" out " janet=" want " | " err))))
 
+# 3x) non-ASCII / control-char string literals (jolt-x0os): Janet's %j renders
+#   a non-ASCII char as raw UTF-8 bytes (\xC3\xA9) and a control char as \xHH
+#   with NO terminating semicolon — both forms Chez's reader rejects ("invalid
+#   character \ in string hex escape"). emit-const must emit a Chez string with
+#   codepoint escapes (\x<cp>;) so a literal that just passes through (str/=)
+#   round-trips. (count/subs/nth over a multibyte string index by BYTES in the
+#   seed but by codepoints on Chez — a separate semantic gap, not tested here.)
+(each src ["(str \"h\xC3\xA9llo\")"
+           "\"h\xC3\xA9llo\""
+           "(str \"na\xC3\xAFve caf\xC3\xA9\")"
+           "(str \"\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E\")"
+           "(str \"\xCE\xB1\xCE\xB2\xCE\xB3 \xCE\xB4\xCE\xB5\xCE\xB6\")"
+           "(= \"h\xC3\xA9llo\" (str \"h\xC3\xA9llo\"))"
+           "(str \"a\x01b\")"
+           "(str \"tab\tend\")"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "non-ascii str: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.
