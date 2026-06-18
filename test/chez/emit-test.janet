@@ -526,6 +526,36 @@
       (ok (string "seq-native -e: " src) (and (= code 0) (= out want))
           (string "chez=" out " janet=" want " | " err)))))
 
+# 3t) transducer arities (jolt-kxsr): the 1-arg map/filter/take/drop/remove/
+#   take-while/drop-while/mapcat return a transducer (fn [rf] rf'), and into gets a
+#   3-arg (into to xform from). These lowered to the bare native procedure at the
+#   wrong arity (the 'cdr () not a pair' / 'incorrect number of arguments' bucket),
+#   so the fix is RT-side: case-lambda the seq fns + jolt-into. (map inc)/into are
+#   native, so into+single-xform runs in run-prelude; transduce/comp are overlay,
+#   so those go through the -e binary.
+(each src ["(= [2 3 4] (into [] (map inc) [1 2 3]))"
+           "(= #{2 3 4} (into #{} (map inc) [1 2 3]))"
+           "(= [2 4] (into [] (filter even?) [1 2 3 4 5]))"
+           "(= [1 3 5] (into [] (remove even?) [1 2 3 4 5]))"
+           "(= [1 2] (into [] (take 2) [1 2 3 4]))"
+           "(= [3 4] (into [] (drop 2) [1 2 3 4]))"
+           "(= [1 2] (into [] (take-while (fn [x] (< x 3))) [1 2 3 1]))"
+           "(= [3 1] (into [] (drop-while (fn [x] (< x 3))) [1 2 3 1]))"
+           "(= [1 1 2 2] (into [] (mapcat (fn [x] [x x])) [1 2]))"]
+  (let [[code out err] (run-prelude src) want (cli-oracle src)]
+    (ok (string "transducer: " src) (and (= code 0) (= out want))
+        (string "chez=" out " janet=" want " | " err))))
+(when (os/stat "bin/jolt-chez")
+  (each src ["(= 6 (transduce (map inc) + [0 1 2]))"
+             "(= 5 (transduce (map inc) + [1 2]))"
+             "(= 6 (transduce (map inc) (completing +) 0 [0 1 2]))"
+             "(= [4 6] (into [] (comp (map inc) (filter even?)) [2 3 4 5]))"
+             "(= 3 (reduce (fn [a x] (if (> a 2) (reduced a) (+ a x))) 0 (range 100)))"
+             "(into #{} (map inc) [1 2 3])"]
+    (let [[code out err] (run-jolt-chez src) want (cli-oracle src)]
+      (ok (string "transducer -e: " src) (and (= code 0) (= out want))
+          (string "chez=" out " janet=" want " | " err)))))
+
 # 4) perf signal: emitted fib(30) in-Scheme timing (excludes Chez startup), to
 #    track against the spike ceiling (hand-Scheme fib ~5ms). Informational — the
 #    jolt-truthy? wrapper (~3x) and flonum modeling are known Phase-4 levers.
