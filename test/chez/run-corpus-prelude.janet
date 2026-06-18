@@ -58,7 +58,16 @@
    # str falls back to for collections) renders inf as "inf" — str needs a
    # recursive long-form renderer, the Phase-2 canonical printer. Top-level
    # (str ##Inf) -> "Infinity" already works (jolt-str-render-one).
-   "inf inside coll" true})
+   "inf inside coll" true
+   # Phase 2 inc B (jolt-9zhh) made pr-str run; these now render via the readable
+   # FALLBACK instead of the seed's print-method / var semantics — separate gaps:
+   #   - def returns the VALUE on Chez, not the var (#'ns/name) — def-returns-var
+   #     is a later increment; (pr-str (def x 1)) -> "1" not "#'user/x"
+   #   - a custom (defmethod print-method ...) isn't consulted by the Chez printer
+   #     (print-method multimethod integration is deferred)
+   "pr-str of a var" true
+   "pr-str of a defn" true
+   "atom override fires nested" true})
 
 (def ctx (d/make-ctx))
 
@@ -141,8 +150,11 @@
 # jolt-ea9k) 1534 (total evaluated drops as the 3 odd-arg rows become :throws).
 # Phase 2 inc A (jolt-agw6: collection ctors set/hash-map/hash-set/array-map +
 # rand + real map entries / key / val / map-entry?) 1593.
+# Phase 2 inc B (jolt-9zhh: readable printer + __pr-str1/__write/__with-out-str
+# -> pr-str/pr/prn/print/println/*-str family) + inc C (bit ops + parse-long/
+# parse-double) 1652.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1593")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1652")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
