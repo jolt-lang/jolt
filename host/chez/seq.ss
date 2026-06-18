@@ -176,15 +176,18 @@
     (if (or (fx<=? n 0) (jolt-nil? s)) (if (jolt-nil? s) jolt-empty-list s)
         (loop (fx- n 1) (jolt-seq (seq-more s))))))
 
-(define (concat2 a b)                  ; lazily append seq a then seqable b
-  (if (jolt-nil? a) (jolt-seq b)
-      (cseq-lazy (seq-first a) (lambda () (concat2 (jolt-seq (seq-more a)) b)))))
+;; lazily append seq a then the seqable produced by the thunk `brest` — the rest
+;; is NOT forced until a is exhausted, so concat is fully lazy (Clojure semantics).
+;; This matters for a self-referential lazy-cat (fib = (lazy-cat [0 1] (map + (rest
+;; fib) fib))): forcing the rest eagerly at construction would read fib before its
+;; def binds, memoizing the tail as empty.
+(define (concat2 a brest)
+  (if (jolt-nil? a) (jolt-seq (brest))
+      (cseq-lazy (seq-first a) (lambda () (concat2 (jolt-seq (seq-more a)) brest)))))
 (define (jolt-concat . colls)
   (cond ((null? colls) jolt-empty-list)
         ((null? (cdr colls)) (jolt-seq (car colls)))
-        (else (let loop ((c (jolt-seq (car colls))) (rest (cdr colls)))
-                (if (null? rest) (if (jolt-nil? c) jolt-empty-list c)
-                    (concat2 c (apply jolt-concat rest)))))))
+        (else (concat2 (jolt-seq (car colls)) (lambda () (apply jolt-concat (cdr colls)))))))
 
 ;; (apply f a b ... coll): spread the trailing seqable into the call.
 (define (jolt-apply f . args)

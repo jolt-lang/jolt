@@ -170,8 +170,14 @@
 # sorted-map/sorted-set/subseq/rsubseq + sorted equality; unblocks sorted? and
 # every fn that calls it: empty/ifn?/reversible?/map?/set?/coll?. Also an emit fix
 # routing a computed call operator ((sorted-map …) k) through jolt-invoke) 1837.
+# Phase 2 inc G (jolt-dmw9: lazy-seq bridge — make-lazy-seq / coll->cells over the
+# cseq model + a jolt-lazyseq arm on the non-jolt-seq dispatchers (sequential?/=/
+# hash/count/empty?/nth/printers); jolt-concat made fully lazy so a self-
+# referential lazy-cat (fib) stays productive. Unblocks repeat/iterate/cycle/
+# dedupe/take-nth/keep/interpose/reductions/map-indexed/distinct/interleave/
+# tree-seq->flatten/partition-all/lazy-cat) 1886.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1837")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "1886")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

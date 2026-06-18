@@ -206,3 +206,9 @@
 ;; through their :ops table). Loaded LAST — wraps the jrec-extended dispatchers
 ;; (records.ss), jolt-disj (transients.ss), and value-host-tags (records.ss).
 (load "host/chez/host-table.ss")
+
+;; lazy-seq bridge (jolt-dmw9, Phase 2): make-lazy-seq / coll->cells over the
+;; cseq model — unblocks every overlay fn built on the lazy-seq macro (repeat/
+;; iterate/cycle/dedupe/take-nth/keep/interpose/reductions/tree-seq/lazy-cat).
+;; Loaded LAST so %ls-seq captures the fully-extended (sorted-aware) jolt-seq.
+(load "host/chez/lazy-bridge.ss")
