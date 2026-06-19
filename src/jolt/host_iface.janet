@@ -22,6 +22,7 @@
 (use ./evaluator)
 (use ./core)
 (import ./phm :as phm)
+(import ./pv :as pv)
 (import ./reader :as rdr)
 
 # ---------------------------------------------------------------------------
@@ -296,10 +297,27 @@
 # (Janet scan-number; Chez string->number). Returns nil on a non-number.
 (defn h-scan-number [str] (scan-number str))
 
+# Collection form constructors. The portable reader accumulates items in a jolt
+# vector and hands it here; the host builds its native form representation.
+(defn- jvec->array [v]
+  (cond
+    (pv/pvec? v) (pv/pv->array v)
+    (indexed? v) (array ;v)
+    (array)))
+(defn h-make-list [items] (jvec->array items))                  # list form = Janet array
+(defn h-make-vector [items] (tuple/slice (jvec->array items)))  # vector form = Janet tuple
+(defn h-make-map [kvs] (rdr/reader-map (jvec->array kvs)))      # map form (+ kv-order)
+# Attach/merge reader metadata onto a symbol FORM (^hint sym): keeps it a bare
+# symbol carrying :meta, so type hints are transparent in every position.
+(defn h-sym-merge-meta [sym m]
+  (struct ;(kvs sym) :meta (merge (or (sym :meta) {}) m)))
+
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
    "form-make-symbol" h-make-symbol "form-make-char" h-make-char
    "form-char-from-name" h-char-from-name "form-scan-number" h-scan-number
+   "form-make-list" h-make-list "form-make-vector" h-make-vector
+   "form-make-map" h-make-map "form-sym-merge-meta" h-sym-merge-meta
    "ref-put!" h-ref-put!
    "ref-get" h-ref-get
    "tagged-table" h-tagged-table

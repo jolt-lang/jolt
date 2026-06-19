@@ -79,5 +79,26 @@
 # characters
 (each i [`\a` `\Z` `\0` `\newline` `\tab` `\space` `\return` `\\` `\(` `\{` `\%` `A` `\o101`] (check i))
 
+# --- inc 5b: collections + quote/deref/meta -----------------------------------
+# lists
+(each i ["(1 2 3)" "(a b c)" "()" "(foo (bar baz) qux)" "(+ 1 (* 2 3))"] (check i))
+(check "(1 ; c\n 2 3)")     # comment inside a list
+# vectors
+(each i ["[1 2 3]" "[]" "[a [b c]]" "[1 [2 [3]]]" "[:a :b :c]"] (check i))
+# maps
+(each i ["{:a 1 :b 2}" "{}" "{:a {:b 1}}" "{:x [1 2] :y {:z 3}}" "{1 2 3 4}"] (check i))
+(check "{:a 1 ; c\n :b 2}")  # comment inside a map (key/value slots)
+# mixed / nested forms (real code shapes)
+(each i ["(defn f [x] (+ x 1))" "{:list (1 2) :vec [3 4]}" "(let [a 1 b 2] (+ a b))"] (check i))
+# quote / syntax-quote / unquote / deref
+(each i ["'foo" "'(1 2 3)" "''x" "'[a b]" "'{:a 1}"] (check i))
+(each i ["`foo" "`(a b c)" "`[x y]"] (check i))
+(check "`\"meow\"")          # syntax-quote of a literal collapses
+(each i ["~x" "~@xs" "@x" "@(atom 1)"] (check i))
+(check "`(a ~b ~@c)")
+# metadata
+(each i ["^:dynamic x" "^String s" "^:private foo" "^{:a 1} v" "^t/Ray r"] (check i))
+(check "(defn ^:private g [x] x)")
+
 (printf "\n%d/%d ok" (- total fails) total)
 (when (> fails 0) (os/exit 1))

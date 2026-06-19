@@ -19,7 +19,9 @@
   (#) land in 5b/5c (they throw not-yet-ported so a hit is loud)."
   (:require [clojure.string :as str]
             [jolt.host :refer [form-make-symbol form-make-char form-char-from-name
-                               form-scan-number]]))
+                               form-scan-number form-make-list form-make-vector
+                               form-make-map form-sym-merge-meta
+                               form-sym? form-sym-name form-sym-ns form-char?]]))
 
 ;; Source access by CHARACTER codepoint, mirroring the Janet reader's byte access
 ;; (identical for ASCII). cp = codepoint at i; len = character count.
@@ -172,27 +174,135 @@
       [(form-char-from-name (subs s (inc pos) end)) end])))
 
 ;; --- dispatcher --------------------------------------------------------------
+;; read-form returns a CONTROL triple [kind payload pos]:
+;;   :form  payload=the form          a real datum
+;;   :skip  payload=nil               a comment (;) or #_ discard — produced nothing
+;;   :splice payload=items-vector     #?@ — contributes 0+ items to the enclosing coll
+;; Out-of-band control (vs the Janet reader's :jolt/skip / :jolt/splice sentinel
+;; FORMS) keeps it collision-free and host-neutral — no tagged-struct to build or
+;; recognize. Collection readers dispatch on kind; read-next-form skips :skip.
+(declare read-form)
+
 (defn- number-start? [s pos c]
   (or (digit? c)
       (and (= c 45) (< (inc pos) (len s)) (digit? (cp s (inc pos))))
       (and (= c 43) (< (inc pos) (len s)) (digit? (cp s (inc pos))))))
 
+;; Read items until `close`, dispatching control kinds. Returns [items-vec end].
+(defn- read-delimited [s start-pos close errmsg]
+  (loop [pos start-pos items []]
+    (let [pos (skip-whitespace s pos)]
+      (when (>= pos (len s)) (throw (ex-info errmsg {})))
+      (if (= (cp s pos) close)
+        [items (inc pos)]
+        (let [[kind payload np] (read-form s pos)]
+          (case kind
+            :skip (recur np items)
+            :splice (recur np (into items payload))
+            :form (recur np (conj items payload))))))))
+
+(defn- read-list* [s pos]
+  (let [[items end] (read-delimited s (inc pos) 41 "Unterminated list")]   ; )
+    [:form (form-make-list items) end]))
+
+(defn- read-vector* [s pos]
+  (let [[items end] (read-delimited s (inc pos) 93 "Unterminated vector")] ; ]
+    [:form (form-make-vector items) end]))
+
+;; Map: pair up keys and values, skipping comments/#_ in either slot while keeping
+;; the pending key (dropping both desyncs the pairing). Splice in a map slot lands
+;; in inc 5c; here a key/value is always a single :form (or :skip).
+(defn- read-map* [s pos]
+  (loop [pos (inc pos) kvs []]
+    (let [pos (skip-whitespace s pos)]
+      (when (>= pos (len s)) (throw (ex-info "Unterminated map" {})))
+      (if (= (cp s pos) 125)   ; }
+        [:form (form-make-map kvs) (inc pos)]
+        (let [[kk kp knp] (read-form s pos)]
+          (if (= kk :skip)
+            (recur knp kvs)
+            ;; key in hand; read the value slot, skipping trivia but keeping the key
+            (let [[v vnp]
+                  (loop [vp (skip-whitespace s knp)]
+                    (when (>= vp (len s)) (throw (ex-info "Unterminated map" {})))
+                    (let [[vk vp2 vnp2] (read-form s vp)]
+                      (if (= vk :skip) (recur (skip-whitespace s vnp2)) [vp2 vnp2])))]
+              (recur vnp (conj (conj kvs kp) v)))))))))
+
+;; Read the next REAL form (skip :skip), returning [form pos]. Used wherever a
+;; single datum is needed (quote/meta/top level).
+(defn- read-next-form [s pos]
+  (let [[kind payload np] (read-form s pos)]
+    (case kind
+      :skip (recur s np)
+      :form [payload np]
+      :splice (throw (ex-info "splice (#?@) not inside a collection" {})))))
+
+;; syntax-quote of a self-evaluating literal collapses to the literal at read time
+;; (so nested backticks over literals are inert). NOT symbols (they qualify) or
+;; collections (they template).
+(defn- self-evaluating-literal? [form]
+  (or (nil? form) (true? form) (false? form) (number? form)
+      (string? form) (keyword? form) (form-char? form)))
+
+(defn- read-quote* [s newpos token-sym]
+  (let [[form finalpos] (read-next-form s newpos)]
+    (if (and (= "syntax-quote" (form-sym-name token-sym)) (self-evaluating-literal? form))
+      [:form form finalpos]
+      [:form (form-make-list [token-sym form]) finalpos])))
+
+;; Normalize a metadata reader form: keyword -> {kw true}; symbol/string -> {:tag …}
+;; (a symbol tag keeps its ns qualifier); else nil (a map-literal meta).
+(defn- meta-form->map [meta-form]
+  (cond
+    (keyword? meta-form) {meta-form true}
+    (form-sym? meta-form) {:tag (if (form-sym-ns meta-form)
+                                  (str (form-sym-ns meta-form) "/" (form-sym-name meta-form))
+                                  (form-sym-name meta-form))}
+    (string? meta-form) {:tag meta-form}
+    :else nil))
+
+(defn- read-meta* [s pos]
+  ;; pos at ^
+  (let [[meta-form np] (read-next-form s (inc pos))
+        [form np2] (read-next-form s np)
+        m (meta-form->map meta-form)]
+    (if (and m (form-sym? form))
+      ;; attach to the symbol itself (^Type x / ^:dynamic) — stays a bare symbol
+      [:form (form-sym-merge-meta form m) np2]
+      ;; non-symbol target -> a runtime with-meta form (normalized map, or the
+      ;; raw map-literal meta when m is nil)
+      [:form (form-make-list [(form-make-symbol "with-meta") form (if m m meta-form)]) np2])))
+
 (defn read-form [s pos]
   (let [pos (skip-whitespace s pos)]
     (if (>= pos (len s))
-      [nil pos]
+      [:form nil pos]
       (let [c (cp s pos)]
         (cond
-          (= c 59) (read-form s (read-until-newline s pos))   ; ; comment: skip + reread
-          (= c 34) (read-string* s pos)
-          (= c 58) (read-keyword* s pos)
-          (= c 92) (read-char* s pos)
-          (number-start? s pos c) (read-number* s pos)
-          (symbol-start? c) (read-symbol* s pos)
-          :else (throw (ex-info (str "read-form: not yet ported (inc 5a atoms): '"
-                                     (char c) "' (" c ")") {})))))))
+          (= c 59) [:skip nil (read-until-newline s pos)]              ; ; comment
+          (= c 34) (let [r (read-string* s pos)] [:form (nth r 0) (nth r 1)])
+          (= c 58) (let [r (read-keyword* s pos)] [:form (nth r 0) (nth r 1)])
+          (= c 92) (let [r (read-char* s pos)] [:form (nth r 0) (nth r 1)])
+          (= c 40) (read-list* s pos)                                  ; (
+          (= c 91) (read-vector* s pos)                                ; [
+          (= c 123) (read-map* s pos)                                  ; {
+          (= c 39) (read-quote* s (inc pos) (form-make-symbol "quote"))            ; '
+          (= c 96) (read-quote* s (inc pos) (form-make-symbol "syntax-quote"))     ; `
+          (= c 126) (if (and (< (inc pos) (len s)) (= (cp s (inc pos)) 64))        ; ~ / ~@
+                      (read-quote* s (+ pos 2) (form-make-symbol "unquote-splicing"))
+                      (read-quote* s (inc pos) (form-make-symbol "unquote")))
+          (= c 64) (read-quote* s (inc pos) (form-make-symbol "clojure.core/deref")) ; @
+          (= c 94) (read-meta* s pos)                                  ; ^
+          (= c 41) (throw (ex-info "Unmatched delimiter: )" {}))
+          (= c 93) (throw (ex-info "Unmatched delimiter: ]" {}))
+          (= c 125) (throw (ex-info "Unmatched delimiter: }" {}))
+          (= c 35) (throw (ex-info "read-form: dispatch (#) not yet ported (inc 5c)" {})) ; #
+          (number-start? s pos c) (let [r (read-number* s pos)] [:form (nth r 0) (nth r 1)])
+          (symbol-start? c) (let [r (read-symbol* s pos)] [:form (nth r 0) (nth r 1)])
+          :else (throw (ex-info (str "read-form: unexpected char '" (char c) "' (" c ")") {})))))))
 
 (defn read-one
   "Read the first form of `s` (skipping leading trivia). Returns the form."
   [s]
-  (first (read-form s 0)))
+  (first (read-next-form s 0)))
