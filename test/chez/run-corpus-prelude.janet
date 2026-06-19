@@ -240,8 +240,12 @@
 # map member dispatch, and the seed's universal object-methods getMessage/getCause/
 # toString/hashCode/equals. Also added getMessage/getLocalizedMessage/equals to the
 # string method surface so a thrown string / Exception. ctor answers .getMessage) 2150.
+# jolt-mn9o (atom watches/validators — the Chez atom record carries watches/
+# validator slots; swap!/reset! validate-then-set-then-notify in seed order;
+# add-watch/remove-watch/set-validator!/get-validator are native and re-asserted
+# in post-prelude.ss over the overlay's ref-put!-on-a-Janet-table versions) 2154.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2150")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2154")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

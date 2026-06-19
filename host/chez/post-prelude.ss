@@ -13,6 +13,13 @@
 ;; override.)
 (def-var! "clojure.core" "char?" jolt-char-pred?)
 (def-var! "clojure.core" "atom?" jolt-atom?)
+;; atom watches/validators: the overlay drives these via jolt.host/ref-put! on a
+;; Janet table (get a :watches), which a Chez atom record is not — re-assert the
+;; native versions (defined in atoms.ss), and swap!/reset! notify+validate there.
+(def-var! "clojure.core" "add-watch" jolt-add-watch)
+(def-var! "clojure.core" "remove-watch" jolt-remove-watch)
+(def-var! "clojure.core" "set-validator!" jolt-set-validator!)
+(def-var! "clojure.core" "get-validator" jolt-get-validator)
 ;; volatiles: a Chez volatile is a jvol record, but the overlay vreset!/vswap!/
 ;; volatile? drive it via jolt.host/ref-put!+get / :jolt/type (tagged-table only).
 ;; Override with the native versions (defined in natives-xform.ss).
