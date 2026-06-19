@@ -257,8 +257,12 @@
 # slurp/spit/flush over Chez file I/O, file-seq dir primitives, clojure.java.io/
 # file — host/chez/io.ss, a Chez-native impl since io.clj is a janet.* shim;
 # reader/StringReader-coupled io deferred to jolt-at0a) 2191.
+# jolt-at0a inc W (reader-coupled io — clojure.java.io/reader over a StringReader
+# (slurp/string/char[]/File), File .toURL/.toURI + a url jhost, slurp draining a
+# StringReader, char-array, and with-open's __close seam over jhost readers + plain
+# :close maps; all in host/chez/io.ss, no analyzer change) 2202.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2191")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2202")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

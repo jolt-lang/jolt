@@ -40,6 +40,25 @@
          (sort string<? (directory-list p)))))
 (define (jolt-dir? path) (if (file-directory? (file-path-of path)) #t #f))
 
+;; absolute path string (cwd-relative paths resolved against current-directory).
+(define (jfile-abs p)
+  (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) p
+      (string-append (current-directory) "/" p)))
+
+;; --- java.net.URL (a jhost "url", state #(spec)) ----------------------------
+;; A File.toURL value: .toString / .toExternalForm give the spec, .getPath /
+;; .getFile strip the "file:" scheme. (Mirrors host_io.janet's :jolt/url.)
+(define (make-url spec) (make-jhost "url" (vector spec)))
+(define (url-spec u) (vector-ref (jhost-state u) 0))
+(define (url-strip-scheme spec)
+  (if (and (>= (string-length spec) 5) (string=? (substring spec 0 5) "file:"))
+      (substring spec 5 (string-length spec)) spec))
+(register-host-methods! "url"
+  (list (cons "toString"       (lambda (self) (url-spec self)))
+        (cons "toExternalForm" (lambda (self) (url-spec self)))
+        (cons "getPath"        (lambda (self) (url-strip-scheme (url-spec self))))
+        (cons "getFile"        (lambda (self) (url-strip-scheme (url-spec self))))))
+
 ;; --- File method surface (record-method-dispatch arm) -----------------------
 (define (jfile-method f name args)        ; -> boxed result, or #f to fall through
   (let ((p (jfile-path f)))
@@ -47,7 +66,10 @@
       ((string=? name "getPath")        (list p))
       ((string=? name "getName")        (list (path-last-segment p)))
       ((string=? name "toString")       (list p))
-      ((string=? name "getAbsolutePath")(list p))
+      ((string=? name "getAbsolutePath")(list (jfile-abs p)))
+      ((string=? name "getCanonicalPath")(list (jfile-abs p)))
+      ((string=? name "toURI")          (list (string-append "file:" (jfile-abs p))))
+      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-abs p)))))
       ((string=? name "exists")         (list (if (file-exists? p) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? p) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? p) (not (file-directory? p))) #t #f)))
@@ -86,11 +108,25 @@
   (let ((p (open-input-file path)))
     (let ((s (get-string-all p))) (close-port p) (if (eof-object? s) "" s))))
 
+;; Drain a jhost reader (StringReader / PushbackReader): read code units from the
+;; current position to EOF (-1) and assemble the string. Used by slurp; advances
+;; the reader, as on the JVM.
+(define (drain-reader r)
+  (let loop ((acc '()))
+    (let ((u (record-method-dispatch r "read" jolt-nil)))
+      (if (or (jolt-nil? u) (and (number? u) (< u 0)))
+          (list->string (reverse acc))
+          (loop (cons (integer->char (exact (truncate u))) acc))))))
+
+(define (reader-jhost? x)
+  (and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader"))))
+
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (read-file-string (jfile-path src)))
+    ((reader-jhost? src) (drain-reader src))
     ((string? src) (read-file-string src))
-    (else (error #f "slurp: unsupported source (reader io is jolt-at0a)" src))))
+    (else (error #f "slurp: unsupported source" src))))
 
 (define (spit-append? opts)
   (let loop ((o opts))
@@ -144,6 +180,54 @@
 (def-var! "clojure.core" "spit" jolt-spit)
 (def-var! "clojure.core" "flush" jolt-flush)
 
-;; --- clojure.java.io ns (file/as-file; reader/writer are jolt-at0a) ---------
+;; --- char-array: a seq of chars over a string (the JVM char[]). io/reader's
+;; char[] branch + selmer's (char-array template) feed on this. Mirrors the seed
+;; core-char-array (string -> chars). A leaf array native; lives here as io/reader
+;; is its only Chez consumer so far.
+(define (jolt-char-array a . rest)
+  (cond
+    ((string? a) (list->cseq (string->list a)))
+    ((number? a) (list->cseq (make-list (exact (truncate a)) #\nul)))
+    (else (list->cseq (map (lambda (c) (if (char? c) c (integer->char (exact (truncate c)))))
+                           (seq->list a))))))
+(def-var! "clojure.core" "char-array" jolt-char-array)
+
+;; --- with-open's close seam (__close): a map-like value closes via its :close
+;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
+;; else is an error. Mirrors core_extra.janet core-close-resource.
+(define (jolt-close x)
+  (cond
+    ((jolt-nil? x) jolt-nil)
+    ((and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader" "writer")))
+     (record-method-dispatch x "close" jolt-nil) jolt-nil)
+    ((jfile? x) jolt-nil)
+    (else
+     (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
+       (if (and (not (jolt-nil? closef)) (procedure? closef))
+           (begin (jolt-invoke closef) jolt-nil)
+           (error #f "with-open: don't know how to close" x))))))
+(def-var! "clojure.core" "__close" jolt-close)
+
+;; --- clojure.java.io/reader: an in-memory java.io.Reader over the source. An
+;; existing reader passes through; a File / path / URL is slurped; a char[] (or
+;; any seq) becomes a reader over (apply str …). Mirrors io.clj's reader. Returns
+;; a StringReader (host-static.ss jhost) so .read/.mark/.reset and slurp work.
+(define (seq-source->string x)
+  (apply string-append (map jolt-str-render-one (seq->list x))))
+(define (jolt-io-reader x)
+  (cond
+    ((reader-jhost? x) x)
+    ((jfile? x) (host-new "StringReader" (read-file-string (jfile-path x))))
+    ((and (jhost? x) (string=? (jhost-tag x) "url"))
+     (host-new "StringReader" (read-file-string (url-strip-scheme (url-spec x)))))
+    ((string? x) (host-new "StringReader" (read-file-string x)))
+    ((or (cseq? x) (empty-list-t? x) (pvec? x))
+     (host-new "StringReader" (seq-source->string x)))
+    (else (host-new "StringReader" (jolt-str-render-one x)))))
+
+;; --- clojure.java.io ns -----------------------------------------------------
 (def-var! "clojure.java.io" "file" jolt-make-file)
 (def-var! "clojure.java.io" "as-file" (lambda (x) (if (jfile? x) x (make-jfile (file-path-of x)))))
+(def-var! "clojure.java.io" "reader" jolt-io-reader)
+(def-var! "clojure.java.io" "input-stream" jolt-io-reader)
+(def-var! "clojure.java.io" "as-url" (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "url")) x (make-url (jolt-str-render-one x)))))
