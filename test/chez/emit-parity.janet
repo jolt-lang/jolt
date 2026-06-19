@@ -170,6 +170,9 @@
 (check "inst eq" `(= #inst "2020-01-01" #inst "2020-01-01")`)
 (check "uuid eq" `(= #uuid "00000000-0000-0000-0000-000000000000" #uuid "00000000-0000-0000-0000-000000000000")`)
 (check "regex smoke" `(do (def r #"[0-9]+") true)`)
+(check "char eq" `(= \a \a)`)
+(check "char int" `(do (def c \newline) (= c \newline))`)
+(check "quoted char" `(= (quote \z) \z)`)
 
 (check "mandelbrot run(20)"
   (string ``

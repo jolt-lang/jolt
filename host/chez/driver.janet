@@ -15,7 +15,33 @@
 (import ../../src/jolt/reader :as r)
 (import ../../src/jolt/evaluator :as evlr)
 (import ../../src/jolt/types_ctx :as tctx)
+(import ../../src/jolt/types_ns :as tns)
+(import ../../src/jolt/types_var :as tvar)
 (import ./emit :as emit)
+
+# Chez Phase 3 (jolt-duot): the IR->Scheme emitter is now the PORTABLE Clojure
+# jolt.backend-scheme (jolt-core), not emit.janet. It's loaded into the ctx and
+# called from here the same way the analyzer is. emit.janet stays only as the
+# program-string wrapper (emit/program) until program assembly ports to Clojure
+# with compile-from-source. This is the step that takes the emitter off Janet.
+(defn- ensure-clj-emitter [ctx]
+  (def env (ctx :env))
+  (unless (get env :clj-emit-fn)
+    (def src (get (get env :embedded-sources @{}) "jolt.backend-scheme"))
+    (assert src "jolt.backend-scheme not embedded (check stdlib_embed)")
+    (backend/bootstrap-load-source ctx "jolt.backend-scheme" src)
+    (def ns (tctx/ctx-find-ns ctx "jolt.backend-scheme"))
+    (put env :clj-emit-fn (tvar/var-get (tns/ns-find ns "emit")))
+    (put env :clj-set-prelude-fn (tvar/var-get (tns/ns-find ns "set-prelude-mode!"))))
+  ctx)
+
+# Emit IR -> Scheme via the Clojure emitter (returns a Janet string).
+(defn- cemit [ctx ir] (string ((get (ctx :env) :clj-emit-fn) ir)))
+(defn- cset-prelude! [ctx on] ((get (ctx :env) :clj-set-prelude-fn) on))
+
+# Public: emit IR -> Scheme via the portable Clojure emitter (jolt.backend-scheme).
+# The single seam tests use so emit.janet's emit fn is no longer exercised.
+(defn scheme-emit [ctx ir] (ensure-clj-emitter ctx) (cemit ctx ir))
 
 (defn chez-available?
   "True when a `chez` binary is on PATH — lets the chez tests skip cleanly on
@@ -35,6 +61,7 @@
   call) lowers to a var-deref instead of failing to compile (jolt-9ls5)."
   (def ctx (api/init {:compile? true}))
   (put (get ctx :env) :late-bind-unresolved? true)
+  (ensure-clj-emitter ctx)
   ctx)
 
 (defn- parse-all [src]
@@ -53,6 +80,7 @@
   treated as defs (also interned in the ctx so later forms resolve their vars),
   and the last form is the expression whose value the program prints."
   [ctx src]
+  (ensure-clj-emitter ctx)
   (def forms (parse-all src))
   (assert (> (length forms) 0) "compile-program: empty program")
   (def n (length forms))
@@ -61,9 +89,9 @@
     (def f (in forms i))
     # emit the def, then intern it (interpreted) so a later form's reference to
     # this var resolves to a :var node rather than an unresolved symbol.
-    (array/push def-scm (emit/emit (backend/analyze-form ctx f)))
+    (array/push def-scm (cemit ctx (backend/analyze-form ctx f)))
     (evlr/eval-form ctx @{} f))
-  (def final-scm (emit/emit (backend/analyze-form ctx (in forms (- n 1)))))
+  (def final-scm (cemit ctx (backend/analyze-form ctx (in forms (- n 1)))))
   (emit/program def-scm final-scm))
 
 # Drain a pipe to EOF. A single (ev/read pipe N) can return BEFORE the child has
@@ -158,7 +186,8 @@
   assembly via emit/program or program-with-prelude)."
   [ctx &opt core-dir]
   (default core-dir "jolt-core/clojure/core/")
-  (emit/set-prelude-mode! true)
+  (ensure-clj-emitter ctx)
+  (cset-prelude! ctx true)
   (def prev-ns (tctx/ctx-current-ns ctx))
   (tctx/ctx-set-current-ns ctx "clojure.core")
   (def out @[])
@@ -179,7 +208,7 @@
       # already carry explicit ns names). Macros have no runtime value either.
       (unless (or ns-form? (macro-form? f))
         (++ total)
-        (def res (protect (emit/emit (backend/analyze-form ctx f))))
+        (def res (protect (cemit ctx (backend/analyze-form ctx f))))
         (when (res 0)
           (++ emitted)
           # Tolerant load guard: a form that fails to LOAD (currently only the 8
@@ -197,7 +226,7 @@
   (each [ns-name path] stdlib-ns-files
     (emit-ns-forms ns-name (slurp path)))
   (tctx/ctx-set-current-ns ctx prev-ns)
-  (emit/set-prelude-mode! false)
+  (cset-prelude! ctx false)
   [(string/join out "\n") emitted total])
 
 (defn program-with-prelude
@@ -224,11 +253,12 @@
   resolves via var-deref. Returns [code stdout stderr], or [:emit-err msg \"\"]
   if the user form itself can't be emitted."
   [ctx src prelude-path &opt scheme-out]
-  (emit/set-prelude-mode! true)
+  (ensure-clj-emitter ctx)
+  (cset-prelude! ctx true)
   (def form (in (r/parse-next src) 0))
   (scan-eval-requires! ctx form)
-  (def res (protect (emit/emit (backend/analyze-form ctx form))))
-  (emit/set-prelude-mode! false)
+  (def res (protect (cemit ctx (backend/analyze-form ctx form))))
+  (cset-prelude! ctx false)
   (if (not (res 0))
     [:emit-err (string (res 1)) ""]
     (let [prog (program-with-prelude prelude-path (res 1))

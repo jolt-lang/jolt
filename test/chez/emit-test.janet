@@ -81,7 +81,7 @@
 #   wrapper — (if (jolt-truthy? (< a b)) …) === (if (< a b) …). Sound because
 #   jolt-truthy? of #t/#f is identity. The hot fib/mandelbrot tests are all
 #   comparisons, so this is a direct ceiling lever. Inspect the emitted Scheme.
-(defn- emit-scm [src] (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0))))
+(defn- emit-scm [src] (d/scheme-emit ctx (backend/analyze-form ctx (in (r/parse-next src) 0))))
 (each [label src wrapped?] [["if < elides wrapper"   "(fn [n] (if (< n 2) 1 2))"      false]
                             ["if > elides wrapper"   "(fn [n] (if (> n 2) 1 2))"      false]
                             ["if = elides wrapper"   "(fn [n] (if (= n 2) 1 2))"      false]
