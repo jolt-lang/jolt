@@ -209,6 +209,9 @@
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
                          (if f (apply jolt-invoke f obj rest) (error #f (string-append "No method " method-name))))))
+      ;; java.lang.String interop (jolt-nfca): defined in natives-str.ss, loaded
+      ;; after this file (free reference, resolved at call time).
+      ((string? obj) (jolt-string-method method-name obj rest))
       (else (error #f (string-append "No method " method-name " for value"))))))
 
 ;; reify: instance-local method table. obj is a jreify carrying a method ht +

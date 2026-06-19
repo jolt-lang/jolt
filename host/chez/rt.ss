@@ -265,3 +265,9 @@
 ;; frame is seen by every var read. Loaded LAST: needs the fully-extended var-read
 ;; paths + jolt-hash-map/pmap-fold/pmap-assoc (collections.ss).
 (load "host/chez/dyn-binding.ss")
+
+;; java.lang.String method interop (jolt-nfca, Phase 2): jolt-string-method, the
+;; portable String/CharSequence surface record-method-dispatch falls through to on
+;; a string target. After regex.ss (jolt-re-pattern/regex-t-irx) + records.ss
+;; (which references jolt-string-method).
+(load "host/chez/natives-str.ss")

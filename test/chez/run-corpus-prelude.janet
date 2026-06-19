@@ -195,8 +195,13 @@
 # with-in-str/line-seq) 2000.
 # jolt-fmm4 ((type x) — :type meta override, record ns-qualified class-name
 # symbol, total value->taxonomy keyword mapping) 2002.
+# jolt-nfca (host java.lang.String method interop — jolt-string-method, the
+# portable String/CharSequence surface record-method-dispatch falls through to on
+# a string target: case/trim/length/indexOf/substring/startsWith/contains/replace/
+# charAt/equalsIgnoreCase + the regex methods matches/replaceAll/replaceFirst/
+# split) 2026.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2002")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2026")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
