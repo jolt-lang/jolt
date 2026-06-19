@@ -203,9 +203,11 @@
 (define (jolt-conj1 coll x)
   (cond ((pvec? coll) (pvec-conj coll x))   ; nil is a valid vector/set element
         ((pset? coll) (pset-conj coll x))
-        ;; a list/seq conjs by PREPENDING (seq.ss: cseq / empty-list)
-        ((cseq? coll) (cseq-realized x coll))
-        ((empty-list-t? coll) (cseq-realized x jolt-nil))
+        ;; a list/seq conjs by PREPENDING (seq.ss: cseq / empty-list). conj onto a
+        ;; list stays a list, conj onto a lazy/realized seq yields a seq cell (a
+        ;; Cons) — list?-preserving, matching the seed.
+        ((cseq? coll) (if (cseq-list? coll) (cseq-list x coll) (cseq-realized x coll)))
+        ((empty-list-t? coll) (cseq-list x jolt-nil))
         ((pmap? coll)
          (cond ((jolt-nil? x) coll)                                   ; (conj m nil) = m
                ((pmap? x) (pmap-fold x (lambda (k v m) (pmap-assoc m k v)) coll))   ; merge

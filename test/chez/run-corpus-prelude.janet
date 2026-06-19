@@ -248,8 +248,13 @@
 # strings + (class x) scalar arms, host-class.ss; the analyzer already resolves
 # these names to clojure.core vars so it's a runtime def-var! only, no analyzer
 # change) 2163.
+# jolt-75sv (list? via a list marker on the cseq record — only list/quote/cons/
+# reverse/conj-on-list mark the head cell, so rest/seq/map stay non-list seqs;
+# map-entry is now vector? matching Clojure's MapEntry; clojure.walk + clojure.
+# template added to the prelude stdlib tier, the driver evals each ns's requires
+# to register aliases at emit time) 2176.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2163")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2176")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

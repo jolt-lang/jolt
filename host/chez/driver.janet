@@ -107,7 +107,11 @@
 # same analyze->emit pipeline lowers it; an aliased ref resolves via var-deref at
 # runtime once the alias is registered (the driver pre-evals requires). jolt-nfca.
 (def stdlib-ns-files
-  [["clojure.string" "src/jolt/clojure/string.clj"]])
+  [["clojure.string" "src/jolt/clojure/string.clj"]
+   ["clojure.walk" "src/jolt/clojure/walk.clj"]
+   # clojure.template requires clojure.walk (apply-template over postwalk-replace)
+   # — must follow it so the alias resolves at emit time.
+   ["clojure.template" "src/jolt/clojure/template.clj"]])
 
 (defn- sym-name [x]
   (when (and (struct? x) (= :symbol (get x :jolt/type))) (get x :name)))
@@ -120,6 +124,21 @@
   (if (and (indexed? f) (> (length f) 1))
     (let [h (or (sym-name (in f 0)) "?") n (sym-name (in f 1))] (if n (string h " " n) h))
     "?"))
+
+(defn- require-head? [f]
+  (and (indexed? f) (> (length f) 0)
+       (let [h (sym-name (in f 0))] (and h (or (= h "require") (= h "use"))))))
+
+(defn- scan-eval-requires! [ctx form]
+  "Recursively eval any (require ...)/(use ...) sub-form against the ctx so the
+  alias registers + the aliased ns loads BEFORE the AOT analyzer resolves its
+  qualified refs — the whole user form is analyzed up front, before any require
+  would run at eval time (jolt-nfca). Failures are swallowed (the ref then stays
+  an emit-err, the prior behavior)."
+  (when (indexed? form)
+    (if (require-head? form)
+      (protect (api/eval-one ctx form))
+      (each sub form (scan-eval-requires! ctx sub)))))
 
 (defn emit-core-prelude
   "Assemble the clojure.core prelude as a Scheme string. `ctx` must be a
@@ -138,7 +157,17 @@
     (tctx/create-ns ctx ns-name)
     (tctx/ctx-set-current-ns ctx ns-name)
     (each f (parse-all src)
-      (unless (macro-form? f)
+      # Register any aliases this ns depends on before analyzing its forms, so an
+      # aliased ref (e.g. clojure.template's walk/postwalk-replace) resolves at emit
+      # time instead of lowering to an "Unknown class walk" host-static. The ns
+      # form's :require is a keyword-headed clause that scan-eval-requires! (matching
+      # the `require`/`use` symbol heads) doesn't catch, so eval the ns form whole.
+      (def ns-form? (and (indexed? f) (> (length f) 0) (= "ns" (sym-name (in f 0)))))
+      (if ns-form? (protect (api/eval-one ctx f)) (scan-eval-requires! ctx f))
+      # Skip emitting ns forms: their only role here is alias registration, and a
+      # runtime ns-switch would leak into the prelude's trailing *ns* (the def-var!s
+      # already carry explicit ns names). Macros have no runtime value either.
+      (unless (or ns-form? (macro-form? f))
         (++ total)
         (def res (protect (emit/emit (backend/analyze-form ctx f))))
         (when (res 0)
@@ -178,21 +207,6 @@
     "(load \"host/chez/post-prelude.ss\")\n"
     "(set-chez-ns! \"user\")\n"
     "(printf \"~a\\n\" (jolt-final-str " final-scm "))\n"))
-
-(defn- require-head? [f]
-  (and (indexed? f) (> (length f) 0)
-       (let [h (sym-name (in f 0))] (and h (or (= h "require") (= h "use"))))))
-
-(defn- scan-eval-requires! [ctx form]
-  "Recursively eval any (require ...)/(use ...) sub-form against the ctx so the
-  alias registers + the aliased ns loads BEFORE the AOT analyzer resolves its
-  qualified refs — the whole user form is analyzed up front, before any require
-  would run at eval time (jolt-nfca). Failures are swallowed (the ref then stays
-  an emit-err, the prior behavior)."
-  (when (indexed? form)
-    (if (require-head? form)
-      (protect (api/eval-one ctx form))
-      (each sub form (scan-eval-requires! ctx sub)))))
 
 (defn eval-e-with-prelude
   "Run a single user expression `src` on Chez with the full clojure.core prelude

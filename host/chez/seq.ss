@@ -18,9 +18,16 @@
 ;; head : the realized first element. tail : EITHER a realized seq (cseq |
 ;; jolt-nil) when forced? is #t, OR a 0-arg thunk producing one when forced? is
 ;; #f. Forcing memoizes (set the tail to the produced seq, flip forced?).
-(define-record-type cseq (fields head (mutable tail) (mutable forced?)) (nongenerative chez-cseq-v1))
-(define (cseq-realized head tail) (make-cseq head tail #t))   ; tail already a seq
-(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f))
+;; list? : #t when this cell is a PersistentList node (list literal / (list ...)
+;; / cons / reverse / conj-onto-list) vs a lazy or vector-backed seq cell — the
+;; only thing that distinguishes a list from any other realized seq on this host,
+;; since one record type backs both (clojure.core/list? — jolt-75sv). The marker
+;; lives on the cell, so (rest a-list) / (seq a-vector) / (map …) yield plain seq
+;; cells and are not list?, matching the seed.
+(define-record-type cseq (fields head (mutable tail) (mutable forced?) list?) (nongenerative chez-cseq-v2))
+(define (cseq-realized head tail) (make-cseq head tail #t #f))   ; tail already a seq
+(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f))
+(define (cseq-list head tail) (make-cseq head tail #t #t))       ; a PersistentList node
 (define (seq-first s) (cseq-head s))
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
   (if (cseq-forced? s) (cseq-tail s)
@@ -72,11 +79,26 @@
         (let ((m (seq-more s))) (if (jolt-nil? m) jolt-empty-list m)))))
 (define (jolt-next x)                  ; nil when the rest is empty
   (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-nil (seq-more s))))
-(define (jolt-cons x coll) (cseq-realized x (jolt-seq coll)))
-(define (jolt-list . xs) (if (null? xs) jolt-empty-list (list->cseq xs)))
-(define (jolt-reverse coll) (let loop ((s (jolt-seq coll)) (acc jolt-empty-list))
-                              (if (jolt-nil? s) acc
-                                  (loop (jolt-seq (seq-more s)) (cseq-realized (seq-first s) (if (empty-list-t? acc) jolt-nil acc))))))
+;; Only the HEAD cell carries the list marker — (rest a-list)/(next a-list) return
+;; the unmarked tail, so they are seqs and not list?, matching the seed (which
+;; makes rest-of-a-list a non-list seq). cons/list/reverse/conj therefore mark
+;; just the cell they create.
+;;
+;; cons always yields a list — (list? (cons x anything)) is true on the seed (cons
+;; onto a vector/seq/nil all report list?).
+(define (jolt-cons x coll) (cseq-list x (jolt-seq coll)))
+;; Scheme list -> a jolt PersistentList: head is a list cell, the tail chain is
+;; plain seq cells. For (list …) and quoted list literals (the emitter lowers
+;; '(a b) to (jolt-list a b)).
+(define (jolt-list . xs)
+  (if (null? xs) jolt-empty-list (cseq-list (car xs) (list->cseq (cdr xs)))))
+;; reverse yields a list (seed: (list? (reverse coll)) is always true). Build a
+;; plain seq chain, then mark its head as a list cell.
+(define (jolt-reverse coll)
+  (let loop ((s (jolt-seq coll)) (acc jolt-empty-list))
+    (if (jolt-nil? s)
+        (if (empty-list-t? acc) acc (cseq-list (seq-first acc) (seq-more acc)))
+        (loop (jolt-seq (seq-more s)) (cseq-realized (seq-first s) (if (empty-list-t? acc) jolt-nil acc))))))
 (define (jolt-last coll) (let loop ((s (jolt-seq coll)) (last jolt-nil))
                            (if (jolt-nil? s) last (loop (jolt-seq (seq-more s)) (seq-first s)))))
 ;; nth over a seq (walks; forces lazily). default? selects the 3-arg behavior.

@@ -8,11 +8,15 @@
 ;; seed predicates are simply absent here for now.
 
 (define (jolt-map? x) (pmap? x))
-;; a map entry is a pvec under the hood but is NOT vector? (matches Clojure's
-;; MapEntry — jolt-agw6); the public vector? predicate excludes it.
-(define (jolt-vector? x) (and (pvec? x) (not (pvec-ent x))))
+;; a map entry is a pvec under the hood AND is vector? — Clojure's MapEntry
+;; implements IPersistentVector, so (vector? (first {:a 1})) is true (the seed
+;; agrees; jolt-75sv corrected the earlier exclusion).
+(define (jolt-vector? x) (pvec? x))
 (define (jolt-set? x) (pset? x))
 (define (jolt-seq? x) (or (cseq? x) (empty-list-t? x)))
+;; (list? x): a list-marked cseq node or the empty list (). A lazy/vector-backed
+;; seq, (rest list), (seq coll), (map …) are seqs but not lists (jolt-75sv).
+(define (jolt-list-pred? x) (or (and (cseq? x) (cseq-list? x)) (empty-list-t? x)))
 (define (jolt-coll-pred? x)
   (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x)))
 (define (jolt-number? x) (number? x))
@@ -52,6 +56,7 @@
 (def-var! "clojure.core" "vector?" jolt-vector?)
 (def-var! "clojure.core" "set?" jolt-set?)
 (def-var! "clojure.core" "seq?" jolt-seq?)
+(def-var! "clojure.core" "list?" jolt-list-pred?)
 (def-var! "clojure.core" "coll?" jolt-coll-pred?)
 (def-var! "clojure.core" "fn?" jolt-fn?)
 (def-var! "clojure.core" "boolean?" jolt-boolean-pred?)
