@@ -282,8 +282,24 @@
 (defn h-record-shapes [ctx]
   (or (get (ctx :env) :record-shapes) @{}))
 
+# Reader form CONSTRUCTORS (Chez Phase 3, jolt-cf1q.4). The portable Clojure
+# reader (jolt.reader) holds all the LEXING/PARSING logic but must DELEGATE form
+# construction to the host — a Clojure source file cannot write a {:jolt/type
+# :symbol} literal (it parses as a tagged reader form, CLAUDE.md), and the
+# concrete representation (Janet struct/array/tuple here; something else on Chez)
+# is the host's to own. Same split the analyzer already uses for form-* readers.
+(defn h-make-symbol [name] (rdr/make-symbol name))
+(defn h-make-char [code] (make-char code))
+(defn h-char-from-name [name] (char-from-name name))
+# Parse a numeric literal substring to a number. The reader keeps the radix/ratio/
+# sign/exponent LOGIC portable; only the final string->number bottoms out here
+# (Janet scan-number; Chez string->number). Returns nil on a non-number.
+(defn h-scan-number [str] (scan-number str))
+
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
+   "form-make-symbol" h-make-symbol "form-make-char" h-make-char
+   "form-char-from-name" h-char-from-name "form-scan-number" h-scan-number
    "ref-put!" h-ref-put!
    "ref-get" h-ref-get
    "tagged-table" h-tagged-table
