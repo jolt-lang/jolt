@@ -37,14 +37,25 @@
   (def w (protect (in (r/parse-next input) 0)))   # Janet seed reader (oracle)
   (def g (protect (read-one input)))               # portable Clojure reader
   (cond
-    # both readers throw on the same input = faithful parity (e.g. the +N latent
-    # bug, jolt-if19 — reader.janet dispatches +digit to read-number but never
-    # strips the +, so "+5" errors; the port reproduces it).
+    # both readers throw on the same input = faithful parity (safety net for
+    # genuinely-invalid input). We FIX latent bugs rather than reproduce them
+    # (fix-bugs-dont-reproduce), so this should be rare.
     (and (not (w 0)) (not (g 0))) (ok input true)
     (not (w 0)) (ok input false (string "janet threw, clj didn't: clj=" (string/format "%p" (g 1))))
     (not (g 0)) (ok input false (string "clj threw, janet ok: " (string (g 1))))
     (ok input (jeq (w 1) (g 1))
         (string "clj=" (string/format "%p" (g 1)) " janet=" (string/format "%p" (w 1))))))
+
+# For inputs where the Janet seed reader is a BUGGY oracle (a latent bug we FIX in
+# the port rather than reproduce, fix-bugs-dont-reproduce), assert the portable
+# reader against the hand-verified correct value. The Janet seed isn't fixed —
+# it's deleted in Phase 5 — so we don't compare against it here.
+(defn check-correct [input expected]
+  (def g (protect (read-one input)))
+  (if (not (g 0))
+    (ok input false (string "clj threw: " (string (g 1))))
+    (ok input (jeq expected (g 1))
+        (string "clj=" (string/format "%p" (g 1)) " want=" (string/format "%p" expected)))))
 
 # --- inc 5a: atoms -------------------------------------------------------------
 # nil / bool
@@ -56,9 +67,15 @@
 # strings (escapes)
 (each i [`"hello"` `"with space"` `"tab\there"` `"nl\nhere"` `"q\"q"` `"back\\slash"` `""`] (check i))
 # integers / signs / hex / radix
-(each i ["0" "42" "-7" "+5" "123456" "0xFF" "0x10" "-0xff" "2r1010" "16rFF" "36rZ" "8r17"] (check i))
+(each i ["0" "42" "-7" "123456" "0xFF" "0x10" "-0xff" "2r1010" "16rFF" "36rZ" "8r17"] (check i))
 # floats / exponent / ratio / N|M suffix
 (each i ["3.14" "-2.5" "0.0" "1e10" "1.5e-3" "2E5" "10N" "3.14M" "1/2" "-3/4" "22/7"] (check i))
+# leading + reads as the positive number (jolt-if19 fixed in the port; the Janet
+# seed reader still errors on these, so assert against the correct value).
+(check-correct "+5" 5)
+(check-correct "+42" 42)
+(check-correct "+0xff" 255)
+(check-correct "+3.5" 3.5)
 # characters
 (each i [`\a` `\Z` `\0` `\newline` `\tab` `\space` `\return` `\\` `\(` `\{` `\%` `A` `\o101`] (check i))
 

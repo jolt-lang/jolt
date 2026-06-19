@@ -117,8 +117,11 @@
 ;; number, a ratio a/b reads as the double quotient, radixed ints by base.
 (defn- read-number* [s pos]
   (let [length (len s)
+        ;; optional leading sign: - negates; + is a positive no-op (Clojure reads
+        ;; +5 as 5). read-form only dispatches +digit/-digit, so the sign is real.
         neg (and (< pos length) (= (cp s pos) 45))
-        start (if neg (inc pos) pos)
+        plus (and (< pos length) (= (cp s pos) 43))
+        start (if (or neg plus) (inc pos) pos)
         hex? (and (< (inc start) length) (= (cp s start) 48)
                   (let [c1 (cp s (inc start))] (or (= c1 120) (= c1 88))))]  ; 0x / 0X
     (if hex?
