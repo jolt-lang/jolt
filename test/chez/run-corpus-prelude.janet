@@ -71,7 +71,21 @@
    "defmethod fires through prn" true
    # var def-time metadata (^:private / ^Type tag / docstring) is now captured on
    # the Chez var-cell (jolt-zikh), so those three cases pass.
-   "methods table inspectable" true})
+   "methods table inspectable" true
+   # jolt-nfca made (require ...) a runtime no-op (the driver pre-evals requires
+   # for aliases), and the clojure.string prelude tier now loads — which makes
+   # these previously-CRASHING cases emit + run, surfacing pre-existing gaps:
+   #  - the read-line trio reads two lines into a [(read-line) (read-line)] vector;
+   #    the emitted Scheme evaluates the two elements in non-source order (the same
+   #    eval-order gap already allowlisted above as "values evaluate in source
+   #    order"), so the lines come back swapped. Reachable now that with-in-str runs.
+   "read-line sequential" true
+   "read-line after last" true
+   "empty line" true
+   #  - (instance? clojure.lang.Atom (atom 0)): the fully-qualified host class name
+   #    clojure.lang.Atom isn't mapped to the atom predicate on Chez (host-class
+   #    interop, jolt-mn9o/avt6). Reachable now that the leading require is a no-op.
+   "atom?" true})
 
 (def ctx (d/make-ctx))
 
@@ -200,8 +214,14 @@
 # a string target: case/trim/length/indexOf/substring/startsWith/contains/replace/
 # charAt/equalsIgnoreCase + the regex methods matches/replaceAll/replaceFirst/
 # split) 2026.
+# jolt-nfca cont. (clojure.string namespace — the driver pre-evals (require ...)
+# so an aliased ref like s/split resolves at analyze time; clojure.string.clj is
+# emitted as a prelude tier over the str-* primitives (str-upper/lower/trim/find/
+# join/split/replace/replace-all/reverse-b) def-var!'d on the RT; regex split
+# keeps interior empties + honors limit, regex replace does $N + fn replacement;
+# require/use are runtime no-ops) 2078.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2026")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2078")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

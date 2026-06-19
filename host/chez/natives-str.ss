@@ -125,3 +125,155 @@
     ((string=? method "split")
      (apply jolt-vector (str-split-drop-trailing (irregex-split (str-irx (arg 0)) s))))
     (else (error #f (string-append "No method " method " for value")))))
+
+;; --- clojure.core str-* primitives (the substrate clojure.string.clj calls) ---
+;; clojure.string.clj (src/jolt/clojure/string.clj) is pure Clojure over these
+;; seed natives (core.janet core-bindings); def-var!'d here so the emitted
+;; clojure.string prelude tier's var-derefs resolve. Ported from the seed:
+;; string/ascii-* (ASCII), string/find (index or nil), core-str-* (regex|literal).
+
+;; (string/split sep s) -> parts, splitting on each non-overlapping sep.
+(define (str-literal-split s sep)
+  (let ((slen (string-length s)) (plen (string-length sep)))
+    (if (fx=? plen 0)
+        (map string (string->list s))
+        (let loop ((i 0) (start 0) (acc '()))
+          (cond ((fx>? (fx+ i plen) slen)
+                 (reverse (cons (substring s start slen) acc)))
+                ((string=? (substring s i (fx+ i plen)) sep)
+                 (loop (fx+ i plen) (fx+ i plen) (cons (substring s start i) acc)))
+                (else (loop (fx+ i 1) start acc)))))))
+
+(define (str-upper s) (ascii-string-up s))
+(define (str-lower s) (ascii-string-down s))
+(define (str-reverse-b s) (list->string (reverse (string->list s))))
+
+;; (str-find needle haystack) -> flonum index of first occurrence, or nil.
+(define (str-find needle s)
+  (let ((i (str-index-of s needle 0)))
+    (if (fx<? i 0) jolt-nil (exact->inexact i))))
+
+;; (str-join coll [sep]) -> stringify each element (Clojure str), join by sep.
+(define (str-join coll . opt)
+  (let ((sep (if (pair? opt) (jolt-str-render-one (car opt)) ""))
+        (items (map jolt-str-render-one (seq->list coll))))
+    (let loop ((xs items) (first #t) (acc '()))
+      (cond ((null? xs) (apply string-append (reverse acc)))
+            (first (loop (cdr xs) #f (cons (car xs) acc)))
+            (else (loop (cdr xs) #f (cons (car xs) (cons sep acc))))))))
+
+;; (re-split irx s limit) -> parts, splitting at each match. Keeps interior AND
+;; trailing empty strings (the clojure.string wrapper drops trailing for limit 0);
+;; a positive limit yields at most `limit` parts (the rest kept unsplit). Mirrors
+;; the seed re-split (src/jolt/regex.janet); the clojure.string.clj split wrapper
+;; layers the trailing-empty trim on top.
+(define (re-split irx s limit)
+  (let ((len (string-length s)))
+    (let loop ((start 0) (last 0) (out '()))
+      (if (and limit (fx>=? (length out) (fx- limit 1)))
+          (reverse (cons (substring s last len) out))
+          (let ((m (and (fx<=? start len) (irregex-search irx s start))))
+            (if (not m)
+                (reverse (cons (substring s last len) out))
+                (let ((ms (irregex-match-start-index m 0))
+                      (me (irregex-match-end-index m 0)))
+                  (if (fx=? me ms)                 ; zero-width: step past to avoid a stall
+                      (if (fx>=? start len)
+                          (reverse (cons (substring s last len) out))
+                          (loop (fx+ start 1) last out))
+                      (loop me me (cons (substring s last ms) out))))))))))
+
+;; (str-split pat s [limit]) -> parts. Regex or literal separator; a positive
+;; limit caps the part count (the unsplit tail kept), matching core-str-split.
+(define (str-split pat s . opt)
+  (let ((limit (if (and (pair? opt) (not (jolt-nil? (car opt)))) (jolt->idx (car opt)) #f)))
+    (if (jolt-regex? pat)
+        (apply jolt-vector (re-split (regex-t-irx pat) s limit))
+        (let ((parts (str-literal-split s pat)))
+          (apply jolt-vector
+            (if (and limit (fx>? limit 0) (fx>? (length parts) limit))
+                (append (list-head parts (fx- limit 1))
+                        (list (str-join-strs (list-tail parts (fx- limit 1)) pat)))
+                parts))))))
+(define (str-join-strs strs sep)
+  (let loop ((xs strs) (first #t) (acc '()))
+    (cond ((null? xs) (apply string-append (reverse acc)))
+          (first (loop (cdr xs) #f (cons (car xs) acc)))
+          (else (loop (cdr xs) #f (cons (car xs) (cons sep acc)))))))
+
+;; $0/$1... expansion in a string replacement against an irregex match (the
+;; JVM/seed replacement syntax). $N -> group N's text (dropped if non-matching).
+(define (expand-dollar repl m)
+  (let ((len (string-length repl)))
+    (let loop ((i 0) (acc '()))
+      (if (fx>=? i len)
+          (apply string-append (reverse acc))
+          (let ((c (string-ref repl i)))
+            (if (and (char=? c #\$) (fx<? (fx+ i 1) len)
+                     (char<=? #\0 (string-ref repl (fx+ i 1)))
+                     (char<=? (string-ref repl (fx+ i 1)) #\9))
+                (let* ((n (fx- (char->integer (string-ref repl (fx+ i 1))) 48))
+                       (g (and (fx<=? n (irregex-match-num-submatches m))
+                               (irregex-match-substring m n))))
+                  (loop (fx+ i 2) (if g (cons g acc) acc)))
+                (loop (fx+ i 1) (cons (string c) acc))))))))
+
+;; One match's replacement text. A string gets $N expansion; a fn (jolt closure)
+;; is called with the match result (whole string, or [whole g1 ...] when grouped)
+;; and its result stringified (mirrors the seed replacement-for).
+(define (replacement-text replacement m)
+  (cond
+    ((string? replacement) (expand-dollar replacement m))
+    ((procedure? replacement) (jolt-str-render-one (jolt-invoke replacement (irx-result m))))
+    (else (jolt-str-render-one replacement))))
+
+;; regex replace, first or all matches. Mirrors the seed re-replace-all/first.
+(define (re-replace irx s replacement all?)
+  (let ((len (string-length s)))
+    (let loop ((start 0) (last 0) (acc '()))
+      (let ((m (and (fx<=? start len) (irregex-search irx s start))))
+        (if (not m)
+            (apply string-append (reverse (cons (substring s last len) acc)))
+            (let ((ms (irregex-match-start-index m 0))
+                  (me (irregex-match-end-index m 0)))
+              (if (fx=? me ms)                     ; zero-width: step past
+                  (if (fx>=? start len)
+                      (apply string-append (reverse (cons (substring s last len) acc)))
+                      (loop (fx+ start 1) last acc))
+                  (let ((acc2 (cons (replacement-text replacement m)
+                                    (cons (substring s last ms) acc))))
+                    (if all?
+                        (loop me me acc2)
+                        (apply string-append (reverse (cons (substring s me len) acc2))))))))))))
+
+;; (str-replace-all pat repl s) / (str-replace pat repl s) — regex or literal.
+(define (str-replace-all pat repl s)
+  (if (jolt-regex? pat)
+      (re-replace (regex-t-irx pat) s repl #t)
+      (str-replace-literal s pat repl)))
+(define (str-replace-literal-first s a b)
+  (let ((alen (string-length a)) (i (str-index-of s a 0)))
+    (if (fx<? i 0) s
+        (string-append (substring s 0 i) b (substring s (fx+ i alen) (string-length s))))))
+(define (str-replace pat repl s)
+  (if (jolt-regex? pat)
+      (re-replace (regex-t-irx pat) s repl #f)
+      (str-replace-literal-first s pat repl)))
+
+(def-var! "clojure.core" "str-upper" str-upper)
+(def-var! "clojure.core" "str-lower" str-lower)
+(def-var! "clojure.core" "str-trim" str-trim)
+(def-var! "clojure.core" "str-triml" str-triml)
+(def-var! "clojure.core" "str-trimr" str-trimr)
+(def-var! "clojure.core" "str-find" str-find)
+(def-var! "clojure.core" "str-reverse-b" str-reverse-b)
+(def-var! "clojure.core" "str-join" str-join)
+(def-var! "clojure.core" "str-split" str-split)
+(def-var! "clojure.core" "str-replace" str-replace)
+(def-var! "clojure.core" "str-replace-all" str-replace-all)
+
+;; (require ...) / (use ...) at runtime: the Chez AOT driver pre-evals these
+;; against the analyzer ctx to register aliases + load aliased nss (driver.janet),
+;; so the emitted call only needs to not crash. A no-op returning nil.
+(def-var! "clojure.core" "require" (lambda args jolt-nil))
+(def-var! "clojure.core" "use" (lambda args jolt-nil))

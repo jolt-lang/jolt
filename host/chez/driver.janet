@@ -102,6 +102,13 @@
 (def core-tier-files
   ["00-syntax" "00-kernel" "10-seq" "20-coll" "25-sorted" "30-macros" "40-lazy" "50-io"])
 
+# stdlib namespaces (beyond clojure.core) emitted into the prelude as their own
+# def-var! tier. Each is pure Clojure over clojure.core + host natives, so the
+# same analyze->emit pipeline lowers it; an aliased ref resolves via var-deref at
+# runtime once the alias is registered (the driver pre-evals requires). jolt-nfca.
+(def stdlib-ns-files
+  [["clojure.string" "src/jolt/clojure/string.clj"]])
+
 (defn- sym-name [x]
   (when (and (struct? x) (= :symbol (get x :jolt/type))) (get x :name)))
 
@@ -127,8 +134,9 @@
   (tctx/ctx-set-current-ns ctx "clojure.core")
   (def out @[])
   (var total 0) (var emitted 0)
-  (each tf core-tier-files
-    (def src (slurp (string core-dir tf ".clj")))
+  (defn- emit-ns-forms [ns-name src]
+    (tctx/create-ns ctx ns-name)
+    (tctx/ctx-set-current-ns ctx ns-name)
     (each f (parse-all src)
       (unless (macro-form? f)
         (++ total)
@@ -142,6 +150,13 @@
           # Silent to keep a real -e's stderr clean; the known set is documented.
           (array/push out
             (string "(guard (e (#t #f))\n  " (res 1) ")"))))))
+  (each tf core-tier-files
+    (emit-ns-forms "clojure.core" (slurp (string core-dir tf ".clj"))))
+  # stdlib namespaces beyond clojure.core that are pure Clojure over core/host
+  # natives — emitted as their own def-var! tier so an aliased ref (e.g. s/split
+  # after (require '[clojure.string :as s])) resolves at runtime (jolt-nfca).
+  (each [ns-name path] stdlib-ns-files
+    (emit-ns-forms ns-name (slurp path)))
   (tctx/ctx-set-current-ns ctx prev-ns)
   (emit/set-prelude-mode! false)
   [(string/join out "\n") emitted total])
@@ -164,6 +179,21 @@
     "(set-chez-ns! \"user\")\n"
     "(printf \"~a\\n\" (jolt-final-str " final-scm "))\n"))
 
+(defn- require-head? [f]
+  (and (indexed? f) (> (length f) 0)
+       (let [h (sym-name (in f 0))] (and h (or (= h "require") (= h "use"))))))
+
+(defn- scan-eval-requires! [ctx form]
+  "Recursively eval any (require ...)/(use ...) sub-form against the ctx so the
+  alias registers + the aliased ns loads BEFORE the AOT analyzer resolves its
+  qualified refs — the whole user form is analyzed up front, before any require
+  would run at eval time (jolt-nfca). Failures are swallowed (the ref then stays
+  an emit-err, the prior behavior)."
+  (when (indexed? form)
+    (if (require-head? form)
+      (protect (api/eval-one ctx form))
+      (each sub form (scan-eval-requires! ctx sub)))))
+
 (defn eval-e-with-prelude
   "Run a single user expression `src` on Chez with the full clojure.core prelude
   (loaded from `prelude-path`). Emits `src` in prelude mode so any core ref
@@ -172,6 +202,7 @@
   [ctx src prelude-path &opt scheme-out]
   (emit/set-prelude-mode! true)
   (def form (in (r/parse-next src) 0))
+  (scan-eval-requires! ctx form)
   (def res (protect (emit/emit (backend/analyze-form ctx form))))
   (emit/set-prelude-mode! false)
   (if (not (res 0))
