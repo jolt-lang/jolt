@@ -300,14 +300,17 @@
         (string "chez=" out " janet=" want " | " err))))
 
 # 3l) host interop method calls (inc 3h). (.method target arg*) analyzes to a
-#   :host-call IR node and lowers to a jolt-host-call dispatch. The Janet back end
-#   PUNTS these (no interop model -> interpreter); the Chez RT shims the methods
-#   jolt-core's io tier uses: .write -> display to a port, .isDirectory ->
-#   file-directory?, .listFiles -> directory-list. Interop has no portable oracle
-#   (the Janet host models it differently), so these are emit-shape checks plus one
-#   deterministic runtime probe (the root "/" is always a directory).
+#   :host-call IR node and lowers to a dispatch. The Janet back end PUNTS these
+#   (no interop model -> interpreter); the Chez RT shims the File methods
+#   jolt-core's io tier uses via jolt-host-call (.isDirectory -> file-directory?,
+#   .listFiles -> directory-list). All OTHER methods (.write/.append/.read/... on
+#   a StringWriter/StringReader/record) route through record-method-dispatch
+#   (jolt-avt6 removed .write from the jolt-host-call fast-path so a StringWriter
+#   jhost handles it). Interop has no portable oracle (the Janet host models it
+#   differently), so these are emit-shape checks plus one deterministic runtime
+#   probe (the root "/" is always a directory).
 (each [label src needle]
-  [["emit .write -> jolt-host-call" "(fn [w x] (.write w x))" "jolt-host-call"]
+  [["emit .write -> record-method-dispatch" "(fn [w x] (.write w x))" "record-method-dispatch"]
    ["emit .write keeps method name" "(fn [w x] (.write w x))" "\"write\""]
    ["emit .isDirectory -> jolt-host-call" "(fn [f] (.isDirectory f))" "isDirectory"]
    ["emit .listFiles -> jolt-host-call" "(fn [f] (.listFiles f))" "listFiles"]]
@@ -317,6 +320,21 @@
 (let [[code out err] (d/run-on-chez ctx "(.isDirectory \"/\")")]
   (ok "runtime .isDirectory \"/\" = true" (and (= code 0) (= out "true"))
       (string "chez=" out " | " err)))
+
+# 3l') host class statics + constructors (jolt-avt6). Class/member lowers to a
+#   :host-static node (host-static-ref in value position, host-static-call as a
+#   call head); (Class. ...) / (new Class ...) lower to :host-new. The Janet back
+#   end punts all three; the Chez RT resolves them from the class-statics /
+#   class-ctors / jhost-method registries (host/chez/host-static.ss). Emit-shape
+#   checks; the registry behaviour is covered by test/chez/_javastatic.janet.
+(each [label src needle]
+  [["emit Class/field -> host-static-ref" "(fn [] Long/MAX_VALUE)" "(host-static-ref \"Long\" \"MAX_VALUE\")"]
+   ["emit Class/method call -> host-static-call" "(fn [] (System/getenv))" "(host-static-call \"System\" \"getenv\")"]
+   ["emit static call passes args" "(fn [x] (Long/parseLong x))" "(host-static-call \"Long\" \"parseLong\""]
+   ["emit (Class.) -> host-new" "(fn [] (StringBuilder.))" "(host-new \"StringBuilder\")"]
+   ["emit (new Class ...) -> host-new" "(fn [s] (new java.io.StringReader s))" "(host-new \"java.io.StringReader\""]]
+  (let [scm (protect (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0))))]
+    (ok label (and (scm 0) (string/find needle (scm 1))) (string/format "%p" scm))))
 
 # 3m) regex (jolt-i0s3): the #"…" literal lowers to a jolt-regex value over the
 #   vendored irregex; re-pattern/re-matches/re-find/re-seq/regex? are def-var!'d

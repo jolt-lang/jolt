@@ -781,6 +781,13 @@
       # punt to the interpreter, exactly as the analyzer used to before producing
       # a :host-call node (the Chez back end lowers it instead).
       :host-call (error "jolt/uncompilable: host method call")
+      # host class statics (Class/member) and constructors ((Class. ...)/(new
+      # Class ...)): the back end doesn't model class interop — punt to the
+      # interpreter (its class-statics / class-ctors registries), exactly as the
+      # analyzer used to before producing these nodes. The Chez back end lowers
+      # them to a runtime static/ctor dispatch (jolt-avt6).
+      :host-static (error "jolt/uncompilable: host static ref")
+      :host-new (error "jolt/uncompilable: host constructor")
       # regex literal: the back end doesn't compile patterns — punt to the
       # interpreter (the seed compiles #"…" to a Janet PEG). Chez emits jolt-regex.
       :regex (error "jolt/uncompilable: regex literal")

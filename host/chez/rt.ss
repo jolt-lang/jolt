@@ -271,3 +271,9 @@
 ;; a string target. After regex.ss (jolt-re-pattern/regex-t-irx) + records.ss
 ;; (which references jolt-string-method).
 (load "host/chez/natives-str.ss")
+
+;; host class statics + constructors (jolt-avt6, Phase 2): host-static-ref/
+;; host-static-call/host-new + the jhost method registry. Loads LAST — it extends
+;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
+;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
+(load "host/chez/host-static.ss")

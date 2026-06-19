@@ -16,7 +16,7 @@
   them to one keeps the compiled namespace simple."
   (:require [jolt.ir :refer [const local var-ref the-var host-ref if-node do-node invoke
                              def-node let-node fn-node vector-node map-node set-node
-                             quote-node throw-node]]
+                             quote-node throw-node host-static host-new]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
                                form-vec? form-map? form-set? form-char?
                                form-literal? form-elements form-vec-items
@@ -294,6 +294,20 @@
    :target (analyze ctx (nth items 1) env)
    :args (mapv #(analyze ctx % env) (drop 2 items))})
 
+;; A constructor head: `Class.` — a symbol ending in "." (but not the member
+;; access `.method` / `..` forms). `(Class. args*)` builds an instance.
+(defn- ctor-head? [nm]
+  (and (> (count nm) 1)
+       (= "." (subs nm (dec (count nm)) (count nm)))
+       (not (= "." (subs nm 0 1)))))
+
+;; `(Class. args*)` and `(new Class args*)` -> a :host-new node carrying the class
+;; token and the analyzed args. The Janet back end punts it (the interpreter runs
+;; the constructor from its class-ctors registry); the Chez back end lowers it to
+;; a runtime constructor dispatch (jolt-avt6).
+(defn- analyze-ctor [ctx class args env]
+  (host-new class (mapv #(analyze ctx % env) args)))
+
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
@@ -302,7 +316,13 @@
       ns (let [r (resolve-global ctx form)]
            (if (= :var (:kind r))
              (var-ref (:ns r) (:name r))
-             (uncompilable (str "qualified ref " ns "/" nm))))
+             ;; A non-var qualified ref `Class/member` is a host class static
+             ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Janet back end
+             ;; punts the :host-static node (the interpreter resolves it from its
+             ;; class-statics registry, exactly as it did when this was an
+             ;; uncompilable); the Chez back end lowers it to a runtime static
+             ;; dispatch (jolt-avt6).
+             (host-static ns nm)))
       :else (let [r (resolve-global ctx form)]
               (case (:kind r)
                 :var (var-ref (:ns r) (:name r))
@@ -337,6 +357,13 @@
             (analyze-special ctx hname items env)
           (and hname (not shadowed) (method-head? hname))
             (analyze-host-call ctx hname items env)
+          ;; (Class. args*) — trailing-dot constructor sugar.
+          (and hname (not shadowed) (ctor-head? hname))
+            (analyze-ctor ctx (subs hname 0 (dec (count hname))) (rest items) env)
+          ;; (new Class args*) — explicit constructor.
+          (and (= hname "new") (not shadowed) (>= (count items) 2)
+               (form-sym? (nth items 1)))
+            (analyze-ctor ctx (form-sym-name (nth items 1)) (drop 2 items) env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
           (and (form-sym? head) (not shadowed) (form-macro? ctx head))

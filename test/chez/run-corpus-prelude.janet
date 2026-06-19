@@ -45,9 +45,10 @@
   {"class name evaluates to canonical string" true
    "dispatch-only class name" true
    "inside class" true
-   "values evaluate in source order" true
-   "keys evaluate before their values, pairwise" true
-   "source order with a nil value (phm form)" true
+   # (the collection-literal eval-order entries here — "values evaluate in source
+   # order" / "keys evaluate before their values" / "source order with a nil value"
+   # — were REMOVED in jolt-avt6: emit now evaluates vector/set/map literal
+   # elements left-to-right via emit-ordered, so they pass.)
    "close on throw" true
    # *ns* now a namespace value (jolt-yxqm): str/ns-name of *ns* + the var str
    # case ("ns-name of *ns*" / "str of *ns*" / "*ns* user" / "str of a var") pass.
@@ -69,19 +70,21 @@
    "defmethod overrides a record, top level" true
    "defmethod fires nested in a map" true
    "defmethod fires through prn" true
+   # Same print-method gap, newly REACHABLE in jolt-avt6: StringWriter now
+   # constructs, so (defmethod print-method :number ...) + (print-method 42 w)
+   # runs — but print-method's multimethod override on a builtin isn't consulted,
+   # so the StringWriter holds "42" not "#42#". (The :default print-method path —
+   # "StringWriter accumulates" / "direct call uses :default" — does pass now.)
+   "direct builtin override" true
    # var def-time metadata (^:private / ^Type tag / docstring) is now captured on
    # the Chez var-cell (jolt-zikh), so those three cases pass.
    "methods table inspectable" true
    # jolt-nfca made (require ...) a runtime no-op (the driver pre-evals requires
    # for aliases), and the clojure.string prelude tier now loads — which makes
    # these previously-CRASHING cases emit + run, surfacing pre-existing gaps:
-   #  - the read-line trio reads two lines into a [(read-line) (read-line)] vector;
-   #    the emitted Scheme evaluates the two elements in non-source order (the same
-   #    eval-order gap already allowlisted above as "values evaluate in source
-   #    order"), so the lines come back swapped. Reachable now that with-in-str runs.
-   "read-line sequential" true
-   "read-line after last" true
-   "empty line" true
+   #  - the read-line trio ([(read-line) (read-line)]) now PASSES: jolt-avt6's
+   #    emit-ordered evaluates the two vector elements left-to-right, so the lines
+   #    no longer come back swapped (the entries were removed here).
    #  - (instance? clojure.lang.Atom (atom 0)): the fully-qualified host class name
    #    clojure.lang.Atom isn't mapped to the atom predicate on Chez (host-class
    #    interop, jolt-mn9o/avt6). Reachable now that the leading require is a no-op.
@@ -220,8 +223,18 @@
 # join/split/replace/replace-all/reverse-b) def-var!'d on the RT; regex split
 # keeps interior empties + honors limit, regex replace does $N + fn replacement;
 # require/use are runtime no-ops) 2078.
+# jolt-avt6 (host class statics + constructors — the analyzer lowers Class/member
+# to :host-static and (Class. ...)/(new Class ...) to :host-new; the Chez RT
+# resolves them from class-statics/class-ctors/jhost-method registries
+# (host-static.ss): Math/System/Long/Integer/Boolean/Character/String/Thread/Class
+# statics, Pattern compile/quote/MULTILINE, URLEncoder/Decoder, Base64, the Number
+# method surface (byteValue/intValue/...), and the StringBuilder/StringWriter/
+# StringReader/PushbackReader/HashMap/StringTokenizer/BigInteger/String/MapEntry/
+# exception constructors. Also emit now evaluates collection-literal elements
+# left-to-right (emit-ordered), which un-allowlisted the 6 eval-order cases.
+# java.time formatting / edn-read-over-readers / slurp-over-readers deferred) 2134.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2078")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2134")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

@@ -107,6 +107,20 @@
 (var- gensym-n 0)
 (defn- fresh-label [prefix] (string prefix (++ gensym-n)))
 
+# Emit a call `(ctor a0 a1 ...)` with the args evaluated LEFT-TO-RIGHT. Chez's
+# procedure-argument evaluation order is unspecified (and in practice right-to-
+# left), but Clojure/JVM evaluates collection-literal elements left-to-right, so a
+# literal like [(read r) (read r)] over side-effecting reads must bind in source
+# order. Bind each arg to a fresh temp in a let* (sequential) then construct. Only
+# wraps when there are >= 2 args (0/1 have no ordering to preserve), keeping the
+# common small-literal output compact (jolt-avt6).
+(defn- emit-ordered [ctor arg-strs]
+  (if (< (length arg-strs) 2)
+    (string "(" ctor (if (empty? arg-strs) "" (string " " (string/join arg-strs " "))) ")")
+    (let [tmps (map (fn [_] (fresh-label "_o$")) arg-strs)
+          binds (string/join (map (fn [t a] (string "(" t " " a ")")) tmps arg-strs) " ")]
+      (string "(let* (" binds ") (" ctor " " (string/join tmps " ") "))"))))
+
 # Most jolt names are already valid Scheme identifiers (inc, even?, +, ->str all
 # are — Scheme allows ! $ % & * + - . / : < = > ? @ ^ _ ~). The one that isn't is
 # `#`, which jolt auto-gensyms use as a suffix (e.g. p1__0000X4# from #(...)
@@ -345,7 +359,10 @@
 
 # Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
 # call on any other method is out of subset until shimmed — keep this in sync.
-(def- supported-host-methods {"write" true "isDirectory" true "listFiles" true})
+# `.write` is NOT here: StringWriter (a jhost, host-static.ss) handles .write via
+# record-method-dispatch; the old jolt-host-call "write" fast-path (display to a
+# port) would mis-route a writer to `(display x jhost)`. Keep the File-op methods.
+(def- supported-host-methods {"isDirectory" true "listFiles" true})
 
 # jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg
 # (so (< :kw) is true), but Scheme's < demands a number even there — special-case.
@@ -381,6 +398,13 @@
     (= kind :coll) (string "(jolt-get " (emit fnode) " " (first args) default ")")
     (and (stdlib-var? fnode) (not prelude-mode?))
     (errorf "emit: unsupported stdlib fn `%s/%s` (no core on Chez yet)" (get fnode :ns) (get fnode :name))
+    # static method call (Class/method arg*) -> (host-static-call "Class"
+    # "method" arg*). host-static.ss resolves the method from the class-statics
+    # registry and applies it (jolt-avt6).
+    (= :host-static (get fnode :op))
+    (string "(host-static-call " (chez-str-lit (get fnode :class)) " "
+            (chez-str-lit (get fnode :member))
+            (if (empty? args) "" (string " " (string/join args " "))) ")")
     (= :host (get fnode :op))
     (errorf "emit: unsupported host call `%s` (no host interop on Chez yet)" (get fnode :name))
     # a :local callee that isn't a known procedure (a let/param binding holding a
@@ -438,6 +462,14 @@
                (string "(var-deref " (chez-str-lit (get node :ns)) " "
                        (chez-str-lit (get node :name)) ")")))
     :host  (errorf "emit: unsupported host ref `%s` (no host interop on Chez yet)" (get node :name))
+    # value-position static ref (Class/member, e.g. Long/MAX_VALUE, System/exit
+    # passed as a value) -> the registered static value/procedure (host-static.ss).
+    :host-static (string "(host-static-ref " (chez-str-lit (get node :class)) " "
+                         (chez-str-lit (get node :member)) ")")
+    # constructor (Class. args*) / (new Class args*) -> (host-new "Class" args*).
+    :host-new (string "(host-new " (chez-str-lit (get node :class))
+                      (let [args (map emit (vv (get node :args)))]
+                        (if (empty? args) "" (string " " (string/join args " ")))) ")")
     # (var x) / #'x -> the var cell itself (the rt.ss var-cell, a first-class var
     # object). var?/var-get/deref/invoke/= operate on it (vars.ss).
     :the-var (string "(jolt-var " (chez-str-lit (get node :ns)) " " (chez-str-lit (get node :name)) ")")
@@ -450,15 +482,16 @@
                    (if (empty? (vv (get node :statements))) "" " ")
                    (emit (get node :ret)) ")")
     :invoke (emit-invoke node)
-    # collection literals -> rt constructors (collections.ss)
-    :vector (string "(jolt-vector " (string/join (map emit (vv (get node :items))) " ") ")")
-    :set    (string "(jolt-hash-set " (string/join (map emit (vv (get node :items))) " ") ")")
+    # collection literals -> rt constructors (collections.ss). Elements evaluate
+    # LEFT-TO-RIGHT (emit-ordered) to match Clojure for side-effecting elements.
+    :vector (emit-ordered "jolt-vector" (map emit (vv (get node :items))))
+    :set    (emit-ordered "jolt-hash-set" (map emit (vv (get node :items))))
     :map   (let [flat @[]]
              (each p (vv (get node :pairs))
                (def p (vv p))
                (array/push flat (emit (get p 0)))
                (array/push flat (emit (get p 1))))
-             (string "(jolt-hash-map " (string/join flat " ") ")"))
+             (emit-ordered "jolt-hash-map" flat))
     :let   (emit-let node)
     :loop  (emit-loop node)
     :recur (emit-recur node)
