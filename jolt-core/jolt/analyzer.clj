@@ -308,6 +308,38 @@
 (defn- analyze-ctor [ctx class args env]
   (host-new class (mapv #(analyze ctx % env) args)))
 
+;; The `.` special form: `(. target member arg*)` — member access / method call.
+;; A symbol member whose name starts with "-" is a field read; otherwise it is a
+;; method (call with the trailing args). Both lower to a :host-call carrying the
+;; member name verbatim (the leading "-" survives so the runtime dispatcher reads
+;; it as a field). The Janet back end punts :host-call to the interpreter, which
+;; re-runs the original `.` form via eval-dot — so Janet behavior is unchanged;
+;; the Chez back end dispatches it through record-method-dispatch (jolt-kuic).
+;; A non-symbol member (e.g. a keyword) stays punted — the interpreter handles it.
+(defn- analyze-dot [ctx items env]
+  (when (< (count items) 3)
+    (throw (str "Malformed (. target member ...) form")))
+  (let [member (nth items 2)]
+    (if (form-sym? member)
+      {:op :host-call
+       :method (form-sym-name member)
+       :target (analyze ctx (nth items 1) env)
+       :args (mapv #(analyze ctx % env) (drop 3 items))}
+      (uncompilable "special form . (non-symbol member)"))))
+
+;; A `.-field` head: `(.-field target)` is field access. Lowers to a :host-call
+;; with the "-field" method (the dash signals field access to the dispatcher).
+(defn- field-head? [nm]
+  (and (> (count nm) 2) (= ".-" (subs nm 0 2))))
+
+(defn- analyze-field [ctx hname items env]
+  (when (< (count items) 2)
+    (throw (str "Malformed (.-field target) form")))
+  {:op :host-call
+   :method (subs hname 1)        ; ".-field" -> "-field"
+   :target (analyze ctx (nth items 1) env)
+   :args []})
+
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
@@ -364,6 +396,12 @@
           (and (= hname "new") (not shadowed) (>= (count items) 2)
                (form-sym? (nth items 1)))
             (analyze-ctor ctx (form-sym-name (nth items 1)) (drop 2 items) env)
+          ;; (. target member arg*) — the `.` special form.
+          (and (= hname ".") (not shadowed))
+            (analyze-dot ctx items env)
+          ;; (.-field target) — field-access head.
+          (and hname (not shadowed) (field-head? hname))
+            (analyze-field ctx hname items env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
           (and (form-sym? head) (not shadowed) (form-macro? ctx head))

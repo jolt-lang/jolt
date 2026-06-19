@@ -233,8 +233,15 @@
 # exception constructors. Also emit now evaluates collection-literal elements
 # left-to-right (emit-ordered), which un-allowlisted the 6 eval-order cases.
 # java.time formatting / edn-read-over-readers / slurp-over-readers deferred) 2134.
+# jolt-kuic (the `.` special form + `.-field` desugar — the analyzer lowers
+# (. target member arg*) and (.-field target) to :host-call; the Chez RT
+# dispatches them through record-method-dispatch, extended by dot-forms.ss with
+# collection interop (count/nth/get/valAt/containsKey), field access, non-record
+# map member dispatch, and the seed's universal object-methods getMessage/getCause/
+# toString/hashCode/equals. Also added getMessage/getLocalizedMessage/equals to the
+# string method surface so a thrown string / Exception. ctor answers .getMessage) 2150.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2134")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2150")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

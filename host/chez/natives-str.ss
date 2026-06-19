@@ -124,6 +124,11 @@
     ((string=? method "replaceFirst") (irregex-replace (str-irx (arg 0)) s (arg 1)))
     ((string=? method "split")
      (apply jolt-vector (str-split-drop-trailing (irregex-split (str-irx (arg 0)) s))))
+    ;; universal object-methods that reach a string target (seed object-methods):
+    ;; a thrown string / Exception. ctor (which keeps the message string) answers
+    ;; getMessage with itself; equals is value equality.
+    ((or (string=? method "getMessage") (string=? method "getLocalizedMessage")) s)
+    ((string=? method "equals") (and (string? (arg 0)) (string=? s (arg 0))))
     (else (error #f (string-append "No method " method " for value")))))
 
 ;; --- clojure.core str-* primitives (the substrate clojure.string.clj calls) ---

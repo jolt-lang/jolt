@@ -277,3 +277,8 @@
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
 (load "host/chez/host-static.ss")
+
+;; generic dot-form dispatch (jolt-kuic): field access + map/vector member access
+;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every
+;; record-method-dispatch arm (jhost/number/regex/jrec/string) and falls through.
+(load "host/chez/dot-forms.ss")

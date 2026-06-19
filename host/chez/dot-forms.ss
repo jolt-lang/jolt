@@ -1,0 +1,82 @@
+;; dot-forms.ss — generic dispatch for the `.` special-form / `.-field` desugar
+;; (jolt-kuic). The analyzer lowers (. target member arg*) and (.-field target)
+;; to a :host-call; the Chez emit routes a non-shimmed :host-call through
+;; record-method-dispatch. This file extends that dispatcher with the collection
+;; arms the interpreter's dispatch-member covers but the record/string base does
+;; not, mirroring src/jolt/interop/collections.janet precedence exactly:
+;;
+;;   * collection interop wins first — count/seq/nth/get/valAt/containsKey on a
+;;     vector/map/set/seq/record (so (. {:count 9} count) is the entry count, 1,
+;;     like the seed, NOT the :count field).
+;;   * field access — a "-name" member reads the field (records and maps).
+;;   * map member   — a stored fn is a method (called with self + args); any
+;;                    other value is returned as a field.
+;;
+;; Anything not recognized falls through to the previous dispatcher (jhost /
+;; number / regex / jrec protocol / string). Loaded LAST (after host-static.ss).
+;; A record (jrec) is jolt-map? here (records.ss makes it so) and a collection,
+;; so its protocol method (no dash, not a coll method) lands in the base.
+
+(define %dot-rmd record-method-dispatch)
+
+;; Vectors / maps / sets only (records are jolt-map? here). Raw seqs are excluded:
+;; the seed's coll-interop accepts some seq representations and not others (a
+;; plain (seq v) returns nil from .count, a lazy-seq returns the count), an
+;; inconsistency Chez's normalized cseq can't mirror — so a raw seq target falls
+;; through to the base dispatcher rather than risk a divergence the corpus would
+;; never exercise but a future case might.
+(define (dot-coll? obj)
+  (or (jolt-vector? obj) (jolt-map? obj) (pset? obj)))
+
+;; Mirror coll-interop: return a one-element list boxing the result (so a jolt-nil
+;; result is still distinguishable from "not a collection method"), or #f.
+(define (dot-coll-method obj name args)
+  (cond
+    ((string=? name "count") (list (jolt-count obj)))
+    ((string=? name "seq")   (list (jolt-seq obj)))
+    ((string=? name "nth")   (list (apply jolt-nth obj args)))
+    ((or (string=? name "get") (string=? name "valAt"))
+     (list (apply jolt-get obj args)))
+    ((string=? name "containsKey") (list (jolt-contains? obj (car args))))
+    (else #f)))
+
+;; Mirror the seed's universal object-methods (src/jolt/eval_resolve.janet): on a
+;; non-record map these win OVER a field lookup, like dispatch-member. getMessage
+;; on an ex-info reads its :message (the one the corpus exercises); getCause reads
+;; :cause; toString/hashCode/equals round out the set. Returns a boxed result or
+;; #f. Strings/numbers/records/jhost keep the base dispatcher (it shims them).
+(define (dot-object-method obj name args)
+  (cond
+    ((string=? name "getMessage")
+     (list (if (jolt=2 (jolt-get obj jolt-kw-ex-type jolt-nil) jolt-kw-ex-info)
+               (jolt-get obj jolt-kw-message jolt-nil)
+               (jolt-str-render-one obj))))
+    ((string=? name "getCause")  (list (jolt-get obj jolt-kw-cause jolt-nil)))
+    ((string=? name "toString")  (list (jolt-str-render-one obj)))
+    ((string=? name "hashCode")  (list (jolt-hash obj)))
+    ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))
+    (else #f)))
+
+(set! record-method-dispatch
+  (lambda (obj method-name rest-args)
+    (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
+           (field? (and (> (string-length method-name) 0)
+                        (char=? (string-ref method-name 0) #\-)))
+           (mname (if field?
+                      (substring method-name 1 (string-length method-name))
+                      method-name)))
+      (cond
+        ;; collection interop first (entry count / seq / nth / get / containsKey).
+        ((and (dot-coll? obj) (dot-coll-method obj mname rest))
+         => (lambda (box) (car box)))
+        ;; (.-field obj) / (. obj -field): field read on a record or map.
+        (field? (jolt-get obj (keyword #f mname) jolt-nil))
+        ;; non-record map: a universal object-method (getMessage/...) wins first,
+        ;; then a stored procedure is a method (call with self), else the field.
+        ((and (jolt-map? obj) (not (jrec? obj)))
+         (cond
+           ((dot-object-method obj mname rest) => car)
+           (else
+            (let ((v (jolt-get obj (keyword #f mname) jolt-nil)))
+              (if (procedure? v) (apply jolt-invoke v obj rest) v)))))
+        (else (%dot-rmd obj method-name rest-args))))))

@@ -336,6 +336,21 @@
   (let [scm (protect (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0))))]
     (ok label (and (scm 0) (string/find needle (scm 1))) (string/format "%p" scm))))
 
+# 3l'') the `.` special form + `.-field` desugar (jolt-kuic). (. target member
+#   arg*) and (.-field target) lower to a :host-call routed through
+#   record-method-dispatch (a non-shimmed method); the dash on a field member
+#   survives in the method name so dot-forms.ss reads it as a field access. The
+#   Janet back end punts :host-call (interpreter re-runs the original `.` form);
+#   runtime behaviour is covered by test/chez/_dotform.janet.
+(each [label src needle]
+  [["emit (. obj method) -> record-method-dispatch" "(fn [o] (. o frob))" "record-method-dispatch"]
+   ["emit (. obj method) keeps method name" "(fn [o] (. o frob))" "\"frob\""]
+   ["emit (. obj method arg) passes args" "(fn [o a] (. o frob a))" "record-method-dispatch"]
+   ["emit (.-field obj) keeps dash" "(fn [o] (.-value o))" "\"-value\""]
+   ["emit (. obj -field) keeps dash" "(fn [o] (. o -value))" "\"-value\""]]
+  (let [scm (protect (emit/emit (backend/analyze-form ctx (in (r/parse-next src) 0))))]
+    (ok label (and (scm 0) (string/find needle (scm 1))) (string/format "%p" scm))))
+
 # 3m) regex (jolt-i0s3): the #"…" literal lowers to a jolt-regex value over the
 #   vendored irregex; re-pattern/re-matches/re-find/re-seq/regex? are def-var!'d
 #   into clojure.core (not subset native-ops — irregex's Unicode/property
