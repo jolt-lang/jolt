@@ -54,6 +54,17 @@
   (and (struct? form) (= :jolt/tagged (form :jolt/type)) (= :regex (form :tag))))
 (defn h-regex-source [form] (form :form))
 
+# #inst / #uuid literals read as tagged forms whose :tag keyword keeps the leading
+# # (the data-readers convention; (keyword "#inst") = :#inst). The analyzer lowers
+# them to :inst / :uuid IR leaves: the Chez back end emits a runtime inst/uuid
+# value; the Janet back end punts to the interpreter (its data-readers parse them).
+(defn h-inst? [form]
+  (and (struct? form) (= :jolt/tagged (form :jolt/type)) (= (keyword "#inst") (form :tag))))
+(defn h-inst-source [form] (form :form))
+(defn h-uuid? [form]
+  (and (struct? form) (= :jolt/tagged (form :jolt/type)) (= (keyword "#uuid") (form :tag))))
+(defn h-uuid-source [form] (form :form))
+
 (defn h-literal? [form]
   (or (nil? form) (boolean? form) (number? form) (string? form)
       (keyword? form) (h-char? form)))
@@ -270,6 +281,8 @@
    "form-list?" h-list? "form-vec?" h-vector? "form-map?" h-map?
    "form-set?" h-set? "form-char?" h-char? "form-literal?" h-literal?
    "form-regex?" h-regex? "form-regex-source" h-regex-source
+   "form-inst?" h-inst? "form-inst-source" h-inst-source
+   "form-uuid?" h-uuid? "form-uuid-source" h-uuid-source
    "form-elements" h-elements "form-vec-items" h-vector-items
    "form-map-pairs" h-map-pairs "form-set-items" h-set-items
    "form-special?" h-special? "compile-ns" h-current-ns "form-macro?" h-macro?

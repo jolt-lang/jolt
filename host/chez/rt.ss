@@ -293,3 +293,9 @@
 ;; arm wraps the fully-built record-method-dispatch and the str/type/instance-check
 ;; extensions sit over every prior shim.
 (load "host/chez/io.ss")
+
+;; #inst values + java.time formatting (jolt-at0a inc X): jinst (RFC3339 ms) +
+;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads
+;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
+;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
+(load "host/chez/inst-time.ss")

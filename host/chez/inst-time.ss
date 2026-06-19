@@ -1,0 +1,293 @@
+;; #inst values + a java.time formatting shim (jolt-at0a, inc X).
+;;
+;; A #inst literal lowers (analyzer :inst node -> emit) to (jolt-inst-from-string
+;; "…"); this file parses the RFC3339 string to epoch-ms and models the value as a
+;; `jinst` record (one flonum field, ms). Equality / map-key hashing are by the
+;; INSTANT (offset-normalized), matching the seed (types_ctx.janet parse-inst /
+;; inst->rfc3339). The overlay inst?/inst-ms read (get x :jolt/type)/(get x :ms),
+;; so jolt-get answers those off a jinst — the overlay fns then work unchanged.
+;;
+;; The java.time surface (DateTimeFormatter/Instant/ZoneId/LocalDateTime/
+;; FormatStyle/Locale + the .format/.atZone/.toInstant/… methods) is the Chez port
+;; of java_base.janet, registered through host-static.ss's class-statics / host-
+;; methods registries — so this loads LAST in rt.ss, after host-static.ss and io.ss.
+
+;; --- civil <-> days since the Unix epoch (Howard Hinnant's algorithms) -------
+;; No portable UTC mktime on Chez, so compute epoch days directly from y/m/d.
+(define (days-from-civil y m d)
+  (let* ((y2 (if (<= m 2) (- y 1) y))
+         (era (quotient (if (>= y2 0) y2 (- y2 399)) 400))
+         (yoe (- y2 (* era 400)))
+         (doy (+ (quotient (+ (* 153 (+ m (if (> m 2) -3 9))) 2) 5) (- d 1)))
+         (doe (+ (* yoe 365) (quotient yoe 4) (- (quotient yoe 100)) doy)))
+    (+ (* era 146097) doe -719468)))
+
+(define (civil-from-days z)            ; -> (values year month day)
+  (let* ((z2 (+ z 719468))
+         (era (quotient (if (>= z2 0) z2 (- z2 146096)) 146097))
+         (doe (- z2 (* era 146097)))
+         (yoe (quotient (+ doe (- (quotient doe 1460)) (quotient doe 36524) (- (quotient doe 146096))) 365))
+         (y (+ yoe (* era 400)))
+         (doy (- doe (+ (* 365 yoe) (quotient yoe 4) (- (quotient yoe 100)))))
+         (mp (quotient (+ (* 5 doy) 2) 153))
+         (d (+ (- doy (quotient (+ (* 153 mp) 2) 5)) 1))
+         (m (+ mp (if (< mp 10) 3 -9))))
+    (values (if (<= m 2) (+ y 1) y) m d)))
+
+;; --- RFC3339 parse: yyyy[-MM[-dd[Thh[:mm[:ss[.fff]]]]]][Z|±hh:mm] -> ms -------
+(define-record-type jinst (fields ms) (nongenerative chez-jinst-v1))
+
+(define (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+(define (digits-at s i n)               ; n digits from i -> integer, or #f
+  (and (<= (+ i n) (string-length s))
+       (let loop ((j i) (acc 0))
+         (if (= j (+ i n))
+             acc
+             (and (digit? (string-ref s j))
+                  (loop (+ j 1) (+ (* acc 10) (- (char->integer (string-ref s j)) 48))))))))
+
+(define (jolt-inst-from-string ts)
+  (define len (string-length ts))
+  (define (fail) (error #f (string-append "Unrecognized #inst timestamp: " ts)))
+  (let* ((year (or (digits-at ts 0 4) (fail)))
+         (i 4) (month 1) (day 1) (hh 0) (mm 0) (ss 0) (frac-ms 0) (off-s 0))
+    ;; -MM
+    (when (and (< i len) (char=? (string-ref ts i) #\-) (digits-at ts (+ i 1) 2))
+      (set! month (digits-at ts (+ i 1) 2)) (set! i (+ i 3)))
+    ;; -dd
+    (when (and (< i len) (char=? (string-ref ts i) #\-) (digits-at ts (+ i 1) 2))
+      (set! day (digits-at ts (+ i 1) 2)) (set! i (+ i 3)))
+    ;; Thh
+    (when (and (< i len) (or (char=? (string-ref ts i) #\T) (char=? (string-ref ts i) #\t))
+               (digits-at ts (+ i 1) 2))
+      (set! hh (digits-at ts (+ i 1) 2)) (set! i (+ i 3))
+      ;; :mm
+      (when (and (< i len) (char=? (string-ref ts i) #\:) (digits-at ts (+ i 1) 2))
+        (set! mm (digits-at ts (+ i 1) 2)) (set! i (+ i 3))
+        ;; :ss
+        (when (and (< i len) (char=? (string-ref ts i) #\:) (digits-at ts (+ i 1) 2))
+          (set! ss (digits-at ts (+ i 1) 2)) (set! i (+ i 3))
+          ;; .fff (truncate beyond 3)
+          (when (and (< i len) (char=? (string-ref ts i) #\.))
+            (let loop ((j (+ i 1)) (k 0) (acc 0))
+              (if (and (< j len) (digit? (string-ref ts j)))
+                  (loop (+ j 1) (+ k 1) (if (< k 3) (+ (* acc 10) (- (char->integer (string-ref ts j)) 48)) acc))
+                  (begin
+                    (set! frac-ms (* acc (expt 10 (max 0 (- 3 k)))))
+                    (set! i j))))))))
+    ;; offset Z | ±hh:mm
+    (when (< i len)
+      (let ((c (string-ref ts i)))
+        (cond
+          ((or (char=? c #\Z) (char=? c #\z)) (set! i (+ i 1)))
+          ((or (char=? c #\+) (char=? c #\-))
+           (let ((oh (digits-at ts (+ i 1) 2)) (om (digits-at ts (+ i 4) 2)))
+             (unless (and oh om (char=? (string-ref ts (+ i 3)) #\:)) (fail))
+             (set! off-s (* (if (char=? c #\-) -1 1) (+ (* oh 3600) (* om 60))))
+             (set! i (+ i 6))))
+          (else (fail)))))
+    (unless (= i len) (fail))
+    (let ((base-s (+ (* (days-from-civil year month day) 86400) (* hh 3600) (* mm 60) ss)))
+      (make-jinst (exact->inexact (- (+ (* base-s 1000) frac-ms) (* off-s 1000)))))))
+
+;; --- canonical print form: yyyy-MM-ddThh:mm:ss.fff-00:00 (UTC) ---------------
+(define (pad2 n) (if (< n 10) (string-append "0" (number->string n)) (number->string n)))
+(define (pad4 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 4 (string-length s))) #\0) s)))
+(define (pad3 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 3 (string-length s))) #\0) s)))
+(define (floor-div a b) (let ((q (quotient a b)) (r (remainder a b))) (if (and (not (= r 0)) (< (* a b) 0)) (- q 1) q)))
+(define (floor-mod a b) (- a (* (floor-div a b) b)))
+
+(define (inst-fields ms)                ; -> list (y mo d hh mm ss frac dow)
+  (let* ((total-s (floor-div (exact (truncate ms)) 1000))
+         (frac (- (exact (truncate ms)) (* total-s 1000)))
+         (days (floor-div total-s 86400))
+         (sod (floor-mod total-s 86400))
+         (hh (quotient sod 3600)) (mm (quotient (remainder sod 3600) 60)) (ss (remainder sod 60))
+         (dow (floor-mod (+ days 4) 7)))   ; 1970-01-01 = Thursday; 0=Sunday
+    (call-with-values (lambda () (civil-from-days days))
+      (lambda (y mo d) (list y mo d hh mm ss frac dow)))))
+
+(define (inst-rfc3339 inst)
+  (let ((f (inst-fields (jinst-ms inst))))
+    (string-append (pad4 (list-ref f 0)) "-" (pad2 (list-ref f 1)) "-" (pad2 (list-ref f 2))
+                   "T" (pad2 (list-ref f 3)) ":" (pad2 (list-ref f 4)) ":" (pad2 (list-ref f 5))
+                   "." (pad3 (list-ref f 6)) "-00:00")))
+
+;; --- DateTimeFormatter pattern engine (port of java_base.janet format-ms) -----
+(define month-names (vector "January" "February" "March" "April" "May" "June" "July"
+                            "August" "September" "October" "November" "December"))
+(define day-names (vector "Sunday" "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday"))
+
+(define (format-ms pattern ms)
+  (let ((f (inst-fields ms)) (n (string-length pattern)) (out (open-output-string)))
+    (let ((y (list-ref f 0)) (mo (list-ref f 1)) (d (list-ref f 2))
+          (hh (list-ref f 3)) (mi (list-ref f 4)) (se (list-ref f 5)) (dow (list-ref f 7)))
+      (define (run-len i c) (let loop ((j i)) (if (and (< j n) (char=? (string-ref pattern j) c)) (loop (+ j 1)) (- j i))))
+      (let loop ((i 0))
+        (when (< i n)
+          (let* ((c (string-ref pattern i)) (k (run-len i c)))
+            (cond
+              ((char=? c #\')
+               (if (and (< (+ i 1) n) (char=? (string-ref pattern (+ i 1)) #\'))
+                   (begin (write-char #\' out) (loop (+ i 2)))
+                   (let close ((j (+ i 1)))
+                     (cond ((>= j n) (loop j))
+                           ((char=? (string-ref pattern j) #\') (loop (+ j 1)))
+                           (else (write-char (string-ref pattern j) out) (close (+ j 1)))))))
+              ((char=? c #\y) (display (if (>= k 4) (number->string y) (pad2 (modulo y 100))) out) (loop (+ i k)))
+              ((char=? c #\M)
+               (display (cond ((= k 1) (number->string mo)) ((= k 2) (pad2 mo))
+                              ((= k 3) (substring (vector-ref month-names (- mo 1)) 0 3))
+                              (else (vector-ref month-names (- mo 1)))) out)
+               (loop (+ i k)))
+              ((char=? c #\d) (display (if (= k 1) (number->string d) (pad2 d)) out) (loop (+ i k)))
+              ((char=? c #\E)
+               (display (if (>= k 4) (vector-ref day-names dow) (substring (vector-ref day-names dow) 0 3)) out)
+               (loop (+ i k)))
+              ((char=? c #\H) (display (if (= k 1) (number->string hh) (pad2 hh)) out) (loop (+ i k)))
+              ((char=? c #\h)
+               (let ((h12 (let ((h (modulo hh 12))) (if (= h 0) 12 h))))
+                 (display (if (= k 1) (number->string h12) (pad2 h12)) out)) (loop (+ i k)))
+              ((char=? c #\m) (display (if (= k 1) (number->string mi) (pad2 mi)) out) (loop (+ i k)))
+              ((char=? c #\s) (display (if (= k 1) (number->string se) (pad2 se)) out) (loop (+ i k)))
+              ((char=? c #\a) (display (if (< hh 12) "AM" "PM") out) (loop (+ i k)))
+              (else (write-char c out) (loop (+ i 1)))))))
+      (get-output-string out))))
+
+;; --- value integration: get / = / hash / pr / type / instance? --------------
+(define kw-jolt-type (keyword "jolt" "type"))
+(define kw-ms (keyword #f "ms"))
+(define inst-type-kw (keyword "jolt" "inst"))
+
+(define %it-get jolt-get)
+(set! jolt-get (case-lambda
+  ((coll k)   (jolt-get coll k jolt-nil))
+  ((coll k d) (if (jinst? coll)
+                  (cond ((jolt=2 k kw-jolt-type) inst-type-kw)
+                        ((jolt=2 k kw-ms) (jinst-ms coll))
+                        (else d))
+                  (%it-get coll k d)))))
+
+(define %it-=2 jolt=2)
+(set! jolt=2 (lambda (a b)
+  (cond ((jinst? a) (and (jinst? b) (= (jinst-ms a) (jinst-ms b))))
+        ((jinst? b) #f)
+        (else (%it-=2 a b)))))
+
+(define %it-hash jolt-hash)
+(set! jolt-hash (lambda (x) (if (jinst? x) (jolt-hash (jinst-ms x)) (%it-hash x))))
+
+(define (inst-pr i) (string-append "#inst \"" (inst-rfc3339 i) "\""))
+(define %it-pr-str jolt-pr-str)
+(set! jolt-pr-str (lambda (x) (if (jinst? x) (inst-pr x) (%it-pr-str x))))
+(define %it-pr-readable jolt-pr-readable)
+(set! jolt-pr-readable (lambda (x) (if (jinst? x) (inst-pr x) (%it-pr-readable x))))
+(define %it-str-render jolt-str-render-one)
+(set! jolt-str-render-one (lambda (x) (if (jinst? x) (inst-rfc3339 x) (%it-str-render x))))
+
+(define %it-type jolt-type)
+(set! jolt-type (lambda (x) (if (jinst? x) inst-type-kw (%it-type x))))
+(def-var! "clojure.core" "type" jolt-type)
+
+;; instance? java.util.Date -> a jinst; java.time.Instant/LocalDateTime -> the
+;; matching jhost tag. The instance? macro passes the class-name symbol.
+(define (class-short tn) (let loop ((i (- (string-length tn) 1)))
+                           (cond ((< i 0) tn) ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn))) (else (loop (- i 1))))))
+(define %it-instance-check instance-check)
+(set! instance-check
+  (lambda (type-sym val)
+    (let ((tn (class-short (symbol-t-name type-sym))))
+      (cond
+        ((jinst? val) (if (string=? tn "Date") #t (%it-instance-check type-sym val)))
+        ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t (%it-instance-check type-sym val)))
+        ((and (jhost? val) (string=? (jhost-tag val) "local-dt")) (if (string=? tn "LocalDateTime") #t (%it-instance-check type-sym val)))
+        (else (%it-instance-check type-sym val))))))
+(def-var! "clojure.core" "instance-check" instance-check)
+
+;; inst-ms* is a seed native (the overlay inst-ms reads (get x :ms), now answered).
+(def-var! "clojure.core" "inst-ms*" (lambda (i) (jinst-ms i)))
+
+;; --- java.time shim values (jhost objects over host-static.ss registries) -----
+(define (ms-of d)
+  (cond ((number? d) d)
+        ((jinst? d) (jinst-ms d))
+        ((and (jhost? d) (member (jhost-tag d) '("instant" "zoned-dt" "local-dt")))
+         (vector-ref (jhost-state d) 0))
+        (else (error #f "not a date value" d))))
+(define (mk-instant ms) (make-jhost "instant" (vector ms)))
+(define (mk-zoned ms) (make-jhost "zoned-dt" (vector ms)))
+(define (mk-local ms) (make-jhost "local-dt" (vector ms)))
+(define (mk-formatter pat) (make-jhost "dt-formatter" (vector pat)))
+(define (fmt-pat f) (vector-ref (jhost-state f) 0))
+(define (now-ms) (exact->inexact (now-millis)))   ; now-millis from host-static.ss
+
+(register-host-methods! "instant"
+  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))
+        (cons "toEpochMilli" (lambda (self) (ms-of self)))
+        (cons "toString" (lambda (self) (inst-rfc3339 (make-jinst (ms-of self)))))))
+(register-host-methods! "zoned-dt"
+  (list (cons "toLocalDateTime" (lambda (self) (mk-local (ms-of self))))
+        (cons "toInstant" (lambda (self) (mk-instant (ms-of self))))))
+(register-host-methods! "local-dt"
+  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
+(register-host-methods! "dt-formatter"
+  (list (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self))))
+        (cons "format" (lambda (self d) (format-ms (fmt-pat self) (ms-of d))))))
+
+;; FormatStyle approximations (no locale DB on this host).
+(define style-patterns
+  '((date . ((short . "M/d/yy") (medium . "MMM d, yyyy") (long . "MMMM d, yyyy") (full . "EEEE, MMMM d, yyyy")))
+    (time . ((short . "h:mm a") (medium . "h:mm:ss a") (long . "h:mm:ss a") (full . "h:mm:ss a")))
+    (datetime . ((short . "M/d/yy, h:mm a") (medium . "MMM d, yyyy, h:mm:ss a")
+                 (long . "MMMM d, yyyy, h:mm:ss a") (full . "EEEE, MMMM d, yyyy, h:mm:ss a")))))
+(define (style-of fs) (vector-ref (jhost-state fs) 0))       ; a symbol: short/medium/long/full
+(define (style-fmt kind fs)
+  (mk-formatter (or (let ((row (assq kind style-patterns))) (and row (let ((e (assq (style-of fs) (cdr row)))) (and e (cdr e)))))
+                    "yyyy-MM-dd HH:mm:ss")))
+
+(register-class-statics! "FormatStyle"
+  (list (cons "SHORT" (make-jhost "format-style" (vector 'short)))
+        (cons "MEDIUM" (make-jhost "format-style" (vector 'medium)))
+        (cons "LONG" (make-jhost "format-style" (vector 'long)))
+        (cons "FULL" (make-jhost "format-style" (vector 'full)))))
+(register-class-statics! "DateTimeFormatter"
+  (list (cons "ofPattern" (lambda (p . _) (mk-formatter p)))
+        (cons "ISO_LOCAL_DATE" (mk-formatter "yyyy-MM-dd"))
+        (cons "ISO_LOCAL_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ss"))
+        (cons "ofLocalizedDate" (lambda (fs) (style-fmt 'date fs)))
+        (cons "ofLocalizedTime" (lambda (fs) (style-fmt 'time fs)))
+        (cons "ofLocalizedDateTime" (lambda (fs) (style-fmt 'datetime fs)))))
+(register-class-statics! "Instant"
+  (list (cons "ofEpochMilli" (lambda (ms) (mk-instant (exact->inexact ms))))
+        (cons "now" (lambda () (mk-instant (now-ms))))))
+(register-class-statics! "ZoneId"
+  (list (cons "systemDefault" (lambda () (make-jhost "zone-id" (vector "system"))))
+        (cons "of" (lambda (id) (make-jhost "zone-id" (vector id))))))
+(register-class-statics! "LocalDateTime"
+  (list (cons "ofInstant" (lambda (inst zone) (mk-local (ms-of inst))))
+        (cons "now" (lambda () (mk-local (now-ms))))))
+(let ((locale-ctor (lambda (id . _) (make-jhost "locale" (vector (if (string? id) id (jolt-str-render-one id)))))))
+  (register-class-ctor! "Locale" locale-ctor)
+  (register-class-ctor! "java.util.Locale" locale-ctor))
+(register-class-statics! "Locale"
+  (list (cons "getDefault" (lambda () (make-jhost "locale" (vector "default"))))
+        (cons "ENGLISH" (make-jhost "locale" (vector "en")))
+        (cons "US" (make-jhost "locale" (vector "en-US")))
+        (cons "ROOT" (make-jhost "locale" (vector "root")))))
+
+;; java.util.Date: #inst's class. (Date. ms) and the no-arg now form -> a jinst,
+;; so .getTime / inst? / instance? Date work; ctor + .getTime mirror host_io.janet.
+(register-class-ctor! "Date" (lambda args (make-jinst (if (null? args) (now-ms) (exact->inexact (car args))))))
+(register-class-ctor! "java.util.Date" (lambda args (make-jinst (if (null? args) (now-ms) (exact->inexact (car args))))))
+
+;; a jinst's java.util.Date method surface (record-method-dispatch arm).
+(define %it-rmd record-method-dispatch)
+(set! record-method-dispatch
+  (lambda (obj method-name rest-args)
+    (cond
+      ((jinst? obj)
+       (cond ((string=? method-name "getTime") (jinst-ms obj))
+             ((string=? method-name "toInstant") (mk-instant (jinst-ms obj)))
+             ((string=? method-name "toString") (inst-rfc3339 obj))
+             (else (error #f (string-append "No method " method-name " on Date")))))
+      (else (%it-rmd obj method-name rest-args)))))

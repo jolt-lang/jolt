@@ -23,6 +23,7 @@
            "host/chez/ns.ss" "host/chez/post-prelude.ss" "host/chez/natives-meta.ss"
            "host/chez/natives-str.ss" "host/chez/records.ss"
            "host/chez/host-class.ss" "host/chez/io.ss"
+           "host/chez/inst-time.ss"
            "host/chez/host-static.ss" "host/chez/dot-forms.ss"
            "src/jolt/clojure/string.clj" "src/jolt/clojure/walk.clj"
            "src/jolt/clojure/template.clj"]

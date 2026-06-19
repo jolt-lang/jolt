@@ -22,6 +22,7 @@
                                form-literal? form-elements form-vec-items
                                form-map-pairs form-set-items form-special? compile-ns
                                form-regex? form-regex-source
+                               form-inst? form-inst-source form-uuid? form-uuid-source
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key form-position late-bind?]]))
@@ -431,4 +432,9 @@
      ;; (interpreter compiles via the seed PEG engine); the Chez back end emits a
      ;; jolt-regex value over the vendored irregex.
      (form-regex? form) {:op :regex :source (form-regex-source form)}
+     ;; #inst / #uuid literals -> :inst / :uuid IR leaves. Like :regex, the Janet
+     ;; back end punts (the interpreter's data-readers parse them); the Chez back
+     ;; end emits a runtime inst/uuid value (host/chez/inst-time.ss).
+     (form-inst? form) {:op :inst :source (form-inst-source form)}
+     (form-uuid? form) {:op :uuid :source (form-uuid-source form)}
      :else (uncompilable "unsupported form"))))

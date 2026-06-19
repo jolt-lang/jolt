@@ -503,6 +503,10 @@
     # in the pattern becomes \\ in the Scheme string literal -> the 1-char
     # backslash irregex expects (same escaping emit-const uses for strings).
     :regex (string "(jolt-regex " (chez-str-lit (get node :source)) ")")
+    # #inst / #uuid literals -> a runtime inst / uuid value (inst-time.ss /
+    # natives-misc.ss). The source string round-trips through chez-str-lit.
+    :inst (string "(jolt-inst-from-string " (chez-str-lit (get node :source)) ")")
+    :uuid (string "(jolt-uuid-from-string " (chez-str-lit (get node :source)) ")")
     # host interop (jolt-0kf5): (.method target arg*) -> (jolt-host-call "method"
     # target arg*). Only the methods the RT dispatcher (rt.ss) actually shims are
     # IN the subset; any other method is out of subset (a clean emit-time reject,

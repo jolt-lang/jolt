@@ -791,6 +791,11 @@
       # regex literal: the back end doesn't compile patterns — punt to the
       # interpreter (the seed compiles #"…" to a Janet PEG). Chez emits jolt-regex.
       :regex (error "jolt/uncompilable: regex literal")
+      # #inst / #uuid literals: the back end doesn't construct them — punt to the
+      # interpreter (its data-readers parse the timestamp/uuid). Chez emits a
+      # runtime jolt-inst-from-string / jolt-uuid-from-string value.
+      :inst (error "jolt/uncompilable: inst literal")
+      :uuid (error "jolt/uncompilable: uuid literal")
       (error (string "backend: unhandled op " (node :op))))))
 
 (defn emit-ir

@@ -261,8 +261,16 @@
 # (slurp/string/char[]/File), File .toURL/.toURI + a url jhost, slurp draining a
 # StringReader, char-array, and with-open's __close seam over jhost readers + plain
 # :close maps; all in host/chez/io.ss, no analyzer change) 2202.
+# jolt-at0a inc X (#inst / #uuid literals + java.time formatting — the analyzer
+# lowers a #inst/#uuid tagged form to a :inst/:uuid IR leaf (mirroring :regex):
+# the Janet back end punts to the interpreter's data-readers, the Chez back end
+# emits jolt-inst-from-string / jolt-uuid-from-string. host/chez/inst-time.ss is
+# the jinst value (RFC3339 ms via Hinnant civil/days math, partial defaults +
+# offsets, = / hash / pr-str / get-as-overlay-seam) plus the DateTimeFormatter
+# pattern engine + Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date shims.
+# This cleared the whole "unsupported form" emit-fail bucket) 2238.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2202")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2238")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

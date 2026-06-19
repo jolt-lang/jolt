@@ -26,6 +26,10 @@
             (loop (fx+ i 1)))))))
 (define (jolt-random-uuid) (make-juuid (random-uuid-str)))
 
+;; #uuid literal -> a uuid value (emit.janet lowers the :uuid node to this). The
+;; reader already validated the shape; lowercase for value equality.
+(define (jolt-uuid-from-string s) (make-juuid (string-downcase s)))
+
 ;; parse-uuid: validate the canonical shape (8-4-4-4-12 hex), lowercase, -> uuid;
 ;; nil if the string doesn't conform (Clojure parse-uuid), error on a non-string.
 (define (hex-char? c) (or (and (char>=? c #\0) (char<=? c #\9))
