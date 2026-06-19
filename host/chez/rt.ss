@@ -299,3 +299,8 @@
 ;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
 ;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
 (load "host/chez/inst-time.ss")
+
+;; Chez-side data reader (jolt-r8ku inc Y): read-string / __parse-next /
+;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst
+;; constructors, and the reader needs the full value/collection layer above.
+(load "host/chez/reader.ss")

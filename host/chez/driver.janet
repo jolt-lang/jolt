@@ -111,7 +111,11 @@
    ["clojure.walk" "src/jolt/clojure/walk.clj"]
    # clojure.template requires clojure.walk (apply-template over postwalk-replace)
    # — must follow it so the alias resolves at emit time.
-   ["clojure.template" "src/jolt/clojure/template.clj"]])
+   ["clojure.template" "src/jolt/clojure/template.clj"]
+   # clojure.edn requires clojure.string; read-string/__read-tagged are the
+   # reader.ss seams. The reader-arity's drain-reader is Janet-coupled (janet/type)
+   # so it's a lazy gap on Chez — read-string/edn->value are the live path. jolt-r8ku.
+   ["clojure.edn" "src/jolt/clojure/edn.clj"]])
 
 (defn- sym-name [x]
   (when (and (struct? x) (= :symbol (get x :jolt/type))) (get x :name)))

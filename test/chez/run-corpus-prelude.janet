@@ -269,8 +269,14 @@
 # offsets, = / hash / pr-str / get-as-overlay-seam) plus the DateTimeFormatter
 # pattern engine + Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date shims.
 # This cleared the whole "unsupported form" emit-fail bucket) 2238.
+# jolt-r8ku inc Y (Chez data reader — host/chez/reader.ss, a recursive-descent
+# Clojure reader producing the same forms as the Janet reader, behind the
+# read-string / __parse-next / __read-tagged seams) + clojure.edn loaded into the
+# prelude. Lights up read / read+string / with-in-str (read) / read-string and
+# clojure.edn/read-string. (eval / load-string / runtime defmacro stay Phase-3 —
+# they need the compiler at runtime.) 2259.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2238")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2259")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
