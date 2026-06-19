@@ -220,6 +220,11 @@
 ;; side-table. After records.ss (jrec) + the collection ctors it copies.
 (load "host/chez/natives-meta.ss")
 
+;; host class tokens (jolt-13zk): bare class names (String/Keyword/File...) ->
+;; canonical JVM class-name strings + (class x). After natives-meta.ss (jolt-type)
+;; and the printer (jolt-str-render-one).
+(load "host/chez/host-class.ss")
+
 ;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the seed
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
 (load "host/chez/dynamic-vars.ss")

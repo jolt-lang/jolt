@@ -244,8 +244,12 @@
 # validator slots; swap!/reset! validate-then-set-then-notify in seed order;
 # add-watch/remove-watch/set-validator!/get-validator are native and re-asserted
 # in post-prelude.ss over the overlay's ref-put!-on-a-Janet-table versions) 2154.
+# jolt-13zk (bare class tokens String/Keyword/File... -> canonical JVM class-name
+# strings + (class x) scalar arms, host-class.ss; the analyzer already resolves
+# these names to clojure.core vars so it's a runtime def-var! only, no analyzer
+# change) 2163.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2154")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2163")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
