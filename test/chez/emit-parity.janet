@@ -88,11 +88,26 @@
   [code (string/trim out) (string/trim err)])
 
 # A case passes when the Clojure emitter's Chez output equals the Janet oracle.
+# An emit-time throw (out-of-subset op) is a clean FAIL, not a crash.
 (defn check [name src]
   (def want (cli-oracle src))
-  (def [code out err] (run-clj src))
-  (ok name (and (= code 0) (= out want))
-      (string "chez=" out " oracle=" want " code=" code " | " err)))
+  (def res (protect (run-clj src)))
+  (if (not (res 0))
+    (ok name false (string "emit/run threw: " (res 1)))
+    (let [[code out err] (res 1)]
+      (ok name (and (= code 0) (= out want))
+          (string "chez=" out " oracle=" want " code=" code " | " err)))))
+
+# For cases where the Janet oracle carries a known latent bug (e.g. quoted-set
+# literals don't reconstruct, jolt-tg9s) but Chez is correct: assert Chez output
+# against the hand-verified real-Clojure value directly.
+(defn check-exact [name src want]
+  (def res (protect (run-clj src)))
+  (if (not (res 0))
+    (ok name false (string "emit/run threw: " (res 1)))
+    (let [[code out err] (res 1)]
+      (ok name (and (= code 0) (= out want))
+          (string "chez=" out " want=" want " code=" code " | " err)))))
 
 # --- inc 1 subset: const/local/var/if/do/let/loop/recur/invoke/fn/def ----------
 
@@ -113,6 +128,35 @@
 (check "truthy local" "(defn t [x] (if x 1 2)) (t false)")
 (check "mod rem quot" "(+ (mod 17 5) (rem 17 5) (quot 17 5))")
 (check "min max" "(+ (min 3 1 2) (max 3 1 2))")
+# --- inc 2 subset: collection literals (vector/map/set) + quote -----------------
+
+(check "vector literal" "[1 2 3]")
+(check "nested vector" "[1 [2 3] [4 [5 6]]]")
+(check "vector of exprs" "[(+ 1 2) (* 3 4)]")
+(check "map literal eq" "(= {:a 1 :b 2} {:a 1 :b 2})")
+(check "map get" "(get {:a 1 :b 2} :b)")
+(check "set literal eq" "(= #{1 2 3} #{3 2 1})")
+(check "set contains" "(contains? #{1 2 3} 2)")
+(check "vector count" "(count [10 20 30 40])")
+(check "conj vector" "(conj [1 2] 3 4)")
+(check "assoc map" "(get (assoc {:a 1} :b 2) :b)")
+(check "coll as fn" "({:a 1 :b 2} :a)")
+(check "kw as fn" "(:b {:a 1 :b 2})")
+(check "kw as fn default" "(:z {:a 1} 99)")
+(check "quote list" "(count (quote (a b c d)))")
+(check "quote vector eq" "(= (quote [1 2 3]) [1 2 3])")
+(check "quote symbol eq" "(= (quote foo) (quote foo))")
+(check "quote ns symbol eq" "(= (quote my.ns/bar) (quote my.ns/bar))")
+(check "quote nested count" "(count (quote (a [1 2] {:k v})))")
+(check "quote keyword in list" "(first (quote (:a :b :c)))")
+(check "quote map" "(get (quote {:x 1 :y 2}) :y)")
+# Janet oracle is buggy here (jolt-tg9s): quoted-set doesn't reconstruct. Chez is
+# correct (real Clojure: true) — assert against the verified value.
+(check-exact "quote set contains" "(contains? (quote #{:p :q}) :p)" "true")
+(check-exact "quote set eq literal" "(= (quote #{1 2 3}) #{1 2 3})" "true")
+(check "vector map filter" "(into [] (filter even? (map inc [1 2 3 4 5])))")
+(check "map over literal" "(reduce + (vals {:a 1 :b 2 :c 3}))")
+
 (check "mandelbrot run(20)"
   (string ``
 (defn count-point [cr ci cap]

@@ -12,11 +12,17 @@
   Janet emitter while the port is in flight.
 
   INCREMENT 1 (jolt-hg7z): const/local/var/the-var/if/do/let/loop/recur/invoke
-  (+ native-ops)/fn/def + the escaping/flonum/munge helpers — enough to compile
-  fib/mandelbrot-shaped code end to end. Quote, collection literals, try/throw,
-  host interop, regex/inst/uuid and program assembly land in later increments
-  (they throw `:not-yet-ported` here so an accidental hit is loud)."
-  (:require [clojure.string :as str]))
+  (+ native-ops)/fn/def + the escaping/flonum/munge helpers.
+  INCREMENT 2 (jolt-7jvp): collection literals (vector/map/set, emit-ordered) +
+  quote (emit-quoted, walks the raw reader form via the portable jolt.host form-*
+  contract — same seam the analyzer uses, so it stays host-neutral). Quoted symbol
+  metadata, def-meta, try/throw, host interop, regex/inst/uuid and program
+  assembly land in later increments (they throw not-yet-ported so a hit is loud)."
+  (:require [clojure.string :as str]
+            [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
+                               form-list? form-vec? form-map? form-set? form-char?
+                               form-literal? form-elements form-vec-items
+                               form-map-pairs form-set-items]]))
 
 ;; Hot clojure.core primitives lowered to native Scheme, mirroring the Janet
 ;; backend's native-ops. `=` is the exactness-aware jolt= from values.ss; inc/dec/
@@ -138,6 +144,46 @@
     (and (map? v) (= :jolt/char (:jolt/type v)))
     (str "(integer->char " (:ch v) ")")
     :else (throw (ex-info (str "emit-const: unsupported literal " (pr-str v)) {}))))
+
+;; Emit a call `(ctor a0 a1 ...)` with the args evaluated LEFT-TO-RIGHT. Chez's
+;; procedure-argument evaluation order is unspecified (in practice right-to-left),
+;; but Clojure evaluates collection-literal elements left to right, so a literal
+;; like [(read r) (read r)] over side-effecting reads must bind in source order.
+;; Bind each arg to a fresh temp in a let* then construct. Only wraps at >= 2 args.
+(defn- emit-ordered [ctor arg-strs]
+  (if (< (count arg-strs) 2)
+    (str "(" ctor (if (empty? arg-strs) "" (str " " (str/join " " arg-strs))) ")")
+    (let [tmps (map (fn [_] (fresh-label "_o$")) arg-strs)
+          binds (str/join " " (map (fn [t a] (str "(" t " " a ")")) tmps arg-strs))]
+      (str "(let* (" binds ") (" ctor " " (str/join " " tmps) "))"))))
+
+;; Quoted literals (jolt-u8j7). A :quote node's :form is the RAW reader form;
+;; reconstruct each as the matching Chez RT constructor — the runtime value of a
+;; quote is just that literal data. The form is walked via the jolt.host form-*
+;; contract (the portable seam the analyzer uses), NOT host-native predicates, so
+;; this stays host-neutral: on Janet the contract walks Janet reader forms, on
+;; Chez it walks Chez reader forms.
+(declare emit-quoted)
+(defn- emit-quoted-map [pairs]
+  ;; pairs: a jolt vector of [k-form v-form] pairs (form-map-pairs)
+  (str "(jolt-hash-map "
+       (str/join " " (mapcat (fn [p] [(emit-quoted (nth p 0)) (emit-quoted (nth p 1))]) pairs))
+       ")"))
+(defn- emit-quoted [form]
+  (cond
+    (form-char? form) (emit-const form)
+    (form-literal? form) (emit-const form)
+    (form-sym? form)
+    (let [m (form-sym-meta form)]
+      (when (and m (pos? (count m)))
+        (throw (ex-info "emit-quoted: quoted symbol with metadata not yet ported (inc 3)" {})))
+      (let [sns (form-sym-ns form) nm (form-sym-name form)]
+        (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")")))
+    (form-set? form) (str "(jolt-hash-set " (str/join " " (map emit-quoted (form-set-items form))) ")")
+    (form-list? form) (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")
+    (form-vec? form) (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")")
+    (form-map? form) (emit-quoted-map (form-map-pairs form))
+    :else (throw (ex-info (str "emit-quoted: unsupported quoted form " (pr-str form)) {}))))
 
 ;; A def's :meta is a jolt map value. Non-empty? (a plain def carries {}).
 (defn- jmeta-nonempty? [m] (and (map? m) (pos? (count m))))
@@ -305,6 +351,13 @@
     :do (str "(begin " (str/join " " (map emit (:statements node)))
              (if (empty? (:statements node)) "" " ") (emit (:ret node)) ")")
     :invoke (emit-invoke node)
+    ;; collection literals -> rt constructors (collections.ss). Elements are
+    ;; already-analyzed IR nodes; evaluate LEFT-TO-RIGHT (emit-ordered).
+    :vector (emit-ordered "jolt-vector" (map emit (:items node)))
+    :set (emit-ordered "jolt-hash-set" (map emit (:items node)))
+    :map (emit-ordered "jolt-hash-map"
+                       (mapcat (fn [p] [(emit (nth p 0)) (emit (nth p 1))]) (:pairs node)))
+    :quote (emit-quoted (:form node))
     :let (emit-let node)
     :loop (emit-loop node)
     :recur (emit-recur node)
@@ -315,7 +368,7 @@
            (:no-init node)
            (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
            (jmeta-nonempty? (:meta node))
-           (throw (ex-info "emit: def with non-empty meta not yet ported (inc 2)" {}))
+           (throw (ex-info "emit: def with non-empty meta not yet ported (inc 3)" {}))
            :else
            (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                 (emit (:init node)) ")"))
