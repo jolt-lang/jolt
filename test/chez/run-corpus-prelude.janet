@@ -253,8 +253,12 @@
 # map-entry is now vector? matching Clojure's MapEntry; clojure.walk + clojure.
 # template added to the prelude stdlib tier, the driver evals each ns's requires
 # to register aliases at emit time) 2176.
+# jolt-yyud (java.io.File as a path-backed jfile record + the File method surface,
+# slurp/spit/flush over Chez file I/O, file-seq dir primitives, clojure.java.io/
+# file — host/chez/io.ss, a Chez-native impl since io.clj is a janet.* shim;
+# reader/StringReader-coupled io deferred to jolt-at0a) 2191.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2176")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2191")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

@@ -287,3 +287,9 @@
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every
 ;; record-method-dispatch arm (jhost/number/regex/jrec/string) and falls through.
 (load "host/chez/dot-forms.ss")
+
+;; java.io.File + host file I/O (jolt-yyud): path-backed jfile record, slurp/spit/
+;; flush, file-seq dir primitives, clojure.java.io/file. Loads LAST so its jfile
+;; arm wraps the fully-built record-method-dispatch and the str/type/instance-check
+;; extensions sit over every prior shim.
+(load "host/chez/io.ss")
