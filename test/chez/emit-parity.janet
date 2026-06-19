@@ -157,6 +157,20 @@
 (check "vector map filter" "(into [] (filter even? (map inc [1 2 3 4 5])))")
 (check "map over literal" "(reduce + (vals {:a 1 :b 2 :c 3}))")
 
+# --- inc 3 subset: try/throw + def-meta + quoted-sym-meta + inst/uuid + regex ----
+
+(check "try catch" `(try (throw (ex-info "boom" {})) (catch Throwable e 42))`)
+(check "try catch value" `(+ (try (throw (ex-info "" {})) (catch Throwable e 10)) 5)`)
+(check "try no throw" `(try 7 (catch Throwable e 0))`)
+(check "try finally" `(try 1 (finally 2))`)
+(check "try finally side" `(try (throw (ex-info "" {})) (catch Throwable e 3) (finally 9))`)
+(check "def private runs" `(do (defn ^:private secret [] 99) (secret))`)
+(check "def tagged runs" `(do (def ^:dynamic *q* 5) *q*)`)
+(check "quoted sym meta eq" `(do (def x (quote ^:foo bar)) (= x x))`)
+(check "inst eq" `(= #inst "2020-01-01" #inst "2020-01-01")`)
+(check "uuid eq" `(= #uuid "00000000-0000-0000-0000-000000000000" #uuid "00000000-0000-0000-0000-000000000000")`)
+(check "regex smoke" `(do (def r #"[0-9]+") true)`)
+
 (check "mandelbrot run(20)"
   (string ``
 (defn count-point [cr ci cap]
@@ -177,6 +191,17 @@
           (recur (inc y) (+ acc row)))
         acc))))
 `` "\n(run 20)"))
+
+# Structural: a ^:private def must now take the def-var-with-meta! path (the meta
+# is a portable struct after the h-sym-meta fix; before, map?/count failed on the
+# raw table and it silently fell back to the lean def-var!, dropping the meta).
+(let [scm (emit-clj (backend/analyze-form ctx (in (r/parse-next "(def ^:private p 1)") 0)))]
+  (ok "def ^:private emits def-var-with-meta!"
+      (truthy? (string/find "def-var-with-meta!" scm)) scm))
+(let [scm (emit-clj (backend/analyze-form ctx (in (r/parse-next "(def plain 1)") 0)))]
+  (ok "plain def stays lean def-var!"
+      (and (truthy? (string/find "(def-var! " scm))
+           (not (string/find "with-meta" scm))) scm))
 
 (printf "\n%d/%d ok" (- total fails) total)
 (when (> fails 0) (os/exit 1))

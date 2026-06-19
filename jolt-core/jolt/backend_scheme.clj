@@ -15,9 +15,12 @@
   (+ native-ops)/fn/def + the escaping/flonum/munge helpers.
   INCREMENT 2 (jolt-7jvp): collection literals (vector/map/set, emit-ordered) +
   quote (emit-quoted, walks the raw reader form via the portable jolt.host form-*
-  contract — same seam the analyzer uses, so it stays host-neutral). Quoted symbol
-  metadata, def-meta, try/throw, host interop, regex/inst/uuid and program
-  assembly land in later increments (they throw not-yet-ported so a hit is loud)."
+  contract — same seam the analyzer uses, so it stays host-neutral).
+  INCREMENT 3 (jolt-me6m): try/throw + host-call + regex/inst/uuid + def-meta +
+  quoted-symbol-meta. With this the emitter covers every op emit.janet handles.
+  emit-quoted now also reconstructs plain jolt VALUES (def/symbol :meta), enabled
+  by making :meta a portable struct at the host seam (h-sym-meta). Program
+  assembly + the prelude driver port land with compile-from-source (inc 4+)."
   (:require [clojure.string :as str]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
                                form-list? form-vec? form-map? form-set? form-char?
@@ -74,6 +77,11 @@
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg,
 ;; but Scheme's < demands a number even there — special-case.
 (def ^:private cmp1-ops #{"<" ">" "<=" ">="})
+
+;; Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
+;; call on any other method routes to record-method-dispatch (a reify/record
+;; protocol method). Keep in sync with emit.janet's supported-host-methods.
+(def ^:private supported-host-methods #{"isDirectory" "listFiles"})
 
 ;; Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
 ;; :if test built from them needs no jolt-truthy? wrapper (jolt-nkcb).
@@ -169,20 +177,36 @@
   (str "(jolt-hash-map "
        (str/join " " (mapcat (fn [p] [(emit-quoted (nth p 0)) (emit-quoted (nth p 1))]) pairs))
        ")"))
+(defn- emit-quoted-map-value [m]
+  ;; a jolt map VALUE (def/symbol metadata is a value, not a reader form)
+  (str "(jolt-hash-map "
+       (str/join " " (mapcat (fn [k] [(emit-quoted k) (emit-quoted (get m k))]) (keys m)))
+       ")"))
+;; emit-quoted reconstructs both raw reader forms (from :quote) AND plain jolt
+;; values (def/symbol :meta). Reader forms are walked via the jolt.host form-*
+;; contract; the native-predicate branches below catch genuine jolt collection
+;; VALUES. The form-* branches come first so a reader form (a host-native struct/
+;; array that a native predicate might also match) is always handled as a form.
 (defn- emit-quoted [form]
   (cond
     (form-char? form) (emit-const form)
     (form-literal? form) (emit-const form)
     (form-sym? form)
-    (let [m (form-sym-meta form)]
-      (when (and m (pos? (count m)))
-        (throw (ex-info "emit-quoted: quoted symbol with metadata not yet ported (inc 3)" {})))
-      (let [sns (form-sym-ns form) nm (form-sym-name form)]
+    (let [m (form-sym-meta form) sns (form-sym-ns form) nm (form-sym-name form)]
+      (if (and m (pos? (count m)))
+        ;; carry reader metadata (^:foo bar) onto the quoted symbol so (meta 'x) sees it
+        (str "(jolt-symbol/meta " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) " "
+             (emit-quoted m) ")")
         (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")")))
     (form-set? form) (str "(jolt-hash-set " (str/join " " (map emit-quoted (form-set-items form))) ")")
     (form-list? form) (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")
     (form-vec? form) (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")")
     (form-map? form) (emit-quoted-map (form-map-pairs form))
+    ;; plain jolt VALUES (metadata maps and anything nested in them)
+    (map? form) (emit-quoted-map-value form)
+    (vector? form) (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")")
+    (set? form) (str "(jolt-hash-set " (str/join " " (map emit-quoted form)) ")")
+    (seq? form) (str "(jolt-list " (str/join " " (map emit-quoted form)) ")")
     :else (throw (ex-info (str "emit-quoted: unsupported quoted form " (pr-str form)) {}))))
 
 ;; A def's :meta is a jolt map value. Non-empty? (a plain def carries {}).
@@ -314,6 +338,19 @@
       :else
       (str "(jolt-invoke " (emit fnode) " " (str/join " " args) ")"))))
 
+;; try/catch/finally (jolt-vcsl). throw raises the jolt value RAW (jolt-throw =
+;; Scheme `raise`); catch lowers to `guard` with an `else` clause (the IR drops
+;; the class), finally to `dynamic-wind`'s after-thunk (runs on success, catch and
+;; escape — Clojure finally semantics). Both keys optional on the node.
+(defn- emit-try [node]
+  (let [core (if-let [cs (:catch-sym node)]
+               (str "(guard (" (munge-name cs) " (else " (emit (:catch-body node)) ")) "
+                    (emit (:body node)) ")")
+               (emit (:body node)))]
+    (if-let [fin (:finally node)]
+      (str "(dynamic-wind (lambda () #f) (lambda () " core ") (lambda () " (emit fin) "))")
+      core)))
+
 ;; Does this IR node emit to an expression that yields a Scheme boolean? Used to
 ;; drop the redundant jolt-truthy? on an :if test.
 (defn- returns-scheme-bool? [node]
@@ -358,6 +395,23 @@
     :map (emit-ordered "jolt-hash-map"
                        (mapcat (fn [p] [(emit (nth p 0)) (emit (nth p 1))]) (:pairs node)))
     :quote (emit-quoted (:form node))
+    :throw (str "(jolt-throw " (emit (:expr node)) ")")
+    :try (emit-try node)
+    ;; regex literal #"…" -> a jolt-regex value (regex.ss, vendored irregex).
+    :regex (str "(jolt-regex " (chez-str-lit (:source node)) ")")
+    ;; #inst / #uuid literals -> runtime inst / uuid values.
+    :inst (str "(jolt-inst-from-string " (chez-str-lit (:source node)) ")")
+    :uuid (str "(jolt-uuid-from-string " (chez-str-lit (:source node)) ")")
+    ;; (.method target arg*) -> jolt-host-call for an rt-shimmed method, else
+    ;; record-method-dispatch (a reify/record protocol method, jolt-jgoc).
+    :host-call (let [m (:method node)
+                     target (emit (:target node))
+                     args (map emit (:args node))]
+                 (if (supported-host-methods m)
+                   (str "(jolt-host-call " (chez-str-lit m) " " target
+                        (if (empty? args) "" (str " " (str/join " " args))) ")")
+                   (str "(record-method-dispatch " target " " (chez-str-lit m)
+                        " (jolt-vector" (if (empty? args) "" (str " " (str/join " " args))) "))")))
     :let (emit-let node)
     :loop (emit-loop node)
     :recur (emit-recur node)
@@ -368,7 +422,8 @@
            (:no-init node)
            (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
            (jmeta-nonempty? (:meta node))
-           (throw (ex-info "emit: def with non-empty meta not yet ported (inc 3)" {}))
+           (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                (emit (:init node)) " " (emit-quoted (:meta node)) ")")
            :else
            (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                 (emit (:init node)) ")"))

@@ -32,9 +32,19 @@
 (defn h-sym-name [form] (form :name))
 (defn h-sym-ns [form] (form :ns))
 # Reader metadata on a symbol (e.g. ^:dynamic / ^:redef / ^:private on a def
-# name). Returns the meta map or nil. Lets the analyzer carry def metadata that
-# the back end applies to the var — without it, compiled defs drop all var meta.
-(defn h-sym-meta [form] (form :meta))
+# name). Returns the meta map (a portable jolt map) or nil. Lets the analyzer
+# carry def metadata that the back end applies to the var — without it, compiled
+# defs drop all var meta.
+#
+# The reader builds meta as a Janet TABLE (mutable). Return it as an immutable
+# STRUCT so it is a portable jolt value: the Janet back end's merge/get work on a
+# struct, AND jolt's own count/map?/keys (used by the portable Clojure emitter,
+# jolt.backend-scheme, to emit def metadata) work on a struct but NOT on a raw
+# table. A table embedded in the IR is a host value (counter to jolt.ir's "no host
+# values embedded") — struct keeps :meta host-neutral. (jolt-me6m)
+(defn h-sym-meta [form]
+  (def m (form :meta))
+  (if (table? m) (table/to-struct m) m))
 
 (defn h-list? [form] (array? form))          # a call / list (reader: array)
 (defn h-vector? [form] (tuple? form))        # a vector literal (reader: tuple)
