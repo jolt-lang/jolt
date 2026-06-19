@@ -115,7 +115,13 @@
    # clojure.edn requires clojure.string; read-string/__read-tagged are the
    # reader.ss seams. The reader-arity's drain-reader is Janet-coupled (janet/type)
    # so it's a lazy gap on Chez — read-string/edn->value are the live path. jolt-r8ku.
-   ["clojure.edn" "src/jolt/clojure/edn.clj"]])
+   ["clojure.edn" "src/jolt/clojure/edn.clj"]
+   # clojure.set / clojure.pprint: pure Clojure over core. set = relational ops
+   # (union/intersection/difference/join/index/...); pprint = the minimal jolt
+   # shim (pprint -> prn + recognized dispatch vars, with-pprint-dispatch macro).
+   # jolt-j5vg, clojure.pprint Phase-2 parity.
+   ["clojure.set" "src/jolt/clojure/set.clj"]
+   ["clojure.pprint" "src/jolt/clojure/pprint.clj"]])
 
 (defn- sym-name [x]
   (when (and (struct? x) (= :symbol (get x :jolt/type))) (get x :name)))

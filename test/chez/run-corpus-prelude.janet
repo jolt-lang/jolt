@@ -275,8 +275,14 @@
 # prelude. Lights up read / read+string / with-in-str (read) / read-string and
 # clojure.edn/read-string. (eval / load-string / runtime defmacro stay Phase-3 —
 # they need the compiler at runtime.) 2259.
+# Phase-2 stdlib closeout (jolt-j5vg / jolt-22vo / clojure.pprint): clojure.set +
+# clojure.pprint added to the prelude stdlib tier (driver.janet stdlib-ns-files),
+# clojure.math shimmed over Chez native flonum math (host/chez/math.ss), and the
+# missing `long` coercion def-var!'d (converters.ss). pprint's 2-arity dropped its
+# (binding [*out* writer] ...) (uncompilable on the no-fallback Chez back end —
+# *out* isn't a bindable var). 2280, crashes 191->170, 0 new divergences.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2259")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2280")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

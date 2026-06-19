@@ -121,5 +121,8 @@
 (def-var! "clojure.core" "symbol" jolt-symbol-new)
 (def-var! "clojure.core" "gensym" jolt-gensym)
 (def-var! "clojure.core" "int" jolt-int)
+;; long: same truncation as int in jolt's all-flonum model (seed core-long =
+;; math/trunc; char -> code point). Distinct cell so (long ...) resolves.
+(def-var! "clojure.core" "long" jolt-int)
 (def-var! "clojure.core" "double" jolt-double)
 (def-var! "clojure.core" "compare" jolt-compare)

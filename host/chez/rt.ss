@@ -304,3 +304,7 @@
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst
 ;; constructors, and the reader needs the full value/collection layer above.
 (load "host/chez/reader.ss")
+
+;; clojure.math (jolt-22vo): native flonum-math shims def-var!'d into the
+;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
+(load "host/chez/math.ss")
