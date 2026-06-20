@@ -409,6 +409,61 @@
   (def code (os/proc-wait proc))
   [code (string/trim (string out err))])
 
+# --- pure-Chez self-build (jolt-9phg, inc9a) ----------------------------------
+# host/chez/bootstrap.ss rebuilds the prelude + compiler image from source ON
+# CHEZ given a seed (prelude, image) pair. run-bootstrap drives ONE bootstrap.ss
+# pass (no Janet in the compile path — Janet only spawns chez). mint-chez-seed
+# iterates it from the Janet seed to the joint fixpoint and writes the checked-in
+# bootstrap seed under host/chez/seed/.
+
+(defn run-bootstrap
+  "Run one pure-Chez bootstrap pass: load (seed-prelude, seed-image), rebuild the
+  prelude + image from source on Chez, write them to (out-prelude, out-image).
+  Returns [code stdout stderr]. The compilation is 100% Chez; Janet only spawns
+  the process."
+  [seed-prelude seed-image out-prelude out-image]
+  (def proc (os/spawn ["chez" "--script" "host/chez/bootstrap.ss"
+                       seed-prelude seed-image out-prelude out-image]
+                      :p {:out :pipe :err :pipe}))
+  (def out (drain (proc :out)))
+  (def err (drain (proc :err)))
+  (def code (os/proc-wait proc))
+  [code (string/trim out) (string/trim err)])
+
+(defn mint-chez-seed*
+  "Mint the checked-in bootstrap seed. Takes the Janet-emitted starting pair
+  (janet-prelude + janet-image, e.g. from jolt-chez/ensure-prelude +
+  ensure-compiler-image) and iterates bootstrap.ss to the joint byte-fixpoint, then
+  writes the converged pair to seed-prelude/seed-image. Run once (and whenever the
+  seed sources change) to refresh the checked-in seed. Returns iteration count."
+  [janet-prelude janet-image seed-prelude seed-image &opt max-iter]
+  (default max-iter 8)
+  (defn b= [a b] (= (string (slurp a)) (string (slurp b))))
+  (def tmp (or (os/getenv "TMPDIR") "/tmp"))
+  (var cur-pre janet-prelude)
+  (var cur-img janet-image)
+  (var converged false)
+  (var iters 0)
+  (for i 0 max-iter
+    (def npre (string tmp "/mint-pre-" i ".ss"))
+    (def nimg (string tmp "/mint-img-" i ".ss"))
+    (def [code _ err] (run-bootstrap cur-pre cur-img npre nimg))
+    (unless (zero? code) (errorf "bootstrap pass %d failed: %s" i err))
+    (set iters (inc i))
+    # A pass is a fixpoint once its output equals its input AND the input is no
+    # longer the Janet seed (the Janet prelude/image differ only in gensym ids).
+    (when (and (not= cur-pre janet-prelude)
+               (b= cur-pre npre) (b= cur-img nimg))
+      (set converged true)
+      (set cur-pre npre) (set cur-img nimg)
+      (break))
+    (set cur-pre npre) (set cur-img nimg))
+  (unless converged (errorf "seed did not converge in %d iterations" max-iter))
+  (os/mkdir (string/slice seed-prelude 0 (last (string/find-all "/" seed-prelude))))
+  (spit seed-prelude (slurp cur-pre))
+  (spit seed-image (slurp cur-img))
+  iters)
+
 # --- batched zero-Janet corpus runner (jolt-qjr0, inc7) -----------------------
 # eval-zero-janet spawns a fresh chez per case, each reloading rt.ss + the prelude
 # (~282KB) + the compiler image (~89KB) from source — ~0.5s of pure reload per
