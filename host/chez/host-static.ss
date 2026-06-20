@@ -94,8 +94,18 @@
 
 (define (host-new class . args)
   (let ((ctor (lookup-class class-ctors-tbl class)))
-    (if ctor (apply ctor args)
-        (error #f (string-append "No constructor for class " class)))))
+    (cond
+      (ctor (apply ctor args))
+      ;; deftype/defrecord (jolt-499t): the type name is bound as a VAR (the
+      ;; make-deftype-ctor closure) in its defining ns, not a registered host class.
+      ;; Resolve it in the current ns / clojure.core and invoke it — so (P. args)
+      ;; works the same as the ->P factory.
+      (else
+       (let ((cell (or (var-cell-lookup (chez-current-ns) class)
+                       (var-cell-lookup "clojure.core" class))))
+         (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
+             (apply (var-cell-root cell) args)
+             (error #f (string-append "No constructor for class " class))))))))
 
 ;; ---- coercion helpers -------------------------------------------------------
 (define (->num x) (exact->inexact x))

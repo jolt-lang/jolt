@@ -215,8 +215,9 @@
 # are allowlisted) -> 2567. jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn
 # + ns runtime fns) -> 2600; arrays -> 2631; reader-features/reader-conditional/
 # re-matcher/macroexpand -> 2642; runtime-defmacro cases via top-level eval of
-# ACTUAL (matching certify.clj's eval-isolated) -> 2673; delay/force/realized? -> 2685.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2685")))
+# ACTUAL (matching certify.clj's eval-isolated) -> 2673; delay/force/realized? ->
+# 2685; deftype (P. args) constructor via host-new var fallback -> 2688.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2688")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
