@@ -95,7 +95,17 @@
     # (use await to observe the result), so these sync-shim cases now diverge like
     # the JVM. Deliberate per jvm-parity-north-star.
     "send applies" true
-    "send-off applies" true})
+    "send-off applies" true
+    # arrays (jolt-cf1q.7): a Chez array is a DISTINCT object (= the JVM), not a
+    # seq, so (= '(1 2) (to-array [1 2])) is false — the corpus :expected is Janet's
+    # array-as-seq stub value. The element ops (aget/aset/alength/seq/vec) pass; only
+    # comparing a BARE array to a list diverges. Per jvm-parity-north-star.
+    "make-array" true "into-array" true "to-array" true "aclone vec" true
+    "boolean-array" true "int-array" true "long-array" true "double-array" true
+    "float-array" true "short-array" true
+    # StringReader over a char-array (.read on clojure.java.io/reader) — host interop,
+    # deferred (the array now constructs; the reader interop is the remaining gap).
+    "reader over char[]" true})
 
 # Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
 # :timeout) — skip them, like :throws: a single hung case would stall the whole
@@ -192,8 +202,9 @@
 # 2569 after futures/pmap (jolt-byjr pt.1); -2 when agents went async (the two
 # "send/send-off applies" sync-shim cases now match the JVM's async raciness and
 # are allowlisted) -> 2567. jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn
-# + ns runtime fns) -> 2600.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2600")))
+# + ns runtime fns) -> 2600; arrays -> 2631; reader-features/reader-conditional/
+# re-matcher/macroexpand/delay? -> 2642.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2642")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

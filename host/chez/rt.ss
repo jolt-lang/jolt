@@ -325,6 +325,11 @@
 ;; transients.ss, values.ss (jolt-hash), seq.ss.
 (load "host/chez/natives-parity.ss")
 
+;; Java-style arrays (jolt-cf1q.7): object/typed array constructors + a jolt-array
+;; backing; extends count/nth/seq/get/ref-put! so the overlay aget/aset/alength see
+;; it. After the dispatchers it chains.
+(load "host/chez/natives-array.ss")
+
 ;; syntax-quote form builders (jolt-r9lm, inc6b): __sqcat/__sqvec/__sqmap/__sqset/
 ;; __sq1, def-var!'d into clojure.core. A cross-compiled macro expander (analyzer
 ;; on Chez, inc6b) calls these to build its expansion as reader forms. Needs the

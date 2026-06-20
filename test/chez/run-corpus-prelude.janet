@@ -107,7 +107,14 @@
    # synchronous shim: (send a f) (deref a) reads state before the action runs, so
    # these sync-shim cases diverge like the JVM. Per jvm-parity-north-star.
    "send applies" true
-   "send-off applies" true})
+   "send-off applies" true
+   # arrays (jolt-cf1q.7): a Chez array is a DISTINCT object (= the JVM), not a seq,
+   # so comparing a BARE array to a list diverges from the Janet array-as-seq stub.
+   # Element ops (aget/aset/alength/seq/vec) pass. Per jvm-parity-north-star.
+   "make-array" true "into-array" true "to-array" true "aclone vec" true
+   "boolean-array" true "int-array" true "long-array" true "double-array" true
+   "float-array" true "short-array" true
+   "reader over char[]" true})
 
 # Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
 # :timeout) — skip, like :throws, so a hung per-case process can't stall the gate.
@@ -313,9 +320,10 @@
 # Then -2 when agents went async (the two "send/send-off applies" sync-shim cases
 # match the JVM's async raciness and are allowlisted) -> 2557.
 # jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn + ns runtime fns +
-# runtime-require alias registration) -> 2590.
+# runtime-require alias registration) -> 2590; arrays + reader-features/
+# macroexpand/reader-conditional/re-matcher -> 2629.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2590")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2629")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
