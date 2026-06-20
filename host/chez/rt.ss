@@ -331,3 +331,8 @@
 ;; thread-local binding stack (dyn-binding.ss) into workers. pmap/pcalls/pvalues
 ;; (overlay, over `future`) light up once future-call exists here.
 (load "host/chez/concurrency.ss")
+
+;; clojure.core.async (jolt-byjr): real-thread blocking channels + go/go-loop/
+;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses
+;; ms->duration) and the collection/seq layer.
+(load "host/chez/async.ss")

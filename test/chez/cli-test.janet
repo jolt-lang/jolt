@@ -68,7 +68,15 @@
    ["(let [a (atom 0)] (dorun (pmap (fn [_] (swap! a inc)) [1 2 3 4])) @a)" "4"]
    # promise blocks until delivered (JVM), unlike the Janet atom-shim.
    ["(let [p (promise)] (deliver p 7) @p)" "7"]
-   ["(let [p (promise)] (future (deliver p :hi)) @p)" ":hi"]])
+   ["(let [p (promise)] (future (deliver p :hi)) @p)" ":hi"]
+   # jolt-byjr: clojure.core.async on real-thread blocking channels.
+   ["(require (quote [clojure.core.async :refer [chan go <! >! <!!]])) (def c (chan)) (go (>! c (+ 40 2))) (<!! c)" "42"]
+   ["(require (quote [clojure.core.async :refer [chan go go-loop <! >! <!! close!]])) (def c (chan 5)) (go (>! c 1) (>! c 2) (>! c 3) (close! c)) (<!! (go-loop [o []] (let [v (<! c)] (if (nil? v) o (recur (conj o v))))))" "[1 2 3]"]
+   ["(require (quote [clojure.core.async :refer [chan go <! >! <!!]])) (def x (chan)) (def y (chan)) (go (>! x 10)) (go (>! y 32)) (<!! (go (+ (<! x) (<! y))))" "42"]
+   ["(require (quote [clojure.core.async :refer [chan go <! >! <!! alts!]])) (def x (chan)) (def y (chan)) (go (>! y :v)) (<!! (go (let [[v ch] (alts! [x y])] (and (= v :v) (= ch y)))))" "true"]
+   ["(require (quote [clojure.core.async :refer [chan go go-loop <! >! <!! close!]])) (def c (chan 10 (map inc))) (go (>! c 1) (>! c 2) (>! c 3) (close! c)) (<!! (go-loop [o []] (let [v (<! c)] (if (nil? v) o (recur (conj o v))))))" "[2 3 4]"]
+   ["(require (quote [clojure.core.async :refer [timeout <!!]])) (<!! (timeout 10)) :done" ":done"]
+   ["(require (quote [clojure.core.async :refer [chan go <! >! <!!]])) (def ^:dynamic *x* 0) (<!! (binding [*x* 7] (go (<! (clojure.core.async/timeout 5)) *x*)))" "7"]])
 
 (each [src want] cases
   (def [code out err] (joltc src))
