@@ -1,0 +1,238 @@
+{:doc
+ "Known divergences of test/chez/corpus.edn :expected from JVM Clojure, classified. Most are deliberate jolt-specific or host-model differences (-> :features in conformance inc3). :bug entries are genuine and tracked. The certifier (certify.clj) gates on NEW (unlisted) divergences only. Keyed by [suite label].",
+ :legend
+ {:bug
+  "genuine jolt/corpus bug — tracked bead, fix in jolt-core + correct :expected",
+  :numeric-model
+  "jolt is all-double: no Ratio/BigDecimal/float; (/ 1 2)=>0.5, 3.0 prints 3",
+  :concurrency-model
+  "Janet isolated-heap snapshot futures/agents/pmap; atoms snapshot, not shared",
+  :host-model
+  "no JVM host: classes->name strings, no Java arrays, type->symbol, *in* is a map, inline-impl extenders, duck-typed with-open close",
+  :reader-model
+  "jolt reader features (:jolt) + syntax-quote literal collapse (spec 2.4 S25); map source-order preserved",
+  :printer-model
+  "jolt printer renders transients/atoms/print-method overrides differently from JVM #object",
+  :strictness
+  "jolt is intentionally stricter: throws on odd assoc! args / defn with no param vector",
+  :impl-detail
+  "representation detail: syntax-quote yields a list? (JVM yields a Cons)"},
+ :entries
+ [{:suite "clojure.core / leaf batch (complement fnil munge etc.)",
+   :label "munge symbol",
+   :category :bug,
+   :bead "jolt-hc35"}
+  {:suite "exceptions / ex-info",
+   :label "ex-message of string",
+   :category :bug,
+   :bead "jolt-l8e8"}
+  {:suite "io / print family (overlay)",
+   :label "print nil arg",
+   :category :bug,
+   :bead "jolt-pqio"}
+  {:suite "seq / overlay-migrated fns",
+   :label "bounded-count",
+   :category :bug,
+   :bead "jolt-2507"}
+  {:suite "clojure.core / futures — predicates",
+   :label "cancel an in-flight future returns true",
+   :category :concurrency-model,
+   :flaky true}
+  {:suite "clojure.core / futures — snapshot (copy) semantics",
+   :label "captured atom is snapshotted, not shared",
+   :category :concurrency-model}
+  {:suite "clojure.core / pmap family",
+   :label "snapshot semantics",
+   :category :concurrency-model}
+  {:suite "state / agents (synchronous shim)",
+   :label "send applies",
+   :category :concurrency-model}
+  {:suite "state / agents (synchronous shim)",
+   :label "send-off applies",
+   :category :concurrency-model}
+  {:suite "core / extenders",
+   :label "lists extended type",
+   :category :host-model}
+  {:suite "core / extenders",
+   :label "seq of tags",
+   :category :host-model}
+  {:suite "core / with-open",
+   :label "close on throw",
+   :category :host-model}
+  {:suite "host-interop / class tokens & readers",
+   :label "class name evaluates to canonical string",
+   :category :host-model}
+  {:suite "host-interop / exception + HashMap shims",
+   :label "getMessage on a thrown string",
+   :category :host-model}
+  {:suite "io / *in* + with-in-str + read-line",
+   :label "*in* is bound",
+   :category :host-model}
+  {:suite "metadata / def metadata",
+   :label "^Type tag on var",
+   :category :host-model}
+  {:suite "metadata / type hints",
+   :label "symbol hint -> :tag",
+   :category :host-model}
+  {:suite "predicates / compare, type, any? (stage 3)",
+   :label "type of record",
+   :category :host-model}
+  {:suite "predicates / tagged-value (Phase 4)",
+   :label "chunked-seq? always false",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "bean is the map",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "class keyword",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "class number",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "class string",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "definterface defines",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "proxy resolves nil",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "boolean-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "double-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "float-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "int-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "into-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "long-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "short-array",
+   :category :host-model}
+  {:suite "untested / array stubs (vectors + host buffers)",
+   :label "to-array",
+   :category :host-model}
+  {:suite "untested / chunk family (eager equivalents) + cat",
+   :label "chunk round-trip",
+   :category :host-model}
+  {:suite "untested / ns + REPL machinery",
+   :label "*in* bound",
+   :category :host-model}
+  {:suite "untested / ns + REPL machinery",
+   :label "ns-imports empty user",
+   :category :host-model}
+  {:suite "untested / unchecked-* are plain ops",
+   :label "unchecked-char",
+   :category :host-model}
+  {:suite "macros / defmacro",
+   :label "macroexpand-1",
+   :category :impl-detail}
+  {:suite "clojure.core / leaf batch (complement fnil munge etc.)",
+   :label "bigdec",
+   :category :numeric-model}
+  {:suite "numbers / arithmetic",
+   :label "divide to fraction",
+   :category :numeric-model}
+  {:suite "numbers / literal syntax",
+   :label "bigdec int M",
+   :category :numeric-model}
+  {:suite "numbers / literal syntax",
+   :label "bigdec suffix M",
+   :category :numeric-model}
+  {:suite "numbers / literal syntax",
+   :label "neg ratio",
+   :category :numeric-model}
+  {:suite "numbers / literal syntax",
+   :label "ratio -> double",
+   :category :numeric-model}
+  {:suite "numbers / literal syntax",
+   :label "ratio 3/4",
+   :category :numeric-model}
+  {:suite "numbers / printing of inf & nan",
+   :label "inf inside coll",
+   :category :numeric-model}
+  {:suite "numbers / printing of inf & nan",
+   :label "pr-str Infinity",
+   :category :numeric-model}
+  {:suite "reader / scalar literals",
+   :label "bigdec suffix M",
+   :category :numeric-model}
+  {:suite "reader / scalar literals",
+   :label "ratio -> double",
+   :category :numeric-model}
+  {:suite "untested / primed + division + bit ops",
+   :label "/ ratio-as-double",
+   :category :numeric-model}
+  {:suite "untested / typed coercion views",
+   :label "double",
+   :category :numeric-model}
+  {:suite "untested / typed coercion views",
+   :label "float",
+   :category :numeric-model}
+  {:suite "untested / unchecked-* are plain ops",
+   :label "unchecked-double",
+   :category :numeric-model}
+  {:suite "untested / unchecked-* are plain ops",
+   :label "unchecked-float",
+   :category :numeric-model}
+  {:suite "io / cold tagged types via print-method",
+   :label "transient map",
+   :category :printer-model}
+  {:suite "io / cold tagged types via print-method",
+   :label "transient vector",
+   :category :printer-model}
+  {:suite "io / print-method multimethod",
+   :label "defmethod fires through prn",
+   :category :printer-model}
+  {:suite "io / print-method multimethod",
+   :label "defmethod overrides a record, top level",
+   :category :printer-model}
+  {:suite "io / cold tagged types via print-method",
+   :label "atom override fires nested",
+   :category :reader-model}
+  {:suite "io / print-method multimethod",
+   :label "defmethod fires nested in a map",
+   :category :reader-model}
+  {:suite "maps / literal construction",
+   :label "source order through syntax-quote",
+   :category :reader-model}
+  {:suite "reader / dispatch & sugar",
+   :label "reader cond :jolt",
+   :category :reader-model}
+  {:suite "reader / dispatch & sugar",
+   :label "reader cond no match",
+   :category :reader-model}
+  {:suite "reader / dispatch & sugar",
+   :label "reader cond splice",
+   :category :reader-model}
+  {:suite "reader / dispatch & sugar",
+   :label "reader cond splice no match",
+   :category :reader-model}
+  {:suite "reader / dispatch & sugar",
+   :label "reader conditional",
+   :category :reader-model}
+  {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)",
+   :label "bool nested",
+   :category :reader-model}
+  {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)",
+   :label "nil nested",
+   :category :reader-model}
+  {:suite "forms / fn",
+   :label "no param vector",
+   :category :strictness}
+  {:suite "transient / assoc! odd args throw",
+   :label "map dangling key",
+   :category :strictness}
+  {:suite "transient / assoc! odd args throw",
+   :label "vector dangling",
+   :category :strictness}]}
