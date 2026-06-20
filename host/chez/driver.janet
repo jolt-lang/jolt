@@ -364,6 +364,48 @@
   (def code (os/proc-wait proc))
   [code (string/trim out) (string/trim err)])
 
+# --- self-hosting fixpoint (jolt-cf1q.4 inc8) ---------------------------------
+# emit-compiler-image (above) builds stage1: the Janet analyzer/emitter
+# cross-compiles the compiler sources to a Scheme def-var! image. To prove the
+# ON-CHEZ compiler reproduces itself we recompile the SAME sources WITH the loaded
+# image (emit-image.ss's jolt-emit-image runs analyze->emit on Chez): feeding it
+# stage1 yields stage2, feeding it stage2 yields stage3, and stage2 == stage3
+# byte-for-byte is the fixpoint (self-hosting-bootstrap-research §4).
+
+(defn program-emit-image
+  "A Chez program that loads the zero-Janet runtime + the compiler `image-path`,
+  then re-emits the compiler image ON CHEZ (jolt-emit-image) and writes it to
+  `out-path`. Running this with image = stageN produces stage(N+1)."
+  [prelude-path image-path out-path]
+  (string
+    "(import (chezscheme))\n"
+    "(load \"host/chez/rt.ss\")\n"
+    "(set-chez-ns! \"clojure.core\")\n"
+    "(load " (string/format "%j" prelude-path) ")\n"
+    "(load \"host/chez/post-prelude.ss\")\n"
+    "(set-chez-ns! \"user\")\n"
+    "(load \"host/chez/host-contract.ss\")\n"
+    "(load " (string/format "%j" image-path) ")\n"
+    "(load \"host/chez/compile-eval.ss\")\n"
+    "(load \"host/chez/emit-image.ss\")\n"
+    "(let ((p (open-output-file " (string/format "%j" out-path) " 'replace)))\n"
+    "  (put-string p (jolt-emit-image)) (close-port p))\n"))
+
+(defn emit-image-on-chez
+  "Re-emit the compiler image on Chez: load `image-path` (stageN) and write the
+  re-emitted image (stage N+1) to `out-path`. Each runs in a fresh chez process so
+  gensym/state start clean (essential for a byte-stable fixpoint). Returns
+  [code stderr]."
+  [prelude-path image-path out-path]
+  (def prog (program-emit-image prelude-path image-path out-path))
+  (def path (string "/tmp/jolt-emit-image-" (os/getpid) "-" (hash out-path) ".ss"))
+  (spit path prog)
+  (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))
+  (def out (drain (proc :out)))
+  (def err (drain (proc :err)))
+  (def code (os/proc-wait proc))
+  [code (string/trim (string out err))])
+
 # --- batched zero-Janet corpus runner (jolt-qjr0, inc7) -----------------------
 # eval-zero-janet spawns a fresh chez per case, each reloading rt.ss + the prelude
 # (~282KB) + the compiler image (~89KB) from source — ~0.5s of pure reload per
