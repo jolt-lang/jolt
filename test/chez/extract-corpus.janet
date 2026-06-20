@@ -56,6 +56,49 @@
       (when-let [rows (triples-from form)]
         (array/concat all rows)))))
 
+# --- fold in the inline conformance cases (jolt-ohtd) -------------------------
+# test/integration/conformance-test.janet carries ~355 hand-written cases as a
+# (def cases [["label" "expected" "actual"] ...]) vector — historically invisible to
+# the corpus because extract only reads test/spec/. Pull them in too, deduped by
+# :actual against the spec rows, so the host-neutral corpus is the union of both.
+# Suites come from the file's `### ---- section ----` headers via a line scan (the
+# parser drops comments, so section structure is recovered from raw text).
+(def conf-path "test/integration/conformance-test.janet")
+
+(defn- section-map [src]
+  # label-string -> section-name, by scanning raw lines: track the most recent
+  # `### ---- NAME ----` / `### ==== NAME ====` header above each `["label" ...]`.
+  (def out @{})
+  (var section "misc")
+  (each line (string/split "\n" src)
+    (def tl (string/trim line))
+    (cond
+      (string/has-prefix? "###" tl)
+      (let [body (string/trim (string/trim (string/trim tl "#") " ") "-= ")]
+        (when (> (length body) 0) (set section body)))
+      (string/has-prefix? "[\"" tl)
+      (let [close (string/find "\"" tl 2)]
+        (when close (put out (string/slice tl 2 close) section)))))
+  out)
+
+(def conf-src (slurp conf-path))
+(def sections (section-map conf-src))
+(def seen-actual (tabseq [r :in all] (r :actual) true))
+(var conf-added 0)
+(each form (parse-all conf-src)
+  (when (and (indexed? form) (>= (length form) 3)
+             (= (first form) 'def) (= (in form 1) 'cases))
+    (each c (in form 2)
+      (when (and (indexed? c) (= 3 (length c))
+                 (string? (in c 0)) (string? (in c 1)) (string? (in c 2)))
+        (def [label expected actual] [(in c 0) (in c 1) (in c 2)])
+        (unless (seen-actual actual)
+          (put seen-actual actual true)
+          (++ conf-added)
+          (array/push all {:suite (string "conformance / " (get sections label "misc"))
+                           :label label :expected expected :actual actual}))))))
+(printf "folded %d unique conformance cases (deduped by :actual)" conf-added)
+
 # emit EDN-and-Janet-valid corpus
 (def out @"[\n")
 (each row all

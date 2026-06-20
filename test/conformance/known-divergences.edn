@@ -140,6 +140,10 @@
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)",
    :label "bigdec",
    :category :numeric-model}
+  {:suite
+   "conformance / native-op parity (compile emits janet ops at guarded arities)",
+   :label "native unary div",
+   :category :numeric-model}
   {:suite "numbers / arithmetic",
    :label "divide to fraction",
    :category :numeric-model}

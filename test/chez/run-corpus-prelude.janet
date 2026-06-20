@@ -88,7 +88,10 @@
    #  - (instance? clojure.lang.Atom (atom 0)): the fully-qualified host class name
    #    clojure.lang.Atom isn't mapped to the atom predicate on Chez (host-class
    #    interop, jolt-mn9o/avt6). Reachable now that the leading require is a no-op.
-   "atom?" true})
+   "atom?" true
+   # Same atom-class gap, via the folded-in conformance case (jolt-ohtd):
+   # (instance? clojure.lang.Atom (atom 1)).
+   "instance? Atom" true})
 
 (def ctx (d/make-ctx))
 
@@ -286,7 +289,7 @@
 # (`(...)/`[...]/`{...}/`#{...} via __sqcat/__sqvec/__sqmap/__sqset) run at runtime.
 # 2280->2295, 0 new divergences.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2295")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2533")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
