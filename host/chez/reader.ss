@@ -287,6 +287,80 @@
       (jolt-list (jolt-symbol "clojure.core" "with-meta") target meta)))
 
 ;; --- # dispatch -------------------------------------------------------------
+;; #(...) anonymous fn shorthand (jolt-qjr0): % -> p1, %N -> pN, %& -> rest. The
+;; fixed arity is the MAX positional used (Clojure: #(do %2 %&) -> [p1 p2 & rest]).
+;; Param names carry a trailing "#" so a #() inside a syntax-quote still reads them
+;; as auto-gensyms. Mirrors src/jolt/reader.janet read-anon-fn.
+(define rdr-anon-counter 0)
+(define (rdr-anon-gensym)
+  (set! rdr-anon-counter (+ rdr-anon-counter 1))
+  (jolt-symbol #f (string-append "p__" (number->string rdr-anon-counter) "#")))
+(define (rdr-pct-index nm)               ; % ->1, %& ->'rest, %N ->N, else #f
+  (cond ((string=? nm "%") 1)
+        ((string=? nm "%&") 'rest)
+        ((and (> (string-length nm) 1) (char=? (string-ref nm 0) #\%))
+         (let ((n (string->number (substring nm 1 (string-length nm)))))
+           (if (and n (integer? n) (>= n 1)) n #f)))
+        (else #f)))
+(define (rdr-anon-set? f) (and (pmap? f) (eq? (jolt-get f rdr-kw-jolt-type) rdr-kw-jolt-set)))
+(define (rdr-anon-scan f max-box rest-box)
+  (cond
+    ((symbol-t? f)
+     (let ((idx (rdr-pct-index (symbol-t-name f))))
+       (cond ((eq? idx 'rest) (set-box! rest-box #t))
+             ((and idx (> idx (unbox max-box))) (set-box! max-box idx)))))
+    ((or (pvec? f) (cseq? f) (empty-list-t? f))
+     (for-each (lambda (x) (rdr-anon-scan x max-box rest-box)) (seq->list f)))
+    ((rdr-anon-set? f)
+     (for-each (lambda (x) (rdr-anon-scan x max-box rest-box)) (seq->list (jolt-get f rdr-kw-value))))
+    ((pmap? f)
+     (for-each (lambda (x) (rdr-anon-scan x max-box rest-box)) (or (hashtable-ref rdr-map-order f #f) '())))))
+(define (rdr-anon-replace f slots rest-sym)
+  (cond
+    ((symbol-t? f)
+     (let ((idx (rdr-pct-index (symbol-t-name f))))
+       (cond ((eq? idx 'rest) rest-sym) (idx (vector-ref slots (- idx 1))) (else f))))
+    ((pvec? f) (apply jolt-vector (map (lambda (x) (rdr-anon-replace x slots rest-sym)) (seq->list f))))
+    ((or (cseq? f) (empty-list-t? f))
+     (apply jolt-list (map (lambda (x) (rdr-anon-replace x slots rest-sym)) (seq->list f))))
+    ((rdr-anon-set? f)
+     (rdr-make-set (map (lambda (x) (rdr-anon-replace x slots rest-sym)) (seq->list (jolt-get f rdr-kw-value)))))
+    ((pmap? f)
+     (let ((kv (hashtable-ref rdr-map-order f #f)))
+       (if kv (rdr-make-map (map (lambda (x) (rdr-anon-replace x slots rest-sym)) kv)) f)))
+    (else f)))
+(define (rdr-read-anon-fn s i end)       ; i at the '(' after '#'
+  (let-values (((form j) (rdr-read-form s i end)))
+    (let ((max-box (box 0)) (rest-box (box #f)))
+      (rdr-anon-scan form max-box rest-box)
+      (let* ((n (unbox max-box))
+             (slots (make-vector n)))
+        (let loop ((k 0)) (when (< k n) (vector-set! slots k (rdr-anon-gensym)) (loop (+ k 1))))
+        (let* ((rest-sym (if (unbox rest-box) (rdr-anon-gensym) #f))
+               (body (rdr-anon-replace form slots rest-sym))
+               (params (append (vector->list slots)
+                               (if rest-sym (list (jolt-symbol #f "&") rest-sym) '()))))
+          (values (jolt-list (jolt-symbol #f "fn*") (apply jolt-vector params) body) j))))))
+
+;; reader conditionals (jolt-qjr0): jolt's feature set is {:jolt :default}; the
+;; FIRST clause whose feature key is in the set wins (clause order, like Clojure).
+(define rdr-features '("jolt" "default"))
+(define (rdr-feature? kw)
+  (and (keyword? kw) (jolt-nil? (let ((n (keyword-t-ns kw))) (if n n jolt-nil)))
+       (and (member (keyword-t-name kw) rdr-features) #t)))
+(define (rdr-read-reader-cond s i end)   ; i is past the '?'
+  (let* ((splice (and (< i end) (char=? (string-ref s i) #\@)))
+         (start (if splice (+ i 1) i)))
+    (let-values (((form j) (rdr-read-form s start end)))
+      (when (rdr-eof? form) (jolt-throw (jolt-ex-info "EOF after #?" (empty-pmap))))
+      (let ((items (cond ((pvec? form) (seq->list form))
+                         ((or (cseq? form) (empty-list-t? form)) (seq->list form))
+                         (else '()))))
+        (let loop ((xs items))
+          (cond ((or (null? xs) (null? (cdr xs))) (values rdr-eof j))  ; no match -> discard
+                ((rdr-feature? (car xs)) (values (cadr xs) j))
+                (else (loop (cddr xs)))))))))
+
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'
   (when (>= i end) (jolt-throw (jolt-ex-info "EOF after #" (empty-pmap))))
   (let ((c (string-ref s i)))
@@ -294,6 +368,8 @@
       ((char=? c #\{)                    ; #{...} set
        (let-values (((elems j) (rdr-read-seq s (+ i 1) end #\})))
          (values (rdr-make-set elems) j)))
+      ((char=? c #\()                    ; #(...) anonymous fn shorthand
+       (rdr-read-anon-fn s i end))
       ((char=? c #\")                    ; #"..." regex -> tagged :regex (raw source)
        (let-values (((src j) (rdr-read-regex s (+ i 1) end)))
          (values (rdr-make-tagged (keyword #f "regex") src) j)))
@@ -310,6 +386,16 @@
            (when (rdr-eof? target)
              (jolt-throw (jolt-ex-info "EOF after #^meta" (empty-pmap))))
            (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
+      ((char=? c #\#)                    ; ## symbolic value: ##Inf / ##-Inf / ##NaN
+       (let-values (((tok j) (rdr-read-token s (+ i 1) end)))
+         (values (cond ((string=? tok "Inf") +inf.0)
+                       ((string=? tok "-Inf") -inf.0)
+                       ((string=? tok "NaN") +nan.0)
+                       (else (jolt-throw (jolt-ex-info (string-append "unknown ## literal: " tok)
+                                                       (empty-pmap)))))
+                 j)))
+      ((char=? c #\?)                    ; #?(...) / #?@(...) reader conditional
+       (rdr-read-reader-cond s (+ i 1) end))
       (else                              ; #tag form -> tagged {:tag :#tag :form ...}
        (let-values (((tok j) (rdr-read-token s i end)))
          (let-values (((form k) (rdr-read-form s j end)))

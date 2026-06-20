@@ -32,15 +32,27 @@
 ;; Pre-register any (require ...)/(use ...) :as aliases under `ns` BEFORE analysis,
 ;; so a qualified s/foo resolves while compiling (analysis precedes the runtime
 ;; require). Walks the whole form (a require may be nested in a do/let). jolt-qjr0.
+(define (ce-clause-require? cl)          ; (:require ...) / (:use ...) ns clause
+  (and (pair? cl) (keyword? (car cl))
+       (let ((kn (keyword-t-name (car cl)))) (or (string=? kn "require") (string=? kn "use")))))
 (define (ce-scan-requires! form ns)
   (when (and (cseq? form) (cseq-list? form))
     (let ((items (seq->list form)))
       (when (pair? items)
-        (let ((h (car items)))
-          (if (and (symbol-t? h)
-                   (let ((n (symbol-t-name h))) (or (string=? n "require") (string=? n "use"))))
-              (for-each (lambda (a) (chez-register-spec! ns (ce-unquote a))) (cdr items))
-              (for-each (lambda (x) (ce-scan-requires! x ns)) items)))))))
+        (let* ((h (car items)) (hn (and (symbol-t? h) (symbol-t-name h))))
+          (cond
+            ;; (require spec...) / (use spec...) — specs are quoted
+            ((and hn (or (string=? hn "require") (string=? hn "use")))
+             (for-each (lambda (a) (chez-register-spec! ns (ce-unquote a))) (cdr items)))
+            ;; (ns name (:require [a :as x]) ...) — clause specs are literal
+            ((and hn (string=? hn "ns"))
+             (for-each (lambda (clause)
+                         (when (and (cseq? clause) (cseq-list? clause))
+                           (let ((cl (seq->list clause)))
+                             (when (ce-clause-require? cl)
+                               (for-each (lambda (spec) (chez-register-spec! ns spec)) (cdr cl))))))
+                       (if (pair? (cdr items)) (cddr items) '())))
+            (else (for-each (lambda (x) (ce-scan-requires! x ns)) items))))))))
 
 ;; Source string -> Scheme source string (read -> analyze -> emit, all on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
