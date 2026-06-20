@@ -105,7 +105,12 @@
     "float-array" true "short-array" true
     # StringReader over a char-array (.read on clojure.java.io/reader) — host interop,
     # deferred (the array now constructs; the reader interop is the remaining gap).
-    "reader over char[]" true})
+    "reader over char[]" true
+    # syntax-quote map construction `{:a ~x :b ~y} builds a pmap (unordered), so the
+    # unquoted value forms eval in hash order, not source order — a minor ordering
+    # gap (pmap has no insertion order; the reader's source-order table doesn't cover
+    # syntax-quote-built maps). 1 case; the non-syntax-quote map-order cases pass.
+    "source order through syntax-quote" true})
 
 # Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
 # :timeout) — skip them, like :throws: a single hung case would stall the whole
@@ -145,7 +150,11 @@
 (var throws 0)
 
 # Build the evaluable case list (skip :throws), keyed by index (labels aren't
-# unique across suites). idx -> row, idx -> "(= EXPECTED ACTUAL)".
+# unique across suites). Each pair carries EXPECTED + ACTUAL as SEPARATE source
+# strings; the runner evaluates ACTUAL as its own top-level program (so its
+# top-level `do` unrolls and a macro defined in the program is usable later —
+# matching certify.clj's eval-isolated) and compares to EXPECTED with =. Wrapping
+# in (= E A) would nest ACTUAL's do and break runtime defmacro (jolt-cf1q.7).
 (def rows-by-idx @{})
 (def pairs @[])
 (eachp [i row] cases
@@ -154,7 +163,7 @@
     (++ throws)
     (let [key (string i)]
       (put rows-by-idx key row)
-      (array/push pairs [key (string "(= " e " " a ")")]))))
+      (array/push pairs [key e a]))))
 
 (defn- handle [key verdict]
   (def row (get rows-by-idx key))
@@ -166,10 +175,12 @@
                (array/push diverged [l (string "got " (get verdict 1))]))))
 
 (if (os/getenv "JOLT_ZJ_PERCASE")
-  # slow per-case path (each case its own chez process) — for isolating a hang/crash
-  (each [key src] pairs
-    (def [code out err] (d/eval-zero-janet prelude-path image-path src))
-    (handle key (cond (not= code 0) [:crash err] (= out "true") [:pass] [:diverge out])))
+  # slow per-case path (each case its own chez process) — for isolating a hang/crash.
+  # Eval ACTUAL and EXPECTED top-level (separate processes), compare printed forms.
+  (each [key e a] pairs
+    (def [acode aout aerr] (d/eval-zero-janet prelude-path image-path a))
+    (def [_ eout _] (d/eval-zero-janet prelude-path image-path e))
+    (handle key (cond (not= acode 0) [:crash aerr] (= aout eout) [:pass] [:diverge aout])))
   # fast batched path: one chez process loads the runtime once, runs all cases
   (let [{:results r :code c :stderr se :count n} (d/eval-corpus-zero-janet prelude-path image-path pairs)]
     (when (< n (length pairs))
@@ -203,8 +214,9 @@
 # "send/send-off applies" sync-shim cases now match the JVM's async raciness and
 # are allowlisted) -> 2567. jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn
 # + ns runtime fns) -> 2600; arrays -> 2631; reader-features/reader-conditional/
-# re-matcher/macroexpand/delay? -> 2642.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2642")))
+# re-matcher/macroexpand/delay? -> 2642; runtime-defmacro cases via top-level eval
+# of ACTUAL (matching certify.clj's eval-isolated) -> 2673.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2673")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

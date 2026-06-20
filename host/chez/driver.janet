@@ -542,23 +542,31 @@
     "                  (write-char (cond ((char=? d #\\n) #\\newline) ((char=? d #\\t) #\\tab) (else d)) out)\n"
     "                  (loop (+ i 2)))\n"
     "                (begin (write-char c out) (loop (+ i 1)))))))))\n"
-    "(define (zj-run label esrc)\n"
-    "  (define src (zj-unescape esrc))\n"
+    # ACTUAL is compiled+eval'd as its OWN top-level program (jolt-compile-eval
+    # unrolls a top-level do), so a macro defined earlier in the program is usable
+    # later (runtime defmacro) — matching certify.clj's eval-isolated. Then compare
+    # to EXPECTED with =. (Wrapping in (= E A) would nest ACTUAL's do; wrapping A in
+    # (eval (quote A)) would quote a map literal and lose its source eval-order.)
+    "(define (zj-run label e-esc a-esc)\n"
+    "  (define esrc (zj-unescape e-esc))\n"
+    "  (define asrc (zj-unescape a-esc))\n"
     "  (guard (e (#t (printf \"CRASH\\t~a\\t~a\\n\" label (zj-clean (zj-err->str e)))))\n"
-    "    (let ((v (jolt-compile-eval src \"user\")))\n"
-    "      (if (string=? (jolt-final-str v) \"true\")\n"
+    "    (let* ((av (jolt-compile-eval asrc \"user\")) (ev (jolt-compile-eval esrc \"user\")))\n"
+    "      (if (jolt= ev av)\n"
     "          (printf \"PASS\\t~a\\n\" label)\n"
-    "          (printf \"DIVERGE\\t~a\\t~a\\n\" label (zj-clean (jolt-final-str v))))))\n"
+    "          (printf \"DIVERGE\\t~a\\t~a\\n\" label (zj-clean (jolt-final-str av))))))\n"
     "  (zj-reset!))\n"
+    "(define (zj-tab s from)\n"
+    "  (let loop ((i from)) (cond ((>= i (string-length s)) #f)\n"
+    "    ((char=? (string-ref s i) #\\tab) i) (else (loop (+ i 1))))))\n"
     "(let ((p (open-input-file " (string/format "%j" cases-tsv) ")))\n"
     "  (let loop ()\n"
     "    (let ((line (get-line p)))\n"
     "      (unless (eof-object? line)\n"
-    "        (let find ((i 0))\n"
-    "          (cond ((>= i (string-length line)) #f)\n"
-    "                ((char=? (string-ref line i) #\\tab)\n"
-    "                 (zj-run (substring line 0 i) (substring line (+ i 1) (string-length line))))\n"
-    "                (else (find (+ i 1)))))\n"
+    "        (let* ((t1 (zj-tab line 0)) (t2 (and t1 (zj-tab line (+ t1 1)))))\n"
+    "          (when (and t1 t2)\n"
+    "            (zj-run (substring line 0 t1) (substring line (+ t1 1) t2)\n"
+    "                    (substring line (+ t2 1) (string-length line)))))\n"
     "        (loop)))))\n"))
 
 (defn eval-corpus-zero-janet
@@ -574,7 +582,7 @@
   (defn- tsv-esc [s]
     (->> s (string/replace-all "\\" "\\\\") (string/replace-all "\n" "\\n")
            (string/replace-all "\t" "\\t")))
-  (each [label src] cases (buffer/push buf label "\t" (tsv-esc src) "\n"))
+  (each [label e a] cases (buffer/push buf label "\t" (tsv-esc e) "\t" (tsv-esc a) "\n"))
   (spit tsv-path buf)
   (def prog (program-corpus-zero-janet prelude-path image-path tsv-path))
   (def path (or scheme-out (string "/tmp/jolt-zj-runner-" (os/getpid) ".ss")))
