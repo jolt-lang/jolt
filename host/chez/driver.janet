@@ -429,7 +429,20 @@
     "(define (zj-clean s)\n"   # strip tabs/newlines from a message so it stays one TSV line
     "  (list->string (map (lambda (c) (if (or (char=? c #\\tab) (char=? c #\\newline)) #\\space c))\n"
     "                     (string->list s))))\n"
-    "(define (zj-run label src)\n"
+    # cases are stored one-per-line with \\n / \\t / \\\\ escaped (a source may be
+    # multi-line — e.g. a ;comment\\n inside a map literal); unescape before eval.
+    "(define (zj-unescape s)\n"
+    "  (let ((out (open-output-string)) (n (string-length s)))\n"
+    "    (let loop ((i 0))\n"
+    "      (if (>= i n) (get-output-string out)\n"
+    "          (let ((c (string-ref s i)))\n"
+    "            (if (and (char=? c #\\\\) (< (+ i 1) n))\n"
+    "                (let ((d (string-ref s (+ i 1))))\n"
+    "                  (write-char (cond ((char=? d #\\n) #\\newline) ((char=? d #\\t) #\\tab) (else d)) out)\n"
+    "                  (loop (+ i 2)))\n"
+    "                (begin (write-char c out) (loop (+ i 1)))))))))\n"
+    "(define (zj-run label esrc)\n"
+    "  (define src (zj-unescape esrc))\n"
     "  (guard (e (#t (printf \"CRASH\\t~a\\t~a\\n\" label (zj-clean (zj-err->str e)))))\n"
     "    (let ((v (jolt-compile-eval src \"user\")))\n"
     "      (if (string=? (jolt-final-str v) \"true\")\n"
@@ -455,7 +468,12 @@
   [prelude-path image-path cases &opt scheme-out cases-out]
   (def tsv-path (or cases-out (string "/tmp/jolt-zj-cases-" (os/getpid) ".tsv")))
   (def buf @"")
-  (each [label src] cases (buffer/push buf label "\t" src "\n"))
+  # escape so each case is one TSV line even if its source is multi-line; the
+  # runner's zj-unescape reverses it. Backslash first, then newline/tab.
+  (defn- tsv-esc [s]
+    (->> s (string/replace-all "\\" "\\\\") (string/replace-all "\n" "\\n")
+           (string/replace-all "\t" "\\t")))
+  (each [label src] cases (buffer/push buf label "\t" (tsv-esc src) "\n"))
   (spit tsv-path buf)
   (def prog (program-corpus-zero-janet prelude-path image-path tsv-path))
   (def path (or scheme-out (string "/tmp/jolt-zj-runner-" (os/getpid) ".ss")))
