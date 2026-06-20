@@ -57,6 +57,10 @@
       (phm/phm? form)))
 (defn h-set? [form] (and (struct? form) (= :jolt/set (form :jolt/type))))
 (defn h-char? [form] (and (struct? form) (= :jolt/char (form :jolt/type))))
+# Codepoint of a char form. Janet rep is a {:ch <cp> :jolt/type :jolt/char} struct;
+# the emitter uses this (not a raw :ch read) so the Chez host can answer for its
+# native char rep too (form-char-code).
+(defn h-char-code [form] (get form :ch))
 # A regex literal #"…" reads as a tagged form {:jolt/type :jolt/tagged :tag :regex
 # :form "source"}. The analyzer lowers it to a :regex IR node (Chez emits a
 # jolt-regex value; the Janet back end punts to the interpreter, which compiles it
@@ -331,7 +335,7 @@
    "tagged-table" h-tagged-table
    "form-sym-meta" h-sym-meta
    "form-list?" h-list? "form-vec?" h-vector? "form-map?" h-map?
-   "form-set?" h-set? "form-char?" h-char? "form-literal?" h-literal?
+   "form-set?" h-set? "form-char?" h-char? "form-char-code" h-char-code "form-literal?" h-literal?
    "form-regex?" h-regex? "form-regex-source" h-regex-source
    "form-inst?" h-inst? "form-inst-source" h-inst-source
    "form-uuid?" h-uuid? "form-uuid-source" h-uuid-source

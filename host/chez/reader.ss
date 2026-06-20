@@ -83,6 +83,20 @@
                 (rdr-digit? (string-ref tok start))
                 (rdr-number-body tok start signed c0))))))
 
+;; parse DDD in base `radix` (2..36); #f on a bad digit. Scheme string->number only
+;; does radix 2/8/10/16, so Clojure's NrDDD (e.g. 36rZ) needs a manual parse.
+(define (rdr-parse-radix digits radix)
+  (let ((len (string-length digits)))
+    (and (> len 0)
+         (let loop ((i 0) (acc 0))
+           (if (>= i len)
+               acc
+               (let* ((c (char-downcase (string-ref digits i)))
+                      (d (cond ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
+                               ((and (char>=? c #\a) (char<=? c #\z)) (+ 10 (- (char->integer c) 97)))
+                               (else #f))))
+                 (and d (< d radix) (loop (+ i 1) (+ (* acc radix) d)))))))))
+
 (define (rdr-number-body tok start signed sign-ch)
   (let* ((sign (if (and signed (char=? sign-ch #\-)) -1 1))
          (len (string-length tok))
@@ -101,6 +115,14 @@
             (or (char=? (string-ref body 1) #\x) (char=? (string-ref body 1) #\X)))
        (let ((h (string->number (substring body 2 blen) 16)))
          (and h (* sign h))))
+      ;; radix NrDDD (Clojure 2r1010 / 16rFF / 36rZ): N in decimal, DDD in base N
+      ((let ((ri (or (rdr-string-index-char body #\r) (rdr-string-index-char body #\R))))
+         (and ri (> ri 0) (< (+ ri 1) blen) ri))
+       => (lambda (ri)
+            (let ((radix (string->number (substring body 0 ri))))
+              (and radix (integer? radix) (>= radix 2) (<= radix 36)
+                   (let ((v (rdr-parse-radix (substring body (+ ri 1) blen) radix)))
+                     (and v (* sign v)))))))
       ;; bigint suffix N
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\N))
        (let ((n (string->number (substring body 0 (- blen 1)))))
@@ -222,6 +244,16 @@
                (loop j acc)             ; a #_ discard or close — re-check at j
                (loop j (cons form acc)))))))))
 
+;; Map literals must preserve SOURCE key order so the analyzer emits the value
+;; expressions in source order (Clojure guarantees left-to-right map-literal eval).
+;; A pmap is hash-ordered, so record each reader-built map's (k1 v1 k2 v2 ...) form
+;; sequence in a weak side-table the host contract's form-map-pairs consults.
+(define rdr-map-order (make-weak-eq-hashtable))
+(define (rdr-make-map es)
+  (let ((m (apply jolt-hash-map es)))
+    (when (pair? es) (hashtable-set! rdr-map-order m es))
+    m))
+
 (define (rdr-make-set elems)
   (jolt-hash-map rdr-kw-jolt-type rdr-kw-jolt-set
                  rdr-kw-value (apply jolt-vector elems)))
@@ -248,7 +280,11 @@
   (if (symbol-t? target)
       (make-symbol-t (symbol-t-ns target) (symbol-t-name target)
                      (rdr-merge-meta (symbol-t-meta target) meta))
-      target))                           ; non-symbol meta is dropped (corpus only hints symbols)
+      ;; non-symbol target (a collection): lower to a runtime (with-meta form meta)
+      ;; the analyzer compiles like any invoke — same as the Janet reader, so e.g.
+      ;; (meta ^{:tag :int} [1 2]) and ^:foo {} carry their meta at runtime. The meta
+      ;; pmap doubles as its own map-literal form.
+      (jolt-list (jolt-symbol "clojure.core" "with-meta") target meta)))
 
 ;; --- # dispatch -------------------------------------------------------------
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'
@@ -268,6 +304,12 @@
       ((char=? c #\')                    ; #'x var-quote -> (var x)
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
          (values (jolt-list (jolt-symbol #f "var") form) j)))
+      ((char=? c #\^)                    ; #^meta — deprecated metadata syntax = ^meta
+       (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
+         (let-values (((target k) (rdr-read-form s j end)))
+           (when (rdr-eof? target)
+             (jolt-throw (jolt-ex-info "EOF after #^meta" (empty-pmap))))
+           (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
       (else                              ; #tag form -> tagged {:tag :#tag :form ...}
        (let-values (((tok j) (rdr-read-token s i end)))
          (let-values (((form k) (rdr-read-form s j end)))
@@ -310,7 +352,7 @@
             ((char=? c #\[) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\])))
                               (values (apply jolt-vector es) j)))
             ((char=? c #\{) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\})))
-                              (values (apply jolt-hash-map es) j)))
+                              (values (rdr-make-map es) j)))
             ((or (char=? c #\)) (char=? c #\]) (char=? c #\}))
              (values rdr-eof i))         ; unconsumed close — read-seq handles it
             ((char=? c #\") (rdr-read-string-lit s (+ i 1) end))
@@ -318,7 +360,16 @@
             ((char=? c #\:) (rdr-read-keyword s (+ i 1) end))
             ((char=? c #\#) (rdr-read-dispatch s (+ i 1) end))
             ((char=? c #\') (rdr-wrap s (+ i 1) end (jolt-symbol #f "quote")))
-            ((char=? c #\`) (rdr-wrap s (+ i 1) end (jolt-symbol #f "syntax-quote")))
+            ;; syntax-quote of a self-evaluating literal collapses to the literal at
+            ;; READ time (Clojure's reader), so nested backticks over a literal are
+            ;; inert: ``42 reads as 42, ```"meow" as "meow".
+            ((char=? c #\`)
+             (let-values (((form j) (rdr-read-form s (+ i 1) end)))
+               (when (rdr-eof? form) (jolt-throw (jolt-ex-info "EOF after `" (empty-pmap))))
+               (values (if (rdr-self-eval-literal? form)
+                           form
+                           (jolt-list (jolt-symbol #f "syntax-quote") form))
+                       j)))
             ((char=? c #\@) (rdr-wrap s (+ i 1) end (jolt-symbol "clojure.core" "deref")))
             ((char=? c #\~)
              (if (and (< (+ i 1) end) (char=? (string-ref s (+ i 1)) #\@))
@@ -335,6 +386,11 @@
                (values (rdr-token->value tok) j))))))))
 
 ;; wrap the next form in a 2-element list (READER-MACRO form)
+;; self-evaluating literals (NOT symbols/collections) — syntax-quote passes these
+;; through unchanged, collapsed at read time.
+(define (rdr-self-eval-literal? x)
+  (or (jolt-nil? x) (boolean? x) (number? x) (string? x) (keyword? x) (char? x)))
+
 (define (rdr-wrap s i end head)
   (let-values (((form j) (rdr-read-form s i end)))
     (when (rdr-eof? form)

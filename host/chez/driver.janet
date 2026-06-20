@@ -364,6 +364,118 @@
   (def code (os/proc-wait proc))
   [code (string/trim out) (string/trim err)])
 
+# --- batched zero-Janet corpus runner (jolt-qjr0, inc7) -----------------------
+# eval-zero-janet spawns a fresh chez per case, each reloading rt.ss + the prelude
+# (~282KB) + the compiler image (~89KB) from source — ~0.5s of pure reload per
+# case, the entire cost. This runs ALL cases in ONE chez process: load the runtime
+# once, then loop. Each case is guarded (errors isolated) and the user namespace is
+# reset between cases (var-table keys added by a case are removed, *ns* restored) so
+# there is no state leakage vs the per-process path. ~10-30x faster.
+
+(defn program-corpus-zero-janet
+  "A Chez program that loads the zero-Janet runtime once, then runs every case in
+  `cases-tsv` (label<TAB>src per line) through jolt-compile-eval, printing one
+  result line per case: PASS<TAB>label | DIVERGE<TAB>label<TAB>value |
+  CRASH<TAB>label<TAB>message."
+  [prelude-path image-path cases-tsv]
+  (string
+    "(import (chezscheme))\n"
+    "(load \"host/chez/rt.ss\")\n"
+    "(set-chez-ns! \"clojure.core\")\n"
+    "(load " (string/format "%j" prelude-path) ")\n"
+    "(load \"host/chez/post-prelude.ss\")\n"
+    "(set-chez-ns! \"user\")\n"
+    "(load \"host/chez/host-contract.ss\")\n"
+    "(load " (string/format "%j" image-path) ")\n"
+    "(load \"host/chez/compile-eval.ss\")\n"
+    # Snapshot mutable global state after setup so each case sees a clean world (as
+    # if it ran in its own process): (1) var-table keys a case ADDS (its defs) are
+    # removed; (2) a base cell whose ROOT a case mutated (e.g. in-ns rebinds
+    # clojure.core/*ns*) is restored; (3) the ns + type registries are pruned back to
+    # their base keys. Without this, *ns*/find-ns/all-ns/satisfies? leak across cases.
+    "(define zj-base (let ((h (make-hashtable string-hash string=?)))\n"
+    "  (vector-for-each (lambda (k) (hashtable-set! h k #t)) (hashtable-keys var-table)) h))\n"
+    "(define zj-roots '())\n"
+    "(vector-for-each (lambda (k) (let ((c (hashtable-ref var-table k #f)))\n"
+    "                   (when c (set! zj-roots (cons (cons c (var-cell-root c)) zj-roots)))))\n"
+    "                 (hashtable-keys var-table))\n"
+    "(define (zj-snap ht) (let ((h (make-hashtable string-hash string=?)))\n"
+    "  (vector-for-each (lambda (k) (hashtable-set! h k #t)) (hashtable-keys ht)) h))\n"
+    "(define (zj-prune! ht base) (vector-for-each\n"
+    "  (lambda (k) (unless (hashtable-ref base k #f) (hashtable-delete! ht k))) (hashtable-keys ht)))\n"
+    "(define zj-ns-base (zj-snap ns-registry))\n"
+    "(define zj-type-base (zj-snap type-registry))\n"
+    # global-hierarchy is a core atom whose CONTENTS `derive` mutates (its var root
+    # stays the same atom object, so the root-restore above misses it). Reset its
+    # contents to a fresh hierarchy each case.
+    "(define zj-ghier (var-cell-lookup \"clojure.core\" \"global-hierarchy\"))\n"
+    "(define (zj-reset!)\n"
+    "  (vector-for-each (lambda (k) (unless (hashtable-ref zj-base k #f) (hashtable-delete! var-table k)))\n"
+    "                   (hashtable-keys var-table))\n"
+    "  (for-each (lambda (cr) (unless (eq? (var-cell-root (car cr)) (cdr cr))\n"
+    "                           (var-cell-root-set! (car cr) (cdr cr)))) zj-roots)\n"
+    "  (zj-prune! ns-registry zj-ns-base)\n"
+    "  (zj-prune! type-registry zj-type-base)\n"
+    "  (when zj-ghier (jolt-invoke (var-deref \"clojure.core\" \"reset!\")\n"
+    "                   (var-cell-root zj-ghier) (jolt-invoke (var-deref \"clojure.core\" \"make-hierarchy\"))))\n"
+    "  (set-chez-ns! \"user\"))\n"
+    "(define kw-message (keyword #f \"message\"))\n"
+    "(define (zj-err->str e)\n"
+    "  (cond ((and (pmap? e) (string? (jolt-get e kw-message))) (jolt-get e kw-message))\n"
+    "        ((condition? e) (call-with-string-output-port (lambda (p) (display-condition e p))))\n"
+    "        ((string? e) e)\n"
+    "        (else (call-with-string-output-port (lambda (p) (write e p))))))\n"
+    "(define (zj-clean s)\n"   # strip tabs/newlines from a message so it stays one TSV line
+    "  (list->string (map (lambda (c) (if (or (char=? c #\\tab) (char=? c #\\newline)) #\\space c))\n"
+    "                     (string->list s))))\n"
+    "(define (zj-run label src)\n"
+    "  (guard (e (#t (printf \"CRASH\\t~a\\t~a\\n\" label (zj-clean (zj-err->str e)))))\n"
+    "    (let ((v (jolt-compile-eval src \"user\")))\n"
+    "      (if (string=? (jolt-final-str v) \"true\")\n"
+    "          (printf \"PASS\\t~a\\n\" label)\n"
+    "          (printf \"DIVERGE\\t~a\\t~a\\n\" label (zj-clean (jolt-final-str v))))))\n"
+    "  (zj-reset!))\n"
+    "(let ((p (open-input-file " (string/format "%j" cases-tsv) ")))\n"
+    "  (let loop ()\n"
+    "    (let ((line (get-line p)))\n"
+    "      (unless (eof-object? line)\n"
+    "        (let find ((i 0))\n"
+    "          (cond ((>= i (string-length line)) #f)\n"
+    "                ((char=? (string-ref line i) #\\tab)\n"
+    "                 (zj-run (substring line 0 i) (substring line (+ i 1) (string-length line))))\n"
+    "                (else (find (+ i 1)))))\n"
+    "        (loop)))))\n"))
+
+(defn eval-corpus-zero-janet
+  "Run all `cases` ([label src] pairs) through the ON-CHEZ analyzer in ONE chez
+  process. Returns a struct mapping label -> [:pass] | [:diverge value] |
+  [:crash message]. Vastly faster than per-case eval-zero-janet (single runtime
+  load); use eval-zero-janet to isolate a single case for debugging."
+  [prelude-path image-path cases &opt scheme-out cases-out]
+  (def tsv-path (or cases-out (string "/tmp/jolt-zj-cases-" (os/getpid) ".tsv")))
+  (def buf @"")
+  (each [label src] cases (buffer/push buf label "\t" src "\n"))
+  (spit tsv-path buf)
+  (def prog (program-corpus-zero-janet prelude-path image-path tsv-path))
+  (def path (or scheme-out (string "/tmp/jolt-zj-runner-" (os/getpid) ".ss")))
+  (spit path prog)
+  (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))
+  (def out (drain (proc :out)))
+  (def err (drain (proc :err)))
+  (def code (os/proc-wait proc))
+  (def res @{})
+  (each line (string/split "\n" (string/trim out))
+    (when (> (length line) 0)
+      (def parts (string/split "\t" line))
+      (def status (in parts 0))
+      (def label (get parts 1 ""))
+      (cond
+        (= status "PASS") (put res label [:pass])
+        (= status "DIVERGE") (put res label [:diverge (get parts 2 "")])
+        (= status "CRASH") (put res label [:crash (get parts 2 "")]))))
+  # If chez died mid-run (e.g. an uncatchable error), surface what we have + stderr.
+  {:results res :code code :stderr (string/trim err) :count (length res)})
+
 (defn program-with-prelude
   "Assemble a runnable Chez program that loads rt.ss, loads the assembled core
   prelude from `prelude-path` (a file written once), then prints `final-scm`."

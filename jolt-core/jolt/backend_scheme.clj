@@ -25,7 +25,7 @@
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
                                form-list? form-vec? form-map? form-set? form-char?
                                form-literal? form-elements form-vec-items
-                               form-map-pairs form-set-items]]))
+                               form-map-pairs form-set-items form-char-code]]))
 
 ;; Hot clojure.core primitives lowered to native Scheme, mirroring the Janet
 ;; backend's native-ops. `=` is the exactness-aware jolt= from values.ss; inc/dec/
@@ -148,10 +148,11 @@
     (keyword? v) (if-let [kns (namespace v)]
                    (str "(keyword " (chez-str-lit kns) " " (chez-str-lit (name v)) ")")
                    (str "(keyword #f " (chez-str-lit (name v)) ")"))
-    ;; jolt char value {:ch <codepoint> :jolt/type :jolt/char}. Use the host
-    ;; contract form-char? — a :jolt/type-tagged struct is not a plain map? in
-    ;; jolt, so a native map? test misses it.
-    (form-char? v) (str "(integer->char " (get v :ch) ")")
+    ;; char literal -> (integer->char <codepoint>). Get the codepoint via the host
+    ;; contract (form-char-code), NOT (get v :ch): on Janet a char is a struct with
+    ;; a :ch field, but on Chez (the self-hosted spine) it's a native char, so the
+    ;; struct-field read returns nil and emits (integer->char) with no arg.
+    (form-char? v) (str "(integer->char " (form-char-code v) ")")
     :else (throw (ex-info (str "emit-const: unsupported literal " (pr-str v)) {}))))
 
 ;; Emit a call `(ctor a0 a1 ...)` with the args evaluated LEFT-TO-RIGHT. Chez's

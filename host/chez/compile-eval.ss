@@ -13,6 +13,13 @@
 (define jolt-ce-emit (var-deref "jolt.backend-scheme" "emit"))
 (define jolt-ce-read (var-deref "clojure.core" "read-string"))
 
+;; The zero-Janet spine ALWAYS runs with the full clojure.core prelude loaded, so a
+;; clojure.* ref must lower to var-deref (resolved from the prelude), not trip the
+;; emitter's "unsupported stdlib fn (no core on Chez yet)" out-of-subset guard —
+;; that guard is only for the bare -e subset with no prelude. Turn prelude mode on
+;; once, here, so every analyze->emit on this spine sees the full core (jolt-qjr0).
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
+
 ;; Source string -> Scheme source string (read -> analyze -> emit, all on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
 (define (jolt-analyze-emit src ns)

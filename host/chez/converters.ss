@@ -47,7 +47,17 @@
        (cond
          ((jolt-nil? a) jolt-nil)
          ((keyword? a) a)
-         ((string? a) (keyword #f a))
+         ;; a 1-arg string splits on the FIRST "/" into ns/name, like the seed
+         ;; (keyword "x/y") => :x/y with ns "x" — destructure's {:keys [x/y]} builds
+         ;; the key this way, so without the split the namespaced key never matches.
+         ((string? a)
+          (let ((si (let loop ((i 0))
+                      (cond ((>= i (string-length a)) #f)
+                            ((char=? (string-ref a i) #\/) i)
+                            (else (loop (+ i 1)))))))
+            (if (and si (> si 0) (< si (- (string-length a) 1)))
+                (keyword (substring a 0 si) (substring a (+ si 1) (string-length a)))
+                (keyword #f a))))
          ((jolt-symbol? a)
           (let ((ns (symbol-t-ns a)))
             (keyword (if (or (jolt-nil? ns) (not ns) (eq? ns '())) #f ns) (symbol-t-name a))))

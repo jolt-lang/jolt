@@ -60,6 +60,7 @@
 (define (hc-uuid? x) (hc-tagged-of x hc-kw-uuid))
 
 ;; --- form accessors ---------------------------------------------------------
+(define (hc-char-code x) (char->integer x))  ; native Chez char -> codepoint
 (define (hc-sym-name x) (symbol-t-name x))
 ;; The reader stores an unqualified symbol's ns inconsistently (#f, '(), or
 ;; jolt-nil — see converters.ss). The contract is jolt-nil for unqualified (the
@@ -82,10 +83,18 @@
       (apply jolt-vector (pset-fold x cons '()))
       (jolt-get x hc-kw-value)))
 (define (hc-map-pairs x)
-  (let loop ((ks (if (jolt-nil? (jolt-seq (jolt-keys x))) '()
-                     (seq->list (jolt-seq (jolt-keys x))))) (acc '()))
-    (if (null? ks) (apply jolt-vector (reverse acc))
-        (loop (cdr ks) (cons (jolt-vector (car ks) (jolt-get x (car ks))) acc)))))
+  (let ((kv (hashtable-ref rdr-map-order x #f)))
+    (if kv
+        ;; reader-built map literal: emit pairs in SOURCE order (kv = k1 v1 k2 v2 …)
+        ;; so the analyzer evaluates the values left-to-right (jolt-qjr0).
+        (let loop ((kv kv) (acc '()))
+          (if (null? kv) (apply jolt-vector (reverse acc))
+              (loop (cddr kv) (cons (jolt-vector (car kv) (cadr kv)) acc))))
+        ;; a runtime/non-reader map: pmap iteration order
+        (let loop ((ks (if (jolt-nil? (jolt-seq (jolt-keys x))) '()
+                           (seq->list (jolt-seq (jolt-keys x))))) (acc '()))
+          (if (null? ks) (apply jolt-vector (reverse acc))
+              (loop (cdr ks) (cons (jolt-vector (car ks) (jolt-get x (car ks))) acc)))))))
 (define (hc-regex-source x) (jolt-get x hc-kw-form))
 (define (hc-inst-source x) (jolt-get x hc-kw-form))
 (define (hc-uuid-source x) (jolt-get x hc-kw-form))
@@ -158,11 +167,84 @@
 
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
 
-;; syntax-quote lowering + record hints land in later increments (6b+); stub so
-;; the contract is complete (not on the macro-free spine).
+;; --- syntax-quote lowering (jolt-qjr0, inc7) ---------------------------------
+;; Mirrors src/jolt/eval_base.janet syntax-quote-lower/sq-symbol. Lowers a `form
+;; to CONSTRUCTION CODE — Chez reader forms calling __sqcat/__sqvec/__sqmap/
+;; __sqset/__sq1 + quote — that the analyzer re-analyzes, so a backtick compiles
+;; with zero runtime cost (read -> macroexpand -> compile). Symbols resolve to
+;; clojure.core / the compile ns; a foo# auto-gensym is stable within one `.
+(define hc-special-symbols
+  '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
+    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var" "eval"
+    "new" "."))
+(define (hc-special-symbol? nm) (and (member nm hc-special-symbols) #t))
+
+(define hc-sq-gensym-counter 0)
+(define (hc-sq-gensym base)
+  (set! hc-sq-gensym-counter (+ hc-sq-gensym-counter 1))
+  (jolt-symbol #f (string-append base "__" (number->string hc-sq-gensym-counter) "__auto")))
+
+(define (hc-sym nm) (jolt-symbol #f nm))
+;; is `x` a non-empty list FORM whose head is the unqualified symbol `nm`?
+(define (hc-head-is? x nm)
+  (and (cseq? x) (cseq-list? x)
+       (let ((h (seq-first x)))
+         (and (symbol-t? h) (jolt-nil? (hc-sym-ns h)) (string=? (symbol-t-name h) nm)))))
+(define (hc-second x) (seq-first (jolt-seq (seq-more x))))
+
+(define (hc-sq-symbol ctx form gsmap)
+  (let ((sns (hc-sym-ns form)) (nm (symbol-t-name form)))
+    (if (jolt-nil? sns)
+        (cond
+          ;; foo# -> a stable per-` auto-gensym
+          ((and (> (string-length nm) 0)
+                (char=? (string-ref nm (- (string-length nm) 1)) #\#))
+           (or (hashtable-ref gsmap nm #f)
+               (let ((g (hc-sq-gensym (substring nm 0 (- (string-length nm) 1)))))
+                 (hashtable-set! gsmap nm g) g)))
+          ((hc-special-symbol? nm) form)               ; special form: leave bare
+          ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
+          (else (jolt-symbol (chez-actx-cns ctx) nm)))  ; else: qualify to compile ns
+        ;; qualified (a real ns or an alias): ns aliases aren't modeled on the Chez
+        ;; data layer yet, so leave a qualified symbol as written (jolt-qjr0).
+        form)))
+
+(define (hc-sq-lower ctx form gsmap)
+  (cond
+    ((hc-head-is? form "unquote") (hc-second form))
+    ((hc-head-is? form "unquote-splicing")
+     (jolt-throw (jolt-ex-info "~@ used outside of a list or vector in syntax-quote"
+                               (jolt-hash-map))))
+    ((hc-literal? form) form)
+    ((symbol-t? form) (jolt-list (hc-sym "quote") (hc-sq-symbol ctx form gsmap)))
+    ((hc-list? form)
+     (apply jolt-list (hc-sym "__sqcat")
+            (map (lambda (it) (hc-sq-lower-part ctx it gsmap)) (seq->list form))))
+    ((hc-vec? form)
+     (apply jolt-list (hc-sym "__sqvec")
+            (map (lambda (it) (hc-sq-lower-part ctx it gsmap)) (seq->list form))))
+    ((hc-set? form)
+     (apply jolt-list (hc-sym "__sqset")
+            (map (lambda (it) (hc-sq-lower-part ctx it gsmap)) (seq->list (hc-set-items form)))))
+    ((hc-map? form)
+     (apply jolt-list (hc-sym "__sqmap")
+            (let loop ((pairs (seq->list (hc-map-pairs form))) (acc '()))
+              (if (null? pairs) (reverse acc)
+                  (let ((p (seq->list (car pairs))))
+                    (loop (cdr pairs)
+                          (cons (hc-sq-lower ctx (cadr p) gsmap)
+                                (cons (hc-sq-lower ctx (car p) gsmap) acc))))))))
+    (else (jolt-list (hc-sym "quote") form))))            ; tagged (char/regex/...) etc.
+
+;; a list/vector/set element: a ~@ splice passes through (its seq is spliced by
+;; __sqcat), any other item is wrapped (__sq1 <lowered>) so __sqcat flattens it.
+(define (hc-sq-lower-part ctx item gsmap)
+  (if (hc-head-is? item "unquote-splicing")
+      (hc-second item)
+      (jolt-list (hc-sym "__sq1") (hc-sq-lower ctx item gsmap))))
+
 (define (hc-syntax-quote-lower ctx inner)
-  (jolt-throw (jolt-ex-info "form-syntax-quote-lower: not on Chez yet (jolt-r8ku)"
-                            (jolt-hash-map))))
+  (hc-sq-lower ctx inner (make-hashtable string-hash string=?)))
 (define (hc-record-type? ctx name) #f)
 (define (hc-record-ctor-key ctx name) jolt-nil)
 (define (hc-record-shapes ctx) (jolt-hash-map))
@@ -191,6 +273,7 @@
   (def-var! "jolt.host" "form-map?" hc-map?)
   (def-var! "jolt.host" "form-set?" hc-set?)
   (def-var! "jolt.host" "form-char?" hc-char?)
+  (def-var! "jolt.host" "form-char-code" hc-char-code)
   (def-var! "jolt.host" "form-literal?" hc-literal?)
   (def-var! "jolt.host" "form-regex?" hc-regex?)
   (def-var! "jolt.host" "form-inst?" hc-inst?)

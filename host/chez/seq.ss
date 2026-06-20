@@ -78,7 +78,11 @@
     (if (jolt-nil? s) jolt-empty-list
         (let ((m (seq-more s))) (if (jolt-nil? m) jolt-empty-list m)))))
 (define (jolt-next x)                  ; nil when the rest is empty
-  (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-nil (seq-more s))))
+  ;; next = (seq (rest x)): the rest must be RE-SEQ'd so an empty tail collapses to
+  ;; nil. seq-more on a lazy seq (e.g. map's) forces to jolt-empty-list, which is
+  ;; truthy — returning it raw made (next 1-elem-lazy-seq) non-nil, so butlast and
+  ;; other (if (next s) ...) loops over a lazy seq ran one step too far.
+  (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-nil (jolt-seq (seq-more s)))))
 ;; Only the HEAD cell carries the list marker — (rest a-list)/(next a-list) return
 ;; the unmarked tail, so they are seqs and not list?, matching the seed (which
 ;; makes rest-of-a-list a non-list seq). cons/list/reverse/conj therefore mark
