@@ -38,7 +38,10 @@
 
 ;; --- form predicates --------------------------------------------------------
 (define (hc-sym? x) (symbol-t? x))
-(define (hc-list? x) (or (empty-list-t? x) (and (cseq? x) (cseq-list? x))))
+;; ANY non-empty seq is a list form for analysis (a macro/eval form built via
+;; concat/map/cons is a lazy cseq with list?=#f, but evaluating it still means
+;; calling its head) — not just reader-built lists (jolt-cf1q.7).
+(define (hc-list? x) (or (empty-list-t? x) (cseq? x)))
 (define (hc-vec? x) (pvec? x))
 (define (hc-map? x) (and (pmap? x) (jolt-nil? (jolt-get x hc-kw-jolt-type))))
 ;; A set form is the reader's tagged map {:jolt/type :jolt/set :value <pvec>} OR a
