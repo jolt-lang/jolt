@@ -455,3 +455,16 @@
   "Read the first form of `s` (skipping leading trivia). Returns the form."
   [s]
   (first (read-next-form s 0)))
+
+(defn read-all
+  "Read every top-level form of `s`, returning them in a vector (trivia skipped)."
+  [s]
+  (loop [pos 0 acc []]
+    (let [p (skip-whitespace s pos)]
+      (if (>= p (len s))
+        acc
+        (let [[kind payload np] (read-form s p)]
+          (case kind
+            :skip (recur np acc)
+            :splice (recur np (into acc payload))
+            :form (recur np (conj acc payload))))))))
