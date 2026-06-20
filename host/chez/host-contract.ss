@@ -130,7 +130,9 @@
          (sns (symbol-t-ns sym))
          (qualified (and sns (not (jolt-nil? sns)) (not (null? sns)) sns)))
     (if qualified
-        (var-cell-lookup qualified nm)
+        ;; a qualified ns may be a require :as alias (s/split -> clojure.string/split)
+        (let ((target (or (chez-resolve-alias (chez-actx-cns ctx) qualified) qualified)))
+          (var-cell-lookup target nm))
         (or (var-cell-lookup (chez-actx-cns ctx) nm)
             (var-cell-lookup "clojure.core" nm)))))
 

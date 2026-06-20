@@ -24,6 +24,31 @@
 (intern-ns! "user")
 (intern-ns! "clojure.core")
 
+;; --- namespace aliases (jolt-qjr0) -----------------------------------------
+;; (require '[ns :as a]) registers a -> ns so the analyzer can resolve a/foo to
+;; ns/foo. Keyed by (compile-ns . alias). On the zero-Janet spine the requires are
+;; pre-registered at analyze time (compile-eval.ss) — analysis precedes eval, so a
+;; runtime require no-op is fine. Also drives jolt-ns-aliases below.
+(define ns-alias-table (make-hashtable equal-hash equal?))
+(define (chez-register-alias! cns alias target)
+  (hashtable-set! ns-alias-table (cons cns alias) target))
+(define (chez-resolve-alias cns alias)
+  (hashtable-ref ns-alias-table (cons cns alias) #f))
+;; parse a require/use spec FORM and register its :as alias under `cns`.
+;; spec: [ns :as a ...] / (ns :as a ...) / bare ns (no alias).
+(define (chez-register-spec! cns spec)
+  (let ((items (cond ((pvec? spec) (seq->list spec))
+                     ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
+                     (else '()))))
+    (when (and (pair? items) (symbol-t? (car items)))
+      (let ((target (symbol-t-name (car items))))
+        (let loop ((xs (cdr items)))
+          (cond ((or (null? xs) (null? (cdr xs))) #f)
+                ((and (keyword? (car xs)) (string=? (keyword-t-name (car xs)) "as")
+                      (symbol-t? (cadr xs)))
+                 (chez-register-alias! cns (symbol-t-name (cadr xs)) target))
+                (else (loop (cdr xs)))))))))
+
 ;; a namespace designator -> its name string (a jns or a symbol; the corpus never
 ;; passes a bare string).
 (define (ns-desig->name d)

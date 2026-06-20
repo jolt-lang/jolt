@@ -20,13 +20,36 @@
 ;; once, here, so every analyze->emit on this spine sees the full core (jolt-qjr0).
 ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 
+;; (quote X) -> X, else x — unwraps a quoted require spec.
+(define (ce-unquote x)
+  (if (and (cseq? x) (cseq-list? x))
+      (let ((items (seq->list x)))
+        (if (and (pair? items) (symbol-t? (car items))
+                 (string=? (symbol-t-name (car items)) "quote") (pair? (cdr items)))
+            (cadr items) x))
+      x))
+
+;; Pre-register any (require ...)/(use ...) :as aliases under `ns` BEFORE analysis,
+;; so a qualified s/foo resolves while compiling (analysis precedes the runtime
+;; require). Walks the whole form (a require may be nested in a do/let). jolt-qjr0.
+(define (ce-scan-requires! form ns)
+  (when (and (cseq? form) (cseq-list? form))
+    (let ((items (seq->list form)))
+      (when (pair? items)
+        (let ((h (car items)))
+          (if (and (symbol-t? h)
+                   (let ((n (symbol-t-name h))) (or (string=? n "require") (string=? n "use"))))
+              (for-each (lambda (a) (chez-register-spec! ns (ce-unquote a))) (cdr items))
+              (for-each (lambda (x) (ce-scan-requires! x ns)) items)))))))
+
 ;; Source string -> Scheme source string (read -> analyze -> emit, all on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
 (define (jolt-analyze-emit src ns)
-  (let* ((form (jolt-ce-read src))
-         (ctx (make-analyze-ctx ns))
-         (ir (jolt-ce-analyze ctx form)))
-    (jolt-ce-emit ir)))
+  (let* ((form (jolt-ce-read src)))
+    (ce-scan-requires! form ns)
+    (let* ((ctx (make-analyze-ctx ns))
+           (ir (jolt-ce-analyze ctx form)))
+      (jolt-ce-emit ir))))
 
 ;; Source string -> value (compile on Chez, then eval the emitted Scheme in the
 ;; top-level environment where rt.ss's runtime procedures live).
