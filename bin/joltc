@@ -1,0 +1,14 @@
+#!/bin/sh
+# joltc (jolt-9phg, inc9b) — the pure-Chez jolt runtime. NO Janet.
+#
+# Runs a Clojure expression through the zero-Janet spine on Chez, using the
+# checked-in bootstrap seed (host/chez/seed/). With only Chez installed and no
+# Janet anywhere, this compiles and evaluates jolt code end to end.
+#
+#   bin/joltc -e "(+ 1 2)"
+#
+# (bin/jolt-chez is the older Janet-hosted -e path still used as the corpus oracle;
+# joltc is the fully self-hosted runtime.)
+root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$root" || exit 1
+exec chez --script host/chez/cli.ss "$@"
