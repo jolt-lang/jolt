@@ -58,7 +58,7 @@
   ["denominator throws"  :throws    "(denominator 1)"]
   ["supers empty set"    "#{}"      "(supers 1)"]
   ["munge dashes"        "\"a_b\""  "(munge \"a-b\")"]
-  ["munge symbol"        "\"x_y\""  "(munge (quote x-y))"]
+  ["munge symbol"        "(quote x_y)"  "(munge (quote x-y))"]
   ["test no-test"        ":no-test" "(test (quote foo))"])
 
 # Phase 2 leaf batch 2 (jolt-ded): canonical ports of key/val/select-keys/

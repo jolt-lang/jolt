@@ -55,10 +55,16 @@
 
 (defn prn [& xs] (apply pr xs) (__write "\n") nil)
 
+;; print renders each arg non-readably (strings/chars unquoted) like str — except
+;; nil, which prints as "nil" (str yields ""). Only the top-level arg needs the
+;; guard; nil nested in a collection already renders as "nil" via the collection
+;; printer.
 (defn print [& xs]
   (__write (loop [out "" s (seq xs) first? true]
              (if s
-               (recur (str out (if first? "" " ") (str (first s))) (next s) false)
+               (let [x (first s)
+                     r (if (nil? x) "nil" (str x))]
+                 (recur (str out (if first? "" " ") r) (next s) false))
                out)))
   nil)
 
@@ -210,7 +216,11 @@
       (recur (dec n) (next xs))
       xs)))
 
-(defn bounded-count [n coll] (min n (count coll)))
+(defn bounded-count [n coll]
+  (if (counted? coll)
+    (count coll)
+    (loop [i 0 s (seq coll)]
+      (if (and s (< i n)) (recur (inc i) (next s)) i))))
 
 (defn run! [proc coll] (reduce (fn [_ x] (proc x) nil) nil coll) nil)
 
@@ -650,7 +660,6 @@
 (defn ex-message [e]
   (let [e (ex-unwrap e)]
     (cond (ex-info-val? e) (get e :message)
-          (string? e)      e
           :else            nil)))
 (defn ex-cause [e]
   (let [e (ex-unwrap e)] (if (ex-info-val? e) (get e :cause) nil)))
@@ -785,8 +794,12 @@
 ;; No class hierarchy on the Janet host.
 (defn supers [x] #{})
 
-;; The kernel's munge only rewrote dashes; kept as-is for parity.
-(defn munge [s] (str-replace-all "-" "_" (str s)))
+;; Like Clojure's munge: rewrite dashes to underscores, preserving the argument's
+;; type — a symbol munges to a symbol, anything else to a string. (jolt only
+;; rewrites dashes, not the full Compiler CHAR_MAP.)
+(defn munge [s]
+  (let [m (str-replace-all "-" "_" (str s))]
+    (if (symbol? s) (symbol m) m)))
 
 (defn test
   "Calls the :test fn from v's metadata; :ok if it runs, :no-test if absent."

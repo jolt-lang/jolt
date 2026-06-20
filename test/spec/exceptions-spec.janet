@@ -43,4 +43,4 @@
    "(try (try (throw (ex-info \"inner\" {})) (catch :default e (throw e))) (catch :default e (ex-message e)))"]
   ["ex-data on non-ex"    "nil"       "(ex-data 42)"]
   ["ex-cause on non-ex"   "nil"       "(ex-cause {:k 1})"]
-  ["ex-message of string" "\"hi\""    "(ex-message \"hi\")"])
+  ["ex-message of string" "nil"        "(ex-message \"hi\")"])

@@ -168,7 +168,7 @@
   {:suite "exceptions / ex-info" :label "rethrow preserves ex" :expected "\"inner\"" :actual "(try (try (throw (ex-info \"inner\" {})) (catch :default e (throw e))) (catch :default e (ex-message e)))"}
   {:suite "exceptions / ex-info" :label "ex-data on non-ex" :expected "nil" :actual "(ex-data 42)"}
   {:suite "exceptions / ex-info" :label "ex-cause on non-ex" :expected "nil" :actual "(ex-cause {:k 1})"}
-  {:suite "exceptions / ex-info" :label "ex-message of string" :expected "\"hi\"" :actual "(ex-message \"hi\")"}
+  {:suite "exceptions / ex-info" :label "ex-message of string" :expected "nil" :actual "(ex-message \"hi\")"}
   {:suite "forms / case" :label "bool" :expected ":yes" :actual "(case true true :yes false :no :default)"}
   {:suite "forms / case" :label "keyword match" :expected ":b" :actual "(case :a :x :wrong :a :b :default)"}
   {:suite "forms / case" :label "number match" :expected ":two" :actual "(case 2 1 :one 2 :two :default)"}
@@ -278,7 +278,7 @@
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "denominator throws" :expected :throws :actual "(denominator 1)"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "supers empty set" :expected "#{}" :actual "(supers 1)"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "munge dashes" :expected "\"a_b\"" :actual "(munge \"a-b\")"}
-  {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "munge symbol" :expected "\"x_y\"" :actual "(munge (quote x-y))"}
+  {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "munge symbol" :expected "(quote x_y)" :actual "(munge (quote x-y))"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "test no-test" :expected ":no-test" :actual "(test (quote foo))"}
   {:suite "clojure.core / leaf batch 2" :label "key" :expected "1" :actual "(key (first {1 :a}))"}
   {:suite "clojure.core / leaf batch 2" :label "val" :expected ":a" :actual "(val (first {1 :a}))"}
@@ -669,7 +669,7 @@
   {:suite "io / print family (overlay)" :label "println appends newline" :expected "\"x 1\\n\"" :actual "(with-out-str (println \"x\" 1))"}
   {:suite "io / print family (overlay)" :label "prn is readable + newline" :expected "\"[1 \\\"s\\\"]\\n\"" :actual "(with-out-str (prn [1 \"s\"]))"}
   {:suite "io / print family (overlay)" :label "pr writes no newline" :expected "\"\\\\a\"" :actual "(with-out-str (pr \\a))"}
-  {:suite "io / print family (overlay)" :label "print nil arg" :expected "\"\"" :actual "(with-out-str (print nil))"}
+  {:suite "io / print family (overlay)" :label "print nil arg" :expected "\"nil\"" :actual "(with-out-str (print nil))"}
   {:suite "io / print family (overlay)" :label "prn keyword" :expected "\":k\\n\"" :actual "(with-out-str (prn :k))"}
   {:suite "io / print-method multimethod" :label "records print canonically" :expected "\"#user.Pt{:x 1, :y 2}\"" :actual "(do (defrecord Pt [x y]) (pr-str (->Pt 1 2)))"}
   {:suite "io / print-method multimethod" :label "records nested in colls" :expected "\"[#user.Pt{:x 1, :y 2}]\"" :actual "(do (defrecord Pt [x y]) (pr-str [(->Pt 1 2)]))"}
@@ -1927,7 +1927,8 @@
   {:suite "seq / overlay-migrated fns" :label "drop-last n" :expected "[1 2]" :actual "(drop-last 2 [1 2 3 4])"}
   {:suite "seq / overlay-migrated fns" :label "split-with" :expected "[[2 4] [5 6]]" :actual "(split-with even? [2 4 5 6])"}
   {:suite "seq / overlay-migrated fns" :label "replicate" :expected "[:x :x :x]" :actual "(replicate 3 :x)"}
-  {:suite "seq / overlay-migrated fns" :label "bounded-count" :expected "3" :actual "(bounded-count 3 [1 2 3 4 5])"}
+  {:suite "seq / overlay-migrated fns" :label "bounded-count" :expected "5" :actual "(bounded-count 3 [1 2 3 4 5])"}
+  {:suite "seq / overlay-migrated fns" :label "bounded-count uncounted" :expected "3" :actual "(bounded-count 3 (filter odd? (range 100)))"}
   {:suite "seq / overlay-migrated fns" :label "run! side effects" :expected "6" :actual "(let [a (atom 0)] (run! (fn [x] (swap! a + x)) [1 2 3]) @a)"}
   {:suite "seq / overlay-migrated fns" :label "completing wraps rf" :expected "3" :actual "((completing +) 1 2)"}
   {:suite "seq / overlay-migrated fns" :label "comparator <" :expected "[1 2 3]" :actual "(sort (comparator <) [3 1 2])"}

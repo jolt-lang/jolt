@@ -1,9 +1,7 @@
 {:doc
  "Known divergences of test/chez/corpus.edn :expected from JVM Clojure, classified. Most are deliberate jolt-specific or host-model differences (-> :features in conformance inc3). :bug entries are genuine and tracked. The certifier (certify.clj) gates on NEW (unlisted) divergences only. Keyed by [suite label].",
  :legend
- {:bug
-  "genuine jolt/corpus bug — tracked bead, fix in jolt-core + correct :expected",
-  :numeric-model
+ {:numeric-model
   "jolt is all-double: no Ratio/BigDecimal/float; (/ 1 2)=>0.5, 3.0 prints 3",
   :concurrency-model
   "Janet isolated-heap snapshot futures/agents/pmap; atoms snapshot, not shared",
@@ -18,23 +16,7 @@
   :impl-detail
   "representation detail: syntax-quote yields a list? (JVM yields a Cons)"},
  :entries
- [{:suite "clojure.core / leaf batch (complement fnil munge etc.)",
-   :label "munge symbol",
-   :category :bug,
-   :bead "jolt-hc35"}
-  {:suite "exceptions / ex-info",
-   :label "ex-message of string",
-   :category :bug,
-   :bead "jolt-l8e8"}
-  {:suite "io / print family (overlay)",
-   :label "print nil arg",
-   :category :bug,
-   :bead "jolt-pqio"}
-  {:suite "seq / overlay-migrated fns",
-   :label "bounded-count",
-   :category :bug,
-   :bead "jolt-2507"}
-  {:suite "clojure.core / futures — predicates",
+ [{:suite "clojure.core / futures — predicates",
    :label "cancel an in-flight future returns true",
    :category :concurrency-model,
    :flaky true}

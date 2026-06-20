@@ -65,7 +65,7 @@
   ["println appends newline" "\"x 1\\n\"" "(with-out-str (println \"x\" 1))"]
   ["prn is readable + newline" "\"[1 \\\"s\\\"]\\n\"" "(with-out-str (prn [1 \"s\"]))"]
   ["pr writes no newline" "\"\\\\a\"" "(with-out-str (pr \\a))"]
-  ["print nil arg"      "\"\""        "(with-out-str (print nil))"]
+  ["print nil arg"      "\"nil\""     "(with-out-str (print nil))"]
   ["prn keyword"        "\":k\\n\""   "(with-out-str (prn :k))"])
 
 # print-method is a real multimethod (jolt-g1r): canonical dispatch on
