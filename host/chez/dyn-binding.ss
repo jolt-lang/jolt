@@ -15,11 +15,15 @@
 ;; the stack before falling back to the cell root. Loaded LAST (after vars.ss and
 ;; ns.ss) so it chains the fully-extended jolt-var-get and overrides rt.ss var-deref.
 
-(define dyn-binding-stack '())
+;; THREAD-LOCAL (jolt-byjr): a Chez thread parameter, so each OS thread (a future
+;; / go block) has its own binding stack. Chez initializes a new thread's parameter
+;; to the spawning thread's value at fork time, giving Clojure binding conveyance
+;; for free (the future shim also installs an explicit snapshot, belt-and-suspenders).
+(define dyn-binding-stack (make-thread-parameter '()))
 
 ;; find the innermost (cell . value) pair binding CELL, or #f.
 (define (dyn-find-binding cell)
-  (let loop ((frames dyn-binding-stack))
+  (let loop ((frames (dyn-binding-stack)))
     (and (pair? frames)
          (or (assq cell (car frames))
              (loop (cdr frames))))))
@@ -28,7 +32,7 @@
 ;; value happens to be jolt-nil.
 (define dyn-no-binding (list 'no-binding))
 (define (dyn-binding-value cell)
-  (if (pair? dyn-binding-stack)
+  (if (pair? (dyn-binding-stack))
       (let ((p (dyn-find-binding cell)))
         (if p
             (let ((val (cdr p)))
@@ -39,21 +43,21 @@
 ;; push-thread-bindings: frame is a jolt map of var-cell -> value. Fold it into an
 ;; identity-keyed alist of mutable pairs and push.
 (define (jolt-push-thread-bindings frame)
-  (set! dyn-binding-stack
-        (cons (pmap-fold frame (lambda (k v acc) (cons (cons k v) acc)) '())
-              dyn-binding-stack))
+  (dyn-binding-stack
+   (cons (pmap-fold frame (lambda (k v acc) (cons (cons k v) acc)) '())
+         (dyn-binding-stack)))
   jolt-nil)
 
 (define (jolt-pop-thread-bindings)
-  (when (pair? dyn-binding-stack)
-    (set! dyn-binding-stack (cdr dyn-binding-stack)))
+  (when (pair? (dyn-binding-stack))
+    (dyn-binding-stack (cdr (dyn-binding-stack))))
   jolt-nil)
 
 ;; get-thread-bindings: a jolt map of every currently-bound cell -> value,
 ;; innermost wins. Merge oldest-frame-first (the stack head is innermost). The
 ;; result can be re-pushed by with-bindings* / bound-fn*.
 (define (jolt-get-thread-bindings)
-  (let loop ((frames (reverse dyn-binding-stack)) (m (jolt-hash-map)))
+  (let loop ((frames (reverse (dyn-binding-stack))) (m (jolt-hash-map)))
     (if (null? frames)
         m
         (loop (cdr frames)

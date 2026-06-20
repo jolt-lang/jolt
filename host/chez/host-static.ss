@@ -128,9 +128,16 @@
         (cons "PI" (->num (* 4 (atan 1)))) (cons "E" (->num (exp 1)))
         (cons "random" (lambda args (->num (random 1.0))))))
 
-;; Thread: no real threading here (futures/timing are jolt-byjr). sleep is a no-op.
+;; Thread: real OS threads back futures/promises (jolt-byjr), so sleep genuinely
+;; parks the calling thread for `ms` milliseconds (a worker sleeping doesn't block
+;; the parent). yield hands off the scheduler.
 (register-class-statics! "Thread"
-  (list (cons "sleep" (lambda (ms . _) jolt-nil))
+  (list (cons "sleep" (lambda (ms . _)
+                        (let* ((ms* (exact (floor ms)))
+                               (secs (quotient ms* 1000))
+                               (nanos (* (remainder ms* 1000) 1000000)))
+                          (sleep (make-time 'time-duration nanos secs)))
+                        jolt-nil))
         (cons "yield" (lambda () jolt-nil))
         (cons "interrupted" (lambda () #f))
         (cons "currentThread" (lambda () (make-jhost "thread" '())))))

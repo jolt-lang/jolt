@@ -325,3 +325,9 @@
 ;; on Chez, inc6b) calls these to build its expansion as reader forms. Needs the
 ;; collection/seq layer + def-var!; order-independent past those.
 (load "host/chez/syntax-quote.ss")
+
+;; concurrency (jolt-byjr): real OS-thread futures + blocking promises, shared-heap
+;; (JVM) semantics. Loaded LAST — chains the fully-built jolt-deref and conveys the
+;; thread-local binding stack (dyn-binding.ss) into workers. pmap/pcalls/pvalues
+;; (overlay, over `future`) light up once future-call exists here.
+(load "host/chez/concurrency.ss")

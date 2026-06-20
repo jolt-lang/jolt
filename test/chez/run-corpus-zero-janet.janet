@@ -78,7 +78,24 @@
     "inf inside coll" true
     # #?@ reader-conditional splicing into the enclosing seq isn't supported yet
     # (plain #? works); a single niche corpus case.
-    "reader cond splice" true})
+    "reader cond splice" true
+    # concurrency (jolt-byjr): Chez futures are real OS threads sharing the heap =
+    # JVM semantics, NOT Janet's isolated-heap snapshot. So a captured atom IS
+    # shared (the corpus :expected is the Janet snapshot value). Deliberate per the
+    # jvm-parity-north-star — Chez matches the JVM, Janet keeps the old snapshot.
+    "captured atom is snapshotted, not shared" true   # Chez 1 (shared) vs Janet 0
+    "snapshot semantics" true                          # pmap: Chez 2 (shared) vs Janet 0
+    # future-cancel on a trivial body is timing-dependent under real threads: the
+    # future usually completes before the cancel (cancel -> false), like the JVM.
+    # The Janet :expected "true" relies on cooperative scheduling. Flaky/divergent.
+    "cancel an in-flight future returns true" true
+    "future-cancelled? after cancel" true})
+
+# Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
+# :timeout) — skip them, like :throws: a single hung case would stall the whole
+# batched process. (deref of an undelivered promise blocks on the JVM and now on
+# Chez; Janet's non-blocking atom-shim returned nil.)
+(def skip-blocking @{"promise undelivered" true})
 
 (var pass 0)
 (def crashes @[])      # nonzero chez exit (analyzer/emitter raised, or runtime gap)
@@ -116,8 +133,8 @@
 (def rows-by-idx @{})
 (def pairs @[])
 (eachp [i row] cases
-  (def {:expected e :actual a} row)
-  (if (= e :throws)
+  (def {:expected e :actual a :label l} row)
+  (if (or (= e :throws) (get skip-blocking l))
     (++ throws)
     (let [key (string i)]
       (put rows-by-idx key row)
@@ -166,7 +183,7 @@
 
 # Regression floor: raise as the Chez-hosted compiler closes gaps. The gate fails
 # on any NEW divergence or if pass drops below the floor. Strided runs scale to 0.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2544")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2569")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

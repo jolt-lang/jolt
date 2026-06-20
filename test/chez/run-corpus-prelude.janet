@@ -91,7 +91,22 @@
    "atom?" true
    # Same atom-class gap, via the folded-in conformance case (jolt-ohtd):
    # (instance? clojure.lang.Atom (atom 1)).
-   "instance? Atom" true})
+   "instance? Atom" true
+   # concurrency (jolt-byjr): the Chez runtime now uses real OS-thread futures
+   # sharing the heap = JVM semantics, NOT Janet's isolated-heap snapshot. So a
+   # captured atom is shared (the corpus :expected is the Janet snapshot value).
+   # Deliberate per jvm-parity-north-star. Same allowlist as the zero-Janet gate.
+   "captured atom is snapshotted, not shared" true   # Chez 1 (shared) vs Janet 0
+   "snapshot semantics" true                          # pmap: Chez 2 (shared) vs Janet 0
+   # future-cancel of a trivial body races the worker under real threads (cancel
+   # usually loses -> false), like the JVM; the Janet :expected relies on its
+   # cooperative scheduler. Flaky/divergent.
+   "cancel an in-flight future returns true" true
+   "future-cancelled? after cancel" true})
+
+# Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
+# :timeout) — skip, like :throws, so a hung per-case process can't stall the gate.
+(def skip-blocking {"promise undelivered" true})
 
 (def ctx (d/make-ctx))
 
@@ -130,7 +145,7 @@
 (def t1 (os/clock))
 (each row cases
   (def {:expected e :actual a :label l} row)
-  (if (= e :throws)
+  (if (or (= e :throws) (get skip-blocking l))
     nil  # :throws error-semantics aren't modeled here; skip (counted out of run)
     (let [src (string "(= " e " " a ")")
           res (d/eval-e-with-prelude ctx src prelude-path)]

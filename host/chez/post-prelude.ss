@@ -38,3 +38,20 @@
 ;; ns-name: the overlay reads (get ns :name) — nil on a jns namespace record.
 ;; Native version (defined in ns.ss) returns the namespace's name symbol.
 (def-var! "clojure.core" "ns-name" jolt-ns-name)
+;; concurrency (jolt-byjr): the overlay's future-done?/future-cancelled?/realized?
+;; read a Janet future-map's :cached/:cancelled keys, and promise/deliver are a
+;; non-blocking atom shim. A Chez future/promise is a record, and we want JVM
+;; (blocking, shared-heap) semantics — re-assert the native versions. realized?
+;; wraps the overlay (which still handles delay/lazy-seq/atom) for non-futures.
+(def-var! "clojure.core" "future-done?" jolt-native-future-done?)
+(def-var! "clojure.core" "future-cancelled?" jolt-native-future-cancelled?)
+(def-var! "clojure.core" "future?" jolt-future?)
+(def-var! "clojure.core" "promise" jolt-promise-new)
+(def-var! "clojure.core" "deliver" jolt-deliver)
+(def-var! "clojure.core" "deref" jolt-deref)
+(let ((overlay-realized? (var-deref "clojure.core" "realized?")))
+  (def-var! "clojure.core" "realized?"
+    (lambda (x)
+      (if (or (jolt-future? x) (jolt-promise? x))
+          (jolt-conc-realized? x)
+          (jolt-invoke overlay-realized? x)))))

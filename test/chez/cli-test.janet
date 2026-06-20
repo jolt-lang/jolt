@@ -47,7 +47,28 @@
    ["(map eval [(quote (+ 1 1)) (quote (* 3 3))])" "(2 9)"]
    ["(defmacro add1 [x] (list (quote +) x 1)) (add1 10)" "11"]
    ["(defmacro twice [x] `(do ~x ~x)) (twice (+ 2 3))" "5"]
-   ["(defmacro m [x] `(+ ~x 1)) (m (m (m 0)))" "3"]])
+   ["(defmacro m [x] `(+ ~x 1)) (m (m (m 0)))" "3"]
+   # jolt-byjr: concurrency — futures/pmap/promise on real OS threads (shared heap).
+   ["(deref (future (+ 1 2)))" "3"]
+   ["@(future (* 6 7))" "42"]
+   ["(deref (future (mapv inc [1 2 3])))" "[2 3 4]"]
+   ["(let [f (future (+ 1 1))] [(deref f) (deref f)])" "[2 2]"]
+   ["(future? (future 1))" "true"]
+   ["(future? 42)" "false"]
+   ["(let [f (future 1)] (deref f) (future-done? f))" "true"]
+   ["(let [f (future 1)] (deref f) (realized? f))" "true"]
+   ["(let [f (future 42)] (deref f) (deref f 1000 :nope))" "42"]
+   ["(vec (pmap inc [1 2 3]))" "[2 3 4]"]
+   ["(vec (pmap + [1 2 3] [4 5 6]))" "[5 7 9]"]
+   ["(vec (pcalls (fn [] 1) (fn [] 2)))" "[1 2]"]
+   ["(vec (pvalues (+ 1 2) (+ 3 4)))" "[3 7]"]
+   # shared heap = JVM semantics (NOT Janet's isolated-heap snapshot): a captured
+   # atom is shared, so the future's swap! is visible to the parent.
+   ["(let [a (atom 0)] (deref (future (swap! a inc))) @a)" "1"]
+   ["(let [a (atom 0)] (dorun (pmap (fn [_] (swap! a inc)) [1 2 3 4])) @a)" "4"]
+   # promise blocks until delivered (JVM), unlike the Janet atom-shim.
+   ["(let [p (promise)] (deliver p 7) @p)" "7"]
+   ["(let [p (promise)] (future (deliver p :hi)) @p)" ":hi"]])
 
 (each [src want] cases
   (def [code out err] (joltc src))

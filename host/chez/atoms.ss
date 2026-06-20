@@ -16,16 +16,21 @@
 ;; Janet table, which a Chez atom record is not — so the peripheral ops + the
 ;; notify/validate behaviour live natively here, and post-prelude.ss re-asserts
 ;; them over the overlay's def-var! (jolt-mn9o).
+;; `lock` (jolt-byjr) is a per-atom mutex guarding the read-modify-write critical
+;; sections, so swap!/reset!/compare-and-set! are atomic under real OS threads
+;; (futures/go blocks share the heap on Chez). The user fn in swap! runs OUTSIDE
+;; the lock (a CAS retry loop, like the JVM) so it never deadlocks on re-entrant
+;; access and a watch/validator can deref the same atom.
 (define-record-type jolt-atom
-  (fields (mutable val) (mutable watches) (mutable validator))
-  (nongenerative jolt-atom-v2))
+  (fields (mutable val) (mutable watches) (mutable validator) lock)
+  (nongenerative jolt-atom-v3))
 
 ;; (atom init) / (atom init :validator f :meta m): scan the trailing keyword opts
 ;; for :validator (the only one with runtime behaviour; :meta is accepted/ignored).
 (define (jolt-atom-new v . opts)
   (let loop ((o opts) (validator jolt-nil))
     (cond
-      ((or (null? o) (null? (cdr o))) (make-jolt-atom v '() validator))
+      ((or (null? o) (null? (cdr o))) (make-jolt-atom v '() validator (make-mutex)))
       ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
        (loop (cddr o) (cadr o)))
       (else (loop (cddr o) validator)))))
@@ -50,37 +55,57 @@
     ((jolt-reduced? x) (jolt-reduced-val x))
     (else (error #f "deref: unsupported reference type" x))))
 
-;; (swap! a f arg*) -> (reset! a (f @a arg*)); f is invoked through jolt-invoke.
-;; Validate the new value BEFORE storing, notify watches AFTER (the seed order).
+;; CAS the val from `old` to `nv` by identity (eq?), atomically. Returns #t on
+;; success. The compute step (f) runs outside this, so we re-check under the lock.
+(define (jolt-atom-cas! a old nv)
+  (with-mutex (jolt-atom-lock a)
+    (if (eq? (jolt-atom-val a) old)
+        (begin (jolt-atom-val-set! a nv) #t)
+        #f)))
+
+;; (swap! a f arg*): JVM-style CAS loop — read, compute f OUTSIDE the lock, then
+;; atomically compare-and-set; retry if another thread changed it. Validate the
+;; new value before storing, notify watches after (the seed order).
 (define (jolt-swap! a f . args)
-  (let* ((old (jolt-atom-val a))
-         (nv (apply jolt-invoke f old args)))
-    (jolt-atom-validate a nv)
-    (jolt-atom-val-set! a nv)
-    (jolt-atom-notify a old nv)
-    nv))
+  (let retry ()
+    (let* ((old (jolt-atom-val a))
+           (nv (apply jolt-invoke f old args)))
+      (jolt-atom-validate a nv)
+      (if (jolt-atom-cas! a old nv)
+          (begin (jolt-atom-notify a old nv) nv)
+          (retry)))))
 
 (define (jolt-reset! a v)
-  (let ((old (jolt-atom-val a)))
-    (jolt-atom-validate a v)
-    (jolt-atom-val-set! a v)
+  (jolt-atom-validate a v)
+  (let ((old (with-mutex (jolt-atom-lock a)
+               (let ((o (jolt-atom-val a))) (jolt-atom-val-set! a v) o))))
     (jolt-atom-notify a old v)
     v))
 
+;; compare-and-set! keeps jolt= (value) semantics, done atomically under the lock.
 (define (jolt-compare-and-set! a oldv newv)
-  (if (jolt= (jolt-atom-val a) oldv)
-      (begin (jolt-reset! a newv) #t)
-      #f))
+  (jolt-atom-validate a newv)
+  (let ((swapped (with-mutex (jolt-atom-lock a)
+                   (if (jolt= (jolt-atom-val a) oldv)
+                       (begin (jolt-atom-val-set! a newv) #t)
+                       #f))))
+    (when swapped (jolt-atom-notify a oldv newv))
+    swapped))
 
 (define (jolt-swap-vals! a f . args)
-  (let* ((old (jolt-atom-val a))
-         (nv (apply jolt-invoke f old args)))
-    (jolt-reset! a nv)
-    (jolt-vector old nv)))
+  (let retry ()
+    (let* ((old (jolt-atom-val a))
+           (nv (apply jolt-invoke f old args)))
+      (jolt-atom-validate a nv)
+      (if (jolt-atom-cas! a old nv)
+          (begin (jolt-atom-notify a old nv) (jolt-vector old nv))
+          (retry)))))
 
 (define (jolt-reset-vals! a v)
-  (let ((old (jolt-atom-val a)))
-    (jolt-reset! a v)
+  (jolt-atom-validate a v)
+  (let ((old (with-mutex (jolt-atom-lock a)
+               (let ((o (jolt-atom-val a))) (jolt-atom-val-set! a v) o))))
+    (jolt-atom-notify a old v)
     (jolt-vector old v)))
 
 ;; --- watches / validators (jolt-mn9o) ---------------------------------------
