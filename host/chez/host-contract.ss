@@ -105,9 +105,12 @@
 ;; --- special forms ----------------------------------------------------------
 ;; Mirrors host_iface special-names + interop-head? — forms the analyzer marks
 ;; uncompilable (the handled specials are dispatched in analyze-list BEFORE this).
+;; `eval` is NOT here: it is a clojure.core FUNCTION on the spine (compile-eval.ss
+;; def-var!s it), so it must resolve as an ordinary var, not punt (jolt-r8ku).
+;; `defmacro` stays special — the spine intercepts it before analysis.
 (define hc-special-names
   '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
-    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "eval" "new"
+    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "new"
     "." "gen-class" "monitor-enter" "monitor-exit" "letfn"))
 (define (hc-interop-head? name)
   (let ((n (string-length name)))
@@ -180,7 +183,7 @@
 ;; clojure.core / the compile ns; a foo# auto-gensym is stable within one `.
 (define hc-special-symbols
   '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
-    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var" "eval"
+    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
     "new" "."))
 (define (hc-special-symbol? nm) (and (member nm hc-special-symbols) #t))
 

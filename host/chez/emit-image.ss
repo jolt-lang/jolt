@@ -30,31 +30,8 @@
          (and (pair? items) (symbol-t? (car items))
               (string=? (symbol-t-name (car items)) "ns")))))
 
-;; Is `f` a (defmacro ...) / (definline ...) form?
-(define (ei-macro-form? f)
-  (and (cseq? f) (cseq-list? f)
-       (let ((items (seq->list f)))
-         (and (pair? items) (symbol-t? (car items))
-              (let ((h (symbol-t-name (car items))))
-                (or (string=? h "defmacro") (string=? h "definline")))))))
-
-;; (defmacro NAME [docstring] [attr-map] params body...) -> (values "NAME" (fn ...)).
-;; Mirrors driver.janet defmacro->fn: strip a leading docstring (native string) and
-;; an attr-map (a pmap that isn't a symbol), then re-head the rest with `fn` so a
-;; destructured macro arglist desugars before lowering. We emit the BARE fn (the
-;; caller wraps it in def-var! + mark-macro!), never a (def NAME ...) — interning
-;; NAME would make require skip the real macro (jolt-r9lm).
-(define (ei-defmacro->fn f)
-  (let* ((items (seq->list f))
-         (name-sym (cadr items))
-         (after-name (cddr items))
-         (a1 (if (and (pair? after-name) (string? (car after-name)))
-                 (cdr after-name) after-name))
-         (after-meta (if (and (pair? a1) (pmap? (car a1)))
-                         (cdr a1) a1))
-         (fn-sym (jolt-symbol #f "fn")))
-    (values (symbol-t-name name-sym)
-            (apply jolt-list (cons fn-sym after-meta)))))
+;; ei-macro-form? / ei-defmacro->fn moved to compile-eval.ss (ce-macro-form? /
+;; ce-defmacro->fn, loaded before this) — shared with the runtime defmacro spine.
 
 ;; Cross-compile one namespace's source to a list of guard-wrapped Scheme strings.
 ;; Mirrors driver.janet emit-ns-forms-list/emit-core-prelude + emit-form-scheme.
@@ -70,8 +47,8 @@
           (ce-scan-requires! f ns-name)
           (cond
             ((ei-ns-form? f) (loop (cdr forms) acc))
-            ((ei-macro-form? f)
-             (let-values (((nm fn-form) (ei-defmacro->fn f)))
+            ((ce-macro-form? f)
+             (let-values (((nm fn-form) (ce-defmacro->fn f)))
                (let ((scm (guard (e (#t #f))
                             (let ((ctx (make-analyze-ctx ns-name)))
                               (jolt-ce-emit (jolt-ce-analyze ctx fn-form))))))

@@ -36,7 +36,18 @@
    ["(case 3 1 :a 2 :b :other)" ":other"]
    ["(reduce + (vals (reduce (fn [m k] (assoc m k (* k k))) {} [1 2 3])))" "14"]
    ["(map inc [1 2 3])" "(2 3 4)"]
-   ["nil" ""]])
+   ["nil" ""]
+   # jolt-r8ku: runtime eval / load-string / defmacro on the Chez spine.
+   ["(eval (quote (+ 1 2)))" "3"]
+   ["(eval (list (quote +) 1 2 3))" "6"]
+   ["(eval (quote (let [a 2 b 3] (* a b))))" "6"]
+   ["(load-string \"(+ 1 2)\")" "3"]
+   ["(load-string \"(def y 5) (* y y)\")" "25"]
+   ["(load-string \"\")" ""]
+   ["(map eval [(quote (+ 1 1)) (quote (* 3 3))])" "(2 9)"]
+   ["(defmacro add1 [x] (list (quote +) x 1)) (add1 10)" "11"]
+   ["(defmacro twice [x] `(do ~x ~x)) (twice (+ 2 3))" "5"]
+   ["(defmacro m [x] `(+ ~x 1)) (m (m (m 0)))" "3"]])
 
 (each [src want] cases
   (def [code out err] (joltc src))
