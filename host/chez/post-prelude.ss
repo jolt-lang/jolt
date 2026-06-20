@@ -62,6 +62,6 @@
 (let ((overlay-realized? (var-deref "clojure.core" "realized?")))
   (def-var! "clojure.core" "realized?"
     (lambda (x)
-      (if (or (jolt-future? x) (jolt-promise? x))
+      (if (or (jolt-future? x) (jolt-promise? x) (jolt-delay? x))
           (jolt-conc-realized? x)
           (jolt-invoke overlay-realized? x)))))

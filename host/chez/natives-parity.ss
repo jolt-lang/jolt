@@ -62,9 +62,7 @@
 (define (np-re-matcher re s)
   (jolt-hash-map np-kw-type np-kw-mat np-kw-re re np-kw-s s np-kw-pos 0.0))
 
-;; --- delay? : no delay type is built on Chez yet, so always false (enough for
-;; (delay? x) on non-delays; revisit when delay/force land).
-(define (np-delay? x) #f)
+;; (delay? / make-delay / force live in concurrency.ss with the real delay type.)
 
 ;; --- macroexpand-1 / macroexpand: expand a (quoted) call form via the runtime
 ;; macro table (host-contract hc-macro?/hc-expand-1; forward-referenced, resolved
@@ -90,6 +88,5 @@
 (def-var! "clojure.core" "__reader-features-set!" np-reader-features-set!)
 (def-var! "clojure.core" "reader-conditional" np-reader-conditional)
 (def-var! "clojure.core" "re-matcher" np-re-matcher)
-(def-var! "clojure.core" "delay?" np-delay?)
 (def-var! "clojure.core" "macroexpand-1" np-macroexpand-1)
 (def-var! "clojure.core" "macroexpand" np-macroexpand)

@@ -214,9 +214,23 @@
   (jolt-agent-state-set! a new-state)
   a)
 
+;; --- delay (lazy once-forced computation) -----------------------------------
+;; (delay body) -> (make-delay (fn [] body)) (overlay macro); force/deref run the
+;; thunk once under a lock and cache the value (JVM delays are thread-safe). force
+;; (overlay) is (if (delay? x) (deref x) x), so it works once delay?/deref do.
+(define-record-type jolt-delay (fields thunk (mutable realized?) (mutable value) mu)
+  (nongenerative jolt-delay-v1))
+(define (jolt-make-delay thunk) (make-jolt-delay thunk #f jolt-nil (make-mutex)))
+(define (jolt-delay-force d)
+  (with-mutex (jolt-delay-mu d)
+    (unless (jolt-delay-realized? d)
+      (jolt-delay-value-set! d (jolt-invoke (jolt-delay-thunk d)))
+      (jolt-delay-realized?-set! d #t)))
+  (jolt-delay-value d))
+
 ;; --- deref extension --------------------------------------------------------
 ;; Chain the fully-built jolt-deref (atoms/vars/volatiles/reduced) with futures,
-;; promises, and agents, and accept the timed (deref ref ms val) arity for the
+;; promises, agents, and delays; accept the timed (deref ref ms val) arity for the
 ;; blocking ref types.
 (define %pre-conc-deref jolt-deref)
 (set! jolt-deref
@@ -229,13 +243,15 @@
        (if (null? opts) (jolt-promise-deref x)
            (jolt-promise-deref-timed x (car opts) (cadr opts))))
       ((jolt-agent? x) (jolt-agent-state x))
+      ((jolt-delay? x) (jolt-delay-force x))
       (else (apply %pre-conc-deref x opts)))))
 
-;; realized? for a Chez future/promise (the overlay reads Janet map keys). Wrap the
-;; overlay version in post-prelude.ss; here just the future/promise predicate.
+;; realized? for a Chez future/promise/delay (the overlay reads Janet map keys).
+;; Wrapped over the overlay version in post-prelude.ss.
 (define (jolt-conc-realized? x)
   (cond ((jolt-future? x) (jolt-future-done? x))
         ((jolt-promise? x) (jolt-promise-delivered? x))
+        ((jolt-delay? x) (jolt-delay-realized? x))
         (else #f)))
 
 ;; --- bind into clojure.core -------------------------------------------------
@@ -253,4 +269,6 @@
 (def-var! "clojure.core" "await" jolt-agent-await)
 (def-var! "clojure.core" "agent-error" jolt-agent-error)
 (def-var! "clojure.core" "restart-agent" jolt-agent-restart)
+(def-var! "clojure.core" "make-delay" jolt-make-delay)
+(def-var! "clojure.core" "delay?" jolt-delay?)
 (def-var! "clojure.core" "deref" jolt-deref)
