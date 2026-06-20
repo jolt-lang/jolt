@@ -121,7 +121,34 @@
       (hashtable-values var-table))
     m))
 (define (jolt-ns-publics desig) (ns-vars-pmap (ns-desig->name desig)))
-(define (jolt-ns-aliases desig) (jolt-hash-map))
+
+;; ns-aliases (jolt-cf1q.7): the {alias-sym -> ns-value} registered under `desig`
+;; (default the current ns) via require :as / alias. Reads ns-alias-table.
+(define (jolt-ns-aliases . desig)
+  (let ((cns (if (pair? desig) (ns-desig->name (car desig)) (chez-current-ns)))
+        (m (jolt-hash-map)))
+    (vector-for-each
+      (lambda (k)
+        (when (string=? (car k) cns)
+          (set! m (jolt-assoc m (jolt-symbol #f (cdr k))
+                              (intern-ns! (hashtable-ref ns-alias-table k #f))))))
+      (hashtable-keys ns-alias-table))
+    m))
+
+;; ns-refers (jolt-cf1q.7): the {sym -> var} referred into `desig` via refer/use.
+(define (jolt-ns-refers desig)
+  (let ((cns (ns-desig->name desig)) (m (jolt-hash-map)))
+    (vector-for-each
+      (lambda (k)
+        (when (string=? (car k) cns)
+          (let* ((target (hashtable-ref ns-refer-table k #f))
+                 (c (and target (var-cell-lookup target (cdr k)))))
+            (when c (set! m (jolt-assoc m (jolt-symbol #f (cdr k)) c))))))
+      (hashtable-keys ns-refer-table))
+    m))
+
+;; ns-imports: Chez has no Java class imports -> always the empty map.
+(define (jolt-ns-imports . _) (jolt-hash-map))
 
 ;; resolve: an unqualified symbol resolves in the current ns then clojure.core; a
 ;; qualified one in its own ns. Returns the var iff genuinely defined, else nil —
@@ -146,6 +173,66 @@
   (let ((c (var-cell-lookup (ns-desig->name ns-desig) (symbol-t-name sym))))
     (when c (var-cell-defined?-set! c #f) (var-cell-root-set! c jolt-unbound)))
   jolt-nil)
+
+;; --- ns runtime fns (jolt-cf1q.7) -------------------------------------------
+;; ns-resolve: resolve `sym` as if reading it in namespace `ns-desig`. Qualified
+;; syms consult that ns's :as aliases; unqualified resolve in the ns, its :refers,
+;; then clojure.core. Returns the var or nil (never interns).
+(define (jolt-ns-resolve ns-desig sym)
+  (let* ((cns (ns-desig->name ns-desig))
+         (sns (symbol-t-ns sym)) (nm (symbol-t-name sym))
+         (c (if (string? sns)
+                (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
+                (or (var-cell-lookup cns nm)
+                    (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
+                    (var-cell-lookup "clojure.core" nm)))))
+    (if (and c (var-cell-defined? c)) c jolt-nil)))
+
+;; remove-ns: drop the namespace from the registry AND its vars, so find-ns
+;; (which also derives existence from the var-table) returns nil afterward.
+(define (jolt-remove-ns desig)
+  (let ((nm (ns-desig->name desig)))
+    (hashtable-delete! ns-registry nm)
+    (vector-for-each
+      (lambda (k) (let ((c (hashtable-ref var-table k #f)))
+                    (when (and c (string=? (var-cell-ns c) nm)) (hashtable-delete! var-table k))))
+      (hashtable-keys var-table))
+    jolt-nil))
+
+;; intern: create/set a var ns/sym to val (or an unbound cell). Returns the var.
+(define (jolt-intern ns-desig sym . vopt)
+  (let ((nm (ns-desig->name ns-desig)) (s (symbol-t-name sym)))
+    (if (pair? vopt) (def-var! nm s (car vopt)) (declare-var! nm s))))
+
+;; alias / ns-unalias: register/drop an :as alias under the current (or given) ns.
+;; A runtime alias is registered into the SAME table the analyzer consults, so a
+;; later form in the program resolves alias/foo (the spine analyzes form by form).
+(define (jolt-alias alias-sym ns-sym)
+  (chez-register-alias! (chez-current-ns) (symbol-t-name alias-sym) (ns-desig->name ns-sym))
+  jolt-nil)
+(define (jolt-ns-unalias ns-desig alias-sym)
+  (hashtable-delete! ns-alias-table (cons (ns-desig->name ns-desig) (symbol-t-name alias-sym)))
+  jolt-nil)
+
+;; refer: bring every public var of `ns-sym` into the current ns as an unqualified
+;; name (filters accepted/ignored — the corpus uses the bare form). refer-clojure
+;; is a no-op (clojure.core always resolves on Chez).
+(define (jolt-refer ns-sym . _filters)
+  (let ((target (ns-desig->name ns-sym)) (cns (chez-current-ns)))
+    (vector-for-each
+      (lambda (c) (when (and (string=? (var-cell-ns c) target) (var-cell-defined? c))
+                    (chez-register-refer! cns (var-cell-name c) target)))
+      (hashtable-values var-table))
+    jolt-nil))
+(define (jolt-refer-clojure . _) jolt-nil)
+
+;; alter-meta! / reset-meta!: update a var's metadata (var-meta-table, rt.ss).
+(define (jolt-alter-meta! ref f . args)
+  (let* ((cur (or (hashtable-ref var-meta-table ref #f) (jolt-hash-map)))
+         (new (apply jolt-invoke f cur args)))
+    (hashtable-set! var-meta-table ref new)
+    new))
+(define (jolt-reset-meta! ref m) (hashtable-set! var-meta-table ref m) m)
 
 ;; --- RESOLVE FRICTION: native-op cells -------------------------------------
 ;; Native-op primitives (+ map reduce …) are INLINED at emit, so they have no
@@ -187,9 +274,20 @@
 (def-var! "clojure.core" "ns-map" jolt-ns-publics)
 (def-var! "clojure.core" "ns-interns" jolt-ns-publics)
 (def-var! "clojure.core" "ns-aliases" jolt-ns-aliases)
+(def-var! "clojure.core" "ns-refers" jolt-ns-refers)
+(def-var! "clojure.core" "ns-imports" jolt-ns-imports)
 (def-var! "clojure.core" "resolve" jolt-resolve)
+(def-var! "clojure.core" "ns-resolve" jolt-ns-resolve)
 (def-var! "clojure.core" "find-var" jolt-find-var)
 (def-var! "clojure.core" "ns-unmap" jolt-ns-unmap)
+(def-var! "clojure.core" "remove-ns" jolt-remove-ns)
+(def-var! "clojure.core" "intern" jolt-intern)
+(def-var! "clojure.core" "alias" jolt-alias)
+(def-var! "clojure.core" "ns-unalias" jolt-ns-unalias)
+(def-var! "clojure.core" "refer" jolt-refer)
+(def-var! "clojure.core" "refer-clojure" jolt-refer-clojure)
+(def-var! "clojure.core" "alter-meta!" jolt-alter-meta!)
+(def-var! "clojure.core" "reset-meta!" jolt-reset-meta!)
 ;; *ns* starts at the user namespace (the current ns for -e user code). in-ns
 ;; re-binds it. (ns-name is overridden natively in post-prelude.ss.)
 (def-var! "clojure.core" "*ns*" (intern-ns! "user"))

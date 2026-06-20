@@ -132,6 +132,7 @@
     ((procedure? f) (apply f args))
     ((keyword? f) (apply jolt-get (car args) f (cdr args)))   ; (:k m [d]) -> (get m :k [d])
     ((jolt-coll? f) (apply jolt-get f args))                  ; (coll k [d]) -> (get coll k [d])
+    ((jolt-transient? f) (apply jolt-get f args))             ; a transient vec/map/set is callable on the JVM
     (else (error 'invoke "not a fn" f))))
 
 ;; ============================================================================

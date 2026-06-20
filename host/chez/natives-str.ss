@@ -277,8 +277,14 @@
 (def-var! "clojure.core" "str-replace" str-replace)
 (def-var! "clojure.core" "str-replace-all" str-replace-all)
 
-;; (require ...) / (use ...) at runtime: the Chez AOT driver pre-evals these
-;; against the analyzer ctx to register aliases + load aliased nss (driver.janet),
-;; so the emitted call only needs to not crash. A no-op returning nil.
-(def-var! "clojure.core" "require" (lambda args jolt-nil))
-(def-var! "clojure.core" "use" (lambda args jolt-nil))
+;; (require ...) / (use ...) at runtime: register each spec's :as alias + :refer
+;; names into the runtime ns tables (chez-register-spec!, ns.ss), keyed by the
+;; current ns. The zero-Janet spine also pre-registers these at analyze time
+;; (idempotent); but when the JANET analyzer compiled the form (the prelude path)
+;; the Chez tables were never populated, so ns-aliases/ns-resolve over an :as alias
+;; need this runtime registration (jolt-cf1q.7). Specs arrive evaluated (quoted).
+(define (chez-runtime-require . specs)
+  (for-each (lambda (s) (chez-register-spec! (chez-current-ns) s)) specs)
+  jolt-nil)
+(def-var! "clojure.core" "require" chez-runtime-require)
+(def-var! "clojure.core" "use" chez-runtime-require)

@@ -320,6 +320,11 @@
 ;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
 (load "host/chez/math.ss")
 
+;; parity shims (jolt-cf1q.7): native clojure.core fns missing on the zero-Janet
+;; spine (hash family / rseq / cat / transient?). After host-table.ss (sorted),
+;; transients.ss, values.ss (jolt-hash), seq.ss.
+(load "host/chez/natives-parity.ss")
+
 ;; syntax-quote form builders (jolt-r9lm, inc6b): __sqcat/__sqvec/__sqmap/__sqset/
 ;; __sq1, def-var!'d into clojure.core. A cross-compiled macro expander (analyzer
 ;; on Chez, inc6b) calls these to build its expansion as reader forms. Needs the

@@ -312,8 +312,10 @@
 # future/deref/pmap cases run instead of crashing. 2534->2559, 0 new divergences.
 # Then -2 when agents went async (the two "send/send-off applies" sync-shim cases
 # match the JVM's async raciness and are allowlisted) -> 2557.
+# jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn + ns runtime fns +
+# runtime-require alias registration) -> 2590.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2557")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2590")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

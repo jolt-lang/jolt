@@ -191,8 +191,9 @@
 # on any NEW divergence or if pass drops below the floor. Strided runs scale to 0.
 # 2569 after futures/pmap (jolt-byjr pt.1); -2 when agents went async (the two
 # "send/send-off applies" sync-shim cases now match the JVM's async raciness and
-# are allowlisted) -> 2567.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2567")))
+# are allowlisted) -> 2567. jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn
+# + ns runtime fns) -> 2600.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2600")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
