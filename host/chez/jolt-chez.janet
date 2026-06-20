@@ -11,7 +11,7 @@
 (import ../../src/jolt/api :as api)
 (import ./driver :as d)
 
-(defn- fingerprint []
+(defn fingerprint []
   # Hash the inputs that shape the prelude: the core tiers + the emitter + the
   # Chez RT shims. Any change invalidates the cached prelude.
   (def parts @[])
@@ -32,7 +32,7 @@
     (array/push parts (slurp f)))
   (string/slice (string (hash (string/join parts))) 0))
 
-(defn- ensure-prelude [ctx]
+(defn ensure-prelude [ctx]
   (def dir (or (os/getenv "JOLT_IMAGE_CACHE_DIR") (os/getenv "TMPDIR") "/tmp"))
   (def path (string dir "/jolt-chez-prelude-" (fingerprint) ".ss"))
   (unless (os/stat path)

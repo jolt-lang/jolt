@@ -229,6 +229,101 @@
   (cset-prelude! ctx false)
   [(string/join out "\n") emitted total])
 
+# --- analyzer/emitter cross-compile (jolt-hs9n, the zero-Janet spine) ---------
+# Phase 3 inc6: cross-compile the PORTABLE compiler (jolt.ir + jolt.analyzer +
+# jolt.backend-scheme) to Scheme def-var! forms so analyze->IR->emit runs ON CHEZ.
+# Same emit pipeline as the core prelude, but for jolt-core/jolt/* namespaces
+# rather than clojure.core: jolt.* refs lower to var-deref (the prelude-mode gate
+# only rejects clojure.* refs), clojure.core refs resolve from the loaded prelude,
+# and the jolt.host form-*/resolve-global/... refs resolve from host-contract.ss.
+
+(defn- emit-ns-forms-list
+  "Cross-compile one namespace's source to a list of guard-wrapped def-var! Scheme
+  strings (prelude mode must already be ON). Registers the ns' requires/aliases in
+  ctx first so cross-ns refs resolve at emit time; skips ns + macro forms (macros
+  are analyze-time only, already expanded at their use sites)."
+  [ctx ns-name src]
+  (tctx/create-ns ctx ns-name)
+  (tctx/ctx-set-current-ns ctx ns-name)
+  (def out @[])
+  (each f (parse-all src)
+    (def ns-form? (and (indexed? f) (> (length f) 0) (= "ns" (sym-name (in f 0)))))
+    (if ns-form? (protect (api/eval-one ctx f)) (scan-eval-requires! ctx f))
+    (unless (or ns-form? (macro-form? f))
+      (def res (protect (cemit ctx (backend/analyze-form ctx f))))
+      (when (res 0)
+        (array/push out (string "(guard (e (#t #f))\n  " (res 1) ")")))))
+  out)
+
+(def compiler-ns-files
+  [["jolt.ir" "jolt-core/jolt/ir.clj"]
+   ["jolt.analyzer" "jolt-core/jolt/analyzer.clj"]
+   ["jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj"]])
+
+(defn emit-compiler-image
+  "Cross-compile the analyzer pipeline (jolt.ir + jolt.analyzer +
+  jolt.backend-scheme) to a Scheme string of prelude-mode def-var! forms — the
+  analyze->IR->emit spine running ON CHEZ (jolt-hs9n). Load AFTER rt.ss +
+  host-contract.ss + the core prelude. Returns [scheme total]."
+  [ctx]
+  (ensure-clj-emitter ctx)
+  # ensure-analyzer is lazy; a trivial analyze builds jolt.ir/jolt.analyzer/
+  # jolt.passes in the Janet ctx so their vars resolve while we emit their source.
+  (protect (backend/analyze-form ctx (in (r/parse-next "nil") 0)))
+  (cset-prelude! ctx true)
+  (def prev-ns (tctx/ctx-current-ns ctx))
+  (def out @[])
+  (each [ns-name path] compiler-ns-files
+    (array/concat out (emit-ns-forms-list ctx ns-name (slurp path))))
+  (tctx/ctx-set-current-ns ctx prev-ns)
+  (cset-prelude! ctx false)
+  [(string/join out "\n") (length out)])
+
+(defn ensure-compiler-image
+  "Build (once) and return the path to the cross-compiled compiler image — the
+  jolt.ir/jolt.analyzer/jolt.backend-scheme def-var! forms (jolt-hs9n). Cached on
+  disk keyed by the same fingerprint scheme as the prelude; pass an explicit path
+  to control caching from the test harness."
+  [ctx path]
+  (unless (os/stat path)
+    (def [img _] (emit-compiler-image ctx))
+    (spit path img))
+  path)
+
+(defn program-zero-janet
+  "Assemble a fully self-hosted Chez program: rt.ss + the core prelude +
+  host-contract.ss + the cross-compiled compiler image + compile-eval.ss, then
+  compile AND eval `src` ON CHEZ (read->analyze->emit->eval, no Janet). The
+  zero-Janet spine (jolt-hs9n)."
+  [prelude-path image-path src ns]
+  (string
+    "(import (chezscheme))\n"
+    "(load \"host/chez/rt.ss\")\n"
+    "(set-chez-ns! \"clojure.core\")\n"
+    "(load " (string/format "%j" prelude-path) ")\n"
+    "(load \"host/chez/post-prelude.ss\")\n"
+    "(set-chez-ns! \"user\")\n"
+    "(load \"host/chez/host-contract.ss\")\n"
+    "(load " (string/format "%j" image-path) ")\n"
+    "(load \"host/chez/compile-eval.ss\")\n"
+    "(printf \"~a\\n\" (jolt-final-str (jolt-compile-eval "
+    (string/format "%j" src) " " (string/format "%j" ns) ")))\n"))
+
+(defn eval-zero-janet
+  "Compile+run `src` through the ON-CHEZ analyzer/emitter (zero Janet). Needs a
+  prebuilt core prelude (`prelude-path`) and compiler image (`image-path`).
+  Returns [code stdout stderr]."
+  [prelude-path image-path src &opt ns scheme-out]
+  (default ns "user")
+  (def prog (program-zero-janet prelude-path image-path src ns))
+  (def path (or scheme-out (string "/tmp/jolt-zero-janet-" (os/getpid) ".ss")))
+  (spit path prog)
+  (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))
+  (def out (drain (proc :out)))
+  (def err (drain (proc :err)))
+  (def code (os/proc-wait proc))
+  [code (string/trim out) (string/trim err)])
+
 (defn program-with-prelude
   "Assemble a runnable Chez program that loads rt.ss, loads the assembled core
   prelude from `prelude-path` (a file written once), then prints `final-scm`."
