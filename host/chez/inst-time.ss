@@ -198,7 +198,11 @@
   (lambda (type-sym val)
     (let ((tn (class-short (symbol-t-name type-sym))))
       (cond
-        ((jinst? val) (if (string=? tn "Date") #t (%it-instance-check type-sym val)))
+        ;; a #inst / (Date.) is a java.util.Date; it is NOT a java.sql.Timestamp
+        ;; (on the JVM a Date is not a Timestamp), so answer Timestamp explicitly #f.
+        ((jinst? val) (cond ((string=? tn "Date") #t)
+                            ((string=? tn "Timestamp") #f)
+                            (else (%it-instance-check type-sym val))))
         ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t (%it-instance-check type-sym val)))
         ((and (jhost? val) (string=? (jhost-tag val) "local-dt")) (if (string=? tn "LocalDateTime") #t (%it-instance-check type-sym val)))
         (else (%it-instance-check type-sym val))))))
@@ -275,10 +279,30 @@
         (cons "US" (make-jhost "locale" (vector "en-US")))
         (cons "ROOT" (make-jhost "locale" (vector "root")))))
 
-;; java.util.Date: #inst's class. (Date. ms) and the no-arg now form -> a jinst,
-;; so .getTime / inst? / instance? Date work; ctor + .getTime mirror host_io.janet.
-(register-class-ctor! "Date" (lambda args (make-jinst (if (null? args) (now-ms) (exact->inexact (car args))))))
-(register-class-ctor! "java.util.Date" (lambda args (make-jinst (if (null? args) (now-ms) (exact->inexact (car args))))))
+;; java.util.Date / java.sql.Timestamp: #inst's classes. (Date.) = now, (Date. ms)
+;; or (Date. another-date) -> a jinst (ms-of accepts a number / jinst / instant), so
+;; .getTime / inst? / instance? Date|Timestamp work. (jolt-dcmm)
+(define (date-ctor . args)
+  (make-jinst (if (null? args) (now-ms) (exact->inexact (ms-of (car args))))))
+(register-class-ctor! "Date" date-ctor)
+(register-class-ctor! "java.util.Date" date-ctor)
+(register-class-ctor! "Timestamp" date-ctor)
+(register-class-ctor! "java.sql.Timestamp" date-ctor)
+
+;; java.util.TimeZone: an opaque id holder (format-ms is UTC, so a non-UTC zone is
+;; not honored — only the UTC case the corpus uses is exercised).
+(define (timezone-of id) (make-jhost "timezone" (vector (if (string? id) id (jolt-str-render-one id)))))
+(register-class-statics! "TimeZone" (list (cons "getTimeZone" timezone-of)))
+(register-class-statics! "java.util.TimeZone" (list (cons "getTimeZone" timezone-of)))
+
+;; java.text.SimpleDateFormat: holds a pattern; .setTimeZone is accepted (format-ms
+;; is UTC); .format(date) renders the date per the pattern via the format-ms engine.
+(define (sdf-ctor pat . _) (make-jhost "sdf" (vector (if (string? pat) pat (jolt-str-render-one pat)))))
+(register-class-ctor! "SimpleDateFormat" sdf-ctor)
+(register-class-ctor! "java.text.SimpleDateFormat" sdf-ctor)
+(register-host-methods! "sdf"
+  (list (cons "setTimeZone" (lambda (self tz) jolt-nil))
+        (cons "format" (lambda (self d) (format-ms (vector-ref (jhost-state self) 0) (ms-of d))))))
 
 ;; a jinst's java.util.Date method surface (record-method-dispatch arm).
 (define %it-rmd record-method-dispatch)

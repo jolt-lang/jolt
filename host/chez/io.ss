@@ -121,6 +121,13 @@
 (define (reader-jhost? x)
   (and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader"))))
 
+;; clojure.edn/read over a reader (jolt-uicd): the overlay edn.clj's drain-reader is
+;; janet/type-coupled, so on Chez we drain the jhost reader to a string and read the
+;; first EDN form (read-string). Re-asserted over the prelude in post-prelude.ss.
+(define (chez-edn-read reader)
+  (jolt-invoke (var-deref "clojure.core" "read-string")
+               (if (reader-jhost? reader) (drain-reader reader) (jolt-str-render-one reader))))
+
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (read-file-string (jfile-path src)))

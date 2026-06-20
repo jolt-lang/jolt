@@ -65,3 +65,9 @@
       (if (or (jolt-future? x) (jolt-promise? x) (jolt-delay? x))
           (jolt-conc-realized? x)
           (jolt-invoke overlay-realized? x)))))
+;; clojure.edn/read over a reader: the overlay edn.clj drain-reader uses janet/type;
+;; the native Chez version (io.ss) drains the jhost reader instead (jolt-uicd/jolt-7t3l).
+(def-var! "clojure.edn" "read"
+  (case-lambda
+    ((reader) (chez-edn-read reader))
+    ((opts reader) (chez-edn-read reader))))
