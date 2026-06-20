@@ -92,6 +92,17 @@
 (define jolt-kw-var-name (keyword #f "name"))
 (define (def-var-with-meta! ns name v m)
   (let ((c (def-var! ns name v))) (hashtable-set! var-meta-table c m) c))
+;; runtime-macro registry (jolt-r9lm, inc6b): a var whose root holds a macro
+;; expander fn is flagged here, so the ON-CHEZ analyzer's form-macro?/form-expand-1
+;; (host-contract.ss) expand it. The prelude emits each core/stdlib defmacro as a
+;; def-var! of its (cross-compiled) expander followed by (mark-macro! ns name).
+;; Keyed by cell (eq), like var-meta-table — survives a later (def name ...) that
+;; replaces the expander but keeps the same cell, matching Clojure (a defmacro IS a
+;; def whose var carries :macro).
+(define var-macro-table (make-eq-hashtable))
+(define (mark-macro! ns name)
+  (let ((c (jolt-var ns name))) (hashtable-set! var-macro-table c #t) c))
+(define (macro-var? cell) (and cell (hashtable-ref var-macro-table cell #f) #t))
 ;; declare / (def name) with no init: reserve the cell ONLY if absent. An
 ;; existing root is left intact — Clojure's (def x) with no init does not clobber
 ;; a prior binding (do (def x 7) (def x) x) => 7. Returns the cell either way.
@@ -308,3 +319,9 @@
 ;; clojure.math (jolt-22vo): native flonum-math shims def-var!'d into the
 ;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
 (load "host/chez/math.ss")
+
+;; syntax-quote form builders (jolt-r9lm, inc6b): __sqcat/__sqvec/__sqmap/__sqset/
+;; __sq1, def-var!'d into clojure.core. A cross-compiled macro expander (analyzer
+;; on Chez, inc6b) calls these to build its expansion as reader forms. Needs the
+;; collection/seq layer + def-var!; order-independent past those.
+(load "host/chez/syntax-quote.ss")

@@ -41,7 +41,12 @@
 (define (hc-list? x) (or (empty-list-t? x) (and (cseq? x) (cseq-list? x))))
 (define (hc-vec? x) (pvec? x))
 (define (hc-map? x) (and (pmap? x) (jolt-nil? (jolt-get x hc-kw-jolt-type))))
-(define (hc-set? x) (and (pmap? x) (eq? (jolt-get x hc-kw-jolt-type) hc-kw-jolt-set)))
+;; A set form is the reader's tagged map {:jolt/type :jolt/set :value <pvec>} OR a
+;; real pset value — a macro template's #{...} expansion (syntax-quote.ss jolt-sqset)
+;; produces a pset, which the analyzer must still read as a set literal (jolt-r9lm).
+(define (hc-set? x)
+  (or (pset? x)
+      (and (pmap? x) (eq? (jolt-get x hc-kw-jolt-type) hc-kw-jolt-set))))
 (define (hc-char? x) (char? x))
 (define (hc-literal? x)
   (or (jolt-nil? x) (boolean? x) (number? x) (string? x) (keyword-t? x) (char? x)))
@@ -72,7 +77,10 @@
         ((cseq? x) (make-pvec (list->vector (seq->list x))))
         (else empty-pvec)))
 (define (hc-vec-items x) x)                 ; already a pvec
-(define (hc-set-items x) (jolt-get x hc-kw-value))
+(define (hc-set-items x)
+  (if (pset? x)
+      (apply jolt-vector (pset-fold x cons '()))
+      (jolt-get x hc-kw-value)))
 (define (hc-map-pairs x)
   (let loop ((ks (if (jolt-nil? (jolt-seq (jolt-keys x))) '()
                      (seq->list (jolt-seq (jolt-keys x))))) (acc '()))
@@ -104,13 +112,33 @@
 (define (hc-current-ns ctx) (chez-actx-cns ctx))
 (define (hc-late-bind? ctx) #t)            ; Chez has no interpreter to punt to
 
-;; Runtime macros land in inc6b (jolt-r8ku): no macro is emitted as a runtime
-;; value yet, so nothing is a macro. form-macro? is only ever asked about a
-;; non-handled, non-special head (e.g. +, a user fn) — all non-macros today.
-(define (hc-macro? ctx sym) #f)
+;; Resolve a global symbol to its var cell against the compile ns then clojure.core
+;; (a qualified ns wins). Shared by resolve-global / form-macro? / form-expand-1.
+;; Normalizes the reader's unqualified-ns sentinel (#f / '() / jolt-nil) like
+;; hc-sym-ns, so an unqualified symbol never looks up a bogus "#f" namespace.
+(define (hc-resolve-cell ctx sym)
+  (let* ((nm (symbol-t-name sym))
+         (sns (symbol-t-ns sym))
+         (qualified (and sns (not (jolt-nil? sns)) (not (null? sns)) sns)))
+    (if qualified
+        (var-cell-lookup qualified nm)
+        (or (var-cell-lookup (chez-actx-cns ctx) nm)
+            (var-cell-lookup "clojure.core" nm)))))
+
+;; Runtime macros (jolt-r9lm, inc6b): a defmacro is emitted into the prelude as a
+;; def-var! of its cross-compiled expander fn plus (mark-macro! ns name), so the
+;; var cell is flagged a macro (rt.ss var-macro-table). form-macro? checks the
+;; flag; form-expand-1 applies the expander to the unevaluated arg forms (the rest
+;; of the list), and the analyzer re-analyzes the returned form. Mirrors
+;; host_iface.janet h-macro?/h-expand-1.
+(define (hc-macro? ctx sym)
+  (macro-var? (hc-resolve-cell ctx sym)))
 (define (hc-expand-1 ctx form)
-  (jolt-throw (jolt-ex-info "form-expand-1: runtime macros not on Chez yet (jolt-r8ku)"
-                            (jolt-hash-map))))
+  (let* ((items (seq->list form))
+         (head (car items))
+         (args (cdr items))
+         (expander (var-cell-root (hc-resolve-cell ctx head))))
+    (apply jolt-invoke expander args)))
 
 ;; Classify a global (non-local) symbol reference against the var registry:
 ;;   {:kind :var :ns NS :name NAME}   — a defined var (compile ns / clojure.core)
@@ -121,12 +149,7 @@
 ;; they classify as :var and the emitter's native-op path lowers them.
 (define (hc-resolve-global ctx sym)
   (let* ((nm (symbol-t-name sym))
-         (sns (symbol-t-ns sym))
-         (qualified (and (not (jolt-nil? sns)) sns))
-         (cell (if qualified
-                   (var-cell-lookup qualified nm)
-                   (or (var-cell-lookup (chez-actx-cns ctx) nm)
-                       (var-cell-lookup "clojure.core" nm)))))
+         (cell (hc-resolve-cell ctx sym)))
     (if (and cell (var-cell-defined? cell))
         (jolt-hash-map hc-kw-kind hc-kw-var
                        hc-kw-ns (var-cell-ns cell)

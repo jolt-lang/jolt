@@ -67,5 +67,31 @@
    "(= 5 5)"]
   (check src))
 
+# inc6b (jolt-r9lm): runtime macros — the on-Chez analyzer expands core macros
+# (emitted into the prelude as expander fns + a macro flag). Same oracle: the
+# Janet analyzer expands them at analyze time, the value must match.
+(each src
+  ["(when true 1)"
+   "(when false 1)"
+   "(when true 1 2 3)"
+   "(when-not false 5)"
+   "(let [a 1] (+ a 2))"
+   "(let [a 1 b 2] (+ a b))"
+   "(let [a 1 b (+ a 1)] (* a b))"
+   "(-> 1 inc inc)"
+   "(-> 5 (- 2))"
+   "(->> 3 (- 10))"
+   "(and 1 2 3)"
+   "(and 1 false 3)"
+   "(or nil 5)"
+   "(or false nil 7)"
+   "(cond false 1 true 2)"
+   "(cond false 1 :else 3)"
+   "(if-not false :a :b)"
+   "(do (defn f [x] (* x x)) (f 6))"
+   "(do (defn g [x y] (+ x y 1)) (g 3 4))"
+   "(let [a 1] (when (< a 5) (-> a inc inc)))"]
+  (check src))
+
 (printf "\n%d/%d ok" (- total fails) total)
 (when (> fails 0) (os/exit 1))

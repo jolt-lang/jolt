@@ -281,8 +281,12 @@
 # missing `long` coercion def-var!'d (converters.ss). pprint's 2-arity dropped its
 # (binding [*out* writer] ...) (uncompilable on the no-fallback Chez back end —
 # *out* isn't a bindable var). 2280, crashes 191->170, 0 new divergences.
+# Phase-3 inc6b (jolt-r9lm): runtime macros — each core/stdlib defmacro now emits
+# into the prelude as an expander fn + mark-macro!, so syntax-quote VALUE forms
+# (`(...)/`[...]/`{...}/`#{...} via __sqcat/__sqvec/__sqmap/__sqset) run at runtime.
+# 2280->2295, 0 new divergences.
 # Strided runs scale down.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2280")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_PRELUDE_FLOOR") "2295")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

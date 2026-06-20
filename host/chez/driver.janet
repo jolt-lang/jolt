@@ -158,6 +158,47 @@
   (and (indexed? f) (> (length f) 0)
        (let [h (sym-name (in f 0))] (and h (or (= h "defmacro") (= h "definline"))))))
 
+# Extract [name-string fn-form] from (defmacro NAME ...rest): the macro's expander
+# as a bare (fn ...rest), docstring/attr-map stripped. Mirrors eval_special.janet/
+# eval-defmacro's parsing — bare name (no metadata on the name in core/stdlib),
+# optional docstring, optional attr-map, then a params vector + body (single arity)
+# OR arity clauses. Uses the `fn` MACRO (not fn*) so a destructured macro arglist
+# desugars before lowering, like api/macro-compile-hook.
+#
+# We emit the BARE fn (not (def NAME ...)) on purpose: analyzing a def would
+# host-intern! NAME in the Janet build ctx as a non-macro nil-root stub, and that
+# stub makes a later (require '[stdlib-ns]) skip loading the REAL macro — so the
+# Janet-hosted analyzer (the parity oracle) would treat e.g. with-pprint-dispatch
+# as a fn and return its unexpanded template. The caller wraps the emitted lambda
+# in def-var! manually, so NAME is never interned and require still works (jolt-r9lm).
+(defn- defmacro->fn [f]
+  (def name-sym (in f 1))
+  (def after-name (tuple/slice f 2))
+  (def a1 (if (and (> (length after-name) 0) (string? (first after-name)))
+            (tuple/slice after-name 1) after-name))
+  (def after-meta (if (and (> (length a1) 0) (struct? (first a1))
+                           (not= :symbol (get (first a1) :jolt/type)))
+                    (tuple/slice a1 1) a1))
+  (def fn-sym {:jolt/type :symbol :ns nil :name "fn"})
+  [(sym-name name-sym) (array fn-sym ;after-meta)])
+
+# Cross-compile one top-level form to its guard-wrapped Scheme string, or nil if it
+# doesn't emit (out of subset). A defmacro emits as (def-var! ns name <expander fn>)
+# plus (mark-macro! ns name) so the on-Chez analyzer expands it (jolt-r9lm). The
+# caller handles ns forms (alias registration only) before calling this.
+(defn- emit-form-scheme [ctx ns-name f]
+  (defn- jts [x] (string/format "%j" x))
+  (if (macro-form? f)
+    (let [[nm fn-form] (defmacro->fn f)]
+      (when nm
+        (def res (protect (cemit ctx (backend/analyze-form ctx fn-form))))
+        (when (res 0)
+          (string "(guard (e (#t #f))\n  (def-var! " (jts ns-name) " " (jts nm) "\n    "
+                  (res 1) ")\n  (mark-macro! " (jts ns-name) " " (jts nm) "))"))))
+    (let [res (protect (cemit ctx (backend/analyze-form ctx f)))]
+      (when (res 0)
+        (string "(guard (e (#t #f))\n  " (res 1) ")")))))
+
 (defn- form-label [f]
   (if (and (indexed? f) (> (length f) 1))
     (let [h (or (sym-name (in f 0)) "?") n (sym-name (in f 1))] (if n (string h " " n) h))
@@ -205,19 +246,17 @@
       (if ns-form? (protect (api/eval-one ctx f)) (scan-eval-requires! ctx f))
       # Skip emitting ns forms: their only role here is alias registration, and a
       # runtime ns-switch would leak into the prelude's trailing *ns* (the def-var!s
-      # already carry explicit ns names). Macros have no runtime value either.
-      (unless (or ns-form? (macro-form? f))
+      # already carry explicit ns names). Macros ARE emitted now (jolt-r9lm): each
+      # defmacro becomes a def of its expander fn + (mark-macro! ns name) so the
+      # on-Chez analyzer (inc6b) can expand it — previously skipped (the Janet
+      # analyzer expanded them at analyze time, before they reached the prelude).
+      # Tolerant load guard (inside emit-form-scheme): a form that fails to LOAD
+      # (the 8 Phase-2 multimethod print-method forms in 50-io) is swallowed so it
+      # doesn't break the rest of the prelude — it becomes a lazy gap.
+      (unless ns-form?
         (++ total)
-        (def res (protect (cemit ctx (backend/analyze-form ctx f))))
-        (when (res 0)
-          (++ emitted)
-          # Tolerant load guard: a form that fails to LOAD (currently only the 8
-          # Phase-2 multimethod print-method forms in 50-io) is swallowed so it
-          # doesn't break the rest of the prelude — it becomes a lazy gap (the var
-          # cell stays nil; calling it surfaces in the parity gate's crash bucket).
-          # Silent to keep a real -e's stderr clean; the known set is documented.
-          (array/push out
-            (string "(guard (e (#t #f))\n  " (res 1) ")"))))))
+        (def scm (emit-form-scheme ctx ns-name f))
+        (when scm (++ emitted) (array/push out scm)))))
   (each tf core-tier-files
     (emit-ns-forms "clojure.core" (slurp (string core-dir tf ".clj"))))
   # stdlib namespaces beyond clojure.core that are pure Clojure over core/host
@@ -249,10 +288,11 @@
   (each f (parse-all src)
     (def ns-form? (and (indexed? f) (> (length f) 0) (= "ns" (sym-name (in f 0)))))
     (if ns-form? (protect (api/eval-one ctx f)) (scan-eval-requires! ctx f))
-    (unless (or ns-form? (macro-form? f))
-      (def res (protect (cemit ctx (backend/analyze-form ctx f))))
-      (when (res 0)
-        (array/push out (string "(guard (e (#t #f))\n  " (res 1) ")")))))
+    # The compiler namespaces define no macros, but route through the shared helper
+    # anyway (a defmacro would emit as a def + mark-macro!, jolt-r9lm).
+    (unless ns-form?
+      (def scm (emit-form-scheme ctx ns-name f))
+      (when scm (array/push out scm))))
   out)
 
 (def compiler-ns-files
