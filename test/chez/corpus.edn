@@ -2897,7 +2897,7 @@
   {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "optional group" :expected "[\"1.2.3\" \"1\" \"2\" \"3\" nil]" :actual "(re-find #\"(\\d+)\\.(\\d+)\\.(\\d+)(?:-([a-z]+))?\" \"1.2.3\")"}
   {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "alternation" :expected "\"dog\"" :actual "(re-find #\"cat|dog\" \"a dog cat\")"}
   {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "str/replace $1" :expected "\"he[ll]o\"" :actual "(do (require (quote [clojure.string :as s])) (s/replace \"hello\" #\"(l+)\" \"[$1]\"))"}
-  {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "str/replace regex" :expected "\"X-X\"" :actual "(do (require (quote [clojure.string :as s])) (s/replace \"a-b\" #\"[a-z]\" \"X\"))"}
+  {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "str/replace regex (2)" :expected "\"X-X\"" :actual "(do (require (quote [clojure.string :as s])) (s/replace \"a-b\" #\"[a-z]\" \"X\"))"}
   {:suite "conformance / map literals evaluate their values" :label "map literal var" :expected "{:k 5}" :actual "(let [x 5] {:k x})"}
   {:suite "conformance / map literals evaluate their values" :label "map literal nested" :expected "{:a {:b 2}}" :actual "(let [y 2] {:a {:b y}})"}
   {:suite "conformance / map literals evaluate their values" :label "map literal keyfn" :expected "{:x 1}" :actual "(let [k :x] {k 1})"}

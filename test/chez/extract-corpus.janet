@@ -99,12 +99,20 @@
                            :label label :expected expected :actual actual}))))))
 (printf "folded %d unique conformance cases (deduped by :actual)" conf-added)
 
-# emit EDN-and-Janet-valid corpus
+# emit EDN-and-Janet-valid corpus. [suite label] is the canonical case id, so make
+# it unique: a duplicate label within a suite gets " (N)" appended (jolt-3447 — the
+# conformance fold can repeat a label, e.g. two "str/replace regex" rows). Rows are
+# immutable structs, so disambiguate the label here at emit time.
+(def label-seen @{})
 (def out @"[\n")
 (each row all
+  (def k (string (row :suite) "\x00" (row :label)))
+  (def n (get label-seen k))
+  (put label-seen k (if n (+ n 1) 1))
+  (def label (if n (string (row :label) " (" (+ n 1) ")") (row :label)))
   (buffer/push out
     (string "  {:suite " (edn-str (row :suite))
-            " :label " (edn-str (row :label))
+            " :label " (edn-str label)
             " :expected " (if (keyword? (row :expected)) ":throws" (edn-str (row :expected)))
             " :actual " (edn-str (row :actual)) "}\n")))
 (buffer/push out "]\n")

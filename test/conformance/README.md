@@ -1,5 +1,10 @@
 # Conformance: certifying the corpus against reference Clojure
 
+> **See [SPEC.md](SPEC.md)** for the full host-neutral language-spec contract: the
+> corpus schema, conformance levels, the feature profile, and how to host jolt on a
+> new runtime. This README covers the certification tooling specifically.
+
+
 The corpus (`test/chez/corpus.edn`) is jolt's host-neutral behavioral suite — one
 row per case: `{:suite :label :expected :actual}`, where `:actual` is a Clojure
 source expression and `:expected` its result (or `:throws`). Runtime harnesses
