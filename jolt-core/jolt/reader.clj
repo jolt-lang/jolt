@@ -20,8 +20,12 @@
   (:require [clojure.string :as str]
             [jolt.host :refer [form-make-symbol form-make-char form-char-from-name
                                form-scan-number form-make-list form-make-vector
-                               form-make-map form-sym-merge-meta
-                               form-sym? form-sym-name form-sym-ns form-char?]]))
+                               form-make-map form-sym-merge-meta form-make-set
+                               form-make-tagged form-gensym-name
+                               form-sym? form-sym-name form-sym-ns form-char?
+                               form-list? form-vec? form-set? form-map?
+                               form-elements form-vec-items form-set-items
+                               form-map-pairs]]))
 
 ;; Source access by CHARACTER codepoint, mirroring the Janet reader's byte access
 ;; (identical for ASCII). cp = codepoint at i; len = character count.
@@ -274,6 +278,151 @@
       ;; raw map-literal meta when m is nil)
       [:form (form-make-list [(form-make-symbol "with-meta") form (if m m meta-form)]) np2])))
 
+;; --- dispatch (#) ------------------------------------------------------------
+;; Reader-conditional feature set (spec 02-reader). jolt's portable default; the
+;; JOLT_FEATURES env override is a host concern wired later. :default always honored.
+(def reader-features (atom #{:jolt :default}))
+(defn set-reader-features! [features] (reset! reader-features (conj (set features) :default)))
+
+(defn- read-set* [s pos]
+  ;; pos at #, next char {
+  (let [[items end] (read-delimited s (+ pos 2) 125 "Unterminated set")]  ; }
+    [:form (form-make-set items) end]))
+
+(defn- read-var-quote* [s pos]
+  ;; pos at #, next char '
+  (let [[form np] (read-next-form s (+ pos 2))]
+    [:form (form-make-list [(form-make-symbol "var") form]) np]))
+
+(defn- read-regex* [s pos]
+  ;; pos at #, next char "; read raw to the unescaped closing " (backslashes kept)
+  (loop [i (+ pos 2)]
+    (when (>= i (len s)) (throw (ex-info "Unterminated regex literal" {})))
+    (let [c (cp s i)]
+      (cond
+        (= c 92) (recur (+ i 2))   ; backslash escapes next char
+        (= c 34) [:form (form-make-tagged :regex (subs s (+ pos 2) i)) (inc i)]
+        :else (recur (inc i))))))
+
+;; #?(…) / #?@(…): pick the first clause whose feature key is active (clause order,
+;; like Clojure). #? -> :skip when the result is nil (e.g. a :cljs branch); #?@ ->
+;; :splice the resolved items into the enclosing collection.
+(defn- rc-resolve [clauses]
+  ;; clauses: a jolt vector of [feature-kw form feature-kw form ...]
+  (loop [i 0]
+    (if (>= i (count clauses))
+      [false nil]
+      (if (contains? @reader-features (nth clauses i))
+        [true (nth clauses (inc i))]
+        (recur (+ i 2))))))
+
+(defn- read-reader-conditional* [s pos]
+  ;; pos at #, next char ? (optionally ?@)
+  (let [splice? (and (< (+ pos 2) (len s)) (= (cp s (+ pos 2)) 64))  ; @
+        form-start (if splice? (+ pos 3) (+ pos 2))
+        [form np] (read-next-form s form-start)]
+    (if (form-list? form)
+      (let [clauses (form-elements form)
+            [matched result] (rc-resolve clauses)]
+        (if splice?
+          (let [items (cond (not matched) []
+                            (form-list? result) (vec (form-elements result))
+                            (form-vec? result) (vec (form-vec-items result))
+                            :else [result])]
+            [:splice items np])
+          (if (or (not matched) (nil? result)) [:skip nil np] [:form result np])))
+      (throw (ex-info "reader conditional body must be a list" {})))))
+
+;; Symbolic values ##Inf ##-Inf ##NaN.
+(defn- read-symbolic* [s pos]
+  (let [end (read-symbol-name s (+ pos 2) (+ pos 2))
+        nm (subs s (+ pos 2) end)]
+    (cond
+      (= nm "Inf") [:form ##Inf end]
+      (= nm "-Inf") [:form ##-Inf end]
+      (= nm "NaN") [:form ##NaN end]
+      :else (throw (ex-info (str "Invalid symbolic value: ##" nm) {})))))
+
+(defn- read-tagged* [s pos]
+  ;; unknown dispatch -> a tagged literal (#inst, #uuid, #foo). The tag includes
+  ;; the leading # (read-symbol-name starts at #), matching the Janet reader.
+  (let [end (read-symbol-name s pos pos)
+        tag (subs s pos end)
+        [form np] (read-next-form s end)]
+    [:form (form-make-tagged (keyword tag) form) np]))
+
+(declare read-anon-fn*)
+
+(defn- read-dispatch* [s pos]
+  ;; pos at #
+  (when (>= (inc pos) (len s)) (throw (ex-info "Unexpected end after #" {})))
+  (let [c (cp s (inc pos))]
+    (cond
+      (= c 123) (read-set* s pos)                 ; #{
+      (= c 40) (read-anon-fn* s pos)              ; #(
+      (= c 63) (read-reader-conditional* s pos)   ; #?
+      (= c 95) (let [[_ _ np] (read-form s (+ pos 2))] [:skip nil np])  ; #_ discard
+      (= c 39) (read-var-quote* s pos)            ; #'
+      (= c 94) (read-meta* s (inc pos))           ; #^ (deprecated, = ^)
+      (= c 34) (read-regex* s pos)                ; #"
+      (= c 35) (read-symbolic* s pos)             ; ##
+      :else (read-tagged* s pos))))
+
+;; #(...) anonymous fn. Positional %-arg index: % and %1 => 1, %N => N, %& => the
+;; rest param (:rest); anything else is not positional (nil). Fixed arity = max
+;; index used (Clojure: #(do %2 %&) => [p1 p2 & rest], unused lower slots still
+;; get a placeholder param).
+(defn- pct-index [nm]
+  (cond
+    (= nm "%") 1
+    (= nm "%&") :rest
+    (and (> (count nm) 1) (= "%" (subs nm 0 1)))
+    (let [n (form-scan-number (subs nm 1))]
+      (if (and n (integer? n) (>= n 1)) n nil))
+    :else nil))
+
+;; Pass 1: collect every %-index used anywhere in the form tree.
+(defn- collect-pcts [form acc]
+  (cond
+    (form-sym? form) (let [i (pct-index (form-sym-name form))] (if i (conj acc i) acc))
+    (form-list? form) (reduce (fn [a x] (collect-pcts x a)) acc (form-elements form))
+    (form-vec? form) (reduce (fn [a x] (collect-pcts x a)) acc (form-vec-items form))
+    (form-set? form) (reduce (fn [a x] (collect-pcts x a)) acc (form-set-items form))
+    (form-map? form) (reduce (fn [a p] (collect-pcts (nth p 1) (collect-pcts (nth p 0) a)))
+                             acc (form-map-pairs form))
+    :else acc))
+
+;; Pass 2: replace each %-symbol with its slot's gensym (rebuilding collections).
+(defn- replace-pct [form slot-syms rest-sym]
+  (cond
+    (form-sym? form) (let [idx (pct-index (form-sym-name form))]
+                       (cond (= idx :rest) rest-sym
+                             idx (get slot-syms idx)
+                             :else form))
+    (form-list? form) (form-make-list (mapv #(replace-pct % slot-syms rest-sym) (form-elements form)))
+    (form-vec? form) (form-make-vector (mapv #(replace-pct % slot-syms rest-sym) (form-vec-items form)))
+    (form-set? form) (form-make-set (mapv #(replace-pct % slot-syms rest-sym) (form-set-items form)))
+    (form-map? form) (form-make-map
+                       (vec (mapcat (fn [p] [(replace-pct (nth p 0) slot-syms rest-sym)
+                                             (replace-pct (nth p 1) slot-syms rest-sym)])
+                                    (form-map-pairs form))))
+    :else form))
+
+(defn- gensym-param [] (form-make-symbol (str (form-gensym-name) "#")))
+
+(defn- read-anon-fn* [s pos]
+  ;; pos at #, next char (
+  (let [[form np] (read-next-form s (inc pos))
+        pcts (collect-pcts form [])
+        max-n (reduce (fn [m i] (if (and (number? i) (> i m)) i m)) 0 pcts)
+        has-rest (boolean (some #(= :rest %) pcts))
+        slot-syms (into {} (map (fn [i] [i (gensym-param)]) (range 1 (inc max-n))))
+        rest-sym (when has-rest (gensym-param))
+        replaced (replace-pct form slot-syms rest-sym)
+        arg-names (let [base (mapv #(get slot-syms %) (range 1 (inc max-n)))]
+                    (if has-rest (conj base (form-make-symbol "&") rest-sym) base))]
+    [:form (form-make-list [(form-make-symbol "fn*") (form-make-vector arg-names) replaced]) np]))
+
 (defn read-form [s pos]
   (let [pos (skip-whitespace s pos)]
     (if (>= pos (len s))
@@ -297,7 +446,7 @@
           (= c 41) (throw (ex-info "Unmatched delimiter: )" {}))
           (= c 93) (throw (ex-info "Unmatched delimiter: ]" {}))
           (= c 125) (throw (ex-info "Unmatched delimiter: }" {}))
-          (= c 35) (throw (ex-info "read-form: dispatch (#) not yet ported (inc 5c)" {})) ; #
+          (= c 35) (read-dispatch* s pos)                             ; #
           (number-start? s pos c) (let [r (read-number* s pos)] [:form (nth r 0) (nth r 1)])
           (symbol-start? c) (let [r (read-symbol* s pos)] [:form (nth r 0) (nth r 1)])
           :else (throw (ex-info (str "read-form: unexpected char '" (char c) "' (" c ")") {})))))))

@@ -311,6 +311,12 @@
 # symbol carrying :meta, so type hints are transparent in every position.
 (defn h-sym-merge-meta [sym m]
   (struct ;(kvs sym) :meta (merge (or (sym :meta) {}) m)))
+(defn h-make-set [items]                                        # set form
+  {:jolt/type :jolt/set :value (tuple/slice (jvec->array items))})
+(defn h-make-tagged [tag form]                                 # tagged form (#inst/#uuid/#regex/#foo)
+  {:jolt/type :jolt/tagged :tag tag :form form})
+# A fresh unique name string for #() auto-gensym params (the reader appends '#').
+(defn h-gensym-name [] (string (gensym)))
 
 (def- exports
   {"form-sym?" h-sym? "form-sym-name" h-sym-name "form-sym-ns" h-sym-ns
@@ -318,6 +324,8 @@
    "form-char-from-name" h-char-from-name "form-scan-number" h-scan-number
    "form-make-list" h-make-list "form-make-vector" h-make-vector
    "form-make-map" h-make-map "form-sym-merge-meta" h-sym-merge-meta
+   "form-make-set" h-make-set "form-make-tagged" h-make-tagged
+   "form-gensym-name" h-gensym-name
    "ref-put!" h-ref-put!
    "ref-get" h-ref-get
    "tagged-table" h-tagged-table

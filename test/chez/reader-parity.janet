@@ -79,6 +79,30 @@
 # characters
 (each i [`\a` `\Z` `\0` `\newline` `\tab` `\space` `\return` `\\` `\(` `\{` `\%` `A` `\o101`] (check i))
 
+# For #() forms the two readers gensym DIFFERENT param names, so compare modulo
+# gensyms: canonicalize each "#"-suffixed symbol to G__<first-occurrence-order>.
+(defn- gsym? [nm] (and (> (length nm) 0) (= (in nm (- (length nm) 1)) (chr "#"))))
+(defn normalize [form mp]
+  (cond
+    (and (struct? form) (= :symbol (form :jolt/type)) (gsym? (form :name)))
+      (do (when (nil? (get mp (form :name))) (put mp (form :name) (string "G__" (length mp))))
+          {:jolt/type :symbol :ns nil :name (get mp (form :name))})
+    (and (struct? form) (= :symbol (form :jolt/type))) form
+    (array? form) (map |(normalize $ mp) form)
+    (tuple? form) (tuple/slice (tuple ;(map |(normalize $ mp) form)))
+    (and (struct? form) (= :jolt/set (form :jolt/type)))
+      {:jolt/type :jolt/set :value (tuple/slice (tuple ;(map |(normalize $ mp) (form :value))))}
+    (struct? form) (let [order (r/form-kv-order form)]
+                     (if order (r/reader-map (array ;(map |(normalize $ mp) order))) form))
+    form))
+(defn check-anon [input]
+  (def w (in (r/parse-next input) 0))
+  (def g (protect (read-one input)))
+  (if (not (g 0))
+    (ok input false (string "clj threw: " (string (g 1))))
+    (ok input (core/jolt-equal? (normalize w @{}) (normalize (g 1) @{}))
+        (string "clj=" (string/format "%p" (normalize (g 1) @{})) " janet=" (string/format "%p" (normalize w @{}))))))
+
 # --- inc 5b: collections + quote/deref/meta -----------------------------------
 # lists
 (each i ["(1 2 3)" "(a b c)" "()" "(foo (bar baz) qux)" "(+ 1 (* 2 3))"] (check i))
@@ -99,6 +123,32 @@
 # metadata
 (each i ["^:dynamic x" "^String s" "^:private foo" "^{:a 1} v" "^t/Ray r"] (check i))
 (check "(defn ^:private g [x] x)")
+
+# --- inc 5c: dispatch (#) ------------------------------------------------------
+# sets
+(each i ["#{1 2 3}" "#{}" "#{:a :b}" "#{[1 2] {:k 1}}"] (check i))
+# var-quote
+(each i ["#'foo" "#'my.ns/bar"] (check i))
+# regex (tagged :regex form — compared by source string)
+(each i [`#"[0-9]+"` `#"\d+"` `#"a.c"` `#"(?i)foo"`] (check i))
+# tagged literals (#inst / #uuid / arbitrary #tag)
+(each i [`#inst "2020-01-01"` `#uuid "00000000-0000-0000-0000-000000000000"`
+         `#foo bar` `#foo [1 2]` `#my.ns/Tag {:a 1}`] (check i))
+# #_ discard (in collections + top-level + map slots)
+(each i ["[1 #_2 3]" "(a #_b c)" "#_ x y" "{:a #_1 2 :b 3}" "[#_#_1 2 3]"] (check i))
+# #? reader-conditional (jolt + default active; cljs inactive)
+(each i ["#?(:jolt 1 :clj 2)" "#?(:clj 1 :default 2)" "[#?(:cljs 1) 2]"
+         "#?(:jolt :yes :default :no)"] (check i))
+# #?@ splice
+(each i ["[#?@(:jolt [1 2]) 3]" "[#?@(:cljs [9]) 4]" "(0 #?@(:default [1 2 3]) 4)"] (check i))
+# ## symbolic (Inf/-Inf comparable; NaN checked by property)
+(each i ["##Inf" "##-Inf"] (check i))
+(let [g (read-one "##NaN")] (ok "##NaN" (not= g g) (string "got " (string/format "%p" g))))
+# #^ deprecated metadata reader macro (= ^)
+(each i ["#^String x" "#^:dynamic y"] (check i))
+# #() anonymous fns (gensym-normalized)
+(each i ["#(+ %1 %2)" "#(* % %)" "#(do %2 %&)" "#(foo)" "#(vector %1 %2 %3)"
+         "#(%)" "#(apply + %&)" "#(get {:a %} :a)" "#(conj #{%1} %2)" "#(inc %)"] (check-anon i))
 
 (printf "\n%d/%d ok" (- total fails) total)
 (when (> fails 0) (os/exit 1))
