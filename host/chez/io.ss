@@ -128,6 +128,20 @@
   (jolt-invoke (var-deref "clojure.core" "read-string")
                (if (reader-jhost? reader) (drain-reader reader) (jolt-str-render-one reader))))
 
+;; line-seq (jolt-0obq): the overlay line-seq reads via a Janet map-reader's
+;; :read-line-fn, but a Chez io/reader is a jhost StringReader. Drain it (or take a
+;; string) and split on newline; a trailing newline does NOT yield a final empty
+;; line (like readLine -> nil at EOF). Re-asserted in post-prelude.ss.
+(define (chez-lines s)
+  (let loop ((cs (string->list s)) (cur '()) (acc '()))
+    (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+          ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) acc)))
+          (else (loop (cdr cs) (cons (car cs) cur) acc)))))
+(define (chez-line-seq rdr)
+  (list->cseq (chez-lines (cond ((string? rdr) rdr)
+                                ((reader-jhost? rdr) (drain-reader rdr))
+                                (else (jolt-str-render-one rdr))))))
+
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (read-file-string (jfile-path src)))

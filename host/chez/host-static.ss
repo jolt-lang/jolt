@@ -154,6 +154,11 @@
 (register-host-methods! "thread"
   (list (cons "getContextClassLoader" (lambda (self) (make-jhost "classloader" '())))))
 
+;; clojure.lang.LockingTransaction: jolt has no STM (no refs/dosync), so a
+;; transaction is never running. isRunning -> false (jolt-0obq).
+(register-class-statics! "LockingTransaction" (list (cons "isRunning" (lambda () #f))))
+(register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () #f))))
+
 (define (now-millis)
   (let ((t (current-time 'time-utc)))
     (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))

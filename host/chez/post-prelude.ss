@@ -71,3 +71,9 @@
   (case-lambda
     ((reader) (chez-edn-read reader))
     ((opts reader) (chez-edn-read reader))))
+;; line-seq: a jhost reader (io/reader result) -> drain+split; a map-reader (the
+;; overlay's :read-line-fn model, e.g. with-in-str) -> the overlay version.
+(let ((overlay-line-seq (var-deref "clojure.core" "line-seq")))
+  (def-var! "clojure.core" "line-seq"
+    (lambda (rdr)
+      (if (reader-jhost? rdr) (chez-line-seq rdr) (jolt-invoke overlay-line-seq rdr)))))
