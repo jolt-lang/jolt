@@ -163,7 +163,7 @@
 
 # Regression floor: raise as the Chez-hosted compiler closes gaps. The gate fails
 # on any NEW divergence or if pass drops below the floor. Strided runs scale to 0.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2293")))
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2295")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

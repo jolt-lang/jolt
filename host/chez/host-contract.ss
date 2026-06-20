@@ -134,6 +134,9 @@
         (let ((target (or (chez-resolve-alias (chez-actx-cns ctx) qualified) qualified)))
           (var-cell-lookup target nm))
         (or (var-cell-lookup (chez-actx-cns ctx) nm)
+            ;; a :refer'd name resolves to its source ns
+            (let ((ref (chez-resolve-refer (chez-actx-cns ctx) nm)))
+              (and ref (var-cell-lookup ref nm)))
             (var-cell-lookup "clojure.core" nm)))))
 
 ;; Runtime macros (jolt-r9lm, inc6b): a defmacro is emitted into the prelude as a

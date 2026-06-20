@@ -34,8 +34,15 @@
   (hashtable-set! ns-alias-table (cons cns alias) target))
 (define (chez-resolve-alias cns alias)
   (hashtable-ref ns-alias-table (cons cns alias) #f))
-;; parse a require/use spec FORM and register its :as alias under `cns`.
-;; spec: [ns :as a ...] / (ns :as a ...) / bare ns (no alias).
+;; :refer brings an UNQUALIFIED name into cns, resolving to target-ns/name.
+(define ns-refer-table (make-hashtable equal-hash equal?))
+(define (chez-register-refer! cns name target)
+  (hashtable-set! ns-refer-table (cons cns name) target))
+(define (chez-resolve-refer cns name)
+  (hashtable-ref ns-refer-table (cons cns name) #f))
+;; parse a require/use spec FORM and register its :as alias + :refer names under
+;; `cns`. spec: [ns :as a :refer [x y] ...] / (ns ...) / bare ns. opts are
+;; keyword/value pairs after the ns symbol.
 (define (chez-register-spec! cns spec)
   (let ((items (cond ((pvec? spec) (seq->list spec))
                      ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
@@ -43,11 +50,18 @@
     (when (and (pair? items) (symbol-t? (car items)))
       (let ((target (symbol-t-name (car items))))
         (let loop ((xs (cdr items)))
-          (cond ((or (null? xs) (null? (cdr xs))) #f)
-                ((and (keyword? (car xs)) (string=? (keyword-t-name (car xs)) "as")
-                      (symbol-t? (cadr xs)))
-                 (chez-register-alias! cns (symbol-t-name (cadr xs)) target))
-                (else (loop (cdr xs)))))))))
+          (when (and (pair? xs) (pair? (cdr xs)))
+            (let ((k (car xs)) (v (cadr xs)))
+              (when (keyword? k)
+                (cond
+                  ((string=? (keyword-t-name k) "as")
+                   (when (symbol-t? v) (chez-register-alias! cns (symbol-t-name v) target)))
+                  ((string=? (keyword-t-name k) "refer")
+                   (when (pvec? v)
+                     (for-each (lambda (n)
+                                 (when (symbol-t? n) (chez-register-refer! cns (symbol-t-name n) target)))
+                               (seq->list v)))))))
+            (loop (cddr xs))))))))
 
 ;; a namespace designator -> its name string (a jns or a symbol; the corpus never
 ;; passes a bare string).

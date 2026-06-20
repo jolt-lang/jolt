@@ -417,6 +417,7 @@
     "  (zj-prune! ns-registry zj-ns-base)\n"
     "  (zj-prune! type-registry zj-type-base)\n"
     "  (hashtable-clear! ns-alias-table)\n"
+    "  (hashtable-clear! ns-refer-table)\n"
     "  (when zj-ghier (jolt-invoke (var-deref \"clojure.core\" \"reset!\")\n"
     "                   (var-cell-root zj-ghier) (jolt-invoke (var-deref \"clojure.core\" \"make-hierarchy\"))))\n"
     "  (set-chez-ns! \"user\"))\n"
