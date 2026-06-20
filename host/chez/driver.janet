@@ -374,9 +374,11 @@
 
 (defn program-emit-image
   "A Chez program that loads the zero-Janet runtime + the compiler `image-path`,
-  then re-emits the compiler image ON CHEZ (jolt-emit-image) and writes it to
-  `out-path`. Running this with image = stageN produces stage(N+1)."
-  [prelude-path image-path out-path]
+  then re-emits the compiler image (or, with emit-fn \"jolt-emit-prelude\", the
+  clojure.core prelude) ON CHEZ and writes it to `out-path`. Running this with
+  image = stageN produces stage(N+1)."
+  [prelude-path image-path out-path &opt emit-fn]
+  (default emit-fn "jolt-emit-image")
   (string
     "(import (chezscheme))\n"
     "(load \"host/chez/rt.ss\")\n"
@@ -389,15 +391,16 @@
     "(load \"host/chez/compile-eval.ss\")\n"
     "(load \"host/chez/emit-image.ss\")\n"
     "(let ((p (open-output-file " (string/format "%j" out-path) " 'replace)))\n"
-    "  (put-string p (jolt-emit-image)) (close-port p))\n"))
+    "  (put-string p (" emit-fn ")) (close-port p))\n"))
 
 (defn emit-image-on-chez
   "Re-emit the compiler image on Chez: load `image-path` (stageN) and write the
   re-emitted image (stage N+1) to `out-path`. Each runs in a fresh chez process so
-  gensym/state start clean (essential for a byte-stable fixpoint). Returns
+  gensym/state start clean (essential for a byte-stable fixpoint). emit-fn selects
+  jolt-emit-image (the compiler) or jolt-emit-prelude (clojure.core). Returns
   [code stderr]."
-  [prelude-path image-path out-path]
-  (def prog (program-emit-image prelude-path image-path out-path))
+  [prelude-path image-path out-path &opt emit-fn]
+  (def prog (program-emit-image prelude-path image-path out-path emit-fn))
   (def path (string "/tmp/jolt-emit-image-" (os/getpid) "-" (hash out-path) ".ss"))
   (spit path prog)
   (def proc (os/spawn ["chez" "--script" path] :p {:out :pipe :err :pipe}))

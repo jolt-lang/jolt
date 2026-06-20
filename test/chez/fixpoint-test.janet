@@ -1,23 +1,30 @@
-# Chez Phase 3 inc8 (jolt-bzni) — the stage2==stage3 self-hosting fixpoint.
+# Chez Phase 3 inc8 (jolt-bzni) — the self-hosting bootstrap fixpoint.
 #
 # The zero-Janet spine (spine-test / run-corpus-zero-janet) proves the ON-CHEZ
 # analyzer+emitter compile arbitrary Clojure faithfully. This proves the stronger
-# property from self-hosting-bootstrap-research §4: the on-Chez compiler reproduces
-# ITSELF. The compiler image (jolt.ir + jolt.analyzer + jolt.backend-scheme cross-
-# compiled to Scheme def-var! forms) is built three ways:
+# property from self-hosting-bootstrap-research §4: the emitted system reproduces
+# ITSELF. Two artifacts are re-emitted ON CHEZ by the loaded compiler:
 #
-#   stage1  = Janet analyzer/emitter cross-compiles the compiler sources
-#             (driver/emit-compiler-image — the current bootstrap input)
-#   stage2  = the ON-CHEZ compiler loaded from stage1 re-emits the same sources
-#             (driver/emit-image-on-chez, host/chez/emit-image.ss)
-#   stage3  = the ON-CHEZ compiler loaded from stage2 re-emits them again
+#   COMPILER IMAGE  (jolt.ir + jolt.analyzer + jolt.backend-scheme)
+#     stage1 = Janet analyzer/emitter cross-compiles the sources (the bootstrap input)
+#     stage2 = the on-Chez compiler (from stage1) re-emits them
+#     stage3 = the on-Chez compiler (from stage2) re-emits them
+#     FIXPOINT: stage2 == stage3 (stage1 differs only in gensym numbering — the
+#     Janet build allocates more gensyms before reaching the compiler emit).
 #
-# stage1 differs from stage2 only in gensym numbering (the Janet build allocates
-# more gensyms before reaching the compiler emit), so the fixpoint is stage2 vs
-# stage3: both are produced by Chez from a fresh process, so a byte-for-byte match
-# means the compiler has converged — it compiles its own source to itself. We also
-# run real compile+eval cases THROUGH stage2 to prove it's a working compiler, not
-# a degenerate one that just happens to be stable.
+#   CORE PRELUDE  (clojure.core tiers + clojure.string/walk/template/edn/set/pprint)
+#     pstage2 = on-Chez compiler re-emits the prelude with the JANET prelude loaded
+#     pstage3 = ... with pstage2 loaded
+#     pstage4 = ... with pstage3 loaded
+#     FIXPOINT: pstage3 == pstage4. The prelude converges one stage later than the
+#     compiler because its MACRO expanders bake an auto-gensym id (foo#) at emit
+#     time, so a macro emitted by Janet (pstage2's loaded prelude) carries a
+#     different baked id than one emitted by Chez — only once BOTH stages load a
+#     Chez-emitted prelude (pstage3 onward) does it stabilize.
+#
+# Finally we load the FULLY Chez-emitted system (Chez prelude + Chez compiler
+# image, NO Janet-emitted artifact in the loop) and run real cases, proving the
+# fixpoint is a working compiler, not a degenerate stable one.
 #
 #   janet test/chez/fixpoint-test.janet
 (import ../../host/chez/driver :as d)
@@ -34,10 +41,10 @@
   (os/exit 0))
 
 (def ctx (d/make-ctx))
-(def prelude-path (jc/ensure-prelude ctx))
+(def jprelude (jc/ensure-prelude ctx))
 
-# stage1: the Janet cross-compiled image, cached by source fingerprint (same scheme
-# as spine-test / run-corpus-zero-janet).
+# stage1: the Janet cross-compiled compiler image, cached by source fingerprint
+# (same scheme as spine-test / run-corpus-zero-janet).
 (defn- image-fingerprint []
   (string/slice (string (hash (string/join
     (map slurp ["jolt-core/jolt/ir.clj" "jolt-core/jolt/analyzer.clj"
@@ -45,65 +52,75 @@
                 "host/chez/compile-eval.ss"])))) 0))
 (def tmp (or (os/getenv "TMPDIR") "/tmp"))
 (def stage1 (string tmp "/jolt-compiler-image-" (image-fingerprint) ".ss"))
-(def t0 (os/clock))
 (d/ensure-compiler-image ctx stage1)
-(printf "stage1 (Janet cross-compile): %d bytes (%.1fs)" (length (slurp stage1)) (- (os/clock) t0))
+(printf "stage1 compiler image (Janet cross-compile): %d bytes" (length (slurp stage1)))
 (flush)
 
-# stage2 = on-Chez compiler (from stage1) re-emits the compiler. Fresh temp path so
-# it always regenerates.
-(def stage2 (string tmp "/jolt-fixpoint-stage2-" (os/getpid) ".ss"))
-(def stage3 (string tmp "/jolt-fixpoint-stage3-" (os/getpid) ".ss"))
-(def t1 (os/clock))
-(def [c2 e2] (d/emit-image-on-chez prelude-path stage1 stage2))
-(ok "stage2 emits cleanly on Chez" (and (= c2 0) (os/stat stage2))
+(defn- bytes= [a b] (= (string (slurp a)) (string (slurp b))))
+(defn- first-diff [a b]
+  (def s (string (slurp a))) (def t (string (slurp b)))
+  (def n (min (length s) (length t)))
+  (var i 0) (while (and (< i n) (= (s i) (t i))) (++ i))
+  (string "sizes " (length s) " vs " (length t) ", first diff at " i))
+
+# ---- compiler-image fixpoint: stage2 == stage3 -------------------------------
+(def s2 (string tmp "/jolt-fixpoint-img2-" (os/getpid) ".ss"))
+(def s3 (string tmp "/jolt-fixpoint-img3-" (os/getpid) ".ss"))
+(def [c2 e2] (d/emit-image-on-chez jprelude stage1 s2))
+(ok "compiler image stage2 emits cleanly on Chez" (and (= c2 0) (os/stat s2))
     (string "exit " c2 " " (string/slice e2 0 (min 300 (length e2)))))
-(when (os/stat stage2)
-  (printf "stage2 (on-Chez, from stage1): %d bytes (%.1fs)" (length (slurp stage2)) (- (os/clock) t1)))
-(flush)
-
-# stage3 = on-Chez compiler (from stage2) re-emits the compiler.
-(def t2 (os/clock))
-(def [c3 e3] (d/emit-image-on-chez prelude-path stage2 stage3))
-(ok "stage3 emits cleanly on Chez" (and (= c3 0) (os/stat stage3))
+(def [c3 e3] (d/emit-image-on-chez jprelude s2 s3))
+(ok "compiler image stage3 emits cleanly on Chez" (and (= c3 0) (os/stat s3))
     (string "exit " c3 " " (string/slice e3 0 (min 300 (length e3)))))
-(when (os/stat stage3)
-  (printf "stage3 (on-Chez, from stage2): %d bytes (%.1fs)" (length (slurp stage3)) (- (os/clock) t2)))
-(flush)
+(when (and (os/stat s2) (os/stat s3))
+  (ok "compiler image: stage2 == stage3 (byte-for-byte fixpoint)" (bytes= s2 s3)
+      (first-diff s2 s3))
+  (ok "compiler image is substantial (> 80KB)" (> (length (slurp s2)) 80000)))
 
-# THE FIXPOINT: stage2 and stage3 must be byte-for-byte identical.
-(when (and (os/stat stage2) (os/stat stage3))
-  # slurp returns a buffer; Janet = on buffers is identity, so compare as strings.
-  (def s2 (string (slurp stage2))) (def s3 (string (slurp stage3)))
-  (ok "stage2 == stage3 (byte-for-byte fixpoint)" (= s2 s3)
-      (if (= s2 s3) ""
-        (string "sizes " (length s2) " vs " (length s3)
-                "; first diff at "
-                (let [n (min (length s2) (length s3))]
-                  (var i 0) (while (and (< i n) (= (s2 i) (s3 i))) (++ i)) i))))
-  # A degenerate emitter (emits nothing) would also be "stable" — guard against it.
-  (ok "stage2 image is substantial (> 80KB)" (> (length s2) 80000)
-      (string "only " (length s2) " bytes")))
+# ---- prelude fixpoint: pstage3 == pstage4 ------------------------------------
+(def p2 (string tmp "/jolt-fixpoint-prelude2-" (os/getpid) ".ss"))
+(def p3 (string tmp "/jolt-fixpoint-prelude3-" (os/getpid) ".ss"))
+(def p4 (string tmp "/jolt-fixpoint-prelude4-" (os/getpid) ".ss"))
+(def [pc2 pe2] (d/emit-image-on-chez jprelude stage1 p2 "jolt-emit-prelude"))
+(ok "prelude pstage2 emits cleanly on Chez (from Janet prelude)" (and (= pc2 0) (os/stat p2))
+    (string "exit " pc2 " " (string/slice pe2 0 (min 300 (length pe2)))))
+(when (os/stat p2)
+  (def [pc3 pe3] (d/emit-image-on-chez p2 stage1 p3 "jolt-emit-prelude"))
+  (ok "prelude pstage3 emits cleanly on Chez (from pstage2)" (and (= pc3 0) (os/stat p3))
+      (string "exit " pc3 " " (string/slice pe3 0 (min 300 (length pe3)))))
+  (when (os/stat p3)
+    (def [pc4 pe4] (d/emit-image-on-chez p3 stage1 p4 "jolt-emit-prelude"))
+    (ok "prelude pstage4 emits cleanly on Chez (from pstage3)" (and (= pc4 0) (os/stat p4))
+        (string "exit " pc4 " " (string/slice pe4 0 (min 300 (length pe4)))))
+    (when (os/stat p4)
+      (ok "prelude: pstage3 == pstage4 (byte-for-byte fixpoint)" (bytes= p3 p4)
+          (first-diff p3 p4))
+      (ok "prelude is substantial (> 250KB)" (> (length (slurp p3)) 250000)))))
 
-# stage2 must be a WORKING compiler: drive real compile+eval through it.
+# ---- the fully Chez-emitted system is a working compiler ----------------------
+# Chez-emitted prelude (pstage3) + Chez-emitted compiler image (s2): no Janet
+# artifact in the loop. Drive real compile+eval through it.
 (def verify-cases
   [["(let [x 1 y 2] (+ x y))" "3"]
    ["(when (> 5 3) (-> 10 (- 1) (* 2)))" "18"]
    ["(defn f [a b] (* a b)) (f 6 7)" "42"]
    ["(map inc [1 2 3])" "(2 3 4)"]
    ["(reduce + 0 (range 5))" "10"]
-   ["(filter even? (range 10))" "(0 2 4 6 8)"]])
-(when (os/stat stage2)
+   ["(let [{:keys [a b]} {:a 7 :b 8}] (+ a b))" "15"]
+   ["(filter even? (range 10))" "(0 2 4 6 8)"]
+   ["(require '[clojure.string :as s]) (s/upper-case \"hi\")" "HI"]
+   ["(cond (= 1 2) :a (= 1 1) :b :else :c)" ":b"]])
+(when (and (os/stat p3) (os/stat s2))
   (var vpass 0)
   (each [src want] verify-cases
-    (def [code out _] (d/eval-zero-janet prelude-path stage2 (string "(do " src ")")))
+    (def [code out _] (d/eval-zero-janet p3 s2 (string "(do " src ")")))
     (when (and (= code 0) (= out want)) (++ vpass)))
-  (ok "stage2 is a working compiler (real cases compile+run)"
+  (ok "fully Chez-emitted system (Chez prelude + Chez image) compiles+runs real cases"
       (= vpass (length verify-cases))
       (string vpass "/" (length verify-cases) " cases passed")))
 
 # cleanup temp stages
-(each p [stage2 stage3] (when (os/stat p) (os/rm p)))
+(each p [s2 s3 p2 p3 p4] (when (os/stat p) (os/rm p)))
 
 (printf "\nfixpoint-test: %d/%d checks passed" (- total fails) total)
 (os/exit (if (zero? fails) 0 1))

@@ -30,25 +30,71 @@
          (and (pair? items) (symbol-t? (car items))
               (string=? (symbol-t-name (car items)) "ns")))))
 
+;; Is `f` a (defmacro ...) / (definline ...) form?
+(define (ei-macro-form? f)
+  (and (cseq? f) (cseq-list? f)
+       (let ((items (seq->list f)))
+         (and (pair? items) (symbol-t? (car items))
+              (let ((h (symbol-t-name (car items))))
+                (or (string=? h "defmacro") (string=? h "definline")))))))
+
+;; (defmacro NAME [docstring] [attr-map] params body...) -> (values "NAME" (fn ...)).
+;; Mirrors driver.janet defmacro->fn: strip a leading docstring (native string) and
+;; an attr-map (a pmap that isn't a symbol), then re-head the rest with `fn` so a
+;; destructured macro arglist desugars before lowering. We emit the BARE fn (the
+;; caller wraps it in def-var! + mark-macro!), never a (def NAME ...) — interning
+;; NAME would make require skip the real macro (jolt-r9lm).
+(define (ei-defmacro->fn f)
+  (let* ((items (seq->list f))
+         (name-sym (cadr items))
+         (after-name (cddr items))
+         (a1 (if (and (pair? after-name) (string? (car after-name)))
+                 (cdr after-name) after-name))
+         (after-meta (if (and (pair? a1) (pmap? (car a1)))
+                         (cdr a1) a1))
+         (fn-sym (jolt-symbol #f "fn")))
+    (values (symbol-t-name name-sym)
+            (apply jolt-list (cons fn-sym after-meta)))))
+
 ;; Cross-compile one namespace's source to a list of guard-wrapped Scheme strings.
-;; Mirrors driver.janet emit-ns-forms-list + emit-form-scheme (the compiler
-;; namespaces define no macros, so there is no defmacro branch). Each form is
-;; analyzed with a fresh ctx — resolution is via the runtime var-table + alias
-;; tables, not ctx-accumulated state, so this matches the spine's per-form analyze.
+;; Mirrors driver.janet emit-ns-forms-list/emit-core-prelude + emit-form-scheme.
+;; Each form is analyzed with a fresh ctx — resolution is via the runtime var-table
+;; + alias tables, not ctx-accumulated state, so this matches the spine's per-form
+;; analyze. A defmacro emits its expander fn as (def-var! ns name <fn>) +
+;; (mark-macro! ns name) so the on-Chez analyzer can expand it (jolt-r9lm).
 (define (ei-emit-ns ns-name src)
   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
         (reverse acc)
         (let ((f (car forms)))
           (ce-scan-requires! f ns-name)
-          (if (ei-ns-form? f)
-              (loop (cdr forms) acc)
-              (let* ((ctx (make-analyze-ctx ns-name))
-                     (scm (guard (e (#t #f)) (jolt-ce-emit (jolt-ce-analyze ctx f)))))
-                (loop (cdr forms)
-                      (if scm
-                          (cons (string-append "(guard (e (#t #f))\n  " scm ")") acc)
-                          acc))))))))
+          (cond
+            ((ei-ns-form? f) (loop (cdr forms) acc))
+            ((ei-macro-form? f)
+             (let-values (((nm fn-form) (ei-defmacro->fn f)))
+               (let ((scm (guard (e (#t #f))
+                            (let ((ctx (make-analyze-ctx ns-name)))
+                              (jolt-ce-emit (jolt-ce-analyze ctx fn-form))))))
+                 (loop (cdr forms)
+                       (if scm
+                           (cons (string-append
+                                   "(guard (e (#t #f))\n  (def-var! "
+                                   (ei-str-lit ns-name) " " (ei-str-lit nm) "\n    "
+                                   scm ")\n  (mark-macro! "
+                                   (ei-str-lit ns-name) " " (ei-str-lit nm) "))")
+                                 acc)
+                           acc)))))
+            (else
+             (let* ((ctx (make-analyze-ctx ns-name))
+                    (scm (guard (e (#t #f)) (jolt-ce-emit (jolt-ce-analyze ctx f)))))
+               (loop (cdr forms)
+                     (if scm
+                         (cons (string-append "(guard (e (#t #f))\n  " scm ")") acc)
+                         acc)))))))))
+
+;; Scheme string literal for a ns/name — uses the runtime's own writer so it
+;; matches the Janet driver's %j (printable ASCII identifiers only here).
+(define (ei-str-lit s) (with-output-to-string (lambda () (write s))))
 
 ;; The compiler namespaces, in load order — same list as driver.janet
 ;; compiler-ns-files.
@@ -57,16 +103,37 @@
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
 
-;; Emit the whole compiler image as one Scheme string: every namespace's forms,
-;; joined by newlines. Byte-identical layout to driver.janet emit-compiler-image
-;; (forms joined with "\n", no trailing newline) so an image emitted here can be
-;; diffed directly against the Janet-built one.
-(define (jolt-emit-image)
-  (let ((forms (apply append
-                 (map (lambda (nf) (ei-emit-ns (car nf) (read-file-string (cdr nf))))
-                      ei-compiler-ns-files))))
-    (let join ((fs forms) (out ""))
-      (cond
-        ((null? fs) out)
-        ((string=? out "") (join (cdr fs) (car fs)))
-        (else (join (cdr fs) (string-append out "\n" (car fs))))))))
+;; The clojure.core tiers + stdlib namespaces, in load order — same lists as
+;; driver.janet core-tier-files / stdlib-ns-files. Re-emitting these on Chez is the
+;; prelude half of the fixpoint (the whole emitted system reproducing itself).
+(define ei-prelude-ns-files
+  (append
+    (map (lambda (tf) (cons "clojure.core" (string-append "jolt-core/clojure/core/" tf ".clj")))
+         '("00-syntax" "00-kernel" "10-seq" "20-coll" "25-sorted" "30-macros" "40-lazy" "50-io"))
+    (list (cons "clojure.string" "src/jolt/clojure/string.clj")
+          (cons "clojure.walk" "src/jolt/clojure/walk.clj")
+          (cons "clojure.template" "src/jolt/clojure/template.clj")
+          (cons "clojure.edn" "src/jolt/clojure/edn.clj")
+          (cons "clojure.set" "src/jolt/clojure/set.clj")
+          (cons "clojure.pprint" "src/jolt/clojure/pprint.clj"))))
+
+;; Join a list of form strings with "\n", no trailing newline — byte-identical
+;; layout to the Janet driver's (string/join out "\n").
+(define (ei-join forms)
+  (let join ((fs forms) (out ""))
+    (cond
+      ((null? fs) out)
+      ((string=? out "") (join (cdr fs) (car fs)))
+      (else (join (cdr fs) (string-append out "\n" (car fs)))))))
+
+;; Re-emit the whole list of (ns . file) pairs ON CHEZ as one Scheme string.
+(define (ei-emit-ns-files nfs)
+  (ei-join (apply append
+             (map (lambda (nf) (ei-emit-ns (car nf) (read-file-string (cdr nf)))) nfs))))
+
+;; Emit the compiler image (jolt.ir + jolt.analyzer + jolt.backend-scheme) on Chez.
+(define (jolt-emit-image) (ei-emit-ns-files ei-compiler-ns-files))
+
+;; Emit the clojure.core prelude (all tiers + stdlib) on Chez — the prelude half of
+;; the self-hosting fixpoint.
+(define (jolt-emit-prelude) (ei-emit-ns-files ei-prelude-ns-files))
