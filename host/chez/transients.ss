@@ -23,14 +23,18 @@
   (jolt-transient-active-set! t #f)
   (jolt-transient-coll t))
 
-;; (conj!) with no args -> a fresh transient vector (Clojure); otherwise mutate t.
+;; (conj!) with no args -> a fresh transient vector (Clojure); (conj! coll) is the
+;; 1-arity transducer-completion arity, which returns coll as-is with NO transient
+;; check (JVM: conj! 1-arity is identity); otherwise mutate t.
 (define (jolt-conj! . args)
-  (if (null? args)
-      (jolt-transient-new (jolt-vector))
+  (cond
+    ((null? args) (jolt-transient-new (jolt-vector)))
+    ((null? (cdr args)) (car args))
+    (else
       (let ((t (car args)) (xs (cdr args)))
         (jolt-trans-check t "conj!")
         (jolt-transient-coll-set! t (apply jolt-conj (jolt-transient-coll t) xs))
-        t)))
+        t))))
 ;; (assoc! t k v & kvs): variadic like Clojure (jolt-assoc already folds pairs).
 (define (jolt-assoc! t . kvs)
   (jolt-trans-check t "assoc!")

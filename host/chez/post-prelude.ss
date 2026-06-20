@@ -62,9 +62,12 @@
 (let ((overlay-realized? (var-deref "clojure.core" "realized?")))
   (def-var! "clojure.core" "realized?"
     (lambda (x)
-      (if (or (jolt-future? x) (jolt-promise? x) (jolt-delay? x))
-          (jolt-conc-realized? x)
-          (jolt-invoke overlay-realized? x)))))
+      (cond
+        ((or (jolt-future? x) (jolt-promise? x) (jolt-delay? x)) (jolt-conc-realized? x))
+        ;; a lazy-seq carries its own realized? flag (lazy-bridge.ss). The overlay
+        ;; realized? reads :jolt/type and throws on a jolt-lazyseq record.
+        ((jolt-lazyseq? x) (jolt-lazyseq-realized? x))
+        (else (jolt-invoke overlay-realized? x))))))
 ;; clojure.edn/read over a reader: the overlay edn.clj drain-reader uses janet/type;
 ;; the native Chez version (io.ss) drains the jhost reader instead (jolt-uicd/jolt-7t3l).
 (def-var! "clojure.edn" "read"

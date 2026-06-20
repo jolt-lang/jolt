@@ -200,6 +200,10 @@
     (each k (sort-by (fn [k] (- (get tbl k))) (keys tbl))
       (printf "  %4d x  %s" (get tbl k) k))))
 (report "crash reasons" crash-keys)
+(when (os/getenv "JOLT_DUMP_CRASH_LABELS")
+  (printf "\nCRASH LABELS:")
+  (each [l k] (sort-by (fn [pair] (get pair 1)) crashes)
+    (printf "  [%s] :: %s" k l)))
 (when (> (length diverged) 0)
   (printf "\nNEW divergences (ran, wrong value) — gate FAILS:")
   (each [l m] (slice diverged 0 (min 40 (length diverged)))
@@ -218,8 +222,9 @@
 # ACTUAL (matching certify.clj's eval-isolated) -> 2673; delay/force/realized? ->
 # 2685; deftype (P. args) constructor via host-new var fallback -> 2688;
 # date/time (Date/Timestamp/SimpleDateFormat/TimeZone) + clojure.edn/read over a
-# reader -> 2692.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2696")))
+# reader -> 2692; STM stub + portable line-seq -> 2696; realized? on a lazy-seq +
+# conj! 1-arity (transducer-completion identity) -> 2698.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2698")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))
