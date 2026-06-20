@@ -143,9 +143,81 @@
                         (else (jolt-promise-delivered? p)))))))
     (if got (jolt-promise-value p) timeout-val)))
 
+;; --- agents (async, per-agent serialized dispatch) --------------------------
+;; JVM semantics, not Janet's synchronous shim: send/send-off enqueue an action
+;; and a single worker thread applies them to the state IN ORDER; deref reads the
+;; (possibly not-yet-updated) state without blocking; await blocks until the queue
+;; drains. An action error is captured (agent-error) and stops the queue.
+(define-record-type jolt-agent
+  (fields (mutable state) (mutable err) (mutable validator)
+          (mutable queue) (mutable running?) mu cv)
+  (nongenerative jolt-agent-v1))
+
+;; (agent state) / (agent state :validator f :error-mode m :meta x): only :validator
+;; has runtime behaviour here; other opts are accepted/ignored.
+(define (jolt-agent-new state . opts)
+  (let loop ((o opts) (validator jolt-nil))
+    (cond
+      ((or (null? o) (null? (cdr o)))
+       (make-jolt-agent state jolt-nil validator '() #f (make-mutex) (make-condition)))
+      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
+       (loop (cddr o) (cadr o)))
+      (else (loop (cddr o) validator)))))
+
+;; Drain the queue, applying each action (f state arg*) outside the lock (an action
+;; may send/deref the same agent). A validator rejection or a thrown action puts the
+;; agent in an error state and halts the queue (JVM :fail mode).
+(define (jolt-agent-worker a)
+  (let loop ()
+    (let ((act (with-mutex (jolt-agent-mu a)
+                 (if (or (not (jolt-nil? (jolt-agent-err a))) (null? (jolt-agent-queue a)))
+                     (begin (jolt-agent-running?-set! a #f)
+                            (condition-broadcast (jolt-agent-cv a)) #f)
+                     (let ((x (car (jolt-agent-queue a))))
+                       (jolt-agent-queue-set! a (cdr (jolt-agent-queue a))) x)))))
+      (when act
+        (guard (e (#t (with-mutex (jolt-agent-mu a)
+                        (jolt-agent-err-set! a e)
+                        (condition-broadcast (jolt-agent-cv a)))))
+          (let ((nv (apply jolt-invoke (car act) (jolt-agent-state a) (cdr act))))
+            (let ((vf (jolt-agent-validator a)))
+              (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf nv)))
+                (error #f "Invalid reference state")))
+            (jolt-agent-state-set! a nv)))
+        (loop)))))
+
+;; send / send-off: enqueue the action, start the worker if idle. (jolt treats them
+;; identically — one serialized worker per agent — which is observably a superset of
+;; the JVM's fixed/cached pool split.)
+(define (jolt-agent-send a f . args)
+  (with-mutex (jolt-agent-mu a)
+    (jolt-agent-queue-set! a (append (jolt-agent-queue a) (list (cons f args))))
+    (unless (jolt-agent-running? a)
+      (jolt-agent-running?-set! a #t)
+      (fork-thread (lambda () (jolt-agent-worker a)))))
+  a)
+
+;; (await & agents): block until each agent's queue has drained.
+(define (jolt-agent-await . agents)
+  (for-each
+   (lambda (a)
+     (with-mutex (jolt-agent-mu a)
+       (let loop ()
+         (when (or (jolt-agent-running? a) (pair? (jolt-agent-queue a)))
+           (condition-wait (jolt-agent-cv a) (jolt-agent-mu a)) (loop)))))
+   agents)
+  jolt-nil)
+
+(define (jolt-agent-error a) (jolt-agent-err a))
+(define (jolt-agent-restart a new-state . _opts)
+  (jolt-agent-err-set! a jolt-nil)
+  (jolt-agent-state-set! a new-state)
+  a)
+
 ;; --- deref extension --------------------------------------------------------
-;; Chain the fully-built jolt-deref (atoms/vars/volatiles/reduced) with futures +
-;; promises, and accept the timed (deref ref ms val) arity for both.
+;; Chain the fully-built jolt-deref (atoms/vars/volatiles/reduced) with futures,
+;; promises, and agents, and accept the timed (deref ref ms val) arity for the
+;; blocking ref types.
 (define %pre-conc-deref jolt-deref)
 (set! jolt-deref
   (lambda (x . opts)
@@ -156,6 +228,7 @@
       ((jolt-promise? x)
        (if (null? opts) (jolt-promise-deref x)
            (jolt-promise-deref-timed x (car opts) (cadr opts))))
+      ((jolt-agent? x) (jolt-agent-state x))
       (else (apply %pre-conc-deref x opts)))))
 
 ;; realized? for a Chez future/promise (the overlay reads Janet map keys). Wrap the
@@ -173,4 +246,11 @@
 (def-var! "clojure.core" "future-cancelled?" jolt-native-future-cancelled?)
 (def-var! "clojure.core" "promise" jolt-promise-new)
 (def-var! "clojure.core" "deliver" jolt-deliver)
+(def-var! "clojure.core" "agent" jolt-agent-new)
+(def-var! "clojure.core" "agent?" jolt-agent?)
+(def-var! "clojure.core" "send" jolt-agent-send)
+(def-var! "clojure.core" "send-off" jolt-agent-send)
+(def-var! "clojure.core" "await" jolt-agent-await)
+(def-var! "clojure.core" "agent-error" jolt-agent-error)
+(def-var! "clojure.core" "restart-agent" jolt-agent-restart)
 (def-var! "clojure.core" "deref" jolt-deref)

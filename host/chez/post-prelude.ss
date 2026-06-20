@@ -48,6 +48,16 @@
 (def-var! "clojure.core" "future?" jolt-future?)
 (def-var! "clojure.core" "promise" jolt-promise-new)
 (def-var! "clojure.core" "deliver" jolt-deliver)
+;; agents: the overlay (50-io) is a synchronous shim (agent = atom, send applies
+;; immediately). Re-assert the native async agents (per-agent serialized worker),
+;; matching the JVM. await/restart-agent are new (the overlay has neither).
+(def-var! "clojure.core" "agent" jolt-agent-new)
+(def-var! "clojure.core" "agent?" jolt-agent?)
+(def-var! "clojure.core" "send" jolt-agent-send)
+(def-var! "clojure.core" "send-off" jolt-agent-send)
+(def-var! "clojure.core" "await" jolt-agent-await)
+(def-var! "clojure.core" "agent-error" jolt-agent-error)
+(def-var! "clojure.core" "restart-agent" jolt-agent-restart)
 (def-var! "clojure.core" "deref" jolt-deref)
 (let ((overlay-realized? (var-deref "clojure.core" "realized?")))
   (def-var! "clojure.core" "realized?"

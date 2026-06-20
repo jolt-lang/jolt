@@ -89,7 +89,13 @@
     # future usually completes before the cancel (cancel -> false), like the JVM.
     # The Janet :expected "true" relies on cooperative scheduling. Flaky/divergent.
     "cancel an in-flight future returns true" true
-    "future-cancelled? after cancel" true})
+    "future-cancelled? after cancel" true
+    # agents are async on Chez (per-agent serialized dispatch) = JVM, not Janet's
+    # synchronous shim: (send a f) (deref a) reads the state BEFORE the action runs
+    # (use await to observe the result), so these sync-shim cases now diverge like
+    # the JVM. Deliberate per jvm-parity-north-star.
+    "send applies" true
+    "send-off applies" true})
 
 # Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
 # :timeout) — skip them, like :throws: a single hung case would stall the whole
@@ -183,7 +189,10 @@
 
 # Regression floor: raise as the Chez-hosted compiler closes gaps. The gate fails
 # on any NEW divergence or if pass drops below the floor. Strided runs scale to 0.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2569")))
+# 2569 after futures/pmap (jolt-byjr pt.1); -2 when agents went async (the two
+# "send/send-off applies" sync-shim cases now match the JVM's async raciness and
+# are allowlisted) -> 2567.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2567")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

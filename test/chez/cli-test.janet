@@ -76,7 +76,14 @@
    ["(require (quote [clojure.core.async :refer [chan go <! >! <!! alts!]])) (def x (chan)) (def y (chan)) (go (>! y :v)) (<!! (go (let [[v ch] (alts! [x y])] (and (= v :v) (= ch y)))))" "true"]
    ["(require (quote [clojure.core.async :refer [chan go go-loop <! >! <!! close!]])) (def c (chan 10 (map inc))) (go (>! c 1) (>! c 2) (>! c 3) (close! c)) (<!! (go-loop [o []] (let [v (<! c)] (if (nil? v) o (recur (conj o v))))))" "[2 3 4]"]
    ["(require (quote [clojure.core.async :refer [timeout <!!]])) (<!! (timeout 10)) :done" ":done"]
-   ["(require (quote [clojure.core.async :refer [chan go <! >! <!!]])) (def ^:dynamic *x* 0) (<!! (binding [*x* 7] (go (<! (clojure.core.async/timeout 5)) *x*)))" "7"]])
+   ["(require (quote [clojure.core.async :refer [chan go <! >! <!!]])) (def ^:dynamic *x* 0) (<!! (binding [*x* 7] (go (<! (clojure.core.async/timeout 5)) *x*)))" "7"]
+   # jolt-byjr: async agents (serialized per-agent dispatch); await for determinism.
+   ["(deref (agent 0))" "0"]
+   ["(let [a (agent 0)] (send-off a + 5) (await a) (deref a))" "5"]
+   ["(let [a (agent 1)] (send a + 6) (await a) (deref a))" "7"]
+   ["(let [a (agent 0)] (dotimes [_ 100] (send a inc)) (await a) (deref a))" "100"]
+   ["(agent-error (agent 0))" ""]
+   ["(let [a (agent 0)] (send a (fn [_] (throw (ex-info \"boom\" {})))) (await a) (boolean (agent-error a)))" "true"]])
 
 (each [src want] cases
   (def [code out err] (joltc src))
