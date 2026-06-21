@@ -1,10 +1,10 @@
 # jolt-yxqm — namespace value model (find-ns/ns-name/all-ns/resolve/ns-publics/
-# in-ns/*ns* …). TDD harness: drives bin/jolt-chez -e per case (fresh subprocess
+# in-ns/*ns* …). TDD harness: drives bin/joltc -e per case (fresh subprocess
 # = per-case isolation), checks the LAST printed line == expected. Expected
-# values are the JVM-canonical reference (build/jolt), captured up front.
+# values are the JVM-canonical reference, baked per case.
 #
 #   janet test/chez/_ns.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 # [label expr expected-last-line]
 (def cases

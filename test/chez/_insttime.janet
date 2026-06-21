@@ -1,13 +1,13 @@
 # jolt-at0a (inc X) — #inst / #uuid literals + java.time formatting on Chez.
 # #inst lowers (analyzer :inst node) to a jinst value (RFC3339 ms, partial
 # defaults + offsets); #uuid to a juuid; the java.time shim (DateTimeFormatter/
-# Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date) ports java_base.janet.
-# Mirrors the :regex IR-leaf precedent: Janet back end punts to the interpreter's
-# data-readers, Chez emits the runtime value (host/chez/inst-time.ss).
-# Oracle = build/jolt.
+# Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date.
+# Reader data-readers and statics emit the runtime value
+# (host/chez/inst-time.ss).
+#
 #
 #   janet test/chez/_insttime.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- #inst reading + identity ---
@@ -60,11 +60,8 @@
 (var pass 0)
 (def fails @[])
 (each [expr expected] cases
-  (def [ocode oracle _] (run-capture "build/jolt" expr))
   (def [code got err] (run-capture jolt-bin expr))
   (cond
-    (not= ocode 0) (array/push fails [expr (string "ORACLE FAILED exit " ocode)])
-    (not= oracle expected) (array/push fails [expr (string "ORACLE MISMATCH want `" expected "` got `" oracle "`")])
     (not= code 0) (array/push fails [expr (string "exit " code "; err: " err)])
     (= got expected) (++ pass)
     (array/push fails [expr (string "want `" expected "`, got `" got "`")])))

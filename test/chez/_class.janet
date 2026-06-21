@@ -2,12 +2,11 @@
 # Keyword, File...) evaluates to its JVM canonical-name STRING — the same value
 # (class instance) returns — so (= String (class "x")) holds and a (defmethod m
 # String ...) keys against a (class ...) dispatch. host-class.ss ports
-# src/jolt/eval_resolve.janet's class-canonical-names + core-class (scalar arms).
-# Oracle = build/jolt. Collection (class ...) is host-taxonomy-dependent (the seed
-# leaks the Janet host type "table"/"struct") and is NOT compared here.
+# Scalar (class x) returns the JVM-style class-name symbol.
+# Collection (class ...) is host-taxonomy-dependent and is NOT compared here.
 #
 #   janet test/chez/_class.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- bare class tokens evaluate to canonical strings ---
@@ -46,11 +45,8 @@
 (var pass 0)
 (def fails @[])
 (each [expr expected] cases
-  (def [ocode oracle _] (run-capture "build/jolt" expr))
   (def [code got err] (run-capture jolt-bin expr))
   (cond
-    (not= ocode 0) (array/push fails [expr (string "ORACLE FAILED exit " ocode)])
-    (not= oracle expected) (array/push fails [expr (string "ORACLE MISMATCH want `" expected "` got `" oracle "`")])
     (not= code 0) (array/push fails [expr (string "exit " code "; err: " err)])
     (= got expected) (++ pass)
     (array/push fails [expr (string "want `" expected "`, got `" got "`")])))

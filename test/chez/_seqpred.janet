@@ -3,14 +3,14 @@
 # is overlay (`(defn sequential? [x] (or (vector? x) (seq? x)))`), so it inherits
 # the fix transitively; this pins that both predicates agree with the JVM oracle
 # over every lazy-seq-producing form (and the native =/hash path via set!).
-# Expectations are the build/jolt (JVM-canonical) values.
+# Expectations are the JVM-canonical values.
 #
 #   janet test/chez/_seqpred.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- seq? over lazy seqs ---
-   # (NB: not (seq? (range 3)) — the seed makes range an eager vector, chez a lazy
+   # (NB: range is lazy, so (type (range 3)) is :seq not :vector
    #  seq; a range-container divergence, not the predicate. sequential? agrees on it.)
    ["seq? map"              "(seq? (map inc [1 2 3]))"               "true"]
    ["seq? filter"           "(seq? (filter odd? [1 2 3]))"          "true"]

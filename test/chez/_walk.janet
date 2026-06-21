@@ -1,8 +1,8 @@
 # jolt-75sv — list? (a list marker on cseq, since cseq backs both lists and
-# realized/lazy seqs) + map-entry-as-vector + clojure.walk. Oracle = build/jolt.
+# realized/lazy seqs) + map-entry-as-vector + clojure.walk.
 #
 #   janet test/chez/_walk.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 # -e reads only the FIRST form — wrap require + use in a single (do ...).
 (defn w [body] (string "(do (require (quote [clojure.walk :as w])) " body ")"))
@@ -63,11 +63,8 @@
 (var pass 0)
 (def fails @[])
 (each [expr expected] cases
-  (def [ocode oracle _] (run-capture "build/jolt" expr))
   (def [code got err] (run-capture jolt-bin expr))
   (cond
-    (not= ocode 0) (array/push fails [expr (string "ORACLE FAILED exit " ocode)])
-    (not= oracle expected) (array/push fails [expr (string "ORACLE MISMATCH want `" expected "` got `" oracle "`")])
     (not= code 0) (array/push fails [expr (string "exit " code "; err: " err)])
     (= got expected) (++ pass)
     (array/push fails [expr (string "want `" expected "`, got `" got "`")])))

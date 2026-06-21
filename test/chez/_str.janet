@@ -1,11 +1,11 @@
 # jolt-nfca — host java.lang.String method interop on Chez: (.toUpperCase s),
 # (.indexOf s x), (.substring s a b), the regex methods (.matches/.replaceAll/
-# .replaceFirst), etc. Ported from the seed's string-methods surface
-# (src/jolt/eval_resolve.janet). Expectations are the build/jolt (seed) oracle.
+# .replaceFirst), etc. The string-methods surface. Each case carries its
+# expected value.
 # An expected of :throws asserts a non-zero exit (unsupported method).
 #
 #   janet test/chez/_str.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [["toLowerCase"      "(.toLowerCase \"HI\")"                  "hi"]

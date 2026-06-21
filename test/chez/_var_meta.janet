@@ -1,16 +1,16 @@
 # jolt-zikh — var def-time metadata capture (^:private / ^Type tag / docstring).
 # (meta (var v)) must carry the def-time reader metadata + :ns/:name, matching the
-# JVM-canonical build/jolt. TDD harness: bin/jolt-chez -e per case, last line ==
+# JVM-canonical reference. TDD harness: bin/joltc -e per case, last line ==
 # expected.
 #
 #   janet test/chez/_var_meta.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   # NOTE: ^{:map} metadata on a def name (e.g. (def ^{:doc "hi"} dv 1)) reads as
   # (def (with-meta name m) v) and is uncompilable for the COMPILER generally
-  # (analyzer.clj rejects it; the Janet back end punts to its interpreter, which
-  # Chez lacks) — out of subset, not a meta-capture gap. Shorthand ^:kw / ^Type
+  # (analyzer.clj rejects it) — out of subset, not a meta-capture gap. Shorthand
+  # ^:kw / ^Type
   # and the docstring form keep the name a plain symbol, so they're in scope.
   [["^:private on var"   "(do (def ^:private pv 1) (:private (meta (var pv))))"      "true"]
    ["^Type tag on var"   "(do (def ^String tv \"a\") (:tag (meta (var tv))))"        "String"]

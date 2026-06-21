@@ -1,14 +1,14 @@
 # jolt-r8ku (inc Y) — Chez-side Clojure data reader: read-string / read /
 # read+string / with-in-str / clojure.edn. The reader (host/chez/reader.ss)
-# produces the same jolt forms the Janet reader yields; the *in* family and
+# produces jolt forms directly; the *in* family and
 # clojure.edn are Clojure over the read-string / __parse-next seams.
 #
 # Outputs are kept order-stable (equality checks, scalars) so set/map iteration
-# order — which legitimately differs from build/jolt — doesn't masquerade as a
-# divergence. Oracle = build/jolt.
+# order — which is host-dependent — doesn't masquerade as a
+# divergence.
 #
 #   janet test/chez/_reader.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- scalars + collections (value equality, order-independent) ---
@@ -81,11 +81,8 @@
 (var pass 0)
 (def fails @[])
 (each [expr expected] cases
-  (def [ocode oracle _] (run-capture "build/jolt" expr))
   (def [code got err] (run-capture jolt-bin expr))
   (cond
-    (not= ocode 0) (array/push fails [expr (string "ORACLE FAILED exit " ocode)])
-    (not= oracle expected) (array/push fails [expr (string "ORACLE MISMATCH want `" expected "` got `" oracle "`")])
     (not= code 0) (array/push fails [expr (string "exit " code "; err: " err)])
     (= got expected) (++ pass)
     (array/push fails [expr (string "want `" expected "`, got `" got "`")])))

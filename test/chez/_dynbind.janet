@@ -1,10 +1,10 @@
 # jolt-2o7x — dynamic var binding (binding / with-bindings* / var-set /
 # thread-bound? / with-local-vars / with-redefs / bound-fn* / get-thread-bindings).
-# Expectations are the JVM-canonical build/jolt values. TDD harness: bin/jolt-chez
+# Expectations are the JVM-canonical values. TDD harness: bin/joltc
 # -e per case, last non-empty line == expected.
 #
 #   janet test/chez/_dynbind.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- binding: install / restore / seen across a fn call ---
@@ -26,10 +26,8 @@
    ["thread-bound? in scope" "(do (def ^:dynamic *tc* 1) (binding [*tc* 2] (thread-bound? (var *tc*))))" "true"]
 
    # --- with-bindings* / bound-fn* / get-thread-bindings ---
-   # NOTE: build/jolt (the seed) returns 1 here — its persistent-hash-map can't
-   # find a var key, which is why the seed's `binding` macro uses array-map. On
-   # Chez array-map IS hash-map and frames look up by cell identity, so this is
-   # the correct Clojure value 7 (a place Chez is more correct than the seed).
+   # Binding frames look up by var cell identity, so a var-keyed binding map
+   # resolves: the Clojure-correct value is 7.
    ["with-bindings*"         "(do (def ^:dynamic *wb* 1) (with-bindings* {(var *wb*) 7} (fn [] *wb*)))" "7"]
    ["bound-fn* conveys"      "(do (def ^:dynamic *cf* 1) (let [g (binding [*cf* 3] (bound-fn* (fn [] *cf*)))] (g)))" "3"]
    ["get-thread-bindings"    "(do (def ^:dynamic *gb* 1) (binding [*gb* 9] (get (get-thread-bindings) (var *gb*))))" "9"]

@@ -2,10 +2,10 @@
 # alias `s` established by a runtime (require '[clojure.string :as s]). The Chez
 # AOT driver pre-evals require forms against the ctx so the alias resolves at
 # analyze time, and clojure.string is emitted as a prelude tier over the str-*
-# primitives. Expectations are the build/jolt (seed) oracle.
+# primitives. Each case carries its expected value.
 #
 #   janet test/chez/_strns.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (defn- with-req [body] (string "(do (require (quote [clojure.string :as s])) " body ")"))
 

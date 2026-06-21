@@ -1,12 +1,11 @@
 # jolt-yyud — clojure.java.io/file + java.io.File interop + slurp/spit/flush/
 # file-seq on Chez. A File is a path-backed jfile record (instance? java.io.File,
-# str -> path, the File method surface). io.clj is a Janet-backed shim (janet.*),
-# so this is a Chez-native implementation, not a port of it. Reader/StringReader-
-# coupled cases (line-seq, slurp over a reader, toURL) are deferred to jolt-at0a.
-# Oracle = build/jolt.
+# str -> path, the File method surface). This is a Chez-native implementation.
+# Reader-coupled cases (line-seq, slurp over a reader, toURL) are deferred to jolt-at0a.
+#
 #
 #   janet test/chez/_io.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (defn io [body] (string "(do (require (quote [clojure.java.io :as io])) " body ")"))
 
@@ -48,11 +47,8 @@
 (var pass 0)
 (def fails @[])
 (each [expr expected] cases
-  (def [ocode oracle _] (run-capture "build/jolt" expr))
   (def [code got err] (run-capture jolt-bin expr))
   (cond
-    (not= ocode 0) (array/push fails [expr (string "ORACLE FAILED exit " ocode)])
-    (not= oracle expected) (array/push fails [expr (string "ORACLE MISMATCH want `" expected "` got `" oracle "`")])
     (not= code 0) (array/push fails [expr (string "exit " code "; err: " err)])
     (= got expected) (++ pass)
     (array/push fails [expr (string "want `" expected "`, got `" got "`")])))

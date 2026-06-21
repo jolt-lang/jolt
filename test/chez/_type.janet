@@ -1,12 +1,11 @@
 # jolt-fmm4 — (type x) on Chez: :type meta override, record class-name symbol,
 # and a comprehensive value->taxonomy mapping (no value type crashes -> must be
-# total, the recorded gotcha). Expectations are the build/jolt (seed) oracle.
-# Producers that the seed makes eager (range) are avoided: (type (range 3)) is
-# :vector on the seed (eager) but :seq on chez (lazy) — a range-container
-# divergence unrelated to `type`, covered elsewhere.
+# total, the recorded gotcha). Each case carries its expected value.
+# (type (range 3)) is :seq (range is lazy); range-container divergences are
+# covered elsewhere.
 #
 #   janet test/chez/_type.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- scalars ---

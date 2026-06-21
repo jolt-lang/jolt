@@ -11,11 +11,11 @@
 #                    through the host seam).
 #
 # Outputs are order-stable (value-equality / scalars) so set/map iteration order
-# — which legitimately differs from build/jolt — never masquerades as a divergence.
-# Oracle = build/jolt.
+# — which is host-dependent — never masquerades as a divergence.
+#
 #
 #   janet test/chez/_stdlib.janet
-(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/jolt-chez"))
+(def jolt-bin (or (os/getenv "JOLT_BIN") "bin/joltc"))
 
 (def cases
   [# --- clojure.math (jolt-22vo / jolt-h79) ---
@@ -31,7 +31,7 @@
    ["(long (clojure.math/cbrt 27))"                                 "3"]
    ["(< 4.6 (clojure.math/log 100) 4.7)"                            "true"]
    # Chez has no native log10 (computed as log(x)/log(10)), so it can differ from
-   # the seed's C log10 in the last ulp (3 vs 2.9999…); range-check, don't pin.
+   # C log10 in the last ulp (3 vs 2.9999…); range-check, don't pin.
    ["(< 2.99 (clojure.math/log10 1000) 3.01)"                       "true"]
    ["(do (require (quote [clojure.math :as m])) (long (m/hypot 3 4)))" "5"]
    ["(mapv (comp long clojure.math/sqrt) [1 4])"                    "[1 2]"]
@@ -63,11 +63,8 @@
 (var pass 0)
 (def fails @[])
 (each [expr expected] cases
-  (def [ocode oracle _] (run-capture "build/jolt" expr))
   (def [code got err] (run-capture jolt-bin expr))
   (cond
-    (not= ocode 0) (array/push fails [expr (string "ORACLE FAILED exit " ocode)])
-    (not= oracle expected) (array/push fails [expr (string "ORACLE MISMATCH want `" expected "` got `" oracle "`")])
     (not= code 0) (array/push fails [expr (string "exit " code "; err: " err)])
     (= got expected) (++ pass)
     (array/push fails [expr (string "want `" expected "`, got `" got "`")])))
