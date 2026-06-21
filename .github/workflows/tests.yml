@@ -35,4 +35,7 @@ jobs:
           clojure --version
 
       - name: Gate
-        run: make test
+        # `make ci` runs the behavior gates (corpus/unit/smoke/sci/certify). The
+        # self-host byte-fixpoint (make selfhost) is a dev-machine check — it only
+        # holds on the Chez that minted the seed. See jolt-8479.
+        run: make ci
