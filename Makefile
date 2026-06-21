@@ -4,10 +4,10 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test values corpus unit smoke selfhost certify remint
+.PHONY: test values corpus unit smoke selfhost sci certify remint
 
 # Full gate. Each step exits non-zero on failure, failing the target.
-test: selfhost values corpus unit smoke certify
+test: selfhost values corpus unit smoke sci certify
 	@echo "OK: all gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -29,6 +29,10 @@ unit:
 # Real-CLI smoke over bin/joltc.
 smoke:
 	@sh host/chez/smoke.sh
+
+# SCI conformance: load borkdude/sci's source through joltc (floor-gated).
+sci:
+	@chez --script host/chez/run-sci.ss
 
 # JVM oracle: certify the corpus against reference Clojure. Skips if clojure absent.
 certify:

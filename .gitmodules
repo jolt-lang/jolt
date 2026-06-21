@@ -1,3 +1,6 @@
 [submodule "vendor/irregex"]
 	path = vendor/irregex
 	url = https://github.com/ashinn/irregex.git
+[submodule "vendor/sci"]
+	path = vendor/sci
+	url = https://github.com/borkdude/sci.git

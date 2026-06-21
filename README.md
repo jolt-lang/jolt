@@ -96,6 +96,7 @@ make corpus                   # conformance corpus vs the JVM-sourced spec
 make unit                     # host-specific unit cases
 make selfhost                 # bootstrap fixpoint (rebuild == checked-in seed)
 make smoke                    # bin/joltc CLI smoke
+make sci                      # load borkdude/sci's source through joltc (compat stress)
 make certify                  # JVM oracle (skips if clojure is absent)
 ```
 
