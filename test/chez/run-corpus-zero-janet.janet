@@ -110,7 +110,27 @@
     # unquoted value forms eval in hash order, not source order — a minor ordering
     # gap (pmap has no insertion order; the reader's source-order table doesn't cover
     # syntax-quote-built maps). 1 case; the non-syntax-quote map-order cases pass.
-    "source order through syntax-quote" true})
+    "source order through syntax-quote" true
+    # numeric tower (jolt-n6al): the zero-Janet path now carries the Chez numeric
+    # tower (exact ints / Ratio / double) = JVM parity, while the corpus :expected
+    # is the all-flonum Janet value (the Janet host has only doubles). So Chez gives
+    # the JVM value and the Janet-era corpus diverges — flipped to JVM at Phase 5
+    # (jolt-ecz0), these stay allowlisted during the transition. Each verified
+    # Chez == reference JVM Clojure.
+    "divide to fraction" true   # (/ 1 2) -> 1/2 (JVM Ratio), corpus 0.5
+    "ratio 3/4" true            # 3/4 literal -> Ratio
+    "neg ratio" true            # -1/2 -> Ratio
+    "ratio -> double" true      # ratio result, corpus double
+    "/ ratio-as-double" true
+    "native unary div" true     # (/ 2) -> 1/2
+    "double" true               # (double 3) -> 3.0 (double != exact 3)
+    "doubles" true "floats" true
+    "unchecked-double" true "unchecked-float" true
+    "floor" true                # clojure.math/floor -> 2.0 (JVM double)
+    "signum" true               # clojure.math/signum -> -1.0 (JVM double)
+    "Math/sqrt" true            # -> 3.0 (double)
+    "Math/pow" true             # -> 8.0 (double)
+    "bigdec int M" true})       # 1M: no BigDecimal type on Chez (documented gap)
 
 # Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
 # :timeout) — skip them, like :throws: a single hung case would stall the whole
@@ -226,7 +246,12 @@
 # date/time (Date/Timestamp/SimpleDateFormat/TimeZone) + clojure.edn/read over a
 # reader -> 2692; STM stub + portable line-seq -> 2696; realized? on a lazy-seq +
 # conj! 1-arity (transducer-completion identity) -> 2698.
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2698")))
+# numeric tower (jolt-n6al): 2698 -> 2682. ~16 numeric cases that the all-flonum
+# model coincidentally passed (corpus :expected is the Janet double value) now give
+# the JVM tower value (1/2, 3.0, ...) and are reclassified as known tower
+# divergences (Chez == reference JVM). The floor rises back when the corpus flips
+# to JVM values (jolt-ecz0, Phase 5).
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2682")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

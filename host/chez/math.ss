@@ -22,7 +22,8 @@
       (- (expt (- x) (/ 1.0 3.0)))
       (expt x (/ 1.0 3.0))))
 
-(define (jolt-math-round x) (floor (+ x 0.5)))
+;; clojure.math/round returns a long (exact); floor/ceil/signum/rint return doubles.
+(define (jolt-math-round x) (exact (floor (+ x 0.5))))
 (define (jolt-math-signum x) (cond ((< x 0.0) -1.0) ((> x 0.0) 1.0) (else 0.0)))
 (define (jolt-math-to-degrees r) (/ (* r 180.0) jolt-math-pi))
 (define (jolt-math-to-radians d) (/ (* d jolt-math-pi) 180.0))

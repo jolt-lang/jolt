@@ -108,7 +108,8 @@
              (error #f (string-append "No constructor for class " class))))))))
 
 ;; ---- coercion helpers -------------------------------------------------------
-(define (->num x) (exact->inexact x))
+;; numeric tower (jolt-n6al): currentTimeMillis/nanoTime are exact longs (JVM).
+(define (->num x) x)
 (define (jnum->exact n) (exact (truncate n)))
 ;; parse an integer string in radix; #f on failure (matches the seed's scan-number)
 (define (parse-int-str s radix)
@@ -291,7 +292,7 @@
 (register-host-methods! "string-reader"
   (list (cons "read" (lambda (self)
                        (let ((s (sr-s self)) (p (sr-pos self)))
-                         (if (>= p (string-length s)) -1.0
+                         (if (>= p (string-length s)) -1   ; EOF -> exact int -1 (= JVM)
                              (begin (sr-pos! self (+ p 1)) (->num (char->integer (string-ref s p))))))))
         (cons "mark" (lambda (self . _) (vector-set! (jhost-state self) 2 (sr-pos self)) jolt-nil))
         (cons "reset" (lambda (self) (sr-pos! self (vector-ref (jhost-state self) 2)) jolt-nil))

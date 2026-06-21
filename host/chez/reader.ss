@@ -73,9 +73,13 @@
 ;; jolt models EVERY number as a double (emit-const lowers integer literals to
 ;; flonums too), so the reader coerces every parsed number to inexact — else a
 ;; read int (exact) is not jolt= to a source int literal (flonum).
+;; Preserve exactness for the Chez numeric tower (JVM parity): integer literals
+;; read as exact integers (= Long/BigInt, arbitrary precision), a/b ratios as
+;; exact rationals (= Ratio), and decimal/exponent literals as flonums (= double).
+;; Only the zero-Janet path (this reader) carries exactness through to runtime;
+;; the Janet-reader prelude path stays all-flonum (Janet has only doubles).
 (define (rdr-try-number tok)
-  (let ((raw (rdr-try-number-raw tok)))
-    (and raw (exact->inexact raw))))
+  (rdr-try-number-raw tok))
 
 (define (rdr-try-number-raw tok)
   (let ((len (string-length tok)))
@@ -108,12 +112,13 @@
          (blen (string-length body))
          (slash (rdr-string-index-char body #\/)))
     (cond
-      ;; ratio a/b -> flonum (the seed has no exact ratios)
+      ;; ratio a/b -> exact rational (= JVM Ratio); reduces to an exact integer
+      ;; when d divides n.
       (slash
        (let ((n (string->number (substring body 0 slash)))
              (d (string->number (substring body (+ slash 1) blen))))
          (and (integer? n) (integer? d) (not (= d 0))
-              (* sign (exact->inexact (/ n d))))))
+              (* sign (/ n d)))))
       ;; hex 0x..
       ((and (>= blen 2) (char=? (string-ref body 0) #\0)
             (or (char=? (string-ref body 1) #\x) (char=? (string-ref body 1) #\X)))
@@ -137,9 +142,8 @@
          (and n (exact->inexact (* sign n)))))
       (else
        (let ((n (string->number tok)))   ; tok carries its own sign
-         (and (number? n) (real? n)
-              ;; never surface an exact non-integer ratio
-              (if (and (exact? n) (not (integer? n))) (exact->inexact n) n)))))))
+         ;; keep exactness: "42" -> exact int, "3.14"/"1e3" -> flonum.
+         (and (number? n) (real? n) n))))))
 
 ;; --- string / char literals -------------------------------------------------
 (define (rdr-hex->int s i n)            ; n hex digits at i -> (values int j)

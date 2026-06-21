@@ -252,10 +252,11 @@
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #t d))
              (else d))))))
 
-;; jolt models every number as a double, so a count is a flonum — else
-;; (= 2 (count m)) is false (jolt= is exactness-aware: 2.0 vs exact 2).
+;; a count is an exact integer (JVM parity: count returns a long). jolt= is
+;; exactness-aware, so this must be exact to match an exact integer literal:
+;; (= 2 (count m)) -> 2 vs exact 2 -> true.
 (define (jolt-count coll)
-  (exact->inexact
+  (begin
     (cond ((pvec? coll) (pvec-count coll))
           ((pmap? coll) (pmap-cnt coll))
           ((pset? coll) (pset-count coll))

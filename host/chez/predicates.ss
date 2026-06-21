@@ -22,8 +22,16 @@
 (define (jolt-number? x) (number? x))
 (define (jolt-string? x) (string? x))
 (define (jolt-char-pred? x) (char? x))
-;; finite integral number — Chez integer? already rejects the infinities and NaN.
-(define (jolt-integer? x) (and (number? x) (integer? x)))
+;; JVM-parity number-type predicates over the Chez numeric tower. integer? is the
+;; INTEGER TYPE (exact integer = Long/BigInt), NOT integer-VALUED: (integer? 3.0)
+;; is false on the JVM (3.0 is a Double). float? = flonum (double). ratio? = exact
+;; non-integer (= JVM Ratio). rational? = exact (integer or ratio; jolt has no
+;; BigDecimal). decimal? is always false (no BigDecimal type).
+(define (jolt-integer? x) (and (number? x) (exact? x) (integer? x)))
+(define (jolt-float? x) (and (number? x) (flonum? x)))
+(define (jolt-ratio? x) (and (number? x) (exact? x) (rational? x) (not (integer? x))))
+(define (jolt-rational? x) (and (number? x) (exact? x)))
+(define (jolt-decimal? x) #f)
 (define (jolt-fn? x) (procedure? x))
 (define (jolt-boolean-pred? x) (boolean? x))
 
@@ -50,6 +58,20 @@
 (def-var! "clojure.core" "string?" jolt-string?)
 (def-var! "clojure.core" "char?" jolt-char-pred?)
 (def-var! "clojure.core" "integer?" jolt-integer?)
+(def-var! "clojure.core" "float?" jolt-float?)
+(def-var! "clojure.core" "ratio?" jolt-ratio?)
+(def-var! "clojure.core" "rational?" jolt-rational?)
+(def-var! "clojure.core" "decimal?" jolt-decimal?)
+;; == numeric value-equality (ignores exactness, unlike =): (== 3 3.0) -> true.
+;; 1-arity is trivially true; 2+ args must all be numbers (Numbers.equiv throws
+;; otherwise). Uses Scheme = (value across the tower), not jolt= (category-aware).
+(define (jolt-num-equiv . xs)
+  (let all-num? ((ys xs))
+    (cond
+      ((null? ys) (or (null? xs) (null? (cdr xs)) (apply = xs)))
+      ((number? (car ys)) (all-num? (cdr ys)))
+      (else (error #f "== requires numbers" xs)))))
+(def-var! "clojure.core" "==" jolt-num-equiv)
 (def-var! "clojure.core" "symbol?" jolt-symbol?)
 (def-var! "clojure.core" "keyword?" keyword?)
 (def-var! "clojure.core" "map?" jolt-map?)

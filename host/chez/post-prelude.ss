@@ -80,3 +80,17 @@
   (def-var! "clojure.core" "line-seq"
     (lambda (rdr)
       (if (reader-jhost? rdr) (chez-line-seq rdr) (jolt-invoke overlay-line-seq rdr)))))
+;; JVM-parity numeric tower (jolt-n6al): the overlay (20-coll.clj) carries an
+;; all-flonum number-predicate web with no Ratio concept (ratio? -> false,
+;; double? -> not-integer, float? -> double?, rational? -> int?), which
+;; misclassifies exact rationals on the Chez tower (e.g. (double? 1/2) -> true).
+;; Re-assert the native tower-correct versions (predicates.ss) so they win over
+;; the overlay defs. int?/double? alias integer?/float?. == is value-equality.
+(def-var! "clojure.core" "integer?" jolt-integer?)
+(def-var! "clojure.core" "int?" jolt-integer?)
+(def-var! "clojure.core" "float?" jolt-float?)
+(def-var! "clojure.core" "double?" jolt-float?)
+(def-var! "clojure.core" "ratio?" jolt-ratio?)
+(def-var! "clojure.core" "rational?" jolt-rational?)
+(def-var! "clojure.core" "decimal?" jolt-decimal?)
+(def-var! "clojure.core" "==" jolt-num-equiv)

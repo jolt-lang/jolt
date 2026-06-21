@@ -17,9 +17,9 @@
       (make-jolt-array (make-vector (exact (na-idx a)) (if (pair? rest) (car rest) init)) kind)
       (na-from-seq a kind)))
 
-;; jolt numbers are flonums — array element defaults / masked bytes / count must be
-;; INEXACT or jolt's exactness-aware = fails (= 3.0 (exact 3) -> false).
-(define (na-byte-of v) (exact->inexact (bitwise-and (exact (floor v)) #xff)))
+;; numeric tower (jolt-n6al): array element defaults / masked bytes / count are
+;; EXACT integers (= JVM byte/short/int), matching exact integer literals.
+(define (na-byte-of v) (bitwise-and (exact (floor v)) #xff))
 
 ;; --- constructors -----------------------------------------------------------
 (define (na-object-array a . rest)  (na-num-array a rest jolt-nil 'object))
@@ -60,9 +60,9 @@
 (define (na-bytes? x) (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)))
 (define (na-identity x) x)
 (define (na-byte x)
-  (let ((b (bitwise-and (exact (floor x)) #xff))) (exact->inexact (if (>= b 128) (- b 256) b))))
+  (let ((b (bitwise-and (exact (floor x)) #xff))) (if (>= b 128) (- b 256) b)))
 (define (na-short x)
-  (let ((s (bitwise-and (exact (floor x)) #xffff))) (exact->inexact (if (>= s #x8000) (- s #x10000) s))))
+  (let ((s (bitwise-and (exact (floor x)) #xffff))) (if (>= s #x8000) (- s #x10000) s)))
 
 ;; --- chunked seqs (Jolt does not chunk; eager equivalents over a buffer) -----
 (define-record-type jolt-chunkbuf (fields (mutable items)) (nongenerative jolt-chunkbuf-v1))
@@ -76,7 +76,7 @@
 
 ;; --- extend the collection dispatchers to see a jolt-array ------------------
 (define %na-count jolt-count)
-(set! jolt-count (lambda (c) (if (jolt-array? c) (exact->inexact (vector-length (jolt-array-vec c))) (%na-count c))))
+(set! jolt-count (lambda (c) (if (jolt-array? c) (vector-length (jolt-array-vec c)) (%na-count c))))
 (define %na-seq jolt-seq)
 (set! jolt-seq (lambda (c) (if (jolt-array? c) (list->cseq (vector->list (jolt-array-vec c))) (%na-seq c))))
 (define %na-nth jolt-nth)

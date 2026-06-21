@@ -66,7 +66,7 @@
   ((coll k)   (if (jrec? coll) (jrec-lookup coll k jolt-nil) (%r-jolt-get coll k)))
   ((coll k d) (if (jrec? coll) (jrec-lookup coll k d) (%r-jolt-get coll k d)))))
 (define %r-jolt-count jolt-count)
-(set! jolt-count (lambda (coll) (if (jrec? coll) (exact->inexact (length (jrec-pairs coll))) (%r-jolt-count coll))))
+(set! jolt-count (lambda (coll) (if (jrec? coll) (length (jrec-pairs coll)) (%r-jolt-count coll))))
 (define %r-jolt-contains? jolt-contains?)
 (set! jolt-contains? (lambda (coll k) (if (jrec? coll) (jrec-has? coll k) (%r-jolt-contains? coll k))))
 (define %r-jolt-assoc1 jolt-assoc1)

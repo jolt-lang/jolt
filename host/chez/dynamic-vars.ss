@@ -7,9 +7,9 @@
 ;; *clojure-version* — a jolt map {:major 1 :minor 11 :incremental 0 :qualifier nil}
 ;; (jolt is all-flonum, so the numbers are flonums).
 (def-var! "clojure.core" "*clojure-version*"
-  (jolt-hash-map (keyword #f "major") 1.0
-                 (keyword #f "minor") 11.0
-                 (keyword #f "incremental") 0.0
+  (jolt-hash-map (keyword #f "major") 1
+                 (keyword #f "minor") 11
+                 (keyword #f "incremental") 0
                  (keyword #f "qualifier") jolt-nil))
 
 ;; *unchecked-math* — jolt does no unchecked-math elision; the var reads false.

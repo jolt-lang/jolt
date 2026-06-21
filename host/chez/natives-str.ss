@@ -91,18 +91,17 @@
     ((string=? method "toLowerCase") (ascii-string-down s))
     ((string=? method "toUpperCase") (ascii-string-up s))
     ((string=? method "trim") (str-trim s))
-    ((string=? method "length") (exact->inexact (string-length s)))
+    ((string=? method "length") (string-length s))   ; exact int (= JVM)
     ((string=? method "isEmpty") (fx=? (string-length s) 0))
     ((string=? method "charAt") (string-ref s (jolt->idx (arg 0))))
     ((string=? method "substring")
      (substring s (jolt->idx (arg 0))
                 (if (fx>? (length rest) 1) (jolt->idx (arg 1)) (string-length s))))
     ((string=? method "indexOf")
-     (exact->inexact
-      (str-index-of s (str-needle (arg 0))
-                    (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0))))
+     (str-index-of s (str-needle (arg 0))
+                   (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0)))
     ((string=? method "lastIndexOf")
-     (exact->inexact (str-last-index-of s (str-needle (arg 0)))))
+     (str-last-index-of s (str-needle (arg 0))))
     ((string=? method "startsWith")
      (let ((p (arg 0))) (and (fx>=? (string-length s) (string-length p))
                              (string=? (substring s 0 (string-length p)) p))))
@@ -153,10 +152,10 @@
 (define (str-lower s) (ascii-string-down s))
 (define (str-reverse-b s) (list->string (reverse (string->list s))))
 
-;; (str-find needle haystack) -> flonum index of first occurrence, or nil.
+;; (str-find needle haystack) -> exact int index of first occurrence, or nil.
 (define (str-find needle s)
   (let ((i (str-index-of s needle 0)))
-    (if (fx<? i 0) jolt-nil (exact->inexact i))))
+    (if (fx<? i 0) jolt-nil i)))
 
 ;; (str-join coll [sep]) -> stringify each element (Clojure str), join by sep.
 (define (str-join coll . opt)

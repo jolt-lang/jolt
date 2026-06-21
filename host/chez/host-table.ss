@@ -70,7 +70,7 @@
 (define %h-seq jolt-seq)
 (set! jolt-seq (lambda (x) (if (htable-sorted? x) (sc-call x kw-op-seq) (%h-seq x))))
 (define %h-count jolt-count)
-(set! jolt-count (lambda (coll) (if (htable-sorted? coll) (exact->inexact (sc-call coll kw-op-count)) (%h-count coll))))
+(set! jolt-count (lambda (coll) (if (htable-sorted? coll) (sc-call coll kw-op-count) (%h-count coll))))
 (define %h-get jolt-get)
 (set! jolt-get (case-lambda
   ((coll k)   (if (htable-sorted? coll) (sc-call coll kw-op-get k jolt-nil) (%h-get coll k)))

@@ -14,9 +14,12 @@
   [# --- scalars + collections (value equality, order-independent) ---
    ["(= 42 (read-string \"42\"))"                                  "true"]
    ["(= 42 (read-string \"0x2A\"))"                                "true"]
-   ["(= 0.5 (read-string \"1/2\"))"                                "true"]
+   # numeric tower (jolt-n6al): "1/2" reads as an exact Ratio (= JVM), so a
+   # category-aware = against the double 0.5 is false; assert numeric value (==),
+   # which holds in both the all-flonum and tower models.
+   ["(== 0.5 (read-string \"1/2\"))"                               "true"]
    ["(= -3.5 (read-string \"-3.5\"))"                              "true"]
-   ["(= 1000.0 (read-string \"1e3\"))"                             "true"]
+   ["(== 1000.0 (read-string \"1e3\"))"                            "true"]
    ["(= 1 (read-string \"1N\"))"                                   "true"]
    ["(integer? (read-string \"7\"))"                               "true"]
    ["(= :foo (read-string \":foo\"))"                              "true"]

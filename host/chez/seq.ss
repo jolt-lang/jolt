@@ -113,14 +113,15 @@
               ((fx=? i 0) (seq-first s))
               (else (loop (jolt-seq (seq-more s)) (fx- i 1)))))))
 
-;; value-position arithmetic: jolt models every number as a double, so the
-;; higher-order forms ((reduce + []), (apply * xs)) must coerce — Scheme's (+)/(*)
-;; identities are EXACT 0/1, which aren't jolt= to the double 0.0/1.0. The hot
-;; path uses the inlined native ops, not these.
-(define (jolt-add . xs) (exact->inexact (apply + xs)))
-(define (jolt-sub . xs) (exact->inexact (apply - xs)))
-(define (jolt-mul . xs) (exact->inexact (apply * xs)))
-(define (jolt-div . xs) (exact->inexact (apply / xs)))
+;; value-position arithmetic (the higher-order forms: (reduce + []), (apply * xs)).
+;; Scheme's +/-/*// already implement the JVM-parity numeric tower: exact+exact ->
+;; exact, exact/exact -> Ratio, any flonum -> flonum. Identities (+)=0 / (*)=1 are
+;; exact, matching exact integer arithmetic. The hot path uses the inlined native
+;; ops, not these.
+(define (jolt-add . xs) (apply + xs))
+(define (jolt-sub . xs) (apply - xs))
+(define (jolt-mul . xs) (apply * xs))
+(define (jolt-div . xs) (apply / xs))
 
 ;; ============================================================================
 ;; IFn dispatch — the dynamic "value as fn" fallback. A callee that the emitter
@@ -181,16 +182,18 @@
 
 (define (jolt-into to from) (reduce-seq (lambda (acc x) (jolt-conj1 acc x)) to (jolt-seq from)))
 
-(define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1.0)))))
+(define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1)))))
 (define (range-bounded n end step)
   (if (if (> step 0.0) (< n end) (> n end))
       (cseq-lazy n (lambda () (range-bounded (+ n step) end step)))
       jolt-nil))
+;; numeric tower (jolt-n6al): exact 0/1 defaults so (range 3) yields exact ints
+;; (= JVM longs); flonum args still produce flonums (Scheme arithmetic preserves).
 (define jolt-range
   (case-lambda
-    (() (range-from 0.0))
-    ((end) (range-bounded 0.0 end 1.0))
-    ((start end) (range-bounded start end 1.0))
+    (() (range-from 0))
+    ((end) (range-bounded 0 end 1))
+    ((start end) (range-bounded start end 1))
     ((start end step) (range-bounded start end step))))
 
 (define (jolt-take n coll)

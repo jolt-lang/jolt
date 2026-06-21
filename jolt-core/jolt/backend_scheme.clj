@@ -133,16 +133,18 @@
   (cond
     (nil? v) "jolt-nil"
     (boolean? v) (if v "#t" "#f")
-    ;; jolt models every number as a double. Emit flonums so arithmetic matches
-    ;; the Janet host and Chez doesn't fall into exploding exact rationals.
-    ;; ##Inf/##-Inf/##NaN -> Chez's flonum literals (Janet stringifies them as
-    ;; inf/-inf/nan, unbound symbols in Chez).
+    ;; Numeric tower (jolt-n6al): emit a literal Chez re-reads as the SAME number.
+    ;; Exact integers -> "42", exact ratios -> "1/2" (str renders both faithfully);
+    ;; a flonum must carry a decimal point/exponent or Chez reads it back as exact,
+    ;; so a whole flonum (str drops its .0) gets ".0" appended. ##Inf/##-Inf/##NaN
+    ;; -> Chez's flonum literals.
     (number? v) (cond
                   (= v ##Inf) "+inf.0"
                   (= v ##-Inf) "-inf.0"
                   (not= v v) "+nan.0"
-                  :else (let [s (str v)]
-                          (if (or (str/includes? s ".") (str/includes? s "e")) s (str s ".0"))))
+                  (float? v) (let [s (str v)]
+                               (if (or (str/includes? s ".") (str/includes? s "e")) s (str s ".0")))
+                  :else (str v))
     (string? v) (chez-str-lit v)
     ;; keyword literal -> (keyword ns name)
     (keyword? v) (if-let [kns (namespace v)]
@@ -310,9 +312,9 @@
         kind (ifn-kind fnode)
         default (if (> (count args) 1) (str " " (nth args 1)) "")]
     (cond
-      ;; zero-arg + / * : flonum identity to keep the all-double model.
-      (and nop (empty? args) (= nop "+")) "0.0"
-      (and nop (empty? args) (= nop "*")) "1.0"
+      ;; zero-arg + / * : exact integer identity (= JVM long: (+) -> 0, (*) -> 1).
+      (and nop (empty? args) (= nop "+")) "0"
+      (and nop (empty? args) (= nop "*")) "1"
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
       nop (str "(" nop " " (str/join " " args) ")")
       ;; (:k coll [default]) -> (jolt-get coll :k [default])

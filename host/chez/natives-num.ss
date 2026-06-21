@@ -4,24 +4,25 @@
 ;; to an exact integer, operate, and return a flonum. parse-* match the seed's
 ;; strict shapes (Clojure 1.11: nil on malformed, throw on a non-string).
 
+;; bit ops return EXACT integers (= JVM long). ->int coerces the operand.
 (define (->int x) (exact (truncate x)))
-(define (jolt-bit-and a b)     (exact->inexact (bitwise-and (->int a) (->int b))))
-(define (jolt-bit-or a b)      (exact->inexact (bitwise-ior (->int a) (->int b))))
-(define (jolt-bit-xor a b)     (exact->inexact (bitwise-xor (->int a) (->int b))))
-(define (jolt-bit-and-not a b) (exact->inexact (bitwise-and (->int a) (bitwise-not (->int b)))))
-(define (jolt-bit-not a)       (exact->inexact (bitwise-not (->int a))))
-(define (jolt-bit-shift-left x n)  (exact->inexact (bitwise-arithmetic-shift-left (->int x) (->int n))))
-(define (jolt-bit-shift-right x n) (exact->inexact (bitwise-arithmetic-shift-right (->int x) (->int n))))
+(define (jolt-bit-and a b)     (bitwise-and (->int a) (->int b)))
+(define (jolt-bit-or a b)      (bitwise-ior (->int a) (->int b)))
+(define (jolt-bit-xor a b)     (bitwise-xor (->int a) (->int b)))
+(define (jolt-bit-and-not a b) (bitwise-and (->int a) (bitwise-not (->int b))))
+(define (jolt-bit-not a)       (bitwise-not (->int a)))
+(define (jolt-bit-shift-left x n)  (bitwise-arithmetic-shift-left (->int x) (->int n)))
+(define (jolt-bit-shift-right x n) (bitwise-arithmetic-shift-right (->int x) (->int n)))
 (define (bit-mask n) (bitwise-arithmetic-shift-left 1 (->int n)))
-(define (jolt-bit-set x n)   (exact->inexact (bitwise-ior (->int x) (bit-mask n))))
-(define (jolt-bit-clear x n) (exact->inexact (bitwise-and (->int x) (bitwise-not (bit-mask n)))))
-(define (jolt-bit-flip x n)  (exact->inexact (bitwise-xor (->int x) (bit-mask n))))
+(define (jolt-bit-set x n)   (bitwise-ior (->int x) (bit-mask n)))
+(define (jolt-bit-clear x n) (bitwise-and (->int x) (bitwise-not (bit-mask n))))
+(define (jolt-bit-flip x n)  (bitwise-xor (->int x) (bit-mask n)))
 (define (jolt-bit-test x n)  (not (zero? (bitwise-and (->int x) (bit-mask n)))))
 ;; unsigned-bit-shift-right: logical shift over 64-bit longs. For the common
 ;; non-negative operand it equals the arithmetic shift; the negative-operand
-;; 64-bit-window case is not modeled (no fixed-width longs on the all-flonum side).
+;; 64-bit-window case is not modeled.
 (define (jolt-unsigned-bit-shift-right x n)
-  (exact->inexact (bitwise-arithmetic-shift-right (->int x) (->int n))))
+  (bitwise-arithmetic-shift-right (->int x) (->int n)))
 
 ;; ---- string->scalar parsers -------------------------------------------------
 (define (ascii-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
@@ -34,7 +35,7 @@
 
 (define (jolt-parse-long s)
   (if (not (string? s)) (error #f "parse-long requires a string" s)
-      (if (parse-long-shape? s) (exact->inexact (string->number s)) jolt-nil)))
+      (if (parse-long-shape? s) (string->number s) jolt-nil)))   ; exact long
 
 ;; strict float shape: [+-]? ( D+ (. D*)? | . D+ ) ([eE][+-]? D+)?  fully anchored.
 (define (parse-double-shape? s)

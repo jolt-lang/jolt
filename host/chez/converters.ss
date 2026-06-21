@@ -90,28 +90,31 @@
                  (string-append (if (string? p) p (jolt-str-render-one p))
                                 (number->string jolt-gensym-counter)))))
 
-(define (jolt-int x) (if (char? x) (exact->inexact (char->integer x)) (truncate x)))
+;; int/long: truncate toward zero to an EXACT integer (= JVM long). char -> code
+;; point (exact). double: always a flonum (= JVM double).
+(define (jolt-int x) (if (char? x) (char->integer x) (exact (truncate x))))
 (define (jolt-double x) (if (char? x) (exact->inexact (char->integer x)) (exact->inexact x)))
 
-;; compare: 3-way, ported from core_io.janet core-compare.
-(define (jolt-cmp3 x y) (cond ((< x y) -1.0) ((> x y) 1.0) (else 0.0)))
-(define (jolt-strcmp a b) (cond ((string<? a b) -1.0) ((string>? a b) 1.0) (else 0.0)))
+;; compare: 3-way, returns an EXACT integer (= JVM compare -> int).
+(define (jolt-cmp3 x y) (cond ((< x y) -1) ((> x y) 1) (else 0)))
+(define (jolt-strcmp a b) (cond ((string<? a b) -1) ((string>? a b) 1) (else 0)))
 (define (jolt-kw->string k)
   (let ((ns (keyword-t-ns k))) (if ns (string-append ns "/" (keyword-t-name k)) (keyword-t-name k))))
 (define (jolt-sym-ns-string s)
   (let ((n (symbol-t-ns s))) (if (or (jolt-nil? n) (not n) (eq? n '())) "" n)))
+;; compare returns an EXACT integer -1/0/1 (= JVM compare -> int).
 (define (jolt-compare a b)
   (cond
-    ((and (jolt-nil? a) (jolt-nil? b)) 0.0)
-    ((jolt-nil? a) -1.0)
-    ((jolt-nil? b) 1.0)
+    ((and (jolt-nil? a) (jolt-nil? b)) 0)
+    ((jolt-nil? a) -1)
+    ((jolt-nil? b) 1)
     ((and (number? a) (number? b)) (jolt-cmp3 a b))
     ((and (string? a) (string? b)) (jolt-strcmp a b))
     ((and (keyword? a) (keyword? b)) (jolt-strcmp (jolt-kw->string a) (jolt-kw->string b)))
     ((and (jolt-symbol? a) (jolt-symbol? b))
      (let ((r (jolt-strcmp (jolt-sym-ns-string a) (jolt-sym-ns-string b))))
-       (if (= r 0.0) (jolt-strcmp (symbol-t-name a) (symbol-t-name b)) r)))
-    ((and (boolean? a) (boolean? b)) (cond ((eq? a b) 0.0) ((eq? a #f) -1.0) (else 1.0)))
+       (if (= r 0) (jolt-strcmp (symbol-t-name a) (symbol-t-name b)) r)))
+    ((and (boolean? a) (boolean? b)) (cond ((eq? a b) 0) ((eq? a #f) -1) (else 1)))
     ((and (char? a) (char? b)) (jolt-cmp3 (char->integer a) (char->integer b)))
     ((and (pvec? a) (pvec? b))
      (let ((la (pvec-count a)) (lb (pvec-count b)))
@@ -119,9 +122,9 @@
            (jolt-cmp3 la lb)
            (let loop ((i 0))
              (if (>= i la)
-                 0.0
+                 0
                  (let ((r (jolt-compare (pvec-nth-d a i jolt-nil) (pvec-nth-d b i jolt-nil))))
-                   (if (= r 0.0) (loop (+ i 1)) r)))))))
+                   (if (= r 0) (loop (+ i 1)) r)))))))
     (else (error #f "compare: cannot compare these types" a b))))
 
 (def-var! "clojure.core" "str" jolt-str)

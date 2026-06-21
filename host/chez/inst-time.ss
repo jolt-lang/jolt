@@ -88,7 +88,7 @@
           (else (fail)))))
     (unless (= i len) (fail))
     (let ((base-s (+ (* (days-from-civil year month day) 86400) (* hh 3600) (* mm 60) ss)))
-      (make-jinst (exact->inexact (- (+ (* base-s 1000) frac-ms) (* off-s 1000)))))))
+      (make-jinst (- (+ (* base-s 1000) frac-ms) (* off-s 1000))))))
 
 ;; --- canonical print form: yyyy-MM-ddThh:mm:ss.fff-00:00 (UTC) ---------------
 (define (pad2 n) (if (< n 10) (string-append "0" (number->string n)) (number->string n)))
@@ -223,7 +223,9 @@
 (define (mk-local ms) (make-jhost "local-dt" (vector ms)))
 (define (mk-formatter pat) (make-jhost "dt-formatter" (vector pat)))
 (define (fmt-pat f) (vector-ref (jhost-state f) 0))
-(define (now-ms) (exact->inexact (now-millis)))   ; now-millis from host-static.ss
+(define (now-ms) (now-millis))   ; exact ms (= JVM long); now-millis from host-static.ss
+;; coerce a user-supplied ms (exact or flonum) to an exact integer for storage.
+(define (ms->exact ms) (exact (round ms)))
 
 (register-host-methods! "instant"
   (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))
@@ -262,7 +264,7 @@
         (cons "ofLocalizedTime" (lambda (fs) (style-fmt 'time fs)))
         (cons "ofLocalizedDateTime" (lambda (fs) (style-fmt 'datetime fs)))))
 (register-class-statics! "Instant"
-  (list (cons "ofEpochMilli" (lambda (ms) (mk-instant (exact->inexact ms))))
+  (list (cons "ofEpochMilli" (lambda (ms) (mk-instant (ms->exact ms))))
         (cons "now" (lambda () (mk-instant (now-ms))))))
 (register-class-statics! "ZoneId"
   (list (cons "systemDefault" (lambda () (make-jhost "zone-id" (vector "system"))))
@@ -283,7 +285,7 @@
 ;; or (Date. another-date) -> a jinst (ms-of accepts a number / jinst / instant), so
 ;; .getTime / inst? / instance? Date|Timestamp work. (jolt-dcmm)
 (define (date-ctor . args)
-  (make-jinst (if (null? args) (now-ms) (exact->inexact (ms-of (car args))))))
+  (make-jinst (if (null? args) (now-ms) (ms->exact (ms-of (car args))))))
 (register-class-ctor! "Date" date-ctor)
 (register-class-ctor! "java.util.Date" date-ctor)
 (register-class-ctor! "Timestamp" date-ctor)
