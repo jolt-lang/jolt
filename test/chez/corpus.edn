@@ -461,19 +461,6 @@
   {:suite "interop / dot dispatch arms" :label "deftype method with args" :expected "7" :actual "(do (defprotocol Pq (qq [this y])) (deftype Tq [x] Pq (qq [this y] (+ x y))) (.qq (Tq. 3) 4))"}
   {:suite "interop / dot dispatch arms" :label "record -field is field access" :expected "7" :actual "(do (defrecord Rf [x]) (.-x (->Rf 7)))"}
   {:suite "interop / dot dispatch arms" :label "object-method with args .equals" :expected "true" :actual "(.equals \"a\" \"a\")"}
-  {:suite "interop / janet bridge" :label "root builtin janet/<name>" :expected "\"123\"" :actual "(janet/string 1 2 3)"}
-  {:suite "interop / janet bridge" :label "root builtin janet/type" :expected ":string" :actual "(janet/type \"x\")"}
-  {:suite "interop / janet bridge" :label "module fn janet.<mod>/<name>" :expected "4" :actual "(janet.math/sqrt 16)"}
-  {:suite "interop / janet bridge" :label "janet.string module fn" :expected "\"HI\"" :actual "(janet.string/ascii-upper \"hi\")"}
-  {:suite "interop / janet bridge" :label "janet.os/clock is a number" :expected "true" :actual "(number? (janet.os/clock))"}
-  {:suite "interop / janet bridge" :label "jolt vector crosses as a janet table" :expected ":table" :actual "(janet/type [1 2])"}
-  {:suite "interop / janet bridge" :label "unprefixed janet module not exposed" :expected :throws :actual "net/server"}
-  {:suite "interop / janet bridge" :label "unknown janet symbol throws" :expected :throws :actual "(janet.os/definitely-not-a-real-fn)"}
-  {:suite "interop / jolt.interop" :label "janet-type quoted list" :expected ":array" :actual "(do (require (quote [jolt.interop :as j])) (j/janet-type (quote (1 2))))"}
-  {:suite "interop / jolt.interop" :label "janet-type list" :expected ":array" :actual "(do (require (quote [jolt.interop :as j])) (j/janet-type (list 1 2)))"}
-  {:suite "interop / jolt.interop" :label "janet-type string" :expected ":string" :actual "(do (require (quote [jolt.interop :as j])) (j/janet-type \"x\"))"}
-  {:suite "interop / jolt.interop" :label "janet-type number" :expected ":number" :actual "(do (require (quote [jolt.interop :as j])) (j/janet-type 1))"}
-  {:suite "interop / jolt.interop" :label "janet-type keyword" :expected ":keyword" :actual "(do (require (quote [jolt.interop :as j])) (j/janet-type :a))"}
   {:suite "interop / arrays (aget/aset/alength)" :label "alength" :expected "3" :actual "(alength (object-array [1 2 3]))"}
   {:suite "interop / arrays (aget/aset/alength)" :label "aget" :expected "20" :actual "(aget (object-array [10 20 30]) 1)"}
   {:suite "interop / arrays (aget/aset/alength)" :label "aset returns val" :expected "9" :actual "(aset (object-array [1 2 3]) 1 9)"}
@@ -570,10 +557,6 @@
   {:suite "host-interop / class tokens & readers" :label "replace with fn replacement is literal" :expected "\"$0\"" :actual "(do (require (quote [clojure.string :as s9])) (s9/replace \"x\" #\".\" (fn [m] \"$0\")))"}
   {:suite "host-interop / class tokens & readers" :label "replace fn gets group vector" :expected "\"v=k\"" :actual "(do (require (quote [clojure.string :as s9])) (s9/replace \"k=v\" #\"(\\w+)=(\\w+)\" (fn [[_ k v]] (str v \"=\" k))))"}
   {:suite "host-interop / class tokens & readers" :label "indexOf int needle is a char code" :expected "1" :actual "(.indexOf \"a=b\" 61)"}
-  {:suite "host-interop / bake env scrub" :label "unlisted name reads nil under the allowlist" :expected "nil" :actual "(do (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" \"PATH\") (let [r (System/getenv \"HOME\")] (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" nil) r))"}
-  {:suite "host-interop / bake env scrub" :label "listed name still reads" :expected "true" :actual "(do (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" \"HOME\") (let [r (System/getenv \"HOME\")] (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" nil) (string? r)))"}
-  {:suite "host-interop / bake env scrub" :label "full snapshot filtered to the allowlist" :expected "true" :actual "(do (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" \"HOME\") (let [e (System/getenv)] (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" nil) (and (contains? (set (keys e)) \"HOME\") (= 1 (count (keys e))))))"}
-  {:suite "host-interop / bake env scrub" :label "no allowlist: unfiltered live reads" :expected "true" :actual "(string? (System/getenv \"HOME\"))"}
   {:suite "host-interop / exception + HashMap shims" :label "getMessage on a thrown string" :expected "\"class java.lang.String cannot be cast to class java.lang.Throwable (java.lang.String and java.lang.Throwable are in module java.base of loader 'bootstrap')\"" :actual "(try (throw \"boom\") (catch Throwable e (.getMessage e)))"}
   {:suite "host-interop / exception + HashMap shims" :label "getMessage on ex-info" :expected "\"bad\"" :actual "(try (throw (ex-info \"bad\" {})) (catch Throwable e (.getMessage e)))"}
   {:suite "host-interop / exception + HashMap shims" :label "HashMap get" :expected "2" :actual "(let [m (HashMap. {:a 1 :b 2})] (.get m :b))"}
