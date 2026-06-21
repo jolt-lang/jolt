@@ -44,6 +44,9 @@
 (def-var! "jolt.host" "tagged-table" jolt-tagged-table)
 (def-var! "jolt.host" "ref-put!" jolt-ref-put!)
 (def-var! "jolt.host" "ref-get" jolt-ref-get)
+;; map-entry constructor: a 2-elem entry-flagged pvec (map-entry? true, vector?
+;; false), so sorted-map seq/first produce real map entries that key/val accept.
+(def-var! "jolt.host" "map-entry" make-map-entry)
 
 ;; --- sorted-coll recognition + ops access ------------------------------------
 (define kw-jtype (keyword "jolt" "type"))

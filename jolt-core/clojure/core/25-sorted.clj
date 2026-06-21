@@ -221,7 +221,9 @@
   (tree-collect (sfield sc :tree) proj []))
 
 ;; --- sorted-map ops ---------------------------------------------------------
-(defn- map-entry [t] [(nd-key t) (nd-val t)])
+;; a real map-entry (map-entry? true), so key/val/seq destructuring work like a
+;; regular map's entries.
+(defn- map-entry [t] (jolt.host/map-entry (nd-key t) (nd-val t)))
 
 (defn- sm-get [sm k not-found]
   (let [n (tree-lookup (sfield sm :tree) (the-cmp sm) k)]
