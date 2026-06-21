@@ -108,11 +108,15 @@
 ;; visible (macro flag set, var interned) before a later subform is analyzed.
 (define (jolt-compile-eval-form form ns)
   (cond
+    ;; thread the current ns: an earlier subform may switch it (ns/in-ns call
+    ;; set-chez-ns!), and the next subform must be ANALYZED in that ns so its defs
+    ;; land there and its refs resolve (cross-ns def/require in one program).
     ((ce-top-do? form)
-     (let loop ((fs (cdr (seq->list form))) (result jolt-nil))
+     (let loop ((fs (cdr (seq->list form))) (result jolt-nil) (cur ns))
        (if (null? fs)
            result
-           (loop (cdr fs) (jolt-compile-eval-form (car fs) ns)))))
+           (let ((r (jolt-compile-eval-form (car fs) cur)))
+             (loop (cdr fs) r (chez-current-ns))))))
     ;; runtime defmacro: def the expander fn + mark the var a macro so subsequent
     ;; forms expand it (hc-macro? reads var-macro-table). Mirrors emit-image.ss
     ;; ei-emit-ns.

@@ -56,11 +56,16 @@
 ;; if absent (defmethod before defmulti — rare; identity dispatch as a fallback).
 (define (jolt-defmethod-setup mm-sym dval impl)
   (let* ((nm (symbol-t-name mm-sym))
-         (cur (var-deref (chez-current-ns) nm))
+         ;; a QUALIFIED multifn (cf.mm/ext) resolves in its own ns (cross-ns
+         ;; defmethod), not the current one — else we'd auto-create a stray multifn.
+         (sns (symbol-t-ns mm-sym))
+         (qns (and sns (not (jolt-nil? sns)) (not (null? sns)) sns))
+         (mns (if qns (or (chez-resolve-alias (chez-current-ns) qns) qns) (chez-current-ns)))
+         (cur (var-deref mns nm))
          (mf (if (jolt-multifn? cur) cur
                  (let ((m (make-jolt-multifn nm (var-deref "clojure.core" "identity")
                                              (new-mm-table) kw-default #f (new-mm-table))))
-                   (def-var! (chez-current-ns) nm m) m))))
+                   (def-var! mns nm m) m))))
     (hashtable-set! (jolt-multifn-methods mf) dval impl)
     mf))
 

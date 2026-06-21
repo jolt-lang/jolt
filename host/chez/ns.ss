@@ -38,8 +38,19 @@
 (define ns-refer-table (make-hashtable equal-hash equal?))
 (define (chez-register-refer! cns name target)
   (hashtable-set! ns-refer-table (cons cns name) target))
+;; refer-all (a bare `use`): cns -> list of fully-referred target ns names. A name
+;; not found per-name resolves to the first refer-all target that defines it.
+(define ns-refer-all-table (make-hashtable equal-hash equal?))
+(define (chez-register-refer-all! cns target)
+  (let ((cur (hashtable-ref ns-refer-all-table cns '())))
+    (unless (member target cur)
+      (hashtable-set! ns-refer-all-table cns (cons target cur)))))
 (define (chez-resolve-refer cns name)
-  (hashtable-ref ns-refer-table (cons cns name) #f))
+  (or (hashtable-ref ns-refer-table (cons cns name) #f)
+      (let loop ((ts (hashtable-ref ns-refer-all-table cns '())))
+        (cond ((null? ts) #f)
+              ((let ((c (var-cell-lookup (car ts) name))) (and c (var-cell-defined? c))) (car ts))
+              (else (loop (cdr ts)))))))
 ;; parse a require/use spec FORM and register its :as alias + :refer names under
 ;; `cns`. spec: [ns :as a :refer [x y] ...] / (ns ...) / bare ns. opts are
 ;; keyword/value pairs after the ns symbol.
