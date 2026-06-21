@@ -51,6 +51,7 @@
   (or (pset? x)
       (and (pmap? x) (eq? (jolt-get x hc-kw-jolt-type) hc-kw-jolt-set))))
 (define (hc-char? x) (char? x))
+(define (hc-keyword? x) (keyword? x))
 (define (hc-literal? x)
   (or (jolt-nil? x) (boolean? x) (number? x) (string? x) (keyword-t? x) (char? x)))
 
@@ -286,6 +287,7 @@
   (def-var! "jolt.host" "form-char?" hc-char?)
   (def-var! "jolt.host" "form-char-code" hc-char-code)
   (def-var! "jolt.host" "form-literal?" hc-literal?)
+  (def-var! "jolt.host" "form-keyword?" hc-keyword?)
   (def-var! "jolt.host" "form-regex?" hc-regex?)
   (def-var! "jolt.host" "form-inst?" hc-inst?)
   (def-var! "jolt.host" "form-uuid?" hc-uuid?)

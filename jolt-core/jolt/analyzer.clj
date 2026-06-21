@@ -19,7 +19,7 @@
                              quote-node throw-node host-static host-new]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
                                form-vec? form-map? form-set? form-char?
-                               form-literal? form-elements form-vec-items
+                               form-literal? form-keyword? form-elements form-vec-items
                                form-map-pairs form-set-items form-special? compile-ns
                                form-regex? form-regex-source
                                form-inst? form-inst-source form-uuid? form-uuid-source
@@ -335,12 +335,16 @@
   (when (< (count items) 3)
     (throw (str "Malformed (. target member ...) form")))
   (let [member (nth items 2)]
-    (if (form-sym? member)
-      {:op :host-call
-       :method (form-sym-name member)
-       :target (analyze ctx (nth items 1) env)
-       :args (mapv #(analyze ctx % env) (drop 3 items))}
-      (uncompilable "special form . (non-symbol member)"))))
+    (cond
+      (form-sym? member)
+        {:op :host-call
+         :method (form-sym-name member)
+         :target (analyze ctx (nth items 1) env)
+         :args (mapv #(analyze ctx % env) (drop 3 items))}
+      ;; (. obj :kw) is a keyword lookup — invoke the keyword on the target.
+      (form-keyword? member)
+        (invoke (analyze ctx member env) [(analyze ctx (nth items 1) env)])
+      :else (uncompilable "special form . (non-symbol member)"))))
 
 ;; A `.-field` head: `(.-field target)` is field access. Lowers to a :host-call
 ;; with the "-field" method (the dash signals field access to the dispatcher).
