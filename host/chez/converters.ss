@@ -141,4 +141,6 @@
 ;; math/trunc; char -> code point). Distinct cell so (long ...) resolves.
 (def-var! "clojure.core" "long" jolt-int)
 (def-var! "clojure.core" "double" jolt-double)
+;; float: Chez has no single-float type, so float coerces to a flonum like double.
+(def-var! "clojure.core" "float" jolt-double)
 (def-var! "clojure.core" "compare" jolt-compare)
