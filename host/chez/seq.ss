@@ -178,7 +178,15 @@
     ((f coll) (let ((s (jolt-seq coll)))
                 (if (jolt-nil? s) (jolt-invoke f)          ; (reduce f []) -> (f)
                     (reduce-seq f (seq-first s) (jolt-seq (seq-more s))))))
-    ((f init coll) (reduce-seq f init (jolt-seq coll)))))
+    ((f init coll)
+     ;; IReduceInit: a reify/record with its own `reduce` method drives the
+     ;; reduction (reduce f init (reify clojure.lang.IReduceInit (reduce [_ f i] ...))).
+     (cond
+       ((and (jreify? coll) (reified-methods coll)
+             (hashtable-ref (reified-methods coll) "reduce" #f))
+        => (lambda (m) (let ((r (jolt-invoke m coll f init)))
+                         (if (jolt-reduced? r) (jolt-reduced-val r) r))))
+       (else (reduce-seq f init (jolt-seq coll)))))))
 
 (define (jolt-into to from) (reduce-seq (lambda (acc x) (jolt-conj1 acc x)) to (jolt-seq from)))
 
