@@ -270,10 +270,18 @@
       (else (case-string tname val)))))
 (define (case-string tname val)
   (cond
-    ((member tname '("Number" "java.lang.Number" "Long" "java.lang.Long" "Integer" "Double")) (number? val))
+    ((member tname '("Number" "java.lang.Number")) (number? val))
+    ((member tname '("Long" "java.lang.Long" "Integer" "java.lang.Integer"))
+     (and (number? val) (exact? val) (integer? val)))
+    ((member tname '("Double" "java.lang.Double" "Float" "java.lang.Float")) (and (number? val) (flonum? val)))
+    ((member tname '("Ratio" "clojure.lang.Ratio")) (and (number? val) (exact? val) (rational? val) (not (integer? val))))
     ((member tname '("String" "java.lang.String" "CharSequence" "java.lang.CharSequence")) (string? val))
     ((member tname '("Boolean" "java.lang.Boolean")) (boolean? val))
-    ((member tname '("Keyword")) (keyword? val))
+    ((member tname '("Character" "java.lang.Character")) (char? val))
+    ((member tname '("Keyword" "clojure.lang.Keyword")) (keyword? val))
+    ((member tname '("Symbol" "clojure.lang.Symbol")) (jolt-symbol? val))
+    ((member tname '("Atom" "clojure.lang.Atom")) (jolt-atom? val))
+    ((member tname '("IFn" "clojure.lang.IFn" "Fn" "clojure.lang.Fn")) (procedure? val))
     (else #f)))
 
 ;; str of a record uses a custom (Object toString) impl if the type defines one

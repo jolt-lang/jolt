@@ -17,10 +17,17 @@
   (cond
     ((jolt-nil? x) jolt-nil)
     ((boolean? x) "java.lang.Boolean")
+    ;; per-type number classes, like the JVM: integer -> Long, flonum -> Double,
+    ;; exact non-integer -> Ratio.
+    ((and (number? x) (flonum? x)) "java.lang.Double")
+    ((and (number? x) (exact? x) (integer? x)) "java.lang.Long")
+    ((and (number? x) (exact? x) (rational? x)) "clojure.lang.Ratio")
     ((number? x) "java.lang.Number")
     ((string? x) "java.lang.String")
     ((keyword? x) "clojure.lang.Keyword")
     ((symbol-t? x) "clojure.lang.Symbol")
+    ((jolt-atom? x) "clojure.lang.Atom")
+    ((char? x) "java.lang.Character")
     ((procedure? x) "clojure.lang.IFn")
     (else (jolt-str-render-one (jolt-type x)))))
 
@@ -44,3 +51,17 @@
     ("IllegalArgumentException" . "java.lang.IllegalArgumentException")
     ("InterruptedException" . "java.lang.InterruptedException")
     ("Throwable" . "java.lang.Throwable")))
+
+;; fully-qualified canonical class names self-evaluate to their own name string,
+;; so (= (class 1) java.lang.Long) and (instance? clojure.lang.Atom x) resolve the
+;; class token (= what jolt-class / instance-check key on).
+(for-each
+  (lambda (nm) (def-var! "clojure.core" nm nm))
+  '("java.lang.Long" "java.lang.Integer" "java.lang.Double" "java.lang.Float"
+    "java.lang.Number" "java.lang.String" "java.lang.Boolean" "java.lang.Character"
+    "java.lang.Object" "java.lang.CharSequence" "java.lang.Comparable"
+    "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.BigInt"
+    "clojure.lang.Atom" "clojure.lang.IFn" "clojure.lang.Fn" "clojure.lang.ISeq"
+    "clojure.lang.IPersistentMap" "clojure.lang.IPersistentVector" "clojure.lang.IPersistentCollection"
+    "clojure.lang.PersistentVector" "clojure.lang.Var" "clojure.lang.Namespace"
+    "clojure.lang.MapEntry"))

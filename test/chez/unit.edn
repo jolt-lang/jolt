@@ -15,15 +15,15 @@
   {:suite "class" :expr "File" :expected "java.io.File"}
   {:suite "class" :expr "Exception" :expected "java.lang.Exception"}
   {:suite "class" :expr "MapEntry" :expected "clojure.lang.MapEntry"}
-  {:suite "class" :expr "(class 1)" :expected "java.lang.Number"}
-  {:suite "class" :expr "(class 1.5)" :expected "java.lang.Number"}
+  {:suite "class" :expr "(class 1)" :expected "java.lang.Long"}
+  {:suite "class" :expr "(class 1.5)" :expected "java.lang.Double"}
   {:suite "class" :expr "(class \"s\")" :expected "java.lang.String"}
   {:suite "class" :expr "(class :k)" :expected "clojure.lang.Keyword"}
   {:suite "class" :expr "(class true)" :expected "java.lang.Boolean"}
   {:suite "class" :expr "(class false)" :expected "java.lang.Boolean"}
   {:suite "class" :expr "(class nil)" :expected ""}
   {:suite "class" :expr "(= String (class \"abc\"))" :expected "true"}
-  {:suite "class" :expr "(= Number (class 7))" :expected "true"}
+  {:suite "class" :expr "(= Number (class 7))" :expected "false"}
   {:suite "class" :expr "(= String (class 7))" :expected "false"}
   {:suite "class" :expr "(do (defmulti cm (fn [x] (class x))) (defmethod cm String [x] :str) (cm \"a\"))" :expected ":str"}
   {:suite "class" :expr "(do (defmulti cn (fn [x] (class x))) (defmethod cn nil [x] :nil) (defmethod cn String [x] :str) (cn nil))" :expected ":nil"}
