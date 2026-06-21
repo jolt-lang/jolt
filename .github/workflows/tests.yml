@@ -18,9 +18,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y chezscheme
-          # the gate invokes `chez`; Debian/Ubuntu installs it as `scheme`
+          # the gate invokes `chez`; Debian/Ubuntu installs it as `scheme`. A symlink
+          # won't do — Chez derives its boot-file name from argv0, so `chez` would look
+          # for a nonexistent chez.boot. A wrapper that exec's `scheme` keeps argv0.
           if ! command -v chez >/dev/null 2>&1; then
-            sudo ln -s "$(command -v scheme)" /usr/local/bin/chez
+            printf '#!/bin/sh\nexec scheme "$@"\n' | sudo tee /usr/local/bin/chez >/dev/null
+            sudo chmod +x /usr/local/bin/chez
           fi
           chez --version || true
 
