@@ -3,11 +3,11 @@
 ;; to a :host-call; the Chez emit routes a non-shimmed :host-call through
 ;; record-method-dispatch. This file extends that dispatcher with the collection
 ;; arms the interpreter's dispatch-member covers but the record/string base does
-;; not, mirroring src/jolt/interop/collections.janet precedence exactly:
+;; not, with this precedence:
 ;;
 ;;   * collection interop wins first — count/seq/nth/get/valAt/containsKey on a
 ;;     vector/map/set/seq/record (so (. {:count 9} count) is the entry count, 1,
-;;     like the seed, NOT the :count field).
+;;     NOT the :count field).
 ;;   * field access — a "-name" member reads the field (records and maps).
 ;;   * map member   — a stored fn is a method (called with self + args); any
 ;;                    other value is returned as a field.
@@ -20,7 +20,7 @@
 (define %dot-rmd record-method-dispatch)
 
 ;; Vectors / maps / sets only (records are jolt-map? here). Raw seqs are excluded:
-;; the seed's coll-interop accepts some seq representations and not others (a
+;; coll-interop accepts some seq representations and not others (a
 ;; plain (seq v) returns nil from .count, a lazy-seq returns the count), an
 ;; inconsistency Chez's normalized cseq can't mirror — so a raw seq target falls
 ;; through to the base dispatcher rather than risk a divergence the corpus would
@@ -40,7 +40,7 @@
     ((string=? name "containsKey") (list (jolt-contains? obj (car args))))
     (else #f)))
 
-;; Mirror the seed's universal object-methods (src/jolt/eval_resolve.janet): on a
+;; Universal object-methods: on a
 ;; non-record map these win OVER a field lookup, like dispatch-member. getMessage
 ;; on an ex-info reads its :message (the one the corpus exercises); getCause reads
 ;; :cause; toString/hashCode/equals round out the set. Returns a boxed result or

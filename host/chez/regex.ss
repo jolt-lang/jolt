@@ -1,7 +1,6 @@
 ;; Phase 1 (jolt-cf1q.2) — regex on Chez via vendored irregex (jolt-i0s3).
 ;;
-;; jolt's seed regex (src/jolt/regex.janet) compiles patterns to Janet's PEG
-;; engine; Chez has no regex at all. Rather than re-host that engine, we vendor
+;; Chez has no regex at all. We vendor
 ;; Alex Shinn's irregex (vendor/irregex, BSD) — a portable Scheme regex with
 ;; PCRE/Java-style STRING patterns — and wrap jolt's re-* surface over it.
 ;;
@@ -14,7 +13,7 @@
 ;;
 ;; The re-* fns are def-var!'d into clojure.core so prelude / -e code resolves
 ;; them at runtime (they're NOT subset native-ops: irregex's Unicode/property-
-;; class semantics differ from the seed's byte-PEG approximation, so they stay out
+;; class semantics keep them out
 ;; of the subset-parity corpus). Loaded from rt.ss after def-var! is defined.
 
 ;; irregex.scm is portable R[457]RS; two small adaptations for Chez's top level:
@@ -35,17 +34,16 @@
 (load "vendor/irregex/irregex.scm")
 
 ;; Unicode property classes \p{...} (jolt-y1zq): irregex's string syntax has no
-;; \p{...}, so translate the ones the seed's byte-PEG maps (src/jolt/regex.janet
-;; prop-frag) to ASCII char classes before compiling. ASCII-only — the seed counts
-;; UTF-8 high bytes as letters for \p{L}, which a Unicode-char Scheme string can't
+;; \p{...}, so translate a fixed set of property names
+;; to ASCII char classes before compiling. ASCII-only — \p{L} would need
+;; UTF-8 high bytes counted as letters, which a Unicode-char Scheme string can't
 ;; reproduce byte-for-byte; the corpus tests ASCII inputs, where they agree. An
 ;; unmapped name is left as-is (irregex errors, as before — no new behavior). The
 ;; ORIGINAL source is kept for printing; only the compiled pattern is translated.
 (define (prop-class name)
   (cond
-    ;; L/Alpha: ASCII letters + any non-ASCII codepoint (the seed counts UTF-8 high
-    ;; bytes as letters, so ^\p{L}+$ accepts accented words). N/Z stay ASCII-only,
-    ;; matching the seed's byte-PEG.
+    ;; L/Alpha: ASCII letters + any non-ASCII codepoint (UTF-8 high
+    ;; bytes count as letters, so ^\p{L}+$ accepts accented words). N/Z stay ASCII-only.
     ((or (string=? name "L") (string=? name "Alpha")) "a-zA-Z\\x80-\\x{10FFFF}")
     ((string=? name "Lu") "A-Z")
     ((string=? name "Ll") "a-z")
@@ -55,7 +53,7 @@
     ((string=? name "Pe") ")\\]}")
     (else #f)))
 ;; Tracks whether the cursor is inside a [...] char class: a \p{X} there emits the
-;; class CONTENT (the seed inlines it), standalone it emits a wrapping [X]. Escapes
+;; class CONTENT (inlined), standalone it emits a wrapping [X]. Escapes
 ;; (\[, \]) don't toggle the class. \P (negation) only wraps when standalone.
 (define (translate-prop-classes src)
   (let ((len (string-length src)) (out (open-output-string)))
@@ -120,7 +118,7 @@
 
 ;; All non-overlapping matches, left to right. Advance past each match end (or by
 ;; one on a zero-width match). nil when there are no matches (Clojure: seq-able as
-;; nil, so (if-let [m (re-seq ...)] ...) works), matching the seed.
+;; nil, so (if-let [m (re-seq ...)] ...) works).
 (define (jolt-re-seq re s)
   (let ((irx (regex-t-irx (jolt-re-pattern re)))
         (len (string-length s)))

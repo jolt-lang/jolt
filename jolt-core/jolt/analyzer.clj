@@ -7,7 +7,7 @@
   bootstrap can compile this namespace via its plain :var path. ctx is an opaque
   host handle threaded to the contract fns; the analyzer never inspects it.
 
-  Coverage grows toward compiler.janet; unsupported forms throw :jolt/uncompilable
+  Unsupported forms throw :jolt/uncompilable
   so the caller falls back to the interpreter (the hybrid contract).
 
   `env` carries lexical state: {:locals #{names} :recur recur-target-name|nil}.
@@ -140,8 +140,8 @@
 ;; form (the Chez data reader) wraps an arglist vector carrying a return-type hint
 ;; (^bytes [b] / ^String [x y]). Unwrap to the underlying vector so fn parsing sees
 ;; the params — the hint is ignored at runtime. Only the (with-meta <vec> _) shape
-;; matches, so a real arity clause (head is a vector) and the Janet reader's
-;; meta-on-tuple (already a vector) pass through unchanged.
+;; matches, so a real arity clause (head is a vector) and a
+;; meta-on-vector arglist pass through unchanged.
 (defn- strip-arglist-meta [form]
   (if (form-list? form)
     (let [es (vec (form-elements form))]
@@ -212,10 +212,10 @@
 ;; letfn: (letfn [(name [params] body*)...] body*). The named local fns are
 ;; MUTUALLY recursive, so bind every name into the env BEFORE analyzing any spec
 ;; — each spec then resolves its siblings (and itself) as locals. Emitted as a
-;; :let flagged :letrec so the back ends know the bindings forward-reference each
-;; other: Chez lowers it to `letrec*`; the Janet back end punts to the
-;; interpreter (its shared mutable env already gives the letrec semantics that a
-;; compiled sequential let* lacks — the reason letfn was uncompilable before).
+;; :let flagged :letrec so the back end knows the bindings forward-reference each
+;; other: Chez lowers it to `letrec*`. The interpreter's shared mutable env already
+;; gives the letrec semantics that a
+;; compiled sequential let* lacks — the reason letfn was uncompilable before.
 (defn- analyze-letfn [ctx items env]
   (let [specs (vec (form-vec-items (nth items 1)))
         names (mapv #(form-sym-name (first (vec (form-elements %)))) specs)
@@ -252,9 +252,9 @@
               (uncompilable "def name with map metadata"))
             (if (< (count items) 3)
               ;; (def name) with no init (declare): intern + reserve the cell so a
-              ;; forward reference resolves. The back ends key on :no-init — Chez
-              ;; def-var!s an unbound placeholder; the Janet back end punts to the
-              ;; interpreter, which interns a genuinely-unbound var.
+              ;; forward reference resolves. The back end keys on :no-init — Chez
+              ;; def-var!s an unbound placeholder; the interpreter interns a
+              ;; genuinely-unbound var.
               (let [nm (form-sym-name name-sym) cur (compile-ns ctx)]
                 (host-intern! ctx cur nm)
                 {:op :def :ns cur :name nm :no-init true})
@@ -297,8 +297,7 @@
 
 ;; Host interop method call (jolt-0kf5). `(.method target arg*)` — a head that
 ;; starts with "." but not ".-" (field access stays punted). Analyzes to a
-;; :host-call node; the Janet back end punts it at emit (no interop model -> the
-;; interpreter runs it), the Chez back end lowers it to a jolt-host-call dispatch.
+;; :host-call node; the Chez back end lowers it to a jolt-host-call dispatch.
 (defn- method-head? [nm]
   (and (> (count nm) 1)
        (= "." (subs nm 0 1))
@@ -320,9 +319,8 @@
        (not (= "." (subs nm 0 1)))))
 
 ;; `(Class. args*)` and `(new Class args*)` -> a :host-new node carrying the class
-;; token and the analyzed args. The Janet back end punts it (the interpreter runs
-;; the constructor from its class-ctors registry); the Chez back end lowers it to
-;; a runtime constructor dispatch (jolt-avt6).
+;; token and the analyzed args. The Chez back end lowers it to a runtime
+;; constructor dispatch (jolt-avt6).
 (defn- analyze-ctor [ctx class args env]
   (host-new class (mapv #(analyze ctx % env) args)))
 
@@ -330,10 +328,8 @@
 ;; A symbol member whose name starts with "-" is a field read; otherwise it is a
 ;; method (call with the trailing args). Both lower to a :host-call carrying the
 ;; member name verbatim (the leading "-" survives so the runtime dispatcher reads
-;; it as a field). The Janet back end punts :host-call to the interpreter, which
-;; re-runs the original `.` form via eval-dot — so Janet behavior is unchanged;
-;; the Chez back end dispatches it through record-method-dispatch (jolt-kuic).
-;; A non-symbol member (e.g. a keyword) stays punted — the interpreter handles it.
+;; it as a field). The Chez back end dispatches it through record-method-dispatch
+;; (jolt-kuic).
 (defn- analyze-dot [ctx items env]
   (when (< (count items) 3)
     (throw (str "Malformed (. target member ...) form")))
@@ -367,11 +363,8 @@
            (if (= :var (:kind r))
              (var-ref (:ns r) (:name r))
              ;; A non-var qualified ref `Class/member` is a host class static
-             ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Janet back end
-             ;; punts the :host-static node (the interpreter resolves it from its
-             ;; class-statics registry, exactly as it did when this was an
-             ;; uncompilable); the Chez back end lowers it to a runtime static
-             ;; dispatch (jolt-avt6).
+             ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
+             ;; lowers it to a runtime static dispatch (jolt-avt6).
              (host-static ns nm)))
       :else (let [r (resolve-global ctx form)]
               (case (:kind r)
@@ -445,12 +438,10 @@
                                      (form-map-pairs form)))
      (form-set? form) (set-node (mapv #(analyze ctx % env) (form-set-items form)))
      (form-list? form) (analyze-list ctx form env)
-     ;; regex literal #"…" -> a :regex IR node (leaf). The Janet back end punts it
-     ;; (interpreter compiles via the seed PEG engine); the Chez back end emits a
+     ;; regex literal #"…" -> a :regex IR node (leaf). The Chez back end emits a
      ;; jolt-regex value over the vendored irregex.
      (form-regex? form) {:op :regex :source (form-regex-source form)}
-     ;; #inst / #uuid literals -> :inst / :uuid IR leaves. Like :regex, the Janet
-     ;; back end punts (the interpreter's data-readers parse them); the Chez back
+     ;; #inst / #uuid literals -> :inst / :uuid IR leaves. The Chez back
      ;; end emits a runtime inst/uuid value (host/chez/inst-time.ss).
      (form-inst? form) {:op :inst :source (form-inst-source form)}
      (form-uuid? form) {:op :uuid :source (form-uuid-source form)}

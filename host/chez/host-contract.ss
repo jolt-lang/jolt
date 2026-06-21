@@ -1,7 +1,7 @@
 ;; host-contract.ss (jolt-hs9n, Phase 3 inc6) — the jolt.host contract on Chez.
 ;;
 ;; The portable seam between jolt-core (analyzer/IR/emitter, cross-compiled to
-;; Scheme) and the host. Mirrors src/jolt/host_iface.janet's `exports`: every
+;; Scheme) and the host. Every
 ;; contract fn is def-var!'d into the "jolt.host" namespace so the cross-compiled
 ;; jolt.analyzer / jolt.backend-scheme — whose unqualified form-*/resolve-global/
 ;; ... refs lower to (var-deref "jolt.host" ...) — resolve here at runtime.
@@ -149,8 +149,7 @@
 ;; def-var! of its cross-compiled expander fn plus (mark-macro! ns name), so the
 ;; var cell is flagged a macro (rt.ss var-macro-table). form-macro? checks the
 ;; flag; form-expand-1 applies the expander to the unevaluated arg forms (the rest
-;; of the list), and the analyzer re-analyzes the returned form. Mirrors
-;; host_iface.janet h-macro?/h-expand-1.
+;; of the list), and the analyzer re-analyzes the returned form.
 (define (hc-macro? ctx sym)
   (macro-var? (hc-resolve-cell ctx sym)))
 (define (hc-expand-1 ctx form)
@@ -179,7 +178,7 @@
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
 
 ;; --- syntax-quote lowering (jolt-qjr0, inc7) ---------------------------------
-;; Mirrors src/jolt/eval_base.janet syntax-quote-lower/sq-symbol. Lowers a `form
+;; Lowers a `form
 ;; to CONSTRUCTION CODE — Chez reader forms calling __sqcat/__sqvec/__sqmap/
 ;; __sqset/__sq1 + quote — that the analyzer re-analyzes, so a backtick compiles
 ;; with zero runtime cost (read -> macroexpand -> compile). Symbols resolve to

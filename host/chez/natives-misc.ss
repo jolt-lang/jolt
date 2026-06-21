@@ -26,7 +26,7 @@
             (loop (fx+ i 1)))))))
 (define (jolt-random-uuid) (make-juuid (random-uuid-str)))
 
-;; #uuid literal -> a uuid value (emit.janet lowers the :uuid node to this). The
+;; #uuid literal -> a uuid value (the emitter lowers the :uuid node to this). The
 ;; reader already validated the shape; lowercase for value equality.
 (define (jolt-uuid-from-string s) (make-juuid (string-downcase s)))
 

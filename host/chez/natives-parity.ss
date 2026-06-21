@@ -1,11 +1,10 @@
 ;; natives-parity.ss (jolt-cf1q.7) — native Chez shims for clojure.core fns that
-;; live in the Janet seed (src/jolt/core*.janet) but had no Chez shim, so on the
-;; zero-Janet spine they resolved to nil ("not a fn"). Pure-Chez, JVM-matching.
+;; had no Chez shim, so they resolved to nil ("not a fn"). Pure-Chez, JVM-matching.
 ;;
 ;; Loaded after host-table.ss (htable-sorted?), transients.ss (jolt-transient?),
 ;; values.ss (jolt-hash), seq.ss (jolt-seq/seq->list/list->cseq/jolt-invoke).
 
-;; --- hash family (mirrors core_extra.janet: 24-bit masked so int? holds) ------
+;; --- hash family (24-bit masked so int? holds) ------
 (define (np-h24 x) (bitwise-and (jolt-hash x) #xffffff))
 (define (np-hash x) (np-h24 x))
 (define (np-hash-combine a b)
@@ -26,7 +25,7 @@
       (list->cseq (reverse (seq->list (jolt-seq coll))))
       (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map)))))
 
-;; --- cat transducer (mirrors core_refs.janet core-cat): each item of the input
+;; --- cat transducer: each item of the input
 ;; is itself a collection, concatenated into the downstream reducing fn.
 (define (np-cat rf)
   (lambda a

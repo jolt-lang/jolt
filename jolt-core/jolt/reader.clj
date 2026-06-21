@@ -1,16 +1,16 @@
 (ns jolt.reader
   "Portable Clojure reader: source text -> reader forms (Chez Phase 3, jolt-cf1q.4).
 
-  The no-Janet replacement for src/jolt/reader.janet. All the lexing/parsing LOGIC
+  All the lexing/parsing LOGIC
   is portable Clojure; form CONSTRUCTION and string->number parsing delegate to the
   jolt.host contract (form-make-symbol/char, form-char-from-name, form-scan-number)
   — a Clojure source file cannot write a {:jolt/type :symbol} literal (it parses as
   a tagged reader form), and the concrete form representation is the host's to own.
   Same split the analyzer uses for the form-* readers. Once cross-compiled this runs
-  ON Chez so compile-from-source needs no Janet reader.
+  ON Chez to drive compile-from-source.
 
-  Positions are CHARACTER indices (the Janet reader uses byte indices); for ASCII
-  source they coincide, and form VALUES are identical either way — the parity gate
+  Positions are CHARACTER indices; for ASCII
+  source they coincide with byte indices, and form VALUES are identical either way — the parity gate
   compares values, not positions.
 
   INCREMENT 5a (jolt-50xx): the ATOM layer — whitespace/comments, symbols (+ nil/
@@ -27,8 +27,8 @@
                                form-elements form-vec-items form-set-items
                                form-map-pairs]]))
 
-;; Source access by CHARACTER codepoint, mirroring the Janet reader's byte access
-;; (identical for ASCII). cp = codepoint at i; len = character count.
+;; Source access by CHARACTER codepoint
+;; (identical to byte access for ASCII). cp = codepoint at i; len = character count.
 (defn- cp [s i] (int (nth s i)))
 (defn- len [s] (count s))
 
@@ -71,8 +71,7 @@
   (if (and (< end (len s)) (symbol-char? (cp s end))) (recur s pos (inc end)) end))
 
 (defn- read-keyword* [s pos]
-  ;; pos is at the first colon; ::foo is treated as :foo (no auto-resolution),
-  ;; matching the Janet reader.
+  ;; pos is at the first colon; ::foo is treated as :foo (no auto-resolution).
   (let [start (if (and (< (inc pos) (len s)) (= (cp s (inc pos)) 58)) (+ pos 2) (inc pos))
         end (read-keyword-name s start start)]
     [(keyword (subs s start end)) end]))
@@ -182,7 +181,7 @@
 ;;   :form  payload=the form          a real datum
 ;;   :skip  payload=nil               a comment (;) or #_ discard — produced nothing
 ;;   :splice payload=items-vector     #?@ — contributes 0+ items to the enclosing coll
-;; Out-of-band control (vs the Janet reader's :jolt/skip / :jolt/splice sentinel
+;; Out-of-band control (rather than :jolt/skip / :jolt/splice sentinel
 ;; FORMS) keeps it collision-free and host-neutral — no tagged-struct to build or
 ;; recognize. Collection readers dispatch on kind; read-next-form skips :skip.
 (declare read-form)
@@ -345,7 +344,7 @@
 
 (defn- read-tagged* [s pos]
   ;; unknown dispatch -> a tagged literal (#inst, #uuid, #foo). The tag includes
-  ;; the leading # (read-symbol-name starts at #), matching the Janet reader.
+  ;; the leading # (read-symbol-name starts at #).
   (let [end (read-symbol-name s pos pos)
         tag (subs s pos end)
         [form np] (read-next-form s end)]

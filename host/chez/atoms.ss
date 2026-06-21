@@ -1,7 +1,7 @@
 ;; atoms (jolt-9ziu) — host-coupled mutable reference cells for the Chez host.
 ;;
-;; atom/deref/swap!/reset! stay in the Janet seed (not the clojure.core overlay),
-;; so the Chez runtime needs native shims, def-var!'d into clojure.core. They
+;; atom/deref/swap!/reset! are host primitives (not the clojure.core overlay),
+;; so the Chez runtime provides native shims, def-var!'d into clojure.core. They
 ;; lower to var-deref in prelude mode. The hierarchy machinery
 ;; (global-hierarchy = (atom (make-hierarchy))) calls `atom` at the prelude's
 ;; LOAD time, so without this shim the whole prelude fails to load.
@@ -42,7 +42,7 @@
       (error #f "Invalid reference state"))))
 
 ;; notify each watch (k ref old new), in insertion order (alist is reverse-built,
-;; so walk it reversed to match add order — matches the seed's :pairs iteration).
+;; so walk it reversed to match add order).
 (define (jolt-atom-notify a old new)
   (for-each (lambda (kv) (jolt-invoke (cdr kv) (car kv) a old new))
             (reverse (jolt-atom-watches a))))
@@ -65,7 +65,7 @@
 
 ;; (swap! a f arg*): JVM-style CAS loop — read, compute f OUTSIDE the lock, then
 ;; atomically compare-and-set; retry if another thread changed it. Validate the
-;; new value before storing, notify watches after (the seed order).
+;; new value before storing, notify watches after.
 (define (jolt-swap! a f . args)
   (let retry ()
     (let* ((old (jolt-atom-val a))

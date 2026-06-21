@@ -1,12 +1,10 @@
-;; Collection constructors + rand (jolt-cf1q.3 Phase 2 inc A) — host-coupled seed
+;; Collection constructors + rand (jolt-cf1q.3 Phase 2 inc A) — host-coupled
 ;; natives the overlay assumes as bare clojure.core vars but which were never
 ;; def-var!'d, so they resolved to jolt-nil and any call hit the apply-jolt-nil
 ;; crash bucket. The persistent-collection constructors already exist in
 ;; collections.ss (jolt-hash-map / jolt-hash-set / jolt-vector); this just binds
 ;; the public clojure.core names to them. Loaded after def-var! (rt.ss) + the
-;; collections + seq tiers. Semantics match the Janet seed (core_coll.janet
-;; core-hash-map/core-array-map/core-hash-set/core-set, core_types.janet
-;; core-rand).
+;; collections + seq tiers. hash-map/array-map/hash-set/set/rand semantics.
 
 ;; hash-map / hash-set: variadic kvs / elems straight onto the existing ctors.
 ;; array-map: Clojure preserves insertion order, but jolt's `=` is structural and

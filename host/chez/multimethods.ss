@@ -2,8 +2,8 @@
 ;;
 ;; defmulti/defmethod are macros that expand to ctx-capturing setup CALLS
 ;; (defmulti-setup / defmethod-setup, + the table ops get-method/methods/
-;; remove-method/prefer-method/prefers). The Janet seed implements these against
-;; the evaluator's ns/var machinery (eval_runtime.janet); this is the Chez port.
+;; remove-method/prefer-method/prefers), implemented here against
+;; the runtime's ns/var machinery.
 ;;
 ;; A multimethod VALUE is a jolt-multifn record carrying its dispatch fn and a
 ;; mutable method table (dispatch-val -> method fn, keyed with jolt= so keyword/

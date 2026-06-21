@@ -33,8 +33,8 @@
     ((and (flonum? x) (fl= x +inf.0)) "Infinity")
     ((and (flonum? x) (fl= x -inf.0)) "-Infinity")
     ((and (flonum? x) (not (fl= x x))) "NaN")
-    ;; transients print as a cold tagged type (the seed routes this through a
-    ;; print-method multimethod; the readable fallback renders it directly).
+    ;; transients print as a cold tagged type (print-method routes this through a
+    ;; multimethod; the readable fallback renders it directly).
     ;; forward refs to transients.ss (loaded later) — resolved at call time.
     ((jolt-transient? x)
      (if (pvec? (jolt-transient-coll x)) "#<transient vector>" "#<transient map>"))

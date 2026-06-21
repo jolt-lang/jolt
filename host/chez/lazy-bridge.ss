@@ -2,8 +2,8 @@
 ;;
 ;; The `lazy-seq` macro (00-syntax.clj) expands to
 ;;   (make-lazy-seq (fn* [] (coll->cells (do body))))
-;; and `lazy-cat` to (concat (lazy-seq c) ...). make-lazy-seq / coll->cells are
-;; seed natives (src/jolt/lazyseq.janet) with no Chez shim, so EVERY overlay fn
+;; and `lazy-cat` to (concat (lazy-seq c) ...). make-lazy-seq / coll->cells had
+;; no Chez shim, so EVERY overlay fn
 ;; built on lazy-seq — repeat / iterate / cycle / dedupe / take-nth / keep /
 ;; interpose / reductions / tree-seq (-> flatten) / lazy-cat — resolved the call
 ;; to jolt-nil and hit the apply-jolt-nil crash bucket.

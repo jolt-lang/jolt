@@ -11,7 +11,7 @@
 ;;      these — a red-black tree + :ops table travel inside the htable.
 ;;   2. a sorted-coll arm on the collection dispatchers, set!-extended the same
 ;;      way records.ss extends them for jrec: each op routes through the value's
-;;      own :ops table (the seed's dispatch pattern, core_coll.janet). first/rest/
+;;      own :ops table (the dispatch pattern). first/rest/
 ;;      next/last fall out free once jolt-seq has a sorted arm (they seq first).
 ;;
 ;; Loaded LAST (after records.ss / transients.ss / natives-meta.ss): it wraps the
@@ -118,7 +118,7 @@
 (def-var! "clojure.core" "coll?" (lambda (x) (or (htable-sorted? x) (jrec? x) (jolt-coll-pred? x))))
 
 ;; --- equality / hash ---------------------------------------------------------
-;; A sorted coll canonicalizes like its unordered counterpart (core_types.janet):
+;; A sorted coll canonicalizes like its unordered counterpart:
 ;; a sorted-map equals ANY map (hash or sorted) with the same entries, a
 ;; sorted-set ANY set with the same elements — the comparator is irrelevant to =.
 ;; Convert to the plain persistent coll and delegate to the prior jolt=2 / hash.
@@ -140,8 +140,8 @@
 
 ;; --- printing ----------------------------------------------------------------
 ;; sorted colls render in SORTED order (the value's :seq), not HAMT order — and
-;; a sorted-map prints "{k v, k v}" (", " between pairs) like the seed's
-;; pr-render-pairs, NOT the space-only form the unordered pmap arm uses.
+;; a sorted-map prints "{k v, k v}" (", " between pairs),
+;; NOT the space-only form the unordered pmap arm uses.
 (define (sorted-map-render sc render)
   (string-append "{"
     (let loop ((es (seq->list (sc-call sc kw-op-seq))) (first #t) (acc ""))

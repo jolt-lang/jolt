@@ -1,15 +1,14 @@
 ;; clojure.math (jolt-22vo) — Chez host shim over native flonum math.
 ;;
-;; On the Janet seed clojure.math is registered as native math/ bindings
-;; (api.janet install-clojure-math!, jolt-h79), NOT a .clj file — so there's no
-;; source tier to emit. Chez provides its own def-var! shims here, one per
-;; clojure.math fn, over Chez's native procedures. The analyzer already knows the
-;; clojure.math ns exists (init interns the same fns on the Janet side), so a ref
+;; clojure.math is registered as native bindings (jolt-h79), NOT a .clj file — so
+;; there's no source tier to emit. Chez provides its own def-var! shims here, one per
+;; clojure.math fn, over Chez's native procedures. The analyzer knows the
+;; clojure.math ns exists, so a ref
 ;; like clojure.math/sqrt lowers to a var-deref; these cells back it at runtime.
 ;;
 ;; jolt is all-flonum, so every result is a flonum (inputs arrive as flonums; Chez
-;; sqrt/sin/expt/... return flonums for flonum args). Semantics match the seed
-;; (Clojure 1.11 clojure.math): round = floor(x+0.5), rint = round-half-even,
+;; sqrt/sin/expt/... return flonums for flonum args). Semantics match
+;; Clojure 1.11 clojure.math: round = floor(x+0.5), rint = round-half-even,
 ;; floor/ceil/floor-div return doubles, to-degrees/to-radians via PI.
 
 (define jolt-math-pi (acos -1.0))

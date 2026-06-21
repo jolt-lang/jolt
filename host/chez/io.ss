@@ -1,12 +1,11 @@
-;; java.io.File + host file I/O (jolt-yyud). The seed's clojure.java.io (io.clj)
-;; is a Janet-backed shim (janet.*/janet.file) — not reusable here, so this is a
+;; java.io.File + host file I/O (jolt-yyud). A
 ;; Chez-native implementation over Chez's filesystem primitives. A File is a
 ;; path-backed jfile record: (instance? java.io.File f) is true, str/slurp coerce
 ;; it to its path, and the File method surface (getName/getPath/exists/
 ;; isDirectory/isFile/listFiles) dispatches through record-method-dispatch.
 ;;
-;; Mirrors src/jolt/core_io.janet (core-make-file/file?/slurp/spit/flush/dir?/
-;; list-dir) and the overlay file-seq (20-coll.clj), which calls __file?/__dir?/
+;; Provides make-file/file?/slurp/spit/flush/dir?/
+;; list-dir for the overlay file-seq (20-coll.clj), which calls __file?/__dir?/
 ;; __list-dir + the .isDirectory/.listFiles/.isFile method surface.
 ;;
 ;; Reader/StringReader-coupled io (io/reader, line-seq over a file, .toURL,
@@ -47,7 +46,7 @@
 
 ;; --- java.net.URL (a jhost "url", state #(spec)) ----------------------------
 ;; A File.toURL value: .toString / .toExternalForm give the spec, .getPath /
-;; .getFile strip the "file:" scheme. (Mirrors host_io.janet's :jolt/url.)
+;; .getFile strip the "file:" scheme.
 (define (make-url spec) (make-jhost "url" (vector spec)))
 (define (url-spec u) (vector-ref (jhost-state u) 0))
 (define (url-strip-scheme spec)
@@ -91,7 +90,7 @@
         (%io-rmd obj method-name rest-args))))
 
 ;; .isDirectory / .listFiles emit to jolt-host-call (rt.ss), not record-method-
-;; dispatch (emit.janet supported-host-methods) — the Phase-1 shims there assume a
+;; dispatch — the Phase-1 shims there assume a
 ;; path STRING target. Make them jfile-aware so file-seq's File branch works.
 (define %io-host-call jolt-host-call)
 (set! jolt-host-call
@@ -171,7 +170,7 @@
 (set! jolt-str-render-one
   (lambda (v) (if (jfile? v) (jfile-path v) (%io-str-render v))))
 
-;; (type f) -> :jolt/file, matching the seed's tagged-file :jolt/type. Re-def-var!
+;; (type f) -> :jolt/file (the tagged-file :jolt/type). Re-def-var!
 ;; "type": natives-meta.ss already bound the var to the old jolt-type value, so the
 ;; set! alone (which updates the symbol for internal callers) wouldn't reach it.
 (define io-kw-file (keyword "jolt" "file"))
@@ -192,7 +191,7 @@
           (%io-instance-check type-sym val)))))
 (def-var! "clojure.core" "instance-check" instance-check)
 
-;; --- def-var! the seed-native names the overlay file-seq + str/slurp use ----
+;; --- def-var! the native names the overlay file-seq + str/slurp use ----
 (def-var! "clojure.core" "__make-file" jolt-make-file)
 (def-var! "clojure.core" "__file?" jolt-file?)
 (def-var! "clojure.core" "__dir?" jolt-dir?)
@@ -202,8 +201,8 @@
 (def-var! "clojure.core" "flush" jolt-flush)
 
 ;; --- char-array: a seq of chars over a string (the JVM char[]). io/reader's
-;; char[] branch + selmer's (char-array template) feed on this. Mirrors the seed
-;; core-char-array (string -> chars). A leaf array native; lives here as io/reader
+;; char[] branch + selmer's (char-array template) feed on this.
+;; char-array (string -> chars). A leaf array native; lives here as io/reader
 ;; is its only Chez consumer so far.
 (define (jolt-char-array a . rest)
   (cond
@@ -215,7 +214,7 @@
 
 ;; --- with-open's close seam (__close): a map-like value closes via its :close
 ;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
-;; else is an error. Mirrors core_extra.janet core-close-resource.
+;; else is an error.
 (define (jolt-close x)
   (cond
     ((jolt-nil? x) jolt-nil)

@@ -1,16 +1,16 @@
 ;; Chez-side Clojure data reader (jolt-r8ku, inc Y).
 ;;
 ;; The data half of runtime read/eval: a recursive-descent reader that parses
-;; ONE Clojure form off a string and produces the same jolt runtime values the
-;; Janet reader's parse-next yields (the analyzer/eval half — eval, load-string,
+;; ONE Clojure form off a string and produces jolt runtime values
+;; (the analyzer/eval half — eval, load-string,
 ;; runtime defmacro — stays Phase-3, it needs the compiler at runtime). Two host
-;; seams hang off it, matching the Janet seed (eval_runtime.janet):
+;; seams hang off it:
 ;;   read-string  : string -> first form (clojure.core seam, src 772)
 ;;   __parse-next : string -> [form rest] | nil  (the *in* family seam, src 801)
 ;; read / read+string / with-in-str / line-seq / clojure.edn are Clojure over
 ;; these (jolt-core/clojure/core/50-io.clj, src/jolt/clojure/edn.clj).
 ;;
-;; Form shapes are pinned to the Janet reader's output (probed against build/jolt):
+;; Form shapes:
 ;;   sets     -> {:jolt/type :jolt/set :value [...]}        (a FORM, not a set)
 ;;   #tag frm -> {:jolt/type :jolt/tagged :tag :#tag :form ...}  (NO data reader)
 ;;   #"src"   -> {:jolt/type :jolt/tagged :tag :regex :form "src"}
@@ -61,7 +61,7 @@
 
 ;; --- numbers ----------------------------------------------------------------
 ;; A token is a number iff it (after an optional sign) starts with a digit and
-;; parses. Ratios and big-N/M decimals follow the seed's all-double rendering
+;; parses. Ratios and big-N/M decimals use all-double rendering
 ;; for division; ints/bignums stay exact (Chez's tower IS Clojure's).
 (define (rdr-string-index-char str c)
   (let ((n (string-length str)))
@@ -287,10 +287,10 @@
       (make-symbol-t (symbol-t-ns target) (symbol-t-name target)
                      (rdr-merge-meta (symbol-t-meta target) meta))
       ;; non-symbol target (a collection): lower to a runtime (with-meta form meta)
-      ;; the analyzer compiles like any invoke — same as the Janet reader, so e.g.
+      ;; the analyzer compiles like any invoke, so e.g.
       ;; (meta ^{:tag :int} [1 2]) and ^:foo {} carry their meta at runtime. The meta
       ;; pmap doubles as its own map-literal form. Use the BARE `with-meta` symbol
-      ;; (ns #f) to match the Janet reader exactly — the fn/defn macros unwrap a
+      ;; (ns #f) — the fn/defn macros unwrap a
       ;; (with-meta <arglist-vec> _) return-hint by matching the unqualified head,
       ;; so a qualified clojure.core/with-meta would slip past them (^bytes [b]).
       (jolt-list (jolt-symbol #f "with-meta") target meta)))
@@ -299,7 +299,7 @@
 ;; #(...) anonymous fn shorthand (jolt-qjr0): % -> p1, %N -> pN, %& -> rest. The
 ;; fixed arity is the MAX positional used (Clojure: #(do %2 %&) -> [p1 p2 & rest]).
 ;; Param names carry a trailing "#" so a #() inside a syntax-quote still reads them
-;; as auto-gensyms. Mirrors src/jolt/reader.janet read-anon-fn.
+;; as auto-gensyms.
 (define rdr-anon-counter 0)
 (define (rdr-anon-gensym)
   (set! rdr-anon-counter (+ rdr-anon-counter 1))
@@ -427,7 +427,7 @@
 
 ;; --- keyword ----------------------------------------------------------------
 (define (rdr-read-keyword s i end)       ; i points just past the leading ':'
-  ;; ::kw auto-resolves; the seed drops the ns, so skip a second ':'
+  ;; ::kw auto-resolves; drop the ns, so skip a second ':'
   (let ((i (if (and (< i end) (char=? (string-ref s i) #\:)) (+ i 1) i)))
     (let-values (((tok j) (rdr-read-token s i end)))
       (let-values (((ns name) (rdr-sym-parts tok)))
@@ -494,7 +494,7 @@
 
 ;; --- the two host seams -----------------------------------------------------
 ;; clojure.core/read-string: first form, or nil for blank / comment-only input
-;; (the seed's parse-string wart, matched deliberately).
+;; (parse-string wart, matched deliberately).
 (define (jolt-read-string s)
   (let-values (((form j) (rdr-read-form s 0 (string-length s))))
     (if (rdr-eof? form) jolt-nil form)))

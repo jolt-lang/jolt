@@ -23,7 +23,7 @@
 ;; only thing that distinguishes a list from any other realized seq on this host,
 ;; since one record type backs both (clojure.core/list? — jolt-75sv). The marker
 ;; lives on the cell, so (rest a-list) / (seq a-vector) / (map …) yield plain seq
-;; cells and are not list?, matching the seed.
+;; cells and are not list?.
 (define-record-type cseq (fields head (mutable tail) (mutable forced?) list?) (nongenerative chez-cseq-v2))
 (define (cseq-realized head tail) (make-cseq head tail #t #f))   ; tail already a seq
 (define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f))
@@ -84,11 +84,11 @@
   ;; other (if (next s) ...) loops over a lazy seq ran one step too far.
   (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-nil (jolt-seq (seq-more s)))))
 ;; Only the HEAD cell carries the list marker — (rest a-list)/(next a-list) return
-;; the unmarked tail, so they are seqs and not list?, matching the seed (which
-;; makes rest-of-a-list a non-list seq). cons/list/reverse/conj therefore mark
+;; the unmarked tail, so they are seqs and not list? (rest-of-a-list is a non-list
+;; seq). cons/list/reverse/conj therefore mark
 ;; just the cell they create.
 ;;
-;; cons always yields a list — (list? (cons x anything)) is true on the seed (cons
+;; cons always yields a list — (list? (cons x anything)) is true (cons
 ;; onto a vector/seq/nil all report list?).
 (define (jolt-cons x coll) (cseq-list x (jolt-seq coll)))
 ;; Scheme list -> a jolt PersistentList: head is a list cell, the tail chain is

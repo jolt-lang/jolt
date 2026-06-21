@@ -9,7 +9,7 @@
 ;; The binding macro builds a frame as a jolt map (array-map of (var x) -> value);
 ;; push-thread-bindings folds it into the alist. Lookups walk frames by cell
 ;; IDENTITY (eq?) — vars are interned, so (var x) always yields the same cell, and
-;; this sidesteps the seed's persistent-hash-map-can't-find-a-var-key quirk.
+;; this sidesteps a persistent-hash-map-can't-find-a-var-key quirk.
 ;;
 ;; var reads (var-deref in compiled code, jolt-var-get / deref on a cell) consult
 ;; the stack before falling back to the cell root. Loaded LAST (after vars.ss and

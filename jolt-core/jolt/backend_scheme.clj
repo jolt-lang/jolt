@@ -1,15 +1,14 @@
 (ns jolt.backend-scheme
   "Portable Clojure IR -> Chez Scheme emitter (Chez Phase 3, jolt-cf1q.4).
 
-  The no-Janet replacement for host/chez/emit.janet: consumes the same
+  Consumes the
   host-neutral IR (jolt.ir, see jolt-core/jolt/ir.clj) the analyzer produces and
   emits Chez Scheme source TEXT. Pure jolt-core (clojure.core + clojure.string
   only) so that, once cross-compiled, it runs ON Chez and the analyzer can emit
-  its own code with no Janet in the loop — the bootstrap spine.
+  its own code — the bootstrap spine.
 
   Output is a STRING of Scheme source; `host/compile` on Chez is `(eval (read
-  ...))`. Mirrors emit.janet op-for-op so the value-parity gate holds against the
-  Janet emitter while the port is in flight.
+  ...))`. Lowers each IR op to Scheme.
 
   INCREMENT 1 (jolt-hg7z): const/local/var/the-var/if/do/let/loop/recur/invoke
   (+ native-ops)/fn/def + the escaping/flonum/munge helpers.
@@ -17,7 +16,7 @@
   quote (emit-quoted, walks the raw reader form via the portable jolt.host form-*
   contract — same seam the analyzer uses, so it stays host-neutral).
   INCREMENT 3 (jolt-me6m): try/throw + host-call + regex/inst/uuid + def-meta +
-  quoted-symbol-meta. With this the emitter covers every op emit.janet handles.
+  quoted-symbol-meta. With this the emitter covers every IR op.
   emit-quoted now also reconstructs plain jolt VALUES (def/symbol :meta), enabled
   by making :meta a portable struct at the host seam (h-sym-meta). Program
   assembly + the prelude driver port land with compile-from-source (inc 4+)."
@@ -27,8 +26,8 @@
                                form-literal? form-elements form-vec-items
                                form-map-pairs form-set-items form-char-code]]))
 
-;; Hot clojure.core primitives lowered to native Scheme, mirroring the Janet
-;; backend's native-ops. `=` is the exactness-aware jolt= from values.ss; inc/dec/
+;; Hot clojure.core primitives lowered to native Scheme.
+;; `=` is the exactness-aware jolt= from values.ss; inc/dec/
 ;; not are rt shims; mod/rem/quot map to Scheme's (Scheme has all three).
 (def ^:private native-ops
   {"+" "+" "-" "-" "*" "*" "/" "/"
@@ -80,7 +79,7 @@
 
 ;; Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
 ;; call on any other method routes to record-method-dispatch (a reify/record
-;; protocol method). Keep in sync with emit.janet's supported-host-methods.
+;; protocol method).
 (def ^:private supported-host-methods #{"isDirectory" "listFiles"})
 
 ;; Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
@@ -173,8 +172,7 @@
 ;; reconstruct each as the matching Chez RT constructor — the runtime value of a
 ;; quote is just that literal data. The form is walked via the jolt.host form-*
 ;; contract (the portable seam the analyzer uses), NOT host-native predicates, so
-;; this stays host-neutral: on Janet the contract walks Janet reader forms, on
-;; Chez it walks Chez reader forms.
+;; this stays host-neutral — the contract walks the host's reader forms.
 (declare emit-quoted)
 (defn- emit-quoted-map [pairs]
   ;; pairs: a jolt vector of [k-form v-form] pairs (form-map-pairs)

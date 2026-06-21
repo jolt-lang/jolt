@@ -1,6 +1,6 @@
 ;; records + protocols (jolt-cf1q.3 Phase 2 inc D) — the deftype/defrecord +
-;; defprotocol/extend-type subsystem. These are ctx-capturing seed natives
-;; (eval_runtime.janet) that resolved to jolt-nil on the prelude, so every record
+;; defprotocol/extend-type subsystem. These are ctx-capturing natives
+;; that resolved to jolt-nil on the prelude, so every record
 ;; case hit the apply-jolt-nil crash bucket.
 ;;
 ;; A record is a `jrec`: a type tag ("ns.Name") + an alist of (kw . val) in
@@ -138,7 +138,7 @@
 
 (define (record-tag obj) (and (jrec? obj) (jrec-tag obj)))
 
-;; ---- the seed-native handles the analyzer/overlay call ----------------------
+;; ---- the native that handles the analyzer/overlay call ----------------------
 ;; make-deftype-ctor: (name-sym field-kws field-tags field-muts) -> ctor closure.
 ;; The tag is baked at definition time in the type's ns (chez-current-ns).
 (define (make-deftype-ctor name-sym field-kws . _ignored)
@@ -156,7 +156,7 @@
                  (keyword #f "name") (jolt-symbol jolt-nil name-str)
                  (keyword #f "methods") methods))
 
-;; register-protocol-methods!: devirt hint in the seed; a no-op for Chez dispatch.
+;; register-protocol-methods!: a no-op for Chez dispatch.
 (define (register-protocol-methods! proto-name method-names) jolt-nil)
 
 ;; register-method: extend-type/extend register an impl. Host type names keep a

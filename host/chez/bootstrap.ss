@@ -6,7 +6,7 @@
 ;; compiler image from the .clj/.ss sources using the ON-CHEZ compiler (emit-image.ss),
 ;; writing fresh artifacts. No Janet is invoked: read -> analyze -> emit all run on
 ;; Chez. The seed is a JOINT fixpoint, so a rebuild from an up-to-date seed
-;; reproduces it byte-for-byte (test/chez/bootstrap-test.janet checks this); when
+;; reproduces it byte-for-byte (`make selfhost` checks this); when
 ;; the sources change, run it twice to reconverge and re-mint the seed.
 ;;
 ;; Run from the repo root:

@@ -3,7 +3,7 @@
 ;; No mature Chez fibers library exists, and this Chez is a threaded build, so a
 ;; `go` block is just an OS thread and a channel is a mutex+condition blocking
 ;; queue: <! / >! are the blocking <!! / >!! (they "park" by blocking the thread).
-;; Like the Janet stackful-fiber model, <! / >! work ANYWHERE (no CPS transform) —
+;; <! / >! work ANYWHERE (no CPS transform) —
 ;; here because they are ordinary blocking calls. Real parallelism, shared heap.
 ;; Trade-off: one OS thread per go block (fine for typical use / conformance, not
 ;; for thousands of simultaneous go blocks).
@@ -13,7 +13,7 @@
 ;; buffers never block the putter. A transducer is applied on the put side.
 ;;
 ;; The fns are def-var!'d into clojure.core.async; go/go-loop/thread are macros
-;; (mark-macro!) expanding to go-spawn, mirroring src/jolt/async.janet. Loaded after
+;; (mark-macro!) expanding to go-spawn. Loaded after
 ;; concurrency.ss (reuses ms->duration). Requires a threaded Chez build.
 
 ;; --- buffers ----------------------------------------------------------------
@@ -49,7 +49,7 @@
 
 ;; A transducer is a jolt fn (xform); (xform add-rf) yields the channel's reducing
 ;; fn. add-rf: 0-arg init, 1-arg completion, 2-arg step (enqueue the output). A
-;; `reduced` step result closes the channel. Mirrors async.janet make-add-rf.
+;; `reduced` step result closes the channel.
 (define (ac-make-add-rf ch)
   (lambda args
     (cond ((null? args) ch)                                   ; init
@@ -135,8 +135,8 @@
           (else ac-poll-empty))))
 
 ;; (alts! [ch ...]) — take from whichever channel is ready first; returns
-;; [value channel] (value nil if that channel closed). Take-only (like the Janet
-;; impl). Polls with a 1ms backoff — no cross-channel wait-set yet.
+;; [value channel] (value nil if that channel closed). Take-only.
+;; Polls with a 1ms backoff — no cross-channel wait-set yet.
 (define ac-1ms (make-time 'time-duration 1000000 0))
 (define (jolt-async-alts chans)
   (let ((cs (seq->list (jolt-seq chans))))

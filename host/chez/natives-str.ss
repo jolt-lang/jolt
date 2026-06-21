@@ -2,7 +2,7 @@
 ;;
 ;; (.method s arg*) on a string target lowers to record-method-dispatch (emit.ss),
 ;; which falls through to jolt-string-method here when the target is a string.
-;; Ported from the seed surface (src/jolt/eval_resolve.janet string-methods): the
+;; Covers the
 ;; portable java.lang.String/CharSequence methods cljc libraries actually call.
 ;; Case mapping is ASCII (the whole engine is byte-oriented), indexOf returns -1
 ;; on miss as on the JVM, indices come in as flonums, char results are Scheme
@@ -11,7 +11,7 @@
 ;; Loaded from rt.ss AFTER regex.ss (the regex methods reuse jolt-re-pattern /
 ;; regex-t-irx) and records.ss (which calls jolt-string-method).
 
-;; --- ASCII case mapping (match the seed's byte-oriented string/ascii-*) -------
+;; --- ASCII case mapping (byte-oriented) -------
 (define (ascii-up-char c)
   (if (and (char<=? #\a c) (char<=? c #\z))
       (integer->char (fx- (char->integer c) 32)) c))
@@ -131,9 +131,9 @@
     (else (error #f (string-append "No method " method " for value")))))
 
 ;; --- clojure.core str-* primitives (the substrate clojure.string.clj calls) ---
-;; clojure.string.clj (src/jolt/clojure/string.clj) is pure Clojure over these
-;; seed natives (core.janet core-bindings); def-var!'d here so the emitted
-;; clojure.string prelude tier's var-derefs resolve. Ported from the seed:
+;; clojure.string.clj is pure Clojure over these
+;; natives; def-var!'d here so the emitted
+;; clojure.string prelude tier's var-derefs resolve:
 ;; string/ascii-* (ASCII), string/find (index or nil), core-str-* (regex|literal).
 
 ;; (string/split sep s) -> parts, splitting on each non-overlapping sep.
@@ -168,8 +168,8 @@
 
 ;; (re-split irx s limit) -> parts, splitting at each match. Keeps interior AND
 ;; trailing empty strings (the clojure.string wrapper drops trailing for limit 0);
-;; a positive limit yields at most `limit` parts (the rest kept unsplit). Mirrors
-;; the seed re-split (src/jolt/regex.janet); the clojure.string.clj split wrapper
+;; a positive limit yields at most `limit` parts (the rest kept unsplit).
+;; The clojure.string.clj split wrapper
 ;; layers the trailing-empty trim on top.
 (define (re-split irx s limit)
   (let ((len (string-length s)))
@@ -224,14 +224,14 @@
 
 ;; One match's replacement text. A string gets $N expansion; a fn (jolt closure)
 ;; is called with the match result (whole string, or [whole g1 ...] when grouped)
-;; and its result stringified (mirrors the seed replacement-for).
+;; and its result stringified.
 (define (replacement-text replacement m)
   (cond
     ((string? replacement) (expand-dollar replacement m))
     ((procedure? replacement) (jolt-str-render-one (jolt-invoke replacement (irx-result m))))
     (else (jolt-str-render-one replacement))))
 
-;; regex replace, first or all matches. Mirrors the seed re-replace-all/first.
+;; regex replace, first or all matches.
 (define (re-replace irx s replacement all?)
   (let ((len (string-length s)))
     (let loop ((start 0) (last 0) (acc '()))

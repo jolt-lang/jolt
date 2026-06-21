@@ -1,7 +1,6 @@
-;; syntax-quote form builders (jolt-r9lm, inc6b) — the Chez analogs of
-;; core_types.janet's core-sq*. A cross-compiled macro expander whose body was a
-;; syntax-quote template (lowered by jolt.host/form-syntax-quote-lower at Janet
-;; cross-compile time) calls these at RUNTIME on Chez to build the EXPANSION as
+;; syntax-quote form builders (jolt-r9lm, inc6b). A macro expander whose body was a
+;; syntax-quote template (lowered by jolt.host/form-syntax-quote-lower) calls these
+;; at RUNTIME on Chez to build the EXPANSION as
 ;; Chez READER forms (cseq list / pvec / pmap / tagged-set pmap) so the on-Chez
 ;; analyzer can re-analyze it. def-var!'d into clojure.core, so the lowered body's
 ;; unqualified __sqcat/__sqvec/__sqmap/__sqset/__sq1 refs (which lower to var-deref

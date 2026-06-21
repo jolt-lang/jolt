@@ -205,7 +205,7 @@
         ((pset? coll) (pset-conj coll x))
         ;; a list/seq conjs by PREPENDING (seq.ss: cseq / empty-list). conj onto a
         ;; list stays a list, conj onto a lazy/realized seq yields a seq cell (a
-        ;; Cons) — list?-preserving, matching the seed.
+        ;; Cons) — list?-preserving.
         ((cseq? coll) (if (cseq-list? coll) (cseq-list x coll) (cseq-realized x coll)))
         ((empty-list-t? coll) (cseq-list x jolt-nil))
         ((pmap? coll)

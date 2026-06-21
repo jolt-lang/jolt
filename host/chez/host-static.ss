@@ -2,11 +2,11 @@
 ;;
 ;; The analyzer lowers `Class/member` to a :host-static node and `(Class. ...)` /
 ;; `(new Class ...)` to a :host-new node (jolt-core/jolt/analyzer.clj); the Chez
-;; emit (emit.janet) lowers a value ref to (host-static-ref "Class" "member"), a
+;; emit lowers a value ref to (host-static-ref "Class" "member"), a
 ;; call head to (host-static-call "Class" "member" args...), and a constructor to
 ;; (host-new "Class" args...). This file is the runtime registry those three
-;; resolve against — the Chez port of the seed's class-statics / class-ctors /
-;; tagged-methods registries (src/jolt/interop/java_base.janet + host_io.janet),
+;; resolve against — the class-statics / class-ctors /
+;; tagged-methods registries,
 ;; restricted to the java.lang/util/net/io surface portable cljc code calls.
 ;; (java.time formatting is a separate increment.)
 ;;
@@ -111,7 +111,7 @@
 ;; numeric tower (jolt-n6al): currentTimeMillis/nanoTime are exact longs (JVM).
 (define (->num x) x)
 (define (jnum->exact n) (exact (truncate n)))
-;; parse an integer string in radix; #f on failure (matches the seed's scan-number)
+;; parse an integer string in radix; #f on failure
 (define (parse-int-str s radix)
   (let ((n (string->number (str-trim (if (string? s) s (jolt-str-render-one s))) radix)))
     (and n (integer? n) (->num n))))
@@ -488,7 +488,7 @@
     (if (regex-t? obj)
         (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
           (cond ((string=? method-name "split")
-                 ;; .split returns a String[] — a seq, like the seed's array (prints
+                 ;; .split returns a String[] — a seq (prints
                  ;; (a b c), not a vector). re-split with no limit; drop trailing
                  ;; empties (JVM default).
                  (let ((parts (re-split (regex-t-irx obj) (car rest) #f)))

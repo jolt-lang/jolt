@@ -6,7 +6,7 @@
 ;;      reference reads at call time, so redefinition / mutual recursion work);
 ;;   2. the rt primitive shims the emitter names (jolt-inc/dec/not) and jolt's
 ;;      number printing (all jolt numbers model Clojure doubles; integer-valued
-;;      print without a trailing ".0", matching the Janet host).
+;;      print without a trailing ".0").
 ;;
 ;; Emitted programs do `(load "host/chez/rt.ss")`; this loads values.ss in turn.
 
@@ -14,15 +14,15 @@
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
-;; --- rt arithmetic / logic shims (named in emit.janet's native-ops) ----------
+;; --- rt arithmetic / logic shims (named in the emitter's native-ops) ----------
 (define (jolt-inc x) (+ x 1))
 (define (jolt-dec x) (- x 1))
 ;; jolt `not`: only nil and false are falsey.
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 
 ;; --- exceptions (jolt-vcsl) --------------------------------------------------
-;; throw raises the jolt value RAW (no envelope), like the Janet compiled back
-;; end; catch (emitted as `guard`) binds it directly. Chez `raise` accepts any
+;; throw raises the jolt value RAW (no envelope);
+;; catch (emitted as `guard`) binds it directly. Chez `raise` accepts any
 ;; object, so a thrown number/map/ex-info all work; uncaught -> non-zero exit.
 (define (jolt-throw v) (raise v))
 ;; ex-info builds the tagged map {:jolt/type :jolt/ex-info :message :data :cause}
@@ -130,7 +130,7 @@
 
 ;; --- jolt number printing ----------------------------------------------------
 ;; jolt models every number as a Clojure double: integer-valued values print
-;; without a ".0" (the Janet host prints (* 1.0 5) as "5", (/ 1 2) as "0.5").
+;; without a ".0" ((* 1.0 5) prints as "5", (/ 1 2) as "0.5").
 (define (jolt-num->string x)
   (cond
     ;; the -e / element printer renders the infinities and NaN as inf/-inf/nan
@@ -144,7 +144,7 @@
 
 ;; Program-final-value printer. jolt's `-e` prints in str-style: strings raw (no
 ;; quotes), chars as `\c`/`\newline`, collections recursively. NOTE: maps/sets
-;; render in HAMT-iteration order, which does NOT match the Janet host's order —
+;; render in HAMT-iteration order, which is not a stable insertion order —
 ;; so unordered values are compared via `=` (true/false), not printed form.
 ;; The full canonical printer is Phase 2.
 (define (jolt-str-join strs)
@@ -236,7 +236,7 @@
 ;; and the printer (jolt-str-render-one).
 (load "host/chez/host-class.ss")
 
-;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the seed
+;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the host
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
 (load "host/chez/dynamic-vars.ss")
 

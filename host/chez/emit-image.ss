@@ -1,9 +1,6 @@
 ;; emit-image.ss (jolt-cf1q.4 inc8) — the on-Chez compiler-image emitter.
 ;;
-;; This is the stage2/stage3 half of the self-hosting fixpoint. driver.janet's
-;; emit-compiler-image cross-compiles the compiler sources (jolt.ir +
-;; jolt.analyzer + jolt.backend-scheme) to a Scheme def-var! image USING THE JANET
-;; analyzer/emitter — that is stage1. This file does the SAME job but the
+;; This is the stage2/stage3 half of the self-hosting fixpoint. The
 ;; analyze->emit runs ON CHEZ (jolt-ce-analyze / jolt-ce-emit, loaded from a
 ;; previously-built image): feed it stage1's image and it produces stage2; feed it
 ;; stage2 and it produces stage3. stage2 == stage3 byte-for-byte proves the
@@ -12,8 +9,8 @@
 ;; Loaded after compile-eval.ss (needs jolt-ce-analyze/jolt-ce-emit/ce-scan-requires!,
 ;; make-analyze-ctx) and rt.ss (read-file-string, the reader's rdr-read-form).
 
-;; Read every top-level form from a source string (a Chez read-all). Mirrors the
-;; Janet driver's parse-all; uses the same reader the spine reads single forms with.
+;; Read every top-level form from a source string (a Chez read-all).
+;; Uses the same reader the spine reads single forms with.
 (define (ei-read-all src)
   (let ((end (string-length src)))
     (let loop ((i 0) (acc '()))
@@ -23,7 +20,7 @@
             (loop j (cons form acc)))))))
 
 ;; Is `f` an (ns ...) form? (Its only role in the image is alias registration; we
-;; never emit it — the def-var!s carry explicit ns names. Matches driver.janet.)
+;; never emit it — the def-var!s carry explicit ns names.)
 (define (ei-ns-form? f)
   (and (cseq? f) (cseq-list? f)
        (let ((items (seq->list f)))
@@ -34,7 +31,6 @@
 ;; ce-defmacro->fn, loaded before this) — shared with the runtime defmacro spine.
 
 ;; Cross-compile one namespace's source to a list of guard-wrapped Scheme strings.
-;; Mirrors driver.janet emit-ns-forms-list/emit-core-prelude + emit-form-scheme.
 ;; Each form is analyzed with a fresh ctx — resolution is via the runtime var-table
 ;; + alias tables, not ctx-accumulated state, so this matches the spine's per-form
 ;; analyze. A defmacro emits its expander fn as (def-var! ns name <fn>) +
@@ -69,19 +65,18 @@
                          (cons (string-append "(guard (e (#t #f))\n  " scm ")") acc)
                          acc)))))))))
 
-;; Scheme string literal for a ns/name — uses the runtime's own writer so it
-;; matches the Janet driver's %j (printable ASCII identifiers only here).
+;; Scheme string literal for a ns/name — uses the runtime's own writer
+;; (printable ASCII identifiers only here).
 (define (ei-str-lit s) (with-output-to-string (lambda () (write s))))
 
-;; The compiler namespaces, in load order — same list as driver.janet
-;; compiler-ns-files.
+;; The compiler namespaces, in load order.
 (define ei-compiler-ns-files
   (list (cons "jolt.ir" "jolt-core/jolt/ir.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
 
-;; The clojure.core tiers + stdlib namespaces, in load order — same lists as
-;; driver.janet core-tier-files / stdlib-ns-files. Re-emitting these on Chez is the
+;; The clojure.core tiers + stdlib namespaces, in load order.
+;; Re-emitting these on Chez is the
 ;; prelude half of the fixpoint (the whole emitted system reproducing itself).
 (define ei-prelude-ns-files
   (append
@@ -94,8 +89,7 @@
           (cons "clojure.set" "src/jolt/clojure/set.clj")
           (cons "clojure.pprint" "src/jolt/clojure/pprint.clj"))))
 
-;; Join a list of form strings with "\n", no trailing newline — byte-identical
-;; layout to the Janet driver's (string/join out "\n").
+;; Join a list of form strings with "\n", no trailing newline.
 (define (ei-join forms)
   (let join ((fs forms) (out ""))
     (cond

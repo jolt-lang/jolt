@@ -3,8 +3,7 @@
 ;; A jolt-array wraps a Chez mutable vector + a `kind` tag (for bytes?). The array
 ;; CONSTRUCTORS are native (they build the backing); the overlay's aget/aset/alength
 ;; are pure over count / nth / jolt.host/ref-put!, so we extend those dispatchers
-;; to see a jolt-array. Mirrors src/jolt/core_refs.janet (Janet uses its mutable
-;; arrays/buffers; here a Chez vector). Loaded after host-table.ss (ref-put!),
+;; to see a jolt-array (backed by a Chez vector). Loaded after host-table.ss (ref-put!),
 ;; transients.ss, seq.ss (the dispatchers it chains).
 
 (define-record-type jolt-array (fields (mutable vec) kind) (nongenerative jolt-array-v1))

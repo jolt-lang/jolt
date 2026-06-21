@@ -1,20 +1,16 @@
 ;; host class tokens (jolt-13zk) — a bare class name (String, Keyword, File...)
 ;; evaluates to its JVM canonical-name STRING, the same value (class instance)
 ;; returns, so (= String (class "x")) holds and a (defmethod m String ...) keys
-;; against a (class …) dispatch (ring.util.request does this). Mirrors
-;; src/jolt/eval_resolve.janet's class-canonical-names + core_refs.janet's
-;; core-class. The analyzer already resolves these names to clojure.core vars (the
-;; seed ctx interns them via setup-class-ctors), so the back end emits
+;; against a (class …) dispatch (ring.util.request does this).
+;; The analyzer resolves these names to clojure.core vars, so the back end emits
 ;; (var-deref "clojure.core" "String") — def-var!'ing the canonical strings here is
-;; all that's needed at runtime. No analyzer change, so the Janet back end is
-;; untouched.
+;; all that's needed at runtime.
 ;;
 ;; Loaded after natives-meta.ss (jolt-type) + the printer (jolt-str-render-one).
 
 ;; (class x) — Clojure's class of a value. Scalars map to their JVM class name,
-;; matching core-class. Collections/seqs have no JVM class on this host; the seed
-;; leaks the Janet host type ("table"/"struct"/"tuple") there, which we don't
-;; reproduce (Janet is going away) — (str (type x)) is the clean host taxonomy and
+;; matching core-class. Collections/seqs have no JVM class on this host;
+;; (str (type x)) is the clean host taxonomy and
 ;; is never compared against a class token in the corpus. Records yield their
 ;; ns-qualified class name (= (str (type x))). Total — never crashes.
 (define (jolt-class x)

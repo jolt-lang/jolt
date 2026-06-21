@@ -115,7 +115,7 @@
            (loop (cdr fs) (jolt-compile-eval-form (car fs) ns)))))
     ;; runtime defmacro: def the expander fn + mark the var a macro so subsequent
     ;; forms expand it (hc-macro? reads var-macro-table). Mirrors emit-image.ss
-    ;; ei-emit-ns and the Janet seed eval-defmacro.
+    ;; ei-emit-ns.
     ((ce-macro-form? form)
      (let-values (((nm fn-form) (ce-defmacro->fn form)))
        (def-var! ns nm (jolt-compile-eval-form fn-form ns))
@@ -132,7 +132,7 @@
 
 ;; clojure.core/load-string: read every form from the source string and compile+
 ;; eval each in the current ns, returning the last value (nil for blank input).
-;; Mirrors src/jolt/api.janet load-string (the parse-next loop). jolt-r8ku.
+;; jolt-r8ku.
 (define (jolt-load-string s)
   (let loop ((src s) (result jolt-nil))
     (let ((pn (jolt-parse-next src)))

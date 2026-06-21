@@ -3,13 +3,12 @@
 ;; A #inst literal lowers (analyzer :inst node -> emit) to (jolt-inst-from-string
 ;; "…"); this file parses the RFC3339 string to epoch-ms and models the value as a
 ;; `jinst` record (one flonum field, ms). Equality / map-key hashing are by the
-;; INSTANT (offset-normalized), matching the seed (types_ctx.janet parse-inst /
-;; inst->rfc3339). The overlay inst?/inst-ms read (get x :jolt/type)/(get x :ms),
+;; INSTANT (offset-normalized). The overlay inst?/inst-ms read (get x :jolt/type)/(get x :ms),
 ;; so jolt-get answers those off a jinst — the overlay fns then work unchanged.
 ;;
 ;; The java.time surface (DateTimeFormatter/Instant/ZoneId/LocalDateTime/
-;; FormatStyle/Locale + the .format/.atZone/.toInstant/… methods) is the Chez port
-;; of java_base.janet, registered through host-static.ss's class-statics / host-
+;; FormatStyle/Locale + the .format/.atZone/.toInstant/… methods) is
+;; registered through host-static.ss's class-statics / host-
 ;; methods registries — so this loads LAST in rt.ss, after host-static.ss and io.ss.
 
 ;; --- civil <-> days since the Unix epoch (Howard Hinnant's algorithms) -------
@@ -113,7 +112,7 @@
                    "T" (pad2 (list-ref f 3)) ":" (pad2 (list-ref f 4)) ":" (pad2 (list-ref f 5))
                    "." (pad3 (list-ref f 6)) "-00:00")))
 
-;; --- DateTimeFormatter pattern engine (port of java_base.janet format-ms) -----
+;; --- DateTimeFormatter pattern engine -----
 (define month-names (vector "January" "February" "March" "April" "May" "June" "July"
                             "August" "September" "October" "November" "December"))
 (define day-names (vector "Sunday" "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday"))

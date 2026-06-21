@@ -16,7 +16,7 @@
 ;; neg? throws on non-numbers via <, as Clojure's Numbers.isNeg does.
 (defn neg? [x] (< x 0))
 
-;; even?/odd? stay in the seed: (filter even? ...) is idiomatic-hot and the
+;; even?/odd? stay host primitives: (filter even? ...) is idiomatic-hot and the
 ;; overlay versions cost an extra call layer per element (seq-pipe bench 4x).
 
 ;; Variadic bit ops — canonical Clojure arities folding the binary host op
@@ -355,9 +355,9 @@
                (make-hierarchy) (partition 2 deriv-seq))
        h))))
 
-;; --- Stage 3 tier shrink: pure-over-core leaves moved off the Janet seed ----
+;; --- Stage 3 tier shrink: pure-over-core leaves moved off the host primitives ----
 
-;; Representation predicates over the overlay's own predicates (no Janet reps).
+;; Representation predicates over the overlay's own predicates.
 (defn sequential? [x] (or (vector? x) (seq? x)))
 (defn associative? [x] (or (map? x) (vector? x)))
 (defn counted? [x]
@@ -381,10 +381,10 @@
 
 
 ;; realized?: defined on the pending types only (delay/lazy-seq/future read
-;; Tagged-value predicates. The constructors (atom/volatile!/...) stay in Janet,
-;; but every tagged value carries its kind under :jolt/type (records under
-;; :jolt/deftype), reachable via get — which is nil on non-tables — so the
-;; predicates are pure over get and move out of the seed.
+;; Tagged-value predicates. The constructors (atom/volatile!/...) are host
+;; primitives, but every tagged value carries its kind under :jolt/type (records
+;; under :jolt/deftype), reachable via get — which is nil on non-tables — so the
+;; predicates are pure over get.
 (defn atom? [x]               (= (get x :jolt/type) :jolt/atom))
 (defn volatile? [x]           (= (get x :jolt/type) :jolt/volatile))
 (defn reader-conditional? [x] (= (get x :jolt/type) :jolt/reader-conditional))
@@ -418,7 +418,7 @@
     :else (throw (str "pop not supported on: " coll))))
 
 ;; doall/dorun: realization boundaries. dorun walks (optionally at most n
-;; steps — the Janet seed version ignored n); doall walks then returns coll.
+;; steps); doall walks then returns coll.
 (defn dorun
   ([coll]
    (loop [s (seq coll)]
@@ -791,7 +791,7 @@
 (defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
 (defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
 
-;; No class hierarchy on the Janet host.
+;; No class hierarchy on this host.
 (defn supers [x] #{})
 
 ;; Like Clojure's munge: rewrite dashes to underscores, preserving the argument's
@@ -949,7 +949,7 @@
 ;; inst-ms itself.
 (defn inst-ms* [i] (inst-ms i))
 
-;; Canonical comp — here rather than the seed so each stage is invoked with
+;; Canonical comp — here rather than a host primitive so each stage is invoked with
 ;; jolt call semantics: (comp seq :content) works because the keyword stage
 ;; goes through IFn dispatch (raw Janet keyword application does not).
 (defn comp
@@ -1078,7 +1078,7 @@
    (let [xf (xform f)]
      (xf (reduce xf init coll)))))
 
-;; into stays in the seed: it's perf-wall hot (the into-vec bench pays ~11%
+;; into stays a host primitive: it's perf-wall hot (the into-vec bench pays ~11%
 ;; through the overlay call layers — same lesson as even?/odd? in round 4).
 
 ;; eduction is EAGER on jolt (documented divergence, as before): the composed
@@ -1116,8 +1116,8 @@
 
 ;; print-method / print-dup are real multimethods in the io tier (50-io.clj).
 
-;; JVM proxies don't exist on a Janet host: the read-only surface is inert,
-;; the constructive surface throws (matching the prior seed stubs).
+;; JVM proxies don't exist on this host: the read-only surface is inert,
+;; the constructive surface throws.
 (defn proxy-mappings [p] {})
 (defn proxy-call-with-super [f p meth] (f))
 (defn init-proxy [p mappings] p)

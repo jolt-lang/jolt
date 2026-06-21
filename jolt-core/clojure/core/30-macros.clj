@@ -5,9 +5,9 @@
 ;; IMPORTANT — only macros NOT used by the self-hosted compiler (jolt-core/jolt/*)
 ;; or by the earlier overlay tiers belong here; those (and/or/when/when-not/
 ;; when-let/cond/case/doseq/declare/cond->/->) must stay available before this
-;; tier loads, so they remain in Janet for now. Everything here is user-facing.
+;; tier loads, so they remain host primitives for now. Everything here is user-facing.
 ;;
-;; Migration: remove the Janet core-X macro fn AND its core-macro-names entry when
+;; Migration: remove the host core-X macro fn AND its core-macro-names entry when
 ;; moving a macro here (defmacro installs the :macro flag itself).
 
 (defmacro comment [& body] nil)

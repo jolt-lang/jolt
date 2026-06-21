@@ -25,7 +25,7 @@
 ;;             :phm                    (persistent hash map; NOT raw-get-safe)
 ;;   :any (top), nil (bottom, identity for join).
 ;; Compound types are small jolt maps, so they compare by value on both the
-;; Clojure and the Janet (orchestrator) side. struct/vec/set use distinct keys so
+;; Clojure and the host (orchestrator) side. struct/vec/set use distinct keys so
 ;; a type is recognised by which key it carries.
 ;; (get t :KEY) is nil for a keyword type and the child for a compound, so a
 ;; compound is detected by some? — no map?/contains? needed.

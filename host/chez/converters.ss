@@ -45,7 +45,7 @@
        (cond
          ((jolt-nil? a) jolt-nil)
          ((keyword? a) a)
-         ;; a 1-arg string splits on the FIRST "/" into ns/name, like the seed
+         ;; a 1-arg string splits on the FIRST "/" into ns/name:
          ;; (keyword "x/y") => :x/y with ns "x" — destructure's {:keys [x/y]} builds
          ;; the key this way, so without the split the namespaced key never matches.
          ((string? a)
@@ -79,7 +79,7 @@
     ((= (length args) 2) (jolt-symbol (car args) (cadr args)))
     (else (error #f "symbol: wrong arity"))))
 
-;; gensym: per-process counter, like the seed's gensym_counter.
+;; gensym: per-process counter.
 (define jolt-gensym-counter 0)
 (define (jolt-gensym . prefix)
   (let ((p (if (null? prefix) "G__" (car prefix))))

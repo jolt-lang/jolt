@@ -1,16 +1,16 @@
-;; type predicates + simple accessors (jolt-9ziu) — host-coupled seed natives.
+;; type predicates + simple accessors (jolt-9ziu) — host-coupled natives.
 ;;
-;; These are seed primitives (not clojure.core overlay fns), so they're never
-;; def-var!'d by the assembled prelude; the Chez host must provide them. Semantics
-;; match the Janet seed (src/jolt/core_types.janet): map?/vector?/set? are STRICT
+;; These are host primitives (not clojure.core overlay fns), so they're never
+;; def-var!'d by the assembled prelude; the Chez host must provide them.
+;; map?/vector?/set? are STRICT
 ;; over the persistent-collection records, seq? is true only for real sequences,
 ;; coll? is the union. Records (shape-recs) are Phase 2, so the record arms of the
-;; seed predicates are simply absent here for now.
+;; predicates are simply absent here for now.
 
 (define (jolt-map? x) (pmap? x))
 ;; a map entry is a pvec under the hood AND is vector? — Clojure's MapEntry
-;; implements IPersistentVector, so (vector? (first {:a 1})) is true (the seed
-;; agrees; jolt-75sv corrected the earlier exclusion).
+;; implements IPersistentVector, so (vector? (first {:a 1})) is true
+;; (jolt-75sv corrected the earlier exclusion).
 (define (jolt-vector? x) (pvec? x))
 (define (jolt-set? x) (pset? x))
 (define (jolt-seq? x) (or (cseq? x) (empty-list-t? x)))

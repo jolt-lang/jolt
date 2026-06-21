@@ -1,6 +1,6 @@
-;; seq-native shims (jolt-y6mv) — seed-native seq fns the overlay assumes are
-;; clojure.core natives but which live in the Janet seed (src/jolt/core_coll.janet),
-;; so they have no def-var! in the assembled prelude and resolve to jolt-nil on
+;; seq-native shims (jolt-y6mv) — native seq fns the overlay assumes are
+;; clojure.core natives but which have no def-var! in the assembled prelude and
+;; resolve to jolt-nil on
 ;; Chez. This was the dominant prelude-parity crash bucket ('apply jolt-nil').
 ;; Each is a pure fn over the existing seq layer (seq.ss) — collection arities
 ;; only; the 1-arg transducer arities are jolt-kxsr. Loaded last (after
@@ -16,8 +16,7 @@
 ;; ============================================================================
 ;; transducers (jolt-kxsr) — the 1-arg arity of map/filter/take/... returns a
 ;; transducer (fn [rf] rf') where rf' is a reducing fn with arities
-;; []=init, [acc]=complete, [acc x]=step. Ported from the seed's td-* factories
-;; (core_coll.janet). rf and the mapping/predicate fns are jolt values, so every
+;; []=init, [acc]=complete, [acc x]=step. rf and the mapping/predicate fns are jolt values, so every
 ;; call routes through jolt-invoke. A `reduced` step stops the fold — reduce-seq
 ;; (seq.ss) already short-circuits on a jolt-reduced.
 ;; ============================================================================
@@ -181,9 +180,8 @@
     (if (jolt-nil? s) jolt-empty-list
         (list->cseq (list-sort less? (seq->list s))))))
 
-;; identical?: jolt reference identity. The seed defines it as (= a b) over its
-;; value model (core_types.janet core-identical?), where interned keywords/small
-;; values compare equal — so jolt= is the faithful port.
+;; identical?: jolt reference identity, defined as (= a b) over the
+;; value model, where interned keywords/small values compare equal.
 (define (jolt-identical? a b) (jolt= a b))
 
 ;; Give the seq.ss native procedures their transducer (1-arg) arity — the emitter
