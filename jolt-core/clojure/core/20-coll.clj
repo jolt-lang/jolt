@@ -591,23 +591,35 @@
 
 ;; rand-int: random integer in [0, n). Uses Janet math/random.
 
-;; Eager dedupe of consecutive equal elements (Jolt has no transducer arity yet).
-(defn dedupe [coll]
-  (let [step (fn step [s prev]
-               (make-lazy-seq
-                 (fn* []
-                   (let [s (seq s)]
-                     (if s
-                       (let [x (first s)]
-                         (if (= x prev)
-                           (coll->cells (step (rest s) prev))
-                           (coll->cells (cons x (step (rest s) x)))))
-                       nil)))))]
-    (let [s (seq coll)]
-      (if s
-        (make-lazy-seq
-          (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
-        ()))))
+;; 0-arg: a stateful transducer (tracks [seen? prev] in a volatile, so no sentinel
+;; value is needed). 1-arg: eager dedupe of consecutive equal elements.
+(defn dedupe
+  ([]
+   (fn [rf]
+     (let [pv (volatile! [false nil])]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [[seen prior] @pv]
+            (vreset! pv [true input])
+            (if (and seen (= prior input)) result (rf result input))))))))
+  ([coll]
+   (let [step (fn step [s prev]
+                (make-lazy-seq
+                  (fn* []
+                    (let [s (seq s)]
+                      (if s
+                        (let [x (first s)]
+                          (if (= x prev)
+                            (coll->cells (step (rest s) prev))
+                            (coll->cells (cons x (step (rest s) x)))))
+                        nil)))))]
+     (let [s (seq coll)]
+       (if s
+         (make-lazy-seq
+           (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
+         ())))))
 
 ;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs —
 ;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):
