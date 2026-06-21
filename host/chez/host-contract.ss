@@ -215,6 +215,7 @@
                (let ((g (hc-sq-gensym (substring nm 0 (- (string-length nm) 1)))))
                  (hashtable-set! gsmap nm g) g)))
           ((hc-special-symbol? nm) form)               ; special form: leave bare
+          ((hc-interop-head? nm) form)                 ; interop (.method / Class. / .-field): bare
           ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
           (else (jolt-symbol (chez-actx-cns ctx) nm)))  ; else: qualify to compile ns
         ;; qualified (a real ns or an alias): ns aliases aren't modeled on the Chez
