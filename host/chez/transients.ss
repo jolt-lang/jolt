@@ -38,7 +38,13 @@
 ;; (assoc! t k v & kvs): variadic like Clojure (jolt-assoc already folds pairs).
 (define (jolt-assoc! t . kvs)
   (jolt-trans-check t "assoc!")
-  (jolt-transient-coll-set! t (apply jolt-assoc (jolt-transient-coll t) kvs))
+  ;; JVM assoc! is variadic: once a complete first key/val pair is present (>=3
+  ;; kvs), a TRAILING lone key fills nil; a lone key alone (1 kv) is a wrong-arity
+  ;; throw (so don't pad it — the persistent assoc raises on odd args).
+  (let ((kvs (if (and (>= (length kvs) 3) (odd? (length kvs)))
+                 (append kvs (list jolt-nil))
+                 kvs)))
+    (jolt-transient-coll-set! t (apply jolt-assoc (jolt-transient-coll t) kvs)))
   t)
 (define (jolt-dissoc! t . ks)
   (jolt-trans-check t "dissoc!")
