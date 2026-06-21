@@ -17,10 +17,9 @@ read one data file, run each case, compare, report.
 | `test/conformance/certify.clj` | Certifies `:expected` against reference **JVM Clojure**; gates on new/stale divergences; emits the profile. | — |
 
 `corpus.edn` is **JVM-sourced**: `regen-corpus.clj` evaluates each case's `:actual`
-on reference JVM Clojure and writes the JVM value as `:expected`. The case *list*
-(the `:actual` strings) comes from `test/spec/*-spec.janet` via `extract-corpus.janet`,
-but the *answers* are the JVM's. **`corpus.edn` is the canonical contract**: it is
-what every runtime consumes and what `certify.clj` certifies.
+on reference JVM Clojure and writes the JVM value as `:expected`. **`corpus.edn` is
+the canonical, frozen contract**: it is what every runtime consumes, what
+`certify.clj` certifies, and where new cases are authored directly.
 
 ## Row schema
 
@@ -101,17 +100,16 @@ implements. Current profile (≈2670 portable, ≈249 non-portable):
 3. Run it. Your **conformance level** is the set of feature families with no
    failures. Portable-only is the floor; each feature you implement raises it.
 
-The two reference harnesses already do exactly this on Chez:
-`test/chez/run-corpus-prelude.janet` (Janet analyzer → Chez runtime) and
-`test/chez/run-corpus-zero-janet.janet` (Chez analyzer → Chez runtime), both with a
-regression floor.
+The reference harness does exactly this on Chez: `host/chez/run-corpus.ss` (the
+analyzer runs on Chez → Chez runtime), with a regression floor. Run it via `make
+corpus`.
 
 ## Maintaining the spec
 
-- **Add/change cases**: edit `test/spec/*-spec.janet` or `conformance-test.janet`,
-  then `janet test/chez/extract-corpus.janet` to regenerate `corpus.edn`.
+- **Add/change cases**: edit `test/chez/corpus.edn` directly, then re-source the
+  answers with `regen-corpus.clj`.
 - **Re-certify**: `clojure -M test/conformance/certify.clj`. A new divergence is
   either a real bug (file it, mark the allowlist entry `:bug` + `:bead`) or a
   deliberate delta (classify it in `known-divergences.edn`).
 - **Refresh the profile**: re-run with `--profile test/conformance/profile.edn`.
-- **Re-floor the runtime gates** when parity rises (`run-corpus-*.janet`).
+- **Re-floor the runtime gate** when parity rises (`host/chez/run-corpus.ss`).

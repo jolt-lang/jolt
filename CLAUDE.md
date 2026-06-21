@@ -53,75 +53,64 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-```bash
-jpm build              # build/jolt (one binary; ctx baked at build time)
-jpm build; janet run-tests.janet   # FULL gate, PARALLEL (across CPU workers) — build first so binary-spawning tests don't skip; JOLT_TEST_JOBS overrides worker count, -v shows all output
-jpm test               # FULL gate, serial (same file set; slower — recursive over test/)
-janet test/spec/<f>.janet            # one spec file
-janet test/integration/conformance-test.janet   # 3-mode conformance (interpret/compile/self-host)
-JOLT_BENCH=1 janet test/bench/core-bench.janet   # bench (opt-in; skipped in the gate) — back-to-back vs main, never absolute
-```
-
-**Run the gate with a REAL exit code.** `jpm test | grep ...` reports grep's
-exit, not jpm's — this once shipped masked spec failures. Correct form:
+No build step — `bin/joltc` runs off the checked-in seed (`host/chez/seed/`).
+The gate is pure Chez (+ Clojure for the JVM oracle); no Janet.
 
 ```bash
-jpm test > /tmp/gate.out 2>&1; echo "EXIT: $?"
-grep -E "non-zero exit|All tests" /tmp/gate.out
+bin/joltc -e EXPR                          # run a Clojure expression on Chez
+make test                                  # FULL gate (self-host + corpus + unit + smoke + certify)
+make corpus                                # conformance corpus vs the JVM-sourced spec (floor 2678)
+make unit                                  # host-specific unit cases (test/chez/unit.edn)
+make selfhost                              # bootstrap fixpoint (rebuild == checked-in seed)
+make certify                               # JVM oracle (skips if clojure absent)
+chez --script host/chez/run-corpus.ss      # the corpus gate directly; JOLT_CORPUS_LIMIT=N for a fast stride
+make remint                                # re-mint the seed after a seed-source change
 ```
 
-The literal `All tests passed.` line must be present. CI (.github/workflows/
-tests.yml) runs the same gate on every push/PR.
+**Re-mint after changing a seed source.** The reader (`host/chez/reader.ss`), the
+analyzer/IR/backend (`jolt-core/jolt/*.clj`), or the `clojure.core` overlay
+(`jolt-core/clojure/core/*.clj`) are baked into the seed — change one and run
+`make remint` (iterates `host/chez/bootstrap.ss` to a byte-fixpoint) or `make
+selfhost` fails. Runtime-only `host/chez/*.ss` shims do NOT need a re-mint.
 
-`jpm build` output goes STALE silently — `rm -rf build && jpm clean` before
-trusting the binary, or test from source (authoritative).
+**Run the gate with a REAL exit code.** `make test > /tmp/gate.out 2>&1; echo
+"EXIT: $?"` — the final `OK: all gates passed` line must be present. CI
+(`.github/workflows/tests.yml`) runs `make test` on every push/PR.
 
 ## Architecture Overview
 
-Clojure on Janet. A shrinking Janet seed (`src/jolt/*.janet`: reader, value
-layer, vars/ns, evaluator, the self-hosted pipeline's back end) hosts a
-Clojure overlay (`jolt-core/`): the analyzer/IR (`jolt-core/jolt/`) and
-`clojure.core` in dependency-ordered tiers (`jolt-core/clojure/core/NN-*.clj`,
-loaded in order: 00-syntax, 00-kernel (bootstrap-compiled), 10-seq, 20-coll,
-25-sorted, 30-macros, 40-lazy, 50-io). Compile is the default path (analyzer
--> IR -> Janet bytecode, hybrid with interpreter fallback); `JOLT_INTERPRET=1`
-forces the tree-walking interpreter, `JOLT_INTERPRET_MACROS=1` additionally
-keeps macro expanders interpreted (the pure oracle). `api/init-cached` serves
-a disk-cached ctx image (~5ms vs ~2.4s); the cache key fingerprints sources +
-env knobs — add any NEW ctx-shaping env var to `image-cache-path` in
-api.janet or tests will see stale language behavior.
+Clojure on Chez Scheme — the sole substrate, no Janet. A small Chez runtime
+(`host/chez/*.ss`: value model, persistent collections, seqs, vars/ns, host
+interop) hosts a portable Clojure overlay (`jolt-core/`): the
+reader/analyzer/IR/backend (`jolt-core/jolt/`) and `clojure.core` in
+dependency-ordered tiers (`jolt-core/clojure/core/NN-*.clj`, loaded in order:
+00-syntax, 00-kernel, 10-seq, 20-coll, 25-sorted, 30-macros, 40-lazy, 50-io).
+The stdlib namespaces (`clojure.string`/`set`/`walk`/`edn`/`pprint`/…) are
+portable Clojure under `src/jolt/clojure/`.
+
+`bin/joltc` (`host/chez/cli.ss`) loads the checked-in seed
+(`host/chez/seed/{prelude,image}.ss`) + the spine and compiles+evals on Chez
+(read → analyze → IR → emit → eval). `host/chez/bootstrap.ss` rebuilds that seed
+from source on pure Chez; the build is a self-hosting fixpoint (a rebuild
+reproduces the checked-in seed byte-for-byte — `make selfhost`). The correctness
+oracle is the JVM-sourced conformance corpus (`test/chez/corpus.edn`,
+`test/conformance/`).
 
 Issue tracking and design notes live in beads (`bd prime`, `bd memories`).
 
 ## Conventions & Patterns
 
-Porting seed fns to the overlay (the jolt-tzo shrink ladder) — traps that have
-each bitten at least once:
-
-- **Verify leaf-ness first**: grep ALL `src/jolt/*.janet` for the `core-X`
-  name (defn + core-bindings entry only), and check that tiers loading
-  EARLIER than the target tier don't call it. Nothing the analyzer/ir use may
-  move below the kernel tier.
-- **Delete the seed defn + binding in the same change.** A leftover stub
-  breaks direct-linked self-recursion: the overlay fn's recursive call binds
-  to the STUB's root at compile time (line-seq once truncated after one
-  element this way).
 - **A tier may only use macros from tiers that load before it.** Compile mode
-  expands macros at tier LOAD; the interpreter expands lazily — so an
-  if-let (30-macros) inside a 20-coll fn passes every interpreted test and
-  breaks compiled init.
+  expands macros at tier LOAD, so an `if-let` (30-macros) inside a 20-coll fn
+  breaks compiled init even though it passes when expanded lazily. Same ordering
+  for expander-called fns (empty?/keys/vals live in 00-syntax).
 - **Never read your own wrapper's fields with `get`** in attached-ops values
   (sorted colls): `get` on the wrapper IS the dispatched lookup and recurses
   forever. Use `jolt.host/ref-get`.
 - **Map literals with `:jolt/type` as a key** parse as tagged reader forms —
   don't tag overlay value maps in source.
-- **Expander-called fns live in 00-syntax** (empty?/keys/vals): expansion
-  first happens during the kernel-tier compile, before later tiers exist.
-  Early defns and expanders are interpreted during init and recompiled by the
-  staged passes (recompile-defns!/recompile-macros!) once the analyzer is
-  alive.
 - **Fix latent bugs to match Clojure** rather than preserving them, with a
-  regression spec row. Canonical Clojure definitions are preferred verbatim.
-- **Gate every batch**: conformance x3 modes, suite >= baseline
-  (clojure-test-suite-test.janet — raise the baseline when it rises), full
-  jpm test with a real exit code, bench back-to-back vs main.
+  regression case. Match the JVM (or provide a superset); the JVM-sourced corpus
+  is the contract.
+- **Gate every change**: `make test` with a real exit code (self-host fixpoint,
+  corpus floor, unit, cli smoke, certify). Re-mint if a seed source changed.

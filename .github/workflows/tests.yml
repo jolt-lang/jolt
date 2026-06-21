@@ -1,6 +1,7 @@
 name: tests
 
-# Run the full test suite (jpm test) on every push and pull request.
+# Run the gate (make test) on every push and pull request. Chez is the sole
+# substrate; the JVM is used only as the conformance oracle (certify).
 on:
   push:
   pull_request:
@@ -8,53 +9,27 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      JANET_VERSION: v1.41.2   # bump to match the version Jolt is developed against
-      # Per-file deadline for the clojure-test-suite battery. Finite files finish
-      # in well under 1s; the genuinely-infinite ones get killed at any deadline.
-      # A generous value gives slow CI runners headroom so a sub-second file
-      # spiking doesn't time out and drop total-pass below the baseline.
-      JOLT_SUITE_TIMEOUT: "20"
     steps:
       - uses: actions/checkout@v5
         with:
-          # Submodules: vendor/sci (SCI bootstrap/runtime tests) and
-          # vendor/clojure-test-suite (the cross-dialect conformance battery,
-          # asserted against a baseline by clojure-test-suite-test.janet).
-          submodules: recursive
+          submodules: recursive   # vendor/irregex, used by the Chez regex shim
 
-      - name: Cache Janet build
-        id: cache-janet
-        uses: actions/cache@v5
-        with:
-          path: /tmp/janet
-          key: janet-${{ env.JANET_VERSION }}-${{ runner.os }}
-
-      - name: Build Janet
-        if: steps.cache-janet.outputs.cache-hit != 'true'
+      - name: Install Chez Scheme
         run: |
-          git clone --depth 1 --branch "$JANET_VERSION" https://github.com/janet-lang/janet.git /tmp/janet
-          make -C /tmp/janet
+          sudo apt-get update
+          sudo apt-get install -y chezscheme
+          # the gate invokes `chez`; Debian/Ubuntu installs it as `scheme`
+          if ! command -v chez >/dev/null 2>&1; then
+            sudo ln -s "$(command -v scheme)" /usr/local/bin/chez
+          fi
+          chez --version || true
 
-      - name: Install Janet
-        run: sudo make -C /tmp/janet install
-
-      - name: Install jpm
+      - name: Install JDK + Clojure (certify oracle)
         run: |
-          git clone --depth 1 https://github.com/janet-lang/jpm.git /tmp/jpm
-          # bootstrap.janet resolves jpm/cli.janet relative to the cwd, so it
-          # must run from inside the jpm checkout.
-          cd /tmp/jpm
-          sudo janet bootstrap.janet
+          sudo apt-get install -y default-jdk rlwrap
+          curl -L -O https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+          sudo bash linux-install.sh
+          clojure --version
 
-      - name: Janet version
-        run: janet -v
-
-      - name: Build executable
-        run: jpm build
-
-      - name: Run tests
-        # Parallel runner (same file set as `jpm test`, across CPU workers).
-        # The executable is built in the previous step, so binary-spawning tests
-        # don't skip.
-        run: janet run-tests.janet
+      - name: Gate
+        run: make test
