@@ -66,11 +66,15 @@
 ;; 1-arity is trivially true; 2+ args must all be numbers (Numbers.equiv throws
 ;; otherwise). Uses Scheme = (value across the tower), not jolt= (category-aware).
 (define (jolt-num-equiv . xs)
-  (let all-num? ((ys xs))
-    (cond
-      ((null? ys) (or (null? xs) (null? (cdr xs)) (apply = xs)))
-      ((number? (car ys)) (all-num? (cdr ys)))
-      (else (error #f "== requires numbers" xs)))))
+  ;; 1-arity short-circuits to true for ANY value (Clojure's == 1-arg returns true
+  ;; before the number check); 2+ args must all be numbers.
+  (if (and (pair? xs) (null? (cdr xs)))
+      #t
+      (let all-num? ((ys xs))
+        (cond
+          ((null? ys) (or (null? xs) (apply = xs)))
+          ((number? (car ys)) (all-num? (cdr ys)))
+          (else (error #f "== requires numbers" xs))))))
 (def-var! "clojure.core" "==" jolt-num-equiv)
 (def-var! "clojure.core" "symbol?" jolt-symbol?)
 (def-var! "clojure.core" "keyword?" keyword?)

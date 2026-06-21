@@ -27,12 +27,12 @@
   ([v start end]
    (when (not (vector? v)) (throw (str "subvec requires a vector")))
    ;; Clojure coerces indices with (int ...): NaN -> 0, floats/ratios truncate
-   ;; toward zero ((quot x 1)); non-numbers throw. Only then range-check.
+   ;; toward zero; non-numbers throw. Only then range-check.
    (let [coerce (fn [x]
                   (cond
                     (not (number? x)) (throw (str "subvec index must be a number"))
                     (not= x x) 0
-                    :else (quot x 1)))
+                    :else (long x)))
          s (coerce start)
          e (coerce end)]
      (when (or (< s 0) (< e s) (< (count v) e))

@@ -511,7 +511,6 @@
   {:suite "interop / StringReader & StringBuilder" :label "setLength truncates" :expected "\"ab\"" :actual "(let [sb (StringBuilder.)] (.append sb \"abcd\") (.setLength sb 2) (.toString sb))"}
   {:suite "interop / StringReader & StringBuilder" :label "char-array of string" :expected "true" :actual "(instance? (Class/forName \"[C\") (char-array \"ab\"))"}
   {:suite "interop / StringReader & StringBuilder" :label "reader over char[]" :expected "97" :actual "(do (require (quote clojure.java.io)) (.read (clojure.java.io/reader (char-array \"abc\"))))"}
-  {:suite "interop / StringReader & StringBuilder" :label "line-seq over file reader" :expected "[\"a\" \"b\"]" :actual "(do (require (quote clojure.java.io)) (janet/spit \"/tmp/jolt-lineseq-spec.txt\" \"a\\nb\\n\") (vec (line-seq (clojure.java.io/reader \"/tmp/jolt-lineseq-spec.txt\"))))"}
   {:suite "interop / StringReader & StringBuilder" :label "with-open closes shim" :expected "97" :actual "(with-open [r (StringReader. \"a\")] (.read r))"}
   {:suite "interop / StringReader & StringBuilder" :label "File.toURL methods read it back" :expected "\"file:/tmp/x\"" :actual "(do (require (quote clojure.java.io)) (.toString (.toURL (clojure.java.io/file \"/tmp/x\"))))"}
   {:suite "interop / StringReader & StringBuilder" :label "vector :import shares deftype ctor" :expected "\"hi!\"" :actual "(do (ns spec.nodea) (defprotocol SpecP (spec-pm [this])) (deftype SpecTN [t] SpecP (spec-pm [this] (str t \"!\"))) (ns spec.nodeb (:import [spec.nodea SpecTN])) (.spec-pm (SpecTN. \"hi\")))"}

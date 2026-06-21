@@ -167,6 +167,9 @@
 (define (now-millis)
   (let ((t (current-time 'time-utc)))
     (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+
+;; clojure.core/current-time-ms — epoch milliseconds; backs the `time` macro.
+(def-var! "clojure.core" "current-time-ms" (lambda () (->num (now-millis))))
 (register-class-statics! "System"
   (list (cons "currentTimeMillis" (lambda () (->num (now-millis))))
         (cons "nanoTime" (lambda () (->num (* 1000000 (now-millis)))))

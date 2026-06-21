@@ -122,8 +122,11 @@
   `(bound-fn* (fn ~@fntail)))
 
 (defmacro defonce [name expr]
+  ;; only def when the var has no root value. In a top-level (do ...) the name is
+  ;; already interned (an unbound cell) by the time this runs, so check bound? —
+  ;; var-get would throw on the unbound cell.
   `(let [v# (resolve (quote ~name))]
-     (if (and v# (some? (var-get v#)))
+     (if (and v# (bound? v#))
        v#
        (def ~name ~expr))))
 
