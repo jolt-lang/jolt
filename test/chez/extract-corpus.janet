@@ -1,9 +1,12 @@
-# Phase 0b — extract the spec corpus into a host-neutral contract file.
+# Extract the case LIST (suite, label, actual) from the spec sources into corpus.edn.
+#
+# corpus.edn :expected is sourced from reference JVM Clojure by
+# test/conformance/regen-corpus.clj — this extractor's :expected column is a
+# placeholder. Use it to (re)derive the case list when adding spec rows, then run
+# regen-corpus.clj to fill :expected from the JVM. Do not commit its raw output.
 #
 # Parses every test/spec/*.janet as DATA (no eval), pulls each
-# (defspec "suite" [label expected actual] ...) triple, and writes a corpus that
-# is valid BOTH as EDN (a future Chez-jolt runner reads it) and as Janet data
-# (the current runner reads it via `parse`). Run from repo root:
+# (defspec "suite" [label expected actual] ...) triple. Run from repo root:
 #   janet test/chez/extract-corpus.janet
 (use ../../src/jolt/reader)   # not needed for parse, but keeps paths obvious
 
@@ -116,5 +119,12 @@
             " :expected " (if (keyword? (row :expected)) ":throws" (edn-str (row :expected)))
             " :actual " (edn-str (row :actual)) "}\n")))
 (buffer/push out "]\n")
-(spit "test/chez/corpus.edn" out)
-(printf "extracted %d cases from %s into test/chez/corpus.edn" (length all) spec-dir)
+# corpus.edn is JVM-sourced (regen-corpus.clj); writing the Janet-extracted answers
+# here would clobber it. Only write the case list to a separate path when explicitly
+# asked (then re-source :expected with regen-corpus.clj). The test runner imports
+# this file but never sets the flag, so it has no side effect.
+(def out-path (os/getenv "JOLT_EXTRACT_CORPUS_OUT"))
+(if out-path
+  (do (spit out-path out)
+      (printf "extracted %d cases from %s into %s" (length all) spec-dir out-path))
+  (print "extract-corpus: set JOLT_EXTRACT_CORPUS_OUT=<path> to write the case list (corpus.edn is JVM-sourced via regen-corpus.clj)"))

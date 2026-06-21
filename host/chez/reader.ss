@@ -73,11 +73,9 @@
 ;; jolt models EVERY number as a double (emit-const lowers integer literals to
 ;; flonums too), so the reader coerces every parsed number to inexact — else a
 ;; read int (exact) is not jolt= to a source int literal (flonum).
-;; Preserve exactness for the Chez numeric tower (JVM parity): integer literals
-;; read as exact integers (= Long/BigInt, arbitrary precision), a/b ratios as
-;; exact rationals (= Ratio), and decimal/exponent literals as flonums (= double).
-;; Only the zero-Janet path (this reader) carries exactness through to runtime;
-;; the Janet-reader prelude path stays all-flonum (Janet has only doubles).
+;; Numeric tower (JVM parity): integer literals read as exact integers (= Long/
+;; BigInt, arbitrary precision), a/b ratios as exact rationals (= Ratio), and
+;; decimal/exponent literals as flonums (= double).
 (define (rdr-try-number tok)
   (rdr-try-number-raw tok))
 

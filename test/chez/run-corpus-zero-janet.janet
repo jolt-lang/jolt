@@ -56,81 +56,50 @@
 #    jolt-cf1q.7. Same family the prelude gate buckets as crashes.
 #  - eval / load-string / read->eval: the jolt-r8ku tail (runtime compiler entry).
 (def known-fail
-  # Same deferred set the prelude (oracle) gate allowlists — NOT Chez-analyzer
-  # faithfulness bugs, but runtime gaps tracked elsewhere:
-  #  - print-method multimethod integration: a user (defmethod print-method ...)
-  #    isn't consulted by the Chez printer, so pr-str/prn of an overridden type
-  #    uses the built-in form (Phase 2 deferred).
-  #  - atom?: (instance? clojure.lang.Atom (atom 0)) — host class not mapped on
-  #    Chez (Phase 4 host interop, jolt-cf1q.7).
-  @{"defmethod overrides a record, top level" true
-    "defmethod fires nested in a map" true
-    "defmethod fires through prn" true
-    "direct builtin override" true
-    "methods table inspectable" true
-    "atom override fires nested" true
-    "atom?" true
-    # (instance? clojure.lang.Atom (atom 1)) — atom class identity isn't mapped on
-    # Chez (same Phase-4 host-interop gap as "atom?"). JVM-certifies fine.
-    "instance? Atom" true
-    # str of an Infinity/NaN INSIDE a collection renders the flonum form, not
-    # "Infinity" — the prelude gate allowlists this too (Phase-2 recursive str).
-    "inf inside coll" true
-    # #?@ reader-conditional splicing into the enclosing seq isn't supported yet
-    # (plain #? works); a single niche corpus case.
-    "reader cond splice" true
-    # concurrency (jolt-byjr): Chez futures are real OS threads sharing the heap =
-    # JVM semantics, NOT Janet's isolated-heap snapshot. So a captured atom IS
-    # shared (the corpus :expected is the Janet snapshot value). Deliberate per the
-    # jvm-parity-north-star — Chez matches the JVM, Janet keeps the old snapshot.
-    "captured atom is snapshotted, not shared" true   # Chez 1 (shared) vs Janet 0
-    "snapshot semantics" true                          # pmap: Chez 2 (shared) vs Janet 0
-    # future-cancel on a trivial body is timing-dependent under real threads: the
-    # future usually completes before the cancel (cancel -> false), like the JVM.
-    # The Janet :expected "true" relies on cooperative scheduling. Flaky/divergent.
-    "cancel an in-flight future returns true" true
-    "future-cancelled? after cancel" true
-    # agents are async on Chez (per-agent serialized dispatch) = JVM, not Janet's
-    # synchronous shim: (send a f) (deref a) reads the state BEFORE the action runs
-    # (use await to observe the result), so these sync-shim cases now diverge like
-    # the JVM. Deliberate per jvm-parity-north-star.
-    "send applies" true
-    "send-off applies" true
-    # arrays (jolt-cf1q.7): a Chez array is a DISTINCT object (= the JVM), not a
-    # seq, so (= '(1 2) (to-array [1 2])) is false — the corpus :expected is Janet's
-    # array-as-seq stub value. The element ops (aget/aset/alength/seq/vec) pass; only
-    # comparing a BARE array to a list diverges. Per jvm-parity-north-star.
+  # Conformance gaps vs the JVM spec: cases jolt does not match because it has no
+  # JVM host (no Class objects / Java arrays / BigDecimal), supports the :jolt
+  # reader-conditional feature, or prints its own forms for transients/atoms.
+  @{# --- host classes: a class token resolves to a name string, not a Class ------
+    "class name evaluates to canonical string" true
+    "class number" true "class string" true "class keyword" true
+    "definterface defines" true
+    "getMessage on a thrown string" true
+    "type of record" true "chunked-seq? always false" true
+    "^Type tag on var" true "symbol hint -> :tag" true
+    "lists extended type" true "seq of tags" true
+    "close on throw" true            # duck-typed with-open close, no .close interop
+    "macroexpand-1" true             # returns a value, not the JVM Cons form
+    "ns-imports empty user" true
+    "bean is the map" true "proxy resolves nil" true
+    "unchecked-char" true
+    # --- *in* is a map on Chez, not a JVM Reader --------------------------------
+    "*in* is bound" true "*in* bound" true
+    # --- no BigDecimal type -----------------------------------------------------
+    "bigdec" true "bigdec int M" true "bigdec suffix M" true
+    # --- printer: jolt renders its own forms (transient/atom/Infinity, no
+    #     print-method multimethod integration) where the JVM prints #object ------
+    "transient vector" true "transient map" true
+    "atom override fires nested" true "inf inside coll" true "pr-str Infinity" true
+    "defmethod overrides a record, top level" true
+    "defmethod fires nested in a map" true "defmethod fires through prn" true
+    "direct builtin override" true "methods table inspectable" true
+    # --- reader: :jolt reader-conditional feature + syntax-quote literal collapse -
+    "reader conditional" true "reader cond :jolt" true "reader cond no match" true
+    "reader cond splice" true "reader cond splice no match" true
+    "nil nested" true "bool nested" true
+    "source order through syntax-quote" true   # syntax-quote map: hash, not source, order
+    # --- Java arrays are distinct host objects, not seqs --------------------------
     "make-array" true "into-array" true "to-array" true "aclone vec" true
     "boolean-array" true "int-array" true "long-array" true "double-array" true
-    "float-array" true "short-array" true
-    # StringReader over a char-array (.read on clojure.java.io/reader) — host interop,
-    # deferred (the array now constructs; the reader interop is the remaining gap).
+    "float-array" true "short-array" true "doubles" true "floats" true
     "reader over char[]" true
-    # syntax-quote map construction `{:a ~x :b ~y} builds a pmap (unordered), so the
-    # unquoted value forms eval in hash order, not source order — a minor ordering
-    # gap (pmap has no insertion order; the reader's source-order table doesn't cover
-    # syntax-quote-built maps). 1 case; the non-syntax-quote map-order cases pass.
-    "source order through syntax-quote" true
-    # numeric tower (jolt-n6al): the zero-Janet path now carries the Chez numeric
-    # tower (exact ints / Ratio / double) = JVM parity, while the corpus :expected
-    # is the all-flonum Janet value (the Janet host has only doubles). So Chez gives
-    # the JVM value and the Janet-era corpus diverges — flipped to JVM at Phase 5
-    # (jolt-ecz0), these stay allowlisted during the transition. Each verified
-    # Chez == reference JVM Clojure.
-    "divide to fraction" true   # (/ 1 2) -> 1/2 (JVM Ratio), corpus 0.5
-    "ratio 3/4" true            # 3/4 literal -> Ratio
-    "neg ratio" true            # -1/2 -> Ratio
-    "ratio -> double" true      # ratio result, corpus double
-    "/ ratio-as-double" true
-    "native unary div" true     # (/ 2) -> 1/2
-    "double" true               # (double 3) -> 3.0 (double != exact 3)
-    "doubles" true "floats" true
-    "unchecked-double" true "unchecked-float" true
-    "floor" true                # clojure.math/floor -> 2.0 (JVM double)
-    "signum" true               # clojure.math/signum -> -1.0 (JVM double)
-    "Math/sqrt" true            # -> 3.0 (double)
-    "Math/pow" true             # -> 8.0 (double)
-    "bigdec int M" true})       # 1M: no BigDecimal type on Chez (documented gap)
+    # --- atom class identity not mapped on Chez ---------------------------------
+    "atom?" true "instance? Atom" true
+    # --- future-cancel races completion (timing-dependent) -----------------------
+    "cancel an in-flight future returns true" true
+    "future-cancelled? after cancel" true
+    # --- (fn* foo) with no param vector throws; the JVM builds a fn object --------
+    "no param vector" true})
 
 # Cases that BLOCK forever on a shared-heap / JVM host (profile.edn :bucket
 # :timeout) — skip them, like :throws: a single hung case would stall the whole
@@ -234,24 +203,9 @@
   (printf "\n%d known (allowlisted) failures tolerated." (length known-hit)))
 (flush)
 
-# Regression floor: raise as the Chez-hosted compiler closes gaps. The gate fails
-# on any NEW divergence or if pass drops below the floor. Strided runs scale to 0.
-# 2569 after futures/pmap (jolt-byjr pt.1); -2 when agents went async (the two
-# "send/send-off applies" sync-shim cases now match the JVM's async raciness and
-# are allowlisted) -> 2567. jolt-cf1q.7 parity batches (hash/rseq/cat/transient-as-fn
-# + ns runtime fns) -> 2600; arrays -> 2631; reader-features/reader-conditional/
-# re-matcher/macroexpand -> 2642; runtime-defmacro cases via top-level eval of
-# ACTUAL (matching certify.clj's eval-isolated) -> 2673; delay/force/realized? ->
-# 2685; deftype (P. args) constructor via host-new var fallback -> 2688;
-# date/time (Date/Timestamp/SimpleDateFormat/TimeZone) + clojure.edn/read over a
-# reader -> 2692; STM stub + portable line-seq -> 2696; realized? on a lazy-seq +
-# conj! 1-arity (transducer-completion identity) -> 2698.
-# numeric tower (jolt-n6al): 2698 -> 2682. ~16 numeric cases that the all-flonum
-# model coincidentally passed (corpus :expected is the Janet double value) now give
-# the JVM tower value (1/2, 3.0, ...) and are reclassified as known tower
-# divergences (Chez == reference JVM). The floor rises back when the corpus flips
-# to JVM values (jolt-ecz0, Phase 5).
-(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2682")))
+# Regression floor: cases that pass against the JVM corpus. The gate fails on any
+# NEW divergence or if pass drops below the floor. Raise as host gaps close.
+(def base-floor (scan-number (or (os/getenv "JOLT_CHEZ_ZJ_FLOOR") "2678")))
 (def floor (if (os/getenv "JOLT_CORPUS_LIMIT") 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass %d < floor %d or %d new divergence(s)" pass floor (length diverged)))

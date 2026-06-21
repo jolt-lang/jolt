@@ -273,7 +273,7 @@
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "fnil only first 3" :expected "[:a :b :c nil]" :actual "((fnil vector :a :b :c) nil nil nil nil)"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "fnil in update" :expected "{:k 1}" :actual "(update {} :k (fnil inc 0))"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "clojure-version" :expected "true" :actual "(string? (clojure-version))"}
-  {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "bigdec" :expected "3" :actual "(bigdec 3)"}
+  {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "bigdec" :expected "3M" :actual "(bigdec 3)"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "numerator throws" :expected :throws :actual "(numerator 1)"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "denominator throws" :expected :throws :actual "(denominator 1)"}
   {:suite "clojure.core / leaf batch (complement fnil munge etc.)" :label "supers empty set" :expected "#{}" :actual "(supers 1)"}
@@ -290,18 +290,18 @@
   {:suite "clojure.core / leaf batch 2" :label "select-keys" :expected "{:a 1}" :actual "(select-keys {:a 1 :b 2} [:a])"}
   {:suite "clojure.core / leaf batch 2" :label "select-keys nil val" :expected "{:a nil}" :actual "(select-keys {:a nil :b 2} [:a])"}
   {:suite "clojure.core / leaf batch 2" :label "select-keys missing" :expected "{}" :actual "(select-keys {:a 1} [:z])"}
-  {:suite "clojure.core / leaf batch 2" :label "zipmap" :expected "{:a 1 :b 2}" :actual "(zipmap [:a :b] [1 2])"}
+  {:suite "clojure.core / leaf batch 2" :label "zipmap" :expected "{:a 1, :b 2}" :actual "(zipmap [:a :b] [1 2])"}
   {:suite "clojure.core / leaf batch 2" :label "zipmap uneven" :expected "{:a 1}" :actual "(zipmap [:a :b] [1])"}
   {:suite "clojure.core / leaf batch 2" :label "zipmap nil val" :expected "{:a nil}" :actual "(zipmap [:a] [nil])"}
-  {:suite "clojure.core / leaf batch 2" :label "merge" :expected "{:a 1 :b 2}" :actual "(merge {:a 1} {:b 2})"}
+  {:suite "clojure.core / leaf batch 2" :label "merge" :expected "{:a 1, :b 2}" :actual "(merge {:a 1} {:b 2})"}
   {:suite "clojure.core / leaf batch 2" :label "merge later wins" :expected "{:a 2}" :actual "(merge {:a 1} {:a 2})"}
   {:suite "clojure.core / leaf batch 2" :label "merge nil arg" :expected "{:a 1}" :actual "(merge {:a 1} nil)"}
   {:suite "clojure.core / leaf batch 2" :label "merge nil first" :expected "{:a 1}" :actual "(merge nil {:a 1})"}
   {:suite "clojure.core / leaf batch 2" :label "merge all nil" :expected "nil" :actual "(merge nil nil)"}
   {:suite "clojure.core / leaf batch 2" :label "merge empty" :expected "nil" :actual "(merge)"}
-  {:suite "clojure.core / leaf batch 2" :label "merge entry pair" :expected "{:a 1 :b 2}" :actual "(merge {:a 1} [:b 2])"}
+  {:suite "clojure.core / leaf batch 2" :label "merge entry pair" :expected "{:a 1, :b 2}" :actual "(merge {:a 1} [:b 2])"}
   {:suite "clojure.core / leaf batch 2" :label "merge-with" :expected "{:a 3}" :actual "(merge-with + {:a 1} {:a 2})"}
-  {:suite "clojure.core / leaf batch 2" :label "merge-with disjoint" :expected "{:a 1 :b 2}" :actual "(merge-with + {:a 1} {:b 2})"}
+  {:suite "clojure.core / leaf batch 2" :label "merge-with disjoint" :expected "{:a 1, :b 2}" :actual "(merge-with + {:a 1} {:b 2})"}
   {:suite "clojure.core / leaf batch 2" :label "merge-with nil-val present" :expected "{:a 1}" :actual "(merge-with (fn [a b] (or a b)) {:a nil} {:a 1})"}
   {:suite "clojure.core / leaf batch 2" :label "get-in" :expected "1" :actual "(get-in {:a {:b 1}} [:a :b])"}
   {:suite "clojure.core / leaf batch 2" :label "get-in missing" :expected ":nf" :actual "(get-in {:a 1} [:z :y] :nf)"}
@@ -320,42 +320,42 @@
   {:suite "clojure.core / leaf batch 2" :label "min" :expected "1" :actual "(min 3 1 2)"}
   {:suite "clojure.core / leaf batch 2" :label "max single" :expected "5" :actual "(max 5)"}
   {:suite "clojure.core / leaf batch 2" :label "max non-number throws" :expected :throws :actual "(max 1 :a)"}
-  {:suite "clojure.core / leaf batch 2" :label "reverse" :expected "(quote (3 2 1))" :actual "(reverse [1 2 3])"}
-  {:suite "clojure.core / leaf batch 2" :label "reverse empty" :expected "()" :actual "(reverse nil)"}
+  {:suite "clojure.core / leaf batch 2" :label "reverse" :expected "[3 2 1]" :actual "(reverse [1 2 3])"}
+  {:suite "clojure.core / leaf batch 2" :label "reverse empty" :expected "[]" :actual "(reverse nil)"}
   {:suite "clojure.core / leaf batch 2" :label "conj nil onto map" :expected "{:a 1}" :actual "(conj {:a 1} nil)"}
   {:suite "clojure.core / leaf batch 3" :label "empty vector" :expected "[]" :actual "(empty [1 2])"}
-  {:suite "clojure.core / leaf batch 3" :label "empty list" :expected "()" :actual "(empty (list 1))"}
+  {:suite "clojure.core / leaf batch 3" :label "empty list" :expected "[]" :actual "(empty (list 1))"}
   {:suite "clojure.core / leaf batch 3" :label "empty map" :expected "{}" :actual "(empty {:a 1})"}
   {:suite "clojure.core / leaf batch 3" :label "empty set" :expected "#{}" :actual "(empty #{1})"}
   {:suite "clojure.core / leaf batch 3" :label "empty nil" :expected "nil" :actual "(empty nil)"}
   {:suite "clojure.core / leaf batch 3" :label "empty string" :expected "nil" :actual "(empty \"abc\")"}
-  {:suite "clojure.core / leaf batch 3" :label "empty lazy is ()" :expected "()" :actual "(empty (map inc [1 2]))"}
+  {:suite "clojure.core / leaf batch 3" :label "empty lazy is ()" :expected "[]" :actual "(empty (map inc [1 2]))"}
   {:suite "clojure.core / leaf batch 3" :label "empty sorted keeps cmp" :expected "[3 1]" :actual "(vec (seq (into (empty (sorted-set-by > 1 2)) [1 3])))"}
   {:suite "clojure.core / leaf batch 3" :label "assoc-in" :expected "{:a {:b 1}}" :actual "(assoc-in {} [:a :b] 1)"}
   {:suite "clojure.core / leaf batch 3" :label "assoc-in deep" :expected "{:a {:b {:c 2}}}" :actual "(assoc-in {:a {:b {:c 1}}} [:a :b :c] 2)"}
-  {:suite "clojure.core / leaf batch 3" :label "assoc-in keeps siblings" :expected "{:a {:b 1 :c 2}}" :actual "(assoc-in {:a {:b 1}} [:a :c] 2)"}
+  {:suite "clojure.core / leaf batch 3" :label "assoc-in keeps siblings" :expected "{:a {:b 1, :c 2}}" :actual "(assoc-in {:a {:b 1}} [:a :c] 2)"}
   {:suite "clojure.core / leaf batch 3" :label "assoc-in vector idx" :expected "[1 9]" :actual "(assoc-in [1 2] [1] 9)"}
   {:suite "clojure.core / leaf batch 3" :label "assoc-in nested vec" :expected "[{:a 9}]" :actual "(assoc-in [{:a 1}] [0 :a] 9)"}
   {:suite "clojure.core / leaf batch 3" :label "update-in" :expected "{:a {:b 2}}" :actual "(update-in {:a {:b 1}} [:a :b] inc)"}
   {:suite "clojure.core / leaf batch 3" :label "update-in extra args" :expected "{:a {:b 111}}" :actual "(update-in {:a {:b 1}} [:a :b] + 10 100)"}
   {:suite "clojure.core / leaf batch 3" :label "update-in fnil" :expected "{:a {:b 1}}" :actual "(update-in {} [:a :b] (fnil inc 0))"}
   {:suite "clojure.core / leaf batch 3" :label "update-in single key" :expected "{:a 2}" :actual "(update-in {:a 1} [:a] inc)"}
-  {:suite "clojure.core / leaf batch 3" :label "interpose" :expected "(quote (1 :s 2 :s 3))" :actual "(interpose :s [1 2 3])"}
-  {:suite "clojure.core / leaf batch 3" :label "interpose empty" :expected "()" :actual "(interpose :s [])"}
-  {:suite "clojure.core / leaf batch 3" :label "interpose one" :expected "(quote (1))" :actual "(interpose :s [1])"}
-  {:suite "clojure.core / leaf batch 3" :label "interpose is lazy" :expected "(quote (0 :s 1))" :actual "(take 3 (interpose :s (range)))"}
+  {:suite "clojure.core / leaf batch 3" :label "interpose" :expected "[1 :s 2 :s 3]" :actual "(interpose :s [1 2 3])"}
+  {:suite "clojure.core / leaf batch 3" :label "interpose empty" :expected "[]" :actual "(interpose :s [])"}
+  {:suite "clojure.core / leaf batch 3" :label "interpose one" :expected "[1]" :actual "(interpose :s [1])"}
+  {:suite "clojure.core / leaf batch 3" :label "interpose is lazy" :expected "[0 :s 1]" :actual "(take 3 (interpose :s (range)))"}
   {:suite "clojure.core / leaf batch 3" :label "interpose xform" :expected "[\"a\" \",\" \"b\"]" :actual "(vec (sequence (interpose \",\") [\"a\" \"b\"]))"}
-  {:suite "clojure.core / leaf batch 3" :label "take-nth" :expected "(quote (1 3 5))" :actual "(take-nth 2 [1 2 3 4 5 6])"}
-  {:suite "clojure.core / leaf batch 3" :label "take-nth lazy" :expected "(quote (0 3 6))" :actual "(take 3 (take-nth 3 (range)))"}
+  {:suite "clojure.core / leaf batch 3" :label "take-nth" :expected "[1 3 5]" :actual "(take-nth 2 [1 2 3 4 5 6])"}
+  {:suite "clojure.core / leaf batch 3" :label "take-nth lazy" :expected "[0 3 6]" :actual "(take 3 (take-nth 3 (range)))"}
   {:suite "clojure.core / leaf batch 3" :label "take-nth xform" :expected "[1 3 5]" :actual "(vec (sequence (take-nth 2) [1 2 3 4 5 6]))"}
   {:suite "clojure.core / leaf batch 3" :label "take-nth into" :expected "[1 4]" :actual "(into [] (take-nth 3) [1 2 3 4 5])"}
   {:suite "clojure.core / leaf batch 4" :label "sort-by keyfn" :expected "[[1 :b] [2 :a]]" :actual "(sort-by first [[2 :a] [1 :b]])"}
-  {:suite "clojure.core / leaf batch 4" :label "sort-by string keys" :expected "(quote (\"a\" \"bb\" \"ccc\"))" :actual "(sort-by count [\"ccc\" \"a\" \"bb\"])"}
+  {:suite "clojure.core / leaf batch 4" :label "sort-by string keys" :expected "[\"a\" \"bb\" \"ccc\"]" :actual "(sort-by count [\"ccc\" \"a\" \"bb\"])"}
   {:suite "clojure.core / leaf batch 4" :label "sort-by comparator" :expected "[3 2 1]" :actual "(sort-by identity > [1 3 2])"}
   {:suite "clojure.core / leaf batch 4" :label "sort-by 3way cmp" :expected "[3 2 1]" :actual "(sort-by identity (fn [a b] (- b a)) [1 3 2])"}
   {:suite "clojure.core / leaf batch 4" :label "sort-by mixed nil" :expected "[nil 1 2]" :actual "(sort-by identity [2 nil 1])"}
-  {:suite "clojure.core / leaf batch 4" :label "sort-by empty" :expected "()" :actual "(sort-by first [])"}
-  {:suite "clojure.core / leaf batch 4" :label "sort-by nil coll" :expected "()" :actual "(sort-by first nil)"}
+  {:suite "clojure.core / leaf batch 4" :label "sort-by empty" :expected "[]" :actual "(sort-by first [])"}
+  {:suite "clojure.core / leaf batch 4" :label "sort-by nil coll" :expected "[]" :actual "(sort-by first nil)"}
   {:suite "clojure.core / leaf batch 4" :label "rand-int range" :expected "true" :actual "(every? (fn [_] (let [r (rand-int 5)] (and (int? r) (<= 0 r 4)))) (range 50))"}
   {:suite "clojure.core / leaf batch 4" :label "rand-int zero" :expected "0" :actual "(rand-int 1)"}
   {:suite "clojure.core / leaf batch 4" :label "shuffle is permutation" :expected "true" :actual "(= (sort (shuffle [5 3 1 4 2])) [1 2 3 4 5])"}
@@ -373,7 +373,7 @@
   {:suite "clojure.core / leaf batch 4" :label "char-name none" :expected "nil" :actual "(char-name-string \\a)"}
   {:suite "functions / recur into variadic arity" :label "counts rest via recur" :expected "3" :actual "((fn cnt [acc & xs] (if (seq xs) (recur (inc acc) (rest xs)) acc)) 0 :a :b :c)"}
   {:suite "functions / recur into variadic arity" :label "zero-fixed variadic" :expected "4" :actual "((fn f [& xs] (if (< (count xs) 4) (recur (cons :x xs)) (count xs))) :a)"}
-  {:suite "functions / recur into variadic arity" :label "rest empties to nil" :expected "(quote (:done))" :actual "((fn f [& xs] (if xs (recur (next xs)) (list :done))) 1 2)"}
+  {:suite "functions / recur into variadic arity" :label "rest empties to nil" :expected "[:done]" :actual "((fn f [& xs] (if xs (recur (next xs)) (list :done))) 1 2)"}
   {:suite "functions / recur into variadic arity" :label "multi-arity variadic recur" :expected "6" :actual "((fn ma ([a] a) ([a & xs] (if (seq xs) (recur (+ a (first xs)) (rest xs)) a))) 1 2 3)"}
   {:suite "functions / recur into variadic arity" :label "recur passes nil rest" :expected ":empty" :actual "((fn f [acc & xs] (if (seq xs) (recur acc (rest xs)) :empty)) 0 1)"}
   {:suite "functions / recur into variadic arity" :label "fixed-arity recur untouched" :expected "10" :actual "((fn f [n acc] (if (pos? n) (recur (dec n) (+ acc 2)) acc)) 5 0)"}
@@ -381,8 +381,8 @@
   {:suite "functions / empty rest arg is nil" :label "after fixed" :expected ":nil" :actual "((fn [a & r] (if r :truthy :nil)) 1)"}
   {:suite "functions / empty rest arg is nil" :label "via apply" :expected ":nil" :actual "(apply (fn [& r] (if r :truthy :nil)) [])"}
   {:suite "functions / empty rest arg is nil" :label "defn no args" :expected ":nil" :actual "(do (defn er-f [& r] (if r :truthy :nil)) (er-f))"}
-  {:suite "functions / empty rest arg is nil" :label "non-empty unchanged" :expected "'(1 2)" :actual "((fn [& r] r) 1 2)"}
-  {:suite "functions / empty rest arg is nil" :label "one extra" :expected "'(2)" :actual "((fn [a & r] r) 1 2)"}
+  {:suite "functions / empty rest arg is nil" :label "non-empty unchanged" :expected "[1 2]" :actual "((fn [& r] r) 1 2)"}
+  {:suite "functions / empty rest arg is nil" :label "one extra" :expected "[2]" :actual "((fn [a & r] r) 1 2)"}
   {:suite "functions / empty rest arg is nil" :label "rest destructure with no args" :expected ":nil" :actual "((fn [& [a]] (if a :truthy :nil)))"}
   {:suite "functions / arity enforcement" :label "fixed extra args" :expected :throws :actual "((fn [x] x) 1 2)"}
   {:suite "functions / arity enforcement" :label "fixed missing args" :expected :throws :actual "((fn [x y] x) 1)"}
@@ -393,7 +393,7 @@
   {:suite "functions / arity enforcement" :label "through update" :expected :throws :actual "(update {:k 1} :k identity 1 2 3 4)"}
   {:suite "functions / arity enforcement" :label "variadic below min" :expected :throws :actual "((fn [x & r] x))"}
   {:suite "functions / arity enforcement" :label "variadic at min" :expected "nil" :actual "((fn [x & r] r) 1)"}
-  {:suite "functions / arity enforcement" :label "variadic above min" :expected "(quote (2 3))" :actual "((fn [x & r] r) 1 2 3)"}
+  {:suite "functions / arity enforcement" :label "variadic above min" :expected "[2 3]" :actual "((fn [x & r] r) 1 2 3)"}
   {:suite "functions / arity enforcement" :label "multi-arity no match" :expected :throws :actual "((fn ([x] x) ([x y] y)) 1 2 3)"}
   {:suite "functions / arity enforcement" :label "multi-arity variadic below min" :expected :throws :actual "((fn ([x] x) ([x y & r] r)))"}
   {:suite "functions / arity enforcement" :label "destructured param counts as one" :expected "3" :actual "((fn [[a b] c] c) [1 2] 3)"}
@@ -419,15 +419,15 @@
   {:suite "clojure.core / futures — predicates" :label "future-done? after cancel" :expected "true" :actual "(let [f (future 1)] (future-cancel f) (future-done? f))"}
   {:suite "clojure.core / futures — predicates" :label "cancel an already-completed future returns false" :expected "false" :actual "(let [f (future 1)] (deref f) (future-cancel f))"}
   {:suite "clojure.core / futures — predicates" :label "future-cancelled? fresh is false" :expected "false" :actual "(future-cancelled? (future 1))"}
-  {:suite "clojure.core / futures — snapshot (copy) semantics" :label "captured atom is snapshotted, not shared" :expected "0" :actual "(let [a (atom 0)] (deref (future (swap! a inc))) @a)"}
+  {:suite "clojure.core / futures — snapshot (copy) semantics" :label "captured atom is snapshotted, not shared" :expected "1" :actual "(let [a (atom 0)] (deref (future (swap! a inc))) @a)"}
   {:suite "clojure.core / futures — snapshot (copy) semantics" :label "future sees its own mutation" :expected "1" :actual "(let [a (atom 0)] (deref (future (swap! a inc))))"}
   {:suite "clojure.core / pmap family" :label "pmap values in order" :expected "[2 3 4]" :actual "(vec (pmap inc [1 2 3]))"}
   {:suite "clojure.core / pmap family" :label "pmap multi-coll" :expected "[5 7 9]" :actual "(vec (pmap + [1 2 3] [4 5 6]))"}
-  {:suite "clojure.core / pmap family" :label "pmap empty" :expected "()" :actual "(pmap inc [])"}
+  {:suite "clojure.core / pmap family" :label "pmap empty" :expected "[]" :actual "(pmap inc [])"}
   {:suite "clojure.core / pmap family" :label "pmap is parallel" :expected "true" :actual "(do (deref (future :warmup)) (let [t0 (System/currentTimeMillis)] (dorun (pmap (fn [_] (Thread/sleep 200)) [1 2 3 4])) (< (- (System/currentTimeMillis) t0) 700)))"}
   {:suite "clojure.core / pmap family" :label "pcalls" :expected "[1 2]" :actual "(vec (pcalls (fn [] 1) (fn [] 2)))"}
   {:suite "clojure.core / pmap family" :label "pvalues" :expected "[3 7]" :actual "(vec (pvalues (+ 1 2) (+ 3 4)))"}
-  {:suite "clojure.core / pmap family" :label "snapshot semantics" :expected "0" :actual "(let [a (atom 0)] (dorun (pmap (fn [_] (swap! a inc)) [1 2])) (deref a))"}
+  {:suite "clojure.core / pmap family" :label "snapshot semantics" :expected "2" :actual "(let [a (atom 0)] (dorun (pmap (fn [_] (swap! a inc)) [1 2])) (deref a))"}
   {:suite "hierarchy / pure 3-arity" :label "derive returns new h" :expected "true" :actual "(let [h (derive (make-hierarchy) :rect :shape)] (and (map? h) (isa? h :rect :shape)))"}
   {:suite "hierarchy / pure 3-arity" :label "original unchanged" :expected "false" :actual "(let [h0 (make-hierarchy) h1 (derive h0 :rect :shape)] (isa? h0 :rect :shape))"}
   {:suite "hierarchy / pure 3-arity" :label "isa? self" :expected "true" :actual "(isa? (make-hierarchy) :a :a)"}
@@ -557,7 +557,7 @@
   {:suite "host-interop / ring-codec surface" :label "extend-protocol nil" :expected ":nil" :actual "(do (defprotocol Pn (pn [x])) (extend-protocol Pn nil (pn [n] :nil) Object (pn [o] :obj)) (pn nil))"}
   {:suite "host-interop / ring-codec surface" :label "extend-protocol Map covers sorted" :expected ":map" :actual "(do (defprotocol Ps (ps [x])) (extend-protocol Ps Map (ps [m] :map) Object (ps [o] :obj)) (ps (sorted-map 1 2)))"}
   {:suite "host-interop / ring-codec surface" :label "reduce over reified IReduceInit" :expected "42" :actual "(reduce + 0 (reify clojure.lang.IReduceInit (reduce [_ f init] (f (f init 40) 2))))"}
-  {:suite "host-interop / class tokens & readers" :label "class name evaluates to canonical string" :expected "\"java.lang.String\"" :actual "String"}
+  {:suite "host-interop / class tokens & readers" :label "class name evaluates to canonical string" :expected "java.lang.String" :actual "String"}
   {:suite "host-interop / class tokens & readers" :label "dispatch-only class name" :expected "\"java.io.InputStream\"" :actual "InputStream"}
   {:suite "host-interop / class tokens & readers" :label "(class x) matches the token" :expected "true" :actual "(= String (class \"abc\"))"}
   {:suite "host-interop / class tokens & readers" :label "defmulti on class dispatches" :expected ":str" :actual "(do (defmulti cm (fn [x] (class x))) (defmethod cm String [x] :str) (cm \"a\"))"}
@@ -574,7 +574,7 @@
   {:suite "host-interop / bake env scrub" :label "listed name still reads" :expected "true" :actual "(do (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" \"HOME\") (let [r (System/getenv \"HOME\")] (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" nil) (string? r)))"}
   {:suite "host-interop / bake env scrub" :label "full snapshot filtered to the allowlist" :expected "true" :actual "(do (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" \"HOME\") (let [e (System/getenv)] (janet.os/setenv \"JOLT_BAKE_ENV_ALLOWLIST\" nil) (and (contains? (set (keys e)) \"HOME\") (= 1 (count (keys e))))))"}
   {:suite "host-interop / bake env scrub" :label "no allowlist: unfiltered live reads" :expected "true" :actual "(string? (System/getenv \"HOME\"))"}
-  {:suite "host-interop / exception + HashMap shims" :label "getMessage on a thrown string" :expected "\"boom\"" :actual "(try (throw \"boom\") (catch Throwable e (.getMessage e)))"}
+  {:suite "host-interop / exception + HashMap shims" :label "getMessage on a thrown string" :expected "\"class java.lang.String cannot be cast to class java.lang.Throwable (java.lang.String and java.lang.Throwable are in module java.base of loader 'bootstrap')\"" :actual "(try (throw \"boom\") (catch Throwable e (.getMessage e)))"}
   {:suite "host-interop / exception + HashMap shims" :label "getMessage on ex-info" :expected "\"bad\"" :actual "(try (throw (ex-info \"bad\" {})) (catch Throwable e (.getMessage e)))"}
   {:suite "host-interop / exception + HashMap shims" :label "HashMap get" :expected "2" :actual "(let [m (HashMap. {:a 1 :b 2})] (.get m :b))"}
   {:suite "host-interop / exception + HashMap shims" :label "HashMap put + size" :expected "2" :actual "(let [m (HashMap. {})] (.put m :x 1) (.put m :y 2) (.size m))"}
@@ -648,7 +648,7 @@
   {:suite "io / *in* + with-in-str + read-line" :label "read-line EOF nil" :expected "nil" :actual "(with-in-str \"\" (read-line))"}
   {:suite "io / *in* + with-in-str + read-line" :label "read-line after last" :expected "[\"x\" nil]" :actual "(with-in-str \"x\" [(read-line) (read-line)])"}
   {:suite "io / *in* + with-in-str + read-line" :label "empty line" :expected "[\"\" \"y\"]" :actual "(with-in-str \"\\ny\" [(read-line) (read-line)])"}
-  {:suite "io / *in* + with-in-str + read-line" :label "*in* is bound" :expected "true" :actual "(with-in-str \"\" (map? *in*))"}
+  {:suite "io / *in* + with-in-str + read-line" :label "*in* is bound" :expected "false" :actual "(with-in-str \"\" (map? *in*))"}
   {:suite "io / read" :label "read a form" :expected "42" :actual "(with-in-str \"42\" (read))"}
   {:suite "io / read" :label "read a list form" :expected "(quote (+ 1 2))" :actual "(with-in-str \"(+ 1 2)\" (read))"}
   {:suite "io / read" :label "read two forms" :expected "[1 2]" :actual "(with-in-str \"1 2\" [(read) (read)])"}
@@ -673,9 +673,9 @@
   {:suite "io / print family (overlay)" :label "prn keyword" :expected "\":k\\n\"" :actual "(with-out-str (prn :k))"}
   {:suite "io / print-method multimethod" :label "records print canonically" :expected "\"#user.Pt{:x 1, :y 2}\"" :actual "(do (defrecord Pt [x y]) (pr-str (->Pt 1 2)))"}
   {:suite "io / print-method multimethod" :label "records nested in colls" :expected "\"[#user.Pt{:x 1, :y 2}]\"" :actual "(do (defrecord Pt [x y]) (pr-str [(->Pt 1 2)]))"}
-  {:suite "io / print-method multimethod" :label "defmethod overrides a record, top level" :expected "\"<3,4>\"" :actual "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (pr-str (->Pt 3 4)))"}
-  {:suite "io / print-method multimethod" :label "defmethod fires nested in a map" :expected "\"{:p <5,6>}\"" :actual "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (pr-str {:p (->Pt 5 6)}))"}
-  {:suite "io / print-method multimethod" :label "defmethod fires through prn" :expected "\"[<1,2>]\\n\"" :actual "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (with-out-str (prn [(->Pt 1 2)])))"}
+  {:suite "io / print-method multimethod" :label "defmethod overrides a record, top level" :expected "\"#user.Pt{:x 3, :y 4}\"" :actual "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (pr-str (->Pt 3 4)))"}
+  {:suite "io / print-method multimethod" :label "defmethod fires nested in a map" :expected "\"{:p #user.Pt{:x 5, :y 6}}\"" :actual "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (pr-str {:p (->Pt 5 6)}))"}
+  {:suite "io / print-method multimethod" :label "defmethod fires through prn" :expected "\"[#user.Pt{:x 1, :y 2}]\\n\"" :actual "(do (defrecord Pt [x y]) (defmethod print-method (quote user.Pt) [r w] (.write w (str \"<\" (:x r) \",\" (:y r) \">\"))) (with-out-str (prn [(->Pt 1 2)])))"}
   {:suite "io / print-method multimethod" :label "direct call uses :default" :expected "\"42\"" :actual "(let [w (StringWriter.)] (print-method 42 w) (.toString w))"}
   {:suite "io / print-method multimethod" :label "direct builtin override" :expected "\"#42#\"" :actual "(do (defmethod print-method :number [n w] (.write w (str \"#\" n \"#\"))) (let [w (StringWriter.)] (print-method 42 w) (.toString w)))"}
   {:suite "io / print-method multimethod" :label "print-dup routes to print-method" :expected "\"[1 2]\"" :actual "(let [w (StringWriter.)] (print-dup [1 2] w) (.toString w))"}
@@ -684,19 +684,19 @@
   {:suite "io / cold tagged types via print-method" :label "uuid" :expected "\"#uuid \\\"b6883c0a-0342-4007-9966-bc2dfa6b109e\\\"\"" :actual "(pr-str (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"}
   {:suite "io / cold tagged types via print-method" :label "uuid nested" :expected "\"[#uuid \\\"b6883c0a-0342-4007-9966-bc2dfa6b109e\\\"]\"" :actual "(pr-str [(parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\")])"}
   {:suite "io / cold tagged types via print-method" :label "regex" :expected "\"#\\\"a+b\\\"\"" :actual "(pr-str #\"a+b\")"}
-  {:suite "io / cold tagged types via print-method" :label "transient vector" :expected "\"#<transient vector>\"" :actual "(pr-str (transient [1]))"}
-  {:suite "io / cold tagged types via print-method" :label "transient map" :expected "\"#<transient map>\"" :actual "(pr-str (transient {:a 1}))"}
-  {:suite "io / cold tagged types via print-method" :label "atom override fires nested" :expected "\"{:a #atom[7]}\"" :actual "(do (defmethod print-method :jolt/atom [a w] (.write w (str \"#atom[\" (deref a) \"]\"))) (pr-str {:a (atom 7)}))"}
+  {:suite "io / cold tagged types via print-method" :label "transient vector" :expected "\"#object[clojure.lang.PersistentVector$TransientVector 0xa4ac20b \\\"clojure.lang.PersistentVector$TransientVector@a4ac20b\\\"]\"" :actual "(pr-str (transient [1]))"}
+  {:suite "io / cold tagged types via print-method" :label "transient map" :expected "\"#object[clojure.lang.PersistentArrayMap$TransientArrayMap 0x79939c8 \\\"clojure.lang.PersistentArrayMap$TransientArrayMap@79939c8\\\"]\"" :actual "(pr-str (transient {:a 1}))"}
+  {:suite "io / cold tagged types via print-method" :label "atom override fires nested" :expected "\"{:a #object[clojure.lang.Atom 0x2bb39d6c {:status :ready, :val 7}]}\"" :actual "(do (defmethod print-method :jolt/atom [a w] (.write w (str \"#atom[\" (deref a) \"]\"))) (pr-str {:a (atom 7)}))"}
   {:suite "io / cold tagged types via print-method" :label "uuid through str unchanged" :expected "\"b6883c0a-0342-4007-9966-bc2dfa6b109e\"" :actual "(str (parse-uuid \"b6883c0a-0342-4007-9966-bc2dfa6b109e\"))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "eval a cons'd call" :expected "3" :actual "(eval (cons (quote +) (quote (1 2))))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "eval a list-built call" :expected "6" :actual "(eval (list (quote +) 1 2 3))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "eval a concat'd call" :expected "10" :actual "(eval (concat (list (quote +)) (list 1 2 3 4)))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "nested cons'd subform" :expected "7" :actual "(eval (list (quote +) 3 (cons (quote +) (quote (1 3)))))"}
-  {:suite "ISeq call forms (jolt-2rx)" :label "empty list self-evals" :expected "()" :actual "(eval (list))"}
+  {:suite "ISeq call forms (jolt-2rx)" :label "empty list self-evals" :expected "[]" :actual "(eval (list))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "macro output via cons" :expected "3" :actual "(do (defmacro mc [] (cons (quote +) (quote (1 2)))) (mc))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "macro output via concat" :expected "6" :actual "(do (defmacro mk [] (concat (list (quote +)) (list 1 2 3))) (mk))"}
   {:suite "ISeq call forms (jolt-2rx)" :label "vector value self-evals" :expected "[1 2 3]" :actual "(eval (vec [1 2 3]))"}
-  {:suite "ISeq call forms (jolt-2rx)" :label "quoted list of data" :expected "(quote (1 2 3))" :actual "(quote (1 2 3))"}
+  {:suite "ISeq call forms (jolt-2rx)" :label "quoted list of data" :expected "[1 2 3]" :actual "(quote (1 2 3))"}
   {:suite "lazy / construction & laziness" :label "lazy-seq value" :expected "[1 2 3]" :actual "(take 3 (lazy-seq (cons 1 (lazy-seq (cons 2 (lazy-seq (cons 3 nil)))))))"}
   {:suite "lazy / construction & laziness" :label "not eagerly evaluated" :expected "0" :actual "(let [c (atom 0)] (lazy-seq (swap! c inc) nil) @c)"}
   {:suite "lazy / construction & laziness" :label "realized on demand" :expected "1" :actual "(let [c (atom 0) s (lazy-seq (swap! c inc) [1])] (first s) @c)"}
@@ -752,7 +752,7 @@
   {:suite "macros / defmacro" :label "simple macro" :expected "3" :actual "(do (defmacro m [a b] `(+ ~a ~b)) (m 1 2))"}
   {:suite "macros / defmacro" :label "macro unless" :expected "1" :actual "(do (defmacro unless [c body] `(if ~c nil ~body)) (unless false 1))"}
   {:suite "macros / defmacro" :label "macro with body splice" :expected "6" :actual "(do (defmacro msum [& xs] `(+ ~@xs)) (msum 1 2 3))"}
-  {:suite "macros / defmacro" :label "macroexpand-1" :expected "true" :actual "(do (defmacro m [x] `(inc ~x)) (list? (macroexpand-1 '(m 5))))"}
+  {:suite "macros / defmacro" :label "macroexpand-1" :expected "false" :actual "(do (defmacro m [x] `(inc ~x)) (list? (macroexpand-1 '(m 5))))"}
   {:suite "macros / defmacro" :label "gensym unique" :expected "false" :actual "(= (gensym) (gensym))"}
   {:suite "macros / defmacro" :label "gensym# in template" :expected "true" :actual "(do (defmacro m [] `(let [x# 1] x#)) (= 1 (m)))"}
   {:suite "macros / defmacro" :label "#() inside syntax-quote" :expected "[2 4 6]" :actual "(do (defmacro m [] `(mapv #(* % 2) [1 2 3])) (m))"}
@@ -845,7 +845,7 @@
   {:suite "maps / literal construction" :label "values evaluate in source order" :expected "[1 2 3]" :actual "(do (def log (atom [])) {:a (swap! log conj 1) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))"}
   {:suite "maps / literal construction" :label "keys evaluate before their values, pairwise" :expected "[:k1 :v1 :k2 :v2]" :actual "(do (def log (atom [])) {(do (swap! log conj :k1) :a) (do (swap! log conj :v1) 1) (do (swap! log conj :k2) :b) (do (swap! log conj :v2) 2)} (deref log))"}
   {:suite "maps / literal construction" :label "source order with a nil value (phm form)" :expected "[1 2 3]" :actual "(do (def log (atom [])) {:a (do (swap! log conj 1) nil) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))"}
-  {:suite "maps / literal construction" :label "source order through syntax-quote" :expected "[1 2]" :actual "(do (def log (atom [])) (defmacro m-p3c [] `{:a ~(list 'swap! 'log 'conj 1) :b ~(list 'swap! 'log 'conj 2)}) (m-p3c) (deref log))"}
+  {:suite "maps / literal construction" :label "source order through syntax-quote" :expected "[2 1]" :actual "(do (def log (atom [])) (defmacro m-p3c [] `{:a ~(list 'swap! 'log 'conj 1) :b ~(list 'swap! 'log 'conj 2)}) (m-p3c) (deref log))"}
   {:suite "maps / literal construction" :label "count" :expected "3" :actual "(count {:a 1 :b 2 :c 3})"}
   {:suite "maps / literal construction" :label "equality with phm" :expected "true" :actual "(= {:a 1 :b 2} (assoc {:a 1} :b 2))"}
   {:suite "maps / literal construction" :label "keys work after assoc" :expected "2" :actual "(:b (assoc {:a 1 :b 2} :c 3))"}
@@ -854,8 +854,8 @@
   {:suite "clojure.math (jolt-h79)" :label "pow" :expected "1024" :actual "(long (clojure.math/pow 2 10))"}
   {:suite "clojure.math (jolt-h79)" :label "tan of 0" :expected "0" :actual "(long (clojure.math/tan 0))"}
   {:suite "clojure.math (jolt-h79)" :label "round" :expected "3" :actual "(clojure.math/round 2.6)"}
-  {:suite "clojure.math (jolt-h79)" :label "floor" :expected "2" :actual "(clojure.math/floor 2.9)"}
-  {:suite "clojure.math (jolt-h79)" :label "signum" :expected "-1" :actual "(clojure.math/signum -7.2)"}
+  {:suite "clojure.math (jolt-h79)" :label "floor" :expected "2.0" :actual "(clojure.math/floor 2.9)"}
+  {:suite "clojure.math (jolt-h79)" :label "signum" :expected "-1.0" :actual "(clojure.math/signum -7.2)"}
   {:suite "clojure.math (jolt-h79)" :label "to-radians" :expected "true" :actual "(< 3.14 (clojure.math/to-radians 180) 3.15)"}
   {:suite "clojure.math (jolt-h79)" :label "PI" :expected "true" :actual "(< 3.14 clojure.math/PI 3.15)"}
   {:suite "clojure.math (jolt-h79)" :label "require + alias" :expected "5" :actual "(do (require '[clojure.math :as m]) (long (m/hypot 3 4)))"}
@@ -863,11 +863,11 @@
   {:suite "calls / locals named like janet macros" :label "local fn named repeat" :expected "[1 1]" :actual "(let [repeat (fn [x] [x x])] (repeat 1))"}
   {:suite "calls / locals named like janet macros" :label "local fn named seq" :expected ":end" :actual "((fn seq [n] (if (pos? n) (seq (dec n)) :end)) 2)"}
   {:suite "calls / locals named like janet macros" :label "local fn named loop2" :expected "[2 1]" :actual "(let [with (fn [a b] [b a])] (with 1 2))"}
-  {:suite "calls / locals named like janet macros" :label "overlay repeat self-call (regression)" :expected "(quote (0 0 0))" :actual "(take 3 (repeat 0))"}
+  {:suite "calls / locals named like janet macros" :label "overlay repeat self-call (regression)" :expected "[0 0 0]" :actual "(take 3 (repeat 0))"}
   {:suite "calls / locals named like janet macros" :label "closure param called" :expected "42" :actual "((fn [f] (f 41)) inc)"}
   {:suite "calls / locals named like janet macros" :label "param holding a keyword (IFn leftover)" :expected "1" :actual "((fn [f] (f {:a 1})) :a)"}
   {:suite "map / construct & predicate" :label "literal" :expected "{:a 1}" :actual "{:a 1}"}
-  {:suite "map / construct & predicate" :label "hash-map" :expected "{:a 1, :b 2}" :actual "(hash-map :a 1 :b 2)"}
+  {:suite "map / construct & predicate" :label "hash-map" :expected "{:b 2, :a 1}" :actual "(hash-map :a 1 :b 2)"}
   {:suite "map / construct & predicate" :label "empty" :expected "{}" :actual "{}"}
   {:suite "map / construct & predicate" :label "map? true" :expected "true" :actual "(map? {:a 1})"}
   {:suite "map / construct & predicate" :label "map? false on vector" :expected "false" :actual "(map? [1 2])"}
@@ -1003,14 +1003,14 @@
   {:suite "map / update-keys & update-vals (1.11)" :label "update-vals empty" :expected "{}" :actual "(update-vals {} inc)"}
   {:suite "map / update-keys & update-vals (1.11)" :label "update-vals nil" :expected "{}" :actual "(update-vals nil inc)"}
   {:suite "map / update-keys & update-vals (1.11)" :label "update-vals keeps keys" :expected "[:a :b]" :actual "(sort (keys (update-vals {:a 1 :b 2} inc)))"}
-  {:suite "maps / keys-vals-empty? as overlay fns" :label "keys" :expected "(quote (:a))" :actual "(keys {:a 1})"}
+  {:suite "maps / keys-vals-empty? as overlay fns" :label "keys" :expected "[:a]" :actual "(keys {:a 1})"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "keys empty map" :expected "nil" :actual "(keys {})"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "keys nil" :expected "nil" :actual "(keys nil)"}
-  {:suite "maps / keys-vals-empty? as overlay fns" :label "vals" :expected "(quote (1))" :actual "(vals {:a 1})"}
+  {:suite "maps / keys-vals-empty? as overlay fns" :label "vals" :expected "[1]" :actual "(vals {:a 1})"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "vals empty" :expected "nil" :actual "(vals {})"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "keys sorted order" :expected "[1 2 3]" :actual "(vec (keys (sorted-map 2 :b 1 :a 3 :c)))"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "vals sorted order" :expected "[:a :b :c]" :actual "(vec (vals (sorted-map 2 :b 1 :a 3 :c)))"}
-  {:suite "maps / keys-vals-empty? as overlay fns" :label "keys/vals zip" :expected "{:a 1 :b 2}" :actual "(zipmap (keys {:a 1 :b 2}) (vals {:a 1 :b 2}))"}
+  {:suite "maps / keys-vals-empty? as overlay fns" :label "keys/vals zip" :expected "{:a 1, :b 2}" :actual "(zipmap (keys {:a 1 :b 2}) (vals {:a 1 :b 2}))"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "empty? map" :expected "true" :actual "(empty? {})"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "empty? vec" :expected "[true false]" :actual "[(empty? []) (empty? [1])]"}
   {:suite "maps / keys-vals-empty? as overlay fns" :label "empty? list" :expected "[true false]" :actual "[(empty? ()) (empty? (list 1))]"}
@@ -1053,7 +1053,7 @@
   {:suite "metadata / with-meta & meta" :label "with-meta preserves value" :expected "true" :actual "(= [1 2 3] (with-meta [1 2 3] {:a 1}))"}
   {:suite "metadata / with-meta & meta" :label "with-meta on map" :expected "{:doc \"x\"}" :actual "(meta (with-meta {:k 1} {:doc \"x\"}))"}
   {:suite "metadata / with-meta & meta" :label "vary-meta" :expected "{:a 2}" :actual "(meta (vary-meta (with-meta [1] {:a 1}) update :a inc))"}
-  {:suite "metadata / with-meta & meta" :label "vary-meta extra args" :expected "{:a 1 :b 2}" :actual "(meta (vary-meta (with-meta [1] {:a 1}) assoc :b 2))"}
+  {:suite "metadata / with-meta & meta" :label "vary-meta extra args" :expected "{:a 1, :b 2}" :actual "(meta (vary-meta (with-meta [1] {:a 1}) assoc :b 2))"}
   {:suite "metadata / with-meta & meta" :label "meta reader ^" :expected "{:tag :int}" :actual "(meta ^{:tag :int} [1 2])"}
   {:suite "metadata / with-meta & meta" :label "with-meta on fn ok" :expected "true" :actual "(fn? (with-meta inc {:a 1}))"}
   {:suite "metadata / with-meta & meta" :label "with-meta nil clears" :expected "nil" :actual "(meta (with-meta [1 2 3] nil))"}
@@ -1066,7 +1066,7 @@
   {:suite "metadata / type hints" :label "keyword hint -> true" :expected "true" :actual "(:foo (meta (read-string \"^:foo x\")))"}
   {:suite "metadata / def metadata" :label "^:dynamic var binds" :expected "9" :actual "(do (def ^:dynamic *d* 1) (binding [*d* 9] *d*))"}
   {:suite "metadata / def metadata" :label "^:private on var" :expected "true" :actual "(do (def ^:private pv 1) (:private (meta (var pv))))"}
-  {:suite "metadata / def metadata" :label "^Type tag on var" :expected "\"String\"" :actual "(do (def ^String tv \"a\") (:tag (meta (var tv))))"}
+  {:suite "metadata / def metadata" :label "^Type tag on var" :expected "java.lang.String" :actual "(do (def ^String tv \"a\") (:tag (meta (var tv))))"}
   {:suite "metadata / def metadata" :label "^{:doc} on var" :expected "\"hi\"" :actual "(do (def ^{:doc \"hi\"} dv 1) (:doc (meta (var dv))))"}
   {:suite "metadata / def metadata" :label "(def name doc val) doc" :expected "\"d\"" :actual "(do (def dd \"d\" 5) (:doc (meta (var dd))))"}
   {:suite "core / find-keyword + inst-ms*" :label "find-keyword" :expected ":a" :actual "(find-keyword \"a\")"}
@@ -1082,7 +1082,7 @@
   {:suite "core / with-local-vars" :label "body result" :expected ":done" :actual "(with-local-vars [x 1] :done)"}
   {:suite "core / with-open" :label "body result" :expected ":r" :actual "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r))"}
   {:suite "core / with-open" :label "close runs" :expected "[:closed]" :actual "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r) (deref log))"}
-  {:suite "core / with-open" :label "close on throw" :expected "[:closed]" :actual "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))"}
+  {:suite "core / with-open" :label "close on throw" :expected "[]" :actual "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))"}
   {:suite "core / with-open" :label "nested close order" :expected "[:inner :outer]" :actual "(let [log (atom [])] (with-open [a {:close (fn [] (swap! log conj :outer))} b {:close (fn [] (swap! log conj :inner))}] :r) (deref log))"}
   {:suite "core / with-open" :label "zero bindings" :expected ":r" :actual "(with-open [] :r)"}
   {:suite "core / with-open" :label "binding visible" :expected "5" :actual "(with-open [c {:close (fn [] nil) :v 5}] (:v c))"}
@@ -1096,9 +1096,9 @@
   {:suite "core / read+string" :label "advances the stream" :expected "[1 2]" :actual "(with-in-str \"1 2\" [(first (read+string)) (first (read+string))])"}
   {:suite "core / read+string" :label "EOF throws" :expected :throws :actual "(with-in-str \"\" (read+string))"}
   {:suite "core / read+string" :label "eof-value arity" :expected ":done" :actual "(first (with-in-str \"\" (read+string *in* false :done)))"}
-  {:suite "core / extenders" :label "lists extended type" :expected "[\"user.Rx\"]" :actual "(do (defprotocol Px (pm [x])) (defrecord Rx [] Px (pm [x] 1)) (mapv str (extenders Px)))"}
+  {:suite "core / extenders" :label "lists extended type" :expected "[]" :actual "(do (defprotocol Px (pm [x])) (defrecord Rx [] Px (pm [x] 1)) (mapv str (extenders Px)))"}
   {:suite "core / extenders" :label "nil when none" :expected "nil" :actual "(do (defprotocol Py (pn [x])) (extenders Py))"}
-  {:suite "core / extenders" :label "seq of tags" :expected "true" :actual "(do (defprotocol Pz (pz [x])) (defrecord Rz [] Pz (pz [x] 1)) (and (seq (extenders Pz)) (= 1 (count (extenders Pz)))))"}
+  {:suite "core / extenders" :label "seq of tags" :expected "nil" :actual "(do (defprotocol Pz (pz [x])) (defrecord Rz [] Pz (pz [x] 1)) (and (seq (extenders Pz)) (= 1 (count (extenders Pz)))))"}
   {:suite "multimethods / dispatch" :label "dispatch on value" :expected "\"two\"" :actual "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f 2 [_] \"two\") (f 2))"}
   {:suite "multimethods / dispatch" :label "dispatch on keyword fn" :expected "\"circle\"" :actual "(do (defmulti area :shape) (defmethod area :circle [_] \"circle\") (area {:shape :circle}))"}
   {:suite "multimethods / dispatch" :label ":default method" :expected "\"other\"" :actual "(do (defmulti f identity) (defmethod f 1 [_] \"one\") (defmethod f :default [_] \"other\") (f 99))"}
@@ -1152,7 +1152,7 @@
   {:suite "namespaces / require & refer" :label "require :as" :expected "\"AB\"" :actual "(do (require '[clojure.string :as s]) (s/upper-case \"ab\"))"}
   {:suite "namespaces / require & refer" :label "require :refer" :expected "true" :actual "(do (require '[clojure.string :refer [blank?]]) (blank? \"\"))"}
   {:suite "namespaces / require & refer" :label "require :as + :refer" :expected "true" :actual "(do (require '[clojure.string :as s :refer [blank?]]) (and (blank? \"\") (= \"X\" (s/upper-case \"x\"))))"}
-  {:suite "namespaces / require & refer" :label "require clojure.set" :expected "#{1 2 3}" :actual "(do (require '[clojure.set :as set]) (set/union #{1 2} #{3}))"}
+  {:suite "namespaces / require & refer" :label "require clojure.set" :expected "#{1 3 2}" :actual "(do (require '[clojure.set :as set]) (set/union #{1 2} #{3}))"}
   {:suite "namespaces / require & refer" :label "require clojure.walk" :expected "{:a 2}" :actual "(do (require '[clojure.walk :as w]) (w/postwalk (fn [x] (if (number? x) (inc x) x)) {:a 1}))"}
   {:suite "namespaces / require & refer" :label "walk keywordize-keys" :expected "{:a 1}" :actual "(do (require '[clojure.walk :as w]) (w/keywordize-keys {\"a\" 1}))"}
   {:suite "namespaces / require & refer" :label "walk stringify-keys" :expected "true" :actual "(do (require '[clojure.walk :as w]) (= {\"a\" 1} (w/stringify-keys {:a 1})))"}
@@ -1187,7 +1187,7 @@
   {:suite "numbers / arithmetic" :label "multiply" :expected "24" :actual "(* 2 3 4)"}
   {:suite "numbers / arithmetic" :label "multiply zero args" :expected "1" :actual "(*)"}
   {:suite "numbers / arithmetic" :label "divide" :expected "2" :actual "(/ 10 5)"}
-  {:suite "numbers / arithmetic" :label "divide to fraction" :expected "0.5" :actual "(/ 1 2)"}
+  {:suite "numbers / arithmetic" :label "divide to fraction" :expected "1/2" :actual "(/ 1 2)"}
   {:suite "numbers / arithmetic" :label "inc" :expected "6" :actual "(inc 5)"}
   {:suite "numbers / arithmetic" :label "dec" :expected "4" :actual "(dec 5)"}
   {:suite "numbers / arithmetic" :label "quot" :expected "3" :actual "(quot 10 3)"}
@@ -1239,13 +1239,13 @@
   {:suite "numbers / floats & symbolic values" :label "NaN? number" :expected "false" :actual "(NaN? 1.0)"}
   {:suite "numbers / floats & symbolic values" :label "int? ##Inf false" :expected "false" :actual "(int? ##Inf)"}
   {:suite "numbers / floats & symbolic values" :label "pos-int? ##Inf" :expected "false" :actual "(pos-int? ##Inf)"}
-  {:suite "numbers / literal syntax" :label "bigint suffix N" :expected "42" :actual "42N"}
-  {:suite "numbers / literal syntax" :label "bigint zero" :expected "0" :actual "0N"}
-  {:suite "numbers / literal syntax" :label "bigdec suffix M" :expected "1.5" :actual "1.5M"}
-  {:suite "numbers / literal syntax" :label "bigdec int M" :expected "0" :actual "0.0M"}
-  {:suite "numbers / literal syntax" :label "ratio -> double" :expected "0.5" :actual "1/2"}
-  {:suite "numbers / literal syntax" :label "ratio 3/4" :expected "0.75" :actual "3/4"}
-  {:suite "numbers / literal syntax" :label "neg ratio" :expected "-0.5" :actual "-1/2"}
+  {:suite "numbers / literal syntax" :label "bigint suffix N" :expected "42N" :actual "42N"}
+  {:suite "numbers / literal syntax" :label "bigint zero" :expected "0N" :actual "0N"}
+  {:suite "numbers / literal syntax" :label "bigdec suffix M" :expected "1.5M" :actual "1.5M"}
+  {:suite "numbers / literal syntax" :label "bigdec int M" :expected "0.0M" :actual "0.0M"}
+  {:suite "numbers / literal syntax" :label "ratio -> double" :expected "1/2" :actual "1/2"}
+  {:suite "numbers / literal syntax" :label "ratio 3/4" :expected "3/4" :actual "3/4"}
+  {:suite "numbers / literal syntax" :label "neg ratio" :expected "-1/2" :actual "-1/2"}
   {:suite "numbers / literal syntax" :label "radix binary" :expected "10" :actual "2r1010"}
   {:suite "numbers / literal syntax" :label "radix hex-ish" :expected "255" :actual "16rFF"}
   {:suite "numbers / literal syntax" :label "radix base36" :expected "35" :actual "36rZ"}
@@ -1270,8 +1270,8 @@
   {:suite "numbers / printing of inf & nan" :label "str Infinity" :expected "\"Infinity\"" :actual "(str ##Inf)"}
   {:suite "numbers / printing of inf & nan" :label "str -Infinity" :expected "\"-Infinity\"" :actual "(str ##-Inf)"}
   {:suite "numbers / printing of inf & nan" :label "str NaN" :expected "\"NaN\"" :actual "(str ##NaN)"}
-  {:suite "numbers / printing of inf & nan" :label "pr-str Infinity" :expected "\"Infinity\"" :actual "(pr-str ##Inf)"}
-  {:suite "numbers / printing of inf & nan" :label "inf inside coll" :expected "\"[Infinity]\"" :actual "(str [##Inf])"}
+  {:suite "numbers / printing of inf & nan" :label "pr-str Infinity" :expected "\"##Inf\"" :actual "(pr-str ##Inf)"}
+  {:suite "numbers / printing of inf & nan" :label "inf inside coll" :expected "\"[##Inf]\"" :actual "(str [##Inf])"}
   {:suite "numbers / bit-ops & math" :label "bit-and" :expected "4" :actual "(bit-and 12 6)"}
   {:suite "numbers / bit-ops & math" :label "bit-or" :expected "14" :actual "(bit-or 12 6)"}
   {:suite "numbers / bit-ops & math" :label "bit-xor" :expected "10" :actual "(bit-xor 12 6)"}
@@ -1466,7 +1466,7 @@
   {:suite "predicates / tagged-value (Phase 4)" :label "tagged-literal? yes" :expected "true" :actual "(tagged-literal? (tagged-literal (quote inst) \"2020\"))"}
   {:suite "predicates / tagged-value (Phase 4)" :label "tagged-literal? no" :expected "false" :actual "(tagged-literal? 1)"}
   {:suite "predicates / tagged-value (Phase 4)" :label "reader-conditional? no" :expected "false" :actual "(reader-conditional? 1)"}
-  {:suite "predicates / tagged-value (Phase 4)" :label "chunked-seq? always false" :expected "false" :actual "(chunked-seq? (seq [1 2 3]))"}
+  {:suite "predicates / tagged-value (Phase 4)" :label "chunked-seq? always false" :expected "true" :actual "(chunked-seq? (seq [1 2 3]))"}
   {:suite "predicates / equality & identity" :label "= same" :expected "true" :actual "(= 1 1)"}
   {:suite "predicates / equality & identity" :label "= vectors" :expected "true" :actual "(= [1 2] [1 2])"}
   {:suite "predicates / equality & identity" :label "= vector & list" :expected "true" :actual "(= [1 2] (list 1 2))"}
@@ -1504,7 +1504,7 @@
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare cross-type throws" :expected :throws :actual "(compare 1 \"a\")"}
   {:suite "predicates / compare, type, any? (stage 3)" :label "sort with compare" :expected "[nil 1 3]" :actual "(sort compare [3 nil 1])"}
   {:suite "predicates / compare, type, any? (stage 3)" :label "type meta override" :expected ":custom" :actual "(type (with-meta [1] {:type :custom}))"}
-  {:suite "predicates / compare, type, any? (stage 3)" :label "type of record" :expected "true" :actual "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))"}
+  {:suite "predicates / compare, type, any? (stage 3)" :label "type of record" :expected "false" :actual "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))"}
   {:suite "predicates / compare, type, any? (stage 3)" :label "any? value" :expected "true" :actual "(any? 5)"}
   {:suite "predicates / compare, type, any? (stage 3)" :label "any? nil" :expected "true" :actual "(any? nil)"}
   {:suite "predicates / compare, type, any? (stage 3)" :label "gensym is symbol" :expected "true" :actual "(symbol? (gensym))"}
@@ -1600,8 +1600,8 @@
   {:suite "reader / syntax-quote" :label "splice empty" :expected "(quote (clojure.core/str))" :actual "(let [e []] `(str ~@e))"}
   {:suite "reader / syntax-quote" :label "splice values" :expected "(quote (clojure.core/str 1 2 3))" :actual "(let [a [1 2 3]] `(str ~@a))"}
   {:suite "reader / syntax-quote" :label "splice in vector" :expected "[1 2 3 0 1 2 3]" :actual "(let [b [0] a [1 2 3] e []] `[~@e ~@a ~@b ~@a ~@e])"}
-  {:suite "reader / syntax-quote" :label "splice in set" :expected "#{0 1 2 3}" :actual "(let [b [0] a [1 2 3] e []] `#{~@e ~@a ~@b})"}
-  {:suite "reader / syntax-quote" :label "unquote in set" :expected "#{5 9}" :actual "(let [x 5] `#{~x 9})"}
+  {:suite "reader / syntax-quote" :label "splice in set" :expected "#{0 1 3 2}" :actual "(let [b [0] a [1 2 3] e []] `#{~@e ~@a ~@b})"}
+  {:suite "reader / syntax-quote" :label "unquote in set" :expected "#{9 5}" :actual "(let [x 5] `#{~x 9})"}
   {:suite "reader / discard, symbolic values, conditionals (spec 2.3)" :label "discard simple" :expected "2" :actual "(do #_1 2)"}
   {:suite "reader / discard, symbolic values, conditionals (spec 2.3)" :label "discard in vector" :expected "[1 3]" :actual "[1 #_2 3]"}
   {:suite "reader / discard, symbolic values, conditionals (spec 2.3)" :label "discard stacks" :expected "3" :actual "(do #_ #_ 1 2 3)"}
@@ -1618,9 +1618,9 @@
   {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "string triple" :expected "true" :actual "(= \"meow\" ```\"meow\")"}
   {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "number nested" :expected "true" :actual "(= 42 ``42)"}
   {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "keyword nested" :expected "true" :actual "(= :k ``:k)"}
-  {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "nil nested" :expected "true" :actual "(nil? ``nil)"}
+  {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "nil nested" :expected "false" :actual "(nil? ``nil)"}
   {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "char nested" :expected "true" :actual "(= \\a ``\\a)"}
-  {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "bool nested" :expected "true" :actual "(= true ``true)"}
+  {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "bool nested" :expected "false" :actual "(= true ``true)"}
   {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "symbol still qualifies" :expected "true" :actual "(= (quote clojure.core/map) `map)"}
   {:suite "reader / syntax-quote literal collapse (spec 2.4 S25)" :label "vector still templates" :expected "true" :actual "(= [1 2] `[1 ~(inc 1)])"}
   {:suite "reader / scalar literals" :label "integer" :expected "42" :actual "42"}
@@ -1640,9 +1640,9 @@
   {:suite "reader / scalar literals" :label "char unicode" :expected "65" :actual "(int \\u0041)"}
   {:suite "reader / scalar literals" :label "hex literal" :expected "255" :actual "0xff"}
   {:suite "reader / scalar literals" :label "hex uppercase" :expected "31" :actual "0X1F"}
-  {:suite "reader / scalar literals" :label "bigint suffix N" :expected "42" :actual "42N"}
-  {:suite "reader / scalar literals" :label "bigdec suffix M" :expected "1.5" :actual "1.5M"}
-  {:suite "reader / scalar literals" :label "ratio -> double" :expected "0.75" :actual "3/4"}
+  {:suite "reader / scalar literals" :label "bigint suffix N" :expected "42N" :actual "42N"}
+  {:suite "reader / scalar literals" :label "bigdec suffix M" :expected "1.5M" :actual "1.5M"}
+  {:suite "reader / scalar literals" :label "ratio -> double" :expected "3/4" :actual "3/4"}
   {:suite "reader / scalar literals" :label "radix integer" :expected "255" :actual "16rFF"}
   {:suite "reader / scalar literals" :label "exponent" :expected "1500.0" :actual "1.5e3"}
   {:suite "reader / scalar literals" :label "symbolic Infinity" :expected "true" :actual "(infinite? ##Inf)"}
@@ -1651,7 +1651,7 @@
   {:suite "reader / collection literals" :label "vector" :expected "[1 2 3]" :actual "[1 2 3]"}
   {:suite "reader / collection literals" :label "list quoted" :expected "[1 2 3]" :actual "'(1 2 3)"}
   {:suite "reader / collection literals" :label "map" :expected "{:a 1}" :actual "{:a 1}"}
-  {:suite "reader / collection literals" :label "set" :expected "#{1 2 3}" :actual "#{1 2 3}"}
+  {:suite "reader / collection literals" :label "set" :expected "#{1 3 2}" :actual "#{1 2 3}"}
   {:suite "reader / collection literals" :label "nested" :expected "{:a [1 {:b 2}]}" :actual "{:a [1 {:b 2}]}"}
   {:suite "reader / collection literals" :label "empty vector" :expected "[]" :actual "[]"}
   {:suite "reader / collection literals" :label "empty map" :expected "{}" :actual "{}"}
@@ -1661,12 +1661,12 @@
   {:suite "reader / dispatch & sugar" :label "anon fn %&" :expected "[2 3]" :actual "(#(vec %&) 2 3)"}
   {:suite "reader / dispatch & sugar" :label "discard #_" :expected "[1 3]" :actual "[1 #_2 3]"}
   {:suite "reader / dispatch & sugar" :label "regex literal" :expected "true" :actual "(= \"abc\" (re-find #\"abc\" \"xabcx\"))"}
-  {:suite "reader / dispatch & sugar" :label "reader conditional" :expected "3" :actual "#?(:clj 1 :cljs 2 :default 3)"}
-  {:suite "reader / dispatch & sugar" :label "reader cond :jolt" :expected "4" :actual "#?(:clj 1 :jolt 4 :default 3)"}
+  {:suite "reader / dispatch & sugar" :label "reader conditional" :expected "1" :actual "#?(:clj 1 :cljs 2 :default 3)"}
+  {:suite "reader / dispatch & sugar" :label "reader cond :jolt" :expected "1" :actual "#?(:clj 1 :jolt 4 :default 3)"}
   {:suite "reader / dispatch & sugar" :label "reader cond clause order" :expected "5" :actual "#?(:default 5 :jolt 6)"}
-  {:suite "reader / dispatch & sugar" :label "reader cond no match" :expected "[]" :actual "[#?(:clj 1 :cljs 2)]"}
-  {:suite "reader / dispatch & sugar" :label "reader cond splice" :expected "[1 2 3]" :actual "[#?@(:jolt [1 2 3] :cljs [4 5])]"}
-  {:suite "reader / dispatch & sugar" :label "reader cond splice no match" :expected "[]" :actual "[#?@(:clj [1 2 3] :cljs [4 5])]"}
+  {:suite "reader / dispatch & sugar" :label "reader cond no match" :expected "[1]" :actual "[#?(:clj 1 :cljs 2)]"}
+  {:suite "reader / dispatch & sugar" :label "reader cond splice" :expected "[]" :actual "[#?@(:jolt [1 2 3] :cljs [4 5])]"}
+  {:suite "reader / dispatch & sugar" :label "reader cond splice no match" :expected "[1 2 3]" :actual "[#?@(:clj [1 2 3] :cljs [4 5])]"}
   {:suite "reader / dispatch & sugar" :label "inst literal reads" :expected "true" :actual "(some? #inst \"2020-01-01T00:00:00Z\")"}
   {:suite "reader / dispatch & sugar" :label "uuid literal" :expected "\"550e8400-e29b-41d4-a716-446655440000\"" :actual "(str #uuid \"550e8400-e29b-41d4-a716-446655440000\")"}
   {:suite "reader / dispatch & sugar" :label "tagged literal var" :expected "true" :actual "(var? #'+)"}
@@ -1674,7 +1674,7 @@
   {:suite "reader / dispatch & sugar" :label "meta sugar" :expected "{:t 1}" :actual "(meta ^{:t 1} [])"}
   {:suite "reader / comments inside maps" :label "comment in value slot" :expected "{:a 1}" :actual "{:a ; note\n 1}"}
   {:suite "reader / comments inside maps" :label "comment before key" :expected "{:a 1}" :actual "{; lead\n :a 1}"}
-  {:suite "reader / comments inside maps" :label "comment between entries" :expected "{:a 1 :b 2}" :actual "{:a 1 ; mid\n :b 2}"}
+  {:suite "reader / comments inside maps" :label "comment between entries" :expected "{:a 1, :b 2}" :actual "{:a 1 ; mid\n :b 2}"}
   {:suite "reader / comments inside maps" :label "discard in value slot" :expected "{:a 1}" :actual "{:a #_9 1}"}
   {:suite "reader / comments inside maps" :label "comment with parens" :expected "{:a {:b 1}}" :actual "{:a ; dev (REPL, etc)\n {:b 1}}"}
   {:suite "reader / comments inside maps" :label "nested with comments" :expected "{:x {:y 2}}" :actual "{:x ; outer\n {:y ; inner\n 2}}"}
@@ -1690,9 +1690,9 @@
   {:suite "regex / re-matches" :label "partial = nil" :expected "nil" :actual "(re-matches #\"\\d+\" \"123abc\")"}
   {:suite "regex / re-matches" :label "groups" :expected "[\"12\" \"1\" \"2\"]" :actual "(re-matches #\"(\\d)(\\d)\" \"12\")"}
   {:suite "regex / re-matches" :label "no match nil" :expected "nil" :actual "(re-matches #\"x+\" \"yyy\")"}
-  {:suite "regex / re-seq" :label "all matches" :expected "(quote (\"1\" \"22\" \"333\"))" :actual "(re-seq #\"\\d+\" \"a1b22c333\")"}
+  {:suite "regex / re-seq" :label "all matches" :expected "[\"1\" \"22\" \"333\"]" :actual "(re-seq #\"\\d+\" \"a1b22c333\")"}
   {:suite "regex / re-seq" :label "empty when none" :expected "nil" :actual "(seq (re-seq #\"z\" \"abc\"))"}
-  {:suite "regex / re-seq" :label "words" :expected "(quote (\"foo\" \"bar\"))" :actual "(re-seq #\"\\w+\" \"foo bar\")"}
+  {:suite "regex / re-seq" :label "words" :expected "[\"foo\" \"bar\"]" :actual "(re-seq #\"\\w+\" \"foo bar\")"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern build" :expected "\"hi\"" :actual "(re-find (re-pattern \"\\\\w+\") \"hi!\")"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern is regex?" :expected "true" :actual "(regex? (re-pattern \"a\"))"}
   {:suite "regex / re-pattern & string ops" :label "split on regex" :expected "[\"a\" \"b\" \"c\"]" :actual "(do (require '[clojure.string :as s]) (s/split \"a1b2c\" #\"\\d\"))"}
@@ -1701,7 +1701,7 @@
   {:suite "regex / \\p property classes" :label "p{L} ascii" :expected "\"hello\"" :actual "(re-matches #\"^\\p{L}+$\" \"hello\")"}
   {:suite "regex / \\p property classes" :label "p{L} utf-8" :expected "true" :actual "(boolean (re-matches #\"^\\p{L}+$\" \"héllo\"))"}
   {:suite "regex / \\p property classes" :label "p{L} rejects digits" :expected "false" :actual "(boolean (re-matches #\"^\\p{L}+$\" \"ab1\"))"}
-  {:suite "regex / \\p property classes" :label "p{N}" :expected "(quote (\"12\" \"345\"))" :actual "(re-seq #\"\\p{N}+\" \"a12b345\")"}
+  {:suite "regex / \\p property classes" :label "p{N}" :expected "[\"12\" \"345\"]" :actual "(re-seq #\"\\p{N}+\" \"a12b345\")"}
   {:suite "regex / \\p property classes" :label "P{N} negation" :expected "\"abc\"" :actual "(re-matches #\"^\\P{N}+$\" \"abc\")"}
   {:suite "regex / \\p property classes" :label "inside class" :expected "\"a-1_b\"" :actual "(re-matches #\"^[\\p{N}\\p{L}_-]+$\" \"a-1_b\")"}
   {:suite "regex / \\p property classes" :label "p{Lu}/p{Ll}" :expected "\"aB\"" :actual "(re-matches #\"^\\p{Ll}\\p{Lu}$\" \"aB\")"}
@@ -1771,7 +1771,7 @@
   {:suite "seq / map filter reduce" :label "map 3 colls shortest" :expected "[12 15]" :actual "(map + [1 2] [4 5 6] [7 8 9])"}
   {:suite "seq / map filter reduce" :label "map 4 colls" :expected "[16 20]" :actual "(map + [1 2] [3 4] [5 6] [7 8])"}
   {:suite "seq / map filter reduce" :label "map 3 colls nils" :expected "[[1 :a 10] [nil :b 20] [3 nil 30]]" :actual "(map vector [1 nil 3] [:a :b nil] [10 20 30])"}
-  {:suite "seq / map filter reduce" :label "map empty coll" :expected "()" :actual "(map + [] [1 2 3] [4 5 6])"}
+  {:suite "seq / map filter reduce" :label "map empty coll" :expected "[]" :actual "(map + [] [1 2 3] [4 5 6])"}
   {:suite "seq / map filter reduce" :label "map lazy+concrete" :expected "[11 22 33]" :actual "(map + (map identity [1 2 3]) [10 20 30])"}
   {:suite "seq / map filter reduce" :label "map-indexed" :expected "[[0 :a] [1 :b]]" :actual "(map-indexed vector [:a :b])"}
   {:suite "seq / map filter reduce" :label "mapv" :expected "[2 3 4]" :actual "(mapv inc [1 2 3])"}
@@ -1791,7 +1791,7 @@
   {:suite "seq / map filter reduce" :label "mapcat" :expected "[1 1 2 2]" :actual "(mapcat (fn [x] [x x]) [1 2])"}
   {:suite "seq / map filter reduce" :label "mapcat two colls" :expected "[1 3 2 4]" :actual "(mapcat vector [1 2] [3 4])"}
   {:suite "seq / map filter reduce" :label "mapcat three colls" :expected "[1 2 3]" :actual "(mapcat vector [1] [2] [3])"}
-  {:suite "seq / map filter reduce" :label "mapcat empty coll" :expected "()" :actual "(mapcat vector [] [1 2] [3 4])"}
+  {:suite "seq / map filter reduce" :label "mapcat empty coll" :expected "[]" :actual "(mapcat vector [] [1 2] [3 4])"}
   {:suite "seq / map filter reduce" :label "mapcat seqs" :expected "[1 2 3 4]" :actual "(mapcat identity [[1 2] [3 4]])"}
   {:suite "seq / map filter reduce" :label "keep" :expected "[1 3]" :actual "(keep (fn [x] (if (odd? x) x nil)) [1 2 3 4])"}
   {:suite "seq / map filter reduce" :label "some truthy" :expected "true" :actual "(some even? [1 2 3])"}
@@ -1907,8 +1907,8 @@
   {:suite "seq / strictness round 3" :label "nthnext nil count" :expected :throws :actual "(nthnext [0 1 2] nil)"}
   {:suite "seq / strictness round 3" :label "update vec oob" :expected :throws :actual "(update [] 1 identity)"}
   {:suite "seq / strictness round 3" :label "update vec kw key" :expected :throws :actual "(update [1 2 3] :k identity)"}
-  {:suite "seq / overlay-migrated fns" :label "nthrest exhausted -> ()" :expected "()" :actual "(nthrest nil 100)"}
-  {:suite "seq / overlay-migrated fns" :label "nthrest vec exhausted" :expected "()" :actual "(nthrest [1 2 3] 100)"}
+  {:suite "seq / overlay-migrated fns" :label "nthrest exhausted -> ()" :expected "[]" :actual "(nthrest nil 100)"}
+  {:suite "seq / overlay-migrated fns" :label "nthrest vec exhausted" :expected "[]" :actual "(nthrest [1 2 3] 100)"}
   {:suite "seq / overlay-migrated fns" :label "nthrest n<=0 keeps coll" :expected "[1 2 3]" :actual "(nthrest [1 2 3] 0)"}
   {:suite "seq / overlay-migrated fns" :label "nthrest drops n" :expected "[3 4 5]" :actual "(nthrest [1 2 3 4 5] 2)"}
   {:suite "seq / overlay-migrated fns" :label "nthnext exhausted -> nil" :expected "nil" :actual "(nthnext [1 2] 5)"}
@@ -1962,10 +1962,10 @@
   {:suite "seq / partitionv & splitv-at (1.11)" :label "splitv-at past end" :expected "[[1 2] []]" :actual "(splitv-at 5 [1 2])"}
   {:suite "sequences / linear walks over concrete collections" :label "rest of vector is a seq" :expected "true" :actual "(seq? (rest [1 2 3]))"}
   {:suite "sequences / linear walks over concrete collections" :label "rest of vector not vector" :expected "false" :actual "(vector? (rest [1 2 3]))"}
-  {:suite "sequences / linear walks over concrete collections" :label "rest values" :expected "(quote (2 3))" :actual "(rest [1 2 3])"}
-  {:suite "sequences / linear walks over concrete collections" :label "next of vector" :expected "(quote (2 3))" :actual "(next [1 2 3])"}
+  {:suite "sequences / linear walks over concrete collections" :label "rest values" :expected "[2 3]" :actual "(rest [1 2 3])"}
+  {:suite "sequences / linear walks over concrete collections" :label "next of vector" :expected "[2 3]" :actual "(next [1 2 3])"}
   {:suite "sequences / linear walks over concrete collections" :label "next exhausts to nil" :expected "nil" :actual "(next [1])"}
-  {:suite "sequences / linear walks over concrete collections" :label "rest exhausts to ()" :expected "()" :actual "(rest [1])"}
+  {:suite "sequences / linear walks over concrete collections" :label "rest exhausts to ()" :expected "[]" :actual "(rest [1])"}
   {:suite "sequences / linear walks over concrete collections" :label "rest-loop scales (20k linear)" :expected "20000" :actual "(loop [xs (seq (vec (range 20000))) n 0] (if xs (recur (next xs) (inc n)) n))"}
   {:suite "sequences / linear walks over concrete collections" :label "mapv scales (50k linear)" :expected "50000" :actual "(count (mapv inc (vec (range 50000))))"}
   {:suite "sequences / linear walks over concrete collections" :label "nested walk" :expected "[2 3]" :actual "(vec (rest (mapv inc [0 1 2])))"}
@@ -1975,23 +1975,23 @@
   {:suite "sequences / rest & next over set-like colls" :label "rest of empty set" :expected "0" :actual "(count (rest #{}))"}
   {:suite "sequences / rest & next over set-like colls" :label "next of map" :expected "true" :actual "(let [n (next {:a 1 :b 2})] (and (= 1 (count n)) (map-entry? (first n))))"}
   {:suite "sequences / rest & next over set-like colls" :label "next of singleton map" :expected "nil" :actual "(next {:a 1})"}
-  {:suite "sequences / rest & next over set-like colls" :label "rest of sorted-set" :expected "(quote (2 3))" :actual "(rest (sorted-set 3 1 2))"}
-  {:suite "sequences / rest & next over set-like colls" :label "next of sorted-map" :expected "(quote ([2 :b]))" :actual "(next (sorted-map 1 :a 2 :b))"}
+  {:suite "sequences / rest & next over set-like colls" :label "rest of sorted-set" :expected "[2 3]" :actual "(rest (sorted-set 3 1 2))"}
+  {:suite "sequences / rest & next over set-like colls" :label "next of sorted-map" :expected "[[2 :b]]" :actual "(next (sorted-map 1 :a 2 :b))"}
   {:suite "sequences / rest & next over set-like colls" :label "every? over set" :expected "true" :actual "(every? pos? #{1 2 3})"}
   {:suite "sequences / rest & next over set-like colls" :label "every? over set false" :expected "false" :actual "(every? odd? #{1 2})"}
   {:suite "sequences / rest & next over set-like colls" :label "every? over sorted-set" :expected "true" :actual "(every? pos? (sorted-set 1 2 3))"}
   {:suite "sequences / rest & next over set-like colls" :label "every? over map entries" :expected "true" :actual "(every? map-entry? (seq {:a 1 :b 2}))"}
-  {:suite "set / construct & predicate" :label "literal" :expected "#{1 2 3}" :actual "#{1 2 3}"}
-  {:suite "set / construct & predicate" :label "hash-set" :expected "#{1 2 3}" :actual "(hash-set 1 2 3)"}
-  {:suite "set / construct & predicate" :label "set from vector" :expected "#{1 2 3}" :actual "(set [1 2 3 1])"}
+  {:suite "set / construct & predicate" :label "literal" :expected "#{1 3 2}" :actual "#{1 2 3}"}
+  {:suite "set / construct & predicate" :label "hash-set" :expected "#{1 3 2}" :actual "(hash-set 1 2 3)"}
+  {:suite "set / construct & predicate" :label "set from vector" :expected "#{1 3 2}" :actual "(set [1 2 3 1])"}
   {:suite "set / construct & predicate" :label "empty" :expected "#{}" :actual "#{}"}
   {:suite "set / construct & predicate" :label "set? true" :expected "true" :actual "(set? #{1})"}
   {:suite "set / construct & predicate" :label "set? false on vector" :expected "false" :actual "(set? [1])"}
   {:suite "set / construct & predicate" :label "count dedups" :expected "3" :actual "(count (set [1 1 2 3]))"}
   {:suite "set / construct & predicate" :label "equality order-indep" :expected "true" :actual "(= #{1 2 3} #{3 2 1})"}
-  {:suite "set / construct & predicate" :label "into set" :expected "#{:a :b}" :actual "(into #{} [:a :b])"}
-  {:suite "set / construct & predicate" :label "into non-empty set" :expected "#{1 2 3}" :actual "(into #{1} [2 3 2])"}
-  {:suite "set / operations" :label "conj adds" :expected "#{1 2 3}" :actual "(conj #{1 2} 3)"}
+  {:suite "set / construct & predicate" :label "into set" :expected "#{:b :a}" :actual "(into #{} [:a :b])"}
+  {:suite "set / construct & predicate" :label "into non-empty set" :expected "#{1 3 2}" :actual "(into #{1} [2 3 2])"}
+  {:suite "set / operations" :label "conj adds" :expected "#{1 3 2}" :actual "(conj #{1 2} 3)"}
   {:suite "set / operations" :label "conj dup no-op" :expected "#{1 2}" :actual "(conj #{1 2} 1)"}
   {:suite "set / operations" :label "disj removes" :expected "#{1 2}" :actual "(disj #{1 2 3} 3)"}
   {:suite "set / operations" :label "disj missing no-op" :expected "#{1 2}" :actual "(disj #{1 2} 9)"}
@@ -2001,7 +2001,7 @@
   {:suite "set / operations" :label "get missing nil" :expected "nil" :actual "(get #{1 2} 9)"}
   {:suite "set / operations" :label "set as fn present" :expected "2" :actual "(#{1 2 3} 2)"}
   {:suite "set / operations" :label "set as fn missing" :expected "nil" :actual "(#{1 2 3} 9)"}
-  {:suite "set / literals & value elements" :label "literal evaluates elements" :expected "#{2 4}" :actual "#{(inc 1) (* 2 2)}"}
+  {:suite "set / literals & value elements" :label "literal evaluates elements" :expected "#{4 2}" :actual "#{(inc 1) (* 2 2)}"}
   {:suite "set / literals & value elements" :label "map elements by value" :expected "true" :actual "(= #{{:a 1}} #{(hash-map :a 1)})"}
   {:suite "set / literals & value elements" :label "contains? map by value" :expected "true" :actual "(contains? #{(hash-map :x 1)} {:x 1})"}
   {:suite "set / literals & value elements" :label "dedup equal maps" :expected "1" :actual "(count (set [{:a 1} (hash-map :a 1)]))"}
@@ -2022,12 +2022,12 @@
   {:suite "set / nil element (jolt-bn2p)" :label "transient disj! nil cnt" :expected "1" :actual "(count (persistent! (disj! (conj! (transient #{}) nil 1) nil)))"}
   {:suite "set / nil element (jolt-bn2p)" :label "transient disj! removes" :expected "false" :actual "(contains? (persistent! (disj! (conj! (transient #{}) nil 1) nil)) nil)"}
   {:suite "set / nil element (jolt-bn2p)" :label "transient of set w/ nil" :expected "true" :actual "(contains? (persistent! (transient (set [nil 1]))) nil)"}
-  {:suite "clojure.set" :label "union" :expected "#{1 2 3 4}" :actual "(do (require (quote [clojure.set :as s])) (s/union #{1 2} #{3 4}))"}
+  {:suite "clojure.set" :label "union" :expected "#{1 4 3 2}" :actual "(do (require (quote [clojure.set :as s])) (s/union #{1 2} #{3 4}))"}
   {:suite "clojure.set" :label "intersection" :expected "#{2}" :actual "(do (require (quote [clojure.set :as s])) (s/intersection #{1 2} #{2 3}))"}
   {:suite "clojure.set" :label "difference" :expected "#{1}" :actual "(do (require (quote [clojure.set :as s])) (s/difference #{1 2} #{2 3}))"}
   {:suite "clojure.set" :label "subset? true" :expected "true" :actual "(do (require (quote [clojure.set :as s])) (s/subset? #{1} #{1 2}))"}
   {:suite "clojure.set" :label "superset? true" :expected "true" :actual "(do (require (quote [clojure.set :as s])) (s/superset? #{1 2} #{1}))"}
-  {:suite "clojure.set" :label "select" :expected "#{2 4}" :actual "(do (require (quote [clojure.set :as s])) (s/select even? #{1 2 3 4}))"}
+  {:suite "clojure.set" :label "select" :expected "#{4 2}" :actual "(do (require (quote [clojure.set :as s])) (s/select even? #{1 2 3 4}))"}
   {:suite "clojure.set" :label "join" :expected "#{{:a 1, :b 2, :c 3}}" :actual "(do (require (quote [clojure.set :as s])) (s/join #{{:a 1 :b 2}} #{{:b 2 :c 3}}))"}
   {:suite "clojure.set" :label "map-invert" :expected "{1 :a}" :actual "(do (require (quote [clojure.set :as s])) (s/map-invert {:a 1}))"}
   {:suite "clojure.set" :label "rename-keys" :expected "{:b 1}" :actual "(do (require (quote [clojure.set :as s])) (s/rename-keys {:a 1} {:a :b}))"}
@@ -2197,8 +2197,8 @@
   {:suite "state / promises" :label "promise undelivered" :expected "nil" :actual "(let [p (promise)] @p)"}
   {:suite "state / agents (synchronous shim)" :label "agent deref" :expected "0" :actual "(deref (agent 0))"}
   {:suite "state / agents (synchronous shim)" :label "agent with opts" :expected "0" :actual "(deref (agent 0 :error-mode :continue))"}
-  {:suite "state / agents (synchronous shim)" :label "send-off applies" :expected "5" :actual "(let [a (agent 0)] (send-off a + 5) (deref a))"}
-  {:suite "state / agents (synchronous shim)" :label "send applies" :expected "7" :actual "(let [a (agent 1)] (send a + 6) (deref a))"}
+  {:suite "state / agents (synchronous shim)" :label "send-off applies" :expected "0" :actual "(let [a (agent 0)] (send-off a + 5) (deref a))"}
+  {:suite "state / agents (synchronous shim)" :label "send applies" :expected "1" :actual "(let [a (agent 1)] (send a + 6) (deref a))"}
   {:suite "state / agents (synchronous shim)" :label "agent-error nil" :expected "nil" :actual "(agent-error (agent 0))"}
   {:suite "string / str & basics" :label "str concat" :expected "\"abc\"" :actual "(str \"a\" \"b\" \"c\")"}
   {:suite "string / str & basics" :label "str of numbers" :expected "\"12\"" :actual "(str 1 2)"}
@@ -2274,7 +2274,7 @@
   {:suite "transducers / into" :label "map-indexed xform" :expected "[[0 :a] [1 :b]]" :actual "(into [] (map-indexed vector) [:a :b])"}
   {:suite "transducers / into" :label "mapcat xform" :expected "[1 1 2 2]" :actual "(into [] (mapcat (fn [x] [x x])) [1 2])"}
   {:suite "transducers / into" :label "cat xform" :expected "[1 2 3 4]" :actual "(into [] cat [[1 2] [3 4]])"}
-  {:suite "transducers / into" :label "into a set" :expected "#{2 3 4}" :actual "(into #{} (map inc) [1 2 3])"}
+  {:suite "transducers / into" :label "into a set" :expected "#{4 3 2}" :actual "(into #{} (map inc) [1 2 3])"}
   {:suite "transducers / compose" :label "comp map+filter" :expected "[2 4 6 8]" :actual "(into [] (comp (map (fn [x] (* x 2))) (filter even?)) [1 2 3 4])"}
   {:suite "transducers / compose" :label "comp filter+map" :expected "[2 4]" :actual "(into [] (comp (filter odd?) (map inc)) [1 2 3 4])"}
   {:suite "transducers / compose" :label "comp three" :expected "[2]" :actual "(into [] (comp (map inc) (filter even?) (take 1)) [1 2 3 4])"}
@@ -2301,7 +2301,7 @@
   {:suite "reduce / honors reduced" :label "reduce empty calls f" :expected "0" :actual "(reduce + [])"}
   {:suite "reduce / honors reduced" :label "reduce with-init" :expected "16" :actual "(reduce + 10 [1 2 3])"}
   {:suite "reduce / honors reduced" :label "reduce reduced immediate" :expected ":x" :actual "(reduce (fn [a x] (reduced :x)) :init [1 2 3])"}
-  {:suite "transducers / into & eduction (overlay)" :label "into list prepends" :expected "(quote (4 3 1 2))" :actual "(into (quote (1 2)) [3 4])"}
+  {:suite "transducers / into & eduction (overlay)" :label "into list prepends" :expected "[4 3 1 2]" :actual "(into (quote (1 2)) [3 4])"}
   {:suite "transducers / into & eduction (overlay)" :label "into sorted-map" :expected "{1 :a, 2 :b}" :actual "(into (sorted-map) [[2 :b] [1 :a]])"}
   {:suite "transducers / into & eduction (overlay)" :label "into from map entry" :expected "[:a 1]" :actual "(into [] (first {:a 1}))"}
   {:suite "transducers / into & eduction (overlay)" :label "into xform on map" :expected "{:a 2}" :actual "(into {} (map (fn [e] [(key e) (inc (val e))])) {:a 1})"}
@@ -2335,7 +2335,7 @@
   {:suite "transient / map" :label "reduce build" :expected "{0 0, 1 1, 2 2}" :actual "(persistent! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 3)))"}
   {:suite "transient / set" :label "conj! dedups" :expected "#{1 2 3}" :actual "(persistent! (conj! (transient #{}) 1 2 2 3))"}
   {:suite "transient / set" :label "disj!" :expected "#{1 3}" :actual "(persistent! (disj! (transient #{1 2 3}) 2))"}
-  {:suite "transient / set" :label "from existing set" :expected "#{1 2 3}" :actual "(persistent! (conj! (transient #{1 2}) 3))"}
+  {:suite "transient / set" :label "from existing set" :expected "#{1 3 2}" :actual "(persistent! (conj! (transient #{1 2}) 3))"}
   {:suite "transient / set" :label "contains?" :expected "true" :actual "(contains? (transient #{1 2}) 1)"}
   {:suite "transient / set" :label "count" :expected "2" :actual "(count (transient #{1 2}))"}
   {:suite "transient / set" :label "persistent! is a set" :expected "true" :actual "(set? (persistent! (transient #{1})))"}
@@ -2349,9 +2349,9 @@
   {:suite "transient / invokable lookup" :label "set membership" :expected "2" :actual "((transient #{1 2 3}) 2)"}
   {:suite "transient / invokable lookup" :label "set miss default" :expected ":no" :actual "((transient #{1 2 3}) 42 :no)"}
   {:suite "transient / invokable lookup" :label "collection key" :expected ":v" :actual "((transient {[1 2] :v}) [1 2])"}
-  {:suite "transient / assoc! odd args throw" :label "map dangling key" :expected :throws :actual "(persistent! (assoc! (transient {}) :a 1 :b))"}
+  {:suite "transient / assoc! odd args throw" :label "map dangling key" :expected "{:a 1, :b nil}" :actual "(persistent! (assoc! (transient {}) :a 1 :b))"}
   {:suite "transient / assoc! odd args throw" :label "map lone key" :expected :throws :actual "(persistent! (assoc! (transient {}) :a))"}
-  {:suite "transient / assoc! odd args throw" :label "vector dangling" :expected :throws :actual "(persistent! (apply assoc! (transient []) [0 9 1]))"}
+  {:suite "transient / assoc! odd args throw" :label "vector dangling" :expected "[9 nil]" :actual "(persistent! (apply assoc! (transient []) [0 9 1]))"}
   {:suite "transient / assoc! odd args throw" :label "even args still ok" :expected "true" :actual "(= {:a 1, :b 2} (persistent! (assoc! (transient {}) :a 1 :b 2)))"}
   {:suite "transient / invalidation" :label "conj! after persistent!" :expected :throws :actual "(let [t (transient [])] (persistent! t) (conj! t 1))"}
   {:suite "transient / invalidation" :label "assoc! after persistent!" :expected :throws :actual "(let [t (transient {})] (persistent! t) (assoc! t :a 1))"}
@@ -2424,7 +2424,7 @@
   {:suite "untested / primed + division + bit ops" :label "inc'" :expected "2.5" :actual "(inc' 1.5)"}
   {:suite "untested / primed + division + bit ops" :label "dec'" :expected "1.5" :actual "(dec' 2.5)"}
   {:suite "untested / primed + division + bit ops" :label "/" :expected "2" :actual "(/ 6 3)"}
-  {:suite "untested / primed + division + bit ops" :label "/ ratio-as-double" :expected "0.5" :actual "(/ 1 2)"}
+  {:suite "untested / primed + division + bit ops" :label "/ ratio-as-double" :expected "1/2" :actual "(/ 1 2)"}
   {:suite "untested / primed + division + bit ops" :label "bit-not" :expected "-6" :actual "(bit-not 5)"}
   {:suite "untested / primed + division + bit ops" :label "bit-and-not" :expected "4" :actual "(bit-and-not 12 10)"}
   {:suite "untested / primed + division + bit ops" :label "bit-flip" :expected "3" :actual "(bit-flip 2 0)"}
@@ -2438,7 +2438,7 @@
   {:suite "untested / array stubs (vectors + host buffers)" :label "into-array" :expected "(quote (1 2))" :actual "(into-array [1 2])"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "to-array" :expected "(quote (1 2))" :actual "(to-array [1 2])"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aclone vec" :expected "(quote (1 2))" :actual "(aclone [1 2])"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "aclone independent" :expected "(quote (9 2))" :actual "(let [a (aclone (to-array [1 2]))] (aset a 0 9) (seq a))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "aclone independent" :expected "[9 2]" :actual "(let [a (aclone (to-array [1 2]))] (aset a 0 9) (seq a))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset/aget" :expected "9" :actual "(let [a (to-array [1 2 3])] (aset a 0 9) (aget a 0))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset-int" :expected "7" :actual "(let [a (to-array [1 2])] (aset-int a 0 7) (aget a 0))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset-boolean" :expected "true" :actual "(let [a (to-array [1])] (aset-boolean a 0 true) (aget a 0))"}
@@ -2468,8 +2468,8 @@
   {:suite "untested / typed coercion views" :label "byte" :expected "65" :actual "(byte 65)"}
   {:suite "untested / typed coercion views" :label "short" :expected "1" :actual "(short 1)"}
   {:suite "untested / typed coercion views" :label "long truncates" :expected "1" :actual "(long 1.7)"}
-  {:suite "untested / typed coercion views" :label "double" :expected "3" :actual "(double 3)"}
-  {:suite "untested / typed coercion views" :label "float" :expected "3" :actual "(float 3)"}
+  {:suite "untested / typed coercion views" :label "double" :expected "3.0" :actual "(double 3)"}
+  {:suite "untested / typed coercion views" :label "float" :expected "3.0" :actual "(float 3)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-add" :expected "3" :actual "(unchecked-add 1 2)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-add-int" :expected "3" :actual "(unchecked-add-int 1 2)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-subtract" :expected "3" :actual "(unchecked-subtract 5 2)"}
@@ -2486,10 +2486,10 @@
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-remainder-int" :expected "1" :actual "(unchecked-remainder-int 7 2)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-int" :expected "3" :actual "(unchecked-int 3.7)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-long" :expected "3" :actual "(unchecked-long 3.7)"}
-  {:suite "untested / unchecked-* are plain ops" :label "unchecked-double" :expected "3" :actual "(unchecked-double 3)"}
-  {:suite "untested / unchecked-* are plain ops" :label "unchecked-float" :expected "3" :actual "(unchecked-float 3)"}
+  {:suite "untested / unchecked-* are plain ops" :label "unchecked-double" :expected "3.0" :actual "(unchecked-double 3)"}
+  {:suite "untested / unchecked-* are plain ops" :label "unchecked-float" :expected "3.0" :actual "(unchecked-float 3)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-byte" :expected "65" :actual "(unchecked-byte 65)"}
-  {:suite "untested / unchecked-* are plain ops" :label "unchecked-char" :expected "97" :actual "(unchecked-char 97)"}
+  {:suite "untested / unchecked-* are plain ops" :label "unchecked-char" :expected "\\a" :actual "(unchecked-char 97)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-short" :expected "5" :actual "(unchecked-short 5)"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk round-trip" :expected "1" :actual "(let [cb (chunk-buffer 4)] (chunk-append cb 1) (chunk-first (chunk-cons (chunk cb) nil)))"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "cat transducer" :expected "[1 2 3]" :actual "(into [] cat [[1] [2 3]])"}
@@ -2497,10 +2497,10 @@
   {:suite "untested / chunk family (eager equivalents) + cat" :label "ensure-reduced keeps reduced" :expected "true" :actual "(reduced? (ensure-reduced (reduced 5)))"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "halt-when" :expected "4" :actual "(transduce (halt-when even?) conj [] [1 3 4 5])"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-next exhausted" :expected "nil" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (chunk-next (chunk-cons (chunk cb) nil)))"}
-  {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-rest seqable" :expected "()" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (vec (chunk-rest (chunk-cons (chunk cb) nil))))"}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class number" :expected "\"java.lang.Number\"" :actual "(class 1)"}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class string" :expected "\"java.lang.String\"" :actual "(class \"s\")"}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class keyword" :expected "\"clojure.lang.Keyword\"" :actual "(class :k)"}
+  {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-rest seqable" :expected "[]" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (vec (chunk-rest (chunk-cons (chunk cb) nil))))"}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class number" :expected "java.lang.Long" :actual "(class 1)"}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class string" :expected "java.lang.String" :actual "(class \"s\")"}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class keyword" :expected "clojure.lang.Keyword" :actual "(class :k)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class nil" :expected "nil" :actual "(class nil)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "bean is the map" :expected "{:a 1}" :actual "(bean {:a 1})"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "biginteger" :expected "\"5\"" :actual "(str (biginteger 5))"}
@@ -2523,10 +2523,10 @@
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "print-method nil writer throws" :expected :throws :actual "(print-method 1 nil)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "uri? string" :expected "false" :actual "(uri? \"http://x\")"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "uri? nil" :expected "false" :actual "(uri? nil)"}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "definterface defines" :expected "true" :actual "(var? (definterface IFoo (foo [x])))"}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "definterface defines" :expected "false" :actual "(var? (definterface IFoo (foo [x])))"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "enumeration-seq" :expected "(quote (1 2))" :actual "(enumeration-seq [1 2])"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "iterator-seq" :expected "(quote (1 2))" :actual "(iterator-seq [1 2])"}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "seque passthrough" :expected "(quote (1 2))" :actual "(seque [1 2])"}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "seque passthrough" :expected "[1 2]" :actual "(seque [1 2])"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "delay? true" :expected "true" :actual "(delay? (delay 1))"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "delay? false" :expected "false" :actual "(delay? 1)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "future-call" :expected "42" :actual "(deref (future-call (fn [] 42)))"}
@@ -2540,7 +2540,7 @@
   {:suite "untested / ns + REPL machinery" :label "all-ns non-empty" :expected "true" :actual "(pos? (count (all-ns)))"}
   {:suite "untested / ns + REPL machinery" :label "ns-interns sees def" :expected "true" :actual "(do (def zz 1) (pos? (count (ns-interns (quote user)))))"}
   {:suite "untested / ns + REPL machinery" :label "ns-interns countable" :expected "true" :actual "(map? (ns-interns (quote user)))"}
-  {:suite "untested / ns + REPL machinery" :label "ns-imports empty user" :expected "0" :actual "(count (ns-imports (quote user)))"}
+  {:suite "untested / ns + REPL machinery" :label "ns-imports empty user" :expected "96" :actual "(count (ns-imports (quote user)))"}
   {:suite "untested / ns + REPL machinery" :label "reset-meta!" :expected "{:doc \"d\"}" :actual "(do (def vv 1) (reset-meta! (var vv) {:doc \"d\"}))"}
   {:suite "untested / ns + REPL machinery" :label "prefers empty" :expected "{}" :actual "(do (defmulti mm identity) (prefers mm))"}
   {:suite "untested / ns + REPL machinery" :label "refer-clojure" :expected "nil" :actual "(refer-clojure)"}
@@ -2558,14 +2558,14 @@
   {:suite "untested / ns + REPL machinery" :label "*3 nil" :expected "nil" :actual "*3"}
   {:suite "untested / ns + REPL machinery" :label "*e nil" :expected "nil" :actual "*e"}
   {:suite "untested / ns + REPL machinery" :label "*unchecked-math*" :expected "false" :actual "*unchecked-math*"}
-  {:suite "untested / ns + REPL machinery" :label "*in* bound" :expected "true" :actual "(map? *in*)"}
-  {:suite "untested / misc seqs + binding machinery" :label "nfirst" :expected "(quote (2))" :actual "(nfirst [[1 2] [3]])"}
+  {:suite "untested / ns + REPL machinery" :label "*in* bound" :expected "false" :actual "(map? *in*)"}
+  {:suite "untested / misc seqs + binding machinery" :label "nfirst" :expected "[2]" :actual "(nfirst [[1 2] [3]])"}
   {:suite "untested / misc seqs + binding machinery" :label "xml-seq root" :expected "1" :actual "(count (xml-seq {:tag :a :content []}))"}
   {:suite "untested / misc seqs + binding machinery" :label "xml-seq walks" :expected "2" :actual "(count (xml-seq {:tag :a :content [{:tag :b :content []}]}))"}
-  {:suite "untested / misc seqs + binding machinery" :label "comp keyword stage" :expected "(quote (1 2))" :actual "((comp seq :content) {:content [1 2]})"}
+  {:suite "untested / misc seqs + binding machinery" :label "comp keyword stage" :expected "[1 2]" :actual "((comp seq :content) {:content [1 2]})"}
   {:suite "untested / misc seqs + binding machinery" :label "comp three stages" :expected "4" :actual "((comp inc inc :n) {:n 2})"}
-  {:suite "untested / misc seqs + binding machinery" :label "random-sample all" :expected "(quote (1 2))" :actual "(random-sample 1.0 [1 2])"}
-  {:suite "untested / misc seqs + binding machinery" :label "random-sample none" :expected "()" :actual "(random-sample 0.0 [1 2])"}
+  {:suite "untested / misc seqs + binding machinery" :label "random-sample all" :expected "[1 2]" :actual "(random-sample 1.0 [1 2])"}
+  {:suite "untested / misc seqs + binding machinery" :label "random-sample none" :expected "[]" :actual "(random-sample 0.0 [1 2])"}
   {:suite "untested / misc seqs + binding machinery" :label "reader-conditional builds" :expected "true" :actual "(reader-conditional? (reader-conditional (quote (:clj 1)) false))"}
   {:suite "untested / misc seqs + binding machinery" :label "->Eduction" :expected "[2 3]" :actual "(vec (->Eduction (map inc) [1 2]))"}
   {:suite "untested / misc seqs + binding machinery" :label "bound-fn calls" :expected "42" :actual "((bound-fn [] 42))"}
@@ -2652,21 +2652,21 @@
   {:suite "vector / bulk build boundaries" :label "assoc into bulk vec" :expected "9" :actual "(nth (assoc (vec (range 1025)) 1000 9) 1000)"}
   {:suite "vector / bulk build boundaries" :label "into onto non-empty" :expected "[0 1 2 0 1]" :actual "(into (vec (range 3)) (range 2))"}
   {:suite "clojure.walk / lists + seqs" :label "postwalk-replace symbol keys in a list" :expected "(quote (+ 2 2))" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {(quote x) 2} (quote (+ x x))))"}
-  {:suite "clojure.walk / lists + seqs" :label "postwalk descends a list" :expected "(quote (:a :a))" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk (fn [n] (if (symbol? n) :a n)) (quote (x y))))"}
+  {:suite "clojure.walk / lists + seqs" :label "postwalk descends a list" :expected "[:a :a]" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk (fn [n] (if (symbol? n) :a n)) (quote (x y))))"}
   {:suite "clojure.walk / lists + seqs" :label "prewalk-replace in a list" :expected "(quote (* 3 3))" :actual "(do (require (quote [clojure.walk :as w])) (w/prewalk-replace {(quote *) (quote *) (quote y) 3} (quote (* y y))))"}
-  {:suite "clojure.walk / lists + seqs" :label "nested list + vector" :expected "(quote (1 [2 1]))" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {:a 1 :b 2} (quote (:a [:b :a]))))"}
+  {:suite "clojure.walk / lists + seqs" :label "nested list + vector" :expected "[1 [2 1]]" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {:a 1 :b 2} (quote (:a [:b :a]))))"}
   {:suite "clojure.walk / lists + seqs" :label "postwalk-replace in a vector" :expected "[:one 2 :one]" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {1 :one} [1 2 1]))"}
   {:suite "clojure.walk / lists + seqs" :label "keywordize-keys still works" :expected "{:a 1}" :actual "(do (require (quote [clojure.walk :as w])) (w/keywordize-keys {\"a\" 1}))"}
   {:suite "clojure.walk / lists + seqs" :label "apply-template substitutes" :expected "(quote (+ 1 2))" :actual "(do (require (quote [clojure.template :as t])) (t/apply-template (quote [x y]) (quote (+ x y)) (quote (1 2))))"}
-  {:suite "conformance / CRITICAL: lazy sequences" :label "self-ref lazy-cat fib" :expected "(quote (0 1 1 2 3 5 8 13 21 34))" :actual "(do (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq))) (take 10 fib-seq))"}
-  {:suite "conformance / CRITICAL: multi-collection map" :label "map two colls" :expected "(quote (11 22 33))" :actual "(map + [1 2 3] [10 20 30])"}
-  {:suite "conformance / CRITICAL: multi-collection map" :label "map three colls" :expected "(quote (12 24 36))" :actual "(map + [1 2 3] [10 20 30] [1 2 3])"}
-  {:suite "conformance / CRITICAL: multi-collection map" :label "map uneven (shortest)" :expected "(quote ([1 :a] [2 :b]))" :actual "(map vector [1 2 3] [:a :b])"}
-  {:suite "conformance / CRITICAL: multi-collection map" :label "map over range+vec" :expected "(quote (1 3 5))" :actual "(map + (range 3) [1 2 3])"}
-  {:suite "conformance / CRITICAL: multi-collection map" :label "map fn list arg" :expected "(quote (2 3 4))" :actual "(map inc (list 1 2 3))"}
-  {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "iterate" :expected "(quote (0 1 2 3 4))" :actual "(take 5 (iterate inc 0))"}
-  {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "iterate double" :expected "(quote (1 2 4 8 16))" :actual "(take 5 (iterate (fn [x] (* 2 x)) 1))"}
-  {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "range over inf map" :expected "(quote (1 2 3))" :actual "(take 3 (map inc (range)))"}
+  {:suite "conformance / CRITICAL: lazy sequences" :label "self-ref lazy-cat fib" :expected "[0 1 1 2 3 5 8 13 21 34]" :actual "(do (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq))) (take 10 fib-seq))"}
+  {:suite "conformance / CRITICAL: multi-collection map" :label "map two colls" :expected "[11 22 33]" :actual "(map + [1 2 3] [10 20 30])"}
+  {:suite "conformance / CRITICAL: multi-collection map" :label "map three colls" :expected "[12 24 36]" :actual "(map + [1 2 3] [10 20 30] [1 2 3])"}
+  {:suite "conformance / CRITICAL: multi-collection map" :label "map uneven (shortest)" :expected "[[1 :a] [2 :b]]" :actual "(map vector [1 2 3] [:a :b])"}
+  {:suite "conformance / CRITICAL: multi-collection map" :label "map over range+vec" :expected "[1 3 5]" :actual "(map + (range 3) [1 2 3])"}
+  {:suite "conformance / CRITICAL: multi-collection map" :label "map fn list arg" :expected "[2 3 4]" :actual "(map inc (list 1 2 3))"}
+  {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "iterate" :expected "[0 1 2 3 4]" :actual "(take 5 (iterate inc 0))"}
+  {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "iterate double" :expected "[1 2 4 8 16]" :actual "(take 5 (iterate (fn [x] (* 2 x)) 1))"}
+  {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "range over inf map" :expected "[1 2 3]" :actual "(take 3 (map inc (range)))"}
   {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "count of take" :expected "100" :actual "(count (take 100 (range)))"}
   {:suite "conformance / CRITICAL: iterate / infinite seqs" :label "last of take" :expected "5" :actual "(last (take 5 (iterate inc 1)))"}
   {:suite "conformance / CRITICAL: collections as IFn" :label "map as fn miss" :expected "nil" :actual "({:a 1} :z)"}
@@ -2680,20 +2680,20 @@
   {:suite "conformance / CRITICAL: collections as IFn" :label "disj one" :expected "#{1 3}" :actual "(disj #{1 2 3} 2)"}
   {:suite "conformance / CRITICAL: collections as IFn" :label "disj many" :expected "#{1}" :actual "(disj #{1 2 3} 2 3)"}
   {:suite "conformance / CRITICAL: collections as IFn" :label "disj absent" :expected "#{1 2}" :actual "(disj #{1 2} 5)"}
-  {:suite "conformance / CRITICAL: collections as IFn" :label "map fn over coll" :expected "(quote (1 3))" :actual "(map {:a 1 :b 3} [:a :b])"}
+  {:suite "conformance / CRITICAL: collections as IFn" :label "map fn over coll" :expected "[1 3]" :actual "(map {:a 1 :b 3} [:a :b])"}
   {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "vec of map-result" :expected "[2 3 4]" :actual "(vec (map inc [1 2 3]))"}
   {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "vec of range" :expected "[0 1 2 3 4]" :actual "(vec (range 5))"}
   {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "into vec" :expected "[1 2 3 4 5 6]" :actual "(into [1 2 3] [4 5 6])"}
   {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "into vec from lazy" :expected "[2 3 4]" :actual "(into [] (map inc [1 2 3]))"}
-  {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "into map pairs" :expected "{:a 1 :b 2}" :actual "(into {} [[:a 1] [:b 2]])"}
-  {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "into map onto map" :expected "{:a 1 :b 2 :c 3}" :actual "(into {:a 1} [[:b 2] [:c 3]])"}
+  {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "into map pairs" :expected "{:a 1, :b 2}" :actual "(into {} [[:a 1] [:b 2]])"}
+  {:suite "conformance / CRITICAL: vec / into over lazy + maps" :label "into map onto map" :expected "{:a 1, :b 2, :c 3}" :actual "(into {:a 1} [[:b 2] [:c 3]])"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "map vec is seq" :expected "true" :actual "(seq? (map inc [1 2 3]))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "map vec not vector" :expected "false" :actual "(vector? (map inc [1 2 3]))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "filter vec is seq" :expected "true" :actual "(seq? (filter odd? [1 2 3]))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "take vec is seq" :expected "true" :actual "(seq? (take 2 [1 2 3]))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "map over set" :expected "true" :actual "(= #{2 3 4} (set (map inc #{1 2 3})))"}
-  {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "filter over map ev" :expected "(quote ([:b 2]))" :actual "(filter (fn [[k v]] (> v 1)) {:a 1 :b 2})"}
-  {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "cons cons lazy" :expected "(quote (1 2 3))" :actual "(cons 1 (cons 2 (lazy-seq (cons 3 nil))))"}
+  {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "filter over map ev" :expected "[[:b 2]]" :actual "(filter (fn [[k v]] (> v 1)) {:a 1 :b 2})"}
+  {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "cons cons lazy" :expected "[1 2 3]" :actual "(cons 1 (cons 2 (lazy-seq (cons 3 nil))))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "next empty lazy" :expected "nil" :actual "(next (take 1 [1]))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "drop vec is seq" :expected "true" :actual "(seq? (drop 1 [1 2 3]))"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "distinct vec is seq" :expected "true" :actual "(seq? (distinct [1 1 2]))"}
@@ -2701,7 +2701,7 @@
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "nth lazy false elem" :expected "false" :actual "(nth (map identity [false 1 2]) 0)"}
   {:suite "conformance / Option A: lazy transformers return seqs, not vectors" :label "nth lazy past false" :expected "2" :actual "(nth (drop 1 (list false 1 2)) 1)"}
   {:suite "conformance / HIGH: destructuring" :label "destr nested seq" :expected "[1 2 3]" :actual "(let [[a [b c]] [1 [2 3]]] [a b c])"}
-  {:suite "conformance / HIGH: destructuring" :label "destr rest+as" :expected "[1 (quote (2 3)) [1 2 3]]" :actual "(let [[a & r :as all] [1 2 3]] [a r all])"}
+  {:suite "conformance / HIGH: destructuring" :label "destr rest+as" :expected "[1 [2 3] [1 2 3]]" :actual "(let [[a & r :as all] [1 2 3]] [a r all])"}
   {:suite "conformance / HIGH: destructuring" :label "destr map :keys" :expected "[1 2]" :actual "(let [{:keys [a b]} {:a 1 :b 2}] [a b])"}
   {:suite "conformance / HIGH: destructuring" :label "destr map :or" :expected "[1 99]" :actual "(let [{:keys [a b] :or {b 99}} {:a 1}] [a b])"}
   {:suite "conformance / HIGH: destructuring" :label "destr map :strs" :expected "[1 2]" :actual "(let [{:strs [a b]} {\"a\" 1 \"b\" 2}] [a b])"}
@@ -2712,7 +2712,7 @@
   {:suite "conformance / HIGH: update / assoc-in on map literals" :label "get-in" :expected "1" :actual "(get-in {:a {:b {:c 1}}} [:a :b :c])"}
   {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native mod floored" :expected "2" :actual "(mod -7 3)"}
   {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native rem truncated" :expected "-1" :actual "(rem -7 3)"}
-  {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native unary div" :expected "0.5" :actual "(/ 2)"}
+  {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native unary div" :expected "1/2" :actual "(/ 2)"}
   {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native chained div" :expected "1" :actual "(/ 6 3 2)"}
   {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native bit-and" :expected "8" :actual "(bit-and 12 10)"}
   {:suite "conformance / native-op parity (compile emits janet ops at guarded arities)" :label "native bit-xor" :expected "6" :actual "(bit-xor 12 10)"}
@@ -2771,45 +2771,45 @@
   {:suite "conformance / HIGH: aliased namespace calls" :label "ns :use refers" :expected "42" :actual "(do (ns src.u) (def helper 42) (ns dst.u (:use [src.u])) helper)"}
   {:suite "conformance / MED: missing core fns" :label "subvec" :expected "[2 3]" :actual "(subvec [1 2 3 4 5] 1 3)"}
   {:suite "conformance / MED: missing core fns" :label "subvec to-end" :expected "[3 4 5]" :actual "(subvec [1 2 3 4 5] 2)"}
-  {:suite "conformance / MED: missing core fns" :label "reduce-kv" :expected "{:a 2 :b 3}" :actual "(reduce-kv (fn [m k v] (assoc m k (inc v))) {} {:a 1 :b 2})"}
+  {:suite "conformance / MED: missing core fns" :label "reduce-kv" :expected "{:a 2, :b 3}" :actual "(reduce-kv (fn [m k v] (assoc m k (inc v))) {} {:a 1 :b 2})"}
   {:suite "conformance / iterating maps yields entries" :label "reduce over map" :expected "6" :actual "(reduce (fn [a [k v]] (+ a v)) 0 {:a 1 :b 2 :c 3})"}
-  {:suite "conformance / iterating maps yields entries" :label "into transform map" :expected "{:a 2 :b 3}" :actual "(into {} (map (fn [[k v]] [k (inc v)]) {:a 1 :b 2}))"}
+  {:suite "conformance / iterating maps yields entries" :label "into transform map" :expected "{:a 2, :b 3}" :actual "(into {} (map (fn [[k v]] [k (inc v)]) {:a 1 :b 2}))"}
   {:suite "conformance / iterating maps yields entries" :label "filter over map" :expected "true" :actual "(= [[:b 2]] (filterv (fn [[k v]] (> v 1)) {:a 1 :b 2}))"}
-  {:suite "conformance / iterating maps yields entries" :label "tree-seq" :expected "(quote (1 2 3))" :actual "(map (fn [x] x) (filter (complement coll?) (tree-seq coll? seq [1 [2 [3]]])))"}
+  {:suite "conformance / iterating maps yields entries" :label "tree-seq" :expected "[1 2 3]" :actual "(map (fn [x] x) (filter (complement coll?) (tree-seq coll? seq [1 [2 [3]]])))"}
   {:suite "conformance / iterating maps yields entries" :label "key/val" :expected "true" :actual "(let [e (first {:k 9})] (and (= :k (key e)) (= 9 (val e))))"}
   {:suite "conformance / iterating maps yields entries" :label "nat-int?" :expected "true" :actual "(and (nat-int? 0) (nat-int? 5) (not (nat-int? -1)))"}
-  {:suite "conformance / iterating maps yields entries" :label "list* prepend" :expected "(quote (1 2 3 4))" :actual "(list* 1 2 [3 4])"}
-  {:suite "conformance / iterating maps yields entries" :label "cycle" :expected "(quote (1 2 3 1 2 3 1))" :actual "(take 7 (cycle [1 2 3]))"}
-  {:suite "conformance / iterating maps yields entries" :label "partition-all" :expected "(quote ((1 2) (3 4) (5)))" :actual "(partition-all 2 [1 2 3 4 5])"}
-  {:suite "conformance / iterating maps yields entries" :label "reductions init" :expected "(quote (0 1 3 6))" :actual "(reductions + 0 [1 2 3])"}
-  {:suite "conformance / iterating maps yields entries" :label "dedupe" :expected "(quote (1 2 3 1))" :actual "(dedupe [1 1 2 3 3 1])"}
-  {:suite "conformance / iterating maps yields entries" :label "partition-by odd?" :expected "(quote ((1 1) (2) (3 3)))" :actual "(partition-by odd? [1 1 2 3 3])"}
-  {:suite "conformance / iterating maps yields entries" :label "reductions inf" :expected "(quote (0 1 3 6))" :actual "(take 4 (reductions + (range)))"}
+  {:suite "conformance / iterating maps yields entries" :label "list* prepend" :expected "[1 2 3 4]" :actual "(list* 1 2 [3 4])"}
+  {:suite "conformance / iterating maps yields entries" :label "cycle" :expected "[1 2 3 1 2 3 1]" :actual "(take 7 (cycle [1 2 3]))"}
+  {:suite "conformance / iterating maps yields entries" :label "partition-all" :expected "[[1 2] [3 4] [5]]" :actual "(partition-all 2 [1 2 3 4 5])"}
+  {:suite "conformance / iterating maps yields entries" :label "reductions init" :expected "[0 1 3 6]" :actual "(reductions + 0 [1 2 3])"}
+  {:suite "conformance / iterating maps yields entries" :label "dedupe" :expected "[1 2 3 1]" :actual "(dedupe [1 1 2 3 3 1])"}
+  {:suite "conformance / iterating maps yields entries" :label "partition-by odd?" :expected "[[1 1] [2] [3 3]]" :actual "(partition-by odd? [1 1 2 3 3])"}
+  {:suite "conformance / iterating maps yields entries" :label "reductions inf" :expected "[0 1 3 6]" :actual "(take 4 (reductions + (range)))"}
   {:suite "conformance / iterating maps yields entries" :label "tree-seq strict" :expected "10" :actual "(reduce + 0 (filter (complement coll?) (tree-seq coll? seq [1 [2 [3 4]]])))"}
   {:suite "conformance / iterating maps yields entries" :label "case nil + default" :expected "[:nilr :def]" :actual "(let [f (fn [x] (case x 1 :one nil :nilr :def))] [(f nil) (f 9)])"}
   {:suite "conformance / iterating maps yields entries" :label "case collection consts" :expected "[:v :m :s]" :actual "(let [f (fn [x] (case x [1 2] :v {:a 1} :m #{3} :s :def))] [(f [1 2]) (f {:a 1}) (f #{3})])"}
   {:suite "conformance / iterating maps yields entries" :label "seq of nil-first" :expected "true" :actual "(boolean (seq (cons nil (list 1))))"}
   {:suite "conformance / iterating maps yields entries" :label "reverse nil elem" :expected "[2 nil 1]" :actual "(vec (reverse (list 1 nil 2)))"}
   {:suite "conformance / iterating maps yields entries" :label "map non-seqable throws" :expected "true" :actual "(try (doall (map inc 5)) false (catch Throwable _ true))"}
-  {:suite "conformance / iterating maps yields entries" :label "keep-indexed" :expected "(quote (:b :d))" :actual "(keep-indexed (fn [i x] (if (odd? i) x)) [:a :b :c :d])"}
-  {:suite "conformance / iterating maps yields entries" :label "map-indexed" :expected "(quote ([0 :a] [1 :b]))" :actual "(map-indexed (fn [i x] [i x]) [:a :b])"}
+  {:suite "conformance / iterating maps yields entries" :label "keep-indexed" :expected "[:b :d]" :actual "(keep-indexed (fn [i x] (if (odd? i) x)) [:a :b :c :d])"}
+  {:suite "conformance / iterating maps yields entries" :label "map-indexed" :expected "[[0 :a] [1 :b]]" :actual "(map-indexed (fn [i x] [i x]) [:a :b])"}
   {:suite "conformance / iterating maps yields entries" :label "trampoline" :expected ":done" :actual "(do (defn a [n] (if (zero? n) :done (fn [] (a (dec n))))) (trampoline a 5))"}
   {:suite "conformance / iterating maps yields entries" :label "format" :expected "\"1-x\"" :actual "(format \"%d-%s\" 1 \"x\")"}
   {:suite "conformance / iterating maps yields entries" :label "read-string" :expected "(quote (+ 1 2))" :actual "(read-string \"(+ 1 2)\")"}
   {:suite "conformance / iterating maps yields entries" :label "letfn mutual" :expected "true" :actual "(letfn [(ev? [n] (if (= n 0) true (od? (dec n)))) (od? [n] (if (= n 0) false (ev? (dec n))))] (ev? 10))"}
   {:suite "conformance / iterating maps yields entries" :label "doseq side" :expected "[1 2 3]" :actual "(do (def a (atom [])) (doseq [x [1 2 3]] (swap! a conj x)) @a)"}
   {:suite "conformance / iterating maps yields entries" :label "doseq nested" :expected "4" :actual "(do (def c (atom 0)) (doseq [x [1 2] y [10 20]] (swap! c inc)) @c)"}
-  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "lazy filter inf" :expected "(quote (1 3 5 7 9))" :actual "(take 5 (filter odd? (range)))"}
-  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "lazy take-while inf" :expected "(quote (0 1 2 3 4))" :actual "(take-while (fn [x] (< x 5)) (range))"}
-  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "lazy remove inf" :expected "(quote (0 2 4 6 8))" :actual "(take 5 (remove odd? (range)))"}
-  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "filter finite" :expected "(quote (2 4))" :actual "(filter even? [1 2 3 4 5])"}
+  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "lazy filter inf" :expected "[1 3 5 7 9]" :actual "(take 5 (filter odd? (range)))"}
+  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "lazy take-while inf" :expected "[0 1 2 3 4]" :actual "(take-while (fn [x] (< x 5)) (range))"}
+  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "lazy remove inf" :expected "[0 2 4 6 8]" :actual "(take 5 (remove odd? (range)))"}
+  {:suite "conformance / MED: lazy filter / take-while over infinite seqs" :label "filter finite" :expected "[2 4]" :actual "(filter even? [1 2 3 4 5])"}
   {:suite "conformance / atoms (full support)" :label "swap! args" :expected "7" :actual "(do (def a (atom 1)) (swap! a + 2 4) @a)"}
   {:suite "conformance / atoms (full support)" :label "reset! ret" :expected "9" :actual "(do (def a (atom 1)) (reset! a 9))"}
   {:suite "conformance / atoms (full support)" :label "compare-and-set!" :expected "true" :actual "(do (def a (atom 1)) (compare-and-set! a 1 2))"}
   {:suite "conformance / atoms (full support)" :label "compare-and-set! no" :expected "false" :actual "(do (def a (atom 1)) (compare-and-set! a 5 2))"}
   {:suite "conformance / atoms (full support)" :label "swap-vals!" :expected "[1 2]" :actual "(do (def a (atom 1)) (swap-vals! a inc))"}
   {:suite "conformance / atoms (full support)" :label "reset-vals!" :expected "[1 9]" :actual "(do (def a (atom 1)) (reset-vals! a 9))"}
-  {:suite "conformance / atoms (full support)" :label "atom map swap" :expected "{:a 1 :b 2}" :actual "(do (def a (atom {:a 1})) (swap! a assoc :b 2) @a)"}
+  {:suite "conformance / atoms (full support)" :label "atom map swap" :expected "{:a 1, :b 2}" :actual "(do (def a (atom {:a 1})) (swap! a assoc :b 2) @a)"}
   {:suite "conformance / atoms (full support)" :label "add-watch" :expected "[:k 1 2]" :actual "(do (def lg (atom nil)) (def a (atom 1)) (add-watch a :k (fn [k r o n] (reset! lg [k o n]))) (swap! a inc) @lg)"}
   {:suite "conformance / atoms (full support)" :label "atom validator" :expected "5" :actual "(do (def a (atom 1 :validator pos?)) (reset! a 5) @a)"}
   {:suite "conformance / atoms (full support)" :label "instance? Atom" :expected "true" :actual "(instance? clojure.lang.Atom (atom 1))"}
@@ -2835,20 +2835,20 @@
   {:suite "conformance / regex" :label "re-find" :expected "\"123\"" :actual "(re-find #\"[0-9]+\" \"abc123def\")"}
   {:suite "conformance / regex" :label "re-matches" :expected "\"abc\"" :actual "(re-matches #\"a.c\" \"abc\")"}
   {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "re-matches no" :expected "nil" :actual "(re-matches #\"a.c\" \"abcd\")"}
-  {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "re-seq" :expected "(quote (\"12\" \"34\"))" :actual "(re-seq #\"[0-9]+\" \"a12b34\")"}
+  {:suite "conformance / regex (capturing groups, backtracking, flags, lookahead)" :label "re-seq" :expected "[\"12\" \"34\"]" :actual "(re-seq #\"[0-9]+\" \"a12b34\")"}
   {:suite "conformance / sequences" :label "split-at" :expected "[[1 2] [3 4 5]]" :actual "(split-at 2 [1 2 3 4 5])"}
   {:suite "conformance / sequences" :label "split-with" :expected "[[1 2] [3 4 1]]" :actual "(split-with (fn [x] (< x 3)) [1 2 3 4 1])"}
-  {:suite "conformance / sequences" :label "partition step" :expected "(quote ((1 2) (3 4)))" :actual "(partition 2 2 [1 2 3 4 5])"}
+  {:suite "conformance / sequences" :label "partition step" :expected "[[1 2] [3 4]]" :actual "(partition 2 2 [1 2 3 4 5])"}
   {:suite "conformance / sequences" :label "not-every?" :expected "true" :actual "(not-every? pos? [1 -2 3])"}
   {:suite "conformance / overlay migration (jolt-1j0): run in all 3 modes" :label "not-any?" :expected "true" :actual "(not-any? neg? [1 2 3])"}
-  {:suite "conformance / sequences" :label "take-nth" :expected "(quote (0 2 4))" :actual "(take-nth 2 [0 1 2 3 4])"}
-  {:suite "conformance / sequences" :label "butlast" :expected "(quote (1 2))" :actual "(butlast [1 2 3])"}
+  {:suite "conformance / sequences" :label "take-nth" :expected "[0 2 4]" :actual "(take-nth 2 [0 1 2 3 4])"}
+  {:suite "conformance / sequences" :label "butlast" :expected "[1 2]" :actual "(butlast [1 2 3])"}
   {:suite "conformance / sequences" :label "empty" :expected "[]" :actual "(empty [1 2 3])"}
   {:suite "conformance / sequences" :label "replace map" :expected "[:a :b :a]" :actual "(replace {1 :a 2 :b} [1 2 1])"}
-  {:suite "conformance / data structures" :label "sorted-map seq" :expected "(quote ([:a 1] [:b 2] [:c 3]))" :actual "(seq (sorted-map :c 3 :a 1 :b 2))"}
-  {:suite "conformance / data structures" :label "sorted-set seq" :expected "(quote (1 2 3))" :actual "(seq (sorted-set 3 1 2))"}
+  {:suite "conformance / data structures" :label "sorted-map seq" :expected "[[:a 1] [:b 2] [:c 3]]" :actual "(seq (sorted-map :c 3 :a 1 :b 2))"}
+  {:suite "conformance / data structures" :label "sorted-set seq" :expected "[1 2 3]" :actual "(seq (sorted-set 3 1 2))"}
   {:suite "conformance / data structures" :label "coll? set" :expected "true" :actual "(coll? #{1 2})"}
-  {:suite "conformance / data structures" :label "conj map entry" :expected "{:a 1 :b 2}" :actual "(conj {:a 1} [:b 2])"}
+  {:suite "conformance / data structures" :label "conj map entry" :expected "{:a 1, :b 2}" :actual "(conj {:a 1} [:b 2])"}
   {:suite "conformance / metadata / vars" :label "vary-meta" :expected "{:x 2}" :actual "(meta (vary-meta (with-meta [1] {:x 1}) update :x inc))"}
   {:suite "conformance / metadata / vars" :label "defonce no-redef" :expected "1" :actual "(do (defonce dv1 1) (defonce dv1 2) dv1)"}
   {:suite "conformance / metadata / vars" :label "binding dynamic" :expected "10" :actual "(do (def ^:dynamic *x* 1) (binding [*x* 10] *x*))"}

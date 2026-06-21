@@ -122,22 +122,26 @@
 (define (char-code c) (if (char? c) (char->integer c) (jnum->exact c)))
 
 ;; ---- java.lang statics ------------------------------------------------------
+;; java.lang.Math: sqrt/pow/floor/ceil/trig/log/exp always return a DOUBLE on the
+;; JVM (Chez's sqrt/expt return EXACT for exact args, e.g. (sqrt 9) -> 3), so coerce
+;; to flonum. round -> long (exact); abs/max/min preserve the argument's type.
+(define (->dbl x) (exact->inexact x))
 (register-class-statics! "Math"
-  (list (cons "sqrt" (lambda (x) (->num (sqrt x))))
-        (cons "pow" (lambda (a b) (->num (expt a b))))
-        (cons "floor" (lambda (x) (->num (floor x))))
-        (cons "ceil" (lambda (x) (->num (ceiling x))))
-        (cons "round" (lambda (x) (->num (round x))))
-        (cons "abs" (lambda (x) (->num (abs x))))
-        (cons "sin" (lambda (x) (->num (sin x)))) (cons "cos" (lambda (x) (->num (cos x))))
-        (cons "tan" (lambda (x) (->num (tan x)))) (cons "asin" (lambda (x) (->num (asin x))))
-        (cons "acos" (lambda (x) (->num (acos x)))) (cons "atan" (lambda (x) (->num (atan x))))
-        (cons "log" (lambda (x) (->num (log x)))) (cons "log10" (lambda (x) (->num (/ (log x) (log 10)))))
-        (cons "exp" (lambda (x) (->num (exp x))))
-        (cons "max" (lambda (a b) (->num (if (> a b) a b)))) (cons "min" (lambda (a b) (->num (if (< a b) a b))))
+  (list (cons "sqrt" (lambda (x) (->dbl (sqrt x))))
+        (cons "pow" (lambda (a b) (->dbl (expt a b))))
+        (cons "floor" (lambda (x) (->dbl (floor x))))
+        (cons "ceil" (lambda (x) (->dbl (ceiling x))))
+        (cons "round" (lambda (x) (exact (floor (+ x 1/2)))))   ; JVM round-half-up -> long
+        (cons "abs" (lambda (x) (abs x)))
+        (cons "sin" (lambda (x) (->dbl (sin x)))) (cons "cos" (lambda (x) (->dbl (cos x))))
+        (cons "tan" (lambda (x) (->dbl (tan x)))) (cons "asin" (lambda (x) (->dbl (asin x))))
+        (cons "acos" (lambda (x) (->dbl (acos x)))) (cons "atan" (lambda (x) (->dbl (atan x))))
+        (cons "log" (lambda (x) (->dbl (log x)))) (cons "log10" (lambda (x) (->dbl (/ (log x) (log 10)))))
+        (cons "exp" (lambda (x) (->dbl (exp x))))
+        (cons "max" (lambda (a b) (if (> a b) a b))) (cons "min" (lambda (a b) (if (< a b) a b)))
         (cons "signum" (lambda (x) (cond ((< x 0) -1.0) ((> x 0) 1.0) (else 0.0))))
-        (cons "PI" (->num (* 4 (atan 1)))) (cons "E" (->num (exp 1)))
-        (cons "random" (lambda args (->num (random 1.0))))))
+        (cons "PI" (->dbl (* 4 (atan 1)))) (cons "E" (->dbl (exp 1)))
+        (cons "random" (lambda args (random 1.0)))))
 
 ;; Thread: real OS threads back futures/promises (jolt-byjr), so sleep genuinely
 ;; parks the calling thread for `ms` milliseconds (a worker sleeping doesn't block

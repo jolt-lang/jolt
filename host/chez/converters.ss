@@ -1,9 +1,7 @@
-;; converters + string ops (jolt-t6cr) — host-coupled seed natives the Chez host
-;; must provide; def-var!'d into clojure.core, resolved in prelude mode. Loaded
-;; last (after jolt-pr-str), since `str` reuses the printer. Semantics match the
-;; Janet seed (core_print.janet str-render-one, core_io.janet core-compare,
-;; core_refs.janet int/double). jolt is all-flonum, so numeric results are
-;; flonums (int truncates toward zero, compare returns -1.0/0.0/1.0).
+;; converters + string ops — host-coupled natives def-var!'d into clojure.core,
+;; resolved in prelude mode. Loaded last (after jolt-pr-str), since `str` reuses
+;; the printer. int/long truncate toward zero to an exact integer; compare returns
+;; an exact -1/0/1; double yields a flonum.
 
 ;; str: nil -> "", string raw, char bare (not \c), regex -> raw source, else the
 ;; printer (which renders collections with readable elements).

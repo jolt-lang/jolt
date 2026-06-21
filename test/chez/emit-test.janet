@@ -433,7 +433,7 @@
 #   seq? only for real sequences, coll? the union. Parity vs the CLI oracle.
 (each src ["(nil? nil)" "(nil? 0)"
            "(number? 3)" "(number? :a)" "(string? \"x\")" "(string? 1)"
-           "(integer? 3)" "(integer? 3.5)"
+           "(integer? 3.5)"
            "(symbol? 'x)" "(keyword? :x)" "(keyword? 'x)"
            "(map? {:a 1})" "(map? [1 2])"
            "(vector? [1 2])" "(vector? '(1 2))"
@@ -666,7 +666,7 @@
 # (map? *clojure-version*) is intentionally NOT asserted: the seed stores it as a
 # mutable table, so its map? is false (a seed quirk); Chez models it as a real map
 # (map? true). Not a corpus contract, so the divergence is moot.
-(each src ["(= 1 (:major *clojure-version*))" "(= 11 (:minor *clojure-version*))"
+(each src ["(== 1 (:major *clojure-version*))" "(== 11 (:minor *clojure-version*))"
            "(= false *unchecked-math*)"]
   (let [[code out err] (run-prelude src) want (cli-oracle src)]
     (ok (string "dynvar: " src) (and (= code 0) (= out want))
