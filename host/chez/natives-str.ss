@@ -307,3 +307,24 @@
     specs)
   jolt-nil)
 (def-var! "clojure.core" "use" chez-runtime-use)
+;; import: bring a deftype/defrecord from another ns into the current one. A spec
+;; [from-ns Type ...] binds each Type's ctor closure under the current ns, so its
+;; (Type. ...) constructor (host-new resolves it as a var) works after :import.
+(define (chez-runtime-import . specs)
+  (for-each
+    (lambda (spec)
+      (let ((items (cond ((pvec? spec) (seq->list spec))
+                         ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
+                         (else '()))))
+        (when (and (pair? items) (symbol-t? (car items)))
+          (let ((from (symbol-t-name (car items))))
+            (for-each
+              (lambda (tn)
+                (when (symbol-t? tn)
+                  (let ((c (var-cell-lookup from (symbol-t-name tn))))
+                    (when (and c (var-cell-defined? c))
+                      (def-var! (chez-current-ns) (symbol-t-name tn) (var-cell-root c))))))
+              (cdr items))))))
+    specs)
+  jolt-nil)
+(def-var! "clojure.core" "import" chez-runtime-import)
