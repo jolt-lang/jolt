@@ -4,15 +4,19 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test corpus unit smoke selfhost certify remint
+.PHONY: test values corpus unit smoke selfhost certify remint
 
 # Full gate. Each step exits non-zero on failure, failing the target.
-test: selfhost corpus unit smoke certify
+test: selfhost values corpus unit smoke certify
 	@echo "OK: all gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
 selfhost:
 	@sh host/chez/selfcheck.sh
+
+# Value-model unit tests (nil/truthiness/collections on Chez).
+values:
+	@chez --script test/chez/values-test.ss
 
 # Corpus conformance vs JVM-sourced expecteds (allowlist + floor).
 corpus:

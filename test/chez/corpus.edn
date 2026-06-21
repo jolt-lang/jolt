@@ -596,7 +596,7 @@
   {:suite "host-interop / java.io.File" :label "getName" :expected "\"c.txt\"" :actual "(do (require '[clojure.java.io :as io]) (.getName (io/file \"/a/b/c.txt\")))"}
   {:suite "host-interop / java.io.File" :label "getPath joins" :expected "\"/a/b\"" :actual "(do (require '[clojure.java.io :as io]) (.getPath (io/file \"/a\" \"b\")))"}
   {:suite "host-interop / java.io.File" :label "isDirectory of repo dir" :expected "true" :actual "(do (require '[clojure.java.io :as io]) (.isDirectory (io/file \"docs\")))"}
-  {:suite "host-interop / java.io.File" :label "isFile of repo file" :expected "true" :actual "(do (require '[clojure.java.io :as io]) (.isFile (io/file \"project.janet\")))"}
+  {:suite "host-interop / java.io.File" :label "isFile of repo file" :expected "true" :actual "(do (require '[clojure.java.io :as io]) (.isFile (io/file \"README.md\")))"}
   {:suite "host-interop / java.io.File" :label "exists is false off-disk" :expected "false" :actual "(do (require '[clojure.java.io :as io]) (.exists (io/file \"/no/such/path/xyz\")))"}
   {:suite "host-interop / java.io.File" :label "file-seq yields File values" :expected "true" :actual "(do (require '[clojure.java.io :as io]) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"docs\"))))"}
   {:suite "host-interop / java.io.File" :label "file-seq finds files" :expected "true" :actual "(do (require '[clojure.java.io :as io]) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))"}
@@ -2137,14 +2137,14 @@
   {:suite "sorted / seq fn interop" :label "vec of sorted-set" :expected "[1 2 3]" :actual "(vec (sorted-set 3 1 2))"}
   {:suite "sorted / seq fn interop" :label "into vec" :expected "[[1 :a] [2 :b]]" :actual "(into [] (sorted-map 2 :b 1 :a))"}
   {:suite "sorted / seq fn interop" :label "sorted-map-by 3way cmp" :expected "[3 2 1]" :actual "(vec (keys (sorted-map-by (fn [a b] (- b a)) 1 :a 2 :b 3 :c)))"}
-  {:suite "io / slurp, spit, printf, flush (host-classified)" :label "slurp returns string" :expected "true" :actual "(string? (slurp \"project.janet\"))"}
-  {:suite "io / slurp, spit, printf, flush (host-classified)" :label "slurp content" :expected "true" :actual "(do (require (quote [clojure.string :as s])) (s/includes? (slurp \"project.janet\") \"jolt\"))"}
+  {:suite "io / slurp, spit, printf, flush (host-classified)" :label "slurp returns string" :expected "true" :actual "(string? (slurp \"README.md\"))"}
+  {:suite "io / slurp, spit, printf, flush (host-classified)" :label "slurp content" :expected "true" :actual "(do (require (quote [clojure.string :as s])) (s/includes? (slurp \"README.md\") \"jolt\"))"}
   {:suite "io / slurp, spit, printf, flush (host-classified)" :label "spit + slurp round" :expected "\"hello\"" :actual "(do (spit \"/tmp/jolt-spit-test.txt\" \"hello\") (slurp \"/tmp/jolt-spit-test.txt\"))"}
   {:suite "io / slurp, spit, printf, flush (host-classified)" :label "spit append" :expected "\"ab\"" :actual "(do (spit \"/tmp/jolt-spit-test.txt\" \"a\") (spit \"/tmp/jolt-spit-test.txt\" \"b\" :append true) (slurp \"/tmp/jolt-spit-test.txt\"))"}
   {:suite "io / slurp, spit, printf, flush (host-classified)" :label "printf formats" :expected "\"x=1 y=a\"" :actual "(with-out-str (printf \"x=%d y=%s\" 1 \"a\"))"}
   {:suite "io / slurp, spit, printf, flush (host-classified)" :label "printf no newline" :expected "false" :actual "(do (require (quote [clojure.string :as s])) (s/includes? (with-out-str (printf \"%d\" 1)) \"\\n\"))"}
   {:suite "io / slurp, spit, printf, flush (host-classified)" :label "flush returns nil" :expected "nil" :actual "(flush)"}
-  {:suite "io / slurp, spit, printf, flush (host-classified)" :label "file-seq finds files" :expected "true" :actual "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"project.janet\")) (file-seq \".\"))))"}
+  {:suite "io / slurp, spit, printf, flush (host-classified)" :label "file-seq finds files" :expected "true" :actual "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"README.md\")) (file-seq \".\"))))"}
   {:suite "ns / ns-map, ns-unmap, ns-refers" :label "ns-map has var" :expected "true" :actual "(do (def nmv 1) (some? (get (ns-map (quote user)) (quote nmv))))"}
   {:suite "ns / ns-map, ns-unmap, ns-refers" :label "ns-unmap removes" :expected "nil" :actual "(do (def nuv 1) (ns-unmap (quote user) (quote nuv)) (resolve (quote nuv)))"}
   {:suite "ns / ns-map, ns-unmap, ns-refers" :label "ns-refers sees refer" :expected "true" :actual "(do (require (quote clojure.string)) (refer (quote clojure.string)) (some? (get (ns-refers (quote user)) (quote join))))"}

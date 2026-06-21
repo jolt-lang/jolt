@@ -1,9 +1,3 @@
-[submodule "vendor/sci"]
-	path = vendor/sci
-	url = https://github.com/borkdude/sci.git
-[submodule "vendor/clojure-test-suite"]
-	path = vendor/clojure-test-suite
-	url = https://github.com/jank-lang/clojure-test-suite.git
 [submodule "vendor/irregex"]
 	path = vendor/irregex
 	url = https://github.com/ashinn/irregex.git

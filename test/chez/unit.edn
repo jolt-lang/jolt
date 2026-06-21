@@ -114,27 +114,27 @@
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getName (io/file \"/a/b/c.txt\")))" :expected "c.txt"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (io/file \"/a\" \"b\")))" :expected "/a/b"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isDirectory (io/file \"docs\")))" :expected "true"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"project.janet\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"README.md\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"docs\")))" :expected "false"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"/no/such/path/xyz\")))" :expected "false"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"project.janet\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"README.md\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File (io/file \"/a/b\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File \"/a/b\"))" :expected "false"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (type (io/file \"/a\"))))" :expected ":jolt/file"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"docs\"))))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))" :expected "true"}
-  {:suite "io" :expr "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"project.janet\")) (file-seq \".\"))))" :expected "true"}
-  {:suite "io" :expr "(string? (slurp \"project.janet\"))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"README.md\")) (file-seq \".\"))))" :expected "true"}
+  {:suite "io" :expr "(string? (slurp \"README.md\"))" :expected "true"}
   {:suite "io" :expr "(do (spit \"/tmp/jolt-io-test.txt\" \"hello\") (slurp \"/tmp/jolt-io-test.txt\"))" :expected "hello"}
   {:suite "io" :expr "(do (spit \"/tmp/jolt-io-test.txt\" \"a\") (spit \"/tmp/jolt-io-test.txt\" \"b\" :append true) (slurp \"/tmp/jolt-io-test.txt\"))" :expected "ab"}
   {:suite "io" :expr "(flush)" :expected ""}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/file \"project.janet\"))))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/file \"README.md\"))))" :expected "true"}
   {:suite "ioreader" :expr "(str (char-array \"abc\"))" :expected "(\\a \\b \\c)"}
   {:suite "ioreader" :expr "(.read (StringReader. (apply str (char-array \"Qz\"))))" :expected "81"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (char-array \"abc\"))))" :expected "97"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (StringReader. \"k\"))))" :expected "107"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (slurp (io/reader (char-array \"xyz\"))))" :expected "xyz"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/reader \"project.janet\"))))" :expected "true"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/reader \"README.md\"))))" :expected "true"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toString (.toURL (io/file \"/tmp/x\"))))" :expected "file:/tmp/x"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toURI (io/file \"/tmp/x\")))" :expected "file:/tmp/x"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/x\"))))" :expected "/tmp/x"}
