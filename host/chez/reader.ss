@@ -36,9 +36,13 @@
 (define (rdr-ws? c)
   (or (char-whitespace? c) (char=? c #\,)))
 
+;; `'` (apostrophe) is a NON-terminating macro char in Clojure (isTerminatingMacro
+;; is false for it), so it's a valid symbol constituent after the first char:
+;; inc'/+'/foo' read as single symbols. A LEADING ' still dispatches as quote
+;; (handled before token reading begins). Omit it from the terminator set.
 (define (rdr-terminator? c)
   (or (rdr-ws? c)
-      (memv c '(#\( #\) #\[ #\] #\{ #\} #\" #\; #\@ #\^ #\' #\` #\~ #\\))))
+      (memv c '(#\( #\) #\[ #\] #\{ #\} #\" #\; #\@ #\^ #\` #\~ #\\))))
 
 (define (rdr-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
 
@@ -283,8 +287,11 @@
       ;; non-symbol target (a collection): lower to a runtime (with-meta form meta)
       ;; the analyzer compiles like any invoke — same as the Janet reader, so e.g.
       ;; (meta ^{:tag :int} [1 2]) and ^:foo {} carry their meta at runtime. The meta
-      ;; pmap doubles as its own map-literal form.
-      (jolt-list (jolt-symbol "clojure.core" "with-meta") target meta)))
+      ;; pmap doubles as its own map-literal form. Use the BARE `with-meta` symbol
+      ;; (ns #f) to match the Janet reader exactly — the fn/defn macros unwrap a
+      ;; (with-meta <arglist-vec> _) return-hint by matching the unqualified head,
+      ;; so a qualified clojure.core/with-meta would slip past them (^bytes [b]).
+      (jolt-list (jolt-symbol #f "with-meta") target meta)))
 
 ;; --- # dispatch -------------------------------------------------------------
 ;; #(...) anonymous fn shorthand (jolt-qjr0): % -> p1, %N -> pN, %& -> rest. The

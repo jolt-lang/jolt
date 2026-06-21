@@ -136,11 +136,28 @@
     ;; but keeps a fixed arity a nil-free struct rather than a phm.
     (if rst (assoc arity :rest rst) arity)))
 
+;; A reader that lowers ^meta on a collection to a runtime (with-meta <coll> <meta>)
+;; form (the Chez data reader) wraps an arglist vector carrying a return-type hint
+;; (^bytes [b] / ^String [x y]). Unwrap to the underlying vector so fn parsing sees
+;; the params — the hint is ignored at runtime. Only the (with-meta <vec> _) shape
+;; matches, so a real arity clause (head is a vector) and the Janet reader's
+;; meta-on-tuple (already a vector) pass through unchanged.
+(defn- strip-arglist-meta [form]
+  (if (form-list? form)
+    (let [es (vec (form-elements form))]
+      (if (and (= 3 (count es))
+               (form-sym? (first es))
+               (= "with-meta" (form-sym-name (first es)))
+               (form-vec? (nth es 1)))
+        (nth es 1)
+        form))
+    form))
+
 (defn- analyze-fn [ctx items env]
   (let [named (form-sym? (nth items 1))
         fn-name (when named (form-sym-name (nth items 1)))
         rest-items (if named (drop 2 items) (drop 1 items))
-        first* (first rest-items)]
+        first* (strip-arglist-meta (first rest-items))]
     (cond
       (form-vec? first*)
         (fn-node fn-name [(analyze-arity ctx first* (rest rest-items) env fn-name)])
@@ -148,7 +165,7 @@
         (fn-node fn-name
                  (mapv (fn [clause]
                          (let [cl (vec (form-elements clause))]
-                           (analyze-arity ctx (first cl) (rest cl) env fn-name)))
+                           (analyze-arity ctx (strip-arglist-meta (first cl)) (rest cl) env fn-name)))
                        rest-items))
       :else (uncompilable "fn: bad params"))))
 
