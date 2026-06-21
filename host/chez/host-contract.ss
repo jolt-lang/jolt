@@ -118,6 +118,7 @@
 (define (hc-interop-head? name)
   (let ((n (string-length name)))
     (and (> n 1)
+         (not (string=? name ".."))   ; the .. threading macro, not an interop form
          (or (char=? (string-ref name 0) #\.)
              (char=? (string-ref name (- n 1)) #\.)))))
 (define (hc-special? name)

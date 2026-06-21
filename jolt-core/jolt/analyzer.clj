@@ -301,7 +301,8 @@
 (defn- method-head? [nm]
   (and (> (count nm) 1)
        (= "." (subs nm 0 1))
-       (not (= "-" (subs nm 1 2)))))
+       (not (= "-" (subs nm 1 2)))     ; .-field is field access
+       (not (= "." (subs nm 1 2)))))   ; .. is the threading macro, not .method
 
 (defn- analyze-host-call [ctx hname items env]
   (when (< (count items) 2)
