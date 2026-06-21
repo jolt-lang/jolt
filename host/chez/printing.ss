@@ -28,11 +28,11 @@
 (define (jolt-pr-readable x)
   (cond
     ((string? x) (string-append "\"" (jolt-str-escape x) "\""))
-    ;; pr renders the infinities / NaN long-form (Clojure .toString), at every
-    ;; nesting level — unlike the -e printer's inf/-inf/nan.
-    ((and (flonum? x) (fl= x +inf.0)) "Infinity")
-    ((and (flonum? x) (fl= x -inf.0)) "-Infinity")
-    ((and (flonum? x) (not (fl= x x))) "NaN")
+    ;; pr renders the infinities / NaN in READABLE form (##Inf reads back), unlike
+    ;; str's "Infinity"/"-Infinity"/"NaN". Applies at every nesting level.
+    ((and (flonum? x) (fl= x +inf.0)) "##Inf")
+    ((and (flonum? x) (fl= x -inf.0)) "##-Inf")
+    ((and (flonum? x) (not (fl= x x))) "##NaN")
     ;; transients print as a cold tagged type (print-method routes this through a
     ;; multimethod; the readable fallback renders it directly).
     ;; forward refs to transients.ss (loaded later) — resolved at call time.

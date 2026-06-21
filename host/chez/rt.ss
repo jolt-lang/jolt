@@ -133,12 +133,12 @@
 ;; without a ".0" ((* 1.0 5) prints as "5", (/ 1 2) as "0.5").
 (define (jolt-num->string x)
   (cond
-    ;; the -e / element printer renders the infinities and NaN as inf/-inf/nan
-    ;; (Chez's number->string gives +inf.0 etc.); the str/print family uses the
-    ;; long "Infinity"/"NaN" forms (see jolt-str-render-one in converters.ss).
-    ((and (flonum? x) (fl= x +inf.0)) "inf")
-    ((and (flonum? x) (fl= x -inf.0)) "-inf")
-    ((and (flonum? x) (not (fl= x x))) "nan")
+    ;; the -e / element printer renders the infinities and NaN in READABLE form
+    ;; (##Inf reads back, like Clojure's REPL/pr); str/print uses "Infinity"/"NaN"
+    ;; (see jolt-str-render-one in converters.ss).
+    ((and (flonum? x) (fl= x +inf.0)) "##Inf")
+    ((and (flonum? x) (fl= x -inf.0)) "##-Inf")
+    ((and (flonum? x) (not (fl= x x))) "##NaN")
     ((and (rational? x) (integer? x)) (number->string (exact x)))
     (else (number->string x))))
 

@@ -1072,12 +1072,11 @@
 (defn to-array-2d [coll] (to-array (map to-array coll)))
 
 ;; Masking integer coercions (not aliases): byte/short wrap to their width.
-;; unchecked-char keeps jolt's historical NUMBER result (Clojure returns a
-;; char) — the char wrapper is a different value type here. int handles chars,
-;; so (unchecked-byte \a) works as on the JVM.
+;; unchecked-byte/short truncate to a number; unchecked-char returns a char (as on
+;; the JVM). int handles chars, so (unchecked-byte \a) works.
 (defn unchecked-byte [x] (bit-and (int x) 0xff))
 (defn unchecked-short [x] (bit-and (int x) 0xffff))
-(defn unchecked-char [x] (bit-and (int x) 0xffff))
+(defn unchecked-char [x] (char (bit-and (int x) 0xffff)))
 (defn unchecked-float [x] (double x))
 (defn unchecked-double [x] (double x))
 

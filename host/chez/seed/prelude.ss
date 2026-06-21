@@ -561,7 +561,7 @@
 (guard (e (#t #f))
   (def-var! "clojure.core" "unchecked-short" (letrec ((unchecked-short (lambda (x) (let fnrec918 ((x x)) (jolt-invoke (var-deref "clojure.core" "bit-and") (jolt-invoke (var-deref "clojure.core" "int") x) 65535))))) unchecked-short)))
 (guard (e (#t #f))
-  (def-var! "clojure.core" "unchecked-char" (letrec ((unchecked-char (lambda (x) (let fnrec919 ((x x)) (jolt-invoke (var-deref "clojure.core" "bit-and") (jolt-invoke (var-deref "clojure.core" "int") x) 65535))))) unchecked-char)))
+  (def-var! "clojure.core" "unchecked-char" (letrec ((unchecked-char (lambda (x) (let fnrec919 ((x x)) (jolt-invoke (var-deref "clojure.core" "char") (jolt-invoke (var-deref "clojure.core" "bit-and") (jolt-invoke (var-deref "clojure.core" "int") x) 65535)))))) unchecked-char)))
 (guard (e (#t #f))
   (def-var! "clojure.core" "unchecked-float" (letrec ((unchecked-float (lambda (x) (let fnrec920 ((x x)) (jolt-invoke (var-deref "clojure.core" "double") x))))) unchecked-float)))
 (guard (e (#t #f))
