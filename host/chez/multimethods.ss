@@ -56,11 +56,20 @@
 ;; if absent (defmethod before defmulti — rare; identity dispatch as a fallback).
 (define (jolt-defmethod-setup mm-sym dval impl)
   (let* ((nm (symbol-t-name mm-sym))
-         ;; a QUALIFIED multifn (cf.mm/ext) resolves in its own ns (cross-ns
-         ;; defmethod), not the current one — else we'd auto-create a stray multifn.
          (sns (symbol-t-ns mm-sym))
          (qns (and sns (not (jolt-nil? sns)) (not (null? sns)) sns))
-         (mns (if qns (or (chez-resolve-alias (chez-current-ns) qns) qns) (chez-current-ns)))
+         ;; resolve the multifn's HOME ns like a var: a qualified name in its own ns
+         ;; (cross-ns defmethod); an unqualified name via current ns -> :refer ->
+         ;; clojure.core, so (defmethod print-method ...) finds clojure.core's multifn
+         ;; instead of auto-creating a stray one in the current ns.
+         (mns (cond
+                (qns (or (chez-resolve-alias (chez-current-ns) qns) qns))
+                ((let ((c (var-cell-lookup (chez-current-ns) nm))) (and c (var-cell-defined? c)))
+                 (chez-current-ns))
+                ((chez-resolve-refer (chez-current-ns) nm))
+                ((let ((c (var-cell-lookup "clojure.core" nm))) (and c (var-cell-defined? c)))
+                 "clojure.core")
+                (else (chez-current-ns))))
          (cur (var-deref mns nm))
          (mf (if (jolt-multifn? cur) cur
                  (let ((m (make-jolt-multifn nm (var-deref "clojure.core" "identity")
