@@ -45,6 +45,7 @@ sci:
 # FFI + threading: HTTP server GC-safety (blocking calls deactivate the thread)
 # and http-client temp-file uniqueness, plus a live request.
 ffi:
+	@chez --script test/chez/ffi-binding-test.ss
 	@chez --script test/chez/ffi-server-test.ss
 
 # Transients: mutable backing, snapshot on persistent!, and linear-time builds.

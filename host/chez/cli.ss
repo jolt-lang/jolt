@@ -22,8 +22,12 @@
 (load "host/chez/png.ss")          ; jolt.png — a baked namespace before the snapshot
 (load "host/chez/http-client.ss")  ; jolt.http-client (libcurl)
 (load "host/chez/sqlite.ss")       ; jolt.sqlite + jdbc.core (libsqlite3)
-(load "host/chez/http-server.ss")  ; jolt.http.server + ring-janet.adapter (BSD sockets)
+(load "host/chez/http-server.ss")  ; jolt.http.server (BSD sockets)
 (load "host/chez/loader.ss")
+;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
+;; baked-ns snapshot, so a library's (require '[jolt.ffi]) still loads jolt.ffi's
+;; Clojure side (the foreign-fn / defcfn macros, src/jolt/jolt/ffi.clj).
+(load "host/chez/ffi.ss")          ; jolt.ffi (FFI: a library binds native code)
 
 ;; jolt.main + jolt.deps live under jolt-core; keep them (and src/jolt) on the
 ;; roots so the CLI's own namespaces — and any jolt.* an app pulls in — resolve.
