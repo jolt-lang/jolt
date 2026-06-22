@@ -114,12 +114,15 @@
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the
-  ;; nREPL server so an editor can connect and (require '[some.lib]) live.
-  (try (apply-project! (deps/resolve-project (project-dir))) (catch :default _ nil))
-  (let [port (or (some-> (first (filter #(not (str/starts-with? % "-")) more)) parse-long)
-                 (parse-long (or (jolt.host/getenv "JOLT_NREPL_PORT") "7888")))]
-    (require 'jolt.nrepl)
-    ((resolve 'jolt.nrepl/start) port)))
+  ;; nREPL server so an editor can connect and (require '[some.lib]) live. A
+  ;; library's middleware (deps.edn :nrepl/middleware) is composed over the
+  ;; built-in handler — sessions / interruptible-eval / completion etc.
+  (let [resolved (deps/resolve-project (project-dir))]
+    (apply-project! resolved)
+    (let [port (or (some-> (first (filter #(not (str/starts-with? % "-")) more)) parse-long)
+                   (parse-long (or (jolt.host/getenv "JOLT_NREPL_PORT") "7888")))]
+      (require 'jolt.nrepl)
+      ((resolve 'jolt.nrepl/start) port (:nrepl-middleware resolved)))))
 
 (defn- usage []
   (println "usage: jolt <command> [args]")

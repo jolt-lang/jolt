@@ -1,10 +1,19 @@
 (ns jolt.nrepl
-  "A minimal nREPL server for jolt, so an editor (CIDER / Calva / Cursive) can
-  connect and develop a project live. Speaks bencode over a loopback TCP socket
-  bound through jolt.ffi; supports the ops a client needs to connect and eval:
-  clone, describe, eval, load-file, close. The project's deps are already on the
-  source roots and its native libs loaded (jolt.main applies the project before
-  starting the server), so (require '[some.lib]) works at the REPL.
+  "A minimal, extensible nREPL server for jolt, so an editor (CIDER / Calva /
+  Cursive) can connect and develop a project live. Speaks bencode over a loopback
+  TCP socket bound through jolt.ffi. Built in: clone, describe, eval, load-file,
+  close — enough to connect and eval, with the project's deps on the roots and
+  native libs loaded (jolt.main applies the project first), so (require '[lib])
+  works.
+
+  EXTENSIBLE: a library can add the heavier nREPL features (sessions,
+  interruptible-eval, completion, lookup) as MIDDLEWARE without bloating core. A
+  middleware is `(fn [handler] (fn [request] ...))`; list them in deps.edn under
+  :nrepl/middleware (symbols resolving to a middleware fn, or to a vector of them)
+  and jolt.nrepl composes them over the built-in handler. The request is the
+  decoded bencode map (string keys: \"op\" \"code\" \"ns\" \"id\" \"session\" …)
+  plus :reply — a thread-safe (fn [response-map]) that adds id/session and sends.
+  Public seam for middleware: respond, evaluate, register-ops!, new-session.
 
   Writes .nrepl-port in the project dir so editors auto-detect the port."
   (:require [clojure.string :as str]
@@ -109,80 +118,122 @@
               (when (<= end (count s)) [(subs s start end) end]))))
         :else nil))))
 
-;; --- eval ------------------------------------------------------------------
+;; --- public seam for middleware --------------------------------------------
 (def ^:private session-counter (atom 0))
-(defn- new-session [] (str "jolt-" (swap! session-counter inc)))
+(defn new-session
+  "A fresh session id (middleware that implements sessions uses this)."
+  [] (str "jolt-" (swap! session-counter inc)))
 
-(defn- err-msg [e]
+(defn respond
+  "Send a response map for `request` (id/session added, then bencoded)."
+  [request m] ((:reply request) m))
+
+(defn err-msg
+  "Best-effort message for any thrown value (ex-info, or a raw Chez condition —
+  ex-message is nil for those, so fall back to the host condition text)."
+  [e]
   (or (ex-message e)
       (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
       (pr-str e)))
 
-(defn- eval-in-ns [ns-str code]
-  ;; evaluate in the requested ns if it's loaded (CIDER sends :ns with each eval).
-  ;; in-ns — not (binding [*ns* ..]) — sets the ns load-string resolves against on
-  ;; jolt; it persists for the next eval (fine for a serial editor session).
-  (when (and ns-str (not (str/blank? ns-str)) (find-ns (symbol ns-str)))
-    (in-ns (symbol ns-str)))
-  (load-string code))
-
-(defn- do-eval [code ns-str]
-  ;; eval the code, capturing *out*; return {:value .. :out .. :ns .. :err ..}.
+(defn evaluate
+  "Evaluate `code` (optionally in loaded ns `ns-str`), capturing *out*. Returns
+  {:value .. :out .. :ns .. :err ..}. in-ns — not (binding [*ns* ..]) — sets the
+  ns load-string resolves against on jolt. Reusable by eval middleware."
+  [code ns-str]
   (let [result (atom nil) err (atom nil)
         out (with-out-str
-              (try (reset! result (eval-in-ns ns-str (wire-> code)))
+              (try (when (and ns-str (not (str/blank? ns-str)) (find-ns (symbol ns-str)))
+                     (in-ns (symbol ns-str)))
+                   (reset! result (load-string code))
                    (catch :default e (reset! err (err-msg e)))))]
     {:value (when (nil? @err) (pr-str @result))
      :out out
      :ns (str (ns-name *ns*))
      :err @err}))
 
-(defn- handle-msg [fd msg]
-  (let [op (get msg "op")
-        id (get msg "id")
-        session (or (get msg "session") "none")
-        base (fn [m] (cond-> m id (assoc "id" id) session (assoc "session" session)))
-        reply (fn [m] (send-str fd (bencode (base m))))]
-    (cond
-      (= op "clone")    (reply {"new-session" (new-session) "status" ["done"]})
-      (= op "close")    (reply {"status" ["session-closed" "done"]})
-      (= op "describe") (reply {"status" ["done"]
-                                "versions" {"jolt-nrepl" {"major" 0 "minor" 1}}
-                                "ops" {"clone" {} "close" {} "describe" {} "eval" {} "load-file" {}}})
-      (or (= op "eval") (= op "load-file"))
-      (let [code (if (= op "load-file") (get msg "file") (get msg "code"))
-            {:keys [value out ns err]} (do-eval code (get msg "ns"))]
-        (when (seq out) (reply {"out" out}))
-        (if err
-          (do (reply {"err" (str err "\n")}) (reply {"ex" (str err) "status" ["eval-error" "done"]}))
-          (reply {"value" value "ns" ns "status" ["done"]})))
-      :else (reply {"status" ["done" "unknown-op"]}))))
+;; ops middleware advertise via describe (built-ins + any a library registers).
+(def ^:private extra-ops (atom #{}))
+(defn register-ops!
+  "Register op name(s) so `describe` advertises them. Call at middleware load."
+  [& ops] (swap! extra-ops into (map name ops)))
 
-(defn- handle-conn [fd]
-  (loop [buf ""]
-    (let [chunk (recv-str fd)]
-      (if (nil? chunk)
-        (c-close fd)
-        (let [buf (str buf chunk)
-              ;; drain every complete message in the buffer
-              rest-buf (loop [b buf]
-                         (let [r (bdecode b 0)]
-                           (if (nil? r) b
-                               (do (when (map? (first r)) (handle-msg fd (first r)))
-                                   (recur (subs b (second r)))))))]
-          (recur rest-buf))))))
+;; --- built-in handler ------------------------------------------------------
+(defn- built-in-handler [request]
+  (let [op (get request "op")]
+    (cond
+      (= op "clone")    (respond request {"new-session" (new-session) "status" ["done"]})
+      (= op "close")    (respond request {"status" ["session-closed" "done"]})
+      (= op "describe") (respond request {"status" ["done"]
+                                          "versions" {"jolt-nrepl" {"major" 0 "minor" 1}}
+                                          "ops" (zipmap (into #{"clone" "close" "describe" "eval" "load-file"}
+                                                              @extra-ops)
+                                                        (repeat {}))})
+      (or (= op "eval") (= op "load-file"))
+      (let [code (wire-> (if (= op "load-file") (get request "file") (get request "code")))
+            {:keys [value out ns err]} (evaluate code (get request "ns"))]
+        (when (seq out) (respond request {"out" out}))
+        (if err
+          (do (respond request {"err" (str err "\n")})
+              (respond request {"ex" (str err) "status" ["eval-error" "done"]}))
+          (respond request {"value" value "ns" ns "status" ["done"]})))
+      :else (respond request {"status" ["done" "unknown-op"]}))))
+
+;; --- middleware composition ------------------------------------------------
+;; resolve deps.edn :nrepl/middleware symbols to middleware fns. An entry may
+;; resolve to a single (fn [handler] handler') or to a vector of them (so a
+;; library can export one `default-middleware` var).
+(defn- resolve-middleware [syms]
+  (vec (mapcat
+         (fn [sym]
+           (require (symbol (namespace sym)))
+           (let [v (deref (resolve sym))]
+             (if (sequential? v) (map #(if (var? %) (deref %) %) v) [v])))
+         syms)))
+
+(defn- build-handler [middleware]
+  ;; first listed middleware is outermost.
+  (reduce (fn [h mw] (mw h)) built-in-handler (reverse middleware)))
+
+(defn- handle-conn [fd handler]
+  ;; one send lock per connection: eval/session middleware reply from other
+  ;; threads, so sends must not interleave.
+  (let [lock (Object.)
+        reply-for (fn [msg]
+                    (let [id (get msg "id") session (or (get msg "session") "none")]
+                      (fn [m]
+                        (locking lock
+                          (send-str fd (bencode (cond-> m id (assoc "id" id)
+                                                        session (assoc "session" session))))))))]
+    (loop [buf ""]
+      (let [chunk (recv-str fd)]
+        (if (nil? chunk)
+          (c-close fd)
+          (let [rest-buf (loop [b (str buf chunk)]
+                           (let [r (bdecode b 0)]
+                             (if (nil? r) b
+                                 (do (when (map? (first r))
+                                       (let [msg (first r)]
+                                         (try (handler (assoc msg :reply (reply-for msg)))
+                                              (catch :default e (println "nrepl handler error:" (err-msg e))))))
+                                     (recur (subs b (second r)))))))]
+            (recur rest-buf)))))))
 
 (defn start
-  "Start the nREPL server on `port` (0 = an OS-assigned port is not supported here;
-  pass a concrete port). Writes .nrepl-port. Blocks accepting connections."
-  [port]
-  (let [fd (listen-socket port)]
-    (try (spit ".nrepl-port" (str port)) (catch :default _ nil))
-    (println (str "nREPL server started on port " port " (127.0.0.1) — .nrepl-port written"))
-    (println ";; connect your editor; ^C to stop")
-    (loop []
-      (let [conn (c-accept fd ffi/null ffi/null)]
-        (when (>= conn 0)
-          (future (try (handle-conn conn)
-                       (catch :default e (println "nrepl conn error:" (ex-message e)) (c-close conn)))))
-        (recur)))))
+  "Start the nREPL server on `port` (a concrete port; loopback only). `middleware`
+  is a vector of deps.edn :nrepl/middleware symbols to compose over the built-in
+  handler. Writes .nrepl-port. Blocks accepting connections."
+  ([port] (start port nil))
+  ([port middleware]
+   (let [handler (build-handler (resolve-middleware (or middleware [])))
+         fd (listen-socket port)]
+     (try (spit ".nrepl-port" (str port)) (catch :default _ nil))
+     (println (str "nREPL server started on port " port " (127.0.0.1) — .nrepl-port written"))
+     (when (seq middleware) (println (str ";; middleware: " (str/join " " middleware))))
+     (println ";; connect your editor; ^C to stop")
+     (loop []
+       (let [conn (c-accept fd ffi/null ffi/null)]
+         (when (>= conn 0)
+           (future (try (handle-conn conn handler)
+                        (catch :default e (println "nrepl conn error:" (err-msg e)) (c-close conn)))))
+         (recur))))))
