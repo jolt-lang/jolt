@@ -908,7 +908,7 @@
   (mark-macro! "clojure.core" "proxy"))
 (guard (e (#t #f))
   (def-var! "clojure.core" "definterface"
-    (lambda (name-sym . body) (let fnrec484 ((name-sym name-sym) (body (list->cseq body))) (jolt-invoke (var-deref "clojure.core" "__sqcat") (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-symbol #f "def")) (jolt-invoke (var-deref "clojure.core" "__sq1") name-sym) (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-invoke (var-deref "clojure.core" "__sqmap") ))))))
+    (lambda (name-sym . body) (let fnrec484 ((name-sym name-sym) (body (list->cseq body))) (jolt-invoke (var-deref "clojure.core" "__sqcat") (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-symbol #f "do")) (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-invoke (var-deref "clojure.core" "__sqcat") (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-symbol #f "def")) (jolt-invoke (var-deref "clojure.core" "__sq1") name-sym) (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-invoke (var-deref "clojure.core" "__sqmap") )))) (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-invoke (var-deref "clojure.core" "__sqcat") (jolt-invoke (var-deref "clojure.core" "__sq1") (jolt-symbol #f "quote")) (jolt-invoke (var-deref "clojure.core" "__sq1") name-sym)))))))
   (mark-macro! "clojure.core" "definterface"))
 (guard (e (#t #f))
   (def-var! "clojure.core" "reify"

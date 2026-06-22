@@ -11,7 +11,7 @@
 ;; reset between cases so there is no leakage — same isolation a fresh process gives.
 ;;
 ;;   chez --script host/chez/run-corpus.ss
-;;   JOLT_CHEZ_ZJ_FLOOR=N   override the regression floor (default 2718)
+;;   JOLT_CHEZ_ZJ_FLOOR=N   override the regression floor (default 2720)
 ;;   JOLT_CORPUS_LIMIT=N    every-Nth stride (fast iteration; floor drops to 0)
 ;;   JOLT_DUMP_CRASH_LABELS=1   list crash + allowlisted labels
 (import (chezscheme))
@@ -86,11 +86,11 @@
 ;; transients/atoms/Infinity. These DIVERGE but are tolerated; the gate fails only on
 ;; a NEW (unlisted) divergence or a drop below the floor.
 (define known-fail-labels
-  '("definterface defines" "getMessage on a thrown string"
+  '("getMessage on a thrown string"
     "type of record" "chunked-seq? always false"
     "^Type tag on var" "symbol hint -> :tag"
     "lists extended type" "seq of tags"
-    "close on throw" "macroexpand-1" "ns-imports empty user"
+    "close on throw" "macroexpand-1"
     "bean is the map" "proxy resolves nil"
     "*in* is bound" "*in* bound"
     "bigdec" "bigdec int M" "bigdec suffix M"
@@ -196,7 +196,7 @@
 
 ;; Regression floor: fail on any NEW divergence or if pass drops below the floor.
 (define base-floor (let ((s (getenv "JOLT_CHEZ_ZJ_FLOOR")))
-                     (if s (string->number s) 2718)))
+                     (if s (string->number s) 2720)))
 (define floor (if limit 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass ~a < floor ~a or ~a new divergence(s)\n"

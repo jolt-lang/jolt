@@ -415,8 +415,10 @@
 ;; extend is a real FUNCTION now — defined above extend-type.
 ;; JVM proxies are unsupported.
 (defmacro proxy [& args] nil)
-;; definterface is JVM-only; bind the name to an empty marker.
-(defmacro definterface [name-sym & body] `(def ~name-sym {}))
+;; definterface is JVM-only; bind the name to a marker and return the name (not a
+;; var), matching the JVM where definterface yields the interface Class.
+(defmacro definterface [name-sym & body]
+  `(do (def ~name-sym {}) (quote ~name-sym)))
 
 ;; make-reified is a fn (clojure.core); the method map {kw (fn* ...)} is an
 ;; ordinary map literal that evaluates to {keyword fn}, and the protocol NAME is

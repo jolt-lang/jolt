@@ -158,8 +158,36 @@
       (hashtable-keys ns-refer-table))
     m))
 
-;; ns-imports: Chez has no Java class imports -> always the empty map.
-(define (jolt-ns-imports . _) (jolt-hash-map))
+;; ns-imports: clojure.core auto-imports the 96 public java.lang classes into
+;; every ns. jolt has no classloader, but returns that map (short symbol ->
+;; canonical class-name token) so (count (ns-imports 'user)) = 96 like the JVM.
+(define jolt-default-import-names
+  '("AbstractMethodError" "Appendable" "ArithmeticException" "ArrayIndexOutOfBoundsException"
+    "ArrayStoreException" "AssertionError" "BigDecimal" "BigInteger" "Boolean" "Byte"
+    "Callable" "CharSequence" "Character" "Class" "ClassCastException" "ClassCircularityError"
+    "ClassFormatError" "ClassLoader" "ClassNotFoundException" "CloneNotSupportedException"
+    "Cloneable" "Comparable" "Compiler" "Deprecated" "Double" "Enum"
+    "EnumConstantNotPresentException" "Error" "Exception" "ExceptionInInitializerError" "Float"
+    "IllegalAccessError" "IllegalAccessException" "IllegalArgumentException"
+    "IllegalMonitorStateException" "IllegalStateException" "IllegalThreadStateException"
+    "IncompatibleClassChangeError" "IndexOutOfBoundsException" "InheritableThreadLocal"
+    "InstantiationError" "InstantiationException" "Integer" "InternalError" "InterruptedException"
+    "Iterable" "LinkageError" "Long" "Math" "NegativeArraySizeException" "NoClassDefFoundError"
+    "NoSuchFieldError" "NoSuchFieldException" "NoSuchMethodError" "NoSuchMethodException"
+    "NullPointerException" "Number" "NumberFormatException" "Object" "OutOfMemoryError" "Override"
+    "Package" "Process" "ProcessBuilder" "Readable" "Runnable" "Runtime" "RuntimeException"
+    "RuntimePermission" "SecurityException" "SecurityManager" "Short" "StackOverflowError"
+    "StackTraceElement" "StrictMath" "String" "StringBuffer" "StringBuilder"
+    "StringIndexOutOfBoundsException" "SuppressWarnings" "System" "Thread" "Thread$State"
+    "Thread$UncaughtExceptionHandler" "ThreadDeath" "ThreadGroup" "ThreadLocal" "Throwable"
+    "TypeNotPresentException" "UnknownError" "UnsatisfiedLinkError" "UnsupportedClassVersionError"
+    "UnsupportedOperationException" "VerifyError" "VirtualMachineError" "Void"))
+(define jolt-default-imports
+  (let loop ((ns jolt-default-import-names) (m (jolt-hash-map)))
+    (if (null? ns) m
+        (loop (cdr ns)
+              (jolt-assoc m (jolt-symbol #f (car ns)) (string-append "java.lang." (car ns)))))))
+(define (jolt-ns-imports . _) jolt-default-imports)
 
 ;; resolve: an unqualified symbol resolves in the current ns then clojure.core; a
 ;; qualified one in its own ns. Returns the var iff genuinely defined, else nil —
