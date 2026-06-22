@@ -307,6 +307,21 @@
                                                   (:volatile-mutable mt)))
                                     true false)))
                         fields)
+        ;; mutable field symbols (^:unsynchronized-mutable / ^:volatile-mutable):
+        ;; (set! field v) in a method body lowers to (set! (.-field inst) v), the
+        ;; in-place field write the analyzer compiles to jolt-set-field! (jolt-c3q).
+        mutable-syms (map first (filter second (map vector fields field-muts)))
+        mutable? (fn [s] (boolean (some (fn [m] (= m s)) mutable-syms)))
+        rewrite-set (fn rw [inst form]
+                      (cond
+                        (and (seq? form) (seq form) (symbol? (first form))
+                             (= "set!" (name (first form)))
+                             (symbol? (second form)) (mutable? (second form)))
+                        (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
+                              (rw inst (nth form 2)))
+                        (seq? form) (map (fn [x] (rw inst x)) form)
+                        (vector? form) (mapv (fn [x] (rw inst x)) form)
+                        :else form))
         ;; inline impls register for dispatch but are NOT extenders of the
         ;; protocol (the JVM compiles them into the class) — register-inline-method,
         ;; not extend-type.
@@ -315,9 +330,10 @@
                   ~@(map (fn [spec]
                            (let [argv (nth spec 1)
                                  inst (first argv)
-                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
+                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
+                                 mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))]
                              `(register-inline-method ~(name tname) ~(name proto) ~(name (first spec))
-                                                      (fn ~argv (let [~@binds] ~@(drop 2 spec))))))
+                                                      (fn ~argv (let [~@binds] ~@mbody)))))
                          specs)))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))

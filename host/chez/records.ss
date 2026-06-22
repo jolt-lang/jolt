@@ -28,6 +28,16 @@
 (define (jrec-has? r k)
   (let loop ((ps (jrec-pairs r)))
     (cond ((null? ps) #f) ((jolt=2 (caar ps) k) #t) (else (loop (cdr ps))))))
+;; mutate a deftype's mutable field in place (jolt-c3q): the pairs are runtime
+;; cons cells, so set-cdr! updates the field. (set! field v) inside a method
+;; lowers to this; returns v, as set! does.
+(define (jolt-set-field! inst k v)
+  (if (jrec? inst)
+      (let loop ((ps (jrec-pairs inst)))
+        (cond ((null? ps) (error #f "set! of an unknown field" k))
+              ((jolt=2 (caar ps) k) (set-cdr! (car ps) v) v)
+              (else (loop (cdr ps)))))
+      (error #f "set! of a field on a non-record" inst)))
 (define (jrec-replace pairs k v)        ; replace existing field (keep order) or append
   (let loop ((ps pairs) (acc '()) (hit #f))
     (cond ((null? ps) (reverse (if hit acc (cons (cons k v) acc))))
@@ -329,6 +339,7 @@
 (def-var! "clojure.core" "register-protocol-methods!" register-protocol-methods!)
 (def-var! "clojure.core" "register-method" register-method)
 (def-var! "clojure.core" "register-inline-method" register-inline-method)
+(def-var! "jolt.host" "set-field!" jolt-set-field!)
 (def-var! "clojure.core" "protocol-dispatch" (lambda (pn mn obj rest) (protocol-dispatch pn mn obj rest)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)

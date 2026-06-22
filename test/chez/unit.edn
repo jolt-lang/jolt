@@ -456,4 +456,7 @@
   {:suite "shadowing" :expr "(let [when (fn [a b] :local)] (when 1 2))" :expected ":local"}
   {:suite "macroexpand" :expr "(do (when true (defmacro m6 [x] `(* ~x 2))) (m6 3))" :expected "6"}
   {:suite "macroexpand" :expr "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 10))" :expected "true"}
+  {:suite "deftype-mutable" :expr "(do (defprotocol IB (gv [_]) (sv [_ v])) (deftype B [^:unsynchronized-mutable val] IB (gv [_] val) (sv [_ v] (set! val v))) (let [b (->B 1)] (sv b 42) (gv b)))" :expected "42"}
+  {:suite "deftype-mutable" :expr "(do (defprotocol IC (bump [_]) (cur [_])) (deftype C [^:unsynchronized-mutable n] IC (bump [this] (set! n (inc n)) n) (cur [_] n)) (let [c (->C 5)] (bump c) (bump c) (bump c) (cur c)))" :expected "8"}
+  {:suite "deftype-mutable" :expr "(do (defprotocol IH (g [_]) (s [_ v])) (deftype H [^:volatile-mutable st] IH (g [_] st) (s [this v] (set! (.-st this) v))) (let [h (->H :old)] (s h :new) (g h)))" :expected ":new"}
 ]

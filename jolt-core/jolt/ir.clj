@@ -97,6 +97,7 @@
                                  :ret (f (get node :ret)))
       (= op :throw)  (assoc node :expr (f (get node :expr)))
       (= op :set-var) (assoc node :val (f (get node :val)))
+      (= op :set-field) (assoc node :obj (f (get node :obj)) :val (f (get node :val)))
       (= op :defmacro) (assoc node :fn (f (get node :fn)))
       (= op :invoke) (assoc node :fn (f (get node :fn))
                                  :args (mapv f (get node :args)))

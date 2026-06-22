@@ -343,13 +343,24 @@
                  (host-intern! ctx cur nm)
                  {:op :defmacro :ns cur :name nm
                   :fn (analyze ctx fn-form env)})
-    "set!" (let [target (nth items 1)]
-             (when-not (form-sym? target) (uncompilable "set! of a non-symbol target"))
-             (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
-             (let [r (resolve-global ctx target)]
-               (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
-               {:op :set-var :the-var (the-var (:ns r) (:name r))
-                :val (analyze ctx (nth items 2) env)}))
+    "set!" (let [target (nth items 1)
+                 val-node (analyze ctx (nth items 2) env)
+                 ti (when (form-list? target) (vec (form-elements target)))
+                 thead (when (and ti (pos? (count ti)) (form-sym? (first ti)))
+                         (form-sym-name (first ti)))]
+             (cond
+               ;; (set! (.-field obj) v): mutate a deftype instance field in place.
+               ;; A deftype method's (set! mutable-field v) lowers to this shape.
+               (and thead (field-head? thead))
+               {:op :set-field :obj (analyze ctx (nth ti 1) env)
+                :field (subs thead 2) :val val-node}
+               ;; (set! *var* v): set the var's innermost binding, else its root.
+               (form-sym? target)
+               (do (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
+                   (let [r (resolve-global ctx target)]
+                     (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
+                     {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
+               :else (uncompilable "set! of an unsupported target")))
     (uncompilable (str "special form " op))))
 
 ;; Host interop method call (jolt-0kf5). `(.method target arg*)` — a head that

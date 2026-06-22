@@ -392,6 +392,9 @@
     :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
     ;; (set! *var* val) -> set the var's innermost binding (else root); returns val.
     :set-var (str "(jolt-var-set " (emit (:the-var node)) " " (emit (:val node)) ")")
+    ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
+    :set-field (str "(jolt-set-field! " (emit (:obj node)) " (keyword #f "
+                    (chez-str-lit (:field node)) ") " (emit (:val node)) ")")
     ;; a non-top-level defmacro -> def the expander fn + mark the var a macro at
     ;; runtime (the spine does the same for top-level forms).
     :defmacro (str "(begin (def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
