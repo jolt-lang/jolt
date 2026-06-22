@@ -19,6 +19,7 @@
 (load "host/chez/host-contract.ss")
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
+(load "host/chez/png.ss")          ; jolt.png — a baked namespace before the snapshot
 (load "host/chez/loader.ss")
 
 ;; jolt.main + jolt.deps live under jolt-core; keep them (and src/jolt) on the
