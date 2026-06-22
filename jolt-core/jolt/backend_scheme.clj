@@ -379,6 +379,11 @@
     :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
     ;; (set! *var* val) -> set the var's innermost binding (else root); returns val.
     :set-var (str "(jolt-var-set " (emit (:the-var node)) " " (emit (:val node)) ")")
+    ;; a non-top-level defmacro -> def the expander fn + mark the var a macro at
+    ;; runtime (the spine does the same for top-level forms).
+    :defmacro (str "(begin (def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                   (emit (:fn node)) ") (mark-macro! " (chez-str-lit (:ns node)) " "
+                   (chez-str-lit (:name node)) ") jolt-nil)")
     :host (throw (ex-info (str "emit: unsupported host ref `" (:name node) "`") {}))
     :host-static (str "(host-static-ref " (chez-str-lit (:class node)) " "
                       (chez-str-lit (:member node)) ")")

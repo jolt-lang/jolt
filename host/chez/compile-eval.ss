@@ -117,14 +117,9 @@
            result
            (let ((r (jolt-compile-eval-form (car fs) cur)))
              (loop (cdr fs) r (chez-current-ns))))))
-    ;; runtime defmacro: def the expander fn + mark the var a macro so subsequent
-    ;; forms expand it (hc-macro? reads var-macro-table). Mirrors emit-image.ss
-    ;; ei-emit-ns.
-    ((ce-macro-form? form)
-     (let-values (((nm fn-form) (ce-defmacro->fn form)))
-       (def-var! ns nm (jolt-compile-eval-form fn-form ns))
-       (mark-macro! ns nm)
-       jolt-nil))
+    ;; defmacro is compiled like any other form — the analyzer lowers it to a def
+    ;; of the expander fn + (mark-macro! …) so subsequent forms expand it. One
+    ;; macro-expansion path (no separate spine interception).
     (else
      (eval (read (open-input-string (jolt-analyze-emit-form form ns)))
            (interaction-environment)))))

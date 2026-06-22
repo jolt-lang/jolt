@@ -34,7 +34,7 @@
 
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
-    "syntax-quote" "var" "letfn" "set!"})
+    "syntax-quote" "var" "letfn" "set!" "defmacro"})
 
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
@@ -326,6 +326,23 @@
     ;; (set! *var* val): set the var's innermost thread binding, else its root
     ;; (jolt-var-set). A local target is a deftype mutable field — not yet
     ;; supported (jolt binds fields immutably); an interop (.-field) target too.
+    ;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
+    ;; produced by a macro like (when … (defmacro …)). Lower it the way the spine
+    ;; does: def the expander fn, then mark the var a macro at runtime so later
+    ;; forms expand it. Strip a leading docstring / attr-map, as defmacro allows.
+    "defmacro" (let [name-sym (nth items 1)
+                     nm (form-sym-name name-sym)
+                     cur (compile-ns ctx)
+                     after (drop 2 items)
+                     after (if (string? (first after)) (rest after) after)
+                     after (if (form-map? (first after)) (rest after) after)
+                     ;; build (fn params body…) and analyze it through the fn MACRO
+                     ;; so a destructuring macro arglist desugars (the fn* primitive
+                     ;; would not), then def it and mark the var a macro.
+                     fn-form (cons (symbol "fn") after)]
+                 (host-intern! ctx cur nm)
+                 {:op :defmacro :ns cur :name nm
+                  :fn (analyze ctx fn-form env)})
     "set!" (let [target (nth items 1)]
              (when-not (form-sym? target) (uncompilable "set! of a non-symbol target"))
              (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
@@ -441,6 +458,13 @@
             hname (when (and (form-sym? head) (nil? (form-sym-ns head))) (form-sym-name head))
             shadowed (and hname (local? env hname))]
         (cond
+          ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
+          ;; dispatch special forms / interop / invoke. Expanding before the
+          ;; special-form check means a head that is a macro always expands — even
+          ;; one whose name is also in the special-form set — matching reference
+          ;; read -> macroexpand -> analyze. A local shadows both.
+          (and (form-sym? head) (not shadowed) (form-macro? ctx head))
+            (analyze ctx (form-expand-1 ctx form) env)
           (and hname (not shadowed) (contains? handled hname))
             (analyze-special ctx hname items env)
           (and hname (not shadowed) (method-head? hname))
@@ -460,8 +484,6 @@
             (analyze-field ctx hname items env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
-          (and (form-sym? head) (not shadowed) (form-macro? ctx head))
-            (analyze ctx (form-expand-1 ctx form) env)
           :else
             ;; stamp the list form's source offset onto the :invoke (jolt-fqy)
             ;; so the success checker can report file:line:col. nil when the

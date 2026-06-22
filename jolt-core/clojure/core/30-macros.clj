@@ -225,10 +225,10 @@
 
 ;; Build the fn* form via a template (a reader-list array): cons/list in a macro
 ;; body produce a plist the evaluator can't call as a form.
-(defmacro letfn [fnspecs & body]
-  (let [binds (reduce (fn [acc spec] (conj (conj acc (first spec)) `(fn* ~@(rest spec))))
-                      [] fnspecs)]
-    `(let* [~@binds] ~@body)))
+;; letfn is a primitive special form (analyze-letfn -> letrec*), not a macro: its
+;; fns are mutually recursive, which a (let* …) expansion cannot express. Defining
+;; it as a macro would shadow the special once macroexpansion runs first (the
+;; canonical order), so it is intentionally NOT a macro here.
 
 ;; Dynamic binding: install a thread-binding frame of var->value (array-map keeps
 ;; var-get happy, unlike a phm), restore on exit.

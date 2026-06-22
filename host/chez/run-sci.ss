@@ -1,11 +1,11 @@
 ;; run-sci.ss — SCI conformance: load borkdude/sci's own source (vendor/sci) through
 ;; joltc and require its forms to compile+eval. A real-world Clojure-compatibility
 ;; stress test. Pure Chez, no Janet. Floor-gated like the corpus: a regression below
-;; the floor (or the count today, 196/218) fails. Raise the floor as host gaps close
+;; the floor (or the count today, 202/218) fails. Raise the floor as host gaps close
 ;; (the tail is genuine gaps — set! on vars, some macro/def shapes).
 ;;
 ;;   chez --script host/chez/run-sci.ss
-;;   JOLT_SCI_FLOOR=N    override the floor (default 196)
+;;   JOLT_SCI_FLOOR=N    override the floor (default 202)
 ;;   SCI_VERBOSE=1       print each failing form's error
 (import (chezscheme))
 
@@ -74,7 +74,7 @@
   load-order)
 
 (printf "\nSCI load: ~a/~a forms ok (~a fail)\n" total-ok (+ total-ok total-fail) total-fail)
-(define floor (let ((s (getenv "JOLT_SCI_FLOOR"))) (if s (string->number s) 196)))
+(define floor (let ((s (getenv "JOLT_SCI_FLOOR"))) (if s (string->number s) 202)))
 (when (< total-ok floor)
   (printf "REGRESSION: ~a forms loaded < floor ~a\n" total-ok floor))
 (flush-output-port)
