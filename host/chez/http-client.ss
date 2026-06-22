@@ -41,11 +41,17 @@
                  (else n))))
         (else (jolt-str-render-one ct))))
 
+;; A per-request header file path, unique across processes (PID) and threads (a
+;; mutex-guarded monotonic counter). The previous unguarded `set!` + `mod 90000`
+;; raced: concurrent callers could compute the same path and clobber each other's
+;; -D header dump. getpid is a fast, non-blocking foreign call.
+(define c-getpid (begin (load-shared-object #f) (foreign-procedure "getpid" () int)))
+(define hc-tmp-mutex (make-mutex))
 (define hc-tmp-counter 0)
 (define (hc-tmp-path)
-  (set! hc-tmp-counter (+ hc-tmp-counter 1))
-  (string-append (or (getenv "TMPDIR") "/tmp") "/jolt-http-"
-                 (number->string (* 100000 (+ 1 (modulo hc-tmp-counter 90000)))) ".hdr"))
+  (let ((n (with-mutex hc-tmp-mutex (set! hc-tmp-counter (+ hc-tmp-counter 1)) hc-tmp-counter)))
+    (string-append (or (getenv "TMPDIR") "/tmp") "/jolt-http-"
+                   (number->string (c-getpid)) "-" (number->string n) ".hdr")))
 
 (define (hc-trim s)
   (let* ((n (string-length s))

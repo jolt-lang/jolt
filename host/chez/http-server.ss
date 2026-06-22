@@ -11,11 +11,18 @@
 (define c-socket     (foreign-procedure "socket" (int int int) int))
 (define c-bind       (foreign-procedure "bind" (int void* int) int))
 (define c-listen     (foreign-procedure "listen" (int int) int))
-(define c-accept     (foreign-procedure "accept" (int void* void*) int))
 (define c-setsockopt (foreign-procedure "setsockopt" (int int int void* int) int))
-(define c-recv       (foreign-procedure "recv" (int void* size_t int) ssize_t))
-(define c-send       (foreign-procedure "send" (int void* size_t int) ssize_t))
 (define c-close      (foreign-procedure "close" (int) int))
+;; accept/recv/send can BLOCK (accept indefinitely while idle). A thread inside a
+;; plain foreign call stays "active" and stalls the stop-the-world collector for
+;; every thread, so the accept loop would freeze GC process-wide whenever a future
+;; or async block allocates while no request is in flight. __collect_safe
+;; deactivates the calling thread for the call's duration so collection proceeds.
+;; Safe here: the only arguments are an fd and foreign-alloc'd buffers (outside the
+;; Scheme heap), so a collection during the call has nothing to move.
+(define c-accept     (foreign-procedure __collect_safe "accept" (int void* void*) int))
+(define c-recv       (foreign-procedure __collect_safe "recv" (int void* size_t int) ssize_t))
+(define c-send       (foreign-procedure __collect_safe "send" (int void* size_t int) ssize_t))
 
 (define AF_INET 2) (define SOCK_STREAM 1)
 ;; SOL_SOCKET / SO_REUSEADDR differ by platform: macOS uses 0xffff / 4, Linux 1 / 2.
