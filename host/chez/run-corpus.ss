@@ -86,9 +86,7 @@
 ;; transients/atoms/Infinity. These DIVERGE but are tolerated; the gate fails only on
 ;; a NEW (unlisted) divergence or a drop below the floor.
 (define known-fail-labels
-  '("class name evaluates to canonical string"
-    "class number" "class string" "class keyword"
-    "definterface defines" "getMessage on a thrown string"
+  '("definterface defines" "getMessage on a thrown string"
     "type of record" "chunked-seq? always false"
     "^Type tag on var" "symbol hint -> :tag"
     "lists extended type" "seq of tags"
@@ -108,7 +106,6 @@
     "boolean-array" "int-array" "long-array" "double-array"
     "float-array" "short-array" "doubles" "floats" "reader over char[]"
     "char-array of string"
-    "atom?" "instance? Atom"
     "cancel an in-flight future returns true" "future-cancelled? after cancel"
     "no param vector"))
 (define known-fail (make-hashtable string-hash string=?))
