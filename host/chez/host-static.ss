@@ -238,8 +238,21 @@
                               (make-jhost "class" (list (cons 'name nm))))))))
 
 ;; ---- System helpers (defined before use above via top-level order) ----------
+;; os.name reflects the actual platform (Chez's machine-type names it): a *osx
+;; machine is macOS, otherwise Linux. Code that branches on the OS (socket struct
+;; layout, path handling) needs the truth, not a fixed value.
+(define (substring-index needle hay)
+  (let ((nl (string-length needle)) (hl (string-length hay)))
+    (let loop ((i 0)) (cond ((> (+ i nl) hl) #f)
+                            ((string=? (substring hay i (+ i nl)) needle) i)
+                            (else (loop (+ i 1)))))))
+(define sys-os-name
+  (let ((m (symbol->string (machine-type))))
+    (cond ((or (substring-index "osx" m) (substring-index "macos" m)) "Mac OS X")
+          ((or (substring-index "nt" m) (substring-index "windows" m)) "Windows")
+          (else "Linux"))))
 (define (sys-get-property k . dflt)
-  (cond ((string=? k "os.name") "Mac OS X")
+  (cond ((string=? k "os.name") sys-os-name)
         ((string=? k "line.separator") "\n")
         ((string=? k "file.separator") "/")
         ((string=? k "path.separator") ":")
@@ -249,7 +262,7 @@
         ((pair? dflt) (car dflt))
         (else jolt-nil)))
 (define (sys-properties-map)
-  (jolt-hash-map "os.name" "Mac OS X" "line.separator" "\n" "file.separator" "/"
+  (jolt-hash-map "os.name" sys-os-name "line.separator" "\n" "file.separator" "/"
                  "user.dir" (or (getenv "PWD") ".") "user.home" (or (getenv "HOME") "")
                  "java.io.tmpdir" (or (getenv "TMPDIR") "/tmp")))
 
