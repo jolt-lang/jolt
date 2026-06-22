@@ -259,8 +259,56 @@
         (cons "isWhitespace" (lambda (c) (char<=? (integer->char (char-code c)) #\space)))))
 
 ;; String/valueOf(Object): "null" for nil, else jolt's str semantics.
+;; String/format(fmt args…) / (locale fmt args…) -> the clojure.core format engine.
 (register-class-statics! "String"
-  (list (cons "valueOf" (lambda (x . _) (if (jolt-nil? x) "null" (jolt-str-render-one x))))))
+  (list (cons "valueOf" (lambda (x . _) (if (jolt-nil? x) "null" (jolt-str-render-one x))))
+        (cons "format" (lambda (a . rest)
+                         (if (and (jhost? a) (string=? (jhost-tag a) "locale"))
+                             (apply jolt-format (car rest) (cdr rest))
+                             (apply jolt-format a rest))))))
+
+;; ---- java.text.NumberFormat (jolt-1nnn) -------------------------------------
+;; A grouping decimal formatter (selmer number-format / cuerdas). state:
+;; #(grouping? min-frac max-frac). .format groups the integer part with commas.
+(define (nf-make grouping? minf maxf) (make-jhost "numberformat" (vector grouping? minf maxf)))
+(define (group-int-str s)               ; "1234567" -> "1,234,567"
+  (let* ((neg (and (> (string-length s) 0) (char=? (string-ref s 0) #\-)))
+         (digs (if neg (substring s 1 (string-length s)) s))
+         (n (string-length digs)) (out '()))
+    (let loop ((i 0))
+      (when (< i n)
+        (when (and (> i 0) (= 0 (modulo (- n i) 3))) (set! out (cons #\, out)))
+        (set! out (cons (string-ref digs i) out)) (loop (+ i 1))))
+    (string-append (if neg "-" "") (list->string (reverse out)))))
+(define (nf-format self x)
+  (let* ((grouping? (vector-ref (jhost-state self) 0))
+         (minf (vector-ref (jhost-state self) 1)) (maxf (vector-ref (jhost-state self) 2))
+         (neg (< x 0)) (ax (abs (exact->inexact x)))
+         (scale (expt 10 maxf))
+         (scaled (exact (round (* ax scale))))
+         (ipart (quotient scaled scale)) (fpart (remainder scaled scale))
+         (istr (number->string ipart))
+         (fstr0 (if (> maxf 0) (let ((s (number->string fpart)))
+                                 (string-append (make-string (max 0 (- maxf (string-length s))) #\0) s)) ""))
+         ;; trim trailing zeros down to minf
+         (fstr (let loop ((s fstr0)) (if (and (> (string-length s) minf)
+                                              (char=? (string-ref s (- (string-length s) 1)) #\0))
+                                         (loop (substring s 0 (- (string-length s) 1))) s))))
+    (string-append (if neg "-" "") (if grouping? (group-int-str istr) istr)
+                   (if (> (string-length fstr) 0) (string-append "." fstr) ""))))
+(register-host-methods! "numberformat"
+  (list (cons "format" (lambda (self n) (nf-format self n)))
+        (cons "setMaximumFractionDigits" (lambda (self d) (vector-set! (jhost-state self) 2 (jnum->exact d)) jolt-nil))
+        (cons "setMinimumFractionDigits" (lambda (self d) (vector-set! (jhost-state self) 1 (jnum->exact d)) jolt-nil))
+        (cons "setGroupingUsed" (lambda (self b) (vector-set! (jhost-state self) 0 (jolt-truthy? b)) jolt-nil))))
+(register-class-statics! "NumberFormat"
+  (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0)))))
+(register-class-statics! "java.text.NumberFormat"
+  (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0)))))
 
 (register-class-statics! "Class"
   ;; an array descriptor ("[C", "[I", …) is its own class token (so instance? and
