@@ -80,6 +80,23 @@
 (def-var! "jolt.ffi" "read-bytes" ffi-read-bytes)
 (def-var! "jolt.ffi" "write-bytes" ffi-write-bytes)
 
+;; --- byte-array buffer I/O (binary-faithful) --------------------------------
+;; Move raw bytes between a jolt byte-array (jolt-array kind 'byte) and foreign
+;; memory, byte-exact (no UTF-8 / latin1 decode) — for socket recv/send and the
+;; zlib / OpenSSL buffers an HTTP client passes through. read-array returns a
+;; fresh byte-array of n bytes; write-array copies a byte-array's bytes into ptr
+;; and returns the count.
+(define (ffi-read-array ptr n)
+  (let* ((n (jnum->exact n)) (p (jnum->exact ptr)) (v (make-vector n 0)))
+    (do ((i 0 (+ i 1))) ((= i n)) (vector-set! v i (foreign-ref 'unsigned-8 p i)))
+    (make-jolt-array v 'byte)))
+(define (ffi-write-array ptr arr)
+  (let* ((v (jolt-array-vec arr)) (n (vector-length v)) (p (jnum->exact ptr)))
+    (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bitwise-and (exact (vector-ref v i)) #xff)))
+    n))
+(def-var! "jolt.ffi" "read-array" ffi-read-array)
+(def-var! "jolt.ffi" "write-array" ffi-write-array)
+
 ;; --- string / bytevector marshaling ------------------------------------------
 ;; A C string result already comes back as a jolt string (the `string` foreign
 ;; type). For a `void*` that points at a NUL-terminated C string, read it here.

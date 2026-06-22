@@ -20,7 +20,6 @@
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
 (load "host/chez/png.ss")          ; jolt.png — a baked namespace before the snapshot
-(load "host/chez/http-client.ss")  ; jolt.http-client (libcurl)
 (load "host/chez/loader.ss")
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
 ;; baked-ns snapshot, so a library's (require '[jolt.ffi]) still loads jolt.ffi's

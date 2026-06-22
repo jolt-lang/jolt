@@ -514,9 +514,31 @@
                                   (error #f "NoSuchElementException")))))))
 
 ;; ---- String / BigInteger / MapEntry constructors ----------------------------
-;; (String. x) / (String. bytes): a bytevector decodes UTF-8; else stringify.
+;; (String. bytes [charset]) decodes bytes (a bytevector OR a jolt byte-array)
+;; with the named charset (UTF-8 default; ISO-8859-1/latin1/ascii = one byte per
+;; char); else stringify. clj-http-lite's body coercion is (String. ^[B body cs).
+(define (string-charset-name rest)
+  (if (pair? rest)
+      (let ((c (car rest)))
+        (cond ((string? c) c)
+              ((and (jhost? c) (string=? (jhost-tag c) "charset"))
+               (let ((p (assq 'name (jhost-state c)))) (if p (jolt-str-render-one (cdr p)) "UTF-8")))
+              (else "UTF-8")))
+      "UTF-8"))
+(define (decode-bytevector bv rest)
+  (let ((cs (ascii-string-down (string-charset-name rest))))
+    (cond
+      ((or (string=? cs "utf-8") (string=? cs "utf8")) (utf8->string bv))
+      ((or (string=? cs "iso-8859-1") (string=? cs "latin1") (string=? cs "iso8859-1")
+           (string=? cs "us-ascii") (string=? cs "ascii"))
+       (list->string (map integer->char (bytevector->u8-list bv))))
+      (else (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))))
 (register-class-ctor! "String"
-  (lambda (x . _) (cond ((bytevector? x) (utf8->string x)) ((string? x) x) (else (jolt-str-render-one x)))))
+  (lambda (x . rest)
+    (cond ((bytevector? x) (decode-bytevector x rest))
+          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (decode-bytevector (na-bytearray->bv x) rest))
+          ((string? x) x)
+          (else (jolt-str-render-one x)))))
 (register-class-ctor! "BigInteger"
   (lambda (v) (parse-int-or-throw v 10 "BigInteger")))
 (register-class-ctor! "MapEntry" (lambda (k v) (make-map-entry k v)))
@@ -561,7 +583,9 @@
     (let loop ((l lst) (i 0)) (if (null? l) bv (begin (bytevector-u8-set! bv i (car l)) (loop (cdr l) (+ i 1)))))))
 (register-class-statics! "URLEncoder" (list (cons "encode" url-encode)))
 (register-class-statics! "URLDecoder" (list (cons "decode" url-decode)))
-(register-class-statics! "Charset" (list (cons "forName" (lambda (nm) (make-jhost "charset" (list (cons 'name nm)))))))
+;; Charset/forName yields the canonical name STRING (not an opaque object) so it
+;; threads straight into (.getBytes s cs) / (String. bytes cs), which take a name.
+(register-class-statics! "Charset" (list (cons "forName" (lambda (nm) (jolt-str-render-one nm)))))
 
 ;; ---- Base64 (RFC 4648) ------------------------------------------------------
 (define b64-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
@@ -658,3 +682,56 @@
   (lambda (name proc) (register-class-ctor! name proc) jolt-nil))
 (def-var! "clojure.core" "__register-class-statics!"
   (lambda (name members) (register-class-statics! name (jmap->static-alist members)) jolt-nil))
+
+;; ---- tagged-table method dispatch + pluggable instance? --------------------
+;; A jolt library can build stateful host objects with (jolt.host/tagged-table
+;; tag) and dispatch (.method obj ...) to handlers registered here, keyed by the
+;; table's "jolt/type" tag — the htable analogue of the jhost method registry
+;; above. jolt-lang/http-client uses this to emulate java.net URL /
+;; HttpURLConnection / java.io byte streams so clj-http-lite runs unchanged.
+(define tagged-methods-tbl (make-hashtable string-hash string=?))   ; tag-key -> (method-ht)
+(define (tag->method-key tag)
+  (if (keyword-t? tag)
+      (let ((ns (keyword-t-ns tag)))
+        (if (and ns (not (jolt-nil? ns))) (string-append ns "/" (keyword-t-name tag)) (keyword-t-name tag)))
+      (jolt-str-render-one tag)))
+(define (register-tagged-methods! tag members)
+  (let* ((key (tag->method-key tag))
+         (h (or (hashtable-ref tagged-methods-tbl key #f)
+                (let ((nh (make-hashtable string-hash string=?)))
+                  (hashtable-set! tagged-methods-tbl key nh) nh))))
+    (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
+
+;; htable arm: dispatch (.method obj a*) through the table's tag method registry;
+;; an unregistered method falls through (sorted colls are htables too).
+(define %hs-rmd-htable record-method-dispatch)
+(set! record-method-dispatch
+  (lambda (obj method-name rest-args)
+    (let ((tag (and (htable? obj) (hashtable-ref (htable-h obj) "jolt/type" #f))))
+      (let* ((mh (and tag (hashtable-ref tagged-methods-tbl (tag->method-key tag) #f)))
+             (f  (and mh (hashtable-ref mh method-name #f))))
+        (if f
+            (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
+            (%hs-rmd-htable obj method-name rest-args))))))
+
+(def-var! "clojure.core" "__register-class-methods!"
+  (lambda (tag members) (register-tagged-methods! tag (jmap->static-alist members)) jolt-nil))
+
+;; Pluggable instance? — a library registers (fn [class-name-string val] -> true
+;; | false | nil); nil means "not my class, fall through". First non-nil wins.
+(define user-instance-checks '())
+(define %hs-instance-check instance-check)
+(set! instance-check
+  (lambda (type-sym val)
+    (let ((tname (symbol-t-name type-sym)))
+      (let loop ((fs user-instance-checks))
+        (if (null? fs)
+            (%hs-instance-check type-sym val)
+            (let ((r ((car fs) tname val)))
+              (if (jolt-nil? r) (loop (cdr fs)) (if (jolt-truthy? r) #t #f))))))))
+(def-var! "clojure.core" "instance-check" instance-check)
+(def-var! "clojure.core" "__register-instance-check!"
+  (lambda (f) (set! user-instance-checks (append user-instance-checks (list f))) jolt-nil))
+
+;; (jolt.host/table? x) — is x a host tagged-table (the Janet-table replacement)?
+(def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))

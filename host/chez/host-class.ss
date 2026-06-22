@@ -49,7 +49,16 @@
     ("Charset" . "java.nio.charset.Charset") ("Base64" . "java.util.Base64")
     ("Exception" . "java.lang.Exception")
     ("IllegalArgumentException" . "java.lang.IllegalArgumentException")
+    ("IllegalStateException" . "java.lang.IllegalStateException")
+    ("RuntimeException" . "java.lang.RuntimeException")
+    ("UnsupportedOperationException" . "java.lang.UnsupportedOperationException")
     ("InterruptedException" . "java.lang.InterruptedException")
+    ("IOException" . "java.io.IOException")
+    ("UnknownHostException" . "java.net.UnknownHostException")
+    ("ConnectException" . "java.net.ConnectException")
+    ("SocketTimeoutException" . "java.net.SocketTimeoutException")
+    ("MalformedURLException" . "java.net.MalformedURLException")
+    ("SSLException" . "javax.net.ssl.SSLException")
     ("Throwable" . "java.lang.Throwable")))
 (for-each
   (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
@@ -74,4 +83,11 @@
   '("java.lang.Long" "java.lang.Integer" "java.lang.Double" "java.lang.Float"
     "java.lang.Number" "java.lang.String" "java.lang.Boolean" "java.lang.Character"
     "java.lang.Object"
+    ;; exception classes compared against (class e): (= java.net.SocketTimeoutException (class e))
+    "java.lang.Exception" "java.lang.Throwable" "java.lang.RuntimeException"
+    "java.lang.IllegalArgumentException" "java.lang.IllegalStateException"
+    "java.lang.UnsupportedOperationException" "java.io.IOException"
+    "java.net.UnknownHostException" "java.net.ConnectException"
+    "java.net.SocketTimeoutException" "java.net.MalformedURLException"
+    "javax.net.ssl.SSLException"
     "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.Atom"))

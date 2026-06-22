@@ -117,7 +117,17 @@
      (string=? (ascii-string-down s) (ascii-string-down (arg 0))))
     ((string=? method "compareTo")
      (let ((o (arg 0))) (cond ((string<? s o) -1.0) ((string>? s o) 1.0) (else 0.0))))
-    ((string=? method "getBytes") (string->utf8 s))
+    ((string=? method "getBytes")
+     ;; (.getBytes s) / (.getBytes s charset). UTF-8 default; ISO-8859-1/latin1/
+     ;; ascii encode one byte per char (clj-http-lite's body-encoding path).
+     (if (null? rest)
+         (string->utf8 s)
+         (let ((cn (ascii-string-down (if (string? (arg 0)) (arg 0) (jolt-str-render-one (arg 0))))))
+           (if (member cn '("iso-8859-1" "latin1" "iso8859-1" "us-ascii" "ascii"))
+               (let* ((n (string-length s)) (bv (make-bytevector n)))
+                 (do ((i 0 (+ i 1))) ((= i n) bv)
+                   (bytevector-u8-set! bv i (bitwise-and (char->integer (string-ref s i)) #xff))))
+               (string->utf8 s)))))
     ((string=? method "matches") (if (irregex-match (str-irx (arg 0)) s) #t #f))
     ((string=? method "replaceAll") (irregex-replace/all (str-irx (arg 0)) s (arg 1)))
     ((string=? method "replaceFirst") (irregex-replace (str-irx (arg 0)) s (arg 1)))

@@ -46,10 +46,20 @@
     (else (make-jolt-array
            (list->vector (map (lambda (c) (if (char? c) c (integer->char (exact (truncate c)))))
                               (seq->list (jolt-seq a)))) 'char))))
+;; (byte-array n [init]) | (byte-array coll). Also coerces the host's OTHER byte
+;; carrier — a Chez bytevector (what String/.getBytes produce) — and a string's
+;; UTF-8 bytes, so bytevector and byte-array interconvert across interop seams.
 (define (na-byte-array a . rest)
-  (if (number? a)
-      (make-jolt-array (make-vector (exact (na-idx a)) (na-byte-of (if (pair? rest) (car rest) 0))) 'byte)
-      (make-jolt-array (list->vector (map na-byte-of (seq->list (jolt-seq a)))) 'byte)))
+  (cond
+    ((number? a) (make-jolt-array (make-vector (exact (na-idx a)) (na-byte-of (if (pair? rest) (car rest) 0))) 'byte))
+    ((bytevector? a) (make-jolt-array (list->vector (bytevector->u8-list a)) 'byte))
+    ((string? a) (make-jolt-array (list->vector (bytevector->u8-list (string->utf8 a))) 'byte))
+    (else (make-jolt-array (list->vector (map na-byte-of (seq->list (jolt-seq a)))) 'byte))))
+;; jolt byte-array -> Chez bytevector (for String decode / utf8->string).
+(define (na-bytearray->bv arr)
+  (let* ((v (jolt-array-vec arr)) (n (vector-length v)) (bv (make-bytevector n)))
+    (do ((i 0 (+ i 1))) ((= i n)) (bytevector-u8-set! bv i (bitwise-and (exact (vector-ref v i)) #xff)))
+    bv))
 (define (na-make-array a . rest)    ; (make-array len) | (make-array type len ...)
   (make-jolt-array (make-vector (exact (na-idx (if (number? a) a (car rest)))) jolt-nil) 'object))
 (define (na-into-array a . rest)    (na-from-seq (if (pair? rest) (car rest) a) 'object))
@@ -195,3 +205,29 @@
     (cons "chunk" na-chunk) (cons "chunk-cons" na-chunk-cons)
     (cons "chunk-first" na-chunk-first) (cons "chunk-rest" na-chunk-rest)
     (cons "chunk-next" na-chunk-next) (cons "chunked-seq?" na-chunked-seq?)))
+
+;; --- clojure.java.io/copy ---------------------------------------------------
+;; Copy src -> dst, JVM-style. Raw bytes (byte-array / bytevector / string) and a
+;; jhost reader write in one shot; any other source (a stream shim with a .read
+;; method, e.g. jolt-lang/http-client's ByteArrayInputStream) drains via .read
+;; into a byte-array buffer and .write to dst — both reached through method
+;; dispatch, so a library's tagged-table streams work without the host knowing
+;; their layout. Lives here (not io.ss) because io.ss loads before byte-array.
+(define (jolt-io-copy src dst . _opts)
+  (define (write-all! bytes)
+    (record-method-dispatch dst "write" (list->cseq (list bytes 0 (vector-length (jolt-array-vec bytes))))))
+  (cond
+    ((or (bytevector? src) (string? src)
+         (and (jolt-array? src) (eq? (jolt-array-kind src) 'byte)))
+     (write-all! (na-byte-array src)))
+    ((and (jhost? src) (member (jhost-tag src) '("string-reader" "pushback-reader")))
+     (write-all! (na-byte-array (drain-reader src))))
+    (else
+     (let ((buf (na-byte-array 8192)))
+       (let loop ()
+         (let ((n (record-method-dispatch src "read" (list->cseq (list buf 0 8192)))))
+           (when (and (number? n) (> (jnum->exact n) 0))
+             (record-method-dispatch dst "write" (list->cseq (list buf 0 n)))
+             (loop)))))))
+  jolt-nil)
+(def-var! "clojure.java.io" "copy" jolt-io-copy)
