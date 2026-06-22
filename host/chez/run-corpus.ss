@@ -88,7 +88,7 @@
 (define known-fail-labels
   '("getMessage on a thrown string"
     "type of record" "chunked-seq? always false"
-    "^Type tag on var" "symbol hint -> :tag"
+    "^Type tag on var"
     "lists extended type" "seq of tags"
     "close on throw" "macroexpand-1"
     "bean is the map" "proxy resolves nil"
@@ -96,12 +96,9 @@
     "bigdec" "bigdec int M" "bigdec suffix M"
     "transient vector" "transient map"
     "atom override fires nested"
-    "defmethod overrides a record, top level"
-    "defmethod fires nested in a map" "defmethod fires through prn"
-    "direct builtin override" "methods table inspectable"
     "reader conditional" "reader cond :jolt" "reader cond no match"
     "reader cond splice" "reader cond splice no match"
-    "nil nested" "bool nested" "source order through syntax-quote"
+    "nil nested" "bool nested"
     "cancel an in-flight future returns true" "future-cancelled? after cancel"
     "no param vector"))
 (define known-fail (make-hashtable string-hash string=?))
