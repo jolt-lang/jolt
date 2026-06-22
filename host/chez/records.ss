@@ -176,10 +176,28 @@
                     ((and (> (string-length type-name) 10) (string=? (substring type-name 0 10) "java.util.")) (substring type-name 10 (string-length type-name)))
                     (else type-name))))
     (and (hashtable-ref host-type-set base #f) base)))
+;; An extend/extend-type/extend-protocol registration marks the tag as an
+;; extender of the protocol (recorded inside type-registry so the per-case prune
+;; restores it). deftype/defrecord inline impls go through register-inline-method
+;; and skip the mark: the JVM compiles inline protocol methods into the class, so
+;; extenders excludes them.
+(define extend-mark "__jolt_extend__")
+(define (mark-extend! tag proto-name)
+  (let ((ti (hashtable-ref type-registry tag #f)))
+    (when ti (let ((pi (hashtable-ref ti proto-name #f)))
+               (when pi (hashtable-set! pi extend-mark #t))))))
 (define (register-method type-name proto-name method-name fn)
-  (let ((host (canonical-host-tag type-name)))
-    (register-protocol-method (or host (string-append (chez-current-ns) "." type-name)) proto-name method-name fn)
+  (let* ((host (canonical-host-tag type-name))
+         (tag (or host (string-append (chez-current-ns) "." type-name))))
+    (register-protocol-method tag proto-name method-name fn)
+    (mark-extend! tag proto-name)
     jolt-nil))
+
+;; register-inline-method: a deftype/defrecord inline impl. Registers for dispatch
+;; under the ns-qualified record tag but does NOT mark it as an extender.
+(define (register-inline-method type-name proto-name method-name fn)
+  (register-protocol-method (string-append (chez-current-ns) "." type-name) proto-name method-name fn)
+  jolt-nil)
 
 ;; protocol-dispatch: look up the impl by the value's type tag (record) or host
 ;; candidates, invoke it; reified objects carry instance-local methods.
@@ -245,14 +263,19 @@
     (cond ((< i 0) s) ((char=? (string-ref s i) #\.) (substring s (+ i 1) (string-length s))) (else (loop (- i 1))))))
 (define (memp pred lst) (cond ((null? lst) #f) ((pred (car lst)) lst) (else (memp pred (cdr lst)))))
 
-;; extenders: type-tags implementing a protocol, as symbols (extends? reads this).
+;; extenders: type-tags that extend a protocol via extend/extend-type/extend-
+;; protocol, as symbols (extends? reads this). Inline deftype/defrecord impls are
+;; excluded — only tags carrying the extend mark count, matching the JVM.
 (define (extenders proto)
   (let* ((pn (jolt-get proto (keyword #f "name") jolt-nil))
          (pn-str (if (symbol-t? pn) (symbol-t-name pn) pn))
          (out '()))
     (vector-for-each
-      (lambda (tag) (when (let ((ti (hashtable-ref type-registry tag #f))) (and ti (hashtable-ref ti pn-str #f)))
-                      (set! out (cons (jolt-symbol jolt-nil tag) out))))
+      (lambda (tag)
+        (let ((ti (hashtable-ref type-registry tag #f)))
+          (when ti (let ((pi (hashtable-ref ti pn-str #f)))
+                     (when (and pi (hashtable-ref pi extend-mark #f))
+                       (set! out (cons (jolt-symbol jolt-nil tag) out)))))))
       (hashtable-keys type-registry))
     (if (null? out) jolt-nil (list->cseq out))))
 
@@ -305,6 +328,7 @@
 (def-var! "clojure.core" "make-protocol" make-protocol)
 (def-var! "clojure.core" "register-protocol-methods!" register-protocol-methods!)
 (def-var! "clojure.core" "register-method" register-method)
+(def-var! "clojure.core" "register-inline-method" register-inline-method)
 (def-var! "clojure.core" "protocol-dispatch" (lambda (pn mn obj rest) (protocol-dispatch pn mn obj rest)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)

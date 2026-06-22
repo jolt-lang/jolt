@@ -307,13 +307,17 @@
                                                   (:volatile-mutable mt)))
                                     true false)))
                         fields)
+        ;; inline impls register for dispatch but are NOT extenders of the
+        ;; protocol (the JVM compiles them into the class) — register-inline-method,
+        ;; not extend-type.
         impl (fn [proto specs]
-               `(extend-type ~tname ~proto
+               `(do
                   ~@(map (fn [spec]
                            (let [argv (nth spec 1)
                                  inst (first argv)
                                  binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
-                             `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
+                             `(register-inline-method ~(name tname) ~(name proto) ~(name (first spec))
+                                                      (fn ~argv (let [~@binds] ~@(drop 2 spec))))))
                          specs)))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
@@ -445,8 +449,11 @@
         ;; each method body sees the record fields, bound from the instance (the
         ;; method's first param), matching Clojure's defrecord method scope. vec the
         ;; spliced binding seq so ~@ splices its elements, not the lazy-seq itself.
+        ;; inline impls register for dispatch but are NOT extenders of the
+        ;; protocol (the JVM compiles them into the class) — register-inline-method,
+        ;; not extend-type.
         impl (fn [proto specs]
-               `(extend-type ~name-sym ~proto
+               `(do
                   ~@(map (fn [spec]
                            (let [argv (nth spec 1)
                                  inst (first argv)
@@ -455,7 +462,8 @@
                                  ;; instead of going through the runtime tag guard.
                                  hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
                                  binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
-                             `(~(first spec) ~hinted (let [~@binds] ~@(drop 2 spec)))))
+                             `(register-inline-method ~(name name-sym) ~(name proto) ~(name (first spec))
+                                                      (fn ~hinted (let [~@binds] ~@(drop 2 spec))))))
                          specs)))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
