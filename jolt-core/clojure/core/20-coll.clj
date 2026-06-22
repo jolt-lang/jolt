@@ -798,8 +798,7 @@
 
 (defn clojure-version [] "1.11.0-jolt")
 
-;; Jolt numbers are doubles; no BigDecimal, no ratios.
-(defn bigdec [x] (* 1.0 x))
+;; bigdec is a host fn (host/chez/bigdec.ss) — a real BigDecimal value type.
 (defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
 (defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
 

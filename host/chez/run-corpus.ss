@@ -90,7 +90,6 @@
     "type of record" "chunked-seq? always false"
     "close on throw" "macroexpand-1"
     "bean is the map" "proxy resolves nil"
-    "bigdec" "bigdec int M" "bigdec suffix M"
     "transient vector" "transient map"
     "atom override fires nested"
     "reader conditional" "reader cond :jolt" "reader cond no match"

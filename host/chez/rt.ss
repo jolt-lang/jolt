@@ -347,3 +347,8 @@
 ;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses
 ;; ms->duration) and the collection/seq layer.
 (load "host/chez/async.ss")
+
+;; BigDecimal (jolt-i2jm): the jbigdec value type + bigdec/decimal?/class/equality/
+;; printing. Loads LAST so its set!-wraps of jolt-class/jolt=2/the printers sit
+;; outermost over every earlier extension.
+(load "host/chez/bigdec.ss")

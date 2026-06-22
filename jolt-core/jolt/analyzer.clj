@@ -23,6 +23,7 @@
                                form-map-pairs form-set-items form-special? compile-ns
                                form-regex? form-regex-source
                                form-inst? form-inst-source form-uuid? form-uuid-source
+                               form-bigdec? form-bigdec-source
                                form-ns-value? form-ns-value-name
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower
@@ -463,6 +464,9 @@
      ;; end emits a runtime inst/uuid value (host/chez/inst-time.ss).
      (form-inst? form) {:op :inst :source (form-inst-source form)}
      (form-uuid? form) {:op :uuid :source (form-uuid-source form)}
+     ;; bigdecimal literal (1.5M) -> a :bigdec leaf; the back end emits a runtime
+     ;; jbigdec built from the numeric text.
+     (form-bigdec? form) {:op :bigdec :source (form-bigdec-source form)}
      ;; a live namespace value spliced into a form (~*ns* in a macro) -> a
      ;; :the-ns leaf the back end reconstructs by name at the call site.
      (form-ns-value? form) {:op :the-ns :name (form-ns-value-name form)}

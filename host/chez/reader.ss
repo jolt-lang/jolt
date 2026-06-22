@@ -134,10 +134,12 @@
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\N))
        (let ((n (string->number (substring body 0 (- blen 1)))))
          (and n (integer? n) (* sign n))))
-      ;; bigdecimal suffix M -> double
+      ;; bigdecimal suffix M -> a :bigdec form carrying the numeric text; the back
+      ;; end lowers it to a runtime jbigdec (jolt-i2jm).
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\M))
        (let ((n (string->number (substring body 0 (- blen 1)))))
-         (and n (exact->inexact (* sign n)))))
+         (and n (real? n)
+              (rdr-make-tagged (keyword #f "bigdec") (substring tok 0 (- len 1))))))
       (else
        (let ((n (string->number tok)))   ; tok carries its own sign
          ;; keep exactness: "42" -> exact int, "3.14"/"1e3" -> flonum.

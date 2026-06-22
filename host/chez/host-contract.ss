@@ -35,6 +35,7 @@
 (define hc-kw-regex (keyword #f "regex"))
 (define hc-kw-inst  (keyword #f "#inst"))
 (define hc-kw-uuid  (keyword #f "#uuid"))
+(define hc-kw-bigdec (keyword #f "bigdec"))
 
 ;; --- form predicates --------------------------------------------------------
 (define (hc-sym? x) (symbol-t? x))
@@ -62,6 +63,8 @@
 (define (hc-regex? x) (hc-tagged-of x hc-kw-regex))
 (define (hc-inst? x) (hc-tagged-of x hc-kw-inst))
 (define (hc-uuid? x) (hc-tagged-of x hc-kw-uuid))
+(define (hc-bigdec? x) (hc-tagged-of x hc-kw-bigdec))
+(define (hc-bigdec-source x) (jolt-get x hc-kw-form))
 ;; A live namespace value spliced into a form (e.g. `(str ~*ns*) in a macro):
 ;; the analyzer can't carry an opaque runtime value, so recognize a jns and
 ;; reconstruct it by name at the call site (jolt-8sha).
@@ -299,6 +302,8 @@
   (def-var! "jolt.host" "form-uuid?" hc-uuid?)
   (def-var! "jolt.host" "form-ns-value?" hc-ns-value?)
   (def-var! "jolt.host" "form-ns-value-name" hc-ns-value-name)
+  (def-var! "jolt.host" "form-bigdec?" hc-bigdec?)
+  (def-var! "jolt.host" "form-bigdec-source" hc-bigdec-source)
   (def-var! "jolt.host" "form-elements" hc-elements)
   (def-var! "jolt.host" "form-vec-items" hc-vec-items)
   (def-var! "jolt.host" "form-set-items" hc-set-items)
