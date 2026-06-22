@@ -294,6 +294,20 @@
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) (sb-str self)))))
 
+;; a file-backed writer (clojure.java.io/writer of a File/path): accumulates like
+;; StringWriter, then persists to the path on flush/close, so
+;; (with-open [w (io/writer "f")] (.write w …)) writes the file. State #(path buf).
+(define (fw-path self) (vector-ref (jhost-state self) 0))
+(define (fw-buf self) (vector-ref (jhost-state self) 1))
+(define (fw-append! self s) (vector-set! (jhost-state self) 1 (string-append (fw-buf self) s)))
+(define (fw-flush! self) (jolt-spit (fw-path self) (fw-buf self)))  ; jolt-spit: io.ss
+(register-host-methods! "file-writer"
+  (list (cons "write" (lambda (self x) (fw-append! self (writer-piece x)) jolt-nil))
+        (cons "append" (lambda (self x) (fw-append! self (render-piece x)) self))
+        (cons "flush" (lambda (self) (fw-flush! self) jolt-nil))
+        (cons "close" (lambda (self) (fw-flush! self) jolt-nil))
+        (cons "toString" (lambda (self) (fw-buf self)))))
+
 ;; ---- StringReader -----------------------------------------------------------
 ;; state: a vector #(string pos marked).
 (register-class-ctor! "StringReader"
@@ -310,6 +324,19 @@
         (cons "reset" (lambda (self) (sr-pos! self (vector-ref (jhost-state self) 2)) jolt-nil))
         (cons "skip" (lambda (self n) (let ((n (jnum->exact n)))
                                         (sr-pos! self (min (string-length (sr-s self)) (+ (sr-pos self) n))) (->num n))))
+        ;; readLine: the next line without its terminator (\n or \r\n), nil at EOF —
+        ;; what line-seq drives over a BufferedReader.
+        (cons "readLine"
+          (lambda (self)
+            (let ((s (sr-s self)) (p (sr-pos self)) (len (string-length (sr-s self))))
+              (if (>= p len) jolt-nil
+                  (let scan ((i p))
+                    (cond
+                      ((>= i len) (sr-pos! self len) (substring s p len))
+                      ((char=? (string-ref s i) #\newline)
+                       (sr-pos! self (+ i 1))
+                       (substring s p (if (and (> i p) (char=? (string-ref s (- i 1)) #\return)) (- i 1) i)))
+                      (else (scan (+ i 1)))))))))
         (cons "close" (lambda (self) jolt-nil))))
 
 ;; ---- PushbackReader ---------------------------------------------------------

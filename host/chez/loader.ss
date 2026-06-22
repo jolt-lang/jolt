@@ -57,12 +57,21 @@
 ;; Read every form from a file and compile+eval it in turn. The first form is
 ;; normally (ns …), which expands to (in-ns …) and switches the current ns, so
 ;; later forms compile in that namespace — (chez-current-ns) is re-read each step.
+;;
+;; Reads by POSITION rather than via __parse-next: a top-level form that reads as
+;; nothing — a :cljs-only #? with no matching branch, a #_ discard, a trailing
+;; comment — yields rdr-eof but still advances. parse-next collapses that to "no
+;; more forms", which would silently drop the entire rest of the file; here we
+;; skip the no-op form and continue to true end-of-string.
 (define (load-jolt-file path)
-  (let loop ((src (read-file-string path)))
-    (let ((pn (jolt-parse-next src)))
-      (unless (jolt-nil? pn)
-        (jolt-compile-eval-form (jolt-nth pn 0) (chez-current-ns))
-        (loop (jolt-nth pn 1))))))
+  (let* ((src (read-file-string path)) (end (string-length src)))
+    (let loop ((i 0))
+      (when (< i end)
+        (let-values (((form j) (rdr-read-form src i end)))
+          (when (> j i)
+            (unless (rdr-eof? form)
+              (jolt-compile-eval-form form (chez-current-ns)))
+            (loop j)))))))
 
 ;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
 ;; dependency cycle terminates (Clojure's behavior). The caller's current ns is

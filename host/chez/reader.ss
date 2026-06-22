@@ -33,6 +33,10 @@
 (define rdr-eof (list 'reader-eof))
 (define (rdr-eof? x) (eq? x rdr-eof))
 
+;; A splicing reader conditional #?@(...) yields this wrapper; the enclosing
+;; sequence reader splices its items in place (never a legal jolt value).
+(define-record-type rdr-splice-t (fields items) (nongenerative rdr-splice-v1))
+
 (define (rdr-ws? c)
   (or (char-whitespace? c) (char=? c #\,)))
 
@@ -248,9 +252,11 @@
         ((char=? (string-ref s i) close) (values (reverse acc) (+ i 1)))
         (else
          (let-values (((form j) (rdr-read-form s i end)))
-           (if (rdr-eof? form)
-               (loop j acc)             ; a #_ discard or close — re-check at j
-               (loop j (cons form acc)))))))))
+           (cond
+             ((rdr-eof? form) (loop j acc))   ; a #_ discard or no-match #? — re-check at j
+             ((rdr-splice-t? form)            ; #?@ — splice the matched collection's items
+              (loop j (append (reverse (rdr-splice-t-items form)) acc)))
+             (else (loop j (cons form acc))))))))))
 
 ;; Map literals must preserve SOURCE key order so the analyzer emits the value
 ;; expressions in source order (Clojure guarantees left-to-right map-literal eval).
@@ -360,9 +366,13 @@
                                (if rest-sym (list (jolt-symbol #f "&") rest-sym) '()))))
           (values (jolt-list (jolt-symbol #f "fn*") (apply jolt-vector params) body) j))))))
 
-;; reader conditionals (jolt-qjr0): jolt's feature set is {:jolt :default}; the
-;; FIRST clause whose feature key is in the set wins (clause order, like Clojure).
-(define rdr-features '("jolt" "default"))
+;; reader conditionals (jolt-qjr0): jolt's feature set is {:jolt :clj :default};
+;; the FIRST clause whose feature key is in the set wins (clause order, like
+;; Clojure). jolt is a Clojure/JVM-compatible host — it emulates clojure.lang.*
+;; and java.* interop — so it reads the :clj branch of a .cljc library (the JVM
+;; code path its host shims target), not the :cljs one. A library can still
+;; override with a :jolt-specific branch (place it before :clj).
+(define rdr-features '("jolt" "clj" "default"))
 (define (rdr-feature? kw)
   (and (keyword? kw) (jolt-nil? (let ((n (keyword-t-ns kw))) (if n n jolt-nil)))
        (and (member (keyword-t-name kw) rdr-features) #t)))
@@ -376,7 +386,17 @@
                          (else '()))))
         (let loop ((xs items))
           (cond ((or (null? xs) (null? (cdr xs))) (values rdr-eof j))  ; no match -> discard
-                ((rdr-feature? (car xs)) (values (cadr xs) j))
+                ((rdr-feature? (car xs))
+                 (if splice
+                     ;; #?@ — the matched value is a collection whose ITEMS splice
+                     ;; into the enclosing sequence (read-seq expands the wrapper).
+                     (let ((v (cadr xs)))
+                       (values (make-rdr-splice-t
+                                 (cond ((pvec? v) (seq->list v))
+                                       ((or (cseq? v) (empty-list-t? v)) (seq->list v))
+                                       (else (list v))))
+                               j))
+                     (values (cadr xs) j)))
                 (else (loop (cddr xs)))))))))
 
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'

@@ -245,9 +245,22 @@
      (host-new "StringReader" (seq-source->string x)))
     (else (host-new "StringReader" (jolt-str-render-one x)))))
 
+;; --- clojure.java.io/writer: an existing writer passes through; a File / path
+;; gets a file-backed writer (host-static.ss "file-writer") that persists on
+;; flush/close. Mirrors io.clj's writer over the host's StringWriter/file ports.
+(define (jolt-io-writer x)
+  (cond
+    ((and (jhost? x) (string=? (jhost-tag x) "writer")) x)
+    ((and (jhost? x) (string=? (jhost-tag x) "file-writer")) x)
+    ((jfile? x) (make-jhost "file-writer" (vector (jfile-path x) "")))
+    ((string? x) (make-jhost "file-writer" (vector x "")))
+    (else (error #f "io/writer: don't know how to create a writer from" x))))
+
 ;; --- clojure.java.io ns -----------------------------------------------------
 (def-var! "clojure.java.io" "file" jolt-make-file)
 (def-var! "clojure.java.io" "as-file" (lambda (x) (if (jfile? x) x (make-jfile (file-path-of x)))))
 (def-var! "clojure.java.io" "reader" jolt-io-reader)
+(def-var! "clojure.java.io" "writer" jolt-io-writer)
 (def-var! "clojure.java.io" "input-stream" jolt-io-reader)
+(def-var! "clojure.java.io" "output-stream" jolt-io-writer)
 (def-var! "clojure.java.io" "as-url" (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "url")) x (make-url (jolt-str-render-one x)))))

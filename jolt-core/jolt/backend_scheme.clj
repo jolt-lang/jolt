@@ -120,7 +120,13 @@
 ;; starts a datum in Scheme, so replace it with `_`. A name that collides with a
 ;; Scheme keyword is prefixed with `_` so it can never shadow the emitted form.
 (defn- munge-name [s]
-  (let [s (str/replace s "#" "_")]
+  ;; A Clojure symbol may contain chars that break a Scheme identifier: ' is the
+  ;; quote reader macro (a bare f' would read as f then 'rest), # already maps to
+  ;; _. Munge both to safe tokens; the same mapping applies at the binding and at
+  ;; every reference, so resolution stays consistent.
+  (let [s (-> s
+              (str/replace "#" "_")
+              (str/replace "'" "_PRIME_"))]
     (if (contains? scheme-reserved s) (str "_" s) s)))
 
 (declare emit)

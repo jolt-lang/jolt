@@ -247,7 +247,7 @@
                                a
                                (proc k `(get ~gm ~(get pat k)) a)))
                            g3 (keys pat)))
-               :else (throw (str "unsupported destructuring pattern"))))
+               :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
          ploop
            (fn* ploop [i acc]
              (if (< i (count bindings))

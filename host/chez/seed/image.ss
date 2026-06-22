@@ -131,7 +131,7 @@
 (guard (e (#t #f))
   (def-var-with-meta! "jolt.backend-scheme" "scheme-reserved" (let* ((_o$1341 "if") (_o$1342 "begin") (_o$1343 "lambda") (_o$1344 "let") (_o$1345 "let*") (_o$1346 "letrec") (_o$1347 "letrec*") (_o$1348 "quote") (_o$1349 "quasiquote") (_o$1350 "unquote") (_o$1351 "set!") (_o$1352 "define") (_o$1353 "define-syntax") (_o$1354 "cond") (_o$1355 "case") (_o$1356 "when") (_o$1357 "unless") (_o$1358 "and") (_o$1359 "or") (_o$1360 "do") (_o$1361 "else") (_o$1362 "guard") (_o$1363 "parameterize") (_o$1364 "delay") (_o$1365 "values")) (jolt-hash-set _o$1341 _o$1342 _o$1343 _o$1344 _o$1345 _o$1346 _o$1347 _o$1348 _o$1349 _o$1350 _o$1351 _o$1352 _o$1353 _o$1354 _o$1355 _o$1356 _o$1357 _o$1358 _o$1359 _o$1360 _o$1361 _o$1362 _o$1363 _o$1364 _o$1365)) (jolt-hash-map (keyword #f "private") #t)))
 (guard (e (#t #f))
-  (def-var! "jolt.backend-scheme" "munge-name" (letrec ((munge-name (lambda (s) (let fnrec1366 ((s s)) (let* ((s (jolt-invoke (var-deref "clojure.string" "replace") s "#" "_"))) (if (jolt-contains? (var-deref "jolt.backend-scheme" "scheme-reserved") s) (jolt-invoke (var-deref "clojure.core" "str") "_" s) s)))))) munge-name)))
+  (def-var! "jolt.backend-scheme" "munge-name" (letrec ((munge-name (lambda (s) (let fnrec1366 ((s s)) (let* ((s (jolt-invoke (var-deref "clojure.string" "replace") (jolt-invoke (var-deref "clojure.string" "replace") s "#" "_") "'" "_PRIME_"))) (if (jolt-contains? (var-deref "jolt.backend-scheme" "scheme-reserved") s) (jolt-invoke (var-deref "clojure.core" "str") "_" s) s)))))) munge-name)))
 (guard (e (#t #f))
   (declare-var! "jolt.backend-scheme" "emit"))
 (guard (e (#t #f))
