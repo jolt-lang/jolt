@@ -114,9 +114,25 @@
                    (if ph (conj phints [nm ph]) phints)))))
       {:fixed fixed :rest rest-name :hints hints :phints phints})))
 
+;; Clojure lets a later param shadow an earlier same-named one (a macro expander
+;; uses _ for both its &form and &env slots, so its param list is (_ _ …)); the
+;; body binds the LAST occurrence. Chez rejects duplicate formals, so rename every
+;; earlier duplicate to a fresh name — it is shadowed and unreferenceable.
+(defn- uniquify-params [names]
+  (let [n (count names)]
+    (loop [i 0 out []]
+      (if (< i n)
+        (let [nm (nth names i)
+              dup? (loop [j (inc i)]
+                     (cond (>= j n) false
+                           (= nm (nth names j)) true
+                           :else (recur (inc j))))]
+          (recur (inc i) (conj out (if dup? (gen-name (str nm "_")) nm))))
+        out))))
+
 (defn- analyze-arity [ctx pvec body env fn-name]
   (let [pp (parse-params ctx (vec (form-vec-items pvec)))
-        fixed (:fixed pp)
+        fixed (uniquify-params (:fixed pp))
         rst (:rest pp)
         ;; Always a recur target, variadic included: the back end gives the rest
         ;; param an ordinary positional slot (holding the collected seq), so recur
