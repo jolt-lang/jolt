@@ -62,6 +62,11 @@
 (define (hc-regex? x) (hc-tagged-of x hc-kw-regex))
 (define (hc-inst? x) (hc-tagged-of x hc-kw-inst))
 (define (hc-uuid? x) (hc-tagged-of x hc-kw-uuid))
+;; A live namespace value spliced into a form (e.g. `(str ~*ns*) in a macro):
+;; the analyzer can't carry an opaque runtime value, so recognize a jns and
+;; reconstruct it by name at the call site (jolt-8sha).
+(define (hc-ns-value? x) (jns? x))
+(define (hc-ns-value-name x) (jns-name x))
 
 ;; --- form accessors ---------------------------------------------------------
 (define (hc-char-code x) (char->integer x))  ; native Chez char -> codepoint
@@ -292,6 +297,8 @@
   (def-var! "jolt.host" "form-regex?" hc-regex?)
   (def-var! "jolt.host" "form-inst?" hc-inst?)
   (def-var! "jolt.host" "form-uuid?" hc-uuid?)
+  (def-var! "jolt.host" "form-ns-value?" hc-ns-value?)
+  (def-var! "jolt.host" "form-ns-value-name" hc-ns-value-name)
   (def-var! "jolt.host" "form-elements" hc-elements)
   (def-var! "jolt.host" "form-vec-items" hc-vec-items)
   (def-var! "jolt.host" "form-set-items" hc-set-items)

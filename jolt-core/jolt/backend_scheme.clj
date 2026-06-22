@@ -404,6 +404,8 @@
     ;; #inst / #uuid literals -> runtime inst / uuid values.
     :inst (str "(jolt-inst-from-string " (chez-str-lit (:source node)) ")")
     :uuid (str "(jolt-uuid-from-string " (chez-str-lit (:source node)) ")")
+    ;; a namespace value spliced into a form (~*ns*) -> reconstruct by name.
+    :the-ns (str "(intern-ns! " (chez-str-lit (:name node)) ")")
     ;; (.method target arg*) -> jolt-host-call for an rt-shimmed method, else
     ;; record-method-dispatch (a reify/record protocol method, jolt-jgoc).
     :host-call (let [m (:method node)
