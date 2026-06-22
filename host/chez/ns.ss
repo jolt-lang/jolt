@@ -67,7 +67,9 @@
                 (cond
                   ((string=? (keyword-t-name k) "as")
                    (when (symbol-t? v) (chez-register-alias! cns (symbol-t-name v) target)))
-                  ((string=? (keyword-t-name k) "refer")
+                  ;; :refer (require) and :only (use) both bring unqualified names
+                  ;; into cns resolving to target/name.
+                  ((or (string=? (keyword-t-name k) "refer") (string=? (keyword-t-name k) "only"))
                    (cond
                      ;; :refer :all — bring in every public var (require :refer :all)
                      ((and (keyword? v) (string=? (keyword-t-name v) "all"))
@@ -196,11 +198,16 @@
 ;; resolve: an unqualified symbol resolves in the current ns then clojure.core; a
 ;; qualified one in its own ns. Returns the var iff genuinely defined, else nil —
 ;; never interns an empty cell (var-cell-lookup is non-creating).
+;; resolve `sym` in the current ns: a qualified ns part is read as an :as alias
+;; (then a real ns); an unqualified name resolves in the current ns, its :refers,
+;; then clojure.core. (ns-resolve does the same against an explicit ns.)
 (define (jolt-resolve sym)
-  (let* ((sns (symbol-t-ns sym)) (nm (symbol-t-name sym))
+  (let* ((cns (chez-current-ns))
+         (sns (symbol-t-ns sym)) (nm (symbol-t-name sym))
          (c (if (string? sns)
-                (var-cell-lookup sns nm)
-                (or (var-cell-lookup (chez-current-ns) nm)
+                (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
+                (or (var-cell-lookup cns nm)
+                    (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
                     (var-cell-lookup "clojure.core" nm)))))
     (if (and c (var-cell-defined? c)) c jolt-nil)))
 
