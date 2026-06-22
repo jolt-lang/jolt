@@ -39,6 +39,19 @@
                      (let [v (jolt.ffi/read p :int)] (jolt.ffi/free p) v))"))))
 (ok "sizeof :pointer is a word" (let ((n (jnum->exact (ev "(jolt.ffi/sizeof :pointer)")))) (or (= n 8) (= n 4))))
 
+;; byte-array buffer I/O: write a byte-array into foreign memory and read it back
+;; byte-exact (high bytes preserved, no UTF-8 mangling).
+(ok "byte-array roundtrip (binary-faithful)"
+    (jolt-truthy?
+      (ev "(let [src (byte-array [0 65 200 255 10])
+                  p (jolt.ffi/alloc 5)]
+              (jolt.ffi/write-array p src)
+              (let [back (jolt.ffi/read-array p 5)]
+                (jolt.ffi/free p)
+                (and (= 5 (alength back))
+                     (= 0 (aget back 0)) (= 65 (aget back 1))
+                     (= 200 (aget back 2)) (= 255 (aget back 3)) (= 10 (aget back 4)))))")))
+
 ;; a :blocking foreign call is collect-safe: a thread parked in it must not pin
 ;; the stop-the-world collector. (collect) here would throw "cannot collect when
 ;; multiple threads are active" if usleep weren't emitted __collect_safe.
