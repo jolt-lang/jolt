@@ -225,6 +225,12 @@
           ((hc-special-symbol? nm) form)               ; special form: leave bare
           ((hc-interop-head? nm) form)                 ; interop (.method / Class. / .-field): bare
           ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
+          ;; a name referred into the compile ns (:require :refer / :use :only)
+          ;; qualifies to its SOURCE ns, not the compile ns — so a macro that
+          ;; syntax-quotes a referred var (e.g. clojure.tools.logging/spy using
+          ;; clojure.pprint's pprint) expands to the real var.
+          ((chez-resolve-refer (chez-actx-cns ctx) nm)
+           => (lambda (target) (jolt-symbol target nm)))
           (else (jolt-symbol (chez-actx-cns ctx) nm)))  ; else: qualify to compile ns
         ;; qualified: if the ns part is an :as alias in the compile ns, resolve it
         ;; to the target namespace — Clojure resolves the alias part of a qualified
