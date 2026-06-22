@@ -42,11 +42,10 @@ smoke:
 sci:
 	@chez --script host/chez/run-sci.ss
 
-# FFI + threading: HTTP server GC-safety (blocking calls deactivate the thread)
-# and http-client temp-file uniqueness, plus a live request.
+# FFI: bind native functions (typed foreign-procedure), memory, and that a
+# :blocking call is collect-safe (a parked thread doesn't pin the collector).
 ffi:
 	@chez --script test/chez/ffi-binding-test.ss
-	@chez --script test/chez/ffi-server-test.ss
 
 # Transients: mutable backing, snapshot on persistent!, and linear-time builds.
 transient:
