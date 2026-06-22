@@ -65,6 +65,21 @@
 (define (ffi-null? ptr) (and (number? ptr) (= (jnum->exact ptr) 0)))
 (define ffi-null 0)
 
+;; --- buffer I/O (known length) ----------------------------------------------
+;; read n bytes at ptr as a string (UTF-8, falling back to latin1 for invalid
+;; sequences) — for a socket recv buffer and similar fixed-length reads.
+(define (ffi-read-bytes ptr n)
+  (let* ((n (jnum->exact n)) (p (jnum->exact ptr)) (bv (make-bytevector n)))
+    (do ((i 0 (+ i 1))) ((= i n)) (bytevector-u8-set! bv i (foreign-ref 'unsigned-8 p i)))
+    (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))
+;; write a string's UTF-8 bytes into ptr (no NUL terminator); return the count.
+(define (ffi-write-bytes ptr s)
+  (let* ((bv (string->utf8 (jolt-str-render-one s))) (n (bytevector-length bv)) (p (jnum->exact ptr)))
+    (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bytevector-u8-ref bv i)))
+    n))
+(def-var! "jolt.ffi" "read-bytes" ffi-read-bytes)
+(def-var! "jolt.ffi" "write-bytes" ffi-write-bytes)
+
 ;; --- string / bytevector marshaling ------------------------------------------
 ;; A C string result already comes back as a jolt string (the `string` foreign
 ;; type). For a `void*` that points at a NUL-terminated C string, read it here.
