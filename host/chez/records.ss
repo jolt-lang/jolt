@@ -256,6 +256,11 @@
         (let loop ((xs irr) (acc m))
           (if (null? xs) acc (loop (cdr xs) (string-append acc " " (jolt-pr-str (car xs)))))))
       (with-output-to-string (lambda () (display-condition c)))))
+;; expose a Chez condition's message to Clojure (ex-message returns nil for raw
+;; host conditions): the nREPL eval handler surfaces it instead of an opaque
+;; "#<compound condition>".
+(def-var! "jolt.host" "condition-message"
+  (lambda (c) (if (condition? c) (condition->message-string c) jolt-nil)))
 (define (record-method-dispatch obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
