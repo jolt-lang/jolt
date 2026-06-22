@@ -11,7 +11,7 @@
 ;; reset between cases so there is no leakage — same isolation a fresh process gives.
 ;;
 ;;   chez --script host/chez/run-corpus.ss
-;;   JOLT_CHEZ_ZJ_FLOOR=N   override the regression floor (default 2728)
+;;   JOLT_CHEZ_ZJ_FLOOR=N   override the regression floor (default 2726)
 ;;   JOLT_CORPUS_LIMIT=N    every-Nth stride (fast iteration; floor drops to 0)
 ;;   JOLT_DUMP_CRASH_LABELS=1   list crash + allowlisted labels
 (import (chezscheme))
@@ -94,15 +94,23 @@
     "reader conditional" "reader cond :jolt" "reader cond no match"
     "reader cond splice" "reader cond splice no match"
     "nil nested" "bool nested"
-    "cancel an in-flight future returns true" "future-cancelled? after cancel"
     "no param vector"))
 (define known-fail (make-hashtable string-hash string=?))
 (for-each (lambda (l) (hashtable-set! known-fail l #t)) known-fail-labels)
 
-;; Cases that BLOCK forever on a shared-heap host (deref of an undelivered promise) —
-;; skip like :throws so one hung case can't stall the run.
+;; Cases skipped like :throws so they can't perturb the pass count:
+;;  - "promise undelivered" BLOCKS forever on a shared-heap host (deref of an
+;;    undelivered promise), so one hung case can't stall the run.
+;;  - the future-cancel races: whether `future-cancel` catches a trivial
+;;    `(future 1)` in-flight is pure thread-scheduling luck (the JVM expects the
+;;    future still queued; on a loaded host it may already have completed). A racy
+;;    outcome must not be a deterministic gate criterion — counting it inflates the
+;;    floor on a fast machine and trips CI on a slow one.
 (define skip-blocking (make-hashtable string-hash string=?))
-(hashtable-set! skip-blocking "promise undelivered" #t)
+(for-each (lambda (l) (hashtable-set! skip-blocking l #t))
+          '("promise undelivered"
+            "cancel an in-flight future returns true"
+            "future-cancelled? after cancel"))
 
 ;; Coarse crash bucket for the punch-list (informational; not gate-critical).
 (define (crash-reason m)
@@ -188,7 +196,7 @@
 
 ;; Regression floor: fail on any NEW divergence or if pass drops below the floor.
 (define base-floor (let ((s (getenv "JOLT_CHEZ_ZJ_FLOOR")))
-                     (if s (string->number s) 2728)))
+                     (if s (string->number s) 2726)))
 (define floor (if limit 0 base-floor))
 (when (or (> (length diverged) 0) (< pass floor))
   (printf "REGRESSION: pass ~a < floor ~a or ~a new divergence(s)\n"
