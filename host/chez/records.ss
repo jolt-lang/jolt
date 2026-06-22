@@ -139,12 +139,16 @@
         ((boolean? obj) '("Boolean" "Object"))
         ((keyword? obj) '("Keyword" "Named" "Object"))
         ((jolt-symbol? obj) '("Symbol" "Named" "Object"))
-        ((pvec? obj) '("PersistentVector" "IPersistentVector" "IPersistentCollection"
+        ((pvec? obj) '("PersistentVector" "APersistentVector" "IPersistentVector" "IPersistentCollection"
                        "List" "java.util.List" "Sequential" "Collection" "Object"))
-        ((pmap? obj) '("PersistentArrayMap" "IPersistentMap" "Associative"
+        ((pmap? obj) '("PersistentArrayMap" "APersistentMap" "IPersistentMap" "Associative"
                        "Map" "java.util.Map" "Object"))
-        ((pset? obj) '("PersistentHashSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Object"))
-        ((or (cseq? obj) (empty-list-t? obj)) '("ISeq" "IPersistentCollection" "Sequential" "Collection" "Object"))
+        ((pset? obj) '("PersistentHashSet" "APersistentSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Object"))
+        ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Object"))
+        ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
+        ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
+        ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
+        ((procedure? obj) '("Fn" "IFn" "AFn" "Object"))
         ((jolt-nil? obj) '("nil"))
         (else '("Object"))))
 
@@ -185,9 +189,11 @@
               '("Long" "Integer" "Number" "Double" "Ratio" "BigInt" "BigInteger"
                 "String" "CharSequence" "Boolean" "Character"
                 "Keyword" "Symbol" "Named" "Object" "nil"
-                "PersistentVector" "IPersistentVector"
-                "PersistentArrayMap" "IPersistentMap" "PersistentHashSet" "IPersistentSet"
-                "ISeq" "IPersistentCollection" "Associative" "Sequential"
+                "Fn" "IFn" "AFn" "URI"
+                "PersistentVector" "APersistentVector" "IPersistentVector"
+                "PersistentArrayMap" "APersistentMap" "IPersistentMap"
+                "PersistentHashSet" "APersistentSet" "IPersistentSet"
+                "ASeq" "ISeq" "IPersistentCollection" "Associative" "Sequential"
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
                 "Collection" "java.util.Collection"))
     h))
@@ -197,6 +203,7 @@
 (define (canonical-host-tag type-name)
   (let ((base (or (strip-prefix type-name "java.lang.")
                   (strip-prefix type-name "java.util.")
+                  (strip-prefix type-name "java.net.")
                   (strip-prefix type-name "clojure.lang.")
                   type-name)))
     (and (hashtable-ref host-type-set base #f) base)))
@@ -233,7 +240,16 @@
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
                          (if f (apply jolt-invoke f obj rest)
-                             (error #f (string-append "No reified method " method-name))))))
+                             ;; not implemented on the reify — fall back to the
+                             ;; protocol's extended impls over the reify's host tags
+                             ;; (e.g. an Object/default extension). malli reifies some
+                             ;; protocols and relies on a protocol's default for the
+                             ;; rest (jolt-az9a).
+                             (let loop ((tags (value-host-tags obj)))
+                               (cond ((null? tags) (error #f (string-append "No reified method " method-name)))
+                                     ((find-protocol-method (car tags) proto-name method-name)
+                                      => (lambda (g) (apply jolt-invoke g obj rest)))
+                                     (else (loop (cdr tags)))))))))
       (else
        (let loop ((tags (value-host-tags obj)))
          (cond ((null? tags) (error #f (string-append "No method " method-name " in " proto-name)))
@@ -264,6 +280,11 @@
 (define (record-method-dispatch obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
+      ;; (.getClass x): universal Object method — the class token for any value
+      ;; (jolt has no Class objects; the token is the canonical name string, on
+      ;; which .getName/.getSimpleName work via the String method shim).
+      ((and (string=? method-name "getClass") (not (jrec? obj)) (not (jreify? obj)))
+       (jolt-class obj))
       ((and (jrec? obj) (find-method-any-protocol (jrec-tag obj) method-name))
        => (lambda (f) (apply jolt-invoke f obj rest)))
       ((reified-methods obj)
@@ -311,6 +332,10 @@
               (condition->message-string obj))
              ((string=? method-name "toString") (condition->message-string obj))
              ((string=? method-name "getCause") jolt-nil)
+             ;; java.sql.SQLException chaining — jolt errors don't chain (nil).
+             ((or (string=? method-name "getNextException") (string=? method-name "getCause")) jolt-nil)
+             ((string=? method-name "getStackTrace") (jolt-vector))
+             ((string=? method-name "printStackTrace") jolt-nil)
              (else (error #f (string-append "No method " method-name " on Throwable")))))
       ;; java.lang.Character interop: (.toString \+) -> "+", etc.
       ((char? obj)
@@ -321,6 +346,19 @@
              ((string=? method-name "compareTo")
               (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
              (else (error #f (string-append "No method " method-name " on char")))))
+      ;; java.util.List .indexOf / .lastIndexOf over any seqable (vector / list /
+      ;; seq) — -1 when absent, like the JVM (medley/index-of reads this).
+      ((or (string=? method-name "indexOf") (string=? method-name "lastIndexOf"))
+       (let ((target (car rest)) (last? (string=? method-name "lastIndexOf")))
+         (let loop ((s (jolt-seq obj)) (i 0) (found -1))
+           (cond ((jolt-nil? s) found)
+                 ((jolt=2 (seq-first s) target)
+                  (if last? (loop (jolt-seq (seq-more s)) (fx+ i 1) i) i))
+                 (else (loop (jolt-seq (seq-more s)) (fx+ i 1) found))))))
+      ;; universal Object methods on any remaining value (boolean, etc.).
+      ((string=? method-name "toString") (jolt-str-render-one obj))
+      ((string=? method-name "hashCode") (jolt-hash obj))
+      ((string=? method-name "equals") (and (pair? rest) (if (jolt= obj (car rest)) #t #f)))
       (else (error #f (string-append "No method " method-name " for value: "
                                      (jolt-pr-str obj)))))))
 
@@ -371,6 +409,55 @@
       (hashtable-keys type-registry))
     (if (null? out) jolt-nil (list->cseq out))))
 
+;; jolt exception values (ex-info + host-constructed throwables) are ex-info-shaped
+;; maps tagged :jolt/type :jolt/ex-info; (class …)/instance? read the JVM class off
+;; the optional :jolt/class key, defaulting to clojure.lang.ExceptionInfo.
+;; pmap? guard: ex-info maps are plain hash-maps, never sorted-map htables — and a
+;; bare jolt-get on a sorted-map would invoke its comparator on :jolt/type and throw.
+(define (ex-info-map? v)
+  (and (pmap? v) (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info)))
+(define (ex-info-class v)
+  (let ((c (jolt-get v jolt-kw-class jolt-nil)))
+    (if (string? c) c "clojure.lang.ExceptionInfo")))
+;; immediate-parent chain of the JVM exception hierarchy (simple names). Drives
+;; instance? across exception supertypes — (instance? Throwable (ex-info …)) etc.
+(define exception-parent
+  '(("ExceptionInfo" . "RuntimeException")
+    ("RuntimeException" . "Exception")
+    ("IllegalArgumentException" . "RuntimeException")
+    ("NumberFormatException" . "IllegalArgumentException")
+    ("IllegalStateException" . "RuntimeException")
+    ("UnsupportedOperationException" . "RuntimeException")
+    ("ArithmeticException" . "RuntimeException")
+    ("NullPointerException" . "RuntimeException")
+    ("ClassCastException" . "RuntimeException")
+    ("IndexOutOfBoundsException" . "RuntimeException")
+    ("ConcurrentModificationException" . "RuntimeException")
+    ("NoSuchElementException" . "RuntimeException")
+    ("UncheckedIOException" . "RuntimeException")
+    ("InterruptedException" . "Exception")
+    ("IOException" . "Exception")
+    ("FileNotFoundException" . "IOException")
+    ("UnsupportedEncodingException" . "IOException")
+    ("UnknownHostException" . "IOException")
+    ("SocketException" . "IOException")
+    ("ConnectException" . "IOException")
+    ("SocketTimeoutException" . "IOException")
+    ("MalformedURLException" . "IOException")
+    ("SSLException" . "IOException")
+    ("Exception" . "Throwable")
+    ("Error" . "Throwable")
+    ("AssertionError" . "Error")
+    ("Throwable" . "Object")))
+;; Is `wanted` (simple name) `cls` or a supertype of it? ExceptionInfo also
+;; implements the IExceptionInfo interface.
+(define (exception-isa? cls wanted)
+  (let loop ((c cls))
+    (cond ((not c) #f)
+          ((string=? c wanted) #t)
+          ((and (string=? c "ExceptionInfo") (string=? wanted "IExceptionInfo")) #t)
+          (else (let ((p (assoc c exception-parent))) (loop (and p (cdr p))))))))
+
 ;; instance-check: (type-sym val) — type/protocol membership.
 (define (instance-check type-sym val)
   (let ((tname (symbol-t-name type-sym)))
@@ -382,6 +469,7 @@
                   (string=? (substring tag (- (string-length tag) (string-length tname)) (string-length tag)) tname)))))
       ((jreify? val) (let ((short (last-dot tname)))
                        (and (memp (lambda (p) (string=? (last-dot p) short)) (jreify-protos val)) #t)))
+      ((ex-info-map? val) (exception-isa? (last-dot (ex-info-class val)) (last-dot tname)))
       (else (case-string tname val)))))
 (define (case-string tname val)
   (cond
@@ -397,6 +485,11 @@
     ((member tname '("Symbol" "clojure.lang.Symbol")) (jolt-symbol? val))
     ((member tname '("Atom" "clojure.lang.Atom")) (jolt-atom? val))
     ((member tname '("IFn" "clojure.lang.IFn" "Fn" "clojure.lang.Fn")) (procedure? val))
+    ((member tname '("Pattern" "java.util.regex.Pattern")) (regex-t? val))
+    ((member tname '("URI" "java.net.URI"))
+     (and (jhost? val) (string=? (jhost-tag val) "uri")))
+    ((member tname '("File" "java.io.File")) (jfile? val))
+    ((member tname '("UUID" "java.util.UUID")) (juuid? val))
     (else #f)))
 
 ;; str of a record uses a custom (Object toString) impl if the type defines one

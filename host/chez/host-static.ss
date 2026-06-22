@@ -57,6 +57,9 @@
 (set! record-method-dispatch
   (lambda (obj method-name rest-args)
     (cond
+      ;; (.getClass x) is universal — the class token for any value (incl. numbers
+      ;; / jhost) — before the per-type arms that would otherwise reject it.
+      ((string=? method-name "getClass") (jolt-class obj))
       ((jhost? obj)
        (let ((mh (hashtable-ref host-methods-tbl (jhost-tag obj) #f)))
          (let ((f (and mh (hashtable-ref mh method-name #f))))
@@ -120,6 +123,21 @@
       (error #f (string-append "NumberFormatException: For input string: \""
                                (if (string? s) s (jolt-str-render-one s)) "\""))))
 (define (char-code c) (if (char? c) (char->integer c) (jnum->exact c)))
+
+;; parse a double string (Double/parseDouble, (Double. s)); JVM accepts NaN /
+;; Infinity / decimal / scientific. #f on failure.
+(define (parse-double-str s)
+  (let ((t (str-trim (if (string? s) s (jolt-str-render-one s)))))
+    (cond
+      ((or (string=? t "NaN") (string=? t "+NaN") (string=? t "-NaN")) +nan.0)
+      ((or (string=? t "Infinity") (string=? t "+Infinity")) +inf.0)
+      ((string=? t "-Infinity") -inf.0)
+      (else (let ((n (string->number t))) (and n (real? n) (exact->inexact n)))))))
+(define (parse-double-or-throw s)
+  (or (parse-double-str s)
+      (error #f (string-append "NumberFormatException: For input string: \""
+                               (if (string? s) s (jolt-str-render-one s)) "\""))))
+(define (->double x) (if (number? x) (exact->inexact x) (parse-double-or-throw x)))
 
 ;; ---- java.lang statics ------------------------------------------------------
 ;; java.lang.Math: sqrt/pow/floor/ceil/trig/log/exp always return a DOUBLE on the
@@ -198,6 +216,8 @@
         (cons "exit" (lambda args (exit (if (null? args) 0 (jnum->exact (car args))))))
         ;; wrapped in lambdas: the helpers are defined below, resolved at call time.
         (cons "getProperty" (lambda (k . d) (apply sys-get-property k d)))
+        (cons "setProperty" (lambda (k v) (sys-set-property k v)))
+        (cons "clearProperty" (lambda (k) (sys-clear-property k)))
         (cons "getProperties" (lambda () (sys-properties-map)))
         (cons "getenv" (lambda k (apply sys-getenv k)))))
 
@@ -218,6 +238,19 @@
   (list (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))
         (cons "TRUE" #t) (cons "FALSE" #f)))
 
+(register-class-ctor! "Double" ->double)
+(register-class-ctor! "Float" ->double)
+(register-class-statics! "Double"
+  (list (cons "parseDouble" parse-double-or-throw)
+        (cons "valueOf" ->double)
+        (cons "toString" (lambda (x) (jolt-str-render-one (->double x))))
+        (cons "isNaN" (lambda (x) (and (flonum? x) (nan? x))))
+        (cons "isInfinite" (lambda (x) (and (flonum? x) (infinite? x))))
+        (cons "MAX_VALUE" 1.7976931348623157e308) (cons "MIN_VALUE" 4.9e-324)
+        (cons "POSITIVE_INFINITY" +inf.0) (cons "NEGATIVE_INFINITY" -inf.0) (cons "NaN" +nan.0)))
+(register-class-statics! "Float"
+  (list (cons "parseFloat" parse-double-or-throw) (cons "valueOf" ->double)))
+
 ;; Character: ASCII predicates (the engine is byte/ASCII oriented).
 (register-class-statics! "Character"
   (list (cons "isUpperCase" (lambda (c) (let ((n (char-code c))) (and (>= n 65) (<= n 90)))))
@@ -226,8 +259,56 @@
         (cons "isWhitespace" (lambda (c) (char<=? (integer->char (char-code c)) #\space)))))
 
 ;; String/valueOf(Object): "null" for nil, else jolt's str semantics.
+;; String/format(fmt args…) / (locale fmt args…) -> the clojure.core format engine.
 (register-class-statics! "String"
-  (list (cons "valueOf" (lambda (x . _) (if (jolt-nil? x) "null" (jolt-str-render-one x))))))
+  (list (cons "valueOf" (lambda (x . _) (if (jolt-nil? x) "null" (jolt-str-render-one x))))
+        (cons "format" (lambda (a . rest)
+                         (if (and (jhost? a) (string=? (jhost-tag a) "locale"))
+                             (apply jolt-format (car rest) (cdr rest))
+                             (apply jolt-format a rest))))))
+
+;; ---- java.text.NumberFormat (jolt-1nnn) -------------------------------------
+;; A grouping decimal formatter (selmer number-format / cuerdas). state:
+;; #(grouping? min-frac max-frac). .format groups the integer part with commas.
+(define (nf-make grouping? minf maxf) (make-jhost "numberformat" (vector grouping? minf maxf)))
+(define (group-int-str s)               ; "1234567" -> "1,234,567"
+  (let* ((neg (and (> (string-length s) 0) (char=? (string-ref s 0) #\-)))
+         (digs (if neg (substring s 1 (string-length s)) s))
+         (n (string-length digs)) (out '()))
+    (let loop ((i 0))
+      (when (< i n)
+        (when (and (> i 0) (= 0 (modulo (- n i) 3))) (set! out (cons #\, out)))
+        (set! out (cons (string-ref digs i) out)) (loop (+ i 1))))
+    (string-append (if neg "-" "") (list->string (reverse out)))))
+(define (nf-format self x)
+  (let* ((grouping? (vector-ref (jhost-state self) 0))
+         (minf (vector-ref (jhost-state self) 1)) (maxf (vector-ref (jhost-state self) 2))
+         (neg (< x 0)) (ax (abs (exact->inexact x)))
+         (scale (expt 10 maxf))
+         (scaled (exact (round (* ax scale))))
+         (ipart (quotient scaled scale)) (fpart (remainder scaled scale))
+         (istr (number->string ipart))
+         (fstr0 (if (> maxf 0) (let ((s (number->string fpart)))
+                                 (string-append (make-string (max 0 (- maxf (string-length s))) #\0) s)) ""))
+         ;; trim trailing zeros down to minf
+         (fstr (let loop ((s fstr0)) (if (and (> (string-length s) minf)
+                                              (char=? (string-ref s (- (string-length s) 1)) #\0))
+                                         (loop (substring s 0 (- (string-length s) 1))) s))))
+    (string-append (if neg "-" "") (if grouping? (group-int-str istr) istr)
+                   (if (> (string-length fstr) 0) (string-append "." fstr) ""))))
+(register-host-methods! "numberformat"
+  (list (cons "format" (lambda (self n) (nf-format self n)))
+        (cons "setMaximumFractionDigits" (lambda (self d) (vector-set! (jhost-state self) 2 (jnum->exact d)) jolt-nil))
+        (cons "setMinimumFractionDigits" (lambda (self d) (vector-set! (jhost-state self) 1 (jnum->exact d)) jolt-nil))
+        (cons "setGroupingUsed" (lambda (self b) (vector-set! (jhost-state self) 0 (jolt-truthy? b)) jolt-nil))))
+(register-class-statics! "NumberFormat"
+  (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0)))))
+(register-class-statics! "java.text.NumberFormat"
+  (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
+        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0)))))
 
 (register-class-statics! "Class"
   ;; an array descriptor ("[C", "[I", …) is its own class token (so instance? and
@@ -251,16 +332,28 @@
     (cond ((or (substring-index "osx" m) (substring-index "macos" m)) "Mac OS X")
           ((or (substring-index "nt" m) (substring-index "windows" m)) "Windows")
           (else "Linux"))))
+;; runtime-settable system properties (System/setProperty). A set value wins over
+;; the built-in defaults below; clearProperty removes it.
+(define sys-prop-table (make-hashtable string-hash string=?))
+(define (sys-set-property k v)
+  (let ((prev (hashtable-ref sys-prop-table k jolt-nil)))
+    (hashtable-set! sys-prop-table k (if (string? v) v (jolt-str-render-one v)))
+    prev))
+(define (sys-clear-property k)
+  (let ((prev (hashtable-ref sys-prop-table k jolt-nil)))
+    (hashtable-delete! sys-prop-table k) prev))
 (define (sys-get-property k . dflt)
-  (cond ((string=? k "os.name") sys-os-name)
-        ((string=? k "line.separator") "\n")
-        ((string=? k "file.separator") "/")
-        ((string=? k "path.separator") ":")
-        ((string=? k "user.dir") (or (getenv "PWD") "."))
-        ((string=? k "user.home") (or (getenv "HOME") ""))
-        ((string=? k "java.io.tmpdir") (or (getenv "TMPDIR") "/tmp"))
-        ((pair? dflt) (car dflt))
-        (else jolt-nil)))
+  (let ((set-val (hashtable-ref sys-prop-table k #f)))
+    (cond (set-val set-val)
+          ((string=? k "os.name") sys-os-name)
+          ((string=? k "line.separator") "\n")
+          ((string=? k "file.separator") "/")
+          ((string=? k "path.separator") ":")
+          ((string=? k "user.dir") (or (getenv "PWD") "."))
+          ((string=? k "user.home") (or (getenv "HOME") ""))
+          ((string=? k "java.io.tmpdir") (or (getenv "TMPDIR") "/tmp"))
+          ((pair? dflt) (car dflt))
+          (else jolt-nil))))
 (define (sys-properties-map)
   (jolt-hash-map "os.name" sys-os-name "line.separator" "\n" "file.separator" "/"
                  "user.dir" (or (getenv "PWD") ".") "user.home" (or (getenv "HOME") "")
@@ -305,6 +398,52 @@
 ;; (Object.) — a fresh value with distinct identity (libraries use it as a lock
 ;; or a unique sentinel). Each call returns a new jhost so identical?/= separate.
 (register-class-ctor! "Object" (lambda _ (make-jhost "object" (vector))))
+
+;; ---- java.util.ArrayList (jolt-1nnn) ----------------------------------------
+;; A mutable list backed by a Scheme list in a box. medley's stateful transducers
+;; (window / partition-between) build one with .add / .size / .toArray / .clear /
+;; .remove. (ArrayList.) | (ArrayList. n) | (ArrayList. coll).
+(define (al-list self) (vector-ref (jhost-state self) 0))
+(define (al-set! self xs) (vector-set! (jhost-state self) 0 xs))
+(define (make-arraylist xs) (make-jhost "arraylist" (vector xs)))
+(register-class-ctor! "ArrayList"
+  (lambda args
+    (cond ((null? args) (make-arraylist '()))
+          ((number? (car args)) (make-arraylist '()))   ; initial capacity, ignored
+          (else (make-arraylist (seq->list (jolt-seq (car args))))))))
+(register-class-ctor! "java.util.ArrayList"
+  (lambda args
+    (cond ((null? args) (make-arraylist '()))
+          ((number? (car args)) (make-arraylist '()))
+          (else (make-arraylist (seq->list (jolt-seq (car args))))))))
+(define (al-remove-at xs i)
+  (let loop ((xs xs) (i i) (acc '()))
+    (cond ((null? xs) (reverse acc))
+          ((= i 0) (append (reverse acc) (cdr xs)))
+          (else (loop (cdr xs) (- i 1) (cons (car xs) acc))))))
+(register-host-methods! "arraylist"
+  (list
+    (cons "add" (lambda (self . a)
+                  ;; (.add x) -> append+true; (.add i x) -> insert at i, returns nil.
+                  (if (= 1 (length a))
+                      (begin (al-set! self (append (al-list self) (list (car a)))) #t)
+                      (let ((i (jnum->exact (car a))) (x (cadr a)) (xs (al-list self)))
+                        (al-set! self (append (list-head xs i) (list x) (list-tail xs i))) jolt-nil))))
+    (cons "add!" (lambda (self x) (al-set! self (append (al-list self) (list x))) #t))
+    (cons "get" (lambda (self i) (list-ref (al-list self) (jnum->exact i))))
+    (cons "set" (lambda (self i x)
+                  (let* ((xs (al-list self)) (idx (jnum->exact i)) (old (list-ref xs idx)))
+                    (al-set! self (append (list-head xs idx) (list x) (list-tail xs (+ idx 1)))) old)))
+    (cons "size" (lambda (self) (->num (length (al-list self)))))
+    (cons "isEmpty" (lambda (self) (null? (al-list self))))
+    (cons "remove" (lambda (self i)
+                     (let* ((xs (al-list self)) (idx (jnum->exact i)) (old (list-ref xs idx)))
+                       (al-set! self (al-remove-at xs idx)) old)))
+    (cons "clear" (lambda (self) (al-set! self '()) jolt-nil))
+    (cons "contains" (lambda (self x) (and (memp (lambda (e) (jolt=2 e x)) (al-list self)) #t)))
+    (cons "toArray" (lambda (self . _) (apply jolt-vector (al-list self))))
+    (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al-list self)))))
+    (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al-list self)))))))
 
 (register-class-ctor! "StringBuilder"
   (lambda args (make-jhost "string-builder"
@@ -532,6 +671,12 @@
       ((or (string=? cs "iso-8859-1") (string=? cs "latin1") (string=? cs "iso8859-1")
            (string=? cs "us-ascii") (string=? cs "ascii"))
        (list->string (map integer->char (bytevector->u8-list bv))))
+      ((or (string=? cs "utf-16") (string=? cs "utf16") (string=? cs "utf-16be") (string=? cs "unicode"))
+       (utf16->string bv (endianness big)))   ; respects a leading BOM
+      ((string=? cs "utf-16le") (utf16->string bv (endianness little)))
+      ((or (string=? cs "utf-32") (string=? cs "utf32") (string=? cs "utf-32be"))
+       (utf32->string bv (endianness big)))
+      ((string=? cs "utf-32le") (utf32->string bv (endianness little)))
       (else (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))))
 (register-class-ctor! "String"
   (lambda (x . rest)
@@ -542,10 +687,27 @@
 (register-class-ctor! "BigInteger"
   (lambda (v) (parse-int-or-throw v 10 "BigInteger")))
 (register-class-ctor! "MapEntry" (lambda (k v) (make-map-entry k v)))
-;; JVM exception ctors: keep the message string (so getMessage / ex-message work).
-(for-each (lambda (nm) (register-class-ctor! nm (lambda (msg . _) (if (string? msg) msg (jolt-str-render-one msg)))))
-          '("Exception" "RuntimeException" "IllegalArgumentException" "IllegalStateException"
-            "InterruptedException" "UnsupportedOperationException" "IOException"))
+;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
+;; (so class / instance? / getMessage / ex-message reflect the real type) and the
+;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.).
+(for-each
+  (lambda (nm)
+    (let ((canonical (or (resolve-class-hint nm) nm)))
+      (register-class-ctor! nm
+        (lambda args
+          (let* ((a0 (if (pair? args) (car args) jolt-nil))
+                 (rest (if (pair? args) (cdr args) '()))
+                 (cause (if (pair? rest) (car rest) jolt-nil)))
+            (cond
+              ((string? a0) (jolt-host-throwable canonical a0 cause))
+              ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
+              ;; (E. cause): a lone throwable arg is the cause, message nil.
+              ((and (null? rest) (ex-info-map? a0)) (jolt-host-throwable canonical jolt-nil a0))
+              (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))))
+  '("Throwable" "Exception" "RuntimeException" "IllegalArgumentException" "IllegalStateException"
+    "InterruptedException" "UnsupportedOperationException" "IOException" "NumberFormatException"
+    "ArithmeticException" "NullPointerException" "ClassCastException" "IndexOutOfBoundsException"
+    "FileNotFoundException" "UnsupportedEncodingException"))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
@@ -589,7 +751,11 @@
 
 ;; ---- Base64 (RFC 4648) ------------------------------------------------------
 (define b64-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-(define (->bytevector x) (cond ((bytevector? x) x) ((string? x) (string->utf8 x)) (else (string->utf8 (jolt-str-render-one x)))))
+(define (->bytevector x)
+  (cond ((bytevector? x) x)
+        ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (na-bytearray->bv x))
+        ((string? x) (string->utf8 x))
+        (else (string->utf8 (jolt-str-render-one x)))))
 (define (b64-encode x)
   (let* ((bs (->bytevector x)) (n (bytevector-length bs)) (out '()))
     (let loop ((i 0))

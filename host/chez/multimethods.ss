@@ -21,9 +21,23 @@
 ;; so they agree with defmulti. Loaded from rt.ss after seq.ss (jolt-invoke),
 ;; collections.ss (jolt=/key-hash/jolt-hash-map) and the var-cell machinery.
 
-(define chez-current-ns-box (vector "user"))
-(define (chez-current-ns) (vector-ref chez-current-ns-box 0))
-(define (set-chez-ns! ns) (vector-set! chez-current-ns-box 0 ns))
+;; THREAD-LOCAL (jolt-6rld): a Chez thread-parameter, so each OS thread (an nREPL
+;; session worker / future) has its own current ns — vars stay global, only the
+;; "current ns" pointer is per-thread, matching Clojure's thread-local *ns*. A new
+;; thread inherits the forking thread's value. `star-ns-cell` (the *ns* var cell,
+;; captured by dyn-binding.ss once *ns* exists) lets chez-current-ns DERIVE from a
+;; thread-local (binding [*ns* ..]) so a bound *ns* drives load-string/analyzer
+;; resolution; bootstrap-safe (it's #f until then, so we just read the parameter).
+(define chez-current-ns-param (make-thread-parameter "user"))
+(define star-ns-cell #f)
+(define (chez-current-ns)
+  (if star-ns-cell
+      (let ((bv (dyn-binding-value star-ns-cell)))
+        (if (and (not (eq? bv dyn-no-binding)) (jns? bv))
+            (jns-name bv)
+            (chez-current-ns-param)))
+      (chez-current-ns-param)))
+(define (set-chez-ns! ns) (chez-current-ns-param ns))
 
 (define-record-type jolt-multifn
   (fields name dispatch-fn methods default hierarchy prefers)

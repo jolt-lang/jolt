@@ -97,3 +97,44 @@
 ;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
 ;; always-false stub loaded over the host fn, so re-assert it (jolt-hs5q).
 (def-var! "clojure.core" "chunked-seq?" na-chunked-seq?)
+;; record? is a host type check (jrec?), not the overlay's (some? (get x
+;; :jolt/deftype)) — the get-trick invokes a sorted-map's comparator on
+;; :jolt/deftype and throws (jolt-3bbj). Matches the JVM (instance? IRecord).
+(def-var! "clojure.core" "record?" (lambda (x) (jrec? x)))
+
+;; read / read+string over a HOST reader jhost (java.io StringReader/PushbackReader):
+;; the overlay's IReader protocol only covers the reify map-reader, so a (read
+;; pushback-reader) — cuerdas' string interpolation — would miss. Intercept a host
+;; reader; everything else (the *in* reify) delegates to the overlay.
+(let ((ov-read (var-deref "clojure.core" "read")))
+  (def-var! "clojure.core" "read"
+    (case-lambda
+      (() (jolt-invoke ov-read))
+      ((stream)
+       (if (reader-jhost? stream)
+           (let-values (((form found?) (host-reader-read-form stream)))
+             (if found? form (jolt-throw (jolt-ex-info "EOF while reading" (empty-pmap)))))
+           (jolt-invoke ov-read stream)))
+      ((stream e? ev)
+       (if (reader-jhost? stream)
+           (let-values (((form found?) (host-reader-read-form stream)))
+             (cond (found? form)
+                   ((jolt-truthy? e?) (jolt-throw (jolt-ex-info "EOF while reading" (empty-pmap))))
+                   (else ev)))
+           (jolt-invoke ov-read stream e? ev))))))
+(let ((ov-rps (var-deref "clojure.core" "read+string")))
+  (def-var! "clojure.core" "read+string"
+    (case-lambda
+      (() (jolt-invoke ov-rps))
+      ((stream) (jolt-invoke (var-deref "clojure.core" "read+string") stream #t jolt-nil))
+      ((stream e? ev)
+       (if (reader-jhost? stream)
+           (let* ((s (drain-reader stream)) (pr (jolt-parse-next s)))
+             (if (jolt-nil? pr)
+                 (begin (reader-refill! stream "")
+                        (if (jolt-truthy? e?) (jolt-throw (jolt-ex-info "EOF while reading" (empty-pmap)))
+                            (jolt-vector ev "")))
+                 (let ((rest (jolt-nth pr 1)))
+                   (reader-refill! stream rest)
+                   (jolt-vector (jolt-nth pr 0) (substring s 0 (- (string-length s) (string-length rest)))))))
+           (jolt-invoke ov-rps stream e? ev))))))

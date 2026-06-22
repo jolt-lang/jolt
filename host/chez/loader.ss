@@ -90,8 +90,8 @@
                                      ".clj (or .cljc) on the source roots") name))
           (let ((saved (chez-current-ns)))
             (load-jolt-file file)
-            (set-chez-ns! saved)
-            (def-var! "clojure.core" "*ns*" (intern-ns! saved)))))))
+            ;; restore the current ns (thread-local); *ns* reads derive from it.
+            (set-chez-ns! saved))))))
 
 ;; load-file: load an explicit path (a `run FILE`), in the current ns.
 (define (jolt-load-file path)

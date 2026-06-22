@@ -62,9 +62,18 @@
 (define (url-strip-scheme spec)
   (if (and (>= (string-length spec) 5) (string=? (substring spec 0 5) "file:"))
       (substring spec 5 (string-length spec)) spec))
+(define (url-protocol spec)
+  (let ((i (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                   ((char=? (string-ref spec j) #\:) j) (else (loop (+ j 1)))))))
+    (if i (substring spec 0 i) "")))
+;; (java.net.URL. spec) — a basic file/http URL value (a library may register a
+;; richer URL shim, which overrides this).
+(register-class-ctor! "URL" (lambda (spec . _) (make-url (jolt-str-render-one spec))))
+(register-class-ctor! "java.net.URL" (lambda (spec . _) (make-url (jolt-str-render-one spec))))
 (register-host-methods! "url"
   (list (cons "toString"       (lambda (self) (url-spec self)))
         (cons "toExternalForm" (lambda (self) (url-spec self)))
+        (cons "getProtocol"    (lambda (self) (url-protocol (url-spec self))))
         (cons "getPath"        (lambda (self) (url-strip-scheme (url-spec self))))
         (cons "getFile"        (lambda (self) (url-strip-scheme (url-spec self))))))
 
@@ -129,6 +138,23 @@
 
 (define (reader-jhost? x)
   (and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader"))))
+
+;; Refill a host reader so subsequent read/slurp see `s` (the unconsumed tail).
+(define (reader-refill! r s)
+  (cond
+    ((string=? (jhost-tag r) "string-reader")
+     (vector-set! (jhost-state r) 0 s) (vector-set! (jhost-state r) 1 0))
+    ((string=? (jhost-tag r) "pushback-reader")
+     (vector-set! (jhost-state r) 0 (host-new "StringReader" s))
+     (vector-set! (jhost-state r) 1 '()))))
+;; Read ONE form from a host reader (StringReader/PushbackReader): drain the
+;; remaining chars, parse one form, push the tail back. -> (values form found?).
+;; (read r) over a java.io reader — cuerdas' interpolation reads this way.
+(define (host-reader-read-form r)
+  (let* ((s (drain-reader r)) (pr (jolt-parse-next s)))
+    (if (jolt-nil? pr)
+        (begin (reader-refill! r "") (values jolt-nil #f))
+        (begin (reader-refill! r (jolt-nth pr 1)) (values (jolt-nth pr 0) #t)))))
 
 ;; clojure.edn/read over a reader (jolt-uicd): the overlay edn.clj's drain-reader is
 ;; janet/type-coupled, so on Chez we drain the jhost reader to a string and read the
@@ -323,3 +349,151 @@
           ((htable? x) x)
           (else (let ((ctor (lookup-class class-ctors-tbl "URL")))
                   (if ctor (ctor (jolt-str-render-one x)) (make-url (jolt-str-render-one x))))))))
+
+;; --- java.lang.ClassLoader (jolt-1nnn) --------------------------------------
+;; jolt has no classpath; a "classloader" resolves a named resource against the
+;; loader's source roots (the same model as clojure.java.io/resource), returning a
+;; file: URL or nil. getSystemClassLoader / a thread's contextClassLoader both hand
+;; back this loader. Libraries that probe the classpath (e.g. migratus's migration-
+;; dir discovery) then fall back to the filesystem when a resource isn't a root.
+(define the-classloader (make-jhost "classloader" (vector)))
+(define (cl-get-resource self name)
+  (let ((nm (jolt-str-render-one name)))
+    (let loop ((roots (get-source-roots)))
+      (cond ((null? roots) jolt-nil)
+            ((file-exists? (string-append (car roots) "/" nm))
+             (make-url (string-append "file:" (car roots) "/" nm)))
+            (else (loop (cdr roots)))))))
+(register-host-methods! "classloader"
+  (list (cons "getResource" cl-get-resource)
+        (cons "getResourceAsStream"
+              (lambda (self name)
+                (let ((u (cl-get-resource self name)))
+                  (if (jolt-nil? u) jolt-nil (host-new "StringReader" (jolt-slurp (url-strip-scheme (url-spec u))))))))))
+(register-class-statics! "ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
+(register-class-statics! "java.lang.ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
+;; Thread/currentThread -> a thread jhost whose getContextClassLoader is the loader.
+(define the-thread (make-jhost "thread" (vector)))
+(register-host-methods! "thread"
+  (list (cons "getContextClassLoader" (lambda (self) the-classloader))
+        (cons "getName" (lambda (self) "main"))))
+(register-class-statics! "Thread" (list (cons "currentThread" (lambda () the-thread))))
+(register-class-statics! "java.lang.Thread" (list (cons "currentThread" (lambda () the-thread))))
+
+;; --- java.io.File / java.util.UUID constructors (jolt-1nnn) ------------------
+;; (java.io.File. parent child) joins with "/"; (File. path) wraps the path.
+(register-class-ctor! "File"
+  (lambda (a . rest)
+    (if (pair? rest)
+        (jolt-make-file (string-append (file-path-of a) "/" (file-path-of (car rest))))
+        (jolt-make-file a))))
+;; UUID: randomUUID / fromString statics + a (UUID. s) string ctor.
+(register-class-statics! "UUID"
+  (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
+        (cons "fromString" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))))
+(register-class-statics! "java.util.UUID"
+  (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
+        (cons "fromString" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))))
+(register-class-ctor! "UUID" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))
+
+;; --- java.net.URI (jolt-1nnn) -----------------------------------------------
+;; A minimal RFC-3986 split into scheme/authority/host/port/path/query/fragment,
+;; kept in a jhost "uri" carrying the original string. (str u)/(.toString u) give
+;; the original; getHost is nil for a relative URI (hiccup.util/to-str branches on
+;; it). instance? java.net.URI + extend-protocol dispatch work via value-host-tags.
+(define (uri-index-of s ch from)
+  (let ((n (string-length s)))
+    (let loop ((i from)) (cond ((>= i n) #f) ((char=? (string-ref s i) ch) i) (else (loop (+ i 1)))))))
+(define (uri-scheme-end s)
+  ;; index of ':' that ends a scheme (letter then alnum/+-. before any /?#), or #f.
+  (let ((n (string-length s)))
+    (and (> n 0) (char-alphabetic? (string-ref s 0))
+         (let loop ((i 1))
+           (cond ((>= i n) #f)
+                 ((char=? (string-ref s i) #\:) i)
+                 ((let ((c (string-ref s i)))
+                    (or (char-alphabetic? c) (char-numeric? c) (char=? c #\+) (char=? c #\-) (char=? c #\.)))
+                  (loop (+ i 1)))
+                 (else #f))))))
+(define (uri-parse s)
+  (let* ((n (string-length s))
+         (se (uri-scheme-end s))
+         (scheme (and se (substring s 0 se)))
+         (rest-start (if se (+ se 1) 0))
+         ;; fragment
+         (hash (uri-index-of s #\# rest-start))
+         (frag (and hash (substring s (+ hash 1) n)))
+         (pre-frag-end (or hash n))
+         ;; query
+         (qm (uri-index-of s #\? rest-start))
+         (query (and qm (< qm pre-frag-end) (substring s (+ qm 1) pre-frag-end)))
+         (hp-end (cond ((and qm (< qm pre-frag-end)) qm) (else pre-frag-end)))
+         ;; authority (after "//")
+         (has-auth (and (<= (+ rest-start 2) n)
+                        (char=? (string-ref s rest-start) #\/)
+                        (char=? (string-ref s (+ rest-start 1)) #\/)))
+         (auth-start (and has-auth (+ rest-start 2)))
+         (auth-end (and has-auth
+                        (let loop ((i auth-start))
+                          (cond ((>= i hp-end) hp-end)
+                                ((char=? (string-ref s i) #\/) i)
+                                (else (loop (+ i 1)))))))
+         (authority (and has-auth (substring s auth-start auth-end)))
+         (path-start (if has-auth auth-end rest-start))
+         (path (substring s path-start hp-end)))
+    ;; host:port from authority (strip userinfo@)
+    (let* ((at (and authority (uri-index-of authority #\@ 0)))
+           (hostport (if at (substring authority (+ at 1) (string-length authority)) authority))
+           (colon (and hostport (uri-index-of hostport #\: 0)))
+           (host (cond ((not hostport) jolt-nil)
+                       (colon (substring hostport 0 colon))
+                       (else hostport)))
+           (port (if (and colon (< (+ colon 1) (string-length hostport)))
+                     (or (string->number (substring hostport (+ colon 1) (string-length hostport))) -1)
+                     -1)))
+      (make-jhost "uri"
+        (list (cons 'string s)
+              (cons 'scheme (or scheme jolt-nil))
+              (cons 'authority (or authority jolt-nil))
+              (cons 'host (if (and host (string? host) (= 0 (string-length host))) jolt-nil host))
+              (cons 'port (->num port))
+              (cons 'path (if (= 0 (string-length path)) (if has-auth "" jolt-nil) path))
+              (cons 'query (or query jolt-nil))
+              (cons 'fragment (or frag jolt-nil)))))))
+(define (uri-field u k) (let ((p (assq k (jhost-state u)))) (if p (cdr p) jolt-nil)))
+(register-class-ctor! "URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
+(register-class-ctor! "java.net.URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
+(register-host-methods! "uri"
+  (list (cons "toString" (lambda (u) (uri-field u 'string)))
+        (cons "toASCIIString" (lambda (u) (uri-field u 'string)))
+        (cons "getScheme" (lambda (u) (uri-field u 'scheme)))
+        (cons "getAuthority" (lambda (u) (uri-field u 'authority)))
+        (cons "getHost" (lambda (u) (uri-field u 'host)))
+        (cons "getPort" (lambda (u) (uri-field u 'port)))
+        (cons "getPath" (lambda (u) (uri-field u 'path)))
+        (cons "getRawPath" (lambda (u) (uri-field u 'path)))
+        (cons "getQuery" (lambda (u) (uri-field u 'query)))
+        (cons "getRawQuery" (lambda (u) (uri-field u 'query)))
+        (cons "getFragment" (lambda (u) (uri-field u 'fragment)))
+        (cons "isAbsolute" (lambda (u) (not (jolt-nil? (uri-field u 'scheme)))))
+        (cons "hashCode" (lambda (u) (string-hash (uri-field u 'string))))
+        (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri")
+                                          (string=? (uri-field u 'string) (uri-field o 'string)))))))
+;; str / pr-str of a uri -> its string form.
+(define %uri-str-render-one jolt-str-render-one)
+(set! jolt-str-render-one
+  (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri")) (uri-field x 'string) (%uri-str-render-one x))))
+(define %uri-pr-readable jolt-pr-readable)
+(set! jolt-pr-readable
+  (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri"))
+                  (string-append "#object[java.net.URI \"" (uri-field x 'string) "\"]")
+                  (%uri-pr-readable x))))
+;; class of the host value types defined by now (uri/uuid/file).
+(define %uri-class jolt-class)
+(set! jolt-class
+  (lambda (x)
+    (cond ((and (jhost? x) (string=? (jhost-tag x) "uri")) "java.net.URI")
+          ((juuid? x) "java.util.UUID")
+          ((jfile? x) "java.io.File")
+          (else (%uri-class x)))))
+(def-var! "clojure.core" "class" jolt-class)

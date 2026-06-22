@@ -272,3 +272,43 @@
 (def-var! "clojure.core" "make-delay" jolt-make-delay)
 (def-var! "clojure.core" "delay?" jolt-delay?)
 (def-var! "clojure.core" "deref" jolt-deref)
+
+;; --- cooperative thread interrupt (jolt-amzy) -------------------------------
+;; Chez has no force-kill, but its engine timer (set-timer + timer-interrupt-
+;; handler, thread-local) is polled at procedure-call / loop back-edges — so a
+;; running computation, even a tight Scheme loop, can be aborted from another
+;; thread. An interrupt TOKEN is a shared box; run-interruptible arms a periodic
+;; timer in the eval thread whose handler escapes (via call/cc) when the token is
+;; set; interrupt! sets the token from any thread. The aborted eval throws a jolt
+;; ex-info {:jolt/interrupted true}, so the thread is REUSED, not abandoned.
+;;
+;; Caveat: a thread blocked in a __collect_safe foreign call (socket recv/accept,
+;; sleep) only sees the interrupt when it returns to Scheme — like the JVM not
+;; killing native code.
+(define interrupt-check-ticks 100000)   ; ~poll interval; responsive + low overhead
+(define interrupt-sentinel (cons 'jolt 'interrupted))
+(define jolt-kw-interrupted (keyword "jolt" "interrupted"))
+(define (jolt-make-interrupt) (box #f))
+(define (jolt-interrupt! token) (when (box? token) (set-box! token #t)) jolt-nil)
+(define (jolt-interrupted? token) (and (box? token) (unbox token) #t))
+(define (jolt-run-interruptible token thunk)
+  (let ((prev-handler (timer-interrupt-handler)))
+    (let ((r (call/cc
+               (lambda (k)
+                 (timer-interrupt-handler
+                   (lambda ()
+                     (if (and (box? token) (unbox token))
+                         (k interrupt-sentinel)
+                         (begin (set-timer interrupt-check-ticks) (void)))))
+                 (set-timer interrupt-check-ticks)
+                 (let ((v (thunk))) (set-timer 0) v)))))
+      ;; restore the prior timer state regardless of outcome.
+      (set-timer 0)
+      (timer-interrupt-handler prev-handler)
+      (if (eq? r interrupt-sentinel)
+          (jolt-throw (jolt-ex-info "Evaluation interrupted" (jolt-hash-map jolt-kw-interrupted #t)))
+          r))))
+(def-var! "jolt.host" "make-interrupt" jolt-make-interrupt)
+(def-var! "jolt.host" "interrupt!" jolt-interrupt!)
+(def-var! "jolt.host" "interrupted?" jolt-interrupted?)
+(def-var! "jolt.host" "run-interruptible" jolt-run-interruptible)

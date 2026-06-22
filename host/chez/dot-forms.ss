@@ -57,6 +57,9 @@
                (jolt-get obj jolt-kw-message jolt-nil)
                (jolt-str-render-one obj))))
     ((string=? name "getCause")  (list (jolt-get obj jolt-kw-cause jolt-nil)))
+    ;; java.sql.SQLException chaining — ex-info / host throwables don't chain.
+    ((string=? name "getNextException") (list jolt-nil))
+    ((string=? name "getStackTrace") (list (jolt-vector)))
     ((string=? name "toString")  (list (jolt-str-render-one obj)))
     ((string=? name "hashCode")  (list (jolt-hash obj)))
     ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))
@@ -71,6 +74,9 @@
                       (substring method-name 1 (string-length method-name))
                       method-name)))
       (cond
+        ;; (.getClass x) universal — the class token for any value, before the
+        ;; collection/map field-lookup arms below would read it as a missing key.
+        ((string=? method-name "getClass") (jolt-class obj))
         ;; collection interop first (entry count / seq / nth / get / containsKey).
         ((and (dot-coll? obj) (dot-coll-method obj mname rest))
          => (lambda (box) (car box)))

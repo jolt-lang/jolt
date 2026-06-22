@@ -241,10 +241,12 @@
         env* (add-locals env names)
         binds (mapv (fn [spec]
                       (let [cl (vec (form-elements spec))]
-                        ;; analyze as a named fn (items[1] = the name): self- and
-                        ;; sibling-calls resolve, the fn carries its own name.
+                        ;; Build (fn name [params] body*) and analyze through the fn
+                        ;; MACRO so destructuring params desugar (the fn* primitive
+                        ;; would not — same trick defmacro uses). The named fn means
+                        ;; self- and sibling-calls resolve and it carries its own name.
                         [(form-sym-name (first cl))
-                         (analyze-fn ctx (vec (cons (first cl) cl)) env*)]))
+                         (analyze ctx (cons (symbol "fn") cl) env*)]))
                     specs)]
     {:op :let :letrec true :bindings binds
      :body (analyze-seq ctx (drop 2 items) env*)}))
