@@ -79,9 +79,10 @@
          (override (if (jolt-nil? m) jolt-nil (jolt-get m ty-kw-type jolt-nil))))
     (cond
       ((not (jolt-nil? override)) override)            ; :type meta wins
-      ;; record -> ns.Name symbol. No-ns sentinel is #f (not jolt-nil) so it = the
-      ;; overlay's (symbol (str t)) — jolt= compares the ns field with equal?.
-      ((jrec? x) (jolt-symbol #f (jrec-tag x)))
+      ;; record -> its ns-qualified class-name STRING (= (class x)). jolt models
+      ;; classes as strings, so (symbol (str (type r))) is NOT (type r) — as on the
+      ;; JVM where type is a Class, not a Symbol.
+      ((jrec? x) (jrec-tag x))
       ((jolt-nil? x) jolt-nil)
       ((boolean? x) ty-boolean)
       ((number? x) ty-number)

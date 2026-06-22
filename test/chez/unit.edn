@@ -395,8 +395,8 @@
   {:suite "type" :expr "(type (with-meta {:a 1} {:type :rec}))" :expected ":rec"}
   {:suite "type" :expr "(type (with-meta [1] {:other 9}))" :expected ":vector"}
   {:suite "type" :expr "(do (defrecord TyR [a]) (type (->TyR 1)))" :expected "user.TyR"}
-  {:suite "type" :expr "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))" :expected "true"}
-  {:suite "type" :expr "(do (defrecord TyR [a]) (symbol? (type (->TyR 1))))" :expected "true"}
+  {:suite "type" :expr "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))" :expected "false"}
+  {:suite "type" :expr "(do (defrecord TyR [a]) (symbol? (type (->TyR 1))))" :expected "false"}
   {:suite "type" :expr "(type (atom 1))" :expected ":jolt/atom"}
   {:suite "type" :expr "(type (volatile! 1))" :expected ":jolt/volatile"}
   {:suite "type" :expr "(type #\"re\")" :expected ":jolt/regex"}
