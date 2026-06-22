@@ -129,8 +129,9 @@
 (load "host/chez/predicates.ss")
 
 ;; --- jolt number printing ----------------------------------------------------
-;; jolt models every number as a Clojure double: integer-valued values print
-;; without a ".0" ((* 1.0 5) prints as "5", (/ 1 2) as "0.5").
+;; jolt has a numeric tower (exact integer / ratio / double, distinguished by
+;; class). Exact integer-valued values print without a ".0" ((+ 1 2) -> "3");
+;; a double prints with one ((* 1.0 5) -> "5.0", as the JVM does).
 (define (jolt-num->string x)
   (cond
     ;; the -e / element printer renders the infinities and NaN in READABLE form
@@ -139,7 +140,7 @@
     ((and (flonum? x) (fl= x +inf.0)) "##Inf")
     ((and (flonum? x) (fl= x -inf.0)) "##-Inf")
     ((and (flonum? x) (not (fl= x x))) "##NaN")
-    ((and (rational? x) (integer? x)) (number->string (exact x)))
+    ((and (exact? x) (integer? x)) (number->string x))
     (else (number->string x))))
 
 ;; Program-final-value printer. jolt's `-e` prints in str-style: strings raw (no

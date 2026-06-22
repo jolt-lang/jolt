@@ -208,7 +208,12 @@
   (list (cons "valueOf" (lambda (x . _) (if (jolt-nil? x) "null" (jolt-str-render-one x))))))
 
 (register-class-statics! "Class"
-  (list (cons "forName" (lambda (nm) (make-jhost "class" (list (cons 'name nm)))))))
+  ;; an array descriptor ("[C", "[I", …) is its own class token (so instance? and
+  ;; class compare equal); other names become a class jhost.
+  (list (cons "forName" (lambda (nm)
+                          (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[))
+                              nm
+                              (make-jhost "class" (list (cons 'name nm))))))))
 
 ;; ---- System helpers (defined before use above via top-level order) ----------
 (define (sys-get-property k . dflt)

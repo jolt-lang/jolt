@@ -2416,10 +2416,10 @@
   {:suite "untested / hash family" :label "hash-combine" :expected "true" :actual "(int? (hash-combine 1 2))"}
   {:suite "untested / hash family" :label "hash-ordered-coll" :expected "true" :actual "(int? (hash-ordered-coll [1 2]))"}
   {:suite "untested / hash family" :label "hash-unordered-coll" :expected "true" :actual "(int? (hash-unordered-coll #{1}))"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "make-array" :expected "(quote (nil nil nil))" :actual "(make-array 3)"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "into-array" :expected "(quote (1 2))" :actual "(into-array [1 2])"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "to-array" :expected "(quote (1 2))" :actual "(to-array [1 2])"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "aclone vec" :expected "(quote (1 2))" :actual "(aclone [1 2])"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "make-array" :expected "[nil nil nil]" :actual "(vec (make-array Object 3))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "into-array" :expected "[1 2]" :actual "(vec (into-array [1 2]))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "to-array" :expected "[1 2]" :actual "(vec (to-array [1 2]))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "aclone vec" :expected "[1 2]" :actual "(vec (aclone (int-array [1 2])))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aclone independent" :expected "[9 2]" :actual "(let [a (aclone (to-array [1 2]))] (aset a 0 9) (seq a))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset/aget" :expected "9" :actual "(let [a (to-array [1 2 3])] (aset a 0 9) (aget a 0))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset-int" :expected "7" :actual "(let [a (to-array [1 2])] (aset-int a 0 7) (aget a 0))"}
@@ -2430,18 +2430,18 @@
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset-float" :expected "2.5" :actual "(let [a (to-array [0])] (aset-float a 0 2.5) (aget a 0))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset-long" :expected "3" :actual "(let [a (to-array [0])] (aset-long a 0 3) (aget a 0))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "aset-short" :expected "4" :actual "(let [a (to-array [0])] (aset-short a 0 4) (aget a 0))"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "boolean-array" :expected "(quote (false false))" :actual "(boolean-array 2)"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "int-array" :expected "(quote (1 2))" :actual "(int-array [1 2])"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "long-array" :expected "(quote (0 0))" :actual "(long-array 2)"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "double-array" :expected "(quote (0 0))" :actual "(double-array 2)"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "float-array" :expected "(quote (0 0))" :actual "(float-array 2)"}
-  {:suite "untested / array stubs (vectors + host buffers)" :label "short-array" :expected "(quote (0 0))" :actual "(short-array 2)"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "boolean-array" :expected "[false false]" :actual "(vec (boolean-array 2))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "int-array" :expected "[1 2]" :actual "(vec (int-array [1 2]))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "long-array" :expected "[0 0]" :actual "(vec (long-array 2))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "double-array" :expected "[0.0 0.0]" :actual "(vec (double-array 2))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "float-array" :expected "[0.0 0.0]" :actual "(vec (float-array 2))"}
+  {:suite "untested / array stubs (vectors + host buffers)" :label "short-array" :expected "[0 0]" :actual "(vec (short-array 2))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "char-array count" :expected "2" :actual "(count (char-array 2))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "byte-array bytes?" :expected "true" :actual "(bytes? (byte-array 2))"}
   {:suite "untested / array stubs (vectors + host buffers)" :label "bytes? not vec" :expected "false" :actual "(bytes? [1])"}
   {:suite "untested / typed coercion views" :label "booleans" :expected "(quote (true))" :actual "(booleans [true])"}
-  {:suite "untested / typed coercion views" :label "doubles" :expected "(quote (1))" :actual "(doubles [1.0])"}
-  {:suite "untested / typed coercion views" :label "floats" :expected "(quote (1))" :actual "(floats [1.0])"}
+  {:suite "untested / typed coercion views" :label "doubles" :expected "[1.0]" :actual "(vec (doubles (double-array [1.0])))"}
+  {:suite "untested / typed coercion views" :label "floats" :expected "[1.0]" :actual "(vec (floats (float-array [1.0])))"}
   {:suite "untested / typed coercion views" :label "ints" :expected "(quote (1))" :actual "(ints [1])"}
   {:suite "untested / typed coercion views" :label "longs" :expected "(quote (1))" :actual "(longs [1])"}
   {:suite "untested / typed coercion views" :label "shorts" :expected "(quote (1))" :actual "(shorts [1])"}

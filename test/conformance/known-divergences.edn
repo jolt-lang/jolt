@@ -2,11 +2,11 @@
  "Rows of test/chez/corpus.edn whose :expected differs from reference JVM Clojure. The corpus is JVM-sourced (regen-corpus.clj), so this list is only the rows whose JVM value is an opaque host object that cannot round-trip to readable source — Java arrays, transients, atoms, beans, proxies, and chunks print as #object[..@addr] with a per-run identity — plus the (fn* foo) strictness case and a few racy concurrency cases (:flaky). For those the corpus keeps jolt's value. certify.clj gates on NEW (unlisted) divergences and STALE entries. Keyed by [suite label].",
  :legend
  {:numeric-model
-  "jolt is all-double: no Ratio/BigDecimal/float; (/ 1 2)=>0.5, 3.0 prints 3",
+  "jolt has a numeric tower (exact integer / Ratio / double); no BigDecimal",
   :concurrency-model
   "Janet isolated-heap snapshot futures/agents/pmap; atoms snapshot, not shared",
   :host-model
-  "no JVM host: classes->name strings, no Java arrays, type->symbol, *in* is a map, inline-impl extenders, duck-typed with-open close",
+  "no JVM host: classes->name strings, type->symbol, *in* is a map, inline-impl extenders, duck-typed with-open close",
   :reader-model
   "jolt reader features (:jolt) + syntax-quote literal collapse (spec 2.4 S25); map source-order preserved",
   :printer-model
@@ -48,30 +48,6 @@
    :category :host-model}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)",
    :label "proxy resolves nil",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "boolean-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "double-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "float-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "int-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "into-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "long-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "short-array",
-   :category :host-model}
-  {:suite "untested / array stubs (vectors + host buffers)",
-   :label "to-array",
    :category :host-model}
   {:suite "untested / chunk family (eager equivalents) + cat",
    :label "chunk round-trip",

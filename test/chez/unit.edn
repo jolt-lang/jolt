@@ -129,7 +129,7 @@
   {:suite "io" :expr "(do (spit \"/tmp/jolt-io-test.txt\" \"a\") (spit \"/tmp/jolt-io-test.txt\" \"b\" :append true) (slurp \"/tmp/jolt-io-test.txt\"))" :expected "ab"}
   {:suite "io" :expr "(flush)" :expected ""}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/file \"README.md\"))))" :expected "true"}
-  {:suite "ioreader" :expr "(str (char-array \"abc\"))" :expected "(\\a \\b \\c)"}
+  {:suite "ioreader" :expr "(apply str (char-array \"abc\"))" :expected "abc"}
   {:suite "ioreader" :expr "(.read (StringReader. (apply str (char-array \"Qz\"))))" :expected "81"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (char-array \"abc\"))))" :expected "97"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (StringReader. \"k\"))))" :expected "107"}
@@ -146,7 +146,7 @@
   {:suite "ioreader" :expr "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))" :expected "[:closed]"}
   {:suite "ioreader" :expr "(let [log (atom [])] (with-open [a {:close (fn [] (swap! log conj :outer))} b {:close (fn [] (swap! log conj :inner))}] :r) (deref log))" :expected "[:inner :outer]"}
   {:suite "ioreader" :expr "(with-open [c {:close (fn [] nil) :v 5}] (:v c))" :expected "5"}
-  {:suite "javastatic" :expr "(Math/sqrt 16)" :expected "4"}
+  {:suite "javastatic" :expr "(Math/sqrt 16)" :expected "4.0"}
   {:suite "javastatic" :expr "(Math/abs -3)" :expected "3"}
   {:suite "javastatic" :expr "(Math/max 2 7)" :expected "7"}
   {:suite "javastatic" :expr "(pos? Long/MAX_VALUE)" :expected "true"}
@@ -289,8 +289,8 @@
   {:suite "stdlib" :expr "(long (clojure.math/pow 2 10))" :expected "1024"}
   {:suite "stdlib" :expr "(long (clojure.math/tan 0))" :expected "0"}
   {:suite "stdlib" :expr "(clojure.math/round 2.6)" :expected "3"}
-  {:suite "stdlib" :expr "(clojure.math/floor 2.9)" :expected "2"}
-  {:suite "stdlib" :expr "(clojure.math/signum -7.2)" :expected "-1"}
+  {:suite "stdlib" :expr "(clojure.math/floor 2.9)" :expected "2.0"}
+  {:suite "stdlib" :expr "(clojure.math/signum -7.2)" :expected "-1.0"}
   {:suite "stdlib" :expr "(< 3.14 (clojure.math/to-radians 180) 3.15)" :expected "true"}
   {:suite "stdlib" :expr "(< 3.14 clojure.math/PI 3.15)" :expected "true"}
   {:suite "stdlib" :expr "(< 2.71 clojure.math/E 2.72)" :expected "true"}
