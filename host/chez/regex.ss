@@ -89,10 +89,38 @@
                (write-char c out) (loop (fx+ i 1) #f))
               (else (write-char c out) (loop (fx+ i 1) in-class))))))))
 
+;; Java/Clojure inline flags: a leading (?imsx…) group sets a flag over the whole
+;; pattern. irregex has the same semantics but as constructor OPTIONS, not inline
+;; syntax (it rejects (?s)/(?s:…)), so peel any leading flag groups off the source
+;; and pass the equivalent option symbols. Scoped groups ((?:…), (?=…), (?<n>…))
+;; and groups with a flag irregex can't express are left untouched for irregex.
+(define (regex-flag->opt c)
+  (cond ((char=? c #\s) 'single-line)        ; DOTALL — . matches newline
+        ((char=? c #\i) 'case-insensitive)
+        ((char=? c #\m) 'multi-line)          ; ^/$ match at line boundaries
+        (else #f)))
+(define (regex-parse-flags src)
+  (let loop ((s src) (opts '()))
+    (if (and (>= (string-length s) 4)
+             (char=? (string-ref s 0) #\() (char=? (string-ref s 1) #\?))
+        (let scan ((i 2) (fs '()))
+          (cond
+            ((>= i (string-length s)) (values (reverse opts) s))
+            ((char=? (string-ref s i) #\))
+             (let ((mapped (map regex-flag->opt fs)))
+               (if (and (pair? fs) (for-all (lambda (x) x) mapped))
+                   (loop (substring s (+ i 1) (string-length s)) (append opts mapped))
+                   (values (reverse opts) s))))      ; unmappable flag — leave as-is
+            ((char=? (string-ref s i) #\:) (values (reverse opts) s)) ; scoped group
+            (else (scan (+ i 1) (cons (string-ref s i) fs)))))
+        (values (reverse opts) s))))
+
 ;; A jolt regex value: the source string (for printing / str) + the compiled
 ;; irregex. regex? recognizes it; the printer renders #"source".
 (define-record-type regex-t (fields source irx) (nongenerative jolt-regex-v1))
-(define (jolt-regex source) (make-regex-t source (irregex (translate-prop-classes source))))
+(define (jolt-regex source)
+  (let-values (((opts pat) (regex-parse-flags source)))
+    (make-regex-t source (apply irregex (translate-prop-classes pat) opts))))
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
 

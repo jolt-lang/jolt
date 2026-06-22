@@ -285,17 +285,24 @@
       new))
 
 (define (rdr-attach-meta target meta)
-  (if (symbol-t? target)
-      (make-symbol-t (symbol-t-ns target) (symbol-t-name target)
-                     (rdr-merge-meta (symbol-t-meta target) meta))
-      ;; non-symbol target (a collection): lower to a runtime (with-meta form meta)
-      ;; the analyzer compiles like any invoke, so e.g.
-      ;; (meta ^{:tag :int} [1 2]) and ^:foo {} carry their meta at runtime. The meta
-      ;; pmap doubles as its own map-literal form. Use the BARE `with-meta` symbol
-      ;; (ns #f) — the fn/defn macros unwrap a
-      ;; (with-meta <arglist-vec> _) return-hint by matching the unqualified head,
-      ;; so a qualified clojure.core/with-meta would slip past them (^bytes [b]).
-      (jolt-list (jolt-symbol #f "with-meta") target meta)))
+  (cond
+    ((symbol-t? target)
+     (make-symbol-t (symbol-t-ns target) (symbol-t-name target)
+                    (rdr-merge-meta (symbol-t-meta target) meta)))
+    ;; A LIST form is code: ^Type (expr) is a compile-time hint on the FORM, not a
+    ;; runtime operation. Attach the metadata to the form itself (so a quoted list
+    ;; keeps it and the analyzer can read :tag) — never lower to a runtime
+    ;; (with-meta (expr) meta), which would mis-apply the hint to the call's RESULT
+    ;; and throw when that result is a string/number (e.g. ^String (to-str x)).
+    ;; Matches Clojure: a tag hint on an evaluated form is discarded at runtime.
+    ((cseq? target) (jolt-with-meta target meta))
+    ((empty-list-t? target) target)
+    ;; A vector/map/set LITERAL: Clojure attaches the metadata to the runtime value
+    ;; ((meta ^{:tag :int} [1 2]) / ^:foo {}), so lower to a runtime (with-meta form
+    ;; meta). Use the BARE `with-meta` symbol (ns #f) — the fn/defn macros unwrap a
+    ;; (with-meta <arglist-vec> _) return-hint by matching the unqualified head, so a
+    ;; qualified clojure.core/with-meta would slip past them (^bytes [b]).
+    (else (jolt-list (jolt-symbol #f "with-meta") target meta))))
 
 ;; --- # dispatch -------------------------------------------------------------
 ;; #(...) anonymous fn shorthand (jolt-qjr0): % -> p1, %N -> pN, %& -> rest. The

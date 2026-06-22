@@ -132,11 +132,13 @@
 
 ;; host type-tag candidates for a non-record value (extend-protocol on builtins).
 (define (value-host-tags obj)
-  (cond ((number? obj) '("Long" "Integer" "Number" "Double" "Object"))
+  (cond ((and (number? obj) (and (exact? obj) (not (integer? obj))))
+         '("Ratio" "Number" "Object"))
+        ((number? obj) '("Long" "Integer" "Number" "Double" "Object"))
         ((string? obj) '("String" "CharSequence" "Object"))
         ((boolean? obj) '("Boolean" "Object"))
-        ((keyword? obj) '("Keyword" "Object"))
-        ((jolt-symbol? obj) '("Symbol" "Object"))
+        ((keyword? obj) '("Keyword" "Named" "Object"))
+        ((jolt-symbol? obj) '("Symbol" "Named" "Object"))
         ((pvec? obj) '("PersistentVector" "IPersistentVector" "IPersistentCollection"
                        "List" "java.util.List" "Sequential" "Collection" "Object"))
         ((pmap? obj) '("PersistentArrayMap" "IPersistentMap" "Associative"
@@ -152,13 +154,19 @@
 ;; make-deftype-ctor: (name-sym field-kws field-tags field-muts) -> ctor closure.
 ;; The tag is baked at definition time in the type's ns (chez-current-ns).
 (define (make-deftype-ctor name-sym field-kws . _ignored)
-  (let ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
-        (kws (seq->list field-kws)))
-    (lambda args
-      (make-jrec tag (let loop ((ks kws) (as args) (acc '()))
-                       (if (null? ks) (reverse acc)
-                           (loop (cdr ks) (if (null? as) '() (cdr as))
-                                 (cons (cons (car ks) (if (null? as) jolt-nil (car as))) acc))))))))
+  (let* ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
+         (kws (seq->list field-kws))
+         (ctor (lambda args
+                 (make-jrec tag (let loop ((ks kws) (as args) (acc '()))
+                                  (if (null? ks) (reverse acc)
+                                      (loop (cdr ks) (if (null? as) '() (cdr as))
+                                            (cons (cons (car ks) (if (null? as) jolt-nil (car as))) acc))))))))
+    ;; Register the ctor globally by simple class name (like StringBuilder) so
+    ;; (Name. …) interop resolves ns-agnostically: a deftype used across files works
+    ;; even when the runtime current ns is the caller's, not the defining ns
+    ;; (host-new checks class-ctors-tbl before the current-ns var fallback).
+    (register-class-ctor! (symbol-t-name name-sym) ctor)
+    ctor))
 
 ;; make-protocol: a protocol value the overlay reads via (get p :name)/(get p :methods).
 (define (make-protocol name-str methods)
@@ -174,17 +182,23 @@
 (define host-type-set
   (let ((h (make-hashtable string-hash string=?)))
     (for-each (lambda (n) (hashtable-set! h n #t))
-              '("Long" "Integer" "Number" "Double" "String" "CharSequence" "Boolean"
-                "Keyword" "Symbol" "Object" "nil" "PersistentVector" "IPersistentVector"
+              '("Long" "Integer" "Number" "Double" "Ratio" "BigInt" "BigInteger"
+                "String" "CharSequence" "Boolean" "Character"
+                "Keyword" "Symbol" "Named" "Object" "nil"
+                "PersistentVector" "IPersistentVector"
                 "PersistentArrayMap" "IPersistentMap" "PersistentHashSet" "IPersistentSet"
                 "ISeq" "IPersistentCollection" "Associative" "Sequential"
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
                 "Collection" "java.util.Collection"))
     h))
+(define (strip-prefix s p)
+  (let ((pl (string-length p)))
+    (and (> (string-length s) pl) (string=? (substring s 0 pl) p) (substring s pl (string-length s)))))
 (define (canonical-host-tag type-name)
-  (let ((base (cond ((and (> (string-length type-name) 10) (string=? (substring type-name 0 10) "java.lang.")) (substring type-name 10 (string-length type-name)))
-                    ((and (> (string-length type-name) 10) (string=? (substring type-name 0 10) "java.util.")) (substring type-name 10 (string-length type-name)))
-                    (else type-name))))
+  (let ((base (or (strip-prefix type-name "java.lang.")
+                  (strip-prefix type-name "java.util.")
+                  (strip-prefix type-name "clojure.lang.")
+                  type-name)))
     (and (hashtable-ref host-type-set base #f) base)))
 ;; An extend/extend-type/extend-protocol registration marks the tag as an
 ;; extender of the protocol (recorded inside type-registry so the per-case prune
@@ -229,6 +243,10 @@
 
 ;; dot-dispatch fallback used by emit for (.method record args): find the method
 ;; in ANY protocol the record's type implements.
+;; java.util.Iterator over a jolt seqable: (.iterator coll) returns a jiterator
+;; holding a mutable cursor over (seq coll); (.hasNext it)/(.next it) walk it.
+;; hiccup/compiler's run! loop iterates collections this way.
+(define-record-type jiterator (fields (mutable cur)) (nongenerative jolt-iterator-v1))
 (define (record-method-dispatch obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
@@ -240,6 +258,14 @@
       ;; java.lang.String interop (jolt-nfca): defined in natives-str.ss, loaded
       ;; after this file (free reference, resolved at call time).
       ((string? obj) (jolt-string-method method-name obj rest))
+      ((jiterator? obj)
+       (cond ((string=? method-name "hasNext") (not (jolt-nil? (jolt-seq (jiterator-cur obj)))))
+             ((string=? method-name "next")
+              (let ((s (jolt-seq (jiterator-cur obj))))
+                (if (jolt-nil? s) (error #f "iterator exhausted")
+                    (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
+             (else (error #f (string-append "No method " method-name " on Iterator")))))
+      ((string=? method-name "iterator") (make-jiterator (jolt-seq obj)))
       (else (error #f (string-append "No method " method-name " for value"))))))
 
 ;; reify: instance-local method table. obj is a jreify carrying a method ht +
