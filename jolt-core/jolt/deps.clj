@@ -78,33 +78,37 @@
     (map #(abspath root %) paths)))
 
 (defn- resolve-deps
-  "Breadth-first walk of a deps map; returns an ordered, de-duplicated list of
-  source-root directories. `base-dir` resolves :local/root and is replaced by a
-  dep's own root as the walk descends."
+  "Breadth-first walk of a deps map; returns {:roots [...] :natives [...]} — the
+  ordered, de-duplicated source-root directories and the collected :jolt/native
+  declarations from every dep's deps.edn. `base-dir` resolves :local/root and is
+  replaced by a dep's own root as the walk descends."
   [deps base-dir]
   (loop [queue (mapv (fn [[c s]] [c s base-dir]) (seq deps))
          seen #{}
-         roots []]
+         roots []
+         natives []]
     (if (empty? queue)
-      (distinct roots)
+      {:roots (distinct roots) :natives natives}
       (let [[coord spec bd] (first queue)
             queue (subvec (vec queue) 1)]
         (if (contains? seen coord)
-          (recur queue seen roots)
+          (recur queue seen roots natives)
           (let [root (coord-root coord spec bd)]
             (if (nil? root)
-              (recur queue (conj seen coord) roots)
+              (recur queue (conj seen coord) roots natives)
               (let [edn (read-edn (str root "/deps.edn"))
                     child (mapv (fn [[c s]] [c s root]) (seq (:deps edn)))]
                 (recur (into queue child)
                        (conj seen coord)
-                       (into roots (dep-source-roots root)))))))))))
+                       (into roots (dep-source-roots root))
+                       (into natives (:jolt/native edn)))))))))))
 
 ;; --- public -----------------------------------------------------------------
 (defn resolve-project
   "Resolve `project-dir`'s deps.edn with the selected alias keywords. Returns
-  {:roots [...] :main-opts [...] :tasks {...}}; :main-opts is the last selected
-  alias's, else nil."
+  {:roots [...] :main-opts [...] :tasks {...} :natives [...]}; :main-opts is the
+  last selected alias's, else nil; :natives are the project's + deps' :jolt/native
+  shared-library declarations."
   ([project-dir] (resolve-project project-dir []))
   ([project-dir alias-kws]
    (let [edn (read-edn (str project-dir "/deps.edn"))
@@ -116,10 +120,11 @@
          project-paths (concat (or (:paths edn) ["src"]) extra-paths)
          project-roots (map #(abspath project-dir %) project-paths)
          all-deps (merge (:deps edn) extra-deps)
-         dep-roots (resolve-deps all-deps project-dir)]
+         {dep-roots :roots dep-natives :natives} (resolve-deps all-deps project-dir)]
      {:roots (vec (distinct (concat project-roots dep-roots)))
       :main-opts main-opts
-      :tasks (:tasks edn)})))
+      :tasks (:tasks edn)
+      :natives (vec (distinct (concat (:jolt/native edn) dep-natives)))})))
 
 (defn has-deps-edn? [project-dir]
   (file-exists? (str project-dir "/deps.edn")))
