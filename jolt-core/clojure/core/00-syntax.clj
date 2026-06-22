@@ -157,8 +157,8 @@
 (defmacro declare [& syms]
   `(do ~@(map (fn* [s] `(def ~s)) syms)))
 
-;; destructure — Clojure's binding-vector expander, ported from the Janet seed
-;; (was core-destructure). Turns a binding vector that may contain destructuring
+;; destructure — Clojure's binding-vector expander.
+;; Turns a binding vector that may contain destructuring
 ;; patterns into a plain binding vector (alternating symbol / init-form) built from
 ;; nth/nthnext/get, so the COMPILER only ever sees plain symbols (analyze-bindings
 ;; rejects patterns). `let` consumes it directly; `loop`/`fn` reuse it transitively
@@ -247,7 +247,7 @@
                                a
                                (proc k `(get ~gm ~(get pat k)) a)))
                            g3 (keys pat)))
-               :else (throw (str "unsupported destructuring pattern"))))
+               :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
          ploop
            (fn* ploop [i acc]
              (if (< i (count bindings))

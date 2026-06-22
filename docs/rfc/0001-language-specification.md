@@ -170,9 +170,9 @@ Signature(s), since-version
 ## Open questions
 
 1. Numerics: the reference has longs/doubles/ratios/BigInt with promotion
-   rules; CLJS has JS numbers; jolt has Janet numbers. Likely answer: specify
-   an integer/float core with a host-numeric-tower extension point — needs
-   its own design note in §4.
+   rules; CLJS has JS numbers. Resolved: jolt carries the Scheme numeric tower
+   (exact integers/bignums, exact ratios, flonum doubles), matching the
+   reference's tower — see the numerics note in §4.
 2. Where do `*print-length*`-style dynamic vars land — host-dependent
    interface or portable with defaults?
 3. License/venue if the spec outgrows this repo (likely CC-BY; separate repo

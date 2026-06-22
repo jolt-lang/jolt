@@ -53,7 +53,6 @@ the broadening (2026-06-16), ratios cluster by axis:
 ## Running
 
 ```sh
-jpm build && export PATH="$PWD/build:$PATH"
 bench/run.sh                      # whole-program optimization on (default)
 JOLT_WHOLE_PROGRAM=0 bench/run.sh # WP off, to measure what WP buys
 bench/run.sh binary-trees 16      # one benchmark, custom size
@@ -62,7 +61,7 @@ bench/run.sh binary-trees 16      # one benchmark, custom size
 ## A/B against a change
 
 To measure a pass, run the suite on `main`, then on the branch, back to back
-(same machine, quiet) — the protocol used for `test/bench/core-bench.janet` and
-the ray tracer. Each benchmark prints `runs: [...]` and `mean: N ms`; compare
+(same machine, quiet) — the same protocol used for the ray tracer. Each
+benchmark prints `runs: [...]` and `mean: N ms`; compare
 the means. A pass is worth landing when it moves a benchmark whose axis it
 targets, even if the ray tracer stays flat.

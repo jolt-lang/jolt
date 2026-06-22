@@ -16,7 +16,7 @@
 ;; neg? throws on non-numbers via <, as Clojure's Numbers.isNeg does.
 (defn neg? [x] (< x 0))
 
-;; even?/odd? stay in the seed: (filter even? ...) is idiomatic-hot and the
+;; even?/odd? stay host primitives: (filter even? ...) is idiomatic-hot and the
 ;; overlay versions cost an extra call layer per element (seq-pipe bench 4x).
 
 ;; Variadic bit ops — canonical Clojure arities folding the binary host op
@@ -55,10 +55,16 @@
 
 (defn prn [& xs] (apply pr xs) (__write "\n") nil)
 
+;; print renders each arg non-readably (strings/chars unquoted) like str — except
+;; nil, which prints as "nil" (str yields ""). Only the top-level arg needs the
+;; guard; nil nested in a collection already renders as "nil" via the collection
+;; printer.
 (defn print [& xs]
   (__write (loop [out "" s (seq xs) first? true]
              (if s
-               (recur (str out (if first? "" " ") (str (first s))) (next s) false)
+               (let [x (first s)
+                     r (if (nil? x) "nil" (str x))]
+                 (recur (str out (if first? "" " ") r) (next s) false))
                out)))
   nil)
 
@@ -210,7 +216,11 @@
       (recur (dec n) (next xs))
       xs)))
 
-(defn bounded-count [n coll] (min n (count coll)))
+(defn bounded-count [n coll]
+  (if (counted? coll)
+    (count coll)
+    (loop [i 0 s (seq coll)]
+      (if (and s (< i n)) (recur (inc i) (next s)) i))))
 
 (defn run! [proc coll] (reduce (fn [_ x] (proc x) nil) nil coll) nil)
 
@@ -345,9 +355,9 @@
                (make-hierarchy) (partition 2 deriv-seq))
        h))))
 
-;; --- Stage 3 tier shrink: pure-over-core leaves moved off the Janet seed ----
+;; --- Stage 3 tier shrink: pure-over-core leaves moved off the host primitives ----
 
-;; Representation predicates over the overlay's own predicates (no Janet reps).
+;; Representation predicates over the overlay's own predicates.
 (defn sequential? [x] (or (vector? x) (seq? x)))
 (defn associative? [x] (or (map? x) (vector? x)))
 (defn counted? [x]
@@ -371,10 +381,10 @@
 
 
 ;; realized?: defined on the pending types only (delay/lazy-seq/future read
-;; Tagged-value predicates. The constructors (atom/volatile!/...) stay in Janet,
-;; but every tagged value carries its kind under :jolt/type (records under
-;; :jolt/deftype), reachable via get — which is nil on non-tables — so the
-;; predicates are pure over get and move out of the seed.
+;; Tagged-value predicates. The constructors (atom/volatile!/...) are host
+;; primitives, but every tagged value carries its kind under :jolt/type (records
+;; under :jolt/deftype), reachable via get — which is nil on non-tables — so the
+;; predicates are pure over get.
 (defn atom? [x]               (= (get x :jolt/type) :jolt/atom))
 (defn volatile? [x]           (= (get x :jolt/type) :jolt/volatile))
 (defn reader-conditional? [x] (= (get x :jolt/type) :jolt/reader-conditional))
@@ -408,7 +418,7 @@
     :else (throw (str "pop not supported on: " coll))))
 
 ;; doall/dorun: realization boundaries. dorun walks (optionally at most n
-;; steps — the Janet seed version ignored n); doall walks then returns coll.
+;; steps); doall walks then returns coll.
 (defn dorun
   ([coll]
    (loop [s (seq coll)]
@@ -581,23 +591,35 @@
 
 ;; rand-int: random integer in [0, n). Uses Janet math/random.
 
-;; Eager dedupe of consecutive equal elements (Jolt has no transducer arity yet).
-(defn dedupe [coll]
-  (let [step (fn step [s prev]
-               (make-lazy-seq
-                 (fn* []
-                   (let [s (seq s)]
-                     (if s
-                       (let [x (first s)]
-                         (if (= x prev)
-                           (coll->cells (step (rest s) prev))
-                           (coll->cells (cons x (step (rest s) x)))))
-                       nil)))))]
-    (let [s (seq coll)]
-      (if s
-        (make-lazy-seq
-          (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
-        ()))))
+;; 0-arg: a stateful transducer (tracks [seen? prev] in a volatile, so no sentinel
+;; value is needed). 1-arg: eager dedupe of consecutive equal elements.
+(defn dedupe
+  ([]
+   (fn [rf]
+     (let [pv (volatile! [false nil])]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [[seen prior] @pv]
+            (vreset! pv [true input])
+            (if (and seen (= prior input)) result (rf result input))))))))
+  ([coll]
+   (let [step (fn step [s prev]
+                (make-lazy-seq
+                  (fn* []
+                    (let [s (seq s)]
+                      (if s
+                        (let [x (first s)]
+                          (if (= x prev)
+                            (coll->cells (step (rest s) prev))
+                            (coll->cells (cons x (step (rest s) x)))))
+                        nil)))))]
+     (let [s (seq coll)]
+       (if s
+         (make-lazy-seq
+           (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
+         ())))))
 
 ;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs —
 ;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):
@@ -650,7 +672,6 @@
 (defn ex-message [e]
   (let [e (ex-unwrap e)]
     (cond (ex-info-val? e) (get e :message)
-          (string? e)      e
           :else            nil)))
 (defn ex-cause [e]
   (let [e (ex-unwrap e)] (if (ex-info-val? e) (get e :cause) nil)))
@@ -777,16 +798,19 @@
 
 (defn clojure-version [] "1.11.0-jolt")
 
-;; Jolt numbers are doubles; no BigDecimal, no ratios.
-(defn bigdec [x] (* 1.0 x))
+;; bigdec is a host fn (host/chez/bigdec.ss) — a real BigDecimal value type.
 (defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
 (defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
 
-;; No class hierarchy on the Janet host.
+;; No class hierarchy on this host.
 (defn supers [x] #{})
 
-;; The kernel's munge only rewrote dashes; kept as-is for parity.
-(defn munge [s] (str-replace-all "-" "_" (str s)))
+;; Like Clojure's munge: rewrite dashes to underscores, preserving the argument's
+;; type — a symbol munges to a symbol, anything else to a string. (jolt only
+;; rewrites dashes, not the full Compiler CHAR_MAP.)
+(defn munge [s]
+  (let [m (str-replace-all "-" "_" (str s))]
+    (if (symbol? s) (symbol m) m)))
 
 (defn test
   "Calls the :test fn from v's metadata; :ok if it runs, :no-test if absent."
@@ -936,7 +960,7 @@
 ;; inst-ms itself.
 (defn inst-ms* [i] (inst-ms i))
 
-;; Canonical comp — here rather than the seed so each stage is invoked with
+;; Canonical comp — here rather than a host primitive so each stage is invoked with
 ;; jolt call semantics: (comp seq :content) works because the keyword stage
 ;; goes through IFn dispatch (raw Janet keyword application does not).
 (defn comp
@@ -1047,12 +1071,11 @@
 (defn to-array-2d [coll] (to-array (map to-array coll)))
 
 ;; Masking integer coercions (not aliases): byte/short wrap to their width.
-;; unchecked-char keeps jolt's historical NUMBER result (Clojure returns a
-;; char) — the char wrapper is a different value type here. int handles chars,
-;; so (unchecked-byte \a) works as on the JVM.
+;; unchecked-byte/short truncate to a number; unchecked-char returns a char (as on
+;; the JVM). int handles chars, so (unchecked-byte \a) works.
 (defn unchecked-byte [x] (bit-and (int x) 0xff))
 (defn unchecked-short [x] (bit-and (int x) 0xffff))
-(defn unchecked-char [x] (bit-and (int x) 0xffff))
+(defn unchecked-char [x] (char (bit-and (int x) 0xffff)))
 (defn unchecked-float [x] (double x))
 (defn unchecked-double [x] (double x))
 
@@ -1065,7 +1088,7 @@
    (let [xf (xform f)]
      (xf (reduce xf init coll)))))
 
-;; into stays in the seed: it's perf-wall hot (the into-vec bench pays ~11%
+;; into stays a host primitive: it's perf-wall hot (the into-vec bench pays ~11%
 ;; through the overlay call layers — same lesson as even?/odd? in round 4).
 
 ;; eduction is EAGER on jolt (documented divergence, as before): the composed
@@ -1103,8 +1126,8 @@
 
 ;; print-method / print-dup are real multimethods in the io tier (50-io.clj).
 
-;; JVM proxies don't exist on a Janet host: the read-only surface is inert,
-;; the constructive surface throws (matching the prior seed stubs).
+;; JVM proxies don't exist on this host: the read-only surface is inert,
+;; the constructive surface throws.
 (defn proxy-mappings [p] {})
 (defn proxy-call-with-super [f p meth] (f))
 (defn init-proxy [p mappings] p)

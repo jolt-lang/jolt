@@ -1,0 +1,462 @@
+[
+  {:suite "atomwatch" :expr "(let [a (atom 0) seen (atom 0)] (add-watch a :k (fn [k r o n] (reset! seen 1))) (reset! a 5) @seen)" :expected "1"}
+  {:suite "atomwatch" :expr "(let [a (atom 0) seen (atom 0)] (add-watch a :k (fn [k r o n] (swap! seen inc))) (remove-watch a :k) (reset! a 5) @seen)" :expected "0"}
+  {:suite "atomwatch" :expr "(let [a (atom 0) log (atom [])] (add-watch a :k (fn [k r o n] (swap! log conj [o n]))) (reset! a 1) (reset! a 2) @log)" :expected "[[0 1] [1 2]]"}
+  {:suite "atomwatch" :expr "(let [a (atom 0)] (set-validator! a number?) (reset! a 5) @a)" :expected "5"}
+  {:suite "atomwatch" :expr "(let [a (atom 5)] (set-validator! a pos?) (swap! a inc) @a)" :expected "6"}
+  {:suite "atomwatch" :expr "(let [a (atom 0)] (set-validator! a number?) (fn? (get-validator a)))" :expected "true"}
+  {:suite "atomwatch" :expr "(let [a (atom 0)] (nil? (get-validator a)))" :expected "true"}
+  {:suite "atomwatch" :expr "(let [a (atom 0)] (set-validator! a pos?) (reset! a -1))" :expected :throws}
+  {:suite "atomwatch" :expr "(let [a (atom 5)] (set-validator! a pos?) (swap! a (fn [_] -1)) @a)" :expected :throws}
+  {:suite "atomwatch" :expr "(let [a (atom 0) c (atom 0)] (add-watch a :k (fn [k r o n] (swap! c inc))) (swap! a inc) (swap! a inc) @c)" :expected "2"}
+  {:suite "class" :expr "String" :expected "java.lang.String"}
+  {:suite "class" :expr "Number" :expected "java.lang.Number"}
+  {:suite "class" :expr "Keyword" :expected "clojure.lang.Keyword"}
+  {:suite "class" :expr "File" :expected "java.io.File"}
+  {:suite "class" :expr "Exception" :expected "java.lang.Exception"}
+  {:suite "class" :expr "MapEntry" :expected "clojure.lang.MapEntry"}
+  {:suite "class" :expr "(class 1)" :expected "java.lang.Long"}
+  {:suite "class" :expr "(class 1.5)" :expected "java.lang.Double"}
+  {:suite "class" :expr "(class \"s\")" :expected "java.lang.String"}
+  {:suite "class" :expr "(class :k)" :expected "clojure.lang.Keyword"}
+  {:suite "class" :expr "(class true)" :expected "java.lang.Boolean"}
+  {:suite "class" :expr "(class false)" :expected "java.lang.Boolean"}
+  {:suite "class" :expr "(class nil)" :expected ""}
+  {:suite "class" :expr "(= String (class \"abc\"))" :expected "true"}
+  {:suite "class" :expr "(= Number (class 7))" :expected "false"}
+  {:suite "class" :expr "(= String (class 7))" :expected "false"}
+  {:suite "class" :expr "(do (defmulti cm (fn [x] (class x))) (defmethod cm String [x] :str) (cm \"a\"))" :expected ":str"}
+  {:suite "class" :expr "(do (defmulti cn (fn [x] (class x))) (defmethod cn nil [x] :nil) (defmethod cn String [x] :str) (cn nil))" :expected ":nil"}
+  {:suite "class" :expr "(do (defmulti cn (fn [x] (class x))) (defmethod cn nil [x] :nil) (defmethod cn String [x] :str) (cn \"z\"))" :expected ":str"}
+  {:suite "dotform" :expr "(. \"HI\" toLowerCase)" :expected "hi"}
+  {:suite "dotform" :expr "(. \"abc\" length)" :expected "3"}
+  {:suite "dotform" :expr "(. \"abc\" toUpperCase)" :expected "ABC"}
+  {:suite "dotform" :expr "(. [1 2 3] count)" :expected "3"}
+  {:suite "dotform" :expr "(. [10 20 30] nth 1)" :expected "20"}
+  {:suite "dotform" :expr "(. {:a 1 :b 2} count)" :expected "2"}
+  {:suite "dotform" :expr "(. {:a 1 :b 2} get :b)" :expected "2"}
+  {:suite "dotform" :expr "(. {:a 1} containsKey :a)" :expected "true"}
+  {:suite "dotform" :expr "(. {:count 99} count)" :expected "1"}
+  {:suite "dotform" :expr "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)" :expected "v=41"}
+  {:suite "dotform" :expr "(. {:greet (fn [self n] (str \"Hello \" n))} greet \"Alice\")" :expected "Hello Alice"}
+  {:suite "dotform" :expr "(. {:value 41} value)" :expected "41"}
+  {:suite "dotform" :expr "(.-value {:value 41})" :expected "41"}
+  {:suite "dotform" :expr "(.-x {:x 7 :y 9})" :expected "7"}
+  {:suite "dotform" :expr "(. {:value 41} -value)" :expected "41"}
+  {:suite "dotform" :expr "(do (defrecord Rf [x]) (.-x (->Rf 7)))" :expected "7"}
+  {:suite "dotform" :expr "(do (defrecord Rg [a b]) (.-b (->Rg 1 2)))" :expected "2"}
+  {:suite "dotform" :expr "(do (defprotocol Greet (hi [_])) (defrecord Rh [nm] Greet (hi [_] (str \"hi \" nm))) (. (->Rh \"x\") hi))" :expected "hi x"}
+  {:suite "dotform" :expr "(try (throw (ex-info \"bad\" {})) (catch Throwable e (.getMessage e)))" :expected "bad"}
+  {:suite "dotform" :expr "(try (throw (ex-info \"bad\" {:k 1})) (catch Throwable e (.getMessage e)))" :expected "bad"}
+  {:suite "dotform" :expr "(try (throw \"boom\") (catch Throwable e (.getMessage e)))" :expected "boom"}
+  {:suite "dotform" :expr "(try (throw (Exception. \"boom\")) (catch Throwable e (.getMessage e)))" :expected "boom"}
+  {:suite "dotform" :expr "(try (throw (IllegalArgumentException. \"bad\")) (catch Exception e (.getMessage e)))" :expected "bad"}
+  {:suite "dotform" :expr "(.equals \"a\" \"a\")" :expected "true"}
+  {:suite "dotform" :expr "(.equals \"a\" \"b\")" :expected "false"}
+  {:suite "dotform" :expr "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)" :expected "v=41"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *bx* 10) (binding [*bx* 99] *bx*))" :expected "99"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *by* 10) (binding [*by* 99] *by*) *by*)" :expected "10"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *bz* 0) (defn rdz [] *bz*) (binding [*bz* 7] (rdz)))" :expected "7"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *bv* 1) [(binding [*bv* 2] *bv*) *bv*])" :expected "[2 1]"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *bn* 1) (binding [*bn* 2] (binding [*bn* 3] *bn*)))" :expected "3"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *bo* 1) (binding [*bo* 2] (binding [*bo* 3] nil) *bo*))" :expected "2"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *z* 1) (binding [*z* 0] (var-set (var *z*) 5) *z*))" :expected "5"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *zr* 1) (binding [*zr* 0] (var-set (var *zr*) 5)) *zr*)" :expected "1"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *tb* 1) (thread-bound? (var *tb*)))" :expected "false"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *tc* 1) (binding [*tc* 2] (thread-bound? (var *tc*))))" :expected "true"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *wb* 1) (with-bindings* {(var *wb*) 7} (fn [] *wb*)))" :expected "7"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *cf* 1) (let [g (binding [*cf* 3] (bound-fn* (fn [] *cf*)))] (g)))" :expected "3"}
+  {:suite "dynbind" :expr "(do (def ^:dynamic *gb* 1) (binding [*gb* 9] (get (get-thread-bindings) (var *gb*))))" :expected "9"}
+  {:suite "dynbind" :expr "(with-local-vars [x 1] (var-get x))" :expected "1"}
+  {:suite "dynbind" :expr "(with-local-vars [x 1] (var-set x 2) (var-get x))" :expected "2"}
+  {:suite "dynbind" :expr "(with-local-vars [a 1 b 2] [(var-get a) (var-get b)])" :expected "[1 2]"}
+  {:suite "dynbind" :expr "(with-local-vars [x 0] (let [bump (fn [v] (var-set v (+ 5 (var-get v))))] (bump x) (var-get x)))" :expected "5"}
+  {:suite "dynbind" :expr "(let [y 3] (with-local-vars [x y] (var-get x)))" :expected "3"}
+  {:suite "dynbind" :expr "(with-local-vars [x 1] :done)" :expected ":done"}
+  {:suite "dynbind" :expr "(do (defn wrf [] 1) (with-redefs [wrf (fn [] 42)] (wrf)))" :expected "42"}
+  {:suite "dynbind" :expr "(do (defn wrg [] 1) (with-redefs [wrg (fn [] 42)]) (wrg))" :expected "1"}
+  {:suite "dynbind" :expr "(do (defn wrh [] 1) (try (with-redefs [wrh (fn [] 42)] (throw (ex-info \"x\" {}))) (catch :default e nil)) (wrh))" :expected "1"}
+  {:suite "dynbind" :expr "(do (defn wri [] 1) (with-redefs-fn {(var wri) (fn [] 42)} (fn [] (wri))))" :expected "42"}
+  {:suite "dynbind" :expr "(do (def av 1) (alter-var-root (var av) inc) av)" :expected "2"}
+  {:suite "insttime" :expr "(inst? #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(inst-ms #inst \"1970-01-01T00:00:01Z\")" :expected "1000"}
+  {:suite "insttime" :expr "(inst-ms #inst \"1970-01-01T00:00:00.123Z\")" :expected "123"}
+  {:suite "insttime" :expr "(inst-ms #inst \"2020-01-01T00:00:00Z\")" :expected "1577836800000"}
+  {:suite "insttime" :expr "(inst-ms* #inst \"1970-01-01T00:00:00Z\")" :expected "0"}
+  {:suite "insttime" :expr "(some? #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(str (type #inst \"2020-01-01T00:00:00Z\"))" :expected ":jolt/inst"}
+  {:suite "insttime" :expr "(= #inst \"2020\" #inst \"2020-01-01T00:00:00.000Z\")" :expected "true"}
+  {:suite "insttime" :expr "(= #inst \"2020-03\" #inst \"2020-03-01T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(= #inst \"2020-03-15\" #inst \"2020-03-15T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(= #inst \"2020-01-01T01:00:00+01:00\" #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(= #inst \"2019-12-31T23:00:00-01:00\" #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(= #inst \"2020-01-01T00:00:00Z\" #inst \"2020-01-01T00:00:01Z\")" :expected "false"}
+  {:suite "insttime" :expr "(get {#inst \"2020-01-01T00:00:00Z\" :v} #inst \"2020-01-01T00:00:00.000Z\")" :expected ":v"}
+  {:suite "insttime" :expr "(pr-str #inst \"2020-01-01T00:00:00Z\")" :expected "#inst \"2020-01-01T00:00:00.000-00:00\""}
+  {:suite "insttime" :expr "(str #inst \"2020-01-01T00:00:00Z\")" :expected "2020-01-01T00:00:00.000-00:00"}
+  {:suite "insttime" :expr "(uuid? #uuid \"550e8400-e29b-41d4-a716-446655440000\")" :expected "true"}
+  {:suite "insttime" :expr "(= #uuid \"550E8400-E29B-41D4-A716-446655440000\" #uuid \"550e8400-e29b-41d4-a716-446655440000\")" :expected "true"}
+  {:suite "insttime" :expr "(pr-str #uuid \"550e8400-e29b-41d4-a716-446655440000\")" :expected "#uuid \"550e8400-e29b-41d4-a716-446655440000\""}
+  {:suite "insttime" :expr "(.getTime #inst \"1970-01-01T00:00:00Z\")" :expected "0"}
+  {:suite "insttime" :expr "(instance? java.util.Date #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
+  {:suite "insttime" :expr "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")" :expected "false"}
+  {:suite "insttime" :expr "(.toEpochMilli (Instant/ofEpochMilli 1234))" :expected "1234"}
+  {:suite "insttime" :expr "(instance? java.time.Instant (Instant/ofEpochMilli 0))" :expected "true"}
+  {:suite "insttime" :expr "(> (.toEpochMilli (Instant/now)) 1500000000000)" :expected "true"}
+  {:suite "insttime" :expr "(instance? LocalDateTime (-> #inst \"2020-03-05T13:45:30Z\" (.toInstant) (.atZone (ZoneId/systemDefault)) (.toLocalDateTime)))" :expected "true"}
+  {:suite "insttime" :expr "(.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\")" :expected "2020-03-05"}
+  {:suite "insttime" :expr "(boolean (re-matches #\"[A-Z][a-z]{2} \\d{1,2}, 2020 \\d{1,2}:\\d{2} [AP]M\" (.format (DateTimeFormatter/ofPattern \"MMM d, yyyy h:mm a\") #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
+  {:suite "insttime" :expr "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\" (.format DateTimeFormatter/ISO_LOCAL_DATE_TIME #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
+  {:suite "insttime" :expr "(string? (.format (DateTimeFormatter/ofLocalizedDate FormatStyle/MEDIUM) #inst \"2020-03-05T13:45:30Z\"))" :expected "true"}
+  {:suite "insttime" :expr "(string? (.format (.withLocale (DateTimeFormatter/ofPattern \"yyyy\") (java.util.Locale. \"en\")) #inst \"2020-01-01T00:00:00Z\"))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a/b\")))" :expected "/a/b"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a\" \"b\")))" :expected "/a/b"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getName (io/file \"/a/b/c.txt\")))" :expected "c.txt"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (io/file \"/a\" \"b\")))" :expected "/a/b"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isDirectory (io/file \"docs\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"README.md\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"docs\")))" :expected "false"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"/no/such/path/xyz\")))" :expected "false"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"README.md\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File (io/file \"/a/b\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File \"/a/b\"))" :expected "false"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (type (io/file \"/a\"))))" :expected ":jolt/file"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"docs\"))))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"README.md\")) (file-seq \".\"))))" :expected "true"}
+  {:suite "io" :expr "(string? (slurp \"README.md\"))" :expected "true"}
+  {:suite "io" :expr "(do (spit \"/tmp/jolt-io-test.txt\" \"hello\") (slurp \"/tmp/jolt-io-test.txt\"))" :expected "hello"}
+  {:suite "io" :expr "(do (spit \"/tmp/jolt-io-test.txt\" \"a\") (spit \"/tmp/jolt-io-test.txt\" \"b\" :append true) (slurp \"/tmp/jolt-io-test.txt\"))" :expected "ab"}
+  {:suite "io" :expr "(flush)" :expected ""}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/file \"README.md\"))))" :expected "true"}
+  {:suite "ioreader" :expr "(apply str (char-array \"abc\"))" :expected "abc"}
+  {:suite "ioreader" :expr "(.read (StringReader. (apply str (char-array \"Qz\"))))" :expected "81"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (char-array \"abc\"))))" :expected "97"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (StringReader. \"k\"))))" :expected "107"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (slurp (io/reader (char-array \"xyz\"))))" :expected "xyz"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/reader \"README.md\"))))" :expected "true"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toString (.toURL (io/file \"/tmp/x\"))))" :expected "file:/tmp/x"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toURI (io/file \"/tmp/x\")))" :expected "file:/tmp/x"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/x\"))))" :expected "/tmp/x"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getAbsolutePath (io/file \"/a/b\")))" :expected "/a/b"}
+  {:suite "ioreader" :expr "(slurp (StringReader. \"a=1\"))" :expected "a=1"}
+  {:suite "ioreader" :expr "(slurp (StringReader. \"b\") :encoding \"UTF-8\")" :expected "b"}
+  {:suite "ioreader" :expr "(with-open [r (StringReader. \"a\")] (.read r))" :expected "97"}
+  {:suite "ioreader" :expr "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r) (deref log))" :expected "[:closed]"}
+  {:suite "ioreader" :expr "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))" :expected "[:closed]"}
+  {:suite "ioreader" :expr "(let [log (atom [])] (with-open [a {:close (fn [] (swap! log conj :outer))} b {:close (fn [] (swap! log conj :inner))}] :r) (deref log))" :expected "[:inner :outer]"}
+  {:suite "ioreader" :expr "(with-open [c {:close (fn [] nil) :v 5}] (:v c))" :expected "5"}
+  {:suite "javastatic" :expr "(Math/sqrt 16)" :expected "4.0"}
+  {:suite "javastatic" :expr "(Math/abs -3)" :expected "3"}
+  {:suite "javastatic" :expr "(Math/max 2 7)" :expected "7"}
+  {:suite "javastatic" :expr "(pos? Long/MAX_VALUE)" :expected "true"}
+  {:suite "javastatic" :expr "(String/valueOf 42)" :expected "42"}
+  {:suite "javastatic" :expr "(String/valueOf \"hi\")" :expected "hi"}
+  {:suite "javastatic" :expr "(String/valueOf :k)" :expected ":k"}
+  {:suite "javastatic" :expr "(String/valueOf nil)" :expected "null"}
+  {:suite "javastatic" :expr "(Long/parseLong \"42\")" :expected "42"}
+  {:suite "javastatic" :expr "(Long/valueOf \"42\")" :expected "42"}
+  {:suite "javastatic" :expr "(Integer/parseInt \"ff\" 16)" :expected "255"}
+  {:suite "javastatic" :expr "(.byteValue (Integer/valueOf \"ff\" 16))" :expected "-1"}
+  {:suite "javastatic" :expr "(Boolean/parseBoolean \"true\")" :expected "true"}
+  {:suite "javastatic" :expr "(Boolean/parseBoolean \"yes\")" :expected "false"}
+  {:suite "javastatic" :expr "(Character/isUpperCase \\A)" :expected "true"}
+  {:suite "javastatic" :expr "(Character/isLowerCase \\a)" :expected "true"}
+  {:suite "javastatic" :expr "(Character/isUpperCase \\a)" :expected "false"}
+  {:suite "javastatic" :expr "(Thread/interrupted)" :expected "false"}
+  {:suite "javastatic" :expr "(string? (System/getProperty \"os.name\"))" :expected "true"}
+  {:suite "javastatic" :expr "(string? (get (System/getenv) \"HOME\"))" :expected "true"}
+  {:suite "javastatic" :expr "(string? (System/getenv \"HOME\"))" :expected "true"}
+  {:suite "javastatic" :expr "(fn? System/exit)" :expected "true"}
+  {:suite "javastatic" :expr "(string? (get (System/getProperties) \"os.name\"))" :expected "true"}
+  {:suite "javastatic" :expr "(pos? (count (seq (System/getenv))))" :expected "true"}
+  {:suite "javastatic" :expr "(let [es (map (fn [[k v]] [k v]) (System/getenv))] (and (pos? (count es)) (every? vector? es)))" :expected "true"}
+  {:suite "javastatic" :expr "(.toString (StringBuilder. \"x\"))" :expected "x"}
+  {:suite "javastatic" :expr "(.toString (-> (StringBuilder.) (.append \"a\") (.append \\b) (.append 1)))" :expected "ab1"}
+  {:suite "javastatic" :expr "(.toString (.append (StringBuilder. 16) \"x\"))" :expected "x"}
+  {:suite "javastatic" :expr "(let [sb (StringBuilder.)] (.append sb \"abcd\") (.setLength sb 2) (.toString sb))" :expected "ab"}
+  {:suite "javastatic" :expr "(let [w (StringWriter.)] (.write w \"a\") (.append w \\b) (.toString w))" :expected "ab"}
+  {:suite "javastatic" :expr "(let [r (StringReader. \"ab\")] [(.read r) (.read r) (.read r)])" :expected "[97 98 -1]"}
+  {:suite "javastatic" :expr "(let [r (StringReader. \"ab\")] (.mark r 1) [(.read r) (do (.reset r) (.read r))])" :expected "[97 97]"}
+  {:suite "javastatic" :expr "(let [r (java.io.PushbackReader. (java.io.StringReader. \"ab\"))] [(.read r) (.read r)])" :expected "[97 98]"}
+  {:suite "javastatic" :expr "(let [r (PushbackReader. (StringReader. \"ab\")) a (.read r)] (.unread r a) [a (.read r) (.read r)])" :expected "[97 97 98]"}
+  {:suite "javastatic" :expr "(let [r (PushbackReader. (StringReader. \"a\"))] (.unread r \\x) [(.read r) (.read r)])" :expected "[120 97]"}
+  {:suite "javastatic" :expr "(BigInteger. \"123\")" :expected "123"}
+  {:suite "javastatic" :expr "(let [m (HashMap. {:a 1 :b 2})] (.get m :b))" :expected "2"}
+  {:suite "javastatic" :expr "(let [m (HashMap. {})] (.put m :x 1) (.put m :y 2) (.size m))" :expected "2"}
+  {:suite "javastatic" :expr "(let [t (StringTokenizer. \"a=1&b=2\" \"&\")] [(.nextToken t) (.nextToken t)])" :expected "[a=1 b=2]"}
+  {:suite "javastatic" :expr "(.toString (StringBuilder. \"x\"))" :expected "x"}
+  {:suite "javastatic" :expr "(URLEncoder/encode \"a b=c\")" :expected "a+b%3Dc"}
+  {:suite "javastatic" :expr "(URLDecoder/decode (URLEncoder/encode \"x &=%?\"))" :expected "x &=%?"}
+  {:suite "javastatic" :expr "(String. (.encode (Base64/getEncoder) (.getBytes \"hello\")))" :expected "aGVsbG8="}
+  {:suite "javastatic" :expr "(String. (.decode (Base64/getDecoder) (String. (.encode (Base64/getEncoder) (.getBytes \"hello\")))))" :expected "hello"}
+  {:suite "javastatic" :expr "(Integer/parseInt \"ff\" 16)" :expected "255"}
+  {:suite "javastatic" :expr "(regex? (Pattern/compile \"a.c\"))" :expected "true"}
+  {:suite "javastatic" :expr "(.split (Pattern/compile \",\") \"a,b,c\")" :expected "(a b c)"}
+  {:suite "javastatic" :expr "(do (require '[clojure.string :as s]) (s/replace \"a1b2\" (Pattern/compile \"[0-9]\") \"\"))" :expected "ab"}
+  {:suite "javastatic" :expr "(boolean (re-find (Pattern/compile \"^x\" Pattern/MULTILINE) \"y\\nx\"))" :expected "true"}
+  {:suite "javastatic" :expr "(boolean (re-find (re-pattern (Pattern/quote \"a.c\")) \"za.cy\"))" :expected "true"}
+  {:suite "javastatic" :expr "(boolean (re-find (re-pattern (Pattern/quote \"a.c\")) \"zabcy\"))" :expected "false"}
+  {:suite "ns" :expr "(some? (find-ns 'clojure.core))" :expected "true"}
+  {:suite "ns" :expr "(nil? (find-ns 'does.not.exist))" :expected "true"}
+  {:suite "ns" :expr "(var? (resolve '+))" :expected "true"}
+  {:suite "ns" :expr "(nil? (resolve 'totally-undefined-xyz))" :expected "true"}
+  {:suite "ns" :expr "(do (def npv 1) (some? (get (ns-publics 'user) 'npv)))" :expected "true"}
+  {:suite "ns" :expr "(do (def nmv 1) (some? (get (ns-map 'user) 'nmv)))" :expected "true"}
+  {:suite "ns" :expr "(map? (ns-aliases 'clojure.core))" :expected "true"}
+  {:suite "ns" :expr "(map? (ns-interns 'user))" :expected "true"}
+  {:suite "ns" :expr "(do (def q 1) (pos? (count (ns-interns 'user))))" :expected "true"}
+  {:suite "ns" :expr "(pos? (count (all-ns)))" :expected "true"}
+  {:suite "ns" :expr "(= (ns-name *ns*) (ns-name (find-ns 'user)))" :expected "true"}
+  {:suite "ns" :expr "(str (in-ns 'jolt.test-ns-b))" :expected "jolt.test-ns-b"}
+  {:suite "ns" :expr "(do (in-ns 'jolt.test-ns-a) (str *ns*))" :expected "jolt.test-ns-a"}
+  {:suite "ns" :expr "(do (def nuv 1) (ns-unmap 'user 'nuv) (nil? (resolve 'nuv)))" :expected "true"}
+  {:suite "ns" :expr "(do (in-ns 'my.ns) (symbol? 'x))" :expected "true"}
+  {:suite "ns" :expr "(str (ns-name *ns*))" :expected "user"}
+  {:suite "ns" :expr "(var? (find-var 'clojure.core/map))" :expected "true"}
+  {:suite "ns" :expr "(= 'user (ns-name (the-ns 'user)))" :expected "true"}
+  {:suite "ns" :expr "(= 'foo.bar (ns-name (create-ns 'foo.bar)))" :expected "true"}
+  {:suite "reader" :expr "(= 42 (read-string \"42\"))" :expected "true"}
+  {:suite "reader" :expr "(= 42 (read-string \"0x2A\"))" :expected "true"}
+  {:suite "reader" :expr "(== 0.5 (read-string \"1/2\"))" :expected "true"}
+  {:suite "reader" :expr "(= -3.5 (read-string \"-3.5\"))" :expected "true"}
+  {:suite "reader" :expr "(== 1000.0 (read-string \"1e3\"))" :expected "true"}
+  {:suite "reader" :expr "(= 1 (read-string \"1N\"))" :expected "true"}
+  {:suite "reader" :expr "(integer? (read-string \"7\"))" :expected "true"}
+  {:suite "reader" :expr "(= :foo (read-string \":foo\"))" :expected "true"}
+  {:suite "reader" :expr "(= :a/b (read-string \":a/b\"))" :expected "true"}
+  {:suite "reader" :expr "(= :foo (read-string \"::foo\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote sym) (read-string \"sym\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote ns/sym) (read-string \"ns/sym\"))" :expected "true"}
+  {:suite "reader" :expr "(nil? (read-string \"nil\"))" :expected "true"}
+  {:suite "reader" :expr "(true? (read-string \"true\"))" :expected "true"}
+  {:suite "reader" :expr "(false? (read-string \"false\"))" :expected "true"}
+  {:suite "reader" :expr "(= \\a (read-string \"\\\\a\"))" :expected "true"}
+  {:suite "reader" :expr "(= \\newline (read-string \"\\\\newline\"))" :expected "true"}
+  {:suite "reader" :expr "(= \\space (read-string \"\\\\space\"))" :expected "true"}
+  {:suite "reader" :expr "(= \"a\\nb\" (read-string \"\\\"a\\\\nb\\\"\"))" :expected "true"}
+  {:suite "reader" :expr "(= [1 2 3] (read-string \"[1 2 3]\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (+ 1 2)) (read-string \"(+ 1 2)\"))" :expected "true"}
+  {:suite "reader" :expr "(= {:a 1 :b 2} (read-string \"{:a 1 :b 2}\"))" :expected "true"}
+  {:suite "reader" :expr "(:value (read-string \"#{1 2 3}\"))" :expected "[1 2 3]"}
+  {:suite "reader" :expr "(= :jolt/set (:jolt/type (read-string \"#{1 2 3}\")))" :expected "true"}
+  {:suite "reader" :expr "(= [1 [2 3] {:k :v}] (read-string \"[1 [2 3] {:k :v}]\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (quote x)) (read-string \"'x\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (clojure.core/deref a)) (read-string \"@a\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (syntax-quote (a (unquote b)))) (read-string \"`(a ~b)\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (unquote-splicing xs)) (read-string \"~@xs\"))" :expected "true"}
+  {:suite "reader" :expr "(= 42 (read-string \"; comment\\n42\"))" :expected "true"}
+  {:suite "reader" :expr "(= [1 2] (read-string \"[1 #_ 9 2]\"))" :expected "true"}
+  {:suite "reader" :expr "(nil? (read-string \"\"))" :expected "true"}
+  {:suite "reader" :expr "(nil? (read-string \"  , ,\"))" :expected "true"}
+  {:suite "reader" :expr "(:tag (meta (read-string \"^String x\")))" :expected "String"}
+  {:suite "reader" :expr "(:foo (meta (read-string \"^:foo x\")))" :expected "true"}
+  {:suite "reader" :expr "(= 42 (with-in-str \"42\" (read)))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (+ 1 2)) (with-in-str \"(+ 1 2)\" (read)))" :expected "true"}
+  {:suite "reader" :expr "(with-in-str \"1 2\" [(read) (read)])" :expected "[1 2]"}
+  {:suite "reader" :expr "(= :done (with-in-str \"\" (read *in* false :done)))" :expected "true"}
+  {:suite "reader" :expr "(let [[v s] (with-in-str \"42 rest\" (read+string))] (and (= v 42) (string? s)))" :expected "true"}
+  {:suite "reader" :expr "(= [1 2] (with-in-str \"1 2\" [(first (read+string)) (first (read+string))]))" :expected "true"}
+  {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (= #{1 2} (e0/read-string \"#{1 2}\")))" :expected "true"}
+  {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (uuid? (e0/read-string \"#uuid \\\"550e8400-e29b-41d4-a716-446655440000\\\"\")))" :expected "true"}
+  {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (inst? (e0/read-string \"#inst \\\"2020-01-01T00:00:00Z\\\"\")))" :expected "true"}
+  {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (= :end (e0/read-string {:eof :end} \"\")))" :expected "true"}
+  {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (= [:custom 5] (e0/read-string {:readers {(quote custom) (fn [v] [:custom v])}} \"#custom 5\")))" :expected "true"}
+  {:suite "reader" :expr "(do (require (quote clojure.edn)) (= {:a 1 :b 2} (clojure.edn/read-string \"{:a 1\\n :b 2}\")))" :expected "true"}
+  {:suite "seqpred" :expr "(seq? (map inc [1 2 3]))" :expected "true"}
+  {:suite "seqpred" :expr "(seq? (filter odd? [1 2 3]))" :expected "true"}
+  {:suite "seqpred" :expr "(seq? (lazy-seq (cons 1 nil)))" :expected "true"}
+  {:suite "seqpred" :expr "(seq? (take 3 (iterate inc 0)))" :expected "true"}
+  {:suite "seqpred" :expr "(seq? (cons 0 (range 3)))" :expected "true"}
+  {:suite "seqpred" :expr "(seq? [1 2 3])" :expected "false"}
+  {:suite "seqpred" :expr "(seq? {:a 1})" :expected "false"}
+  {:suite "seqpred" :expr "(seq? nil)" :expected "false"}
+  {:suite "seqpred" :expr "(sequential? (range 3))" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? (map inc [1 2 3]))" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? (filter odd? [1 2 3]))" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? (lazy-seq (cons 1 nil)))" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? (take 2 (repeat 9)))" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? [1 2 3])" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? '(1 2 3))" :expected "true"}
+  {:suite "seqpred" :expr "(sequential? {:a 1})" :expected "false"}
+  {:suite "seqpred" :expr "(sequential? #{1 2})" :expected "false"}
+  {:suite "seqpred" :expr "(sequential? nil)" :expected "false"}
+  {:suite "seqpred" :expr "(= [0 1 2] (range 3))" :expected "true"}
+  {:suite "seqpred" :expr "(= (range 3) [0 1 2])" :expected "true"}
+  {:suite "seqpred" :expr "(= (map inc [0 1]) '(1 2))" :expected "true"}
+  {:suite "seqpred" :expr "(contains? #{[0 1 2]} (vec (range 3)))" :expected "true"}
+  {:suite "stdlib" :expr "(< 1.4142 (clojure.math/sqrt 2) 1.4143)" :expected "true"}
+  {:suite "stdlib" :expr "(long (clojure.math/pow 2 10))" :expected "1024"}
+  {:suite "stdlib" :expr "(long (clojure.math/tan 0))" :expected "0"}
+  {:suite "stdlib" :expr "(clojure.math/round 2.6)" :expected "3"}
+  {:suite "stdlib" :expr "(clojure.math/floor 2.9)" :expected "2.0"}
+  {:suite "stdlib" :expr "(clojure.math/signum -7.2)" :expected "-1.0"}
+  {:suite "stdlib" :expr "(< 3.14 (clojure.math/to-radians 180) 3.15)" :expected "true"}
+  {:suite "stdlib" :expr "(< 3.14 clojure.math/PI 3.15)" :expected "true"}
+  {:suite "stdlib" :expr "(< 2.71 clojure.math/E 2.72)" :expected "true"}
+  {:suite "stdlib" :expr "(long (clojure.math/cbrt 27))" :expected "3"}
+  {:suite "stdlib" :expr "(< 4.6 (clojure.math/log 100) 4.7)" :expected "true"}
+  {:suite "stdlib" :expr "(< 2.99 (clojure.math/log10 1000) 3.01)" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.math :as m])) (long (m/hypot 3 4)))" :expected "5"}
+  {:suite "stdlib" :expr "(mapv (comp long clojure.math/sqrt) [1 4])" :expected "[1 2]"}
+  {:suite "stdlib" :expr "(long (clojure.math/atan2 0 1))" :expected "0"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= #{1 2 3 4} (s/union #{1 2} #{3 4})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= #{2} (s/intersection #{1 2} #{2 3})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= #{1} (s/difference #{1 2} #{2 3})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (s/subset? #{1} #{1 2}))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (s/superset? #{1 2} #{1}))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= {1 :a 2 :b} (s/map-invert {:a 1 :b 2})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= #{:a} (s/select keyword? #{:a})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= #{{:a 1 :b 2}} (s/join #{{:a 1}} #{{:b 2}})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= {:b 1} (s/rename-keys {:a 1} {:a :b})))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.set :as s])) (= 2 (count (s/index #{{:k 1} {:k 2}} [:k]))))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.pprint :as pp])) (= \"[1 2 3]\\n\" (with-out-str (pp/pprint [1 2 3]))))" :expected "true"}
+  {:suite "stdlib" :expr "(do (require (quote [clojure.pprint :as pp])) (pp/with-pprint-dispatch pp/code-dispatch 42))" :expected "42"}
+  {:suite "str" :expr "(.toLowerCase \"HI\")" :expected "hi"}
+  {:suite "str" :expr "(.toUpperCase \"hi\")" :expected "HI"}
+  {:suite "str" :expr "(.trim \"  x  \")" :expected "x"}
+  {:suite "str" :expr "(.length \"abc\")" :expected "3"}
+  {:suite "str" :expr "[(.isEmpty \"\") (.isEmpty \"a\")]" :expected "[true false]"}
+  {:suite "str" :expr "(.indexOf \"abc\" \"b\")" :expected "1"}
+  {:suite "str" :expr "(.indexOf \"abc\" \"z\")" :expected "-1"}
+  {:suite "str" :expr "(.indexOf \"abab\" \"a\" 1)" :expected "2"}
+  {:suite "str" :expr "(.indexOf \"a=b\" 61)" :expected "1"}
+  {:suite "str" :expr "(.lastIndexOf \"abab\" \"b\")" :expected "3"}
+  {:suite "str" :expr "(.substring \"abc\" 1)" :expected "bc"}
+  {:suite "str" :expr "(.substring \"abc\" 1 2)" :expected "b"}
+  {:suite "str" :expr "(.startsWith \"abc\" \"ab\")" :expected "true"}
+  {:suite "str" :expr "(.endsWith \"abc\" \"bc\")" :expected "true"}
+  {:suite "str" :expr "(.contains \"abc\" \"b\")" :expected "true"}
+  {:suite "str" :expr "(.replace \"abc\" \"b\" \"x\")" :expected "axc"}
+  {:suite "str" :expr "(.replace \"aaa\" \"a\" \"b\")" :expected "bbb"}
+  {:suite "str" :expr "(.charAt \"abc\" 1)" :expected "\\b"}
+  {:suite "str" :expr "(.equalsIgnoreCase \"AbC\" \"aBc\")" :expected "true"}
+  {:suite "str" :expr "(.toString \"hi\")" :expected "hi"}
+  {:suite "str" :expr "(.concat \"ab\" \"cd\")" :expected "abcd"}
+  {:suite "str" :expr "(.matches \"abc\" \"a.c\")" :expected "true"}
+  {:suite "str" :expr "(.matches \"abcd\" \"a.c\")" :expected "false"}
+  {:suite "str" :expr "(.replaceAll \"a_b_c\" \"_\" \"-\")" :expected "a-b-c"}
+  {:suite "str" :expr "(.replaceFirst \"a_b_c\" \"_\" \"-\")" :expected "a-b_c"}
+  {:suite "str" :expr "(vec (.split \"a,b,c\" \",\"))" :expected "[a b c]"}
+  {:suite "str" :expr "(.frobnicate \"abc\")" :expected :throws}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/upper-case \"abc\"))" :expected "ABC"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/lower-case \"ABC\"))" :expected "abc"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/capitalize \"hello\"))" :expected "Hello"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/trim \"  x  \"))" :expected "x"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (= \"x  \" (s/triml \"  x  \")))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (= \"  x\" (s/trimr \"  x  \")))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/blank? \"\"))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/blank? \"  \"))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/blank? \"x\"))" :expected "false"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/blank? nil))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/includes? \"abcd\" \"bc\"))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/includes? \"abcd\" \"zz\"))" :expected "false"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/starts-with? \"abc\" \"ab\"))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/starts-with? \"abc\" \"bc\"))" :expected "false"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/ends-with? \"abc\" \"bc\"))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/join [\"a\" \"b\" \"c\"]))" :expected "abc"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/join \",\" [\"a\" \"b\" \"c\"]))" :expected "a,b,c"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/join \"-\" [1 2 3]))" :expected "1-2-3"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/split \"a,b,c\" \",\"))" :expected "[a b c]"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/split \"a1b2c\" #\"[0-9]\"))" :expected "[a b c]"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/split-lines \"a\\nb\\nc\"))" :expected "[a b c]"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/replace \"a_b_c\" \"_\" \"-\"))" :expected "a-b-c"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/replace \"a1b2\" #\"[0-9]\" \"\"))" :expected "ab"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/replace-first \"a_b_c\" \"_\" \"-\"))" :expected "a-b_c"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/reverse \"abc\"))" :expected "cba"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/index-of \"abc\" \"b\"))" :expected "1"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (nil? (s/index-of \"abc\" \"z\")))" :expected "true"}
+  {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/trim-newline \"abc\\n\\n\"))" :expected "abc"}
+  {:suite "type" :expr "(type 5)" :expected ":number"}
+  {:suite "type" :expr "(type 5.0)" :expected ":number"}
+  {:suite "type" :expr "(type (/ 10 2))" :expected ":number"}
+  {:suite "type" :expr "(type \"s\")" :expected ":string"}
+  {:suite "type" :expr "(type :k)" :expected ":keyword"}
+  {:suite "type" :expr "(type 'x)" :expected ":symbol"}
+  {:suite "type" :expr "(type true)" :expected ":boolean"}
+  {:suite "type" :expr "(type false)" :expected ":boolean"}
+  {:suite "type" :expr "(type nil)" :expected ""}
+  {:suite "type" :expr "(type \\a)" :expected ":char"}
+  {:suite "type" :expr "(type [1 2])" :expected ":vector"}
+  {:suite "type" :expr "(type [])" :expected ":vector"}
+  {:suite "type" :expr "(type {:a 1})" :expected ":map"}
+  {:suite "type" :expr "(type #{1})" :expected ":set"}
+  {:suite "type" :expr "(type '(1 2))" :expected ":seq"}
+  {:suite "type" :expr "(type '())" :expected ":seq"}
+  {:suite "type" :expr "(type (first {:a 1}))" :expected ":vector"}
+  {:suite "type" :expr "(type (map inc [1 2]))" :expected ":seq"}
+  {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected ":seq"}
+  {:suite "type" :expr "(type (lazy-seq (cons 1 nil)))" :expected ":seq"}
+  {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected ":seq"}
+  {:suite "type" :expr "(type inc)" :expected ":fn"}
+  {:suite "type" :expr "(type (sorted-map :a 1))" :expected ":map"}
+  {:suite "type" :expr "(type (sorted-set 1))" :expected ":jolt/sorted-set"}
+  {:suite "type" :expr "(type (with-meta [1] {:type :custom}))" :expected ":custom"}
+  {:suite "type" :expr "(type (with-meta {:a 1} {:type :rec}))" :expected ":rec"}
+  {:suite "type" :expr "(type (with-meta [1] {:other 9}))" :expected ":vector"}
+  {:suite "type" :expr "(do (defrecord TyR [a]) (type (->TyR 1)))" :expected "user.TyR"}
+  {:suite "type" :expr "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))" :expected "false"}
+  {:suite "type" :expr "(do (defrecord TyR [a]) (symbol? (type (->TyR 1))))" :expected "false"}
+  {:suite "type" :expr "(type (atom 1))" :expected ":jolt/atom"}
+  {:suite "type" :expr "(type (volatile! 1))" :expected ":jolt/volatile"}
+  {:suite "type" :expr "(type #\"re\")" :expected ":jolt/regex"}
+  {:suite "type" :expr "(do (def vx 1) (type (var vx)))" :expected ":jolt/var"}
+  {:suite "type" :expr "(type (transient []))" :expected ":jolt/transient"}
+  {:suite "type" :expr "(type (random-uuid))" :expected ":jolt/uuid"}
+  {:suite "type" :expr "(type (ex-info \"x\" {}))" :expected ":jolt/ex-info"}
+  {:suite "var_meta" :expr "(do (def ^:private pv 1) (:private (meta (var pv))))" :expected "true"}
+  {:suite "var_meta" :expr "(do (def ^String tv \"a\") (:tag (meta (var tv))))" :expected "java.lang.String"}
+  {:suite "var_meta" :expr "(do (def dv2 \"hi\" 1) (:doc (meta (var dv2))))" :expected "hi"}
+  {:suite "var_meta" :expr "(do (def mv 1) (:name (meta (var mv))))" :expected "mv"}
+  {:suite "var_meta" :expr "(do (def nv 1) (:ns (meta (var nv))))" :expected "user"}
+  {:suite "var_meta" :expr "(do (def pl 1) (nil? (:private (meta (var pl)))))" :expected "true"}
+  {:suite "walk" :expr "(list? (list 1 2))" :expected "true"}
+  {:suite "walk" :expr "(list? (list 1))" :expected "true"}
+  {:suite "walk" :expr "(list? '(1 2))" :expected "true"}
+  {:suite "walk" :expr "(list? '())" :expected "true"}
+  {:suite "walk" :expr "(list? (list))" :expected "true"}
+  {:suite "walk" :expr "(list? (cons 1 nil))" :expected "true"}
+  {:suite "walk" :expr "(list? (cons 1 [2]))" :expected "true"}
+  {:suite "walk" :expr "(list? (cons 1 '(2)))" :expected "true"}
+  {:suite "walk" :expr "(list? (conj (list 1) 0))" :expected "true"}
+  {:suite "walk" :expr "(list? (conj '() 1))" :expected "true"}
+  {:suite "walk" :expr "(list? (reverse [1 2]))" :expected "true"}
+  {:suite "walk" :expr "(list? (reverse '(1 2)))" :expected "true"}
+  {:suite "walk" :expr "(list? [1 2])" :expected "false"}
+  {:suite "walk" :expr "(list? {:a 1})" :expected "false"}
+  {:suite "walk" :expr "(list? (map inc [1 2]))" :expected "false"}
+  {:suite "walk" :expr "(list? (filter odd? [1 2 3]))" :expected "false"}
+  {:suite "walk" :expr "(list? (seq [1 2]))" :expected "false"}
+  {:suite "walk" :expr "(list? (rest (list 1 2)))" :expected "false"}
+  {:suite "walk" :expr "(list? (next (list 1 2)))" :expected "false"}
+  {:suite "walk" :expr "(list? (take 2 (list 1 2 3)))" :expected "false"}
+  {:suite "walk" :expr "(list? (concat '(1) '(2)))" :expected "false"}
+  {:suite "walk" :expr "(list? (rest [1 2]))" :expected "false"}
+  {:suite "walk" :expr "(list? 5)" :expected "false"}
+  {:suite "walk" :expr "(list? nil)" :expected "false"}
+  {:suite "walk" :expr "(vector? (first {:a 1}))" :expected "true"}
+  {:suite "walk" :expr "(vector? (first (seq {:a 1})))" :expected "true"}
+  {:suite "walk" :expr "(map-entry? (first {:a 1}))" :expected "true"}
+  {:suite "walk" :expr "(= (first {:a 1}) [:a 1])" :expected "true"}
+  {:suite "walk" :expr "(vector? [1 2])" :expected "true"}
+  {:suite "walk" :expr "(vector? (rest [1 2 3]))" :expected "false"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk (fn [x] (if (number? x) (inc x) x)) {:a 1}))" :expected "{:a 2}"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/keywordize-keys {\"a\" 1}))" :expected "{:a 1}"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (= {\"a\" 1} (w/stringify-keys {:a 1})))" :expected "true"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {'x 2} '(+ x x)))" :expected "(+ 2 2)"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk (fn [n] (if (symbol? n) :a n)) '(x y)))" :expected "(:a :a)"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/prewalk-replace {'* '* 'y 3} '(* y y)))" :expected "(* 3 3)"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {:a 1 :b 2} '(:a [:b :a])))" :expected "(1 [2 1])"}
+  {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {1 :one} [1 2 1]))" :expected "[:one 2 :one]"}
+  {:suite "walk" :expr "(do (require (quote [clojure.template :as t])) (t/apply-template '[x y] '(+ x y) '(1 2)))" :expected "(+ 1 2)"}
+  {:suite "shadowing" :expr "(let [if (fn [a b c] :L)] (if true 1 2))" :expected "1"}
+  {:suite "shadowing" :expr "(let [quote (fn [_] :L)] (quote x))" :expected "x"}
+  {:suite "shadowing" :expr "(let [if 5] if)" :expected "5"}
+  {:suite "shadowing" :expr "((fn [if] (+ if 1)) 7)" :expected "8"}
+  {:suite "shadowing" :expr "(let [when (fn [a b] :local)] (when 1 2))" :expected ":local"}
+  {:suite "macroexpand" :expr "(do (when true (defmacro m6 [x] `(* ~x 2))) (m6 3))" :expected "6"}
+  {:suite "macroexpand" :expr "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 10))" :expected "true"}
+  {:suite "deftype-mutable" :expr "(do (defprotocol IB (gv [_]) (sv [_ v])) (deftype B [^:unsynchronized-mutable val] IB (gv [_] val) (sv [_ v] (set! val v))) (let [b (->B 1)] (sv b 42) (gv b)))" :expected "42"}
+  {:suite "deftype-mutable" :expr "(do (defprotocol IC (bump [_]) (cur [_])) (deftype C [^:unsynchronized-mutable n] IC (bump [this] (set! n (inc n)) n) (cur [_] n)) (let [c (->C 5)] (bump c) (bump c) (bump c) (cur c)))" :expected "8"}
+  {:suite "deftype-mutable" :expr "(do (defprotocol IH (g [_]) (s [_ v])) (deftype H [^:volatile-mutable st] IH (g [_] st) (s [this v] (set! (.-st this) v))) (let [h (->H :old)] (s h :new) (g h)))" :expected ":new"}
+]

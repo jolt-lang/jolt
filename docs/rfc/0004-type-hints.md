@@ -11,26 +11,19 @@ measured effect, so later work does not relitigate it.
 ## Background: why the lookup carries a guard
 
 A Jolt map value has several runtime representations (see RFC on collections and
-`src/jolt/core.janet`): a Janet struct for a small all-scalar-key literal map, a
-persistent hash map (a table tagged `:jolt/type :jolt/phm`) when a key is a
-collection or a value is nil, plus sorted maps, transients, and record/deftype
-instances. A record instance is a Janet table tagged `:jolt/deftype` but, like a
-struct, it carries no `:jolt/type`, so a raw Janet `(get inst :field)` reads its
-fields directly.
+`host/chez/collections.ss`): a persistent hash map (a bitmap HAMT) for the
+general case, plus sorted maps, transients, and record/deftype instances. A
+record instance is a Chez record (`jrec`) whose fields are read directly off the
+record's storage, while a HAMT lookup runs the full `jolt=`/`jolt-hash`-keyed
+collection path.
 
-A constant-keyword lookup `(:k m)` compiles to a guarded form:
-
-```janet
-(if (get m :jolt/type) (core-get m k) (get m k))
-```
-
-The guard is one opcode. A non-nil `:jolt/type` routes phm/sorted/transient/
-lazy-seq values to `core-get`'s full semantics; everything else (structs,
-records, nil, scalars) takes the bare Janet `get`, which matches `core-get` for
-keyword keys. The guard is correct and cheap, but on a struct it is a second
-`get`: profiling the ray tracer (a naive all-maps program) found keyword lookups
-are about half of a render, and the guard is the only avoidable part of each
-one. A bare get is roughly 20ns where the guarded form is roughly 36ns.
+A constant-keyword lookup `(:k m)` compiles to a guarded form: it inspects the
+subject's representation and routes a HAMT/sorted/transient/lazy-seq value to the
+full `jolt-get` semantics, while a record/raw-get-safe value takes the direct
+field read, which matches `jolt-get` for keyword keys. The guard is correct and
+cheap, but on a raw-get-safe value it is wasted work: profiling the ray tracer (a
+naive all-maps program) found keyword lookups are about half of a render, and the
+guard is the only avoidable part of each one.
 
 Dropping the guard is only safe when the subject is known to be a plain
 struct/record rather than a tagged collection. Jolt does not infer that
@@ -59,27 +52,27 @@ optimization.
 ## How it flows
 
 The reader already keeps `^hint` metadata on the binding symbol and is otherwise
-transparent (`reader.janet`, `meta-form->map`). The change threads that fact to
-the lookup site:
+transparent (`host/chez/reader.ss`). The change threads that fact to the lookup
+site:
 
 1. The analyzer (`jolt-core/jolt/analyzer.clj`) records a `:struct` hint per
    local in its env when a param or `let` binding carries `^:struct` or a
    record-type tag, and attaches `:hint :struct` to that local's `:local` IR
-   node. Resolving a record-type tag uses a new host contract function
-   `record-type?` (`src/jolt/host_iface.janet`), which checks for the `->Name`
-   constructor.
-2. The back end (`emit-kw-lookup` in `src/jolt/backend.janet`) emits the bare get
+   node. Resolving a record-type tag uses the host contract function
+   `record-type?` (`jolt.host`, backed by `host/chez/host-contract.ss`), which
+   checks for the `->Name` constructor.
+2. The back end (`jolt-core/jolt/backend_scheme.clj`) emits the direct field read
    when the lookup subject is a `:local` carrying the hint, and the guarded form
-   otherwise. The unhinted path is byte-identical to before.
+   otherwise. The unhinted path is identical to before.
 3. The inline pass (`jolt-core/jolt/passes.clj`) propagates the hint: when it
    binds a non-trivial call argument to a fresh local, it carries the called
    function's parameter hint onto that local, so lookups inside the spliced body
-   keep the bare path. Without this, inlining a hinted function would erase the
+   keep the direct path. Without this, inlining a hinted function would erase the
    benefit, because the hinted parameter is replaced by an unhinted temporary.
 
 The same machinery covers both `(:k m)` and `(get m :k [default])` when the key
 is a constant keyword. A `get` with a variable, numeric, or string key falls
-through to `core-get` unchanged.
+through to `jolt-get` unchanged.
 
 ## Record hints across namespaces, and as inference seeds
 
@@ -98,15 +91,14 @@ the function where the hot reads actually happen.
 
 **It resolves across namespaces.** A hint may name a record defined in another
 namespace, in either spelling — `^Vec3` where the type is `:refer`-ed, or
-`^v/Vec3` where the namespace is `:as`-aliased. Resolution (`record-ctor-key` in
-`src/jolt/host_iface.janet`, backed by `record-hint-ctor-key` in
-`src/jolt/evaluator.janet`) runs against the *compile* namespace and maps the
-type to its home constructor key through a constructor-value index — keyed by the
-constructor value, not a var's namespace, so a `:refer`-interned var (whose
-namespace is the referring one) still resolves home. The reader keeps a tag's
-namespace qualifier (`^v/Vec3` → `"v/Vec3"`, not `"Vec3"`) so the aliased
-spelling has something to resolve. Both `defrecord` field hints and function
-parameter hints use this resolution.
+`^v/Vec3` where the namespace is `:as`-aliased. Resolution (`record-ctor-key`,
+a `jolt.host` contract function backed by `host/chez/host-contract.ss`) runs
+against the *compile* namespace and maps the type to its home constructor key
+through a constructor-value index — keyed by the constructor value, not a var's
+namespace, so a `:refer`-interned var (whose namespace is the referring one)
+still resolves home. The reader keeps a tag's namespace qualifier (`^v/Vec3` →
+`"v/Vec3"`, not `"Vec3"`) so the aliased spelling has something to resolve. Both
+`defrecord` field hints and function parameter hints use this resolution.
 
 ## Soundness and the checked mode
 
@@ -120,8 +112,8 @@ To make a lie visible without taxing the fast path, `JOLT_CHECK_HINTS=1` keeps
 the guard but throws on the tagged arm with a message naming the local and key:
 
 ```
-type hint violated on `m`: (:a m) — value carries :jolt/type
-(a phm/sorted/transient/lazy-seq), not the plain struct/record the
+type hint violated on `m`: (:a m) — value is a
+phm/sorted/transient/lazy-seq, not the plain struct/record the
 ^:struct/^Record hint asserts
 ```
 
@@ -134,7 +126,7 @@ off). The flag is part of the image-cache fingerprint.
 Type hints parse in every position Clojure accepts them and are inert except for
 the optimization above. This matches Clojure's "parse and otherwise do nothing"
 model, with the difference that Clojure additionally uses hints to avoid
-reflection and select primitive arithmetic, which do not apply to a Janet host.
+reflection and select primitive arithmetic, which do not apply to the Chez host.
 
 ## Measured effect
 

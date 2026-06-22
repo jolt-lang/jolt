@@ -1,0 +1,54 @@
+{:doc
+ "Rows of test/chez/corpus.edn whose :expected differs from reference JVM Clojure. The corpus is JVM-sourced (regen-corpus.clj), so this list is only the rows whose JVM value is an opaque host object that cannot round-trip to readable source — Java arrays, transients, atoms, beans, proxies, and chunks print as #object[..@addr] with a per-run identity — plus the (fn* foo) strictness case and a few racy concurrency cases (:flaky). For those the corpus keeps jolt's value. certify.clj gates on NEW (unlisted) divergences and STALE entries. Keyed by [suite label].",
+ :legend
+ {:numeric-model
+  "jolt has a numeric tower (exact integer / Ratio / double); no BigDecimal",
+  :concurrency-model
+  "Janet isolated-heap snapshot futures/agents/pmap; atoms snapshot, not shared",
+  :host-model
+  "no JVM host: classes->name strings, type->symbol, *in* is a map, inline-impl extenders, duck-typed with-open close",
+  :reader-model
+  "jolt reader features (:jolt) + syntax-quote literal collapse (spec 2.4 S25); map source-order preserved",
+  :printer-model
+  "jolt printer renders transients/atoms/print-method overrides differently from JVM #object",
+  :strictness
+  "jolt is intentionally stricter: throws on odd assoc! args / defn with no param vector",
+  :impl-detail
+  "representation detail: syntax-quote yields a list? (JVM yields a Cons)"},
+ :entries
+ [{:suite "forms / fn",
+   :label "no param vector",
+   :category :strictness}
+  ;; racy: agent send / future-cancel observe state that the action thread may or
+  ;; may not have reached yet, so the JVM value is nondeterministic run-to-run.
+  {:suite "state / agents (synchronous shim)", :label "send applies",
+   :category :concurrency-model, :flaky true}
+  {:suite "state / agents (synchronous shim)", :label "send-off applies",
+   :category :concurrency-model, :flaky true}
+  {:suite "clojure.core / futures — predicates",
+   :label "cancel an in-flight future returns true",
+   :category :concurrency-model, :flaky true}
+  {:suite "clojure.core / futures — predicates",
+   :label "future-cancelled? after cancel",
+   :category :concurrency-model, :flaky true}
+  {:suite "io / cold tagged types via print-method",
+   :label "atom override fires nested",
+   :category :reader-model}
+  {:suite "io / cold tagged types via print-method",
+   :label "transient map",
+   :category :printer-model}
+  {:suite "io / cold tagged types via print-method",
+   :label "transient vector",
+   :category :printer-model}
+  {:suite "metadata / type hints",
+   :label "symbol hint -> :tag",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "bean is the map",
+   :category :host-model}
+  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
+   :label "proxy resolves nil",
+   :category :host-model}
+  {:suite "untested / chunk family (eager equivalents) + cat",
+   :label "chunk round-trip",
+   :category :host-model}]}

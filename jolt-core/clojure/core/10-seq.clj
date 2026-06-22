@@ -1,5 +1,5 @@
 ;; clojure.core — seq tier. Pure-Clojure leaf sequence fns on top of the kernel
-;; tier (00-kernel) and the Janet seed. Loaded after the kernel tier; in compile
+;; tier (00-kernel) and the host primitives. Loaded after the kernel tier; in compile
 ;; mode these self-host through the now-built analyzer (interpreted otherwise).
 ;;
 ;; Migration rule for adding fns here: the fn must (1) NOT be in

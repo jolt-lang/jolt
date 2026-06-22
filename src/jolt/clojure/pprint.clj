@@ -16,10 +16,15 @@
 (def ^:dynamic *print-pprint-dispatch* simple-dispatch)
 
 (defn pprint
-  "Print object readably followed by a newline. Writes to *out* (or the given
-  writer). Not a pretty-printer on jolt — no column-aware layout."
+  "Print object readably followed by a newline. Not a pretty-printer on jolt —
+  no column-aware layout. jolt routes all printing through the host output seam
+  (with-out-str captures it), and *out* is not a bindable var, so an explicit
+  writer arg is accepted for API compatibility but not honored — output goes to
+  the current output. (The old `(binding [*out* writer] ...)` never redirected
+  anything either, and made the defn fall back to the interpreter; dropping it
+  lets pprint compile cleanly, which the no-fallback Chez back end requires.)"
   ([object] (prn object))
-  ([object writer] (binding [*out* writer] (prn object))))
+  ([object _writer] (prn object)))
 
 (defmacro with-pprint-dispatch
   "Evaluate body with the given pprint dispatch selected. On jolt the dispatch is

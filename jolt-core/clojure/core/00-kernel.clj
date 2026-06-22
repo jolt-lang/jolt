@@ -1,4 +1,4 @@
-;; clojure.core — kernel tier (stage just above the Janet seed).
+;; clojure.core — kernel tier (stage just above the host primitives).
 ;;
 ;; These are the structural fns the self-hosted compiler itself uses
 ;; (jolt.analyzer): second/peek/subvec/mapv/update. Because the compiler must be
@@ -6,12 +6,11 @@
 ;; before it is built. So this tier is loaded FIRST and, in compile mode, is
 ;; bootstrap-compiled directly into clojure.core (not routed through the
 ;; self-hosted pipeline, which would need these to already exist — the
-;; circularity that previously forced `second` to stay in Janet). With this tier
-;; in place the analyzer is built against the Clojure definitions and the Janet
-;; primitives are gone.
+;; circularity that previously forced `second` to stay a host primitive). With this tier
+;; in place the analyzer is built against the Clojure definitions.
 ;;
 ;; Constraint: depend only on core-renames primitives (first/next/nth/count/conj/
-;; vec/map/apply/assoc/get/…, all hardwired to the Janet seed) and on each other.
+;; vec/map/apply/assoc/get/…, all hardwired to host primitives) and on each other.
 
 (defn second [coll] (first (next coll)))
 
@@ -28,12 +27,12 @@
   ([v start end]
    (when (not (vector? v)) (throw (str "subvec requires a vector")))
    ;; Clojure coerces indices with (int ...): NaN -> 0, floats/ratios truncate
-   ;; toward zero ((quot x 1)); non-numbers throw. Only then range-check.
+   ;; toward zero; non-numbers throw. Only then range-check.
    (let [coerce (fn [x]
                   (cond
                     (not (number? x)) (throw (str "subvec index must be a number"))
                     (not= x x) 0
-                    :else (quot x 1)))
+                    :else (long x)))
          s (coerce start)
          e (coerce end)]
      (when (or (< s 0) (< e s) (< (count v) e))

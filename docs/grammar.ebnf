@@ -50,11 +50,12 @@ collection      = list | vector | map ;
 nil             = "nil" ;
 boolean         = "true" | "false" ;
 
-(* Numbers. Jolt accepts Clojure's numeric literal syntaxes, but — since Jolt
-   numbers are Janet ints/doubles — it has no distinct bignum, ratio or
-   BigDecimal types: the BigInt suffix N and BigDecimal suffix M are read as the
-   plain number, a ratio a/b is read as its double quotient, and radixed
-   integers are computed by base. The symbolic floats ##Inf/##-Inf/##NaN are
+(* Numbers. Jolt carries a real numeric tower (JVM parity): an integer literal
+   reads as an exact integer (arbitrary precision), a ratio a/b as an exact
+   Ratio, a decimal/exponent literal as a double. The BigDecimal suffix M reads
+   as a real BigDecimal (unscaled x 10^-scale) — 1.5M, 0.0M, 3M; class is
+   java.math.BigDecimal. The BigInt suffix N reads as an exact integer. Radixed
+   integers are computed by base; the symbolic floats ##Inf/##-Inf/##NaN are
    also read. (No octal-with-leading-0 literal.) *)
 number          = symbolic-value
                 | [ sign ] , ( radix-int | ratio | hex-int | decimal ) ;
@@ -62,10 +63,10 @@ sign            = "+" | "-" ;
 integer         = digit , { digit } ;
 hex-int         = "0" , ( "x" | "X" ) , hex-digit , { hex-digit } , [ "N" ] ;
 radix-int       = integer , ( "r" | "R" ) , alnum , { alnum } ; (* base 2..36: 2r1010, 16rFF, 36rZ *)
-ratio           = integer , "/" , integer ;                     (* read as a double quotient *)
+ratio           = integer , "/" , integer ;                     (* exact Ratio *)
 decimal         = integer , [ "." , digit , { digit } ] , [ exponent ] , [ num-suffix ] ;
 exponent        = ( "e" | "E" ) , [ sign ] , digit , { digit } ;
-num-suffix      = "N" | "M" ;          (* BigInt / BigDecimal in Clojure; plain number in Jolt *)
+num-suffix      = "N" | "M" ;          (* N = exact integer (BigInt); M = BigDecimal *)
 symbolic-value  = "##Inf" | "##-Inf" | "##NaN" ;
 digit           = "0".."9" ;
 hex-digit       = digit | "a".."f" | "A".."F" ;

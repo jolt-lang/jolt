@@ -43,7 +43,10 @@ exponent := [eE] ['+'|'-'] digits
 - S5. Trailing `N` (BigInt) and `M` (BigDecimal) suffixes are part of the
   grammar; their value semantics are the §4 numeric-tower question.
   Implementations without those towers SHOULD read them as the nearest
-  numeric type and MUST document the choice.
+  numeric type and MUST document the choice. The Chez host carries the full
+  tower: `N` reads as an exact integer (arbitrary precision) and `M` as a real
+  BigDecimal — `1.5M`, `0.0M`, `3M` — with value equality ignoring scale
+  (`1.0M = 1.00M`), `(class 1.5M)` ⇒ `java.math.BigDecimal`, and `decimal?` true.
 
 ### Symbols and keywords
 

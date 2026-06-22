@@ -17,7 +17,7 @@
 ;; and the methods become functions — the algorithm is identical.
 ;;
 ;; A sorted-SET stores its elements as keys with a nil value; its ops project the
-;; key. ALL the semantics live here in Clojure; the Janet seed keeps only its
+;; key. ALL the semantics live here in Clojure; the host keeps only its
 ;; dispatch branches (conj/assoc/get/seq/count/…), each a one-line call through
 ;; the value's own :ops table, so the ops travel WITH the value (correct across
 ;; contexts, forks, and AOT images). The wrapper is minted/read through the host
@@ -221,7 +221,9 @@
   (tree-collect (sfield sc :tree) proj []))
 
 ;; --- sorted-map ops ---------------------------------------------------------
-(defn- map-entry [t] [(nd-key t) (nd-val t)])
+;; a real map-entry (map-entry? true), so key/val/seq destructuring work like a
+;; regular map's entries.
+(defn- map-entry [t] (jolt.host/map-entry (nd-key t) (nd-val t)))
 
 (defn- sm-get [sm k not-found]
   (let [n (tree-lookup (sfield sm :tree) (the-cmp sm) k)]
@@ -286,7 +288,7 @@
 
 (defn- ss-disj-many [ss xs] (reduce ss-disj-1 ss xs))
 
-;; --- the ops tables the Janet seed dispatches through ------------------------
+;; --- the ops tables the host dispatches through ------------------------
 
 (def ^:private sm-ops
   {:count    (fn [sm] (sfield sm :cnt))

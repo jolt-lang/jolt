@@ -9,91 +9,57 @@ Scope, decided up front:
 - **pure `clj`/`cljc`** — anything needing the JVM won't load or run; expected.
 - **no classpath abstraction** — `require` just needs to find a dep's namespaces;
   "the classpath" is an ordered list of source directories.
-- **piggyback on jpm** — reuse jpm's git fetch + cache; don't write a package
-  manager.
+- **own resolver, own reader** — `deps.edn` is read by jolt's own reader, and git
+  fetch/cache is a thin shell-out to `git`; no external package manager.
 - **deps-agnostic runtime core** — resolution is a CLI front-end concern, not a
-  runtime one. The `jolt` *runtime* knows nothing about deps.edn; it only reads
-  source roots from `JOLT_PATH`. The `jolt` *CLI* resolves a deps.edn into that
-  env var before running, in a module (`deps.janet`) that loads `jpm` lazily.
-  (This was a separate `jolt-deps` binary originally; it was folded into `jolt`
-  for a single-binary UX — the code boundary stayed, only the executable merged.
-  A back-compat `jolt-deps` shim still ships and forwards to `jolt`.)
+  runtime one. The runtime knows nothing about `deps.edn`; it only consumes a
+  list of source roots. The CLI resolves a `deps.edn` into those roots before
+  running.
 
-## How jpm handles dependencies
+## How resolution works
 
-jpm's package code (`jpm/pm.janet`) splits into a fetch half and a build half,
-and we use only the first:
+`jolt.deps` (`jolt-core/jolt/deps.clj`) reads `deps.edn` (jolt's own reader
+parses the EDN), then walks `:deps`:
 
-- **`resolve-bundle`** normalizes a dep spec to `{:url :tag :type :shallow}`,
-  accepting `:url`/`:repo` + `:tag`/`:sha`/`:commit`/`:ref`. A deps.edn
-  `{:git/url … :git/sha …}` maps straight onto it.
-- **`download-bundle url :git tag shallow`** clones into a content-addressed cache
-  (`<modpath>/.cache/git_<tag>_<sanitized-url>`) and returns the path —
-  `git init` + `remote add` + fetch + reset, plus submodules. No build step.
-- **`bundle-install`** is the half we skip: it then runs `project.janet` build
-  rules, which a Clojure lib doesn't have. It's cleanly separable from the clone.
-
-So jpm gives us git resolution and a cache for free; calling `download-bundle`
-needs `jpm/config/load-default` first (it sets `gitpath` and the cache dyns).
-
-## How it works
-
-`src/jolt/deps.janet` reads `deps.edn` (Janet parses it directly — EDN and Janet
-syntax overlap for the `:deps`/`:paths` subset), then walks `:deps`:
-
-- `:git/url` (+ `:git/sha` or `:git/tag`) → `resolve-bundle` + `download-bundle`
-  into `jpm_tree/.cache`;
+- `:git/url` + `:git/sha` (+ optional `:deps/root`) → clone the sha into the git
+  cache and contribute the checkout (or its `:deps/root` subdir);
 - `:local/root` → the path as-is;
-- `:mvn/*` and anything else → ignored.
+- `:mvn/*` → skipped with a warning;
+- anything else → ignored.
+
+git resolution shells out to `git` through `jolt.host/sh` — `git init` + remote
+add + fetch + reset at the requested sha. Clones land in a global, sha-immutable
+cache (`$JOLT_GITLIBS`, else `~/.jolt/gitlibs`) shared across projects, the
+`tools.gitlibs` `~/.gitlibs` model.
 
 Each resolved dependency contributes its own `:paths` (default `["src"]`) as
 source roots; the walk is **breadth-first** so every top-level coordinate
 registers before any transitive one — a top-level pin always wins, matching
-tools.deps, and a coordinate conflict warns on stderr naming both. The result
-is a de-duplicated, ordered list of directories. `resolve-deps-cached` memoizes
-that list in the project-local `.cpcache/jolt-deps.jdn`, keyed on a hash of the
-project `deps.edn` + the user-level `deps.edn` + the selected aliases. jpm is
-loaded lazily (`require`, not `import`) so it's pulled in only when resolving —
-never embedded in a built binary.
+tools.deps. The result is a de-duplicated, ordered list of directories.
 
-Three tools.deps features are mirrored in reduced form. **Aliases**: `:aliases`
+Two tools.deps features are mirrored in reduced form. **Aliases**: `:aliases`
 entries supply `:extra-paths`/`:extra-deps` (accumulate across the aliases
 selected with `-A:a:b`) and `:main-opts` (last-wins, run with `-M:alias`).
-**User config**: a `deps.edn` under `$JOLT_CONFIG` (else
-`$XDG_CONFIG_HOME/jolt`, else `~/.jolt`) merges beneath the project file,
-per key, project wins. **Tasks**: the honest subset of babashka's — a string
-task is a shell command, a map task is `{:main-opts […] :doc "…"}`; bare
-Clojure expressions aren't supported because the reader hands back parsed
-data, and round-tripping it to source isn't worth the fragility.
+**Tasks**: the honest subset of babashka's — a string task is a shell command, a
+map task is `{:main-opts […]}`; bare Clojure expressions aren't a separate task
+form.
 
-Clones default to a global sha-immutable cache (`$JOLT_GITLIBS`, else
-`<config-dir>/gitlibs`) shared across projects, the `tools.gitlibs`
-`~/.gitlibs` model; per-project trees remain available by passing `tree`
-explicitly.
+## How the CLI ties it together
 
-The loader (`evaluator.janet/find-ns-file`) resolves a namespace by searching the
-context's `:source-paths` in order (the stdlib `src/jolt` first), trying `<ns>.clj`
-then `<ns>.cljc`. Extra roots come from `JOLT_PATH` or `init`'s `:paths` option.
+`jolt.main` (`jolt-core/jolt/main.clj`) is the CLI dispatch. Driven by `cli.ss`,
+it resolves the project (`jolt.deps/resolve-project`), prepends the resolved
+roots, and de-sugars the argv into a run:
 
-The `jolt` CLI (`src/jolt/main.janet`, `resolve-deps-argv`) ties it together: on
-a deps subcommand — or any runnable command in a directory that has a `deps.edn`
-— it resolves the roots, sets `JOLT_PATH`/`JOLT_APP_PATHS`, and de-sugars the
-argv into a plain runtime command (`-M:alias` → the alias `:main-opts`, `run
-FILE` → `FILE`, …) that the normal dispatch then runs. `main.janet` imports
-`deps.janet`, so the resolver ships in the `jolt` binary; but `deps.janet` loads
-`jpm` lazily, and the runtime modules (`api`/`backend`/RT) never import it, so an
-app baked from its own `jolt/api` entry doesn't link it. The runtime's only
-dependency interface remains that one env var.
+- `run -m NS args` → load `NS`, call its `-main`;
+- `run FILE` → load the file;
+- `-M:alias` → run the alias's `:main-opts`;
+- `-A:alias` → add the alias's paths/deps, then run the rest;
+- `repl` → a line REPL;
+- `path` → print the resolved roots;
+- `<task>` → run a `deps.edn` `:tasks` entry.
 
-`jolt uberscript` bundles a namespace and everything it requires into one
-standalone `.clj`. It requires the entry namespace and uses the order in which
-the loader finishes loading files — a dependency finishes before the file that
-required it, so the order is topological — then concatenates that source. The
-baked-in stdlib is excluded (it's part of the runtime, not bundled).
-
-Gotcha worth remembering: the `jolt` CLI's context is built into its image at
-build time, so `JOLT_PATH` is applied at runtime in `main`, not in `init` (whose
-env read would be frozen at build).
+The resolver lives in the overlay alongside the runtime, but the runtime's only
+dependency interface is the list of source roots it's handed.
 
 ## Limitations
 
@@ -105,35 +71,9 @@ env read would be frozen at build).
 
 ## Conformance
 
-`test/integration/deps-conformance-test.janet` resolves a few real pure-`cljc`
-git libraries and reports whether their namespaces load and a sample call works.
-It's network-gated behind `JOLT_CONFORMANCE=1` so CI stays offline. Use it to
-check a library against the current interpreter, and to drive fixes for whatever
-gap a failure points at (the same loop as the clojure-test-suite battery). A
-library fails when it relies on something Jolt doesn't provide — JVM interop, or
-a regex feature like Unicode property classes (`\p{…}`).
-
-## Not yet
-
-- **Compiling deps into a binary image.** `uberscript` already produces a
-  standalone `.clj`; baking a project's dependencies directly into a custom
-  executable image is a heavier variant that isn't implemented.
-
-## Janet dependencies: `:jpm/module`
-
-A jolt project can depend on janet libraries. jpm owns their installation;
-`deps.edn` declares the requirement and `jolt` verifies it at resolve time:
-
-```clojure
-:deps {janet/spork-http {:jpm/module "spork/http"
-                         :jpm/install "spork"}}
-```
-
-- `:jpm/module` — the janet module path that must be importable.
-- `:jpm/install` (optional) — the jpm package to install when it isn't;
-  `jolt` runs `jpm install <name>` once, then re-checks. Without it the resolve
-  fails with the install hint.
-
-A `:jpm/module` dep contributes no source roots. At runtime the `janet.*`
-interop bridge autoloads the module on first reference
-(`janet.spork.http/server`, …), so nothing else is needed.
+The known-working libraries (see [libraries.md](libraries.md)) and the
+[examples](https://github.com/jolt-lang/examples) exercise real pure-`cljc` git
+libraries end to end — resolving them from git, loading their namespaces, and
+running sample calls. A library fails when it relies on something Jolt doesn't
+provide — JVM interop, or a regex feature like Unicode property classes
+(`\p{…}`).

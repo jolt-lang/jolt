@@ -5,9 +5,9 @@
 ;; IMPORTANT — only macros NOT used by the self-hosted compiler (jolt-core/jolt/*)
 ;; or by the earlier overlay tiers belong here; those (and/or/when/when-not/
 ;; when-let/cond/case/doseq/declare/cond->/->) must stay available before this
-;; tier loads, so they remain in Janet for now. Everything here is user-facing.
+;; tier loads, so they remain host primitives for now. Everything here is user-facing.
 ;;
-;; Migration: remove the Janet core-X macro fn AND its core-macro-names entry when
+;; Migration: remove the host core-X macro fn AND its core-macro-names entry when
 ;; moving a macro here (defmacro installs the :macro flag itself).
 
 (defmacro comment [& body] nil)
@@ -122,8 +122,11 @@
   `(bound-fn* (fn ~@fntail)))
 
 (defmacro defonce [name expr]
+  ;; only def when the var has no root value. In a top-level (do ...) the name is
+  ;; already interned (an unbound cell) by the time this runs, so check bound? —
+  ;; var-get would throw on the unbound cell.
   `(let [v# (resolve (quote ~name))]
-     (if (and v# (some? (var-get v#)))
+     (if (and v# (bound? v#))
        v#
        (def ~name ~expr))))
 
@@ -222,10 +225,10 @@
 
 ;; Build the fn* form via a template (a reader-list array): cons/list in a macro
 ;; body produce a plist the evaluator can't call as a form.
-(defmacro letfn [fnspecs & body]
-  (let [binds (reduce (fn [acc spec] (conj (conj acc (first spec)) `(fn* ~@(rest spec))))
-                      [] fnspecs)]
-    `(let* [~@binds] ~@body)))
+;; letfn is a primitive special form (analyze-letfn -> letrec*), not a macro: its
+;; fns are mutually recursive, which a (let* …) expansion cannot express. Defining
+;; it as a macro would shadow the special once macroexpansion runs first (the
+;; canonical order), so it is intentionally NOT a macro here.
 
 ;; Dynamic binding: install a thread-binding frame of var->value (array-map keeps
 ;; var-get happy, unlike a phm), restore on exit.
@@ -304,13 +307,33 @@
                                                   (:volatile-mutable mt)))
                                     true false)))
                         fields)
+        ;; mutable field symbols (^:unsynchronized-mutable / ^:volatile-mutable):
+        ;; (set! field v) in a method body lowers to (set! (.-field inst) v), the
+        ;; in-place field write the analyzer compiles to jolt-set-field! (jolt-c3q).
+        mutable-syms (map first (filter second (map vector fields field-muts)))
+        mutable? (fn [s] (boolean (some (fn [m] (= m s)) mutable-syms)))
+        rewrite-set (fn rw [inst form]
+                      (cond
+                        (and (seq? form) (seq form) (symbol? (first form))
+                             (= "set!" (name (first form)))
+                             (symbol? (second form)) (mutable? (second form)))
+                        (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
+                              (rw inst (nth form 2)))
+                        (seq? form) (map (fn [x] (rw inst x)) form)
+                        (vector? form) (mapv (fn [x] (rw inst x)) form)
+                        :else form))
+        ;; inline impls register for dispatch but are NOT extenders of the
+        ;; protocol (the JVM compiles them into the class) — register-inline-method,
+        ;; not extend-type.
         impl (fn [proto specs]
-               `(extend-type ~tname ~proto
+               `(do
                   ~@(map (fn [spec]
                            (let [argv (nth spec 1)
                                  inst (first argv)
-                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
-                             `(~(first spec) ~argv (let [~@binds] ~@(drop 2 spec)))))
+                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
+                                 mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))]
+                             `(register-inline-method ~(name tname) ~(name proto) ~(name (first spec))
+                                                      (fn ~argv (let [~@binds] ~@mbody)))))
                          specs)))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
@@ -412,8 +435,10 @@
 ;; extend is a real FUNCTION now — defined above extend-type.
 ;; JVM proxies are unsupported.
 (defmacro proxy [& args] nil)
-;; definterface is JVM-only; bind the name to an empty marker.
-(defmacro definterface [name-sym & body] `(def ~name-sym {}))
+;; definterface is JVM-only; bind the name to a marker and return the name (not a
+;; var), matching the JVM where definterface yields the interface Class.
+(defmacro definterface [name-sym & body]
+  `(do (def ~name-sym {}) (quote ~name-sym)))
 
 ;; make-reified is a fn (clojure.core); the method map {kw (fn* ...)} is an
 ;; ordinary map literal that evaluates to {keyword fn}, and the protocol NAME is
@@ -440,8 +465,11 @@
         ;; each method body sees the record fields, bound from the instance (the
         ;; method's first param), matching Clojure's defrecord method scope. vec the
         ;; spliced binding seq so ~@ splices its elements, not the lazy-seq itself.
+        ;; inline impls register for dispatch but are NOT extenders of the
+        ;; protocol (the JVM compiles them into the class) — register-inline-method,
+        ;; not extend-type.
         impl (fn [proto specs]
-               `(extend-type ~name-sym ~proto
+               `(do
                   ~@(map (fn [spec]
                            (let [argv (nth spec 1)
                                  inst (first argv)
@@ -450,7 +478,8 @@
                                  ;; instead of going through the runtime tag guard.
                                  hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
                                  binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
-                             `(~(first spec) ~hinted (let [~@binds] ~@(drop 2 spec)))))
+                             `(register-inline-method ~(name name-sym) ~(name proto) ~(name (first spec))
+                                                      (fn ~hinted (let [~@binds] ~@(drop 2 spec))))))
                          specs)))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,

@@ -27,6 +27,17 @@
 ;; Janet) — the back end emits a host-appropriate reference.
 (defn host-ref [name] {:op :host :name name})
 
+;; A qualified static reference to a host class member, `Class/member` (e.g.
+;; Math/sqrt, Long/MAX_VALUE, System/getenv). A leaf node carrying the class and
+;; member names. The Chez back end lowers a value ref to host-static-ref and a
+;; call head to host-static-call (host-static.ss).
+(defn host-static [class member] {:op :host-static :class class :member member})
+
+;; A host constructor, `(Class. args*)` / `(new Class args*)`. Carries the class
+;; name and the analyzed argument nodes. Chez lowers to host-new (host-static.ss
+;; class-ctor registry).
+(defn host-new [class args] {:op :host-new :class class :args args})
+
 (defn if-node [test then else] {:op :if :test test :then then :else else})
 
 (defn do-node [statements ret] {:op :do :statements statements :ret ret})
@@ -85,6 +96,9 @@
       (= op :do)     (assoc node :statements (mapv f (get node :statements))
                                  :ret (f (get node :ret)))
       (= op :throw)  (assoc node :expr (f (get node :expr)))
+      (= op :set-var) (assoc node :val (f (get node :val)))
+      (= op :set-field) (assoc node :obj (f (get node :obj)) :val (f (get node :val)))
+      (= op :defmacro) (assoc node :fn (f (get node :fn)))
       (= op :invoke) (assoc node :fn (f (get node :fn))
                                  :args (mapv f (get node :args)))
       (= op :vector) (assoc node :items (mapv f (get node :items)))
@@ -101,6 +115,9 @@
       (= op :fn)     (assoc node :arities (mapv (fn [a] (assoc a :body (f (get a :body))))
                                                 (get node :arities)))
       (= op :def)    (assoc node :init (f (get node :init)))
+      (= op :host-call) (assoc node :target (f (get node :target))
+                                    :args (mapv f (get node :args)))
+      (= op :host-new) (assoc node :args (mapv f (get node :args)))
       ;; :catch-body / :finally are optional; recurse them only when PRESENT.
       ;; Assoc'ing them nil-when-absent would turn the node into a phm (jolt's
       ;; nil-valued-key representation) and force backend densification — so we
@@ -110,5 +127,5 @@
             n (if (get node :catch-body) (assoc n :catch-body (f (get node :catch-body))) n)
             n (if (get node :finally) (assoc n :finally (f (get node :finally))) n)]
         n)
-      ;; :const :local :var :host :the-var :rt :quote — no child nodes
+      ;; :const :local :var :host :host-static :the-var :rt :quote — no child nodes
       :else node)))

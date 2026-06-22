@@ -17,7 +17,17 @@ syntax is specified here, their behavior is host-defined.
 
 Special-form head symbols are not shadowable: a binding named `if` does not
 change the meaning of `(if ...)` in operator position. ⚠ This matches the
-reference; it differs from Scheme.
+reference; it differs from Scheme. A local *may* legally be named like a special
+form and used in value position (`(let [if 5] if)` ⇒ `5`); only operator
+position is reserved. **Macros, unlike special forms, ARE shadowable** by a local
+(`(let [when (fn ...)] (when 1 2))` calls the local).
+
+A list form in operator position is resolved in this order (the canonical
+read → **macroexpand** → analyze pipeline): a local binding shadows everything;
+otherwise a macro head is expanded and the result re-analyzed; otherwise a
+special-form head is parsed by rule; otherwise the form is a function
+application. Macroexpansion therefore happens *before* special-form dispatch, so
+a macro is never mistaken for a special form (and vice versa).
 
 ---
 
@@ -135,10 +145,11 @@ S1–S3, E1 → jolt `forms-spec` let group; clojure-test-suite
 | `do` | empty `(do)` → nil; top-level `do` splices for compilation units (important and under-documented) |
 | `fn*` | arities, variadic `&`, closure capture, self-name, simple-symbol params only, recur target |
 | `loop*` | recur arity must match bindings; recur rebinds in place |
+| `letfn` | mutually-recursive local fns (`letrec*` semantics — a fn body sees every binding, not only earlier ones). jolt treats `letfn` as a primitive special, not the reference's `letfn` macro → `letfn*` indirection; behavior is identical |
 | `recur` | tail-position rule (normative definition of tail position needed), across `if`/`do`/`let*`/`try` interactions |
 | `quote` | self-evaluation table: which literals are self-evaluating unquoted |
 | `var` | `#'` reader sugar; resolution at compile time |
 | `throw` | any value vs Throwable — host question; jolt/cljs allow data, reference requires Throwable → classification needed |
 | `try/catch/finally` | catch dispatch order, `:default`-style catch-all is a dialect extension (⚠ divergence note), finally evaluation guarantees, value of try |
-| `set!` | host-dependent (dynamic vars + host fields) |
+| `set!` | three targets, all implemented: `(set! *var* val)` sets the var's innermost thread binding (else root); `(set! field val)` inside a `deftype` method mutates a `^:unsynchronized-mutable`/`^:volatile-mutable` field in place; `(set! (.-field obj) val)` does the same via interop syntax. Returns val |
 | `.` / `new` | syntax only; behavior host-defined |
