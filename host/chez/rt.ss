@@ -38,6 +38,17 @@
                  jolt-kw-message msg
                  jolt-kw-data data
                  jolt-kw-cause (if (null? more) jolt-nil (car more))))
+;; A host-constructed throwable (RuntimeException. etc.): an ex-info-shaped map
+;; carrying its canonical JVM :jolt/class, so (class …) / instance? / .getMessage /
+;; ex-message all reflect the real type. Plain ex-info has no :jolt/class (its class
+;; defaults to clojure.lang.ExceptionInfo), so those maps stay byte-identical.
+(define jolt-kw-class (keyword "jolt" "class"))
+(define (jolt-host-throwable class-name msg . more)
+  (jolt-hash-map jolt-kw-ex-type jolt-kw-ex-info
+                 jolt-kw-class class-name
+                 jolt-kw-message msg
+                 jolt-kw-data jolt-nil
+                 jolt-kw-cause (if (null? more) jolt-nil (car more))))
 
 ;; --- host interop (jolt-0kf5) ------------------------------------------------
 ;; (.method target arg*) lowers to (jolt-host-call "method" target arg*). JVM
@@ -330,6 +341,11 @@
 ;; backing; extends count/nth/seq/get/ref-put! so the overlay aget/aset/alength see
 ;; it. After the dispatchers it chains.
 (load "host/chez/natives-array.ss")
+
+;; clojure.lang.PersistentQueue (jolt-b8he): a functional queue + EMPTY static.
+;; Chains seq/count/empty?/peek/pop/conj/sequential?/class/instance?/printer, so
+;; load after natives-array (the dispatchers it extends).
+(load "host/chez/natives-queue.ss")
 
 ;; syntax-quote form builders (jolt-r9lm, inc6b): __sqcat/__sqvec/__sqmap/__sqset/
 ;; __sq1, def-var!'d into clojure.core. A cross-compiled macro expander (analyzer

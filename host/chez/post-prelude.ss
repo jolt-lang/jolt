@@ -97,3 +97,7 @@
 ;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
 ;; always-false stub loaded over the host fn, so re-assert it (jolt-hs5q).
 (def-var! "clojure.core" "chunked-seq?" na-chunked-seq?)
+;; record? is a host type check (jrec?), not the overlay's (some? (get x
+;; :jolt/deftype)) — the get-trick invokes a sorted-map's comparator on
+;; :jolt/deftype and throws (jolt-3bbj). Matches the JVM (instance? IRecord).
+(def-var! "clojure.core" "record?" (lambda (x) (jrec? x)))

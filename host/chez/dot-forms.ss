@@ -71,6 +71,9 @@
                       (substring method-name 1 (string-length method-name))
                       method-name)))
       (cond
+        ;; (.getClass x) universal — the class token for any value, before the
+        ;; collection/map field-lookup arms below would read it as a missing key.
+        ((string=? method-name "getClass") (jolt-class obj))
         ;; collection interop first (entry count / seq / nth / get / containsKey).
         ((and (dot-coll? obj) (dot-coll-method obj mname rest))
          => (lambda (box) (car box)))

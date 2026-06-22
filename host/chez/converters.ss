@@ -70,10 +70,20 @@
      (let ((a (car args)))
        (cond
          ((jolt-symbol? a) a)
-         ;; no-ns sentinel is #f — matches emit's quoted-symbol lowering
-         ;; (jolt-symbol #f "x"), so (= 'x (symbol "x")) holds (jolt= compares ns
-         ;; with strict equal?; jolt-nil vs #f would otherwise differ).
-         ((string? a) (jolt-symbol #f a))
+         ;; (symbol "ns/name") splits the namespace at the LAST "/" (JVM
+         ;; Symbol.intern), so (namespace (symbol "foo/bar")) => "foo". A lone "/"
+         ;; or a leading slash has no namespace. The no-ns sentinel is #f — matches
+         ;; emit's quoted-symbol lowering (jolt-symbol #f "x"), so (= 'x (symbol
+         ;; "x")) holds (jolt= compares ns with strict equal?).
+         ((string? a)
+          (let ((slen (string-length a)))
+            (if (string=? a "/")
+                (jolt-symbol #f "/")
+                (let loop ((i (- slen 1)))
+                  (cond ((<= i 0) (jolt-symbol #f a))
+                        ((char=? (string-ref a i) #\/)
+                         (jolt-symbol (substring a 0 i) (substring a (+ i 1) slen)))
+                        (else (loop (- i 1))))))))
          ((keyword? a) (jolt-symbol (keyword-t-ns a) (keyword-t-name a)))
          (else (error #f "symbol: requires string/symbol" a)))))
     ((= (length args) 2) (jolt-symbol (car args) (cadr args)))

@@ -51,6 +51,56 @@
   {:suite "dotform" :expr "(try (throw \"boom\") (catch Throwable e (.getMessage e)))" :expected "boom"}
   {:suite "dotform" :expr "(try (throw (Exception. \"boom\")) (catch Throwable e (.getMessage e)))" :expected "boom"}
   {:suite "dotform" :expr "(try (throw (IllegalArgumentException. \"bad\")) (catch Exception e (.getMessage e)))" :expected "bad"}
+  {:suite "exinfo" :expr "(instance? clojure.lang.ExceptionInfo (ex-info \"x\" {}))" :expected "true"}
+  {:suite "exinfo" :expr "(instance? clojure.lang.IExceptionInfo (ex-info \"x\" {}))" :expected "true"}
+  {:suite "exinfo" :expr "(instance? RuntimeException (ex-info \"x\" {}))" :expected "true"}
+  {:suite "exinfo" :expr "(instance? Throwable (ex-info \"x\" {}))" :expected "true"}
+  {:suite "exinfo" :expr "(class (ex-info \"x\" {}))" :expected "clojure.lang.ExceptionInfo"}
+  {:suite "exinfo" :expr "(= clojure.lang.ExceptionInfo (class (ex-info \"x\" {})))" :expected "true"}
+  {:suite "exinfo" :expr "(class (RuntimeException. \"x\"))" :expected "java.lang.RuntimeException"}
+  {:suite "exinfo" :expr "(instance? RuntimeException (RuntimeException. \"x\"))" :expected "true"}
+  {:suite "exinfo" :expr "(instance? Exception (IllegalArgumentException. \"x\"))" :expected "true"}
+  {:suite "exinfo" :expr "(instance? Throwable (IllegalArgumentException. \"x\"))" :expected "true"}
+  {:suite "exinfo" :expr "(instance? IllegalArgumentException (RuntimeException. \"x\"))" :expected "false"}
+  {:suite "exinfo" :expr "(instance? RuntimeException (InterruptedException. \"x\"))" :expected "false"}
+  {:suite "exinfo" :expr "(.getMessage (RuntimeException. \"boom\"))" :expected "boom"}
+  {:suite "exinfo" :expr "(ex-message (RuntimeException. \"boom\"))" :expected "boom"}
+  {:suite "exinfo" :expr "(type (ex-info \"x\" {}))" :expected ":jolt/ex-info"}
+  {:suite "hostobj" :expr "(.getName (.getClass \"x\"))" :expected "java.lang.String"}
+  {:suite "hostobj" :expr "(.getClass 5)" :expected "java.lang.Long"}
+  {:suite "hostobj" :expr "(.getSimpleName (.getClass :k))" :expected "Keyword"}
+  {:suite "hostobj" :expr "(.toString true)" :expected "true"}
+  {:suite "hostobj" :expr "(class (ex-info \"x\" {}))" :expected "clojure.lang.ExceptionInfo"}
+  {:suite "hostobj" :expr "[(instance? Double 1.5) (Double. \"3.5\") (Double/parseDouble \"2.5\")]" :expected "[true 3.5 2.5]"}
+  {:suite "hostobj" :expr "(instance? java.util.regex.Pattern #\"x\")" :expected "true"}
+  {:suite "hostobj" :expr "(class #\"x\")" :expected "java.util.regex.Pattern"}
+  {:suite "hostobj" :expr "[(namespace (symbol \"foo/bar\")) (name (symbol \"foo/bar\"))]" :expected "[foo bar]"}
+  {:suite "hostobj" :expr "(str (symbol \"a/b/c\"))" :expected "a/b/c"}
+  {:suite "hostobj" :expr "(do (System/setProperty \"jolt.test.x\" \"z\") (System/getProperty \"jolt.test.x\"))" :expected "z"}
+  {:suite "hostobj" :expr "(set! *assert* false)" :expected "false"}
+  {:suite "hostobj" :expr "(binding [*print-readably* false] *print-readably*)" :expected "false"}
+  {:suite "hostobj" :expr "(do (defprotocol P (m [_])) (extend-protocol P clojure.lang.Fn (m [_] :fn)) (m (fn [x] x)))" :expected ":fn"}
+  {:suite "hostobj" :expr "(do (defprotocol P (m [_])) (extend-protocol P clojure.lang.APersistentVector (m [_] :vec)) (m [1 2 3]))" :expected ":vec"}
+  {:suite "hostobj" :expr "(record? (sorted-map 1 2 3 4))" :expected "false"}
+  {:suite "queue" :expr "(seq (conj clojure.lang.PersistentQueue/EMPTY 1 2 3))" :expected "(1 2 3)"}
+  {:suite "queue" :expr "(peek (conj clojure.lang.PersistentQueue/EMPTY 1 2 3))" :expected "1"}
+  {:suite "queue" :expr "(seq (pop (conj clojure.lang.PersistentQueue/EMPTY 1 2 3)))" :expected "(2 3)"}
+  {:suite "queue" :expr "(count (conj clojure.lang.PersistentQueue/EMPTY 1 2 3))" :expected "3"}
+  {:suite "queue" :expr "(empty? clojure.lang.PersistentQueue/EMPTY)" :expected "true"}
+  {:suite "queue" :expr "(instance? clojure.lang.PersistentQueue (conj clojure.lang.PersistentQueue/EMPTY 1))" :expected "true"}
+  {:suite "queue" :expr "(= [1 2 3] (into clojure.lang.PersistentQueue/EMPTY [1 2 3]))" :expected "true"}
+  {:suite "queue" :expr "(first (into clojure.lang.PersistentQueue/EMPTY [1 2 3]))" :expected "1"}
+  {:suite "destructure" :expr "(letfn [(up [s [k & ks]] (cons s ks))] (up 1 [2 3 4]))" :expected "(1 3 4)"}
+  {:suite "hostctor" :expr "(.getName (java.io.File. \"/tmp/abc.txt\"))" :expected "abc.txt"}
+  {:suite "hostctor" :expr "(instance? java.io.File (java.io.File. \"/x\"))" :expected "true"}
+  {:suite "hostctor" :expr "(uuid? (java.util.UUID/randomUUID))" :expected "true"}
+  {:suite "hostctor" :expr "(instance? java.util.UUID (java.util.UUID/fromString \"12345678-1234-1234-1234-123456789abc\"))" :expected "true"}
+  {:suite "hostctor" :expr "(let [u (java.net.URI. \"http://h.com:81/p?q=1#f\")] [(.getScheme u) (.getHost u) (.getPort u) (.getPath u) (.getQuery u) (.getFragment u)])" :expected "[http h.com 81 /p q=1 f]"}
+  {:suite "hostctor" :expr "(nil? (.getHost (java.net.URI. \"/rel/path\")))" :expected "true"}
+  {:suite "hostctor" :expr "(str (java.net.URI. \"http://x/y\"))" :expected "http://x/y"}
+  {:suite "hostctor" :expr "(instance? java.net.URI (java.net.URI. \"/x\"))" :expected "true"}
+  {:suite "hostctor" :expr "(let [a (java.util.ArrayList.)] (.add a 1) (.add a 2) (.add a 3) (.remove a 0) [(.size a) (vec (.toArray a))])" :expected "[2 [2 3]]"}
+  {:suite "hostctor" :expr "[(.indexOf [:a :b :c] :b) (.indexOf (list :a :b) :b) (.indexOf [:a] :z) (.indexOf (range 0 10) 1)]" :expected "[1 1 -1 1]"}
   {:suite "dotform" :expr "(.equals \"a\" \"a\")" :expected "true"}
   {:suite "dotform" :expr "(.equals \"a\" \"b\")" :expected "false"}
   {:suite "dotform" :expr "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)" :expected "v=41"}

@@ -28,7 +28,12 @@
     ((symbol-t? x) "clojure.lang.Symbol")
     ((jolt-atom? x) "clojure.lang.Atom")
     ((char? x) "java.lang.Character")
+    ((regex-t? x) "java.util.regex.Pattern")
     ((procedure? x) "clojure.lang.IFn")
+    ;; an exception value (ex-info / host-constructed throwable) reports its JVM
+    ;; class, so (= clojure.lang.ExceptionInfo (class e)) and clojure.test's
+    ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
+    ((ex-info-map? x) (ex-info-class x))
     (else (jolt-str-render-one (jolt-type x)))))
 
 (def-var! "clojure.core" "class" jolt-class)
@@ -59,6 +64,18 @@
     ("SocketTimeoutException" . "java.net.SocketTimeoutException")
     ("MalformedURLException" . "java.net.MalformedURLException")
     ("SSLException" . "javax.net.ssl.SSLException")
+    ("ExceptionInfo" . "clojure.lang.ExceptionInfo")
+    ("IExceptionInfo" . "clojure.lang.IExceptionInfo")
+    ("Pattern" . "java.util.regex.Pattern")
+    ("URI" . "java.net.URI") ("UUID" . "java.util.UUID")
+    ("ArrayList" . "java.util.ArrayList") ("PersistentQueue" . "clojure.lang.PersistentQueue")
+    ("NumberFormatException" . "java.lang.NumberFormatException")
+    ("ArithmeticException" . "java.lang.ArithmeticException")
+    ("NullPointerException" . "java.lang.NullPointerException")
+    ("ClassCastException" . "java.lang.ClassCastException")
+    ("IndexOutOfBoundsException" . "java.lang.IndexOutOfBoundsException")
+    ("UnsupportedEncodingException" . "java.io.UnsupportedEncodingException")
+    ("FileNotFoundException" . "java.io.FileNotFoundException")
     ("Throwable" . "java.lang.Throwable")))
 (for-each
   (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
@@ -90,4 +107,12 @@
     "java.net.UnknownHostException" "java.net.ConnectException"
     "java.net.SocketTimeoutException" "java.net.MalformedURLException"
     "javax.net.ssl.SSLException"
+    "java.lang.NumberFormatException" "java.lang.ArithmeticException"
+    "java.lang.NullPointerException" "java.lang.ClassCastException"
+    "java.lang.IndexOutOfBoundsException" "java.io.FileNotFoundException"
+    "java.io.UnsupportedEncodingException"
+    ;; clojure.lang.ExceptionInfo / IExceptionInfo compared against (class e)
+    "clojure.lang.ExceptionInfo" "clojure.lang.IExceptionInfo"
+    "java.util.regex.Pattern" "java.net.URI" "java.util.UUID"
+    "clojure.lang.PersistentQueue"
     "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.Atom"))

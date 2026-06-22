@@ -16,3 +16,10 @@
 ;; *warn-on-reflection* — jolt has no reflection, so the var reads false; (set!
 ;; *warn-on-reflection* …) resolves and updates it (a no-op effect).
 (def-var! "clojure.core" "*warn-on-reflection*" #f)
+
+;; *assert* — gates `assert`; settable/bindable (malli.assert toggles it). Default
+;; true, like the JVM.
+(def-var! "clojure.core" "*assert*" #t)
+
+;; *print-readably* — bound by pr-family / with-out-str-style code; default true.
+(def-var! "clojure.core" "*print-readably*" #t)
