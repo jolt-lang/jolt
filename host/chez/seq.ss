@@ -24,10 +24,18 @@
 ;; since one record type backs both (clojure.core/list? — jolt-75sv). The marker
 ;; lives on the cell, so (rest a-list) / (seq a-vector) / (map …) yield plain seq
 ;; cells and are not list?.
-(define-record-type cseq (fields head (mutable tail) (mutable forced?) list?) (nongenerative chez-cseq-v2))
-(define (cseq-realized head tail) (make-cseq head tail #t #f))   ; tail already a seq
-(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f))
-(define (cseq-list head tail) (make-cseq head tail #t #t))       ; a PersistentList node
+;; cvec/ci: for a vector-backed seq cell, the backing vector and this cell's
+;; element index — so it is a real chunked-seq (chunked-seq? true, chunk-first
+;; hands out a 32-element block, chunk-rest is the seq at the next block) and
+;; reduce iterates the vector directly with no per-element cells (jolt-hs5q).
+;; cvec is #f for every other seq; stored as two fields (not a cons) so a vector
+;; seq cell costs no extra allocation. The rest of the seq layer ignores them, so
+;; first/rest/count/printing are unchanged.
+(define-record-type cseq (fields head (mutable tail) (mutable forced?) list? cvec ci) (nongenerative chez-cseq-v3))
+(define (cseq-realized head tail) (make-cseq head tail #t #f #f 0))   ; tail already a seq
+(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f #f 0))
+(define (cseq-list head tail) (make-cseq head tail #t #t #f 0))       ; a PersistentList node
+(define (cseq-vec head tail-thunk v i) (make-cseq head tail-thunk #f #f v i)) ; vector-backed
 (define (seq-first s) (cseq-head s))
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
   (if (cseq-forced? s) (cseq-tail s)
@@ -47,9 +55,9 @@
 ;; ============================================================================
 (define (list->cseq xs)               ; Scheme list -> realized cseq chain (jolt-nil if empty)
   (if (null? xs) jolt-nil (cseq-realized (car xs) (list->cseq (cdr xs)))))
-(define (vec->seq v i)                 ; lazy index seq over a persistent vector
+(define (vec->seq v i)                 ; chunked index seq over a persistent vector
   (if (fx>=? i (pvec-count v)) jolt-nil
-      (cseq-lazy (pvec-nth-d v i jolt-nil) (lambda () (vec->seq v (fx+ i 1))))))
+      (cseq-vec (pvec-nth-d v i jolt-nil) (lambda () (vec->seq v (fx+ i 1))) v i)))
 (define (str->seq s i)
   (if (fx>=? i (string-length s)) jolt-nil
       (cseq-lazy (string-ref s i) (lambda () (str->seq s (fx+ i 1))))))
@@ -168,10 +176,20 @@
 ;; honors `reduced`: a reducing fn that returns (reduced x) stops the fold and
 ;; unwraps to x (so does a reduced INIT). Checked at entry, so the value returned
 ;; by the last step is unwrapped on the next turn before the seq is consulted.
+;; reduce a vector's backing store directly by index from element i — no per-
+;; element seq cells. Honors `reduced`. The chunked-seq fast path.
+(define (vec-reduce f acc v i)
+  (let ((n (pvec-count v)) (raw (pvec-v v)))
+    (let loop ((i i) (acc acc))
+      (cond ((jolt-reduced? acc) (jolt-reduced-val acc))
+            ((fx>=? i n) acc)
+            (else (loop (fx+ i 1) (jolt-invoke f acc (vector-ref raw i))))))))
 (define (reduce-seq f acc s)
   (cond
     ((jolt-reduced? acc) (jolt-reduced-val acc))
     ((jolt-nil? s) acc)
+    ;; a vector-backed (chunked) seq reduces its vector directly, in a tight loop.
+    ((and (cseq? s) (cseq-cvec s)) (vec-reduce f acc (cseq-cvec s) (cseq-ci s)))
     (else (reduce-seq f (jolt-invoke f acc (seq-first s)) (jolt-seq (seq-more s))))))
 (define jolt-reduce
   (case-lambda

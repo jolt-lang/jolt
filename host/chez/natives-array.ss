@@ -80,15 +80,37 @@
 (define (na-short x)
   (let ((s (bitwise-and (exact (floor x)) #xffff))) (if (>= s #x8000) (- s #x10000) s)))
 
-;; --- chunked seqs (Jolt does not chunk; eager equivalents over a buffer) -----
+;; --- chunked seqs -----------------------------------------------------------
+;; A vector's seq is a REAL chunked-seq: (seq v) carries its backing vector +
+;; element index (seq.ss cseq-vec), so chunked-seq? is true and chunk-first hands
+;; out a 32-element block (a pvec slice) while chunk-rest is the seq at the next
+;; block boundary — the Clojure/CLJS ChunkedSeq contract (chunk-first ++
+;; chunk-rest == the seq). The eager buffer model (chunk-buffer/chunk-append/
+;; chunk) builds a plain cseq; chunk-cons/first/rest fall back to seq ops over it.
+(define na-chunk-size 32)
 (define-record-type jolt-chunkbuf (fields (mutable items)) (nongenerative jolt-chunkbuf-v1))
 (define (na-chunk-buffer cap) (make-jolt-chunkbuf '()))
 (define (na-chunk-append b x) (jolt-chunkbuf-items-set! b (append (jolt-chunkbuf-items b) (list x))) b)
 (define (na-chunk b) (list->cseq (jolt-chunkbuf-items b)))
 (define (na-chunk-cons chunk rest) (jolt-concat chunk rest))
-(define (na-chunk-first s) (jolt-first s))
-(define (na-chunk-rest s) (jolt-rest s))
-(define (na-chunk-next s) (jolt-next s))
+;; backing (vector . end-of-block index) for a vector-seq cell, or #f.
+(define (na-vblock s)
+  (and (cseq? s) (cseq-cvec s)
+       (let* ((v (cseq-cvec s)) (i (cseq-ci s)))
+         (cons v (fxmin (fx+ i na-chunk-size) (pvec-count v))))))
+(define (na-chunked-seq? x) (and (na-vblock x) #t))
+(define (na-chunk-first s)
+  (let ((vb (na-vblock s)))
+    (if vb (make-pvec (vec-copy-range (pvec-v (car vb)) (cseq-ci s) (cdr vb)))
+        (jolt-first s))))               ; eager-buffer fallback
+(define (na-chunk-rest s)
+  (let ((vb (na-vblock s)))
+    (if vb (if (fx>=? (cdr vb) (pvec-count (car vb))) jolt-empty-list (vec->seq (car vb) (cdr vb)))
+        (jolt-rest s))))
+(define (na-chunk-next s)
+  (let ((vb (na-vblock s)))
+    (if vb (if (fx>=? (cdr vb) (pvec-count (car vb))) jolt-nil (vec->seq (car vb) (cdr vb)))
+        (jolt-next s))))
 
 ;; --- extend the collection dispatchers to see a jolt-array ------------------
 (define %na-count jolt-count)
@@ -172,4 +194,4 @@
     (cons "chunk-buffer" na-chunk-buffer) (cons "chunk-append" na-chunk-append)
     (cons "chunk" na-chunk) (cons "chunk-cons" na-chunk-cons)
     (cons "chunk-first" na-chunk-first) (cons "chunk-rest" na-chunk-rest)
-    (cons "chunk-next" na-chunk-next)))
+    (cons "chunk-next" na-chunk-next) (cons "chunked-seq?" na-chunked-seq?)))

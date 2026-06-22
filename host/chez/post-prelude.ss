@@ -94,3 +94,6 @@
 (def-var! "clojure.core" "rational?" jolt-rational?)
 (def-var! "clojure.core" "decimal?" jolt-decimal?)
 (def-var! "clojure.core" "==" jolt-num-equiv)
+;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
+;; always-false stub loaded over the host fn, so re-assert it (jolt-hs5q).
+(def-var! "clojure.core" "chunked-seq?" na-chunked-seq?)
