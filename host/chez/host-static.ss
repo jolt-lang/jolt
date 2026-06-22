@@ -164,6 +164,28 @@
 (register-class-statics! "LockingTransaction" (list (cons "isRunning" (lambda () #f))))
 (register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () #f))))
 
+;; clojure.lang.LazilyPersistentVector/createOwning: build a vector from an array
+;; (malli's -vmap fills an object-array then hands it over). jolt has no array
+;; ownership transfer, so copy the array's elements into a persistent vector.
+(define (lpv-create-owning arr) (apply jolt-vector (seq->list (jolt-seq arr))))
+(register-class-statics! "LazilyPersistentVector" (list (cons "createOwning" lpv-create-owning)))
+(register-class-statics! "clojure.lang.LazilyPersistentVector" (list (cons "createOwning" lpv-create-owning)))
+
+;; clojure.lang.PersistentArrayMap/createWithCheck: build a map from a [k v k v…]
+;; array, throwing on a duplicate key. malli's eager entry parser relies on the
+;; throw to report ::duplicate-keys, so a missing class would mis-fire on every
+;; map. Build the map and signal if a key collapsed (count*2 < array length).
+(define (pam-create-with-check arr)
+  (let ((items (seq->list (jolt-seq arr))))
+    (let loop ((xs items) (m (jolt-hash-map)))
+      (if (null? xs) m
+          (if (null? (cdr xs)) (error #f "PersistentArrayMap: odd key/value count")
+              (let ((k (car xs)))
+                (if (jolt-contains? m k) (error #f "Duplicate key")
+                    (loop (cddr xs) (jolt-assoc m k (cadr xs))))))))))
+(register-class-statics! "PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
+(register-class-statics! "clojure.lang.PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
+
 (define (now-millis)
   (let ((t (current-time 'time-utc)))
     (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))

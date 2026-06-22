@@ -70,6 +70,9 @@
         (let-values (((form j) (rdr-read-form src i end)))
           (when (> j i)
             (unless (rdr-eof? form)
+              (when (getenv "JOLT_TRACE_LOAD")
+                (display "  [load-form] " (current-error-port))
+                (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
               (jolt-compile-eval-form form (chez-current-ns)))
             (loop j)))))))
 

@@ -38,6 +38,11 @@
     ((or (string=? name "get") (string=? name "valAt"))
      (list (apply jolt-get obj args)))
     ((string=? name "containsKey") (list (jolt-contains? obj (car args))))
+    ;; (.iterator coll): a java.util.Iterator over the seq — for a map this is the
+    ;; entry iterator. Without this a map's .iterator falls into the map-as-object
+    ;; branch and is mis-read as a missing :iterator key (nil). Some libraries
+    ;; (e.g. malli's -vmap) iterate a map this way.
+    ((string=? name "iterator") (list (make-jiterator (jolt-seq obj))))
     (else #f)))
 
 ;; Universal object-methods: on a
