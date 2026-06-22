@@ -102,12 +102,20 @@
 ;; var-deref (rt.ss): the compiled-code read path for every clojure.core var
 ;; reference. Consult the stack first; fall straight back to the root (NOT through
 ;; jolt-var-get's unbound-error path) so undefined-var reads keep prior behaviour.
+;; The *ns* var cell — its reads are thread-local: with no thread-binding they
+;; derive from chez-current-ns (a thread-parameter), so *ns* tracks in-ns per
+;; thread and a (binding [*ns* ..]) drives resolution (jolt-6rld). Captured now
+;; that *ns* is defined (ns.ss loaded earlier); chez-current-ns consults it too.
+(set! star-ns-cell (jolt-var "clojure.core" "*ns*"))
+
 (define %dyn-rt-var-deref var-deref)
 (set! var-deref
   (lambda (ns name)
     (let ((cell (jolt-var ns name)))
       (let ((bv (dyn-binding-value cell)))
-        (if (eq? bv dyn-no-binding) (var-cell-root cell) bv)))))
+        (cond ((not (eq? bv dyn-no-binding)) bv)
+              ((eq? cell star-ns-cell) (intern-ns! (chez-current-ns)))
+              (else (var-cell-root cell)))))))
 
 ;; jolt-var-get (vars.ss): the var-get fn + deref/@ on a cell. Stack first, then
 ;; the original (which errors on an unbound root, matching Clojure).
@@ -116,7 +124,9 @@
   (lambda (v)
     (if (var-cell? v)
         (let ((bv (dyn-binding-value v)))
-          (if (eq? bv dyn-no-binding) (%dyn-var-get v) bv))
+          (cond ((not (eq? bv dyn-no-binding)) bv)
+                ((eq? v star-ns-cell) (intern-ns! (chez-current-ns)))
+                (else (%dyn-var-get v))))
         (%dyn-var-get v))))
 
 ;; var-cell keys hash/compare by ns/name (jolt=2 in vars.ss already compares

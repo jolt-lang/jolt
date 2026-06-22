@@ -111,8 +111,9 @@
 ;; redirect them. It is enough for *ns* / str-of-ns to track the switch.
 (define (jolt-in-ns desig)
   (let* ((nm (ns-desig->name desig)) (n (intern-ns! nm)))
+    ;; set the THREAD-LOCAL current ns; *ns* reads derive from it (dyn-binding.ss),
+    ;; so this is per-thread — concurrent nREPL sessions don't clobber each other.
     (set-chez-ns! nm)
-    (def-var! "clojure.core" "*ns*" n)
     n))
 
 ;; ns-name: a namespace's name as a (no-ns) symbol. Overrides the overlay (which

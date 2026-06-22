@@ -115,6 +115,12 @@
   {:suite "hostobj" :expr "[(some? (ClassLoader/getSystemClassLoader)) (some? (.getContextClassLoader (Thread/currentThread)))]" :expected "[true true]"}
   {:suite "reify" :expr "(do (defprotocol P (pm [_])) (defprotocol Q (qm [_])) (extend-protocol Q java.lang.Object (qm [_] :q-default)) (qm (reify P (pm [_] :p))))" :expected ":q-default"}
   {:suite "reify" :expr "(do (defprotocol Q (qa [_]) (qb [_])) (extend-protocol Q java.lang.Object (qa [_] :da) (qb [_] :db)) (def r (reify Q (qa [_] :ra))) [(qa r) (qb r)])" :expected "[:ra :db]"}
+  {:suite "interrupt" :expr "(jolt.host/run-interruptible (jolt.host/make-interrupt) (fn [] (+ 1 2)))" :expected "3"}
+  {:suite "interrupt" :expr "(let [t (jolt.host/make-interrupt)] (jolt.host/interrupt! t) (try (jolt.host/run-interruptible t (fn [] (loop [i 0] (recur (inc i))))) :not-interrupted (catch :default e (:jolt/interrupted (ex-data e)))))" :expected "true"}
+  {:suite "ns-tl" :expr "(do (in-ns (quote foo.bar)) (str *ns*))" :expected "foo.bar"}
+  {:suite "ns-tl" :expr "(do (create-ns (quote my.ns)) (binding [*ns* (find-ns (quote my.ns))] (str *ns*)))" :expected "my.ns"}
+  {:suite "ns-tl" :expr "(do (in-ns (quote app.core)) (def sekret 42) (in-ns (quote user)) (binding [*ns* (find-ns (quote app.core))] (load-string \"sekret\")))" :expected "42"}
+  {:suite "ns-tl" :expr "(do (create-ns (quote a.x)) (create-ns (quote b.y)) (let [fa (future (in-ns (quote a.x)) (Thread/sleep 80) (str *ns*)) fb (future (in-ns (quote b.y)) (Thread/sleep 80) (str *ns*))] [(deref fa) (deref fb) (str *ns*)]))" :expected "[a.x b.y user]"}
   {:suite "dotform" :expr "(.equals \"a\" \"a\")" :expected "true"}
   {:suite "dotform" :expr "(.equals \"a\" \"b\")" :expected "false"}
   {:suite "dotform" :expr "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)" :expected "v=41"}
