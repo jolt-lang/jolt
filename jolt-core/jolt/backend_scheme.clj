@@ -292,7 +292,7 @@
 (defn- ffi-type->chez [t]
   (or (ffi-types t) (throw (ex-info (str "jolt.ffi: unknown foreign type :" t) {}))))
 (defn- emit-ffi-fn [node]
-  (str "(foreign-procedure " (chez-str-lit (:csym node))
+  (str "(foreign-procedure " (when (:blocking node) "__collect_safe ") (chez-str-lit (:csym node))
        " (" (str/join " " (map ffi-type->chez (:argtypes node))) ") "
        (ffi-type->chez (:rettype node)) ")"))
 
