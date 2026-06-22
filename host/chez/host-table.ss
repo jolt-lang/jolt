@@ -176,3 +176,12 @@
     ((htable-sorted-set? obj) '("PersistentTreeSet" "Sorted" "IPersistentSet"
                                 "Set" "java.util.Set" "Collection" "IPersistentCollection" "Object"))
     (else (%h-value-host-tags obj)))))
+
+;; (class e) on a throwable tagged-table (a library's ex-info envelope carrying a
+;; JVM :class, e.g. jolt-lang/http-client's UnknownHostException) reads that
+;; class name, so clojure.test's (thrown? Class …) / (= Class (class e)) match.
+(define %h-class jolt-class)
+(set! jolt-class (lambda (x)
+  (let ((c (and (htable? x) (hashtable-ref (htable-h x) "class" #f))))
+    (if (and c (string? c)) c (%h-class x)))))
+(def-var! "clojure.core" "class" jolt-class)

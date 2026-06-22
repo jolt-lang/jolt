@@ -151,10 +151,32 @@
                                 ((reader-jhost? rdr) (drain-reader rdr))
                                 (else (jolt-str-render-one rdr))))))
 
+;; (slurp src :encoding "...") — pull the charset from the trailing kwargs.
+(define (slurp-encoding opts)
+  (let loop ((o opts))
+    (cond ((or (null? o) (null? (cdr o))) '())
+          ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "encoding"))
+           (list (jolt-str-render-one (cadr o))))
+          (else (loop (cddr o))))))
+;; drain a byte input-stream shim (tagged-table) one byte at a time to a bytevector.
+(define (drain-byte-stream src)
+  (let loop ((acc '()))
+    (let ((b (record-method-dispatch src "read" jolt-nil)))
+      (if (or (jolt-nil? b) (and (number? b) (< b 0)))
+          (u8-list->bytevector (reverse acc))
+          (loop (cons (bitwise-and (jnum->exact b) #xff) acc))))))
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (read-file-string (jfile-path src)))
     ((reader-jhost? src) (drain-reader src))
+    ;; bytes (a bytevector or a jolt byte-array): decode with :encoding (UTF-8
+    ;; default). clj-http-lite slurps response-body byte arrays.
+    ((bytevector? src) (decode-bytevector src (slurp-encoding opts)))
+    ((and (jolt-array? src) (eq? (jolt-array-kind src) 'byte))
+     (decode-bytevector (na-bytearray->bv src) (slurp-encoding opts)))
+    ;; a byte input-stream shim (e.g. clj-http-lite's :as :stream body): drain it.
+    ((and (htable? src) (jolt-truthy? (jolt-ref-get src (keyword "jolt" "input-stream"))))
+     (decode-bytevector (drain-byte-stream src) (slurp-encoding opts)))
     ((string? src) (read-file-string src))
     (else (error #f "slurp: unsupported source" src))))
 
@@ -230,6 +252,9 @@
     ((jolt-nil? x) jolt-nil)
     ((and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader" "writer")))
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
+    ;; a library's stream shim (tagged-table) closes via its registered .close
+    ;; method (a no-op for in-memory streams); absent method -> no-op.
+    ((htable? x) (guard (e (#t jolt-nil)) (record-method-dispatch x "close" jolt-nil)) jolt-nil)
     ((jfile? x) jolt-nil)
     (else
      (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))

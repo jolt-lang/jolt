@@ -583,7 +583,9 @@
     (let loop ((l lst) (i 0)) (if (null? l) bv (begin (bytevector-u8-set! bv i (car l)) (loop (cdr l) (+ i 1)))))))
 (register-class-statics! "URLEncoder" (list (cons "encode" url-encode)))
 (register-class-statics! "URLDecoder" (list (cons "decode" url-decode)))
-(register-class-statics! "Charset" (list (cons "forName" (lambda (nm) (make-jhost "charset" (list (cons 'name nm)))))))
+;; Charset/forName yields the canonical name STRING (not an opaque object) so it
+;; threads straight into (.getBytes s cs) / (String. bytes cs), which take a name.
+(register-class-statics! "Charset" (list (cons "forName" (lambda (nm) (jolt-str-render-one nm)))))
 
 ;; ---- Base64 (RFC 4648) ------------------------------------------------------
 (define b64-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
