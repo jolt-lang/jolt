@@ -38,10 +38,13 @@ Of the 694 `clojure.core` vars in the ClojureDocs inventory:
 
 ## How this connects to the test suites
 
-- `test/integration/conformance-test.janet` — 302 assertions, each run
-  through three independent execution paths (interpreter, bootstrap
-  compiler, self-hosted compiler) that must agree. Spec entries cite these.
-- `test/spec/*.janet` — ~1,500 behavioral cases organized by topic.
+- `test/chez/corpus.edn` — the host-neutral behavioral corpus, one row per
+  case (`{:suite :label :expected :actual}`). The Chez compiler evaluates each
+  case via `host/chez/run-corpus.ss` (run with `make corpus`), and
+  `test/conformance/certify.clj` certifies every `:expected` against reference
+  JVM Clojure (run with `make certify`). Spec entries cite these cases.
+- `test/conformance/` — the certification tooling and classified divergences
+  (`certify.clj`, `known-divergences.edn`); see its `README.md` and `SPEC.md`.
 - `vendor/clojure-test-suite` — the cross-dialect suite (≥4081 assertions
   passing); dialect splits there are classification evidence.
 - jank's per-construct corpus (`~/src/jank/compiler+runtime/test/jank`) is

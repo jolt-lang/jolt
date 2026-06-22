@@ -1,80 +1,45 @@
 # Seed ↔ Overlay Registry
 
-Jolt is "Clojure on Janet": a shrinking **Janet seed** (`src/jolt/*.janet`)
-hosts a **Clojure overlay** (`jolt-core/clojure/core/NN-*.clj`). Both define
-`clojure.core`-facing functions, and for a handful of names *both* tiers carry a
-definition. Which copy is authoritative has been tribal knowledge. This document
-is the single source of truth; `test/unit/seed-overlay-registry-test.janet` is a
-build-time drift check that fails if reality diverges from what is written here.
+Jolt is Clojure on Chez Scheme. `clojure.core` is built from two tiers that both
+define `clojure.core`-facing vars, and for a handful of names *both* tiers carry
+a definition. This document records how the two tiers relate and which copy is
+authoritative.
 
-## The registration mechanism
+## The two tiers
 
-Seed core functions are named with a `core-` prefix (`core-into`, `core-conj`,
-`core-transduce`) and registered into the `clojure.core` namespace by the
-`core-bindings` table in `src/jolt/core.janet`. Each entry maps a **public
-Clojure name** (the string key) to a seed function value:
+- **Native shims** (`host/chez/natives-*.ss`) bind a set of `clojure.core` vars
+  directly to Scheme runtime values via `def-var!` — collection constructors,
+  seq fns, numeric/string ops, and so on. These cover names the overlay assumes
+  exist as bare `clojure.core` vars but does not define itself.
+- **The Clojure overlay** (`jolt-core/clojure/core/NN-*.clj`) defines the rest of
+  `clojure.core` in dependency-ordered tiers, loaded in order: `00-syntax`,
+  `00-kernel`, `10-seq`, `20-coll`, `25-sorted`, `30-macros`, `40-lazy`, `50-io`.
 
-```janet
-(def- core-bindings
-  @{"into"   core-into
-    "reduce" core-reduce
-    ...})
-```
-
-`init-core!` (`src/jolt/core.janet`) interns every pair into `clojure.core`.
-The overlay tiers load afterwards (`api.janet`: 00-syntax, 00-kernel, 10-seq,
-20-coll, 25-sorted, 30-macros, 40-lazy, 50-io). When an overlay tier `(defn X …)`
-for a name that `core-bindings` already registered, the **overlay def shadows the
-seed binding** — the seed `core-X` then survives only if some other seed code
-still calls it directly.
+The overlay loads after the native shims. When an overlay tier `(defn X …)` for a
+name a native shim already bound, the **overlay def shadows the native binding** —
+user code sees the overlay copy. The native binding then survives only if some
+other native/runtime code still calls the Scheme value directly.
 
 So a name's *home* is determined by two facts:
 
-1. is it a key in `core-bindings`? (registered ⇒ the seed `core-X` is reachable)
-2. does an overlay tier `(defn X …)`? (defined ⇒ the overlay copy shadows)
+1. is it bound by a native shim? (the Scheme value is reachable from the runtime)
+2. does an overlay tier `(defn X …)`? (the overlay copy is what user code sees)
 
-## Dispatch-only seed helpers: the `__` prefix
+## The compiled seed
 
-Seed functions that are **not** public Clojure vars but must be reachable by
-name from compiled/overlay code (compiler hooks, macro-expansion targets) are
-registered under a `__`-prefixed key — e.g. `"__sq1"`, `"__write"`,
-`"__bit-and"`, `"__jdbc-conn-raw"`. The `__` prefix is unreadable as a
-user-level symbol, so these never collide with or masquerade as public API. When
-you add a dispatch-only hook, give it a `__` key; do not register it under a bare
-name.
+`clojure.core` is compiled ahead of time into the checked-in seed
+(`host/chez/seed/{prelude,image}.ss`) as Scheme `def-var!` forms. The seed's
+source twin is the overlay (`jolt-core/clojure/core/*.clj` plus the stdlib
+namespaces under `src/jolt/clojure/`); `host/chez/emit-image.ss` re-emits the
+prelude from those sources on Chez. The build is a byte-fixpoint: rebuilding from
+an up-to-date seed reproduces it exactly.
 
-## Dispatch twins
+## Consistency guard
 
-A **twin** is a name with *both* a seed `core-X` defn and an overlay `(defn X …)`.
-There are exactly five. Each seed site carries a greppable `SEED-TWIN:` comment.
-
-| name          | overlay (authoritative public)        | seed copy (`core-X`)                | registered? | role of the seed copy |
-|---------------|----------------------------------------|--------------------------------------|-------------|------------------------|
-| `char?`       | `20-coll.clj` `char?`                  | `core_types.janet` `core-char?`      | no          | internal type dispatch |
-| `sorted-map?` | `25-sorted.clj` `sorted-map?`          | `core_types.janet` `core-sorted-map?`| no          | internal dispatch (sorted-op) |
-| `sorted-set?` | `25-sorted.clj` `sorted-set?`          | `core_types.janet` `core-sorted-set?`| no          | internal dispatch |
-| `sorted?`     | `25-sorted.clj` `sorted?`              | `core_types.janet` `core-sorted?`    | no          | internal dispatch |
-| `transduce`   | `20-coll.clj` `transduce`              | `core_coll.janet` `core-transduce`   | no          | internal helper for `core-into` only |
-
-None of the five is registered in `core-bindings`: the overlay copy is the public
-one, and the seed copy is reached only by other *seed* code (so editing the seed
-copy alone will not change what user code sees — change both, or move the logic).
-
-## The surprising asymmetry: `into` vs `transduce`
-
-`into` and `reduce` are **seed-public**: registered in `core-bindings`, and the
-overlay deliberately does *not* redefine them (they sit on the perf wall — see
-the "into stays in the seed" note in `20-coll.clj`). `transduce`, by contrast, is
-**overlay-public**: the overlay `transduce` is the real one, and `core-transduce`
-remains only because `core-into` calls it directly. So two functions that read as
-a matched pair have opposite homes. That asymmetry is intentional and is the
-reason this registry exists.
-
-## Drift check
-
-`test/unit/seed-overlay-registry-test.janet` recomputes the twin set from source
-(names with both a seed `core-X` defn and an overlay `defn X`) and asserts it
-equals the five above. It also asserts none of the twins is registered in
-`core-bindings`, and that every non-`__` `core-bindings` key is a plausible
-public name (no accidental `__`-less dispatch helper). If you add, remove, or
-re-home a twin, update this table and that test together.
+There is no separate drift-check test for the registry. The self-hosting
+fixpoint is the guard: after changing a seed source (a core tier, the compiler
+namespaces, the host contract, the reader, or `emit-image.ss`) you must re-mint
+the seed (`make remint`), and `make selfhost` fails if the checked-in seed and
+its sources have drifted. So if the overlay's shadowing relationship changes, the
+re-minted prelude changes with it, and the fixpoint check keeps source and seed
+in agreement.

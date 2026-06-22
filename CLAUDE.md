@@ -54,7 +54,7 @@ bd close <id>         # Complete work
 ## Build & Test
 
 No build step — `bin/joltc` runs off the checked-in seed (`host/chez/seed/`).
-The gate is pure Chez (+ Clojure for the JVM oracle); no Janet.
+The gate is pure Chez (+ Clojure for the JVM oracle).
 
 ```bash
 bin/joltc -e EXPR                          # run a Clojure expression on Chez
@@ -79,7 +79,7 @@ selfhost` fails. Runtime-only `host/chez/*.ss` shims do NOT need a re-mint.
 
 ## Architecture Overview
 
-Clojure on Chez Scheme — the sole substrate, no Janet. A small Chez runtime
+Clojure on Chez Scheme — the sole substrate. A small Chez runtime
 (`host/chez/*.ss`: value model, persistent collections, seqs, vars/ns, host
 interop) hosts a portable Clojure overlay (`jolt-core/`): the
 reader/analyzer/IR/backend (`jolt-core/jolt/`) and `clojure.core` in

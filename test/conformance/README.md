@@ -7,13 +7,14 @@
 
 The corpus (`test/chez/corpus.edn`) is jolt's host-neutral behavioral suite — one
 row per case: `{:suite :label :expected :actual}`, where `:actual` is a Clojure
-source expression and `:expected` its result (or `:throws`). Runtime harnesses
-(`test/chez/run-corpus-prelude.janet`, `run-corpus-zero-janet.janet`) replay it on
-each host and compare by value-equality.
+source expression and `:expected` its result (or `:throws`). The runtime harness
+(`host/chez/run-corpus.ss`, invoked by `make corpus`) replays it on Chez and
+compares by value-equality.
 
-Historically every `:expected` was **hand-written by jolt developers**. That makes
-the corpus a fine regression suite but a weak *specification*: it certifies jolt
-against its authors' beliefs, not against Clojure. This directory closes that gap.
+Every `:expected` is sourced from reference JVM Clojure, so the corpus is both a
+regression suite and a *specification* certified against Clojure rather than
+against its authors' beliefs. This directory holds the certification tooling that
+closes that gap.
 
 ## What's here
 
@@ -34,17 +35,17 @@ against its authors' beliefs, not against Clojure. This directory closes that ga
   entries with a tracked bead. These categories become the `:features` flags in
   conformance inc3.
 
-- **`certify-test.janet`** — gate wrapper. Skips cleanly when `clojure` (JVM) is
-  not installed; otherwise runs `certify.clj` and fails the build on a **NEW**
-  (unclassified) divergence or a **stale** allowlist entry. Flaky entries (JVM
-  result is timing-dependent, e.g. `future-cancel`) are tolerated either way.
+`make certify` is the gate wrapper. It skips cleanly when `clojure` (JVM) is not
+installed; otherwise it runs `certify.clj` and fails the build on a **NEW**
+(unclassified) divergence or a **stale** allowlist entry. Flaky entries (JVM
+result is timing-dependent, e.g. `future-cancel`) are tolerated either way.
 
 ## Running
 
 ```sh
-clojure -M test/conformance/certify.clj                      # gate (exit≠0 on new/stale)
+make certify                                                 # the gate wrapper (skips if clojure absent)
+clojure -M test/conformance/certify.clj                      # gate directly (exit≠0 on new/stale)
 clojure -M test/conformance/certify.clj test/chez/corpus.edn --edn /tmp/report.edn  # full machine-readable report
-janet test/conformance/certify-test.janet                    # the gate wrapper
 ```
 
 ## Current state

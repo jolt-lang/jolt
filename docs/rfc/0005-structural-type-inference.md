@@ -50,7 +50,7 @@ A type `T` is one of:
   `:nonnil` for "provably not nil and not false", which is what the struct-vs-phm
   decision needs; see below.)
 - `:nil`.
-- `{:struct {field -> T}}` — a raw-get-safe map (Janet struct or record) whose
+- `{:struct {field -> T}}` — a raw-get-safe map (a record) whose
   field `k` has type `(fields k)` or `:any` if absent. The degenerate
   `{:struct {}}` is "a struct, fields unknown" and replaces today's
   `:struct-map`.
@@ -65,7 +65,7 @@ A type `T` is one of:
 
 Types are immutable values comparable by structural equality, exactly like the
 current `{:vec ELEM}` representation, so they flow across the portable
-inference and the Janet orchestrator unchanged.
+inference and the host unchanged.
 
 ### Join (least upper bound)
 

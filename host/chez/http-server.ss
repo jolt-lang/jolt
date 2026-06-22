@@ -3,8 +3,8 @@
 ;; connection handled at a time on a background accept thread; synchronous Ring
 ;; handlers. Enough to serve a small web app.
 ;;
-;; Exposed as jolt.http.server/run-server and (for the ring-app example) as
-;; ring-janet.adapter/run-server + stop-server — both baked namespaces.
+;; Exposed as jolt.http.server/run-server + stop-server — a baked namespace an
+;; app requires for a Ring-style adapter (run a handler, stop the server).
 
 (load-shared-object #f)   ; resolve socket/bind/listen/accept/recv/send in the process
 
@@ -227,6 +227,3 @@
 
 (def-var! "jolt.http.server" "run-server" (lambda (handler . opt) (http-run-server handler (if (pair? opt) (car opt) (jolt-hash-map)))))
 (def-var! "jolt.http.server" "stop-server" http-stop-server)
-;; the ring-app example reaches the server through this adapter namespace.
-(def-var! "ring-janet.adapter" "run-server" (lambda (handler . opt) (http-run-server handler (if (pair? opt) (car opt) (jolt-hash-map)))))
-(def-var! "ring-janet.adapter" "stop-server" http-stop-server)

@@ -68,8 +68,9 @@ Behavioral questions are settled in this order: differential testing against
 the reference implementation → cross-dialect agreement in clojure-test-suite
 → ClojureDocs community examples (verified before inclusion) → reference
 source (for intent). Conformance tests live in this repository
-(`test/integration/conformance-test.janet` runs each assertion through three
-independent execution paths) and in the cross-dialect clojure-test-suite.
+(the corpus `test/chez/corpus.edn`, run on Chez via `host/chez/run-corpus.ss`
+and certified against reference JVM Clojure by `test/conformance/certify.clj`)
+and in the cross-dialect clojure-test-suite.
 
 ## 5. Chapter plan
 

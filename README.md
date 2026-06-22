@@ -77,10 +77,9 @@ Jolt targets Clojure semantics but runs on Chez, not the JVM.
   and `go`/`<!`/`>!`/`alts!`/`timeout`.
 - **Regex.** Backed by [irregex](https://github.com/ashinn/irregex) (vendored),
   PCRE/Java-style patterns.
-- **Collections.** Immutable persistent vectors (32-way tries), cons lists, and HAMT
-  maps/sets. Hash-map/hash-set iteration order is unspecified — use
-  `sorted-map`/`sorted-set` when order matters. Transients are real mutable scratch
-  collections.
+- **Collections.** Immutable persistent vectors, cons lists, and HAMT maps/sets.
+  Hash-map/hash-set iteration order is unspecified — use `sorted-map`/`sorted-set`
+  when order matters. Transients are real mutable scratch collections.
 
 Supported and Clojure-compatible: lazy/infinite sequences, transducers,
 destructuring, multimethods with hierarchies, protocols/records
@@ -91,12 +90,14 @@ destructuring, multimethods with hierarchies, protocols/records
 ## Test
 
 ```bash
-make test                     # the full gate (no Janet)
+make test                     # the full gate
 make corpus                   # conformance corpus vs the JVM-sourced spec
 make unit                     # host-specific unit cases
 make selfhost                 # bootstrap fixpoint (rebuild == checked-in seed)
 make smoke                    # bin/joltc CLI smoke
 make sci                      # load borkdude/sci's source through joltc (compat stress)
+make ffi                      # HTTP-server GC-safety + http-client temp paths
+make transient                # transient mutation + linear-time builds
 make certify                  # JVM oracle (skips if clojure is absent)
 ```
 

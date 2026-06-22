@@ -70,7 +70,6 @@ implements. Current profile (≈2670 portable, ≈249 non-portable):
 | `:concurrency/snapshot` | isolated-heap futures/agents/pmap — captured atoms are snapshotted, not shared |
 | `:host/jvm-interop` | Java classes / `instance?` on host classes / proxy / bean / definterface |
 | `:host/arrays` | Java arrays (`into-array`, `int-array`, …) |
-| `:host/janet` | Janet host interop (`janet.*`) |
 | `:async/core-async` | `clojure.core.async` channels/`go` |
 | `:runtime/eval` | runtime `eval` / `load-string` |
 | `:reader/jolt` | jolt reader features (`#?(:jolt …)`) + syntax-quote literal collapse |

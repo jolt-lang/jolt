@@ -1,7 +1,7 @@
 # Chez bootstrap seed
 
-These two files are the **bootstrap compiler** for jolt-on-Chez — the seed that
-makes the build self-hosting with no Janet in the loop:
+These two files are the **bootstrap compiler** for jolt — the seed that makes
+the build self-hosting:
 
 - `prelude.ss` — the `clojure.core` prelude (all tiers + clojure.string/walk/
   template/edn/set/pprint) as Scheme `def-var!` forms.

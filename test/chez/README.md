@@ -1,6 +1,6 @@
 # Chez test harness
 
-The correctness gate for jolt. Pure Chez (+ Clojure for the JVM oracle), no Janet.
+The correctness gate for jolt. Pure Chez (+ Clojure for the JVM oracle).
 Correctness is judged against the JVM-sourced conformance spec; the spec itself
 lives in `test/conformance/` (see its `SPEC.md`). Run the whole gate with `make
 test` from the repo root.
