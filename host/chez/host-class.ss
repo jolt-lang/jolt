@@ -34,11 +34,11 @@
 (def-var! "clojure.core" "class" jolt-class)
 
 ;; bare class-name tokens -> canonical JVM class-name strings.
-(for-each
-  (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
+(define class-token-alist
   '(("String" . "java.lang.String") ("Number" . "java.lang.Number")
     ("Boolean" . "java.lang.Boolean") ("Long" . "java.lang.Long")
     ("Integer" . "java.lang.Integer") ("Double" . "java.lang.Double")
+    ("Object" . "java.lang.Object") ("Character" . "java.lang.Character")
     ("InputStream" . "java.io.InputStream") ("OutputStream" . "java.io.OutputStream")
     ("File" . "java.io.File") ("Reader" . "java.io.Reader") ("Writer" . "java.io.Writer")
     ("ISeq" . "clojure.lang.ISeq") ("Keyword" . "clojure.lang.Keyword")
@@ -51,6 +51,18 @@
     ("IllegalArgumentException" . "java.lang.IllegalArgumentException")
     ("InterruptedException" . "java.lang.InterruptedException")
     ("Throwable" . "java.lang.Throwable")))
+(for-each
+  (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
+  class-token-alist)
+
+;; resolve a ^Type hint symbol-name to its canonical class name at def time
+;; (jolt-a1ir): "String" -> "java.lang.String", matching the JVM compiler. An
+;; already-canonical name maps to itself; an unknown name yields #f (left as-is).
+(define class-hint-table (make-hashtable string-hash string=?))
+(for-each (lambda (p) (hashtable-set! class-hint-table (car p) (cdr p))) class-token-alist)
+(for-each (lambda (p) (hashtable-set! class-hint-table (cdr p) (cdr p))) class-token-alist)
+(define (resolve-class-hint name) (hashtable-ref class-hint-table name #f))
+(def-var! "jolt.host" "resolve-class-hint" resolve-class-hint)
 
 ;; fully-qualified canonical class names self-evaluate to their own name string,
 ;; so (= (class 1) java.lang.Long) and (instance? clojure.lang.Atom x) resolve the

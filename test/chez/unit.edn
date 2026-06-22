@@ -405,7 +405,7 @@
   {:suite "type" :expr "(type (random-uuid))" :expected ":jolt/uuid"}
   {:suite "type" :expr "(type (ex-info \"x\" {}))" :expected ":jolt/ex-info"}
   {:suite "var_meta" :expr "(do (def ^:private pv 1) (:private (meta (var pv))))" :expected "true"}
-  {:suite "var_meta" :expr "(do (def ^String tv \"a\") (:tag (meta (var tv))))" :expected "String"}
+  {:suite "var_meta" :expr "(do (def ^String tv \"a\") (:tag (meta (var tv))))" :expected "java.lang.String"}
   {:suite "var_meta" :expr "(do (def dv2 \"hi\" 1) (:doc (meta (var dv2))))" :expected "hi"}
   {:suite "var_meta" :expr "(do (def mv 1) (:name (meta (var mv))))" :expected "mv"}
   {:suite "var_meta" :expr "(do (def nv 1) (:ns (meta (var nv))))" :expected "user"}

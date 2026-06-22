@@ -26,7 +26,8 @@
                                form-ns-value? form-ns-value-name
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta host-intern! form-syntax-quote-lower
-                               record-type? record-ctor-key form-position late-bind?]]))
+                               record-type? record-ctor-key form-position late-bind?
+                               resolve-class-hint]]))
 
 (declare analyze)
 
@@ -266,7 +267,18 @@
                     ;; as the value and the real init dropped (jolt-6ym).
                     has-doc (and (> (count items) 3) (string? (nth items 2)))
                     val-form (nth items (if has-doc 3 2))
-                    base-meta (or (form-sym-meta name-sym) {})
+                    base0 (or (form-sym-meta name-sym) {})
+                    ;; resolve a ^Type hint to its canonical class name at def
+                    ;; time (jolt-a1ir), as the JVM compiler does: ^String ->
+                    ;; java.lang.String. A record/unknown hint is left untouched.
+                    tag (get base0 :tag)
+                    tag-name (cond (form-sym? tag) (form-sym-name tag)
+                                   (string? tag) tag
+                                   :else nil)
+                    base-meta (if tag-name
+                                (let [c (resolve-class-hint tag-name)]
+                                  (if c (assoc base0 :tag c) base0))
+                                base0)
                     node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
                 (host-intern! ctx cur nm)
                 (def-node cur nm (analyze ctx val-form env) node-meta))))
