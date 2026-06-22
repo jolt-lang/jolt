@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke selfhost sci certify ffi remint
+.PHONY: test ci values corpus unit smoke selfhost sci certify ffi transient remint
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -15,7 +15,7 @@ test: selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: values corpus unit smoke sci ffi certify
+ci: values corpus unit smoke sci ffi transient certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -46,6 +46,10 @@ sci:
 # and http-client temp-file uniqueness, plus a live request.
 ffi:
 	@chez --script test/chez/ffi-server-test.ss
+
+# Transients: mutable backing, snapshot on persistent!, and linear-time builds.
+transient:
+	@chez --script test/chez/transient-test.ss
 
 # JVM oracle: certify the corpus against reference Clojure. Skips if clojure absent.
 certify:

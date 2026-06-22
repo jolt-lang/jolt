@@ -37,7 +37,8 @@
     ;; multimethod; the readable fallback renders it directly).
     ;; forward refs to transients.ss (loaded later) — resolved at call time.
     ((jolt-transient? x)
-     (if (pvec? (jolt-transient-coll x)) "#<transient vector>" "#<transient map>"))
+     (case (jolt-transient-kind x)
+       ((vec) "#<transient vector>") ((set) "#<transient set>") (else "#<transient map>")))
     ((pvec? x)
      (let ((acc '()))
        (let loop ((i (fx- (pvec-count x) 1)))
