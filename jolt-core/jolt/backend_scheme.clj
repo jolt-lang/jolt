@@ -279,6 +279,23 @@
         body (binding [*recur-target* label] (emit (:body node)))]
     (str "(let* (" seq-bs ") (let " label " (" rebinds ") " body "))")))
 
+;; jolt.ffi/__cfn -> a Chez foreign-procedure (jolt-ffi). The C symbol + types are
+;; compile-time literals from the analyzer, so this emits a real typed binding;
+;; the resulting Scheme procedure is callable like any jolt fn. The library must
+;; have loaded the shared object (jolt.ffi/load-library) before this def runs.
+(def ^:private ffi-types
+  {"int" "int" "uint" "unsigned-int" "long" "long" "ulong" "unsigned-long"
+   "int64" "integer-64" "uint64" "unsigned-64" "size_t" "size_t" "ssize_t" "ssize_t"
+   "iptr" "iptr" "uptr" "uptr" "double" "double" "float" "float"
+   "pointer" "void*" "void*" "void*" "string" "string" "void" "void"
+   "uint8" "unsigned-8" "u8" "unsigned-8" "byte" "unsigned-8" "char" "char"})
+(defn- ffi-type->chez [t]
+  (or (ffi-types t) (throw (ex-info (str "jolt.ffi: unknown foreign type :" t) {}))))
+(defn- emit-ffi-fn [node]
+  (str "(foreign-procedure " (chez-str-lit (:csym node))
+       " (" (str/join " " (map ffi-type->chez (:argtypes node))) ") "
+       (ffi-type->chez (:rettype node)) ")"))
+
 (defn- emit-recur [node]
   (when-not *recur-target* (throw (ex-info "emit: recur outside a loop/fn target" {})))
   (let [arg-nodes (:args node)]
@@ -491,6 +508,7 @@
     :let (emit-let node)
     :loop (emit-loop node)
     :recur (emit-recur node)
+    :ffi-fn (emit-ffi-fn node)
     :fn (emit-fn node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).

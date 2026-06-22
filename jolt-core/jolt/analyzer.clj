@@ -393,6 +393,20 @@
 (defn- analyze-ctor [ctx class args env]
   (host-new class (mapv #(analyze ctx % env) args)))
 
+;; jolt.ffi/__cfn (jolt-ffi): the low-level foreign-function form a jolt library
+;; uses (via the jolt.ffi/foreign-fn macro) to bind native code. Shape:
+;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype)
+;; The C symbol is a string literal and the types are literal keywords, read here
+;; at compile time; the Chez back end lowers it to a real `foreign-procedure`
+;; (typed marshaling, no runtime eval). A leaf IR node.
+(defn- analyze-ffi-fn [ctx items env]
+  (when (not= 4 (count items))
+    (throw (str "jolt.ffi/foreign-fn expects (foreign-fn \"sym\" [argtypes] rettype)")))
+  {:op :ffi-fn
+   :csym (nth items 1)
+   :argtypes (mapv name (form-vec-items (nth items 2)))
+   :rettype (name (nth items 3))})
+
 ;; The `.` special form: `(. target member arg*)` — member access / method call.
 ;; A symbol member whose name starts with "-" is a field read; otherwise it is a
 ;; method (call with the trailing args). Both lower to a :host-call carrying the
@@ -476,6 +490,11 @@
           ;; read -> macroexpand -> analyze. A local shadows both.
           (and (form-sym? head) (not shadowed) (form-macro? ctx head))
             (analyze ctx (form-expand-1 ctx form) env)
+          ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
+          ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).
+          (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
+               (= "__cfn" (form-sym-name head)))
+            (analyze-ffi-fn ctx items env)
           ;; special-form heads are NOT shadowable (unlike macros): a local named
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.
