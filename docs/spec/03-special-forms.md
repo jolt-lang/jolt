@@ -151,5 +151,5 @@ S1–S3, E1 → jolt `forms-spec` let group; clojure-test-suite
 | `var` | `#'` reader sugar; resolution at compile time |
 | `throw` | any value vs Throwable — host question; jolt/cljs allow data, reference requires Throwable → classification needed |
 | `try/catch/finally` | catch dispatch order, `:default`-style catch-all is a dialect extension (⚠ divergence note), finally evaluation guarantees, value of try |
-| `set!` | `(set! *var* val)` sets the var's innermost thread binding, else its root, and returns val (implemented); a local (deftype mutable field) or host `(.-field obj)` target is host-dependent |
+| `set!` | three targets, all implemented: `(set! *var* val)` sets the var's innermost thread binding (else root); `(set! field val)` inside a `deftype` method mutates a `^:unsynchronized-mutable`/`^:volatile-mutable` field in place; `(set! (.-field obj) val)` does the same via interop syntax. Returns val |
 | `.` / `new` | syntax only; behavior host-defined |
