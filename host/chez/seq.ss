@@ -255,8 +255,11 @@
 ;; Return Scheme #t/#f (= jolt true/false). All-flonum model: coerce to an exact
 ;; integer for the parity tests.
 ;; ============================================================================
-(define (jolt-even? n) (fx=? 0 (fxand (->idx n) 1)))
-(define (jolt-odd? n) (fx=? 1 (fxand (->idx n) 1)))
+;; Parity over the full integer range (JVM even?/odd? accept any integer,
+;; bignums included); a fixnum-only fxand crashes on a large value (e.g. a hash).
+(define (parity-int n) (if (flonum? n) (exact (floor n)) n))
+(define (jolt-even? n) (even? (parity-int n)))
+(define (jolt-odd? n) (odd? (parity-int n)))
 (define (jolt-pos? n) (> n 0))
 (define (jolt-neg? n) (< n 0))
 (define (jolt-zero? n) (= n 0))

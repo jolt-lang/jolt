@@ -125,10 +125,29 @@
 (def-var! "jdbc.core" "connection" (lambda (url) (sql-open (jdbc-strip-scheme url))))
 (def-var! "jdbc.core" "execute!"
   (lambda (c sqlvec) (let-values (((sql ps) (jdbc-sqlvec sqlvec))) (sql-query c sql ps) jolt-nil)))
+;; jdbc.core (jolt-lang/db) returns kebab-cased column keys, so an `id_seq`
+;; column reads as :id-seq — the Clojure jdbc convention the templates/queries
+;; expect. (The lower jolt.sqlite/query keeps the raw column names.)
+(define (kebab-keyword k)
+  (if (keyword-t? k)
+      (let ((nm (keyword-t-name k)))
+        (if (memv #\_ (string->list nm))
+            (keyword (keyword-t-ns k) (list->string (map (lambda (c) (if (char=? c #\_) #\- c)) (string->list nm))))
+            k))
+      k))
+(define (kebab-row row)
+  (let loop ((s (jolt-seq row)) (m (jolt-hash-map)))
+    (if (jolt-nil? s) m
+        (let ((e (jolt-first s)))
+          (loop (jolt-seq (jolt-rest s)) (jolt-assoc m (kebab-keyword (jolt-nth e 0)) (jolt-nth e 1)))))))
+(define (kebab-rows rows)
+  (let loop ((i 0) (out (jolt-vector)))
+    (if (>= i (pvec-count rows)) out
+        (loop (+ i 1) (jolt-conj out (kebab-row (pvec-nth-d rows i jolt-nil)))))))
 (def-var! "jdbc.core" "fetch"
-  (lambda (c sqlvec) (let-values (((sql ps) (jdbc-sqlvec sqlvec))) (sql-query c sql ps))))
+  (lambda (c sqlvec) (let-values (((sql ps) (jdbc-sqlvec sqlvec))) (kebab-rows (sql-query c sql ps)))))
 (def-var! "jdbc.core" "fetch-one"
   (lambda (c sqlvec) (let-values (((sql ps) (jdbc-sqlvec sqlvec)))
                        (let ((rows (sql-query c sql ps)))
-                         (if (> (pvec-count rows) 0) (pvec-nth-d rows 0 jolt-nil) jolt-nil)))))
+                         (if (> (pvec-count rows) 0) (kebab-row (pvec-nth-d rows 0 jolt-nil)) jolt-nil)))))
 (def-var! "jdbc.core" "last-insert-id" (lambda (c) (sqlite3_last_insert_rowid (sql-conn-db c))))

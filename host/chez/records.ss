@@ -247,6 +247,15 @@
 ;; holding a mutable cursor over (seq coll); (.hasNext it)/(.next it) walk it.
 ;; hiccup/compiler's run! loop iterates collections this way.
 (define-record-type jiterator (fields (mutable cur)) (nongenerative jolt-iterator-v1))
+;; A Chez condition's message string (for Throwable .getMessage/.toString): the
+;; &message text plus any &irritants, or display-condition output as a fallback.
+(define (condition->message-string c)
+  (if (message-condition? c)
+      (let ((m (condition-message c))
+            (irr (if (irritants-condition? c) (condition-irritants c) '())))
+        (let loop ((xs irr) (acc m))
+          (if (null? xs) acc (loop (cdr xs) (string-append acc " " (jolt-pr-str (car xs)))))))
+      (with-output-to-string (lambda () (display-condition c)))))
 (define (record-method-dispatch obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
@@ -266,6 +275,38 @@
                     (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
              (else (error #f (string-append "No method " method-name " on Iterator")))))
       ((string=? method-name "iterator") (make-jiterator (jolt-seq obj)))
+      ;; clojure.lang.Keyword interop: a Keyword carries an interned `sym` field
+      ;; (the symbol form, ns + name) plus the Named methods. honeysql/reitit read
+      ;; (.sym k) on their :clj branch to recover the symbol without the colon.
+      ((keyword-t? obj)
+       (cond ((string=? method-name "sym")
+              (jolt-symbol (keyword-t-ns obj) (keyword-t-name obj)))
+             ((string=? method-name "getName") (keyword-t-name obj))
+             ((string=? method-name "getNamespace") (or (keyword-t-ns obj) jolt-nil))
+             ((string=? method-name "toString")
+              (string-append ":" (if (keyword-t-ns obj) (string-append (keyword-t-ns obj) "/") "")
+                             (keyword-t-name obj)))
+             ((string=? method-name "hashCode") (keyword-t-khash obj))
+             ((string=? method-name "equals") (and (pair? rest) (eq? obj (car rest))))
+             (else (error #f (string-append "No method " method-name " on Keyword")))))
+      ;; clojure.lang.Symbol interop: the Named methods + getName/getNamespace.
+      ((symbol-t? obj)
+       (cond ((string=? method-name "getName") (symbol-t-name obj))
+             ((string=? method-name "getNamespace") (or (symbol-t-ns obj) jolt-nil))
+             ((string=? method-name "toString")
+              (string-append (if (symbol-t-ns obj) (string-append (symbol-t-ns obj) "/") "")
+                             (symbol-t-name obj)))
+             ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
+             (else (error #f (string-append "No method " method-name " on Symbol")))))
+      ;; java.lang.Throwable interop over a Chez condition. A jolt host error
+      ;; (`error`/`assertion-violationf`) raises a Chez condition; Clojure code
+      ;; that catches it as a Throwable reads (.getMessage e) / (.toString e).
+      ((condition? obj)
+       (cond ((or (string=? method-name "getMessage") (string=? method-name "getLocalizedMessage"))
+              (condition->message-string obj))
+             ((string=? method-name "toString") (condition->message-string obj))
+             ((string=? method-name "getCause") jolt-nil)
+             (else (error #f (string-append "No method " method-name " on Throwable")))))
       ;; java.lang.Character interop: (.toString \+) -> "+", etc.
       ((char? obj)
        (cond ((string=? method-name "toString") (string obj))

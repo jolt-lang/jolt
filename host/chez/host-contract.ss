@@ -226,9 +226,14 @@
           ((hc-interop-head? nm) form)                 ; interop (.method / Class. / .-field): bare
           ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
           (else (jolt-symbol (chez-actx-cns ctx) nm)))  ; else: qualify to compile ns
-        ;; qualified (a real ns or an alias): ns aliases aren't modeled on the Chez
-        ;; data layer yet, so leave a qualified symbol as written (jolt-qjr0).
-        form)))
+        ;; qualified: if the ns part is an :as alias in the compile ns, resolve it
+        ;; to the target namespace — Clojure resolves the alias part of a qualified
+        ;; symbol in syntax-quote, so a macro's `impl/foo` expands to its real
+        ;; (clojure.tools.logging.impl/foo) name and stays unambiguous even when
+        ;; another loaded ns shares the alias's short name (jolt-qjr0). Otherwise
+        ;; leave it as written (a real ns or an interop class token).
+        (let ((target (chez-resolve-alias (chez-actx-cns ctx) sns)))
+          (if target (jolt-symbol target nm) form)))))
 
 (define (hc-sq-lower ctx form gsmap)
   (cond

@@ -187,6 +187,30 @@
           binds (str/join " " (map (fn [t a] (str "(" t " " a ")")) tmps arg-strs))]
       (str "(let* (" binds ") (" ctor " " (str/join " " tmps) "))"))))
 
+;; An operand whose evaluation has no observable effect and whose result doesn't
+;; depend on when it runs: constants, locals, var/the-var reads, quoted literals.
+;; Re-ordering such operands relative to others is invisible.
+(defn- side-effect-free? [n]
+  (contains? #{:const :local :var :the-var :quote} (:op n)))
+
+;; Clojure evaluates a call's operands (and recur's args) left to right; Chez's
+;; application order is unspecified (right-to-left in practice). Force source
+;; order by binding operands to fresh temps in a let* — but only when two or more
+;; could have observable effects, so hot calls over locals/consts stay un-wrapped.
+(defn- needs-order? [nodes]
+  (> (count (remove side-effect-free? nodes)) 1))
+
+;; Build a call from operand strings, forcing left-to-right evaluation when
+;; needed. `nodes`/`strs` are the operands (parallel); `build` receives the
+;; operand strings to splice (temps when wrapped, raw otherwise) and returns the
+;; call. Operands that don't need ordering are passed through inline.
+(defn- ordered-call [nodes strs build]
+  (if (needs-order? nodes)
+    (let [tmps (mapv (fn [_] (fresh-label "_a$")) strs)
+          binds (str/join " " (map (fn [t a] (str "(" t " " a ")")) tmps strs))]
+      (str "(let* (" binds ") " (build tmps) ")"))
+    (build strs)))
+
 ;; Quoted literals (jolt-u8j7). A :quote node's :form is the RAW reader form;
 ;; reconstruct each as the matching Chez RT constructor — the runtime value of a
 ;; quote is just that literal data. The form is walked via the jolt.host form-*
@@ -257,7 +281,9 @@
 
 (defn- emit-recur [node]
   (when-not *recur-target* (throw (ex-info "emit: recur outside a loop/fn target" {})))
-  (str "(" *recur-target* " " (str/join " " (map emit (:args node))) ")"))
+  (let [arg-nodes (:args node)]
+    (ordered-call arg-nodes (mapv emit arg-nodes)
+                  (fn [as] (str "(" *recur-target* " " (str/join " " as) ")")))))
 
 ;; One arity -> a Scheme lambda param-list + a named-let-wrapped body. The named
 ;; let lets fn-level `recur` rebind this arity's params. A variadic arity takes a
@@ -324,40 +350,55 @@
 
 (defn- emit-invoke [node]
   (let [fnode (:fn node)
-        args (mapv emit (:args node))
+        arg-nodes (:args node)
+        args (mapv emit arg-nodes)
         nop (native-op fnode (count args))
         kind (ifn-kind fnode)
-        default (if (> (count args) 1) (str " " (nth args 1)) "")]
+        ;; order args left-to-right (build receives the spliced operand strings)
+        order-args (fn [build] (ordered-call arg-nodes args build))
+        defstr (fn [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
+        ;; jolt-invoke dispatch: Clojure evaluates the fn expr before the args, so
+        ;; order [callee & args] together when ordering is observable.
+        invoke (fn []
+                 (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
+                               (fn [[f & as]]
+                                 (str "(jolt-invoke " f (if (seq as) (str " " (str/join " " as)) "") ")"))))]
     (cond
       ;; zero-arg + / * : exact integer identity (= JVM long: (+) -> 0, (*) -> 1).
       (and nop (empty? args) (= nop "+")) "0"
       (and nop (empty? args) (= nop "*")) "1"
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
-      nop (str "(" nop " " (str/join " " args) ")")
-      ;; (:k coll [default]) -> (jolt-get coll :k [default])
-      (= kind :keyword) (str "(jolt-get " (first args) " " (emit fnode) default ")")
-      ;; (coll k [default]) -> (jolt-get coll k [default])
-      (= kind :coll) (str "(jolt-get " (emit fnode) " " (first args) default ")")
+      nop (order-args (fn [as] (str "(" nop " " (str/join " " as) ")")))
+      ;; (:k coll [default]) -> (jolt-get coll :k [default]) — the key (fnode) is a
+      ;; const, so only the coll/default args carry order.
+      (= kind :keyword)
+      (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))
+      ;; (coll k [default]) -> (jolt-get coll k [default]) — coll (fnode) is the
+      ;; callee, evaluated before the key/default args.
+      (= kind :coll)
+      (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
+                    (fn [[c & as]] (str "(jolt-get " c " " (str/join " " as) ")")))
       (and (stdlib-var? fnode) (not (deref prelude-mode?)))
       (throw (ex-info (str "emit: unsupported stdlib fn `" (:ns fnode) "/" (:name fnode)
                            "` (no core on Chez yet)") {}))
       ;; static method call (Class/method arg*) -> (host-static-call ...).
       (= :host-static (:op fnode))
-      (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
-           (if (empty? args) "" (str " " (str/join " " args))) ")")
+      (order-args (fn [as]
+                    (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
+                         (if (empty? as) "" (str " " (str/join " " as))) ")")))
       (= :host (:op fnode))
       (throw (ex-info (str "emit: unsupported host call `" (:name fnode) "`") {}))
       ;; a :local callee that isn't a known procedure -> dynamic IFn dispatch.
       (and (= :local (:op fnode)) (not (*known-procs* (munge-name (:name fnode)))))
-      (str "(jolt-invoke " (emit fnode) " " (str/join " " args) ")")
+      (invoke)
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
       (= :var (:op fnode))
-      (str "(jolt-invoke " (emit fnode) " " (str/join " " args) ")")
+      (invoke)
       ;; a computed callee can yield ANY IFn — route through jolt-invoke.
       :else
-      (str "(jolt-invoke " (emit fnode) " " (str/join " " args) ")"))))
+      (invoke))))
 
 ;; try/catch/finally (jolt-vcsl). throw raises the jolt value RAW (jolt-throw =
 ;; Scheme `raise`); catch lowers to `guard` with an `else` clause (the IR drops

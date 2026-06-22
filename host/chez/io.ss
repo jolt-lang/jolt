@@ -20,9 +20,19 @@
 ;; path string of any value: a jfile -> its path, else its str rendering.
 (define (file-path-of x) (if (jfile? x) (jfile-path x) (jolt-str-render-one x)))
 
+;; A user-facing relative path resolves against JOLT_PWD — the user's cwd before
+;; the launcher cd'd to the jolt repo root — matching the JVM, where io/file is
+;; cwd-relative. (io/resource builds jfiles from the source roots directly, so it
+;; isn't routed through here.)
+(define (project-relative p)
+  (if (or (= (string-length p) 0) (char=? (string-ref p 0) #\/))
+      p
+      (let ((pwd (getenv "JOLT_PWD")))
+        (if (and pwd (> (string-length pwd) 0)) (string-append pwd "/" p) p))))
+
 ;; (io/file path) / (io/file parent child) — join children with "/".
 (define (jolt-make-file path . rest)
-  (let loop ((p (file-path-of path)) (cs rest))
+  (let loop ((p (project-relative (file-path-of path))) (cs rest))
     (if (null? cs) (make-jfile p)
         (loop (string-append p "/" (file-path-of (car cs))) (cdr cs)))))
 

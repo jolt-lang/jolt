@@ -30,16 +30,41 @@
 ;; A project's resolved deps roots are prepended to these by jolt.main.
 (set-source-roots! (list "jolt-core" "src/jolt"))
 
-(cond
-  ;; -e EXPR — evaluate one expression and print it (blank for nil). Wrapped in
-  ;; (do …) so a multi-form string evaluates every form and returns the last.
-  ((and (= (length cli-args) 2) (string=? (car cli-args) "-e"))
-   (let ((result (jolt-final-str
-                   (jolt-compile-eval (string-append "(do " (cadr cli-args) ")") "user"))))
-     (unless (string=? result "")
-       (display result) (newline))))
-  ;; otherwise dispatch the argv through jolt.main/-main
-  (else
-   (load-namespace "jolt.main")
-   (let ((mainv (var-deref "jolt.main" "-main")))
-     (apply jolt-invoke mainv cli-args))))
+;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
+;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. An
+;; ex-info shows its message + ex-data; anything else is pr-str'd.
+(define (jolt-report-uncaught v)
+  (let ((port (current-error-port)))
+    (if (and (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info))
+        (begin
+          (display "Unhandled exception: " port)
+          (display (jolt-str-render-one (jolt-get v jolt-kw-message jolt-nil)) port)
+          (newline port)
+          (let ((data (jolt-get v jolt-kw-data jolt-nil)))
+            (unless (jolt-nil? data)
+              (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
+          (let ((cause (jolt-get v jolt-kw-cause jolt-nil)))
+            (when (condition? cause)
+              (display "  cause: " port)
+              (display (with-output-to-string (lambda () (display-condition cause))) port)
+              (newline port))))
+        (begin
+          (display "Unhandled exception: " port)
+          (display (if (condition? v) (with-output-to-string (lambda () (display-condition v))) (jolt-pr-str v)) port)
+          (newline port)))
+    (exit 1)))
+
+(guard (v (#t (jolt-report-uncaught v)))
+  (cond
+    ;; -e EXPR — evaluate one expression and print it (blank for nil). Wrapped in
+    ;; (do …) so a multi-form string evaluates every form and returns the last.
+    ((and (= (length cli-args) 2) (string=? (car cli-args) "-e"))
+     (let ((result (jolt-final-str
+                     (jolt-compile-eval (string-append "(do " (cadr cli-args) ")") "user"))))
+       (unless (string=? result "")
+         (display result) (newline))))
+    ;; otherwise dispatch the argv through jolt.main/-main
+    (else
+     (load-namespace "jolt.main")
+     (let ((mainv (var-deref "jolt.main" "-main")))
+       (apply jolt-invoke mainv cli-args)))))

@@ -84,7 +84,11 @@
 (define empty-hnode (make-hnode 0 (vector)))
 (define hmask #x3FFFFFFFFFFFFFF)       ; 58-bit non-negative hash window
 (define max-shift 55)
-(define (key-hash k) (fxand (jolt-hash k) hmask))
+;; bitwise-and (not fxand): jolt-hash is set!-decorated per type (records/inst/
+;; sorted return their own hash) and Chez's equal-hash can yield a BIGNUM, so a
+;; key's hash isn't guaranteed to be a fixnum. Masking with the 58-bit window via
+;; the generic bitwise-and always lands in fixnum range for the HAMT's fx slicing.
+(define (key-hash k) (bitwise-and (jolt-hash k) hmask))
 (define (chunk h shift) (fxand (fxsra h shift) 31))
 (define (bitpos h shift) (fxsll 1 (chunk h shift)))
 (define (popcount n) (let loop ((n n) (c 0)) (if (fx=? n 0) c (loop (fxand n (fx- n 1)) (fx+ c 1)))))

@@ -128,6 +128,9 @@
     ;; getMessage with itself; equals is value equality.
     ((or (string=? method "getMessage") (string=? method "getLocalizedMessage")) s)
     ((string=? method "equals") (and (string? (arg 0)) (string=? s (arg 0))))
+    ;; String.intern: jolt strings aren't pooled, but value equality holds, so the
+    ;; canonical representation is the string itself.
+    ((string=? method "intern") s)
     (else (error #f (string-append "No method " method " for value")))))
 
 ;; --- clojure.core str-* primitives (the substrate clojure.string.clj calls) ---

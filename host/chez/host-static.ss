@@ -609,3 +609,17 @@
 (def-var! "clojure.core" "host-static-ref" host-static-ref)
 (def-var! "clojure.core" "host-static-call" (lambda (c m . a) (apply host-static-call c m a)))
 (def-var! "clojure.core" "host-new" (lambda (c . a) (apply host-new c a)))
+
+;; Clojure-visible class-registration hooks. A host shim (e.g. reitit.trie-jolt,
+;; which mirrors the reitit.Trie Java class) registers a constructor proc or a
+;; map of static members against a class token so (Class. args) / (Class/member
+;; args) resolve to it. The statics argument is a jolt map {member-name -> val}.
+(define (jmap->static-alist m)
+  (let loop ((s (jolt-seq m)) (acc '()))
+    (if (jolt-nil? s) acc
+        (let ((e (jolt-first s)))
+          (loop (jolt-seq (jolt-rest s)) (cons (cons (jolt-nth e 0) (jolt-nth e 1)) acc))))))
+(def-var! "clojure.core" "__register-class-ctor!"
+  (lambda (name proc) (register-class-ctor! name proc) jolt-nil))
+(def-var! "clojure.core" "__register-class-statics!"
+  (lambda (name members) (register-class-statics! name (jmap->static-alist members)) jolt-nil))
