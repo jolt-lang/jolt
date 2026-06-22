@@ -101,6 +101,13 @@
   {:suite "hostctor" :expr "(instance? java.net.URI (java.net.URI. \"/x\"))" :expected "true"}
   {:suite "hostctor" :expr "(let [a (java.util.ArrayList.)] (.add a 1) (.add a 2) (.add a 3) (.remove a 0) [(.size a) (vec (.toArray a))])" :expected "[2 [2 3]]"}
   {:suite "hostctor" :expr "[(.indexOf [:a :b :c] :b) (.indexOf (list :a :b) :b) (.indexOf [:a] :z) (.indexOf (range 0 10) 1)]" :expected "[1 1 -1 1]"}
+  {:suite "sdf" :expr "(.format (java.text.SimpleDateFormat. \"EEE, dd MMM yyyy HH:mm:ss zzz\") (java.util.Date. 1348401170000))" :expected "Sun, 23 Sep 2012 11:52:50 GMT"}
+  {:suite "sdf" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"EEE, dd MMM yyyy HH:mm:ss zzz\") \"Sun, 23 Sep 2012 11:52:50 GMT\"))" :expected "1348401170000"}
+  {:suite "sdf" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"EEEE, dd-MMM-yy HH:mm:ss zzz\") \"Sunday, 23-Sep-12 11:52:50 GMT\"))" :expected "1348401170000"}
+  {:suite "sdf" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"EEE MMM d HH:mm:ss yyyy\") \"Sun Sep 23 11:52:50 2012\"))" :expected "1348401170000"}
+  {:suite "sdf" :expr "(let [f (java.text.SimpleDateFormat. \"yyyy-MM-dd\")] (.format f (.parse f \"2023-07-15\")))" :expected "2023-07-15"}
+  {:suite "reader" :expr "(let [r (-> \"foo bar baz\" java.io.StringReader. java.io.PushbackReader.)] [(read r) (slurp r)])" :expected "[foo  bar baz]"}
+  {:suite "reader" :expr "(let [r (-> \"(+ 1 2) 99\" java.io.StringReader. java.io.PushbackReader.)] [(read r) (read r)])" :expected "[(+ 1 2) 99]"}
   {:suite "dotform" :expr "(.equals \"a\" \"a\")" :expected "true"}
   {:suite "dotform" :expr "(.equals \"a\" \"b\")" :expected "false"}
   {:suite "dotform" :expr "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)" :expected "v=41"}

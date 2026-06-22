@@ -130,6 +130,23 @@
 (define (reader-jhost? x)
   (and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader"))))
 
+;; Refill a host reader so subsequent read/slurp see `s` (the unconsumed tail).
+(define (reader-refill! r s)
+  (cond
+    ((string=? (jhost-tag r) "string-reader")
+     (vector-set! (jhost-state r) 0 s) (vector-set! (jhost-state r) 1 0))
+    ((string=? (jhost-tag r) "pushback-reader")
+     (vector-set! (jhost-state r) 0 (host-new "StringReader" s))
+     (vector-set! (jhost-state r) 1 '()))))
+;; Read ONE form from a host reader (StringReader/PushbackReader): drain the
+;; remaining chars, parse one form, push the tail back. -> (values form found?).
+;; (read r) over a java.io reader — cuerdas' interpolation reads this way.
+(define (host-reader-read-form r)
+  (let* ((s (drain-reader r)) (pr (jolt-parse-next s)))
+    (if (jolt-nil? pr)
+        (begin (reader-refill! r "") (values jolt-nil #f))
+        (begin (reader-refill! r (jolt-nth pr 1)) (values (jolt-nth pr 0) #t)))))
+
 ;; clojure.edn/read over a reader (jolt-uicd): the overlay edn.clj's drain-reader is
 ;; janet/type-coupled, so on Chez we drain the jhost reader to a string and read the
 ;; first EDN form (read-string). Re-asserted over the prelude in post-prelude.ss.
