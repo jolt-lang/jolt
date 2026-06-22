@@ -15,76 +15,98 @@
 
 (def ^:private reader-eof :jolt/reader-eof)
 
+;; *in* is a Reader, not a map — so (map? *in*) is false, matching the JVM
+;; (java.io.Reader). The reader is a reify over IReader (a non-map value, unlike
+;; a defrecord which IS a map); read/read-line/read+string dispatch through its
+;; methods. Each implementation closes over its own buffer atom: read may pull a
+;; whole line to parse a form and hands the remainder to the next read/read-line.
+(defprotocol IReader
+  (-read-line [rdr] "Next line, newline stripped; nil at EOF.")
+  (-read-form [rdr] "Next form; the reader-eof sentinel at end of input.")
+  (-read+string [rdr eof-error? eof-value]
+    "Next form plus the exact text consumed (leading whitespace included), as
+    [form text]. On EOF: throws, or returns [eof-value \"\"] when eof-error? is false."))
+
 (defn __string-reader
   "A reader over string s (the with-in-str expansion calls this)."
   [s]
   (let [buf (atom s)]
-    {:buf buf
-     :fill-fn nil
-     :read-line-fn
-     (fn []
-       (let [cur @buf]
-         (when (pos? (count cur))
-           (let [i (str-find "\n" cur)]
-             (if (nil? i)
-               (do (reset! buf "") cur)
-               (do (reset! buf (subs cur (inc i))) (subs cur 0 i)))))))
-     :read-fn
-     (fn []
-       (let [r (__parse-next @buf)]
-         (if (nil? r)
-           reader-eof
-           (do (reset! buf (nth r 1)) (nth r 0)))))}))
+    (reify IReader
+      (-read-line [_]
+        (let [cur @buf]
+          (when (pos? (count cur))
+            (let [i (str-find "\n" cur)]
+              (if (nil? i)
+                (do (reset! buf "") cur)
+                (do (reset! buf (subs cur (inc i))) (subs cur 0 i)))))))
+      (-read-form [_]
+        (let [r (__parse-next @buf)]
+          (if (nil? r)
+            reader-eof
+            (do (reset! buf (nth r 1)) (nth r 0)))))
+      (-read+string [_ eof-error? eof-value]
+        (let [s @buf
+              r (__parse-next s)]
+          (if (nil? r)
+            (if eof-error?
+              (throw (ex-info "EOF while reading" {}))
+              [eof-value ""])
+            (do (reset! buf (nth r 1))
+                [(nth r 0) (subs s 0 (- (count s) (count (nth r 1))))])))))))
 
-;; Real stdin, with a leftover buffer shared by read and read-line: read may
-;; pull a whole line to parse a form and must hand the remainder to the next
-;; read/read-line.
+;; Real stdin, with a leftover buffer shared by read and read-line.
 (def ^:private stdin-buf (atom ""))
 
 (def ^:dynamic *in*
-  {:buf stdin-buf
-   :fill-fn (fn []
-              (let [line (__stdin-read-line)]
-                (if (nil? line)
-                  false
-                  (do (swap! stdin-buf (fn [b] (str b line "\n"))) true))))
-   :read-line-fn
-   (fn []
-     (let [cur @stdin-buf]
-       (if (pos? (count cur))
-         (let [i (str-find "\n" cur)]
-           (if (nil? i)
-             (do (reset! stdin-buf "") cur)
-             (do (reset! stdin-buf (subs cur (inc i))) (subs cur 0 i))))
-         (__stdin-read-line))))
-   :read-fn
-   (fn []
-     (loop []
-       (let [r (__parse-next @stdin-buf)]
-         (if (nil? r)
-           (let [line (__stdin-read-line)]
-             (if (nil? line)
-               reader-eof
-               (do (swap! stdin-buf (fn [b] (str b line "\n"))) (recur))))
-           (do (reset! stdin-buf (nth r 1)) (nth r 0))))))})
+  (reify IReader
+    (-read-line [_]
+      (let [cur @stdin-buf]
+        (if (pos? (count cur))
+          (let [i (str-find "\n" cur)]
+            (if (nil? i)
+              (do (reset! stdin-buf "") cur)
+              (do (reset! stdin-buf (subs cur (inc i))) (subs cur 0 i))))
+          (__stdin-read-line))))
+    (-read-form [_]
+      (loop []
+        (let [r (__parse-next @stdin-buf)]
+          (if (nil? r)
+            (let [line (__stdin-read-line)]
+              (if (nil? line)
+                reader-eof
+                (do (swap! stdin-buf (fn [b] (str b line "\n"))) (recur))))
+            (do (reset! stdin-buf (nth r 1)) (nth r 0))))))
+    (-read+string [_ eof-error? eof-value]
+      (loop []
+        (let [s @stdin-buf
+              r (__parse-next s)]
+          (if (nil? r)
+            (let [line (__stdin-read-line)]
+              (if (nil? line)
+                (if eof-error?
+                  (throw (ex-info "EOF while reading" {}))
+                  [eof-value ""])
+                (do (swap! stdin-buf (fn [b] (str b line "\n"))) (recur))))
+            (do (reset! stdin-buf (nth r 1))
+                [(nth r 0) (subs s 0 (- (count s) (count (nth r 1))))])))))))
 
 (defn read-line
   "Reads the next line from the stream that is the current value of *in*.
   Returns nil at EOF."
   []
-  ((:read-line-fn *in*)))
+  (-read-line *in*))
 
 (defn read
   "Reads the next object from stream (defaults to *in*). At EOF, throws —
   or returns eof-value when eof-error? is false."
   ([] (read *in*))
   ([stream]
-   (let [v ((:read-fn stream))]
+   (let [v (-read-form stream)]
      (if (= v reader-eof)
        (throw (ex-info "EOF while reading" {}))
        v)))
   ([stream eof-error? eof-value]
-   (let [v ((:read-fn stream))]
+   (let [v (-read-form stream)]
      (if (= v reader-eof)
        (if eof-error? (throw (ex-info "EOF while reading" {})) eof-value)
        v))))
@@ -95,26 +117,11 @@
   `(binding [*in* (__string-reader ~s)]
      ~@body))
 
-;; Like read, and also returns the exact text consumed for the form (leading
-;; whitespace included). On EOF: throws, or returns [eof-value ""] when
-;; eof-error? is false.
 (defn read+string
   ([] (read+string *in*))
   ([stream] (read+string stream true nil))
   ([stream eof-error? eof-value]
-   (let [buf (get stream :buf)
-         fill (get stream :fill-fn)]
-     (loop []
-       (let [s (deref buf)
-             r (__parse-next s)]
-         (if (nil? r)
-           (if (and fill (fill))
-             (recur)
-             (if eof-error?
-               (throw (ex-info "EOF while reading" {}))
-               [eof-value ""]))
-           (do (reset! buf (nth r 1))
-               [(nth r 0) (subs s 0 (- (count s) (count (nth r 1))))])))))))
+   (-read+string stream eof-error? eof-value)))
 
 (defn line-seq
   "Returns the lines of text from rdr as a lazy sequence of strings, as by
@@ -124,7 +131,7 @@
   (if (string? rdr)
     (seq (str-split "\n" rdr))
     (lazy-seq
-      (let [line ((:read-line-fn rdr))]
+      (let [line (-read-line rdr)]
         (when line
           (cons line (line-seq rdr)))))))
 
