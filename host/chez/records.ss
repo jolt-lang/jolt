@@ -323,6 +323,10 @@
               (condition->message-string obj))
              ((string=? method-name "toString") (condition->message-string obj))
              ((string=? method-name "getCause") jolt-nil)
+             ;; java.sql.SQLException chaining — jolt errors don't chain (nil).
+             ((or (string=? method-name "getNextException") (string=? method-name "getCause")) jolt-nil)
+             ((string=? method-name "getStackTrace") (jolt-vector))
+             ((string=? method-name "printStackTrace") jolt-nil)
              (else (error #f (string-append "No method " method-name " on Throwable")))))
       ;; java.lang.Character interop: (.toString \+) -> "+", etc.
       ((char? obj)

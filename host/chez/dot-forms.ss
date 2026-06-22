@@ -57,6 +57,9 @@
                (jolt-get obj jolt-kw-message jolt-nil)
                (jolt-str-render-one obj))))
     ((string=? name "getCause")  (list (jolt-get obj jolt-kw-cause jolt-nil)))
+    ;; java.sql.SQLException chaining — ex-info / host throwables don't chain.
+    ((string=? name "getNextException") (list jolt-nil))
+    ((string=? name "getStackTrace") (list (jolt-vector)))
     ((string=? name "toString")  (list (jolt-str-render-one obj)))
     ((string=? name "hashCode")  (list (jolt-hash obj)))
     ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))

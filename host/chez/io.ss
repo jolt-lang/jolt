@@ -62,9 +62,18 @@
 (define (url-strip-scheme spec)
   (if (and (>= (string-length spec) 5) (string=? (substring spec 0 5) "file:"))
       (substring spec 5 (string-length spec)) spec))
+(define (url-protocol spec)
+  (let ((i (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                   ((char=? (string-ref spec j) #\:) j) (else (loop (+ j 1)))))))
+    (if i (substring spec 0 i) "")))
+;; (java.net.URL. spec) — a basic file/http URL value (a library may register a
+;; richer URL shim, which overrides this).
+(register-class-ctor! "URL" (lambda (spec . _) (make-url (jolt-str-render-one spec))))
+(register-class-ctor! "java.net.URL" (lambda (spec . _) (make-url (jolt-str-render-one spec))))
 (register-host-methods! "url"
   (list (cons "toString"       (lambda (self) (url-spec self)))
         (cons "toExternalForm" (lambda (self) (url-spec self)))
+        (cons "getProtocol"    (lambda (self) (url-protocol (url-spec self))))
         (cons "getPath"        (lambda (self) (url-strip-scheme (url-spec self))))
         (cons "getFile"        (lambda (self) (url-strip-scheme (url-spec self))))))
 
@@ -340,6 +349,36 @@
           ((htable? x) x)
           (else (let ((ctor (lookup-class class-ctors-tbl "URL")))
                   (if ctor (ctor (jolt-str-render-one x)) (make-url (jolt-str-render-one x))))))))
+
+;; --- java.lang.ClassLoader (jolt-1nnn) --------------------------------------
+;; jolt has no classpath; a "classloader" resolves a named resource against the
+;; loader's source roots (the same model as clojure.java.io/resource), returning a
+;; file: URL or nil. getSystemClassLoader / a thread's contextClassLoader both hand
+;; back this loader. Libraries that probe the classpath (e.g. migratus's migration-
+;; dir discovery) then fall back to the filesystem when a resource isn't a root.
+(define the-classloader (make-jhost "classloader" (vector)))
+(define (cl-get-resource self name)
+  (let ((nm (jolt-str-render-one name)))
+    (let loop ((roots (get-source-roots)))
+      (cond ((null? roots) jolt-nil)
+            ((file-exists? (string-append (car roots) "/" nm))
+             (make-url (string-append "file:" (car roots) "/" nm)))
+            (else (loop (cdr roots)))))))
+(register-host-methods! "classloader"
+  (list (cons "getResource" cl-get-resource)
+        (cons "getResourceAsStream"
+              (lambda (self name)
+                (let ((u (cl-get-resource self name)))
+                  (if (jolt-nil? u) jolt-nil (host-new "StringReader" (jolt-slurp (url-strip-scheme (url-spec u))))))))))
+(register-class-statics! "ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
+(register-class-statics! "java.lang.ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
+;; Thread/currentThread -> a thread jhost whose getContextClassLoader is the loader.
+(define the-thread (make-jhost "thread" (vector)))
+(register-host-methods! "thread"
+  (list (cons "getContextClassLoader" (lambda (self) the-classloader))
+        (cons "getName" (lambda (self) "main"))))
+(register-class-statics! "Thread" (list (cons "currentThread" (lambda () the-thread))))
+(register-class-statics! "java.lang.Thread" (list (cons "currentThread" (lambda () the-thread))))
 
 ;; --- java.io.File / java.util.UUID constructors (jolt-1nnn) ------------------
 ;; (java.io.File. parent child) joins with "/"; (File. path) wraps the path.
