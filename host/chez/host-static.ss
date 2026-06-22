@@ -308,6 +308,55 @@
         (cons "close" (lambda (self) (fw-flush! self) jolt-nil))
         (cons "toString" (lambda (self) (fw-buf self)))))
 
+;; ---- java.util.HashMap ------------------------------------------------------
+;; A mutable map keyed by jolt values (jolt-hash / jolt=2). State #(chez-hashtable).
+;; Constructors: () | (capacity) | (capacity load-factor) [sizing args ignored] |
+;; (Map m) [copy]. Enough of the Map surface for libraries that build a fast lookup
+;; (malli's fast-registry: (doto (HashMap. 1024 0.25) (.putAll m)) then .get).
+(define (hm-hash k) (let ((h (jolt-hash k)))
+                      (bitwise-and (if (and (integer? h) (exact? h)) (abs h) 0) #x3FFFFFFF)))
+(define (hm-tbl self) (vector-ref (jhost-state self) 0))
+(define (hm-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
+(define (hm-copy-into! ht src)            ; src: a jolt map or another hashmap
+  (if (hm-hashmap? src)
+      (vector-for-each (lambda (k) (hashtable-set! ht k (hashtable-ref (hm-tbl src) k jolt-nil)))
+                       (hashtable-keys (hm-tbl src)))
+      (for-each (lambda (e) (hashtable-set! ht (jolt-nth e 0) (jolt-nth e 1)))
+                (seq->list (jolt-seq src)))))
+(register-class-ctor! "HashMap"
+  (lambda args
+    (let ((ht (make-hashtable hm-hash jolt=2)))
+      (when (and (pair? args) (or (pmap? (car args)) (hm-hashmap? (car args))))
+        (hm-copy-into! ht (car args)))
+      (make-jhost "hashmap" (vector ht)))))
+(define (hm->pmap self)
+  (let ((m (jolt-hash-map)))
+    (vector-for-each (lambda (k) (set! m (jolt-assoc m k (hashtable-ref (hm-tbl self) k jolt-nil))))
+                     (hashtable-keys (hm-tbl self)))
+    m))
+(register-host-methods! "hashmap"
+  (list (cons "put" (lambda (self k v) (let ((old (hashtable-ref (hm-tbl self) k jolt-nil)))
+                                          (hashtable-set! (hm-tbl self) k v) old)))
+        (cons "get" (lambda (self k) (hashtable-ref (hm-tbl self) k jolt-nil)))
+        (cons "getOrDefault" (lambda (self k d) (hashtable-ref (hm-tbl self) k d)))
+        (cons "containsKey" (lambda (self k) (if (hashtable-contains? (hm-tbl self) k) #t #f)))
+        (cons "containsValue" (lambda (self v)
+          (let ((found #f))
+            (vector-for-each (lambda (k) (when (jolt=2 v (hashtable-ref (hm-tbl self) k jolt-nil)) (set! found #t)))
+                             (hashtable-keys (hm-tbl self))) found)))
+        (cons "size" (lambda (self) (hashtable-size (hm-tbl self))))
+        (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
+        (cons "remove" (lambda (self k) (let ((old (hashtable-ref (hm-tbl self) k jolt-nil)))
+                                           (hashtable-delete! (hm-tbl self) k) old)))
+        (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) jolt-nil))
+        (cons "putAll" (lambda (self m) (hm-copy-into! (hm-tbl self) m) jolt-nil))
+        (cons "keySet" (lambda (self) (apply jolt-hash-set (vector->list (hashtable-keys (hm-tbl self))))))
+        (cons "values" (lambda (self) (apply jolt-vector
+                          (map (lambda (k) (hashtable-ref (hm-tbl self) k jolt-nil))
+                               (vector->list (hashtable-keys (hm-tbl self)))))))
+        (cons "entrySet" (lambda (self) (jolt-seq (hm->pmap self))))
+        (cons "toString" (lambda (self) (jolt-pr-str (hm->pmap self))))))
+
 ;; ---- StringReader -----------------------------------------------------------
 ;; state: a vector #(string pos marked).
 (register-class-ctor! "StringReader"

@@ -266,7 +266,8 @@
                     (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
              (else (error #f (string-append "No method " method-name " on Iterator")))))
       ((string=? method-name "iterator") (make-jiterator (jolt-seq obj)))
-      (else (error #f (string-append "No method " method-name " for value"))))))
+      (else (error #f (string-append "No method " method-name " for value: "
+                                     (jolt-pr-str obj)))))))
 
 ;; reify: instance-local method table. obj is a jreify carrying a method ht +
 ;; the protocol short-names it implements (for satisfies?/instance?).
