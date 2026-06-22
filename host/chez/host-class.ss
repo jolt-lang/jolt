@@ -55,13 +55,11 @@
 ;; fully-qualified canonical class names self-evaluate to their own name string,
 ;; so (= (class 1) java.lang.Long) and (instance? clojure.lang.Atom x) resolve the
 ;; class token (= what jolt-class / instance-check key on).
+;; Value classes only — NOT the collection interfaces (ISeq/IPersistentMap/...),
+;; which downstream code (e.g. SCI) references as protocols/interfaces.
 (for-each
   (lambda (nm) (def-var! "clojure.core" nm nm))
   '("java.lang.Long" "java.lang.Integer" "java.lang.Double" "java.lang.Float"
     "java.lang.Number" "java.lang.String" "java.lang.Boolean" "java.lang.Character"
-    "java.lang.Object" "java.lang.CharSequence" "java.lang.Comparable"
-    "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.BigInt"
-    "clojure.lang.Atom" "clojure.lang.IFn" "clojure.lang.Fn" "clojure.lang.ISeq"
-    "clojure.lang.IPersistentMap" "clojure.lang.IPersistentVector" "clojure.lang.IPersistentCollection"
-    "clojure.lang.PersistentVector" "clojure.lang.Var" "clojure.lang.Namespace"
-    "clojure.lang.MapEntry"))
+    "java.lang.Object"
+    "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.Atom"))

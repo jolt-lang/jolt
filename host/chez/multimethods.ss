@@ -58,22 +58,21 @@
   (let* ((nm (symbol-t-name mm-sym))
          (sns (symbol-t-ns mm-sym))
          (qns (and sns (not (jolt-nil? sns)) (not (null? sns)) sns))
-         ;; resolve the multifn's HOME ns like a var: a qualified name in its own ns
-         ;; (cross-ns defmethod); an unqualified name via current ns -> :refer ->
-         ;; clojure.core, so (defmethod print-method ...) finds clojure.core's multifn
-         ;; instead of auto-creating a stray one in the current ns.
-         (mns (cond
-                (qns (or (chez-resolve-alias (chez-current-ns) qns) qns))
-                ((let ((c (var-cell-lookup (chez-current-ns) nm))) (and c (var-cell-defined? c)))
-                 (chez-current-ns))
-                ((chez-resolve-refer (chez-current-ns) nm))
-                ((let ((c (var-cell-lookup "clojure.core" nm))) (and c (var-cell-defined? c)))
-                 "clojure.core")
-                (else (chez-current-ns))))
+         ;; qualified (cf.mm/ext) resolves in its own ns (cross-ns defmethod);
+         ;; unqualified stays in the current ns (a shadow, as before).
+         (mns (if qns (or (chez-resolve-alias (chez-current-ns) qns) qns) (chez-current-ns)))
          (cur (var-deref mns nm))
          (mf (if (jolt-multifn? cur) cur
-                 (let ((m (make-jolt-multifn nm (var-deref "clojure.core" "identity")
-                                             (new-mm-table) kw-default #f (new-mm-table))))
+                 ;; auto-create: copy the dispatch fn + default from a same-named
+                 ;; clojure.core multifn (e.g. print-method's 2-arg dispatch) so a
+                 ;; (defmethod print-method ...) before naming clojure.core's still
+                 ;; dispatches right — the old 1-arg identity fallback crashed.
+                 (let* ((core (var-deref "clojure.core" nm))
+                        (disp (if (jolt-multifn? core)
+                                  (jolt-multifn-dispatch-fn core)
+                                  (var-deref "clojure.core" "identity")))
+                        (deft (if (jolt-multifn? core) (jolt-multifn-default core) kw-default))
+                        (m (make-jolt-multifn nm disp (new-mm-table) deft #f (new-mm-table))))
                    (def-var! mns nm m) m))))
     (hashtable-set! (jolt-multifn-methods mf) dval impl)
     mf))
