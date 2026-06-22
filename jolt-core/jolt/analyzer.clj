@@ -465,7 +465,10 @@
           ;; read -> macroexpand -> analyze. A local shadows both.
           (and (form-sym? head) (not shadowed) (form-macro? ctx head))
             (analyze ctx (form-expand-1 ctx form) env)
-          (and hname (not shadowed) (contains? handled hname))
+          ;; special-form heads are NOT shadowable (unlike macros): a local named
+          ;; `if` does not change the meaning of (if …) in operator position, per
+          ;; spec §3 and the reference. No (not shadowed) guard here.
+          (and hname (contains? handled hname))
             (analyze-special ctx hname items env)
           (and hname (not shadowed) (method-head? hname))
             (analyze-host-call ctx hname items env)

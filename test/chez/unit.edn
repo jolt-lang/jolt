@@ -449,4 +449,11 @@
   {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {:a 1 :b 2} '(:a [:b :a])))" :expected "(1 [2 1])"}
   {:suite "walk" :expr "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {1 :one} [1 2 1]))" :expected "[:one 2 :one]"}
   {:suite "walk" :expr "(do (require (quote [clojure.template :as t])) (t/apply-template '[x y] '(+ x y) '(1 2)))" :expected "(+ 1 2)"}
+  {:suite "shadowing" :expr "(let [if (fn [a b c] :L)] (if true 1 2))" :expected "1"}
+  {:suite "shadowing" :expr "(let [quote (fn [_] :L)] (quote x))" :expected "x"}
+  {:suite "shadowing" :expr "(let [if 5] if)" :expected "5"}
+  {:suite "shadowing" :expr "((fn [if] (+ if 1)) 7)" :expected "8"}
+  {:suite "shadowing" :expr "(let [when (fn [a b] :local)] (when 1 2))" :expected ":local"}
+  {:suite "macroexpand" :expr "(do (when true (defmacro m6 [x] `(* ~x 2))) (m6 3))" :expected "6"}
+  {:suite "macroexpand" :expr "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 10))" :expected "true"}
 ]

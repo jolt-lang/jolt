@@ -105,10 +105,23 @@
 (def ^:private gensym-counter (atom 0))
 (defn- fresh-label [prefix] (str prefix (swap! gensym-counter inc)))
 
+;; Scheme syntactic keywords. A jolt local with one of these names would, when
+;; emitted verbatim, shadow the Scheme form in operator position (a local named
+;; `if` would turn the special form (if …) the back end emits into a call), so
+;; such locals are prefixed. Matches the spec: special-form heads are not
+;; shadowable, but a value local may legally be named `if`.
+(def ^:private scheme-reserved
+  #{"if" "begin" "lambda" "let" "let*" "letrec" "letrec*" "quote" "quasiquote"
+    "unquote" "set!" "define" "define-syntax" "cond" "case" "when" "unless"
+    "and" "or" "do" "else" "guard" "parameterize" "delay" "values"})
+
 ;; Most jolt names are already valid Scheme identifiers. The one that isn't is
 ;; `#`, which jolt auto-gensyms use as a suffix (p1__0000X4# from #(...)) — `#`
-;; starts a datum in Scheme, so replace it with `_`.
-(defn- munge-name [s] (str/replace s "#" "_"))
+;; starts a datum in Scheme, so replace it with `_`. A name that collides with a
+;; Scheme keyword is prefixed with `_` so it can never shadow the emitted form.
+(defn- munge-name [s]
+  (let [s (str/replace s "#" "_")]
+    (if (contains? scheme-reserved s) (str "_" s) s)))
 
 (declare emit)
 
