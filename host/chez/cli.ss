@@ -21,7 +21,6 @@
 (load "host/chez/compile-eval.ss")
 (load "host/chez/png.ss")          ; jolt.png — a baked namespace before the snapshot
 (load "host/chez/http-client.ss")  ; jolt.http-client (libcurl)
-(load "host/chez/sqlite.ss")       ; jolt.sqlite + jdbc.core (libsqlite3)
 (load "host/chez/http-server.ss")  ; jolt.http.server (BSD sockets)
 (load "host/chez/loader.ss")
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's

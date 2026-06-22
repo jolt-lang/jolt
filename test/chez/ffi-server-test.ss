@@ -22,7 +22,6 @@
 (load "host/chez/compile-eval.ss")
 (load "host/chez/png.ss")
 (load "host/chez/http-client.ss")
-(load "host/chez/sqlite.ss")
 (load "host/chez/http-server.ss")
 (load "host/chez/loader.ss")   ; defines jolt-sh-out, used by http-client
 
