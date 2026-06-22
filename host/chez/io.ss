@@ -284,4 +284,11 @@
             ((file-exists? (string-append (car roots) "/" nm)) (make-jfile (string-append (car roots) "/" nm)))
             (else (loop (cdr roots)))))))
 (def-var! "clojure.java.io" "resource" jolt-io-resource)
-(def-var! "clojure.java.io" "as-url" (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "url")) x (make-url (jolt-str-render-one x)))))
+;; as-url honors a library-registered URL class (e.g. jolt-lang/http-client's full
+;; java.net.URL shim) so io/as-url and (URL. spec) agree; else the file-only jhost.
+(def-var! "clojure.java.io" "as-url"
+  (lambda (x)
+    (cond ((and (jhost? x) (string=? (jhost-tag x) "url")) x)
+          ((htable? x) x)
+          (else (let ((ctor (lookup-class class-ctors-tbl "URL")))
+                  (if ctor (ctor (jolt-str-render-one x)) (make-url (jolt-str-render-one x))))))))

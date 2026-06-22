@@ -205,3 +205,29 @@
     (cons "chunk" na-chunk) (cons "chunk-cons" na-chunk-cons)
     (cons "chunk-first" na-chunk-first) (cons "chunk-rest" na-chunk-rest)
     (cons "chunk-next" na-chunk-next) (cons "chunked-seq?" na-chunked-seq?)))
+
+;; --- clojure.java.io/copy ---------------------------------------------------
+;; Copy src -> dst, JVM-style. Raw bytes (byte-array / bytevector / string) and a
+;; jhost reader write in one shot; any other source (a stream shim with a .read
+;; method, e.g. jolt-lang/http-client's ByteArrayInputStream) drains via .read
+;; into a byte-array buffer and .write to dst — both reached through method
+;; dispatch, so a library's tagged-table streams work without the host knowing
+;; their layout. Lives here (not io.ss) because io.ss loads before byte-array.
+(define (jolt-io-copy src dst . _opts)
+  (define (write-all! bytes)
+    (record-method-dispatch dst "write" (list->cseq (list bytes 0 (vector-length (jolt-array-vec bytes))))))
+  (cond
+    ((or (bytevector? src) (string? src)
+         (and (jolt-array? src) (eq? (jolt-array-kind src) 'byte)))
+     (write-all! (na-byte-array src)))
+    ((and (jhost? src) (member (jhost-tag src) '("string-reader" "pushback-reader")))
+     (write-all! (na-byte-array (drain-reader src))))
+    (else
+     (let ((buf (na-byte-array 8192)))
+       (let loop ()
+         (let ((n (record-method-dispatch src "read" (list->cseq (list buf 0 8192)))))
+           (when (and (number? n) (> (jnum->exact n) 0))
+             (record-method-dispatch dst "write" (list->cseq (list buf 0 n)))
+             (loop)))))))
+  jolt-nil)
+(def-var! "clojure.java.io" "copy" jolt-io-copy)
