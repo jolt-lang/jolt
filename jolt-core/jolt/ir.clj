@@ -96,6 +96,7 @@
       (= op :do)     (assoc node :statements (mapv f (get node :statements))
                                  :ret (f (get node :ret)))
       (= op :throw)  (assoc node :expr (f (get node :expr)))
+      (= op :set-var) (assoc node :val (f (get node :val)))
       (= op :invoke) (assoc node :fn (f (get node :fn))
                                  :args (mapv f (get node :args)))
       (= op :vector) (assoc node :items (mapv f (get node :items)))

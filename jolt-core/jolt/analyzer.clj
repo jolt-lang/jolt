@@ -34,7 +34,7 @@
 
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
-    "syntax-quote" "var" "letfn"})
+    "syntax-quote" "var" "letfn" "set!"})
 
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
@@ -323,6 +323,16 @@
             (if (= :var (:kind r))
               (the-var (:ns r) (:name r))
               (uncompilable (str "var of non-var " (form-sym-name sym)))))
+    ;; (set! *var* val): set the var's innermost thread binding, else its root
+    ;; (jolt-var-set). A local target is a deftype mutable field — not yet
+    ;; supported (jolt binds fields immutably); an interop (.-field) target too.
+    "set!" (let [target (nth items 1)]
+             (when-not (form-sym? target) (uncompilable "set! of a non-symbol target"))
+             (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
+             (let [r (resolve-global ctx target)]
+               (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
+               {:op :set-var :the-var (the-var (:ns r) (:name r))
+                :val (analyze ctx (nth items 2) env)}))
     (uncompilable (str "special form " op))))
 
 ;; Host interop method call (jolt-0kf5). `(.method target arg*)` — a head that

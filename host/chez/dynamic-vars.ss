@@ -12,3 +12,7 @@
 
 ;; *unchecked-math* — jolt does no unchecked-math elision; the var reads false.
 (def-var! "clojure.core" "*unchecked-math*" #f)
+
+;; *warn-on-reflection* — jolt has no reflection, so the var reads false; (set!
+;; *warn-on-reflection* …) resolves and updates it (a no-op effect).
+(def-var! "clojure.core" "*warn-on-reflection*" #f)

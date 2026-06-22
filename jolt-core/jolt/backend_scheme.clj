@@ -377,6 +377,8 @@
                                   "` (no core on Chez yet)") {}))
              :else (str "(var-deref " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")))
     :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
+    ;; (set! *var* val) -> set the var's innermost binding (else root); returns val.
+    :set-var (str "(jolt-var-set " (emit (:the-var node)) " " (emit (:val node)) ")")
     :host (throw (ex-info (str "emit: unsupported host ref `" (:name node) "`") {}))
     :host-static (str "(host-static-ref " (chez-str-lit (:class node)) " "
                       (chez-str-lit (:member node)) ")")
