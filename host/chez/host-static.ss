@@ -267,6 +267,10 @@
 (define (render-piece x)
   (cond ((jolt-nil? x) "null") ((char? x) (string x)) ((string? x) x)
         (else (jolt-str-render-one x))))
+;; (Object.) — a fresh value with distinct identity (libraries use it as a lock
+;; or a unique sentinel). Each call returns a new jhost so identical?/= separate.
+(register-class-ctor! "Object" (lambda _ (make-jhost "object" (vector))))
+
 (register-class-ctor! "StringBuilder"
   (lambda args (make-jhost "string-builder"
     ;; a numeric first arg is a CAPACITY hint, not content.
@@ -307,6 +311,19 @@
         (cons "flush" (lambda (self) (fw-flush! self) jolt-nil))
         (cons "close" (lambda (self) (fw-flush! self) jolt-nil))
         (cons "toString" (lambda (self) (fw-buf self)))))
+
+;; a writer over a real Chez port — the values *out* / *err* hold. write/append
+;; push to the port (so (.write *out* s) and (binding [*out* *err*] …) work);
+;; it isn't a buffer, so toString is empty. Lets libraries that touch *out*/*err*
+;; (tools.logging, selmer) compile and run.
+(register-host-methods! "port-writer"
+  (list (cons "write" (lambda (self x) (display (writer-piece x) (vector-ref (jhost-state self) 0)) jolt-nil))
+        (cons "append" (lambda (self x) (display (render-piece x) (vector-ref (jhost-state self) 0)) self))
+        (cons "flush" (lambda (self) (flush-output-port (vector-ref (jhost-state self) 0)) jolt-nil))
+        (cons "close" (lambda (self) jolt-nil))
+        (cons "toString" (lambda (self) ""))))
+(def-var! "clojure.core" "*out*" (make-jhost "port-writer" (vector (current-output-port))))
+(def-var! "clojure.core" "*err*" (make-jhost "port-writer" (vector (current-error-port))))
 
 ;; ---- java.util.HashMap ------------------------------------------------------
 ;; A mutable map keyed by jolt values (jolt-hash / jolt=2). State #(chez-hashtable).
@@ -360,7 +377,14 @@
 ;; ---- StringReader -----------------------------------------------------------
 ;; state: a vector #(string pos marked).
 (register-class-ctor! "StringReader"
-  (lambda (src . _) (make-jhost "string-reader" (vector (if (string? src) src (jolt-str-render-one src)) 0 0))))
+  ;; src is a String or a char[] ((StringReader. (char-array s)) — selmer's parser
+  ;; reads templates this way); a char-array becomes the string of its chars.
+  (lambda (src . _)
+    (make-jhost "string-reader"
+      (vector (cond ((string? src) src)
+                    ((jolt-array? src) (apply string-append (map jolt-str-render-one (seq->list (jolt-seq src)))))
+                    (else (jolt-str-render-one src)))
+              0 0))))
 (define (sr-s self) (vector-ref (jhost-state self) 0))
 (define (sr-pos self) (vector-ref (jhost-state self) 1))
 (define (sr-pos! self p) (vector-set! (jhost-state self) 1 p))

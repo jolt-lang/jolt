@@ -263,4 +263,15 @@
 (def-var! "clojure.java.io" "writer" jolt-io-writer)
 (def-var! "clojure.java.io" "input-stream" jolt-io-reader)
 (def-var! "clojure.java.io" "output-stream" jolt-io-writer)
+;; resource: jolt has no classpath, so a named resource is resolved against the
+;; loader's source roots (a project's :paths, e.g. "resources"). Returns a File
+;; (slurp/reader-able) for the first match, else nil. get-source-roots is the
+;; loader's accessor (loader.ss), resolved at call time — the runtime CLI loads it.
+(define (jolt-io-resource name)
+  (let ((nm (jolt-str-render-one name)))
+    (let loop ((roots (get-source-roots)))
+      (cond ((null? roots) jolt-nil)
+            ((file-exists? (string-append (car roots) "/" nm)) (make-jfile (string-append (car roots) "/" nm)))
+            (else (loop (cdr roots)))))))
+(def-var! "clojure.java.io" "resource" jolt-io-resource)
 (def-var! "clojure.java.io" "as-url" (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "url")) x (make-url (jolt-str-render-one x)))))

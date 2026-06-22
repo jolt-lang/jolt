@@ -266,6 +266,15 @@
                     (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
              (else (error #f (string-append "No method " method-name " on Iterator")))))
       ((string=? method-name "iterator") (make-jiterator (jolt-seq obj)))
+      ;; java.lang.Character interop: (.toString \+) -> "+", etc.
+      ((char? obj)
+       (cond ((string=? method-name "toString") (string obj))
+             ((string=? method-name "charValue") obj)
+             ((string=? method-name "hashCode") (char->integer obj))
+             ((string=? method-name "equals") (and (pair? rest) (char? (car rest)) (char=? obj (car rest))))
+             ((string=? method-name "compareTo")
+              (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
+             (else (error #f (string-append "No method " method-name " on char")))))
       (else (error #f (string-append "No method " method-name " for value: "
                                      (jolt-pr-str obj)))))))
 

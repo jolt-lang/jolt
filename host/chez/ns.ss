@@ -68,10 +68,14 @@
                   ((string=? (keyword-t-name k) "as")
                    (when (symbol-t? v) (chez-register-alias! cns (symbol-t-name v) target)))
                   ((string=? (keyword-t-name k) "refer")
-                   (when (pvec? v)
-                     (for-each (lambda (n)
-                                 (when (symbol-t? n) (chez-register-refer! cns (symbol-t-name n) target)))
-                               (seq->list v)))))))
+                   (cond
+                     ;; :refer :all — bring in every public var (require :refer :all)
+                     ((and (keyword? v) (string=? (keyword-t-name v) "all"))
+                      (chez-register-refer-all! cns target))
+                     ((pvec? v)
+                      (for-each (lambda (n)
+                                  (when (symbol-t? n) (chez-register-refer! cns (symbol-t-name n) target)))
+                                (seq->list v))))))))
             (loop (cddr xs))))))))
 
 ;; a namespace designator -> its name string (a jns or a symbol; the corpus never

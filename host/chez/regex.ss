@@ -42,9 +42,12 @@
 ;; ORIGINAL source is kept for printing; only the compiled pattern is translated.
 (define (prop-class name)
   (cond
-    ;; L/Alpha: ASCII letters + any non-ASCII codepoint (UTF-8 high
-    ;; bytes count as letters, so ^\p{L}+$ accepts accented words). N/Z stay ASCII-only.
-    ((or (string=? name "L") (string=? name "Alpha")) "a-zA-Z\\x80-\\x{10FFFF}")
+    ;; L/Alpha: ASCII letters + non-ASCII up to just below the UTF-16 surrogate gap
+    ;; (D800). This covers essentially every real letter (Latin/Greek/Cyrillic/CJK/…
+    ;; live below D800); the supplementary planes above it are rare and a range that
+    ;; reaches them makes irregex's char-set construction call integer->char on a
+    ;; surrogate and crash. N/Z stay ASCII-only.
+    ((or (string=? name "L") (string=? name "Alpha")) "a-zA-Z\\x80-\\x{D7FF}")
     ((string=? name "Lu") "A-Z")
     ((string=? name "Ll") "a-z")
     ((or (string=? name "N") (string=? name "Nd") (string=? name "Digit")) "0-9")
