@@ -465,4 +465,11 @@
   {:suite "hostshim" :expr "(do (__register-class-ctor! \"Box4\" (fn [] (jolt.host/tagged-table :my/box4))) (__register-instance-check! (fn [cn val] (if (= cn \"Box4\") (= :my/box4 (jolt.host/ref-get val :jolt/type)) nil))) (instance? Box4 \"not-a-box\"))" :expected "false"}
   {:suite "hostshim" :expr "(jolt.host/table? (jolt.host/tagged-table :t))" :expected "true"}
   {:suite "hostshim" :expr "(jolt.host/table? \"x\")" :expected "false"}
+  {:suite "bytes" :expr "(seq (byte-array \"hi\"))" :expected "(104 105)"}
+  {:suite "bytes" :expr "(seq (byte-array (.getBytes \"AB\" \"UTF-8\")))" :expected "(65 66)"}
+  {:suite "bytes" :expr "(alength (byte-array (.getBytes \"hello\" \"UTF-8\")))" :expected "5"}
+  {:suite "bytes" :expr "(String. (byte-array [104 105]))" :expected "hi"}
+  {:suite "bytes" :expr "(String. (byte-array [104 105]) \"UTF-8\")" :expected "hi"}
+  {:suite "bytes" :expr "(int (first (String. (byte-array [200]) \"ISO-8859-1\")))" :expected "200"}
+  {:suite "bytes" :expr "(String. (.getBytes \"round\" \"UTF-8\") \"UTF-8\")" :expected "round"}
 ]

@@ -46,10 +46,20 @@
     (else (make-jolt-array
            (list->vector (map (lambda (c) (if (char? c) c (integer->char (exact (truncate c)))))
                               (seq->list (jolt-seq a)))) 'char))))
+;; (byte-array n [init]) | (byte-array coll). Also coerces the host's OTHER byte
+;; carrier — a Chez bytevector (what String/.getBytes produce) — and a string's
+;; UTF-8 bytes, so bytevector and byte-array interconvert across interop seams.
 (define (na-byte-array a . rest)
-  (if (number? a)
-      (make-jolt-array (make-vector (exact (na-idx a)) (na-byte-of (if (pair? rest) (car rest) 0))) 'byte)
-      (make-jolt-array (list->vector (map na-byte-of (seq->list (jolt-seq a)))) 'byte)))
+  (cond
+    ((number? a) (make-jolt-array (make-vector (exact (na-idx a)) (na-byte-of (if (pair? rest) (car rest) 0))) 'byte))
+    ((bytevector? a) (make-jolt-array (list->vector (bytevector->u8-list a)) 'byte))
+    ((string? a) (make-jolt-array (list->vector (bytevector->u8-list (string->utf8 a))) 'byte))
+    (else (make-jolt-array (list->vector (map na-byte-of (seq->list (jolt-seq a)))) 'byte))))
+;; jolt byte-array -> Chez bytevector (for String decode / utf8->string).
+(define (na-bytearray->bv arr)
+  (let* ((v (jolt-array-vec arr)) (n (vector-length v)) (bv (make-bytevector n)))
+    (do ((i 0 (+ i 1))) ((= i n)) (bytevector-u8-set! bv i (bitwise-and (exact (vector-ref v i)) #xff)))
+    bv))
 (define (na-make-array a . rest)    ; (make-array len) | (make-array type len ...)
   (make-jolt-array (make-vector (exact (na-idx (if (number? a) a (car rest)))) jolt-nil) 'object))
 (define (na-into-array a . rest)    (na-from-seq (if (pair? rest) (car rest) a) 'object))

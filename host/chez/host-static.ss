@@ -514,9 +514,31 @@
                                   (error #f "NoSuchElementException")))))))
 
 ;; ---- String / BigInteger / MapEntry constructors ----------------------------
-;; (String. x) / (String. bytes): a bytevector decodes UTF-8; else stringify.
+;; (String. bytes [charset]) decodes bytes (a bytevector OR a jolt byte-array)
+;; with the named charset (UTF-8 default; ISO-8859-1/latin1/ascii = one byte per
+;; char); else stringify. clj-http-lite's body coercion is (String. ^[B body cs).
+(define (string-charset-name rest)
+  (if (pair? rest)
+      (let ((c (car rest)))
+        (cond ((string? c) c)
+              ((and (jhost? c) (string=? (jhost-tag c) "charset"))
+               (let ((p (assq 'name (jhost-state c)))) (if p (jolt-str-render-one (cdr p)) "UTF-8")))
+              (else "UTF-8")))
+      "UTF-8"))
+(define (decode-bytevector bv rest)
+  (let ((cs (ascii-string-down (string-charset-name rest))))
+    (cond
+      ((or (string=? cs "utf-8") (string=? cs "utf8")) (utf8->string bv))
+      ((or (string=? cs "iso-8859-1") (string=? cs "latin1") (string=? cs "iso8859-1")
+           (string=? cs "us-ascii") (string=? cs "ascii"))
+       (list->string (map integer->char (bytevector->u8-list bv))))
+      (else (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))))
 (register-class-ctor! "String"
-  (lambda (x . _) (cond ((bytevector? x) (utf8->string x)) ((string? x) x) (else (jolt-str-render-one x)))))
+  (lambda (x . rest)
+    (cond ((bytevector? x) (decode-bytevector x rest))
+          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (decode-bytevector (na-bytearray->bv x) rest))
+          ((string? x) x)
+          (else (jolt-str-render-one x)))))
 (register-class-ctor! "BigInteger"
   (lambda (v) (parse-int-or-throw v 10 "BigInteger")))
 (register-class-ctor! "MapEntry" (lambda (k v) (make-map-entry k v)))
