@@ -8,10 +8,34 @@
 
 (defn- project-dir [] (or (jolt.host/getenv "JOLT_PWD") "."))
 
+;; Load a library's declared native shared objects (deps.edn :jolt/native) before
+;; its Clojure is required, so its foreign-fn bindings resolve. Each entry is a
+;; map: {:name "sqlite3" :darwin ["libsqlite3.0.dylib" ...] :linux ["libsqlite3.so.0" ...]}
+;; with optional :optional (missing is fine — a feature-gated dep) and :process
+;; (use the running process's symbols, e.g. libc sockets — no external file).
+(defn- load-natives! [natives]
+  (when (seq natives)
+    (let [os (str/lower-case (or (System/getProperty "os.name") ""))
+          plat (cond (str/includes? os "mac") :darwin
+                     (str/includes? os "win") :windows
+                     :else :linux)]
+      (doseq [spec natives]
+        (if (:process spec)
+          (jolt.ffi/load-library)
+          (let [c (get spec plat)
+                cands (if (string? c) [c] (vec c))
+                hit (some #(when (jolt.ffi/loaded? %) %) cands)]
+            (when (and (nil? hit) (not (:optional spec)))
+              (throw (ex-info (str "required native library "
+                                   (or (:name spec) (first cands) "?")
+                                   " not found — tried " (pr-str cands) " for " (name plat))
+                              {:native spec})))))))))
+
 ;; Apply a resolved project's roots on top of the current (jolt-core) roots so app
-;; namespaces resolve while jolt.* stays loadable.
-(defn- apply-roots! [roots]
-  (jolt.host/set-source-roots! (vec (distinct (concat roots (jolt.host/source-roots))))))
+;; namespaces resolve while jolt.* stays loadable, then load its native deps.
+(defn- apply-project! [{:keys [roots natives]}]
+  (jolt.host/set-source-roots! (vec (distinct (concat roots (jolt.host/source-roots)))))
+  (load-natives! natives))
 
 (defn- run-ns
   "Require ns-name and invoke its -main with the string app args."
@@ -36,27 +60,25 @@
 
 ;; run [-m NS args… | FILE]
 (defn- cmd-run [more]
-  (let [{:keys [roots]} (deps/resolve-project (project-dir))]
-    (apply-roots! roots)
-    (cond
-      (= "-m" (first more)) (run-ns (second more) (drop 2 more))
-      (seq more)            (do (load-file (first more)) nil)
-      :else (throw (ex-info "run needs -m NS or a FILE" {})))))
+  (apply-project! (deps/resolve-project (project-dir)))
+  (cond
+    (= "-m" (first more)) (run-ns (second more) (drop 2 more))
+    (seq more)            (do (load-file (first more)) nil)
+    :else (throw (ex-info "run needs -m NS or a FILE" {}))))
 
 ;; -M:alias…  — resolve with the aliases, run their :main-opts
 (defn- cmd-M [arg more]
   (let [aliases (parse-aliases arg)
-        {:keys [roots main-opts]} (deps/resolve-project (project-dir) aliases)]
-    (apply-roots! roots)
+        {:keys [main-opts] :as resolved} (deps/resolve-project (project-dir) aliases)]
+    (apply-project! resolved)
     (if main-opts
       (apply-main-opts main-opts more)
       (throw (ex-info (str "alias(es) " (pr-str aliases) " have no :main-opts") {})))))
 
 ;; -A:alias… — add the aliases' paths/deps, then run the remaining argv as a command
 (defn- cmd-A [arg more]
-  (let [aliases (parse-aliases arg)
-        {:keys [roots]} (deps/resolve-project (project-dir) aliases)]
-    (apply-roots! roots)
+  (let [aliases (parse-aliases arg)]
+    (apply-project! (deps/resolve-project (project-dir) aliases))
     (when (seq more) (run-ns (second more) (drop 2 more)))))
 
 (defn- cmd-path []
@@ -75,12 +97,12 @@
 
 ;; A deps.edn :tasks entry: a string is a shell command; a map is {:main-opts …}.
 (defn- run-task [name more]
-  (let [{:keys [roots tasks]} (deps/resolve-project (project-dir))
+  (let [{:keys [tasks] :as resolved} (deps/resolve-project (project-dir))
         task (get tasks (symbol name))]
     (cond
       (nil? task) (throw (ex-info (str "unknown command or task: " name) {:name name}))
       (string? task) (jolt.host/sh task)
-      (map? task) (do (apply-roots! roots) (apply-main-opts (:main-opts task) more))
+      (map? task) (do (apply-project! resolved) (apply-main-opts (:main-opts task) more))
       :else (throw (ex-info (str "bad task " name) {})))))
 
 (defn- usage []
