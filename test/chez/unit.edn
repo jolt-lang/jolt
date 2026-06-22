@@ -113,6 +113,8 @@
   {:suite "hostctor" :expr "[(.getProtocol (java.net.URL. \"file:/tmp/x\")) (.getFile (java.net.URL. \"http://h/p\")) (.getProtocol (java.net.URL. \"http://h/p\"))]" :expected "[file http://h/p http]"}
   {:suite "hostobj" :expr "(try (throw (ex-info \"x\" {})) (catch Throwable e [(.getNextException e) (vec (.getStackTrace e))]))" :expected "[nil []]"}
   {:suite "hostobj" :expr "[(some? (ClassLoader/getSystemClassLoader)) (some? (.getContextClassLoader (Thread/currentThread)))]" :expected "[true true]"}
+  {:suite "reify" :expr "(do (defprotocol P (pm [_])) (defprotocol Q (qm [_])) (extend-protocol Q java.lang.Object (qm [_] :q-default)) (qm (reify P (pm [_] :p))))" :expected ":q-default"}
+  {:suite "reify" :expr "(do (defprotocol Q (qa [_]) (qb [_])) (extend-protocol Q java.lang.Object (qa [_] :da) (qb [_] :db)) (def r (reify Q (qa [_] :ra))) [(qa r) (qb r)])" :expected "[:ra :db]"}
   {:suite "dotform" :expr "(.equals \"a\" \"a\")" :expected "true"}
   {:suite "dotform" :expr "(.equals \"a\" \"b\")" :expected "false"}
   {:suite "dotform" :expr "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)" :expected "v=41"}

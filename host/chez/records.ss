@@ -240,7 +240,16 @@
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
                          (if f (apply jolt-invoke f obj rest)
-                             (error #f (string-append "No reified method " method-name))))))
+                             ;; not implemented on the reify — fall back to the
+                             ;; protocol's extended impls over the reify's host tags
+                             ;; (e.g. an Object/default extension). malli reifies some
+                             ;; protocols and relies on a protocol's default for the
+                             ;; rest (jolt-az9a).
+                             (let loop ((tags (value-host-tags obj)))
+                               (cond ((null? tags) (error #f (string-append "No reified method " method-name)))
+                                     ((find-protocol-method (car tags) proto-name method-name)
+                                      => (lambda (g) (apply jolt-invoke g obj rest)))
+                                     (else (loop (cdr tags)))))))))
       (else
        (let loop ((tags (value-host-tags obj)))
          (cond ((null? tags) (error #f (string-append "No method " method-name " in " proto-name)))
