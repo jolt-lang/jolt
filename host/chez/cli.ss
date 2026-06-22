@@ -1,24 +1,16 @@
-;; cli.ss (jolt-9phg, Phase 3 inc9b) — the pure-Chez jolt runtime. NO Janet.
+;; cli.ss (jolt-9phg / jolt-90sp) — the pure-Chez jolt runtime. NO Janet.
 ;;
-;; This is the zero-Janet runtime counterpart to bootstrap.ss (the zero-Janet
-;; build). It loads the checked-in seed (host/chez/seed/{prelude,image}.ss — the
-;; bootstrap compiler) and the zero-Janet spine, reads a Clojure expression, and
-;; compiles+evals it ON CHEZ (read -> analyze -> IR -> emit -> eval). With the seed
-;; checked in, a clone of the repo runs jolt with only Chez installed — no Janet at
-;; build or run time.
+;; Loads the checked-in seed (host/chez/seed/{prelude,image}.ss — the bootstrap
+;; compiler) and the zero-Janet spine, then either evaluates a -e expression or
+;; dispatches a CLI command (run/-M/repl/path/task) through jolt.main. The loader
+;; (loader.ss) turns `require` into real file loading off the source roots, so a
+;; multi-file project with deps.edn dependencies runs end to end.
 ;;
-;; Run from the repo root:
-;;   chez --script host/chez/cli.ss -e "EXPR"
+;; Run from the repo root (bin/joltc cd's there); the project dir is JOLT_PWD.
 (import (chezscheme))
 
 (define cli-args (cdr (command-line)))   ; drop the script name
-(unless (and (= (length cli-args) 2) (string=? (car cli-args) "-e"))
-  (display "usage: cli.ss -e EXPR\n")
-  (exit 2))
-(define cli-expr (cadr cli-args))
 
-;; Assemble the zero-Janet spine from the checked-in seed, exactly as
-;; driver/program-zero-janet does — but with no Janet generating the program.
 (load "host/chez/rt.ss")
 (set-chez-ns! "clojure.core")
 (load "host/chez/seed/prelude.ss")
@@ -27,11 +19,23 @@
 (load "host/chez/host-contract.ss")
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
+(load "host/chez/loader.ss")
 
-;; Compile + eval on Chez; print the result (blank for nil, like the spine). Wrap
-;; in (do ...) so a multi-form -e string evaluates every form and returns the last,
-;; matching Clojure's -e (jolt-compile-eval reads a single form).
-(let ((result (jolt-final-str
-                (jolt-compile-eval (string-append "(do " cli-expr ")") "user"))))
-  (unless (string=? result "")
-    (display result) (newline)))
+;; jolt.main + jolt.deps live under jolt-core; keep them (and src/jolt) on the
+;; roots so the CLI's own namespaces — and any jolt.* an app pulls in — resolve.
+;; A project's resolved deps roots are prepended to these by jolt.main.
+(set-source-roots! (list "jolt-core" "src/jolt"))
+
+(cond
+  ;; -e EXPR — evaluate one expression and print it (blank for nil). Wrapped in
+  ;; (do …) so a multi-form string evaluates every form and returns the last.
+  ((and (= (length cli-args) 2) (string=? (car cli-args) "-e"))
+   (let ((result (jolt-final-str
+                   (jolt-compile-eval (string-append "(do " (cadr cli-args) ")") "user"))))
+     (unless (string=? result "")
+       (display result) (newline))))
+  ;; otherwise dispatch the argv through jolt.main/-main
+  (else
+   (load-namespace "jolt.main")
+   (let ((mainv (var-deref "jolt.main" "-main")))
+     (apply jolt-invoke mainv cli-args))))

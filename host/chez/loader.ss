@@ -1,0 +1,182 @@
+;; loader.ss (jolt-90sp) — file-based namespace loading + a shell primitive.
+;;
+;; The corpus/CLI spine compiles one program at a time; namespaces declared in
+;; that program see each other because a top-level (do …) unrolls. A real project
+;; spans many FILES, so `require` must locate a namespace's source on the search
+;; roots and load it — transitively, once each. This is the piece the Phase-3
+;; "cross-ns load is deferred" note left open (ns.ss).
+;;
+;; Loaded by cli.ss AFTER compile-eval.ss (it calls jolt-compile-eval-form). The
+;; gates load compile-eval.ss but NOT this file, so the corpus/unit/sci runners
+;; keep their alias-only `require` and are unaffected.
+
+;; --- search roots -----------------------------------------------------------
+;; An ordered list of directory strings. `require` searches them left to right.
+;; The CLI seeds this with the project's resolved deps roots (jolt.deps) plus the
+;; jolt-core roots so jolt.main/jolt.deps themselves load.
+(define source-roots '("."))
+(define (set-source-roots! roots) (set! source-roots roots))
+(define (get-source-roots) source-roots)
+
+;; --- namespace -> file path -------------------------------------------------
+;; "app.commonmark-test" -> "app/commonmark_test": split on '.', munge '-'->'_'
+;; per segment, join with '/'. Matches Clojure's ns->file munging.
+(define (ns-seg-munge seg)
+  (list->string (map (lambda (c) (if (char=? c #\-) #\_ c)) (string->list seg))))
+(define (ns-name->rel name)
+  (let loop ((cs (string->list name)) (seg '()) (segs '()))
+    (cond
+      ((null? cs)
+       (let ((all (reverse (cons (list->string (reverse seg)) segs))))
+         (let join ((xs all) (acc ""))
+           (cond ((null? xs) acc)
+                 ((string=? acc "") (join (cdr xs) (ns-seg-munge (car xs))))
+                 (else (join (cdr xs) (string-append acc "/" (ns-seg-munge (car xs)))))))))
+      ((char=? (car cs) #\.)
+       (loop (cdr cs) '() (cons (list->string (reverse seg)) segs)))
+      (else (loop (cdr cs) (cons (car cs) seg) segs)))))
+
+(define (find-ns-file name)
+  (let ((rel (ns-name->rel name)))
+    (let loop ((roots source-roots))
+      (if (null? roots) #f
+          (let ((clj  (string-append (car roots) "/" rel ".clj"))
+                (cljc (string-append (car roots) "/" rel ".cljc")))
+            (cond ((file-exists? clj) clj)
+                  ((file-exists? cljc) cljc)
+                  (else (loop (cdr roots)))))))))
+
+;; --- the loaded set ---------------------------------------------------------
+;; Seeded with every namespace that already has vars at load time — the baked
+;; prelude/image (clojure.core, clojure.string, jolt.analyzer, …). A `require` of
+;; one of those then no-ops instead of hunting for a (nonexistent) source file.
+(define loaded-ns (make-hashtable string-hash string=?))
+(vector-for-each (lambda (c) (hashtable-set! loaded-ns (var-cell-ns c) #t))
+                 (hashtable-values var-table))
+
+;; Read every form from a file and compile+eval it in turn. The first form is
+;; normally (ns …), which expands to (in-ns …) and switches the current ns, so
+;; later forms compile in that namespace — (chez-current-ns) is re-read each step.
+(define (load-jolt-file path)
+  (let loop ((src (read-file-string path)))
+    (let ((pn (jolt-parse-next src)))
+      (unless (jolt-nil? pn)
+        (jolt-compile-eval-form (jolt-nth pn 0) (chez-current-ns))
+        (loop (jolt-nth pn 1))))))
+
+;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
+;; dependency cycle terminates (Clojure's behavior). The caller's current ns is
+;; restored afterward, since loading the file switched it.
+(define (load-namespace name)
+  (unless (hashtable-ref loaded-ns name #f)
+    (hashtable-set! loaded-ns name #t)
+    (let ((file (find-ns-file name)))
+      (if (not file)
+          (begin
+            (hashtable-delete! loaded-ns name)
+            (error #f (string-append "Could not locate " (ns-name->rel name)
+                                     ".clj (or .cljc) on the source roots") name))
+          (let ((saved (chez-current-ns)))
+            (load-jolt-file file)
+            (set-chez-ns! saved)
+            (def-var! "clojure.core" "*ns*" (intern-ns! saved)))))))
+
+;; load-file: load an explicit path (a `run FILE`), in the current ns.
+(define (jolt-load-file path)
+  (load-jolt-file path)
+  jolt-nil)
+
+;; The target ns name of a require/use spec ([ns …] / (ns …) / bare ns).
+(define (spec-target-name spec)
+  (let ((items (cond ((pvec? spec) (seq->list spec))
+                     ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
+                     ((symbol-t? spec) (list spec))
+                     (else '()))))
+    (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items)))))
+
+;; --- require/use that LOAD ---------------------------------------------------
+;; Override the alias-only versions from natives-str.ss. Load each spec's target
+;; (no-op if baked/already loaded), THEN register its :as/:refer under the caller
+;; ns (chez-register-spec! reads the current ns, restored by load-namespace).
+(define (loader-require . specs)
+  (for-each
+    (lambda (s)
+      (let ((target (spec-target-name s)))
+        (when target (load-namespace target)))
+      (chez-register-spec! (chez-current-ns) s))
+    specs)
+  jolt-nil)
+(def-var! "clojure.core" "require" loader-require)
+
+(define (loader-use . specs)
+  (for-each
+    (lambda (spec)
+      (let ((target (spec-target-name spec)))
+        (when target (load-namespace target)))
+      (chez-register-spec! (chez-current-ns) spec)
+      (let* ((items (cond ((pvec? spec) (seq->list spec))
+                          ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
+                          ((symbol-t? spec) (list spec))
+                          (else '())))
+             (target (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items))))
+             (filtered (let scan ((xs (if (pair? items) (cdr items) '())))
+                         (cond ((null? xs) #f)
+                               ((and (keyword? (car xs))
+                                     (member (keyword-t-name (car xs)) '("only" "refer"))) #t)
+                               (else (scan (cdr xs)))))))
+        (when (and target (not filtered))
+          (chez-register-refer-all! (chez-current-ns) target))))
+    specs)
+  jolt-nil)
+(def-var! "clojure.core" "use" loader-use)
+
+(def-var! "clojure.core" "load-file" jolt-load-file)
+;; load: each arg is a "/"-rooted resource path like "/app/extra"; load the file
+;; for it relative to the search roots (strip the leading slash, try .clj/.cljc).
+(define (jolt-load . paths)
+  (for-each
+    (lambda (p)
+      (let* ((rel (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
+                      (substring p 1 (string-length p)) p)))
+        (let loop ((roots source-roots))
+          (if (null? roots)
+              (error #f "Could not locate resource on source roots" p)
+              (let ((clj  (string-append (car roots) "/" rel ".clj"))
+                    (cljc (string-append (car roots) "/" rel ".cljc")))
+                (cond ((file-exists? clj) (load-jolt-file clj))
+                      ((file-exists? cljc) (load-jolt-file cljc))
+                      (else (loop (cdr roots)))))))))
+    paths)
+  jolt-nil)
+(def-var! "clojure.core" "load" jolt-load)
+
+;; --- shell primitive (jolt.host/sh, sh-out) ---------------------------------
+;; `sh` runs `sh -c CMD`, inheriting stdout/stderr (so git progress shows), and
+;; returns the exit code. `sh-out` captures stdout to a string (exit ignored) for
+;; commands whose output we parse (git rev-parse). Used by jolt.deps for git.
+(define (jolt-sh cmd) (system cmd))
+(def-var! "jolt.host" "sh" jolt-sh)
+
+(define (jolt-sh-out cmd)
+  (call-with-values
+    (lambda () (open-process-ports (string-append "exec sh -c " (sh-quote cmd))
+                                   (buffer-mode block) (native-transcoder)))
+    (lambda (stdin stdout stderr pid)
+      (close-port stdin)
+      (let ((out (get-string-all stdout)))
+        (close-port stdout) (close-port stderr)
+        (if (eof-object? out) "" out)))))
+(define (sh-quote s)   ; single-quote for the outer sh -c
+  (string-append "'"
+    (apply string-append
+      (map (lambda (c) (if (char=? c #\') "'\\''" (string c))) (string->list s)))
+    "'"))
+(def-var! "jolt.host" "sh-out" jolt-sh-out)
+
+;; Expose source-root control + ns loading to Clojure (jolt.main / jolt.deps).
+(def-var! "jolt.host" "set-source-roots!"
+  (lambda (roots) (set-source-roots! (seq->list roots)) jolt-nil))
+(def-var! "jolt.host" "source-roots" (lambda () (list->cseq source-roots)))
+(def-var! "jolt.host" "load-namespace" (lambda (n) (load-namespace n) jolt-nil))
+(def-var! "jolt.host" "file-exists?" (lambda (p) (if (file-exists? p) #t #f)))
+(def-var! "jolt.host" "getenv" (lambda (n) (let ((v (getenv n))) (if v v jolt-nil))))

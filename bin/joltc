@@ -1,14 +1,19 @@
 #!/bin/sh
-# joltc (jolt-9phg, inc9b) — the pure-Chez jolt runtime. NO Janet.
+# joltc — the pure-Chez jolt runtime. NO Janet.
 #
-# Runs a Clojure expression through the zero-Janet spine on Chez, using the
-# checked-in bootstrap seed (host/chez/seed/). With only Chez installed and no
-# Janet anywhere, this compiles and evaluates jolt code end to end.
+# Compiles and evaluates jolt (Clojure) on Chez using the checked-in bootstrap
+# seed (host/chez/seed/). With only Chez installed it runs jolt end to end:
 #
-#   bin/joltc -e "(+ 1 2)"
+#   joltc -e "(+ 1 2)"             evaluate an expression
+#   joltc run -m app.core [args]   resolve deps.edn, run a namespace's -main
+#   joltc -M:alias [args]          run an alias's :main-opts
+#   joltc repl | path | <task>     REPL, print roots, or a deps.edn task
 #
-# (bin/jolt-chez is the older Janet-hosted -e path still used as the corpus oracle;
-# joltc is the fully self-hosted runtime.)
+# The launcher cd's to the jolt repo root so the runtime's relative loads work;
+# the user's original cwd (the project dir, where deps.edn lives) is passed in
+# JOLT_PWD.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+JOLT_PWD="${JOLT_PWD:-$PWD}"
+export JOLT_PWD
 cd "$root" || exit 1
 exec chez --script host/chez/cli.ss "$@"
