@@ -21,9 +21,15 @@
 ;; foreign-fn binds C symbol `csym` to a typed callable. Expands to the __cfn
 ;; special form (always fully-qualified, so an :as alias on jolt.ffi resolves):
 ;; the analyzer/back end turn it into a Chez foreign-procedure.
-(defmacro foreign-fn [csym argtypes rettype]
-  (list 'jolt.ffi/__cfn csym argtypes rettype))
+;; An optional trailing :blocking marks a call that may block (accept/recv/...),
+;; so it's emitted collect-safe and won't pin the garbage collector.
+(defmacro foreign-fn [csym argtypes rettype & [opt]]
+  (if (= opt :blocking)
+    (list 'jolt.ffi/__cfn csym argtypes rettype :blocking)
+    (list 'jolt.ffi/__cfn csym argtypes rettype)))
 
-;; (defcfn name "c_symbol" [argtypes] rettype) — def a foreign function.
-(defmacro defcfn [name csym argtypes rettype]
-  (list 'def name (list 'jolt.ffi/__cfn csym argtypes rettype)))
+;; (defcfn name "c_symbol" [argtypes] rettype [:blocking]) — def a foreign function.
+(defmacro defcfn [name csym argtypes rettype & [opt]]
+  (list 'def name (if (= opt :blocking)
+                    (list 'jolt.ffi/__cfn csym argtypes rettype :blocking)
+                    (list 'jolt.ffi/__cfn csym argtypes rettype))))

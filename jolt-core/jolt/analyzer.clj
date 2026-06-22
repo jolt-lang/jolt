@@ -395,17 +395,21 @@
 
 ;; jolt.ffi/__cfn (jolt-ffi): the low-level foreign-function form a jolt library
 ;; uses (via the jolt.ffi/foreign-fn macro) to bind native code. Shape:
-;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype)
+;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype)            ; non-blocking
+;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype :blocking)  ; may block
 ;; The C symbol is a string literal and the types are literal keywords, read here
 ;; at compile time; the Chez back end lowers it to a real `foreign-procedure`
-;; (typed marshaling, no runtime eval). A leaf IR node.
+;; (typed marshaling, no runtime eval). A :blocking call is emitted __collect_safe
+;; so it deactivates the thread for the call — a blocking call (accept/recv/...)
+;; must not pin the stop-the-world collector. A leaf IR node.
 (defn- analyze-ffi-fn [ctx items env]
-  (when (not= 4 (count items))
-    (throw (str "jolt.ffi/foreign-fn expects (foreign-fn \"sym\" [argtypes] rettype)")))
+  (when-not (<= 4 (count items) 5)
+    (throw (str "jolt.ffi/foreign-fn expects (foreign-fn \"sym\" [argtypes] rettype [:blocking])")))
   {:op :ffi-fn
    :csym (nth items 1)
    :argtypes (mapv name (form-vec-items (nth items 2)))
-   :rettype (name (nth items 3))})
+   :rettype (name (nth items 3))
+   :blocking (and (= 5 (count items)) (= "blocking" (name (nth items 4))))})
 
 ;; The `.` special form: `(. target member arg*)` — member access / method call.
 ;; A symbol member whose name starts with "-" is a field read; otherwise it is a

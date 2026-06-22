@@ -39,5 +39,14 @@
                      (let [v (jolt.ffi/read p :int)] (jolt.ffi/free p) v))"))))
 (ok "sizeof :pointer is a word" (let ((n (jnum->exact (ev "(jolt.ffi/sizeof :pointer)")))) (or (= n 8) (= n 4))))
 
+;; a :blocking foreign call is collect-safe: a thread parked in it must not pin
+;; the stop-the-world collector. (collect) here would throw "cannot collect when
+;; multiple threads are active" if usleep weren't emitted __collect_safe.
+(ev "(def c-usleep (jolt.ffi/__cfn \"usleep\" [:uint] :int :blocking))")
+(let ((usleep (var-deref "user" "c-usleep")))
+  (fork-thread (lambda () (usleep 2000000)))           ; ~2s in a blocking call
+  (let loop ((i 0)) (when (fx<? i 30000000) (loop (fx+ i 1))))  ; spin so the thread enters usleep
+  (ok "blocking ffi call is collect-safe" (guard (e (#t #f)) (collect) #t)))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
