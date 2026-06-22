@@ -459,4 +459,10 @@
   {:suite "deftype-mutable" :expr "(do (defprotocol IB (gv [_]) (sv [_ v])) (deftype B [^:unsynchronized-mutable val] IB (gv [_] val) (sv [_ v] (set! val v))) (let [b (->B 1)] (sv b 42) (gv b)))" :expected "42"}
   {:suite "deftype-mutable" :expr "(do (defprotocol IC (bump [_]) (cur [_])) (deftype C [^:unsynchronized-mutable n] IC (bump [this] (set! n (inc n)) n) (cur [_] n)) (let [c (->C 5)] (bump c) (bump c) (bump c) (cur c)))" :expected "8"}
   {:suite "deftype-mutable" :expr "(do (defprotocol IH (g [_]) (s [_ v])) (deftype H [^:volatile-mutable st] IH (g [_] st) (s [this v] (set! (.-st this) v))) (let [h (->H :old)] (s h :new) (g h)))" :expected ":new"}
+  {:suite "hostshim" :expr "(do (__register-class-ctor! \"Box1\" (fn [v] (let [t (jolt.host/tagged-table :my/box)] (jolt.host/ref-put! t :v v) t))) (__register-class-methods! :my/box {\"getV\" (fn [self] (jolt.host/ref-get self :v))}) (.getV (Box1. 42)))" :expected "42"}
+  {:suite "hostshim" :expr "(do (__register-class-ctor! \"Box2\" (fn [v] (let [t (jolt.host/tagged-table :my/box2)] (jolt.host/ref-put! t :v v) t))) (__register-class-methods! :my/box2 {\"add\" (fn [self n] (+ n (jolt.host/ref-get self :v)))}) (.add (Box2. 10) 5))" :expected "15"}
+  {:suite "hostshim" :expr "(do (__register-class-ctor! \"Box3\" (fn [] (jolt.host/tagged-table :my/box3))) (__register-instance-check! (fn [cn val] (if (= cn \"Box3\") (= :my/box3 (jolt.host/ref-get val :jolt/type)) nil))) (instance? Box3 (Box3.)))" :expected "true"}
+  {:suite "hostshim" :expr "(do (__register-class-ctor! \"Box4\" (fn [] (jolt.host/tagged-table :my/box4))) (__register-instance-check! (fn [cn val] (if (= cn \"Box4\") (= :my/box4 (jolt.host/ref-get val :jolt/type)) nil))) (instance? Box4 \"not-a-box\"))" :expected "false"}
+  {:suite "hostshim" :expr "(jolt.host/table? (jolt.host/tagged-table :t))" :expected "true"}
+  {:suite "hostshim" :expr "(jolt.host/table? \"x\")" :expected "false"}
 ]
