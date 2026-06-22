@@ -86,13 +86,20 @@
     (println (str/join ":" roots))))
 
 (defn- repl []
+  ;; resolve the project so deps (git libs) are on the roots and native libs are
+  ;; loaded — same context a run gets, so (require '[some.lib]) works in the REPL.
+  (try (apply-project! (deps/resolve-project (project-dir)))
+       (catch :default _ nil))
   (println ";; jolt repl — ^D to exit")
   (loop []
     (print "user=> ") (flush)
     (let [line (read-line)]
       (when line
         (try (println (pr-str (load-string line)))
-             (catch :default e (println "error:" (ex-message e))))
+             (catch :default e
+               (println "error:" (or (ex-message e)
+                                     (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
+                                     (pr-str e)))))
         (recur)))))
 
 ;; A deps.edn :tasks entry: a string is a shell command; a map is {:main-opts …}.
@@ -105,6 +112,15 @@
       (map? task) (do (apply-project! resolved) (apply-main-opts (:main-opts task) more))
       :else (throw (ex-info (str "bad task " name) {})))))
 
+(defn- nrepl [more]
+  ;; resolve the project (deps on the roots, native libs loaded), then start the
+  ;; nREPL server so an editor can connect and (require '[some.lib]) live.
+  (try (apply-project! (deps/resolve-project (project-dir))) (catch :default _ nil))
+  (let [port (or (some-> (first (filter #(not (str/starts-with? % "-")) more)) parse-long)
+                 (parse-long (or (jolt.host/getenv "JOLT_NREPL_PORT") "7888")))]
+    (require 'jolt.nrepl)
+    ((resolve 'jolt.nrepl/start) port)))
+
 (defn- usage []
   (println "usage: jolt <command> [args]")
   (println "  run -m NS [args]   resolve deps.edn, load NS, call its -main")
@@ -112,6 +128,7 @@
   (println "  -M:alias [args]    run the alias's :main-opts")
   (println "  -A:alias [args]    add the alias's paths/deps")
   (println "  repl               start a line REPL")
+  (println "  nrepl [port]       start an nREPL server (default 7888) for editors")
   (println "  path               print the resolved source roots")
   (println "  <task>             run a deps.edn :tasks entry"))
 
@@ -121,6 +138,7 @@
       (nil? cmd)                  (usage)
       (= cmd "run")               (cmd-run more)
       (= cmd "repl")              (repl)
+      (= cmd "nrepl")             (nrepl more)
       (= cmd "path")              (cmd-path)
       (str/starts-with? cmd "-M") (cmd-M cmd more)
       (str/starts-with? cmd "-A") (cmd-A cmd more)

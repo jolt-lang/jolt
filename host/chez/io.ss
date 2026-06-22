@@ -202,6 +202,12 @@
 (set! jolt-str-render-one
   (lambda (v) (if (jfile? v) (jfile-path v) (%io-str-render v))))
 
+;; stdin line seam: the clojure.core *in* reader (50-io.clj) drives read-line /
+;; read / read+string through __stdin-read-line. Return the next line (newline
+;; stripped) or nil at EOF. Without this, (read-line) and the REPL call nil.
+(def-var! "clojure.core" "__stdin-read-line"
+  (lambda () (let ((l (get-line (current-input-port)))) (if (eof-object? l) jolt-nil l))))
+
 ;; (type f) -> :jolt/file (the tagged-file :jolt/type). Re-def-var!
 ;; "type": natives-meta.ss already bound the var to the old jolt-type value, so the
 ;; set! alone (which updates the symbol for internal callers) wouldn't reach it.
