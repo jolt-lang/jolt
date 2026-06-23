@@ -571,6 +571,11 @@
                        (mapcat (fn [p] [(emit (nth p 0)) (emit (nth p 1))]) (:pairs node)))
     :quote (emit-quoted (:form node))
     :throw (str "(jolt-throw " (emit (:expr node)) ")")
+    ;; numeric coercion (from an inlined ^double/^long param or return).
+    :coerce (let [e (emit (:expr node))]
+              (cond (= :double (:kind node)) (str "(exact->inexact " e ")")
+                    (= :long (:kind node)) (str "(jolt->fx " e ")")
+                    :else e))
     :try (emit-try node)
     ;; regex literal #"…" -> a jolt-regex value (regex.ss, vendored irregex).
     :regex (str "(jolt-regex " (chez-str-lit (:source node)) ")")

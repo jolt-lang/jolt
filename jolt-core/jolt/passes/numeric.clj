@@ -137,6 +137,7 @@
     (cond
       (= op :const) [(if (float-lit? node) :double nil) node]
       (= op :local) [(get tenv (get node :name)) node]
+      (= op :coerce) [(get node :kind) (assoc node :expr (nth (an (get node :expr) tenv) 1))]
       (= op :invoke) (an-invoke node tenv)
       (= op :let)
       (let [res (reduce (fn [acc b]
