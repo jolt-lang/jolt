@@ -179,10 +179,15 @@
       (when (null? ordered)
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
-      ;; 2. emit each app namespace.
+      ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
+      ;; + scalar-replace passes (closed world). release/dev stay on proven
+      ;; var-deref codegen until those passes are validated on Chez — they were
+      ;; dormant before `jolt build` (inline-enabled? was hardwired off).
+      (set-optimize! (string=? mode "optimized"))
       (let* ((app-strs (apply append
                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))
                               ordered)))
+             (_ (set-optimize! #f))
              (builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))
              (flat-so  (string-append builddir "/flat.so"))

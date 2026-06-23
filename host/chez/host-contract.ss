@@ -280,7 +280,12 @@
 (define (hc-record-type? ctx name) #f)
 (define (hc-record-ctor-key ctx name) jolt-nil)
 (define (hc-record-shapes ctx) (jolt-hash-map))
-(define (hc-inline-enabled? ctx) #f)
+;; Optimization gate. Off for ordinary runs (open world, redefinition); `jolt
+;; build` flips it on during app emission for release/optimized modes (closed
+;; world), turning on the inference + flatten + scalar-replace passes.
+(define hc-optimize? #f)
+(define (set-optimize! on) (set! hc-optimize? on))
+(define (hc-inline-enabled? ctx) hc-optimize?)
 (define (hc-inline-ir ctx ns-name nm) jolt-nil)
 
 ;; --- declare the hot clojure.core primitives so resolve-global sees them ------
