@@ -237,6 +237,7 @@
 ;; the dispatchers/printers it wraps (collections/seq/values/converters/printing/
 ;; transients).
 (load "host/chez/records.ss")
+(load "host/chez/records-interop.ss")   ; exception hierarchy + instance-check taxonomy
 
 ;; metadata: meta / with-meta over an identity-keyed
 ;; side-table. After records.ss (jrec) + the collection ctors it copies.
