@@ -80,14 +80,25 @@
   (let [m (form-sym-meta sym)]
     (when m (let [t (get m :tag)] (when t (record-ctor-key ctx t))))))
 
-;; A primitive numeric hint (^long / ^double) on a binding symbol -> :long /
-;; :double, else nil. Drives the fl*/fx* fast path (jolt.passes.numeric). The tag
-;; is a string on the data reader; tolerate a symbol from macroexpansion too.
-(defn- nhint-of [ctx sym]
-  (let [m (form-sym-meta sym)
-        t (when m (get m :tag))
-        s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
+;; A ^long / ^double tag -> :long / :double, else nil. The tag is a string on the
+;; data reader; tolerate a symbol from macroexpansion too.
+(defn- tag->nkind [t]
+  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
     (cond (= s "double") :double (= s "long") :long :else nil)))
+
+;; A primitive numeric hint (^long / ^double) on a binding symbol. Drives the
+;; fl*/fx* fast path (jolt.passes.numeric).
+(defn- nhint-of [ctx sym]
+  (let [m (form-sym-meta sym)] (when m (tag->nkind (get m :tag)))))
+
+;; Push a numeric return hint (from ^double/^long on a defn's name) onto each arity
+;; of its fn, so the back end coerces the body's value to that kind on return —
+;; making the hint a contract a caller's arithmetic can trust.
+(defn- with-ret-nhint [node kind]
+  (if (and kind (= :fn (:op node)))
+    (assoc node :arities (mapv (fn [a] (if (:ret-nhint a) a (assoc a :ret-nhint kind)))
+                               (:arities node)))
+    node))
 
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
@@ -304,7 +315,8 @@
                         base0)
             node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
         (host-intern! ctx cur nm)
-        (def-node cur nm (analyze ctx val-form env) node-meta)))))
+        ;; a ^double/^long return hint on the name applies to all arities of the fn.
+        (def-node cur nm (with-ret-nhint (analyze ctx val-form env) (tag->nkind tag)) node-meta)))))
 
 ;; (set! (.-field obj) v) mutates a deftype instance field in place; (set! *var* v)
 ;; sets the var's innermost thread binding, else its root. A local target (jolt
@@ -493,14 +505,16 @@
         (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
       ns (let [r (resolve-global ctx form)]
            (if (= :var (:kind r))
-             (var-ref (:ns r) (:name r))
+             (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))
              ;; A non-var qualified ref `Class/member` is a host class static
              ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
              ;; lowers it to a runtime static dispatch.
              (host-static ns nm)))
       :else (let [r (resolve-global ctx form)]
               (case (:kind r)
-                :var (var-ref (:ns r) (:name r))
+                ;; :num-ret (a ^double/^long declared return) rides on the var node so
+                ;; jolt.passes.numeric types a call to it (an accumulator over the result).
+                :var (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))
                 :host (host-ref (:name r))
                 ;; :unresolved — emitting a var-ref here would auto-intern an
                 ;; UNBOUND var, so a typo'd symbol would die later as 'Cannot call

@@ -373,8 +373,15 @@
         pbind (map (fn [o p] (str "(" p " " (nhint-init nh o p) ")")) orig params)
         binds (if restp
                 (concat pbind [(str "(" restp " (list->cseq " restp "))")])
-                pbind)]
-    [paramlist (str "(let " label " (" (str/join " " binds) ") " body ")")]))
+                pbind)
+        lett (str "(let " label " (" (str/join " " binds) ") " body ")")
+        ;; a ^double/^long return hint coerces the arity's value on the way out
+        ;; (exact->inexact / jolt->fx), like a JVM primitive return — so a caller's
+        ;; arithmetic over the result is sound.
+        ret (:ret-nhint a)]
+    [paramlist (cond (= ret :double) (str "(exact->inexact " lett ")")
+                     (= ret :long)   (str "(jolt->fx " lett ")")
+                     :else lett)]))
 
 (defn- emit-fn [node]
   (let [arities (:arities node)
