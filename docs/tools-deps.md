@@ -96,11 +96,13 @@ a C compiler; `JOLT_CHEZ_CSV` overrides the auto-detected `csv<ver>/<machine>`
 dir. `--opt` turns on the inference/flatten/scalar-replace passes; the default
 `release` mode is const-fold only.
 
-`release` and `--opt` are closed-world: a call between the app's own functions
-binds to its target directly, skipping the var lookup and generic dispatch a
-runtime call pays. That assumes app vars are final — mark one `^:redef` (or
-`^:dynamic`) to keep it redefinable and indirect. `--dev` keeps everything
-indirect/open. Calls into `clojure.core` stay indirect in every mode.
+`--direct-link` (or `:jolt/build {:direct-link true}`) opts into a closed world: a
+call between the app's own functions binds to its target directly, skipping the var
+lookup and generic dispatch a runtime call pays — at the cost of runtime
+redefinition of those vars and `eval`/`load-string`. It's off by default, so
+ordinary builds (including `release` and `--opt`) stay dynamically linked. A var
+marked `^:redef` or `^:dynamic` stays indirect even under `--direct-link`, and calls
+into `clojure.core` stay indirect in every mode.
 
 ## Limitations
 

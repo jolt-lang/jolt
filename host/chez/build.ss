@@ -211,7 +211,10 @@
 ;; natives: encoded :jolt/native libs to load at startup. embed-dirs: dirs whose
 ;; files bake into the binary (single-file). ext-roots: project-relative io/resource
 ;; roots resolved at runtime against JOLT_PWD (ship-alongside resources).
-(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots)
+;; direct-link?: opt-in closed-world direct-linking (app->app calls bind directly,
+;; no runtime redefinition). Off by default in every mode — release stays
+;; dynamically linked.
+(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link?)
   (bld-check-toolchain)
   ;; 1. record app namespaces in dependency order as they finish loading.
   (let ((app-order '()))
@@ -224,14 +227,15 @@
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
       ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
-      ;; + scalar-replace passes (closed world); release/dev get const-fold only.
-      ;; release + optimized are closed-world: turn on direct-linking so app->app
-      ;; calls bind directly (dev stays open/indirect). The defined-set accumulates
-      ;; across the dependency-ordered namespaces, so a dep's defs are direct-linkable
-      ;; by the time the entry that calls them is emitted.
+      ;; + scalar-replace passes; release/dev get const-fold only.
+      ;; direct-link? (opt-in) commits to a closed world: app->app calls bind
+      ;; directly, giving up runtime redefinition of those vars. Off by default in
+      ;; every mode. The defined-set accumulates across the dependency-ordered
+      ;; namespaces, so a dep's defs are direct-linkable by the time the entry that
+      ;; calls them is emitted.
       (set-optimize! (string=? mode "optimized"))
-      (let ((dl (not (string=? mode "dev"))))
-        ((var-deref "jolt.backend-scheme" "set-direct-link!") dl)
+      (when direct-link?
+        ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
         ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
       (let* ((app-strs (apply append
                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))
@@ -325,9 +329,9 @@
         (display (string-append "jolt build: wrote " out-path "\n"))))))
 
 (def-var! "jolt.host" "build-binary"
-  (lambda (entry out mode natives embed-dirs ext-roots)
+  (lambda (entry out mode natives embed-dirs ext-roots direct-link?)
     (build-binary (jolt-str-render-one entry)
                   (jolt-str-render-one out)
                   (jolt-str-render-one mode)
-                  natives embed-dirs ext-roots)
+                  natives embed-dirs ext-roots (jolt-truthy? direct-link?))
     jolt-nil))
