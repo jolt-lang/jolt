@@ -216,6 +216,12 @@
 (def ^:private map-shapes-box (atom false))
 (def ^:private checking-box (atom #{}))     ;; keys mid-recheck — cycle guard
 (def ^:private strict-box (atom false))     ;; report against user-fn domains?
+;; Memo for check-user-call's per-fn body re-inference: [:base key] -> baseline
+;; diag count, [:arg key i argtype] -> does binding param i to argtype add a
+;; diagnostic. Cleared per form (check-form) — the global type-env is stable within
+;; one form's check, and isolated-diag-count's calls/escapes side effects are not
+;; read there, so skipping a repeat probe is observably identical.
+(def ^:private diag-memo-box (atom {}))
 ;; When true, `infer` emits success-type diagnostics as it types (jolt audit).
 ;; The checker IS the inference walk now — one O(n) pass that both types and
 ;; checks, instead of a separate check-walk that re-inferred every subtree
@@ -699,13 +705,25 @@
                  {:op :user-call :type :arity :pos pos
                   :msg (str "wrong number of args (" nargs ") passed to `"
                             (:name sig) "` (expected " npar ")")})
-          (let [base (isolated-diag-count body (all-any-env params))]
+          ;; all-any-env is built once (was rebuilt per param), and each probe is
+          ;; memoized by [key i argtype] so the same fn re-checked across call
+          ;; sites in this form re-infers its body at most once per (param, type).
+          (let [base-env (all-any-env params)
+                base (let [bk [:base key]]
+                       (if (contains? @diag-memo-box bk)
+                         (get @diag-memo-box bk)
+                         (let [b (isolated-diag-count body base-env)]
+                           (swap! diag-memo-box assoc bk b) b)))]
             (reduce
               (fn [_ i]
                 (let [at (nth arg-types i)]
                   (when (and (not= at :any) (not= at :truthy))
-                    (let [pe (assoc (all-any-env params) (nth params i) at)]
-                      (when (> (isolated-diag-count body pe) base)
+                    (let [mk [:arg key i at]
+                          rejects (if (contains? @diag-memo-box mk)
+                                    (get @diag-memo-box mk)
+                                    (let [r (> (isolated-diag-count body (assoc base-env (nth params i) at)) base)]
+                                      (swap! diag-memo-box assoc mk r) r))]
+                      (when rejects
                         (swap! diag-box conj
                                {:op :user-call :argpos i :type (type-name at) :pos pos
                                 :msg (str "argument " (inc i) " to `" (:name sig)
@@ -755,6 +773,7 @@
    (reset! strict-box (if strict? true false))
    (reset! checking-box #{})
    (reset! diag-box [])
+   (reset! diag-memo-box {})
    ;; the check IS the inference: one walk that types and emits diagnostics
    ;; (jolt audit). checking? gates emission so the optimization fixpoint, which
    ;; also calls infer, stays silent.
