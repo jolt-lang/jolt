@@ -225,11 +225,19 @@
                                           " — is it on the source roots?")))
       ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
       ;; + scalar-replace passes (closed world); release/dev get const-fold only.
+      ;; release + optimized are closed-world: turn on direct-linking so app->app
+      ;; calls bind directly (dev stays open/indirect). The defined-set accumulates
+      ;; across the dependency-ordered namespaces, so a dep's defs are direct-linkable
+      ;; by the time the entry that calls them is emitted.
       (set-optimize! (string=? mode "optimized"))
+      (let ((dl (not (string=? mode "dev"))))
+        ((var-deref "jolt.backend-scheme" "set-direct-link!") dl)
+        ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
       (let* ((app-strs (apply append
                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))
                               ordered)))
              (_ (set-optimize! #f))
+             (_ ((var-deref "jolt.backend-scheme" "set-direct-link!") #f))
              (builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))
              (flat-so  (string-append builddir "/flat.so"))
