@@ -52,6 +52,39 @@
 
 (declare an)
 
+;; The recur-arg kinds for the recurs targeting THIS loop level. recur only appears
+;; in tail position (an if branch, a do's ret, a let body), so descend only those;
+;; a nested loop/fn (and any non-tail child) owns its own recur and is skipped.
+(defn- recur-kinds [node tenv]
+  (let [op (get node :op)]
+    (cond
+      (= op :recur) [(mapv (fn [a] (nth (an a tenv) 0)) (get node :args))]
+      (= op :let) (recur-kinds (get node :body)
+                               (reduce (fn [te b] (assoc te (nth b 0) (nth (an (nth b 1) te) 0)))
+                                       tenv (get node :bindings)))
+      (= op :if) (concat (recur-kinds (get node :then) tenv) (recur-kinds (get node :else) tenv))
+      (= op :do) (recur-kinds (get node :ret) tenv)
+      :else [])))
+
+;; Loop-var kinds by bounded fixpoint. A var is :double only if its init is double
+;; AND every recur arg in that slot is double (under the current assumption) — a
+;; monotone demotion that stops at a fixpoint, bounded by the var count. Integers
+;; stay untyped (no :long from a bare init literal, so a bignum-producing loop keeps
+;; arbitrary precision). A :double loop var's init and recur args are all flonums,
+;; so no entry coercion is needed (unlike a fn param fed an arbitrary argument).
+(defn- loop-kinds [names ik body tenv]
+  (loop [cur (mapv (fn [k] (if (= k :double) :double nil)) ik) iter 0]
+    (if (> iter (count names))
+      cur
+      (let [te (reduce (fn [t i] (assoc t (nth names i) (nth cur i))) tenv (range (count names)))
+            rks (recur-kinds body te)
+            nxt (mapv (fn [j]
+                        (if (and (= (nth cur j) :double)
+                                 (every? (fn [rk] (= :double (nth rk j))) rks))
+                          :double nil))
+                      (range (count names)))]
+        (if (= nxt cur) cur (recur nxt (inc iter)))))))
+
 ;; Seed a fn arity's local env from its numeric param hints; an unhinted param
 ;; shadows any same-named outer local to nil.
 (defn- arity-env [tenv a]
@@ -109,11 +142,15 @@
             br (an (get node :body) (nth res 0))]
         [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
       (= op :loop)
-      ;; loop vars join across recur, untracked here, so they stay untyped; still
-      ;; descend to specialize any non-loop arithmetic in the inits/body.
-      [nil (assoc node
-                  :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) (get node :bindings))
-                  :body (nth (an (get node :body) tenv) 1))]
+      ;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
+      (let [binds (get node :bindings)
+            names (mapv (fn [b] (nth b 0)) binds)
+            ik (mapv (fn [b] (nth (an (nth b 1) tenv) 0)) binds)
+            lk (loop-kinds names ik (get node :body) tenv)
+            te (reduce (fn [t i] (assoc t (nth names i) (nth lk i))) tenv (range (count names)))]
+        [nil (assoc node
+                    :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)
+                    :body (nth (an (get node :body) te) 1))])
       (= op :if)
       (let [tr (an (get node :test) tenv)
             thn (an (get node :then) tenv)

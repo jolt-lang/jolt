@@ -56,6 +56,15 @@
 (let ((e (emitf "u" "(fn* ([^double x] (let [d (* x x)] (+ d 1.0))))")))
   (ok "let-bound double propagates (fl* then fl+)" (and (has? e "(fl*") (has? e "(fl+"))))
 
+;; --- loop-carried variable typing (round 2) ---
+;; a double accumulator types via fixpoint, so its recur arithmetic is fl-ops.
+(let ((e (emitf "u" "(fn* ([] (loop [acc 0.0 i 0] (if (< i 5) (recur (+ acc 1.5) (inc i)) acc))))")))
+  (ok "loop double accumulator lowers (+ acc 1.5) to fl+" (has? e "(fl+")))
+;; an integer accumulator stays generic — a bignum-producing loop keeps arbitrary
+;; precision (no fx* overflow).
+(let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc))))")))
+  (ok "loop integer accumulator is NOT fx-specialized" (not (has? e "(fx*"))))
+
 ;; --- soundness: un-hinted / integer-literal code stays generic ---
 (let ((e (emitf "u" "(fn* ([a b] (+ a b)))")))
   (ok "un-hinted + stays generic (no fl/fx)" (and (not (has? e "(fl+")) (not (has? e "(fx+")))))
@@ -79,6 +88,10 @@
 (ok "long unary negate"        (= -5 (jnum->exact (ev "((fn* ([^long a] (- a))) 5)"))))
 (ok "long quot 7/2 = 3"        (= 3  (jnum->exact (ev "((fn* ([^long a ^long b] (quot a b))) 7 2)"))))
 (ok "double + int literal = 4.5" (= 9 (jnum->exact (ev "((fn* ([^double x] (* (+ x 1) 2))) 3.5)"))))
+(ok "loop double accumulator: 10*1.5 = 15"
+    (= 15 (jnum->exact (ev "((fn* ([] (loop [acc 0.0 i 0] (if (< i 10) (recur (+ acc 1.5) (inc i)) acc)))))"))))
+(ok "loop integer factorial stays exact (bignum preserved)"
+    (jolt-truthy? (ev "(< 1000000000000000000000 ((fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc)))) ))")))
 
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
