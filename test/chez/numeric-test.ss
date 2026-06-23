@@ -100,5 +100,24 @@
 (ok "long-seeded loop accumulator counts to 100"
     (= 100 (jnum->exact (ev "((fn* ([^long start] (loop [acc start] (if (< acc 100) (recur (inc acc)) acc)))) 0)"))))
 
+;; --- numeric return hints (round 3) ---
+;; a ^double / ^long return hint coerces the fn's value on the way out (the contract).
+(jolt-compile-eval "(def ^double dsq (fn* ([x] (* x x))))" "u")
+(ok "^double return coerces value to a flonum" (flonum? (ev "(dsq 3)")))
+(jolt-compile-eval "(def ^long ldbl (fn* ([x] (+ x x))))" "u")
+(ok "^long return coerces value to a fixnum" (let ((r (ev "(ldbl 5)"))) (and (fixnum? r) (= r 10))))
+;; the defn macro must carry the name's return hint through to the def.
+(jolt-compile-eval "(defn ^double dnsq [x] (* x x))" "u")
+(ok "defn ^double return coerces to flonum" (flonum? (ev "(dnsq 4)")))
+
+;; caller propagation: a call to a ^double-returning fn types an accumulator over it.
+(let ((e (emitf "u" "(fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (dsq 2.0)) (inc i)) acc))))")))
+  (ok "accumulator over a ^double-returning call lowers to fl+" (has? e "(fl+")))
+(ok "accumulator over ^double call runtime: 3 * (2*2) = 12.0"
+    (= 12 (jnum->exact (ev "((fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (dsq 2.0)) (inc i)) acc)))))"))))
+;; a ^double call result also specializes a straight-line op
+(let ((e (emitf "u" "(fn* ([^double y] (+ y (dsq 2.0))))")))
+  (ok "straight-line op over ^double call lowers to fl+" (has? e "(fl+")))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

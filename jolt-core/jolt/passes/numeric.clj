@@ -100,8 +100,13 @@
         argnodes (mapv (fn [r] (nth r 1)) ars)
         node1 (assoc node :args argnodes)
         n (count ars)]
-    (if (nil? nm)
-      [nil node1]
+    (cond
+      ;; a call to a var with a declared numeric return (^double/^long) yields that
+      ;; kind, so an accumulator over the result types. The call itself isn't an
+      ;; arithmetic op to lower — its body already coerces the return.
+      (get fnode :num-ret) [(get fnode :num-ret) node1]
+      (nil? nm) [nil node1]
+      :else
       (let [;; per-operand class: :double / :long (typed), :wild (integer literal,
             ;; usable in either), or :no (anything else — blocks specialization).
             cls (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]

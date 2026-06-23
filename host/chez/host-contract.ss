@@ -32,6 +32,9 @@
 (define hc-kw-name  (keyword #f "name"))
 (define hc-kw-var   (keyword #f "var"))
 (define hc-kw-unresolved (keyword #f "unresolved"))
+(define hc-kw-num-ret (keyword #f "num-ret"))
+(define hc-kw-double (keyword #f "double"))
+(define hc-kw-long (keyword #f "long"))
 (define hc-kw-regex (keyword #f "regex"))
 (define hc-kw-inst  (keyword #f "#inst"))
 (define hc-kw-uuid  (keyword #f "#uuid"))
@@ -176,13 +179,24 @@
 ;; No :host branch: there is no separate native-op env — the hot
 ;; clojure.core primitives (+,-,map,...) are declared in clojure.core below so
 ;; they classify as :var and the emitter's native-op path lowers them.
+;; A var's declared numeric return (^double/^long on its name) -> :double/:long,
+;; read from its meta. Lets jolt.passes.numeric type a call to it.
+(define (hc-cell-num-ret cell)
+  (let ((m (and cell (hashtable-ref var-meta-table cell #f))))
+    (and m (let ((t (jolt-get m hc-kw-tag)))
+             (cond ((equal? t "double") hc-kw-double)
+                   ((equal? t "long") hc-kw-long)
+                   (else #f))))))
+
 (define (hc-resolve-global ctx sym)
   (let* ((nm (symbol-t-name sym))
          (cell (hc-resolve-cell ctx sym)))
     (if (and cell (var-cell-defined? cell))
-        (jolt-hash-map hc-kw-kind hc-kw-var
-                       hc-kw-ns (var-cell-ns cell)
-                       hc-kw-name (var-cell-name cell))
+        (let ((base (jolt-hash-map hc-kw-kind hc-kw-var
+                                   hc-kw-ns (var-cell-ns cell)
+                                   hc-kw-name (var-cell-name cell)))
+              (nr (hc-cell-num-ret cell)))
+          (if nr (jolt-assoc base hc-kw-num-ret nr) base))
         (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm))))
 
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
