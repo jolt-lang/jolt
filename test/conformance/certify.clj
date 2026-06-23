@@ -1,4 +1,4 @@
-;; certify.clj (jolt-xsfe) — certify the jolt corpus against reference JVM Clojure.
+;; certify.clj — certify the jolt corpus against reference JVM Clojure.
 ;;
 ;; The corpus (test/chez/corpus.edn) carries hand-written :expected values. This
 ;; script runs each row's :actual and :expected through REAL JVM Clojure and checks
@@ -154,7 +154,6 @@
 (defn jvm-error-feature [actual]
   (let [a (str/lower-case actual)]
     (cond
-      (re-find #"janet" a) :host/janet
       (re-find #"chan|>!|<!|go-loop|\(go |alts!|core\.async" a) :async/core-async
       (re-find #"load-string|\beval\b|read-string.*eval" a) :runtime/eval
       (re-find #"-array|into-array|to-array|aget|aset|aclone|alength" a) :host/arrays

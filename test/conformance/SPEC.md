@@ -42,7 +42,7 @@ the canonical, frozen contract**: it is what every runtime consumes, what
 Historically every `:expected` was hand-written. `certify.clj` removes that
 weakness: it evaluates every `:actual` (and `:expected`) on **JVM Clojure** in a
 fresh `user` namespace and checks jolt's `:expected` against what real Clojure
-produces. Of ~2740 vanilla-certifiable rows, **>2660 match reference Clojure
+produces. Of ~2740 vanilla-certifiable rows, **>2730 match reference Clojure
 exactly**. The rest are classified (see below) — none are silently wrong.
 
 ```sh
@@ -62,7 +62,7 @@ each **non-portable** case by the feature it requires. Cases *not* in the profil
 are **portable** — they must pass on any faithful Clojure.
 
 A runtime's **conformance level** = portable cases + the feature families it
-implements. Current profile (≈2670 portable, ≈249 non-portable):
+implements. Current profile (≈2735 portable, ≈167 non-portable):
 
 | Feature | Meaning |
 |---------|---------|

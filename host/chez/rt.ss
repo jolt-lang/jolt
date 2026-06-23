@@ -1,4 +1,4 @@
-;; Phase 1 (jolt-cf1q.2) — the minimal Chez RT the emitted Scheme rests on.
+;; The minimal Chez RT the emitted Scheme rests on.
 ;;
 ;; Sits above the value model (values.ss) and below an emitted program. Adds the
 ;; two things the back end's output references that aren't in the value layer:
@@ -20,7 +20,7 @@
 ;; jolt `not`: only nil and false are falsey.
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 
-;; --- exceptions (jolt-vcsl) --------------------------------------------------
+;; --- exceptions --------------------------------------------------------------
 ;; throw raises the jolt value RAW (no envelope);
 ;; catch (emitted as `guard`) binds it directly. Chez `raise` accepts any
 ;; object, so a thrown number/map/ex-info all work; uncaught -> non-zero exit.
@@ -50,7 +50,7 @@
                  jolt-kw-data jolt-nil
                  jolt-kw-cause (if (null? more) jolt-nil (car more))))
 
-;; --- host interop (jolt-0kf5) ------------------------------------------------
+;; --- host interop ------------------------------------------------------------
 ;; (.method target arg*) lowers to (jolt-host-call "method" target arg*). JVM
 ;; interop has no general Chez analog, but the few methods jolt-core's io tier
 ;; calls map onto Chez equivalents: a writer's .write is a port display; a File's
@@ -74,7 +74,7 @@
 (define jolt-unbound (string->symbol "#<jolt-unbound>"))
 ;; `defined?` distinguishes a genuinely interned var (def / declare / a native-op
 ;; cell) from a cell lazily materialised by a forward `var-deref` / `(var x)` on a
-;; not-yet-defined name — `resolve` returns the cell iff defined? (jolt-yxqm).
+;; not-yet-defined name — `resolve` returns the cell iff defined?.
 ;; ns-unmap clears it. Avoids the (def x nil) edge of probing the root.
 (define-record-type var-cell (fields ns name (mutable root) (mutable defined?)) (nongenerative var-cell-v2))
 (define var-table (make-hashtable string-hash string=?))
@@ -93,7 +93,7 @@
 ;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
 ;; return, so this is transparent there.
 (define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
-;; var def-time metadata (jolt-zikh): the :def emit passes the def's reader meta
+;; var def-time metadata: the :def emit passes the def's reader meta
 ;; (^:private / ^Type tag / docstring -> {:doc}) here, stored in an eq side-table
 ;; keyed by the cell. jolt-meta (natives-meta.ss) merges it onto {:ns :name},
 ;; which it derives from the cell — so EVERY var (plain def, native-op, declare)
@@ -103,7 +103,7 @@
 (define jolt-kw-var-name (keyword #f "name"))
 (define (def-var-with-meta! ns name v m)
   (let ((c (def-var! ns name v))) (hashtable-set! var-meta-table c m) c))
-;; runtime-macro registry (jolt-r9lm, inc6b): a var whose root holds a macro
+;; runtime-macro registry: a var whose root holds a macro
 ;; expander fn is flagged here, so the ON-CHEZ analyzer's form-macro?/form-expand-1
 ;; (host-contract.ss) expand it. The prelude emits each core/stdlib defmacro as a
 ;; def-var! of its (cross-compiled) expander followed by (mark-macro! ns name).
@@ -124,17 +124,17 @@
           (hashtable-set! var-table k c)
           c))))
 
-;; regex (jolt-i0s3): defines regex-t + the re-* fns (def-var!'d into
+;; regex: defines regex-t + the re-* fns (def-var!'d into
 ;; clojure.core), so it loads after def-var! and before the printer below (which
 ;; renders a regex-t as #"source").
 (load "host/chez/regex.ss")
 
-;; atoms (jolt-9ziu): host-coupled mutable cells; def-var!'d into clojure.core
+;; atoms: host-coupled mutable cells; def-var!'d into clojure.core
 ;; (atom/deref/swap!/reset! + the compare/vals kernel). Loads after def-var! and
 ;; jolt-invoke (seq.ss) / jolt= (values.ss) / jolt-vector (collections.ss).
 (load "host/chez/atoms.ss")
 
-;; type predicates + simple accessors (jolt-9ziu): seed natives the overlay
+;; type predicates + simple accessors: seed natives the overlay
 ;; assumes (map?/vector?/nil?/number?/.../name/namespace), def-var!'d into
 ;; clojure.core. Loads after the value-model record predicates they wrap.
 (load "host/chez/predicates.ss")
@@ -158,7 +158,6 @@
 ;; quotes), chars as `\c`/`\newline`, collections recursively. NOTE: maps/sets
 ;; render in HAMT-iteration order, which is not a stable insertion order —
 ;; so unordered values are compared via `=` (true/false), not printed form.
-;; The full canonical printer is Phase 2.
 (define (jolt-str-join strs)
   (cond ((null? strs) "") ((null? (cdr strs)) (car strs))
         (else (string-append (car strs) " " (jolt-str-join (cdr strs))))))
@@ -197,174 +196,174 @@
                        (loop (jolt-seq (seq-more s)) (cons (jolt-pr-str (seq-first s)) acc))))) ")"))
     (else (format "~a" x))))
 
-;; converters + string ops (jolt-t6cr): str/subs/vec/keyword/symbol/compare/int/
+;; converters + string ops: str/subs/vec/keyword/symbol/compare/int/
 ;; double/gensym — host-coupled seed natives def-var!'d into clojure.core. Loaded
 ;; LAST because `str` reuses jolt-pr-str (defined just above).
 (load "host/chez/converters.ss")
 
-;; transients (jolt-kl2l): copy-on-write transient collections + persistent disj;
+;; transients: copy-on-write transient collections + persistent disj;
 ;; extends get/count/contains? to see through a transient. After collections.ss
 ;; (the persistent ops it delegates to).
 (load "host/chez/transients.ss")
 
-;; seq-native shims (jolt-y6mv): mapcat/take-while/drop-while/partition/sort +
+;; seq-native shims: mapcat/take-while/drop-while/partition/sort +
 ;; reduced/reduced?/identical? — seed-native fns the overlay assumes are core
 ;; natives. Over the seq layer + jolt-compare, so loaded after converters.ss.
 (load "host/chez/natives-seq.ss")
 
-;; readable printer + output seams (jolt-9zhh, Phase 2 inc B): __pr-str1/__write/
+;; readable printer + output seams: __pr-str1/__write/
 ;; __with-out-str/__eprint/__eprintf — the host seams the overlay print family
 ;; (pr-str/pr/prn/print/println/*-str) is built on. After converters.ss (uses
 ;; jolt-pr-str/jolt-str-join) + seq.ss (jolt-invoke).
 (load "host/chez/printing.ss")
 
-;; collection constructors + rand (jolt-agw6, Phase 2 inc A): bind the public
+;; collection constructors + rand: bind the public
 ;; clojure.core names hash-map/hash-set/array-map/set/rand to the existing
 ;; pmap/pset ctors. After collections.ss (the ctors) + seq.ss (seq->list).
 (load "host/chez/natives-coll.ss")
 
-;; bit ops + parse-long/parse-double (jolt-cf1q.3 inc C): host-coupled scalar
+;; bit ops + parse-long/parse-double: host-coupled scalar
 ;; seed natives over the all-flonum number model.
 (load "host/chez/natives-num.ss")
 
-;; multimethods (jolt-9ls5): defmulti/defmethod dispatch runtime. Needs jolt-invoke
+;; multimethods: defmulti/defmethod dispatch runtime. Needs jolt-invoke
 ;; (seq.ss), jolt=/key-hash/jolt-hash-map (collections.ss), jolt-atom? (atoms.ss),
 ;; jolt-pr-str (above), and the var-cell machinery — so loaded last.
 (load "host/chez/multimethods.ss")
 
-;; records + protocols (jolt-jgoc, Phase 2 inc D): defrecord/deftype/defprotocol/
+;; records + protocols: defrecord/deftype/defprotocol/
 ;; extend-type/reify. A jrec record type set!-extended into the collection
 ;; dispatchers + a protocol registry. After multimethods.ss (chez-current-ns) and
 ;; the dispatchers/printers it wraps (collections/seq/values/converters/printing/
 ;; transients).
 (load "host/chez/records.ss")
 
-;; metadata (jolt-rkbc, Phase 2 inc E): meta / with-meta over an identity-keyed
+;; metadata: meta / with-meta over an identity-keyed
 ;; side-table. After records.ss (jrec) + the collection ctors it copies.
 (load "host/chez/natives-meta.ss")
 
-;; host class tokens (jolt-13zk): bare class names (String/Keyword/File...) ->
+;; host class tokens: bare class names (String/Keyword/File...) ->
 ;; canonical JVM class-name strings + (class x). After natives-meta.ss (jolt-type)
 ;; and the printer (jolt-str-render-one).
 (load "host/chez/host-class.ss")
 
-;; dynamic vars (jolt-9ls5): *clojure-version* / *unchecked-math* constants the host
+;; dynamic vars: *clojure-version* / *unchecked-math* constants the host
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
 (load "host/chez/dynamic-vars.ss")
 
-;; host tables + sorted collections (jolt-0zoy, Phase 2): jolt.host/tagged-table/
+;; host tables + sorted collections: jolt.host/tagged-table/
 ;; ref-put!/ref-get + the 25-sorted tier's runtime (sorted-map/sorted-set routed
 ;; through their :ops table). Loaded LAST — wraps the jrec-extended dispatchers
 ;; (records.ss), jolt-disj (transients.ss), and value-host-tags (records.ss).
 (load "host/chez/host-table.ss")
 
-;; lazy-seq bridge (jolt-dmw9, Phase 2): make-lazy-seq / coll->cells over the
+;; lazy-seq bridge: make-lazy-seq / coll->cells over the
 ;; cseq model — unblocks every overlay fn built on the lazy-seq macro (repeat/
 ;; iterate/cycle/dedupe/take-nth/keep/interpose/reductions/tree-seq/lazy-cat).
 ;; Loaded LAST so %ls-seq captures the fully-extended (sorted-aware) jolt-seq.
 (load "host/chez/lazy-bridge.ss")
 
-;; volatiles + sequence / transduce (jolt-xjx6, Phase 2): native volatile boxes +
+;; volatiles + sequence / transduce: native volatile boxes +
 ;; the transduce/sequence entry points over into-xform/reduce-seq. After
 ;; natives-seq.ss (into-xform), seq.ss (reduce-seq) + atoms.ss (deref).
 (load "host/chez/natives-xform.ss")
 
-;; vars as first-class objects (jolt-n7rz, Phase 2): var?/var-get/deref/invoke/=/
+;; vars as first-class objects: var?/var-get/deref/invoke/=/
 ;; pr-str over the rt.ss var-cell. After natives-xform.ss (chains deref) + the
 ;; printers. emit lowers :the-var to (jolt-var ns name).
 (load "host/chez/vars.ss")
 
-;; misc scalar natives (jolt-cf1q.3): UUID (random-uuid/parse-uuid/uuid?), format/
+;; misc scalar natives: UUID (random-uuid/parse-uuid/uuid?), format/
 ;; printf, tagged-literal, bigint. After the printers + converters (str/pr-str of
 ;; a uuid). Overlay names (uuid?/random-uuid/parse-uuid/tagged-literal?) re-asserted
 ;; in post-prelude.ss.
 (load "host/chez/natives-misc.ss")
 
-;; namespaces (jolt-yxqm, Phase 2): the namespace value model — find-ns/ns-name/
+;; namespaces: the namespace value model — find-ns/ns-name/
 ;; all-ns/the-ns/create-ns/in-ns/ns-publics/ns-map/ns-interns/ns-aliases/resolve/
 ;; find-var/ns-unmap/*ns*, over the var-table + chez-current-ns. Loaded LAST: needs
 ;; var-cell + var-cell-defined?, jolt-symbol/jolt-hash-map/jolt-assoc, chez-current-ns
 ;; (multimethods.ss), list->cseq (seq.ss), and the fully-patched printers (vars.ss).
 (load "host/chez/ns.ss")
 
-;; dynamic var binding (jolt-2o7x, Phase 2): the per-thread binding stack +
+;; dynamic var binding: the per-thread binding stack +
 ;; push/pop/get-thread-bindings/__thread-bound?/var-set/alter-var-root/__local-var.
 ;; Chains var-deref (rt.ss) and jolt-var-get (vars.ss) onto the stack, so a `binding`
 ;; frame is seen by every var read. Loaded LAST: needs the fully-extended var-read
 ;; paths + jolt-hash-map/pmap-fold/pmap-assoc (collections.ss).
 (load "host/chez/dyn-binding.ss")
 
-;; java.lang.String method interop (jolt-nfca, Phase 2): jolt-string-method, the
+;; java.lang.String method interop: jolt-string-method, the
 ;; portable String/CharSequence surface record-method-dispatch falls through to on
 ;; a string target. After regex.ss (jolt-re-pattern/regex-t-irx) + records.ss
 ;; (which references jolt-string-method).
 (load "host/chez/natives-str.ss")
 
-;; host class statics + constructors (jolt-avt6, Phase 2): host-static-ref/
+;; host class statics + constructors: host-static-ref/
 ;; host-static-call/host-new + the jhost method registry. Loads LAST — it extends
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
 (load "host/chez/host-static.ss")
 
-;; generic dot-form dispatch (jolt-kuic): field access + map/vector member access
+;; generic dot-form dispatch: field access + map/vector member access
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every
 ;; record-method-dispatch arm (jhost/number/regex/jrec/string) and falls through.
 (load "host/chez/dot-forms.ss")
 
-;; java.io.File + host file I/O (jolt-yyud): path-backed jfile record, slurp/spit/
+;; java.io.File + host file I/O: path-backed jfile record, slurp/spit/
 ;; flush, file-seq dir primitives, clojure.java.io/file. Loads LAST so its jfile
 ;; arm wraps the fully-built record-method-dispatch and the str/type/instance-check
 ;; extensions sit over every prior shim.
 (load "host/chez/io.ss")
 
-;; #inst values + java.time formatting (jolt-at0a inc X): jinst (RFC3339 ms) +
+;; #inst values + java.time formatting: jinst (RFC3339 ms) +
 ;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads
 ;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
 ;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
 (load "host/chez/inst-time.ss")
 
-;; Chez-side data reader (jolt-r8ku inc Y): read-string / __parse-next /
+;; Chez-side data reader: read-string / __parse-next /
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst
 ;; constructors, and the reader needs the full value/collection layer above.
 (load "host/chez/reader.ss")
 
-;; clojure.math (jolt-22vo): native flonum-math shims def-var!'d into the
+;; clojure.math: native flonum-math shims def-var!'d into the
 ;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
 (load "host/chez/math.ss")
 
-;; parity shims (jolt-cf1q.7): native clojure.core fns missing on the zero-Janet
-;; spine (hash family / rseq / cat / transient?). After host-table.ss (sorted),
+;; parity shims: native clojure.core fns not covered by the overlay
+;; (hash family / rseq / cat / transient?). After host-table.ss (sorted),
 ;; transients.ss, values.ss (jolt-hash), seq.ss.
 (load "host/chez/natives-parity.ss")
 
-;; Java-style arrays (jolt-cf1q.7): object/typed array constructors + a jolt-array
+;; Java-style arrays: object/typed array constructors + a jolt-array
 ;; backing; extends count/nth/seq/get/ref-put! so the overlay aget/aset/alength see
 ;; it. After the dispatchers it chains.
 (load "host/chez/natives-array.ss")
 
-;; clojure.lang.PersistentQueue (jolt-b8he): a functional queue + EMPTY static.
+;; clojure.lang.PersistentQueue: a functional queue + EMPTY static.
 ;; Chains seq/count/empty?/peek/pop/conj/sequential?/class/instance?/printer, so
 ;; load after natives-array (the dispatchers it extends).
 (load "host/chez/natives-queue.ss")
 
-;; syntax-quote form builders (jolt-r9lm, inc6b): __sqcat/__sqvec/__sqmap/__sqset/
+;; syntax-quote form builders: __sqcat/__sqvec/__sqmap/__sqset/
 ;; __sq1, def-var!'d into clojure.core. A cross-compiled macro expander (analyzer
-;; on Chez, inc6b) calls these to build its expansion as reader forms. Needs the
+;; on Chez) calls these to build its expansion as reader forms. Needs the
 ;; collection/seq layer + def-var!; order-independent past those.
 (load "host/chez/syntax-quote.ss")
 
-;; concurrency (jolt-byjr): real OS-thread futures + blocking promises, shared-heap
+;; concurrency: real OS-thread futures + blocking promises, shared-heap
 ;; (JVM) semantics. Loaded LAST — chains the fully-built jolt-deref and conveys the
 ;; thread-local binding stack (dyn-binding.ss) into workers. pmap/pcalls/pvalues
 ;; (overlay, over `future`) light up once future-call exists here.
 (load "host/chez/concurrency.ss")
 
-;; clojure.core.async (jolt-byjr): real-thread blocking channels + go/go-loop/
+;; clojure.core.async: real-thread blocking channels + go/go-loop/
 ;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses
 ;; ms->duration) and the collection/seq layer.
 (load "host/chez/async.ss")
 
-;; BigDecimal (jolt-i2jm): the jbigdec value type + bigdec/decimal?/class/equality/
+;; BigDecimal: the jbigdec value type + bigdec/decimal?/class/equality/
 ;; printing. Loads LAST so its set!-wraps of jolt-class/jolt=2/the printers sit
 ;; outermost over every earlier extension.
 (load "host/chez/bigdec.ss")

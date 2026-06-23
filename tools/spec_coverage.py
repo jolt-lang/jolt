@@ -2,40 +2,33 @@
 """Generate docs/spec/coverage.md — the spec status dashboard.
 
 Cross-references three sources:
-  1. clojuredocs-export.json   — the clojure.core var inventory (the surface)
-  2. jolt's interned clojure.core mappings (via janet)
-  3. symbols exercised by test/spec/* + the 3-path conformance suite
+  1. tools/clojuredocs-export.json — the clojure.core var inventory (the surface)
+  2. jolt's interned clojure.core mappings (via bin/joltc)
+  3. symbols exercised by the conformance corpus + unit cases
 
 Run from the repo root: python3 tools/spec_coverage.py
 """
-import json, re, subprocess, glob, datetime
+import json, re, subprocess, datetime
 from collections import Counter
 
 # --- 1. the surface --------------------------------------------------------
-data = json.load(open('clojuredocs-export.json'))
+data = json.load(open('tools/clojuredocs-export.json'))
 core = sorted(v['name'] for v in data['vars'] if v['ns'] == 'clojure.core')
 examples = {v['name'] for v in data['vars']
             if v['ns'] == 'clojure.core' and v.get('examples')}
 
 # --- 2. what jolt provides ---------------------------------------------------
-# Two notions: INTERNED (in clojure.core's mappings — visible to ns
+# Two notions: INTERNED (in clojure.core's interns — visible to ns
 # introspection) and RESOLVABLE (usable in code; some seed fns resolve through
 # fallback paths without being interned — itself a conformance finding).
-janet_prog = '''(use ./src/jolt/api) (use ./src/jolt/types) (use ./src/jolt/reader)
-(def ctx (init))
-(def core (ctx-find-ns ctx "clojure.core"))
-(each n (sort (keys (core :mappings))) (print "I " n))
-(def names (string/split "\\n" (slurp "/tmp/spec-surface-names.txt")))
-(each n names
-  (when (> (length n) 0)
-    # value-position probe: seed fns resolve through the core fallback even
-    # when not interned (and jolt resolve can't see them — a finding itself).
-    (def r (protect (do (def form (parse-string n))
-                        (when (and (struct? form) (= :symbol (form :jolt/type)))
-                          (eval-string ctx n) true))))
-    (when (and (r 0) (= true (r 1))) (print "R " n))))'''
+probe = '''(let [names (clojure.string/split-lines (slurp "/tmp/spec-surface-names.txt"))
+      interned (set (map name (keys (ns-interns (quote clojure.core)))))]
+  (doseq [n names]
+    (when (seq n)
+      (when (contains? interned n) (println "I" n))
+      (when (some? (resolve (symbol n))) (println "R" n)))))'''
 open('/tmp/spec-surface-names.txt','w').write('\n'.join(core))
-out = subprocess.run(['janet', '-e', janet_prog], capture_output=True, text=True)
+out = subprocess.run(['bin/joltc', '-e', probe], capture_output=True, text=True)
 interned = {l[2:] for l in out.stdout.splitlines() if l.startswith('I ')}
 resolvable = {l[2:] for l in out.stdout.splitlines() if l.startswith('R ')}
 jolt = interned | resolvable
@@ -49,7 +42,7 @@ test_text = ''
 SYMCHARS = r"\w*+!?<>=_.'/-"
 def token_re(name):
     return re.compile('(?<![' + re.escape(SYMCHARS) + '])' + re.escape(name) + '(?![' + re.escape(SYMCHARS) + '])')
-for f in glob.glob('test/spec/*.janet') + ['test/integration/conformance-test.janet']:
+for f in ['test/chez/corpus.edn', 'test/chez/unit.edn']:
     test_text += open(f).read()
 
 # --- classification ---------------------------------------------------------

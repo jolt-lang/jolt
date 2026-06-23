@@ -1,4 +1,4 @@
-;; Phase 1 (jolt-cf1q.2, inc 3a) — persistent collections on the Chez RT.
+;; persistent collections on the Chez RT.
 ;;
 ;; The vector / map / set the emitted programs construct from literals and
 ;; operate on via the lowered leaf ops (conj/get/nth/count/assoc/...). Loaded by
@@ -6,11 +6,8 @@
 ;; jolt-coll? / jolt-coll=? / jolt-coll-hash hooks defined here (forward refs,
 ;; resolved at run time — nothing is CALLED during load).
 ;;
-;; Phase note: the persistent vector is a copy-on-write Scheme vector and the
-;; map/set are a bitmap HAMT (the structure 0c measured self-hostable). They live
-;; in Scheme for the Phase-1 bootstrap; the 0c decision is to SELF-HOST them in
-;; Clojure once core is up on Chez (Phase 3 shim shrink). Correctness, not perf,
-;; is the Phase-1 gate.
+;; The persistent vector is a copy-on-write Scheme vector and the map/set are a
+;; bitmap HAMT. They live in Scheme; correctness, not perf, is the gate.
 
 ;; ============================================================================
 ;; small immutable-vector helpers (manual; avoid stdlib arg-order ambiguity)
@@ -40,7 +37,7 @@
 ;; A pvec carries an `ent` flag: #t marks a MAP ENTRY (the [k v] pair seq'd out
 ;; of a map). A map entry equals its [k v] vector and walks like one (nth/count/
 ;; seq/=/hash/print all read only `v`), but is NOT `vector?` and IS `map-entry?`
-;; — matching Clojure's MapEntry (jolt-agw6). The flag defaults #f, so every
+;; — matching Clojure's MapEntry. The flag defaults #f, so every
 ;; existing `(make-pvec v)` builds a plain vector; modifying an entry (conj/assoc)
 ;; likewise yields a plain vector.
 (define-record-type pvec

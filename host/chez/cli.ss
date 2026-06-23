@@ -1,8 +1,8 @@
-;; cli.ss (jolt-9phg / jolt-90sp) — the pure-Chez jolt runtime. NO Janet.
+;; cli.ss — the jolt runtime.
 ;;
 ;; Loads the checked-in seed (host/chez/seed/{prelude,image}.ss — the bootstrap
-;; compiler) and the zero-Janet spine, then either evaluates a -e expression or
-;; dispatches a CLI command (run/-M/repl/path/task) through jolt.main. The loader
+;; compiler) and the spine, then either evaluates a -e expression or dispatches a
+;; CLI command (run/-M/repl/path/task) through jolt.main. The loader
 ;; (loader.ss) turns `require` into real file loading off the source roots, so a
 ;; multi-file project with deps.edn dependencies runs end to end.
 ;;
@@ -23,13 +23,13 @@
 (load "host/chez/loader.ss")
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
 ;; baked-ns snapshot, so a library's (require '[jolt.ffi]) still loads jolt.ffi's
-;; Clojure side (the foreign-fn / defcfn macros, src/jolt/jolt/ffi.clj).
+;; Clojure side (the foreign-fn / defcfn macros, stdlib/jolt/ffi.clj).
 (load "host/chez/ffi.ss")          ; jolt.ffi (FFI: a library binds native code)
 
-;; jolt.main + jolt.deps live under jolt-core; keep them (and src/jolt) on the
+;; jolt.main + jolt.deps live under jolt-core; keep them (and stdlib) on the
 ;; roots so the CLI's own namespaces — and any jolt.* an app pulls in — resolve.
 ;; A project's resolved deps roots are prepended to these by jolt.main.
-(set-source-roots! (list "jolt-core" "src/jolt"))
+(set-source-roots! (list "jolt-core" "stdlib"))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
 ;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. An

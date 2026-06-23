@@ -143,8 +143,8 @@
 (def-var! "clojure.core" "gensym" jolt-gensym)
 (def-var! "clojure.core" "int" jolt-int)
 ;; char: coerce a code point (jolt's all-flonum number) to a Chez char; pass a
-;; char through. Inverse of int on chars. (Missing on Chez before jolt-hs9n — the
-;; cross-compiled emitter's chez-str-lit needs it for printable-ASCII escaping.)
+;; char through. Inverse of int on chars. The cross-compiled emitter's
+;; chez-str-lit needs it for printable-ASCII escaping.
 (define (jolt-char x) (if (char? x) x (integer->char (exact (round x)))))
 (def-var! "clojure.core" "char" jolt-char)
 ;; long: same truncation as int in jolt's all-flonum model (seed core-long =

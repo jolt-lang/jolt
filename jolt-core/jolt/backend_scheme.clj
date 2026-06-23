@@ -1,25 +1,12 @@
 (ns jolt.backend-scheme
-  "Portable Clojure IR -> Chez Scheme emitter (Chez Phase 3, jolt-cf1q.4).
+  "Lowers the host-neutral IR (jolt.ir) to Chez Scheme source text.
 
-  Consumes the
-  host-neutral IR (jolt.ir, see jolt-core/jolt/ir.clj) the analyzer produces and
-  emits Chez Scheme source TEXT. Pure jolt-core (clojure.core + clojure.string
-  only) so that, once cross-compiled, it runs ON Chez and the analyzer can emit
-  its own code — the bootstrap spine.
-
-  Output is a STRING of Scheme source; `host/compile` on Chez is `(eval (read
-  ...))`. Lowers each IR op to Scheme.
-
-  INCREMENT 1 (jolt-hg7z): const/local/var/the-var/if/do/let/loop/recur/invoke
-  (+ native-ops)/fn/def + the escaping/flonum/munge helpers.
-  INCREMENT 2 (jolt-7jvp): collection literals (vector/map/set, emit-ordered) +
-  quote (emit-quoted, walks the raw reader form via the portable jolt.host form-*
-  contract — same seam the analyzer uses, so it stays host-neutral).
-  INCREMENT 3 (jolt-me6m): try/throw + host-call + regex/inst/uuid + def-meta +
-  quoted-symbol-meta. With this the emitter covers every IR op.
-  emit-quoted now also reconstructs plain jolt VALUES (def/symbol :meta), enabled
-  by making :meta a portable struct at the host seam (h-sym-meta). Program
-  assembly + the prelude driver port land with compile-from-source (inc 4+)."
+  The analyzer produces IR; this emitter turns each IR op into a string of Scheme
+  source, which the host compiles with (eval (read ...)). It depends only on
+  clojure.core and clojure.string, so once cross-compiled it runs on Chez and can
+  emit its own code — the bootstrap spine. Quoted forms are walked through the
+  portable jolt.host form-* contract, the same seam the analyzer uses, so the
+  emitter never touches a concrete host representation directly."
   (:require [clojure.string :as str]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
                                form-list? form-vec? form-map? form-set? form-char?
@@ -83,13 +70,13 @@
 (def ^:private supported-host-methods #{"isDirectory" "listFiles"})
 
 ;; Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
-;; :if test built from them needs no jolt-truthy? wrapper (jolt-nkcb).
+;; :if test built from them needs no jolt-truthy? wrapper.
 (def ^:private bool-returning-ops
   #{"<" "<=" ">" ">=" "jolt=" "jolt-not"
     "jolt-even?" "jolt-odd?" "jolt-pos?" "jolt-neg?"
     "jolt-zero?" "jolt-empty?" "jolt-contains?"})
 
-;; PRELUDE MODE (inc 3d). The default (subset) mode rejects any clojure.core ref
+;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
 ;; When emitting clojure.core ITSELF as a prelude, core fns reference each other
 ;; constantly; those lower to var-deref (resolved at runtime).
@@ -131,7 +118,7 @@
 
 (declare emit)
 
-;; A Chez string literal (jolt-x0os). Every char outside printable ASCII becomes a
+;; A Chez string literal. Every char outside printable ASCII becomes a
 ;; codepoint hex escape \x<cp>; ; the named escapes (\n \t \r \" \\) match what
 ;; Chez's reader accepts. For pure printable ASCII this is byte-identical to %j.
 (defn- char-escape [cp]
@@ -151,7 +138,7 @@
   (cond
     (nil? v) "jolt-nil"
     (boolean? v) (if v "#t" "#f")
-    ;; Numeric tower (jolt-n6al): emit a literal Chez re-reads as the SAME number.
+    ;; Numeric tower: emit a literal Chez re-reads as the SAME number.
     ;; Exact integers -> "42", exact ratios -> "1/2" (str renders both faithfully);
     ;; a flonum must carry a decimal point/exponent or Chez reads it back as exact,
     ;; so a whole flonum (str drops its .0) gets ".0" appended. ##Inf/##-Inf/##NaN
@@ -169,9 +156,9 @@
                    (str "(keyword " (chez-str-lit kns) " " (chez-str-lit (name v)) ")")
                    (str "(keyword #f " (chez-str-lit (name v)) ")"))
     ;; char literal -> (integer->char <codepoint>). Get the codepoint via the host
-    ;; contract (form-char-code), NOT (get v :ch): on Janet a char is a struct with
-    ;; a :ch field, but on Chez (the self-hosted spine) it's a native char, so the
-    ;; struct-field read returns nil and emits (integer->char) with no arg.
+    ;; contract (form-char-code), NOT (get v :ch): on Chez (the self-hosted spine)
+    ;; a char is a native char, so a struct-field read returns nil and would emit
+    ;; (integer->char) with no arg.
     (form-char? v) (str "(integer->char " (form-char-code v) ")")
     :else (throw (ex-info (str "emit-const: unsupported literal " (pr-str v)) {}))))
 
@@ -211,7 +198,7 @@
       (str "(let* (" binds ") " (build tmps) ")"))
     (build strs)))
 
-;; Quoted literals (jolt-u8j7). A :quote node's :form is the RAW reader form;
+;; Quoted literals. A :quote node's :form is the RAW reader form;
 ;; reconstruct each as the matching Chez RT constructor — the runtime value of a
 ;; quote is just that literal data. The form is walked via the jolt.host form-*
 ;; contract (the portable seam the analyzer uses), NOT host-native predicates, so
@@ -417,7 +404,7 @@
       :else
       (invoke))))
 
-;; try/catch/finally (jolt-vcsl). throw raises the jolt value RAW (jolt-throw =
+;; try/catch/finally. throw raises the jolt value RAW (jolt-throw =
 ;; Scheme `raise`); catch lowers to `guard` with an `else` clause (the IR drops
 ;; the class), finally to `dynamic-wind`'s after-thunk (runs on success, catch and
 ;; escape — Clojure finally semantics). Both keys optional on the node.
@@ -496,7 +483,7 @@
     ;; a namespace value spliced into a form (~*ns*) -> reconstruct by name.
     :the-ns (str "(intern-ns! " (chez-str-lit (:name node)) ")")
     ;; (.method target arg*) -> jolt-host-call for an rt-shimmed method, else
-    ;; record-method-dispatch (a reify/record protocol method, jolt-jgoc).
+    ;; record-method-dispatch (a reify/record protocol method).
     :host-call (let [m (:method node)
                      target (emit (:target node))
                      args (map emit (:args node))]

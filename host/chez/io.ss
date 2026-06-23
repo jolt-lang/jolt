@@ -1,5 +1,5 @@
-;; java.io.File + host file I/O (jolt-yyud). A
-;; Chez-native implementation over Chez's filesystem primitives. A File is a
+;; java.io.File + host file I/O, implemented over Chez's filesystem
+;; primitives. A File is a
 ;; path-backed jfile record: (instance? java.io.File f) is true, str/slurp coerce
 ;; it to its path, and the File method surface (getName/getPath/exists/
 ;; isDirectory/isFile/listFiles) dispatches through record-method-dispatch.
@@ -8,8 +8,7 @@
 ;; list-dir for the overlay file-seq (20-coll.clj), which calls __file?/__dir?/
 ;; __list-dir + the .isDirectory/.listFiles/.isFile method surface.
 ;;
-;; Reader/StringReader-coupled io (io/reader, line-seq over a file, .toURL,
-;; slurp over a reader) is deferred to jolt-at0a. Loaded LAST in rt.ss, after
+;; Loaded LAST in rt.ss, after
 ;; dot-forms.ss (so the jfile method arm wraps the fully-built dispatch) and
 ;; natives-meta.ss / records.ss / printing.ss (jolt-type / instance-check /
 ;; jolt-str-render-one, which it extends).
@@ -109,8 +108,8 @@
         (%io-rmd obj method-name rest-args))))
 
 ;; .isDirectory / .listFiles emit to jolt-host-call (rt.ss), not record-method-
-;; dispatch — the Phase-1 shims there assume a
-;; path STRING target. Make them jfile-aware so file-seq's File branch works.
+;; dispatch — the shims there assume a path STRING target. Make them jfile-aware
+;; so file-seq's File branch works.
 (define %io-host-call jolt-host-call)
 (set! jolt-host-call
   (lambda (method target . args)
@@ -156,17 +155,15 @@
         (begin (reader-refill! r "") (values jolt-nil #f))
         (begin (reader-refill! r (jolt-nth pr 1)) (values (jolt-nth pr 0) #t)))))
 
-;; clojure.edn/read over a reader (jolt-uicd): the overlay edn.clj's drain-reader is
-;; janet/type-coupled, so on Chez we drain the jhost reader to a string and read the
+;; clojure.edn/read over a reader: drain the jhost reader to a string and read the
 ;; first EDN form (read-string). Re-asserted over the prelude in post-prelude.ss.
 (define (chez-edn-read reader)
   (jolt-invoke (var-deref "clojure.core" "read-string")
                (if (reader-jhost? reader) (drain-reader reader) (jolt-str-render-one reader))))
 
-;; line-seq (jolt-0obq): the overlay line-seq reads via a Janet map-reader's
-;; :read-line-fn, but a Chez io/reader is a jhost StringReader. Drain it (or take a
-;; string) and split on newline; a trailing newline does NOT yield a final empty
-;; line (like readLine -> nil at EOF). Re-asserted in post-prelude.ss.
+;; line-seq: an io/reader is a jhost StringReader. Drain it (or take a string)
+;; and split on newline; a trailing newline does NOT yield a final empty line
+;; (like readLine -> nil at EOF). Re-asserted in post-prelude.ss.
 (define (chez-lines s)
   (let loop ((cs (string->list s)) (cur '()) (acc '()))
     (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
@@ -350,7 +347,7 @@
           (else (let ((ctor (lookup-class class-ctors-tbl "URL")))
                   (if ctor (ctor (jolt-str-render-one x)) (make-url (jolt-str-render-one x))))))))
 
-;; --- java.lang.ClassLoader (jolt-1nnn) --------------------------------------
+;; --- java.lang.ClassLoader --------------------------------------------------
 ;; jolt has no classpath; a "classloader" resolves a named resource against the
 ;; loader's source roots (the same model as clojure.java.io/resource), returning a
 ;; file: URL or nil. getSystemClassLoader / a thread's contextClassLoader both hand
@@ -380,7 +377,7 @@
 (register-class-statics! "Thread" (list (cons "currentThread" (lambda () the-thread))))
 (register-class-statics! "java.lang.Thread" (list (cons "currentThread" (lambda () the-thread))))
 
-;; --- java.io.File / java.util.UUID constructors (jolt-1nnn) ------------------
+;; --- java.io.File / java.util.UUID constructors -----------------------------
 ;; (java.io.File. parent child) joins with "/"; (File. path) wraps the path.
 (register-class-ctor! "File"
   (lambda (a . rest)
@@ -396,7 +393,7 @@
         (cons "fromString" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))))
 (register-class-ctor! "UUID" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))
 
-;; --- java.net.URI (jolt-1nnn) -----------------------------------------------
+;; --- java.net.URI -----------------------------------------------------------
 ;; A minimal RFC-3986 split into scheme/authority/host/port/path/query/fragment,
 ;; kept in a jhost "uri" carrying the original string. (str u)/(.toString u) give
 ;; the original; getHost is nil for a relative URI (hiccup.util/to-str branches on

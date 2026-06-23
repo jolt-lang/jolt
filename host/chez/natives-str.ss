@@ -1,4 +1,4 @@
-;; natives-str.ss (jolt-nfca) — java.lang.String method interop on Chez.
+;; natives-str.ss — java.lang.String method interop on Chez.
 ;;
 ;; (.method s arg*) on a string target lowers to record-method-dispatch (emit.ss),
 ;; which falls through to jolt-string-method here when the target is a string.
@@ -316,10 +316,9 @@
 
 ;; (require ...) / (use ...) at runtime: register each spec's :as alias + :refer
 ;; names into the runtime ns tables (chez-register-spec!, ns.ss), keyed by the
-;; current ns. The zero-Janet spine also pre-registers these at analyze time
-;; (idempotent); but when the JANET analyzer compiled the form (the prelude path)
-;; the Chez tables were never populated, so ns-aliases/ns-resolve over an :as alias
-;; need this runtime registration (jolt-cf1q.7). Specs arrive evaluated (quoted).
+;; current ns. The spine also pre-registers these at analyze time (idempotent),
+;; so ns-aliases/ns-resolve over an :as alias resolve. Specs arrive evaluated
+;; (quoted).
 (define (chez-runtime-require . specs)
   (for-each (lambda (s) (chez-register-spec! (chez-current-ns) s)) specs)
   jolt-nil)

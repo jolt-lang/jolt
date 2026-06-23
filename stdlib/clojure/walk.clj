@@ -10,7 +10,7 @@
     (map? form) (outer (into (empty form) (map inner form)))
     ; lists rebuild as lists, other seqs (incl. macro/template output: cons/
     ; concat/lazy-seq) walk too — without this, postwalk-replace silently no-op'd
-    ; a quoted list, breaking clojure.template/apply-template (jolt-khk)
+    ; a quoted list, breaking clojure.template/apply-template
     (list? form) (outer (apply list (map inner form)))
     (seq? form) (outer (map inner form))
     :else (outer form)))

@@ -43,7 +43,7 @@
           (clojure.core/refer-clojure)
           ;; make the stdlib namespaces a corpus case may reference by qualified name
           ;; resolvable (clojure.math/floor etc.) so they evaluate to the real JVM
-          ;; value instead of throwing Unable-to-resolve (-> kept Janet value).
+          ;; value instead of throwing Unable-to-resolve (-> existing :expected kept).
           (doseq [n '[clojure.string clojure.set clojure.walk clojure.edn
                       clojure.math clojure.pprint]]
             (try (require n) (catch Throwable _ nil)))

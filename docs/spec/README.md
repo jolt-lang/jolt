@@ -12,29 +12,29 @@ sources, and process: [`../rfc/0001-language-specification.md`](../rfc/0001-lang
 | Doc | Content | Status |
 |---|---|---|
 | [`00-front-matter.md`](00-front-matter.md) | conformance terms, entry format, host classification | drafted |
-| `01-evaluation.md` … `08-macros.md` | see chapter plan in front matter | planned |
+| [`02-reader.md`](02-reader.md) | token grammar + reader-macro catalog | drafted |
+| `01`, `04`–`08` | see chapter plan in front matter | planned |
 | [`03-special-forms.md`](03-special-forms.md) | special-form catalog + normative exemplars (`if`, `let*`) | exemplars |
 | [`09-core-library.md`](09-core-library.md) | per-var entry format + exemplars (`first`, `reduce`, `parse-uuid`) | exemplars |
 | [`coverage.md`](coverage.md) | generated dashboard over the 694-var surface | generated |
+| [`../grammar.ebnf`](../grammar.ebnf) | reader surface syntax (EBNF), companion to `02-reader.md` | reference |
 
 Regenerate the dashboard after surface changes:
-`python3 tools/spec_coverage.py` (requires `clojuredocs-export.json` in the
-repo root and a working jolt checkout).
+`python3 tools/spec_coverage.py` (reads `tools/clojuredocs-export.json` and
+probes a working jolt checkout via `bin/joltc`).
 
-## Current numbers (2026-06-10)
+## Current numbers (2026-06-22)
 
-Of the 694 `clojure.core` vars in the ClojureDocs inventory:
+Of the 694 `clojure.core` vars in the ClojureDocs inventory, jolt interns 574.
+Broadly:
 
-- **380** implemented in jolt *and* exercised by the behavioral suites
-- **154** implemented but not directly tested — each gets a test with its spec entry
-- **35** portable but missing from jolt (`parse-long`/`parse-double`/
-  `parse-boolean`, `update-keys`/`update-vals`, `macroexpand`, `time`,
-  `partitionv`/`partitionv-all`/`splitv-at`, `with-redefs`, `with-open`,
-  reader fns, ns-introspection stragglers, …) — tracked as implementation gaps
-- **22** resolvable in code but invisible to ns introspection
-  (`resolve`/`ns-publics` can't see seed-fallback names like `compare`,
-  `gensym`, `type`) — a conformance finding in its own right
-- the rest classified host/JVM/concurrency (see dashboard)
+- **568** implemented in jolt *and* exercised by the behavioral suites
+- **6** implemented but not directly tested — each gets a test with its spec entry
+- **6** portable but absent from jolt's resolvable surface (the REPL history
+  vars `*1`/`*2`/`*3`/`*e`, plus `letfn`/`re-groups`, which work but aren't
+  interned where `resolve` can see them) — tracked as gaps
+- the rest classified host/JVM/concurrency (see the dashboard for the full
+  per-var breakdown — it is the source of truth)
 
 ## How this connects to the test suites
 

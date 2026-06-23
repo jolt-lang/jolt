@@ -1,9 +1,9 @@
-;; BigDecimal (jolt-i2jm). A jbigdec is {unscaled, scale} over Chez arbitrary-
-;; precision exact integers; its value is unscaled * 10^-scale (1.5M = {15,1},
-;; 1.00M = {100,2}, 3M = {3,0}). M-suffix literals read to a :bigdec form that the
-;; back end lowers to jolt-bigdec-from-string; bigdec coerces a number/string.
-;; Equality is by value (1.0M = 1.00M), str drops the M, pr keeps it, class is
-;; java.math.BigDecimal. Arithmetic contagion is not modelled (jolt-i2jm scope).
+;; BigDecimal. A jbigdec is {unscaled, scale} over Chez arbitrary-precision exact
+;; integers; its value is unscaled * 10^-scale (1.5M = {15,1}, 1.00M = {100,2},
+;; 3M = {3,0}). M-suffix literals read to a :bigdec form that the back end lowers
+;; to jolt-bigdec-from-string; bigdec coerces a number/string. Equality is by
+;; value (1.0M = 1.00M), str drops the M, pr keeps it, class is
+;; java.math.BigDecimal. Arithmetic contagion is not modelled.
 
 (define-record-type jbigdec (fields unscaled scale) (nongenerative chez-jbigdec-v1))
 

@@ -1,4 +1,4 @@
-;; #inst values + a java.time formatting shim (jolt-at0a, inc X).
+;; #inst values + a java.time formatting shim.
 ;;
 ;; A #inst literal lowers (analyzer :inst node -> emit) to (jolt-inst-from-string
 ;; "…"); this file parses the RFC3339 string to epoch-ms and models the value as a
@@ -356,7 +356,7 @@
 
 ;; java.util.Date / java.sql.Timestamp: #inst's classes. (Date.) = now, (Date. ms)
 ;; or (Date. another-date) -> a jinst (ms-of accepts a number / jinst / instant), so
-;; .getTime / inst? / instance? Date|Timestamp work. (jolt-dcmm)
+;; .getTime / inst? / instance? Date|Timestamp work.
 (define (date-ctor . args)
   (make-jinst (if (null? args) (now-ms) (ms->exact (ms-of (car args))))))
 (register-class-ctor! "Date" date-ctor)

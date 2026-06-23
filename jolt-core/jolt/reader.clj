@@ -1,22 +1,16 @@
 (ns jolt.reader
-  "Portable Clojure reader: source text -> reader forms (Chez Phase 3, jolt-cf1q.4).
+  "Reads Clojure source text into reader forms.
 
-  All the lexing/parsing LOGIC
-  is portable Clojure; form CONSTRUCTION and string->number parsing delegate to the
-  jolt.host contract (form-make-symbol/char, form-char-from-name, form-scan-number)
-  — a Clojure source file cannot write a {:jolt/type :symbol} literal (it parses as
-  a tagged reader form), and the concrete form representation is the host's to own.
-  Same split the analyzer uses for the form-* readers. Once cross-compiled this runs
-  ON Chez to drive compile-from-source.
+  The lexing and parsing is portable Clojure; form construction and
+  string->number parsing delegate to the jolt.host contract (form-make-symbol/
+  char, form-char-from-name, form-scan-number). A Clojure source file can't write
+  a {:jolt/type :symbol} literal — it would parse as a tagged reader form — and
+  the concrete form representation belongs to the host. The analyzer uses the same
+  split. Once cross-compiled this runs on Chez to drive compile-from-source.
 
-  Positions are CHARACTER indices; for ASCII
-  source they coincide with byte indices, and form VALUES are identical either way — the parity gate
-  compares values, not positions.
-
-  INCREMENT 5a (jolt-50xx): the ATOM layer — whitespace/comments, symbols (+ nil/
-  true/false), keywords, strings, numbers (sign/hex/radix/ratio/fractional/
-  exponent, trailing N/M), characters. Collections, quote/deref/meta, and dispatch
-  (#) land in 5b/5c (they throw not-yet-ported so a hit is loud)."
+  Positions are character indices; for ASCII source they coincide with byte
+  indices, and form values are identical either way — the parity gate compares
+  values, not positions."
   (:require [clojure.string :as str]
             [jolt.host :refer [form-make-symbol form-make-char form-char-from-name
                                form-scan-number form-make-list form-make-vector
@@ -213,8 +207,8 @@
     [:form (form-make-vector items) end]))
 
 ;; Map: pair up keys and values, skipping comments/#_ in either slot while keeping
-;; the pending key (dropping both desyncs the pairing). Splice in a map slot lands
-;; in inc 5c; here a key/value is always a single :form (or :skip).
+;; the pending key (dropping both desyncs the pairing). A key/value is always a
+;; single :form (or :skip) — splice in a map slot is not supported.
 (defn- read-map* [s pos]
   (loop [pos (inc pos) kvs []]
     (let [pos (skip-whitespace s pos)]

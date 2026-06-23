@@ -1,7 +1,6 @@
-;; readable printer + output seams (jolt-cf1q.3 Phase 2 inc B) — the __pr-str1 /
-;; __write / __with-out-str host seams the overlay's pr-str/pr/prn/print/println/
-;; *-str family is built on (jolt-core/clojure/core/20-coll.clj). They resolved to
-;; jolt-nil, so the whole print family hit the apply-jolt-nil crash bucket.
+;; readable printer + output seams — the __pr-str1 / __write / __with-out-str
+;; host seams the overlay's pr-str/pr/prn/print/println/*-str family is built on
+;; (jolt-core/clojure/core/20-coll.clj).
 ;;
 ;; jolt-pr-str (rt.ss) is STR-style: strings render raw. pr-str needs READABLE
 ;; (pr) style: strings quoted+escaped at every nesting level. This adds the

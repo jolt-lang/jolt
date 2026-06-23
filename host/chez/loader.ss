@@ -1,10 +1,9 @@
-;; loader.ss (jolt-90sp) — file-based namespace loading + a shell primitive.
+;; loader.ss — file-based namespace loading + a shell primitive.
 ;;
 ;; The corpus/CLI spine compiles one program at a time; namespaces declared in
 ;; that program see each other because a top-level (do …) unrolls. A real project
 ;; spans many FILES, so `require` must locate a namespace's source on the search
-;; roots and load it — transitively, once each. This is the piece the Phase-3
-;; "cross-ns load is deferred" note left open (ns.ss).
+;; roots and load it — transitively, once each.
 ;;
 ;; Loaded by cli.ss AFTER compile-eval.ss (it calls jolt-compile-eval-form). The
 ;; gates load compile-eval.ss but NOT this file, so the corpus/unit/sci runners

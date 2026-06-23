@@ -1,8 +1,6 @@
-;; bench-chez.ss (jolt-cf1q.5) — Phase 4 perf probe for the zero-Janet Chez path.
-;;
-;; Mirrors test/bench/core-bench.janet's programs and methodology (load the runtime
-;; ONCE, then time compile+run of each program, min of N) so the Chez compute path
-;; (analyze->Scheme->Chez eval) is comparable to the Janet compile path. Run:
+;; bench-chez.ss — perf probe for the Chez compute path. Loads the runtime ONCE,
+;; then times compile+run of each program (min of N) over the
+;; analyze->Scheme->Chez eval pipeline. Run:
 ;;   chez --script test/chez/bench-chez.ss
 (import (chezscheme))
 (load "host/chez/rt.ss")

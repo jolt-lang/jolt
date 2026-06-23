@@ -1,26 +1,24 @@
-;; atoms (jolt-9ziu) — host-coupled mutable reference cells for the Chez host.
+;; atoms — host-coupled mutable reference cells for the Chez host.
 ;;
 ;; atom/deref/swap!/reset! are host primitives (not the clojure.core overlay),
-;; so the Chez runtime provides native shims, def-var!'d into clojure.core. They
+;; so the runtime provides native shims, def-var!'d into clojure.core. They
 ;; lower to var-deref in prelude mode. The hierarchy machinery
 ;; (global-hierarchy = (atom (make-hierarchy))) calls `atom` at the prelude's
 ;; LOAD time, so without this shim the whole prelude fails to load.
 ;;
 ;; compare-and-set!/swap-vals!/reset-vals! are overlay fns over the native kernel
-;; in the live system; provided here natively too so the Chez host is
-;; self-sufficient for atoms without the full prelude (the overlay versions, when
-;; the full prelude loads, override these but compose the same native kernel).
+;; in the live system; provided here natively too so the host is self-sufficient
+;; for atoms without the full prelude (the overlay versions, when the full prelude
+;; loads, override these but compose the same native kernel).
 
 ;; watches is an alist of (key . watch-fn); validator is a jolt fn or jolt-nil.
-;; The overlay's add-watch/set-validator! drive these via jolt.host/ref-put! on a
-;; Janet table, which a Chez atom record is not — so the peripheral ops + the
-;; notify/validate behaviour live natively here, and post-prelude.ss re-asserts
-;; them over the overlay's def-var! (jolt-mn9o).
-;; `lock` (jolt-byjr) is a per-atom mutex guarding the read-modify-write critical
-;; sections, so swap!/reset!/compare-and-set! are atomic under real OS threads
-;; (futures/go blocks share the heap on Chez). The user fn in swap! runs OUTSIDE
-;; the lock (a CAS retry loop, like the JVM) so it never deadlocks on re-entrant
-;; access and a watch/validator can deref the same atom.
+;; The peripheral ops + the notify/validate behaviour live natively here, and
+;; post-prelude.ss re-asserts them over the overlay's def-var!.
+;; `lock` is a per-atom mutex guarding the read-modify-write critical sections,
+;; so swap!/reset!/compare-and-set! are atomic under real OS threads
+;; (futures/go blocks share the heap). The user fn in swap! runs OUTSIDE the lock
+;; (a CAS retry loop, like the JVM) so it never deadlocks on re-entrant access and
+;; a watch/validator can deref the same atom.
 (define-record-type jolt-atom
   (fields (mutable val) (mutable watches) (mutable validator) lock)
   (nongenerative jolt-atom-v3))
@@ -108,7 +106,7 @@
     (jolt-atom-notify a old v)
     (jolt-vector old v)))
 
-;; --- watches / validators (jolt-mn9o) ---------------------------------------
+;; --- watches / validators ---------------------------------------------------
 ;; add-watch interns (key . fn) (replacing any existing key, keeping order);
 ;; remove-watch drops it; both return the atom. set-validator! installs a
 ;; validator and validates the CURRENT value immediately (Clojure throws if it's
@@ -139,7 +137,7 @@
 (def-var! "clojure.core" "reset-vals!" jolt-reset-vals!)
 (def-var! "clojure.core" "atom?" jolt-atom?)
 ;; peripheral ops: the overlay (20-coll) re-defs these over jolt.host/ref-put!,
-;; which fails on a Chez atom record — post-prelude.ss re-asserts the natives.
+;; which fails on an atom record — post-prelude.ss re-asserts the natives.
 (def-var! "clojure.core" "add-watch" jolt-add-watch)
 (def-var! "clojure.core" "remove-watch" jolt-remove-watch)
 (def-var! "clojure.core" "set-validator!" jolt-set-validator!)

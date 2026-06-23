@@ -1,13 +1,12 @@
-;; concurrency.ss (jolt-byjr) — real OS-thread futures + promises for the Chez host.
+;; concurrency.ss — real OS-thread futures + promises for the Chez host.
 ;;
-;; SHARED-HEAP semantics (JVM Clojure), NOT Janet's isolated-heap snapshot: a
-;; future body runs on a native thread (fork-thread) over the SAME heap, so a
-;; captured atom is shared and the body's mutations are visible to the parent —
-;; matching `clojure.core` on the JVM. deref blocks on a mutex+condition latch.
+;; SHARED-HEAP semantics, like JVM Clojure: a future body runs on a native thread
+;; (fork-thread) over the SAME heap, so a captured atom is shared and the body's
+;; mutations are visible to the parent. deref blocks on a mutex+condition latch.
 ;;
 ;; future / future-call / future-cancel / future? / future-done? / future-cancelled?
 ;; promise / deliver, and the deref extension for both, are bound here (some
-;; re-asserted in post-prelude.ss over the overlay's Janet-shaped versions).
+;; re-asserted in post-prelude.ss over the overlay's versions).
 ;;
 ;; pmap / pcalls / pvalues live in the clojure.core overlay (40-lazy) expressed
 ;; over `future`, so they light up for free once future-call exists.
@@ -105,8 +104,8 @@
   (and (jolt-future? x) (jolt-future-cancelled? x)))
 
 ;; --- promises ---------------------------------------------------------------
-;; A blocking promise (JVM), not Janet's non-blocking atom shim: deref parks until
-;; deliver, then caches the value. deliver wins once; later delivers return nil.
+;; A blocking promise (like the JVM): deref parks until deliver, then caches the
+;; value. deliver wins once; later delivers return nil.
 (define-record-type jolt-promise
   (fields (mutable delivered?) (mutable value) mu cv)
   (nongenerative jolt-promise-v1))
@@ -144,8 +143,8 @@
     (if got (jolt-promise-value p) timeout-val)))
 
 ;; --- agents (async, per-agent serialized dispatch) --------------------------
-;; JVM semantics, not Janet's synchronous shim: send/send-off enqueue an action
-;; and a single worker thread applies them to the state IN ORDER; deref reads the
+;; JVM semantics: send/send-off enqueue an action and a single worker thread
+;; applies them to the state IN ORDER; deref reads the
 ;; (possibly not-yet-updated) state without blocking; await blocks until the queue
 ;; drains. An action error is captured (agent-error) and stops the queue.
 (define-record-type jolt-agent
@@ -246,8 +245,8 @@
       ((jolt-delay? x) (jolt-delay-force x))
       (else (apply %pre-conc-deref x opts)))))
 
-;; realized? for a Chez future/promise/delay (the overlay reads Janet map keys).
-;; Wrapped over the overlay version in post-prelude.ss.
+;; realized? for a future/promise/delay. Wrapped over the overlay version in
+;; post-prelude.ss.
 (define (jolt-conc-realized? x)
   (cond ((jolt-future? x) (jolt-future-done? x))
         ((jolt-promise? x) (jolt-promise-delivered? x))
@@ -273,7 +272,7 @@
 (def-var! "clojure.core" "delay?" jolt-delay?)
 (def-var! "clojure.core" "deref" jolt-deref)
 
-;; --- cooperative thread interrupt (jolt-amzy) -------------------------------
+;; --- cooperative thread interrupt -------------------------------------------
 ;; Chez has no force-kill, but its engine timer (set-timer + timer-interrupt-
 ;; handler, thread-local) is polled at procedure-call / loop back-edges — so a
 ;; running computation, even a tight Scheme loop, can be aborted from another

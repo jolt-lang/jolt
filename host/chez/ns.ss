@@ -1,15 +1,15 @@
-;; namespaces (jolt-yxqm, Phase 2) — the namespace value model.
+;; namespaces — the namespace value model.
 ;;
-;; Chez has no ctx, so the ctx-coupled seed natives (find-ns/resolve/in-ns/…) are
-;; reimplemented over the rt.ss var-table (cells carry ns + name + defined?) and
-;; the multimethods.ss chez-current-ns box. A namespace VALUE is a `jns` record
-;; carrying its name string — distinct from a map/record so (map? ns) is #f, but
-;; the overlay's `ns-name` reads (get ns :name); that's overridden natively in
-;; post-prelude.ss (loads after the overlay clobbers it).
+;; The namespace ops (find-ns/resolve/in-ns/…) work over the rt.ss var-table
+;; (cells carry ns + name + defined?) and the multimethods.ss chez-current-ns
+;; box. A namespace VALUE is a `jns` record carrying its name string — distinct
+;; from a map/record so (map? ns) is #f, but the overlay's `ns-name` reads
+;; (get ns :name); that's overridden natively in post-prelude.ss (loads after
+;; the overlay clobbers it).
 ;;
-;; Loaded LAST from rt.ss. SCOPE (jolt-yxqm): the read/resolve/in-ns/*ns* ops.
-;; use/require cross-ns SWITCHING is deferred (Phase 3) — the analyzer bakes a
-;; def's target ns at compile time, so a runtime in-ns can't redirect later defs.
+;; Loaded LAST from rt.ss. The analyzer bakes a def's target ns at compile time,
+;; so a runtime in-ns redirects only *ns* / str-of-ns, not later defs in the
+;; same program.
 
 (define-record-type jns (fields name) (nongenerative chez-jns-v1))
 
@@ -24,11 +24,11 @@
 (intern-ns! "user")
 (intern-ns! "clojure.core")
 
-;; --- namespace aliases (jolt-qjr0) -----------------------------------------
+;; --- namespace aliases ------------------------------------------------------
 ;; (require '[ns :as a]) registers a -> ns so the analyzer can resolve a/foo to
-;; ns/foo. Keyed by (compile-ns . alias). On the zero-Janet spine the requires are
-;; pre-registered at analyze time (compile-eval.ss) — analysis precedes eval, so a
-;; runtime require no-op is fine. Also drives jolt-ns-aliases below.
+;; ns/foo. Keyed by (compile-ns . alias). The requires are pre-registered at
+;; analyze time (compile-eval.ss) — analysis precedes eval, so a runtime require
+;; no-op is fine. Also drives jolt-ns-aliases below.
 (define ns-alias-table (make-hashtable equal-hash equal?))
 (define (chez-register-alias! cns alias target)
   (hashtable-set! ns-alias-table (cons cns alias) target))
@@ -105,10 +105,10 @@
 
 (define (jolt-create-ns desig) (intern-ns! (ns-desig->name desig)))
 
-;; in-ns: register + switch the current ns + re-bind *ns* + return the jns. NOTE
-;; (Phase-3 deferral): this updates only the RUNTIME current ns — subsequent defs
-;; in the same program were already ns-baked by the analyzer, so it does not
-;; redirect them. It is enough for *ns* / str-of-ns to track the switch.
+;; in-ns: register + switch the current ns + re-bind *ns* + return the jns. This
+;; updates only the RUNTIME current ns — subsequent defs in the same program were
+;; already ns-baked by the analyzer, so it does not redirect them. It is enough
+;; for *ns* / str-of-ns to track the switch.
 (define (jolt-in-ns desig)
   (let* ((nm (ns-desig->name desig)) (n (intern-ns! nm)))
     ;; set the THREAD-LOCAL current ns; *ns* reads derive from it (dyn-binding.ss),
@@ -140,7 +140,7 @@
     m))
 (define (jolt-ns-publics desig) (ns-vars-pmap (ns-desig->name desig)))
 
-;; ns-aliases (jolt-cf1q.7): the {alias-sym -> ns-value} registered under `desig`
+;; ns-aliases: the {alias-sym -> ns-value} registered under `desig`
 ;; (default the current ns) via require :as / alias. Reads ns-alias-table.
 (define (jolt-ns-aliases . desig)
   (let ((cns (if (pair? desig) (ns-desig->name (car desig)) (chez-current-ns)))
@@ -153,7 +153,7 @@
       (hashtable-keys ns-alias-table))
     m))
 
-;; ns-refers (jolt-cf1q.7): the {sym -> var} referred into `desig` via refer/use.
+;; ns-refers: the {sym -> var} referred into `desig` via refer/use.
 (define (jolt-ns-refers desig)
   (let ((cns (ns-desig->name desig)) (m (jolt-hash-map)))
     (vector-for-each
@@ -225,7 +225,7 @@
     (when c (var-cell-defined?-set! c #f) (var-cell-root-set! c jolt-unbound)))
   jolt-nil)
 
-;; --- ns runtime fns (jolt-cf1q.7) -------------------------------------------
+;; --- ns runtime fns ---------------------------------------------------------
 ;; ns-resolve: resolve `sym` as if reading it in namespace `ns-desig`. Qualified
 ;; syms consult that ns's :as aliases; unqualified resolve in the ns, its :refers,
 ;; then clojure.core. Returns the var or nil (never interns).

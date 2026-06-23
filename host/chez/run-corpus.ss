@@ -1,7 +1,7 @@
-;; run-corpus.ss — the standing correctness gate, pure Chez. NO Janet.
+;; run-corpus.ss — the standing correctness gate.
 ;;
-;; Loads the checked-in seed (host/chez/seed/{prelude,image}.ss) + the zero-Janet
-;; spine, reads test/chez/corpus.edn, and for each row evaluates :actual and
+;; Loads the checked-in seed (host/chez/seed/{prelude,image}.ss) + the spine,
+;; reads test/chez/corpus.edn, and for each row evaluates :actual and
 ;; :expected through jolt-compile-eval and compares by value-equality (jolt=). The
 ;; corpus :expected is JVM-sourced (test/conformance/regen-corpus.clj), so this
 ;; measures jolt-on-Chez against reference Clojure.
@@ -170,7 +170,7 @@
 (define n-eval (+ pass (length crashes) (length diverged) (length known-hit)))
 (define secs (let ((d (time-difference (current-time) t0)))
                (+ (time-second d) (/ (time-nanosecond d) 1e9))))
-(printf "\nZero-Janet corpus parity: ~a/~a evaluated cases pass  (~as)\n"
+(printf "\nCorpus parity: ~a/~a evaluated cases pass  (~as)\n"
         pass n-eval (/ (round (* secs 10)) 10.0))
 (printf "  crash: ~a   NEW divergence: ~a   known: ~a   (throws skipped: ~a)\n"
         (length crashes) (length diverged) (length known-hit) throws)

@@ -1,4 +1,4 @@
-;; host-contract.ss (jolt-hs9n, Phase 3 inc6) — the jolt.host contract on Chez.
+;; host-contract.ss — the jolt.host contract on Chez.
 ;;
 ;; The portable seam between jolt-core (analyzer/IR/emitter, cross-compiled to
 ;; Scheme) and the host. Every
@@ -6,7 +6,7 @@
 ;; jolt.analyzer / jolt.backend-scheme — whose unqualified form-*/resolve-global/
 ;; ... refs lower to (var-deref "jolt.host" ...) — resolve here at runtime.
 ;;
-;; This is what puts analyze->IR->emit ON CHEZ (the zero-Janet spine). It runs
+;; This is what puts analyze->IR->emit ON CHEZ. It runs
 ;; over the Chez data reader's forms (reader.ss): symbols are symbol-t, lists are
 ;; cseq (list?), () is empty-list-t, vectors/maps are pvec/pmap, sets and #tag/
 ;; regex/inst/uuid are pmaps tagged :jolt/type, chars are NATIVE Chez chars.
@@ -41,13 +41,13 @@
 (define (hc-sym? x) (symbol-t? x))
 ;; ANY non-empty seq is a list form for analysis (a macro/eval form built via
 ;; concat/map/cons is a lazy cseq with list?=#f, but evaluating it still means
-;; calling its head) — not just reader-built lists (jolt-cf1q.7).
+;; calling its head) — not just reader-built lists.
 (define (hc-list? x) (or (empty-list-t? x) (cseq? x)))
 (define (hc-vec? x) (pvec? x))
 (define (hc-map? x) (and (pmap? x) (jolt-nil? (jolt-get x hc-kw-jolt-type))))
 ;; A set form is the reader's tagged map {:jolt/type :jolt/set :value <pvec>} OR a
 ;; real pset value — a macro template's #{...} expansion (syntax-quote.ss jolt-sqset)
-;; produces a pset, which the analyzer must still read as a set literal (jolt-r9lm).
+;; produces a pset, which the analyzer must still read as a set literal.
 (define (hc-set? x)
   (or (pset? x)
       (and (pmap? x) (eq? (jolt-get x hc-kw-jolt-type) hc-kw-jolt-set))))
@@ -67,7 +67,7 @@
 (define (hc-bigdec-source x) (jolt-get x hc-kw-form))
 ;; A live namespace value spliced into a form (e.g. `(str ~*ns*) in a macro):
 ;; the analyzer can't carry an opaque runtime value, so recognize a jns and
-;; reconstruct it by name at the call site (jolt-8sha).
+;; reconstruct it by name at the call site.
 (define (hc-ns-value? x) (jns? x))
 (define (hc-ns-value-name x) (jns-name x))
 
@@ -98,7 +98,7 @@
   (let ((kv (hashtable-ref rdr-map-order x #f)))
     (if kv
         ;; reader-built map literal: emit pairs in SOURCE order (kv = k1 v1 k2 v2 …)
-        ;; so the analyzer evaluates the values left-to-right (jolt-qjr0).
+        ;; so the analyzer evaluates the values left-to-right.
         (let loop ((kv kv) (acc '()))
           (if (null? kv) (apply jolt-vector (reverse acc))
               (loop (cddr kv) (cons (jolt-vector (car kv) (cadr kv)) acc))))
@@ -111,14 +111,14 @@
 (define (hc-inst-source x) (jolt-get x hc-kw-form))
 (define (hc-uuid-source x) (jolt-get x hc-kw-form))
 
-;; The Chez reader does not record source offsets yet (jolt-q2kg).
+;; The Chez reader does not record source offsets yet.
 (define (hc-form-position x) jolt-nil)
 
 ;; --- special forms ----------------------------------------------------------
 ;; Mirrors host_iface special-names + interop-head? — forms the analyzer marks
 ;; uncompilable (the handled specials are dispatched in analyze-list BEFORE this).
 ;; `eval` is NOT here: it is a clojure.core FUNCTION on the spine (compile-eval.ss
-;; def-var!s it), so it must resolve as an ordinary var, not punt (jolt-r8ku).
+;; def-var!s it), so it must resolve as an ordinary var, not punt.
 ;; `defmacro` stays special — the spine intercepts it before analysis.
 (define hc-special-names
   '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
@@ -155,7 +155,7 @@
               (and ref (var-cell-lookup ref nm)))
             (var-cell-lookup "clojure.core" nm)))))
 
-;; Runtime macros (jolt-r9lm, inc6b): a defmacro is emitted into the prelude as a
+;; Runtime macros: a defmacro is emitted into the prelude as a
 ;; def-var! of its cross-compiled expander fn plus (mark-macro! ns name), so the
 ;; var cell is flagged a macro (rt.ss var-macro-table). form-macro? checks the
 ;; flag; form-expand-1 applies the expander to the unevaluated arg forms (the rest
@@ -173,7 +173,7 @@
 ;;   {:kind :var :ns NS :name NAME}   — a defined var (compile ns / clojure.core)
 ;;   {:kind :unresolved :name NAME}   — not found (late-bind -> var-ref @ compile ns;
 ;;                                      a qualified one -> host-static in the analyzer)
-;; No :host branch: there is no Janet-style native-op env on Chez — the hot
+;; No :host branch: there is no separate native-op env — the hot
 ;; clojure.core primitives (+,-,map,...) are declared in clojure.core below so
 ;; they classify as :var and the emitter's native-op path lowers them.
 (define (hc-resolve-global ctx sym)
@@ -187,7 +187,7 @@
 
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
 
-;; --- syntax-quote lowering (jolt-qjr0, inc7) ---------------------------------
+;; --- syntax-quote lowering ---------------------------------------------------
 ;; Lowers a `form
 ;; to CONSTRUCTION CODE — Chez reader forms calling __sqcat/__sqvec/__sqmap/
 ;; __sqset/__sq1 + quote — that the analyzer re-analyzes, so a backtick compiles
@@ -236,7 +236,7 @@
         ;; to the target namespace — Clojure resolves the alias part of a qualified
         ;; symbol in syntax-quote, so a macro's `impl/foo` expands to its real
         ;; (clojure.tools.logging.impl/foo) name and stays unambiguous even when
-        ;; another loaded ns shares the alias's short name (jolt-qjr0). Otherwise
+        ;; another loaded ns shares the alias's short name. Otherwise
         ;; leave it as written (a real ns or an interop class token).
         (let ((target (chez-resolve-alias (chez-actx-cns ctx) sns)))
           (if target (jolt-symbol target nm) form)))))

@@ -1,8 +1,8 @@
-;; syntax-quote form builders (jolt-r9lm, inc6b). A macro expander whose body was a
-;; syntax-quote template (lowered by jolt.host/form-syntax-quote-lower) calls these
-;; at RUNTIME on Chez to build the EXPANSION as
-;; Chez READER forms (cseq list / pvec / pmap / tagged-set pmap) so the on-Chez
-;; analyzer can re-analyze it. def-var!'d into clojure.core, so the lowered body's
+;; syntax-quote form builders. A macro expander whose body was a syntax-quote
+;; template (lowered by jolt.host/form-syntax-quote-lower) calls these at RUNTIME
+;; to build the EXPANSION as READER forms (cseq list / pvec / pmap / tagged-set
+;; pmap) so the on-Chez analyzer can re-analyze it. def-var!'d into clojure.core,
+;; so the lowered body's
 ;; unqualified __sqcat/__sqvec/__sqmap/__sqset/__sq1 refs (which lower to var-deref
 ;; in prelude mode) resolve here.
 ;;
@@ -36,7 +36,7 @@
 ;; pmap that __sqcat/__sqvec/__sqmap build double as their own form rep — but a set
 ;; value (pset) differs from the reader's set FORM ({:jolt/type :jolt/set :value
 ;; <pvec>}), so building the tagged form here would make a runtime `#{~@xs} a map,
-;; not a set (jolt-r9lm regression). Build the value; the analyzer's form-set?
+;; not a set. Build the value; the analyzer's form-set?
 ;; (host-contract.ss) additionally recognizes a pset, so a macro template's #{...}
 ;; expansion still re-analyzes as a set literal.
 (define (jolt-sqset . parts) (apply jolt-hash-set (sq-flatten parts)))

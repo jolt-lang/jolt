@@ -1,4 +1,4 @@
-;; Phase 1 (jolt-cf1q.2) — regex on Chez via vendored irregex (jolt-i0s3).
+;; regex on Chez via vendored irregex.
 ;;
 ;; Chez has no regex at all. We vendor
 ;; Alex Shinn's irregex (vendor/irregex, BSD) — a portable Scheme regex with
@@ -33,7 +33,7 @@
       (apply %chez-error args)))
 (load "vendor/irregex/irregex.scm")
 
-;; Unicode property classes \p{...} (jolt-y1zq): irregex's string syntax has no
+;; Unicode property classes \p{...}: irregex's string syntax has no
 ;; \p{...}, so translate a fixed set of property names
 ;; to ASCII char classes before compiling. ASCII-only — \p{L} would need
 ;; UTF-8 high bytes counted as letters, which a Unicode-char Scheme string can't

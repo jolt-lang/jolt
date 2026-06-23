@@ -1,6 +1,6 @@
-;; clojure.core — macro tier. Macros expressed in Clojure (defmacro + syntax-quote)
-;; rather than as hand-built Janet form-transformers. Loaded after the fn tiers,
-;; so a macro here may use any already-frozen core fn/macro.
+;; clojure.core — macro tier. Macros expressed in Clojure (defmacro + syntax-quote).
+;; Loaded after the fn tiers, so a macro here may use any already-frozen core
+;; fn/macro.
 ;;
 ;; IMPORTANT — only macros NOT used by the self-hosted compiler (jolt-core/jolt/*)
 ;; or by the earlier overlay tiers belong here; those (and/or/when/when-not/
@@ -34,7 +34,7 @@
 (defmacro defmethod [mm dispatch-val & fn-tail]
   `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)))
 
-;; Multimethod table ops (tier 6c): a multimethod's method table lives on its
+;; Multimethod table ops: a multimethod's method table lives on its
 ;; VAR (the value is just the dispatch closure), so these pass the name quoted
 ;; to ctx-capturing setups — the same shape as defmulti/defmethod above.
 (defmacro prefer-method [mm dval-a dval-b]
@@ -48,7 +48,7 @@
 
 ;; methods/get-method take the multimethod VALUE (Clojure semantics); the setup
 ;; maps it back to its var via the registry, so a bare multifn ref works from a
-;; compiled fn in any namespace (jolt multimethod table-visibility fix).
+;; compiled fn in any namespace.
 (defmacro get-method [mm dval]
   `(get-method-setup ~mm ~dval))
 
@@ -75,7 +75,7 @@
   `(do ~x ~@body))
 
 ;; defonce: define name only if it isn't already bound to a non-nil root;
-;; returns the existing var untouched otherwise (matching the prior arm).
+;; returns the existing var untouched otherwise.
 ;; time: evaluate expr, print the elapsed wall-clock, return the value.
 ;; current-time-ms is the host's monotonic clock.
 (defmacro time [expr]
@@ -164,14 +164,12 @@
        (loop [~i 0]
          (when (< ~i n#) ~@body (recur (inc ~i)))))))
 
-;; A fresh jolt symbol inside a macro body: (gensym) here resolves to Janet's
-;; builtin (a Janet symbol the destructurer rejects), so round-trip through str.
+;; A fresh jolt symbol inside a macro body: a bare (gensym) returns a host symbol
+;; the destructurer rejects, so round-trip through str.
 (defn- fresh-sym [] (symbol (str (gensym))))
 
 ;; Lazy-safe: take only the head via first (Clojure uses (seq coll), but Jolt's
-;; eager seq would realize an infinite coll like (repeat nil) and hang). Matches
-;; the prior Janet behavior; the nil/false-head distinction waits on Phase 5
-;; laziness.
+;; eager seq would realize an infinite coll like (repeat nil) and hang).
 (defmacro when-first [bindings & body]
   (let [x (bindings 0) coll (bindings 1)]
     `(when-let [~x (first ~coll)] ~@body)))
@@ -289,7 +287,7 @@
         ;; a seq of field keywords; spliced into a vector LITERAL below ([~@…]) so
         ;; the analyzer sees a vector form, not a runtime pvec value.
         field-kws (map (fn [f] (keyword (name f))) fields)
-        ;; per-field TYPE HINT (jolt-3ko): ^Vec3 origin -> "Vec3" (a record type
+        ;; per-field TYPE HINT: ^Vec3 origin -> "Vec3" (a record type
         ;; name), ^:num x -> "num", else nil. Lets the inference know a field's
         ;; exact type up front, so reading it back carries that type (not :any) —
         ;; the key to fast nested-record code. Spliced as a vector literal too.
@@ -298,7 +296,7 @@
                                         (and mt (:num mt)) "num"
                                         :else nil)))
                         fields)
-        ;; per-field MUTABILITY (jolt-c3q): ^:unsynchronized-mutable / ^:volatile-
+        ;; per-field MUTABILITY: ^:unsynchronized-mutable / ^:volatile-
         ;; mutable marks a field set!-able. A type with any mutable field opts out
         ;; of the immutable shape-rec layout and uses the mutable table form, so
         ;; set! can mutate it (the ctor reads this vector). Spliced as a literal.
@@ -309,7 +307,7 @@
                         fields)
         ;; mutable field symbols (^:unsynchronized-mutable / ^:volatile-mutable):
         ;; (set! field v) in a method body lowers to (set! (.-field inst) v), the
-        ;; in-place field write the analyzer compiles to jolt-set-field! (jolt-c3q).
+        ;; in-place field write the analyzer compiles to jolt-set-field!.
         mutable-syms (map first (filter second (map vector fields field-muts)))
         mutable? (fn [s] (boolean (some (fn [m] (= m s)) mutable-syms)))
         rewrite-set (fn rw [inst form]
@@ -359,7 +357,7 @@
                         {} sigs)]
     `(do
        (def ~pname (make-protocol ~(name pname) ~methods))
-       ;; register method var-keys for devirtualization (jolt-41m); the inference
+       ;; register method var-keys for devirtualization; the inference
        ;; reads this (via infer-unit!) to resolve a protocol call on a known record
        (register-protocol-methods! ~(name pname) [~@(map (fn [s] (name (first s))) sigs)])
        ~@(map (fn [sig]
@@ -431,8 +429,7 @@
   `(do ~@(map (fn [g] `(extend-type ~(first g) ~psym ~@(rest g)))
               (group-by-head type-impls))))
 
-;; extend (the fn form) is not supported — stub to nil, as before.
-;; extend is a real FUNCTION now — defined above extend-type.
+;; extend is a real FUNCTION — defined above extend-type.
 ;; JVM proxies are unsupported.
 (defmacro proxy [& args] nil)
 ;; definterface is JVM-only; bind the name to a marker and return the name (not a
@@ -474,7 +471,7 @@
                            (let [argv (nth spec 1)
                                  inst (first argv)
                                  ;; hint `this` with the record type so the inference
-                                 ;; types it (jolt-3ko) and its field reads bare-index
+                                 ;; types it and its field reads bare-index
                                  ;; instead of going through the runtime tag guard.
                                  hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
                                  binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
@@ -492,8 +489,8 @@
 ;; lazy-seq / lazy-cat moved to the 00-syntax tier: the seq/coll tiers (10-seq,
 ;; 20-coll) use lazy-seq, and in compile mode a tier's forms are compiled as it
 ;; loads — so the macro must be registered BEFORE those tiers, else (lazy-seq …)
-;; compiles as a call to the macro-as-function and leaks its expansion at runtime
-;; (jolt-r81). They only need seed fns (make-lazy-seq/coll->cells/concat).
+;; compiles as a call to the macro-as-function and leaks its expansion at runtime.
+;; They only need seed fns (make-lazy-seq/coll->cells/concat).
 
 ;; memfn: a fn wrapping a method call, (memfn toUpperCase) => #(.toUpperCase %).
 ;; The method symbol is rewritten to jolt's .method call sugar; extra arg names

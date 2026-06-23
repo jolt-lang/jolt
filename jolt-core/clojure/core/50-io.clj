@@ -1,4 +1,4 @@
-;; clojure.core — IO tier: the *in* reader family (jolt-0d9).
+;; clojure.core — IO tier: the *in* reader family.
 ;;
 ;; *in* is a dynamic var holding a READER: a plain map whose two ops close
 ;; over their source — :read-line-fn (next line, newline
@@ -135,7 +135,7 @@
         (when line
           (cons line (line-seq rdr)))))))
 
-;; --- print-method (jolt-g1r) ------------------------------------------------
+;; --- print-method ------------------------------------------------
 ;; Canonical dispatch (clojure/core.clj 3693): the :type metadata when it's a
 ;; keyword, else the value's type. On jolt, type is the keyword tag for
 ;; builtins and the deftype name SYMBOL for records — so a record method is

@@ -1,12 +1,10 @@
-;; async.ss (jolt-byjr) — clojure.core.async on real OS threads for the Chez host.
+;; async.ss — clojure.core.async on real OS threads for the Chez host.
 ;;
-;; No mature Chez fibers library exists, and this Chez is a threaded build, so a
-;; `go` block is just an OS thread and a channel is a mutex+condition blocking
+;; A `go` block is an OS thread and a channel is a mutex+condition blocking
 ;; queue: <! / >! are the blocking <!! / >!! (they "park" by blocking the thread).
-;; <! / >! work ANYWHERE (no CPS transform) —
-;; here because they are ordinary blocking calls. Real parallelism, shared heap.
-;; Trade-off: one OS thread per go block (fine for typical use / conformance, not
-;; for thousands of simultaneous go blocks).
+;; <! / >! work ANYWHERE — no CPS transform — because they are ordinary blocking
+;; calls. Real parallelism, shared heap. Trade-off: one OS thread per go block
+;; (fine for typical use, not for thousands of simultaneous go blocks).
 ;;
 ;; Channel: an unbuffered channel is a rendezvous (the putter blocks until its
 ;; value is taken); a buffered (chan n) put blocks only when full; dropping/sliding

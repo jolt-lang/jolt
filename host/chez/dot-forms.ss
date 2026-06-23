@@ -1,5 +1,5 @@
-;; dot-forms.ss — generic dispatch for the `.` special-form / `.-field` desugar
-;; (jolt-kuic). The analyzer lowers (. target member arg*) and (.-field target)
+;; dot-forms.ss — generic dispatch for the `.` special-form / `.-field` desugar.
+;; The analyzer lowers (. target member arg*) and (.-field target)
 ;; to a :host-call; the Chez emit routes a non-shimmed :host-call through
 ;; record-method-dispatch. This file extends that dispatcher with the collection
 ;; arms the interpreter's dispatch-member covers but the record/string base does

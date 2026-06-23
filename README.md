@@ -48,11 +48,16 @@ $ bin/joltc -e '(/ 1 2)'
 ## Architecture
 
 A small Chez runtime (`host/chez/*.ss`: value model, persistent collections, seqs,
-vars/namespaces, host interop) hosts a portable Clojure overlay (`jolt-core/`): the
-reader/analyzer/IR/backend (`jolt-core/jolt/`) and `clojure.core` in
-dependency-ordered tiers (`jolt-core/clojure/core/NN-*.clj`). The stdlib namespaces
-(`clojure.string`/`set`/`walk`/`edn`/`pprint`/…) are portable Clojure under
-`src/jolt/clojure/`.
+vars/namespaces, host interop) hosts a portable Clojure overlay split across two
+source roots by *when* they load:
+
+- **`jolt-core/`** is baked into the seed — the compiler (`jolt-core/jolt/`:
+  reader/analyzer/IR/backend, plus `jolt.main`/`jolt.deps`) and `clojure.core` in
+  dependency-ordered tiers (`jolt-core/clojure/core/NN-*.clj`). Changing anything
+  here means re-minting the seed.
+- **`stdlib/`** loads lazily at runtime off the source roots — the rest of the
+  standard library (`clojure.string`/`set`/`walk`/`edn`/`pprint`/…) plus the
+  `jolt.ffi` host library. Editing these needs no re-mint.
 
 `bin/joltc` loads the checked-in seed and the spine, then compiles and evaluates on
 Chez (read → analyze → IR → emit → eval). `host/chez/bootstrap.ss` rebuilds that
@@ -63,9 +68,11 @@ reproduces the checked-in seed byte-for-byte).
 
 Jolt targets Clojure semantics but runs on Chez, not the JVM.
 
-- **Host platform.** No JVM and no Java interop — `import`, `gen-class`, `proxy` of
-  Java classes, and `java.*` are unavailable. A class token resolves to a name; a
-  small set of host classes is recognized for `instance?`.
+- **Host platform.** No JVM, no reflection, no `gen-class`/`proxy` of Java
+  classes. Interop syntax (`Class.`, `Class/static`, `.method`) works against a
+  shimmed subset of the `java.*` standard library, and a class token resolves to
+  a name. See [docs/host-interop.md](docs/host-interop.md) for what's covered and
+  how to register your own host classes from a library.
 - **Numbers.** The full Scheme numeric tower, matching the JVM: exact integers and
   bignums, exact ratios (`(/ 1 2)` ⇒ `1/2`), and flonum doubles. `=` is
   category-aware (`(= 3 3.0)` ⇒ `false`); `==` is value-equality (`(== 3 3.0)` ⇒

@@ -1,11 +1,11 @@
-;; compile-eval.ss (jolt-hs9n, Phase 3 inc6) — the zero-Janet compile spine.
+;; compile-eval.ss — the compile spine.
 ;;
 ;; Ties together the cross-compiled compiler image (jolt.ir + jolt.analyzer +
 ;; jolt.backend-scheme, loaded as def-var! forms) and the host contract
 ;; (host-contract.ss) into a runtime entry: a Clojure source string is read by the
-;; Chez data reader, analyzed by the ON-CHEZ analyzer to IR, emitted to Scheme by
-;; the ON-CHEZ emitter, and eval'd — no Janet in the loop. This is the spine the
-;; stage2==stage3 bootstrap fixpoint (later increments) closes over.
+;; Chez data reader, analyzed by the analyzer to IR, emitted to Scheme by the
+;; emitter, and eval'd. This is the spine the stage2==stage3 bootstrap fixpoint
+;; closes over.
 ;;
 ;; Loaded after host-contract.ss + the compiler image.
 
@@ -13,11 +13,11 @@
 (define jolt-ce-emit (var-deref "jolt.backend-scheme" "emit"))
 (define jolt-ce-read (var-deref "clojure.core" "read-string"))
 
-;; The zero-Janet spine ALWAYS runs with the full clojure.core prelude loaded, so a
-;; clojure.* ref must lower to var-deref (resolved from the prelude), not trip the
-;; emitter's "unsupported stdlib fn (no core on Chez yet)" out-of-subset guard —
-;; that guard is only for the bare -e subset with no prelude. Turn prelude mode on
-;; once, here, so every analyze->emit on this spine sees the full core (jolt-qjr0).
+;; The spine ALWAYS runs with the full clojure.core prelude loaded, so a clojure.*
+;; ref must lower to var-deref (resolved from the prelude), not trip the emitter's
+;; "unsupported stdlib fn (no core on Chez yet)" out-of-subset guard — that guard
+;; is only for the bare -e subset with no prelude. Turn prelude mode on once, here,
+;; so every analyze->emit on this spine sees the full core.
 ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 
 ;; (quote X) -> X, else x — unwraps a quoted require spec.
@@ -31,7 +31,7 @@
 
 ;; Pre-register any (require ...)/(use ...) :as aliases under `ns` BEFORE analysis,
 ;; so a qualified s/foo resolves while compiling (analysis precedes the runtime
-;; require). Walks the whole form (a require may be nested in a do/let). jolt-qjr0.
+;; require). Walks the whole form (a require may be nested in a do/let).
 (define (ce-clause-require? cl)          ; (:require ...) / (:use ...) ns clause
   (and (pair? cl) (keyword? (car cl))
        (let ((kn (keyword-t-name (car cl)))) (or (string=? kn "require") (string=? kn "use")))))
@@ -66,7 +66,7 @@
 (define (jolt-analyze-emit src ns)
   (jolt-analyze-emit-form (jolt-ce-read src) ns))
 
-;; --- runtime defmacro (jolt-r8ku) -------------------------------------------
+;; --- runtime defmacro -------------------------------------------------------
 ;; Shared with emit-image.ss (loaded after this). A defmacro lowers to a def of
 ;; its expander fn + a macro flag, exactly as the prelude emits build-time macros.
 
@@ -82,7 +82,7 @@
 ;; Strips a leading docstring (native string) + attr-map (a non-symbol pmap), then
 ;; re-heads the rest with `fn` so a destructured macro arglist desugars. Emits the
 ;; BARE fn (the caller wraps it in def-var! + mark-macro!), never a (def NAME ...) —
-;; interning NAME would make require skip the real macro (jolt-r9lm).
+;; interning NAME would make require skip the real macro.
 (define (ce-defmacro->fn f)
   (let* ((items (seq->list f))
          (name-sym (cadr items))
@@ -131,7 +131,6 @@
 
 ;; clojure.core/load-string: read every form from the source string and compile+
 ;; eval each in the current ns, returning the last value (nil for blank input).
-;; jolt-r8ku.
 (define (jolt-load-string s)
   (let loop ((src s) (result jolt-nil))
     (let ((pn (jolt-parse-next src)))

@@ -1,10 +1,8 @@
-;; volatiles + sequence / transduce (jolt-cf1q.3, jolt-xjx6) — the transducer
-;; application surface.
+;; volatiles + sequence / transduce — the transducer application surface.
 ;;
-;; `sequence` and `transduce` are seed natives that were jolt-nil on the prelude.
-;; The stateful transducer arities (take-nth/map-indexed/partition-by/dedupe/
-;; distinct, all overlay) use volatile!/vswap!/vreset!/deref, also unshimmed — so
-;; the whole (sequence xform coll) / (transduce xform f coll) surface crashed.
+;; `sequence` and `transduce` are seed natives. The stateful transducer arities
+;; (take-nth/map-indexed/partition-by/dedupe/distinct, all overlay) use
+;; volatile!/vswap!/vreset!/deref, shimmed here.
 ;;
 ;; Volatiles are a native mutable box (jvol) — the overlay vreset!/vswap! drive a
 ;; volatile through jolt.host/ref-put!+get, but a Chez volatile is a record, not a

@@ -1,16 +1,16 @@
-;; Jolt value model on Chez Scheme — Phase 0a (jolt-cf1q.1).
+;; Jolt value model on Chez Scheme.
 ;;
 ;; The irreducible value layer the self-hosted RT rests on. Maps Clojure's value
 ;; types onto Chez natives where possible, and adds records only where Chez lacks
 ;; a distinct type (nil sentinel, keywords, ns-bearing symbols). Loaded into an
-;; env that has already (import (chezscheme)); becomes a real library in Phase 1.
+;; env that has already (import (chezscheme)).
 ;;
 ;; Design notes:
 ;; - nil is a UNIQUE sentinel, distinct from #f and '() (the classic Lisp-on-Lisp
 ;;   trap). jolt false -> Chez #f, jolt true -> #t.
 ;; - Chez's numeric tower IS Clojure's: long->exact integer, double->flonum,
-;;   ratio->exact rational, bigint->bignum. A windfall vs Janet (ratios/bignums
-;;   for free). Clojure `=` is exactness-aware: (= 1 1.0) is FALSE.
+;;   ratio->exact rational, bigint->bignum. Clojure `=` is exactness-aware:
+;;   (= 1 1.0) is FALSE.
 
 ;; --- nil ---------------------------------------------------------------------
 (define-record-type jolt-nil-t (fields) (nongenerative jolt-nil-v1))
@@ -42,7 +42,7 @@
 
 ;; chars/strings: Chez natives (strings treated immutable).
 
-;; --- jolt equality (Clojure =) — scalars; collections land in Phase 2 --------
+;; --- jolt equality (Clojure =) — scalars + collections ----------------------
 (define (jolt=2 a b)
   (cond
     ((and (jolt-nil? a) (jolt-nil? b)) #t)
@@ -69,7 +69,7 @@
           ((jolt=2 a (car rest)) (loop (car rest) (cdr rest)))
           (else #f))))
 
-;; --- jolt hash — consistent with jolt= (for the HAMT in 0c / Phase 2) ---------
+;; --- jolt hash — consistent with jolt= (for the HAMT) -----------------------
 (define (jolt-hash x)
   (cond
     ((jolt-nil? x) 0)

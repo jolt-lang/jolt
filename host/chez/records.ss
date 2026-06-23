@@ -1,7 +1,5 @@
-;; records + protocols (jolt-cf1q.3 Phase 2 inc D) — the deftype/defrecord +
-;; defprotocol/extend-type subsystem. These are ctx-capturing natives
-;; that resolved to jolt-nil on the prelude, so every record
-;; case hit the apply-jolt-nil crash bucket.
+;; records + protocols — the deftype/defrecord + defprotocol/extend-type
+;; subsystem.
 ;;
 ;; A record is a `jrec`: a type tag ("ns.Name") + an alist of (kw . val) in
 ;; declared field order. It is map?/coll?, equal to another jrec of the same tag
@@ -28,8 +26,8 @@
 (define (jrec-has? r k)
   (let loop ((ps (jrec-pairs r)))
     (cond ((null? ps) #f) ((jolt=2 (caar ps) k) #t) (else (loop (cdr ps))))))
-;; mutate a deftype's mutable field in place (jolt-c3q): the pairs are runtime
-;; cons cells, so set-cdr! updates the field. (set! field v) inside a method
+;; mutate a deftype's mutable field in place: the pairs are runtime cons cells,
+;; so set-cdr! updates the field. (set! field v) inside a method
 ;; lowers to this; returns v, as set! does.
 (define (jolt-set-field! inst k v)
   (if (jrec? inst)
@@ -97,8 +95,6 @@
 (define %r-jolt-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (jrec? x) (jrec-pr x) (%r-jolt-pr-readable x))))
 
-;; records are map? and coll? (Clojure: a record IS an associative map). Override
-;; the public predicates to include jrec.
 ;; records are map? and coll? (Clojure: a record IS an associative map). The
 ;; predicates.ss vars hold a snapshot, so re-def-var! after extending. record? is
 ;; the overlay's (some? (get x :jolt/deftype)) — works for free since the get
@@ -244,7 +240,7 @@
                              ;; protocol's extended impls over the reify's host tags
                              ;; (e.g. an Object/default extension). malli reifies some
                              ;; protocols and relies on a protocol's default for the
-                             ;; rest (jolt-az9a).
+                             ;; rest.
                              (let loop ((tags (value-host-tags obj)))
                                (cond ((null? tags) (error #f (string-append "No reified method " method-name)))
                                      ((find-protocol-method (car tags) proto-name method-name)
@@ -290,7 +286,7 @@
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
                          (if f (apply jolt-invoke f obj rest) (error #f (string-append "No method " method-name))))))
-      ;; java.lang.String interop (jolt-nfca): defined in natives-str.ss, loaded
+      ;; java.lang.String interop: defined in natives-str.ss, loaded
       ;; after this file (free reference, resolved at call time).
       ((string? obj) (jolt-string-method method-name obj rest))
       ((jiterator? obj)
@@ -505,7 +501,7 @@
               (let ((s (jrec-pr v))) (substring s 1 (string-length s)))))
         (%r-str-render-one v))))
 
-;; `type` lives in natives-meta.ss (jolt-fmm4): it needs jolt-meta for the :type
+;; `type` lives in natives-meta.ss: it needs jolt-meta for the :type
 ;; override and a total value->taxonomy mapping, so it sits with meta — a record
 ;; yields (jolt-symbol #f (jrec-tag x)), the ns.Name class-name symbol.
 

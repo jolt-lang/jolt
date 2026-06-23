@@ -1,4 +1,4 @@
-;; natives-queue.ss (jolt-b8he) — clojure.lang.PersistentQueue for the Chez host.
+;; natives-queue.ss — clojure.lang.PersistentQueue for the Chez host.
 ;;
 ;; A functional queue: a `front` Scheme list (the dequeue end, head = front of the
 ;; queue) + a reversed `rear` Scheme list (the enqueue end, head = most recent).

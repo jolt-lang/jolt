@@ -1,4 +1,4 @@
-;; run-unit.ss — host-specific unit gate, pure Chez. NO Janet.
+;; run-unit.ss — host-specific unit gate.
 ;;
 ;; Loads the checked-in seed + spine, reads test/chez/unit.edn, and for each case
 ;; evaluates :expr (wrapped in (do ...), as `joltc -e` does) and compares its PRINTED
