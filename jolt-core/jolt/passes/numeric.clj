@@ -66,22 +66,22 @@
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
 
-;; Loop-var kinds by bounded fixpoint. A var is :double only if its init is double
-;; AND every recur arg in that slot is double (under the current assumption) — a
-;; monotone demotion that stops at a fixpoint, bounded by the var count. Integers
-;; stay untyped (no :long from a bare init literal, so a bignum-producing loop keeps
-;; arbitrary precision). A :double loop var's init and recur args are all flonums,
-;; so no entry coercion is needed (unlike a fn param fed an arbitrary argument).
+;; Loop-var kinds by bounded fixpoint. A var keeps its init kind (:double or :long)
+;; only if every recur arg in that slot is the same kind (under the current
+;; assumption) — a monotone demotion that stops at a fixpoint, bounded by the var
+;; count. An integer-literal init has kind nil and stays generic, so a bignum loop
+;; keeps arbitrary precision (no :long from a bare literal). A typed loop var's init
+;; and recur args are all flonums/fixnums (a :long init flows from a coerced ^long
+;; value or an fx op), so no entry coercion is needed here, unlike a fn param.
 (defn- loop-kinds [names ik body tenv]
-  (loop [cur (mapv (fn [k] (if (= k :double) :double nil)) ik) iter 0]
+  (loop [cur ik iter 0]
     (if (> iter (count names))
       cur
       (let [te (reduce (fn [t i] (assoc t (nth names i) (nth cur i))) tenv (range (count names)))
             rks (recur-kinds body te)
             nxt (mapv (fn [j]
-                        (if (and (= (nth cur j) :double)
-                                 (every? (fn [rk] (= :double (nth rk j))) rks))
-                          :double nil))
+                        (let [k (nth cur j)]
+                          (if (and k (every? (fn [rk] (= k (nth rk j))) rks)) k nil)))
                       (range (count names)))]
         (if (= nxt cur) cur (recur nxt (inc iter)))))))
 

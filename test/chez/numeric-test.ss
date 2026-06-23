@@ -64,6 +64,11 @@
 ;; precision (no fx* overflow).
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc))))")))
   (ok "loop integer accumulator is NOT fx-specialized" (not (has? e "(fx*"))))
+;; a ^long-seeded loop accumulator IS fx-typed (the hint is a fixnum promise, and
+;; the value flows from a coerced ^long param).
+(let ((e (emitf "u" "(fn* ([^long start] (loop [acc start] (if (< acc 100) (recur (inc acc)) acc))))")))
+  (ok "long-seeded loop accumulator lowers (inc acc) to fx1+" (has? e "(fx1+"))
+  (ok "long-seeded loop comparison lowers to fx<?" (has? e "(fx<?")))
 
 ;; --- soundness: un-hinted / integer-literal code stays generic ---
 (let ((e (emitf "u" "(fn* ([a b] (+ a b)))")))
@@ -92,6 +97,8 @@
     (= 15 (jnum->exact (ev "((fn* ([] (loop [acc 0.0 i 0] (if (< i 10) (recur (+ acc 1.5) (inc i)) acc)))))"))))
 (ok "loop integer factorial stays exact (bignum preserved)"
     (jolt-truthy? (ev "(< 1000000000000000000000 ((fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc)))) ))")))
+(ok "long-seeded loop accumulator counts to 100"
+    (= 100 (jnum->exact (ev "((fn* ([^long start] (loop [acc start] (if (< acc 100) (recur (inc acc)) acc)))) 0)"))))
 
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
