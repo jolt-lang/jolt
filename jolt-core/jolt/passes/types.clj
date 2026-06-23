@@ -12,75 +12,71 @@
               join-t join type-depth cap struct-safe? field-type shape-order type-shape
               mark-struct truthy-type? num-ret-fns vector-ret-fns]]))
 
-;; Inter-procedural state. The orchestrator (backend
-;; infer-unit!) drives a whole-unit fixpoint: before typing a fn body it installs
-;; the current return-type estimates of all unit fns here, and after typing it
-;; reads back the call sites this body made (callee + inferred arg types) to
-;; propagate into callee param types. Both are plain module state, like `dirty`.
-(def ^:private rtenv-box (atom {}))   ;; "ns/name" -> inferred return type
-(def ^:private calls-box (atom []))   ;; collected [ "ns/name" [arg-types...] ]
-(def ^:private escapes-box (atom #{})) ;; var-keys used as a VALUE (not a call head)
-(def ^:private diag-box (atom []))    ;; success-type-check diagnostics (RFC 0006)
-;; a var reference's VALUE type — a fn var is :truthy (non-nil), a def
-;; var carries its inferred init type (e.g. a color table -> {:vec :struct-map}).
-;; The orchestrator populates this from sealed (opt-mode) cell roots + def inits.
-(def ^:private vtype-box (atom {}))   ;; "ns/name" -> value type
+;; --- engine state ------------------------------------------------------------
+;; The walk threads an immutable `env` (mk-env) instead of reading scattered
+;; module atoms: it carries the read-only config (rtenv/vtypes/record-shapes/
+;; protocol-methods/map-shapes?) plus the per-run flags (checking?/strict?) and
+;; per-run accumulator/guard CELLS (diags/calls/checking-set/diag-memo). A fresh
+;; env per run makes the pass re-entrant — a nested probe (isolated-diag-count)
+;; runs under a sub-env with its own diags cell, no save/restore.
+;;
+;; Only state whose lifecycle spans separate API calls stays module-level: the
+;; config the orchestrator installs (set-*! before a sweep), the escapes and
+;; user-sig registries (collected/registered across the forms of a sweep), and a
+;; bridge holding the last checking run's diagnostics for take-diags!.
+(def ^:private config-box
+  (atom {:rtenv {}              ;; "ns/name" -> inferred return type
+         :vtypes {}             ;; "ns/name" -> var VALUE type (fn=:truthy, def=init type)
+         :record-shapes {}      ;; "ns/->Name" -> {:fields :tags :type}
+         :protocol-methods {}   ;; "ns/method" -> [proto method]
+         :map-shapes? false}))  ;; shape generic const-key maps (opt-in, JOLT_SHAPE)
+;; var-keys used as a VALUE (not a call head) — accumulated across a whole sweep,
+;; reset by reset-escapes! and read by collected-escapes.
+(def ^:private escapes-box (atom #{}))
+;; User-function error domains, opt-in. As the checker walks defs it registers
+;; each non-redefinable single-fixed-arity user fn's {:params :body} here, keyed
+;; "ns/name"; a later call site (strict mode) re-checks the body with one param
+;; bound to its concrete argument type. Accumulates ACROSS forms — a def must
+;; precede its call (the closed-world ordering RFC 0005 assumes).
+(def ^:private user-sig-box (atom {}))    ;; "ns/name" -> {:params [..] :body ir}
+;; Diagnostics from the last checking run-inference, for take-diags! to drain.
+(def ^:private last-diags-box (atom []))
+;; Whether run-inference also checks, and strictly. Set by set-check-mode!.
+(def ^:private check-mode-box (atom {:on false :strict false}))
 
-;; User-function error domains, opt-in. As the checker walks defs it
-;; registers each non-redefinable single-fixed-arity user fn's {:params :body}
-;; here, keyed "ns/name". At a later call site (strict mode only) the body is
-;; re-checked with ONE parameter bound to its concrete argument type — if that
-;; alone produces a diagnostic the all-:any body did not, that argument is
-;; provably wrong and the CALL is reported. Module state, like rtenv-box: a def
-;; must precede its call (the same closed-world ordering RFC 0005 assumes).
-(def ^:private user-sig-box (atom {}))      ;; "ns/name" -> {:params [..] :body ir}
-;; a record constructor's return shape. "ns/->Name" -> [field-kw ...]
-;; in DECLARED order (the runtime lays records out in declared field order, so
-;; the back end bare-indexes by that order). A call (->Point a b) types as a
-;; struct of this shape, so field reads on the result bare-index — declared
-;; shapes are clean fuel: a lookup, not fragile inference.
-(def ^:private record-shapes-box (atom {}))
-;; protocol-method registry "ns/method" -> [proto method], for
-;; devirtualizing a protocol call whose receiver is a known record type.
-(def ^:private protocol-methods-box (atom {}))
+;; build a per-run env: a snapshot of the installed config plus this run's flags
+;; and fresh accumulator/guard cells. escapes/user-sigs reference the sweep-level
+;; module cells (their lifecycle spans calls); diags/calls/checking-set/diag-memo
+;; are this run's own.
+(defn- mk-env [checking? strict?]
+  (let [c @config-box]
+    {:rtenv (get c :rtenv) :vtypes (get c :vtypes)
+     :record-shapes (get c :record-shapes) :protocol-methods (get c :protocol-methods)
+     :map-shapes? (get c :map-shapes?)
+     :checking? checking? :strict? strict?
+     :diags (atom []) :calls (atom []) :checking-set (atom #{}) :diag-memo (atom {})
+     :escapes escapes-box :user-sigs user-sig-box}))
 
-;; build a record's struct TYPE from its registry entry, resolving each
-;; field's declared type hint. A field tagged with a record type (its ctor-key)
-;; recurses, so a Vec3 stored in a Ray field reads back as Vec3 — not :any —
-;; which is what lets nested-record code prove its reads. Depth-bounded so a
-;; self/cyclic-referencing record type can't loop.
+;; build a record's struct TYPE from its registry entry, resolving each field's
+;; declared type hint against `shapes` ("ns/->Name" -> entry). A field tagged with
+;; a record type (its ctor-key) recurses, so a Vec3 stored in a Ray field reads
+;; back as Vec3 — not :any — which is what lets nested-record code prove its reads.
+;; Depth-bounded so a self/cyclic-referencing record type can't loop.
 (declare record-type-from-entry)
-(defn- field-type-from-tag [tag depth]
+(defn- field-type-from-tag [tag depth shapes]
   (cond
     (or (nil? tag) (<= depth 0)) :any
     (= tag "num") :num
-    :else (let [e (get @record-shapes-box tag)]
-            (if e (record-type-from-entry e depth) :any))))
-(defn- record-type-from-entry [rs depth]
+    :else (let [e (get shapes tag)]
+            (if e (record-type-from-entry e depth shapes) :any))))
+(defn- record-type-from-entry [rs depth shapes]
   (let [fields (get rs :fields)
         tags (get rs :tags)
         fmap (reduce (fn [m i]
                        (assoc m (nth fields i)
-                              (field-type-from-tag (when tags (nth tags i)) (dec depth))))
+                              (field-type-from-tag (when tags (nth tags i)) (dec depth) shapes)))
                      {} (range (count fields)))]
     (assoc (mk-struct fmap) :shape (vec fields) :type (get rs :type))))
-;; whether to shape generic const-key MAP literals (opt-in, JOLT_SHAPE).
-;; Records are shaped regardless; maps only when this is on.
-(def ^:private map-shapes-box (atom false))
-(def ^:private checking-box (atom #{}))     ;; keys mid-recheck — cycle guard
-(def ^:private strict-box (atom false))     ;; report against user-fn domains?
-;; Memo for check-user-call's per-fn body re-inference: [:base key] -> baseline
-;; diag count, [:arg key i argtype] -> does binding param i to argtype add a
-;; diagnostic. Cleared per form (check-form) — the global type-env is stable within
-;; one form's check, and isolated-diag-count's calls/escapes side effects are not
-;; read there, so skipping a repeat probe is observably identical.
-(def ^:private diag-memo-box (atom {}))
-;; When true, `infer` emits success-type diagnostics as it types (jolt audit).
-;; The checker IS the inference walk now — one O(n) pass that both types and
-;; checks, instead of a separate check-walk that re-inferred every subtree
-;; (quadratic in nesting). Off during the optimization fixpoint so it doesn't
-;; emit intermediate diagnostics; on only inside check-form.
-(def ^:private checking? (atom false))
 
 ;; fns that RETURN an element of their (first) collection arg, so a lookup on the
 ;; result of (rand-nth coll-of-structs) etc. types as the element.
@@ -91,18 +87,19 @@
 
 (defn- var-key [fnode] (str (get fnode :ns) "/" (get fnode :name)))
 
-(defn- call-ret-type [fnode]
-  (let [op (get fnode :op)]
+(defn- call-ret-type [fnode env]
+  (let [op (get fnode :op)
+        shapes (get env :record-shapes)]
     (cond
       ;; a user fn whose return type the fixpoint has estimated
-      (= op :var) (let [rs (get @record-shapes-box (var-key fnode))]
+      (= op :var) (let [rs (get shapes (var-key fnode))]
                     (if rs
                       ;; record ctor -> struct of declared shape; :shape
                       ;; is the DECLARED field order the back end indexes by, :type
                       ;; the record tag (devirt), and field types come from the
                       ;; declared hints so nested records stay typed
-                      (record-type-from-entry rs type-depth)
-                      (let [r (get @rtenv-box (var-key fnode))]
+                      (record-type-from-entry rs type-depth shapes)
+                      (let [r (get (get env :rtenv) (var-key fnode))]
                         (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
                                   (cond (nil? nm) :any
                                         (contains? num-ret-fns nm) :num
@@ -161,7 +158,7 @@
   types (seeds: param-index -> type), other params :any, captured locals from
   tenv. Returns [ret-type node'] — ret is the lub of arity tail types, used to
   type the HOF result (e.g. reduce's accumulator, mapv's element)."
-  [node seeds tenv]
+  [node seeds tenv env]
   (let [res (mapv (fn [a]
                     (let [params (get a :params)
                           pe (reduce (fn [e i]
@@ -169,7 +166,7 @@
                                               (let [s (get seeds i)] (if s s :any))))
                                      tenv (range (count params)))
                           pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
-                          br (infer (get a :body) pe)]
+                          br (infer (get a :body) pe env)]
                       [(nth br 0) (assoc a :body (nth br 1))]))
                   (get node :arities))
         rets (mapv (fn [r] (nth r 0)) res)
@@ -179,8 +176,8 @@
 (defn- infer
   "Returns [type node'] — the inferred type of node and node with struct-safe
   :local references annotated :hint :struct. tenv maps in-scope local names to
-  inferred types."
-  [node tenv]
+  inferred types; env carries the inference config and this run's accumulators."
+  [node tenv env]
   (let [op (get node :op)]
     (cond
       (= op :const)
@@ -202,8 +199,8 @@
       (= op :map)
       (let [pairs (get node :pairs)
             res (mapv (fn [pr]
-                        (let [kr (infer (nth pr 0) tenv)
-                              vr (infer (nth pr 1) tenv)]
+                        (let [kr (infer (nth pr 0) tenv env)
+                              vr (infer (nth pr 1) tenv env)]
                           [(nth kr 1) (nth vr 1) (nth vr 0) (get (nth pr 0) :val)]))
                       pairs)
             struct? (and (> (count res) 0)
@@ -213,38 +210,38 @@
                    (cap (mk-struct (reduce (fn [m r] (assoc m (nth r 3) (nth r 2))) {} res)) type-depth))
             ;; a literal is a COMPLETE shape: carry its sorted key vector so the
             ;; back end can lay it out and bare-index lookups
-            shp (when (and @map-shapes-box base (struct-type? base)) (shape-order (keys (sfields base))))
+            shp (when (and (get env :map-shapes?) base (struct-type? base)) (shape-order (keys (sfields base))))
             t (if base (if shp (assoc base :shape shp) base) :any)
             node' (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))]
         [t (if shp (assoc node' :shape shp) node')])
       (= op :vector)
-      (let [irs (mapv (fn [x] (infer x tenv)) (get node :items))
+      (let [irs (mapv (fn [x] (infer x tenv env)) (get node :items))
             ets (mapv (fn [r] (nth r 0)) irs)
             el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
         [(cap (mk-vec el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
       (= op :set)
-      (let [irs (mapv (fn [x] (infer x tenv)) (get node :items))
+      (let [irs (mapv (fn [x] (infer x tenv env)) (get node :items))
             ets (mapv (fn [r] (nth r 0)) irs)
             el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
         [(cap (mk-set el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
       (= op :if)
-      (let [tr (infer (get node :test) tenv)
-            thn (infer (get node :then) tenv)
-            els (infer (get node :else) tenv)]
+      (let [tr (infer (get node :test) tenv env)
+            thn (infer (get node :then) tenv env)
+            els (infer (get node :else) tenv env)]
         [(join (nth thn 0) (nth els 0))
          (assoc node :test (nth tr 1) :then (nth thn 1) :else (nth els 1))])
       (= op :do)
-      (let [stmts (mapv (fn [s] (nth (infer s tenv) 1)) (get node :statements))
-            r (infer (get node :ret) tenv)]
+      (let [stmts (mapv (fn [s] (nth (infer s tenv env) 1)) (get node :statements))
+            r (infer (get node :ret) tenv env)]
         [(nth r 0) (assoc node :statements stmts :ret (nth r 1))])
       (= op :throw)
-      [:any (assoc node :expr (nth (infer (get node :expr) tenv) 1))]
+      [:any (assoc node :expr (nth (infer (get node :expr) tenv env) 1))]
       ;; a :var reached HERE is in value position (an arg, a let init, ...), not
       ;; a call head — so the fn it names escapes and its params can't be inferred.
-      ;; Its VALUE type comes from vtype-box (a fn is :truthy, a def carries its
+      ;; Its VALUE type comes from vtypes (a fn is :truthy, a def carries its
       ;; inferred type); unknown -> :any.
-      (= op :var) (do (swap! escapes-box conj (var-key node))
-                      [(let [vt (get @vtype-box (var-key node))] (if vt vt :any)) node])
+      (= op :var) (do (swap! (get env :escapes) conj (var-key node))
+                      [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
       (= op :invoke)
       (let [fnode (get node :fn)
             iscall-var (= :var (get fnode :op))
@@ -258,32 +255,32 @@
           ;; after inference) collapsing any `if` it gates. Falls through to the
           ;; normal call path when the answer isn't provable or the arg is impure.
           (and iscall-var (contains? fold-preds cn) (= n 1))
-          (let [ar (infer (nth args 0) tenv)
+          (let [ar (infer (nth args 0) tenv env)
                 v (pred-on cn (nth ar 0))]
             (if (and (not (nil? v)) (pure-node? (nth ar 1)))
               [:any {:op :const :val v}]
-              [(call-ret-type fnode) (assoc node :args [(nth ar 1)])]))
+              [(call-ret-type fnode env) (assoc node :args [(nth ar 1)])]))
           ;; (:k m) / (:k m default): the result is m's field type, and if m is a
           ;; struct the subject is tagged so the back end drops the guard — this
           ;; types nested access end to end (RFC 0005).
           (and (= :const (get fnode :op)) (keyword? (get fnode :val)) (>= n 1) (<= n 2))
-          (let [mr (infer (nth args 0) tenv)
+          (let [mr (infer (nth args 0) tenv env)
                 mt (nth mr 0)
                 msub (if (struct-safe? mt) (mark-struct (nth mr 1) mt) (nth mr 1))
                 ft (field-type mt (get fnode :val))
-                dr (when (= n 2) (infer (nth args 1) tenv))]
+                dr (when (= n 2) (infer (nth args 1) tenv env))]
             [(if dr (join ft (nth dr 0)) ft)
              (assoc node :args (if dr [msub (nth dr 1)] [msub]))])
           ;; (get m :k [default]): same, when the key is a constant keyword.
           (and (or (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)) (= "get" (get fnode :name)))
                    (and (= :host (get fnode :op)) (= "get" (get fnode :name))))
                (>= n 2) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
-          (let [mr (infer (nth args 0) tenv)
+          (let [mr (infer (nth args 0) tenv env)
                 mt (nth mr 0)
                 msub (if (struct-safe? mt) (mark-struct (nth mr 1) mt) (nth mr 1))
-                kr (infer (nth args 1) tenv)
+                kr (infer (nth args 1) tenv env)
                 ft (field-type mt (get (nth args 1) :val))
-                dr (when (= n 3) (infer (nth args 2) tenv))]
+                dr (when (= n 3) (infer (nth args 2) tenv env))]
             [(if dr (join ft (nth dr 0)) ft)
              (assoc node :args (if dr [msub (nth kr 1) (nth dr 1)] [msub (nth kr 1)]))])
           ;; reduce over a typed vector with a fn-literal: seed the
@@ -292,11 +289,11 @@
           ;; it makes — see those types.
           (and (= cn "reduce") (>= n 2) (= :fn (get (nth args 0) :op)))
           (let [three (>= n 3)
-                coll-r (infer (nth args (if three 2 1)) tenv)
-                init-r (when three (infer (nth args 1) tenv))
+                coll-r (infer (nth args (if three 2 1)) tenv env)
+                init-r (when three (infer (nth args 1) tenv env))
                 et (let [ct (nth coll-r 0)] (if (vec-type? ct) (velem ct) :any))
                 init-t (if init-r (nth init-r 0) :any)
-                fn-r (infer-fn-seeded (nth args 0) {0 init-t 1 et} tenv)]
+                fn-r (infer-fn-seeded (nth args 0) {0 init-t 1 et} tenv env)]
             [(join init-t (nth fn-r 0))
              (assoc node :args (if three
                                  [(nth fn-r 1) (nth init-r 1) (nth coll-r 1)]
@@ -304,16 +301,16 @@
           ;; map/mapv/filter/... over a typed vector with a fn-literal: seed the
           ;; fn's element param; mapv/filterv produce a typed vector.
           (and cn (get hof-table cn) (>= n 2) (= :fn (get (nth args 0) :op)))
-          (let [coll-r (infer (nth args 1) tenv)
+          (let [coll-r (infer (nth args 1) tenv env)
                 et (let [ct (nth coll-r 0)] (if (vec-type? ct) (velem ct) :any))
-                fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv)
+                fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv env)
                 rt (cond (= cn "mapv") (mk-vec (nth fn-r 0))
                          (= cn "filterv") (mk-vec et)
                          :else :any)]
             [rt (assoc node :args [(nth fn-r 1) (nth coll-r 1)])])
           ;; conj/into: track the element type of a vector being grown.
           (and (or (= cn "conj") (= cn "into")) (>= n 1))
-          (let [ares (mapv (fn [a] (infer a tenv)) args)
+          (let [ares (mapv (fn [a] (infer a tenv env)) args)
                 base (nth (nth ares 0) 0)
                 rest-ts (mapv (fn [r] (nth r 0)) (rest ares))
                 rt (cond
@@ -321,40 +318,40 @@
                      (mk-vec (reduce join (velem base) rest-ts))
                      (and (= cn "into") (vec-type? base) (= 2 n) (vec-type? (nth rest-ts 0)))
                      (mk-vec (join (velem base) (velem (nth rest-ts 0))))
-                     :else (call-ret-type fnode))]
+                     :else (call-ret-type fnode env))]
             [rt (assoc node :args (mapv (fn [r] (nth r 1)) ares))])
           ;; everything else: type args, collect the call (var callee), use the
           ;; declared/estimated return type. range produces a numeric vector.
           :else
-          (let [fr (when (not iscall-var) (infer fnode tenv))
+          (let [fr (when (not iscall-var) (infer fnode tenv env))
                 fnode' (if iscall-var fnode (nth fr 1))
-                ;; the callee's value type: a var's from vtype-box (a fn is
+                ;; the callee's value type: a var's from vtypes (a fn is
                 ;; :truthy, a def carries its inferred type), else the inferred
                 ;; type of the callee expression
-                callee-t (if iscall-var (get @vtype-box (var-key fnode)) (nth fr 0))
-                ares (mapv (fn [a] (infer a tenv)) args)]
+                callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (nth fr 0))
+                ares (mapv (fn [a] (infer a tenv env)) args)]
             (when iscall-var
-              (swap! calls-box conj [(var-key fnode) (mapv (fn [r] (nth r 0)) ares)]))
+              (swap! (get env :calls) conj [(var-key fnode) (mapv (fn [r] (nth r 0)) ares)]))
             ;; success-type check at this call, reusing the arg types just
             ;; computed (jolt audit): core error domains always, user-fn domains
             ;; in strict mode. The arg subtrees are inferred exactly once.
-            (when @checking?
+            (when (get env :checking?)
               (let [ats (mapv (fn [r] (nth r 0)) ares) pos (get node :pos)]
-                (when cn (check-invoke cn args ats pos))
+                (when cn (check-invoke cn args ats pos env))
                 ;; calling a provably non-function
                 (when (not-callable? callee-t)
-                  (swap! diag-box conj
+                  (swap! (get env :diags) conj
                          {:op :call :type (type-name callee-t) :pos pos
                           :msg (str "cannot call " (type-name callee-t) " as a function")}))
-                (when (and @strict-box iscall-var)
-                  (let [k (var-key fnode) usig (get @user-sig-box k)]
-                    (when usig (check-user-call k usig ats pos))))))
+                (when (and (get env :strict?) iscall-var)
+                  (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
+                    (when usig (check-user-call k usig ats pos env))))))
             ;; devirtualization: a protocol-method call whose receiver
             ;; (arg 0) is a known record type resolves to a direct method call.
             ;; Annotate the node with [type-tag proto method]; the back end looks
             ;; up the impl at emit time and calls it directly, skipping the
             ;; registry dispatch (~19x cheaper than protocol-dispatch).
-            (let [pm (and iscall-var (get @protocol-methods-box (var-key fnode)))
+            (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
                   rtype (when (and pm (pos? n)) (get (nth (nth ares 0) 0) :type))
                   base (assoc node :fn fnode' :args (mapv (fn [r] (nth r 1)) ares))]
               [(cond
@@ -362,27 +359,27 @@
                  ;; element-returning fn over a typed vector -> the element type
                  (and cn (contains? elem-fns cn) (> n 0))
                  (let [a0 (nth (nth ares 0) 0)] (if (vec-type? a0) (velem a0) :any))
-                 :else (call-ret-type fnode))
+                 :else (call-ret-type fnode env))
                (if rtype
                  (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
                  base)]))))
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [te (nth acc 0) binds (nth acc 1)
-                                ir (infer (nth b 1) te)]
+                                ir (infer (nth b 1) te env)]
                             [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
                         [tenv []] (get node :bindings))
-            br (infer (get node :body) (nth res 0))]
+            br (infer (get node :body) (nth res 0) env)]
         [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
       (= op :loop)
       ;; conservative + sound: loop bindings join across recur, which we don't
       ;; track here, so they stay :any. Still descend to annotate any
       ;; known-type lookups inside the body.
       [:any (assoc node
-                   :bindings (mapv (fn [b] [(nth b 0) (nth (infer (nth b 1) tenv) 1)]) (get node :bindings))
-                   :body (nth (infer (get node :body) tenv) 1))]
+                   :bindings (mapv (fn [b] [(nth b 0) (nth (infer (nth b 1) tenv env) 1)]) (get node :bindings))
+                   :body (nth (infer (get node :body) tenv env) 1))]
       (= op :recur)
-      [:any (assoc node :args (mapv (fn [a] (nth (infer a tenv) 1)) (get node :args)))]
+      [:any (assoc node :args (mapv (fn [a] (nth (infer a tenv env) 1)) (get node :args)))]
       (= op :fn)
       ;; a closure inherits the enclosing tenv so CAPTURED locals keep their
       ;; types (e.g. a reduce closure that calls (f captured-struct ...)). Its own
@@ -393,27 +390,28 @@
       ;; read its fields without the runtime tag guard.
       [:any (assoc node :arities
                    (mapv (fn [a]
-                           (let [phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
+                           (let [shapes (get env :record-shapes)
+                                 phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
                                              {} (get a :phints))
                                  pe (reduce (fn [e p]
                                               (assoc e p
-                                                     (let [ent (get @record-shapes-box (get phm p))]
-                                                       (if ent (record-type-from-entry ent type-depth) :any))))
+                                                     (let [ent (get shapes (get phm p))]
+                                                       (if ent (record-type-from-entry ent type-depth shapes) :any))))
                                             tenv (get a :params))
                                  pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)]
-                             (assoc a :body (nth (infer (get a :body) pe) 1))))
+                             (assoc a :body (nth (infer (get a :body) pe env) 1))))
                          (get node :arities)))]
       (= op :def)
-      (do (when @checking? (register-user-fn! node))
-          [:any (assoc node :init (nth (infer (get node :init) tenv) 1))])
+      (do (when (get env :checking?) (register-user-fn! node env))
+          [:any (assoc node :init (nth (infer (get node :init) tenv env) 1))])
       (= op :try)
       [:any (assoc node
-                   :body (nth (infer (get node :body) tenv) 1)
-                   :catch-body (when (get node :catch-body) (nth (infer (get node :catch-body) tenv) 1))
-                   :finally (when (get node :finally) (nth (infer (get node :finally) tenv) 1)))]
+                   :body (nth (infer (get node :body) tenv env) 1)
+                   :catch-body (when (get node :catch-body) (nth (infer (get node :catch-body) tenv env) 1))
+                   :finally (when (get node :finally) (nth (infer (get node :finally) tenv env) 1)))]
       :else [:any node])))
 
-(defn- infer-top [node] (nth (infer node {}) 1))
+(defn- infer-top [node env] (nth (infer node {} env) 1))
 
 ;; ---------------------------------------------------------------------------
 ;; Success-type checking (RFC 0006). Reuse the inference above as a loose type
@@ -473,15 +471,16 @@
 
 (defn- check-invoke
   "If node is a core-op call whose argument type is provably in the error domain,
-  conj a diagnostic. arg-types is the vector of inferred argument types; pos is
-  the call form's source offset, carried into each diagnostic."
-  [cn args arg-types pos]
+  conj a diagnostic into env's diags cell. arg-types is the vector of inferred
+  argument types; pos is the call form's source offset, carried into each
+  diagnostic."
+  [cn args arg-types pos env]
   (cond
     (contains? num-ops cn)
     (reduce (fn [_ i]
               (let [t (nth arg-types i)]
                 (when (not-number? t)
-                  (swap! diag-box conj
+                  (swap! (get env :diags) conj
                          {:op cn :argpos i :type (type-name t) :pos pos
                           :msg (str "`" cn "` requires a number, but argument "
                                     (inc i) " is " (type-name t))})))
@@ -490,7 +489,7 @@
     (and (contains? seq-ops cn) (> (count args) 0))
     (let [t (nth arg-types 0)]
       (when (not-seqable? t)
-        (swap! diag-box conj
+        (swap! (get env :diags) conj
                {:op cn :argpos 0 :type (type-name t) :pos pos
                 :msg (str "`" cn "` requires "
                           (if (= cn "count") "a countable collection" "a seqable")
@@ -504,22 +503,20 @@
   (reduce (fn [e p] (assoc e p :any)) {} params))
 
 (defn- isolated-diag-count
-  "Count of diagnostics typing body under tenv produces, with the shared
-  diag-box saved and restored so this probe never leaks into the real report.
-  Runs the same checking inference as check-form (checking? is already on)."
-  [body tenv]
-  (let [saved @diag-box]
-    (reset! diag-box [])
-    (infer body tenv)
-    (let [n (count @diag-box)]
-      (reset! diag-box saved)
-      n)))
+  "Count of diagnostics typing body under tenv produces. Runs under a SUB-ENV
+  with its own diags cell, so this probe never leaks into the real report (the
+  shared calls/escapes/guard cells are intentionally still threaded — they are
+  not read here). Runs the same checking inference as check-form."
+  [body tenv env]
+  (let [sub (assoc env :diags (atom []))]
+    (infer body tenv sub)
+    (count @(get sub :diags))))
 
 (defn- register-user-fn!
   "Record a (def name (fn [params] body)) — single fixed arity, not redefinable —
   for later user-fn call checking. Redefinable/dynamic and multi/variadic fns are
   skipped (their body is not a stable requirement)."
-  [node]
+  [node env]
   (let [init (get node :init)
         m (get node :meta)
         redefable (and m (or (get m :redef) (get m :dynamic)))]
@@ -528,7 +525,7 @@
         (when (= 1 (count arities))
           (let [ar (first arities)]
             (when (not (get ar :rest))
-              (swap! user-sig-box assoc
+              (swap! (get env :user-sigs) assoc
                      (str (get node :ns) "/" (get node :name))
                      {:name (get node :name)
                       :params (get ar :params) :body (get ar :body)}))))))))
@@ -541,67 +538,69 @@
   its arg type (others :any); a diagnostic the all-:any body did not already
   have means the argument alone is provably wrong. Monotonic — binding a
   concrete type can only ADD error-domain hits — so no false positive.
-  Cycle-guarded so mutually recursive fns terminate."
-  [key sig arg-types pos]
-  (when (not (contains? @checking-box key))
-    (let [prev @checking-box]
-      (reset! checking-box (conj prev key))
-      (let [params (:params sig)
-            body (:body sig)
-            npar (count params)
-            nargs (count arg-types)]
-        (if (not= npar nargs)
-          ;; arity is provably wrong regardless of types — report and stop (the
-          ;; per-arg type re-check would bind params positionally, meaningless
-          ;; under a mismatch)
-          (swap! diag-box conj
-                 {:op :user-call :type :arity :pos pos
-                  :msg (str "wrong number of args (" nargs ") passed to `"
-                            (:name sig) "` (expected " npar ")")})
-          ;; all-any-env is built once (was rebuilt per param), and each probe is
-          ;; memoized by [key i argtype] so the same fn re-checked across call
-          ;; sites in this form re-infers its body at most once per (param, type).
-          (let [base-env (all-any-env params)
-                base (let [bk [:base key]]
-                       (if (contains? @diag-memo-box bk)
-                         (get @diag-memo-box bk)
-                         (let [b (isolated-diag-count body base-env)]
-                           (swap! diag-memo-box assoc bk b) b)))]
-            (reduce
-              (fn [_ i]
-                (let [at (nth arg-types i)]
-                  (when (and (not= at :any) (not= at :truthy))
-                    (let [mk [:arg key i at]
-                          rejects (if (contains? @diag-memo-box mk)
-                                    (get @diag-memo-box mk)
-                                    (let [r (> (isolated-diag-count body (assoc base-env (nth params i) at)) base)]
-                                      (swap! diag-memo-box assoc mk r) r))]
-                      (when rejects
-                        (swap! diag-box conj
-                               {:op :user-call :argpos i :type (type-name at) :pos pos
-                                :msg (str "argument " (inc i) " to `" (:name sig)
-                                          "` is " (type-name at)
-                                          ", which its body provably rejects")})))))
-                nil)
-              nil (range npar)))))
-      (reset! checking-box prev))))
+  Cycle-guarded (env's checking-set) so mutually recursive fns terminate."
+  [key sig arg-types pos env]
+  (let [cset (get env :checking-set)]
+    (when (not (contains? @cset key))
+      (let [prev @cset]
+        (reset! cset (conj prev key))
+        (let [params (:params sig)
+              body (:body sig)
+              npar (count params)
+              nargs (count arg-types)
+              memo (get env :diag-memo)]
+          (if (not= npar nargs)
+            ;; arity is provably wrong regardless of types — report and stop (the
+            ;; per-arg type re-check would bind params positionally, meaningless
+            ;; under a mismatch)
+            (swap! (get env :diags) conj
+                   {:op :user-call :type :arity :pos pos
+                    :msg (str "wrong number of args (" nargs ") passed to `"
+                              (:name sig) "` (expected " npar ")")})
+            ;; all-any-env is built once (was rebuilt per param), and each probe is
+            ;; memoized by [key i argtype] so the same fn re-checked across call
+            ;; sites in this form re-infers its body at most once per (param, type).
+            (let [base-env (all-any-env params)
+                  base (let [bk [:base key]]
+                         (if (contains? @memo bk)
+                           (get @memo bk)
+                           (let [b (isolated-diag-count body base-env env)]
+                             (swap! memo assoc bk b) b)))]
+              (reduce
+                (fn [_ i]
+                  (let [at (nth arg-types i)]
+                    (when (and (not= at :any) (not= at :truthy))
+                      (let [mk [:arg key i at]
+                            rejects (if (contains? @memo mk)
+                                      (get @memo mk)
+                                      (let [r (> (isolated-diag-count body (assoc base-env (nth params i) at) env) base)]
+                                        (swap! memo assoc mk r) r))]
+                        (when rejects
+                          (swap! (get env :diags) conj
+                                 {:op :user-call :argpos i :type (type-name at) :pos pos
+                                  :msg (str "argument " (inc i) " to `" (:name sig)
+                                            "` is " (type-name at)
+                                            ", which its body provably rejects")})))))
+                  nil)
+                nil (range npar)))))
+        (reset! cset prev)))))
 
 ;; --- Inter-procedural driver API consumed by the back end -------------------
 (defn set-rtenv!
   "Install the current return-type estimates (a map \"ns/name\" -> type) used to
   type call results during the fixpoint."
-  [m] (reset! rtenv-box m))
+  [m] (swap! config-box assoc :rtenv (or m {})))
 
 ;; install record-ctor shapes ("ns/->Name" -> [field-kw ...]) and the
 ;; map-shaping flag (opt-in JOLT_SHAPE), both read by infer.
-(defn set-record-shapes! [m] (reset! record-shapes-box (or m {})))
-(defn set-protocol-methods! [m] (reset! protocol-methods-box (or m {})))
-(defn set-map-shapes! [b] (reset! map-shapes-box (boolean b)))
+(defn set-record-shapes! [m] (swap! config-box assoc :record-shapes (or m {})))
+(defn set-protocol-methods! [m] (swap! config-box assoc :protocol-methods (or m {})))
+(defn set-map-shapes! [b] (swap! config-box assoc :map-shapes? (boolean b)))
 
 (defn set-vtypes!
   "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy
   (non-nil), def vars carry their inferred init type."
-  [m] (reset! vtype-box m))
+  [m] (swap! config-box assoc :vtypes (or m {})))
 
 (defn join-types
   "Public structural join (lub), used by the orchestrator's fixpoint so param/
@@ -623,18 +622,12 @@
   def must precede its call — the same ordering RFC 0005 already assumes."
   ([node] (check-form node false))
   ([node strict?]
-   (reset! strict-box (if strict? true false))
-   (reset! checking-box #{})
-   (reset! diag-box [])
-   (reset! diag-memo-box {})
-   ;; the check IS the inference: one walk that types and emits diagnostics
-   ;; (jolt audit). checking? gates emission so the optimization fixpoint, which
-   ;; also calls infer, stays silent.
-   (reset! checking? true)
-   (infer node {})
-   (reset! checking? false)
-   (reset! strict-box false)
-   (vec @diag-box)))
+   ;; the check IS the inference: one walk that types and emits diagnostics into
+   ;; this run's env. The optimization fixpoint runs with checking? false so it
+   ;; stays silent.
+   (let [env (mk-env true strict?)]
+     (infer node {} env)
+     (vec @(get env :diags)))))
 
 (defn infer-body
   "Type `body` under tenv (local-name -> type). Returns [ret-type node' calls],
@@ -642,9 +635,9 @@
   propagating into callee param types). Also accumulates escapes (read with
   collected-escapes after a full sweep)."
   [body tenv]
-  (reset! calls-box [])
-  (let [r (infer body tenv)]
-    [(nth r 0) (nth r 1) @calls-box]))
+  (let [env (mk-env false false)
+        r (infer body tenv env)]
+    [(nth r 0) (nth r 1) @(get env :calls)]))
 
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded
@@ -652,7 +645,9 @@
   end emits the result directly (no further passes), so the param-typed lookups
   keep their specialization. Used by the inter-procedural recompile."
   [def-node ptmap]
-  (let [fnode (get def-node :init)]
+  (let [fnode (get def-node :init)
+        env (mk-env false false)
+        shapes (get env :record-shapes)]
     (if (= :fn (get fnode :op))
       (assoc def-node :init
              (assoc fnode :arities
@@ -664,12 +659,12 @@
                             ;; as precise), so this only fills the gaps.
                             (let [pt (reduce (fn [m pr]
                                                (let [nm (nth pr 0)
-                                                     e (get @record-shapes-box (nth pr 1))]
+                                                     e (get shapes (nth pr 1))]
                                                  (if (and e (not (contains? m nm)))
-                                                   (assoc m nm (record-type-from-entry e type-depth))
+                                                   (assoc m nm (record-type-from-entry e type-depth shapes))
                                                    m)))
                                              ptmap (get a :phints))]
-                              (assoc a :body (nth (infer (get a :body) pt) 1))))
+                              (assoc a :body (nth (infer (get a :body) pt env) 1))))
                           (get fnode :arities))))
       def-node)))
 
@@ -684,11 +679,12 @@
   fixpoint, so a field read off it (e.g. (:origin ^Ray r)) never tells a shared
   callee its arg is a Vec3."
   [params phints]
-  (let [m (reduce (fn [acc pr] (assoc acc (nth pr 0) (nth pr 1))) {} phints)]
+  (let [shapes (get @config-box :record-shapes)
+        m (reduce (fn [acc pr] (assoc acc (nth pr 0) (nth pr 1))) {} phints)]
     (mapv (fn [nm]
             (let [ck (get m nm)
-                  e (and ck (get @record-shapes-box ck))]
-              (when e (record-type-from-entry e type-depth))))
+                  e (and ck (get shapes ck))]
+              (when e (record-type-from-entry e type-depth shapes))))
           params)))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
@@ -698,27 +694,22 @@
 ;; run-passes and reads take-diags! after. It checks the POST-optimization IR,
 ;; which matches what the optimized program actually evaluates (scalar-replace
 ;; only drops provably-pure code, an accepted opt-mode divergence).
-(def ^:private check-mode-box (atom {:on false :strict false}))
 (defn set-check-mode!
   "Enable/disable checking during the next run-passes inference (direct-link)."
   [on strict?] (reset! check-mode-box {:on (if on true false) :strict (if strict? true false)}))
 (defn take-diags!
   "Diagnostics accumulated by the last checking run-passes; clears the buffer."
-  [] (let [d (vec @diag-box)] (reset! diag-box []) d))
+  [] (let [d @last-diags-box] (reset! last-diags-box []) d))
 
 (defn run-inference
   "Type-infer the optimized node (the inference walk specializes struct-safe
   lookups). When check mode is on (set-check-mode!), the same walk also emits
-  success-type diagnostics into the buffer take-diags! drains afterward. Pulled
+  success-type diagnostics, stashed for take-diags! to drain afterward. Pulled
   out of run-passes so the checking state stays private to this namespace."
   [opt]
   (if (get @check-mode-box :on)
-    (do (reset! diag-box [])
-        (reset! checking-box #{})
-        (reset! strict-box (get @check-mode-box :strict))
-        (reset! checking? true)
-        (let [r (infer-top opt)]
-          (reset! checking? false)
-          (reset! strict-box false)
-          r))
-    (infer-top opt)))
+    (let [env (mk-env true (get @check-mode-box :strict))
+          r (infer-top opt env)]
+      (reset! last-diags-box @(get env :diags))
+      r)
+    (infer-top opt (mk-env false false))))
