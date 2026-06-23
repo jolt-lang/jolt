@@ -369,13 +369,22 @@
                   (if (jolt-nil? u) jolt-nil (host-new "StringReader" (jolt-slurp (url-strip-scheme (url-spec u))))))))))
 (register-class-statics! "ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
 (register-class-statics! "java.lang.ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
-;; Thread/currentThread -> a thread jhost whose getContextClassLoader is the loader.
-(define the-thread (make-jhost "thread" (vector)))
+;; Thread/currentThread -> a fresh thread jhost wrapping THIS thread's interrupt
+;; flag (the box from current-interrupt-box, host-static.ss), so .interrupt from
+;; any thread sets the target thread's flag and .isInterrupted reads it without
+;; clearing (instance semantics; the static Thread/interrupted reads-and-clears).
+;; getContextClassLoader hands back the loader.
 (register-host-methods! "thread"
   (list (cons "getContextClassLoader" (lambda (self) the-classloader))
-        (cons "getName" (lambda (self) "main"))))
-(register-class-statics! "Thread" (list (cons "currentThread" (lambda () the-thread))))
-(register-class-statics! "java.lang.Thread" (list (cons "currentThread" (lambda () the-thread))))
+        (cons "getName" (lambda (self) "main"))
+        (cons "interrupt" (lambda (self)
+                            (when (box? (jhost-state self)) (set-box! (jhost-state self) #t))
+                            jolt-nil))
+        (cons "isInterrupted" (lambda (self)
+                                (and (box? (jhost-state self)) (unbox (jhost-state self)) #t)))))
+(define (current-thread-handle) (make-jhost "thread" (current-interrupt-box)))
+(register-class-statics! "Thread" (list (cons "currentThread" current-thread-handle)))
+(register-class-statics! "java.lang.Thread" (list (cons "currentThread" current-thread-handle)))
 
 ;; --- java.io.File / java.util.UUID constructors -----------------------------
 ;; (java.io.File. parent child) joins with "/"; (File. path) wraps the path.

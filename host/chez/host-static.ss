@@ -161,21 +161,48 @@
         (cons "PI" (->dbl (* 4 (atan 1)))) (cons "E" (->dbl (exp 1)))
         (cons "random" (lambda args (random 1.0)))))
 
-;; Thread: real OS threads back futures/promises, so sleep genuinely
-;; parks the calling thread for `ms` milliseconds (a worker sleeping doesn't block
-;; the parent). yield hands off the scheduler.
-(register-class-statics! "Thread"
+;; Thread: real OS threads back futures/promises.
+;;  - sleep parks the calling thread for `ms` ms (a worker sleeping doesn't block
+;;    the parent).
+;;  - yield hands the CPU to another runnable thread (libc sched_yield).
+;;  - each thread carries an interrupt flag; interrupted (static) reads AND clears
+;;    the current thread's flag, matching the JVM. currentThread / .interrupt /
+;;    .isInterrupted are wired in io.ss, where the thread handle is built.
+
+;; Per-thread interrupt flag, lazily allocated so each OS thread gets its own box.
+;; A thread handle (from currentThread) captures this box, so .interrupt from
+;; another thread sets the target thread's flag.
+(define thread-interrupt-box (make-thread-parameter #f))
+(define (current-interrupt-box)
+  (or (thread-interrupt-box)
+      (let ((b (box #f))) (thread-interrupt-box b) b)))
+(define (clear-thread-interrupt!) (set-box! (current-interrupt-box) #f))
+
+;; libc sched_yield, resolved once; fall back to a zero-length park if the symbol
+;; isn't available.
+(define thread-yield!
+  (let ((fp #f) (tried? #f))
+    (lambda ()
+      (unless tried?
+        (set! tried? #t)
+        (set! fp (guard (e (#t #f))
+                   (load-shared-object #f)
+                   (foreign-procedure "sched_yield" () int))))
+      (if fp (fp) (sleep (make-time 'time-duration 0 0)))
+      jolt-nil)))
+
+(define thread-statics
   (list (cons "sleep" (lambda (ms . _)
                         (let* ((ms* (exact (floor ms)))
                                (secs (quotient ms* 1000))
                                (nanos (* (remainder ms* 1000) 1000000)))
                           (sleep (make-time 'time-duration nanos secs)))
                         jolt-nil))
-        (cons "yield" (lambda () jolt-nil))
-        (cons "interrupted" (lambda () #f))
-        (cons "currentThread" (lambda () (make-jhost "thread" '())))))
-(register-host-methods! "thread"
-  (list (cons "getContextClassLoader" (lambda (self) (make-jhost "classloader" '())))))
+        (cons "yield" (lambda _ (thread-yield!)))
+        (cons "interrupted" (lambda _ (let* ((b (current-interrupt-box)) (v (unbox b)))
+                                        (set-box! b #f) (and v #t))))))
+(register-class-statics! "Thread" thread-statics)
+(register-class-statics! "java.lang.Thread" thread-statics)
 
 ;; clojure.lang.LockingTransaction: jolt has no STM (no refs/dosync), so a
 ;; transaction is never running. isRunning -> false.
