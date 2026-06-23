@@ -117,6 +117,14 @@
   {:suite "reify" :expr "(do (defprotocol Q (qa [_]) (qb [_])) (extend-protocol Q java.lang.Object (qa [_] :da) (qb [_] :db)) (def r (reify Q (qa [_] :ra))) [(qa r) (qb r)])" :expected "[:ra :db]"}
   {:suite "interrupt" :expr "(jolt.host/run-interruptible (jolt.host/make-interrupt) (fn [] (+ 1 2)))" :expected "3"}
   {:suite "interrupt" :expr "(let [t (jolt.host/make-interrupt)] (jolt.host/interrupt! t) (try (jolt.host/run-interruptible t (fn [] (loop [i 0] (recur (inc i))))) :not-interrupted (catch :default e (:jolt/interrupted (ex-data e)))))" :expected "true"}
+  {:suite "interrupt" :expr "(do (Thread/yield) :ok)" :expected ":ok"}
+  {:suite "interrupt" :expr "(nil? (Thread/yield))" :expected "true"}
+  {:suite "interrupt" :expr "(.isInterrupted (Thread/currentThread))" :expected "false"}
+  {:suite "interrupt" :expr "(let [t (Thread/currentThread)] (.interrupt t) (.isInterrupted t))" :expected "true"}
+  {:suite "interrupt" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(.isInterrupted t) (.isInterrupted t)])" :expected "[true true]"}
+  {:suite "interrupt" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(Thread/interrupted) (Thread/interrupted)])" :expected "[true false]"}
+  {:suite "interrupt" :expr "(do (.interrupt (Thread/currentThread)) (Thread/interrupted) (.isInterrupted (Thread/currentThread)))" :expected "false"}
+  {:suite "interrupt" :expr "(let [t (atom nil) started (promise) go (promise) f (future (reset! t (Thread/currentThread)) (deliver started true) (deref go) (.isInterrupted (deref t)))] (deref started) (.interrupt (deref t)) (deliver go true) (deref f))" :expected "true"}
   {:suite "ns-tl" :expr "(do (in-ns (quote foo.bar)) (str *ns*))" :expected "foo.bar"}
   {:suite "ns-tl" :expr "(do (create-ns (quote my.ns)) (binding [*ns* (find-ns (quote my.ns))] (str *ns*)))" :expected "my.ns"}
   {:suite "ns-tl" :expr "(do (in-ns (quote app.core)) (def sekret 42) (in-ns (quote user)) (binding [*ns* (find-ns (quote app.core))] (load-string \"sekret\")))" :expected "42"}
