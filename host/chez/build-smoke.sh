@@ -5,6 +5,26 @@
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 
+# Preflight: a standalone build needs Chez's kernel dev files (libkernel.a +
+# scheme.h) and a C compiler. A distro chezscheme package ships neither, so on
+# such hosts (CI included) skip — like `certify` skips without Clojure. Pin the
+# csv dir we validate so the build uses exactly it.
+csv="$JOLT_CHEZ_CSV"
+if [ -z "$csv" ]; then
+  chez_bin="$(command -v chez || command -v scheme || command -v petite || true)"
+  if [ -n "$chez_bin" ]; then
+    base="$(cd "$(dirname "$chez_bin")/.." 2>/dev/null && pwd)"
+    for d in "$base"/lib/csv*/*/; do
+      [ -f "${d}libkernel.a" ] && csv="${d%/}" && break
+    done
+  fi
+fi
+if ! command -v cc >/dev/null 2>&1 || [ -z "$csv" ] || [ ! -f "$csv/scheme.h" ] || [ ! -f "$csv/libkernel.a" ]; then
+  echo "build smoke: skipped (Chez kernel dev files or C compiler not available)"
+  exit 0
+fi
+export JOLT_CHEZ_CSV="$csv"
+
 app="$root/test/chez/build-app"
 out="$(mktemp -d)/app-bin"
 trap 'rm -rf "$(dirname "$out")"' EXIT
