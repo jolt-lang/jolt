@@ -1,5 +1,5 @@
-;; natives-parity.ss (jolt-cf1q.7) — native Chez shims for clojure.core fns that
-;; had no Chez shim, so they resolved to nil ("not a fn"). Pure-Chez, JVM-matching.
+;; natives-parity.ss — native Chez shims for clojure.core fns. Pure-Chez,
+;; JVM-matching.
 ;;
 ;; Loaded after host-table.ss (htable-sorted?), transients.ss (jolt-transient?),
 ;; values.ss (jolt-hash), seq.ss (jolt-seq/seq->list/list->cseq/jolt-invoke).

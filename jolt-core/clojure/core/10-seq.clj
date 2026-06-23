@@ -3,14 +3,14 @@
 ;; mode these self-host through the now-built analyzer (interpreted otherwise).
 ;;
 ;; Migration rule for adding fns here: the fn must (1) NOT be in
-;; compiler/core-renames (that map emits core-X Janet symbols directly), (2) have
-;; no internal Janet callers of its core-X binding, and (3) NOT be used by the
+;; compiler/core-renames (that map emits core-X symbols directly), (2) have
+;; no internal callers of its core-X binding, and (3) NOT be used by the
 ;; self-hosted compiler (jolt-core/jolt/*.clj). Compiler-facing structural fns go
 ;; in the kernel tier (00-kernel) instead — see its header.
 
-;; Volatiles (moved up from 20-coll: this tier's transducers use them, and the
-;; analyzer now ERRORS on unresolved forward references — jolt-2o7.3). The
-;; constructor (volatile!) stays native; these are pure over ref-put!/get.
+;; Volatiles (this tier's transducers use them, and the analyzer ERRORS on
+;; unresolved forward references). The constructor (volatile!) stays native;
+;; these are pure over ref-put!/get.
 (defn vreset! [vol newval]
   (jolt.host/ref-put! vol :val newval) newval)
 (defn vswap! [vol f & args]
@@ -21,7 +21,7 @@
 (defn fnext  [coll] (first (next coll)))
 (defn nnext  [coll] (next (next coll)))
 
-;; Canonical Clojure defs: pure first/next/loop/recur, no Janet realize-for-iteration.
+;; Canonical Clojure defs: pure first/next/loop/recur.
 (defn last [s]
   (if (next s) (recur (next s)) (first s)))
 

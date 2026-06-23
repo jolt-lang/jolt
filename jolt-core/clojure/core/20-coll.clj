@@ -4,7 +4,7 @@
 ;; redefinable. Loaded after the seq tier; self-hosted in compile mode.
 ;;
 ;; Same migration rule as the seq tier (see 10-seq.clj): not in core-renames, no
-;; internal Janet callers, not used by the self-hosted compiler.
+;; internal callers, not used by the self-hosted compiler.
 
 ;; Tiny leaves first — fns below in this tier (and 25-sorted) use them.
 (defn some? [x] (not (nil? x)))
@@ -20,7 +20,7 @@
 ;; overlay versions cost an extra call layer per element (seq-pipe bench 4x).
 
 ;; Variadic bit ops — canonical Clojure arities folding the binary host op
-;; (__bit-* seams). 2-arg call sites still compile to the native janet op via
+;; (__bit-* seams). 2-arg call sites still compile to the native op via
 ;; the backend's native-ops table, so the binary fast path is unchanged.
 (defn bit-and
   ([x y] (__bit-and x y))
@@ -87,8 +87,8 @@
 ;; Distinct keys are recorded in a side vector so the buckets can be frozen in
 ;; place (no second map rebuild). A bucket's FIRST element is stored as a cheap
 ;; persistent [x]; only the second element promotes it to a transient — so an
-;; all-singletons grouping pays no transient alloc and matches the old cost,
-;; while any bucket that actually grows rides the O(1) push.
+;; all-singletons grouping pays no transient alloc, while any bucket that
+;; actually grows rides the O(1) push.
 (defn group-by [f coll]
   (let [tm (transient {})
         ks (reduce (fn [ks x]
@@ -355,7 +355,7 @@
                (make-hierarchy) (partition 2 deriv-seq))
        h))))
 
-;; --- Stage 3 tier shrink: pure-over-core leaves moved off the host primitives ----
+;; --- pure-over-core leaves expressed off the host primitives -----------------
 
 ;; Representation predicates over the overlay's own predicates.
 (defn sequential? [x] (or (vector? x) (seq? x)))
@@ -364,7 +364,7 @@
   (or (vector? x) (map? x) (set? x) (list? x) (string? x)))
 (defn indexed? [x] (vector? x))
 ;; sorted? is defined by the next tier (25-sorted) — declared here so this
-;; tier compiles (forward references are analysis errors now, jolt-2o7.3).
+;; tier compiles (forward references are analysis errors).
 (declare sorted?)
 
 (defn reversible? [x] (or (vector? x) (sorted? x)))
@@ -377,7 +377,7 @@
 (defn infinite? [x] (and (number? x) (or (= x ##Inf) (= x ##-Inf))))
 
 ;; qualified-/simple- keyword?/symbol? moved above qualified-ident? (forward
-;; references are analysis errors now — jolt-2o7.3).
+;; references are analysis errors).
 
 
 ;; realized?: defined on the pending types only (delay/lazy-seq/future read
@@ -453,7 +453,7 @@
 (defn println-str [& xs] (__with-out-str (fn* [] (apply println xs))))
 (defn prn-str [& xs] (__with-out-str (fn* [] (apply prn xs))))
 
-;; --- Phase 2 leaf batch 4 (jolt-ded): over the rand / sort host seams --------
+;; --- leaves over the rand / sort host seams ----------------------------------
 
 ;; Canonical truncation toward zero via int (the kernel fn floored, which is
 ;; wrong for a negative n).
@@ -549,11 +549,11 @@
 
 ;; file-seq: the tree of paths under root (root included), directories walked
 ;; via the host dir primitives. Paths (strings), not File objects. (Lives below
-;; tree-seq: forward references are analysis errors now — jolt-2o7.3.)
+;; tree-seq: forward references are analysis errors.)
 (defn file-seq [root]
   (if (__file? root)
     ;; java.io.File tree: walk via the File method surface so leaves are File
-    ;; values callers can invoke .isFile/.getName/slurp on (jolt-hjw).
+    ;; values callers can invoke .isFile/.getName/slurp on.
     (tree-seq (fn [f] (.isDirectory f)) (fn [f] (seq (.listFiles f))) root)
     (tree-seq __dir? __list-dir root)))
 
@@ -586,10 +586,6 @@
 
 ;; No ratio type on Jolt, so rationalize is identity.
 (defn rationalize [x] x)
-
-;; trampoline: repeatedly calls f with args until a non-function result.
-
-;; rand-int: random integer in [0, n). Uses Janet math/random.
 
 ;; 0-arg: a stateful transducer (tracks [seen? prev] in a volatile, so no sentinel
 ;; value is needed). 1-arg: eager dedupe of consecutive equal elements.
@@ -625,8 +621,7 @@
 ;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):
 ;; even pairs build a map (later keys win, as createAsIfByAssoc), a SINGLE
 ;; element is returned as-is (the trailing-map calling convention), and an
-;; unpaired key past pairs throws. The old jolt version silently dropped the
-;; trailing element, losing (f {:b 2}) kwargs calls.
+;; unpaired key past pairs throws.
 (defn seq-to-map-for-destructuring [s]
   (if (next s)
     (loop [m {} xs (seq s)]
@@ -637,8 +632,8 @@
         m))
     (if (seq s) (first s) {})))
 
-;; Phase 4 (jolt-1j0): host-coupled fns that are pure logic over existing core
-;; primitives, so they need no new jolt.host surface.
+;; Host-coupled fns that are pure logic over existing core primitives, so they
+;; need no new jolt.host surface.
 
 ;; vary-meta: f applied to obj's metadata (+ extra args), reattached. meta and
 ;; with-meta are the irreducible host primitives; vary-meta is just their compose.
@@ -650,9 +645,8 @@
   (apply str (map (fn [c] (if (= c \-) \_ c)) (seq (str s)))))
 
 ;; reduce-kv over a map (k v) or vector (index v). Both branches go through reduce,
-;; so reduced short-circuits — and the vector path indexes correctly. (The prior
-;; Janet version saw a pvec as a table and folded over its internal keys; it also
-;; ignored reduced.) nil folds to init, matching Clojure.
+;; so reduced short-circuits — and the vector path indexes correctly. nil folds
+;; to init, matching Clojure.
 (defn reduce-kv [f init coll]
   (cond
     (vector? coll) (reduce (fn [acc i] (f acc i (nth coll i))) init (range (count coll)))
@@ -660,7 +654,7 @@
     (nil? coll)    init
     :else (throw (str "reduce-kv not supported on: " coll))))
 
-;; ex-info accessors. The Janet constructor (ex-info) stays — it builds the tagged
+;; ex-info accessors. The constructor (ex-info) stays native — it builds the tagged
 ;; value and wires into throw — but the value exposes :jolt/type/:message/:data/
 ;; :cause via get, so the accessors are pure over get. A thrown non-ex-info arrives
 ;; wrapped as {:jolt/type :jolt/exception :value v}; unwrap that first.
@@ -724,7 +718,7 @@
           (when (< i (count vars))
             (var-set (nth vars i) (nth saved i))
             (recur (inc i))))))))
-;; Jolt has no chunked seqs (Phase 5 territory), so this is always false.
+;; Jolt has no chunked seqs, so this is always false.
 (defn chunked-seq? [x] false)
 
 ;; Atom peripheral operations. atom/swap!/reset!/deref stay native — the compiler
@@ -733,7 +727,7 @@
 ;; slot; add-watch/remove-watch/set-validator! mutate the atom (or its watches
 ;; sub-table) through the one host primitive jolt.host/ref-put! — the minimal
 ;; mutation kernel the overlay can't express over core fns (a nil value removes the
-;; key). compare-and-set! compares by value, matching the prior Janet behavior.
+;; key). compare-and-set! compares by value.
 (defn swap-vals! [a f & args]
   (let [old (deref a)] [old (apply swap! a f args)]))
 (defn reset-vals! [a newval]
@@ -777,7 +771,7 @@
     (jolt.host/ref-put! target (nth idxs+val (- n 2)) val)
     val))
 
-;; --- Phase 2 leaf batch (jolt-ded): fn combinators + host-free stubs ---------
+;; --- fn combinators + host-free stubs ----------------------------------------
 
 (defn complement
   "Takes a fn f and returns a fn that takes the same arguments as f, has the
@@ -785,8 +779,7 @@
   [f]
   (fn [& args] (not (apply f args))))
 
-;; Canonical Clojure fnil: patches only the FIRST 1-3 arguments (the old Janet
-;; kernel patched every position it had a default for, which Clojure does not).
+;; Canonical Clojure fnil: patches only the FIRST 1-3 arguments.
 (defn fnil
   ([f x]
    (fn [a & args] (apply f (if (nil? a) x a) args)))
@@ -818,7 +811,7 @@
   (let [t (:test (meta v))]
     (if t (do (t) :ok) :no-test)))
 
-;; --- Phase 2 leaf batch 2 (jolt-ded): canonical Clojure ports ----------------
+;; --- canonical Clojure ports -------------------------------------------------
 ;; key/val/find first — merge-with and memoize below use them.
 
 ;; Strict, as in Clojure: an entry is what (seq m) yields (a host tuple), NOT
@@ -882,8 +875,7 @@
              (recur nxt (next ks))))
          m)))))
 
-;; find-based, so nil RESULTS are cached too (the old kernel fn re-computed
-;; them); args canonicalize as a collection key.
+;; find-based, so nil RESULTS are cached too; args canonicalize as a collection key.
 (defn memoize [f]
   (let [mem (atom (hash-map))]
     (fn [& args]
@@ -920,11 +912,9 @@
 
 (defn reverse [coll] (reduce conj (list) coll))
 
-;; --- Phase 2 leaf batch 3 (jolt-ded) -----------------------------------------
-
 ;; An empty coll of the same category; sorted colls keep their comparator (the
 ;; value's own :empty op). Strings and scalars are nil, as in Clojure; a lazy
-;; seq empties to () (the old kernel fn returned a host table for it).
+;; seq empties to ().
 (defn empty [coll]
   (cond
     (nil? coll) nil
@@ -948,8 +938,6 @@
                  (assoc m k (apply f (get m k) args)))))]
     (up m ks f args)))
 
-;; --- jolt-brh: the last missing-portable vars --------------------------------
-
 ;; jolt keywords have no intern table (any keyword "exists"), so find-keyword
 ;; always finds — babashka makes the same call.
 (defn find-keyword
@@ -962,7 +950,7 @@
 
 ;; Canonical comp — here rather than a host primitive so each stage is invoked with
 ;; jolt call semantics: (comp seq :content) works because the keyword stage
-;; goes through IFn dispatch (raw Janet keyword application does not).
+;; goes through IFn dispatch.
 (defn comp
   ([] identity)
   ([f] f)
@@ -977,17 +965,15 @@
      ([x y z & args] (f (apply g x y z args)))))
   ([f g & fs] (reduce comp (comp f g) fs)))
 
-;; Canonical IFn set (jolt-1vx): fns, keywords, symbols, maps (sorted incl.),
+;; Canonical IFn set: fns, keywords, symbols, maps (sorted incl.),
 ;; sets, vectors, and vars — NOT lists ((ifn? '(1 2)) is false in Clojure).
-;; Mutable-mode caveat: vectors and lists share the array representation
-;; there, so vector? can't separate them and lists read as ifn?.
 (defn ifn? [x]
   (or (fn? x) (keyword? x) (symbol? x) (map? x) (set? x) (vector? x) (var? x)))
 
 ;; Auto-promoting (') and unchecked arithmetic. Jolt numbers don't overflow,
 ;; so all of these are the checked ops; fixed arities mirror Clojure's
 ;; signatures. unchecked-divide-int goes through quot, so dividing by zero
-;; throws as on the JVM (the old seed fn silently truncated infinity).
+;; throws as on the JVM.
 (def +' +)
 (def -' -)
 (def *' *)
@@ -1079,7 +1065,7 @@
 (defn unchecked-float [x] (double x))
 (defn unchecked-double [x] (double x))
 
-;; --- transduce / into / eduction (seed-shrink round 5) ---------------------
+;; --- transduce / into / eduction ---------------------------------------------
 ;; Canonical transduce: build the stacked rf once, reduce (which honors
 ;; `reduced` and steps lazy seqs incrementally), then run the completion arity.
 (defn transduce
@@ -1089,9 +1075,9 @@
      (xf (reduce xf init coll)))))
 
 ;; into stays a host primitive: it's perf-wall hot (the into-vec bench pays ~11%
-;; through the overlay call layers — same lesson as even?/odd? in round 4).
+;; through the overlay call layers — same lesson as even?/odd?).
 
-;; eduction is EAGER on jolt (documented divergence, as before): the composed
+;; eduction is EAGER on jolt (documented divergence): the composed
 ;; xforms applied to coll, realized into a vector.
 (defn eduction [& args]
   (let [coll (last args)
@@ -1102,7 +1088,7 @@
 
 (defn ->Eduction [xform coll] (into [] xform coll))
 
-;; --- JVM-shape stubs and trivial shells (seed-shrink batch 2) --------------
+;; --- JVM-shape stubs and trivial shells --------------------------------------
 ;; Pure compositions or documented jolt stubs; the host keeps nothing.
 (defn enumeration-seq [e] (seq e))
 (defn iterator-seq [i] (seq i))

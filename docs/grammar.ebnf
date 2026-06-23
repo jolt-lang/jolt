@@ -3,10 +3,11 @@
    ===========================================================================
 
    This grammar specifies the surface syntax accepted by Jolt's reader
-   (src/jolt/reader.janet) — the text that `read`/`parse-string`/`load-string`
-   turn into data/forms. It is the syntactic half of Jolt's contract; the
-   behavioural half lives in test/spec/. Where Jolt diverges from Clojure the
-   difference is called out in a comment.
+   (host/chez/reader.ss, with the portable half in jolt-core/jolt/reader.clj) —
+   the text that `read`/`read-string`/`load-string` turn into data/forms. It is
+   the syntactic half of Jolt's contract; the behavioural half lives in the
+   conformance corpus (test/chez/corpus.edn, see docs/spec/02-reader.md). Where
+   Jolt diverges from Clojure the difference is called out in a comment.
 
    Notation (ISO-ish EBNF):
      =           definition          |   alternation
@@ -128,7 +129,7 @@ meta-form       = map | keyword | symbol | string ;
    a keyword -> {keyword true}; a map is used as-is. A keyword/symbol/string
    meta-form on a symbol rides ON the symbol (it stays a bare symbol, so a hint
    like ^String is transparent in params/lets/bodies). A MAP meta-form routes
-   through a runtime (with-meta form ...) even on a symbol (jolt-8w2), so a name
+   through a runtime (with-meta form ...) even on a symbol, so a name
    with ^{:map} metadata reads as a form, not a bare symbol — def/defn/defmacro/ns
    unwrap that to the bare name (and attach the metadata). *)
 
@@ -152,7 +153,7 @@ anon-arg        = "%" | "%" , digit , { digit } | "%&" ;
 
 var-quote       = "#'" , symbol ;                  (* (var symbol) *)
 
-(* Regex literal -> a Janet PEG-backed regex value.
+(* Regex literal -> an irregex-backed regex value.
    Supported: groups, greedy/lazy quantifiers, (?:..), lookahead (?=..)/(?!..),
    alternation, anchors ^ $ \b \B, classes, (?i). NOT: lookbehind,
    backreferences, named groups. *)

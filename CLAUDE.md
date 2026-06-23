@@ -86,7 +86,7 @@ reader/analyzer/IR/backend (`jolt-core/jolt/`) and `clojure.core` in
 dependency-ordered tiers (`jolt-core/clojure/core/NN-*.clj`, loaded in order:
 00-syntax, 00-kernel, 10-seq, 20-coll, 25-sorted, 30-macros, 40-lazy, 50-io).
 The stdlib namespaces (`clojure.string`/`set`/`walk`/`edn`/`pprint`/…) are
-portable Clojure under `src/jolt/clojure/`.
+portable Clojure under `stdlib/clojure/`.
 
 `bin/joltc` (`host/chez/cli.ss`) loads the checked-in seed
 (`host/chez/seed/{prelude,image}.ss`) + the spine and compiles+evals on Chez
@@ -114,3 +114,19 @@ Issue tracking and design notes live in beads (`bd prime`, `bd memories`).
   is the contract.
 - **Gate every change**: `make test` with a real exit code (self-host fixpoint,
   corpus floor, unit, cli smoke, certify). Re-mint if a seed source changed.
+
+## Writing style (comments, docstrings, docs)
+
+Write like a human maintainer of a serious open-source project. Plain, terse,
+factual. Document how the code works *now* — what it does and why it matters.
+
+- No LLM tells: drop "Note that", "It's worth noting", "Importantly", "simply",
+  "essentially", "in order to", "under the hood", and marketing words
+  ("comprehensive", "robust", "seamless", "leverage", "powerful").
+- No historical exposition (how the code used to work, porting notes, "the prior
+  X"), no internal issue IDs (`jolt-xxxx`) or milestone tags ("Phase N") in
+  comments or docstrings. The git history and beads hold that.
+- Keep genuine semantic contrasts with JVM Clojure — those document real,
+  user-visible behavior.
+- Don't restate the code; explain the non-obvious. Match the surrounding file's
+  comment density and tone.

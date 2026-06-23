@@ -23,8 +23,8 @@
 ;; A runtime primitive (cons, +, get, apply, …) the back end maps to the host RT.
 (defn rt [name] {:op :rt :name name})
 
-;; A name that resolves only via the host's own environment (e.g. + or int? on
-;; Janet) — the back end emits a host-appropriate reference.
+;; A name that resolves only via the host's own environment (e.g. + or int?) —
+;; the back end emits a host-appropriate reference.
 (defn host-ref [name] {:op :host :name name})
 
 ;; A qualified static reference to a host class member, `Class/member` (e.g.
@@ -72,7 +72,7 @@
 (defn op [node] (:op node))
 
 ;; ---------------------------------------------------------------------------
-;; Structural recursion over IR child nodes (jolt-26dm / phase 3a).
+;; Structural recursion over IR child nodes.
 ;;
 ;; A tree-rewriting pass recurses into each op's child NODE positions and
 ;; rebuilds the node; this combinator does that one place, so the per-op child

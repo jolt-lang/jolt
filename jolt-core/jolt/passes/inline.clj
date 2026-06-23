@@ -1,6 +1,6 @@
 (ns jolt.passes.inline
   "Inlining + flatten-lets + scalar-replace (AOT escape analysis). These run only
-  when host/inline-enabled? (user code opted into direct-linking, jolt-87f); they
+  when host/inline-enabled? (user code opted into direct-linking); they
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir]]
@@ -18,10 +18,10 @@
 ;; per unit by run-passes (set-rec-shapes!) before the fixpoint so scalar-replace
 ;; can recognize a (->Rec ..) call and map its positional args to declared fields
 ;; — the record analogue of the inline keys a map literal already carries in the
-;; IR (jolt-15jq).
+;; IR.
 (def ^:private rec-shapes (atom {}))
 (defn set-rec-shapes!
-  "Install the record-ctor shape registry the record fold consults (jolt-15jq)."
+  "Install the record-ctor shape registry the record fold consults."
   [m] (reset! rec-shapes (or m {})))
 
 (def ^:private fresh-counter (atom 0))
@@ -31,7 +31,7 @@
     (str base "__il" n)))
 
 ;; ---------------------------------------------------------------------------
-;; Inlining (jolt-87f). The back end stashes {:params [..] :body ir} on the var
+;; Inlining. The back end stashes {:params [..] :body ir} on the var
 ;; cell of each single-fixed-arity defn compiled under :inline?; here we splice
 ;; that body at a call site. To stay capture-safe we ALPHA-RENAME the body —
 ;; every param and every inner let-bound name becomes a globally fresh name —
@@ -89,7 +89,7 @@
       (= op :local) (let [r (get env (get node :name))]
                       ;; carry the param's ^:struct hint onto a let-bound fresh
                       ;; local, so lookups inside the inlined body keep the bare
-                      ;; (no-guard) path (jolt-dad). The param hint asserts the
+                      ;; (no-guard) path. The param hint asserts the
                       ;; arg is a struct; inlining doesn't change that contract.
                       (if r
                         (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
@@ -256,7 +256,7 @@
 
 ;; forward ref: a record ctor (allocating an immutable struct from its args) is
 ;; side-effect-free, so pure? treats (->Rec pure-args..) as pure — which lets a
-;; nested record (a Ray holding a Vec3) fold bottom-up (jolt-15jq).
+;; nested record (a Ray holding a Vec3) fold bottom-up.
 (declare ctor-shape)
 
 (defn- pure?
@@ -427,7 +427,7 @@
       (= op :def) (local-escapes? (get node :init) nm)
       :else true)))
 
-;; --- record constructors as foldable struct sources (jolt-15jq) -------------
+;; --- record constructors as foldable struct sources -------------------------
 ;; A record ctor (->Rec a b ..) is a positional struct: the registry maps its
 ;; ctor key ("ns/->Name", exactly how the IR names the call head) to the DECLARED
 ;; field order. A field read on a non-escaping ctor folds to the matching arg,

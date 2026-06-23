@@ -1,4 +1,4 @@
-;; clojure.core — sorted collections tier (stage 3, jolt-0lj).
+;; clojure.core — sorted collections tier.
 ;;
 ;; A sorted-map / sorted-set is a tagged host table
 ;;   {:jolt/type :jolt/sorted-map|:jolt/sorted-set
@@ -10,8 +10,7 @@
 ;; The tree is a left-leaning-free red-black tree — Rich Hickey's algorithm,
 ;; ported from the ClojureScript PersistentTreeMap (cljs.core: tree-map-add /
 ;; balance-left / balance-right / tree-map-append / balance-*-del). assoc / get /
-;; dissoc / contains are O(log n); the old sorted-VECTOR rep was O(n) per assoc,
-;; O(n^2) to build (jolt-684u's sibling, jolt-0hbr). cljs uses BlackNode/RedNode
+;; dissoc / contains are O(log n). cljs uses BlackNode/RedNode
 ;; deftypes, but this tier loads before 30-macros (no deftype), so a node is a
 ;; plain vector [color k v left right] (color :red/:black; left/right node|nil)
 ;; and the methods become functions — the algorithm is identical.

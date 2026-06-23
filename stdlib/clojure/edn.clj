@@ -52,7 +52,7 @@
 
 (defn- drain-reader
   "All remaining content of a reader as a string. Shim readers (StringReader,
-  PushbackReader, io/reader results) expose char-wise .read; a raw janet file
+  PushbackReader, io/reader results) expose char-wise .read; a raw file
   handle is read whole."
   [reader]
   (if (= :core/file (janet/type reader))

@@ -77,6 +77,6 @@ per-context opt-in, exactly how the SCI bootstrap now loads
 - Loading clj-ecosystem libraries via deps requires deciding their feature
   set; the deps loader currently inherits the process default — a future
   refinement is per-dependency feature configuration (filed with the deps
-  work, jolt-dw4).
+  work).
 - `.cljc` authors targeting jolt can write `:jolt` branches and rely on
   `:default` fallbacks.

@@ -1,4 +1,4 @@
-;; host-static.ss (jolt-avt6) — host class statics + constructors on Chez.
+;; host-static.ss — host class statics + constructors on Chez.
 ;;
 ;; The analyzer lowers `Class/member` to a :host-static node and `(Class. ...)` /
 ;; `(new Class ...)` to a :host-new node (jolt-core/jolt/analyzer.clj); the Chez
@@ -99,7 +99,7 @@
   (let ((ctor (lookup-class class-ctors-tbl class)))
     (cond
       (ctor (apply ctor args))
-      ;; deftype/defrecord (jolt-499t): the type name is bound as a VAR (the
+      ;; deftype/defrecord: the type name is bound as a VAR (the
       ;; make-deftype-ctor closure) in its defining ns, not a registered host class.
       ;; Resolve it in the current ns / clojure.core and invoke it — so (P. args)
       ;; works the same as the ->P factory.
@@ -111,7 +111,7 @@
              (error #f (string-append "No constructor for class " class))))))))
 
 ;; ---- coercion helpers -------------------------------------------------------
-;; numeric tower (jolt-n6al): currentTimeMillis/nanoTime are exact longs (JVM).
+;; numeric tower: currentTimeMillis/nanoTime are exact longs (JVM).
 (define (->num x) x)
 (define (jnum->exact n) (exact (truncate n)))
 ;; parse an integer string in radix; #f on failure
@@ -161,7 +161,7 @@
         (cons "PI" (->dbl (* 4 (atan 1)))) (cons "E" (->dbl (exp 1)))
         (cons "random" (lambda args (random 1.0)))))
 
-;; Thread: real OS threads back futures/promises (jolt-byjr), so sleep genuinely
+;; Thread: real OS threads back futures/promises, so sleep genuinely
 ;; parks the calling thread for `ms` milliseconds (a worker sleeping doesn't block
 ;; the parent). yield hands off the scheduler.
 (register-class-statics! "Thread"
@@ -178,7 +178,7 @@
   (list (cons "getContextClassLoader" (lambda (self) (make-jhost "classloader" '())))))
 
 ;; clojure.lang.LockingTransaction: jolt has no STM (no refs/dosync), so a
-;; transaction is never running. isRunning -> false (jolt-0obq).
+;; transaction is never running. isRunning -> false.
 (register-class-statics! "LockingTransaction" (list (cons "isRunning" (lambda () #f))))
 (register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () #f))))
 
@@ -267,7 +267,7 @@
                              (apply jolt-format (car rest) (cdr rest))
                              (apply jolt-format a rest))))))
 
-;; ---- java.text.NumberFormat (jolt-1nnn) -------------------------------------
+;; ---- java.text.NumberFormat -------------------------------------------------
 ;; A grouping decimal formatter (selmer number-format / cuerdas). state:
 ;; #(grouping? min-frac max-frac). .format groups the integer part with commas.
 (define (nf-make grouping? minf maxf) (make-jhost "numberformat" (vector grouping? minf maxf)))
@@ -371,7 +371,7 @@
                                                 ((char=? (string-ref l i) #\=) i)
                                                 (else (scan (+ i 1)))))))
                 (loop (if eq (cons (cons (substring l 0 eq) (substring l (+ eq 1) (string-length l))) acc) acc)))))))))
-;; JOLT_BAKE_ENV_ALLOWLIST (jolt-s3j): when set, only the listed comma-separated
+;; JOLT_BAKE_ENV_ALLOWLIST: when set, only the listed comma-separated
 ;; names are served; unset (the normal case) reads are live and unfiltered.
 (define (env-allowlist)
   (let ((a (getenv "JOLT_BAKE_ENV_ALLOWLIST")))
@@ -399,7 +399,7 @@
 ;; or a unique sentinel). Each call returns a new jhost so identical?/= separate.
 (register-class-ctor! "Object" (lambda _ (make-jhost "object" (vector))))
 
-;; ---- java.util.ArrayList (jolt-1nnn) ----------------------------------------
+;; ---- java.util.ArrayList ----------------------------------------------------
 ;; A mutable list backed by a Scheme list in a box. medley's stateful transducers
 ;; (window / partition-between) build one with .add / .size / .toArray / .clear /
 ;; .remove. (ArrayList.) | (ArrayList. n) | (ArrayList. coll).
@@ -899,5 +899,5 @@
 (def-var! "clojure.core" "__register-instance-check!"
   (lambda (f) (set! user-instance-checks (append user-instance-checks (list f))) jolt-nil))
 
-;; (jolt.host/table? x) — is x a host tagged-table (the Janet-table replacement)?
+;; (jolt.host/table? x) — is x a host tagged-table?
 (def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))

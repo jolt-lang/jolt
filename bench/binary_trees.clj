@@ -1,7 +1,7 @@
 ;; binary-trees (Computer Language Benchmarks Game) — an ALLOCATION/GC stress
 ;; test. Builds and discards millions of short-lived `Node` records; the nodes
-;; ESCAPE (stored in the tree, walked later), so this is the regime jolt-8flj
-;; (escape analysis) targets and the ray tracer never exercises (~7% alloc).
+;; ESCAPE (stored in the tree, walked later), so this is the regime escape analysis
+;; targets and the ray tracer never exercises (~7% alloc).
 ;;
 ;; Portable Clojure: runs on jolt and JVM Clojure for cross-impl comparison.
 ;;   jolt -m binary-trees 14        (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)

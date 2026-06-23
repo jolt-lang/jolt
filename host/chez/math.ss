@@ -1,10 +1,10 @@
-;; clojure.math (jolt-22vo) — Chez host shim over native flonum math.
+;; clojure.math — host shim over native flonum math.
 ;;
-;; clojure.math is registered as native bindings (jolt-h79), NOT a .clj file — so
-;; there's no source tier to emit. Chez provides its own def-var! shims here, one per
-;; clojure.math fn, over Chez's native procedures. The analyzer knows the
-;; clojure.math ns exists, so a ref
-;; like clojure.math/sqrt lowers to a var-deref; these cells back it at runtime.
+;; clojure.math is registered as native bindings, NOT a .clj file — so there's no
+;; source tier to emit. The def-var! shims here back each clojure.math fn over
+;; Chez's native procedures. The analyzer knows the clojure.math ns exists, so a
+;; ref like clojure.math/sqrt lowers to a var-deref; these cells back it at
+;; runtime.
 ;;
 ;; jolt is all-flonum, so every result is a flonum (inputs arrive as flonums; Chez
 ;; sqrt/sin/expt/... return flonums for flonum args). Semantics match

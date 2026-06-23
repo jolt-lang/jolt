@@ -1,11 +1,11 @@
 (ns jolt.passes
-  "IR optimization passes (nanopass-lite, jolt-2om) + the inference/checking
+  "IR optimization passes (nanopass-lite) + the inference/checking
   driver. Façade over three weakly-coupled namespaces, loaded with the compiler:
 
     jolt.passes.fold    — const-fold (always-on) + the shared const-shape predicate.
     jolt.passes.inline  — inline + flatten-lets + scalar-replace (direct-link only).
     jolt.passes.types   — collection-type inference + success-type checking
-                          (RFC 0006) + the inter-procedural driver API (jolt-767).
+                          (RFC 0006) + the inter-procedural driver API.
 
   run-passes (below) is the single entry the back end applies to every analyzed
   form. The driver/checker fns the back end looks up by name (check-form,
@@ -25,18 +25,18 @@
 
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form. When
-  inlining is enabled for the unit (user code under direct-linking, jolt-87f),
+  inlining is enabled for the unit (user code under direct-linking),
   run inline + flatten + scalar-replace + const-fold to a capped fixpoint —
   inlining exposes map literals to lookups, scalar-replace collapses them, which
-  may expose more — then a collection-type inference pass (jolt-99x, optionally
+  may expose more — then a collection-type inference pass (optionally
   also emitting success diagnostics) that auto-drops the lookup guard where the
   type is proven. Otherwise (core + bootstrap) just const-fold, as before."
   [node ctx]
   (if (inline-enabled? ctx)
-    (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold (jolt-15jq)
+    (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
           ;; resolve ^Record param hints (incl. defrecord/extend-type method
-          ;; `this`) to bare field reads per-form, not only under whole-program
-          ;; (jolt-3ko). Same shapes the inline pass uses.
+          ;; `this`) to bare field reads per-form, not only under whole-program.
+          ;; Same shapes the inline pass uses.
           _ (set-record-shapes! (record-shapes ctx))
           opt (loop [i 0 n (const-fold node)]
                 (reset! dirty false)
@@ -45,6 +45,6 @@
                     (recur (inc i) n2)
                     n2)))]
       ;; a final const-fold after inference propagates any predicate folded to a
-      ;; constant (jolt-wcw), collapsing the `if` it gates to the taken branch.
+      ;; constant, collapsing the `if` it gates to the taken branch.
       (const-fold (run-inference opt)))
     (const-fold node)))

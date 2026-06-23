@@ -1,4 +1,4 @@
-;; metadata (jolt-cf1q.3 Phase 2 inc E) — meta / with-meta. Chez values don't
+;; metadata — meta / with-meta. Chez values don't
 ;; carry metadata, so collections use an identity-keyed side-table: with-meta
 ;; returns a fresh COPY of the value (new identity) and records its meta there, so
 ;; the original is unchanged (Clojure's immutable-with-meta) and a copy made by a
@@ -13,7 +13,7 @@
   (cond
     ((symbol-t? x) (let ((m (symbol-t-meta x))) (if (jolt-nil? m) jolt-nil m)))
     ;; a var's meta is {:ns :name} (derived from the cell) + any def-time user
-    ;; meta from rt.ss's var-meta-table (jolt-zikh).
+    ;; meta from rt.ss's var-meta-table.
     ((var-cell? x)
      (let ((user (hashtable-ref var-meta-table x #f)))
        (jolt-assoc (if user user (jolt-hash-map))

@@ -1,4 +1,4 @@
-;; host class tokens (jolt-13zk) — a bare class name (String, Keyword, File...)
+;; host class tokens — a bare class name (String, Keyword, File...)
 ;; evaluates to its JVM canonical-name STRING, the same value (class instance)
 ;; returns, so (= String (class "x")) holds and a (defmethod m String ...) keys
 ;; against a (class …) dispatch (ring.util.request does this).
@@ -81,8 +81,8 @@
   (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
   class-token-alist)
 
-;; resolve a ^Type hint symbol-name to its canonical class name at def time
-;; (jolt-a1ir): "String" -> "java.lang.String", matching the JVM compiler. An
+;; resolve a ^Type hint symbol-name to its canonical class name at def time:
+;; "String" -> "java.lang.String", matching the JVM compiler. An
 ;; already-canonical name maps to itself; an unknown name yields #f (left as-is).
 (define class-hint-table (make-hashtable string-hash string=?))
 (for-each (lambda (p) (hashtable-set! class-hint-table (car p) (cdr p))) class-token-alist)

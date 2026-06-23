@@ -5,7 +5,7 @@
 ;; Ported from clojure.zip (Rich Hickey). A loc is a vector [node path] carrying
 ;; the zipper fns (:zip/branch? :zip/children :zip/make-node) as metadata. The
 ;; reference indexes a loc with (loc 0)/(loc 1); Jolt uses (nth loc ...) because a
-;; metadata-bearing vector is not currently invocable as a fn (see jolt-vh5).
+;; metadata-bearing vector is not currently invocable as a fn.
 (ns clojure.zip
   "Functional hierarchical zipper, with navigation, editing, and enumeration.")
 

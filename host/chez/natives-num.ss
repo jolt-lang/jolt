@@ -1,8 +1,7 @@
-;; bit ops + string->number parsers (jolt-cf1q.3 Phase 2 inc C) — host-coupled
-;; natives (bit family, parse-long/double) that
-;; resolved to jolt-nil. jolt models every number as a double, so bit ops coerce
-;; to an exact integer, operate, and return a flonum. parse-* use
-;; strict shapes (Clojure 1.11: nil on malformed, throw on a non-string).
+;; bit ops + string->number parsers — host-coupled natives (bit family,
+;; parse-long/double). jolt models every number as a double, so bit ops coerce
+;; to an exact integer, operate, and return a flonum. parse-* use strict shapes
+;; (Clojure 1.11: nil on malformed, throw on a non-string).
 
 ;; bit ops return EXACT integers (= JVM long). ->int coerces the operand.
 (define (->int x) (exact (truncate x)))

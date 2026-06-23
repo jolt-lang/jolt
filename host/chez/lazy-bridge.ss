@@ -1,12 +1,10 @@
-;; lazy-seq bridge (jolt-cf1q.3, jolt-dmw9) — make-lazy-seq / coll->cells.
+;; lazy-seq bridge — make-lazy-seq / coll->cells.
 ;;
 ;; The `lazy-seq` macro (00-syntax.clj) expands to
 ;;   (make-lazy-seq (fn* [] (coll->cells (do body))))
-;; and `lazy-cat` to (concat (lazy-seq c) ...). make-lazy-seq / coll->cells had
-;; no Chez shim, so EVERY overlay fn
+;; and `lazy-cat` to (concat (lazy-seq c) ...). These back every overlay fn
 ;; built on lazy-seq — repeat / iterate / cycle / dedupe / take-nth / keep /
-;; interpose / reductions / tree-seq (-> flatten) / lazy-cat — resolved the call
-;; to jolt-nil and hit the apply-jolt-nil crash bucket.
+;; interpose / reductions / tree-seq (-> flatten) / lazy-cat.
 ;;
 ;; Bridge to the cseq model (seq.ss): a `jolt-lazyseq` is a deferred seq — a 0-arg
 ;; thunk that, when forced once, yields a seq (cseq | nil). coll->cells coerces the

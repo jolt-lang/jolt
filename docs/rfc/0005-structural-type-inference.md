@@ -1,6 +1,6 @@
 # RFC 0005 — Structural collection-type inference
 
-- **Status**: Implemented (jolt-5uj). Ray tracer 12.8s to 11.0s hint-free,
+- **Status**: Implemented. Ray tracer 12.8s to 11.0s hint-free,
   matching the explicit `^:struct` version; render checksum unchanged.
 - **Champions**: jolt maintainers
 - **Created**: 2026-06-13
@@ -14,7 +14,7 @@ function its parameter and return types, recursively. A keyword lookup returns
 the looked-up field's type, so nested access like `(:r (:direction ray))` is
 typed end to end. This unifies the two facts the current inference tracks
 inconsistently (a vector's element type, but not a map's field types), subsumes
-the existing inference phases (jolt-99x Phases 0 to 3) as special cases, and
+the existing inference passes as special cases, and
 closes the remaining ray-tracer gap without a hint. The system is a
 soft-typing-style inference: it never rejects a program, it assigns a concrete
 type only when it can prove one, and it falls back to `:any` (and the existing
@@ -22,7 +22,7 @@ runtime guard) everywhere else.
 
 ## Motivation
 
-The inference added in jolt-99x specializes a collection access (drops the
+The existing inference specializes a collection access (drops the
 `:jolt/type` guard, emits `pv-count`, and so on) when it can prove the
 collection's type. It works, it is sound, and it is fully dynamic-fallback
 safe. But its type lattice grew ad hoc:
@@ -96,7 +96,7 @@ are depth 2 to 3, well inside the cap.
 
 Inference is a forward pass producing `[type node']` for each IR node (the
 existing shape), threaded with a local type environment and the
-inter-procedural state from Phase 1. The rules are uniform over the structural
+inter-procedural state. The rules are uniform over the structural
 type:
 
 - **Literals.** `{:k v ...}` with constant scalar keys and struct-safe values
@@ -115,9 +115,9 @@ type:
   signature: core fns from a fixed signature table (below), user fns from the
   inter-procedural fixpoint's inferred signature.
 
-The Phase 1 inter-procedural fixpoint, recompile, escape gate, and closed-world
-assumption (RFC to follow / jolt-767) are unchanged. They now propagate
-structural types instead of flat tags.
+The inter-procedural fixpoint, recompile, escape gate, and closed-world
+assumption are unchanged. They now propagate structural types instead of flat
+tags.
 
 ## Core function signatures
 
@@ -266,8 +266,8 @@ plus a signature table.
    tables and HOF handling).
 4. The back end keeps reading the use-site type to specialize (guard drop for
    `{:struct}`, `pv-count`/`pv-nth` for `{:vec}`), now uniformly.
-5. Keep the Phase 1 fixpoint, recompile, escape gate, and triggering as is; they
-   propagate structural types.
+5. Keep the inter-procedural fixpoint, recompile, escape gate, and triggering as
+   is; they propagate structural types.
 
 The phases land incrementally behind the same optimization-mode gate, each
 verified against conformance (three modes), the full test gate, and the
@@ -298,5 +298,6 @@ ray-tracer benchmark, exactly as the current phases were.
   param/return inference is enough for the collection-specialization goal;
   full function types matter more for the type-checker (RFC 0006) and could be
   deferred.
-- **Closed-world boundary.** Inherited from Phase 1: param/return inference
-  assumes the compiled unit is the whole program. Documented there; unchanged.
+- **Closed-world boundary.** Inherited from the inter-procedural pass:
+  param/return inference assumes the compiled unit is the whole program.
+  Documented there; unchanged.

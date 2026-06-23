@@ -1,8 +1,9 @@
-;; Transient regression: mutable backing + snapshot-on-persist (jolt-kl2l). Run:
+;; Transient regression: mutable backing + snapshot-on-persist. Run:
 ;;   chez --script test/chez/transient-test.ss
 ;; Semantics are covered broadly by the corpus; this pins the invariants the
-;; mutable port must keep AND that large builds stay linear (a copy-on-write
-;; regression would make the 200k builds quadratic and time the gate out).
+;; mutable implementation must keep AND that large builds stay linear (a
+;; copy-on-write regression would make the 200k builds quadratic and time the
+;; gate out).
 
 (import (chezscheme))
 (load "host/chez/rt.ss")
@@ -31,7 +32,7 @@
 (is "source map unchanged"    "(let [m {:a 1} _ (persistent! (assoc! (transient m) :b 2))] (= m {:a 1}))" "true")
 (is "source vector unchanged" "(let [v [1 2] _ (persistent! (conj! (transient v) 3))] (= v [1 2]))" "true")
 
-;; --- edges the port must keep -----------------------------------------------
+;; --- edges the implementation must keep -------------------------------------
 (is "nil key"            "(get (persistent! (assoc! (transient {}) nil :v)) nil)" ":v")
 (is "collection key"     "(get (persistent! (assoc! (transient {}) [1 2] :v)) [1 2])" ":v")
 (is "dangling key pads"  "(= {:a 1 :b nil} (persistent! (assoc! (transient {}) :a 1 :b)))" "true")

@@ -1,4 +1,4 @@
-;; Phase 1 (jolt-cf1q.2, inc 3b) — the seq tier on the Chez RT.
+;; The seq tier on the Chez RT.
 ;;
 ;; One lazy-capable node (cseq) models Clojure's list, cons, and lazy seq — all
 ;; print as (...), all sequential-= to each other AND to vectors. `jolt-seq`
@@ -21,13 +21,13 @@
 ;; list? : #t when this cell is a PersistentList node (list literal / (list ...)
 ;; / cons / reverse / conj-onto-list) vs a lazy or vector-backed seq cell — the
 ;; only thing that distinguishes a list from any other realized seq on this host,
-;; since one record type backs both (clojure.core/list? — jolt-75sv). The marker
+;; since one record type backs both (clojure.core/list?). The marker
 ;; lives on the cell, so (rest a-list) / (seq a-vector) / (map …) yield plain seq
 ;; cells and are not list?.
 ;; cvec/ci: for a vector-backed seq cell, the backing vector and this cell's
 ;; element index — so it is a real chunked-seq (chunked-seq? true, chunk-first
 ;; hands out a 32-element block, chunk-rest is the seq at the next block) and
-;; reduce iterates the vector directly with no per-element cells (jolt-hs5q).
+;; reduce iterates the vector directly with no per-element cells.
 ;; cvec is #f for every other seq; stored as two fields (not a cons) so a vector
 ;; seq cell costs no extra allocation. The rest of the seq layer ignores them, so
 ;; first/rest/count/printing are unchanged.
@@ -45,7 +45,7 @@
 (define-record-type empty-list-t (fields) (nongenerative empty-list-v1))
 (define jolt-empty-list (make-empty-list-t))
 
-;; reduced (jolt-y6mv): a box a reducing fn returns to stop reduce early. The
+;; reduced: a box a reducing fn returns to stop reduce early. The
 ;; reduce machinery below unwraps it; (deref a-reduced) / unreduced also read it.
 ;; reduced?/reduced are def-var!'d into clojure.core in natives-seq.ss.
 (define-record-type jolt-reduced (fields val) (nongenerative jolt-reduced-v1))
@@ -213,7 +213,7 @@
   (if (if (> step 0.0) (< n end) (> n end))
       (cseq-lazy n (lambda () (range-bounded (+ n step) end step)))
       jolt-nil))
-;; numeric tower (jolt-n6al): exact 0/1 defaults so (range 3) yields exact ints
+;; numeric tower: exact 0/1 defaults so (range 3) yields exact ints
 ;; (= JVM longs); flonum args still produce flonums (Scheme arithmetic preserves).
 (define jolt-range
   (case-lambda

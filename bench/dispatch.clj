@@ -1,7 +1,7 @@
 ;; dispatch — a POLYMORPHIC-DISPATCH stress test. A protocol method is called in
 ;; a hot loop over a heterogeneous (megamorphic) collection of record types, with
 ;; minimal per-call work, so protocol dispatch dominates. This is the regime
-;; jolt-41m (devirtualization) and the inline-cache target, and the one the ray
+;; devirtualization and the inline-cache target, and the one the ray
 ;; tracer can't reveal — its dispatch is monomorphic and a small fraction of the
 ;; float-math cost (devirt measured FLAT there).
 ;;

@@ -1,4 +1,4 @@
-;; natives-array.ss (jolt-cf1q.7) — Java-style mutable arrays for the Chez host.
+;; natives-array.ss — Java-style mutable arrays for the Chez host.
 ;;
 ;; A jolt-array wraps a Chez mutable vector + a `kind` tag (for bytes?). The array
 ;; CONSTRUCTORS are native (they build the backing); the overlay's aget/aset/alength
@@ -24,7 +24,7 @@
       (make-jolt-array (make-vector (exact (na-idx a)) (if (pair? rest) (car rest) init)) kind)
       (na-from-seq a kind)))
 
-;; numeric tower (jolt-n6al): array element defaults / masked bytes / count are
+;; numeric tower: array element defaults / masked bytes / count are
 ;; EXACT integers (= JVM byte/short/int), matching exact integer literals.
 (define (na-byte-of v) (bitwise-and (exact (floor v)) #xff))
 

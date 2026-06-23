@@ -1,10 +1,9 @@
-;; host tables + sorted collections (jolt-cf1q.3, jolt-0zoy) — the jolt.host
-;; value primitives and the 25-sorted tier's runtime.
+;; host tables + sorted collections — the jolt.host value primitives and the
+;; 25-sorted tier's runtime.
 ;;
-;; jolt.host/tagged-table + ref-put! + ref-get resolved to jolt-nil on the Chez
-;; prelude, so the whole sorted tier (sorted-map/sorted-set/subseq/rsubseq) AND
-;; every overlay fn that calls (sorted? x) — empty, ifn?, reversible?, map?, set?,
-;; coll? — hit the apply-jolt-nil crash bucket. This provides:
+;; jolt.host/tagged-table + ref-put! + ref-get back the whole sorted tier
+;; (sorted-map/sorted-set/subseq/rsubseq) AND every overlay fn that calls
+;; (sorted? x) — empty, ifn?, reversible?, map?, set?, coll?. This provides:
 ;;   1. tagged-table / ref-put! / ref-get over a Chez mutable tagged-table type
 ;;      (a string-keyed hashtable wrapped in an `htable` record), def-var!'d into
 ;;      the jolt.host ns. The sorted tier (25-sorted.clj) mints its wrapper with
@@ -28,10 +27,9 @@
   (let ((h (make-hashtable string-hash string=?)))
     (hashtable-set! h "jolt/type" tag)
     (make-htable h)))
-;; ref-put! threads the table back; a nil value REMOVES the key (Janet table
-;; semantics — h-ref-put!). Errors on a non-htable so the atom-watch / volatile
-;; uses (which pass a different ref type and have no Chez table yet) stay a crash
-;; rather than silently diverging.
+;; ref-put! threads the table back; a nil value REMOVES the key. Errors on a
+;; non-htable so the atom-watch / volatile uses (which pass a different ref type
+;; and have no table yet) stay a crash rather than silently diverging.
 (define (jolt-ref-put! t k v)
   (unless (htable? t) (error #f "ref-put!: not a host table" t))
   (if (jolt-nil? v)

@@ -30,7 +30,7 @@ So a name's *home* is determined by two facts:
 `clojure.core` is compiled ahead of time into the checked-in seed
 (`host/chez/seed/{prelude,image}.ss`) as Scheme `def-var!` forms. The seed's
 source twin is the overlay (`jolt-core/clojure/core/*.clj` plus the stdlib
-namespaces under `src/jolt/clojure/`); `host/chez/emit-image.ss` re-emits the
+namespaces under `stdlib/clojure/`); `host/chez/emit-image.ss` re-emits the
 prelude from those sources on Chez. The build is a byte-fixpoint: rebuilding from
 an up-to-date seed reproduces it exactly.
 

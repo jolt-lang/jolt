@@ -3,7 +3,7 @@
 ;; dispatch, no collections in the hot loop — just double arithmetic and tight
 ;; recur loops. This isolates the irreducible-math axis the ray tracer is bound
 ;; on (where devirt/alloc passes measured flat), so it tracks native-arith codegen
-;; (jolt-3pl) and loop quality directly.
+;; and loop quality directly.
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
 ;;   jolt -m mandelbrot 1000     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)

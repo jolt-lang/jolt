@@ -1,9 +1,6 @@
-;; seq-native shims (jolt-y6mv) — native seq fns the overlay assumes are
-;; clojure.core natives but which have no def-var! in the assembled prelude and
-;; resolve to jolt-nil on
-;; Chez. This was the dominant prelude-parity crash bucket ('apply jolt-nil').
-;; Each is a pure fn over the existing seq layer (seq.ss) — collection arities
-;; only; the 1-arg transducer arities are jolt-kxsr. Loaded last (after
+;; seq-native shims — native seq fns the overlay assumes are clojure.core
+;; natives. Each is a pure fn over the existing seq layer (seq.ss) — collection
+;; arities only; the 1-arg transducer arities follow below. Loaded last (after
 ;; converters.ss for jolt-compare and seq.ss for the reduced record).
 
 ;; reduced / reduced? — the box itself is the jolt-reduced record from seq.ss
@@ -14,7 +11,7 @@
 (define (ensure-reduced x) (if (jolt-reduced? x) x (make-jolt-reduced x)))
 
 ;; ============================================================================
-;; transducers (jolt-kxsr) — the 1-arg arity of map/filter/take/... returns a
+;; transducers — the 1-arg arity of map/filter/take/... returns a
 ;; transducer (fn [rf] rf') where rf' is a reducing fn with arities
 ;; []=init, [acc]=complete, [acc x]=step. rf and the mapping/predicate fns are jolt values, so every
 ;; call routes through jolt-invoke. A `reduced` step stops the fold — reduce-seq

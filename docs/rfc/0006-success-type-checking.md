@@ -2,10 +2,10 @@
 
 - **Status**: Implemented. Core-fn error domains (arithmetic on non-numbers,
   count/first/rest/next/seq/nth on non-seqable scalars), `JOLT_TYPE_CHECK=
-  off|warn|error`. Follow-ups landed: bounded scalar **unions** (jolt-pz5) so a
+  off|warn|error`. Follow-ups landed: bounded scalar **unions** so a
   use is reported only when every member is in the error domain; **user-fn
-  error domains** behind `JOLT_TYPE_CHECK_USER` (jolt-zo1, closed-world);
-  precise **file:line:col** locations (jolt-fqy). The checker is now one
+  error domains** behind `JOLT_TYPE_CHECK_USER` (closed-world);
+  precise **file:line:col** locations. The checker is now one
   inference walk (folded into `infer`), and is **on by default in direct-link
   builds** — where it piggybacks on the specialization inference for ~free —
   and opt-in (`JOLT_TYPE_CHECK`) in plain builds.
@@ -203,22 +203,22 @@ smallest high-confidence table (arithmetic and seq/count/nth/first), and grow.
   destroys trust. Mitigation: start tiny, test each entry against the runtime,
   grow slowly. Open question: derive the table from the same machinery the
   runtime uses, to avoid drift?
-- **Unions.** *Resolved (jolt-pz5).* The lattice has a bounded scalar union
+- **Unions.** *Resolved.* The lattice has a bounded scalar union
   `{:union #{T...}}` (cap 4); differing if-branches form a union instead of
   collapsing to `:any`, and a use is reported only when *every* member is in the
   error domain. Unions are opaque to structural specialization, so codegen is
   unchanged.
-- **User-function signatures.** *Resolved (jolt-zo1), opt-in.* Behind
+- **User-function signatures.** *Resolved, opt-in.* Behind
   `JOLT_TYPE_CHECK_USER`: the checker re-checks a registered non-redefinable
   user fn's body with one parameter bound to its concrete argument type; a
   diagnostic the all-`:any` body did not have means that argument is provably
   wrong. Monotonic, so still no false positives; closed-world, hence opt-in.
-- **Negative/never types.** *Resolved (jolt-wwy).* Calling a provably
+- **Negative/never types.** *Resolved.* Calling a provably
   non-callable value (`:num`/`:str` — keywords/maps/vectors/sets are IFn) is
   reported at the default level; wrong-arity to a registered single-fixed-arity
   user fn is reported under the `JOLT_TYPE_CHECK_USER` opt-in. A union callee is
   flagged only when every member is non-callable.
-- **Position vs intent.** *Resolved (jolt-fqy).* The reader records each list
+- **Position vs intent.** *Resolved.* The reader records each list
   form's absolute offset (identity-keyed, so positions survive macroexpansion
   exactly when the user's sub-form is spliced through); the analyzer stamps it
   onto `:invoke` nodes, the checker carries it into each diagnostic, and the

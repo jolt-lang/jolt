@@ -25,7 +25,7 @@
       (throw (str "zero? requires a number, got: " x)))))
 
 ;; pos? checks number? explicitly: this tier is recompiled by the staged pass,
-;; where a bare (> x 0) emits the native janet op that happily orders strings
+;; where a bare (> x 0) emits the native op that happily orders strings
 ;; (the documented native-ops relaxation) — the guard keeps Clojure's throw.
 (def pos?
   (fn* pos? [x]
@@ -111,7 +111,7 @@
 ;; of 00-syntax has loaded, so using them here is fine.
 (defmacro ns [nm & clauses]
   ;; ^{:map} metadata on the ns name reads as a (with-meta sym {...}) form, not an
-  ;; annotated symbol (jolt-8w2). Real libraries put :author/:doc there
+  ;; annotated symbol. Real libraries put :author/:doc there
   ;; (clojure.tools.logging), so unwrap to the bare symbol; jolt does not track
   ;; namespace metadata, so the map is dropped.
   (let [nm (if (and (seq? nm) (= 'with-meta (first nm))) (second nm) nm)
@@ -152,7 +152,7 @@
 
 ;; Forward declaration interns unbound vars (Clojure semantics). The interpreter
 ;; resolves forward refs lazily either way, but the COMPILER classifies globals at
-;; compile time: without the var, a declared name that collides with a Janet root
+;; compile time: without the var, a declared name that collides with a host root
 ;; binding (parse, hash, …) would compile to the host fn instead of the var.
 (defmacro declare [& syms]
   `(do ~@(map (fn* [s] `(def ~s)) syms)))
@@ -309,8 +309,8 @@
              (if (seq ps)
                (if (symbol? (first ps))
                  (go (next ps) (conj nps (first ps)) lets)
-                 ;; bare (gensym) here is Janet's (a Janet symbol the destructurer
-                 ;; rejects); round-trip through str for a jolt symbol.
+                 ;; a bare (gensym) returns a host symbol the destructurer rejects;
+                 ;; round-trip through str for a jolt symbol.
                  (let [g (symbol (str (gensym)))]
                    (go (next ps) (conj nps g) (conj (conj lets (first ps)) g))))
                [nps lets]))
@@ -348,18 +348,18 @@
         body (if (and (seq body) (map? (first body)) (not (symbol? (first body))))
                (rest body) body)
         ;; ^{:map} metadata on the name reads as a (with-meta sym …) form, not an
-        ;; annotated symbol (jolt-8w2). def attaches the metadata, but fn needs a
+        ;; annotated symbol. def attaches the metadata, but fn needs a
         ;; bare symbol, so unwrap it for the fn name.
         fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))]
-    ;; pass the name through to fn: the compiled fn's janet name carries it,
-    ;; so stack traces read app.deep/level3 instead of a gensym (jolt-2o7.1)
+    ;; pass the name through to fn: the compiled fn's host name carries it,
+    ;; so stack traces read app.deep/level3 instead of a gensym
     `(def ~fn-name (fn ~fn-only-name ~@body))))
 
 ;; Jolt doesn't enforce privacy, so defn- is just defn (matching how Clojure's own
 ;; defn- delegates to defn with :private metadata).
 (defmacro defn- [fn-name & body] `(defn ~fn-name ~@body))
 
-;; A fresh jolt symbol inside a macro body (a bare (gensym) returns a Janet symbol
+;; A fresh jolt symbol inside a macro body (a bare (gensym) returns a host symbol
 ;; the destructurer rejects). This defn compiles fine: by the time a tier triggers
 ;; the analyzer build the kernel is in place (the build is gated until then).
 (defn- fresh-sym [] (symbol (str (gensym))))
@@ -422,9 +422,9 @@
 ;; Per binding group: :when wraps the inner form in (if test (list inner) []) so
 ;; mapcat drops it when false; :let wraps it in a let*; :while wraps the coll in
 ;; take-while. The last group with no modifiers is a plain map (no flatten needed).
-;; Faithful port of the prior Janet macro (single body expr). The body uses only
-;; kernel/seed fns so it runs at analyzer-build time. `fn` (not fn*) carries the
-;; binding so destructuring forms work.
+;; Single body expr. The body uses only kernel/seed fns so it runs at
+;; analyzer-build time. `fn` (not fn*) carries the binding so destructuring forms
+;; work.
 (defmacro for [bindings body]
   (let [scan (fn scan [bvec i bind coll mods]
                (if (and (< i (count bvec)) (keyword? (nth bvec i)))
@@ -471,9 +471,9 @@
       (build 0 (parse-groups bindings 0 []))
       body)))
 
-;; doseq runs body for side effects across the bindings, returning nil. Same
-;; shortcut as the prior Janet macro: realize a `for` comprehension with count
-;; (for handles :when/:let/:while and multiple bindings).
+;; doseq runs body for side effects across the bindings, returning nil. Realizes
+;; a `for` comprehension with count (for handles :when/:let/:while and multiple
+;; bindings).
 (defmacro doseq [bindings & body]
   `(do (count (for ~bindings (do ~@body nil))) nil))
 
@@ -489,7 +489,7 @@
 ;; lazy-seq / lazy-cat live here (not 30-macros) because the seq/coll tiers use
 ;; them and compile-as-they-load: the macro must be registered before those tiers
 ;; or (lazy-seq …) compiles to a call of the macro-as-function and leaks its
-;; expansion at runtime (jolt-r81). They use only seed fns (make-lazy-seq/
+;; expansion at runtime. They use only seed fns (make-lazy-seq/
 ;; coll->cells/concat) + map, all available from the start.
 ;; lazy-seq defers its body: make-lazy-seq holds a thunk that realizes the body
 ;; to cells when forced. lazy-cat wraps each coll in a lazy-seq and concats.

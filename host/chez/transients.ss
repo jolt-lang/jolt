@@ -1,13 +1,12 @@
-;; transients (jolt-kl2l) — mutable backing per collection kind, snapshotted to
-;; the immutable collection on persistent!. A faithful port of the Janet host's
-;; mutable transients: conj!/assoc!/dissoc!/disj!/pop! mutate in place (amortized
-;; O(1)); persistent! converts back to a pvec / pmap / pset once.
+;; transients — mutable backing per collection kind, snapshotted to the immutable
+;; collection on persistent!. conj!/assoc!/dissoc!/disj!/pop! mutate in place
+;; (amortized O(1)); persistent! converts back to a pvec / pmap / pset once.
 ;;
 ;;   vec : a growable Scheme vector (capacity) + a fill count `n`. conj!/pop! are
 ;;         O(1) amortized — the old copy-on-write rebuilt the whole vector per op,
 ;;         so building an N-vector was O(N^2).
 ;;   map : a Chez hashtable keyed by key-hash / jolt= (value-equality, nil-safe —
-;;         a jolt-nil key stores fine here, unlike a Janet table).
+;;         a jolt-nil key stores fine here).
 ;;   set : a Chez hashtable of elements.
 ;;   cow : fallback for anything else (e.g. a sorted coll) — copy-on-write over
 ;;         the persistent ops, preserving jolt's superset of Clojure's transients.

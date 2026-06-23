@@ -1,5 +1,4 @@
-;; misc scalar natives (jolt-cf1q.3) — UUID, format/printf, tagged-literal,
-;; bigint. Seed natives that were jolt-nil on the prelude.
+;; misc scalar natives — UUID, format/printf, tagged-literal, bigint.
 ;;
 ;; Loaded after the printers (pr-str of a uuid is #uuid "…") and converters
 ;; (jolt-str-render-one for %s / str of a uuid).

@@ -1,4 +1,4 @@
-;; emit-image.ss (jolt-cf1q.4 inc8) — the on-Chez compiler-image emitter.
+;; emit-image.ss — the on-Chez compiler-image emitter.
 ;;
 ;; This is the stage2/stage3 half of the self-hosting fixpoint. The
 ;; analyze->emit runs ON CHEZ (jolt-ce-analyze / jolt-ce-emit, loaded from a
@@ -34,7 +34,7 @@
 ;; Each form is analyzed with a fresh ctx — resolution is via the runtime var-table
 ;; + alias tables, not ctx-accumulated state, so this matches the spine's per-form
 ;; analyze. A defmacro emits its expander fn as (def-var! ns name <fn>) +
-;; (mark-macro! ns name) so the on-Chez analyzer can expand it (jolt-r9lm).
+;; (mark-macro! ns name) so the on-Chez analyzer can expand it.
 (define (ei-emit-ns ns-name src)
   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
@@ -82,12 +82,12 @@
   (append
     (map (lambda (tf) (cons "clojure.core" (string-append "jolt-core/clojure/core/" tf ".clj")))
          '("00-syntax" "00-kernel" "10-seq" "20-coll" "25-sorted" "30-macros" "40-lazy" "50-io"))
-    (list (cons "clojure.string" "src/jolt/clojure/string.clj")
-          (cons "clojure.walk" "src/jolt/clojure/walk.clj")
-          (cons "clojure.template" "src/jolt/clojure/template.clj")
-          (cons "clojure.edn" "src/jolt/clojure/edn.clj")
-          (cons "clojure.set" "src/jolt/clojure/set.clj")
-          (cons "clojure.pprint" "src/jolt/clojure/pprint.clj"))))
+    (list (cons "clojure.string" "stdlib/clojure/string.clj")
+          (cons "clojure.walk" "stdlib/clojure/walk.clj")
+          (cons "clojure.template" "stdlib/clojure/template.clj")
+          (cons "clojure.edn" "stdlib/clojure/edn.clj")
+          (cons "clojure.set" "stdlib/clojure/set.clj")
+          (cons "clojure.pprint" "stdlib/clojure/pprint.clj"))))
 
 ;; Join a list of form strings with "\n", no trailing newline.
 (define (ei-join forms)

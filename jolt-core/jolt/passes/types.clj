@@ -1,14 +1,14 @@
 (ns jolt.passes.types
-  "Collection-type inference (jolt-99x) and success-type checking (RFC 0006).
+  "Collection-type inference and success-type checking (RFC 0006).
   A forward, soft-typing pass (simplified HM: monovariant, never-fails, lattice
-  top = :any) that types expressions and reuses the SAME walk as a loose success
-  checker. Also the inter-procedural driver API (jolt-767) the back end calls to
+  top = :any) that types expressions and reuses the same walk as a loose success
+  checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares only the const-shape predicate (jolt.passes.fold)."
   (:require [jolt.passes.fold :refer [scalar-const?]]))
 
 ;; ---------------------------------------------------------------------------
-;; Collection-type inference (jolt-99x), Phase 0: intra-procedural. A forward,
+;; Collection-type inference, intra-procedural. A forward,
 ;; soft-typing-style pass (simplified HM: monovariant, never-fails, lattice top
 ;; = :any) that types expressions from literals/arithmetic and flows the type
 ;; through let bindings and if-joins. Where a keyword-lookup subject is PROVEN a
@@ -39,7 +39,7 @@
 (defn- mk-set [t] {:set (if t t :any)})
 (defn- mk-struct [fs] {:struct fs})
 
-;; Bounded union types (RFC 0006 / jolt-pz5). A union {:union #{T...}} records
+;; Bounded union types (RFC 0006). A union {:union #{T...}} records
 ;; that a value is provably one of a small, fixed set of SCALAR types — what
 ;; differing if-branches used to collapse to :any. It exists so the success
 ;; checker can reject a use where EVERY member is in the op's error domain
@@ -86,7 +86,7 @@
     (and (struct-type? a) (struct-type? b))
       (let [merged (mk-struct (merge-fields (sfields a) (sfields b)))]
         ;; joining two values of the SAME complete shape preserves it — the
-        ;; merged struct has the same key set (jolt-t34 R2). Different shapes
+        ;; merged struct has the same key set. Different shapes
         ;; (or an incomplete side) drop it, as the layout is no longer proven.
         (if (and (get a :shape) (= (get a :shape) (get b :shape)))
           (assoc merged :shape (get a :shape))
@@ -94,7 +94,7 @@
     (and (vec-type? a) (vec-type? b)) (mk-vec (join-t (velem a) (velem b)))
     (and (set-type? a) (set-type? b)) (mk-set (join-t (selem a) (selem b)))
     ;; differing kinds: form a scalar union when both sides reduce to scalars
-    ;; (or scalar unions); anything compound on either side stays :any (jolt-pz5)
+    ;; (or scalar unions); anything compound on either side stays :any
     :else (let [ma (cond (union-type? a) (umembers a) (scalar-t? a) #{a} :else nil)
                 mb (cond (union-type? b) (umembers b) (scalar-t? b) #{b} :else nil)]
             (if (and ma mb) (union-of (reduce conj ma mb)) :any))))
@@ -108,25 +108,25 @@
     (struct-type? t)
       ;; capping truncates VALUES below depth d, but the KEY SET is unchanged, so
       ;; a complete :shape survives — keep it so nested/container field reads can
-      ;; still bare-index (jolt-t34 R2). cap recurses into fields, so a nested
+      ;; still bare-index. cap recurses into fields, so a nested
       ;; shaped value (a vec3 inside a hit-info) keeps its own :shape too.
       (let [capped (mk-struct (reduce (fn [m k] (assoc m k (cap (get (sfields t) k) (dec d))))
                                       {} (keys (sfields t))))
             ;; the record :type tag (and :shape) are independent of field-value
             ;; depth, so they survive truncation — a record read from a deep
-            ;; container keeps its identity, so devirtualization (jolt-41m),
-            ;; record? folding, and the record fast path still fire on it.
+            ;; container keeps its identity, so devirtualization, record? folding,
+            ;; and the record fast path still fire on it.
             capped (if (get t :shape) (assoc capped :shape (get t :shape)) capped)
             capped (if (get t :type) (assoc capped :type (get t :type)) capped)]
         capped)
     (vec-type? t) (mk-vec (cap (velem t) (dec d)))
     (set-type? t) (mk-set (cap (selem t) (dec d)))
     :else t))
-;; raw-get-safe (a Janet struct / record): a struct type. The field type of key
+;; raw-get-safe (a struct / record): a struct type. The field type of key
 ;; k, if known, else :any.
 (defn- struct-safe? [t] (struct-type? t))
 (defn- field-type [t k] (if (struct-type? t) (get (sfields t) k :any) :any))
-;; Shape (hidden class, jolt-t34). A struct type built from a map LITERAL carries
+;; Shape (hidden class). A struct type built from a map LITERAL carries
 ;; its complete layout — :shape, the canonical (str-sorted) key vector. The back
 ;; end represents such a map as a shape tuple and reads a field by bare index.
 ;; A struct type from a JOIN or from field-access inference has no :shape
@@ -141,7 +141,7 @@
 ;; a lookup whose SUBJECT is that node — this is what makes nested access work:
 ;; (:direction ray) is tagged struct, so (:r (:direction ray)) drops its guard.
 ;; tag a lookup subject as a struct, carrying the complete shape when known
-;; (so the back end bare-indexes) — jolt-t34
+;; (so the back end bare-indexes).
 (defn- mark-struct [node t]
   (let [n (assoc node :hint :struct)]
     (if (get t :shape) (assoc n :shape (get t :shape)) n)))
@@ -159,7 +159,7 @@
     "bit-and" "bit-or" "bit-xor" "count"})
 (def ^:private vector-ret-fns #{"vec" "vector" "mapv" "filterv" "subvec"})
 
-;; Inter-procedural state (jolt-767, Phase 1). The Janet orchestrator (backend
+;; Inter-procedural state. The orchestrator (backend
 ;; infer-unit!) drives a whole-unit fixpoint: before typing a fn body it installs
 ;; the current return-type estimates of all unit fns here, and after typing it
 ;; reads back the call sites this body made (callee + inferred arg types) to
@@ -168,12 +168,12 @@
 (def ^:private calls-box (atom []))   ;; collected [ "ns/name" [arg-types...] ]
 (def ^:private escapes-box (atom #{})) ;; var-keys used as a VALUE (not a call head)
 (def ^:private diag-box (atom []))    ;; success-type-check diagnostics (RFC 0006)
-;; jolt-d6u: a var reference's VALUE type — a fn var is :truthy (non-nil), a def
+;; a var reference's VALUE type — a fn var is :truthy (non-nil), a def
 ;; var carries its inferred init type (e.g. a color table -> {:vec :struct-map}).
 ;; The orchestrator populates this from sealed (opt-mode) cell roots + def inits.
 (def ^:private vtype-box (atom {}))   ;; "ns/name" -> value type
 
-;; User-function error domains (jolt-zo1), opt-in. As the checker walks defs it
+;; User-function error domains, opt-in. As the checker walks defs it
 ;; registers each non-redefinable single-fixed-arity user fn's {:params :body}
 ;; here, keyed "ns/name". At a later call site (strict mode only) the body is
 ;; re-checked with ONE parameter bound to its concrete argument type — if that
@@ -181,17 +181,17 @@
 ;; provably wrong and the CALL is reported. Module state, like rtenv-box: a def
 ;; must precede its call (the same closed-world ordering RFC 0005 assumes).
 (def ^:private user-sig-box (atom {}))      ;; "ns/name" -> {:params [..] :body ir}
-;; jolt-t34: a record constructor's return shape. "ns/->Name" -> [field-kw ...]
+;; a record constructor's return shape. "ns/->Name" -> [field-kw ...]
 ;; in DECLARED order (the runtime lays records out in declared field order, so
 ;; the back end bare-indexes by that order). A call (->Point a b) types as a
 ;; struct of this shape, so field reads on the result bare-index — declared
 ;; shapes are clean fuel: a lookup, not fragile inference.
 (def ^:private record-shapes-box (atom {}))
-;; jolt-41m: protocol-method registry "ns/method" -> [proto method], for
+;; protocol-method registry "ns/method" -> [proto method], for
 ;; devirtualizing a protocol call whose receiver is a known record type.
 (def ^:private protocol-methods-box (atom {}))
 
-;; jolt-3ko: build a record's struct TYPE from its registry entry, resolving each
+;; build a record's struct TYPE from its registry entry, resolving each
 ;; field's declared type hint. A field tagged with a record type (its ctor-key)
 ;; recurses, so a Vec3 stored in a Ray field reads back as Vec3 — not :any —
 ;; which is what lets nested-record code prove its reads. Depth-bounded so a
@@ -211,7 +211,7 @@
                               (field-type-from-tag (when tags (nth tags i)) (dec depth))))
                      {} (range (count fields)))]
     (assoc (mk-struct fmap) :shape (vec fields) :type (get rs :type))))
-;; jolt-t34: whether to shape generic const-key MAP literals (opt-in, JOLT_SHAPE).
+;; whether to shape generic const-key MAP literals (opt-in, JOLT_SHAPE).
 ;; Records are shaped regardless; maps only when this is on.
 (def ^:private map-shapes-box (atom false))
 (def ^:private checking-box (atom #{}))     ;; keys mid-recheck — cycle guard
@@ -238,10 +238,10 @@
       ;; a user fn whose return type the fixpoint has estimated
       (= op :var) (let [rs (get @record-shapes-box (var-key fnode))]
                     (if rs
-                      ;; record ctor -> struct of declared shape (jolt-t34); :shape
+                      ;; record ctor -> struct of declared shape; :shape
                       ;; is the DECLARED field order the back end indexes by, :type
                       ;; the record tag (devirt), and field types come from the
-                      ;; declared hints so nested records stay typed (jolt-3ko)
+                      ;; declared hints so nested records stay typed
                       (record-type-from-entry rs type-depth)
                       (let [r (get @rtenv-box (var-key fnode))]
                         (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
@@ -255,7 +255,7 @@
                            :else :any))
       :else :any)))
 
-;; Predicate folding (jolt-wcw): a type predicate whose argument's type is
+;; Predicate folding: a type predicate whose argument's type is
 ;; PROVEN folds to a compile-time boolean. Only the precise tags are folded —
 ;; :num/:str/:kw mean exactly that scalar, and a record carries its defrecord
 ;; :type tag. NOT folded: vector?/set?/map?, because the :vec tag conflates a
@@ -289,8 +289,8 @@
 
 (declare infer)
 
-;; HOFs that apply their fn arg to the ELEMENTS of a collection (jolt-d6u,
-;; Phase 3). :epos is which param of the fn receives an element. reduce is
+;; HOFs that apply their fn arg to the ELEMENTS of a collection. :epos is which
+;; param of the fn receives an element. reduce is
 ;; handled separately (its arity changes the coll position, and its closure
 ;; also takes an accumulator).
 (def ^:private hof-table
@@ -353,7 +353,7 @@
             base (when struct?
                    (cap (mk-struct (reduce (fn [m r] (assoc m (nth r 3) (nth r 2))) {} res)) type-depth))
             ;; a literal is a COMPLETE shape: carry its sorted key vector so the
-            ;; back end can lay it out and bare-index lookups (jolt-t34)
+            ;; back end can lay it out and bare-index lookups
             shp (when (and @map-shapes-box base (struct-type? base)) (shape-order (keys (sfields base))))
             t (if base (if shp (assoc base :shape shp) base) :any)
             node' (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))]
@@ -393,7 +393,7 @@
             args (get node :args)
             n (count args)]
         (cond
-          ;; predicate folding (jolt-wcw): a type predicate over a single,
+          ;; predicate folding: a type predicate over a single,
           ;; side-effect-free argument whose type PROVES the answer becomes a
           ;; boolean constant — eliminating the call, and (once const-fold runs
           ;; after inference) collapsing any `if` it gates. Falls through to the
@@ -427,7 +427,7 @@
                 dr (when (= n 3) (infer (nth args 2) tenv))]
             [(if dr (join ft (nth dr 0)) ft)
              (assoc node :args (if dr [msub (nth kr 1) (nth dr 1)] [msub (nth kr 1)]))])
-          ;; reduce over a typed vector with a fn-literal (jolt-d6u): seed the
+          ;; reduce over a typed vector with a fn-literal: seed the
           ;; closure's accumulator (param 0) to the init type and its element
           ;; (param 1) to the vector's element type, so its body — and any calls
           ;; it makes — see those types.
@@ -471,7 +471,7 @@
                 fnode' (if iscall-var fnode (nth fr 1))
                 ;; the callee's value type: a var's from vtype-box (a fn is
                 ;; :truthy, a def carries its inferred type), else the inferred
-                ;; type of the callee expression (jolt-wwy)
+                ;; type of the callee expression
                 callee-t (if iscall-var (get @vtype-box (var-key fnode)) (nth fr 0))
                 ares (mapv (fn [a] (infer a tenv)) args)]
             (when iscall-var
@@ -482,7 +482,7 @@
             (when @checking?
               (let [ats (mapv (fn [r] (nth r 0)) ares) pos (get node :pos)]
                 (when cn (check-invoke cn args ats pos))
-                ;; calling a provably non-function (jolt-wwy)
+                ;; calling a provably non-function
                 (when (not-callable? callee-t)
                   (swap! diag-box conj
                          {:op :call :type (type-name callee-t) :pos pos
@@ -490,7 +490,7 @@
                 (when (and @strict-box iscall-var)
                   (let [k (var-key fnode) usig (get @user-sig-box k)]
                     (when usig (check-user-call k usig ats pos))))))
-            ;; devirtualization (jolt-41m): a protocol-method call whose receiver
+            ;; devirtualization: a protocol-method call whose receiver
             ;; (arg 0) is a known record type resolves to a direct method call.
             ;; Annotate the node with [type-tag proto method]; the back end looks
             ;; up the impl at emit time and calls it directly, skipping the
@@ -517,7 +517,7 @@
         [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
       (= op :loop)
       ;; conservative + sound: loop bindings join across recur, which we don't
-      ;; track in Phase 0, so they stay :any. Still descend to annotate any
+      ;; track here, so they stay :any. Still descend to annotate any
       ;; known-type lookups inside the body.
       [:any (assoc node
                    :bindings (mapv (fn [b] [(nth b 0) (nth (infer (nth b 1) tenv) 1)]) (get node :bindings))
@@ -531,7 +531,7 @@
       ;; (:phints, name -> ctor-key) — then seed it to that record type so field
       ;; reads off it bare-index per-form, not only under whole-program. This is
       ;; what makes a protocol method's `this` (hinted by defrecord/extend-type)
-      ;; read its fields without the runtime tag guard (jolt-3ko).
+      ;; read its fields without the runtime tag guard.
       [:any (assoc node :arities
                    (mapv (fn [a]
                            (let [phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
@@ -565,7 +565,7 @@
 ;; cases; lenient ops ((get 5 :k) -> nil, (:k 5) -> nil) are NOT listed.
 
 ;; concrete non-numbers: arithmetic provably throws on these. A union is in the
-;; error domain only when EVERY member is (jolt-pz5) — if any member is an
+;; error domain only when EVERY member is — if any member is an
 ;; accepted type the call is accepted (no false positive).
 (defn- not-number? [t]
   (if (union-type? t)
@@ -581,7 +581,7 @@
     (every? not-seqable? (umembers t))
     (or (= t :num) (= t :kw))))
 
-;; concrete non-callable values (jolt-wwy): calling them throws "Cannot call X
+;; concrete non-callable values: calling them throws "Cannot call X
 ;; as a function". Only :num and :str — keywords/maps/vectors/sets are IFn,
 ;; :truthy/:any/:nil are ambiguous (accepted). A union is non-callable only when
 ;; every member is.
@@ -615,7 +615,7 @@
 (defn- check-invoke
   "If node is a core-op call whose argument type is provably in the error domain,
   conj a diagnostic. arg-types is the vector of inferred argument types; pos is
-  the call form's source offset (jolt-fqy), carried into each diagnostic."
+  the call form's source offset, carried into each diagnostic."
   [cn args arg-types pos]
   (cond
     (contains? num-ops cn)
@@ -638,7 +638,7 @@
                           ", but argument 1 is " (type-name t))})))
     :else nil))
 
-;; --- user-function error domains (jolt-zo1), opt-in --------------------------
+;; --- user-function error domains, opt-in -------------------------------------
 (defn- all-any-env
   "tenv binding every param name to :any (the all-ambiguous baseline)."
   [params]
@@ -677,7 +677,7 @@
 (defn- check-user-call
   "Strict mode: report a call to a registered user fn that provably throws —
   either a WRONG ARITY (the registered fn has one fixed arity, so a different
-  arg count always throws, jolt-wwy) or an argument whose concrete type the body
+  arg count always throws) or an argument whose concrete type the body
   rejects. For the latter, re-check the body with ONLY that parameter bound to
   its arg type (others :any); a diagnostic the all-:any body did not already
   have means the argument alone is provably wrong. Monotonic — binding a
@@ -715,13 +715,13 @@
               nil (range npar)))))
       (reset! checking-box prev))))
 
-;; --- Inter-procedural driver API (jolt-767) consumed by the back end --------
+;; --- Inter-procedural driver API consumed by the back end -------------------
 (defn set-rtenv!
   "Install the current return-type estimates (a map \"ns/name\" -> type) used to
   type call results during the fixpoint."
   [m] (reset! rtenv-box m))
 
-;; jolt-t34: install record-ctor shapes ("ns/->Name" -> [field-kw ...]) and the
+;; install record-ctor shapes ("ns/->Name" -> [field-kw ...]) and the
 ;; map-shaping flag (opt-in JOLT_SHAPE), both read by infer.
 (defn set-record-shapes! [m] (reset! record-shapes-box (or m {})))
 (defn set-protocol-methods! [m] (reset! protocol-methods-box (or m {})))
@@ -729,7 +729,7 @@
 
 (defn set-vtypes!
   "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy
-  (non-nil), def vars carry their inferred init type (jolt-d6u)."
+  (non-nil), def vars carry their inferred init type."
   [m] (reset! vtype-box m))
 
 (defn join-types
@@ -747,7 +747,7 @@
   usable in normal builds (the decoupled checking path).
 
   With strict? true, also reports calls to registered user functions whose
-  concrete argument types provably make the body throw (jolt-zo1, opt-in,
+  concrete argument types provably make the body throw (opt-in,
   closed-world). user-sig-box accumulates registered defs across forms, so a
   def must precede its call — the same ordering RFC 0005 already assumes."
   ([node] (check-form node false))
@@ -810,7 +810,7 @@
   propagates to a fn's callees DURING inference — not only at the final re-emit
   (reinfer-def). Without it a hinted param with no callers stays :any through the
   fixpoint, so a field read off it (e.g. (:origin ^Ray r)) never tells a shared
-  callee its arg is a Vec3 (jolt-3ko)."
+  callee its arg is a Vec3."
   [params phints]
   (let [m (reduce (fn [acc pr] (assoc acc (nth pr 0) (nth pr 1))) {} phints)]
     (mapv (fn [nm]

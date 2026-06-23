@@ -1,4 +1,4 @@
-;; multimethods (jolt-9ls5) — the multimethod dispatch runtime on the Chez host.
+;; multimethods — the multimethod dispatch runtime on the Chez host.
 ;;
 ;; defmulti/defmethod are macros that expand to ctx-capturing setup CALLS
 ;; (defmulti-setup / defmethod-setup, + the table ops get-method/methods/
@@ -21,7 +21,7 @@
 ;; so they agree with defmulti. Loaded from rt.ss after seq.ss (jolt-invoke),
 ;; collections.ss (jolt=/key-hash/jolt-hash-map) and the var-cell machinery.
 
-;; THREAD-LOCAL (jolt-6rld): a Chez thread-parameter, so each OS thread (an nREPL
+;; THREAD-LOCAL: a Chez thread-parameter, so each OS thread (an nREPL
 ;; session worker / future) has its own current ns — vars stay global, only the
 ;; "current ns" pointer is per-thread, matching Clojure's thread-local *ns*. A new
 ;; thread inherits the forking thread's value. `star-ns-cell` (the *ns* var cell,

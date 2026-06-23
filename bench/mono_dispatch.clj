@@ -1,5 +1,5 @@
 ;; mono-dispatch — protocol dispatch where every call site sees ONE record type
-;; (monomorphic). This is the regime where devirtualization (jolt-41m) and a
+;; (monomorphic). This is the regime where devirtualization and a
 ;; call-site inline cache CAN fire — the megamorphic `dispatch` bench deliberately
 ;; defeats them, so this is its complement: it measures how close a proven/cached
 ;; monomorphic dispatch gets to a direct call. Same per-call work as `dispatch`.

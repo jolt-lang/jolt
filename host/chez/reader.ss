@@ -1,14 +1,12 @@
-;; Chez-side Clojure data reader (jolt-r8ku, inc Y).
+;; Chez-side Clojure data reader.
 ;;
 ;; The data half of runtime read/eval: a recursive-descent reader that parses
-;; ONE Clojure form off a string and produces jolt runtime values
-;; (the analyzer/eval half — eval, load-string,
-;; runtime defmacro — stays Phase-3, it needs the compiler at runtime). Two host
+;; ONE Clojure form off a string and produces jolt runtime values. Two host
 ;; seams hang off it:
 ;;   read-string  : string -> first form (clojure.core seam, src 772)
 ;;   __parse-next : string -> [form rest] | nil  (the *in* family seam, src 801)
 ;; read / read+string / with-in-str / line-seq / clojure.edn are Clojure over
-;; these (jolt-core/clojure/core/50-io.clj, src/jolt/clojure/edn.clj).
+;; these (jolt-core/clojure/core/50-io.clj, stdlib/clojure/edn.clj).
 ;;
 ;; Form shapes:
 ;;   sets     -> {:jolt/type :jolt/set :value [...]}        (a FORM, not a set)
@@ -74,9 +72,6 @@
             ((char=? (string-ref str i) c) i)
             (else (loop (+ i 1)))))))
 
-;; jolt models EVERY number as a double (emit-const lowers integer literals to
-;; flonums too), so the reader coerces every parsed number to inexact — else a
-;; read int (exact) is not jolt= to a source int literal (flonum).
 ;; Numeric tower (JVM parity): integer literals read as exact integers (= Long/
 ;; BigInt, arbitrary precision), a/b ratios as exact rationals (= Ratio), and
 ;; decimal/exponent literals as flonums (= double).
@@ -139,7 +134,7 @@
        (let ((n (string->number (substring body 0 (- blen 1)))))
          (and n (integer? n) (* sign n))))
       ;; bigdecimal suffix M -> a :bigdec form carrying the numeric text; the back
-      ;; end lowers it to a runtime jbigdec (jolt-i2jm).
+      ;; end lowers it to a runtime jbigdec.
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\M))
        (let ((n (string->number (substring body 0 (- blen 1)))))
          (and n (real? n)
@@ -311,7 +306,7 @@
     (else (jolt-list (jolt-symbol #f "with-meta") target meta))))
 
 ;; --- # dispatch -------------------------------------------------------------
-;; #(...) anonymous fn shorthand (jolt-qjr0): % -> p1, %N -> pN, %& -> rest. The
+;; #(...) anonymous fn shorthand: % -> p1, %N -> pN, %& -> rest. The
 ;; fixed arity is the MAX positional used (Clojure: #(do %2 %&) -> [p1 p2 & rest]).
 ;; Param names carry a trailing "#" so a #() inside a syntax-quote still reads them
 ;; as auto-gensyms.
@@ -366,7 +361,7 @@
                                (if rest-sym (list (jolt-symbol #f "&") rest-sym) '()))))
           (values (jolt-list (jolt-symbol #f "fn*") (apply jolt-vector params) body) j))))))
 
-;; reader conditionals (jolt-qjr0): jolt's feature set is {:jolt :clj :default};
+;; reader conditionals: jolt's feature set is {:jolt :clj :default};
 ;; the FIRST clause whose feature key is in the set wins (clause order, like
 ;; Clojure). jolt is a Clojure/JVM-compatible host — it emulates clojure.lang.*
 ;; and java.* interop — so it reads the :clj branch of a .cljc library (the JVM
@@ -537,7 +532,7 @@
           (jolt-vector form (substring s j end))))))
 
 ;; __read-tagged: apply a built-in data reader to an already-read form. The tag
-;; is the :#name keyword the reader produced; #uuid/#inst reuse the inc X ctors.
+;; is the :#name keyword the reader produced; #uuid/#inst reuse the inst-time ctors.
 (define (jolt-read-tagged tag form)
   (cond
     ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string form))

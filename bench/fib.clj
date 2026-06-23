@@ -1,7 +1,7 @@
 ;; fib — naive recursive Fibonacci: pure function-call + integer-arithmetic
 ;; throughput, with no allocation, dispatch, or collections. Isolates call
-;; overhead and native integer arith (jolt-3pl), and is the natural target for
-;; single-call-site / small-fn inlining (jolt-826) and self-call direct-linking.
+;; overhead and native integer arith, and is the natural target for
+;; single-call-site / small-fn inlining and self-call direct-linking.
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
 ;;   jolt -m fib 32     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)

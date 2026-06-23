@@ -3,7 +3,7 @@
 #
 # Each benchmark isolates an axis the ray tracer (float-compute-bound) doesn't
 # capture — see README.md. Run back-to-back against `main` to measure a pass's
-# impact (the same protocol as test/bench/core-bench.janet).
+# impact.
 #
 #   bench/run.sh                 # default sizes, whole-program optimization on
 #   JOLT_WHOLE_PROGRAM=0 bench/run.sh   # compare with WP off
@@ -20,12 +20,12 @@ export JOLT_PATH="$PWD"
 
 # name:default-arg  (arg sized to run in a few seconds each). Axes: allocation
 # (binary-trees), megamorphic vs monomorphic dispatch, persistent-collection
-# churn (collections — now O(log n) via the HAMT, jolt-684u, so sized up), pure
+# churn (collections — now O(log n) via the HAMT, so sized up), pure
 # float compute (mandelbrot), call+arith recursion (fib).
 BENCHES="binary-trees:14 dispatch:2000 mono-dispatch:2000 collections:30000 mandelbrot:200 fib:30"
 
 # JVM=1 also runs each bench on JVM Clojure and prints a jolt/JVM ratio — the
-# holistic absolute-reference scorecard for the optimization epic (jolt-ffn).
+# holistic absolute-reference scorecard for the optimization work.
 run_one() {
   ns="${1%%:*}"; arg="${2:-${1##*:}}"
   jmean=$(jolt -m "$ns" "$arg" 2>&1 | awk '/^mean:/{print $2}')

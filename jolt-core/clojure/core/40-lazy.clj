@@ -105,7 +105,7 @@
 ;; --- partition-all --- (transducer + [n coll] + [n step coll])
 ;; The collection arities realize EXACTLY n per chunk via a first/rest loop and
 ;; continue from the advanced cursor (not a re-drop / nthrest), so they realize
-;; minimally — the §6.3 laziness counters depend on this.
+;; minimally — the laziness counters depend on this.
 ;; (A take/nthrest form is correct but over-realizes.)
 (defn partition-all
   ([n]
@@ -139,7 +139,7 @@
                  (cons (take n s) (go (nthrest s step))))))]
      (go coll))))
 
-;; --- Phase 2 leaf batch 3 (jolt-ded): canonical lazy + transducer arities ----
+;; --- canonical lazy + transducer arities -------------------------------------
 
 (defn interpose
   ([sep]
@@ -176,7 +176,7 @@
      (when-let [s (seq coll)]
        (cons (first s) (take-nth n (drop n s)))))))
 
-;; --- pmap family (jolt-oeu): parallel map over real-thread futures ----------
+;; --- pmap family: parallel map over real-thread futures ----------------------
 ;; Each element's work runs on its own OS thread with SNAPSHOT semantics
 ;; (futures marshal captured state — pure fns only, mutations don't propagate
 ;; back). All futures are spawned up front (doall), then derefed in order:

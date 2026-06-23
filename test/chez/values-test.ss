@@ -1,4 +1,5 @@
-;; Phase 0a tests — Jolt value model on Chez. Run from repo root:
+;; Tests for the Jolt value model on Chez (nil/truthiness, interned keywords,
+;; symbols, exactness-aware =, hashing). Run from repo root:
 ;;   chez --script test/chez/values-test.ss
 (import (chezscheme))
 (load "host/chez/values.ss")

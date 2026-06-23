@@ -1,4 +1,4 @@
-;; png.ss (jolt-90sp) — jolt.png: a minimal PNG writer, the built-in the
+;; png.ss — jolt.png: a minimal PNG writer, the built-in the
 ;; ray-tracer-multi example renders through. Truecolor (8-bit RGB), no
 ;; compression: the IDAT zlib stream uses DEFLATE "stored" (uncompressed) blocks,
 ;; so there is no compressor to carry — just CRC-32 / Adler-32 framing over Chez

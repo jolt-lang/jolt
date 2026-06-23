@@ -1,4 +1,4 @@
-;; vars as first-class objects (jolt-cf1q.3, jolt-n7rz) — (var x) / #'x.
+;; vars as first-class objects — (var x) / #'x.
 ;;
 ;; The emitter lowers :the-var to (jolt-var ns name) — the rt.ss var-cell, which
 ;; is now also a Clojure VAR value. var? / var-get / deref-of-var / var-as-IFn /
@@ -6,8 +6,8 @@
 ;; in post-prelude.ss (the overlay reads (get v :root), nil on a record).
 ;;
 ;; Dynamic binding (binding / with-bindings* / var-set / thread-bound? /
-;; with-redefs) is a separate follow-up — those crash on nil host primitives,
-;; which is safe (a crash stays a crash, not a divergence).
+;; with-redefs) lives in dyn-binding.ss, which chains the var-read paths set up
+;; here.
 ;;
 ;; Loaded LAST (after natives-xform.ss): chains jolt-deref (atom/volatile arms)
 ;; and the printers.

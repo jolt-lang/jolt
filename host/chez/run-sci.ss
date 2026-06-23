@@ -1,6 +1,6 @@
 ;; run-sci.ss — SCI conformance: load borkdude/sci's own source (vendor/sci) through
 ;; joltc and require its forms to compile+eval. A real-world Clojure-compatibility
-;; stress test. Pure Chez, no Janet. Floor-gated like the corpus: a regression below
+;; stress test. Floor-gated like the corpus: a regression below
 ;; the floor (or the count today, 205/218) fails. Raise the floor as host gaps close
 ;; (the tail is genuine gaps — set! on vars, some macro/def shapes).
 ;;
@@ -54,7 +54,7 @@
 (define verbose (and (getenv "SCI_VERBOSE") #t))
 
 ;; stubs first (host shims SCI's source expects)
-(for-each (lambda (f) (load-forms (string-append "src/jolt/clojure/sci/" f) verbose))
+(for-each (lambda (f) (load-forms (string-append "stdlib/clojure/sci/" f) verbose))
           '("lang_stubs.clj" "io_stubs.clj" "host_stubs.clj"))
 
 (define sci-base "vendor/sci/src/sci/")

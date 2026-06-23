@@ -1,8 +1,8 @@
 (ns jolt.analyzer
   "Portable Clojure analyzer: reader form -> host-neutral IR (see jolt.ir).
 
-  Pure jolt-core — depends only on the host contract (jolt.host) and IR
-  constructors (jolt.ir), never on Janet. The contract fns are referred unqualified
+  Depends only on the host contract (jolt.host) and IR
+  constructors (jolt.ir). The contract fns are referred unqualified
   (host form predicates are `form-*` to avoid colliding with clojure.core), so the
   bootstrap can compile this namespace via its plain :var path. ctx is an opaque
   host handle threaded to the contract fns; the analyzer never inspects it.
@@ -50,7 +50,7 @@
 (defn- add-locals [env names] (update env :locals #(reduce conj % names)))
 (defn- with-recur [env name] (assoc env :recur name))
 
-;; Type hints (jolt-94n). The reader keeps ^hint metadata on the binding symbol.
+;; Type hints. The reader keeps ^hint metadata on the binding symbol.
 ;; Two hints resolve to the :struct fast path (a constant-keyword lookup skips
 ;; the :jolt/type guard and emits a bare get): ^:struct (a plain struct/record
 ;; map) and ^TypeName where TypeName is a defrecord/deftype (its instances are
@@ -138,7 +138,7 @@
         ;; param an ordinary positional slot (holding the collected seq), so recur
         ;; is a self-call carrying the rest seq directly — Clojure semantics.
         ;; The recur target doubles as the COMPILED FN'S NAME, which is what a
-        ;; janet stack trace shows — so carry the Clojure ns/fn-name (jolt-2o7.1):
+        ;; host stack trace shows — so carry the Clojure ns/fn-name:
         ;; an error inside app.deep/level3 traces as _r$app.deep/level3--N
         ;; (report-error demangles the _r$/--N wrapper). gen-name's counter
         ;; keeps recur targets unique per compilation unit.
@@ -215,7 +215,7 @@
     ;; the arity :rest key above). Assoc'ing them nil-when-absent would give the
     ;; node a nil-valued key, which makes it a phm in jolt's map representation
     ;; and forces the back end to densify it (norm-node) before reading :op — the
-    ;; map-nil-representation trap Phase 2 cleaned up for def/fn/arity nodes. The
+    ;; map-nil-representation trap, also avoided for def/fn/arity nodes. The
     ;; back end reads each key with a nil-safe (node :k) and gates on it, so an
     ;; absent key is indistinguishable from a present-nil one.
     (let [n {:op :try :body (analyze-seq ctx @body env)}
@@ -282,13 +282,13 @@
               (let [nm (form-sym-name name-sym)
                     cur (compile-ns ctx)
                     ;; (def name docstring value): docstring is form 2, value form 3.
-                    ;; Matches the interpreter; without this the docstring was taken
-                    ;; as the value and the real init dropped (jolt-6ym).
+                    ;; Matches the interpreter; otherwise the docstring is taken as
+                    ;; the value and the real init dropped.
                     has-doc (and (> (count items) 3) (string? (nth items 2)))
                     val-form (nth items (if has-doc 3 2))
                     base0 (or (form-sym-meta name-sym) {})
                     ;; resolve a ^Type hint to its canonical class name at def
-                    ;; time (jolt-a1ir), as the JVM compiler does: ^String ->
+                    ;; time, as the JVM compiler does: ^String ->
                     ;; java.lang.String. A record/unknown hint is left untouched.
                     tag (get base0 :tag)
                     tag-name (cond (form-sym? tag) (form-sym-name tag)
@@ -365,7 +365,7 @@
                :else (uncompilable "set! of an unsupported target")))
     (uncompilable (str "special form " op))))
 
-;; Host interop method call (jolt-0kf5). `(.method target arg*)` — a head that
+;; Host interop method call. `(.method target arg*)` — a head that
 ;; starts with "." but not ".-" (field access stays punted). Analyzes to a
 ;; :host-call node; the Chez back end lowers it to a jolt-host-call dispatch.
 (defn- method-head? [nm]
@@ -391,11 +391,11 @@
 
 ;; `(Class. args*)` and `(new Class args*)` -> a :host-new node carrying the class
 ;; token and the analyzed args. The Chez back end lowers it to a runtime
-;; constructor dispatch (jolt-avt6).
+;; constructor dispatch.
 (defn- analyze-ctor [ctx class args env]
   (host-new class (mapv #(analyze ctx % env) args)))
 
-;; jolt.ffi/__cfn (jolt-ffi): the low-level foreign-function form a jolt library
+;; jolt.ffi/__cfn: the low-level foreign-function form a jolt library
 ;; uses (via the jolt.ffi/foreign-fn macro) to bind native code. Shape:
 ;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype)            ; non-blocking
 ;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype :blocking)  ; may block
@@ -417,8 +417,7 @@
 ;; A symbol member whose name starts with "-" is a field read; otherwise it is a
 ;; method (call with the trailing args). Both lower to a :host-call carrying the
 ;; member name verbatim (the leading "-" survives so the runtime dispatcher reads
-;; it as a field). The Chez back end dispatches it through record-method-dispatch
-;; (jolt-kuic).
+;; it as a field). The Chez back end dispatches it through record-method-dispatch.
 (defn- analyze-dot [ctx items env]
   (when (< (count items) 3)
     (throw (str "Malformed (. target member ...) form")))
@@ -457,15 +456,15 @@
              (var-ref (:ns r) (:name r))
              ;; A non-var qualified ref `Class/member` is a host class static
              ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
-             ;; lowers it to a runtime static dispatch (jolt-avt6).
+             ;; lowers it to a runtime static dispatch.
              (host-static ns nm)))
       :else (let [r (resolve-global ctx form)]
               (case (:kind r)
                 :var (var-ref (:ns r) (:name r))
                 :host (host-ref (:name r))
-                ;; :unresolved — previously emitted a var-ref that auto-interned
-                ;; an UNBOUND var, so a typo'd symbol died later as 'Cannot call
-                ;; nil as a function' with no hint which symbol (jolt-2o7.3).
+                ;; :unresolved — emitting a var-ref here would auto-intern an
+                ;; UNBOUND var, so a typo'd symbol would die later as 'Cannot call
+                ;; nil as a function' with no hint which symbol.
                 ;; Punt to the interpreter: its resolver raises Clojure's
                 ;; 'Unable to resolve symbol' when the form actually runs (at
                 ;; eval for top-level forms, at call for fn bodies). A punt
@@ -524,7 +523,7 @@
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
           :else
-            ;; stamp the list form's source offset onto the :invoke (jolt-fqy)
+            ;; stamp the list form's source offset onto the :invoke
             ;; so the success checker can report file:line:col. nil when the
             ;; reader did not record it (synthetic/macro-built forms).
             (let [n (invoke (analyze ctx head env)

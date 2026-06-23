@@ -1,5 +1,5 @@
-;; dynamic var binding (jolt-2o7x, Phase 2) — binding / with-bindings* / var-set /
-;; thread-bound? / with-local-vars / with-redefs / bound-fn* / get-thread-bindings.
+;; dynamic var binding — binding / with-bindings* / var-set / thread-bound? /
+;; with-local-vars / with-redefs / bound-fn* / get-thread-bindings.
 ;;
 ;; A per-thread dynamic-binding stack: a list of frames, innermost (most recently
 ;; pushed) at the HEAD. Each frame is an alist of (var-cell . value) MUTABLE pairs
@@ -15,8 +15,8 @@
 ;; the stack before falling back to the cell root. Loaded LAST (after vars.ss and
 ;; ns.ss) so it chains the fully-extended jolt-var-get and overrides rt.ss var-deref.
 
-;; THREAD-LOCAL (jolt-byjr): a Chez thread parameter, so each OS thread (a future
-;; / go block) has its own binding stack. Chez initializes a new thread's parameter
+;; THREAD-LOCAL: a Chez thread parameter, so each OS thread (a future / go block)
+;; has its own binding stack. Chez initializes a new thread's parameter
 ;; to the spawning thread's value at fork time, giving Clojure binding conveyance
 ;; for free (the future shim also installs an explicit snapshot, belt-and-suspenders).
 (define dyn-binding-stack (make-thread-parameter '()))
@@ -104,8 +104,8 @@
 ;; jolt-var-get's unbound-error path) so undefined-var reads keep prior behaviour.
 ;; The *ns* var cell — its reads are thread-local: with no thread-binding they
 ;; derive from chez-current-ns (a thread-parameter), so *ns* tracks in-ns per
-;; thread and a (binding [*ns* ..]) drives resolution (jolt-6rld). Captured now
-;; that *ns* is defined (ns.ss loaded earlier); chez-current-ns consults it too.
+;; thread and a (binding [*ns* ..]) drives resolution. Captured now that *ns* is
+;; defined (ns.ss loaded earlier); chez-current-ns consults it too.
 (set! star-ns-cell (jolt-var "clojure.core" "*ns*"))
 
 (define %dyn-rt-var-deref var-deref)

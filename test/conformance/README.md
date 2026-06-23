@@ -50,10 +50,10 @@ clojure -M test/conformance/certify.clj test/chez/corpus.edn --edn /tmp/report.e
 
 ## Current state
 
-Of ~2487 vanilla-certifiable rows, **>2410 match reference Clojure exactly**; the
-~70 divergences are all classified (deliberate deltas + 4 tracked bugs). The corpus
-is trustworthy as a spec, with the host-specific deltas made explicit rather than
-hidden.
+Of ~2740 vanilla-certifiable rows, **>2730 match reference Clojure exactly**; the
+handful of divergences are all classified (deliberate deltas plus a few tracked
+bugs). The corpus is trustworthy as a spec, with the host-specific deltas made
+explicit rather than hidden.
 
 ## Adding / changing cases
 

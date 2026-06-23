@@ -1,20 +1,16 @@
-;; post-prelude overrides (jolt-9ziu) — loaded AFTER the assembled clojure.core
+;; post-prelude overrides — loaded AFTER the assembled clojure.core
 ;; prelude, so these win over the overlay's own def-var!.
 ;;
 ;; A few clojure.core predicates are implemented in the overlay by inspecting a
-;; Janet-host tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key
-;; doesn't exist for Chez-native representations: a jolt char is a Scheme char,
-;; an atom is a Chez record. The overlay's def-var! loads after rt.ss, so it
-;; clobbers the correct native shims (predicates.ss / atoms.ss) with versions
-;; that return false on every Chez value. Re-assert the native versions here.
-;;
-;; (Long-term these predicates want a host-neutral implementation that calls a
-;; host primitive instead of reading :jolt/type; until then this is the Chez-host
-;; override.)
+;; tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key doesn't
+;; exist for native representations: a jolt char is a Scheme char, an atom is a
+;; Chez record. The overlay's def-var! loads after rt.ss, so it clobbers the
+;; correct native shims (predicates.ss / atoms.ss) with versions that return
+;; false on every Chez value. Re-assert the native versions here.
 (def-var! "clojure.core" "char?" jolt-char-pred?)
 (def-var! "clojure.core" "atom?" jolt-atom?)
 ;; atom watches/validators: the overlay drives these via jolt.host/ref-put! on a
-;; Janet table (get a :watches), which a Chez atom record is not — re-assert the
+;; tagged table (get a :watches), which a Chez atom record is not — re-assert the
 ;; native versions (defined in atoms.ss), and swap!/reset! notify+validate there.
 (def-var! "clojure.core" "add-watch" jolt-add-watch)
 (def-var! "clojure.core" "remove-watch" jolt-remove-watch)
@@ -30,7 +26,7 @@
 ;; would wrongly report every var unbound. Native version (defined in vars.ss).
 (def-var! "clojure.core" "bound?" jolt-bound?)
 ;; uuid?/random-uuid/parse-uuid/tagged-literal? are overlay (read :jolt/type or
-;; build tagged tables) — re-assert the native versions (defined in natives-misc.ss).
+;; build tagged tables) — re-assert the native versions (natives-misc.ss).
 (def-var! "clojure.core" "uuid?" jolt-uuid-pred?)
 (def-var! "clojure.core" "random-uuid" jolt-random-uuid)
 (def-var! "clojure.core" "parse-uuid" jolt-parse-uuid)
@@ -38,10 +34,10 @@
 ;; ns-name: the overlay reads (get ns :name) — nil on a jns namespace record.
 ;; Native version (defined in ns.ss) returns the namespace's name symbol.
 (def-var! "clojure.core" "ns-name" jolt-ns-name)
-;; concurrency (jolt-byjr): the overlay's future-done?/future-cancelled?/realized?
-;; read a Janet future-map's :cached/:cancelled keys, and promise/deliver are a
-;; non-blocking atom shim. A Chez future/promise is a record, and we want JVM
-;; (blocking, shared-heap) semantics — re-assert the native versions. realized?
+;; concurrency: the overlay's future-done?/future-cancelled?/realized? read a
+;; future-map's :cached/:cancelled keys, and promise/deliver are a non-blocking
+;; atom shim. A Chez future/promise is a record, and we want JVM (blocking,
+;; shared-heap) semantics — re-assert the native versions. realized?
 ;; wraps the overlay (which still handles delay/lazy-seq/atom) for non-futures.
 (def-var! "clojure.core" "future-done?" jolt-native-future-done?)
 (def-var! "clojure.core" "future-cancelled?" jolt-native-future-cancelled?)
@@ -68,8 +64,8 @@
         ;; realized? reads :jolt/type and throws on a jolt-lazyseq record.
         ((jolt-lazyseq? x) (jolt-lazyseq-realized? x))
         (else (jolt-invoke overlay-realized? x))))))
-;; clojure.edn/read over a reader: the overlay edn.clj drain-reader uses janet/type;
-;; the native Chez version (io.ss) drains the jhost reader instead (jolt-uicd/jolt-7t3l).
+;; clojure.edn/read over a reader: the overlay edn.clj drain-reader reads
+;; :jolt/type; the native version (io.ss) drains the jhost reader instead.
 (def-var! "clojure.edn" "read"
   (case-lambda
     ((reader) (chez-edn-read reader))
@@ -80,7 +76,7 @@
   (def-var! "clojure.core" "line-seq"
     (lambda (rdr)
       (if (reader-jhost? rdr) (chez-line-seq rdr) (jolt-invoke overlay-line-seq rdr)))))
-;; JVM-parity numeric tower (jolt-n6al): the overlay (20-coll.clj) carries an
+;; JVM-parity numeric tower: the overlay (20-coll.clj) carries an
 ;; all-flonum number-predicate web with no Ratio concept (ratio? -> false,
 ;; double? -> not-integer, float? -> double?, rational? -> int?), which
 ;; misclassifies exact rationals on the Chez tower (e.g. (double? 1/2) -> true).
@@ -95,11 +91,11 @@
 (def-var! "clojure.core" "decimal?" jolt-decimal?)
 (def-var! "clojure.core" "==" jolt-num-equiv)
 ;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
-;; always-false stub loaded over the host fn, so re-assert it (jolt-hs5q).
+;; always-false stub loaded over the host fn, so re-assert it.
 (def-var! "clojure.core" "chunked-seq?" na-chunked-seq?)
 ;; record? is a host type check (jrec?), not the overlay's (some? (get x
 ;; :jolt/deftype)) — the get-trick invokes a sorted-map's comparator on
-;; :jolt/deftype and throws (jolt-3bbj). Matches the JVM (instance? IRecord).
+;; :jolt/deftype and throws. Matches the JVM (instance? IRecord).
 (def-var! "clojure.core" "record?" (lambda (x) (jrec? x)))
 
 ;; read / read+string over a HOST reader jhost (java.io StringReader/PushbackReader):
