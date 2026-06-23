@@ -94,6 +94,7 @@
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
+        (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
         (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")
         (cons "jolt.passes" "jolt-core/jolt/passes.clj")))
 
