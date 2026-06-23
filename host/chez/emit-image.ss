@@ -103,7 +103,7 @@
 (define ei-prelude-ns-files
   (append
     (map (lambda (tf) (cons "clojure.core" (string-append "jolt-core/clojure/core/" tf ".clj")))
-         '("00-syntax" "00-kernel" "10-seq" "20-coll" "25-sorted" "30-macros" "40-lazy" "50-io"))
+         '("00-syntax" "00-kernel" "10-seq" "20-coll" "21-coll" "22-coll" "25-sorted" "30-macros" "40-lazy" "50-io"))
     (list (cons "clojure.string" "stdlib/clojure/string.clj")
           (cons "clojure.walk" "stdlib/clojure/walk.clj")
           (cons "clojure.template" "stdlib/clojure/template.clj")
