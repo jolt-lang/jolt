@@ -35,7 +35,27 @@
 ;; + alias tables, not ctx-accumulated state, so this matches the spine's per-form
 ;; analyze. A defmacro emits its expander fn as (def-var! ns name <fn>) +
 ;; (mark-macro! ns name) so the on-Chez analyzer can expand it.
-(define (ei-emit-ns ns-name src)
+;; Analyze -> (optionally run passes) -> emit one form. optimize? runs
+;; jolt.passes/run-passes (build optimizes; the seed minter stays un-optimized so
+;; the self-host fixpoint is independent of the passes).
+(define (ei-compile-form ctx f optimize?)
+  (let ((ir (jolt-ce-analyze ctx f)))
+    (jolt-ce-emit (if optimize? (jolt-ce-run-passes ir ctx) ir))))
+
+;; The emitted `(def-var! …)(mark-macro! …)` pair for a defmacro, guard-wrapped
+;; (tolerant) or bare (strict) to match guard?.
+(define (ei-macro-string ns-name nm scm guard?)
+  (if guard?
+      (string-append "(guard (e (#t #f))\n  (def-var! " (ei-str-lit ns-name) " " (ei-str-lit nm)
+                     "\n    " scm ")\n  (mark-macro! " (ei-str-lit ns-name) " " (ei-str-lit nm) "))")
+      (string-append "(def-var! " (ei-str-lit ns-name) " " (ei-str-lit nm) "\n  " scm
+                     ")\n(mark-macro! " (ei-str-lit ns-name) " " (ei-str-lit nm) ")")))
+
+;; Cross-compile one namespace's source to a list of Scheme strings — shared by
+;; the seed minter (ei-emit-ns: optimize? #f, guard? #t — tolerant, skips a form
+;; that fails to emit) and `jolt build` (bld-emit-ns: optimize? #t, guard? #f —
+;; strict, a failing form errors the build).
+(define (ei-emit-ns* ns-name src optimize? guard?)
   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
         (reverse acc)
@@ -45,25 +65,21 @@
             ((ei-ns-form? f) (loop (cdr forms) acc))
             ((ce-macro-form? f)
              (let-values (((nm fn-form) (ce-defmacro->fn f)))
-               (let ((scm (guard (e (#t #f))
-                            (let ((ctx (make-analyze-ctx ns-name)))
-                              (jolt-ce-emit (jolt-ce-analyze ctx fn-form))))))
+               (let ((scm (if guard?
+                              (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns-name) fn-form optimize?))
+                              (ei-compile-form (make-analyze-ctx ns-name) fn-form optimize?))))
                  (loop (cdr forms)
-                       (if scm
-                           (cons (string-append
-                                   "(guard (e (#t #f))\n  (def-var! "
-                                   (ei-str-lit ns-name) " " (ei-str-lit nm) "\n    "
-                                   scm ")\n  (mark-macro! "
-                                   (ei-str-lit ns-name) " " (ei-str-lit nm) "))")
-                                 acc)
-                           acc)))))
+                       (if (and guard? (not scm)) acc
+                           (cons (ei-macro-string ns-name nm scm guard?) acc))))))
             (else
-             (let* ((ctx (make-analyze-ctx ns-name))
-                    (scm (guard (e (#t #f)) (jolt-ce-emit (jolt-ce-analyze ctx f)))))
+             (let ((scm (if guard?
+                            (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns-name) f optimize?))
+                            (ei-compile-form (make-analyze-ctx ns-name) f optimize?))))
                (loop (cdr forms)
-                     (if scm
-                         (cons (string-append "(guard (e (#t #f))\n  " scm ")") acc)
-                         acc)))))))))
+                     (if (and guard? (not scm)) acc
+                         (cons (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm) acc))))))))))
+
+(define (ei-emit-ns ns-name src) (ei-emit-ns* ns-name src #f #t))
 
 ;; Scheme string literal for a ns/name — uses the runtime's own writer
 ;; (printable ASCII identifiers only here).

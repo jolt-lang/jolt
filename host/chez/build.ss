@@ -141,31 +141,10 @@
   (for-each (lambda (l) (bld-inline-line l out 0)) bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
-;; Re-emit one app namespace to a list of Scheme strings. Like emit-image's
-;; ei-emit-ns but WITHOUT the silent (guard ...) wrapper — a form that fails to
-;; emit must fail the build, not vanish.
-(define (bld-emit-ns ns-name src)
-  (let loop ((forms (ei-read-all src)) (acc '()))
-    (if (null? forms)
-        (reverse acc)
-        (let ((f (car forms)))
-          (ce-scan-requires! f ns-name)
-          (cond
-            ((ei-ns-form? f) (loop (cdr forms) acc))
-            ((ce-macro-form? f)
-             (let-values (((nm fn-form) (ce-defmacro->fn f)))
-               (let ((scm (let ((ctx (make-analyze-ctx ns-name)))
-                            (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx fn-form) ctx)))))
-                 (loop (cdr forms)
-                       (cons (string-append
-                               "(def-var! " (ei-str-lit ns-name) " " (ei-str-lit nm) "\n  "
-                               scm ")\n(mark-macro! "
-                               (ei-str-lit ns-name) " " (ei-str-lit nm) ")")
-                             acc)))))
-            (else
-             (let* ((ctx (make-analyze-ctx ns-name))
-                    (scm (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))))
-               (loop (cdr forms) (cons scm acc)))))))))
+;; Re-emit one app namespace to a list of Scheme strings: optimize (run-passes)
+;; and stay strict — a form that fails to emit must fail the build, not vanish.
+;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
+(define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
 ;; --- the build --------------------------------------------------------------
 ;; entry-ns: the app's main namespace (a string). out-path: the binary to write.
