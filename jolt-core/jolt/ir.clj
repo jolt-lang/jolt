@@ -124,3 +124,37 @@
         n)
       ;; :const :local :var :host :host-static :the-var :quote — no child nodes
       :else node)))
+
+;; The read-only companion to map-ir-children: fold f over node's child IR nodes,
+;; left to right, threading acc — same single-sourced child layout, so a read-only
+;; analysis (size/closedness/purity) built on it is TOTAL over the op set (an
+;; unknown op, or a leaf, folds over no children and returns acc unchanged). Skips
+;; the same non-node positions map-ir-children does (binding NAMES, fn :params/
+;; :rest, :op/:ns/:name/:val). f is (acc child) -> acc.
+(defn reduce-ir-children [f acc node]
+  (let [op (get node :op)]
+    (cond
+      (= op :if) (f (f (f acc (get node :test)) (get node :then)) (get node :else))
+      (= op :do) (f (reduce f acc (get node :statements)) (get node :ret))
+      (= op :throw) (f acc (get node :expr))
+      (= op :set-var) (f acc (get node :val))
+      (= op :set-field) (f (f acc (get node :obj)) (get node :val))
+      (= op :defmacro) (f acc (get node :fn))
+      (= op :invoke) (reduce f (f acc (get node :fn)) (get node :args))
+      (= op :vector) (reduce f acc (get node :items))
+      (= op :set) (reduce f acc (get node :items))
+      (= op :map) (reduce (fn [a pr] (f (f a (nth pr 0)) (nth pr 1))) acc (get node :pairs))
+      (= op :let) (f (reduce (fn [a b] (f a (nth b 1))) acc (get node :bindings)) (get node :body))
+      (= op :loop) (f (reduce (fn [a b] (f a (nth b 1))) acc (get node :bindings)) (get node :body))
+      (= op :recur) (reduce f acc (get node :args))
+      (= op :fn) (reduce (fn [a ar] (f a (get ar :body))) acc (get node :arities))
+      (= op :def) (if (get node :init) (f acc (get node :init)) acc)
+      (= op :host-call) (reduce f (f acc (get node :target)) (get node :args))
+      (= op :host-new) (reduce f acc (get node :args))
+      (= op :try)
+      (let [a (f acc (get node :body))
+            a (if (get node :catch-body) (f a (get node :catch-body)) a)
+            a (if (get node :finally) (f a (get node :finally)) a)]
+        a)
+      ;; leaves and any op with no child nodes
+      :else acc)))
