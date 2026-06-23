@@ -14,18 +14,42 @@ jobs:
         with:
           submodules: recursive   # vendor/irregex, used by the Chez regex shim
 
-      - name: Install Chez Scheme
+      # Build Chez from source rather than the distro package: the apt
+      # chezscheme ships petite+scheme only, with no kernel dev files
+      # (libkernel.a, scheme.h), so `jolt build` (the buildsmoke gate) can't link
+      # a binary and would skip. The source build provides them, plus the libs the
+      # kernel links against.
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y chezscheme
-          # the gate invokes `chez`; Debian/Ubuntu installs it as `scheme`. A symlink
-          # won't do — Chez derives its boot-file name from argv0, so `chez` would look
-          # for a nonexistent chez.boot. A wrapper that exec's `scheme` keeps argv0.
-          if ! command -v chez >/dev/null 2>&1; then
-            printf '#!/bin/sh\nexec scheme "$@"\n' | sudo tee /usr/local/bin/chez >/dev/null
-            sudo chmod +x /usr/local/bin/chez
-          fi
-          chez --version || true
+          sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev libncurses-dev uuid-dev
+
+      - name: Cache Chez Scheme
+        id: cache-chez
+        uses: actions/cache@v4
+        with:
+          path: /opt/chez
+          key: chez-${{ runner.os }}-v10.4.1
+
+      - name: Build Chez Scheme from source
+        if: steps.cache-chez.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
+          cd /tmp/chez-src
+          ./configure --installprefix=/opt/chez --threads
+          make -j"$(nproc)"
+          sudo make install
+          sudo chown -R "$USER" /opt/chez
+
+      - name: Put chez on PATH
+        run: |
+          # Installed as `scheme`; the gate invokes `chez`. A wrapper that execs
+          # scheme keeps argv0 so Chez finds its boot files. Placed next to scheme
+          # so build.ss derives the csv dir (libkernel.a/scheme.h) from it.
+          printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
+          chmod +x /opt/chez/bin/chez
+          echo '/opt/chez/bin' >> "$GITHUB_PATH"
+          /opt/chez/bin/chez --version
 
       - name: Install JDK + Clojure (certify oracle)
         run: |
@@ -35,7 +59,9 @@ jobs:
           clojure --version
 
       - name: Gate
-        # `make ci` runs the behavior gates (corpus/unit/smoke/sci/certify). The
-        # self-host byte-fixpoint (make selfhost) is a dev-machine check — it only
-        # holds on the Chez that minted the seed. See jolt-8479.
+        # `make ci` runs the behavior gates (corpus/unit/smoke/buildsmoke/sci/
+        # certify). buildsmoke now links a real binary (the source-built Chez has
+        # the kernel dev files). The self-host byte-fixpoint (make selfhost) is a
+        # dev-machine check — it only holds on the Chez that minted the seed. See
+        # jolt-8479.
         run: make ci
