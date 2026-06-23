@@ -127,6 +127,14 @@
          {dep-roots :roots dep-natives :natives} (resolve-deps all-deps project-dir)]
      {:roots (vec (distinct (concat project-roots dep-roots)))
       :main-opts main-opts
+      ;; the project's own paths (relative to project-dir) and absolute resource
+      ;; roots, plus its :jolt/build options — `jolt build` uses these to bundle
+      ;; resources into / alongside a standalone binary.
+      :project-dir project-dir
+      :project-paths (vec project-paths)
+      :project-roots (vec project-roots)
+      :build (:jolt/build edn)
+      :embed-dirs (mapv #(abspath project-dir %) (:embed (:jolt/build edn)))
       :tasks (:tasks edn)
       :natives (vec (distinct (concat (:jolt/native edn) dep-natives)))
       ;; nREPL middleware a library contributes (jolt.nrepl composes them over its

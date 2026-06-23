@@ -61,5 +61,29 @@
   (let loop ((i 0)) (when (fx<? i 30000000) (loop (fx+ i 1))))  ; spin so the thread enters usleep
   (ok "blocking ffi call is collect-safe" (guard (e (#t #f)) (collect) #t)))
 
+;; callbacks: receive a call FROM C. A foreign-callable wraps a jolt fn as a
+;; C-callable function pointer (what GTK signal handlers / qsort comparators need).
+;; Build a comparator and sort an int array through libc qsort.
+(ev "(def cmp (jolt.ffi/__ccallable
+                (fn [pa pb]
+                  (let [a (jolt.ffi/read pa :int) b (jolt.ffi/read pb :int)]
+                    (cond (< a b) -1 (> a b) 1 :else 0)))
+                [:pointer :pointer] :int))")
+(ok "foreign-callable returns a pointer"
+    (let ((p (jnum->exact (var-deref "user" "cmp")))) (and (integer? p) (> p 0))))
+(ev "(def c-qsort (jolt.ffi/__cfn \"qsort\" [:pointer :size_t :size_t :pointer] :void))")
+(ok "C calls back into jolt: qsort with a jolt comparator"
+    (jolt-truthy?
+      (ev "(let [n 5 w (jolt.ffi/sizeof :int) p (jolt.ffi/alloc (* n w))]
+             (doseq [[i v] (map vector (range n) [3 1 4 1 5])]
+               (jolt.ffi/write p :int (* i w) v))
+             (c-qsort p n w cmp)
+             (let [out (mapv (fn [i] (jolt.ffi/read p :int (* i w))) (range n))]
+               (jolt.ffi/free p)
+               (= out [1 1 3 4 5])))")))
+;; free-callable unlocks + drops the code object, returning nil.
+(ok "free-callable releases the callback"
+    (jolt-nil? (ev "(jolt.ffi/free-callable cmp)")))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

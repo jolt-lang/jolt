@@ -424,6 +424,28 @@
    :rettype (name (nth items 3))
    :blocking (and (= 5 (count items)) (= "blocking" (name (nth items 4))))})
 
+;; jolt.ffi/__ccallable: the foreign-CALLBACK form (via the jolt.ffi/foreign-callable
+;; macro) — the inverse of __cfn. It wraps a jolt fn as a C-callable function
+;; pointer so C can call back INTO jolt (GTK signal handlers, qsort comparators).
+;; Shape:
+;;   (jolt.ffi/__ccallable f [:argtype ...] :rettype)                ; thread stays active
+;;   (jolt.ffi/__ccallable f [:argtype ...] :rettype :collect-safe)  ; may be invoked
+;;                                                                   ; while the thread is
+;;                                                                   ; parked in a :blocking call
+;; Unlike __cfn, the fn is a CHILD expression (analyzed + walked by the passes);
+;; the types are literal keywords read at compile time. The Chez back end lowers
+;; it to a locked `foreign-callable` and returns its entry-point address (a jolt
+;; pointer). :collect-safe is required when C invokes the callback from a thread
+;; that is deactivated inside a :blocking foreign call (e.g. a GTK main loop).
+(defn- analyze-ffi-callable [ctx items env]
+  (when-not (<= 4 (count items) 5)
+    (throw (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
+  {:op :ffi-callable
+   :fn (analyze ctx (nth items 1) env)
+   :argtypes (mapv name (form-vec-items (nth items 2)))
+   :rettype (name (nth items 3))
+   :collect-safe (and (= 5 (count items)) (= "collect-safe" (name (nth items 4))))})
+
 ;; The `.` special form: `(. target member arg*)` — member access / method call.
 ;; A symbol member whose name starts with "-" is a field read; otherwise it is a
 ;; method (call with the trailing args). Both lower to a :host-call carrying the
@@ -506,6 +528,11 @@
           (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
                (= "__cfn" (form-sym-name head)))
             (analyze-ffi-fn ctx items env)
+          ;; jolt.ffi/__ccallable — the foreign-callback special form (the fn is a
+          ;; child expression, analyzed here).
+          (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
+               (= "__ccallable" (form-sym-name head)))
+            (analyze-ffi-callable ctx items env)
           ;; special-form heads are NOT shadowable (unlike macros): a local named
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.

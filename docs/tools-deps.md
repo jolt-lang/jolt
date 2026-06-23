@@ -56,10 +56,40 @@ roots, and de-sugars the argv into a run:
 - `-A:alias` → add the alias's paths/deps, then run the rest;
 - `repl` → a line REPL;
 - `path` → print the resolved roots;
+- `build -m NS [-o OUT] [--opt|--dev]` → AOT-compile the app into a standalone binary;
 - `<task>` → run a `deps.edn` `:tasks` entry.
 
 The resolver lives in the overlay alongside the runtime, but the runtime's only
 dependency interface is the list of source roots it's handed.
+
+## Native libraries
+
+A library that binds C declares the shared objects it needs under `:jolt/native`,
+so `jolt.main` loads them before the namespace is required and its `foreign-fn`
+bindings resolve. Each entry is a map — `{:name "sqlite3" :darwin
+["libsqlite3.0.dylib" …] :linux ["libsqlite3.so.0" …]}` — with optional
+`:optional true` (absence is fine, a feature-gated dep) and `:process true` (use
+the running process's own symbols, e.g. libc sockets, no external file). A
+project inherits its dependencies' `:jolt/native`.
+
+## Standalone binaries
+
+`joltc build -m NS -o OUT` compiles the app and every library into one
+executable (the runtime + compiler are baked in). It loads the resolved
+`:jolt/native` libs at startup, so an FFI app — sockets, SQLite — runs with no
+jolt or Chez on the path.
+
+`:jolt/build {:embed ["resources" …]}` bakes those directories' files into the
+binary; `io/resource` serves them from the image with no files on disk. Resources
+not embedded resolve at runtime against `JOLT_PWD` (or the cwd), so the
+ship-the-binary-with-its-`resources/`-dir model also works. Files read through
+`io/file` (e.g. a `config.edn` a config library loads) stay external by design —
+edit them without rebuilding.
+
+A standalone build needs Chez's kernel dev files (`libkernel.a`, `scheme.h`) and
+a C compiler; `JOLT_CHEZ_CSV` overrides the auto-detected `csv<ver>/<machine>`
+dir. `--opt` turns on the inference/flatten/scalar-replace passes; the default
+`release` mode is const-fold only.
 
 ## Limitations
 

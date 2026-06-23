@@ -36,9 +36,12 @@ if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" >/dev/null 2>&1; then
 fi
 [ -x "$out" ] || { echo "  FAIL: no executable produced"; exit 1; }
 
-# Run from a neutral cwd with args; check the three output lines.
+# Run from a neutral cwd with args. The first line is an embedded resource
+# (deps.edn :jolt/build :embed), proving io/resource resolves from the binary with
+# no resources/ dir on disk; the rest exercise a macro, cross-ns, and args.
 got="$(cd / && "$out" alpha bb ccc 2>&1)"
-want='HELLO FROM A BUILT BINARY!
+want='embedded resource ok
+HELLO FROM A BUILT BINARY!
 HELLO FROM A BUILT BINARY!
 args: [alpha bb ccc]
 sum: 10'

@@ -116,7 +116,44 @@
     (foreign-set! 'unsigned-8 p n 0)
     p))
 
+;; --- callbacks: receive calls FROM C ----------------------------------------
+;; jolt.ffi/foreign-callable lowers to (jolt-ffi-register-callable! (foreign-callable …)).
+;; A foreign-callable code object must be LOCKED (so the collector neither moves
+;; nor reclaims it) and RETAINED while C may still call through its entry point.
+;; Register it keyed by that entry-point address (a jolt pointer integer) — which
+;; is what the caller hands to C; free-callable unlocks and drops it. A callback
+;; left registered lives for the process (the GTK-signal-handler common case).
+(define ffi-callable-table (make-eqv-hashtable))   ; entry-point addr -> code object
+(define (jolt-ffi-register-callable! co)
+  (lock-object co)
+  (let ((addr (foreign-callable-entry-point co)))
+    (hashtable-set! ffi-callable-table addr co)
+    addr))
+(define (ffi-free-callable addr)
+  (let* ((a (jnum->exact addr)) (co (hashtable-ref ffi-callable-table a #f)))
+    (when co (unlock-object co) (hashtable-delete! ffi-callable-table a))
+    jolt-nil))
+
+;; --- native libraries for a standalone binary -------------------------------
+;; `jolt build` bakes a project's deps.edn :jolt/native declarations into the
+;; launcher, which loads them at startup (load-shared-object isn't part of the
+;; saved heap, so it must run in the built process, not at heap build). process?
+;; loads the running binary's own symbols (libc sockets); otherwise try each
+;; platform candidate in turn and fail unless the spec is optional.
+(define (jolt-build-load-native cands optional? process?)
+  (if process?
+      (begin (load-shared-object #f) #t)
+      (let loop ((cs cands))
+        (cond
+          ((null? cs)
+           (unless optional?
+             (error 'jolt-build "required native library not found" cands))
+           #f)
+          ((guard (e (#t #f)) (load-shared-object (car cs)) #t) #t)
+          (else (loop (cdr cs)))))))
+
 ;; --- expose under jolt.ffi ---------------------------------------------------
+(def-var! "jolt.ffi" "free-callable" ffi-free-callable)
 (def-var! "jolt.ffi" "load-library" ffi-load-library)
 (def-var! "jolt.ffi" "loaded?" (lambda (n) (if (ffi-loaded? n) #t #f)))
 (def-var! "jolt.ffi" "alloc" ffi-alloc)
