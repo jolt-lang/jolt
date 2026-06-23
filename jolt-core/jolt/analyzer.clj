@@ -251,6 +251,65 @@
     {:op :let :letrec true :bindings binds
      :body (analyze-seq ctx (drop 2 items) env*)}))
 
+;; A `.-field` head: `(.-field target)` is field access (the dash signals field
+;; access to the host-call dispatcher). Defined above analyze-special so its set!
+;; arm and analyze-list both reach it without a forward reference.
+(defn- field-head? [nm]
+  (and (> (count nm) 2) (= ".-" (subs nm 0 2))))
+
+(defn- analyze-def [ctx items env]
+  (let [name-sym (nth items 1)]
+    ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
+    ;; runtime expression, so the interpreter evaluates the whole def.
+    (when-not (form-sym? name-sym)
+      (uncompilable "def name with map metadata"))
+    (if (< (count items) 3)
+      ;; (def name) with no init (declare): intern + reserve the cell so a forward
+      ;; reference resolves; the back end keys on :no-init.
+      (let [nm (form-sym-name name-sym) cur (compile-ns ctx)]
+        (host-intern! ctx cur nm)
+        {:op :def :ns cur :name nm :no-init true})
+      ;; (def name docstring value): docstring is form 2, value form 3 — matching
+      ;; the interpreter, else the docstring is taken as the value.
+      (let [nm (form-sym-name name-sym)
+            cur (compile-ns ctx)
+            has-doc (and (> (count items) 3) (string? (nth items 2)))
+            val-form (nth items (if has-doc 3 2))
+            base0 (or (form-sym-meta name-sym) {})
+            ;; resolve a ^Type hint to its canonical class name at def time, as the
+            ;; JVM compiler does (^String -> java.lang.String); unknown hints pass.
+            tag (get base0 :tag)
+            tag-name (cond (form-sym? tag) (form-sym-name tag)
+                           (string? tag) tag
+                           :else nil)
+            base-meta (if tag-name
+                        (let [c (resolve-class-hint tag-name)]
+                          (if c (assoc base0 :tag c) base0))
+                        base0)
+            node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
+        (host-intern! ctx cur nm)
+        (def-node cur nm (analyze ctx val-form env) node-meta)))))
+
+;; (set! (.-field obj) v) mutates a deftype instance field in place; (set! *var* v)
+;; sets the var's innermost thread binding, else its root. A local target (jolt
+;; binds fields immutably) or any other shape is uncompilable.
+(defn- analyze-set! [ctx items env]
+  (let [target (nth items 1)
+        val-node (analyze ctx (nth items 2) env)
+        ti (when (form-list? target) (vec (form-elements target)))
+        thead (when (and ti (pos? (count ti)) (form-sym? (first ti)))
+                (form-sym-name (first ti)))]
+    (cond
+      (and thead (field-head? thead))
+      {:op :set-field :obj (analyze ctx (nth ti 1) env)
+       :field (subs thead 2) :val val-node}
+      (form-sym? target)
+      (do (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
+          (let [r (resolve-global ctx target)]
+            (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
+            {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
+      :else (uncompilable "set! of an unsupported target"))))
+
 (defn- analyze-special [ctx op items env]
   (case op
     "quote" (quote-node (second items))
@@ -265,42 +324,7 @@
                       (const nil))))
     "do" (analyze-seq ctx (rest items) env)
     "throw" (throw-node (analyze ctx (nth items 1) env))
-    "def" (let [name-sym (nth items 1)]
-            ;; ^{:map} metadata reads as (def (with-meta name m) v) — the
-            ;; metadata is a runtime expression, so the interpreter evaluates
-            ;; the whole def (it unwraps the name and merges the meta).
-            (when-not (form-sym? name-sym)
-              (uncompilable "def name with map metadata"))
-            (if (< (count items) 3)
-              ;; (def name) with no init (declare): intern + reserve the cell so a
-              ;; forward reference resolves. The back end keys on :no-init — Chez
-              ;; def-var!s an unbound placeholder; the interpreter interns a
-              ;; genuinely-unbound var.
-              (let [nm (form-sym-name name-sym) cur (compile-ns ctx)]
-                (host-intern! ctx cur nm)
-                {:op :def :ns cur :name nm :no-init true})
-              (let [nm (form-sym-name name-sym)
-                    cur (compile-ns ctx)
-                    ;; (def name docstring value): docstring is form 2, value form 3.
-                    ;; Matches the interpreter; otherwise the docstring is taken as
-                    ;; the value and the real init dropped.
-                    has-doc (and (> (count items) 3) (string? (nth items 2)))
-                    val-form (nth items (if has-doc 3 2))
-                    base0 (or (form-sym-meta name-sym) {})
-                    ;; resolve a ^Type hint to its canonical class name at def
-                    ;; time, as the JVM compiler does: ^String ->
-                    ;; java.lang.String. A record/unknown hint is left untouched.
-                    tag (get base0 :tag)
-                    tag-name (cond (form-sym? tag) (form-sym-name tag)
-                                   (string? tag) tag
-                                   :else nil)
-                    base-meta (if tag-name
-                                (let [c (resolve-class-hint tag-name)]
-                                  (if c (assoc base0 :tag c) base0))
-                                base0)
-                    node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
-                (host-intern! ctx cur nm)
-                (def-node cur nm (analyze ctx val-form env) node-meta))))
+    "def" (analyze-def ctx items env)
     "let*" (let [bvec (vec (form-vec-items (nth items 1)))
                  r (analyze-bindings ctx bvec env)]
              (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))
@@ -345,24 +369,7 @@
                  (host-intern! ctx cur nm)
                  {:op :defmacro :ns cur :name nm
                   :fn (analyze ctx fn-form env)})
-    "set!" (let [target (nth items 1)
-                 val-node (analyze ctx (nth items 2) env)
-                 ti (when (form-list? target) (vec (form-elements target)))
-                 thead (when (and ti (pos? (count ti)) (form-sym? (first ti)))
-                         (form-sym-name (first ti)))]
-             (cond
-               ;; (set! (.-field obj) v): mutate a deftype instance field in place.
-               ;; A deftype method's (set! mutable-field v) lowers to this shape.
-               (and thead (field-head? thead))
-               {:op :set-field :obj (analyze ctx (nth ti 1) env)
-                :field (subs thead 2) :val val-node}
-               ;; (set! *var* v): set the var's innermost binding, else its root.
-               (form-sym? target)
-               (do (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
-                   (let [r (resolve-global ctx target)]
-                     (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
-                     {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
-               :else (uncompilable "set! of an unsupported target")))
+    "set!" (analyze-set! ctx items env)
     (uncompilable (str "special form " op))))
 
 ;; Host interop method call. `(.method target arg*)` — a head that
@@ -432,11 +439,6 @@
       (form-keyword? member)
         (invoke (analyze ctx member env) [(analyze ctx (nth items 1) env)])
       :else (uncompilable "special form . (non-symbol member)"))))
-
-;; A `.-field` head: `(.-field target)` is field access. Lowers to a :host-call
-;; with the "-field" method (the dash signals field access to the dispatcher).
-(defn- field-head? [nm]
-  (and (> (count nm) 2) (= ".-" (subs nm 0 2))))
 
 (defn- analyze-field [ctx hname items env]
   (when (< (count items) 2)
