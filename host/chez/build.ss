@@ -86,8 +86,9 @@
         (string-append
           (if (> (string-length lz4) 0) (string-append "-L" lz4 "/lib ") "")
           "-llz4 -lz -lncurses -framework Foundation -liconv -lm"))
-      ;; Best-effort Linux/other; untested here.
-      "-llz4 -lz -lncurses -ldl -lpthread -lm"))
+      ;; Linux: the Chez kernel pulls in compression (lz4/z), the expression
+      ;; editor (ncurses + terminfo), threads, dlopen, libuuid, and clock_gettime.
+      "-llz4 -lz -lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt"))
 
 ;; --- runtime manifest (mirrors host/chez/cli.ss's load order) ---------------
 (define bld-runtime-manifest

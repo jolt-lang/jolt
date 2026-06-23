@@ -45,6 +45,27 @@ $ bin/joltc -e '(/ 1 2)'
 1/2
 ```
 
+## Compile a binary
+
+`bin/joltc build` ahead-of-time compiles a project into a single self-contained
+executable — the runtime, `clojure.core`, the standard library, the app, and its
+`deps.edn` dependencies are linked in, so the result needs no Chez install, no
+JVM, and no source on disk to run.
+
+```bash
+bin/joltc build -m myapp.core -o myapp   # compile myapp.core's -main into ./myapp
+./myapp arg1 arg2                        # runs anywhere; args reach -main
+```
+
+Modes trade dynamism for speed: the default (release) build uses the proven code
+generator; `--opt` also runs the inference + scalar-replacement passes over the
+closed-world program; `--dev` is unoptimized.
+
+This needs Chez's kernel development files (`libkernel.a`, `scheme.h`) and a C
+compiler. They come with a from-source Chez install; a distro `chezscheme`
+package ships only the runtime, so `build` won't link a binary there.
+RFC 0007 (`docs/rfc/`) covers the design and the three-mode model.
+
 ## Architecture
 
 A small Chez runtime (`host/chez/*.ss`: value model, persistent collections, seqs,
