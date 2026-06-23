@@ -28,6 +28,9 @@
 (define collected-escapes  (var-deref "jolt.passes.types" "collected-escapes"))
 (define set-record-shapes! (var-deref "jolt.passes.types" "set-record-shapes!"))
 (define set-vtypes!        (var-deref "jolt.passes.types" "set-vtypes!"))
+(define set-check-mode!    (var-deref "jolt.passes.types" "set-check-mode!"))
+(define run-inference      (var-deref "jolt.passes.types" "run-inference"))
+(define take-diags!        (var-deref "jolt.passes.types" "take-diags!"))
 
 ;; analyze a source string to its IR node (fresh ctx, ns "user", no passes).
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
@@ -86,6 +89,17 @@
                                 (keyword #f "type")   "user.P")))
 (check "ctor result struct w/ shapes" (diags "(+ (->P 1) 1)" #f) 1)
 (set-record-shapes! (jolt-hash-map))
+
+;; --- the opt-path checker: run-inference emits, take-diags! drains -----------
+;; (set-check-mode! on strict?) arms checking during the next run-inference; the
+;; diagnostics are stashed for take-diags! to drain once.
+(set-check-mode! #t #f)
+(run-inference (anode "(+ 1 :k)"))
+(check "take-diags drains run-inference" (jolt-count (take-diags!)) 1)
+(check "take-diags re-drained empty"     (jolt-count (take-diags!)) 0)
+(set-check-mode! #f #f)
+(run-inference (anode "(+ 1 :k)"))
+(check "no diags when check-mode off"    (jolt-count (take-diags!)) 0)
 
 (if (= fails 0)
     (begin (printf "infer gate: ~a/~a passed\n" total total) (exit 0))
