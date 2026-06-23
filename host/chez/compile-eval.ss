@@ -62,10 +62,6 @@
          (ir (jolt-ce-analyze ctx form)))
     (jolt-ce-emit ir)))
 
-;; Source string -> Scheme source string (read then analyze -> emit, all on Chez).
-(define (jolt-analyze-emit src ns)
-  (jolt-analyze-emit-form (jolt-ce-read src) ns))
-
 ;; --- runtime defmacro -------------------------------------------------------
 ;; Shared with emit-image.ss (loaded after this). A defmacro lowers to a def of
 ;; its expander fn + a macro flag, exactly as the prelude emits build-time macros.

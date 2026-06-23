@@ -206,7 +206,13 @@
                          (if (jolt-reduced? r) (jolt-reduced-val r) r))))
        (else (reduce-seq f init (jolt-seq coll)))))))
 
-(define (jolt-into to from) (reduce-seq (lambda (acc x) (jolt-conj1 acc x)) to (jolt-seq from)))
+;; Fold through a transient so a pvec/pmap/pset target is built in O(n): a
+;; persistent pvec-conj copies its whole backing vector each step, making a naive
+;; fold O(n^2) (and into/vec/mapv/filterv all route here). jolt-transient-new
+;; falls back to a copy-on-write wrapper for other targets (lists, sorted colls,
+;; nil), so those keep the old per-step jolt-conj behaviour.
+(define (jolt-into to from)
+  (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from))))
 
 (define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1)))))
 (define (range-bounded n end step)

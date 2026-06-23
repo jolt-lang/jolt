@@ -55,12 +55,10 @@
   PushbackReader, io/reader results) expose char-wise .read; a raw file
   handle is read whole."
   [reader]
-  (if (= :core/file (janet/type reader))
-    (janet.file/read reader :all)
-    (loop [acc (transient []) c (.read reader)]
-      (if (== -1 c)
-        (apply str (map char (persistent! acc)))
-        (recur (conj! acc c) (.read reader))))))
+  (loop [acc (transient []) c (.read reader)]
+    (if (== -1 c)
+      (apply str (map char (persistent! acc)))
+      (recur (conj! acc c) (.read reader)))))
 
 (defn read
   "Reads one EDN object from reader (a PushbackReader or any jolt reader).

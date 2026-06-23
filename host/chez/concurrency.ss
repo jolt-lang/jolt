@@ -96,7 +96,6 @@
                                 #t)))))
     cancelled))
 
-(define (jolt-future-done?* f) (and (jolt-future? f) (jolt-future-done? f)))
 (define (jolt-native-future-done? x)
   (if (jolt-future? x) (jolt-future-done? x)
       (jolt-throw (jolt-ex-info "future-done? requires a future" (jolt-hash-map)))))
@@ -158,10 +157,23 @@
   (let loop ((o opts) (validator jolt-nil))
     (cond
       ((or (null? o) (null? (cdr o)))
-       (make-jolt-agent state jolt-nil validator '() #f (make-mutex) (make-condition)))
+       (make-jolt-agent state jolt-nil validator (vector '() '()) #f (make-mutex) (make-condition)))
       ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
        (loop (cddr o) (cadr o)))
       (else (loop (cddr o) validator)))))
+
+;; The action queue is an amortized-O(1) FIFO held as a mutable #(out in): `out` is
+;; the front, `in` holds sends reversed onto it (an append-to-a-list send was O(n)).
+;; All three helpers run under the agent mutex.
+(define (jagent-q-empty? a)
+  (let ((q (jolt-agent-queue a))) (and (null? (vector-ref q 0)) (null? (vector-ref q 1)))))
+(define (jagent-q-push! a entry)
+  (let ((q (jolt-agent-queue a))) (vector-set! q 1 (cons entry (vector-ref q 1)))))
+(define (jagent-q-pop! a)
+  (let ((q (jolt-agent-queue a)))
+    (when (null? (vector-ref q 0))
+      (vector-set! q 0 (reverse (vector-ref q 1))) (vector-set! q 1 '()))
+    (let ((out (vector-ref q 0))) (vector-set! q 0 (cdr out)) (car out))))
 
 ;; Drain the queue, applying each action (f state arg*) outside the lock (an action
 ;; may send/deref the same agent). A validator rejection or a thrown action puts the
@@ -169,11 +181,10 @@
 (define (jolt-agent-worker a)
   (let loop ()
     (let ((act (with-mutex (jolt-agent-mu a)
-                 (if (or (not (jolt-nil? (jolt-agent-err a))) (null? (jolt-agent-queue a)))
+                 (if (or (not (jolt-nil? (jolt-agent-err a))) (jagent-q-empty? a))
                      (begin (jolt-agent-running?-set! a #f)
                             (condition-broadcast (jolt-agent-cv a)) #f)
-                     (let ((x (car (jolt-agent-queue a))))
-                       (jolt-agent-queue-set! a (cdr (jolt-agent-queue a))) x)))))
+                     (jagent-q-pop! a)))))
       (when act
         (guard (e (#t (with-mutex (jolt-agent-mu a)
                         (jolt-agent-err-set! a e)
@@ -190,7 +201,7 @@
 ;; the JVM's fixed/cached pool split.)
 (define (jolt-agent-send a f . args)
   (with-mutex (jolt-agent-mu a)
-    (jolt-agent-queue-set! a (append (jolt-agent-queue a) (list (cons f args))))
+    (jagent-q-push! a (cons f args))
     (unless (jolt-agent-running? a)
       (jolt-agent-running?-set! a #t)
       (fork-thread (lambda () (jolt-agent-worker a)))))
@@ -202,7 +213,7 @@
    (lambda (a)
      (with-mutex (jolt-agent-mu a)
        (let loop ()
-         (when (or (jolt-agent-running? a) (pair? (jolt-agent-queue a)))
+         (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
            (condition-wait (jolt-agent-cv a) (jolt-agent-mu a)) (loop)))))
    agents)
   jolt-nil)

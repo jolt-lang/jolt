@@ -20,9 +20,6 @@
 ;; end emits the embedded var cell so `binding`'s thread-binding frame can key on it.
 (defn the-var [ns name] {:op :the-var :ns ns :name name})
 
-;; A runtime primitive (cons, +, get, apply, …) the back end maps to the host RT.
-(defn rt [name] {:op :rt :name name})
-
 ;; A name that resolves only via the host's own environment (e.g. + or int?) —
 ;; the back end emits a host-appropriate reference.
 (defn host-ref [name] {:op :host :name name})
@@ -68,8 +65,6 @@
 
 (defn quote-node [form] {:op :quote :form form})
 (defn throw-node [expr] {:op :throw :expr expr})
-
-(defn op [node] (:op node))
 
 ;; ---------------------------------------------------------------------------
 ;; Structural recursion over IR child nodes.
@@ -127,5 +122,5 @@
             n (if (get node :catch-body) (assoc n :catch-body (f (get node :catch-body))) n)
             n (if (get node :finally) (assoc n :finally (f (get node :finally))) n)]
         n)
-      ;; :const :local :var :host :host-static :the-var :rt :quote — no child nodes
+      ;; :const :local :var :host :host-static :the-var :quote — no child nodes
       :else node)))

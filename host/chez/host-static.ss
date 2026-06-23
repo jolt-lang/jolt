@@ -427,12 +427,41 @@
 (register-class-ctor! "Object" (lambda _ (make-jhost "object" (vector))))
 
 ;; ---- java.util.ArrayList ----------------------------------------------------
-;; A mutable list backed by a Scheme list in a box. medley's stateful transducers
-;; (window / partition-between) build one with .add / .size / .toArray / .clear /
-;; .remove. (ArrayList.) | (ArrayList. n) | (ArrayList. coll).
-(define (al-list self) (vector-ref (jhost-state self) 0))
-(define (al-set! self xs) (vector-set! (jhost-state self) 0 xs))
-(define (make-arraylist xs) (make-jhost "arraylist" (vector xs)))
+;; A mutable list backed by a growable Scheme vector. State is #(backing count);
+;; .add amortizes O(1) and .get is O(1) (a list backing made both O(n)). medley's
+;; stateful transducers (window / partition-between) build one with .add / .size /
+;; .toArray / .clear / .remove. (ArrayList.) | (ArrayList. n) | (ArrayList. coll).
+(define al-min-cap 8)
+(define (al-vec self) (vector-ref (jhost-state self) 0))
+(define (al-cnt self) (vector-ref (jhost-state self) 1))
+(define (al-cnt! self n) (vector-set! (jhost-state self) 1 n))
+(define (make-arraylist xs)               ; xs: a Scheme list of initial elements
+  (let* ((n (length xs)) (cap (fxmax al-min-cap n)) (v (make-vector cap jolt-nil)))
+    (let loop ((i 0) (xs xs)) (when (pair? xs) (vector-set! v i (car xs)) (loop (fx+ i 1) (cdr xs))))
+    (make-jhost "arraylist" (vector v n))))
+(define (al-ensure! self need)            ; grow the backing vector (doubling) to fit `need`
+  (let ((v (al-vec self)))
+    (when (fx>? need (vector-length v))
+      (let grow ((cap (fxmax al-min-cap (vector-length v))))
+        (if (fx<? cap need) (grow (fx* cap 2))
+            (let ((nv (make-vector cap jolt-nil)))
+              (let cp ((i 0)) (when (fx<? i (al-cnt self)) (vector-set! nv i (vector-ref v i)) (cp (fx+ i 1))))
+              (vector-set! (jhost-state self) 0 nv)))))))
+(define (al-push! self x)
+  (let ((n (al-cnt self))) (al-ensure! self (fx+ n 1)) (vector-set! (al-vec self) n x) (al-cnt! self (fx+ n 1))))
+(define (al-insert-at! self i x)
+  (let ((n (al-cnt self)))
+    (al-ensure! self (fx+ n 1))
+    (let ((v (al-vec self)))
+      (let shift ((j n)) (when (fx>? j i) (vector-set! v j (vector-ref v (fx- j 1))) (shift (fx- j 1))))
+      (vector-set! v i x) (al-cnt! self (fx+ n 1)))))
+(define (al-remove-at! self i)
+  (let ((n (al-cnt self)) (v (al-vec self)))
+    (let shift ((j i)) (when (fx<? j (fx- n 1)) (vector-set! v j (vector-ref v (fx+ j 1))) (shift (fx+ j 1))))
+    (vector-set! v (fx- n 1) jolt-nil) (al-cnt! self (fx- n 1))))
+(define (al->list self)                   ; first `count` elements as a Scheme list
+  (let ((v (al-vec self)))
+    (let loop ((i (fx- (al-cnt self) 1)) (acc '())) (if (fx<? i 0) acc (loop (fx- i 1) (cons (vector-ref v i) acc))))))
 (register-class-ctor! "ArrayList"
   (lambda args
     (cond ((null? args) (make-arraylist '()))
@@ -443,34 +472,28 @@
     (cond ((null? args) (make-arraylist '()))
           ((number? (car args)) (make-arraylist '()))
           (else (make-arraylist (seq->list (jolt-seq (car args))))))))
-(define (al-remove-at xs i)
-  (let loop ((xs xs) (i i) (acc '()))
-    (cond ((null? xs) (reverse acc))
-          ((= i 0) (append (reverse acc) (cdr xs)))
-          (else (loop (cdr xs) (- i 1) (cons (car xs) acc))))))
 (register-host-methods! "arraylist"
   (list
     (cons "add" (lambda (self . a)
                   ;; (.add x) -> append+true; (.add i x) -> insert at i, returns nil.
                   (if (= 1 (length a))
-                      (begin (al-set! self (append (al-list self) (list (car a)))) #t)
-                      (let ((i (jnum->exact (car a))) (x (cadr a)) (xs (al-list self)))
-                        (al-set! self (append (list-head xs i) (list x) (list-tail xs i))) jolt-nil))))
-    (cons "add!" (lambda (self x) (al-set! self (append (al-list self) (list x))) #t))
-    (cons "get" (lambda (self i) (list-ref (al-list self) (jnum->exact i))))
+                      (begin (al-push! self (car a)) #t)
+                      (begin (al-insert-at! self (jnum->exact (car a)) (cadr a)) jolt-nil))))
+    (cons "add!" (lambda (self x) (al-push! self x) #t))
+    (cons "get" (lambda (self i) (vector-ref (al-vec self) (jnum->exact i))))
     (cons "set" (lambda (self i x)
-                  (let* ((xs (al-list self)) (idx (jnum->exact i)) (old (list-ref xs idx)))
-                    (al-set! self (append (list-head xs idx) (list x) (list-tail xs (+ idx 1)))) old)))
-    (cons "size" (lambda (self) (->num (length (al-list self)))))
-    (cons "isEmpty" (lambda (self) (null? (al-list self))))
+                  (let* ((idx (jnum->exact i)) (old (vector-ref (al-vec self) idx)))
+                    (vector-set! (al-vec self) idx x) old)))
+    (cons "size" (lambda (self) (->num (al-cnt self))))
+    (cons "isEmpty" (lambda (self) (fx=? 0 (al-cnt self))))
     (cons "remove" (lambda (self i)
-                     (let* ((xs (al-list self)) (idx (jnum->exact i)) (old (list-ref xs idx)))
-                       (al-set! self (al-remove-at xs idx)) old)))
-    (cons "clear" (lambda (self) (al-set! self '()) jolt-nil))
-    (cons "contains" (lambda (self x) (and (memp (lambda (e) (jolt=2 e x)) (al-list self)) #t)))
-    (cons "toArray" (lambda (self . _) (apply jolt-vector (al-list self))))
-    (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al-list self)))))
-    (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al-list self)))))))
+                     (let* ((idx (jnum->exact i)) (old (vector-ref (al-vec self) idx)))
+                       (al-remove-at! self idx) old)))
+    (cons "clear" (lambda (self) (vector-set! (jhost-state self) 0 (make-vector al-min-cap jolt-nil)) (al-cnt! self 0) jolt-nil))
+    (cons "contains" (lambda (self x) (and (memp (lambda (e) (jolt=2 e x)) (al->list self)) #t)))
+    (cons "toArray" (lambda (self . _) (apply jolt-vector (al->list self))))
+    (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al->list self)))))
+    (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al->list self)))))))
 
 (register-class-ctor! "StringBuilder"
   (lambda args (make-jhost "string-builder"
@@ -630,32 +653,6 @@
                            (cons (if (char? ch) (->num (char->integer ch)) ch) (vector-ref (jhost-state self) 1)))
                          jolt-nil))
         (cons "close" (lambda (self) jolt-nil))))
-
-;; ---- HashMap ----------------------------------------------------------------
-;; state: a box holding an alist of (k . v), jolt= keyed.
-(define (hm-alist self) (vector-ref (jhost-state self) 0))
-(define (hm-set! self al) (vector-set! (jhost-state self) 0 al))
-(define (hm-assoc al k v)
-  (let loop ((ps al) (acc '()) (hit #f))
-    (cond ((null? ps) (reverse (if hit acc (cons (cons k v) acc))))
-          ((jolt=2 (caar ps) k) (loop (cdr ps) (cons (cons k v) acc) #t))
-          (else (loop (cdr ps) (cons (car ps) acc) hit)))))
-(define (hm-get al k) (let loop ((ps al)) (cond ((null? ps) jolt-nil) ((jolt=2 (caar ps) k) (cdar ps)) (else (loop (cdr ps))))))
-(define (coll->pairs m)
-  (if (jolt-nil? m) '()
-      (let loop ((s (jolt-seq m)) (acc '()))
-        (if (jolt-nil? s) (reverse acc)
-            (let ((e (seq-first s))) (loop (jolt-seq (seq-more s)) (cons (cons (jolt-nth e 0) (jolt-nth e 1)) acc)))))))
-(register-class-ctor! "HashMap"
-  (lambda args
-    (let ((init (and (pair? args) (car args))))
-      (make-jhost "hashmap" (vector (if (and init (not (number? init))) (coll->pairs init) '()))))))
-(register-host-methods! "hashmap"
-  (list (cons "get" (lambda (self k) (hm-get (hm-alist self) k)))
-        (cons "put" (lambda (self k v) (hm-set! self (hm-assoc (hm-alist self) k v)) v))
-        (cons "putAll" (lambda (self m) (for-each (lambda (p) (hm-set! self (hm-assoc (hm-alist self) (car p) (cdr p)))) (coll->pairs m)) jolt-nil))
-        (cons "containsKey" (lambda (self k) (not (jolt-nil? (hm-get (hm-alist self) k)))))
-        (cons "size" (lambda (self) (->num (length (hm-alist self)))))))
 
 ;; ---- StringTokenizer --------------------------------------------------------
 ;; state: a vector #(tokens-list pos)

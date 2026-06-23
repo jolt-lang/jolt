@@ -261,18 +261,6 @@
 (def-var! "clojure.core" "spit" jolt-spit)
 (def-var! "clojure.core" "flush" jolt-flush)
 
-;; --- char-array: a seq of chars over a string (the JVM char[]). io/reader's
-;; char[] branch + selmer's (char-array template) feed on this.
-;; char-array (string -> chars). A leaf array native; lives here as io/reader
-;; is its only Chez consumer so far.
-(define (jolt-char-array a . rest)
-  (cond
-    ((string? a) (list->cseq (string->list a)))
-    ((number? a) (list->cseq (make-list (exact (truncate a)) #\nul)))
-    (else (list->cseq (map (lambda (c) (if (char? c) c (integer->char (exact (truncate c)))))
-                           (seq->list a))))))
-(def-var! "clojure.core" "char-array" jolt-char-array)
-
 ;; --- with-open's close seam (__close): a map-like value closes via its :close
 ;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
 ;; else is an error.
@@ -323,7 +311,8 @@
 ;; --- clojure.java.io ns -----------------------------------------------------
 (def-var! "clojure.java.io" "file" jolt-make-file)
 (def-var! "clojure.java.io" "as-file" (lambda (x) (if (jfile? x) x (make-jfile (file-path-of x)))))
-(def-var! "clojure.java.io" "reader" jolt-io-reader)
+;; "reader" is bound by natives-array.ss (loaded later) so a char[] argument is
+;; handled; that binding delegates here via jolt-io-reader for everything else.
 (def-var! "clojure.java.io" "writer" jolt-io-writer)
 (def-var! "clojure.java.io" "input-stream" jolt-io-reader)
 (def-var! "clojure.java.io" "output-stream" jolt-io-writer)

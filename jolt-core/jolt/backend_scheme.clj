@@ -210,10 +210,12 @@
        (str/join " " (mapcat (fn [p] [(emit-quoted (nth p 0)) (emit-quoted (nth p 1))]) pairs))
        ")"))
 (defn- emit-quoted-map-value [m]
-  ;; a jolt map VALUE (def/symbol metadata is a value, not a reader form)
-  (str "(jolt-hash-map "
-       (str/join " " (mapcat (fn [k] [(emit-quoted k) (emit-quoted (get m k))]) (keys m)))
-       ")"))
+  ;; A jolt map VALUE (def/symbol metadata is a value, not a reader form). (keys m)
+  ;; iterates in host-hash order, which is not stable across Chez versions, so emit
+  ;; the pairs sorted by their emitted Scheme text — keeps the seed byte-fixed
+  ;; regardless of the host hash (jolt-8479).
+  (let [pairs (sort (map (fn [k] (str (emit-quoted k) " " (emit-quoted (get m k)))) (keys m)))]
+    (str "(jolt-hash-map " (str/join " " pairs) ")")))
 ;; emit-quoted reconstructs both raw reader forms (from :quote) AND plain jolt
 ;; values (def/symbol :meta). Reader forms are walked via the jolt.host form-*
 ;; contract; the native-predicate branches below catch genuine jolt collection
@@ -230,14 +232,16 @@
         (str "(jolt-symbol/meta " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) " "
              (emit-quoted m) ")")
         (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")")))
-    (form-set? form) (str "(jolt-hash-set " (str/join " " (map emit-quoted (form-set-items form))) ")")
+    ;; sort items by emitted text: a set has no source order, and host-hash order
+    ;; is not stable across Chez versions (jolt-8479).
+    (form-set? form) (str "(jolt-hash-set " (str/join " " (sort (map emit-quoted (form-set-items form)))) ")")
     (form-list? form) (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")
     (form-vec? form) (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")")
     (form-map? form) (emit-quoted-map (form-map-pairs form))
     ;; plain jolt VALUES (metadata maps and anything nested in them)
     (map? form) (emit-quoted-map-value form)
     (vector? form) (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")")
-    (set? form) (str "(jolt-hash-set " (str/join " " (map emit-quoted form)) ")")
+    (set? form) (str "(jolt-hash-set " (str/join " " (sort (map emit-quoted form))) ")")
     (seq? form) (str "(jolt-list " (str/join " " (map emit-quoted form)) ")")
     :else (throw (ex-info (str "emit-quoted: unsupported quoted form " (pr-str form)) {}))))
 

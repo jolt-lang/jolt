@@ -21,20 +21,39 @@
 (define (jolt-async-sliding-buffer n)  (make-async-buffer n 'sliding))
 
 ;; --- channels ---------------------------------------------------------------
-;; items: a FIFO list of (value . box); box is #f for a buffered value or a 1-slot
-;; vector for an unbuffered rendezvous put (set #t when taken, waking the putter).
+;; items: an amortized-O(1) FIFO held as a mutable #(out in len) — `out` is the
+;; front (pop from its head), `in` holds pushed entries reversed onto it, `len` is
+;; the count (an append-to-a-list FIFO is O(n) per push and O(n) to measure).
+;; Each entry is (value . box); box is #f for a buffered value or a 1-slot vector
+;; for an unbuffered rendezvous put (set #t when taken, waking the putter).
 ;; cap 0 + kind 'unbuffered = rendezvous; cap>0 with kind fixed/dropping/sliding.
 (define-record-type async-chan
   (fields mu cv (mutable items) cap kind (mutable closed?) (mutable xrf))
   (nongenerative async-chan-v1))
 
-(define (ac-qlen ch) (length (async-chan-items ch)))
-(define (ac-qempty? ch) (null? (async-chan-items ch)))
-(define (ac-qpush! ch entry) (async-chan-items-set! ch (append (async-chan-items ch) (list entry))))
+(define (ac-qnew) (vector '() '() 0))
+(define (ac-qlen ch) (vector-ref (async-chan-items ch) 2))
+(define (ac-qempty? ch) (fx=? 0 (vector-ref (async-chan-items ch) 2)))
+(define (ac-qpush! ch entry)
+  (let ((q (async-chan-items ch)))
+    (vector-set! q 1 (cons entry (vector-ref q 1)))
+    (vector-set! q 2 (fx+ 1 (vector-ref q 2)))))
+(define (ac-qfront! q)                  ; ensure `out` is non-empty: out := reverse in
+  (when (null? (vector-ref q 0))
+    (vector-set! q 0 (reverse (vector-ref q 1)))
+    (vector-set! q 1 '())))
 (define (ac-qpop! ch)
-  (let ((e (car (async-chan-items ch))))
-    (async-chan-items-set! ch (cdr (async-chan-items ch))) e))
-(define (ac-qdrop-oldest! ch) (async-chan-items-set! ch (cdr (async-chan-items ch))))
+  (let ((q (async-chan-items ch)))
+    (ac-qfront! q)
+    (let ((out (vector-ref q 0)))
+      (vector-set! q 0 (cdr out))
+      (vector-set! q 2 (fx- (vector-ref q 2) 1))
+      (car out))))
+(define (ac-qdrop-oldest! ch)
+  (let ((q (async-chan-items ch)))
+    (ac-qfront! q)
+    (vector-set! q 0 (cdr (vector-ref q 0)))
+    (vector-set! q 2 (fx- (vector-ref q 2) 1))))
 
 ;; enqueue honoring the buffer kind (used by the transducer step + buffered puts).
 (define (ac-buf-give! ch v)
@@ -54,7 +73,7 @@
           ((null? (cdr args)) (car args))                     ; completion
           (else (ac-buf-give! ch (cadr args)) (car args)))))  ; step
 
-(define (ac-make cap kind xrf) (make-async-chan (make-mutex) (make-condition) '() cap kind #f xrf))
+(define (ac-make cap kind xrf) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f xrf))
 
 ;; (chan) | (chan n) | (chan buf) | (chan n|buf xform)
 (define (jolt-async-chan . args)
