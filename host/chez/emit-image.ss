@@ -69,11 +69,17 @@
 ;; (printable ASCII identifiers only here).
 (define (ei-str-lit s) (with-output-to-string (lambda () (write s))))
 
-;; The compiler namespaces, in load order.
+;; The compiler namespaces, in load order. The passes (fold/inline/types + the
+;; jolt.passes façade) load after ir so run-passes is available to the back end;
+;; fold/inline/types come before the façade that :refers them.
 (define ei-compiler-ns-files
   (list (cons "jolt.ir" "jolt-core/jolt/ir.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
-        (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
+        (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")
+        (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
+        (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
+        (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")
+        (cons "jolt.passes" "jolt-core/jolt/passes.clj")))
 
 ;; The clojure.core tiers + stdlib namespaces, in load order.
 ;; Re-emitting these on Chez is the

@@ -152,7 +152,7 @@
             ((ce-macro-form? f)
              (let-values (((nm fn-form) (ce-defmacro->fn f)))
                (let ((scm (let ((ctx (make-analyze-ctx ns-name)))
-                            (jolt-ce-emit (jolt-ce-analyze ctx fn-form)))))
+                            (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx fn-form) ctx)))))
                  (loop (cdr forms)
                        (cons (string-append
                                "(def-var! " (ei-str-lit ns-name) " " (ei-str-lit nm) "\n  "
@@ -161,13 +161,14 @@
                              acc)))))
             (else
              (let* ((ctx (make-analyze-ctx ns-name))
-                    (scm (jolt-ce-emit (jolt-ce-analyze ctx f))))
+                    (scm (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))))
                (loop (cdr forms) (cons scm acc)))))))))
 
 ;; --- the build --------------------------------------------------------------
 ;; entry-ns: the app's main namespace (a string). out-path: the binary to write.
-;; mode: "dev" | "release" | "optimized" (recorded; optimization passes wired in a
-;; later stage). Deps + source roots are already applied by the caller.
+;; mode: "dev" | "release" | "optimized". Every form runs through jolt.passes/
+;; run-passes (const-fold always; inline + type inference when optimized turns on
+;; direct-linking). Deps + source roots are already applied by the caller.
 (define (build-binary entry-ns out-path mode)
   (bld-check-toolchain)
   ;; 1. record app namespaces in dependency order as they finish loading.
@@ -181,9 +182,7 @@
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
       ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
-      ;; + scalar-replace passes (closed world). release/dev stay on proven
-      ;; var-deref codegen until those passes are validated on Chez — they were
-      ;; dormant before `jolt build` (inline-enabled? was hardwired off).
+      ;; + scalar-replace passes (closed world); release/dev get const-fold only.
       (set-optimize! (string=? mode "optimized"))
       (let* ((app-strs (apply append
                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))

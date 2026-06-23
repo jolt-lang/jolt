@@ -11,6 +11,10 @@
 
 (define jolt-ce-analyze (var-deref "jolt.analyzer" "analyze"))
 (define jolt-ce-emit (var-deref "jolt.backend-scheme" "emit"))
+;; jolt.passes/run-passes: const-fold every analyzed form, plus inline + type
+;; inference when the unit opted into direct-linking (jolt build --opt). Off that
+;; path it is a pure const-fold. Loaded from the compiler image (jolt.passes).
+(define jolt-ce-run-passes (var-deref "jolt.passes" "run-passes"))
 (define jolt-ce-read (var-deref "clojure.core" "read-string"))
 
 ;; The spine ALWAYS runs with the full clojure.core prelude loaded, so a clojure.*
@@ -59,7 +63,7 @@
 (define (jolt-analyze-emit-form form ns)
   (ce-scan-requires! form ns)
   (let* ((ctx (make-analyze-ctx ns))
-         (ir (jolt-ce-analyze ctx form)))
+         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx form) ctx)))
     (jolt-ce-emit ir)))
 
 ;; --- runtime defmacro -------------------------------------------------------
