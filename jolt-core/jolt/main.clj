@@ -170,10 +170,13 @@
             natives (encode-natives (:natives resolved))
             ;; closed-world direct-linking is opt-in: the --direct-link flag or a
             ;; deps.edn :jolt/build {:direct-link true}. Off otherwise.
-            direct-link? (boolean (or (some #{"--direct-link"} more) (:direct-link build)))]
+            direct-link? (boolean (or (some #{"--direct-link"} more) (:direct-link build)))
+            ;; tree-shaking (drop library code not reachable from -main): --tree-shake
+            ;; or deps.edn :jolt/build {:tree-shake true}.
+            tree-shake? (boolean (or (some #{"--tree-shake"} more) (:tree-shake build)))]
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
-        (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link?)))))
+        (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake?)))))
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the
@@ -191,7 +194,7 @@
   (println "usage: jolt <command> [args]")
   (println "  run -m NS [args]   resolve deps.edn, load NS, call its -main")
   (println "  run FILE           load a Clojure file")
-  (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link]  compile a standalone binary")
+  (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--tree-shake]  compile a standalone binary")
   (println "  -M:alias [args]    run the alias's :main-opts")
   (println "  -A:alias [args]    add the alias's paths/deps")
   (println "  repl               start a line REPL")

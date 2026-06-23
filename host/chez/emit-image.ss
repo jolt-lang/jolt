@@ -84,6 +84,67 @@
 
 (define (ei-emit-ns ns-name src) (ei-emit-ns* ns-name src #f #t))
 
+;; --- tree-shaking (jolt build --tree-shake) ---------------------------------
+;; Reachability DCE over the re-emitted app + library forms: keep -main, every
+;; side-effecting (non-def) top-level form, and every def reachable from those;
+;; drop the rest (unused library code). Bails (keeps everything) if the app resolves
+;; vars by name at runtime (eval/resolve/...), which static reachability can't
+;; follow. clojure.core / the compiler stay baked (the prelude + image blobs), so
+;; only the re-emitted namespaces are shaken.
+(define dce-kw-op   (keyword #f "op"))
+(define dce-kw-var  (keyword #f "var"))
+(define dce-kw-def  (keyword #f "def"))
+(define dce-kw-ns   (keyword #f "ns"))
+(define dce-kw-name (keyword #f "name"))
+(define dce-reduce-children (var-deref "jolt.ir" "reduce-ir-children"))
+
+;; "ns/name" of every :var reference anywhere in node, prepended to acc. Arg order
+;; (acc node) matches reduce-ir-children's fold fn, so it nests directly.
+(define (dce-collect-refs acc node)
+  (if (eq? (jolt-get node dce-kw-op) dce-kw-var)
+      (cons (string-append (jolt-get node dce-kw-ns) "/" (jolt-get node dce-kw-name)) acc)
+      (dce-reduce-children dce-collect-refs acc node)))
+
+;; The fqn of a bare top-level def (the only prunable form), else #f.
+(define (dce-def-fqn node)
+  (and (eq? (jolt-get node dce-kw-op) dce-kw-def)
+       (string-append (jolt-get node dce-kw-ns) "/" (jolt-get node dce-kw-name))))
+
+;; A reference whose presence forces keep-everything (runtime name resolution).
+(define dce-bail-refs
+  '("clojure.core/eval" "clojure.core/resolve" "clojure.core/ns-resolve"
+    "clojure.core/requiring-resolve" "clojure.core/find-var" "clojure.core/intern"
+    "clojure.core/load-string" "clojure.core/load-file" "clojure.core/load-reader"
+    "clojure.core/load"))
+
+;; One record per form: (vector keep? fqn refs str). keep? #t = a non-def form,
+;; always emitted, its refs are reachability roots; #f = a prunable def emitted only
+;; if fqn is reached. A macro is a prunable def (its expander isn't called at runtime
+;; in an AOT build). Strict (no guard) like the build's ei-emit-ns* path.
+(define (ei-emit-ns-records ns-name src)
+  (let loop ((forms (ei-read-all src)) (acc '()))
+    (if (null? forms)
+        (reverse acc)
+        (let ((f (car forms)))
+          (ce-scan-requires! f ns-name)
+          (cond
+            ((ei-ns-form? f) (loop (cdr forms) acc))
+            ((ce-macro-form? f)
+             (let-values (((nm fn-form) (ce-defmacro->fn f)))
+               (let* ((ctx (make-analyze-ctx ns-name))
+                      (ir (jolt-ce-run-passes (jolt-ce-analyze ctx fn-form) ctx))
+                      (str (ei-macro-string ns-name nm (jolt-ce-emit-top ir) #f))
+                      (refs (dce-collect-refs '() ir)))
+                 (loop (cdr forms) (cons (vector #f (string-append ns-name "/" nm) refs str) acc)))))
+            (else
+             (let* ((ctx (make-analyze-ctx ns-name))
+                    (ir (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))
+                    (str (jolt-ce-emit-top ir))
+                    (fqn (dce-def-fqn ir))
+                    (refs (dce-collect-refs '() ir)))
+               (loop (cdr forms)
+                     (cons (if fqn (vector #f fqn refs str) (vector #t #f refs str)) acc)))))))))
+
 ;; Scheme string literal for a ns/name — uses the runtime's own writer
 ;; (printable ASCII identifiers only here).
 (define (ei-str-lit s) (with-output-to-string (lambda () (write s))))
