@@ -196,13 +196,10 @@
     (if (fx<? i 0) jolt-nil i)))
 
 ;; (str-join coll [sep]) -> stringify each element (Clojure str), join by sep.
+;; str-join-strs (defined below) does the join; here we just render each element.
 (define (str-join coll . opt)
-  (let ((sep (if (pair? opt) (jolt-str-render-one (car opt)) ""))
-        (items (map jolt-str-render-one (seq->list coll))))
-    (let loop ((xs items) (first #t) (acc '()))
-      (cond ((null? xs) (apply string-append (reverse acc)))
-            (first (loop (cdr xs) #f (cons (car xs) acc)))
-            (else (loop (cdr xs) #f (cons (car xs) (cons sep acc))))))))
+  (let ((sep (if (pair? opt) (jolt-str-render-one (car opt)) "")))
+    (str-join-strs (map jolt-str-render-one (seq->list coll)) sep)))
 
 ;; (re-split irx s limit) -> parts, splitting at each match. Keeps interior AND
 ;; trailing empty strings (the clojure.string wrapper drops trailing for limit 0);

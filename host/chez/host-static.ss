@@ -328,14 +328,11 @@
         (cons "setMaximumFractionDigits" (lambda (self d) (vector-set! (jhost-state self) 2 (jnum->exact d)) jolt-nil))
         (cons "setMinimumFractionDigits" (lambda (self d) (vector-set! (jhost-state self) 1 (jnum->exact d)) jolt-nil))
         (cons "setGroupingUsed" (lambda (self b) (vector-set! (jhost-state self) 0 (jolt-truthy? b)) jolt-nil))))
-(register-class-statics! "NumberFormat"
-  (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
-        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
-        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0)))))
-(register-class-statics! "java.text.NumberFormat"
-  (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
-        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
-        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0)))))
+(let ((nf-statics (list (cons "getInstance" (lambda _ (nf-make #t 0 3)))
+                        (cons "getNumberInstance" (lambda _ (nf-make #t 0 3)))
+                        (cons "getIntegerInstance" (lambda _ (nf-make #t 0 0))))))
+  (register-class-statics! "NumberFormat" nf-statics)
+  (register-class-statics! "java.text.NumberFormat" nf-statics))
 
 (register-class-statics! "Class"
   ;; an array descriptor ("[C", "[I", …) is its own class token (so instance? and

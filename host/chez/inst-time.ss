@@ -93,16 +93,16 @@
 (define (pad2 n) (if (< n 10) (string-append "0" (number->string n)) (number->string n)))
 (define (pad4 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 4 (string-length s))) #\0) s)))
 (define (pad3 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 3 (string-length s))) #\0) s)))
-(define (floor-div a b) (let ((q (quotient a b)) (r (remainder a b))) (if (and (not (= r 0)) (< (* a b) 0)) (- q 1) q)))
-(define (floor-mod a b) (- a (* (floor-div a b) b)))
+(define (inst-floor-div a b) (let ((q (quotient a b)) (r (remainder a b))) (if (and (not (= r 0)) (< (* a b) 0)) (- q 1) q)))
+(define (inst-floor-mod a b) (- a (* (inst-floor-div a b) b)))
 
 (define (inst-fields ms)                ; -> list (y mo d hh mm ss frac dow)
-  (let* ((total-s (floor-div (exact (truncate ms)) 1000))
+  (let* ((total-s (inst-floor-div (exact (truncate ms)) 1000))
          (frac (- (exact (truncate ms)) (* total-s 1000)))
-         (days (floor-div total-s 86400))
-         (sod (floor-mod total-s 86400))
+         (days (inst-floor-div total-s 86400))
+         (sod (inst-floor-mod total-s 86400))
          (hh (quotient sod 3600)) (mm (quotient (remainder sod 3600) 60)) (ss (remainder sod 60))
-         (dow (floor-mod (+ days 4) 7)))   ; 1970-01-01 = Thursday; 0=Sunday
+         (dow (inst-floor-mod (+ days 4) 7)))   ; 1970-01-01 = Thursday; 0=Sunday
     (call-with-values (lambda () (civil-from-days days))
       (lambda (y mo d) (list y mo d hh mm ss frac dow)))))
 
