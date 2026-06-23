@@ -66,33 +66,34 @@ reproduces the checked-in seed byte-for-byte).
 
 ## Differences from Clojure
 
-Jolt targets Clojure semantics but runs on Chez, not the JVM.
+Jolt targets Clojure semantics but runs on Chez, not the JVM. Most portable
+Clojure runs unchanged — persistent collections (32-way-trie vectors, HAMT
+maps/sets), the numeric tower (exact integers, bignums, ratios, doubles), lazy
+and infinite sequences, transducers, destructuring, multimethods with
+hierarchies, protocols/records (`deftype`/`defrecord`/`reify`/`extend-protocol`),
+metadata, namespaces, atoms, `future`/`promise`/`agent`/`pmap`,
+`clojure.core.async`, runtime `eval`/`load-string`/`defmacro`, and the full
+reader (`#()`, `#_`, `#?`, tagged literals, `#"…"`) all behave as on the JVM.
+`=` is category-aware (`(= 3 3.0)` ⇒ `false`) and `==` is value-equality, as in
+Clojure. The genuine divergences:
 
-- **Host platform.** No JVM, no reflection, no `gen-class`/`proxy` of Java
-  classes. Interop syntax (`Class.`, `Class/static`, `.method`) works against a
-  shimmed subset of the `java.*` standard library, and a class token resolves to
-  a name. See [docs/host-interop.md](docs/host-interop.md) for what's covered and
-  how to register your own host classes from a library.
-- **Numbers.** The full Scheme numeric tower, matching the JVM: exact integers and
-  bignums, exact ratios (`(/ 1 2)` ⇒ `1/2`), and flonum doubles. `=` is
-  category-aware (`(= 3 3.0)` ⇒ `false`); `==` is value-equality (`(== 3 3.0)` ⇒
-  `true`). `integer?`/`int?` are exact integers, `float?`/`double?` are flonums,
-  `ratio?` is an exact non-integer. No `BigDecimal` (`decimal?` is always false).
-- **Concurrency.** `future`/`promise`/`agent`/`pmap` run on real OS threads over a
-  **shared heap**, matching JVM semantics (not isolated-heap snapshots). Atoms use a
-  per-atom mutex with JVM-style CAS. `clojure.core.async` provides blocking channels
-  and `go`/`<!`/`>!`/`alts!`/`timeout`.
-- **Regex.** Backed by [irregex](https://github.com/ashinn/irregex) (vendored),
-  PCRE/Java-style patterns.
-- **Collections.** Immutable persistent vectors, cons lists, and HAMT maps/sets.
-  Hash-map/hash-set iteration order is unspecified — use `sorted-map`/`sorted-set`
-  when order matters. Transients are real mutable scratch collections.
-
-Supported and Clojure-compatible: lazy/infinite sequences, transducers,
-destructuring, multimethods with hierarchies, protocols/records
-(`deftype`/`defrecord`/`reify`/`extend-protocol`), metadata, namespaces, runtime
-`eval`/`load-string`/`defmacro`, and the reader (`#()`, `#_`, `#?`, tagged literals,
-`#"…"`).
+- **No JVM, no Java interop.** No reflection, no `gen-class`/`proxy`. Interop
+  syntax (`Class.`, `Class/static`, `.method`) resolves only against a shimmed
+  subset of the `java.*` standard library; a class token is a name, not a loaded
+  class. See [docs/host-interop.md](docs/host-interop.md). To call C libraries
+  directly, use the `jolt.ffi` foreign-function interface (how the db and
+  http-client libraries bind SQLite/libpq and sockets/OpenSSL/zlib).
+- **No `BigDecimal`.** `decimal?` is always false and there is no `M` literal;
+  the rest of the numeric tower matches the JVM.
+- **No STM.** No `ref`/`dosync`/`alter`/`commute` — coordinated shared state uses
+  atoms (per-atom mutex, JVM-style CAS). The concurrency primitives above are
+  otherwise present and run on a shared heap.
+- **Regex engine.** Patterns compile through
+  [irregex](https://github.com/ashinn/irregex) (vendored), not
+  `java.util.regex`; common patterns work, Java-specific features can differ.
+- **Coverage.** `clojure.core` is implemented function by function against the
+  JVM-sourced conformance corpus — broad but not total; a namespace can load with
+  most functions working and a few not yet implemented.
 
 ## Test
 
