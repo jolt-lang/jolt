@@ -80,6 +80,15 @@
   (let [m (form-sym-meta sym)]
     (when m (let [t (get m :tag)] (when t (record-ctor-key ctx t))))))
 
+;; A primitive numeric hint (^long / ^double) on a binding symbol -> :long /
+;; :double, else nil. Drives the fl*/fx* fast path (jolt.passes.numeric). The tag
+;; is a string on the data reader; tolerate a symbol from macroexpansion too.
+(defn- nhint-of [ctx sym]
+  (let [m (form-sym-meta sym)
+        t (when m (get m :tag))
+        s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
+    (cond (= s "double") :double (= s "long") :long :else nil)))
+
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
         n (count v)]
@@ -104,19 +113,20 @@
   ;; folds it with a plain reduce — no reduce-over-map in the kernel subset).
   ;; :phints is the parallel vector of [name ctor-key] for record param hints,
   ;; carrying the specific type for the inference to seed.
-  (loop [i 0 fixed [] rest-name nil hints [] phints []]
+  (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p) (uncompilable "destructuring fn param"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
             (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
-            (recur (+ i 2) fixed (form-sym-name r) hints phints))
-          (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)]
+            (recur (+ i 2) fixed (form-sym-name r) hints phints nhints))
+          (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p) nh (nhint-of ctx p)]
             (recur (inc i) (conj fixed nm) rest-name
                    (if h (conj hints [nm h]) hints)
-                   (if ph (conj phints [nm ph]) phints)))))
-      {:fixed fixed :rest rest-name :hints hints :phints phints})))
+                   (if ph (conj phints [nm ph]) phints)
+                   (if nh (conj nhints [nm nh]) nhints)))))
+      {:fixed fixed :rest rest-name :hints hints :phints phints :nhints nhints})))
 
 ;; Clojure lets a later param shadow an earlier same-named one (a macro expander
 ;; uses _ for both its &form and &env slots, so its param list is (_ _ …)); the
@@ -154,7 +164,9 @@
                :body (analyze-seq ctx body env*)}
         ;; carry record param hints (name -> ctor-key) for the inference to seed
         ;; the param type; only when present so a hintless arity stays a struct.
-        arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)]
+        arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)
+        ;; numeric param hints (name -> :long/:double) for jolt.passes.numeric.
+        arity (if (seq (:nhints pp)) (assoc arity :nhints (:nhints pp)) arity)]
     ;; :rest only when variadic — an absent :rest reads back nil, same as before,
     ;; but keeps a fixed arity a nil-free struct rather than a phm.
     (if rst (assoc arity :rest rst) arity)))

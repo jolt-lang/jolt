@@ -76,6 +76,19 @@
     "jolt-even?" "jolt-odd?" "jolt-pos?" "jolt-neg?"
     "jolt-zero?" "jolt-empty?" "jolt-contains?"})
 
+;; Numeric-specialized op strings. jolt.passes.numeric tags an arithmetic invoke
+;; :num-kind :double|:long when every operand is that kind; these are the Chez
+;; flonum/fixnum ops it lowers to — no generic dispatch, fixnums unboxed. fl?/fx?
+;; comparisons carry the question mark; fl+/fx+ don't.
+(def ^:private dbl-ops
+  {"+" "fl+" "-" "fl-" "*" "fl*" "/" "fl/" "min" "flmin" "max" "flmax"
+   "<" "fl<?" ">" "fl>?" "<=" "fl<=?" ">=" "fl>=?" "=" "fl=?" "==" "fl=?"})
+(def ^:private lng-ops
+  {"+" "fx+" "-" "fx-" "*" "fx*" "min" "fxmin" "max" "fxmax"
+   "unchecked-add" "fx+" "unchecked-subtract" "fx-" "unchecked-multiply" "fx*"
+   "quot" "fxquotient" "rem" "fxremainder" "mod" "fxmodulo"
+   "<" "fx<?" ">" "fx>?" "<=" "fx<=?" ">=" "fx>=?" "=" "fx=?" "==" "fx=?"})
+
 ;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
 ;; When emitting clojure.core ITSELF as a prelude, core fns reference each other
@@ -335,8 +348,21 @@
 ;; let lets fn-level `recur` rebind this arity's params. A variadic arity takes a
 ;; Scheme rest arg coerced to a jolt seq (nil when empty); recur carries the rest
 ;; seq directly, and the named let's init only runs on first entry.
+;; Coerce a numeric-hinted param at fn entry, the way the JVM coerces a primitive
+;; parameter: ^double -> exact->inexact, ^long -> jolt->fx. Only the named-let init
+;; (first entry) coerces — recur carries already-typed values, like a JVM goto. This
+;; is what makes the hint a contract the body's fl*/fx* ops can rely on. `orig` is
+;; the param's source name (the :nhints key); `munged` the emitted identifier.
+(defn- nhint-init [nh orig munged]
+  (let [k (get nh orig)]
+    (cond (= k :double) (str "(exact->inexact " munged ")")
+          (= k :long)   (str "(jolt->fx " munged ")")
+          :else munged)))
+
 (defn- emit-arity-clause [a]
-  (let [params (map munge-name (:params a))
+  (let [orig (:params a)
+        nh (into {} (:nhints a))
+        params (map munge-name orig)
         restp (when-let [r (:rest a)] (munge-name r))
         label (fresh-label "fnrec")
         body (binding [*recur-target* label] (emit (:body a)))
@@ -344,10 +370,10 @@
                     (and restp (empty? params)) restp
                     restp (str "(" (str/join " " params) " . " restp ")")
                     :else (str "(" (str/join " " params) ")"))
+        pbind (map (fn [o p] (str "(" p " " (nhint-init nh o p) ")")) orig params)
         binds (if restp
-                (concat (map (fn [p] (str "(" p " " p ")")) params)
-                        [(str "(" restp " (list->cseq " restp "))")])
-                (map (fn [p] (str "(" p " " p ")")) params))]
+                (concat pbind [(str "(" restp " (list->cseq " restp "))")])
+                pbind)]
     [paramlist (str "(let " label " (" (str/join " " binds) ") " body ")")]))
 
 (defn- emit-fn [node]
@@ -394,6 +420,19 @@
 (defn- stdlib-var? [n]
   (and (= :var (:op n)) (str/starts-with? (or (:ns n) "") "clojure.")))
 
+;; Emit a :num-kind-tagged arithmetic call as a Chez flonum/fixnum op. inc/dec are
+;; unary (fl +/- 1.0, fx1+/fx1-); the rest map through dbl-ops/lng-ops. Integer
+;; literal operands of a :double op were coerced to flonums by jolt.passes.numeric.
+(defn- emit-numeric [kind nm args order-args]
+  (cond
+    (and (= kind :double) (= nm "inc")) (str "(fl+ " (first args) " 1.0)")
+    (and (= kind :double) (= nm "dec")) (str "(fl- " (first args) " 1.0)")
+    (and (= kind :long) (or (= nm "inc") (= nm "unchecked-inc"))) (str "(fx1+ " (first args) ")")
+    (and (= kind :long) (or (= nm "dec") (= nm "unchecked-dec"))) (str "(fx1- " (first args) ")")
+    :else
+    (let [op (if (= kind :double) (dbl-ops nm) (lng-ops nm))]
+      (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
+
 (defn- emit-invoke [node]
   (let [fnode (:fn node)
         arg-nodes (:args node)
@@ -410,6 +449,9 @@
                                (fn [[f & as]]
                                  (str "(jolt-invoke " f (if (seq as) (str " " (str/join " " as)) "") ")"))))]
     (cond
+      ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
+      ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
+      (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
       ;; zero-arg + / * : exact integer identity (= JVM long: (+) -> 0, (*) -> 1).
       (and nop (empty? args) (= nop "+")) "0"
       (and nop (empty? args) (= nop "*")) "1"

@@ -17,6 +17,17 @@
 ;; --- rt arithmetic / logic shims (named in the emitter's native-ops) ----------
 (define (jolt-inc x) (+ x 1))
 (define (jolt-dec x) (- x 1))
+;; Coerce a ^long-hinted argument to a fixnum at fn entry, the way the JVM's
+;; longCast coerces a primitive-long parameter: truncate a flonum toward zero,
+;; pass an exact integer through, error if it doesn't fit a fixnum or isn't a
+;; number. The hint is a promise the value is a fixnum-range long; the body's fx*
+;; ops rely on it. (^double params coerce with the built-in exact->inexact.)
+(define (jolt->fx x)
+  (let ((n (cond ((fixnum? x) x)
+                 ((flonum? x) (exact (truncate x)))
+                 ((rational? x) (exact (truncate x)))
+                 (else (error 'jolt "^long hint: not a number" x)))))
+    (if (fixnum? n) n (error 'jolt "^long hint: value out of fixnum range" x))))
 ;; jolt `not`: only nil and false are falsey.
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 
