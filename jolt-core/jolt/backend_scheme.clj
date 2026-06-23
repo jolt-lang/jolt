@@ -287,6 +287,19 @@
        " (" (str/join " " (map ffi-type->chez (:argtypes node))) ") "
        (ffi-type->chez (:rettype node)) ")"))
 
+;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
+;; locked + registered (jolt-ffi-register-callable!, host/chez/ffi.ss) so the
+;; collector neither moves nor reclaims it while C may still call through it. The
+;; expression evaluates to the entry-point address — a jolt pointer the caller
+;; hands to C. :collect-safe emits the convention that reactivates the thread on
+;; entry, for callbacks invoked while it is parked in a :blocking foreign call.
+(defn- emit-ffi-callable [node]
+  (str "(jolt-ffi-register-callable! (foreign-callable "
+       (when (:collect-safe node) "__collect_safe ")
+       (emit (:fn node))
+       " (" (str/join " " (map ffi-type->chez (:argtypes node))) ") "
+       (ffi-type->chez (:rettype node)) "))"))
+
 (defn- emit-recur [node]
   (when-not *recur-target* (throw (ex-info "emit: recur outside a loop/fn target" {})))
   (let [arg-nodes (:args node)]
@@ -500,6 +513,7 @@
     :loop (emit-loop node)
     :recur (emit-recur node)
     :ffi-fn (emit-ffi-fn node)
+    :ffi-callable (emit-ffi-callable node)
     :fn (emit-fn node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).
