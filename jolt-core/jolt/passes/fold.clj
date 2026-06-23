@@ -46,7 +46,9 @@
             folded (when (and ff (pos? (count args)) (every? const-num? args))
                      (try
                        {:op :const :val (apply ff (mapv (fn [a] (get a :val)) args))}
-                       (catch Exception e nil)))]
+                       ;; :default (not Exception) — match the rest of jolt-core and
+                       ;; also catch a raw host condition from a folding primitive.
+                       (catch :default e nil)))]
         (or folded n))
 
       (= op :if)

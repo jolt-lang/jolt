@@ -27,9 +27,12 @@
       (let ((l (get-line in)))
         (if (eof-object? l)
             (begin (close-port in)
-                   (let ((s (apply string-append (reverse acc))))
-                     ;; trim a trailing newline-equivalent (we joined without them)
-                     s))
+                   ;; rejoin with newlines (get-line stripped them). Callers use
+                   ;; single-line output; this just avoids silently concatenating
+                   ;; two lines into one corrupt token if a command emits more.
+                   (let ((ls (reverse acc)))
+                     (if (null? ls) ""
+                         (fold-left (lambda (s x) (string-append s "\n" x)) (car ls) (cdr ls)))))
             (loop (cons l acc)))))))
 
 (define (bld-system cmd)

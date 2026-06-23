@@ -188,13 +188,15 @@
 
 (defn replicate [n x] (map (fn [_] x) (range n)))
 
+;; Returns a seq (JVM does), nil when n<=0 or coll is empty.
 (defn take-last [n coll]
   (let [c (vec coll) len (count c)]
-    (when (pos? len) (subvec c (max 0 (- len n))))))
+    (when (pos? len) (seq (subvec c (max 0 (- len n)))))))
 
+;; The JVM definition: a lazy seq (() when empty), not a vector.
 (defn drop-last
   ([coll] (drop-last 1 coll))
-  ([n coll] (let [c (vec coll)] (subvec c 0 (max 0 (- (count c) n))))))
+  ([n coll] (map (fn [x _] x) coll (drop n coll))))
 
 (defn distinct?
   ([x] true)

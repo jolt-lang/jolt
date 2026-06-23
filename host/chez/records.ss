@@ -174,7 +174,9 @@
                  (keyword #f "name") (jolt-symbol jolt-nil name-str)
                  (keyword #f "methods") methods))
 
-;; register-protocol-methods!: a no-op for Chez dispatch.
+;; register-protocol-methods!: intentional no-op. Chez dispatches a protocol method
+;; by the receiver's type tag at call time, so there is no method table to register;
+;; this binding exists only because defprotocol-emitted code calls it.
 (define (register-protocol-methods! proto-name method-names) jolt-nil)
 
 ;; register-method: extend-type/extend register an impl. Host type names keep a
@@ -329,7 +331,7 @@
              ((string=? method-name "toString") (condition->message-string obj))
              ((string=? method-name "getCause") jolt-nil)
              ;; java.sql.SQLException chaining — jolt errors don't chain (nil).
-             ((or (string=? method-name "getNextException") (string=? method-name "getCause")) jolt-nil)
+             ((string=? method-name "getNextException") jolt-nil)
              ((string=? method-name "getStackTrace") (jolt-vector))
              ((string=? method-name "printStackTrace") jolt-nil)
              (else (error #f (string-append "No method " method-name " on Throwable")))))

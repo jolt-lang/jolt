@@ -32,6 +32,10 @@
 
 (declare analyze)
 
+;; Special forms analyze-special has a dispatch arm for — the subset of the host
+;; contract's reserved words (jolt.host/form-special?) the analyzer lowers itself.
+;; The two differ deliberately (e.g. interop heads like `new`/`.` are reserved but
+;; analyzed in analyze-list), so keep them in sync by intent, not by equality.
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
     "syntax-quote" "var" "letfn" "set!" "defmacro"})

@@ -152,11 +152,19 @@
           (else ac-poll-empty))))
 
 ;; (alts! [ch ...]) — take from whichever channel is ready first; returns
-;; [value channel] (value nil if that channel closed). Take-only.
+;; [value channel] (value nil if that channel closed). Take-only: every port must
+;; be a channel — put specs [ch val] and the :default option are not supported, so
+;; reject them with a clear error instead of crashing inside ac-poll!.
 ;; Polls with a 1ms backoff — no cross-channel wait-set yet.
 (define ac-1ms (make-time 'time-duration 1000000 0))
 (define (jolt-async-alts chans)
   (let ((cs (seq->list (jolt-seq chans))))
+    (for-each (lambda (c)
+                (unless (async-chan? c)
+                  (jolt-throw (jolt-ex-info
+                                "alts! supports channel ports only (put specs [ch val] and :default are not supported)"
+                                (jolt-hash-map)))))
+              cs)
     (let loop ()
       (let try ((rest cs))
         (if (null? rest)

@@ -23,6 +23,10 @@
                                        reset-escapes! collected-escapes
                                        set-check-mode! take-diags!]]))
 
+;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
+;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
+(def ^:private inline-fixpoint-cap 8)
+
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form. When
   inlining is enabled for the unit (user code under direct-linking),
@@ -41,7 +45,7 @@
           opt (loop [i 0 n (const-fold node)]
                 (reset! dirty false)
                 (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
-                  (if (and @dirty (< i 8))
+                  (if (and @dirty (< i inline-fixpoint-cap))
                     (recur (inc i) n2)
                     n2)))]
       ;; a final const-fold after inference propagates any predicate folded to a
