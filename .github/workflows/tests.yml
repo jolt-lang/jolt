@@ -29,14 +29,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/chez
-          key: chez-${{ runner.os }}-v10.4.1
+          key: chez-${{ runner.os }}-v10.4.1-x11off
 
       - name: Build Chez Scheme from source
         if: steps.cache-chez.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
           cd /tmp/chez-src
-          ./configure --installprefix=/opt/chez --threads
+          # --disable-x11: the expression editor's X11 clipboard isn't needed and
+          # would pull an X11 build/link dep.
+          ./configure --installprefix=/opt/chez --threads --disable-x11
           make -j"$(nproc)"
           sudo make install
           sudo chown -R "$USER" /opt/chez
