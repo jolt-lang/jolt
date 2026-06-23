@@ -112,6 +112,28 @@
       (map? task) (do (apply-project! resolved) (apply-main-opts (:main-opts task) more))
       :else (throw (ex-info (str "bad task " name) {})))))
 
+;; build [-m NS | FILE] [-o OUT] [--opt | --dev] — AOT-compile the app into a
+;; standalone executable. Resolves deps + roots like `run`, then hands the entry
+;; namespace to the host build driver (jolt.host/build-binary, defined by
+;; build.ss). Default mode is release; --opt selects optimized, --dev unoptimized.
+(defn- cmd-build [more]
+  (apply-project! (deps/resolve-project (project-dir)))
+  (let [opts (loop [a more, entry nil, out nil]
+               (cond
+                 (empty? a)          {:entry entry :out out}
+                 (= "-m" (first a))  (recur (drop 2 a) (second a) out)
+                 (= "-o" (first a))  (recur (drop 2 a) entry (second a))
+                 (str/starts-with? (first a) "-") (recur (rest a) entry out)
+                 :else               (recur (rest a) (or entry (first a)) out)))
+        entry (:entry opts)
+        mode  (cond (some #{"--opt"} more) "optimized"
+                    (some #{"--dev"} more) "dev"
+                    :else                  "release")]
+    (when (nil? entry)
+      (throw (ex-info "build needs an entry: -m NS" {})))
+    (let [out (or (:out opts) (first (str/split entry #"\.")))]
+      (jolt.host/build-binary entry out mode))))
+
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the
   ;; nREPL server so an editor can connect and (require '[some.lib]) live. A
@@ -128,6 +150,7 @@
   (println "usage: jolt <command> [args]")
   (println "  run -m NS [args]   resolve deps.edn, load NS, call its -main")
   (println "  run FILE           load a Clojure file")
+  (println "  build -m NS [-o OUT] [--opt|--dev]  compile a standalone binary")
   (println "  -M:alias [args]    run the alias's :main-opts")
   (println "  -A:alias [args]    add the alias's paths/deps")
   (println "  repl               start a line REPL")
@@ -146,4 +169,5 @@
       (str/starts-with? cmd "-M") (cmd-M cmd more)
       (str/starts-with? cmd "-A") (cmd-A cmd more)
       (= cmd "-m")                (cmd-run (cons "-m" more))
+      (= cmd "build")             (cmd-build more)
       :else                       (run-task cmd more))))

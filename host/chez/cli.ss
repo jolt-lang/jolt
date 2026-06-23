@@ -66,6 +66,11 @@
          (display result) (newline))))
     ;; otherwise dispatch the argv through jolt.main/-main
     (else
+     ;; `build` AOT-compiles an app to a standalone binary — load the build
+     ;; driver (the cross-compiler emitter) on demand so a normal run never pays
+     ;; for it. It defines jolt.host/build-binary, which jolt.main's build cmd calls.
+     (when (and (pair? cli-args) (string=? (car cli-args) "build"))
+       (load "host/chez/build.ss"))
      (load-namespace "jolt.main")
      (let ((mainv (var-deref "jolt.main" "-main")))
        (apply jolt-invoke mainv cli-args)))))

@@ -53,6 +53,23 @@
 (vector-for-each (lambda (c) (hashtable-set! loaded-ns (var-cell-ns c) #t))
                  (hashtable-values var-table))
 
+;; Does `name` already have vars in the var-table? A namespace baked into the
+;; image after the snapshot above — an AOT'd app namespace in a `jolt build`
+;; binary — exists in memory with no source file; a later `require` of it must
+;; no-op rather than hunt the (absent) source.
+(define (ns-has-vars? name)
+  (let ((found #f))
+    (vector-for-each
+      (lambda (c) (when (and (not found) (string=? (var-cell-ns c) name)) (set! found #t)))
+      (hashtable-values var-table))
+    found))
+
+;; Called after a file-backed namespace finishes loading, with (name file). The
+;; build driver sets this to record app namespaces in dependency order for AOT
+;; emission; a no-op for normal runs.
+(define ns-loaded-hook (lambda (name file) #f))
+(define (set-ns-loaded-hook! f) (set! ns-loaded-hook f))
+
 ;; Read every form from a file and compile+eval it in turn. The first form is
 ;; normally (ns …), which expands to (in-ns …) and switches the current ns, so
 ;; later forms compile in that namespace — (chez-current-ns) is re-read each step.
@@ -80,17 +97,22 @@
 ;; restored afterward, since loading the file switched it.
 (define (load-namespace name)
   (unless (hashtable-ref loaded-ns name #f)
-    (hashtable-set! loaded-ns name #t)
     (let ((file (find-ns-file name)))
-      (if (not file)
-          (begin
-            (hashtable-delete! loaded-ns name)
-            (error #f (string-append "Could not locate " (ns-name->rel name)
-                                     ".clj (or .cljc) on the source roots") name))
-          (let ((saved (chez-current-ns)))
-            (load-jolt-file file)
-            ;; restore the current ns (thread-local); *ns* reads derive from it.
-            (set-chez-ns! saved))))))
+      (cond
+        (file
+         (hashtable-set! loaded-ns name #t)   ; mark before load so a cycle terminates
+         (let ((saved (chez-current-ns)))
+           (load-jolt-file file)
+           ;; restore the current ns (thread-local); *ns* reads derive from it.
+           (set-chez-ns! saved))
+         (ns-loaded-hook name file))
+        ;; No source file but the namespace exists in memory (AOT'd into a built
+        ;; binary): it's already defined — mark loaded and move on.
+        ((ns-has-vars? name)
+         (hashtable-set! loaded-ns name #t))
+        (else
+         (error #f (string-append "Could not locate " (ns-name->rel name)
+                                  ".clj (or .cljc) on the source roots") name))))))
 
 ;; load-file: load an explicit path (a `run FILE`), in the current ns.
 (define (jolt-load-file path)
