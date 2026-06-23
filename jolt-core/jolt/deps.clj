@@ -83,22 +83,26 @@
   declarations from every dep's deps.edn. `base-dir` resolves :local/root and is
   replaced by a dep's own root as the walk descends."
   [deps base-dir]
+  ;; queue grows by appending children at the tail; an index cursor walks it so
+  ;; each dequeue is O(1) (was (subvec (vec queue) 1) per pop -> O(n^2)).
   (loop [queue (mapv (fn [[c s]] [c s base-dir]) (seq deps))
+         i 0
          seen #{}
          roots []
          natives []]
-    (if (empty? queue)
+    (if (>= i (count queue))
       {:roots (distinct roots) :natives natives}
-      (let [[coord spec bd] (first queue)
-            queue (subvec (vec queue) 1)]
+      (let [[coord spec bd] (nth queue i)
+            i (inc i)]
         (if (contains? seen coord)
-          (recur queue seen roots natives)
+          (recur queue i seen roots natives)
           (let [root (coord-root coord spec bd)]
             (if (nil? root)
-              (recur queue (conj seen coord) roots natives)
+              (recur queue i (conj seen coord) roots natives)
               (let [edn (read-edn (str root "/deps.edn"))
                     child (mapv (fn [[c s]] [c s root]) (seq (:deps edn)))]
                 (recur (into queue child)
+                       i
                        (conj seen coord)
                        (into roots (dep-source-roots root))
                        (into natives (:jolt/native edn)))))))))))

@@ -3,8 +3,19 @@
 ;; the printer. int/long truncate toward zero to an exact integer; compare returns
 ;; an exact -1/0/1; double yields a flonum.
 
-;; str: nil -> "", string raw, char bare (not \c), regex -> raw source, else the
-;; printer (which renders collections with readable elements).
+;; str rendering for the value types not handled by the fast arms below. A host
+;; shim loaded later (records, host-table, inst-time, …) registers an arm with
+;; register-str-render! instead of set!-wrapping jolt-str-render-one — the arms
+;; are type-disjoint, so the full behavior is the base arms here plus the
+;; registry, gathered in one place rather than scattered across a set! chain.
+;; Newest registration is checked first (matches the old outermost-wins order).
+(define str-render-registry '())   ; list of (pred . render), checked front-to-back
+(define (register-str-render! pred render)
+  (set! str-render-registry (cons (cons pred render) str-render-registry)))
+
+;; str: nil -> "", string raw, char bare (not \c), regex -> raw source, a
+;; registered host type via its arm, else the printer (which renders collections
+;; with readable elements).
 (define (jolt-str-render-one v)
   (cond
     ((jolt-nil? v) "")
@@ -16,7 +27,12 @@
     ((and (flonum? v) (fl= v +inf.0)) "Infinity")
     ((and (flonum? v) (fl= v -inf.0)) "-Infinity")
     ((and (flonum? v) (not (fl= v v))) "NaN")
-    (else (jolt-pr-str v))))
+    (else
+     (let loop ((rs str-render-registry))
+       (cond
+         ((null? rs) (jolt-pr-str v))
+         (((caar rs) v) ((cdar rs) v))
+         (else (loop (cdr rs))))))))
 (define (jolt-str . xs)
   (let loop ((xs xs) (acc '()))
     (if (null? xs)

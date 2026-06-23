@@ -4,7 +4,7 @@
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir]]
-            [jolt.ir :refer [map-ir-children]]
+            [jolt.ir :refer [map-ir-children reduce-ir-children]]
             [jolt.passes.fold :refer [scalar-const?]]))
 
 ;; ---------------------------------------------------------------------------
@@ -54,27 +54,12 @@
 (defn- body-size
   "Node count of an inline-eligible body. A disallowed op contributes a number
   larger than any budget, so the caller's (<= size budget) test fails and we
-  never try to inline (or alpha-rename) such a body."
+  never try to inline (or alpha-rename) such a body. Only reached for safe ops,
+  so the shared child fold covers it exactly (leaves fold to 1)."
   [node]
-  (let [op (get node :op)]
-    (cond
-      (not (safe-op? op)) 100000
-      (= op :if) (+ 1 (body-size (get node :test))
-                      (body-size (get node :then))
-                      (body-size (get node :else)))
-      (= op :do) (+ 1 (reduce + 0 (mapv body-size (get node :statements)))
-                      (body-size (get node :ret)))
-      (= op :throw) (+ 1 (body-size (get node :expr)))
-      (= op :invoke) (+ 1 (body-size (get node :fn))
-                          (reduce + 0 (mapv body-size (get node :args))))
-      (= op :let) (+ 1 (reduce + 0 (mapv (fn [b] (body-size (nth b 1))) (get node :bindings)))
-                       (body-size (get node :body)))
-      (= op :vector) (+ 1 (reduce + 0 (mapv body-size (get node :items))))
-      (= op :set) (+ 1 (reduce + 0 (mapv body-size (get node :items))))
-      (= op :map) (+ 1 (reduce + 0 (mapv (fn [pr] (+ (body-size (nth pr 0))
-                                                     (body-size (nth pr 1))))
-                                         (get node :pairs))))
-      :else 1)))
+  (if (not (safe-op? (get node :op)))
+    100000
+    (reduce-ir-children (fn [acc c] (+ acc (body-size c))) 1 node)))
 
 (defn- subst
   "Substitute locals in node per env (a map name -> replacement IR node), and
@@ -129,24 +114,8 @@
   (let [op (get node :op)]
     (cond
       (= op :local) (contains? scope (get node :name))
-      (= op :const) true
-      (= op :var) true
-      (= op :host) true
-      (= op :the-var) true
-      (= op :quote) true
-      (= op :if) (and (body-closed? (get node :test) scope)
-                      (body-closed? (get node :then) scope)
-                      (body-closed? (get node :else) scope))
-      (= op :do) (and (every? (fn [s] (body-closed? s scope)) (get node :statements))
-                      (body-closed? (get node :ret) scope))
-      (= op :throw) (body-closed? (get node :expr) scope)
-      (= op :invoke) (and (body-closed? (get node :fn) scope)
-                          (every? (fn [a] (body-closed? a scope)) (get node :args)))
-      (= op :vector) (every? (fn [x] (body-closed? x scope)) (get node :items))
-      (= op :set) (every? (fn [x] (body-closed? x scope)) (get node :items))
-      (= op :map) (every? (fn [pr] (and (body-closed? (nth pr 0) scope)
-                                        (body-closed? (nth pr 1) scope)))
-                          (get node :pairs))
+      ;; :let threads scope sequentially (each binding extends it), so it can't go
+      ;; through the uniform fold.
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [sc (nth acc 0) ok (nth acc 1)]
@@ -156,6 +125,9 @@
                         [scope true]
                         (get node :bindings))]
         (and (nth res 1) (body-closed? (get node :body) (nth res 0))))
+      ;; leaves (:const/:var/:host/:the-var/:quote) fold to true; the rest AND
+      ;; their children. Unsafe ops never reach here (body-size rejects them).
+      (safe-op? op) (reduce-ir-children (fn [ok c] (and ok (body-closed? c scope))) true node)
       :else false)))
 
 (defn- try-inline
@@ -267,20 +239,13 @@
   [node]
   (let [op (get node :op)]
     (cond
-      (= op :const) true
-      (= op :local) true
-      (= op :var) true
-      (= op :host) true
-      (= op :the-var) true
-      (= op :quote) true
-      (= op :if) (and (pure? (get node :test)) (pure? (get node :then)) (pure? (get node :else)))
-      (= op :do) (and (every? pure? (get node :statements)) (pure? (get node :ret)))
-      (= op :let) (and (every? (fn [b] (pure? (nth b 1))) (get node :bindings)) (pure? (get node :body)))
-      (= op :vector) (every? pure? (get node :items))
-      (= op :set) (every? pure? (get node :items))
-      (= op :map) (every? (fn [pr] (and (pure? (nth pr 0)) (pure? (nth pr 1)))) (get node :pairs))
+      ;; :invoke is pure only for a known-pure fn / record ctor, and only its ARGS
+      ;; are folded (not the :fn position) — so it can't go through the uniform fold.
       (= op :invoke) (and (or (pure-fn? (get node :fn)) (ctor-shape node))
                           (every? pure? (get node :args)))
+      ;; leaves (:const/:local/:var/:host/:the-var/:quote) fold to true; :if/:do/
+      ;; :let/:vector/:set/:map AND their children's purity.
+      (safe-op? op) (reduce-ir-children (fn [ok c] (and ok (pure? c))) true node)
       :else false)))
 
 (defn- const-key-map? [node]
@@ -340,7 +305,12 @@
   "Does local nm escape in node — i.e. is it used anywhere other than as the
   subject of a constant-keyword lookup? Precise over straight-line expression
   ops; conservatively true for loop/fn/try/recur/def (and any rebinding of nm),
-  so scalar replacement only fires where the whole use region is simple."
+  so scalar replacement only fires where the whole use region is simple.
+
+  Stays an explicit per-op walk (not the shared reduce-ir-children fold): its
+  default is conservatively TRUE, and the lookup-subject and rebinding cases
+  inspect node shape beyond child purity — folding an unhandled op over its
+  children would under-report escape and is unsound for scalar replacement."
   [node nm]
   (let [op (get node :op)
         k (lookup-key node nm)]

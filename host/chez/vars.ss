@@ -45,8 +45,7 @@
 (set! jolt-pr-str (lambda (x) (if (var-cell? x) (var->str x) (%v-pr-str x))))
 (define %v-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (var-cell? x) (var->str x) (%v-pr-readable x))))
-(define %v-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (var-cell? x) (var->str x) (%v-str-render-one x))))
+(register-str-render! var-cell? var->str)
 
 ;; bound? — native (the overlay's (get v :root) is nil on a var-cell record).
 (define (jolt-var-bound-one? v) (and (var-cell? v) (not (eq? (var-cell-root v) jolt-unbound))))

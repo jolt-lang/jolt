@@ -221,9 +221,7 @@
 
 ;; --- str / type / instance? integration ------------------------------------
 ;; str of a jfile is its path (Clojure's File.toString).
-(define %io-str-render jolt-str-render-one)
-(set! jolt-str-render-one
-  (lambda (v) (if (jfile? v) (jfile-path v) (%io-str-render v))))
+(register-str-render! jfile? jfile-path)
 
 ;; stdin line seam: the clojure.core *in* reader (50-io.clj) drives read-line /
 ;; read / read+string through __stdin-read-line. Return the next line (newline
@@ -241,16 +239,14 @@
 
 ;; (instance? java.io.File f): the instance? macro passes the class-name symbol;
 ;; match "File" / "java.io.File" (and any *.File) against a jfile.
-(define %io-instance-check instance-check)
-(set! instance-check
+(register-instance-check-arm!
   (lambda (type-sym val)
     (let ((tname (symbol-t-name type-sym)))
       (if (and (jfile? val)
                (or (string=? tname "File") (string=? tname "java.io.File")
                    (string=? (path-last-segment tname) "File")))
           #t
-          (%io-instance-check type-sym val)))))
-(def-var! "clojure.core" "instance-check" instance-check)
+          'pass))))
 
 ;; --- def-var! the native names the overlay file-seq + str/slurp use ----
 (def-var! "clojure.core" "__make-file" jolt-make-file)
@@ -260,18 +256,6 @@
 (def-var! "clojure.core" "slurp" jolt-slurp)
 (def-var! "clojure.core" "spit" jolt-spit)
 (def-var! "clojure.core" "flush" jolt-flush)
-
-;; --- char-array: a seq of chars over a string (the JVM char[]). io/reader's
-;; char[] branch + selmer's (char-array template) feed on this.
-;; char-array (string -> chars). A leaf array native; lives here as io/reader
-;; is its only Chez consumer so far.
-(define (jolt-char-array a . rest)
-  (cond
-    ((string? a) (list->cseq (string->list a)))
-    ((number? a) (list->cseq (make-list (exact (truncate a)) #\nul)))
-    (else (list->cseq (map (lambda (c) (if (char? c) c (integer->char (exact (truncate c)))))
-                           (seq->list a))))))
-(def-var! "clojure.core" "char-array" jolt-char-array)
 
 ;; --- with-open's close seam (__close): a map-like value closes via its :close
 ;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
@@ -323,7 +307,8 @@
 ;; --- clojure.java.io ns -----------------------------------------------------
 (def-var! "clojure.java.io" "file" jolt-make-file)
 (def-var! "clojure.java.io" "as-file" (lambda (x) (if (jfile? x) x (make-jfile (file-path-of x)))))
-(def-var! "clojure.java.io" "reader" jolt-io-reader)
+;; "reader" is bound by natives-array.ss (loaded later) so a char[] argument is
+;; handled; that binding delegates here via jolt-io-reader for everything else.
 (def-var! "clojure.java.io" "writer" jolt-io-writer)
 (def-var! "clojure.java.io" "input-stream" jolt-io-reader)
 (def-var! "clojure.java.io" "output-stream" jolt-io-writer)
@@ -486,9 +471,8 @@
         (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri")
                                           (string=? (uri-field u 'string) (uri-field o 'string)))))))
 ;; str / pr-str of a uri -> its string form.
-(define %uri-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one
-  (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri")) (uri-field x 'string) (%uri-str-render-one x))))
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
+                      (lambda (x) (uri-field x 'string)))
 (define %uri-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable
   (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri"))

@@ -46,15 +46,13 @@
 (define (jolt-seq-or-empty x) (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-empty-list s)))
 (define %q-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (jolt-queue? x) (%q-pr-readable (jolt-seq-or-empty x)) (%q-pr-readable x))))
-(define %q-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (jolt-queue? x) (%q-str-render-one (jolt-seq-or-empty x)) (%q-str-render-one x))))
+(register-str-render! jolt-queue? (lambda (x) (jolt-str-render-one (jolt-seq-or-empty x))))
 
 ;; class / type / instance? recognize a queue.
 (define %q-class jolt-class)
 (set! jolt-class (lambda (x) (if (jolt-queue? x) "clojure.lang.PersistentQueue" (%q-class x))))
 (def-var! "clojure.core" "class" jolt-class)
-(define %q-instance-check instance-check)
-(set! instance-check
+(register-instance-check-arm!
   (lambda (type-sym val)
     (if (jolt-queue? val)
         (let ((tn (cond ((string? type-sym) type-sym)
@@ -62,8 +60,7 @@
           (and (member (last-dot tn)
                        '("PersistentQueue" "IPersistentCollection" "Sequential" "Collection" "Object"))
                #t))
-        (%q-instance-check type-sym val))))
-(def-var! "clojure.core" "instance-check" instance-check)
+        'pass)))
 
 ;; clojure.lang.PersistentQueue/EMPTY + a queue? predicate.
 (register-class-statics! "PersistentQueue" (list (cons "EMPTY" jolt-queue-empty)))

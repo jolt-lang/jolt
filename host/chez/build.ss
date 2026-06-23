@@ -27,9 +27,12 @@
       (let ((l (get-line in)))
         (if (eof-object? l)
             (begin (close-port in)
-                   (let ((s (apply string-append (reverse acc))))
-                     ;; trim a trailing newline-equivalent (we joined without them)
-                     s))
+                   ;; rejoin with newlines (get-line stripped them). Callers use
+                   ;; single-line output; this just avoids silently concatenating
+                   ;; two lines into one corrupt token if a command emits more.
+                   (let ((ls (reverse acc)))
+                     (if (null? ls) ""
+                         (fold-left (lambda (s x) (string-append s "\n" x)) (car ls) (cdr ls)))))
             (loop (cons l acc)))))))
 
 (define (bld-system cmd)
@@ -138,36 +141,16 @@
   (for-each (lambda (l) (bld-inline-line l out 0)) bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
-;; Re-emit one app namespace to a list of Scheme strings. Like emit-image's
-;; ei-emit-ns but WITHOUT the silent (guard ...) wrapper — a form that fails to
-;; emit must fail the build, not vanish.
-(define (bld-emit-ns ns-name src)
-  (let loop ((forms (ei-read-all src)) (acc '()))
-    (if (null? forms)
-        (reverse acc)
-        (let ((f (car forms)))
-          (ce-scan-requires! f ns-name)
-          (cond
-            ((ei-ns-form? f) (loop (cdr forms) acc))
-            ((ce-macro-form? f)
-             (let-values (((nm fn-form) (ce-defmacro->fn f)))
-               (let ((scm (let ((ctx (make-analyze-ctx ns-name)))
-                            (jolt-ce-emit (jolt-ce-analyze ctx fn-form)))))
-                 (loop (cdr forms)
-                       (cons (string-append
-                               "(def-var! " (ei-str-lit ns-name) " " (ei-str-lit nm) "\n  "
-                               scm ")\n(mark-macro! "
-                               (ei-str-lit ns-name) " " (ei-str-lit nm) ")")
-                             acc)))))
-            (else
-             (let* ((ctx (make-analyze-ctx ns-name))
-                    (scm (jolt-ce-emit (jolt-ce-analyze ctx f))))
-               (loop (cdr forms) (cons scm acc)))))))))
+;; Re-emit one app namespace to a list of Scheme strings: optimize (run-passes)
+;; and stay strict — a form that fails to emit must fail the build, not vanish.
+;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
+(define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
 ;; --- the build --------------------------------------------------------------
 ;; entry-ns: the app's main namespace (a string). out-path: the binary to write.
-;; mode: "dev" | "release" | "optimized" (recorded; optimization passes wired in a
-;; later stage). Deps + source roots are already applied by the caller.
+;; mode: "dev" | "release" | "optimized". Every form runs through jolt.passes/
+;; run-passes (const-fold always; inline + type inference when optimized turns on
+;; direct-linking). Deps + source roots are already applied by the caller.
 (define (build-binary entry-ns out-path mode)
   (bld-check-toolchain)
   ;; 1. record app namespaces in dependency order as they finish loading.
@@ -181,9 +164,7 @@
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
       ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
-      ;; + scalar-replace passes (closed world). release/dev stay on proven
-      ;; var-deref codegen until those passes are validated on Chez — they were
-      ;; dormant before `jolt build` (inline-enabled? was hardwired off).
+      ;; + scalar-replace passes (closed world); release/dev get const-fold only.
       (set-optimize! (string=? mode "optimized"))
       (let* ((app-strs (apply append
                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))

@@ -96,15 +96,6 @@
   [s]
   (str-trimr s))
 
-(defn trim-newline
-  
-  [s]
-  (var result s)
-  (while (or (= (subs result (dec (count result))) "\n")
-             (= (subs result (dec (count result))) "\r"))
-    (set result (subs result 0 (dec (count result)))))
-  result)
-
 (defn escape
   
   [s cmap]

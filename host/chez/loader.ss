@@ -35,15 +35,17 @@
        (loop (cdr cs) '() (cons (list->string (reverse seg)) segs)))
       (else (loop (cdr cs) (cons (car cs) seg) segs)))))
 
-(define (find-ns-file name)
-  (let ((rel (ns-name->rel name)))
-    (let loop ((roots source-roots))
-      (if (null? roots) #f
-          (let ((clj  (string-append (car roots) "/" rel ".clj"))
-                (cljc (string-append (car roots) "/" rel ".cljc")))
-            (cond ((file-exists? clj) clj)
-                  ((file-exists? cljc) cljc)
-                  (else (loop (cdr roots)))))))))
+;; First existing <root>/rel.clj or <root>/rel.cljc on the search roots, else #f.
+(define (resolve-on-roots rel)
+  (let loop ((roots source-roots))
+    (if (null? roots) #f
+        (let ((clj  (string-append (car roots) "/" rel ".clj"))
+              (cljc (string-append (car roots) "/" rel ".cljc")))
+          (cond ((file-exists? clj) clj)
+                ((file-exists? cljc) cljc)
+                (else (loop (cdr roots))))))))
+
+(define (find-ns-file name) (resolve-on-roots (ns-name->rel name)))
 
 ;; --- the loaded set ---------------------------------------------------------
 ;; Seeded with every namespace that already has vars at load time — the baked
@@ -170,15 +172,10 @@
   (for-each
     (lambda (p)
       (let* ((rel (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
-                      (substring p 1 (string-length p)) p)))
-        (let loop ((roots source-roots))
-          (if (null? roots)
-              (error #f "Could not locate resource on source roots" p)
-              (let ((clj  (string-append (car roots) "/" rel ".clj"))
-                    (cljc (string-append (car roots) "/" rel ".cljc")))
-                (cond ((file-exists? clj) (load-jolt-file clj))
-                      ((file-exists? cljc) (load-jolt-file cljc))
-                      (else (loop (cdr roots)))))))))
+                      (substring p 1 (string-length p)) p))
+             (f (resolve-on-roots rel)))
+        (if f (load-jolt-file f)
+            (error #f "Could not locate resource on source roots" p))))
     paths)
   jolt-nil)
 (def-var! "clojure.core" "load" jolt-load)

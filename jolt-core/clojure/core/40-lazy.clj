@@ -76,13 +76,11 @@
      (mapi 0 coll))))
 
 ;; --- cycle ---
+;; Lazy, like the JVM: never counts coll, so it terminates on a lazy/infinite
+;; argument instead of forcing it.
 (defn cycle [coll]
-  (if-let [vals (seq coll)]
-    (let [n (count vals)]
-      (letfn [(cstep [i]
-                (lazy-seq
-                  (cons (nth vals (mod i n)) (cstep (inc i)))))]
-        (cstep 0)))
+  (if (seq coll)
+    (lazy-seq (concat coll (cycle coll)))
     ()))
 
 ;; --- repeatedly --- ((f) throws on a non-fn; (take n …) throws on a non-number
