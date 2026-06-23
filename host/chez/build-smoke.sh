@@ -78,4 +78,18 @@ fi
 if ! grep -q '(jv\$app.util\$shout' "$out.build/flat.ss"; then
   echo "  FAIL: --direct-link did not emit a direct app->app call"; exit 1
 fi
-echo "build smoke: passed (release + optimized + direct-link)"
+# Tree-shaking (opt-in): same result, and an unreachable def (the `twice` macro,
+# expanded at AOT and never called at runtime) is dropped.
+if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --tree-shake >/dev/null 2>&1; then
+  echo "  FAIL: jolt build --tree-shake exited non-zero"; exit 1
+fi
+got_ts="$(cd / && "$out" alpha bb ccc 2>&1)"
+if [ "$got_ts" != "$want" ]; then
+  echo "  FAIL: --tree-shake binary output mismatch"
+  echo "--- got ----"; echo "$got_ts"
+  exit 1
+fi
+if grep -q 'def-var! "app.util" "twice"' "$out.build/flat.ss"; then
+  echo "  FAIL: --tree-shake did not drop the unreachable twice macro"; exit 1
+fi
+echo "build smoke: passed (release + optimized + direct-link + tree-shake)"

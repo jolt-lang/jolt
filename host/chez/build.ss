@@ -146,6 +146,51 @@
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
+;; Tree-shake the re-emitted forms: keep every non-def form (side effects) + every
+;; def reachable from -main and from those forms; drop the rest. Bails to keep-all
+;; if any form resolves vars by name at runtime. `records` is the ei-emit-ns-records
+;; output across all app namespaces; returns the kept Scheme strings in order.
+(define (bld-tree-shake records entry-main)
+  (let ((edges (make-hashtable string-hash string=?))
+        (roots '()))
+    (for-each (lambda (r)
+                (if (vector-ref r 0)
+                    (set! roots (append (vector-ref r 2) roots))
+                    (hashtable-set! edges (vector-ref r 1) (vector-ref r 2))))
+              records)
+    ;; reachability from -main + every side-effecting form's refs.
+    (let ((reached (make-hashtable string-hash string=?)))
+      (let bfs ((work (cons entry-main roots)))
+        (unless (null? work)
+          (let ((fq (car work)))
+            (if (hashtable-ref reached fq #f)
+                (bfs (cdr work))
+                (begin (hashtable-set! reached fq #t)
+                       (bfs (append (or (hashtable-ref edges fq #f) '()) (cdr work))))))))
+      (let ((kept? (lambda (r) (or (vector-ref r 0) (hashtable-ref reached (vector-ref r 1) #f))))
+            (bail #f))
+        ;; bail only if REACHABLE code resolves vars by name — then the static call
+        ;; graph is incomplete and dropping anything is unsound. Unreached eval-using
+        ;; library code is simply shaken away and never triggers the bail.
+        (for-each (lambda (r)
+                    (when (and (kept? r)
+                               (ormap (lambda (b) (and (member b (vector-ref r 2)) #t)) dce-bail-refs))
+                      (set! bail #t)))
+                  records)
+        (if bail
+            (begin (display "jolt build: tree-shake skipped (reachable code resolves vars at runtime)\n")
+                   (map (lambda (r) (vector-ref r 3)) records))
+            (let ((kept '()) (ndef 0) (nkeep 0))
+              (for-each (lambda (r)
+                          (when (vector-ref r 1) (set! ndef (+ ndef 1)))
+                          (when (kept? r)
+                            (when (vector-ref r 1) (set! nkeep (+ nkeep 1)))
+                            (set! kept (cons (vector-ref r 3) kept))))
+                        records)
+              (display (string-append "jolt build: tree-shake kept " (number->string nkeep)
+                                      " of " (number->string ndef) " defs\n"))
+              (reverse kept)))))))
+
 ;; --- bundling: native libs + resources --------------------------------------
 ;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
 (define (bld-strs x) (map jolt-str-render-one (seq->list x)))
@@ -214,7 +259,7 @@
 ;; direct-link?: opt-in closed-world direct-linking (app->app calls bind directly,
 ;; no runtime redefinition). Off by default in every mode — release stays
 ;; dynamically linked.
-(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link?)
+(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake?)
   (bld-check-toolchain)
   ;; 1. record app namespaces in dependency order as they finish loading.
   (let ((app-order '()))
@@ -237,9 +282,15 @@
       (when direct-link?
         ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
         ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
-      (let* ((app-strs (apply append
-                         (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))
-                              ordered)))
+      (let* ((app-strs (if tree-shake?
+                           (bld-tree-shake
+                             (apply append
+                               (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf))))
+                                    ordered))
+                             (string-append entry-ns "/-main"))
+                           (apply append
+                             (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))
+                                  ordered))))
              (_ (set-optimize! #f))
              (_ ((var-deref "jolt.backend-scheme" "set-direct-link!") #f))
              (builddir (string-append out-path ".build"))
@@ -329,9 +380,9 @@
         (display (string-append "jolt build: wrote " out-path "\n"))))))
 
 (def-var! "jolt.host" "build-binary"
-  (lambda (entry out mode natives embed-dirs ext-roots direct-link?)
+  (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)
     (build-binary (jolt-str-render-one entry)
                   (jolt-str-render-one out)
                   (jolt-str-render-one mode)
-                  natives embed-dirs ext-roots (jolt-truthy? direct-link?))
+                  natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?))
     jolt-nil))
