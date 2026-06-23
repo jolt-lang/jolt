@@ -158,21 +158,18 @@
 (set! jolt-type (lambda (x) (if (jolt-array? x) (na-array-class-name x) (%na-type x))))
 (def-var! "clojure.core" "type" jolt-type)
 
-;; instance? over an array class token ([I, [C, …). The token reaches us as a
-;; string (Class/forName "[C") or symbol; normalize, and pass a non-array string
-;; token on as a symbol so the inner wrappers' symbol-t-name doesn't choke.
-(define %na-instance-check instance-check)
-(set! instance-check
+;; instance? over an array class token ([I, [C, …). An array token reaches us as
+;; a string ("[C", from (Class/forName "[C")) — the dispatcher leaves it a string
+;; (non-array string tokens are already normalized to symbols there); decide it
+;; here, deferring everything else.
+(register-instance-check-arm!
   (lambda (type-sym val)
     (let ((tname (cond ((string? type-sym) type-sym)
                        ((symbol-t? type-sym) (symbol-t-name type-sym))
                        (else #f))))
-      (cond
-        ((and tname (> (string-length tname) 0) (char=? (string-ref tname 0) #\[))
-         (and (jolt-array? val) (string=? (na-array-class-name val) tname)))
-        ((string? type-sym) (%na-instance-check (jolt-symbol #f type-sym) val))
-        (else (%na-instance-check type-sym val))))))
-(def-var! "clojure.core" "instance-check" instance-check)
+      (if (and tname (> (string-length tname) 0) (char=? (string-ref tname 0) #\[))
+          (and (jolt-array? val) (string=? (na-array-class-name val) tname))
+          'pass))))
 
 ;; clojure.java.io/reader over a char-array reads its chars (the JVM char[] branch).
 (def-var! "clojure.java.io" "reader"

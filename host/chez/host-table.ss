@@ -160,8 +160,7 @@
 (set! jolt-pr-readable (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-pr-readable) (%h-pr-readable x))))
 (define %h-pr-str jolt-pr-str)
 (set! jolt-pr-str (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-pr-str) (%h-pr-str x))))
-(define %h-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-str-render-one) (%h-str-render-one x))))
+(register-str-render! htable-sorted? (lambda (x) (sorted-render x jolt-str-render-one)))
 
 ;; --- protocol dispatch over builtins (extend-protocol Map/Set on sorted) ------
 ;; value-host-tags (records.ss) drives extend-protocol on host values; a

@@ -255,8 +255,7 @@
 (set! jolt-pr-str (lambda (x) (if (jinst? x) (inst-pr x) (%it-pr-str x))))
 (define %it-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (jinst? x) (inst-pr x) (%it-pr-readable x))))
-(define %it-str-render jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (jinst? x) (inst-rfc3339 x) (%it-str-render x))))
+(register-str-render! jinst? inst-rfc3339)
 
 (define %it-type jolt-type)
 (set! jolt-type (lambda (x) (if (jinst? x) inst-type-kw (%it-type x))))
@@ -266,8 +265,7 @@
 ;; matching jhost tag. The instance? macro passes the class-name symbol.
 (define (class-short tn) (let loop ((i (- (string-length tn) 1)))
                            (cond ((< i 0) tn) ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn))) (else (loop (- i 1))))))
-(define %it-instance-check instance-check)
-(set! instance-check
+(register-instance-check-arm!
   (lambda (type-sym val)
     (let ((tn (class-short (symbol-t-name type-sym))))
       (cond
@@ -275,11 +273,10 @@
         ;; (on the JVM a Date is not a Timestamp), so answer Timestamp explicitly #f.
         ((jinst? val) (cond ((string=? tn "Date") #t)
                             ((string=? tn "Timestamp") #f)
-                            (else (%it-instance-check type-sym val))))
-        ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t (%it-instance-check type-sym val)))
-        ((and (jhost? val) (string=? (jhost-tag val) "local-dt")) (if (string=? tn "LocalDateTime") #t (%it-instance-check type-sym val)))
-        (else (%it-instance-check type-sym val))))))
-(def-var! "clojure.core" "instance-check" instance-check)
+                            (else 'pass)))
+        ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t 'pass))
+        ((and (jhost? val) (string=? (jhost-tag val) "local-dt")) (if (string=? tn "LocalDateTime") #t 'pass))
+        (else 'pass)))))
 
 ;; inst-ms* is a seed native (the overlay inst-ms reads (get x :ms), now answered).
 (def-var! "clojure.core" "inst-ms*" (lambda (i) (jinst-ms i)))

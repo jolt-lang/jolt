@@ -410,14 +410,11 @@
 ;; jolt exception values (ex-info + host-constructed throwables) are ex-info-shaped
 ;; maps tagged :jolt/type :jolt/ex-info; (class …)/instance? read the JVM class off
 ;; the optional :jolt/class key, defaulting to clojure.lang.ExceptionInfo.
-(define %r-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one
+(register-str-render! jrec?
   (lambda (v)
-    (if (jrec? v)
-        (let ((f (find-protocol-method (jrec-tag v) "Object" "toString")))
-          (if f (jolt-invoke f v)
-              (let ((s (jrec-pr v))) (substring s 1 (string-length s)))))
-        (%r-str-render-one v))))
+    (let ((f (find-protocol-method (jrec-tag v) "Object" "toString")))
+      (if f (jolt-invoke f v)
+          (let ((s (jrec-pr v))) (substring s 1 (string-length s)))))))
 
 ;; `type` lives in natives-meta.ss: it needs jolt-meta for the :type
 ;; override and a total value->taxonomy mapping, so it sits with meta — a record

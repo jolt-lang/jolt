@@ -49,8 +49,17 @@
           ((and (string=? c "ExceptionInfo") (string=? wanted "IExceptionInfo")) #t)
           (else (let ((p (assoc c exception-parent))) (loop (and p (cdr p))))))))
 
-;; instance-check: (type-sym val) — type/protocol membership.
-(define (instance-check type-sym val)
+;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded
+;; later (io, inst-time, natives-array, natives-queue, host-static-objects)
+;; register an arm with register-instance-check-arm! instead of set!-wrapping
+;; instance-check; an arm returns #t/#f to decide or 'pass to defer to the next.
+;; Newest arm is checked first (matches the old outermost-wins set! order).
+;; instance-check-base is the JVM taxonomy fallback when no arm decides.
+(define instance-check-registry '())
+(define (register-instance-check-arm! f)   ; f: (type-sym val) -> #t | #f | 'pass
+  (set! instance-check-registry (cons f instance-check-registry)))
+
+(define (instance-check-base type-sym val)
   (let ((tname (symbol-t-name type-sym)))
     (cond
       ((jrec? val)
@@ -62,6 +71,21 @@
                        (and (memp (lambda (p) (string=? (last-dot p) short)) (jreify-protos val)) #t)))
       ((ex-info-map? val) (exception-isa? (last-dot (ex-info-class val)) (last-dot tname)))
       (else (case-string tname val)))))
+
+(define (instance-check type-sym val)
+  ;; normalize a bare (non-array) string class token to a symbol so every arm and
+  ;; the base table can read its name; array tokens ("[I") stay strings for the
+  ;; natives-array arm.
+  (let ((ts (if (and (string? type-sym)
+                     (or (= 0 (string-length type-sym))
+                         (not (char=? (string-ref type-sym 0) #\[))))
+                (jolt-symbol #f type-sym)
+                type-sym)))
+    (let loop ((rs instance-check-registry))
+      (if (null? rs)
+          (instance-check-base ts val)
+          (let ((r ((car rs) ts val)))
+            (if (eq? r 'pass) (loop (cdr rs)) r))))))
 (define (case-string tname val)
   (cond
     ((member tname '("Number" "java.lang.Number")) (number? val))

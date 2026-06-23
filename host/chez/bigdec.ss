@@ -68,8 +68,7 @@
         (else (%bd-jolt=2 a b)))))
 
 ;; str drops the M; pr/pr-str keep it.
-(define %bd-str-render jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (jbigdec? x) (jbigdec->string x) (%bd-str-render x))))
+(register-str-render! jbigdec? jbigdec->string)
 (define %bd-pr-str jolt-pr-str)
 (set! jolt-pr-str (lambda (x) (if (jbigdec? x) (string-append (jbigdec->string x) "M") (%bd-pr-str x))))
 (define %bd-pr-readable jolt-pr-readable)

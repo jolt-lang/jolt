@@ -348,5 +348,4 @@
 (set! jolt-pr-str (lambda (x) (if (jns? x) (jns-name x) (%ns-pr-str x))))
 (define %ns-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (jns? x) (jns-name x) (%ns-pr-readable x))))
-(define %ns-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (jns? x) (jns-name x) (%ns-str-render-one x))))
+(register-str-render! jns? jns-name)

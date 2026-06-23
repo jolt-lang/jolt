@@ -51,8 +51,7 @@
 ;; the prelude would clobber a def-var! here — they're asserted in post-prelude.ss.
 
 ;; str of a uuid -> the bare 36-char string; pr-str -> #uuid "…".
-(define %m-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (juuid? x) (juuid-s x) (%m-str-render-one x))))
+(register-str-render! juuid? juuid-s)
 (define (juuid-pr u) (string-append "#uuid \"" (juuid-s u) "\""))
 (define %m-pr-str jolt-pr-str)
 (set! jolt-pr-str (lambda (x) (if (juuid? x) (juuid-pr x) (%m-pr-str x))))

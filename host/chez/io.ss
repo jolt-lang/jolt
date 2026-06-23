@@ -221,9 +221,7 @@
 
 ;; --- str / type / instance? integration ------------------------------------
 ;; str of a jfile is its path (Clojure's File.toString).
-(define %io-str-render jolt-str-render-one)
-(set! jolt-str-render-one
-  (lambda (v) (if (jfile? v) (jfile-path v) (%io-str-render v))))
+(register-str-render! jfile? jfile-path)
 
 ;; stdin line seam: the clojure.core *in* reader (50-io.clj) drives read-line /
 ;; read / read+string through __stdin-read-line. Return the next line (newline
@@ -241,16 +239,14 @@
 
 ;; (instance? java.io.File f): the instance? macro passes the class-name symbol;
 ;; match "File" / "java.io.File" (and any *.File) against a jfile.
-(define %io-instance-check instance-check)
-(set! instance-check
+(register-instance-check-arm!
   (lambda (type-sym val)
     (let ((tname (symbol-t-name type-sym)))
       (if (and (jfile? val)
                (or (string=? tname "File") (string=? tname "java.io.File")
                    (string=? (path-last-segment tname) "File")))
           #t
-          (%io-instance-check type-sym val)))))
-(def-var! "clojure.core" "instance-check" instance-check)
+          'pass))))
 
 ;; --- def-var! the native names the overlay file-seq + str/slurp use ----
 (def-var! "clojure.core" "__make-file" jolt-make-file)
@@ -475,9 +471,8 @@
         (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri")
                                           (string=? (uri-field u 'string) (uri-field o 'string)))))))
 ;; str / pr-str of a uri -> its string form.
-(define %uri-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one
-  (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri")) (uri-field x 'string) (%uri-str-render-one x))))
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
+                      (lambda (x) (uri-field x 'string)))
 (define %uri-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable
   (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri"))

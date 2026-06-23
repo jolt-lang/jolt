@@ -487,16 +487,14 @@
 ;; Pluggable instance? — a library registers (fn [class-name-string val] -> true
 ;; | false | nil); nil means "not my class, fall through". First non-nil wins.
 (define user-instance-checks '())
-(define %hs-instance-check instance-check)
-(set! instance-check
+(register-instance-check-arm!
   (lambda (type-sym val)
     (let ((tname (symbol-t-name type-sym)))
       (let loop ((fs user-instance-checks))
         (if (null? fs)
-            (%hs-instance-check type-sym val)
+            'pass
             (let ((r ((car fs) tname val)))
               (if (jolt-nil? r) (loop (cdr fs)) (if (jolt-truthy? r) #t #f))))))))
-(def-var! "clojure.core" "instance-check" instance-check)
 (def-var! "clojure.core" "__register-instance-check!"
   (lambda (f) (set! user-instance-checks (append user-instance-checks (list f))) jolt-nil))
 

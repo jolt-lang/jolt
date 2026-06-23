@@ -69,8 +69,7 @@
 (set! jolt-pr-str (lambda (x) (if (jolt-lazyseq? x) (%ls-pr-str (jolt-seq x)) (%ls-pr-str x))))
 (define %ls-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (jolt-lazyseq? x) (%ls-pr-readable (jolt-seq x)) (%ls-pr-readable x))))
-(define %ls-str-render-one jolt-str-render-one)
-(set! jolt-str-render-one (lambda (x) (if (jolt-lazyseq? x) (%ls-str-render-one (jolt-seq x)) (%ls-str-render-one x))))
+(register-str-render! jolt-lazyseq? (lambda (x) (jolt-str-render-one (jolt-seq x))))
 
 ;; seq? — a lazy seq IS a seq (predicates.ss's jolt-seq? predates the lazyseq
 ;; record). Unlike the native-op dispatchers above (called via a direct top-level
