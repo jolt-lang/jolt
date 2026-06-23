@@ -4,7 +4,7 @@
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir]]
-            [jolt.ir :refer [map-ir-children reduce-ir-children]]
+            [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
             [jolt.passes.fold :refer [scalar-const?]]))
 
 ;; ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@
   ;; is rejected by body-size below and never inlined or alpha-renamed.
   (or (= op :const) (= op :local) (= op :var) (= op :host) (= op :the-var)
       (= op :quote) (= op :if) (= op :do) (= op :let) (= op :invoke)
-      (= op :map) (= op :vector) (= op :set) (= op :throw)))
+      (= op :map) (= op :vector) (= op :set) (= op :throw) (= op :coerce)))
 
 (def ^:private inline-budget 120)
 
@@ -141,6 +141,8 @@
         (if stash
           (let [params (get stash :params)
                 body (get stash :body)
+                nh (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1))) {} (get stash :nhints))
+                ret (get stash :ret)
                 args (get node :args)]
             (if (and (= (count params) (count args))
                      (<= (body-size body) inline-budget)
@@ -149,19 +151,25 @@
                     ;; trivial args (local/const) substitute straight in (copy
                     ;; propagation); the rest get a fresh local bound once in a
                     ;; wrapping let, so they evaluate exactly once in source order.
+                    ;; A ^double/^long param always binds (no copy-prop) so its
+                    ;; entry coercion runs — preserving the called fn's semantics.
                     res (loop [i 0 env {} binds []]
                           (if (< i n)
-                            (let [p (nth params i) a (nth args i)]
-                              (if (trivial-arg? a)
-                                (recur (inc i) (assoc env p a) binds)
-                                (let [f (fresh p)]
-                                  (recur (inc i)
-                                         (assoc env p {:op :local :name f})
-                                         (conj binds [f a])))))
+                            (let [p (nth params i) a (nth args i) k (get nh p)]
+                              (cond
+                                k (let [f (fresh p)]
+                                    (recur (inc i) (assoc env p {:op :local :name f})
+                                           (conj binds [f (coerce-node k a)])))
+                                (trivial-arg? a) (recur (inc i) (assoc env p a) binds)
+                                :else (let [f (fresh p)]
+                                        (recur (inc i) (assoc env p {:op :local :name f})
+                                               (conj binds [f a])))))
                             [env binds]))
                     env (nth res 0)
                     binds (nth res 1)
-                    rbody (subst body env)]
+                    rbody0 (subst body env)
+                    ;; preserve the fn's ^double/^long return coercion.
+                    rbody (if ret (coerce-node ret rbody0) rbody0)]
                 (mark!)
                 (if (= 0 (count binds))
                   rbody

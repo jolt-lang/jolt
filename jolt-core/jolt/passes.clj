@@ -13,7 +13,7 @@
   :refer, so jolt.passes stays the only namespace the back end imports.
 
   Portable Clojure: kernel-tier fns + seed primitives only."
-  (:require [jolt.host :refer [inline-enabled? record-shapes]]
+  (:require [jolt.host :refer [inline-enabled? record-shapes stash-inline!]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
@@ -28,6 +28,17 @@
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
 (def ^:private inline-fixpoint-cap 8)
 
+;; A top-level defn the inline pass may splice: a single fixed arity (no rest). The
+;; pass itself checks body size + closedness, so any such fn is stashable.
+(defn- inline-eligible? [node]
+  (and (= :def (:op node)) (:init node) (= :fn (:op (:init node)))
+       (= 1 (count (:arities (:init node))))
+       (not (:rest (first (:arities (:init node)))))))
+
+(defn- stash-of [node]
+  (let [a (first (:arities (:init node)))]
+    {:params (:params a) :body (:body a) :nhints (:nhints a) :ret (:ret-nhint a)}))
+
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form. When
   inlining is enabled for the unit (user code under direct-linking),
@@ -40,6 +51,10 @@
   numeric/annotate runs last in both branches (hint-directed fl*/fx* arithmetic);
   it benefits open builds too, so it is not gated on inlining."
   [node ctx]
+  ;; stash an inline-eligible defn so later call sites can splice it (closed-world
+  ;; optimization only). Done before optimizing, from the analyzed node.
+  (when (and (inline-enabled? ctx) (inline-eligible? node))
+    (stash-inline! ctx (:ns node) (:name node) (stash-of node)))
   (numeric/annotate
     (if (inline-enabled? ctx)
       (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold

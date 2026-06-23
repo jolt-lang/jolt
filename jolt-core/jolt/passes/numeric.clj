@@ -66,6 +66,41 @@
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
 
+;; The recur-arg NODE lists for the recurs at THIS loop level (structural, no env),
+;; parallel to recur-kinds. Used to recognise a counter.
+(defn- recur-arg-lists [node]
+  (let [op (get node :op)]
+    (cond
+      (= op :recur) [(get node :args)]
+      (= op :let) (recur-arg-lists (get node :body))
+      (= op :if) (concat (recur-arg-lists (get node :then)) (recur-arg-lists (get node :else)))
+      (= op :do) (recur-arg-lists (get node :ret))
+      :else [])))
+
+;; Is `arg` an increment-style step of loop var `vname`: the var unchanged, or
+;; inc/dec/unchecked-inc/dec, or (+/- var <int-literal>)? Bounded growth that a
+;; fixnum-range counter can sustain for any realistic loop — unlike (* acc x), which
+;; overflows fast, so a multiplicative accumulator never qualifies and stays
+;; arbitrary-precision.
+(defn- counter-step? [arg vname]
+  (cond
+    (and (= :local (get arg :op)) (= vname (get arg :name))) true
+    (= :invoke (get arg :op))
+    (let [f (get arg :fn) as (get arg :args)]
+      (and (= :var (get f :op)) (= "clojure.core" (get f :ns))
+           (let [nm (get f :name)
+                 v? (fn [n] (and (= :local (get n :op)) (= vname (get n :name))))]
+             (cond
+               (and (contains? #{"inc" "dec" "unchecked-inc" "unchecked-dec"} nm) (= 1 (count as)))
+               (v? (nth as 0))
+               (and (contains? #{"+" "unchecked-add"} nm) (= 2 (count as)))
+               (or (and (v? (nth as 0)) (int-lit? (nth as 1)))
+                   (and (v? (nth as 1)) (int-lit? (nth as 0))))
+               (and (contains? #{"-" "unchecked-subtract"} nm) (= 2 (count as)))
+               (and (v? (nth as 0)) (int-lit? (nth as 1)))
+               :else false))))
+    :else false))
+
 ;; Loop-var kinds by bounded fixpoint. A var keeps its init kind (:double or :long)
 ;; only if every recur arg in that slot is the same kind (under the current
 ;; assumption) — a monotone demotion that stops at a fixpoint, bounded by the var
@@ -73,8 +108,8 @@
 ;; keeps arbitrary precision (no :long from a bare literal). A typed loop var's init
 ;; and recur args are all flonums/fixnums (a :long init flows from a coerced ^long
 ;; value or an fx op), so no entry coercion is needed here, unlike a fn param.
-(defn- loop-kinds [names ik body tenv]
-  (loop [cur ik iter 0]
+(defn- loop-kinds [names seed body tenv]
+  (loop [cur seed iter 0]
     (if (> iter (count names))
       cur
       (let [te (reduce (fn [t i] (assoc t (nth names i) (nth cur i))) tenv (range (count names)))
@@ -137,6 +172,7 @@
     (cond
       (= op :const) [(if (float-lit? node) :double nil) node]
       (= op :local) [(get tenv (get node :name)) node]
+      (= op :coerce) [(get node :kind) (assoc node :expr (nth (an (get node :expr) tenv) 1))]
       (= op :invoke) (an-invoke node tenv)
       (= op :let)
       (let [res (reduce (fn [acc b]
@@ -151,7 +187,24 @@
       (let [binds (get node :bindings)
             names (mapv (fn [b] (nth b 0)) binds)
             ik (mapv (fn [b] (nth (an (nth b 1) tenv) 0)) binds)
-            lk (loop-kinds names ik (get node :body) tenv)
+            rlists (recur-arg-lists (get node :body))
+            ;; seed each var: an already-typed init keeps its kind; an integer-literal
+            ;; init whose recur args are all counter steps is a fixnum counter (:long).
+            seed (mapv (fn [j]
+                         (let [k (nth ik j) b (nth binds j)]
+                           (cond
+                             k k
+                             ;; an int-literal var is a fixnum counter only in a real
+                             ;; iterating loop (>= 1 recur) whose every step is bounded.
+                             ;; A recur-less loop is a let — its int literal stays
+                             ;; generic (arbitrary precision), like a let binding.
+                             (and (seq rlists)
+                                  (int-lit? (nth b 1))
+                                  (every? (fn [args] (counter-step? (nth args j) (nth b 0))) rlists))
+                             :long
+                             :else nil)))
+                       (range (count names)))
+            lk (loop-kinds names seed (get node :body) tenv)
             te (reduce (fn [t i] (assoc t (nth names i) (nth lk i))) tenv (range (count names)))]
         [nil (assoc node
                     :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)

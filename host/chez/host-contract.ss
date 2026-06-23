@@ -300,7 +300,15 @@
 (define hc-optimize? #f)
 (define (set-optimize! on) (set! hc-optimize? on))
 (define (hc-inline-enabled? ctx) hc-optimize?)
-(define (hc-inline-ir ctx ns-name nm) jolt-nil)
+;; Inline-body registry: jolt.passes stashes an inline-eligible defn's
+;; {:params :body :nhints :ret} here (keyed ns/name) as its form is optimized;
+;; jolt.passes.inline fetches it to splice the body at a call site. The stash is an
+;; opaque jolt value to the host — IR maps round-tripping through the table.
+(define inline-stash-table (make-hashtable string-hash string=?))
+(define (hc-stash-inline! ctx ns-name nm m)
+  (hashtable-set! inline-stash-table (string-append ns-name "/" nm) m) jolt-nil)
+(define (hc-inline-ir ctx ns-name nm)
+  (or (hashtable-ref inline-stash-table (string-append ns-name "/" nm) #f) jolt-nil))
 
 ;; --- declare the hot clojure.core primitives so resolve-global sees them ------
 ;; (mirrors backend_scheme.clj native-ops keys — the emitter lowers these inline,
@@ -354,6 +362,7 @@
   (def-var! "jolt.host" "record-ctor-key" hc-record-ctor-key)
   (def-var! "jolt.host" "record-shapes" hc-record-shapes)
   (def-var! "jolt.host" "inline-enabled?" hc-inline-enabled?)
-  (def-var! "jolt.host" "inline-ir" hc-inline-ir))
+  (def-var! "jolt.host" "inline-ir" hc-inline-ir)
+  (def-var! "jolt.host" "stash-inline!" hc-stash-inline!))
 
 (hc-install!)

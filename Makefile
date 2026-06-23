@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer directlink numeric remint
+.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer directlink numeric inline remint
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -15,7 +15,7 @@ test: selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: values corpus unit smoke buildsmoke sci ffi transient infer directlink numeric certify
+ci: values corpus unit smoke buildsmoke sci ffi transient infer directlink numeric inline certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -71,6 +71,11 @@ directlink:
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.
 numeric:
 	@chez --script test/chez/numeric-test.ss
+
+# IR inlining: a small single-arity defn is spliced at call sites (under optimize),
+# with ^double/^long entry/return coercions carried through via :coerce nodes.
+inline:
+	@chez --script test/chez/inline-test.ss
 
 # JVM oracle: certify the corpus against reference Clojure. Skips if clojure absent.
 certify:

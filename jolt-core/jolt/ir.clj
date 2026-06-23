@@ -66,6 +66,13 @@
 (defn quote-node [form] {:op :quote :form form})
 (defn throw-node [expr] {:op :throw :expr expr})
 
+;; Numeric coercion of a value to a primitive kind (:double / :long), the way a JVM
+;; ^double/^long parameter or return coerces. The back end lowers it (exact->inexact
+;; / jolt->fx) and jolt.passes.numeric reads its :kind as the value's numeric kind.
+;; Carrying coercion as an IR node (rather than a back-end string wrap) lets it
+;; travel with inlining and keeps the typed-arithmetic fast path sound.
+(defn coerce-node [kind expr] {:op :coerce :kind kind :expr expr})
+
 ;; ---------------------------------------------------------------------------
 ;; Structural recursion over IR child nodes.
 ;;
@@ -91,6 +98,7 @@
       (= op :do)     (assoc node :statements (mapv f (get node :statements))
                                  :ret (f (get node :ret)))
       (= op :throw)  (assoc node :expr (f (get node :expr)))
+      (= op :coerce) (assoc node :expr (f (get node :expr)))
       (= op :set-var) (assoc node :val (f (get node :val)))
       (= op :set-field) (assoc node :obj (f (get node :obj)) :val (f (get node :val)))
       (= op :defmacro) (assoc node :fn (f (get node :fn)))
@@ -138,6 +146,7 @@
       (= op :if) (f (f (f acc (get node :test)) (get node :then)) (get node :else))
       (= op :do) (f (reduce f acc (get node :statements)) (get node :ret))
       (= op :throw) (f acc (get node :expr))
+      (= op :coerce) (f acc (get node :expr))
       (= op :set-var) (f acc (get node :val))
       (= op :set-field) (f (f acc (get node :obj)) (get node :val))
       (= op :defmacro) (f acc (get node :fn))

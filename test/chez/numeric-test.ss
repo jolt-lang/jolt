@@ -30,6 +30,7 @@
   (let-values (((f j) (rdr-read-form str 0 (string-length str))))
     (let ((ctx (make-analyze-ctx ns)))
       (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx)))))
+(define (ev s) (jolt-compile-eval s "u"))
 
 ;; --- emission: ^double -> fl-ops, ^long -> fx-ops ---
 (let ((e (emitf "u" "(fn* ([^double a ^double b] (+ (* a a) (* b b))))")))
@@ -64,6 +65,25 @@
 ;; precision (no fx* overflow).
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc))))")))
   (ok "loop integer accumulator is NOT fx-specialized" (not (has? e "(fx*"))))
+;; a literal-init increment counter types as a fixnum (fx1+), even with no hint.
+(let ((e (emitf "u" "(fn* ([] (loop [i 0] (if (< i 5) (recur (inc i)) i))))")))
+  (ok "literal-init increment counter lowers to fx1+" (has? e "(fx1+")))
+;; but a multiplicative accumulator in the SAME loop stays generic (bignum-safe);
+;; only the counter types.
+(let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 0] (if (< i 100) (recur (* acc i) (inc i)) acc))))")))
+  (ok "counter beside a * accumulator: counter is fx1+" (has? e "(fx1+"))
+  (ok "the * accumulator is NOT fx-specialized (bignum-safe)" (not (has? e "(fx*"))))
+(ok "counter+bignum-accumulator stays exact (1*2*...*99 is a bignum)"
+    (jolt-truthy? (ev "(< 1000000000000000000000 ((fn* ([] (loop [acc 1 i 1] (if (< i 100) (recur (* acc i) (inc i)) acc))))))")))
+(ok "increment counter runtime: counts to 1000"
+    (= 1000 (jnum->exact (ev "((fn* ([] (loop [i 0] (if (< i 1000) (recur (inc i)) i)))))"))))
+;; a recur-less loop is a let: its int-literal binding stays generic (no fx), so
+;; arbitrary precision is preserved (matches (let [i 5] ...)).
+(let ((e (emitf "u" "(fn* ([] (loop [i 5] (+ i 9223372036854775807))))")))
+  (ok "recur-less loop int binding is NOT fx-typed" (not (has? e "(fx+"))))
+(ok "recur-less loop with a big add stays exact (bignum)"
+    (jolt-truthy? (ev "(< 9223372036854775807 ((fn* ([] (loop [i 5] (+ i 9223372036854775807))))))")))
+
 ;; a ^long-seeded loop accumulator IS fx-typed (the hint is a fixnum promise, and
 ;; the value flows from a coerced ^long param).
 (let ((e (emitf "u" "(fn* ([^long start] (loop [acc start] (if (< acc 100) (recur (inc acc)) acc))))")))
@@ -85,7 +105,6 @@
   (ok "long division is NOT specialized (stays generic /)" (not (has? e "(fx"))))
 
 ;; --- runtime values match the generic result ---
-(define (ev s) (jolt-compile-eval s "u"))
 (ok "double dot: 3^2+4^2 = 25" (= 25 (jnum->exact (ev "((fn* ([^double a ^double b] (+ (* a a) (* b b)))) 3.0 4.0)"))))
 (ok "long sum: 2+3 = 5"        (= 5  (jnum->exact (ev "((fn* ([^long a ^long b] (+ a b))) 2 3)"))))
 (ok "double compare true"      (jolt-truthy? (ev "((fn* ([^double x] (< x 5.0))) 3.0)")))
