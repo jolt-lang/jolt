@@ -74,10 +74,15 @@ project inherits its dependencies' `:jolt/native`.
 
 ## Standalone binaries
 
-`joltc build -m NS -o OUT` compiles the app and every library into one
-executable (the runtime + compiler are baked in). It loads the resolved
-`:jolt/native` libs at startup, so an FFI app — sockets, SQLite — runs with no
-jolt or Chez on the path.
+`joltc build -m NS` compiles the app and every library into one executable (the
+runtime + compiler are baked in). It loads the resolved `:jolt/native` libs at
+startup, so an FFI app — sockets, SQLite — runs with no jolt or Chez on the path.
+
+Output goes under the project's `target/`, cargo-style: `target/release/<project>`
+by default and with `--opt`, `target/debug/<project>` with `--dev` (the
+`<name>.build` scratch dir sits beside it). `-o PATH` overrides — absolute as-is,
+relative against the project dir. Paths resolve against the project (`JOLT_PWD`),
+not the CLI's cwd, since `bin/joltc` runs from the jolt repo.
 
 `:jolt/build {:embed ["resources" …]}` bakes those directories' files into the
 binary; `io/resource` serves them from the image with no files on disk. Resources

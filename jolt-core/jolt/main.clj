@@ -149,7 +149,21 @@
                       :else                  "release")]
       (when (nil? entry)
         (throw (ex-info "build needs an entry: -m NS" {})))
-      (let [out (or (:out opts) (first (str/split entry #"\.")))
+      ;; Output paths resolve against the project dir (JOLT_PWD), not the CLI's
+      ;; cwd — bin/joltc cd's to the jolt repo, so a bare relative path would land
+      ;; there. Default output is cargo-style under target/: --dev -> target/debug,
+      ;; release/--opt -> target/release, the binary named after the project dir
+      ;; (falling back to the entry's first segment). The <name>.build scratch dir
+      ;; the driver creates sits next to it, so it lands under the same target dir.
+      ;; An explicit -o is honored: absolute as-is, relative against the project.
+      (let [pdir (project-dir)
+            proj (let [seg (last (str/split pdir #"/"))]
+                   (if (or (str/blank? seg) (= "." seg)) (first (str/split entry #"\.")) seg))
+            out (let [o (:out opts)]
+                  (cond
+                    (nil? o) (str pdir "/target/" (if (= mode "dev") "debug" "release") "/" proj)
+                    (str/starts-with? o "/") o
+                    :else (str pdir "/" o)))
             natives (encode-natives (:natives resolved))]
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
