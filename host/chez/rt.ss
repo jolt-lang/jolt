@@ -303,7 +303,9 @@
 ;; host-static-call/host-new + the jhost method registry. Loads LAST — it extends
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
-(load "host/chez/host-static.ss")
+(load "host/chez/host-static.ss")          ; registries + jhost + coercion helpers
+(load "host/chez/host-static-statics.ss")  ; java.lang/util static methods
+(load "host/chez/host-static-objects.ss")  ; host object classes + instance? hook
 
 ;; generic dot-form dispatch: field access + map/vector member access
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every
