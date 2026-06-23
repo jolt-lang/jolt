@@ -8,6 +8,12 @@
 
 (defn- project-dir [] (or (jolt.host/getenv "JOLT_PWD") "."))
 
+(defn- current-platform []
+  (let [os (str/lower-case (or (System/getProperty "os.name") ""))]
+    (cond (str/includes? os "mac") :darwin
+          (str/includes? os "win") :windows
+          :else :linux)))
+
 ;; Load a library's declared native shared objects (deps.edn :jolt/native) before
 ;; its Clojure is required, so its foreign-fn bindings resolve. Each entry is a
 ;; map: {:name "sqlite3" :darwin ["libsqlite3.0.dylib" ...] :linux ["libsqlite3.so.0" ...]}
@@ -15,10 +21,7 @@
 ;; (use the running process's symbols, e.g. libc sockets — no external file).
 (defn- load-natives! [natives]
   (when (seq natives)
-    (let [os (str/lower-case (or (System/getProperty "os.name") ""))
-          plat (cond (str/includes? os "mac") :darwin
-                     (str/includes? os "win") :windows
-                     :else :linux)]
+    (let [plat (current-platform)]
       (doseq [spec natives]
         (if (:process spec)
           (jolt.ffi/load-library)
@@ -116,23 +119,41 @@
 ;; standalone executable. Resolves deps + roots like `run`, then hands the entry
 ;; namespace to the host build driver (jolt.host/build-binary, defined by
 ;; build.ss). Default mode is release; --opt selects optimized, --dev unoptimized.
+;; Encode a deps.edn :jolt/native spec for the build launcher, resolving the
+;; current platform's candidate list now (the binary runs on this OS). Each entry
+;; becomes a vector the launcher (build.ss) reads: ["process"] for the running
+;; binary's own symbols, else ["req"|"opt" cand…] to try in turn.
+(defn- encode-natives [natives]
+  (let [plat (current-platform)]
+    (vec (for [spec natives]
+           (if (:process spec)
+             ["process"]
+             (let [c (get spec plat)
+                   cands (if (string? c) [c] (vec c))]
+               (into [(if (:optional spec) "opt" "req")] cands)))))))
+
 (defn- cmd-build [more]
-  (apply-project! (deps/resolve-project (project-dir)))
-  (let [opts (loop [a more, entry nil, out nil]
-               (cond
-                 (empty? a)          {:entry entry :out out}
-                 (= "-m" (first a))  (recur (drop 2 a) (second a) out)
-                 (= "-o" (first a))  (recur (drop 2 a) entry (second a))
-                 (str/starts-with? (first a) "-") (recur (rest a) entry out)
-                 :else               (recur (rest a) (or entry (first a)) out)))
-        entry (:entry opts)
-        mode  (cond (some #{"--opt"} more) "optimized"
-                    (some #{"--dev"} more) "dev"
-                    :else                  "release")]
-    (when (nil? entry)
-      (throw (ex-info "build needs an entry: -m NS" {})))
-    (let [out (or (:out opts) (first (str/split entry #"\.")))]
-      (jolt.host/build-binary entry out mode))))
+  (let [{:keys [project-paths embed-dirs] :as resolved}
+        (deps/resolve-project (project-dir))]
+    (apply-project! resolved)
+    (let [opts (loop [a more, entry nil, out nil]
+                 (cond
+                   (empty? a)          {:entry entry :out out}
+                   (= "-m" (first a))  (recur (drop 2 a) (second a) out)
+                   (= "-o" (first a))  (recur (drop 2 a) entry (second a))
+                   (str/starts-with? (first a) "-") (recur (rest a) entry out)
+                   :else               (recur (rest a) (or entry (first a)) out)))
+          entry (:entry opts)
+          mode  (cond (some #{"--opt"} more) "optimized"
+                      (some #{"--dev"} more) "dev"
+                      :else                  "release")]
+      (when (nil? entry)
+        (throw (ex-info "build needs an entry: -m NS" {})))
+      (let [out (or (:out opts) (first (str/split entry #"\.")))
+            natives (encode-natives (:natives resolved))]
+        ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
+        ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
+        (jolt.host/build-binary entry out mode natives embed-dirs project-paths)))))
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the

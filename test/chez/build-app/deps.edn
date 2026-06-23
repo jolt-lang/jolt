@@ -1,1 +1,8 @@
-{:paths ["src"]}
+{:paths ["src" "resources"]
+
+ ;; exercise the build's native-lib loading: a :process spec loads the running
+ ;; binary's own symbols (libc) at startup — no external file, always succeeds.
+ :jolt/native [{:name "libc" :process true}]
+
+ ;; bake resources/ into the binary so io/resource resolves with no file on disk.
+ :jolt/build {:embed ["resources"]}}

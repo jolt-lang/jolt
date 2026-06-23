@@ -146,12 +146,72 @@
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
+;; --- bundling: native libs + resources --------------------------------------
+;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
+(define (bld-strs x) (map jolt-str-render-one (seq->list x)))
+
+;; Emit native-library loads. `natives` is the encoded jolt seq jolt.main/
+;; encode-natives produced: each entry is ["process"] | ["req" cand…] | ["opt" cand…].
+;; `which` selects 'required (process + req) or 'optional. Required + process loads
+;; are emitted before the app forms (the app's defcfn foreign-procedures resolve
+;; their symbols at top-level eval during startup, so the libs must be loaded
+;; first); a load-shared-object failure there is fatal — correct for a required
+;; lib. Optional loads run in the scheme-start launcher, where guard catches a
+;; missing lib (an optional lib's namespace is only present when the app requires
+;; it, so its foreign-procedures aren't among the baked top-level forms).
+(define (bld-emit-natives out natives which)
+  (for-each
+    (lambda (entry)
+      (let* ((parts (bld-strs entry)) (kind (car parts)) (cands (cdr parts))
+             (cand-lits (fold-left (lambda (s c) (string-append s (ei-str-lit c) " ")) "" cands)))
+        (cond
+          ((and (eq? which 'required) (string=? kind "process"))
+           (put-string out "(jolt-build-load-native '() #f #t)\n"))
+          ((and (eq? which 'required) (string=? kind "req"))
+           (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #f #f)\n")))
+          ((and (eq? which 'optional) (string=? kind "opt"))
+           (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #t #f)\n"))))))
+    (seq->list natives)))
+
+;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
+;; resource-name is the "/"-joined path under the root (what io/resource is asked for).
+(define (bld-walk-files root rel acc)
+  (let ((dir (if (string=? rel "") root (string-append root "/" rel))))
+    (fold-left
+      (lambda (acc name)
+        (let* ((relpath (if (string=? rel "") name (string-append rel "/" name)))
+               (full (string-append root "/" relpath)))
+          (if (file-directory? full)
+              (bld-walk-files root relpath acc)
+              (cons (cons relpath full) acc))))
+      acc
+      (directory-list dir))))
+
+;; Emit register-embedded-resource! per file under each embed dir. Emitted BEFORE
+;; the app forms so the (read-file-string ABSPATH) runs at heap build — the file's
+;; contents bake into the boot image and io/resource serves them with no file on
+;; disk. ABSPATH only has to exist at build time.
+(define (bld-emit-embeds out embed-dirs)
+  (for-each
+    (lambda (root)
+      (when (file-directory? root)
+        (for-each
+          (lambda (rp)
+            (put-string out (string-append
+                              "(register-embedded-resource! " (ei-str-lit (car rp))
+                              " (read-file-string " (ei-str-lit (cdr rp)) "))\n")))
+          (bld-walk-files root "" '()))))
+    (bld-strs embed-dirs)))
+
 ;; --- the build --------------------------------------------------------------
 ;; entry-ns: the app's main namespace (a string). out-path: the binary to write.
 ;; mode: "dev" | "release" | "optimized". Every form runs through jolt.passes/
 ;; run-passes (const-fold always; inline + type inference when optimized turns on
 ;; direct-linking). Deps + source roots are already applied by the caller.
-(define (build-binary entry-ns out-path mode)
+;; natives: encoded :jolt/native libs to load at startup. embed-dirs: dirs whose
+;; files bake into the binary (single-file). ext-roots: project-relative io/resource
+;; roots resolved at runtime against JOLT_PWD (ship-alongside resources).
+(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots)
   (bld-check-toolchain)
   ;; 1. record app namespaces in dependency order as they finish loading.
   (let ((app-order '()))
@@ -180,16 +240,40 @@
         ;; 3. flat source = runtime + app + launcher.
         (let ((out (open-output-file flat-ss 'replace)))
           (bld-emit-runtime out)
+          ;; Load native libs, bake embedded resources, and point source roots at
+          ;; the build-time app roots — all BEFORE the app forms. The app's
+          ;; top-level forms run at binary startup (Sbuild_heap), and they include
+          ;; foreign-procedure evals (a library's defcfn) and (slurp (io/resource …))
+          ;; reads. So the libraries must be loaded and resources resolvable by the
+          ;; time those forms run, not later in the scheme-start launcher.
+          (put-string out "\n;; === native libraries (required) ===\n")
+          (bld-emit-natives out natives 'required)
+          (put-string out "\n;; === embedded resources ===\n")
+          (bld-emit-embeds out embed-dirs)
+          (put-string out (string-append
+                            "(set-source-roots! (list "
+                            (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) ""
+                                       (get-source-roots))
+                            "))\n"))
           (put-string out "\n;; === app ===\n")
           (for-each (lambda (s) (put-string out s) (put-string out "\n")) app-strs)
           ;; The launcher runs as Chez's scheme-start (so argv reaches -main —
           ;; top-level boot forms run during heap build, before args are set), and
-          ;; suppresses the interactive greeting.
+          ;; suppresses the interactive greeting. It resets source roots to the
+          ;; app's resource dirs resolved against JOLT_PWD (or cwd) so a runtime
+          ;; io/resource that wasn't embedded still resolves next to the binary.
           (put-string out "\n;; === launcher ===\n")
+          (put-string out "(suppress-greeting #t)\n")
+          (put-string out "(scheme-start\n  (lambda args\n")
+          (bld-emit-natives out natives 'optional)
           (put-string out (string-append
-                            "(suppress-greeting #t)\n"
-                            "(scheme-start\n"
-                            "  (lambda args\n"
+                            "    (let ((base (or (getenv \"JOLT_PWD\") \".\")))\n"
+                            "      (set-source-roots!\n"
+                            "        (append (map (lambda (r) (string-append base \"/\" r)) (list "
+                            (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
+                            "))\n"
+                            "                (list \"jolt-core\" \"stdlib\"))))\n"))
+          (put-string out (string-append
                             "    (let ((mainv (var-deref " (ei-str-lit entry-ns) " \"-main\")))\n"
                             "      (apply jolt-invoke mainv args))\n"
                             "    (exit 0)))\n"))
@@ -233,8 +317,9 @@
         (display (string-append "jolt build: wrote " out-path "\n"))))))
 
 (def-var! "jolt.host" "build-binary"
-  (lambda (entry out mode)
+  (lambda (entry out mode natives embed-dirs ext-roots)
     (build-binary (jolt-str-render-one entry)
                   (jolt-str-render-one out)
-                  (jolt-str-render-one mode))
+                  (jolt-str-render-one mode)
+                  natives embed-dirs ext-roots)
     jolt-nil))

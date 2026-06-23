@@ -19,6 +19,16 @@
 ;; path string of any value: a jfile -> its path, else its str rendering.
 (define (file-path-of x) (if (jfile? x) (jfile-path x) (jolt-str-render-one x)))
 
+;; Resources baked into a standalone binary by `jolt build` (deps.edn
+;; :jolt/build :embed). The build emits a register-embedded-resource! per file at
+;; heap-build time, so the contents live in the boot image — io/resource serves
+;; them with no file on disk. An embedded hit reads through slurp/reader exactly
+;; like a jfile would.
+(define embedded-resources (make-hashtable equal-hash equal?))
+(define (register-embedded-resource! name content)
+  (hashtable-set! embedded-resources name content))
+(define-record-type embedded-res (fields name content) (nongenerative jolt-embres-v1))
+
 ;; A user-facing relative path resolves against JOLT_PWD — the user's cwd before
 ;; the launcher cd'd to the jolt repo root — matching the JVM, where io/file is
 ;; cwd-relative. (io/resource builds jfiles from the source roots directly, so it
@@ -191,6 +201,7 @@
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (read-file-string (jfile-path src)))
+    ((embedded-res? src) (embedded-res-content src))
     ((reader-jhost? src) (drain-reader src))
     ;; bytes (a bytevector or a jolt byte-array): decode with :encoding (UTF-8
     ;; default). clj-http-lite slurps response-body byte arrays.
@@ -286,6 +297,7 @@
   (cond
     ((reader-jhost? x) x)
     ((jfile? x) (host-new "StringReader" (read-file-string (jfile-path x))))
+    ((embedded-res? x) (host-new "StringReader" (embedded-res-content x)))
     ((and (jhost? x) (string=? (jhost-tag x) "url"))
      (host-new "StringReader" (read-file-string (url-strip-scheme (url-spec x)))))
     ((string? x) (host-new "StringReader" (read-file-string x)))
@@ -317,11 +329,13 @@
 ;; (slurp/reader-able) for the first match, else nil. get-source-roots is the
 ;; loader's accessor (loader.ss), resolved at call time — the runtime CLI loads it.
 (define (jolt-io-resource name)
-  (let ((nm (jolt-str-render-one name)))
-    (let loop ((roots (get-source-roots)))
-      (cond ((null? roots) jolt-nil)
-            ((file-exists? (string-append (car roots) "/" nm)) (make-jfile (string-append (car roots) "/" nm)))
-            (else (loop (cdr roots)))))))
+  (let* ((nm (jolt-str-render-one name))
+         (emb (hashtable-ref embedded-resources nm #f)))
+    (if emb (make-embedded-res nm emb)
+        (let loop ((roots (get-source-roots)))
+          (cond ((null? roots) jolt-nil)
+                ((file-exists? (string-append (car roots) "/" nm)) (make-jfile (string-append (car roots) "/" nm)))
+                (else (loop (cdr roots))))))))
 (def-var! "clojure.java.io" "resource" jolt-io-resource)
 ;; as-url honors a library-registered URL class (e.g. jolt-lang/http-client's full
 ;; java.net.URL shim) so io/as-url and (URL. spec) agree; else the file-only jhost.

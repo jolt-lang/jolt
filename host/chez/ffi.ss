@@ -134,6 +134,24 @@
     (when co (unlock-object co) (hashtable-delete! ffi-callable-table a))
     jolt-nil))
 
+;; --- native libraries for a standalone binary -------------------------------
+;; `jolt build` bakes a project's deps.edn :jolt/native declarations into the
+;; launcher, which loads them at startup (load-shared-object isn't part of the
+;; saved heap, so it must run in the built process, not at heap build). process?
+;; loads the running binary's own symbols (libc sockets); otherwise try each
+;; platform candidate in turn and fail unless the spec is optional.
+(define (jolt-build-load-native cands optional? process?)
+  (if process?
+      (begin (load-shared-object #f) #t)
+      (let loop ((cs cands))
+        (cond
+          ((null? cs)
+           (unless optional?
+             (error 'jolt-build "required native library not found" cands))
+           #f)
+          ((guard (e (#t #f)) (load-shared-object (car cs)) #t) #t)
+          (else (loop (cdr cs)))))))
+
 ;; --- expose under jolt.ffi ---------------------------------------------------
 (def-var! "jolt.ffi" "free-callable" ffi-free-callable)
 (def-var! "jolt.ffi" "load-library" ffi-load-library)
