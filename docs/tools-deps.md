@@ -96,6 +96,12 @@ a C compiler; `JOLT_CHEZ_CSV` overrides the auto-detected `csv<ver>/<machine>`
 dir. `--opt` turns on the inference/flatten/scalar-replace passes; the default
 `release` mode is const-fold only.
 
+`release` and `--opt` are closed-world: a call between the app's own functions
+binds to its target directly, skipping the var lookup and generic dispatch a
+runtime call pays. That assumes app vars are final — mark one `^:redef` (or
+`^:dynamic`) to keep it redefinable and indirect. `--dev` keeps everything
+indirect/open. Calls into `clojure.core` stay indirect in every mode.
+
 ## Limitations
 
 - Pure `clj`/`cljc` only — JVM interop, host classes, and unimplemented
