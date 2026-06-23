@@ -1,0 +1,178 @@
+(ns jolt.passes.numeric
+  "Hint-directed numeric specialization. A local forward type-flow that seeds
+  local kinds from `^double`/`^long` fn-param hints and float literals, propagates
+  them through let inits, arithmetic results, and if/do, and tags an arithmetic
+  `:invoke` node with `:num-kind :double` or `:long` when every operand is that
+  kind (an integer literal is a wildcard, valid in either). The back end then emits
+  Chez `fl*`/`fx*` ops instead of generic arithmetic.
+
+  Soundness: `:long` is seeded ONLY from an explicit `^long` hint — never a bare
+  integer literal — so un-hinted integer code keeps jolt's arbitrary-precision
+  numbers (no fixnum overflow surprise). `:double` is seeded from `^double` hints
+  and float literals; flonum arithmetic is always flonum, so this matches the
+  generic result. A `^long` hint is a promise the value is a fixnum: `fx+` raises
+  on overflow rather than promoting, exactly as a JVM primitive long is fixed-width.
+
+  Runs in every build and at `-e`/repl, but not the seed mint (which compiles with
+  the passes off), so it stays out of the self-host fixpoint and benefits open and
+  closed builds alike."
+  (:require [jolt.ir :refer [map-ir-children]]))
+
+;; --- operand classification -------------------------------------------------
+(defn- int-lit? [n]
+  (and (= :const (get n :op))
+       (let [v (get n :val)] (and (number? v) (integer? v)))))
+(defn- float-lit? [n]
+  (and (= :const (get n :op))
+       (let [v (get n :val)] (and (number? v) (float? v)))))
+
+;; result kind of a double-specialized op at this name/arity, or nil if N/A.
+;; arithmetic -> :double; comparison -> :bool (operands specialized, result not numeric).
+(defn- dbl-spec [nm n]
+  (cond
+    (and (>= n 1) (contains? #{"+" "-" "*" "/" "min" "max"} nm)) :double
+    (and (= n 1) (contains? #{"inc" "dec"} nm)) :double
+    (and (>= n 2) (contains? #{"<" ">" "<=" ">=" "=" "=="} nm)) :bool
+    :else nil))
+
+;; result kind of a long-specialized op, or nil. `/` is absent on purpose:
+;; (/ long long) is a Ratio in Clojure, not a long. unchecked-* join the fast path
+;; (they aren't native ops otherwise).
+(defn- lng-spec [nm n]
+  (cond
+    (and (>= n 1) (contains? #{"+" "-" "*" "min" "max"
+                               "unchecked-add" "unchecked-subtract" "unchecked-multiply"} nm)) :long
+    (and (= n 1) (contains? #{"inc" "dec" "unchecked-inc" "unchecked-dec"} nm)) :long
+    (and (= n 2) (contains? #{"quot" "rem" "mod"} nm)) :long
+    (and (>= n 2) (contains? #{"<" ">" "<=" ">=" "=" "=="} nm)) :bool
+    :else nil))
+
+;; A non-numeric result (a comparison) doesn't propagate a numeric kind.
+(defn- propagate [spec] (if (= spec :bool) nil spec))
+
+(declare an)
+
+;; The recur-arg kinds for the recurs targeting THIS loop level. recur only appears
+;; in tail position (an if branch, a do's ret, a let body), so descend only those;
+;; a nested loop/fn (and any non-tail child) owns its own recur and is skipped.
+(defn- recur-kinds [node tenv]
+  (let [op (get node :op)]
+    (cond
+      (= op :recur) [(mapv (fn [a] (nth (an a tenv) 0)) (get node :args))]
+      (= op :let) (recur-kinds (get node :body)
+                               (reduce (fn [te b] (assoc te (nth b 0) (nth (an (nth b 1) te) 0)))
+                                       tenv (get node :bindings)))
+      (= op :if) (concat (recur-kinds (get node :then) tenv) (recur-kinds (get node :else) tenv))
+      (= op :do) (recur-kinds (get node :ret) tenv)
+      :else [])))
+
+;; Loop-var kinds by bounded fixpoint. A var is :double only if its init is double
+;; AND every recur arg in that slot is double (under the current assumption) — a
+;; monotone demotion that stops at a fixpoint, bounded by the var count. Integers
+;; stay untyped (no :long from a bare init literal, so a bignum-producing loop keeps
+;; arbitrary precision). A :double loop var's init and recur args are all flonums,
+;; so no entry coercion is needed (unlike a fn param fed an arbitrary argument).
+(defn- loop-kinds [names ik body tenv]
+  (loop [cur (mapv (fn [k] (if (= k :double) :double nil)) ik) iter 0]
+    (if (> iter (count names))
+      cur
+      (let [te (reduce (fn [t i] (assoc t (nth names i) (nth cur i))) tenv (range (count names)))
+            rks (recur-kinds body te)
+            nxt (mapv (fn [j]
+                        (if (and (= (nth cur j) :double)
+                                 (every? (fn [rk] (= :double (nth rk j))) rks))
+                          :double nil))
+                      (range (count names)))]
+        (if (= nxt cur) cur (recur nxt (inc iter)))))))
+
+;; Seed a fn arity's local env from its numeric param hints; an unhinted param
+;; shadows any same-named outer local to nil.
+(defn- arity-env [tenv a]
+  (let [nh (into {} (get a :nhints))
+        pe (reduce (fn [e p] (assoc e p (get nh p))) tenv (get a :params))]
+    (if (get a :rest) (assoc pe (get a :rest) nil) pe)))
+
+(defn- an-invoke [node tenv]
+  (let [fnode (get node :fn)
+        nm (when (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)))
+             (get fnode :name))
+        ars (mapv (fn [a] (an a tenv)) (get node :args))
+        argnodes (mapv (fn [r] (nth r 1)) ars)
+        node1 (assoc node :args argnodes)
+        n (count ars)]
+    (if (nil? nm)
+      [nil node1]
+      (let [;; per-operand class: :double / :long (typed), :wild (integer literal,
+            ;; usable in either), or :no (anything else — blocks specialization).
+            cls (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
+                                (cond (= k :double) :double
+                                      (= k :long) :long
+                                      (int-lit? nd) :wild
+                                      :else :no)))
+                      ars)
+            ok? (fn [allowed need]
+                  (and (pos? n)
+                       (every? (fn [c] (or (= c :wild) (= c allowed))) cls)
+                       (some (fn [c] (= c need)) cls)))
+            ds (dbl-spec nm n)
+            ls (lng-spec nm n)]
+        (cond
+          (and ds (ok? :double :double))
+          ;; coerce integer-literal operands to flonum so fl-ops never see an exact int.
+          (let [args' (mapv (fn [nd] (if (int-lit? nd) (assoc nd :val (double (get nd :val))) nd))
+                            argnodes)]
+            [(propagate ds) (assoc node1 :args args' :num-kind :double)])
+          (and ls (ok? :long :long))
+          [(propagate ls) (assoc node1 :num-kind :long)]
+          :else [nil node1])))))
+
+;; Returns [kind node'] — kind is :double, :long, or nil.
+(defn- an [node tenv]
+  (let [op (get node :op)]
+    (cond
+      (= op :const) [(if (float-lit? node) :double nil) node]
+      (= op :local) [(get tenv (get node :name)) node]
+      (= op :invoke) (an-invoke node tenv)
+      (= op :let)
+      (let [res (reduce (fn [acc b]
+                          (let [te (nth acc 0) binds (nth acc 1)
+                                ir (an (nth b 1) te)]
+                            [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
+                        [tenv []] (get node :bindings))
+            br (an (get node :body) (nth res 0))]
+        [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
+      (= op :loop)
+      ;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
+      (let [binds (get node :bindings)
+            names (mapv (fn [b] (nth b 0)) binds)
+            ik (mapv (fn [b] (nth (an (nth b 1) tenv) 0)) binds)
+            lk (loop-kinds names ik (get node :body) tenv)
+            te (reduce (fn [t i] (assoc t (nth names i) (nth lk i))) tenv (range (count names)))]
+        [nil (assoc node
+                    :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)
+                    :body (nth (an (get node :body) te) 1))])
+      (= op :if)
+      (let [tr (an (get node :test) tenv)
+            thn (an (get node :then) tenv)
+            els (an (get node :else) tenv)
+            tk (nth thn 0) ek (nth els 0)]
+        [(if (= tk ek) tk nil)
+         (assoc node :test (nth tr 1) :then (nth thn 1) :else (nth els 1))])
+      (= op :do)
+      (let [stmts (mapv (fn [s] (nth (an s tenv) 1)) (get node :statements))
+            r (an (get node :ret) tenv)]
+        [(nth r 0) (assoc node :statements stmts :ret (nth r 1))])
+      (= op :fn)
+      [nil (assoc node :arities
+                  (mapv (fn [a] (assoc a :body (nth (an (get a :body) (arity-env tenv a)) 1)))
+                        (get node :arities)))]
+      (= op :def) [nil (assoc node :init (nth (an (get node :init) tenv) 1))]
+      ;; every other op introduces no bindings and isn't numeric: descend with the
+      ;; same env to specialize nested arithmetic, no kind.
+      :else [nil (map-ir-children (fn [c] (nth (an c tenv) 1)) node)])))
+
+(defn annotate
+  "Tag arithmetic nodes with :num-kind from local numeric type-flow. Returns the
+  rewritten IR (no kind escapes to the caller)."
+  [node]
+  (nth (an node {}) 1))

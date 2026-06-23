@@ -63,4 +63,19 @@ if [ "$got_opt" != "$want" ]; then
   echo "--- got ----"; echo "$got_opt"
   exit 1
 fi
-echo "build smoke: passed (release + optimized)"
+
+# Closed-world direct-linking (opt-in): same result, and the cross-namespace call
+# (app.core -> app.util/shout) must lower to a direct jv$ binding, not var-deref.
+if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --direct-link >/dev/null 2>&1; then
+  echo "  FAIL: jolt build --direct-link exited non-zero"; exit 1
+fi
+got_dl="$(cd / && "$out" alpha bb ccc 2>&1)"
+if [ "$got_dl" != "$want" ]; then
+  echo "  FAIL: --direct-link binary output mismatch"
+  echo "--- got ----"; echo "$got_dl"
+  exit 1
+fi
+if ! grep -q '(jv\$app.util\$shout' "$out.build/flat.ss"; then
+  echo "  FAIL: --direct-link did not emit a direct app->app call"; exit 1
+fi
+echo "build smoke: passed (release + optimized + direct-link)"

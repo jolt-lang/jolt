@@ -37,10 +37,13 @@
 ;; (mark-macro! ns name) so the on-Chez analyzer can expand it.
 ;; Analyze -> (optionally run passes) -> emit one form. optimize? runs
 ;; jolt.passes/run-passes (build optimizes; the seed minter stays un-optimized so
-;; the self-host fixpoint is independent of the passes).
+;; the self-host fixpoint is independent of the passes). emit-top-form is the
+;; top-level entry: in direct-link mode it binds jv$<fqn> for a top-level def; off
+;; that mode (the minter, runtime eval) it is exactly emit, so output is unchanged.
+(define jolt-ce-emit-top (var-deref "jolt.backend-scheme" "emit-top-form"))
 (define (ei-compile-form ctx f optimize?)
   (let ((ir (jolt-ce-analyze ctx f)))
-    (jolt-ce-emit (if optimize? (jolt-ce-run-passes ir ctx) ir))))
+    (jolt-ce-emit-top (if optimize? (jolt-ce-run-passes ir ctx) ir))))
 
 ;; The emitted `(def-var! …)(mark-macro! …)` pair for a defmacro, guard-wrapped
 ;; (tolerant) or bare (strict) to match guard?.
@@ -93,6 +96,7 @@
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
+        (cons "jolt.passes.numeric" "jolt-core/jolt/passes/numeric.clj")
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
         (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
         (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")

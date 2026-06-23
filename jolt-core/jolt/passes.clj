@@ -15,6 +15,7 @@
   Portable Clojure: kernel-tier fns + seed primitives only."
   (:require [jolt.host :refer [inline-enabled? record-shapes]]
             [jolt.passes.fold :refer [const-fold]]
+            [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
             [jolt.passes.types :refer [run-inference
                                        check-form infer-body reinfer-def phint-seed
@@ -34,21 +35,25 @@
   inlining exposes map literals to lookups, scalar-replace collapses them, which
   may expose more — then a collection-type inference pass (optionally
   also emitting success diagnostics) that auto-drops the lookup guard where the
-  type is proven. Otherwise (core + bootstrap) just const-fold, as before."
+  type is proven. Otherwise (core + bootstrap) just const-fold, as before.
+
+  numeric/annotate runs last in both branches (hint-directed fl*/fx* arithmetic);
+  it benefits open builds too, so it is not gated on inlining."
   [node ctx]
-  (if (inline-enabled? ctx)
-    (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
-          ;; resolve ^Record param hints (incl. defrecord/extend-type method
-          ;; `this`) to bare field reads per-form, not only under whole-program.
-          ;; Same shapes the inline pass uses.
-          _ (set-record-shapes! (record-shapes ctx))
-          opt (loop [i 0 n (const-fold node)]
-                (reset! dirty false)
-                (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
-                  (if (and @dirty (< i inline-fixpoint-cap))
-                    (recur (inc i) n2)
-                    n2)))]
-      ;; a final const-fold after inference propagates any predicate folded to a
-      ;; constant, collapsing the `if` it gates to the taken branch.
-      (const-fold (run-inference opt)))
-    (const-fold node)))
+  (numeric/annotate
+    (if (inline-enabled? ctx)
+      (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
+            ;; resolve ^Record param hints (incl. defrecord/extend-type method
+            ;; `this`) to bare field reads per-form, not only under whole-program.
+            ;; Same shapes the inline pass uses.
+            _ (set-record-shapes! (record-shapes ctx))
+            opt (loop [i 0 n (const-fold node)]
+                  (reset! dirty false)
+                  (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
+                    (if (and @dirty (< i inline-fixpoint-cap))
+                      (recur (inc i) n2)
+                      n2)))]
+        ;; a final const-fold after inference propagates any predicate folded to a
+        ;; constant, collapsing the `if` it gates to the taken branch.
+        (const-fold (run-inference opt)))
+      (const-fold node))))

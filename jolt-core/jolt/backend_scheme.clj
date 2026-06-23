@@ -76,12 +76,50 @@
     "jolt-even?" "jolt-odd?" "jolt-pos?" "jolt-neg?"
     "jolt-zero?" "jolt-empty?" "jolt-contains?"})
 
+;; Numeric-specialized op strings. jolt.passes.numeric tags an arithmetic invoke
+;; :num-kind :double|:long when every operand is that kind; these are the Chez
+;; flonum/fixnum ops it lowers to — no generic dispatch, fixnums unboxed. fl?/fx?
+;; comparisons carry the question mark; fl+/fx+ don't.
+(def ^:private dbl-ops
+  {"+" "fl+" "-" "fl-" "*" "fl*" "/" "fl/" "min" "flmin" "max" "flmax"
+   "<" "fl<?" ">" "fl>?" "<=" "fl<=?" ">=" "fl>=?" "=" "fl=?" "==" "fl=?"})
+(def ^:private lng-ops
+  {"+" "fx+" "-" "fx-" "*" "fx*" "min" "fxmin" "max" "fxmax"
+   "unchecked-add" "fx+" "unchecked-subtract" "fx-" "unchecked-multiply" "fx*"
+   "quot" "fxquotient" "rem" "fxremainder" "mod" "fxmodulo"
+   "<" "fx<?" ">" "fx>?" "<=" "fx<=?" ">=" "fx>=?" "=" "fx=?" "==" "fx=?"})
+
 ;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
 ;; When emitting clojure.core ITSELF as a prelude, core fns reference each other
 ;; constantly; those lower to var-deref (resolved at runtime).
 (def prelude-mode? (atom false))
 (defn set-prelude-mode! [on] (reset! prelude-mode? on))
+
+;; DIRECT-LINK MODE. Off for ordinary runs, the seed mint, and `-e`/repl/load-string
+;; (open world — vars are redefinable). `jolt build` (release/optimized) flips it on
+;; during app emission: a closed-world program where every app def is final, so an
+;; app->app call binds to the def's Scheme binding directly, skipping the var-table
+;; lookup and the generic jolt-invoke dispatch.
+(def direct-link? (atom false))
+(defn set-direct-link! [on] (reset! direct-link? on))
+
+;; Fully-qualified app var names ("ns/name") already emitted with a direct-link
+;; binding in the current unit. A call/value-ref direct-links only to a name in this
+;; set — one defined earlier in emission order (or itself), so the Scheme binding
+;; exists by the time the reference runs. Reset per build.
+(def direct-link-defined (atom #{}))
+(defn direct-link-reset! [] (reset! direct-link-defined #{}))
+
+;; A direct-link Scheme binding name for a var. The fqn maps to a unique identifier
+;; jv$<ns>$<name>; chars that break a Scheme identifier or the `$` separator are
+;; escaped so distinct vars never collide.
+(defn- dl-munge [s]
+  (-> s (str/replace "$" "_D_") (str/replace "#" "_H_") (str/replace "'" "_Q_")))
+(defn- dl-name [ns nm] (str "jv$" (dl-munge ns) "$" (dl-munge nm)))
+(defn- dl-fqn [ns nm] (str ns "/" nm))
+(defn- direct-linkable? [ns nm]
+  (and @direct-link? (contains? @direct-link-defined (dl-fqn ns nm))))
 
 ;; recur-target and the set of munged local names known to hold a procedure (a
 ;; named fn's self-recursion name) are lexically scoped — dynamic vars so the
@@ -310,8 +348,21 @@
 ;; let lets fn-level `recur` rebind this arity's params. A variadic arity takes a
 ;; Scheme rest arg coerced to a jolt seq (nil when empty); recur carries the rest
 ;; seq directly, and the named let's init only runs on first entry.
+;; Coerce a numeric-hinted param at fn entry, the way the JVM coerces a primitive
+;; parameter: ^double -> exact->inexact, ^long -> jolt->fx. Only the named-let init
+;; (first entry) coerces — recur carries already-typed values, like a JVM goto. This
+;; is what makes the hint a contract the body's fl*/fx* ops can rely on. `orig` is
+;; the param's source name (the :nhints key); `munged` the emitted identifier.
+(defn- nhint-init [nh orig munged]
+  (let [k (get nh orig)]
+    (cond (= k :double) (str "(exact->inexact " munged ")")
+          (= k :long)   (str "(jolt->fx " munged ")")
+          :else munged)))
+
 (defn- emit-arity-clause [a]
-  (let [params (map munge-name (:params a))
+  (let [orig (:params a)
+        nh (into {} (:nhints a))
+        params (map munge-name orig)
         restp (when-let [r (:rest a)] (munge-name r))
         label (fresh-label "fnrec")
         body (binding [*recur-target* label] (emit (:body a)))
@@ -319,10 +370,10 @@
                     (and restp (empty? params)) restp
                     restp (str "(" (str/join " " params) " . " restp ")")
                     :else (str "(" (str/join " " params) ")"))
+        pbind (map (fn [o p] (str "(" p " " (nhint-init nh o p) ")")) orig params)
         binds (if restp
-                (concat (map (fn [p] (str "(" p " " p ")")) params)
-                        [(str "(" restp " (list->cseq " restp "))")])
-                (map (fn [p] (str "(" p " " p ")")) params))]
+                (concat pbind [(str "(" restp " (list->cseq " restp "))")])
+                pbind)]
     [paramlist (str "(let " label " (" (str/join " " binds) ") " body ")")]))
 
 (defn- emit-fn [node]
@@ -369,6 +420,19 @@
 (defn- stdlib-var? [n]
   (and (= :var (:op n)) (str/starts-with? (or (:ns n) "") "clojure.")))
 
+;; Emit a :num-kind-tagged arithmetic call as a Chez flonum/fixnum op. inc/dec are
+;; unary (fl +/- 1.0, fx1+/fx1-); the rest map through dbl-ops/lng-ops. Integer
+;; literal operands of a :double op were coerced to flonums by jolt.passes.numeric.
+(defn- emit-numeric [kind nm args order-args]
+  (cond
+    (and (= kind :double) (= nm "inc")) (str "(fl+ " (first args) " 1.0)")
+    (and (= kind :double) (= nm "dec")) (str "(fl- " (first args) " 1.0)")
+    (and (= kind :long) (or (= nm "inc") (= nm "unchecked-inc"))) (str "(fx1+ " (first args) ")")
+    (and (= kind :long) (or (= nm "dec") (= nm "unchecked-dec"))) (str "(fx1- " (first args) ")")
+    :else
+    (let [op (if (= kind :double) (dbl-ops nm) (lng-ops nm))]
+      (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
+
 (defn- emit-invoke [node]
   (let [fnode (:fn node)
         arg-nodes (:args node)
@@ -385,6 +449,9 @@
                                (fn [[f & as]]
                                  (str "(jolt-invoke " f (if (seq as) (str " " (str/join " " as)) "") ")"))))]
     (cond
+      ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
+      ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
+      (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
       ;; zero-arg + / * : exact integer identity (= JVM long: (+) -> 0, (*) -> 1).
       (and nop (empty? args) (= nop "+")) "0"
       (and nop (empty? args) (= nop "*")) "1"
@@ -412,6 +479,11 @@
       ;; a :local callee that isn't a known procedure -> dynamic IFn dispatch.
       (and (= :local (:op fnode)) (not (*known-procs* (munge-name (:name fnode)))))
       (invoke)
+      ;; closed-world direct call: the callee var is an app def already emitted with
+      ;; a Scheme binding — call it directly, no var lookup, no jolt-invoke.
+      (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode)))
+      (order-args (fn [as] (str "(" (dl-name (:ns fnode) (:name fnode))
+                                (if (seq as) (str " " (str/join " " as)) "") ")")))
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
@@ -453,6 +525,9 @@
     :var (let [core-proc (and (= "clojure.core" (:ns node)) (core-value-procs (:name node)))]
            (cond
              core-proc core-proc
+             ;; direct-linked app var used as a value -> reference its binding (same
+             ;; root as the var cell for a final var; helps DCE keep it live).
+             (direct-linkable? (:ns node) (:name node)) (dl-name (:ns node) (:name node))
              (and (stdlib-var? node) (not (deref prelude-mode?)))
              (throw (ex-info (str "emit: unsupported stdlib ref `" (:ns node) "/" (:name node)
                                   "` (no core on Chez yet)") {}))
@@ -527,3 +602,32 @@
            (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                 (emit (:init node)) ")"))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
+
+;; ^:dynamic / ^:redef on a def opts it out of direct-linking: it stays redefinable,
+;; so callers must go through the var cell. m is a def's :meta (a jolt map value).
+(defn- dl-opt-out? [m] (or (get m :dynamic) (get m :redef)))
+
+;; Per-form entry used by the image/build emitter. In direct-link mode a TOP-LEVEL
+;; def (form root, or spliced from a top-level do) without an opt-out also binds
+;; jv$<fqn> and aliases the var cell to it, so app->app calls/refs bind directly.
+;; Off direct-link mode this is exactly `emit`, so the seed mint and runtime eval are
+;; byte-unchanged. Nested defs (a defonce's inner def) never reach a top-level branch
+;; here, so they stay indirect — a `define` would be illegal in their position.
+(defn emit-top-form [node]
+  (cond
+    (not @direct-link?) (emit node)
+    ;; top-level do splices: each statement/ret is itself a top-level form.
+    (= :do (:op node))
+    (str "(begin " (str/join " " (map emit-top-form (:statements node)))
+         (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
+    (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
+    (let [ns (:ns node) nm (:name node) b (dl-name ns nm)]
+      ;; register before emitting the init so a self-referential body direct-links.
+      (swap! direct-link-defined conj (dl-fqn ns nm))
+      (let [init (emit (:init node))]
+        (if (jmeta-nonempty? (:meta node))
+          (str "(begin (define " b " " init ") (def-var-with-meta! "
+               (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-quoted (:meta node)) "))")
+          (str "(begin (define " b " " init ") (def-var! "
+               (chez-str-lit ns) " " (chez-str-lit nm) " " b "))"))))
+    :else (emit node)))

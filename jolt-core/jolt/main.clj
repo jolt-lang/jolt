@@ -115,10 +115,13 @@
       (map? task) (do (apply-project! resolved) (apply-main-opts (:main-opts task) more))
       :else (throw (ex-info (str "bad task " name) {})))))
 
-;; build [-m NS | FILE] [-o OUT] [--opt | --dev] — AOT-compile the app into a
-;; standalone executable. Resolves deps + roots like `run`, then hands the entry
-;; namespace to the host build driver (jolt.host/build-binary, defined by
+;; build [-m NS | FILE] [-o OUT] [--opt | --dev] [--direct-link] — AOT-compile the
+;; app into a standalone executable. Resolves deps + roots like `run`, then hands the
+;; entry namespace to the host build driver (jolt.host/build-binary, defined by
 ;; build.ss). Default mode is release; --opt selects optimized, --dev unoptimized.
+;; --direct-link (or deps.edn :jolt/build {:direct-link true}) opts into closed-world
+;; direct-linking: app->app calls bind directly, giving up runtime redefinition of
+;; those vars and eval/load-string. Off by default — release stays dynamically linked.
 ;; Encode a deps.edn :jolt/native spec for the build launcher, resolving the
 ;; current platform's candidate list now (the binary runs on this OS). Each entry
 ;; becomes a vector the launcher (build.ss) reads: ["process"] for the running
@@ -133,7 +136,7 @@
                (into [(if (:optional spec) "opt" "req")] cands)))))))
 
 (defn- cmd-build [more]
-  (let [{:keys [project-paths embed-dirs] :as resolved}
+  (let [{:keys [project-paths embed-dirs build] :as resolved}
         (deps/resolve-project (project-dir))]
     (apply-project! resolved)
     (let [opts (loop [a more, entry nil, out nil]
@@ -164,10 +167,13 @@
                     (nil? o) (str pdir "/target/" (if (= mode "dev") "debug" "release") "/" proj)
                     (str/starts-with? o "/") o
                     :else (str pdir "/" o)))
-            natives (encode-natives (:natives resolved))]
+            natives (encode-natives (:natives resolved))
+            ;; closed-world direct-linking is opt-in: the --direct-link flag or a
+            ;; deps.edn :jolt/build {:direct-link true}. Off otherwise.
+            direct-link? (boolean (or (some #{"--direct-link"} more) (:direct-link build)))]
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
-        (jolt.host/build-binary entry out mode natives embed-dirs project-paths)))))
+        (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link?)))))
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the
@@ -185,7 +191,7 @@
   (println "usage: jolt <command> [args]")
   (println "  run -m NS [args]   resolve deps.edn, load NS, call its -main")
   (println "  run FILE           load a Clojure file")
-  (println "  build -m NS [-o OUT] [--opt|--dev]  compile a standalone binary")
+  (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link]  compile a standalone binary")
   (println "  -M:alias [args]    run the alias's :main-opts")
   (println "  -A:alias [args]    add the alias's paths/deps")
   (println "  repl               start a line REPL")
