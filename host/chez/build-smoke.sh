@@ -96,4 +96,8 @@ fi
 if grep -q 'def-var! "jolt.analyzer"' "$out.build/flat.ss"; then
   echo "  FAIL: --tree-shake kept the compiler image in a no-eval app"; exit 1
 fi
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler-drop)"
+# Core is shaken: a clojure.core overlay fn this app never uses is dropped.
+if grep -q 'def-var! "clojure.core" "group-by"' "$out.build/flat.ss"; then
+  echo "  FAIL: --tree-shake kept an unreachable clojure.core fn (group-by)"; exit 1
+fi
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake)"
