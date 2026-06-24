@@ -95,14 +95,37 @@
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))
 
-;; __write: push a string to *out* (current-output-port, so __with-out-str's
-;; redirect captures it). Returns nil.
-(define (jolt-write s) (display s) jolt-nil)
+;; __write: push a string to output. Normally this goes to the current Chez port
+;; (so __with-out-str's redirect captures it). When clojure.pprint is active it
+;; installs __pprint-write-hook; jolt-write then offers each string to the hook,
+;; which routes it column-aware into a clojure.pprint pretty-writer if *out* is
+;; bound to one (returns truthy) and otherwise declines (returns nil) so the
+;; string falls through to the port. This is the JVM behaviour where core print
+;; honours *out*; jolt only needs it for the pretty-printer.
+(define jolt-pprint-write-hook jolt-nil)
+;; suppressed while __with-out-str captures output to a string port: there the
+;; redirect, not *out*, defines where text goes (pr-str / print-str rely on it).
+(define jolt-pprint-hook-suppressed (make-thread-parameter #f))
+(define (jolt-write s)
+  (if (and (not (jolt-nil? jolt-pprint-write-hook))
+           (not (jolt-pprint-hook-suppressed))
+           (jolt-truthy? (jolt-invoke jolt-pprint-write-hook s)))
+      jolt-nil
+      (begin (display s) jolt-nil)))
+(def-var! "clojure.core" "__set-pprint-write-hook!"
+  (lambda (f) (set! jolt-pprint-write-hook f) jolt-nil))
+;; clojure.pprint wraps its writing in this so core print routes into the active
+;; pretty-writer even under an outer with-out-str (which sets suppressed). A
+;; pr-str/print-str nested inside then re-suppresses, so its capture still works.
+(def-var! "clojure.core" "__with-pprint-routing"
+  (lambda (thunk)
+    (parameterize ((jolt-pprint-hook-suppressed #f)) (jolt-invoke thunk))))
 
 ;; __with-out-str: run a jolt thunk with *out* rebound to a string port, return
 ;; the captured text.
 (define (jolt-with-out-str thunk)
-  (with-output-to-string (lambda () (jolt-invoke thunk))))
+  (with-output-to-string
+    (lambda () (parameterize ((jolt-pprint-hook-suppressed #t)) (jolt-invoke thunk)))))
 
 ;; __eprint / __eprintf: stderr seams. Flush each write — like the JVM's
 ;; auto-flushing System.err — so a long-running process (a server that never

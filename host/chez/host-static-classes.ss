@@ -137,6 +137,32 @@
 (def-var! "clojure.core" "*out*" (make-jhost "port-writer" (vector (current-output-port))))
 (def-var! "clojure.core" "*err*" (make-jhost "port-writer" (vector (current-error-port))))
 
+;; PrintWriter — a thin wrapper over a target writer. write/append/print forward
+;; the rendered text to the target. clojure.data.json's pretty printer builds
+;; (PrintWriter. *out*) where *out* is bound to clojure.pprint's pretty-writer (a
+;; jolt record), so forwarding routes column-aware through clojure.pprint/-write;
+;; for a host writer target it falls back to that writer's own write.
+(define (pw-forward target s)
+  (cond
+    ((and (jhost? target) (string=? (jhost-tag target) "port-writer"))
+     (display s (vector-ref (jhost-state target) 0)))
+    ((and (jhost? target) (memv #t (list (string=? (jhost-tag target) "writer")
+                                         (string=? (jhost-tag target) "string-builder"))))
+     (sb-set! target (string-append (sb-str target) s)))
+    (else
+     (jolt-invoke (var-deref "clojure.pprint" "-write") target s))))
+(register-class-ctor! "PrintWriter"
+  (lambda args (make-jhost "print-writer" (vector (if (pair? args) (car args) jolt-nil)))))
+(register-class-ctor! "java.io.PrintWriter"
+  (lambda args (make-jhost "print-writer" (vector (if (pair? args) (car args) jolt-nil)))))
+(register-host-methods! "print-writer"
+  (list (cons "write" (lambda (self x . rest) (pw-forward (vector-ref (jhost-state self) 0) (append-text x rest)) jolt-nil))
+        (cons "print" (lambda (self x) (pw-forward (vector-ref (jhost-state self) 0) (render-piece x)) jolt-nil))
+        (cons "append" (lambda (self x . rest) (pw-forward (vector-ref (jhost-state self) 0) (append-text x rest)) self))
+        (cons "flush" (lambda (self) jolt-nil))
+        (cons "close" (lambda (self) jolt-nil))
+        (cons "toString" (lambda (self) ""))))
+
 ;; ---- java.util.HashMap ------------------------------------------------------
 ;; A mutable map keyed by jolt values (jolt-hash / jolt=2). State #(chez-hashtable).
 ;; Constructors: () | (capacity) | (capacity load-factor) [sizing args ignored] |
