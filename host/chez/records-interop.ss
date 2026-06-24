@@ -50,7 +50,7 @@
           (else (let ((p (assoc c exception-parent))) (loop (and p (cdr p))))))))
 
 ;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded
-;; later (io, inst-time, natives-array, natives-queue, host-static-objects)
+;; later (io, inst-time, natives-array, natives-queue, host-static-classes)
 ;; register an arm with register-instance-check-arm! instead of set!-wrapping
 ;; instance-check; an arm returns #t/#f to decide or 'pass to defer to the next.
 ;; Newest arm is checked first (matches the old outermost-wins set! order).

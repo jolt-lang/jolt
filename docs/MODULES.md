@@ -32,7 +32,8 @@ composed and where a given `.ss` fits.
   thread-local binding stack), `dynamic-vars.ss` (a few `*…*` constant defaults),
   `atoms.ss`, `multimethods.ss`.
 - **Host interop**: `host-class.ss` (class tokens + method dispatch),
-  `host-static*.ss` (static methods/fields + host object classes), `host-table.ss`,
+  `host-static.ss` (interop registry core) + `host-static-methods.ss` (`Class/member`
+  statics) + `host-static-classes.ss` (instantiable object classes), `host-table.ss`,
   `host-contract.ss` (the `jolt.host` seam the compiler resolves against),
   `dot-forms.ss`, `records-interop.ss`.
 - **Scalars / misc**: `regex.ss` (vendored irregex), `math.ss`, `inst-time.ss`,

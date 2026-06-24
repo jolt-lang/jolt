@@ -327,8 +327,8 @@
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
 (load "host/chez/host-static.ss")          ; registries + jhost + coercion helpers
-(load "host/chez/host-static-statics.ss")  ; java.lang/util static methods
-(load "host/chez/host-static-objects.ss")  ; host object classes + instance? hook
+(load "host/chez/host-static-methods.ss")  ; Class/member static methods + fields
+(load "host/chez/host-static-classes.ss")  ; instantiable host object classes
 
 ;; generic dot-form dispatch: field access + map/vector member access
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every

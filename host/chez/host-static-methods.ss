@@ -1,6 +1,8 @@
-;; host-static-statics.ss — java.lang / java.util.* static methods and the
-;; NumberFormat / Class registries. Continues host-static.ss (its registries +
-;; jhost record + coercion helpers); loaded right after it.
+;; host-static-methods.ss — the `Class/member` static surface: java.lang.Math,
+;; System (properties/env), Thread, the Long/Integer/Double/Character/String static
+;; methods, java.text.NumberFormat, and the Class registry. Registers into
+;; host-static.ss's class-statics table (loaded just before this); instantiable host
+;; object classes (ArrayList, StringBuilder, …) live in host-static-classes.ss.
 
 ;; ---- java.lang statics ------------------------------------------------------
 ;; java.lang.Math: sqrt/pow/floor/ceil/trig/log/exp always return a DOUBLE on the
