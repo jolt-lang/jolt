@@ -223,7 +223,7 @@
       (let ((coll (car args)) (xs (cdr args)))
         (if (jolt-nil? coll)
             (fold-left jolt-conj1 jolt-empty-list xs)
-            (fold-left jolt-conj1 coll xs)))))
+            (meta-carry coll (fold-left jolt-conj1 coll xs))))))
 
 ;; A host shim registers a type's get via register-get-arm! (handler: (coll k d) ->
 ;; value) instead of set!-wrapping jolt-get — disjoint coll types, checked before the
@@ -287,14 +287,15 @@
         ((jolt-nil? coll) (pmap-assoc empty-pmap k v))
         (else (error 'assoc "unsupported collection"))))
 (define (jolt-assoc coll . kvs)
-  (let loop ((coll coll) (kvs kvs))
-    (cond ((null? kvs) coll)
-          ((null? (cdr kvs)) (error 'assoc "assoc expects an even number of key/vals"))
-          (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs))))))
+  (meta-carry coll
+    (let loop ((coll coll) (kvs kvs))
+      (cond ((null? kvs) coll)
+            ((null? (cdr kvs)) (error 'assoc "assoc expects an even number of key/vals"))
+            (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs)))))))
 
 (define (jolt-dissoc coll . ks)
   (cond ((jolt-nil? coll) jolt-nil)
-        ((pmap? coll) (fold-left pmap-dissoc coll ks))
+        ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
         (else (error 'dissoc "unsupported collection"))))
 
 (define (jolt-contains? coll k)
@@ -319,8 +320,8 @@
         ((or (cseq? coll) (empty-list-t? coll)) (jolt-first coll))   ; list peek = first
         ((jolt-nil? coll) jolt-nil) (else (error 'peek "unsupported collection"))))
 (define (jolt-pop coll)
-  (cond ((pvec? coll) (pvec-pop coll))
-        ((cseq? coll) (jolt-rest coll))                              ; list pop = rest
+  (cond ((pvec? coll) (meta-carry coll (pvec-pop coll)))
+        ((cseq? coll) (meta-carry coll (jolt-rest coll)))            ; list pop = rest
         ((empty-list-t? coll) (error 'pop "can't pop empty list"))
         (else (error 'pop "unsupported collection"))))
 
