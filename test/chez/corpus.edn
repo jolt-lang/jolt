@@ -2648,6 +2648,8 @@
   {:suite "reader / auto-resolved keywords" :label "::kw is namespace-qualified" :expected "true" :actual "(some? (namespace ::foo))"}
   {:suite "reader / auto-resolved keywords" :label "::kw keeps its name" :expected "\"foo\"" :actual "(name ::foo)"}
   {:suite "reader / auto-resolved keywords" :label "::kw resolves to the current ns" :expected "true" :actual "(= ::a ::a)"}
+  {:suite "clojure.edn / reader opts" :label ":default receives the tag as a symbol" :expected "[true \"foo\" 5]" :actual "(do (require (quote [clojure.edn :as edn])) (let [r (edn/read-string {:default (fn [t v] [t v])} \"#foo 5\")] [(symbol? (first r)) (name (first r)) (second r)]))"}
+  {:suite "metadata / lazy seqs carry meta" :label "with-meta on a lazy seq" :expected "{:k 1}" :actual "(meta (with-meta (map inc [1 2 3]) {:k 1}))"}
   {:suite "conformance / CRITICAL: lazy sequences" :label "self-ref lazy-cat fib" :expected "[0 1 1 2 3 5 8 13 21 34]" :actual "(do (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq))) (take 10 fib-seq))"}
   {:suite "conformance / CRITICAL: multi-collection map" :label "map two colls" :expected "[11 22 33]" :actual "(map + [1 2 3] [10 20 30])"}
   {:suite "conformance / CRITICAL: multi-collection map" :label "map three colls" :expected "[12 24 36]" :actual "(map + [1 2 3] [10 20 30] [1 2 3])"}
