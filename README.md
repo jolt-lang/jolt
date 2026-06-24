@@ -58,8 +58,22 @@ bin/joltc build -m myapp.core -o myapp   # compile myapp.core's -main into ./mya
 ```
 
 Modes trade dynamism for speed: the default (release) build uses the proven code
-generator; `--opt` also runs the inference + scalar-replacement passes over the
-closed-world program; `--dev` is unoptimized.
+generator; `--opt` also runs the inference + inlining + scalar-replacement passes
+over the closed-world program; `--dev` is unoptimized.
+
+Two opt-in closed-world flags cut dispatch cost and binary size:
+
+```bash
+bin/joltc build -m myapp.core --direct-link   # app->app calls bind directly (no var lookup)
+bin/joltc build -m myapp.core --tree-shake    # ship only code reachable from -main
+```
+
+`--tree-shake` walks the call graph across your app, its libraries, and
+`clojure.core`, drops everything unreachable from `-main` (and the compiler itself
+when the app never `eval`s), and typically removes 1–2 MB. It stays sound by bailing
+out — keeping everything, and reporting which library is responsible — when reachable
+code resolves vars by name at runtime (`eval`/`resolve`/`ns-resolve`/…). See
+[docs/tools-deps.md](docs/tools-deps.md) and `docs/rfc/0007`.
 
 This needs Chez's kernel development files (`libkernel.a`, `scheme.h`) and a C
 compiler. They come with a from-source Chez install; a distro `chezscheme`
