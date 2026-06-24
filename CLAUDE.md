@@ -109,6 +109,18 @@ Issue tracking and design notes live in beads (`bd prime`, `bd memories`).
   forever. Use `jolt.host/ref-get`.
 - **Map literals with `:jolt/type` as a key** parse as tagged reader forms —
   don't tag overlay value maps in source.
+- **The compiler is reached from the runtime by `var-deref` string lookup.** The
+  `.ss` runtime calls into the cross-compiled compiler with
+  `(var-deref "jolt.analyzer" "analyze")` etc., and the compiler resolves its own
+  unqualified `jolt.host/…` refs the same way against `host-contract.ss`. So a
+  public `defn` with no in-Clojure callers may still be a live entry point — don't
+  treat it as dead. Only a private `defn-` with no callers is safe to remove.
+- **A native `clojure.core` fn is a `(def-var! "clojure.core" "name" …)`** in a
+  `host/chez/*.ss`; the rest of core is the overlay (`jolt-core/clojure/core/*.clj`).
+  A few natives are re-asserted in `post-prelude.ss` so they win over the overlay.
+  See [docs/MODULES.md](docs/MODULES.md) for where a given fn lives, and
+  [docs/seed-overlay-registry.md](docs/seed-overlay-registry.md) for the shadowing
+  rule. Start at [docs/MODULES.md](docs/MODULES.md) to find a feature's files.
 - **Fix latent bugs to match Clojure** rather than preserving them, with a
   regression case. Match the JVM (or provide a superset); the JVM-sourced corpus
   is the contract.
