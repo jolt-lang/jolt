@@ -388,3 +388,11 @@
              ((string=? method-name "after") (> (jinst-ms obj) (ms-of (car (seq->list rest-args)))))
              (else (error #f (string-append "No method " method-name " on Date")))))
       (else (%it-rmd obj method-name rest-args)))))
+
+;; Clojure's built-in data readers, so a library that merges default-data-readers
+;; or binds *data-readers* (e.g. aero's reader opts) resolves #inst / #uuid.
+;; Keyed by symbol, like Clojure. *data-readers* is the bindable user table.
+(def-var! "clojure.core" "default-data-readers"
+  (jolt-hash-map (jolt-symbol #f "inst") jolt-inst-from-string
+                 (jolt-symbol #f "uuid") jolt-uuid-from-string))
+(def-var! "clojure.core" "*data-readers*" empty-pmap)

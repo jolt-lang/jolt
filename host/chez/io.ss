@@ -100,6 +100,7 @@
       ((string=? name "exists")         (list (if (file-exists? p) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? p) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? p) (not (file-directory? p))) #t #f)))
+      ((string=? name "isAbsolute")     (list (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) #t #f)))
       ((string=? name "listFiles")      (list (list->cseq (map make-jfile (jolt-list-dir p)))))
       ((string=? name "getParent")
        (let loop ((i (- (string-length p) 1)))
