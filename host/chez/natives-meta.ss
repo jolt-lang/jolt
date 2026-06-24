@@ -19,7 +19,7 @@
        (jolt-assoc (if user user (jolt-hash-map))
                    jolt-kw-var-ns (var-cell-ns x)
                    jolt-kw-var-name (var-cell-name x))))
-    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jrec? x) (procedure? x))
+    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (procedure? x))
      (hashtable-ref meta-table x jolt-nil))
     (else jolt-nil)))
 
@@ -36,7 +36,7 @@
 (define (jolt-with-meta x m)
   (cond
     ((symbol-t? x) (make-symbol-t (symbol-t-ns x) (symbol-t-name x) m))
-    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jrec? x) (procedure? x))
+    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (procedure? x))
      (let ((c (meta-copy x)))
        (if (jolt-nil? m) (hashtable-delete! meta-table c) (hashtable-set! meta-table c m))
        c))
