@@ -85,10 +85,18 @@
 (define (jolt-with-out-str thunk)
   (with-output-to-string (lambda () (jolt-invoke thunk))))
 
-;; __eprint / __eprintf: stderr seams.
-(define (jolt-eprint s) (display s (current-error-port)) jolt-nil)
+;; __eprint / __eprintf: stderr seams. Flush each write — like the JVM's
+;; auto-flushing System.err — so a long-running process (a server that never
+;; returns from -main) shows its log lines instead of leaving them in a buffer
+;; that only drains at exit.
+(define (jolt-eprint s)
+  (display s (current-error-port))
+  (flush-output-port (current-error-port))
+  jolt-nil)
 (define (jolt-eprintf fmt . args)
-  (apply fprintf (current-error-port) fmt args) jolt-nil)
+  (apply fprintf (current-error-port) fmt args)
+  (flush-output-port (current-error-port))
+  jolt-nil)
 
 (def-var! "clojure.core" "__pr-str1" jolt-pr-str1)
 (def-var! "clojure.core" "__write" jolt-write)
