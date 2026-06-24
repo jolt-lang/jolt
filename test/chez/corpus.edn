@@ -3023,4 +3023,16 @@
   {:suite "interop / java.time" :label "ChronoUnit DAYS between" :expected "14" :actual "(.between java.time.temporal.ChronoUnit/DAYS (java.time.LocalDate/of 2020 1 1) (java.time.LocalDate/of 2020 1 15))"}
   {:suite "interop / java.time" :label "LocalDate plus ChronoUnit DAYS" :expected "\"2020-01-04\"" :actual "(str (.plus (java.time.LocalDate/of 2020 1 1) 3 java.time.temporal.ChronoUnit/DAYS))"}
   {:suite "interop / java.time" :label "LocalDate until ChronoUnit DAYS" :expected "31" :actual "(.until (java.time.LocalDate/of 2020 1 1) (java.time.LocalDate/of 2020 2 1) java.time.temporal.ChronoUnit/DAYS)"}
+  {:suite "interop / java.time" :label "ZoneOffset ofHoursMinutes toString" :expected "\"+02:00\"" :actual "(str (java.time.ZoneOffset/ofHoursMinutes 2 0))"}
+  {:suite "interop / java.time" :label "ZoneOffset ofTotalSeconds toString" :expected "\"-04:30\"" :actual "(str (java.time.ZoneOffset/ofTotalSeconds -16200))"}
+  {:suite "interop / java.time" :label "ZoneOffset UTC toString" :expected "\"Z\"" :actual "(str java.time.ZoneOffset/UTC)"}
+  {:suite "interop / java.time" :label "ZoneOffset of getTotalSeconds" :expected "7200" :actual "(.getTotalSeconds (java.time.ZoneOffset/of \"+02:00\"))"}
+  {:suite "interop / java.time" :label "ZoneOffset ofHoursMinutes negative" :expected "\"-04:30\"" :actual "(.getId (java.time.ZoneOffset/ofHoursMinutes -4 -30))"}
+  {:suite "interop / java.time" :label "OffsetDateTime toInstant" :expected "\"2020-01-15T08:30:00Z\"" :actual "(str (.toInstant (java.time.OffsetDateTime/of 2020 1 15 10 30 0 0 (java.time.ZoneOffset/ofHours 2))))"}
+  {:suite "interop / java.time" :label "OffsetDateTime toString" :expected "\"2020-01-15T10:30+02:00\"" :actual "(str (java.time.OffsetDateTime/of 2020 1 15 10 30 0 0 (java.time.ZoneOffset/ofHours 2)))"}
+  {:suite "interop / java.time" :label "ZonedDateTime withZoneSameInstant UTC" :expected "\"2020-01-15T08:30Z\"" :actual "(str (.withZoneSameInstant (java.time.ZonedDateTime/parse \"2020-01-15T10:30:00+02:00[Europe/Paris]\") java.time.ZoneOffset/UTC))"}
+  {:suite "interop / java.time" :label "ZonedDateTime of toInstant fixed offset" :expected "\"2020-01-15T08:30:00Z\"" :actual "(str (.toInstant (java.time.ZonedDateTime/of 2020 1 15 10 30 0 0 (java.time.ZoneId/of \"+02:00\"))))"}
+  {:suite "interop / java.time" :label "DateTimeFormatter ofPattern format" :expected "\"2020-01-15 10:30:00\"" :actual "(.format (java.time.format.DateTimeFormatter/ofPattern \"yyyy-MM-dd HH:mm:ss\") (java.time.LocalDateTime/of 2020 1 15 10 30 0))"}
+  {:suite "interop / java.time" :label "ISO_LOCAL_DATE_TIME format" :expected "\"2020-01-15T10:30:00\"" :actual "(.format java.time.format.DateTimeFormatter/ISO_LOCAL_DATE_TIME (java.time.LocalDateTime/of 2020 1 15 10 30 0))"}
+  {:suite "interop / java.time" :label "ISO_OFFSET_DATE_TIME format" :expected "\"2020-01-15T10:30:00+02:00\"" :actual "(.format java.time.format.DateTimeFormatter/ISO_OFFSET_DATE_TIME (java.time.OffsetDateTime/of 2020 1 15 10 30 0 0 (java.time.ZoneOffset/ofHours 2)))"}
 ]

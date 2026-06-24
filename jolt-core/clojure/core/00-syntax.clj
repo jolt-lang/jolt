@@ -217,17 +217,19 @@
                         as-sym (get pat :as)
                         bound (conj (conj (conj (conj acc g) init) gm) coerce)
                         base (if as-sym (conj (conj bound as-sym) gm) bound)
+                        ;; group binds a :keys/:strs/:syms list. dnsp is the destructuring
+                        ;; namespace from a qualified key like :ns/keys — it both prefixes
+                        ;; the lookup key and overrides a bare symbol's namespace.
                         group
-                          (fn* [a kw kind]
-                            (let* [names (get pat kw)]
-                              (if names
+                          (fn* group [a names kind dnsp]
+                            (if names
                                 (reduce
                                   ;; s is a symbol (a b) or a keyword (:a :b); name/
                                   ;; namespace handle both, so :keys [:major] binds
                                   ;; `major` looking up :major (str would keep the colon).
                                   (fn* [aa s]
                                     (let* [local (name s)
-                                           nsp (namespace s)
+                                           nsp (or (namespace s) dnsp)
                                            keyform (cond
                                                      (= kind :kw) (keyword (if nsp (str nsp "/" local) local))
                                                      (= kind :str) local
@@ -238,13 +240,21 @@
                                               `(get ~gm ~keyform ~(nth fo 1))
                                               `(get ~gm ~keyform)))))
                                   a names)
-                                a)))
-                        g1 (group base :keys :kw)
-                        g2 (group g1 :strs :str)
-                        g3 (group g2 :syms :sym)]
+                                a))
+                        g1 (group base (get pat :keys) :kw nil)
+                        g2 (group g1 (get pat :strs) :str nil)
+                        g3 (group g2 (get pat :syms) :sym nil)]
+                   ;; remaining keys: a qualified :ns/keys|:ns/strs|:ns/syms groups under
+                   ;; its namespace; any other keyword is skipped; a non-keyword is a
+                   ;; nested binding pattern.
                    (reduce (fn* [a k]
                              (if (keyword? k)
-                               a
+                               (let* [kn (name k) kns (namespace k)]
+                                 (cond
+                                   (and kns (= kn "keys")) (group a (get pat k) :kw kns)
+                                   (and kns (= kn "strs")) (group a (get pat k) :str kns)
+                                   (and kns (= kn "syms")) (group a (get pat k) :sym kns)
+                                   :else a))
                                (proc k `(get ~gm ~(get pat k)) a)))
                            g3 (keys pat)))
                :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))

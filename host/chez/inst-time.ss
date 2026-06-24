@@ -45,11 +45,23 @@
              (and (digit? (string-ref s j))
                   (loop (+ j 1) (+ (* acc 10) (- (char->integer (string-ref s j)) 48))))))))
 
-(define (jolt-inst-from-string ts)
+(define (jolt-inst-from-string ts0)
+  ;; a leading '-' marks a negative (proleptic) year; the rest of the field may be
+  ;; more than 4 digits (java.time prints -999999999-…). Read the year up to the
+  ;; first '-' that separates it from the month.
+  (define neg-year (and (> (string-length ts0) 0) (char=? (string-ref ts0 0) #\-)))
+  (define ts (if neg-year (substring ts0 1 (string-length ts0)) ts0))
   (define len (string-length ts))
-  (define (fail) (error #f (string-append "Unrecognized #inst timestamp: " ts)))
-  (let* ((year (or (digits-at ts 0 4) (fail)))
-         (i 4) (month 1) (day 1) (hh 0) (mm 0) (ss 0) (frac-ms 0) (off-s 0))
+  (define (fail) (error #f (string-append "Unrecognized #inst timestamp: " ts0)))
+  (define (read-year)
+    ;; >=4 digits up to a non-digit; java.time uses min-4 but allows more.
+    (let loop ((j 0) (acc 0) (n 0))
+      (if (and (< j len) (digit? (string-ref ts j)))
+          (loop (+ j 1) (+ (* acc 10) (- (char->integer (string-ref ts j)) 48)) (+ n 1))
+          (if (>= n 4) (cons acc j) #f))))
+  (let* ((yr (or (read-year) (fail)))
+         (year (if neg-year (- (car yr)) (car yr)))
+         (i (cdr yr)) (month 1) (day 1) (hh 0) (mm 0) (ss 0) (frac-ms 0) (off-s 0))
     ;; -MM
     (when (and (< i len) (char=? (string-ref ts i) #\-) (digits-at ts (+ i 1) 2))
       (set! month (digits-at ts (+ i 1) 2)) (set! i (+ i 3)))
@@ -170,11 +182,14 @@
         (y 1970) (mo 1) (d 1) (hh 0) (mi 0) (ss 0) (pm 'none))
     (define (pfail) (error #f (string-append "ParseException: unparseable date \"" input "\"")))
     (define (run-len i c) (let loop ((j i)) (if (and (< j pn) (char=? (string-ref pattern j) c)) (loop (+ j 1)) (- j i))))
-    (define (read-digits ii)             ; -> (val . next), pfail if none
-      (let loop ((j ii) (acc 0) (any #f))
-        (if (and (< j inn) (digit? (string-ref input j)))
-            (loop (+ j 1) (+ (* acc 10) (- (char->integer (string-ref input j)) 48)) #t)
+    ;; read up to `maxw` digits (#f = unbounded). A fixed-width field (k>=2, e.g.
+    ;; HHmm) caps the read at its run length so adjacent numeric fields split.
+    (define (read-digits-w ii maxw)      ; -> (val . next), pfail if none
+      (let loop ((j ii) (acc 0) (n 0) (any #f))
+        (if (and (< j inn) (digit? (string-ref input j)) (or (not maxw) (< n maxw)))
+            (loop (+ j 1) (+ (* acc 10) (- (char->integer (string-ref input j)) 48)) (+ n 1) #t)
             (if any (cons acc j) (pfail)))))
+    (define (read-digits ii) (read-digits-w ii #f))
     (define (read-alpha ii)              ; -> (str . next)
       (let loop ((j ii)) (if (and (< j inn) (char-alphabetic? (string-ref input j))) (loop (+ j 1))
                              (cons (substring input ii j) j))))
@@ -195,23 +210,23 @@
               ((char-alphabetic? c)
                (let ((k (run-len pi c)))
                  (cond
-                   ((char=? c #\y) (let ((r (read-digits ii)))
+                   ((char=? c #\y) (let ((r (read-digits-w ii (if (>= k 3) #f k))))
                                      ;; 2-digit year (value < 100): JVM sliding window — 00-68 -> 20xx,
                                      ;; 69-99 -> 19xx (rfc1036 HTTP dates). A full year stays as-is.
-                                     (set! y (let ((v (car r))) (if (< v 100) (if (< v 69) (+ 2000 v) (+ 1900 v)) v)))
+                                     (set! y (let ((v (car r))) (if (and (= k 2) (< v 100)) (if (< v 69) (+ 2000 v) (+ 1900 v)) v)))
                                      (loop (+ pi k) (cdr r))))
                    ((char=? c #\M) (if (>= k 3)
                                        (let ((r (read-alpha ii))) (set! mo (or (month-from-name (car r)) (pfail))) (loop (+ pi k) (cdr r)))
-                                       (let ((r (read-digits ii))) (set! mo (car r)) (loop (+ pi k) (cdr r)))))
-                   ((char=? c #\d) (let ((r (read-digits ii))) (set! d (car r)) (loop (+ pi k) (cdr r))))
-                   ((or (char=? c #\H) (char=? c #\h)) (let ((r (read-digits ii))) (set! hh (car r)) (loop (+ pi k) (cdr r))))
-                   ((char=? c #\m) (let ((r (read-digits ii))) (set! mi (car r)) (loop (+ pi k) (cdr r))))
-                   ((char=? c #\s) (let ((r (read-digits ii))) (set! ss (car r)) (loop (+ pi k) (cdr r))))
+                                       (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! mo (car r)) (loop (+ pi k) (cdr r)))))
+                   ((char=? c #\d) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! d (car r)) (loop (+ pi k) (cdr r))))
+                   ((or (char=? c #\H) (char=? c #\h)) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! hh (car r)) (loop (+ pi k) (cdr r))))
+                   ((char=? c #\m) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! mi (car r)) (loop (+ pi k) (cdr r))))
+                   ((char=? c #\s) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! ss (car r)) (loop (+ pi k) (cdr r))))
                    ((char=? c #\E) (loop (+ pi k) (cdr (read-alpha ii))))
                    ((char=? c #\a) (let ((r (read-alpha ii)))
                                      (set! pm (if (string=? (ascii-string-down (car r)) "pm") 'pm 'am))
                                      (loop (+ pi k) (cdr r))))
-                   ((or (char=? c #\z) (char=? c #\Z) (char=? c #\X)) (loop (+ pi k) (read-tz ii)))
+                   ((or (char=? c #\z) (char=? c #\Z) (char=? c #\X) (char=? c #\x) (char=? c #\V) (char=? c #\v)) (loop (+ pi k) (read-tz ii)))
                    (else (loop (+ pi k) ii)))))
               ((char=? c #\')
                (if (and (< (+ pi 1) pn) (char=? (string-ref pattern (+ pi 1)) #\'))
@@ -393,6 +408,9 @@
   (list (cons "getDefault" (lambda () (make-jhost "locale" (vector "default"))))
         (cons "ENGLISH" (make-jhost "locale" (vector "en")))
         (cons "US" (make-jhost "locale" (vector "en-US")))
+        (cons "FRENCH" (make-jhost "locale" (vector "fr")))
+        (cons "FRANCE" (make-jhost "locale" (vector "fr-FR")))
+        (cons "GERMAN" (make-jhost "locale" (vector "de")))
         (cons "ROOT" (make-jhost "locale" (vector "root")))))
 
 ;; java.util.Date / java.sql.Timestamp: #inst's classes. (Date.) = now, (Date. ms)
@@ -404,6 +422,10 @@
 (register-class-ctor! "java.util.Date" date-ctor)
 (register-class-ctor! "Timestamp" date-ctor)
 (register-class-ctor! "java.sql.Timestamp" date-ctor)
+;; Date/from(Instant) -> a java.util.Date at the instant's epoch-ms.
+(let ((date-statics (list (cons "from" (lambda (inst) (make-jinst (ms->exact (ms-of inst))))))))
+  (register-class-statics! "Date" date-statics)
+  (register-class-statics! "java.util.Date" date-statics))
 ;; java.sql.Date: a distinct class from java.util.Date (a "sql-date" jhost over
 ;; epoch-ms) so a protocol extended to both routes a sql.Date to its own impl.
 ;; (Date. year-1900 month0 day) builds UTC midnight of that civil date; valueOf
