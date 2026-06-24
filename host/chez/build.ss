@@ -140,11 +140,16 @@
 ;; Inline the runtime manifest. When drop-compiler? (a closed AOT app that never
 ;; compiles from source at runtime), omit the compiler image + compile-eval shim —
 ;; the analyzer/back end are dead weight in the binary (~0.8MB).
-(define (bld-emit-runtime out drop-compiler?)
+(define (bld-emit-runtime out drop-compiler? core-strs)
   (for-each (lambda (l)
-              (unless (and drop-compiler?
-                           (or (bld-contains? l "seed/image.ss") (bld-contains? l "compile-eval.ss")))
-                (bld-inline-line l out 0)))
+              (cond
+                ;; core-shake: emit the shaken clojure.core defs in place of the blob.
+                ((and core-strs (bld-contains? l "seed/prelude.ss"))
+                 (for-each (lambda (s) (put-string out s) (put-string out "\n")) core-strs))
+                ((and drop-compiler?
+                      (or (bld-contains? l "seed/image.ss") (bld-contains? l "compile-eval.ss")))
+                 #f)
+                (else (bld-inline-line l out 0))))
             bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
@@ -153,21 +158,24 @@
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
-;; Tree-shake the re-emitted forms: keep every non-def form (side effects) + every
-;; def reachable from -main and from those forms; drop the rest. Bails to keep-all
-;; if any form resolves vars by name at runtime. `records` is the ei-emit-ns-records
-;; output across all app namespaces; returns the kept Scheme strings in order.
-(define (bld-tree-shake records entry-main)
-  (let ((edges (make-hashtable string-hash string=?))
-        (roots '()))
+;; Tree-shake the whole closed program — the clojure.core prelude (read into records
+;; by dce-blob-records) AND the re-emitted app + library namespaces — over one
+;; reachability graph: keep every non-def form (side effects), -main, the core fns the
+;; runtime shims need, and every def reachable from those; drop the rest. Bails to
+;; keep-all if reachable code resolves vars by name at runtime (closed-world
+;; violation). Returns (values core-strs app-strs drop-compiler?); core-strs is #f on
+;; a bail, signalling "inline prelude.ss unshaken".
+(define (bld-shake-all core-records app-records entry-main)
+  (let ((all (append core-records app-records))
+        (edges (make-hashtable string-hash string=?))
+        (roots (cons entry-main dce-runtime-core-roots)))
     (for-each (lambda (r)
                 (if (vector-ref r 0)
                     (set! roots (append (vector-ref r 2) roots))
                     (hashtable-set! edges (vector-ref r 1) (vector-ref r 2))))
-              records)
-    ;; reachability from -main + every side-effecting form's refs.
+              all)
     (let ((reached (make-hashtable string-hash string=?)))
-      (let bfs ((work (cons entry-main roots)))
+      (let bfs ((work roots))
         (unless (null? work)
           (let ((fq (car work)))
             (if (hashtable-ref reached fq #f)
@@ -177,31 +185,31 @@
       (let ((kept? (lambda (r) (or (vector-ref r 0) (hashtable-ref reached (vector-ref r 1) #f))))
             (refs-any (lambda (r set) (ormap (lambda (b) (and (member b (vector-ref r 2)) #t)) set)))
             (bail #f) (needs-compiler #f))
-        ;; bail only if REACHABLE code resolves vars by name — then the static call
-        ;; graph is incomplete and dropping anything is unsound. Unreached eval-using
-        ;; library code is simply shaken away and never triggers the bail. Track
-        ;; whether any reachable code needs the compiler at runtime (eval/load).
         (for-each (lambda (r)
                     (when (kept? r)
                       (when (refs-any r dce-bail-refs) (set! bail #t))
                       (when (refs-any r dce-compile-refs) (set! needs-compiler #t))))
-                  records)
-        ;; the compiler image can be dropped only when reachability is trustworthy
-        ;; (no bail) and no reachable code compiles from source at runtime.
-        (let ((drop-compiler? (and (not bail) (not needs-compiler))))
+                  all)
+        (let ((drop-compiler? (and (not bail) (not needs-compiler)))
+              ;; -> (values strs n-defs n-kept)
+              (pick (lambda (recs)
+                      (let loop ((rs recs) (acc '()) (n 0) (k 0))
+                        (if (null? rs)
+                            (values (reverse acc) n k)
+                            (let* ((r (car rs)) (isdef (and (vector-ref r 1) #t)))
+                              (if (kept? r)
+                                  (loop (cdr rs) (cons (vector-ref r 3) acc)
+                                        (if isdef (+ n 1) n) (if isdef (+ k 1) k))
+                                  (loop (cdr rs) acc (if isdef (+ n 1) n) k))))))))
           (if bail
               (begin (display "jolt build: tree-shake skipped (reachable code resolves vars at runtime)\n")
-                     (values (map (lambda (r) (vector-ref r 3)) records) drop-compiler?))
-              (let ((kept '()) (ndef 0) (nkeep 0))
-                (for-each (lambda (r)
-                            (when (vector-ref r 1) (set! ndef (+ ndef 1)))
-                            (when (kept? r)
-                              (when (vector-ref r 1) (set! nkeep (+ nkeep 1)))
-                              (set! kept (cons (vector-ref r 3) kept))))
-                          records)
-                (display (string-append "jolt build: tree-shake kept " (number->string nkeep)
-                                        " of " (number->string ndef) " defs\n"))
-                (values (reverse kept) drop-compiler?))))))))
+                     (values #f (map (lambda (r) (vector-ref r 3)) app-records) drop-compiler?))
+              (let-values (((core-strs cn ck) (pick core-records))
+                           ((app-strs an ak) (pick app-records)))
+                (display (string-append "jolt build: tree-shake kept " (number->string (+ ck ak))
+                                        " of " (number->string (+ cn an)) " defs (core "
+                                        (number->string ck) "/" (number->string cn) ")\n"))
+                (values core-strs app-strs drop-compiler?))))))))
 
 ;; --- bundling: native libs + resources --------------------------------------
 ;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
@@ -295,13 +303,15 @@
         ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
         ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
       (let*-values
-          (((app-strs drop-compiler?)
+          (((core-strs app-strs drop-compiler?)
             (if tree-shake?
-                (bld-tree-shake
+                (bld-shake-all
+                  (dce-blob-records "host/chez/seed/prelude.ss")
                   (apply append
                     (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf)))) ordered))
                   (string-append entry-ns "/-main"))
-                (values (apply append
+                (values #f
+                        (apply append
                           (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf)))) ordered))
                         #f))))
         (set-optimize! #f)
@@ -316,7 +326,7 @@
         (bld-system (string-append "mkdir -p '" builddir "'"))
         ;; 3. flat source = runtime + app + launcher.
         (let ((out (open-output-file flat-ss 'replace)))
-          (bld-emit-runtime out drop-compiler?)
+          (bld-emit-runtime out drop-compiler? core-strs)
           ;; Load native libs, bake embedded resources, and point source roots at
           ;; the build-time app roots — all BEFORE the app forms. The app's
           ;; top-level forms run at binary startup (Sbuild_heap), and they include

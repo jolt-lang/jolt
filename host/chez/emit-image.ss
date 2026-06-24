@@ -122,6 +122,50 @@
     "clojure.core/load-string" "clojure.core/load-file" "clojure.core/load-reader"
     "clojure.core/load"))
 
+;; clojure.core fns the runtime .ss shims reference by name (via var-deref) — they
+;; aren't visible in the IR call graph, so seed them as roots. (Found by grepping the
+;; runtime shims; the smoke harness catches a miss as a diff/crash.)
+(define dce-runtime-core-roots
+  '("clojure.core/identity" "clojure.core/isa?" "clojure.core/line-seq"
+    "clojure.core/make-hierarchy" "clojure.core/read" "clojure.core/read-string"
+    "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"))
+
+;; --- reading a minted blob (prelude.ss) into DCE records --------------------
+;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the
+;; occasional side-effecting init). Read each with Chez `read` so it joins the
+;; reachability graph instead of being baked wholesale: a def-var! is a prunable node
+;; whose core->core edges are the (var-deref/jolt-var "ns" "name") calls in V; any
+;; other form is non-prunable (kept, refs are roots).
+(define (dce-unwrap form)
+  (if (and (pair? form) (eq? (car form) 'guard) (pair? (cddr form))) (caddr form) form))
+
+(define (dce-sexp-refs form acc)
+  (cond
+    ((and (pair? form) (memq (car form) '(var-deref jolt-var))
+          (pair? (cdr form)) (string? (cadr form)) (pair? (cddr form)) (string? (caddr form)))
+     (cons (string-append (cadr form) "/" (caddr form)) acc))
+    ((pair? form) (dce-sexp-refs (cdr form) (dce-sexp-refs (car form) acc)))
+    (else acc)))
+
+;; Records (same shape as ei-emit-ns-records) for a minted blob file. str re-serializes
+;; the read form (compiled identically; comments/whitespace are irrelevant).
+(define (dce-blob-records path)
+  (call-with-input-file path
+    (lambda (p)
+      (let loop ((acc '()))
+        (let ((form (read p)))
+          (if (eof-object? form)
+              (reverse acc)
+              (let ((b (dce-unwrap form))
+                    (str (with-output-to-string (lambda () (write form))))
+                    (refs (dce-sexp-refs form '())))
+                (loop (cons
+                        (if (and (pair? b) (eq? (car b) 'def-var!) (pair? (cdr b)) (string? (cadr b))
+                                 (pair? (cddr b)) (string? (caddr b)))
+                            (vector #f (string-append (cadr b) "/" (caddr b)) refs str)
+                            (vector #t #f refs str))
+                        acc)))))))))
+
 ;; A reference that needs the analyzer/back end at runtime (compile-from-source). If
 ;; reachable code uses none of these, the compiler image can be dropped from the
 ;; binary — the AOT app is fully compiled. (resolve/require don't need it: resolve is
