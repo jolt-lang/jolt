@@ -72,11 +72,10 @@
       ((ex-info-map? val) (exception-isa? (last-dot (ex-info-class val)) (last-dot tname)))
       (else (case-string tname val)))))
 
-(define (instance-check type-sym val)
-  ;; normalize a bare (non-array) string class token to a symbol so every arm and
-  ;; the base table can read its name; array tokens ("[I") stay strings for the
-  ;; natives-array arm.
-  (let ((ts (if (and (string? type-sym)
+(define (instance-check type-sym0 val)
+  ;; a Class value as the type arg (instance? (class x) y) -> use its name string.
+  (let* ((type-sym (if (jclass? type-sym0) (jclass-name type-sym0) type-sym0))
+         (ts (if (and (string? type-sym)
                      (or (= 0 (string-length type-sym))
                          (not (char=? (string-ref type-sym 0) #\[))))
                 (jolt-symbol #f type-sym)

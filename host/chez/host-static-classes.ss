@@ -643,5 +643,29 @@
                    (else 'none))))
         (if (eq? hit 'none) 'pass (if hit #t #f))))))
 
+;; java.lang.Class value: (class x) / (.getClass x) return one. It renders like
+;; the JVM — str/.toString -> "class <name>", pr -> "<name>", .getName -> "<name>"
+;; — but stays = and hash equal to its name STRING, so (= (class x) String),
+;; class-keyed maps/sets, multimethod dispatch on class, and instance? all keep
+;; working against the bare class-name tokens.
+(define (make-class-obj name) (make-jhost "class" (vector name)))
+(define (jclass? x) (and (jhost? x) (string=? (jhost-tag x) "class")))
+(define (jclass-name x) (vector-ref (jhost-state x) 0))
+(define (class-key x) (cond ((jclass? x) (jclass-name x)) ((string? x) x) (else #f)))
+(register-eq-arm! (lambda (a b) (or (jclass? a) (jclass? b)))
+                  (lambda (a b) (let ((ka (class-key a)) (kb (class-key b)))
+                                  (and ka kb (string=? ka kb) #t))))
+(register-hash-arm! jclass? (lambda (x) (jolt-hash (jclass-name x))))
+(register-str-render! jclass? (lambda (x) (string-append "class " (jclass-name x))))
+(register-pr-arm! jclass? (lambda (x) (jclass-name x)))
+(register-host-methods! "class"
+  (list (cons "getName" (lambda (self) (jclass-name self)))
+        (cons "getCanonicalName" (lambda (self) (jclass-name self)))
+        (cons "getSimpleName" (lambda (self) (hsc-last-segment (jclass-name self))))
+        (cons "toString" (lambda (self) (string-append "class " (jclass-name self))))
+        (cons "isArray" (lambda (self) (let ((n (jclass-name self)))
+                                         (and (fx>? (string-length n) 0) (char=? (string-ref n 0) #\[)))))
+        (cons "getClass" (lambda (self) (make-class-obj "java.lang.Class")))))
+
 ;; (jolt.host/table? x) — is x a host tagged-table?
 (def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))

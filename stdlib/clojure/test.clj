@@ -74,8 +74,9 @@
   (let [w (last-seg wanted)]
     (if (or (= w "Exception") (= w "Throwable"))
       true
-      (let [c (class e)]
-        (and (string? c) (= (last-seg c) w))))))
+      (let [c (class e)
+            cn (cond (nil? c) nil (string? c) c :else (.getName c))]
+        (and cn (= (last-seg cn) w))))))
 
 ;; --- assertion macros ------------------------------------------------------
 
