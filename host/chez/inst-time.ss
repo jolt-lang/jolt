@@ -368,7 +368,9 @@
 ;; date; valueOf parses "yyyy-MM-dd" to the same instant (so the two agree).
 (define (sql-date-midnight y mo d) (make-jinst (* 1000 (* (days-from-civil y mo d) 86400))))
 (register-class-ctor! "java.sql.Date"
-  (lambda (y m d) (sql-date-midnight (+ 1900 (jnum->exact y)) (+ 1 (jnum->exact m)) (jnum->exact d))))
+  (case-lambda
+    ((ms) (make-jinst (ms->exact (ms-of ms))))   ; (Date. epoch-ms)
+    ((y m d) (sql-date-midnight (+ 1900 (jnum->exact y)) (+ 1 (jnum->exact m)) (jnum->exact d)))))
 (register-class-statics! "java.sql.Date"
   (list (cons "valueOf" (lambda (s) (parse-ms "yyyy-MM-dd" (if (string? s) s (jolt-str-render-one s)))))))
 
