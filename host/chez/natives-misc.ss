@@ -1,4 +1,5 @@
-;; misc scalar natives — UUID, format/printf, tagged-literal, bigint.
+;; misc scalar natives — UUID, tagged-literal, bigint, and the hash API. (format /
+;; printf moved to natives-format.ss.)
 ;;
 ;; Loaded after the printers (pr-str of a uuid is #uuid "…") and converters
 ;; (jolt-str-render-one for %s / str of a uuid).
@@ -53,16 +54,10 @@
 ;; str of a uuid -> the bare 36-char string; pr-str -> #uuid "…".
 (register-str-render! juuid? juuid-s)
 (define (juuid-pr u) (string-append "#uuid \"" (juuid-s u) "\""))
-(define %m-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (juuid? x) (juuid-pr x) (%m-pr-str x))))
-(define %m-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (juuid? x) (juuid-pr x) (%m-pr-readable x))))
+(register-pr-arm! juuid? juuid-pr)
 ;; two uuids are = iff same string.
-(define %m-=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((juuid? a) (and (juuid? b) (string=? (juuid-s a) (juuid-s b))))
-        ((juuid? b) #f)
-        (else (%m-=2 a b)))))
+(register-eq-arm! (lambda (a b) (or (juuid? a) (juuid? b)))
+                  (lambda (a b) (and (juuid? a) (juuid? b) (string=? (juuid-s a) (juuid-s b)))))
 
 ;; --- bigint / biginteger -----------------------------------------------------
 ;; jolt models every number as a double; an integer-valued double prints without
@@ -80,79 +75,30 @@
 (define (jolt-tagged-literal-pred? x) (jtagged? x))
 (define kw-tl-tag (keyword #f "tag"))
 (define kw-tl-form (keyword #f "form"))
-(define %m-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (if (jtagged? coll) (jolt-get coll k jolt-nil) (%m-get coll k)))
-  ((coll k d) (if (jtagged? coll)
-                  (cond ((jolt=2 k kw-tl-tag) (jtagged-tag coll))
-                        ((jolt=2 k kw-tl-form) (jtagged-form coll))
-                        (else d))
-                  (%m-get coll k d)))))
+(register-get-arm! jtagged?
+  (lambda (coll k d)
+    (cond ((jolt=2 k kw-tl-tag) (jtagged-tag coll))
+          ((jolt=2 k kw-tl-form) (jtagged-form coll))
+          (else d))))
 (define (jtagged-pr t) (string-append "#" (jolt-pr-str (jtagged-tag t)) " " (jolt-pr-readable (jtagged-form t))))
-(define %m2-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jtagged? x) (jtagged-pr x) (%m2-pr-str x))))
-(define %m2-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jtagged? x) (jtagged-pr x) (%m2-pr-readable x))))
+(register-pr-arm! jtagged? jtagged-pr)
 (def-var! "clojure.core" "tagged-literal" jolt-tagged-literal)
 ;; tagged-literal? is OVERLAY (reads :jolt/type) — asserted in post-prelude.ss.
 
-;; --- format / printf ---------------------------------------------------------
-;; A small %-format engine over the all-flonum number model: %d (integer), %s
-;; (str), %f / %.Nf (fixed-point), %x/%X (hex int), %o (octal), %c (char int),
-;; %b (boolean), %% (literal). Enough for the corpus; not the full Java spec.
-(define (->long x) (exact (truncate x)))
-(define (pad-left s n c) (if (fx>=? (string-length s) n) s (string-append (make-string (fx- n (string-length s)) c) s)))
-(define (fmt-float x prec)
-  (let* ((neg (< x 0)) (ax (abs x))
-         (scale (expt 10 prec))
-         (scaled (round (* (inexact ax) scale)))
-         (i (exact (truncate (/ scaled scale))))
-         (frac (exact (truncate (- scaled (* i scale))))))
-    (string-append (if neg "-" "")
-                   (number->string i)
-                   (if (fx>? prec 0) (string-append "." (pad-left (number->string frac) prec #\0)) ""))))
-(define (jolt-format fmt . args)
-  (let ((out (open-output-string)))
-    (let loop ((i 0) (as args))
-      (if (fx>=? i (string-length fmt))
-          (get-output-string out)
-          (let ((c (string-ref fmt i)))
-            (if (char=? c #\%)
-                ;; parse a directive: %[-][0][width][.prec]conv
-                (let scan ((j (fx+ i 1)) (left #f) (zero #f) (width #f) (prec #f) (seen-dot #f))
-                  (let ((d (string-ref fmt j)))
-                    (cond
-                      ((char=? d #\%) (write-char #\% out) (loop (fx+ j 1) as))
-                      ((and (not seen-dot) (not width) (char=? d #\-))
-                       (scan (fx+ j 1) #t zero width prec seen-dot))
-                      ((and (not seen-dot) (not width) (char=? d #\0))
-                       (scan (fx+ j 1) left #t width prec seen-dot))
-                      ((char=? d #\.) (scan (fx+ j 1) left zero width 0 #t))
-                      ((and (char>=? d #\0) (char<=? d #\9))
-                       (if seen-dot
-                           (scan (fx+ j 1) left zero width (fx+ (fx* (or prec 0) 10) (fx- (char->integer d) 48)) seen-dot)
-                           (scan (fx+ j 1) left zero (fx+ (fx* (or width 0) 10) (fx- (char->integer d) 48)) prec seen-dot)))
-                      (else
-                       (let* ((a (if (null? as) jolt-nil (car as)))
-                              (rest (if (null? as) '() (cdr as)))
-                              (s (case d
-                                   ((#\d) (number->string (->long a)))
-                                   ((#\s) (jolt-str-render-one a))
-                                   ((#\f) (fmt-float a (or prec 6)))
-                                   ((#\x) (number->string (->long a) 16))
-                                   ((#\X) (string-upcase (number->string (->long a) 16)))
-                                   ((#\o) (number->string (->long a) 8))
-                                   ((#\b) (if (jolt-truthy? a) "true" "false"))
-                                   ((#\c) (string (integer->char (->long a))))
-                                   (else (string #\% d))))
-                              ;; pad to width: left-justify with spaces, else right-justify
-                              ;; (zero-pad only a right-justified number).
-                              (s (if (and width (fx<? (string-length s) width))
-                                     (let ((p (fx- width (string-length s))))
-                                       (if left (string-append s (make-string p #\space))
-                                           (string-append (make-string p (if (and zero (memv d '(#\d #\f #\x #\X #\o))) #\0 #\space)) s)))
-                                     s)))
-                         (display s out)
-                         (loop (fx+ j 1) rest))))))
-                (begin (write-char c out) (loop (fx+ i 1) as))))))))
-(def-var! "clojure.core" "format" jolt-format)
+;; --- hash family (24-bit masked so int? holds) -------------------------------
+;; The public hash API over jolt-hash (values.ss). hash-ordered/-unordered-coll
+;; fold the element hashes the way Clojure's IHash mixers do.
+(define (nm-h24 x) (bitwise-and (jolt-hash x) #xffffff))
+(define (nm-hash x) (nm-h24 x))
+(define (nm-hash-combine a b)
+  (bitwise-and (bitwise-xor (nm-h24 a) (+ (nm-h24 b) #x9e3779)) #xffffff))
+(define (nm-hash-ordered-coll coll)
+  (let loop ((xs (seq->list (jolt-seq coll))) (h 1))
+    (if (null? xs) h (loop (cdr xs) (bitwise-and (+ (* 31 h) (nm-h24 (car xs))) #xffffff)))))
+(define (nm-hash-unordered-coll coll)
+  (let loop ((xs (seq->list (jolt-seq coll))) (h 0))
+    (if (null? xs) h (loop (cdr xs) (bitwise-and (+ h (nm-h24 (car xs))) #xffffff)))))
+(def-var! "clojure.core" "hash" nm-hash)
+(def-var! "clojure.core" "hash-combine" nm-hash-combine)
+(def-var! "clojure.core" "hash-ordered-coll" nm-hash-ordered-coll)
+(def-var! "clojure.core" "hash-unordered-coll" nm-hash-unordered-coll)

@@ -1,4 +1,7 @@
-;; host-static.ss — host class statics + constructors on Chez.
+;; host-static.ss — the host-interop registry core: the class-statics / class-ctors
+;; / tagged-methods tables, the jhost record, and the coercion helpers. The actual
+;; entries are registered by host-static-methods.ss (Class/member statics) and
+;; host-static-classes.ss (instantiable object classes), loaded after this.
 ;;
 ;; The analyzer lowers `Class/member` to a :host-static node and `(Class. ...)` /
 ;; `(new Class ...)` to a :host-new node (jolt-core/jolt/analyzer.clj); the Chez

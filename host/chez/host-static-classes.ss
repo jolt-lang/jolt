@@ -1,7 +1,8 @@
-;; host-static-objects.ss — host object classes (ArrayList, HashMap, the
-;; String/Reader/Writer/Tokenizer shims, BigInteger/MapEntry ctors, URL codecs)
-;; and the tagged-table method dispatch + pluggable instance? hook. Continues
-;; host-static-statics.ss; loaded last of the three.
+;; host-static-classes.ss — instantiable host object classes: ArrayList, HashMap,
+;; the String/Reader/Writer/Tokenizer shims, BigInteger/MapEntry ctors, and URL
+;; codecs. Holds the tagged-table method dispatch (the (.method ...) arm on a jhost)
+;; and the pluggable instance? hook. Loaded after host-static-methods.ss; the
+;; `Class/member` static methods live there, the registry core in host-static.ss.
 
 ;; ---- java.util.ArrayList ----------------------------------------------------
 ;; A mutable list backed by a growable Scheme vector. State is #(backing count);

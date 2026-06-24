@@ -44,6 +44,8 @@
 (jolt-compile-eval "(def hof (fn* ([] a)))" "app")
 (jolt-compile-eval "(def ^:dynamic d 5)" "app")
 (jolt-compile-eval "(def usesd (fn* ([] (d))))" "app")
+(jolt-compile-eval "(def cfg {:a 1 :b 2})" "app")
+(jolt-compile-eval "(def usecfg (fn* ([] (cfg :a))))" "app")
 
 ;; --- direct-link OFF: every reference stays indirect (var-deref) ---
 (let ((eb (emit-form "app" "(def b (fn* ([] (a))))")))
@@ -71,6 +73,16 @@
 (let ((eh (emit-form "app" "(def hof (fn* ([] a)))")))
   (ok "on: a used as a value references the binding directly" (contains? eh " jv$app$a)"))
   (ok "on: value-ref to a is NOT var-deref'd" (not (contains? eh "(var-deref \"app\" \"a\")"))))
+
+;; A map-valued (non-fn) def is invokable in Clojure but is NOT a Scheme procedure;
+;; a direct-link call to it must route through jolt-invoke, never raw-apply the
+;; binding (which crashed with "attempt to apply non-procedure" before the fix).
+(let ((ec (emit-form "app" "(def cfg {:a 1 :b 2})")))   ; registers app/cfg (non-fn) in the set
+  (ok "on: a non-fn def still gets a jv$ binding" (contains? ec "(define jv$app$cfg ")))
+(let ((eu (emit-form "app" "(def usecfg (fn* ([] (cfg :a))))")))
+  (ok "on: call to a map-valued def routes through jolt-invoke" (contains? eu "(jolt-invoke"))
+  (ok "on: call to a map-valued def still uses the direct binding" (contains? eu "jv$app$cfg"))
+  (ok "on: a map-valued def is NOT raw-applied as a procedure" (not (contains? eu "(jv$app$cfg"))))
 
 ;; ^:dynamic opts out: no jv$ binding, callers stay indirect.
 (let ((ed (emit-form "app" "(def ^:dynamic d 5)")))

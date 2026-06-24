@@ -13,7 +13,13 @@
 ;; (str (type x)) is the clean host taxonomy and
 ;; is never compared against a class token in the corpus. Records yield their
 ;; ns-qualified class name (= (str (type x))). Total — never crashes.
-(define (jolt-class x)
+;; A host shim (bigdec, queue, host-table) registers its type's class name via
+;; register-class-arm! instead of set!-wrapping jolt-class (cf. register-hash-arm!).
+;; The entry is stable, so the var cell bound below stays current as arms register.
+(define jolt-class-arms '())
+(define (register-class-arm! pred handler)
+  (set! jolt-class-arms (cons (cons pred handler) jolt-class-arms)))
+(define (jolt-class-base x)
   (cond
     ((jolt-nil? x) jolt-nil)
     ((boolean? x) "java.lang.Boolean")
@@ -35,6 +41,11 @@
     ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
     ((ex-info-map? x) (ex-info-class x))
     (else (jolt-str-render-one (jolt-type x)))))
+(define (jolt-class x)
+  (let loop ((as jolt-class-arms))
+    (cond ((null? as) (jolt-class-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))
 
 (def-var! "clojure.core" "class" jolt-class)
 

@@ -72,10 +72,7 @@
 (set! jolt-seq (lambda (x) (if (htable-sorted? x) (sc-call x kw-op-seq) (%h-seq x))))
 (define %h-count jolt-count)
 (set! jolt-count (lambda (coll) (if (htable-sorted? coll) (sc-call coll kw-op-count) (%h-count coll))))
-(define %h-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (if (htable-sorted? coll) (sc-call coll kw-op-get k jolt-nil) (%h-get coll k)))
-  ((coll k d) (if (htable-sorted? coll) (sc-call coll kw-op-get k d) (%h-get coll k d)))))
+(register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))
 (define %h-contains? jolt-contains?)
 (set! jolt-contains? (lambda (coll k)
   (if (htable-sorted? coll) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f) (%h-contains? coll k))))
@@ -131,13 +128,13 @@
 (define (sorted-set->pset sc)
   (fold-left (lambda (s x) (pset-conj s x)) empty-pset (seq->list (sc-call sc kw-op-seq))))
 (define (sorted->plain x) (if (htable-sorted-map? x) (sorted-map->pmap x) (sorted-set->pset x)))
-(define %h-jolt=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((htable-sorted? a) (%h-jolt=2 (sorted->plain a) (if (htable-sorted? b) (sorted->plain b) b)))
-        ((htable-sorted? b) (%h-jolt=2 a (sorted->plain b)))
-        (else (%h-jolt=2 a b)))))
-(define %h-jolt-hash jolt-hash)
-(set! jolt-hash (lambda (x) (if (htable-sorted? x) (%h-jolt-hash (sorted->plain x)) (%h-jolt-hash x))))
+;; a sorted coll compares as its plain equivalent: normalize and re-dispatch (the
+;; normalized values aren't sorted, so this arm won't re-match — the base compares).
+(register-eq-arm! (lambda (a b) (or (htable-sorted? a) (htable-sorted? b)))
+                  (lambda (a b) (jolt=2 (if (htable-sorted? a) (sorted->plain a) a)
+                                        (if (htable-sorted? b) (sorted->plain b) b))))
+;; a sorted coll hashes as its plain equivalent (jolt-hash recurses through the base).
+(register-hash-arm! htable-sorted? (lambda (x) (jolt-hash (sorted->plain x))))
 
 ;; --- printing ----------------------------------------------------------------
 ;; sorted colls render in SORTED order (the value's :seq), not HAMT order — and
@@ -156,10 +153,9 @@
 (define (sorted-render x render)
   (if (htable-sorted-map? x) (sorted-map-render x render) (sorted-set-render x render)))
 
-(define %h-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-pr-readable) (%h-pr-readable x))))
-(define %h-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-pr-str) (%h-pr-str x))))
+;; sorted colls render in :seq order via the calling printer (str vs readable).
+(register-pr-readable-arm! htable-sorted? (lambda (x) (sorted-render x jolt-pr-readable)))
+(register-pr-str-arm! htable-sorted? (lambda (x) (sorted-render x jolt-pr-str)))
 (register-str-render! htable-sorted? (lambda (x) (sorted-render x jolt-str-render-one)))
 
 ;; --- protocol dispatch over builtins (extend-protocol Map/Set on sorted) ------
@@ -177,8 +173,6 @@
 ;; (class e) on a throwable tagged-table (a library's ex-info envelope carrying a
 ;; JVM :class, e.g. jolt-lang/http-client's UnknownHostException) reads that
 ;; class name, so clojure.test's (thrown? Class …) / (= Class (class e)) match.
-(define %h-class jolt-class)
-(set! jolt-class (lambda (x)
-  (let ((c (and (htable? x) (hashtable-ref (htable-h x) "class" #f))))
-    (if (and c (string? c)) c (%h-class x)))))
-(def-var! "clojure.core" "class" jolt-class)
+;; an htable carrying a string "class" entry reports it (a host-object class mirror).
+(register-class-arm! (lambda (x) (and (htable? x) (string? (hashtable-ref (htable-h x) "class" #f))))
+                     (lambda (x) (hashtable-ref (htable-h x) "class" #f)))

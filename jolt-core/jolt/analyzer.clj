@@ -18,7 +18,7 @@
                              def-node let-node fn-node vector-node map-node set-node
                              quote-node throw-node host-static host-new]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
-                               form-vec? form-map? form-set? form-char?
+                               form-vec? form-map? form-set?
                                form-literal? form-keyword? form-elements form-vec-items
                                form-map-pairs form-set-items form-special? compile-ns
                                form-regex? form-regex-source

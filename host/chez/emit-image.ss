@@ -84,100 +84,13 @@
 
 (define (ei-emit-ns ns-name src) (ei-emit-ns* ns-name src #f #t))
 
-;; --- tree-shaking (jolt build --tree-shake) ---------------------------------
-;; Reachability DCE over the re-emitted app + library forms: keep -main, every
-;; side-effecting (non-def) top-level form, and every def reachable from those;
-;; drop the rest (unused library code). Bails (keeps everything) if the app resolves
-;; vars by name at runtime (eval/resolve/...), which static reachability can't
-;; follow. clojure.core / the compiler stay baked (the prelude + image blobs), so
-;; only the re-emitted namespaces are shaken.
-(define dce-kw-op   (keyword #f "op"))
-(define dce-kw-var  (keyword #f "var"))
-(define dce-kw-the-var (keyword #f "the-var"))
-(define dce-kw-def  (keyword #f "def"))
-(define dce-kw-ns   (keyword #f "ns"))
-(define dce-kw-name (keyword #f "name"))
-(define dce-reduce-children (var-deref "jolt.ir" "reduce-ir-children"))
-
-;; "ns/name" of every var reference anywhere in node, prepended to acc. Counts BOTH
-;; a :var (call head or value) and a :the-var (#'x / (var x)) — per Stalin's rule,
-;; any reference (not just a direct call) keeps the target live, so a var passed as a
-;; value or referenced as #'x is reachable. Arg order (acc node) matches
-;; reduce-ir-children's fold fn, so it nests directly.
-(define (dce-collect-refs acc node)
-  (let ((op (jolt-get node dce-kw-op)))
-    (if (or (eq? op dce-kw-var) (eq? op dce-kw-the-var))
-        (cons (string-append (jolt-get node dce-kw-ns) "/" (jolt-get node dce-kw-name)) acc)
-        (dce-reduce-children dce-collect-refs acc node))))
-
-;; The fqn of a bare top-level def (the only prunable form), else #f.
-(define (dce-def-fqn node)
-  (and (eq? (jolt-get node dce-kw-op) dce-kw-def)
-       (string-append (jolt-get node dce-kw-ns) "/" (jolt-get node dce-kw-name))))
-
-;; A reference whose presence forces keep-everything (runtime name resolution).
-(define dce-bail-refs
-  '("clojure.core/eval" "clojure.core/resolve" "clojure.core/ns-resolve"
-    "clojure.core/requiring-resolve" "clojure.core/find-var" "clojure.core/intern"
-    "clojure.core/load-string" "clojure.core/load-file" "clojure.core/load-reader"
-    "clojure.core/load"))
-
-;; clojure.core fns the runtime .ss shims reference by name (via var-deref) — they
-;; aren't visible in the IR call graph, so seed them as roots. (Found by grepping the
-;; runtime shims; the smoke harness catches a miss as a diff/crash.)
-(define dce-runtime-core-roots
-  '("clojure.core/identity" "clojure.core/isa?" "clojure.core/line-seq"
-    "clojure.core/make-hierarchy" "clojure.core/read" "clojure.core/read-string"
-    "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"))
-
-;; --- reading a minted blob (prelude.ss) into DCE records --------------------
-;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the
-;; occasional side-effecting init). Read each with Chez `read` so it joins the
-;; reachability graph instead of being baked wholesale: a def-var! is a prunable node
-;; whose core->core edges are the (var-deref/jolt-var "ns" "name") calls in V; any
-;; other form is non-prunable (kept, refs are roots).
-(define (dce-unwrap form)
-  (if (and (pair? form) (eq? (car form) 'guard) (pair? (cddr form))) (caddr form) form))
-
-(define (dce-sexp-refs form acc)
-  (cond
-    ((and (pair? form) (memq (car form) '(var-deref jolt-var))
-          (pair? (cdr form)) (string? (cadr form)) (pair? (cddr form)) (string? (caddr form)))
-     (cons (string-append (cadr form) "/" (caddr form)) acc))
-    ((pair? form) (dce-sexp-refs (cdr form) (dce-sexp-refs (car form) acc)))
-    (else acc)))
-
-;; Records (same shape as ei-emit-ns-records) for a minted blob file. str re-serializes
-;; the read form (compiled identically; comments/whitespace are irrelevant).
-(define (dce-blob-records path)
-  (call-with-input-file path
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((form (read p)))
-          (if (eof-object? form)
-              (reverse acc)
-              (let ((b (dce-unwrap form))
-                    (str (with-output-to-string (lambda () (write form))))
-                    (refs (dce-sexp-refs form '())))
-                (loop (cons
-                        (if (and (pair? b) (eq? (car b) 'def-var!) (pair? (cdr b)) (string? (cadr b))
-                                 (pair? (cddr b)) (string? (caddr b)))
-                            (vector #f (string-append (cadr b) "/" (caddr b)) refs str)
-                            (vector #t #f refs str))
-                        acc)))))))))
-
-;; A reference that needs the analyzer/back end at runtime (compile-from-source). If
-;; reachable code uses none of these, the compiler image can be dropped from the
-;; binary — the AOT app is fully compiled. (resolve/require don't need it: resolve is
-;; a var-table lookup; a require of a baked ns no-ops.)
-(define dce-compile-refs
-  '("clojure.core/eval" "clojure.core/load-string" "clojure.core/load-file"
-    "clojure.core/load-reader" "clojure.core/load"))
-
-;; One record per form: (vector keep? fqn refs str). keep? #t = a non-def form,
-;; always emitted, its refs are reachability roots; #f = a prunable def emitted only
-;; if fqn is reached. A macro is a prunable def (its expander isn't called at runtime
-;; in an AOT build). Strict (no guard) like the build's ei-emit-ns* path.
+;; --- DCE record producer ----------------------------------------------------
+;; Cross-compile a namespace's source to tree-shaking records — the app/library
+;; counterpart to dce-blob-records (the prelude). The shake itself and all dce-*
+;; helpers live in dce.ss; this stays here because it drives the ei-* compiler. A
+;; top-level def becomes a prunable record; any other form a kept (side-effecting)
+;; record whose refs are roots. A macro is prunable — its expander isn't called at
+;; runtime in an AOT build.
 (define (ei-emit-ns-records ns-name src)
   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
@@ -192,7 +105,7 @@
                       (ir (jolt-ce-run-passes (jolt-ce-analyze ctx fn-form) ctx))
                       (str (ei-macro-string ns-name nm (jolt-ce-emit-top ir) #f))
                       (refs (dce-collect-refs '() ir)))
-                 (loop (cdr forms) (cons (vector #f (string-append ns-name "/" nm) refs str) acc)))))
+                 (loop (cdr forms) (cons (dce-rec #f (string-append ns-name "/" nm) refs str) acc)))))
             (else
              (let* ((ctx (make-analyze-ctx ns-name))
                     (ir (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))
@@ -200,7 +113,7 @@
                     (fqn (dce-def-fqn ir))
                     (refs (dce-collect-refs '() ir)))
                (loop (cdr forms)
-                     (cons (if fqn (vector #f fqn refs str) (vector #t #f refs str)) acc)))))))))
+                     (cons (if fqn (dce-rec #f fqn refs str) (dce-rec #t #f refs str)) acc)))))))))
 
 ;; Scheme string literal for a ns/name — uses the runtime's own writer
 ;; (printable ASCII identifiers only here).
@@ -217,6 +130,7 @@
         (cons "jolt.passes.numeric" "jolt-core/jolt/passes/numeric.clj")
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
         (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
+        (cons "jolt.passes.types.check" "jolt-core/jolt/passes/types/check.clj")
         (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")
         (cons "jolt.passes" "jolt-core/jolt/passes.clj")))
 

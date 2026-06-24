@@ -179,7 +179,13 @@
 ;; bare nil renders as the empty string (a nil ELEMENT inside a collection still
 ;; prints "nil", which jolt-pr-str handles).
 (define (jolt-final-str x) (if (jolt-nil? x) "" (jolt-pr-str x)))
-(define (jolt-pr-str x)
+;; A host shim registers a type's str-style rendering via register-pr-str-arm! (or
+;; register-pr-arm! in printing.ss for both printers at once) instead of
+;; set!-wrapping jolt-pr-str. Disjoint types, checked before the base cases.
+(define jolt-pr-str-arms '())
+(define (register-pr-str-arm! pred render)
+  (set! jolt-pr-str-arms (cons (cons pred render) jolt-pr-str-arms)))
+(define (jolt-pr-str-base x)
   (cond
     ((jolt-nil? x) "nil")
     ((eq? x #t) "true")
@@ -206,6 +212,11 @@
                    (if (jolt-nil? s) (reverse acc)
                        (loop (jolt-seq (seq-more s)) (cons (jolt-pr-str (seq-first s)) acc))))) ")"))
     (else (format "~a" x))))
+(define (jolt-pr-str x)
+  (let loop ((as jolt-pr-str-arms))
+    (cond ((null? as) (jolt-pr-str-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))
 
 ;; converters + string ops: str/subs/vec/keyword/symbol/compare/int/
 ;; double/gensym — host-coupled seed natives def-var!'d into clojure.core. Loaded
@@ -261,7 +272,7 @@
 
 ;; dynamic vars: *clojure-version* / *unchecked-math* constants the host
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
-(load "host/chez/dynamic-vars.ss")
+(load "host/chez/dynamic-var-defaults.ss")
 
 ;; host tables + sorted collections: jolt.host/tagged-table/
 ;; ref-put!/ref-get + the 25-sorted tier's runtime (sorted-map/sorted-set routed
@@ -275,13 +286,13 @@
 ;; Loaded LAST so %ls-seq captures the fully-extended (sorted-aware) jolt-seq.
 (load "host/chez/lazy-bridge.ss")
 
-;; volatiles + sequence / transduce: native volatile boxes +
+;; transducer surface: native volatile boxes, cat, +
 ;; the transduce/sequence entry points over into-xform/reduce-seq. After
 ;; natives-seq.ss (into-xform), seq.ss (reduce-seq) + atoms.ss (deref).
-(load "host/chez/natives-xform.ss")
+(load "host/chez/natives-transduce.ss")
 
 ;; vars as first-class objects: var?/var-get/deref/invoke/=/
-;; pr-str over the rt.ss var-cell. After natives-xform.ss (chains deref) + the
+;; pr-str over the rt.ss var-cell. After natives-transduce.ss (chains deref) + the
 ;; printers. emit lowers :the-var to (jolt-var ns name).
 (load "host/chez/vars.ss")
 
@@ -290,6 +301,10 @@
 ;; a uuid). Overlay names (uuid?/random-uuid/parse-uuid/tagged-literal?) re-asserted
 ;; in post-prelude.ss.
 (load "host/chez/natives-misc.ss")
+
+;; format / printf: the %-directive engine. After natives-misc.ss + converters.ss
+;; (jolt-str-render-one).
+(load "host/chez/natives-format.ss")
 
 ;; namespaces: the namespace value model — find-ns/ns-name/
 ;; all-ns/the-ns/create-ns/in-ns/ns-publics/ns-map/ns-interns/ns-aliases/resolve/
@@ -316,8 +331,8 @@
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
 (load "host/chez/host-static.ss")          ; registries + jhost + coercion helpers
-(load "host/chez/host-static-statics.ss")  ; java.lang/util static methods
-(load "host/chez/host-static-objects.ss")  ; host object classes + instance? hook
+(load "host/chez/host-static-methods.ss")  ; Class/member static methods + fields
+(load "host/chez/host-static-classes.ss")  ; instantiable host object classes
 
 ;; generic dot-form dispatch: field access + map/vector member access
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every
@@ -345,10 +360,10 @@
 ;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
 (load "host/chez/math.ss")
 
-;; parity shims: native clojure.core fns not covered by the overlay
-;; (hash family / rseq / cat / transient?). After host-table.ss (sorted),
-;; transients.ss, values.ss (jolt-hash), seq.ss.
-(load "host/chez/natives-parity.ss")
+;; reader/macro runtime support: #?() feature set, reader-conditional + re-matcher
+;; tagged-map ctors, macroexpand. After ns.ss; macroexpand call-time-refs the macro
+;; table (host-contract) + analyzer ctx.
+(load "host/chez/natives-reader.ss")
 
 ;; Java-style arrays: object/typed array constructors + a jolt-array
 ;; backing; extends count/nth/seq/get/ref-put! so the overlay aget/aset/alength see

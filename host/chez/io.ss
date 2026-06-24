@@ -487,17 +487,9 @@
 ;; str / pr-str of a uri -> its string form.
 (register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
                       (lambda (x) (uri-field x 'string)))
-(define %uri-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable
-  (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "uri"))
-                  (string-append "#object[java.net.URI \"" (uri-field x 'string) "\"]")
-                  (%uri-pr-readable x))))
+(register-pr-readable-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
+                           (lambda (x) (string-append "#object[java.net.URI \"" (uri-field x 'string) "\"]")))
 ;; class of the host value types defined by now (uri/uuid/file).
-(define %uri-class jolt-class)
-(set! jolt-class
-  (lambda (x)
-    (cond ((and (jhost? x) (string=? (jhost-tag x) "uri")) "java.net.URI")
-          ((juuid? x) "java.util.UUID")
-          ((jfile? x) "java.io.File")
-          (else (%uri-class x)))))
-(def-var! "clojure.core" "class" jolt-class)
+(register-class-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri"))) (lambda (x) "java.net.URI"))
+(register-class-arm! juuid? (lambda (x) "java.util.UUID"))
+(register-class-arm! jfile? (lambda (x) "java.io.File"))

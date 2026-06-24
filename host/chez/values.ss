@@ -43,7 +43,15 @@
 ;; chars/strings: Chez natives (strings treated immutable).
 
 ;; --- jolt equality (Clojure =) — scalars + collections ----------------------
-(define (jolt=2 a b)
+;; A host shim registers a type's equality via register-eq-arm! instead of
+;; set!-wrapping jolt=2 (cf. register-hash-arm!). An arm is (pred . handler), both
+;; (a b): the arm applies when pred holds (typically either arg is the type), and
+;; handler returns the #t/#f result. Arms are checked before the base scalar/coll
+;; cases; the entry is stable.
+(define jolt-eq-arms '())
+(define (register-eq-arm! pred handler)
+  (set! jolt-eq-arms (cons (cons pred handler) jolt-eq-arms)))
+(define (jolt=2-base a b)
   (cond
     ((and (jolt-nil? a) (jolt-nil? b)) #t)
     ((or  (jolt-nil? a) (jolt-nil? b)) #f)
@@ -63,6 +71,11 @@
     ;; other collections (map/set): forward to collections.ss.
     ((and (jolt-coll? a) (jolt-coll? b)) (jolt-coll=? a b))
     (else (eq? a b))))
+(define (jolt=2 a b)
+  (let loop ((as jolt-eq-arms))
+    (cond ((null? as) (jolt=2-base a b))
+          (((caar as) a b) ((cdar as) a b))
+          (else (loop (cdr as))))))
 (define (jolt= a . rest)
   (let loop ((a a) (rest rest))
     (cond ((null? rest) #t)
@@ -70,7 +83,14 @@
           (else #f))))
 
 ;; --- jolt hash — consistent with jolt= (for the HAMT) -----------------------
-(define (jolt-hash x)
+;; A host shim (records, host-table, inst-time, …) registers its type's hash via
+;; register-hash-arm! instead of set!-wrapping jolt-hash — the arms are disjoint
+;; types, checked before the base cases, so the full behavior is gathered here plus
+;; the registry rather than scattered across a set! chain (cf. register-str-render!).
+(define jolt-hash-arms '())
+(define (register-hash-arm! pred handler)
+  (set! jolt-hash-arms (cons (cons pred handler) jolt-hash-arms)))
+(define (jolt-hash-base x)
   (cond
     ((jolt-nil? x) 0)
     ((keyword-t? x) (keyword-t-khash x))
@@ -87,3 +107,8 @@
     ((jolt-sequential? x) (seq-hash x)) ; vector/list/seq hash alike (forward to seq.ss)
     ((jolt-coll? x) (jolt-coll-hash x))   ; map/set; forward to collections.ss
     (else (equal-hash x))))
+(define (jolt-hash x)
+  (let loop ((as jolt-hash-arms))
+    (cond ((null? as) (jolt-hash-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))

@@ -65,10 +65,9 @@
 (set! jolt-nth (case-lambda
   ((coll i)   (if (jolt-lazyseq? coll) (%ls-nth (jolt-seq coll) i)   (%ls-nth coll i)))
   ((coll i d) (if (jolt-lazyseq? coll) (%ls-nth (jolt-seq coll) i d) (%ls-nth coll i d)))))
-(define %ls-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jolt-lazyseq? x) (%ls-pr-str (jolt-seq x)) (%ls-pr-str x))))
-(define %ls-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jolt-lazyseq? x) (%ls-pr-readable (jolt-seq x)) (%ls-pr-readable x))))
+;; a lazy seq prints as its realized seq — force, then re-dispatch through the printer.
+(register-pr-str-arm! jolt-lazyseq? (lambda (x) (jolt-pr-str (jolt-seq x))))
+(register-pr-readable-arm! jolt-lazyseq? (lambda (x) (jolt-pr-readable (jolt-seq x))))
 (register-str-render! jolt-lazyseq? (lambda (x) (jolt-str-render-one (jolt-seq x))))
 
 ;; seq? — a lazy seq IS a seq (predicates.ss's jolt-seq? predates the lazyseq

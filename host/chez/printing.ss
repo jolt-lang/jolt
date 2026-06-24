@@ -24,7 +24,16 @@
                   ((#\return) (cons #\r (cons #\\ acc)))
                   (else (cons c acc))))))))
 
-(define (jolt-pr-readable x)
+;; A host shim registers a type's readable rendering via register-pr-readable-arm!,
+;; or register-pr-arm! for types whose str and readable forms match (most host types:
+;; inst, uuid, record, var, …). Disjoint types, checked before the base cases.
+(define jolt-pr-readable-arms '())
+(define (register-pr-readable-arm! pred render)
+  (set! jolt-pr-readable-arms (cons (cons pred render) jolt-pr-readable-arms)))
+(define (register-pr-arm! pred render)
+  (register-pr-str-arm! pred render)
+  (register-pr-readable-arm! pred render))
+(define (jolt-pr-readable-base x)
   (cond
     ((string? x) (string-append "\"" (jolt-str-escape x) "\""))
     ;; pr renders the infinities / NaN in READABLE form (##Inf reads back), unlike
@@ -58,6 +67,11 @@
          (if (jolt-nil? s) (reverse acc)
              (loop (jolt-seq (seq-more s)) (cons (jolt-pr-readable (seq-first s)) acc))))) ")"))
     (else (jolt-pr-str x))))
+(define (jolt-pr-readable x)
+  (let loop ((as jolt-pr-readable-arms))
+    (cond ((null? as) (jolt-pr-readable-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))
@@ -71,10 +85,18 @@
 (define (jolt-with-out-str thunk)
   (with-output-to-string (lambda () (jolt-invoke thunk))))
 
-;; __eprint / __eprintf: stderr seams.
-(define (jolt-eprint s) (display s (current-error-port)) jolt-nil)
+;; __eprint / __eprintf: stderr seams. Flush each write — like the JVM's
+;; auto-flushing System.err — so a long-running process (a server that never
+;; returns from -main) shows its log lines instead of leaving them in a buffer
+;; that only drains at exit.
+(define (jolt-eprint s)
+  (display s (current-error-port))
+  (flush-output-port (current-error-port))
+  jolt-nil)
 (define (jolt-eprintf fmt . args)
-  (apply fprintf (current-error-port) fmt args) jolt-nil)
+  (apply fprintf (current-error-port) fmt args)
+  (flush-output-port (current-error-port))
+  jolt-nil)
 
 (def-var! "clojure.core" "__pr-str1" jolt-pr-str1)
 (def-var! "clojure.core" "__write" jolt-write)

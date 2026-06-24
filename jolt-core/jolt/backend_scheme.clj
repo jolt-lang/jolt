@@ -80,6 +80,10 @@
 ;; :num-kind :double|:long when every operand is that kind; these are the Chez
 ;; flonum/fixnum ops it lowers to — no generic dispatch, fixnums unboxed. fl?/fx?
 ;; comparisons carry the question mark; fl+/fx+ don't.
+;;
+;; CONTRACT: every op name jolt.passes.numeric/dbl-spec (resp. lng-spec) tags must
+;; have an entry here, or emit-numeric splices a nil op string into the output. Keep
+;; these tables and those specializers in sync.
 (def ^:private dbl-ops
   {"+" "fl+" "-" "fl-" "*" "fl*" "/" "fl/" "min" "flmin" "max" "flmax"
    "<" "fl<?" ">" "fl>?" "<=" "fl<=?" ">=" "fl>=?" "=" "fl=?" "==" "fl=?"})
@@ -109,7 +113,12 @@
 ;; set — one defined earlier in emission order (or itself), so the Scheme binding
 ;; exists by the time the reference runs. Reset per build.
 (def direct-link-defined (atom #{}))
-(defn direct-link-reset! [] (reset! direct-link-defined #{}))
+;; Of those, the ones whose init is a fn literal — safe to call as a raw Scheme
+;; application. A def of a non-fn value (a map, set, keyword, …) is invokable in
+;; Clojure but is not a Scheme procedure, so its calls must still route through
+;; jolt-invoke even with a direct binding.
+(def direct-link-fns (atom #{}))
+(defn direct-link-reset! [] (reset! direct-link-defined #{}) (reset! direct-link-fns #{}))
 
 ;; A direct-link Scheme binding name for a var. The fqn maps to a unique identifier
 ;; jv$<ns>$<name>; chars that break a Scheme identifier or the `$` separator are
@@ -120,6 +129,10 @@
 (defn- dl-fqn [ns nm] (str ns "/" nm))
 (defn- direct-linkable? [ns nm]
   (and @direct-link? (contains? @direct-link-defined (dl-fqn ns nm))))
+;; A direct-linked var whose value is a fn literal — its binding is a Scheme
+;; procedure, so a call site can apply it directly.
+(defn- direct-link-fn? [ns nm]
+  (contains? @direct-link-fns (dl-fqn ns nm)))
 
 ;; recur-target and the set of munged local names known to hold a procedure (a
 ;; named fn's self-recursion name) are lexically scoped — dynamic vars so the
@@ -486,9 +499,13 @@
       ;; a :local callee that isn't a known procedure -> dynamic IFn dispatch.
       (and (= :local (:op fnode)) (not (*known-procs* (munge-name (:name fnode)))))
       (invoke)
-      ;; closed-world direct call: the callee var is an app def already emitted with
-      ;; a Scheme binding — call it directly, no var lookup, no jolt-invoke.
-      (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode)))
+      ;; closed-world direct call: the callee var is an app fn def already emitted
+      ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
+      ;; Only fn-valued defs qualify; a non-fn invokable value (a map/set/keyword
+      ;; held in a var) isn't a Scheme procedure, so it falls through to jolt-invoke
+      ;; below (which still uses the direct binding as the invoke target).
+      (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode))
+           (direct-link-fn? (:ns fnode) (:name fnode)))
       (order-args (fn [as] (str "(" (dl-name (:ns fnode) (:name fnode))
                                 (if (seq as) (str " " (str/join " " as)) "") ")")))
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
@@ -636,6 +653,7 @@
     (let [ns (:ns node) nm (:name node) b (dl-name ns nm)]
       ;; register before emitting the init so a self-referential body direct-links.
       (swap! direct-link-defined conj (dl-fqn ns nm))
+      (when (= :fn (:op (:init node))) (swap! direct-link-fns conj (dl-fqn ns nm)))
       (let [init (emit (:init node))]
         (if (jmeta-nonempty? (:meta node))
           (str "(begin (define " b " " init ") (def-var-with-meta! "

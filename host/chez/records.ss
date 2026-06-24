@@ -62,17 +62,10 @@
     "}"))
 
 ;; ---- extend the collection dispatchers with a jrec arm ----------------------
-(define %r-jolt=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((jrec? a) (and (jrec? b) (jrec=? a b)))
-        ((jrec? b) #f)
-        (else (%r-jolt=2 a b)))))
-(define %r-jolt-hash jolt-hash)
-(set! jolt-hash (lambda (x) (if (jrec? x) (jrec-hash x) (%r-jolt-hash x))))
-(define %r-jolt-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (if (jrec? coll) (jrec-lookup coll k jolt-nil) (%r-jolt-get coll k)))
-  ((coll k d) (if (jrec? coll) (jrec-lookup coll k d) (%r-jolt-get coll k d)))))
+(register-eq-arm! (lambda (a b) (or (jrec? a) (jrec? b)))
+                  (lambda (a b) (and (jrec? a) (jrec? b) (jrec=? a b))))
+(register-hash-arm! jrec? jrec-hash)
+(register-get-arm! jrec? (lambda (coll k d) (jrec-lookup coll k d)))
 (define %r-jolt-count jolt-count)
 (set! jolt-count (lambda (coll) (if (jrec? coll) (length (jrec-pairs coll)) (%r-jolt-count coll))))
 (define %r-jolt-contains? jolt-contains?)
@@ -90,10 +83,7 @@
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
   (if (jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)) (%r-jolt-conj1 coll x))))
-(define %r-jolt-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jrec? x) (jrec-pr x) (%r-jolt-pr-str x))))
-(define %r-jolt-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jrec? x) (jrec-pr x) (%r-jolt-pr-readable x))))
+(register-pr-arm! jrec? jrec-pr)
 
 ;; records are map? and coll? (Clojure: a record IS an associative map). The
 ;; predicates.ss vars hold a snapshot, so re-def-var! after extending. record? is

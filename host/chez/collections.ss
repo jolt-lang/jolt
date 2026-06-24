@@ -225,16 +225,28 @@
             (fold-left jolt-conj1 jolt-empty-list xs)
             (fold-left jolt-conj1 coll xs)))))
 
+;; A host shim registers a type's get via register-get-arm! (handler: (coll k d) ->
+;; value) instead of set!-wrapping jolt-get — disjoint coll types, checked before the
+;; base map/set/vec/string cases (cf. register-hash-arm!).
+(define jolt-get-arms '())
+(define (register-get-arm! pred handler)
+  (set! jolt-get-arms (cons (cons pred handler) jolt-get-arms)))
+(define (jolt-get-base coll k d)
+  (cond ((pmap? coll) (pmap-get coll k d))
+        ((pset? coll) (if (pset-contains? coll k) k d))
+        ((pvec? coll) (pvec-nth-d coll k d))
+        ((string? coll) (let ((i (->idx k)))
+                          (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
+        (else d)))
+(define (jolt-get-dispatch coll k d)
+  (let loop ((as jolt-get-arms))
+    (cond ((null? as) (jolt-get-base coll k d))
+          (((caar as) coll) ((cdar as) coll k d))
+          (else (loop (cdr as))))))
 (define jolt-get
   (case-lambda
-    ((coll k) (jolt-get coll k jolt-nil))
-    ((coll k d)
-     (cond ((pmap? coll) (pmap-get coll k d))
-           ((pset? coll) (if (pset-contains? coll k) k d))
-           ((pvec? coll) (pvec-nth-d coll k d))
-           ((string? coll) (let ((i (->idx k)))
-                             (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
-           (else d)))))
+    ((coll k) (jolt-get-dispatch coll k jolt-nil))
+    ((coll k d) (jolt-get-dispatch coll k d))))
 
 (define jolt-nth
   (case-lambda

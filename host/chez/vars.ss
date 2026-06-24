@@ -9,7 +9,7 @@
 ;; with-redefs) lives in dyn-binding.ss, which chains the var-read paths set up
 ;; here.
 ;;
-;; Loaded LAST (after natives-xform.ss): chains jolt-deref (atom/volatile arms)
+;; Loaded LAST (after natives-transduce.ss): chains jolt-deref (atom/volatile arms)
 ;; and the printers.
 
 (define (jolt-var-pred? x) (var-cell? x))
@@ -31,20 +31,14 @@
   (if (var-cell? f) (apply jolt-invoke (var-cell-root f) args) (apply %v-invoke f args))))
 
 ;; two var cells are = iff same ns/name (Clojure var identity).
-(define %v-=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((var-cell? a) (and (var-cell? b)
-                            (string=? (var-cell-ns a) (var-cell-ns b))
-                            (string=? (var-cell-name a) (var-cell-name b))))
-        ((var-cell? b) #f)
-        (else (%v-=2 a b)))))
+(register-eq-arm! (lambda (a b) (or (var-cell? a) (var-cell? b)))
+                  (lambda (a b) (and (var-cell? a) (var-cell? b)
+                                     (string=? (var-cell-ns a) (var-cell-ns b))
+                                     (string=? (var-cell-name a) (var-cell-name b)))))
 
 ;; pr-str / str of a var -> #'ns/name.
 (define (var->str v) (string-append "#'" (var-cell-ns v) "/" (var-cell-name v)))
-(define %v-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (var-cell? x) (var->str x) (%v-pr-str x))))
-(define %v-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (var-cell? x) (var->str x) (%v-pr-readable x))))
+(register-pr-arm! var-cell? var->str)
 (register-str-render! var-cell? var->str)
 
 ;; bound? — native (the overlay's (get v :root) is nil on a var-cell record).

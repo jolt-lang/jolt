@@ -1,6 +1,8 @@
-;; dynamic vars — the handful of clojure.core dynamic vars that aren't emitted into
-;; the prelude. These two are plain constants; *ns* (a namespace object) needs a
-;; value type with get-see-through and map?=false and is tracked separately. Loaded
+;; dynamic-var-defaults.ss — default values for the handful of clojure.core dynamic
+;; vars that aren't emitted into the prelude (*clojure-version*, *assert*, …). Plain
+;; constant def-var!s; *ns* (a namespace object) needs a value type with
+;; get-see-through and map?=false and is tracked separately. The binding-stack
+;; machinery (binding / var-set / thread-bound?) lives in dyn-binding.ss. Loaded
 ;; from rt.ss after the value model + def-var!.
 
 ;; *clojure-version* — a map {:major 1 :minor 11 :incremental 0 :qualifier nil}.

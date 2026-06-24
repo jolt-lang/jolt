@@ -73,3 +73,19 @@
 (defn scalar-const? [n]
   (and (= :const (get n :op))
        (let [v (get n :val)] (or (keyword? v) (string? v) (number? v) (boolean? v)))))
+
+;; The two callee shapes a constant-keyword map lookup takes: a keyword in fn
+;; position — (:k m) — or clojure.core/get with a const key — (get m :k). The
+;; inliner (scalar replacement) and the type inferencer both recognize these;
+;; sharing the head predicates keeps the two from drifting. Each caller still
+;; imposes its own arity, subject, and key-type constraints.
+(defn kw-callee?
+  "True if fnode is a constant keyword used as a function head — the (:k m) form."
+  [fnode]
+  (and (= :const (get fnode :op)) (keyword? (get fnode :val))))
+
+(defn get-callee?
+  "True if fnode is the clojure.core/get (or host get) callee — the (get m k) form."
+  [fnode]
+  (or (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)) (= "get" (get fnode :name)))
+      (and (= :host (get fnode :op)) (= "get" (get fnode :name)))))

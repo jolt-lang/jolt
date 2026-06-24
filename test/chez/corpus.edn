@@ -2640,6 +2640,11 @@
   {:suite "clojure.walk / lists + seqs" :label "postwalk-replace in a vector" :expected "[:one 2 :one]" :actual "(do (require (quote [clojure.walk :as w])) (w/postwalk-replace {1 :one} [1 2 1]))"}
   {:suite "clojure.walk / lists + seqs" :label "keywordize-keys still works" :expected "{:a 1}" :actual "(do (require (quote [clojure.walk :as w])) (w/keywordize-keys {\"a\" 1}))"}
   {:suite "clojure.walk / lists + seqs" :label "apply-template substitutes" :expected "(quote (+ 1 2))" :actual "(do (require (quote [clojure.template :as t])) (t/apply-template (quote [x y]) (quote (+ x y)) (quote (1 2))))"}
+  {:suite "clojure.walk / records keep their type" :label "postwalk preserves record type" :expected "true" :actual "(do (require (quote [clojure.walk :as w])) (defrecord R [a]) (record? (w/postwalk identity (->R 1))))"}
+  {:suite "clojure.walk / records keep their type" :label "postwalk still walks record fields" :expected "2" :actual "(do (require (quote [clojure.walk :as w])) (defrecord R [a]) (:a (w/postwalk (fn [x] (if (number? x) (inc x) x)) (->R 1))))"}
+  {:suite "clojure.walk / records keep their type" :label "instance? survives a walk" :expected "true" :actual "(do (require (quote [clojure.walk :as w])) (defrecord R [a]) (instance? R (w/postwalk identity (->R 1))))"}
+  {:suite "clojure.walk / records keep their type" :label "a record nested in a map keeps its type" :expected "true" :actual "(do (require (quote [clojure.walk :as w])) (defrecord R [a]) (record? (:r (w/postwalk identity {:r (->R 1)}))))"}
+  {:suite "clojure.walk / records keep their type" :label "prewalk preserves record type" :expected "true" :actual "(do (require (quote [clojure.walk :as w])) (defrecord R [a]) (record? (w/prewalk identity (->R 1))))"}
   {:suite "conformance / CRITICAL: lazy sequences" :label "self-ref lazy-cat fib" :expected "[0 1 1 2 3 5 8 13 21 34]" :actual "(do (def fib-seq (lazy-cat [0 1] (map + (rest fib-seq) fib-seq))) (take 10 fib-seq))"}
   {:suite "conformance / CRITICAL: multi-collection map" :label "map two colls" :expected "[11 22 33]" :actual "(map + [1 2 3] [10 20 30])"}
   {:suite "conformance / CRITICAL: multi-collection map" :label "map three colls" :expected "[12 24 36]" :actual "(map + [1 2 3] [10 20 30] [1 2 3])"}
