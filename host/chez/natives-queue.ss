@@ -49,9 +49,7 @@
 (register-str-render! jolt-queue? (lambda (x) (jolt-str-render-one (jolt-seq-or-empty x))))
 
 ;; class / type / instance? recognize a queue.
-(define %q-class jolt-class)
-(set! jolt-class (lambda (x) (if (jolt-queue? x) "clojure.lang.PersistentQueue" (%q-class x))))
-(def-var! "clojure.core" "class" jolt-class)
+(register-class-arm! jolt-queue? (lambda (x) "clojure.lang.PersistentQueue"))
 (register-instance-check-arm!
   (lambda (type-sym val)
     (if (jolt-queue? val)

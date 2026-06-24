@@ -75,8 +75,6 @@
 (set! jolt-pr-readable (lambda (x) (if (jbigdec? x) (string-append (jbigdec->string x) "M") (%bd-pr-readable x))))
 
 ;; class / decimal?
-(define %bd-class jolt-class)
-(set! jolt-class (lambda (x) (if (jbigdec? x) "java.math.BigDecimal" (%bd-class x))))
-(def-var! "clojure.core" "class" jolt-class)
+(register-class-arm! jbigdec? (lambda (x) "java.math.BigDecimal"))
 (set! jolt-decimal? (lambda (x) (jbigdec? x)))
 (def-var! "clojure.core" "decimal?" jolt-decimal?)

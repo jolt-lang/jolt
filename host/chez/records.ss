@@ -67,8 +67,7 @@
   (cond ((jrec? a) (and (jrec? b) (jrec=? a b)))
         ((jrec? b) #f)
         (else (%r-jolt=2 a b)))))
-(define %r-jolt-hash jolt-hash)
-(set! jolt-hash (lambda (x) (if (jrec? x) (jrec-hash x) (%r-jolt-hash x))))
+(register-hash-arm! jrec? jrec-hash)
 (define %r-jolt-get jolt-get)
 (set! jolt-get (case-lambda
   ((coll k)   (if (jrec? coll) (jrec-lookup coll k jolt-nil) (%r-jolt-get coll k)))

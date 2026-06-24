@@ -70,7 +70,14 @@
           (else #f))))
 
 ;; --- jolt hash — consistent with jolt= (for the HAMT) -----------------------
-(define (jolt-hash x)
+;; A host shim (records, host-table, inst-time, …) registers its type's hash via
+;; register-hash-arm! instead of set!-wrapping jolt-hash — the arms are disjoint
+;; types, checked before the base cases, so the full behavior is gathered here plus
+;; the registry rather than scattered across a set! chain (cf. register-str-render!).
+(define jolt-hash-arms '())
+(define (register-hash-arm! pred handler)
+  (set! jolt-hash-arms (cons (cons pred handler) jolt-hash-arms)))
+(define (jolt-hash-base x)
   (cond
     ((jolt-nil? x) 0)
     ((keyword-t? x) (keyword-t-khash x))
@@ -87,3 +94,8 @@
     ((jolt-sequential? x) (seq-hash x)) ; vector/list/seq hash alike (forward to seq.ss)
     ((jolt-coll? x) (jolt-coll-hash x))   ; map/set; forward to collections.ss
     (else (equal-hash x))))
+(define (jolt-hash x)
+  (let loop ((as jolt-hash-arms))
+    (cond ((null? as) (jolt-hash-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))

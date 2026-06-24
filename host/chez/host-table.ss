@@ -136,8 +136,8 @@
   (cond ((htable-sorted? a) (%h-jolt=2 (sorted->plain a) (if (htable-sorted? b) (sorted->plain b) b)))
         ((htable-sorted? b) (%h-jolt=2 a (sorted->plain b)))
         (else (%h-jolt=2 a b)))))
-(define %h-jolt-hash jolt-hash)
-(set! jolt-hash (lambda (x) (if (htable-sorted? x) (%h-jolt-hash (sorted->plain x)) (%h-jolt-hash x))))
+;; a sorted coll hashes as its plain equivalent (jolt-hash recurses through the base).
+(register-hash-arm! htable-sorted? (lambda (x) (jolt-hash (sorted->plain x))))
 
 ;; --- printing ----------------------------------------------------------------
 ;; sorted colls render in SORTED order (the value's :seq), not HAMT order — and
@@ -177,8 +177,6 @@
 ;; (class e) on a throwable tagged-table (a library's ex-info envelope carrying a
 ;; JVM :class, e.g. jolt-lang/http-client's UnknownHostException) reads that
 ;; class name, so clojure.test's (thrown? Class …) / (= Class (class e)) match.
-(define %h-class jolt-class)
-(set! jolt-class (lambda (x)
-  (let ((c (and (htable? x) (hashtable-ref (htable-h x) "class" #f))))
-    (if (and c (string? c)) c (%h-class x)))))
-(def-var! "clojure.core" "class" jolt-class)
+;; an htable carrying a string "class" entry reports it (a host-object class mirror).
+(register-class-arm! (lambda (x) (and (htable? x) (string? (hashtable-ref (htable-h x) "class" #f))))
+                     (lambda (x) (hashtable-ref (htable-h x) "class" #f)))

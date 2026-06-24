@@ -247,8 +247,7 @@
         ((jinst? b) #f)
         (else (%it-=2 a b)))))
 
-(define %it-hash jolt-hash)
-(set! jolt-hash (lambda (x) (if (jinst? x) (jolt-hash (jinst-ms x)) (%it-hash x))))
+(register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
 (define (inst-pr i) (string-append "#inst \"" (inst-rfc3339 i) "\""))
 (define %it-pr-str jolt-pr-str)
