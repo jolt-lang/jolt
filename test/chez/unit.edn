@@ -303,7 +303,7 @@
   {:suite "reader" :expr "(integer? (read-string \"7\"))" :expected "true"}
   {:suite "reader" :expr "(= :foo (read-string \":foo\"))" :expected "true"}
   {:suite "reader" :expr "(= :a/b (read-string \":a/b\"))" :expected "true"}
-  {:suite "reader" :expr "(= :foo (read-string \"::foo\"))" :expected "true"}
+  {:suite "reader" :expr "(= [true \"foo\"] [(some? (namespace (read-string \"::foo\"))) (name (read-string \"::foo\"))])" :expected "true"}
   {:suite "reader" :expr "(= (quote sym) (read-string \"sym\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote ns/sym) (read-string \"ns/sym\"))" :expected "true"}
   {:suite "reader" :expr "(nil? (read-string \"nil\"))" :expected "true"}

@@ -451,11 +451,19 @@
 
 ;; --- keyword ----------------------------------------------------------------
 (define (rdr-read-keyword s i end)       ; i points just past the leading ':'
-  ;; ::kw auto-resolves; drop the ns, so skip a second ':'
-  (let ((i (if (and (< i end) (char=? (string-ref s i) #\:)) (+ i 1) i)))
-    (let-values (((tok j) (rdr-read-token s i end)))
-      (let-values (((ns name) (rdr-sym-parts tok)))
-        (values (keyword ns name) j)))))
+  ;; ::kw is auto-resolved against the current ns: ::name -> current-ns/name,
+  ;; ::alias/name -> the alias's target ns / name (Clojure's reader semantics).
+  (let ((auto? (and (< i end) (char=? (string-ref s i) #\:))))
+    (let ((i (if auto? (+ i 1) i)))
+      (let-values (((tok j) (rdr-read-token s i end)))
+        (let-values (((ns name) (rdr-sym-parts tok)))
+          (if auto?
+              (let* ((cur (chez-current-ns))
+                     (rns (if (string? ns)
+                              (let ((a (chez-resolve-alias cur ns))) (if a a ns))
+                              cur)))
+                (values (keyword rns name) j))
+              (values (keyword ns name) j)))))))
 
 ;; --- the main dispatch ------------------------------------------------------
 ;; Returns (values form j). form is rdr-eof at end-of-input or at an unconsumed

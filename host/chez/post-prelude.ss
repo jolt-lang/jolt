@@ -64,12 +64,14 @@
         ;; realized? reads :jolt/type and throws on a jolt-lazyseq record.
         ((jolt-lazyseq? x) (jolt-lazyseq-realized? x))
         (else (jolt-invoke overlay-realized? x))))))
-;; clojure.edn/read over a reader: the overlay edn.clj drain-reader reads
-;; :jolt/type; the native version (io.ss) drains the jhost reader instead.
+;; clojure.edn/read over a reader: drain the jhost reader, then read through the
+;; overlay read-string so the opts map (:readers/:default/:eof) is honored.
 (def-var! "clojure.edn" "read"
   (case-lambda
     ((reader) (chez-edn-read reader))
-    ((opts reader) (chez-edn-read reader))))
+    ((opts reader)
+     (jolt-invoke (var-deref "clojure.edn" "read-string") opts
+                  (if (reader-jhost? reader) (drain-reader reader) (jolt-str-render-one reader))))))
 ;; line-seq: a jhost reader (io/reader result) -> drain+split; a map-reader (the
 ;; overlay's :read-line-fn model, e.g. with-in-str) -> the overlay version.
 (let ((overlay-line-seq (var-deref "clojure.core" "line-seq")))

@@ -27,7 +27,8 @@
             custom (get (get opts :readers) tag-sym)]
         (cond
           custom (custom v)
-          (get opts :default) ((get opts :default) tag v)
+          ;; Clojure calls :default with the tag as a SYMBOL and the value.
+          (get opts :default) ((get opts :default) tag-sym v)
           :else (__read-tagged tag v)))
     (map? x)
       (into {} (map (fn [e] [(edn->value opts (key e)) (edn->value opts (val e))]) x))
