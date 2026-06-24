@@ -177,7 +177,21 @@
              ((#\0) (loop (+ i 2) (cons #\nul acc)))
              ((#\u)
               (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
-                (loop j (cons (integer->char cp) acc))))
+                ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,
+                ;; so combine a high+low surrogate pair (😃 -> U+1F603) into
+                ;; the one scalar char. A lone surrogate has no scalar — emit U+FFFD
+                ;; rather than crash (the irreducible UTF-16/scalar divergence).
+                (cond
+                  ((and (fx>=? cp #xD800) (fx<=? cp #xDBFF)
+                        (fx<? (fx+ j 1) end)
+                        (char=? (string-ref s j) #\\) (char=? (string-ref s (fx+ j 1)) #\u))
+                   (let-values (((lo k) (rdr-hex->int s (+ j 2) 4)))
+                     (if (and (fx>=? lo #xDC00) (fx<=? lo #xDFFF))
+                         (loop k (cons (integer->char
+                                        (fx+ #x10000 (fx* (fx- cp #xD800) 1024) (fx- lo #xDC00))) acc))
+                         (loop j (cons #\xFFFD acc)))))
+                  ((and (fx>=? cp #xD800) (fx<=? cp #xDFFF)) (loop j (cons #\xFFFD acc)))
+                  (else (loop j (cons (integer->char cp) acc))))))
              (else (loop (+ i 2) (cons e acc))))))
         (else (loop (+ i 1) (cons c acc)))))))
 

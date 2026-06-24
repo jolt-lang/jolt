@@ -2981,4 +2981,8 @@
   {:suite "interop / instance? on host interfaces" :label "map is not a Collection" :expected "false" :actual "(instance? java.util.Collection {:a 1})"}
   {:suite "interop / instance? on host interfaces" :label "vector is Associative" :expected "true" :actual "(instance? clojure.lang.Associative [1])"}
   {:suite "interop / instance? on host interfaces" :label "string is not Number" :expected "false" :actual "(instance? java.lang.Number \"s\")"}
+  {:suite "interop / String & StringBuilder char ops" :label "String from char-array slice" :expected "\"abc\"" :actual "(String. (char-array [\\a \\b \\c \\d]) 0 3)"}
+  {:suite "interop / String & StringBuilder char ops" :label "str of StringBuilder" :expected "\"hi\"" :actual "(let [sb (StringBuilder.)] (.append sb \"hi\") (str sb))"}
+  {:suite "interop / String & StringBuilder char ops" :label "append subsequence" :expected "\"bcd\"" :actual "(let [sb (StringBuilder.)] (.append sb \"abcde\" 1 4) (.toString sb))"}
+  {:suite "interop / String & StringBuilder char ops" :label "String.getChars into buffer" :expected "\"abc\"" :actual "(let [a (char-array 4)] (.getChars \"abcd\" 0 3 a 0) (String. a 0 3))"}
 ]

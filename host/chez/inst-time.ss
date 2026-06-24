@@ -356,8 +356,11 @@
 ;; java.util.TimeZone: an opaque id holder (format-ms is UTC, so a non-UTC zone is
 ;; not honored — only the UTC case the corpus uses is exercised).
 (define (timezone-of id) (make-jhost "timezone" (vector (if (string? id) id (jolt-str-render-one id)))))
-(register-class-statics! "TimeZone" (list (cons "getTimeZone" timezone-of)))
-(register-class-statics! "java.util.TimeZone" (list (cons "getTimeZone" timezone-of)))
+(define timezone-statics
+  (list (cons "getTimeZone" timezone-of)
+        (cons "getDefault" (lambda () (timezone-of "default")))))
+(register-class-statics! "TimeZone" timezone-statics)
+(register-class-statics! "java.util.TimeZone" timezone-statics)
 
 ;; java.text.SimpleDateFormat: holds a pattern; .setTimeZone is accepted (format-ms
 ;; is UTC); .format(date) renders the date per the pattern via the format-ms engine.
