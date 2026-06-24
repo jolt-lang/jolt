@@ -380,17 +380,19 @@
       step)))
 
 ;; True when atype's methods were registered for this protocol (via extend /
-;; extend-type). Tags are canonical host names or ns-qualified record names,
-;; so a bare record name also matches its "ns.Name" tag.
+;; extend-type). Tags are canonical host names or ns-qualified record names, so a
+;; name matches its tag when either is a dotted suffix of the other — a bare
+;; record name matches its "ns.Name" tag, and a query for a qualified host class
+;; (java.util.Map) matches the canonical short tag (Map) extend registered it as.
 (defn extends? [protocol atype]
   (let [want (if (nil? atype) "nil" (name atype))
-        dotted (str "." want)
-        dlen (count dotted)]
+        suffix? (fn [long short]
+                  (let [d (str "." short)]
+                    (and (> (count long) (count d))
+                         (= (subs long (- (count long) (count d))) d))))]
     (boolean (some (fn [t]
                      (let [tn (name t)]
-                       (or (= tn want)
-                           (and (> (count tn) dlen)
-                                (= (subs tn (- (count tn) dlen)) dotted)))))
+                       (or (= tn want) (suffix? tn want) (suffix? want tn))))
                    (extenders protocol)))))
 
 ;; extend, the FUNCTION (extend-type's runtime sibling): protocol + method-map

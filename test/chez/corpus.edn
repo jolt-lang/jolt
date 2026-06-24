@@ -2968,4 +2968,7 @@
   {:suite "protocols / extend & extends? on nil" :label "extends? nil when extended" :expected "true" :actual "(do (defprotocol Pe (pe [this])) (extend nil Pe {:pe (fn [_] :x)}) (extends? Pe nil))"}
   {:suite "protocols / extend & extends? on nil" :label "extends? nil when not extended" :expected "false" :actual "(do (defprotocol P3 (r [this])) (extends? P3 nil))"}
   {:suite "protocols / extend & extends? on nil" :label "extend-type nil still works" :expected ":via-type" :actual "(do (defprotocol P4 (s [this])) (extend-type nil P4 (s [_] :via-type)) (s nil))"}
+  {:suite "protocols / extend on host classes" :label "dispatch by java.util.Map/Collection/CharSequence" :expected "[:map :coll :str :obj]" :actual "(do (defprotocol W (-w [x])) (extend java.util.Map W {:-w (fn [_] :map)}) (extend java.util.Collection W {:-w (fn [_] :coll)}) (extend java.lang.CharSequence W {:-w (fn [_] :str)}) (extend java.lang.Object W {:-w (fn [_] :obj)}) [(-w {:a 1}) (-w [1 2]) (-w \"s\") (-w 42)])"}
+  {:suite "protocols / extend on host classes" :label "satisfies? via java.util.Map" :expected "true" :actual "(do (defprotocol Q (qq [x])) (extend java.util.Map Q {:qq (fn [_] :m)}) (satisfies? Q {}))"}
+  {:suite "protocols / extend on host classes" :label "extends? on a qualified host class" :expected "true" :actual "(do (defprotocol Qe (qe [x])) (extend java.util.Collection Qe {:qe (fn [_] :c)}) (extends? Qe java.util.Collection))"}
 ]

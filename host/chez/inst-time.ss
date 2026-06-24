@@ -320,6 +320,8 @@
   (list (cons "ofPattern" (lambda (p . _) (mk-formatter p)))
         (cons "ISO_LOCAL_DATE" (mk-formatter "yyyy-MM-dd"))
         (cons "ISO_LOCAL_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ss"))
+        ;; ISO_INSTANT always renders in UTC with a trailing Z (format-ms is UTC; X -> "Z").
+        (cons "ISO_INSTANT" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssX"))
         (cons "ofLocalizedDate" (lambda (fs) (style-fmt 'date fs)))
         (cons "ofLocalizedTime" (lambda (fs) (style-fmt 'time fs)))
         (cons "ofLocalizedDateTime" (lambda (fs) (style-fmt 'datetime fs)))))
