@@ -58,11 +58,8 @@
 (define %m-pr-readable jolt-pr-readable)
 (set! jolt-pr-readable (lambda (x) (if (juuid? x) (juuid-pr x) (%m-pr-readable x))))
 ;; two uuids are = iff same string.
-(define %m-=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((juuid? a) (and (juuid? b) (string=? (juuid-s a) (juuid-s b))))
-        ((juuid? b) #f)
-        (else (%m-=2 a b)))))
+(register-eq-arm! (lambda (a b) (or (juuid? a) (juuid? b)))
+                  (lambda (a b) (and (juuid? a) (juuid? b) (string=? (juuid-s a) (juuid-s b)))))
 
 ;; --- bigint / biginteger -----------------------------------------------------
 ;; jolt models every number as a double; an integer-valued double prints without
@@ -80,14 +77,11 @@
 (define (jolt-tagged-literal-pred? x) (jtagged? x))
 (define kw-tl-tag (keyword #f "tag"))
 (define kw-tl-form (keyword #f "form"))
-(define %m-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (if (jtagged? coll) (jolt-get coll k jolt-nil) (%m-get coll k)))
-  ((coll k d) (if (jtagged? coll)
-                  (cond ((jolt=2 k kw-tl-tag) (jtagged-tag coll))
-                        ((jolt=2 k kw-tl-form) (jtagged-form coll))
-                        (else d))
-                  (%m-get coll k d)))))
+(register-get-arm! jtagged?
+  (lambda (coll k d)
+    (cond ((jolt=2 k kw-tl-tag) (jtagged-tag coll))
+          ((jolt=2 k kw-tl-form) (jtagged-form coll))
+          (else d))))
 (define (jtagged-pr t) (string-append "#" (jolt-pr-str (jtagged-tag t)) " " (jolt-pr-readable (jtagged-form t))))
 (define %m2-pr-str jolt-pr-str)
 (set! jolt-pr-str (lambda (x) (if (jtagged? x) (jtagged-pr x) (%m2-pr-str x))))

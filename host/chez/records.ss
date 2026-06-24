@@ -62,16 +62,10 @@
     "}"))
 
 ;; ---- extend the collection dispatchers with a jrec arm ----------------------
-(define %r-jolt=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((jrec? a) (and (jrec? b) (jrec=? a b)))
-        ((jrec? b) #f)
-        (else (%r-jolt=2 a b)))))
+(register-eq-arm! (lambda (a b) (or (jrec? a) (jrec? b)))
+                  (lambda (a b) (and (jrec? a) (jrec? b) (jrec=? a b))))
 (register-hash-arm! jrec? jrec-hash)
-(define %r-jolt-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (if (jrec? coll) (jrec-lookup coll k jolt-nil) (%r-jolt-get coll k)))
-  ((coll k d) (if (jrec? coll) (jrec-lookup coll k d) (%r-jolt-get coll k d)))))
+(register-get-arm! jrec? (lambda (coll k d) (jrec-lookup coll k d)))
 (define %r-jolt-count jolt-count)
 (set! jolt-count (lambda (coll) (if (jrec? coll) (length (jrec-pairs coll)) (%r-jolt-count coll))))
 (define %r-jolt-contains? jolt-contains?)

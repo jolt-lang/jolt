@@ -232,20 +232,14 @@
 (define kw-ms (keyword #f "ms"))
 (define inst-type-kw (keyword "jolt" "inst"))
 
-(define %it-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (jolt-get coll k jolt-nil))
-  ((coll k d) (if (jinst? coll)
-                  (cond ((jolt=2 k kw-jolt-type) inst-type-kw)
-                        ((jolt=2 k kw-ms) (jinst-ms coll))
-                        (else d))
-                  (%it-get coll k d)))))
+(register-get-arm! jinst?
+  (lambda (coll k d)
+    (cond ((jolt=2 k kw-jolt-type) inst-type-kw)
+          ((jolt=2 k kw-ms) (jinst-ms coll))
+          (else d))))
 
-(define %it-=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((jinst? a) (and (jinst? b) (= (jinst-ms a) (jinst-ms b))))
-        ((jinst? b) #f)
-        (else (%it-=2 a b)))))
+(register-eq-arm! (lambda (a b) (or (jinst? a) (jinst? b)))
+                  (lambda (a b) (and (jinst? a) (jinst? b) (= (jinst-ms a) (jinst-ms b)))))
 
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 

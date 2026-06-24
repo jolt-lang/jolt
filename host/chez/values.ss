@@ -43,7 +43,15 @@
 ;; chars/strings: Chez natives (strings treated immutable).
 
 ;; --- jolt equality (Clojure =) — scalars + collections ----------------------
-(define (jolt=2 a b)
+;; A host shim registers a type's equality via register-eq-arm! instead of
+;; set!-wrapping jolt=2 (cf. register-hash-arm!). An arm is (pred . handler), both
+;; (a b): the arm applies when pred holds (typically either arg is the type), and
+;; handler returns the #t/#f result. Arms are checked before the base scalar/coll
+;; cases; the entry is stable.
+(define jolt-eq-arms '())
+(define (register-eq-arm! pred handler)
+  (set! jolt-eq-arms (cons (cons pred handler) jolt-eq-arms)))
+(define (jolt=2-base a b)
   (cond
     ((and (jolt-nil? a) (jolt-nil? b)) #t)
     ((or  (jolt-nil? a) (jolt-nil? b)) #f)
@@ -63,6 +71,11 @@
     ;; other collections (map/set): forward to collections.ss.
     ((and (jolt-coll? a) (jolt-coll? b)) (jolt-coll=? a b))
     (else (eq? a b))))
+(define (jolt=2 a b)
+  (let loop ((as jolt-eq-arms))
+    (cond ((null? as) (jolt=2-base a b))
+          (((caar as) a b) ((cdar as) a b))
+          (else (loop (cdr as))))))
 (define (jolt= a . rest)
   (let loop ((a a) (rest rest))
     (cond ((null? rest) #t)

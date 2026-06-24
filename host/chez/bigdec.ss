@@ -61,11 +61,8 @@
 (def-var! "clojure.core" "bigdec" jolt-bigdec)
 
 ;; equality: a bigdec equals only another bigdec, by value (matching (= 3M 3) = false).
-(define %bd-jolt=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((and (jbigdec? a) (jbigdec? b)) (jbigdec=? a b))
-        ((or (jbigdec? a) (jbigdec? b)) #f)
-        (else (%bd-jolt=2 a b)))))
+(register-eq-arm! (lambda (a b) (or (jbigdec? a) (jbigdec? b)))
+                  (lambda (a b) (and (jbigdec? a) (jbigdec? b) (jbigdec=? a b))))
 
 ;; str drops the M; pr/pr-str keep it.
 (register-str-render! jbigdec? jbigdec->string)

@@ -72,10 +72,7 @@
 (set! jolt-seq (lambda (x) (if (htable-sorted? x) (sc-call x kw-op-seq) (%h-seq x))))
 (define %h-count jolt-count)
 (set! jolt-count (lambda (coll) (if (htable-sorted? coll) (sc-call coll kw-op-count) (%h-count coll))))
-(define %h-get jolt-get)
-(set! jolt-get (case-lambda
-  ((coll k)   (if (htable-sorted? coll) (sc-call coll kw-op-get k jolt-nil) (%h-get coll k)))
-  ((coll k d) (if (htable-sorted? coll) (sc-call coll kw-op-get k d) (%h-get coll k d)))))
+(register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))
 (define %h-contains? jolt-contains?)
 (set! jolt-contains? (lambda (coll k)
   (if (htable-sorted? coll) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f) (%h-contains? coll k))))
@@ -131,11 +128,11 @@
 (define (sorted-set->pset sc)
   (fold-left (lambda (s x) (pset-conj s x)) empty-pset (seq->list (sc-call sc kw-op-seq))))
 (define (sorted->plain x) (if (htable-sorted-map? x) (sorted-map->pmap x) (sorted-set->pset x)))
-(define %h-jolt=2 jolt=2)
-(set! jolt=2 (lambda (a b)
-  (cond ((htable-sorted? a) (%h-jolt=2 (sorted->plain a) (if (htable-sorted? b) (sorted->plain b) b)))
-        ((htable-sorted? b) (%h-jolt=2 a (sorted->plain b)))
-        (else (%h-jolt=2 a b)))))
+;; a sorted coll compares as its plain equivalent: normalize and re-dispatch (the
+;; normalized values aren't sorted, so this arm won't re-match — the base compares).
+(register-eq-arm! (lambda (a b) (or (htable-sorted? a) (htable-sorted? b)))
+                  (lambda (a b) (jolt=2 (if (htable-sorted? a) (sorted->plain a) a)
+                                        (if (htable-sorted? b) (sorted->plain b) b))))
 ;; a sorted coll hashes as its plain equivalent (jolt-hash recurses through the base).
 (register-hash-arm! htable-sorted? (lambda (x) (jolt-hash (sorted->plain x))))
 
