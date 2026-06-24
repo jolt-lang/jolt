@@ -145,6 +145,12 @@
 
 (declare infer)
 
+;; infer (and infer-fn-seeded) return a [type node'] tuple — the result type plus
+;; the rewritten subtree. A bare (nth r 0)/(nth r 1) transposes silently and still
+;; type-checks, so name the projections; the call-pattern code below is dense in them.
+(defn- ty [r] (nth r 0))
+(defn- nd [r] (nth r 1))
+
 ;; HOFs that apply their fn arg to the ELEMENTS of a collection. :epos is which
 ;; param of the fn receives an element. reduce is
 ;; handled separately (its arity changes the coll position, and its closure
@@ -167,11 +173,167 @@
                                      tenv (range (count params)))
                           pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
                           br (infer (get a :body) pe env)]
-                      [(nth br 0) (assoc a :body (nth br 1))]))
+                      [(ty br) (assoc a :body (nd br))]))
                   (get node :arities))
-        rets (mapv (fn [r] (nth r 0)) res)
+        rets (mapv (fn [r] (ty r)) res)
         ret (if (empty? rets) :any (reduce join (first rets) (rest rets)))]
-    [ret (assoc node :arities (mapv (fn [r] (nth r 1)) res))]))
+    [ret (assoc node :arities (mapv (fn [r] (nd r)) res))]))
+
+;; --- :invoke call patterns ---------------------------------------------------
+;; infer's :invoke arm splits the callee/args once, then dispatches by callee
+;; shape to one of these. Each returns [type node']; all recurse through `infer`.
+
+(defn- infer-pred-fold
+  "A type predicate over a single side-effect-free arg whose type PROVES the answer
+  folds to a boolean constant — eliminating the call, and (once const-fold runs
+  after inference) collapsing any `if` it gates. Falls back to the normal call path
+  when the answer isn't provable or the arg is impure."
+  [node fnode cn args tenv env]
+  (let [ar (infer (nth args 0) tenv env)
+        v (pred-on cn (ty ar))]
+    (if (and (not (nil? v)) (pure-node? (nd ar)))
+      [:any {:op :const :val v}]
+      [(call-ret-type fnode env) (assoc node :args [(nd ar)])])))
+
+(defn- infer-kw-lookup
+  "(:k m) / (:k m default): the result is m's field type, and if m is a struct the
+  subject is tagged so the back end drops the guard — this types nested access end
+  to end (RFC 0005)."
+  [node fnode args n tenv env]
+  (let [mr (infer (nth args 0) tenv env)
+        mt (ty mr)
+        msub (if (struct-safe? mt) (mark-struct (nd mr) mt) (nd mr))
+        ft (field-type mt (get fnode :val))
+        dr (when (= n 2) (infer (nth args 1) tenv env))]
+    [(if dr (join ft (ty dr)) ft)
+     (assoc node :args (if dr [msub (nd dr)] [msub]))]))
+
+(defn- infer-get-lookup
+  "(get m :k [default]): the keyword-lookup result type, when the key is a constant
+  keyword."
+  [node args n tenv env]
+  (let [mr (infer (nth args 0) tenv env)
+        mt (ty mr)
+        msub (if (struct-safe? mt) (mark-struct (nd mr) mt) (nd mr))
+        kr (infer (nth args 1) tenv env)
+        ft (field-type mt (get (nth args 1) :val))
+        dr (when (= n 3) (infer (nth args 2) tenv env))]
+    [(if dr (join ft (ty dr)) ft)
+     (assoc node :args (if dr [msub (nd kr) (nd dr)] [msub (nd kr)]))]))
+
+(defn- infer-reduce-hof
+  "reduce over a typed vector with a fn-literal: seed the closure's accumulator
+  (param 0) to the init type and its element (param 1) to the vector's element
+  type, so its body — and any calls it makes — see those types."
+  [node args n tenv env]
+  (let [three (>= n 3)
+        coll-r (infer (nth args (if three 2 1)) tenv env)
+        init-r (when three (infer (nth args 1) tenv env))
+        et (let [ct (ty coll-r)] (if (vec-type? ct) (velem ct) :any))
+        init-t (if init-r (ty init-r) :any)
+        fn-r (infer-fn-seeded (nth args 0) {0 init-t 1 et} tenv env)]
+    [(join init-t (ty fn-r))
+     (assoc node :args (if three
+                         [(nd fn-r) (nd init-r) (nd coll-r)]
+                         [(nd fn-r) (nd coll-r)]))]))
+
+(defn- infer-seq-hof
+  "map/mapv/filter/... over a typed vector with a fn-literal: seed the fn's element
+  param; mapv/filterv produce a typed vector."
+  [node cn args tenv env]
+  (let [coll-r (infer (nth args 1) tenv env)
+        et (let [ct (ty coll-r)] (if (vec-type? ct) (velem ct) :any))
+        fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv env)
+        rt (cond (= cn "mapv") (mk-vec (ty fn-r))
+                 (= cn "filterv") (mk-vec et)
+                 :else :any)]
+    [rt (assoc node :args [(nd fn-r) (nd coll-r)])]))
+
+(defn- infer-conj-into
+  "conj/into: track the element type of a vector being grown."
+  [node fnode cn args n tenv env]
+  (let [ares (mapv (fn [a] (infer a tenv env)) args)
+        base (ty (nth ares 0))
+        rest-ts (mapv (fn [r] (ty r)) (rest ares))
+        rt (cond
+             (and (= cn "conj") (vec-type? base))
+             (mk-vec (reduce join (velem base) rest-ts))
+             (and (= cn "into") (vec-type? base) (= 2 n) (vec-type? (nth rest-ts 0)))
+             (mk-vec (join (velem base) (velem (nth rest-ts 0))))
+             :else (call-ret-type fnode env))]
+    [rt (assoc node :args (mapv (fn [r] (nd r)) ares))]))
+
+(defn- infer-call
+  "Everything else: type the args, collect the call (var callee) for whole-program
+  inference, run the success-type check, and use the declared/estimated return type.
+  range produces a numeric vector; an element-returning fn over a typed vector
+  yields the element type. A protocol-method call whose receiver (arg 0) is a known
+  record type is annotated [type-tag proto method] for devirtualization — the back
+  end looks up the impl at emit time and calls it directly, skipping the registry
+  dispatch (~19x cheaper)."
+  [node fnode iscall-var cn args n tenv env]
+  (let [fr (when (not iscall-var) (infer fnode tenv env))
+        fnode' (if iscall-var fnode (nd fr))
+        ;; the callee's value type: a var's from vtypes (a fn is :truthy, a def
+        ;; carries its inferred type), else the inferred type of the callee expr
+        callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (ty fr))
+        ares (mapv (fn [a] (infer a tenv env)) args)]
+    (when iscall-var
+      (swap! (get env :calls) conj [(var-key fnode) (mapv (fn [r] (ty r)) ares)]))
+    ;; success-type check at this call, reusing the arg types just computed (jolt
+    ;; audit): core error domains always, user-fn domains in strict mode.
+    (when (get env :checking?)
+      (let [ats (mapv (fn [r] (ty r)) ares) pos (get node :pos)]
+        (when cn (check-invoke cn args ats pos env))
+        (when (not-callable? callee-t)
+          (swap! (get env :diags) conj
+                 {:op :call :type (type-name callee-t) :pos pos
+                  :msg (str "cannot call " (type-name callee-t) " as a function")}))
+        (when (and (get env :strict?) iscall-var)
+          (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
+            (when usig (check-user-call k usig ats pos env))))))
+    (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
+          rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
+          base (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares))]
+      [(cond
+         (= cn "range") (mk-vec :num)
+         (and cn (contains? elem-fns cn) (> n 0))
+         (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
+         :else (call-ret-type fnode env))
+       (if rtype
+         (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
+         base)])))
+
+(defn- infer-invoke
+  "Split the callee/args once and dispatch by callee shape to a pattern helper."
+  [node tenv env]
+  (let [fnode (get node :fn)
+        iscall-var (= :var (get fnode :op))
+        cn (when (and iscall-var (= "clojure.core" (get fnode :ns))) (get fnode :name))
+        args (get node :args)
+        n (count args)]
+    (cond
+      (and iscall-var (contains? fold-preds cn) (= n 1))
+      (infer-pred-fold node fnode cn args tenv env)
+
+      (and (kw-callee? fnode) (>= n 1) (<= n 2))
+      (infer-kw-lookup node fnode args n tenv env)
+
+      (and (get-callee? fnode)
+           (>= n 2) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
+      (infer-get-lookup node args n tenv env)
+
+      (and (= cn "reduce") (>= n 2) (= :fn (get (nth args 0) :op)))
+      (infer-reduce-hof node args n tenv env)
+
+      (and cn (get hof-table cn) (>= n 2) (= :fn (get (nth args 0) :op)))
+      (infer-seq-hof node cn args tenv env)
+
+      (and (or (= cn "conj") (= cn "into")) (>= n 1))
+      (infer-conj-into node fnode cn args n tenv env)
+
+      :else
+      (infer-call node fnode iscall-var cn args n tenv env))))
 
 (defn- infer
   "Returns [type node'] — the inferred type of node and node with struct-safe
@@ -242,126 +404,7 @@
       ;; inferred type); unknown -> :any.
       (= op :var) (do (swap! (get env :escapes) conj (var-key node))
                       [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
-      (= op :invoke)
-      (let [fnode (get node :fn)
-            iscall-var (= :var (get fnode :op))
-            cn (when (and iscall-var (= "clojure.core" (get fnode :ns))) (get fnode :name))
-            args (get node :args)
-            n (count args)]
-        (cond
-          ;; predicate folding: a type predicate over a single,
-          ;; side-effect-free argument whose type PROVES the answer becomes a
-          ;; boolean constant — eliminating the call, and (once const-fold runs
-          ;; after inference) collapsing any `if` it gates. Falls through to the
-          ;; normal call path when the answer isn't provable or the arg is impure.
-          (and iscall-var (contains? fold-preds cn) (= n 1))
-          (let [ar (infer (nth args 0) tenv env)
-                v (pred-on cn (nth ar 0))]
-            (if (and (not (nil? v)) (pure-node? (nth ar 1)))
-              [:any {:op :const :val v}]
-              [(call-ret-type fnode env) (assoc node :args [(nth ar 1)])]))
-          ;; (:k m) / (:k m default): the result is m's field type, and if m is a
-          ;; struct the subject is tagged so the back end drops the guard — this
-          ;; types nested access end to end (RFC 0005).
-          (and (kw-callee? fnode) (>= n 1) (<= n 2))
-          (let [mr (infer (nth args 0) tenv env)
-                mt (nth mr 0)
-                msub (if (struct-safe? mt) (mark-struct (nth mr 1) mt) (nth mr 1))
-                ft (field-type mt (get fnode :val))
-                dr (when (= n 2) (infer (nth args 1) tenv env))]
-            [(if dr (join ft (nth dr 0)) ft)
-             (assoc node :args (if dr [msub (nth dr 1)] [msub]))])
-          ;; (get m :k [default]): same, when the key is a constant keyword.
-          (and (get-callee? fnode)
-               (>= n 2) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
-          (let [mr (infer (nth args 0) tenv env)
-                mt (nth mr 0)
-                msub (if (struct-safe? mt) (mark-struct (nth mr 1) mt) (nth mr 1))
-                kr (infer (nth args 1) tenv env)
-                ft (field-type mt (get (nth args 1) :val))
-                dr (when (= n 3) (infer (nth args 2) tenv env))]
-            [(if dr (join ft (nth dr 0)) ft)
-             (assoc node :args (if dr [msub (nth kr 1) (nth dr 1)] [msub (nth kr 1)]))])
-          ;; reduce over a typed vector with a fn-literal: seed the
-          ;; closure's accumulator (param 0) to the init type and its element
-          ;; (param 1) to the vector's element type, so its body — and any calls
-          ;; it makes — see those types.
-          (and (= cn "reduce") (>= n 2) (= :fn (get (nth args 0) :op)))
-          (let [three (>= n 3)
-                coll-r (infer (nth args (if three 2 1)) tenv env)
-                init-r (when three (infer (nth args 1) tenv env))
-                et (let [ct (nth coll-r 0)] (if (vec-type? ct) (velem ct) :any))
-                init-t (if init-r (nth init-r 0) :any)
-                fn-r (infer-fn-seeded (nth args 0) {0 init-t 1 et} tenv env)]
-            [(join init-t (nth fn-r 0))
-             (assoc node :args (if three
-                                 [(nth fn-r 1) (nth init-r 1) (nth coll-r 1)]
-                                 [(nth fn-r 1) (nth coll-r 1)]))])
-          ;; map/mapv/filter/... over a typed vector with a fn-literal: seed the
-          ;; fn's element param; mapv/filterv produce a typed vector.
-          (and cn (get hof-table cn) (>= n 2) (= :fn (get (nth args 0) :op)))
-          (let [coll-r (infer (nth args 1) tenv env)
-                et (let [ct (nth coll-r 0)] (if (vec-type? ct) (velem ct) :any))
-                fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv env)
-                rt (cond (= cn "mapv") (mk-vec (nth fn-r 0))
-                         (= cn "filterv") (mk-vec et)
-                         :else :any)]
-            [rt (assoc node :args [(nth fn-r 1) (nth coll-r 1)])])
-          ;; conj/into: track the element type of a vector being grown.
-          (and (or (= cn "conj") (= cn "into")) (>= n 1))
-          (let [ares (mapv (fn [a] (infer a tenv env)) args)
-                base (nth (nth ares 0) 0)
-                rest-ts (mapv (fn [r] (nth r 0)) (rest ares))
-                rt (cond
-                     (and (= cn "conj") (vec-type? base))
-                     (mk-vec (reduce join (velem base) rest-ts))
-                     (and (= cn "into") (vec-type? base) (= 2 n) (vec-type? (nth rest-ts 0)))
-                     (mk-vec (join (velem base) (velem (nth rest-ts 0))))
-                     :else (call-ret-type fnode env))]
-            [rt (assoc node :args (mapv (fn [r] (nth r 1)) ares))])
-          ;; everything else: type args, collect the call (var callee), use the
-          ;; declared/estimated return type. range produces a numeric vector.
-          :else
-          (let [fr (when (not iscall-var) (infer fnode tenv env))
-                fnode' (if iscall-var fnode (nth fr 1))
-                ;; the callee's value type: a var's from vtypes (a fn is
-                ;; :truthy, a def carries its inferred type), else the inferred
-                ;; type of the callee expression
-                callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (nth fr 0))
-                ares (mapv (fn [a] (infer a tenv env)) args)]
-            (when iscall-var
-              (swap! (get env :calls) conj [(var-key fnode) (mapv (fn [r] (nth r 0)) ares)]))
-            ;; success-type check at this call, reusing the arg types just
-            ;; computed (jolt audit): core error domains always, user-fn domains
-            ;; in strict mode. The arg subtrees are inferred exactly once.
-            (when (get env :checking?)
-              (let [ats (mapv (fn [r] (nth r 0)) ares) pos (get node :pos)]
-                (when cn (check-invoke cn args ats pos env))
-                ;; calling a provably non-function
-                (when (not-callable? callee-t)
-                  (swap! (get env :diags) conj
-                         {:op :call :type (type-name callee-t) :pos pos
-                          :msg (str "cannot call " (type-name callee-t) " as a function")}))
-                (when (and (get env :strict?) iscall-var)
-                  (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
-                    (when usig (check-user-call k usig ats pos env))))))
-            ;; devirtualization: a protocol-method call whose receiver
-            ;; (arg 0) is a known record type resolves to a direct method call.
-            ;; Annotate the node with [type-tag proto method]; the back end looks
-            ;; up the impl at emit time and calls it directly, skipping the
-            ;; registry dispatch (~19x cheaper than protocol-dispatch).
-            (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
-                  rtype (when (and pm (pos? n)) (get (nth (nth ares 0) 0) :type))
-                  base (assoc node :fn fnode' :args (mapv (fn [r] (nth r 1)) ares))]
-              [(cond
-                 (= cn "range") (mk-vec :num)
-                 ;; element-returning fn over a typed vector -> the element type
-                 (and cn (contains? elem-fns cn) (> n 0))
-                 (let [a0 (nth (nth ares 0) 0)] (if (vec-type? a0) (velem a0) :any))
-                 :else (call-ret-type fnode env))
-               (if rtype
-                 (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-                 base)]))))
+      (= op :invoke) (infer-invoke node tenv env)
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [te (nth acc 0) binds (nth acc 1)
