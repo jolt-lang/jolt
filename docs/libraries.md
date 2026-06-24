@@ -16,6 +16,11 @@ Libraries confirmed to load and pass their conformance checks on Jolt
   reitit.Trie Java class is mirrored in Clojure by
   [jolt-lang/router](https://github.com/jolt-lang/router). Load with
   `JOLT_FEATURES` including `clj`.
+* [integrant](https://github.com/weavejester/integrant) — data-driven system
+  configuration; `ig/init`/`ig/halt!` build and tear down a component graph wired
+  with `#ig/ref`, on the ring-app example. Loads unmodified with its
+  [dependency](https://github.com/weavejester/dependency) and
+  [meta-merge](https://github.com/weavejester/meta-merge) deps.
 * [honeysql](https://github.com/seancorfield/honeysql) — full formatter + helpers
   (select/insert/update/delete/joins/:inline), loaded unmodified from git
 * [clojure.jdbc](https://github.com/yogthos/clojure.jdbc) — as [jolt-lang/db](https://github.com/jolt-lang/db)'s
