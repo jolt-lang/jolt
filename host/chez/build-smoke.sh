@@ -46,7 +46,8 @@ HELLO FROM A BUILT BINARY!
 args: [alpha bb ccc]
 sum: 10
 greet-default: greet:default
-greet-loud: greet:loud'
+greet-loud: greet:loud
+greet-soft: greet:soft'
 if [ "$got" != "$want" ]; then
   echo "  FAIL: binary output mismatch"
   echo "--- want ---"; echo "$want"
