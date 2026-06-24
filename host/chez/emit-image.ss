@@ -117,6 +117,14 @@
     "clojure.core/load-string" "clojure.core/load-file" "clojure.core/load-reader"
     "clojure.core/load"))
 
+;; A reference that needs the analyzer/back end at runtime (compile-from-source). If
+;; reachable code uses none of these, the compiler image can be dropped from the
+;; binary — the AOT app is fully compiled. (resolve/require don't need it: resolve is
+;; a var-table lookup; a require of a baked ns no-ops.)
+(define dce-compile-refs
+  '("clojure.core/eval" "clojure.core/load-string" "clojure.core/load-file"
+    "clojure.core/load-reader" "clojure.core/load"))
+
 ;; One record per form: (vector keep? fqn refs str). keep? #t = a non-def form,
 ;; always emitted, its refs are reachability roots; #f = a prunable def emitted only
 ;; if fqn is reached. A macro is a prunable def (its expander isn't called at runtime

@@ -137,8 +137,15 @@
         (for-each (lambda (l) (bld-inline-line l out (+ depth 1))) (bld-file-lines p))
         (begin (put-string out line) (put-string out "\n")))))
 
-(define (bld-emit-runtime out)
-  (for-each (lambda (l) (bld-inline-line l out 0)) bld-runtime-manifest))
+;; Inline the runtime manifest. When drop-compiler? (a closed AOT app that never
+;; compiles from source at runtime), omit the compiler image + compile-eval shim —
+;; the analyzer/back end are dead weight in the binary (~0.8MB).
+(define (bld-emit-runtime out drop-compiler?)
+  (for-each (lambda (l)
+              (unless (and drop-compiler?
+                           (or (bld-contains? l "seed/image.ss") (bld-contains? l "compile-eval.ss")))
+                (bld-inline-line l out 0)))
+            bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
 ;; Re-emit one app namespace to a list of Scheme strings: optimize (run-passes)
@@ -168,28 +175,33 @@
                 (begin (hashtable-set! reached fq #t)
                        (bfs (append (or (hashtable-ref edges fq #f) '()) (cdr work))))))))
       (let ((kept? (lambda (r) (or (vector-ref r 0) (hashtable-ref reached (vector-ref r 1) #f))))
-            (bail #f))
+            (refs-any (lambda (r set) (ormap (lambda (b) (and (member b (vector-ref r 2)) #t)) set)))
+            (bail #f) (needs-compiler #f))
         ;; bail only if REACHABLE code resolves vars by name — then the static call
         ;; graph is incomplete and dropping anything is unsound. Unreached eval-using
-        ;; library code is simply shaken away and never triggers the bail.
+        ;; library code is simply shaken away and never triggers the bail. Track
+        ;; whether any reachable code needs the compiler at runtime (eval/load).
         (for-each (lambda (r)
-                    (when (and (kept? r)
-                               (ormap (lambda (b) (and (member b (vector-ref r 2)) #t)) dce-bail-refs))
-                      (set! bail #t)))
+                    (when (kept? r)
+                      (when (refs-any r dce-bail-refs) (set! bail #t))
+                      (when (refs-any r dce-compile-refs) (set! needs-compiler #t))))
                   records)
-        (if bail
-            (begin (display "jolt build: tree-shake skipped (reachable code resolves vars at runtime)\n")
-                   (map (lambda (r) (vector-ref r 3)) records))
-            (let ((kept '()) (ndef 0) (nkeep 0))
-              (for-each (lambda (r)
-                          (when (vector-ref r 1) (set! ndef (+ ndef 1)))
-                          (when (kept? r)
-                            (when (vector-ref r 1) (set! nkeep (+ nkeep 1)))
-                            (set! kept (cons (vector-ref r 3) kept))))
-                        records)
-              (display (string-append "jolt build: tree-shake kept " (number->string nkeep)
-                                      " of " (number->string ndef) " defs\n"))
-              (reverse kept)))))))
+        ;; the compiler image can be dropped only when reachability is trustworthy
+        ;; (no bail) and no reachable code compiles from source at runtime.
+        (let ((drop-compiler? (and (not bail) (not needs-compiler))))
+          (if bail
+              (begin (display "jolt build: tree-shake skipped (reachable code resolves vars at runtime)\n")
+                     (values (map (lambda (r) (vector-ref r 3)) records) drop-compiler?))
+              (let ((kept '()) (ndef 0) (nkeep 0))
+                (for-each (lambda (r)
+                            (when (vector-ref r 1) (set! ndef (+ ndef 1)))
+                            (when (kept? r)
+                              (when (vector-ref r 1) (set! nkeep (+ nkeep 1)))
+                              (set! kept (cons (vector-ref r 3) kept))))
+                          records)
+                (display (string-append "jolt build: tree-shake kept " (number->string nkeep)
+                                        " of " (number->string ndef) " defs\n"))
+                (values (reverse kept) drop-compiler?))))))))
 
 ;; --- bundling: native libs + resources --------------------------------------
 ;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
@@ -282,18 +294,20 @@
       (when direct-link?
         ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
         ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
-      (let* ((app-strs (if tree-shake?
-                           (bld-tree-shake
-                             (apply append
-                               (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf))))
-                                    ordered))
-                             (string-append entry-ns "/-main"))
-                           (apply append
-                             (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf))))
-                                  ordered))))
-             (_ (set-optimize! #f))
-             (_ ((var-deref "jolt.backend-scheme" "set-direct-link!") #f))
-             (builddir (string-append out-path ".build"))
+      (let*-values
+          (((app-strs drop-compiler?)
+            (if tree-shake?
+                (bld-tree-shake
+                  (apply append
+                    (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf)))) ordered))
+                  (string-append entry-ns "/-main"))
+                (values (apply append
+                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf)))) ordered))
+                        #f))))
+        (set-optimize! #f)
+        ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
+        (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
+      (let* ((builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))
              (flat-so  (string-append builddir "/flat.so"))
              (boot     (string-append builddir "/jolt.boot"))
@@ -302,7 +316,7 @@
         (bld-system (string-append "mkdir -p '" builddir "'"))
         ;; 3. flat source = runtime + app + launcher.
         (let ((out (open-output-file flat-ss 'replace)))
-          (bld-emit-runtime out)
+          (bld-emit-runtime out drop-compiler?)
           ;; Load native libs, bake embedded resources, and point source roots at
           ;; the build-time app roots — all BEFORE the app forms. The app's
           ;; top-level forms run at binary startup (Sbuild_heap), and they include
@@ -377,7 +391,7 @@
         (bld-system (string-append
           "cc -O2 -I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
           "-o '" out-path "' " (bld-link-libs)))
-        (display (string-append "jolt build: wrote " out-path "\n"))))))
+        (display (string-append "jolt build: wrote " out-path "\n")))))))
 
 (def-var! "jolt.host" "build-binary"
   (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)
