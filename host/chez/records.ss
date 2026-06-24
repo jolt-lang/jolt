@@ -255,10 +255,21 @@
 ;; &message text plus any &irritants, or display-condition output as a fallback.
 (define (condition->message-string c)
   (if (message-condition? c)
-      (let ((m (condition-message c))
-            (irr (if (irritants-condition? c) (condition-irritants c) '())))
-        (let loop ((xs irr) (acc m))
-          (if (null? xs) acc (loop (cdr xs) (string-append acc " " (jolt-pr-str (car xs)))))))
+      (let* ((m (condition-message c))
+             (irr (if (irritants-condition? c) (condition-irritants c) '()))
+             (append-irr (lambda ()
+                           (let loop ((xs irr) (acc m))
+                             (if (null? xs) acc
+                                 (loop (cdr xs) (string-append acc " " (jolt-pr-str (car xs)))))))))
+        ;; some Chez conditions (open-input-file etc.) carry a format-template
+        ;; message ("failed for ~a: ~(~a~)") whose irritants fill the directives;
+        ;; format it in. Fall back to appending the irritants if that fails.
+        (if (and (string? m) (let scan ((i 0))
+                               (cond ((>= i (string-length m)) #f)
+                                     ((char=? (string-ref m i) #\~) #t)
+                                     (else (scan (+ i 1))))))
+            (guard (e (#t (append-irr))) (apply format m irr))
+            (append-irr)))
       (with-output-to-string (lambda () (display-condition c)))))
 ;; expose a Chez condition's message to Clojure (ex-message returns nil for raw
 ;; host conditions): the nREPL eval handler surfaces it instead of an opaque
