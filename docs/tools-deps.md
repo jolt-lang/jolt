@@ -104,6 +104,46 @@ ordinary builds (including `release` and `--opt`) stay dynamically linked. A var
 marked `^:redef` or `^:dynamic` stays indirect even under `--direct-link`, and calls
 into `clojure.core` stay indirect in every mode.
 
+## Tree-shaking
+
+`--tree-shake` (or `:jolt/build {:tree-shake true}`) ships only the code reachable
+from `-main`. The build constructs one call graph spanning the app, every resolved
+library, and the `clojure.core`/stdlib prelude, then keeps `-main`, every
+side-effecting top-level form (so a `defmethod`/`defrecord`/protocol registration
+keeps its targets live), and everything reachable from those — dropping the rest. A
+reference counts whether it's a call or a value (`#'x`, a fn passed to `map`, a fn
+stored in a map): any reference keeps its target live, so nothing reachable is ever
+dropped. An app that never compiles at runtime (no reachable `eval`/`load-string`)
+also drops the analyzer and back end from the binary. Typical savings are 1–2 MB;
+behaviour is unchanged.
+
+**It bails — keeps everything — when reachable code resolves a var by name at
+runtime** (`eval`, `resolve`, `ns-resolve`, `requiring-resolve`, `find-var`,
+`intern`, `load-string`, `load-file`). A static call graph can't follow a runtime
+`resolve`, so dropping anything would be unsound. The build prints which definitions
+forced the bail:
+
+```
+jolt build: tree-shake skipped (reachable code resolves vars at runtime):
+  selmer.filters/generate-json -> clojure.core/resolve
+  clojure.tools.logging/call-str -> clojure.core/ns-resolve
+```
+
+These are almost always libraries, not your code — `resolve` is how mature Clojure
+libraries implement plugin systems and optional integrations (a logging backend
+chosen at runtime, a template filter that lazily loads an optional dependency). On
+the JVM that costs nothing; in a closed-world binary it defeats reachability. To make
+an app tree-shakeable, keep runtime resolution off the *reachable* path: a backend
+that's fixed on jolt can be referenced directly rather than resolved (the jolt
+`tools.logging` port dropped the JVM's dynamic factory selection for exactly this),
+and an optional integration you don't use can be dropped or hard-wired. Unreached
+`resolve`-using code is shaken away like anything else — only resolution on the live
+path triggers the bail.
+
+The closed-world soundness model follows Stalin's dead-code analysis: in a program
+with no `eval`, a definition is live iff it is referenced (called or as a value) from
+a root, transitively.
+
 ## Limitations
 
 - Pure `clj`/`cljc` only — JVM interop, host classes, and unimplemented
