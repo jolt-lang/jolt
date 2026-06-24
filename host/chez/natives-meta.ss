@@ -22,7 +22,7 @@
        (jolt-assoc (if user user (jolt-hash-map))
                    jolt-kw-var-ns (var-cell-ns x)
                    jolt-kw-var-name (var-cell-name x))))
-    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (procedure? x))
+    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x))
      (hashtable-ref meta-table x jolt-nil))
     (else jolt-nil)))
 
@@ -34,6 +34,10 @@
     ((pmap? x) (make-pmap (pmap-root x) (pmap-cnt x)))
     ((pset? x) (make-pset (pset-m x)))
     ((jrec? x) (make-jrec (jrec-tag x) (jrec-pairs x)))
+    ;; a reify shares its (read-only) method table + protos but gets a fresh
+    ;; identity, so attaching meta leaves the original's meta untouched. Every
+    ;; Clojure reify implements IObj.
+    ((jreify? x) (make-jreify (jreify-methods x) (jreify-protos x)))
     ;; () is a shared singleton — a fresh instance keeps meta off every other ().
     ((empty-list-t? x) (fresh-empty-list))
     (else x)))                          ; cseq / procedure
@@ -41,7 +45,7 @@
 (define (jolt-with-meta x m)
   (cond
     ((symbol-t? x) (make-symbol-t (symbol-t-ns x) (symbol-t-name x) m))
-    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (procedure? x))
+    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x))
      (let ((c (meta-copy x)))
        (if (jolt-nil? m) (hashtable-delete! meta-table c) (hashtable-set! meta-table c m))
        c))

@@ -448,15 +448,22 @@
   ;; a reify can implement SEVERAL protocols; collect them all (each bare symbol
   ;; switches the current protocol, like extend-type) and pass every protocol name
   ;; to make-reified so (instance? Proto r)/satisfies? recognise all of them.
-  (loop [items (seq forms) protos [] methods {}]
+  ;; Several bodies for the same method name are distinct arities (clojure.spec
+  ;; reifies (specize* [s]) and (specize* [s _])): group them into one multi-arity
+  ;; fn so dispatch picks the clause by arg count.
+  (loop [items (seq forms) protos [] methods {} order []]
     (if (empty? items)
-      `(make-reified ~methods ~@(vec (map name protos)))
+      `(make-reified
+         ~(reduce (fn [m k] (assoc m k `(fn ~@(get methods k)))) {} order)
+         ~@(vec (map name protos)))
       (let [x (first items)]
         (if (symbol? x)
-          (recur (rest items) (conj protos x) methods)
-          (recur (rest items) protos
-                 (assoc methods (keyword (name (first x)))
-                        `(fn ~(nth x 1) ~@(drop 2 x)))))))))
+          (recur (rest items) (conj protos x) methods order)
+          (let [k (keyword (name (first x)))
+                clause `(~(nth x 1) ~@(drop 2 x))]
+            (recur (rest items) protos
+                   (assoc methods k (conj (get methods k []) clause))
+                   (if (contains? methods k) order (conj order k)))))))))
 
 (defmacro defrecord [name-sym fields & body]
   (let [tn (name name-sym)

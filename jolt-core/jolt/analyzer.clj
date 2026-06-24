@@ -331,6 +331,14 @@
       (and thead (field-head? thead))
       {:op :set-field :obj (analyze ctx (nth ti 1) env)
        :field (subs thead 2) :val val-node}
+      ;; (set! (. Class member) val) — a host static-field set. clojure.spec.alpha
+      ;; toggles clojure.lang.RT/checkSpecAsserts this way. Lowered to a runtime
+      ;; jolt.host/set-static-field! call (the read side is a :host-static ref).
+      (and (= thead ".") (>= (count ti) 3) (form-sym? (nth ti 1)) (form-sym? (nth ti 2))
+           (= :class (:kind (resolve-global ctx (nth ti 1)))))
+      (invoke (var-ref "jolt.host" "set-static-field!")
+              [(const (:name (resolve-global ctx (nth ti 1))))
+               (const (form-sym-name (nth ti 2))) val-node])
       (form-sym? target)
       (do (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
           (let [r (resolve-global ctx target)]
@@ -557,11 +565,12 @@
             shadowed (and hname (local? env hname))]
         (cond
           ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
-          ;; dispatch special forms / interop / invoke. Expanding before the
-          ;; special-form check means a head that is a macro always expands — even
-          ;; one whose name is also in the special-form set — matching reference
-          ;; read -> macroexpand -> analyze. A local shadows both.
-          (and (form-sym? head) (not shadowed) (form-macro? ctx head))
+          ;; dispatch special forms / interop / invoke. A local shadows the macro.
+          ;; A true special form is NOT shadowable by a same-named macro, matching
+          ;; the reference macroexpand1's isSpecial check — so a ns that redefs a
+          ;; macro `def`/`and`/`or` (clojure.spec.alpha) keeps the special form `def`.
+          (and (form-sym? head) (not shadowed)
+               (not (contains? handled hname)) (form-macro? ctx head))
             (analyze ctx (form-expand-1 ctx form) env)
           ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
           ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).

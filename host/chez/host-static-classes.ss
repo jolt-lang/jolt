@@ -595,7 +595,7 @@
 ;; values that carry metadata (mirrors jolt-with-meta's set in natives-meta.ss).
 (define (hsc-imeta? x)
   (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x)
-      (jolt-lazyseq? x) (jrec? x) (procedure? x) (symbol-t? x)))
+      (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x) (symbol-t? x)))
 (register-instance-check-arm!
   (lambda (type-sym val)
     (let ((iface (hsc-last-segment (symbol-t-name type-sym))))
