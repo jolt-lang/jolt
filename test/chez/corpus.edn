@@ -2953,4 +2953,19 @@
   {:suite "conformance / defmacro surface + syntax-quote/ns (enabling real clojure libs)" :label "syntax-quote resolves alias" :expected "\"HI\"" :actual "(do (ns sq.lib (:require [clojure.string :as s])) (defmacro up [x] `(s/upper-case ~x)) (in-ns (quote user)) (sq.lib/up \"hi\"))"}
   {:suite "conformance / defmacro surface + syntax-quote/ns (enabling real clojure libs)" :label "ns name with ^{:map} meta" :expected "5" :actual "(do (ns ^{:author \"a\" :doc \"d\"} nm.meta) (def q 5) (in-ns (quote user)) nm.meta/q)"}
   {:suite "conformance / defmacro surface + syntax-quote/ns (enabling real clojure libs)" :label "unquote *ns* in template" :expected "true" :actual "(do (defmacro cur-ns [] `(str ~*ns*)) (string? (cur-ns)))"}
+  {:suite "reader / read-string constructs sets" :label "top-level set" :expected "true" :actual "(set? (read-string \"#{:a :b}\"))"}
+  {:suite "reader / read-string constructs sets" :label "set value equals" :expected "true" :actual "(= #{1 2} (read-string \"#{1 2}\"))"}
+  {:suite "reader / read-string constructs sets" :label "set nested in map" :expected "true" :actual "(set? (:k (read-string \"{:k #{:a :b}}\")))"}
+  {:suite "reader / read-string constructs sets" :label "set nested in vector" :expected "true" :actual "(set? (first (read-string \"[#{:a}]\")))"}
+  {:suite "reader / read-string constructs sets" :label "set nested in list" :expected "true" :actual "(set? (first (read-string \"(#{:a})\")))"}
+  {:suite "reader / read-string constructs sets" :label "set keeps reader metadata" :expected "true" :actual "(:s (meta (read-string \"^:s #{1 2}\")))"}
+  {:suite "reader / read-string constructs sets" :label "set of sets" :expected "true" :actual "(every? set? (read-string \"#{#{1} #{2}}\"))"}
+  {:suite "io / str & format" :label "format %x lowercase" :expected "\"ff\"" :actual "(format \"%x\" 255)"}
+  {:suite "io / str & format" :label "format %04x zero-pad lower" :expected "\"00ff\"" :actual "(format \"%04x\" 255)"}
+  {:suite "io / str & format" :label "format %X uppercase" :expected "\"00FF\"" :actual "(format \"%04X\" 255)"}
+  {:suite "io / str & format" :label "format %x wide hex" :expected "\"deadbeef\"" :actual "(format \"%x\" 3735928559)"}
+  {:suite "protocols / extend & extends? on nil" :label "extend nil dispatches" :expected ":nil-via-extend" :actual "(do (defprotocol P2 (q [this])) (extend nil P2 {:q (fn [_] :nil-via-extend)}) (q nil))"}
+  {:suite "protocols / extend & extends? on nil" :label "extends? nil when extended" :expected "true" :actual "(do (defprotocol Pe (pe [this])) (extend nil Pe {:pe (fn [_] :x)}) (extends? Pe nil))"}
+  {:suite "protocols / extend & extends? on nil" :label "extends? nil when not extended" :expected "false" :actual "(do (defprotocol P3 (r [this])) (extends? P3 nil))"}
+  {:suite "protocols / extend & extends? on nil" :label "extend-type nil still works" :expected ":via-type" :actual "(do (defprotocol P4 (s [this])) (extend-type nil P4 (s [_] :via-type)) (s nil))"}
 ]

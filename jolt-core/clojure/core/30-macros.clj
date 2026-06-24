@@ -383,7 +383,7 @@
 ;; extend-type). Tags are canonical host names or ns-qualified record names,
 ;; so a bare record name also matches its "ns.Name" tag.
 (defn extends? [protocol atype]
-  (let [want (name atype)
+  (let [want (if (nil? atype) "nil" (name atype))
         dotted (str "." want)
         dlen (count dotted)]
     (boolean (some (fn [t]
@@ -397,14 +397,16 @@
 ;; pairs, methods registered under the type's (canonicalized) name — so
 ;; (extend 'String P {:m (fn [x] ...)}) dispatches exactly like extend-type.
 (defn extend [atype & proto+mmaps]
-  (loop [s (seq proto+mmaps)]
-    (when s
-      (let [proto (first s)
-            mmap (second s)
-            pname (name (get proto :name))]
-        (doseq [[k f] mmap]
-          (register-method (name atype) pname (name k) f)))
-      (recur (nnext s)))))
+  ;; nil extends on nil values; its host tag is the string "nil" (as extend-type).
+  (let [tname (if (nil? atype) "nil" (name atype))]
+    (loop [s (seq proto+mmaps)]
+      (when s
+        (let [proto (first s)
+              mmap (second s)
+              pname (name (get proto :name))]
+          (doseq [[k f] mmap]
+            (register-method tname pname (name k) f)))
+        (recur (nnext s))))))
 
 (defmacro extend-type [tsym & body]
   ;; register-method is a fn (clojure.core); pass type/protocol/method NAMES as

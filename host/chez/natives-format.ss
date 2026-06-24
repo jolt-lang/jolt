@@ -43,7 +43,7 @@
                                    ((#\d) (number->string (->long a)))
                                    ((#\s) (jolt-str-render-one a))
                                    ((#\f) (fmt-float a (or prec 6)))
-                                   ((#\x) (number->string (->long a) 16))
+                                   ((#\x) (string-downcase (number->string (->long a) 16)))
                                    ((#\X) (string-upcase (number->string (->long a) 16)))
                                    ((#\o) (number->string (->long a) 8))
                                    ((#\b) (if (jolt-truthy? a) "true" "false"))
