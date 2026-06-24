@@ -272,7 +272,7 @@
 
 ;; dynamic vars: *clojure-version* / *unchecked-math* constants the host
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
-(load "host/chez/dynamic-vars.ss")
+(load "host/chez/dynamic-var-defaults.ss")
 
 ;; host tables + sorted collections: jolt.host/tagged-table/
 ;; ref-put!/ref-get + the 25-sorted tier's runtime (sorted-map/sorted-set routed
@@ -301,6 +301,10 @@
 ;; a uuid). Overlay names (uuid?/random-uuid/parse-uuid/tagged-literal?) re-asserted
 ;; in post-prelude.ss.
 (load "host/chez/natives-misc.ss")
+
+;; format / printf: the %-directive engine. After natives-misc.ss + converters.ss
+;; (jolt-str-render-one).
+(load "host/chez/natives-format.ss")
 
 ;; namespaces: the namespace value model — find-ns/ns-name/
 ;; all-ns/the-ns/create-ns/in-ns/ns-publics/ns-map/ns-interns/ns-aliases/resolve/

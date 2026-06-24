@@ -26,10 +26,10 @@ composed and where a given `.ss` fits.
 - **Value model**: `values.ss` (nil/numbers/keywords/symbols), `collections.ss`
   (persistent vec + HAMT map/set), `seq.ss` + `lazy-bridge.ss` (seqs, lazy-seqs),
   `transients.ss`, `records.ss` + `records-interop.ss`.
-- **Native `clojure.core` shims**: `natives-*.ss` (array/coll/meta/misc/num/parity/
-  queue/seq/str/xform), plus `predicates.ss`, `converters.ss`, `printing.ss`.
+- **Native `clojure.core` shims**: `natives-*.ss` (array/coll/format/meta/misc/num/
+  queue/reader/seq/str/transduce), plus `predicates.ss`, `converters.ss`, `printing.ss`.
 - **Vars / namespaces / dynamics**: `vars.ss`, `ns.ss`, `dyn-binding.ss` (the
-  thread-local binding stack), `dynamic-vars.ss` (a few `*…*` constant defaults),
+  thread-local binding stack), `dynamic-var-defaults.ss` (a few `*…*` constant defaults),
   `atoms.ss`, `multimethods.ss`.
 - **Host interop**: `host-class.ss` (class tokens + method dispatch),
   `host-static.ss` (interop registry core) + `host-static-methods.ss` (`Class/member`
