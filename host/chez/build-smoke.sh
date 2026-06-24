@@ -92,4 +92,8 @@ fi
 if grep -q 'def-var! "app.util" "twice"' "$out.build/flat.ss"; then
   echo "  FAIL: --tree-shake did not drop the unreachable twice macro"; exit 1
 fi
-echo "build smoke: passed (release + optimized + direct-link + tree-shake)"
+# The app never evals, so the compiler image (analyzer/back end) is dropped.
+if grep -q 'def-var! "jolt.analyzer"' "$out.build/flat.ss"; then
+  echo "  FAIL: --tree-shake kept the compiler image in a no-eval app"; exit 1
+fi
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler-drop)"
