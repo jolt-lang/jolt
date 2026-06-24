@@ -7,6 +7,11 @@
     ; vectors/maps first so seq? can't swallow them (a vector is not seq? on
     ; jolt, but keep the concrete branches authoritative)
     (vector? form) (outer (vec (map inner form)))
+    ; a record is also map?, but (empty record) yields a plain map — rebuild by
+    ; conj-ing the walked entries back onto the original so the record TYPE
+    ; survives. Type-dispatched walks depend on it (e.g. integrant resolves
+    ; #ig/ref by detecting its Ref record while postwalking the config).
+    (record? form) (outer (reduce (fn [r x] (conj r (inner x))) form form))
     (map? form) (outer (into (empty form) (map inner form)))
     ; lists rebuild as lists, other seqs (incl. macro/template output: cons/
     ; concat/lazy-seq) walk too — without this, postwalk-replace silently no-op'd
