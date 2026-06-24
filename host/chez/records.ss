@@ -141,6 +141,9 @@
         ((jinst? obj) '("Date" "java.util.Date" "Timestamp" "java.sql.Timestamp" "Object"))
         ((jbigdec? obj) '("BigDecimal" "java.math.BigDecimal" "Number" "Object"))
         ((and (jhost? obj) (string=? (jhost-tag obj) "instant")) '("Instant" "java.time.Instant" "Object"))
+        ;; java.sql.Date — a distinct class from java.util.Date so a protocol
+        ;; extended to both (data.json's JSONWriter) routes a sql.Date to its impl.
+        ((and (jhost? obj) (string=? (jhost-tag obj) "sql-date")) '("java.sql.Date" "Date" "java.util.Date" "Object"))
         ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
         ((procedure? obj) '("Fn" "IFn" "AFn" "Object"))
         ((jolt-nil? obj) '("nil"))
@@ -192,7 +195,7 @@
                 "ASeq" "ISeq" "IPersistentCollection" "Associative" "Sequential"
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
                 "Collection" "java.util.Collection"
-                "UUID" "BigDecimal" "Date" "Timestamp" "Instant"))
+                "UUID" "BigDecimal" "Date" "Timestamp" "Instant" "java.sql.Date"))
     h))
 (define (strip-prefix s p)
   (let ((pl (string-length p)))
