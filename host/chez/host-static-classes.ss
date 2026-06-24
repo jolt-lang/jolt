@@ -506,5 +506,37 @@
 (def-var! "clojure.core" "__register-instance-check!"
   (lambda (f) (set! user-instance-checks (append user-instance-checks (list f))) jolt-nil))
 
+;; (instance? clojure.lang.IFoo x) for the core clojure.lang interfaces libraries
+;; branch on — jolt's value model satisfies them, so report it. Matched by the
+;; interface's last dotted segment, so "clojure.lang.IObj" and "IObj" both hit.
+(define (hsc-last-segment s)
+  (let loop ((i (- (string-length s) 1)))
+    (cond ((< i 0) s)
+          ((char=? (string-ref s i) #\.) (substring s (+ i 1) (string-length s)))
+          (else (loop (- i 1))))))
+;; values that carry metadata (mirrors jolt-with-meta's set in natives-meta.ss).
+(define (hsc-imeta? x)
+  (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x)
+      (jolt-lazyseq? x) (jrec? x) (procedure? x) (symbol-t? x)))
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (let ((iface (hsc-last-segment (symbol-t-name type-sym))))
+      (let ((hit (cond
+                   ((or (string=? iface "IObj") (string=? iface "IMeta")) (hsc-imeta? val))
+                   ((or (string=? iface "IMapEntry") (string=? iface "MapEntry")) (jolt-map-entry? val))
+                   ((string=? iface "IRecord") (jrec? val))
+                   ((string=? iface "IPersistentMap") (or (pmap? val) (htable-sorted-map? val)))
+                   ((string=? iface "IPersistentVector") (and (pvec? val) (not (jolt-map-entry? val))))
+                   ((string=? iface "IPersistentSet") (or (pset? val) (htable-sorted-set? val)))
+                   ((or (string=? iface "ISeq") (string=? iface "Seqable"))
+                    (or (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ((string=? iface "Sequential")
+                    (or (pvec? val) (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ((string=? iface "IFn")
+                    (or (procedure? val) (keyword? val) (symbol-t? val)
+                        (pmap? val) (pset? val) (pvec? val)))
+                   (else 'none))))
+        (if (eq? hit 'none) 'pass (if hit #t #f))))))
+
 ;; (jolt.host/table? x) — is x a host tagged-table?
 (def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))
