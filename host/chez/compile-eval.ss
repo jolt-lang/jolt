@@ -15,7 +15,10 @@
 ;; inference when the unit opted into direct-linking (jolt build --opt). Off that
 ;; path it is a pure const-fold. Loaded from the compiler image (jolt.passes).
 (define jolt-ce-run-passes (var-deref "jolt.passes" "run-passes"))
-(define jolt-ce-read (var-deref "clojure.core" "read-string"))
+;; The compiler reads source as FORMS (set literals stay {:jolt/type :jolt/set},
+;; which the analyzer lowers) — the raw reader, not clojure.core/read-string,
+;; whose data conversion would turn those into real sets.
+(define jolt-ce-read jolt-read-form-raw)
 
 ;; The spine ALWAYS runs with the full clojure.core prelude loaded, so a clojure.*
 ;; ref must lower to var-deref (resolved from the prelude), not trip the emitter's

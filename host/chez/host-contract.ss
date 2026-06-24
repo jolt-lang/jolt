@@ -32,6 +32,7 @@
 (define hc-kw-name  (keyword #f "name"))
 (define hc-kw-var   (keyword #f "var"))
 (define hc-kw-unresolved (keyword #f "unresolved"))
+(define hc-kw-class (keyword #f "class"))
 (define hc-kw-num-ret (keyword #f "num-ret"))
 (define hc-kw-double (keyword #f "double"))
 (define hc-kw-long (keyword #f "long"))
@@ -192,6 +193,19 @@
                    ((equal? t "long") hc-kw-long)
                    (else #f))))))
 
+;; A slash-free dotted symbol whose final segment is Capitalized is a class
+;; reference (java.util.Map, clojure.lang.Named) — Clojure has no such vars. With
+;; no JVM classes, jolt models a class as its name string, so the symbol
+;; self-evaluates to that string (the analyzer emits a :const). This lets a lib
+;; extend a protocol to / instance?-check a host class jolt has no shim for.
+(define (hc-fq-class-name? nm)
+  (let ((n (string-length nm)))
+    (let loop ((i (fx- n 1)))
+      (cond ((fx<? i 0) #f)
+            ((char=? (string-ref nm i) #\.)
+             (and (fx<? (fx+ i 1) n) (char-upper-case? (string-ref nm (fx+ i 1)))))
+            (else (loop (fx- i 1)))))))
+
 (define (hc-resolve-global ctx sym)
   (let* ((nm (symbol-t-name sym))
          (cell (hc-resolve-cell ctx sym)))
@@ -201,7 +215,9 @@
                                    hc-kw-name (var-cell-name cell)))
               (nr (hc-cell-num-ret cell)))
           (if nr (jolt-assoc base hc-kw-num-ret nr) base))
-        (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm))))
+        (if (hc-fq-class-name? nm)
+            (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name nm)
+            (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm)))))
 
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
 

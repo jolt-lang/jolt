@@ -73,12 +73,19 @@
     (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al->list self)))))
     (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al->list self)))))))
 
+;; Appendable.append text: append(x) renders x; append(csq,start,end) appends the
+;; subsequence csq[start,end) (data.json's writer appends string runs this way).
+(define (append-text x rest)
+  (if (null? rest)
+      (render-piece x)
+      (substring (render-piece x) (jnum->exact (car rest)) (jnum->exact (cadr rest)))))
+
 (register-class-ctor! "StringBuilder"
   (lambda args (make-jhost "string-builder"
     ;; a numeric first arg is a CAPACITY hint, not content.
     (vector (if (and (pair? args) (not (number? (car args)))) (render-piece (car args)) "")))))
 (register-host-methods! "string-builder"
-  (list (cons "append" (lambda (self x) (sb-set! self (string-append (sb-str self) (render-piece x))) self))
+  (list (cons "append" (lambda (self x . rest) (sb-set! self (string-append (sb-str self) (append-text x rest))) self))
         (cons "toString" (lambda (self) (sb-str self)))
         (cons "length" (lambda (self) (->num (string-length (sb-str self)))))
         (cons "charAt" (lambda (self i) (string-ref (sb-str self) (jnum->exact i))))
@@ -88,6 +95,9 @@
                                                 (substring cur 0 n)
                                                 (string-append cur (make-string (- n (string-length cur)) #\nul)))))
                             jolt-nil))))
+;; (str sb) / print a StringBuilder -> its accumulated content, like the JVM
+;; (str calls toString). Without this str renders the opaque host object.
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "string-builder"))) sb-str)
 
 ;; ---- StringWriter -----------------------------------------------------------
 ;; Writer.write(int) writes the CHAR for that code; append(char) appends the char.
@@ -95,7 +105,7 @@
 (register-class-ctor! "StringWriter" (lambda args (make-jhost "writer" (vector ""))))
 (register-host-methods! "writer"
   (list (cons "write" (lambda (self x) (sb-set! self (string-append (sb-str self) (writer-piece x))) jolt-nil))
-        (cons "append" (lambda (self x) (sb-set! self (string-append (sb-str self) (render-piece x))) self))
+        (cons "append" (lambda (self x . rest) (sb-set! self (string-append (sb-str self) (append-text x rest))) self))
         (cons "flush" (lambda (self) jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) (sb-str self)))))
@@ -109,7 +119,7 @@
 (define (fw-flush! self) (jolt-spit (fw-path self) (fw-buf self)))  ; jolt-spit: io.ss
 (register-host-methods! "file-writer"
   (list (cons "write" (lambda (self x) (fw-append! self (writer-piece x)) jolt-nil))
-        (cons "append" (lambda (self x) (fw-append! self (render-piece x)) self))
+        (cons "append" (lambda (self x . rest) (fw-append! self (append-text x rest)) self))
         (cons "flush" (lambda (self) (fw-flush! self) jolt-nil))
         (cons "close" (lambda (self) (fw-flush! self) jolt-nil))
         (cons "toString" (lambda (self) (fw-buf self)))))
@@ -120,7 +130,7 @@
 ;; (tools.logging, selmer) compile and run.
 (register-host-methods! "port-writer"
   (list (cons "write" (lambda (self x) (display (writer-piece x) (vector-ref (jhost-state self) 0)) jolt-nil))
-        (cons "append" (lambda (self x) (display (render-piece x) (vector-ref (jhost-state self) 0)) self))
+        (cons "append" (lambda (self x . rest) (display (append-text x rest) (vector-ref (jhost-state self) 0)) self))
         (cons "flush" (lambda (self) (flush-output-port (vector-ref (jhost-state self) 0)) jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) ""))))
@@ -291,6 +301,15 @@
   (lambda (x . rest)
     (cond ((bytevector? x) (decode-bytevector x rest))
           ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (decode-bytevector (na-bytearray->bv x) rest))
+          ;; (String. char[] [offset count]) — the whole array or a slice. Buffered
+          ;; readers (data.json) build a string from a fill buffer this way.
+          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))
+           (let ((v (jolt-array-vec x)))
+             (if (pair? rest)
+                 (let* ((off (jnum->exact (car rest))) (cnt (jnum->exact (cadr rest))) (out (make-string cnt)))
+                   (let loop ((i 0)) (when (fx<? i cnt) (string-set! out i (vector-ref v (fx+ off i))) (loop (fx+ i 1))))
+                   out)
+                 (list->string (vector->list v)))))
           ((string? x) x)
           (else (jolt-str-render-one x)))))
 (register-class-ctor! "BigInteger"
@@ -535,6 +554,24 @@
                    ((string=? iface "IFn")
                     (or (procedure? val) (keyword? val) (symbol-t? val)
                         (pmap? val) (pset? val) (pvec? val)))
+                   ;; host-class interfaces libraries branch on (data.json, etc.).
+                   ;; Matched by last segment, so java.util.Map and Map both hit.
+                   ((string=? iface "Named") (or (keyword? val) (symbol-t? val)))
+                   ((string=? iface "CharSequence") (string? val))
+                   ((string=? iface "Number") (number? val))
+                   ((string=? iface "Map") (or (pmap? val) (htable-sorted-map? val)))
+                   ((string=? iface "Set") (or (pset? val) (htable-sorted-set? val)))
+                   ;; a Java List is a vector or a seq/list — not a set or map.
+                   ((string=? iface "List")
+                    (or (and (pvec? val) (not (jolt-map-entry? val)))
+                        (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ;; a Java Collection is any of those plus a set — but NOT a map.
+                   ((string=? iface "Collection")
+                    (or (pvec? val) (pset? val) (cseq? val) (empty-list-t? val)
+                        (jolt-lazyseq? val) (htable-sorted-set? val)))
+                   ((string=? iface "Associative")
+                    (or (pmap? val) (htable-sorted-map? val)
+                        (and (pvec? val) (not (jolt-map-entry? val)))))
                    (else 'none))))
         (if (eq? hit 'none) 'pass (if hit #t #f))))))
 

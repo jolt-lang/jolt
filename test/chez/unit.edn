@@ -316,8 +316,8 @@
   {:suite "reader" :expr "(= [1 2 3] (read-string \"[1 2 3]\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (+ 1 2)) (read-string \"(+ 1 2)\"))" :expected "true"}
   {:suite "reader" :expr "(= {:a 1 :b 2} (read-string \"{:a 1 :b 2}\"))" :expected "true"}
-  {:suite "reader" :expr "(:value (read-string \"#{1 2 3}\"))" :expected "[1 2 3]"}
-  {:suite "reader" :expr "(= :jolt/set (:jolt/type (read-string \"#{1 2 3}\")))" :expected "true"}
+  {:suite "reader" :expr "(set? (read-string \"#{1 2 3}\"))" :expected "true"}
+  {:suite "reader" :expr "(= #{1 2 3} (read-string \"#{1 2 3}\"))" :expected "true"}
   {:suite "reader" :expr "(= [1 [2 3] {:k :v}] (read-string \"[1 [2 3] {:k :v}]\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (quote x)) (read-string \"'x\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (clojure.core/deref a)) (read-string \"@a\"))" :expected "true"}

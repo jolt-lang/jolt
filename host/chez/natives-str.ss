@@ -166,6 +166,18 @@
     ((or (string=? method "getName") (string=? method "getCanonicalName")) s)
     ((string=? method "getSimpleName")
      (let ((i (str-last-index-of s "."))) (if (>= i 0) (substring s (+ i 1) (string-length s)) s)))
+    ;; .getChars srcBegin srcEnd dst dstBegin — copy s[srcBegin,srcEnd) into the
+    ;; char-array dst at dstBegin (used by buffered readers, e.g. data.json).
+    ((string=? method "getChars")
+     (let ((src-begin (jolt->idx (arg 0))) (src-end (jolt->idx (arg 1)))
+           (dv (jolt-array-vec (arg 2))) (dst-begin (jolt->idx (arg 3))))
+       (let loop ((i src-begin) (j dst-begin))
+         (when (fx<? i src-end)
+           (vector-set! dv j (string-ref s i))
+           (loop (fx+ i 1) (fx+ j 1)))))
+     jolt-nil)
+    ((string=? method "subSequence")
+     (substring s (jolt->idx (arg 0)) (jolt->idx (arg 1))))
     (else (error #f (string-append "No method " method " for value")))))
 
 ;; --- clojure.core str-* primitives (the substrate clojure.string.clj calls) ---

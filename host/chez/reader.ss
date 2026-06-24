@@ -177,7 +177,21 @@
              ((#\0) (loop (+ i 2) (cons #\nul acc)))
              ((#\u)
               (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
-                (loop j (cons (integer->char cp) acc))))
+                ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,
+                ;; so combine a high+low surrogate pair (😃 -> U+1F603) into
+                ;; the one scalar char. A lone surrogate has no scalar — emit U+FFFD
+                ;; rather than crash (the irreducible UTF-16/scalar divergence).
+                (cond
+                  ((and (fx>=? cp #xD800) (fx<=? cp #xDBFF)
+                        (fx<? (fx+ j 1) end)
+                        (char=? (string-ref s j) #\\) (char=? (string-ref s (fx+ j 1)) #\u))
+                   (let-values (((lo k) (rdr-hex->int s (+ j 2) 4)))
+                     (if (and (fx>=? lo #xDC00) (fx<=? lo #xDFFF))
+                         (loop k (cons (integer->char
+                                        (fx+ #x10000 (fx* (fx- cp #xD800) 1024) (fx- lo #xDC00))) acc))
+                         (loop j (cons #\xFFFD acc)))))
+                  ((and (fx>=? cp #xD800) (fx<=? cp #xDFFF)) (loop j (cons #\xFFFD acc)))
+                  (else (loop j (cons (integer->char cp) acc))))))
              (else (loop (+ i 2) (cons e acc))))))
         (else (loop (+ i 1) (cons c acc)))))))
 
@@ -526,12 +540,62 @@
       (jolt-throw (jolt-ex-info "EOF while reading reader macro" (empty-pmap))))
     (values (jolt-list head form) j)))
 
+;; --- form -> data -----------------------------------------------------------
+;; read-string/read return DATA, so set literal FORMS ({:jolt/type :jolt/set
+;; :value [...]}) become real sets, recursing through maps/vectors/lists. The
+;; COMPILER reads via rdr-read-form and keeps the set FORM (the analyzer lowers
+;; it), so this conversion runs only on the data seams. Structural sharing keeps
+;; identity (and the rdr-map-order entry + metadata) for any branch with no set.
+(define (rdr-set-form? x)
+  (and (pmap? x) (eq? (jolt-get x rdr-kw-jolt-type) rdr-kw-jolt-set)
+       (not (jolt-nil? (jolt-get x rdr-kw-value)))))
+
+(define (rdr-conv-each xs)         ; (values converted-list changed?)
+  (let loop ((xs xs) (acc '()) (changed #f))
+    (if (null? xs)
+        (values (reverse acc) changed)
+        (let ((c (rdr-form->data (car xs))))
+          (loop (cdr xs) (cons c acc) (or changed (not (eq? c (car xs)))))))))
+
+(define (rdr-carry-meta src dst)
+  (let ((m (jolt-meta src))) (if (jolt-nil? m) dst (jolt-with-meta dst m))))
+
+(define (rdr-form->data x)
+  (cond
+    ((rdr-set-form? x)
+     (let ((items (jolt-get x rdr-kw-value)))
+       (rdr-carry-meta x
+         (let loop ((i 0) (s empty-pset))
+           (if (fx>=? i (pvec-count items)) s
+               (loop (fx+ i 1) (pset-conj s (rdr-form->data (pvec-nth-d items i jolt-nil)))))))))
+    ((pvec? x)
+     (let-values (((items changed) (rdr-conv-each (vector->list (pvec-v x)))))
+       (if changed (rdr-carry-meta x (apply jolt-vector items)) x)))
+    ((pmap? x)
+     (let ((order (hashtable-ref rdr-map-order x #f)))
+       (if order
+           (let-values (((kvs changed) (rdr-conv-each order)))
+             (if changed
+                 (let ((m (rdr-make-map kvs))) (rdr-carry-meta x m))
+                 x))
+           (let-values (((kvs changed)
+                         (rdr-conv-each (pmap-fold x (lambda (k v a) (cons k (cons v a))) '()))))
+             (if changed (rdr-carry-meta x (apply jolt-hash-map kvs)) x)))))
+    ((cseq? x)
+     (let-values (((items changed) (rdr-conv-each (seq->list x))))
+       (if changed (rdr-carry-meta x (apply jolt-list items)) x)))
+    (else x)))
+
 ;; --- the two host seams -----------------------------------------------------
 ;; clojure.core/read-string: first form, or nil for blank / comment-only input
-;; (parse-string wart, matched deliberately).
-(define (jolt-read-string s)
+;; (parse-string wart, matched deliberately). jolt-read-form-raw keeps set FORMS
+;; for the compiler spine (compile-eval); the data seam converts them to sets.
+(define (jolt-read-form-raw s)
   (let-values (((form j) (rdr-read-form s 0 (string-length s))))
     (if (rdr-eof? form) jolt-nil form)))
+(define (jolt-read-string s)
+  (let ((form (jolt-read-form-raw s)))
+    (if (jolt-nil? form) form (rdr-form->data form))))
 
 ;; __parse-next: [form rest-of-string] or nil when only whitespace/comments left.
 (define (jolt-parse-next s)
@@ -539,7 +603,7 @@
     (let-values (((form j) (rdr-read-form s 0 end)))
       (if (rdr-eof? form)
           jolt-nil
-          (jolt-vector form (substring s j end))))))
+          (jolt-vector (rdr-form->data form) (substring s j end))))))
 
 ;; __read-tagged: apply a built-in data reader to an already-read form. The tag
 ;; is the :#name keyword the reader produced; #uuid/#inst reuse the inst-time ctors.

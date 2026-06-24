@@ -516,6 +516,9 @@
                 ;; jolt.passes.numeric types a call to it (an accumulator over the result).
                 :var (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))
                 :host (host-ref (:name r))
+                ;; a class-name symbol (java.util.Map) self-evaluates to its name
+                ;; string — jolt models a class as its name, with no JVM classes.
+                :class (const (:name r))
                 ;; :unresolved — emitting a var-ref here would auto-intern an
                 ;; UNBOUND var, so a typo'd symbol would die later as 'Cannot call
                 ;; nil as a function' with no hint which symbol.

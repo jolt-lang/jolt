@@ -380,31 +380,35 @@
       step)))
 
 ;; True when atype's methods were registered for this protocol (via extend /
-;; extend-type). Tags are canonical host names or ns-qualified record names,
-;; so a bare record name also matches its "ns.Name" tag.
+;; extend-type). Tags are canonical host names or ns-qualified record names, so a
+;; name matches its tag when either is a dotted suffix of the other — a bare
+;; record name matches its "ns.Name" tag, and a query for a qualified host class
+;; (java.util.Map) matches the canonical short tag (Map) extend registered it as.
 (defn extends? [protocol atype]
-  (let [want (name atype)
-        dotted (str "." want)
-        dlen (count dotted)]
+  (let [want (if (nil? atype) "nil" (name atype))
+        suffix? (fn [long short]
+                  (let [d (str "." short)]
+                    (and (> (count long) (count d))
+                         (= (subs long (- (count long) (count d))) d))))]
     (boolean (some (fn [t]
                      (let [tn (name t)]
-                       (or (= tn want)
-                           (and (> (count tn) dlen)
-                                (= (subs tn (- (count tn) dlen)) dotted)))))
+                       (or (= tn want) (suffix? tn want) (suffix? want tn))))
                    (extenders protocol)))))
 
 ;; extend, the FUNCTION (extend-type's runtime sibling): protocol + method-map
 ;; pairs, methods registered under the type's (canonicalized) name — so
 ;; (extend 'String P {:m (fn [x] ...)}) dispatches exactly like extend-type.
 (defn extend [atype & proto+mmaps]
-  (loop [s (seq proto+mmaps)]
-    (when s
-      (let [proto (first s)
-            mmap (second s)
-            pname (name (get proto :name))]
-        (doseq [[k f] mmap]
-          (register-method (name atype) pname (name k) f)))
-      (recur (nnext s)))))
+  ;; nil extends on nil values; its host tag is the string "nil" (as extend-type).
+  (let [tname (if (nil? atype) "nil" (name atype))]
+    (loop [s (seq proto+mmaps)]
+      (when s
+        (let [proto (first s)
+              mmap (second s)
+              pname (name (get proto :name))]
+          (doseq [[k f] mmap]
+            (register-method tname pname (name k) f)))
+        (recur (nnext s))))))
 
 (defmacro extend-type [tsym & body]
   ;; register-method is a fn (clojure.core); pass type/protocol/method NAMES as
