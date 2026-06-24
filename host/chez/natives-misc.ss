@@ -82,6 +82,13 @@
           (else d))))
 (define (jtagged-pr t) (string-append "#" (jolt-pr-str (jtagged-tag t)) " " (jolt-pr-readable (jtagged-form t))))
 (register-pr-arm! jtagged? jtagged-pr)
+;; two tagged literals are = iff same tag and (recursively) = form, like the JVM's
+;; TaggedLiteral — so they work as map keys / set members. (jolt-hash already
+;; hashes the fields structurally, so eq/hash stay consistent.)
+(register-eq-arm! (lambda (a b) (or (jtagged? a) (jtagged? b)))
+                  (lambda (a b) (and (jtagged? a) (jtagged? b)
+                                     (jolt=2 (jtagged-tag a) (jtagged-tag b))
+                                     (jolt=2 (jtagged-form a) (jtagged-form b)))))
 (def-var! "clojure.core" "tagged-literal" jolt-tagged-literal)
 ;; tagged-literal? is OVERLAY (reads :jolt/type) — asserted in post-prelude.ss.
 
