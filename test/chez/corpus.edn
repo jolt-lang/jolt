@@ -1063,6 +1063,22 @@
   {:suite "metadata / clojure.edn preserves meta" :label "edn vector meta" :expected "{:ref true}" :actual "(do (require (quote [clojure.edn :as e1])) (meta (e1/read-string \"^:ref [:greeting]\")))"}
   {:suite "metadata / clojure.edn preserves meta" :label "edn map meta" :expected "{:m true}" :actual "(do (require (quote [clojure.edn :as e1])) (meta (e1/read-string \"^:m {:a 1}\")))"}
   {:suite "metadata / clojure.edn preserves meta" :label "edn set meta" :expected "{:s true}" :actual "(do (require (quote [clojure.edn :as e1])) (meta (e1/read-string \"^:s #{1}\")))"}
+  {:suite "metadata / collection ops preserve meta" :label "empty keeps vector meta" :expected "{:k 9}" :actual "(meta (empty (with-meta [1] {:k 9})))"}
+  {:suite "metadata / collection ops preserve meta" :label "empty keeps map meta" :expected "{:k 9}" :actual "(meta (empty (with-meta {:a 1} {:k 9})))"}
+  {:suite "metadata / collection ops preserve meta" :label "empty keeps set meta" :expected "{:k 9}" :actual "(meta (empty (with-meta #{1} {:k 9})))"}
+  {:suite "metadata / collection ops preserve meta" :label "empty keeps list meta" :expected "{:k 9}" :actual "(meta (empty (with-meta (list 1) {:k 9})))"}
+  {:suite "metadata / collection ops preserve meta" :label "into empty keeps meta" :expected "{:k 9}" :actual "(meta (into (empty (with-meta {:a 1} {:k 9})) {:b 2}))"}
+  {:suite "metadata / collection ops preserve meta" :label "into target meta" :expected "{:k 9}" :actual "(meta (into (with-meta [] {:k 9}) [1 2]))"}
+  {:suite "metadata / collection ops preserve meta" :label "conj on vector" :expected "{:k 9}" :actual "(meta (conj (with-meta [1] {:k 9}) 2))"}
+  {:suite "metadata / collection ops preserve meta" :label "conj on list" :expected "{:k 9}" :actual "(meta (conj (with-meta (list 1) {:k 9}) 2))"}
+  {:suite "metadata / collection ops preserve meta" :label "assoc on map" :expected "{:k 9}" :actual "(meta (assoc (with-meta {:a 1} {:k 9}) :b 2))"}
+  {:suite "metadata / collection ops preserve meta" :label "dissoc on map" :expected "{:k 9}" :actual "(meta (dissoc (with-meta {:a 1 :c 3} {:k 9}) :c))"}
+  {:suite "metadata / collection ops preserve meta" :label "disj on set" :expected "{:k 9}" :actual "(meta (disj (with-meta #{1 2} {:k 9}) 2))"}
+  {:suite "metadata / collection ops preserve meta" :label "pop on vector" :expected "{:k 9}" :actual "(meta (pop (with-meta [1 2] {:k 9})))"}
+  {:suite "metadata / collection ops preserve meta" :label "op without meta is nil" :expected "nil" :actual "(meta (conj [1] 2))"}
+  {:suite "metadata / collection ops preserve meta" :label "value preserved through conj" :expected "[1 2]" :actual "(conj (with-meta [1] {:k 9}) 2)"}
+  {:suite "metadata / collection ops preserve meta" :label "empty list singleton unaffected" :expected "nil" :actual "(do (with-meta () {:leak 1}) (meta ()))"}
+  {:suite "metadata / collection ops preserve meta" :label "empty vector literal unaffected" :expected "nil" :actual "(do (with-meta [] {:leak 1}) (meta []))"}
   {:suite "metadata / def metadata" :label "^:dynamic var binds" :expected "9" :actual "(do (def ^:dynamic *d* 1) (binding [*d* 9] *d*))"}
   {:suite "metadata / def metadata" :label "^:private on var" :expected "true" :actual "(do (def ^:private pv 1) (:private (meta (var pv))))"}
   {:suite "metadata / def metadata" :label "^Type tag on var" :expected "java.lang.String" :actual "(do (def ^String tv \"a\") (:tag (meta (var tv))))"}
