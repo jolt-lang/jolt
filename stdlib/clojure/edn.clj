@@ -8,12 +8,15 @@
 ;; The reader yields set literals as a FORM ({:jolt/type :jolt/set :value [...]})
 ;; rather than a constructed set, so build the actual values, recursing into
 ;; maps/vectors/lists. (Lists stay lists — EDN never evaluates them as code.)
+;; Re-attach the source value's metadata to each rebuilt collection — read-string
+;; preserves reader metadata (^:ref […]) but this rebuild would otherwise drop it,
+;; which a metadata-driven config lib (aero/integrant) relies on.
 (defn- edn->value [opts x]
   (cond
     ;; Reader FORMS are detected by :jolt/type tag, never by map? — strict map?
     ;; (correctly) excludes tagged structs, so the old (and (map? x) ...) guard
     ;; would skip them.
-    (= :jolt/set (get x :jolt/type)) (set (map (fn [v] (edn->value opts v)) (get x :value)))
+    (= :jolt/set (get x :jolt/type)) (with-meta (set (map (fn [v] (edn->value opts v)) (get x :value))) (meta x))
     ;; Tagged elements: a reader from the :readers opt wins, then the built-in
     ;; data readers (#uuid/#inst + registered); an unknown tag falls to the
     ;; :default opt fn (called with tag and value, as in Clojure) or throws.
@@ -31,9 +34,9 @@
           (get opts :default) ((get opts :default) tag-sym v)
           :else (__read-tagged tag v)))
     (map? x)
-      (into {} (map (fn [e] [(edn->value opts (key e)) (edn->value opts (val e))]) x))
-    (vector? x) (mapv (fn [v] (edn->value opts v)) x)
-    (seq? x) (map (fn [v] (edn->value opts v)) x)
+      (with-meta (into {} (map (fn [e] [(edn->value opts (key e)) (edn->value opts (val e))]) x)) (meta x))
+    (vector? x) (with-meta (mapv (fn [v] (edn->value opts v)) x) (meta x))
+    (seq? x) (with-meta (map (fn [v] (edn->value opts v)) x) (meta x))
     :else x))
 
 ;; Private helper, NOT named read-string: an unqualified (read-string …) call

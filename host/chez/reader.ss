@@ -290,20 +290,22 @@
     ((symbol-t? target)
      (make-symbol-t (symbol-t-ns target) (symbol-t-name target)
                     (rdr-merge-meta (symbol-t-meta target) meta)))
-    ;; A LIST form is code: ^Type (expr) is a compile-time hint on the FORM, not a
-    ;; runtime operation. Attach the metadata to the form itself (so a quoted list
-    ;; keeps it and the analyzer can read :tag) — never lower to a runtime
-    ;; (with-meta (expr) meta), which would mis-apply the hint to the call's RESULT
-    ;; and throw when that result is a string/number (e.g. ^String (to-str x)).
-    ;; Matches Clojure: a tag hint on an evaluated form is discarded at runtime.
-    ((cseq? target) (jolt-with-meta target meta))
     ((empty-list-t? target) target)
-    ;; A vector/map/set LITERAL: Clojure attaches the metadata to the runtime value
-    ;; ((meta ^{:tag :int} [1 2]) / ^:foo {}), so lower to a runtime (with-meta form
-    ;; meta). Use the BARE `with-meta` symbol (ns #f) — the fn/defn macros unwrap a
-    ;; (with-meta <arglist-vec> _) return-hint by matching the unqualified head, so a
-    ;; qualified clojure.core/with-meta would slip past them (^bytes [b]).
-    (else (jolt-list (jolt-symbol #f "with-meta") target meta))))
+    ;; Lists/vectors/maps/sets attach metadata to the value itself, as Clojure's
+    ;; reader does. Reading DATA (read-string, edn) then preserves it. A list form
+    ;; is code: ^Type (expr) is a compile-time hint on the FORM, read off the form
+    ;; for :tag and discarded at runtime (a hint on an evaluated form is dropped).
+    ;; A vector/map/set LITERAL keeps it as a runtime value: the analyzer re-emits a
+    ;; (with-meta form meta) for a meta-carrying collection literal in code, so
+    ;; (meta ^{:tag :int} [1 2]) / ^:foo {} still works.
+    (else
+     (let ((c (jolt-with-meta target meta)))
+       ;; jolt-with-meta copies a pmap, giving it a fresh identity the rdr-map-order
+       ;; side-table (source key order for left-to-right map-literal eval) loses —
+       ;; carry the order entry over to the copy.
+       (let ((order (and (pmap? target) (hashtable-ref rdr-map-order target #f))))
+         (when order (hashtable-set! rdr-map-order c order)))
+       c))))
 
 ;; --- # dispatch -------------------------------------------------------------
 ;; #(...) anonymous fn shorthand: % -> p1, %N -> pN, %& -> rest. The

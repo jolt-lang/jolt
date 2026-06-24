@@ -67,11 +67,30 @@
          (if (jolt-nil? s) (reverse acc)
              (loop (jolt-seq (seq-more s)) (cons (jolt-pr-readable (seq-first s)) acc))))) ")"))
     (else (jolt-pr-str x))))
-(define (jolt-pr-readable x)
+(define (jolt-pr-readable-dispatch x)
   (let loop ((as jolt-pr-readable-arms))
     (cond ((null? as) (jolt-pr-readable-base x))
           (((caar as) x) ((cdar as) x))
           (else (loop (cdr as))))))
+
+;; *print-meta* support. The var is def'd after this file loads, so capture its
+;; cell lazily; jolt-var-get (patched by dyn-binding.ss) honors a `binding`.
+(define pr-meta-cell #f)
+(define (pr-print-meta?)
+  (unless pr-meta-cell (set! pr-meta-cell (jolt-var "clojure.core" "*print-meta*")))
+  (jolt-truthy? (jolt-var-get pr-meta-cell)))
+;; The metadata to print before x, or jolt-nil. A var prints as #'ns/name (its
+;; {:ns :name} is derived, not user metadata) and a procedure is opaque — skip both.
+(define (pr-user-meta x)
+  (if (or (var-cell? x) (procedure? x)) jolt-nil (jolt-meta x)))
+
+(define (jolt-pr-readable x)
+  (if (pr-print-meta?)
+      (let ((m (pr-user-meta x)))
+        (if (jolt-nil? m)
+            (jolt-pr-readable-dispatch x)
+            (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x))))
+      (jolt-pr-readable-dispatch x)))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))

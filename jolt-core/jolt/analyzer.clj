@@ -26,7 +26,7 @@
                                form-bigdec? form-bigdec-source
                                form-ns-value? form-ns-value-name
                                form-macro? form-expand-1 resolve-global
-                               form-sym-meta host-intern! form-syntax-quote-lower
+                               form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key form-position late-bind?
                                resolve-class-hint]]))
 
@@ -590,17 +590,31 @@
                   p (form-position form)]
               (if p (assoc n :pos p) n)))))))
 
+;; A vector/map/set literal carrying reader metadata (^:foo {…}, ^{:tag :int} [1])
+;; keeps it as a runtime value: wrap the collection node in (with-meta coll meta).
+;; The metadata is itself a form (its values may be expressions, ^{:a (f)}), so
+;; analyze it. nil meta passes the node through. Arglist vectors never reach here —
+;; analyze-arity reads their items directly — so a ^Type [args] hint is not wrapped.
+(defn- with-coll-meta [ctx form env node]
+  (let [m (form-coll-meta form)]
+    (if (nil? m)
+      node
+      (invoke (var-ref "clojure.core" "with-meta") [node (analyze ctx m env)]))))
+
 (defn analyze
   ([ctx form] (analyze ctx form (empty-env)))
   ([ctx form env]
    (cond
      (form-literal? form) (const form)
      (form-sym? form) (analyze-symbol ctx form env)
-     (form-vec? form) (vector-node (mapv #(analyze ctx % env) (form-vec-items form)))
-     (form-map? form) (map-node (mapv (fn [p] [(analyze ctx (first p) env)
-                                              (analyze ctx (second p) env)])
-                                     (form-map-pairs form)))
-     (form-set? form) (set-node (mapv #(analyze ctx % env) (form-set-items form)))
+     (form-vec? form) (with-coll-meta ctx form env
+                        (vector-node (mapv #(analyze ctx % env) (form-vec-items form))))
+     (form-map? form) (with-coll-meta ctx form env
+                        (map-node (mapv (fn [p] [(analyze ctx (first p) env)
+                                                 (analyze ctx (second p) env)])
+                                        (form-map-pairs form))))
+     (form-set? form) (with-coll-meta ctx form env
+                        (set-node (mapv #(analyze ctx % env) (form-set-items form))))
      (form-list? form) (analyze-list ctx form env)
      ;; regex literal #"…" -> a :regex IR node (leaf). The Chez back end emits a
      ;; jolt-regex value over the vendored irregex.
