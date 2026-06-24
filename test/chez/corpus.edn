@@ -3035,4 +3035,14 @@
   {:suite "interop / java.time" :label "DateTimeFormatter ofPattern format" :expected "\"2020-01-15 10:30:00\"" :actual "(.format (java.time.format.DateTimeFormatter/ofPattern \"yyyy-MM-dd HH:mm:ss\") (java.time.LocalDateTime/of 2020 1 15 10 30 0))"}
   {:suite "interop / java.time" :label "ISO_LOCAL_DATE_TIME format" :expected "\"2020-01-15T10:30:00\"" :actual "(.format java.time.format.DateTimeFormatter/ISO_LOCAL_DATE_TIME (java.time.LocalDateTime/of 2020 1 15 10 30 0))"}
   {:suite "interop / java.time" :label "ISO_OFFSET_DATE_TIME format" :expected "\"2020-01-15T10:30:00+02:00\"" :actual "(.format java.time.format.DateTimeFormatter/ISO_OFFSET_DATE_TIME (java.time.OffsetDateTime/of 2020 1 15 10 30 0 0 (java.time.ZoneOffset/ofHours 2)))"}
+  {:suite "interop / java.time" :label "Instant plusNanos toString nanos group" :expected "\"1970-01-01T00:00:00.000000001Z\"" :actual "(str (.plusNanos (java.time.Instant/ofEpochSecond 0) 1))"}
+  {:suite "interop / java.time" :label "Instant one nano differs" :expected "false" :actual "(= (java.time.Instant/ofEpochSecond 0) (.plusNanos (java.time.Instant/ofEpochSecond 0) 1))"}
+  {:suite "interop / java.time" :label "Instant getNano single nano" :expected "1" :actual "(.getNano (.plusNanos (java.time.Instant/ofEpochSecond 0) 1))"}
+  {:suite "interop / java.time" :label "Instant ofEpochSecond nano millis group" :expected "\"1970-01-01T00:00:00.001Z\"" :actual "(str (java.time.Instant/ofEpochSecond 0 1000000))"}
+  {:suite "interop / java.time" :label "Instant ofEpochSecond nano micros group" :expected "\"1970-01-01T00:00:00.000001Z\"" :actual "(str (java.time.Instant/ofEpochSecond 0 1000))"}
+  {:suite "interop / java.time" :label "Instant plusSeconds keeps nanos" :expected "\"1970-01-01T00:00:02.000000005Z\"" :actual "(str (.plusSeconds (.plusNanos (java.time.Instant/ofEpochSecond 0) 5) 2))"}
+  {:suite "interop / java.time" :label "Instant getEpochSecond floors negative nano" :expected "-1" :actual "(.getEpochSecond (.plusNanos (java.time.Instant/ofEpochSecond 0) -1))"}
+  {:suite "interop / java.time" :label "Instant getNano of negative nano" :expected "999999999" :actual "(.getNano (.plusNanos (java.time.Instant/ofEpochSecond 0) -1))"}
+  {:suite "interop / java.time" :label "Instant toEpochMilli floors sub-milli" :expected "1000" :actual "(.toEpochMilli (.plusNanos (java.time.Instant/ofEpochSecond 1) 999999))"}
+  {:suite "interop / java.time" :label "Instant truncatedTo SECONDS drops nanos" :expected "\"1970-01-01T00:00:05Z\"" :actual "(str (.truncatedTo (.plusNanos (java.time.Instant/ofEpochSecond 5) 123) java.time.temporal.ChronoUnit/SECONDS))"}
 ]
