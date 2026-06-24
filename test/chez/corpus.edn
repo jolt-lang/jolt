@@ -2999,4 +2999,16 @@
   {:suite "interop / numbers & classes" :label "instance? PushbackReader" :expected "true" :actual "(instance? java.io.PushbackReader (java.io.PushbackReader. (java.io.StringReader. \"x\")))"}
   {:suite "interop / numbers & classes" :label "EOFException catch by class" :expected "\"boom\"" :actual "(try (throw (java.io.EOFException. \"boom\")) (catch java.io.EOFException e (.getMessage e)))"}
   {:suite "interop / numbers & classes" :label "Reader.read into char[]" :expected "[4 \"abcd\"]" :actual "(let [r (java.io.StringReader. \"abcd\") b (char-array 4)] (let [n (.read r b 0 4)] [n (String. b 0 n)]))"}
+  {:suite "interop / java.time" :label "LocalDate toString" :expected "\"2020-01-15\"" :actual "(str (java.time.LocalDate/of 2020 1 15))"}
+  {:suite "interop / java.time" :label "LocalDate plusDays over leap day" :expected "\"2020-02-29\"" :actual "(str (.plusDays (java.time.LocalDate/of 2020 2 28) 1))"}
+  {:suite "interop / java.time" :label "LocalDate equality" :expected "true" :actual "(= (java.time.LocalDate/of 2020 1 15) (java.time.LocalDate/of 2020 1 15))"}
+  {:suite "interop / java.time" :label "LocalDate compare" :expected "-1" :actual "(compare (java.time.LocalDate/of 2020 1 15) (java.time.LocalDate/of 2020 1 16))"}
+  {:suite "interop / java.time" :label "LocalDate ofEpochDay round-trip" :expected "1" :actual "(.toEpochDay (java.time.LocalDate/of 1970 1 2))"}
+  {:suite "interop / java.time" :label "LocalDate parse" :expected "\"2020-01-15\"" :actual "(str (java.time.LocalDate/parse \"2020-01-15\"))"}
+  {:suite "interop / java.time" :label "LocalDate getDayOfWeek name" :expected "\"WEDNESDAY\"" :actual "(.name (.getDayOfWeek (java.time.LocalDate/of 2020 1 15)))"}
+  {:suite "interop / java.time" :label "LocalTime toString" :expected "\"10:30:15\"" :actual "(str (java.time.LocalTime/of 10 30 15))"}
+  {:suite "interop / java.time" :label "LocalTime plusHours wraps midnight" :expected "\"01:30\"" :actual "(str (.plusHours (java.time.LocalTime/of 23 30) 2))"}
+  {:suite "interop / java.time" :label "LocalDateTime toString" :expected "\"2020-01-15T10:30\"" :actual "(str (java.time.LocalDateTime/of 2020 1 15 10 30 0))"}
+  {:suite "interop / java.time" :label "Instant ofEpochMilli toString" :expected "\"2020-01-15T10:30:00Z\"" :actual "(str (java.time.Instant/ofEpochMilli 1579084200000))"}
+  {:suite "interop / java.time" :label "Instant ofEpochMilli round-trip" :expected "1579084200000" :actual "(.toEpochMilli (java.time.Instant/ofEpochMilli 1579084200000))"}
 ]

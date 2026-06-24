@@ -245,7 +245,9 @@
 
 ;; java.time.Instant/ZonedDateTime/LocalDateTime values (mk-instant/mk-zoned/mk-local
 ;; jhosts) are equal when same kind + same epoch-ms — two parsed Instants compare =.
-(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("instant" "zoned-dt" "local-dt" "local-date" "sql-date")) #t))
+;; java.time LocalDate/LocalTime/LocalDateTime own their = / hash in java-time.ss;
+;; this arm covers the ms-based shim values (instant / zoned-dt / sql-date).
+(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("instant" "zoned-dt" "sql-date")) #t))
 (register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
                   (lambda (a b) (and (time-jhost? a) (time-jhost? b)
                                      (string=? (jhost-tag a) (jhost-tag b))
@@ -274,7 +276,6 @@
                             ((string=? tn "Timestamp") #f)
                             (else 'pass)))
         ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t 'pass))
-        ((and (jhost? val) (string=? (jhost-tag val) "local-dt")) (if (string=? tn "LocalDateTime") #t 'pass))
         ;; java.sql.Date is a java.util.Date subclass (but not a Timestamp).
         ((and (jhost? val) (string=? (jhost-tag val) "sql-date"))
          (cond ((or (string=? tn "Date")) #t) ((string=? tn "Timestamp") #f) (else 'pass)))
@@ -284,16 +285,31 @@
 (def-var! "clojure.core" "inst-ms*" (lambda (i) (jinst-ms i)))
 
 ;; --- java.time shim values (jhost objects over host-static.ss registries) -----
+;; "local-date" stores an epoch-day (java-time.ss owns the type); ms-of projects it
+;; to UTC midnight so existing date math keeps working. "local-dt" stores epoch-day +
+;; nano-of-day; the others store epoch-ms.
 (define (ms-of d)
   (cond ((number? d) d)
         ((jinst? d) (jinst-ms d))
-        ((and (jhost? d) (member (jhost-tag d) '("instant" "zoned-dt" "local-dt" "local-date" "calendar" "sql-date")))
+        ((and (jhost? d) (string=? (jhost-tag d) "local-date"))
+         (* (vector-ref (jhost-state d) 0) 86400000))
+        ((and (jhost? d) (string=? (jhost-tag d) "local-date-time"))
+         (+ (* (vector-ref (jhost-state d) 0) 86400000)
+            (quotient (vector-ref (jhost-state d) 1) 1000000)))
+        ((and (jhost? d) (member (jhost-tag d) '("instant" "zoned-dt" "calendar" "sql-date")))
          (vector-ref (jhost-state d) 0))
         (else (error #f "not a date value" d))))
 (define (mk-instant ms) (make-jhost "instant" (vector ms)))
 (define (mk-zoned ms) (make-jhost "zoned-dt" (vector ms)))
-(define (mk-local ms) (make-jhost "local-dt" (vector ms)))
-(define (mk-local-date ms) (make-jhost "local-date" (vector ms)))
+;; LocalDateTime from epoch-ms (UTC): the java-time.ss "local-date-time" jhost,
+;; state [epoch-day nano-of-day].
+(define (mk-local ms)
+  (let* ((ems (exact (truncate ms)))
+         (ed (inst-floor-div ems 86400000))
+         (mod (inst-floor-mod ems 86400000)))
+    (make-jhost "local-date-time" (vector ed (* mod 1000000)))))
+;; local-date from epoch-ms: the epoch-day of the UTC day containing ms.
+(define (mk-local-date ms) (make-jhost "local-date" (vector (inst-floor-div (exact (truncate ms)) 86400000))))
 ;; start of the UTC day containing ms.
 (define (start-of-utc-day ms)
   (* (inst-floor-div (exact (truncate ms)) 86400000) 86400000))
@@ -310,13 +326,10 @@
 (register-host-methods! "zoned-dt"
   (list (cons "toLocalDateTime" (lambda (self) (mk-local (ms-of self))))
         (cons "toInstant" (lambda (self) (mk-instant (ms-of self))))))
-(register-host-methods! "local-dt"
-  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))
-        (cons "toLocalDate" (lambda (self) (mk-local-date (ms-of self))))))
-;; LocalDate.atStartOfDay(zone): midnight of the UTC day (the layer is UTC).
+;; LocalDate.atZone(zone): the UTC layer treats it as a zoned value at midnight.
+;; (java-time.ss registers atStartOfDay and the rest of the local-date surface.)
 (register-host-methods! "local-date"
-  (list (cons "atStartOfDay" (lambda (self . zone) (mk-zoned (start-of-utc-day (ms-of self)))))
-        (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
+  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
 (register-host-methods! "dt-formatter"
   (list (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self))))
         (cons "withZone" (lambda (self zone) (mk-formatter (fmt-pat self))))
