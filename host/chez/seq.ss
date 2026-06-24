@@ -41,9 +41,13 @@
   (if (cseq-forced? s) (cseq-tail s)
       (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t)))
 
-;; The empty seq (Clojure's empty list ()), distinct from nil.
-(define-record-type empty-list-t (fields) (nongenerative empty-list-v1))
-(define jolt-empty-list (make-empty-list-t))
+;; The empty seq (Clojure's empty list ()), distinct from nil. The (unused) field
+;; defeats Chez's interning of fieldless records, so an empty list carrying
+;; metadata (an `empty`/`pop`/`with-meta` result) is a distinct identity from the
+;; shared jolt-empty-list — otherwise its meta would leak onto every ().
+(define-record-type empty-list-t (fields _) (nongenerative empty-list-v2))
+(define (fresh-empty-list) (make-empty-list-t #f))
+(define jolt-empty-list (fresh-empty-list))
 
 ;; reduced: a box a reducing fn returns to stop reduce early. The
 ;; reduce machinery below unwraps it; (deref a-reduced) / unreduced also read it.
@@ -212,7 +216,8 @@
 ;; falls back to a copy-on-write wrapper for other targets (lists, sorted colls,
 ;; nil), so those keep the old per-step jolt-conj behaviour.
 (define (jolt-into to from)
-  (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from))))
+  (meta-carry to
+    (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from)))))
 
 (define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1)))))
 (define (range-bounded n end step)

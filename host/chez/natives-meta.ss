@@ -7,7 +7,10 @@
 ;;
 ;; Loaded after records.ss (jrec) + collections/seq/values (the ctors it copies).
 
-(define meta-table (make-eq-hashtable))
+;; Weak so a collection's metadata is reclaimed with the collection — collection
+;; ops (conj/assoc/into) carry meta forward onto fresh values, so a strong table
+;; would retain every meta-bearing intermediate.
+(define meta-table (make-weak-eq-hashtable))
 
 (define (jolt-meta x)
   (cond
@@ -31,7 +34,9 @@
     ((pmap? x) (make-pmap (pmap-root x) (pmap-cnt x)))
     ((pset? x) (make-pset (pset-m x)))
     ((jrec? x) (make-jrec (jrec-tag x) (jrec-pairs x)))
-    (else x)))                          ; cseq / empty-list / procedure
+    ;; () is a shared singleton — a fresh instance keeps meta off every other ().
+    ((empty-list-t? x) (fresh-empty-list))
+    (else x)))                          ; cseq / procedure
 
 (define (jolt-with-meta x m)
   (cond
@@ -44,6 +49,20 @@
 
 (def-var! "clojure.core" "meta" jolt-meta)
 (def-var! "clojure.core" "with-meta" jolt-with-meta)
+
+;; Carry SRC's collection metadata onto DST (a freshly-built collection of the
+;; same kind), as Clojure's ops do — each new collection threads its receiver's
+;; meta() forward. Returns DST. The size check is the fast path: programs that
+;; never attach collection metadata pay one O(1) check per op, no lookup.
+(define (meta-carry src dst)
+  (if (fx=? 0 (hashtable-size meta-table))
+      dst
+      (let ((m (hashtable-ref meta-table src #f)))
+        (if m
+            ;; never attach to the shared () singleton — use a fresh instance
+            (let ((d (if (empty-list-t? dst) (fresh-empty-list) dst)))
+              (hashtable-set! meta-table d m) d)
+            dst))))
 
 ;; (type x) — Clojure's (or (:type (meta x)) (class x)). With no JVM classes the
 ;; "class" is a host taxonomy: a record yields its ns-qualified class-name SYMBOL

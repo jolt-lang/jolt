@@ -103,17 +103,18 @@
 
 (defn reverse [coll] (reduce conj (list) coll))
 
-;; An empty coll of the same category; sorted colls keep their comparator (the
+;; An empty coll of the same category, carrying the receiver's metadata (Clojure's
+;; .empty() does EMPTY.withMeta(meta())). Sorted colls keep their comparator (the
 ;; value's own :empty op). Strings and scalars are nil, as in Clojure; a lazy
 ;; seq empties to ().
 (defn empty [coll]
   (cond
     (nil? coll) nil
     (sorted? coll) ((get (jolt.host/ref-get coll :ops) :empty) coll)
-    (map? coll) {}
-    (set? coll) #{}
-    (vector? coll) []
-    (coll? coll) ()
+    (map? coll) (with-meta {} (meta coll))
+    (set? coll) (with-meta #{} (meta coll))
+    (vector? coll) (with-meta [] (meta coll))
+    (coll? coll) (with-meta () (meta coll))
     :else nil))
 
 (defn assoc-in [m [k & ks] v]
