@@ -257,24 +257,32 @@
       ;; every mode. The defined-set accumulates across the dependency-ordered
       ;; namespaces, so a dep's defs are direct-linkable by the time the entry that
       ;; calls them is emitted.
-      (set-optimize! (string=? mode "optimized"))
-      (when direct-link?
-        ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
-        ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
+      ;; set-optimize!/set-direct-link! are process-global flags in the back end;
+      ;; dynamic-wind guarantees they revert even if a strict form errors mid-emit
+      ;; (a failing form errors the build by design), so the compiler isn't left in
+      ;; optimize/direct-link mode for a later caller.
       (let*-values
           (((core-strs app-strs drop-compiler?)
-            (if tree-shake?
-                (dce-shake
-                  (dce-blob-records "host/chez/seed/prelude.ss")
-                  (apply append
-                    (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf)))) ordered))
-                  (string-append entry-ns "/-main"))
-                (values #f
-                        (apply append
-                          (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf)))) ordered))
-                        #f))))
-        (set-optimize! #f)
-        ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
+            (dynamic-wind
+              (lambda ()
+                (set-optimize! (string=? mode "optimized"))
+                (when direct-link?
+                  ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
+                  ((var-deref "jolt.backend-scheme" "direct-link-reset!"))))
+              (lambda ()
+                (if tree-shake?
+                    (dce-shake
+                      (dce-blob-records "host/chez/seed/prelude.ss")
+                      (apply append
+                        (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf)))) ordered))
+                      (string-append entry-ns "/-main"))
+                    (values #f
+                            (apply append
+                              (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf)))) ordered))
+                            #f)))
+              (lambda ()
+                (set-optimize! #f)
+                ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))
