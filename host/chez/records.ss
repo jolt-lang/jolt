@@ -144,6 +144,14 @@
         ((and (jhost? obj) (string=? (jhost-tag obj) "local-date")) '("LocalDate" "java.time.LocalDate" "Object"))
         ((and (jhost? obj) (string=? (jhost-tag obj) "local-time")) '("LocalTime" "java.time.LocalTime" "Object"))
         ((and (jhost? obj) (string=? (jhost-tag obj) "local-date-time")) '("LocalDateTime" "java.time.LocalDateTime" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "duration")) '("Duration" "java.time.Duration" "TemporalAmount" "java.time.temporal.TemporalAmount" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "period")) '("Period" "java.time.Period" "TemporalAmount" "java.time.temporal.TemporalAmount" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "month-enum")) '("Month" "java.time.Month" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "dow-enum")) '("DayOfWeek" "java.time.DayOfWeek" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "year")) '("Year" "java.time.Year" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "year-month")) '("YearMonth" "java.time.YearMonth" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "chrono-unit")) '("ChronoUnit" "java.time.temporal.ChronoUnit" "TemporalUnit" "java.time.temporal.TemporalUnit" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "chrono-field")) '("ChronoField" "java.time.temporal.ChronoField" "TemporalField" "java.time.temporal.TemporalField" "Object"))
         ;; java.sql.Date — a distinct class from java.util.Date so a protocol
         ;; extended to both (data.json's JSONWriter) routes a sql.Date to its impl.
         ((and (jhost? obj) (string=? (jhost-tag obj) "sql-date")) '("java.sql.Date" "Date" "java.util.Date" "Object"))
