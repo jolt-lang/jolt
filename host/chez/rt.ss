@@ -286,13 +286,13 @@
 ;; Loaded LAST so %ls-seq captures the fully-extended (sorted-aware) jolt-seq.
 (load "host/chez/lazy-bridge.ss")
 
-;; volatiles + sequence / transduce: native volatile boxes +
+;; transducer surface: native volatile boxes, cat, +
 ;; the transduce/sequence entry points over into-xform/reduce-seq. After
 ;; natives-seq.ss (into-xform), seq.ss (reduce-seq) + atoms.ss (deref).
-(load "host/chez/natives-xform.ss")
+(load "host/chez/natives-transduce.ss")
 
 ;; vars as first-class objects: var?/var-get/deref/invoke/=/
-;; pr-str over the rt.ss var-cell. After natives-xform.ss (chains deref) + the
+;; pr-str over the rt.ss var-cell. After natives-transduce.ss (chains deref) + the
 ;; printers. emit lowers :the-var to (jolt-var ns name).
 (load "host/chez/vars.ss")
 
@@ -356,10 +356,10 @@
 ;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
 (load "host/chez/math.ss")
 
-;; parity shims: native clojure.core fns not covered by the overlay
-;; (hash family / rseq / cat / transient?). After host-table.ss (sorted),
-;; transients.ss, values.ss (jolt-hash), seq.ss.
-(load "host/chez/natives-parity.ss")
+;; reader/macro runtime support: #?() feature set, reader-conditional + re-matcher
+;; tagged-map ctors, macroexpand. After ns.ss; macroexpand call-time-refs the macro
+;; table (host-contract) + analyzer ctx.
+(load "host/chez/natives-reader.ss")
 
 ;; Java-style arrays: object/typed array constructors + a jolt-array
 ;; backing; extends count/nth/seq/get/ref-put! so the overlay aget/aset/alength see

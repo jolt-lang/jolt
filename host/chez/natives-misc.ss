@@ -144,3 +144,21 @@
                          (loop (fx+ j 1) rest))))))
                 (begin (write-char c out) (loop (fx+ i 1) as))))))))
 (def-var! "clojure.core" "format" jolt-format)
+
+;; --- hash family (24-bit masked so int? holds) -------------------------------
+;; The public hash API over jolt-hash (values.ss). hash-ordered/-unordered-coll
+;; fold the element hashes the way Clojure's IHash mixers do.
+(define (nm-h24 x) (bitwise-and (jolt-hash x) #xffffff))
+(define (nm-hash x) (nm-h24 x))
+(define (nm-hash-combine a b)
+  (bitwise-and (bitwise-xor (nm-h24 a) (+ (nm-h24 b) #x9e3779)) #xffffff))
+(define (nm-hash-ordered-coll coll)
+  (let loop ((xs (seq->list (jolt-seq coll))) (h 1))
+    (if (null? xs) h (loop (cdr xs) (bitwise-and (+ (* 31 h) (nm-h24 (car xs))) #xffffff)))))
+(define (nm-hash-unordered-coll coll)
+  (let loop ((xs (seq->list (jolt-seq coll))) (h 0))
+    (if (null? xs) h (loop (cdr xs) (bitwise-and (+ h (nm-h24 (car xs))) #xffffff)))))
+(def-var! "clojure.core" "hash" nm-hash)
+(def-var! "clojure.core" "hash-combine" nm-hash-combine)
+(def-var! "clojure.core" "hash-ordered-coll" nm-hash-ordered-coll)
+(def-var! "clojure.core" "hash-unordered-coll" nm-hash-unordered-coll)

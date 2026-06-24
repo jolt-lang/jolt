@@ -192,6 +192,7 @@
          (%prev-jolt-nth coll i d)))))
 
 (def-var! "clojure.core" "transient" jolt-transient-new)
+(def-var! "clojure.core" "transient?" jolt-transient?)
 (def-var! "clojure.core" "persistent!" jolt-persistent!)
 (def-var! "clojure.core" "conj!" jolt-conj!)
 (def-var! "clojure.core" "assoc!" jolt-assoc!)

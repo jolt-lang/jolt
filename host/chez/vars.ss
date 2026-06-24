@@ -9,7 +9,7 @@
 ;; with-redefs) lives in dyn-binding.ss, which chains the var-read paths set up
 ;; here.
 ;;
-;; Loaded LAST (after natives-xform.ss): chains jolt-deref (atom/volatile arms)
+;; Loaded LAST (after natives-transduce.ss): chains jolt-deref (atom/volatile arms)
 ;; and the printers.
 
 (define (jolt-var-pred? x) (var-cell? x))

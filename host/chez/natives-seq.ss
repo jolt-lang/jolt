@@ -213,3 +213,10 @@
 (def-var! "clojure.core" "partition" jolt-partition)
 (def-var! "clojure.core" "sort" jolt-sort)
 (def-var! "clojure.core" "identical?" jolt-identical?)
+
+;; rseq: vectors + sorted colls only (Clojure), the reverse of the ascending seq.
+(define (jolt-rseq coll)
+  (if (or (pvec? coll) (htable-sorted? coll))
+      (list->cseq (reverse (seq->list (jolt-seq coll))))
+      (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map)))))
+(def-var! "clojure.core" "rseq" jolt-rseq)

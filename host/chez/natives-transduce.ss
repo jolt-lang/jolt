@@ -1,4 +1,5 @@
-;; volatiles + sequence / transduce — the transducer application surface.
+;; natives-transduce.ss — the transducer surface: volatiles, the `cat` transducer,
+;; and sequence / transduce application.
 ;;
 ;; `sequence` and `transduce` are seed natives. The stateful transducer arities
 ;; (take-nth/map-indexed/partition-by/dedupe/distinct, all overlay) use
@@ -47,3 +48,16 @@
 
 (def-var! "clojure.core" "transduce" jolt-transduce)
 (def-var! "clojure.core" "sequence" jolt-sequence)
+
+;; --- cat ---------------------------------------------------------------------
+;; cat transducer: each input item is itself a collection, concatenated into the
+;; downstream reducing fn.
+(define (jolt-cat rf)
+  (lambda a
+    (cond
+      ((null? a) (jolt-invoke rf))
+      ((null? (cdr a)) (jolt-invoke rf (car a)))
+      (else
+       (let loop ((xs (seq->list (jolt-seq (cadr a)))) (acc (car a)))
+         (if (null? xs) acc (loop (cdr xs) (jolt-invoke rf acc (car xs)))))))))
+(def-var! "clojure.core" "cat" jolt-cat)
