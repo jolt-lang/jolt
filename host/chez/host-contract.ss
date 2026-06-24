@@ -86,6 +86,10 @@
 (define (hc-sym-meta x)
   (let ((m (symbol-t-meta x)))
     (if (and m (not (jolt-nil? m)) (not (null? m))) m jolt-nil)))
+;; Metadata the reader attached to a collection literal (vec/map/set/list), or
+;; jolt-nil. The analyzer re-emits a runtime (with-meta ..) for a meta-carrying
+;; vector/map/set so the value keeps its metadata.
+(define (hc-coll-meta x) (jolt-meta x))
 
 ;; list items -> jolt vector (pvec); the analyzer mapv's over the result.
 (define (hc-elements x)
@@ -327,6 +331,7 @@
   (def-var! "jolt.host" "form-sym-name" hc-sym-name)
   (def-var! "jolt.host" "form-sym-ns" hc-sym-ns)
   (def-var! "jolt.host" "form-sym-meta" hc-sym-meta)
+  (def-var! "jolt.host" "form-coll-meta" hc-coll-meta)
   (def-var! "jolt.host" "form-list?" hc-list?)
   (def-var! "jolt.host" "form-vec?" hc-vec?)
   (def-var! "jolt.host" "form-map?" hc-map?)

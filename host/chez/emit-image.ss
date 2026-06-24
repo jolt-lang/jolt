@@ -59,6 +59,10 @@
 ;; that fails to emit) and `jolt build` (bld-emit-ns: optimize? #t, guard? #f —
 ;; strict, a failing form errors the build).
 (define (ei-emit-ns* ns-name src optimize? guard?)
+  ;; set the ns before reading so ::kw auto-resolves against this ns (the runtime
+  ;; loader reads form-by-form after the ns form sets it; the cross-compile reads
+  ;; all forms up front, so set it here).
+  (set-chez-ns! ns-name)
   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
         (reverse acc)
@@ -92,6 +96,7 @@
 ;; record whose refs are roots. A macro is prunable — its expander isn't called at
 ;; runtime in an AOT build.
 (define (ei-emit-ns-records ns-name src)
+  (set-chez-ns! ns-name)               ; ::kw resolves against this ns (see ei-emit-ns*)
   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
         (reverse acc)

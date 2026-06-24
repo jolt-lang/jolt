@@ -46,6 +46,14 @@
 (defn n-error [] (:error @counters))
 (defn failures [] (:fails @counters))
 
+;; Message of a thrown value: ex-info's message, else a raw host condition's text
+;; (ex-message is nil for those), else its printed form — so a crash is never
+;; reported with a blank message.
+(defn err-text [e]
+  (or (ex-message e)
+      (jolt.host/condition-message e)
+      (str e)))
+
 ;; clojure.test/report multimethod — present so suites that add reporting
 ;; methods (defmethod clojure.test/report :begin-test-var ...) load. The runner
 ;; below does its own console output and doesn't dispatch through it.
@@ -110,7 +118,7 @@
           (clojure.test/inc-pass!)
           (clojure.test/fail! (str (pr-str '~form) (when ~msg (str " — " ~msg)))))
         (catch Throwable e#
-          (clojure.test/err! (str (pr-str '~form) " threw: " (clojure.core/ex-message e#))))))))
+          (clojure.test/err! (str (pr-str '~form) " threw: " (clojure.test/err-text e#))))))))
 
 (defmacro testing [s & body]
   `(do
@@ -152,7 +160,7 @@
       (try
         ((:fn t))
         (catch Throwable e
-          (err! (str (:name t) " crashed: " (clojure.core/ex-message e))))))))
+          (err! (str (:name t) " crashed: " (err-text e))))))))
 
 (defn run-registered []
   (doseq [t @registry] (run-one t))

@@ -59,8 +59,9 @@ keyword  := ':' name | ':' ns '/' name | '::' name | '::' alias '/' name
   . $ & %` (with `%` and `&` further constrained inside `#()`); a symbol
   MUST NOT begin with a digit; `.` and `/` have positional restrictions.
 - S7. `::kw` MUST resolve to the current namespace at *read* time
-  (`::k` in ns `user` reads as `:user/k`); `::alias/k` resolves the alias or
-  MUST be a read error if the alias does not exist.
+  (`::k` in ns `user` reads as `:user/k`); `::alias/k` resolves `alias` through
+  the current namespace's aliases. (Clojure raises a read error for an unknown
+  alias; jolt reads it as `:alias/k`.)
 
 ### Strings and characters
 

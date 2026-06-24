@@ -73,8 +73,14 @@
          (sns (symbol-t-ns mm-sym))
          (qns (and sns (not (jolt-nil? sns)) (not (null? sns)) sns))
          ;; qualified (cf.mm/ext) resolves in its own ns (cross-ns defmethod);
-         ;; unqualified stays in the current ns (a shadow, as before).
-         (mns (if qns (or (chez-resolve-alias (chez-current-ns) qns) qns) (chez-current-ns)))
+         ;; unqualified resolves in the current ns, else a :refer's home ns (so a
+         ;; defmethod on a referred multifn lands on the real one), else stays in
+         ;; the current ns (a shadow, as before).
+         (mns (cond
+                (qns (or (chez-resolve-alias (chez-current-ns) qns) qns))
+                ((var-cell-lookup (chez-current-ns) nm) (chez-current-ns))
+                ((chez-resolve-refer (chez-current-ns) nm) => values)
+                (else (chez-current-ns))))
          (cur (var-deref mns nm))
          (mf (if (jolt-multifn? cur) cur
                  ;; auto-create: copy the dispatch fn + default from a same-named

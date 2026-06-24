@@ -185,10 +185,26 @@
         (let loop ((xs (cdr items)))
           (when (and (pair? xs) (pair? (cdr xs)))
             (let ((k (car xs)) (v (cadr xs)))
-              (when (and (keyword? k) (string=? (keyword-t-name k) "as") (symbol-t? v))
-                (emit! (string-append "(chez-register-alias! " (ei-str-lit ns-name)
-                                      " " (ei-str-lit (symbol-t-name v))
-                                      " " (ei-str-lit target) ")"))))
+              (when (keyword? k)
+                (cond
+                  ((and (string=? (keyword-t-name k) "as") (symbol-t? v))
+                   (emit! (string-append "(chez-register-alias! " (ei-str-lit ns-name)
+                                         " " (ei-str-lit (symbol-t-name v))
+                                         " " (ei-str-lit target) ")")))
+                  ;; :refer [a b] / :refer :all — a defmethod on a referred multifn
+                  ;; resolves the bare name through the refer table at runtime.
+                  ((or (string=? (keyword-t-name k) "refer") (string=? (keyword-t-name k) "only"))
+                   (cond
+                     ((and (keyword? v) (string=? (keyword-t-name v) "all"))
+                      (emit! (string-append "(chez-register-refer-all! " (ei-str-lit ns-name)
+                                            " " (ei-str-lit target) ")")))
+                     ((or (pvec? v) (and (cseq? v) (cseq-list? v)))
+                      (for-each (lambda (n)
+                                  (when (symbol-t? n)
+                                    (emit! (string-append "(chez-register-refer! " (ei-str-lit ns-name)
+                                                          " " (ei-str-lit (symbol-t-name n))
+                                                          " " (ei-str-lit target) ")"))))
+                                (seq->list v))))))))
             (loop (cddr xs))))))))
 
 (define (bld-ns-prelude ns-name src)

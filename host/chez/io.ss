@@ -100,6 +100,7 @@
       ((string=? name "exists")         (list (if (file-exists? p) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? p) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? p) (not (file-directory? p))) #t #f)))
+      ((string=? name "isAbsolute")     (list (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) #t #f)))
       ((string=? name "listFiles")      (list (list->cseq (map make-jfile (jolt-list-dir p)))))
       ((string=? name "getParent")
        (let loop ((i (- (string-length p) 1)))
@@ -211,7 +212,7 @@
     ;; a byte input-stream shim (e.g. clj-http-lite's :as :stream body): drain it.
     ((and (htable? src) (jolt-truthy? (jolt-ref-get src (keyword "jolt" "input-stream"))))
      (decode-bytevector (drain-byte-stream src) (slurp-encoding opts)))
-    ((string? src) (read-file-string src))
+    ((string? src) (read-file-string (project-relative src)))
     (else (error #f "slurp: unsupported source" src))))
 
 (define (spit-append? opts)
@@ -300,7 +301,7 @@
     ((embedded-res? x) (host-new "StringReader" (embedded-res-content x)))
     ((and (jhost? x) (string=? (jhost-tag x) "url"))
      (host-new "StringReader" (read-file-string (url-strip-scheme (url-spec x)))))
-    ((string? x) (host-new "StringReader" (read-file-string x)))
+    ((string? x) (host-new "StringReader" (read-file-string (project-relative x))))
     ((or (cseq? x) (empty-list-t? x) (pvec? x))
      (host-new "StringReader" (seq-source->string x)))
     (else (host-new "StringReader" (jolt-str-render-one x)))))
