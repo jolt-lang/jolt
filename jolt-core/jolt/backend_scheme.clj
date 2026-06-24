@@ -80,6 +80,10 @@
 ;; :num-kind :double|:long when every operand is that kind; these are the Chez
 ;; flonum/fixnum ops it lowers to — no generic dispatch, fixnums unboxed. fl?/fx?
 ;; comparisons carry the question mark; fl+/fx+ don't.
+;;
+;; CONTRACT: every op name jolt.passes.numeric/dbl-spec (resp. lng-spec) tags must
+;; have an entry here, or emit-numeric splices a nil op string into the output. Keep
+;; these tables and those specializers in sync.
 (def ^:private dbl-ops
   {"+" "fl+" "-" "fl-" "*" "fl*" "/" "fl/" "min" "flmin" "max" "flmax"
    "<" "fl<?" ">" "fl>?" "<=" "fl<=?" ">=" "fl>=?" "=" "fl=?" "==" "fl=?"})

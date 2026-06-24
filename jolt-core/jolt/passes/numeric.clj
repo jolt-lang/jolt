@@ -28,6 +28,8 @@
 
 ;; result kind of a double-specialized op at this name/arity, or nil if N/A.
 ;; arithmetic -> :double; comparison -> :bool (operands specialized, result not numeric).
+;; Every op name dbl-spec / lng-spec returns non-nil for must have a Chez op in
+;; jolt.backend-scheme/dbl-ops resp. lng-ops, or emit-numeric splices a nil op.
 (defn- dbl-spec [nm n]
   (cond
     (and (>= n 1) (contains? #{"+" "-" "*" "/" "min" "max"} nm)) :double
