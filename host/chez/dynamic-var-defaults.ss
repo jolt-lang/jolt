@@ -25,3 +25,6 @@
 
 ;; *print-readably* — bound by pr-family / with-out-str-style code; default true.
 (def-var! "clojure.core" "*print-readably*" #t)
+
+;; *print-meta* — when true, pr prints metadata with a ^ prefix; default false.
+(def-var! "clojure.core" "*print-meta*" #f)
