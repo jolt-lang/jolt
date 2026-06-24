@@ -44,7 +44,9 @@ want='embedded resource ok
 HELLO FROM A BUILT BINARY!
 HELLO FROM A BUILT BINARY!
 args: [alpha bb ccc]
-sum: 10'
+sum: 10
+greet-default: greet:default
+greet-loud: greet:loud'
 if [ "$got" != "$want" ]; then
   echo "  FAIL: binary output mismatch"
   echo "--- want ---"; echo "$want"

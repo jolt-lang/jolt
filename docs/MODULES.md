@@ -81,6 +81,10 @@ sync when changing it.
   (stash) + `host-contract.ss` (`inline-ir`/`stash-inline!`); `test/chez/inline-test.ss`.
 - **Multimethods**: `host/chez/multimethods.ss` (dispatch) + the overlay
   `defmulti`/`defmethod` macros + `host-contract.ss` late-bind.
+- **AOT namespace context** (`jolt build`): `build.ss` (`bld-ns-prelude`) emits
+  `(set-chez-ns! ns)` + `chez-register-alias!` per app namespace (both the normal
+  and tree-shake emit paths), matching the loader's per-file ns context;
+  `test/chez/build-app` (`make buildsmoke`).
 - **Deps resolution**: `jolt-core/jolt/deps.clj` (the only file) + `main.clj`
   (applies the roots) + `loader.ss` (the `require` path).
 

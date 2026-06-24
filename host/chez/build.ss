@@ -170,6 +170,48 @@
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
+;; Strings emitted before each app ns's forms, replaying what the source loader
+;; does per file: (1) set chez-current-ns so runtime ns-sensitive setup forms
+;; (defmulti/defmethod resolve their target var through it) land in the right ns;
+;; (2) register the ns's :as aliases so a quoted alias resolves at runtime — a
+;; (defmethod ig/foo …) passes 'ig/foo to defmethod-setup, which needs ig -> the
+;; real ns, but the build strips the (ns …) form that would register it.
+(define (bld-scan-spec! ns-name spec emit!)
+  (let ((items (cond ((pvec? spec) (seq->list spec))
+                     ((and (cseq? spec) (cseq-list? spec)) (seq->list spec))
+                     (else '()))))
+    (when (and (pair? items) (symbol-t? (car items)))
+      (let ((target (symbol-t-name (car items))))
+        (let loop ((xs (cdr items)))
+          (when (and (pair? xs) (pair? (cdr xs)))
+            (let ((k (car xs)) (v (cadr xs)))
+              (when (and (keyword? k) (string=? (keyword-t-name k) "as") (symbol-t? v))
+                (emit! (string-append "(chez-register-alias! " (ei-str-lit ns-name)
+                                      " " (ei-str-lit (symbol-t-name v))
+                                      " " (ei-str-lit target) ")"))))
+            (loop (cddr xs))))))))
+
+(define (bld-ns-prelude ns-name src)
+  (let ((acc (list (string-append "(set-chez-ns! " (ei-str-lit ns-name) ")")))
+        (nsf (let loop ((fs (ei-read-all src)))
+               (cond ((null? fs) #f)
+                     ((ei-ns-form? (car fs)) (car fs))
+                     (else (loop (cdr fs)))))))
+    (when nsf
+      (for-each
+        (lambda (clause)
+          (when (and (cseq? clause) (cseq-list? clause))
+            (let ((citems (seq->list clause)))
+              (when (and (pair? citems) (keyword? (car citems))
+                         (let ((kn (keyword-t-name (car citems))))
+                           (or (string=? kn "require") (string=? kn "use"))))
+                (for-each (lambda (spec)
+                            (bld-scan-spec! ns-name spec
+                                            (lambda (s) (set! acc (cons s acc)))))
+                          (cdr citems))))))
+        (seq->list nsf)))
+    (reverse acc)))
+
 ;; --- bundling: native libs + resources --------------------------------------
 ;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
 (define (bld-strs x) (map jolt-str-render-one (seq->list x)))
@@ -274,11 +316,24 @@
                     (dce-shake
                       (dce-blob-records "host/chez/seed/prelude.ss")
                       (apply append
-                        (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf)))) ordered))
+                        (map (lambda (nf)
+                               ;; ns-prelude forms (always kept, no fqn/refs) set the
+                               ;; ns + register aliases before this ns's forms; dce
+                               ;; keeps original order.
+                               (let ((src (read-file-string (cdr nf))))
+                                 (append
+                                   (map (lambda (s) (dce-rec #t #f '() s))
+                                        (bld-ns-prelude (car nf) src))
+                                   (ei-emit-ns-records (car nf) src))))
+                             ordered))
                       (string-append entry-ns "/-main"))
                     (values #f
                             (apply append
-                              (map (lambda (nf) (bld-emit-ns (car nf) (read-file-string (cdr nf)))) ordered))
+                              (map (lambda (nf)
+                                     (let ((src (read-file-string (cdr nf))))
+                                       (append (bld-ns-prelude (car nf) src)
+                                               (bld-emit-ns (car nf) src))))
+                                   ordered))
                             #f)))
               (lambda ()
                 (set-optimize! #f)
