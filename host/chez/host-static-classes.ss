@@ -218,6 +218,12 @@
 ;; state: a vector #(wrapped-reader pushed-list)
 (register-class-ctor! "PushbackReader"
   (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '()))))
+;; LineNumberingPushbackReader: a pushback-reader (jolt doesn't track line
+;; numbers; getLineNumber is a stub for error-reporting paths that read it).
+(register-class-ctor! "LineNumberingPushbackReader"
+  (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '()))))
+(register-class-ctor! "clojure.lang.LineNumberingPushbackReader"
+  (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '()))))
 (define (read-unit r)        ; read one code unit (flonum) from any reader, -1 at EOF
   (record-method-dispatch r "read" jolt-nil))
 (register-host-methods! "pushback-reader"
@@ -230,7 +236,8 @@
                          (vector-set! (jhost-state self) 1
                            (cons (if (char? ch) (->num (char->integer ch)) ch) (vector-ref (jhost-state self) 1)))
                          jolt-nil))
-        (cons "close" (lambda (self) jolt-nil))))
+        (cons "close" (lambda (self) jolt-nil))
+        (cons "getLineNumber" (lambda (self) 0))))
 
 ;; ---- StringTokenizer --------------------------------------------------------
 ;; state: a vector #(tokens-list pos)
