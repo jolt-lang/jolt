@@ -245,7 +245,7 @@
 
 ;; java.time.Instant/ZonedDateTime/LocalDateTime values (mk-instant/mk-zoned/mk-local
 ;; jhosts) are equal when same kind + same epoch-ms — two parsed Instants compare =.
-(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("instant" "zoned-dt" "local-dt")) #t))
+(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("instant" "zoned-dt" "local-dt" "local-date" "sql-date")) #t))
 (register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
                   (lambda (a b) (and (time-jhost? a) (time-jhost? b)
                                      (string=? (jhost-tag a) (jhost-tag b))
@@ -275,6 +275,9 @@
                             (else 'pass)))
         ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t 'pass))
         ((and (jhost? val) (string=? (jhost-tag val) "local-dt")) (if (string=? tn "LocalDateTime") #t 'pass))
+        ;; java.sql.Date is a java.util.Date subclass (but not a Timestamp).
+        ((and (jhost? val) (string=? (jhost-tag val) "sql-date"))
+         (cond ((or (string=? tn "Date")) #t) ((string=? tn "Timestamp") #f) (else 'pass)))
         (else 'pass)))))
 
 ;; inst-ms* is a seed native (the overlay inst-ms reads (get x :ms), now answered).
@@ -284,12 +287,16 @@
 (define (ms-of d)
   (cond ((number? d) d)
         ((jinst? d) (jinst-ms d))
-        ((and (jhost? d) (member (jhost-tag d) '("instant" "zoned-dt" "local-dt")))
+        ((and (jhost? d) (member (jhost-tag d) '("instant" "zoned-dt" "local-dt" "local-date" "calendar" "sql-date")))
          (vector-ref (jhost-state d) 0))
         (else (error #f "not a date value" d))))
 (define (mk-instant ms) (make-jhost "instant" (vector ms)))
 (define (mk-zoned ms) (make-jhost "zoned-dt" (vector ms)))
 (define (mk-local ms) (make-jhost "local-dt" (vector ms)))
+(define (mk-local-date ms) (make-jhost "local-date" (vector ms)))
+;; start of the UTC day containing ms.
+(define (start-of-utc-day ms)
+  (* (inst-floor-div (exact (truncate ms)) 86400000) 86400000))
 (define (mk-formatter pat) (make-jhost "dt-formatter" (vector pat)))
 (define (fmt-pat f) (vector-ref (jhost-state f) 0))
 (define (now-ms) (now-millis))   ; exact ms (= JVM long); now-millis from host-static.ss
@@ -304,10 +311,19 @@
   (list (cons "toLocalDateTime" (lambda (self) (mk-local (ms-of self))))
         (cons "toInstant" (lambda (self) (mk-instant (ms-of self))))))
 (register-host-methods! "local-dt"
-  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
+  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))
+        (cons "toLocalDate" (lambda (self) (mk-local-date (ms-of self))))))
+;; LocalDate.atStartOfDay(zone): midnight of the UTC day (the layer is UTC).
+(register-host-methods! "local-date"
+  (list (cons "atStartOfDay" (lambda (self . zone) (mk-zoned (start-of-utc-day (ms-of self)))))
+        (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
 (register-host-methods! "dt-formatter"
   (list (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self))))
-        (cons "format" (lambda (self d) (format-ms (fmt-pat self) (ms-of d))))))
+        (cons "withZone" (lambda (self zone) (mk-formatter (fmt-pat self))))
+        (cons "format" (lambda (self d) (format-ms (fmt-pat self) (ms-of d))))
+        ;; parse a string per the pattern -> an instant value; Instant/from / the
+        ;; LocalDateTime/parse static read its ms back out.
+        (cons "parse" (lambda (self s) (mk-instant (jinst-ms (parse-ms (fmt-pat self) (jolt-str-render-one s))))))))
 
 ;; FormatStyle approximations (no locale DB on this host).
 (define style-patterns
@@ -331,6 +347,8 @@
         (cons "ISO_LOCAL_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ss"))
         ;; ISO_INSTANT always renders in UTC with a trailing Z (format-ms is UTC; X -> "Z").
         (cons "ISO_INSTANT" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssX"))
+        ;; ISO_ZONED_DATE_TIME: the UTC layer renders/parses it like ISO_INSTANT.
+        (cons "ISO_ZONED_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssX"))
         (cons "ofLocalizedDate" (lambda (fs) (style-fmt 'date fs)))
         (cons "ofLocalizedTime" (lambda (fs) (style-fmt 'time fs)))
         (cons "ofLocalizedDateTime" (lambda (fs) (style-fmt 'datetime fs)))))
@@ -339,13 +357,22 @@
         (cons "now" (lambda () (mk-instant (now-ms))))
         ;; Instant/parse an ISO-8601 instant ("…T…Z") -> an instant value.
         (cons "parse" (lambda (s) (mk-instant (jinst-ms (jolt-inst-from-string
-                                                          (if (string? s) s (jolt-str-render-one s)))))))))
+                                                          (if (string? s) s (jolt-str-render-one s)))))))
+        ;; Instant/from a temporal accessor -> an instant at the same epoch-ms.
+        (cons "from" (lambda (t) (mk-instant (ms-of t))))))
 (register-class-statics! "ZoneId"
   (list (cons "systemDefault" (lambda () (make-jhost "zone-id" (vector "system"))))
         (cons "of" (lambda (id) (make-jhost "zone-id" (vector id))))))
 (register-class-statics! "LocalDateTime"
   (list (cons "ofInstant" (lambda (inst zone) (mk-local (ms-of inst))))
-        (cons "now" (lambda () (mk-local (now-ms))))))
+        (cons "now" (lambda () (mk-local (now-ms))))
+        ;; LocalDateTime/parse text, or text + a formatter (the UTC layer ignores
+        ;; the parsed offset) -> a local-dt at the parsed instant.
+        (cons "parse" (lambda (s . fmt)
+                        (let ((str (if (string? s) s (jolt-str-render-one s))))
+                          (mk-local (jinst-ms (if (null? fmt)
+                                                  (jolt-inst-from-string str)
+                                                  (parse-ms (fmt-pat (car fmt)) str)))))))))
 (let ((locale-ctor (lambda (id . _) (make-jhost "locale" (vector (if (string? id) id (jolt-str-render-one id)))))))
   (register-class-ctor! "Locale" locale-ctor)
   (register-class-ctor! "java.util.Locale" locale-ctor))
@@ -364,15 +391,64 @@
 (register-class-ctor! "java.util.Date" date-ctor)
 (register-class-ctor! "Timestamp" date-ctor)
 (register-class-ctor! "java.sql.Timestamp" date-ctor)
-;; java.sql.Date: (Date. year-1900 month0 day) builds UTC midnight of that civil
-;; date; valueOf parses "yyyy-MM-dd" to the same instant (so the two agree).
-(define (sql-date-midnight y mo d) (make-jinst (* 1000 (* (days-from-civil y mo d) 86400))))
+;; java.sql.Date: a distinct class from java.util.Date (a "sql-date" jhost over
+;; epoch-ms) so a protocol extended to both routes a sql.Date to its own impl.
+;; (Date. year-1900 month0 day) builds UTC midnight of that civil date; valueOf
+;; parses "yyyy-MM-dd" to the same instant (so the two agree).
+(define (mk-sql-date ms) (make-jhost "sql-date" (vector (ms->exact ms))))
+(define (sql-date-midnight y mo d) (mk-sql-date (* 1000 (* (days-from-civil y mo d) 86400))))
 (register-class-ctor! "java.sql.Date"
   (case-lambda
-    ((ms) (make-jinst (ms->exact (ms-of ms))))   ; (Date. epoch-ms)
+    ((ms) (mk-sql-date (ms-of ms)))   ; (Date. epoch-ms)
     ((y m d) (sql-date-midnight (+ 1900 (jnum->exact y)) (+ 1 (jnum->exact m)) (jnum->exact d)))))
 (register-class-statics! "java.sql.Date"
-  (list (cons "valueOf" (lambda (s) (parse-ms "yyyy-MM-dd" (if (string? s) s (jolt-str-render-one s)))))))
+  (list (cons "valueOf" (lambda (s) (mk-sql-date (jinst-ms (parse-ms "yyyy-MM-dd" (if (string? s) s (jolt-str-render-one s)))))))))
+(register-host-methods! "sql-date"
+  (list (cons "getTime" (lambda (self) (ms-of self)))
+        (cons "toInstant" (lambda (self) (mk-instant (ms-of self))))
+        (cons "toLocalDate" (lambda (self) (mk-local-date (ms-of self))))
+        (cons "toString" (lambda (self) (inst-rfc3339 (make-jinst (ms-of self)))))))
+
+;; java.util.Calendar: a mutable broken-down UTC time over an epoch-ms. setTime/
+;; getTime read/write it; set(field,value) recomputes ms from the field projection.
+;; Field constants are Java's int values so .set/.get dispatch on the right field.
+(define cal-YEAR 1) (define cal-MONTH 2) (define cal-DAY_OF_MONTH 5)
+(define cal-HOUR_OF_DAY 11) (define cal-MINUTE 12) (define cal-SECOND 13)
+(define cal-MILLISECOND 14)
+(define (cal-ms->fields ms)            ; -> vector [y mo0 d hh mi ss frac] (MONTH 0-based, JVM)
+  (let ((f (inst-fields ms)))
+    (vector (list-ref f 0) (- (list-ref f 1) 1) (list-ref f 2)
+            (list-ref f 3) (list-ref f 4) (list-ref f 5) (list-ref f 6))))
+(define (cal-fields->ms v)
+  (+ (* 1000 (+ (* (days-from-civil (vector-ref v 0) (+ 1 (vector-ref v 1)) (vector-ref v 2)) 86400)
+                (* (vector-ref v 3) 3600) (* (vector-ref v 4) 60) (vector-ref v 5)))
+     (vector-ref v 6)))
+(define (cal-field-index fld)
+  (cond ((= fld cal-YEAR) 0) ((= fld cal-MONTH) 1) ((= fld cal-DAY_OF_MONTH) 2)
+        ((= fld cal-HOUR_OF_DAY) 3) ((= fld cal-MINUTE) 4) ((= fld cal-SECOND) 5)
+        ((= fld cal-MILLISECOND) 6) (else #f)))
+(register-host-methods! "calendar"
+  (list (cons "setTime" (lambda (self d) (vector-set! (jhost-state self) 0 (ms->exact (ms-of d))) jolt-nil))
+        (cons "getTime" (lambda (self) (make-jinst (vector-ref (jhost-state self) 0))))
+        (cons "getTimeInMillis" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "setTimeInMillis" (lambda (self ms) (vector-set! (jhost-state self) 0 (ms->exact ms)) jolt-nil))
+        (cons "set" (lambda (self field val)
+                      (let ((v (cal-ms->fields (vector-ref (jhost-state self) 0)))
+                            (idx (cal-field-index (jnum->exact field))))
+                        (when idx (vector-set! v idx (jnum->exact val))
+                              (vector-set! (jhost-state self) 0 (cal-fields->ms v)))
+                        jolt-nil)))
+        (cons "get" (lambda (self field)
+                      (let ((v (cal-ms->fields (vector-ref (jhost-state self) 0)))
+                            (idx (cal-field-index (jnum->exact field))))
+                        (if idx (vector-ref v idx) 0))))))
+(define calendar-statics
+  (list (cons "getInstance" (lambda _ (make-jhost "calendar" (vector (now-ms)))))
+        (cons "YEAR" cal-YEAR) (cons "MONTH" cal-MONTH) (cons "DAY_OF_MONTH" cal-DAY_OF_MONTH)
+        (cons "HOUR_OF_DAY" cal-HOUR_OF_DAY) (cons "MINUTE" cal-MINUTE)
+        (cons "SECOND" cal-SECOND) (cons "MILLISECOND" cal-MILLISECOND)))
+(register-class-statics! "Calendar" calendar-statics)
+(register-class-statics! "java.util.Calendar" calendar-statics)
 
 ;; java.util.TimeZone: an opaque id holder (format-ms is UTC, so a non-UTC zone is
 ;; not honored — only the UTC case the corpus uses is exercised).
@@ -404,7 +480,7 @@
       ((jinst? obj)
        (cond ((string=? method-name "getTime") (jinst-ms obj))
              ((string=? method-name "toInstant") (mk-instant (jinst-ms obj)))
-             ((string=? method-name "toLocalDate") (mk-local (jinst-ms obj)))
+             ((string=? method-name "toLocalDate") (mk-local-date (jinst-ms obj)))
              ((string=? method-name "toLocalDateTime") (mk-local (jinst-ms obj)))
              ((string=? method-name "toString") (inst-rfc3339 obj))
              ((string=? method-name "equals") (and (pair? (if (jolt-nil? rest-args) '() (seq->list rest-args)))

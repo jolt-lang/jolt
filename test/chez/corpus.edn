@@ -548,6 +548,11 @@
   {:suite "host-interop / class tokens & readers" :label "(class x) matches the token" :expected "true" :actual "(= String (class \"abc\"))"}
   {:suite "host-interop / class tokens & readers" :label "defmulti on class dispatches" :expected ":str" :actual "(do (defmulti cm (fn [x] (class x))) (defmethod cm String [x] :str) (cm \"a\"))"}
   {:suite "host-interop / class tokens & readers" :label "defmethod on nil dispatch value" :expected ":nil" :actual "(do (defmulti cn (fn [x] (class x))) (defmethod cn nil [x] :nil) (defmethod cn String [x] :str) (cn nil))"}
+  {:suite "host-interop / class tokens & readers" :label "Class str is class-prefixed" :expected "\"class java.lang.String\"" :actual "(str (class \"\"))"}
+  {:suite "host-interop / class tokens & readers" :label "Class getName" :expected "\"java.lang.String\"" :actual "(.getName (class \"\"))"}
+  {:suite "host-interop / class tokens & readers" :label "Class getSimpleName" :expected "\"Long\"" :actual "(.getSimpleName (class 5))"}
+  {:suite "host-interop / class tokens & readers" :label "Class of equal-typed values is =" :expected "true" :actual "(= (class 5) (class 6))"}
+  {:suite "host-interop / class tokens & readers" :label "Class in a thrown message" :expected "\"of class java.lang.String\"" :actual "(try (throw (Exception. (str \"of \" (class \"\")))) (catch Exception e (.getMessage e)))"}
   {:suite "host-interop / class tokens & readers" :label "ctor sugar still constructs" :expected "\"x\"" :actual "(.toString (StringBuilder. \"x\"))"}
   {:suite "host-interop / class tokens & readers" :label "return-hinted defn parses" :expected "7" :actual "(do (defn- hb ^bytes [b] b) (hb 7))"}
   {:suite "host-interop / class tokens & readers" :label "hinted multi-arity parses" :expected ":two" :actual "((fn ([x] :one) (^String [x y] :two)) 1 2)"}

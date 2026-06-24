@@ -41,11 +41,17 @@
     ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
     ((ex-info-map? x) (ex-info-class x))
     (else (jolt-str-render-one (jolt-type x)))))
-(define (jolt-class x)
+;; the class NAME of x (string), or nil for nil. (class x) wraps it in a Class
+;; value (make-class-obj, host-static-classes.ss) so it renders like a JVM Class
+;; while staying = its name string.
+(define (jolt-class-name x)
   (let loop ((as jolt-class-arms))
     (cond ((null? as) (jolt-class-base x))
           (((caar as) x) ((cdar as) x))
           (else (loop (cdr as))))))
+(define (jolt-class x)
+  (let ((n (jolt-class-name x)))
+    (if (jolt-nil? n) jolt-nil (make-class-obj n))))
 
 (def-var! "clojure.core" "class" jolt-class)
 
