@@ -344,8 +344,5 @@
 (def-var! "clojure.core" "*ns*" (intern-ns! "user"))
 
 ;; --- printer patches: a namespace renders as its name (str / pr-str / -e) ----
-(define %ns-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jns? x) (jns-name x) (%ns-pr-str x))))
-(define %ns-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jns? x) (jns-name x) (%ns-pr-readable x))))
+(register-pr-arm! jns? jns-name)
 (register-str-render! jns? jns-name)

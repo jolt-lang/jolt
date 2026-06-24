@@ -24,7 +24,16 @@
                   ((#\return) (cons #\r (cons #\\ acc)))
                   (else (cons c acc))))))))
 
-(define (jolt-pr-readable x)
+;; A host shim registers a type's readable rendering via register-pr-readable-arm!,
+;; or register-pr-arm! for types whose str and readable forms match (most host types:
+;; inst, uuid, record, var, …). Disjoint types, checked before the base cases.
+(define jolt-pr-readable-arms '())
+(define (register-pr-readable-arm! pred render)
+  (set! jolt-pr-readable-arms (cons (cons pred render) jolt-pr-readable-arms)))
+(define (register-pr-arm! pred render)
+  (register-pr-str-arm! pred render)
+  (register-pr-readable-arm! pred render))
+(define (jolt-pr-readable-base x)
   (cond
     ((string? x) (string-append "\"" (jolt-str-escape x) "\""))
     ;; pr renders the infinities / NaN in READABLE form (##Inf reads back), unlike
@@ -58,6 +67,11 @@
          (if (jolt-nil? s) (reverse acc)
              (loop (jolt-seq (seq-more s)) (cons (jolt-pr-readable (seq-first s)) acc))))) ")"))
     (else (jolt-pr-str x))))
+(define (jolt-pr-readable x)
+  (let loop ((as jolt-pr-readable-arms))
+    (cond ((null? as) (jolt-pr-readable-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))

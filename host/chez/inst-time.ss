@@ -244,10 +244,7 @@
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
 (define (inst-pr i) (string-append "#inst \"" (inst-rfc3339 i) "\""))
-(define %it-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jinst? x) (inst-pr x) (%it-pr-str x))))
-(define %it-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jinst? x) (inst-pr x) (%it-pr-readable x))))
+(register-pr-arm! jinst? inst-pr)
 (register-str-render! jinst? inst-rfc3339)
 
 (define %it-type jolt-type)

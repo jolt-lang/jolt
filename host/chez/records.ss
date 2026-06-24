@@ -83,10 +83,7 @@
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
   (if (jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)) (%r-jolt-conj1 coll x))))
-(define %r-jolt-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jrec? x) (jrec-pr x) (%r-jolt-pr-str x))))
-(define %r-jolt-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jrec? x) (jrec-pr x) (%r-jolt-pr-readable x))))
+(register-pr-arm! jrec? jrec-pr)
 
 ;; records are map? and coll? (Clojure: a record IS an associative map). The
 ;; predicates.ss vars hold a snapshot, so re-def-var! after extending. record? is

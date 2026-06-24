@@ -132,12 +132,7 @@
 ;; var-cell keys hash/compare by ns/name (jolt=2 in vars.ss already compares
 ;; ns/name) — stable under root mutation, so a var works as a map key (with-redefs
 ;; builds (hash-map (var f) v); get-thread-bindings returns a var-keyed map).
-(define %dyn-hash jolt-hash)
-(set! jolt-hash
-  (lambda (x)
-    (if (var-cell? x)
-        (equal-hash (cons (var-cell-ns x) (var-cell-name x)))
-        (%dyn-hash x))))
+(register-hash-arm! var-cell? (lambda (x) (equal-hash (cons (var-cell-ns x) (var-cell-name x)))))
 
 ;; --- bind the host seams the overlay references -----------------------------
 (def-var! "clojure.core" "push-thread-bindings" jolt-push-thread-bindings)

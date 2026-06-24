@@ -153,10 +153,9 @@
 (define (sorted-render x render)
   (if (htable-sorted-map? x) (sorted-map-render x render) (sorted-set-render x render)))
 
-(define %h-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-pr-readable) (%h-pr-readable x))))
-(define %h-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (htable-sorted? x) (sorted-render x jolt-pr-str) (%h-pr-str x))))
+;; sorted colls render in :seq order via the calling printer (str vs readable).
+(register-pr-readable-arm! htable-sorted? (lambda (x) (sorted-render x jolt-pr-readable)))
+(register-pr-str-arm! htable-sorted? (lambda (x) (sorted-render x jolt-pr-str)))
 (register-str-render! htable-sorted? (lambda (x) (sorted-render x jolt-str-render-one)))
 
 ;; --- protocol dispatch over builtins (extend-protocol Map/Set on sorted) ------

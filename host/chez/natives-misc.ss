@@ -53,10 +53,7 @@
 ;; str of a uuid -> the bare 36-char string; pr-str -> #uuid "…".
 (register-str-render! juuid? juuid-s)
 (define (juuid-pr u) (string-append "#uuid \"" (juuid-s u) "\""))
-(define %m-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (juuid? x) (juuid-pr x) (%m-pr-str x))))
-(define %m-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (juuid? x) (juuid-pr x) (%m-pr-readable x))))
+(register-pr-arm! juuid? juuid-pr)
 ;; two uuids are = iff same string.
 (register-eq-arm! (lambda (a b) (or (juuid? a) (juuid? b)))
                   (lambda (a b) (and (juuid? a) (juuid? b) (string=? (juuid-s a) (juuid-s b)))))
@@ -83,10 +80,7 @@
           ((jolt=2 k kw-tl-form) (jtagged-form coll))
           (else d))))
 (define (jtagged-pr t) (string-append "#" (jolt-pr-str (jtagged-tag t)) " " (jolt-pr-readable (jtagged-form t))))
-(define %m2-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jtagged? x) (jtagged-pr x) (%m2-pr-str x))))
-(define %m2-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jtagged? x) (jtagged-pr x) (%m2-pr-readable x))))
+(register-pr-arm! jtagged? jtagged-pr)
 (def-var! "clojure.core" "tagged-literal" jolt-tagged-literal)
 ;; tagged-literal? is OVERLAY (reads :jolt/type) — asserted in post-prelude.ss.
 

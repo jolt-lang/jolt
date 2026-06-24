@@ -66,10 +66,7 @@
 
 ;; str drops the M; pr/pr-str keep it.
 (register-str-render! jbigdec? jbigdec->string)
-(define %bd-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (jbigdec? x) (string-append (jbigdec->string x) "M") (%bd-pr-str x))))
-(define %bd-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jbigdec? x) (string-append (jbigdec->string x) "M") (%bd-pr-readable x))))
+(register-pr-arm! jbigdec? (lambda (x) (string-append (jbigdec->string x) "M")))
 
 ;; class / decimal?
 (register-class-arm! jbigdec? (lambda (x) "java.math.BigDecimal"))

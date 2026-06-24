@@ -179,7 +179,13 @@
 ;; bare nil renders as the empty string (a nil ELEMENT inside a collection still
 ;; prints "nil", which jolt-pr-str handles).
 (define (jolt-final-str x) (if (jolt-nil? x) "" (jolt-pr-str x)))
-(define (jolt-pr-str x)
+;; A host shim registers a type's str-style rendering via register-pr-str-arm! (or
+;; register-pr-arm! in printing.ss for both printers at once) instead of
+;; set!-wrapping jolt-pr-str. Disjoint types, checked before the base cases.
+(define jolt-pr-str-arms '())
+(define (register-pr-str-arm! pred render)
+  (set! jolt-pr-str-arms (cons (cons pred render) jolt-pr-str-arms)))
+(define (jolt-pr-str-base x)
   (cond
     ((jolt-nil? x) "nil")
     ((eq? x #t) "true")
@@ -206,6 +212,11 @@
                    (if (jolt-nil? s) (reverse acc)
                        (loop (jolt-seq (seq-more s)) (cons (jolt-pr-str (seq-first s)) acc))))) ")"))
     (else (format "~a" x))))
+(define (jolt-pr-str x)
+  (let loop ((as jolt-pr-str-arms))
+    (cond ((null? as) (jolt-pr-str-base x))
+          (((caar as) x) ((cdar as) x))
+          (else (loop (cdr as))))))
 
 ;; converters + string ops: str/subs/vec/keyword/symbol/compare/int/
 ;; double/gensym — host-coupled seed natives def-var!'d into clojure.core. Loaded

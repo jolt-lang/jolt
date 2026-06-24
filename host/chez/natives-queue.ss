@@ -44,8 +44,7 @@
 
 ;; printing: render the elements as a parenthesized list (delegate to the seq path).
 (define (jolt-seq-or-empty x) (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-empty-list s)))
-(define %q-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (jolt-queue? x) (%q-pr-readable (jolt-seq-or-empty x)) (%q-pr-readable x))))
+(register-pr-readable-arm! jolt-queue? (lambda (x) (jolt-pr-readable (jolt-seq-or-empty x))))
 (register-str-render! jolt-queue? (lambda (x) (jolt-str-render-one (jolt-seq-or-empty x))))
 
 ;; class / type / instance? recognize a queue.

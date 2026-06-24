@@ -38,10 +38,7 @@
 
 ;; pr-str / str of a var -> #'ns/name.
 (define (var->str v) (string-append "#'" (var-cell-ns v) "/" (var-cell-name v)))
-(define %v-pr-str jolt-pr-str)
-(set! jolt-pr-str (lambda (x) (if (var-cell? x) (var->str x) (%v-pr-str x))))
-(define %v-pr-readable jolt-pr-readable)
-(set! jolt-pr-readable (lambda (x) (if (var-cell? x) (var->str x) (%v-pr-readable x))))
+(register-pr-arm! var-cell? var->str)
 (register-str-render! var-cell? var->str)
 
 ;; bound? — native (the overlay's (get v :root) is nil on a var-cell record).

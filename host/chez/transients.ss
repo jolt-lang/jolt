@@ -169,11 +169,7 @@
 
 ;; Redefine the native get/count/contains?/nth (captured first) so the existing
 ;; emit lowerings unwrap a transient; non-transients are untouched.
-(define %prev-jolt-get jolt-get)
-(set! jolt-get
-  (case-lambda
-    ((coll k) (if (jolt-transient? coll) (t-get coll k jolt-nil) (%prev-jolt-get coll k)))
-    ((coll k d) (if (jolt-transient? coll) (t-get coll k d) (%prev-jolt-get coll k d)))))
+(register-get-arm! jolt-transient? (lambda (coll k d) (t-get coll k d)))
 (define %prev-jolt-count jolt-count)
 (set! jolt-count (lambda (coll) (if (jolt-transient? coll) (t-count coll) (%prev-jolt-count coll))))
 (define %prev-jolt-contains? jolt-contains?)
