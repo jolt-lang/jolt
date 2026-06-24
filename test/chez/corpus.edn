@@ -1046,6 +1046,23 @@
   {:suite "metadata / type hints" :label "type hint in destructure" :expected "3" :actual "(let [{:keys [^long a]} {:a 3}] a)"}
   {:suite "metadata / type hints" :label "symbol hint -> :tag" :expected "\"String\"" :actual "(:tag (meta (read-string \"^String x\")))"}
   {:suite "metadata / type hints" :label "keyword hint -> true" :expected "true" :actual "(:foo (meta (read-string \"^:foo x\")))"}
+  {:suite "metadata / read data metadata" :label "vector data meta" :expected "{:ref true}" :actual "(meta (read-string \"^:ref [:greeting]\"))"}
+  {:suite "metadata / read data metadata" :label "map data meta" :expected "{:k 1}" :actual "(meta (read-string \"^{:k 1} {:a 2}\"))"}
+  {:suite "metadata / read data metadata" :label "set data meta" :expected "{:s true}" :actual "(meta (read-string \"^:s #{1 2}\"))"}
+  {:suite "metadata / read data metadata" :label "nested vector data meta" :expected "{:x true}" :actual "(meta (second (read-string \"[1 ^:x {:a 2}]\")))"}
+  {:suite "metadata / read data metadata" :label "collection value unchanged" :expected "[:greeting]" :actual "(read-string \"^:ref [:greeting]\")"}
+  {:suite "metadata / coll literal in code keeps meta" :label "vector literal meta" :expected "{:foo true}" :actual "(meta ^:foo [1 2])"}
+  {:suite "metadata / coll literal in code keeps meta" :label "map literal meta with expr" :expected "{:a 3}" :actual "(meta ^{:a (+ 1 2)} [1])"}
+  {:suite "metadata / coll literal in code keeps meta" :label "map literal value-eval order" :expected "[1 2]" :actual "(let [a (atom [])] ^:t {(do (swap! a conj 1) :a) 1 (do (swap! a conj 2) :b) 2} @a)"}
+  {:suite "metadata / *print-meta*" :label "pr-str prefixes ^meta" :expected "\"^{:ref true} [:g]\"" :actual "(binding [*print-meta* true] (pr-str (with-meta [:g] {:ref true})))"}
+  {:suite "metadata / *print-meta*" :label "off by default" :expected "\"[:g]\"" :actual "(pr-str (with-meta [:g] {:ref true}))"}
+  {:suite "metadata / *print-meta*" :label "symbol meta prefixed" :expected "\"^{:k 1} x\"" :actual "(binding [*print-meta* true] (pr-str (with-meta (quote x) {:k 1})))"}
+  {:suite "metadata / *print-meta*" :label "print then read round-trips" :expected "{:ref true}" :actual "(meta (read-string (binding [*print-meta* true] (pr-str (with-meta [:g] {:ref true})))))"}
+  {:suite "metadata / clojure.walk preserves meta" :label "postwalk keeps vector meta" :expected "{:ref true}" :actual "(do (require (quote [clojure.walk :as w])) (meta (w/postwalk identity (with-meta [:b] {:ref true}))))"}
+  {:suite "metadata / clojure.walk preserves meta" :label "postwalk keeps map meta" :expected "{:m 1}" :actual "(do (require (quote [clojure.walk :as w])) (meta (w/postwalk identity (with-meta {:a 2} {:m 1}))))"}
+  {:suite "metadata / clojure.edn preserves meta" :label "edn vector meta" :expected "{:ref true}" :actual "(do (require (quote [clojure.edn :as e1])) (meta (e1/read-string \"^:ref [:greeting]\")))"}
+  {:suite "metadata / clojure.edn preserves meta" :label "edn map meta" :expected "{:m true}" :actual "(do (require (quote [clojure.edn :as e1])) (meta (e1/read-string \"^:m {:a 1}\")))"}
+  {:suite "metadata / clojure.edn preserves meta" :label "edn set meta" :expected "{:s true}" :actual "(do (require (quote [clojure.edn :as e1])) (meta (e1/read-string \"^:s #{1}\")))"}
   {:suite "metadata / def metadata" :label "^:dynamic var binds" :expected "9" :actual "(do (def ^:dynamic *d* 1) (binding [*d* 9] *d*))"}
   {:suite "metadata / def metadata" :label "^:private on var" :expected "true" :actual "(do (def ^:private pv 1) (:private (meta (var pv))))"}
   {:suite "metadata / def metadata" :label "^Type tag on var" :expected "java.lang.String" :actual "(do (def ^String tv \"a\") (:tag (meta (var tv))))"}
