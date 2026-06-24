@@ -4,8 +4,8 @@
   top = :any) that types expressions and reuses the same walk as a loose success
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
-  IR-rewriting passes — shares only the const-shape predicate (jolt.passes.fold)."
-  (:require [jolt.passes.fold :refer [scalar-const?]]
+  IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
+  (:require [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.lattice :refer
              [velem selem sfields vec-type? set-type? struct-type? mk-vec mk-set
               mk-struct union-cap scalar-t? union-type? umembers union-of merge-fields
@@ -263,7 +263,7 @@
           ;; (:k m) / (:k m default): the result is m's field type, and if m is a
           ;; struct the subject is tagged so the back end drops the guard — this
           ;; types nested access end to end (RFC 0005).
-          (and (= :const (get fnode :op)) (keyword? (get fnode :val)) (>= n 1) (<= n 2))
+          (and (kw-callee? fnode) (>= n 1) (<= n 2))
           (let [mr (infer (nth args 0) tenv env)
                 mt (nth mr 0)
                 msub (if (struct-safe? mt) (mark-struct (nth mr 1) mt) (nth mr 1))
@@ -272,8 +272,7 @@
             [(if dr (join ft (nth dr 0)) ft)
              (assoc node :args (if dr [msub (nth dr 1)] [msub]))])
           ;; (get m :k [default]): same, when the key is a constant keyword.
-          (and (or (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)) (= "get" (get fnode :name)))
-                   (and (= :host (get fnode :op)) (= "get" (get fnode :name))))
+          (and (get-callee? fnode)
                (>= n 2) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
           (let [mr (infer (nth args 0) tenv env)
                 mt (nth mr 0)

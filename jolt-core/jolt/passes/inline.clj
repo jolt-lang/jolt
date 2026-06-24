@@ -5,7 +5,7 @@
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir]]
             [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
-            [jolt.passes.fold :refer [scalar-const?]]))
+            [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Shared state: a dirty flag the fixpoint loop reads, and a fresh-name counter
@@ -229,7 +229,7 @@
 (defn- pure-fn? [f]
   (let [op (get f :op)]
     (cond
-      (and (= op :const) (keyword? (get f :val))) true
+      (kw-callee? f) true
       (= op :var) (and (= "clojure.core" (get f :ns)) (contains? pure-fns (get f :name)))
       (= op :host) (contains? pure-fns (get f :name))
       :else false)))
@@ -282,13 +282,12 @@
   (if (= :invoke (get node :op))
     (let [f (get node :fn) args (get node :args)]
       (cond
-        (and (= :const (get f :op)) (keyword? (get f :val))
+        (and (kw-callee? f)
              (= 1 (count args))
              (= :local (get (nth args 0) :op)) (= nm (get (nth args 0) :name)))
         (get f :val)
 
-        (and (or (and (= :var (get f :op)) (= "clojure.core" (get f :ns)) (= "get" (get f :name)))
-                 (and (= :host (get f :op)) (= "get" (get f :name))))
+        (and (get-callee? f)
              (= 2 (count args))
              (= :local (get (nth args 0) :op)) (= nm (get (nth args 0) :name))
              (scalar-const? (nth args 1)))
@@ -500,7 +499,7 @@
   lookup folds only for a declared field."
   [node]
   (let [f (get node :fn) args (get node :args)]
-    (if (and (= :const (get f :op)) (keyword? (get f :val)) (= 1 (count args)))
+    (if (and (kw-callee? f) (= 1 (count args)))
       (let [m (nth args 0) k (get f :val)]
         (if (and (= :map (get m :op)) (const-key-map? m) (all-vals-pure? m))
           (do (mark!) (map-val m k))
