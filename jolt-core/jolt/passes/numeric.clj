@@ -127,7 +127,13 @@
         pe (reduce (fn [e p] (assoc e p (get nh p))) tenv (get a :params))]
     (if (get a :rest) (assoc pe (get a :rest) nil) pe)))
 
-(defn- an-invoke [node tenv]
+(defn- an-invoke
+  "Annotate an :invoke with its numeric kind. An arithmetic core op specializes to
+  the Chez fl*/fx* op only when every operand is the same kind (:double or :long),
+  except an integer literal is :wild — valid in either — so (+ ^double x 2) stays
+  double. A call to a ^double/^long-returning var yields that kind without lowering
+  the call (its body already coerces the return)."
+  [node tenv]
   (let [fnode (get node :fn)
         nm (when (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)))
              (get fnode :name))
