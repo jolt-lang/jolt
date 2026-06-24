@@ -535,6 +535,24 @@
                    ((string=? iface "IFn")
                     (or (procedure? val) (keyword? val) (symbol-t? val)
                         (pmap? val) (pset? val) (pvec? val)))
+                   ;; host-class interfaces libraries branch on (data.json, etc.).
+                   ;; Matched by last segment, so java.util.Map and Map both hit.
+                   ((string=? iface "Named") (or (keyword? val) (symbol-t? val)))
+                   ((string=? iface "CharSequence") (string? val))
+                   ((string=? iface "Number") (number? val))
+                   ((string=? iface "Map") (or (pmap? val) (htable-sorted-map? val)))
+                   ((string=? iface "Set") (or (pset? val) (htable-sorted-set? val)))
+                   ;; a Java List is a vector or a seq/list — not a set or map.
+                   ((string=? iface "List")
+                    (or (and (pvec? val) (not (jolt-map-entry? val)))
+                        (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ;; a Java Collection is any of those plus a set — but NOT a map.
+                   ((string=? iface "Collection")
+                    (or (pvec? val) (pset? val) (cseq? val) (empty-list-t? val)
+                        (jolt-lazyseq? val) (htable-sorted-set? val)))
+                   ((string=? iface "Associative")
+                    (or (pmap? val) (htable-sorted-map? val)
+                        (and (pvec? val) (not (jolt-map-entry? val)))))
                    (else 'none))))
         (if (eq? hit 'none) 'pass (if hit #t #f))))))
 

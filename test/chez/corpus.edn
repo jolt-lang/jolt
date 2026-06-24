@@ -2971,4 +2971,14 @@
   {:suite "protocols / extend on host classes" :label "dispatch by java.util.Map/Collection/CharSequence" :expected "[:map :coll :str :obj]" :actual "(do (defprotocol W (-w [x])) (extend java.util.Map W {:-w (fn [_] :map)}) (extend java.util.Collection W {:-w (fn [_] :coll)}) (extend java.lang.CharSequence W {:-w (fn [_] :str)}) (extend java.lang.Object W {:-w (fn [_] :obj)}) [(-w {:a 1}) (-w [1 2]) (-w \"s\") (-w 42)])"}
   {:suite "protocols / extend on host classes" :label "satisfies? via java.util.Map" :expected "true" :actual "(do (defprotocol Q (qq [x])) (extend java.util.Map Q {:qq (fn [_] :m)}) (satisfies? Q {}))"}
   {:suite "protocols / extend on host classes" :label "extends? on a qualified host class" :expected "true" :actual "(do (defprotocol Qe (qe [x])) (extend java.util.Collection Qe {:qe (fn [_] :c)}) (extends? Qe java.util.Collection))"}
+  {:suite "interop / instance? on host interfaces" :label "keyword is Named" :expected "true" :actual "(instance? clojure.lang.Named :a)"}
+  {:suite "interop / instance? on host interfaces" :label "string is CharSequence" :expected "true" :actual "(instance? java.lang.CharSequence \"s\")"}
+  {:suite "interop / instance? on host interfaces" :label "number is Number" :expected "true" :actual "(instance? java.lang.Number 42)"}
+  {:suite "interop / instance? on host interfaces" :label "map is java.util.Map" :expected "true" :actual "(instance? java.util.Map {:a 1})"}
+  {:suite "interop / instance? on host interfaces" :label "vector is java.util.List" :expected "true" :actual "(instance? java.util.List [1 2])"}
+  {:suite "interop / instance? on host interfaces" :label "list is java.util.Collection" :expected "true" :actual "(instance? java.util.Collection (list 1))"}
+  {:suite "interop / instance? on host interfaces" :label "set is java.util.Set" :expected "true" :actual "(instance? java.util.Set #{1})"}
+  {:suite "interop / instance? on host interfaces" :label "map is not a Collection" :expected "false" :actual "(instance? java.util.Collection {:a 1})"}
+  {:suite "interop / instance? on host interfaces" :label "vector is Associative" :expected "true" :actual "(instance? clojure.lang.Associative [1])"}
+  {:suite "interop / instance? on host interfaces" :label "string is not Number" :expected "false" :actual "(instance? java.lang.Number \"s\")"}
 ]
