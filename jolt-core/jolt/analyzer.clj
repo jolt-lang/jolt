@@ -478,12 +478,23 @@
 (defn- analyze-dot [ctx items env]
   (when (< (count items) 3)
     (throw (str "Malformed (. target member ...) form")))
-  (let [member (nth items 2)]
+  (let [target (nth items 1)
+        member (nth items 2)
+        ;; (. Class method args*) with a class target is a static call —
+        ;; equivalent to (Class/method args*). resolve-global tags a class
+        ;; symbol :kind :class; a local of the same name shadows it.
+        class-target (when (and (form-sym? target)
+                                (not (local? env (form-sym-name target))))
+                       (let [r (resolve-global ctx target)]
+                         (when (= :class (:kind r)) (:name r))))]
     (cond
+      (and class-target (form-sym? member))
+        (invoke (host-static class-target (form-sym-name member))
+                (mapv #(analyze ctx % env) (drop 3 items)))
       (form-sym? member)
         {:op :host-call
          :method (form-sym-name member)
-         :target (analyze ctx (nth items 1) env)
+         :target (analyze ctx target env)
          :args (mapv #(analyze ctx % env) (drop 3 items))}
       ;; (. obj :kw) is a keyword lookup — invoke the keyword on the target.
       (form-keyword? member)

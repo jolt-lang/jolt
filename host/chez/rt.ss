@@ -351,6 +351,12 @@
 ;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
 (load "host/chez/inst-time.ss")
 
+;; java.time value types: LocalDate / LocalTime / LocalDateTime / Instant as
+;; tz-free jhost values (epoch-day / nano-of-day / epoch-ms). Loads after
+;; inst-time.ss — it reuses its civil<->days helpers, the jhost registries, and
+;; re-registers a few LocalDateTime/Instant statics to use the richer reps.
+(load "host/chez/java-time.ss")
+
 ;; Chez-side data reader: read-string / __parse-next /
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst
 ;; constructors, and the reader needs the full value/collection layer above.
