@@ -93,17 +93,22 @@
 ;; only the re-emitted namespaces are shaken.
 (define dce-kw-op   (keyword #f "op"))
 (define dce-kw-var  (keyword #f "var"))
+(define dce-kw-the-var (keyword #f "the-var"))
 (define dce-kw-def  (keyword #f "def"))
 (define dce-kw-ns   (keyword #f "ns"))
 (define dce-kw-name (keyword #f "name"))
 (define dce-reduce-children (var-deref "jolt.ir" "reduce-ir-children"))
 
-;; "ns/name" of every :var reference anywhere in node, prepended to acc. Arg order
-;; (acc node) matches reduce-ir-children's fold fn, so it nests directly.
+;; "ns/name" of every var reference anywhere in node, prepended to acc. Counts BOTH
+;; a :var (call head or value) and a :the-var (#'x / (var x)) — per Stalin's rule,
+;; any reference (not just a direct call) keeps the target live, so a var passed as a
+;; value or referenced as #'x is reachable. Arg order (acc node) matches
+;; reduce-ir-children's fold fn, so it nests directly.
 (define (dce-collect-refs acc node)
-  (if (eq? (jolt-get node dce-kw-op) dce-kw-var)
-      (cons (string-append (jolt-get node dce-kw-ns) "/" (jolt-get node dce-kw-name)) acc)
-      (dce-reduce-children dce-collect-refs acc node)))
+  (let ((op (jolt-get node dce-kw-op)))
+    (if (or (eq? op dce-kw-var) (eq? op dce-kw-the-var))
+        (cons (string-append (jolt-get node dce-kw-ns) "/" (jolt-get node dce-kw-name)) acc)
+        (dce-reduce-children dce-collect-refs acc node))))
 
 ;; The fqn of a bare top-level def (the only prunable form), else #f.
 (define (dce-def-fqn node)

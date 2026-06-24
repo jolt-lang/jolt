@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer directlink numeric inline remint
+.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer directlink numeric inline shakesmoke remint
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -76,6 +76,12 @@ numeric:
 # with ^double/^long entry/return coercions carried through via :coerce nodes.
 inline:
 	@chez --script test/chez/inline-test.ss
+
+# Tree-shake soundness: build example apps (incl. deps.edn git-lib apps) default vs
+# --tree-shake and require identical output. Slow (two builds per app); not in the
+# default gate. Skips without the examples repo / Chez kernel dev files.
+shakesmoke:
+	@sh host/chez/tree-shake-smoke.sh
 
 # JVM oracle: certify the corpus against reference Clojure. Skips if clojure absent.
 certify:
