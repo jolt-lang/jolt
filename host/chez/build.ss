@@ -18,6 +18,7 @@
 ;; normal run never pays for it.
 
 (load "host/chez/emit-image.ss")
+(load "host/chez/dce.ss")
 
 ;; --- shell helpers ----------------------------------------------------------
 ;; Run a command, return its stdout as one trimmed string ("" on no output).
@@ -94,20 +95,29 @@
       "-llz4 -lz -lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt"))
 
 ;; --- runtime manifest (mirrors host/chez/cli.ss's load order) ---------------
+;; A line is either literal Scheme text to inline, or a tag whose emission the build
+;; controls: 'prelude (the clojure.core blob, replaced by the shaken core under
+;; tree-shake), 'image + 'compile-eval (the compiler, dropped for a no-eval app).
+;; Tagging keeps the splice/drop decisions off fragile substring matching.
 (define bld-runtime-manifest
   (list
     "(load \"host/chez/rt.ss\")"
     "(set-chez-ns! \"clojure.core\")"
-    "(load \"host/chez/seed/prelude.ss\")"
+    'prelude
     "(load \"host/chez/post-prelude.ss\")"
     "(set-chez-ns! \"user\")"
     "(load \"host/chez/host-contract.ss\")"
-    "(load \"host/chez/seed/image.ss\")"
-    "(load \"host/chez/compile-eval.ss\")"
+    'image
+    'compile-eval
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
     "(load \"host/chez/ffi.ss\")"
     "(set-source-roots! (list \"jolt-core\" \"stdlib\"))"))
+
+(define bld-tagged-loads
+  '((prelude . "(load \"host/chez/seed/prelude.ss\")")
+    (image . "(load \"host/chez/seed/image.ss\")")
+    (compile-eval . "(load \"host/chez/compile-eval.ss\")")))
 
 ;; A single-line top-level `(load "PATH")` -> PATH, else #f.
 (define (bld-load-path line)
@@ -137,86 +147,28 @@
         (for-each (lambda (l) (bld-inline-line l out (+ depth 1))) (bld-file-lines p))
         (begin (put-string out line) (put-string out "\n")))))
 
-;; Inline the runtime manifest. When drop-compiler? (a closed AOT app that never
-;; compiles from source at runtime), omit the compiler image + compile-eval shim —
+;; Inline the runtime manifest, dispatching on the manifest tags. core-strs (the
+;; shaken clojure.core defs, or #f) replaces the 'prelude blob; drop-compiler? (a
+;; closed AOT app that never compiles from source) omits 'image + 'compile-eval —
 ;; the analyzer/back end are dead weight in the binary (~0.8MB).
 (define (bld-emit-runtime out drop-compiler? core-strs)
-  (for-each (lambda (l)
-              (cond
-                ;; core-shake: emit the shaken clojure.core defs in place of the blob.
-                ((and core-strs (bld-contains? l "seed/prelude.ss"))
-                 (for-each (lambda (s) (put-string out s) (put-string out "\n")) core-strs))
-                ((and drop-compiler?
-                      (or (bld-contains? l "seed/image.ss") (bld-contains? l "compile-eval.ss")))
-                 #f)
-                (else (bld-inline-line l out 0))))
-            bld-runtime-manifest))
+  (for-each
+    (lambda (entry)
+      (cond
+        ((eq? entry 'prelude)
+         (if core-strs
+             (for-each (lambda (s) (put-string out s) (put-string out "\n")) core-strs)
+             (bld-inline-line (cdr (assq 'prelude bld-tagged-loads)) out 0)))
+        ((memq entry '(image compile-eval))
+         (unless drop-compiler? (bld-inline-line (cdr (assq entry bld-tagged-loads)) out 0)))
+        (else (bld-inline-line entry out 0))))
+    bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
 ;; Re-emit one app namespace to a list of Scheme strings: optimize (run-passes)
 ;; and stay strict — a form that fails to emit must fail the build, not vanish.
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
-
-;; Tree-shake the whole closed program — the clojure.core prelude (read into records
-;; by dce-blob-records) AND the re-emitted app + library namespaces — over one
-;; reachability graph: keep every non-def form (side effects), -main, the core fns the
-;; runtime shims need, and every def reachable from those; drop the rest. Bails to
-;; keep-all if reachable code resolves vars by name at runtime (closed-world
-;; violation). Returns (values core-strs app-strs drop-compiler?); core-strs is #f on
-;; a bail, signalling "inline prelude.ss unshaken".
-(define (bld-shake-all core-records app-records entry-main)
-  (let ((all (append core-records app-records))
-        (edges (make-hashtable string-hash string=?))
-        (roots (cons entry-main dce-runtime-core-roots)))
-    (for-each (lambda (r)
-                (if (vector-ref r 0)
-                    (set! roots (append (vector-ref r 2) roots))
-                    (hashtable-set! edges (vector-ref r 1) (vector-ref r 2))))
-              all)
-    (let ((reached (make-hashtable string-hash string=?)))
-      (let bfs ((work roots))
-        (unless (null? work)
-          (let ((fq (car work)))
-            (if (hashtable-ref reached fq #f)
-                (bfs (cdr work))
-                (begin (hashtable-set! reached fq #t)
-                       (bfs (append (or (hashtable-ref edges fq #f) '()) (cdr work))))))))
-      (let ((kept? (lambda (r) (or (vector-ref r 0) (hashtable-ref reached (vector-ref r 1) #f))))
-            (refs-any (lambda (r set) (ormap (lambda (b) (and (member b (vector-ref r 2)) #t)) set)))
-            (bail #f) (bail-why '()) (needs-compiler #f))
-        (for-each (lambda (r)
-                    (when (kept? r)
-                      (for-each (lambda (b)
-                                  (when (member b (vector-ref r 2))
-                                    (set! bail #t)
-                                    (when (< (length bail-why) 6)
-                                      (set! bail-why (cons (cons (or (vector-ref r 1) "<form>") b) bail-why)))))
-                                dce-bail-refs)
-                      (when (refs-any r dce-compile-refs) (set! needs-compiler #t))))
-                  all)
-        (let ((drop-compiler? (and (not bail) (not needs-compiler)))
-              ;; -> (values strs n-defs n-kept)
-              (pick (lambda (recs)
-                      (let loop ((rs recs) (acc '()) (n 0) (k 0))
-                        (if (null? rs)
-                            (values (reverse acc) n k)
-                            (let* ((r (car rs)) (isdef (and (vector-ref r 1) #t)))
-                              (if (kept? r)
-                                  (loop (cdr rs) (cons (vector-ref r 3) acc)
-                                        (if isdef (+ n 1) n) (if isdef (+ k 1) k))
-                                  (loop (cdr rs) acc (if isdef (+ n 1) n) k))))))))
-          (if bail
-              (begin (display "jolt build: tree-shake skipped (reachable code resolves vars at runtime):\n")
-                     (for-each (lambda (w) (display (string-append "  " (car w) " -> " (cdr w) "\n")))
-                               (reverse bail-why))
-                     (values #f (map (lambda (r) (vector-ref r 3)) app-records) drop-compiler?))
-              (let-values (((core-strs cn ck) (pick core-records))
-                           ((app-strs an ak) (pick app-records)))
-                (display (string-append "jolt build: tree-shake kept " (number->string (+ ck ak))
-                                        " of " (number->string (+ cn an)) " defs (core "
-                                        (number->string ck) "/" (number->string cn) ")\n"))
-                (values core-strs app-strs drop-compiler?))))))))
 
 ;; --- bundling: native libs + resources --------------------------------------
 ;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
@@ -312,7 +264,7 @@
       (let*-values
           (((core-strs app-strs drop-compiler?)
             (if tree-shake?
-                (bld-shake-all
+                (dce-shake
                   (dce-blob-records "host/chez/seed/prelude.ss")
                   (apply append
                     (map (lambda (nf) (ei-emit-ns-records (car nf) (read-file-string (cdr nf)))) ordered))
