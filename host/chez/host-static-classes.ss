@@ -201,10 +201,21 @@
 (define (sr-pos self) (vector-ref (jhost-state self) 1))
 (define (sr-pos! self p) (vector-set! (jhost-state self) 1 p))
 (register-host-methods! "string-reader"
-  (list (cons "read" (lambda (self)
+  (list (cons "read" (lambda (self . rest)
                        (let ((s (sr-s self)) (p (sr-pos self)))
-                         (if (>= p (string-length s)) -1   ; EOF -> exact int -1 (= JVM)
-                             (begin (sr-pos! self (+ p 1)) (->num (char->integer (string-ref s p))))))))
+                         (cond
+                           ;; .read() -> one char code, -1 at EOF
+                           ((null? rest)
+                            (if (>= p (string-length s)) -1
+                                (begin (sr-pos! self (+ p 1)) (->num (char->integer (string-ref s p))))))
+                           ;; .read(cbuf, off, len) -> fill cbuf, return count or -1 at EOF
+                           (else
+                            (let ((slen (string-length s)))
+                              (if (>= p slen) -1
+                                  (let ((cbuf (car rest)) (off (jnum->exact (cadr rest))) (len (jnum->exact (caddr rest))))
+                                    (let ((n (min len (- slen p))) (dv (jolt-array-vec cbuf)))
+                                      (let loop ((i 0)) (when (< i n) (vector-set! dv (+ off i) (string-ref s (+ p i))) (loop (+ i 1))))
+                                      (sr-pos! self (+ p n)) (->num n))))))))))
         (cons "mark" (lambda (self . _) (vector-set! (jhost-state self) 2 (sr-pos self)) jolt-nil))
         (cons "reset" (lambda (self) (sr-pos! self (vector-ref (jhost-state self) 2)) jolt-nil))
         (cons "skip" (lambda (self n) (let ((n (jnum->exact n)))
@@ -237,15 +248,37 @@
 (define (read-unit r)        ; read one code unit (flonum) from any reader, -1 at EOF
   (record-method-dispatch r "read" jolt-nil))
 (register-host-methods! "pushback-reader"
-  (list (cons "read" (lambda (self)
-                       (let ((pushed (vector-ref (jhost-state self) 1)))
-                         (if (pair? pushed)
-                             (begin (vector-set! (jhost-state self) 1 (cdr pushed)) (car pushed))
-                             (read-unit (vector-ref (jhost-state self) 0))))))
-        (cons "unread" (lambda (self ch)
-                         (vector-set! (jhost-state self) 1
-                           (cons (if (char? ch) (->num (char->integer ch)) ch) (vector-ref (jhost-state self) 1)))
-                         jolt-nil))
+  (list (cons "read"
+          (lambda (self . rest)
+            (define (read1)
+              (let ((pushed (vector-ref (jhost-state self) 1)))
+                (if (pair? pushed)
+                    (begin (vector-set! (jhost-state self) 1 (cdr pushed)) (car pushed))
+                    (read-unit (vector-ref (jhost-state self) 0)))))
+            (if (null? rest)
+                (read1)
+                ;; .read(cbuf, off, len) -> read one code unit at a time into cbuf,
+                ;; return count or -1 at immediate EOF.
+                (let ((off (jnum->exact (cadr rest))) (len (jnum->exact (caddr rest))) (dv (jolt-array-vec (car rest))))
+                  (let loop ((i 0))
+                    (if (>= i len) (->num i)
+                        (let ((c (jnum->exact (read1))))
+                          (if (= c -1) (if (= i 0) -1 (->num i))
+                              (begin (vector-set! dv (+ off i) (integer->char c)) (loop (+ i 1)))))))))))
+        (cons "unread"
+          (lambda (self ch . rest)
+            (if (null? rest)
+                ;; unread(int|char) — push one code unit back
+                (vector-set! (jhost-state self) 1
+                  (cons (if (char? ch) (->num (char->integer ch)) ch) (vector-ref (jhost-state self) 1)))
+                ;; unread(char[] cbuf, off, len) — push cbuf[off,off+len) so cbuf[off]
+                ;; reads back first (the list head).
+                (let ((dv (jolt-array-vec ch)) (off (jnum->exact (car rest))) (len (jnum->exact (cadr rest))))
+                  (let loop ((i (- (+ off len) 1)) (acc (vector-ref (jhost-state self) 1)))
+                    (if (< i off)
+                        (vector-set! (jhost-state self) 1 acc)
+                        (loop (- i 1) (cons (->num (char->integer (vector-ref dv i))) acc))))))
+            jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "getLineNumber" (lambda (self) 0))))
 
@@ -335,7 +368,7 @@
   '("Throwable" "Exception" "RuntimeException" "IllegalArgumentException" "IllegalStateException"
     "InterruptedException" "UnsupportedOperationException" "IOException" "NumberFormatException"
     "ArithmeticException" "NullPointerException" "ClassCastException" "IndexOutOfBoundsException"
-    "FileNotFoundException" "UnsupportedEncodingException"))
+    "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
@@ -572,6 +605,15 @@
                    ((string=? iface "Associative")
                     (or (pmap? val) (htable-sorted-map? val)
                         (and (pvec? val) (not (jolt-map-entry? val)))))
+                   ;; reader jhosts — data.json re-wraps a reader in a new
+                   ;; PushbackReader unless (instance? PushbackReader r), so this
+                   ;; must hold for repeated reads from one reader to work.
+                   ((string=? iface "PushbackReader")
+                    (and (jhost? val) (string=? (jhost-tag val) "pushback-reader")))
+                   ((string=? iface "StringReader")
+                    (and (jhost? val) (string=? (jhost-tag val) "string-reader")))
+                   ((or (string=? iface "Reader") (string=? iface "BufferedReader"))
+                    (reader-jhost? val))
                    (else 'none))))
         (if (eq? hit 'none) 'pass (if hit #t #f))))))
 

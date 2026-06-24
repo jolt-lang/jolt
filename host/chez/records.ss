@@ -118,9 +118,11 @@
 
 ;; host type-tag candidates for a non-record value (extend-protocol on builtins).
 (define (value-host-tags obj)
-  (cond ((and (number? obj) (and (exact? obj) (not (integer? obj))))
-         '("Ratio" "Number" "Object"))
-        ((number? obj) '("Long" "Integer" "Number" "Double" "Object"))
+  ;; numbers dispatch by actual type (a Double is NOT a Long): flonum -> Double,
+  ;; exact ratio -> Ratio, exact integer -> Long.
+  (cond ((flonum? obj) '("Double" "Float" "Number" "Object"))
+        ((and (number? obj) (exact? obj) (not (integer? obj))) '("Ratio" "Number" "Object"))
+        ((number? obj) '("Long" "Integer" "BigInteger" "BigInt" "Number" "Object"))
         ((string? obj) '("String" "CharSequence" "Object"))
         ((boolean? obj) '("Boolean" "Object"))
         ((keyword? obj) '("Keyword" "Named" "Object"))
@@ -133,6 +135,12 @@
         ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Object"))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
+        ;; host value types a library may extend a protocol to by class (data.json
+        ;; extends JSONWriter to java.util.UUID / java.util.Date / java.math.BigDecimal).
+        ((juuid? obj) '("UUID" "java.util.UUID" "Object"))
+        ((jinst? obj) '("Date" "java.util.Date" "Timestamp" "java.sql.Timestamp" "Object"))
+        ((jbigdec? obj) '("BigDecimal" "java.math.BigDecimal" "Number" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "instant")) '("Instant" "java.time.Instant" "Object"))
         ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
         ((procedure? obj) '("Fn" "IFn" "AFn" "Object"))
         ((jolt-nil? obj) '("nil"))
@@ -183,7 +191,8 @@
                 "PersistentHashSet" "APersistentSet" "IPersistentSet"
                 "ASeq" "ISeq" "IPersistentCollection" "Associative" "Sequential"
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
-                "Collection" "java.util.Collection"))
+                "Collection" "java.util.Collection"
+                "UUID" "BigDecimal" "Date" "Timestamp" "Instant"))
     h))
 (define (strip-prefix s p)
   (let ((pl (string-length p)))
@@ -192,6 +201,8 @@
   (let ((base (or (strip-prefix type-name "java.lang.")
                   (strip-prefix type-name "java.util.")
                   (strip-prefix type-name "java.net.")
+                  (strip-prefix type-name "java.math.")
+                  (strip-prefix type-name "java.time.")
                   (strip-prefix type-name "clojure.lang.")
                   type-name)))
     (and (hashtable-ref host-type-set base #f) base)))

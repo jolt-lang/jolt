@@ -178,6 +178,8 @@
      jolt-nil)
     ((string=? method "subSequence")
      (substring s (jolt->idx (arg 0)) (jolt->idx (arg 1))))
+    ;; Class.isArray over a class-name string: array classes are "[…" (e.g. "[C").
+    ((string=? method "isArray") (and (fx>? (string-length s) 0) (char=? (string-ref s 0) #\[)))
     (else (error #f (string-append "No method " method " for value")))))
 
 ;; --- clojure.core str-* primitives (the substrate clojure.string.clj calls) ---
