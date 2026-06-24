@@ -85,6 +85,9 @@
     ((string=? method "floatValue") (->num n))
     ((string=? method "toString") (jolt-num->string n))
     ((string=? method "hashCode") (->num (jnum->exact n)))
+    ;; Double/Float .isNaN / .isInfinite (a non-flonum is neither).
+    ((string=? method "isNaN") (and (flonum? n) (not (= n n))))
+    ((string=? method "isInfinite") (and (flonum? n) (infinite? n)))
     (else (error #f (string-append "No method " method " for number")))))
 
 ;; ---- emit entry points ------------------------------------------------------

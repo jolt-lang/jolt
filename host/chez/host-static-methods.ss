@@ -119,12 +119,19 @@
         (cons "parseLong" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "parseLong")))
         (cons "valueOf" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "valueOf")))))
 
+;; JVM Integer.toHexString/etc. treat the int as 32-bit unsigned.
+(define (int->u32 n) (if (< n 0) (+ n 4294967296) n))
 (register-class-statics! "Integer"
   (list (cons "MAX_VALUE" (->num 2147483647)) (cons "MIN_VALUE" (->num -2147483648))
         (cons "valueOf" (lambda (x . r)
                           (if (number? x) (->num x)
                               (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "valueOf"))))
-        (cons "parseInt" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseInt")))))
+        (cons "parseInt" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseInt")))
+        ;; lowercase, like the JVM; a negative int is the 32-bit unsigned form.
+        (cons "toHexString" (lambda (x) (string-downcase (number->string (int->u32 (jnum->exact x)) 16))))
+        (cons "toOctalString" (lambda (x) (number->string (int->u32 (jnum->exact x)) 8)))
+        (cons "toBinaryString" (lambda (x) (number->string (int->u32 (jnum->exact x)) 2)))
+        (cons "toString" (lambda (x . r) (number->string (jnum->exact x) (if (null? r) 10 (jnum->exact (car r))))))))
 
 (register-class-statics! "Boolean"
   (list (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))

@@ -243,6 +243,15 @@
 
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
+;; java.time.Instant/ZonedDateTime/LocalDateTime values (mk-instant/mk-zoned/mk-local
+;; jhosts) are equal when same kind + same epoch-ms — two parsed Instants compare =.
+(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("instant" "zoned-dt" "local-dt")) #t))
+(register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
+                  (lambda (a b) (and (time-jhost? a) (time-jhost? b)
+                                     (string=? (jhost-tag a) (jhost-tag b))
+                                     (= (ms-of a) (ms-of b)))))
+(register-hash-arm! time-jhost? (lambda (x) (jolt-hash (ms-of x))))
+
 (define (inst-pr i) (string-append "#inst \"" (inst-rfc3339 i) "\""))
 (register-pr-arm! jinst? inst-pr)
 (register-str-render! jinst? inst-rfc3339)
@@ -327,7 +336,10 @@
         (cons "ofLocalizedDateTime" (lambda (fs) (style-fmt 'datetime fs)))))
 (register-class-statics! "Instant"
   (list (cons "ofEpochMilli" (lambda (ms) (mk-instant (ms->exact ms))))
-        (cons "now" (lambda () (mk-instant (now-ms))))))
+        (cons "now" (lambda () (mk-instant (now-ms))))
+        ;; Instant/parse an ISO-8601 instant ("…T…Z") -> an instant value.
+        (cons "parse" (lambda (s) (mk-instant (jinst-ms (jolt-inst-from-string
+                                                          (if (string? s) s (jolt-str-render-one s)))))))))
 (register-class-statics! "ZoneId"
   (list (cons "systemDefault" (lambda () (make-jhost "zone-id" (vector "system"))))
         (cons "of" (lambda (id) (make-jhost "zone-id" (vector id))))))
@@ -352,6 +364,13 @@
 (register-class-ctor! "java.util.Date" date-ctor)
 (register-class-ctor! "Timestamp" date-ctor)
 (register-class-ctor! "java.sql.Timestamp" date-ctor)
+;; java.sql.Date: (Date. year-1900 month0 day) builds UTC midnight of that civil
+;; date; valueOf parses "yyyy-MM-dd" to the same instant (so the two agree).
+(define (sql-date-midnight y mo d) (make-jinst (* 1000 (* (days-from-civil y mo d) 86400))))
+(register-class-ctor! "java.sql.Date"
+  (lambda (y m d) (sql-date-midnight (+ 1900 (jnum->exact y)) (+ 1 (jnum->exact m)) (jnum->exact d))))
+(register-class-statics! "java.sql.Date"
+  (list (cons "valueOf" (lambda (s) (parse-ms "yyyy-MM-dd" (if (string? s) s (jolt-str-render-one s)))))))
 
 ;; java.util.TimeZone: an opaque id holder (format-ms is UTC, so a non-UTC zone is
 ;; not honored — only the UTC case the corpus uses is exercised).

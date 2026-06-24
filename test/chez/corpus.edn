@@ -2985,4 +2985,13 @@
   {:suite "interop / String & StringBuilder char ops" :label "str of StringBuilder" :expected "\"hi\"" :actual "(let [sb (StringBuilder.)] (.append sb \"hi\") (str sb))"}
   {:suite "interop / String & StringBuilder char ops" :label "append subsequence" :expected "\"bcd\"" :actual "(let [sb (StringBuilder.)] (.append sb \"abcde\" 1 4) (.toString sb))"}
   {:suite "interop / String & StringBuilder char ops" :label "String.getChars into buffer" :expected "\"abc\"" :actual "(let [a (char-array 4)] (.getChars \"abcd\" 0 3 a 0) (String. a 0 3))"}
+  {:suite "interop / numbers & classes" :label "Integer/toHexString lowercase" :expected "\"ff\"" :actual "(Integer/toHexString 255)"}
+  {:suite "interop / numbers & classes" :label "Integer/toHexString wide" :expected "\"1234\"" :actual "(Integer/toHexString 4660)"}
+  {:suite "interop / numbers & classes" :label ".isNaN on a double" :expected "true" :actual "(.isNaN (/ 0.0 0.0))"}
+  {:suite "interop / numbers & classes" :label ".isInfinite on a double" :expected "true" :actual "(.isInfinite (/ 1.0 0.0))"}
+  {:suite "interop / numbers & classes" :label ".isNaN false for finite" :expected "false" :actual "(.isNaN 1.0)"}
+  {:suite "interop / numbers & classes" :label "protocol dispatch Long vs Double" :expected "[:l :d]" :actual "(do (defprotocol N (-n [x])) (extend java.lang.Long N {:-n (fn [_] :l)}) (extend java.lang.Double N {:-n (fn [_] :d)}) [(-n 5) (-n 5.0)])"}
+  {:suite "interop / numbers & classes" :label "instance? PushbackReader" :expected "true" :actual "(instance? java.io.PushbackReader (java.io.PushbackReader. (java.io.StringReader. \"x\")))"}
+  {:suite "interop / numbers & classes" :label "EOFException catch by class" :expected "\"boom\"" :actual "(try (throw (java.io.EOFException. \"boom\")) (catch java.io.EOFException e (.getMessage e)))"}
+  {:suite "interop / numbers & classes" :label "Reader.read into char[]" :expected "[4 \"abcd\"]" :actual "(let [r (java.io.StringReader. \"abcd\") b (char-array 4)] (let [n (.read r b 0 4)] [n (String. b 0 n)]))"}
 ]
