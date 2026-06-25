@@ -259,7 +259,7 @@
 ;; the dispatchers/printers it wraps (collections/seq/values/converters/printing/
 ;; transients).
 (load "host/chez/records.ss")
-(load "host/chez/records-interop.ss")   ; exception hierarchy + instance-check taxonomy
+(load "host/chez/java/records-interop.ss")   ; exception hierarchy + instance-check taxonomy
 
 ;; metadata: meta / with-meta over an identity-keyed
 ;; side-table. After records.ss (jrec) + the collection ctors it copies.
@@ -268,7 +268,7 @@
 ;; host class tokens: bare class names (String/Keyword/File...) ->
 ;; canonical JVM class-name strings + (class x). After natives-meta.ss (jolt-type)
 ;; and the printer (jolt-str-render-one).
-(load "host/chez/host-class.ss")
+(load "host/chez/java/host-class.ss")
 
 ;; dynamic vars: *clojure-version* / *unchecked-math* constants the host
 ;; binds natively. After collections.ss (jolt-hash-map) + def-var!.
@@ -324,39 +324,39 @@
 ;; portable String/CharSequence surface record-method-dispatch falls through to on
 ;; a string target. After regex.ss (jolt-re-pattern/regex-t-irx) + records.ss
 ;; (which references jolt-string-method).
-(load "host/chez/natives-str.ss")
+(load "host/chez/java/natives-str.ss")
 
 ;; host class statics + constructors: host-static-ref/
 ;; host-static-call/host-new + the jhost method registry. Loads LAST — it extends
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
-(load "host/chez/host-static.ss")          ; registries + jhost + coercion helpers
-(load "host/chez/host-static-methods.ss")  ; Class/member static methods + fields
-(load "host/chez/host-static-classes.ss")  ; instantiable host object classes
-(load "host/chez/byte-buffer.ss")          ; java.nio.ByteBuffer over a byte-array
+(load "host/chez/java/host-static.ss")          ; registries + jhost + coercion helpers
+(load "host/chez/java/host-static-methods.ss")  ; Class/member static methods + fields
+(load "host/chez/java/host-static-classes.ss")  ; instantiable host object classes
+(load "host/chez/java/byte-buffer.ss")          ; java.nio.ByteBuffer over a byte-array
 
 ;; generic dot-form dispatch: field access + map/vector member access
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every
 ;; record-method-dispatch arm (jhost/number/regex/jrec/string) and falls through.
-(load "host/chez/dot-forms.ss")
+(load "host/chez/java/dot-forms.ss")
 
 ;; java.io.File + host file I/O: path-backed jfile record, slurp/spit/
 ;; flush, file-seq dir primitives, clojure.java.io/file. Loads LAST so its jfile
 ;; arm wraps the fully-built record-method-dispatch and the str/type/instance-check
 ;; extensions sit over every prior shim.
-(load "host/chez/io.ss")
+(load "host/chez/java/io.ss")
 
 ;; #inst values + java.time formatting: jinst (RFC3339 ms) +
 ;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads
 ;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
 ;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
-(load "host/chez/inst-time.ss")
+(load "host/chez/java/inst-time.ss")
 
 ;; java.time value types: LocalDate / LocalTime / LocalDateTime / Instant as
 ;; tz-free jhost values (epoch-day / nano-of-day / epoch-ms). Loads after
 ;; inst-time.ss — it reuses its civil<->days helpers, the jhost registries, and
 ;; re-registers a few LocalDateTime/Instant statics to use the richer reps.
-(load "host/chez/java-time.ss")
+(load "host/chez/java/java-time.ss")
 
 ;; Chez-side data reader: read-string / __parse-next /
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst
@@ -365,7 +365,7 @@
 
 ;; clojure.math: native flonum-math shims def-var!'d into the
 ;; clojure.math ns. Self-contained (only def-var! + Chez math), order-independent.
-(load "host/chez/math.ss")
+(load "host/chez/java/math.ss")
 
 ;; reader/macro runtime support: #?() feature set, reader-conditional + re-matcher
 ;; tagged-map ctors, macroexpand. After ns.ss; macroexpand call-time-refs the macro
@@ -375,17 +375,17 @@
 ;; Java-style arrays: object/typed array constructors + a jolt-array
 ;; backing; extends count/nth/seq/get/ref-put! so the overlay aget/aset/alength see
 ;; it. After the dispatchers it chains.
-(load "host/chez/natives-array.ss")
+(load "host/chez/java/natives-array.ss")
 
 ;; java.io byte/char streams (FileInputStream/…/ByteArrayOutputStream/Buffered*)
 ;; over Chez ports. After io.ss (extends its slurp/__close/reader-jhost?) and
 ;; natives-array.ss (the byte-array <-> bytevector bridge).
-(load "host/chez/io-streams.ss")
+(load "host/chez/java/io-streams.ss")
 
 ;; clojure.lang.PersistentQueue: a functional queue + EMPTY static.
 ;; Chains seq/count/empty?/peek/pop/conj/sequential?/class/instance?/printer, so
 ;; load after natives-array (the dispatchers it extends).
-(load "host/chez/natives-queue.ss")
+(load "host/chez/java/natives-queue.ss")
 
 ;; syntax-quote form builders: __sqcat/__sqvec/__sqmap/__sqset/
 ;; __sq1, def-var!'d into clojure.core. A cross-compiled macro expander (analyzer
@@ -397,14 +397,14 @@
 ;; (JVM) semantics. Loaded LAST — chains the fully-built jolt-deref and conveys the
 ;; thread-local binding stack (dyn-binding.ss) into workers. pmap/pcalls/pvalues
 ;; (overlay, over `future`) light up once future-call exists here.
-(load "host/chez/concurrency.ss")
+(load "host/chez/java/concurrency.ss")
 
 ;; clojure.core.async: real-thread blocking channels + go/go-loop/
 ;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses
 ;; ms->duration) and the collection/seq layer.
-(load "host/chez/async.ss")
+(load "host/chez/java/async.ss")
 
 ;; BigDecimal: the jbigdec value type + bigdec/decimal?/class/equality/
 ;; printing. Loads LAST so its set!-wraps of jolt-class/jolt=2/the printers sit
 ;; outermost over every earlier extension.
-(load "host/chez/bigdec.ss")
+(load "host/chez/java/bigdec.ss")

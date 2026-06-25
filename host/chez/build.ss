@@ -111,7 +111,7 @@
     'compile-eval
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
-    "(load \"host/chez/ffi.ss\")"
+    "(load \"host/chez/java/ffi.ss\")"
     "(set-source-roots! (list \"jolt-core\" \"stdlib\"))"))
 
 (define bld-tagged-loads

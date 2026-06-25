@@ -340,7 +340,7 @@
 
 (defn clojure-version [] "1.11.0-jolt")
 
-;; bigdec is a host fn (host/chez/bigdec.ss) — a real BigDecimal value type.
+;; bigdec is a host fn (host/chez/java/bigdec.ss) — a real BigDecimal value type.
 (defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
 (defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
 
