@@ -3063,4 +3063,7 @@
   {:suite "interop / java.io streams" :label "BufferedReader over StringReader readLine" :expected "[\"a\" \"b\" nil]" :actual "(let [r (java.io.BufferedReader. (java.io.StringReader. \"a\\nb\\n\"))] [(.readLine r) (.readLine r) (.readLine r)])"}
   {:suite "interop / java.io streams" :label "instance? InputStream" :expected "true" :actual "(instance? java.io.InputStream (java.io.ByteArrayInputStream. (.getBytes \"x\")))"}
   {:suite "interop / java.io streams" :label "FileOutputStream then FileInputStream round-trip" :expected "90" :actual "(let [f (java.io.File/createTempFile \"jc\" \".t\") o (java.io.FileOutputStream. f)] (.write o (byte-array [90])) (.close o) (let [in (java.io.FileInputStream. f) b (.read in)] (.close in) (.delete f) b))"}
+  {:suite "clojure.edn / unknown tags" :label "unknown tag throws naming the tag" :expected "\"No reader function for tag foobar\"" :actual "(do (require (quote [clojure.edn :as e1])) (try (e1/read-string \"#foobar 1\") (catch Exception e (ex-message e))))"}
+  {:suite "clojure.edn / unknown tags" :label "object tag throws naming the tag" :expected "\"No reader function for tag object\"" :actual "(do (require (quote [clojure.edn :as e2])) (try (e2/read-string \"#object [1 2 3]\") (catch Exception e (ex-message e))))"}
+  {:suite "clojure.edn / unknown tags" :label ":default opt handles an unknown tag" :expected "[\"foobar\" 9]" :actual "(do (require (quote [clojure.edn :as e3])) (e3/read-string {:default (fn [t v] [(name t) v])} \"#foobar 9\"))"}
 ]
