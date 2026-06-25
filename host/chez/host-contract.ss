@@ -215,9 +215,17 @@
                                    hc-kw-name (var-cell-name cell)))
               (nr (hc-cell-num-ret cell)))
           (if nr (jolt-assoc base hc-kw-num-ret nr) base))
-        (if (hc-fq-class-name? nm)
-            (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name nm)
-            (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm)))))
+        (cond
+          ;; java.util.Map / clojure.lang.Named — a dotted class name.
+          ((hc-fq-class-name? nm) (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name nm))
+          ;; a bare Capitalized name that names a registered host class — an
+          ;; imported short name (`(:import [java.time ZonedDateTime])` then
+          ;; `(. ZonedDateTime parse s)`). Only when otherwise unresolved, so a
+          ;; same-named var still wins.
+          ((and (fx>? (string-length nm) 0) (char-upper-case? (string-ref nm 0))
+                (hashtable-ref class-statics-tbl nm #f))
+           (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name nm))
+          (else (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm))))))
 
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
 

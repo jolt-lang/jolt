@@ -17,6 +17,92 @@
 (define (set-source-roots! roots) (set! source-roots roots))
 (define (get-source-roots) source-roots)
 
+;; --- data readers (#tag literals) -------------------------------------------
+;; A project's data_readers.{clj,cljc} at a source root maps a tag symbol to a
+;; qualified reader fn (e.g. {time/date time-literals.data-readers/date}). We
+;; merge those into clojure.core/*data-readers* and require each reader's
+;; namespace, then while loading source rewrite a registered #tag form into a
+;; call (reader-fn 'inner-form) so the value is built at runtime. #inst/#uuid and
+;; #"regex" stay built-in (the analyzer lowers them); only tags present in
+;; *data-readers* are rewritten. data-readers-active gates the per-form walk so
+;; projects without data readers (the common case) pay nothing.
+(define data-readers-active #f)
+(define (data-readers-table) (var-deref "clojure.core" "*data-readers*"))
+;; tag keyword (:#time/date) -> its registered reader symbol, or #f.
+(define (data-reader-symbol tag)
+  (and (keyword? tag)
+       (let ((nm (keyword-t-name tag)))
+         (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\#)
+              (let* ((bare (substring nm 1 (string-length nm)))
+                     (slash (let loop ((i 0))
+                              (cond ((>= i (string-length bare)) #f)
+                                    ((char=? (string-ref bare i) #\/) i)
+                                    (else (loop (+ i 1))))))
+                     (sym (if slash
+                              (jolt-symbol (substring bare 0 slash) (substring bare (+ slash 1) (string-length bare)))
+                              (jolt-symbol #f bare)))
+                     (t (data-readers-table))
+                     (v (and (pmap? t) (jolt-get t sym))))
+                (and v (not (jolt-nil? v)) v))))))
+;; change-tracking walk: rewrite registered #tag forms, keep everything else
+;; (and its identity/metadata) intact. Mirrors reader.ss rdr-form->data but keeps
+;; set FORMS for the compiler spine instead of building real sets.
+(define (ldr-conv-each xs)
+  (let loop ((xs xs) (acc '()) (changed #f))
+    (if (null? xs) (values (reverse acc) changed)
+        (let ((c (ldr-apply-readers (car xs))))
+          (loop (cdr xs) (cons c acc) (or changed (not (eq? c (car xs)))))))))
+(define (ldr-apply-readers x)
+  (cond
+    ((and (pmap? x) (eq? (jolt-get x rdr-kw-jolt-type) rdr-kw-jolt-tagged))
+     (let ((rdr (data-reader-symbol (jolt-get x rdr-kw-tag)))
+           (inner (ldr-apply-readers (jolt-get x rdr-kw-form))))
+       (cond (rdr (jolt-list rdr (jolt-list (jolt-symbol #f "quote") inner)))
+             ((eq? inner (jolt-get x rdr-kw-form)) x)
+             (else (rdr-make-tagged (jolt-get x rdr-kw-tag) inner)))))
+    ((rdr-set-form? x)
+     (let-values (((items changed) (ldr-conv-each (seq->list (jolt-get x rdr-kw-value)))))
+       (if changed (rdr-carry-meta x (rdr-make-set items)) x)))
+    ((pvec? x)
+     (let-values (((items changed) (ldr-conv-each (vector->list (pvec-v x)))))
+       (if changed (rdr-carry-meta x (apply jolt-vector items)) x)))
+    ((pmap? x)
+     (let ((order (hashtable-ref rdr-map-order x #f)))
+       (if order
+           (let-values (((kvs changed) (ldr-conv-each order)))
+             (if changed (rdr-carry-meta x (rdr-make-map kvs)) x))
+           (let-values (((kvs changed) (ldr-conv-each (pmap-fold x (lambda (k v a) (cons k (cons v a))) '()))))
+             (if changed (rdr-carry-meta x (apply jolt-hash-map kvs)) x)))))
+    ((cseq? x)
+     (let-values (((items changed) (ldr-conv-each (seq->list x))))
+       (if changed (rdr-carry-meta x (apply jolt-list items)) x)))
+    (else x)))
+
+;; read+merge one data_readers file: a literal {tag-sym reader-sym …} map.
+(define (merge-data-readers-file path)
+  (let* ((src (read-file-string path)))
+    (let-values (((m j) (rdr-read-form src 0 (string-length src))))
+    (when (and (not (rdr-eof? m)) (pmap? m))
+      (let ((cur (data-readers-table)))
+        (def-var! "clojure.core" "*data-readers*"
+          (apply jolt-assoc (if (pmap? cur) cur empty-pmap)
+                 (pmap-fold m (lambda (k v a) (cons k (cons v a))) '()))))
+      (set! data-readers-active #t)
+      ;; eagerly load each reader fn's namespace so the rewritten call resolves.
+      (pmap-fold m (lambda (k v a)
+                     (when (and (symbol-t? v) (symbol-t-ns v) (not (jolt-nil? (symbol-t-ns v))))
+                       (guard (e (#t #f)) (load-namespace (symbol-t-ns v))))
+                     a)
+                 #f)))))
+(define (load-data-readers!)
+  (for-each
+    (lambda (root)
+      (let ((clj (string-append root "/data_readers.clj"))
+            (cljc (string-append root "/data_readers.cljc")))
+        (cond ((file-exists? clj) (merge-data-readers-file clj))
+              ((file-exists? cljc) (merge-data-readers-file cljc)))))
+    source-roots))
+
 ;; --- namespace -> file path -------------------------------------------------
 ;; "app.commonmark-test" -> "app/commonmark_test": split on '.', munge '-'->'_'
 ;; per segment, join with '/'. Matches Clojure's ns->file munging.
@@ -91,7 +177,8 @@
               (when (getenv "JOLT_TRACE_LOAD")
                 (display "  [load-form] " (current-error-port))
                 (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
-              (jolt-compile-eval-form form (chez-current-ns)))
+              (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
+                                      (chez-current-ns)))
             (loop j)))))))
 
 ;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
@@ -205,7 +292,7 @@
 
 ;; Expose source-root control + ns loading to Clojure (jolt.main / jolt.deps).
 (def-var! "jolt.host" "set-source-roots!"
-  (lambda (roots) (set-source-roots! (seq->list roots)) jolt-nil))
+  (lambda (roots) (set-source-roots! (seq->list roots)) (load-data-readers!) jolt-nil))
 (def-var! "jolt.host" "source-roots" (lambda () (list->cseq source-roots)))
 (def-var! "jolt.host" "load-namespace" (lambda (n) (load-namespace n) jolt-nil))
 (def-var! "jolt.host" "file-exists?" (lambda (p) (if (file-exists? p) #t #f)))
