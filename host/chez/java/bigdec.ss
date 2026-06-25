@@ -3,7 +3,18 @@
 ;; 3M = {3,0}). M-suffix literals read to a :bigdec form that the back end lowers
 ;; to jolt-bigdec-from-string; bigdec coerces a number/string. Equality is by
 ;; value (1.0M = 1.00M), str drops the M, pr keeps it, class is
-;; java.math.BigDecimal. Arithmetic contagion is not modelled.
+;; java.math.BigDecimal.
+;;
+;; Arithmetic follows java.math.BigDecimal's scale rules: add/sub align to the
+;; larger scale; multiply adds scales; divide gives the exact quotient at minimal
+;; scale or throws ArithmeticException on a non-terminating expansion. Clojure
+;; contagion: a bigdec mixed with an integer stays a bigdec; a flonum operand wins
+;; (the result is a double). jbd+/jbd-/jbd*/jbd-div and the comparison helpers are
+;; the shared engine; the value-position shims (jolt-add/-sub/-mul/-div, compare)
+;; route through them when a bigdec is present, leaving the inlined native hot path
+;; untouched. Call-position `(+ 1.5M 2.5M)` reaches the raw Chez op and needs the
+;; analyzer's :bigdec type to dispatch (not yet wired); use it through reduce/apply
+;; or a let where the type is known.
 
 (define-record-type jbigdec (fields unscaled scale) (nongenerative chez-jbigdec-v1))
 
@@ -57,8 +68,147 @@
                  (pl (string-length padded)))
             (string-append (substring padded 0 (- pl sc)) "." (substring padded (- pl sc) pl)))))))
 
+;; value as a Chez flonum (for double contagion: a flonum operand wins).
+(define (jbigdec->flonum b)
+  (exact->inexact (/ (jbigdec-unscaled b) (expt 10 (jbigdec-scale b)))))
+
+;; coerce an exact integer to a scale-0 bigdec; pass a bigdec through. Used on the
+;; non-flonum mixed path (bigdec + long -> bigdec).
+(define (jbd-coerce x)
+  (cond ((jbigdec? x) x)
+        ((and (number? x) (exact? x) (integer? x)) (make-jbigdec x 0))
+        (else (error #f "bigdec arithmetic: cannot coerce operand" x))))
+
+;; --- core arithmetic on the {unscaled, scale} pair --------------------------
+;; align two bigdecs to a common scale, returning (unscaled-a unscaled-b scale).
+(define (jbd-align a b)
+  (let ((sa (jbigdec-scale a)) (sb (jbigdec-scale b)))
+    (cond
+      ((= sa sb) (values (jbigdec-unscaled a) (jbigdec-unscaled b) sa))
+      ((> sa sb) (values (jbigdec-unscaled a)
+                         (* (jbigdec-unscaled b) (expt 10 (- sa sb))) sa))
+      (else      (values (* (jbigdec-unscaled a) (expt 10 (- sb sa)))
+                         (jbigdec-unscaled b) sb)))))
+
+(define (jbd2+ a b) (let-values (((ua ub s) (jbd-align a b))) (make-jbigdec (+ ua ub) s)))
+(define (jbd2- a b) (let-values (((ua ub s) (jbd-align a b))) (make-jbigdec (- ua ub) s)))
+(define (jbd2* a b) (make-jbigdec (* (jbigdec-unscaled a) (jbigdec-unscaled b))
+                                  (+ (jbigdec-scale a) (jbigdec-scale b))))
+(define (jbd-negate a) (make-jbigdec (- (jbigdec-unscaled a)) (jbigdec-scale a)))
+
+;; exact rational -> bigdec at minimal scale, or throw if non-terminating. den must
+;; factor into 2s and 5s; scale = max(count2, count5).
+(define (jbd-rational->bigdec r)
+  (let ((p (numerator r)) (q (denominator r)))
+    (let loop ((d q) (c2 0) (c5 0))
+      (cond
+        ((= d 1) (let ((sc (max c2 c5)))
+                   (make-jbigdec (* p (quotient (expt 10 sc) q)) sc)))
+        ((= 0 (modulo d 2)) (loop (quotient d 2) (+ c2 1) c5))
+        ((= 0 (modulo d 5)) (loop (quotient d 5) c2 (+ c5 1)))
+        (else (jolt-throw (jolt-host-throwable
+                           "java.lang.ArithmeticException"
+                           "Non-terminating decimal expansion; no exact representable decimal result.")))))))
+
+(define (jbd2-div a b)
+  (when (= 0 (jbigdec-unscaled b))
+    (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
+  ;; a/b = (ua * 10^sb) / (ub * 10^sa) as an exact rational.
+  (jbd-rational->bigdec (/ (* (jbigdec-unscaled a) (expt 10 (jbigdec-scale b)))
+                           (* (jbigdec-unscaled b) (expt 10 (jbigdec-scale a))))))
+
+;; integer-division semantics (quot/rem): truncate toward zero, scale 0.
+(define (jbd-int-quot a b)
+  (when (= 0 (jbigdec-unscaled b))
+    (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
+  (let-values (((ua ub s) (jbd-align a b))) (make-jbigdec (quotient ua ub) 0)))
+(define (jbd-int-rem a b)
+  (when (= 0 (jbigdec-unscaled b))
+    (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
+  (let-values (((ua ub s) (jbd-align a b)))
+    (make-jbigdec (remainder ua ub) (max (jbigdec-scale a) (jbigdec-scale b)))))
+
+;; scale-independent ordering: compare unscaled values aligned to a common scale.
+(define (jbd-compare2 a b)
+  (let-values (((ua ub s) (jbd-align a b))) (cond ((< ua ub) -1) ((> ua ub) 1) (else 0))))
+
+;; A binary op over operands that may mix bigdec / integer / flonum. flonum-op is
+;; the native fallback for the double-contagion path; bd-op is the exact bigdec op.
+(define (jbd-binop flonum-op bd-op a b)
+  (if (or (flonum? a) (flonum? b))
+      (flonum-op (if (jbigdec? a) (jbigdec->flonum a) a)
+                 (if (jbigdec? b) (jbigdec->flonum b) b))
+      (bd-op (jbd-coerce a) (jbd-coerce b))))
+
+;; --- variadic engine ops (Phase-2 emit targets + value-position folds) -------
+(define (jbd-fold flonum-op bd-op init xs)
+  (let loop ((acc init) (rest xs))
+    (if (null? rest) acc (loop (jbd-binop flonum-op bd-op acc (car rest)) (cdr rest)))))
+
+(define (jbd-add . xs)
+  (cond ((null? xs) (make-jbigdec 0 0))
+        ((null? (cdr xs)) (car xs))
+        (else (jbd-fold + jbd2+ (car xs) (cdr xs)))))
+(define (jbd-sub . xs)
+  (cond ((null? xs) (error #f "- needs at least 1 arg"))
+        ((null? (cdr xs)) (if (jbigdec? (car xs)) (jbd-negate (car xs)) (- (car xs))))
+        (else (jbd-fold - jbd2- (car xs) (cdr xs)))))
+(define (jbd-mul . xs)
+  (cond ((null? xs) (make-jbigdec 1 0))
+        ((null? (cdr xs)) (car xs))
+        (else (jbd-fold * jbd2* (car xs) (cdr xs)))))
+(define (jbd-div . xs)
+  (cond ((null? xs) (error #f "/ needs at least 1 arg"))
+        ((null? (cdr xs)) (jbd-binop / jbd2-div (make-jbigdec 1 0) (car xs)))
+        (else (jbd-fold / jbd2-div (car xs) (cdr xs)))))
+
+;; comparison / predicate helpers (Phase-2 emit targets). A flonum operand demotes
+;; to the native comparison on the flonum values.
+(define (jbd-cmp-num op flop a b)
+  (if (or (flonum? a) (flonum? b))
+      (flop (if (jbigdec? a) (jbigdec->flonum a) a) (if (jbigdec? b) (jbigdec->flonum b) b))
+      (op (jbd-compare2 (jbd-coerce a) (jbd-coerce b)) 0)))
+(define (jbd-lt? a b) (jbd-cmp-num < < a b))
+(define (jbd-gt? a b) (jbd-cmp-num > > a b))
+(define (jbd-le? a b) (jbd-cmp-num <= <= a b))
+(define (jbd-ge? a b) (jbd-cmp-num >= >= a b))
+(define (jbd-zero? a) (= 0 (jbigdec-unscaled a)))
+(define (jbd-pos? a) (> (jbigdec-unscaled a) 0))
+(define (jbd-neg? a) (< (jbigdec-unscaled a) 0))
+(define (jbd-quot a b) (jbd-int-quot (jbd-coerce a) (jbd-coerce b)))
+(define (jbd-rem a b) (jbd-int-rem (jbd-coerce a) (jbd-coerce b)))
+
 ;; --- wire into the value model ----------------------------------------------
 (def-var! "clojure.core" "bigdec" jolt-bigdec)
+
+;; Value-position arithmetic: (reduce + bigs) / (apply * bigs) pass +/*/- // AS A
+;; VALUE, which lowers to these shims (NOT the inlined hot-path native op). Extend
+;; them to dispatch to the bigdec engine when a bigdec operand is present; ordinary
+;; numeric folds hit the captured native path unchanged.
+(define jbd-prev-add jolt-add)
+(define jbd-prev-sub jolt-sub)
+(define jbd-prev-mul jolt-mul)
+(define jbd-prev-div jolt-div)
+(define (jbd-any? xs) (and (pair? xs) (or (jbigdec? (car xs)) (jbd-any? (cdr xs)))))
+(set! jolt-add (lambda xs (if (jbd-any? xs) (apply jbd-add xs) (apply jbd-prev-add xs))))
+(set! jolt-sub (lambda xs (if (jbd-any? xs) (apply jbd-sub xs) (apply jbd-prev-sub xs))))
+(set! jolt-mul (lambda xs (if (jbd-any? xs) (apply jbd-mul xs) (apply jbd-prev-mul xs))))
+(set! jolt-div (lambda xs (if (jbd-any? xs) (apply jbd-div xs) (apply jbd-prev-div xs))))
+
+;; compare: add a bigdec arm (enables compare / sort / sorted collections). A
+;; bigdec vs a plain number compares by value; bigdec vs bigdec is scale-independent.
+(define jbd-prev-compare jolt-compare)
+(define (jbd-numberish? x) (or (jbigdec? x) (number? x)))
+(set! jolt-compare
+  (lambda (a b)
+    (if (and (or (jbigdec? a) (jbigdec? b)) (jbd-numberish? a) (jbd-numberish? b))
+        (if (or (flonum? a) (flonum? b))
+            (let ((fa (if (jbigdec? a) (jbigdec->flonum a) a))
+                  (fb (if (jbigdec? b) (jbigdec->flonum b) b)))
+              (cond ((< fa fb) -1) ((> fa fb) 1) (else 0)))
+            (jbd-compare2 (jbd-coerce a) (jbd-coerce b)))
+        (jbd-prev-compare a b))))
+(def-var! "clojure.core" "compare" jolt-compare)
 
 ;; equality: a bigdec equals only another bigdec, by value (matching (= 3M 3) = false).
 (register-eq-arm! (lambda (a b) (or (jbigdec? a) (jbigdec? b)))
