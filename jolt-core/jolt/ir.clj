@@ -118,7 +118,10 @@
       (= op :recur)  (assoc node :args (mapv f (get node :args)))
       (= op :fn)     (assoc node :arities (mapv (fn [a] (assoc a :body (f (get a :body))))
                                                 (get node :arities)))
-      (= op :def)    (assoc node :init (f (get node :init)))
+      (= op :def)    (let [n (assoc node :init (f (get node :init)))]
+                       (if (get node :meta-expr)
+                         (assoc n :meta-expr (f (get node :meta-expr)))
+                         n))
       (= op :host-call) (assoc node :target (f (get node :target))
                                     :args (mapv f (get node :args)))
       (= op :host-new) (assoc node :args (mapv f (get node :args)))
@@ -159,7 +162,8 @@
       (= op :loop) (f (reduce (fn [a b] (f a (nth b 1))) acc (get node :bindings)) (get node :body))
       (= op :recur) (reduce f acc (get node :args))
       (= op :fn) (reduce (fn [a ar] (f a (get ar :body))) acc (get node :arities))
-      (= op :def) (if (get node :init) (f acc (get node :init)) acc)
+      (= op :def) (let [a (if (get node :init) (f acc (get node :init)) acc)]
+                    (if (get node :meta-expr) (f a (get node :meta-expr)) a))
       (= op :host-call) (reduce f (f acc (get node :target)) (get node :args))
       (= op :host-new) (reduce f acc (get node :args))
       (= op :try)

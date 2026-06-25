@@ -344,8 +344,12 @@
 (defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
 (defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
 
-;; No class hierarchy on this host.
-(defn supers [x] #{})
+;; jolt has no reflection, but a few common JVM interfaces carry a modeled
+;; ancestry (jolt.host/class-supers) so reflective checks like
+;; (ancestors (class f)) answer like the JVM.
+(defn supers [x]
+  (let [s (jolt.host/class-supers x)]
+    (if s (set s) #{})))
 
 ;; Like Clojure's munge: rewrite dashes to underscores, preserving the argument's
 ;; type — a symbol munges to a symbol, anything else to a string. (jolt only

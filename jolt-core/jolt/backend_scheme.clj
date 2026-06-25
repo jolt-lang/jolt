@@ -302,6 +302,14 @@
 ;; A def's :meta is a jolt map value. Non-empty? (a plain def carries {}).
 (defn- jmeta-nonempty? [m] (and (map? m) (pos? (count m))))
 
+;; The meta argument to def-var-with-meta!. When the analyzer attached a
+;; :meta-expr (metadata with values to evaluate, e.g. ^{:a some-fn}), emit it as a
+;; runtime expression; otherwise the static :meta map as quoted data.
+(defn- emit-def-meta [node]
+  (if (:meta-expr node)
+    (emit (:meta-expr node))
+    (emit-quoted (:meta node))))
+
 (defn- emit-binding [b]
   (str "(" (munge-name (nth b 0)) " " (emit (nth b 1)) ")"))
 
@@ -629,7 +637,7 @@
            (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
            (jmeta-nonempty? (:meta node))
            (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                (emit (:init node)) " " (emit-quoted (:meta node)) ")")
+                (emit (:init node)) " " (emit-def-meta node) ")")
            :else
            (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                 (emit (:init node)) ")"))
@@ -660,7 +668,7 @@
       (let [init (emit (:init node))]
         (if (jmeta-nonempty? (:meta node))
           (str "(begin (define " b " " init ") (def-var-with-meta! "
-               (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-quoted (:meta node)) "))")
+               (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) "))")
           (str "(begin (define " b " " init ") (def-var! "
                (chez-str-lit ns) " " (chez-str-lit nm) " " b "))"))))
     :else (emit node)))

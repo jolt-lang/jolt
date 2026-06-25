@@ -57,7 +57,10 @@ aren't implemented; a few are accepted but no-ops (noted inline).
   `.hashCode` `.equals` `.getClass` work on any value.
 - **`java.lang.Class`** — `forName` (throws a catchable `ClassNotFoundException`
   for a class jolt can't back, so `(try (Class/forName "opt.Dep") (catch …))`
-  dependency probes work).
+  dependency probes work). There is no reflection, but a few common interfaces
+  carry a modeled ancestry so `(supers c)` / `(ancestors c)` answer like the JVM —
+  e.g. `(ancestors (class f))` for a function yields `Runnable` and `Callable`,
+  the check `core.memoize` uses to validate a memoizable argument.
 
 ### Strings and text
 
@@ -138,8 +141,13 @@ aren't implemented; a few are accepted but no-ops (noted inline).
   `IllegalArgumentException` `IllegalStateException` `IOException`
   `NumberFormatException` `ArithmeticException` `NullPointerException`
   `ClassCastException` `IndexOutOfBoundsException` `FileNotFoundException`
-  `UnsupportedOperationException` and the common network exceptions, each with
-  the `(E.)` / `(E. msg)` / `(E. msg cause)` / `(E. cause)` constructors.
+  `UnsupportedOperationException` `Error` `AssertionError` and the common network
+  exceptions, each with the `(E.)` / `(E. msg)` / `(E. msg cause)` / `(E. cause)`
+  constructors. `try` dispatches its `catch` clauses by class in order, respecting
+  the exception supertype hierarchy (`(catch Exception e …)` catches a
+  `RuntimeException` but not an `Error`); a thrown value matching no clause
+  re-throws. An untyped host condition (e.g. from `(/ 1 0)`) is caught by a
+  `RuntimeException`/`Exception`/`Throwable` clause.
 
 What's deliberately absent: STM (`clojure.lang.LockingTransaction/isRunning`
 returns `false`), reflection, `gen-class`/`proxy` of Java classes, and

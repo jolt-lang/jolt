@@ -260,6 +260,12 @@
            (jolt-promise-deref-timed x (car opts) (cadr opts))))
       ((jolt-agent? x) (jolt-agent-state x))
       ((jolt-delay? x) (jolt-delay-force x))
+      ;; a record/reify implementing clojure.lang.IDeref: @x calls its `deref`
+      ;; method with the value itself as the leading `this`.
+      ((and (jrec? x) (find-method-any-protocol (jrec-tag x) "deref"))
+       => (lambda (m) (jolt-invoke m x)))
+      ((and (reified-methods x) (hashtable-ref (reified-methods x) "deref" #f))
+       => (lambda (m) (jolt-invoke m x)))
       (else (apply %pre-conc-deref x opts)))))
 
 ;; realized? for a future/promise/delay. Wrapped over the overlay version in
@@ -288,6 +294,26 @@
 (def-var! "clojure.core" "make-delay" jolt-make-delay)
 (def-var! "clojure.core" "delay?" jolt-delay?)
 (def-var! "clojure.core" "deref" jolt-deref)
+
+;; --- object monitors (locking) ----------------------------------------------
+;; (locking obj body…) takes obj's monitor for the body — a real per-object lock
+;; now that futures/agents/threads share one heap. Each object gets a recursive
+;; Chez mutex (a thread may re-enter a monitor it already holds, like the JVM),
+;; held in an identity-keyed weak table so monitors are reclaimed with their
+;; objects. dynamic-wind releases on normal, exceptional, and continuation exit.
+(define monitor-table (make-weak-eq-hashtable))
+(define monitor-table-lock (make-mutex))
+(define (object-monitor obj)
+  (with-mutex monitor-table-lock
+    (or (hashtable-ref monitor-table obj #f)
+        (let ((m (make-mutex))) (hashtable-set! monitor-table obj m) m))))
+(define (jolt-with-monitor obj thunk)
+  (let ((m (object-monitor obj)))
+    (dynamic-wind
+      (lambda () (mutex-acquire m))
+      thunk
+      (lambda () (mutex-release m)))))
+(def-var! "jolt.host" "with-monitor" jolt-with-monitor)
 
 ;; --- cooperative thread interrupt -------------------------------------------
 ;; Chez has no force-kill, but its engine timer (set-timer + timer-interrupt-

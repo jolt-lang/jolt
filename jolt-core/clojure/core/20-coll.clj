@@ -311,7 +311,12 @@
 
 (defn ancestors
   ([tag] (ancestors (deref global-hierarchy) tag))
-  ([h tag] (not-empty (get (get h :ancestors) tag))))
+  ([h tag]
+   ;; the user hierarchy plus any modeled JVM ancestry (jolt.host/class-ancestors)
+   ;; so (ancestors (class x)) answers like the JVM for the common interfaces.
+   (let [hier (get (get h :ancestors) tag)
+         host (jolt.host/class-ancestors tag)]
+     (not-empty (if host (into (or hier #{}) host) hier)))))
 
 (defn descendants
   ([tag] (descendants (deref global-hierarchy) tag))

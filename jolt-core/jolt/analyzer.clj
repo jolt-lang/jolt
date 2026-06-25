@@ -215,11 +215,14 @@
                        rest-items))
       :else (uncompilable "fn: bad params"))))
 
+;; class names that catch everything (the JVM root types); a (catch Throwable e …)
+;; clause matches any thrown value unconditionally.
+(def ^:private catch-all-names #{"Throwable" "java.lang.Throwable" "Object" "java.lang.Object"})
+
 (defn- analyze-try [ctx items env]
   (let [clauses (rest items)
         body (atom [])
-        catch-sym (atom nil)
-        catch-body (atom nil)
+        catches (atom [])           ; ordered vector of (catch class binding body*) clauses
         finally-body (atom nil)]
     (doseq [c clauses]
       (let [head (when (form-list? c) (first (vec (form-elements c))))
@@ -233,22 +236,43 @@
               ;; form-sym-name crash on a non-symbol.
               (when (or (< (count cl) 3) (not (form-sym? (nth cl 2))))
                 (throw "Unable to parse catch clause; expected (catch class binding body*)"))
-              (reset! catch-sym (form-sym-name (nth cl 2)))
-              (reset! catch-body (drop 3 cl)))
+              (swap! catches conj cl))
           (= hname "finally")
             (reset! finally-body (rest (vec (form-elements c))))
           :else (swap! body conj c))))
-    ;; Add :catch-sym/:catch-body/:finally ONLY when present (same discipline as
-    ;; the arity :rest key above). Assoc'ing them nil-when-absent would give the
-    ;; node a nil-valued key, which makes it a phm in jolt's map representation
-    ;; and forces the back end to densify it (norm-node) before reading :op — the
-    ;; map-nil-representation trap, also avoided for def/fn/arity nodes. The
-    ;; back end reads each key with a nil-safe (node :k) and gates on it, so an
-    ;; absent key is indistinguishable from a present-nil one.
+    ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
+    ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
+    ;; clause's class with (instance? C e) — which respects the exception supertype
+    ;; hierarchy — plus __catch-broad? for an untyped host condition. No match
+    ;; re-throws. (The earlier single-catch IR ignored the class and caught
+    ;; everything; this gives real per-class dispatch.) :catch-sym/:catch-body/
+    ;; :finally are added only when present — an absent key must stay absent (a
+    ;; nil-valued key would make the node a phm and force back-end densification).
     (let [n {:op :try :body (analyze-seq ctx @body env)}
-          n (if @catch-body
-              (assoc n :catch-sym @catch-sym
-                       :catch-body (analyze-seq ctx @catch-body (add-locals env [@catch-sym])))
+          n (if (seq @catches)
+              (let [evar-name (gen-name "catch")
+                    evar (symbol evar-name)
+                    dispatch
+                    (reduce
+                      (fn [else cl]
+                        (let [cform (nth cl 1)
+                              bindsym (nth cl 2)
+                              bodyf (drop 3 cl)
+                              letform (cons 'let (cons (vector bindsym evar) bodyf))
+                              fullname (when (form-sym? cform) (form-sym-name cform))
+                              catch-all? (or (not (form-sym? cform))
+                                             (contains? catch-all-names fullname))]
+                          (if catch-all?
+                            letform
+                            (list 'if (list 'or
+                                            (list 'instance? cform evar)
+                                            (list '__catch-broad? fullname evar))
+                                  letform else))))
+                      (list 'throw evar)
+                      (reverse @catches))]
+                (assoc n :catch-sym evar-name
+                         :catch-body (analyze-seq ctx (list dispatch)
+                                                  (add-locals env [evar-name]))))
               n)
           n (if @finally-body
               (assoc n :finally (analyze-seq ctx @finally-body env))
@@ -284,6 +308,22 @@
 (defn- field-head? [nm]
   (and (> (count nm) 2) (= ".-" (subs nm 0 2))))
 
+;; Clojure evaluates def metadata values as expressions: ^{:k (f)} stores the
+;; result of (f), ^{:a some-fn} stores the fn value. Build an IR map that evaluates
+;; each value at def time. :tag keeps the resolved class-name string (jolt models a
+;; type hint as its class name, not a runtime expression). nil when there's no
+;; metadata, so a plain def keeps the cheap static path.
+(defn- def-meta-expr [ctx base env]
+  (when (pos? (count base))
+    (map-node (mapv (fn [p]
+                      (let [k (first p) v (second p)]
+                        ;; :tag stays a literal (a resolved class-name string or a
+                        ;; primitive-hint symbol like `double`) — quote it rather
+                        ;; than evaluate it. Everything else is evaluated.
+                        [(const k)
+                         (if (= k :tag) (quote-node v) (analyze ctx v env))]))
+                    (seq base)))))
+
 (defn- analyze-def [ctx items env]
   (let [name-sym (nth items 1)]
     ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
@@ -316,7 +356,9 @@
             node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
         (host-intern! ctx cur nm)
         ;; a ^double/^long return hint on the name applies to all arities of the fn.
-        (def-node cur nm (with-ret-nhint (analyze ctx val-form env) (tag->nkind tag)) node-meta)))))
+        (let [node (def-node cur nm (with-ret-nhint (analyze ctx val-form env) (tag->nkind tag)) node-meta)
+              me (def-meta-expr ctx node-meta env)]
+          (if me (assoc node :meta-expr me) node))))))
 
 ;; (set! (.-field obj) v) mutates a deftype instance field in place; (set! *var* v)
 ;; sets the var's innermost thread binding, else its root. A local target (jolt

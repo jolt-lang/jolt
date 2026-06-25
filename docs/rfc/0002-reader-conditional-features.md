@@ -1,8 +1,21 @@
 # RFC 0002 — Reader-Conditional Feature Set
 
-- **Status**: Accepted (implemented; measured)
+- **Status**: Superseded (2026-06-25) — jolt now includes `:clj` in the default
+  set; see the note below.
 - **Created**: 2026-06-10
 - **Spec**: `docs/spec/02-reader.md` §2.3 S18
+
+> **Update (2026-06-25).** The default set is now **`#{:jolt :clj :default}`** —
+> `:clj` is satisfied by default. The clj ecosystem's `.cljc` libraries gate
+> their host code behind `#?(:clj …)` with no `:jolt`/`:default` fallback, so
+> the conformance libraries (core.cache, core.match, tick, malli, …) only load
+> with `:clj` present; requiring an opt-in for each was friction with no payoff
+> once jolt's `clojure.lang.*`/`java.*` emulation was broad enough to run those
+> `:clj` branches. Matching is still by **clause order**, so a library can place
+> a `:jolt` branch first to override. There is no `JOLT_FEATURES` environment
+> variable; a loading context overrides the set at runtime with
+> `reader-features-set!`. The rest of this RFC is the original (reverted)
+> design.
 
 ## Summary
 

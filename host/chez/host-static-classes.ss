@@ -456,7 +456,8 @@
   '("Throwable" "Exception" "RuntimeException" "IllegalArgumentException" "IllegalStateException"
     "InterruptedException" "UnsupportedOperationException" "IOException" "NumberFormatException"
     "ArithmeticException" "NullPointerException" "ClassCastException" "IndexOutOfBoundsException"
-    "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"))
+    "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"
+    "Error" "AssertionError"))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
@@ -742,3 +743,42 @@
 
 ;; (jolt.host/table? x) — is x a host tagged-table?
 (def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))
+
+;; --- minimal JVM class/interface ancestry -----------------------------------
+;; A handful of libraries reflect over the class hierarchy — e.g. core.memoize
+;; validates its first argument with (some #{IFn AFn Runnable Callable}
+;; (ancestors (class f))). jolt models a class as its name string and has no
+;; reflection, so supers/ancestors return nothing on their own. This table gives
+;; the common interfaces the direct supers the JVM reports, and the overlay's
+;; supers/ancestors fold it in. Keyed by canonical class name; value = direct
+;; supers. Extend as more interfaces are exercised.
+(define class-supers-tbl (make-hashtable string-hash string=?))
+(define (reg-class-supers! name supers) (hashtable-set! class-supers-tbl name supers))
+(reg-class-supers! "clojure.lang.IFn" '("java.lang.Runnable" "java.util.concurrent.Callable"))
+(reg-class-supers! "clojure.lang.AFn" '("clojure.lang.IFn" "java.lang.Runnable" "java.util.concurrent.Callable"))
+(reg-class-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.IFn" "clojure.lang.Fn"
+                                              "java.lang.Runnable" "java.util.concurrent.Callable"))
+
+;; transitive closure of direct supers (set semantics via an accumulator list)
+(define (class-ancestors-list name)
+  (let loop ((pending (hashtable-ref class-supers-tbl name '())) (seen '()))
+    (cond ((null? pending) (reverse seen))
+          ((member (car pending) seen) (loop (cdr pending) seen))
+          (else (loop (append (hashtable-ref class-supers-tbl (car pending) '()) (cdr pending))
+                      (cons (car pending) seen))))))
+
+;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
+;; super / ancestor class-name strings, or nil when jolt models no hierarchy for it.
+(def-var! "jolt.host" "class-supers"
+  (lambda (x)
+    (let ((name (class-key x)))
+      (if (and name (hashtable-contains? class-supers-tbl name))
+          (list->cseq (hashtable-ref class-supers-tbl name '()))
+          jolt-nil))))
+(def-var! "jolt.host" "class-ancestors"
+  (lambda (x)
+    (let ((name (class-key x)))
+      (if name
+          (let ((as (class-ancestors-list name)))
+            (if (null? as) jolt-nil (list->cseq as)))
+          jolt-nil))))

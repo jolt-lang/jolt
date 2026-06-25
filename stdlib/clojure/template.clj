@@ -1,6 +1,6 @@
 ;; Verbatim from clojure.template (Stuart Sierra) — pure Clojure over
 ;; clojure.walk, which jolt ships. Added so honeysql's :clj branch (which
-;; requires clojure.template) loads under JOLT_FEATURES including clj.
+;; requires clojure.template) loads.
 (ns clojure.template
   "Macros that expand to repeated copies of a template expression."
   (:require [clojure.walk :as walk]))
