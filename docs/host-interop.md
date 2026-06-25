@@ -39,12 +39,25 @@ aren't implemented; a few are accepted but no-ops (noted inline).
   `.doubleValue` `.floatValue` `.byteValue` `.shortValue` `.toString`
   `.hashCode` (integer projections wrap modulo their width, as on the JVM).
 - **`java.lang.System`** — `currentTimeMillis` `nanoTime` `exit` `getProperty`
-  `setProperty` `clearProperty` `getProperties` `getenv`.
-- **`java.lang.Thread`** — `sleep` (real), `yield`/`interrupted` (no-ops),
-  `currentThread`.
+  `setProperty` `clearProperty` `getProperties` `getenv` `gc` (a full Chez
+  collection — clears weak references and fires their queues).
+- **`java.lang.Thread`** — real OS threads over Chez `fork-thread`, sharing the
+  one heap (a captured atom/var is shared): `(Thread. thunk)` + `start` / `join` /
+  `run` / `isAlive`; plus `sleep` (real), `yield`/`interrupted`/`interrupt`
+  (no-ops), `currentThread`.
+- **`java.util.concurrent.CountDownLatch`** — `(CountDownLatch. n)` + `countDown`
+  / `await` / `getCount`, a real counting barrier (mutex + condition).
+- **`java.lang.ref.SoftReference` / `WeakReference` + `ReferenceQueue`** — genuine
+  GC reclamation: the referent is held through a Chez weak pair, so the collector
+  reclaims it once unreachable (`.get` then returns nil) and a guardian enqueues
+  the reference on its `ReferenceQueue` (`poll`). Chez has no reference softer than
+  weak, so a `SoftReference` clears on unreachability, not memory pressure — eager,
+  but real eviction (core.cache's SoftCache).
 - **`java.lang.Object`** — `(Object.)` as a fresh-identity sentinel; `.toString`
   `.hashCode` `.equals` `.getClass` work on any value.
-- **`java.lang.Class`** — `forName`.
+- **`java.lang.Class`** — `forName` (throws a catchable `ClassNotFoundException`
+  for a class jolt can't back, so `(try (Class/forName "opt.Dep") (catch …))`
+  dependency probes work).
 
 ### Strings and text
 
@@ -64,9 +77,11 @@ aren't implemented; a few are accepted but no-ops (noted inline).
 
 - **`java.util.ArrayList`** — `add` `get` `set` `size` `isEmpty` `remove` `clear`
   `contains` `toArray` `iterator`.
-- **`java.util.HashMap`** — `put` `get` `getOrDefault` `containsKey`
-  `containsValue` `size` `isEmpty` `remove` `clear` `putAll` `keySet` `values`
-  `entrySet`.
+- **`java.util.HashMap`** / **`java.util.concurrent.ConcurrentHashMap`** — `put`
+  `get` `getOrDefault` `containsKey` `containsValue` `size` `isEmpty` `remove`
+  `clear` `putAll` `keySet` `values` `entrySet`; `clojure.core`'s `get` / `count` /
+  `contains?` also read them. (One shared heap, so the plain mutable map serves the
+  concurrent one.)
 
 ### I/O
 
