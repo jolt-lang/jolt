@@ -49,6 +49,18 @@
     (and (>= n 2) (contains? #{"<" ">" "<=" ">=" "=" "=="} nm)) :bool
     :else nil))
 
+;; result kind of a bigdec-specialized op, or nil. Arithmetic / quot / rem yield a
+;; bigdec; the comparisons and zero?/pos?/neg? yield a bool. `=` is left to the
+;; generic jolt= (already bigdec-aware), and `/` can throw (non-terminating) but is
+;; still a bigdec op. Each non-nil name must have an entry in backend bd-ops.
+(defn- bd-spec [nm n]
+  (cond
+    (and (>= n 1) (contains? #{"+" "-" "*" "/"} nm)) :bigdec
+    (and (= n 2) (contains? #{"quot" "rem"} nm)) :bigdec
+    (and (= n 1) (contains? #{"zero?" "pos?" "neg?"} nm)) :bool
+    (and (>= n 2) (contains? #{"<" ">" "<=" ">="} nm)) :bool
+    :else nil))
+
 ;; A non-numeric result (a comparison) doesn't propagate a numeric kind.
 (defn- propagate [spec] (if (= spec :bool) nil spec))
 
@@ -150,11 +162,12 @@
       (get fnode :num-ret) [(get fnode :num-ret) node1]
       (nil? nm) [nil node1]
       :else
-      (let [;; per-operand class: :double / :long (typed), :wild (integer literal,
-            ;; usable in either), or :no (anything else — blocks specialization).
+      (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (integer
+            ;; literal, usable in any), or :no (anything else — blocks specialization).
             cls (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
                                 (cond (= k :double) :double
                                       (= k :long) :long
+                                      (= k :bigdec) :bigdec
                                       (int-lit? nd) :wild
                                       :else :no)))
                       ars)
@@ -163,7 +176,8 @@
                        (every? (fn [c] (or (= c :wild) (= c allowed))) cls)
                        (some (fn [c] (= c need)) cls)))
             ds (dbl-spec nm n)
-            ls (lng-spec nm n)]
+            ls (lng-spec nm n)
+            bs (bd-spec nm n)]
         (cond
           (and ds (ok? :double :double))
           ;; coerce integer-literal operands to flonum so fl-ops never see an exact int.
@@ -172,6 +186,11 @@
             [(propagate ds) (assoc node1 :args args' :num-kind :double)])
           (and ls (ok? :long :long))
           [(propagate ls) (assoc node1 :num-kind :long)]
+          ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
+          ;; runtime). A flonum operand blocks this (double contagion) and falls
+          ;; through to the generic op.
+          (and bs (ok? :bigdec :bigdec))
+          [(propagate bs) (assoc node1 :num-kind :bigdec)]
           :else [nil node1])))))
 
 ;; Returns [kind node'] — kind is :double, :long, or nil.
@@ -179,6 +198,9 @@
   (let [op (get node :op)]
     (cond
       (= op :const) [(if (float-lit? node) :double nil) node]
+      ;; a bigdec (M) literal seeds the :bigdec kind so call-position arithmetic
+      ;; over it (and let-bound copies of it) dispatches to the bigdec engine.
+      (= op :bigdec) [:bigdec node]
       (= op :local) [(get tenv (get node :name)) node]
       (= op :coerce) [(get node :kind) (assoc node :expr (nth (an (get node :expr) tenv) 1))]
       (= op :invoke) (an-invoke node tenv)

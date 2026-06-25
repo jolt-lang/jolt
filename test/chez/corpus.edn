@@ -1325,6 +1325,22 @@
   {:suite "numbers / bigdec arithmetic" :label "compare is scale-independent" :expected "0" :actual "(compare 1.0M 1.00M)"}
   {:suite "numbers / bigdec arithmetic" :label "compare orders by value" :expected "-1" :actual "(compare 1.5M 2.5M)"}
   {:suite "numbers / bigdec arithmetic" :label "sort uses bigdec compare" :expected "[1M 2M 3M]" :actual "(vec (sort [3M 1M 2M]))"}
+  {:suite "numbers / bigdec call position" :label "add" :expected "4.0M" :actual "(+ 1.5M 2.5M)"}
+  {:suite "numbers / bigdec call position" :label "multiply adds scales" :expected "\"3.0000\"" :actual "(str (* 1.50M 2.00M))"}
+  {:suite "numbers / bigdec call position" :label "subtract" :expected "3.5M" :actual "(- 5M 1.5M)"}
+  {:suite "numbers / bigdec call position" :label "negate" :expected "-1.5M" :actual "(- 1.5M)"}
+  {:suite "numbers / bigdec call position" :label "long contagion" :expected "3.5M" :actual "(+ 1.5M 2)"}
+  {:suite "numbers / bigdec call position" :label "exact divide" :expected "0.25M" :actual "(/ 1M 4M)"}
+  {:suite "numbers / bigdec call position" :label "less-than" :expected "true" :actual "(< 1.5M 2.5M)"}
+  {:suite "numbers / bigdec call position" :label "greater-than false" :expected "false" :actual "(> 1.5M 2.5M)"}
+  {:suite "numbers / bigdec call position" :label "zero?" :expected "true" :actual "(zero? 0M)"}
+  {:suite "numbers / bigdec call position" :label "pos?" :expected "true" :actual "(pos? 1.5M)"}
+  {:suite "numbers / bigdec call position" :label "neg? false" :expected "false" :actual "(neg? 1.5M)"}
+  {:suite "numbers / bigdec call position" :label "quot truncates to scale 0" :expected "3M" :actual "(quot 7M 2M)"}
+  {:suite "numbers / bigdec call position" :label "rem" :expected "1M" :actual "(rem 7M 2M)"}
+  {:suite "numbers / bigdec call position" :label "let-bound operands" :expected "4.0M" :actual "(let [a 1.5M b 2.5M] (+ a b))"}
+  {:suite "numbers / bigdec call position" :label "nested arithmetic propagates" :expected "6.0M" :actual "(+ (* 1.5M 2M) 3M)"}
+  {:suite "numbers / bigdec call position" :label "non-terminating divide throws" :expected ":nonterm" :actual "(try (/ 1M 3M) (catch ArithmeticException _ :nonterm))"}
   {:suite "numbers / literal syntax" :label "ratio -> double" :expected "1/2" :actual "1/2"}
   {:suite "numbers / literal syntax" :label "ratio 3/4" :expected "3/4" :actual "3/4"}
   {:suite "numbers / literal syntax" :label "neg ratio" :expected "-1/2" :actual "-1/2"}

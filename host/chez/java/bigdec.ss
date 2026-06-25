@@ -9,12 +9,19 @@
 ;; larger scale; multiply adds scales; divide gives the exact quotient at minimal
 ;; scale or throws ArithmeticException on a non-terminating expansion. Clojure
 ;; contagion: a bigdec mixed with an integer stays a bigdec; a flonum operand wins
-;; (the result is a double). jbd+/jbd-/jbd*/jbd-div and the comparison helpers are
-;; the shared engine; the value-position shims (jolt-add/-sub/-mul/-div, compare)
-;; route through them when a bigdec is present, leaving the inlined native hot path
-;; untouched. Call-position `(+ 1.5M 2.5M)` reaches the raw Chez op and needs the
-;; analyzer's :bigdec type to dispatch (not yet wired); use it through reduce/apply
-;; or a let where the type is known.
+;; (the result is a double). jbd-add/-sub/-mul/-div, the jbd-lt?/…/zero? helpers,
+;; and jbd-quot/-rem are the shared engine. Two paths reach it, both leaving the
+;; inlined native hot path untouched:
+;;   - value position ((reduce + bigs)/(apply * bigs)): the jolt-add/-sub/-mul/-div
+;;     and compare shims dispatch here when a bigdec operand is present.
+;;   - call position ((+ 1.5M 2.5M), (< a b), (zero? b)): jolt.passes.numeric tags
+;;     the invoke :num-kind :bigdec when every operand is statically a bigdec (M
+;;     literal or a let-bound copy, integer literals allowed), and the back end
+;;     lowers it to the jbd op. Non-bigdec code is unaffected.
+;; Gaps (a runtime bigdec the analyzer can't see statically): a bigdec mixed with a
+;; flonum in call position ((+ 1.5M 2.0)) and arithmetic over a bigdec the analyzer
+;; types as :any ((+ (bigdec x) 1)) fall through to the raw op and throw; use value
+;; position or a literal-typed let.
 
 (define-record-type jbigdec (fields unscaled scale) (nongenerative chez-jbigdec-v1))
 
