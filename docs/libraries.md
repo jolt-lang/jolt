@@ -53,3 +53,12 @@ Libraries confirmed to load and pass their conformance checks on Jolt
   [hiccup-app example](https://github.com/jolt-lang/examples/tree/main/hiccup-app).
   Element tags, attribute maps, nested elements, and `for` comprehensions; its
   `html` macro pre-compiles the markup (a good compiler stress test).
+* [clojure.data.json](https://github.com/clojure/data.json) — JSON reading and
+  writing; `read-str`/`write-str` with key/value fns and options. Its own test
+  suite passes 138/139.
+* [clojure.spec.alpha](https://github.com/clojure/spec.alpha) — data specs;
+  `s/def`, `s/valid?`, `s/conform`, `s/cat`/`s/keys`, `s/explain-str`, and
+  `s/check-asserts` work over the registry.
+* [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`. The
+  API test suite passes 353/359; the remaining failures are named-zone DST (full
+  tzdb) and locale-specific formatting.
