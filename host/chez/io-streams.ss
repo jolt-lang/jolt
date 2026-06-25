@@ -275,6 +275,10 @@
   (cond ((in-stream? input) (let ((bv (get-bytevector-all (in-stream-port input)))) (if (eof-object? bv) (make-bytevector 0) bv)))
         ((bytevector? input) input)
         ((and (jolt-array? input) (eq? (jolt-array-kind input) 'byte)) (na-bytearray->bv input))
+        ;; a byte-input-stream shim (host tagged-table, :jolt/input-stream — e.g.
+        ;; http-client's ByteArrayInputStream): drain it byte-exact, like slurp.
+        ((and (htable? input) (jolt-truthy? (jolt-ref-get input (keyword "jolt" "input-stream"))))
+         (drain-byte-stream input))
         (else #f)))
 (define (input-text input)
   (cond ((string? input) input)
