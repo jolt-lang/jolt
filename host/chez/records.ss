@@ -65,24 +65,47 @@
 (register-eq-arm! (lambda (a b) (or (jrec? a) (jrec? b)))
                   (lambda (a b) (and (jrec? a) (jrec? b) (jrec=? a b))))
 (register-hash-arm! jrec? jrec-hash)
-(register-get-arm! jrec? (lambda (coll k d) (jrec-lookup coll k d)))
+;; get on a jrec: a real field reads raw (so a deftype method's own field bindings,
+;; compiled to (get inst :field), never recurse); a NON-field key on a deftype that
+;; implements clojure.lang.ILookup routes to its valAt (core.match's pattern types
+;; compute ::tag in valAt), else the default.
+(register-get-arm! jrec?
+  (lambda (coll k d)
+    (cond ((jrec-has? coll k) (jrec-lookup coll k d))
+          ((find-method-any-protocol (jrec-tag coll) "valAt")
+           => (lambda (m) (jolt-invoke m coll k d)))
+          (else d))))
+;; A jrec is a defrecord (map of fields) by default, BUT a deftype that
+;; implements a clojure.lang collection interface carries the op as an inline
+;; method — prefer that method, else fall back to the field/map behavior. (jrec-cl
+;; finds the method; find-method-any-protocol / jolt-invoke resolve at call time.)
+(define (jrec-cl coll name) (and (jrec? coll) (find-method-any-protocol (jrec-tag coll) name)))
 (define %r-jolt-count jolt-count)
-(set! jolt-count (lambda (coll) (if (jrec? coll) (length (jrec-pairs coll)) (%r-jolt-count coll))))
+(set! jolt-count (lambda (coll)
+  (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
+        ((jrec? coll) (length (jrec-pairs coll)))
+        (else (%r-jolt-count coll)))))
 (define %r-jolt-contains? jolt-contains?)
 (set! jolt-contains? (lambda (coll k) (if (jrec? coll) (jrec-has? coll k) (%r-jolt-contains? coll k))))
 (define %r-jolt-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
-  (if (jrec? coll) (make-jrec (jrec-tag coll) (jrec-replace (jrec-pairs coll) k v)) (%r-jolt-assoc1 coll k v))))
+  (cond ((jrec-cl coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
+        ((jrec? coll) (make-jrec (jrec-tag coll) (jrec-replace (jrec-pairs coll) k v)))
+        (else (%r-jolt-assoc1 coll k v)))))
 (define %r-jolt-keys jolt-keys)
 (set! jolt-keys (lambda (m) (if (jrec? m) (list->cseq (map car (jrec-pairs m))) (%r-jolt-keys m))))
 (define %r-jolt-vals jolt-vals)
 (set! jolt-vals (lambda (m) (if (jrec? m) (list->cseq (map cdr (jrec-pairs m))) (%r-jolt-vals m))))
 (define %r-jolt-seq jolt-seq)
 (set! jolt-seq (lambda (x)
-  (if (jrec? x) (list->cseq (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-pairs x))) (%r-jolt-seq x))))
+  (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
+        ((jrec? x) (list->cseq (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-pairs x))))
+        (else (%r-jolt-seq x)))))
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
-  (if (jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)) (%r-jolt-conj1 coll x))))
+  (cond ((jrec-cl coll "cons") => (lambda (m) (jolt-invoke m coll x)))
+        ((jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))
+        (else (%r-jolt-conj1 coll x)))))
 (register-pr-arm! jrec? jrec-pr)
 
 ;; records are map? and coll? (Clojure: a record IS an associative map). The
@@ -252,6 +275,16 @@
 ;; under the ns-qualified record tag but does NOT mark it as an extender.
 (define (register-inline-method type-name proto-name method-name fn)
   (register-protocol-method (string-append (chez-current-ns) "." type-name) proto-name method-name fn)
+  jolt-nil)
+;; record that a deftype/defrecord implements a protocol even when it adds no
+;; methods (a MARKER protocol, e.g. core.match's IPseudoPattern) — so
+;; instance?/satisfies? on the protocol hold.
+(define (register-inline-protocol! type-name proto-name)
+  (let* ((tag (string-append (chez-current-ns) "." type-name))
+         (ti (or (hashtable-ref type-registry tag #f)
+                 (let ((h (make-hashtable string-hash string=?))) (hashtable-set! type-registry tag h) h))))
+    (unless (hashtable-ref ti proto-name #f)
+      (hashtable-set! ti proto-name (make-hashtable string-hash string=?))))
   jolt-nil)
 
 ;; protocol-dispatch: look up the impl by the value's type tag (record) or host
@@ -479,6 +512,7 @@
 (def-var! "clojure.core" "register-protocol-methods!" register-protocol-methods!)
 (def-var! "clojure.core" "register-method" register-method)
 (def-var! "clojure.core" "register-inline-method" register-inline-method)
+(def-var! "clojure.core" "register-inline-protocol!" register-inline-protocol!)
 (def-var! "jolt.host" "set-field!" jolt-set-field!)
 (def-var! "clojure.core" "protocol-dispatch" (lambda (pn mn obj rest) (protocol-dispatch pn mn obj rest)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)

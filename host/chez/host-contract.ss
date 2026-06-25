@@ -248,8 +248,12 @@
 
 (define (hc-sym nm) (jolt-symbol #f nm))
 ;; is `x` a non-empty list FORM whose head is the unqualified symbol `nm`?
+;; Detect a (unquote …) / (unquote-splicing …) form in a syntax-quote template.
+;; Any seq counts, not just a proper list: a macro that builds the template with
+;; map/for (e.g. deftype's rewrite-set) yields a LAZY seq, and its ~unquotes must
+;; still be recognized.
 (define (hc-head-is? x nm)
-  (and (cseq? x) (cseq-list? x)
+  (and (cseq? x)
        (let ((h (seq-first x)))
          (and (symbol-t? h) (jolt-nil? (hc-sym-ns h)) (string=? (symbol-t-name h) nm)))))
 (define (hc-second x) (seq-first (jolt-seq (seq-more x))))
@@ -266,6 +270,10 @@
                  (hashtable-set! gsmap nm g) g)))
           ((hc-special-symbol? nm) form)               ; special form: leave bare
           ((hc-interop-head? nm) form)                 ; interop (.method / Class. / .-field): bare
+          ;; a fully-qualified class name (java.util.Map, clojure.lang.ILookup) is
+          ;; a class token, not a var to namespace-qualify — leave it bare, as
+          ;; Clojure's syntax-quote resolves it to the class.
+          ((hc-fq-class-name? nm) form)
           ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
           ;; a name referred into the compile ns (:require :refer / :use :only)
           ;; qualifies to its SOURCE ns, not the compile ns — so a macro that

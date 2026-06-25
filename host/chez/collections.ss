@@ -215,6 +215,7 @@
                ((and (pvec? x) (fx=? 2 (pvec-count x)))
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
                (else (error 'conj "conj on a map expects a [k v] pair or a map"))))
+        ((rec-coll-method coll "cons") => (lambda (m) (jolt-invoke m coll x)))
         (else (error 'conj "unsupported collection"))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
 (define (jolt-conj . args)
@@ -248,6 +249,13 @@
     ((coll k) (jolt-get-dispatch coll k jolt-nil))
     ((coll k d) (jolt-get-dispatch coll k d))))
 
+;; A deftype implementing a clojure.lang collection interface (Indexed/Counted/
+;; Associative/ILookup/ISeq/IPersistentCollection) carries the interface method
+;; as an inline impl; the core collection fns fall back to it. find-method-any-
+;; protocol / jolt-invoke load later — resolved at call time.
+(define (rec-coll-method coll name)
+  (and (jrec? coll) (find-method-any-protocol (jrec-tag coll) name)))
+
 (define jolt-nth
   (case-lambda
     ((coll i)
@@ -258,12 +266,14 @@
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
                                  (error 'nth "index out of bounds")))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))
+             ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i)))
              (else (error 'nth "unsupported collection")))))
     ((coll i d)
      (let ((i (->idx i)))
        (cond ((pvec? coll) (pvec-nth-d coll i d))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #t d))
+             ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i d)))
              (else d))))))
 
 ;; a count is an exact integer (JVM parity: count returns a long). jolt= is
@@ -279,12 +289,14 @@
           ((empty-list-t? coll) 0)
           ((cseq? coll) (let loop ((s coll) (n 0))   ; walk (forces a finite seq)
                           (if (jolt-nil? s) n (loop (jolt-seq (seq-more s)) (fx+ n 1)))))
+          ((rec-coll-method coll "count") => (lambda (m) (jolt-invoke m coll)))
           (else (error 'count "uncountable")))))
 
 (define (jolt-assoc1 coll k v)
   (cond ((pmap? coll) (pmap-assoc coll k v))
         ((pvec? coll) (pvec-assoc coll k v))
         ((jolt-nil? coll) (pmap-assoc empty-pmap k v))
+        ((rec-coll-method coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
         (else (error 'assoc "unsupported collection"))))
 (define (jolt-assoc coll . kvs)
   (meta-carry coll

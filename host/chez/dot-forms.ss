@@ -38,6 +38,14 @@
     ((or (string=? name "get") (string=? name "valAt"))
      (list (apply jolt-get obj args)))
     ((string=? name "containsKey") (list (jolt-contains? obj (car args))))
+    ((string=? name "size")    (list (jolt-count obj)))
+    ((string=? name "isEmpty") (list (jolt-empty? obj)))
+    ;; java.util.Map views: keySet (a Set), values (a Collection), entrySet.
+    ((and (jolt-map? obj) (string=? name "keySet"))
+     (list (apply jolt-hash-set (seq->list (jolt-keys obj)))))
+    ((and (jolt-map? obj) (string=? name "values"))
+     (list (apply jolt-vector (seq->list (jolt-vals obj)))))
+    ((and (jolt-map? obj) (string=? name "entrySet")) (list (jolt-seq obj)))
     ;; (.iterator coll): a java.util.Iterator over the seq — for a map this is the
     ;; entry iterator. Without this a map's .iterator falls into the map-as-object
     ;; branch and is mis-read as a missing :iterator key (nil). Some libraries

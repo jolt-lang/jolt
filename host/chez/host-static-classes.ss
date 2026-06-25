@@ -631,6 +631,17 @@
                    ((string=? iface "Associative")
                     (or (pmap? val) (htable-sorted-map? val)
                         (and (pvec? val) (not (jolt-map-entry? val)))))
+                   ;; ILookup (valAt): maps and vectors; Indexed (nth): vectors;
+                   ;; Counted: the counted collections. A deftype that declares one
+                   ;; is matched by type-satisfies? in instance-check-base.
+                   ((string=? iface "ILookup")
+                    (or (pmap? val) (htable-sorted-map? val)
+                        (and (pvec? val) (not (jolt-map-entry? val)))))
+                   ((string=? iface "Indexed")
+                    (and (pvec? val) (not (jolt-map-entry? val))))
+                   ((string=? iface "Counted")
+                    (or (pmap? val) (pset? val) (pvec? val)
+                        (htable-sorted-map? val) (htable-sorted-set? val)))
                    ;; reader jhosts — data.json re-wraps a reader in a new
                    ;; PushbackReader unless (instance? PushbackReader r), so this
                    ;; must hold for repeated reads from one reader to work.

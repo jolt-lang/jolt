@@ -3066,4 +3066,15 @@
   {:suite "clojure.edn / unknown tags" :label "unknown tag throws naming the tag" :expected "\"No reader function for tag foobar\"" :actual "(do (require (quote [clojure.edn :as e1])) (try (e1/read-string \"#foobar 1\") (catch Exception e (ex-message e))))"}
   {:suite "clojure.edn / unknown tags" :label "object tag throws naming the tag" :expected "\"No reader function for tag object\"" :actual "(do (require (quote [clojure.edn :as e2])) (try (e2/read-string \"#object [1 2 3]\") (catch Exception e (ex-message e))))"}
   {:suite "clojure.edn / unknown tags" :label ":default opt handles an unknown tag" :expected "[\"foobar\" 9]" :actual "(do (require (quote [clojure.edn :as e3])) (e3/read-string {:default (fn [t v] [(name t) v])} \"#foobar 9\"))"}
+  {:suite "deftype / clojure.lang interfaces" :label "Indexed + Counted dispatch" :expected "[3 20]" :actual "(do (deftype Row [v] clojure.lang.Indexed (nth [_ i] (nth v i)) (nth [_ i x] (nth v i x)) clojure.lang.Counted (count [_] (count v))) [(count (->Row [10 20 30])) (nth (->Row [10 20 30]) 1)])"}
+  {:suite "deftype / clojure.lang interfaces" :label "multi-arity inline method" :expected "[5 11]" :actual "(do (defprotocol PMul (mm [this a] [this a b])) (deftype TMul [] PMul (mm [_ a] a) (mm [_ a b] (+ a b))) [(mm (->TMul) 5) (mm (->TMul) 5 6)])"}
+  {:suite "deftype / clojure.lang interfaces" :label "ILookup valAt computes a non-field key" :expected "[1 :miss]" :actual "(do (deftype TL [a] clojure.lang.ILookup (valAt [this k] (.valAt this k nil)) (valAt [_ k nf] (case k :a a :computed 99 nf))) [(:a (->TL 1)) (get (->TL 1) :nope :miss)])"}
+  {:suite "deftype / clojure.lang interfaces" :label "marker protocol satisfies?" :expected "true" :actual "(do (defprotocol PMark) (deftype TM [] PMark) (satisfies? PMark (->TM)))"}
+  {:suite "deftype / clojure.lang interfaces" :label "IFn record is callable" :expected "7" :actual "(do (deftype Adder [n] clojure.lang.IFn (invoke [_ x] (+ n x))) ((->Adder 5) 2))"}
+  {:suite "interop / collections" :label "Map keySet" :expected "true" :actual "(= (set (.keySet {:a 1 :b 2})) #{:a :b})"}
+  {:suite "interop / collections" :label "instance? ILookup on a map" :expected "true" :actual "(instance? clojure.lang.ILookup {:a 1})"}
+  {:suite "interop / collections" :label "instance? Indexed on a vector" :expected "true" :actual "(instance? clojure.lang.Indexed [1 2 3])"}
+  {:suite "interop / java.util.Date" :label "deprecated getYear/getMonth" :expected "[110 0]" :actual "(let [d (java.util.Date. 110 0 15)] [(.getYear d) (.getMonth d)])"}
+  {:suite "clojure.set / variadic" :label "union of 4 sets" :expected "#{1 2 3 4}" :actual "(do (require (quote clojure.set)) (clojure.set/union #{1} #{2} #{3} #{4}))"}
+  {:suite "clojure.set / variadic" :label "intersection of 3 sets" :expected "#{3}" :actual "(do (require (quote clojure.set)) (clojure.set/intersection #{1 2 3} #{2 3 4} #{3 4 5}))"}
 ]

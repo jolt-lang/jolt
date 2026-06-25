@@ -66,7 +66,12 @@
        (let ((tag (jrec-tag val)))
          (or (string=? tag tname)
              (and (> (string-length tag) (string-length tname))
-                  (string=? (substring tag (- (string-length tag) (string-length tname)) (string-length tag)) tname)))))
+                  (string=? (substring tag (- (string-length tag) (string-length tname)) (string-length tag)) tname))
+             ;; a protocol/interface the type implements (defprotocol generates an
+             ;; interface; (instance? SomeProtocol record) is true when the record
+             ;; implements it — core.match dispatches on instance? IPatternCompile).
+             (type-satisfies? tag tname)
+             (type-satisfies? tag (last-dot tname)))))
       ((jreify? val) (let ((short (last-dot tname)))
                        ;; every Clojure reify implements IObj/IMeta (carries metadata).
                        (or (member short '("IObj" "IMeta"))
