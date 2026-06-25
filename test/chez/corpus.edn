@@ -1,4 +1,11 @@
 [
+  {:suite "destructure / :or" :label "map default when key absent" :expected "9" :actual "(let [{x :x :or {x 9}} {}] x)"}
+  {:suite "destructure / :or" :label "kwargs default when key absent" :expected "9" :actual "((fn [& {x :x :or {x 9}}] x))"}
+  {:suite "destructure / :or" :label "default not used when key present" :expected "5" :actual "(let [{x :x :or {x 9}} {:x 5}] x)"}
+  {:suite "deftype / field access" :label ".field reads a deftype field" :expected "7" :actual "(do (deftype FldT [q]) (.q (->FldT 7)))"}
+  {:suite "fn / pre-post" :label ":pre + :post pass" :expected "5" :actual "(do (defn ppf [x] {:pre [(pos? x)] :post [(= % x)]} x) (ppf 5))"}
+  {:suite "fn / pre-post" :label ":pre failure throws" :expected ":blocked" :actual "(do (defn ppg [x] {:pre [(pos? x)]} x) (try (ppg -1) (catch Throwable _ :blocked)))"}
+  {:suite "deftype / map-like dispatch" :label "dissoc + keys via IPersistentMap/Seqable methods" :expected "[:b]" :actual "(do (deftype MapT [m] clojure.lang.Seqable (seq [_] (seq m)) clojure.lang.IPersistentMap (without [_ k] (->MapT (dissoc m k))) (assoc [_ k v] (->MapT (assoc m k v)))) (vec (keys (dissoc (->MapT {:a 1 :b 2}) :a))))"}
   {:suite "interop / Class.forName" :label "unknown class throws ClassNotFoundException" :expected ":nf" :actual "(try (Class/forName \"no.such.Klass\") (catch ClassNotFoundException _ :nf))"}
   {:suite "interop / Class.forName" :label "known class resolves" :expected "\"java.lang.String\"" :actual "(.getName (Class/forName \"java.lang.String\"))"}
   {:suite "clojure.string / replace" :label "char match and replacement" :expected "\"a-b-c\"" :actual "(clojure.string/replace \"a/b/c\" \\/ \\-)"}

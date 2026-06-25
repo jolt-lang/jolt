@@ -85,17 +85,40 @@
   (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
         ((jrec? coll) (length (jrec-pairs coll)))
         (else (%r-jolt-count coll)))))
+;; contains?: a deftype implementing Associative/containsKey (e.g. core.cache's
+;; caches) answers through that; a plain defrecord checks its fields.
 (define %r-jolt-contains? jolt-contains?)
-(set! jolt-contains? (lambda (coll k) (if (jrec? coll) (jrec-has? coll k) (%r-jolt-contains? coll k))))
+(set! jolt-contains? (lambda (coll k)
+  (cond ((jrec-cl coll "containsKey") => (lambda (m) (if (jolt-truthy? (jolt-invoke m coll k)) #t #f)))
+        ((jrec? coll) (jrec-has? coll k))
+        (else (%r-jolt-contains? coll k)))))
 (define %r-jolt-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
   (cond ((jrec-cl coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
         ((jrec? coll) (make-jrec (jrec-tag coll) (jrec-replace (jrec-pairs coll) k v)))
         (else (%r-jolt-assoc1 coll k v)))))
+;; dissoc: a deftype implementing IPersistentMap/without answers through it; a
+;; plain defrecord drops the field pair.
+(define %r-jolt-dissoc jolt-dissoc)
+(set! jolt-dissoc (lambda (coll . ks)
+  (cond ((jrec-cl coll "without")
+         => (lambda (m) (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
+        ((jrec? coll)
+         (fold-left (lambda (c k) (make-jrec (jrec-tag c)
+                                             (filter (lambda (p) (not (jolt=2 (car p) k))) (jrec-pairs c))))
+                    coll ks))
+        (else (apply %r-jolt-dissoc coll ks)))))
+;; keys/vals over a jrec read its entry seq (jolt-seq is method-first, so a
+;; map-like deftype delegates to its Seqable; a defrecord's seq is its fields, so
+;; the result is unchanged for records).
+(define (jrec-seq-col m which)
+  (let loop ((s (jolt-seq m)) (acc '()))
+    (if (jolt-nil? s) (list->cseq (reverse acc))
+        (loop (jolt-seq (seq-more s)) (cons (jolt-nth (seq-first s) which) acc)))))
 (define %r-jolt-keys jolt-keys)
-(set! jolt-keys (lambda (m) (if (jrec? m) (list->cseq (map car (jrec-pairs m))) (%r-jolt-keys m))))
+(set! jolt-keys (lambda (m) (if (jrec? m) (jrec-seq-col m 0) (%r-jolt-keys m))))
 (define %r-jolt-vals jolt-vals)
-(set! jolt-vals (lambda (m) (if (jrec? m) (list->cseq (map cdr (jrec-pairs m))) (%r-jolt-vals m))))
+(set! jolt-vals (lambda (m) (if (jrec? m) (jrec-seq-col m 1) (%r-jolt-vals m))))
 (define %r-jolt-seq jolt-seq)
 (set! jolt-seq (lambda (x)
   (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
@@ -106,6 +129,16 @@
   (cond ((jrec-cl coll "cons") => (lambda (m) (jolt-invoke m coll x)))
         ((jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))
         (else (%r-jolt-conj1 coll x)))))
+;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
+;; core.cache's LRU/LU caches lean on) dispatch to its methods.
+(define %r-jolt-peek jolt-peek)
+(set! jolt-peek (lambda (coll)
+  (cond ((jrec-cl coll "peek") => (lambda (m) (jolt-invoke m coll)))
+        (else (%r-jolt-peek coll)))))
+(define %r-jolt-pop jolt-pop)
+(set! jolt-pop (lambda (coll)
+  (cond ((jrec-cl coll "pop") => (lambda (m) (jolt-invoke m coll)))
+        (else (%r-jolt-pop coll)))))
 (register-pr-arm! jrec? jrec-pr)
 
 ;; records are map? and coll? (Clojure: a record IS an associative map). The
@@ -359,6 +392,11 @@
        (jolt-class obj))
       ((and (jrec? obj) (find-method-any-protocol (jrec-tag obj) method-name))
        => (lambda (f) (apply jolt-invoke f obj rest)))
+      ;; (.field inst): a deftype/record field read with no matching method.
+      ;; Clojure reads the field for (.q x) just like (.-q x); a declared method
+      ;; (above) wins, this is the field-accessor fallback.
+      ((and (jrec? obj) (null? rest) (jrec-has? obj (keyword #f method-name)))
+       (jrec-lookup obj (keyword #f method-name) jolt-nil))
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
                          (if f (apply jolt-invoke f obj rest) (error #f (string-append "No method " method-name))))))
