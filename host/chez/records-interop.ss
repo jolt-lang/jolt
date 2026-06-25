@@ -26,6 +26,8 @@
     ("ConcurrentModificationException" . "RuntimeException")
     ("NoSuchElementException" . "RuntimeException")
     ("UncheckedIOException" . "RuntimeException")
+    ("DateTimeException" . "RuntimeException")
+    ("DateTimeParseException" . "DateTimeException")
     ("InterruptedException" . "Exception")
     ("IOException" . "Exception")
     ("FileNotFoundException" . "IOException")

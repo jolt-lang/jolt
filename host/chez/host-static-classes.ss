@@ -744,6 +744,51 @@
 ;; (jolt.host/table? x) — is x a host tagged-table?
 (def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))
 
+;; --- java.util.Arrays -------------------------------------------------------
+(let ((arrays-statics
+       (list
+         (cons "equals" (lambda (a b)
+                          (cond ((and (jolt-nil? a) (jolt-nil? b)) #t)
+                                ((or (jolt-nil? a) (jolt-nil? b)) #f)
+                                (else (equal? (jolt-array-vec a) (jolt-array-vec b))))))
+         (cons "fill" (lambda (a v) (vector-fill! (jolt-array-vec a) v) jolt-nil))
+         (cons "copyOf" (lambda (a n)
+                          (let* ((src (jolt-array-vec a)) (len (jnum->exact n))
+                                 (out (make-vector len 0)))
+                            (do ((i 0 (fx+ i 1))) ((fx=? i (min len (vector-length src))))
+                              (vector-set! out i (vector-ref src i)))
+                            (make-jolt-array out (jolt-array-kind a)))))
+         (cons "copyOfRange" (lambda (a from to)
+                               (let* ((src (jolt-array-vec a)) (f (jnum->exact from)) (tt (jnum->exact to))
+                                      (len (- tt f)) (out (make-vector len 0)))
+                                 (do ((i 0 (fx+ i 1))) ((fx=? i len))
+                                   (vector-set! out i (vector-ref src (+ f i))))
+                                 (make-jolt-array out (jolt-array-kind a)))))
+         (cons "toString" (lambda (a) (jolt-pr-str (apply jolt-vector (vector->list (jolt-array-vec a)))))))))
+  (register-class-statics! "Arrays" arrays-statics)
+  (register-class-statics! "java.util.Arrays" arrays-statics))
+
+;; --- java.util.Random -------------------------------------------------------
+;; A non-cryptographic PRNG over Chez's `random`. A seed argument is accepted but
+;; not honored for reproducibility (jolt has no seedable Random state); callers
+;; that need determinism use SecureRandom or their own generator.
+(for-each
+  (lambda (nm) (register-class-ctor! nm (lambda args (make-jhost "random" (vector)))))
+  '("Random" "java.util.Random"))
+(register-host-methods! "random"
+  (list
+    (cons "nextBytes" (lambda (self ba)
+                        (let ((v (jolt-array-vec ba)))
+                          (do ((i 0 (fx+ i 1))) ((fx=? i (vector-length v)))
+                            (vector-set! v i (random 256))))
+                        jolt-nil))
+    (cons "nextInt" (lambda (self . a)
+                      (->num (if (pair? a) (random (jnum->exact (car a))) (- (random 4294967296) 2147483648)))))
+    (cons "nextLong" (lambda (self) (->num (- (random 18446744073709551616) 9223372036854775808))))
+    (cons "nextDouble" (lambda (self) (random 1.0)))
+    (cons "nextFloat" (lambda (self) (random 1.0)))
+    (cons "nextBoolean" (lambda (self) (fx=? 0 (random 2))))))
+
 ;; --- minimal JVM class/interface ancestry -----------------------------------
 ;; A handful of libraries reflect over the class hierarchy — e.g. core.memoize
 ;; validates its first argument with (some #{IFn AFn Runnable Callable}

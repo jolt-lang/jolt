@@ -457,6 +457,10 @@
                   (if (jolt-nil? u) jolt-nil (host-new "StringReader" (jolt-slurp (url-strip-scheme (url-spec u))))))))))
 (register-class-statics! "ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
 (register-class-statics! "java.lang.ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
+;; clojure.lang.RT/baseLoader — the resource-resolving class loader (RT/baseLoader
+;; is how libraries reach Clojure's base loader, e.g. aws-api's resources ns).
+(register-class-statics! "RT" (list (cons "baseLoader" (lambda () the-classloader))))
+(register-class-statics! "clojure.lang.RT" (list (cons "baseLoader" (lambda () the-classloader))))
 ;; Thread/currentThread -> a fresh thread jhost wrapping THIS thread's interrupt
 ;; flag (the box from current-interrupt-box, host-static.ss), so .interrupt from
 ;; any thread sets the target thread's flag and .isInterrupted reads it without
@@ -583,6 +587,9 @@
 (define (uri-field u k) (let ((p (assq k (jhost-state u)))) (if p (cdr p) jolt-nil)))
 (register-class-ctor! "URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
 (register-class-ctor! "java.net.URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
+;; URI/create — the static factory, same as the (URI. s) constructor.
+(register-class-statics! "URI" (list (cons "create" (lambda (s) (uri-parse (jolt-str-render-one s))))))
+(register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-parse (jolt-str-render-one s))))))
 (register-host-methods! "uri"
   (list (cons "toString" (lambda (u) (uri-field u 'string)))
         (cons "toASCIIString" (lambda (u) (uri-field u 'string)))

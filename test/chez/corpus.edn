@@ -24,6 +24,12 @@
   {:suite "try / multi-catch" :label "a host condition is caught by its RuntimeException subclass" :expected ":arith" :actual "(try (/ 1 0) (catch ArithmeticException _ :arith) (catch Throwable _ :other))"}
   {:suite "locking" :label "returns the body value" :expected "42" :actual "(let [o (Object.)] (locking o 42))"}
   {:suite "locking" :label "reentrant on the same object" :expected "42" :actual "(let [o (Object.)] (locking o (locking o 42)))"}
+  {:suite "extend-protocol / class value" :label "extend to (Class/forName \"[B\") dispatches a byte-array" :expected "[:ba :str]" :actual "(do (defprotocol P (m [x])) (extend-protocol P (Class/forName \"[B\") (m [bs] :ba) String (m [s] :str)) [(m (byte-array 1)) (m \"x\")])"}
+  {:suite "interop / ByteBuffer" :label "wrap then remaining + array" :expected "[3 [1 2 3]]" :actual "(let [bb (java.nio.ByteBuffer/wrap (byte-array [1 2 3]))] [(.remaining bb) (vec (.array bb))])"}
+  {:suite "interop / ByteBuffer" :label "get drains into a byte-array" :expected "[1 2]" :actual "(let [bb (java.nio.ByteBuffer/wrap (byte-array [1 2])) d (byte-array 2)] (.get bb d) (vec d))"}
+  {:suite "interop / Arrays" :label "equals on byte arrays" :expected "true" :actual "(java.util.Arrays/equals (byte-array [1 2 3]) (byte-array [1 2 3]))"}
+  {:suite "interop / Arrays" :label "equals on unequal byte arrays" :expected "false" :actual "(java.util.Arrays/equals (byte-array [1 2]) (byte-array [1 9]))"}
+  {:suite "interop / URI" :label "URI/create static factory" :expected "\"x.com\"" :actual "(.getHost (java.net.URI/create \"http://x.com/p\"))"}
   {:suite "interop / Thread" :label "start + join runs the thunk" :expected "7" :actual "(let [a (atom 0) t (Thread. (fn [] (reset! a 7)))] (.start t) (.join t) (deref a))"}
   {:suite "interop / CountDownLatch" :label "countDown to zero, await returns" :expected "0" :actual "(let [l (java.util.concurrent.CountDownLatch. 1)] (.countDown l) (.await l) (.getCount l))"}
   {:suite "interop / SoftReference" :label "get returns the referent" :expected ":v" :actual "(.get (java.lang.ref.SoftReference. :v))"}

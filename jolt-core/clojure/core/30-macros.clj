@@ -462,12 +462,23 @@
                        (or (= tn want) (suffix? tn want) (suffix? want tn))))
                    (extenders protocol)))))
 
+;; The canonical name for a protocol-extension type: a symbol/keyword via name, a
+;; string as-is, nil as "nil" (extends on nil values), and a Class VALUE — e.g.
+;; (Class/forName "[B") for the byte-array class — via .getName. Lets a library
+;; extend a protocol to a class it computes rather than names with a symbol.
+(defn type->name [t]
+  (cond (nil? t) "nil"
+        (string? t) t
+        (symbol? t) (name t)
+        (keyword? t) (name t)
+        :else (.getName t)))
+
 ;; extend, the FUNCTION (extend-type's runtime sibling): protocol + method-map
 ;; pairs, methods registered under the type's (canonicalized) name — so
 ;; (extend 'String P {:m (fn [x] ...)}) dispatches exactly like extend-type.
 (defn extend [atype & proto+mmaps]
   ;; nil extends on nil values; its host tag is the string "nil" (as extend-type).
-  (let [tname (if (nil? atype) "nil" (name atype))]
+  (let [tname (type->name atype)]
     (loop [s (seq proto+mmaps)]
       (when s
         (let [proto (first s)
@@ -484,21 +495,41 @@
   ;; `body` is one or more protocols, each followed by its method specs:
   ;; (extend-type T P1 (m1 [_] ..) P2 (m2 [_] ..)) — a bare symbol switches the
   ;; current protocol (like reify), so multiple protocols extend in one form.
-  (let [tname (if (nil? tsym) "nil" (name tsym))]
-    (loop [items (seq body) proto nil forms []]
-      (if (empty? items)
-        `(do ~@forms)
-        (let [x (first items)]
-          (if (symbol? x)
-            (recur (rest items) (name x) forms)
-            (recur (rest items) proto
-                   (conj forms
-                         `(register-method ~tname ~proto ~(name (first x))
-                                           (fn ~(nth x 1) ~@(drop 2 x)))))))))))
+  ;; tsym may be a symbol/nil (name resolved at compile time) or a computed class
+  ;; expression like (Class/forName "[B") — bind its runtime name once.
+  (let [literal? (or (nil? tsym) (symbol? tsym))
+        tn (gensym "tname")
+        tref (if literal? (if (nil? tsym) "nil" (name tsym)) tn)
+        emit (fn []
+               (loop [items (seq body) proto nil forms []]
+                 (if (empty? items)
+                   forms
+                   (let [x (first items)]
+                     (if (symbol? x)
+                       (recur (rest items) (name x) forms)
+                       (recur (rest items) proto
+                              (conj forms
+                                    `(register-method ~tref ~proto ~(name (first x))
+                                                      (fn ~(nth x 1) ~@(drop 2 x))))))))))]
+    (if literal?
+      `(do ~@(emit))
+      `(let [~tn (type->name ~tsym)] ~@(emit) nil))))
+
+;; Group an extend-protocol body into [type method-spec*] groups: the type is the
+;; first item and its method specs are the seqs that follow it (up to the next
+;; type — a symbol/nil — or end). Handles a computed class type (a seq like
+;; (Class/forName "[B")) positionally, matching Clojure's parse-impls.
+(defn- parse-extend-impls [items]
+  (loop [s (seq items) groups []]
+    (if (empty? s)
+      groups
+      (let [after (rest s)]
+        (recur (drop-while seq? after)
+               (conj groups (vec (cons (first s) (take-while seq? after)))))))))
 
 (defmacro extend-protocol [psym & type-impls]
   `(do ~@(map (fn [g] `(extend-type ~(first g) ~psym ~@(rest g)))
-              (group-by-head type-impls))))
+              (parse-extend-impls type-impls))))
 
 ;; extend is a real FUNCTION — defined above extend-type.
 ;; JVM proxies are unsupported.
