@@ -645,8 +645,13 @@
   (cond
     ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string form))
     ((eq? tag (keyword #f "#inst")) (jolt-inst-from-string form))
-    (else (jolt-throw (jolt-ex-info (string-append "No reader function for tag " (jolt-pr-str tag))
-                                    (empty-pmap))))))
+    ;; No registered reader: throw a clean, catchable ex-info naming the tag, like
+    ;; the JVM's "No reader function for tag foobar" (empty-pmap is a VALUE — the
+    ;; old (empty-pmap) applied it as a procedure and crashed the Chez VM).
+    (else (let* ((nm (keyword-t-name tag))
+                 (bare (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\#))
+                           (substring nm 1 (string-length nm)) nm)))
+            (jolt-throw (jolt-ex-info (string-append "No reader function for tag " bare) empty-pmap))))))
 
 (def-var! "clojure.core" "read-string" jolt-read-string)
 (def-var! "clojure.core" "__parse-next" jolt-parse-next)
