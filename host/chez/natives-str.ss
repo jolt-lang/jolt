@@ -303,7 +303,9 @@
 (define (str-replace-all pat repl s)
   (if (jolt-regex? pat)
       (re-replace (regex-t-irx pat) s repl #t)
-      (str-replace-literal s pat repl)))
+      ;; literal match: a char/number match or replacement (str/replace s \a \b)
+      ;; coerces to a string, as on the JVM.
+      (str-replace-literal s (str-needle pat) (str-needle repl))))
 (define (str-replace-literal-first s a b)
   (let ((alen (string-length a)) (i (str-index-of s a 0)))
     (if (fx<? i 0) s
@@ -311,7 +313,7 @@
 (define (str-replace pat repl s)
   (if (jolt-regex? pat)
       (re-replace (regex-t-irx pat) s repl #f)
-      (str-replace-literal-first s pat repl)))
+      (str-replace-literal-first s (str-needle pat) (str-needle repl))))
 
 (def-var! "clojure.core" "str-upper" str-upper)
 (def-var! "clojure.core" "str-lower" str-lower)

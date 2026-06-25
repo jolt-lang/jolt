@@ -131,6 +131,11 @@
       ((string=? name "getCanonicalPath")(list (jfile-abs fp)))
       ((string=? name "toURI")          (list (string-append "file:" (jfile-abs fp))))
       ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-abs fp)))))
+      ;; io/resource returns a File where the JVM returns a file: URL; answer the
+      ;; two URL methods resource-serving middleware (ring) calls on the result, so
+      ;; it sees a "file" protocol and a path without changing the return type.
+      ((string=? name "getProtocol")    (list "file"))
+      ((string=? name "getFile")        (list (jfile-abs fp)))
       ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
@@ -433,8 +438,19 @@
             ((file-exists? (string-append (car roots) "/" nm))
              (make-url (string-append "file:" (car roots) "/" nm)))
             (else (loop (cdr roots)))))))
+;; getResources: every source root that holds the named resource, as file: URLs
+;; (enumeration-seq just calls seq, so a list serves). ring's static-resource
+;; symlink check enumerates these to confirm a served file sits under a root.
+(define (cl-get-resources self name)
+  (let ((nm (jolt-str-render-one name)))
+    (let loop ((roots (get-source-roots)) (acc '()))
+      (cond ((null? roots) (list->cseq (reverse acc)))
+            ((file-exists? (string-append (car roots) "/" nm))
+             (loop (cdr roots) (cons (make-url (string-append "file:" (car roots) "/" nm)) acc)))
+            (else (loop (cdr roots) acc))))))
 (register-host-methods! "classloader"
   (list (cons "getResource" cl-get-resource)
+        (cons "getResources" cl-get-resources)
         (cons "getResourceAsStream"
               (lambda (self name)
                 (let ((u (cl-get-resource self name)))
