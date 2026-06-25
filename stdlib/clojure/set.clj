@@ -1,18 +1,22 @@
 ; Jolt Standard Library: clojure.set
-; Set operations. Note: no & rest arities (evaluator limitation).
+; Set operations.
 
 (defn union
+  ([] #{})
   ([s1] s1)
-  ([s1 s2] (reduce conj s2 s1)))
+  ([s1 s2] (if (< (count s1) (count s2)) (reduce conj s2 s1) (reduce conj s1 s2)))
+  ([s1 s2 & sets] (reduce union (union s1 s2) sets)))
 
 (defn intersection
   ([s1] s1)
   ([s1 s2]
-   (reduce (fn [acc item] (if (contains? s2 item) acc (disj acc item))) s1 s1)))
+   (reduce (fn [acc item] (if (contains? s2 item) acc (disj acc item))) s1 s1))
+  ([s1 s2 & sets] (reduce intersection (intersection s1 s2) sets)))
 
 (defn difference
   ([s1] s1)
-  ([s1 s2] (reduce disj s1 s2)))
+  ([s1 s2] (reduce disj s1 s2))
+  ([s1 s2 & sets] (reduce difference (difference s1 s2) sets)))
 
 (defn select
   [pred s]

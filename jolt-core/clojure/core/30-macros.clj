@@ -323,16 +323,31 @@
         ;; inline impls register for dispatch but are NOT extenders of the
         ;; protocol (the JVM compiles them into the class) — register-inline-method,
         ;; not extend-type.
+        ;; Several bodies for one method name are distinct arities (a type that
+        ;; implements clojure.lang.Indexed has (nth [_ i]) AND (nth [_ i x])):
+        ;; group them into one multi-arity fn so dispatch picks the clause by arg
+        ;; count, instead of the last clause clobbering the rest.
         impl (fn [proto specs]
-               `(do
-                  ~@(map (fn [spec]
-                           (let [argv (nth spec 1)
-                                 inst (first argv)
-                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
-                                 mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))]
-                             `(register-inline-method ~(name tname) ~(name proto) ~(name (first spec))
-                                                      (fn ~argv (let [~@binds] ~@mbody)))))
-                         specs)))]
+               (loop [ss (seq specs) methods {} order []]
+                 (if (empty? ss)
+                   `(do (register-inline-protocol! ~(name tname) ~(name proto))
+                        ~@(map (fn [mname]
+                                 `(register-inline-method ~(name tname) ~(name proto) ~mname
+                                                          (fn ~@(get methods mname))))
+                               order))
+                   (let [spec (first ss)
+                         mname (name (first spec))
+                         argv (nth spec 1)
+                         inst (first argv)
+                         binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
+                         mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))
+                         ;; build the clause as DATA, not via a syntax-quote: a body
+                         ;; that is itself a syntax-quote (`(= ~ocr ~l)) would have its
+                         ;; ~unquotes consumed a level early if re-spliced through one.
+                         clause (list argv (list* 'let binds mbody))]
+                     (recur (rest ss)
+                            (assoc methods mname (conj (get methods mname []) clause))
+                            (if (contains? methods mname) order (conj order mname)))))))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
        (def ~arrow ~tname)
@@ -476,19 +491,29 @@
         ;; inline impls register for dispatch but are NOT extenders of the
         ;; protocol (the JVM compiles them into the class) — register-inline-method,
         ;; not extend-type.
+        ;; group multi-arity method bodies into one fn (see deftype's impl).
         impl (fn [proto specs]
-               `(do
-                  ~@(map (fn [spec]
-                           (let [argv (nth spec 1)
-                                 inst (first argv)
-                                 ;; hint `this` with the record type so the inference
-                                 ;; types it and its field reads bare-index
-                                 ;; instead of going through the runtime tag guard.
-                                 hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
-                                 binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
-                             `(register-inline-method ~(name name-sym) ~(name proto) ~(name (first spec))
-                                                      (fn ~hinted (let [~@binds] ~@(drop 2 spec))))))
-                         specs)))]
+               (loop [ss (seq specs) methods {} order []]
+                 (if (empty? ss)
+                   `(do (register-inline-protocol! ~(name name-sym) ~(name proto))
+                        ~@(map (fn [mname]
+                                 `(register-inline-method ~(name name-sym) ~(name proto) ~mname
+                                                          (fn ~@(get methods mname))))
+                               order))
+                   (let [spec (first ss)
+                         mname (name (first spec))
+                         argv (nth spec 1)
+                         inst (first argv)
+                         ;; hint `this` with the record type so the inference types it
+                         ;; and its field reads bare-index instead of the runtime guard.
+                         hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
+                         binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
+                         ;; clause as DATA (see deftype): a syntax-quote body must not
+                         ;; be re-spliced through another syntax-quote.
+                         clause (list hinted (list* 'let binds (drop 2 spec)))]
+                     (recur (rest ss)
+                            (assoc methods mname (conj (get methods mname []) clause))
+                            (if (contains? methods mname) order (conj order mname)))))))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
        ;; so defrecord compiles too. map->name builds via that ctor.

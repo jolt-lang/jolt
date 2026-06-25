@@ -435,7 +435,18 @@
 ;; or (Date. another-date) -> a jinst (ms-of accepts a number / jinst / instant), so
 ;; .getTime / inst? / instance? Date|Timestamp work.
 (define (date-ctor . args)
-  (make-jinst (if (null? args) (now-ms) (ms->exact (ms-of (car args))))))
+  (cond
+    ((null? args) (make-jinst (now-ms)))
+    ((null? (cdr args)) (make-jinst (ms->exact (ms-of (car args)))))
+    ;; deprecated (Date. year-1900 month0 date [hrs min sec]) — civil fields in UTC.
+    (else
+     (let* ((y  (+ 1900 (jnum->exact (list-ref args 0))))
+            (mo (+ 1 (jnum->exact (list-ref args 1))))
+            (d  (jnum->exact (list-ref args 2)))
+            (hh (if (> (length args) 3) (jnum->exact (list-ref args 3)) 0))
+            (mm (if (> (length args) 4) (jnum->exact (list-ref args 4)) 0))
+            (ss (if (> (length args) 5) (jnum->exact (list-ref args 5)) 0)))
+       (make-jinst (* 1000 (+ (* (days-from-civil y mo d) 86400) (* hh 3600) (* mm 60) ss)))))))
 (register-class-ctor! "Date" date-ctor)
 (register-class-ctor! "java.util.Date" date-ctor)
 (register-class-ctor! "Timestamp" date-ctor)
@@ -532,6 +543,14 @@
     (cond
       ((jinst? obj)
        (cond ((string=? method-name "getTime") (jinst-ms obj))
+             ;; deprecated java.util.Date accessors (UTC civil fields).
+             ((string=? method-name "getYear") (- (list-ref (inst-fields (jinst-ms obj)) 0) 1900))
+             ((string=? method-name "getMonth") (- (list-ref (inst-fields (jinst-ms obj)) 1) 1))
+             ((string=? method-name "getDate") (list-ref (inst-fields (jinst-ms obj)) 2))
+             ((string=? method-name "getHours") (list-ref (inst-fields (jinst-ms obj)) 3))
+             ((string=? method-name "getMinutes") (list-ref (inst-fields (jinst-ms obj)) 4))
+             ((string=? method-name "getSeconds") (list-ref (inst-fields (jinst-ms obj)) 5))
+             ((string=? method-name "getDay") (list-ref (inst-fields (jinst-ms obj)) 7))
              ((string=? method-name "toInstant") (mk-instant (jinst-ms obj)))
              ((string=? method-name "toLocalDate") (mk-local-date (jinst-ms obj)))
              ((string=? method-name "toLocalDateTime") (mk-local (jinst-ms obj)))
