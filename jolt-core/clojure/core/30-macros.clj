@@ -69,10 +69,10 @@
     `(instance-check ~t ~x)
     `(instance-check (quote ~t) ~x)))
 
-;; Single-threaded host: evaluate the monitor expr (for its effects, matching
-;; Clojure's evaluation order) and the body — no lock to take.
+;; Take x's monitor for the duration of body (futures/agents/threads share one
+;; heap, so this is a real per-object lock), releasing on any exit.
 (defmacro locking [x & body]
-  `(do ~x ~@body))
+  `(jolt.host/with-monitor ~x (fn* [] ~@body)))
 
 ;; defonce: define name only if it isn't already bound to a non-nil root;
 ;; returns the existing var untouched otherwise.
@@ -310,16 +310,61 @@
         ;; in-place field write the analyzer compiles to jolt-set-field!.
         mutable-syms (map first (filter second (map vector fields field-muts)))
         mutable? (fn [s] (boolean (some (fn [m] (= m s)) mutable-syms)))
-        rewrite-set (fn rw [inst form]
-                      (cond
-                        (and (seq? form) (seq form) (symbol? (first form))
-                             (= "set!" (name (first form)))
-                             (symbol? (second form)) (mutable? (second form)))
-                        (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
-                              (rw inst (nth form 2)))
-                        (seq? form) (map (fn [x] (rw inst x)) form)
-                        (vector? form) (mapv (fn [x] (rw inst x)) form)
-                        :else form))
+        ;; rewrite a method body: (set! mut-field v) -> an in-place (.-field inst)
+        ;; write, and a READ of a mutable field -> (.-field inst) so it observes the
+        ;; live value after a set! (the double-checked-locking idiom re-reads a field
+        ;; after taking a lock). Immutable fields stay let-bound (captured once is
+        ;; correct and cheaper). Tracks lexical shadowing through let/loop/fn/letfn so
+        ;; a same-named local wins over a field.
+        rewrite-body
+        (fn rw [inst shadowed form]
+          (cond
+            (and (seq? form) (seq form) (symbol? (first form))
+                 (= "set!" (name (first form)))
+                 (symbol? (second form)) (mutable? (second form))
+                 (not (contains? shadowed (second form))))
+            (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
+                  (rw inst shadowed (nth form 2)))
+            ;; let/loop-style vector-binding forms: rewrite inits, then shadow the
+            ;; bound names in the body.
+            (and (seq? form) (seq form) (symbol? (first form))
+                 (contains? #{"let" "let*" "loop" "binding" "when-let" "if-let"
+                              "when-some" "if-some"} (name (first form)))
+                 (vector? (second form)))
+            (let [bv (second form) n (count bv)
+                  bv' (loop [i 0 acc []]
+                        (if (< i n)
+                          (recur (+ i 2)
+                                 (let [a (conj acc (nth bv i))]
+                                   (if (< (inc i) n) (conj a (rw inst shadowed (nth bv (inc i)))) a)))
+                          acc))
+                  sh (loop [i 0 acc shadowed]
+                       (if (< i n)
+                         (recur (+ i 2) (if (symbol? (nth bv i)) (conj acc (nth bv i)) acc))
+                         acc))]
+              (cons (first form) (cons bv' (map (fn [x] (rw inst sh x)) (drop 2 form)))))
+            ;; fn/fn*: shadow each arity's params in its body.
+            (and (seq? form) (seq form) (symbol? (first form))
+                 (contains? #{"fn" "fn*"} (name (first form))))
+            (let [head (first form) tail (rest form)
+                  named? (and (seq tail) (symbol? (first tail)))
+                  fname (when named? (first tail))
+                  arts (if named? (rest tail) tail)
+                  psyms (fn [pv] (loop [p (seq pv) acc shadowed]
+                                   (if p
+                                     (recur (next p)
+                                            (if (and (symbol? (first p)) (not= (name (first p)) "&"))
+                                              (conj acc (first p)) acc))
+                                     acc)))
+                  do-art (fn [ar] (cons (first ar) (map (fn [x] (rw inst (psyms (first ar)) x)) (rest ar))))
+                  arts' (if (vector? (first arts)) (do-art arts) (map do-art arts))]
+              (concat (list head) (when named? (list fname)) arts'))
+            ;; a bare read of a mutable field -> live field access
+            (and (symbol? form) (mutable? form) (not (contains? shadowed form)))
+            (list (symbol (str ".-" (name form))) inst)
+            (seq? form) (map (fn [x] (rw inst shadowed x)) form)
+            (vector? form) (mapv (fn [x] (rw inst shadowed x)) form)
+            :else form))
         ;; inline impls register for dispatch but are NOT extenders of the
         ;; protocol (the JVM compiles them into the class) — register-inline-method,
         ;; not extend-type.
@@ -329,8 +374,11 @@
         mk-clause (fn [spec]
                     (let [argv (nth spec 1)
                           inst (first argv)
-                          binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
-                          mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))]
+                          ;; let-bind only immutable fields; mutable ones are read live
+                          ;; via rewrite-body so a set! within the method is observed.
+                          binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))])
+                                             (filter (fn [f] (not (mutable? f))) fields)))
+                          mbody (map (fn [bf] (rewrite-body inst #{} bf)) (drop 2 spec))]
                       (list argv (list* 'let binds mbody))))
         groups (group-by-head body)
         ;; merge clauses by method NAME across ALL protocols into one multi-arity

@@ -159,9 +159,10 @@ checks → UNVERIFIED (rows to add).
   key the platform satisfies wins (`#?(:default 5 :clj 6)` is `5` everywhere)
   — not by key priority. Implementations SHOULD provide a per-loading-context
   compatibility override for foreign-dialect libraries. (jolt:
-  `#{:jolt :default}`, opt-in via `reader-features-set!`/`JOLT_FEATURES`;
-  decision + A/B data in RFC 0002 — inheriting `:clj` cost 146 suite
-  assertions and 38 errors.)
+  `#{:jolt :clj :default}` — jolt emulates `clojure.lang.*`/`java.*`, so it
+  reads the `:clj` branch of a `.cljc` library by default; a library can put a
+  `:jolt` branch first to override, or a loading context can call
+  `reader-features-set!`. History in RFC 0002.)
 - Reader conditionals MUST be an error outside `.cljc`-style reading unless
   the implementation documents otherwise.
 

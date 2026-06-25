@@ -1,9 +1,8 @@
 # Clojure libraries known to work with Jolt
 
 Libraries confirmed to load and pass their conformance checks on Jolt. A library
-listed here works; some need `JOLT_FEATURES` including `clj` (noted below). See
-the [examples](https://github.com/jolt-lang/examples), e.g. the
-[ring-app example](https://github.com/jolt-lang/examples/tree/main/ring-app).
+listed here works. See the [examples](https://github.com/jolt-lang/examples),
+e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring-app).
 
 * [aero](https://github.com/juxt/aero) — EDN configuration with tag literals
   (`#ref`/`#env`/`#or`/`#profile`/`#long`/…)
@@ -20,7 +19,7 @@ the [examples](https://github.com/jolt-lang/examples), e.g. the
   [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) (OpenSSL)
 * [reitit-core](https://github.com/metosin/reitit) — data-driven routing; the
   `reitit.Trie` Java class is mirrored by
-  [jolt-lang/router](https://github.com/jolt-lang/router). `JOLT_FEATURES` `clj`.
+  [jolt-lang/router](https://github.com/jolt-lang/router).
 * [integrant](https://github.com/weavejester/integrant) — data-driven system
   configuration (`#ig/ref`), with its
   [dependency](https://github.com/weavejester/dependency) and
@@ -36,7 +35,7 @@ the [examples](https://github.com/jolt-lang/examples), e.g. the
 * [migratus](https://github.com/yogthos/migratus) — database migrations over the
   next.jdbc layer
 * [malli](https://github.com/metosin/malli) — data schema validation, on the
-  malli-app example. `JOLT_FEATURES` `clj`.
+  malli-app example.
 * [markdown-clj](https://github.com/yogthos/markdown-clj) — Markdown → HTML, on the
   markdown-app example
 * [hiccup](https://github.com/weavejester/hiccup) — HTML from Clojure data, on the
@@ -44,11 +43,11 @@ the [examples](https://github.com/jolt-lang/examples), e.g. the
 * [clojure.data.json](https://github.com/clojure/data.json) — JSON reading and writing
 * [clojure.spec.alpha](https://github.com/clojure/spec.alpha) — data specs
 * [core.match](https://github.com/clojure/core.match) — pattern matching.
-  `JOLT_FEATURES` `clj`.
 * [core.cache](https://github.com/clojure/core.cache) — caching (Basic/FIFO/LRU/
   LU/TTL/Soft + the wrapped atom API), over
   [data.priority-map](https://github.com/clojure/data.priority-map).
-  `JOLT_FEATURES` `clj`.
+* [core.memoize](https://github.com/clojure/core.memoize) — function memoization
+  over [core.cache](https://github.com/clojure/core.cache).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
-  `#time/…` literals via `time-literals`. `JOLT_FEATURES` `clj`.
+  `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write

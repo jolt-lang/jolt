@@ -119,3 +119,26 @@
 ;; records.ss, so this set! sees the registry — forward refs resolve at call time.
 
 (def-var! "clojure.core" "instance-check" instance-check)
+
+;; Broad-catch fallback for catch-clause dispatch (analyze-try desugars
+;; (catch C e …) to (or (instance? C e) (__catch-broad? "C" e))). A jolt host
+;; condition or a raw raised value carries no jolt exception class, so instance?
+;; can't place it; a Clojure (catch C e) over such a value matches when C is
+;; RuntimeException (or a subclass) / Exception / Throwable — most host runtime
+;; errors are RuntimeExceptions. Typed throwables (ex-info, (SomeException. …)) are
+;; recognized by instance? as Throwable, so untyped? is false and they dispatch
+;; precisely through the instance? arm instead.
+(define throwable-type-sym (jolt-symbol #f "Throwable"))
+(define (simple-class-name nm)
+  (let loop ((i (- (string-length nm) 1)))
+    (cond ((< i 0) nm)
+          ((char=? (string-ref nm i) #\.) (substring nm (+ i 1) (string-length nm)))
+          (else (loop (- i 1))))))
+(define (jolt-catch-broad? nm v)
+  (and (not (instance-check throwable-type-sym v))
+       (let ((s (simple-class-name nm)))
+         (or (exception-isa? s "RuntimeException")
+             (string=? s "Exception")
+             (string=? s "Throwable")))))
+(def-var! "clojure.core" "__catch-broad?"
+  (lambda (nm v) (if (jolt-catch-broad? nm v) #t #f)))

@@ -11,6 +11,19 @@
   {:suite "interop / iterator-seq" :label "iterator-seq over .iterator" :expected "[:a :b]" :actual "(vec (iterator-seq (.iterator [:a :b])))"}
   {:suite "deftype / IPersistentStack" :label "peek/pop dispatch" :expected "[1 [2 3]]" :actual "(do (deftype Stk [v] clojure.lang.IPersistentStack (peek [_] (first v)) (pop [_] (->Stk (rest v)))) [(peek (->Stk [1 2 3])) (vec (.v (pop (->Stk [1 2 3]))))])"}
   {:suite "deftype / equiv" :label "(= deftype other) uses equiv method" :expected "true" :actual "(do (deftype EqT [m] clojure.lang.IPersistentCollection (equiv [_ o] (= o m)) clojure.lang.Seqable (seq [_] (seq m))) (= (->EqT {:a 1}) {:a 1}))"}
+  {:suite "deftype / IDeref" :label "@ dispatches to the deref method" :expected "7" :actual "(do (deftype Box [v] clojure.lang.IDeref (deref [_] v)) (deref (->Box 7)))"}
+  {:suite "reify / IDeref" :label "@ dispatches to the deref method" :expected "7" :actual "(deref (reify clojure.lang.IDeref (deref [_] 7)))"}
+  {:suite "deftype / mutable field" :label "set! is observed by a later read in the same method" :expected "9" :actual "(do (deftype B [^:unsynchronized-mutable v] clojure.lang.IDeref (deref [_] (set! v 9) v)) (deref (->B 0)))"}
+  {:suite "def / metadata evaluation" :label "a symbol metadata value evaluates to its var" :expected "true" :actual "(do (def ^{:af rest} mv 1) (fn? (:af (meta (var mv)))))"}
+  {:suite "def / metadata evaluation" :label "an expression metadata value is evaluated" :expected "3" :actual "(do (def ^{:k (+ 1 2)} mv2 1) (:k (meta (var mv2))))"}
+  {:suite "interop / class ancestry" :label "(ancestors (class fn)) includes a callable interface" :expected "true" :actual "(boolean (some #{java.lang.Runnable java.util.concurrent.Callable} (ancestors (class identity))))"}
+  {:suite "interop / AssertionError" :label "construct + catch as Throwable" :expected "\"boom\"" :actual "(try (throw (AssertionError. \"boom\")) (catch Throwable e (.getMessage e)))"}
+  {:suite "try / multi-catch" :label "dispatches to the matching class clause, not the first" :expected ":rte" :actual "(try (throw (RuntimeException. \"x\")) (catch NullPointerException _ :npe) (catch RuntimeException _ :rte) (catch Exception _ :exc))"}
+  {:suite "try / multi-catch" :label "Error is not caught by an Exception clause" :expected ":thr" :actual "(try (throw (Error. \"e\")) (catch Exception _ :exc) (catch Throwable _ :thr))"}
+  {:suite "try / multi-catch" :label "no matching clause re-throws to an outer catch" :expected ":outer" :actual "(try (try (throw (RuntimeException. \"x\")) (catch NullPointerException _ :npe)) (catch Exception _ :outer))"}
+  {:suite "try / multi-catch" :label "a host condition is caught by its RuntimeException subclass" :expected ":arith" :actual "(try (/ 1 0) (catch ArithmeticException _ :arith) (catch Throwable _ :other))"}
+  {:suite "locking" :label "returns the body value" :expected "42" :actual "(let [o (Object.)] (locking o 42))"}
+  {:suite "locking" :label "reentrant on the same object" :expected "42" :actual "(let [o (Object.)] (locking o (locking o 42)))"}
   {:suite "interop / Thread" :label "start + join runs the thunk" :expected "7" :actual "(let [a (atom 0) t (Thread. (fn [] (reset! a 7)))] (.start t) (.join t) (deref a))"}
   {:suite "interop / CountDownLatch" :label "countDown to zero, await returns" :expected "0" :actual "(let [l (java.util.concurrent.CountDownLatch. 1)] (.countDown l) (.await l) (.getCount l))"}
   {:suite "interop / SoftReference" :label "get returns the referent" :expected ":v" :actual "(.get (java.lang.ref.SoftReference. :v))"}
