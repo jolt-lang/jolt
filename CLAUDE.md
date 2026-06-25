@@ -98,6 +98,26 @@ oracle is the JVM-sourced conformance corpus (`test/chez/corpus.edn`,
 
 Issue tracking and design notes live in beads (`bd prime`, `bd memories`).
 
+## Library conformance
+
+When a real Clojure library's tests start passing (in full or substantially) on
+Jolt, treat the docs/specs/tests update as PART OF THE SAME WORK — not a
+follow-up. In the change that lands the fixes:
+
+- **Add JVM-certified corpus rows** (`test/chez/corpus.edn`) for every general
+  gap the library shook out — the corpus is the executable contract. Verify each
+  via `make test`'s certify step.
+- **List the library** in BOTH the in-repo `docs/libraries.md` AND the website
+  (`jolt-lang.github.io`, `resources/md/libraries.md`). State what works and call
+  out any remaining gaps honestly (with the test tally if there is a suite).
+- **Update the affected prose docs and RFCs** — `docs/host-interop.md` for new
+  interop surface, `docs/spec/*.md` / `docs/rfc/*` for semantics, `docs/MODULES.md`
+  if files moved.
+- **File a bead** for each remaining gap so it's tracked.
+
+The supported-libraries list (docs + site) and the corpus are the public record
+of what Jolt runs — keep them current as libraries land.
+
 ## Conventions & Patterns
 
 - **A tier may only use macros from tiers that load before it.** Compile mode

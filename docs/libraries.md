@@ -66,3 +66,8 @@ Libraries confirmed to load and pass their conformance checks on Jolt
   `api` and `alpha.interval` test suites pass in full, including named-zone DST,
   nanosecond instants, and French locale formatting. Loads with `JOLT_FEATURES`
   including `clj`; `#time/…` literals work via `time-literals`' data readers.
+* [core.match](https://github.com/clojure/core.match) — pattern matching. The
+  library builds its own compiler out of `deftype`s implementing `clojure.lang`
+  interfaces; its test suite passes 111/115 (literal/vector/map/seq/guard/or/rest/
+  bind patterns, `:only`, `:guard`). Regex-literal and primitive-array patterns
+  aren't supported yet.
