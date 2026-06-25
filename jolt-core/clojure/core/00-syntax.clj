@@ -255,7 +255,13 @@
                                    (and kns (= kn "strs")) (group a (get pat k) :str kns)
                                    (and kns (= kn "syms")) (group a (get pat k) :sym kns)
                                    :else a))
-                               (proc k `(get ~gm ~(get pat k)) a)))
+                               ;; a direct binding {x :x}: apply its :or default
+                               ;; (keyed by the local symbol) when the key is absent.
+                               (let* [fo (if (symbol? k) (find-or or-map (name k)) [false nil])]
+                                 (proc k (if (nth fo 0)
+                                           `(get ~gm ~(get pat k) ~(nth fo 1))
+                                           `(get ~gm ~(get pat k)))
+                                       a))))
                            g3 (keys pat)))
                :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
          ploop
@@ -315,6 +321,21 @@
                  (if (if (seq? x) (= 'with-meta (first x)) false)
                    (nth x 1)
                    x))
+        ;; a :pre/:post conditions map (a leading map when the body has more forms
+        ;; after it) becomes assertions: pre before the body, then bind % to the
+        ;; result, post after, return %. (map? is a native, so this is tier-safe;
+        ;; the assert/map calls only run when a conditions map is actually present.)
+        wrap-conds
+          (fn* [body]
+            (if (if (map? (first body)) (next body) false)
+              (let [conds (first body)
+                    real (next body)
+                    mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))]
+                `(~@(mka (get conds :pre))
+                  (let [~'% (do ~@real)]
+                    ~@(mka (get conds :post))
+                    ~'%)))
+              body))
         md (fn* go [ps nps lets]
              (if (seq ps)
                (if (symbol? (first ps))
@@ -327,8 +348,11 @@
         mk (fn* [sig]
              (let [ps (unhint (first sig))
                    hinted (not (= ps (first sig)))
-                   r (md (seq ps) [] [])]
-               (if (if (empty? (nth r 1)) (not hinted) false)
+                   r (md (seq ps) [] [])
+                   raw-body (rest sig)
+                   body (wrap-conds raw-body)
+                   conds? (not (= body raw-body))]
+               (if (if (empty? (nth r 1)) (if (not hinted) (not conds?) false) false)
                  sig
                  ;; build the params/let vectors via [~@..] so they are tuple forms
                  ;; (the accumulators are plain seqs, the wrong representation).
@@ -337,8 +361,8 @@
                  (let [pv `[~@(nth r 0)]
                        lv `[~@(nth r 1)]]
                    (if (empty? (nth r 1))
-                     `(~pv ~@(rest sig))
-                     `(~pv (let ~lv ~@(rest sig))))))))]
+                     `(~pv ~@body)
+                     `(~pv (let ~lv ~@body)))))))]
     (if (vector? (unhint (first aftn)))
       (let [a (mk aftn)]
         (if nm `(fn* ~nm ~@a) `(fn* ~@a)))
