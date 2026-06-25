@@ -90,13 +90,35 @@
     ((string=? method "isInfinite") (and (flonum? n) (infinite? n)))
     (else (error #f (string-append "No method " method " for number")))))
 
+;; Mutable static fields: "Class" -> (member -> 1-vector cell). A library that
+;; writes a static field — clojure.spec.alpha's (set! (. clojure.lang.RT
+;; checkSpecAsserts) flag) — lands here; the analyzer lowers the set! to a
+;; set-static-field! call and a plain Class/member read consults the cell first.
+(define mutable-statics-tbl (make-hashtable string-hash string=?))
+(define (mutable-static-cell class member create?)
+  (let ((h (or (hashtable-ref mutable-statics-tbl class #f)
+               (and create? (let ((nh (make-hashtable string-hash string=?)))
+                              (hashtable-set! mutable-statics-tbl class nh) nh)))))
+    (and h (or (hashtable-ref h member #f)
+               (and create? (let ((c (vector jolt-nil))) (hashtable-set! h member c) c))))))
+(def-var! "jolt.host" "set-static-field!"
+  (lambda (class member val)
+    (vector-set! (mutable-static-cell class member #t) 0 val)
+    val))
+;; clojure.lang.RT.checkSpecAsserts — a JVM-internal flag clojure.spec.alpha reads
+;; and writes; default false. Pre-seed the cell so a read before any write works.
+(vector-set! (mutable-static-cell "clojure.lang.RT" "checkSpecAsserts" #t) 0 #f)
+
 ;; ---- emit entry points ------------------------------------------------------
 (define (host-static-ref class member)
-  (let ((h (lookup-class class-statics-tbl class)))
-    (if h
-        (let ((v (hashtable-ref h member #f)))
-          (if v v (error #f (string-append "No static " class "/" member))))
-        (error #f (string-append "Unknown class " class)))))
+  (let ((cell (mutable-static-cell class member #f)))
+    (if cell
+        (vector-ref cell 0)
+        (let ((h (lookup-class class-statics-tbl class)))
+          (if h
+              (let ((v (hashtable-ref h member #f)))
+                (if v v (error #f (string-append "No static " class "/" member))))
+              (error #f (string-append "Unknown class " class)))))))
 
 (define (host-static-call class member . args)
   (apply (host-static-ref class member) args))

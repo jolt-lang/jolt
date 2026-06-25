@@ -1,4 +1,6 @@
 [
+  {:suite "special-form precedence" :expr "(do (ns sftest (:refer-clojure :exclude [def])) (defmacro def [n v] :shadowed) (clojure.core/defn ff [] 99) (ff))" :expected "99"}
+  {:suite "special-form precedence" :expr "(do (set! (. clojure.lang.RT checkSpecAsserts) true) clojure.lang.RT/checkSpecAsserts)" :expected "true"}
   {:suite "atomwatch" :expr "(let [a (atom 0) seen (atom 0)] (add-watch a :k (fn [k r o n] (reset! seen 1))) (reset! a 5) @seen)" :expected "1"}
   {:suite "atomwatch" :expr "(let [a (atom 0) seen (atom 0)] (add-watch a :k (fn [k r o n] (swap! seen inc))) (remove-watch a :k) (reset! a 5) @seen)" :expected "0"}
   {:suite "atomwatch" :expr "(let [a (atom 0) log (atom [])] (add-watch a :k (fn [k r o n] (swap! log conj [o n]))) (reset! a 1) (reset! a 2) @log)" :expected "[[0 1] [1 2]]"}

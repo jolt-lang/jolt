@@ -359,6 +359,23 @@
                              (symbol-t-name obj)))
              ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
              (else (error #f (string-append "No method " method-name " on Symbol")))))
+      ;; clojure.lang.Namespace: name/getName yield the ns name as a Symbol (JVM:
+      ;; Namespace.name is a Symbol). clojure.spec.alpha reads (.name *ns*).
+      ((jns? obj)
+       (cond ((or (string=? method-name "name") (string=? method-name "getName"))
+              (jolt-symbol #f (jns-name obj)))
+             ((string=? method-name "toString") (jns-name obj))
+             (else (error #f (string-append "No method " method-name " on Namespace")))))
+      ;; clojure.lang.Var: ns -> its Namespace, sym -> the simple-name Symbol.
+      ;; clojure.spec.alpha's ->sym reads (.name (.ns v)) and (.sym v).
+      ((var-cell? obj)
+       (cond ((string=? method-name "ns") (intern-ns! (var-cell-ns obj)))
+             ((or (string=? method-name "sym") (string=? method-name "name"))
+              (jolt-symbol #f (var-cell-name obj)))
+             ((string=? method-name "getName")
+              (jolt-symbol (var-cell-ns obj) (var-cell-name obj)))
+             ((string=? method-name "toString") (string-append "#'" (var-cell-ns obj) "/" (var-cell-name obj)))
+             (else (error #f (string-append "No method " method-name " on Var")))))
       ;; java.lang.Throwable interop over a Chez condition. A jolt host error
       ;; (`error`/`assertion-violationf`) raises a Chez condition; Clojure code
       ;; that catches it as a Throwable reads (.getMessage e) / (.toString e).

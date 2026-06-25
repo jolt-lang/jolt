@@ -543,6 +543,9 @@
   {:suite "host-interop / ring-codec surface" :label "extend-protocol nil" :expected ":nil" :actual "(do (defprotocol Pn (pn [x])) (extend-protocol Pn nil (pn [n] :nil) Object (pn [o] :obj)) (pn nil))"}
   {:suite "host-interop / ring-codec surface" :label "extend-protocol Map covers sorted" :expected ":map" :actual "(do (defprotocol Ps (ps [x])) (extend-protocol Ps Map (ps [m] :map) Object (ps [o] :obj)) (ps (sorted-map 1 2)))"}
   {:suite "host-interop / ring-codec surface" :label "reduce over reified IReduceInit" :expected "42" :actual "(reduce + 0 (reify clojure.lang.IReduceInit (reduce [_ f init] (f (f init 40) 2))))"}
+  {:suite "core / reify" :label "multi-arity method dispatches by arg count" :expected "[:z 9]" :actual "(do (defprotocol P (m [_] [_ a])) (let [r (reify P (m [_] :z) (m [_ x] x))] [(m r) (m r 9)]))"}
+  {:suite "core / reify" :label "reify implements IObj and carries metadata" :expected "[true 2]" :actual "(do (defprotocol Q (qq [_])) (let [r (reify Q (qq [_] 1))] [(instance? clojure.lang.IObj r) (:k (meta (with-meta r {:k 2})))]))"}
+  {:suite "core / reify" :label "with-meta leaves the original untouched and keeps dispatch" :expected "[nil {:k 2} 1]" :actual "(do (defprotocol Q (qq [_])) (let [r (reify Q (qq [_] 1)) r2 (with-meta r {:k 2})] [(meta r) (meta r2) (qq r2)]))"}
   {:suite "host-interop / class tokens & readers" :label "class name evaluates to canonical string" :expected "java.lang.String" :actual "String"}
   {:suite "host-interop / class tokens & readers" :label "dispatch-only class name" :expected "\"java.io.InputStream\"" :actual "InputStream"}
   {:suite "host-interop / class tokens & readers" :label "(class x) matches the token" :expected "true" :actual "(= String (class \"abc\"))"}

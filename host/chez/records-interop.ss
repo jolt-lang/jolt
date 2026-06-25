@@ -68,7 +68,9 @@
              (and (> (string-length tag) (string-length tname))
                   (string=? (substring tag (- (string-length tag) (string-length tname)) (string-length tag)) tname)))))
       ((jreify? val) (let ((short (last-dot tname)))
-                       (and (memp (lambda (p) (string=? (last-dot p) short)) (jreify-protos val)) #t)))
+                       ;; every Clojure reify implements IObj/IMeta (carries metadata).
+                       (or (member short '("IObj" "IMeta"))
+                           (and (memp (lambda (p) (string=? (last-dot p) short)) (jreify-protos val)) #t))))
       ((ex-info-map? val) (exception-isa? (last-dot (ex-info-class val)) (last-dot tname)))
       (else (case-string tname val)))))
 
