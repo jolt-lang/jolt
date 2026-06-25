@@ -164,9 +164,8 @@
        (loop [~i 0]
          (when (< ~i n#) ~@body (recur (inc ~i)))))))
 
-;; A fresh jolt symbol inside a macro body: a bare (gensym) returns a host symbol
-;; the destructurer rejects, so round-trip through str.
-(defn- fresh-sym [] (symbol (str (gensym))))
+;; fresh-sym (a macro-body gensym round-tripped through str) is defined in
+;; 00-syntax, which loads before this tier — reuse it.
 
 ;; Lazy-safe: take only the head via first (Clojure uses (seq coll), but Jolt's
 ;; eager seq would realize an infinite coll like (repeat nil) and hang).
@@ -264,6 +263,10 @@
 
 ;; Group a flat seq that starts with a head symbol followed by its list specs
 ;; into [[head spec spec ...] ...] runs. Used by extend-protocol and defrecord.
+;; Group deftype/defrecord/reify body forms: a symbol/nil head starts a new
+;; group, every other form appends to the current one. (extend-protocol uses
+;; parse-extend-impls instead — it must treat a COMPUTED class type like
+;; (Class/forName "[B"), a seq, as a head, which this would misread as a method.)
 (defn- group-by-head [items]
   ;; nil is a valid extension head (extend-protocol P ... nil (m [x] ...)).
   (reduce (fn [acc x]
