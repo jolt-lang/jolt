@@ -113,6 +113,11 @@
       (else
        (case (async-chan-kind ch)
          ((dropping sliding) (ac-buf-give! ch v) #t)
+         ;; a promise channel takes ONE value, delivered to every taker; further
+         ;; puts are dropped. Never blocks.
+         ((promise) (when (ac-qempty? ch)
+                      (ac-qpush! ch (cons v #f)) (condition-broadcast (async-chan-cv ch)))
+                    #t)
          (else
           (if (> (async-chan-cap ch) 0)
               (let loop ()                                    ; buffered fixed: wait for room
@@ -135,11 +140,22 @@
     (condition-broadcast (async-chan-cv ch))
     v))
 
+;; peek the front value without removing it (promise channels keep their value).
+(define (ac-peek ch)
+  (let ((q (async-chan-items ch)))
+    (ac-qfront! q)
+    (car (car (vector-ref q 0)))))
+
 ;; <! / <!! — take, blocking. Drains buffered values, then nil once closed + empty.
+;; A promise channel PEEKS — its one value stays for every taker.
 (define (jolt-async-take ch)
   (with-mutex (async-chan-mu ch)
     (let loop ()
-      (cond ((not (ac-qempty? ch)) (ac-take-head! ch))
+      (cond ((eq? (async-chan-kind ch) 'promise)
+             (cond ((not (ac-qempty? ch)) (ac-peek ch))
+                   ((async-chan-closed? ch) jolt-nil)
+                   (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))
+            ((not (ac-qempty? ch)) (ac-take-head! ch))
             ((async-chan-closed? ch) jolt-nil)
             (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))
 
@@ -147,7 +163,8 @@
 (define ac-poll-empty (list 'empty))
 (define (ac-poll! ch)
   (with-mutex (async-chan-mu ch)
-    (cond ((not (ac-qempty? ch)) (ac-take-head! ch))
+    (cond ((and (eq? (async-chan-kind ch) 'promise) (not (ac-qempty? ch))) (ac-peek ch))
+          ((not (ac-qempty? ch)) (ac-take-head! ch))
           ((async-chan-closed? ch) jolt-nil)
           (else ac-poll-empty))))
 
@@ -224,6 +241,7 @@
 ;; --- install clojure.core.async ---------------------------------------------
 (define (cca-def! name v) (def-var! "clojure.core.async" name v))
 (cca-def! "chan" jolt-async-chan)
+(cca-def! "promise-chan" (lambda args (ac-make 1 'promise #f)))
 (cca-def! "chan?" async-chan?)
 (cca-def! "buffer" jolt-async-buffer)
 (cca-def! "dropping-buffer" jolt-async-dropping-buffer)

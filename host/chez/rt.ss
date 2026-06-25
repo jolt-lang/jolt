@@ -333,6 +333,7 @@
 (load "host/chez/host-static.ss")          ; registries + jhost + coercion helpers
 (load "host/chez/host-static-methods.ss")  ; Class/member static methods + fields
 (load "host/chez/host-static-classes.ss")  ; instantiable host object classes
+(load "host/chez/byte-buffer.ss")          ; java.nio.ByteBuffer over a byte-array
 
 ;; generic dot-form dispatch: field access + map/vector member access
 ;; for the `.` / `.-field` desugar. Loads after host-static.ss so it wraps every

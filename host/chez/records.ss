@@ -203,6 +203,13 @@
         ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
+        ;; a ByteBuffer — extend-protocol java.nio.ByteBuffer (aws-api util).
+        ((and (jhost? obj) (string=? (jhost-tag obj) "byte-buffer")) '("ByteBuffer" "java.nio.ByteBuffer" "Object"))
+        ;; arrays dispatch by their JVM array-class name — extend-protocol to
+        ;; (Class/forName "[B") for byte[] (data.json, aws-api), "[C" for char[].
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'byte)) '("[B" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'char)) '("[C" "Object"))
+        ((jolt-array? obj) '("[Ljava.lang.Object;" "Object"))
         ;; a regex VALUE — extend-protocol java.util.regex.Pattern (core.match.regex).
         ((regex-t? obj) '("Pattern" "java.util.regex.Pattern" "Object"))
         ;; host value types a library may extend a protocol to by class (data.json
@@ -288,7 +295,10 @@
                 "Duration" "Period" "LocalDate" "LocalTime" "LocalDateTime"
                 "ZonedDateTime" "OffsetDateTime" "OffsetTime" "ZoneId" "ZoneOffset"
                 "Clock" "Year" "YearMonth" "Month" "DayOfWeek"
-                "ChronoUnit" "ChronoField" "TemporalAmount" "TemporalUnit" "TemporalField"))
+                "ChronoUnit" "ChronoField" "TemporalAmount" "TemporalUnit" "TemporalField"
+                ;; ByteBuffer + JVM array classes (extend-protocol to (Class/forName "[B"))
+                "ByteBuffer" "java.nio.ByteBuffer"
+                "[B" "[C" "[I" "[J" "[D" "[Ljava.lang.Object;"))
     h))
 (define (strip-prefix s p)
   (let ((pl (string-length p)))

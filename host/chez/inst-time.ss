@@ -180,7 +180,11 @@
 (define (parse-ms pattern input)
   (let ((pn (string-length pattern)) (inn (string-length input))
         (y 1970) (mo 1) (d 1) (hh 0) (mi 0) (ss 0) (pm 'none))
-    (define (pfail) (error #f (string-append "ParseException: unparseable date \"" input "\"")))
+    ;; a parse failure is a java.time.format.DateTimeParseException (typed, so a
+    ;; (catch DateTimeParseException …) over a bad date matches), like the JVM.
+    (define (pfail)
+      (jolt-throw (jolt-host-throwable "java.time.format.DateTimeParseException"
+                                       (string-append "unparseable date \"" input "\"") jolt-nil)))
     (define (run-len i c) (let loop ((j i)) (if (and (< j pn) (char=? (string-ref pattern j) c)) (loop (+ j 1)) (- j i))))
     ;; read up to `maxw` digits (#f = unbounded). A fixed-width field (k>=2, e.g.
     ;; HHmm) caps the read at its run length so adjacent numeric fields split.
