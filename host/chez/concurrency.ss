@@ -328,3 +328,47 @@
 (def-var! "jolt.host" "interrupt!" jolt-interrupt!)
 (def-var! "jolt.host" "interrupted?" jolt-interrupted?)
 (def-var! "jolt.host" "run-interruptible" jolt-run-interruptible)
+
+;; --- java.lang.Thread / java.util.concurrent.CountDownLatch -----------------
+;; Real OS threads over Chez fork-thread (shared heap — a captured atom/var is
+;; shared). A Thread runs its Runnable thunk; start forks, join waits on a
+;; condition latched at completion. CountDownLatch is a counting barrier.
+(define (make-jthread thunk) (make-jhost "user-thread" (vector thunk #f (make-mutex) (make-condition))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (thunk . _) (make-jthread thunk))))
+          '("Thread" "java.lang.Thread"))
+(register-host-methods! "user-thread"
+  (list (cons "start" (lambda (self)
+          (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
+            (fork-thread (lambda ()
+              (dyn-binding-stack snap)
+              (guard (e (#t #f)) (jolt-invoke (vector-ref st 0)))
+              (with-mutex (vector-ref st 2)
+                (vector-set! st 1 #t)
+                (condition-broadcast (vector-ref st 3)))))
+            jolt-nil)))
+        (cons "run" (lambda (self) (jolt-invoke (vector-ref (jhost-state self) 0)) jolt-nil))
+        (cons "join" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 2)
+              (let loop () (unless (vector-ref st 1) (condition-wait (vector-ref st 3) (vector-ref st 2)) (loop)))))
+          jolt-nil))
+        (cons "isAlive" (lambda (self) (not (vector-ref (jhost-state self) 1))))
+        (cons "interrupt" (lambda (self . _) jolt-nil))
+        (cons "setDaemon" (lambda (self . _) jolt-nil))))
+
+(define (make-jlatch n) (make-jhost "count-down-latch" (vector n (make-mutex) (make-condition))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (n . _) (make-jlatch (jnum->exact n)))))
+          '("CountDownLatch" "java.util.concurrent.CountDownLatch"))
+(register-host-methods! "count-down-latch"
+  (list (cons "countDown" (lambda (self)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 1)
+              (when (> (vector-ref st 0) 0) (vector-set! st 0 (- (vector-ref st 0) 1)))
+              (when (= (vector-ref st 0) 0) (condition-broadcast (vector-ref st 2)))))
+          jolt-nil))
+        (cons "await" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 1)
+              (let loop () (when (> (vector-ref st 0) 0) (condition-wait (vector-ref st 2) (vector-ref st 1)) (loop)))))
+          jolt-nil))
+        (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))
