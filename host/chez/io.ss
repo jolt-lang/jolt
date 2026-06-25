@@ -39,11 +39,16 @@
       (let ((pwd (getenv "JOLT_PWD")))
         (if (and pwd (> (string-length pwd) 0)) (string-append pwd "/" p) p))))
 
-;; (io/file path) / (io/file parent child) — join children with "/".
+;; (io/file path) / (io/file parent child) — join children with "/". The File
+;; keeps the path AS GIVEN (like the JVM: new File("rel").getPath() is "rel");
+;; a relative path resolves against JOLT_PWD only when the filesystem is touched
+;; (jfile-fs / slurp / spit / the stream constructors).
 (define (jolt-make-file path . rest)
-  (let loop ((p (project-relative (file-path-of path))) (cs rest))
+  (let loop ((p (file-path-of path)) (cs rest))
     (if (null? cs) (make-jfile p)
         (loop (string-append p "/" (file-path-of (car cs))) (cdr cs)))))
+;; the on-disk path of a value: a relative path resolves against JOLT_PWD.
+(define (jfile-fs f) (project-relative (file-path-of f)))
 
 (define (path-last-segment p)
   (let loop ((i (- (string-length p) 1)))
@@ -53,15 +58,43 @@
 
 ;; directory children as full paths, sorted (the __list-dir seed primitive).
 (define (jolt-list-dir path)
-  (let ((p (file-path-of path)))
+  (let ((p (project-relative (file-path-of path))))
     (map (lambda (e) (string-append p "/" e))
          (sort string<? (directory-list p)))))
-(define (jolt-dir? path) (if (file-directory? (file-path-of path)) #t #f))
+(define (jolt-dir? path) (if (file-directory? (project-relative (file-path-of path))) #t #f))
 
 ;; absolute path string (cwd-relative paths resolved against current-directory).
 (define (jfile-abs p)
   (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) p
       (string-append (current-directory) "/" p)))
+
+;; --- file metadata over Chez filesystem ops ---------------------------------
+;; byte size of a regular file (0 for a directory or a missing file).
+(define (file-byte-size p)
+  (if (or (not (file-exists? p)) (file-directory? p)) 0
+      (let ((port (open-file-input-port p))) (let ((n (file-length port))) (close-port port) n))))
+;; last-modified as epoch milliseconds (0 if the file is absent).
+(define (file-mtime-millis p)
+  (if (file-exists? p)
+      (let ((t (file-modification-time p)))
+        (+ (* (time-second t) 1000) (div (time-nanosecond t) 1000000)))
+      0))
+;; mkdir -p: create p and any missing parents. Returns #t if p ends up a dir.
+(define (mkdirs! p)
+  (unless (or (= 0 (string-length p)) (file-exists? p))
+    (let loop ((i (- (string-length p) 1)))
+      (cond ((<= i 0) #f)
+            ((char=? (string-ref p i) #\/)
+             (let ((parent (substring p 0 i))) (unless (file-exists? parent) (mkdirs! parent))))
+            (else (loop (- i 1)))))
+    (guard (e (#t #f)) (mkdir p)))
+  (and (file-exists? p) (file-directory? p)))
+;; delete a file or an (empty) directory; #t on success.
+(define (delete-path! p)
+  (guard (e (#t #f))
+    (cond ((not (file-exists? p)) #f)
+          ((file-directory? p) (delete-directory p) #t)
+          (else (delete-file p) #t))))
 
 ;; --- java.net.URL (a jhost "url", state #(spec)) ----------------------------
 ;; A File.toURL value: .toString / .toExternalForm give the spec, .getPath /
@@ -88,20 +121,54 @@
 
 ;; --- File method surface (record-method-dispatch arm) -----------------------
 (define (jfile-method f name args)        ; -> boxed result, or #f to fall through
-  (let ((p (jfile-path f)))
+  (let ((p (jfile-path f))               ; the path as given (display methods)
+        (fp (jfile-fs f)))               ; JOLT_PWD-resolved on-disk path (FS methods)
     (cond
       ((string=? name "getPath")        (list p))
       ((string=? name "getName")        (list (path-last-segment p)))
       ((string=? name "toString")       (list p))
-      ((string=? name "getAbsolutePath")(list (jfile-abs p)))
-      ((string=? name "getCanonicalPath")(list (jfile-abs p)))
-      ((string=? name "toURI")          (list (string-append "file:" (jfile-abs p))))
-      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-abs p)))))
-      ((string=? name "exists")         (list (if (file-exists? p) #t #f)))
-      ((string=? name "isDirectory")    (list (if (file-directory? p) #t #f)))
-      ((string=? name "isFile")         (list (if (and (file-exists? p) (not (file-directory? p))) #t #f)))
+      ((string=? name "getAbsolutePath")(list (jfile-abs fp)))
+      ((string=? name "getCanonicalPath")(list (jfile-abs fp)))
+      ((string=? name "toURI")          (list (string-append "file:" (jfile-abs fp))))
+      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-abs fp)))))
+      ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
+      ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
+      ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
       ((string=? name "isAbsolute")     (list (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) #t #f)))
-      ((string=? name "listFiles")      (list (list->cseq (map make-jfile (jolt-list-dir p)))))
+      ((string=? name "listFiles")      (list (list->cseq (map make-jfile (jolt-list-dir fp)))))
+      ;; .list -> the child NAMES (a String[]), nil if not a directory.
+      ((string=? name "list")
+       (list (if (file-directory? fp)
+                 (apply jolt-vector (sort string<? (directory-list fp)))
+                 jolt-nil)))
+      ((string=? name "length")         (list (->num (file-byte-size fp))))
+      ((string=? name "lastModified")   (list (->num (file-mtime-millis fp))))
+      ((string=? name "canRead")        (list (if (file-exists? fp) #t #f)))
+      ((string=? name "canWrite")       (list (if (file-exists? fp) #t #f)))
+      ((string=? name "canExecute")     (list (if (file-exists? fp) #t #f)))
+      ((string=? name "isHidden")       (list (let ((nm (path-last-segment p)))
+                                                (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\.)) #t #f))))
+      ((string=? name "mkdir")          (list (guard (e (#t #f)) (and (not (file-exists? fp)) (begin (mkdir fp) #t)))))
+      ((string=? name "mkdirs")         (list (if (mkdirs! fp) #t #f)))
+      ((string=? name "delete")         (list (if (delete-path! fp) #t #f)))
+      ((string=? name "deleteOnExit")   (list jolt-nil))
+      ((string=? name "setLastModified")(list #t))
+      ((string=? name "createNewFile")
+       (list (if (file-exists? fp) #f
+                 (guard (e (#t #f)) (close-port (open-output-file fp 'truncate)) #t))))
+      ((string=? name "renameTo")
+       (list (let ((dst (jfile-fs (car args)))) (guard (e (#t #f)) (rename-file fp dst) #t))))
+      ((string=? name "getParentFile")
+       (let loop ((i (- (string-length p) 1)))
+         (cond ((< i 0) (list jolt-nil))
+               ((char=? (string-ref p i) #\/) (list (make-jfile (if (= i 0) "/" (substring p 0 i)))))
+               (else (loop (- i 1))))))
+      ((string=? name "getAbsoluteFile")  (list (make-jfile (jfile-abs p))))
+      ((string=? name "getCanonicalFile") (list (make-jfile (jfile-abs p))))
+      ((string=? name "compareTo")      (list (->num (let ((o (file-path-of (car args))))
+                                                       (cond ((string<? p o) -1) ((string>? p o) 1) (else 0))))))
+      ((string=? name "equals")         (list (and (jfile? (car args)) (string=? p (jfile-path (car args))))))
+      ((string=? name "hashCode")       (list (->num (string-hash p))))
       ((string=? name "getParent")
        (let loop ((i (- (string-length p) 1)))
          (cond ((< i 0) (list jolt-nil))
@@ -126,7 +193,7 @@
   (lambda (method target . args)
     (cond
       ((and (jfile? target) (string=? method "isDirectory"))
-       (if (file-directory? (jfile-path target)) #t #f))
+       (if (file-directory? (jfile-fs target)) #t #f))
       ((and (jfile? target) (string=? method "listFiles"))
        (list->cseq (map make-jfile (jolt-list-dir target))))
       (else (apply %io-host-call method target args)))))
@@ -201,7 +268,7 @@
           (loop (cons (bitwise-and (jnum->exact b) #xff) acc))))))
 (define (jolt-slurp src . opts)
   (cond
-    ((jfile? src) (read-file-string (jfile-path src)))
+    ((jfile? src) (read-file-string (jfile-fs src)))
     ((embedded-res? src) (embedded-res-content src))
     ((reader-jhost? src) (drain-reader src))
     ;; bytes (a bytevector or a jolt byte-array): decode with :encoding (UTF-8
@@ -223,7 +290,7 @@
           (else (loop (cddr o))))))
 
 (define (jolt-spit path content . opts)
-  (let* ((p (file-path-of path))
+  (let* ((p (project-relative (file-path-of path)))
          (port (open-output-file p (if (spit-append? opts) 'append 'truncate))))
     (put-string port (jolt-str-render-one content))
     (close-port port)
@@ -275,7 +342,8 @@
 (define (jolt-close x)
   (cond
     ((jolt-nil? x) jolt-nil)
-    ((and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader" "writer")))
+    ((and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader" "writer"
+                                             "file-writer" "port-writer" "print-writer")))
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
     ;; a library's stream shim (tagged-table) closes via its registered .close
     ;; method (a no-op for in-memory streams); absent method -> no-op.
@@ -294,10 +362,14 @@
 ;; a StringReader (host-static.ss jhost) so .read/.mark/.reset and slurp work.
 (define (seq-source->string x)
   (apply string-append (map jolt-str-render-one (seq->list x))))
+;; io/reader returns an in-memory StringReader (the full Reader contract incl.
+;; (read), mark/reset and pushback). The streaming java.io.FileReader /
+;; BufferedReader classes (io-streams.ss) read a Chez port directly when a caller
+;; wants to avoid loading the whole source.
 (define (jolt-io-reader x)
   (cond
     ((reader-jhost? x) x)
-    ((jfile? x) (host-new "StringReader" (read-file-string (jfile-path x))))
+    ((jfile? x) (host-new "StringReader" (read-file-string (jfile-fs x))))
     ((embedded-res? x) (host-new "StringReader" (embedded-res-content x)))
     ((and (jhost? x) (string=? (jhost-tag x) "url"))
      (host-new "StringReader" (read-file-string (url-strip-scheme (url-spec x)))))
@@ -389,6 +461,32 @@
 ;; --- java.io.File / java.util.UUID constructors -----------------------------
 ;; (java.io.File. parent child) joins with "/"; (File. path) wraps the path.
 (register-class-ctor! "File"
+  (lambda (a . rest)
+    (if (pair? rest)
+        (jolt-make-file (string-append (file-path-of a) "/" (file-path-of (car rest))))
+        (jolt-make-file a))))
+;; File statics: the platform separators plus createTempFile / listRoots.
+(define temp-file-counter 0)
+(define (file-create-temp prefix suffix . dir)
+  (let* ((d (cond ((pair? dir) (file-path-of (car dir)))
+                  ((getenv "TMPDIR") => (lambda (t) t))
+                  (else "/tmp")))
+         (sfx (if (or (null? (list suffix)) (jolt-nil? suffix)) ".tmp" (jolt-str-render-one suffix))))
+    (set! temp-file-counter (+ temp-file-counter 1))
+    (let loop ((n temp-file-counter))
+      (let ((p (string-append d "/" (jolt-str-render-one prefix)
+                              (number->string (now-millis)) "-" (number->string n) sfx)))
+        (if (file-exists? p) (loop (+ n 1))
+            (begin (close-port (open-output-file p 'truncate)) (make-jfile p)))))))
+(let ((statics (list (cons "separator" "/")
+                     (cons "separatorChar" #\/)
+                     (cons "pathSeparator" ":")
+                     (cons "pathSeparatorChar" #\:)
+                     (cons "createTempFile" file-create-temp)
+                     (cons "listRoots" (lambda () (jolt-vector (make-jfile "/")))))))
+  (register-class-statics! "File" statics)
+  (register-class-statics! "java.io.File" statics))
+(register-class-ctor! "java.io.File"
   (lambda (a . rest)
     (if (pair? rest)
         (jolt-make-file (string-append (file-path-of a) "/" (file-path-of (car rest))))
