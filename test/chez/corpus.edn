@@ -24,6 +24,11 @@
   {:suite "try / multi-catch" :label "a host condition is caught by its RuntimeException subclass" :expected ":arith" :actual "(try (/ 1 0) (catch ArithmeticException _ :arith) (catch Throwable _ :other))"}
   {:suite "locking" :label "returns the body value" :expected "42" :actual "(let [o (Object.)] (locking o 42))"}
   {:suite "locking" :label "reentrant on the same object" :expected "42" :actual "(let [o (Object.)] (locking o (locking o 42)))"}
+  {:suite "defn / docstring" :label "leading docstring becomes :doc metadata" :expected "\"the docs\"" :actual "(do (defn dd \"the docs\" [x] x) (:doc (meta (var dd))))"}
+  {:suite "assert" :label "failed assert throws AssertionError" :expected ":ae" :actual "(try (assert false) (catch AssertionError _ :ae))"}
+  {:suite "fn / pre-post" :label ":pre failure throws AssertionError" :expected ":caught" :actual "(do (defn pp [x] {:pre [(pos? x)]} x) (try (pp -1) (catch AssertionError _ :caught)))"}
+  {:suite "interop / Seqable" :label "a vector is Seqable but not an ISeq" :expected "[true false]" :actual "[(instance? clojure.lang.Seqable [1 2 3]) (instance? clojure.lang.ISeq [1 2 3])]"}
+  {:suite "interop / Seqable" :label "a map is Seqable" :expected "true" :actual "(instance? clojure.lang.Seqable {:a 1})"}
   {:suite "extend-protocol / class value" :label "extend to (Class/forName \"[B\") dispatches a byte-array" :expected "[:ba :str]" :actual "(do (defprotocol P (m [x])) (extend-protocol P (Class/forName \"[B\") (m [bs] :ba) String (m [s] :str)) [(m (byte-array 1)) (m \"x\")])"}
   {:suite "interop / ByteBuffer" :label "wrap then remaining + array" :expected "[3 [1 2 3]]" :actual "(let [bb (java.nio.ByteBuffer/wrap (byte-array [1 2 3]))] [(.remaining bb) (vec (.array bb))])"}
   {:suite "interop / ByteBuffer" :label "get drains into a byte-array" :expected "[1 2]" :actual "(let [bb (java.nio.ByteBuffer/wrap (byte-array [1 2])) d (byte-array 2)] (.get bb d) (vec d))"}
@@ -817,7 +822,7 @@
   {:suite "macros / core-overlay" :label "cond->> skip" :expected "10" :actual "(cond->> 10 false (+ 1))"}
   {:suite "macros / core-overlay" :label "assert pass" :expected ":ok" :actual "(do (assert (= 1 1)) :ok)"}
   {:suite "macros / core-overlay" :label "assert throws" :expected ":threw" :actual "(try (assert (= 1 2)) (catch :default e :threw))"}
-  {:suite "macros / core-overlay" :label "assert message" :expected "\"nope\"" :actual "(try (assert false \"nope\") (catch :default e (ex-message e)))"}
+  {:suite "macros / core-overlay" :label "assert message" :expected "\"Assert failed: nope\\nfalse\"" :actual "(try (assert false \"nope\") (catch AssertionError e (ex-message e)))"}
   {:suite "macros / core-overlay" :label "delay value" :expected "42" :actual "(deref (delay 42))"}
   {:suite "macros / core-overlay" :label "delay forces once" :expected "1" :actual "(let [c (atom 0) d (delay (swap! c inc))] @d @d @c)"}
   {:suite "macros / core-overlay" :label "future deref" :expected "9" :actual "(deref (future (* 3 3)))"}

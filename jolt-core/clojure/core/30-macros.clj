@@ -208,8 +208,10 @@
     `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
 
 (defmacro assert [x & [message]]
-  (let [msg (if message message (str "Assert failed: " (pr-str x)))]
-    `(when-not ~x (throw (ex-info ~msg {})))))
+  (let [msg (if message
+              (str "Assert failed: " message "\n" (pr-str x))
+              (str "Assert failed: " (pr-str x)))]
+    `(when-not ~x (throw (new AssertionError ~msg)))))
 
 ;; (pvalues e1 e2 ...) — each expression evaluated in parallel (pcalls).
 (defmacro pvalues [& exprs]
