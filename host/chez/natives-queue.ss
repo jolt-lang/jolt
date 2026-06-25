@@ -19,7 +19,9 @@
 (define (queue-peek q) (if (null? (jolt-queue-front q)) jolt-nil (car (jolt-queue-front q))))
 (define (queue-pop q)
   (let ((f (jolt-queue-front q)))
-    (cond ((null? f) (error 'pop "can't pop empty queue"))
+    ;; popping an empty PersistentQueue returns it (Clojure's pop: if f==null
+    ;; return this) — unlike a vector, which throws.
+    (cond ((null? f) q)
           ((null? (cdr f)) (make-jolt-queue (reverse (jolt-queue-rear q)) '() (fx- (jolt-queue-cnt q) 1)))
           (else (make-jolt-queue (cdr f) (jolt-queue-rear q) (fx- (jolt-queue-cnt q) 1))))))
 

@@ -228,15 +228,21 @@
 ;; (delay body) -> (make-delay (fn [] body)) (overlay macro); force/deref run the
 ;; thunk once under a lock and cache the value (JVM delays are thread-safe). force
 ;; (overlay) is (if (delay? x) (deref x) x), so it works once delay?/deref do.
-(define-record-type jolt-delay (fields thunk (mutable realized?) (mutable value) mu)
+(define-record-type jolt-delay (fields thunk (mutable realized?) (mutable value) (mutable exn) mu)
   (nongenerative jolt-delay-v1))
-(define (jolt-make-delay thunk) (make-jolt-delay thunk #f jolt-nil (make-mutex)))
+(define (jolt-make-delay thunk) (make-jolt-delay thunk #f jolt-nil #f (make-mutex)))
+;; run the thunk once, like Clojure's Delay: if it throws, cache the exception
+;; (the delay IS realized) and re-throw it on every deref — do NOT re-run the
+;; body (so value-fns memoize and there is no cache-stampede / retried side
+;; effect). Store the exception inside the lock, re-raise outside it so the mutex
+;; is always released.
 (define (jolt-delay-force d)
   (with-mutex (jolt-delay-mu d)
     (unless (jolt-delay-realized? d)
-      (jolt-delay-value-set! d (jolt-invoke (jolt-delay-thunk d)))
-      (jolt-delay-realized?-set! d #t)))
-  (jolt-delay-value d))
+      (guard (e (#t (jolt-delay-exn-set! d e) (jolt-delay-realized?-set! d #t)))
+        (jolt-delay-value-set! d (jolt-invoke (jolt-delay-thunk d)))
+        (jolt-delay-realized?-set! d #t))))
+  (if (jolt-delay-exn d) (raise (jolt-delay-exn d)) (jolt-delay-value d)))
 
 ;; --- deref extension --------------------------------------------------------
 ;; Chain the fully-built jolt-deref (atoms/vars/volatiles/reduced) with futures,

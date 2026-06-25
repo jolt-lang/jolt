@@ -6,6 +6,11 @@
   {:suite "fn / pre-post" :label ":pre + :post pass" :expected "5" :actual "(do (defn ppf [x] {:pre [(pos? x)] :post [(= % x)]} x) (ppf 5))"}
   {:suite "fn / pre-post" :label ":pre failure throws" :expected ":blocked" :actual "(do (defn ppg [x] {:pre [(pos? x)]} x) (try (ppg -1) (catch Throwable _ :blocked)))"}
   {:suite "deftype / map-like dispatch" :label "dissoc + keys via IPersistentMap/Seqable methods" :expected "[:b]" :actual "(do (deftype MapT [m] clojure.lang.Seqable (seq [_] (seq m)) clojure.lang.IPersistentMap (without [_ k] (->MapT (dissoc m k))) (assoc [_ k v] (->MapT (assoc m k v)))) (vec (keys (dissoc (->MapT {:a 1 :b 2}) :a))))"}
+  {:suite "delay / exception memoization" :label "throwing body runs once, stays realized, re-throws" :expected "[1 true]" :actual "(let [n (atom 0) d (delay (swap! n inc) (throw (ex-info \"e\" {})))] (dotimes [_ 3] (try (deref d) (catch Throwable _ nil))) [(deref n) (realized? d)])"}
+  {:suite "queue / pop" :label "pop of empty PersistentQueue returns empty" :expected "nil" :actual "(seq (pop clojure.lang.PersistentQueue/EMPTY))"}
+  {:suite "interop / iterator-seq" :label "iterator-seq over .iterator" :expected "[:a :b]" :actual "(vec (iterator-seq (.iterator [:a :b])))"}
+  {:suite "deftype / IPersistentStack" :label "peek/pop dispatch" :expected "[1 [2 3]]" :actual "(do (deftype Stk [v] clojure.lang.IPersistentStack (peek [_] (first v)) (pop [_] (->Stk (rest v)))) [(peek (->Stk [1 2 3])) (vec (.v (pop (->Stk [1 2 3]))))])"}
+  {:suite "deftype / equiv" :label "(= deftype other) uses equiv method" :expected "true" :actual "(do (deftype EqT [m] clojure.lang.IPersistentCollection (equiv [_ o] (= o m)) clojure.lang.Seqable (seq [_] (seq m))) (= (->EqT {:a 1}) {:a 1}))"}
   {:suite "interop / Class.forName" :label "unknown class throws ClassNotFoundException" :expected ":nf" :actual "(try (Class/forName \"no.such.Klass\") (catch ClassNotFoundException _ :nf))"}
   {:suite "interop / Class.forName" :label "known class resolves" :expected "\"java.lang.String\"" :actual "(.getName (Class/forName \"java.lang.String\"))"}
   {:suite "clojure.string / replace" :label "char match and replacement" :expected "\"a-b-c\"" :actual "(clojure.string/replace \"a/b/c\" \\/ \\-)"}
