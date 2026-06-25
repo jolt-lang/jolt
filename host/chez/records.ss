@@ -158,6 +158,8 @@
         ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
+        ;; a regex VALUE — extend-protocol java.util.regex.Pattern (core.match.regex).
+        ((regex-t? obj) '("Pattern" "java.util.regex.Pattern" "Object"))
         ;; host value types a library may extend a protocol to by class (data.json
         ;; extends JSONWriter to java.util.UUID / java.util.Date / java.math.BigDecimal).
         ((juuid? obj) '("UUID" "java.util.UUID" "Object"))
@@ -236,6 +238,7 @@
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
                 "Collection" "java.util.Collection" "Iterable" "java.lang.Iterable"
                 "UUID" "BigDecimal" "Date" "Timestamp" "Instant" "java.sql.Date"
+                "Pattern" "java.util.regex.Pattern"
                 ;; java.time value types (extend-protocol Duration / ZonedDateTime / …)
                 "Duration" "Period" "LocalDate" "LocalTime" "LocalDateTime"
                 "ZonedDateTime" "OffsetDateTime" "OffsetTime" "ZoneId" "ZoneOffset"
@@ -247,6 +250,7 @@
     (and (> (string-length s) pl) (string=? (substring s 0 pl) p) (substring s pl (string-length s)))))
 (define (canonical-host-tag type-name)
   (let ((base (or (strip-prefix type-name "java.lang.")
+                  (strip-prefix type-name "java.util.regex.")
                   (strip-prefix type-name "java.util.")
                   (strip-prefix type-name "java.net.")
                   (strip-prefix type-name "java.math.")

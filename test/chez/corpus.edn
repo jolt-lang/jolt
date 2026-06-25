@@ -1052,7 +1052,8 @@
   {:suite "metadata / type hints" :label "type hint in let" :expected "6" :actual "(let [^long x 5] (inc x))"}
   {:suite "metadata / type hints" :label "type hint in body" :expected "2" :actual "(let [s \"ab\"] (count ^String s))"}
   {:suite "metadata / type hints" :label "type hint in destructure" :expected "3" :actual "(let [{:keys [^long a]} {:a 3}] a)"}
-  {:suite "metadata / type hints" :label "symbol hint -> :tag" :expected "\"String\"" :actual "(:tag (meta (read-string \"^String x\")))"}
+  {:suite "metadata / type hints" :label "symbol hint -> :tag is a symbol" :expected "true" :actual "(symbol? (:tag (meta (read-string \"^String x\"))))"}
+  {:suite "metadata / type hints" :label "symbol hint -> :tag name" :expected "\"String\"" :actual "(name (:tag (meta (read-string \"^String x\"))))"}
   {:suite "metadata / type hints" :label "keyword hint -> true" :expected "true" :actual "(:foo (meta (read-string \"^:foo x\")))"}
   {:suite "metadata / read data metadata" :label "vector data meta" :expected "{:ref true}" :actual "(meta (read-string \"^:ref [:greeting]\"))"}
   {:suite "metadata / read data metadata" :label "map data meta" :expected "{:k 1}" :actual "(meta (read-string \"^{:k 1} {:a 2}\"))"}
@@ -3077,4 +3078,8 @@
   {:suite "interop / java.util.Date" :label "deprecated getYear/getMonth" :expected "[110 0]" :actual "(let [d (java.util.Date. 110 0 15)] [(.getYear d) (.getMonth d)])"}
   {:suite "clojure.set / variadic" :label "union of 4 sets" :expected "#{1 2 3 4}" :actual "(do (require (quote clojure.set)) (clojure.set/union #{1} #{2} #{3} #{4}))"}
   {:suite "clojure.set / variadic" :label "intersection of 3 sets" :expected "#{3}" :actual "(do (require (quote clojure.set)) (clojure.set/intersection #{1 2 3} #{2 3 4} #{3 4 5}))"}
+  {:suite "regex / literal value" :label "literal is a Pattern" :expected "true" :actual "(instance? java.util.regex.Pattern #\"a.c\")"}
+  {:suite "regex / literal value" :label "re-matches on a literal" :expected "\"aaa\"" :actual "(re-matches #\"a+\" \"aaa\")"}
+  {:suite "regex / literal value" :label "quoted regex round-trips" :expected "\"#\\\"a.c\\\"\"" :actual "(pr-str (quote #\"a.c\"))"}
+  {:suite "regex / literal value" :label "extend-protocol to Pattern dispatches" :expected "[:pattern :other]" :actual "(do (defprotocol Tg (tg [_])) (extend-protocol Tg java.util.regex.Pattern (tg [_] :pattern) Object (tg [_] :other)) [(tg #\"x\") (tg 1)])"}
 ]

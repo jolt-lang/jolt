@@ -26,9 +26,6 @@
   {:suite "io / cold tagged types via print-method",
    :label "transient vector",
    :category :printer-model}
-  {:suite "metadata / type hints",
-   :label "symbol hint -> :tag",
-   :category :host-model}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)",
    :label "bean is the map",
    :category :host-model}

@@ -292,7 +292,7 @@
         ;; exact type up front, so reading it back carries that type (not :any) —
         ;; the key to fast nested-record code. Spliced as a vector literal too.
         field-tags (map (fn [f] (let [mt (meta f)]
-                                  (cond (and mt (:tag mt)) (:tag mt)
+                                  (cond (and mt (:tag mt)) (name (:tag mt))   ; symbol or string -> string
                                         (and mt (:num mt)) "num"
                                         :else nil)))
                         fields)

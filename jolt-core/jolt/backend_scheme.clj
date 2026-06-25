@@ -11,7 +11,8 @@
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
                                form-list? form-vec? form-map? form-set? form-char?
                                form-literal? form-elements form-vec-items
-                               form-map-pairs form-set-items form-char-code]]))
+                               form-map-pairs form-set-items form-char-code
+                               form-regex? form-regex-source]]))
 
 ;; Hot clojure.core primitives lowered to native Scheme.
 ;; `=` is the exactness-aware jolt= from values.ss; inc/dec/
@@ -289,6 +290,8 @@
     (form-list? form) (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")
     (form-vec? form) (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")")
     (form-map? form) (emit-quoted-map (form-map-pairs form))
+    ;; a quoted #"…" regex value -> reconstruct it (same as the :regex IR leaf).
+    (form-regex? form) (str "(jolt-regex " (chez-str-lit (form-regex-source form)) ")")
     ;; plain jolt VALUES (metadata maps and anything nested in them)
     (map? form) (emit-quoted-map-value form)
     (vector? form) (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")")
