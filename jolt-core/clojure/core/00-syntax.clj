@@ -378,7 +378,8 @@
 ;; needed. (map? is true for symbol forms too, so guard the attr-map with symbol?.)
 ;; Defined before fresh-sym below, which is a defn-.
 (defmacro defn [fn-name & body]
-  (let [body (if (and (seq body) (string? (first body))) (rest body) body)
+  (let [docstring (when (and (seq body) (string? (first body))) (first body))
+        body (if docstring (rest body) body)
         body (if (and (seq body) (map? (first body)) (not (symbol? (first body))))
                (rest body) body)
         ;; ^{:map} metadata on the name reads as a (with-meta sym …) form, not an
@@ -386,8 +387,11 @@
         ;; bare symbol, so unwrap it for the fn name.
         fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))]
     ;; pass the name through to fn: the compiled fn's host name carries it,
-    ;; so stack traces read app.deep/level3 instead of a gensym
-    `(def ~fn-name (fn ~fn-only-name ~@body))))
+    ;; so stack traces read app.deep/level3 instead of a gensym. A leading
+    ;; docstring rides the def's docstring slot so (:doc (meta #'f)) is set.
+    (if docstring
+      `(def ~fn-name ~docstring (fn ~fn-only-name ~@body))
+      `(def ~fn-name (fn ~fn-only-name ~@body)))))
 
 ;; Jolt doesn't enforce privacy, so defn- is just defn (matching how Clojure's own
 ;; defn- delegates to defn with :private metadata).

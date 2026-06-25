@@ -669,8 +669,14 @@
                    ((string=? iface "IPersistentMap") (or (pmap? val) (htable-sorted-map? val)))
                    ((string=? iface "IPersistentVector") (and (pvec? val) (not (jolt-map-entry? val))))
                    ((string=? iface "IPersistentSet") (or (pset? val) (htable-sorted-set? val)))
-                   ((or (string=? iface "ISeq") (string=? iface "Seqable"))
+                   ((string=? iface "ISeq")
                     (or (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ;; Seqable is anything (seq x) works on — every persistent
+                   ;; collection, not just seqs (a vector IS Seqable, not an ISeq).
+                   ((string=? iface "Seqable")
+                    (or (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)
+                        (pvec? val) (pmap? val) (pset? val)
+                        (htable-sorted-map? val) (htable-sorted-set? val)))
                    ((string=? iface "Sequential")
                     (or (pvec? val) (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
                    ((string=? iface "IFn")
