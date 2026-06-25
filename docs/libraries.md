@@ -14,6 +14,10 @@ the [examples](https://github.com/jolt-lang/examples), e.g. the
 * [ring-core](https://github.com/ring-clojure/ring) — via `:deps/root "ring-core"`,
   on the ring-app example
 * [ring-codec](https://github.com/ring-clojure/ring-codec) — URL/form encoding
+* [ring-defaults](https://github.com/ring-clojure/ring-defaults) — the standard
+  middleware stack (params, static resources + content-type, session, security
+  headers); its session/CSRF crypto comes from
+  [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) (OpenSSL)
 * [reitit-core](https://github.com/metosin/reitit) — data-driven routing; the
   `reitit.Trie` Java class is mirrored by
   [jolt-lang/router](https://github.com/jolt-lang/router). `JOLT_FEATURES` `clj`.

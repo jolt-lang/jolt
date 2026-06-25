@@ -1,4 +1,8 @@
 [
+  {:suite "interop / Class.forName" :label "unknown class throws ClassNotFoundException" :expected ":nf" :actual "(try (Class/forName \"no.such.Klass\") (catch ClassNotFoundException _ :nf))"}
+  {:suite "interop / Class.forName" :label "known class resolves" :expected "\"java.lang.String\"" :actual "(.getName (Class/forName \"java.lang.String\"))"}
+  {:suite "clojure.string / replace" :label "char match and replacement" :expected "\"a-b-c\"" :actual "(clojure.string/replace \"a/b/c\" \\/ \\-)"}
+  {:suite "clojure.string / replace" :label "char match, string replacement" :expected "\"x_y\"" :actual "(clojure.string/replace \"x.y\" \\. \"_\")"}
   {:suite "interop-fixes / deprecated #^ metadata reader" :label "#^ type hint on a param" :expected "\"x\"" :actual "(do (defn f1 [#^String s] s) (f1 \"x\"))"}
   {:suite "interop-fixes / deprecated #^ metadata reader" :label "#^\"[B\" array hint" :expected "[1 2]" :actual "(do (defn f2 [#^\"[B\" b] b) (f2 [1 2]))"}
   {:suite "interop-fixes / deprecated #^ metadata reader" :label "#^ is equivalent to ^" :expected "true" :actual "(= (meta (with-meta [] {:tag (quote String)})) {:tag (quote String)})"}

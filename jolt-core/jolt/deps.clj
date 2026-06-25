@@ -77,11 +77,35 @@
         paths (or (:paths edn) ["src"])]
     (map #(abspath root %) paths)))
 
+;; --- reconciliation ---------------------------------------------------------
+;; Dependencies are resolved as a TREE (resolve-deps' BFS, which visits each
+;; coordinate once) and then reconciled into a definitive, de-duplicated set —
+;; one place, not ad-hoc per call site. dedup-by keeps the first item per key,
+;; order preserved; it dedups both source roots (by path) and native libraries
+;; (by identity), so an app pulling two libs that declare the same shared object
+;; (e.g. libcrypto via both http-client and the ring adapter) includes and loads
+;; it ONCE.
+(defn- dedup-by [key xs]
+  (second (reduce (fn [[seen acc] x]
+                    (let [k (key x)]
+                      (if (contains? seen k) [seen acc] [(conj seen k) (conj acc x)])))
+                  [#{} []] xs)))
+
+(defn- native-key
+  "Identity of a :jolt/native spec. A :process lib (the running process's own
+  symbols, e.g. libc) keys on that flag; a file lib on its :name, else on its
+  platform candidate paths — two deps naming the same lib reconcile to one load."
+  [spec]
+  (letfn [(cands [k] (let [v (get spec k)] (cond (string? v) [v] (sequential? v) (vec v) :else [])))]
+    (if (:process spec)
+      [:process (:name spec)]
+      [:native (or (:name spec) (vec (sort (concat (cands :darwin) (cands :linux)))))])))
+
 (defn- resolve-deps
   "Breadth-first walk of a deps map; returns {:roots [...] :natives [...]} — the
-  ordered, de-duplicated source-root directories and the collected :jolt/native
-  declarations from every dep's deps.edn. `base-dir` resolves :local/root and is
-  replaced by a dep's own root as the walk descends."
+  source-root directories and the collected :jolt/native declarations from every
+  dep's deps.edn (raw, in walk order; reconcile-project dedups them). `base-dir`
+  resolves :local/root and is replaced by a dep's own root as the walk descends."
   [deps base-dir]
   ;; queue grows by appending children at the tail; an index cursor walks it so
   ;; each dequeue is O(1) (was (subvec (vec queue) 1) per pop -> O(n^2)).
@@ -91,7 +115,7 @@
          roots []
          natives []]
     (if (>= i (count queue))
-      {:roots (distinct roots) :natives natives}
+      {:roots roots :natives natives}
       (let [[coord spec bd] (nth queue i)
             i (inc i)]
         (if (contains? seen coord)
@@ -125,7 +149,8 @@
          project-roots (map #(abspath project-dir %) project-paths)
          all-deps (merge (:deps edn) extra-deps)
          {dep-roots :roots dep-natives :natives} (resolve-deps all-deps project-dir)]
-     {:roots (vec (distinct (concat project-roots dep-roots)))
+     ;; reconcile: the project's own roots/natives + every dep's, deduped once.
+     {:roots (dedup-by identity (concat project-roots dep-roots))
       :main-opts main-opts
       ;; the project's own paths (relative to project-dir) and absolute resource
       ;; roots, plus its :jolt/build options — `jolt build` uses these to bundle
@@ -136,7 +161,7 @@
       :build (:jolt/build edn)
       :embed-dirs (mapv #(abspath project-dir %) (:embed (:jolt/build edn)))
       :tasks (:tasks edn)
-      :natives (vec (distinct (concat (:jolt/native edn) dep-natives)))
+      :natives (dedup-by native-key (concat (:jolt/native edn) dep-natives))
       ;; nREPL middleware a library contributes (jolt.nrepl composes them over its
       ;; built-in handler) — symbols resolving to a middleware fn or a vector of them.
       :nrepl-middleware (:nrepl/middleware edn)})))

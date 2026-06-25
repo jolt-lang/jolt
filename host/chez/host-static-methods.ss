@@ -206,13 +206,24 @@
   (register-class-statics! "NumberFormat" nf-statics)
   (register-class-statics! "java.text.NumberFormat" nf-statics))
 
+;; Class.forName: an array descriptor ("[C") is its own class token; a class Jolt
+;; can back (registered statics/ctor, or a java.*/clojure.* core class) yields a
+;; class object; anything else throws a catchable ClassNotFoundException, like the
+;; JVM — so the common `(try (Class/forName "optional.Dep") (catch …))` probe a
+;; library uses to detect an absent dependency works (e.g. ring's joda-time check).
+(define (forname-known? nm)
+  (or (lookup-class class-statics-tbl nm)
+      (lookup-class class-ctors-tbl nm)
+      (let ((pre? (lambda (p) (and (>= (string-length nm) (string-length p))
+                                   (string=? (substring nm 0 (string-length p)) p)))))
+        (or (pre? "java.") (pre? "clojure.") (pre? "jolt.")))))
 (register-class-statics! "Class"
-  ;; an array descriptor ("[C", "[I", …) is its own class token (so instance? and
-  ;; class compare equal); other names become a class jhost.
-  (list (cons "forName" (lambda (nm)
-                          (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[))
-                              nm
-                              (make-jhost "class" (list (cons 'name nm))))))))
+  (list (cons "forName"
+              (lambda (nm . _)
+                (cond
+                  ((and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[)) nm)
+                  ((forname-known? nm) (make-class-obj nm))
+                  (else (jolt-throw (jolt-host-throwable "java.lang.ClassNotFoundException" nm))))))))
 
 ;; ---- System helpers (defined before use above via top-level order) ----------
 ;; os.name reflects the actual platform (Chez's machine-type names it): a *osx

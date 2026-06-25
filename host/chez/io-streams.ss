@@ -296,6 +296,14 @@
            (let ((port (open-file-output-port (path-of output) (file-options no-fail) (buffer-mode block))))
              (put-bytevector port bv) (close-port port))
            (jolt-spit output (input-text input)))))
+    ;; a byte-output-stream shim (a host tagged-table with :jolt/output-stream,
+    ;; e.g. http-client's ByteArrayOutputStream): write through its .write method,
+    ;; byte-exact for a byte source.
+    ((and (htable? output) (jolt-truthy? (jolt-ref-get output (keyword "jolt" "output-stream"))))
+     (let ((bv (input-bytes input)))
+       (record-method-dispatch output "write"
+         (list->cseq (list (if bv (make-jolt-array (list->vector (bytevector->u8-list bv)) 'byte)
+                               (input-text input)))))))
     (else (error #f "io/copy: don't know how to write to" output)))
   jolt-nil)
 (def-var! "clojure.java.io" "copy" jio-copy)
