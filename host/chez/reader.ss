@@ -560,8 +560,42 @@
 (define (rdr-carry-meta src dst)
   (let ((m (jolt-meta src))) (if (jolt-nil? m) dst (jolt-with-meta dst m))))
 
+;; tag keyword (:#time/date) -> its *data-readers* reader fn, or #f. The fn's
+;; namespace must already be loaded (the loader requires them when a project's
+;; data_readers.{clj,cljc} registers a tag).
+(define (rdr-data-reader-fn tag)
+  (and (keyword? tag)
+       (let ((nm (keyword-t-name tag)))
+         (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\#)
+              (let* ((bare (substring nm 1 (string-length nm)))
+                     (slash (let loop ((i 0))
+                              (cond ((>= i (string-length bare)) #f)
+                                    ((char=? (string-ref bare i) #\/) i)
+                                    (else (loop (+ i 1))))))
+                     (sym (if slash
+                              (jolt-symbol (substring bare 0 slash) (substring bare (+ slash 1) (string-length bare)))
+                              (jolt-symbol #f bare)))
+                     (dr (var-deref "clojure.core" "*data-readers*"))
+                     (v (and (pmap? dr) (jolt-get dr sym))))
+                (and v (not (jolt-nil? v)) (symbol-t? v) (not (jolt-nil? (symbol-t-ns v)))
+                     (guard (e (#t #f))
+                       (let ((fn (var-deref (symbol-t-ns v) (symbol-t-name v))))
+                         (and (procedure? fn) fn)))))))))
+;; read-string / read data seam: construct the value for a #tag literal. #inst,
+;; #uuid and #"regex" are built in; any other tag is applied from *data-readers*.
+;; An unregistered tag stays a tagged FORM (lenient — clojure.edn raises instead).
+(define (rdr-construct-tag tag inner)
+  (cond
+    ((eq? tag (keyword #f "#inst")) (jolt-inst-from-string inner))
+    ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string inner))
+    ((eq? tag (keyword #f "regex")) (jolt-re-pattern inner))
+    (else (let ((fn (rdr-data-reader-fn tag)))
+            (if fn (jolt-invoke fn inner) (rdr-make-tagged tag inner))))))
+
 (define (rdr-form->data x)
   (cond
+    ((and (pmap? x) (eq? (jolt-get x rdr-kw-jolt-type) rdr-kw-jolt-tagged))
+     (rdr-construct-tag (jolt-get x rdr-kw-tag) (rdr-form->data (jolt-get x rdr-kw-form))))
     ((rdr-set-form? x)
      (let ((items (jolt-get x rdr-kw-value)))
        (rdr-carry-meta x

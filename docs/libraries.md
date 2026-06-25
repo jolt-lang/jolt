@@ -4,6 +4,9 @@ Libraries confirmed to load and pass their conformance checks on Jolt
 (see the [examples](https://github.com/jolt-lang/examples), e.g. the
 [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring-app)).
 
+* [aero](https://github.com/juxt/aero) — EDN configuration with tag literals;
+  `read-config` resolves `#ref`/`#env`/`#or`/`#profile`/`#long`/… and map/vector/set
+  configs round-trip
 * [config](https://github.com/yogthos/config)
 * [Selmer](https://github.com/yogthos/Selmer)
 * [medley](https://github.com/weavejester/medley)
@@ -59,6 +62,7 @@ Libraries confirmed to load and pass their conformance checks on Jolt
 * [clojure.spec.alpha](https://github.com/clojure/spec.alpha) — data specs;
   `s/def`, `s/valid?`, `s/conform`, `s/cat`/`s/keys`, `s/explain-str`, and
   `s/check-asserts` work over the registry.
-* [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`. The
-  API test suite passes 353/359; the remaining failures are named-zone DST (full
-  tzdb) and locale-specific formatting.
+* [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`. Its
+  `api` and `alpha.interval` test suites pass in full, including named-zone DST,
+  nanosecond instants, and French locale formatting. Loads with `JOLT_FEATURES`
+  including `clj`; `#time/…` literals work via `time-literals`' data readers.

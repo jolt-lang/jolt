@@ -146,6 +146,12 @@
     ((keyword? f) (apply jolt-get (car args) f (cdr args)))   ; (:k m [d]) -> (get m :k [d])
     ((jolt-coll? f) (apply jolt-get f args))                  ; (coll k [d]) -> (get coll k [d])
     ((jolt-transient? f) (apply jolt-get f args))             ; a transient vec/map/set is callable on the JVM
+    ;; a record/reify implementing clojure.lang.IFn is callable: dispatch to its
+    ;; inline `invoke` method with the value itself as the leading `this`.
+    ((and (jrec? f) (find-method-any-protocol (jrec-tag f) "invoke"))
+     => (lambda (m) (apply jolt-invoke m f args)))
+    ((and (reified-methods f) (hashtable-ref (reified-methods f) "invoke" #f))
+     => (lambda (m) (apply jolt-invoke m f args)))
     (else (error 'invoke "not a fn" f))))
 
 ;; ============================================================================

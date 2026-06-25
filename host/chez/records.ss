@@ -128,11 +128,11 @@
         ((keyword? obj) '("Keyword" "Named" "Object"))
         ((jolt-symbol? obj) '("Symbol" "Named" "Object"))
         ((pvec? obj) '("PersistentVector" "APersistentVector" "IPersistentVector" "IPersistentCollection"
-                       "List" "java.util.List" "Sequential" "Collection" "Object"))
+                       "List" "java.util.List" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ((pmap? obj) '("PersistentArrayMap" "APersistentMap" "IPersistentMap" "Associative"
-                       "Map" "java.util.Map" "Object"))
-        ((pset? obj) '("PersistentHashSet" "APersistentSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Object"))
-        ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Object"))
+                       "Map" "java.util.Map" "Iterable" "java.lang.Iterable" "Object"))
+        ((pset? obj) '("PersistentHashSet" "APersistentSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
         ;; host value types a library may extend a protocol to by class (data.json
@@ -211,7 +211,7 @@
                 "PersistentHashSet" "APersistentSet" "IPersistentSet"
                 "ASeq" "ISeq" "IPersistentCollection" "Associative" "Sequential"
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
-                "Collection" "java.util.Collection"
+                "Collection" "java.util.Collection" "Iterable" "java.lang.Iterable"
                 "UUID" "BigDecimal" "Date" "Timestamp" "Instant" "java.sql.Date"
                 ;; java.time value types (extend-protocol Duration / ZonedDateTime / …)
                 "Duration" "Period" "LocalDate" "LocalTime" "LocalDateTime"

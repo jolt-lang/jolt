@@ -342,8 +342,12 @@
 ;; start of the UTC day containing ms.
 (define (start-of-utc-day ms)
   (* (inst-floor-div (exact (truncate ms)) 86400000) 86400000))
-(define (mk-formatter pat) (make-jhost "dt-formatter" (vector pat)))
+;; a formatter carries its pattern and a locale id (default "en"); the locale
+;; selects month/day names in the java-time.ss format engine.
+(define (mk-formatter pat . loc) (make-jhost "dt-formatter" (vector pat (if (null? loc) "en" (car loc)))))
 (define (fmt-pat f) (vector-ref (jhost-state f) 0))
+(define (fmt-locale f) (let ((s (jhost-state f))) (if (> (vector-length s) 1) (vector-ref s 1) "en")))
+(define (locale-id l) (if (and (jhost? l) (string=? (jhost-tag l) "locale")) (vector-ref (jhost-state l) 0) "en"))
 (define (now-ms) (now-millis))   ; exact ms (= JVM long); now-millis from host-static.ss
 ;; coerce a user-supplied ms (exact or flonum) to an exact integer for storage.
 (define (ms->exact ms) (exact (round ms)))
@@ -360,8 +364,8 @@
 (register-host-methods! "local-date"
   (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
 (register-host-methods! "dt-formatter"
-  (list (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self))))
-        (cons "withZone" (lambda (self zone) (mk-formatter (fmt-pat self))))
+  (list (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self) (locale-id locale))))
+        (cons "withZone" (lambda (self zone) (mk-formatter (fmt-pat self) (fmt-locale self))))
         (cons "format" (lambda (self d) (format-ms (fmt-pat self) (ms-of d))))
         ;; parse a string per the pattern -> an instant value; Instant/from / the
         ;; LocalDateTime/parse static read its ms back out.

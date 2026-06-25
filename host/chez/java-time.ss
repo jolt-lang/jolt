@@ -163,6 +163,27 @@
     (values (parse-iso-date (substring s 0 ti))
             (parse-iso-time (substring s (+ ti 1) (string-length s))))))
 
+;; the offset/zone suffix start in an ISO instant/offset string: the first
+;; Z/z/+/- after the 'T', or #f if local-only. (parse-zone-offset / the [zone]
+;; bracket handle the suffix itself.)
+(define (iso-offset-pos s)
+  (let ((tpos (let loop ((i 0)) (cond ((>= i (string-length s)) 0)
+                                      ((memv (string-ref s i) '(#\T #\t)) i)
+                                      (else (loop (+ i 1)))))))
+    (let loop ((i (+ tpos 1)))
+      (cond ((>= i (string-length s)) #f)
+            ((memv (string-ref s i) '(#\Z #\z #\+ #\-)) i)
+            (else (loop (+ i 1)))))))
+;; parse an ISO-8601 instant ("…T…[.fffffffff](Z|±HH:mm)") -> UTC epoch-nanos,
+;; preserving full fractional-second precision.
+(define (parse-iso-instant-nanos s)
+  (let* ((opos (iso-offset-pos s))
+         (local (if opos (substring s 0 opos) s))
+         (osuf (if opos (substring s opos (string-length s)) "Z"))
+         (off (if (or (string=? osuf "Z") (string=? osuf "z")) 0 (parse-zone-offset osuf))))
+    (call-with-values (lambda () (parse-iso-datetime local))
+      (lambda (ed nod) (- (+ (* ed nanos-per-day) nod) (* off nanos-per-sec))))))
+
 ;; --- LocalDate ---------------------------------------------------------------
 (define ld-min (jt-local-date (ymd->epoch-day -999999999 1 1)))
 (define ld-max (jt-local-date (ymd->epoch-day 999999999 12 31)))
@@ -450,7 +471,14 @@
         (cons "EPOCH" (mk-instant-nanos 0))
         (cons "MIN" (mk-instant-nanos (* (ymd->epoch-day -999999999 1 1) 86400 nanos-per-sec)))
         (cons "MAX" (mk-instant-nanos (+ (* (ymd->epoch-day 999999999 12 31) 86400 nanos-per-sec)
-                                         (* 86399 nanos-per-sec) 999999999)))))
+                                         (* 86399 nanos-per-sec) 999999999)))
+        ;; nano-precise ISO parse, overriding the ms-granular inst-time.ss parse.
+        ;; Falls back to the ms parser for extended-year (±999999999) MIN/MAX strings
+        ;; the fixed-width date parser can't read.
+        (cons "parse" (lambda (s . _)
+                        (let ((str (if (string? s) s (jolt-str-render-one s))))
+                          (guard (e (#t (mk-instant (jinst-ms (jolt-inst-from-string str)))))
+                            (mk-instant-nanos (parse-iso-instant-nanos str))))))))
 
 (register-host-methods! "instant"
   (list (cons "getEpochSecond" (lambda (x) (jt-floor-div (inst-nanos x) nanos-per-sec)))
@@ -470,8 +498,8 @@
         (cons "hashCode" (lambda (x) (inst-nanos x)))
         (cons "truncatedTo" (lambda (x u) (let ((d (instant-unit-nanos u)))
                                             (mk-instant-nanos (* (jt-floor-div (inst-nanos x) d) d)))))
-        (cons "atOffset" (lambda (x off) (offset-of-instant-ms (inst-ms x) off)))
-        (cons "atZone" (lambda (x zone) (zoned-of-instant-ms (inst-ms x) zone)))
+        (cons "atOffset" (lambda (x off) (offset-of-instant-nanos (inst-nanos x) off)))
+        (cons "atZone" (lambda (x zone) (zoned-of-instant-nanos (inst-nanos x) zone)))
         (cons "toString" (lambda (x) (iso-instant-str-nanos (inst-nanos x))))))
 
 ;; --- Month / DayOfWeek enums (returned by getMonth / getDayOfWeek) -----------
@@ -594,11 +622,14 @@
                             ((char=? (string-ref s9 (- i 1)) #\0) (loop (- i 1)))
                             (else (substring s9 0 i))))))
 
-(define (dur-temporal-nanos t)   ; instant/ldt/lt -> a nanos-since-epoch-ish count
+(define (dur-temporal-nanos t)   ; instant/ldt/lt/zoned/offset -> a nanos count
   (cond ((jt-instant? t) (inst-nanos t))
         ((jt-dt? t) (+ (* (ldt-epoch-day t) nanos-per-day) (ldt-nano-of-day t)))
         ((jt-time? t) (lt-nano-of-day t))
         ((jt-date? t) (* (ld-epoch-day t) nanos-per-day))
+        ;; zoned/offset date-times measure on the instant timeline (UTC nanos).
+        ((jt-zoned-dt? t) (zdt->nanos t))
+        ((jt-offset-dt? t) (odt->nanos t))
         (else (error #f "Duration/between: unsupported temporal"))))
 (register-class-statics! "Duration"
   (list (cons "ZERO" dur-zero)
@@ -1445,6 +1476,72 @@
 ;; (Chez's real machine offset is available via date-zone-offset, but using it would
 ;; make results machine-tz-dependent and break that round-trip.)
 (define (system-zone-offset-secs) 0)
+;; --- DST rules ---------------------------------------------------------------
+;; A DST-observing named zone has a standard offset plus a rule family (US/Canada
+;; or EU) that puts the clock one hour ahead for part of the year. The rule yields
+;; the two transition points; outside the table a zone keeps a fixed offset.
+;; Southern-hemisphere zones (Sydney/Auckland) stay fixed — their reversed DST
+;; isn't exercised and a fixed offset preserves existing behavior.
+(define dst-saving 3600)
+;; day-of-week of an epoch-day, 0=Sunday (1970-01-01 is a Thursday).
+(define (epoch-day-dow ed) (modulo (+ ed 4) 7))
+;; epoch-day of the nth (1-based) weekday `dow` in (year, month); n<0 counts from the end.
+(define (nth-dow-epoch-day year month dow n)
+  (if (> n 0)
+      (let* ((first-ed (ymd->epoch-day year month 1))
+             (shift (modulo (- dow (epoch-day-dow first-ed)) 7)))
+        (+ first-ed shift (* 7 (- n 1))))
+      (let* ((last-ed (ymd->epoch-day year month (jt-len-of-month year month)))
+             (shift (modulo (- (epoch-day-dow last-ed) dow) 7)))
+        (- last-ed shift))))
+;; year of a UTC/local epoch-seconds value.
+(define (secs->year s)
+  (call-with-values (lambda () (civil-from-days (jt-floor-div s 86400)))
+    (lambda (y m d) y)))
+;; zone-id -> (standard-offset-secs . rule-symbol: us | eu).
+(define dst-zone-table
+  '(("America/New_York" -18000 . us) ("America/Toronto" -18000 . us)
+    ("America/Chicago" -21600 . us) ("America/Denver" -25200 . us)
+    ("America/Los_Angeles" -28800 . us)
+    ("Europe/London" 0 . eu) ("Europe/Paris" 3600 . eu)
+    ("Europe/Berlin" 3600 . eu) ("Europe/Madrid" 3600 . eu)))
+(define (dst-entry id) (assoc id dst-zone-table))
+;; offset for a DST zone at a UTC instant (epoch-seconds).
+(define (dst-offset-at-instant id std rule secs)
+  (let ((year (secs->year secs)))
+    (case rule
+      ;; US: spring 2nd Sun Mar 02:00 local std; fall 1st Sun Nov 02:00 local DST.
+      ((us)
+       (let ((spring (- (+ (* (nth-dow-epoch-day year 3 0 2) 86400) (* 2 3600)) std))
+             (fall   (- (+ (* (nth-dow-epoch-day year 11 0 1) 86400) (* 2 3600)) (+ std dst-saving))))
+         (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
+      ;; EU: spring last Sun Mar 01:00 UTC; fall last Sun Oct 01:00 UTC.
+      ((eu)
+       (let ((spring (+ (* (nth-dow-epoch-day year 3 0 -1) 86400) 3600))
+             (fall   (+ (* (nth-dow-epoch-day year 10 0 -1) 86400) 3600)))
+         (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
+      (else std))))
+;; offset for a DST zone given a local wall-time (epoch-seconds in local time).
+;; Boundary hours (the spring gap / fall overlap) resolve to the simple window test.
+(define (dst-offset-at-local id std rule lsecs)
+  (let ((year (secs->year lsecs)))
+    (case rule
+      ((us)
+       (let ((spring (+ (* (nth-dow-epoch-day year 3 0 2) 86400) (* 2 3600)))
+             (fall   (+ (* (nth-dow-epoch-day year 11 0 1) 86400) (* 2 3600))))
+         (if (and (<= spring lsecs) (< lsecs fall)) (+ std dst-saving) std)))
+      ((eu)
+       (let ((spring (+ (* (nth-dow-epoch-day year 3 0 -1) 86400) 3600 std))
+             (fall   (+ (* (nth-dow-epoch-day year 10 0 -1) 86400) 7200 std)))
+         (if (and (<= spring lsecs) (< lsecs fall)) (+ std dst-saving) std)))
+      (else std))))
+;; DST-aware offset for a resolved (id . std-off) at a UTC instant / local wall-time.
+;; Falls back to the resolved fixed offset for non-DST zones.
+(define (zone-offset-at-instant id std secs)
+  (let ((e (dst-entry id))) (if e (dst-offset-at-instant id (cadr e) (cddr e) secs) std)))
+(define (zone-offset-at-local id std lsecs)
+  (let ((e (dst-entry id))) (if e (dst-offset-at-local id (cadr e) (cddr e) lsecs) std)))
+
 ;; resolve any zone designator (string / ZoneId / ZoneOffset) to a (id . offset).
 (define (resolve-zone z)
   (cond
@@ -1471,19 +1568,36 @@
                                        ((jt-zoned-dt? t) (zdt-zone t)) (else (error #f "ZoneId/from: unsupported")))))))
 (register-host-methods! "zone-id"
   (list (cons "getId" (lambda (z) (zid-id z)))
-        (cons "getRules" (lambda (z) (make-jhost "zone-rules" (vector (zid-off z)))))
+        (cons "getRules" (lambda (z) (make-jhost "zone-rules" (vector (zid-id z) (zid-off z)))))
         (cons "normalized" (lambda (z) (if (and (> (string-length (zid-id z)) 0) (memv (string-ref (zid-id z) 0) '(#\+ #\- #\Z)))
                                            (jt-zone-offset (zid-off z)) z)))
         (cons "getDisplayName" (lambda (z . _) (zid-id z)))
         (cons "equals" (lambda (z o) (and (jt-zone-id? o) (string=? (zid-id z) (zid-id o)))))
         (cons "hashCode" (lambda (z) (string-hash (zid-id z))))
         (cons "toString" (lambda (z) (zid-id z)))))
-;; ZoneRules stub: only getOffset/isFixedOffset are exercised; the offset is fixed.
+;; ZoneRules carries the zone id + standard offset. getOffset is DST-aware: given
+;; an Instant it resolves the offset at that instant, given a LocalDateTime at that
+;; local wall time; with no argument it yields the standard offset.
+(define (zr-id r) (vector-ref (jhost-state r) 0))
+(define (zr-std r) (vector-ref (jhost-state r) 1))
 (register-host-methods! "zone-rules"
-  (list (cons "getOffset" (lambda (r . _) (jt-zone-offset (vector-ref (jhost-state r) 0))))
-        (cons "isFixedOffset" (lambda (r) #t))
-        (cons "getStandardOffset" (lambda (r . _) (jt-zone-offset (vector-ref (jhost-state r) 0))))
-        (cons "toString" (lambda (r) "ZoneRules[fixed]"))))
+  (list (cons "getOffset"
+              (lambda (r . args)
+                (if (null? args)
+                    (jt-zone-offset (zr-std r))
+                    (let ((a (car args)))
+                      (cond
+                        ((jt-instant-tag? a)
+                         (jt-zone-offset (zone-offset-at-instant (zr-id r) (zr-std r) (jt-floor-div (inst-nanos a) nanos-per-sec))))
+                        ((jinst? a)
+                         (jt-zone-offset (zone-offset-at-instant (zr-id r) (zr-std r) (jt-floor-div (exact (truncate (jinst-ms a))) 1000))))
+                        ((and (jhost? a) (string=? (jhost-tag a) "local-date-time"))
+                         (jt-zone-offset (zone-offset-at-local (zr-id r) (zr-std r)
+                                          (+ (* (ldt-epoch-day a) 86400) (jt-floor-div (ldt-nano-of-day a) nanos-per-sec)))))
+                        (else (jt-zone-offset (zr-std r))))))))
+        (cons "isFixedOffset" (lambda (r) (not (dst-entry (zr-id r)))))
+        (cons "getStandardOffset" (lambda (r . _) (jt-zone-offset (zr-std r))))
+        (cons "toString" (lambda (r) (if (dst-entry (zr-id r)) "ZoneRules" "ZoneRules[fixed]")))))
 
 ;; --- OffsetTime --------------------------------------------------------------
 (define (jt-offset-time nod off) (make-jhost "offset-time" (vector nod off)))
@@ -1503,6 +1617,7 @@
 (define (odt-ldt x) (jt-local-dt (odt-epoch-day x) (odt-nano-of-day x)))
 ;; epoch-ms of the instant this offset-dt denotes (subtract the offset to reach UTC).
 (define (odt->ms x) (- (ldt->ms (odt-ldt x)) (* (odt-offset x) 1000)))
+(define (odt->nanos x) (- (+ (* (odt-epoch-day x) nanos-per-day) (odt-nano-of-day x)) (* (odt-offset x) nanos-per-sec)))
 (define (odt->string x) (string-append (iso-datetime-str (odt-epoch-day x) (odt-nano-of-day x)) (offset-suffix (odt-offset x))))
 
 ;; --- ZonedDateTime -----------------------------------------------------------
@@ -1514,6 +1629,7 @@
 (define (jt-zoned-dt? x) (and (jhost? x) (string=? (jhost-tag x) "zoned-date-time")))
 (define (zdt-ldt x) (jt-local-dt (zdt-epoch-day x) (zdt-nano-of-day x)))
 (define (zdt->ms x) (- (ldt->ms (zdt-ldt x)) (* (zdt-offset x) 1000)))
+(define (zdt->nanos x) (- (+ (* (zdt-epoch-day x) nanos-per-day) (zdt-nano-of-day x)) (* (zdt-offset x) nanos-per-sec)))
 ;; ISO zoned: local + offset, then [zone-id] unless the zone IS the offset.
 (define (zdt->string x)
   (let* ((zid (zdt-zone x)) (id (zid-id zid)))
@@ -1525,24 +1641,44 @@
 ;; build a ZonedDateTime/OffsetDateTime from a LocalDateTime + zone designator. The
 ;; offset is the zone's fixed offset (no DST resolution).
 (define (zoned-of-ldt ldt zone)
-  (let ((r (resolve-zone zone)))
-    (jt-zoned-dt (ldt-epoch-day ldt) (ldt-nano-of-day ldt) (cdr r) (jt-zone-id (car r) (cdr r)))))
+  (let* ((r (resolve-zone zone))
+         (lsecs (+ (* (ldt-epoch-day ldt) 86400) (jt-floor-div (ldt-nano-of-day ldt) 1000000000)))
+         (off (zone-offset-at-local (car r) (cdr r) lsecs)))
+    (jt-zoned-dt (ldt-epoch-day ldt) (ldt-nano-of-day ldt) off (jt-zone-id (car r) (cdr r)))))
 (define (offset-of-ldt ldt off)
   (let ((secs (cond ((jt-zone-offset? off) (zo-secs off)) ((jt-zone-id? off) (zid-off off)) (else (parse-zone-offset off)))))
     (jt-offset-dt (ldt-epoch-day ldt) (ldt-nano-of-day ldt) secs)))
 ;; from an epoch-ms instant + zone: apply the zone offset to get the local fields.
 (define (zoned-of-instant-ms ms zone)
-  (let* ((r (resolve-zone zone)) (off (cdr r))
+  (let* ((r (resolve-zone zone))
+         (off (zone-offset-at-instant (car r) (cdr r) (jt-floor-div (exact (truncate ms)) 1000)))
          (local-ms (+ (exact (truncate ms)) (* off 1000)))
          (ed (jt-floor-div local-ms 86400000)) (nod (* (jt-floor-mod local-ms 86400000) 1000000)))
-    (jt-zoned-dt ed nod off (jt-zone-id (car r) off))))
+    (jt-zoned-dt ed nod off (jt-zone-id (car r) (cdr r)))))
 (define (offset-of-instant-ms ms off-or-zone)
   (let* ((secs (cond ((jt-zone-offset? off-or-zone) (zo-secs off-or-zone))
                      ((jt-zone-id? off-or-zone) (zid-off off-or-zone))
-                     (else (cdr (resolve-zone off-or-zone)))))
+                     (else (let ((r (resolve-zone off-or-zone)))
+                             (zone-offset-at-instant (car r) (cdr r) (jt-floor-div (exact (truncate ms)) 1000))))))
          (local-ms (+ (exact (truncate ms)) (* secs 1000)))
          (ed (jt-floor-div local-ms 86400000)) (nod (* (jt-floor-mod local-ms 86400000) 1000000)))
     (jt-offset-dt ed nod secs)))
+;; nano-precise instant -> zoned/offset (Instant carries epoch-nanos; ms versions
+;; above stay for the ms-based Date/Calendar callers).
+(define (zoned-of-instant-nanos nanos zone)
+  (let* ((r (resolve-zone zone))
+         (off (zone-offset-at-instant (car r) (cdr r) (jt-floor-div nanos nanos-per-sec)))
+         (local-nanos (+ nanos (* off nanos-per-sec)))
+         (ed (jt-floor-div local-nanos nanos-per-day)) (nod (jt-floor-mod local-nanos nanos-per-day)))
+    (jt-zoned-dt ed nod off (jt-zone-id (car r) (cdr r)))))
+(define (offset-of-instant-nanos nanos off-or-zone)
+  (let* ((off (cond ((jt-zone-offset? off-or-zone) (zo-secs off-or-zone))
+                    ((jt-zone-id? off-or-zone) (zid-off off-or-zone))
+                    (else (let ((r (resolve-zone off-or-zone)))
+                            (zone-offset-at-instant (car r) (cdr r) (jt-floor-div nanos nanos-per-sec))))))
+         (local-nanos (+ nanos (* off nanos-per-sec)))
+         (ed (jt-floor-div local-nanos nanos-per-day)) (nod (jt-floor-mod local-nanos nanos-per-day)))
+    (jt-offset-dt ed nod off)))
 
 ;; redefine mk-zoned (used by Phase-1/2 atZone/atOffset) to yield a real
 ;; ZonedDateTime at UTC. Older inst-time.ss "zoned-dt" callers route through here.
@@ -1647,7 +1783,7 @@
         (cons "getNano" (lambda (x) (lt-nano (zdt-ldt x))))
         (cons "getOffset" (lambda (x) (jt-zone-offset (zdt-offset x))))
         (cons "getZone" (lambda (x) (zdt-zone x)))
-        (cons "toInstant" (lambda (x) (mk-instant (zdt->ms x))))
+        (cons "toInstant" (lambda (x) (mk-instant-nanos (zdt->nanos x))))
         (cons "toLocalDate" (lambda (x) (jt-local-date (zdt-epoch-day x))))
         (cons "toLocalTime" (lambda (x) (jt-local-time (zdt-nano-of-day x))))
         (cons "toLocalDateTime" (lambda (x) (zdt-ldt x)))
@@ -1678,7 +1814,7 @@
         (cons "withSecond" (lambda (x v) (zdt-with-ldt x (ldt-combine (ldt-date (zdt-ldt x)) (lt-with (ldt-time (zdt-ldt x)) 'second (jt->exact v))))))
         (cons "withNano" (lambda (x v) (zdt-with-ldt x (ldt-combine (ldt-date (zdt-ldt x)) (lt-with (ldt-time (zdt-ldt x)) 'nano (jt->exact v))))))
         (cons "truncatedTo" (lambda (x u) (zdt-with-ldt x (ldt-combine (ldt-date (zdt-ldt x)) (lt-truncate (ldt-time (zdt-ldt x)) u)))))
-        (cons "withZoneSameInstant" (lambda (x zone) (zoned-of-instant-ms (zdt->ms x) zone)))
+        (cons "withZoneSameInstant" (lambda (x zone) (zoned-of-instant-nanos (zdt->nanos x) zone)))
         (cons "withZoneSameLocal" (lambda (x zone) (zoned-of-ldt (zdt-ldt x) zone)))
         (cons "withFixedOffsetZone" (lambda (x) (jt-zoned-dt (zdt-epoch-day x) (zdt-nano-of-day x) (zdt-offset x) (jt-zone-id (zo-id (zdt-offset x)) (zdt-offset x)))))
         (cons "plus" (case-lambda ((x a) (zdt-plus-amount x a 1)) ((x n u) (zdt-with-ldt x (temporal-plus-unit (zdt-ldt x) (jt->exact n) (arg-unit-name u))))))
@@ -1747,14 +1883,14 @@
         (cons "getSecond" (lambda (x) (lt-second (odt-ldt x))))
         (cons "getNano" (lambda (x) (lt-nano (odt-ldt x))))
         (cons "getOffset" (lambda (x) (jt-zone-offset (odt-offset x))))
-        (cons "toInstant" (lambda (x) (mk-instant (odt->ms x))))
+        (cons "toInstant" (lambda (x) (mk-instant-nanos (odt->nanos x))))
         (cons "toLocalDate" (lambda (x) (jt-local-date (odt-epoch-day x))))
         (cons "toLocalTime" (lambda (x) (jt-local-time (odt-nano-of-day x))))
         (cons "toLocalDateTime" (lambda (x) (odt-ldt x)))
         (cons "toOffsetTime" (lambda (x) (jt-offset-time (odt-nano-of-day x) (odt-offset x))))
         (cons "toZonedDateTime" (lambda (x) (jt-zoned-dt (odt-epoch-day x) (odt-nano-of-day x) (odt-offset x) (jt-zone-id (zo-id (odt-offset x)) (odt-offset x)))))
         (cons "toEpochSecond" (lambda (x) (jt-floor-div (odt->ms x) 1000)))
-        (cons "atZoneSameInstant" (lambda (x zone) (zoned-of-instant-ms (odt->ms x) zone)))
+        (cons "atZoneSameInstant" (lambda (x zone) (zoned-of-instant-nanos (odt->nanos x) zone)))
         (cons "atZoneSimilarLocal" (lambda (x zone) (zoned-of-ldt (odt-ldt x) zone)))
         (cons "withOffsetSameInstant" (lambda (x off) (offset-of-instant-ms (odt->ms x) off)))
         (cons "withOffsetSameLocal" (lambda (x off) (offset-of-ldt (odt-ldt x) off)))
@@ -1922,9 +2058,34 @@
     ((jt-offset-time? v) (let ((t (jt-local-time (ot-nod v)))) (vector 1970 1 1 (lt-hour t) (lt-minute t) (lt-second t) (lt-nano t) 4 (ot-offset v) #f)))
     ((jt-instant? v) #f)                  ; instants render via format-ms (UTC)
     (else #f)))
+;; Locale month/day names. Only the locales tick exercises (en, fr) are tabled;
+;; an unknown locale falls back to English. French abbreviations follow CLDR/
+;; java.time (most carry a trailing period; "mars"/"mai"/"juin"/"août" don't).
+(define fr-month-full
+  (vector "janvier" "février" "mars" "avril" "mai" "juin"
+          "juillet" "août" "septembre" "octobre" "novembre" "décembre"))
+(define fr-month-abbr
+  (vector "janv." "févr." "mars" "avr." "mai" "juin"
+          "juil." "août" "sept." "oct." "nov." "déc."))
+(define fr-day-full   ; indexed by day-of-week 0=Sunday
+  (vector "dimanche" "lundi" "mardi" "mercredi" "jeudi" "vendredi" "samedi"))
+(define fr-day-abbr
+  (vector "dim." "lun." "mar." "mer." "jeu." "ven." "sam."))
+(define (locale-fr? loc) (and (>= (string-length loc) 2) (string=? (substring loc 0 2) "fr")))
+;; month display name for a 1-based month under a locale; full? picks MMMM over MMM.
+(define (locale-month-name loc mo full?)
+  (if (locale-fr? loc)
+      (vector-ref (if full? fr-month-full fr-month-abbr) (- mo 1))
+      (if full? (vector-ref month-names (- mo 1)) (substring (vector-ref month-names (- mo 1)) 0 3))))
+(define (locale-day-name loc dow full?)
+  (if (locale-fr? loc)
+      (vector-ref (if full? fr-day-full fr-day-abbr) dow)
+      (if full? (vector-ref day-names dow) (substring (vector-ref day-names dow) 0 3))))
+
 ;; the pattern engine for java.time values (extends inst-time.ss's format-ms letters
 ;; with fractional S and real X/x/Z/z from the value's own offset/zone).
-(define (jt-format-pattern pattern v)
+(define (jt-format-pattern pattern v . loc)
+  (define locale (if (null? loc) "en" (car loc)))
   (let ((parts (jt-value-format-parts v)))
     (if (not parts)
         (format-ms pattern (ms-of v))     ; instant: UTC engine
@@ -1955,10 +2116,10 @@
                   ((or (char=? c #\y) (char=? c #\Y)) (display (if (>= k 4) (pad4 y) (pad2 (modulo y 100))) out) (loop (+ i k)))
                   ((char=? c #\M)
                    (display (cond ((= k 1) (number->string mo)) ((= k 2) (pad2 mo))
-                                  ((= k 3) (substring (vector-ref month-names (- mo 1)) 0 3))
-                                  (else (vector-ref month-names (- mo 1)))) out) (loop (+ i k)))
+                                  ((= k 3) (locale-month-name locale mo #f))
+                                  (else (locale-month-name locale mo #t))) out) (loop (+ i k)))
                   ((char=? c #\d) (display (if (= k 1) (number->string d) (pad2 d)) out) (loop (+ i k)))
-                  ((char=? c #\E) (display (if (>= k 4) (vector-ref day-names dow) (substring (vector-ref day-names dow) 0 3)) out) (loop (+ i k)))
+                  ((char=? c #\E) (display (locale-day-name locale dow (>= k 4)) out) (loop (+ i k)))
                   ((char=? c #\H) (display (if (= k 1) (number->string hh) (pad2 hh)) out) (loop (+ i k)))
                   ((char=? c #\h) (let ((h12 (let ((h (modulo hh 12))) (if (= h 0) 12 h)))) (display (if (= k 1) (number->string h12) (pad2 h12)) out)) (loop (+ i k)))
                   ((char=? c #\m) (display (if (= k 1) (number->string mi) (pad2 mi)) out) (loop (+ i k)))
@@ -1977,7 +2138,7 @@
 ;; .format on a dt-formatter applied to a java.time value. The pattern comes from the
 ;; formatter; ISO_* constants carry a literal pattern that round-trips through here.
 (define (fmt-format fmt v)
-  (cond ((and (jhost? fmt) (string=? (jhost-tag fmt) "dt-formatter")) (jt-format-pattern (fmt-pat fmt) v))
+  (cond ((and (jhost? fmt) (string=? (jhost-tag fmt) "dt-formatter")) (jt-format-pattern (fmt-pat fmt) v (fmt-locale fmt)))
         ((string? fmt) (jt-format-pattern fmt v))
         (else (jt-value->iso v))))
 (define (jt-value->iso v)
@@ -1997,9 +2158,9 @@
 ;; extend the dt-formatter method table: .format routes java.time values through the
 ;; richer engine; .parse picks the value type from the parsed fields.
 (register-host-methods! "dt-formatter"
-  (list (cons "format" (lambda (self d) (jt-format-pattern (fmt-pat self) d)))
+  (list (cons "format" (lambda (self d) (jt-format-pattern (fmt-pat self) d (fmt-locale self))))
         (cons "getZone" (lambda (self) (jt-zone-id "Z" 0)))
-        (cons "getLocale" (lambda (self) (make-jhost "locale" (vector "en-US"))))
+        (cons "getLocale" (lambda (self) (make-jhost "locale" (vector (fmt-locale self)))))
         (cons "toString" (lambda (self) (fmt-pat self)))))
 
 ;; DateTimeFormatter ISO constants (richer engine; the pattern strings drive parse +
@@ -2058,8 +2219,15 @@
 (register-hash-arm! jt-zoned-dt? (lambda (x) (jolt-hash (zdt->ms x))))
 (register-hash-arm! jt-offset-dt? (lambda (x) (jolt-hash (odt->ms x))))
 (register-hash-arm! jt-offset-time? (lambda (x) (jolt-hash (ot-nod x))))
+;; ZonedDateTime equality is local-date-time + offset + zone id (java.time
+;; ZonedDateTime.equals). Compare fields, not the raw state: the state holds a
+;; nested zone-id record that Chez equal? compares by identity, not contents.
 (register-eq-arm! (lambda (a b) (or (jt-zoned-dt? a) (jt-zoned-dt? b)))
-                  (lambda (a b) (and (jt-zoned-dt? a) (jt-zoned-dt? b) (equal? (jhost-state a) (jhost-state b)))))
+                  (lambda (a b) (and (jt-zoned-dt? a) (jt-zoned-dt? b)
+                                     (= (zdt-epoch-day a) (zdt-epoch-day b))
+                                     (= (zdt-nano-of-day a) (zdt-nano-of-day b))
+                                     (= (zdt-offset a) (zdt-offset b))
+                                     (string=? (zid-id (zdt-zone a)) (zid-id (zdt-zone b))))))
 (register-eq-arm! (lambda (a b) (or (jt-offset-dt? a) (jt-offset-dt? b)))
                   (lambda (a b) (and (jt-offset-dt? a) (jt-offset-dt? b) (equal? (jhost-state a) (jhost-state b)))))
 (register-eq-arm! (lambda (a b) (or (jt-offset-time? a) (jt-offset-time? b)))
