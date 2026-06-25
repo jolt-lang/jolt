@@ -258,11 +258,17 @@
 
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
-;; java.time.Instant/ZonedDateTime/LocalDateTime values (mk-instant/mk-zoned/mk-local
-;; jhosts) are equal when same kind + same epoch-ms — two parsed Instants compare =.
-;; java.time LocalDate/LocalTime/LocalDateTime own their = / hash in java-time.ss;
-;; this arm covers the ms-based shim values (instant / zoned-dt / sql-date).
-(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("instant" "zoned-dt" "sql-date")) #t))
+;; java.time.Instant is nano-precise: two Instants are = when their epoch-nanos
+;; match (so an Instant and one shifted by a single nanosecond differ).
+(define (jt-instant-tag? x) (and (jhost? x) (string=? (jhost-tag x) "instant")))
+(register-eq-arm! (lambda (a b) (or (jt-instant-tag? a) (jt-instant-tag? b)))
+                  (lambda (a b) (and (jt-instant-tag? a) (jt-instant-tag? b)
+                                     (= (inst-nanos a) (inst-nanos b)))))
+(register-hash-arm! jt-instant-tag? (lambda (x) (jolt-hash (inst-nanos x))))
+
+;; ZonedDateTime / java.sql.Date shim values (mk-zoned/mk-sql-date jhosts) are
+;; equal when same kind + same epoch-ms.
+(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("zoned-dt" "sql-date")) #t))
 (register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
                   (lambda (a b) (and (time-jhost? a) (time-jhost? b)
                                      (string=? (jhost-tag a) (jhost-tag b))
@@ -311,10 +317,18 @@
         ((and (jhost? d) (string=? (jhost-tag d) "local-date-time"))
          (+ (* (vector-ref (jhost-state d) 0) 86400000)
             (quotient (vector-ref (jhost-state d) 1) 1000000)))
-        ((and (jhost? d) (member (jhost-tag d) '("instant" "zoned-dt" "calendar" "sql-date")))
+        ;; "instant" stores epoch-nanos; project to ms (floor) for ms-based callers.
+        ((and (jhost? d) (string=? (jhost-tag d) "instant"))
+         (inst-floor-div (vector-ref (jhost-state d) 0) 1000000))
+        ((and (jhost? d) (member (jhost-tag d) '("zoned-dt" "calendar" "sql-date")))
          (vector-ref (jhost-state d) 0))
         (else (error #f "not a date value" d))))
-(define (mk-instant ms) (make-jhost "instant" (vector ms)))
+;; A java.time.Instant stores epoch-nanos (exact integer). mk-instant takes ms,
+;; for the many ms-based call sites; mk-instant-nanos is the nano-precise ctor and
+;; inst-nanos the nano accessor (java-time.ss owns the nano-aware arithmetic).
+(define (mk-instant-nanos n) (make-jhost "instant" (vector (exact (truncate n)))))
+(define (inst-nanos x) (vector-ref (jhost-state x) 0))
+(define (mk-instant ms) (mk-instant-nanos (* (ms->exact ms) 1000000)))
 (define (mk-zoned ms) (make-jhost "zoned-dt" (vector ms)))
 ;; LocalDateTime from epoch-ms (UTC): the java-time.ss "local-date-time" jhost,
 ;; state [epoch-day nano-of-day].

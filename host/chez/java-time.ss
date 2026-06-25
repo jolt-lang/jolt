@@ -111,6 +111,24 @@
                    (pad2 (quotient sod 3600)) ":" (pad2 (modulo (quotient sod 60) 60)) ":" (pad2 (modulo sod 60))
                    (if (= frac 0) "" (string-append "." (frac-digits (* frac 1000000))))
                    "Z")))
+;; nano-precise ISO instant. The fraction is shown in groups of 3 digits (millis,
+;; micros, or nanos), matching DateTimeFormatter.ISO_INSTANT.
+(define (iso-instant-str-nanos en)
+  (let* ((secs (jt-floor-div en nanos-per-sec))
+         (nano (jt-floor-mod en nanos-per-sec))
+         (ed (jt-floor-div secs 86400))
+         (sod (jt-floor-mod secs 86400)))
+    (string-append (iso-date-str ed) "T"
+                   (pad2 (quotient sod 3600)) ":" (pad2 (modulo (quotient sod 60) 60)) ":" (pad2 (modulo sod 60))
+                   (cond ((= nano 0) "")
+                         ((= 0 (modulo nano 1000000)) (string-append "." (frac-fixed nano 3)))
+                         ((= 0 (modulo nano 1000)) (string-append "." (frac-fixed nano 6)))
+                         (else (string-append "." (frac-fixed nano 9))))
+                   "Z")))
+;; nano (0..1e9) -> the leading `digits` of its 9-digit zero-padded form.
+(define (frac-fixed nano digits)
+  (let ((s9 (let ((s (number->string nano))) (string-append (make-string (max 0 (- 9 (string-length s))) #\0) s))))
+    (substring s9 0 digits)))
 
 ;; --- ISO parsing -------------------------------------------------------------
 (define (jt-str x) (if (string? x) x (jolt-str-render-one x)))
@@ -410,48 +428,51 @@
 (define (ldt=? x o) (= (ldt-cmp x o) 0))
 
 ;; --- Instant (extend the existing inst-time.ss "instant" jhost) --------------
-;; ms-granular: nanos plus/minus and getNano round to the millisecond.
-(define (inst-ms x) (vector-ref (jhost-state x) 0))
+;; nano-precise: state is epoch-nanos (inst-nanos). inst-ms projects to ms (floor)
+;; for the ms-based zone/Date call sites; mk-instant-nanos / inst-nanos own the
+;; nano arithmetic.
+(define (inst-ms x) (jt-floor-div (inst-nanos x) 1000000))
+;; truncatedTo unit -> nanos, or #f for an unsupported unit (no-op).
+(define (instant-unit-nanos u)
+  (let ((unit (chrono-unit-name u)))
+    (cond ((and unit (string-ci=? unit "DAYS")) (* 86400 nanos-per-sec))
+          ((and unit (string-ci=? unit "HALF_DAYS")) (* 43200 nanos-per-sec))
+          ((and unit (string-ci=? unit "HOURS")) (* 3600 nanos-per-sec))
+          ((and unit (string-ci=? unit "MINUTES")) (* 60 nanos-per-sec))
+          ((and unit (string-ci=? unit "SECONDS")) nanos-per-sec)
+          ((and unit (string-ci=? unit "MILLIS")) 1000000)
+          ((and unit (string-ci=? unit "MICROS")) 1000)
+          (else 1))))
 (register-class-statics! "Instant"
   (list (cons "ofEpochSecond" (case-lambda
-                                ((s) (mk-instant (* (jt->exact s) 1000)))
-                                ((s nano) (mk-instant (+ (* (jt->exact s) 1000) (quotient (jt->exact nano) 1000000))))))
-        (cons "EPOCH" (mk-instant 0))
-        ;; java.time Instant MIN/MAX are -1e9..1e9 yrs; the ms model can't hold those
-        ;; exactly, so use the broadest range the ms layer represents safely.
-        (cons "MIN" (mk-instant (* (ymd->epoch-day -999999999 1 1) 86400000)))
-        (cons "MAX" (mk-instant (+ (* (ymd->epoch-day 999999999 12 31) 86400000) 86399999)))))
+                                ((s) (mk-instant-nanos (* (jt->exact s) nanos-per-sec)))
+                                ((s nano) (mk-instant-nanos (+ (* (jt->exact s) nanos-per-sec) (jt->exact nano))))))
+        (cons "EPOCH" (mk-instant-nanos 0))
+        (cons "MIN" (mk-instant-nanos (* (ymd->epoch-day -999999999 1 1) 86400 nanos-per-sec)))
+        (cons "MAX" (mk-instant-nanos (+ (* (ymd->epoch-day 999999999 12 31) 86400 nanos-per-sec)
+                                         (* 86399 nanos-per-sec) 999999999)))))
 
 (register-host-methods! "instant"
-  (list (cons "getEpochSecond" (lambda (x) (jt-floor-div (exact (truncate (inst-ms x))) 1000)))
-        (cons "getNano" (lambda (x) (* (jt-floor-mod (exact (truncate (inst-ms x))) 1000) 1000000)))
-        (cons "plusMillis" (lambda (x n) (mk-instant (+ (inst-ms x) (jt->exact n)))))
-        (cons "minusMillis" (lambda (x n) (mk-instant (- (inst-ms x) (jt->exact n)))))
-        (cons "plusSeconds" (lambda (x n) (mk-instant (+ (inst-ms x) (* (jt->exact n) 1000)))))
-        (cons "minusSeconds" (lambda (x n) (mk-instant (- (inst-ms x) (* (jt->exact n) 1000)))))
-        (cons "plusNanos" (lambda (x n) (mk-instant (+ (inst-ms x) (quotient (jt->exact n) 1000000)))))
-        (cons "minusNanos" (lambda (x n) (mk-instant (- (inst-ms x) (quotient (jt->exact n) 1000000)))))
-        (cons "isBefore" (lambda (x o) (< (inst-ms x) (inst-ms o))))
-        (cons "isAfter" (lambda (x o) (> (inst-ms x) (inst-ms o))))
-        (cons "compareTo" (lambda (x o) (let ((a (inst-ms x)) (b (inst-ms o)))
+  (list (cons "getEpochSecond" (lambda (x) (jt-floor-div (inst-nanos x) nanos-per-sec)))
+        (cons "getNano" (lambda (x) (jt-floor-mod (inst-nanos x) nanos-per-sec)))
+        (cons "toEpochMilli" (lambda (x) (jt-floor-div (inst-nanos x) 1000000)))
+        (cons "plusMillis" (lambda (x n) (mk-instant-nanos (+ (inst-nanos x) (* (jt->exact n) 1000000)))))
+        (cons "minusMillis" (lambda (x n) (mk-instant-nanos (- (inst-nanos x) (* (jt->exact n) 1000000)))))
+        (cons "plusSeconds" (lambda (x n) (mk-instant-nanos (+ (inst-nanos x) (* (jt->exact n) nanos-per-sec)))))
+        (cons "minusSeconds" (lambda (x n) (mk-instant-nanos (- (inst-nanos x) (* (jt->exact n) nanos-per-sec)))))
+        (cons "plusNanos" (lambda (x n) (mk-instant-nanos (+ (inst-nanos x) (jt->exact n)))))
+        (cons "minusNanos" (lambda (x n) (mk-instant-nanos (- (inst-nanos x) (jt->exact n)))))
+        (cons "isBefore" (lambda (x o) (< (inst-nanos x) (inst-nanos o))))
+        (cons "isAfter" (lambda (x o) (> (inst-nanos x) (inst-nanos o))))
+        (cons "compareTo" (lambda (x o) (let ((a (inst-nanos x)) (b (inst-nanos o)))
                                           (cond ((< a b) -1) ((> a b) 1) (else 0)))))
-        (cons "equals" (lambda (x o) (and (jhost? o) (string=? (jhost-tag o) "instant") (= (inst-ms x) (inst-ms o)))))
-        (cons "hashCode" (lambda (x) (jt->exact (inst-ms x))))
-        (cons "truncatedTo" (lambda (x u) (let ((unit (chrono-unit-name u)))
-                                            (mk-instant (* (quotient (exact (truncate (inst-ms x)))
-                                                                     (cond ((and unit (string-ci=? unit "DAYS")) 86400000)
-                                                                           ((and unit (string-ci=? unit "HOURS")) 3600000)
-                                                                           ((and unit (string-ci=? unit "MINUTES")) 60000)
-                                                                           ((and unit (string-ci=? unit "SECONDS")) 1000)
-                                                                           (else 1)))
-                                                           (cond ((and unit (string-ci=? unit "DAYS")) 86400000)
-                                                                 ((and unit (string-ci=? unit "HOURS")) 3600000)
-                                                                 ((and unit (string-ci=? unit "MINUTES")) 60000)
-                                                                 ((and unit (string-ci=? unit "SECONDS")) 1000)
-                                                                 (else 1)))))))
+        (cons "equals" (lambda (x o) (and (jhost? o) (string=? (jhost-tag o) "instant") (= (inst-nanos x) (inst-nanos o)))))
+        (cons "hashCode" (lambda (x) (inst-nanos x)))
+        (cons "truncatedTo" (lambda (x u) (let ((d (instant-unit-nanos u)))
+                                            (mk-instant-nanos (* (jt-floor-div (inst-nanos x) d) d)))))
         (cons "atOffset" (lambda (x off) (offset-of-instant-ms (inst-ms x) off)))
         (cons "atZone" (lambda (x zone) (zoned-of-instant-ms (inst-ms x) zone)))
-        (cons "toString" (lambda (x) (iso-instant-str (inst-ms x))))))
+        (cons "toString" (lambda (x) (iso-instant-str-nanos (inst-nanos x))))))
 
 ;; --- Month / DayOfWeek enums (returned by getMonth / getDayOfWeek) -----------
 (define (jt-month n) (make-jhost "month-enum" (vector n)))
@@ -574,7 +595,7 @@
                             (else (substring s9 0 i))))))
 
 (define (dur-temporal-nanos t)   ; instant/ldt/lt -> a nanos-since-epoch-ish count
-  (cond ((jt-instant? t) (* (inst-ms t) 1000000))
+  (cond ((jt-instant? t) (inst-nanos t))
         ((jt-dt? t) (+ (* (ldt-epoch-day t) nanos-per-day) (ldt-nano-of-day t)))
         ((jt-time? t) (lt-nano-of-day t))
         ((jt-date? t) (* (ld-epoch-day t) nanos-per-day))
@@ -995,15 +1016,15 @@
              ((string=? u "MILLENNIA") (ldt-combine (ld-plus-years (ldt-date t) (* 1000 n)) (ldt-time t)))
              (else (ldt-plus-nanos t (* n (chrono-unit-nanos (jt-chrono-unit u)))))))
       ((jt-instant? t)
-       (cond ((string=? u "DAYS") (mk-instant (+ (inst-ms t) (* n 86400000))))
-             (else (mk-instant (+ (inst-ms t) (quotient (* n (chrono-unit-nanos (jt-chrono-unit u))) 1000000))))))
+       (cond ((string=? u "DAYS") (mk-instant-nanos (+ (inst-nanos t) (* n 86400 nanos-per-sec))))
+             (else (mk-instant-nanos (+ (inst-nanos t) (* n (chrono-unit-nanos (jt-chrono-unit u))))))))
       (else (error #f "plus: unsupported temporal")))))
 
 ;; add raw nanos (for Duration.addTo).
 (define (temporal-plus-nanos t nanos)
   (cond ((jt-time? t) (lt-plus t nanos))
         ((jt-dt? t) (ldt-plus-nanos t nanos))
-        ((jt-instant? t) (mk-instant (+ (inst-ms t) (quotient nanos 1000000))))
+        ((jt-instant? t) (mk-instant-nanos (+ (inst-nanos t) nanos)))
         ((jt-date? t) (jt-local-date (+ (ld-epoch-day t) (quotient nanos (* 86400 nanos-per-sec)))))
         (else (error #f "plus(Duration): unsupported temporal"))))
 
@@ -1036,7 +1057,7 @@
                                  (+ (* (ldt-epoch-day a) nanos-per-day) (ldt-nano-of-day a)))
                              (chrono-unit-nanos (jt-chrono-unit u))))))
       ((and (jt-instant? a) (jt-instant? b))
-       (quotient (* (- (inst-ms b) (inst-ms a)) 1000000) (chrono-unit-nanos (jt-chrono-unit u))))
+       (quotient (- (inst-nanos b) (inst-nanos a)) (chrono-unit-nanos (jt-chrono-unit u))))
       (else (error #f "between: unsupported temporals")))))
 ;; whole months between two epoch-days (java.time: months, then -1 if day-of-month
 ;; of b hasn't reached a's).
@@ -1081,9 +1102,10 @@
            (temporal-get-field (ldt-date t) f)
            (temporal-get-field (ldt-time t) f)))
       ((jt-instant? t)
-       (cond ((string=? f "INSTANT_SECONDS") (jt-floor-div (exact (truncate (inst-ms t))) 1000))
-             ((string=? f "NANO_OF_SECOND") (* (jt-floor-mod (exact (truncate (inst-ms t))) 1000) 1000000))
-             ((string=? f "MILLI_OF_SECOND") (jt-floor-mod (exact (truncate (inst-ms t))) 1000))
+       (cond ((string=? f "INSTANT_SECONDS") (jt-floor-div (inst-nanos t) nanos-per-sec))
+             ((string=? f "NANO_OF_SECOND") (jt-floor-mod (inst-nanos t) nanos-per-sec))
+             ((string=? f "MILLI_OF_SECOND") (jt-floor-div (jt-floor-mod (inst-nanos t) nanos-per-sec) 1000000))
+             ((string=? f "MICRO_OF_SECOND") (jt-floor-div (jt-floor-mod (inst-nanos t) nanos-per-sec) 1000))
              (else (error #f (string-append "Instant has no field " f)))))
       (else (error #f "get(field): unsupported temporal")))))
 
@@ -1259,8 +1281,8 @@
 
 ;; the "instant" jhost prints as a java.time ISO instant (…Z), not the bare record.
 (define (jt-instant? x) (and (jhost? x) (string=? (jhost-tag x) "instant")))
-(register-str-render! jt-instant? (lambda (x) (iso-instant-str (inst-ms x))))
-(register-pr-arm! jt-instant? (lambda (x) (iso-instant-str (inst-ms x))))
+(register-str-render! jt-instant? (lambda (x) (iso-instant-str-nanos (inst-nanos x))))
+(register-pr-arm! jt-instant? (lambda (x) (iso-instant-str-nanos (inst-nanos x))))
 
 ;; Phase-2 value types: amounts, enums, and the chrono-unit/field tokens. Each
 ;; prints as its java.time toString and is = / hashed on its canonical state.
@@ -1289,7 +1311,7 @@
       ((and (jt-date? a) (jt-date? b)) (cond ((< (ld-epoch-day a) (ld-epoch-day b)) -1) ((> (ld-epoch-day a) (ld-epoch-day b)) 1) (else 0)))
       ((and (jt-time? a) (jt-time? b)) (cond ((< (lt-nano-of-day a) (lt-nano-of-day b)) -1) ((> (lt-nano-of-day a) (lt-nano-of-day b)) 1) (else 0)))
       ((and (jt-dt? a) (jt-dt? b)) (ldt-cmp a b))
-      ((and (jt-instant? a) (jt-instant? b)) (cond ((< (inst-ms a) (inst-ms b)) -1) ((> (inst-ms a) (inst-ms b)) 1) (else 0)))
+      ((and (jt-instant? a) (jt-instant? b)) (cond ((< (inst-nanos a) (inst-nanos b)) -1) ((> (inst-nanos a) (inst-nanos b)) 1) (else 0)))
       ((and (jt-tagged-as? a "duration") (jt-tagged-as? b "duration"))
        (let ((x (dur-total-nanos a)) (y (dur-total-nanos b))) (cond ((< x y) -1) ((> x y) 1) (else 0))))
       ((and (jt-tagged-as? a "month-enum") (jt-tagged-as? b "month-enum")) (- (month-val a) (month-val b)))
@@ -1962,7 +1984,7 @@
   (cond ((jt-date? v) (iso-date-str (ld-epoch-day v))) ((jt-time? v) (iso-time-str (lt-nano-of-day v)))
         ((jt-dt? v) (iso-datetime-str (ldt-epoch-day v) (ldt-nano-of-day v)))
         ((jt-zoned-dt? v) (zdt->string v)) ((jt-offset-dt? v) (odt->string v))
-        ((jt-offset-time? v) (ot->string v)) ((jt-instant? v) (iso-instant-str (inst-ms v)))
+        ((jt-offset-time? v) (ot->string v)) ((jt-instant? v) (iso-instant-str-nanos (inst-nanos v)))
         (else (jolt-str-render-one v))))
 
 ;; .format on the new value types reaches the per-tag method tables above. Add
