@@ -289,7 +289,10 @@
 (define (rdr-meta-map m)
   (cond
     ((keyword? m) (jolt-hash-map m #t))
-    ((symbol-t? m) (jolt-hash-map rdr-kw-tag (symbol-t-name m)))
+    ;; ^Type -> {:tag Type} with the SYMBOL (Clojure parity — core.match's
+    ;; array-tag and other libs look the tag up as a symbol; jolt's tag consumers
+    ;; tolerate a symbol). ^"Type" keeps the string.
+    ((symbol-t? m) (jolt-hash-map rdr-kw-tag m))
     ((string? m) (jolt-hash-map rdr-kw-tag m))
     ((pmap? m) m)
     (else (jolt-hash-map rdr-kw-tag m))))
@@ -419,9 +422,12 @@
          (values (rdr-make-set elems) j)))
       ((char=? c #\()                    ; #(...) anonymous fn shorthand
        (rdr-read-anon-fn s i end))
-      ((char=? c #\")                    ; #"..." regex -> tagged :regex (raw source)
+      ((char=? c #\")                    ; #"..." -> a regex VALUE (Clojure parity:
+       ;; the reader constructs the Pattern, so a macro gets a regex, not a form).
+       ;; The analyzer compiles a regex value to the same :regex IR leaf via its
+       ;; source string.
        (let-values (((src j) (rdr-read-regex s (+ i 1) end)))
-         (values (rdr-make-tagged (keyword #f "regex") src) j)))
+         (values (jolt-re-pattern src) j)))
       ((char=? c #\_)                    ; #_ discard the next form
        (let-values (((_ j) (rdr-read-form s (+ i 1) end)))
          (when (rdr-eof? _) (jolt-throw (jolt-ex-info "EOF after #_" (empty-pmap))))

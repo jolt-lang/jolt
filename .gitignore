@@ -1,3 +1,6 @@
+AGENTS.md
+.DS_Store
+CLAUDE.md
 build/
 .clj-kondo/
 .dirge/

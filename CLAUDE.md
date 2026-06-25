@@ -100,16 +100,18 @@ Issue tracking and design notes live in beads (`bd prime`, `bd memories`).
 
 ## Library conformance
 
-When a real Clojure library's tests start passing (in full or substantially) on
-Jolt, treat the docs/specs/tests update as PART OF THE SAME WORK — not a
-follow-up. In the change that lands the fixes:
+When a real Clojure library's tests pass on Jolt, treat the docs/specs/tests
+update as PART OF THE SAME WORK — not a follow-up. In the change that lands the
+fixes:
 
 - **Add JVM-certified corpus rows** (`test/chez/corpus.edn`) for every general
   gap the library shook out — the corpus is the executable contract. Verify each
   via `make test`'s certify step.
 - **List the library** in BOTH the in-repo `docs/libraries.md` AND the website
-  (`jolt-lang.github.io`, `resources/md/libraries.md`). State what works and call
-  out any remaining gaps honestly (with the test tally if there is a suite).
+  (`jolt-lang.github.io`, `resources/md/libraries.md`) — one line (name + a short
+  description + any load note like `JOLT_FEATURES` `clj`). Do NOT enumerate what
+  works or paste test tallies; a listed library is assumed to work fully, so only
+  list it once it does.
 - **Update the affected prose docs and RFCs** — `docs/host-interop.md` for new
   interop surface, `docs/spec/*.md` / `docs/rfc/*` for semantics, `docs/MODULES.md`
   if files moved.

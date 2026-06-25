@@ -64,7 +64,7 @@
   (and (pmap? x)
        (eq? (jolt-get x hc-kw-jolt-type) hc-kw-jolt-tagged)
        (eq? (jolt-get x hc-kw-tag) tag)))
-(define (hc-regex? x) (hc-tagged-of x hc-kw-regex))
+(define (hc-regex? x) (regex-t? x))   ; #"..." reads as a regex VALUE now
 (define (hc-inst? x) (hc-tagged-of x hc-kw-inst))
 (define (hc-uuid? x) (hc-tagged-of x hc-kw-uuid))
 (define (hc-bigdec? x) (hc-tagged-of x hc-kw-bigdec))
@@ -115,7 +115,7 @@
                            (seq->list (jolt-seq (jolt-keys x))))) (acc '()))
           (if (null? ks) (apply jolt-vector (reverse acc))
               (loop (cdr ks) (cons (jolt-vector (car ks) (jolt-get x (car ks))) acc)))))))
-(define (hc-regex-source x) (jolt-get x hc-kw-form))
+(define (hc-regex-source x) (regex-t-source x))
 (define (hc-inst-source x) (jolt-get x hc-kw-form))
 (define (hc-uuid-source x) (jolt-get x hc-kw-form))
 
@@ -188,9 +188,10 @@
 ;; read from its meta. Lets jolt.passes.numeric type a call to it.
 (define (hc-cell-num-ret cell)
   (let ((m (and cell (hashtable-ref var-meta-table cell #f))))
-    (and m (let ((t (jolt-get m hc-kw-tag)))
-             (cond ((equal? t "double") hc-kw-double)
-                   ((equal? t "long") hc-kw-long)
+    (and m (let* ((t (jolt-get m hc-kw-tag))   ; ^double/^long is a symbol; ^"double" a string
+                  (s (cond ((symbol-t? t) (symbol-t-name t)) ((string? t) t) (else #f))))
+             (cond ((equal? s "double") hc-kw-double)
+                   ((equal? s "long") hc-kw-long)
                    (else #f))))))
 
 ;; A slash-free dotted symbol whose final segment is Capitalized is a class
