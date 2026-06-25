@@ -14,6 +14,7 @@
   {:suite "interop / Thread" :label "start + join runs the thunk" :expected "7" :actual "(let [a (atom 0) t (Thread. (fn [] (reset! a 7)))] (.start t) (.join t) (deref a))"}
   {:suite "interop / CountDownLatch" :label "countDown to zero, await returns" :expected "0" :actual "(let [l (java.util.concurrent.CountDownLatch. 1)] (.countDown l) (.await l) (.getCount l))"}
   {:suite "interop / SoftReference" :label "get returns the referent" :expected ":v" :actual "(.get (java.lang.ref.SoftReference. :v))"}
+  {:suite "interop / System.gc" :label "gc runs and returns" :expected "42" :actual "(do (System/gc) 42)"}
   {:suite "interop / ConcurrentHashMap" :label "put + get/count/contains?" :expected "[1 1 true]" :actual "(let [m (java.util.concurrent.ConcurrentHashMap.)] (.put m :a 1) [(get m :a) (count m) (contains? m :a)])"}
   {:suite "interop / Class.forName" :label "unknown class throws ClassNotFoundException" :expected ":nf" :actual "(try (Class/forName \"no.such.Klass\") (catch ClassNotFoundException _ :nf))"}
   {:suite "interop / Class.forName" :label "known class resolves" :expected "\"java.lang.String\"" :actual "(.getName (Class/forName \"java.lang.String\"))"}

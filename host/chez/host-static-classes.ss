@@ -230,37 +230,49 @@
                                          (if (hashtable-contains? (hm-tbl c) k) #t #f)
                                          (prev-contains c k)))))
 
-;; ---- java.lang.ref.SoftReference / ReferenceQueue ---------------------------
-;; No JVM GC reference semantics here: a SoftReference holds its referent strongly
-;; (never auto-cleared), which makes a SoftCache an unbounded cache rather than a
-;; GC-pressure one. .enqueue / ReferenceQueue.poll work so code that drains the
-;; queue (clojure.core.cache's clear-soft-cache!) runs. soft-ref state:
-;; #(referent queue enqueued?); ref-queue state: #(list-of-enqueued-refs).
-(define (refqueue-add! rq ref)
-  (let ((st (jhost-state rq))) (vector-set! st 0 (append (vector-ref st 0) (list ref)))))
-(for-each (lambda (nm)
-            (register-class-ctor! nm
-              (lambda (v . rest) (make-jhost "soft-ref" (vector v (if (pair? rest) (car rest) jolt-nil) #f)))))
-          '("SoftReference" "java.lang.ref.SoftReference"))
-(register-host-methods! "soft-ref"
-  (list (cons "get" (lambda (self) (vector-ref (jhost-state self) 0)))
-        (cons "clear" (lambda (self) (vector-set! (jhost-state self) 0 jolt-nil) jolt-nil))
+;; ---- java.lang.ref.Soft/WeakReference + ReferenceQueue ----------------------
+;; Real GC reclamation via Chez's generational collector: the referent is held
+;; through a weak pair (collected once otherwise unreachable, leaving the bwp
+;; object), and a guardian registered on the referent makes the reference itself
+;; available the moment its referent is reclaimed — which the ReferenceQueue
+;; surfaces as enqueued, exactly like the JVM. (Chez has no softer-than-weak
+;; reference, so a SoftReference clears on unreachability rather than under memory
+;; pressure — its SoftCache evicts more eagerly than the JVM's, but it is genuine
+;; GC eviction, not an unbounded strong cache. Immediates like fixnums/keywords
+;; are never collected.)
+;; ref-queue state: #(guardian pending-list); reference state: #(weak-pair queue enqueued?).
+(define (rq-guardian-of q) (vector-ref (jhost-state q) 0))
+(define (rq-add! q ref)
+  (let ((st (jhost-state q))) (vector-set! st 1 (append (vector-ref st 1) (list ref)))))
+(define (rq-pump! q)                                  ; drain GC-reclaimed refs onto the list
+  (let loop ()
+    (let ((rep ((rq-guardian-of q)))) (when rep (rq-add! q rep) (loop)))))
+(define (rq-poll q)
+  (rq-pump! q)
+  (let* ((st (jhost-state q)) (l (vector-ref st 1)))
+    (if (null? l) jolt-nil (begin (vector-set! st 1 (cdr l)) (car l)))))
+(define (a-ref-queue? x) (and (jhost? x) (string=? (jhost-tag x) "ref-queue")))
+(define (make-reference v rest)
+  (let* ((rq (if (pair? rest) (car rest) jolt-nil))
+         (ref (make-jhost "weak-ref" (vector (weak-cons v #f) rq #f))))
+    (when (a-ref-queue? rq) ((rq-guardian-of rq) v ref))   ; fire on the referent's collection
+    ref))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (v . rest) (make-reference v rest))))
+          '("SoftReference" "java.lang.ref.SoftReference" "WeakReference" "java.lang.ref.WeakReference"))
+(register-host-methods! "weak-ref"
+  (list (cons "get" (lambda (self) (let ((r (car (vector-ref (jhost-state self) 0))))
+                                     (if (bwp-object? r) jolt-nil r))))
+        (cons "clear" (lambda (self) (set-car! (vector-ref (jhost-state self) 0) jolt-nil) jolt-nil))
         (cons "isEnqueued" (lambda (self) (vector-ref (jhost-state self) 2)))
         (cons "enqueue" (lambda (self)
           (let* ((st (jhost-state self)) (rq (vector-ref st 1)))
             (if (vector-ref st 2) #f
-                (begin (vector-set! st 2 #t)
-                       (when (and (jhost? rq) (string=? (jhost-tag rq) "ref-queue")) (refqueue-add! rq self))
-                       #t)))))))
-(for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-jhost "ref-queue" (vector '())))))
+                (begin (vector-set! st 2 #t) (when (a-ref-queue? rq) (rq-add! rq self)) #t)))))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-jhost "ref-queue" (vector (make-guardian) '())))))
           '("ReferenceQueue" "java.lang.ref.ReferenceQueue"))
 (register-host-methods! "ref-queue"
-  (list (cons "poll" (lambda (self . _)
-          (let* ((st (jhost-state self)) (q (vector-ref st 0)))
-            (if (null? q) jolt-nil (begin (vector-set! st 0 (cdr q)) (car q))))))
-        (cons "remove" (lambda (self . _)
-          (let* ((st (jhost-state self)) (q (vector-ref st 0)))
-            (if (null? q) jolt-nil (begin (vector-set! st 0 (cdr q)) (car q))))))))
+  (list (cons "poll" (lambda (self . _) (rq-poll self)))
+        (cons "remove" (lambda (self . _) (rq-poll self)))))
 
 ;; ---- StringReader -----------------------------------------------------------
 ;; state: a vector #(string pos marked).
