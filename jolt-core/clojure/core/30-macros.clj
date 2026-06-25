@@ -323,35 +323,39 @@
         ;; inline impls register for dispatch but are NOT extenders of the
         ;; protocol (the JVM compiles them into the class) — register-inline-method,
         ;; not extend-type.
-        ;; Several bodies for one method name are distinct arities (a type that
-        ;; implements clojure.lang.Indexed has (nth [_ i]) AND (nth [_ i x])):
-        ;; group them into one multi-arity fn so dispatch picks the clause by arg
-        ;; count, instead of the last clause clobbering the rest.
-        impl (fn [proto specs]
-               (loop [ss (seq specs) methods {} order []]
-                 (if (empty? ss)
-                   `(do (register-inline-protocol! ~(name tname) ~(name proto))
-                        ~@(map (fn [mname]
-                                 `(register-inline-method ~(name tname) ~(name proto) ~mname
-                                                          (fn ~@(get methods mname))))
-                               order))
-                   (let [spec (first ss)
-                         mname (name (first spec))
-                         argv (nth spec 1)
-                         inst (first argv)
-                         binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
-                         mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))
-                         ;; build the clause as DATA, not via a syntax-quote: a body
-                         ;; that is itself a syntax-quote (`(= ~ocr ~l)) would have its
-                         ;; ~unquotes consumed a level early if re-spliced through one.
-                         clause (list argv (list* 'let binds mbody))]
-                     (recur (rest ss)
-                            (assoc methods mname (conj (get methods mname []) clause))
-                            (if (contains? methods mname) order (conj order mname)))))))]
+        ;; build one method clause (argv + field-bound body) from a method spec.
+        ;; The clause is DATA, not a syntax-quote: a body that is itself a syntax-
+        ;; quote would have its ~unquotes consumed a level early if re-spliced.
+        mk-clause (fn [spec]
+                    (let [argv (nth spec 1)
+                          inst (first argv)
+                          binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
+                          mbody (map (fn [bf] (rewrite-set inst bf)) (drop 2 spec))]
+                      (list argv (list* 'let binds mbody))))
+        groups (group-by-head body)
+        ;; merge clauses by method NAME across ALL protocols into one multi-arity
+        ;; fn, so a name appearing in two interfaces with different arities
+        ;; (data.priority-map's seq is in Seqable [this] AND Sorted [this asc])
+        ;; dispatches by arg count instead of one registration shadowing the other.
+        ;; (Within one protocol, distinct arities like Indexed's nth merge the same
+        ;; way.) Each (protocol, name) registers the merged fn, so dispatch by name
+        ;; and satisfies? by protocol both hold.
+        by-name (reduce (fn [m spec]
+                          (let [nm (name (first spec))]
+                            (assoc m nm (conj (get m nm []) (mk-clause spec)))))
+                        {} (mapcat rest groups))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
        (def ~arrow ~tname)
-       ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body))
+       ~@(mapcat (fn [g]
+                   (let [proto (first g)
+                         names (distinct (map (fn [spec] (name (first spec))) (rest g)))]
+                     (cons `(register-inline-protocol! ~(name tname) ~(name proto))
+                           (map (fn [nm]
+                                  `(register-inline-method ~(name tname) ~(name proto) ~nm
+                                                           (fn ~@(get by-name nm))))
+                                names))))
+                 groups)
        ~tname)))
 
 ;; The protocol value is built by make-protocol (a fn call) rather than an embedded
@@ -491,35 +495,35 @@
         ;; inline impls register for dispatch but are NOT extenders of the
         ;; protocol (the JVM compiles them into the class) — register-inline-method,
         ;; not extend-type.
-        ;; group multi-arity method bodies into one fn (see deftype's impl).
-        impl (fn [proto specs]
-               (loop [ss (seq specs) methods {} order []]
-                 (if (empty? ss)
-                   `(do (register-inline-protocol! ~(name name-sym) ~(name proto))
-                        ~@(map (fn [mname]
-                                 `(register-inline-method ~(name name-sym) ~(name proto) ~mname
-                                                          (fn ~@(get methods mname))))
-                               order))
-                   (let [spec (first ss)
-                         mname (name (first spec))
-                         argv (nth spec 1)
-                         inst (first argv)
-                         ;; hint `this` with the record type so the inference types it
-                         ;; and its field reads bare-index instead of the runtime guard.
-                         hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
-                         binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))
-                         ;; clause as DATA (see deftype): a syntax-quote body must not
-                         ;; be re-spliced through another syntax-quote.
-                         clause (list hinted (list* 'let binds (drop 2 spec)))]
-                     (recur (rest ss)
-                            (assoc methods mname (conj (get methods mname []) clause))
-                            (if (contains? methods mname) order (conj order mname)))))))]
+        ;; one clause from a spec; `this` is hinted with the record type so the
+        ;; inference reads its fields bare-index. Clause as DATA (see deftype).
+        mk-clause (fn [spec]
+                    (let [argv (nth spec 1)
+                          inst (first argv)
+                          hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
+                          binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
+                      (list hinted (list* 'let binds (drop 2 spec)))))
+        groups (group-by-head body)
+        ;; merge clauses by name across protocols into one multi-arity fn (see
+        ;; deftype's by-name).
+        by-name (reduce (fn [m spec]
+                          (let [nm (name (first spec))]
+                            (assoc m nm (conj (get m nm []) (mk-clause spec)))))
+                        {} (mapcat rest groups))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
        ;; so defrecord compiles too. map->name builds via that ctor.
        (deftype ~name-sym ~fields)
        (def ~mapf (fn* [~m] (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))))
-       ~@(map (fn [g] (impl (first g) (rest g))) (group-by-head body)))))
+       ~@(mapcat (fn [g]
+                   (let [proto (first g)
+                         names (distinct (map (fn [spec] (name (first spec))) (rest g)))]
+                     (cons `(register-inline-protocol! ~(name name-sym) ~(name proto))
+                           (map (fn [nm]
+                                  `(register-inline-method ~(name name-sym) ~(name proto) ~nm
+                                                           (fn ~@(get by-name nm))))
+                                names))))
+                 groups))))
 
 ;; --- laziness --------------------------------------------------------------
 ;; lazy-seq / lazy-cat moved to the 00-syntax tier: the seq/coll tiers (10-seq,

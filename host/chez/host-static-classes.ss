@@ -211,6 +211,56 @@
                                (vector->list (hashtable-keys (hm-tbl self)))))))
         (cons "entrySet" (lambda (self) (jolt-seq (hm->pmap self))))
         (cons "toString" (lambda (self) (jolt-pr-str (hm->pmap self))))))
+;; java.util.concurrent.ConcurrentHashMap — one shared heap, so the mutable
+;; HashMap shim serves. (get a-hashmap k) reads the map (clojure.core/get).
+(define (make-hashmap-jhost . args)
+  (let ((ht (make-hashtable hm-hash jolt=2)))
+    (when (and (pair? args) (or (pmap? (car args)) (hm-hashmap? (car args)))) (hm-copy-into! ht (car args)))
+    (make-jhost "hashmap" (vector ht))))
+(register-class-ctor! "ConcurrentHashMap" make-hashmap-jhost)
+(register-class-ctor! "java.util.concurrent.ConcurrentHashMap" make-hashmap-jhost)
+(register-get-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
+                   (lambda (coll k d) (hashtable-ref (hm-tbl coll) k d)))
+;; count / contains? over the mutable map shim (clojure.core/count + contains?,
+;; which core.cache's SoftCache uses on its backing ConcurrentHashMap).
+(define (jhost-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
+(let ((prev-count jolt-count) (prev-contains jolt-contains?))
+  (set! jolt-count (lambda (c) (if (jhost-hashmap? c) (hashtable-size (hm-tbl c)) (prev-count c))))
+  (set! jolt-contains? (lambda (c k) (if (jhost-hashmap? c)
+                                         (if (hashtable-contains? (hm-tbl c) k) #t #f)
+                                         (prev-contains c k)))))
+
+;; ---- java.lang.ref.SoftReference / ReferenceQueue ---------------------------
+;; No JVM GC reference semantics here: a SoftReference holds its referent strongly
+;; (never auto-cleared), which makes a SoftCache an unbounded cache rather than a
+;; GC-pressure one. .enqueue / ReferenceQueue.poll work so code that drains the
+;; queue (clojure.core.cache's clear-soft-cache!) runs. soft-ref state:
+;; #(referent queue enqueued?); ref-queue state: #(list-of-enqueued-refs).
+(define (refqueue-add! rq ref)
+  (let ((st (jhost-state rq))) (vector-set! st 0 (append (vector-ref st 0) (list ref)))))
+(for-each (lambda (nm)
+            (register-class-ctor! nm
+              (lambda (v . rest) (make-jhost "soft-ref" (vector v (if (pair? rest) (car rest) jolt-nil) #f)))))
+          '("SoftReference" "java.lang.ref.SoftReference"))
+(register-host-methods! "soft-ref"
+  (list (cons "get" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "clear" (lambda (self) (vector-set! (jhost-state self) 0 jolt-nil) jolt-nil))
+        (cons "isEnqueued" (lambda (self) (vector-ref (jhost-state self) 2)))
+        (cons "enqueue" (lambda (self)
+          (let* ((st (jhost-state self)) (rq (vector-ref st 1)))
+            (if (vector-ref st 2) #f
+                (begin (vector-set! st 2 #t)
+                       (when (and (jhost? rq) (string=? (jhost-tag rq) "ref-queue")) (refqueue-add! rq self))
+                       #t)))))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-jhost "ref-queue" (vector '())))))
+          '("ReferenceQueue" "java.lang.ref.ReferenceQueue"))
+(register-host-methods! "ref-queue"
+  (list (cons "poll" (lambda (self . _)
+          (let* ((st (jhost-state self)) (q (vector-ref st 0)))
+            (if (null? q) jolt-nil (begin (vector-set! st 0 (cdr q)) (car q))))))
+        (cons "remove" (lambda (self . _)
+          (let* ((st (jhost-state self)) (q (vector-ref st 0)))
+            (if (null? q) jolt-nil (begin (vector-set! st 0 (cdr q)) (car q))))))))
 
 ;; ---- StringReader -----------------------------------------------------------
 ;; state: a vector #(string pos marked).

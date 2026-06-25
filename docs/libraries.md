@@ -45,6 +45,10 @@ the [examples](https://github.com/jolt-lang/examples), e.g. the
 * [clojure.spec.alpha](https://github.com/clojure/spec.alpha) — data specs
 * [core.match](https://github.com/clojure/core.match) — pattern matching.
   `JOLT_FEATURES` `clj`.
+* [core.cache](https://github.com/clojure/core.cache) — caching (Basic/FIFO/LRU/
+  LU/TTL/Soft + the wrapped atom API), over
+  [data.priority-map](https://github.com/clojure/data.priority-map).
+  `JOLT_FEATURES` `clj`.
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`. `JOLT_FEATURES` `clj`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write

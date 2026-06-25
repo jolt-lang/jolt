@@ -228,15 +228,21 @@
 ;; (delay body) -> (make-delay (fn [] body)) (overlay macro); force/deref run the
 ;; thunk once under a lock and cache the value (JVM delays are thread-safe). force
 ;; (overlay) is (if (delay? x) (deref x) x), so it works once delay?/deref do.
-(define-record-type jolt-delay (fields thunk (mutable realized?) (mutable value) mu)
+(define-record-type jolt-delay (fields thunk (mutable realized?) (mutable value) (mutable exn) mu)
   (nongenerative jolt-delay-v1))
-(define (jolt-make-delay thunk) (make-jolt-delay thunk #f jolt-nil (make-mutex)))
+(define (jolt-make-delay thunk) (make-jolt-delay thunk #f jolt-nil #f (make-mutex)))
+;; run the thunk once, like Clojure's Delay: if it throws, cache the exception
+;; (the delay IS realized) and re-throw it on every deref — do NOT re-run the
+;; body (so value-fns memoize and there is no cache-stampede / retried side
+;; effect). Store the exception inside the lock, re-raise outside it so the mutex
+;; is always released.
 (define (jolt-delay-force d)
   (with-mutex (jolt-delay-mu d)
     (unless (jolt-delay-realized? d)
-      (jolt-delay-value-set! d (jolt-invoke (jolt-delay-thunk d)))
-      (jolt-delay-realized?-set! d #t)))
-  (jolt-delay-value d))
+      (guard (e (#t (jolt-delay-exn-set! d e) (jolt-delay-realized?-set! d #t)))
+        (jolt-delay-value-set! d (jolt-invoke (jolt-delay-thunk d)))
+        (jolt-delay-realized?-set! d #t))))
+  (if (jolt-delay-exn d) (raise (jolt-delay-exn d)) (jolt-delay-value d)))
 
 ;; --- deref extension --------------------------------------------------------
 ;; Chain the fully-built jolt-deref (atoms/vars/volatiles/reduced) with futures,
@@ -322,3 +328,47 @@
 (def-var! "jolt.host" "interrupt!" jolt-interrupt!)
 (def-var! "jolt.host" "interrupted?" jolt-interrupted?)
 (def-var! "jolt.host" "run-interruptible" jolt-run-interruptible)
+
+;; --- java.lang.Thread / java.util.concurrent.CountDownLatch -----------------
+;; Real OS threads over Chez fork-thread (shared heap — a captured atom/var is
+;; shared). A Thread runs its Runnable thunk; start forks, join waits on a
+;; condition latched at completion. CountDownLatch is a counting barrier.
+(define (make-jthread thunk) (make-jhost "user-thread" (vector thunk #f (make-mutex) (make-condition))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (thunk . _) (make-jthread thunk))))
+          '("Thread" "java.lang.Thread"))
+(register-host-methods! "user-thread"
+  (list (cons "start" (lambda (self)
+          (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
+            (fork-thread (lambda ()
+              (dyn-binding-stack snap)
+              (guard (e (#t #f)) (jolt-invoke (vector-ref st 0)))
+              (with-mutex (vector-ref st 2)
+                (vector-set! st 1 #t)
+                (condition-broadcast (vector-ref st 3)))))
+            jolt-nil)))
+        (cons "run" (lambda (self) (jolt-invoke (vector-ref (jhost-state self) 0)) jolt-nil))
+        (cons "join" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 2)
+              (let loop () (unless (vector-ref st 1) (condition-wait (vector-ref st 3) (vector-ref st 2)) (loop)))))
+          jolt-nil))
+        (cons "isAlive" (lambda (self) (not (vector-ref (jhost-state self) 1))))
+        (cons "interrupt" (lambda (self . _) jolt-nil))
+        (cons "setDaemon" (lambda (self . _) jolt-nil))))
+
+(define (make-jlatch n) (make-jhost "count-down-latch" (vector n (make-mutex) (make-condition))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (n . _) (make-jlatch (jnum->exact n)))))
+          '("CountDownLatch" "java.util.concurrent.CountDownLatch"))
+(register-host-methods! "count-down-latch"
+  (list (cons "countDown" (lambda (self)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 1)
+              (when (> (vector-ref st 0) 0) (vector-set! st 0 (- (vector-ref st 0) 1)))
+              (when (= (vector-ref st 0) 0) (condition-broadcast (vector-ref st 2)))))
+          jolt-nil))
+        (cons "await" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 1)
+              (let loop () (when (> (vector-ref st 0) 0) (condition-wait (vector-ref st 2) (vector-ref st 1)) (loop)))))
+          jolt-nil))
+        (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))

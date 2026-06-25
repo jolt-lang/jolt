@@ -62,8 +62,16 @@
     "}"))
 
 ;; ---- extend the collection dispatchers with a jrec arm ----------------------
+;; equality for a jrec: a deftype implementing IPersistentCollection/equiv (e.g.
+;; core.cache's caches, which equiv to their backing map) compares through that
+;; method, so (= cache {…}) works; a plain record has no equiv and falls back to
+;; field-wise jrec=? (and a record is never = a plain map).
 (register-eq-arm! (lambda (a b) (or (jrec? a) (jrec? b)))
-                  (lambda (a b) (and (jrec? a) (jrec? b) (jrec=? a b))))
+                  (lambda (a b)
+                    (cond ((and (jrec? a) (jrec-cl a "equiv")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m a b)) #t #f)))
+                          ((and (jrec? b) (jrec-cl b "equiv")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m b a)) #t #f)))
+                          ((and (jrec? a) (jrec? b)) (jrec=? a b))
+                          (else #f))))
 (register-hash-arm! jrec? jrec-hash)
 ;; get on a jrec: a real field reads raw (so a deftype method's own field bindings,
 ;; compiled to (get inst :field), never recurse); a NON-field key on a deftype that
@@ -131,6 +139,10 @@
         (else (%r-jolt-conj1 coll x)))))
 ;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
 ;; core.cache's LRU/LU caches lean on) dispatch to its methods.
+;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
+;; .priority-map's peek calls (.isEmpty this) -> empty?). jolt-seq is method-first.
+(define %r-jolt-empty? jolt-empty?)
+(set! jolt-empty? (lambda (coll) (if (jrec? coll) (jolt-nil? (jolt-seq coll)) (%r-jolt-empty? coll))))
 (define %r-jolt-peek jolt-peek)
 (set! jolt-peek (lambda (coll)
   (cond ((jrec-cl coll "peek") => (lambda (m) (jolt-invoke m coll)))
@@ -357,6 +369,10 @@
 ;; holding a mutable cursor over (seq coll); (.hasNext it)/(.next it) walk it.
 ;; hiccup/compiler's run! loop iterates collections this way.
 (define-record-type jiterator (fields (mutable cur)) (nongenerative jolt-iterator-v1))
+;; (seq an-iterator) / (iterator-seq it): a jiterator wraps the remaining seq in
+;; cur, so seq just yields it — clojure.test's (iterator-seq (.iterator coll)).
+(let ((prev-seq jolt-seq))
+  (set! jolt-seq (lambda (x) (if (jiterator? x) (jiterator-cur x) (prev-seq x)))))
 ;; A Chez condition's message string (for Throwable .getMessage/.toString): the
 ;; &message text plus any &irritants, or display-condition output as a fallback.
 (define (condition->message-string c)
