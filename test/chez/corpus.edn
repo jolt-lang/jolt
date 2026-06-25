@@ -3048,4 +3048,19 @@
   {:suite "interop / java.time" :label "Instant getNano of negative nano" :expected "999999999" :actual "(.getNano (.plusNanos (java.time.Instant/ofEpochSecond 0) -1))"}
   {:suite "interop / java.time" :label "Instant toEpochMilli floors sub-milli" :expected "1000" :actual "(.toEpochMilli (.plusNanos (java.time.Instant/ofEpochSecond 1) 999999))"}
   {:suite "interop / java.time" :label "Instant truncatedTo SECONDS drops nanos" :expected "\"1970-01-01T00:00:05Z\"" :actual "(str (.truncatedTo (.plusNanos (java.time.Instant/ofEpochSecond 5) 123) java.time.temporal.ChronoUnit/SECONDS))"}
+  {:suite "interop / java.io File" :label "getName" :expected "\"c.txt\"" :actual "(.getName (java.io.File. \"/a/b/c.txt\"))"}
+  {:suite "interop / java.io File" :label "getParent" :expected "\"/a/b\"" :actual "(.getParent (java.io.File. \"/a/b/c.txt\"))"}
+  {:suite "interop / java.io File" :label "getPath keeps relative path" :expected "\"rel/x\"" :actual "(.getPath (java.io.File. \"rel/x\"))"}
+  {:suite "interop / java.io File" :label "relative File is not absolute" :expected "false" :actual "(.isAbsolute (java.io.File. \"rel\"))"}
+  {:suite "interop / java.io File" :label "parent+child constructor joins" :expected "\"/a/b\"" :actual "(.getPath (java.io.File. \"/a\" \"b\"))"}
+  {:suite "interop / java.io File" :label "File/separator" :expected "\"/\"" :actual "java.io.File/separator"}
+  {:suite "interop / java.io File" :label "str of File is its path" :expected "\"a/b\"" :actual "(str (java.io.File. \"a/b\"))"}
+  {:suite "interop / java.io File" :label "mkdir then delete a temp dir" :expected "[true true true]" :actual "(let [d (java.io.File/createTempFile \"jd\" \"\")] (.delete d) [(.mkdir d) (.isDirectory d) (.delete d)])"}
+  {:suite "interop / java.io streams" :label "ByteArrayOutputStream toString" :expected "\"hi!\"" :actual "(let [b (java.io.ByteArrayOutputStream.)] (.write b (.getBytes \"hi\")) (.write b 33) (.toString b))"}
+  {:suite "interop / java.io streams" :label "ByteArrayOutputStream size" :expected "4" :actual "(let [b (java.io.ByteArrayOutputStream.)] (.write b (.getBytes \"abcd\")) (.size b))"}
+  {:suite "interop / java.io streams" :label "ByteArrayOutputStream toByteArray round-trips" :expected "\"yo\"" :actual "(String. (.toByteArray (doto (java.io.ByteArrayOutputStream.) (.write (.getBytes \"yo\")))))"}
+  {:suite "interop / java.io streams" :label "ByteArrayInputStream read to EOF" :expected "[65 66 -1]" :actual "(let [in (java.io.ByteArrayInputStream. (.getBytes \"AB\"))] [(.read in) (.read in) (.read in)])"}
+  {:suite "interop / java.io streams" :label "BufferedReader over StringReader readLine" :expected "[\"a\" \"b\" nil]" :actual "(let [r (java.io.BufferedReader. (java.io.StringReader. \"a\\nb\\n\"))] [(.readLine r) (.readLine r) (.readLine r)])"}
+  {:suite "interop / java.io streams" :label "instance? InputStream" :expected "true" :actual "(instance? java.io.InputStream (java.io.ByteArrayInputStream. (.getBytes \"x\")))"}
+  {:suite "interop / java.io streams" :label "FileOutputStream then FileInputStream round-trip" :expected "90" :actual "(let [f (java.io.File/createTempFile \"jc\" \".t\") o (java.io.FileOutputStream. f)] (.write o (byte-array [90])) (.close o) (let [in (java.io.FileInputStream. f) b (.read in)] (.close in) (.delete f) b))"}
 ]

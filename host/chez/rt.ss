@@ -376,6 +376,11 @@
 ;; it. After the dispatchers it chains.
 (load "host/chez/natives-array.ss")
 
+;; java.io byte/char streams (FileInputStream/…/ByteArrayOutputStream/Buffered*)
+;; over Chez ports. After io.ss (extends its slurp/__close/reader-jhost?) and
+;; natives-array.ss (the byte-array <-> bytevector bridge).
+(load "host/chez/io-streams.ss")
+
 ;; clojure.lang.PersistentQueue: a functional queue + EMPTY static.
 ;; Chains seq/count/empty?/peek/pop/conj/sequential?/class/instance?/printer, so
 ;; load after natives-array (the dispatchers it extends).

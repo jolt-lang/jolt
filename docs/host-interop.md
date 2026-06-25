@@ -70,12 +70,29 @@ aren't implemented; a few are accepted but no-ops (noted inline).
 
 ### I/O
 
-- **`java.io.File`** — `(File. path)` / `(File. parent child)`; `getPath`
-  `getName` `getAbsolutePath` `getCanonicalPath` `toURI` `toURL` `exists`
-  `isDirectory` `isFile` `listFiles` `getParent`.
-- **`java.io.StringReader` / `StringWriter` / `PushbackReader`** — the
-  `read`/`readLine`/`mark`/`reset`/`unread`/`write`/`append`/`toString` surface
-  the reader and `with-out-str` rely on.
+- **`java.io.File`** — `(File. path)` / `(File. parent child)`. A File keeps the
+  path as given (`(.getPath (File. "rel"))` is `"rel"`, `.isAbsolute` false); a
+  relative path resolves against `JOLT_PWD` only when the filesystem is touched.
+  Methods: `getPath` `getName` `getParent` `getParentFile` `getAbsolutePath`
+  `getAbsoluteFile` `getCanonicalPath` `getCanonicalFile` `toURI` `toURL`
+  `exists` `isDirectory` `isFile` `isAbsolute` `isHidden` `length` `lastModified`
+  `canRead` `canWrite` `canExecute` `list` `listFiles` `mkdir` `mkdirs` `delete`
+  `createNewFile` `renameTo` `compareTo` `equals` `hashCode`. Statics:
+  `File/separator` `File/separatorChar` `File/pathSeparator` `File/createTempFile`
+  `File/listRoots`.
+- **Byte streams** — `FileInputStream` / `FileOutputStream` (over a path/File,
+  `append` arg), `ByteArrayInputStream` / `ByteArrayOutputStream`
+  (`toByteArray`/`toString`/`size`/`reset`), `BufferedInputStream` /
+  `BufferedOutputStream`. `read`/`read(byte[])`, `write(int)`/`write(byte[])`,
+  `flush`, `close`. Each is a Chez binary port underneath.
+- **Char streams** — `FileReader` / `InputStreamReader` (read a byte stream as
+  UTF-8), `FileWriter` / `OutputStreamWriter`, `BufferedReader` (`readLine`,
+  `lines`) / `BufferedWriter` (`newLine`), `StringReader` / `StringWriter` /
+  `PushbackReader`.
+- **`clojure.java.io`** — `file` `as-file` `reader` `writer` `input-stream`
+  `output-stream` `copy` (byte-exact for byte sources) `make-parents`
+  `delete-file` `resource` `as-url`. `slurp`/`spit`/`line-seq`/`with-open` work
+  over all of the above.
 - **`java.lang.ClassLoader`** — `getSystemClassLoader`, `.getResource`,
   `.getResourceAsStream` (resolved against the source roots).
 
