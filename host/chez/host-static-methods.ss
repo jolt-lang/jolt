@@ -106,6 +106,9 @@
   (list (cons "currentTimeMillis" (lambda () (->num (now-millis))))
         (cons "nanoTime" (lambda () (->num (* 1000000 (now-millis)))))
         (cons "exit" (lambda args (exit (if (null? args) 0 (jnum->exact (car args))))))
+        ;; System/gc -> a full Chez collection (so weak references clear and their
+        ;; guardians fire); Runtime.gc() routes here too.
+        (cons "gc" (lambda _ (collect (collect-maximum-generation)) jolt-nil))
         ;; wrapped in lambdas: the helpers are defined below, resolved at call time.
         (cons "getProperty" (lambda (k . d) (apply sys-get-property k d)))
         (cons "setProperty" (lambda (k v) (sys-set-property k v)))
