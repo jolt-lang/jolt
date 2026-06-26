@@ -132,4 +132,10 @@
       ((procedure? x) ty-fn)
       (else ty-object))))
 
+;; jolt-type is the keyword TAXONOMY (:string/:set/:jolt/inst/…) — jolt's native
+;; value model, with no JVM in it. print-method/print-dup dispatch on it (via
+;; __type-tag). The PUBLIC clojure.core/type is Clojure's (or (:type meta) (class
+;; x)) — a JVM class — but that mapping belongs to the java host layer (host-class.ss
+;; rebinds `type` next to `class`), so this core layer stays JVM-free.
+(def-var! "clojure.core" "__type-tag" jolt-type)
 (def-var! "clojure.core" "type" jolt-type)

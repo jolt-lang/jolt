@@ -280,6 +280,10 @@
 
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
+;; #inst is a java.util.Date — (class x) / (type x) report that, not the internal
+;; :jolt/inst tag (which print-method still dispatches on via __type-tag).
+(register-class-arm! jinst? (lambda (x) "java.util.Date"))
+
 ;; java.time.Instant is nano-precise: two Instants are = when their epoch-nanos
 ;; match (so an Instant and one shifted by a single nanosecond differ).
 (define (jt-instant-tag? x) (and (jhost? x) (string=? (jhost-tag x) "instant")))
@@ -303,7 +307,6 @@
 
 (define %it-type jolt-type)
 (set! jolt-type (lambda (x) (if (jinst? x) inst-type-kw (%it-type x))))
-(def-var! "clojure.core" "type" jolt-type)
 
 ;; instance? java.util.Date -> a jinst; java.time.Instant/LocalDateTime -> the
 ;; matching jhost tag. The instance? macro passes the class-name symbol.

@@ -156,7 +156,6 @@
 ;; (jolt-type …) for arrays, so extending jolt-type covers both.
 (define %na-type jolt-type)
 (set! jolt-type (lambda (x) (if (jolt-array? x) (na-array-class-name x) (%na-type x))))
-(def-var! "clojure.core" "type" jolt-type)
 
 ;; instance? over an array class token ([I, [C, …). An array token reaches us as
 ;; a string ("[C", from (Class/forName "[C")) — the dispatcher leaves it a string

@@ -65,6 +65,19 @@
 
 (def-var! "clojure.core" "class" jolt-class)
 
+;; The PUBLIC clojure.core/type — Clojure's (or (:type meta) (class x)). This is the
+;; java host layer's job: the core taxonomy (natives-meta.ss jolt-type, kept under
+;; __type-tag for print-method) is JVM-free, and the JVM class mapping lives HERE,
+;; next to (class …). The inst/array/byte-buffer host files extend `class` (a
+;; class-arm or jolt-type fallthrough) and re-point `type` at this same fn, so the
+;; remap of every value — :jolt/inst -> java.util.Date etc. — happens in one place.
+(define ty-meta-key (keyword #f "type"))
+(define (jolt-type-pub x)
+  (let* ((m (jolt-meta x))
+         (override (if (jolt-nil? m) jolt-nil (jolt-get m ty-meta-key jolt-nil))))
+    (if (not (jolt-nil? override)) override (jolt-class x))))
+(def-var! "clojure.core" "type" jolt-type-pub)
+
 ;; bare class-name tokens -> canonical JVM class-name strings.
 (define class-token-alist
   '(("String" . "java.lang.String") ("Number" . "java.lang.Number")
