@@ -613,7 +613,12 @@
           ;; macro `def`/`and`/`or` (clojure.spec.alpha) keeps the special form `def`.
           (and (form-sym? head) (not shadowed)
                (not (contains? handled hname)) (form-macro? ctx head))
-            (analyze ctx (form-expand-1 ctx form) env)
+            ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
+            ;; source offset onto the resulting def, since the macro builds a fresh
+            ;; (def …) with no metadata. So the back end can register fn defs.
+            (let [node (analyze ctx (form-expand-1 ctx form) env)
+                  p (form-position form)]
+              (if (and p (= :def (:op node))) (assoc node :pos p) node))
           ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
           ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).
           (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
@@ -628,7 +633,11 @@
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.
           (and hname (contains? handled hname))
-            (analyze-special ctx hname items env)
+            ;; stamp the form's source offset onto a top-level def so the back end
+            ;; can register it (jv$ns$name -> source) for native stack traces.
+            (let [node (analyze-special ctx hname items env)
+                  p (form-position form)]
+              (if (and p (= :def (:op node))) (assoc node :pos p) node))
           (and hname (not shadowed) (method-head? hname))
             (analyze-host-call ctx hname items env)
           ;; (Class. args*) — trailing-dot constructor sugar.

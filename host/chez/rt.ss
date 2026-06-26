@@ -35,7 +35,13 @@
 ;; throw raises the jolt value RAW (no envelope);
 ;; catch (emitted as `guard`) binds it directly. Chez `raise` accepts any
 ;; object, so a thrown number/map/ex-info all work; uncaught -> non-zero exit.
-(define (jolt-throw v) (raise v))
+;; Capture the live continuation at the throw site (identity-tagged with the
+;; thrown value) so an uncaught error can walk the native frames back to a Clojure
+;; stack trace (source-registry.ss). call/cc is paid only on a throw, never per
+;; call; the captured k is walked, never invoked.
+(define jolt-throw-cont (make-thread-parameter #f))
+(define (jolt-throw v)
+  (call/cc (lambda (k) (jolt-throw-cont (cons v k)) (raise v))))
 ;; ex-info builds the tagged map {:jolt/type :jolt/ex-info :message :data :cause}
 ;; — a real jolt-hash-map, so the ex-data/ex-message/ex-cause tier fns read it
 ;; via jolt-get for free. Arity 2 (msg data) or 3 (msg data cause).
@@ -408,3 +414,7 @@
 ;; printing. Loads LAST so its set!-wraps of jolt-class/jolt=2/the printers sit
 ;; outermost over every earlier extension.
 (load "host/chez/java/bigdec.ss")
+
+;; Native stack traces: jv$ns$name -> source registry + continuation frame walk +
+;; uncaught-throwable renderer. After the printers/equality it relies on.
+(load "host/chez/source-registry.ss")
