@@ -848,6 +848,21 @@
 (reg-class-supers! "java.net.UnknownHostException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
 (reg-class-supers! "java.net.ConnectException" '("java.net.SocketException" "java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
 (reg-class-supers! "java.net.SocketTimeoutException" '("java.io.InterruptedIOException" "java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+;; clojure.lang / java.util ancestry for the builtins (class) reports, so a
+;; class-keyed multimethod / (isa? (class x) SomeClass) dispatches like the JVM.
+;; (Object is supplied universally by class-isa?, so it need not be listed.)
+(reg-class-supers! "clojure.lang.IFn" '("clojure.lang.Fn" "java.lang.Runnable" "java.util.concurrent.Callable"))
+(reg-class-supers! "clojure.lang.Keyword" '("clojure.lang.Named" "java.lang.Comparable"))
+(reg-class-supers! "clojure.lang.Symbol" '("clojure.lang.Named" "java.lang.Comparable"))
+(reg-class-supers! "java.lang.String" '("java.lang.CharSequence" "java.lang.Comparable"))
+(reg-class-supers! "clojure.lang.PersistentHashSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.PersistentTreeSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.PersistentVector" '("clojure.lang.APersistentVector" "clojure.lang.IPersistentVector" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Associative" "java.util.List" "java.util.Collection" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.PersistentArrayMap" '("clojure.lang.APersistentMap" "clojure.lang.IPersistentMap" "clojure.lang.IPersistentCollection" "clojure.lang.Associative" "java.util.Map" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.PersistentHashMap" '("clojure.lang.APersistentMap" "clojure.lang.IPersistentMap" "clojure.lang.IPersistentCollection" "clojure.lang.Associative" "java.util.Map" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.PersistentList" '("clojure.lang.ASeq" "clojure.lang.ISeq" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.util.List" "java.util.Collection" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.LazySeq" '("clojure.lang.ISeq" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.lang.Iterable"))
+(reg-class-supers! "clojure.lang.Cons" '("clojure.lang.ASeq" "clojure.lang.ISeq" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.lang.Iterable"))
 
 ;; transitive closure of direct supers (set semantics via an accumulator list)
 (define (class-ancestors-list name)
@@ -874,6 +889,24 @@
                        (string=? want-seg (hsc-last-segment (car names)))) #t)
                   (else (loop (cdr names))))))
         'pass)))
+
+;; JVM class assignability for isa? (20-coll): true when child and parent are both
+;; class values and parent is child, java.lang.Object (every class's root), or a
+;; modeled ancestor of child (full name or last segment). nil for non-class args, so
+;; isa? falls through to its hierarchy/vector logic.
+(def-var! "jolt.host" "class-isa?"
+  (lambda (child parent)
+    (let ((cc (class-key child)) (pp (class-key parent)))
+      (if (and cc pp)
+          (let ((pseg (hsc-last-segment pp)))
+            (if (let loop ((names (cons cc (class-ancestors-list cc))))
+                  (cond ((string=? pp "java.lang.Object") #t)
+                        ((null? names) #f)
+                        ((or (string=? pp (car names))
+                             (string=? pseg (hsc-last-segment (car names)))) #t)
+                        (else (loop (cdr names)))))
+                #t jolt-nil))
+          jolt-nil))))
 
 ;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
 ;; super / ancestor class-name strings, or nil when jolt models no hierarchy for it.

@@ -565,6 +565,12 @@
   {:suite "interop / java.util Optional" :label "value equality" :expected "true" :actual "(= (java.util.Optional/of 5) (java.util.Optional/of 5))"}
   {:suite "interop / java.util Optional" :label "empty orElse" :expected "7" :actual "(.orElse (java.util.Optional/empty) 7)"}
   {:suite "interop / java.util Optional" :label "ofNullable nil is empty" :expected "true" :actual "(= (java.util.Optional/empty) (java.util.Optional/ofNullable nil))"}
+  {:suite "interop / class + isa?" :label "forName throws for unknown class" :expected ":cnfe" :actual "(try (do (Class/forName \"totally.Bogus.Class\") :found) (catch ClassNotFoundException e :cnfe))"}
+  {:suite "interop / class + isa?" :label "PersistentHashSet isa java.util.Set" :expected "true" :actual "(isa? clojure.lang.PersistentHashSet java.util.Set)"}
+  {:suite "interop / class + isa?" :label "String isa Object" :expected "true" :actual "(isa? java.lang.String java.lang.Object)"}
+  {:suite "interop / class + isa?" :label "IFn isa Object" :expected "true" :actual "(isa? clojure.lang.IFn java.lang.Object)"}
+  {:suite "interop / class + isa?" :label "class of vector" :expected "true" :actual "(= clojure.lang.PersistentVector (class [1]))"}
+  {:suite "interop / class + isa?" :label "isa? class keyword Object" :expected "true" :actual "(isa? (class :k) java.lang.Object)"}
   {:suite "interop / java.time shims" :label "Instant/now is current" :expected "true" :actual "(> (.toEpochMilli (Instant/now)) 1500000000000)"}
   {:suite "interop / java.time shims" :label "sql types are not" :expected "false" :actual "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")"}
   {:suite "interop / StringReader & StringBuilder" :label "StringReader read" :expected "[97 98 -1]" :actual "(let [r (java.io.StringReader. \"ab\")] [(.read r) (.read r) (.read r)])"}
