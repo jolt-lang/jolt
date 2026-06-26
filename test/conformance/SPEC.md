@@ -35,6 +35,12 @@ the canonical, frozen contract**: it is what every runtime consumes, what
   disambiguates duplicate labels with ` (N)`).
 - Comparison is **value-equality** (`=`), never string/printed-form — so map/set
   iteration order never matters.
+- Because comparison is `=`, a **type** or **laziness** difference is invisible to a
+  plain value row: `(= [0 1] '(0 1))` is true, so a fn returning a vector where
+  Clojure returns a seq still passes. Pin those explicitly — container/element type
+  with a predicate row (`(seq? …)`, `(vector? …)`, `(every? seq? …)`), and laziness
+  with a `(take n (… (range)))` row over an infinite source (it hangs, not just
+  diverges, if the fn isn't lazy). The `seq / lazy over infinite` suite does both.
 - `:expected :throws` asserts evaluating `:actual` raises.
 
 ## The oracle: reference JVM Clojure

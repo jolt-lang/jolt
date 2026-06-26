@@ -101,7 +101,9 @@
 (define (jolt-mapcat f . colls)
   (if (null? colls)
       (td-mapcat f)
-      (apply jolt-concat (seq->list (apply jolt-map f colls)))))
+      ;; lazily concat the per-element results — no seq->list, so mapcat over an
+      ;; infinite source stays lazy.
+      (lazy-concat-seq (apply jolt-map f colls))))
 
 ;; take-while / drop-while: 1-arg -> transducer; 2-arg -> a seq over the coll.
 (define (take-while-seq pred s)
