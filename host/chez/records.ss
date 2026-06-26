@@ -100,6 +100,21 @@
         ks vs))
     out))
 
+;; resolve a record TYPE name (a ^Type param hint's tag) to the ctor-key
+;; "ns/->Name" the inference seeds with. Prefer the ctor in `ns` (the compile ns);
+;; else any registered record with that simple name (cross-ns / imported). #f if
+;; the name isn't a record type (so a ^double/^String hint resolves to nil).
+(define (chez-find-ctor-key name ns)
+  (let* ((simple (chez-shape-simple-name name))
+         (target (string-append "->" simple))
+         (preferred (string-append ns "/->" simple)))
+    (if (hashtable-ref chez-record-shapes-tbl preferred #f)
+        preferred
+        (let loop ((ks (vector->list (hashtable-keys chez-record-shapes-tbl))))
+          (cond ((null? ks) #f)
+                ((string=? (chez-shape-simple-name (car ks)) target) (car ks))
+                (else (loop (cdr ks))))))))
+
 ;; materialize chez-protocol-methods-tbl into "ns/method" -> [proto method].
 (define (chez-protocol-methods-map)
   (let ((out (jolt-hash-map)))

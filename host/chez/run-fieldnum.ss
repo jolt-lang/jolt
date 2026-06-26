@@ -59,6 +59,15 @@
 (check "field-field arithmetic unboxes to fl*" (contains-sub? dot-emit "fl*") #t)
 (check "field-field arithmetic unboxes to fl+" (contains-sub? dot-emit "fl+") #t)
 
+;; a ^V param hint types the param with no inferable caller (open-world / cross-fn:
+;; the receiver isn't a ctor return). This is the record-ctor-key path — without it
+;; the hint is dead and the reads fall back to generic jolt-get + boxed arithmetic.
+(define hinted (anode "(def hyp (fn [^V v] (+ (* (:x v) (:x v)) (* (:y v) (:y v)))))"))
+(define hint-emit (emit (run-passes hinted (make-analyze-ctx "user"))))
+(check "^V param hint bare-indexes field reads" (contains-sub? hint-emit "jrec-field-at") #t)
+(check "^V param hint unboxes arithmetic" (contains-sub? hint-emit "fl*") #t)
+(check "^V param hint leaves no generic jolt-get" (contains-sub? hint-emit "jolt-get") #f)
+
 ;; an UNTAGGED field stays generic — no fl-op (the read is :any, not :double).
 (evals "(defrecord W [p q])")
 (define dotw (anode "(def dotw (fn [a b] (* (:p a) (:p b))))"))
