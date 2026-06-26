@@ -482,6 +482,14 @@
     (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))]
       (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
 
+;; slot of a declared field key in a record's field-order shape, or nil.
+(defn- struct-field-index [shape kw]
+  (when shape
+    (loop [i 0]
+      (cond (>= i (count shape)) nil
+            (= (nth shape i) kw) i
+            :else (recur (inc i))))))
+
 (defn- emit-invoke [node]
   (let [fnode (:fn node)
         arg-nodes (:args node)
@@ -519,9 +527,18 @@
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
       nop (order-args (fn [as] (str "(" nop " " (str/join " " as) ")")))
       ;; (:k coll [default]) -> (jolt-get coll :k [default]) — the key (fnode) is a
-      ;; const, so only the coll/default args carry order.
+      ;; const, so only the coll/default args carry order. When the inference typed
+      ;; the receiver as a record whose declared fields include :k (it carries the
+      ;; field-order :shape), read the field by its static slot — no field-key
+      ;; lookup, no jolt-get dispatch. Only the no-default form (a declared field is
+      ;; always present, so a default is never taken).
       (= kind :keyword)
-      (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))
+      (let [recv (first arg-nodes)
+            idx (when (and (= :struct (:hint recv)) (= 1 (count arg-nodes)))
+                  (struct-field-index (:shape recv) (:val fnode)))]
+        (if idx
+          (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit fnode) ")")))
+          (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))
       ;; (coll k [default]) -> (jolt-get coll k [default]) — coll (fnode) is the
       ;; callee, evaluated before the key/default args.
       (= kind :coll)

@@ -146,6 +146,17 @@
                          => (lambda (m) (jolt-invoke m coll k d)))
                         (else d))
                   v))))))
+;; bare-index field read for a statically-known record field — emitted by `jolt
+;; build --opt` for a struct-typed receiver, where i is the field's declared slot.
+;; When r is the expected record it reads the value vector directly: no field-key
+;; hashtable lookup, no jolt-get dispatch. Falls back to jolt-get otherwise (a map
+;; downgraded by dissoc, or a value the inference mistyped), so it stays correct
+;; even if the static type is wrong.
+(define (jrec-field-at r i k)
+  (if (and (jrec? r) (fx< i (vector-length (jrec-vals r))))
+      (vector-ref (jrec-vals r) i)
+      (jolt-get r k)))
+
 ;; mutate a deftype's mutable field in place: the value vector is mutable, so
 ;; vector-set! updates the field. (set! field v) inside a method lowers to this;
 ;; returns v, as set! does.
