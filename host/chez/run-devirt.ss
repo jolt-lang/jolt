@@ -54,7 +54,7 @@
 (define (run-emit scm) (eval (read (open-input-string scm)) (interaction-environment)))
 
 (let ((e (devirt-emit "user.Circle" "c")))
-  (check "emit uses find-protocol-method" (has-sub? e "find-protocol-method") #t)
+  (check "emit uses devirt-resolve" (has-sub? e "devirt-resolve") #t)
   (check "devirt inline impl == dispatch" (run-emit e) (evals "(area c)")))   ; 7
 
 (let ((e (devirt-emit "user.Square" "sq")))
@@ -63,8 +63,19 @@
 ;; a normal (no devirt) call still goes through dispatch and agrees — the path the
 ;; megamorphic / unknown-receiver site keeps.
 (let ((e (emit (analyze (make-analyze-ctx "user") (jolt-ce-read "(area c)")))))
-  (check "non-devirt path no find-protocol-method" (has-sub? e "find-protocol-method") #f)
+  (check "non-devirt path no devirt-resolve" (has-sub? e "devirt-resolve") #f)
   (check "non-devirt still dispatches" (run-emit e) 7))
+
+;; a record that relies on the protocol's Object default (no direct impl): the
+;; inference still types it as a concrete record and annotates devirt, so the
+;; emitted call must resolve the same value dispatch would. find-protocol-method
+;; on the record's own tag misses here, so the devirt path has to fall back to
+;; ordinary dispatch (else it applies #f and crashes).
+(evals "(extend-protocol Shape Object (area [s] :obj-default))")
+(evals "(defrecord Plain [n])")
+(evals "(def pl (->Plain 9))")
+(let ((e (devirt-emit "user.Plain" "pl")))
+  (check "devirt Object-default == dispatch" (run-emit e) (evals "(area pl)")))  ; :obj-default
 
 (if (= fails 0)
     (begin (printf "devirt gate: ~a/~a passed\n" total total) (exit 0))

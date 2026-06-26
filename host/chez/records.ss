@@ -579,6 +579,16 @@
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (apply (protocol-resolve proto-name method-name obj) obj rest)))
 
+;; devirt-resolve: the impl for a call the inference proved monomorphic. Try the
+;; static type tag directly (the fast path that skips receiver-type computation),
+;; and fall back to ordinary dispatch when it misses — a record can satisfy a
+;; protocol via an Object/host-tag default rather than a direct impl, which
+;; find-protocol-method on its own tag wouldn't see. Mirrors jrec-field-at falling
+;; back to jolt-get: correct regardless of how precise the inference was.
+(define (devirt-resolve type-tag proto-name method-name obj)
+  (or (find-protocol-method type-tag proto-name method-name)
+      (protocol-resolve proto-name method-name obj)))
+
 ;; dot-dispatch fallback used by emit for (.method record args): find the method
 ;; in ANY protocol the record's type implements.
 ;; java.util.Iterator over a jolt seqable: (.iterator coll) returns a jiterator
