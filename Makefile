@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum directlink numeric inline shakesmoke remint
+.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum reducesroa directlink numeric inline shakesmoke remint
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -15,7 +15,7 @@ test: selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: values corpus unit smoke buildsmoke sci ffi transient infer wp devirt fieldread numwp fieldnum directlink numeric inline certify
+ci: values corpus unit smoke buildsmoke sci ffi transient infer wp devirt fieldread numwp fieldnum reducesroa directlink numeric inline certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -91,6 +91,12 @@ numwp:
 # an untagged field stays generic.
 fieldnum:
 	@chez --script host/chez/run-fieldnum.ss
+
+# Reduce-accumulator scalar replacement: a reduce over a non-escaping record
+# accumulator lowers to a seq loop carrying the acc fields as scalar vars, so the
+# per-step record allocation goes away; the result matches the ordinary reduce.
+reducesroa:
+	@chez --script host/chez/run-reduce-sroa.ss
 
 # Direct-linking emission: a closed-world build binds top-level app defs to jv$
 # Scheme bindings and routes app->app calls/refs to them, skipping var-deref +

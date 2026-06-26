@@ -546,13 +546,161 @@
             (recur (inc i))))
         node))))
 
+;; --- reduce-accumulator scalar replacement ----------------------------------
+;; (reduce (fn [acc x] body) (->Rec inits..) coll) where acc is a non-escaping
+;; record — read only via its fields, returned each step as a same-shape ctor or
+;; carried forward unchanged — allocates one record PER ELEMENT. Lower it to a seq
+;; loop that carries acc's fields as scalar loop vars and rebuilds the record once
+;; at exit, so the per-step allocation disappears. This is the ray tracer's hit-all
+;; (a HitAcc per sphere test). Closed-world (--opt) only, like the rest of this pass.
+
+(defn- local-node [nm] {:op :local :name nm})
+(defn- core-call [nm cargs] {:op :invoke :fn {:op :var :ns "clojure.core" :name nm} :args (vec cargs)})
+
+(defn- reduce3-callee?
+  "node is a (clojure.core/reduce f init coll) — the 3-arg form with an explicit
+  initial value (the 2-arg form seeds from the collection, a different shape)."
+  [node]
+  (let [f (get node :fn)]
+    (and (= :invoke (get node :op))
+         (= :var (get f :op)) (= "clojure.core" (get f :ns)) (= "reduce" (get f :name))
+         (= 3 (count (get node :args))))))
+
+(defn- same-shape-ctor? [node rs]
+  (let [cs (ctor-shape node)] (and cs (= (get cs :type) (get rs :type)))))
+
+(defn- acc-ok?
+  "Is acc (local nm, record shape rs) safe to scalarize across body? It may appear
+  ONLY as a constant-field-read subject, or — in tail position — as the bare
+  carried-forward value. tail? marks whether node is the reduce-fn's return value.
+  A binding/control form that could capture or rebind acc bails (false)."
+  [node nm rs tail?]
+  (let [op (get node :op)
+        k (lookup-key node nm)]
+    (cond
+      ;; a field read of acc: nm is consumed as the subject; a get-default (extra
+      ;; arg) is non-tail and must not leak acc either.
+      k (let [args (get node :args)]
+          (if (> (count args) 1)
+            (every? (fn [a] (acc-ok? a nm rs false)) (subvec args 1 (count args)))
+            true))
+      (= op :local) (or (not= nm (get node :name)) tail?)   ;; bare acc only ok in tail
+      (= op :const) true (= op :var) true (= op :host) true
+      (= op :the-var) true (= op :quote) true
+      (= op :if) (and (acc-ok? (get node :test) nm rs false)
+                      (acc-ok? (get node :then) nm rs tail?)
+                      (acc-ok? (get node :else) nm rs tail?))
+      (= op :do) (and (every? (fn [s] (acc-ok? s nm rs false)) (get node :statements))
+                      (acc-ok? (get node :ret) nm rs tail?))
+      (= op :let) (and (every? (fn [b] (acc-ok? (nth b 1) nm rs false)) (get node :bindings))
+                       (or (any-binding-named? (get node :bindings) nm)   ;; nm shadowed below
+                           (acc-ok? (get node :body) nm rs tail?)))
+      (= op :invoke) (and (acc-ok? (get node :fn) nm rs false)
+                          (every? (fn [a] (acc-ok? a nm rs false)) (get node :args)))
+      (= op :throw) (acc-ok? (get node :expr) nm rs false)
+      (= op :vector) (every? (fn [a] (acc-ok? a nm rs false)) (get node :items))
+      (= op :set) (every? (fn [a] (acc-ok? a nm rs false)) (get node :items))
+      (= op :map) (every? (fn [p] (and (acc-ok? (nth p 0) nm rs false)
+                                       (acc-ok? (nth p 1) nm rs false))) (get node :pairs))
+      ;; :fn/:loop/:recur/:try/:def — acc could be captured, or a nested recur would
+      ;; collide with the loop we synthesize; conservatively bail.
+      :else false)))
+
+(defn- tails-valid?
+  "Every tail position of body returns a same-shape ctor or the bare acc — the
+  values the recur can carry as exploded scalars. (A `reduced` tail, or any other
+  shape, isn't one of these, so it keeps the ordinary reduce.)"
+  [node nm rs]
+  (let [op (get node :op)]
+    (cond
+      (= op :if) (and (tails-valid? (get node :then) nm rs) (tails-valid? (get node :else) nm rs))
+      (= op :do) (tails-valid? (get node :ret) nm rs)
+      (= op :let) (tails-valid? (get node :body) nm rs)
+      (and (= op :local) (= nm (get node :name))) true
+      :else (same-shape-ctor? node rs))))
+
+(defn- subst-acc-fields
+  "Replace every (:k acc)/(get acc :k) in node with the scalar loop var for field k.
+  acc-ok? guarantees acc appears only as such reads (or the bare tail), so a uniform
+  recursion is safe."
+  [node nm fields acc-locals]
+  (let [k (lookup-key node nm)]
+    (if k
+      (nth acc-locals (field-index fields k))
+      (map-ir-children (fn [c] (subst-acc-fields c nm fields acc-locals)) node))))
+
+(defn- tail->recur
+  "Convert each tail of body (already field-substituted) into a recur that advances
+  the seq and carries the next accumulator components: a same-shape ctor explodes
+  into its positional args, the bare acc carries the current components forward."
+  [node nm acc-locals snm]
+  (let [op (get node :op)
+        step (fn [t] (tail->recur t nm acc-locals snm))
+        recur-with (fn [comps] {:op :recur :args (reduce conj [(core-call "next" [(local-node snm)])] comps)})]
+    (cond
+      (= op :if) (assoc node :then (step (get node :then)) :else (step (get node :else)))
+      (= op :do) (assoc node :ret (step (get node :ret)))
+      (= op :let) (assoc node :body (step (get node :body)))
+      (and (= op :local) (= nm (get node :name))) (recur-with acc-locals)
+      :else (recur-with (get node :args)))))   ;; a same-shape ctor: its args are the new components
+
+(defn- lower-reduce
+  "Rewrite a lowerable (reduce (fn [acc x] body) (->Rec inits) coll) into a seq loop
+  with acc's fields carried as scalar vars. Caller has validated the shape."
+  [node]
+  (let [args (get node :args)
+        closure (nth args 0) init (nth args 1) coll (nth args 2)
+        ar (first (get closure :arities))
+        params (get ar :params)
+        nm (nth params 0) xnm (nth params 1)
+        body (get ar :body)
+        rs (ctor-shape init)
+        fields (get rs :fields)
+        snm (fresh "rseq")
+        accnms (mapv (fn [_] (fresh "racc")) fields)
+        acc-locals (mapv local-node accnms)
+        body' (tail->recur (subst-acc-fields body nm fields acc-locals) nm acc-locals snm)]
+    {:op :loop
+     :bindings (reduce conj [[snm (core-call "seq" [coll])]]
+                       (mapv (fn [an ia] [an ia]) accnms (get init :args)))
+     :body {:op :if
+            :test (core-call "nil?" [(local-node snm)])
+            ;; exhausted: rebuild the record once from the final components
+            :then {:op :invoke :fn (get init :fn) :args acc-locals}
+            :else {:op :let :bindings [[xnm (core-call "first" [(local-node snm)])]]
+                   :body body'}}}))
+
+(defn- try-lower-reduce
+  "Lower a (reduce closure (->Rec inits) coll) when the closure is a single-arity
+  2-param literal fn and acc is a non-escaping record; else nil."
+  [node]
+  (when (reduce3-callee? node)
+    (let [closure (nth (get node :args) 0)
+          init (nth (get node :args) 1)
+          ars (get closure :arities)]
+      (when (and (= :fn (get closure :op)) (= 1 (count ars))
+                 (= 2 (count (get (first ars) :params)))
+                 (not (get (first ars) :rest))
+                 (ctor-shape init))
+        (let [ar (first ars)
+              nm (nth (get ar :params) 0)
+              body (get ar :body)
+              rs (ctor-shape init)]
+          (when (and (acc-ok? body nm rs true) (tails-valid? body nm rs))
+            (lower-reduce node)))))))
+
 (defn scalar-replace
   "Bottom-up: scalar-replace children, then apply (a) at invokes / (b) at lets."
   [node]
   (let [op (get node :op)]
     (cond
-      ;; (a) fold (:k <map|ctor>) at invokes, after scalar-replacing children
-      (= op :invoke) (fold-kw-literal (map-ir-children scalar-replace node))
+      ;; (a) at invokes: lower a reduce-over-record-accumulator to a loop, else fold
+      ;; (:k <map|ctor>) — both after scalar-replacing children.
+      (= op :invoke)
+      (let [n (map-ir-children scalar-replace node)]
+        (if-let [low (try-lower-reduce n)]
+          (do (mark!) low)
+          (fold-kw-literal n)))
       ;; (b) drop a non-escaping foldable-struct let binding, after children
       (= op :let) (elim-let-structs (map-ir-children scalar-replace node))
       :else (map-ir-children scalar-replace node))))
