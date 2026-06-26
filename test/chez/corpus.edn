@@ -1341,6 +1341,12 @@
   {:suite "numbers / bigdec call position" :label "let-bound operands" :expected "4.0M" :actual "(let [a 1.5M b 2.5M] (+ a b))"}
   {:suite "numbers / bigdec call position" :label "nested arithmetic propagates" :expected "6.0M" :actual "(+ (* 1.5M 2M) 3M)"}
   {:suite "numbers / bigdec call position" :label "non-terminating divide throws" :expected ":nonterm" :actual "(try (/ 1M 3M) (catch ArithmeticException _ :nonterm))"}
+  {:suite "numbers / bigdec call position" :label "min" :expected "1M" :actual "(min 1M 2M)"}
+  {:suite "numbers / bigdec call position" :label "max of three" :expected "3M" :actual "(max 1M 2M 3M)"}
+  {:suite "numbers / bigdec call position" :label "min returns the operand, scale intact" :expected "\"1.50\"" :actual "(str (min 1.50M 2M))"}
+  {:suite "numbers / bigdec call position" :label "max tie keeps second operand" :expected "\"1.50\"" :actual "(str (max 1.5M 1.50M))"}
+  {:suite "numbers / bigdec arithmetic" :label "max (value position)" :expected "3M" :actual "(reduce max [1M 3M 2M])"}
+  {:suite "numbers / bigdec arithmetic" :label "min (apply)" :expected "1M" :actual "(apply min [3M 1M 2M])"}
   {:suite "numbers / literal syntax" :label "ratio -> double" :expected "1/2" :actual "1/2"}
   {:suite "numbers / literal syntax" :label "ratio 3/4" :expected "3/4" :actual "3/4"}
   {:suite "numbers / literal syntax" :label "neg ratio" :expected "-1/2" :actual "-1/2"}

@@ -55,7 +55,7 @@
 ;; still a bigdec op. Each non-nil name must have an entry in backend bd-ops.
 (defn- bd-spec [nm n]
   (cond
-    (and (>= n 1) (contains? #{"+" "-" "*" "/"} nm)) :bigdec
+    (and (>= n 1) (contains? #{"+" "-" "*" "/" "min" "max"} nm)) :bigdec
     (and (= n 2) (contains? #{"quot" "rem"} nm)) :bigdec
     (and (= n 1) (contains? #{"zero?" "pos?" "neg?"} nm)) :bool
     (and (>= n 2) (contains? #{"<" ">" "<=" ">="} nm)) :bool

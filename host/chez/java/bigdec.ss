@@ -9,9 +9,9 @@
 ;; larger scale; multiply adds scales; divide gives the exact quotient at minimal
 ;; scale or throws ArithmeticException on a non-terminating expansion. Clojure
 ;; contagion: a bigdec mixed with an integer stays a bigdec; a flonum operand wins
-;; (the result is a double). jbd-add/-sub/-mul/-div, the jbd-lt?/…/zero? helpers,
-;; and jbd-quot/-rem are the shared engine. Two paths reach it, both leaving the
-;; inlined native hot path untouched:
+;; (the result is a double). jbd-add/-sub/-mul/-div, jbd-min/-max, the jbd-lt?/…
+;; /zero? helpers, and jbd-quot/-rem are the shared engine. Two paths reach it, both
+;; leaving the inlined native hot path untouched:
 ;;   - value position ((reduce + bigs)/(apply * bigs)): the jolt-add/-sub/-mul/-div
 ;;     and compare shims dispatch here when a bigdec operand is present.
 ;;   - call position ((+ 1.5M 2.5M), (< a b), (zero? b)): jolt.passes.numeric tags
@@ -185,6 +185,21 @@
 (define (jbd-quot a b) (jbd-int-quot (jbd-coerce a) (jbd-coerce b)))
 (define (jbd-rem a b) (jbd-int-rem (jbd-coerce a) (jbd-coerce b)))
 
+;; min/max compare by value but return the ORIGINAL operand (its type and scale
+;; unchanged), matching java/Clojure: (min 1M 2.0) -> 1M, (max 1M 2.0) -> 2.0,
+;; (min 1.50M 2M) -> 1.50M. Comparison handles a bigdec mixed with an int / flonum.
+(define (jbd-value-compare a b)
+  (if (or (flonum? a) (flonum? b))
+      (let ((fa (if (jbigdec? a) (jbigdec->flonum a) a)) (fb (if (jbigdec? b) (jbigdec->flonum b) b)))
+        (cond ((< fa fb) -1) ((> fa fb) 1) (else 0)))
+      (jbd-compare2 (jbd-coerce a) (jbd-coerce b))))
+;; strict comparison so a tie keeps the second operand, like Clojure's
+;; (if (< x y) x y) / (if (> x y) x y): (max 1.5M 1.50M) -> 1.50M.
+(define (jbd-min2 a b) (if (< (jbd-value-compare a b) 0) a b))
+(define (jbd-max2 a b) (if (> (jbd-value-compare a b) 0) a b))
+(define (jbd-min x . xs) (fold-left jbd-min2 x xs))
+(define (jbd-max x . xs) (fold-left jbd-max2 x xs))
+
 ;; --- wire into the value model ----------------------------------------------
 (def-var! "clojure.core" "bigdec" jolt-bigdec)
 
@@ -196,11 +211,15 @@
 (define jbd-prev-sub jolt-sub)
 (define jbd-prev-mul jolt-mul)
 (define jbd-prev-div jolt-div)
+(define jbd-prev-min jolt-min)
+(define jbd-prev-max jolt-max)
 (define (jbd-any? xs) (and (pair? xs) (or (jbigdec? (car xs)) (jbd-any? (cdr xs)))))
 (set! jolt-add (lambda xs (if (jbd-any? xs) (apply jbd-add xs) (apply jbd-prev-add xs))))
 (set! jolt-sub (lambda xs (if (jbd-any? xs) (apply jbd-sub xs) (apply jbd-prev-sub xs))))
 (set! jolt-mul (lambda xs (if (jbd-any? xs) (apply jbd-mul xs) (apply jbd-prev-mul xs))))
 (set! jolt-div (lambda xs (if (jbd-any? xs) (apply jbd-div xs) (apply jbd-prev-div xs))))
+(set! jolt-min (lambda xs (if (jbd-any? xs) (apply jbd-min xs) (apply jbd-prev-min xs))))
+(set! jolt-max (lambda xs (if (jbd-any? xs) (apply jbd-max xs) (apply jbd-prev-max xs))))
 
 ;; compare: add a bigdec arm (enables compare / sort / sorted collections). A
 ;; bigdec vs a plain number compares by value; bigdec vs bigdec is scale-independent.

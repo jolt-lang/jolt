@@ -42,7 +42,8 @@
 ;; EXACT results for exact/zero-arg inputs, breaking the all-double model in
 ;; higher-order use, so value-position arithmetic routes to the flonum wrappers.
 (def ^:private core-value-procs
-  (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"}))
+  (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"
+                     "min" "jolt-min" "max" "jolt-max"}))
 
 ;; Per-op arity gate: only lower when the Scheme prim and the jolt fn agree at
 ;; this arity. Ops absent from the table are variadic (legal at any arity).
@@ -101,6 +102,7 @@
 ;; flonum path no literal rewrite is needed.
 (def ^:private bd-ops
   {"+" "jbd-add" "-" "jbd-sub" "*" "jbd-mul" "/" "jbd-div"
+   "min" "jbd-min" "max" "jbd-max"
    "quot" "jbd-quot" "rem" "jbd-rem"
    "<" "jbd-lt?" ">" "jbd-gt?" "<=" "jbd-le?" ">=" "jbd-ge?"
    "zero?" "jbd-zero?" "pos?" "jbd-pos?" "neg?" "jbd-neg?"})
