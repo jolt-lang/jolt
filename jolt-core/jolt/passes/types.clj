@@ -13,7 +13,7 @@
              [velem selem sfields vec-type? set-type? struct-type? mk-vec mk-set
               mk-struct union-cap scalar-t? union-type? umembers union-of merge-fields
               join-t join type-depth cap struct-safe? field-type shape-order type-shape
-              mark-struct truthy-type? num-ret-fns vector-ret-fns]]))
+              mark-struct truthy-type? num-ret-fns vector-ret-fns nilable? strip-nilable]]))
 
 ;; --- engine state ------------------------------------------------------------
 ;; The walk threads an immutable `env` (mk-env) instead of reading scattered
@@ -143,6 +143,9 @@
 (defn- pred-on [pname t]
   (cond
     (or (= t :any) (= t :truthy)) nil
+    ;; a nilable struct might be nil — nil?/some?/record? can't be proven, so the
+    ;; runtime guard must stay (this is what makes the narrowing sound).
+    (nilable? t) nil
     ;; a bounded scalar union folds only when every member agrees
     (union-type? t)
     (let [vs (map (fn [m] (pred-on pname m)) (umembers t))]
@@ -159,6 +162,28 @@
 ;; Side-effect-free node whose evaluation can be dropped when its predicate
 ;; folds away (a wider purity analysis can broaden this later).
 (defn- pure-node? [n] (let [op (get n :op)] (or (= op :const) (= op :local))))
+
+;; Flow-sensitive nil narrowing: in (if (some? x) ..) / (if x ..) / (if (nil? x) ..)
+;; a nilable-struct local x is proven non-nil in one branch, so its field reads
+;; bare-index and unbox there. Only a nilable local narrows — nothing else changes.
+(defn- test-local [test pred-name]
+  (when (= :invoke (get test :op))
+    (let [f (get test :fn) args (get test :args)]
+      (when (and (= :var (get f :op)) (= "clojure.core" (get f :ns))
+                 (= pred-name (get f :name))
+                 (= 1 (count args)) (= :local (get (nth args 0) :op)))
+        (get (nth args 0) :name)))))
+(defn- narrow-nonnil [tenv nm]
+  (let [t (get tenv nm)] (if (nilable? t) (assoc tenv nm (strip-nilable t)) tenv)))
+;; [then-tenv else-tenv] for an `if` whose test narrows a nilable local.
+(defn- if-narrow [test tenv]
+  (let [somev (test-local test "some?")
+        nilv (test-local test "nil?")]
+    (cond
+      (= :local (get test :op)) [(narrow-nonnil tenv (get test :name)) tenv]
+      somev [(narrow-nonnil tenv somev) tenv]
+      nilv [tenv (narrow-nonnil tenv nilv)]
+      :else [tenv tenv])))
 
 (declare infer)
 
@@ -423,7 +448,8 @@
                (number? v) :num
                (string? v) :str
                (keyword? v) :kw
-               (or (nil? v) (= false v)) :any   ; nil/false are not struct-eligible
+               (nil? v) :nil        ; a record|nil branch types as a nilable record
+               (= false v) :any     ; false is not struct-eligible
                :else :truthy))                  ; true, char, ... -> non-nil
        node]
       (= op :local)
@@ -463,9 +489,11 @@
             el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
         [(cap (mk-set el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
       (= op :if)
-      (let [tr (infer (get node :test) tenv env)
-            thn (infer (get node :then) tenv env)
-            els (infer (get node :else) tenv env)]
+      (let [test (get node :test)
+            tr (infer test tenv env)
+            nr (if-narrow test tenv)   ; narrow a nilable local in the proven branch
+            thn (infer (get node :then) (nth nr 0) env)
+            els (infer (get node :else) (nth nr 1) env)]
         [(join (nth thn 0) (nth els 0))
          (assoc node :test (nth tr 1) :then (nth thn 1) :else (nth els 1))])
       (= op :do)
