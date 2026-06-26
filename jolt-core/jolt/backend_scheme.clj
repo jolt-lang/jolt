@@ -35,7 +35,11 @@
    "keys" "jolt-keys" "vals" "jolt-vals"
    "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
    "zero?" "jolt-zero?" "identity" "jolt-identity" "nil?" "jolt-nil?" "some?" "jolt-some?"
-   "ex-info" "jolt-ex-info"})
+   "ex-info" "jolt-ex-info"
+   ;; positional protocol-method dispatch (defprotocol-emitted shims) — bind
+   ;; directly to the records.ss entry points so a protocol call doesn't var-deref.
+   "protocol-dispatch1" "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch2"
+   "protocol-dispatch3" "protocol-dispatch3"})
 
 ;; Value-position resolution for a clojure.core ref passed AS A VALUE (to map /
 ;; filter / reduce / apply). Arithmetic is the exception — Scheme's +/-/*// return
@@ -57,6 +61,7 @@
    "reverse" #(= % 1) "last" #(= % 1) "keys" #(= % 1) "vals" #(= % 1)
    "even?" #(= % 1) "odd?" #(= % 1) "pos?" #(= % 1) "neg?" #(= % 1)
    "zero?" #(= % 1) "identity" #(= % 1) "nil?" #(= % 1) "some?" #(= % 1)
+   "protocol-dispatch1" #(= % 3) "protocol-dispatch2" #(= % 4) "protocol-dispatch3" #(= % 5)
    "cons" #(= % 2) "filter" #(= % 2) "remove" #(= % 2) "into" #(= % 2)
    "take" #(= % 2) "drop" #(= % 2) "map" #(>= % 2) "apply" #(>= % 2)
    "reduce" #(or (= % 2) (= % 3)) "range" #(and (>= % 0) (<= % 3))

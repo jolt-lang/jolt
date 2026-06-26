@@ -453,32 +453,42 @@
       (hashtable-set! ti proto-name (make-hashtable string-hash string=?))))
   jolt-nil)
 
-;; protocol-dispatch: look up the impl by the value's type tag (record) or host
-;; candidates, invoke it; reified objects carry instance-local methods.
+;; protocol-resolve: the impl procedure for obj — by record type tag, a reify's
+;; instance-local method, or the protocol's extended impls over obj's host tags.
+;; Raises if none implements the method. The dispatchN entry points apply it
+;; directly so a protocol call doesn't cons a rest-list (the impl fn is always a
+;; procedure, registered by register-(inline-)method/extend).
+(define (protocol-resolve proto-name method-name obj)
+  (cond
+    ((and (jrec? obj) (find-protocol-method (jrec-tag obj) proto-name method-name)))
+    ((reified-methods obj)
+     => (lambda (rm)
+          (or (hashtable-ref rm method-name #f)
+              ;; not implemented on the reify — fall back to the protocol's
+              ;; extended impls over the reify's host tags (e.g. an Object/default
+              ;; extension). malli reifies some protocols and leans on the default.
+              (let loop ((tags (value-host-tags obj)))
+                (cond ((null? tags) (error #f (string-append "No reified method " method-name)))
+                      ((find-protocol-method (car tags) proto-name method-name))
+                      (else (loop (cdr tags))))))))
+    (else
+     (let loop ((tags (value-host-tags obj)))
+       (cond ((null? tags) (error #f (string-append "No method " method-name " in " proto-name)))
+             ((find-protocol-method (car tags) proto-name method-name))
+             (else (loop (cdr tags))))))))
+;; Fixed-arity entry points the protocol-method shims call: no rest-list, no seq
+;; round-trip — apply the resolved impl directly. defprotocol emits one clause per
+;; declared arity that calls the matching dispatchN.
+(define (protocol-dispatch1 proto-name method-name obj)
+  ((protocol-resolve proto-name method-name obj) obj))
+(define (protocol-dispatch2 proto-name method-name obj a)
+  ((protocol-resolve proto-name method-name obj) obj a))
+(define (protocol-dispatch3 proto-name method-name obj a b)
+  ((protocol-resolve proto-name method-name obj) obj a b))
+;; the variadic fallback (a declared arity of 4+ args) takes a seqable rest.
 (define (protocol-dispatch proto-name method-name obj rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
-    (cond
-      ((and (jrec? obj) (find-protocol-method (jrec-tag obj) proto-name method-name))
-       => (lambda (f) (apply jolt-invoke f obj rest)))
-      ((reified-methods obj)
-       => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
-                         (if f (apply jolt-invoke f obj rest)
-                             ;; not implemented on the reify — fall back to the
-                             ;; protocol's extended impls over the reify's host tags
-                             ;; (e.g. an Object/default extension). malli reifies some
-                             ;; protocols and relies on a protocol's default for the
-                             ;; rest.
-                             (let loop ((tags (value-host-tags obj)))
-                               (cond ((null? tags) (error #f (string-append "No reified method " method-name)))
-                                     ((find-protocol-method (car tags) proto-name method-name)
-                                      => (lambda (g) (apply jolt-invoke g obj rest)))
-                                     (else (loop (cdr tags)))))))))
-      (else
-       (let loop ((tags (value-host-tags obj)))
-         (cond ((null? tags) (error #f (string-append "No method " method-name " in " proto-name)))
-               ((find-protocol-method (car tags) proto-name method-name)
-                => (lambda (f) (apply jolt-invoke f obj rest)))
-               (else (loop (cdr tags)))))))))
+    (apply (protocol-resolve proto-name method-name obj) obj rest)))
 
 ;; dot-dispatch fallback used by emit for (.method record args): find the method
 ;; in ANY protocol the record's type implements.
@@ -690,6 +700,9 @@
 (def-var! "clojure.core" "register-inline-protocol!" register-inline-protocol!)
 (def-var! "jolt.host" "set-field!" jolt-set-field!)
 (def-var! "clojure.core" "protocol-dispatch" (lambda (pn mn obj rest) (protocol-dispatch pn mn obj rest)))
+(def-var! "clojure.core" "protocol-dispatch1" (lambda (pn mn obj) (protocol-dispatch1 pn mn obj)))
+(def-var! "clojure.core" "protocol-dispatch2" (lambda (pn mn obj a) (protocol-dispatch2 pn mn obj a)))
+(def-var! "clojure.core" "protocol-dispatch3" (lambda (pn mn obj a b) (protocol-dispatch3 pn mn obj a b)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)
 (def-var! "clojure.core" "make-reified" (lambda (mm . rest) (apply make-reified mm rest)))

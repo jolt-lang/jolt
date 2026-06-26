@@ -3206,4 +3206,9 @@
   {:suite "records / representation" :label "record as a map key" :expected ":v" :actual "(do (defrecord R [a]) (get {(->R 1) :v} (->R 1)))"}
   {:suite "records / representation" :label "records dedup in a set by value" :expected "2" :actual "(do (defrecord R [a]) (count (into #{} [(->R 1) (->R 1) (->R 2)])))"}
   {:suite "records / representation" :label "nested record field reads" :expected "[2 1]" :actual "(do (defrecord N [l r v]) (let [t (->N (->N nil nil 1) nil 2)] [(:v t) (:v (:l t))]))"}
+  {:suite "protocols / arity dispatch" :label "multi-arity protocol method on a record" :expected "[\"0:9\" \"1:9::a\" \"2:9::a::b\"]" :actual "(do (defprotocol P (m [this] [this x] [this x y])) (defrecord R [v] P (m [this] (str \"0:\" v)) (m [this x] (str \"1:\" v \":\" x)) (m [this x y] (str \"2:\" v \":\" x \":\" y))) [(m (->R 9)) (m (->R 9) :a) (m (->R 9) :a :b)])"}
+  {:suite "protocols / arity dispatch" :label "two-arg protocol method" :expected "30" :actual "(do (defprotocol P (addp [this x y])) (defrecord R [n] P (addp [_ x y] (+ n (+ x y)))) (addp (->R 10) 7 13))"}
+  {:suite "protocols / arity dispatch" :label "protocol method extended to a host type with an arg" :expected "\"S:hi:5\"" :actual "(do (defprotocol Q (mq [this a])) (extend-protocol Q java.lang.String (mq [this a] (str \"S:\" this \":\" a))) (mq \"hi\" 5))"}
+  {:suite "protocols / arity dispatch" :label "protocol method used as a value" :expected "[1 2]" :actual "(do (defprotocol Z (z [this])) (defrecord ZR [v] Z (z [_] v)) (mapv z [(->ZR 1) (->ZR 2)]))"}
+  {:suite "protocols / arity dispatch" :label "no-extra-arg method dispatches by type" :expected "[16 25]" :actual "(do (defprotocol Sh (ar [s])) (defrecord Sq [x] Sh (ar [_] (* x x))) (defrecord Sq2 [y] Sh (ar [_] (* y y))) [(ar (->Sq 4)) (ar (->Sq2 5))])"}
 ]
