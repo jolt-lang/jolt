@@ -42,7 +42,8 @@
 ;; EXACT results for exact/zero-arg inputs, breaking the all-double model in
 ;; higher-order use, so value-position arithmetic routes to the flonum wrappers.
 (def ^:private core-value-procs
-  (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"}))
+  (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"
+                     "min" "jolt-min" "max" "jolt-max"}))
 
 ;; Per-op arity gate: only lower when the Scheme prim and the jolt fn agree at
 ;; this arity. Ops absent from the table are variadic (legal at any arity).
@@ -93,6 +94,18 @@
    "unchecked-add" "fx+" "unchecked-subtract" "fx-" "unchecked-multiply" "fx*"
    "quot" "fxquotient" "rem" "fxremainder" "mod" "fxmodulo"
    "<" "fx<?" ">" "fx>?" "<=" "fx<=?" ">=" "fx>=?" "=" "fx=?" "==" "fx=?"})
+
+;; BigDecimal ops. jolt.passes.numeric tags an arithmetic/comparison invoke
+;; :num-kind :bigdec when every operand is a bigdec (or an integer literal); these
+;; are the bigdec.ss engine procedures it lowers to. Variadic where the source op
+;; is; an integer-literal operand is coerced to a bigdec at runtime, so unlike the
+;; flonum path no literal rewrite is needed.
+(def ^:private bd-ops
+  {"+" "jbd-add" "-" "jbd-sub" "*" "jbd-mul" "/" "jbd-div"
+   "min" "jbd-min" "max" "jbd-max"
+   "quot" "jbd-quot" "rem" "jbd-rem"
+   "<" "jbd-lt?" ">" "jbd-gt?" "<=" "jbd-le?" ">=" "jbd-ge?"
+   "zero?" "jbd-zero?" "pos?" "jbd-pos?" "neg?" "jbd-neg?"})
 
 ;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
@@ -461,7 +474,7 @@
     (and (= kind :long) (or (= nm "inc") (= nm "unchecked-inc"))) (str "(fx1+ " (first args) ")")
     (and (= kind :long) (or (= nm "dec") (= nm "unchecked-dec"))) (str "(fx1- " (first args) ")")
     :else
-    (let [op (if (= kind :double) (dbl-ops nm) (lng-ops nm))]
+    (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))]
       (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
 
 (defn- emit-invoke [node]

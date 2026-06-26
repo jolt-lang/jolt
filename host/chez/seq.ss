@@ -134,6 +134,8 @@
 (define (jolt-sub . xs) (apply - xs))
 (define (jolt-mul . xs) (apply * xs))
 (define (jolt-div . xs) (apply / xs))
+(define (jolt-min . xs) (apply min xs))
+(define (jolt-max . xs) (apply max xs))
 
 ;; ============================================================================
 ;; IFn dispatch — the dynamic "value as fn" fallback. A callee that the emitter
