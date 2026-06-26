@@ -150,7 +150,7 @@
 ;; documented jolt divergence).
 (defmulti print-method (fn [x writer]
                          (let [t (get (meta x) :type)]
-                           (if (keyword? t) t (type x)))))
+                           (if (keyword? t) t (__type-tag x)))))
 
 (defmethod print-method :default [o w]
   (.write w (__pr-str1 o))
@@ -160,7 +160,7 @@
 ;; (as Clojure's default does for most types).
 (defmulti print-dup (fn [x writer]
                       (let [t (get (meta x) :type)]
-                        (if (keyword? t) t (type x)))))
+                        (if (keyword? t) t (__type-tag x)))))
 
 (defmethod print-dup :default [o w] (print-method o w))
 

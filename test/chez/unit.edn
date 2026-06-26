@@ -67,7 +67,7 @@
   {:suite "exinfo" :expr "(instance? RuntimeException (InterruptedException. \"x\"))" :expected "false"}
   {:suite "exinfo" :expr "(.getMessage (RuntimeException. \"boom\"))" :expected "boom"}
   {:suite "exinfo" :expr "(ex-message (RuntimeException. \"boom\"))" :expected "boom"}
-  {:suite "exinfo" :expr "(type (ex-info \"x\" {}))" :expected ":jolt/ex-info"}
+  {:suite "exinfo" :expr "(type (ex-info \"x\" {}))" :expected "clojure.lang.ExceptionInfo"}
   {:suite "hostobj" :expr "(.getName (.getClass \"x\"))" :expected "java.lang.String"}
   {:suite "hostobj" :expr "(.getClass 5)" :expected "java.lang.Long"}
   {:suite "hostobj" :expr "(.getSimpleName (.getClass :k))" :expected "Keyword"}
@@ -164,7 +164,7 @@
   {:suite "insttime" :expr "(inst-ms #inst \"2020-01-01T00:00:00Z\")" :expected "1577836800000"}
   {:suite "insttime" :expr "(inst-ms* #inst \"1970-01-01T00:00:00Z\")" :expected "0"}
   {:suite "insttime" :expr "(some? #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
-  {:suite "insttime" :expr "(str (type #inst \"2020-01-01T00:00:00Z\"))" :expected ":jolt/inst"}
+  {:suite "insttime" :expr "(str (type #inst \"2020-01-01T00:00:00Z\"))" :expected "class java.util.Date"}
   {:suite "insttime" :expr "(= #inst \"2020\" #inst \"2020-01-01T00:00:00.000Z\")" :expected "true"}
   {:suite "insttime" :expr "(= #inst \"2020-03\" #inst \"2020-03-01T00:00:00Z\")" :expected "true"}
   {:suite "insttime" :expr "(= #inst \"2020-03-15\" #inst \"2020-03-15T00:00:00Z\")" :expected "true"}
@@ -200,7 +200,7 @@
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"README.md\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File (io/file \"/a/b\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File \"/a/b\"))" :expected "false"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (type (io/file \"/a\"))))" :expected ":jolt/file"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (type (io/file \"/a\"))))" :expected "class java.io.File"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"docs\"))))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"README.md\")) (file-seq \".\"))))" :expected "true"}
@@ -458,43 +458,43 @@
   {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/index-of \"abc\" \"b\"))" :expected "1"}
   {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (nil? (s/index-of \"abc\" \"z\")))" :expected "true"}
   {:suite "strns" :expr "(do (require (quote [clojure.string :as s])) (s/trim-newline \"abc\\n\\n\"))" :expected "abc"}
-  {:suite "type" :expr "(type 5)" :expected ":number"}
-  {:suite "type" :expr "(type 5.0)" :expected ":number"}
-  {:suite "type" :expr "(type (/ 10 2))" :expected ":number"}
-  {:suite "type" :expr "(type \"s\")" :expected ":string"}
-  {:suite "type" :expr "(type :k)" :expected ":keyword"}
-  {:suite "type" :expr "(type 'x)" :expected ":symbol"}
-  {:suite "type" :expr "(type true)" :expected ":boolean"}
-  {:suite "type" :expr "(type false)" :expected ":boolean"}
+  {:suite "type" :expr "(type 5)" :expected "java.lang.Long"}
+  {:suite "type" :expr "(type 5.0)" :expected "java.lang.Double"}
+  {:suite "type" :expr "(type (/ 10 2))" :expected "java.lang.Long"}
+  {:suite "type" :expr "(type \"s\")" :expected "java.lang.String"}
+  {:suite "type" :expr "(type :k)" :expected "clojure.lang.Keyword"}
+  {:suite "type" :expr "(type 'x)" :expected "clojure.lang.Symbol"}
+  {:suite "type" :expr "(type true)" :expected "java.lang.Boolean"}
+  {:suite "type" :expr "(type false)" :expected "java.lang.Boolean"}
   {:suite "type" :expr "(type nil)" :expected ""}
-  {:suite "type" :expr "(type \\a)" :expected ":char"}
-  {:suite "type" :expr "(type [1 2])" :expected ":vector"}
-  {:suite "type" :expr "(type [])" :expected ":vector"}
-  {:suite "type" :expr "(type {:a 1})" :expected ":map"}
-  {:suite "type" :expr "(type #{1})" :expected ":set"}
-  {:suite "type" :expr "(type '(1 2))" :expected ":seq"}
-  {:suite "type" :expr "(type '())" :expected ":seq"}
-  {:suite "type" :expr "(type (first {:a 1}))" :expected ":vector"}
-  {:suite "type" :expr "(type (map inc [1 2]))" :expected ":seq"}
-  {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected ":seq"}
-  {:suite "type" :expr "(type (lazy-seq (cons 1 nil)))" :expected ":seq"}
-  {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected ":seq"}
-  {:suite "type" :expr "(type inc)" :expected ":fn"}
+  {:suite "type" :expr "(type \\a)" :expected "java.lang.Character"}
+  {:suite "type" :expr "(type [1 2])" :expected "clojure.lang.PersistentVector"}
+  {:suite "type" :expr "(type [])" :expected "clojure.lang.PersistentVector"}
+  {:suite "type" :expr "(type {:a 1})" :expected "clojure.lang.PersistentArrayMap"}
+  {:suite "type" :expr "(type #{1})" :expected "clojure.lang.PersistentHashSet"}
+  {:suite "type" :expr "(type '(1 2))" :expected "clojure.lang.PersistentList"}
+  {:suite "type" :expr "(type '())" :expected "clojure.lang.PersistentList$EmptyList"}
+  {:suite "type" :expr "(type (first {:a 1}))" :expected "clojure.lang.PersistentVector"}
+  {:suite "type" :expr "(type (map inc [1 2]))" :expected "clojure.lang.PersistentList"}
+  {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected "clojure.lang.PersistentList"}
+  {:suite "type" :expr "(type (lazy-seq (cons 1 nil)))" :expected "clojure.lang.LazySeq"}
+  {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected "clojure.lang.PersistentList"}
+  {:suite "type" :expr "(type inc)" :expected "clojure.lang.IFn"}
   {:suite "type" :expr "(type (sorted-map :a 1))" :expected ":map"}
   {:suite "type" :expr "(type (sorted-set 1))" :expected ":jolt/sorted-set"}
   {:suite "type" :expr "(type (with-meta [1] {:type :custom}))" :expected ":custom"}
   {:suite "type" :expr "(type (with-meta {:a 1} {:type :rec}))" :expected ":rec"}
-  {:suite "type" :expr "(type (with-meta [1] {:other 9}))" :expected ":vector"}
+  {:suite "type" :expr "(type (with-meta [1] {:other 9}))" :expected "clojure.lang.PersistentVector"}
   {:suite "type" :expr "(do (defrecord TyR [a]) (type (->TyR 1)))" :expected "user.TyR"}
   {:suite "type" :expr "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))" :expected "false"}
   {:suite "type" :expr "(do (defrecord TyR [a]) (symbol? (type (->TyR 1))))" :expected "false"}
-  {:suite "type" :expr "(type (atom 1))" :expected ":jolt/atom"}
+  {:suite "type" :expr "(type (atom 1))" :expected "clojure.lang.Atom"}
   {:suite "type" :expr "(type (volatile! 1))" :expected ":jolt/volatile"}
-  {:suite "type" :expr "(type #\"re\")" :expected ":jolt/regex"}
+  {:suite "type" :expr "(type #\"re\")" :expected "java.util.regex.Pattern"}
   {:suite "type" :expr "(do (def vx 1) (type (var vx)))" :expected ":jolt/var"}
   {:suite "type" :expr "(type (transient []))" :expected ":jolt/transient"}
-  {:suite "type" :expr "(type (random-uuid))" :expected ":jolt/uuid"}
-  {:suite "type" :expr "(type (ex-info \"x\" {}))" :expected ":jolt/ex-info"}
+  {:suite "type" :expr "(type (random-uuid))" :expected "java.util.UUID"}
+  {:suite "type" :expr "(type (ex-info \"x\" {}))" :expected "clojure.lang.ExceptionInfo"}
   {:suite "var_meta" :expr "(do (def ^:private pv 1) (:private (meta (var pv))))" :expected "true"}
   {:suite "var_meta" :expr "(do (def ^String tv \"a\") (:tag (meta (var tv))))" :expected "java.lang.String"}
   {:suite "var_meta" :expr "(do (def dv2 \"hi\" 1) (:doc (meta (var dv2))))" :expected "hi"}

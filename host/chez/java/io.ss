@@ -319,7 +319,6 @@
 (define io-kw-file (keyword "jolt" "file"))
 (define %io-type jolt-type)
 (set! jolt-type (lambda (x) (if (jfile? x) io-kw-file (%io-type x))))
-(def-var! "clojure.core" "type" jolt-type)
 
 ;; (instance? java.io.File f): the instance? macro passes the class-name symbol;
 ;; match "File" / "java.io.File" (and any *.File) against a jfile.
