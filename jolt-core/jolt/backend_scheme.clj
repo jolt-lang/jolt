@@ -566,14 +566,32 @@
       core)))
 
 ;; Does this IR node emit to an expression that yields a Scheme boolean? Used to
-;; drop the redundant jolt-truthy? on an :if test.
-(defn- returns-scheme-bool? [node]
-  (cond
-    (and (= :const (:op node)) (boolean? (:val node))) true
-    (= :invoke (:op node))
-    (let [nop (native-op (:fn node) (count (:args node)))]
-      (if (and nop (bool-returning-ops nop)) true false))
-    :else false))
+;; drop the redundant jolt-truthy? on an :if test. Sees through the let*/if an
+;; (or ...)/(and ...) of bool-returning ops desugars to: `or` is
+;; (let* [g E1] (if (truthy? g) g E2)), `and` is (let* [g E1] (if (truthy? g) E2 g))
+;; — both return a Scheme boolean when E1/E2 are bool ops, since the value yielded
+;; is always one of the (boolean) operand results. `bools` tracks let-bound locals
+;; proven to hold a Scheme boolean.
+(defn- returns-scheme-bool?
+  ([node] (returns-scheme-bool? node #{}))
+  ([node bools]
+   (cond
+     (and (= :const (:op node)) (boolean? (:val node))) true
+     (= :invoke (:op node))
+     (let [nop (native-op (:fn node) (count (:args node)))]
+       (boolean (and nop (bool-returning-ops nop))))
+     (= :local (:op node)) (contains? bools (:name node))
+     (= :if (:op node))
+     (and (returns-scheme-bool? (:then node) bools)
+          (returns-scheme-bool? (:else node) bools))
+     (= :let (:op node))
+     (let [bools' (reduce (fn [s b]
+                            (if (returns-scheme-bool? (nth b 1) s)
+                              (conj s (nth b 0))
+                              (disj s (nth b 0))))
+                          bools (:bindings node))]
+       (returns-scheme-bool? (:body node) bools'))
+     :else false)))
 
 (defn emit [node]
   (case (:op node)
