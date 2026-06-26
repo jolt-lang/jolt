@@ -363,7 +363,10 @@
   (hc-sq-lower ctx inner (make-hashtable string-hash string=?)))
 (define (hc-record-type? ctx name) #f)
 (define (hc-record-ctor-key ctx name) jolt-nil)
-(define (hc-record-shapes ctx) (jolt-hash-map))
+;; record + protocol-method shapes for the inference, from the runtime registries
+;; (records.ss) populated as deftype/defprotocol forms load.
+(define (hc-record-shapes ctx) (chez-record-shapes-map))
+(define (hc-protocol-methods ctx) (chez-protocol-methods-map))
 ;; Optimization gate. Off for ordinary runs (open world, redefinition); `jolt
 ;; build` flips it on during app emission for release/optimized modes (closed
 ;; world), turning on the inference + flatten + scalar-replace passes.
@@ -432,6 +435,7 @@
   (def-var! "jolt.host" "record-type?" hc-record-type?)
   (def-var! "jolt.host" "record-ctor-key" hc-record-ctor-key)
   (def-var! "jolt.host" "record-shapes" hc-record-shapes)
+  (def-var! "jolt.host" "protocol-methods" hc-protocol-methods)
   (def-var! "jolt.host" "inline-enabled?" hc-inline-enabled?)
   (def-var! "jolt.host" "inline-ir" hc-inline-ir)
   (def-var! "jolt.host" "stash-inline!" hc-stash-inline!))

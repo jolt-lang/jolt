@@ -13,7 +13,7 @@
   :refer, so jolt.passes stays the only namespace the back end imports.
 
   Portable Clojure: kernel-tier fns + seed primitives only."
-  (:require [jolt.host :refer [inline-enabled? record-shapes stash-inline!]]
+  (:require [jolt.host :refer [inline-enabled? record-shapes protocol-methods stash-inline!]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
@@ -22,6 +22,7 @@
                                        set-rtenv! set-vtypes! join-types
                                        set-record-shapes! set-map-shapes! set-protocol-methods!
                                        reset-escapes! collected-escapes
+                                       wp-infer! param-seeds-for
                                        set-check-mode! take-diags!]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
@@ -62,13 +63,18 @@
             ;; `this`) to bare field reads per-form, not only under whole-program.
             ;; Same shapes the inline pass uses.
             _ (set-record-shapes! (record-shapes ctx))
+            _ (set-protocol-methods! (protocol-methods ctx))  ;; devirtualization
             opt (loop [i 0 n (const-fold node)]
                   (reset! dirty false)
                   (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
                     (if (and @dirty (< i inline-fixpoint-cap))
                       (recur (inc i) n2)
-                      n2)))]
+                      n2)))
+            ;; a top-level def whose params the whole-program fixpoint typed gets
+            ;; reinferred with those seeds (record types flow in from its callers);
+            ;; everything else takes the ordinary per-form inference.
+            seeds (when (= :def (:op opt)) (param-seeds-for (str (:ns opt) "/" (:name opt))))]
         ;; a final const-fold after inference propagates any predicate folded to a
         ;; constant, collapsing the `if` it gates to the taken branch.
-        (const-fold (run-inference opt)))
+        (const-fold (if seeds (reinfer-def opt seeds) (run-inference opt))))
       (const-fold node))))

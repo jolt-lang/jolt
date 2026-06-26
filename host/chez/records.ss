@@ -36,6 +36,71 @@
 ;; in the extension map is distinguished from a genuine miss).
 (define jrec-absent (list 'jrec-absent))
 
+;; --- whole-program inference registries -------------------------------------
+;; Populated at definition/load time (deftype/defrecord and defprotocol forms run
+;; before `jolt build` re-emits), read by the inference driver to seed record and
+;; protocol-method types across fn boundaries. A no-op for the runtime itself; the
+;; tables just accumulate. jolt.host/record-shapes and /protocol-methods (host-
+;; contract.ss) materialize them into the shape jolt.passes.types expects.
+
+;; ctor-key "ns/->Name" -> (vector field-kw-list field-tag-list type-tag).
+;; field-tag-list parallels the fields: "num", a record simple-name string, or #f.
+(define chez-record-shapes-tbl (make-hashtable string-hash string=?))
+;; method var-key "ns/method" -> (cons proto-name method-name).
+(define chez-protocol-methods-tbl (make-hashtable string-hash string=?))
+
+(define (register-record-shape! ctor-key field-kws field-tags type-tag)
+  (hashtable-set! chez-record-shapes-tbl ctor-key
+                  (vector field-kws field-tags type-tag)))
+
+;; simple name of a dotted/slashed string: the segment after the last . or /.
+(define (chez-shape-simple-name s)
+  (let loop ((i (- (string-length s) 1)))
+    (cond ((< i 0) s)
+          ((or (char=? (string-ref s i) #\.) (char=? (string-ref s i) #\/))
+           (substring s (+ i 1) (string-length s)))
+          (else (loop (- i 1))))))
+
+;; resolve a field's declared type tag to what jolt.passes.types wants: "num"
+;; passes through; a record name (simple "Vec3" or qualified "ns.Vec3") resolves
+;; to its ctor-key (so the field reads back as that record); anything else -> nil.
+(define (chez-resolve-field-tag tag by-name)
+  (cond ((or (not tag) (jolt-nil-t? tag)) jolt-nil)
+        ((string=? tag "num") "num")
+        (else (let ((ck (hashtable-ref by-name (chez-shape-simple-name tag) #f)))
+                (if ck ck jolt-nil)))))
+
+;; materialize chez-record-shapes-tbl into "ns/->Name" -> {:fields :tags :type},
+;; the shape record-type-from-entry consumes.
+(define (chez-record-shapes-map)
+  (let ((by-name (make-hashtable string-hash string=?))
+        (kw-fields (keyword #f "fields")) (kw-tags (keyword #f "tags")) (kw-type (keyword #f "type"))
+        (out (jolt-hash-map)))
+    ;; index simple record name (from the type tag "ns.Name") -> ctor-key for
+    ;; nested-field-tag resolution.
+    (let-values (((ks vs) (hashtable-entries chez-record-shapes-tbl)))
+      (vector-for-each
+        (lambda (k v) (hashtable-set! by-name (chez-shape-simple-name (vector-ref v 2)) k)) ks vs)
+      (vector-for-each
+        (lambda (k v)
+          (let* ((fields (vector-ref v 0)) (tags (vector-ref v 1)) (type-tag (vector-ref v 2))
+                 (rtags (map (lambda (t) (chez-resolve-field-tag t by-name)) tags)))
+            (set! out (jolt-assoc out k
+                                  (jolt-hash-map kw-fields (apply jolt-vector fields)
+                                                 kw-tags   (apply jolt-vector rtags)
+                                                 kw-type   type-tag)))))
+        ks vs))
+    out))
+
+;; materialize chez-protocol-methods-tbl into "ns/method" -> [proto method].
+(define (chez-protocol-methods-map)
+  (let ((out (jolt-hash-map)))
+    (let-values (((ks vs) (hashtable-entries chez-protocol-methods-tbl)))
+      (vector-for-each
+        (lambda (k v) (set! out (jolt-assoc out k (jolt-vector (car v) (cdr v)))))
+        ks vs))
+    out))
+
 ;; index of a declared field key, or #f (only an interned keyword can be one).
 (define (jrec-field-index r k) (hashtable-ref (jrdesc-index (jrec-desc r)) k #f))
 ;; a vector-copy that doesn't depend on the optional rnrs vector-copy being present.
@@ -351,9 +416,10 @@
 ;; ---- the native that handles the analyzer/overlay call ----------------------
 ;; make-deftype-ctor: (name-sym field-kws field-tags field-muts) -> ctor closure.
 ;; The tag is baked at definition time in the type's ns (chez-current-ns).
-(define (make-deftype-ctor name-sym field-kws . _ignored)
+(define (make-deftype-ctor name-sym field-kws . rest-args)
   (let* ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
          (kws (seq->list field-kws))
+         (field-tags (if (pair? rest-args) (seq->list (car rest-args)) '()))
          (desc (make-jrdesc tag kws))
          (nf (length kws))
          (ctor (lambda args
@@ -368,6 +434,10 @@
     ;; even when the runtime current ns is the caller's, not the defining ns
     ;; (host-new checks class-ctors-tbl before the current-ns var fallback).
     (register-class-ctor! (symbol-t-name name-sym) ctor)
+    ;; record the shape for whole-program inference, keyed by the positional
+    ;; ctor var "ns/->Name" the analyzer resolves a (->Name …) call to.
+    (register-record-shape! (string-append (chez-current-ns) "/->" (symbol-t-name name-sym))
+                            kws field-tags tag)
     ctor))
 
 ;; make-protocol: a protocol value the overlay reads via (get p :name)/(get p :methods).
@@ -376,10 +446,18 @@
                  (keyword #f "name") (jolt-symbol jolt-nil name-str)
                  (keyword #f "methods") methods))
 
-;; register-protocol-methods!: intentional no-op. Chez dispatches a protocol method
-;; by the receiver's type tag at call time, so there is no method table to register;
-;; this binding exists only because defprotocol-emitted code calls it.
-(define (register-protocol-methods! proto-name method-names) jolt-nil)
+;; register-protocol-methods!: record each method's var-key -> [proto method] for
+;; the inference driver (devirtualization). Dispatch itself is by the receiver's
+;; type tag at call time, so this table is read only by `jolt build` inference.
+;; Called by defprotocol-emitted code in the protocol's ns.
+(define (register-protocol-methods! proto-name method-names)
+  (let ((ns (chez-current-ns)))
+    (for-each (lambda (mn)
+                (let ((m (if (symbol-t? mn) (symbol-t-name mn) mn)))
+                  (hashtable-set! chez-protocol-methods-tbl
+                                  (string-append ns "/" m) (cons proto-name m))))
+              (seq->list method-names)))
+  jolt-nil)
 
 ;; register-method: extend-type/extend register an impl. Host type names keep a
 ;; bare canonical tag; record names qualify to the current ns.
