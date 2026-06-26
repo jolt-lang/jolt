@@ -179,7 +179,7 @@
             (else (loop (+ i 1)))))))
 (define (parse-ms pattern input)
   (let ((pn (string-length pattern)) (inn (string-length input))
-        (y 1970) (mo 1) (d 1) (hh 0) (mi 0) (ss 0) (pm 'none))
+        (y 1970) (mo 1) (d 1) (hh 0) (mi 0) (ss 0) (frac-ms 0) (pm 'none))
     ;; a parse failure is a java.time.format.DateTimeParseException (typed, so a
     ;; (catch DateTimeParseException …) over a bad date matches), like the JVM.
     (define (pfail)
@@ -208,7 +208,7 @@
           (begin
             (when (eq? pm 'pm) (when (< hh 12) (set! hh (+ hh 12))))
             (when (eq? pm 'am) (when (= hh 12) (set! hh 0)))
-            (make-jinst (* 1000 (+ (* (days-from-civil y mo d) 86400) (* hh 3600) (* mi 60) ss))))
+            (make-jinst (+ (* 1000 (+ (* (days-from-civil y mo d) 86400) (* hh 3600) (* mi 60) ss)) frac-ms)))
           (let ((c (string-ref pattern pi)))
             (cond
               ((char-alphabetic? c)
@@ -225,7 +225,25 @@
                    ((char=? c #\d) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! d (car r)) (loop (+ pi k) (cdr r))))
                    ((or (char=? c #\H) (char=? c #\h)) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! hh (car r)) (loop (+ pi k) (cdr r))))
                    ((char=? c #\m) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! mi (car r)) (loop (+ pi k) (cdr r))))
-                   ((char=? c #\s) (let ((r (read-digits-w ii (if (>= k 2) k #f)))) (set! ss (car r)) (loop (+ pi k) (cdr r))))
+                   ((char=? c #\s) (let ((r (read-digits-w ii (if (>= k 2) k #f))))
+                                     (set! ss (car r))
+                                     ;; an ISO formatter (modeled here as an ss-pattern with no S
+                                     ;; field) still accepts an optional fractional second; consume
+                                     ;; .fff -> millis from the input. Skip when the pattern carries
+                                     ;; the fraction itself (a following '.'/S handles it).
+                                     (let ((j (cdr r)) (pnext (if (< (+ pi k) pn) (string-ref pattern (+ pi k)) #\nul)))
+                                       (if (and (not (char=? pnext #\.)) (not (char=? pnext #\S))
+                                                (< j inn) (char=? (string-ref input j) #\.)
+                                                (< (+ j 1) inn) (digit? (string-ref input (+ j 1))))
+                                           (let frac ((p (+ j 1)) (kk 0) (acc 0))
+                                             (if (and (< p inn) (digit? (string-ref input p)))
+                                                 (frac (+ p 1) (+ kk 1) (if (< kk 3) (+ (* acc 10) (- (char->integer (string-ref input p)) 48)) acc))
+                                                 (begin (set! frac-ms (* acc (expt 10 (max 0 (- 3 kk))))) (loop (+ pi k) p))))
+                                           (loop (+ pi k) j)))))
+                   ((char=? c #\S) (let frac ((p ii) (kk 0) (acc 0))
+                                     (if (and (< p inn) (< kk k) (digit? (string-ref input p)))
+                                         (frac (+ p 1) (+ kk 1) (+ (* acc 10) (- (char->integer (string-ref input p)) 48)))
+                                         (begin (set! frac-ms (* acc (expt 10 (max 0 (- 3 kk))))) (loop (+ pi k) p)))))
                    ((char=? c #\E) (loop (+ pi k) (cdr (read-alpha ii))))
                    ((char=? c #\a) (let ((r (read-alpha ii)))
                                      (set! pm (if (string=? (ascii-string-down (car r)) "pm") 'pm 'am))

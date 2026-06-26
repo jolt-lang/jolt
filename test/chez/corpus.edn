@@ -558,6 +558,8 @@
   {:suite "interop / java.time chrono-fields" :label "ALIGNED_WEEK_OF_MONTH" :expected "3" :actual "(.getLong (java.time.LocalDate/of 2020 3 17) java.time.temporal.ChronoField/ALIGNED_WEEK_OF_MONTH)"}
   {:suite "interop / java.time chrono-fields" :label "Year isSupported + getLong" :expected "2020" :actual "(.getLong (java.time.Year/of 2020) java.time.temporal.ChronoField/YEAR)"}
   {:suite "interop / java.time chrono-fields" :label "YearMonth PROLEPTIC_MONTH" :expected "24244" :actual "(.getLong (java.time.YearMonth/of 2020 5) java.time.temporal.ChronoField/PROLEPTIC_MONTH)"}
+  {:suite "interop / java.time chrono-fields" :label "ISO_OFFSET_DATE_TIME keeps fractional seconds" :expected "1594033153417" :actual "(.toEpochMilli (.toInstant (java.time.ZonedDateTime/parse \"2020-07-06T10:59:13.417Z\" java.time.format.DateTimeFormatter/ISO_OFFSET_DATE_TIME)))"}
+  {:suite "interop / java.time chrono-fields" :label "ISO_OFFSET_DATE_TIME without fraction" :expected "1594033153000" :actual "(.toEpochMilli (.toInstant (java.time.ZonedDateTime/parse \"2020-07-06T10:59:13Z\" java.time.format.DateTimeFormatter/ISO_OFFSET_DATE_TIME)))"}
   {:suite "interop / java.time shims" :label "Instant/now is current" :expected "true" :actual "(> (.toEpochMilli (Instant/now)) 1500000000000)"}
   {:suite "interop / java.time shims" :label "sql types are not" :expected "false" :actual "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")"}
   {:suite "interop / StringReader & StringBuilder" :label "StringReader read" :expected "[97 98 -1]" :actual "(let [r (java.io.StringReader. \"ab\")] [(.read r) (.read r) (.read r)])"}
