@@ -119,8 +119,22 @@
 (define (hc-inst-source x) (jolt-get x hc-kw-form))
 (define (hc-uuid-source x) (jolt-get x hc-kw-form))
 
-;; The Chez reader does not record source offsets yet.
-(define (hc-form-position x) jolt-nil)
+;; Source position for a list form: the reader stamps :line/:column (+ :file when
+;; compiling a file) into the form's metadata. Return a clean {:line :column
+;; :file?} map, or nil for a synthetic/macro-built form that carries none.
+(define hc-kw-line   (keyword #f "line"))
+(define hc-kw-column (keyword #f "column"))
+(define hc-kw-file   (keyword #f "file"))
+(define (hc-form-position x)
+  (let ((m (jolt-meta x)))
+    (if (and (pmap? m) (not (jolt-nil? (jolt-get m hc-kw-line))))
+        (let ((line (jolt-get m hc-kw-line))
+              (col  (jolt-get m hc-kw-column))
+              (file (jolt-get m hc-kw-file)))
+          (if (jolt-nil? file)
+              (jolt-hash-map hc-kw-line line hc-kw-column col)
+              (jolt-hash-map hc-kw-line line hc-kw-column col hc-kw-file file)))
+        jolt-nil)))
 
 ;; --- special forms ----------------------------------------------------------
 ;; Mirrors host_iface special-names + interop-head? — forms the analyzer marks

@@ -169,17 +169,20 @@
 ;; skip the no-op form and continue to true end-of-string.
 (define (load-jolt-file path)
   (let* ((src (read-file-string path)) (end (string-length src)))
-    (let loop ((i 0))
-      (when (< i end)
-        (let-values (((form j) (rdr-read-form src i end)))
-          (when (> j i)
-            (unless (rdr-eof? form)
-              (when (getenv "JOLT_TRACE_LOAD")
-                (display "  [load-form] " (current-error-port))
-                (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
-              (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
-                                      (chez-current-ns)))
-            (loop j)))))))
+    ;; parameterize (not a bare set!) so a require nested in this file's ns form
+    ;; restores path when control returns to the rest of this file.
+    (parameterize ((rdr-source-file path))   ; list forms read here carry :file = path
+      (let loop ((i 0))
+        (when (< i end)
+          (let-values (((form j) (rdr-read-form src i end)))
+            (when (> j i)
+              (unless (rdr-eof? form)
+                (when (getenv "JOLT_TRACE_LOAD")
+                  (display "  [load-form] " (current-error-port))
+                  (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
+                (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
+                                        (chez-current-ns)))
+              (loop j))))))))
 
 ;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
 ;; dependency cycle terminates (Clojure's behavior). The caller's current ns is

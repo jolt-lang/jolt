@@ -316,13 +316,56 @@
     ;; (with-meta form meta) for a meta-carrying collection literal in code, so
     ;; (meta ^{:tag :int} [1 2]) / ^:foo {} still works.
     (else
-     (let ((c (jolt-with-meta target meta)))
+     ;; Merge onto any metadata the target already carries (a list form picks up
+     ;; :line/:column first, then ^meta folds its keys on top).
+     (let* ((old (jolt-meta target))
+            (merged (rdr-merge-meta (if (jolt-nil? old) jolt-nil old) meta))
+            (c (jolt-with-meta target merged)))
        ;; jolt-with-meta copies a pmap, giving it a fresh identity the rdr-map-order
        ;; side-table (source key order for left-to-right map-literal eval) loses —
        ;; carry the order entry over to the copy.
        (let ((order (and (pmap? target) (hashtable-ref rdr-map-order target #f))))
          (when order (hashtable-set! rdr-map-order c order)))
        c))))
+
+;; --- source position --------------------------------------------------------
+;; List forms (code) carry 1-based :line/:column, plus :file when the compiler
+;; bound rdr-source-file. read-string leaves the file unset. The analyzer reads
+;; this back via jolt.host/form-position to stamp :pos on call nodes; macros and
+;; (meta (read-string "(…)")) see it too.
+(define rdr-source-file (make-parameter #f))
+(define rdr-kw-line   (keyword #f "line"))
+(define rdr-kw-column (keyword #f "column"))
+(define rdr-kw-file   (keyword #f "file"))
+
+;; Forms are read left-to-right, so the indices queried are non-decreasing within
+;; one source string — keep a cursor and count newlines only over the delta
+;; (O(n) total, not O(n^2)). A different string or a backward index resets it.
+(define rdr-pos-cursor (make-parameter #f))   ; #f | (vector s i line col)
+(define (rdr-line-col-at s i)
+  (let* ((cur (rdr-pos-cursor))
+         (reuse (and (vector? cur) (eq? (vector-ref cur 0) s)
+                     (fx<=? (vector-ref cur 1) i)))
+         (k0 (if reuse (vector-ref cur 1) 0))
+         (l0 (if reuse (vector-ref cur 2) 1))
+         (c0 (if reuse (vector-ref cur 3) 1)))
+    (let loop ((k k0) (line l0) (col c0))
+      (if (fx>=? k i)
+          (begin (rdr-pos-cursor (vector s k line col)) (values line col))
+          (if (char=? (string-ref s k) #\newline)
+              (loop (fx+ k 1) (fx+ line 1) 1)
+              (loop (fx+ k 1) line (fx+ col 1)))))))
+
+(define (rdr-pos-meta line col)
+  (let ((f (rdr-source-file)))
+    (if f
+        (jolt-hash-map rdr-kw-line line rdr-kw-column col rdr-kw-file f)
+        (jolt-hash-map rdr-kw-line line rdr-kw-column col))))
+
+(define (rdr-attach-pos lst line col)
+  (if (empty-list-t? lst)            ; () is interned, can't carry meta (= Clojure)
+      lst
+      (rdr-attach-meta lst (rdr-pos-meta line col))))
 
 ;; --- # dispatch -------------------------------------------------------------
 ;; #(...) anonymous fn shorthand: % -> p1, %N -> pN, %& -> rest. The
@@ -496,8 +539,9 @@
         (values rdr-eof i)
         (let ((c (string-ref s i)))
           (cond
-            ((char=? c #\() (let-values (((es j) (rdr-read-seq s (+ i 1) end #\))))
-                              (values (apply jolt-list es) j)))
+            ((char=? c #\() (let-values (((line col) (rdr-line-col-at s i)))
+                              (let-values (((es j) (rdr-read-seq s (+ i 1) end #\))))
+                                (values (rdr-attach-pos (apply jolt-list es) line col) j))))
             ((char=? c #\[) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\])))
                               (values (apply jolt-vector es) j)))
             ((char=? c #\{) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\})))
