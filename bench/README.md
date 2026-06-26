@@ -40,29 +40,32 @@ source — the jolt/JVM scorecard. jolt's optimizing passes fire only in a build
 `joltc run -m` is unoptimized, so the harness always builds.
 
 Indicative ratios (M-series, single isolated run — numbers are machine-specific,
-regenerate locally). They cluster into two regimes:
+regenerate locally), ascending:
 
 | benchmark | ratio | axis |
 |---|---|---|
-| `mandelbrot` | ~8× | pure float compute |
-| `fib` | ~9× | call + integer arith |
-| `collections` | ~9× | persistent map/vector churn |
-| `dispatch` | ~130× | megamorphic protocol dispatch |
-| `binary-trees` | ~140× | escaping short-lived records (allocation/GC) |
-| `mono-dispatch` | ~330× | monomorphic protocol dispatch |
+| `fib` | ~0.6× | call + integer arith |
+| `collections` | ~4× | persistent map/vector churn |
+| `mandelbrot` | ~7.5× | pure float compute |
+| `binary-trees` | ~10× | escaping short-lived records (allocation/GC) |
+| `dispatch` | ~12× | megamorphic protocol dispatch |
+| `mono-dispatch` | ~48× | monomorphic protocol dispatch |
 
-- **Compute (~8–9×)** is the substrate floor: Chez is a native-compiling AOT
-  Scheme, not a profiling JIT, so it can't match HotSpot on hot loops. Native arith
-  already gets jolt closest here.
-- **Dispatch & allocation (~130–330×)** are the architectural gaps. jolt does a
-  full protocol-registry lookup on every call; the JVM inline-caches a
-  runtime-monomorphic site to near-free — which is why `mono-dispatch` is *worse*
-  than megamorphic. devirt only fires on *statically proven* receivers (which
-  `reduce`/`mapv` over a heterogeneous vector never gives), so the passes don't
-  engage; a call-site inline cache is the missing lever. `binary-trees` nodes
-  escape into the tree, so scalar-replace can't remove them — this is GC pressure.
-- The optimization passes move these benchmarks <10% vs the unoptimized run, so the
-  gaps are not a missing-flag problem; they're the dispatch/GC/JIT-floor work.
+- **Compute (~0.6–7.5×)** is the substrate floor: Chez is a native-compiling AOT
+  Scheme, not a profiling JIT. With native arith + direct-linking + inlining jolt
+  is at parity here — `fib` runs *faster* than JVM Clojure (no JIT warmup over a
+  short run), `collections` is within ~4×, and `mandelbrot` (~7.5×) is the
+  pure-tight-loop float ceiling that only native codegen moves further.
+- **Dispatch & allocation (~10–48×)** are the remaining architectural gaps, though
+  the type-proving / native-record / bare-field-read work has collapsed them by an
+  order of magnitude (`binary-trees` ~140×→~10×). jolt still does a full protocol-
+  registry lookup on every call; the JVM inline-caches a runtime-monomorphic site
+  to near-free — which is why `mono-dispatch` is *worse* than megamorphic and is now
+  the standout gap. devirt fires only on a *statically proven* receiver; whole-
+  program inference now proves more of them, but a value iterated out of a vector
+  still needs one — a call-site inline cache is the missing lever. `binary-trees`
+  nodes escape into the tree, so scalar-replace can't remove them — residual GC
+  pressure.
 
 ## Running
 
