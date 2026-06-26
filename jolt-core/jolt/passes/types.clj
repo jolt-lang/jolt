@@ -69,6 +69,7 @@
   (cond
     (or (nil? tag) (<= depth 0)) :any
     (= tag "num") :num
+    (= tag "double") :double   ; a ^double field reads back as a flonum
     :else (let [e (get shapes tag)]
             (if e (record-type-from-entry e depth shapes) :any))))
 (defn- record-type-from-entry [rs depth shapes]
@@ -224,9 +225,13 @@
         mt (ty mr)
         msub (if (struct-safe? mt) (mark-struct (nd mr) mt) (nd mr))
         ft (field-type mt (get fnode :val))
-        dr (when (= n 2) (infer (nth args 1) tenv env))]
-    [(if dr (join ft (ty dr)) ft)
-     (assoc node :args (if dr [msub (nd dr)] [msub]))]))
+        dr (when (= n 2) (infer (nth args 1) tenv env))
+        rt (if dr (join ft (ty dr)) ft)
+        node' (assoc node :args (if dr [msub (nd dr)] [msub]))]
+    ;; a flonum field read is a :double operand for the numeric pass (fl-ops); the
+    ;; lookup itself still emits as a keyword/jrec-field-at read, this only feeds
+    ;; its kind up so (* (:x v) (:x v)) over a ^double-fielded record unboxes.
+    [rt (if (= rt :double) (assoc node' :num-read :double) node')]))
 
 (defn- infer-get-lookup
   "(get m :k [default]): the keyword-lookup result type, when the key is a constant
@@ -237,9 +242,10 @@
         msub (if (struct-safe? mt) (mark-struct (nd mr) mt) (nd mr))
         kr (infer (nth args 1) tenv env)
         ft (field-type mt (get (nth args 1) :val))
-        dr (when (= n 3) (infer (nth args 2) tenv env))]
-    [(if dr (join ft (ty dr)) ft)
-     (assoc node :args (if dr [msub (nd kr) (nd dr)] [msub (nd kr)]))]))
+        dr (when (= n 3) (infer (nth args 2) tenv env))
+        rt (if dr (join ft (ty dr)) ft)
+        node' (assoc node :args (if dr [msub (nd kr) (nd dr)] [msub (nd kr)]))]
+    [rt (if (= rt :double) (assoc node' :num-read :double) node')]))
 
 (defn- infer-reduce-hof
   "reduce over a typed vector with a fn-literal: seed the closure's accumulator

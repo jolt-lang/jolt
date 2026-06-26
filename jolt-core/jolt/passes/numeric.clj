@@ -156,6 +156,10 @@
         node1 (assoc node :args argnodes)
         n (count ars)]
     (cond
+      ;; a field read the structural inference proved is a flonum (a ^double record
+      ;; field) is a :double operand — so (* (:x v) (:x v)) unboxes. The read itself
+      ;; isn't lowered here; it keeps its keyword/jrec-field-at emit.
+      (= :double (get node :num-read)) [:double node1]
       ;; a call to a var with a declared numeric return (^double/^long) yields that
       ;; kind, so an accumulator over the result types. The call itself isn't an
       ;; arithmetic op to lower — its body already coerces the return.

@@ -48,10 +48,17 @@
 (define chez-record-shapes-tbl (make-hashtable string-hash string=?))
 ;; method var-key "ns/method" -> (cons proto-name method-name).
 (define chez-protocol-methods-tbl (make-hashtable string-hash string=?))
+;; type-tag "ns.Name" -> #(bool ...) marking which fields are ^double, so the ctor
+;; and set! coerce them to flonums (JVM primitive-field semantics, and what makes
+;; reading the field back as :double sound for fl-ops).
+(define chez-record-dbl-tbl (make-hashtable string-hash string=?))
+(define (chez-double-tag? t) (and (string? t) (string=? t "double")))
 
 (define (register-record-shape! ctor-key field-kws field-tags type-tag)
   (hashtable-set! chez-record-shapes-tbl ctor-key
-                  (vector field-kws field-tags type-tag)))
+                  (vector field-kws field-tags type-tag))
+  (hashtable-set! chez-record-dbl-tbl type-tag
+                  (list->vector (map chez-double-tag? field-tags))))
 
 ;; simple name of a dotted/slashed string: the segment after the last . or /.
 (define (chez-shape-simple-name s)
@@ -67,6 +74,7 @@
 (define (chez-resolve-field-tag tag by-name)
   (cond ((or (not tag) (jolt-nil-t? tag)) jolt-nil)
         ((string=? tag "num") "num")
+        ((string=? tag "double") "double")   ; a ^double field reads back as a flonum
         (else (let ((ck (hashtable-ref by-name (chez-shape-simple-name tag) #f)))
                 (if ck ck jolt-nil)))))
 
@@ -163,7 +171,13 @@
 (define (jolt-set-field! inst k v)
   (if (jrec? inst)
       (let ((i (jrec-field-index inst k)))
-        (if i (begin (vector-set! (jrec-vals inst) i v) v)
+        (if i (let* ((flags (hashtable-ref chez-record-dbl-tbl (jrec-tag inst) #f))
+                     ;; a ^double field stays a flonum across set!, like the ctor —
+                     ;; keeps a later field read sound to unbox.
+                     (v2 (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
+                                  (number? v) (not (flonum? v)))
+                             (exact->inexact v) v)))
+                (vector-set! (jrec-vals inst) i v2) v2)
             (error #f "set! of an unknown field" k)))
       (error #f "set! of a field on a non-record" inst)))
 (define (jrec-ext=? ea eb)
@@ -431,6 +445,10 @@
   (let* ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
          (kws (seq->list field-kws))
          (field-tags (if (pair? rest-args) (seq->list (car rest-args)) '()))
+         ;; which fields are ^double — coerced to a flonum on construction (JVM
+         ;; primitive-field parity), so reading them back is a genuine flonum.
+         (dbl-flags (list->vector (map chez-double-tag? field-tags)))
+         (ndbl (vector-length dbl-flags))
          (desc (make-jrdesc tag kws))
          (nf (length kws))
          (ctor (lambda args
@@ -439,7 +457,12 @@
                  (let ((v (make-vector nf jolt-nil)))
                    (let loop ((as args) (i 0))
                      (if (or (null? as) (= i nf)) (make-jrec desc v jolt-nil)
-                         (begin (vector-set! v i (car as)) (loop (cdr as) (+ i 1)))))))))
+                         (let ((a (car as)))
+                           (vector-set! v i
+                                        (if (and (fx< i ndbl) (vector-ref dbl-flags i)
+                                                 (number? a) (not (flonum? a)))
+                                            (exact->inexact a) a))
+                           (loop (cdr as) (+ i 1)))))))))
     ;; Register the ctor globally by simple class name (like StringBuilder) so
     ;; (Name. …) interop resolves ns-agnostically: a deftype used across files works
     ;; even when the runtime current ns is the caller's, not the defining ns
