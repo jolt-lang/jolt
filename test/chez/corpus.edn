@@ -1827,6 +1827,14 @@
   {:suite "regex / char-class dash" :label "dash + escaped dot in class" :expected "\"a.b_c-d\"" :actual "(re-matches #\"[\\w-_\\.]+\" \"a.b_c-d\")"}
   {:suite "regex / char-class dash" :label "trailing dash in class" :expected "[\"a-b\" \"c-d\"]" :actual "(vec (re-seq #\"[\\w-]+\" \"a-b c-d\"))"}
   {:suite "regex / nested quantifier" :label "(X+)* parses and matches" :expected "true" :actual "(boolean (re-matches #\"([^%]+)*(%(d))?\" \"abc\"))"}
+  {:suite "regex / matcher" :label "re-find over a matcher" :expected "\"1\"" :actual "(re-find (re-matcher #\"\\d+\" \"a1b22\"))"}
+  {:suite "regex / matcher" :label "stateful step + re-groups" :expected "[[\"12-34\" \"12\" \"34\"] [\"12-34\" \"12\" \"34\"] [\"56-78\" \"56\" \"78\"] nil]" :actual "(let [m (re-matcher #\"(\\d+)-(\\d+)\" \"12-34 56-78\")] [(re-find m) (re-groups m) (re-find m) (re-find m)])"}
+  {:suite "regex / matcher" :label "re-groups before a match throws" :expected :throws :actual "(re-groups (re-matcher #\"\\d\" \"abc\"))"}
+  {:suite "dynamic vars / portable defaults" :label "default reads" :expected "[true false true false]" :actual "[*read-eval* *print-dup* *flush-on-newline* *compile-files*]"}
+  {:suite "dynamic vars / portable defaults" :label "binding *read-eval*" :expected "false" :actual "(binding [*read-eval* false] *read-eval*)"}
+  {:suite "special forms / letfn" :label "mutual recursion" :expected "true" :actual "(letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? 10))"}
+  {:suite "core vars / present and callable" :label "*out* *err* *warn-on-reflection* await restart-agent" :expected "[true true false true true]" :actual "[(boolean *out*) (boolean *err*) *warn-on-reflection* (ifn? await) (ifn? restart-agent)]"}
+  {:suite "dynamic vars / portable defaults" :label "*data-readers* map, *math-context* nil" :expected "[true true]" :actual "[(map? *data-readers*) (nil? *math-context*)]"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern build" :expected "\"hi\"" :actual "(re-find (re-pattern \"\\\\w+\") \"hi!\")"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern is regex?" :expected "true" :actual "(regex? (re-pattern \"a\"))"}
   {:suite "regex / re-pattern & string ops" :label "split on regex" :expected "[\"a\" \"b\" \"c\"]" :actual "(do (require '[clojure.string :as s]) (s/split \"a1b2c\" #\"\\d\"))"}

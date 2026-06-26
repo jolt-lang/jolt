@@ -182,9 +182,41 @@
   (let ((m (irregex-match (regex-t-irx (jolt-re-pattern re)) s)))
     (if m (irx-result m) jolt-nil)))
 
-(define (jolt-re-find re s)
-  (let ((m (irregex-search (regex-t-irx (jolt-re-pattern re)) s)))
-    (if m (irx-result m) jolt-nil)))
+;; A stateful matcher (java.util.regex.Matcher): the compiled pattern, the target
+;; string, the next search position, and the last successful irregex match. re-find
+;; over a matcher steps through non-overlapping matches; re-groups returns the
+;; groups of the last one.
+(define-record-type matcher-t
+  (fields irx str (mutable pos) (mutable last))
+  (nongenerative jolt-matcher-v1))
+(define (jolt-re-matcher re s)
+  (make-matcher-t (regex-t-irx (jolt-re-pattern re)) s 0 #f))
+(define (jolt-matcher? x) (matcher-t? x))
+
+;; re-find: stateless over (re s), or stateful over a matcher (advance + remember).
+(define jolt-re-find
+  (case-lambda
+    ((re s)
+     (let ((m (irregex-search (regex-t-irx (jolt-re-pattern re)) s)))
+       (if m (irx-result m) jolt-nil)))
+    ((m)
+     (let* ((str (matcher-t-str m))
+            (len (string-length str))
+            (start (matcher-t-pos m))
+            (mm (and (<= start len) (irregex-search (matcher-t-irx m) str start))))
+       (if mm
+           (let ((e (irregex-match-end-index mm 0)))
+             (matcher-t-last-set! m mm)
+             (matcher-t-pos-set! m (if (> e start) e (+ start 1)))
+             (irx-result mm))
+           (begin (matcher-t-last-set! m #f) jolt-nil))))))
+
+;; re-groups: the groups of the matcher's last successful find. Throws when no
+;; match has succeeded, like Clojure's IllegalStateException "No match found".
+(define (jolt-re-groups m)
+  (let ((last (matcher-t-last m)))
+    (if last (irx-result last)
+        (jolt-throw (jolt-ex-info "No match found" (jolt-hash-map))))))
 
 ;; All non-overlapping matches, left to right. Advance past each match end (or by
 ;; one on a zero-width match). nil when there are no matches (Clojure: seq-able as
@@ -203,4 +235,6 @@
 (def-var! "clojure.core" "re-matches" jolt-re-matches)
 (def-var! "clojure.core" "re-find" jolt-re-find)
 (def-var! "clojure.core" "re-seq" jolt-re-seq)
+(def-var! "clojure.core" "re-matcher" jolt-re-matcher)
+(def-var! "clojure.core" "re-groups" jolt-re-groups)
 (def-var! "clojure.core" "regex?" jolt-regex?)
