@@ -155,6 +155,22 @@
 (defn- ty [r] (nth r 0))
 (defn- nd [r] (nth r 1))
 
+;; Arg types for a self-recursive call. A same-position pass-through of the
+;; enclosing param (arg i is the bare param i) contributes nil — the join identity —
+;; instead of its type: it can't add information (param i ⊇ param i is trivial), but
+;; its type is :any until external callers determine it, and :any is absorbing, so
+;; collecting it would pin the param at :any forever (a recursive fn that threads a
+;; param straight through, e.g. ray-cast passing `hittables` unchanged). A computed
+;; arg, or a DIFFERENT param at this position, is a real constraint and is collected.
+(defn- self-rec-argtys [args ares self-params]
+  (mapv (fn [i]
+          (let [a (nth args i)]
+            (if (and self-params (< i (count self-params))
+                     (= :local (get a :op)) (= (get a :name) (nth self-params i)))
+              nil
+              (ty (nth ares i)))))
+        (range (count ares))))
+
 ;; arithmetic core ops that yield a flonum when their operands are flonums — a
 ;; mirror of jolt.passes.numeric/dbl-spec's arithmetic set, used to flow :double
 ;; across fn boundaries so a hintless fn whose callers all pass doubles is unboxed.
@@ -305,7 +321,15 @@
         callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (ty fr))
         ares (mapv (fn [a] (infer a tenv env)) args)]
     (when iscall-var
-      (swap! (get env :calls) conj [(var-key fnode) (mapv (fn [r] (ty r)) ares)]))
+      ;; a `defn` recurses through its own VAR, so a self-recursion is a var-call
+      ;; here (not the :local case below). When the callee is the enclosing def,
+      ;; drop same-position pass-through args so threading a param straight through
+      ;; the recursion doesn't poison it to :any.
+      (swap! (get env :calls) conj
+             [(var-key fnode)
+              (if (= (var-key fnode) (get env :self-key))
+                (self-rec-argtys args ares (get env :self-params))
+                (mapv (fn [r] (ty r)) ares))]))
     ;; a named fn calling itself binds its name as a :local, so the recursion is
     ;; invisible to the var-call collection above — yet it constrains the fn's own
     ;; params. Collect it under the fn's var-key so the whole-program fixpoint joins
@@ -313,7 +337,8 @@
     ;; callers alone and may be specialized to a type the recursion violates).
     (when (and (= :local (get fnode :op)) (get env :self-key)
                (= (get fnode :name) (get env :self-name)))
-      (swap! (get env :calls) conj [(get env :self-key) (mapv (fn [r] (ty r)) ares)]))
+      (swap! (get env :calls) conj
+             [(get env :self-key) (self-rec-argtys args ares (get env :self-params))]))
     ;; success-type check at this call, reusing the arg types just computed (jolt
     ;; audit): core error domains always, user-fn domains in strict mode.
     (when (get env :checking?)
@@ -465,7 +490,8 @@
         ;; a fn-level recur (not inside a loop) rebinds the enclosing fn's params,
         ;; so its args constrain them like a self-call — collect under the fn key.
         (when (and (not (get env :in-loop?)) (get env :self-key))
-          (swap! (get env :calls) conj [(get env :self-key) (mapv (fn [r] (ty r)) ares)]))
+          (swap! (get env :calls) conj
+                 [(get env :self-key) (self-rec-argtys (get node :args) ares (get env :self-params))]))
         [:any (assoc node :args (mapv (fn [r] (nd r)) ares))])
       (= op :fn)
       ;; a closure inherits the enclosing tenv so CAPTURED locals keep their
@@ -478,7 +504,7 @@
       ;; a nested closure resets the self/loop context: its own recur/self-call
       ;; targets IT, not the enclosing whole-program def, so it must not collect
       ;; into that def's param key.
-      (let [fenv (assoc env :self-name nil :self-key nil :in-loop? false)]
+      (let [fenv (assoc env :self-name nil :self-key nil :self-params nil :in-loop? false)]
         [:any (assoc node :arities
                      (mapv (fn [a]
                              (let [shapes (get env :record-shapes)
@@ -634,9 +660,11 @@
   collected-escapes after a full sweep). With self-name/self-key, a recursive
   self-call or fn-level recur in `body` is collected under self-key too, so a
   self-recursive fn's params are constrained by its recursion, not just callers."
-  ([body tenv] (infer-body body tenv nil nil))
-  ([body tenv self-name self-key]
-   (let [env (assoc (mk-env false false) :self-name self-name :self-key self-key)
+  ([body tenv] (infer-body body tenv nil nil nil))
+  ([body tenv self-name self-key] (infer-body body tenv self-name self-key nil))
+  ([body tenv self-name self-key self-params]
+   (let [env (assoc (mk-env false false)
+                    :self-name self-name :self-key self-key :self-params self-params)
          r (infer body tenv env)]
      [(nth r 0) (nth r 1) @(get env :calls)])))
 
@@ -752,7 +780,7 @@
       (let [k (when (= :def (get node :op)) (str (get node :ns) "/" (get node :name)))
             s (and k (get spec k))]
         (if s
-          (let [r (infer-body (:body s) (zipmap (:params s) (get ptypes k)) (:name s) k)]
+          (let [r (infer-body (:body s) (zipmap (:params s) (get ptypes k)) (:name s) k (:params s))]
             (-> acc (assoc-in [:rets k] (nth r 0))
                     (update :ptypes wp-accum spec (nth r 2))))
           (update acc :ptypes wp-accum spec (nth (infer-body node {}) 2)))))

@@ -91,6 +91,18 @@
 (check "self-recursive same-type param keeps its seed"
        (jolt-truthy? (param-seeds-for "user/grow")) #t)
 
+;; a recursive fn that threads a param STRAIGHT THROUGH its recursion (same arg at
+;; the same position) must keep that param's type — a pass-through self-call adds no
+;; information and must not poison the param to :any. This is the ray tracer's
+;; hittables, passed unchanged through ray-cast's recursion while its reduce element
+;; reads the records' fields.
+(define cwalk (anode "(def cwalk (fn [hs] (reduce (fn [acc h] (:left h)) nil hs)))"))
+(define crec  (anode "(def crec (fn [hs d] (if (< d 0) nil (do (cwalk hs) (crec hs (- d 1))))))"))
+(define cdrv  (anode "(def cdrive (fn [] (crec [(->Node nil nil) (->Node nil nil)] 5)))"))
+(wp-infer! (jolt-vector cwalk crec cdrv))
+(check "recursion pass-through param keeps its vec element type"
+       (contains-sub? (pr-str (param-seeds-for "user/crec")) "user.Node") #t)
+
 (if (= fails 0)
     (begin (printf "wp gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "wp gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
