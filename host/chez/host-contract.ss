@@ -361,8 +361,19 @@
 
 (define (hc-syntax-quote-lower ctx inner)
   (hc-sq-lower ctx inner (make-hashtable string-hash string=?)))
-(define (hc-record-type? ctx name) #f)
-(define (hc-record-ctor-key ctx name) jolt-nil)
+;; a ^Type param hint: name is the tag (a symbol, sometimes a string). Resolve it
+;; against the record registry (records.ss) so the inference seeds the param as
+;; that record — the open-world / cross-ns path where no caller type is inferred.
+(define (hc-record-tag-name name)
+  (cond ((symbol-t? name) (symbol-t-name name))
+        ((string? name) name)
+        (else #f)))
+(define (hc-record-type? ctx name)
+  (let ((nm (hc-record-tag-name name)))
+    (if (and nm (chez-find-ctor-key nm (chez-current-ns))) #t #f)))
+(define (hc-record-ctor-key ctx name)
+  (let ((nm (hc-record-tag-name name)))
+    (or (and nm (chez-find-ctor-key nm (chez-current-ns))) jolt-nil)))
 ;; record + protocol-method shapes for the inference, from the runtime registries
 ;; (records.ss) populated as deftype/defprotocol forms load.
 (define (hc-record-shapes ctx) (chez-record-shapes-map))
