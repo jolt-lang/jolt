@@ -283,6 +283,14 @@
         ares (mapv (fn [a] (infer a tenv env)) args)]
     (when iscall-var
       (swap! (get env :calls) conj [(var-key fnode) (mapv (fn [r] (ty r)) ares)]))
+    ;; a named fn calling itself binds its name as a :local, so the recursion is
+    ;; invisible to the var-call collection above — yet it constrains the fn's own
+    ;; params. Collect it under the fn's var-key so the whole-program fixpoint joins
+    ;; the recursive arg types (else a self-recursive param is typed from external
+    ;; callers alone and may be specialized to a type the recursion violates).
+    (when (and (= :local (get fnode :op)) (get env :self-key)
+               (= (get fnode :name) (get env :self-name)))
+      (swap! (get env :calls) conj [(get env :self-key) (mapv (fn [r] (ty r)) ares)]))
     ;; success-type check at this call, reusing the arg types just computed (jolt
     ;; audit): core error domains always, user-fn domains in strict mode.
     (when (get env :checking?)
@@ -419,12 +427,19 @@
       (= op :loop)
       ;; conservative + sound: loop bindings join across recur, which we don't
       ;; track here, so they stay :any. Still descend to annotate any
-      ;; known-type lookups inside the body.
-      [:any (assoc node
-                   :bindings (mapv (fn [b] [(nth b 0) (nth (infer (nth b 1) tenv env) 1)]) (get node :bindings))
-                   :body (nth (infer (get node :body) tenv env) 1))]
+      ;; known-type lookups inside the body. A recur inside this body targets the
+      ;; loop, not the enclosing fn, so mark :in-loop? to suppress self-collection.
+      (let [lenv (assoc env :in-loop? true)]
+        [:any (assoc node
+                     :bindings (mapv (fn [b] [(nth b 0) (nth (infer (nth b 1) tenv env) 1)]) (get node :bindings))
+                     :body (nth (infer (get node :body) tenv lenv) 1))])
       (= op :recur)
-      [:any (assoc node :args (mapv (fn [a] (nth (infer a tenv env) 1)) (get node :args)))]
+      (let [ares (mapv (fn [a] (infer a tenv env)) (get node :args))]
+        ;; a fn-level recur (not inside a loop) rebinds the enclosing fn's params,
+        ;; so its args constrain them like a self-call — collect under the fn key.
+        (when (and (not (get env :in-loop?)) (get env :self-key))
+          (swap! (get env :calls) conj [(get env :self-key) (mapv (fn [r] (ty r)) ares)]))
+        [:any (assoc node :args (mapv (fn [r] (nd r)) ares))])
       (= op :fn)
       ;; a closure inherits the enclosing tenv so CAPTURED locals keep their
       ;; types (e.g. a reduce closure that calls (f captured-struct ...)). Its own
@@ -433,19 +448,23 @@
       ;; reads off it bare-index per-form, not only under whole-program. This is
       ;; what makes a protocol method's `this` (hinted by defrecord/extend-type)
       ;; read its fields without the runtime tag guard.
-      [:any (assoc node :arities
-                   (mapv (fn [a]
-                           (let [shapes (get env :record-shapes)
-                                 phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
-                                             {} (get a :phints))
-                                 pe (reduce (fn [e p]
-                                              (assoc e p
-                                                     (let [ent (get shapes (get phm p))]
-                                                       (if ent (record-type-from-entry ent type-depth shapes) :any))))
-                                            tenv (get a :params))
-                                 pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)]
-                             (assoc a :body (nth (infer (get a :body) pe env) 1))))
-                         (get node :arities)))]
+      ;; a nested closure resets the self/loop context: its own recur/self-call
+      ;; targets IT, not the enclosing whole-program def, so it must not collect
+      ;; into that def's param key.
+      (let [fenv (assoc env :self-name nil :self-key nil :in-loop? false)]
+        [:any (assoc node :arities
+                     (mapv (fn [a]
+                             (let [shapes (get env :record-shapes)
+                                   phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
+                                               {} (get a :phints))
+                                   pe (reduce (fn [e p]
+                                                (assoc e p
+                                                       (let [ent (get shapes (get phm p))]
+                                                         (if ent (record-type-from-entry ent type-depth shapes) :any))))
+                                              tenv (get a :params))
+                                   pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)]
+                               (assoc a :body (nth (infer (get a :body) pe fenv) 1))))
+                           (get node :arities)))])
       (= op :def)
       (do (when (get env :checking?) (register-user-fn! node env))
           [:any (assoc node :init (nth (infer (get node :init) tenv env) 1))])
@@ -585,11 +604,14 @@
   "Type `body` under tenv (local-name -> type). Returns [ret-type node' calls],
   where calls is the [[\"ns/name\" [arg-types...]] ...] this body invokes (for
   propagating into callee param types). Also accumulates escapes (read with
-  collected-escapes after a full sweep)."
-  [body tenv]
-  (let [env (mk-env false false)
-        r (infer body tenv env)]
-    [(nth r 0) (nth r 1) @(get env :calls)]))
+  collected-escapes after a full sweep). With self-name/self-key, a recursive
+  self-call or fn-level recur in `body` is collected under self-key too, so a
+  self-recursive fn's params are constrained by its recursion, not just callers."
+  ([body tenv] (infer-body body tenv nil nil))
+  ([body tenv self-name self-key]
+   (let [env (assoc (mk-env false false) :self-name self-name :self-key self-key)
+         r (infer body tenv env)]
+     [(nth r 0) (nth r 1) @(get env :calls)])))
 
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded
@@ -638,6 +660,98 @@
                   e (and ck (get shapes ck))]
               (when e (record-type-from-entry e type-depth shapes))))
           params)))
+
+;; --- whole-program param-type fixpoint --------------------------------------
+;; Re-derive each app fn's param types from its call sites under closed world
+;; (--opt), so a record type flows across fn boundaries: a ctor's return type
+;; reaches a callee param ((check-tree (make-tree d)) -> node is a Node), and a
+;; typed vector's element reaches a HOF closure's param (sum-area's reduce sees a
+;; Circle). The back end then bare-indexes a field read and devirtualizes a
+;; protocol call at those sites. Only single-fixed-arity fns are specialized;
+;; anything called in value position (collected-escapes) keeps :any params —
+;; its callers aren't all visible, so a concrete seed would be unsound.
+(def ^:private wp-seeds-box (atom {}))
+(defn param-seeds-for
+  "The param-name -> type seed map a top-level def should be reinferred with, or
+  nil. Set by wp-infer!, read by run-passes during the final per-def emit."
+  [k] (get @wp-seeds-box k))
+
+;; var-key -> {:params [names] :body ir} for each single-fixed-arity fn def.
+(defn- wp-specializable [nodes]
+  (reduce (fn [m d]
+            (let [f (get d :init)]
+              (if (and (= :def (get d :op)) (= :fn (get f :op))
+                       (= 1 (count (get f :arities)))
+                       (not (get (first (get f :arities)) :rest)))
+                (let [a (first (get f :arities))]
+                  (assoc m (str (get d :ns) "/" (get d :name))
+                         {:name (get d :name) :params (get a :params) :body (get a :body)}))
+                m)))
+          {} nodes))
+
+(defn- wp-empty-ptypes [spec ks]
+  (reduce (fn [m k] (assoc m k (vec (repeat (count (:params (get spec k))) nil)))) {} ks))
+
+;; join one call's arg types into its (specializable) callee's param slots.
+(defn- wp-accum [pt spec calls]
+  (reduce (fn [pt2 c]
+            (let [callee (nth c 0) args (nth c 1)]
+              (if (contains? spec callee)
+                (let [cur (get pt2 callee)]
+                  (assoc pt2 callee
+                         (vec (map-indexed
+                                (fn [i t] (if (< i (count args)) (join t (nth args i)) t)) cur))))
+                pt2)))
+          pt calls))
+
+;; one fixpoint pass over every top-level node: a specializable def is typed
+;; under the current param seeds (so a seeded record flows into the calls it
+;; makes) and contributes its return type; any other form is typed only to
+;; harvest its call sites and escapes. Returns {:rets :ptypes}, with ptypes
+;; recomputed fresh each pass — :any is absorbing, so accumulating across passes
+;; would pin a param at :any before its callers' return types are known.
+(defn- wp-pass [nodes spec ks ptypes]
+  (reduce
+    (fn [acc node]
+      (let [k (when (= :def (get node :op)) (str (get node :ns) "/" (get node :name)))
+            s (and k (get spec k))]
+        (if s
+          (let [r (infer-body (:body s) (zipmap (:params s) (get ptypes k)) (:name s) k)]
+            (-> acc (assoc-in [:rets k] (nth r 0))
+                    (update :ptypes wp-accum spec (nth r 2))))
+          (update acc :ptypes wp-accum spec (nth (infer-body node {}) 2)))))
+    {:rets {} :ptypes (wp-empty-ptypes spec ks)} nodes))
+
+(defn wp-infer!
+  "Run the closed-world param-type fixpoint over the unit's analyzed top-level
+  nodes and stash the resulting per-def seed maps (read via param-seeds-for).
+  record-shapes / protocol-methods must already be installed. Idempotent — resets
+  the seed box; called once per build before per-form emit."
+  [nodes]
+  (let [spec (wp-specializable nodes)
+        ks (keys spec)]
+    (loop [iter 0 ptypes (wp-empty-ptypes spec ks) rets {}]
+      (set-rtenv! (reduce (fn [m k] (let [v (get rets k)] (if (some? v) (assoc m k v) m))) {} ks))
+      (reset-escapes!)
+      (let [pass (wp-pass nodes spec ks ptypes)
+            escaped (set (collected-escapes))
+            ;; a fn used in value position has callers we can't see -> :any params
+            new-ptypes (reduce (fn [m k]
+                                 (if (contains? escaped k)
+                                   (assoc m k (vec (repeat (count (get m k)) :any))) m))
+                               (:ptypes pass) ks)
+            new-rets (:rets pass)]
+        (if (or (and (= new-ptypes ptypes) (= new-rets rets)) (>= iter 16))
+          (reset! wp-seeds-box
+                  (reduce (fn [m k]
+                            (let [s (get spec k)
+                                  ptmap (reduce (fn [pm pr]
+                                                  (let [nm (nth pr 0) t (nth pr 1)]
+                                                    (if (and t (not= t :any)) (assoc pm nm t) pm)))
+                                                {} (map vector (:params s) (get new-ptypes k)))]
+                              (if (seq ptmap) (assoc m k ptmap) m)))
+                          {} ks))
+          (recur (inc iter) new-ptypes new-rets))))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
 ;; one inference pass for specialization; turning checking? on during it makes

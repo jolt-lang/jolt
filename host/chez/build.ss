@@ -170,6 +170,38 @@
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
+;; --- whole-program inference pre-pass ---------------------------------------
+;; Analyze every app form (all namespaces, deps-first) to IR and run the
+;; closed-world param-type fixpoint, so each fn's param types pick up the record
+;; types its callers pass. The per-ns emit below then bare-indexes field reads and
+;; devirtualizes protocol calls at those sites (the back end reads the resulting
+;; :hint/:devirt annotations). Optimized builds only; registries come from the
+;; runtime tables populated as the app loaded.
+(define jolt-wp-infer!             (var-deref "jolt.passes.types" "wp-infer!"))
+(define jolt-wp-set-record-shapes! (var-deref "jolt.passes.types" "set-record-shapes!"))
+(define jolt-wp-set-proto-methods! (var-deref "jolt.passes.types" "set-protocol-methods!"))
+(define jolt-wp-host-record-shapes (var-deref "jolt.host" "record-shapes"))
+(define jolt-wp-host-proto-methods (var-deref "jolt.host" "protocol-methods"))
+
+(define (bld-wp-infer! ordered)
+  (jolt-wp-set-record-shapes! (jolt-wp-host-record-shapes #f))
+  (jolt-wp-set-proto-methods! (jolt-wp-host-proto-methods #f))
+  (let ((nodes '()))
+    (for-each
+      (lambda (nf)
+        (set-chez-ns! (car nf))
+        (let ((src (read-file-string (cdr nf))))
+          (parameterize ((rdr-source-file (cdr nf)))
+            (for-each
+              (lambda (f)
+                (ce-scan-requires! f (car nf))
+                (unless (or (ei-ns-form? f) (ce-macro-form? f))
+                  (guard (e (#t #f))
+                    (set! nodes (cons (jolt-ce-analyze (make-analyze-ctx (car nf)) f) nodes)))))
+              (ei-read-all src)))))
+      ordered)
+    (jolt-wp-infer! (apply jolt-vector (reverse nodes)))))
+
 ;; Strings emitted before each app ns's forms, replaying what the source loader
 ;; does per file: (1) set chez-current-ns so runtime ns-sensitive setup forms
 ;; (defmulti/defmethod resolve their target var through it) land in the right ns;
@@ -326,7 +358,9 @@
                 (set-optimize! (string=? mode "optimized"))
                 (when direct-link?
                   ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
-                  ((var-deref "jolt.backend-scheme" "direct-link-reset!"))))
+                  ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
+                ;; whole-program param-type fixpoint before per-form emit
+                (when (string=? mode "optimized") (bld-wp-infer! ordered)))
               (lambda ()
                 (if tree-shake?
                     (dce-shake
