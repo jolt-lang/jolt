@@ -5,7 +5,8 @@
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
-  (:require [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
+  (:require [jolt.ir :refer [reduce-ir-children]]
+            [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
             [jolt.passes.types.lattice :refer
@@ -45,6 +46,11 @@
 (def ^:private last-diags-box (atom []))
 ;; Whether run-inference also checks, and strictly. Set by set-check-mode!.
 (def ^:private check-mode-box (atom {:on false :strict false}))
+;; "Proto/method" -> the join of its impls' return types, so a protocol-method call
+;; types as that record when every impl returns the same one (monomorphic return —
+;; e.g. all Scatter impls return a ScatterResult). Set by collect-pm-rets! before
+;; the fixpoint, read by call-ret-type. A disagreeing impl widens it to :any.
+(def ^:private pm-rets-box (atom {}))
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags
 ;; and fresh accumulator/guard cells. escapes/user-sigs reference the sweep-level
@@ -104,11 +110,18 @@
                       ;; declared hints so nested records stay typed
                       (record-type-from-entry rs type-depth shapes)
                       (let [r (get (get env :rtenv) (var-key fnode))]
-                        (if r r (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
-                                  (cond (nil? nm) :any
-                                        (contains? num-ret-fns nm) :num
-                                        (contains? vector-ret-fns nm) (mk-vec :any)
-                                        :else :any))))))
+                        (if r r
+                          ;; a protocol-method call types as its impls' joined return
+                          ;; (monomorphic): so (:ray (scatter m ..)) reads off a Ray.
+                          (let [pm (get (get env :protocol-methods) (var-key fnode))
+                                pmr (when pm (get @pm-rets-box (str (nth pm 0) "/" (nth pm 1))))]
+                            (if (and pmr (not= pmr :any))
+                              pmr
+                              (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
+                                (cond (nil? nm) :any
+                                      (contains? num-ret-fns nm) :num
+                                      (contains? vector-ret-fns nm) (mk-vec :any)
+                                      :else :any))))))))
       (= op :host) (let [nm (get fnode :name)]
                      (cond (contains? num-ret-fns nm) :num
                            (contains? vector-ret-fns nm) (mk-vec :any)
@@ -668,6 +681,36 @@
          r (infer body tenv env)]
      [(nth r 0) (nth r 1) @(get env :calls)])))
 
+;; --- protocol-method return types -------------------------------------------
+;; An impl is emitted as (register-(inline-)method TAG "Proto" "method" (fn ...)).
+;; Its fn body's return type is one impl's contribution to the method's return; the
+;; join over every impl is the method's return type (monomorphic when all agree).
+(defn- impl-reg-ret [node]
+  (when (= :invoke (get node :op))
+    (let [f (get node :fn) args (get node :args)]
+      (when (and (= :var (get f :op))
+                 (or (= "register-inline-method" (get f :name))
+                     (= "register-method" (get f :name)))
+                 (= 4 (count args)))
+        (let [proto (get (nth args 1) :val)
+              method (get (nth args 2) :val)
+              fnn (nth args 3)]
+          (when (and (string? proto) (string? method)
+                     (= :fn (get fnn :op)) (seq (get fnn :arities)))
+            [(str proto "/" method)
+             (nth (infer-body (get (first (get fnn :arities)) :body) {}) 0)]))))))
+
+(defn- walk-pm-rets [node acc]
+  (let [kr (impl-reg-ret node)
+        acc (if kr (update acc (nth kr 0) (fn [t] (if t (join t (nth kr 1)) (nth kr 1)))) acc)]
+    (reduce-ir-children (fn [a c] (walk-pm-rets c a)) acc node)))
+
+(defn collect-pm-rets!
+  "Scan the unit's nodes for protocol-method impl registrations and stash each
+  method's joined impl-return type (record-shapes must already be installed)."
+  [nodes]
+  (reset! pm-rets-box (reduce (fn [acc n] (walk-pm-rets n acc)) {} nodes)))
+
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded
   (ptmap: param-name -> type), returning the def with annotated bodies. The back
@@ -792,6 +835,7 @@
   record-shapes / protocol-methods must already be installed. Idempotent — resets
   the seed box; called once per build before per-form emit."
   [nodes]
+  (collect-pm-rets! nodes)
   (let [spec (wp-specializable nodes)
         ks (keys spec)]
     (loop [iter 0 ptypes (wp-empty-ptypes spec ks) rets {}]
