@@ -57,19 +57,21 @@
 ;; (frame-name . record) pairs, where record is #(ns name file line) or the symbol
 ;; 'ambiguous. Unmapped frames (host spine, anonymous lambdas) are skipped; raw
 ;; depth is capped.
-(define srcreg-debug? (getenv "JOLT_DEBUG_FRAMES"))
 (define (jolt-frame-records k)
-  (guard (e (#t '()))
+  ;; read the env at call time, not load time: a built binary runs top-level forms
+  ;; at heap-build time, where this would always be unset.
+  (let ((debug? (getenv "JOLT_DEBUG_FRAMES")))
+   (guard (e (#t '()))
     (let loop ((io (inspect/object k)) (n 0) (acc '()))
       (if (or (not io) (fx>=? n 400))
           (reverse acc)
           (let* ((nm (srcreg-frame-name io))
                  (src (and nm (hashtable-ref source-registry nm #f))))
-            (when (and srcreg-debug? nm)
+            (when (and debug? nm)
               (display (string-append "  [frame] " nm (if src " *MAPPED*" "") "\n")
                        (current-error-port)))
             (loop (guard (e (#t #f)) (io 'link)) (fx+ n 1)
-                  (if src (cons (cons nm src) acc) acc)))))))
+                  (if src (cons (cons nm src) acc) acc))))))))
 
 ;; Multi-line backtrace for an uncaught value — "  ns/name (file:line)" for a
 ;; mapped frame, the bare frame name for an ambiguous one — or #f when no jolt

@@ -333,7 +333,7 @@
 ;; bound rdr-source-file. read-string leaves the file unset. The analyzer reads
 ;; this back via jolt.host/form-position to stamp :pos on call nodes; macros and
 ;; (meta (read-string "(…)")) see it too.
-(define rdr-source-file (make-parameter #f))
+(define rdr-source-file (make-thread-parameter #f))
 (define rdr-kw-line   (keyword #f "line"))
 (define rdr-kw-column (keyword #f "column"))
 (define rdr-kw-file   (keyword #f "file"))
@@ -341,7 +341,7 @@
 ;; Forms are read left-to-right, so the indices queried are non-decreasing within
 ;; one source string — keep a cursor and count newlines only over the delta
 ;; (O(n) total, not O(n^2)). A different string or a backward index resets it.
-(define rdr-pos-cursor (make-parameter #f))   ; #f | (vector s i line col)
+(define rdr-pos-cursor (make-thread-parameter #f))   ; #f | (vector s i line col)
 (define (rdr-line-col-at s i)
   (let* ((cur (rdr-pos-cursor))
          (reuse (and (vector? cur) (eq? (vector-ref cur 0) s)

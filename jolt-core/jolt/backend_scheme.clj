@@ -676,13 +676,17 @@
     (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
     (let [ns (:ns node) nm (:name node) b (dl-name ns nm)
           fn? (= :fn (:op (:init node)))
-          ;; A named fn def gets a source-registry entry so a native backtrace can
-          ;; map its frame to ns/name (file:line). Chez names a frame by the fn's
-          ;; SHORT self-binding (emit-fn's letrec name = munge-name), not jv$ns$name,
-          ;; so register under that. Non-fn defs are not procedures.
+          ;; A fn def gets a source-registry entry so a native backtrace can map its
+          ;; frame to ns/name (file:line). Chez names the frame by whatever emit-fn
+          ;; binds the lambda to: a NAMED fn (defn, or (fn foo …)) gets a letrec
+          ;; self-binding = munge-name of the fn's own name; an ANONYMOUS fn def has
+          ;; no letrec, so the lambda sits directly under (define jv$ns$name …) and
+          ;; takes that name. Register under whichever Chez will report.
           pos (:pos node)
+          frame-name (when fn?
+                       (if-let [fnm (:name (:init node))] (munge-name fnm) b))
           reg (when (and fn? pos)
-                (str " (jolt-register-source! " (chez-str-lit (munge-name nm)) " "
+                (str " (jolt-register-source! " (chez-str-lit frame-name) " "
                      (chez-str-lit ns) " " (chez-str-lit nm) " "
                      (if (get pos :file) (chez-str-lit (get pos :file)) "jolt-nil") " "
                      (or (get pos :line) 0) ")"))]
