@@ -16,16 +16,32 @@
 (define-record-type jrec (fields tag pairs) (nongenerative chez-jrec-v1))
 (define jolt-deftype-kw (keyword "jolt" "deftype"))
 
+;; Field keys are interned keywords, so a keyword query compares by eq? (the hot
+;; (:field rec) / (get rec :field) case); any other key type falls back to jolt=2.
+(define (jrec-key=? field-key k)
+  (if (keyword? k) (eq? field-key k) (jolt=2 field-key k)))
 (define (jrec-lookup r k d)
-  (if (jolt=2 k jolt-deftype-kw)
+  (if (eq? k jolt-deftype-kw)
       (jrec-tag r)
       (let loop ((ps (jrec-pairs r)))
         (cond ((null? ps) d)
-              ((jolt=2 (caar ps) k) (cdar ps))
+              ((jrec-key=? (caar ps) k) (cdar ps))
               (else (loop (cdr ps)))))))
 (define (jrec-has? r k)
   (let loop ((ps (jrec-pairs r)))
-    (cond ((null? ps) #f) ((jolt=2 (caar ps) k) #t) (else (loop (cdr ps))))))
+    (cond ((null? ps) #f) ((jrec-key=? (caar ps) k) #t) (else (loop (cdr ps))))))
+;; The get path: one scan (vs jrec-has? + jrec-lookup = two); a deftype's ILookup
+;; valAt runs only when the field is genuinely missing.
+(define (jrec-ref coll k d)
+  (if (eq? k jolt-deftype-kw)
+      (jrec-tag coll)
+      (let loop ((ps (jrec-pairs coll)))
+        (cond ((null? ps)
+               (cond ((find-method-any-protocol (jrec-tag coll) "valAt")
+                      => (lambda (m) (jolt-invoke m coll k d)))
+                     (else d)))
+              ((jrec-key=? (caar ps) k) (cdar ps))
+              (else (loop (cdr ps)))))))
 ;; mutate a deftype's mutable field in place: the pairs are runtime cons cells,
 ;; so set-cdr! updates the field. (set! field v) inside a method
 ;; lowers to this; returns v, as set! does.
@@ -77,12 +93,10 @@
 ;; compiled to (get inst :field), never recurse); a NON-field key on a deftype that
 ;; implements clojure.lang.ILookup routes to its valAt (core.match's pattern types
 ;; compute ::tag in valAt), else the default.
-(register-get-arm! jrec?
-  (lambda (coll k d)
-    (cond ((jrec-has? coll k) (jrec-lookup coll k d))
-          ((find-method-any-protocol (jrec-tag coll) "valAt")
-           => (lambda (m) (jolt-invoke m coll k d)))
-          (else d))))
+;; jrec is the hottest get target (every record field read); jolt-get-dispatch
+;; (collections.ss) checks jrec? directly and calls jrec-ref, skipping the get-arm
+;; walk. This registration is the equivalent fallback for any other caller.
+(register-get-arm! jrec? jrec-ref)
 ;; A jrec is a defrecord (map of fields) by default, BUT a deftype that
 ;; implements a clojure.lang collection interface carries the op as an inline
 ;; method — prefer that method, else fall back to the field/map behavior. (jrec-cl
