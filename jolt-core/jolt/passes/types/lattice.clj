@@ -79,6 +79,15 @@
     (= a b) a
     (nil? a) b
     (nil? b) a
+    ;; :nil is the type of a literal nil. With a struct it forms a NILABLE struct —
+    ;; field reads still bare-index (jrec-field-at falls back to jolt-get on nil), but
+    ;; some?/nil? won't fold and a guard narrows it back to non-nil. With anything
+    ;; else it widens to :any (nil is not a safe scalar/vec — no fl/fx, no bare elem).
+    (or (= a :nil) (= b :nil))
+      (let [o (if (= a :nil) b a)]
+        (cond (= o :nil) :nil
+              (struct-type? o) (assoc o :nilable true)
+              :else :any))
     ;; :double is a flonum refinement of :num: two doubles stay :double (caught by
     ;; = above), but a double joined with anything else loses the flonum guarantee
     ;; and widens to :num before joining — so a param is :double only when EVERY
@@ -86,13 +95,18 @@
     (or (= a :double) (= b :double))
       (join-t (if (= a :double) :num a) (if (= b :double) :num b))
     (and (struct-type? a) (struct-type? b))
-      (let [merged (mk-struct (merge-fields (sfields a) (sfields b)))]
-        ;; joining two values of the SAME complete shape preserves it — the
-        ;; merged struct has the same key set. Different shapes
-        ;; (or an incomplete side) drop it, as the layout is no longer proven.
-        (if (and (get a :shape) (= (get a :shape) (get b :shape)))
-          (assoc merged :shape (get a :shape))
-          merged))
+      (let [merged (mk-struct (merge-fields (sfields a) (sfields b)))
+            ;; joining two values of the SAME complete shape / record type preserves
+            ;; it — the merged struct has the same key set. Different shapes/types
+            ;; (or an incomplete side) drop it, as the layout is no longer proven.
+            merged (if (and (get a :shape) (= (get a :shape) (get b :shape)))
+                     (assoc merged :shape (get a :shape)) merged)
+            merged (if (and (get a :type) (= (get a :type) (get b :type)))
+                     (assoc merged :type (get a :type)) merged)
+            ;; nilability is contagious: a nilable side makes the join nilable.
+            merged (if (or (get a :nilable) (get b :nilable))
+                     (assoc merged :nilable true) merged)]
+        merged)
     (and (vec-type? a) (vec-type? b)) (mk-vec (join-t (velem a) (velem b)))
     (and (set-type? a) (set-type? b)) (mk-set (join-t (selem a) (selem b)))
     ;; differing kinds: form a scalar union when both sides reduce to scalars
@@ -127,7 +141,12 @@
 ;; raw-get-safe (a struct / record): a struct type. The field type of key
 ;; k, if known, else :any.
 (defn struct-safe? [t] (struct-type? t))
-(defn field-type [t k] (if (struct-type? t) (get (sfields t) k :any) :any))
+;; a nilable struct yields :any for every field (the whole value might be nil, so a
+;; field read can be nil) — conservative + sound. A guard narrows it to non-nil first
+;; (strip-nilable), after which the real field types flow.
+(defn field-type [t k] (if (and (struct-type? t) (not (get t :nilable))) (get (sfields t) k :any) :any))
+(defn nilable? [t] (and (map? t) (get t :nilable) true))
+(defn strip-nilable [t] (if (and (map? t) (get t :nilable)) (dissoc t :nilable) t))
 ;; Shape (hidden class). A struct type built from a map LITERAL carries
 ;; its complete layout — :shape, the canonical (str-sorted) key vector. The back
 ;; end represents such a map as a shape tuple and reads a field by bare index.
@@ -152,7 +171,8 @@
 ;; only when all its values have such a type. Collections are non-nil.
 (defn truthy-type? [t]
   (or (= t :num) (= t :double) (= t :str) (= t :kw) (= t :truthy) (= t :phm)
-      (struct-type? t) (vec-type? t) (set-type? t)))
+      (and (struct-type? t) (not (get t :nilable)))   ; a nilable struct may be nil
+      (vec-type? t) (set-type? t)))
 
 ;; core fns whose result is a number (so it is non-nil/non-false and, for the
 ;; success-type checker, provably numeric).
