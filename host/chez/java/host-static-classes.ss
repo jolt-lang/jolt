@@ -836,6 +836,18 @@
 (reg-class-supers! "clojure.lang.AFn" '("clojure.lang.IFn" "java.lang.Runnable" "java.util.concurrent.Callable"))
 (reg-class-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.IFn" "clojure.lang.Fn"
                                               "java.lang.Runnable" "java.util.concurrent.Callable"))
+;; common exception hierarchy, so (instance? IOException e) / (catch IOException e)
+;; match a more specific throwable a library threw (e.g. http-client's
+;; UnknownHostException, caught by clj-http-lite's :ignore-unknown-host?).
+(reg-class-supers! "java.lang.Throwable" '("java.lang.Object"))
+(reg-class-supers! "java.lang.Exception" '("java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.lang.RuntimeException" '("java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.io.IOException" '("java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.io.InterruptedIOException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.net.SocketException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.net.UnknownHostException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.net.ConnectException" '("java.net.SocketException" "java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
+(reg-class-supers! "java.net.SocketTimeoutException" '("java.io.InterruptedIOException" "java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
 
 ;; transitive closure of direct supers (set semantics via an accumulator list)
 (define (class-ancestors-list name)
@@ -844,6 +856,24 @@
           ((member (car pending) seen) (loop (cdr pending) seen))
           (else (loop (append (hashtable-ref class-supers-tbl (car pending) '()) (cdr pending))
                       (cons (car pending) seen))))))
+
+;; (instance? Class e) on a throwable tagged-table carrying a JVM :class matches the
+;; carried class or any of its ancestors (full name or last segment), so a library's
+;; (catch UnknownHostException e …) / (catch IOException e …) matches the ex-info
+;; envelope it threw. Mirrors the (class e) arm (host-table.ss) for catch dispatch,
+;; which lowers to (instance? C e). Non-match returns 'pass so other arms still run.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (htable? val) (string? (hashtable-ref (htable-h val) "class" #f)))
+        (let* ((cls (hashtable-ref (htable-h val) "class" #f))
+               (want (symbol-t-name type-sym))
+               (want-seg (hsc-last-segment want)))
+          (let loop ((names (cons cls (class-ancestors-list cls))))
+            (cond ((null? names) 'pass)
+                  ((or (string=? want (car names))
+                       (string=? want-seg (hsc-last-segment (car names)))) #t)
+                  (else (loop (cdr names))))))
+        'pass)))
 
 ;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
 ;; super / ancestor class-name strings, or nil when jolt models no hierarchy for it.
