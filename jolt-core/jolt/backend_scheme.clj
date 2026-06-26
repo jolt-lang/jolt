@@ -350,7 +350,7 @@
        (ffi-type->chez (:rettype node)) ")"))
 
 ;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
-;; locked + registered (jolt-ffi-register-callable!, host/chez/ffi.ss) so the
+;; locked + registered (jolt-ffi-register-callable!, host/chez/java/ffi.ss) so the
 ;; collector neither moves nor reclaims it while C may still call through it. The
 ;; expression evaluates to the entry-point address — a jolt pointer the caller
 ;; hands to C. :collect-safe emits the convention that reactivates the thread on

@@ -685,7 +685,7 @@
      ;; jolt-regex value over the vendored irregex.
      (form-regex? form) {:op :regex :source (form-regex-source form)}
      ;; #inst / #uuid literals -> :inst / :uuid IR leaves. The Chez back
-     ;; end emits a runtime inst/uuid value (host/chez/inst-time.ss).
+     ;; end emits a runtime inst/uuid value (host/chez/java/inst-time.ss).
      (form-inst? form) {:op :inst :source (form-inst-source form)}
      (form-uuid? form) {:op :uuid :source (form-uuid-source form)}
      ;; bigdecimal literal (1.5M) -> a :bigdec leaf; the back end emits a runtime

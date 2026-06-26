@@ -14,7 +14,7 @@
 (load "host/chez/host-contract.ss")
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
-(load "host/chez/ffi.ss")
+(load "host/chez/java/ffi.ss")
 
 (define total 0) (define fails 0)
 (define (ok name pred) (set! total (+ total 1)) (unless pred (set! fails (+ fails 1)) (printf "FAIL: ~a\n" name)))

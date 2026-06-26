@@ -24,7 +24,7 @@
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
 ;; baked-ns snapshot, so a library's (require '[jolt.ffi]) still loads jolt.ffi's
 ;; Clojure side (the foreign-fn / defcfn macros, stdlib/jolt/ffi.clj).
-(load "host/chez/ffi.ss")          ; jolt.ffi (FFI: a library binds native code)
+(load "host/chez/java/ffi.ss")          ; jolt.ffi (FFI: a library binds native code)
 
 ;; jolt.main + jolt.deps live under jolt-core; keep them (and stdlib) on the
 ;; roots so the CLI's own namespaces — and any jolt.* an app pulls in — resolve.
