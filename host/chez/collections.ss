@@ -32,45 +32,161 @@
     out))
 
 ;; ============================================================================
-;; persistent vector — copy-on-write over a Scheme vector
+;; persistent vector — 32-way trie + tail (Clojure's PersistentVector)
 ;; ============================================================================
-;; A pvec carries an `ent` flag: #t marks a MAP ENTRY (the [k v] pair seq'd out
-;; of a map). A map entry equals its [k v] vector and walks like one (nth/count/
-;; seq/=/hash/print all read only `v`), but is NOT `vector?` and IS `map-entry?`
-;; — matching Clojure's MapEntry. The flag defaults #f, so every
-;; existing `(make-pvec v)` builds a plain vector; modifying an entry (conj/assoc)
-;; likewise yields a plain vector.
-(define-record-type pvec
-  (fields v ent)
-  (protocol (lambda (new) (case-lambda ((v) (new v #f)) ((v e) (new v e)))))
-  (nongenerative chez-pvec-v1))
-(define empty-pvec (make-pvec (vector)))
-(define (jolt-vector . xs) (make-pvec (list->vector xs)))
-(define (make-map-entry k v) (make-pvec (vector k v) #t))
-(define (jolt-map-entry? x) (and (pvec? x) (pvec-ent x) #t))
-(define (pvec-count p) (vector-length (pvec-v p)))
+;; cnt elements live in a trie of 32-wide nodes (root, height = shift bits) plus a
+;; trailing `tail` chunk of 1..32. conj appends to the tail and, when it fills,
+;; pushes it into the trie by path-copy — so conj is O(1) amortized and a linear
+;; build is O(n), not the O(n^2) of a flat copy-on-write array. nth/assoc/pop are
+;; O(log32 n). Trie nodes are Scheme vectors holding only their live children
+;; (grown left-to-right), so a node's length is its child count.
+;;
+;; `ent` #t marks a MAP ENTRY (the [k v] pair seq'd out of a map). An entry has 2
+;; elements (all in the tail), equals its [k v] vector and walks like one, and is
+;; both vector? (Clojure's MapEntry implements IPersistentVector) and map-entry?.
+;; Modifying an entry (conj/assoc/pop) yields a plain vector (ent #f).
+;;
+;; make-pvec and pvec-v keep the old flat-vector API: make-pvec builds a trie from
+;; a Scheme vector (every existing caller still passes one) and pvec-v materializes
+;; it back, so only this file's internals change.
+(define pv-bits 5)
+(define pv-width 32)
+(define pv-mask 31)
+(define pv-empty-node (vector))
+(define-record-type (pvec mk-pvec pvec?)
+  (fields cnt shift root tail ent) (nongenerative chez-pvec-v2))
+
+;; trailing helpers over Scheme vectors used by the trie
+(define (vec-snoc v x)                 ; copy v with x appended
+  (let* ((n (vector-length v)) (out (make-vector (fx+ n 1))))
+    (let loop ((i 0)) (when (fx<? i n) (vector-set! out i (vector-ref v i)) (loop (fx+ i 1))))
+    (vector-set! out n x) out))
+(define (vec-drop-last v) (vec-copy-range v 0 (fx- (vector-length v) 1)))
+(define (vec-take v n) (vec-copy-range v 0 n))
+(define (vec-set-or-snoc v i x)        ; replace index i, or append when i = length
+  (let ((n (vector-length v))) (if (fx<? i n) (vec-set v i x) (vec-snoc v x))))
+
+(define (pv-tailoff cnt)
+  (if (fx<? cnt pv-width) 0 (fxsll (fxsra (fx- cnt 1) pv-bits) pv-bits)))
+;; the 32-chunk Scheme vector holding index i (the tail or a trie leaf)
+(define (pv-chunk-for p i)
+  (if (fx>=? i (pv-tailoff (pvec-cnt p)))
+      (pvec-tail p)
+      (let loop ((node (pvec-root p)) (level (pvec-shift p)))
+        (if (fx>? level 0)
+            (loop (vector-ref node (fxand (fxsra i level) pv-mask)) (fx- level pv-bits))
+            node))))
+
 ;; jolt models every number as a double, so vector indices arrive as flonums —
 ;; coerce an integer-valued index to a Scheme fixnum before bounds math.
 (define (->idx i) (if (fixnum? i) i (if (flonum? i) (exact (floor i)) i)))
+(define (pvec-count p) (pvec-cnt p))
 (define (pvec-nth-d p i d)
-  (let ((v (pvec-v p)) (i (->idx i)))
-    (if (and (fixnum? i) (fx>=? i 0) (fx<? i (vector-length v))) (vector-ref v i) d)))
+  (let ((i (->idx i)))
+    (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
+        (vector-ref (pv-chunk-for p i) (fxand i pv-mask))
+        d)))
+
+;; new-path: wrap a node in single-child nodes up `level` bits.
+(define (pv-new-path level node)
+  (if (fx=? level 0) node (vector (pv-new-path (fx- level pv-bits) node))))
+;; push a full tail chunk into the trie under `parent` at `level`.
+(define (pv-push-tail cnt level parent tail-node)
+  (let ((subidx (fxand (fxsra (fx- cnt 1) level) pv-mask)))
+    (if (fx=? level pv-bits)
+        (vec-set-or-snoc parent subidx tail-node)
+        (let ((child (and (fx<? subidx (vector-length parent)) (vector-ref parent subidx))))
+          (vec-set-or-snoc parent subidx
+            (if child (pv-push-tail cnt (fx- level pv-bits) child tail-node)
+                      (pv-new-path (fx- level pv-bits) tail-node)))))))
 (define (pvec-conj p x)
-  (let* ((v (pvec-v p)) (n (vector-length v)) (out (make-vector (fx+ n 1))))
-    (let loop ((i 0)) (when (fx<? i n) (vector-set! out i (vector-ref v i)) (loop (fx+ i 1))))
-    (vector-set! out n x)
-    (make-pvec out)))
+  (let ((cnt (pvec-cnt p)) (shift (pvec-shift p)))
+    (if (fx<? (fx- cnt (pv-tailoff cnt)) pv-width)
+        ;; room in the tail
+        (mk-pvec (fx+ cnt 1) shift (pvec-root p) (vec-snoc (pvec-tail p) x) #f)
+        ;; tail full: push it into the trie, start a fresh tail
+        (let ((tail-node (pvec-tail p)))
+          (if (fx>? (fxsra cnt pv-bits) (fxsll 1 shift))
+              ;; root overflow: grow the trie a level
+              (mk-pvec (fx+ cnt 1) (fx+ shift pv-bits)
+                       (vector (pvec-root p) (pv-new-path shift tail-node))
+                       (vector x) #f)
+              (mk-pvec (fx+ cnt 1) shift
+                       (pv-push-tail cnt shift (pvec-root p) tail-node)
+                       (vector x) #f))))))
+
+(define (pv-assoc-trie level node i x)
+  (if (fx=? level 0)
+      (vec-set node (fxand i pv-mask) x)
+      (let ((subidx (fxand (fxsra i level) pv-mask)))
+        (vec-set node subidx (pv-assoc-trie (fx- level pv-bits) (vector-ref node subidx) i x)))))
 (define (pvec-assoc p i x)            ; i in [0,count]; =count appends
-  (let* ((v (pvec-v p)) (n (vector-length v)) (i (->idx i)))
-    (cond ((and (fx>=? i 0) (fx<? i n)) (make-pvec (vec-set v i x)))
-          ((fx=? i n) (pvec-conj p x))
-          (else (error 'assoc "vector index out of bounds")))))
+  (let ((i (->idx i)) (cnt (pvec-cnt p)))
+    (cond
+      ((fx=? i cnt) (pvec-conj p x))
+      ((and (fx>=? i 0) (fx<? i cnt))
+       (if (fx>=? i (pv-tailoff cnt))
+           (mk-pvec cnt (pvec-shift p) (pvec-root p)
+                    (vec-set (pvec-tail p) (fxand i pv-mask) x) #f)
+           (mk-pvec cnt (pvec-shift p)
+                    (pv-assoc-trie (pvec-shift p) (pvec-root p) i x) (pvec-tail p) #f)))
+      (else (error 'assoc "vector index out of bounds")))))
 (define (pvec-peek p)
-  (let ((n (pvec-count p))) (if (fx=? n 0) jolt-nil (vector-ref (pvec-v p) (fx- n 1)))))
+  (let ((n (pvec-cnt p))) (if (fx=? n 0) jolt-nil (pvec-nth-d p (fx- n 1) jolt-nil))))
+;; pop the last trie chunk back into the tail; #f means the subtree emptied.
+(define (pv-pop-tail cnt level node)
+  (let ((subidx (fxand (fxsra (fx- cnt 2) level) pv-mask)))
+    (cond
+      ((fx>? level pv-bits)
+       (let ((newchild (pv-pop-tail cnt (fx- level pv-bits) (vector-ref node subidx))))
+         (cond ((and (not newchild) (fx=? subidx 0)) #f)
+               (newchild (vec-set node subidx newchild))
+               (else (vec-take node subidx)))))
+      ((fx=? subidx 0) #f)
+      (else (vec-take node subidx)))))
 (define (pvec-pop p)
-  (let ((n (pvec-count p)))
-    (if (fx=? n 0) (error 'pop "can't pop empty vector")
-        (make-pvec (vec-copy-range (pvec-v p) 0 (fx- n 1))))))
+  (let ((cnt (pvec-cnt p)) (shift (pvec-shift p)))
+    (cond
+      ((fx=? cnt 0) (error 'pop "can't pop empty vector"))
+      ((fx=? cnt 1) empty-pvec)
+      ((fx>? (fx- cnt (pv-tailoff cnt)) 1)
+       (mk-pvec (fx- cnt 1) shift (pvec-root p) (vec-drop-last (pvec-tail p)) #f))
+      (else
+       (let* ((new-tail (pv-chunk-for p (fx- cnt 2)))
+              (popped (pv-pop-tail cnt shift (pvec-root p)))
+              (new-root (or popped pv-empty-node)))
+         (if (and (fx>? shift pv-bits) (fx<? (vector-length new-root) 2))
+             (mk-pvec (fx- cnt 1) (fx- shift pv-bits)
+                      (if (fx=? 0 (vector-length new-root)) pv-empty-node (vector-ref new-root 0))
+                      new-tail #f)
+             (mk-pvec (fx- cnt 1) shift new-root new-tail #f)))))))
+
+(define empty-pvec (mk-pvec 0 pv-bits pv-empty-node (vector) #f))
+;; build a trie pvec from a flat Scheme vector (the public constructor).
+(define make-pvec
+  (case-lambda
+    ((v) (make-pvec v #f))
+    ((v ent)
+     (let ((n (vector-length v)))
+       (if (fx<=? n pv-width)
+           (mk-pvec n pv-bits pv-empty-node v ent)   ; fits in the tail
+           (let loop ((p empty-pvec) (i 0))
+             (if (fx=? i n) p (loop (pvec-conj p (vector-ref v i)) (fx+ i 1)))))))))
+;; materialize the trie back to a flat Scheme vector (compatibility for callers
+;; that read the backing array — all one-shot conversions, not hot loops).
+(define (pvec-v p)
+  (let* ((cnt (pvec-cnt p)) (out (make-vector cnt)))
+    (let loop ((i 0))
+      (if (fx<? i cnt)
+          (let* ((chunk (pv-chunk-for p i)) (clen (vector-length chunk)))
+            (let cloop ((j 0) (k i))
+              (if (and (fx<? j clen) (fx<? k cnt))
+                  (begin (vector-set! out k (vector-ref chunk j)) (cloop (fx+ j 1) (fx+ k 1)))
+                  (loop k))))
+          out))))
+(define (jolt-vector . xs) (make-pvec (list->vector xs)))
+(define (make-map-entry k v) (make-pvec (vector k v) #t))
+(define (jolt-map-entry? x) (and (pvec? x) (pvec-ent x) #t))
 
 ;; ============================================================================
 ;; bitmap HAMT — keys hashed by jolt-hash, leaves compared by jolt=

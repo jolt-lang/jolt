@@ -3211,4 +3211,9 @@
   {:suite "protocols / arity dispatch" :label "protocol method extended to a host type with an arg" :expected "\"S:hi:5\"" :actual "(do (defprotocol Q (mq [this a])) (extend-protocol Q java.lang.String (mq [this a] (str \"S:\" this \":\" a))) (mq \"hi\" 5))"}
   {:suite "protocols / arity dispatch" :label "protocol method used as a value" :expected "[1 2]" :actual "(do (defprotocol Z (z [this])) (defrecord ZR [v] Z (z [_] v)) (mapv z [(->ZR 1) (->ZR 2)]))"}
   {:suite "protocols / arity dispatch" :label "no-extra-arg method dispatches by type" :expected "[16 25]" :actual "(do (defprotocol Sh (ar [s])) (defrecord Sq [x] Sh (ar [_] (* x x))) (defrecord Sq2 [y] Sh (ar [_] (* y y))) [(ar (->Sq 4)) (ar (->Sq2 5))])"}
+  {:suite "vectors / large trie" :label "linear build equals range across paths" :expected "true" :actual "(= (vec (range 2000)) (reduce conj [] (range 2000)) (into [] (range 2000)))"}
+  {:suite "vectors / large trie" :label "nth across a multi-level vector" :expected "[0 1024 2000 2099]" :actual "(let [v (vec (range 2100))] [(nth v 0) (nth v 1024) (nth v 2000) (nth v 2099)])"}
+  {:suite "vectors / large trie" :label "assoc in a large vector" :expected "[1098 :x 1100]" :actual "(let [v (assoc (vec (range 1100)) 1099 :x)] [(nth v 1098) (nth v 1099) (count v)])"}
+  {:suite "vectors / large trie" :label "pop down across a level boundary" :expected "[1023 1022]" :actual "(let [p (pop (vec (range 1024)))] [(count p) (peek p)])"}
+  {:suite "vectors / large trie" :label "pop to empty then rebuild" :expected "[0 5]" :actual "(let [e (loop [v (vec (range 100))] (if (seq v) (recur (pop v)) v))] [(count e) (count (into e (range 5)))])"}
 ]
