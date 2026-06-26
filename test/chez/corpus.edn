@@ -1834,6 +1834,9 @@
   {:suite "dynamic vars / portable defaults" :label "binding *read-eval*" :expected "false" :actual "(binding [*read-eval* false] *read-eval*)"}
   {:suite "special forms / letfn" :label "mutual recursion" :expected "true" :actual "(letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? 10))"}
   {:suite "core vars / present and callable" :label "*out* *err* *warn-on-reflection* await restart-agent" :expected "[true true false true true]" :actual "[(boolean *out*) (boolean *err*) *warn-on-reflection* (ifn? await) (ifn? restart-agent)]"}
+  {:suite "exceptions / runtime error classes" :label "arity error is ArityException" :expected "true" :actual "(instance? clojure.lang.ArityException (try ((fn [a b] a) 1) (catch Throwable e e)))"}
+  {:suite "exceptions / runtime error classes" :label "ArityException is an IllegalArgumentException" :expected "true" :actual "(instance? IllegalArgumentException (try ((fn [a b] a) 1) (catch Throwable e e)))"}
+  {:suite "exceptions / runtime error classes" :label "non-seqable is IllegalArgumentException" :expected "true" :actual "(instance? IllegalArgumentException (try (doall (mapcat identity 0)) (catch Throwable e e)))"}
   {:suite "dynamic vars / portable defaults" :label "*data-readers* map, *math-context* nil" :expected "[true true]" :actual "[(map? *data-readers*) (nil? *math-context*)]"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern build" :expected "\"hi\"" :actual "(re-find (re-pattern \"\\\\w+\") \"hi!\")"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern is regex?" :expected "true" :actual "(regex? (re-pattern \"a\"))"}

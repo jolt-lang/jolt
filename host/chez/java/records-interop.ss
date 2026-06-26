@@ -16,6 +16,7 @@
   '(("ExceptionInfo" . "RuntimeException")
     ("RuntimeException" . "Exception")
     ("IllegalArgumentException" . "RuntimeException")
+    ("ArityException" . "IllegalArgumentException")
     ("NumberFormatException" . "IllegalArgumentException")
     ("IllegalStateException" . "RuntimeException")
     ("UnsupportedOperationException" . "RuntimeException")
@@ -51,6 +52,24 @@
           ((and (string=? c "ExceptionInfo") (string=? wanted "IExceptionInfo")) #t)
           (else (let ((p (assoc c exception-parent))) (loop (and p (cdr p))))))))
 
+;; A raw Chez condition (an arity or non-seqable error Chez itself raised, not a
+;; jolt ex-info) carries no jolt exception class. Map the ones Clojure raises a
+;; specific class for, by message, so (class e) and (instance? C e) match the JVM.
+;; Returns a simple class name or #f.
+(define (ri-substring? needle hay)
+  (let ((nl (string-length needle)) (hl (string-length hay)))
+    (let loop ((i 0))
+      (cond ((> (+ i nl) hl) #f)
+            ((string=? needle (substring hay i (+ i nl))) #t)
+            (else (loop (+ i 1)))))))
+(define (chez-condition-exc-class v)
+  (and (condition? v) (message-condition? v)
+       (let ((m (condition-message v)))
+         (and (string? m)
+              (cond ((ri-substring? "incorrect number of arguments" m) "ArityException")
+                    ((ri-substring? "not seqable" m) "IllegalArgumentException")
+                    (else #f))))))
+
 ;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded
 ;; later (io, inst-time, natives-array, natives-queue, host-static-classes)
 ;; register an arm with register-instance-check-arm! instead of set!-wrapping
@@ -60,6 +79,13 @@
 (define instance-check-registry '())
 (define (register-instance-check-arm! f)   ; f: (type-sym val) -> #t | #f | 'pass
   (set! instance-check-registry (cons f instance-check-registry)))
+
+;; (instance? C raw-condition): match when C is the condition's mapped class or a
+;; supertype of it (ArityException is also an IllegalArgumentException, etc.).
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (let ((k (chez-condition-exc-class val)))
+      (if k (if (exception-isa? k (last-dot (symbol-t-name type-sym))) #t #f) 'pass))))
 
 (define (instance-check-base type-sym val)
   (let ((tname (symbol-t-name type-sym)))

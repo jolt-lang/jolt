@@ -54,6 +54,14 @@
 ;; the class NAME of x (string), or nil for nil. (class x) wraps it in a Class
 ;; value (make-class-obj, host-static-classes.ss) so it renders like a JVM Class
 ;; while staying = its name string.
+;; a raw Chez condition Clojure raises a specific class for (records-interop.ss
+;; chez-condition-exc-class) reports that JVM class, so (class e) and a
+;; (thrown? ArityException …) test match — not the opaque :object fallback.
+(register-class-arm!
+  (lambda (x) (and (chez-condition-exc-class x) #t))
+  (lambda (x) (if (string=? (chez-condition-exc-class x) "ArityException")
+                  "clojure.lang.ArityException"
+                  "java.lang.IllegalArgumentException")))
 (define (jolt-class-name x)
   (let loop ((as jolt-class-arms))
     (cond ((null? as) (jolt-class-base x))
@@ -94,6 +102,7 @@
     ("Charset" . "java.nio.charset.Charset") ("Base64" . "java.util.Base64")
     ("Exception" . "java.lang.Exception")
     ("IllegalArgumentException" . "java.lang.IllegalArgumentException")
+    ("ArityException" . "clojure.lang.ArityException")
     ("IllegalStateException" . "java.lang.IllegalStateException")
     ("RuntimeException" . "java.lang.RuntimeException")
     ("UnsupportedOperationException" . "java.lang.UnsupportedOperationException")
@@ -165,7 +174,7 @@
     "java.lang.IndexOutOfBoundsException" "java.io.FileNotFoundException"
     "java.io.UnsupportedEncodingException"
     ;; clojure.lang.ExceptionInfo / IExceptionInfo compared against (class e)
-    "clojure.lang.ExceptionInfo" "clojure.lang.IExceptionInfo"
+    "clojure.lang.ExceptionInfo" "clojure.lang.IExceptionInfo" "clojure.lang.ArityException"
     "java.util.regex.Pattern" "java.net.URI" "java.util.UUID"
     "clojure.lang.PersistentQueue"
     "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.Atom"))
