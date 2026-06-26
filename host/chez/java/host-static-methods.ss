@@ -214,12 +214,22 @@
 ;; class object; anything else throws a catchable ClassNotFoundException, like the
 ;; JVM — so the common `(try (Class/forName "optional.Dep") (catch …))` probe a
 ;; library uses to detect an absent dependency works (e.g. ring's joda-time check).
+;; java.* / clojure.* packages jolt does NOT back, even though the broad prefix
+;; below would otherwise claim them — optional backends a library feature-probes
+;; with (Class/forName …) (e.g. tools.logging's java.util.logging / log4j). Listing
+;; them here keeps class-found? honest so the probe sees them absent and skips the
+;; backend (jolt has its own logging) instead of trying to use it and crashing.
+(define forname-absent-prefixes
+  '("java.util.logging." "javax.management." "java.lang.management."))
 (define (forname-known? nm)
-  (or (lookup-class class-statics-tbl nm)
-      (lookup-class class-ctors-tbl nm)
+  ;; exact lookups only — lookup-class would fall back to the short class name, so
+  ;; any "x.y.Class" would spuriously match the registered java.lang.Class.
+  (or (hashtable-ref class-statics-tbl nm #f)
+      (hashtable-ref class-ctors-tbl nm #f)
       (let ((pre? (lambda (p) (and (>= (string-length nm) (string-length p))
                                    (string=? (substring nm 0 (string-length p)) p)))))
-        (or (pre? "java.") (pre? "clojure.") (pre? "jolt.")))))
+        (and (or (pre? "java.") (pre? "clojure.") (pre? "jolt."))
+             (not (exists pre? forname-absent-prefixes))))))
 (register-class-statics! "Class"
   (list (cons "forName"
               (lambda (nm . _)

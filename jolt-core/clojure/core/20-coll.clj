@@ -302,6 +302,9 @@
   ([child parent] (isa? (deref global-hierarchy) child parent))
   ([h child parent]
    (or (= child parent)
+       ;; JVM class assignability (Object root + modeled clojure.lang/java.* ancestry),
+       ;; so a class-keyed multimethod / (isa? (class x) C) dispatches like the JVM.
+       (jolt.host/class-isa? child parent)
        (contains? (get (get h :ancestors) child #{}) parent)
        (and (vector? parent) (vector? child)
             (= (count parent) (count child))

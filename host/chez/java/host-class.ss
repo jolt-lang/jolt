@@ -40,6 +40,16 @@
     ;; class, so (= clojure.lang.ExceptionInfo (class e)) and clojure.test's
     ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
     ((ex-info-map? x) (ex-info-class x))
+    ;; persistent collections + namespace report their JVM class names (not jolt's
+    ;; internal :vector/:set/… type keyword), so class-based dispatch — e.g. a
+    ;; defmulti on [(class a) (class b)] — sees a real clojure.lang.* class.
+    ((jns? x) "clojure.lang.Namespace")
+    ((pvec? x) "clojure.lang.PersistentVector")
+    ((pset? x) "clojure.lang.PersistentHashSet")
+    ((pmap? x) "clojure.lang.PersistentArrayMap")
+    ((jolt-lazyseq? x) "clojure.lang.LazySeq")
+    ((empty-list-t? x) "clojure.lang.PersistentList$EmptyList")
+    ((cseq? x) "clojure.lang.PersistentList")
     (else (jolt-str-render-one (jolt-type x)))))
 ;; the class NAME of x (string), or nil for nil. (class x) wraps it in a Class
 ;; value (make-class-obj, host-static-classes.ss) so it renders like a JVM Class
@@ -93,7 +103,20 @@
     ("IndexOutOfBoundsException" . "java.lang.IndexOutOfBoundsException")
     ("UnsupportedEncodingException" . "java.io.UnsupportedEncodingException")
     ("FileNotFoundException" . "java.io.FileNotFoundException")
-    ("Throwable" . "java.lang.Throwable")))
+    ("Throwable" . "java.lang.Throwable")
+    ;; clojure.lang / java.util types that class-based multimethods dispatch on.
+    ("Fn" . "clojure.lang.Fn") ("IFn" . "clojure.lang.IFn")
+    ("Namespace" . "clojure.lang.Namespace") ("Named" . "clojure.lang.Named")
+    ("Set" . "java.util.Set") ("List" . "java.util.List") ("Map" . "java.util.Map")
+    ("Collection" . "java.util.Collection") ("Iterable" . "java.lang.Iterable")
+    ("CharSequence" . "java.lang.CharSequence") ("Comparable" . "java.lang.Comparable")
+    ("Runnable" . "java.lang.Runnable") ("Callable" . "java.util.concurrent.Callable")
+    ("IPersistentSet" . "clojure.lang.IPersistentSet")
+    ("IPersistentVector" . "clojure.lang.IPersistentVector")
+    ("IPersistentMap" . "clojure.lang.IPersistentMap")
+    ("IPersistentCollection" . "clojure.lang.IPersistentCollection")
+    ("Sequential" . "clojure.lang.Sequential") ("Seqable" . "clojure.lang.Seqable")
+    ("Associative" . "clojure.lang.Associative")))
 (for-each
   (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
   class-token-alist)
