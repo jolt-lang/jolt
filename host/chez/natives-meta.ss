@@ -33,7 +33,7 @@
     ((pvec? x) (make-pvec (pvec-v x) (pvec-ent x)))
     ((pmap? x) (make-pmap (pmap-root x) (pmap-cnt x)))
     ((pset? x) (make-pset (pset-m x)))
-    ((jrec? x) (make-jrec (jrec-tag x) (jrec-pairs x)))
+    ((jrec? x) (make-jrec (jrec-desc x) (jrec-vec-copy (jrec-vals x)) (jrec-ext x)))
     ;; a reify shares its (read-only) method table + protos but gets a fresh
     ;; identity, so attaching meta leaves the original's meta untouched. Every
     ;; Clojure reify implements IObj.

@@ -16,6 +16,7 @@
 (define-record-type jolt-nil-t (fields) (nongenerative jolt-nil-v1))
 (define jolt-nil (make-jolt-nil-t))
 (define (jolt-nil? x) (jolt-nil-t? x))
+(define (jolt-some? x) (not (jolt-nil-t? x)))
 
 ;; --- truthiness: only nil and false are falsey -------------------------------
 (define (jolt-truthy? x) (not (or (jolt-nil? x) (eq? x #f))))

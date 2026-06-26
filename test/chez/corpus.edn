@@ -3190,4 +3190,20 @@
   {:suite "regex / literal value" :label "re-matches on a literal" :expected "\"aaa\"" :actual "(re-matches #\"a+\" \"aaa\")"}
   {:suite "regex / literal value" :label "quoted regex round-trips" :expected "\"#\\\"a.c\\\"\"" :actual "(pr-str (quote #\"a.c\"))"}
   {:suite "regex / literal value" :label "extend-protocol to Pattern dispatches" :expected "[:pattern :other]" :actual "(do (defprotocol Tg (tg [_])) (extend-protocol Tg java.util.regex.Pattern (tg [_] :pattern) Object (tg [_] :other)) [(tg #\"x\") (tg 1)])"}
+  {:suite "records / representation" :label "assoc a declared field keeps the record" :expected "[true 9 2]" :actual "(do (defrecord R [a b]) (let [x (assoc (->R 1 2) :a 9)] [(record? x) (:a x) (:b x)]))"}
+  {:suite "records / representation" :label "assoc an extension field keeps the record" :expected "[true 3 1]" :actual "(do (defrecord R [a b]) (let [x (assoc (->R 1 2) :c 3)] [(record? x) (:c x) (:a x)]))"}
+  {:suite "records / representation" :label "dissoc an extension field keeps the record" :expected "[true nil 1]" :actual "(do (defrecord R [a b]) (let [x (-> (->R 1 2) (assoc :c 3) (dissoc :c))] [(record? x) (:c x) (:a x)]))"}
+  {:suite "records / representation" :label "dissoc a declared field downgrades to a map" :expected "[false true 2 false]" :actual "(do (defrecord R [a b]) (let [m (dissoc (->R 1 2) :a)] [(record? m) (map? m) (:b m) (contains? m :a)]))"}
+  {:suite "records / representation" :label "count includes extension fields" :expected "[2 3]" :actual "(do (defrecord R [a b]) [(count (->R 1 2)) (count (assoc (->R 1 2) :c 3))])"}
+  {:suite "records / representation" :label "keys are declared then extension order" :expected "[[:a :b] [:a :b :c]]" :actual "(do (defrecord R [a b]) [(vec (keys (->R 1 2))) (vec (keys (assoc (->R 1 2) :c 3)))])"}
+  {:suite "records / representation" :label "a nil field value is present, not absent" :expected "[nil true :d]" :actual "(do (defrecord R [a b]) (let [n (->R nil 2)] [(:a n) (contains? n :a) (get (->R 1 2) :zzz :d)]))"}
+  {:suite "records / representation" :label "seq yields field map-entries" :expected "[[:a 1] [:b 2]]" :actual "(do (defrecord R [a b]) (vec (map (fn [e] [(key e) (val e)]) (->R 1 2))))"}
+  {:suite "records / representation" :label "conj a map-entry vector assocs it" :expected "3" :actual "(do (defrecord R [a b]) (:c (conj (->R 1 2) [:c 3])))"}
+  {:suite "records / representation" :label "= after assoc of an unchanged field" :expected "true" :actual "(do (defrecord R [a b]) (= (assoc (->R 1 2) :a 1) (->R 1 2)))"}
+  {:suite "records / representation" :label "= compares extension fields" :expected "[true false]" :actual "(do (defrecord R [a b]) [(= (assoc (->R 1 2) :c 9) (assoc (->R 1 2) :c 9)) (= (assoc (->R 1 2) :c 9) (->R 1 2))])"}
+  {:suite "records / representation" :label "assoc then dissoc an extension field = original" :expected "true" :actual "(do (defrecord R [a b]) (= (-> (->R 1 2) (assoc :c 3) (dissoc :c)) (->R 1 2)))"}
+  {:suite "records / representation" :label "map-> keeps extension keys" :expected "[true 3 [:a :b :c]]" :actual "(do (defrecord R [a b]) (let [m (map->R {:a 1 :b 2 :c 3})] [(record? m) (:c m) (vec (keys m))]))"}
+  {:suite "records / representation" :label "record as a map key" :expected ":v" :actual "(do (defrecord R [a]) (get {(->R 1) :v} (->R 1)))"}
+  {:suite "records / representation" :label "records dedup in a set by value" :expected "2" :actual "(do (defrecord R [a]) (count (into #{} [(->R 1) (->R 1) (->R 2)])))"}
+  {:suite "records / representation" :label "nested record field reads" :expected "[2 1]" :actual "(do (defrecord N [l r v]) (let [t (->N (->N nil nil 1) nil 2)] [(:v t) (:v (:l t))]))"}
 ]
