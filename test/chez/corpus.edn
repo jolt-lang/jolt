@@ -1823,6 +1823,10 @@
   {:suite "regex / re-seq" :label "all matches" :expected "[\"1\" \"22\" \"333\"]" :actual "(re-seq #\"\\d+\" \"a1b22c333\")"}
   {:suite "regex / re-seq" :label "empty when none" :expected "nil" :actual "(seq (re-seq #\"z\" \"abc\"))"}
   {:suite "regex / re-seq" :label "words" :expected "[\"foo\" \"bar\"]" :actual "(re-seq #\"\\w+\" \"foo bar\")"}
+  {:suite "regex / char-class dash" :label "dash after \\w is literal" :expected "\"a_b-c\"" :actual "(re-matches #\"[\\w-_]+\" \"a_b-c\")"}
+  {:suite "regex / char-class dash" :label "dash + escaped dot in class" :expected "\"a.b_c-d\"" :actual "(re-matches #\"[\\w-_\\.]+\" \"a.b_c-d\")"}
+  {:suite "regex / char-class dash" :label "trailing dash in class" :expected "[\"a-b\" \"c-d\"]" :actual "(vec (re-seq #\"[\\w-]+\" \"a-b c-d\"))"}
+  {:suite "regex / nested quantifier" :label "(X+)* parses and matches" :expected "true" :actual "(boolean (re-matches #\"([^%]+)*(%(d))?\" \"abc\"))"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern build" :expected "\"hi\"" :actual "(re-find (re-pattern \"\\\\w+\") \"hi!\")"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern is regex?" :expected "true" :actual "(regex? (re-pattern \"a\"))"}
   {:suite "regex / re-pattern & string ops" :label "split on regex" :expected "[\"a\" \"b\" \"c\"]" :actual "(do (require '[clojure.string :as s]) (s/split \"a1b2c\" #\"\\d\"))"}

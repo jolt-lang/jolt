@@ -19,6 +19,36 @@ reflection and no class hierarchy. `(class x)` returns the JVM class name for th
 scalar/collection types Clojure programs compare against (`"java.lang.Long"`,
 `"java.lang.String"`, and so on).
 
+## Source layering: JVM-specific code lives in the java layer
+
+Keep anything JVM-specific in `host/chez/java/`. The rest of the runtime stays
+JVM-free, and the compiler in `jolt-core/` is JVM-free by construction.
+
+- `host/chez/java/` holds the JVM model: the `java.*` mirrors, the class tokens
+  and class hierarchy, `(class x)`/`(type x)`/`instance?`, exception classes, the
+  interop dispatch for `.method`/`Class/static`/`(Class.)`. If a value or name
+  only means something because the JVM has it, it belongs here.
+- The rest of `host/chez/` is the host-neutral runtime — the value model
+  (`values.ss`, `collections.ss`, `seq.ss`), reader, vars, multimethods, meta. It
+  speaks jolt's own taxonomy (`:string`, `:vector`, `:jolt/inst`), never JVM class
+  names.
+- `jolt-core/` (the Clojure compiler + `clojure.core` overlay) emits and reasons
+  in that taxonomy only. The JVM mapping happens *after*, in the java layer.
+
+The worked example is `type`. The core layer (`natives-meta.ss`) computes the
+keyword taxonomy and binds it as `__type-tag` — that's what `print-method` and the
+reader dispatch on, with no JVM in scope. The java layer (`java/host-class.ss`)
+then rebinds the public `clojure.core/type` to Clojure's `(or (:type meta) (class
+x))`, mapping `:jolt/inst` → `java.util.Date` and so on, right next to `(class
+…)`. So the compiler keeps emitting `:jolt/inst`; the java layer remaps it.
+
+When you add interop behaviour, prefer registering it through the generic hooks a
+java-layer file already uses — `register-class-arm!` for `(class x)`,
+`register-instance-check-arm!` for `instance?`, `register-eq-arm!` for value
+equality — rather than threading a JVM concept back into a host-neutral file. A
+new `java.*` shim is a new file under `host/chez/java/` loaded from `rt.ss`, not a
+branch added to `collections.ss` or `seq.ss`.
+
 ## What's shimmed
 
 This is the surface today, not the whole JVM. Methods not listed generally
