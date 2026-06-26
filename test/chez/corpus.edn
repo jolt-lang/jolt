@@ -284,6 +284,10 @@
   {:suite "functions / definition" :label "multi-arity" :expected "[1 5]" :actual "(do (defn f ([x] x) ([x y] (+ x y))) [(f 1) (f 2 3)])"}
   {:suite "functions / definition" :label "variadic" :expected "[1 2 3]" :actual "(do (defn f [& xs] xs) (f 1 2 3))"}
   {:suite "functions / definition" :label "variadic with fixed" :expected "[1 [2 3]]" :actual "(do (defn f [a & xs] [a xs]) (f 1 2 3))"}
+  {:suite "functions / definition" :label "named fn-literal self-recursion (direct self-call)" :expected "3628800" :actual "((fn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) 10)"}
+  {:suite "functions / definition" :label "defn self-recursion" :expected "832040" :actual "(do (defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 30))"}
+  {:suite "functions / definition" :label "multi-arity self-recursion" :expected "15" :actual "(do (defn sum ([xs] (sum xs 0)) ([xs a] (if (seq xs) (sum (rest xs) (+ a (first xs))) a))) (sum [1 2 3 4 5]))"}
+  {:suite "functions / definition" :label "variadic self-recursion" :expected "10" :actual "(do (defn g [& xs] (if (next xs) (apply g (cons (+ (first xs) (second xs)) (nnext xs))) (first xs))) (g 1 2 3 4))"}
   {:suite "functions / definition" :label "closure captures" :expected "8" :actual "(do (defn adder [n] (fn [x] (+ x n))) ((adder 5) 3))"}
   {:suite "functions / definition" :label "recursion" :expected "120" :actual "(do (defn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) (fact 5))"}
   {:suite "functions / definition" :label "named fn self-ref" :expected "120" :actual "((fn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) 5)"}

@@ -520,9 +520,15 @@
                          (if (empty? as) "" (str " " (str/join " " as))) ")")))
       (= :host (:op fnode))
       (throw (ex-info (str "emit: unsupported host call `" (:name fnode) "`") {}))
-      ;; a :local callee that isn't a known procedure -> dynamic IFn dispatch.
-      (and (= :local (:op fnode)) (not (*known-procs* (munge-name (:name fnode)))))
-      (invoke)
+      ;; a :local callee: a known procedure (the letrec-bound self-name of a named
+      ;; fn — i.e. self-recursion) is a real Scheme proc, so call it directly with
+      ;; no jolt-invoke / arg consing; case-lambda handles arity. Any other local
+      ;; holds an arbitrary IFn -> dynamic dispatch.
+      (= :local (:op fnode))
+      (if (*known-procs* (munge-name (:name fnode)))
+        (order-args (fn [as] (str "(" (munge-name (:name fnode))
+                                  (if (seq as) (str " " (str/join " " as)) "") ")")))
+        (invoke))
       ;; closed-world direct call: the callee var is an app fn def already emitted
       ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
       ;; Only fn-valued defs qualify; a non-fn invokable value (a map/set/keyword
