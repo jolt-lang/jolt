@@ -77,6 +77,28 @@
 (let ((e (devirt-emit "user.Plain" "pl")))
   (check "devirt Object-default == dispatch" (run-emit e) (evals "(area pl)")))  ; :obj-default
 
+;; in a direct-link build a devirt site caches the resolved impl in a per-site cell
+;; (resolved once, reused) instead of resolving per call. Annotate the (area x) in a
+;; def body and emit the top form; the result must carry the cell and still be right.
+(let* ((set-direct-link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
+       (emit-top-form    (var-deref "jolt.backend-scheme" "emit-top-form"))
+       (dn (analyze (make-analyze-ctx "user") (jolt-ce-read "(def usearea (fn [x] (area x)))")))
+       (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
+       (inv (jolt-get ar0 (kw "body")))
+       (inv2 (jolt-assoc inv (kw "devirt-type") "user.Circle" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+       (dn2 (jolt-assoc dn (kw "init")
+                        (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
+                                    (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
+  (set-direct-link! #t)
+  (let ((e (emit-top-form dn2)))
+    (set-direct-link! #f)
+    (check "devirt in a def caches in a per-site cell" (has-sub? e "_dvc$") #t)
+    (check "cached cell still resolves the impl" (has-sub? e "devirt-resolve") #t)
+    ;; eval the def, then call it: caches on first call, reuses after — still 7.
+    (run-emit e)
+    (check "cached devirt == dispatch (1st call)" (jolt-invoke (var-deref "user" "usearea") (var-deref "user" "c")) 7)
+    (check "cached devirt == dispatch (2nd call, from cell)" (jolt-invoke (var-deref "user" "usearea") (var-deref "user" "c")) 7)))
+
 (if (= fails 0)
     (begin (printf "devirt gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "devirt gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
