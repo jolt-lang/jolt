@@ -1116,20 +1116,37 @@
                  ((string=? f "PROLEPTIC_MONTH") (+ (* y 12) (- m 1)))
                  ((string=? f "YEAR_OF_ERA") (if (>= y 1) y (- 1 y)))
                  ((string=? f "ERA") (if (>= y 1) 1 0))
+                 ;; aligned-* group the day-of-month/year into 7-day blocks from the
+                 ;; 1st (java.time): the within-block weekday is ((n-1) mod 7)+1, the
+                 ;; block number is ((n-1) quotient 7)+1.
+                 ((string=? f "ALIGNED_DAY_OF_WEEK_IN_MONTH") (+ (modulo (- d 1) 7) 1))
+                 ((string=? f "ALIGNED_WEEK_OF_MONTH") (+ (quotient (- d 1) 7) 1))
+                 ((string=? f "ALIGNED_DAY_OF_WEEK_IN_YEAR")
+                  (+ (modulo (- (ld-day-of-year (ld-epoch-day t)) 1) 7) 1))
+                 ((string=? f "ALIGNED_WEEK_OF_YEAR")
+                  (+ (quotient (- (ld-day-of-year (ld-epoch-day t)) 1) 7) 1))
                  (else (error #f (string-append "LocalDate has no field " f)))))))
       ((jt-time? t)
        (cond ((string=? f "HOUR_OF_DAY") (lt-hour t)) ((string=? f "MINUTE_OF_HOUR") (lt-minute t))
              ((string=? f "SECOND_OF_MINUTE") (lt-second t)) ((string=? f "NANO_OF_SECOND") (lt-nano t))
              ((string=? f "NANO_OF_DAY") (lt-nano-of-day t))
              ((string=? f "MILLI_OF_DAY") (quotient (lt-nano-of-day t) 1000000))
+             ((string=? f "MICRO_OF_DAY") (quotient (lt-nano-of-day t) 1000))
              ((string=? f "SECOND_OF_DAY") (quotient (lt-nano-of-day t) nanos-per-sec))
              ((string=? f "MINUTE_OF_DAY") (quotient (lt-nano-of-day t) (* 60 nanos-per-sec)))
              ((string=? f "MILLI_OF_SECOND") (quotient (lt-nano t) 1000000))
              ((string=? f "MICRO_OF_SECOND") (quotient (lt-nano t) 1000))
+             ;; CLOCK_HOUR_OF_DAY is 1..24 (midnight is 24), HOUR_OF_AMPM 0..11,
+             ;; CLOCK_HOUR_OF_AMPM 1..12, AMPM_OF_DAY 0 (AM) / 1 (PM).
+             ((string=? f "CLOCK_HOUR_OF_DAY") (let ((h (lt-hour t))) (if (= h 0) 24 h)))
+             ((string=? f "HOUR_OF_AMPM") (modulo (lt-hour t) 12))
+             ((string=? f "CLOCK_HOUR_OF_AMPM") (let ((h (modulo (lt-hour t) 12))) (if (= h 0) 12 h)))
              ((string=? f "AMPM_OF_DAY") (quotient (lt-hour t) 12))
              (else (error #f (string-append "LocalTime has no field " f)))))
       ((jt-dt? t)
-       (if (member f '("YEAR" "MONTH_OF_YEAR" "DAY_OF_MONTH" "DAY_OF_WEEK" "DAY_OF_YEAR" "EPOCH_DAY" "PROLEPTIC_MONTH" "YEAR_OF_ERA" "ERA"))
+       ;; route a field to whichever part supports it (date fields incl. the
+       ;; aligned-* group to the date, the rest to the time).
+       (if (temporal-supports-field? (ldt-date t) f)
            (temporal-get-field (ldt-date t) f)
            (temporal-get-field (ldt-time t) f)))
       ((jt-instant? t)
@@ -1138,6 +1155,17 @@
              ((string=? f "MILLI_OF_SECOND") (jt-floor-div (jt-floor-mod (inst-nanos t) nanos-per-sec) 1000000))
              ((string=? f "MICRO_OF_SECOND") (jt-floor-div (jt-floor-mod (inst-nanos t) nanos-per-sec) 1000))
              (else (error #f (string-append "Instant has no field " f)))))
+      ((and (jhost? t) (string=? (jhost-tag t) "year"))
+       (let ((y (year-val t)))
+         (cond ((string=? f "YEAR") y) ((string=? f "YEAR_OF_ERA") (if (>= y 1) y (- 1 y)))
+               ((string=? f "ERA") (if (>= y 1) 1 0))
+               (else (error #f (string-append "Year has no field " f))))))
+      ((and (jhost? t) (string=? (jhost-tag t) "year-month"))
+       (let ((y (ym-year t)) (m (ym-month t)))
+         (cond ((string=? f "YEAR") y) ((string=? f "MONTH_OF_YEAR") m)
+               ((string=? f "PROLEPTIC_MONTH") (+ (* y 12) (- m 1)))
+               ((string=? f "YEAR_OF_ERA") (if (>= y 1) y (- 1 y))) ((string=? f "ERA") (if (>= y 1) 1 0))
+               (else (error #f (string-append "YearMonth has no field " f))))))
       (else (error #f "get(field): unsupported temporal")))))
 
 ;; field set: (with temporal ChronoField value) -> a new temporal.
@@ -1168,10 +1196,17 @@
           (else #f))))
 (define (temporal-supports-field? t field)
   (let ((f (string-upcase field)))
-    (cond ((jt-date? t) (and (member f '("YEAR" "MONTH_OF_YEAR" "DAY_OF_MONTH" "DAY_OF_WEEK" "DAY_OF_YEAR" "EPOCH_DAY" "PROLEPTIC_MONTH" "YEAR_OF_ERA" "ERA")) #t))
-          ((jt-time? t) (and (member f '("HOUR_OF_DAY" "MINUTE_OF_HOUR" "SECOND_OF_MINUTE" "NANO_OF_SECOND" "NANO_OF_DAY" "MILLI_OF_DAY" "SECOND_OF_DAY" "MINUTE_OF_DAY" "MILLI_OF_SECOND" "MICRO_OF_SECOND" "AMPM_OF_DAY")) #t))
+    (cond ((jt-date? t) (and (member f '("YEAR" "MONTH_OF_YEAR" "DAY_OF_MONTH" "DAY_OF_WEEK" "DAY_OF_YEAR" "EPOCH_DAY" "PROLEPTIC_MONTH" "YEAR_OF_ERA" "ERA"
+                                         "ALIGNED_DAY_OF_WEEK_IN_MONTH" "ALIGNED_DAY_OF_WEEK_IN_YEAR" "ALIGNED_WEEK_OF_MONTH" "ALIGNED_WEEK_OF_YEAR")) #t))
+          ((jt-time? t) (and (member f '("HOUR_OF_DAY" "CLOCK_HOUR_OF_DAY" "HOUR_OF_AMPM" "CLOCK_HOUR_OF_AMPM" "AMPM_OF_DAY"
+                                         "MINUTE_OF_HOUR" "MINUTE_OF_DAY" "SECOND_OF_MINUTE" "SECOND_OF_DAY"
+                                         "MILLI_OF_SECOND" "MILLI_OF_DAY" "MICRO_OF_SECOND" "MICRO_OF_DAY"
+                                         "NANO_OF_SECOND" "NANO_OF_DAY")) #t))
           ((jt-dt? t) (or (temporal-supports-field? (ldt-date t) field) (temporal-supports-field? (ldt-time t) field)))
           ((jt-instant? t) (and (member f '("INSTANT_SECONDS" "NANO_OF_SECOND" "MILLI_OF_SECOND" "MICRO_OF_SECOND")) #t))
+          ((and (jhost? t) (string=? (jhost-tag t) "year")) (and (member f '("YEAR" "YEAR_OF_ERA" "ERA")) #t))
+          ((and (jhost? t) (string=? (jhost-tag t) "year-month"))
+           (and (member f '("YEAR" "MONTH_OF_YEAR" "PROLEPTIC_MONTH" "YEAR_OF_ERA" "ERA")) #t))
           (else #f))))
 
 ;; isSupported / get / getLong / with / range / plus / minus / until accept a
@@ -1213,6 +1248,16 @@
 (register-host-methods! "local-date" (mk-temporal-methods))
 (register-host-methods! "local-time" (mk-temporal-methods))
 (register-host-methods! "local-date-time" (mk-temporal-methods))
+;; Year/YearMonth answer the field accessors too (a fields-over-all-temporals walk
+;; queries them); their own plus/minus/with stay the specific methods above.
+(let ((field-methods
+       (list (cons "isSupported" (lambda (t x) (cond ((arg-is-unit? x) (temporal-supports-unit? t (cu-name x)))
+                                                     ((arg-is-field? x) (temporal-supports-field? t (cf-name x)))
+                                                     (else #f))))
+             (cons "get" (lambda (t f) (temporal-get-field t (arg-field-name f))))
+             (cons "getLong" (lambda (t f) (temporal-get-field t (arg-field-name f)))))))
+  (register-host-methods! "year" field-methods)
+  (register-host-methods! "year-month" field-methods))
 (register-host-methods! "instant" (mk-temporal-methods))
 
 ;; --- TemporalAdjuster: a date->date transform applied via (.with t adjuster) --

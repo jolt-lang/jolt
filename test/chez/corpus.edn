@@ -551,6 +551,13 @@
   {:suite "interop / java.time shims" :label "Instant instance" :expected "true" :actual "(instance? java.time.Instant (Instant/ofEpochMilli 0))"}
   {:suite "interop / java.time shims" :label "getTime epoch ms" :expected "0" :actual "(.getTime #inst \"1970-01-01T00:00:00Z\")"}
   {:suite "interop / java.time shims" :label "toEpochMilli round trip" :expected "1234" :actual "(.toEpochMilli (Instant/ofEpochMilli 1234))"}
+  {:suite "interop / java.time chrono-fields" :label "CLOCK_HOUR_OF_DAY midnight is 24" :expected "24" :actual "(.getLong (java.time.LocalTime/of 0 30) java.time.temporal.ChronoField/CLOCK_HOUR_OF_DAY)"}
+  {:suite "interop / java.time chrono-fields" :label "HOUR_OF_AMPM" :expected "2" :actual "(.getLong (java.time.LocalTime/of 14 0) java.time.temporal.ChronoField/HOUR_OF_AMPM)"}
+  {:suite "interop / java.time chrono-fields" :label "CLOCK_HOUR_OF_AMPM noon is 12" :expected "12" :actual "(.getLong (java.time.LocalTime/of 12 0) java.time.temporal.ChronoField/CLOCK_HOUR_OF_AMPM)"}
+  {:suite "interop / java.time chrono-fields" :label "ALIGNED_DAY_OF_WEEK_IN_MONTH" :expected "3" :actual "(.getLong (java.time.LocalDate/of 2020 3 17) java.time.temporal.ChronoField/ALIGNED_DAY_OF_WEEK_IN_MONTH)"}
+  {:suite "interop / java.time chrono-fields" :label "ALIGNED_WEEK_OF_MONTH" :expected "3" :actual "(.getLong (java.time.LocalDate/of 2020 3 17) java.time.temporal.ChronoField/ALIGNED_WEEK_OF_MONTH)"}
+  {:suite "interop / java.time chrono-fields" :label "Year isSupported + getLong" :expected "2020" :actual "(.getLong (java.time.Year/of 2020) java.time.temporal.ChronoField/YEAR)"}
+  {:suite "interop / java.time chrono-fields" :label "YearMonth PROLEPTIC_MONTH" :expected "24244" :actual "(.getLong (java.time.YearMonth/of 2020 5) java.time.temporal.ChronoField/PROLEPTIC_MONTH)"}
   {:suite "interop / java.time shims" :label "Instant/now is current" :expected "true" :actual "(> (.toEpochMilli (Instant/now)) 1500000000000)"}
   {:suite "interop / java.time shims" :label "sql types are not" :expected "false" :actual "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")"}
   {:suite "interop / StringReader & StringBuilder" :label "StringReader read" :expected "[97 98 -1]" :actual "(let [r (java.io.StringReader. \"ab\")] [(.read r) (.read r) (.read r)])"}
