@@ -22,7 +22,7 @@
                                        set-rtenv! set-vtypes! join-types
                                        set-record-shapes! set-map-shapes! set-protocol-methods!
                                        reset-escapes! collected-escapes
-                                       wp-infer! param-seeds-for
+                                       wp-infer! param-seeds-for param-num-seeds-for
                                        set-check-mode! take-diags!]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
@@ -39,6 +39,22 @@
 (defn- stash-of [node]
   (let [a (first (:arities (:init node)))]
     {:params (:params a) :body (:body a) :nhints (:nhints a) :ret (:ret-nhint a)}))
+
+(defn inject-wp-nhints
+  "Merge the whole-program :double param seeds into a def's arity :nhints as
+  synthetic ^double hints, so the numeric pass unboxes a hintless fn whose callers
+  all pass flonums (the entry coercion exact->inexact is a no-op on a proven
+  flonum). Only un-hinted params are added — an explicit hint wins. A no-op unless
+  the closed-world fixpoint typed a param :double (param-num-seeds-for)."
+  [node]
+  (let [seeds (when (= :def (:op node)) (param-num-seeds-for (str (:ns node) "/" (:name node))))
+        f (:init node)]
+    (if (and seeds (= :fn (:op f)) (= 1 (count (:arities f))))
+      (let [a (first (:arities f))
+            have (into #{} (map first (:nhints a)))
+            add (for [[p k] seeds :when (not (have p))] [p k])]
+        (assoc node :init (assoc f :arities [(assoc a :nhints (vec (concat (:nhints a) add)))])))
+      node)))
 
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form. When
@@ -75,6 +91,7 @@
             ;; everything else takes the ordinary per-form inference.
             seeds (when (= :def (:op opt)) (param-seeds-for (str (:ns opt) "/" (:name opt))))]
         ;; a final const-fold after inference propagates any predicate folded to a
-        ;; constant, collapsing the `if` it gates to the taken branch.
-        (const-fold (if seeds (reinfer-def opt seeds) (run-inference opt))))
+        ;; constant, collapsing the `if` it gates to the taken branch; then inject
+        ;; any whole-program :double param hints for the numeric pass that follows.
+        (inject-wp-nhints (const-fold (if seeds (reinfer-def opt seeds) (run-inference opt)))))
       (const-fold node))))

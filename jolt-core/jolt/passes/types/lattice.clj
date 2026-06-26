@@ -79,6 +79,12 @@
     (= a b) a
     (nil? a) b
     (nil? b) a
+    ;; :double is a flonum refinement of :num: two doubles stay :double (caught by
+    ;; = above), but a double joined with anything else loses the flonum guarantee
+    ;; and widens to :num before joining — so a param is :double only when EVERY
+    ;; contributing value is a flonum, which is what makes the hintless fl-op sound.
+    (or (= a :double) (= b :double))
+      (join-t (if (= a :double) :num a) (if (= b :double) :num b))
     (and (struct-type? a) (struct-type? b))
       (let [merged (mk-struct (merge-fields (sfields a) (sfields b)))]
         ;; joining two values of the SAME complete shape preserves it — the
@@ -145,7 +151,7 @@
 ;; (vs a phm) when every value is non-nil/non-false, so a map literal is a struct
 ;; only when all its values have such a type. Collections are non-nil.
 (defn truthy-type? [t]
-  (or (= t :num) (= t :str) (= t :kw) (= t :truthy) (= t :phm)
+  (or (= t :num) (= t :double) (= t :str) (= t :kw) (= t :truthy) (= t :phm)
       (struct-type? t) (vec-type? t) (set-type? t)))
 
 ;; core fns whose result is a number (so it is non-nil/non-false and, for the
