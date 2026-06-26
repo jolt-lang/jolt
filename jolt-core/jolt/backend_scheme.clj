@@ -162,6 +162,15 @@
 (def ^:private gensym-counter (atom 0))
 (defn- fresh-label [prefix] (str prefix (swap! gensym-counter inc)))
 
+;; Per-site devirt cache cells collected while emitting one top-level def. A
+;; devirtualized call resolves a CONSTANT impl (static tag/proto/method), so it
+;; needs resolving once, not per call — the inline cache the JVM gets for free. When
+;; a def init is being emitted this holds an atom; each devirt site appends a fresh
+;; cell name (bound to #f in a let wrapping the def, so it persists across calls and
+;; is shared by every invocation), and the site resolves into it on first use. nil
+;; outside a def (a devirt there falls back to a per-call resolve).
+(def ^:private devirt-cells (atom nil))
+
 ;; Scheme syntactic keywords. A jolt local with one of these names would, when
 ;; emitted verbatim, shadow the Scheme form in operator position (a local named
 ;; `if` would turn the special form (if …) the back end emits into a call), so
@@ -517,11 +526,21 @@
       ;; The receiver is bound once — it feeds both the resolve and the application.
       (:devirt-type node)
       (order-args (fn [as]
-                    (let [r (fresh-label "_r$")]
-                      (str "(let* ((" r " " (first as) ")) "
-                           "((devirt-resolve " (chez-str-lit (:devirt-type node)) " "
-                           (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
-                           " " r ") " (str/join " " (cons r (rest as))) "))"))))
+                    (let [r (fresh-label "_r$")
+                          dv (str "(devirt-resolve " (chez-str-lit (:devirt-type node)) " "
+                                  (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
+                                  " " r ")")
+                          cells @devirt-cells
+                          ;; cache the resolved impl in a per-site cell when inside a
+                          ;; def (resolved once on first call, then reused); else
+                          ;; resolve per call.
+                          resolver (if cells
+                                     (let [c (fresh-label "_dvc$")]
+                                       (swap! cells conj c)
+                                       (str "(or " c " (let ((_f " dv ")) (set! " c " _f) _f))"))
+                                     dv)]
+                      (str "(let* ((" r " " (first as) ")) ("
+                           resolver " " (str/join " " (cons r (rest as))) "))"))))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
@@ -755,7 +774,15 @@
       ;; register before emitting the init so a self-referential body direct-links.
       (swap! direct-link-defined conj (dl-fqn ns nm))
       (when fn? (swap! direct-link-fns conj (dl-fqn ns nm)))
-      (let [init (emit (:init node))]
+      (let [cells (atom [])
+            _ (reset! devirt-cells cells)
+            raw (emit (:init node))
+            _ (reset! devirt-cells nil)
+            ;; wrap the init so each devirt site's cache cell persists across calls,
+            ;; shared by every invocation of this def.
+            init (if (seq @cells)
+                   (str "(let (" (str/join " " (map (fn [c] (str "(" c " #f)")) @cells)) ") " raw ")")
+                   raw)]
         (if (jmeta-nonempty? (:meta node))
           (str "(begin (define " b " " init ") (def-var-with-meta! "
                (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) ")" (or reg "") ")")
