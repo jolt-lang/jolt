@@ -1,48 +1,70 @@
 #!/bin/sh
-# Run the jolt benchmark suite and print mean ms per benchmark.
+# Run the jolt benchmark suite against JVM Clojure and print a jolt/JVM scorecard.
 #
-# Each benchmark isolates an axis the ray tracer (float-compute-bound) doesn't
-# capture — see README.md. Run back-to-back against `main` to measure a pass's
-# impact.
+# jolt's optimizing passes (direct-linking, inlining, scalar-replace, whole-program
+# inference) fire only in an AOT BUILD — `joltc run -m` is unoptimized — so each
+# benchmark is compiled to an optimized standalone binary and timed. JVM Clojure
+# runs the same portable source for the absolute reference. Each benchmark prints
+# `runs: [...]` and `mean: N ms`; the table shows the means and the jolt/JVM ratio.
 #
-#   bench/run.sh                 # default sizes, whole-program optimization on
-#   JOLT_WHOLE_PROGRAM=0 bench/run.sh   # compare with WP off
-#   bench/run.sh binary-trees    # one benchmark
+#   bench/run.sh                 # full suite + JVM scorecard
+#   bench/run.sh fib             # one benchmark, default size
+#   bench/run.sh fib 32          # one benchmark, custom size
+#   NO_JVM=1 bench/run.sh        # jolt only (skip the JVM reference)
 #
-# Needs `jolt` on PATH (build with `jpm build`; export PATH="$PWD/build:$PATH").
+# Building needs Chez's kernel dev files (libkernel.a + scheme.h) and a C compiler,
+# the same as `jolt build`; set JOLT_CHEZ_CSV to override the detected csv dir.
 set -e
 cd "$(dirname "$0")"
+root="$(cd .. && pwd)"
+joltc="$root/bin/joltc"
+export JOLT_PWD="$PWD"
 
-export JOLT_DIRECT_LINK="${JOLT_DIRECT_LINK:-1}"
-export JOLT_WHOLE_PROGRAM="${JOLT_WHOLE_PROGRAM:-1}"
-export JOLT_APP_PATHS="$PWD"
-export JOLT_PATH="$PWD"
+# Locate Chez's kernel dev files for the optimized build (as build-smoke.sh does).
+csv="$JOLT_CHEZ_CSV"
+if [ -z "$csv" ]; then
+  chez_bin="$(command -v chez || command -v scheme || command -v petite || true)"
+  if [ -n "$chez_bin" ]; then
+    base="$(cd "$(dirname "$chez_bin")/.." 2>/dev/null && pwd)"
+    for d in "$base"/lib/csv*/*/; do
+      [ -f "${d}libkernel.a" ] && csv="${d%/}" && break
+    done
+  fi
+fi
+if [ -z "$csv" ] || [ ! -f "$csv/libkernel.a" ] || [ ! -f "$csv/scheme.h" ] || ! command -v cc >/dev/null 2>&1; then
+  echo "error: the optimized build needs Chez kernel dev files (libkernel.a + scheme.h) and cc." >&2
+  echo "       set JOLT_CHEZ_CSV to the csv dir, e.g. \$(brew --prefix chezscheme)/lib/csv*/<machine>." >&2
+  exit 1
+fi
+export JOLT_CHEZ_CSV="$csv"
 
-# name:default-arg  (arg sized to run in a few seconds each). Axes: allocation
-# (binary-trees), megamorphic vs monomorphic dispatch, persistent-collection
-# churn (collections — now O(log n) via the HAMT, so sized up), pure
-# float compute (mandelbrot), call+arith recursion (fib).
-BENCHES="binary-trees:14 dispatch:2000 mono-dispatch:2000 collections:30000 mandelbrot:200 fib:30"
+bindir="$(mktemp -d)"
+trap 'rm -rf "$bindir"' EXIT
 
-# JVM=1 also runs each bench on JVM Clojure and prints a jolt/JVM ratio — the
-# holistic absolute-reference scorecard for the optimization work.
+# name:default-arg, each sized to run in a few seconds. Axes: see README.md.
+BENCHES="fib:30 mandelbrot:200 collections:30000 mono-dispatch:2000 dispatch:2000 binary-trees:14"
+
 run_one() {
   ns="${1%%:*}"; arg="${2:-${1##*:}}"
-  jmean=$(jolt -m "$ns" "$arg" 2>&1 | awk '/^mean:/{print $2}')
-  if [ -n "$JVM" ]; then
-    vmean=$(clojure -Sdeps '{:paths ["."]}' -M -m "$ns" "$arg" 2>&1 | awk '/^mean:/{print $2}')
-    ratio=$(awk "BEGIN{ if ($vmean+0>0) printf \"%.1f\", ($jmean+0)/($vmean+0); else printf \"-\" }")
-    printf '%-16s jolt %9s ms   jvm %8s ms   %sx\n' "$ns" "${jmean:--}" "${vmean:--}" "$ratio"
+  if ! "$joltc" build -m "$ns" -o "$bindir/$ns" --direct-link --opt >/dev/null 2>&1; then
+    printf '%-16s  jolt build FAILED\n' "$ns"; return
+  fi
+  jmean=$("$bindir/$ns" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
+  if [ -z "$NO_JVM" ]; then
+    vmean=$(clojure -Sdeps '{:paths ["."]}' -M -m "$ns" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
+    ratio=$(awk "BEGIN{ if (\"$vmean\"+0>0 && \"$jmean\"+0>0) printf \"%.1fx\", (\"$jmean\"+0)/(\"$vmean\"+0); else printf \"-\" }")
+    printf '%-16s jolt %9s ms   jvm %8s ms   %s\n' "$ns" "${jmean:--}" "${vmean:--}" "$ratio"
   else
-    printf '%-16s %9s ms\n' "$ns" "${jmean:--}"
+    printf '%-16s jolt %9s ms\n' "$ns" "${jmean:--}"
   fi
 }
 
 if [ -n "$1" ]; then
-  for spec in $BENCHES; do
-    [ "${spec%%:*}" = "$1" ] && run_one "$spec" "$2"
-  done
+  spec=""
+  for s in $BENCHES; do [ "${s%%:*}" = "$1" ] && spec="$s"; done
+  [ -n "$spec" ] || { echo "unknown benchmark: $1 (have: ${BENCHES})" >&2; exit 1; }
+  run_one "$spec" "$2"
 else
-  echo "jolt benchmark suite (WP=$JOLT_WHOLE_PROGRAM${JVM:+, vs JVM Clojure})"
+  echo "jolt benchmark suite — optimized AOT binaries${NO_JVM:+ }${NO_JVM:-, vs JVM Clojure}"
   for spec in $BENCHES; do run_one "$spec"; done
 fi

@@ -4,7 +4,7 @@
 ;; single-call-site / small-fn inlining and self-call direct-linking.
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
-;;   jolt -m fib 32     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)
+;;   bench/run.sh fib 32
 (ns fib)
 
 (defn fib [n]

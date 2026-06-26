@@ -34,34 +34,51 @@ control with record state), k-nucleotide proper.
 
 ## Holistic scorecard
 
-`JVM=1 bench/run.sh` runs each benchmark on jolt **and** JVM Clojure and prints
-the jolt/JVM ratio — the absolute-reference scorecard. As of
-the broadening (2026-06-16), ratios cluster by axis:
+`bench/run.sh` compiles each benchmark to an **optimized AOT binary** (`joltc build
+--direct-link --opt`) and times it against JVM Clojure running the same portable
+source — the jolt/JVM scorecard. jolt's optimizing passes fire only in a build;
+`joltc run -m` is unoptimized, so the harness always builds.
 
-- **pure compute** (`mandelbrot`) is the floor, ~15× — native arith
-  already gets jolt closest to the JVM.
-- **collections** ~28×, **fib** ~37×.
-- **dispatch** ~75× (megamorphic), and `mono-dispatch` is *worse* (~110×): the
-  JVM inline-caches a runtime-monomorphic call site to near-free, while jolt does
-  a full registry dispatch regardless (devirt only fires on *statically* proven
-  receivers, which `reduce` over a vector doesn't give). This is the signal for
-  the call-site inline cache.
-- **allocation** (`binary-trees`) is the widest gap — but also the most inflated
-  by host memory pressure, so read it as "alloc is the worst axis," not a precise
-  multiple. Numbers are machine-specific; regenerate with `JVM=1 bench/run.sh`.
+Indicative ratios (M-series, single isolated run — numbers are machine-specific,
+regenerate locally). They cluster into two regimes:
+
+| benchmark | ratio | axis |
+|---|---|---|
+| `mandelbrot` | ~8× | pure float compute |
+| `fib` | ~9× | call + integer arith |
+| `collections` | ~9× | persistent map/vector churn |
+| `dispatch` | ~130× | megamorphic protocol dispatch |
+| `binary-trees` | ~140× | escaping short-lived records (allocation/GC) |
+| `mono-dispatch` | ~330× | monomorphic protocol dispatch |
+
+- **Compute (~8–9×)** is the substrate floor: Chez is a native-compiling AOT
+  Scheme, not a profiling JIT, so it can't match HotSpot on hot loops. Native arith
+  already gets jolt closest here.
+- **Dispatch & allocation (~130–330×)** are the architectural gaps. jolt does a
+  full protocol-registry lookup on every call; the JVM inline-caches a
+  runtime-monomorphic site to near-free — which is why `mono-dispatch` is *worse*
+  than megamorphic. devirt only fires on *statically proven* receivers (which
+  `reduce`/`mapv` over a heterogeneous vector never gives), so the passes don't
+  engage; a call-site inline cache is the missing lever. `binary-trees` nodes
+  escape into the tree, so scalar-replace can't remove them — this is GC pressure.
+- The optimization passes move these benchmarks <10% vs the unoptimized run, so the
+  gaps are not a missing-flag problem; they're the dispatch/GC/JIT-floor work.
 
 ## Running
 
 ```sh
-bench/run.sh                      # whole-program optimization on (default)
-JOLT_WHOLE_PROGRAM=0 bench/run.sh # WP off, to measure what WP buys
-bench/run.sh binary-trees 16      # one benchmark, custom size
+bench/run.sh                 # full suite + JVM scorecard
+bench/run.sh fib             # one benchmark, default size
+bench/run.sh fib 32          # one benchmark, custom size
+NO_JVM=1 bench/run.sh        # jolt only (skip the JVM reference)
 ```
+
+Needs Chez's kernel dev files (`libkernel.a` + `scheme.h`) and `cc` for the build,
+like `jolt build`; set `JOLT_CHEZ_CSV` to override the detected csv dir.
 
 ## A/B against a change
 
 To measure a pass, run the suite on `main`, then on the branch, back to back
-(same machine, quiet) — the same protocol used for the ray tracer. Each
-benchmark prints `runs: [...]` and `mean: N ms`; compare
-the means. A pass is worth landing when it moves a benchmark whose axis it
+(same machine, quiet). Each benchmark prints `runs: [...]` and `mean: N ms`;
+compare the means. A pass is worth landing when it moves a benchmark whose axis it
 targets, even if the ray tracer stays flat.

@@ -5,7 +5,7 @@
 ;; records, no collections in the hot loop) doesn't touch.
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
-;;   jolt -m collections 200000     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)
+;;   bench/run.sh collections 200000
 (ns collections)
 
 ;; map churn: accumulate a frequency map over a stream of keys, then sum it back
