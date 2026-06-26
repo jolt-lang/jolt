@@ -135,7 +135,7 @@
       (if (and (seq vs) (not (nil? (first vs))) (apply = vs)) (first vs) nil))
     :else
     (case pname
-      "number?"  (= t :num)
+      "number?"  (or (= t :num) (= t :double))
       "string?"  (= t :str)
       "keyword?" (= t :kw)
       "record?"  (record-t? t)
@@ -153,6 +153,23 @@
 ;; type-checks, so name the projections; the call-pattern code below is dense in them.
 (defn- ty [r] (nth r 0))
 (defn- nd [r] (nth r 1))
+
+;; arithmetic core ops that yield a flonum when their operands are flonums — a
+;; mirror of jolt.passes.numeric/dbl-spec's arithmetic set, used to flow :double
+;; across fn boundaries so a hintless fn whose callers all pass doubles is unboxed.
+;; Comparisons are excluded: they yield a boolean, not a number.
+(def ^:private dbl-arith-ops #{"+" "-" "*" "/" "min" "max" "inc" "dec"})
+(defn- int-lit-node? [n]
+  (and (= :const (get n :op)) (let [v (get n :val)] (and (number? v) (integer? v)))))
+;; an arithmetic result is :double when every operand is a proven flonum or an
+;; integer literal (a wildcard the fl-op coerces) and at least one is a flonum — so
+;; (* x 2) with x:double is :double, but (* a b) with both :num stays :num (no
+;; flonum proof, no fl-op).
+(defn- dbl-arith? [ares argnodes]
+  (and (pos? (count ares))
+       (every? (fn [i] (or (= :double (ty (nth ares i))) (int-lit-node? (nth argnodes i))))
+               (range (count ares)))
+       (some (fn [r] (= :double (ty r))) ares)))
 
 ;; HOFs that apply their fn arg to the ELEMENTS of a collection. :epos is which
 ;; param of the fn receives an element. reduce is
@@ -310,6 +327,9 @@
          (= cn "range") (mk-vec :num)
          (and cn (contains? elem-fns cn) (> n 0))
          (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
+         ;; flonum arithmetic yields a flonum — flows :double into a callee param
+         ;; (and into the fixpoint's return type) so hintless double code unboxes.
+         (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args)) :double
          :else (call-ret-type fnode env))
        (if rtype
          (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
@@ -355,7 +375,8 @@
     (cond
       (= op :const)
       [(let [v (get node :val)]
-         (cond (number? v) :num
+         (cond (and (number? v) (float? v)) :double   ; a flonum literal is :double
+               (number? v) :num
                (string? v) :str
                (keyword? v) :kw
                (or (nil? v) (= false v)) :any   ; nil/false are not struct-eligible
@@ -676,6 +697,15 @@
   nil. Set by wp-infer!, read by run-passes during the final per-def emit."
   [k] (get @wp-seeds-box k))
 
+;; numeric refinement of the same fixpoint: params the closed-world join proved
+;; are always flonums. Kept SEPARATE from the structural box — these don't reinfer
+;; (field-read/devirt), they become synthetic ^double nhints (jolt.passes/inject-
+;; wp-nhints) so the hint-directed pass unboxes the arithmetic.
+(def ^:private wp-num-seeds-box (atom {}))
+(defn param-num-seeds-for
+  "The param-name -> :double seed map for a def's hintless flonum params, or nil."
+  [k] (get @wp-num-seeds-box k))
+
 ;; var-key -> {:params [names] :body ir} for each single-fixed-arity fn def.
 (defn- wp-specializable [nodes]
   (reduce (fn [m d]
@@ -751,16 +781,21 @@
           (let [seed-ptypes (if converged?
                               new-ptypes
                               (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
-                                      new-ptypes ks))]
-            (reset! wp-seeds-box
-                    (reduce (fn [m k]
-                              (let [s (get spec k)
-                                    ptmap (reduce (fn [pm pr]
+                                      new-ptypes ks))
+                ;; build both seed maps from the same converged ptypes: the
+                ;; structural one (struct/vec, drives reinfer-def's field-read/
+                ;; devirt) excludes :double; the numeric one keeps only :double.
+                pick (fn [keep?]
+                       (reduce (fn [m k]
+                                 (let [s (get spec k)
+                                       pm (reduce (fn [pm pr]
                                                     (let [nm (nth pr 0) t (nth pr 1)]
-                                                      (if (and t (not= t :any)) (assoc pm nm t) pm)))
+                                                      (if (and t (keep? t)) (assoc pm nm t) pm)))
                                                   {} (map vector (:params s) (get seed-ptypes k)))]
-                                (if (seq ptmap) (assoc m k ptmap) m)))
-                            {} ks)))
+                                   (if (seq pm) (assoc m k pm) m)))
+                               {} ks))]
+            (reset! wp-seeds-box (pick (fn [t] (and (not= t :any) (not= t :double)))))
+            (reset! wp-num-seeds-box (pick (fn [t] (= t :double)))))
           (recur (inc iter) new-ptypes new-rets))))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
