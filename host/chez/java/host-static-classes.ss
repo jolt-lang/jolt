@@ -795,6 +795,33 @@
     (cons "nextFloat" (lambda (self) (random 1.0)))
     (cons "nextBoolean" (lambda (self) (fx=? 0 (random 2))))))
 
+;; --- java.util.Optional -----------------------------------------------------
+;; Returned by getters across java.time / java.net.http (e.g. HttpRequest.timeout,
+;; HttpClient.connectTimeout). Value-equal so (= (Optional/of x) (Optional/of x)).
+(define (jt-optional present? value) (make-jhost "optional" (vector present? value)))
+(define jt-optional-empty (jt-optional #f jolt-nil))
+(define (opt? x) (and (jhost? x) (string=? (jhost-tag x) "optional")))
+(define (opt-present? o) (vector-ref (jhost-state o) 0))
+(define (opt-value o) (vector-ref (jhost-state o) 1))
+(let ((statics (list (cons "of" (lambda (v) (if (jolt-nil? v) (error #f "Optional.of(null)") (jt-optional #t v))))
+                     (cons "ofNullable" (lambda (v) (if (jolt-nil? v) jt-optional-empty (jt-optional #t v))))
+                     (cons "empty" (lambda _ jt-optional-empty)))))
+  (register-class-statics! "Optional" statics)
+  (register-class-statics! "java.util.Optional" statics))
+(register-host-methods! "optional"
+  (list (cons "isPresent" (lambda (o) (opt-present? o)))
+        (cons "isEmpty" (lambda (o) (not (opt-present? o))))
+        (cons "get" (lambda (o) (if (opt-present? o) (opt-value o) (error #f "Optional.get() on empty Optional"))))
+        (cons "orElse" (lambda (o d) (if (opt-present? o) (opt-value o) d)))
+        (cons "orElseGet" (lambda (o f) (if (opt-present? o) (opt-value o) (jolt-invoke f))))
+        (cons "ifPresent" (lambda (o f) (when (opt-present? o) (jolt-invoke f (opt-value o))) jolt-nil))
+        (cons "toString" (lambda (o) (if (opt-present? o)
+                                         (string-append "Optional[" (jolt-str-render-one (opt-value o)) "]")
+                                         "Optional.empty")))))
+(register-eq-arm! (lambda (a b) (or (opt? a) (opt? b)))
+                  (lambda (a b) (and (opt? a) (opt? b) (eq? (opt-present? a) (opt-present? b))
+                                     (or (not (opt-present? a)) (jolt=2 (opt-value a) (opt-value b))))))
+
 ;; --- minimal JVM class/interface ancestry -----------------------------------
 ;; A handful of libraries reflect over the class hierarchy — e.g. core.memoize
 ;; validates its first argument with (some #{IFn AFn Runnable Callable}
