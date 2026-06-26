@@ -4,8 +4,7 @@
 ;; targets and the ray tracer never exercises (~7% alloc).
 ;;
 ;; Portable Clojure: runs on jolt and JVM Clojure for cross-impl comparison.
-;;   jolt -m binary-trees 14        (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)
-;;   clojure -M -m binary-trees 14
+;;   bench/run.sh binary-trees 14
 (ns binary-trees)
 
 (defrecord Node [left right])

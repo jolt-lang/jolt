@@ -6,7 +6,7 @@
 ;; float-math cost (devirt measured FLAT there).
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
-;;   jolt -m dispatch 20000     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)
+;;   bench/run.sh dispatch 20000
 (ns dispatch)
 
 (defprotocol Shape

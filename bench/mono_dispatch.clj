@@ -5,7 +5,7 @@
 ;; monomorphic dispatch gets to a direct call. Same per-call work as `dispatch`.
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
-;;   jolt -m mono-dispatch 20000     (JOLT_DIRECT_LINK=1 JOLT_WHOLE_PROGRAM=1)
+;;   bench/run.sh mono-dispatch 20000
 (ns mono-dispatch)
 
 (defprotocol Shape
