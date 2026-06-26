@@ -598,7 +598,12 @@
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
        ;; so defrecord compiles too. map->name builds via that ctor.
        (deftype ~name-sym ~fields)
-       (def ~mapf (fn* [~m] (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))))
+       ;; build via the positional ctor for declared fields, then carry any
+       ;; remaining keys as extension fields (JVM keeps them on the record).
+       (def ~mapf (fn* [~m]
+                    (reduce-kv assoc
+                               (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))
+                               (dissoc ~m ~@(map (fn [f] (keyword (name f))) fields)))))
        ~@(mapcat (fn [g]
                    (let [proto (first g)
                          names (distinct (map (fn [spec] (name (first spec))) (rest g)))]

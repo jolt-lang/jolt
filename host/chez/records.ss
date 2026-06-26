@@ -1,9 +1,13 @@
 ;; records + protocols — the deftype/defrecord + defprotocol/extend-type
 ;; subsystem.
 ;;
-;; A record is a `jrec`: a type tag ("ns.Name") + an alist of (kw . val) in
-;; declared field order. It is map?/coll?, equal to another jrec of the same tag
-;; with equal fields (never equal to a plain map), and prints as #ns.Name{...}.
+;; A record is a `jrec`: a shared per-type descriptor + a flat vector of field
+;; values in declared order, plus an extension map for any non-field keys assoc'd
+;; on (jolt-nil when there are none — the common case). This lays fields out like a
+;; native struct: construction allocates one vector, not a chain of cons cells, and
+;; a field read is an index lookup, not a list scan. It is map?/coll?, equal to
+;; another jrec of the same type with equal fields (never equal to a plain map),
+;; and prints as #ns.Name{...}.
 ;; The collection dispatchers (jolt-get/count/keys/vals/seq/assoc/contains?/=/
 ;; hash/conj + the printers) are set!-extended with a jrec arm that delegates to
 ;; the original — the transients.ss pattern — so all record logic lives here and
@@ -13,69 +17,116 @@
 ;; Loaded after collections/seq/values/converters/printing/transients/multimethods
 ;; (the dispatchers it wraps + chez-current-ns).
 
-(define-record-type jrec (fields tag pairs) (nongenerative chez-jrec-v1))
+;; The per-type descriptor: built once at deftype/defrecord definition and shared
+;; by every instance. Holds the tag, the field keywords in declared order, and an
+;; eq?-keyed keyword->index table (field keys are interned, so identity lookup).
+(define-record-type (jrdesc make-jrdesc-rec jrdesc?)
+  (fields tag fkeys index) (nongenerative chez-jrdesc-v1))
+(define (make-jrdesc tag fkey-list)
+  (let ((index (make-eq-hashtable)))
+    (let loop ((ks fkey-list) (i 0))
+      (unless (null? ks) (hashtable-set! index (car ks) i) (loop (cdr ks) (+ i 1))))
+    (make-jrdesc-rec tag (list->vector fkey-list) index)))
+;; An instance: the shared descriptor, the field-value vector, and an extension
+;; map (jolt-nil unless non-field keys have been assoc'd on).
+(define-record-type (jrec make-jrec jrec?) (fields desc vals ext) (nongenerative chez-jrec-v2))
+(define (jrec-tag r) (jrdesc-tag (jrec-desc r)))
 (define jolt-deftype-kw (keyword "jolt" "deftype"))
+;; unique present-vs-absent sentinel for extension-map lookups (so a present nil
+;; in the extension map is distinguished from a genuine miss).
+(define jrec-absent (list 'jrec-absent))
 
-;; Field keys are interned keywords, so a keyword query compares by eq? (the hot
-;; (:field rec) / (get rec :field) case); any other key type falls back to jolt=2.
-(define (jrec-key=? field-key k)
-  (if (keyword? k) (eq? field-key k) (jolt=2 field-key k)))
+;; index of a declared field key, or #f (only an interned keyword can be one).
+(define (jrec-field-index r k) (hashtable-ref (jrdesc-index (jrec-desc r)) k #f))
+;; a vector-copy that doesn't depend on the optional rnrs vector-copy being present.
+(define (jrec-vec-copy v)
+  (let* ((n (vector-length v)) (out (make-vector n)))
+    (let loop ((i 0)) (when (< i n) (vector-set! out i (vector-ref v i)) (loop (+ i 1))))
+    out))
+;; extension-map entries as an (k . v) alist in iteration order.
+(define (jrec-ext-pairs ext)
+  (let loop ((s (jolt-seq ext)) (acc '()))
+    (if (jolt-nil? s) (reverse acc)
+        (let ((e (seq-first s)))
+          (loop (jolt-seq (seq-more s)) (cons (cons (jolt-nth e 0) (jolt-nth e 1)) acc))))))
+
+;; lookup with default d: a declared field reads index+vector-ref (a present nil
+;; returns nil), then the extension map, then d.
 (define (jrec-lookup r k d)
   (if (eq? k jolt-deftype-kw)
       (jrec-tag r)
-      (let loop ((ps (jrec-pairs r)))
-        (cond ((null? ps) d)
-              ((jrec-key=? (caar ps) k) (cdar ps))
-              (else (loop (cdr ps)))))))
+      (let ((i (jrec-field-index r k)))
+        (if i (vector-ref (jrec-vals r) i)
+            (let ((ext (jrec-ext r)))
+              (if (jolt-nil? ext) d
+                  (let ((v (jolt-get ext k jrec-absent)))
+                    (if (eq? v jrec-absent) d v))))))))
 (define (jrec-has? r k)
-  (let loop ((ps (jrec-pairs r)))
-    (cond ((null? ps) #f) ((jrec-key=? (caar ps) k) #t) (else (loop (cdr ps))))))
-;; The get path: one scan (vs jrec-has? + jrec-lookup = two); a deftype's ILookup
-;; valAt runs only when the field is genuinely missing.
+  (and (not (eq? k jolt-deftype-kw))
+       (or (and (jrec-field-index r k) #t)
+           (let ((ext (jrec-ext r)))
+             (and (not (jolt-nil? ext))
+                  (not (eq? jrec-absent (jolt-get ext k jrec-absent))))))))
+;; The get path: like jrec-lookup, but a deftype's ILookup valAt runs when a key
+;; is genuinely missing from both the fields and the extension map.
 (define (jrec-ref coll k d)
   (if (eq? k jolt-deftype-kw)
       (jrec-tag coll)
-      (let loop ((ps (jrec-pairs coll)))
-        (cond ((null? ps)
-               (cond ((find-method-any-protocol (jrec-tag coll) "valAt")
-                      => (lambda (m) (jolt-invoke m coll k d)))
-                     (else d)))
-              ((jrec-key=? (caar ps) k) (cdar ps))
-              (else (loop (cdr ps)))))))
-;; mutate a deftype's mutable field in place: the pairs are runtime cons cells,
-;; so set-cdr! updates the field. (set! field v) inside a method
-;; lowers to this; returns v, as set! does.
+      (let ((i (jrec-field-index coll k)))
+        (if i (vector-ref (jrec-vals coll) i)
+            (let* ((ext (jrec-ext coll))
+                   (v (if (jolt-nil? ext) jrec-absent (jolt-get ext k jrec-absent))))
+              (if (eq? v jrec-absent)
+                  (cond ((find-method-any-protocol (jrec-tag coll) "valAt")
+                         => (lambda (m) (jolt-invoke m coll k d)))
+                        (else d))
+                  v))))))
+;; mutate a deftype's mutable field in place: the value vector is mutable, so
+;; vector-set! updates the field. (set! field v) inside a method lowers to this;
+;; returns v, as set! does.
 (define (jolt-set-field! inst k v)
   (if (jrec? inst)
-      (let loop ((ps (jrec-pairs inst)))
-        (cond ((null? ps) (error #f "set! of an unknown field" k))
-              ((jolt=2 (caar ps) k) (set-cdr! (car ps) v) v)
-              (else (loop (cdr ps)))))
+      (let ((i (jrec-field-index inst k)))
+        (if i (begin (vector-set! (jrec-vals inst) i v) v)
+            (error #f "set! of an unknown field" k)))
       (error #f "set! of a field on a non-record" inst)))
-(define (jrec-replace pairs k v)        ; replace existing field (keep order) or append
-  (let loop ((ps pairs) (acc '()) (hit #f))
-    (cond ((null? ps) (reverse (if hit acc (cons (cons k v) acc))))
-          ((jolt=2 (caar ps) k) (loop (cdr ps) (cons (cons k v) acc) #t))
-          (else (loop (cdr ps) (cons (car ps) acc) hit)))))
+(define (jrec-ext=? ea eb)
+  (cond ((and (jolt-nil? ea) (jolt-nil? eb)) #t)
+        ((or (jolt-nil? ea) (jolt-nil? eb)) #f)
+        (else (jolt=2 ea eb))))
 (define (jrec=? a b)
   (and (string=? (jrec-tag a) (jrec-tag b))
-       (= (length (jrec-pairs a)) (length (jrec-pairs b)))
-       (let loop ((ps (jrec-pairs a)))
-         (or (null? ps)
-             (and (jrec-has? b (caar ps))
-                  (jolt=2 (cdar ps) (jrec-lookup b (caar ps) jolt-nil))
-                  (loop (cdr ps)))))))
+       (= (vector-length (jrec-vals a)) (vector-length (jrec-vals b)))
+       (let ((va (jrec-vals a)) (vb (jrec-vals b)) (n (vector-length (jrec-vals a))))
+         (let loop ((i 0))
+           (or (= i n)
+               (and (jolt=2 (vector-ref va i) (vector-ref vb i)) (loop (+ i 1))))))
+       (jrec-ext=? (jrec-ext a) (jrec-ext b))))
 (define (jrec-hash r)
-  (fold-left (lambda (acc p) (+ acc (jolt-hash (car p)) (jolt-hash (cdr p))))
-             (string-hash (jrec-tag r)) (jrec-pairs r)))
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)) (n (vector-length vals))
+         (base (let loop ((i 0) (acc (string-hash (jrec-tag r))))
+                 (if (= i n) acc
+                     (loop (+ i 1) (+ acc (jolt-hash (vector-ref fkeys i))
+                                       (jolt-hash (vector-ref vals i))))))))
+    (let ((ext (jrec-ext r)))
+      (if (jolt-nil? ext) base (+ base (jolt-hash ext))))))
 (define (jrec-pr r)                      ; #ns.Name{:k v, :k v}
-  (string-append "#" (jrec-tag r) "{"
-    (let loop ((ps (jrec-pairs r)) (first #t) (acc ""))
-      (if (null? ps) acc
-          (loop (cdr ps) #f
-                (string-append acc (if first "" ", ")
-                  (jolt-pr-readable (caar ps)) " " (jolt-pr-readable (cdar ps))))))
-    "}"))
+  (let ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)))
+    (string-append "#" (jrec-tag r) "{"
+      (let ((n (vector-length vals)))
+        (let loop ((i 0) (first #t) (acc ""))
+          (if (= i n)
+              (let ((ext (jrec-ext r)))
+                (if (jolt-nil? ext) acc
+                    (let eloop ((es (jrec-ext-pairs ext)) (first first) (acc acc))
+                      (if (null? es) acc
+                          (eloop (cdr es) #f
+                                 (string-append acc (if first "" ", ")
+                                   (jolt-pr-readable (caar es)) " " (jolt-pr-readable (cdar es))))))))
+              (loop (+ i 1) #f
+                    (string-append acc (if first "" ", ")
+                      (jolt-pr-readable (vector-ref fkeys i)) " " (jolt-pr-readable (vector-ref vals i)))))))
+      "}")))
 
 ;; ---- extend the collection dispatchers with a jrec arm ----------------------
 ;; equality for a jrec: a deftype implementing IPersistentCollection/equiv (e.g.
@@ -105,7 +156,8 @@
 (define %r-jolt-count jolt-count)
 (set! jolt-count (lambda (coll)
   (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
-        ((jrec? coll) (length (jrec-pairs coll)))
+        ((jrec? coll) (+ (vector-length (jrec-vals coll))
+                         (let ((ext (jrec-ext coll))) (if (jolt-nil? ext) 0 (%r-jolt-count ext)))))
         (else (%r-jolt-count coll)))))
 ;; contains?: a deftype implementing Associative/containsKey (e.g. core.cache's
 ;; caches) answers through that; a plain defrecord checks its fields.
@@ -114,21 +166,48 @@
   (cond ((jrec-cl coll "containsKey") => (lambda (m) (if (jolt-truthy? (jolt-invoke m coll k)) #t #f)))
         ((jrec? coll) (jrec-has? coll k))
         (else (%r-jolt-contains? coll k)))))
+;; assoc: replacing a declared field copies the value vector; any other key grows
+;; the extension map (the value vector is shared — fields are immutable).
 (define %r-jolt-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
   (cond ((jrec-cl coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
-        ((jrec? coll) (make-jrec (jrec-tag coll) (jrec-replace (jrec-pairs coll) k v)))
+        ((jrec? coll)
+         (let ((i (and (keyword? k) (jrec-field-index coll k))))
+           (if i
+               (let ((nv (jrec-vec-copy (jrec-vals coll))))
+                 (vector-set! nv i v)
+                 (make-jrec (jrec-desc coll) nv (jrec-ext coll)))
+               (let ((ext (jrec-ext coll)))
+                 (make-jrec (jrec-desc coll) (jrec-vals coll)
+                            (%r-jolt-assoc1 (if (jolt-nil? ext) empty-pmap ext) k v))))))
         (else (%r-jolt-assoc1 coll k v)))))
-;; dissoc: a deftype implementing IPersistentMap/without answers through it; a
-;; plain defrecord drops the field pair.
+;; dissoc: a deftype implementing IPersistentMap/without answers through it.
+;; Removing a declared field downgrades a plain record to a map (JVM parity); an
+;; extension key drops from the ext map (normalized back to jolt-nil when empty).
+(define (jrec->map-without r drop-k)
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)) (n (vector-length vals)))
+    (let loop ((i 0) (m empty-pmap))
+      (if (= i n)
+          (let ((ext (jrec-ext r)))
+            (if (jolt-nil? ext) m
+                (fold-left (lambda (mm p) (%r-jolt-assoc1 mm (car p) (cdr p))) m (jrec-ext-pairs ext))))
+          (let ((fk (vector-ref fkeys i)))
+            (loop (+ i 1) (if (eq? fk drop-k) m (%r-jolt-assoc1 m fk (vector-ref vals i)))))))))
 (define %r-jolt-dissoc jolt-dissoc)
+(define (jrec-dissoc1 coll k)
+  (if (not (jrec? coll))
+      (%r-jolt-dissoc coll k)            ; an earlier declared-field dissoc downgraded it
+      (let ((i (and (keyword? k) (jrec-field-index coll k))))
+        (if i (jrec->map-without coll k)
+            (let ((ext (jrec-ext coll)))
+              (if (jolt-nil? ext) coll
+                  (let ((ne (%r-jolt-dissoc ext k)))
+                    (make-jrec (jrec-desc coll) (jrec-vals coll)
+                               (if (= 0 (%r-jolt-count ne)) jolt-nil ne)))))))))
 (set! jolt-dissoc (lambda (coll . ks)
   (cond ((jrec-cl coll "without")
          => (lambda (m) (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
-        ((jrec? coll)
-         (fold-left (lambda (c k) (make-jrec (jrec-tag c)
-                                             (filter (lambda (p) (not (jolt=2 (car p) k))) (jrec-pairs c))))
-                    coll ks))
+        ((jrec? coll) (fold-left jrec-dissoc1 coll ks))
         (else (apply %r-jolt-dissoc coll ks)))))
 ;; keys/vals over a jrec read its entry seq (jolt-seq is method-first, so a
 ;; map-like deftype delegates to its Seqable; a defrecord's seq is its fields, so
@@ -141,10 +220,20 @@
 (set! jolt-keys (lambda (m) (if (jrec? m) (jrec-seq-col m 0) (%r-jolt-keys m))))
 (define %r-jolt-vals jolt-vals)
 (set! jolt-vals (lambda (m) (if (jrec? m) (jrec-seq-col m 1) (%r-jolt-vals m))))
+;; a record's seq is its field map-entries in declared order, then any extensions.
+(define (jrec-entry-list r)
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)) (n (vector-length vals)))
+    (let loop ((i 0) (acc '()))
+      (if (= i n)
+          (let ((ext (jrec-ext r)))
+            (append (reverse acc)
+                    (if (jolt-nil? ext) '()
+                        (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-ext-pairs ext)))))
+          (loop (+ i 1) (cons (make-map-entry (vector-ref fkeys i) (vector-ref vals i)) acc))))))
 (define %r-jolt-seq jolt-seq)
 (set! jolt-seq (lambda (x)
   (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
-        ((jrec? x) (list->cseq (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-pairs x))))
+        ((jrec? x) (list->cseq (jrec-entry-list x)))
         (else (%r-jolt-seq x)))))
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
@@ -265,11 +354,15 @@
 (define (make-deftype-ctor name-sym field-kws . _ignored)
   (let* ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
          (kws (seq->list field-kws))
+         (desc (make-jrdesc tag kws))
+         (nf (length kws))
          (ctor (lambda args
-                 (make-jrec tag (let loop ((ks kws) (as args) (acc '()))
-                                  (if (null? ks) (reverse acc)
-                                      (loop (cdr ks) (if (null? as) '() (cdr as))
-                                            (cons (cons (car ks) (if (null? as) jolt-nil (car as))) acc))))))))
+                 ;; fill the value vector from the positional args, padding missing
+                 ;; trailing fields with nil and ignoring any extras.
+                 (let ((v (make-vector nf jolt-nil)))
+                   (let loop ((as args) (i 0))
+                     (if (or (null? as) (= i nf)) (make-jrec desc v jolt-nil)
+                         (begin (vector-set! v i (car as)) (loop (cdr as) (+ i 1)))))))))
     ;; Register the ctor globally by simple class name (like StringBuilder) so
     ;; (Name. …) interop resolves ns-agnostically: a deftype used across files works
     ;; even when the runtime current ns is the caller's, not the defining ns

@@ -34,7 +34,7 @@
    "range" "jolt-range" "take" "jolt-take" "drop" "jolt-drop"
    "keys" "jolt-keys" "vals" "jolt-vals"
    "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
-   "zero?" "jolt-zero?" "identity" "jolt-identity"
+   "zero?" "jolt-zero?" "identity" "jolt-identity" "nil?" "jolt-nil?" "some?" "jolt-some?"
    "ex-info" "jolt-ex-info"})
 
 ;; Value-position resolution for a clojure.core ref passed AS A VALUE (to map /
@@ -56,7 +56,7 @@
    "first" #(= % 1) "rest" #(= % 1) "next" #(= % 1) "seq" #(= % 1)
    "reverse" #(= % 1) "last" #(= % 1) "keys" #(= % 1) "vals" #(= % 1)
    "even?" #(= % 1) "odd?" #(= % 1) "pos?" #(= % 1) "neg?" #(= % 1)
-   "zero?" #(= % 1) "identity" #(= % 1)
+   "zero?" #(= % 1) "identity" #(= % 1) "nil?" #(= % 1) "some?" #(= % 1)
    "cons" #(= % 2) "filter" #(= % 2) "remove" #(= % 2) "into" #(= % 2)
    "take" #(= % 2) "drop" #(= % 2) "map" #(>= % 2) "apply" #(>= % 2)
    "reduce" #(or (= % 2) (= % 3)) "range" #(and (>= % 0) (<= % 3))
@@ -76,7 +76,7 @@
 (def ^:private bool-returning-ops
   #{"<" "<=" ">" ">=" "jolt=" "jolt-not"
     "jolt-even?" "jolt-odd?" "jolt-pos?" "jolt-neg?"
-    "jolt-zero?" "jolt-empty?" "jolt-contains?"})
+    "jolt-zero?" "jolt-empty?" "jolt-contains?" "jolt-nil?" "jolt-some?"})
 
 ;; Numeric-specialized op strings. jolt.passes.numeric tags an arithmetic invoke
 ;; :num-kind :double|:long when every operand is that kind; these are the Chez
