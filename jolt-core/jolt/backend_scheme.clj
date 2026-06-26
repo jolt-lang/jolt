@@ -498,6 +498,18 @@
                                (fn [[f & as]]
                                  (str "(jolt-invoke " f (if (seq as) (str " " (str/join " " as)) "") ")"))))]
     (cond
+      ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
+      ;; one record type, so resolve the impl by that static tag instead of routing
+      ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
+      ;; the tag and walks the type table). find-protocol-method does the same table
+      ;; lookup the dispatch would, but with no var-deref, no rest-cons, and no
+      ;; receiver-type computation. Fires only on a monomorphic site (a megamorphic
+      ;; receiver joins to :any and carries no :devirt-type).
+      (:devirt-type node)
+      (order-args (fn [as]
+                    (str "((find-protocol-method " (chez-str-lit (:devirt-type node)) " "
+                         (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
+                         ") " (str/join " " as) ")")))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
