@@ -20,6 +20,29 @@
 ;; whose data conversion would turn those into real sets.
 (define jolt-ce-read jolt-read-form-raw)
 
+;; --- current source location ------------------------------------------------
+;; The position of the top-level form currently compiling/evaluating, so an
+;; uncaught error can report where it came from (cli.ss jolt-report-uncaught).
+;; Thread-local: a future/agent worker tracks its own form. Holds #f or a
+;; {:line :column :file?} position map (jolt.host/form-position's shape).
+;; Top-level granularity — one set per top-level form, nothing per call.
+(define jolt-current-source (make-thread-parameter #f))
+(define (jolt-enter-form! form)
+  (let ((p (hc-form-position form)))
+    (when (pmap? p) (jolt-current-source p))))
+
+;; "file:line:col" / "line:col" for the current form, or #f when none is set.
+(define (jolt-current-source-string)
+  (let ((p (jolt-current-source)))
+    (and (pmap? p)
+         (let ((line (jolt-get p hc-kw-line jolt-nil))
+               (col  (jolt-get p hc-kw-column jolt-nil))
+               (file (jolt-get p hc-kw-file jolt-nil)))
+           (string-append
+             (if (jolt-nil? file) "" (string-append file ":"))
+             (if (jolt-nil? line) "?" (number->string line)) ":"
+             (if (jolt-nil? col) "?" (number->string col)))))))
+
 ;; The spine ALWAYS runs with the full clojure.core prelude loaded, so a clojure.*
 ;; ref must lower to var-deref (resolved from the prelude), not trip the emitter's
 ;; "unsupported stdlib fn (no core on Chez yet)" out-of-subset guard — that guard
@@ -124,6 +147,9 @@
     ;; of the expander fn + (mark-macro! …) so subsequent forms expand it. One
     ;; macro-expansion path (no separate spine interception).
     (else
+     ;; record this form's source location first, so a compile- or run-time error
+     ;; in it reports the right place.
+     (jolt-enter-form! form)
      (eval (read (open-input-string (jolt-analyze-emit-form form ns)))
            (interaction-environment)))))
 

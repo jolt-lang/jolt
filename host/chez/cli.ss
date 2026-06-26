@@ -53,6 +53,9 @@
           (display "Unhandled exception: " port)
           (display (if (condition? v) (with-output-to-string (lambda () (display-condition v))) (jolt-pr-str v)) port)
           (newline port)))
+    ;; The top-level form that was evaluating when this propagated (file:line:col).
+    (let ((loc (jolt-current-source-string)))
+      (when loc (display "  at " port) (display loc port) (newline port)))
     (exit 1)))
 
 (guard (v (#t (jolt-report-uncaught v)))
