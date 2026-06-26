@@ -337,18 +337,20 @@
                                ;; ns + register aliases before this ns's forms; dce
                                ;; keeps original order.
                                (let ((src (read-file-string (cdr nf))))
-                                 (append
-                                   (map (lambda (s) (dce-rec #t #f '() s))
-                                        (bld-ns-prelude (car nf) src))
-                                   (ei-emit-ns-records (car nf) src))))
+                                 (parameterize ((rdr-source-file (cdr nf)))
+                                   (append
+                                     (map (lambda (s) (dce-rec #t #f '() s))
+                                          (bld-ns-prelude (car nf) src))
+                                     (ei-emit-ns-records (car nf) src)))))
                              ordered))
                       (string-append entry-ns "/-main"))
                     (values #f
                             (apply append
                               (map (lambda (nf)
                                      (let ((src (read-file-string (cdr nf))))
-                                       (append (bld-ns-prelude (car nf) src)
-                                               (bld-emit-ns (car nf) src))))
+                                       (parameterize ((rdr-source-file (cdr nf)))
+                                         (append (bld-ns-prelude (car nf) src)
+                                                 (bld-emit-ns (car nf) src)))))
                                    ordered))
                             #f)))
               (lambda ()
@@ -400,7 +402,10 @@
                             "                (list \"jolt-core\" \"stdlib\"))))\n"))
           (put-string out (string-append
                             "    (let ((mainv (var-deref " (ei-str-lit entry-ns) " \"-main\")))\n"
-                            "      (apply jolt-invoke mainv args))\n"
+                            ;; render an uncaught throw (+ Clojure backtrace) instead
+                            ;; of Chez's opaque dump, then exit non-zero.
+                            "      (guard (v (#t (jolt-report-throwable v (current-error-port)) (exit 1)))\n"
+                            "        (apply jolt-invoke mainv args)))\n"
                             "    (exit 0)))\n"))
           (close-port out))
         ;; 4. compile -> boot -> embed -> link.

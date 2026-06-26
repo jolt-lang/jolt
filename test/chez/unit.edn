@@ -331,6 +331,17 @@
   {:suite "reader" :expr "(nil? (read-string \"  , ,\"))" :expected "true"}
   {:suite "reader" :expr "(:tag (meta (read-string \"^String x\")))" :expected "String"}
   {:suite "reader" :expr "(:foo (meta (read-string \"^:foo x\")))" :expected "true"}
+  {:suite "reader" :expr "(:line (meta (read-string \"(foo bar)\")))" :expected "1"}
+  {:suite "reader" :expr "(:column (meta (read-string \"(foo bar)\")))" :expected "1"}
+  {:suite "reader" :expr "(:line (meta (read-string \"\\n\\n  (x)\")))" :expected "3"}
+  {:suite "reader" :expr "(:column (meta (read-string \"\\n\\n  (x)\")))" :expected "3"}
+  {:suite "reader" :expr "(nil? (meta (read-string \"[1 2]\")))" :expected "true"}
+  {:suite "reader" :expr "(nil? (meta (read-string \"()\")))" :expected "true"}
+  {:suite "reader" :expr "(:foo (meta (read-string \"^:foo (x y)\")))" :expected "true"}
+  {:suite "reader" :expr "(:line (meta (read-string \"^:foo (x y)\")))" :expected "1"}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"(when x y)\"))))" :expected "1"}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"\\n\\n(when x y)\"))))" :expected "3"}
+  {:suite "reader" :expr "(:column (meta (macroexpand-1 (read-string \"(when x y)\"))))" :expected "1"}
   {:suite "reader" :expr "(= 42 (with-in-str \"42\" (read)))" :expected "true"}
   {:suite "reader" :expr "(= (quote (+ 1 2)) (with-in-str \"(+ 1 2)\" (read)))" :expected "true"}
   {:suite "reader" :expr "(with-in-str \"1 2\" [(read) (read)])" :expected "[1 2]"}

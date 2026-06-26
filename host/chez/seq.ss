@@ -154,7 +154,12 @@
      => (lambda (m) (apply jolt-invoke m f args)))
     ((and (reified-methods f) (hashtable-ref (reified-methods f) "invoke" #f))
      => (lambda (m) (apply jolt-invoke m f args)))
-    (else (error 'invoke "not a fn" f))))
+    ;; calling a non-fn: a ClassCastException naming the operator, thrown via
+    ;; jolt-throw so it is catchable and carries the throw-site continuation for a
+    ;; stack trace.
+    (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                        (string-append (guard (e (#t "value")) (jolt-pr-str f))
+                                       " cannot be cast to clojure.lang.IFn"))))))
 
 ;; ============================================================================
 ;; map / filter / reduce / into / remove + range / take / concat / apply

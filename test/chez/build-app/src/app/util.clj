@@ -4,6 +4,19 @@
 (defn shout [s]
   (str/upper-case (str s "!")))
 
+;; A two-deep non-tail call chain that throws — exercises native stack traces in a
+;; direct-link build (build-smoke runs -main with a --boom sentinel arg). deep-boom
+;; is defined through a USER macro: its source registration only gets a real line
+;; if the reader position survives macroexpansion (so the trace frame maps).
+(defmacro defguarded [name args & body]
+  `(defn ~name ~args (assert (number? ~(first args)) "needs a number") ~@body))
+
+(defguarded deep-boom [x]
+  (* x 2))
+
+(defn mid-boom [x]
+  (inc (deep-boom x)))
+
 (defmacro twice [x]
   `(do ~x ~x))
 

@@ -18,6 +18,18 @@ check() {
 }
 pass=0
 
+# An uncaught error reports the source location of the top-level form (stderr).
+check_loc() {
+  err="$(bin/joltc -e "$1" 2>&1 >/dev/null)"
+  if printf '%s' "$err" | grep -q "$2"; then
+    pass=$((pass + 1))
+  else
+    echo "  FAIL (loc): $1"
+    echo "    want stderr to contain \`$2\`, got \`$err\`"
+    fails=$((fails + 1))
+  fi
+}
+
 check '(+ 1 2)' '3'
 check '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 15)' '610'
 check '(->> (range 10) (filter even?) (map (fn [x] (* x x))) (reduce +))' '120'
@@ -31,6 +43,8 @@ check '(deref (future (+ 1 2)))' '3'
 check '(/ 1 2)' '1/2'
 check '(= 3 3.0)' 'false'
 check '(== 3 3.0)' 'true'
+check_loc '(throw (ex-info "boom" {}))' '  at 1:'
+check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
 
 echo "cli smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]

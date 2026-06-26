@@ -12,6 +12,10 @@
 (defmethod greet :soft [_] "greet:soft")
 
 (defn -main [& args]
+  ;; --boom: throw through a two-deep call chain so build-smoke can assert the
+  ;; native stack trace. Off the normal path, so default output is unchanged.
+  (when (= (first args) "--boom")
+    (util/mid-boom "not-a-number"))
   ;; the resource is baked into the binary (deps.edn :jolt/build :embed), so this
   ;; resolves with no resources/ dir on disk, run from any cwd.
   (println (slurp (io/resource "greeting.txt")))

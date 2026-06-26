@@ -32,27 +32,17 @@
 (set-source-roots! (list "jolt-core" "stdlib"))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
-;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. An
-;; ex-info shows its message + ex-data; anything else is pr-str'd.
+;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
+;; message/ex-data/cause + a mapped Clojure backtrace come from the shared
+;; renderer (source-registry.ss); the cli adds the top-level source location.
 (define (jolt-report-uncaught v)
   (let ((port (current-error-port)))
-    (if (and (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info))
-        (begin
-          (display "Unhandled exception: " port)
-          (display (jolt-str-render-one (jolt-get v jolt-kw-message jolt-nil)) port)
-          (newline port)
-          (let ((data (jolt-get v jolt-kw-data jolt-nil)))
-            (unless (jolt-nil? data)
-              (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
-          (let ((cause (jolt-get v jolt-kw-cause jolt-nil)))
-            (when (condition? cause)
-              (display "  cause: " port)
-              (display (with-output-to-string (lambda () (display-condition cause))) port)
-              (newline port))))
-        (begin
-          (display "Unhandled exception: " port)
-          (display (if (condition? v) (with-output-to-string (lambda () (display-condition v))) (jolt-pr-str v)) port)
-          (newline port)))
+    (jolt-render-throwable v port)
+    ;; The top-level form that was evaluating when this propagated (file:line:col).
+    (let ((loc (jolt-current-source-string)))
+      (when loc (display "  at " port) (display loc port) (newline port)))
+    (let ((bt (jolt-backtrace-string v)))
+      (when bt (display "  trace:\n" port) (display bt port)))
     (exit 1)))
 
 (guard (v (#t (jolt-report-uncaught v)))

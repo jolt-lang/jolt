@@ -674,14 +674,29 @@
     (str "(begin " (str/join " " (map emit-top-form (:statements node)))
          (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
     (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
-    (let [ns (:ns node) nm (:name node) b (dl-name ns nm)]
+    (let [ns (:ns node) nm (:name node) b (dl-name ns nm)
+          fn? (= :fn (:op (:init node)))
+          ;; A fn def gets a source-registry entry so a native backtrace can map its
+          ;; frame to ns/name (file:line). Chez names the frame by whatever emit-fn
+          ;; binds the lambda to: a NAMED fn (defn, or (fn foo …)) gets a letrec
+          ;; self-binding = munge-name of the fn's own name; an ANONYMOUS fn def has
+          ;; no letrec, so the lambda sits directly under (define jv$ns$name …) and
+          ;; takes that name. Register under whichever Chez will report.
+          pos (:pos node)
+          frame-name (when fn?
+                       (if-let [fnm (:name (:init node))] (munge-name fnm) b))
+          reg (when (and fn? pos)
+                (str " (jolt-register-source! " (chez-str-lit frame-name) " "
+                     (chez-str-lit ns) " " (chez-str-lit nm) " "
+                     (if (get pos :file) (chez-str-lit (get pos :file)) "jolt-nil") " "
+                     (or (get pos :line) 0) ")"))]
       ;; register before emitting the init so a self-referential body direct-links.
       (swap! direct-link-defined conj (dl-fqn ns nm))
-      (when (= :fn (:op (:init node))) (swap! direct-link-fns conj (dl-fqn ns nm)))
+      (when fn? (swap! direct-link-fns conj (dl-fqn ns nm)))
       (let [init (emit (:init node))]
         (if (jmeta-nonempty? (:meta node))
           (str "(begin (define " b " " init ") (def-var-with-meta! "
-               (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) "))")
+               (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) ")" (or reg "") ")")
           (str "(begin (define " b " " init ") (def-var! "
-               (chez-str-lit ns) " " (chez-str-lit nm) " " b "))"))))
+               (chez-str-lit ns) " " (chez-str-lit nm) " " b ")" (or reg "") ")"))))
     :else (emit node)))

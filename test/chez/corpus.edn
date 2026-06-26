@@ -611,6 +611,8 @@
   {:suite "host-interop / class tokens & readers" :label "indexOf int needle is a char code" :expected "1" :actual "(.indexOf \"a=b\" 61)"}
   {:suite "host-interop / exception + HashMap shims" :label "getMessage on a thrown string" :expected "\"class java.lang.String cannot be cast to class java.lang.Throwable (java.lang.String and java.lang.Throwable are in module java.base of loader 'bootstrap')\"" :actual "(try (throw \"boom\") (catch Throwable e (.getMessage e)))"}
   {:suite "host-interop / exception + HashMap shims" :label "getMessage on ex-info" :expected "\"bad\"" :actual "(try (throw (ex-info \"bad\" {})) (catch Throwable e (.getMessage e)))"}
+  {:suite "host-interop / exception + HashMap shims" :label "calling a non-fn throws ClassCastException" :expected ":ccx" :actual "(try (1 2) (catch ClassCastException _ :ccx))"}
+  {:suite "host-interop / exception + HashMap shims" :label "non-fn cast is a RuntimeException too" :expected ":rt" :actual "(try ((identity 5)) (catch RuntimeException _ :rt))"}
   {:suite "host-interop / exception + HashMap shims" :label "HashMap get" :expected "2" :actual "(let [m (HashMap. {:a 1 :b 2})] (.get m :b))"}
   {:suite "host-interop / exception + HashMap shims" :label "HashMap put + size" :expected "2" :actual "(let [m (HashMap. {})] (.put m :x 1) (.put m :y 2) (.size m))"}
   {:suite "host-interop / reader-feature toggle" :label "features default to jolt+default" :expected "true" :actual "(contains? (set (__reader-features)) \"jolt\")"}

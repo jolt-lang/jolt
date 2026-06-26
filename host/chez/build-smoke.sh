@@ -81,6 +81,19 @@ fi
 if ! grep -q '(jv\$app.util\$shout' "$out.build/flat.ss"; then
   echo "  FAIL: --direct-link did not emit a direct app->app call"; exit 1
 fi
+# A direct-link build registers fn sources, so an uncaught throw prints a Clojure
+# stack trace mapping each native frame back to ns/name (file:line).
+if ! grep -q 'jolt-register-source!' "$out.build/flat.ss"; then
+  echo "  FAIL: --direct-link did not emit source registrations"; exit 1
+fi
+boom_err="$(cd / && "$out" --boom 2>&1 >/dev/null)"
+for frame in 'app.util/deep-boom' 'app.util/mid-boom' 'app.core/-main'; do
+  if ! printf '%s' "$boom_err" | grep -q "$frame"; then
+    echo "  FAIL: stack trace missing frame $frame"
+    echo "--- got ----"; echo "$boom_err"
+    exit 1
+  fi
+done
 # Tree-shaking (opt-in): same result, and an unreachable def (the `twice` macro,
 # expanded at AOT and never called at runtime) is dropped.
 if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --tree-shake >/dev/null 2>&1; then

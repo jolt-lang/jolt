@@ -119,8 +119,22 @@
 (define (hc-inst-source x) (jolt-get x hc-kw-form))
 (define (hc-uuid-source x) (jolt-get x hc-kw-form))
 
-;; The Chez reader does not record source offsets yet.
-(define (hc-form-position x) jolt-nil)
+;; Source position for a list form: the reader stamps :line/:column (+ :file when
+;; compiling a file) into the form's metadata. Return a clean {:line :column
+;; :file?} map, or nil for a synthetic/macro-built form that carries none.
+(define hc-kw-line   (keyword #f "line"))
+(define hc-kw-column (keyword #f "column"))
+(define hc-kw-file   (keyword #f "file"))
+(define (hc-form-position x)
+  (let ((m (jolt-meta x)))
+    (if (and (pmap? m) (not (jolt-nil? (jolt-get m hc-kw-line))))
+        (let ((line (jolt-get m hc-kw-line))
+              (col  (jolt-get m hc-kw-column))
+              (file (jolt-get m hc-kw-file)))
+          (if (jolt-nil? file)
+              (jolt-hash-map hc-kw-line line hc-kw-column col)
+              (jolt-hash-map hc-kw-line line hc-kw-column col hc-kw-file file)))
+        jolt-nil)))
 
 ;; --- special forms ----------------------------------------------------------
 ;; Mirrors host_iface special-names + interop-head? — forms the analyzer marks
@@ -170,12 +184,31 @@
 ;; of the list), and the analyzer re-analyzes the returned form.
 (define (hc-macro? ctx sym)
   (macro-var? (hc-resolve-cell ctx sym)))
+;; Clojure parity: a macro expansion inherits the call form's source position, so
+;; errors/traces in macro-generated code point at the macro call site. Carry it
+;; onto the top of a LIST expansion (code) that has none of its own — merged under
+;; any meta the macro set, leaving collection literals (runtime data) alone. The
+;; recursion through analyze re-expands inner macros, so each level's top form
+;; picks up the position the same way (as the reference compiler does).
+(define (hc-propagate-pos src dst)
+  (if (and (cseq? dst) (cseq-list? dst))
+      (let ((sp (hc-form-position src))
+            (dm (jolt-meta dst)))
+        (if (and (pmap? sp)
+                 (or (jolt-nil? dm) (jolt-nil? (jolt-get dm hc-kw-line))))
+            (jolt-with-meta dst
+              (if (pmap? dm)
+                  (pmap-fold sp (lambda (k v acc) (jolt-assoc1 acc k v)) dm)
+                  sp))
+            dst))
+      dst))
+
 (define (hc-expand-1 ctx form)
   (let* ((items (seq->list form))
          (head (car items))
          (args (cdr items))
          (expander (var-cell-root (hc-resolve-cell ctx head))))
-    (apply jolt-invoke expander args)))
+    (hc-propagate-pos form (apply jolt-invoke expander args))))
 
 ;; Classify a global (non-local) symbol reference against the var registry:
 ;;   {:kind :var :ns NS :name NAME}   — a defined var (compile ns / clojure.core)
