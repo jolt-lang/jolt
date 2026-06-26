@@ -23,15 +23,26 @@
 ;; --- keywords: interned so identity works; optional namespace ----------------
 (define-record-type keyword-t (fields ns name khash) (nongenerative keyword-v1))
 (define keyword-table (make-hashtable string-hash string=?))
+;; The common no-ns keyword is interned in a table keyed by NAME directly, so a
+;; lookup of an already-interned :kw (the hot case — every (:kw x), map literal,
+;; keyword arg) is one hashtable-ref with NO allocation. The ns table keeps the
+;; combined key. Both share the keyword-t khash (equal-hash of the combined key),
+;; so hash values are unchanged.
+(define keyword-table-bare (make-hashtable string-hash string=?))
 ;; NUL separator can't occur in a keyword ns/name, so the intern key is
 ;; unambiguous (a "/" separator would collide ns="a" name="b/c" with ns="a/b").
 (define (keyword-intern-key ns name) (string-append (or ns "") "\x0;" name))
 (define (keyword ns name)
-  (let ((k (keyword-intern-key ns name)))
-    (or (hashtable-ref keyword-table k #f)
-        (let ((kw (make-keyword-t ns name (equal-hash k))))
-          (hashtable-set! keyword-table k kw)
-          kw))))
+  (if ns
+      (let ((k (keyword-intern-key ns name)))
+        (or (hashtable-ref keyword-table k #f)
+            (let ((kw (make-keyword-t ns name (equal-hash k))))
+              (hashtable-set! keyword-table k kw)
+              kw)))
+      (or (hashtable-ref keyword-table-bare name #f)
+          (let ((kw (make-keyword-t #f name (equal-hash (keyword-intern-key #f name)))))
+            (hashtable-set! keyword-table-bare name kw)
+            kw))))
 (define (keyword? x) (keyword-t? x))
 
 ;; --- symbols: ns + name + meta; NOT interned (meta varies), = by ns/name ------
