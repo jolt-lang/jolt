@@ -239,11 +239,16 @@
         ((string? coll) (let ((i (->idx k)))
                           (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
         (else d)))
+;; jrec? / jrec-ref live in records.ss (loaded later); these are forward references
+;; resolved at call time. A record field read is the hottest get, so check it first
+;; and skip the get-arm walk.
 (define (jolt-get-dispatch coll k d)
-  (let loop ((as jolt-get-arms))
-    (cond ((null? as) (jolt-get-base coll k d))
-          (((caar as) coll) ((cdar as) coll k d))
-          (else (loop (cdr as))))))
+  (if (jrec? coll)
+      (jrec-ref coll k d)
+      (let loop ((as jolt-get-arms))
+        (cond ((null? as) (jolt-get-base coll k d))
+              (((caar as) coll) ((cdar as) coll k d))
+              (else (loop (cdr as)))))))
 (define jolt-get
   (case-lambda
     ((coll k) (jolt-get-dispatch coll k jolt-nil))
