@@ -96,8 +96,12 @@
   ([n x] (take n (repeat x))))
 
 ;; --- iterate ---
+;; f is applied lazily, inside the tail thunk — (first (iterate f x)) is x with no
+;; call to f, matching clojure.lang.Iterate. Wrapping the whole body in lazy-seq
+;; instead would force (f x) the moment the head realizes (it is an eager argument
+;; to cons), realizing one step ahead.
 (defn iterate [f x]
-  (lazy-seq (cons x (iterate f (f x)))))
+  (cons x (lazy-seq (iterate f (f x)))))
 
 
 ;; --- partition-all --- (transducer + [n coll] + [n step coll])

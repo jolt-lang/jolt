@@ -17,13 +17,16 @@
 ;; call routes through jolt-invoke. A `reduced` step stops the fold — reduce-seq
 ;; (seq.ss) already short-circuits on a jolt-reduced.
 ;; ============================================================================
+;; The map transducer's step fn supports multiple inputs ([result input & inputs]),
+;; so a multi-collection sequence/transduce — or medley's sequence-padded, which
+;; calls (f acc i1 i2 …) — applies f across all of them: (rf result (apply f inputs)).
 (define (td-map f)
   (lambda (rf)
     (lambda a
       (case (length a)
         ((0) (jolt-invoke rf))
         ((1) (jolt-invoke rf (car a)))
-        (else (jolt-invoke rf (car a) (jolt-invoke f (cadr a))))))))
+        (else (jolt-invoke rf (car a) (apply jolt-invoke f (cdr a))))))))
 (define (td-filter pred)
   (lambda (rf)
     (lambda a

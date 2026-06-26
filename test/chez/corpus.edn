@@ -3261,4 +3261,12 @@
   {:suite "printer / print-level" :label "scalars print regardless of level" :expected "true" :actual "(= \"[1 2]\" (binding [*print-level* 1] (pr-str [1 2])))"}
   {:suite "reader / default-data-reader-fn" :label "consulted for an unregistered tag" :expected "true" :actual "(= [(quote foo) 42] (binding [*default-data-reader-fn* (fn [tag v] [tag v])] (read-string \"#foo 42\")))"}
   {:suite "printer / print-vars" :label "print-length / print-level / default-data-reader-fn default to nil" :expected "[true true true]" :actual "[(nil? *print-length*) (nil? *print-level*) (nil? *default-data-reader-fn*)]"}
+  {:suite "seqs / laziness" :label "an empty lazy seq is () not nil" :expected "true" :actual "(= () (lazy-seq nil))"}
+  {:suite "seqs / laziness" :label "rest of a one-element coll is ()" :expected "true" :actual "(= () (rest [1]))"}
+  {:suite "seqs / laziness" :label "first of iterate does not call f" :expected "true" :actual "(let [a (atom 0)] (first (iterate (fn [x] (swap! a inc) (inc x)) 0)) (= 0 @a))"}
+  {:suite "seqs / laziness" :label "rest of iterate does not realize the next element" :expected "true" :actual "(let [a (atom 0)] (rest (iterate (fn [x] (swap! a inc) (inc x)) 0)) (= 0 @a))"}
+  {:suite "seqs / laziness" :label "take from an infinite iterate" :expected "[0 1 2 3 4]" :actual "(vec (take 5 (iterate inc 0)))"}
+  {:suite "seqs / laziness" :label "distinct over a rest-derived seq does not overrun" :expected "2" :actual "(count (distinct (map inc (rest [10 20 30]))))"}
+  {:suite "transducers / map multi-input" :label "the map transducer applies f across all inputs" :expected "[6]" :actual "(((map +) conj) [] 1 2 3)"}
+  {:suite "transducers / map multi-input" :label "single input is unchanged" :expected "[3]" :actual "(((map +) conj) [] 3)"}
 ]
