@@ -432,13 +432,28 @@
        ;; register method var-keys for devirtualization; the inference
        ;; reads this (via infer-unit!) to resolve a protocol call on a known record
        (register-protocol-methods! ~(name pname) [~@(map (fn [s] (name (first s))) sigs)])
+       ;; one fn clause per declared arity. The protocol/method NAMES pass as
+       ;; strings so the body compiles as a plain invoke (not symbol-as-var). The
+       ;; common 1/2/3-param arities call positional protocol-dispatchN, which
+       ;; applies the impl directly — no rest-list cons; 4+ params fall back to the
+       ;; variadic protocol-dispatch with a vector of the extra args.
        ~@(map (fn [sig]
-                `(def ~(first sig)
-                   ;; protocol-dispatch is a fn (clojure.core); pass the protocol /
-                   ;; method NAMES as strings (not the symbols) so it compiles as a
-                   ;; plain invoke rather than evaluating the symbols as vars.
-                   (fn* [this# & rest#]
-                     (protocol-dispatch ~(name pname) ~(name (first sig)) this# rest#))))
+                (let [pn (name pname)
+                      mn (name (first sig))
+                      arglists (filter vector? (rest sig))
+                      clause (fn [argv]
+                               (let [ps (mapv (fn [_] (fresh-sym)) argv)
+                                     n (count ps)
+                                     obj (first ps)]
+                                 (cond
+                                   (= n 1) (list ps (list 'protocol-dispatch1 pn mn obj))
+                                   (= n 2) (list ps (list 'protocol-dispatch2 pn mn obj (nth ps 1)))
+                                   (= n 3) (list ps (list 'protocol-dispatch3 pn mn obj (nth ps 1) (nth ps 2)))
+                                   :else   (list ps (list 'protocol-dispatch pn mn obj (vec (rest ps)))))))]
+                  (if (seq arglists)
+                    `(def ~(first sig) (fn* ~@(map clause arglists)))
+                    `(def ~(first sig)
+                       (fn* [this# & rest#] (protocol-dispatch ~pn ~mn this# rest#))))))
               sigs))))
 
 ;; Member threading: (.. x f g) => (. (. x f) g); a parenthesized member
