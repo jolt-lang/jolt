@@ -125,10 +125,13 @@
    (letfn [(go [s]
              (lazy-seq
                (when (seq s)
-                 (loop [i 0 chunk [] cur s]
+                 ;; realize exactly n via first/rest (minimal realization), but emit
+                 ;; the chunk as a SEQ — JVM partition-all chunks are seqs, not
+                 ;; vectors (partitionv-all is the vector variant).
+                 (loop [i 0 acc () cur s]
                    (if (and (< i n) (seq cur))
-                     (recur (inc i) (conj chunk (first cur)) (rest cur))
-                     (cons chunk (go cur)))))))]
+                     (recur (inc i) (cons (first cur) acc) (rest cur))
+                     (cons (reverse acc) (go cur)))))))]
      (go coll)))
   ([n step coll]
    (letfn [(go [s]

@@ -10,6 +10,40 @@ them (e.g. vector `nth` is "effectively constant time" — SHOULD-level).
 
 ---
 
+## Collection return types & laziness (cross-cutting)
+
+Two contracts hold across the sequence library and are not restated per entry.
+
+**Return-type fidelity.** A function returns the same *kind* of collection the
+reference does — value equality is not enough, since `(= [0 1] '(0 1))`.
+
+- Sequence transformations return **seqs** (lazy unless noted): `map`, `filter`,
+  `remove`, `keep`, `mapcat`, `take`/`drop` and their `-while` forms, `partition`,
+  `partition-all`, `partition-by`, `interpose`, `dedupe`, `distinct`, `concat`,
+  `reductions`, `cons`, `rest`, `sequence`. The *elements* of `partition` /
+  `partition-all` / `partition-by` are themselves seqs, not vectors.
+- The vector variants return **vectors**: `mapv`, `filterv`, `vec`, `subvec`,
+  `partitionv`, `partitionv-all`, `splitv-at`. `split-at` / `split-with` return a
+  2-vector `[take drop]`. A transducer applied eagerly (`into []`, the
+  `partition-all` transducer's chunks) yields vectors.
+- Type-preserving functions return the input's type: `replace` over a vector is a
+  vector, over any other seqable a (lazy) seq; `empty`/`into (empty coll)` keep the
+  collection kind; `set`/`into #{}` return sets; `into {}`/`select-keys`/`zipmap`/
+  `frequencies`/`group-by`/`merge` return maps (`group-by` values are vectors).
+
+**Laziness.** The lazy sequence functions — including `sequence`, `eduction`, and
+`mapcat` — MUST consume their source incrementally and so terminate on an infinite
+or unbounded source when only a prefix is demanded: `(first (sequence (map inc)
+(range)))` and `(take n (mapcat f (range)))` return without realizing the whole
+source. `(apply concat coll-of-colls)` is likewise lazy in its argument seq. The
+eager consumers (`reduce`, `into`, `count`, `vec`, `doall`) realize the demanded
+portion fully.
+
+These are exercised by the `seq / lazy over infinite` and the per-fn type-predicate
+rows in the conformance corpus.
+
+---
+
 ### first — since 1.0
 
 ```

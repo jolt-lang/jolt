@@ -271,14 +271,17 @@
 
 ;; eduction is EAGER on jolt (documented divergence): the composed
 ;; xforms applied to coll, realized into a vector.
+;; A lazy application of the composed xforms to coll (sequence is lazy now), so an
+;; infinite or expensive source isn't realized up front. Not a re-iterable Eduction
+;; object, but reduce / into / seq / first over it all work.
 (defn eduction [& args]
   (let [coll (last args)
         xforms (butlast args)]
     (if xforms
-      (into [] (apply comp xforms) coll)
-      (into [] coll))))
+      (sequence (apply comp xforms) coll)
+      (sequence coll))))
 
-(defn ->Eduction [xform coll] (into [] xform coll))
+(defn ->Eduction [xform coll] (sequence xform coll))
 
 ;; --- JVM-shape stubs and trivial shells --------------------------------------
 ;; Pure compositions or documented jolt stubs; the host keeps nothing.

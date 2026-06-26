@@ -269,10 +269,25 @@
         ((null? (cdr colls)) (jolt-seq (car colls)))
         (else (concat2 (jolt-seq (car colls)) (lambda () (apply jolt-concat (cdr colls)))))))
 
-;; (apply f a b ... coll): spread the trailing seqable into the call.
+;; Lazily concatenate a (possibly infinite) SEQ of colls — what (apply concat ss)
+;; means, but without realizing ss. Pulls one coll at a time, concatenating it with
+;; a lazy tail, so mapcat / (apply concat …) over an infinite source stays lazy.
+(define (lazy-concat-seq ss)
+  (let ((s (jolt-seq ss)))
+    (if (jolt-nil? s)
+        jolt-empty-list
+        (jolt-concat (seq-first s)
+                     (jolt-make-lazy-seq (lambda () (lazy-concat-seq (seq-more s))))))))
+
+;; (apply f a b ... coll): spread the trailing seqable into the call. concat is
+;; special-cased: it produces a LAZY result, so spreading an infinite tail through
+;; a Scheme variadic (which must realize it) would hang — route to lazy-concat-seq,
+;; prepending any fixed leading colls.
 (define (jolt-apply f . args)
-  (let* ((r (reverse args)) (spread (seq->list (jolt-seq (car r)))) (fixed (reverse (cdr r))))
-    (apply jolt-invoke f (append fixed spread))))
+  (let* ((r (reverse args)) (tail (car r)) (fixed (reverse (cdr r))))
+    (if (eq? f jolt-concat)
+        (lazy-concat-seq (fold-right jolt-cons (jolt-seq tail) fixed))
+        (apply jolt-invoke f (append fixed (seq->list (jolt-seq tail)))))))
 
 ;; ============================================================================
 ;; numeric predicates / identity — usable in fn AND value position (map/filter).

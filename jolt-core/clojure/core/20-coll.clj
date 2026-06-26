@@ -210,7 +210,12 @@
          true))
      false)))
 
-(defn replace [smap coll] (mapv (fn [x] (get smap x x)) coll))
+;; A vector input maps to a vector (eager); any other coll to a lazy seq — JVM
+;; replace is type-preserving, not vector-always.
+(defn replace [smap coll]
+  (if (vector? coll)
+    (mapv (fn [x] (get smap x x)) coll)
+    (map (fn [x] (get smap x x)) coll)))
 
 (defn nthnext [coll n]
   (loop [n n xs (seq coll)]

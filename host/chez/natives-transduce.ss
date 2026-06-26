@@ -38,13 +38,54 @@
             (res (reduce-seq xf init (jolt-seq coll))))
        (jolt-invoke xf res)))))
 
-;; (sequence coll) -> a seq; (sequence xform coll) -> coll transformed by xform.
-;; Materialized eagerly through into-xform then seq'd (corpus inputs are finite; a
-;; fully-lazy pull is future work). Honors reduced via into-xform/reduce-seq.
+;; (sequence coll) -> a seq; (sequence xform coll) -> a LAZY seq of coll transformed
+;; by xform. A transformer iterator (mirrors clojure.core's TransformerIterator):
+;; pull one input at a time through (xform rf), where rf buffers each emitted value;
+;; emit the buffer lazily, pulling more input only when it drains. So an infinite or
+;; expensive source is consumed incrementally — (first (sequence (map inc) (range)))
+;; returns at once. Honors `reduced` (stop pulling) and runs the 1-arg completion to
+;; flush a stateful xform (partition-all / dedupe / a trailing partition).
+(define (sequence-xf xform coll)
+  (let* ((buf (box '()))                  ; emitted values for the current step, reversed
+         (rf (case-lambda
+               (() jolt-nil)
+               ((acc) acc)
+               ((acc x) (set-box! buf (cons x (unbox buf))) acc)))
+         (xrf (jolt-invoke xform rf)))
+    ;; advance the source until buf holds output or the input is drained+completed.
+    (define (fill src acc completed)
+      (let loop ((src src) (acc acc) (completed completed))
+        (cond
+          ((pair? (unbox buf)) (values src acc completed))
+          (completed (values src acc #t))
+          ((jolt-reduced? acc)
+           (jolt-invoke xrf (jolt-reduced-val acc))      ; completion may flush
+           (loop src (jolt-reduced-val acc) #t))
+          (else
+           (let ((s (jolt-seq src)))
+             (if (jolt-nil? s)
+                 (begin (jolt-invoke xrf acc) (loop src acc #t))   ; complete -> flush
+                 (loop (seq-more s) (jolt-invoke xrf acc (seq-first s)) completed)))))))
+    ;; Resolve the next chunk now (one fill pulls just enough input to emit or to
+    ;; exhaust), so the result is a real cseq | empty — `empty` is jolt-empty-list
+    ;; at the top (so an empty result still prints "()") and jolt-nil inside a tail
+    ;; (the cseq terminator). The TAILS stay lazy, so an infinite source is fine.
+    (define (step src acc completed empty)
+      (let-values (((src2 acc2 comp2) (fill src acc completed)))
+        (let ((out (reverse (unbox buf))))
+          (set-box! buf '())
+          (if (null? out)
+              empty
+              (let build ((o out))
+                (if (null? (cdr o))
+                    (cseq-lazy (car o) (lambda () (step src2 acc2 comp2 jolt-nil)))
+                    (cseq-lazy (car o) (lambda () (build (cdr o))))))))))
+    (step coll jolt-nil #f jolt-empty-list)))
+
 (define jolt-sequence
   (case-lambda
     ((coll) (jolt-seq coll))
-    ((xform coll) (jolt-seq (into-xform (jolt-vector) xform coll)))))
+    ((xform coll) (sequence-xf xform coll))))
 
 (def-var! "clojure.core" "transduce" jolt-transduce)
 (def-var! "clojure.core" "sequence" jolt-sequence)
