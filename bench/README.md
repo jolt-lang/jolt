@@ -45,25 +45,27 @@ regenerate locally), ascending:
 | benchmark | ratio | axis |
 |---|---|---|
 | `fib` | ~0.6× | call + integer arith |
-| `collections` | ~4× | persistent map/vector churn |
+| `collections` | ~3.5× | persistent map/vector churn |
 | `mandelbrot` | ~7.5× | pure float compute |
 | `binary-trees` | ~10× | escaping short-lived records (allocation/GC) |
 | `dispatch` | ~12× | megamorphic protocol dispatch |
-| `mono-dispatch` | ~48× | monomorphic protocol dispatch |
+| `mono-dispatch` | ~15× | monomorphic protocol dispatch |
 
 - **Compute (~0.6–7.5×)** is the substrate floor: Chez is a native-compiling AOT
   Scheme, not a profiling JIT. With native arith + direct-linking + inlining jolt
   is at parity here — `fib` runs *faster* than JVM Clojure (no JIT warmup over a
-  short run), `collections` is within ~4×, and `mandelbrot` (~7.5×) is the
+  short run), `collections` is within ~3.5×, and `mandelbrot` (~7.5×) is the
   pure-tight-loop float ceiling that only native codegen moves further.
-- **Dispatch & allocation (~10–48×)** are the remaining architectural gaps, though
+- **Dispatch & allocation (~10–15×)** are the remaining architectural gaps, though
   the type-proving / native-record / bare-field-read work has collapsed them by an
-  order of magnitude (`binary-trees` ~140×→~10×). jolt still does a full protocol-
-  registry lookup on every call; the JVM inline-caches a runtime-monomorphic site
-  to near-free — which is why `mono-dispatch` is *worse* than megamorphic and is now
-  the standout gap. devirt fires only on a *statically proven* receiver; whole-
-  program inference now proves more of them, but a value iterated out of a vector
-  still needs one — a call-site inline cache is the missing lever. `binary-trees`
+  order of magnitude (`binary-trees` ~140×→~10×, `mono-dispatch` ~330×→~15×). On a
+  *statically proven* monomorphic receiver — which whole-program inference now gives
+  for a record iterated out of a vector — devirt resolves the impl and a per-site
+  inline cache holds it (resolved once, not per call), so `mono-dispatch` is no
+  longer worse than megamorphic. The remaining lever is `dispatch`: a *megamorphic*
+  site has no static type, so it pays a full protocol-registry lookup every call
+  where the JVM uses a polymorphic inline cache — a runtime (receiver-type-keyed)
+  cache is the missing piece. `binary-trees`
   nodes escape into the tree, so scalar-replace can't remove them — residual GC
   pressure.
 
