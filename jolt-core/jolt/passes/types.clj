@@ -740,17 +740,27 @@
                                  (if (contains? escaped k)
                                    (assoc m k (vec (repeat (count (get m k)) :any))) m))
                                (:ptypes pass) ks)
-            new-rets (:rets pass)]
-        (if (or (and (= new-ptypes ptypes) (= new-rets rets)) (>= iter 16))
-          (reset! wp-seeds-box
-                  (reduce (fn [m k]
-                            (let [s (get spec k)
-                                  ptmap (reduce (fn [pm pr]
-                                                  (let [nm (nth pr 0) t (nth pr 1)]
-                                                    (if (and t (not= t :any)) (assoc pm nm t) pm)))
-                                                {} (map vector (:params s) (get new-ptypes k)))]
-                              (if (seq ptmap) (assoc m k ptmap) m)))
-                          {} ks))
+            new-rets (:rets pass)
+            converged? (and (= new-ptypes ptypes) (= new-rets rets))]
+        (if (or converged? (>= iter 16))
+          ;; On convergence new-ptypes is the least fixpoint (sound). On hitting the
+          ;; cap without convergence it's a pre-fixpoint — more specific than the
+          ;; fixpoint, so seeding it would be unsound; widen every param to :any
+          ;; (emit no seeds). The cap isn't reached in practice (~2 passes), this is
+          ;; a defensive floor.
+          (let [seed-ptypes (if converged?
+                              new-ptypes
+                              (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
+                                      new-ptypes ks))]
+            (reset! wp-seeds-box
+                    (reduce (fn [m k]
+                              (let [s (get spec k)
+                                    ptmap (reduce (fn [pm pr]
+                                                    (let [nm (nth pr 0) t (nth pr 1)]
+                                                      (if (and t (not= t :any)) (assoc pm nm t) pm)))
+                                                  {} (map vector (:params s) (get seed-ptypes k)))]
+                                (if (seq ptmap) (assoc m k ptmap) m)))
+                            {} ks)))
           (recur (inc iter) new-ptypes new-rets))))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs

@@ -509,15 +509,19 @@
       ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
       ;; one record type, so resolve the impl by that static tag instead of routing
       ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
-      ;; the tag and walks the type table). find-protocol-method does the same table
-      ;; lookup the dispatch would, but with no var-deref, no rest-cons, and no
-      ;; receiver-type computation. Fires only on a monomorphic site (a megamorphic
-      ;; receiver joins to :any and carries no :devirt-type).
+      ;; the tag and walks the type table). devirt-resolve does the same table lookup
+      ;; the dispatch would, but with no var-deref and no receiver-type computation;
+      ;; it falls back to ordinary dispatch when the static tag has no direct impl (a
+      ;; record satisfying the protocol via an Object/host-tag default). Fires only on
+      ;; a monomorphic site (a megamorphic receiver joins to :any, no :devirt-type).
+      ;; The receiver is bound once — it feeds both the resolve and the application.
       (:devirt-type node)
       (order-args (fn [as]
-                    (str "((find-protocol-method " (chez-str-lit (:devirt-type node)) " "
-                         (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
-                         ") " (str/join " " as) ")")))
+                    (let [r (fresh-label "_r$")]
+                      (str "(let* ((" r " " (first as) ")) "
+                           "((devirt-resolve " (chez-str-lit (:devirt-type node)) " "
+                           (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
+                           " " r ") " (str/join " " (cons r (rest as))) "))"))))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
