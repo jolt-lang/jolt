@@ -3,16 +3,16 @@
 Generated 2026-06-26 by `tools/spec_coverage.py` — do not edit by hand.
 
 Surface: **694** clojure.core vars (ClojureDocs export; 648 with
-community examples). jolt interns 591 of them.
+community examples). jolt interns 594 of them.
 
 | Status | Count | Meaning |
 |---|---|---|
-| implemented+tested | 587 | in jolt and exercised by spec/conformance |
+| implemented+tested | 590 | in jolt and exercised by spec/conformance |
 | implemented-untested | 4 | in jolt, no direct test — spec entries will add them |
 | resolvable-not-interned | 0 | works in code but invisible to ns introspection (conformance finding) |
 | missing-portable | 0 | portable semantics, jolt lacks it — implementation gap |
 | special-form | 16 | specified in §3, not a library var |
-| dynamic-var | 14 | classification needed: portable default vs host-dependent |
+| dynamic-var | 11 | classification needed: portable default vs host-dependent |
 | agents-taps | 16 | out of scope pending concurrency design note |
 | stm-refs | 11 | out of scope pending concurrency design note |
 | jvm-specific | 46 | catalogued, not specified |
@@ -39,7 +39,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `*compile-path*` | dynamic-var | ✓ |
 | `*compiler-options*` | dynamic-var | ✓ |
 | `*data-readers*` | implemented+tested | ✓ |
-| `*default-data-reader-fn*` | dynamic-var | ✓ |
+| `*default-data-reader-fn*` | implemented+tested | ✓ |
 | `*e` | implemented+tested | ✓ |
 | `*err*` | implemented+tested | ✓ |
 | `*file*` | implemented-untested | ✓ |
@@ -50,8 +50,8 @@ UNVERIFIED field; that column will be added as entries land.
 | `*ns*` | implemented+tested | ✓ |
 | `*out*` | implemented+tested | ✓ |
 | `*print-dup*` | implemented+tested | ✓ |
-| `*print-length*` | dynamic-var | ✓ |
-| `*print-level*` | dynamic-var | ✓ |
+| `*print-length*` | implemented+tested | ✓ |
+| `*print-level*` | implemented+tested | ✓ |
 | `*print-meta*` | implemented+tested | ✓ |
 | `*print-namespace-maps*` | implemented-untested | ✓ |
 | `*print-readably*` | implemented+tested | ✓ |

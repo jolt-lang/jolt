@@ -3251,4 +3251,14 @@
   {:suite "vectors / large trie" :label "assoc in a large vector" :expected "[1098 :x 1100]" :actual "(let [v (assoc (vec (range 1100)) 1099 :x)] [(nth v 1098) (nth v 1099) (count v)])"}
   {:suite "vectors / large trie" :label "pop down across a level boundary" :expected "[1023 1022]" :actual "(let [p (pop (vec (range 1024)))] [(count p) (peek p)])"}
   {:suite "vectors / large trie" :label "pop to empty then rebuild" :expected "[0 5]" :actual "(let [e (loop [v (vec (range 100))] (if (seq v) (recur (pop v)) v))] [(count e) (count (into e (range 5)))])"}
+  {:suite "printer / print-length" :label "truncates an infinite seq before realizing it" :expected "true" :actual "(= \"(0 1 2 ...)\" (binding [*print-length* 3] (pr-str (range))))"}
+  {:suite "printer / print-length" :label "truncates a vector with ellipsis" :expected "true" :actual "(= \"[1 2 ...]\" (binding [*print-length* 2] (pr-str [1 2 3 4])))"}
+  {:suite "printer / print-length" :label "exactly N elements prints no ellipsis" :expected "true" :actual "(= \"(0 1 2)\" (binding [*print-length* 3] (pr-str (range 3))))"}
+  {:suite "printer / print-length" :label "nil default is unlimited" :expected "true" :actual "(= \"[1 2 3 4 5]\" (pr-str [1 2 3 4 5]))"}
+  {:suite "printer / print-level" :label "collapses a collection past the level to #" :expected "true" :actual "(= \"[:a [:b #]]\" (binding [*print-level* 2] (pr-str [:a [:b [:c 1]]])))"}
+  {:suite "printer / print-level" :label "level 0 collapses the top collection" :expected "true" :actual "(= \"#\" (binding [*print-level* 0] (pr-str [1 2])))"}
+  {:suite "printer / print-level" :label "level 1 keeps the outermost collection" :expected "true" :actual "(= \"[# 3]\" (binding [*print-level* 1] (pr-str [[1 2] 3])))"}
+  {:suite "printer / print-level" :label "scalars print regardless of level" :expected "true" :actual "(= \"[1 2]\" (binding [*print-level* 1] (pr-str [1 2])))"}
+  {:suite "reader / default-data-reader-fn" :label "consulted for an unregistered tag" :expected "true" :actual "(= [(quote foo) 42] (binding [*default-data-reader-fn* (fn [tag v] [tag v])] (read-string \"#foo 42\")))"}
+  {:suite "printer / print-vars" :label "print-length / print-level / default-data-reader-fn default to nil" :expected "[true true true]" :actual "[(nil? *print-length*) (nil? *print-level*) (nil? *default-data-reader-fn*)]"}
 ]

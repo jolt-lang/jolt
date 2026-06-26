@@ -29,11 +29,19 @@
 ;; *print-meta* — when true, pr prints metadata with a ^ prefix; default false.
 (def-var! "clojure.core" "*print-meta*" #f)
 
+;; *print-length* / *print-level* — collection print limits, honored by both
+;; printers (rt.ss jolt-pr-str + printing.ss jolt-pr-readable). nil = unlimited
+;; (the default); a number truncates elements / collapses depth to "#".
+;; *print-length* limits a lazy/infinite seq before realizing it.
+(def-var! "clojure.core" "*print-length*" jolt-nil)
+(def-var! "clojure.core" "*print-level*" jolt-nil)
+;; *default-data-reader-fn* — a (fn [tag value]) the reader consults for an
+;; unregistered #tag before raising; nil = no default handler.
+(def-var! "clojure.core" "*default-data-reader-fn*" jolt-nil)
+
 ;; Portable clojure.core dynamic vars whose DEFAULT already matches jolt's
 ;; behaviour, so exposing them is sound (resolve/binding work, reads return the
-;; right value) — not a silent divergence. The ones that change observable output
-;; if set non-default (*print-length* / *print-level* / *default-data-reader-fn*)
-;; are deliberately NOT interned until the printer/reader honour them.
+;; right value) — not a silent divergence.
 ;;
 ;; *read-eval* — gates #=() read-eval. jolt's reader has no #=, so it reads true
 ;; (no eval-on-read happens regardless); a lib can (binding [*read-eval* false] …).

@@ -47,25 +47,22 @@
     ((jolt-transient? x)
      (case (jolt-transient-kind x)
        ((vec) "#<transient vector>") ((set) "#<transient set>") (else "#<transient map>")))
-    ((pvec? x)
-     (let ((acc '()))
-       (let loop ((i (fx- (pvec-count x) 1)))
-         (when (fx>=? i 0)
-           (set! acc (cons (jolt-pr-readable (pvec-nth-d x i jolt-nil)) acc))
-           (loop (fx- i 1))))
-       (string-append "[" (jolt-str-join acc) "]")))
-    ((pset? x)
-     (string-append "#{" (jolt-str-join (pset-fold x (lambda (e a) (cons (jolt-pr-readable e) a)) '())) "}"))
-    ((pmap? x)
-     (string-append "{" (jolt-str-join
-       (pmap-fold x (lambda (k v a)
-                      (cons (string-append (jolt-pr-readable k) " " (jolt-pr-readable v)) a)) '())) "}"))
-    ((empty-list-t? x) "()")
-    ((cseq? x)
-     (string-append "(" (jolt-str-join
-       (let loop ((s x) (acc '()))
-         (if (jolt-nil? s) (reverse acc)
-             (loop (jolt-seq (seq-more s)) (cons (jolt-pr-readable (seq-first s)) acc))))) ")"))
+    ((pvec? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "[" (jolt-str-join (jolt-limited-vec-strs x jolt-pr-readable)) "]"))))
+    ((pset? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "#{" (jolt-str-join (jolt-limited-list-strs
+                       (pset-fold x (lambda (e a) (cons (jolt-pr-readable e) a)) '()))) "}"))))
+    ((pmap? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "{" (jolt-str-join (jolt-limited-list-strs
+                       (pmap-fold x (lambda (k v a)
+                                      (cons (string-append (jolt-pr-readable k) " " (jolt-pr-readable v)) a)) '()))) "}"))))
+    ((empty-list-t? x) (if (jolt-print-hash?) "#" "()"))
+    ((cseq? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "(" (jolt-str-join (jolt-limited-seq-strs x jolt-pr-readable)) ")"))))
     (else (jolt-pr-str x))))
 (define (jolt-pr-readable-dispatch x)
   (let loop ((as jolt-pr-readable-arms))
