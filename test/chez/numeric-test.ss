@@ -41,12 +41,16 @@
 (ok "long + lowers to fx+"        (has? (emitf "u" "(fn* ([^long a ^long b] (+ a b)))") "(fx+"))
 (ok "long * lowers to fx*"        (has? (emitf "u" "(fn* ([^long a ^long b] (* a b)))") "(fx*"))
 (ok "double < lowers to fl<?"     (has? (emitf "u" "(fn* ([^double x] (< x 1.0)))") "(fl<?"))
-(ok "long < lowers to fx<?"       (has? (emitf "u" "(fn* ([^long a ^long b] (< a b)))") "(fx<?"))
-(ok "long inc lowers to fx1+"     (has? (emitf "u" "(fn* ([^long n] (inc n)))") "(fx1+"))
+;; ^long comparisons / inc / dec / quot use the jolt-l* fast-path-with-fallback
+;; helpers so a full 64-bit operand (past the 61-bit fixnum range) is handled.
+(ok "long < lowers to jolt-l<"    (has? (emitf "u" "(fn* ([^long a ^long b] (< a b)))") "(jolt-l<"))
+(ok "long inc lowers to jolt-l-inc" (has? (emitf "u" "(fn* ([^long n] (inc n)))") "(jolt-l-inc"))
 (ok "double inc lowers to fl+ 1.0" (has? (emitf "u" "(fn* ([^double x] (inc x)))") "(fl+"))
-(ok "long dec lowers to fx1-"     (has? (emitf "u" "(fn* ([^long n] (dec n)))") "(fx1-"))
-(ok "unchecked-add lowers to fx+" (has? (emitf "u" "(fn* ([^long n] (unchecked-add n 1)))") "(fx+"))
-(ok "long quot lowers to fxquotient" (has? (emitf "u" "(fn* ([^long a ^long b] (quot a b)))") "(fxquotient"))
+(ok "long dec lowers to jolt-l-dec" (has? (emitf "u" "(fn* ([^long n] (dec n)))") "(jolt-l-dec"))
+;; unchecked-* WRAP to signed 64 bits (Java long), so they emit the wrapping
+;; jolt-unc* helpers, not the raising fx ops.
+(ok "unchecked-add lowers to jolt-uncadd2" (has? (emitf "u" "(fn* ([^long n] (unchecked-add n 1)))") "(jolt-uncadd2"))
+(ok "long quot lowers to jolt-l-quot" (has? (emitf "u" "(fn* ([^long a ^long b] (quot a b)))") "(jolt-l-quot"))
 (ok "double == lowers to fl=?"    (has? (emitf "u" "(fn* ([^double a ^double b] (== a b)))") "(fl=?"))
 
 ;; integer literal in a double op is coerced to a flonum (fl+ never sees an exact int)
@@ -67,11 +71,11 @@
   (ok "loop integer accumulator is NOT fx-specialized" (not (has? e "(fx*"))))
 ;; a literal-init increment counter types as a fixnum (fx1+), even with no hint.
 (let ((e (emitf "u" "(fn* ([] (loop [i 0] (if (< i 5) (recur (inc i)) i))))")))
-  (ok "literal-init increment counter lowers to fx1+" (has? e "(fx1+")))
+  (ok "literal-init increment counter lowers to jolt-l-inc" (has? e "(jolt-l-inc")))
 ;; but a multiplicative accumulator in the SAME loop stays generic (bignum-safe);
 ;; only the counter types.
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 0] (if (< i 100) (recur (* acc i) (inc i)) acc))))")))
-  (ok "counter beside a * accumulator: counter is fx1+" (has? e "(fx1+"))
+  (ok "counter beside a * accumulator: counter is jolt-l-inc" (has? e "(jolt-l-inc"))
   (ok "the * accumulator is NOT fx-specialized (bignum-safe)" (not (has? e "(fx*"))))
 (ok "counter+bignum-accumulator stays exact (1*2*...*99 is a bignum)"
     (jolt-truthy? (ev "(< 1000000000000000000000 ((fn* ([] (loop [acc 1 i 1] (if (< i 100) (recur (* acc i) (inc i)) acc))))))")))
@@ -87,8 +91,8 @@
 ;; a ^long-seeded loop accumulator IS fx-typed (the hint is a fixnum promise, and
 ;; the value flows from a coerced ^long param).
 (let ((e (emitf "u" "(fn* ([^long start] (loop [acc start] (if (< acc 100) (recur (inc acc)) acc))))")))
-  (ok "long-seeded loop accumulator lowers (inc acc) to fx1+" (has? e "(fx1+"))
-  (ok "long-seeded loop comparison lowers to fx<?" (has? e "(fx<?")))
+  (ok "long-seeded loop accumulator lowers (inc acc) to jolt-l-inc" (has? e "(jolt-l-inc"))
+  (ok "long-seeded loop comparison lowers to jolt-l<" (has? e "(jolt-l<")))
 
 ;; --- soundness: un-hinted / integer-literal code stays generic ---
 (let ((e (emitf "u" "(fn* ([a b] (+ a b)))")))

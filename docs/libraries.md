@@ -61,6 +61,10 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
   `clojure.data.zip.xml`; XML parsing via [jolt-lang/xml](https://github.com/jolt-lang/xml)
   (which now ships `clojure.xml/parse`).
 * [data.csv](https://github.com/clojure/data.csv) — reading and writing CSV.
+* [data.codec](https://github.com/clojure/data.codec) — base64 encode/decode over
+  byte arrays.
+* [test.check](https://github.com/clojure/test.check) — property-based testing
+  (generators, `quick-check`, shrinking).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write

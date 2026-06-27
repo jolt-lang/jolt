@@ -194,20 +194,9 @@
 (def *' *)
 (def inc' inc)
 (def dec' dec)
-(defn unchecked-add [x y] (+ x y))
-(defn unchecked-subtract [x y] (- x y))
-(defn unchecked-multiply [x y] (* x y))
-(defn unchecked-negate [x] (- x))
-(defn unchecked-inc [x] (+ x 1))
-(defn unchecked-dec [x] (- x 1))
-(def unchecked-add-int unchecked-add)
-(def unchecked-subtract-int unchecked-subtract)
-(def unchecked-multiply-int unchecked-multiply)
-(def unchecked-negate-int unchecked-negate)
-(def unchecked-inc-int unchecked-inc)
-(def unchecked-dec-int unchecked-dec)
-(defn unchecked-divide-int [x y] (quot x y))
-(defn unchecked-remainder-int [x y] (rem x y))
+;; unchecked-add / -subtract / -multiply / -negate / -inc / -dec (+ the -int
+;; variants) and -divide-int / -remainder-int are host-defined (host/chez/seq.ss):
+;; they WRAP to signed 64 bits like the JVM, which a plain (+ x y) overlay can't do.
 (defn unchecked-int [x] (int x))
 (def unchecked-long unchecked-int)
 

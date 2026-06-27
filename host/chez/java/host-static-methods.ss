@@ -21,6 +21,11 @@
         (cons "acos" (lambda (x) (->dbl (acos x)))) (cons "atan" (lambda (x) (->dbl (atan x))))
         (cons "log" (lambda (x) (->dbl (log x)))) (cons "log10" (lambda (x) (->dbl (/ (log x) (log 10)))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
+        ;; getExponent: the unbiased binary exponent of a double (floor(log2|x|));
+        ;; scalb: x * 2^n. test.check's double generator uses both.
+        (cons "getExponent" (lambda (x) (if (= x 0.0) -1023
+                                            (exact (floor (/ (log (abs (exact->inexact x))) (log 2.0)))))))
+        (cons "scalb" (lambda (x n) (->dbl (* (exact->inexact x) (expt 2.0 (jnum->exact n))))))
         (cons "max" (lambda (a b) (if (> a b) a b))) (cons "min" (lambda (a b) (if (< a b) a b)))
         (cons "signum" (lambda (x) (cond ((< x 0) -1.0) ((> x 0) 1.0) (else 0.0))))
         (cons "PI" (->dbl (* 4 (atan 1)))) (cons "E" (->dbl (exp 1)))
@@ -180,9 +185,28 @@
         (cons "getProperties" (lambda () (sys-properties-map)))
         (cons "getenv" (lambda k (apply sys-getenv k)))))
 
+;; java.lang.Long.bitCount: the population count of the value's 64-bit two's-
+;; complement (mask to 64 bits so a negative long counts like the JVM, e.g.
+;; bitCount(-1) = 64). test.check's splittable PRNG uses it.
+(define long-mask64 #xFFFFFFFFFFFFFFFF)
+(define long-2^63 (expt 2 63))
+(define long-2^64 (expt 2 64))
+;; interpret a 64-bit value as a signed long (top bit = sign), like the JVM.
+(define (as-signed64 v) (if (>= v long-2^63) (- v long-2^64) v))
+(define (long-nlz n) (- 64 (integer-length (bitwise-and (jnum->exact n) long-mask64))))
+(define (long-reverse n)
+  (let ((v (bitwise-and (jnum->exact n) long-mask64)))
+    (let loop ((i 0) (r 0))
+      (if (fx=? i 64) (as-signed64 r)
+          (loop (fx+ i 1)
+                (bitwise-ior (bitwise-arithmetic-shift-left r 1)
+                             (bitwise-and (bitwise-arithmetic-shift-right v i) 1)))))))
 (register-class-statics! "Long"
   (list (cons "MAX_VALUE" (->num 9223372036854775807))
         (cons "MIN_VALUE" (->num -9223372036854775808))
+        (cons "bitCount" (lambda (n) (->num (bitwise-bit-count (bitwise-and (jnum->exact n) long-mask64)))))
+        (cons "numberOfLeadingZeros" (lambda (n) (->num (long-nlz n))))
+        (cons "reverse" (lambda (n) (->num (long-reverse n))))
         (cons "parseLong" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "parseLong")))
         (cons "valueOf" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "valueOf")))))
 

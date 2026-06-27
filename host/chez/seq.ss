@@ -152,6 +152,60 @@
 (define (jolt-min . xs) (apply min xs))
 (define (jolt-max . xs) (apply max xs))
 
+;; --- unchecked (Java long) arithmetic: wrap to signed 64 bits ----------------
+;; Clojure's unchecked-* (and +/-/* under *unchecked-math*) are long ops that
+;; WRAP on overflow; jolt's checked arithmetic is arbitrary-precision. These
+;; truncate to the low 64 bits as a two's-complement signed long. Chez fixnums are
+;; 61-bit, so wrapping uses bignum bit ops + a mask (no fx fast path). The backend
+;; emits the binary jolt-unc* for :long-typed unchecked ops; the variadic
+;; clojure.core/unchecked-* fns reduce through them.
+(define unc-mask64 #xFFFFFFFFFFFFFFFF)
+(define unc-2^63   #x8000000000000000)
+(define unc-2^64   #x10000000000000000)
+(define (jolt-wrap64 x)
+  (let ((m (bitwise-and (if (and (number? x) (exact? x) (integer? x)) x (exact (floor x))) unc-mask64)))
+    (if (>= m unc-2^63) (- m unc-2^64) m)))
+(define (jolt-uncadd2 a b) (jolt-wrap64 (+ a b)))
+(define (jolt-uncsub2 a b) (jolt-wrap64 (- a b)))
+(define (jolt-uncmul2 a b) (jolt-wrap64 (* a b)))
+(define (jolt-uncinc x)    (jolt-wrap64 (+ x 1)))
+(define (jolt-uncdec x)    (jolt-wrap64 (- x 1)))
+(define (jolt-uncneg x)    (jolt-wrap64 (- x)))
+(define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
+(define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
+(define (jolt-unchecked-sub . xs)
+  (cond ((null? xs) 0) ((null? (cdr xs)) (jolt-uncneg (car xs))) (else (fold-left jolt-uncsub2 (car xs) (cdr xs)))))
+(define (jolt-unchecked-div a b) (quotient (jolt-wrap64 a) (jolt-wrap64 b)))
+(define (jolt-unchecked-rem a b) (remainder (jolt-wrap64 a) (jolt-wrap64 b)))
+;; the clojure.core/unchecked-* vars are def-var!'d in natives-seq.ss (def-var! is
+;; defined after this file loads).
+
+;; --- ^long ops that tolerate a full 64-bit value -----------------------------
+;; A ^long is 64-bit but a Chez fixnum is only 61-bit, so the backend's fast fx
+;; ops would raise on a value past 2^60 (e.g. a long from the PRNG / wrapping
+;; arithmetic). These take the fx fast path when the operands ARE fixnums and fall
+;; back to the generic op otherwise — so ^long comparisons / quot / min etc. on a
+;; full-width long stay correct. Macros (define-syntax) so the fast path inlines.
+(define-syntax define-l-binop
+  (syntax-rules ()
+    ((_ name fxop genop)
+     (define-syntax name
+       (syntax-rules ()
+         ((_ a b) (let ((x a) (y b))
+                    (if (and (fixnum? x) (fixnum? y)) (fxop x y) (genop x y)))))))))
+(define-l-binop jolt-l<  fx<?  <)
+(define-l-binop jolt-l<= fx<=? <=)
+(define-l-binop jolt-l>  fx>?  >)
+(define-l-binop jolt-l>= fx>=? >=)
+(define-l-binop jolt-l=  fx=?  =)
+(define-l-binop jolt-l-min fxmin min)
+(define-l-binop jolt-l-max fxmax max)
+(define-l-binop jolt-l-quot fxquotient quotient)
+(define-l-binop jolt-l-rem  fxremainder remainder)
+(define-l-binop jolt-l-mod  fxmodulo modulo)
+(define-syntax jolt-l-inc (syntax-rules () ((_ a) (let ((x a)) (if (fixnum? x) (fx1+ x) (+ x 1))))))
+(define-syntax jolt-l-dec (syntax-rules () ((_ a) (let ((x a)) (if (fixnum? x) (fx1- x) (- x 1))))))
+
 ;; ============================================================================
 ;; IFn dispatch — the dynamic "value as fn" fallback. A callee that the emitter
 ;; can't statically resolve to a procedure (a keyword/coll/proc held in a local)

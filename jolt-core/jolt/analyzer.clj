@@ -26,6 +26,7 @@
                                form-bigdec? form-bigdec-source
                                form-ns-value? form-ns-value-name
                                form-var-value? form-var-value-ns form-var-value-name
+                               unchecked-math?
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key form-position late-bind?
@@ -611,6 +612,18 @@
                   (var-ref (compile-ns ctx) nm)
                   (uncompilable (str "Unable to resolve symbol: " nm " in this context"))))))))
 
+;; The wrapping unchecked-* name a core arithmetic op rewrites to under
+;; *unchecked-math*, or nil. n is the full item count (head + args); unary - is a
+;; negate.
+(defn- unchecked-arith [hname n]
+  (cond
+    (= hname "+") "unchecked-add"
+    (= hname "*") "unchecked-multiply"
+    (= hname "-") (if (= n 2) "unchecked-negate" "unchecked-subtract")
+    (= hname "inc") "unchecked-inc"
+    (= hname "dec") "unchecked-dec"
+    :else nil))
+
 (defn- analyze-list [ctx form env]
   (let [items (vec (form-elements form))]
     (if (zero? (count items))
@@ -626,8 +639,15 @@
                                    (= "clojure.core" (form-sym-ns head))
                                    (contains? handled (form-sym-name head)))
                           (form-sym-name head)))
-            shadowed (and hname (local? env hname))]
+            shadowed (and hname (local? env hname))
+            ;; under *unchecked-math*, a core +/-/*/inc/dec becomes its wrapping
+            ;; unchecked-* (computed once; nil when off or not such an op).
+            unm (when (and hname (not shadowed) (unchecked-math?))
+                  (unchecked-arith hname (count items)))]
         (cond
+          ;; *unchecked-math* rewrite, before macro/special dispatch (these are
+          ;; ordinary core fns). The unchecked-* form re-analyzes normally.
+          unm (analyze ctx (cons (symbol unm) (rest items)) env)
           ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
           ;; dispatch special forms / interop / invoke. A local shadows the macro.
           ;; A true special form is NOT shadowable by a same-named macro, matching
