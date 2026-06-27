@@ -3302,4 +3302,8 @@
   {:suite "defn / attr-map" :label "attr-map values are evaluated" :expected "true" :actual "(do (defn m {:val (+ 1 2)} [] 1) (= 3 (:val (meta (var m)))))"}
   {:suite "records / clojure.lang interop" :label "a record's Associative/ILookup methods delegate to the map fns" :expected "[1 9 true true 2]" :actual "(do (defrecord M [a b]) (let [m (->M 1 2)] [(.valAt m :a) (.valAt m :z 9) (= {:a 1 :b 2 :c 3} (into {} (.assoc m :c 3))) (.containsKey m :a) (.count m)]))"}
   {:suite "interop / number classes" :label "Byte/Short bounds + class tokens" :expected "[127 -128 32767 -32768 true]" :actual "[Byte/MAX_VALUE Byte/MIN_VALUE Short/MAX_VALUE Short/MIN_VALUE (= java.lang.Byte java.lang.Byte)]"}
+  {:suite "reader / metadata" :label "a set in metadata is read as a value, not a tagged form" :expected "true" :actual "(= #{:a :b} (:foo (meta (read-string (binding [*print-meta* true] (pr-str (with-meta [1] {:foo #{:a :b}})))))))"}
+  {:suite "reader / metadata" :label "metadata on an empty list is preserved" :expected "true" :actual "(= {:foo 1} (meta (read-string \"^{:foo 1} ()\")))"}
+  {:suite "reader / metadata" :label "a vector in metadata reads as a value" :expected "true" :actual "(= [1 2] (:v (meta (read-string \"^{:v [1 2]} {:a 1}\"))))"}
+  {:suite "reader / metadata" :label "an empty list in metadata reads as a value" :expected "true" :actual "(= () (:e (meta (read-string \"^{:e ()} [1]\"))))"}
 ]

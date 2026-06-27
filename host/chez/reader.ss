@@ -307,7 +307,6 @@
     ((symbol-t? target)
      (make-symbol-t (symbol-t-ns target) (symbol-t-name target)
                     (rdr-merge-meta (symbol-t-meta target) meta)))
-    ((empty-list-t? target) target)
     ;; Lists/vectors/maps/sets attach metadata to the value itself, as Clojure's
     ;; reader does. Reading DATA (read-string, edn) then preserves it. A list form
     ;; is code: ^Type (expr) is a compile-time hint on the FORM, read off the form
@@ -607,8 +606,11 @@
         (let ((c (rdr-form->data (car xs))))
           (loop (cdr xs) (cons c acc) (or changed (not (eq? c (car xs)))))))))
 
+;; carry the reader metadata, converting its nested forms too — a set/tagged
+;; literal inside a ^{…} map (^{:k #{…}}) must become a value like the rest of
+;; the data, not stay the tagged set-form.
 (define (rdr-carry-meta src dst)
-  (let ((m (jolt-meta src))) (if (jolt-nil? m) dst (jolt-with-meta dst m))))
+  (let ((m (jolt-meta src))) (if (jolt-nil? m) dst (jolt-with-meta dst (rdr-form->data m)))))
 
 ;; tag keyword (:#time/date) -> its *data-readers* reader fn, or #f. The fn's
 ;; namespace must already be loaded (the loader requires them when a project's
@@ -664,33 +666,39 @@
                   (if dfn (jolt-invoke dfn (rdr-tag->symbol tag) inner)
                       (rdr-make-tagged tag inner))))))))
 
-(define (rdr-form->data x)
+;; rdr-form->data*: convert the VALUE structure (set/tagged/nested forms). The
+;; wrapper below adds the metadata, so the unchanged branches return x bare.
+(define (rdr-form->data* x)
   (cond
     ((and (pmap? x) (eq? (jolt-get x rdr-kw-jolt-type) rdr-kw-jolt-tagged))
      (rdr-construct-tag (jolt-get x rdr-kw-tag) (rdr-form->data (jolt-get x rdr-kw-form))))
     ((rdr-set-form? x)
      (let ((items (jolt-get x rdr-kw-value)))
-       (rdr-carry-meta x
-         (let loop ((i 0) (s empty-pset))
-           (if (fx>=? i (pvec-count items)) s
-               (loop (fx+ i 1) (pset-conj s (rdr-form->data (pvec-nth-d items i jolt-nil)))))))))
+       (let loop ((i 0) (s empty-pset))
+         (if (fx>=? i (pvec-count items)) s
+             (loop (fx+ i 1) (pset-conj s (rdr-form->data (pvec-nth-d items i jolt-nil))))))))
     ((pvec? x)
      (let-values (((items changed) (rdr-conv-each (vector->list (pvec-v x)))))
-       (if changed (rdr-carry-meta x (apply jolt-vector items)) x)))
+       (if changed (apply jolt-vector items) x)))
     ((pmap? x)
      (let ((order (hashtable-ref rdr-map-order x #f)))
        (if order
            (let-values (((kvs changed) (rdr-conv-each order)))
-             (if changed
-                 (let ((m (rdr-make-map kvs))) (rdr-carry-meta x m))
-                 x))
+             (if changed (rdr-make-map kvs) x))
            (let-values (((kvs changed)
                          (rdr-conv-each (pmap-fold x (lambda (k v a) (cons k (cons v a))) '()))))
-             (if changed (rdr-carry-meta x (apply jolt-hash-map kvs)) x)))))
+             (if changed (apply jolt-hash-map kvs) x)))))
     ((cseq? x)
      (let-values (((items changed) (rdr-conv-each (seq->list x))))
-       (if changed (rdr-carry-meta x (apply jolt-list items)) x)))
+       (if changed (apply jolt-list items) x)))
     (else x)))
+;; Read DATA always carries metadata, converting its nested forms too — Clojure's
+;; reader reads a ^{…} map with the same read() as any value, so a set/tagged
+;; literal in metadata is a value, not a form. Carry it whether or not the value
+;; itself changed (a set-form in the metadata of an otherwise-unchanged value).
+(define (rdr-form->data x)
+  (let ((v (rdr-form->data* x)) (m (jolt-meta x)))
+    (if (jolt-nil? m) v (jolt-with-meta v (rdr-form->data m)))))
 
 ;; --- the two host seams -----------------------------------------------------
 ;; clojure.core/read-string: first form, or nil for blank / comment-only input
