@@ -3296,4 +3296,10 @@
   {:suite "ifn / symbol as fn" :label "a symbol invokes as a map lookup" :expected "true" :actual "(= 5 ('a {(quote a) 5}))"}
   {:suite "ifn / symbol as fn" :label "a symbol fn takes a not-found default" :expected "true" :actual "(= :d ('a {} :d))"}
   {:suite "ifn / symbol as fn" :label "a symbol works as a mapping fn" :expected "true" :actual "(= [1 2] (vec (map (quote k) [{(quote k) 1} {(quote k) 2}])))"}
+  {:suite "defn / attr-map" :label "docstring + attr-map both land in var meta" :expected "true" :actual "(do (defn f \"doc\" {:my :attr} [] 1) (= [\"doc\" :attr] [(:doc (meta (var f))) (:my (meta (var f)))]))"}
+  {:suite "defn / attr-map" :label "attr-map without a docstring" :expected "true" :actual "(do (defn g {:my :attr} [] 1) (= :attr (:my (meta (var g)))))"}
+  {:suite "defn / attr-map" :label "attr-map on a multi-arity defn" :expected "true" :actual "(do (defn h \"d\" {:my :a} ([] 1) ([a] a)) (= :a (:my (meta (var h)))))"}
+  {:suite "defn / attr-map" :label "attr-map values are evaluated" :expected "true" :actual "(do (defn m {:val (+ 1 2)} [] 1) (= 3 (:val (meta (var m)))))"}
+  {:suite "records / clojure.lang interop" :label "a record's Associative/ILookup methods delegate to the map fns" :expected "[1 9 true true 2]" :actual "(do (defrecord M [a b]) (let [m (->M 1 2)] [(.valAt m :a) (.valAt m :z 9) (= {:a 1 :b 2 :c 3} (into {} (.assoc m :c 3))) (.containsKey m :a) (.count m)]))"}
+  {:suite "interop / number classes" :label "Byte/Short bounds + class tokens" :expected "[127 -128 32767 -32768 true]" :actual "[Byte/MAX_VALUE Byte/MIN_VALUE Short/MAX_VALUE Short/MIN_VALUE (= java.lang.Byte java.lang.Byte)]"}
 ]

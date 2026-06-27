@@ -567,4 +567,7 @@
   {:suite "deftype-map" :expr "(do (deftype Op [s]) [(map? (->Op 1)) (record? (->Op 1)) (coll? (->Op 1))])" :expected "[false false false]"}
   {:suite "deftype-map" :expr "(do (deftype Lc [xs] clojure.lang.Counted (count [_] (count xs)) clojure.lang.Seqable (seq [_] (seq xs))) [(coll? (->Lc [1 2])) (count (->Lc [1 2])) (vec (seq (->Lc [1 2])))])" :expected "[true 2 [1 2]]"}
   {:suite "deftype-map" :expr "(do (defrecord Dr [a b]) [(map? (->Dr 1 2)) (record? (->Dr 1 2)) (coll? (->Dr 1 2))])" :expected "[true true true]"}
+  {:suite "macro-args" :expr "(do (defmacro sm [x] [(set? x) (map? x)]) (sm #{1 2}))" :expected "[true false]"}
+  {:suite "macro-args" :expr "(do (defmacro ws [x] (conj x :z)) (= #{1 :z} (ws #{1})))" :expected "true"}
+  {:suite "macro-args" :expr "(do (defmacro vm [x] (vector? x)) (vm [1 2]))" :expected "true"}
 ]

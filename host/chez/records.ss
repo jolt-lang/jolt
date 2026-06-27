@@ -728,6 +728,28 @@
       ;; (above) wins, this is the field-accessor fallback.
       ((and (jrec? obj) (null? rest) (jrec-has? obj (keyword #f method-name)))
        (jrec-lookup obj (keyword #f method-name) jolt-nil))
+      ;; a defrecord is Associative / ILookup / IPersistentMap / Seqable / Counted,
+      ;; so its clojure.lang interface methods delegate to the map fns when not
+      ;; overridden by a declared method — reitit's impl calls (.assoc match k v),
+      ;; (.valAt …), (.without …) directly. A bare deftype implements these via its
+      ;; own declared methods (handled above), so this is record-only.
+      ((and (jrec-record? obj)
+            (member method-name '("valAt" "assoc" "without" "containsKey" "cons"
+                                  "count" "seq" "equiv" "entryAt" "empty")))
+       (cond
+         ((string=? method-name "valAt")
+          (if (null? (cdr rest)) (jolt-get obj (car rest) jolt-nil) (jolt-get obj (car rest) (cadr rest))))
+         ((string=? method-name "assoc") (jolt-assoc1 obj (car rest) (cadr rest)))
+         ((string=? method-name "without") (jolt-dissoc obj (car rest)))
+         ((string=? method-name "containsKey") (if (jolt-truthy? (jolt-contains? obj (car rest))) #t #f))
+         ((string=? method-name "cons") (jolt-conj1 obj (car rest)))
+         ((string=? method-name "count") (jolt-count obj))
+         ((string=? method-name "seq") (jolt-seq obj))
+         ((string=? method-name "equiv") (if (jolt= obj (car rest)) #t #f))
+         ((string=? method-name "entryAt")
+          (if (jolt-truthy? (jolt-contains? obj (car rest)))
+              (make-map-entry (car rest) (jolt-get obj (car rest) jolt-nil)) jolt-nil))
+         (else jolt-nil)))   ; .empty of a record is nil on the JVM
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
                          (if f (apply jolt-invoke f obj rest) (error #f (string-append "No method " method-name))))))
