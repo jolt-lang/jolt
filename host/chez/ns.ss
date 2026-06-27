@@ -74,7 +74,8 @@
                      ;; :refer :all — bring in every public var (require :refer :all)
                      ((and (keyword? v) (string=? (keyword-t-name v) "all"))
                       (chez-register-refer-all! cns target))
-                     ((pvec? v)
+                     ;; :refer [a b] or :refer (a b) — both forms list names to bring in.
+                     ((or (pvec? v) (cseq? v) (empty-list-t? v))
                       (for-each (lambda (n)
                                   (when (symbol-t? n) (chez-register-refer! cns (symbol-t-name n) target)))
                                 (seq->list v))))))))

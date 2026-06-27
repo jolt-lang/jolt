@@ -3349,4 +3349,8 @@
   {:suite "symbols / interning" :label "equal symbols share an interned name string" :expected "true" :actual "(let [a (quote ?foo) b (quote ?foo)] (identical? (name a) (name b)))"}
   {:suite "reader / unquote" :label "~x reads as clojure.core/unquote" :expected "true" :actual "(= (quote (clojure.core/unquote v)) (read-string \"~v\"))"}
   {:suite "reader / unquote" :label "~@x reads as clojure.core/unquote-splicing" :expected "true" :actual "(= (quote clojure.core/unquote-splicing) (first (read-string \"~@xs\")))"}
+  {:suite "clojure.core / range" :label "(range 0) is the empty seq ()" :expected "true" :actual "(= () (range 0))"}
+  {:suite "clojure.core / range" :label "(range 5 5) is the empty seq ()" :expected "true" :actual "(= () (range 5 5))"}
+  {:suite "clojure.core / range" :label "empty range is not nil" :expected "true" :actual "(some? (range 5 0))"}
+  {:suite "clojure.core / range" :label "empty range count" :expected "0" :actual "(count (range 0))"}
 ]
