@@ -3269,4 +3269,12 @@
   {:suite "seqs / laziness" :label "distinct over a rest-derived seq does not overrun" :expected "2" :actual "(count (distinct (map inc (rest [10 20 30]))))"}
   {:suite "transducers / map multi-input" :label "the map transducer applies f across all inputs" :expected "[6]" :actual "(((map +) conj) [] 1 2 3)"}
   {:suite "transducers / map multi-input" :label "single input is unchanged" :expected "[3]" :actual "(((map +) conj) [] 3)"}
+  {:suite "records / deftype is not a map" :label "a bare deftype is neither map? nor record?, a defrecord is both" :expected "[false false true true]" :actual "(do (deftype DT [a]) (defrecord DR [a]) [(map? (->DT 1)) (record? (->DT 1)) (map? (->DR 1)) (record? (->DR 1))])"}
+  {:suite "printer / str vs print" :label "str of a vector quotes nested strings" :expected "true" :actual "(= \"[\\\"x\\\"]\" (str [\"x\"]))"}
+  {:suite "printer / str vs print" :label "print-str of a vector leaves strings raw" :expected "true" :actual "(= \"[x]\" (print-str [\"x\"]))"}
+  {:suite "printer / str vs print" :label "str of a map quotes nested strings" :expected "true" :actual "(= \"{\\\"a\\\" \\\"b\\\"}\" (str {\"a\" \"b\"}))"}
+  {:suite "printer / str vs print" :label "print-str of a map leaves strings raw" :expected "true" :actual "(= \"{:a x}\" (print-str {:a \"x\"}))"}
+  {:suite "printer / str vs print" :label "infinity inside a collection prints readably in str" :expected "true" :actual "(= \"[##Inf]\" (str [##Inf]))"}
+  {:suite "interop / uri equality" :label "URIs are value-equal and usable as set members" :expected "[true true]" :actual "[(= (java.net.URI. \"/\") (java.net.URI. \"/\")) (= #{(java.net.URI. \"/\")} #{(java.net.URI. \"/\")})]"}
+  {:suite "stdlib / clojure.walk" :label "macroexpand-all expands a form" :expected "true" :actual "(do (require (quote clojure.walk)) (seq? (clojure.walk/macroexpand-all (quote (when true 1)))))"}
 ]

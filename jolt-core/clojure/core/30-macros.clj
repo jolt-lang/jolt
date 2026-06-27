@@ -613,6 +613,8 @@
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
        ;; so defrecord compiles too. map->name builds via that ctor.
        (deftype ~name-sym ~fields)
+       ;; mark the type a record (map?/record?/field-seq); a bare deftype is not.
+       (register-record-type! (quote ~name-sym))
        ;; build via the positional ctor for declared fields, then carry any
        ;; remaining keys as extension fields (JVM keeps them on the record).
        (def ~mapf (fn* [~m]

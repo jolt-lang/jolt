@@ -605,6 +605,14 @@
         (cons "hashCode" (lambda (u) (string-hash (uri-field u 'string))))
         (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri")
                                           (string=? (uri-field u 'string) (uri-field o 'string)))))))
+;; (= u1 u2) is value equality by string form (the .equals method above only
+;; serves explicit (.equals …)); hash matches so a URI works as a map key / set
+;; member (ring/hiccup compare (URI. "/") values).
+(define (uri-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
+(register-eq-arm! (lambda (a b) (or (uri-jhost? a) (uri-jhost? b)))
+                  (lambda (a b) (and (uri-jhost? a) (uri-jhost? b)
+                                     (string=? (uri-field a 'string) (uri-field b 'string)))))
+(register-hash-arm! uri-jhost? (lambda (x) (string-hash (uri-field x 'string))))
 ;; str / pr-str of a uri -> its string form.
 (register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
                       (lambda (x) (uri-field x 'string)))
