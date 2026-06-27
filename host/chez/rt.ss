@@ -234,10 +234,14 @@
           (cond ((null? s) (reverse acc))
                 ((fx>=? i lim) (reverse (cons "..." acc)))
                 (else (loop (cdr s) (fx+ i 1) (cons (car s) acc))))))))
-;; bump the print depth around a collection's element rendering.
+;; bump the print depth around a collection's element rendering — but only when
+;; *print-level* is set, since depth is consulted only to enforce it. With the
+;; common nil default this is a plain begin, so printing pays no parameterize.
 (define-syntax with-deeper-print
   (syntax-rules ()
-    ((_ body ...) (parameterize ((jolt-print-depth (fx+ (jolt-print-depth) 1))) body ...))))
+    ((_ body ...) (if (jolt-print-level)
+                      (parameterize ((jolt-print-depth (fx+ (jolt-print-depth) 1))) body ...)
+                      (begin body ...)))))
 
 ;; A host shim registers a type's str-style rendering via register-pr-str-arm! (or
 ;; register-pr-arm! in printing.ss for both printers at once) instead of

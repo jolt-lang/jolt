@@ -3277,4 +3277,5 @@
   {:suite "printer / str vs print" :label "infinity inside a collection prints readably in str" :expected "true" :actual "(= \"[##Inf]\" (str [##Inf]))"}
   {:suite "interop / uri equality" :label "URIs are value-equal and usable as set members" :expected "[true true]" :actual "[(= (java.net.URI. \"/\") (java.net.URI. \"/\")) (= #{(java.net.URI. \"/\")} #{(java.net.URI. \"/\")})]"}
   {:suite "stdlib / clojure.walk" :label "macroexpand-all expands a form" :expected "true" :actual "(do (require (quote clojure.walk)) (seq? (clojure.walk/macroexpand-all (quote (when true 1)))))"}
+  {:suite "regex / re-seq zero-width" :label "a zero-width match advances by one without repeating" :expected "[\"a\" \"\" \"a\" \"\"]" :actual "(vec (re-seq #\"a*\" \"aba\"))"}
 ]

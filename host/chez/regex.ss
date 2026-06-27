@@ -205,9 +205,12 @@
             (start (matcher-t-pos m))
             (mm (and (<= start len) (irregex-search (matcher-t-irx m) str start))))
        (if mm
-           (let ((e (irregex-match-end-index mm 0)))
+           (let ((ms (irregex-match-start-index mm 0))
+                 (e (irregex-match-end-index mm 0)))
              (matcher-t-last-set! m mm)
-             (matcher-t-pos-set! m (if (> e start) e (+ start 1)))
+             ;; advance past this match: to its end, or one past a zero-width match
+             ;; (which may sit past the search origin, e.g. a lookahead/boundary).
+             (matcher-t-pos-set! m (if (> e ms) e (+ e 1)))
              (irx-result mm))
            (begin (matcher-t-last-set! m #f) jolt-nil))))))
 
@@ -227,8 +230,11 @@
     (let loop ((start 0) (acc '()))
       (let ((m (and (<= start len) (irregex-search irx s start))))
         (if m
-            (let ((e (irregex-match-end-index m 0)))
-              (loop (if (> e start) e (+ start 1)) (cons (irx-result m) acc)))
+            (let ((ms (irregex-match-start-index m 0))
+                  (e (irregex-match-end-index m 0)))
+              ;; to the match end, or one past a zero-width match (relative to its
+              ;; own start, which may be past the search origin).
+              (loop (if (> e ms) e (+ e 1)) (cons (irx-result m) acc)))
             (list->cseq (reverse acc)))))))
 
 (def-var! "clojure.core" "re-pattern" jolt-re-pattern)
