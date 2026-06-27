@@ -298,10 +298,15 @@
 ;; Any seq counts, not just a proper list: a macro that builds the template with
 ;; map/for (e.g. deftype's rewrite-set) yields a LAZY seq, and its ~unquotes must
 ;; still be recognized.
+;; head symbol matches name nm, bare or clojure.core-qualified — the reader
+;; produces clojure.core/unquote(-splicing) for ~/~@ (JVM parity), and this is
+;; only used to spot those heads in syntax-quote templates.
 (define (hc-head-is? x nm)
   (and (cseq? x)
        (let ((h (seq-first x)))
-         (and (symbol-t? h) (jolt-nil? (hc-sym-ns h)) (string=? (symbol-t-name h) nm)))))
+         (and (symbol-t? h) (string=? (symbol-t-name h) nm)
+              (let ((ns (hc-sym-ns h)))
+                (or (jolt-nil? ns) (and (string? ns) (string=? ns "clojure.core"))))))))
 (define (hc-second x) (seq-first (jolt-seq (seq-more x))))
 
 (define (hc-sq-symbol ctx form gsmap)

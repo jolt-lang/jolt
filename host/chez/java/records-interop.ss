@@ -93,8 +93,13 @@
       ((jrec? val)
        (let ((tag (jrec-tag val)))
          (or (string=? tag tname)
-             (and (> (string-length tag) (string-length tname))
-                  (string=? (substring tag (- (string-length tag) (string-length tname)) (string-length tag)) tname))
+             ;; a simple name matches a qualified tag only at a `.` boundary:
+             ;; "a.b.IntervalFD" is an IntervalFD, but "a.b.MultiIntervalFD" is NOT
+             ;; (a raw string-suffix would wrongly match the latter).
+             (let ((tl (string-length tag)) (nl (string-length tname)))
+               (and (fx>? tl nl)
+                    (char=? (string-ref tag (fx- (fx- tl nl) 1)) #\.)
+                    (string=? (substring tag (fx- tl nl) tl) tname)))
              ;; a protocol/interface the type implements (defprotocol generates an
              ;; interface; (instance? SomeProtocol record) is true when the record
              ;; implements it — core.match dispatches on instance? IPatternCompile).

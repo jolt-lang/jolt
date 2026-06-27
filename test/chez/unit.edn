@@ -323,8 +323,8 @@
   {:suite "reader" :expr "(= [1 [2 3] {:k :v}] (read-string \"[1 [2 3] {:k :v}]\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (quote x)) (read-string \"'x\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (clojure.core/deref a)) (read-string \"@a\"))" :expected "true"}
-  {:suite "reader" :expr "(= (quote (syntax-quote (a (unquote b)))) (read-string \"`(a ~b)\"))" :expected "true"}
-  {:suite "reader" :expr "(= (quote (unquote-splicing xs)) (read-string \"~@xs\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (syntax-quote (a (clojure.core/unquote b)))) (read-string \"`(a ~b)\"))" :expected "true"}
+  {:suite "reader" :expr "(= (quote (clojure.core/unquote-splicing xs)) (read-string \"~@xs\"))" :expected "true"}
   {:suite "reader" :expr "(= 42 (read-string \"; comment\\n42\"))" :expected "true"}
   {:suite "reader" :expr "(= [1 2] (read-string \"[1 #_ 9 2]\"))" :expected "true"}
   {:suite "reader" :expr "(nil? (read-string \"\"))" :expected "true"}
