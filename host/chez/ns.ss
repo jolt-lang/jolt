@@ -128,17 +128,23 @@
     (list->cseq (map intern-ns! (vector->list (hashtable-keys seen))))))
 
 ;; ns-publics / ns-map / ns-interns: a {sym -> var-cell} jolt map built by scanning
-;; the var-table for defined cells in the namespace. (Private vars are not tracked
-;; yet, so ns-publics == ns-interns.) ns-aliases is an empty map (map? is true).
-(define (ns-vars-pmap nm)
+;; the var-table for defined cells in the namespace. ns-interns/ns-map keep every
+;; var; ns-publics drops the ones marked ^:private (defn-/def ^:private), like the
+;; JVM. ns-aliases is an empty map (map? is true).
+(define (var-private? c)
+  (let ((m (hashtable-ref var-meta-table c #f)))
+    (and m (jolt-truthy? (jolt-get m (keyword #f "private"))))))
+(define (ns-vars-pmap-when nm keep?)
   (let ((m (jolt-hash-map)))
     (vector-for-each
       (lambda (c)
-        (when (and (string=? (var-cell-ns c) nm) (var-cell-defined? c))
+        (when (and (string=? (var-cell-ns c) nm) (var-cell-defined? c) (keep? c))
           (set! m (jolt-assoc m (jolt-symbol #f (var-cell-name c)) c))))
       (hashtable-values var-table))
     m))
-(define (jolt-ns-publics desig) (ns-vars-pmap (ns-desig->name desig)))
+(define (ns-vars-pmap nm) (ns-vars-pmap-when nm (lambda (c) #t)))
+(define (jolt-ns-publics desig) (ns-vars-pmap-when (ns-desig->name desig) (lambda (c) (not (var-private? c)))))
+(define (jolt-ns-interns desig) (ns-vars-pmap (ns-desig->name desig)))
 
 ;; ns-aliases: the {alias-sym -> ns-value} registered under `desig`
 ;; (default the current ns) via require :as / alias. Reads ns-alias-table.
@@ -322,8 +328,8 @@
 (def-var! "clojure.core" "in-ns" jolt-in-ns)
 (def-var! "clojure.core" "all-ns" jolt-all-ns)
 (def-var! "clojure.core" "ns-publics" jolt-ns-publics)
-(def-var! "clojure.core" "ns-map" jolt-ns-publics)
-(def-var! "clojure.core" "ns-interns" jolt-ns-publics)
+(def-var! "clojure.core" "ns-map" jolt-ns-interns)
+(def-var! "clojure.core" "ns-interns" jolt-ns-interns)
 (def-var! "clojure.core" "ns-aliases" jolt-ns-aliases)
 (def-var! "clojure.core" "ns-refers" jolt-ns-refers)
 (def-var! "clojure.core" "ns-imports" jolt-ns-imports)
