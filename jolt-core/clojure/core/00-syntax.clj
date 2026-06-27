@@ -377,21 +377,31 @@
 ;; vector + body or a sequence of ([params] body) clauses, so no arity branching is
 ;; needed. (map? is true for symbol forms too, so guard the attr-map with symbol?.)
 ;; Defined before fresh-sym below, which is a defn-.
+;; defn lives in the earliest tier, so its macro body may only use primitives
+;; available before the seq/coll tiers — conj (which merges a map onto a map),
+;; assoc, meta, with-meta — not merge/last/butlast.
 (defmacro defn [fn-name & body]
   (let [docstring (when (and (seq body) (string? (first body))) (first body))
         body (if docstring (rest body) body)
-        body (if (and (seq body) (map? (first body)) (not (symbol? (first body))))
-               (rest body) body)
-        ;; ^{:map} metadata on the name reads as a (with-meta sym …) form, not an
-        ;; annotated symbol. def attaches the metadata, but fn needs a
-        ;; bare symbol, so unwrap it for the fn name.
-        fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))]
-    ;; pass the name through to fn: the compiled fn's host name carries it,
-    ;; so stack traces read app.deep/level3 instead of a gensym. A leading
-    ;; docstring rides the def's docstring slot so (:doc (meta #'f)) is set.
-    (if docstring
-      `(def ~fn-name ~docstring (fn ~fn-only-name ~@body))
-      `(def ~fn-name (fn ~fn-only-name ~@body)))))
+        ;; the attr-map after an optional docstring (or after the name) — its keys
+        ;; merge into the var metadata, like Clojure. A map in the first arity
+        ;; position is the attr-map only when more body follows (else it is a lone
+        ;; map body) and is never a symbol (a name carries its meta as a form).
+        attr-map (when (and (seq body) (next body) (map? (first body)) (not (symbol? (first body))))
+                   (first body))
+        body (if attr-map (rest body) body)
+        ;; the bare name + any ^{:map} metadata the reader attached to it.
+        fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))
+        name-meta (meta fn-only-name)
+        m1 (if attr-map (if name-meta (conj name-meta attr-map) attr-map) name-meta)
+        meta-map (if docstring (assoc (if m1 m1 {}) :doc docstring) m1)]
+    ;; pass the name through to fn: the compiled fn's host name carries it, so
+    ;; stack traces read app.deep/level3 instead of a gensym. All metadata
+    ;; (docstring + attr-map + the name's own) is attached to the def name symbol,
+    ;; which analyze-def reads and evaluates — so (meta #'f) reflects every source.
+    (if meta-map
+      `(def ~(with-meta fn-only-name meta-map) (fn ~(with-meta fn-only-name nil) ~@body))
+      `(def ~fn-only-name (fn ~fn-only-name ~@body)))))
 
 ;; Jolt doesn't enforce privacy, so defn- is just defn (matching how Clojure's own
 ;; defn- delegates to defn with :private metadata).
