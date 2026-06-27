@@ -45,7 +45,9 @@
 (ok "long inc lowers to fx1+"     (has? (emitf "u" "(fn* ([^long n] (inc n)))") "(fx1+"))
 (ok "double inc lowers to fl+ 1.0" (has? (emitf "u" "(fn* ([^double x] (inc x)))") "(fl+"))
 (ok "long dec lowers to fx1-"     (has? (emitf "u" "(fn* ([^long n] (dec n)))") "(fx1-"))
-(ok "unchecked-add lowers to fx+" (has? (emitf "u" "(fn* ([^long n] (unchecked-add n 1)))") "(fx+"))
+;; unchecked-* WRAP to signed 64 bits (Java long), so they emit the wrapping
+;; jolt-unc* helpers, not the raising fx ops.
+(ok "unchecked-add lowers to jolt-uncadd2" (has? (emitf "u" "(fn* ([^long n] (unchecked-add n 1)))") "(jolt-uncadd2"))
 (ok "long quot lowers to fxquotient" (has? (emitf "u" "(fn* ([^long a ^long b] (quot a b)))") "(fxquotient"))
 (ok "double == lowers to fl=?"    (has? (emitf "u" "(fn* ([^double a ^double b] (== a b)))") "(fl=?"))
 

@@ -3369,4 +3369,10 @@
   {:suite "host-interop / class hierarchy" :label "(class sym)-dispatched multimethod hits an IFn method" :expected ":ifn" :actual "(do (defmulti cm1 class) (defmethod cm1 clojure.lang.IFn [_] :ifn) (cm1 (quote sym)))"}
   {:suite "host-interop / extend-protocol java.io" :label "protocol extended to Reader / String dispatches a StringReader and a String" :expected "[:reader :string]" :actual "(do (import (quote (java.io StringReader))) (defprotocol Prdr (mrd [x])) (extend-protocol Prdr java.io.Reader (mrd [_] :reader) String (mrd [_] :string)) [(mrd (StringReader. \"x\")) (mrd \"y\")])"}
   {:suite "host-interop / StringWriter" :label "(str StringWriter) returns its accumulated content" :expected "\"hi!\"" :actual "(do (import (quote (java.io StringWriter))) (let [w (StringWriter.)] (.write w \"hi\") (.write w \"!\") (str w)))"}
+  {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-add overflow wraps" :expected "-9223372036854775808" :actual "(unchecked-add 9223372036854775807 1)"}
+  {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-multiply overflow wraps" :expected "1" :actual "(unchecked-multiply 9223372036854775807 9223372036854775807)"}
+  {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-subtract underflow wraps" :expected "9223372036854775807" :actual "(unchecked-subtract -9223372036854775808 1)"}
+  {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-negate of MIN wraps to MIN" :expected "-9223372036854775808" :actual "(unchecked-negate -9223372036854775808)"}
+  {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-inc of MAX wraps to MIN" :expected "-9223372036854775808" :actual "(unchecked-inc 9223372036854775807)"}
+  {:suite "host-interop / Long bit statics" :label "Long/bitCount, numberOfLeadingZeros, reverse" :expected "[10 63 0 -2]" :actual "[(Long/bitCount 1023) (Long/numberOfLeadingZeros 1) (Long/bitCount 0) (Long/reverse 9223372036854775807)]"}
 ]

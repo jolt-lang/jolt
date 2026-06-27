@@ -96,7 +96,9 @@
    "<" "fl<?" ">" "fl>?" "<=" "fl<=?" ">=" "fl>=?" "=" "fl=?" "==" "fl=?"})
 (def ^:private lng-ops
   {"+" "fx+" "-" "fx-" "*" "fx*" "min" "fxmin" "max" "fxmax"
-   "unchecked-add" "fx+" "unchecked-subtract" "fx-" "unchecked-multiply" "fx*"
+   ;; unchecked-* WRAP to signed 64 bits (Java long), so they can't use the raising
+   ;; fx ops — the backend emits the wrapping jolt-unc* helpers (host/chez/seq.ss).
+   "unchecked-add" "jolt-uncadd2" "unchecked-subtract" "jolt-uncsub2" "unchecked-multiply" "jolt-uncmul2"
    "quot" "fxquotient" "rem" "fxremainder" "mod" "fxmodulo"
    "<" "fx<?" ">" "fx>?" "<=" "fx<=?" ">=" "fx>=?" "=" "fx=?" "==" "fx=?"})
 
@@ -485,8 +487,11 @@
   (cond
     (and (= kind :double) (= nm "inc")) (str "(fl+ " (first args) " 1.0)")
     (and (= kind :double) (= nm "dec")) (str "(fl- " (first args) " 1.0)")
-    (and (= kind :long) (or (= nm "inc") (= nm "unchecked-inc"))) (str "(fx1+ " (first args) ")")
-    (and (= kind :long) (or (= nm "dec") (= nm "unchecked-dec"))) (str "(fx1- " (first args) ")")
+    (and (= kind :long) (= nm "inc")) (str "(fx1+ " (first args) ")")
+    (and (= kind :long) (= nm "dec")) (str "(fx1- " (first args) ")")
+    ;; unchecked-inc/dec wrap (Java long), so the raising fx1+/fx1- can't be used.
+    (and (= kind :long) (= nm "unchecked-inc")) (str "(jolt-uncinc " (first args) ")")
+    (and (= kind :long) (= nm "unchecked-dec")) (str "(jolt-uncdec " (first args) ")")
     :else
     (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))]
       (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))

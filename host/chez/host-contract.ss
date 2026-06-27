@@ -80,6 +80,12 @@
 (define (hc-var-value-ns x) (var-cell-ns x))
 (define (hc-var-value-name x) (var-cell-name x))
 
+;; *unchecked-math* read at compile time: when truthy (a file's (set!
+;; *unchecked-math* …)), the analyzer rewrites +/-/*/inc/dec to their wrapping
+;; unchecked-* forms for the rest of that file, like the JVM.
+(define (hc-unchecked-math?)
+  (jolt-truthy? (guard (e (#t #f)) (var-deref "clojure.core" "*unchecked-math*"))))
+
 ;; --- form accessors ---------------------------------------------------------
 (define (hc-char-code x) (char->integer x))  ; native Chez char -> codepoint
 (define (hc-sym-name x) (symbol-t-name x))
@@ -471,6 +477,7 @@
   (def-var! "jolt.host" "form-var-value?" hc-var-value?)
   (def-var! "jolt.host" "form-var-value-ns" hc-var-value-ns)
   (def-var! "jolt.host" "form-var-value-name" hc-var-value-name)
+  (def-var! "jolt.host" "unchecked-math?" hc-unchecked-math?)
   (def-var! "jolt.host" "form-bigdec?" hc-bigdec?)
   (def-var! "jolt.host" "form-bigdec-source" hc-bigdec-source)
   (def-var! "jolt.host" "form-elements" hc-elements)

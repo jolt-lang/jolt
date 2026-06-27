@@ -22,12 +22,17 @@
 ;; pass an exact integer through, error if it doesn't fit a fixnum or isn't a
 ;; number. The hint is a promise the value is a fixnum-range long; the body's fx*
 ;; ops rely on it. (^double params coerce with the built-in exact->inexact.)
+;; A ^long is a 64-bit value; a Chez fixnum is only 61-bit, so a value that
+;; overflows the fixnum range (a full-width long, e.g. from unchecked / wrapping
+;; arithmetic) passes through as an exact integer rather than erroring. fx ops in
+;; the body still require fixnums (they raise on a bignum), but generic /
+;; unchecked-* ops handle it.
 (define (jolt->fx x)
-  (let ((n (cond ((fixnum? x) x)
-                 ((flonum? x) (exact (truncate x)))
-                 ((rational? x) (exact (truncate x)))
-                 (else (error 'jolt "^long hint: not a number" x)))))
-    (if (fixnum? n) n (error 'jolt "^long hint: value out of fixnum range" x))))
+  (cond ((fixnum? x) x)
+        ((and (number? x) (exact? x) (integer? x)) x)
+        ((flonum? x) (exact (truncate x)))
+        ((rational? x) (exact (truncate x)))
+        (else (error 'jolt "^long hint: not a number" x))))
 ;; jolt `not`: only nil and false are falsey.
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 

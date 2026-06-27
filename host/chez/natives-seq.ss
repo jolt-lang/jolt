@@ -228,3 +228,14 @@
       (list->cseq (reverse (seq->list (jolt-seq coll))))
       (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map)))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
+
+;; clojure.core/unchecked-* — host-defined wrapping (Java long) arithmetic from
+;; seq.ss. def-var!'d here because def-var! isn't bound when seq.ss loads.
+(let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
+  (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" jolt-unchecked-add)
+  (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" jolt-unchecked-sub)
+  (d! "unchecked-multiply" jolt-unchecked-mul)   (d! "unchecked-multiply-int" jolt-unchecked-mul)
+  (d! "unchecked-negate" jolt-uncneg)            (d! "unchecked-negate-int" jolt-uncneg)
+  (d! "unchecked-inc" jolt-uncinc)               (d! "unchecked-inc-int" jolt-uncinc)
+  (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" jolt-uncdec)
+  (d! "unchecked-divide-int" jolt-unchecked-div) (d! "unchecked-remainder-int" jolt-unchecked-rem))
