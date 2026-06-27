@@ -203,10 +203,22 @@
             dst))
       dst))
 
+;; A set literal reads as the tagged set-form {:jolt/type :jolt/set :value [...]}
+;; for the analyzer, but a macro must see a real set value (Clojure parity, so
+;; (set? arg) / seq / conj work — hiccup's compiler does this). Convert a set-form
+;; argument to a set; elements stay as read (a deeply-nested set literal inside
+;; another form is rarer and left for the analyzer).
+(define (hc-macro-arg x)
+  (if (rdr-set-form? x)
+      (let ((items (jolt-get x rdr-kw-value)))
+        (let loop ((i 0) (s empty-pset))
+          (if (fx>=? i (pvec-count items)) s
+              (loop (fx+ i 1) (pset-conj s (pvec-nth-d items i jolt-nil))))))
+      x))
 (define (hc-expand-1 ctx form)
   (let* ((items (seq->list form))
          (head (car items))
-         (args (cdr items))
+         (args (map hc-macro-arg (cdr items)))
          (expander (var-cell-root (hc-resolve-cell ctx head))))
     (hc-propagate-pos form (apply jolt-invoke expander args))))
 
