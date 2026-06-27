@@ -49,6 +49,13 @@
       (cseq-lazy x (lambda () (force-lazyseq coll)))
       (%ls-cons x coll))))
 
+;; (conj lazyseq x): conj onto a seq prepends, like any seq — (conj (rest xs) y).
+;; rest returns a lazyseq, so this is a common path; without it conj reports the
+;; lazyseq as an "unsupported collection".
+(define %ls-conj1 jolt-conj1)
+(set! jolt-conj1 (lambda (coll x)
+  (if (jolt-lazyseq? coll) (jolt-cons x coll) (%ls-conj1 coll x))))
+
 ;; A lazyseq is a NEW value type, so the dispatchers that DON'T route through
 ;; jolt-seq must learn it or a raw (unrealized) lazyseq escapes — e.g. the corpus
 ;; compares (= [1 3 5] (take-nth 2 …)) against the raw lazyseq, and jolt=2 would

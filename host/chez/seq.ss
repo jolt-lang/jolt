@@ -161,6 +161,7 @@
   (cond
     ((procedure? f) (apply f args))
     ((keyword? f) (apply jolt-get (car args) f (cdr args)))   ; (:k m [d]) -> (get m :k [d])
+    ((jolt-symbol? f) (apply jolt-get (car args) f (cdr args)))   ; ('s m [d]) -> (get m 's [d])
     ((jolt-coll? f) (apply jolt-get f args))                  ; (coll k [d]) -> (get coll k [d])
     ((jolt-transient? f) (apply jolt-get f args))             ; a transient vec/map/set is callable on the JVM
     ;; a record/reify implementing clojure.lang.IFn is callable: dispatch to its

@@ -3278,4 +3278,22 @@
   {:suite "interop / uri equality" :label "URIs are value-equal and usable as set members" :expected "[true true]" :actual "[(= (java.net.URI. \"/\") (java.net.URI. \"/\")) (= #{(java.net.URI. \"/\")} #{(java.net.URI. \"/\")})]"}
   {:suite "stdlib / clojure.walk" :label "macroexpand-all expands a form" :expected "true" :actual "(do (require (quote clojure.walk)) (seq? (clojure.walk/macroexpand-all (quote (when true 1)))))"}
   {:suite "regex / re-seq zero-width" :label "a zero-width match advances by one without repeating" :expected "[\"a\" \"\" \"a\" \"\"]" :actual "(vec (re-seq #\"a*\" \"aba\"))"}
+  {:suite "seqs / lazy-seq interop" :label "conj onto a rest-derived seq prepends" :expected "true" :actual "(= [9 2 3] (vec (conj (rest [1 2 3]) 9)))"}
+  {:suite "seqs / lazy-seq interop" :label "conj onto a lazy-seq prepends" :expected "true" :actual "(= [9 1 2] (vec (conj (lazy-seq (list 1 2)) 9)))"}
+  {:suite "seqs / lazy-seq interop" :label "into over a conj'd rest-seq" :expected "true" :actual "(= [0 2 3] (into [] (conj (rest [1 2 3]) 0)))"}
+  {:suite "seqs / lazy-seq interop" :label "first of a conj'd rest-seq" :expected "true" :actual "(= 9 (first (conj (rest [1 2 3]) 9)))"}
+  {:suite "seqs / lazy-seq interop" :label "count of a conj'd rest-seq" :expected "true" :actual "(= 3 (count (conj (rest [1 2 3]) 9)))"}
+  {:suite "seqs / lazy-seq interop" :label "nth into a rest-seq" :expected "true" :actual "(= 3 (nth (rest [1 2 3]) 1))"}
+  {:suite "seqs / lazy-seq interop" :label "reduce over a rest-seq" :expected "true" :actual "(= 5 (reduce + (rest [1 2 3])))"}
+  {:suite "seqs / lazy-seq interop" :label "a rest-seq equals the literal tail" :expected "true" :actual "(= (quote (2 3)) (rest [1 2 3]))"}
+  {:suite "seqs / lazy-seq interop" :label "map over a rest-seq" :expected "true" :actual "(= [3 4] (vec (map inc (rest [1 2 3]))))"}
+  {:suite "seqs / lazy-seq interop" :label "filter over a rest-seq" :expected "true" :actual "(= [3] (vec (filter odd? (rest [1 2 3 4]))))"}
+  {:suite "seqs / lazy-seq interop" :label "apply over a rest-seq" :expected "true" :actual "(= 5 (apply + (rest [1 2 3])))"}
+  {:suite "seqs / lazy-seq interop" :label "seq of an empty rest is nil" :expected "true" :actual "(nil? (seq (rest [1])))"}
+  {:suite "seqs / lazy-seq interop" :label "empty? of an empty rest" :expected "true" :actual "(empty? (rest [1]))"}
+  {:suite "seqs / lazy-seq interop" :label "cons onto a rest-seq" :expected "true" :actual "(= [0 2 3] (vec (cons 0 (rest [1 2 3]))))"}
+  {:suite "seqs / lazy-seq interop" :label "into a set from a rest-seq" :expected "true" :actual "(= #{2 3} (into #{} (rest [1 2 3])))"}
+  {:suite "ifn / symbol as fn" :label "a symbol invokes as a map lookup" :expected "true" :actual "(= 5 ('a {(quote a) 5}))"}
+  {:suite "ifn / symbol as fn" :label "a symbol fn takes a not-found default" :expected "true" :actual "(= :d ('a {} :d))"}
+  {:suite "ifn / symbol as fn" :label "a symbol works as a mapping fn" :expected "true" :actual "(= [1 2] (vec (map (quote k) [{(quote k) 1} {(quote k) 2}])))"}
 ]

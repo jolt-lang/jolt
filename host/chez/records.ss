@@ -58,6 +58,14 @@
                  (find-method-any-protocol tag "valAt")
                  (find-method-any-protocol tag "cons"))))
        #t))
+;; a jrec that is map? — a record, or a deftype implementing clojure.lang
+;; .IPersistentMap (clojure.core.cache's caches do). `without` (dissoc) is the
+;; map-distinctive method: vectors/sets implement Associative/ILookup but not it.
+(define (jrec-maplike? x)
+  (and (jrec? x)
+       (or (jrec-record? x)
+           (find-method-any-protocol (jrec-tag x) "without"))
+       #t))
 (define jolt-deftype-kw (keyword "jolt" "deftype"))
 ;; unique present-vs-absent sentinel for extension-map lookups (so a present nil
 ;; in the extension map is distinguished from a genuine miss).
@@ -399,7 +407,7 @@
 ;; deftype is not. coll? additionally covers a deftype implementing a collection
 ;; interface. predicates.ss vars hold a snapshot, so re-def-var! after extending.
 (define %r-jolt-map? jolt-map?)
-(set! jolt-map? (lambda (x) (or (jrec-record? x) (%r-jolt-map? x))))
+(set! jolt-map? (lambda (x) (or (jrec-maplike? x) (%r-jolt-map? x))))
 (def-var! "clojure.core" "map?" jolt-map?)
 (def-var! "clojure.core" "coll?" (lambda (x) (or (jrec-collection? x) (jolt-coll-pred? x))))
 
