@@ -52,6 +52,8 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
   (`<!`/`>!`/`alts!`, `pipeline`, `mult`/`mix`/`pub`/`sub`) on real OS threads.
 * [core.logic](https://github.com/clojure/core.logic) — relational logic programming
   (unification, `run`/`fresh`/`conde`, finite domains).
+* [math.combinatorics](https://github.com/clojure/math.combinatorics) — permutations,
+  combinations, subsets, selections, cartesian products, partitions.
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write
