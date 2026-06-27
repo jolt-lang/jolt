@@ -150,4 +150,4 @@ whose expected values are sourced from reference JVM Clojure. See
 
 ## License
 
-[Eclipse Public License 1.0](https://opensource.org/licenses/EPL-1.0)
+[Eclipse Public License 2.0](https://www.eclipse.org/legal/epl-2.0/)
