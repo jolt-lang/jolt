@@ -40,7 +40,7 @@
 ;; analyzed in analyze-list), so keep them in sync by intent, not by equality.
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
-    "syntax-quote" "var" "letfn" "set!" "defmacro"})
+    "syntax-quote" "var" "letfn*" "set!" "defmacro"})
 
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
@@ -286,26 +286,21 @@
               n)]
       n)))
 
-;; letfn: (letfn [(name [params] body*)...] body*). The named local fns are
-;; MUTUALLY recursive, so bind every name into the env BEFORE analyzing any spec
-;; — each spec then resolves its siblings (and itself) as locals. Emitted as a
-;; :let flagged :letrec so the back end knows the bindings forward-reference each
-;; other: Chez lowers it to `letrec*`. The interpreter's shared mutable env already
-;; gives the letrec semantics that a
-;; compiled sequential let* lacks — the reason letfn was uncompilable before.
-(defn- analyze-letfn [ctx items env]
-  (let [specs (vec (form-vec-items (nth items 1)))
-        names (mapv #(form-sym-name (first (vec (form-elements %)))) specs)
-        env* (add-locals env names)
-        binds (mapv (fn [spec]
-                      (let [cl (vec (form-elements spec))]
-                        ;; Build (fn name [params] body*) and analyze through the fn
-                        ;; MACRO so destructuring params desugar (the fn* primitive
-                        ;; would not — same trick defmacro uses). The named fn means
-                        ;; self- and sibling-calls resolve and it carries its own name.
-                        [(form-sym-name (first cl))
-                         (analyze ctx (cons (symbol "fn") cl) env*)]))
-                    specs)]
+;; letfn*: (letfn* [name1 fn1 name2 fn2 …] body*) — the special form Clojure's
+;; letfn macro expands to (flat name/fn-form pairs, the fn forms already named).
+;; The named local fns are MUTUALLY recursive, so bind every name into the env
+;; BEFORE analyzing any fn form — each then resolves its siblings (and itself) as
+;; locals. Emitted as a :let flagged :letrec so the back end lowers it to
+;; `letrec*`; the interpreter's shared mutable env gives the same semantics.
+(defn- analyze-letfn* [ctx items env]
+  (let [bvec  (vec (form-vec-items (nth items 1)))
+        n     (quot (count bvec) 2)
+        names (mapv (fn [i] (form-sym-name (nth bvec (* 2 i)))) (range n))
+        env*  (add-locals env names)
+        binds (mapv (fn [i]
+                      [(nth names i)
+                       (analyze ctx (nth bvec (inc (* 2 i))) env*)])
+                    (range n))]
     {:op :let :letrec true :bindings binds
      :body (analyze-seq ctx (drop 2 items) env*)}))
 
@@ -424,7 +419,7 @@
               {:op :recur :recur-name rt
                :args (mapv #(analyze ctx % env) (rest items))})
     "try" (analyze-try ctx items env)
-    "letfn" (analyze-letfn ctx items env)
+    "letfn*" (analyze-letfn* ctx items env)
     "fn*" (analyze-fn ctx items env)
     ;; Lower the backtick to construction code (zero runtime cost), then analyze
     ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.

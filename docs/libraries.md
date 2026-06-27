@@ -65,6 +65,8 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
   byte arrays.
 * [data.priority-map](https://github.com/clojure/data.priority-map) — priority
   maps (incl. keyfn / custom comparator), with `subseq`/`rsubseq`.
+* [tools.macro](https://github.com/clojure/tools.macro) — local macros
+  (`macrolet`/`symbol-macrolet`), `mexpand`/`mexpand-all`.
 * [test.check](https://github.com/clojure/test.check) — property-based testing
   (generators, `quick-check`, shrinking).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;

@@ -159,6 +159,15 @@
 (defmacro declare [& syms]
   `(do ~@(map (fn* [s] `(def ~s)) syms)))
 
+;; letfn is a macro over the letfn* special form, matching Clojure: each
+;; (name [params] body*) spec becomes a name + a (fn name [params] body*) binding.
+;; So (macroexpand-1 '(letfn …)) yields the letfn* form macroexpansion tooling
+;; (tools.macro / tools.analyzer) expects, instead of an opaque special form.
+(defmacro letfn [fnspecs & body]
+  (cons 'letfn*
+        (cons (reduce (fn [acc s] (conj (conj acc (first s)) (cons 'fn s))) [] fnspecs)
+              body)))
+
 ;; destructure — Clojure's binding-vector expander.
 ;; Turns a binding vector that may contain destructuring
 ;; patterns into a plain binding vector (alternating symbol / init-form) built from
