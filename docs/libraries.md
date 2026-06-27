@@ -48,6 +48,10 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
   [data.priority-map](https://github.com/clojure/data.priority-map).
 * [core.memoize](https://github.com/clojure/core.memoize) — function memoization
   over [core.cache](https://github.com/clojure/core.cache).
+* [core.async](https://github.com/clojure/core.async) — CSP channels and `go` blocks
+  (`<!`/`>!`/`alts!`, `pipeline`, `mult`/`mix`/`pub`/`sub`) on real OS threads.
+* [core.logic](https://github.com/clojure/core.logic) — relational logic programming
+  (unification, `run`/`fresh`/`conde`, finite domains).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write

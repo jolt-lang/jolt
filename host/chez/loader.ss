@@ -141,6 +141,14 @@
 (vector-for-each (lambda (c) (hashtable-set! loaded-ns (var-cell-ns c) #t))
                  (hashtable-values var-table))
 
+;; clojure.core.async ships native channel primitives (async.ss) AND a Clojure
+;; overlay (stdlib/clojure/core/async.clj) with the higher-level dataflow API
+;; (alts!, pipe, mult, mix, pub/sub, map, merge, …). The primitives pre-seed the
+;; namespace above, which would make a `require` no-op and skip the overlay. Drop
+;; it from the loaded set so a require pulls the overlay from the source roots
+;; (like clojure.test); the primitives stay defined either way.
+(hashtable-delete! loaded-ns "clojure.core.async")
+
 ;; Does `name` already have vars in the var-table? A namespace baked into the
 ;; image after the snapshot above — an AOT'd app namespace in a `jolt build`
 ;; binary — exists in memory with no source file; a later `require` of it must

@@ -249,10 +249,13 @@
     (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from)))))
 
 (define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1)))))
+;; An empty range is () (jolt-empty-list), NOT nil — (range 0) and (range 5 5) are
+;; empty seqs in Clojure, so (= () (range 0)) holds. The same () terminates the
+;; lazy tail of a non-empty range (jolt-empty-list seqs back to nil, see jolt-take).
 (define (range-bounded n end step)
   (if (if (> step 0.0) (< n end) (> n end))
       (cseq-lazy n (lambda () (range-bounded (+ n step) end step)))
-      jolt-nil))
+      jolt-empty-list))
 ;; numeric tower: exact 0/1 defaults so (range 3) yields exact ints
 ;; (= JVM longs); flonum args still produce flonums (Scheme arithmetic preserves).
 (define jolt-range

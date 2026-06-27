@@ -1,17 +1,20 @@
-;; async.ss — clojure.core.async on real OS threads for the Chez host.
+;; async.ss — clojure.core.async channel primitives on real OS threads.
 ;;
-;; A `go` block is an OS thread and a channel is a mutex+condition blocking
-;; queue: <! / >! are the blocking <!! / >!! (they "park" by blocking the thread).
-;; <! / >! work ANYWHERE — no CPS transform — because they are ordinary blocking
-;; calls. Real parallelism, shared heap. Trade-off: one OS thread per go block
-;; (fine for typical use, not for thousands of simultaneous go blocks).
+;; A `go` block is an OS thread and a channel is a Chez mutex+condition blocking
+;; queue: <! / >! are the blocking <!! / >!! (they "park" by blocking the thread),
+;; and work ANYWHERE — no CPS transform, no go-only restriction. Real parallelism,
+;; shared heap. This is a superset of the JVM model: it has no fixed go-block
+;; thread pool, no MAX-QUEUE-SIZE on pending ops, and parking ops are legal outside
+;; a go block. One OS thread per go block (fine for typical use).
 ;;
 ;; Channel: an unbuffered channel is a rendezvous (the putter blocks until its
 ;; value is taken); a buffered (chan n) put blocks only when full; dropping/sliding
-;; buffers never block the putter. A transducer is applied on the put side.
+;; buffers never block the putter. A transducer is applied on the put side; an
+;; optional ex-handler catches a throw from the transducer step.
 ;;
-;; The fns are def-var!'d into clojure.core.async; go/go-loop/thread are macros
-;; (mark-macro!) expanding to go-spawn. Loaded after
+;; This file provides the primitives; the higher-level dataflow API (mult, mix,
+;; pub/sub, pipeline, map, merge, reduce, …) is a Clojure overlay over them.
+;; go/go-loop/thread are macros (mark-macro!) expanding to go-spawn. Loaded after
 ;; concurrency.ss (reuses ms->duration). Requires a threaded Chez build.
 
 ;; --- buffers ----------------------------------------------------------------
@@ -19,6 +22,8 @@
 (define (jolt-async-buffer n)          (make-async-buffer n 'fixed))
 (define (jolt-async-dropping-buffer n) (make-async-buffer n 'dropping))
 (define (jolt-async-sliding-buffer n)  (make-async-buffer n 'sliding))
+(define (jolt-async-unblocking-buffer? b)
+  (if (and (async-buffer? b) (memq (async-buffer-kind b) '(dropping sliding promise))) #t #f))
 
 ;; --- channels ---------------------------------------------------------------
 ;; items: an amortized-O(1) FIFO held as a mutable #(out in len) — `out` is the
@@ -27,9 +32,12 @@
 ;; Each entry is (value . box); box is #f for a buffered value or a 1-slot vector
 ;; for an unbuffered rendezvous put (set #t when taken, waking the putter).
 ;; cap 0 + kind 'unbuffered = rendezvous; cap>0 with kind fixed/dropping/sliding.
+;; takew counts threads parked in a blocking take (so a non-blocking offer! to an
+;; unbuffered channel can tell a taker is waiting). xrf is the transducer reducing
+;; fn (or #f); exh the ex-handler (or #f).
 (define-record-type async-chan
-  (fields mu cv (mutable items) cap kind (mutable closed?) (mutable xrf))
-  (nongenerative async-chan-v1))
+  (fields mu cv (mutable items) cap kind (mutable closed?) (mutable xrf) (mutable takew) exh)
+  (nongenerative async-chan-v2))
 
 (define (ac-qnew) (vector '() '() 0))
 (define (ac-qlen ch) (vector-ref (async-chan-items ch) 2))
@@ -73,17 +81,30 @@
           ((null? (cdr args)) (car args))                     ; completion
           (else (ac-buf-give! ch (cadr args)) (car args)))))  ; step
 
-(define (ac-make cap kind xrf) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f xrf))
+;; run the transducer step (or completion) guarded by the channel's ex-handler:
+;; if the xform throws and exh returns non-nil, that value is added to the buffer.
+(define (ac-xrf-apply ch . v)
+  (let ((xrf (async-chan-xrf ch)) (exh (async-chan-exh ch)))
+    (guard (e (#t (if exh
+                      (let ((else (jolt-invoke exh e)))
+                        (unless (jolt-nil? else) (ac-buf-give! ch else))
+                        (async-chan-xrf ch))   ; treat as non-reduced
+                      (raise e))))
+      (apply jolt-invoke xrf ch v))))
 
-;; (chan) | (chan n) | (chan buf) | (chan n|buf xform)
+(define (ac-make cap kind xrf) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f xrf 0 #f))
+(define (ac-make/exh cap kind exh) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f #f 0 exh))
+
+;; (chan) | (chan n) | (chan buf) | (chan n|buf xform) | (chan n|buf xform exh)
 (define (jolt-async-chan . args)
   (let ((buf (if (pair? args) (car args) jolt-nil))
-        (xform (if (and (pair? args) (pair? (cdr args))) (cadr args) jolt-nil)))
+        (xform (if (and (pair? args) (pair? (cdr args))) (cadr args) jolt-nil))
+        (exh (if (and (pair? args) (pair? (cdr args)) (pair? (cddr args))) (caddr args) jolt-nil)))
     (let-values (((cap kind)
                   (cond ((async-buffer? buf) (values (async-buffer-n buf) (async-buffer-kind buf)))
                         ((and (number? buf) (> buf 0)) (values buf 'fixed))
                         (else (values 0 'unbuffered)))))
-      (let ((ch (ac-make cap kind #f)))
+      (let ((ch (ac-make/exh cap kind (if (jolt-nil? exh) #f exh))))
         (unless (jolt-nil? xform)
           (async-chan-xrf-set! ch (jolt-invoke xform (ac-make-add-rf ch))))
         ch))))
@@ -93,7 +114,7 @@
 (define (ac-close! ch)
   (unless (async-chan-closed? ch)
     (async-chan-closed?-set! ch #t)
-    (when (async-chan-xrf ch) (guard (e (#t #f)) (jolt-invoke (async-chan-xrf ch) ch)))
+    (when (async-chan-xrf ch) (guard (e (#t #f)) (ac-xrf-apply ch)))
     (condition-broadcast (async-chan-cv ch)))
   jolt-nil)
 (define (jolt-async-close! ch) (with-mutex (async-chan-mu ch) (ac-close! ch)))
@@ -102,12 +123,12 @@
 ;; transducer the value is run through it (one put -> zero or more channel values);
 ;; a `reduced` result closes the channel.
 (define (jolt-async-give ch v)
-  (when (jolt-nil? v) (jolt-throw (jolt-ex-info "Can't put nil on a channel" (jolt-hash-map))))
+  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
   (with-mutex (async-chan-mu ch)
     (cond
       ((async-chan-closed? ch) #f)
       ((async-chan-xrf ch)
-       (let ((r (jolt-invoke (async-chan-xrf ch) ch v)))
+       (let ((r (ac-xrf-apply ch v)))
          (when (jolt-reduced? r) (ac-close! ch))
          #t))
       (else
@@ -154,12 +175,19 @@
       (cond ((eq? (async-chan-kind ch) 'promise)
              (cond ((not (ac-qempty? ch)) (ac-peek ch))
                    ((async-chan-closed? ch) jolt-nil)
-                   (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))
+                   (else (ac-take-wait ch) (loop))))
             ((not (ac-qempty? ch)) (ac-take-head! ch))
             ((async-chan-closed? ch) jolt-nil)
-            (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))
+            (else (ac-take-wait ch) (loop))))))
 
-;; non-blocking take for alts!: a value, jolt-nil (closed+empty), or ac-poll-empty.
+;; park in a take, tracking the waiter count so a concurrent offer! to an
+;; unbuffered channel can see that a taker is ready.
+(define (ac-take-wait ch)
+  (async-chan-takew-set! ch (fx+ 1 (async-chan-takew ch)))
+  (condition-wait (async-chan-cv ch) (async-chan-mu ch))
+  (async-chan-takew-set! ch (fx- (async-chan-takew ch) 1)))
+
+;; non-blocking take for alts!/poll!: a value, jolt-nil (closed+empty), or ac-poll-empty.
 (define ac-poll-empty (list 'empty))
 (define (ac-poll! ch)
   (with-mutex (async-chan-mu ch)
@@ -168,28 +196,40 @@
           ((async-chan-closed? ch) jolt-nil)
           (else ac-poll-empty))))
 
-;; (alts! [ch ...]) — take from whichever channel is ready first; returns
-;; [value channel] (value nil if that channel closed). Take-only: every port must
-;; be a channel — put specs [ch val] and the :default option are not supported, so
-;; reject them with a clear error instead of crashing inside ac-poll!.
-;; Polls with a 1ms backoff — no cross-channel wait-set yet.
-(define ac-1ms (make-time 'time-duration 1000000 0))
-(define (jolt-async-alts chans)
-  (let ((cs (seq->list (jolt-seq chans))))
-    (for-each (lambda (c)
-                (unless (async-chan? c)
-                  (jolt-throw (jolt-ex-info
-                                "alts! supports channel ports only (put specs [ch val] and :default are not supported)"
-                                (jolt-hash-map)))))
-              cs)
-    (let loop ()
-      (let try ((rest cs))
-        (if (null? rest)
-            (begin (sleep ac-1ms) (loop))
-            (let ((r (ac-poll! (car rest))))
-              (if (eq? r ac-poll-empty)
-                  (try (cdr rest))
-                  (jolt-vector r (car rest)))))))))
+;; non-blocking give: 'ok (accepted), 'full (would block), or 'closed.
+(define (ac-try-give! ch v)
+  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
+  (with-mutex (async-chan-mu ch)
+    (cond
+      ((async-chan-closed? ch) 'closed)
+      ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
+                             (when (jolt-reduced? r) (ac-close! ch)) 'ok))
+      (else
+       (case (async-chan-kind ch)
+         ((dropping sliding) (ac-buf-give! ch v) 'ok)
+         ((promise) (when (ac-qempty? ch) (ac-qpush! ch (cons v #f))
+                          (condition-broadcast (async-chan-cv ch))) 'ok)
+         (else
+          (cond
+            ((> (async-chan-cap ch) 0)
+             (if (< (ac-qlen ch) (async-chan-cap ch))
+                 (begin (ac-qpush! ch (cons v #f)) (condition-broadcast (async-chan-cv ch)) 'ok)
+                 'full))
+            ;; unbuffered: only immediate if a taker is parked to receive it.
+            ((> (async-chan-takew ch) 0)
+             (let ((box (vector #f)))
+               (ac-qpush! ch (cons v box))
+               (condition-broadcast (async-chan-cv ch))
+               'ok))
+            (else 'full))))))))
+
+;; offer! / poll! — never block. offer! returns #t/#f(closed) on completion, nil if
+;; it would block; poll! returns a value, nil (closed+empty), or the ::none sentinel.
+(define cca-none (keyword "clojure.core.async" "none"))
+(define (jolt-async-offer! ch v)
+  (case (ac-try-give! ch v) ((ok) #t) ((closed) #f) (else jolt-nil)))
+(define (jolt-async-poll! ch)
+  (let ((r (ac-poll! ch))) (if (eq? r ac-poll-empty) cca-none r)))
 
 ;; (timeout ms) — a channel that closes after ms milliseconds.
 (define (jolt-async-timeout ms)
@@ -197,17 +237,28 @@
     (fork-thread (lambda () (sleep (ms->duration ms)) (jolt-async-close! w)))
     w))
 
-;; (put! ch v [cb]) / (take! ch cb) — async put/take on a thread, optional callback.
-(define (jolt-async-put! ch v . cb)
-  (fork-thread (lambda ()
-                 (let ((ok (jolt-async-give ch v)))
-                   (when (and (pair? cb) (not (jolt-nil? (car cb)))) (jolt-invoke (car cb) ok)))))
-  jolt-nil)
-(define (jolt-async-take! ch cb)
-  (fork-thread (lambda ()
-                 (let ((v (jolt-async-take ch)))
-                   (unless (jolt-nil? cb) (jolt-invoke cb v)))))
-  jolt-nil)
+;; (put! ch v [cb [on-caller?]]) — async put, optional completion callback. If the
+;; put completes immediately and on-caller? (default #t), the callback runs on the
+;; calling thread; otherwise on another thread. Returns true unless already closed.
+(define (jolt-async-put! ch v . rest)
+  (let* ((cb (if (pair? rest) (car rest) jolt-nil))
+         (on-caller? (if (and (pair? rest) (pair? (cdr rest))) (jolt-truthy? (cadr rest)) #t))
+         (call-cb (lambda (ok) (unless (jolt-nil? cb) (jolt-invoke cb ok)))))
+    (case (ac-try-give! ch v)
+      ((ok) (if on-caller? (call-cb #t) (fork-thread (lambda () (call-cb #t)))) #t)
+      ((closed) (if on-caller? (call-cb #f) (fork-thread (lambda () (call-cb #f)))) #f)
+      (else (fork-thread (lambda () (call-cb (jolt-async-give ch v)))) #t))))
+
+;; (take! ch cb [on-caller?]) — async take. Same on-caller? rule as put!.
+(define (jolt-async-take! ch cb . rest)
+  (let* ((on-caller? (if (pair? rest) (jolt-truthy? (car rest)) #t))
+         (call-cb (lambda (v) (unless (jolt-nil? cb) (jolt-invoke cb v))))
+         (r (ac-poll! ch)))
+    (cond
+      ((eq? r ac-poll-empty) (fork-thread (lambda () (call-cb (jolt-async-take ch)))))
+      (on-caller? (call-cb r))
+      (else (fork-thread (lambda () (call-cb r)))))
+    jolt-nil))
 
 ;; (go-spawn thunk) — run thunk on a thread; return a buffered(1) channel that
 ;; conveys its value once then closes (a nil result just closes). Dynamic bindings
@@ -246,14 +297,19 @@
 (cca-def! "buffer" jolt-async-buffer)
 (cca-def! "dropping-buffer" jolt-async-dropping-buffer)
 (cca-def! "sliding-buffer" jolt-async-sliding-buffer)
+(cca-def! "__promise-buffer" (lambda () (make-async-buffer 1 'promise)))
+(cca-def! "unblocking-buffer?" jolt-async-unblocking-buffer?)
 (cca-def! "close!" jolt-async-close!)
 (cca-def! "<!" jolt-async-take)   (cca-def! "<!!" jolt-async-take)
 (cca-def! ">!" jolt-async-give)   (cca-def! ">!!" jolt-async-give)
-(cca-def! "alts!" jolt-async-alts) (cca-def! "alts!!" jolt-async-alts)
 (cca-def! "timeout" jolt-async-timeout)
 (cca-def! "put!" jolt-async-put!)
 (cca-def! "take!" jolt-async-take!)
+(cca-def! "offer!" jolt-async-offer!)
 (cca-def! "go-spawn" async-go-spawn)
+;; non-blocking primitives the Clojure overlay's do-alts polls over.
+(cca-def! "__poll!" jolt-async-poll!)
+(cca-def! "__offer!" jolt-async-offer!)
 (cca-def! "go" cca-go-macro)           (mark-macro! "clojure.core.async" "go")
 (cca-def! "go-loop" cca-go-loop-macro) (mark-macro! "clojure.core.async" "go-loop")
 (cca-def! "thread" cca-thread-macro)   (mark-macro! "clojure.core.async" "thread")
