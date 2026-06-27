@@ -4,11 +4,12 @@
 ;; binds the public clojure.core names to them. Loaded after def-var! (rt.ss) +
 ;; the collections + seq tiers. hash-map/array-map/hash-set/set/rand semantics.
 
-;; hash-map / hash-set: variadic kvs / elems straight onto the existing ctors.
-;; array-map: Clojure preserves insertion order, but jolt's `=` is structural and
-;; the parity corpus compares by value, so a pmap is observationally equal for
-;; the tested cases; keys-ordering is a separate (untested-here) concern.
-(define (jolt-array-map . kvs) (apply jolt-hash-map kvs))
+;; array-map: insertion-ordered, any size (Clojure's PersistentArrayMap, via
+;; createAsIfByAssoc). hash-map: hash order (PersistentHashMap). The map LITERAL
+;; ctor (jolt-hash-map, emitted for {...}) is array-ordered up to 8 entries and
+;; hash beyond, matching RT.map.
+(define (jolt-array-map . kvs) (jolt-array-map-build kvs))
+(define (jolt-hash-map-fn . kvs) (jolt-hash-map-build kvs))
 
 ;; set: realize any seqable to a list, then dedup through the set ctor. nil -> #{}.
 (define (jolt-set coll)
@@ -20,7 +21,7 @@
   (let ((r (random 1.0)))
     (if (null? n) r (* r (exact->inexact (car n))))))
 
-(def-var! "clojure.core" "hash-map" jolt-hash-map)
+(def-var! "clojure.core" "hash-map" jolt-hash-map-fn)
 (def-var! "clojure.core" "hash-set" jolt-hash-set)
 (def-var! "clojure.core" "array-map" jolt-array-map)
 (def-var! "clojure.core" "set" jolt-set)

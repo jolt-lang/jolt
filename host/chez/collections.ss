@@ -287,26 +287,92 @@
 ;; ============================================================================
 ;; persistent map / set over the HAMT
 ;; ============================================================================
-(define-record-type pmap (fields root cnt) (nongenerative chez-pmap-v1))
-(define empty-pmap (make-pmap empty-hnode 0))
+;; A small map keeps its keys in INSERTION order (Clojure's PersistentArrayMap),
+;; converting to hash order past a threshold (PersistentHashMap). The HAMT root
+;; always backs the values; `order` is the auxiliary insertion-order key list when
+;; the map is in array mode, or #f once it has grown into hash mode. Equality and
+;; hashing fold over the entries order-independently, so this only affects
+;; iteration order (seq/keys/vals/print), matching the JVM.
+(define-record-type pmap (fields root cnt order) (nongenerative chez-pmap-v2))
+(define empty-pmap (make-pmap empty-hnode 0 '()))          ; {} = empty array map
+(define empty-pmap-hash (make-pmap empty-hnode 0 #f))      ; hash-order backing (sets)
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
+;; PersistentArrayMap threshold: assoc of a new key promotes to hash mode once the
+;; map already holds 8 entries (array.length >= 16 in the reference).
+(define array-map-limit 8)
+(define (append-key ord k) (append ord (list k)))
+(define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (car o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
+
+;; growth rule (PersistentArrayMap.assoc): a new key appends to the order while in
+;; array mode under the limit; otherwise the result is hash-ordered. Replacing an
+;; existing key (or assoc onto an already-hash map) keeps the current order.
 (define (pmap-assoc m k v)
+  (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added))
+         (cnt (pmap-cnt m)) (ord (pmap-order m)))
+    (if (unbox added)
+        (if (and ord (fx<? cnt array-map-limit))
+            (make-pmap r (fx+ cnt 1) (append-key ord k))
+            (make-pmap r (fx+ cnt 1) #f))
+        (make-pmap r cnt ord))))
+;; force-ordered / force-hash inserts for rebuilding a map whose final mode is
+;; already decided (array-map ctor, transient persistent!).
+(define (pmap-put-ordered m k v)
   (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added)))
-    (make-pmap r (if (unbox added) (fx+ (pmap-cnt m) 1) (pmap-cnt m)))))
+    (if (unbox added)
+        (make-pmap r (fx+ (pmap-cnt m) 1) (append-key (or (pmap-order m) '()) k))
+        (make-pmap r (pmap-cnt m) (pmap-order m)))))
+(define (pmap-put-hash m k v)
+  (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added)))
+    (make-pmap r (if (unbox added) (fx+ (pmap-cnt m) 1) (pmap-cnt m)) #f)))
+(define (pmap->hash m) (if (pmap-order m) (make-pmap (pmap-root m) (pmap-cnt m) #f) m))
 (define (pmap-dissoc m k)
-  (let* ((removed (box #f)) (r (node-dissoc (pmap-root m) 0 (key-hash k) k removed)))
-    (make-pmap r (if (unbox removed) (fx- (pmap-cnt m) 1) (pmap-cnt m)))))
+  (let* ((removed (box #f)) (r (node-dissoc (pmap-root m) 0 (key-hash k) k removed))
+         (ord (pmap-order m)))
+    (if (unbox removed)
+        (make-pmap r (fx- (pmap-cnt m) 1) (if ord (remove-key ord k) #f))
+        m)))
 (define (pmap-get m k default) (node-get (pmap-root m) 0 (key-hash k) k default))
 (define (pmap-contains? m k) (not (eq? pmap-absent (node-get (pmap-root m) 0 (key-hash k) k pmap-absent))))
-(define (pmap-fold m proc acc) (node-fold (pmap-root m) proc acc))
+;; The universal fold idiom across the runtime is `(pmap-fold m (lambda (k v a)
+;; (cons ... a)) '())`, which accumulates in REVERSE visitation order. So that this
+;; reconstructs the map's INSERTION order, pmap-fold visits an array-mode map's keys
+;; in reverse insertion order; a hash-mode map visits HAMT order (its iteration
+;; order is unspecified, so reverse-of-HAMT is equivalent and matches prior
+;; behaviour). Use pmap-fold-fwd when building a value directly in iteration order.
+(define (pmap-fold m proc acc)
+  (let ((ord (pmap-order m)))
+    (if ord
+        (fold-right (lambda (k a) (proc k (pmap-get m k jolt-nil) a)) acc ord)  ; visits last->first
+        (node-fold (pmap-root m) proc acc))))
+;; visit entries in iteration (insertion) order — for code that builds a new map /
+;; ordered value directly rather than via cons-accumulation.
+(define (pmap-fold-fwd m proc acc)
+  (let ((ord (pmap-order m)))
+    (if ord
+        (let loop ((ks ord) (a acc))
+          (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
+        (node-fold (pmap-root m) proc acc))))
+;; map LITERAL ({...}): array map up to 8 entries, hash map beyond (RT.map).
 (define (jolt-hash-map . kvs)
   (let loop ((m empty-pmap) (kvs kvs))
-    (cond ((null? kvs) m)
+    (cond ((null? kvs) (if (fx>? (pmap-cnt m) array-map-limit) (pmap->hash m) m))
           ((null? (cdr kvs)) (error 'hash-map "odd number of map literal entries"))
-          (else (loop (pmap-assoc m (car kvs) (cadr kvs)) (cddr kvs))))))
+          (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
+;; array-map ctor: insertion-ordered regardless of size (createAsIfByAssoc).
+(define (jolt-array-map-build kvs)
+  (let loop ((m empty-pmap) (kvs kvs))
+    (cond ((null? kvs) m)
+          ((null? (cdr kvs)) (error 'array-map "odd number of map entries"))
+          (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
+;; hash-map ctor: hash order (PersistentHashMap).
+(define (jolt-hash-map-build kvs)
+  (let loop ((m empty-pmap-hash) (kvs kvs))
+    (cond ((null? kvs) m)
+          ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
+          (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
 
 (define-record-type pset (fields m) (nongenerative chez-pset-v1))
-(define empty-pset (make-pset empty-pmap))
+(define empty-pset (make-pset empty-pmap-hash))            ; sets are hash-ordered
 (define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
 (define (pset-disj s e) (make-pset (pmap-dissoc (pset-m s) e)))
 (define (pset-contains? s e) (pmap-contains? (pset-m s) e))
@@ -327,7 +393,7 @@
         ((empty-list-t? coll) (cseq-list x jolt-nil))
         ((pmap? coll)
          (cond ((jolt-nil? x) coll)                                   ; (conj m nil) = m
-               ((pmap? x) (pmap-fold x (lambda (k v m) (pmap-assoc m k v)) coll))   ; merge
+               ((pmap? x) (pmap-fold-fwd x (lambda (k v m) (pmap-assoc m k v)) coll))   ; merge in x's order
                ((and (pvec? x) (fx=? 2 (pvec-count x)))
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
                (else (error 'conj "conj on a map expects a [k v] pair or a map"))))

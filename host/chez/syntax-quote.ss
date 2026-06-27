@@ -41,7 +41,9 @@
 ;; expansion still re-analyzes as a set literal.
 (define (jolt-sqset . parts) (apply jolt-hash-set (sq-flatten parts)))
 ;; map FORM: a plain pmap (the analyzer's form-map? = pmap with no :jolt/type).
-(define (jolt-sqmap . parts) (apply jolt-hash-map parts))
+;; Clojure's syntaxQuote builds the map via `apply hash-map`, so a `{...} template
+;; is HASH-ordered (unlike a {...} literal, which keeps insertion order).
+(define (jolt-sqmap . parts) (jolt-hash-map-build parts))
 
 (def-var! "clojure.core" "__sq1"   jolt-sq1)
 (def-var! "clojure.core" "__sqcat" jolt-sqcat)

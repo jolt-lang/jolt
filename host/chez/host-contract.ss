@@ -198,7 +198,7 @@
                  (or (jolt-nil? dm) (jolt-nil? (jolt-get dm hc-kw-line))))
             (jolt-with-meta dst
               (if (pmap? dm)
-                  (pmap-fold sp (lambda (k v acc) (jolt-assoc1 acc k v)) dm)
+                  (pmap-fold-fwd sp (lambda (k v acc) (jolt-assoc1 acc k v)) dm)
                   sp))
             dst))
       dst))

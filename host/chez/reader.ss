@@ -299,7 +299,7 @@
 
 (define (rdr-merge-meta old new)
   (if (pmap? old)
-      (pmap-fold new (lambda (k v acc) (jolt-assoc1 acc k v)) old)
+      (pmap-fold-fwd new (lambda (k v acc) (jolt-assoc1 acc k v)) old)
       new))
 
 (define (rdr-attach-meta target meta)

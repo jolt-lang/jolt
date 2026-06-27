@@ -16,11 +16,17 @@
 ;; this record, not a pvec), which group-by relies on. Loaded after collections.ss
 ;; (persistent ops + key-hash) and converters.ss.
 
+;; For a transient MAP, `n` holds the array-mode capacity (entries it can hold
+;; before promoting to hash order) and `ord` the reverse insertion-order key list;
+;; for a vector `n` is the element count. A transient array map promotes to hash
+;; at max(8, source-count) entries (TransientArrayMap, array sized max(16, len)),
+;; with no keyword exception — unlike the persistent assoc growth rule.
 (define-record-type jolt-transient
-  (fields kind (mutable buf) (mutable n) (mutable active))
-  (nongenerative jolt-transient-v2))
+  (fields kind (mutable buf) (mutable n) (mutable active) (mutable ord))
+  (nongenerative jolt-transient-v3))
 
 (define tvec-min-cap 8)
+(define tmap-min-cap 8)
 
 (define (jolt-transient-new coll)
   (cond
@@ -28,16 +34,27 @@
      (let* ((v (pvec-v coll)) (cnt (vector-length v)) (cap (fxmax tvec-min-cap cnt))
             (buf (make-vector cap jolt-nil)))
        (let loop ((i 0)) (when (fx<? i cnt) (vector-set! buf i (vector-ref v i)) (loop (fx+ i 1))))
-       (make-jolt-transient 'vec buf cnt #t)))
+       (make-jolt-transient 'vec buf cnt #t #f)))
     ((pmap? coll)
-     (let ((ht (make-hashtable key-hash jolt=2)))
-       (pmap-fold coll (lambda (k v acc) (hashtable-set! ht k v) acc) 0)
-       (make-jolt-transient 'map ht 0 #t)))
+     (let ((ht (make-hashtable key-hash jolt=2)) (ord '()) (cnt 0))
+       ;; visit in iteration order so `ord` ends up reverse-insertion (persistent! reverses it back)
+       (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (set! ord (cons k ord)) (set! cnt (fx+ cnt 1)) acc) 0)
+       (make-jolt-transient 'map ht (fxmax tmap-min-cap cnt) #t ord)))
     ((pset? coll)
      (let ((ht (make-hashtable key-hash jolt=2)))
        (pset-fold coll (lambda (e acc) (hashtable-set! ht e #t) acc) 0)
-       (make-jolt-transient 'set ht 0 #t)))
-    (else (make-jolt-transient 'cow coll 0 #t))))
+       (make-jolt-transient 'set ht 0 #t #f)))
+    (else (make-jolt-transient 'cow coll 0 #t #f))))
+
+;; map put/delete that maintain the reverse insertion-order list in `ord`.
+(define (tmap-put! t k v)
+  (let ((ht (jolt-transient-buf t)))
+    (unless (hashtable-contains? ht k) (jolt-transient-ord-set! t (cons k (jolt-transient-ord t))))
+    (hashtable-set! ht k v)))
+(define (tmap-del! t k)
+  (let ((ht (jolt-transient-buf t)))
+    (when (hashtable-contains? ht k) (jolt-transient-ord-set! t (remove-key (jolt-transient-ord t) k)))
+    (hashtable-delete! ht k)))
 
 (define (jolt-trans-check t who)
   (unless (jolt-transient? t) (error #f (string-append who ": not a transient") t))
@@ -60,9 +77,17 @@
                (if (fx<? i cnt) (begin (vector-set! out i (vector-ref buf i)) (loop (fx+ i 1)))
                    (make-pvec out)))))))
     ((map)
-     (let ((ht (jolt-transient-buf t)) (m empty-pmap))
-       (vector-for-each (lambda (k) (set! m (pmap-assoc m k (hashtable-ref ht k jolt-nil)))) (hashtable-keys ht))
-       m))
+     (let* ((ht (jolt-transient-buf t)) (cnt (hashtable-size ht)) (cap (jolt-transient-n t)))
+       (if (fx>? cnt cap)
+           ;; promoted past the array capacity: hash order
+           (let ((m empty-pmap-hash))
+             (vector-for-each (lambda (k) (set! m (pmap-put-hash m k (hashtable-ref ht k jolt-nil)))) (hashtable-keys ht))
+             m)
+           ;; array map: rebuild in insertion order
+           (let ((m empty-pmap))
+             (for-each (lambda (k) (set! m (pmap-put-ordered m k (hashtable-ref ht k jolt-nil))))
+                       (reverse (jolt-transient-ord t)))
+             m))))
     ((set)
      (let ((ht (jolt-transient-buf t)) (s empty-pset))
        (vector-for-each (lambda (e) (set! s (pset-conj s e))) (hashtable-keys ht))
@@ -91,8 +116,8 @@
 (define (tmap-conj-entry! t x)
   (cond
     ((jolt-nil? x) #t)
-    ((pvec? x) (hashtable-set! (jolt-transient-buf t) (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
-    ((pmap? x) (pmap-fold x (lambda (k v acc) (hashtable-set! (jolt-transient-buf t) k v) acc) 0))
+    ((pvec? x) (tmap-put! t (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
+    ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
     (else (error #f "conj!: a transient map takes a map entry or a map" x))))
 
 ;; (conj!) -> fresh transient vector; (conj! coll) -> the 1-arity transducer-
@@ -119,14 +144,14 @@
   (let ((kvs (assoc-pad kvs0)))
     (when (odd? (length kvs)) (error #f "assoc!: no value supplied for key"))
     (case (jolt-transient-kind t)
-      ((map) (let lp ((xs kvs)) (unless (null? xs) (hashtable-set! (jolt-transient-buf t) (car xs) (cadr xs)) (lp (cddr xs)))))
+      ((map) (let lp ((xs kvs)) (unless (null? xs) (tmap-put! t (car xs) (cadr xs)) (lp (cddr xs)))))
       ((vec) (let lp ((xs kvs)) (unless (null? xs) (tvec-assoc1! t (car xs) (cadr xs)) (lp (cddr xs)))))
       (else (jolt-transient-buf-set! t (apply jolt-assoc (jolt-transient-buf t) kvs)))))
   t)
 (define (jolt-dissoc! t . ks)
   (jolt-trans-check t "dissoc!")
   (case (jolt-transient-kind t)
-    ((map) (for-each (lambda (k) (hashtable-delete! (jolt-transient-buf t) k)) ks))
+    ((map) (for-each (lambda (k) (tmap-del! t k)) ks))
     (else (jolt-transient-buf-set! t (apply jolt-dissoc (jolt-transient-buf t) ks))))
   t)
 (define (jolt-disj! t . xs)
