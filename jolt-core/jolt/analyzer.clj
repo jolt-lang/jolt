@@ -611,6 +611,15 @@
       (quote-node form)
       (let [head (first items)
             hname (when (and (form-sym? head) (nil? (form-sym-ns head))) (form-sym-name head))
+            ;; a special-form head may arrive clojure.core-qualified: syntax-quote
+            ;; namespace-qualifies a macro like `letfn` to `clojure.core/letfn`
+            ;; (matching Clojure, where it is a macro), so a macro-emitted
+            ;; (clojure.core/letfn …) must still dispatch to the special form.
+            sf-name (or hname
+                        (when (and (form-sym? head)
+                                   (= "clojure.core" (form-sym-ns head))
+                                   (contains? handled (form-sym-name head)))
+                          (form-sym-name head)))
             shadowed (and hname (local? env hname))]
         (cond
           ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
@@ -619,7 +628,7 @@
           ;; the reference macroexpand1's isSpecial check — so a ns that redefs a
           ;; macro `def`/`and`/`or` (clojure.spec.alpha) keeps the special form `def`.
           (and (form-sym? head) (not shadowed)
-               (not (contains? handled hname)) (form-macro? ctx head))
+               (not (contains? handled sf-name)) (form-macro? ctx head))
             ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
             ;; source offset onto the resulting def, since the macro builds a fresh
             ;; (def …) with no metadata. So the back end can register fn defs.
@@ -639,10 +648,10 @@
           ;; special-form heads are NOT shadowable (unlike macros): a local named
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.
-          (and hname (contains? handled hname))
+          (and sf-name (contains? handled sf-name))
             ;; stamp the form's source offset onto a top-level def so the back end
             ;; can register it (jv$ns$name -> source) for native stack traces.
-            (let [node (analyze-special ctx hname items env)
+            (let [node (analyze-special ctx sf-name items env)
                   p (form-position form)]
               (if (and p (= :def (:op node))) (assoc node :pos p) node))
           (and hname (not shadowed) (method-head? hname))

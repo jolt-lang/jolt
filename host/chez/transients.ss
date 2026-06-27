@@ -171,8 +171,11 @@
 
 ;; persistent disj over sets (pset-disj already exists in collections.ss).
 (define (jolt-disj s . xs)
-  (meta-carry s
-    (let loop ((s s) (xs xs)) (if (null? xs) s (loop (pset-disj s (car xs)) (cdr xs))))))
+  ;; (disj nil ...) is nil on the JVM (disj is otherwise set-only).
+  (if (jolt-nil? s)
+      jolt-nil
+      (meta-carry s
+        (let loop ((s s) (xs xs)) (if (null? xs) s (loop (pset-disj s (car xs)) (cdr xs)))))))
 
 ;; --- see-through accessors ---------------------------------------------------
 (define (tvec-in-bounds? t i) (and (fixnum? i) (fx>=? i 0) (fx<? i (jolt-transient-n t))))

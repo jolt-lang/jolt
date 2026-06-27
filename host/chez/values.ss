@@ -47,9 +47,21 @@
 (define (keyword? x) (keyword-t? x))
 
 ;; --- symbols: ns + name + meta; NOT interned (meta varies), = by ns/name ------
+;; The ns/name STRINGS are pooled (like JVM Symbol.intern, which .intern()s them):
+;; two separately-read `?a` symbols share one name-string object, so code that
+;; compares symbol names by identity (core.logic's non-unique lvar equality, via
+;; (str sym)) behaves like the JVM.
+(define symbol-string-pool (make-hashtable string-hash string=?))
+(define (intern-symbol-string s)
+  (if (string? s)
+      (or (hashtable-ref symbol-string-pool s #f)
+          (begin (hashtable-set! symbol-string-pool s s) s))
+      s))
 (define-record-type symbol-t (fields ns name meta) (nongenerative symbol-v1))
-(define (jolt-symbol ns name) (make-symbol-t ns name jolt-nil))
-(define (jolt-symbol/meta ns name meta) (make-symbol-t ns name meta))
+(define (jolt-symbol ns name)
+  (make-symbol-t (intern-symbol-string ns) (intern-symbol-string name) jolt-nil))
+(define (jolt-symbol/meta ns name meta)
+  (make-symbol-t (intern-symbol-string ns) (intern-symbol-string name) meta))
 (define (jolt-symbol? x) (symbol-t? x))
 
 ;; chars/strings: Chez natives (strings treated immutable).
