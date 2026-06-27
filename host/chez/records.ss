@@ -480,7 +480,10 @@
         ((pmap? obj) '("PersistentArrayMap" "APersistentMap" "IPersistentMap" "Associative"
                        "Map" "java.util.Map" "Iterable" "java.lang.Iterable" "Object"))
         ((pset? obj) '("PersistentHashSet" "APersistentSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Iterable" "java.lang.Iterable" "Object"))
-        ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ;; jolt models every seq as a list (no distinct LazySeq), so a seq also
+        ;; reports PersistentList / IPersistentList / IPersistentStack — extend-protocol
+        ;; clojure.lang.IPersistentList (algo.monads' writer monad) dispatches on one.
+        ((or (cseq? obj) (empty-list-t? obj)) '("PersistentList" "IPersistentList" "IPersistentStack" "ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ;; a var is clojure.lang.Var (also IDeref / IFn) — reitit's Expand protocol
         ;; extends to Var so a #'handler route dispatches.
         ((var-cell? obj) '("Var" "clojure.lang.Var" "IDeref" "IFn" "Object"))
@@ -626,6 +629,7 @@
                 "PersistentArrayMap" "APersistentMap" "IPersistentMap"
                 "PersistentHashSet" "APersistentSet" "IPersistentSet"
                 "ASeq" "ISeq" "IPersistentCollection" "Associative" "Sequential"
+                "PersistentList" "IPersistentList" "IPersistentStack"
                 "Map" "java.util.Map" "List" "java.util.List" "Set" "java.util.Set"
                 "Collection" "java.util.Collection" "Iterable" "java.lang.Iterable"
                 "UUID" "BigDecimal" "Date" "Timestamp" "Instant" "java.sql.Date"
