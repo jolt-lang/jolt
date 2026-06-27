@@ -3293,4 +3293,7 @@
   {:suite "seqs / lazy-seq interop" :label "empty? of an empty rest" :expected "true" :actual "(empty? (rest [1]))"}
   {:suite "seqs / lazy-seq interop" :label "cons onto a rest-seq" :expected "true" :actual "(= [0 2 3] (vec (cons 0 (rest [1 2 3]))))"}
   {:suite "seqs / lazy-seq interop" :label "into a set from a rest-seq" :expected "true" :actual "(= #{2 3} (into #{} (rest [1 2 3])))"}
+  {:suite "ifn / symbol as fn" :label "a symbol invokes as a map lookup" :expected "true" :actual "(= 5 ('a {(quote a) 5}))"}
+  {:suite "ifn / symbol as fn" :label "a symbol fn takes a not-found default" :expected "true" :actual "(= :d ('a {} :d))"}
+  {:suite "ifn / symbol as fn" :label "a symbol works as a mapping fn" :expected "true" :actual "(= [1 2] (vec (map (quote k) [{(quote k) 1} {(quote k) 2}])))"}
 ]
