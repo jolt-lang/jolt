@@ -56,6 +56,40 @@
 
 ;; record-method-dispatch (records.ss) gets a jhost arm: dispatch (.method obj a*)
 ;; through the tag's method table.
+;; clojure.lang.Sorted on jolt's sorted-map / sorted-set: comparator / entryKey /
+;; seqFrom / seq. data.priority-map's subseq/rsubseq reach for these (its
+;; PersistentPriorityMap delegates .comparator to the backing sorted-map). The
+;; comparator is returned as a small Comparator object whose .compare runs the
+;; map's 3-way fn, since (.. sc comparator (compare a b)) is the calling form.
+(define sorted-cmp-kw (keyword #f "cmp"))
+(register-host-methods! "jolt-comparator"
+  (list (cons "compare" (lambda (self a b) (jolt-invoke (jhost-state self) a b)))))
+(define (sorted-comparator-of sc)
+  (let ((c (jolt-ref-get sc sorted-cmp-kw)))
+    (make-jhost "jolt-comparator" (if (jolt-nil? c) jolt-compare c))))
+(define (sorted-iface-method? m)
+  (or (string=? m "comparator") (string=? m "entryKey")
+      (string=? m "seqFrom") (string=? m "seq")))
+(define (sorted-iface-dispatch obj method rest)
+  (cond
+    ((string=? method "comparator") (sorted-comparator-of obj))
+    ((string=? method "entryKey") (jolt-first (car rest)))   ; map entry -> its key
+    ((string=? method "seq")                                 ; (.seq sc) or (.seq sc ascending?)
+     (if (or (null? rest) (jolt-truthy? (car rest))) (jolt-seq obj) (jolt-rseq obj)))
+    ;; (.seqFrom sc k ascending?) — the entries from k onward, in order. Done with a
+    ;; comparator filter over the seq (jolt has no tree cursor), like subseq.
+    ((string=? method "seqFrom")
+     (let* ((k (car rest)) (asc (jolt-truthy? (cadr rest)))
+            (cmp (jolt-ref-get obj sorted-cmp-kw))
+            (cmpf (if (jolt-nil? cmp) jolt-compare cmp))
+            (es (seq->list (jolt-seq obj)))
+            (keep (filter (lambda (e)
+                            (let ((c (jnum->exact (jolt-invoke cmpf (jolt-first e) k))))
+                              (if asc (>= c 0) (<= c 0))))
+                          es)))
+       (list->cseq (if asc keep (reverse keep)))))
+    (else (error #f (string-append "No method " method " on sorted collection")))))
+
 (define %hs-record-method-dispatch record-method-dispatch)
 (set! record-method-dispatch
   (lambda (obj method-name rest-args)

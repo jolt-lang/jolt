@@ -63,6 +63,8 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
 * [data.csv](https://github.com/clojure/data.csv) — reading and writing CSV.
 * [data.codec](https://github.com/clojure/data.codec) — base64 encode/decode over
   byte arrays.
+* [data.priority-map](https://github.com/clojure/data.priority-map) — priority
+  maps (incl. keyfn / custom comparator), with `subseq`/`rsubseq`.
 * [test.check](https://github.com/clojure/test.check) — property-based testing
   (generators, `quick-check`, shrinking).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
