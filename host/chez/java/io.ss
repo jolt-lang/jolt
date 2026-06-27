@@ -536,7 +536,26 @@
 (register-class-statics! "java.util.UUID"
   (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
         (cons "fromString" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))))
-(register-class-ctor! "UUID" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))
+;; (UUID. msb lsb): build from the most/least-significant 64-bit halves (the JVM's
+;; 2-long ctor), the form test.check's uuid generator uses. (UUID. s) parses a
+;; string. The 128 bits format as the canonical 8-4-4-4-12 lowercase hex string.
+(define (uuid-long->hex16 n)
+  (let* ((u (bitwise-and (jnum->exact n) #xFFFFFFFFFFFFFFFF))
+         (s (string-downcase (number->string u 16))))   ; JVM UUIDs are lowercase
+    (string-append (make-string (- 16 (string-length s)) #\0) s)))
+(define (uuid-from-halves msb lsb)
+  (let ((h (uuid-long->hex16 msb)) (l (uuid-long->hex16 lsb)))
+    (make-juuid (string-append (substring h 0 8) "-" (substring h 8 12) "-" (substring h 12 16)
+                               "-" (substring l 0 4) "-" (substring l 4 16)))))
+(define (uuid-ctor . args)
+  (if (= (length args) 2)
+      (uuid-from-halves (car args) (cadr args))
+      (jolt-parse-uuid (jolt-str-render-one (car args)))))
+(register-class-ctor! "UUID" uuid-ctor)
+(register-class-ctor! "java.util.UUID" uuid-ctor)
+;; (Long. n) / (Long. "n"): a Long is just jolt's integer; return it (parse a string).
+(register-class-ctor! "Long" (lambda (x) (if (string? x) (parse-int-or-throw x 10 "Long") (->num (jnum->exact x)))))
+(register-class-ctor! "java.lang.Long" (lambda (x) (if (string? x) (parse-int-or-throw x 10 "Long") (->num (jnum->exact x)))))
 
 ;; --- java.net.URI -----------------------------------------------------------
 ;; A minimal RFC-3986 split into scheme/authority/host/port/path/query/fragment,

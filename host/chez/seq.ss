@@ -165,12 +165,16 @@
 (define (jolt-wrap64 x)
   (let ((m (bitwise-and (if (and (number? x) (exact? x) (integer? x)) x (exact (floor x))) unc-mask64)))
     (if (>= m unc-2^63) (- m unc-2^64) m)))
-(define (jolt-uncadd2 a b) (jolt-wrap64 (+ a b)))
-(define (jolt-uncsub2 a b) (jolt-wrap64 (- a b)))
-(define (jolt-uncmul2 a b) (jolt-wrap64 (* a b)))
-(define (jolt-uncinc x)    (jolt-wrap64 (+ x 1)))
-(define (jolt-uncdec x)    (jolt-wrap64 (- x 1)))
-(define (jolt-uncneg x)    (jolt-wrap64 (- x)))
+;; unchecked-* only WRAP integer (long) math; on a flonum operand they are an
+;; ordinary float op, since *unchecked-math* never wraps doubles — Clojure:
+;; (unchecked-multiply 1.5 2.0) => 3.0, not a truncated long. (test.check's
+;; rand-double is (* double-unit shifted) under *unchecked-math*.)
+(define (jolt-uncadd2 a b) (if (or (flonum? a) (flonum? b)) (+ a b) (jolt-wrap64 (+ a b))))
+(define (jolt-uncsub2 a b) (if (or (flonum? a) (flonum? b)) (- a b) (jolt-wrap64 (- a b))))
+(define (jolt-uncmul2 a b) (if (or (flonum? a) (flonum? b)) (* a b) (jolt-wrap64 (* a b))))
+(define (jolt-uncinc x)    (if (flonum? x) (+ x 1.0) (jolt-wrap64 (+ x 1))))
+(define (jolt-uncdec x)    (if (flonum? x) (- x 1.0) (jolt-wrap64 (- x 1))))
+(define (jolt-uncneg x)    (if (flonum? x) (- x) (jolt-wrap64 (- x))))
 (define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
 (define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
 (define (jolt-unchecked-sub . xs)
@@ -328,12 +332,17 @@
 ;; (take 0 (rest s)) never seqs coll. Realizing one more, as forcing seq-more at
 ;; the boundary would, over-runs the source by one (medley's sequence-padded).
 (define (jolt-take n coll)
-  (let ((n (->idx n)))
-    (let loop ((n n) (s (jolt-seq coll)))
-      (cond
-        ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
-        ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
-        (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s))))))))))
+  ;; (take Double/POSITIVE_INFINITY coll) takes the whole coll on the JVM (the
+  ;; count never reaches 0); test.check's rose-tree unchunk relies on it. Coercing
+  ;; +inf.0 to a fixnum index would throw, so take all up front.
+  (if (and (flonum? n) (infinite? n))
+      (if (> n 0.0) (jolt-seq coll) jolt-empty-list)
+      (let ((n (->idx n)))
+        (let loop ((n n) (s (jolt-seq coll)))
+          (cond
+            ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
+            ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
+            (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s)))))))))))
 (define (jolt-drop n coll)
   (let loop ((n (->idx n)) (s (jolt-seq coll)))
     (if (or (fx<=? n 0) (jolt-nil? s)) (if (jolt-nil? s) jolt-empty-list s)

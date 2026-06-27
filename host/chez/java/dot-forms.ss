@@ -96,6 +96,15 @@
         ;; (.getClass x) universal — the class token for any value, before the
         ;; collection/map field-lookup arms below would read it as a missing key.
         ((string=? method-name "getClass") (jolt-class obj))
+        ;; a transient (ITransientCollection/Set/Map): .contains / .valAt / .count —
+        ;; test.check's distinct-collection gen uses (.contains transient-set k).
+        ((jolt-transient? obj)
+         (cond
+           ((string=? mname "contains") (if (jolt-truthy? (t-contains? obj (car rest))) #t #f))
+           ((or (string=? mname "valAt") (string=? mname "get"))
+            (t-get obj (car rest) (if (null? (cdr rest)) jolt-nil (cadr rest))))
+           ((string=? mname "count") (t-count obj))
+           (else (%dot-rmd obj method-name rest-args))))
         ;; a deftype/record's OWN declared method (matched by name AND arity) wins
         ;; over the generic collection interop below — e.g. data.priority-map
         ;; declares both seq[this] (Seqable) and seq[this ascending] (Sorted), and
