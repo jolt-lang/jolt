@@ -377,7 +377,9 @@
         ;; The clause is DATA, not a syntax-quote: a body that is itself a syntax-
         ;; quote would have its ~unquotes consumed a level early if re-spliced.
         mk-clause (fn [spec]
-                    (let [argv (nth spec 1)
+                    ;; fresh-name each _ param so two _ params don't collide on the
+                    ;; field binds / live-read instance (see defrecord's mk-clause).
+                    (let [argv (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
                           inst (first argv)
                           ;; let-bind only immutable fields; mutable ones are read live
                           ;; via rewrite-body so a set! within the method is observed.
@@ -597,7 +599,11 @@
         ;; one clause from a spec; `this` is hinted with the record type so the
         ;; inference reads its fields bare-index. Clause as DATA (see deftype).
         mk-clause (fn [spec]
-                    (let [argv (nth spec 1)
+                    ;; rename each _ parameter to a fresh symbol so two _ params
+                    ;; (the common (m [_ _] …) on a 1-arg protocol method) don't
+                    ;; collide — the field binds read (get this :field) off the
+                    ;; FIRST param, which an ignored second _ would otherwise shadow.
+                    (let [argv (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
                           inst (first argv)
                           hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
                           binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]

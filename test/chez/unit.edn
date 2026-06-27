@@ -570,4 +570,7 @@
   {:suite "macro-args" :expr "(do (defmacro sm [x] [(set? x) (map? x)]) (sm #{1 2}))" :expected "[true false]"}
   {:suite "macro-args" :expr "(do (defmacro ws [x] (conj x :z)) (= #{1 :z} (ws #{1})))" :expected "true"}
   {:suite "macro-args" :expr "(do (defmacro vm [x] (vector? x)) (vm [1 2]))" :expected "true"}
+  {:suite "deftype-method" :expr "(do (defprotocol P (m [_ o])) (defrecord R [n] P (m [_ _] n)) (m (->R 5) :x))" :expected "5"}
+  {:suite "deftype-method" :expr "(do (defprotocol P2 (m2 [_ o])) (deftype T [n] P2 (m2 [_ _] n)) (m2 (->T 7) :x))" :expected "7"}
+  {:suite "protocol-host" :expr "(do (defprotocol Q (e [_])) (extend-protocol Q clojure.lang.Var (e [_] :var)) [(satisfies? Q (var map)) (e (var map))])" :expected "[true :var]"}
 ]
