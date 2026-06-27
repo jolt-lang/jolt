@@ -215,12 +215,23 @@
           (if (fx>=? i (pvec-count items)) s
               (loop (fx+ i 1) (pset-conj s (pvec-nth-d items i jolt-nil))))))
       x))
-(define (hc-expand-1 ctx form)
+;; &form and &env are bound (as dynamic vars) around the expander call, so a
+;; macro body can read the call form / lexical env without changing the calling
+;; convention. The analyzer passes amp-env (the in-scope locals); macroexpand-1
+;; has none, so it defaults to {}.
+(define hc-amp-form-cell (declare-var! "clojure.core" "&form"))
+(define hc-amp-env-cell (declare-var! "clojure.core" "&env"))
+(define (hc-expand-1 ctx form . maybe-env)
   (let* ((items (seq->list form))
          (head (car items))
          (args (map hc-macro-arg (cdr items)))
-         (expander (var-cell-root (hc-resolve-cell ctx head))))
-    (hc-propagate-pos form (apply jolt-invoke expander args))))
+         (expander (var-cell-root (hc-resolve-cell ctx head)))
+         (amp-env (if (pair? maybe-env) (car maybe-env) (jolt-hash-map))))
+    (dynamic-wind
+      (lambda () (jolt-push-thread-bindings
+                  (jolt-hash-map hc-amp-form-cell form hc-amp-env-cell amp-env)))
+      (lambda () (hc-propagate-pos form (apply jolt-invoke expander args)))
+      (lambda () (jolt-pop-thread-bindings)))))
 
 ;; Classify a global (non-local) symbol reference against the var registry:
 ;;   {:kind :var :ns NS :name NAME}   — a defined var (compile ns / clojure.core)
