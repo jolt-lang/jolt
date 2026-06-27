@@ -16,7 +16,7 @@
     ;; Reader FORMS are detected by :jolt/type tag, never by map? — strict map?
     ;; (correctly) excludes tagged structs, so the old (and (map? x) ...) guard
     ;; would skip them.
-    (= :jolt/set (get x :jolt/type)) (with-meta (set (map (fn [v] (edn->value opts v)) (get x :value))) (meta x))
+    (= :jolt/set (get x :jolt/type)) (with-meta (set (map (fn [v] (edn->value opts v)) (get x :value))) (edn->value opts (meta x)))
     ;; Tagged elements: a reader from the :readers opt wins, then the built-in
     ;; data readers (#uuid/#inst + registered); an unknown tag falls to the
     ;; :default opt fn (called with tag and value, as in Clojure) or throws.
@@ -34,12 +34,12 @@
           (get opts :default) ((get opts :default) tag-sym v)
           :else (__read-tagged tag v)))
     (map? x)
-      (with-meta (into {} (map (fn [e] [(edn->value opts (key e)) (edn->value opts (val e))]) x)) (meta x))
-    (vector? x) (with-meta (mapv (fn [v] (edn->value opts v)) x) (meta x))
+      (with-meta (into {} (map (fn [e] [(edn->value opts (key e)) (edn->value opts (val e))]) x)) (edn->value opts (meta x)))
+    (vector? x) (with-meta (mapv (fn [v] (edn->value opts v)) x) (edn->value opts (meta x)))
     ;; a constructed set: recurse into its elements too, so a tagged literal
     ;; inside #{…} gets the :readers/:default treatment (aero's #ref in a set).
-    (set? x) (with-meta (set (map (fn [v] (edn->value opts v)) x)) (meta x))
-    (seq? x) (with-meta (map (fn [v] (edn->value opts v)) x) (meta x))
+    (set? x) (with-meta (set (map (fn [v] (edn->value opts v)) x)) (edn->value opts (meta x)))
+    (seq? x) (with-meta (map (fn [v] (edn->value opts v)) x) (edn->value opts (meta x)))
     :else x))
 
 ;; Private helper, NOT named read-string: an unqualified (read-string …) call
@@ -48,7 +48,10 @@
 (defn- read-edn [opts s]
   (if (or (nil? s) (cstr/blank? s))
     (get opts :eof nil)
-    (edn->value opts (clojure.core/read-string s))))
+    ;; read the RAW form (tagged/set literals stay forms) so edn->value applies
+    ;; every #tag through :readers/:default — read-string would build the built-in
+    ;; #inst/#uuid eagerly, ignoring an override and failing on a non-string form.
+    (edn->value opts (__read-form-raw s))))
 
 (defn read-string
   "Reads one object from the string s. Returns the :eof option value (default

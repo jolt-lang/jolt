@@ -739,3 +739,8 @@
 (def-var! "clojure.core" "read-string" jolt-read-string)
 (def-var! "clojure.core" "__parse-next" jolt-parse-next)
 (def-var! "clojure.core" "__read-tagged" jolt-read-tagged)
+;; __read-form-raw: the read form WITHOUT building values — set/tagged literals
+;; stay FORMS. clojure.edn reads this so it applies a #tag through its :readers/
+;; :default (a #inst can be overridden to defer), rather than read-string building
+;; the built-in #inst eagerly (which fails on a non-string like #inst ^:ref […]).
+(def-var! "clojure.core" "__read-form-raw" jolt-read-form-raw)

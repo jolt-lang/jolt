@@ -3312,4 +3312,6 @@
   {:suite "metadata / immutability" :label "with-meta on a list carries the metadata" :expected "true" :actual "(= {:k 1} (meta (with-meta (list 1) {:k 1})))"}
   {:suite "metadata / immutability" :label "a meta-bearing list still equals the bare list" :expected "true" :actual "(let [ds (list 1)] (= ds (with-meta ds {:k 9})))"}
   {:suite "metadata / immutability" :label "with-meta on a lazy seq carries metadata" :expected "true" :actual "(= {:k 5} (meta (with-meta (lazy-seq (list 1)) {:k 5})))"}
+  {:suite "edn / deferred tags" :label "a :readers override wins over the built-in #inst (not eagerly built)" :expected "true" :actual "(= [:I \"x\"] (clojure.edn/read-string {:readers {(quote inst) (fn [v] [:I v])}} \"#inst \\\"x\\\"\"))"}
+  {:suite "edn / deferred tags" :label "a normal #inst still constructs without an override" :expected "true" :actual "(= #inst \"2020-01-01T00:00:00.000-00:00\" (clojure.edn/read-string \"#inst \\\"2020-01-01T00:00:00.000-00:00\\\"\"))"}
 ]
