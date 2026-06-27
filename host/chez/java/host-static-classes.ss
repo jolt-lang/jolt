@@ -50,7 +50,7 @@
     (cond ((null? args) (make-arraylist '()))
           ((number? (car args)) (make-arraylist '()))
           (else (make-arraylist (seq->list (jolt-seq (car args))))))))
-(register-host-methods! "arraylist"
+(define arraylist-methods
   (list
     (cons "add" (lambda (self . a)
                   ;; (.add x) -> append+true; (.add i x) -> insert at i, returns nil.
@@ -58,6 +58,14 @@
                       (begin (al-push! self (car a)) #t)
                       (begin (al-insert-at! self (jnum->exact (car a)) (cadr a)) jolt-nil))))
     (cons "add!" (lambda (self x) (al-push! self x) #t))
+    (cons "addAll" (lambda (self . a)
+                     ;; (.addAll coll) appends; (.addAll i coll) inserts at i.
+                     (let* ((at-i (= 2 (length a)))
+                            (i (if at-i (jnum->exact (car a)) (al-cnt self)))
+                            (coll (if at-i (cadr a) (car a))))
+                       (let loop ((xs (seq->list (jolt-seq coll))) (k i))
+                         (if (null? xs) (pair? (seq->list (jolt-seq coll)))
+                             (begin (al-insert-at! self k (car xs)) (loop (cdr xs) (fx+ k 1))))))))
     (cons "get" (lambda (self i) (vector-ref (al-vec self) (jnum->exact i))))
     (cons "set" (lambda (self i x)
                   (let* ((idx (jnum->exact i)) (old (vector-ref (al-vec self) idx)))
@@ -72,6 +80,43 @@
     (cons "toArray" (lambda (self . _) (apply jolt-vector (al->list self))))
     (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al->list self)))))
     (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al->list self)))))))
+(register-host-methods! "arraylist" arraylist-methods)
+
+;; java.util.LinkedList: the ArrayList backing plus the Deque surface
+;; (addFirst/addLast/removeFirst/removeLast/getFirst/getLast/peek/push/pop).
+;; tools.reader holds pending splice forms in one and (seq)s / .remove(0)s it.
+(define (al-first self) (vector-ref (al-vec self) 0))
+(define (al-last self) (vector-ref (al-vec self) (fx- (al-cnt self) 1)))
+(define linkedlist-methods
+  (append arraylist-methods
+    (list
+      (cons "addFirst" (lambda (self x) (al-insert-at! self 0 x) jolt-nil))
+      (cons "addLast" (lambda (self x) (al-push! self x) jolt-nil))
+      (cons "offer" (lambda (self x) (al-push! self x) #t))
+      (cons "removeFirst" (lambda (self) (let ((o (al-first self))) (al-remove-at! self 0) o)))
+      (cons "removeLast" (lambda (self) (let ((o (al-last self))) (al-remove-at! self (fx- (al-cnt self) 1)) o)))
+      (cons "getFirst" al-first) (cons "getLast" al-last)
+      (cons "peek" (lambda (self) (if (fx=? 0 (al-cnt self)) jolt-nil (al-first self))))
+      (cons "poll" (lambda (self) (if (fx=? 0 (al-cnt self)) jolt-nil (let ((o (al-first self))) (al-remove-at! self 0) o))))
+      (cons "push" (lambda (self x) (al-insert-at! self 0 x) jolt-nil))
+      (cons "pop" (lambda (self) (let ((o (al-first self))) (al-remove-at! self 0) o))))))
+(define (make-linkedlist xs)
+  (let ((al (make-arraylist xs))) (make-jhost "linkedlist" (jhost-state al))))
+(register-host-methods! "linkedlist" linkedlist-methods)
+(let ((ctor (lambda args
+              (cond ((null? args) (make-linkedlist '()))
+                    (else (make-linkedlist (seq->list (jolt-seq (car args)))))))))
+  (register-class-ctor! "LinkedList" ctor)
+  (register-class-ctor! "java.util.LinkedList" ctor))
+
+;; ArrayList / LinkedList are Iterable: (seq al) walks the elements (nil if empty),
+;; so (seq pending-forms) and reduce/into over one work like the JVM.
+(define %al-seq jolt-seq)
+(set! jolt-seq
+  (lambda (x)
+    (if (and (jhost? x) (or (string=? (jhost-tag x) "arraylist") (string=? (jhost-tag x) "linkedlist")))
+        (list->cseq (al->list x))
+        (%al-seq x))))
 
 ;; Appendable.append text: append(x) renders x; append(csq,start,end) appends the
 ;; subsequence csq[start,end) (data.json's writer appends string runs this way).
@@ -109,6 +154,9 @@
         (cons "flush" (lambda (self) jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) (sb-str self)))))
+;; (str sw) / print a StringWriter -> its accumulated content, like the JVM
+;; (str calls toString) — data.csv writes CSV to a StringWriter and reads it back.
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "writer"))) sb-str)
 
 ;; a file-backed writer (clojure.java.io/writer of a File/path): accumulates like
 ;; StringWriter, then persists to the path on flush/close, so
@@ -433,8 +481,12 @@
                  (list->string (vector->list v)))))
           ((string? x) x)
           (else (jolt-str-render-one x)))))
+;; (BigInteger. s) | (BigInteger. s radix) — parse a string in the given radix
+;; (default 10). tools.reader's integer parser builds (BigInteger. digits radix).
 (register-class-ctor! "BigInteger"
-  (lambda (v) (parse-int-or-throw v 10 "BigInteger")))
+  (lambda (v . r) (parse-int-or-throw v (if (null? r) 10 (jnum->exact (car r))) "BigInteger")))
+(register-class-ctor! "java.math.BigInteger"
+  (lambda (v . r) (parse-int-or-throw v (if (null? r) 10 (jnum->exact (car r))) "BigInteger")))
 (register-class-ctor! "MapEntry" (lambda (k v) (make-map-entry k v)))
 ;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
 ;; (so class / instance? / getMessage / ex-message reflect the real type) and the
@@ -568,17 +620,29 @@
 (define %hs-rmd2 record-method-dispatch)
 (set! record-method-dispatch
   (lambda (obj method-name rest-args)
-    (if (regex-t? obj)
-        (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
-          (cond ((string=? method-name "split")
-                 ;; .split returns a String[] — a seq (prints
-                 ;; (a b c), not a vector). re-split with no limit; drop trailing
-                 ;; empties (JVM default).
-                 (let ((parts (re-split (regex-t-irx obj) (car rest) #f)))
-                   (list->cseq (str-split-drop-trailing parts))))
-                ((string=? method-name "pattern") (regex-t-source obj))
-                (else (error #f (string-append "No method " method-name " on Pattern")))))
-        (%hs-rmd2 obj method-name rest-args))))
+    (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
+      (cond
+        ((regex-t? obj)
+         (cond ((string=? method-name "split")
+                ;; .split returns a String[] — a seq (prints
+                ;; (a b c), not a vector). re-split with no limit; drop trailing
+                ;; empties (JVM default).
+                (let ((parts (re-split (regex-t-irx obj) (car rest) #f)))
+                  (list->cseq (str-split-drop-trailing parts))))
+               ((string=? method-name "pattern") (regex-t-source obj))
+               ((or (string=? method-name "toString")) (regex-t-source obj))
+               ;; (.matcher pattern s) -> a Matcher (matcher-t) for stepping matches.
+               ((string=? method-name "matcher") (jolt-re-matcher obj (car rest)))
+               (else (error #f (string-append "No method " method-name " on Pattern")))))
+        ;; java.util.regex.Matcher: .matches (anchored whole-region), .find
+        ;; (next match), .group [n], .groupCount.
+        ((jolt-matcher? obj)
+         (cond ((string=? method-name "matches") (jolt-matcher-matches obj))
+               ((string=? method-name "find") (not (jolt-nil? (jolt-re-find obj))))
+               ((string=? method-name "group") (apply jolt-matcher-group obj rest))
+               ((string=? method-name "groupCount") (jolt-matcher-group-count obj))
+               (else (error #f (string-append "No method " method-name " on Matcher")))))
+        (else (%hs-rmd2 obj method-name rest-args))))))
 
 ;; ---- def-var! the registry entry points so emit can also reach them ---------
 (def-var! "clojure.core" "host-static-ref" host-static-ref)
@@ -855,8 +919,14 @@
 ;; class-keyed multimethod / (isa? (class x) SomeClass) dispatches like the JVM.
 ;; (Object is supplied universally by class-isa?, so it need not be listed.)
 (reg-class-supers! "clojure.lang.IFn" '("clojure.lang.Fn" "java.lang.Runnable" "java.util.concurrent.Callable"))
-(reg-class-supers! "clojure.lang.Keyword" '("clojure.lang.Named" "java.lang.Comparable"))
-(reg-class-supers! "clojure.lang.Symbol" '("clojure.lang.Named" "java.lang.Comparable"))
+;; Keyword and Symbol implement IFn (they are callable: (:k m) / ('s m)), so a
+;; (class x)-dispatched multimethod with an IFn method matches them, like the JVM.
+(reg-class-supers! "clojure.lang.Keyword" '("clojure.lang.Named" "java.lang.Comparable"
+                                            "clojure.lang.IFn" "clojure.lang.Fn"
+                                            "java.lang.Runnable" "java.util.concurrent.Callable"))
+(reg-class-supers! "clojure.lang.Symbol" '("clojure.lang.Named" "java.lang.Comparable"
+                                           "clojure.lang.IFn" "clojure.lang.Fn"
+                                           "java.lang.Runnable" "java.util.concurrent.Callable"))
 (reg-class-supers! "java.lang.String" '("java.lang.CharSequence" "java.lang.Comparable"))
 (reg-class-supers! "clojure.lang.PersistentHashSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
 (reg-class-supers! "clojure.lang.PersistentTreeSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))

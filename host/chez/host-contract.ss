@@ -74,6 +74,11 @@
 ;; reconstruct it by name at the call site.
 (define (hc-ns-value? x) (jns? x))
 (define (hc-ns-value-name x) (jns-name x))
+;; a live Var value spliced into a form (a macro that does `(~v …)` with v a
+;; resolved var) — the analyzer turns it into a :the-var reference by ns+name.
+(define (hc-var-value? x) (var-cell? x))
+(define (hc-var-value-ns x) (var-cell-ns x))
+(define (hc-var-value-name x) (var-cell-name x))
 
 ;; --- form accessors ---------------------------------------------------------
 (define (hc-char-code x) (char->integer x))  ; native Chez char -> codepoint
@@ -463,6 +468,9 @@
   (def-var! "jolt.host" "form-uuid?" hc-uuid?)
   (def-var! "jolt.host" "form-ns-value?" hc-ns-value?)
   (def-var! "jolt.host" "form-ns-value-name" hc-ns-value-name)
+  (def-var! "jolt.host" "form-var-value?" hc-var-value?)
+  (def-var! "jolt.host" "form-var-value-ns" hc-var-value-ns)
+  (def-var! "jolt.host" "form-var-value-name" hc-var-value-name)
   (def-var! "jolt.host" "form-bigdec?" hc-bigdec?)
   (def-var! "jolt.host" "form-bigdec-source" hc-bigdec-source)
   (def-var! "jolt.host" "form-elements" hc-elements)

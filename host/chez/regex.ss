@@ -221,6 +221,21 @@
     (if last (irx-result last)
         (jolt-throw (jolt-ex-info "No match found" (jolt-hash-map))))))
 
+;; java.util.regex.Matcher methods over a matcher-t. .matches anchors a full-region
+;; match and remembers it for .group; .group n returns submatch n (0 = whole) or
+;; nil; .groupCount is the pattern's capturing-group count.
+(define (jolt-matcher-matches m)
+  (let ((mm (irregex-match (matcher-t-irx m) (matcher-t-str m))))
+    (matcher-t-last-set! m mm)
+    (if mm #t #f)))
+(define (jolt-matcher-group m . n)
+  (let ((last (matcher-t-last m)))
+    (if last
+        (let ((s (irregex-match-substring last (if (pair? n) (->idx (car n)) 0))))
+          (if s s jolt-nil))
+        (jolt-throw (jolt-ex-info "No match available" (jolt-hash-map))))))
+(define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))
+
 ;; All non-overlapping matches, left to right. Advance past each match end (or by
 ;; one on a zero-width match). nil when there are no matches (Clojure: seq-able as
 ;; nil, so (if-let [m (re-seq ...)] ...) works).

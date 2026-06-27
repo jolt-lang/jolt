@@ -25,6 +25,7 @@
                                form-inst? form-inst-source form-uuid? form-uuid-source
                                form-bigdec? form-bigdec-source
                                form-ns-value? form-ns-value-name
+                               form-var-value? form-var-value-ns form-var-value-name
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key form-position late-bind?
@@ -724,4 +725,8 @@
      ;; a live namespace value spliced into a form (~*ns* in a macro) -> a
      ;; :the-ns leaf the back end reconstructs by name at the call site.
      (form-ns-value? form) {:op :the-ns :name (form-ns-value-name form)}
+     ;; a live Var value spliced into a form (a macro that resolves a var and
+     ;; splices it, e.g. core.contracts' defcurry-from) -> a :the-var reference,
+     ;; same as (var ns/name); the back end emits (jolt-var ns name).
+     (form-var-value? form) (the-var (form-var-value-ns form) (form-var-value-name form))
      :else (uncompilable "unsupported form"))))

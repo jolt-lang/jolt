@@ -96,6 +96,70 @@
 (register-class-statics! "PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
 (register-class-statics! "clojure.lang.PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
 
+;; clojure.lang.RT/map: build a map from a [k v k v…] array/seq (RT.map). Small
+;; maps keep insertion order (PersistentArrayMap). tools.reader builds map and
+;; namespaced-map literals this way.
+(define (rt-map arr)
+  (let loop ((xs (if (jolt-nil? arr) '() (seq->list (jolt-seq arr)))) (m (jolt-hash-map)))
+    (cond ((null? xs) m)
+          ((null? (cdr xs)) (error #f "RT/map: odd key/value count"))
+          (else (loop (cddr xs) (jolt-assoc m (car xs) (cadr xs)))))))
+(register-class-statics! "RT" (list (cons "map" rt-map)))
+(register-class-statics! "clojure.lang.RT" (list (cons "map" rt-map)))
+
+;; clojure.lang.PersistentList/create: a list (in order) from a seq; empty -> ().
+(define (plist-create x)
+  (let ((items (seq->list (jolt-seq x))))
+    (if (null? items) jolt-empty-list (list->cseq items))))
+(register-class-statics! "PersistentList" (list (cons "create" plist-create)))
+(register-class-statics! "clojure.lang.PersistentList" (list (cons "create" plist-create)))
+
+;; clojure.lang.PersistentHashSet/createWithCheck: a set from a seq, throwing on a
+;; duplicate element (tools.reader's #{…} reader reports the dup).
+(define (phs-create-with-check x)
+  (let loop ((xs (seq->list (jolt-seq x))) (s (jolt-hash-set)))
+    (if (null? xs) s
+        (let ((e (car xs)))
+          (if (jolt-truthy? (jolt-contains? s e))
+              (jolt-throw (jolt-ex-info (string-append "Duplicate key: " (jolt-str-render-one e)) (jolt-hash-map)))
+              (loop (cdr xs) (jolt-conj1 s e)))))))
+(register-class-statics! "PersistentHashSet" (list (cons "createWithCheck" phs-create-with-check)))
+(register-class-statics! "clojure.lang.PersistentHashSet" (list (cons "createWithCheck" phs-create-with-check)))
+
+;; java.lang.Character statics. digit(ch, radix) -> the digit value or -1; ch may
+;; be a char or an int codepoint (tools.reader passes (int c)). isDigit/
+;; isWhitespace take a char; valueOf boxes a char (identity on jolt).
+(define (char->cp x) (if (char? x) (char->integer x) (jnum->exact x)))
+(define (char-digit-value cp radix)
+  (let ((d (cond ((and (fx>=? cp 48) (fx<=? cp 57)) (fx- cp 48))            ; 0-9
+                 ((and (fx>=? cp 97) (fx<=? cp 122)) (fx+ 10 (fx- cp 97)))  ; a-z
+                 ((and (fx>=? cp 65) (fx<=? cp 90)) (fx+ 10 (fx- cp 65)))   ; A-Z
+                 (else 99))))
+    (if (fx<? d radix) d -1)))
+(define character-statics
+  (list (cons "digit" (lambda (ch radix) (->num (char-digit-value (char->cp ch) (jnum->exact radix)))))
+        (cons "isDigit" (lambda (ch) (let ((cp (char->cp ch))) (and (fx>=? cp 48) (fx<=? cp 57)))))
+        (cons "isWhitespace" (lambda (ch) (char-whitespace? (integer->char (char->cp ch)))))
+        (cons "valueOf" (lambda (ch) (if (char? ch) ch (integer->char (char->cp ch)))))))
+(register-class-statics! "Character" character-statics)
+(register-class-statics! "java.lang.Character" character-statics)
+
+;; java.util.regex.Pattern/compile: a regex value from a string pattern.
+(define pattern-statics (list (cons "compile" (lambda (s) (jolt-regex (jolt-str-render-one s))))))
+(register-class-statics! "Pattern" pattern-statics)
+(register-class-statics! "java.util.regex.Pattern" pattern-statics)
+
+;; clojure.lang.BigInt / clojure.lang.Numbers: jolt has one exact-integer type
+;; (Chez bignums auto-reduce), so BigInt.fromBigInteger and Numbers.reduceBigInt
+;; are identity. tools.reader's number parser threads integers through these.
+(define identity-num-statics (list (cons "fromBigInteger" (lambda (x) x))))
+(register-class-statics! "BigInt" identity-num-statics)
+(register-class-statics! "clojure.lang.BigInt" identity-num-statics)
+(register-class-statics! "Numbers"
+  (list (cons "reduceBigInt" (lambda (x) x)) (cons "toRatio" (lambda (x) x))))
+(register-class-statics! "clojure.lang.Numbers"
+  (list (cons "reduceBigInt" (lambda (x) x)) (cons "toRatio" (lambda (x) x))))
+
 (define (now-millis)
   (let ((t (current-time 'time-utc)))
     (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))

@@ -28,6 +28,16 @@
   [root]
   (zipper vector? seq (fn [node children] (with-meta (vec children) (meta node))) root))
 
+(defn xml-zip
+  "Returns a zipper for xml elements (as from clojure.xml/parse), given a root
+  element"
+  [root]
+  (zipper (complement string?)
+          (comp seq :content)
+          (fn [node children]
+            (assoc node :content (and children (apply vector children))))
+          root))
+
 (defn node "Returns the node at loc" [loc] (nth loc 0))
 
 (defn branch? "Returns true if the node at loc is a branch"

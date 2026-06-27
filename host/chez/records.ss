@@ -469,6 +469,18 @@
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
         ;; a ByteBuffer — extend-protocol java.nio.ByteBuffer (aws-api util).
         ((and (jhost? obj) (string=? (jhost-tag obj) "byte-buffer")) '("ByteBuffer" "java.nio.ByteBuffer" "Object"))
+        ;; java.io readers/writers — so (extend-protocol java.io.Reader …) (data.csv)
+        ;; and the like dispatch on one. A PushbackReader is also a Reader.
+        ((and (jhost? obj) (string=? (jhost-tag obj) "string-reader"))
+         '("StringReader" "java.io.StringReader" "Reader" "java.io.Reader" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "pushback-reader"))
+         '("PushbackReader" "java.io.PushbackReader" "FilterReader" "java.io.FilterReader" "Reader" "java.io.Reader" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "char-reader"))
+         '("Reader" "java.io.Reader" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "char-writer"))
+         '("Writer" "java.io.Writer" "Object"))
+        ((and (jhost? obj) (string=? (jhost-tag obj) "writer"))
+         '("Writer" "java.io.Writer" "Object"))
         ;; arrays dispatch by their JVM array-class name — extend-protocol to
         ;; (Class/forName "[B") for byte[] (data.json, aws-api), "[C" for char[].
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'byte)) '("[B" "Object"))
@@ -606,7 +618,12 @@
                 "ChronoUnit" "ChronoField" "TemporalAmount" "TemporalUnit" "TemporalField"
                 ;; ByteBuffer + JVM array classes (extend-protocol to (Class/forName "[B"))
                 "ByteBuffer" "java.nio.ByteBuffer"
-                "[B" "[C" "[I" "[J" "[D" "[Ljava.lang.Object;"))
+                "[B" "[C" "[I" "[J" "[D" "[Ljava.lang.Object;"
+                ;; java.io readers/writers — extend-protocol java.io.Reader (data.csv)
+                "Reader" "java.io.Reader" "Writer" "java.io.Writer"
+                "StringReader" "java.io.StringReader" "PushbackReader" "java.io.PushbackReader"
+                "BufferedReader" "java.io.BufferedReader" "FilterReader" "java.io.FilterReader"
+                "InputStream" "java.io.InputStream" "OutputStream" "java.io.OutputStream"))
     h))
 (define (strip-prefix s p)
   (let ((pl (string-length p)))

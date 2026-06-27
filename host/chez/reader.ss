@@ -47,6 +47,11 @@
       (memv c '(#\( #\) #\[ #\] #\{ #\} #\" #\; #\@ #\^ #\` #\~ #\\))))
 
 (define (rdr-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+(define (rdr-octal? c) (and (char>=? c #\0) (char<=? c #\7)))
+;; every char of s in [from,to) is an octal digit (and the span is non-empty).
+(define (rdr-all-octal? s from to)
+  (and (fx<? from to)
+       (let loop ((i from)) (cond ((fx=? i to) #t) ((rdr-octal? (string-ref s i)) (loop (fx+ i 1))) (else #f)))))
 
 ;; Advance past whitespace, commas, and ;-to-end-of-line comments.
 (define (rdr-skip-ws s i end)
@@ -129,6 +134,11 @@
               (and radix (integer? radix) (>= radix 2) (<= radix 36)
                    (let ((v (rdr-parse-radix (substring body (+ ri 1) blen) radix)))
                      (and v (* sign v)))))))
+      ;; octal 0NNN: a leading 0 followed by octal digits (Clojure reads 042 as 34,
+      ;; not decimal 42). "0" alone, 0x.., 0r.. and a float "0.5" are handled
+      ;; elsewhere or fall through (a non-octal digit fails rdr-all-octal?).
+      ((and (>= blen 2) (char=? (string-ref body 0) #\0) (rdr-all-octal? body 1 blen))
+       (let ((o (rdr-parse-radix (substring body 1 blen) 8))) (and o (* sign o))))
       ;; bigint suffix N
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\N))
        (let ((n (string->number (substring body 0 (- blen 1)))))
@@ -174,7 +184,13 @@
              ((#\") (loop (+ i 2) (cons #\" acc)))
              ((#\b) (loop (+ i 2) (cons #\backspace acc)))
              ((#\f) (loop (+ i 2) (cons #\page acc)))
-             ((#\0) (loop (+ i 2) (cons #\nul acc)))
+             ;; octal escape \ooo: 1-3 octal digits (Clojure's \0..\377), so \000
+             ;; is one null char, not \0 + literal "00".
+             ((#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7)
+              (let oct ((j (+ i 1)) (val 0) (cnt 0))
+                (if (and (fx<? cnt 3) (fx<? j end) (rdr-octal? (string-ref s j)))
+                    (oct (fx+ j 1) (fx+ (fx* val 8) (fx- (char->integer (string-ref s j)) 48)) (fx+ cnt 1))
+                    (loop j (cons (integer->char val) acc)))))
              ((#\u)
               (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
                 ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,

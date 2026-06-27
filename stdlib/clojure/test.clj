@@ -107,7 +107,8 @@
 
      ;; (is (thrown-with-msg? Class re body...))
      (thrown-form? form "thrown-with-msg?")
-     (let [klass (name (second form))
+     (let [klass-sym (second form)
+           klass (name klass-sym)
            re    (nth form 2)
            body  (nthrest form 3)]
        `(try
@@ -115,7 +116,11 @@
           (clojure.test/fail! (str "expected " '~form " to throw"))
           (catch Throwable e#
             (let [m# (or (clojure.core/ex-message e#) (str e#))]
-              (if (and (clojure.test/class-match? e# ~klass) (re-find ~re m#))
+              ;; honor the class hierarchy (ExceptionInfo IS a RuntimeException),
+              ;; then fall back to a simple-name match like thrown? does.
+              (if (and (or (clojure.core/instance? ~klass-sym e#)
+                           (clojure.test/class-match? e# ~klass))
+                       (re-find ~re m#))
                 (clojure.test/inc-pass!)
                 (clojure.test/fail! (str "expected throw of " ~klass " matching " ~re " but got " (clojure.core/class e#) ": " m#)))))))
 
