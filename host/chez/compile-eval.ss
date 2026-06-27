@@ -27,9 +27,24 @@
 ;; {:line :column :file?} position map (jolt.host/form-position's shape).
 ;; Top-level granularity — one set per top-level form, nothing per call.
 (define jolt-current-source (make-thread-parameter #f))
+
+;; clojure.lang.Compiler/LINE and /COLUMN — derefable cells (Vars on the JVM)
+;; holding the line/column of the form being compiled. Macros read @Compiler/LINE
+;; as a fallback when &form carries no position (jolt's reader stamps :line on list
+;; forms, so this is rarely hit). Updated per top-level form, like *current-source*.
+(define compiler-line-cell (jolt-atom-new 0))
+(define compiler-column-cell (jolt-atom-new 0))
+(let ((members (list (cons "LINE" compiler-line-cell) (cons "COLUMN" compiler-column-cell))))
+  (register-class-statics! "Compiler" members)
+  (register-class-statics! "clojure.lang.Compiler" members))
+
 (define (jolt-enter-form! form)
   (let ((p (hc-form-position form)))
-    (when (pmap? p) (jolt-current-source p))))
+    (when (pmap? p)
+      (jolt-current-source p)
+      (let ((line (jolt-get p hc-kw-line jolt-nil)) (col (jolt-get p hc-kw-column jolt-nil)))
+        (jolt-atom-val-set! compiler-line-cell (if (jolt-nil? line) 0 line))
+        (jolt-atom-val-set! compiler-column-cell (if (jolt-nil? col) 0 col))))))
 
 ;; "file:line:col" / "line:col" for the current form, or #f when none is set.
 (define (jolt-current-source-string)
