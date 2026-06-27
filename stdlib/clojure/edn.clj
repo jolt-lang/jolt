@@ -36,6 +36,9 @@
     (map? x)
       (with-meta (into {} (map (fn [e] [(edn->value opts (key e)) (edn->value opts (val e))]) x)) (meta x))
     (vector? x) (with-meta (mapv (fn [v] (edn->value opts v)) x) (meta x))
+    ;; a constructed set: recurse into its elements too, so a tagged literal
+    ;; inside #{…} gets the :readers/:default treatment (aero's #ref in a set).
+    (set? x) (with-meta (set (map (fn [v] (edn->value opts v)) x)) (meta x))
     (seq? x) (with-meta (map (fn [v] (edn->value opts v)) x) (meta x))
     :else x))
 

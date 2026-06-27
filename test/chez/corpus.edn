@@ -3306,4 +3306,6 @@
   {:suite "reader / metadata" :label "metadata on an empty list is preserved" :expected "true" :actual "(= {:foo 1} (meta (read-string \"^{:foo 1} ()\")))"}
   {:suite "reader / metadata" :label "a vector in metadata reads as a value" :expected "true" :actual "(= [1 2] (:v (meta (read-string \"^{:v [1 2]} {:a 1}\"))))"}
   {:suite "reader / metadata" :label "an empty list in metadata reads as a value" :expected "true" :actual "(= () (:e (meta (read-string \"^{:e ()} [1]\"))))"}
+  {:suite "edn / readers in collections" :label "a :default tag reader applies inside a set" :expected "true" :actual "(= #{[:t 1]} (clojure.edn/read-string {:default (fn [t v] [:t v])} \"#{#foo 1}\"))"}
+  {:suite "edn / readers in collections" :label "a registered reader applies inside a set" :expected "true" :actual "(= #{6} (clojure.edn/read-string {:readers {(quote x) (fn [v] (* v 2))}} \"#{#x 3}\"))"}
 ]
