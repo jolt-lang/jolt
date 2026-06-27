@@ -22,6 +22,12 @@
 (def once-fixtures (atom []))
 (def each-fixtures (atom []))
 
+;; clojure.test/*testing-vars* — the stack of vars under test. Real clojure.test
+;; binds it around each test var; test.check's default reporter reads it, so a
+;; defspec run through its :test metadata doesn't blow up on an unbound var.
+(def ^:dynamic *testing-vars* (list))
+(def ^:dynamic *report-counters* nil)
+
 (defn reset-report! []
   (reset! counters {:test 0 :pass 0 :fail 0 :error 0 :fails []})
   (reset! ctx-stack [])

@@ -3385,4 +3385,5 @@
   {:suite "numbers / unchecked on doubles" :label "unchecked-multiply of doubles is a double, not a truncated long" :expected "3.0" :actual "(unchecked-multiply 1.5 2.0)"}
   {:suite "seq / take infinite count" :label "(take +Infinity coll) takes the whole coll" :expected "7" :actual "(count (take (/ 1.0 0.0) (range 7)))"}
   {:suite "host-interop / UUID + Long + shiftLeft" :label "(UUID. msb lsb), .shiftLeft, (Long. n)" :expected "[\"00000000-0000-007b-0000-0000000001c8\" 40 10 42]" :actual "[(str (java.util.UUID. 123 456)) (.shiftLeft 5 3) (.shiftRight 40 2) (Long. 42)]"}
+  {:suite "host-interop / ThreadLocal proxy" :label "(proxy [ThreadLocal] [] (initialValue [] v)) get/set" :expected "[42 7]" :actual "(let [tl (proxy [ThreadLocal] [] (initialValue [] 42))] [(.get tl) (do (.set tl 7) (.get tl))])"}
 ]
