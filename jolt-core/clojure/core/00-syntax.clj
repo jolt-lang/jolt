@@ -117,7 +117,9 @@
   (let [nm (if (and (seq? nm) (= 'with-meta (first nm))) (second nm) nm)
         calls (reduce
                 (fn [acc clause]
-                  (if (seq? clause)
+                  ;; a reference clause may be a list (:require …) or a vector
+                  ;; [:require …]; Clojure accepts both, dispatching on (first clause).
+                  (if (or (seq? clause) (vector? clause))
                     (let [head (first clause) args (rest clause)]
                       (cond
                         (= head :require) (conj acc `(require ~@(map (fn [s] `(quote ~s)) args)))

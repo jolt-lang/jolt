@@ -34,7 +34,18 @@
 ;; forms, so this is rarely hit). Updated per top-level form, like *current-source*.
 (define compiler-line-cell (jolt-atom-new 0))
 (define compiler-column-cell (jolt-atom-new 0))
-(let ((members (list (cons "LINE" compiler-line-cell) (cons "COLUMN" compiler-column-cell))))
+;; clojure.lang.Compiler/specials — the JVM's special-form table (sym -> parser).
+;; tools.macro reads (keys Compiler/specials) to know which heads NOT to expand.
+;; Only the keys matter here; values are #t. The set matches Clojure 1.2/1.3.
+(define compiler-specials
+  (let ((unq '("def" "loop*" "recur" "if" "case*" "let*" "letfn*" "do" "fn*"
+               "quote" "var" "." "set!" "try" "monitor-enter" "monitor-exit"
+               "throw" "new" "&" "catch" "finally" "reify*" "deftype*")))
+    (fold-left (lambda (m s) (jolt-assoc1 m (jolt-symbol #f s) #t))
+               (jolt-assoc1 (jolt-hash-map) (jolt-symbol "clojure.core" "import*") #t)
+               unq)))
+(let ((members (list (cons "LINE" compiler-line-cell) (cons "COLUMN" compiler-column-cell)
+                     (cons "specials" compiler-specials))))
   (register-class-statics! "Compiler" members)
   (register-class-statics! "clojure.lang.Compiler" members))
 
