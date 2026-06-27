@@ -3357,4 +3357,12 @@
   {:suite "host-interop / instance? Object" :label "nil is not an instance of Object" :expected "false" :actual "(instance? Object nil)"}
   {:suite "host-interop / instance? Object" :label "java.lang.Object too" :expected "true" :actual "(instance? java.lang.Object :k)"}
   {:suite "host-interop / Compiler" :label "@Compiler/LINE is a number" :expected "true" :actual "(number? @clojure.lang.Compiler/LINE)"}
+  {:suite "reader / octal literals" :label "0NNN is octal" :expected "34" :actual "042"}
+  {:suite "reader / octal literals" :label "negative octal" :expected "-34" :actual "-042"}
+  {:suite "reader / octal literals" :label "octal char escape \\oNNN" :expected "true" :actual "(= (char 0377) \\o377)"}
+  {:suite "reader / octal literals" :label "octal string escape is one char" :expected "true" :actual "(= \"a\\000b\" (str \"a\" (char 0) \"b\"))"}
+  {:suite "reader / octal literals" :label "hex still decimal-distinct" :expected "[1070 255 0]" :actual "[0x42e 0xff 0]"}
+  {:suite "symbols / construction" :label "(symbol nil name) equals (symbol name)" :expected "true" :actual "(= (symbol nil \"foo\") (quote foo))"}
+  {:suite "symbols / construction" :label "(symbol nil name) has no namespace" :expected "true" :actual "(nil? (namespace (symbol nil \"x\")))"}
+  {:suite "host-interop / instance? hierarchy" :label "ExceptionInfo is a RuntimeException" :expected "[true true true]" :actual "[(instance? RuntimeException (ex-info \"x\" {})) (instance? Exception (ex-info \"x\" {})) (instance? Throwable (ex-info \"x\" {}))]"}
 ]

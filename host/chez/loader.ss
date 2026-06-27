@@ -264,13 +264,28 @@
 (def-var! "clojure.core" "use" loader-use)
 
 (def-var! "clojure.core" "load-file" jolt-load-file)
-;; load: each arg is a "/"-rooted resource path like "/app/extra"; load the file
-;; for it relative to the search roots (strip the leading slash, try .clj/.cljc).
+
+;; The directory of a namespace's resource path: "clojure.tools.reader-test" ->
+;; "clojure/tools" (drop the last segment of ns-name->rel). "" for a top-level ns.
+(define (ns-rel-dir name)
+  (let* ((r (ns-name->rel name)))
+    (let loop ((k (fx- (string-length r) 1)))
+      (cond ((fx<? k 0) "")
+            ((char=? (string-ref r k) #\/) (substring r 0 k))
+            (else (loop (fx- k 1)))))))
+
+;; load: an arg starting with "/" is a root-relative resource path ("/app/extra");
+;; otherwise it is resolved against the CURRENT namespace's directory, matching
+;; Clojure — (load "common_tests") from clojure.tools.reader-test loads
+;; clojure/tools/common_tests.clj. Strip the leading slash / try .clj/.cljc.
 (define (jolt-load . paths)
   (for-each
     (lambda (p)
-      (let* ((rel (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
-                      (substring p 1 (string-length p)) p))
+      (let* ((rel (cond
+                    ((and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
+                     (substring p 1 (string-length p)))
+                    (else (let ((dir (ns-rel-dir (chez-current-ns))))
+                            (if (string=? dir "") p (string-append dir "/" p))))))
              (f (resolve-on-roots rel)))
         (if f (load-jolt-file f)
             (error #f "Could not locate resource on source roots" p))))

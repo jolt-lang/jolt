@@ -133,7 +133,12 @@
                         (else (loop (- i 1))))))))
          ((keyword? a) (jolt-symbol (keyword-t-ns a) (keyword-t-name a)))
          (else (error #f "symbol: requires string/symbol" a)))))
-    ((= (length args) 2) (jolt-symbol (car args) (cadr args)))
+    ;; (symbol ns name): a nil namespace is the no-ns sentinel #f (NOT jolt-nil),
+    ;; so (symbol nil "x") equals (symbol "x") and the reader literal 'x — jolt=
+    ;; compares ns with strict equal?, so a jolt-nil ns would differ from #f.
+    ((= (length args) 2)
+     (let ((ns (car args)))
+       (jolt-symbol (if (jolt-nil? ns) #f ns) (cadr args))))
     (else (error #f "symbol: wrong arity"))))
 
 ;; gensym: per-process counter.

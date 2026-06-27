@@ -88,6 +88,13 @@
     ;; Double/Float .isNaN / .isInfinite (a non-flonum is neither).
     ((string=? method "isNaN") (and (flonum? n) (not (= n n))))
     ((string=? method "isInfinite") (and (flonum? n) (infinite? n)))
+    ;; BigInteger interop: .negate / .bitLength / .signum / .abs. A jolt integer is
+    ;; a Chez exact integer, so these are native (integer-length = JVM bitLength,
+    ;; matching for negative values too). tools.reader's number parser uses them.
+    ((string=? method "negate") (->num (- (jnum->exact n))))
+    ((string=? method "abs") (->num (abs (jnum->exact n))))
+    ((string=? method "bitLength") (->num (integer-length (jnum->exact n))))
+    ((string=? method "signum") (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
     (else (error #f (string-append "No method " method " for number")))))
 
 ;; Mutable static fields: "Class" -> (member -> 1-vector cell). A library that
