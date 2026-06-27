@@ -91,6 +91,7 @@
   '(("String" . "java.lang.String") ("Number" . "java.lang.Number")
     ("Boolean" . "java.lang.Boolean") ("Long" . "java.lang.Long")
     ("Integer" . "java.lang.Integer") ("Double" . "java.lang.Double")
+    ("Float" . "java.lang.Float") ("Byte" . "java.lang.Byte") ("Short" . "java.lang.Short")
     ("Object" . "java.lang.Object") ("Character" . "java.lang.Character")
     ("InputStream" . "java.io.InputStream") ("OutputStream" . "java.io.OutputStream")
     ("File" . "java.io.File") ("Reader" . "java.io.Reader") ("Writer" . "java.io.Writer")
@@ -160,6 +161,7 @@
 (for-each
   (lambda (nm) (def-var! "clojure.core" nm nm))
   '("java.lang.Long" "java.lang.Integer" "java.lang.Double" "java.lang.Float"
+    "java.lang.Byte" "java.lang.Short"
     "java.lang.Number" "java.lang.String" "java.lang.Boolean" "java.lang.Character"
     "java.lang.Object"
     ;; exception classes compared against (class e): (= java.net.SocketTimeoutException (class e))

@@ -136,6 +136,19 @@
         (cons "toBinaryString" (lambda (x) (number->string (int->u32 (jnum->exact x)) 2)))
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x) (if (null? r) 10 (jnum->exact (car r))))))))
 
+;; Byte / Short bounds (their values are plain integers on jolt; the statics let
+;; libraries reference the JVM ranges — clojure.test.check generates over them).
+(register-class-statics! "Byte"
+  (list (cons "MAX_VALUE" (->num 127)) (cons "MIN_VALUE" (->num -128))
+        (cons "valueOf" (lambda (x . r) (->num (if (number? x) x (parse-int-or-throw x 10 "valueOf")))))
+        (cons "parseByte" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseByte")))
+        (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
+(register-class-statics! "Short"
+  (list (cons "MAX_VALUE" (->num 32767)) (cons "MIN_VALUE" (->num -32768))
+        (cons "valueOf" (lambda (x . r) (->num (if (number? x) x (parse-int-or-throw x 10 "valueOf")))))
+        (cons "parseShort" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseShort")))
+        (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
+
 (register-class-statics! "Boolean"
   (list (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))
         (cons "TRUE" #t) (cons "FALSE" #f)))
