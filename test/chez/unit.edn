@@ -563,4 +563,8 @@
   {:suite "bytes" :expr "(String. (byte-array [104 105]) \"UTF-8\")" :expected "hi"}
   {:suite "bytes" :expr "(int (first (String. (byte-array [200]) \"ISO-8859-1\")))" :expected "200"}
   {:suite "bytes" :expr "(String. (.getBytes \"round\" \"UTF-8\") \"UTF-8\")" :expected "round"}
+  {:suite "deftype-map" :expr "(do (deftype Mp [m] clojure.lang.IPersistentMap (without [_ k] m)) [(map? (->Mp 1)) (record? (->Mp 1))])" :expected "[true false]"}
+  {:suite "deftype-map" :expr "(do (deftype Op [s]) [(map? (->Op 1)) (record? (->Op 1)) (coll? (->Op 1))])" :expected "[false false false]"}
+  {:suite "deftype-map" :expr "(do (deftype Lc [xs] clojure.lang.Counted (count [_] (count xs)) clojure.lang.Seqable (seq [_] (seq xs))) [(coll? (->Lc [1 2])) (count (->Lc [1 2])) (vec (seq (->Lc [1 2])))])" :expected "[true 2 [1 2]]"}
+  {:suite "deftype-map" :expr "(do (defrecord Dr [a b]) [(map? (->Dr 1 2)) (record? (->Dr 1 2)) (coll? (->Dr 1 2))])" :expected "[true true true]"}
 ]
