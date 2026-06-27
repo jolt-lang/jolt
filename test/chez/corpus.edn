@@ -3380,4 +3380,5 @@
   {:suite "numbers / ^long is 64-bit" :label "^long quot on a full-width long" :expected "3074457345618258602" :actual "((fn* ([^long a] (quot a 3))) 9223372036854775807)"}
   {:suite "host-interop / Compiler" :label "Compiler/specials keys include the special forms" :expected "true" :actual "(every? (set (keys clojure.lang.Compiler/specials)) (quote [if do let* fn* quote def loop* recur try letfn* var]))"}
   {:suite "macros / letfn mutual recursion" :label "letfn binds mutually-recursive named fns" :expected "[true false]" :actual "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] [(ev? 10) (ev? 7)])"}
+  {:suite "host-interop / extend-protocol IPersistentList" :label "a protocol extended to IPersistentList dispatches on a list, not a vector" :expected "[:list :vec :list]" :actual "(do (defprotocol PL (m [x])) (extend-protocol PL clojure.lang.IPersistentList (m [_] :list) clojure.lang.IPersistentVector (m [_] :vec)) [(m (list 1 2)) (m [1 2]) (m ())])"}
 ]

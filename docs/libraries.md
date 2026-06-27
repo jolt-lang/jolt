@@ -67,6 +67,9 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
   maps (incl. keyfn / custom comparator), with `subseq`/`rsubseq`.
 * [tools.macro](https://github.com/clojure/tools.macro) — local macros
   (`macrolet`/`symbol-macrolet`), `mexpand`/`mexpand-all`.
+* [algo.monads](https://github.com/clojure/algo.monads) — monad macros and
+  monads (maybe/seq/state/writer/reader/…), over
+  [tools.macro](https://github.com/clojure/tools.macro).
 * [test.check](https://github.com/clojure/test.check) — property-based testing
   (generators, `quick-check`, shrinking).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
