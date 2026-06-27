@@ -3381,4 +3381,5 @@
   {:suite "host-interop / Compiler" :label "Compiler/specials keys include the special forms" :expected "true" :actual "(every? (set (keys clojure.lang.Compiler/specials)) (quote [if do let* fn* quote def loop* recur try letfn* var]))"}
   {:suite "macros / letfn mutual recursion" :label "letfn binds mutually-recursive named fns" :expected "[true false]" :actual "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] [(ev? 10) (ev? 7)])"}
   {:suite "host-interop / extend-protocol IPersistentList" :label "a protocol extended to IPersistentList dispatches on a list, not a vector" :expected "[:list :vec :list]" :actual "(do (defprotocol PL (m [x])) (extend-protocol PL clojure.lang.IPersistentList (m [_] :list) clojure.lang.IPersistentVector (m [_] :vec)) [(m (list 1 2)) (m [1 2]) (m ())])"}
+  {:suite "scope / qualified ref vs same-named local" :label "clojure.core/max wins over a local named max" :expected "[10 5]" :actual "[((fn [max] (clojure.core/max 5 10)) 100) ((fn [min] (clojure.core/min 5 10)) 0)]"}
 ]

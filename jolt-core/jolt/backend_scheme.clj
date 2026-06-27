@@ -188,10 +188,19 @@
     "unquote" "set!" "define" "define-syntax" "cond" "case" "when" "unless"
     "and" "or" "do" "else" "guard" "parameterize" "delay" "values"})
 
+;; clojure.core ops emitted as a BARE Scheme name (where native-ops maps the op
+;; to itself: + - * / < > min max …). A local binding with one of these names
+;; would otherwise shadow the emitted prim — e.g. (fn [max] (clojure.core/max …))
+;; emits (max …) calling the param — so such locals are prefixed, like reserved
+;; words. Derived from native-ops so the two never drift.
+(def ^:private bare-native-names
+  (set (keep (fn [[k v]] (when (= k v) k)) native-ops)))
+
 ;; Most jolt names are already valid Scheme identifiers. The one that isn't is
 ;; `#`, which jolt auto-gensyms use as a suffix (p1__0000X4# from #(...)) — `#`
 ;; starts a datum in Scheme, so replace it with `_`. A name that collides with a
-;; Scheme keyword is prefixed with `_` so it can never shadow the emitted form.
+;; Scheme keyword OR a bare-emitted native op is prefixed with `_` so it can never
+;; shadow the emitted form.
 (defn- munge-name [s]
   ;; A Clojure symbol may contain chars that break a Scheme identifier: ' is the
   ;; quote reader macro (a bare f' would read as f then 'rest), # already maps to
@@ -200,7 +209,7 @@
   (let [s (-> s
               (str/replace "#" "_")
               (str/replace "'" "_PRIME_"))]
-    (if (contains? scheme-reserved s) (str "_" s) s)))
+    (if (or (contains? scheme-reserved s) (contains? bare-native-names s)) (str "_" s) s)))
 
 (declare emit)
 
