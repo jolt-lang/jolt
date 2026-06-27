@@ -3365,4 +3365,6 @@
   {:suite "symbols / construction" :label "(symbol nil name) equals (symbol name)" :expected "true" :actual "(= (symbol nil \"foo\") (quote foo))"}
   {:suite "symbols / construction" :label "(symbol nil name) has no namespace" :expected "true" :actual "(nil? (namespace (symbol nil \"x\")))"}
   {:suite "host-interop / instance? hierarchy" :label "ExceptionInfo is a RuntimeException" :expected "[true true true]" :actual "[(instance? RuntimeException (ex-info \"x\" {})) (instance? Exception (ex-info \"x\" {})) (instance? Throwable (ex-info \"x\" {}))]"}
+  {:suite "host-interop / class hierarchy" :label "Symbol and Keyword are IFn" :expected "[true true]" :actual "[(isa? clojure.lang.Symbol clojure.lang.IFn) (isa? clojure.lang.Keyword clojure.lang.IFn)]"}
+  {:suite "host-interop / class hierarchy" :label "(class sym)-dispatched multimethod hits an IFn method" :expected ":ifn" :actual "(do (defmulti cm1 class) (defmethod cm1 clojure.lang.IFn [_] :ifn) (cm1 (quote sym)))"}
 ]

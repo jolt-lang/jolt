@@ -916,8 +916,14 @@
 ;; class-keyed multimethod / (isa? (class x) SomeClass) dispatches like the JVM.
 ;; (Object is supplied universally by class-isa?, so it need not be listed.)
 (reg-class-supers! "clojure.lang.IFn" '("clojure.lang.Fn" "java.lang.Runnable" "java.util.concurrent.Callable"))
-(reg-class-supers! "clojure.lang.Keyword" '("clojure.lang.Named" "java.lang.Comparable"))
-(reg-class-supers! "clojure.lang.Symbol" '("clojure.lang.Named" "java.lang.Comparable"))
+;; Keyword and Symbol implement IFn (they are callable: (:k m) / ('s m)), so a
+;; (class x)-dispatched multimethod with an IFn method matches them, like the JVM.
+(reg-class-supers! "clojure.lang.Keyword" '("clojure.lang.Named" "java.lang.Comparable"
+                                            "clojure.lang.IFn" "clojure.lang.Fn"
+                                            "java.lang.Runnable" "java.util.concurrent.Callable"))
+(reg-class-supers! "clojure.lang.Symbol" '("clojure.lang.Named" "java.lang.Comparable"
+                                           "clojure.lang.IFn" "clojure.lang.Fn"
+                                           "java.lang.Runnable" "java.util.concurrent.Callable"))
 (reg-class-supers! "java.lang.String" '("java.lang.CharSequence" "java.lang.Comparable"))
 (reg-class-supers! "clojure.lang.PersistentHashSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
 (reg-class-supers! "clojure.lang.PersistentTreeSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
