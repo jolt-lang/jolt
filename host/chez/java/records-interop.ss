@@ -87,6 +87,15 @@
     (let ((k (chez-condition-exc-class val)))
       (if k (if (exception-isa? k (last-dot (symbol-t-name type-sym))) #t #f) 'pass))))
 
+;; Object / java.lang.Object is the root of the type hierarchy: every non-nil
+;; value is an instance of Object; nil is not an instance of anything.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (let ((tn (symbol-t-name type-sym)))
+      (if (or (string=? tn "Object") (string=? tn "java.lang.Object"))
+          (not (jolt-nil? val))
+          'pass))))
+
 (define (instance-check-base type-sym val)
   (let ((tname (symbol-t-name type-sym)))
     (cond

@@ -3353,4 +3353,8 @@
   {:suite "clojure.core / range" :label "(range 5 5) is the empty seq ()" :expected "true" :actual "(= () (range 5 5))"}
   {:suite "clojure.core / range" :label "empty range is not nil" :expected "true" :actual "(some? (range 5 0))"}
   {:suite "clojure.core / range" :label "empty range count" :expected "0" :actual "(count (range 0))"}
+  {:suite "host-interop / instance? Object" :label "every non-nil value is an Object" :expected "[true true true true]" :actual "[(instance? Object 1) (instance? Object \"x\") (instance? Object []) (instance? Object (fn []))]"}
+  {:suite "host-interop / instance? Object" :label "nil is not an instance of Object" :expected "false" :actual "(instance? Object nil)"}
+  {:suite "host-interop / instance? Object" :label "java.lang.Object too" :expected "true" :actual "(instance? java.lang.Object :k)"}
+  {:suite "host-interop / Compiler" :label "@Compiler/LINE is a number" :expected "true" :actual "(number? @clojure.lang.Compiler/LINE)"}
 ]
