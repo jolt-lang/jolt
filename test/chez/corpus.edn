@@ -3347,4 +3347,6 @@
   {:suite "special forms / qualified" :label "clojure.core-qualified special form (from syntax-quote)" :expected "[:g 9]" :actual "(clojure.core/letfn [(g [x] [:g x])] (g 9))"}
   {:suite "symbols / interning" :label "(str sym) is the symbol's interned name (identity-stable)" :expected "[true true]" :actual "(let [s (quote ?a)] [(identical? (name s) (str s)) (= (str s) \"?a\")])"}
   {:suite "symbols / interning" :label "equal symbols share an interned name string" :expected "true" :actual "(let [a (quote ?foo) b (quote ?foo)] (identical? (name a) (name b)))"}
+  {:suite "reader / unquote" :label "~x reads as clojure.core/unquote" :expected "true" :actual "(= (quote (clojure.core/unquote v)) (read-string \"~v\"))"}
+  {:suite "reader / unquote" :label "~@x reads as clojure.core/unquote-splicing" :expected "true" :actual "(= (quote clojure.core/unquote-splicing) (first (read-string \"~@xs\")))"}
 ]

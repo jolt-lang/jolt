@@ -52,6 +52,11 @@
 (defn- empty-env [] {:locals #{} :hints {}})
 (defn- local? [env nm] (contains? (:locals env) nm))
 (defn- add-locals [env names] (update env :locals #(reduce conj % names)))
+;; &env value handed to a macro: a map of each in-scope local SYMBOL to nil
+;; (Clojure's &env maps locals to compiler binding objects; consumers like
+;; core.logic's matche only read its keys to tell locals from fresh pattern vars).
+(defn- amp-env-map [env]
+  (reduce (fn [m n] (assoc m (symbol n) nil)) {} (:locals env)))
 (defn- with-recur [env name] (assoc env :recur name))
 
 ;; Type hints. The reader keeps ^hint metadata on the binding symbol.
@@ -632,7 +637,7 @@
             ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
             ;; source offset onto the resulting def, since the macro builds a fresh
             ;; (def …) with no metadata. So the back end can register fn defs.
-            (let [node (analyze ctx (form-expand-1 ctx form) env)
+            (let [node (analyze ctx (form-expand-1 ctx form (amp-env-map env)) env)
                   p (form-position form)]
               (if (and p (= :def (:op node))) (assoc node :pos p) node))
           ;; jolt.ffi/__cfn — the foreign-function special form (always emitted

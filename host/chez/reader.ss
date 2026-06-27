@@ -589,10 +589,13 @@
                            (jolt-list (jolt-symbol #f "syntax-quote") form))
                        j)))
             ((char=? c #\@) (rdr-wrap s (+ i 1) end (jolt-symbol "clojure.core" "deref")))
+            ;; ~ / ~@ read as clojure.core/unquote(-splicing), like the JVM reader —
+            ;; so code that inspects pattern/template data (core.logic's defne) sees
+            ;; the qualified symbol it expects.
             ((char=? c #\~)
              (if (and (< (+ i 1) end) (char=? (string-ref s (+ i 1)) #\@))
-                 (rdr-wrap s (+ i 2) end (jolt-symbol #f "unquote-splicing"))
-                 (rdr-wrap s (+ i 1) end (jolt-symbol #f "unquote"))))
+                 (rdr-wrap s (+ i 2) end (jolt-symbol "clojure.core" "unquote-splicing"))
+                 (rdr-wrap s (+ i 1) end (jolt-symbol "clojure.core" "unquote"))))
             ((char=? c #\^)
              (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
                (let-values (((target k) (rdr-read-form s j end)))
