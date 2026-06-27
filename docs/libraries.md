@@ -60,6 +60,7 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
 * [data.zip](https://github.com/clojure/data.zip) — zipper navigation, including
   `clojure.data.zip.xml`; XML parsing via [jolt-lang/xml](https://github.com/jolt-lang/xml)
   (which now ships `clojure.xml/parse`).
+* [data.csv](https://github.com/clojure/data.csv) — reading and writing CSV.
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write

@@ -154,6 +154,9 @@
         (cons "flush" (lambda (self) jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) (sb-str self)))))
+;; (str sw) / print a StringWriter -> its accumulated content, like the JVM
+;; (str calls toString) — data.csv writes CSV to a StringWriter and reads it back.
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "writer"))) sb-str)
 
 ;; a file-backed writer (clojure.java.io/writer of a File/path): accumulates like
 ;; StringWriter, then persists to the path on flush/close, so

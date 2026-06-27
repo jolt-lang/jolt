@@ -3367,4 +3367,6 @@
   {:suite "host-interop / instance? hierarchy" :label "ExceptionInfo is a RuntimeException" :expected "[true true true]" :actual "[(instance? RuntimeException (ex-info \"x\" {})) (instance? Exception (ex-info \"x\" {})) (instance? Throwable (ex-info \"x\" {}))]"}
   {:suite "host-interop / class hierarchy" :label "Symbol and Keyword are IFn" :expected "[true true]" :actual "[(isa? clojure.lang.Symbol clojure.lang.IFn) (isa? clojure.lang.Keyword clojure.lang.IFn)]"}
   {:suite "host-interop / class hierarchy" :label "(class sym)-dispatched multimethod hits an IFn method" :expected ":ifn" :actual "(do (defmulti cm1 class) (defmethod cm1 clojure.lang.IFn [_] :ifn) (cm1 (quote sym)))"}
+  {:suite "host-interop / extend-protocol java.io" :label "protocol extended to Reader / String dispatches a StringReader and a String" :expected "[:reader :string]" :actual "(do (import (quote (java.io StringReader))) (defprotocol Prdr (mrd [x])) (extend-protocol Prdr java.io.Reader (mrd [_] :reader) String (mrd [_] :string)) [(mrd (StringReader. \"x\")) (mrd \"y\")])"}
+  {:suite "host-interop / StringWriter" :label "(str StringWriter) returns its accumulated content" :expected "\"hi!\"" :actual "(do (import (quote (java.io StringWriter))) (let [w (StringWriter.)] (.write w \"hi\") (.write w \"!\") (str w)))"}
 ]

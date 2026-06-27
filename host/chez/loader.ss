@@ -227,39 +227,67 @@
                      (else '()))))
     (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items)))))
 
+;; A libspec under a prefix joins onto it: a bare symbol `string` -> `prefix.string`,
+;; a vector `[string :as s]` -> `[prefix.string :as s]` (opts preserved).
+(define (prefix-join prefix lib)
+  (cond
+    ((symbol-t? lib) (jolt-symbol #f (string-append prefix "." (symbol-t-name lib))))
+    ((pvec? lib)
+     (let ((items (seq->list lib)))
+       (if (and (pair? items) (symbol-t? (car items)))
+           (apply jolt-vector (jolt-symbol #f (string-append prefix "." (symbol-t-name (car items)))) (cdr items))
+           lib)))
+    (else lib)))
+
+;; The prefix-list form of a require/use spec: a LIST `(prefix lib …)` expands to
+;; one spec per lib (prefix.lib), so (:require (clojure [string :as str])) means
+;; clojure.string :as str. A vector / symbol spec is already a single lib.
+(define (expand-spec s)
+  (if (or (cseq? s) (empty-list-t? s))
+      (let ((items (seq->list s)))
+        (if (and (pair? items) (symbol-t? (car items)) (pair? (cdr items)))
+            (map (lambda (lib) (prefix-join (symbol-t-name (car items)) lib)) (cdr items))
+            (list s)))
+      (list s)))
+
 ;; --- require/use that LOAD ---------------------------------------------------
 ;; Override the alias-only versions from natives-str.ss. Load each spec's target
 ;; (no-op if baked/already loaded), THEN register its :as/:refer under the caller
 ;; ns (chez-register-spec! reads the current ns, restored by load-namespace).
 (define (loader-require . specs)
   (for-each
-    (lambda (s)
-      (let ((target (spec-target-name s)))
-        (when target (load-namespace target)))
-      (chez-register-spec! (chez-current-ns) s))
+    (lambda (s0)
+      (for-each
+        (lambda (s)
+          (let ((target (spec-target-name s)))
+            (when target (load-namespace target)))
+          (chez-register-spec! (chez-current-ns) s))
+        (expand-spec s0)))
     specs)
   jolt-nil)
 (def-var! "clojure.core" "require" loader-require)
 
-(define (loader-use . specs)
+(define (loader-use . specs0)
   (for-each
-    (lambda (spec)
-      (let ((target (spec-target-name spec)))
-        (when target (load-namespace target)))
-      (chez-register-spec! (chez-current-ns) spec)
-      (let* ((items (cond ((pvec? spec) (seq->list spec))
-                          ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
-                          ((symbol-t? spec) (list spec))
-                          (else '())))
-             (target (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items))))
-             (filtered (let scan ((xs (if (pair? items) (cdr items) '())))
-                         (cond ((null? xs) #f)
-                               ((and (keyword? (car xs))
-                                     (member (keyword-t-name (car xs)) '("only" "refer"))) #t)
-                               (else (scan (cdr xs)))))))
-        (when (and target (not filtered))
-          (chez-register-refer-all! (chez-current-ns) target))))
-    specs)
+    (lambda (spec0)
+      (for-each
+        (lambda (spec)
+          (let ((target (spec-target-name spec)))
+            (when target (load-namespace target)))
+          (chez-register-spec! (chez-current-ns) spec)
+          (let* ((items (cond ((pvec? spec) (seq->list spec))
+                              ((symbol-t? spec) (list spec))
+                              (else '())))
+                 (target (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items))))
+                 (filtered (let scan ((xs (if (pair? items) (cdr items) '())))
+                             (cond ((null? xs) #f)
+                                   ((and (keyword? (car xs))
+                                         (member (keyword-t-name (car xs)) '("only" "refer"))) #t)
+                                   (else (scan (cdr xs)))))))
+            (when (and target (not filtered))
+              (chez-register-refer-all! (chez-current-ns) target))))
+        (expand-spec spec0)))
+    specs0)
   jolt-nil)
 (def-var! "clojure.core" "use" loader-use)
 
