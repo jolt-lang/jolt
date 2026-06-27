@@ -57,6 +57,9 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
 * [core.contracts](https://github.com/clojure/core.contracts) — programming by
   contract (`contract`/`with-constraints`/`provide`), over
   [core.unify](https://github.com/clojure/core.unify).
+* [data.zip](https://github.com/clojure/data.zip) — zipper navigation, including
+  `clojure.data.zip.xml`; XML parsing via [jolt-lang/xml](https://github.com/jolt-lang/xml)
+  (which now ships `clojure.xml/parse`).
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write
