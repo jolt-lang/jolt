@@ -17,11 +17,12 @@
 (define (jolt-bit-clear x n) (bitwise-and (->int x) (bitwise-not (bit-mask n))))
 (define (jolt-bit-flip x n)  (bitwise-xor (->int x) (bit-mask n)))
 (define (jolt-bit-test x n)  (not (zero? (bitwise-and (->int x) (bit-mask n)))))
-;; unsigned-bit-shift-right: logical shift over 64-bit longs. For the common
-;; non-negative operand it equals the arithmetic shift; the negative-operand
-;; 64-bit-window case is not modeled.
+;; unsigned-bit-shift-right: LOGICAL right shift over a 64-bit long (Java >>>),
+;; so a negative operand shifts in zeros from its 64-bit two's-complement window
+;; ((>>> -1 1) = 2^63-1), not the sign. The shift count is taken mod 64.
 (define (jolt-unsigned-bit-shift-right x n)
-  (bitwise-arithmetic-shift-right (->int x) (->int n)))
+  (bitwise-arithmetic-shift-right (bitwise-and (->int x) #xFFFFFFFFFFFFFFFF)
+                                  (bitwise-and (->int n) 63)))
 
 ;; ---- string->scalar parsers -------------------------------------------------
 (define (ascii-digit? c) (and (char>=? c #\0) (char<=? c #\9)))

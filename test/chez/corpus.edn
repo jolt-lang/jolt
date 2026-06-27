@@ -3375,4 +3375,7 @@
   {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-negate of MIN wraps to MIN" :expected "-9223372036854775808" :actual "(unchecked-negate -9223372036854775808)"}
   {:suite "numbers / unchecked wraps to signed 64-bit" :label "unchecked-inc of MAX wraps to MIN" :expected "-9223372036854775808" :actual "(unchecked-inc 9223372036854775807)"}
   {:suite "host-interop / Long bit statics" :label "Long/bitCount, numberOfLeadingZeros, reverse" :expected "[10 63 0 -2]" :actual "[(Long/bitCount 1023) (Long/numberOfLeadingZeros 1) (Long/bitCount 0) (Long/reverse 9223372036854775807)]"}
+  {:suite "numbers / unsigned-bit-shift-right is logical over 64 bits" :label "shift of a negative shifts in zeros" :expected "[9223372036854775807 4611686018427387902]" :actual "[(unsigned-bit-shift-right -1 1) (unsigned-bit-shift-right -8 2)]"}
+  {:suite "numbers / ^long is 64-bit" :label "^long comparison on a full-width long" :expected "false" :actual "((fn* ([^long a ^long b] (< a b))) 9223372036854775807 1)"}
+  {:suite "numbers / ^long is 64-bit" :label "^long quot on a full-width long" :expected "3074457345618258602" :actual "((fn* ([^long a] (quot a 3))) 9223372036854775807)"}
 ]
