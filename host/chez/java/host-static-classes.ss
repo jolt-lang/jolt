@@ -745,6 +745,9 @@
         (cons "toString" (lambda (self) (string-append "class " (jclass-name self))))
         (cons "isArray" (lambda (self) (let ((n (jclass-name self)))
                                          (and (fx>? (string-length n) 0) (char=? (string-ref n 0) #\[)))))
+        ;; Class.isInstance(o) == (instance? class o); core.logic's deftype .equals
+        ;; uses (.. this getClass (isInstance o)).
+        (cons "isInstance" (lambda (self o) (if (instance-check self o) #t #f)))
         (cons "getClass" (lambda (self) (make-class-obj "java.lang.Class")))))
 
 ;; (jolt.host/table? x) — is x a host tagged-table?

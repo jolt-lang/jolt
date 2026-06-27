@@ -52,11 +52,12 @@
   (and (jrec? x)
        (or (jrec-record? x)
            (let ((tag (jrec-tag x)))
-             (or (find-method-any-protocol tag "seq")
-                 (find-method-any-protocol tag "count")
-                 (find-method-any-protocol tag "nth")
-                 (find-method-any-protocol tag "valAt")
-                 (find-method-any-protocol tag "cons"))))
+             ;; coll? is instance? IPersistentCollection — its marker is `cons`
+             ;; (and ISeq's `first`). ILookup(valAt) / Indexed(nth) / Counted(count)
+             ;; / Seqable(seq) alone do NOT make a value coll?, matching the JVM
+             ;; (e.g. core.logic's LVar implements only valAt and is not coll?).
+             (or (find-method-any-protocol tag "cons")
+                 (find-method-any-protocol tag "first"))))
        #t))
 ;; a jrec that is map? — a record, or a deftype implementing clojure.lang
 ;; .IPersistentMap (clojure.core.cache's caches do). `without` (dissoc) is the
@@ -277,9 +278,20 @@
                   (lambda (a b)
                     (cond ((and (jrec? a) (jrec-cl a "equiv")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m a b)) #t #f)))
                           ((and (jrec? b) (jrec-cl b "equiv")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m b a)) #t #f)))
+                          ;; a deftype with a custom Object.equals (but no equiv) governs
+                          ;; its own value equality and map-key identity — core.logic's
+                          ;; LVar/LCons key substitutions on id, ignoring metadata, so
+                          ;; structural jrec=? (which sees the meta field) is wrong here.
+                          ((and (jrec? a) (jrec-cl a "equals")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m a b)) #t #f)))
+                          ((and (jrec? b) (jrec-cl b "equals")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m b a)) #t #f)))
                           ((and (jrec? a) (jrec? b)) (jrec=? a b))
                           (else #f))))
-(register-hash-arm! jrec? jrec-hash)
+;; a deftype's declared hashCode governs its map/set hashing (paired with the
+;; equals/equiv above so the hash/eq contract holds); a plain record hashes its
+;; fields structurally via jrec-hash.
+(register-hash-arm! jrec?
+  (lambda (x) (let ((m (jrec-cl x "hashCode")))
+                (if m (jolt-invoke m x) (jrec-hash x)))))
 ;; get on a jrec: a real field reads raw (so a deftype method's own field bindings,
 ;; compiled to (get inst :field), never recurse); a NON-field key on a deftype that
 ;; implements clojure.lang.ILookup routes to its valAt (core.match's pattern types
@@ -789,6 +801,8 @@
               (string-append (if (symbol-t-ns obj) (string-append (symbol-t-ns obj) "/") "")
                              (symbol-t-name obj)))
              ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
+             ((string=? method-name "hashCode")
+              (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
              (else (error #f (string-append "No method " method-name " on Symbol")))))
       ;; clojure.lang.Namespace: name/getName yield the ns name as a Symbol (JVM:
       ;; Namespace.name is a Symbol). clojure.spec.alpha reads (.name *ns*).
@@ -838,6 +852,14 @@
                  ((jolt=2 (seq-first s) target)
                   (if last? (loop (jolt-seq (seq-more s)) (fx+ i 1) i) i))
                  (else (loop (jolt-seq (seq-more s)) (fx+ i 1) found))))))
+      ;; java.util.Collection.contains over a list/seq (vectors/sets handle it in
+      ;; dot-coll-method): value membership, like the JVM.
+      ((string=? method-name "contains")
+       (let ((target (car rest)))
+         (let loop ((s (jolt-seq obj)))
+           (cond ((jolt-nil? s) #f)
+                 ((jolt=2 (seq-first s) target) #t)
+                 (else (loop (jolt-seq (seq-more s))))))))
       ;; universal Object methods on any remaining value (boolean, etc.).
       ((string=? method-name "toString") (jolt-str-render-one obj))
       ((string=? method-name "hashCode") (jolt-hash obj))

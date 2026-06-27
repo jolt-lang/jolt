@@ -455,6 +455,30 @@
                      (values (cadr xs) j)))
                 (else (loop (cddr xs)))))))))
 
+(define (rdr-string-rindex-char str c)
+  (let loop ((i (- (string-length str) 1)))
+    (cond ((< i 0) #f) ((char=? (string-ref str i) c) i) (else (loop (- i 1))))))
+
+;; A record/type literal tag (#ns.Type{..} / #ns.Type[..]) is any tag containing
+;; a dot — Clojure routes those to a constructor instead of a data reader.
+(define (rdr-record-tag? tok) (and (rdr-string-rindex-char tok #\.) #t))
+
+;; #a.b.C{..} -> (a.b/map->C {..}); #a.b.C[..] -> (a.b/->C ..). The factory call
+;; compiles like any invoke; defrecord interns map->C/->C in the type's ns.
+(define (rdr-record-ctor-form tok form)
+  (let* ((di (rdr-string-rindex-char tok #\.))
+         (ns (substring tok 0 di))
+         (simple (substring tok (+ di 1) (string-length tok))))
+    (cond
+      ((pmap? form)
+       (jolt-list (jolt-symbol ns (string-append "map->" simple)) form))
+      ((pvec? form)
+       (apply jolt-list (jolt-symbol ns (string-append "->" simple))
+              (vector->list (pvec-v form))))
+      (else (jolt-throw (jolt-ex-info
+                         (string-append "Unreadable constructor form: #" tok)
+                         (empty-pmap)))))))
+
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'
   (when (>= i end) (jolt-throw (jolt-ex-info "EOF after #" (empty-pmap))))
   (let ((c (string-ref s i)))
@@ -497,7 +521,9 @@
        (let-values (((tok j) (rdr-read-token s i end)))
          (let-values (((form k) (rdr-read-form s j end)))
            (when (rdr-eof? form) (jolt-throw (jolt-ex-info "EOF after #tag" (empty-pmap))))
-           (values (rdr-make-tagged (keyword #f (string-append "#" tok)) form) k)))))))
+           (if (rdr-record-tag? tok)       ; #ns.Type{..}/[..] record literal
+               (values (rdr-record-ctor-form tok form) k)
+               (values (rdr-make-tagged (keyword #f (string-append "#" tok)) form) k))))))))
 
 ;; regex literal source: raw chars to the closing quote; \" is an escaped quote,
 ;; every other backslash sequence is kept verbatim (regex engine semantics).

@@ -320,6 +320,12 @@
           ;; a class token, not a var to namespace-qualify — leave it bare, as
           ;; Clojure's syntax-quote resolves it to the class.
           ((hc-fq-class-name? nm) form)
+          ;; the compile ns's OWN def shadows clojure.core — a name the ns
+          ;; excluded and redefined (e.g. core.logic's `==` after
+          ;; (:refer-clojure :exclude [==])), or any ns-local redefinition.
+          ;; Referred names live in a separate table, so this only hits a real
+          ;; local intern, matching how the analyzer resolves the bare symbol.
+          ((var-cell-lookup (chez-actx-cns ctx) nm) (jolt-symbol (chez-actx-cns ctx) nm))
           ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
           ;; a name referred into the compile ns (:require :refer / :use :only)
           ;; qualifies to its SOURCE ns, not the compile ns — so a macro that

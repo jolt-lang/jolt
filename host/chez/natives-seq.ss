@@ -182,9 +182,12 @@
     (if (jolt-nil? s) jolt-empty-list
         (list->cseq (list-sort less? (seq->list s))))))
 
-;; identical?: jolt reference identity, defined as (= a b) over the
-;; value model, where interned keywords/small values compare equal.
-(define (jolt-identical? a b) (jolt= a b))
+;; identical?: reference identity (Clojure ==). eq? gives pointer identity over
+;; the value model — interned keywords/fixnums/nil compare equal, distinct
+;; collections do not. Must NOT be value equality: a deftype whose .equals calls
+;; (identical? this o) to short-circuit (e.g. core.logic's Substitutions) would
+;; otherwise recur forever (identical? -> = -> equiv -> .equals -> identical?).
+(define (jolt-identical? a b) (eq? a b))
 
 ;; Give the seq.ss native procedures their transducer (1-arg) arity — the emitter
 ;; lowers (map f)/(filter p)/(take n) at the wrong arity to the bare procedure

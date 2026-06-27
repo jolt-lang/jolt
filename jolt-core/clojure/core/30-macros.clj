@@ -281,6 +281,10 @@
 ;; type's fields, bound from the instance (the method's first param), matching
 ;; Clojure's deftype scope. defrecord (below) expands to a bodyless (deftype …) and
 ;; handles its own methods, so this also serves the no-body case.
+;; Legacy structmap definer: binds a var to the struct basis (see create-struct).
+(defmacro defstruct [name & keys]
+  `(def ~name (create-struct ~@keys)))
+
 (defmacro deftype [tname fields & body]
   ;; strip ^meta off the type name and fields (the reader yields a (with-meta sym m)
   ;; form for e.g. (deftype ^{:doc …} Foo …)), so (name …) sees a bare symbol.
