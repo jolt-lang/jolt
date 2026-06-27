@@ -28,3 +28,43 @@
 
 ;; *print-meta* — when true, pr prints metadata with a ^ prefix; default false.
 (def-var! "clojure.core" "*print-meta*" #f)
+
+;; *print-length* / *print-level* — collection print limits, honored by both
+;; printers (rt.ss jolt-pr-str + printing.ss jolt-pr-readable). nil = unlimited
+;; (the default); a number truncates elements / collapses depth to "#".
+;; *print-length* limits a lazy/infinite seq before realizing it.
+(def-var! "clojure.core" "*print-length*" jolt-nil)
+(def-var! "clojure.core" "*print-level*" jolt-nil)
+;; *default-data-reader-fn* — a (fn [tag value]) the reader consults for an
+;; unregistered #tag before raising; nil = no default handler.
+(def-var! "clojure.core" "*default-data-reader-fn*" jolt-nil)
+
+;; Portable clojure.core dynamic vars whose DEFAULT already matches jolt's
+;; behaviour, so exposing them is sound (resolve/binding work, reads return the
+;; right value) — not a silent divergence.
+;;
+;; *read-eval* — gates #=() read-eval. jolt's reader has no #=, so it reads true
+;; (no eval-on-read happens regardless); a lib can (binding [*read-eval* false] …).
+(def-var! "clojure.core" "*read-eval*" #t)
+;; *print-dup* — gates print-dup (a multimethod that exists); default false.
+(def-var! "clojure.core" "*print-dup*" #f)
+;; *print-namespace-maps* — jolt never prints the #:ns{…} map shorthand, so the
+;; var reads false (accurate); settable for code that toggles it.
+(def-var! "clojure.core" "*print-namespace-maps*" #f)
+;; *flush-on-newline* — jolt flushes line output; default true.
+(def-var! "clojure.core" "*flush-on-newline*" #t)
+;; *compile-files* — jolt has no separate compile phase that emits .class files.
+(def-var! "clojure.core" "*compile-files*" #f)
+;; *math-context* — BigDecimal rounding context; nil = unlimited, jolt's default.
+(def-var! "clojure.core" "*math-context*" jolt-nil)
+;; *command-line-args* — the args after the script/-main; nil outside a -m run.
+(def-var! "clojure.core" "*command-line-args*" jolt-nil)
+;; *file* — the source file being loaded; "NO_SOURCE_PATH" when none, like the JVM.
+(def-var! "clojure.core" "*file*" "NO_SOURCE_PATH")
+
+;; REPL result/exception history. Bound by the REPL after each evaluation; nil
+;; outside a REPL, which is what reading them returns here.
+(def-var! "clojure.core" "*1" jolt-nil)
+(def-var! "clojure.core" "*2" jolt-nil)
+(def-var! "clojure.core" "*3" jolt-nil)
+(def-var! "clojure.core" "*e" jolt-nil)

@@ -1823,6 +1823,21 @@
   {:suite "regex / re-seq" :label "all matches" :expected "[\"1\" \"22\" \"333\"]" :actual "(re-seq #\"\\d+\" \"a1b22c333\")"}
   {:suite "regex / re-seq" :label "empty when none" :expected "nil" :actual "(seq (re-seq #\"z\" \"abc\"))"}
   {:suite "regex / re-seq" :label "words" :expected "[\"foo\" \"bar\"]" :actual "(re-seq #\"\\w+\" \"foo bar\")"}
+  {:suite "regex / char-class dash" :label "dash after \\w is literal" :expected "\"a_b-c\"" :actual "(re-matches #\"[\\w-_]+\" \"a_b-c\")"}
+  {:suite "regex / char-class dash" :label "dash + escaped dot in class" :expected "\"a.b_c-d\"" :actual "(re-matches #\"[\\w-_\\.]+\" \"a.b_c-d\")"}
+  {:suite "regex / char-class dash" :label "trailing dash in class" :expected "[\"a-b\" \"c-d\"]" :actual "(vec (re-seq #\"[\\w-]+\" \"a-b c-d\"))"}
+  {:suite "regex / nested quantifier" :label "(X+)* parses and matches" :expected "true" :actual "(boolean (re-matches #\"([^%]+)*(%(d))?\" \"abc\"))"}
+  {:suite "regex / matcher" :label "re-find over a matcher" :expected "\"1\"" :actual "(re-find (re-matcher #\"\\d+\" \"a1b22\"))"}
+  {:suite "regex / matcher" :label "stateful step + re-groups" :expected "[[\"12-34\" \"12\" \"34\"] [\"12-34\" \"12\" \"34\"] [\"56-78\" \"56\" \"78\"] nil]" :actual "(let [m (re-matcher #\"(\\d+)-(\\d+)\" \"12-34 56-78\")] [(re-find m) (re-groups m) (re-find m) (re-find m)])"}
+  {:suite "regex / matcher" :label "re-groups before a match throws" :expected :throws :actual "(re-groups (re-matcher #\"\\d\" \"abc\"))"}
+  {:suite "dynamic vars / portable defaults" :label "default reads" :expected "[true false true false]" :actual "[*read-eval* *print-dup* *flush-on-newline* *compile-files*]"}
+  {:suite "dynamic vars / portable defaults" :label "binding *read-eval*" :expected "false" :actual "(binding [*read-eval* false] *read-eval*)"}
+  {:suite "special forms / letfn" :label "mutual recursion" :expected "true" :actual "(letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? 10))"}
+  {:suite "core vars / present and callable" :label "*out* *err* *warn-on-reflection* await restart-agent" :expected "[true true false true true]" :actual "[(boolean *out*) (boolean *err*) *warn-on-reflection* (ifn? await) (ifn? restart-agent)]"}
+  {:suite "exceptions / runtime error classes" :label "arity error is ArityException" :expected "true" :actual "(instance? clojure.lang.ArityException (try ((fn [a b] a) 1) (catch Throwable e e)))"}
+  {:suite "exceptions / runtime error classes" :label "ArityException is an IllegalArgumentException" :expected "true" :actual "(instance? IllegalArgumentException (try ((fn [a b] a) 1) (catch Throwable e e)))"}
+  {:suite "exceptions / runtime error classes" :label "non-seqable is IllegalArgumentException" :expected "true" :actual "(instance? IllegalArgumentException (try (doall (mapcat identity 0)) (catch Throwable e e)))"}
+  {:suite "dynamic vars / portable defaults" :label "*data-readers* map, *math-context* nil" :expected "[true true]" :actual "[(map? *data-readers*) (nil? *math-context*)]"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern build" :expected "\"hi\"" :actual "(re-find (re-pattern \"\\\\w+\") \"hi!\")"}
   {:suite "regex / re-pattern & string ops" :label "re-pattern is regex?" :expected "true" :actual "(regex? (re-pattern \"a\"))"}
   {:suite "regex / re-pattern & string ops" :label "split on regex" :expected "[\"a\" \"b\" \"c\"]" :actual "(do (require '[clojure.string :as s]) (s/split \"a1b2c\" #\"\\d\"))"}
@@ -3236,4 +3251,31 @@
   {:suite "vectors / large trie" :label "assoc in a large vector" :expected "[1098 :x 1100]" :actual "(let [v (assoc (vec (range 1100)) 1099 :x)] [(nth v 1098) (nth v 1099) (count v)])"}
   {:suite "vectors / large trie" :label "pop down across a level boundary" :expected "[1023 1022]" :actual "(let [p (pop (vec (range 1024)))] [(count p) (peek p)])"}
   {:suite "vectors / large trie" :label "pop to empty then rebuild" :expected "[0 5]" :actual "(let [e (loop [v (vec (range 100))] (if (seq v) (recur (pop v)) v))] [(count e) (count (into e (range 5)))])"}
+  {:suite "printer / print-length" :label "truncates an infinite seq before realizing it" :expected "true" :actual "(= \"(0 1 2 ...)\" (binding [*print-length* 3] (pr-str (range))))"}
+  {:suite "printer / print-length" :label "truncates a vector with ellipsis" :expected "true" :actual "(= \"[1 2 ...]\" (binding [*print-length* 2] (pr-str [1 2 3 4])))"}
+  {:suite "printer / print-length" :label "exactly N elements prints no ellipsis" :expected "true" :actual "(= \"(0 1 2)\" (binding [*print-length* 3] (pr-str (range 3))))"}
+  {:suite "printer / print-length" :label "nil default is unlimited" :expected "true" :actual "(= \"[1 2 3 4 5]\" (pr-str [1 2 3 4 5]))"}
+  {:suite "printer / print-level" :label "collapses a collection past the level to #" :expected "true" :actual "(= \"[:a [:b #]]\" (binding [*print-level* 2] (pr-str [:a [:b [:c 1]]])))"}
+  {:suite "printer / print-level" :label "level 0 collapses the top collection" :expected "true" :actual "(= \"#\" (binding [*print-level* 0] (pr-str [1 2])))"}
+  {:suite "printer / print-level" :label "level 1 keeps the outermost collection" :expected "true" :actual "(= \"[# 3]\" (binding [*print-level* 1] (pr-str [[1 2] 3])))"}
+  {:suite "printer / print-level" :label "scalars print regardless of level" :expected "true" :actual "(= \"[1 2]\" (binding [*print-level* 1] (pr-str [1 2])))"}
+  {:suite "reader / default-data-reader-fn" :label "consulted for an unregistered tag" :expected "true" :actual "(= [(quote foo) 42] (binding [*default-data-reader-fn* (fn [tag v] [tag v])] (read-string \"#foo 42\")))"}
+  {:suite "printer / print-vars" :label "print-length / print-level / default-data-reader-fn default to nil" :expected "[true true true]" :actual "[(nil? *print-length*) (nil? *print-level*) (nil? *default-data-reader-fn*)]"}
+  {:suite "seqs / laziness" :label "an empty lazy seq is () not nil" :expected "true" :actual "(= () (lazy-seq nil))"}
+  {:suite "seqs / laziness" :label "rest of a one-element coll is ()" :expected "true" :actual "(= () (rest [1]))"}
+  {:suite "seqs / laziness" :label "first of iterate does not call f" :expected "true" :actual "(let [a (atom 0)] (first (iterate (fn [x] (swap! a inc) (inc x)) 0)) (= 0 @a))"}
+  {:suite "seqs / laziness" :label "rest of iterate does not realize the next element" :expected "true" :actual "(let [a (atom 0)] (rest (iterate (fn [x] (swap! a inc) (inc x)) 0)) (= 0 @a))"}
+  {:suite "seqs / laziness" :label "take from an infinite iterate" :expected "[0 1 2 3 4]" :actual "(vec (take 5 (iterate inc 0)))"}
+  {:suite "seqs / laziness" :label "distinct over a rest-derived seq does not overrun" :expected "2" :actual "(count (distinct (map inc (rest [10 20 30]))))"}
+  {:suite "transducers / map multi-input" :label "the map transducer applies f across all inputs" :expected "[6]" :actual "(((map +) conj) [] 1 2 3)"}
+  {:suite "transducers / map multi-input" :label "single input is unchanged" :expected "[3]" :actual "(((map +) conj) [] 3)"}
+  {:suite "records / deftype is not a map" :label "a bare deftype is neither map? nor record?, a defrecord is both" :expected "[false false true true]" :actual "(do (deftype DT [a]) (defrecord DR [a]) [(map? (->DT 1)) (record? (->DT 1)) (map? (->DR 1)) (record? (->DR 1))])"}
+  {:suite "printer / str vs print" :label "str of a vector quotes nested strings" :expected "true" :actual "(= \"[\\\"x\\\"]\" (str [\"x\"]))"}
+  {:suite "printer / str vs print" :label "print-str of a vector leaves strings raw" :expected "true" :actual "(= \"[x]\" (print-str [\"x\"]))"}
+  {:suite "printer / str vs print" :label "str of a map quotes nested strings" :expected "true" :actual "(= \"{\\\"a\\\" \\\"b\\\"}\" (str {\"a\" \"b\"}))"}
+  {:suite "printer / str vs print" :label "print-str of a map leaves strings raw" :expected "true" :actual "(= \"{:a x}\" (print-str {:a \"x\"}))"}
+  {:suite "printer / str vs print" :label "infinity inside a collection prints readably in str" :expected "true" :actual "(= \"[##Inf]\" (str [##Inf]))"}
+  {:suite "interop / uri equality" :label "URIs are value-equal and usable as set members" :expected "[true true]" :actual "[(= (java.net.URI. \"/\") (java.net.URI. \"/\")) (= #{(java.net.URI. \"/\")} #{(java.net.URI. \"/\")})]"}
+  {:suite "stdlib / clojure.walk" :label "macroexpand-all expands a form" :expected "true" :actual "(do (require (quote clojure.walk)) (seq? (clojure.walk/macroexpand-all (quote (when true 1)))))"}
+  {:suite "regex / re-seq zero-width" :label "a zero-width match advances by one without repeating" :expected "[\"a\" \"\" \"a\" \"\"]" :actual "(vec (re-seq #\"a*\" \"aba\"))"}
 ]

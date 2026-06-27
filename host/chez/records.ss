@@ -31,6 +31,33 @@
 ;; map (jolt-nil unless non-field keys have been assoc'd on).
 (define-record-type (jrec make-jrec jrec?) (fields desc vals ext) (nongenerative chez-jrec-v2))
 (define (jrec-tag r) (jrdesc-tag (jrec-desc r)))
+
+;; defrecord vs deftype: a defrecord IS a map (map?/seq/keys/assoc over its
+;; fields); a bare deftype is an opaque object with only its declared interfaces,
+;; never a map (Clojure semantics). defrecord registers its type tag here; the
+;; default jrec-as-map behaviour (map?/record?/field-seq) is gated on it, while
+;; method dispatch (a deftype implementing ISeq/Counted/…) stays open to any jrec.
+(define chez-record-type-tbl (make-hashtable string-hash string=?))
+(define (jrec-record? x) (and (jrec? x) (hashtable-ref chez-record-type-tbl (jrec-tag x) #f) #t))
+;; every deftype/defrecord tag, and a simple-name -> tag index. An extend-protocol
+;; in a DIFFERENT ns names the type bare (it is :import-ed), so register-method
+;; resolves "Raw" to its real tag "a.util.Raw" here instead of prepending the
+;; calling ns. The local ns is preferred, so a same-named local type still wins.
+(define chez-deftype-tag-set (make-hashtable string-hash string=?))
+(define chez-simple-name-tag (make-hashtable string-hash string=?))
+;; a jrec that is coll? — a record, or a deftype implementing a collection
+;; interface (its seq/count/nth/valAt/cons method is registered). find-method-any-
+;; protocol is defined later; resolved at call time. An opaque deftype is not coll?.
+(define (jrec-collection? x)
+  (and (jrec? x)
+       (or (jrec-record? x)
+           (let ((tag (jrec-tag x)))
+             (or (find-method-any-protocol tag "seq")
+                 (find-method-any-protocol tag "count")
+                 (find-method-any-protocol tag "nth")
+                 (find-method-any-protocol tag "valAt")
+                 (find-method-any-protocol tag "cons"))))
+       #t))
 (define jolt-deftype-kw (keyword "jolt" "deftype"))
 ;; unique present-vs-absent sentinel for extension-map lookups (so a present nil
 ;; in the extension map is distinguished from a genuine miss).
@@ -338,7 +365,9 @@
 (define %r-jolt-seq jolt-seq)
 (set! jolt-seq (lambda (x)
   (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
-        ((jrec? x) (list->cseq (jrec-entry-list x)))
+        ;; a record seqs its fields; a bare deftype is not seqable (falls through
+        ;; to %r-jolt-seq, which errors like the JVM).
+        ((jrec-record? x) (list->cseq (jrec-entry-list x)))
         (else (%r-jolt-seq x)))))
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
@@ -350,7 +379,8 @@
 ;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
 ;; .priority-map's peek calls (.isEmpty this) -> empty?). jolt-seq is method-first.
 (define %r-jolt-empty? jolt-empty?)
-(set! jolt-empty? (lambda (coll) (if (jrec? coll) (jolt-nil? (jolt-seq coll)) (%r-jolt-empty? coll))))
+(set! jolt-empty? (lambda (coll)
+  (if (jrec-collection? coll) (jolt-nil? (jolt-seq coll)) (%r-jolt-empty? coll))))
 (define %r-jolt-peek jolt-peek)
 (set! jolt-peek (lambda (coll)
   (cond ((jrec-cl coll "peek") => (lambda (m) (jolt-invoke m coll)))
@@ -365,10 +395,13 @@
 ;; predicates.ss vars hold a snapshot, so re-def-var! after extending. record? is
 ;; the overlay's (some? (get x :jolt/deftype)) — works for free since the get
 ;; override returns the tag for that key.
+;; only a defrecord is a map (Clojure: a record IS an associative map); a bare
+;; deftype is not. coll? additionally covers a deftype implementing a collection
+;; interface. predicates.ss vars hold a snapshot, so re-def-var! after extending.
 (define %r-jolt-map? jolt-map?)
-(set! jolt-map? (lambda (x) (or (jrec? x) (%r-jolt-map? x))))
+(set! jolt-map? (lambda (x) (or (jrec-record? x) (%r-jolt-map? x))))
 (def-var! "clojure.core" "map?" jolt-map?)
-(def-var! "clojure.core" "coll?" (lambda (x) (or (jrec? x) (jolt-coll-pred? x))))
+(def-var! "clojure.core" "coll?" (lambda (x) (or (jrec-collection? x) (jolt-coll-pred? x))))
 
 ;; ---- protocol registry ------------------------------------------------------
 ;; type-tag -> (proto-name -> (method-name -> fn))
@@ -483,6 +516,9 @@
     ;; even when the runtime current ns is the caller's, not the defining ns
     ;; (host-new checks class-ctors-tbl before the current-ns var fallback).
     (register-class-ctor! (symbol-t-name name-sym) ctor)
+    ;; index the tag so a cross-ns extend-protocol resolves the bare type name.
+    (hashtable-set! chez-deftype-tag-set tag #t)
+    (hashtable-set! chez-simple-name-tag (symbol-t-name name-sym) tag)
     ;; record the shape for whole-program inference, keyed by the positional
     ;; ctor var "ns/->Name" the analyzer resolves a (->Name …) call to.
     (register-record-shape! (string-append (chez-current-ns) "/->" (symbol-t-name name-sym))
@@ -559,7 +595,14 @@
                (when pi (hashtable-set! pi extend-mark #t))))))
 (define (register-method type-name proto-name method-name fn)
   (let* ((host (canonical-host-tag type-name))
-         (tag (or host (string-append (chez-current-ns) "." type-name))))
+         (local (string-append (chez-current-ns) "." type-name))
+         ;; a host class -> its canonical tag; a deftype defined in THIS ns -> the
+         ;; local tag; an :import-ed deftype from another ns -> its real tag via the
+         ;; simple-name index; otherwise the local tag (a forward extend).
+         (tag (cond (host host)
+                    ((hashtable-ref chez-deftype-tag-set local #f) local)
+                    ((hashtable-ref chez-simple-name-tag type-name #f))
+                    (else local))))
     (register-protocol-method tag proto-name method-name fn)
     (mark-extend! tag proto-name)
     jolt-nil))
@@ -830,6 +873,14 @@
 ;; yields (jolt-symbol #f (jrec-tag x)), the ns.Name class-name symbol.
 
 (def-var! "clojure.core" "make-deftype-ctor" make-deftype-ctor)
+
+;; defrecord marks its type a record (deftype does not), keyed by the same
+;; "ns.Name" tag make-deftype-ctor bakes — so jrec-record? distinguishes the two.
+(define (register-record-type! name-sym)
+  (hashtable-set! chez-record-type-tbl
+                  (string-append (chez-current-ns) "." (symbol-t-name name-sym)) #t)
+  jolt-nil)
+(def-var! "clojure.core" "register-record-type!" register-record-type!)
 (def-var! "clojure.core" "make-protocol" make-protocol)
 (def-var! "clojure.core" "register-protocol-methods!" register-protocol-methods!)
 (def-var! "clojure.core" "register-method" register-method)

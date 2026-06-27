@@ -33,6 +33,14 @@
       (apply %chez-error args)))
 (load "vendor/irregex/irregex.scm")
 
+;; irregex rejects a quantifier applied to anything that already contains one —
+;; including a GROUP like (a+)* — because sre-repeater? recurses through submatch.
+;; Java only rejects a DANGLING double quantifier (a**); it allows a quantifier on
+;; a group whose body is quantified. Restrict the check to a bare leading * / + so
+;; a** still errors but (a+)* parses (cuerdas's format tokenizer needs this).
+(set! sre-repeater?
+  (lambda (sre) (and (pair? sre) (memq (car sre) '(* +)) #t)))
+
 ;; Unicode property classes \p{...}: irregex's string syntax has no
 ;; \p{...}, so translate a fixed set of property names
 ;; to ASCII char classes before compiling. ASCII-only — \p{L} would need
@@ -92,6 +100,36 @@
                (write-char c out) (loop (fx+ i 1) #f))
               (else (write-char c out) (loop (fx+ i 1) in-class))))))))
 
+;; Inside a [...] class, irregex reads a '-' that follows a shorthand class
+;; (\w \d \s \W \D \S) as the start of a range and errors ("bad char-set"); Java
+;; reads it as a literal hyphen (a shorthand can't be a range endpoint). Escape
+;; such a '-' to \- so the class parses. Only a '-' right after a shorthand and
+;; not the class terminator is touched; a '-' after a plain char (a real range
+;; like [a-z]) is left alone.
+(define (escape-class-shorthand-dash src)
+  (let ((len (string-length src)) (out (open-output-string)))
+    (let loop ((i 0) (in-class #f) (after-shorthand #f))
+      (if (fx>=? i len)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (cond
+              ;; an escape pair: \w-style shorthand sets after-shorthand inside a class
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (let ((n (string-ref src (fx+ i 1))))
+                 (write-char c out) (write-char n out)
+                 (loop (fx+ i 2) in-class
+                       (and in-class (memv n '(#\w #\d #\s #\W #\D #\S)) #t))))
+              ((and (not in-class) (char=? c #\[))
+               (write-char c out) (loop (fx+ i 1) #t #f))
+              ((and in-class (char=? c #\]))
+               (write-char c out) (loop (fx+ i 1) #f #f))
+              ;; the case Java reads as a literal hyphen
+              ((and in-class after-shorthand (char=? c #\-)
+                    (fx<? (fx+ i 1) len) (not (char=? (string-ref src (fx+ i 1)) #\])))
+               (write-char #\\ out) (write-char #\- out)
+               (loop (fx+ i 1) in-class #f))
+              (else (write-char c out) (loop (fx+ i 1) in-class #f))))))))
+
 ;; Java/Clojure inline flags: a leading (?imsx…) group sets a flag over the whole
 ;; pattern. irregex has the same semantics but as constructor OPTIONS, not inline
 ;; syntax (it rejects (?s)/(?s:…)), so peel any leading flag groups off the source
@@ -123,7 +161,8 @@
 (define-record-type regex-t (fields source irx) (nongenerative jolt-regex-v1))
 (define (jolt-regex source)
   (let-values (((opts pat) (regex-parse-flags source)))
-    (make-regex-t source (apply irregex (translate-prop-classes pat) opts))))
+    (make-regex-t source
+                  (apply irregex (translate-prop-classes (escape-class-shorthand-dash pat)) opts))))
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
 
@@ -143,9 +182,44 @@
   (let ((m (irregex-match (regex-t-irx (jolt-re-pattern re)) s)))
     (if m (irx-result m) jolt-nil)))
 
-(define (jolt-re-find re s)
-  (let ((m (irregex-search (regex-t-irx (jolt-re-pattern re)) s)))
-    (if m (irx-result m) jolt-nil)))
+;; A stateful matcher (java.util.regex.Matcher): the compiled pattern, the target
+;; string, the next search position, and the last successful irregex match. re-find
+;; over a matcher steps through non-overlapping matches; re-groups returns the
+;; groups of the last one.
+(define-record-type matcher-t
+  (fields irx str (mutable pos) (mutable last))
+  (nongenerative jolt-matcher-v1))
+(define (jolt-re-matcher re s)
+  (make-matcher-t (regex-t-irx (jolt-re-pattern re)) s 0 #f))
+(define (jolt-matcher? x) (matcher-t? x))
+
+;; re-find: stateless over (re s), or stateful over a matcher (advance + remember).
+(define jolt-re-find
+  (case-lambda
+    ((re s)
+     (let ((m (irregex-search (regex-t-irx (jolt-re-pattern re)) s)))
+       (if m (irx-result m) jolt-nil)))
+    ((m)
+     (let* ((str (matcher-t-str m))
+            (len (string-length str))
+            (start (matcher-t-pos m))
+            (mm (and (<= start len) (irregex-search (matcher-t-irx m) str start))))
+       (if mm
+           (let ((ms (irregex-match-start-index mm 0))
+                 (e (irregex-match-end-index mm 0)))
+             (matcher-t-last-set! m mm)
+             ;; advance past this match: to its end, or one past a zero-width match
+             ;; (which may sit past the search origin, e.g. a lookahead/boundary).
+             (matcher-t-pos-set! m (if (> e ms) e (+ e 1)))
+             (irx-result mm))
+           (begin (matcher-t-last-set! m #f) jolt-nil))))))
+
+;; re-groups: the groups of the matcher's last successful find. Throws when no
+;; match has succeeded, like Clojure's IllegalStateException "No match found".
+(define (jolt-re-groups m)
+  (let ((last (matcher-t-last m)))
+    (if last (irx-result last)
+        (jolt-throw (jolt-ex-info "No match found" (jolt-hash-map))))))
 
 ;; All non-overlapping matches, left to right. Advance past each match end (or by
 ;; one on a zero-width match). nil when there are no matches (Clojure: seq-able as
@@ -156,12 +230,17 @@
     (let loop ((start 0) (acc '()))
       (let ((m (and (<= start len) (irregex-search irx s start))))
         (if m
-            (let ((e (irregex-match-end-index m 0)))
-              (loop (if (> e start) e (+ start 1)) (cons (irx-result m) acc)))
+            (let ((ms (irregex-match-start-index m 0))
+                  (e (irregex-match-end-index m 0)))
+              ;; to the match end, or one past a zero-width match (relative to its
+              ;; own start, which may be past the search origin).
+              (loop (if (> e ms) e (+ e 1)) (cons (irx-result m) acc)))
             (list->cseq (reverse acc)))))))
 
 (def-var! "clojure.core" "re-pattern" jolt-re-pattern)
 (def-var! "clojure.core" "re-matches" jolt-re-matches)
 (def-var! "clojure.core" "re-find" jolt-re-find)
 (def-var! "clojure.core" "re-seq" jolt-re-seq)
+(def-var! "clojure.core" "re-matcher" jolt-re-matcher)
+(def-var! "clojure.core" "re-groups" jolt-re-groups)
 (def-var! "clojure.core" "regex?" jolt-regex?)

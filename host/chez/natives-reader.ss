@@ -16,20 +16,15 @@
              (seq->list (jolt-seq names))))
   jolt-nil)
 
-;; --- reader-conditional / re-matcher: tagged maps (reader-conditional? + the
-;; matcher consumers are overlay tagged-value predicates that read :jolt/type).
+;; --- reader-conditional: a tagged map (reader-conditional? is an overlay
+;; tagged-value predicate that reads :jolt/type). re-matcher / re-find / re-groups
+;; are the stateful matcher API in regex.ss.
 (define nr-kw-type (keyword "jolt" "type"))
 (define nr-kw-rc   (keyword "jolt" "reader-conditional"))
 (define nr-kw-form (keyword #f "form"))
 (define nr-kw-spl  (keyword #f "splicing?"))
-(define nr-kw-mat  (keyword "jolt" "matcher"))
-(define nr-kw-re   (keyword #f "re"))
-(define nr-kw-s    (keyword #f "s"))
-(define nr-kw-pos  (keyword #f "pos"))
 (define (nr-reader-conditional form splicing?)
   (jolt-hash-map nr-kw-type nr-kw-rc nr-kw-form form nr-kw-spl splicing?))
-(define (nr-re-matcher re s)
-  (jolt-hash-map nr-kw-type nr-kw-mat nr-kw-re re nr-kw-s s nr-kw-pos 0.0))
 
 ;; --- macroexpand-1 / macroexpand: expand a (quoted) call form via the runtime
 ;; macro table (host-contract hc-macro?/hc-expand-1; forward-referenced, resolved
@@ -47,6 +42,13 @@
 (def-var! "clojure.core" "__reader-features" nr-reader-features-get)
 (def-var! "clojure.core" "__reader-features-set!" nr-reader-features-set!)
 (def-var! "clojure.core" "reader-conditional" nr-reader-conditional)
-(def-var! "clojure.core" "re-matcher" nr-re-matcher)
 (def-var! "clojure.core" "macroexpand-1" nr-macroexpand-1)
+
+;; letfn is a special form (the analyzer lowers it to letrec*, checked before any
+;; macro), but on the JVM it is also a clojure.core macro that (resolve 'letfn)
+;; finds — like let / loop / fn here. Intern a var so resolution matches; the value
+;; is never invoked (the analyzer handles every (letfn …) form), and it is NOT
+;; marked a macro, so macroexpand leaves a letfn form alone (it is special).
+(def-var! "clojure.core" "letfn"
+  (lambda args (jolt-throw (jolt-ex-info "letfn is a special form" (jolt-hash-map)))))
 (def-var! "clojure.core" "macroexpand" nr-macroexpand)

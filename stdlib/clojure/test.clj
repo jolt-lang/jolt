@@ -89,13 +89,19 @@
    (cond
      ;; (is (thrown? Class body...))
      (thrown-form? form "thrown?")
-     (let [klass (name (second form))
+     (let [klass-sym (second form)
+           klass (name klass-sym)
            body  (nthrest form 2)]
        `(try
           ~@body
           (clojure.test/fail! (str "expected " '~form " to throw" (when ~msg (str " — " ~msg))))
           (catch Throwable e#
-            (if (clojure.test/class-match? e# ~klass)
+            ;; instance? honors the exception hierarchy (a literal class symbol), so
+            ;; (thrown? IllegalArgumentException …) matches an ArityException subclass
+            ;; like the JVM; class-match? is the simple-name fallback for a class jolt
+            ;; models only by name.
+            (if (or (clojure.core/instance? ~klass-sym e#)
+                    (clojure.test/class-match? e# ~klass))
               (clojure.test/inc-pass!)
               (clojure.test/fail! (str "expected throw of " ~klass " but got " (clojure.core/class e#)))))))
 

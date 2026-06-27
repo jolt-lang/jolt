@@ -48,6 +48,11 @@
   [smap form]
   (prewalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
 
+(defn macroexpand-all
+  "Recursively performs all possible macroexpansions in form."
+  [form]
+  (prewalk (fn [x] (if (seq? x) (macroexpand x) x)) form))
+
 (defn keywordize-keys
   [m]
   (let [f (fn [[k v]] (if (string? k) [(keyword k) v] [k v]))]

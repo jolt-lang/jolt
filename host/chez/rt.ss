@@ -110,6 +110,11 @@
 ;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
 ;; return, so this is transparent there.
 (define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
+;; jolt.host/throwable — build a typed throwable a library can throw so (class …),
+;; instance?, .getMessage and ex-message all reflect the named JVM class (e.g. an
+;; http client throwing java.net.ConnectException). Strictly better than a
+;; hand-rolled :jolt/ex-info table, which carries only the class.
+(def-var! "jolt.host" "throwable" jolt-host-throwable)
 ;; var def-time metadata: the :def emit passes the def's reader meta
 ;; (^:private / ^Type tag / docstring -> {:doc}) here, stored in an eq side-table
 ;; keyed by the cell. jolt-meta (natives-meta.ss) merges it onto {:ns :name},
@@ -185,6 +190,59 @@
 ;; bare nil renders as the empty string (a nil ELEMENT inside a collection still
 ;; prints "nil", which jolt-pr-str handles).
 (define (jolt-final-str x) (if (jolt-nil? x) "" (jolt-pr-str x)))
+;; --- *print-level* / *print-length* -----------------------------------------
+;; Both vars default to nil (= unlimited). A non-nil number limits collection
+;; nesting depth / element count in BOTH printers (jolt-pr-str here and
+;; jolt-pr-readable in printing.ss). Cells captured lazily — the vars are def'd
+;; after rt.ss. The nil default takes a fast path: jolt-print-hash? is #f and the
+;; limited-string walkers never truncate.
+(define plevel-cell #f)
+(define plength-cell #f)
+(define (jolt-print-level)
+  (unless plevel-cell (set! plevel-cell (jolt-var "clojure.core" "*print-level*")))
+  (let ((v (jolt-var-get plevel-cell))) (and (number? v) v)))
+(define (jolt-print-length)
+  (unless plength-cell (set! plength-cell (jolt-var "clojure.core" "*print-length*")))
+  (let ((v (jolt-var-get plength-cell))) (and (number? v) v)))
+(define jolt-print-depth (make-thread-parameter 0))
+;; A collection at depth >= *print-level* renders as "#". The top-level collection
+;; is depth 0, so *print-level* 0 collapses any collection, 1 keeps the outermost.
+(define (jolt-print-hash?)
+  (let ((lvl (jolt-print-level))) (and lvl (fx>=? (jolt-print-depth) lvl))))
+;; Rendered element strings of a vector (by index), honoring *print-length*: at
+;; most N, then "...". render-one runs at the current (already bumped) depth.
+(define (jolt-limited-vec-strs x render-one)
+  (let ((len (pvec-count x)) (lim (jolt-print-length)))
+    (let loop ((i 0) (acc '()))
+      (cond ((fx>=? i len) (reverse acc))
+            ((and lim (fx>=? i lim)) (reverse (cons "..." acc)))
+            (else (loop (fx+ i 1) (cons (render-one (pvec-nth-d x i jolt-nil)) acc)))))))
+;; Rendered element strings of a seq, walked lazily so an infinite seq is realized
+;; only up to *print-length*.
+(define (jolt-limited-seq-strs s render-one)
+  (let ((lim (jolt-print-length)))
+    (let loop ((s s) (i 0) (acc '()))
+      (cond ((jolt-nil? s) (reverse acc))
+            ((and lim (fx>=? i lim)) (reverse (cons "..." acc)))
+            (else (loop (jolt-seq (seq-more s)) (fx+ i 1) (cons (render-one (seq-first s)) acc)))))))
+;; Truncate an already-collected element-string list (set / map, finite) to
+;; *print-length*, appending "..." when more remain.
+(define (jolt-limited-list-strs strs)
+  (let ((lim (jolt-print-length)))
+    (if (not lim) strs
+        (let loop ((s strs) (i 0) (acc '()))
+          (cond ((null? s) (reverse acc))
+                ((fx>=? i lim) (reverse (cons "..." acc)))
+                (else (loop (cdr s) (fx+ i 1) (cons (car s) acc))))))))
+;; bump the print depth around a collection's element rendering — but only when
+;; *print-level* is set, since depth is consulted only to enforce it. With the
+;; common nil default this is a plain begin, so printing pays no parameterize.
+(define-syntax with-deeper-print
+  (syntax-rules ()
+    ((_ body ...) (if (jolt-print-level)
+                      (parameterize ((jolt-print-depth (fx+ (jolt-print-depth) 1))) body ...)
+                      (begin body ...)))))
+
 ;; A host shim registers a type's str-style rendering via register-pr-str-arm! (or
 ;; register-pr-arm! in printing.ss for both printers at once) instead of
 ;; set!-wrapping jolt-pr-str. Disjoint types, checked before the base cases.
@@ -205,18 +263,23 @@
                         (if (or (jolt-nil? ns) (not ns) (eq? ns '())) (symbol-t-name x)
                             (string-append ns "/" (symbol-t-name x)))))
     ((regex-t? x) (string-append "#\"" (regex-t-source x) "\""))
-    ((pvec? x) (let ((acc '())) (let loop ((i (fx- (pvec-count x) 1)))
-                 (when (fx>=? i 0) (set! acc (cons (jolt-pr-str (pvec-nth-d x i jolt-nil)) acc)) (loop (fx- i 1))))
-                 (string-append "[" (jolt-str-join acc) "]")))
-    ((pset? x) (string-append "#{" (jolt-str-join (pset-fold x (lambda (e a) (cons (jolt-pr-str e) a)) '())) "}"))
-    ((pmap? x) (string-append "{" (jolt-str-join
-                 (pmap-fold x (lambda (k v a) (cons (string-append (jolt-pr-str k) " " (jolt-pr-str v)) a)) '())) "}"))
-    ;; lists / cons / lazy seqs all print as (...) — forces a finite seq.
-    ((empty-list-t? x) "()")
-    ((cseq? x) (string-append "(" (jolt-str-join
-                 (let loop ((s x) (acc '()))
-                   (if (jolt-nil? s) (reverse acc)
-                       (loop (jolt-seq (seq-more s)) (cons (jolt-pr-str (seq-first s)) acc))))) ")"))
+    ((pvec? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "[" (jolt-str-join (jolt-limited-vec-strs x jolt-pr-str)) "]"))))
+    ((pset? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "#{" (jolt-str-join (jolt-limited-list-strs
+                       (pset-fold x (lambda (e a) (cons (jolt-pr-str e) a)) '()))) "}"))))
+    ((pmap? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "{" (jolt-str-join (jolt-limited-list-strs
+                       (pmap-fold x (lambda (k v a) (cons (string-append (jolt-pr-str k) " " (jolt-pr-str v)) a)) '()))) "}"))))
+    ;; lists / cons / lazy seqs all print as (...) — forces a finite seq (or up to
+    ;; *print-length* of an infinite one).
+    ((empty-list-t? x) (if (jolt-print-hash?) "#" "()"))
+    ((cseq? x) (if (jolt-print-hash?) "#"
+                   (with-deeper-print
+                     (string-append "(" (jolt-str-join (jolt-limited-seq-strs x jolt-pr-str)) ")"))))
     (else (format "~a" x))))
 (define (jolt-pr-str x)
   (let loop ((as jolt-pr-str-arms))

@@ -113,7 +113,7 @@
 (define %h-set? jolt-set?)
 (set! jolt-set? (lambda (x) (or (htable-sorted-set? x) (%h-set? x))))
 (def-var! "clojure.core" "set?" jolt-set?)
-(def-var! "clojure.core" "coll?" (lambda (x) (or (htable-sorted? x) (jrec? x) (jolt-coll-pred? x))))
+(def-var! "clojure.core" "coll?" (lambda (x) (or (htable-sorted? x) (jrec-collection? x) (jolt-coll-pred? x))))
 
 ;; --- equality / hash ---------------------------------------------------------
 ;; A sorted coll canonicalizes like its unordered counterpart:

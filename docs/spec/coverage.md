@@ -1,21 +1,21 @@
 # Appendix A — Coverage Dashboard (generated)
 
-Generated 2026-06-22 by `tools/spec_coverage.py` — do not edit by hand.
+Generated 2026-06-26 by `tools/spec_coverage.py` — do not edit by hand.
 
 Surface: **694** clojure.core vars (ClojureDocs export; 648 with
-community examples). jolt interns 574 of them.
+community examples). jolt interns 594 of them.
 
 | Status | Count | Meaning |
 |---|---|---|
-| implemented+tested | 568 | in jolt and exercised by spec/conformance |
-| implemented-untested | 6 | in jolt, no direct test — spec entries will add them |
+| implemented+tested | 590 | in jolt and exercised by spec/conformance |
+| implemented-untested | 4 | in jolt, no direct test — spec entries will add them |
 | resolvable-not-interned | 0 | works in code but invisible to ns introspection (conformance finding) |
-| missing-portable | 6 | portable semantics, jolt lacks it — implementation gap |
+| missing-portable | 0 | portable semantics, jolt lacks it — implementation gap |
 | special-form | 16 | specified in §3, not a library var |
-| dynamic-var | 24 | classification needed: portable default vs host-dependent |
+| dynamic-var | 11 | classification needed: portable default vs host-dependent |
 | agents-taps | 16 | out of scope pending concurrency design note |
 | stm-refs | 11 | out of scope pending concurrency design note |
-| jvm-specific | 47 | catalogued, not specified |
+| jvm-specific | 46 | catalogued, not specified |
 
 Classifications are initial and mechanical — reclassifying is an ordinary
 spec change. A var is *Verified* only when its §9 entry exists and carries no
@@ -27,35 +27,35 @@ UNVERIFIED field; that column will be added as entries land.
 |---|---|---|
 | `*` | implemented+tested | ✓ |
 | `*'` | implemented+tested | ✓ |
-| `*1` | missing-portable | ✓ |
-| `*2` | missing-portable | ✓ |
-| `*3` | missing-portable | ✓ |
+| `*1` | implemented+tested | ✓ |
+| `*2` | implemented+tested | ✓ |
+| `*3` | implemented+tested | ✓ |
 | `*agent*` | dynamic-var | ✓ |
 | `*allow-unresolved-vars*` | dynamic-var | ✓ |
 | `*assert*` | implemented+tested | ✓ |
 | `*clojure-version*` | implemented+tested | ✓ |
-| `*command-line-args*` | dynamic-var | ✓ |
-| `*compile-files*` | dynamic-var | ✓ |
+| `*command-line-args*` | implemented-untested | ✓ |
+| `*compile-files*` | implemented+tested | ✓ |
 | `*compile-path*` | dynamic-var | ✓ |
 | `*compiler-options*` | dynamic-var | ✓ |
-| `*data-readers*` | dynamic-var | ✓ |
-| `*default-data-reader-fn*` | dynamic-var | ✓ |
-| `*e` | missing-portable | ✓ |
-| `*err*` | implemented-untested | ✓ |
-| `*file*` | dynamic-var | ✓ |
-| `*flush-on-newline*` | dynamic-var |  |
+| `*data-readers*` | implemented+tested | ✓ |
+| `*default-data-reader-fn*` | implemented+tested | ✓ |
+| `*e` | implemented+tested | ✓ |
+| `*err*` | implemented+tested | ✓ |
+| `*file*` | implemented-untested | ✓ |
+| `*flush-on-newline*` | implemented+tested |  |
 | `*fn-loader*` | dynamic-var |  |
 | `*in*` | implemented+tested |  |
-| `*math-context*` | dynamic-var |  |
+| `*math-context*` | implemented+tested |  |
 | `*ns*` | implemented+tested | ✓ |
-| `*out*` | implemented-untested | ✓ |
-| `*print-dup*` | dynamic-var | ✓ |
-| `*print-length*` | dynamic-var | ✓ |
-| `*print-level*` | dynamic-var | ✓ |
-| `*print-meta*` | dynamic-var | ✓ |
-| `*print-namespace-maps*` | dynamic-var | ✓ |
+| `*out*` | implemented+tested | ✓ |
+| `*print-dup*` | implemented+tested | ✓ |
+| `*print-length*` | implemented+tested | ✓ |
+| `*print-level*` | implemented+tested | ✓ |
+| `*print-meta*` | implemented+tested | ✓ |
+| `*print-namespace-maps*` | implemented-untested | ✓ |
 | `*print-readably*` | implemented+tested | ✓ |
-| `*read-eval*` | dynamic-var | ✓ |
+| `*read-eval*` | implemented+tested | ✓ |
 | `*reader-resolver*` | dynamic-var |  |
 | `*repl*` | dynamic-var |  |
 | `*source-path*` | dynamic-var | ✓ |
@@ -63,7 +63,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `*unchecked-math*` | implemented+tested | ✓ |
 | `*use-context-classloader*` | dynamic-var | ✓ |
 | `*verbose-defrecords*` | dynamic-var |  |
-| `*warn-on-reflection*` | implemented-untested | ✓ |
+| `*warn-on-reflection*` | implemented+tested | ✓ |
 | `+` | implemented+tested | ✓ |
 | `+'` | implemented+tested | ✓ |
 | `-` | implemented+tested | ✓ |
@@ -131,7 +131,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `assoc-in` | implemented+tested | ✓ |
 | `associative?` | implemented+tested | ✓ |
 | `atom` | implemented+tested | ✓ |
-| `await` | implemented-untested | ✓ |
+| `await` | implemented+tested | ✓ |
 | `await-for` | agents-taps | ✓ |
 | `await1` | agents-taps |  |
 | `bases` | jvm-specific | ✓ |
@@ -218,7 +218,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `declare` | implemented+tested | ✓ |
 | `dedupe` | implemented+tested | ✓ |
 | `def` | special-form | ✓ |
-| `default-data-readers` | jvm-specific | ✓ |
+| `default-data-readers` | implemented+tested | ✓ |
 | `definline` | jvm-specific |  |
 | `definterface` | implemented+tested | ✓ |
 | `defmacro` | special-form | ✓ |
@@ -375,7 +375,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `lazy-cat` | implemented+tested | ✓ |
 | `lazy-seq` | implemented+tested | ✓ |
 | `let` | implemented+tested | ✓ |
-| `letfn` | missing-portable | ✓ |
+| `letfn` | implemented+tested | ✓ |
 | `line-seq` | implemented+tested | ✓ |
 | `list` | implemented+tested | ✓ |
 | `list*` | implemented+tested | ✓ |
@@ -512,7 +512,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `rational?` | implemented+tested | ✓ |
 | `rationalize` | implemented+tested | ✓ |
 | `re-find` | implemented+tested | ✓ |
-| `re-groups` | missing-portable | ✓ |
+| `re-groups` | implemented+tested | ✓ |
 | `re-matcher` | implemented+tested | ✓ |
 | `re-matches` | implemented+tested | ✓ |
 | `re-pattern` | implemented+tested | ✓ |
@@ -558,7 +558,7 @@ UNVERIFIED field; that column will be added as entries land.
 | `reset-vals!` | implemented+tested | ✓ |
 | `resolve` | implemented+tested | ✓ |
 | `rest` | implemented+tested | ✓ |
-| `restart-agent` | implemented-untested | ✓ |
+| `restart-agent` | implemented+tested | ✓ |
 | `resultset-seq` | jvm-specific | ✓ |
 | `reverse` | implemented+tested | ✓ |
 | `reversible?` | implemented+tested | ✓ |

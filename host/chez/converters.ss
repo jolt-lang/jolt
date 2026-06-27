@@ -33,11 +33,26 @@
          ((null? rs) (jolt-pr-str v))
          (((caar rs) v) ((cdar rs) v))
          (else (loop (cdr rs))))))))
+;; print/println render non-readably: a nested string is raw. jolt-str-render-one
+;; is exactly that (collections fall through to jolt-pr-str). The print family
+;; uses this seam, NOT the str fn — which renders readably (below). A top-level nil
+;; prints "nil" (str renders it ""), so the seam special-cases it.
+(define (jolt-print-one v) (if (jolt-nil? v) "nil" (jolt-str-render-one v)))
+(def-var! "clojure.core" "__print1" jolt-print-one)
+
+;; str: a top-level string/scalar renders as jolt-str-render-one (raw string,
+;; "Infinity"…), but a COLLECTION renders as its readable form — nested strings
+;; are QUOTED ((str ["x"]) => "[\"x\"]"), matching the JVM (a collection's
+;; toString is readable). jolt-pr-readable resolves at call time.
+(define (jolt-str-one v)
+  (if (or (pvec? v) (pmap? v) (pset? v) (cseq? v) (empty-list-t? v) (jolt-lazyseq? v))
+      (jolt-pr-readable v)
+      (jolt-str-render-one v)))
 (define (jolt-str . xs)
   (let loop ((xs xs) (acc '()))
     (if (null? xs)
         (apply string-append (reverse acc))
-        (loop (cdr xs) (cons (jolt-str-render-one (car xs)) acc)))))
+        (loop (cdr xs) (cons (jolt-str-one (car xs)) acc)))))
 
 ;; jolt indices are flonums; substring etc. need exact ints.
 (define (jolt->idx n) (exact (truncate n)))

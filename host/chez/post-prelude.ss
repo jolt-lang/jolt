@@ -95,10 +95,10 @@
 ;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
 ;; always-false stub loaded over the host fn, so re-assert it.
 (def-var! "clojure.core" "chunked-seq?" na-chunked-seq?)
-;; record? is a host type check (jrec?), not the overlay's (some? (get x
-;; :jolt/deftype)) — the get-trick invokes a sorted-map's comparator on
-;; :jolt/deftype and throws. Matches the JVM (instance? IRecord).
-(def-var! "clojure.core" "record?" (lambda (x) (jrec? x)))
+;; record? is a host type check — true only for a defrecord, not a bare deftype
+;; (jrec-record?), matching the JVM (instance? IRecord). The overlay's
+;; (some? (get x :jolt/deftype)) get-trick would invoke a sorted-map comparator.
+(def-var! "clojure.core" "record?" (lambda (x) (jrec-record? x)))
 
 ;; read / read+string over a HOST reader jhost (java.io StringReader/PushbackReader):
 ;; the overlay's IReader protocol only covers the reify map-reader, so a (read

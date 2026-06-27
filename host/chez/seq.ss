@@ -85,10 +85,25 @@
 ;; the seq leaf ops the emitter lowers core fns to
 ;; ============================================================================
 (define (jolt-first x) (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-nil (seq-first s))))
-(define (jolt-rest x)                  ; () when the seq has 0/1 elements (NOT nil)
+;; rest = Clojure's more(): the tail as a (possibly empty) seq, NOT nil, and
+;; WITHOUT realizing it. A forced cseq (list / realized chain) hands back its tail
+;; directly. An UNFORCED tail (vector / string / lazy-seq cell) is returned as a
+;; deferred seq so (rest s) does not realize the next node — matching Clojure,
+;; where (rest (iterate f x)) does not call f and a side-effecting lazy seq is
+;; realized one element at a time. next = (seq (rest s)) still realizes one.
+;; jolt-make-lazy-seq (lazy-bridge.ss) resolves at call time.
+(define (jolt-rest x)
   (let ((s (jolt-seq x)))
-    (if (jolt-nil? s) jolt-empty-list
-        (let ((m (seq-more s))) (if (jolt-nil? m) jolt-empty-list m)))))
+    (cond
+      ((jolt-nil? s) jolt-empty-list)
+      ((cseq-forced? s) (let ((m (cseq-tail s))) (if (jolt-nil? m) jolt-empty-list m)))
+      ;; the lazyseq forces to a seq (cseq | nil); an empty realized lazyseq is
+      ;; still a sequence value, printing "()" (see lazy-bridge.ss), so (rest s)
+      ;; is never nil even when the tail is empty. jolt-seq coerces seq-more's
+      ;; result (which may be jolt-empty-list, e.g. map's tail) back to cseq | nil,
+      ;; the contract force-lazyseq relies on — else (seq (rest s)) of an empty
+      ;; tail yields a truthy empty-list and walkers (distinct, dedupe) overrun.
+      (else (jolt-make-lazy-seq (lambda () (jolt-seq (seq-more s))))))))
 (define (jolt-next x)                  ; nil when the rest is empty
   ;; next = (seq (rest x)): the rest must be RE-SEQ'd so an empty tail collapses to
   ;; nil. seq-more on a lazy seq (e.g. map's) forces to jolt-empty-list, which is
@@ -246,11 +261,21 @@
     ((start end) (range-bounded start end 1))
     ((start end step) (range-bounded start end step))))
 
+;; An empty take result is () (jolt-empty-list), NOT nil — (take 0 coll) and
+;; (take n []) are empty seqs in Clojure, so (= () (take 0 [:a])) and printing
+;; "()" hold. jolt-empty-list seqs back to nil, so it also terminates the lazy
+;; tail when n hits 0 mid-stream (see map-seq).
+;; The LAST element (n=1) terminates without touching the rest, so (take n s)
+;; realizes exactly n elements of a side-effecting seq — matching Clojure, where
+;; (take 0 (rest s)) never seqs coll. Realizing one more, as forcing seq-more at
+;; the boundary would, over-runs the source by one (medley's sequence-padded).
 (define (jolt-take n coll)
   (let ((n (->idx n)))
     (let loop ((n n) (s (jolt-seq coll)))
-      (if (or (fx<=? n 0) (jolt-nil? s)) jolt-nil
-          (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s)))))))))
+      (cond
+        ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
+        ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
+        (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s))))))))))
 (define (jolt-drop n coll)
   (let loop ((n (->idx n)) (s (jolt-seq coll)))
     (if (or (fx<=? n 0) (jolt-nil? s)) (if (jolt-nil? s) jolt-empty-list s)

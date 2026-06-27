@@ -59,11 +59,13 @@
 ;; nil, which prints as "nil" (str yields ""). Only the top-level arg needs the
 ;; guard; nil nested in a collection already renders as "nil" via the collection
 ;; printer.
+;; print renders non-readably (__print1): a nested string is raw, unlike str/pr
+;; which quote it. (print ["x"]) => [x], (str ["x"]) => ["x"].
 (defn print [& xs]
   (__write (loop [out "" s (seq xs) first? true]
              (if s
                (let [x (first s)
-                     r (if (nil? x) "nil" (str x))]
+                     r (__print1 x)]
                  (recur (str out (if first? "" " ") r) (next s) false))
                out)))
   nil)

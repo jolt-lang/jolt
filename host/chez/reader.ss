@@ -631,16 +631,38 @@
                      (guard (e (#t #f))
                        (let ((fn (var-deref (symbol-t-ns v) (symbol-t-name v))))
                          (and (procedure? fn) fn)))))))))
+;; the bare tag SYMBOL for a :#name / :#ns/name reader keyword (strip the leading
+;; #, split a qualified tag on /). *default-data-reader-fn* receives it.
+(define (rdr-tag->symbol tag)
+  (let* ((nm (keyword-t-name tag))
+         (bare (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\#))
+                   (substring nm 1 (string-length nm)) nm)))
+    (let loop ((i 0))
+      (cond ((>= i (string-length bare)) (jolt-symbol #f bare))
+            ((char=? (string-ref bare i) #\/)
+             (jolt-symbol (substring bare 0 i) (substring bare (+ i 1) (string-length bare))))
+            (else (loop (+ i 1)))))))
+;; *default-data-reader-fn* — a (fn [tag value]) consulted for an unregistered
+;; tag, or #f when unset/nil. Honors a `binding` (var-deref reads the stack).
+(define (rdr-default-data-reader-fn)
+  (guard (e (#t #f))
+    (let ((v (var-deref "clojure.core" "*default-data-reader-fn*")))
+      (and (not (jolt-nil? v)) (procedure? v) v))))
+
 ;; read-string / read data seam: construct the value for a #tag literal. #inst,
-;; #uuid and #"regex" are built in; any other tag is applied from *data-readers*.
-;; An unregistered tag stays a tagged FORM (lenient — clojure.edn raises instead).
+;; #uuid and #"regex" are built in; any other tag is applied from *data-readers*,
+;; then *default-data-reader-fn*. An unregistered tag with no default handler stays
+;; a tagged FORM (lenient — clojure.edn raises instead).
 (define (rdr-construct-tag tag inner)
   (cond
     ((eq? tag (keyword #f "#inst")) (jolt-inst-from-string inner))
     ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string inner))
     ((eq? tag (keyword #f "regex")) (jolt-re-pattern inner))
     (else (let ((fn (rdr-data-reader-fn tag)))
-            (if fn (jolt-invoke fn inner) (rdr-make-tagged tag inner))))))
+            (if fn (jolt-invoke fn inner)
+                (let ((dfn (rdr-default-data-reader-fn)))
+                  (if dfn (jolt-invoke dfn (rdr-tag->symbol tag) inner)
+                      (rdr-make-tagged tag inner))))))))
 
 (define (rdr-form->data x)
   (cond
@@ -695,13 +717,16 @@
   (cond
     ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string form))
     ((eq? tag (keyword #f "#inst")) (jolt-inst-from-string form))
-    ;; No registered reader: throw a clean, catchable ex-info naming the tag, like
-    ;; the JVM's "No reader function for tag foobar" (empty-pmap is a VALUE — the
-    ;; old (empty-pmap) applied it as a procedure and crashed the Chez VM).
-    (else (let* ((nm (keyword-t-name tag))
-                 (bare (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\#))
-                           (substring nm 1 (string-length nm)) nm)))
-            (jolt-throw (jolt-ex-info (string-append "No reader function for tag " bare) empty-pmap))))))
+    ;; No registered reader: consult *default-data-reader-fn*, else throw a clean,
+    ;; catchable ex-info naming the tag, like the JVM's "No reader function for tag
+    ;; foobar" (empty-pmap is a VALUE — the old (empty-pmap) applied it as a
+    ;; procedure and crashed the Chez VM).
+    (else (let ((dfn (rdr-default-data-reader-fn)))
+            (if dfn (jolt-invoke dfn (rdr-tag->symbol tag) form)
+                (let* ((nm (keyword-t-name tag))
+                       (bare (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\#))
+                                 (substring nm 1 (string-length nm)) nm)))
+                  (jolt-throw (jolt-ex-info (string-append "No reader function for tag " bare) empty-pmap))))))))
 
 (def-var! "clojure.core" "read-string" jolt-read-string)
 (def-var! "clojure.core" "__parse-next" jolt-parse-next)

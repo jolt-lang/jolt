@@ -65,10 +65,15 @@
 (set! jolt-nth (case-lambda
   ((coll i)   (if (jolt-lazyseq? coll) (%ls-nth (jolt-seq coll) i)   (%ls-nth coll i)))
   ((coll i d) (if (jolt-lazyseq? coll) (%ls-nth (jolt-seq coll) i d) (%ls-nth coll i d)))))
-;; a lazy seq prints as its realized seq — force, then re-dispatch through the printer.
-(register-pr-str-arm! jolt-lazyseq? (lambda (x) (jolt-pr-str (jolt-seq x))))
-(register-pr-readable-arm! jolt-lazyseq? (lambda (x) (jolt-pr-readable (jolt-seq x))))
-(register-str-render! jolt-lazyseq? (lambda (x) (jolt-str-render-one (jolt-seq x))))
+;; a lazy seq prints as its realized seq — force, then re-dispatch through the
+;; printer. An empty realized lazy seq is still a sequence, printing "()" (like a
+;; JVM LazySeq), not "nil" — so (lazy-seq nil) and (rest '(1)) render "()".
+(register-pr-str-arm! jolt-lazyseq?
+  (lambda (x) (let ((s (jolt-seq x))) (if (jolt-nil? s) "()" (jolt-pr-str s)))))
+(register-pr-readable-arm! jolt-lazyseq?
+  (lambda (x) (let ((s (jolt-seq x))) (if (jolt-nil? s) "()" (jolt-pr-readable s)))))
+(register-str-render! jolt-lazyseq?
+  (lambda (x) (let ((s (jolt-seq x))) (if (jolt-nil? s) "()" (jolt-str-render-one s)))))
 
 ;; seq? — a lazy seq IS a seq (predicates.ss's jolt-seq? predates the lazyseq
 ;; record). Unlike the native-op dispatchers above (called via a direct top-level
