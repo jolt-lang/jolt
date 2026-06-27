@@ -38,6 +38,17 @@
     ((or (string=? name "get") (string=? name "valAt"))
      (list (apply jolt-get obj args)))
     ((string=? name "containsKey") (list (jolt-contains? obj (car args))))
+    ;; java.util.Collection.contains(o): VALUE membership (a set is O(1) via
+    ;; contains?; a list/vector/seq is a linear scan — contains? on a vector tests
+    ;; an index, so it is wrong here).
+    ((string=? name "contains")
+     (list (if (pset? obj)
+               (jolt-contains? obj (car args))
+               (let ((x (car args)))
+                 (let loop ((s (jolt-seq obj)))
+                   (cond ((jolt-nil? s) #f)
+                         ((jolt=2 (seq-first s) x) #t)
+                         (else (loop (jolt-seq (seq-more s))))))))))
     ((string=? name "size")    (list (jolt-count obj)))
     ((string=? name "isEmpty") (list (jolt-empty? obj)))
     ;; java.util.Map views: keySet (a Set), values (a Collection), entrySet.

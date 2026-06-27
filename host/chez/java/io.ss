@@ -460,6 +460,25 @@
 ;; is how libraries reach Clojure's base loader, e.g. aws-api's resources ns).
 (register-class-statics! "RT" (list (cons "baseLoader" (lambda () the-classloader))))
 (register-class-statics! "clojure.lang.RT" (list (cons "baseLoader" (lambda () the-classloader))))
+;; clojure.lang.RT/nextID — process-unique increasing id (AtomicInteger(1)
+;; getAndIncrement), used by id generators such as core.logic's lvar.
+(define rt-next-id-counter 1)
+(define (rt-next-id)
+  (let ((v rt-next-id-counter))
+    (set! rt-next-id-counter (+ rt-next-id-counter 1))
+    v))
+(register-class-statics! "RT" (list (cons "nextID" rt-next-id)))
+(register-class-statics! "clojure.lang.RT" (list (cons "nextID" rt-next-id)))
+;; clojure.lang.Util — hash/equality helpers libraries call directly (core.logic's
+;; LCons.hashCode uses Util/hash). hash = Java hashCode (0 for nil); hasheq = the
+;; value hash jolt's = uses; equiv = value equality; identical = reference identity.
+(let ((util-statics
+       (list (cons "hash" (lambda (x) (if (jolt-nil? x) 0 (record-method-dispatch x "hashCode" jolt-nil))))
+             (cons "hasheq" (lambda (x) (jolt-hash x)))
+             (cons "equiv" (lambda (a b) (if (jolt= a b) #t #f)))
+             (cons "identical" (lambda (a b) (if (eq? a b) #t #f))))))
+  (register-class-statics! "Util" util-statics)
+  (register-class-statics! "clojure.lang.Util" util-statics))
 ;; Thread/currentThread -> a fresh thread jhost wrapping THIS thread's interrupt
 ;; flag (the box from current-interrupt-box, host-static.ss), so .interrupt from
 ;; any thread sets the target thread's flag and .isInterrupted reads it without

@@ -108,10 +108,30 @@
       ((string=? cs "utf-32le") (string->utf32 s (endianness little)))
       (else (string->utf8 s)))))
 
+;; Object.hashCode parity: Java's specified String hash and Clojure's Symbol hash
+;; (Util.hashCombine), so (.hashCode s) / (.hashCode sym) match the JVM. 32-bit int.
+(define (jolt-u32 x) (bitwise-and x #xFFFFFFFF))
+(define (jolt-s32 x) (let ((m (jolt-u32 x))) (if (>= m #x80000000) (- m #x100000000) m)))
+(define (java-string-hash s)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (h 0))
+      (if (fx<? i n)
+          (loop (fx+ i 1) (jolt-s32 (+ (* 31 h) (char->integer (string-ref s i)))))
+          (jolt-s32 h)))))
+(define (java-hash-combine seed hash)
+  (let* ((su (jolt-u32 seed))
+         (sl (bitwise-arithmetic-shift-left su 6))
+         (sr (bitwise-arithmetic-shift-right (jolt-s32 su) 2))
+         (add (+ (jolt-u32 hash) #x9e3779b9 sl sr)))
+    (jolt-s32 (bitwise-xor su (jolt-u32 add)))))
+(define (java-symbol-hash name ns)
+  (java-hash-combine (java-string-hash name) (if ns (java-string-hash ns) 0)))
+
 (define (jolt-string-method method s rest)
   (define (arg n) (list-ref rest n))
   (cond
     ((string=? method "toString") s)
+    ((string=? method "hashCode") (java-string-hash s))
     ((string=? method "toLowerCase") (ascii-string-down s))
     ((string=? method "toUpperCase") (ascii-string-up s))
     ((string=? method "trim") (str-trim s))

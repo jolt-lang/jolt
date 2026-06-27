@@ -3335,4 +3335,12 @@
   {:suite "edn / deferred tags" :label "a normal #inst still constructs without an override" :expected "true" :actual "(= #inst \"2020-01-01T00:00:00.000-00:00\" (clojure.edn/read-string \"#inst \\\"2020-01-01T00:00:00.000-00:00\\\"\"))"}
   {:suite "vars / privacy" :label "defn- marks the var :private" :expected "true" :actual "(do (defn- p [] 1) (true? (:private (meta (var p)))))"}
   {:suite "vars / privacy" :label "ns-publics drops private vars; ns-interns keeps them" :expected "[true false true]" :actual "(do (defn pub [] 1) (defn- priv [] 2) [(contains? (ns-publics (quote user)) (quote pub)) (contains? (ns-publics (quote user)) (quote priv)) (contains? (ns-interns (quote user)) (quote priv))])"}
+  {:suite "host interop / dot form" :label "(. target (method args)) list-member sugar" :expected "\"HELLO\"" :actual "(. \"hello\" (toUpperCase))"}
+  {:suite "predicates / identical?" :label "reference identity, not value equality" :expected "[true false false]" :actual "[(identical? :a :a) (identical? (quote x) (quote x)) (identical? [1] [1])]"}
+  {:suite "host interop / hashCode" :label "Java String and Symbol hashCode" :expected "[120 -1634134448]" :actual "[(.hashCode \"x\") (.hashCode (quote foo/bar))]"}
+  {:suite "structmaps" :label "defstruct / struct-map / struct" :expected "[{:a 1 :b 2} {:a 1 :b 2} {:a 1 :b nil}]" :actual "(do (defstruct sx :a :b) [(struct-map sx :a 1 :b 2) (struct sx 1 2) (struct-map sx :a 1)])"}
+  {:suite "deftype / clojure.lang interfaces" :label "ILookup-only deftype is not coll? or seqable?" :expected "[false false]" :actual "(do (deftype Lk [x] clojure.lang.ILookup (valAt [_ k] nil) (valAt [_ k nf] nf)) [(coll? (->Lk 1)) (seqable? (->Lk 1))])"}
+  {:suite "host interop / Collection.contains" :label "value membership over vector/list/set" :expected "[true false true]" :actual "[(.contains [1 2 3] 2) (.contains (list :a :b) :z) (.contains #{1 2} 1)]"}
+  {:suite "host interop / clojure.lang.Util" :label "Util/hash is Java hashCode" :expected "120" :actual "(clojure.lang.Util/hash \"x\")"}
+  {:suite "deftype / IObj metadata" :label "deftype meta/withMeta govern (meta x)" :expected "{:a 1}" :actual "(do (deftype Sm [m] clojure.lang.IObj (meta [_] m) (withMeta [_ n] (Sm. n))) (meta (Sm. {:a 1})))"}
 ]

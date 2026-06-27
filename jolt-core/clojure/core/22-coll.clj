@@ -34,6 +34,28 @@
       (recur (assoc m (first ks) (first vs)) (next ks) (next vs))
       m)))
 
+;; Structmaps (legacy). A struct basis is the ordered vector of slot keys; a
+;; struct map is a plain map carrying every basis key (nil when unset), in basis
+;; order, so it looks up and compares like any other map.
+(defn create-struct [& keys] (vec keys))
+
+(defn struct-map [basis & inits]
+  (let [base (loop [m {} ks (seq basis)]
+               (if ks (recur (assoc m (first ks) nil) (next ks)) m))]
+    (loop [m base kvs (seq inits)]
+      (if kvs
+        (recur (assoc m (first kvs) (first (next kvs))) (next (next kvs)))
+        m))))
+
+(defn struct [basis & vals]
+  (loop [m (struct-map basis) ks (seq basis) vs (seq vals)]
+    (if (and ks vs)
+      (recur (assoc m (first ks) (first vs)) (next ks) (next vs))
+      m)))
+
+(defn accessor [basis key]
+  (fn [m] (get m key)))
+
 ;; conj semantics per entry arg (a map merges, a [k v] pair adds); nil args are
 ;; no-ops; all-nil (or no args) is nil.
 (defn merge [& maps]

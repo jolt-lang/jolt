@@ -22,6 +22,11 @@
        (jolt-assoc (if user user (jolt-hash-map))
                    jolt-kw-var-ns (var-cell-ns x)
                    jolt-kw-var-name (var-cell-name x))))
+    ;; a deftype implementing clojure.lang.IObj stores meta in a field and threads
+    ;; it through its own assoc/withMeta (core.logic's Substitutions/LVar/LCons),
+    ;; so dispatch to its meta method rather than the identity side-table — which
+    ;; the deftype's reconstructed instances would not share.
+    ((and (jrec? x) (jrec-cl x "meta")) => (lambda (m) (jolt-invoke m x)))
     ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x))
      (hashtable-ref meta-table x jolt-nil))
     (else jolt-nil)))
@@ -53,6 +58,9 @@
 (define (jolt-with-meta x m)
   (cond
     ((symbol-t? x) (make-symbol-t (symbol-t-ns x) (symbol-t-name x) m))
+    ;; a deftype with an explicit clojure.lang.IObj withMeta carries meta in a
+    ;; field; dispatch to it (see jolt-meta) so the meta survives reconstruction.
+    ((and (jrec? x) (jrec-cl x "withMeta")) => (lambda (meth) (jolt-invoke meth x m)))
     ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x))
      (let ((c (meta-copy x)))
        (if (jolt-nil? m) (hashtable-delete! meta-table c) (hashtable-set! meta-table c m))

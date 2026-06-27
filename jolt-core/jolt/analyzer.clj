@@ -528,7 +528,14 @@
 (defn- analyze-dot [ctx items env]
   (when (< (count items) 3)
     (throw (str "Malformed (. target member ...) form")))
-  (let [target (nth items 1)
+  (let [member0 (nth items 2)
+        ;; (. target (member arg*)) is sugar for (. target member arg*) —
+        ;; flatten the list-member form so the rest of the dispatch is uniform.
+        items (if (form-list? member0)
+                (let [ml (vec (form-elements member0))]
+                  (into [(nth items 0) (nth items 1) (first ml)] (rest ml)))
+                items)
+        target (nth items 1)
         member (nth items 2)
         ;; (. Class method args*) with a class target is a static call —
         ;; equivalent to (Class/method args*). resolve-global tags a class
