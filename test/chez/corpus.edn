@@ -3308,4 +3308,8 @@
   {:suite "reader / metadata" :label "an empty list in metadata reads as a value" :expected "true" :actual "(= () (:e (meta (read-string \"^{:e ()} [1]\"))))"}
   {:suite "edn / readers in collections" :label "a :default tag reader applies inside a set" :expected "true" :actual "(= #{[:t 1]} (clojure.edn/read-string {:default (fn [t v] [:t v])} \"#{#foo 1}\"))"}
   {:suite "edn / readers in collections" :label "a registered reader applies inside a set" :expected "true" :actual "(= #{6} (clojure.edn/read-string {:readers {(quote x) (fn [v] (* v 2))}} \"#{#x 3}\"))"}
+  {:suite "metadata / immutability" :label "with-meta on a list does not mutate the original" :expected "true" :actual "(let [ds (list 1 2)] (with-meta ds {:k 1}) (nil? (meta ds)))"}
+  {:suite "metadata / immutability" :label "with-meta on a list carries the metadata" :expected "true" :actual "(= {:k 1} (meta (with-meta (list 1) {:k 1})))"}
+  {:suite "metadata / immutability" :label "a meta-bearing list still equals the bare list" :expected "true" :actual "(let [ds (list 1)] (= ds (with-meta ds {:k 9})))"}
+  {:suite "metadata / immutability" :label "with-meta on a lazy seq carries metadata" :expected "true" :actual "(= {:k 5} (meta (with-meta (lazy-seq (list 1)) {:k 5})))"}
 ]
