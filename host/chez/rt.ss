@@ -110,6 +110,11 @@
 ;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
 ;; return, so this is transparent there.
 (define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
+;; jolt.host/throwable — build a typed throwable a library can throw so (class …),
+;; instance?, .getMessage and ex-message all reflect the named JVM class (e.g. an
+;; http client throwing java.net.ConnectException). Strictly better than a
+;; hand-rolled :jolt/ex-info table, which carries only the class.
+(def-var! "jolt.host" "throwable" jolt-host-throwable)
 ;; var def-time metadata: the :def emit passes the def's reader meta
 ;; (^:private / ^Type tag / docstring -> {:doc}) here, stored in an eq side-table
 ;; keyed by the cell. jolt-meta (natives-meta.ss) merges it onto {:ns :name},
