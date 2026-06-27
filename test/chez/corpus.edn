@@ -911,6 +911,25 @@
   {:suite "maps / literal construction" :label "equality with phm" :expected "true" :actual "(= {:a 1 :b 2} (assoc {:a 1} :b 2))"}
   {:suite "maps / literal construction" :label "keys work after assoc" :expected "2" :actual "(:b (assoc {:a 1 :b 2} :c 3))"}
   {:suite "maps / literal construction" :label "literal in fn body" :expected "12" :actual "(do (defn mfp-mk [x] {:v (* x 2)}) (:v (mfp-mk 6)))"}
+  {:suite "maps / insertion order" :label "small literal keys" :expected "[:c :a :b]" :actual "(vec (keys {:c 3 :a 1 :b 2}))"}
+  {:suite "maps / insertion order" :label "small literal vals" :expected "[3 1 2]" :actual "(vec (vals {:c 3 :a 1 :b 2}))"}
+  {:suite "maps / insertion order" :label "seq follows keys" :expected "[:c :a :b]" :actual "(mapv key (seq {:c 3 :a 1 :b 2}))"}
+  {:suite "maps / insertion order" :label "array-map any size" :expected "[:z :y :x :w :v :u :t :s :r :q]" :actual "(vec (keys (array-map :z 1 :y 2 :x 3 :w 4 :v 5 :u 6 :t 7 :s 8 :r 9 :q 10)))"}
+  {:suite "maps / insertion order" :label "assoc appends new key" :expected "[:c :a :z]" :actual "(vec (keys (assoc {:c 3 :a 1} :z 9)))"}
+  {:suite "maps / insertion order" :label "assoc replace keeps position" :expected "[:c :a]" :actual "(vec (keys (assoc {:c 3 :a 1} :c 9)))"}
+  {:suite "maps / insertion order" :label "dissoc preserves order" :expected "[:c :b]" :actual "(vec (keys (dissoc {:c 3 :a 1 :b 2} :a)))"}
+  {:suite "maps / insertion order" :label "into onto empty (<=8)" :expected "[:c :a :b]" :actual "(vec (keys (into {} [[:c 3] [:a 1] [:b 2]])))"}
+  {:suite "maps / insertion order" :label "reduce assoc" :expected "[:e :d :c :b :a]" :actual "(vec (keys (reduce (fn [m k] (assoc m k k)) {} [:e :d :c :b :a])))"}
+  {:suite "maps / insertion order" :label "conj a map merges in order" :expected "[:a :b :c]" :actual "(vec (keys (conj {:a 1} {:b 2 :c 3})))"}
+  {:suite "maps / insertion order" :label "merge keeps right-hand order" :expected "[:a :c :b]" :actual "(vec (keys (merge {:a 1} {:c 3 :b 2})))"}
+  {:suite "maps / insertion order" :label "assoc stays ordered through 8 entries" :expected "true" :actual "(= (vec (keys (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 8)))) (mapv (fn [i] (keyword (str \"k\" i))) (range 8)))"}
+  {:suite "maps / insertion order" :label "assoc promotes to hash past 8 entries" :expected "9" :actual "(count (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 9)))"}
+  {:suite "maps / insertion order" :label "array-map keeps order past 8" :expected "[:k0 :k1 :k2 :k3 :k4 :k5 :k6 :k7 :k8 :k9 :k10 :k11]" :actual "(vec (keys (apply array-map (mapcat (fn [i] [(keyword (str \"k\" i)) i]) (range 12)))))"}
+  {:suite "maps / insertion order" :label "update-keys preserves order" :expected "[:a :b :c]" :actual "(vec (keys (update-vals (array-map :a 1 :b 2 :c 3) inc)))"}
+  {:suite "maps / insertion order" :label "zipmap from ordered keys/vals" :expected "[:c :a :b]" :actual "(vec (keys (zipmap (keys {:c 3 :a 1 :b 2}) (vals {:c 3 :a 1 :b 2}))))"}
+  {:suite "maps / insertion order" :label "select-keys follows keyseq" :expected "[:c :a]" :actual "(vec (keys (select-keys {:a 1 :b 2 :c 3} [:c :a])))"}
+  {:suite "maps / insertion order" :label "frequencies first-occurrence order" :expected "[:c :a :b]" :actual "(vec (keys (frequencies [:c :a :b :a])))"}
+  {:suite "maps / insertion order" :label "group-by first-occurrence order" :expected "[:c :a :b]" :actual "(vec (keys (group-by identity [:c :a :b :a])))"}
   {:suite "clojure.math" :label "sqrt" :expected "true" :actual "(< 1.4142 (clojure.math/sqrt 2) 1.4143)"}
   {:suite "clojure.math" :label "pow" :expected "1024" :actual "(long (clojure.math/pow 2 10))"}
   {:suite "clojure.math" :label "tan of 0" :expected "0" :actual "(long (clojure.math/tan 0))"}

@@ -21,14 +21,15 @@
 (defn true? [x] (= true x))
 (defn false? [x] (= false x))
 
-;; Presence-preserving: a key with a nil value is kept ((hash-map) base keeps
-;; nil values and canonicalizes collection keys).
+;; Presence-preserving and order-preserving: a key with a nil value is kept, and
+;; the result follows keyseq order (an empty-map base keeps nil values and
+;; canonicalizes collection keys).
 (defn select-keys [map keyseq]
   (reduce (fn [m k] (if (contains? map k) (assoc m k (get map k)) m))
-          (hash-map) keyseq))
+          {} keyseq))
 
 (defn zipmap [keys vals]
-  (loop [m (hash-map) ks (seq keys) vs (seq vals)]
+  (loop [m {} ks (seq keys) vs (seq vals)]
     (if (and ks vs)
       (recur (assoc m (first ks) (first vs)) (next ks) (next vs))
       m)))
@@ -37,7 +38,7 @@
 ;; no-ops; all-nil (or no args) is nil.
 (defn merge [& maps]
   (when (some identity maps)
-    (reduce (fn [acc m] (if (nil? m) acc (conj (or acc (hash-map)) m)))
+    (reduce (fn [acc m] (if (nil? m) acc (conj (or acc {}) m)))
             maps)))
 
 (defn merge-with [f & maps]
@@ -49,7 +50,7 @@
                             (assoc m k (f (get m k) v))
                             (assoc m k v))))
           merge2 (fn [m1 m2]
-                   (reduce merge-entry (or m1 (hash-map)) (seq m2)))]
+                   (reduce merge-entry (or m1 {}) (seq m2)))]
       (reduce merge2 maps))))
 
 (defn get-in

@@ -23,7 +23,7 @@
    "=" "jolt=" "inc" "jolt-inc" "dec" "jolt-dec" "not" "jolt-not"
    "min" "min" "max" "max"
    "mod" "modulo" "rem" "remainder" "quot" "quotient"
-   "vector" "jolt-vector" "hash-map" "jolt-hash-map" "hash-set" "jolt-hash-set"
+   "vector" "jolt-vector" "hash-map" "jolt-hash-map-fn" "hash-set" "jolt-hash-set"
    "conj" "jolt-conj" "get" "jolt-get" "nth" "jolt-nth" "count" "jolt-count"
    "assoc" "jolt-assoc" "dissoc" "jolt-dissoc" "contains?" "jolt-contains?"
    "empty?" "jolt-empty?" "peek" "jolt-peek" "pop" "jolt-pop"

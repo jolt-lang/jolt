@@ -224,13 +224,14 @@
 (defn inst-ms [x]
   (if (inst? x) (get x :ms) (throw (str "inst-ms requires an inst, got: " x))))
 
-;; Clojure 1.11 map transformers. PHM base so transformed keys canonicalize
-;; (collisions: last entry in seq order wins, matching the reference).
+;; Clojure 1.11 map transformers. An empty-map base keeps insertion order;
+;; transformed keys canonicalize via assoc (collisions: last entry in seq order
+;; wins, matching the reference).
 (defn update-keys [m f]
-  (reduce-kv (fn [acc k v] (assoc acc (f k) v)) (hash-map) m))
+  (reduce-kv (fn [acc k v] (assoc acc (f k) v)) {} m))
 
 (defn update-vals [m f]
-  (reduce-kv (fn [acc k v] (assoc acc k (f v))) (hash-map) m))
+  (reduce-kv (fn [acc k v] (assoc acc k (f v))) {} m))
 
 ;; Vector-returning partition variants (1.11): lazy seqs OF vectors.
 (defn partitionv
