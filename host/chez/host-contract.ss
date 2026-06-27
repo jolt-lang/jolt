@@ -326,6 +326,10 @@
           ;; Referred names live in a separate table, so this only hits a real
           ;; local intern, matching how the analyzer resolves the bare symbol.
           ((var-cell-lookup (chez-actx-cns ctx) nm) (jolt-symbol (chez-actx-cns ctx) nm))
+          ;; a name the compile ns excluded from clojure.core (:refer-clojure
+          ;; :exclude) is not clojure.core/nm even before the ns defines its own —
+          ;; qualify to the compile ns, like Clojure (core.logic.fd's `==`).
+          ((chez-core-excluded? (chez-actx-cns ctx) nm) (jolt-symbol (chez-actx-cns ctx) nm))
           ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
           ;; a name referred into the compile ns (:require :refer / :use :only)
           ;; qualifies to its SOURCE ns, not the compile ns — so a macro that

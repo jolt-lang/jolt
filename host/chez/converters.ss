@@ -27,6 +27,15 @@
     ((and (flonum? v) (fl= v +inf.0)) "Infinity")
     ((and (flonum? v) (fl= v -inf.0)) "-Infinity")
     ((and (flonum? v) (not (fl= v v))) "NaN")
+    ;; a symbol stringifies to its name (JVM Symbol.toString returns the interned
+    ;; name), so (str sym) of a no-ns symbol is the SAME string object the symbol
+    ;; holds — code that compares those by identity (core.logic's non-unique lvar
+    ;; equality) depends on it.
+    ((symbol-t? v)
+     (let ((ns (symbol-t-ns v)))
+       (if (or (not ns) (jolt-nil? ns))
+           (symbol-t-name v)
+           (string-append ns "/" (symbol-t-name v)))))
     (else
      (let loop ((rs str-render-registry))
        (cond
@@ -49,10 +58,17 @@
       (jolt-pr-readable v)
       (jolt-str-render-one v)))
 (define (jolt-str . xs)
-  (let loop ((xs xs) (acc '()))
-    (if (null? xs)
-        (apply string-append (reverse acc))
-        (loop (cdr xs) (cons (jolt-str-one (car xs)) acc)))))
+  (cond
+    ((null? xs) "")
+    ;; single arg returns its rendering directly (no string-append copy), so
+    ;; (str sym) hands back the symbol's own name string — JVM (str x) is
+    ;; x.toString(), and core.logic's non-unique lvar equality compares those by
+    ;; identity.
+    ((null? (cdr xs)) (jolt-str-one (car xs)))
+    (else (let loop ((xs xs) (acc '()))
+            (if (null? xs)
+                (apply string-append (reverse acc))
+                (loop (cdr xs) (cons (jolt-str-one (car xs)) acc)))))))
 
 ;; jolt indices are flonums; substring etc. need exact ints.
 (define (jolt->idx n) (exact (truncate n)))

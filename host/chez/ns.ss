@@ -281,7 +281,29 @@
                     (chez-register-refer! cns (var-cell-name c) target)))
       (hashtable-values var-table))
     jolt-nil))
-(define (jolt-refer-clojure . _) jolt-nil)
+;; (:refer-clojure :exclude [names…]) — clojure.core always resolves on Chez, so
+;; the only thing to track is the EXCLUDE set: an excluded name is not
+;; clojure.core/name, so syntax-quote qualifies it to the current ns instead (a ns
+;; that excludes and defines its own, e.g. core.logic.fd's ==).
+(define ns-core-exclude-table (make-hashtable equal-hash equal?))  ; cns -> (name -> #t)
+(define (chez-register-core-exclude! cns name)
+  (let ((h (or (hashtable-ref ns-core-exclude-table cns #f)
+               (let ((h (make-hashtable string-hash string=?)))
+                 (hashtable-set! ns-core-exclude-table cns h) h))))
+    (hashtable-set! h name #t)))
+(define (chez-core-excluded? cns name)
+  (let ((h (hashtable-ref ns-core-exclude-table cns #f)))
+    (and h (hashtable-ref h name #f) #t)))
+(define (jolt-refer-clojure . args)
+  (let ((cns (chez-current-ns)))
+    (let loop ((a args))
+      (when (and (pair? a) (pair? (cdr a)))
+        (when (and (keyword? (car a)) (string=? (keyword-t-name (car a)) "exclude"))
+          (for-each (lambda (n) (when (symbol-t? n)
+                                  (chez-register-core-exclude! cns (symbol-t-name n))))
+                    (seq->list (cadr a))))
+        (loop (cddr a)))))
+  jolt-nil)
 
 ;; alter-meta! / reset-meta!: update a var's metadata (var-meta-table, rt.ss).
 (define (jolt-alter-meta! ref f . args)

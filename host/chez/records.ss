@@ -505,6 +505,21 @@
         ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
         ((procedure? obj) '("Fn" "IFn" "AFn" "Object"))
         ((jolt-nil? obj) '("nil"))
+        ;; a defrecord IS the clojure.lang map/record interfaces, so a protocol
+        ;; extended to IRecord / IPersistentMap / Associative / Seqable / … (and not
+        ;; to the record's own type) dispatches to it — e.g. core.logic extends
+        ;; IWalkTerm to clojure.lang.IRecord, and walking a record value must hit
+        ;; that, not the Object default (which would recur forever). The record's
+        ;; own type is tried first (dispatch checks jrec-tag before these tags).
+        ((jrec-record? obj)
+         (cons (jrec-tag obj)
+               '("IRecord" "clojure.lang.IRecord" "IPersistentMap" "clojure.lang.IPersistentMap"
+                 "APersistentMap" "Associative" "ILookup" "Seqable" "Counted"
+                 "IPersistentCollection" "IObj" "IMeta" "Map" "java.util.Map"
+                 "Iterable" "java.lang.Iterable" "Object")))
+        ;; a bare deftype is opaque — its declared interfaces dispatch via the
+        ;; inline methods registered under its own tag (tried before these tags).
+        ((jrec? obj) (list (jrec-tag obj) "Object"))
         (else '("Object"))))
 
 (define (record-tag obj) (and (jrec? obj) (jrec-tag obj)))
