@@ -96,9 +96,21 @@
         ;; (.getClass x) universal — the class token for any value, before the
         ;; collection/map field-lookup arms below would read it as a missing key.
         ((string=? method-name "getClass") (jolt-class obj))
+        ;; a deftype/record's OWN declared method (matched by name AND arity) wins
+        ;; over the generic collection interop below — e.g. data.priority-map
+        ;; declares both seq[this] (Seqable) and seq[this ascending] (Sorted), and
+        ;; (.seq pm false) must reach the 2-arg one, not dot-coll's plain seq.
+        ((and (not field?) (jrec? obj)
+              (find-method-any-protocol-arity (jrec-tag obj) mname (+ 1 (length rest))))
+         => (lambda (f) (apply jolt-invoke f obj rest)))
         ;; collection interop first (entry count / seq / nth / get / containsKey).
         ((and (dot-coll? obj) (dot-coll-method obj mname rest))
          => (lambda (box) (car box)))
+        ;; clojure.lang.Sorted (comparator / entryKey / seqFrom) on a sorted
+        ;; map/set, before the map arm below reads the method name as a key.
+        ;; data.priority-map's subseq/rsubseq reach for these.
+        ((and (not field?) (htable-sorted? obj) (sorted-iface-method? mname))
+         (sorted-iface-dispatch obj mname rest))
         ;; (.-field obj) / (. obj -field): field read on a record or map.
         (field? (jolt-get obj (keyword #f mname) jolt-nil))
         ;; non-record map: a universal object-method (getMessage/...) wins first,

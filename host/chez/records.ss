@@ -441,9 +441,28 @@
               (and (pair? protos)
                    (let ((f (hashtable-ref (hashtable-ref ti (car protos) #f) method #f)))
                      (or f (loop (cdr protos)))))))))
+;; A deftype can implement a method NAME at two arities from two interfaces (e.g.
+;; data.priority-map's seq: Seqable.seq[this] and Sorted.seq[this ascending]),
+;; registered under different protocols. Pick the impl whose procedure accepts
+;; the call's arg count (this + args); fall back to any same-named impl.
+(define (proc-accepts? f n)
+  (and (procedure? f) (bitwise-bit-set? (procedure-arity-mask f) n)))
+(define (find-method-any-protocol-arity type-tag method nargs)
+  (let ((ti (hashtable-ref type-registry type-tag #f)))
+    (and ti (let loop ((protos (vector->list (hashtable-keys ti))) (fallback #f))
+              (if (null? protos)
+                  fallback
+                  (let ((f (hashtable-ref (hashtable-ref ti (car protos) #f) method #f)))
+                    (cond ((and f (proc-accepts? f nargs)) f)
+                          (else (loop (cdr protos) (or fallback f))))))))))
 (define (type-satisfies? type-tag proto)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
     (and ti (hashtable-ref ti proto #f) #t)))
+;; True when a deftype/record instance DECLARES a method by this name (an inline
+;; protocol impl), so clojure.core can prefer it over generic collection behavior
+;; — e.g. (empty priority-map) must use the type's own empty, not return {}.
+(def-var! "jolt.host" "jrec-method?"
+  (lambda (v name) (if (and (jrec? v) (find-method-any-protocol (jrec-tag v) name)) #t #f)))
 
 ;; host type-tag candidates for a non-record value (extend-protocol on builtins).
 (define (value-host-tags obj)
@@ -768,7 +787,7 @@
       ;; which .getName/.getSimpleName work via the String method shim).
       ((and (string=? method-name "getClass") (not (jrec? obj)) (not (jreify? obj)))
        (jolt-class obj))
-      ((and (jrec? obj) (find-method-any-protocol (jrec-tag obj) method-name))
+      ((and (jrec? obj) (find-method-any-protocol-arity (jrec-tag obj) method-name (+ 1 (length rest))))
        => (lambda (f) (apply jolt-invoke f obj rest)))
       ;; (.field inst): a deftype/record field read with no matching method.
       ;; Clojure reads the field for (.q x) just like (.-q x); a declared method

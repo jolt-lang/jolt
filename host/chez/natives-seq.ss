@@ -224,9 +224,14 @@
 
 ;; rseq: vectors + sorted colls only (Clojure), the reverse of the ascending seq.
 (define (jolt-rseq coll)
-  (if (or (pvec? coll) (htable-sorted? coll))
-      (list->cseq (reverse (seq->list (jolt-seq coll))))
-      (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map)))))
+  (cond
+    ((or (pvec? coll) (htable-sorted? coll))
+     (list->cseq (reverse (seq->list (jolt-seq coll)))))
+    ;; a deftype/record implementing clojure.lang.Reversible (rseq) — e.g.
+    ;; data.priority-map — drives rseq through its own method.
+    ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
+     => (lambda (f) (jolt-invoke f coll)))
+    (else (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map))))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
 
 ;; clojure.core/unchecked-* — host-defined wrapping (Java long) arithmetic from

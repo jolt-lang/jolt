@@ -133,6 +133,9 @@
 (defn empty [coll]
   (cond
     (nil? coll) nil
+    ;; a deftype/record with its own empty (IPersistentCollection) — e.g.
+    ;; data.priority-map — uses it, before the generic map/set/vector arms.
+    (jolt.host/jrec-method? coll "empty") (.empty coll)
     (sorted? coll) ((get (jolt.host/ref-get coll :ops) :empty) coll)
     (map? coll) (with-meta {} (meta coll))
     (set? coll) (with-meta #{} (meta coll))
