@@ -40,7 +40,15 @@
     ((jreify? x) (make-jreify (jreify-methods x) (jreify-protos x)))
     ;; () is a shared singleton — a fresh instance keeps meta off every other ().
     ((empty-list-t? x) (fresh-empty-list))
-    (else x)))                          ; cseq / procedure
+    ;; a list/seq node gets a fresh identity too (Clojure's PersistentList is
+    ;; immutable — (with-meta a-list m) returns a NEW list). Keying meta on the
+    ;; original mutated it, so (with-meta xs {:k xs}) built a self-referential
+    ;; cycle that loops *print-meta* printing.
+    ((cseq? x) (make-cseq (cseq-head x) (cseq-tail x) (cseq-forced? x)
+                          (cseq-list? x) (cseq-cvec x) (cseq-ci x)))
+    ((jolt-lazyseq? x) (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x)
+                                          (jolt-lazyseq-realized? x)))
+    (else x)))                          ; procedure
 
 (define (jolt-with-meta x m)
   (cond

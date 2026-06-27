@@ -3302,4 +3302,18 @@
   {:suite "defn / attr-map" :label "attr-map values are evaluated" :expected "true" :actual "(do (defn m {:val (+ 1 2)} [] 1) (= 3 (:val (meta (var m)))))"}
   {:suite "records / clojure.lang interop" :label "a record's Associative/ILookup methods delegate to the map fns" :expected "[1 9 true true 2]" :actual "(do (defrecord M [a b]) (let [m (->M 1 2)] [(.valAt m :a) (.valAt m :z 9) (= {:a 1 :b 2 :c 3} (into {} (.assoc m :c 3))) (.containsKey m :a) (.count m)]))"}
   {:suite "interop / number classes" :label "Byte/Short bounds + class tokens" :expected "[127 -128 32767 -32768 true]" :actual "[Byte/MAX_VALUE Byte/MIN_VALUE Short/MAX_VALUE Short/MIN_VALUE (= java.lang.Byte java.lang.Byte)]"}
+  {:suite "reader / metadata" :label "a set in metadata is read as a value, not a tagged form" :expected "true" :actual "(= #{:a :b} (:foo (meta (read-string (binding [*print-meta* true] (pr-str (with-meta [1] {:foo #{:a :b}})))))))"}
+  {:suite "reader / metadata" :label "metadata on an empty list is preserved" :expected "true" :actual "(= {:foo 1} (meta (read-string \"^{:foo 1} ()\")))"}
+  {:suite "reader / metadata" :label "a vector in metadata reads as a value" :expected "true" :actual "(= [1 2] (:v (meta (read-string \"^{:v [1 2]} {:a 1}\"))))"}
+  {:suite "reader / metadata" :label "an empty list in metadata reads as a value" :expected "true" :actual "(= () (:e (meta (read-string \"^{:e ()} [1]\"))))"}
+  {:suite "edn / readers in collections" :label "a :default tag reader applies inside a set" :expected "true" :actual "(= #{[:t 1]} (clojure.edn/read-string {:default (fn [t v] [:t v])} \"#{#foo 1}\"))"}
+  {:suite "edn / readers in collections" :label "a registered reader applies inside a set" :expected "true" :actual "(= #{6} (clojure.edn/read-string {:readers {(quote x) (fn [v] (* v 2))}} \"#{#x 3}\"))"}
+  {:suite "metadata / immutability" :label "with-meta on a list does not mutate the original" :expected "true" :actual "(let [ds (list 1 2)] (with-meta ds {:k 1}) (nil? (meta ds)))"}
+  {:suite "metadata / immutability" :label "with-meta on a list carries the metadata" :expected "true" :actual "(= {:k 1} (meta (with-meta (list 1) {:k 1})))"}
+  {:suite "metadata / immutability" :label "a meta-bearing list still equals the bare list" :expected "true" :actual "(let [ds (list 1)] (= ds (with-meta ds {:k 9})))"}
+  {:suite "metadata / immutability" :label "with-meta on a lazy seq carries metadata" :expected "true" :actual "(= {:k 5} (meta (with-meta (lazy-seq (list 1)) {:k 5})))"}
+  {:suite "edn / deferred tags" :label "a :readers override wins over the built-in #inst (not eagerly built)" :expected "true" :actual "(= [:I \"x\"] (clojure.edn/read-string {:readers {(quote inst) (fn [v] [:I v])}} \"#inst \\\"x\\\"\"))"}
+  {:suite "edn / deferred tags" :label "a normal #inst still constructs without an override" :expected "true" :actual "(= #inst \"2020-01-01T00:00:00.000-00:00\" (clojure.edn/read-string \"#inst \\\"2020-01-01T00:00:00.000-00:00\\\"\"))"}
+  {:suite "vars / privacy" :label "defn- marks the var :private" :expected "true" :actual "(do (defn- p [] 1) (true? (:private (meta (var p)))))"}
+  {:suite "vars / privacy" :label "ns-publics drops private vars; ns-interns keeps them" :expected "[true false true]" :actual "(do (defn pub [] 1) (defn- priv [] 2) [(contains? (ns-publics (quote user)) (quote pub)) (contains? (ns-publics (quote user)) (quote priv)) (contains? (ns-interns (quote user)) (quote priv))])"}
 ]

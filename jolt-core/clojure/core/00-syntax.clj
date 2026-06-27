@@ -403,9 +403,11 @@
       `(def ~(with-meta fn-only-name meta-map) (fn ~(with-meta fn-only-name nil) ~@body))
       `(def ~fn-only-name (fn ~fn-only-name ~@body)))))
 
-;; Jolt doesn't enforce privacy, so defn- is just defn (matching how Clojure's own
-;; defn- delegates to defn with :private metadata).
-(defmacro defn- [fn-name & body] `(defn ~fn-name ~@body))
+;; defn- marks the var :private (like Clojure). Jolt doesn't restrict access, but
+;; ns-publics filters private vars out — a lib that introspects ns-publics (e.g.
+;; honeysql's "all helpers have docstrings") sees only the public ones.
+(defmacro defn- [fn-name & body]
+  `(defn ~(with-meta fn-name (assoc (if (meta fn-name) (meta fn-name) {}) :private true)) ~@body))
 
 ;; A fresh jolt symbol inside a macro body (a bare (gensym) returns a host symbol
 ;; the destructurer rejects). This defn compiles fine: by the time a tier triggers

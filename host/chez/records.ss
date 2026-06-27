@@ -450,6 +450,9 @@
                        "Map" "java.util.Map" "Iterable" "java.lang.Iterable" "Object"))
         ((pset? obj) '("PersistentHashSet" "APersistentSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ((or (cseq? obj) (empty-list-t? obj)) '("ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ;; a var is clojure.lang.Var (also IDeref / IFn) — reitit's Expand protocol
+        ;; extends to Var so a #'handler route dispatches.
+        ((var-cell? obj) '("Var" "clojure.lang.Var" "IDeref" "IFn" "Object"))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
         ;; a ByteBuffer — extend-protocol java.nio.ByteBuffer (aws-api util).
@@ -560,7 +563,7 @@
               '("Long" "Integer" "Number" "Double" "Ratio" "BigInt" "BigInteger"
                 "String" "CharSequence" "Boolean" "Character"
                 "Keyword" "Symbol" "Named" "Object" "nil"
-                "Fn" "IFn" "AFn" "URI"
+                "Fn" "IFn" "AFn" "URI" "Var" "IDeref"
                 "PersistentVector" "APersistentVector" "IPersistentVector"
                 "PersistentArrayMap" "APersistentMap" "IPersistentMap"
                 "PersistentHashSet" "APersistentSet" "IPersistentSet"
