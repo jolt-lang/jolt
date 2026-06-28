@@ -119,6 +119,19 @@ allowlisted in `known-divergences.edn`:
   chunk. Strictly finer-grained laziness, decided after the chunk fast path
   (jolt-j9dz) was made O(n).
 
+## Narrow integer types
+
+jolt unifies every integer as one exact-integer type (`:integer-box-model`,
+jolt-k9sw). `(byte n)`/`(short n)`/`(int n)` produce value-correct integers —
+arithmetic, `=`, and `hash` behave exactly as the JVM — but report `Long`, not
+`Byte`/`Short`/`Integer`, so `(class (byte 5))` and `(instance? Byte (byte 5))`
+diverge. This is substrate-inherent: a Chez fixnum is an immediate `identical?`
+to the plain integer (nothing to tag, and numbers carry no metadata), so the only
+faithful representation is a boxed type — which would crash raw compiled `(+ …)`
+(arithmetic emits a bare Chez `+`) or force every `+`/`-`/`*` through an
+unwrapping dispatcher, de-optimizing all arithmetic. Same shape as the accepted
+BigInt-vs-Long unification.
+
 ## Hosting jolt on a new runtime
 
 1. Implement the reader + analyzer + a backend for your runtime (see the Chez port

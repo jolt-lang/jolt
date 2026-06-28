@@ -16,7 +16,9 @@
   :seq-type-model
   "jolt models every seq as PersistentList (eager) or LazySeq (deferred); JVM reifies a specialized class per producer (Cons/Iterate/LongRange/Repeat/Cycle/ChunkedSeq/StringSeq/KeySeq/RSeq/ArraySeq/SubVector). Values and laziness are correct, only (class …) differs. jolt-aei7",
   :chunking-model
-  "jolt seqs are unchunked: forcing one element realizes one (JVM realizes a ~32-element chunk), and mapcat/dedupe realize 0 at construction where JVM forces the first chunk — jolt is a finer-grained lazy superset. jolt-mm6v"},
+  "jolt seqs are unchunked: forcing one element realizes one (JVM realizes a ~32-element chunk), and mapcat/dedupe realize 0 at construction where JVM forces the first chunk — jolt is a finer-grained lazy superset. jolt-mm6v",
+  :integer-box-model
+  "jolt unifies every integer as one exact-integer type. A Chez fixnum is an immediate identical to the plain integer (no distinct identity to tag, no metadata on numbers), so (byte/short/int n) report Long, not Byte/Short/Integer. Value/arithmetic/equality are correct; a faithful narrow box would crash raw compiled (+ …) or de-optimize all arithmetic. jolt-k9sw"},
  :entries
  [{:suite "forms / fn",
    :label "no param vector",
@@ -54,4 +56,9 @@
   {:suite "chunking-model / unchunked realization granularity", :label "first over a vector realizes one, not a chunk", :category :chunking-model}
   {:suite "chunking-model / unchunked realization granularity", :label "nth 0 over a vector realizes one", :category :chunking-model}
   {:suite "chunking-model / unchunked realization granularity", :label "mapcat is fully lazy at construction", :category :chunking-model}
-  {:suite "chunking-model / unchunked realization granularity", :label "dedupe is fully lazy at construction", :category :chunking-model}]}
+  {:suite "chunking-model / unchunked realization granularity", :label "dedupe is fully lazy at construction", :category :chunking-model}
+  {:suite "integer-box-model / narrow int class collapses to Long", :label "byte class", :category :integer-box-model}
+  {:suite "integer-box-model / narrow int class collapses to Long", :label "short class", :category :integer-box-model}
+  {:suite "integer-box-model / narrow int class collapses to Long", :label "int class", :category :integer-box-model}
+  {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Byte is false", :category :integer-box-model}
+  {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Long is true", :category :integer-box-model}]}

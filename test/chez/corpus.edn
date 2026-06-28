@@ -2751,6 +2751,21 @@
   {:suite "chunking-model / unchunked realization granularity" :label "nth 0 over a vector realizes one" :expected "1" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (vec (range 100))) 0) @a)"}
   {:suite "chunking-model / unchunked realization granularity" :label "mapcat is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (mapcat (fn [x] (swap! a inc) [x]) (range 5)) @a)"}
   {:suite "chunking-model / unchunked realization granularity" :label "dedupe is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (dedupe (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  ;; --- integer-box-model: narrow int values behave as integers (certified) ---
+  ;; jolt unifies every integer as one exact-integer type, so (byte/short/int n)
+  ;; produce value-correct integers — only the reified class differs (below).
+  {:suite "integer-box-model / narrow ints behave as integers" :label "byte = plain integer by value" :expected "true" :actual "(= (byte 5) 5)"}
+  {:suite "integer-box-model / narrow ints behave as integers" :label "byte arithmetic promotes" :expected "6" :actual "(+ (byte 5) 1)"}
+  {:suite "integer-box-model / narrow ints behave as integers" :label "byte is a Number" :expected "true" :actual "(instance? Number (byte 5))"}
+  ;; --- integer-box-model divergences (allowlisted): no narrow box types. A Chez
+  ;; fixnum is an immediate identical to the plain integer (cannot be tagged), so
+  ;; (byte/short/int n) report Long, not Byte/Short/Integer. Value is correct.
+  ;; jolt-k9sw (accepted divergence).
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "byte class" :expected "java.lang.Long" :actual "(class (byte 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "short class" :expected "java.lang.Long" :actual "(class (short 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "int class" :expected "java.lang.Long" :actual "(class (int 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "instance? Byte is false" :expected "false" :actual "(instance? Byte (byte 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "instance? Long is true" :expected "true" :actual "(instance? Long (byte 5))"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class number" :expected "java.lang.Long" :actual "(class 1)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class string" :expected "java.lang.String" :actual "(class \"s\")"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class keyword" :expected "clojure.lang.Keyword" :actual "(class :k)"}
