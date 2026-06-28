@@ -801,6 +801,21 @@
   {:suite "lazy / realization order & count" :label "drop+first realizes through the index" :expected "3" :actual "(let [a (atom 0)] (first (drop 2 (map (fn [x] (swap! a inc) x) (iterate inc 0)))) @a)"}
   {:suite "lazy / realization is memoized" :label "first twice realizes once" :expected "1" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (first s) (first s) @a)"}
   {:suite "lazy / realization is memoized" :label "wider take extends, does not re-realize" :expected "4" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (doall (take 2 s)) (doall (take 4 s)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "keep" :expected "0" :actual "(let [a (atom 0)] (keep (fn [x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "keep-indexed" :expected "0" :actual "(let [a (atom 0)] (keep-indexed (fn [i x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "map-indexed" :expected "0" :actual "(let [a (atom 0)] (map-indexed (fn [i x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "distinct" :expected "0" :actual "(let [a (atom 0)] (distinct (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "partition-by" :expected "0" :actual "(let [a (atom 0)] (partition-by (fn [x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "partition-all" :expected "0" :actual "(let [a (atom 0)] (partition-all 2 (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "interpose" :expected "0" :actual "(let [a (atom 0)] (interpose 0 (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "interleave" :expected "0" :actual "(let [a (atom 0)] (interleave (map (fn [x] (swap! a inc) x) (range 5)) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "take-nth" :expected "0" :actual "(let [a (atom 0)] (take-nth 2 (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "reductions" :expected "0" :actual "(let [a (atom 0)] (reductions + (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "tree-seq" :expected "0" :actual "(let [a (atom 0)] (tree-seq (fn [x] (swap! a inc) false) identity [1 [2]]) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "replace over a seq" :expected "0" :actual "(let [a (atom 0)] (replace {} (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / realization timing" :label "sequence realizes the first element" :expected "1" :actual "(let [a (atom 0)] (sequence (map (fn [x] (swap! a inc) x)) (range 5)) @a)"}
+  {:suite "lazy / realization timing" :label "next realizes head + one lookahead" :expected "2" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (next s) @a)"}
+  {:suite "lazy / realization timing" :label "rest realizes only the head" :expected "1" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (rest s) @a)"}
   {:suite "list / construct & predicate" :label "list" :expected "[1 2 3]" :actual "(list 1 2 3)"}
   {:suite "list / construct & predicate" :label "empty list" :expected "[]" :actual "(list)"}
   {:suite "list / construct & predicate" :label "quoted list" :expected "[1 2 3]" :actual "(quote (1 2 3))"}
@@ -2714,6 +2729,28 @@
   {:suite "chunked-seq / over a vector" :label "chunked-seq? false for a list seq" :expected "false" :actual "(chunked-seq? (seq (list 1 2 3)))"}
   {:suite "chunked-seq / over a vector" :label "chunk-first contents + chunk-rest boundary" :expected "[32 0 31 32]" :actual "(let [s (seq (vec (range 50))) c (chunk-first s)] [(count c) (nth c 0) (nth c 31) (first (chunk-rest s))])"}
   {:suite "chunked-seq / over a vector" :label "chunk-first window past the first block" :expected "[32 33 34 35 36 37 38 39]" :actual "(vec (chunk-first (chunk-rest (seq (vec (range 40))))))"}
+  ;; --- seq-type-model divergences (allowlisted): jolt models every seq as
+  ;; PersistentList (eager) or LazySeq (deferred); JVM reifies a specialized class
+  ;; per producer. Values + laziness are correct, only (class …) differs. jolt-aei7.
+  {:suite "seq-type-model / specialized seq classes collapse" :label "cons over a vector" :expected "clojure.lang.PersistentList" :actual "(class (cons 1 [2 3]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "iterate" :expected "clojure.lang.PersistentList" :actual "(class (iterate inc 0))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "range" :expected "clojure.lang.PersistentList" :actual "(class (range 5))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "repeat" :expected "clojure.lang.LazySeq" :actual "(class (repeat 3 :x))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "cycle" :expected "clojure.lang.LazySeq" :actual "(class (cycle [1 2]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "vector seq" :expected "clojure.lang.PersistentList" :actual "(class (seq [1 2 3]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "string seq" :expected "clojure.lang.PersistentList" :actual "(class (seq \"abc\"))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "keys" :expected "clojure.lang.PersistentList" :actual "(class (keys {:a 1 :b 2}))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "rseq" :expected "clojure.lang.PersistentList" :actual "(class (rseq [1 2 3]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "sort" :expected "clojure.lang.PersistentList" :actual "(class (sort [3 1 2]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "subvec" :expected "clojure.lang.PersistentVector" :actual "(class (subvec [1 2 3] 1))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "drop over a vector" :expected "clojure.lang.LazySeq" :actual "(class (drop 1 [1 2 3]))"}
+  ;; --- chunking-model divergences (allowlisted): jolt is unchunked, so forcing
+  ;; one element realizes 1 (JVM realizes a 32-element chunk), and mapcat/dedupe
+  ;; realize 0 at construction (JVM forces the first chunk). jolt-mm6v.
+  {:suite "chunking-model / unchunked realization granularity" :label "first over a vector realizes one, not a chunk" :expected "1" :actual "(let [a (atom 0)] (first (map (fn [x] (swap! a inc) x) (vec (range 100)))) @a)"}
+  {:suite "chunking-model / unchunked realization granularity" :label "nth 0 over a vector realizes one" :expected "1" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (vec (range 100))) 0) @a)"}
+  {:suite "chunking-model / unchunked realization granularity" :label "mapcat is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (mapcat (fn [x] (swap! a inc) [x]) (range 5)) @a)"}
+  {:suite "chunking-model / unchunked realization granularity" :label "dedupe is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (dedupe (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class number" :expected "java.lang.Long" :actual "(class 1)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class string" :expected "java.lang.String" :actual "(class \"s\")"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class keyword" :expected "clojure.lang.Keyword" :actual "(class :k)"}
