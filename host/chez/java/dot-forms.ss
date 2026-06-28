@@ -96,6 +96,21 @@
         ;; (.getClass x) universal — the class token for any value, before the
         ;; collection/map field-lookup arms below would read it as a missing key.
         ((string=? method-name "getClass") (jolt-class obj))
+        ;; clojure.lang.MultiFn .dispatchFn / .getMethod — clojure.spec.alpha's
+        ;; multi-spec walks a multimethod through these.
+        ((jolt-multifn? obj)
+         (cond
+           ((string=? mname "dispatchFn") (jolt-multifn-dispatch-fn obj))
+           ((string=? mname "getMethod")
+            (let ((methods (jolt-multifn-methods obj)) (dv (car rest)))
+              (or (hashtable-ref methods dv #f)
+                  (mm-find-isa obj dv)
+                  (hashtable-ref methods (jolt-multifn-default obj) #f)
+                  jolt-nil)))
+           (else (%dot-rmd obj method-name rest-args))))
+        ;; (.applyTo f args): apply a fn to a seq of args (clojure.spec instrument).
+        ((and (procedure? obj) (string=? mname "applyTo"))
+         (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
         ;; a transient (ITransientCollection/Set/Map): .contains / .valAt / .count —
         ;; test.check's distinct-collection gen uses (.contains transient-set k).
         ((jolt-transient? obj)

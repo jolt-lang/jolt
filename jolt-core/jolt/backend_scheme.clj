@@ -12,7 +12,8 @@
                                form-list? form-vec? form-map? form-set? form-char?
                                form-literal? form-elements form-vec-items
                                form-map-pairs form-set-items form-char-code
-                               form-regex? form-regex-source]]))
+                               form-regex? form-regex-source
+                               form-inst? form-inst-source form-uuid? form-uuid-source]]))
 
 ;; Hot clojure.core primitives lowered to native Scheme.
 ;; `=` is the exactness-aware jolt= from values.ss; inc/dec/
@@ -335,6 +336,11 @@
     (form-map? form) (emit-quoted-map (form-map-pairs form))
     ;; a quoted #"…" regex value -> reconstruct it (same as the :regex IR leaf).
     (form-regex? form) (str "(jolt-regex " (chez-str-lit (form-regex-source form)) ")")
+    ;; quoted #inst / #uuid literals construct their value, like the JVM reader
+    ;; (which builds the Date/UUID at read time, so a quoted/macro form carries the
+    ;; value, not the raw tagged form). Same emit as the :inst / :uuid IR leaves.
+    (form-inst? form) (str "(jolt-inst-from-string " (chez-str-lit (form-inst-source form)) ")")
+    (form-uuid? form) (str "(jolt-uuid-from-string " (chez-str-lit (form-uuid-source form)) ")")
     ;; plain jolt VALUES (metadata maps and anything nested in them)
     (map? form) (emit-quoted-map-value form)
     (vector? form) (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")")

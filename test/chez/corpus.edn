@@ -1,4 +1,8 @@
 [
+  {:suite "host-interop / reify ILookup" :label "(get reify k) / (:k reify) / (get reify k d) route to valAt" :expected "[1 1 :dflt]" :actual "(let [r (reify clojure.lang.ILookup (valAt [_ k] (get {:a 1} k)) (valAt [_ k d] (get {:a 1} k d)))] [(:a r) (get r :a) (get r :z :dflt)])"}
+  {:suite "numbers / comparison error class" :label "nil operand is NPE, non-number is CCE" :expected "[\"java.lang.NullPointerException\" \"java.lang.ClassCastException\"]" :actual "[(try (> nil 5) (catch Throwable e (.getName (class e)))) (try (> :k 5) (catch Throwable e (.getName (class e))))]"}
+  {:suite "reader / quoted #inst constructs a value" :label "a quoted #inst literal is the constructed Date, not a tagged form" :expected "\"(f #inst \\\"1939-01-01T00:00:00.000-00:00\\\")\"" :actual "(pr-str (quote (f #inst \"1939\")))"}
+  {:suite "fn / kwargs trailing map" :label "(f :k v {map}) and (f {map}) both bind & {:as m}" :expected "[{:x 1 :y 2} {:x 1 :y 2}]" :actual "[((fn [a & {:as m}] m) 1 :x 1 {:y 2}) ((fn [a & {:as m}] m) 1 {:x 1 :y 2})]"}
   {:suite "destructure / :or" :label "map default when key absent" :expected "9" :actual "(let [{x :x :or {x 9}} {}] x)"}
   {:suite "destructure / :or" :label "kwargs default when key absent" :expected "9" :actual "((fn [& {x :x :or {x 9}}] x))"}
   {:suite "destructure / :or" :label "default not used when key present" :expected "5" :actual "(let [{x :x :or {x 9}} {:x 5}] x)"}
@@ -3386,4 +3390,8 @@
   {:suite "seq / take infinite count" :label "(take +Infinity coll) takes the whole coll" :expected "7" :actual "(count (take (/ 1.0 0.0) (range 7)))"}
   {:suite "host-interop / UUID + Long + shiftLeft" :label "(UUID. msb lsb), .shiftLeft, (Long. n)" :expected "[\"00000000-0000-007b-0000-0000000001c8\" 40 10 42]" :actual "[(str (java.util.UUID. 123 456)) (.shiftLeft 5 3) (.shiftRight 40 2) (Long. 42)]"}
   {:suite "host-interop / ThreadLocal proxy" :label "(proxy [ThreadLocal] [] (initialValue [] v)) get/set" :expected "[42 7]" :actual "(let [tl (proxy [ThreadLocal] [] (initialValue [] 42))] [(.get tl) (do (.set tl 7) (.get tl))])"}
+  {:suite "host-interop / Compiler/demunge" :label "demunge reverses name munging" :expected "\"a/b?\"" :actual "(clojure.lang.Compiler/demunge \"a$b_QMARK_\")"}
+  {:suite "host-interop / a fn reports its munged class" :label "(class a-def'd-fn) is ns$munged-name, with the IFn hierarchy as ancestors" :expected "[\"clojure.core$odd_QMARK_\" true]" :actual "[(.getName (class odd?)) (boolean (some #{java.lang.Runnable} (ancestors (class odd?))))]"}
+  {:suite "host-interop / MultiFn methods" :label ".getMethod / .dispatchFn on a multimethod" :expected "[true true true]" :actual "(do (defmulti mmc identity) (defmethod mmc :a [_] 1) [(some? (.getMethod mmc :a)) (nil? (.getMethod mmc :z)) (ifn? (.dispatchFn mmc))])"}
+  {:suite "reader / namespaced map literal" :label "#:ns{...} qualifies bare keys; :_/x stays unqualified" :expected "[:search 2 nil]" :actual "[(:event/type #:event{:type :search :id 5}) (count #:x{:a 1 :b 2}) (:k #:_{:k 9})]"}
 ]

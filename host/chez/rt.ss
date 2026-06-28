@@ -114,7 +114,16 @@
 ;; evaluates to #'ns/name (a first-class var), so (var? (def x 1)) is true and
 ;; (pr-str (def x 1)) is "#'ns/x". The prelude's def-var! forms discard the
 ;; return, so this is transparent there.
-(define (def-var! ns name v) (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
+;; proc -> (ns . name) for the var it was def'd into, so (class a-fn) can report a
+;; JVM-style class name and clojure.spec.alpha's fn-sym can recover the symbol of a
+;; bare-fn predicate. Weak so GC'd fns drop out. Last def of a given proc wins.
+(define proc-name-tbl (make-weak-eq-hashtable))
+(define (def-var! ns name v)
+  ;; first def of a given proc wins, so an alias like (def inc' inc) — which binds
+  ;; the SAME proc to a second var — doesn't rename inc.
+  (when (and (procedure? v) (not (hashtable-contains? proc-name-tbl v)))
+    (hashtable-set! proc-name-tbl v (cons ns name)))
+  (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
 ;; jolt.host/throwable — build a typed throwable a library can throw so (class …),
 ;; instance?, .getMessage and ex-message all reflect the named JVM class (e.g. an
 ;; http client throwing java.net.ConnectException). Strictly better than a

@@ -495,6 +495,43 @@
                          (string-append "Unreadable constructor form: #" tok)
                          (empty-pmap)))))))
 
+;; #:ns{…} namespaced map literal: a bare keyword/symbol key gets `ns`, a `:_/x`
+;; key is un-namespaced, an already-qualified key stays. #::{…} uses the current
+;; ns; #::alias{…} resolves the alias.
+(define (rdr-nsmap-key mapns k)
+  (cond
+    ((keyword? k)
+     (let ((kns (keyword-t-ns k)) (kn (keyword-t-name k)))
+       (cond ((and (string? kns) (string=? kns "_")) (keyword #f kn))
+             (kns k)
+             (else (keyword mapns kn)))))
+    ((symbol-t? k)
+     (let ((kns (symbol-t-ns k)) (kn (symbol-t-name k)))
+       (cond ((and (string? kns) (string=? kns "_")) (jolt-symbol #f kn))
+             (kns k)
+             (else (jolt-symbol mapns kn)))))
+    (else k)))
+(define (rdr-nsmap-kvs mapns es)
+  (cond ((null? es) '())
+        ((null? (cdr es)) es)
+        (else (cons (rdr-nsmap-key mapns (car es))
+                    (cons (cadr es) (rdr-nsmap-kvs mapns (cddr es)))))))
+(define (rdr-read-ns-map s i end)        ; i points just past "#:"
+  (let* ((auto? (and (< i end) (char=? (string-ref s i) #\:)))
+         (i2 (if auto? (+ i 1) i)))
+    (let loop ((j i2))
+      (cond
+        ((>= j end) (jolt-throw (jolt-ex-info "EOF in namespaced map literal" (empty-pmap))))
+        ((char=? (string-ref s j) #\{)
+         (let* ((nstok (substring s i2 j))
+                (mapns (if auto?
+                           (if (string=? nstok "") (chez-current-ns)
+                               (let ((a (chez-resolve-alias (chez-current-ns) nstok))) (if a a nstok)))
+                           nstok)))
+           (let-values (((es k) (rdr-read-seq s (+ j 1) end #\})))
+             (values (rdr-make-map (rdr-nsmap-kvs mapns es)) k))))
+        (else (loop (+ j 1)))))))
+
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'
   (when (>= i end) (jolt-throw (jolt-ex-info "EOF after #" (empty-pmap))))
   (let ((c (string-ref s i)))
@@ -533,6 +570,8 @@
                  j)))
       ((char=? c #\?)                    ; #?(...) / #?@(...) reader conditional
        (rdr-read-reader-cond s (+ i 1) end))
+      ((char=? c #\:)                    ; #:ns{...} namespaced map literal
+       (rdr-read-ns-map s (+ i 1) end))
       (else                              ; #tag form -> tagged {:tag :#tag :form ...}
        (let-values (((tok j) (rdr-read-token s i end)))
          (let-values (((form k) (rdr-read-form s j end)))

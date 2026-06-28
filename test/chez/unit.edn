@@ -479,7 +479,7 @@
   {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected "clojure.lang.PersistentList"}
   {:suite "type" :expr "(type (lazy-seq (cons 1 nil)))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected "clojure.lang.PersistentList"}
-  {:suite "type" :expr "(type inc)" :expected "clojure.lang.IFn"}
+  {:suite "type" :expr "(type inc)" :expected "clojure.core$inc"}
   {:suite "type" :expr "(type (sorted-map :a 1))" :expected ":map"}
   {:suite "type" :expr "(type (sorted-set 1))" :expected ":jolt/sorted-set"}
   {:suite "type" :expr "(type (with-meta [1] {:type :custom}))" :expected ":custom"}

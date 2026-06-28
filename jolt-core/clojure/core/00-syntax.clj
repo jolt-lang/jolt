@@ -212,16 +212,16 @@
                  (let* [g (symbol (str (gensym)))
                         gm (symbol (str (gensym)))
                         ;; kwargs: a map pattern may bind against the sequential rest
-                        ;; of a fn — (& {:keys [...]}) — which is a seq of alternating
-                        ;; k/v args, or a single trailing map. Coerce like Clojure (and
-                        ;; like the interpreter's destructure-bind, so interpret/compile
-                        ;; agree): a sequential value with one map element is that map,
-                        ;; otherwise (apply hash-map). A real map value is used as-is, so
-                        ;; ordinary map destructuring is unaffected. g holds init once;
-                        ;; gm is the coerced map every lookup (and :as) reads from.
+                        ;; of a fn — (& {:keys [...]}) — a seq of alternating k/v args,
+                        ;; optionally with a trailing map (Clojure 1.11: (f :a 1 {:b 2})
+                        ;; merges the map over the pairs; (f {:a 1}) is just the map).
+                        ;; An odd count means the last arg is that trailing map. A real
+                        ;; map value is used as-is, so ordinary map destructuring is
+                        ;; unaffected. g holds init once; gm is the coerced map every
+                        ;; lookup (and :as) reads from.
                         coerce `(if (sequential? ~g)
-                                  (if (and (= 1 (count ~g)) (map? (first ~g)))
-                                    (first ~g)
+                                  (if (odd? (count ~g))
+                                    (merge (apply hash-map (butlast ~g)) (last ~g))
                                     (apply hash-map ~g))
                                   ~g)
                         or-map (get pat :or)

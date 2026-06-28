@@ -132,6 +132,8 @@
                          (jolt-symbol (substring a 0 i) (substring a (+ i 1) slen)))
                         (else (loop (- i 1))))))))
          ((keyword? a) (jolt-symbol (keyword-t-ns a) (keyword-t-name a)))
+         ;; (symbol a-var) -> the var's qualified symbol (clojure.spec.alpha/->sym).
+         ((var-cell? a) (jolt-symbol (var-cell-ns a) (var-cell-name a)))
          (else (error #f "symbol: requires string/symbol" a)))))
     ;; (symbol ns name): a nil namespace is the no-ns sentinel #f (NOT jolt-nil),
     ;; so (symbol nil "x") equals (symbol "x") and the reader literal 'x — jolt=
