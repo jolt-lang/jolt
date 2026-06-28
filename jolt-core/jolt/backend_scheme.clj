@@ -37,6 +37,16 @@
    "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
    "zero?" "jolt-zero?" "identity" "jolt-identity" "nil?" "jolt-nil?" "some?" "jolt-some?"
    "ex-info" "jolt-ex-info"
+   ;; bit ops: and/or/xor/not are Chez bitwise primitives (inlined to native code,
+   ;; no helper call); operands must be integers (a non-integer errors, like the
+   ;; JVM). The shifts keep their helpers (Java >>> masking / arithmetic shift) but
+   ;; emit a direct call instead of var-deref + the variadic overlay.
+   ;; and/or/xor/not map to variadic Chez bitwise prims (safe as a value at any
+   ;; arity). bit-and-not is left to its overlay: its only Scheme impl is 2-arg, so
+   ;; a value-position arity-3 use (via the variadic overlay) would mis-emit.
+   "bit-and" "bitwise-and" "bit-or" "bitwise-ior" "bit-xor" "bitwise-xor" "bit-not" "bitwise-not"
+   "bit-shift-left" "jolt-bit-shift-left" "bit-shift-right" "jolt-bit-shift-right"
+   "unsigned-bit-shift-right" "jolt-unsigned-bit-shift-right"
    ;; positional protocol-method dispatch (defprotocol-emitted shims) — bind
    ;; directly to the records.ss entry points so a protocol call doesn't var-deref.
    "protocol-dispatch1" "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch2"
@@ -66,7 +76,10 @@
    "cons" #(= % 2) "filter" #(= % 2) "remove" #(= % 2) "into" #(= % 2)
    "take" #(= % 2) "drop" #(= % 2) "map" #(>= % 2) "apply" #(>= % 2)
    "reduce" #(or (= % 2) (= % 3)) "range" #(and (>= % 0) (<= % 3))
-   "ex-info" #(or (= % 2) (= % 3))})
+   "ex-info" #(or (= % 2) (= % 3))
+   "bit-and" #(= % 2) "bit-or" #(= % 2) "bit-xor" #(= % 2) "bit-not" #(= % 1)
+   "bit-shift-left" #(= % 2) "bit-shift-right" #(= % 2)
+   "unsigned-bit-shift-right" #(= % 2)})
 
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg,
 ;; but Scheme's < demands a number even there — special-case.

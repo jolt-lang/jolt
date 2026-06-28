@@ -1545,6 +1545,11 @@
   {:suite "numbers / variadic bit ops" :label "bit-and-not 3" :expected "8" :actual "(bit-and-not 12 6 3)"}
   {:suite "numbers / variadic bit ops" :label "bit-and single arg throws" :expected :throws :actual "(bit-and 5)"}
   {:suite "numbers / variadic bit ops" :label "bit-or keeps binary fast path" :expected "3" :actual "(bit-or 1 2)"}
+  {:suite "numbers / variadic bit ops" :label "bit-not" :expected "-6" :actual "(bit-not 5)"}
+  {:suite "numbers / variadic bit ops" :label "bit-and in value position" :expected "8" :actual "(reduce bit-and [15 9 12])"}
+  {:suite "numbers / variadic bit ops" :label "bit-xor in value position" :expected "0" :actual "(reduce bit-xor 0 [1 2 3])"}
+  {:suite "numbers / variadic bit ops" :label "bit-or via apply" :expected "7" :actual "(apply bit-or [1 2 4])"}
+  {:suite "numbers / variadic bit ops" :label "unsigned-shift over a full 64-bit value" :expected "17179869183" :actual "(unsigned-bit-shift-right -1 30)"}
   {:suite "predicates / nil & boolean" :label "nil? true" :expected "true" :actual "(nil? nil)"}
   {:suite "predicates / nil & boolean" :label "nil? false" :expected "false" :actual "(nil? 0)"}
   {:suite "predicates / nil & boolean" :label "some? true" :expected "true" :actual "(some? 0)"}
