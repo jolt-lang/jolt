@@ -636,9 +636,14 @@
                           (form-sym-name head)))
             shadowed (and hname (local? env hname))
             ;; under *unchecked-math*, a core +/-/*/inc/dec becomes its wrapping
-            ;; unchecked-* (computed once; nil when off or not such an op).
-            unm (when (and hname (not shadowed) (unchecked-math?))
-                  (unchecked-arith hname (count items)))]
+            ;; unchecked-* (computed once; nil when off or not such an op). The op
+            ;; may arrive bare (+) or clojure.core-qualified (clojure.core/*), the
+            ;; latter from a macro's syntax-quote — both must wrap.
+            unm (when (unchecked-math?)
+                  (let [opn (cond (and hname (not shadowed)) hname
+                                  (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
+                                  (form-sym-name head))]
+                    (when opn (unchecked-arith opn (count items)))))]
         (cond
           ;; *unchecked-math* rewrite, before macro/special dispatch (these are
           ;; ordinary core fns). The unchecked-* form re-analyzes normally.

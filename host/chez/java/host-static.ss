@@ -103,13 +103,13 @@
            (if f
                (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                (error #f (string-append "No method " method-name " on host " (jhost-tag obj)))))))
-      ((number? obj) (number-method method-name obj))
+      ((number? obj) (apply number-method method-name obj (if (jolt-nil? rest-args) '() (seq->list rest-args))))
       (else (%hs-record-method-dispatch obj method-name rest-args)))))
 
 ;; java.lang.Number method surface (the boxed-number methods cljc code calls). The
 ;; integer projections wrap modulo their width (ring-codec relies on byteValue
 ;; overflow: (.byteValue 255) => -1); the float projections are identity flonums.
-(define (number-method method n)
+(define (number-method method n . args)
   (cond
     ((string=? method "byteValue") (let ((b (modulo (jnum->exact n) 256))) (->num (if (>= b 128) (- b 256) b))))
     ((string=? method "shortValue") (let ((b (modulo (jnum->exact n) 65536))) (->num (if (>= b 32768) (- b 65536) b))))
@@ -129,6 +129,10 @@
     ((string=? method "abs") (->num (abs (jnum->exact n))))
     ((string=? method "bitLength") (->num (integer-length (jnum->exact n))))
     ((string=? method "signum") (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
+    ;; BigInteger.shiftLeft/shiftRight (test.check's size-bounded-bigint): arbitrary
+    ;; precision, so an arithmetic shift by the (positive) amount.
+    ((string=? method "shiftLeft") (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
+    ((string=? method "shiftRight") (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args)))))
     (else (error #f (string-append "No method " method " for number")))))
 
 ;; Mutable static fields: "Class" -> (member -> 1-vector cell). A library that

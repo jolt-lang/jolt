@@ -558,8 +558,14 @@
               (parse-extend-impls type-impls))))
 
 ;; extend is a real FUNCTION — defined above extend-type.
-;; JVM proxies are unsupported.
-(defmacro proxy [& args] nil)
+;; JVM proxies are unsupported in general, EXCEPT (proxy [ThreadLocal] [] (initialValue
+;; [] body)) — a per-thread store with a lazy initial value (test.check's no-seed
+;; PRNG uses one). Other proxies stay nil.
+(defmacro proxy [supers ctor-args & methods]
+  (when (and (vector? supers) (= 1 (count supers))
+             (let [s (name (first supers))] (or (= s "ThreadLocal") (= s "InheritableThreadLocal"))))
+    (let [init (some (fn [m] (when (= "initialValue" (name (first m))) m)) methods)]
+      `(jolt.host/make-thread-local (fn [] ~@(when init (nnext init)))))))
 ;; definterface is JVM-only; bind the name to a marker and return the name (not a
 ;; var), matching the JVM where definterface yields the interface Class.
 (defmacro definterface [name-sym & body]

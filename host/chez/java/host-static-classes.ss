@@ -697,6 +697,22 @@
 (def-var! "clojure.core" "__register-class-methods!"
   (lambda (tag members) (register-tagged-methods! tag (jmap->static-alist members)) jolt-nil))
 
+;; java.lang.ThreadLocal via a Chez thread-parameter: real per-thread storage with
+;; a lazy initialValue (the proxy macro lowers (proxy [ThreadLocal] …) to this).
+;; .get returns the thread's value, computing initialValue once; .set / .remove.
+(define tl-unset (list 'tl-unset))
+(define (jolt-make-thread-local init-thunk)
+  (make-jhost "threadlocal" (vector (make-thread-parameter tl-unset) init-thunk)))
+(register-host-methods! "threadlocal"
+  (list (cons "get" (lambda (self)
+                      (let* ((st (jhost-state self)) (tp (vector-ref st 0)) (v (tp)))
+                        (if (eq? v tl-unset)
+                            (let ((nv (jolt-invoke (vector-ref st 1)))) (tp nv) nv)
+                            v))))
+        (cons "set" (lambda (self v) ((vector-ref (jhost-state self) 0) v) jolt-nil))
+        (cons "remove" (lambda (self) ((vector-ref (jhost-state self) 0) tl-unset) jolt-nil))))
+(def-var! "jolt.host" "make-thread-local" jolt-make-thread-local)
+
 ;; Pluggable instance? — a library registers (fn [class-name-string val] -> true
 ;; | false | nil); nil means "not my class, fall through". First non-nil wins.
 (define user-instance-checks '())
