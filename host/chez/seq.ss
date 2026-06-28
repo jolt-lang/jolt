@@ -162,9 +162,16 @@
 (define unc-mask64 #xFFFFFFFFFFFFFFFF)
 (define unc-2^63   #x8000000000000000)
 (define unc-2^64   #x10000000000000000)
+(define unc-neg-2^63 (- unc-2^63))
+;; Wrap to a signed 64-bit value. Fast path: an exact integer already in
+;; [-2^63, 2^63) is its own wrap — skip the bignum mask, which on Chez (61-bit
+;; fixnums) allocates for any value past 2^60. Only an out-of-range result (a
+;; multiply overflowing into 128 bits) needs the mask + sign fixup.
 (define (jolt-wrap64 x)
-  (let ((m (bitwise-and (if (and (number? x) (exact? x) (integer? x)) x (exact (floor x))) unc-mask64)))
-    (if (>= m unc-2^63) (- m unc-2^64) m)))
+  (if (and (exact? x) (integer? x) (>= x unc-neg-2^63) (< x unc-2^63))
+      x
+      (let ((m (bitwise-and (if (and (number? x) (exact? x) (integer? x)) x (exact (floor x))) unc-mask64)))
+        (if (>= m unc-2^63) (- m unc-2^64) m))))
 ;; unchecked-* only WRAP integer (long) math; on a flonum OR ratio operand they
 ;; are an ordinary numeric op, since *unchecked-math* never wraps a non-long —
 ;; Clojure's unchecked-add falls back to regular arithmetic for non-primitives:
