@@ -794,6 +794,13 @@
   {:suite "lazy-seq / realization is shared across walks" :label "effects run once across three walks" :expected "3" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) [1 2 3])] (doall s) (dorun s) (vec s) (deref a))"}
   {:suite "lazy-seq / realization is shared across walks" :label "values stable across walks" :expected "true" :actual "(let [s (map inc [1 2 3])] (= (vec s) (vec s) [2 3 4]))"}
   {:suite "lazy-seq / realization is shared across walks" :label "filter effects once" :expected "4" :actual "(let [a (atom 0) s (filter (fn [x] (swap! a inc) (odd? x)) [1 2 3 4])] (dorun s) (count s) (deref a))"}
+  {:suite "lazy / realization order & count" :label "map realizes left-to-right" :expected "[1 2 3]" :actual "(let [log (atom [])] (dorun (map (fn [x] (swap! log conj x) x) (list 1 2 3))) @log)"}
+  {:suite "lazy / realization order & count" :label "filter realizes left-to-right" :expected "[1 2 3]" :actual "(let [log (atom [])] (dorun (filter (fn [x] (swap! log conj x) true) (list 1 2 3))) @log)"}
+  {:suite "lazy / realization order & count" :label "take realizes exactly n, no over-realization" :expected "3" :actual "(let [a (atom 0)] (dorun (take 3 (map (fn [x] (swap! a inc) x) (iterate inc 0)))) @a)"}
+  {:suite "lazy / realization order & count" :label "nth realizes exactly index+1" :expected "3" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (iterate inc 0)) 2) @a)"}
+  {:suite "lazy / realization order & count" :label "drop+first realizes through the index" :expected "3" :actual "(let [a (atom 0)] (first (drop 2 (map (fn [x] (swap! a inc) x) (iterate inc 0)))) @a)"}
+  {:suite "lazy / realization is memoized" :label "first twice realizes once" :expected "1" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (first s) (first s) @a)"}
+  {:suite "lazy / realization is memoized" :label "wider take extends, does not re-realize" :expected "4" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (doall (take 2 s)) (doall (take 4 s)) @a)"}
   {:suite "list / construct & predicate" :label "list" :expected "[1 2 3]" :actual "(list 1 2 3)"}
   {:suite "list / construct & predicate" :label "empty list" :expected "[]" :actual "(list)"}
   {:suite "list / construct & predicate" :label "quoted list" :expected "[1 2 3]" :actual "(quote (1 2 3))"}
