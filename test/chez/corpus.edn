@@ -1640,7 +1640,7 @@
   {:suite "predicates / tagged-value" :label "tagged-literal? yes" :expected "true" :actual "(tagged-literal? (tagged-literal (quote inst) \"2020\"))"}
   {:suite "predicates / tagged-value" :label "tagged-literal? no" :expected "false" :actual "(tagged-literal? 1)"}
   {:suite "predicates / tagged-value" :label "reader-conditional? no" :expected "false" :actual "(reader-conditional? 1)"}
-  {:suite "predicates / tagged-value" :label "chunked-seq? always false" :expected "true" :actual "(chunked-seq? (seq [1 2 3]))"}
+  {:suite "predicates / tagged-value" :label "chunked-seq? true for a vector seq" :expected "true" :actual "(chunked-seq? (seq [1 2 3]))"}
   {:suite "predicates / equality & identity" :label "= same" :expected "true" :actual "(= 1 1)"}
   {:suite "predicates / equality & identity" :label "= vectors" :expected "true" :actual "(= [1 2] [1 2])"}
   {:suite "predicates / equality & identity" :label "= vector & list" :expected "true" :actual "(= [1 2] (list 1 2))"}
@@ -2709,6 +2709,11 @@
   {:suite "untested / chunk family (eager equivalents) + cat" :label "halt-when" :expected "4" :actual "(transduce (halt-when even?) conj [] [1 3 4 5])"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-next exhausted" :expected "nil" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (chunk-next (chunk-cons (chunk cb) nil)))"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-rest seqable" :expected "[]" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (vec (chunk-rest (chunk-cons (chunk cb) nil))))"}
+  {:suite "chunked-seq / over a vector" :label "chunk-first is a 32-element block" :expected "32" :actual "(count (chunk-first (seq (vec (range 100)))))"}
+  {:suite "chunked-seq / over a vector" :label "chunked-seq? true for vector seq" :expected "true" :actual "(chunked-seq? (seq (vec (range 100))))"}
+  {:suite "chunked-seq / over a vector" :label "chunked-seq? false for a list seq" :expected "false" :actual "(chunked-seq? (seq (list 1 2 3)))"}
+  {:suite "chunked-seq / over a vector" :label "chunk-first contents + chunk-rest boundary" :expected "[32 0 31 32]" :actual "(let [s (seq (vec (range 50))) c (chunk-first s)] [(count c) (nth c 0) (nth c 31) (first (chunk-rest s))])"}
+  {:suite "chunked-seq / over a vector" :label "chunk-first window past the first block" :expected "[32 33 34 35 36 37 38 39]" :actual "(vec (chunk-first (chunk-rest (seq (vec (range 40))))))"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class number" :expected "java.lang.Long" :actual "(class 1)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class string" :expected "java.lang.String" :actual "(class \"s\")"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class keyword" :expected "clojure.lang.Keyword" :actual "(class :k)"}
