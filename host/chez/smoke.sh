@@ -46,6 +46,15 @@ check '(== 3 3.0)' 'true'
 check_loc '(throw (ex-info "boom" {}))' '  at 1:'
 check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
 
+# --help prints usage, and lists the nREPL server under its real flag name.
+help_out="$(bin/joltc --help 2>/dev/null)"
+if printf '%s' "$help_out" | grep -q -- '--nrepl-server'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: --help should list --nrepl-server"
+  fails=$((fails + 1))
+fi
+
 # clojure.test extension points (assert-expr / do-report / report) need separate
 # top-level forms — assert-expr must register before `is` expands — so this is a
 # multi-form `joltc run`, not an -e one-liner. The file self-checks its tallies.

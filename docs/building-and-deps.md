@@ -57,14 +57,14 @@ dependencies, and prepends the resolved source directories to the source roots
 for the run. The CLI commands (`jolt.deps` + `jolt.main`):
 
 ```bash
-bin/joltc run -m NS [args]  # resolve deps.edn, load NS, call its -main
-bin/joltc run FILE          # resolve deps.edn, load a Clojure file
-bin/joltc -M:alias [args]   # run the alias's :main-opts
-bin/joltc -A:alias [args]   # add the alias's paths/deps, then run the rest
-bin/joltc repl              # start a line REPL (project deps + native libs loaded)
-bin/joltc nrepl [port]      # start an nREPL server (default 7888) for editors
-bin/joltc path              # print the resolved source roots (':'-joined)
-bin/joltc <task>            # run a deps.edn :tasks entry
+bin/joltc run -m NS [args]      # resolve deps.edn, load NS, call its -main
+bin/joltc run FILE              # resolve deps.edn, load a Clojure file
+bin/joltc -M:alias [args]       # run the alias's :main-opts
+bin/joltc -A:alias [args]       # add the alias's paths/deps, then run the rest
+bin/joltc repl                  # start a line REPL (project deps + native libs loaded)
+bin/joltc --nrepl-server [port] # start an nREPL server (default 7888) for editors
+bin/joltc path                  # print the resolved source roots (':'-joined)
+bin/joltc <task>                # run a deps.edn :tasks entry
 ```
 
 Example `deps.edn`:
