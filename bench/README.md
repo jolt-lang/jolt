@@ -69,6 +69,37 @@ regenerate locally), ascending:
   nodes escape into the tree, so scalar-replace can't remove them — residual GC
   pressure.
 
+## 64-bit integer arithmetic & generators (test.check)
+
+The AOT suite above is float-compute / dispatch / allocation bound; none of it
+exercises **64-bit integer arithmetic**, which Chez can't hold in a fixnum
+(61-bit), so genuine 64-bit values are heap bignums. The SplitMix PRNG behind
+`clojure.test.check` is the worst case — every `rand-long` is ~8 bignum ops. These
+were measured in **run mode** (`joltc run`, where per-site var-cell caching is on;
+the AOT build keeps it off) against JVM Clojure on the same portable source. The
+first two rows are isolating microbenchmarks; the rest are real test.check
+generators.
+
+| workload | jolt | JVM | ratio | bound by |
+|---|---|---|---|---|
+| SplitMix `mix-64` (×100k) | 45ms | 14ms | ~3.2× | 64-bit integer arithmetic |
+| deftype alloc + protocol dispatch (×100k) | 41ms | 5ms | ~8× | open-world dispatch |
+| raw `split` + `rand-long` (×20k) | 74ms | 6ms | ~12× | bignum 64-bit + dispatch |
+| `gen/large-integer` (×2k) | 108ms | 23ms | ~4.7× | arithmetic + rose-tree machinery |
+| `(gen/vector gen/large-integer)` (×500) | 1289ms | 88ms | ~14.6× | element gen + gen machinery |
+
+Two no-C codegen levers collapsed the **arithmetic** half: emitting `bit-and`/
+`bit-or`/`bit-xor`/`bit-not` as inlined Chez `bitwise-*` primitives (they had gone
+through a var-deref'd variadic overlay), and caching the resolved var cell per
+reference site (a name lookup was ~45ns/access). Together they took `mix-64` from
+~18× → ~3.2× JVM and the raw PRNG from ~30× → ~12×, and the generators ~1.6× each.
+
+The residual gap is **machinery, not arithmetic**: the open-world generator
+deftype/protocol dispatch + rose-tree allocation (~8–10×) can't be devirtualized
+without static types, and the raw 64-bit ops bottom out at the Chez bignum floor
+(~20× a native long, substrate-inherent). A native SplitMix C/FFI shim would give
+the PRNG ~27× but is the only path that needs C.
+
 ## Running
 
 ```sh
