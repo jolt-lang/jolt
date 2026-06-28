@@ -165,16 +165,20 @@
 (define (jolt-wrap64 x)
   (let ((m (bitwise-and (if (and (number? x) (exact? x) (integer? x)) x (exact (floor x))) unc-mask64)))
     (if (>= m unc-2^63) (- m unc-2^64) m)))
-;; unchecked-* only WRAP integer (long) math; on a flonum operand they are an
-;; ordinary float op, since *unchecked-math* never wraps doubles — Clojure:
-;; (unchecked-multiply 1.5 2.0) => 3.0, not a truncated long. (test.check's
-;; rand-double is (* double-unit shifted) under *unchecked-math*.)
-(define (jolt-uncadd2 a b) (if (or (flonum? a) (flonum? b)) (+ a b) (jolt-wrap64 (+ a b))))
-(define (jolt-uncsub2 a b) (if (or (flonum? a) (flonum? b)) (- a b) (jolt-wrap64 (- a b))))
-(define (jolt-uncmul2 a b) (if (or (flonum? a) (flonum? b)) (* a b) (jolt-wrap64 (* a b))))
-(define (jolt-uncinc x)    (if (flonum? x) (+ x 1.0) (jolt-wrap64 (+ x 1))))
-(define (jolt-uncdec x)    (if (flonum? x) (- x 1.0) (jolt-wrap64 (- x 1))))
-(define (jolt-uncneg x)    (if (flonum? x) (- x) (jolt-wrap64 (- x))))
+;; unchecked-* only WRAP integer (long) math; on a flonum OR ratio operand they
+;; are an ordinary numeric op, since *unchecked-math* never wraps a non-long —
+;; Clojure's unchecked-add falls back to regular arithmetic for non-primitives:
+;; (unchecked-multiply 1.5 2.0) => 3.0, (unchecked-add 2/3 2/3) => 4/3, not a
+;; truncated long. (test.check's rand-double is (* double-unit shifted), and
+;; gen/ratio sums ratios, both under *unchecked-math*.) Wrap iff both are exact
+;; integers.
+(define (unc-int? x) (and (exact? x) (integer? x)))
+(define (jolt-uncadd2 a b) (if (and (unc-int? a) (unc-int? b)) (jolt-wrap64 (+ a b)) (+ a b)))
+(define (jolt-uncsub2 a b) (if (and (unc-int? a) (unc-int? b)) (jolt-wrap64 (- a b)) (- a b)))
+(define (jolt-uncmul2 a b) (if (and (unc-int? a) (unc-int? b)) (jolt-wrap64 (* a b)) (* a b)))
+(define (jolt-uncinc x)    (if (unc-int? x) (jolt-wrap64 (+ x 1)) (+ x 1)))
+(define (jolt-uncdec x)    (if (unc-int? x) (jolt-wrap64 (- x 1)) (- x 1)))
+(define (jolt-uncneg x)    (if (unc-int? x) (jolt-wrap64 (- x)) (- x)))
 (define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
 (define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
 (define (jolt-unchecked-sub . xs)

@@ -1484,6 +1484,11 @@
   {:suite "numbers / promoting & unchecked aliases" :label "unchecked-remainder-int negative" :expected "-1" :actual "(unchecked-remainder-int -7 2)"}
   {:suite "numbers / promoting & unchecked aliases" :label "unchecked-int truncates" :expected "3" :actual "(unchecked-int 3.7)"}
   {:suite "numbers / promoting & unchecked aliases" :label "unchecked-int negative" :expected "-3" :actual "(unchecked-int -3.7)"}
+  {:suite "numbers / promoting & unchecked aliases" :label "unchecked-add on ratios does not wrap to long" :expected "4/3" :actual "(unchecked-add 2/3 2/3)"}
+  {:suite "numbers / promoting & unchecked aliases" :label "unchecked-multiply ratio by int" :expected "4/3" :actual "(unchecked-multiply 2/3 2)"}
+  {:suite "numbers / promoting & unchecked aliases" :label "unchecked-negate ratio" :expected "-2/3" :actual "(unchecked-negate 2/3)"}
+  {:suite "numbers / promoting & unchecked aliases" :label "unchecked-add ratios summing to zero" :expected "0" :actual "(unchecked-add 1/2 -1/2)"}
+  {:suite "numbers / promoting & unchecked aliases" :label "unchecked-inc ratio" :expected "3/2" :actual "(unchecked-inc 1/2)"}
   {:suite "numbers / promoting & unchecked aliases" :label "unchecked-long" :expected "3" :actual "(unchecked-long 3.7)"}
   {:suite "numbers / promoting & unchecked aliases" :label "int? on integer" :expected "true" :actual "(int? 5)"}
   {:suite "numbers / promoting & unchecked aliases" :label "int? on double" :expected "false" :actual "(int? 5.5)"}
