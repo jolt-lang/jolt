@@ -16,7 +16,7 @@
 ;; seq, (rest list), (seq coll), (map …) are seqs but not lists.
 (define (jolt-list-pred? x) (or (and (cseq? x) (cseq-list? x)) (empty-list-t? x)))
 (define (jolt-coll-pred? x)
-  (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x)))
+  (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)))
 (define (jolt-number? x) (number? x))
 (define (jolt-string? x) (string? x))
 (define (jolt-char-pred? x) (char? x))

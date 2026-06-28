@@ -46,7 +46,9 @@
 ;; ANY non-empty seq is a list form for analysis (a macro/eval form built via
 ;; concat/map/cons is a lazy cseq with list?=#f, but evaluating it still means
 ;; calling its head) — not just reader-built lists.
-(define (hc-list? x) (or (empty-list-t? x) (cseq? x)))
+;; a lazy seq is a list form too: a macro that builds its expansion with map/for
+;; (now a LazySeq, not an eager cseq) and splices it must still analyze.
+(define (hc-list? x) (or (empty-list-t? x) (cseq? x) (jolt-lazyseq? x)))
 (define (hc-vec? x) (pvec? x))
 (define (hc-map? x) (and (pmap? x) (jolt-nil? (jolt-get x hc-kw-jolt-type))))
 ;; A set form is the reader's tagged map {:jolt/type :jolt/set :value <pvec>} OR a
@@ -106,7 +108,7 @@
 ;; list items -> jolt vector (pvec); the analyzer mapv's over the result.
 (define (hc-elements x)
   (cond ((empty-list-t? x) empty-pvec)
-        ((cseq? x) (make-pvec (list->vector (seq->list x))))
+        ((or (cseq? x) (jolt-lazyseq? x)) (make-pvec (list->vector (seq->list x))))
         (else empty-pvec)))
 (define (hc-vec-items x) x)                 ; already a pvec
 (define (hc-set-items x)

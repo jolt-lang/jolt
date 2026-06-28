@@ -475,10 +475,10 @@
   {:suite "type" :expr "(type '(1 2))" :expected "clojure.lang.PersistentList"}
   {:suite "type" :expr "(type '())" :expected "clojure.lang.PersistentList$EmptyList"}
   {:suite "type" :expr "(type (first {:a 1}))" :expected "clojure.lang.PersistentVector"}
-  {:suite "type" :expr "(type (map inc [1 2]))" :expected "clojure.lang.PersistentList"}
-  {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected "clojure.lang.PersistentList"}
+  {:suite "type" :expr "(type (map inc [1 2]))" :expected "clojure.lang.LazySeq"}
+  {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type (lazy-seq (cons 1 nil)))" :expected "clojure.lang.LazySeq"}
-  {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected "clojure.lang.PersistentList"}
+  {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type inc)" :expected "clojure.core$inc"}
   {:suite "type" :expr "(type (sorted-map :a 1))" :expected ":map"}
   {:suite "type" :expr "(type (sorted-set 1))" :expected ":jolt/sorted-set"}

@@ -751,6 +751,7 @@
                    ((string=? iface "IPersistentSet") (or (pset? val) (htable-sorted-set? val)))
                    ((string=? iface "ISeq")
                     (or (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ((string=? iface "LazySeq") (jolt-lazyseq? val))
                    ;; Seqable is anything (seq x) works on — every persistent
                    ;; collection, not just seqs (a vector IS Seqable, not an ISeq).
                    ((string=? iface "Seqable")

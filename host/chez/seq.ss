@@ -250,10 +250,16 @@
   (if (any-nil? seqs) jolt-empty-list
       (cseq-lazy (apply jolt-invoke f (map seq-first seqs))
                  (lambda () (map-seq* f (map (lambda (s) (jolt-seq (seq-more s))) seqs))))))
+;; map is fully lazy: Clojure's (map f coll) is a LazySeq whose body — including
+;; (f (first coll)) — runs only when forced, so a side-effecting f does not fire
+;; at construction. Wrap the (eager-headed) map-seq in a lazy-seq node; forcing it
+;; once yields the cseq chain, which then iterates with no per-element overhead.
+;; jolt-seq coerces map-seq's result (cseq | jolt-empty-list) to cseq | nil, the
+;; contract force-lazyseq relies on (see jolt-rest).
 (define (jolt-map f . colls)
   (if (null? (cdr colls))
-      (map-seq f (jolt-seq (car colls)))
-      (map-seq* f (map jolt-seq colls))))
+      (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (car colls))))))
+      (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq* f (map jolt-seq colls)))))))
 
 (define (filter-seq pred s keep)
   (let loop ((s s))
@@ -261,8 +267,12 @@
           ((eq? keep (jolt-truthy? (jolt-invoke pred (seq-first s))))
            (cseq-lazy (seq-first s) (lambda () (filter-seq pred (jolt-seq (seq-more s)) keep))))
           (else (loop (jolt-seq (seq-more s)))))))
-(define (jolt-filter pred coll) (filter-seq pred (jolt-seq coll) #t))
-(define (jolt-remove pred coll) (filter-seq pred (jolt-seq coll) #f))
+;; filter/remove are fully lazy (LazySeq): defer the predicate and the source seq
+;; until forced, like Clojure. (lazy-seq* = a 0-arg lazy node coercing to cseq|nil.)
+(define (jolt-filter pred coll)
+  (jolt-make-lazy-seq (lambda () (jolt-seq (filter-seq pred (jolt-seq coll) #t)))))
+(define (jolt-remove pred coll)
+  (jolt-make-lazy-seq (lambda () (jolt-seq (filter-seq pred (jolt-seq coll) #f)))))
 
 ;; honors `reduced`: a reducing fn that returns (reduced x) stops the fold and
 ;; unwraps to x (so does a reduced INIT). Checked at entry, so the value returned
@@ -332,21 +342,28 @@
 ;; (take 0 (rest s)) never seqs coll. Realizing one more, as forcing seq-more at
 ;; the boundary would, over-runs the source by one (medley's sequence-padded).
 (define (jolt-take n coll)
-  ;; (take Double/POSITIVE_INFINITY coll) takes the whole coll on the JVM (the
-  ;; count never reaches 0); test.check's rose-tree unchunk relies on it. Coercing
-  ;; +inf.0 to a fixnum index would throw, so take all up front.
-  (if (and (flonum? n) (infinite? n))
-      (if (> n 0.0) (jolt-seq coll) jolt-empty-list)
-      (let ((n (->idx n)))
-        (let loop ((n n) (s (jolt-seq coll)))
-          (cond
-            ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
-            ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
-            (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s)))))))))))
+  ;; lazy (LazySeq): realize exactly n elements, none at construction. (take
+  ;; Double/POSITIVE_INFINITY coll) takes the whole coll on the JVM (the count
+  ;; never reaches 0); test.check's rose-tree unchunk relies on it. Coercing +inf.0
+  ;; to a fixnum index would throw, so take all up front in that case.
+  (jolt-make-lazy-seq
+   (lambda ()
+     (jolt-seq
+      (if (and (flonum? n) (infinite? n))
+          (if (> n 0.0) (jolt-seq coll) jolt-empty-list)
+          (let ((n (->idx n)))
+            (let loop ((n n) (s (jolt-seq coll)))
+              (cond
+                ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
+                ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
+                (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s))))))))))))))
 (define (jolt-drop n coll)
-  (let loop ((n (->idx n)) (s (jolt-seq coll)))
-    (if (or (fx<=? n 0) (jolt-nil? s)) (if (jolt-nil? s) jolt-empty-list s)
-        (loop (fx- n 1) (jolt-seq (seq-more s))))))
+  (jolt-make-lazy-seq
+   (lambda ()
+     (jolt-seq
+      (let loop ((n (->idx n)) (s (jolt-seq coll)))
+        (if (or (fx<=? n 0) (jolt-nil? s)) (if (jolt-nil? s) jolt-empty-list s)
+            (loop (fx- n 1) (jolt-seq (seq-more s)))))))))
 
 ;; lazily append seq a then the seqable produced by the thunk `brest` — the rest
 ;; is NOT forced until a is exhausted, so concat is fully lazy (Clojure semantics).
@@ -357,9 +374,12 @@
   (if (jolt-nil? a) (jolt-seq (brest))
       (cseq-lazy (seq-first a) (lambda () (concat2 (jolt-seq (seq-more a)) brest)))))
 (define (jolt-concat . colls)
-  (cond ((null? colls) jolt-empty-list)
-        ((null? (cdr colls)) (jolt-seq (car colls)))
-        (else (concat2 (jolt-seq (car colls)) (lambda () (apply jolt-concat (cdr colls)))))))
+  (jolt-make-lazy-seq
+   (lambda ()
+     (jolt-seq
+      (cond ((null? colls) jolt-empty-list)
+            ((null? (cdr colls)) (jolt-seq (car colls)))
+            (else (concat2 (jolt-seq (car colls)) (lambda () (apply jolt-concat (cdr colls))))))))))
 
 ;; Lazily concatenate a (possibly infinite) SEQ of colls — what (apply concat ss)
 ;; means, but without realizing ss. Pulls one coll at a time, concatenating it with

@@ -766,6 +766,15 @@
   {:suite "lazy / construction & laziness" :label "not eagerly evaluated" :expected "0" :actual "(let [c (atom 0)] (lazy-seq (swap! c inc) nil) @c)"}
   {:suite "lazy / construction & laziness" :label "realized on demand" :expected "1" :actual "(let [c (atom 0) s (lazy-seq (swap! c inc) [1])] (first s) @c)"}
   {:suite "lazy / construction & laziness" :label "lazy-cat" :expected "[0 1 2 3]" :actual "(lazy-cat [0 1] [2 3])"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "map" :expected "0" :actual "(let [a (atom 0)] (map (fn [x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "filter" :expected "0" :actual "(let [a (atom 0)] (filter (fn [x] (swap! a inc) true) (range 5)) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "remove" :expected "0" :actual "(let [a (atom 0)] (remove (fn [x] (swap! a inc) false) (range 5)) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "take over a lazy source" :expected "0" :actual "(let [a (atom 0)] (take 3 (map (fn [x] (swap! a inc) x) (range 100))) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "drop over a lazy source" :expected "0" :actual "(let [a (atom 0)] (drop 2 (map (fn [x] (swap! a inc) x) (range 100))) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "concat over lazy sources" :expected "0" :actual "(let [a (atom 0)] (concat (map (fn [x] (swap! a inc) x) [1 2]) (map (fn [x] (swap! a inc) x) [3 4])) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "take-while" :expected "0" :actual "(let [a (atom 0)] (take-while (fn [x] (swap! a inc) true) (range 5)) @a)"}
+  {:suite "lazy / seq fns are lazy (no side effect at construction)" :label "partition over a lazy source" :expected "0" :actual "(let [a (atom 0)] (partition 2 (map (fn [x] (swap! a inc) x) (range 6))) @a)"}
+  {:suite "lazy / result type is LazySeq" :label "map/filter/take/concat/mapcat are LazySeq" :expected "[true true true true true]" :actual "(mapv #(instance? clojure.lang.LazySeq %) [(map inc [1]) (filter odd? [1]) (take 1 [1]) (concat [1]) (mapcat list [1])])"}
   {:suite "lazy / construction & laziness" :label "doall forces" :expected "[2 3 4]" :actual "(doall (map inc [1 2 3]))"}
   {:suite "lazy / construction & laziness" :label "dorun returns nil" :expected "nil" :actual "(dorun (map inc [1 2 3]))"}
   {:suite "lazy / infinite" :label "take from repeat" :expected "[7 7 7]" :actual "(take 3 (repeat 7))"}
