@@ -44,8 +44,37 @@
     (fold-left (lambda (m s) (jolt-assoc1 m (jolt-symbol #f s) #t))
                (jolt-assoc1 (jolt-hash-map) (jolt-symbol "clojure.core" "import*") #t)
                unq)))
+;; clojure.lang.Compiler/demunge — reverse the name munging Clojure applies to
+;; build JVM class/method names, so "clojure.core$odd_QMARK_" -> clojure.core/odd?.
+;; clojure.spec.alpha's fn-sym uses it to recover a symbol from a fn's class name.
+;; Longest tokens first; a standalone _ is a hyphen; $ separates ns from name.
+(define demunge-token-map
+  '(("_DOUBLEQUOTE_" . "\"") ("_SINGLEQUOTE_" . "'") ("_AMPERSAND_" . "&") ("_PERCENT_" . "%")
+    ("_LBRACE_" . "{") ("_RBRACE_" . "}") ("_LBRACK_" . "[") ("_RBRACK_" . "]")
+    ("_BSLASH_" . "\\") ("_TILDE_" . "~") ("_CIRCA_" . "@") ("_SHARP_" . "#") ("_BANG_" . "!")
+    ("_CARET_" . "^") ("_COLON_" . ":") ("_QMARK_" . "?") ("_SLASH_" . "/") ("_PLUS_" . "+")
+    ("_STAR_" . "*") ("_BAR_" . "|") ("_GT_" . ">") ("_LT_" . "<") ("_EQ_" . "=") ("_DOT_" . ".")))
+(define (compiler-demunge s)
+  (let* ((s (if (string? s) s (jolt-str-render-one s)))
+         (n (string-length s))
+         (out (open-output-string)))
+    (let loop ((i 0))
+      (if (>= i n) (get-output-string out)
+          (let ((tok (let scan ((ts demunge-token-map))
+                       (cond ((null? ts) #f)
+                             ((let ((t (caar ts)))
+                                (and (<= (+ i (string-length t)) n)
+                                     (string=? (substring s i (+ i (string-length t))) t)))
+                              (car ts))
+                             (else (scan (cdr ts)))))))
+            (cond
+              (tok (display (cdr tok) out) (loop (+ i (string-length (car tok)))))
+              ((char=? (string-ref s i) #\_) (write-char #\- out) (loop (+ i 1)))
+              ((char=? (string-ref s i) #\$) (write-char #\/ out) (loop (+ i 1)))
+              (else (write-char (string-ref s i) out) (loop (+ i 1)))))))))
 (let ((members (list (cons "LINE" compiler-line-cell) (cons "COLUMN" compiler-column-cell)
-                     (cons "specials" compiler-specials))))
+                     (cons "specials" compiler-specials)
+                     (cons "demunge" compiler-demunge))))
   (register-class-statics! "Compiler" members)
   (register-class-statics! "clojure.lang.Compiler" members))
 
