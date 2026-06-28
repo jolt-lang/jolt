@@ -105,8 +105,9 @@
   (if (null? colls)
       (td-mapcat f)
       ;; lazily concat the per-element results — no seq->list, so mapcat over an
-      ;; infinite source stays lazy.
-      (lazy-concat-seq (apply jolt-map f colls))))
+      ;; infinite source stays lazy; the outer lazy-seq node defers the first
+      ;; element so a side-effecting f does not fire at construction (LazySeq).
+      (jolt-make-lazy-seq (lambda () (jolt-seq (lazy-concat-seq (apply jolt-map f colls)))))))
 
 ;; take-while / drop-while: 1-arg -> transducer; 2-arg -> a seq over the coll.
 (define (take-while-seq pred s)
@@ -118,7 +119,7 @@
 (define jolt-take-while
   (case-lambda
     ((pred) (td-take-while pred))
-    ((pred coll) (take-while-seq pred (jolt-seq coll)))))
+    ((pred coll) (jolt-make-lazy-seq (lambda () (jolt-seq (take-while-seq pred (jolt-seq coll))))))))
 (define (drop-while-seq pred coll)
   (let loop ((s (jolt-seq coll)))
     (if (and (not (jolt-nil? s)) (jolt-truthy? (jolt-invoke pred (seq-first s))))
@@ -127,7 +128,7 @@
 (define jolt-drop-while
   (case-lambda
     ((pred) (td-drop-while pred))
-    ((pred coll) (drop-while-seq pred coll))))
+    ((pred coll) (jolt-make-lazy-seq (lambda () (jolt-seq (drop-while-seq pred coll)))))))
 
 ;; partition: (partition n coll), (partition n step coll), or
 ;; (partition n step pad coll). Only complete partitions of size n are kept;
@@ -135,9 +136,9 @@
 ;; runs out). Each partition is a seq; the whole result is a lazy seq of seqs.
 (define jolt-partition
   (case-lambda
-    ((n coll) (partition* (->idx n) (->idx n) #f #f coll))
-    ((n step coll) (partition* (->idx n) (->idx step) #f #f coll))
-    ((n step pad coll) (partition* (->idx n) (->idx step) #t pad coll))))
+    ((n coll) (jolt-make-lazy-seq (lambda () (jolt-seq (partition* (->idx n) (->idx n) #f #f coll)))))
+    ((n step coll) (jolt-make-lazy-seq (lambda () (jolt-seq (partition* (->idx n) (->idx step) #f #f coll)))))
+    ((n step pad coll) (jolt-make-lazy-seq (lambda () (jolt-seq (partition* (->idx n) (->idx step) #t pad coll)))))))
 (define (take-n n s)               ; -> (values list-of-first-n remaining-seq taken-count)
   (let loop ((n n) (s s) (acc '()))
     (if (or (fx<=? n 0) (jolt-nil? s))

@@ -160,11 +160,14 @@
                             (coll->cells (step (rest s) prev))
                             (coll->cells (cons x (step (rest s) x)))))
                         nil)))))]
-     (let [s (seq coll)]
-       (if s
-         (make-lazy-seq
-           (fn* [] (coll->cells (cons (first s) (step (rest s) (first s))))))
-         ())))))
+     ;; defer (seq coll) into the lazy-seq so a side-effecting source is not
+     ;; realized at construction (dedupe is lazy, like Clojure's).
+     (make-lazy-seq
+       (fn* []
+         (let [s (seq coll)]
+           (if s
+             (coll->cells (cons (first s) (step (rest s) (first s))))
+             nil)))))))
 
 ;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs —
 ;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):

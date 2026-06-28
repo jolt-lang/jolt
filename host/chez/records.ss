@@ -484,6 +484,10 @@
         ;; reports PersistentList / IPersistentList / IPersistentStack — extend-protocol
         ;; clojure.lang.IPersistentList (algo.monads' writer monad) dispatches on one.
         ((or (cseq? obj) (empty-list-t? obj)) '("PersistentList" "IPersistentList" "IPersistentStack" "ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ;; a lazy seq (map/filter/… result) is clojure.lang.LazySeq: a Sequential
+        ;; ISeq, but not a PersistentList — matching the JVM so extend-protocol /
+        ;; instance? on a deferred seq dispatch like an eager one where they should.
+        ((jolt-lazyseq? obj) '("LazySeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
         ;; a var is clojure.lang.Var (also IDeref / IFn) — reitit's Expand protocol
         ;; extends to Var so a #'handler route dispatches.
         ((var-cell? obj) '("Var" "clojure.lang.Var" "IDeref" "IFn" "Object"))
