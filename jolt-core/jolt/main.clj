@@ -192,23 +192,26 @@
 
 (defn- usage []
   (println "usage: jolt <command> [args]")
-  (println "  run -m NS [args]   resolve deps.edn, load NS, call its -main")
-  (println "  run FILE           load a Clojure file")
+  (println "  run -m NS [args]       resolve deps.edn, load NS, call its -main")
+  (println "  run FILE               load a Clojure file")
   (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--tree-shake]  compile a standalone binary")
-  (println "  -M:alias [args]    run the alias's :main-opts")
-  (println "  -A:alias [args]    add the alias's paths/deps")
-  (println "  repl               start a line REPL")
-  (println "  nrepl [port]       start an nREPL server (default 7888) for editors")
-  (println "  path               print the resolved source roots")
-  (println "  <task>             run a deps.edn :tasks entry"))
+  (println "  -M:alias [args]        run the alias's :main-opts")
+  (println "  -A:alias [args]        add the alias's paths/deps")
+  (println "  repl                   start a line REPL")
+  (println "  --nrepl-server [port]  start an nREPL server (default 7888) for editors")
+  (println "  path                   print the resolved source roots")
+  (println "  <task>                 run a deps.edn :tasks entry")
+  (println "  --help                 print this message"))
 
 (defn -main [& args]
   (let [[cmd & more] args]
     (cond
       (nil? cmd)                  (usage)
+      (= cmd "--help")            (usage)
+      (= cmd "-h")                (usage)
       (= cmd "run")               (cmd-run more)
       (= cmd "repl")              (repl)
-      (= cmd "nrepl")             (nrepl more)
+      (= cmd "--nrepl-server")    (nrepl more)
       (= cmd "path")              (cmd-path)
       (str/starts-with? cmd "-M") (cmd-M cmd more)
       (str/starts-with? cmd "-A") (cmd-A cmd more)

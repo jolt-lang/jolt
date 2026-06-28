@@ -45,6 +45,32 @@ $ bin/joltc -e '(/ 1 2)'
 1/2
 ```
 
+## REPL and editor integration
+
+```bash
+bin/joltc repl                  # a line REPL with the project's deps loaded
+bin/joltc --nrepl-server [port] # an nREPL server (default 7888) for editors
+```
+
+Both resolve the `deps.edn` in the current directory first, so the project's
+source roots and native libraries are loaded — `(require '[my.ns])` works live.
+`--nrepl-server` writes a `.nrepl-port` file in the project dir, so CIDER / Calva / Cursive
+auto-detect the port; override it with the argument or `JOLT_NREPL_PORT`.
+
+The server runs in dev mode — calls deref their var, so redefining a function
+takes effect on the next call without restarting the process. The built-in
+handler speaks `clone`/`describe`/`eval`/`load-file`/`close`; heavier ops
+(sessions, interruptible eval, completion) are added as nREPL middleware listed
+in `deps.edn` under `:nrepl/middleware`.
+
+```clojure
+;; from your editor, against the running process:
+(require '[myapp.core :as app])
+(app/start!)                  ; bring the app up
+;; edit a handler, re-evaluate the defn — the running app sees it, no restart
+(app/stop!)
+```
+
 ## Compile a binary
 
 `bin/joltc build` ahead-of-time compiles a project into a single self-contained
