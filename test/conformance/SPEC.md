@@ -84,6 +84,54 @@ implements. Current profile (≈2735 portable, ≈167 non-portable):
 | `:impl/representation` | representation detail (e.g. syntax-quote yields a `list?`, not a `Cons`) |
 | `:bug` | a *known defect* (tracked bead) — not a host difference |
 
+## Seq semantics
+
+Values alone don't pin laziness — an eager `map` and a lazy `map` return the same
+elements. The spec certifies seq *semantics* by reducing them to values with a
+side-effect counter, so the corpus catches a laziness regression the value
+comparison would miss.
+
+**Laziness (certified — jolt matches JVM).** The whole producer family
+(`map`/`filter`/`remove`/`take`/`drop`/`concat`/`take-while`/`drop-while`/`mapcat`/
+`partition`/`partition-all`/`partition-by`/`keep`/`keep-indexed`/`map-indexed`/
+`distinct`/`interpose`/`interleave`/`take-nth`/`reductions`/`tree-seq`/`replace`)
+is lazy at construction: building over a side-effecting source realizes **zero**
+elements (`lazy / family is lazy at construction`). Realization order is
+left-to-right, `take`/`nth`/`drop` realize exactly as far as demanded, a lazy seq
+memoizes (realize-once across walks), and `next` realizes head + one lookahead
+while `rest` realizes only the head (`lazy / realization order & count`,
+`lazy / realization is memoized`, `lazy / realization timing`). A lazy result is
+`clojure.lang.LazySeq`.
+
+**Accepted divergences.** jolt is a simpler, finer-grained superset of JVM seq
+behavior; two classes diverge by representation, never by value, and are
+allowlisted in `known-divergences.edn`:
+
+- **`:seq-type-model`** (`seq-type-model / …` suite, jolt-aei7) — jolt reifies
+  every seq as `PersistentList` (eager) or `LazySeq` (deferred). JVM has a
+  specialized class per producer (`Cons`, `Iterate`, `LongRange`, `Repeat`,
+  `Cycle`, `PersistentVector$ChunkedSeq`, `StringSeq`, `KeySeq`/`ValSeq`, `RSeq`,
+  `ArraySeq`, `SubVector`), so `(class …)` differs. `instance?
+  clojure.lang.ISeq/Sequential` and all values/laziness are correct.
+- **`:chunking-model`** (`chunking-model / …` suite, jolt-mm6v) — jolt seqs are
+  unchunked: forcing one element realizes one, where JVM realizes a ~32-element
+  chunk; `mapcat`/`dedupe` realize 0 at construction where JVM forces the first
+  chunk. Strictly finer-grained laziness, decided after the chunk fast path
+  (jolt-j9dz) was made O(n).
+
+## Narrow integer types
+
+jolt unifies every integer as one exact-integer type (`:integer-box-model`,
+jolt-k9sw). `(byte n)`/`(short n)`/`(int n)` produce value-correct integers —
+arithmetic, `=`, and `hash` behave exactly as the JVM — but report `Long`, not
+`Byte`/`Short`/`Integer`, so `(class (byte 5))` and `(instance? Byte (byte 5))`
+diverge. This is substrate-inherent: a Chez fixnum is an immediate `identical?`
+to the plain integer (nothing to tag, and numbers carry no metadata), so the only
+faithful representation is a boxed type — which would crash raw compiled `(+ …)`
+(arithmetic emits a bare Chez `+`) or force every `+`/`-`/`*` through an
+unwrapping dispatcher, de-optimizing all arithmetic. Same shape as the accepted
+BigInt-vs-Long unification.
+
 ## Hosting jolt on a new runtime
 
 1. Implement the reader + analyzer + a backend for your runtime (see the Chez port

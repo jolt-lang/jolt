@@ -46,5 +46,17 @@ check '(== 3 3.0)' 'true'
 check_loc '(throw (ex-info "boom" {}))' '  at 1:'
 check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
 
+# clojure.test extension points (assert-expr / do-report / report) need separate
+# top-level forms — assert-expr must register before `is` expands — so this is a
+# multi-form `joltc run`, not an -e one-liner. The file self-checks its tallies.
+ct_out="$(bin/joltc run test/chez/clojure-test.clj 2>/dev/null)"
+if printf '%s' "$ct_out" | grep -q 'CLOJURE-TEST OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: clojure.test extension points"
+  echo "    $(printf '%s' "$ct_out" | grep CLOJURE-TEST | tail -1)"
+  fails=$((fails + 1))
+fi
+
 echo "cli smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]

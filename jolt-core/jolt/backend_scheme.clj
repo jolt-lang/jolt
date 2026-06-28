@@ -37,6 +37,16 @@
    "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
    "zero?" "jolt-zero?" "identity" "jolt-identity" "nil?" "jolt-nil?" "some?" "jolt-some?"
    "ex-info" "jolt-ex-info"
+   ;; bit ops: and/or/xor/not are Chez bitwise primitives (inlined to native code,
+   ;; no helper call); operands must be integers (a non-integer errors, like the
+   ;; JVM). The shifts keep their helpers (Java >>> masking / arithmetic shift) but
+   ;; emit a direct call instead of var-deref + the variadic overlay.
+   ;; and/or/xor/not map to variadic Chez bitwise prims (safe as a value at any
+   ;; arity). bit-and-not is left to its overlay: its only Scheme impl is 2-arg, so
+   ;; a value-position arity-3 use (via the variadic overlay) would mis-emit.
+   "bit-and" "bitwise-and" "bit-or" "bitwise-ior" "bit-xor" "bitwise-xor" "bit-not" "bitwise-not"
+   "bit-shift-left" "jolt-bit-shift-left" "bit-shift-right" "jolt-bit-shift-right"
+   "unsigned-bit-shift-right" "jolt-unsigned-bit-shift-right"
    ;; positional protocol-method dispatch (defprotocol-emitted shims) — bind
    ;; directly to the records.ss entry points so a protocol call doesn't var-deref.
    "protocol-dispatch1" "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch2"
@@ -66,7 +76,10 @@
    "cons" #(= % 2) "filter" #(= % 2) "remove" #(= % 2) "into" #(= % 2)
    "take" #(= % 2) "drop" #(= % 2) "map" #(>= % 2) "apply" #(>= % 2)
    "reduce" #(or (= % 2) (= % 3)) "range" #(and (>= % 0) (<= % 3))
-   "ex-info" #(or (= % 2) (= % 3))})
+   "ex-info" #(or (= % 2) (= % 3))
+   "bit-and" #(= % 2) "bit-or" #(= % 2) "bit-xor" #(= % 2) "bit-not" #(= % 1)
+   "bit-shift-left" #(= % 2) "bit-shift-right" #(= % 2)
+   "unsigned-bit-shift-right" #(= % 2)})
 
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg,
 ;; but Scheme's < demands a number even there — special-case.
@@ -147,6 +160,14 @@
 (def direct-link-fns (atom #{}))
 (defn direct-link-reset! [] (reset! direct-link-defined #{}) (reset! direct-link-fns #{}))
 
+;; Cache a resolved var cell in a per-site cell so a non-direct-linked var
+;; reference skips the name lookup (string-append + hash) after the first use.
+;; OFF during the seed mint (the seed must stay a byte-fixpoint, and caching the
+;; compiler's own refs shifts the gensym-numbered cell names every pass); the
+;; runtime eval path turns it on for user code, where it's the big win.
+(def var-cache? (atom false))
+(defn set-var-cache! [on] (reset! var-cache? on))
+
 ;; A direct-link Scheme binding name for a var. The fqn maps to a unique identifier
 ;; jv$<ns>$<name>; chars that break a Scheme identifier or the `$` separator are
 ;; escaped so distinct vars never collide.
@@ -170,14 +191,29 @@
 (def ^:private gensym-counter (atom 0))
 (defn- fresh-label [prefix] (str prefix (swap! gensym-counter inc)))
 
-;; Per-site devirt cache cells collected while emitting one top-level def. A
-;; devirtualized call resolves a CONSTANT impl (static tag/proto/method), so it
-;; needs resolving once, not per call — the inline cache the JVM gets for free. When
-;; a def init is being emitted this holds an atom; each devirt site appends a fresh
-;; cell name (bound to #f in a let wrapping the def, so it persists across calls and
-;; is shared by every invocation), and the site resolves into it on first use. nil
-;; outside a def (a devirt there falls back to a per-call resolve).
-(def ^:private devirt-cells (atom nil))
+;; Per-site cache cells collected while emitting one top-level def. A site that
+;; resolves a STABLE value — a devirtualized impl (constant tag/proto/method) or a
+;; var cell (interned, so the cell never changes even when the var is redefined) —
+;; resolves it once, not per call, the inline cache the JVM gets for free. When a
+;; def init is being emitted this holds an atom; each site appends a fresh cell name
+;; (bound to #f in a let wrapping the def, so it persists across calls and is shared
+;; by every invocation) and resolves into it on first use. nil outside a def (a site
+;; there falls back to a per-call resolve).
+(def ^:private cache-cells (atom nil))
+
+;; Emit a def's init (via the supplied thunk) under a fresh cache-cell collector,
+;; then wrap the result in a let binding any cells its body registered so they
+;; persist in the def's closure. Saves/restores the outer collector for nested
+;; defs. Used by both the runtime def emit and the direct-link top-level emit.
+(defn- emit-with-cells [emit-thunk]
+  (let [cells (atom [])
+        prev @cache-cells
+        _ (reset! cache-cells cells)
+        raw (emit-thunk)
+        _ (reset! cache-cells prev)]
+    (if (seq @cells)
+      (str "(let (" (str/join " " (map (fn [c] (str "(" c " #f)")) @cells)) ") " raw ")")
+      raw)))
 
 ;; Scheme syntactic keywords. A jolt local with one of these names would, when
 ;; emitted verbatim, shadow the Scheme form in operator position (a local named
@@ -556,7 +592,7 @@
                           dv (str "(devirt-resolve " (chez-str-lit (:devirt-type node)) " "
                                   (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
                                   " " r ")")
-                          cells @devirt-cells
+                          cells @cache-cells
                           ;; cache the resolved impl in a per-site cell when inside a
                           ;; def (resolved once on first call, then reused); else
                           ;; resolve per call.
@@ -686,7 +722,22 @@
              (and (stdlib-var? node) (not (deref prelude-mode?)))
              (throw (ex-info (str "emit: unsupported stdlib ref `" (:ns node) "/" (:name node)
                                   "` (no core on Chez yet)") {}))
-             :else (str "(var-deref " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")))
+             ;; inside a def, cache the interned var cell in a per-site cell so the
+             ;; name lookup (string-append + hash) runs once, not per access; the
+             ;; cell is stable and def-var! mutates its root in place, so this stays
+             ;; correct under redefinition. Read through var-cell-deref — the
+             ;; cell-based var-deref: binding-aware (a thread-bound dynamic var
+             ;; resolves to its binding) AND lenient on an unbound root (the strict
+             ;; jolt-var-get throws on a forward-declared var). Outside a def,
+             ;; resolve per access.
+             :else
+             (let [cells @cache-cells
+                   nslit (chez-str-lit (:ns node)) nmlit (chez-str-lit (:name node))]
+               (if (and @var-cache? cells)
+                 (let [c (fresh-label "_vc$")]
+                   (swap! cells conj c)
+                   (str "(var-cell-deref (or " c " (let ((_v (jolt-var " nslit " " nmlit "))) (set! " c " _v) _v)))"))
+                 (str "(var-deref " nslit " " nmlit ")")))))
     :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
     ;; (set! *var* val) -> set the var's innermost binding (else root); returns val.
     :set-var (str "(jolt-var-set " (emit (:the-var node)) " " (emit (:val node)) ")")
@@ -757,10 +808,10 @@
            (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
            (jmeta-nonempty? (:meta node))
            (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                (emit (:init node)) " " (emit-def-meta node) ")")
+                (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
            :else
            (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                (emit (:init node)) ")"))
+                (emit-with-cells #(emit (:init node))) ")"))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
 
 ;; ^:dynamic / ^:redef on a def opts it out of direct-linking: it stays redefinable,
@@ -773,45 +824,53 @@
 ;; Off direct-link mode this is exactly `emit`, so the seed mint and runtime eval are
 ;; byte-unchanged. Nested defs (a defonce's inner def) never reach a top-level branch
 ;; here, so they stay indirect — a `define` would be illegal in their position.
+;; Emit a def, wrapping its init in a let that binds each per-site cache cell
+;; (var-ref + devirt) so a hot loop's lookups resolve once into the def's closure.
+;; Runs in BOTH modes; in direct-link mode a non-opt-out def also binds jv$<fqn>
+;; and registers it for app->app direct linking + a source-map frame.
+(defn- emit-def-cached [node]
+  (let [ns (:ns node) nm (:name node)
+        dl? (and @direct-link? (not (dl-opt-out? (:meta node))))
+        b (dl-name ns nm)
+        fn? (= :fn (:op (:init node)))
+        ;; A fn def gets a source-registry entry so a native backtrace can map its
+        ;; frame to ns/name (file:line). Chez names the frame by whatever emit-fn
+        ;; binds the lambda to: a NAMED fn (defn, or (fn foo …)) gets a letrec
+        ;; self-binding = munge-name of the fn's own name; an ANONYMOUS fn def has
+        ;; no letrec, so the lambda sits directly under (define jv$ns$name …) and
+        ;; takes that name. Register under whichever Chez will report.
+        pos (:pos node)
+        frame-name (when fn? (if-let [fnm (:name (:init node))] (munge-name fnm) b))
+        reg (when (and dl? fn? pos)
+              (str " (jolt-register-source! " (chez-str-lit frame-name) " "
+                   (chez-str-lit ns) " " (chez-str-lit nm) " "
+                   (if (get pos :file) (chez-str-lit (get pos :file)) "jolt-nil") " "
+                   (or (get pos :line) 0) ")"))
+        ;; register before emitting the init so a self-referential body direct-links.
+        _ (when dl? (swap! direct-link-defined conj (dl-fqn ns nm))
+                    (when fn? (swap! direct-link-fns conj (dl-fqn ns nm))))
+        init (emit-with-cells #(emit (:init node)))]
+    (cond
+      dl?
+      (if (jmeta-nonempty? (:meta node))
+        (str "(begin (define " b " " init ") (def-var-with-meta! "
+             (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) ")" (or reg "") ")")
+        (str "(begin (define " b " " init ") (def-var! "
+             (chez-str-lit ns) " " (chez-str-lit nm) " " b ")" (or reg "") ")"))
+      (jmeta-nonempty? (:meta node))
+      (str "(def-var-with-meta! " (chez-str-lit ns) " " (chez-str-lit nm) " " init " " (emit-def-meta node) ")")
+      :else
+      (str "(def-var! " (chez-str-lit ns) " " (chez-str-lit nm) " " init ")"))))
+
 (defn emit-top-form [node]
   (cond
+    ;; off direct-link (the seed mint + runtime-via-image) this is exactly `emit`,
+    ;; whose :def case already wraps cache cells, so the seed stays byte-unchanged.
     (not @direct-link?) (emit node)
     ;; top-level do splices: each statement/ret is itself a top-level form.
     (= :do (:op node))
     (str "(begin " (str/join " " (map emit-top-form (:statements node)))
          (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
     (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
-    (let [ns (:ns node) nm (:name node) b (dl-name ns nm)
-          fn? (= :fn (:op (:init node)))
-          ;; A fn def gets a source-registry entry so a native backtrace can map its
-          ;; frame to ns/name (file:line). Chez names the frame by whatever emit-fn
-          ;; binds the lambda to: a NAMED fn (defn, or (fn foo …)) gets a letrec
-          ;; self-binding = munge-name of the fn's own name; an ANONYMOUS fn def has
-          ;; no letrec, so the lambda sits directly under (define jv$ns$name …) and
-          ;; takes that name. Register under whichever Chez will report.
-          pos (:pos node)
-          frame-name (when fn?
-                       (if-let [fnm (:name (:init node))] (munge-name fnm) b))
-          reg (when (and fn? pos)
-                (str " (jolt-register-source! " (chez-str-lit frame-name) " "
-                     (chez-str-lit ns) " " (chez-str-lit nm) " "
-                     (if (get pos :file) (chez-str-lit (get pos :file)) "jolt-nil") " "
-                     (or (get pos :line) 0) ")"))]
-      ;; register before emitting the init so a self-referential body direct-links.
-      (swap! direct-link-defined conj (dl-fqn ns nm))
-      (when fn? (swap! direct-link-fns conj (dl-fqn ns nm)))
-      (let [cells (atom [])
-            _ (reset! devirt-cells cells)
-            raw (emit (:init node))
-            _ (reset! devirt-cells nil)
-            ;; wrap the init so each devirt site's cache cell persists across calls,
-            ;; shared by every invocation of this def.
-            init (if (seq @cells)
-                   (str "(let (" (str/join " " (map (fn [c] (str "(" c " #f)")) @cells)) ") " raw ")")
-                   raw)]
-        (if (jmeta-nonempty? (:meta node))
-          (str "(begin (define " b " " init ") (def-var-with-meta! "
-               (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) ")" (or reg "") ")")
-          (str "(begin (define " b " " init ") (def-var! "
-               (chez-str-lit ns) " " (chez-str-lit nm) " " b ")" (or reg "") ")"))))
+    (emit-def-cached node)
     :else (emit node)))

@@ -109,9 +109,24 @@
        (let* ((v (cseq-cvec s)) (i (cseq-ci s)))
          (cons v (fxmin (fx+ i na-chunk-size) (pvec-count v))))))
 (define (na-chunked-seq? x) (and (na-vblock x) #t))
+;; Copy the block [i, end) straight out of the pvec trie's 32-element leaf node
+;; (pv-chunk-for is O(log n)). na-chunk-size == pv-width and blocks are 32-aligned,
+;; so a block is exactly one leaf; the rare non-aligned window crossing a leaf
+;; boundary falls back to per-index reads. Flattening the whole backing vector
+;; per block (pvec-v) made chunk-first O(n), so walking a vector chunk-by-chunk
+;; was O(n^2).
 (define (na-chunk-first s)
   (let ((vb (na-vblock s)))
-    (if vb (make-pvec (vec-copy-range (pvec-v (car vb)) (cseq-ci s) (cdr vb)))
+    (if vb
+        (let* ((pv (car vb)) (i (cseq-ci s)) (end (cdr vb)) (len (fx- end i))
+               (node (pv-chunk-for pv i)) (off (fxand i pv-mask)))
+          (if (fx<=? (fx+ off len) (vector-length node))
+              (make-pvec (vec-copy-range node off (fx+ off len)))
+              (let ((out (make-vector len)))
+                (let loop ((j 0))
+                  (if (fx<? j len)
+                      (begin (vector-set! out j (pvec-nth-d pv (fx+ i j) jolt-nil)) (loop (fx+ j 1)))
+                      (make-pvec out))))))
         (jolt-first s))))               ; eager-buffer fallback
 (define (na-chunk-rest s)
   (let ((vb (na-vblock s)))

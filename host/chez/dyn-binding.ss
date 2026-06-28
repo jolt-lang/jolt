@@ -117,6 +117,16 @@
               ((eq? cell star-ns-cell) (intern-ns! (chez-current-ns)))
               (else (var-cell-root cell)))))))
 
+;; var-deref's read on an ALREADY-RESOLVED cell — what compiled code emits when it
+;; caches the cell at a reference site. Binding stack first, then *ns* thread-local,
+;; else the raw root. Lenient on an unbound root (returns the sentinel), matching
+;; var-deref — NOT the strict jolt-var-get, which throws "Unbound var".
+(define (var-cell-deref cell)
+  (let ((bv (dyn-binding-value cell)))
+    (cond ((not (eq? bv dyn-no-binding)) bv)
+          ((eq? cell star-ns-cell) (intern-ns! (chez-current-ns)))
+          (else (var-cell-root cell)))))
+
 ;; jolt-var-get (vars.ss): the var-get fn + deref/@ on a cell. Stack first, then
 ;; the original (which errors on an unbound root, matching Clojure).
 (define %dyn-var-get jolt-var-get)

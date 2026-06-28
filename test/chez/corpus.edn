@@ -794,6 +794,28 @@
   {:suite "lazy-seq / realization is shared across walks" :label "effects run once across three walks" :expected "3" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) [1 2 3])] (doall s) (dorun s) (vec s) (deref a))"}
   {:suite "lazy-seq / realization is shared across walks" :label "values stable across walks" :expected "true" :actual "(let [s (map inc [1 2 3])] (= (vec s) (vec s) [2 3 4]))"}
   {:suite "lazy-seq / realization is shared across walks" :label "filter effects once" :expected "4" :actual "(let [a (atom 0) s (filter (fn [x] (swap! a inc) (odd? x)) [1 2 3 4])] (dorun s) (count s) (deref a))"}
+  {:suite "lazy / realization order & count" :label "map realizes left-to-right" :expected "[1 2 3]" :actual "(let [log (atom [])] (dorun (map (fn [x] (swap! log conj x) x) (list 1 2 3))) @log)"}
+  {:suite "lazy / realization order & count" :label "filter realizes left-to-right" :expected "[1 2 3]" :actual "(let [log (atom [])] (dorun (filter (fn [x] (swap! log conj x) true) (list 1 2 3))) @log)"}
+  {:suite "lazy / realization order & count" :label "take realizes exactly n, no over-realization" :expected "3" :actual "(let [a (atom 0)] (dorun (take 3 (map (fn [x] (swap! a inc) x) (iterate inc 0)))) @a)"}
+  {:suite "lazy / realization order & count" :label "nth realizes exactly index+1" :expected "3" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (iterate inc 0)) 2) @a)"}
+  {:suite "lazy / realization order & count" :label "drop+first realizes through the index" :expected "3" :actual "(let [a (atom 0)] (first (drop 2 (map (fn [x] (swap! a inc) x) (iterate inc 0)))) @a)"}
+  {:suite "lazy / realization is memoized" :label "first twice realizes once" :expected "1" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (first s) (first s) @a)"}
+  {:suite "lazy / realization is memoized" :label "wider take extends, does not re-realize" :expected "4" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (doall (take 2 s)) (doall (take 4 s)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "keep" :expected "0" :actual "(let [a (atom 0)] (keep (fn [x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "keep-indexed" :expected "0" :actual "(let [a (atom 0)] (keep-indexed (fn [i x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "map-indexed" :expected "0" :actual "(let [a (atom 0)] (map-indexed (fn [i x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "distinct" :expected "0" :actual "(let [a (atom 0)] (distinct (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "partition-by" :expected "0" :actual "(let [a (atom 0)] (partition-by (fn [x] (swap! a inc) x) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "partition-all" :expected "0" :actual "(let [a (atom 0)] (partition-all 2 (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "interpose" :expected "0" :actual "(let [a (atom 0)] (interpose 0 (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "interleave" :expected "0" :actual "(let [a (atom 0)] (interleave (map (fn [x] (swap! a inc) x) (range 5)) (range 5)) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "take-nth" :expected "0" :actual "(let [a (atom 0)] (take-nth 2 (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "reductions" :expected "0" :actual "(let [a (atom 0)] (reductions + (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "tree-seq" :expected "0" :actual "(let [a (atom 0)] (tree-seq (fn [x] (swap! a inc) false) identity [1 [2]]) @a)"}
+  {:suite "lazy / family is lazy at construction (no side effect)" :label "replace over a seq" :expected "0" :actual "(let [a (atom 0)] (replace {} (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  {:suite "lazy / realization timing" :label "sequence realizes the first element" :expected "1" :actual "(let [a (atom 0)] (sequence (map (fn [x] (swap! a inc) x)) (range 5)) @a)"}
+  {:suite "lazy / realization timing" :label "next realizes head + one lookahead" :expected "2" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (next s) @a)"}
+  {:suite "lazy / realization timing" :label "rest realizes only the head" :expected "1" :actual "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (iterate inc 0))] (rest s) @a)"}
   {:suite "list / construct & predicate" :label "list" :expected "[1 2 3]" :actual "(list 1 2 3)"}
   {:suite "list / construct & predicate" :label "empty list" :expected "[]" :actual "(list)"}
   {:suite "list / construct & predicate" :label "quoted list" :expected "[1 2 3]" :actual "(quote (1 2 3))"}
@@ -1523,6 +1545,17 @@
   {:suite "numbers / variadic bit ops" :label "bit-and-not 3" :expected "8" :actual "(bit-and-not 12 6 3)"}
   {:suite "numbers / variadic bit ops" :label "bit-and single arg throws" :expected :throws :actual "(bit-and 5)"}
   {:suite "numbers / variadic bit ops" :label "bit-or keeps binary fast path" :expected "3" :actual "(bit-or 1 2)"}
+  {:suite "numbers / variadic bit ops" :label "bit-not" :expected "-6" :actual "(bit-not 5)"}
+  {:suite "numbers / variadic bit ops" :label "bit-and in value position" :expected "8" :actual "(reduce bit-and [15 9 12])"}
+  {:suite "numbers / variadic bit ops" :label "bit-xor in value position" :expected "0" :actual "(reduce bit-xor 0 [1 2 3])"}
+  {:suite "numbers / variadic bit ops" :label "bit-or via apply" :expected "7" :actual "(apply bit-or [1 2 4])"}
+  {:suite "numbers / variadic bit ops" :label "unsigned-shift over a full 64-bit value" :expected "17179869183" :actual "(unsigned-bit-shift-right -1 30)"}
+  ;; var-reference cell caching (runtime path): a ref inside a fn caches the
+  ;; resolved cell, but stays correct under redefinition (cell root mutated in
+  ;; place) and dynamic binding (read goes through the binding-aware path).
+  {:suite "vars / cached reference stays correct" :label "redefinition is seen through a cached ref" :expected "2" :actual "(do (def x 1) (defn f [] x) (def x 2) (f))"}
+  {:suite "vars / cached reference stays correct" :label "dynamic binding is seen through a cached ref" :expected "[1 9 1]" :actual "(do (def ^:dynamic *d* 1) (defn g [] *d*) [(g) (binding [*d* 9] (g)) (g)])"}
+  {:suite "vars / cached reference stays correct" :label "forward reference resolves once the var is defined" :expected "42" :actual "(do (defn a [] (b)) (defn b [] 42) (a))"}
   {:suite "predicates / nil & boolean" :label "nil? true" :expected "true" :actual "(nil? nil)"}
   {:suite "predicates / nil & boolean" :label "nil? false" :expected "false" :actual "(nil? 0)"}
   {:suite "predicates / nil & boolean" :label "some? true" :expected "true" :actual "(some? 0)"}
@@ -1633,7 +1666,7 @@
   {:suite "predicates / tagged-value" :label "tagged-literal? yes" :expected "true" :actual "(tagged-literal? (tagged-literal (quote inst) \"2020\"))"}
   {:suite "predicates / tagged-value" :label "tagged-literal? no" :expected "false" :actual "(tagged-literal? 1)"}
   {:suite "predicates / tagged-value" :label "reader-conditional? no" :expected "false" :actual "(reader-conditional? 1)"}
-  {:suite "predicates / tagged-value" :label "chunked-seq? always false" :expected "true" :actual "(chunked-seq? (seq [1 2 3]))"}
+  {:suite "predicates / tagged-value" :label "chunked-seq? true for a vector seq" :expected "true" :actual "(chunked-seq? (seq [1 2 3]))"}
   {:suite "predicates / equality & identity" :label "= same" :expected "true" :actual "(= 1 1)"}
   {:suite "predicates / equality & identity" :label "= vectors" :expected "true" :actual "(= [1 2] [1 2])"}
   {:suite "predicates / equality & identity" :label "= vector & list" :expected "true" :actual "(= [1 2] (list 1 2))"}
@@ -2702,6 +2735,48 @@
   {:suite "untested / chunk family (eager equivalents) + cat" :label "halt-when" :expected "4" :actual "(transduce (halt-when even?) conj [] [1 3 4 5])"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-next exhausted" :expected "nil" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (chunk-next (chunk-cons (chunk cb) nil)))"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk-rest seqable" :expected "[]" :actual "(let [cb (chunk-buffer 2)] (chunk-append cb 1) (vec (chunk-rest (chunk-cons (chunk cb) nil))))"}
+  {:suite "chunked-seq / over a vector" :label "chunk-first is a 32-element block" :expected "32" :actual "(count (chunk-first (seq (vec (range 100)))))"}
+  {:suite "chunked-seq / over a vector" :label "chunked-seq? true for vector seq" :expected "true" :actual "(chunked-seq? (seq (vec (range 100))))"}
+  {:suite "chunked-seq / over a vector" :label "chunked-seq? false for a list seq" :expected "false" :actual "(chunked-seq? (seq (list 1 2 3)))"}
+  {:suite "chunked-seq / over a vector" :label "chunk-first contents + chunk-rest boundary" :expected "[32 0 31 32]" :actual "(let [s (seq (vec (range 50))) c (chunk-first s)] [(count c) (nth c 0) (nth c 31) (first (chunk-rest s))])"}
+  {:suite "chunked-seq / over a vector" :label "chunk-first window past the first block" :expected "[32 33 34 35 36 37 38 39]" :actual "(vec (chunk-first (chunk-rest (seq (vec (range 40))))))"}
+  ;; --- seq-type-model divergences (allowlisted): jolt models every seq as
+  ;; PersistentList (eager) or LazySeq (deferred); JVM reifies a specialized class
+  ;; per producer. Values + laziness are correct, only (class …) differs. jolt-aei7.
+  {:suite "seq-type-model / specialized seq classes collapse" :label "cons over a vector" :expected "clojure.lang.PersistentList" :actual "(class (cons 1 [2 3]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "iterate" :expected "clojure.lang.PersistentList" :actual "(class (iterate inc 0))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "range" :expected "clojure.lang.PersistentList" :actual "(class (range 5))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "repeat" :expected "clojure.lang.LazySeq" :actual "(class (repeat 3 :x))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "cycle" :expected "clojure.lang.LazySeq" :actual "(class (cycle [1 2]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "vector seq" :expected "clojure.lang.PersistentList" :actual "(class (seq [1 2 3]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "string seq" :expected "clojure.lang.PersistentList" :actual "(class (seq \"abc\"))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "keys" :expected "clojure.lang.PersistentList" :actual "(class (keys {:a 1 :b 2}))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "rseq" :expected "clojure.lang.PersistentList" :actual "(class (rseq [1 2 3]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "sort" :expected "clojure.lang.PersistentList" :actual "(class (sort [3 1 2]))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "subvec" :expected "clojure.lang.PersistentVector" :actual "(class (subvec [1 2 3] 1))"}
+  {:suite "seq-type-model / specialized seq classes collapse" :label "drop over a vector" :expected "clojure.lang.LazySeq" :actual "(class (drop 1 [1 2 3]))"}
+  ;; --- chunking-model divergences (allowlisted): jolt is unchunked, so forcing
+  ;; one element realizes 1 (JVM realizes a 32-element chunk), and mapcat/dedupe
+  ;; realize 0 at construction (JVM forces the first chunk). jolt-mm6v.
+  {:suite "chunking-model / unchunked realization granularity" :label "first over a vector realizes one, not a chunk" :expected "1" :actual "(let [a (atom 0)] (first (map (fn [x] (swap! a inc) x) (vec (range 100)))) @a)"}
+  {:suite "chunking-model / unchunked realization granularity" :label "nth 0 over a vector realizes one" :expected "1" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (vec (range 100))) 0) @a)"}
+  {:suite "chunking-model / unchunked realization granularity" :label "mapcat is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (mapcat (fn [x] (swap! a inc) [x]) (range 5)) @a)"}
+  {:suite "chunking-model / unchunked realization granularity" :label "dedupe is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (dedupe (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
+  ;; --- integer-box-model: narrow int values behave as integers (certified) ---
+  ;; jolt unifies every integer as one exact-integer type, so (byte/short/int n)
+  ;; produce value-correct integers — only the reified class differs (below).
+  {:suite "integer-box-model / narrow ints behave as integers" :label "byte = plain integer by value" :expected "true" :actual "(= (byte 5) 5)"}
+  {:suite "integer-box-model / narrow ints behave as integers" :label "byte arithmetic promotes" :expected "6" :actual "(+ (byte 5) 1)"}
+  {:suite "integer-box-model / narrow ints behave as integers" :label "byte is a Number" :expected "true" :actual "(instance? Number (byte 5))"}
+  ;; --- integer-box-model divergences (allowlisted): no narrow box types. A Chez
+  ;; fixnum is an immediate identical to the plain integer (cannot be tagged), so
+  ;; (byte/short/int n) report Long, not Byte/Short/Integer. Value is correct.
+  ;; jolt-k9sw (accepted divergence).
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "byte class" :expected "java.lang.Long" :actual "(class (byte 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "short class" :expected "java.lang.Long" :actual "(class (short 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "int class" :expected "java.lang.Long" :actual "(class (int 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "instance? Byte is false" :expected "false" :actual "(instance? Byte (byte 5))"}
+  {:suite "integer-box-model / narrow int class collapses to Long" :label "instance? Long is true" :expected "true" :actual "(instance? Long (byte 5))"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class number" :expected "java.lang.Long" :actual "(class 1)"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class string" :expected "java.lang.String" :actual "(class \"s\")"}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class keyword" :expected "clojure.lang.Keyword" :actual "(class :k)"}
