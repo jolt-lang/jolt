@@ -66,6 +66,42 @@
 (defmulti report :type)
 (defmethod report :default [_m] nil)
 
+;; do-report routes a {:type …} report map through the report multimethod — the
+;; seam clojure.test assertions emit through. The built-in :pass/:fail/:error
+;; methods feed jolt's counters; a library can add report types (test.check's
+;; ::trial/::shrunk/::complete) and they dispatch here.
+(defn- report-line [m]
+  (str (when (:message m) (str (:message m)
+                               (when (or (:form m) (contains? m :expected) (contains? m :actual)) " ")))
+       (when (:form m) (pr-str (:form m)))
+       (when (contains? m :expected) (str " expected: " (pr-str (:expected m))))
+       (when (contains? m :actual) (str " actual: " (pr-str (:actual m))))))
+(defmethod report :pass [_m] (inc-pass!))
+(defmethod report :fail [m] (fail! (report-line m)))
+(defmethod report :error [m] (err! (report-line m)))
+(defn do-report [m] (report m))
+
+;; assert-expr is the macro-level extension point: `is` expands a form by calling
+;; (assert-expr msg form), dispatched on the form's first symbol (or :default /
+;; :always-fail). A library registers a custom assertion via
+;; (defmethod assert-expr 'my-pred [msg form] <code returning an assertion form>).
+;; 2-arg [msg form] signature matches clojure.test. `is` routes here only for a
+;; symbol with an explicitly registered method, so built-in forms are unaffected.
+(defmulti assert-expr (fn [_msg form]
+                        (cond (nil? form) :always-fail
+                              (and (seq? form) (symbol? (first form))) (first form)
+                              :else :default)))
+(defmethod assert-expr :always-fail [msg form]
+  `(clojure.test/do-report {:type :fail :message ~msg :form '~form}))
+(defmethod assert-expr :default [msg form]
+  `(try
+     (if ~form
+       (clojure.test/do-report {:type :pass})
+       (clojure.test/do-report {:type :fail :message ~msg :form '~form}))
+     (catch Throwable e#
+       (clojure.test/do-report {:type :error :message ~msg :form '~form
+                                :actual (clojure.test/err-text e#)}))))
+
 ;; --- class matching for thrown? --------------------------------------------
 
 (defn- last-seg [s]
@@ -129,6 +165,13 @@
                        (re-find ~re m#))
                 (clojure.test/inc-pass!)
                 (clojure.test/fail! (str "expected throw of " ~klass " matching " ~re " but got " (clojure.core/class e#) ": " m#)))))))
+
+     ;; a library-registered custom assertion (the assert-expr extension point);
+     ;; only fires for a symbol with an explicitly registered method, so built-in
+     ;; predicate forms keep the inline path below.
+     (and (seq? form) (symbol? (first form))
+          (contains? (methods clojure.test/assert-expr) (first form)))
+     (clojure.test/assert-expr msg form)
 
      :else
      `(try
