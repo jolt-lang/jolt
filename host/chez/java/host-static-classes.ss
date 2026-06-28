@@ -953,12 +953,21 @@
 (reg-class-supers! "clojure.lang.LazySeq" '("clojure.lang.ISeq" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.lang.Iterable"))
 (reg-class-supers! "clojure.lang.Cons" '("clojure.lang.ASeq" "clojure.lang.ISeq" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.lang.Iterable"))
 
+;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the table;
+;; like the JVM (a fn extends clojure.lang.AFunction) its super is AFunction, whose
+;; registered supers give AFn / IFn / Fn / Runnable / Callable transitively.
+(define (str-has-dollar? s)
+  (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
+(define (class-direct-supers name)
+  (or (hashtable-ref class-supers-tbl name #f)
+      (and (str-has-dollar? name) '("clojure.lang.AFunction"))
+      '()))
 ;; transitive closure of direct supers (set semantics via an accumulator list)
 (define (class-ancestors-list name)
-  (let loop ((pending (hashtable-ref class-supers-tbl name '())) (seen '()))
+  (let loop ((pending (class-direct-supers name)) (seen '()))
     (cond ((null? pending) (reverse seen))
           ((member (car pending) seen) (loop (cdr pending) seen))
-          (else (loop (append (hashtable-ref class-supers-tbl (car pending) '()) (cdr pending))
+          (else (loop (append (class-direct-supers (car pending)) (cdr pending))
                       (cons (car pending) seen))))))
 
 ;; (instance? Class e) on a throwable tagged-table carrying a JVM :class matches the

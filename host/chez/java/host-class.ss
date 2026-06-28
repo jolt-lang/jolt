@@ -62,6 +62,26 @@
   (lambda (x) (if (string=? (chez-condition-exc-class x) "ArityException")
                   "clojure.lang.ArityException"
                   "java.lang.IllegalArgumentException")))
+;; A fn def'd into a var reports a JVM-style class name "ns$munged-name" (the
+;; forward CHAR_MAP), so clojure.spec.alpha's fn-sym (which splits on $ and
+;; demunges) recovers the predicate's symbol. Anonymous / unregistered fns stay
+;; clojure.lang.IFn (fn-sym yields :unknown, as on the JVM).
+(define class-munge-map
+  '((#\? . "_QMARK_") (#\! . "_BANG_") (#\* . "_STAR_") (#\+ . "_PLUS_")
+    (#\> . "_GT_") (#\< . "_LT_") (#\= . "_EQ_") (#\/ . "_SLASH_") (#\- . "_")
+    (#\& . "_AMPERSAND_") (#\% . "_PERCENT_") (#\~ . "_TILDE_") (#\^ . "_CARET_")
+    (#\| . "_BAR_") (#\: . "_COLON_")))
+(define (class-munge-name s)
+  (let ((out (open-output-string)))
+    (string-for-each
+     (lambda (c) (let ((t (assv c class-munge-map))) (if t (display (cdr t) out) (write-char c out))))
+     s)
+    (get-output-string out)))
+(register-class-arm!
+  (lambda (x) (and (procedure? x) (hashtable-ref proc-name-tbl x #f)))
+  (lambda (x) (let ((p (hashtable-ref proc-name-tbl x #f)))
+                (string-append (car p) "$" (class-munge-name (cdr p))))))
+
 (define (jolt-class-name x)
   (let loop ((as jolt-class-arms))
     (cond ((null? as) (jolt-class-base x))
