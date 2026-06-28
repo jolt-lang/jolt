@@ -1550,6 +1550,12 @@
   {:suite "numbers / variadic bit ops" :label "bit-xor in value position" :expected "0" :actual "(reduce bit-xor 0 [1 2 3])"}
   {:suite "numbers / variadic bit ops" :label "bit-or via apply" :expected "7" :actual "(apply bit-or [1 2 4])"}
   {:suite "numbers / variadic bit ops" :label "unsigned-shift over a full 64-bit value" :expected "17179869183" :actual "(unsigned-bit-shift-right -1 30)"}
+  ;; var-reference cell caching (runtime path): a ref inside a fn caches the
+  ;; resolved cell, but stays correct under redefinition (cell root mutated in
+  ;; place) and dynamic binding (read goes through the binding-aware path).
+  {:suite "vars / cached reference stays correct" :label "redefinition is seen through a cached ref" :expected "2" :actual "(do (def x 1) (defn f [] x) (def x 2) (f))"}
+  {:suite "vars / cached reference stays correct" :label "dynamic binding is seen through a cached ref" :expected "[1 9 1]" :actual "(do (def ^:dynamic *d* 1) (defn g [] *d*) [(g) (binding [*d* 9] (g)) (g)])"}
+  {:suite "vars / cached reference stays correct" :label "forward reference resolves once the var is defined" :expected "42" :actual "(do (defn a [] (b)) (defn b [] 42) (a))"}
   {:suite "predicates / nil & boolean" :label "nil? true" :expected "true" :actual "(nil? nil)"}
   {:suite "predicates / nil & boolean" :label "nil? false" :expected "false" :actual "(nil? 0)"}
   {:suite "predicates / nil & boolean" :label "some? true" :expected "true" :actual "(some? 0)"}

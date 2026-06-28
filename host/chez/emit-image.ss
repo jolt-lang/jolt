@@ -41,6 +41,11 @@
 ;; top-level entry: in direct-link mode it binds jv$<fqn> for a top-level def; off
 ;; that mode (the minter, runtime eval) it is exactly emit, so output is unchanged.
 (define jolt-ce-emit-top (var-deref "jolt.backend-scheme" "emit-top-form"))
+;; Seed mint and AOT build must stay byte-deterministic, so emit the image with var
+;; cell-caching OFF (compile-eval.ss turned it on for runtime eval; this file loads
+;; after it). Guarded for the first re-mint pass off an older seed.
+(let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
+  (when (procedure? scv) (scv #f)))
 (define (ei-compile-form ctx f optimize?)
   (let ((ir (jolt-ce-analyze ctx f)))
     (jolt-ce-emit-top (if optimize? (jolt-ce-run-passes ir ctx) ir))))

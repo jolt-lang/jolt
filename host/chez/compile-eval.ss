@@ -104,6 +104,12 @@
 ;; is only for the bare -e subset with no prelude. Turn prelude mode on once, here,
 ;; so every analyze->emit on this spine sees the full core.
 ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
+;; Cache resolved var cells per reference site in runtime-compiled code (the big
+;; win for libraries / REPL code). emit-image.ss turns this back off so the seed
+;; mint and AOT build stay byte-deterministic. Guarded: the flag is absent in an
+;; older seed during the first re-mint pass.
+(let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
+  (when (procedure? scv) (scv #t)))
 
 ;; (quote X) -> X, else x — unwraps a quoted require spec.
 (define (ce-unquote x)
