@@ -926,6 +926,12 @@
 ;; the protocol short-names it implements (for satisfies?/instance?).
 (define-record-type jreify (fields methods protos) (nongenerative chez-jreify-v1))
 (define (reified-methods obj) (and (jreify? obj) (jreify-methods obj)))
+;; (get reify k) / (:k reify) routes to a reify's ILookup valAt — clojure.spec.alpha
+;; reifies fspec/regex specs as clojure.lang.ILookup and reads (:args spec) off them.
+(register-get-arm! jreify?
+  (lambda (coll k d)
+    (let ((m (and (reified-methods coll) (hashtable-ref (reified-methods coll) "valAt" #f))))
+      (if m (jolt-invoke m coll k d) d))))
 (define (make-reified methods-map . proto-names)
   (let ((ht (make-hashtable string-hash string=?))
         (protos (if (and (pair? proto-names) (null? (cdr proto-names)) (jolt-coll-pred? (car proto-names)))

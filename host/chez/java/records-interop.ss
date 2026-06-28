@@ -68,6 +68,18 @@
          (and (string? m)
               (cond ((ri-substring? "incorrect number of arguments" m) "ArityException")
                     ((ri-substring? "not seqable" m) "IllegalArgumentException")
+                    ;; Chez's numeric ops raise "~s is not a real number" on a bad
+                    ;; operand. The JVM throws NullPointerException for a nil operand
+                    ;; (null deref) and ClassCastException for a non-number (can't
+                    ;; cast to Number) — clojure.spec.alpha's conform-explain relies
+                    ;; on the distinction. The offending value rides in the irritants.
+                    ((or (ri-substring? "is not a real number" m)
+                         (ri-substring? "is not a number" m))
+                     (if (and (irritants-condition? v)
+                              (let loop ((xs (condition-irritants v)))
+                                (and (pair? xs) (or (jolt-nil? (car xs)) (loop (cdr xs))))))
+                         "NullPointerException"
+                         "ClassCastException"))
                     (else #f))))))
 
 ;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded

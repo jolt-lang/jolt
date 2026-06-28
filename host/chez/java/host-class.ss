@@ -35,7 +35,11 @@
     ((jolt-atom? x) "clojure.lang.Atom")
     ((char? x) "java.lang.Character")
     ((regex-t? x) "java.util.regex.Pattern")
-    ((procedure? x) "clojure.lang.IFn")
+    ;; an anonymous / unregistered fn — like the JVM, where (class #(..)) is a
+    ;; concrete ns$fn__N subclass. The $fn marker lets clojure.spec.alpha's fn-sym
+    ;; recognize it as anonymous and return ::s/unknown. A named fn is registered
+    ;; (proc-name-tbl) and handled by a class-arm with its real ns$name.
+    ((procedure? x) "clojure.lang.AFunction$fn")
     ;; an exception value (ex-info / host-constructed throwable) reports its JVM
     ;; class, so (= clojure.lang.ExceptionInfo (class e)) and clojure.test's
     ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
@@ -59,9 +63,8 @@
 ;; (thrown? ArityException …) test match — not the opaque :object fallback.
 (register-class-arm!
   (lambda (x) (and (chez-condition-exc-class x) #t))
-  (lambda (x) (if (string=? (chez-condition-exc-class x) "ArityException")
-                  "clojure.lang.ArityException"
-                  "java.lang.IllegalArgumentException")))
+  (lambda (x) (let ((p (assoc (chez-condition-exc-class x) class-token-alist)))
+                (if p (cdr p) "java.lang.IllegalArgumentException"))))
 ;; A fn def'd into a var reports a JVM-style class name "ns$munged-name" (the
 ;; forward CHAR_MAP), so clojure.spec.alpha's fn-sym (which splits on $ and
 ;; demunges) recovers the predicate's symbol. Anonymous / unregistered fns stay
