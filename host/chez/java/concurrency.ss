@@ -397,4 +397,89 @@
             (with-mutex (vector-ref st 1)
               (let loop () (when (> (vector-ref st 0) 0) (condition-wait (vector-ref st 2) (vector-ref st 1)) (loop)))))
           jolt-nil))
-        (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))
+         (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))
+
+;; --- main-thread executor ---------------------------------------------------
+;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread
+;; that owns the GUI main loop. On macOS GTK quartz, g_application_run must run
+;; on the process main thread or AppKit aborts (setMainMenu off-main → SIGABRT).
+;; Under `joltc nrepl` the accept loop is backgrounded in a future and the
+;; primordial thread enters jolt-run-main-pump; glimmer's run marshals its
+;; startup through jolt-call-on-main-thread.
+;;
+;; - With no pump running (`joltc -M:run` calls run directly on the main thread),
+;;   call-on-main-thread runs the thunk INLINE — unchanged behaviour.
+;; - A call from a thunk already executing on the pump runs inline too, so the
+;;   pump can't deadlock on itself.
+;; - Otherwise the thunk is enqueued; the caller blocks until the pump runs it,
+;;   then receives the value, or the thrown condition is re-raised.
+
+(define jolt-main-queue-mu (make-mutex))
+(define jolt-main-queue-cv (make-condition))
+(define jolt-main-queue '())            ; FIFO of jolt-main-job, guarded by mu
+(define jolt-main-pump-active (box #f)) ; #t while run-main-pump owns this thread
+(define jolt-main-pump-stop (box #f))   ; set by stop-main-pump to drain + exit
+;; thread-local: this thread is the pump, mid-thunk → nested calls run inline.
+(define jolt-in-main-pump? (make-thread-parameter #f))
+
+(define-record-type jolt-main-job
+  (fields thunk (mutable done?) (mutable ok?) (mutable val) mu cv)
+  (nongenerative jolt-main-job-v1))
+
+(define (jolt-call-on-main-thread thunk)
+  (cond
+    ((jolt-in-main-pump?)               ; reentrant — already on the pump
+     (jolt-invoke thunk))
+    ((not (unbox jolt-main-pump-active)) ; no pump — inline, like -M:run
+     (jolt-invoke thunk))
+    (else
+     (let ((job (make-jolt-main-job thunk #f #f jolt-nil (make-mutex) (make-condition))))
+       (with-mutex jolt-main-queue-mu
+         (set! jolt-main-queue (append jolt-main-queue (list job)))
+         (condition-signal jolt-main-queue-cv))
+       (with-mutex (jolt-main-job-mu job)
+         (let wait ()
+           (unless (jolt-main-job-done? job)
+             (condition-wait (jolt-main-job-cv job) (jolt-main-job-mu job))
+             (wait))))
+       (if (jolt-main-job-ok? job)
+           (jolt-main-job-val job)
+           (raise (jolt-main-job-val job)))))))
+
+(define (jolt-run-main-pump)
+  (set-box! jolt-main-pump-stop #f)
+  (set-box! jolt-main-pump-active #t)
+  (let loop ()
+    (let ((job (with-mutex jolt-main-queue-mu
+                 (let wait ()
+                   (cond
+                     ((not (null? jolt-main-queue))
+                      (let ((j (car jolt-main-queue)))
+                        (set! jolt-main-queue (cdr jolt-main-queue))
+                        j))
+                     ((unbox jolt-main-pump-stop) #f)  ; drain done, told to exit
+                     (else (condition-wait jolt-main-queue-cv jolt-main-queue-mu)
+                           (wait)))))))
+      (when job
+        (let ((r (dynamic-wind
+                   (lambda () (jolt-in-main-pump? #t))
+                   (lambda ()
+                     (guard (e (#t (cons #f e)))
+                       (cons #t (jolt-invoke (jolt-main-job-thunk job)))))
+                   (lambda () (jolt-in-main-pump? #f)))))
+          (with-mutex (jolt-main-job-mu job)
+            (jolt-main-job-ok?-set! job (car r))
+            (jolt-main-job-val-set! job (cdr r))
+            (jolt-main-job-done?-set! job #t)
+            (condition-broadcast (jolt-main-job-cv job))))
+        (loop)))))
+
+(define (jolt-stop-main-pump)
+  (with-mutex jolt-main-queue-mu
+    (set-box! jolt-main-pump-stop #t)
+    (condition-broadcast jolt-main-queue-cv))
+  jolt-nil)
+
+(def-var! "jolt.host" "call-on-main-thread" jolt-call-on-main-thread)
+(def-var! "jolt.host" "run-main-pump" jolt-run-main-pump)
+(def-var! "jolt.host" "stop-main-pump" jolt-stop-main-pump)
