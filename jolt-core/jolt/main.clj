@@ -188,13 +188,18 @@
     (let [port (or (some-> (first (filter #(not (str/starts-with? % "-")) more)) parse-long)
                    (parse-long (or (jolt.host/getenv "JOLT_NREPL_PORT") "7888")))]
       (require 'jolt.nrepl)
-      ;; Run the accept loop on a worker thread so the primordial (main) thread
-      ;; stays free to own the GUI main loop. glimmer's run marshals its startup
-      ;; onto this thread via jolt.host/call-on-main-thread — on macOS GTK quartz,
-      ;; g_application_run must run on the main thread or AppKit aborts when it
-      ;; sets the main menu.
-      (future ((resolve 'jolt.nrepl/start) port (:nrepl-middleware resolved)))
-      (jolt.host/run-main-pump))))
+      ;; start binds the socket synchronously on this (primordial) thread, so a
+      ;; failure like the port already being in use surfaces here and exits rather
+      ;; than being swallowed by a background thread. It then runs the accept loop
+      ;; on a worker thread and returns a stop fn, leaving this thread free to own
+      ;; the GUI main loop: glimmer's run marshals its startup here via
+      ;; jolt.host/call-on-main-thread — on macOS GTK quartz, g_application_run
+      ;; must run on the main thread or AppKit aborts when it sets the main menu.
+      (let [stop ((resolve 'jolt.nrepl/start) port (:nrepl-middleware resolved))]
+        ;; park here until something calls jolt.host/stop-main-pump, then shut the
+        ;; server down cleanly (close the socket, remove .nrepl-port) and return.
+        (jolt.host/run-main-pump)
+        (when stop (stop))))))
 
 (defn- usage []
   (println "usage: jolt <command> [args]")

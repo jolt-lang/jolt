@@ -17,6 +17,7 @@
 
   Writes .nrepl-port in the project dir so editors auto-detect the port."
   (:require [clojure.string :as str]
+            [clojure.java.io :as io]
             [jolt.ffi :as ffi]))
 
 ;; --- sockets (loopback server) ---------------------------------------------
@@ -222,18 +223,38 @@
 (defn start
   "Start the nREPL server on `port` (a concrete port; loopback only). `middleware`
   is a vector of deps.edn :nrepl/middleware symbols to compose over the built-in
-  handler. Writes .nrepl-port. Blocks accepting connections."
+  handler.
+
+  Binds the socket synchronously, so a startup failure (e.g. the port is already
+  in use) is thrown to the caller rather than swallowed by the accept thread, then
+  accepts connections on a background thread and returns immediately. Writes
+  .nrepl-port. Does NOT block — the caller keeps the process alive (jolt.main
+  parks the main thread in jolt.host/run-main-pump).
+
+  Returns a zero-arg stop fn: it stops the accept loop, closes the listen socket
+  (freeing the port), and removes .nrepl-port. Calling it more than once is a
+  no-op."
   ([port] (start port nil))
   ([port middleware]
    (let [handler (build-handler (resolve-middleware (or middleware [])))
-         fd (listen-socket port)]
+         fd (listen-socket port)                  ; throws on bind/listen failure
+         stopped (atom false)]
      (try (spit ".nrepl-port" (str port)) (catch :default _ nil))
      (println (str "nREPL server started on port " port " (127.0.0.1) — .nrepl-port written"))
      (when (seq middleware) (println (str ";; middleware: " (str/join " " middleware))))
      (println ";; connect your editor; ^C to stop")
-     (loop []
-       (let [conn (c-accept fd ffi/null ffi/null)]
-         (when (>= conn 0)
-           (future (try (handle-conn conn handler)
-                        (catch :default e (println "nrepl conn error:" (err-msg e)) (c-close conn)))))
-         (recur))))))
+     (future
+       ;; A stop closes fd, which makes the blocking accept() return an error; the
+       ;; @stopped check then breaks the loop instead of spinning on the dead fd.
+       (loop []
+         (let [conn (c-accept fd ffi/null ffi/null)]
+           (when-not @stopped
+             (when (>= conn 0)
+               (future (try (handle-conn conn handler)
+                            (catch :default e (println "nrepl conn error:" (err-msg e)) (c-close conn)))))
+             (recur)))))
+     (fn stop []
+       (when (compare-and-set! stopped false true)
+         (c-close fd)
+         (try (io/delete-file ".nrepl-port" true) (catch :default _ nil)))
+       nil))))
