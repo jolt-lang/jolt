@@ -271,7 +271,10 @@
           (when (< i (count vars))
             (var-set (nth vars i) (nth saved i))
             (recur (inc i))))))))
-;; Jolt has no chunked seqs, so this is always false.
+;; A vector's seq IS a real chunked-seq (chunk-first hands out a 32-element block).
+;; This is only a placeholder so references compile during overlay load; the host
+;; rebinds chunked-seq? to na-chunked-seq? in post-prelude.ss, which returns true
+;; for a vector seq and false otherwise.
 (defn chunked-seq? [x] false)
 
 ;; Atom peripheral operations. atom/swap!/reset!/deref stay native — the compiler
