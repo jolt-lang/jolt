@@ -413,6 +413,13 @@
 ;;   pump can't deadlock on itself.
 ;; - Otherwise the thunk is enqueued; the caller blocks until the pump runs it,
 ;;   then receives the value, or the thrown condition is re-raised.
+;;
+;; stop-main-pump is the graceful-shutdown / external API: it tells the pump to
+;; drain whatever is queued and return. The pump-active flag is flipped to #f
+;; under jolt-main-queue-mu in the same critical section that decides to exit, and
+;; call-on-main-thread reads that flag and enqueues under the SAME mutex, so a job
+;; can never slip in after the pump has decided to leave — a call that loses the
+;; race simply runs inline instead of blocking forever on a pump that is gone.
 
 (define jolt-main-queue-mu (make-mutex))
 (define jolt-main-queue-cv (make-condition))
@@ -427,52 +434,73 @@
   (nongenerative jolt-main-job-v1))
 
 (define (jolt-call-on-main-thread thunk)
-  (cond
-    ((jolt-in-main-pump?)               ; reentrant — already on the pump
-     (jolt-invoke thunk))
-    ((not (unbox jolt-main-pump-active)) ; no pump — inline, like -M:run
-     (jolt-invoke thunk))
-    (else
-     (let ((job (make-jolt-main-job thunk #f #f jolt-nil (make-mutex) (make-condition))))
-       (with-mutex jolt-main-queue-mu
-         (set! jolt-main-queue (append jolt-main-queue (list job)))
-         (condition-signal jolt-main-queue-cv))
-       (with-mutex (jolt-main-job-mu job)
-         (let wait ()
-           (unless (jolt-main-job-done? job)
-             (condition-wait (jolt-main-job-cv job) (jolt-main-job-mu job))
-             (wait))))
-       (if (jolt-main-job-ok? job)
-           (jolt-main-job-val job)
-           (raise (jolt-main-job-val job)))))))
+  (if (jolt-in-main-pump?)              ; reentrant — already on the pump
+      (jolt-invoke thunk)
+      ;; Decide-and-enqueue atomically: read pump-active and (if active) push the
+      ;; job under jolt-main-queue-mu, the same lock the pump holds when it flips
+      ;; active to #f on exit. So we either get queued before the pump leaves, or
+      ;; we see #f and fall through to inline — never enqueue onto a dead pump.
+      (let ((job (with-mutex jolt-main-queue-mu
+                   (and (unbox jolt-main-pump-active)
+                        (let ((j (make-jolt-main-job thunk #f #f jolt-nil
+                                                     (make-mutex) (make-condition))))
+                          (set! jolt-main-queue (append jolt-main-queue (list j)))
+                          (condition-signal jolt-main-queue-cv)
+                          j)))))
+        (if (not job)
+            (jolt-invoke thunk)         ; no pump (or stopped) — inline, like -M:run
+            (begin
+              (with-mutex (jolt-main-job-mu job)
+                (let wait ()
+                  (unless (jolt-main-job-done? job)
+                    (condition-wait (jolt-main-job-cv job) (jolt-main-job-mu job))
+                    (wait))))
+              (if (jolt-main-job-ok? job)
+                  (jolt-main-job-val job)
+                  (raise (jolt-main-job-val job))))))))
 
 (define (jolt-run-main-pump)
-  (set-box! jolt-main-pump-stop #f)
-  (set-box! jolt-main-pump-active #t)
-  (let loop ()
-    (let ((job (with-mutex jolt-main-queue-mu
-                 (let wait ()
-                   (cond
-                     ((not (null? jolt-main-queue))
-                      (let ((j (car jolt-main-queue)))
-                        (set! jolt-main-queue (cdr jolt-main-queue))
-                        j))
-                     ((unbox jolt-main-pump-stop) #f)  ; drain done, told to exit
-                     (else (condition-wait jolt-main-queue-cv jolt-main-queue-mu)
-                           (wait)))))))
-      (when job
-        (let ((r (dynamic-wind
-                   (lambda () (jolt-in-main-pump? #t))
-                   (lambda ()
-                     (guard (e (#t (cons #f e)))
-                       (cons #t (jolt-invoke (jolt-main-job-thunk job)))))
-                   (lambda () (jolt-in-main-pump? #f)))))
-          (with-mutex (jolt-main-job-mu job)
-            (jolt-main-job-ok?-set! job (car r))
-            (jolt-main-job-val-set! job (cdr r))
-            (jolt-main-job-done?-set! job #t)
-            (condition-broadcast (jolt-main-job-cv job))))
-        (loop)))))
+  (with-mutex jolt-main-queue-mu
+    (set-box! jolt-main-pump-stop #f)
+    (set-box! jolt-main-pump-active #t))
+  ;; dynamic-wind guarantees active is cleared even if the pump escapes abnormally,
+  ;; so a later run-main-pump starts clean and call-on-main-thread never sees a
+  ;; stale #t. The clean-exit path below also clears it under the mutex (the flip
+  ;; that races call-on-main-thread); this is the belt-and-suspenders for escapes.
+  (dynamic-wind
+    (lambda () #f)
+    (lambda ()
+      (let loop ()
+        (let ((job (with-mutex jolt-main-queue-mu
+                     (let wait ()
+                       (cond
+                         ((not (null? jolt-main-queue))
+                          (let ((j (car jolt-main-queue)))
+                            (set! jolt-main-queue (cdr jolt-main-queue))
+                            j))
+                         ((unbox jolt-main-pump-stop)
+                          ;; drain done, told to exit — clear active in the same
+                          ;; critical section so no job can be enqueued after.
+                          (set-box! jolt-main-pump-active #f)
+                          #f)
+                         (else (condition-wait jolt-main-queue-cv jolt-main-queue-mu)
+                               (wait)))))))
+          (when job
+            (let ((r (dynamic-wind
+                       (lambda () (jolt-in-main-pump? #t))
+                       (lambda ()
+                         (guard (e (#t (cons #f e)))
+                           (cons #t (jolt-invoke (jolt-main-job-thunk job)))))
+                       (lambda () (jolt-in-main-pump? #f)))))
+              (with-mutex (jolt-main-job-mu job)
+                (jolt-main-job-ok?-set! job (car r))
+                (jolt-main-job-val-set! job (cdr r))
+                (jolt-main-job-done?-set! job #t)
+                (condition-broadcast (jolt-main-job-cv job))))
+            (loop)))))
+    (lambda ()
+      (with-mutex jolt-main-queue-mu (set-box! jolt-main-pump-active #f))))
+  jolt-nil)
 
 (define (jolt-stop-main-pump)
   (with-mutex jolt-main-queue-mu
