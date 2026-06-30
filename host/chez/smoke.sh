@@ -67,5 +67,26 @@ else
   fails=$((fails + 1))
 fi
 
+# REPL must exit on :repl/quit / :exit — a reliable exit that works in any
+# terminal, unlike ^D (which some terminals/editors don't deliver as EOF).
+# Pipe: an evaluable form, the quit keyword, then a sentinel that must NOT run.
+repl_out="$(printf '(+ 1000 23)\n:repl/quit\n(* 999 9)\n' | bin/joltc repl 2>/dev/null)"
+if printf '%s' "$repl_out" | grep -q '1023' && ! printf '%s' "$repl_out" | grep -q '8991'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: repl should exit on :repl/quit before later forms"
+  printf '%s\n' "$repl_out" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+
+repl_out="$(printf '(- 2024 1)\n:exit\n(* 999 9)\n' | bin/joltc repl 2>/dev/null)"
+if printf '%s' "$repl_out" | grep -q '2023' && ! printf '%s' "$repl_out" | grep -q '8991'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: repl should exit on :exit before later forms"
+  printf '%s\n' "$repl_out" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+
 echo "cli smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]

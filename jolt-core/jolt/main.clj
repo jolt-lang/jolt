@@ -93,17 +93,22 @@
   ;; loaded — same context a run gets, so (require '[some.lib]) works in the REPL.
   (try (apply-project! (deps/resolve-project (project-dir)))
        (catch :default _ nil))
-  (println ";; jolt repl — ^D to exit")
+  (println ";; jolt repl — :repl/quit or ^D to exit")
   (loop []
     (print "user=> ") (flush)
     (let [line (read-line)]
       (when line
-        (try (println (pr-str (load-string line)))
-             (catch :default e
-               (println "error:" (or (ex-message e)
-                                     (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
-                                     (pr-str e)))))
-        (recur)))))
+        ;; :repl/quit / :exit exit the loop — a reliable gesture that works in any
+        ;; terminal, unlike ^D (some terminals/editors don't deliver it as EOF).
+        (if (#{:repl/quit :exit} (try (read-string line) (catch :default _ nil)))
+          nil
+          (do
+            (try (println (pr-str (load-string line)))
+                 (catch :default e
+                   (println "error:" (or (ex-message e)
+                                         (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
+                                         (pr-str e)))))
+            (recur)))))))
 
 ;; A deps.edn :tasks entry: a string is a shell command; a map is {:main-opts …}.
 (defn- run-task [name more]
