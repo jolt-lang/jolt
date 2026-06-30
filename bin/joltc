@@ -13,7 +13,6 @@
 # the user's original cwd (the project dir, where deps.edn lives) is passed in
 # JOLT_PWD.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-JOLT_PWD="${JOLT_PWD:-$PWD}"
-export JOLT_PWD
+export JOLT_PWD="${JOLT_PWD:-$PWD}"
 cd "$root" || exit 1
 exec chez --script host/chez/cli.ss "$@"
