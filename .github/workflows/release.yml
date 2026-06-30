@@ -1,0 +1,113 @@
+name: release
+
+# Build the self-contained joltc binary for each platform and attach it to the
+# GitHub Release when a v* tag is pushed. The binary bundles the runtime,
+# compiler, jolt-core + stdlib source, the Chez boots, and a launcher stub, so it
+# runs AND compiles jolt apps with no Chez or cc on the user's machine (jolt-eaj).
+#
+# No Apple notarization, mirroring dirge: macOS users who download the tarball
+# clear Gatekeeper quarantine once (`xattr -d com.apple.quarantine joltc`), or
+# install via a Homebrew tap that de-quarantines on install.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # create/update the GitHub Release and upload assets
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+          - os: macos-13
+            target: x86_64-macos
+          - os: macos-14
+            target: aarch64-macos
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive   # vendor/irregex, used by the Chez regex shim
+
+      # --- Linux: build Chez from source. The apt chezscheme ships petite+scheme
+      # only, with no kernel dev files (libkernel.a, scheme.h), which build-joltc
+      # needs to cc-link. Same setup as .github/workflows/tests.yml. ---
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev libncurses-dev uuid-dev
+
+      - name: Cache Chez Scheme (Linux)
+        if: runner.os == 'Linux'
+        id: cache-chez
+        uses: actions/cache@v4
+        with:
+          path: /opt/chez
+          key: chez-${{ runner.os }}-v10.4.1-x11off
+
+      - name: Build Chez Scheme from source (Linux)
+        if: runner.os == 'Linux' && steps.cache-chez.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
+          cd /tmp/chez-src
+          ./configure --installprefix=/opt/chez --threads --disable-x11
+          make -j"$(nproc)"
+          sudo make install
+          sudo chown -R "$USER" /opt/chez
+
+      - name: Put chez on PATH (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Installed as `scheme`; the build invokes `chez`. A wrapper that execs
+          # scheme keeps argv0 so Chez finds its boot files, and sits next to
+          # scheme so build.ss derives the csv dir (libkernel.a/scheme.h) from it.
+          printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
+          chmod +x /opt/chez/bin/chez
+          echo '/opt/chez/bin' >> "$GITHUB_PATH"
+
+      # --- macOS: Homebrew chezscheme ships `chez` plus the csv kernel dev files
+      # (libkernel.a, scheme.h, *.boot), which is all build-joltc needs. ---
+      - name: Install Chez Scheme (macOS)
+        if: runner.os == 'macOS'
+        run: brew install chezscheme lz4
+
+      - name: Show Chez version
+        run: chez --version
+
+      # build-joltc compiles in a fresh Chez and cc-links; the checked-in seed is
+      # the compiler image, so no selfhost re-mint (that byte-fixpoint is a
+      # dev-machine check — see jolt-8479). `make joltc-release`, not `make joltc`.
+      - name: Build joltc (release)
+        run: make joltc-release
+
+      # Sanity: the built binary runs (no Chez needed) and self-reports a value.
+      - name: Smoke the binary
+        run: |
+          out="$(./target/release/joltc -e '(reduce + (range 10))')"
+          test "$out" = "45" || { echo "joltc -e gave '$out', want 45"; exit 1; }
+
+      - name: Package
+        run: |
+          ver="${GITHUB_REF_NAME}"
+          name="joltc-${ver}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp target/release/joltc "dist/${name}/joltc"
+          cp README.md LICENSE "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          ls -la dist
+
+      - name: Upload to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          fail_on_unmatched_files: true
