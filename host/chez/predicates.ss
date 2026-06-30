@@ -33,7 +33,11 @@
 (define (jolt-fn? x) (procedure? x))
 (define (jolt-boolean-pred? x) (boolean? x))
 
-;; (boolean x) coerces truthiness (nil/false -> false, else true).
+;; (boolean x) coerces truthiness (nil/false -> false, else true). MUST stay native:
+;; the backend's emit path calls clojure.core/boolean for every :if node
+;; (backend_scheme.clj bool tracking), so it has to exist before ANY compilation,
+;; including the kernel overlay tier (whose own fns contain `if`). Migrating it even
+;; to the kernel tier deadlocks: compiling the tier that defines boolean needs boolean.
 (define (jolt-boolean x) (if (jolt-truthy? x) #t #f))
 
 ;; (name x): keyword/symbol -> name string; string -> itself.

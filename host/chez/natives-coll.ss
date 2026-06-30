@@ -11,9 +11,9 @@
 (define (jolt-array-map . kvs) (jolt-array-map-build kvs))
 (define (jolt-hash-map-fn . kvs) (jolt-hash-map-build kvs))
 
-;; set: realize any seqable to a list, then dedup through the set ctor. nil -> #{}.
-(define (jolt-set coll)
-  (if (jolt-nil? coll) (jolt-hash-set) (apply jolt-hash-set (seq->list coll))))
+;; set lives in the kernel overlay tier (clojure/core/00-kernel.clj): it's a pure
+;; composition (apply hash-set (seq coll)) the compiler uses only off the emit path,
+;; so the Clojure version lowers to the same code without a bootstrap cycle.
 
 ;; rand: a flonum in [0, n) (n defaults to 1.0) — jolt is all-flonum, so the
 ;; result is a double like every other number.
@@ -24,6 +24,5 @@
 (def-var! "clojure.core" "hash-map" jolt-hash-map-fn)
 (def-var! "clojure.core" "hash-set" jolt-hash-set)
 (def-var! "clojure.core" "array-map" jolt-array-map)
-(def-var! "clojure.core" "set" jolt-set)
 (def-var! "clojure.core" "rand" jolt-rand)
 (def-var! "clojure.core" "map-entry?" jolt-map-entry?)

@@ -43,3 +43,10 @@
 (defn mapv [f & colls] (vec (apply map f colls)))
 
 (defn update [m k f & args] (assoc m k (apply f (get m k) args)))
+
+;; set: realize a seqable and dedup through the set constructor; nil -> #{}. The
+;; compiler uses it off the emit path (backend bare-native-names, type inference),
+;; so unlike boolean it can live here — compiling this tier never calls set, and by
+;; the time those callers run the tier is bound. Pure composition of hash-set/seq/
+;; apply, so it lowers to the same code the native shim did.
+(defn set [coll] (if (nil? coll) #{} (apply hash-set (seq coll))))
