@@ -16,7 +16,7 @@
   :seq-type-model
   "jolt models every seq as PersistentList (eager) or LazySeq (deferred); JVM reifies a specialized class per producer (Cons/Iterate/LongRange/Repeat/Cycle/ChunkedSeq/StringSeq/KeySeq/RSeq/ArraySeq/SubVector). Values and laziness are correct, only (class …) differs. jolt-aei7",
   :chunking-model
-  "jolt seqs are unchunked: forcing one element realizes one (JVM realizes a ~32-element chunk), and mapcat/dedupe realize 0 at construction where JVM forces the first chunk — jolt is a finer-grained lazy superset. jolt-mm6v",
+  "jolt now chunks range/vector seqs through map/filter like the JVM (forcing one element realizes the whole ~32-element chunk). What remains finer-grained: mapcat/dedupe realize 0 at construction where the JVM's (apply concat …) / sequence transformer force the first chunk just to build the seq. jolt-mm6v",
   :integer-box-model
   "jolt unifies every integer as one exact-integer type. A Chez fixnum is an immediate identical to the plain integer (no distinct identity to tag, no metadata on numbers), so (byte/short/int n) report Long, not Byte/Short/Integer. Value/arithmetic/equality are correct; a faithful narrow box would crash raw compiled (+ …) or de-optimize all arithmetic. jolt-k9sw"},
  :entries
@@ -53,8 +53,6 @@
   {:suite "seq-type-model / specialized seq classes collapse", :label "sort", :category :seq-type-model}
   {:suite "seq-type-model / specialized seq classes collapse", :label "subvec", :category :seq-type-model}
   {:suite "seq-type-model / specialized seq classes collapse", :label "drop over a vector", :category :seq-type-model}
-  {:suite "chunking-model / unchunked realization granularity", :label "first over a vector realizes one, not a chunk", :category :chunking-model}
-  {:suite "chunking-model / unchunked realization granularity", :label "nth 0 over a vector realizes one", :category :chunking-model}
   {:suite "chunking-model / unchunked realization granularity", :label "mapcat is fully lazy at construction", :category :chunking-model}
   {:suite "chunking-model / unchunked realization granularity", :label "dedupe is fully lazy at construction", :category :chunking-model}
   {:suite "integer-box-model / narrow int class collapses to Long", :label "byte class", :category :integer-box-model}
