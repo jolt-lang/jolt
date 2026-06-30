@@ -31,11 +31,29 @@
 ;; cvec is #f for every other seq; stored as two fields (not a cons) so a vector
 ;; seq cell costs no extra allocation. The rest of the seq layer ignores them, so
 ;; first/rest/count/printing are unchanged.
-(define-record-type cseq (fields head (mutable tail) (mutable forced?) list? cvec ci) (nongenerative chez-cseq-v3))
-(define (cseq-realized head tail) (make-cseq head tail #t #f #f 0))   ; tail already a seq
-(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f #f 0))
-(define (cseq-list head tail) (make-cseq head tail #t #t #f 0))       ; a PersistentList node
-(define (cseq-vec head tail-thunk v i) (make-cseq head tail-thunk #f #f v i)) ; vector-backed
+;; crest: the ChunkedCons case — cvec holds a STANDALONE chunk pvec (<=32 already-
+;; realized elements), ci the offset within it, and crest the seq AFTER the whole
+;; chunk (the clojure.lang.ChunkedCons _more). This is what map/filter/range emit
+;; so their result is itself a chunked-seq (chained chunked transforms each batch
+;; by 32, like the JVM). crest is #f for a plain vector-backed seq (whose "rest"
+;; is the next 32-block of the SAME cvec) and for every non-chunked cell.
+(define-record-type cseq (fields head (mutable tail) (mutable forced?) list? cvec ci crest) (nongenerative chez-cseq-v4))
+(define (cseq-realized head tail) (make-cseq head tail #t #f #f 0 #f))   ; tail already a seq
+(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f #f 0 #f))
+(define (cseq-list head tail) (make-cseq head tail #t #t #f 0 #f))       ; a PersistentList node
+(define (cseq-vec head tail-thunk v i) (make-cseq head tail-thunk #f #f v i #f)) ; vector-backed
+;; A ChunkedCons cell over a standalone chunk pvec: head is chunk[i], walking
+;; (seq-more) advances within the chunk and then continues into `rest`. `rest` is
+;; the already-coerced after-chunk seq (cseq | jolt-nil | a jolt-lazyseq), held in
+;; crest for chunk-rest/chunk-next and forced lazily by the tail thunk at the chunk
+;; boundary so a chunked map over an infinite chunked source stays productive.
+(define (cseq-chunked chunk i rest)
+  (make-cseq (pvec-nth-d chunk i jolt-nil)
+             (lambda () (let ((i1 (fx+ i 1)))
+                          (if (fx<? i1 (pvec-count chunk))
+                              (cseq-chunked chunk i1 rest)
+                              (jolt-seq rest))))
+             #f #f chunk i rest))
 (define (seq-first s) (cseq-head s))
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
   (if (cseq-forced? s) (cseq-tail s)
@@ -247,6 +265,58 @@
                                        " cannot be cast to clojure.lang.IFn"))))))
 
 ;; ============================================================================
+;; chunked-seq accessors — the host side of the Clojure IChunkedSeq contract
+;; (chunk-first ++ chunk-rest == the seq). Two chunked shapes share the cseq
+;; record: a vector-backed seq (cvec = whole pvec, ci = absolute index, crest #f,
+;; rest = next 32-block of cvec) and a ChunkedCons (cvec = standalone chunk pvec,
+;; crest = the after-chunk seq). natives-array.ss binds these into clojure.core and
+;; the chunk-buffer/chunk/chunk-cons builder API on top of them.
+;; ============================================================================
+(define seq-chunk-size 32)
+;; (chunk-pvec . end-index) for a chunked cell, else #f. A ChunkedCons block is the
+;; whole remaining chunk (crest carries what comes after); a vector seq block is the
+;; next <=32 elements within cvec.
+(define (na-vblock s)
+  (and (cseq? s) (cseq-cvec s)
+       (let ((v (cseq-cvec s)) (i (cseq-ci s)))
+         (cons v (if (cseq-crest s) (pvec-count v) (fxmin (fx+ i seq-chunk-size) (pvec-count v)))))))
+(define (na-chunked-seq? x) (and (na-vblock x) #t))
+;; Copy the block [i, end) straight out of the pvec trie's 32-element leaf node
+;; (pv-chunk-for is O(log n)). seq-chunk-size == pv-width and vector-seq blocks are
+;; 32-aligned, so a block is exactly one leaf; the rare non-aligned window crossing
+;; a leaf boundary falls back to per-index reads. Flattening the whole backing
+;; vector per block (pvec-v) made chunk-first O(n), so walking chunk-by-chunk was
+;; O(n^2). A ChunkedCons chunk is a small tail-only pvec, so the leaf IS the chunk.
+(define (na-chunk-first s)
+  (let ((vb (na-vblock s)))
+    (if vb
+        (let* ((pv (car vb)) (i (cseq-ci s)) (end (cdr vb)) (len (fx- end i))
+               (node (pv-chunk-for pv i)) (off (fxand i pv-mask)))
+          (if (fx<=? (fx+ off len) (vector-length node))
+              (make-pvec (vec-copy-range node off (fx+ off len)))
+              (let ((out (make-vector len)))
+                (let loop ((j 0))
+                  (if (fx<? j len)
+                      (begin (vector-set! out j (pvec-nth-d pv (fx+ i j) jolt-nil)) (loop (fx+ j 1)))
+                      (make-pvec out))))))
+        (jolt-first s))))               ; eager-buffer fallback
+;; chunk-rest / chunk-next: drop the whole current chunk. For a ChunkedCons that is
+;; crest (the after-chunk seq); for a vector seq it is the seq at the next block.
+(define (na-chunk-rest s)
+  (cond
+    ((and (cseq? s) (cseq-crest s))
+     (let ((r (jolt-seq (cseq-crest s)))) (if (jolt-nil? r) jolt-empty-list r)))
+    ((na-vblock s) => (lambda (vb)
+       (if (fx>=? (cdr vb) (pvec-count (car vb))) jolt-empty-list (vec->seq (car vb) (cdr vb)))))
+    (else (jolt-rest s))))
+(define (na-chunk-next s)
+  (cond
+    ((and (cseq? s) (cseq-crest s)) (jolt-seq (cseq-crest s)))
+    ((na-vblock s) => (lambda (vb)
+       (if (fx>=? (cdr vb) (pvec-count (car vb))) jolt-nil (vec->seq (car vb) (cdr vb)))))
+    (else (jolt-next s))))
+
+;; ============================================================================
 ;; map / filter / reduce / into / remove + range / take / concat / apply
 ;; ============================================================================
 (define (any-nil? seqs) (and (pair? seqs) (or (jolt-nil? (car seqs)) (any-nil? (cdr seqs)))))
@@ -254,9 +324,22 @@
 ;; an empty seq, so (= () (map f [])) is true and (nil? (map f [])) is false.
 ;; jolt-empty-list seqs back to nil, so it stays a valid lazy-tail terminator for
 ;; the non-empty case (printing / seq= / reduce all walk via jolt-seq).
+;; Single-coll map (core.clj's [f coll] arity). Chunk-preserving: when the source
+;; seq is chunked, realize the WHOLE first chunk — apply f to every element eagerly
+;; into a fresh chunk — and chunk-cons it onto a lazy map of chunk-rest, so the
+;; result is itself a chunked-seq. A non-chunked source maps one element at a time.
 (define (map-seq f s)
-  (if (jolt-nil? s) jolt-empty-list
-      (cseq-lazy (jolt-invoke f (seq-first s)) (lambda () (map-seq f (jolt-seq (seq-more s)))))))
+  (cond
+    ((jolt-nil? s) jolt-empty-list)
+    ((na-chunked-seq? s)
+     (let* ((c (na-chunk-first s)) (n (pvec-count c)) (out (make-vector n)))
+       (let loop ((i 0))
+         (if (fx<? i n)
+             (begin (vector-set! out i (jolt-invoke f (pvec-nth-d c i jolt-nil))) (loop (fx+ i 1)))
+             (cseq-chunked (make-pvec out) 0
+                           (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (na-chunk-rest s)))))))))))
+    (else
+     (cseq-lazy (jolt-invoke f (seq-first s)) (lambda () (map-seq f (jolt-seq (seq-more s))))))))
 (define (map-seq* f seqs)              ; multi-collection map; stops at the shortest
   (if (any-nil? seqs) jolt-empty-list
       (cseq-lazy (apply jolt-invoke f (map seq-first seqs))
@@ -272,12 +355,32 @@
       (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (car colls))))))
       (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq* f (map jolt-seq colls)))))))
 
+;; Chunk-preserving, like core.clj filter: a chunked source has pred applied to the
+;; whole chunk, the kept elements packed into a fresh (possibly smaller) chunk, and
+;; that chunk-cons'd onto a lazy filter of chunk-rest. An all-rejected chunk emits
+;; no empty cell — it recurses straight into chunk-rest (chunk-cons of an empty
+;; chunk == its rest). A non-chunked source filters one element at a time.
 (define (filter-seq pred s keep)
-  (let loop ((s s))
-    (cond ((jolt-nil? s) jolt-empty-list)   ; empty result is () (see map-seq)
-          ((eq? keep (jolt-truthy? (jolt-invoke pred (seq-first s))))
-           (cseq-lazy (seq-first s) (lambda () (filter-seq pred (jolt-seq (seq-more s)) keep))))
-          (else (loop (jolt-seq (seq-more s)))))))
+  (cond
+    ((jolt-nil? s) jolt-empty-list)         ; empty result is () (see map-seq)
+    ((na-chunked-seq? s)
+     (let* ((c (na-chunk-first s)) (n (pvec-count c)))
+       (let loop ((i 0) (acc '()))
+         (if (fx<? i n)
+             (let ((x (pvec-nth-d c i jolt-nil)))
+               (loop (fx+ i 1) (if (eq? keep (jolt-truthy? (jolt-invoke pred x))) (cons x acc) acc)))
+             (let ((kept (reverse acc)))
+               (if (null? kept)
+                   (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)
+                   (cseq-chunked (make-pvec (list->vector kept)) 0
+                                 (jolt-make-lazy-seq
+                                  (lambda () (jolt-seq (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)))))))))))
+    (else
+     (let walk ((s s))
+       (cond ((jolt-nil? s) jolt-empty-list)
+             ((eq? keep (jolt-truthy? (jolt-invoke pred (seq-first s))))
+              (cseq-lazy (seq-first s) (lambda () (filter-seq pred (jolt-seq (seq-more s)) keep))))
+             (else (walk (jolt-seq (seq-more s)))))))))
 ;; filter/remove are fully lazy (LazySeq): defer the predicate and the source seq
 ;; until forced, like Clojure. (lazy-seq* = a 0-arg lazy node coercing to cseq|nil.)
 (define (jolt-filter pred coll)
@@ -290,18 +393,27 @@
 ;; by the last step is unwrapped on the next turn before the seq is consulted.
 ;; reduce a vector's backing store directly by index from element i — no per-
 ;; element seq cells. Honors `reduced`. The chunked-seq fast path.
+;; Reduce a chunk pvec from index i. Returns the accumulator RAW — a `reduced` box
+;; is returned unwrapped-by reduce-seq, not here — so a ChunkedCons continuation can
+;; see early termination instead of folding it back into the running value.
 (define (vec-reduce f acc v i)
   (let ((n (pvec-count v)) (raw (pvec-v v)))
     (let loop ((i i) (acc acc))
-      (cond ((jolt-reduced? acc) (jolt-reduced-val acc))
+      (cond ((jolt-reduced? acc) acc)
             ((fx>=? i n) acc)
             (else (loop (fx+ i 1) (jolt-invoke f acc (vector-ref raw i))))))))
 (define (reduce-seq f acc s)
   (cond
     ((jolt-reduced? acc) (jolt-reduced-val acc))
     ((jolt-nil? s) acc)
-    ;; a vector-backed (chunked) seq reduces its vector directly, in a tight loop.
-    ((and (cseq? s) (cseq-cvec s)) (vec-reduce f acc (cseq-cvec s) (cseq-ci s)))
+    ;; a chunked seq reduces its chunk pvec directly, in a tight loop. A vector seq
+    ;; (crest #f) reduces the whole backing vector and is then done; a ChunkedCons
+    ;; reduces this chunk and continues into its after-chunk rest.
+    ((and (cseq? s) (cseq-cvec s))
+     (let ((acc2 (vec-reduce f acc (cseq-cvec s) (cseq-ci s))))
+       (cond ((jolt-reduced? acc2) (jolt-reduced-val acc2))
+             ((cseq-crest s) (reduce-seq f acc2 (jolt-seq (cseq-crest s))))
+             (else acc2))))
     (else (reduce-seq f (jolt-invoke f acc (seq-first s)) (jolt-seq (seq-more s))))))
 (define jolt-reduce
   (case-lambda
@@ -328,21 +440,31 @@
     (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from)))))
 
 (define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1)))))
+;; A bounded range is a real chunked-seq, like clojure.lang.LongRange: eager, with
+;; chunk-first handing out a block of up to 32 consecutive values. Each block is
+;; materialized into a pvec and chunk-cons'd onto a lazy continuation, so a chunked
+;; map/filter over a range batches by 32 (the JVM's observable realization), while a
+;; huge range still produces its tail one block at a time.
 ;; An empty range is () (jolt-empty-list), NOT nil — (range 0) and (range 5 5) are
-;; empty seqs in Clojure, so (= () (range 0)) holds. The same () terminates the
-;; lazy tail of a non-empty range (jolt-empty-list seqs back to nil, see jolt-take).
-(define (range-bounded n end step)
+;; empty seqs in Clojure, so (= () (range 0)) holds, and () seqs back to nil so it
+;; also terminates the chunked tail (see jolt-take).
+(define (range-chunked n end step)
   (if (if (> step 0.0) (< n end) (> n end))
-      (cseq-lazy n (lambda () (range-bounded (+ n step) end step)))
+      (let loop ((i 0) (v n) (acc '()))
+        (if (and (fx<? i seq-chunk-size) (if (> step 0.0) (< v end) (> v end)))
+            (loop (fx+ i 1) (+ v step) (cons v acc))
+            (cseq-chunked (make-pvec (list->vector (reverse acc))) 0
+                          (jolt-make-lazy-seq (lambda () (jolt-seq (range-chunked v end step)))))))
       jolt-empty-list))
 ;; numeric tower: exact 0/1 defaults so (range 3) yields exact ints
 ;; (= JVM longs); flonum args still produce flonums (Scheme arithmetic preserves).
+;; (range) with no bound is the lazy, NON-chunked (iterate inc' 0) form.
 (define jolt-range
   (case-lambda
     (() (range-from 0))
-    ((end) (range-bounded 0 end 1))
-    ((start end) (range-bounded start end 1))
-    ((start end step) (range-bounded start end step))))
+    ((end) (range-chunked 0 end 1))
+    ((start end) (range-chunked start end 1))
+    ((start end step) (range-chunked start end step))))
 
 ;; An empty take result is () (jolt-empty-list), NOT nil — (take 0 coll) and
 ;; (take n []) are empty seqs in Clojure, so (= () (take 0 [:a])) and printing

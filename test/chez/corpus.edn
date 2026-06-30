@@ -2728,7 +2728,7 @@
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-byte" :expected "65" :actual "(unchecked-byte 65)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-char" :expected "\\a" :actual "(unchecked-char 97)"}
   {:suite "untested / unchecked-* are plain ops" :label "unchecked-short" :expected "5" :actual "(unchecked-short 5)"}
-  {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk round-trip" :expected "1" :actual "(let [cb (chunk-buffer 4)] (chunk-append cb 1) (chunk-first (chunk-cons (chunk cb) nil)))"}
+  {:suite "untested / chunk family (eager equivalents) + cat" :label "chunk round-trip" :expected "[1]" :actual "(let [cb (chunk-buffer 4)] (chunk-append cb 1) (chunk-first (chunk-cons (chunk cb) nil)))"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "cat transducer" :expected "[1 2 3]" :actual "(into [] cat [[1] [2 3]])"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "ensure-reduced wraps" :expected "true" :actual "(reduced? (ensure-reduced 5))"}
   {:suite "untested / chunk family (eager equivalents) + cat" :label "ensure-reduced keeps reduced" :expected "true" :actual "(reduced? (ensure-reduced (reduced 5)))"}
@@ -2755,11 +2755,14 @@
   {:suite "seq-type-model / specialized seq classes collapse" :label "sort" :expected "clojure.lang.PersistentList" :actual "(class (sort [3 1 2]))"}
   {:suite "seq-type-model / specialized seq classes collapse" :label "subvec" :expected "clojure.lang.PersistentVector" :actual "(class (subvec [1 2 3] 1))"}
   {:suite "seq-type-model / specialized seq classes collapse" :label "drop over a vector" :expected "clojure.lang.LazySeq" :actual "(class (drop 1 [1 2 3]))"}
-  ;; --- chunking-model divergences (allowlisted): jolt is unchunked, so forcing
-  ;; one element realizes 1 (JVM realizes a 32-element chunk), and mapcat/dedupe
-  ;; realize 0 at construction (JVM forces the first chunk). jolt-mm6v.
-  {:suite "chunking-model / unchunked realization granularity" :label "first over a vector realizes one, not a chunk" :expected "1" :actual "(let [a (atom 0)] (first (map (fn [x] (swap! a inc) x) (vec (range 100)))) @a)"}
-  {:suite "chunking-model / unchunked realization granularity" :label "nth 0 over a vector realizes one" :expected "1" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (vec (range 100))) 0) @a)"}
+  ;; --- chunking-model realization granularity (JVM-matching): a vector's seq is
+  ;; chunked, so forcing one element of (map f a-vector) realizes the whole first
+  ;; 32-block, like the JVM.
+  {:suite "chunking-model / realization granularity" :label "first over a chunked vector realizes the whole 32-block" :expected "32" :actual "(let [a (atom 0)] (first (map (fn [x] (swap! a inc) x) (vec (range 100)))) @a)"}
+  {:suite "chunking-model / realization granularity" :label "nth 0 over a chunked vector realizes the whole 32-block" :expected "32" :actual "(let [a (atom 0)] (nth (map (fn [x] (swap! a inc) x) (vec (range 100))) 0) @a)"}
+  ;; mapcat/dedupe stay lazier than the JVM at construction: jolt's (apply concat …)
+  ;; and sequence transformer don't force the first chunk just to build the seq
+  ;; (the JVM forces 5 here). Allowlisted in known-divergences.edn (jolt-mm6v).
   {:suite "chunking-model / unchunked realization granularity" :label "mapcat is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (mapcat (fn [x] (swap! a inc) [x]) (range 5)) @a)"}
   {:suite "chunking-model / unchunked realization granularity" :label "dedupe is fully lazy at construction" :expected "0" :actual "(let [a (atom 0)] (dedupe (map (fn [x] (swap! a inc) x) (range 5))) @a)"}
   ;; --- integer-box-model: narrow int values behave as integers (certified) ---
@@ -3483,4 +3486,10 @@
   {:suite "host-interop / a fn reports its munged class" :label "(class a-def'd-fn) is ns$munged-name, with the IFn hierarchy as ancestors" :expected "[\"clojure.core$odd_QMARK_\" true]" :actual "[(.getName (class odd?)) (boolean (some #{java.lang.Runnable} (ancestors (class odd?))))]"}
   {:suite "host-interop / MultiFn methods" :label ".getMethod / .dispatchFn on a multimethod" :expected "[true true true]" :actual "(do (defmulti mmc identity) (defmethod mmc :a [_] 1) [(some? (.getMethod mmc :a)) (nil? (.getMethod mmc :z)) (ifn? (.dispatchFn mmc))])"}
   {:suite "reader / namespaced map literal" :label "#:ns{...} qualifies bare keys; :_/x stays unqualified" :expected "[:search 2 nil]" :actual "[(:event/type #:event{:type :search :id 5}) (count #:x{:a 1 :b 2}) (:k #:_{:k 9})]"}
+  {:suite "lazy / chunking" :label "(seq (range 1 50)) is a chunked-seq" :expected "true" :actual "(chunked-seq? (seq (range 1 50)))"}
+  {:suite "lazy / chunking" :label "map over a chunked range realizes a whole 32-block on first" :expected "32" :actual "(let [c (atom 0) s (map (fn [x] (swap! c inc) x) (range 1 50))] (first s) @c)"}
+  {:suite "lazy / chunking" :label "crossing a chunk boundary realizes the next 32-block" :expected "49" :actual "(let [c (atom 0) s (map (fn [x] (swap! c inc) x) (range 1 50))] (nth s 32) @c)"}
+  {:suite "lazy / chunking" :label "chained maps each batch by 32 (result is itself chunked)" :expected "[32 32]" :actual "(let [fc (atom 0) gc (atom 0) s (map (fn [x] (swap! gc inc) x) (map (fn [x] (swap! fc inc) x) (range 1 50)))] (first s) [@fc @gc])"}
+  {:suite "lazy / chunking" :label "filter over a chunked range applies pred to the whole first block" :expected "32" :actual "(let [c (atom 0) s (filter (fn [x] (swap! c inc) (even? x)) (range 1 50))] (first s) @c)"}
+  {:suite "lazy / chunking" :label "a plain lazy seq (not chunked) realizes one element at a time" :expected "1" :actual "(let [c (atom 0) lz (fn lz [n] (lazy-seq (cons n (lz (inc n))))) s (map (fn [x] (swap! c inc) x) (lz 0))] (first s) @c)"}
 ]
