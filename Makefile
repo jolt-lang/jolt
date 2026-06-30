@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint
+.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -41,6 +41,23 @@ smoke:
 # `jolt build` produces a working standalone binary.
 buildsmoke:
 	@sh host/chez/build-smoke.sh
+
+# Build joltc as a self-contained native binary into target/<profile>/joltc. The
+# binary bundles the runtime, compiler, jolt-core + stdlib source, the Chez boots,
+# and a launcher stub, so it runs AND compiles jolt apps with no Chez or cc on the
+# machine. Built on a dev/CI host that HAS Chez + cc. release = optimize-level 3,
+# no inspector info, compressed; debug = optimize-level 0 + inspector + debug info.
+joltc-release:
+	@chez --script host/chez/build-joltc.ss release target/release/joltc
+joltc-debug:
+	@chez --script host/chez/build-joltc.ss debug target/debug/joltc
+# Re-mint the seed first so the embedded compiler image is current, then both builds.
+joltc: selfhost joltc-release joltc-debug
+	@echo "OK: target/release/joltc and target/debug/joltc built"
+
+# Self-build smoke: the distributed joltc compiles an app with Chez + cc removed.
+joltcsmoke:
+	@sh host/chez/joltc-selfbuild-smoke.sh
 
 # SCI conformance: load borkdude/sci's source through joltc (floor-gated).
 sci:

@@ -29,6 +29,65 @@
   (hashtable-set! embedded-resources name content))
 (define-record-type embedded-res (fields name content) (nongenerative jolt-embres-v1))
 
+;; --- self-contained build artifacts (jolt-eaj) ------------------------------
+;; A toolchain-free `jolt build` (the distributed joltc) carries the Chez
+;; petite/scheme boots and a prebuilt launcher stub baked into its own boot image.
+;; They live in the same table as embedded-resources, but keyed under bytevector
+;; values (register-embedded-bytes!) rather than strings; resolve-on-roots /
+;; io/resource only ever ask for the string-keyed source entries, so the two
+;; coexist. The build driver reads them at heap-build time from files that exist
+;; only on the dev machine.
+(define (register-embedded-bytes! name bv) (hashtable-set! embedded-resources name bv))
+(define (jolt-embedded-bytes name)
+  (let ((v (hashtable-ref embedded-resources name #f)))
+    (and (bytevector? v) v)))
+
+;; Read a whole file as a bytevector ("" -> empty). Used to slurp boot/stub files.
+(define (read-file-bytes path)
+  (let ((p (open-file-input-port path)))
+    (let ((bv (get-bytevector-all p)))
+      (close-port p)
+      (if (eof-object? bv) (bytevector) bv))))
+
+;; Write an embedded bytevector resource out to a path. make-boot-file needs the
+;; petite/scheme boots as files, so they are spilled to scratch before the call.
+(define (jolt-spill-embedded! name path)
+  (let ((bv (jolt-embedded-bytes name)))
+    (unless bv (error 'jolt-spill-embedded! "no embedded bytes for" name))
+    (let ((p (open-file-output-port path (file-options no-fail) (buffer-mode block))))
+      (put-bytevector p bv)
+      (close-port p))))
+
+;; Frame an app boot onto a file that already holds the stub bytes. Layout:
+;; [stub][boot][boot-length:le64]["JOLTBOOT"]. The stub (host/chez/stub/launcher.c)
+;; reads the trailing 16 bytes — the 8-byte magic, then the preceding 8-byte LE
+;; length — to locate and register the boot, so a boot that itself contains the
+;; magic bytes can't be mistaken for the frame.
+(define jolt-payload-magic (string->utf8 "JOLTBOOT"))
+(define (jolt-append-payload! path boot-bv)
+  (let ((head (read-file-bytes path)))           ; the stub bytes already written
+    (let ((p (open-file-output-port path (file-options no-fail) (buffer-mode block)))
+          (lb (make-bytevector 8 0)))
+      (bytevector-u64-set! lb 0 (bytevector-length boot-bv) (endianness little))
+      (put-bytevector p head)
+      (put-bytevector p boot-bv)
+      (put-bytevector p lb)
+      (put-bytevector p jolt-payload-magic)
+      (close-port p))))
+
+;; chmod 0755 via libc, so the produced binary is executable. load-shared-object
+;; with #f pulls the running process's own symbols (chmod is in libc, linked into
+;; every Chez binary) — no external toolchain. Falls back to /bin/sh chmod if the
+;; symbol can't be resolved.
+(define jolt-chmod-755
+  (let ((c (guard (e (#t #f))
+             (load-shared-object #f)
+             (foreign-procedure "chmod" (string int) int))))
+    (lambda (path)
+      (if c
+          (c path #o755)
+          (system (string-append "chmod 755 '" path "'"))))))
+
 ;; A user-facing relative path resolves against JOLT_PWD — the user's cwd before
 ;; the launcher cd'd to the jolt repo root — matching the JVM, where io/file is
 ;; cwd-relative. (io/resource builds jfiles from the source roots directly, so it
