@@ -41,6 +41,12 @@
     (unless (zero? rc)
       (error 'jolt-build (string-append "command failed (" (number->string rc) "): " cmd)))))
 
+;; mkdir -p without a subprocess (the self-contained build shells out to nothing).
+(define (bld-mkdir-p dir)
+  (unless (or (string=? dir "") (string=? dir "/") (string=? dir ".") (file-exists? dir))
+    (bld-mkdir-p (path-parent dir))
+    (guard (e (#t #f)) (mkdir dir))))
+
 (define (bld-contains? s sub)
   (let ((ns (string-length s)) (nsub (string-length sub)))
     (let loop ((i 0))
@@ -329,7 +335,9 @@
 ;; no runtime redefinition). Off by default in every mode — release stays
 ;; dynamically linked.
 (define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake?)
-  (bld-check-toolchain)
+  ;; The self-contained path (jolt-embedded-bytes "stub/launcher") needs no csv
+  ;; kernel files, no Chez, no cc — only the legacy cc path does.
+  (unless (jolt-embedded-bytes "stub/launcher") (bld-check-toolchain))
   ;; 1. record app namespaces in dependency order as they finish loading.
   (let ((app-order '()))
     (set-ns-loaded-hook!
@@ -397,7 +405,7 @@
              (boot     (string-append builddir "/jolt.boot"))
              (boot-h   (string-append builddir "/boot_data.h"))
              (main-c   (string-append builddir "/main.c")))
-        (bld-system (string-append "mkdir -p '" builddir "'"))
+        (bld-mkdir-p builddir)
         ;; 3. flat source = runtime + app + launcher.
         (let ((out (open-output-file flat-ss 'replace)))
           (bld-emit-runtime out drop-compiler? core-strs)
@@ -456,23 +464,21 @@
             (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c)))))))
 
 ;; --- self-contained link (in-process compile + append the boot to the stub) ---
-;; The system `error` is restored around compile-file/make-boot-file: the loaded
-;; jolt runtime shadows it (regex.ss, %chez-error holds the kernel original).
-;; flat.ss opens with (import (chezscheme)) so the boot binds the real error
-;; regardless, but the save/restore keeps any compile-time diagnostic honest.
+;; compile-file runs with a FRESH scheme-environment as the interaction
+;; environment: the loaded jolt runtime redefines `error` (regex.ss), and flat.ss
+;; inlines that same runtime, so an early reference to `error` (before its define
+;; runs) must bind to the kernel primitive — a clean env gives exactly that, the
+;; same as the legacy path compiling in a fresh Chez process. Without it the boot
+;; dies at startup with "variable error is not bound".
 (define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot)
   (let ((petite (string-append builddir "/petite.boot"))
         (scheme (string-append builddir "/scheme.boot")))
     (jolt-spill-embedded! "csv/petite.boot" petite)
     (jolt-spill-embedded! "csv/scheme.boot" scheme)
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
-    (let ((saved-err error))
-      (dynamic-wind
-        (lambda () (set! error %chez-error))
-        (lambda ()
-          (compile-file flat-ss flat-so)
-          (make-boot-file boot '() petite scheme flat-so))
-        (lambda () (set! error saved-err))))
+    (parameterize ((interaction-environment (copy-environment (scheme-environment))))
+      (compile-file flat-ss flat-so)
+      (make-boot-file boot '() petite scheme flat-so))
     ;; link: stub bytes ++ boot ++ frame, then make it executable.
     (jolt-spill-embedded! "stub/launcher" out-path)
     (jolt-append-payload! out-path (read-file-bytes boot))

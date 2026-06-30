@@ -2,6 +2,7 @@ AGENTS.md
 .DS_Store
 CLAUDE.md
 build/
+target/
 .clj-kondo/
 .dirge/
 .claude/
