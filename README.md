@@ -106,6 +106,24 @@ compiler. They come with a from-source Chez install; a distro `chezscheme`
 package ships only the runtime, so `build` won't link a binary there.
 RFC 0007 (`docs/rfc/`) covers the design and the three-mode model.
 
+## Standalone joltc binary
+
+`make` builds joltc itself into a single self-contained native binary — the
+runtime, compiler, `jolt-core`/`stdlib` source, and the Chez boots are baked in,
+so the result runs and `build`s jolt apps on a machine with neither Chez nor a C
+compiler. Build it on a host that *does* have both.
+
+```bash
+make joltc-release             # => target/release/joltc (optimize-level 3, compressed)
+make joltc-debug               # => target/debug/joltc   (optimize-level 0, inspector + debug info)
+make joltc                     # re-mint the seed first, then both
+```
+
+`make joltc` re-mints the seed so the embedded compiler image is current before
+linking; use `joltc-release`/`joltc-debug` directly to skip that when the seed is
+already minted. Like `build`, both require Chez's kernel development files
+(`libkernel.a`, `scheme.h`) and a C compiler.
+
 ## Architecture
 
 A small Chez runtime (`host/chez/*.ss`: value model, persistent collections, seqs,

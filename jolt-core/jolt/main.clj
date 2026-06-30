@@ -200,10 +200,22 @@
       ;; the GUI main loop: glimmer's run marshals its startup here via
       ;; jolt.host/call-on-main-thread — on macOS GTK quartz, g_application_run
       ;; must run on the main thread or AppKit aborts when it sets the main menu.
+      ;; Block SIGINT in this (primordial) thread before starting the server so the
+      ;; accept-loop future — and the conn-handler futures it spawns — inherit a
+      ;; blocked SIGINT mask. Without this, ^C lands on the accept loop blocked in
+      ;; c-accept (a foreign call), where Chez can't fire the keyboard-interrupt
+      ;; handler, and the server hangs. park-until-interrupt unblocks SIGINT here
+      ;; once its own ^C handler is installed, so ^C reaches this thread and the
+      ;; shutdown hooks run cleanly.
+      (jolt.host/block-sigint)
       (let [stop ((resolve 'jolt.nrepl/start) port (:nrepl-middleware resolved))]
-        ;; park here until something calls jolt.host/stop-main-pump, then shut the
-        ;; server down cleanly (close the socket, remove .nrepl-port) and return.
-        (jolt.host/run-main-pump)
+        ;; register stop so ^C (handled by park-until-interrupt) closes the socket
+        ;; and drops .nrepl-port on the way out.
+        (jolt.host/add-shutdown-hook stop)
+        ;; park here until ^C (handled by park-until-interrupt's keyboard-interrupt-
+        ;; handler, which runs the shutdown hooks and exits). The accept loop
+        ;; inherited SIGINT-blocked above, so ^C is delivered to this thread.
+        (jolt.host/park-until-interrupt)
         (when stop (stop))))))
 
 (defn- usage []

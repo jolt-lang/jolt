@@ -459,6 +459,27 @@
                   (jolt-main-job-val job)
                   (raise (jolt-main-job-val job))))))))
 
+(define jolt-pump-kih
+  (lambda ()
+    (for-each (lambda (th) (guard (e (#t #f)) (th)))
+              (reverse (unbox jolt-shutdown-hooks)))
+    (exit 0)))
+
+;; Park the calling thread until a keyboard interrupt (^C), then run the shutdown
+;; hooks and exit. Unlike run-main-pump (whose tight recursive condition-wait
+;; loop elides Chez's interrupt poll points, so the handler never fires), this
+;; uses a single condition-wait — the form Chez reliably interrupts. The nREPL
+;; server parks here; SIGINT is unblocked in this thread first (it was masked by
+;; jolt-block-sigint so the accept loop inherited a blocked mask and couldn't
+;; absorb ^C in its foreign accept() call).
+(define jolt-park-mu (make-mutex))
+(define jolt-park-cv (make-condition))
+(define (jolt-park-until-interrupt)
+  (keyboard-interrupt-handler jolt-pump-kih)
+  (jolt-set-sigint-blocked #f)
+  (with-mutex jolt-park-mu (condition-wait jolt-park-cv jolt-park-mu))
+  jolt-nil)
+
 (define (jolt-run-main-pump)
   (with-mutex jolt-main-queue-mu
     (set-box! jolt-main-pump-stop #f)
@@ -508,6 +529,51 @@
     (condition-broadcast jolt-main-queue-cv))
   jolt-nil)
 
+;; Shutdown hooks run by jolt-pump-kih (the keyboard-interrupt-handler installed by
+;; park-until-interrupt) before (exit 0), so a foreground server (nREPL) can close
+;; its socket and drop .nrepl-port on ^C instead of Chez's default mutex-corrupting
+;; abort. Newest-first; each hook is isolated so one failing hook can't block the exit.
+(define jolt-shutdown-hooks (box '()))
+(define (jolt-add-shutdown-hook thunk)
+  (set-box! jolt-shutdown-hooks (cons thunk (unbox jolt-shutdown-hooks)))
+  jolt-nil)
+
+;; Per-thread SIGINT mask. A worker thread parked in a foreign call (the nREPL
+;; accept loop in c-accept, or a conn handler) can't run Chez's keyboard-interrupt
+;; handler on ^C, so if SIGINT is delivered there the process hangs. Block SIGINT
+;; in the primordial thread BEFORE forking such workers (they inherit the mask),
+;; then park-until-interrupt unblocks it in the primordial once its handler is
+;; installed, so ^C is always delivered to the parked thread. pthread_sigmask/
+;; sigaddset are libc/libpthread symbols, resolvable once the process object is
+;; loaded (as the socket fns already are). 128 bytes covers Linux's 1024-bit
+;; sigset_t and is larger than macOS's 4-byte one.
+(define c-pthread-sigmask
+  (foreign-procedure "pthread_sigmask" (int u8* u8*) int))
+(define c-sigemptyset (foreign-procedure "sigemptyset" (u8*) int))
+(define c-sigaddset (foreign-procedure "sigaddset" (u8* int) int))
+;; POSIX SIG_BLOCK/SIG_UNBLOCK numerics differ by platform: Linux/glibc 0/1,
+;; Darwin/macOS 1/2 (SIG_UNBLOCK is SIG_BLOCK+1 on both). Resolve SIG_BLOCK for
+;; this host from the machine-type symbol — macOS builds contain "osx".
+(define jolt-sig-block-how
+  (let* ((s (symbol->string (machine-type)))
+         (n (string-length s)))
+    (let loop ((i 0))
+      (cond
+        ((> (+ i 3) n) 0)                              ; default: Linux/glibc
+        ((string=? (substring s i (+ i 3)) "osx") 1)   ; Darwin/macOS
+        (else (loop (+ i 1)))))))
+(define (jolt-set-sigint-blocked block?)
+  (let ((set (make-bytevector 128 0))
+        (old (make-bytevector 128 0)))
+    (c-sigemptyset set)
+    (c-sigaddset set 2)                          ; SIGINT = 2
+    (c-pthread-sigmask (if block? jolt-sig-block-how (+ jolt-sig-block-how 1)) set old)
+    jolt-nil))
+
 (def-var! "jolt.host" "call-on-main-thread" jolt-call-on-main-thread)
 (def-var! "jolt.host" "run-main-pump" jolt-run-main-pump)
 (def-var! "jolt.host" "stop-main-pump" jolt-stop-main-pump)
+(def-var! "jolt.host" "add-shutdown-hook" jolt-add-shutdown-hook)
+(def-var! "jolt.host" "block-sigint" (lambda () (jolt-set-sigint-blocked #t)))
+(def-var! "jolt.host" "park-until-interrupt" jolt-park-until-interrupt)
+(def-var! "jolt.host" "delete-file" delete-file)
