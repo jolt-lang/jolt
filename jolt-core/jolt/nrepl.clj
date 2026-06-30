@@ -29,9 +29,9 @@
 (ffi/defcfn c-bind       "bind"       [:int :pointer :int] :int)
 (ffi/defcfn c-listen     "listen"     [:int :int] :int)
 (ffi/defcfn c-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
-(ffi/defcfn c-accept     "accept"     [:int :pointer :pointer] :int :blocking)
-(ffi/defcfn c-recv       "recv"       [:int :pointer :size_t :int] :ssize_t :blocking)
-(ffi/defcfn c-send       "send"       [:int :pointer :size_t :int] :ssize_t :blocking)
+  (ffi/defcfn c-accept     "accept"     [:int :pointer :pointer] :int :blocking)
+  (ffi/defcfn c-recv       "recv"       [:int :pointer :size_t :int] :ssize_t :blocking)
+  (ffi/defcfn c-send       "send"       [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-close      "close"      [:int] :int)
 
 (def ^:private AF-INET 2)
@@ -243,18 +243,18 @@
      (println (str "nREPL server started on port " port " (127.0.0.1) — .nrepl-port written"))
      (when (seq middleware) (println (str ";; middleware: " (str/join " " middleware))))
      (println ";; connect your editor; ^C to stop")
-     (future
-       ;; A stop closes fd, which makes the blocking accept() return an error; the
-       ;; @stopped check then breaks the loop instead of spinning on the dead fd.
-       (loop []
+      (future
+        ;; A stop closes fd, which makes the blocking accept() return an error; the
+        ;; @stopped check then breaks the loop instead of spinning on the dead fd.
+        (loop []
          (let [conn (c-accept fd ffi/null ffi/null)]
            (when-not @stopped
              (when (>= conn 0)
                (future (try (handle-conn conn handler)
                             (catch :default e (println "nrepl conn error:" (err-msg e)) (c-close conn)))))
              (recur)))))
-     (fn stop []
-       (when (compare-and-set! stopped false true)
-         (c-close fd)
-         (try (io/delete-file ".nrepl-port" true) (catch :default _ nil)))
-       nil))))
+      (fn stop []
+        (when (compare-and-set! stopped false true)
+          (c-close fd)
+          (jolt.host/delete-file ".nrepl-port"))
+        nil))))
