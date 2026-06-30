@@ -93,8 +93,3 @@
 
 (def-var! "clojure.core" "make-lazy-seq" jolt-make-lazy-seq)
 (def-var! "clojure.core" "coll->cells" jolt-coll->cells)
-
-;; jolt.host/lazyseq? — raw lazy-seq rep test (the other jolt.host type-test
-;; primitives are exposed in predicates.ss; this one lives here because
-;; jolt-lazyseq? is defined in this file, which loads after predicates.ss).
-(def-var! "jolt.host" "lazyseq?" jolt-lazyseq?)

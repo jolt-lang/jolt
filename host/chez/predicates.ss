@@ -12,9 +12,7 @@
 (define (jolt-vector? x) (pvec? x))
 (define (jolt-set? x) (pset? x))
 (define (jolt-seq? x) (or (cseq? x) (empty-list-t? x)))
-;; (list? x): a list-marked cseq node or the empty list (). A lazy/vector-backed
-;; seq, (rest list), (seq coll), (map …) are seqs but not lists.
-(define (jolt-list-pred? x) (or (and (cseq? x) (cseq-list? x)) (empty-list-t? x)))
+;; list? lives in the overlay (clojure/core/20-coll.clj) — see jolt.host/cseq? etc.
 (define (jolt-coll-pred? x)
   (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)))
 (define (jolt-number? x) (number? x))
@@ -27,8 +25,9 @@
 ;; BigDecimal). decimal? is always false (no BigDecimal type).
 (define (jolt-integer? x) (and (number? x) (exact? x) (integer? x)))
 (define (jolt-float? x) (and (number? x) (flonum? x)))
-(define (jolt-ratio? x) (and (number? x) (exact? x) (rational? x) (not (integer? x))))
-(define (jolt-rational? x) (and (number? x) (exact? x)))
+;; ratio?/rational? live in the overlay (clojure/core/20-coll.clj), built on the
+;; jolt.host tower tests. decimal? stays native: the optional bigdec module
+;; (java/bigdec.ss) re-binds it to jbigdec?, so it can't be a static overlay const.
 (define (jolt-decimal? x) #f)
 (define (jolt-fn? x) (procedure? x))
 (define (jolt-boolean-pred? x) (boolean? x))
@@ -61,8 +60,6 @@
 (def-var! "clojure.core" "char?" jolt-char-pred?)
 (def-var! "clojure.core" "integer?" jolt-integer?)
 (def-var! "clojure.core" "float?" jolt-float?)
-(def-var! "clojure.core" "ratio?" jolt-ratio?)
-(def-var! "clojure.core" "rational?" jolt-rational?)
 (def-var! "clojure.core" "decimal?" jolt-decimal?)
 ;; == numeric value-equality (ignores exactness, unlike =): (== 3 3.0) -> true.
 ;; 1-arity is trivially true; 2+ args must all be numbers (Numbers.equiv throws
@@ -84,7 +81,6 @@
 (def-var! "clojure.core" "vector?" jolt-vector?)
 (def-var! "clojure.core" "set?" jolt-set?)
 (def-var! "clojure.core" "seq?" jolt-seq?)
-(def-var! "clojure.core" "list?" jolt-list-pred?)
 (def-var! "clojure.core" "coll?" jolt-coll-pred?)
 (def-var! "clojure.core" "fn?" jolt-fn?)
 (def-var! "clojure.core" "boolean?" jolt-boolean-pred?)
@@ -93,26 +89,22 @@
 (def-var! "clojure.core" "namespace" jolt-namespace)
 
 ;; --- jolt.host raw type-test primitives -------------------------------------
-;; The clojure.core predicates above bottom out at these host tests. Exposing them
-;; under jolt.host lets overlay Clojure build the predicate web (coll?/list?/ratio?
-;; …) as pure compositions that lower to exactly these calls — no perf loss. Naming:
-;; integer-type?/rational-type? are the Chez TYPE tests (exact integer / exact
-;; rational), distinct from clojure.core/integer? (which also gates on number?).
-;; map?/set?/seq? are NOT reducible to a single rep test — they are extended at
-;; runtime with sorted-collection/record/lazy arms (host-table.ss, records.ss,
-;; lazy-bridge.ss) — so only the rep predicates are exposed, not those unions.
-;; exact? is wrapped to be TOTAL (Chez's raw exact? errors on a non-number); the
-;; rep/flonum/integer/rational tests already return #f for a non-match.
+;; Some clojure.core predicates bottom out at host tests overlay Clojure can't
+;; reach. Expose the ones the migratable predicates need so the overlay versions
+;; lower to exactly these calls — no perf loss. rational-type? is the Chez TYPE
+;; test (exact rational), distinct from clojure.core/rational? (which gates on
+;; number? first). exact? is wrapped TOTAL (Chez's raw exact? errors on a
+;; non-number); rational-type? already returns #f for a non-match.
+;;
+;; Only the tests consumed by the migrated predicates (ratio?/rational? -> exact?,
+;; rational-type?; list? -> cseq?/cseq-list?/empty-list?) are exposed. The rest of
+;; the predicate web stays native and is NOT exposed: map?/set?/seq?/coll? are
+;; extended at runtime with sorted/record/lazy arms, decimal? is extended by the
+;; optional bigdec module, integer?/float? are on the compiler emit/inference path,
+;; and vector? is reached by the kernel-tier peek during bootstrap.
 (define (jh-exact? x) (and (number? x) (exact? x)))
 (def-var! "jolt.host" "exact?" jh-exact?)
-(def-var! "jolt.host" "flonum?" flonum?)
-(def-var! "jolt.host" "integer-type?" integer?)
 (def-var! "jolt.host" "rational-type?" rational?)
-(def-var! "jolt.host" "pvec?" pvec?)
-(def-var! "jolt.host" "pmap?" pmap?)
-(def-var! "jolt.host" "pset?" pset?)
 (def-var! "jolt.host" "cseq?" cseq?)
 (def-var! "jolt.host" "empty-list?" empty-list-t?)
 (def-var! "jolt.host" "cseq-list?" cseq-list?)
-;; jolt.host/lazyseq? is exposed in lazy-bridge.ss, where jolt-lazyseq? is defined
-;; (it loads after this file, so it can't be referenced here as a value).

@@ -78,18 +78,19 @@
   (def-var! "clojure.core" "line-seq"
     (lambda (rdr)
       (if (reader-jhost? rdr) (chez-line-seq rdr) (jolt-invoke overlay-line-seq rdr)))))
-;; JVM-parity numeric tower: the overlay (20-coll.clj) carries an
-;; all-flonum number-predicate web with no Ratio concept (ratio? -> false,
-;; double? -> not-integer, float? -> double?, rational? -> int?), which
-;; misclassifies exact rationals on the Chez tower (e.g. (double? 1/2) -> true).
-;; Re-assert the native tower-correct versions (predicates.ss) so they win over
-;; the overlay defs. int?/double? alias integer?/float?. == is value-equality.
+;; JVM-parity numeric tower. integer?/float? are on the compiler emit/inference
+;; path (so they stay native) but the overlay (20-coll.clj) still carries an
+;; all-flonum int?/double? (int? -> integer?, double? -> not-integer) that
+;; misclassifies exact rationals (e.g. (double? 1/2) -> true). Re-assert the
+;; native tower-correct versions so they win over those overlay defs. int?/double?
+;; alias integer?/float?. == is value-equality. (ratio?/rational? are now correct
+;; in the overlay, built on jolt.host tower tests, so they need no re-assertion.)
 (def-var! "clojure.core" "integer?" jolt-integer?)
 (def-var! "clojure.core" "int?" jolt-integer?)
 (def-var! "clojure.core" "float?" jolt-float?)
 (def-var! "clojure.core" "double?" jolt-float?)
-(def-var! "clojure.core" "ratio?" jolt-ratio?)
-(def-var! "clojure.core" "rational?" jolt-rational?)
+;; ratio?/rational? now live (correctly) in the overlay, so they no longer need a
+;; native re-assertion here. decimal? stays (bigdec re-binds it).
 (def-var! "clojure.core" "decimal?" jolt-decimal?)
 (def-var! "clojure.core" "==" jolt-num-equiv)
 ;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
