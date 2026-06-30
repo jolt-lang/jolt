@@ -91,3 +91,28 @@
 (def-var! "clojure.core" "boolean" jolt-boolean)
 (def-var! "clojure.core" "name" jolt-name)
 (def-var! "clojure.core" "namespace" jolt-namespace)
+
+;; --- jolt.host raw type-test primitives -------------------------------------
+;; The clojure.core predicates above bottom out at these host tests. Exposing them
+;; under jolt.host lets overlay Clojure build the predicate web (coll?/list?/ratio?
+;; …) as pure compositions that lower to exactly these calls — no perf loss. Naming:
+;; integer-type?/rational-type? are the Chez TYPE tests (exact integer / exact
+;; rational), distinct from clojure.core/integer? (which also gates on number?).
+;; map?/set?/seq? are NOT reducible to a single rep test — they are extended at
+;; runtime with sorted-collection/record/lazy arms (host-table.ss, records.ss,
+;; lazy-bridge.ss) — so only the rep predicates are exposed, not those unions.
+;; exact? is wrapped to be TOTAL (Chez's raw exact? errors on a non-number); the
+;; rep/flonum/integer/rational tests already return #f for a non-match.
+(define (jh-exact? x) (and (number? x) (exact? x)))
+(def-var! "jolt.host" "exact?" jh-exact?)
+(def-var! "jolt.host" "flonum?" flonum?)
+(def-var! "jolt.host" "integer-type?" integer?)
+(def-var! "jolt.host" "rational-type?" rational?)
+(def-var! "jolt.host" "pvec?" pvec?)
+(def-var! "jolt.host" "pmap?" pmap?)
+(def-var! "jolt.host" "pset?" pset?)
+(def-var! "jolt.host" "cseq?" cseq?)
+(def-var! "jolt.host" "empty-list?" empty-list-t?)
+(def-var! "jolt.host" "cseq-list?" cseq-list?)
+;; jolt.host/lazyseq? is exposed in lazy-bridge.ss, where jolt-lazyseq? is defined
+;; (it loads after this file, so it can't be referenced here as a value).
