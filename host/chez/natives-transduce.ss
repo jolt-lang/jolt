@@ -25,18 +25,11 @@
 (def-var! "clojure.core" "volatile!" jolt-volatile!)
 (def-var! "clojure.core" "deref" jolt-deref)
 
-;; --- transduce / sequence ----------------------------------------------------
-;; (transduce xform f coll) / (transduce xform f init coll): build the transformed
-;; reducing fn (xform f), reduce it over coll (reduce-seq honors `reduced`), then
-;; run the completion (1-arg) arity. The 3-arg init defaults to (f) — the rf's
-;; 0-arity, e.g. (+) = 0, (conj) = [].
-(define jolt-transduce
-  (case-lambda
-    ((xform f coll) (jolt-transduce xform f (jolt-invoke f) coll))
-    ((xform f init coll)
-     (let* ((xf (jolt-invoke xform f))
-            (res (reduce-seq xf init (jolt-seq coll))))
-       (jolt-invoke xf res)))))
+;; --- sequence ----------------------------------------------------------------
+;; transduce lives in the overlay (clojure/core/22-coll.clj): it's a pure
+;; composition (xf (reduce xf init coll)) over reduce, so the Clojure version
+;; lowers to the same code the native shim did. sequence stays native (below):
+;; its transformer iterator drives the reduced box + lazy realization directly.
 
 ;; (sequence coll) -> a seq; (sequence xform coll) -> a LAZY seq of coll transformed
 ;; by xform. A transformer iterator (mirrors clojure.core's TransformerIterator):
@@ -87,7 +80,6 @@
     ((coll) (jolt-seq coll))
     ((xform coll) (sequence-xf xform coll))))
 
-(def-var! "clojure.core" "transduce" jolt-transduce)
 (def-var! "clojure.core" "sequence" jolt-sequence)
 
 ;; --- cat ---------------------------------------------------------------------
