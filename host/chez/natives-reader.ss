@@ -17,8 +17,12 @@
   jolt-nil)
 
 ;; --- reader-conditional: a tagged map (reader-conditional? is an overlay
-;; tagged-value predicate that reads :jolt/type). re-matcher / re-find / re-groups
-;; are the stateful matcher API in regex.ss.
+;; tagged-value predicate that reads :jolt/type). STAYS NATIVE: building a
+;; :jolt/type-tagged map is part of the native value model — an overlay defn
+;; returning {:jolt/type ...} silently fails to bind during the seed mint (the
+;; guard around each prelude form swallows the load-time error), the same reason
+;; every other tagged-value constructor (atom/volatile!/tagged-literal) is native.
+;; re-matcher / re-find / re-groups are the stateful matcher API in regex.ss.
 (define nr-kw-type (keyword "jolt" "type"))
 (define nr-kw-rc   (keyword "jolt" "reader-conditional"))
 (define nr-kw-form (keyword #f "form"))

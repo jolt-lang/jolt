@@ -177,13 +177,21 @@
 
 (defn simple-ident? [x] (or (simple-symbol? x) (simple-keyword? x)))
 
-;; Jolt has no ratio or bigdecimal types, so these are constants / reduce to int?.
-(defn ratio? [x] false)
-(defn decimal? [x] false)
-;; No first-class Class objects either: class names are symbols the evaluator
-;; handles in instance?/new positions, never values — so nothing is a class.
+;; Numeric-tower predicates over the Chez tower (jolt has exact ints, ratios, and
+;; flonums). ratio? = exact non-integer; rational? = exact (int or ratio). Built on
+;; the jolt.host tower tests so they lower to the same code the native shims did.
+;; decimal?/integer?/float?/int?/double? stay native (bigdec-extended or on the
+;; compiler emit/inference path) — see predicates.ss.
+(defn ratio? [x]
+  (and (number? x) (jolt.host/exact? x) (jolt.host/rational-type? x) (not (integer? x))))
+(defn rational? [x] (and (number? x) (jolt.host/exact? x)))
+;; No first-class Class objects: class names are symbols the evaluator handles in
+;; instance?/new positions, never values — so nothing is a class.
 (defn class? [x] false)
-(defn rational? [x] (int? x))
+;; list?: a list-marked cseq node or the empty list (). A lazy/vector-backed seq,
+;; (rest list), (seq coll), (map …) are seqs but not lists. Not extended like
+;; map?/set?/seq?, so it migrates cleanly.
+(defn list? [x] (or (and (jolt.host/cseq? x) (jolt.host/cseq-list? x)) (jolt.host/empty-list? x)))
 (defn nat-int? [x] (and (int? x) (>= x 0)))
 (defn neg-int? [x] (and (int? x) (neg? x)))
 (defn pos-int? [x] (and (int? x) (pos? x)))
