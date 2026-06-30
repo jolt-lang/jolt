@@ -122,14 +122,31 @@
       (else (loop (cdr cs) (cons (car cs) seg) segs)))))
 
 ;; First existing <root>/rel.clj or <root>/rel.cljc on the search roots, else #f.
+;; A self-contained joltc binary embeds jolt-core + stdlib source keyed by their
+;; root-relative path ("clojure/string.clj"); those are checked first, so a
+;; `require` resolves with no source on disk. The dev bin/joltc has an empty
+;; source store, so the two hashtable probes miss and it falls straight to disk.
 (define (resolve-on-roots rel)
-  (let loop ((roots source-roots))
-    (if (null? roots) #f
-        (let ((clj  (string-append (car roots) "/" rel ".clj"))
-              (cljc (string-append (car roots) "/" rel ".cljc")))
-          (cond ((file-exists? clj) clj)
-                ((file-exists? cljc) cljc)
-                (else (loop (cdr roots))))))))
+  (let ((eclj (string-append rel ".clj")) (ecljc (string-append rel ".cljc")))
+    (cond
+      ((string? (hashtable-ref embedded-resources eclj #f)) eclj)
+      ((string? (hashtable-ref embedded-resources ecljc #f)) ecljc)
+      (else
+        (let loop ((roots source-roots))
+          (if (null? roots) #f
+              (let ((clj  (string-append (car roots) "/" rel ".clj"))
+                    (cljc (string-append (car roots) "/" rel ".cljc")))
+                (cond ((file-exists? clj) clj)
+                      ((file-exists? cljc) cljc)
+                      (else (loop (cdr roots)))))))))))
+
+;; Read a namespace source. An embedded key (resolve-on-roots above, or the
+;; build driver's app-order entries) reads its baked string; everything else is
+;; a real path read off disk. Bytevector entries (the bundled boots/stub) are not
+;; source, so a string? guard skips them.
+(define (ldr-read-source path)
+  (let ((emb (hashtable-ref embedded-resources path #f)))
+    (if (string? emb) emb (read-file-string path))))
 
 (define (find-ns-file name) (resolve-on-roots (ns-name->rel name)))
 
@@ -176,7 +193,7 @@
 ;; more forms", which would silently drop the entire rest of the file; here we
 ;; skip the no-op form and continue to true end-of-string.
 (define (load-jolt-file path)
-  (let* ((src (read-file-string path)) (end (string-length src)))
+  (let* ((src (ldr-read-source path)) (end (string-length src)))
     ;; parameterize (not a bare set!) so a require nested in this file's ns form
     ;; restores path when control returns to the rest of this file.
     (parameterize ((rdr-source-file path))   ; list forms read here carry :file = path

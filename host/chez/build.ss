@@ -190,7 +190,7 @@
     (for-each
       (lambda (nf)
         (set-chez-ns! (car nf))
-        (let ((src (read-file-string (cdr nf))))
+        (let ((src (ldr-read-source (cdr nf))))
           (parameterize ((rdr-source-file (cdr nf)))
             (for-each
               (lambda (f)
@@ -370,7 +370,7 @@
                                ;; ns-prelude forms (always kept, no fqn/refs) set the
                                ;; ns + register aliases before this ns's forms; dce
                                ;; keeps original order.
-                               (let ((src (read-file-string (cdr nf))))
+                               (let ((src (ldr-read-source (cdr nf))))
                                  (parameterize ((rdr-source-file (cdr nf)))
                                    (append
                                      (map (lambda (s) (dce-rec #t #f '() s))
@@ -381,7 +381,7 @@
                     (values #f
                             (apply append
                               (map (lambda (nf)
-                                     (let ((src (read-file-string (cdr nf))))
+                                     (let ((src (ldr-read-source (cdr nf))))
                                        (parameterize ((rdr-source-file (cdr nf)))
                                          (append (bld-ns-prelude (car nf) src)
                                                  (bld-emit-ns (car nf) src)))))
@@ -442,43 +442,82 @@
                             "        (apply jolt-invoke mainv args)))\n"
                             "    (exit 0)))\n"))
           (close-port out))
-        ;; 4. compile -> boot -> embed -> link.
-        ;; compile-file/make-boot-file run in a FRESH Chez, not this process: the
-        ;; loaded runtime shadows `error` (regex.ss, for irregex), which would
-        ;; otherwise bake a broken `error` reference into the boot.
-        (display (string-append "jolt build: compiling " entry-ns " (" mode " mode)\n"))
-        (let ((cs (string-append builddir "/compile.ss")))
-          (let ((p (open-output-file cs 'replace)))
-            (put-string p
-              (string-append
-                "(import (chezscheme))\n"
-                "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
-                "(make-boot-file " (ei-str-lit boot) " '()\n  "
-                (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
-                (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "
-                (ei-str-lit flat-so) ")\n"))
-            (close-port p))
-          (bld-system (string-append bld-chez " --script '" cs "'")))
-        (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
-        ;; The xxd symbol is derived from the path; normalize to jolt_boot.
-        (bld-system (string-append
-          "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/unsigned char jolt_boot[]/; "
-          "s/unsigned int [A-Za-z0-9_]+_len/unsigned int jolt_boot_len/' '" boot-h "'"))
-        (let ((mc (open-output-file main-c 'replace)))
-          (put-string mc
-            (string-append
-              "#include \"scheme.h\"\n#include \"boot_data.h\"\n"
-              "int main(int argc, char *argv[]) {\n"
-              "  Sscheme_init(0);\n"
-              "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, jolt_boot_len);\n"
-              "  Sbuild_heap(0, 0);\n"
-              "  int status = Sscheme_start(argc, (const char **)argv);\n"
-              "  Sscheme_deinit();\n  return status;\n}\n"))
-          (close-port mc))
-        (bld-system (string-append
-          "cc -O2 -I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
-          "-o '" out-path "' " (bld-link-libs)))
-        (display (string-append "jolt build: wrote " out-path "\n")))))))
+        ;; 4. compile -> boot -> link. Two paths, chosen by whether this process
+        ;; carries the bundled Chez boots + launcher stub:
+        ;;  - SELF-CONTAINED (the distributed joltc, jolt-eaj): compile-file +
+        ;;    make-boot-file run IN PROCESS (the compiler is resident — joltc is
+        ;;    built from scheme.boot), then the boot is appended to a copy of the
+        ;;    embedded stub. No external Chez, no cc.
+        ;;  - LEGACY (dev bin/joltc): spawn a fresh Chez for compile-file/
+        ;;    make-boot-file, then xxd the boot into a C array and cc-link against
+        ;;    libkernel.a. Kept so `make buildsmoke` still exercises the cc path.
+        (if (jolt-embedded-bytes "stub/launcher")
+            (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot)
+            (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c)))))))
+
+;; --- self-contained link (in-process compile + append the boot to the stub) ---
+;; The system `error` is restored around compile-file/make-boot-file: the loaded
+;; jolt runtime shadows it (regex.ss, %chez-error holds the kernel original).
+;; flat.ss opens with (import (chezscheme)) so the boot binds the real error
+;; regardless, but the save/restore keeps any compile-time diagnostic honest.
+(define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot)
+  (let ((petite (string-append builddir "/petite.boot"))
+        (scheme (string-append builddir "/scheme.boot")))
+    (jolt-spill-embedded! "csv/petite.boot" petite)
+    (jolt-spill-embedded! "csv/scheme.boot" scheme)
+    (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
+    (let ((saved-err error))
+      (dynamic-wind
+        (lambda () (set! error %chez-error))
+        (lambda ()
+          (compile-file flat-ss flat-so)
+          (make-boot-file boot '() petite scheme flat-so))
+        (lambda () (set! error saved-err))))
+    ;; link: stub bytes ++ boot ++ frame, then make it executable.
+    (jolt-spill-embedded! "stub/launcher" out-path)
+    (jolt-append-payload! out-path (read-file-bytes boot))
+    (jolt-chmod-755 out-path)
+    (display (string-append "jolt build: wrote " out-path "\n"))
+    (when bld-osx?
+      (display (string-append
+                 "jolt build: note — on macOS this binary is unsigned; to share it,\n"
+                 "  `xattr -d com.apple.quarantine " out-path "` on the target, or sign it.\n")))))
+
+;; --- legacy cc link (dev bin/joltc): fresh Chez compile + xxd + cc ------------
+(define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c)
+  (display (string-append "jolt build: compiling " entry-ns " (" mode " mode)\n"))
+  (let ((cs (string-append builddir "/compile.ss")))
+    (let ((p (open-output-file cs 'replace)))
+      (put-string p
+        (string-append
+          "(import (chezscheme))\n"
+          "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
+          "(make-boot-file " (ei-str-lit boot) " '()\n  "
+          (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
+          (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "
+          (ei-str-lit flat-so) ")\n"))
+      (close-port p))
+    (bld-system (string-append bld-chez " --script '" cs "'")))
+  (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
+  ;; The xxd symbol is derived from the path; normalize to jolt_boot.
+  (bld-system (string-append
+    "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/unsigned char jolt_boot[]/; "
+    "s/unsigned int [A-Za-z0-9_]+_len/unsigned int jolt_boot_len/' '" boot-h "'"))
+  (let ((mc (open-output-file main-c 'replace)))
+    (put-string mc
+      (string-append
+        "#include \"scheme.h\"\n#include \"boot_data.h\"\n"
+        "int main(int argc, char *argv[]) {\n"
+        "  Sscheme_init(0);\n"
+        "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, jolt_boot_len);\n"
+        "  Sbuild_heap(0, 0);\n"
+        "  int status = Sscheme_start(argc, (const char **)argv);\n"
+        "  Sscheme_deinit();\n  return status;\n}\n"))
+    (close-port mc))
+  (bld-system (string-append
+    "cc -O2 -I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
+    "-o '" out-path "' " (bld-link-libs)))
+  (display (string-append "jolt build: wrote " out-path "\n")))
 
 (def-var! "jolt.host" "build-binary"
   (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)
