@@ -75,6 +75,18 @@ else
   fails=$((fails + 1))
 fi
 
+# Unit-checks the REPL read-until-complete predicate over balanced/unbalanced,
+# string, comment and regex-literal inputs. A multi-form `joltc run` so jolt.main
+# is loaded and its private var resolves; the file self-checks and prints a sentinel.
+rr_out="$(bin/joltc run test/chez/repl-reader-test.clj 2>/dev/null)"
+if printf '%s' "$rr_out" | grep -q 'REPL-READER OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: repl-form-complete? predicate"
+  echo "    $(printf '%s' "$rr_out" | grep REPL-READER | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # REPL must exit on :repl/quit / :exit — a reliable exit that works in any
 # terminal, unlike ^D (which some terminals/editors don't deliver as EOF).
 # Pipe: an evaluable form, the quit keyword, then a sentinel that must NOT run.
@@ -103,6 +115,17 @@ if printf '%s' "$repl_out" | grep -q '3' && ! printf '%s' "$repl_out" | grep -q 
   pass=$((pass + 1))
 else
   echo "  FAIL: repl should accumulate multi-line forms to 3"
+  printf '%s\n' "$repl_out" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+
+# A single-line regex literal is complete on its own — the #" opens a regex whose
+# body (delimiters, quotes and all) must not be miscounted as unbalanced parens.
+repl_out="$(printf '(re-find #"(a)(b)" "ab")\n:exit\n' | bin/joltc repl 2>/dev/null)"
+if printf '%s' "$repl_out" | grep -q 'ab' && ! printf '%s' "$repl_out" | grep -q 'error'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: repl should evaluate a one-line regex literal, not wait for more input"
   printf '%s\n' "$repl_out" | sed 's/^/    | /'
   fails=$((fails + 1))
 fi

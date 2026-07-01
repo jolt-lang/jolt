@@ -103,8 +103,9 @@
                        (= c \;)        (recur (inc i) depth :comment)
                        (= c \\)        (recur (+ i 2) depth :code)     ; char literal: \(
                        (= c \")        (recur (inc i) depth :string)
-                       (= c \#)        (recur (inc i) depth
-                                               (if (= (get s (inc i)) \") :regex :code))
+                       (= c \#)        (if (= (get s (inc i)) \")
+                                         (recur (+ i 2) depth :regex)   ; consume the #" together
+                                         (recur (inc i) depth :code))
                        (#{\( \[ \{} c) (recur (inc i) (inc depth) :code)
                        (#{\) \] \}} c) (recur (inc i) (dec depth) :code)
                        :else           (recur (inc i) depth :code))
