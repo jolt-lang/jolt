@@ -421,11 +421,11 @@
                 (if (jolt-nil? s) (jolt-invoke f)          ; (reduce f []) -> (f)
                     (reduce-seq f (seq-first s) (jolt-seq (seq-more s))))))
     ((f init coll)
-     ;; IReduceInit: a reify/record with its own `reduce` method drives the
-     ;; reduction (reduce f init (reify clojure.lang.IReduceInit (reduce [_ f i] ...))).
+     ;; IReduceInit: a deftype/record OR reify with its own `reduce` method drives
+     ;; the reduction, e.g. (reduce f init (reify clojure.lang.IReduceInit
+     ;; (reduce [_ f i] ...))) or the same on a deftype.
      (cond
-       ((and (jreify? coll) (reified-methods coll)
-             (hashtable-ref (reified-methods coll) "reduce" #f))
+       ((iface-method coll "reduce" 3)
         => (lambda (m) (let ((r (jolt-invoke m coll f init)))
                          (if (jolt-reduced? r) (jolt-reduced-val r) r))))
        (else (reduce-seq f init (jolt-seq coll)))))))
