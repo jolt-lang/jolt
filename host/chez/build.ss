@@ -449,6 +449,11 @@
                 ;; whole-program param-type fixpoint before per-form emit
                 (when (string=? mode "optimized") (bld-wp-infer! ordered)))
               (lambda ()
+                ;; A #tag data-reader literal must compile in the binary the same as
+                ;; it loads interpreted — apply the reader rewrite to each emitted
+                ;; form too (no-op unless the app registered data readers).
+                (parameterize ((ei-emit-form-hook
+                                (lambda (form) (if data-readers-active (ldr-apply-readers form) form))))
                 (if tree-shake?
                     (dce-shake
                       (dce-blob-records "host/chez/seed/prelude.ss")
@@ -473,7 +478,7 @@
                                          (append (bld-ns-prelude (car nf) src)
                                                  (bld-emit-ns (car nf) src)))))
                                    ordered))
-                            #f)))
+                            #f))))
               (lambda ()
                 (set-optimize! #f)
                 ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)))))
