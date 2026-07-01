@@ -90,7 +90,10 @@
 ;; str re-serializes the read form (compiled identically; comments/whitespace are
 ;; irrelevant).
 (define (dce-blob-records path)
-  (call-with-input-file path
+  ;; bld-source-string (build.ss) reads the embedded copy when running from a
+  ;; self-contained joltc, else the file on disk — so tree-shake works with no
+  ;; jolt checkout present. Forward ref: build.ss loads after this file.
+  (call-with-port (open-input-string (bld-source-string path))
     (lambda (p)
       (let loop ((acc '()))
         (let ((form (read p)))

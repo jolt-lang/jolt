@@ -93,6 +93,22 @@ jobs:
           out="$(./target/release/joltc -e '(reduce + (range 10))')"
           test "$out" = "45" || { echo "joltc -e gave '$out', want 45"; exit 1; }
 
+      # The binary is a self-contained COMPILER: it must `build` an app with no
+      # jolt source on disk. Run from an isolated dir (nothing but the tiny app)
+      # so a build that reaches for host/chez/*.ss on the filesystem fails here,
+      # not on a user's machine.
+      - name: Smoke a self-contained build
+        run: |
+          joltc="$(pwd)/target/release/joltc"
+          work="$(mktemp -d)"
+          mkdir -p "$work/app/src/app"
+          printf '{:paths ["src"]}\n' > "$work/app/deps.edn"
+          printf '(ns app.core)\n(defn -main [& _] (println "built:" (reduce + (range 10))))\n' \
+            > "$work/app/src/app/core.clj"
+          ( cd "$work/app" && "$joltc" build -m app.core -o app )
+          out="$("$work/app/app")"
+          test "$out" = "built: 45" || { echo "self-contained build ran '$out', want 'built: 45'"; exit 1; }
+
       - name: Package
         run: |
           ver="${GITHUB_REF_NAME}"

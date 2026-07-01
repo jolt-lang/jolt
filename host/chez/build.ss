@@ -141,12 +141,23 @@
                 (q2 (let scan ((i (+ q1 1))) (if (char=? (string-ref s i) #\") i (scan (+ i 1))))))
            (substring s (+ q1 1) q2)))))
 
-(define (bld-file-lines path)
-  (call-with-input-file path
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((l (get-line p)))
-          (if (eof-object? l) (reverse acc) (loop (cons l acc))))))))
+;; runtime source for PATH: from the binary's embedded store if present (a
+;; self-contained joltc building an app, with no jolt checkout on disk), else read
+;; from disk (running from a source checkout). build-joltc embeds every runtime
+;; .ss the manifest inlines, so `build` never touches the filesystem for them.
+(define (bld-source-string path)
+  (let ((emb (hashtable-ref embedded-resources path #f)))
+    (if (string? emb) emb (read-file-string path))))
+
+(define (bld-string-lines s)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (start 0) (acc '()))
+      (cond ((>= i n) (reverse (if (> i start) (cons (substring s start i) acc) acc)))
+            ((char=? (string-ref s i) #\newline)
+             (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
+            (else (loop (+ i 1) start acc))))))
+
+(define (bld-file-lines path) (bld-string-lines (bld-source-string path)))
 
 ;; Emit one line to OUT, recursively inlining a `(load ...)` of a repo file.
 (define (bld-inline-line line out depth)

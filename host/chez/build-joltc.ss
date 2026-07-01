@@ -80,6 +80,32 @@
         (bld-walk-files root "" '())))
     (list "jolt-core" "stdlib")))
 
+;; Embed every runtime .ss the build inlines into an app (the transitive closure of
+;; the manifest's loads: rt.ss + all it loads, the seed, compile-eval, loader, ffi,
+;; png, vendored irregex). Keyed by the exact path the (load "…") forms use, so
+;; build.ss's bld-source-string reads them from the binary with no jolt source on
+;; disk. Traversal mirrors bld-emit-runtime/bld-inline-line via the same
+;; bld-file-lines + bld-load-path, so the embedded set is exactly what build reads.
+(define (jb-collect-load-paths)
+  (let ((seen (make-hashtable string-hash string=?)) (order '()))
+    (define (walk path)
+      (when (and path (not (hashtable-ref seen path #f)))
+        (hashtable-set! seen path #t)
+        (set! order (cons path order))
+        (for-each (lambda (l) (walk (bld-load-path l))) (bld-file-lines path))))
+    (for-each (lambda (entry) (when (string? entry) (walk (bld-load-path entry))))
+              bld-runtime-manifest)
+    (for-each (lambda (kv) (walk (bld-load-path (cdr kv)))) bld-tagged-loads)
+    (reverse order)))
+
+(define (jb-emit-runtime-embeds out)
+  (for-each
+    (lambda (path)
+      (put-string out (string-append
+        "(register-embedded-resource! " (ei-str-lit path) " "
+        (ei-str-lit (read-file-string path)) ")\n")))
+    (jb-collect-load-paths)))
+
 ;; The launcher (Chez scheme-start): replicates host/chez/cli.ss but reads argv
 ;; from the scheme-start lambda and has no repo root to cd into (all source is
 ;; embedded; JOLT_PWD defaults to cwd via io/jolt.main). build.ss is already
@@ -134,6 +160,8 @@
   (bld-emit-runtime out #f #f)
   (put-string out "\n;; === build driver (inlined for self-contained `jolt build`) ===\n")
   (bld-inline-line "(load \"host/chez/build.ss\")" out 0)
+  (put-string out "\n;; === embedded runtime source (self-contained `build` reads these) ===\n")
+  (jb-emit-runtime-embeds out)
   (put-string out "\n;; === embedded jolt-core + stdlib source ===\n")
   (jb-emit-source-embeds out)
   (put-string out "\n;; === joltc launcher ===\n")
