@@ -767,6 +767,12 @@
 (register-instance-check-arm!
   (lambda (type-sym val)
     (let ((iface (hsc-last-segment (symbol-t-name type-sym))))
+      ;; the value's own class-graph tags (value-host-tags) are authoritative — the
+      ;; SAME source protocol dispatch reads, so instance? and extend-protocol can't
+      ;; disagree about the interfaces a builtin implements.
+      (if (let ((tags (value-host-tags val)))
+            (or (member (symbol-t-name type-sym) tags) (member iface tags)))
+          #t
       (let ((hit (cond
                    ((or (string=? iface "IObj") (string=? iface "IMeta")) (hsc-imeta? val))
                    ((or (string=? iface "IMapEntry") (string=? iface "MapEntry")) (jolt-map-entry? val))
@@ -827,7 +833,7 @@
                    ((or (string=? iface "Reader") (string=? iface "BufferedReader"))
                     (reader-jhost? val))
                    (else 'none))))
-        (if (eq? hit 'none) 'pass (if hit #t #f))))))
+        (if (eq? hit 'none) 'pass (if hit #t #f)))))))
 
 ;; java.lang.Class value: (class x) / (.getClass x) return one. It renders like
 ;; the JVM — str/.toString -> "class <name>", pr -> "<name>", .getName -> "<name>"
@@ -985,9 +991,20 @@
 (define (str-has-dollar? s)
   (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
 (define (class-direct-supers name)
-  (or (hashtable-ref class-supers-tbl name #f)
-      (and (str-has-dollar? name) '("clojure.lang.AFunction"))
-      '()))
+  ;; union the modeled class graph (jch, direct edges) with any legacy table entry,
+  ;; so isa?/supers/ancestors see the single hierarchy source plus anything not yet
+  ;; migrated. The closure below traverses these to the full transitive set.
+  (let ((jch (jch-direct-supers name))
+        (old (hashtable-ref class-supers-tbl name #f)))
+    (cond ((and (pair? jch) old)
+           (let merge ((ss old) (acc jch))
+             (cond ((null? ss) acc)
+                   ((member (car ss) acc) (merge (cdr ss) acc))
+                   (else (merge (cdr ss) (append acc (list (car ss))))))))
+          ((pair? jch) jch)
+          (old old)
+          ((str-has-dollar? name) '("clojure.lang.AFunction"))
+          (else '()))))
 ;; transitive closure of direct supers (set semantics via an accumulator list)
 (define (class-ancestors-list name)
   (let loop ((pending (class-direct-supers name)) (seen '()))
@@ -1037,8 +1054,9 @@
 (def-var! "jolt.host" "class-supers"
   (lambda (x)
     (let ((name (class-key x)))
-      (if (and name (hashtable-contains? class-supers-tbl name))
-          (list->cseq (hashtable-ref class-supers-tbl name '()))
+      (if name
+          (let ((as (class-ancestors-list name)))   ; transitive, like the JVM
+            (if (null? as) jolt-nil (list->cseq as)))
           jolt-nil))))
 (def-var! "jolt.host" "class-ancestors"
   (lambda (x)

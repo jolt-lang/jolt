@@ -356,6 +356,11 @@
 ;; jolt-pr-str (above), and the var-cell machinery — so loaded last.
 (load "host/chez/multimethods.ss")
 
+;; the single JVM class/interface graph — value-host-tags, instance?, isa?/supers,
+;; and the exception hierarchy all derive from it. Before records.ss so
+;; value-host-tags can build on jch-tags.
+(load "host/chez/java/class-hierarchy.ss")
+
 ;; records + protocols: defrecord/deftype/defprotocol/
 ;; extend-type/reify. A jrec record type set!-extended into the collection
 ;; dispatchers + a protocol registry. After multimethods.ss (chez-current-ns) and

@@ -473,24 +473,22 @@
         ((number? obj) '("Long" "Integer" "BigInteger" "BigInt" "Number" "Object"))
         ((string? obj) '("String" "CharSequence" "Object"))
         ((boolean? obj) '("Boolean" "Object"))
-        ((keyword? obj) '("Keyword" "Named" "Object"))
-        ((jolt-symbol? obj) '("Symbol" "Named" "Object"))
-        ((pvec? obj) '("PersistentVector" "APersistentVector" "IPersistentVector" "IPersistentCollection"
-                       "List" "java.util.List" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
-        ((pmap? obj) '("PersistentArrayMap" "APersistentMap" "IPersistentMap" "Associative"
-                       "Map" "java.util.Map" "Iterable" "java.lang.Iterable" "Object"))
-        ((pset? obj) '("PersistentHashSet" "APersistentSet" "IPersistentSet" "Set" "java.util.Set" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ((keyword? obj) (jch-tags "clojure.lang.Keyword"))
+        ((jolt-symbol? obj) (jch-tags "clojure.lang.Symbol"))
+        ((pvec? obj) (jch-tags "clojure.lang.PersistentVector"))
+        ((pmap? obj) (jch-tags "clojure.lang.PersistentArrayMap"))
+        ((pset? obj) (jch-tags "clojure.lang.PersistentHashSet"))
         ;; jolt models every seq as a list (no distinct LazySeq), so a seq also
         ;; reports PersistentList / IPersistentList / IPersistentStack — extend-protocol
         ;; clojure.lang.IPersistentList (algo.monads' writer monad) dispatches on one.
-        ((or (cseq? obj) (empty-list-t? obj)) '("PersistentList" "IPersistentList" "IPersistentStack" "ASeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ((or (cseq? obj) (empty-list-t? obj)) (jch-tags "clojure.lang.PersistentList"))
         ;; a lazy seq (map/filter/… result) is clojure.lang.LazySeq: a Sequential
         ;; ISeq, but not a PersistentList — matching the JVM so extend-protocol /
         ;; instance? on a deferred seq dispatch like an eager one where they should.
-        ((jolt-lazyseq? obj) '("LazySeq" "ISeq" "IPersistentCollection" "Sequential" "Collection" "Iterable" "java.lang.Iterable" "Object"))
+        ((jolt-lazyseq? obj) (jch-tags "clojure.lang.LazySeq"))
         ;; a var is clojure.lang.Var (also IDeref / IFn) — reitit's Expand protocol
         ;; extends to Var so a #'handler route dispatches.
-        ((var-cell? obj) '("Var" "clojure.lang.Var" "IDeref" "IFn" "Object"))
+        ((var-cell? obj) (jch-tags "clojure.lang.Var"))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
         ;; a ByteBuffer — extend-protocol java.nio.ByteBuffer (aws-api util).
@@ -541,7 +539,7 @@
         ;; extended to both (data.json's JSONWriter) routes a sql.Date to its impl.
         ((and (jhost? obj) (string=? (jhost-tag obj) "sql-date")) '("java.sql.Date" "Date" "java.util.Date" "Object"))
         ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
-        ((procedure? obj) '("Fn" "IFn" "AFn" "Object"))
+        ((procedure? obj) (jch-tags "clojure.lang.AFunction"))
         ((jolt-nil? obj) '("nil"))
         ;; a defrecord IS the clojure.lang map/record interfaces, so a protocol
         ;; extended to IRecord / IPersistentMap / Associative / Seqable / … (and not
@@ -671,7 +669,12 @@
                   (strip-prefix type-name "java.time.")
                   (strip-prefix type-name "clojure.lang.")
                   type-name)))
-    (and (hashtable-ref host-type-set base #f) base)))
+    ;; a host class if the literal set lists it OR the class graph models it — both
+    ;; feed value-host-tags (which emits the same bare segment), so a protocol
+    ;; extended to any modeled class keys under a tag the value reports.
+    (and (or (hashtable-ref host-type-set base #f)
+             (jch-known? base) (jch-known? type-name))
+         base)))
 ;; An extend/extend-type/extend-protocol registration marks the tag as an
 ;; extender of the protocol (recorded inside type-registry so the per-case prune
 ;; restores it). deftype/defrecord inline impls go through register-inline-method

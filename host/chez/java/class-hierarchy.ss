@@ -1,0 +1,204 @@
+;; class-hierarchy.ss — one JVM class/interface graph, the single source of truth
+;; for every "what classes does this satisfy" question. value-host-tags (protocol
+;; dispatch), instance?, isa?/supers/ancestors, and the exception hierarchy all
+;; derive from the ONE table here instead of maintaining parallel hand-kept lists
+;; that drift apart.
+;;
+;; The graph is keyed by canonical (FQN) class name -> its DIRECT super
+;; interfaces/classes (also FQN). Transitivity is computed (jch-closure), so a row
+;; lists only what a class directly extends/implements, matching the JVM source.
+;;
+;; It is OPEN: a library registers a class and its supers with
+;; jolt.host/register-class-supers! (plus a class-arm in host-class.ss to map its
+;; values to that class name), and every derived view picks the class up with no
+;; core change. Loaded before records.ss so value-host-tags can derive from it.
+
+;; canonical-name -> list of direct super canonical-names. Mutable + extensible.
+(define jvm-class-parents (make-hashtable string-hash string=?))
+;; closure cache, invalidated whenever the graph is extended.
+(define jch-closure-cache (make-hashtable string-hash string=?))
+(define jch-tags-cache (make-hashtable string-hash string=?))
+
+;; Merge direct supers for a class (union with any already registered). Public so
+;; libraries can graft their own classes onto the modeled hierarchy.
+(define (jch-register-supers! name supers)
+  (let ((cur (hashtable-ref jvm-class-parents name '())))
+    (hashtable-set! jvm-class-parents name
+                    (let add ((ss supers) (acc cur))
+                      (cond ((null? ss) acc)
+                            ((member (car ss) acc) (add (cdr ss) acc))
+                            (else (add (cdr ss) (append acc (list (car ss)))))))))
+  (hashtable-clear! jch-closure-cache)
+  (hashtable-clear! jch-tags-cache))
+
+(define (jch-direct-supers name) (hashtable-ref jvm-class-parents name '()))
+
+;; transitive supers of NAME (canonical), excluding NAME and Object; Object is the
+;; universal root supplied by callers. Breadth-first, deduped, stable order.
+(define (jch-closure name)
+  (or (hashtable-ref jch-closure-cache name #f)
+      (let ((result
+             (let loop ((pending (jch-direct-supers name)) (seen '()))
+               (cond ((null? pending) (reverse seen))
+                     ((member (car pending) seen) (loop (cdr pending) seen))
+                     (else (loop (append (jch-direct-supers (car pending)) (cdr pending))
+                                 (cons (car pending) seen)))))))
+        (hashtable-set! jch-closure-cache name result)
+        result)))
+
+(define (jch-last-segment s)
+  (let loop ((i (- (string-length s) 1)))
+    (cond ((< i 0) s)
+          ((char=? (string-ref s i) #\.) (substring s (+ i 1) (string-length s)))
+          ((char=? (string-ref s i) #\$) (substring s (+ i 1) (string-length s)))
+          (else (loop (- i 1))))))
+
+;; The protocol-dispatch / instance? tag list for a value of class NAME: the class
+;; and its whole ancestry, each in BOTH canonical and simple spelling (extend-protocol
+;; and instance? accept either "Associative" or "clojure.lang.Associative"), plus
+;; "Object". Memoized — this is on the hot protocol-dispatch path.
+(define (jch-tags name)
+  (or (hashtable-ref jch-tags-cache name #f)
+      (let* ((chain (cons name (jch-closure name)))
+             (result
+              (let build ((cs chain) (acc '()))
+                (if (null? cs)
+                    (reverse (cons "Object" acc))
+                    (let* ((fqn (car cs))
+                           (simple (jch-last-segment fqn))
+                           (acc1 (if (member fqn acc) acc (cons fqn acc)))
+                           (acc2 (if (or (string=? simple fqn) (member simple acc1))
+                                     acc1 (cons simple acc1))))
+                      (build (cdr cs) acc2))))))
+        (hashtable-set! jch-tags-cache name result)
+        result)))
+
+;; Is WANTED (canonical or simple) the class CHILD (canonical) or one of its
+;; ancestors? Object is every class's root. Matched by full name or last segment so
+;; "IOException" and "java.io.IOException" both hit.
+(define (jch-isa? child wanted)
+  (let ((wseg (jch-last-segment wanted)))
+    (or (string=? wanted "java.lang.Object") (string=? wanted "Object")
+        (let loop ((names (cons child (jch-closure child))))
+          (cond ((null? names) #f)
+                ((or (string=? wanted (car names))
+                     (string=? wseg (jch-last-segment (car names)))) #t)
+                (else (loop (cdr names))))))))
+
+;; Does the graph model WANTED at all (as a class or as any class's ancestor)? Used
+;; by instance? to decide between a definitive #f and 'pass (defer to other arms).
+(define jch-known-cache #f)
+(define (jch-known? wanted)
+  (when (not jch-known-cache)
+    (set! jch-known-cache (make-hashtable string-hash string=?))
+    (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+      (vector-for-each
+       (lambda (k supers)
+         (hashtable-set! jch-known-cache k #t)
+         (hashtable-set! jch-known-cache (jch-last-segment k) #t)
+         (for-each (lambda (s)
+                     (hashtable-set! jch-known-cache s #t)
+                     (hashtable-set! jch-known-cache (jch-last-segment s) #t))
+                   supers))
+       keys vals)))
+  (or (hashtable-ref jch-known-cache wanted #f)
+      (hashtable-ref jch-known-cache (jch-last-segment wanted) #f)))
+
+;; A register also invalidates the known-name cache.
+(define jch-register-supers!-inner jch-register-supers!)
+(set! jch-register-supers!
+  (lambda (name supers)
+    (set! jch-known-cache #f)
+    (jch-register-supers!-inner name supers)))
+
+;; ---- seed the built-in graph: direct supers only, faithful to the JVM ---------
+;; core clojure.lang interfaces
+(jch-register-supers! "clojure.lang.IPersistentCollection" '("clojure.lang.Seqable"))
+(jch-register-supers! "clojure.lang.ISeq" '("clojure.lang.IPersistentCollection"))
+(jch-register-supers! "clojure.lang.Associative" '("clojure.lang.IPersistentCollection" "clojure.lang.ILookup"))
+(jch-register-supers! "clojure.lang.IPersistentStack" '("clojure.lang.IPersistentCollection"))
+(jch-register-supers! "clojure.lang.IPersistentVector" '("clojure.lang.Associative" "clojure.lang.Sequential"
+                                                         "clojure.lang.IPersistentStack" "clojure.lang.Reversible"
+                                                         "clojure.lang.Indexed"))
+(jch-register-supers! "clojure.lang.IPersistentMap" '("java.lang.Iterable" "clojure.lang.Associative" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.IPersistentSet" '("clojure.lang.IPersistentCollection" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.IPersistentList" '("clojure.lang.Sequential" "clojure.lang.IPersistentStack"))
+(jch-register-supers! "clojure.lang.IObj" '("clojure.lang.IMeta"))
+(jch-register-supers! "clojure.lang.IFn" '("java.lang.Runnable" "java.util.concurrent.Callable"))
+(jch-register-supers! "clojure.lang.Fn" '("clojure.lang.IFn"))
+(jch-register-supers! "clojure.lang.AFn" '("clojure.lang.IFn"))
+(jch-register-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.Fn"))
+;; java.util collection interfaces
+(jch-register-supers! "java.util.List" '("java.util.Collection"))
+(jch-register-supers! "java.util.Set" '("java.util.Collection"))
+(jch-register-supers! "java.util.Collection" '("java.lang.Iterable"))
+;; concrete collection classes
+(jch-register-supers! "clojure.lang.APersistentVector" '("clojure.lang.IPersistentVector" "java.util.List"))
+(jch-register-supers! "clojure.lang.PersistentVector" '("clojure.lang.APersistentVector" "clojure.lang.IObj"
+                                                        "java.util.List" "java.lang.Comparable"))
+(jch-register-supers! "clojure.lang.APersistentMap" '("clojure.lang.IPersistentMap" "java.util.Map"))
+(jch-register-supers! "clojure.lang.PersistentArrayMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj"))
+(jch-register-supers! "clojure.lang.PersistentHashMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj"))
+(jch-register-supers! "clojure.lang.PersistentTreeMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj" "clojure.lang.Sorted" "clojure.lang.Reversible"))
+(jch-register-supers! "clojure.lang.APersistentSet" '("clojure.lang.IPersistentSet" "java.util.Set"))
+(jch-register-supers! "clojure.lang.PersistentHashSet" '("clojure.lang.APersistentSet" "clojure.lang.IObj"))
+(jch-register-supers! "clojure.lang.PersistentTreeSet" '("clojure.lang.APersistentSet" "clojure.lang.IObj" "clojure.lang.Sorted" "clojure.lang.Reversible"))
+(jch-register-supers! "clojure.lang.ASeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "java.util.List"))
+(jch-register-supers! "clojure.lang.PersistentList" '("clojure.lang.ASeq" "clojure.lang.IPersistentList" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.PersistentList$EmptyList" '("clojure.lang.PersistentList"))
+(jch-register-supers! "clojure.lang.LazySeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "java.util.List" "clojure.lang.IObj"))
+(jch-register-supers! "clojure.lang.Cons" '("clojure.lang.ASeq"))
+(jch-register-supers! "clojure.lang.PersistentQueue" '("clojure.lang.IPersistentList" "clojure.lang.IPersistentCollection" "java.util.Collection"))
+;; scalars / named / callable
+(jch-register-supers! "clojure.lang.Keyword" '("clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable"))
+(jch-register-supers! "clojure.lang.Symbol" '("clojure.lang.IObj" "clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable"))
+(jch-register-supers! "clojure.lang.Var" '("clojure.lang.IDeref" "clojure.lang.IFn"))
+(jch-register-supers! "clojure.lang.Atom" '("clojure.lang.IDeref"))
+(jch-register-supers! "clojure.lang.Ratio" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "clojure.lang.BigInt" '("java.lang.Number"))
+(jch-register-supers! "java.lang.String" '("java.lang.CharSequence" "java.lang.Comparable"))
+(jch-register-supers! "java.lang.Long" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "java.lang.Integer" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "java.lang.Double" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "java.lang.Float" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "java.math.BigDecimal" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "java.math.BigInteger" '("java.lang.Number" "java.lang.Comparable"))
+(jch-register-supers! "java.lang.Boolean" '("java.lang.Comparable"))
+(jch-register-supers! "java.lang.Character" '("java.lang.Comparable"))
+(jch-register-supers! "java.util.UUID" '("java.lang.Comparable"))
+;; exception hierarchy (folds in the former exception-parent table)
+(jch-register-supers! "java.lang.Exception" '("java.lang.Throwable"))
+(jch-register-supers! "java.lang.RuntimeException" '("java.lang.Exception"))
+(jch-register-supers! "clojure.lang.ExceptionInfo" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
+(jch-register-supers! "java.lang.IllegalArgumentException" '("java.lang.RuntimeException"))
+(jch-register-supers! "clojure.lang.ArityException" '("java.lang.IllegalArgumentException"))
+(jch-register-supers! "java.lang.NumberFormatException" '("java.lang.IllegalArgumentException"))
+(jch-register-supers! "java.lang.IllegalStateException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.lang.UnsupportedOperationException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.lang.ArithmeticException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.lang.NullPointerException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.lang.ClassCastException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.lang.IndexOutOfBoundsException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.util.ConcurrentModificationException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.util.NoSuchElementException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.io.UncheckedIOException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.time.DateTimeException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.time.format.DateTimeParseException" '("java.time.DateTimeException"))
+(jch-register-supers! "java.lang.InterruptedException" '("java.lang.Exception"))
+(jch-register-supers! "java.io.IOException" '("java.lang.Exception"))
+(jch-register-supers! "java.io.InterruptedIOException" '("java.io.IOException"))
+(jch-register-supers! "java.io.FileNotFoundException" '("java.io.IOException"))
+(jch-register-supers! "java.io.UnsupportedEncodingException" '("java.io.IOException"))
+(jch-register-supers! "java.net.UnknownHostException" '("java.io.IOException"))
+(jch-register-supers! "java.net.SocketException" '("java.io.IOException"))
+(jch-register-supers! "java.net.ConnectException" '("java.net.SocketException"))
+(jch-register-supers! "java.net.SocketTimeoutException" '("java.io.InterruptedIOException"))
+(jch-register-supers! "java.net.MalformedURLException" '("java.io.IOException"))
+(jch-register-supers! "javax.net.ssl.SSLException" '("java.io.IOException"))
+(jch-register-supers! "java.lang.Error" '("java.lang.Throwable"))
+(jch-register-supers! "java.lang.AssertionError" '("java.lang.Error"))
+;; Throwable's only super is Object (universal), so no row needed for it.
+
+;; Public seam: libraries extend the modeled hierarchy.
+(def-var! "jolt.host" "register-class-supers!"
+  (lambda (name supers) (jch-register-supers! name (seq->list supers)) jolt-nil))
