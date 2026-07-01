@@ -25,15 +25,13 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
   [dependency](https://github.com/weavejester/dependency) and
   [meta-merge](https://github.com/weavejester/meta-merge) deps
 * [honeysql](https://github.com/seancorfield/honeysql) — SQL formatter and helpers
-* [clojure.jdbc](https://github.com/yogthos/clojure.jdbc) — as
+* [clojure.jdbc](https://github.com/yogthos/clojure.jdbc) — via
   [jolt-lang/db](https://github.com/jolt-lang/db)'s `jdbc.core`, over the built-in
   SQLite access (libsqlite3 via Chez's FFI)
-* [next.jdbc](https://github.com/seancorfield/next-jdbc) — a compatibility layer in
-  [jolt-lang/db](https://github.com/jolt-lang/db) over `jdbc.core`
 * [tools.logging](https://github.com/clojure/tools.logging) — runs verbatim over a
   native `clojure.tools.logging.impl` stderr backend
-* [migratus](https://github.com/yogthos/migratus) — database migrations over the
-  next.jdbc layer
+* [migratus](https://github.com/yogthos/migratus) — database migrations over
+  [jolt-lang/db](https://github.com/jolt-lang/db)
 * [malli](https://github.com/metosin/malli) — data schema validation, on the
   malli-app example.
 * [markdown-clj](https://github.com/yogthos/markdown-clj) — Markdown → HTML, on the
