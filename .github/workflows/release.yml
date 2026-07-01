@@ -26,8 +26,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-linux
-          - os: macos-13
-            target: x86_64-macos
+          # No x86_64-macos: GitHub is retiring the macos-13 Intel runner (jobs
+          # queue forever). Intel Macs build from source. macos-14 is arm64.
           - os: macos-14
             target: aarch64-macos
     steps:

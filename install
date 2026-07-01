@@ -77,9 +77,13 @@ esac
 
 target="${arch}-${platform}"
 case "$target" in
-    x86_64-linux|x86_64-macos|aarch64-macos) ;;
+    x86_64-linux|aarch64-macos) ;;
+    x86_64-macos)
+       >&2 echo "No prebuilt joltc for Intel macOS (GitHub retired the Intel runner)."
+       >&2 echo "Build from source: https://github.com/${repo} (needs Chez Scheme + cc)."
+       exit 1 ;;
     *) >&2 echo "No prebuilt joltc for ${target}."
-       >&2 echo "Available: x86_64-linux, x86_64-macos, aarch64-macos."
+       >&2 echo "Available: x86_64-linux, aarch64-macos."
        >&2 echo "Build from source: https://github.com/${repo} (make joltc-release)."
        exit 1 ;;
 esac
