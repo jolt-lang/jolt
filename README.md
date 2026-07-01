@@ -10,15 +10,23 @@ runs it on Chez. The compiler is self-hosted: it is written in Clojure
 ## Install
 
 Grab the self-contained `joltc` binary (Linux/macOS) — it bundles the runtime,
-compiler, and standard library, so there is nothing else to install:
+compiler, and standard library, so there is nothing else to install.
+
+With Homebrew:
+
+```bash
+brew install jolt-lang/jolt/jolt
+```
+
+Or with the install script (installs to `/usr/local/bin` by default; `--dir <dir>`
+and `--version <v>` override that):
 
 ```bash
 curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash
 ```
 
-It installs to `/usr/local/bin` by default; `--dir <dir>` and `--version <v>`
-override that. Then `joltc -e '(+ 1 2)'`. To run from source instead (needs Chez),
-see [Build](#build).
+Then `joltc -e '(+ 1 2)'`. To run from source instead (needs Chez), see
+[Build](#build).
 
 ## Requirements
 
