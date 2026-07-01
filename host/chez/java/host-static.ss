@@ -194,8 +194,9 @@
     (and n (integer? n) (->num n))))
 (define (parse-int-or-throw s radix what)
   (or (parse-int-str s radix)
-      (error #f (string-append "NumberFormatException: For input string: \""
-                               (if (string? s) s (jolt-str-render-one s)) "\""))))
+      (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                    (string-append "For input string: \""
+                                   (if (string? s) s (jolt-str-render-one s)) "\"")))))
 (define (char-code c) (if (char? c) (char->integer c) (jnum->exact c)))
 
 ;; parse a double string (Double/parseDouble, (Double. s)); JVM accepts NaN /
@@ -209,7 +210,8 @@
       (else (let ((n (string->number t))) (and n (real? n) (exact->inexact n)))))))
 (define (parse-double-or-throw s)
   (or (parse-double-str s)
-      (error #f (string-append "NumberFormatException: For input string: \""
-                               (if (string? s) s (jolt-str-render-one s)) "\""))))
+      (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                    (string-append "For input string: \""
+                                   (if (string? s) s (jolt-str-render-one s)) "\"")))))
 (define (->double x) (if (number? x) (exact->inexact x) (parse-double-or-throw x)))
 

@@ -104,11 +104,30 @@
   (or (hashtable-ref jch-known-cache wanted #f)
       (hashtable-ref jch-known-cache (jch-last-segment wanted) #f)))
 
-;; A register also invalidates the known-name cache.
+;; simple last-segment -> canonical FQN for a modeled class (first registered
+;; wins). Lets a simple exception name (from chez-condition-exc-class) resolve to
+;; its graph key so the exception hierarchy answers through the one graph.
+(define jch-simple->fqn-cache #f)
+(define (jch-fqn-of-simple name)
+  (when (not jch-simple->fqn-cache)
+    (set! jch-simple->fqn-cache (make-hashtable string-hash string=?))
+    (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+      (vector-for-each
+       (lambda (k supers)
+         (for-each (lambda (n)
+                     (let ((seg (jch-last-segment n)))
+                       (when (not (hashtable-ref jch-simple->fqn-cache seg #f))
+                         (hashtable-set! jch-simple->fqn-cache seg n))))
+                   (cons k supers)))
+       keys vals)))
+  (or (hashtable-ref jch-simple->fqn-cache name #f) name))
+
+;; A register also invalidates the derived caches.
 (define jch-register-supers!-inner jch-register-supers!)
 (set! jch-register-supers!
   (lambda (name supers)
     (set! jch-known-cache #f)
+    (set! jch-simple->fqn-cache #f)
     (jch-register-supers!-inner name supers)))
 
 ;; ---- seed the built-in graph: direct supers only, faithful to the JVM ---------

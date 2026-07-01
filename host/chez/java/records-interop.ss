@@ -10,47 +10,12 @@
 (define (ex-info-class v)
   (let ((c (jolt-get v jolt-kw-class jolt-nil)))
     (if (string? c) c "clojure.lang.ExceptionInfo")))
-;; immediate-parent chain of the JVM exception hierarchy (simple names). Drives
-;; instance? across exception supertypes — (instance? Throwable (ex-info …)) etc.
-(define exception-parent
-  '(("ExceptionInfo" . "RuntimeException")
-    ("RuntimeException" . "Exception")
-    ("IllegalArgumentException" . "RuntimeException")
-    ("ArityException" . "IllegalArgumentException")
-    ("NumberFormatException" . "IllegalArgumentException")
-    ("IllegalStateException" . "RuntimeException")
-    ("UnsupportedOperationException" . "RuntimeException")
-    ("ArithmeticException" . "RuntimeException")
-    ("NullPointerException" . "RuntimeException")
-    ("ClassCastException" . "RuntimeException")
-    ("IndexOutOfBoundsException" . "RuntimeException")
-    ("ConcurrentModificationException" . "RuntimeException")
-    ("NoSuchElementException" . "RuntimeException")
-    ("UncheckedIOException" . "RuntimeException")
-    ("DateTimeException" . "RuntimeException")
-    ("DateTimeParseException" . "DateTimeException")
-    ("InterruptedException" . "Exception")
-    ("IOException" . "Exception")
-    ("FileNotFoundException" . "IOException")
-    ("UnsupportedEncodingException" . "IOException")
-    ("UnknownHostException" . "IOException")
-    ("SocketException" . "IOException")
-    ("ConnectException" . "IOException")
-    ("SocketTimeoutException" . "IOException")
-    ("MalformedURLException" . "IOException")
-    ("SSLException" . "IOException")
-    ("Exception" . "Throwable")
-    ("Error" . "Throwable")
-    ("AssertionError" . "Error")
-    ("Throwable" . "Object")))
-;; Is `wanted` (simple name) `cls` or a supertype of it? ExceptionInfo also
-;; implements the IExceptionInfo interface.
+;; Is `wanted` (simple name) `cls` or a supertype of it? The exception hierarchy
+;; lives in the one class graph (class-hierarchy.ss) — resolve the simple name to
+;; its graph key and ask jch-isa?, so exceptions and every other class share a
+;; single source of truth (ExceptionInfo -> IExceptionInfo is a graph edge).
 (define (exception-isa? cls wanted)
-  (let loop ((c cls))
-    (cond ((not c) #f)
-          ((string=? c wanted) #t)
-          ((and (string=? c "ExceptionInfo") (string=? wanted "IExceptionInfo")) #t)
-          (else (let ((p (assoc c exception-parent))) (loop (and p (cdr p))))))))
+  (jch-isa? (jch-fqn-of-simple cls) wanted))
 
 ;; A raw Chez condition (an arity or non-seqable error Chez itself raised, not a
 ;; jolt ex-info) carries no jolt exception class. Map the ones Clojure raises a
