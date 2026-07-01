@@ -93,6 +93,17 @@ else
   fails=$((fails + 1))
 fi
 
+# A required namespace's own :as aliases must not leak into the requirer: fix.main
+# aliases clojure.string as ss and requires fix.lib (which aliases clojure.set as
+# ss); (ss/upper-case "hi") in main must stay clojure.string -> "HI #{1 2}".
+al_out="$(JOLT_PWD="$root/test/chez/alias-leak-app" bin/joltc run -m fix.main 2>/dev/null | tail -1)"
+if [ "$al_out" = "HI #{1 2}" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a loaded ns's alias leaked into its requirer — got \`$al_out\`, want \`HI #{1 2}\`"
+  fails=$((fails + 1))
+fi
+
 # Unit-checks the REPL read-until-complete predicate over balanced/unbalanced,
 # string, comment and regex-literal inputs. A multi-form `joltc run` so jolt.main
 # is loaded and its private var resolves; the file self-checks and prints a sentinel.

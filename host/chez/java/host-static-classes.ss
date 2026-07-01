@@ -176,14 +176,26 @@
 ;; push to the port (so (.write *out* s) and (binding [*out* *err*] …) work);
 ;; it isn't a buffer, so toString is empty. Lets libraries that touch *out*/*err*
 ;; (tools.logging, selmer) compile and run.
+;; *out*/*err* resolve their port LIVE — 'out -> (current-output-port), 'err ->
+;; (current-error-port) — so a (.write *out* …) / (.flush *out*) follows a
+;; with-out-str redirect (with-output-to-string rebinds current-output-port) the
+;; same way print/__write do. Storing the startup port instead pinned *out* to the
+;; real stdout, so rewrite-clj's (z/print) — which writes via *out* — escaped the
+;; capture. A stored port object (should any other code make a port-writer) is used
+;; as-is.
+(define (port-writer-port self)
+  (let ((p (vector-ref (jhost-state self) 0)))
+    (cond ((eq? p 'out) (current-output-port))
+          ((eq? p 'err) (current-error-port))
+          (else p))))
 (register-host-methods! "port-writer"
-  (list (cons "write" (lambda (self x) (display (writer-piece x) (vector-ref (jhost-state self) 0)) jolt-nil))
-        (cons "append" (lambda (self x . rest) (display (append-text x rest) (vector-ref (jhost-state self) 0)) self))
-        (cons "flush" (lambda (self) (flush-output-port (vector-ref (jhost-state self) 0)) jolt-nil))
+  (list (cons "write" (lambda (self x) (display (writer-piece x) (port-writer-port self)) jolt-nil))
+        (cons "append" (lambda (self x . rest) (display (append-text x rest) (port-writer-port self)) self))
+        (cons "flush" (lambda (self) (flush-output-port (port-writer-port self)) jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) ""))))
-(def-var! "clojure.core" "*out*" (make-jhost "port-writer" (vector (current-output-port))))
-(def-var! "clojure.core" "*err*" (make-jhost "port-writer" (vector (current-error-port))))
+(def-var! "clojure.core" "*out*" (make-jhost "port-writer" (vector 'out)))
+(def-var! "clojure.core" "*err*" (make-jhost "port-writer" (vector 'err)))
 
 ;; PrintWriter — a thin wrapper over a target writer. write/append/print forward
 ;; the rendered text to the target. clojure.data.json's pretty printer builds
@@ -443,7 +455,15 @@
                             (let ((toks (vector-ref (jhost-state self) 0)) (p (vector-ref (jhost-state self) 1)))
                               (if (< p (length toks))
                                   (begin (vector-set! (jhost-state self) 1 (+ p 1)) (list-ref toks p))
-                                  (error #f "NoSuchElementException")))))))
+                                  (error #f "NoSuchElementException")))))
+        ;; StringTokenizer implements java.util.Enumeration — enumeration-seq drives
+        ;; it through these, so alias them onto the token methods.
+        (cons "hasMoreElements" (lambda (self) (< (vector-ref (jhost-state self) 1) (length (vector-ref (jhost-state self) 0)))))
+        (cons "nextElement" (lambda (self)
+                              (let ((toks (vector-ref (jhost-state self) 0)) (p (vector-ref (jhost-state self) 1)))
+                                (if (< p (length toks))
+                                    (begin (vector-set! (jhost-state self) 1 (+ p 1)) (list-ref toks p))
+                                    (error #f "NoSuchElementException")))))))
 
 ;; ---- String / BigInteger / MapEntry constructors ----------------------------
 ;; (String. bytes [charset]) decodes bytes (a bytevector OR a jolt byte-array)

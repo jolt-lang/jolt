@@ -111,6 +111,16 @@
 (let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
   (when (procedure? scv) (scv #t)))
 
+;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
+;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
+(define (ce-unwrap-meta x)
+  (if (and (cseq? x) (cseq-list? x))
+      (let ((items (seq->list x)))
+        (if (and (pair? items) (symbol-t? (car items))
+                 (string=? (symbol-t-name (car items)) "with-meta") (pair? (cdr items)))
+            (cadr items) x))
+      x))
+
 ;; (quote X) -> X, else x — unwraps a quoted require spec.
 (define (ce-unquote x)
   (if (and (cseq? x) (cseq-list? x))
@@ -135,14 +145,22 @@
             ;; (require spec...) / (use spec...) — specs are quoted
             ((and hn (or (string=? hn "require") (string=? hn "use")))
              (for-each (lambda (a) (chez-register-spec! ns (ce-unquote a))) (cdr items)))
-            ;; (ns name (:require [a :as x]) ...) — clause specs are literal
+            ;; (ns name (:require [a :as x]) ...) — clause specs are literal. Register
+            ;; the aliases under NAME (the ns being defined), not the passed `ns`:
+            ;; when a file is loaded its ns form compiles while (chez-current-ns) is
+            ;; still the requiring ns, so using `ns` would leak the loaded ns's
+            ;; aliases into its requirer and clobber a same-named alias there
+            ;; (rewrite-clj.zip.base's [node.protocols :as node] over the caller's node).
             ((and hn (string=? hn "ns"))
-             (for-each (lambda (clause)
-                         (when (and (cseq? clause) (cseq-list? clause))
-                           (let ((cl (seq->list clause)))
-                             (when (ce-clause-require? cl)
-                               (for-each (lambda (spec) (chez-register-spec! ns spec)) (cdr cl))))))
-                       (if (pair? (cdr items)) (cddr items) '())))
+             (let ((ns-name (if (and (pair? (cdr items)) (symbol-t? (ce-unwrap-meta (cadr items))))
+                                (symbol-t-name (ce-unwrap-meta (cadr items)))
+                                ns)))
+               (for-each (lambda (clause)
+                           (when (and (cseq? clause) (cseq-list? clause))
+                             (let ((cl (seq->list clause)))
+                               (when (ce-clause-require? cl)
+                                 (for-each (lambda (spec) (chez-register-spec! ns-name spec)) (cdr cl))))))
+                         (if (pair? (cdr items)) (cddr items) '()))))
             (else (for-each (lambda (x) (ce-scan-requires! x ns)) items))))))))
 
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
