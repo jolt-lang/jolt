@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+
+# Installs the latest (or a specific) version of joltc, the self-contained jolt
+# binary. It bundles the runtime, compiler, jolt-core + stdlib, and the Chez
+# boots, so there is nothing else to install — no Chez, no cc, no JVM.
+
+set -euo pipefail
+
+version=""
+checksum=""
+default_install_dir="/usr/local/bin"
+install_dir="$default_install_dir"
+download_dir=""
+
+repo="jolt-lang/jolt"
+
+print_help() {
+    echo "Installs the latest (or a specific) version of joltc."
+    echo "Installation directory defaults to ${default_install_dir}."
+    echo
+    echo "Usage:"
+    echo "  install [--dir <dir>] [--download-dir <dir>] [--version <version>] [--checksum <sha256>]"
+    echo
+    echo "Defaults:"
+    echo " * Installation directory: ${default_install_dir}"
+    echo " * Download directory: a temporary directory"
+    echo " * Version: the latest release on GitHub"
+    echo " * Checksum: fetched from the release and verified automatically"
+    exit 1
+}
+
+has() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+fetch() {
+    local url=$1
+    local outfile=${2:-}
+    if has curl; then
+        if [[ -n $outfile ]]; then curl -fsSL "$url" -o "$outfile"; else curl -fsSL "$url"; fi
+    elif has wget; then
+        if [[ -n $outfile ]]; then wget -qO "$outfile" "$url"; else wget -qO - "$url"; fi
+    else
+        >&2 echo "Either 'curl' or 'wget' needs to be on PATH."
+        exit 1
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dir)          install_dir="$2"; shift 2 ;;
+        --download-dir) download_dir="$2"; shift 2 ;;
+        --version)      version="$2"; shift 2 ;;
+        --checksum)     checksum="$2"; shift 2 ;;
+        --help|-h)      print_help ;;
+        *)              print_help ;;
+    esac
+done
+
+if [[ -z "$download_dir" ]]; then
+    download_dir="$(mktemp -d)"
+    trap 'rm -rf "$download_dir"' EXIT
+fi
+
+# --- resolve platform / arch to a release target -----------------------------
+case "$(uname -s)" in
+    Linux*)  platform=linux ;;
+    Darwin*) platform=macos ;;
+    *) >&2 echo "Unsupported OS: $(uname -s). Prebuilt binaries exist for Linux and macOS."; exit 1 ;;
+esac
+
+case "$(uname -m)" in
+    x86_64|amd64)   arch=x86_64 ;;
+    aarch64|arm64)  arch=aarch64 ;;
+    *) >&2 echo "Unsupported architecture: $(uname -m)."; exit 1 ;;
+esac
+
+target="${arch}-${platform}"
+case "$target" in
+    x86_64-linux|x86_64-macos|aarch64-macos) ;;
+    *) >&2 echo "No prebuilt joltc for ${target}."
+       >&2 echo "Available: x86_64-linux, x86_64-macos, aarch64-macos."
+       >&2 echo "Build from source: https://github.com/${repo} (make joltc-release)."
+       exit 1 ;;
+esac
+
+# --- resolve version ---------------------------------------------------------
+if [[ -z "$version" ]]; then
+    version="$(fetch "https://api.github.com/repos/${repo}/releases/latest" \
+        | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    if [[ -z "$version" ]]; then
+        >&2 echo "Could not determine the latest release. Pass --version explicitly."
+        exit 1
+    fi
+fi
+tag="v${version#v}"   # accept 0.1.0 or v0.1.0; the tag/asset carry the leading v
+
+filename="joltc-${tag}-${target}.tar.gz"
+download_url="https://github.com/${repo}/releases/download/${tag}/${filename}"
+
+if has sha256sum; then
+    sha256sum_cmd="sha256sum"
+elif has shasum; then
+    sha256sum_cmd="shasum -a 256"
+else
+    sha256sum_cmd=""
+fi
+
+mkdir -p "$download_dir" && (
+    cd "$download_dir"
+    echo "Downloading ${download_url}"
+    fetch "$download_url" "$filename"
+
+    # verify: an explicit --checksum wins; otherwise fetch the release's .sha256.
+    if [[ -z "$checksum" ]]; then
+        checksum="$(fetch "${download_url}.sha256" 2>/dev/null | cut -d' ' -f1 || true)"
+    fi
+    if [[ -n "$checksum" && -n "$sha256sum_cmd" ]]; then
+        got="$($sha256sum_cmd "$filename" | cut -d' ' -f1)"
+        if [[ "$got" != "$checksum" ]]; then
+            >&2 echo "Checksum mismatch on ${filename}"
+            >&2 echo "  got:      ${got}"
+            >&2 echo "  expected: ${checksum}"
+            exit 1
+        fi
+    elif [[ -z "$sha256sum_cmd" ]]; then
+        >&2 echo "Note: no sha256sum/shasum on PATH; skipping checksum verification."
+    fi
+
+    tar -zxf "$filename"
+    rm -f "$filename"
+)
+
+# the tarball unpacks to a directory holding the binary
+extracted="${download_dir}/joltc-${tag}-${target}/joltc"
+if [[ ! -f "$extracted" ]]; then
+    >&2 echo "Expected ${extracted} in the archive but it was not found."
+    exit 1
+fi
+
+mkdir -p "$install_dir"
+if [[ -f "$install_dir/joltc" ]]; then
+    echo "Moving existing $install_dir/joltc to $install_dir/joltc.old"
+    mv -f "$install_dir/joltc" "$install_dir/joltc.old"
+fi
+mv -f "$extracted" "$install_dir/joltc"
+chmod +x "$install_dir/joltc"
+
+# clear the macOS quarantine flag so Gatekeeper doesn't block the fresh download
+if [[ "$platform" == "macos" ]] && has xattr; then
+    xattr -d com.apple.quarantine "$install_dir/joltc" 2>/dev/null || true
+fi
+
+echo "Successfully installed joltc ${tag} to ${install_dir}/joltc"
+if ! echo ":$PATH:" | grep -q ":${install_dir}:"; then
+    echo "Note: ${install_dir} is not on your PATH."
+fi

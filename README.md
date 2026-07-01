@@ -7,6 +7,19 @@ Jolt reads Clojure source, analyzes it to a host-neutral IR, emits Scheme, and
 runs it on Chez. The compiler is self-hosted: it is written in Clojure
 (`jolt-core/`) and compiles itself. It ships a Clojure-compatible standard library.
 
+## Install
+
+Grab the self-contained `joltc` binary (Linux/macOS) — it bundles the runtime,
+compiler, and standard library, so there is nothing else to install:
+
+```bash
+curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash
+```
+
+It installs to `/usr/local/bin` by default; `--dir <dir>` and `--version <v>`
+override that. Then `joltc -e '(+ 1 2)'`. To run from source instead (needs Chez),
+see [Build](#build).
+
 ## Requirements
 
 Only [Chez Scheme](https://cisco.github.io/ChezScheme/) (the gate invokes it as
