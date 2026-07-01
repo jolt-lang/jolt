@@ -2156,7 +2156,7 @@
   {:suite "seq / overlay-migrated fns" :label "replace preserves nil val" :expected "[1 nil 3]" :actual "(replace {2 nil} [1 2 3])"}
   {:suite "seq / overlay-migrated fns" :label "replace on a vector stays a vector" :expected "true" :actual "(vector? (replace {1 :a} [1 2 1]))"}
   {:suite "seq / overlay-migrated fns" :label "replace on a seq returns a seq" :expected "true" :actual "(seq? (replace {1 :a} (list 1 2 1)))"}
-  {:suite "seq / overlay-migrated fns" :label "replace on a seq is lazy" :expected "(0 :a 2)" :actual "(take 3 (replace {1 :a} (range)))"}
+  {:suite "seq / overlay-migrated fns" :label "replace on a seq is lazy" :expected "[0 :a 2]" :actual "(take 3 (replace {1 :a} (range)))"}
   {:suite "seq / overlay-migrated fns" :label "take-last" :expected "[3 4]" :actual "(take-last 2 [1 2 3 4])"}
   {:suite "seq / overlay-migrated fns" :label "take-last empty -> nil" :expected "nil" :actual "(take-last 2 [])"}
   {:suite "seq / overlay-migrated fns" :label "take-last n>len" :expected "[1 2]" :actual "(take-last 9 [1 2])"}
