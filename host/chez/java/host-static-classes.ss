@@ -455,7 +455,7 @@
                             (let ((toks (vector-ref (jhost-state self) 0)) (p (vector-ref (jhost-state self) 1)))
                               (if (< p (length toks))
                                   (begin (vector-set! (jhost-state self) 1 (+ p 1)) (list-ref toks p))
-                                  (error #f "NoSuchElementException")))))
+                                  (jolt-throw (jolt-host-throwable "java.util.NoSuchElementException" "no more tokens"))))))
         ;; StringTokenizer implements java.util.Enumeration — enumeration-seq drives
         ;; it through these, so alias them onto the token methods.
         (cons "hasMoreElements" (lambda (self) (< (vector-ref (jhost-state self) 1) (length (vector-ref (jhost-state self) 0)))))
@@ -463,7 +463,7 @@
                               (let ((toks (vector-ref (jhost-state self) 0)) (p (vector-ref (jhost-state self) 1)))
                                 (if (< p (length toks))
                                     (begin (vector-set! (jhost-state self) 1 (+ p 1)) (list-ref toks p))
-                                    (error #f "NoSuchElementException")))))))
+                                    (jolt-throw (jolt-host-throwable "java.util.NoSuchElementException" "no more tokens"))))))))
 
 ;; ---- String / BigInteger / MapEntry constructors ----------------------------
 ;; (String. bytes [charset]) decodes bytes (a bytevector OR a jolt byte-array)
