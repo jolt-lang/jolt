@@ -642,8 +642,7 @@
 ;; record-method-dispatch already routes string? -> jolt-string-method. Add a
 ;; regex-t arm (Pattern .split / .matcher-less surface used by corpus) by wrapping
 ;; once more — a regex-t isn't a jhost.
-(define %hs-rmd2 record-method-dispatch)
-(set! record-method-dispatch
+(register-method-arm! 42
   (lambda (obj method-name rest-args)
     (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
       (cond
@@ -667,7 +666,7 @@
                ((string=? method-name "group") (apply jolt-matcher-group obj rest))
                ((string=? method-name "groupCount") (jolt-matcher-group-count obj))
                (else (error #f (string-append "No method " method-name " on Matcher")))))
-        (else (%hs-rmd2 obj method-name rest-args))))))
+        (else 'pass)))))
 
 ;; ---- def-var! the registry entry points so emit can also reach them ---------
 (def-var! "clojure.core" "host-static-ref" host-static-ref)
@@ -709,15 +708,14 @@
 
 ;; htable arm: dispatch (.method obj a*) through the table's tag method registry;
 ;; an unregistered method falls through (sorted colls are htables too).
-(define %hs-rmd-htable record-method-dispatch)
-(set! record-method-dispatch
+(register-method-arm! 43
   (lambda (obj method-name rest-args)
     (let ((tag (and (htable? obj) (hashtable-ref (htable-h obj) "jolt/type" #f))))
       (let* ((mh (and tag (hashtable-ref tagged-methods-tbl (tag->method-key tag) #f)))
              (f  (and mh (hashtable-ref mh method-name #f))))
         (if f
             (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
-            (%hs-rmd-htable obj method-name rest-args))))))
+            'pass)))))
 
 (def-var! "clojure.core" "__register-class-methods!"
   (lambda (tag members) (register-tagged-methods! tag (jmap->static-alist members)) jolt-nil))

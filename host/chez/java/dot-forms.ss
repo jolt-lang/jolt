@@ -17,8 +17,6 @@
 ;; A record (jrec) is jolt-map? here (records.ss makes it so) and a collection,
 ;; so its protocol method (no dash, not a coll method) lands in the base.
 
-(define %dot-rmd record-method-dispatch)
-
 ;; Vectors / maps / sets only (records are jolt-map? here). Raw seqs are excluded:
 ;; coll-interop accepts some seq representations and not others (a
 ;; plain (seq v) returns nil from .count, a lazy-seq returns the count), an
@@ -84,7 +82,7 @@
     ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))
     (else #f)))
 
-(set! record-method-dispatch
+(register-method-arm! 30
   (lambda (obj method-name rest-args)
     (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
            (field? (and (> (string-length method-name) 0)
@@ -93,9 +91,6 @@
                       (substring method-name 1 (string-length method-name))
                       method-name)))
       (cond
-        ;; (.getClass x) universal — the class token for any value, before the
-        ;; collection/map field-lookup arms below would read it as a missing key.
-        ((string=? method-name "getClass") (jolt-class obj))
         ;; clojure.lang.MultiFn .dispatchFn / .getMethod — clojure.spec.alpha's
         ;; multi-spec walks a multimethod through these.
         ((jolt-multifn? obj)
@@ -107,7 +102,7 @@
                   (mm-find-isa obj dv)
                   (hashtable-ref methods (jolt-multifn-default obj) #f)
                   jolt-nil)))
-           (else (%dot-rmd obj method-name rest-args))))
+           (else 'pass)))
         ;; (.applyTo f args): apply a fn to a seq of args (clojure.spec instrument).
         ((and (procedure? obj) (string=? mname "applyTo"))
          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
@@ -119,7 +114,7 @@
            ((or (string=? mname "valAt") (string=? mname "get"))
             (t-get obj (car rest) (if (null? (cdr rest)) jolt-nil (cadr rest))))
            ((string=? mname "count") (t-count obj))
-           (else (%dot-rmd obj method-name rest-args))))
+           (else 'pass)))
         ;; a deftype/record's OWN declared method (matched by name AND arity) wins
         ;; over the generic collection interop below — e.g. data.priority-map
         ;; declares both seq[this] (Seqable) and seq[this ascending] (Sorted), and
@@ -145,4 +140,4 @@
            (else
             (let ((v (jolt-get obj (keyword #f mname) jolt-nil)))
               (if (procedure? v) (apply jolt-invoke v obj rest) v)))))
-        (else (%dot-rmd obj method-name rest-args))))))
+        (else 'pass)))))
