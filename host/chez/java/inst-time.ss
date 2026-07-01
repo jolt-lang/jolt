@@ -562,8 +562,7 @@
         (cons "format" (lambda (self d) (format-ms (vector-ref (jhost-state self) 0) (ms-of d))))))
 
 ;; a jinst's java.util.Date method surface (record-method-dispatch arm).
-(define %it-rmd record-method-dispatch)
-(set! record-method-dispatch
+(register-method-arm! 40
   (lambda (obj method-name rest-args)
     (cond
       ((jinst? obj)
@@ -586,7 +585,7 @@
              ((string=? method-name "before") (< (jinst-ms obj) (ms-of (car (seq->list rest-args)))))
              ((string=? method-name "after") (> (jinst-ms obj) (ms-of (car (seq->list rest-args)))))
              (else (error #f (string-append "No method " method-name " on Date")))))
-      (else (%it-rmd obj method-name rest-args)))))
+      (else 'pass))))
 
 ;; Clojure's built-in data readers, so a library that merges default-data-readers
 ;; or binds *data-readers* (e.g. aero's reader opts) resolves #inst / #uuid.

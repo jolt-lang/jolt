@@ -240,14 +240,13 @@
                (else (loop (- i 1))))))
       (else #f))))
 
-(define %io-rmd record-method-dispatch)
-(set! record-method-dispatch
+(register-method-arm! 41
   (lambda (obj method-name rest-args)
     (if (jfile? obj)
         (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                (r (jfile-method obj method-name rest)))
           (if r (car r) (error #f "no File method" method-name)))
-        (%io-rmd obj method-name rest-args))))
+        'pass)))
 
 ;; .isDirectory / .listFiles emit to jolt-host-call (rt.ss), not record-method-
 ;; dispatch — the shims there assume a path STRING target. Make them jfile-aware

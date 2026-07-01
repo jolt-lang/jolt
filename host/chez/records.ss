@@ -797,14 +797,9 @@
 ;; "#<compound condition>".
 (def-var! "jolt.host" "condition-message"
   (lambda (c) (if (condition? c) (condition->message-string c) jolt-nil)))
-(define (record-method-dispatch obj method-name rest-args)
+(define (record-method-dispatch-base obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
-      ;; (.getClass x): universal Object method — the class token for any value
-      ;; (jolt has no Class objects; the token is the canonical name string, on
-      ;; which .getName/.getSimpleName work via the String method shim).
-      ((and (string=? method-name "getClass") (not (jrec? obj)) (not (jreify? obj)))
-       (jolt-class obj))
       ((and (jrec? obj) (find-method-any-protocol-arity (jrec-tag obj) method-name (+ 1 (length rest))))
        => (lambda (f) (apply jolt-invoke f obj rest)))
       ;; (.field inst): a deftype/record field read with no matching method.
@@ -935,6 +930,36 @@
       ((string=? method-name "equals") (and (pair? rest) (if (jolt= obj (car rest)) #t #f)))
       (else (error #f (string-append "No method " method-name " for value: "
                                      (jolt-pr-str obj)))))))
+
+;; ---- method-dispatch arm registry ------------------------------------------
+;; A .method call (record-method-dispatch) is resolved by an ordered list of arms
+;; (ascending priority), each (obj method-name rest-args) -> result | 'pass.
+;; This replaces a stack of (set! record-method-dispatch ...) rebindings across
+;; six files whose precedence was implicit in load order — priority is now
+;; explicit data. record-method-dispatch-base is the final fallback (the
+;; string/keyword/symbol/Object-method surface). A host shim / library registers
+;; an arm with register-method-arm! instead of set!-wrapping the dispatcher.
+(define method-dispatch-arms '())   ; list of (priority . arm), ascending priority
+(define (register-method-arm! priority arm)
+  (set! method-dispatch-arms
+    (let ins ((as method-dispatch-arms))
+      (cond ((null? as) (list (cons priority arm)))
+            ((< priority (caar as)) (cons (cons priority arm) as))
+            (else (cons (car as) (ins (cdr as))))))))
+(define (record-method-dispatch obj method-name rest-args)
+  (let loop ((as method-dispatch-arms))
+    (if (null? as)
+        (record-method-dispatch-base obj method-name rest-args)
+        (let ((r ((cdar as) obj method-name rest-args)))
+          (if (eq? r 'pass) (loop (cdr as)) r)))))
+
+;; (.getClass x): a universal Object method reached by EVERY value before any
+;; per-type arm — the class token for the value (jolt has no Class objects; the
+;; token is the canonical name string, on which .getName/.getSimpleName work).
+;; One arm, so a type arm that only whitelists its own methods can't steal it.
+(register-method-arm! 5
+  (lambda (obj method-name rest-args)
+    (if (string=? method-name "getClass") (jolt-class obj) 'pass)))
 
 ;; reify: instance-local method table. obj is a jreify carrying a method ht +
 ;; the protocol short-names it implements (for satisfies?/instance?).

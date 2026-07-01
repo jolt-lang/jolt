@@ -90,13 +90,9 @@
        (list->cseq (if asc keep (reverse keep)))))
     (else (error #f (string-append "No method " method " on sorted collection")))))
 
-(define %hs-record-method-dispatch record-method-dispatch)
-(set! record-method-dispatch
+(register-method-arm! 44
   (lambda (obj method-name rest-args)
     (cond
-      ;; (.getClass x) is universal — the class token for any value (incl. numbers
-      ;; / jhost) — before the per-type arms that would otherwise reject it.
-      ((string=? method-name "getClass") (jolt-class obj))
       ((jhost? obj)
        (let ((mh (hashtable-ref host-methods-tbl (jhost-tag obj) #f)))
          (let ((f (and mh (hashtable-ref mh method-name #f))))
@@ -104,7 +100,7 @@
                (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                (error #f (string-append "No method " method-name " on host " (jhost-tag obj)))))))
       ((number? obj) (apply number-method method-name obj (if (jolt-nil? rest-args) '() (seq->list rest-args))))
-      (else (%hs-record-method-dispatch obj method-name rest-args)))))
+      (else 'pass))))
 
 ;; java.lang.Number method surface (the boxed-number methods cljc code calls). The
 ;; integer projections wrap modulo their width (ring-codec relies on byteValue
