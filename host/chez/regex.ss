@@ -159,10 +159,23 @@
 ;; A jolt regex value: the source string (for printing / str) + the compiled
 ;; irregex. regex? recognizes it; the printer renders #"source".
 (define-record-type regex-t (fields source irx) (nongenerative jolt-regex-v1))
+;; A capturing pattern is compiled with irregex's BACKTRACKING matcher ('backtrack),
+;; not its DFA. java.util.regex is itself a leftmost-first backtracking engine, so
+;; this matches the JVM's submatch semantics; irregex's DFA is POSIX leftmost-longest
+;; and, worse, leaks a non-participating alternation group's capture (e.g.
+;; #"(?:([0-9])|([0-9])r([0-9]+))" on "2r11" left group 1 = "2"), which broke
+;; tools.reader's number reader. Non-capturing patterns keep the fast DFA — with no
+;; groups to read, its whole-match result is all a caller sees. The count comes from
+;; a first cheap compile; a capturing pattern is recompiled once (patterns compile
+;; once and cache in the regex-t).
 (define (jolt-regex source)
   (let-values (((opts pat) (regex-parse-flags source)))
-    (make-regex-t source
-                  (apply irregex (translate-prop-classes (escape-class-shorthand-dash pat)) opts))))
+    (let* ((p (translate-prop-classes (escape-class-shorthand-dash pat)))
+           (irx (apply irregex p opts)))
+      (make-regex-t source
+                    (if (> (irregex-num-submatches irx) 0)
+                        (apply irregex p 'backtrack opts)
+                        irx)))))
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
 
