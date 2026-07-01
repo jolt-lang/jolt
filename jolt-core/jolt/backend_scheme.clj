@@ -377,6 +377,14 @@
     ;; value, not the raw tagged form). Same emit as the :inst / :uuid IR leaves.
     (form-inst? form) (str "(jolt-inst-from-string " (chez-str-lit (form-inst-source form)) ")")
     (form-uuid? form) (str "(jolt-uuid-from-string " (chez-str-lit (form-uuid-source form)) ")")
+    ;; a quoted custom #tag with no registered reader -> a tagged-literal value
+    ;; (Clojure's reader builds a TaggedLiteral), not the raw reader map. The tag is
+    ;; stored as a :#name keyword; strip the leading # to the bare symbol.
+    (and (map? form) (= :jolt/tagged (get form :jolt/type)))
+    (let [nm (name (get form :tag))
+          tsym (if (= \# (first nm)) (subs nm 1) nm)]
+      (str "(jolt-tagged-literal (jolt-symbol #f " (chez-str-lit tsym) ") "
+           (emit-quoted (get form :form)) ")"))
     ;; plain jolt VALUES (metadata maps and anything nested in them)
     (map? form) (emit-quoted-map-value form)
     (vector? form) (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")")
