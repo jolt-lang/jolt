@@ -37,16 +37,36 @@
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 
 ;; --- exceptions --------------------------------------------------------------
-;; throw raises the jolt value RAW (no envelope);
-;; catch (emitted as `guard`) binds it directly. Chez `raise` accepts any
-;; object, so a thrown number/map/ex-info all work; uncaught -> non-zero exit.
+;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
+;; `guard`) and jolt-report-uncaught unwrap it back via jolt-unwrap-throw.
+;; Raising the value RAW broke when a throw crossed the host/`eval` boundary:
+;; Chez re-wrapped the non-condition into a compound condition whose
+;; message-extraction APPLIES the value (crashing on an empty-map :data ->
+;; "attempt to apply non-procedure"), and the real message was lost. A real
+;; condition propagates intact through any number of eval boundaries.
 ;; Capture the live continuation at the throw site (identity-tagged with the
 ;; thrown value) so an uncaught error can walk the native frames back to a Clojure
 ;; stack trace (source-registry.ss). call/cc is paid only on a throw, never per
 ;; call; the captured k is walked, never invoked.
 (define jolt-throw-cont (make-thread-parameter #f))
+(define-condition-type &jolt-throw &condition
+  make-jolt-throw-condition jolt-throw-condition?
+  (value jolt-throw-condition-value))
+;; Fallback &message for a leaked condition; the real message always comes from
+;; the unwrapped value via ex-message.
+(define (jolt-throw-message v)
+  (if (and (pmap? v)
+           (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info))
+      (let ((m (jolt-get v jolt-kw-message jolt-nil)))
+        (if (string? m) m "jolt error"))
+      "jolt error"))
 (define (jolt-throw v)
-  (call/cc (lambda (k) (jolt-throw-cont (cons v k)) (raise v))))
+  (call/cc (lambda (k)
+             (jolt-throw-cont (cons v k))
+             (raise (condition (make-message-condition (jolt-throw-message v))
+                               (make-jolt-throw-condition v))))))
+(define (jolt-unwrap-throw x)
+  (if (jolt-throw-condition? x) (jolt-throw-condition-value x) x))
 ;; ex-info builds the tagged map {:jolt/type :jolt/ex-info :message :data :cause}
 ;; — a real jolt-hash-map, so the ex-data/ex-message/ex-cause tier fns read it
 ;; via jolt-get for free. Arity 2 (msg data) or 3 (msg data cause).

@@ -88,6 +88,53 @@
   (let [{:keys [roots]} (deps/resolve-project (project-dir))]
     (println (str/join ":" roots))))
 
+(defn- repl-form-complete?
+  "True when `s` has balanced ()/[]/{}, no open string/char/regex, and at most
+  a trailing comment past the last form. Drives the REPL's read-until-complete
+  decision so a form split across lines is accumulated, not evaluated half-read."
+  [s]
+  (let [n (count s)]
+    (loop [i 0 depth 0 state :code]               ; state: :code :string :regex :comment
+      (if (>= i n)
+        (and (<= depth 0) (#{:code :comment} state))
+        (let [c (get s i)]
+          (case state
+            :code    (cond
+                       (= c \;)        (recur (inc i) depth :comment)
+                       (= c \\)        (recur (+ i 2) depth :code)     ; char literal: \(
+                       (= c \")        (recur (inc i) depth :string)
+                       (= c \#)        (recur (inc i) depth
+                                               (if (= (get s (inc i)) \") :regex :code))
+                       (#{\( \[ \{} c) (recur (inc i) (inc depth) :code)
+                       (#{\) \] \}} c) (recur (inc i) (dec depth) :code)
+                       :else           (recur (inc i) depth :code))
+            :string  (cond
+                       (= c \\) (recur (+ i 2) depth :string)          ; escaped char
+                       (= c \") (recur (inc i) depth :code)
+                       :else    (recur (inc i) depth :string))
+            :regex   (cond
+                       (= c \\) (recur (+ i 2) depth :regex)
+                       (= c \") (recur (inc i) depth :code)
+                       :else    (recur (inc i) depth :regex))
+            :comment (recur (inc i) depth
+                            (if (#{\newline \return} c) :code :comment))))))))
+
+(defn- repl-read-form []
+  ;; Read lines — printing a secondary prompt for continuations — until the
+  ;; accumulated buffer is a complete form. Returns the (possibly multi-line)
+  ;; buffer, or nil on EOF at the primary prompt.
+  (loop [buf nil]
+    (print (if buf "... " "user=> ")) (flush)
+    (let [line (read-line)]
+      (cond
+        (nil? line) buf                                 ; EOF: nil at primary, partial mid-form
+        (nil? buf)  (cond
+                      (str/blank? line)        (recur nil)      ; skip a blank first line
+                      (repl-form-complete? line) line
+                      :else                    (recur line))
+        :else       (let [nb (str buf "\n" line)]
+                      (if (repl-form-complete? nb) nb (recur nb)))))))
+
 (defn- repl []
   ;; resolve the project so deps (git libs) are on the roots and native libs are
   ;; loaded — same context a run gets, so (require '[some.lib]) works in the REPL.
@@ -95,15 +142,14 @@
        (catch :default _ nil))
   (println ";; jolt repl — :repl/quit or ^D to exit")
   (loop []
-    (print "user=> ") (flush)
-    (let [line (read-line)]
-      (when line
+    (let [form (repl-read-form)]
+      (when form
         ;; :repl/quit / :exit exit the loop — a reliable gesture that works in any
         ;; terminal, unlike ^D (some terminals/editors don't deliver it as EOF).
-        (if (#{:repl/quit :exit} (try (read-string line) (catch :default _ nil)))
+        (if (#{:repl/quit :exit} (try (read-string form) (catch :default _ nil)))
           nil
           (do
-            (try (println (pr-str (load-string line)))
+            (try (println (pr-str (load-string form)))
                  (catch :default e
                    (println "error:" (or (ex-message e)
                                          (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))

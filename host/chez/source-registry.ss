@@ -103,24 +103,25 @@
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is
 ;; pr-str'd. Shared by the cli (cli.ss) and a built binary's launcher (build.ss).
-(define (jolt-render-throwable v port)
-  (if (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info)
-      (begin
-        (display "Unhandled exception: " port)
-        (display (jolt-str-render-one (jolt-get v jolt-kw-message jolt-nil)) port)
-        (newline port)
-        (let ((data (jolt-get v jolt-kw-data jolt-nil)))
-          (unless (jolt-nil? data)
-            (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
-        (let ((cause (jolt-get v jolt-kw-cause jolt-nil)))
-          (when (condition? cause)
-            (display "  cause: " port)
-            (display (with-output-to-string (lambda () (display-condition cause))) port)
-            (newline port))))
-      (begin
-        (display "Unhandled exception: " port)
-        (display (if (condition? v) (with-output-to-string (lambda () (display-condition v))) (jolt-pr-str v)) port)
-        (newline port))))
+(define (jolt-render-throwable raw port)
+  (let ((v (jolt-unwrap-throw raw)))
+    (if (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info)
+        (begin
+          (display "Unhandled exception: " port)
+          (display (jolt-str-render-one (jolt-get v jolt-kw-message jolt-nil)) port)
+          (newline port)
+          (let ((data (jolt-get v jolt-kw-data jolt-nil)))
+            (unless (jolt-nil? data)
+              (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
+          (let ((cause (jolt-get v jolt-kw-cause jolt-nil)))
+            (when (condition? cause)
+              (display "  cause: " port)
+              (display (with-output-to-string (lambda () (display-condition cause))) port)
+              (newline port))))
+        (begin
+          (display "Unhandled exception: " port)
+          (display (if (condition? v) (with-output-to-string (lambda () (display-condition v))) (jolt-pr-str v)) port)
+          (newline port)))))
 
 ;; Render the throwable, then its Clojure backtrace when one maps. The caller adds
 ;; any top-level source location (the runtime cli does; a built binary has none).

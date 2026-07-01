@@ -666,14 +666,18 @@
       :else
       (invoke))))
 
-;; try/catch/finally. throw raises the jolt value RAW (jolt-throw =
-;; Scheme `raise`); catch lowers to `guard` with an `else` clause (the IR drops
-;; the class), finally to `dynamic-wind`'s after-thunk (runs on success, catch and
-;; escape — Clojure finally semantics). Both keys optional on the node.
+;; try/catch/finally. throw raises a Chez condition wrapping the jolt value
+;; (jolt-throw = Scheme `raise` of a &jolt-throw condition); catch lowers to
+;; `guard`, whose raw binding is unwrapped via jolt-unwrap-throw so the catch var
+;; receives the jolt value (preserving ex-data/ex-message and the backtrace
+;; identity tag). finally lowers to `dynamic-wind`'s after-thunk (runs on
+;; success, catch and escape — Clojure finally semantics). Both keys optional.
 (defn- emit-try [node]
   (let [core (if-let [cs (:catch-sym node)]
-               (str "(guard (" (munge-name cs) " (else " (emit (:catch-body node)) ")) "
-                    (emit (:body node)) ")")
+               (let [raw (munge-name (:catch-raw-sym node))]
+                 (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
+                      (emit (:catch-body node)) "))) "
+                      (emit (:body node)) ")"))
                (emit (:body node)))]
     (if-let [fin (:finally node)]
       (str "(dynamic-wind (lambda () #f) (lambda () " core ") (lambda () " (emit fin) "))")

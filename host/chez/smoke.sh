@@ -44,6 +44,14 @@ check '(/ 1 2)' '1/2'
 check '(= 3 3.0)' 'false'
 check '(== 3 3.0)' 'true'
 check_loc '(throw (ex-info "boom" {}))' '  at 1:'
+
+# A throw that crosses the eval boundary (eval / load-string) must surface its
+# ex-info :message, not Chez's "attempt to apply non-procedure" noise from
+# re-wrapping a raw value raised through `eval`.
+check '(try (eval (read-string "(throw (ex-info \"boom\" {}))")) (catch :default e (ex-message e)))' 'boom'
+check '(try (load-string "(+") (catch :default e (ex-message e)))' 'EOF while reading'
+# An uncaught throw prints the ex-info message alongside its source location.
+check_loc '(throw (ex-info "boom" {}))' 'boom'
 check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
 
 # --help prints usage, and lists the nREPL server under its real flag name.
@@ -84,6 +92,17 @@ if printf '%s' "$repl_out" | grep -q '2023' && ! printf '%s' "$repl_out" | grep 
   pass=$((pass + 1))
 else
   echo "  FAIL: repl should exit on :exit before later forms"
+  printf '%s\n' "$repl_out" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+
+# A form split across lines is accumulated and evaluated once complete, with a
+# secondary continuation prompt before each continued line.
+repl_out="$(printf '(+ 1\n2)\n:exit\n' | bin/joltc repl 2>/dev/null)"
+if printf '%s' "$repl_out" | grep -q '3' && ! printf '%s' "$repl_out" | grep -q 'error'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: repl should accumulate multi-line forms to 3"
   printf '%s\n' "$repl_out" | sed 's/^/    | /'
   fails=$((fails + 1))
 fi

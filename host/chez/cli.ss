@@ -35,8 +35,9 @@
 ;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
 ;; message/ex-data/cause + a mapped Clojure backtrace come from the shared
 ;; renderer (source-registry.ss); the cli adds the top-level source location.
-(define (jolt-report-uncaught v)
-  (let ((port (current-error-port)))
+(define (jolt-report-uncaught raw)
+  (let ((v (jolt-unwrap-throw raw))
+        (port (current-error-port)))
     (jolt-render-throwable v port)
     ;; The top-level form that was evaluating when this propagated (file:line:col).
     (let ((loc (jolt-current-source-string)))

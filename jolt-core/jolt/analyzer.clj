@@ -258,6 +258,7 @@
     (let [n {:op :try :body (analyze-seq ctx @body env)}
           n (if (seq @catches)
               (let [evar-name (gen-name "catch")
+                    raw-name (gen-name "catch-raw")
                     evar (symbol evar-name)
                     dispatch
                     (reduce
@@ -278,6 +279,7 @@
                       (list 'throw evar)
                       (reverse @catches))]
                 (assoc n :catch-sym evar-name
+                         :catch-raw-sym raw-name
                          :catch-body (analyze-seq ctx (list dispatch)
                                                   (add-locals env [evar-name]))))
               n)
