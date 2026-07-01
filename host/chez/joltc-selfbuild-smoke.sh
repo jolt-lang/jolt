@@ -73,4 +73,36 @@ if [ "$got" != "$want" ]; then
   echo "--- got ----"; echo "$got"
   exit 1
 fi
-echo "joltc self-build smoke: passed (joltc runs + builds a working app with no external toolchain)"
+
+# 5. Static native linking through the distributed joltc: it bundles the Chez
+# kernel, so with the system cc (but still no external Chez) it re-links a stub
+# that bakes a :jolt/native :static archive into the app. The app then calls the
+# C function with the archive removed from disk. Uses the normal PATH so cc — and
+# the kernel's link deps (lz4/…) — are found, but Chez stays out of the build.
+napp="$(mktemp -d)/native-app"
+mkdir -p "$napp/src/app"
+printf 'int jolt_static_answer(void){return 42;}\n' > "$napp/greet.c"
+cc -c "$napp/greet.c" -o "$napp/greet.o" && ar rcs "$napp/libgreet.a" "$napp/greet.o"
+cat > "$napp/src/app/core.clj" <<'EOF'
+(ns app.core (:require [jolt.ffi :as ffi]))
+(ffi/defcfn answer "jolt_static_answer" [] :int)
+(defn -main [& _] (println "answer:" (answer)))
+EOF
+cat > "$napp/deps.edn" <<EOF
+{:paths ["src"]
+ :jolt/native [{:name "greet" :static {:archive "$napp/libgreet.a"}}]}
+EOF
+nout="$napp/app"
+echo "joltc self-build smoke: static-linking a native lib via the binary (no external Chez)"
+if ! JOLT_PWD="$napp" "$joltc" build -m app.core -o "$nout" >/dev/null 2>&1; then
+  echo "  FAIL: static native build via distributed joltc exited non-zero"
+  rm -rf "$(dirname "$napp")"; exit 1
+fi
+rm -f "$napp/libgreet.a" "$napp/greet.o"     # nothing to load at runtime
+got_n="$(cd / && "$nout" 2>&1)"
+rm -rf "$(dirname "$napp")"
+if [ "$got_n" != "answer: 42" ]; then
+  echo "  FAIL: static-linked app (via distributed joltc) output mismatch"
+  echo "--- got ----"; echo "$got_n"; exit 1
+fi
+echo "joltc self-build smoke: passed (joltc runs + builds a working app with no external toolchain, incl. static native linking)"

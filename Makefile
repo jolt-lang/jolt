@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke
+.PHONY: test ci values corpus unit smoke buildsmoke staticnativesmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -15,7 +15,7 @@ test: selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: values corpus unit smoke buildsmoke sci ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
+ci: values corpus unit smoke buildsmoke staticnativesmoke sci ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -41,6 +41,11 @@ smoke:
 # `jolt build` produces a working standalone binary.
 buildsmoke:
 	@sh host/chez/build-smoke.sh
+
+# `jolt build` cc-links a :jolt/native :static archive into the binary (the
+# default), and --dynamic keeps the runtime load-shared-object path.
+staticnativesmoke:
+	@sh host/chez/static-native-smoke.sh
 
 # Build joltc as a self-contained native binary into target/<profile>/joltc. The
 # binary bundles the runtime, compiler, jolt-core + stdlib source, the Chez boots,
