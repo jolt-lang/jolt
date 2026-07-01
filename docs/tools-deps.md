@@ -72,11 +72,41 @@ bindings resolve. Each entry is a map — `{:name "sqlite3" :darwin
 the running process's own symbols, e.g. libc sockets, no external file). A
 project inherits its dependencies' `:jolt/native`.
 
+### Static vs dynamic linking
+
+When you `joltc build`, a native lib is **statically linked** into the binary by
+default if the spec carries a `:static` archive — so the executable calls the C
+code with no shared object present at runtime. Add `:static` alongside the runtime
+candidates:
+
+```clojure
+{:name "sqlite3"
+ :static {:archive "/opt/homebrew/lib/libsqlite3.a"}  ; or {:lib "sqlite3" :libdir "/usr/lib"}
+ :darwin ["libsqlite3.0.dylib"]   ; still used by `run`/`repl` and by --dynamic
+ :linux  ["libsqlite3.so.0"]}
+```
+
+`:static {:archive PATH}` force-loads the whole `.a` and is the reliable
+cross-platform form. `:static {:lib NAME :libdir DIR}` links `-lNAME` (with a
+`-Bstatic` preference on Linux); on macOS, which has no `-Bstatic`, prefer the
+archive form. A spec with no `:static` (or a build passed `--dynamic`, or
+`:jolt/build {:dynamic-natives true}`) keeps the old behavior — the shared object
+is loaded at startup via `load-shared-object`.
+
+Static linking needs a C compiler (`cc`) on `PATH` at build time (plus the C libs
+the Chez kernel links — lz4, zlib, ncurses). The distributed `joltc` bundles the
+Chez kernel, so it re-links the launcher stub with the archive baked in — no
+external Chez, just `cc`. Without a `cc`, a `:static` lib fails with a message
+pointing you to install one or pass `--dynamic`. Keep a `:darwin`/`:linux`
+candidate on any `:static` spec so `run`/`repl` (which have no static binary) can
+still load it.
+
 ## Standalone binaries
 
 `joltc build -m NS` compiles the app and every library into one executable (the
-runtime + compiler are baked in). It loads the resolved `:jolt/native` libs at
-startup, so an FFI app — sockets, SQLite — runs with no jolt or Chez on the path.
+runtime + compiler are baked in). Resolved `:jolt/native` libs are statically
+linked in (or loaded at startup — see [Native libraries](#native-libraries)), so
+an FFI app — sockets, SQLite — runs with no jolt or Chez on the path.
 
 Output goes under the project's `target/`, cargo-style: `target/release/<project>`
 by default and with `--opt`, `target/debug/<project>` with `--dev` (the

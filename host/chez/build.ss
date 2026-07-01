@@ -80,6 +80,9 @@
                (cand (string-append bindir "/../lib/csv" bld-version "/" bld-machine)))
           cand))))
 
+(define (bld-have-cc?)
+  (> (string-length (bld-sh-capture "command -v cc")) 0))
+
 (define (bld-check-toolchain)
   (for-each
     (lambda (f)
@@ -271,27 +274,90 @@
 (define (bld-strs x) (map jolt-str-render-one (seq->list x)))
 
 ;; Emit native-library loads. `natives` is the encoded jolt seq jolt.main/
-;; encode-natives produced: each entry is ["process"] | ["req" cand…] | ["opt" cand…].
-;; `which` selects 'required (process + req) or 'optional. Required + process loads
-;; are emitted before the app forms (the app's defcfn foreign-procedures resolve
-;; their symbols at top-level eval during startup, so the libs must be loaded
-;; first); a load-shared-object failure there is fatal — correct for a required
-;; lib. Optional loads run in the scheme-start launcher, where guard catches a
-;; missing lib (an optional lib's namespace is only present when the app requires
-;; it, so its foreign-procedures aren't among the baked top-level forms).
+;; encode-natives produced: each entry is ["process"] | ["static" form…] |
+;; ["req" cand…] | ["opt" cand…]. `which` selects 'required (process + static +
+;; req) or 'optional. Required loads are emitted before the app forms (the app's
+;; defcfn foreign-procedures resolve their symbols at top-level eval during
+;; startup, so the libs must be loaded first); a load-shared-object failure there
+;; is fatal — correct for a required lib. A "static" lib is cc-linked into the
+;; binary (see bld-native-link-flags), so its symbols are already in the process:
+;; it loads them the same way a "process" lib does. Optional loads run in the
+;; scheme-start launcher, where guard catches a missing lib (an optional lib's
+;; namespace is only present when the app requires it, so its foreign-procedures
+;; aren't among the baked top-level forms).
 (define (bld-emit-natives out natives which)
   (for-each
     (lambda (entry)
       (let* ((parts (bld-strs entry)) (kind (car parts)) (cands (cdr parts))
              (cand-lits (fold-left (lambda (s c) (string-append s (ei-str-lit c) " ")) "" cands)))
         (cond
-          ((and (eq? which 'required) (string=? kind "process"))
+          ((and (eq? which 'required) (or (string=? kind "process") (string=? kind "static")))
            (put-string out "(jolt-build-load-native '() #f #t)\n"))
           ((and (eq? which 'required) (string=? kind "req"))
            (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #f #f)\n")))
           ((and (eq? which 'optional) (string=? kind "opt"))
            (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #t #f)\n"))))))
     (seq->list natives)))
+
+;; The cc link fragment for the "static" natives: each archive must be FORCE-loaded
+;; (the linker would otherwise drop an archive member main.c never references) and,
+;; on Linux, the executable's symbols exported into the dynamic table so the
+;; startup (load-shared-object #f) + foreign-procedure can resolve them (-rdynamic,
+;; added by build-with-cc when this fragment is non-empty). Returns "" when no lib
+;; is statically linked. Entry forms: ["static" "archive" path] | ["static" "lib"
+;; name libdir].
+(define (bld-native-link-flags natives)
+  (fold-left
+    (lambda (acc entry)
+      (let ((parts (bld-strs entry)))
+        (if (string=? (car parts) "static")
+            (string-append acc " " (bld-one-static-link (cdr parts)))
+            acc)))
+    "" (seq->list natives)))
+
+;; A statically-linked native is only in the OUTPUT binary, but build step 1
+;; evaluates the app's `foreign-procedure` forms in THIS process (to register its
+;; macros/vars), and Chez resolves a foreign entry eagerly. So make the archive's
+;; symbols resolvable here: build a throwaway shared object from it (force-loading
+;; every member) and load it. The output binary still cc-links the static archive;
+;; this temp .so is build-time only. Only the "archive" form is preloaded — the
+;; "lib" form names a system library the OS loader already finds by soname.
+(define (bld-preload-static-natives! natives builddir)
+  (let ((n 0))
+    (for-each
+      (lambda (entry)
+        (let ((parts (bld-strs entry)))
+          (when (and (string=? (car parts) "static") (string=? (cadr parts) "archive"))
+            (let* ((archive (caddr parts))
+                   (so (string-append builddir "/native-" (number->string n)
+                                      (if bld-osx? ".dylib" ".so"))))
+              (set! n (+ n 1))
+              (bld-system
+                (if bld-osx?
+                    (string-append "cc -dynamiclib -undefined dynamic_lookup -Wl,-all_load '"
+                                   archive "' -o '" so "'")
+                    (string-append "cc -shared -Wl,--whole-archive '" archive
+                                   "' -Wl,--no-whole-archive -Wl,--unresolved-symbols=ignore-all -o '" so "'")))
+              (load-shared-object so)))))
+      (seq->list natives))))
+
+(define (bld-one-static-link form)
+  (let ((kind (car form)))
+    (cond
+      ((string=? kind "archive")
+       (let ((path (cadr form)))
+         (if bld-osx?
+             (string-append "-Wl,-force_load," path)
+             (string-append "-Wl,--whole-archive " path " -Wl,--no-whole-archive"))))
+      ((string=? kind "lib")
+       (let* ((lib (cadr form)) (dir (caddr form))
+              (L (if (> (string-length dir) 0) (string-append "-L" dir " ") "")))
+         ;; -Bstatic forces the .a over a .so of the same -l name (GNU ld). macOS's
+         ;; ld64 has no -Bstatic; there an :archive path is the reliable form.
+         (if bld-osx?
+             (string-append L "-l" lib)
+             (string-append L "-Wl,-Bstatic -l" lib " -Wl,-Bdynamic"))))
+      (else ""))))
 
 ;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
 ;; resource-name is the "/"-joined path under the root (what io/resource is asked for).
@@ -338,6 +404,19 @@
   ;; The self-contained path (jolt-embedded-bytes "stub/launcher") needs no csv
   ;; kernel files, no Chez, no cc — only the legacy cc path does.
   (unless (jolt-embedded-bytes "stub/launcher") (bld-check-toolchain))
+  (when (> (string-length (bld-native-link-flags natives)) 0)
+    ;; :static natives are cc-linked into the binary, so a C compiler must be on
+    ;; PATH — the self-contained joltc bundles the Chez kernel (libkernel.a +
+    ;; scheme.h) and relinks a custom stub (see build-self-contained), but still
+    ;; needs the system cc for that link. Fail early (before the app's foreign-
+    ;; procedure forms eval below) with an actionable message.
+    (unless (bld-have-cc?)
+      (error 'jolt-build
+        "static native linking needs a C compiler (cc) on PATH; install one, or pass --dynamic to load the library at runtime."))
+    ;; Preload static archives' symbols into this process so step 1's foreign-
+    ;; procedure evals resolve; the .build dir must exist first.
+    (bld-mkdir-p (string-append out-path ".build"))
+    (bld-preload-static-natives! natives (string-append out-path ".build")))
   ;; 1. record app namespaces in dependency order as they finish loading.
   (let ((app-order '()))
     (set-ns-loaded-hook!
@@ -460,8 +539,10 @@
         ;;    make-boot-file, then xxd the boot into a C array and cc-link against
         ;;    libkernel.a. Kept so `make buildsmoke` still exercises the cc path.
         (if (jolt-embedded-bytes "stub/launcher")
-            (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot)
-            (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c)))))))
+            (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot
+                                  (bld-native-link-flags natives))
+            (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c
+                           (bld-native-link-flags natives))))))))
 
 ;; --- self-contained link (in-process compile + append the boot to the stub) ---
 ;; compile-file runs with a FRESH scheme-environment as the interaction
@@ -470,7 +551,7 @@
 ;; runs) must bind to the kernel primitive — a clean env gives exactly that, the
 ;; same as the legacy path compiling in a fresh Chez process. Without it the boot
 ;; dies at startup with "variable error is not bound".
-(define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot)
+(define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link)
   (let ((petite (string-append builddir "/petite.boot"))
         (scheme (string-append builddir "/scheme.boot")))
     (jolt-spill-embedded! "csv/petite.boot" petite)
@@ -479,8 +560,14 @@
     (parameterize ((interaction-environment (copy-environment (scheme-environment))))
       (compile-file flat-ss flat-so)
       (make-boot-file boot '() petite scheme flat-so))
+    ;; The stub is the native launcher the boot is appended to. With no :static
+    ;; natives it's the prebuilt one bundled in joltc (no cc needed); with :static
+    ;; natives it's re-linked here from the bundled kernel + launcher source so the
+    ;; archives are baked in and their symbols resolve in the running binary.
+    (if (> (string-length native-link) 0)
+        (bld-relink-stub builddir native-link out-path)
+        (jolt-spill-embedded! "stub/launcher" out-path))
     ;; link: stub bytes ++ boot ++ frame, then make it executable.
-    (jolt-spill-embedded! "stub/launcher" out-path)
     (jolt-append-payload! out-path (read-file-bytes boot))
     (jolt-chmod-755 out-path)
     (display (string-append "jolt build: wrote " out-path "\n"))
@@ -489,8 +576,27 @@
                  "jolt build: note — on macOS this binary is unsigned; to share it,\n"
                  "  `xattr -d com.apple.quarantine " out-path "` on the target, or sign it.\n")))))
 
+;; Re-link the launcher stub with the app's static native archives baked in, to
+;; OUT-PATH. The self-contained joltc bundles the Chez kernel (libkernel.a),
+;; header, and launcher source; spill them and drive the system cc — the same link
+;; build-joltc.ss ran once at joltc-build time, plus the force-load archive flags
+;; (native-link) and, on Linux, -rdynamic so the baked-in symbols stay dlsym-
+;; visible for (load-shared-object #f) + foreign-procedure at startup.
+(define (bld-relink-stub builddir native-link out-path)
+  (let ((h  (string-append builddir "/scheme.h"))
+        (lk (string-append builddir "/libkernel.a"))
+        (lc (string-append builddir "/launcher.c")))
+    (jolt-spill-embedded! "csv/scheme.h" h)
+    (jolt-spill-embedded! "csv/libkernel.a" lk)
+    (jolt-spill-embedded! "stub/launcher.c" lc)
+    (display "jolt build: relinking launcher stub with static native libraries\n")
+    (bld-system (string-append
+      "cc -O2 " (if bld-osx? "" "-rdynamic ")
+      "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
+      (bld-link-libs) native-link))))
+
 ;; --- legacy cc link (dev bin/joltc): fresh Chez compile + xxd + cc ------------
-(define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c)
+(define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link)
   (display (string-append "jolt build: compiling " entry-ns " (" mode " mode)\n"))
   (let ((cs (string-append builddir "/compile.ss")))
     (let ((p (open-output-file cs 'replace)))
@@ -520,9 +626,13 @@
         "  int status = Sscheme_start(argc, (const char **)argv);\n"
         "  Sscheme_deinit();\n  return status;\n}\n"))
     (close-port mc))
+  ;; -rdynamic (Linux) exports the executable's symbols into the dynamic table so
+  ;; a statically-linked native lib's symbols resolve via (load-shared-object #f)
+  ;; at startup. macOS keeps unstripped executable symbols dlsym-visible already.
   (bld-system (string-append
-    "cc -O2 -I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
-    "-o '" out-path "' " (bld-link-libs)))
+    "cc -O2 " (if (and (not bld-osx?) (> (string-length native-link) 0)) "-rdynamic " "")
+    "-I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
+    "-o '" out-path "' " (bld-link-libs) native-link))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 (def-var! "jolt.host" "build-binary"

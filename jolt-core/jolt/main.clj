@@ -28,7 +28,11 @@
           (let [c (get spec plat)
                 cands (if (string? c) [c] (vec c))
                 hit (some #(when (jolt.ffi/loaded? %) %) cands)]
-            (when (and (nil? hit) (not (:optional spec)))
+            ;; A :static spec has no runtime shared object (it's linked into a
+            ;; built binary), so an interpreted `run`/`repl` has nothing to load —
+            ;; skip it rather than fail. Its foreign calls only resolve in a static
+            ;; build; document a dynamic candidate too to use it under `run`.
+            (when (and (nil? hit) (not (:optional spec)) (not (:static spec)))
               (throw (ex-info (str "required native library "
                                    (or (:name spec) (first cands) "?")
                                    " not found — tried " (pr-str cands) " for " (name plat))
@@ -174,18 +178,38 @@
 ;; --direct-link (or deps.edn :jolt/build {:direct-link true}) opts into closed-world
 ;; direct-linking: app->app calls bind directly, giving up runtime redefinition of
 ;; those vars and eval/load-string. Off by default — release stays dynamically linked.
+;; The static-link description of a :jolt/native spec for this platform, or nil.
+;; :static may be flat ({:archive "…"} / {:lib "z" :libdir "…"}) or per-platform
+;; ({:darwin {…} :linux {…}}). Returns a vector build.ss reads and wraps in the
+;; platform's force-load flags: ["archive" abspath] or ["lib" name libdir].
+(defn- static-link-spec [spec plat]
+  (when-let [s (:static spec)]
+    (let [p (get s plat)
+          s (if (map? p) p s)]
+      (cond
+        (:archive s) ["archive" (:archive s)]
+        (:lib s)     ["lib" (:lib s) (or (:libdir s) "")]
+        :else        nil))))
+
 ;; Encode a deps.edn :jolt/native spec for the build launcher, resolving the
 ;; current platform's candidate list now (the binary runs on this OS). Each entry
-;; becomes a vector the launcher (build.ss) reads: ["process"] for the running
-;; binary's own symbols, else ["req"|"opt" cand…] to try in turn.
-(defn- encode-natives [natives]
+;; becomes a vector the launcher (build.ss) reads:
+;;   ["process"]            — the running binary's own symbols (libc)
+;;   ["static" form …]      — the lib's archive, cc-linked into the binary; its
+;;                            symbols load from the process (default when :static
+;;                            is present and --dynamic wasn't passed)
+;;   ["req"|"opt" cand…]    — load a shared object at runtime, trying each in turn
+;; dynamic? forces the runtime path for every lib (the --dynamic build flag).
+(defn- encode-natives [natives dynamic?]
   (let [plat (current-platform)]
     (vec (for [spec natives]
-           (if (:process spec)
-             ["process"]
-             (let [c (get spec plat)
-                   cands (if (string? c) [c] (vec c))]
-               (into [(if (:optional spec) "opt" "req")] cands)))))))
+           (let [static (and (not dynamic?) (static-link-spec spec plat))]
+             (cond
+               (:process spec) ["process"]
+               static          (into ["static"] static)
+               :else           (let [c (get spec plat)
+                                     cands (if (string? c) [c] (vec c))]
+                                 (into [(if (:optional spec) "opt" "req")] cands))))))))
 
 (defn- cmd-build [more]
   (let [{:keys [project-paths embed-dirs build] :as resolved}
@@ -219,7 +243,11 @@
                     (nil? o) (str pdir "/target/" (if (= mode "dev") "debug" "release") "/" proj)
                     (str/starts-with? o "/") o
                     :else (str pdir "/" o)))
-            natives (encode-natives (:natives resolved))
+            ;; :jolt/native libs with a :static archive are cc-linked into the
+            ;; binary by default; --dynamic (or deps.edn :jolt/build {:dynamic-natives
+            ;; true}) keeps the old behavior — load a shared object at runtime.
+            dynamic-natives? (boolean (or (some #{"--dynamic"} more) (:dynamic-natives build)))
+            natives (encode-natives (:natives resolved) dynamic-natives?)
             ;; closed-world direct-linking is opt-in: the --direct-link flag or a
             ;; deps.edn :jolt/build {:direct-link true}. Off otherwise.
             direct-link? (boolean (or (some #{"--direct-link"} more) (:direct-link build)))
@@ -269,7 +297,7 @@
   (println "usage: jolt <command> [args]")
   (println "  run -m NS [args]       resolve deps.edn, load NS, call its -main")
   (println "  run FILE               load a Clojure file")
-  (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--tree-shake]  compile a standalone binary")
+  (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--tree-shake] [--dynamic]  compile a standalone binary")
   (println "  -M:alias [args]        run the alias's :main-opts")
   (println "  -A:alias [args]        add the alias's paths/deps")
   (println "  repl                   start a line REPL")

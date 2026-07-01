@@ -101,7 +101,10 @@
           (register-embedded-bytes! (car spec) bv)))
       '((\"csv/petite.boot\" \"jolt_petite_boot\" \"jolt_petite_boot_len\")
         (\"csv/scheme.boot\" \"jolt_scheme_boot\" \"jolt_scheme_boot_len\")
-        (\"stub/launcher\" \"jolt_stub\" \"jolt_stub_len\")))))
+        (\"stub/launcher\" \"jolt_stub\" \"jolt_stub_len\")
+        (\"csv/scheme.h\" \"jolt_scheme_h\" \"jolt_scheme_h_len\")
+        (\"csv/libkernel.a\" \"jolt_libkernel_a\" \"jolt_libkernel_a_len\")
+        (\"stub/launcher.c\" \"jolt_launcher_c\" \"jolt_launcher_c_len\")))))
 
 (suppress-greeting #t)
 (scheme-start
@@ -182,6 +185,13 @@
 (jb-c-array (string-append bld-csv-dir "/petite.boot") (string-append jb-build "/petite_data.h") "jolt_petite_boot")
 (jb-c-array (string-append bld-csv-dir "/scheme.boot") (string-append jb-build "/scheme_data.h") "jolt_scheme_boot")
 (jb-c-array jb-stub (string-append jb-build "/stub_data.h") "jolt_stub")
+;; Also bundle the Chez kernel (libkernel.a + scheme.h) and the launcher source,
+;; so a `build` with :static native libs can re-link a custom stub with those
+;; archives baked in — the appended-stub path can't add object code to a prebuilt
+;; stub, so it relinks (build.ss bld-relink-stub). Needs the system cc at build.
+(jb-c-array (string-append bld-csv-dir "/scheme.h") (string-append jb-build "/schemeh_data.h") "jolt_scheme_h")
+(jb-c-array (string-append bld-csv-dir "/libkernel.a") (string-append jb-build "/libkernel_data.h") "jolt_libkernel_a")
+(jb-c-array "host/chez/stub/launcher.c" (string-append jb-build "/launcherc_data.h") "jolt_launcher_c")
 
 (define jb-main-c (string-append jb-build "/main.c"))
 (let ((mc (open-output-file jb-main-c 'replace)))
@@ -192,6 +202,9 @@
       "#include \"petite_data.h\"\n"
       "#include \"scheme_data.h\"\n"
       "#include \"stub_data.h\"\n"
+      "#include \"schemeh_data.h\"\n"
+      "#include \"libkernel_data.h\"\n"
+      "#include \"launcherc_data.h\"\n"
       "int main(int argc, char *argv[]) {\n"
       "  Sscheme_init(0);\n"
       "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, jolt_boot_len);\n"
