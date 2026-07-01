@@ -63,15 +63,23 @@
 ;; the seed minter (ei-emit-ns: optimize? #f, guard? #t — tolerant, skips a form
 ;; that fails to emit) and `jolt build` (bld-emit-ns: optimize? #t, guard? #f —
 ;; strict, a failing form errors the build).
+;; A per-form transform applied to each read form before emit — the build sets it
+;; to the data-reader rewrite (loader.ss ldr-apply-readers) so a registered #tag
+;; literal compiles in a `jolt build` the same as it does in an interpreted load.
+;; #f (the default, and during the seed mint where loader.ss isn't loaded) is no
+;; transform, so emit-image.ss carries no loader dependency.
+(define ei-emit-form-hook (make-parameter #f))
+
 (define (ei-emit-ns* ns-name src optimize? guard?)
   ;; set the ns before reading so ::kw auto-resolves against this ns (the runtime
   ;; loader reads form-by-form after the ns form sets it; the cross-compile reads
   ;; all forms up front, so set it here).
   (set-chez-ns! ns-name)
-  (let loop ((forms (ei-read-all src)) (acc '()))
+  (let ((hook (ei-emit-form-hook)))
+   (let loop ((forms (ei-read-all src)) (acc '()))
     (if (null? forms)
         (reverse acc)
-        (let ((f (car forms)))
+        (let ((f (let ((f0 (car forms))) (if hook (hook f0) f0))))
           (ce-scan-requires! f ns-name)
           (cond
             ((ei-ns-form? f) (loop (cdr forms) acc))
@@ -89,7 +97,7 @@
                             (ei-compile-form (make-analyze-ctx ns-name) f optimize?))))
                (loop (cdr forms)
                      (if (and guard? (not scm)) acc
-                         (cons (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm) acc))))))))))
+                         (cons (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm) acc)))))))))))
 
 (define (ei-emit-ns ns-name src) (ei-emit-ns* ns-name src #f #t))
 

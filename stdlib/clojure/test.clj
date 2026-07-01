@@ -102,6 +102,12 @@
        (clojure.test/do-report {:type :error :message ~msg :form '~form
                                 :actual (clojure.test/err-text e#)}))))
 
+;; The common pure predicates whose args `is` evaluates so a failure shows the
+;; actual values — (is (= expected got)) prints `got`, not just the form. A macro
+;; head (not in this set) keeps the plain form-only path.
+(def ^:private reported-preds
+  '#{= not= == < > <= >= identical? contains? instance? nil? some? empty? even? odd? pos? neg? zero?})
+
 ;; --- class matching for thrown? --------------------------------------------
 
 (defn- last-seg [s]
@@ -172,6 +178,18 @@
      (and (seq? form) (symbol? (first form))
           (contains? (methods clojure.test/assert-expr) (first form)))
      (clojure.test/assert-expr msg form)
+
+     ;; a predicate call — (= a b), (< x y), (pred? v): evaluate the args so a
+     ;; failure shows the actual values, like clojure.test's assert-predicate.
+     (and (seq? form) (contains? clojure.test/reported-preds (first form)))
+     `(try
+        (let [vs# (list ~@(rest form))]
+          (if (apply ~(first form) vs#)
+            (clojure.test/inc-pass!)
+            (clojure.test/fail! (str (pr-str (list '~'not (cons '~(first form) vs#)))
+                                     (when ~msg (str " — " ~msg))))))
+        (catch Throwable e#
+          (clojure.test/err! (str (pr-str '~form) " threw: " (clojure.test/err-text e#)))))
 
      :else
      `(try

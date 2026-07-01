@@ -75,6 +75,18 @@ else
   fails=$((fails + 1))
 fi
 
+# A data reader that returns a CODE form (deps.edn data_readers.clj -> reader fn)
+# must have its result spliced in and COMPILED, like Clojure — #code [:x] becomes
+# (+ 40 2) and evaluates to 42, not the literal list. A project run so the source
+# root's data_readers.clj is picked up.
+dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" bin/joltc run -m drtest.main 2>/dev/null | tail -1)"
+if [ "$dr_out" = "42" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: code-returning data reader (#code) not compiled — got \`$dr_out\`, want 42"
+  fails=$((fails + 1))
+fi
+
 # Unit-checks the REPL read-until-complete predicate over balanced/unbalanced,
 # string, comment and regex-literal inputs. A multi-form `joltc run` so jolt.main
 # is loaded and its private var resolves; the file self-checks and prints a sentinel.

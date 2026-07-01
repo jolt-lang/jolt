@@ -57,9 +57,25 @@
     ((and (pmap? x) (eq? (jolt-get x rdr-kw-jolt-type) rdr-kw-jolt-tagged))
      (let ((rdr (data-reader-symbol (jolt-get x rdr-kw-tag)))
            (inner (ldr-apply-readers (jolt-get x rdr-kw-form))))
-       (cond (rdr (jolt-list rdr (jolt-list (jolt-symbol #f "quote") inner)))
-             ((eq? inner (jolt-get x rdr-kw-form)) x)
-             (else (rdr-make-tagged (jolt-get x rdr-kw-tag) inner)))))
+       (cond
+         (rdr
+          ;; Clojure applies a data reader at read time and substitutes its result
+          ;; as code. A reader that returns a FORM (a list — e.g. borkdude.html's
+          ;; #html expands to (->Html (str …))) must be compiled, so splice it in.
+          ;; A reader that returns a VALUE (time-literals #time/date -> a Date) is
+          ;; left as a runtime call (reader-fn 'inner): the value rebuilds at
+          ;; startup, which also keeps a non-serializable constant out of an AOT
+          ;; build. Apply is guarded — a reader that can't run at load time (its
+          ;; deps not ready) falls back to the runtime call too.
+          (let ((result (and (symbol-t? rdr) (not (jolt-nil? (symbol-t-ns rdr)))
+                             (guard (e (#t #f))
+                               (let ((fn (var-deref (symbol-t-ns rdr) (symbol-t-name rdr))))
+                                 (and (procedure? fn) (jolt-invoke fn inner)))))))
+            (if (cseq? result)
+                result
+                (jolt-list rdr (jolt-list (jolt-symbol #f "quote") inner)))))
+         ((eq? inner (jolt-get x rdr-kw-form)) x)
+         (else (rdr-make-tagged (jolt-get x rdr-kw-tag) inner)))))
     ((rdr-set-form? x)
      (let-values (((items changed) (ldr-conv-each (seq->list (jolt-get x rdr-kw-value)))))
        (if changed (rdr-carry-meta x (rdr-make-set items)) x)))
