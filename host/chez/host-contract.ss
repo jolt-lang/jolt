@@ -184,7 +184,12 @@
         ;; a qualified ns may be a require :as alias (s/split -> clojure.string/split)
         (let ((target (or (chez-resolve-alias (chez-actx-cns ctx) qualified) qualified)))
           (var-cell-lookup target nm))
-        (or (var-cell-lookup (chez-actx-cns ctx) nm)
+        (or (let ((c (var-cell-lookup (chez-actx-cns ctx) nm)))
+              ;; an undefined forward-intern must not shadow a real referred
+              ;; or clojure.core var — e.g. the compiler ns referencing `set`,
+              ;; which late-binds (interns `jolt.backend-scheme/set` undefined)
+              ;; and would otherwise hide clojure.core/set on the mint fixpoint.
+              (and c (var-cell-defined? c) c))
             ;; a :refer'd name resolves to its source ns
             (let ((ref (chez-resolve-refer (chez-actx-cns ctx) nm)))
               (and ref (var-cell-lookup ref nm)))
