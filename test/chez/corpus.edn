@@ -1,5 +1,7 @@
 [
   {:suite "host-interop / reify ILookup" :label "(get reify k) / (:k reify) / (get reify k d) route to valAt" :expected "[1 1 :dflt]" :actual "(let [r (reify clojure.lang.ILookup (valAt [_ k] (get {:a 1} k)) (valAt [_ k d] (get {:a 1} k d)))] [(:a r) (get r :a) (get r :z :dflt)])"}
+  {:suite "regex / alternation submatch" :label "a non-participating alternation group is nil, not a stale capture" :expected "[\"2r11\" nil \"2\" \"11\"]" :actual "(re-matches #\"(?:([0-9])|([0-9])r([0-9]+))\" \"2r11\")"}
+  {:suite "regex / radix read" :label "tools.reader-style radix parse: winning branch's groups, not the losing one's" :expected "[12 255]" :actual "[(read-string \"2r1100\") (read-string \"16rFF\")]"}
   {:suite "numbers / comparison error class" :label "nil operand is NPE, non-number is CCE" :expected "[\"java.lang.NullPointerException\" \"java.lang.ClassCastException\"]" :actual "[(try (> nil 5) (catch Throwable e (.getName (class e)))) (try (> :k 5) (catch Throwable e (.getName (class e))))]"}
   {:suite "reader / quoted #inst constructs a value" :label "a quoted #inst literal is the constructed Date, not a tagged form" :expected "\"(f #inst \\\"1939-01-01T00:00:00.000-00:00\\\")\"" :actual "(pr-str (quote (f #inst \"1939\")))"}
   {:suite "fn / kwargs trailing map" :label "(f :k v {map}) and (f {map}) both bind & {:as m}" :expected "[{:x 1 :y 2} {:x 1 :y 2}]" :actual "[((fn [a & {:as m}] m) 1 :x 1 {:y 2}) ((fn [a & {:as m}] m) 1 {:x 1 :y 2})]"}
