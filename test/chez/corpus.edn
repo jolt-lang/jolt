@@ -3498,4 +3498,11 @@
   {:suite "lazy / chunking" :label "chained maps each batch by 32 (result is itself chunked)" :expected "[32 32]" :actual "(let [fc (atom 0) gc (atom 0) s (map (fn [x] (swap! gc inc) x) (map (fn [x] (swap! fc inc) x) (range 1 50)))] (first s) [@fc @gc])"}
   {:suite "lazy / chunking" :label "filter over a chunked range applies pred to the whole first block" :expected "32" :actual "(let [c (atom 0) s (filter (fn [x] (swap! c inc) (even? x)) (range 1 50))] (first s) @c)"}
   {:suite "lazy / chunking" :label "a plain lazy seq (not chunked) realizes one element at a time" :expected "1" :actual "(let [c (atom 0) lz (fn lz [n] (lazy-seq (cons n (lz (inc n))))) s (map (fn [x] (swap! c inc) x) (lz 0))] (first s) @c)"}
+  {:suite "io / with-out-str" :label "with-out-str captures (.write *out* …) and print alike" :expected "\"hi!x\"" :actual "(with-out-str (.write *out* \"hi\") (.write *out* \"!\") (print \"x\"))"}
+  {:suite "nth / bounds" :label "nth past a vector end throws IndexOutOfBoundsException" :expected ":ok" :actual "(try (nth [1 2] 5) (catch IndexOutOfBoundsException e :ok))"}
+  {:suite "nth / bounds" :label "nth past a seq end throws IndexOutOfBoundsException" :expected ":ok" :actual "(try (nth (seq [1 2]) 5) (catch IndexOutOfBoundsException e :ok))"}
+  {:suite "assoc / bounds" :label "assoc past a vector end throws IndexOutOfBoundsException" :expected ":ok" :actual "(try (assoc [1 2] 5 :x) (catch IndexOutOfBoundsException e :ok))"}
+  {:suite "number / toString radix" :label ".toString(radix) renders in base, lowercase" :expected "[\"ff\" \"377\" \"1001\"]" :actual "[(.toString (biginteger 255) 16) (.toString (biginteger 255) 8) (.toString (biginteger 9) 2)]"}
+  {:suite "quote / metadata" :label "a quoted form keeps user metadata, drops reader location" :expected "[{:x true} nil]" :actual "[(meta (quote ^:x (1 2))) (meta (quote (1 2)))]"}
+  {:suite "enumeration-seq" :label "enumeration-seq drives a java.util.Enumeration (StringTokenizer)" :expected "[\"1\" \"2\" \"3\"]" :actual "(vec (enumeration-seq (java.util.StringTokenizer. \"1 2 3\")))"}
 ]

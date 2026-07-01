@@ -394,7 +394,18 @@
 
 (defn- analyze-special [ctx op items env]
   (case op
-    "quote" (quote-node (second items))
+    ;; A quoted collection keeps its USER metadata (rewrite-clj coerces
+    ;; '^:x (4 5 6) and expects the meta back), but not the reader's location keys
+    ;; (:line/:column/:file) — like Clojure, which strips those from a quoted
+    ;; constant. The kept metadata is itself part of the literal, so quote it.
+    "quote" (let [qf (second items)
+                  m (form-coll-meta qf)
+                  m (when (map? m)
+                      (let [u (dissoc m :line :column :end-line :end-column :file)]
+                        (when (seq u) u)))]
+              (if (nil? m)
+                (quote-node qf)
+                (invoke (var-ref "clojure.core" "with-meta") [(quote-node qf) (quote-node m)])))
     "if" (do
            ;; 2 or 3 argument forms only (spec 03-special-forms X1)
            (when (or (< (count items) 3) (> (count items) 4))

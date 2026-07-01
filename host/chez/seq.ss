@@ -152,9 +152,9 @@
                            (if (jolt-nil? s) last (loop (jolt-seq (seq-more s)) (seq-first s)))))
 ;; nth over a seq (walks; forces lazily). default? selects the 3-arg behavior.
 (define (seq-nth coll i default? d)
-  (if (fx<? i 0) (if default? d (error 'nth "index out of bounds"))
+  (if (fx<? i 0) (if default? d (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))
       (let loop ((s (jolt-seq coll)) (i i))
-        (cond ((jolt-nil? s) (if default? d (error 'nth "index out of bounds")))
+        (cond ((jolt-nil? s) (if default? d (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))
               ((fx=? i 0) (seq-first s))
               (else (loop (jolt-seq (seq-more s)) (fx- i 1)))))))
 

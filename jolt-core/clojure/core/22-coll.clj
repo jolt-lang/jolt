@@ -300,7 +300,14 @@
 
 ;; --- JVM-shape stubs and trivial shells --------------------------------------
 ;; Pure compositions or documented jolt stubs; the host keeps nothing.
-(defn enumeration-seq [e] (seq e))
+;; enumeration-seq drives a java.util.Enumeration (StringTokenizer, etc.) through
+;; hasMoreElements/nextElement, like the JVM; an already-seqable arg (a jolt seq —
+;; some host code passes a list) just seqs.
+(defn enumeration-seq [e]
+  (if (or (nil? e) (seq? e) (sequential? e))
+    (seq e)
+    (lazy-seq (when (.hasMoreElements e)
+                (cons (.nextElement e) (enumeration-seq e))))))
 (defn iterator-seq [i] (seq i))
 
 ;; jolt is single-threaded: a promise is an atom, deref never blocks

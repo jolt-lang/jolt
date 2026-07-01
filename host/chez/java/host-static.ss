@@ -117,7 +117,12 @@
     ((string=? method "longValue") (->num (jnum->exact n)))
     ((string=? method "doubleValue") (->num n))
     ((string=? method "floatValue") (->num n))
-    ((string=? method "toString") (jolt-num->string n))
+    ;; .toString(radix) — BigInteger/Integer render in a base, lowercase like the
+    ;; JVM (rewrite-clj's integer node reconstructs 0xff / 0377 / 2r1001 this way).
+    ((string=? method "toString")
+     (if (pair? args)
+         (string-downcase (number->string (jnum->exact n) (jnum->exact (car args))))
+         (jolt-num->string n)))
     ((string=? method "hashCode") (->num (jnum->exact n)))
     ;; Double/Float .isNaN / .isInfinite (a non-flonum is neither).
     ((string=? method "isNaN") (and (flonum? n) (not (= n n))))
