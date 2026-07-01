@@ -304,7 +304,25 @@
 ;; implements a clojure.lang collection interface carries the op as an inline
 ;; method — prefer that method, else fall back to the field/map behavior. (jrec-cl
 ;; finds the method; find-method-any-protocol / jolt-invoke resolve at call time.)
-(define (jrec-cl coll name) (and (jrec? coll) (find-method-any-protocol (jrec-tag coll) name)))
+;; Same lookup as collections.ss rec-coll-method — one definition, aliased here.
+(define jrec-cl rec-coll-method)
+
+;; iface-method: the single deftype/reify interface-method lookup. Returns the
+;; impl fn for METHOD declared by V (a deftype/record OR a reify), or #f. NARGS
+;; (including `this`) selects the matching arity for a deftype; #f means any
+;; arity. Core fns route interface dispatch through this instead of each
+;; re-deriving jrec-vs-reify lookup and arity handling.
+(define (iface-method v method nargs)
+  (cond ((jrec? v)
+         (if nargs (find-method-any-protocol-arity (jrec-tag v) method nargs)
+             (find-method-any-protocol (jrec-tag v) method)))
+        ((jreify? v) (let ((rm (reified-methods v))) (and rm (hashtable-ref rm method #f))))
+        (else #f)))
+;; Call METHOD on V with ARGS (a list, `this` excluded) if V declares it, else run
+;; FALLBACK. The one seam a core fn's deftype/reify arm collapses to.
+(define (iface-call v method args fallback)
+  (let ((m (iface-method v method (+ 1 (length args)))))
+    (if m (apply jolt-invoke m v args) (fallback))))
 (define %r-jolt-count jolt-count)
 (set! jolt-count (lambda (coll)
   (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
