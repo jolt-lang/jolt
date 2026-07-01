@@ -6,6 +6,10 @@
   {:suite "destructure / :or" :label "map default when key absent" :expected "9" :actual "(let [{x :x :or {x 9}} {}] x)"}
   {:suite "destructure / :or" :label "kwargs default when key absent" :expected "9" :actual "((fn [& {x :x :or {x 9}}] x))"}
   {:suite "destructure / :or" :label "default not used when key present" :expected "5" :actual "(let [{x :x :or {x 9}} {:x 5}] x)"}
+  {:suite "destructure / for :let" :label "a for/doseq :let binding may itself destructure" :expected "[10 20]" :actual "(vec (for [x [1 2] :let [{:keys [y]} {:y (* x 10)}]] y))"}
+  {:suite "deftype / method param shadows field" :label "a method param named like a field shadows it (Clojure scope)" :expected "9" :actual "(do (defprotocol P (setm [this q])) (defrecord R [k m] P (setm [this m] (assoc this :m m))) (:m (setm (->R 1 nil) 9)))"}
+  {:suite "walk / eager" :label "clojure.walk is eager over a lazy seq (side effects run now)" :expected "3" :actual "(let [a (atom 0)] (clojure.walk/postwalk (fn [x] (when (number? x) (swap! a inc)) x) (map inc (list 1 2 3))) @a)"}
+  {:suite "chars / isWhitespace" :label "Character/isWhitespace matches the JVM (Unicode line-sep yes, no-break space no)" :expected "[true true false false]" :actual "(mapv (fn [c] (Character/isWhitespace (char c))) [0x2028 32 0x00A0 65])"}
   {:suite "deftype / field access" :label ".field reads a deftype field" :expected "7" :actual "(do (deftype FldT [q]) (.q (->FldT 7)))"}
   {:suite "fn / pre-post" :label ":pre + :post pass" :expected "5" :actual "(do (defn ppf [x] {:pre [(pos? x)] :post [(= % x)]} x) (ppf 5))"}
   {:suite "fn / pre-post" :label ":pre failure throws" :expected ":blocked" :actual "(do (defn ppg [x] {:pre [(pos? x)]} x) (try (ppg -1) (catch Throwable _ :blocked)))"}

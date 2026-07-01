@@ -29,7 +29,7 @@
                                unchecked-math?
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
-                               record-type? record-ctor-key form-position late-bind?
+                               record-type? record-ctor-key deftype-ctor-class form-position late-bind?
                                resolve-class-hint]]))
 
 (declare analyze)
@@ -482,7 +482,12 @@
 ;; token and the analyzed args. The Chez back end lowers it to a runtime
 ;; constructor dispatch.
 (defn- analyze-ctor [ctx class args env]
-  (host-new class (mapv #(analyze ctx % env) args)))
+  ;; Qualify a bare (Name. …) to its deftype's FQN when THIS ns defined the deftype,
+  ;; so a deftype named like a built-in host class (tools.reader's PushbackReader)
+  ;; resolves to the deftype here while an unrelated ns's bare (PushbackReader. …)
+  ;; still reaches java.io.PushbackReader.
+  (host-new (or (deftype-ctor-class ctx class) class)
+            (mapv #(analyze ctx % env) args)))
 
 ;; jolt.ffi/__cfn: the low-level foreign-function form a jolt library
 ;; uses (via the jolt.ffi/foreign-fn macro) to bind native code. Shape:

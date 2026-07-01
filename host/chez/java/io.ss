@@ -412,6 +412,11 @@
     ;; method (a no-op for in-memory streams); absent method -> no-op.
     ((htable? x) (guard (e (#t jolt-nil)) (record-method-dispatch x "close" jolt-nil)) jolt-nil)
     ((jfile? x) jolt-nil)
+    ;; a deftype/defrecord that implements a `close` method (java.io.Closeable /
+    ;; AutoCloseable, e.g. tools.reader's reader types) closes through it — the
+    ;; same method (.close x) would dispatch to.
+    ((and (jrec? x) (jrec-cl x "close"))
+     (record-method-dispatch x "close" jolt-nil) jolt-nil)
     (else
      (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
        (if (and (not (jolt-nil? closef)) (procedure? closef))

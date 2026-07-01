@@ -375,6 +375,11 @@
 ;; state: a vector #(wrapped-reader pushed-list)
 (register-class-ctor! "PushbackReader"
   (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '()))))
+;; Fully-qualified aliases so (java.io.PushbackReader. …) / (java.io.StringReader. …)
+;; resolve to these built-ins even when a library defines a deftype of the same
+;; simple name (tools.reader), which would otherwise take the bare-name slot.
+(register-class-ctor! "java.io.PushbackReader" (lookup-class class-ctors-tbl "PushbackReader"))
+(register-class-ctor! "java.io.StringReader" (lookup-class class-ctors-tbl "StringReader"))
 ;; LineNumberingPushbackReader: a pushback-reader (jolt doesn't track line
 ;; numbers; getLineNumber is a stub for error-reporting paths that read it).
 (register-class-ctor! "LineNumberingPushbackReader"

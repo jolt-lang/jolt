@@ -226,6 +226,7 @@
   {:suite "ioreader" :expr "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))" :expected "[:closed]"}
   {:suite "ioreader" :expr "(let [log (atom [])] (with-open [a {:close (fn [] (swap! log conj :outer))} b {:close (fn [] (swap! log conj :inner))}] :r) (deref log))" :expected "[:inner :outer]"}
   {:suite "ioreader" :expr "(with-open [c {:close (fn [] nil) :v 5}] (:v c))" :expected "5"}
+  {:suite "ioreader" :expr "(do (defrecord RC [log] java.io.Closeable (close [_] (swap! log conj :closed))) (let [log (atom [])] (with-open [r (->RC log)] :body) @log))" :expected "[:closed]"}
   {:suite "javastatic" :expr "(Math/sqrt 16)" :expected "4.0"}
   {:suite "javastatic" :expr "(Math/abs -3)" :expected "3"}
   {:suite "javastatic" :expr "(Math/max 2 7)" :expected "7"}

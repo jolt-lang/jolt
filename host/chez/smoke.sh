@@ -43,6 +43,12 @@ check '(deref (future (+ 1 2)))' '3'
 check '(/ 1 2)' '1/2'
 check '(= 3 3.0)' 'false'
 check '(== 3 3.0)' 'true'
+# a deftype whose simple name collides with a built-in host class must not shadow
+# the java class: (java.io.PushbackReader. …) still builds the java reader (has
+# .read), while the bare name in the deftype's own ns is the deftype. (Fresh -e
+# process per check, so the deftype doesn't leak.)
+check '(do (deftype PushbackReader [x]) (.read (java.io.PushbackReader. (java.io.StringReader. "A") 1)))' '65'
+check '(do (deftype PushbackReader [x]) (.-x (PushbackReader. 42)))' '42'
 check_loc '(throw (ex-info "boom" {}))' '  at 1:'
 
 # A throw that crosses the eval boundary (eval / load-string) must surface its

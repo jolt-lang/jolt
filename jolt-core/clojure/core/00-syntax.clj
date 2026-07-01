@@ -514,7 +514,9 @@
                             sub (wrap-mods (rest mods) inner)]
                         (if (= (first m) :when)
                           `(if ~(nth m 1) ~sub [])
-                          `(let* ~(nth m 1) ~sub)))))
+                          ;; `let` (not let*) so a :let binding may itself
+                          ;; destructure — (for [x xs :let [{:keys [y]} x]] …).
+                          `(let ~(nth m 1) ~sub)))))
         build (fn build [idx groups]
                 (let [g (nth groups idx)
                       my-bind (nth g 0)

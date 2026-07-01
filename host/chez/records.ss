@@ -587,11 +587,18 @@
                                                  (number? a) (not (flonum? a)))
                                             (exact->inexact a) a))
                            (loop (cdr as) (+ i 1)))))))))
-    ;; Register the ctor globally by simple class name (like StringBuilder) so
-    ;; (Name. …) interop resolves ns-agnostically: a deftype used across files works
-    ;; even when the runtime current ns is the caller's, not the defining ns
-    ;; (host-new checks class-ctors-tbl before the current-ns var fallback).
-    (register-class-ctor! (symbol-t-name name-sym) ctor)
+    ;; Register the ctor under its fully-qualified tag ("ns.Name") — a bare
+    ;; (Name. …) in the DEFINING ns is qualified to this by the analyzer, so a
+    ;; deftype whose simple name collides with a built-in host class (tools.reader's
+    ;; PushbackReader vs java.io.PushbackReader) still resolves correctly there.
+    (register-class-ctor! tag ctor)
+    ;; Also register the simple name so (Name. …) resolves ns-agnostically across
+    ;; files — BUT never clobber a built-in host class of the same simple name (an
+    ;; unrelated ns's bare (Name. …) must still reach the built-in). A prior deftype
+    ;; (tracked in chez-simple-name-tag) is fine to overwrite (last def wins / redef).
+    (when (or (not (hashtable-ref class-ctors-tbl (symbol-t-name name-sym) #f))
+              (hashtable-ref chez-simple-name-tag (symbol-t-name name-sym) #f))
+      (register-class-ctor! (symbol-t-name name-sym) ctor))
     ;; index the tag so a cross-ns extend-protocol resolves the bare type name.
     (hashtable-set! chez-deftype-tag-set tag #t)
     (hashtable-set! chez-simple-name-tag (symbol-t-name name-sym) tag)
