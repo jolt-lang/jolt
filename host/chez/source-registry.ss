@@ -35,9 +35,13 @@
 ;; The continuation to walk for an uncaught value: the one jolt-throw captured for
 ;; THIS value (identity-tagged via jolt-throw-cont, so a stale entry from an
 ;; earlier caught throw is never reused), else a host condition's own
-;; &continuation, else #f.
-(define (jolt-error-continuation v)
-  (let ((tc (jolt-throw-cont)))
+;; &continuation, else #f. raw may arrive as the &jolt-throw condition wrapping
+;; the value (the built-binary launcher hands jolt-report-throwable the guard's
+;; raw value) or already unwrapped (the cli unwraps first); unwrap here so the
+;; identity match holds either way.
+(define (jolt-error-continuation raw)
+  (let* ((v (jolt-unwrap-throw raw))
+         (tc (jolt-throw-cont)))
     (cond
       ((and (pair? tc) (eq? (car tc) v)) (cdr tc))
       ((and (condition? v) (continuation-condition? v)) (condition-continuation v))
