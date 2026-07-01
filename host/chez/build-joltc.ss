@@ -241,7 +241,10 @@
       "  Sscheme_deinit();\n  return status;\n}\n"))
   (close-port mc))
 
+;; -rdynamic puts the embedded jolt_* boot/stub symbols in the dynamic symbol
+;; table so `build` can foreign-entry them to spill the bundled Chez boots. On
+;; Linux dlsym can't see executable symbols otherwise (macOS exports them anyway).
 (bld-system (string-append
-  "cc -O2 -I'" bld-csv-dir "' -I'" jb-build "' '" jb-main-c "' '"
+  "cc -O2 -rdynamic -I'" bld-csv-dir "' -I'" jb-build "' '" jb-main-c "' '"
   bld-csv-dir "/libkernel.a' -o '" jb-out "' " (bld-link-libs)))
 (display (string-append "build-joltc: wrote " jb-out "\n"))
