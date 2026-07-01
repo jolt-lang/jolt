@@ -547,10 +547,14 @@
 ;; sigaddset are libc/libpthread symbols, resolvable once the process object is
 ;; loaded (as the socket fns already are). 128 bytes covers Linux's 1024-bit
 ;; sigset_t and is larger than macOS's 4-byte one.
+;; foreign-procedure resolves its symbol eagerly, and these POSIX signal fns don't
+;; exist on Windows — resolving them unguarded aborted startup ("no entry for
+;; pthread_sigmask"). Guard so a non-POSIX host yields #f; jolt-set-sigint-blocked
+;; then no-ops (Windows delivers ^C through the console, not a per-thread mask).
 (define c-pthread-sigmask
-  (foreign-procedure "pthread_sigmask" (int u8* u8*) int))
-(define c-sigemptyset (foreign-procedure "sigemptyset" (u8*) int))
-(define c-sigaddset (foreign-procedure "sigaddset" (u8* int) int))
+  (guard (e (#t #f)) (foreign-procedure "pthread_sigmask" (int u8* u8*) int)))
+(define c-sigemptyset (guard (e (#t #f)) (foreign-procedure "sigemptyset" (u8*) int)))
+(define c-sigaddset (guard (e (#t #f)) (foreign-procedure "sigaddset" (u8* int) int)))
 ;; POSIX SIG_BLOCK/SIG_UNBLOCK numerics differ by platform: Linux/glibc 0/1,
 ;; Darwin/macOS 1/2 (SIG_UNBLOCK is SIG_BLOCK+1 on both). Resolve SIG_BLOCK for
 ;; this host from the machine-type symbol — macOS builds contain "osx".
@@ -563,12 +567,13 @@
         ((string=? (substring s i (+ i 3)) "osx") 1)   ; Darwin/macOS
         (else (loop (+ i 1)))))))
 (define (jolt-set-sigint-blocked block?)
-  (let ((set (make-bytevector 128 0))
-        (old (make-bytevector 128 0)))
-    (c-sigemptyset set)
-    (c-sigaddset set 2)                          ; SIGINT = 2
-    (c-pthread-sigmask (if block? jolt-sig-block-how (+ jolt-sig-block-how 1)) set old)
-    jolt-nil))
+  (when (and c-pthread-sigmask c-sigemptyset c-sigaddset)
+    (let ((set (make-bytevector 128 0))
+          (old (make-bytevector 128 0)))
+      (c-sigemptyset set)
+      (c-sigaddset set 2)                          ; SIGINT = 2
+      (c-pthread-sigmask (if block? jolt-sig-block-how (+ jolt-sig-block-how 1)) set old)))
+  jolt-nil)
 
 (def-var! "jolt.host" "call-on-main-thread" jolt-call-on-main-thread)
 (def-var! "jolt.host" "run-main-pump" jolt-run-main-pump)
