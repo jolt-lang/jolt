@@ -240,6 +240,24 @@ register checks without clobbering each other. This is the mechanism jolt's
 HTTP client library uses to emulate `java.net.URL` and `HttpURLConnection` so
 `clj-http-lite` runs unchanged.
 
+`__register-instance-check!` answers one `(instance? Foo x)` question. When a
+class belongs to a *hierarchy* — a custom exception that should be caught as an
+`IOException`, or a value that should match `(instance? SomeInterface x)` across
+its whole supertype chain and dispatch a protocol extended to any of those
+supertypes — declare its direct supers once with `jolt.host/register-class-supers!`
+instead. `instance?`, `isa?`, `supers`/`ancestors`, and `extend-protocol`
+dispatch all derive from the one declaration (supers are given by canonical name;
+transitivity is computed):
+
+```clojure
+;; a library's exception type that catch/instance? should treat as an IOException
+(jolt.host/register-class-supers! "com.acme.RetryExhaustedException"
+                                  ["java.io.IOException"])
+
+(throw (jolt.host/throwable "com.acme.RetryExhaustedException" "gave up"))
+;; (catch java.io.IOException e …) now matches it; (instance? java.lang.Exception e) is true
+```
+
 Extending a *built-in* class instead (adding a method to core's `String` shim,
 say) means editing the relevant `host/chez/*.ss` file and running `make remint`
 — see [building-and-deps.md](building-and-deps.md).
