@@ -430,6 +430,19 @@
 (define (hc-record-ctor-key ctx name)
   (let ((nm (hc-record-tag-name name)))
     (or (and nm (chez-find-ctor-key nm (chez-current-ns))) jolt-nil)))
+;; The fully-qualified deftype tag ("ns.Name") IFF `class` names a deftype DEFINED
+;; in the ctx's compile ns — the analyzer qualifies a bare (Name. …) to it, so a
+;; deftype doesn't shadow a same-named built-in host class in an unrelated ns
+;; (rewrite-clj imports java.io.PushbackReader; tools.reader defines its own). Strict:
+;; only this ns's own def (the preferred shape key) counts, not the global
+;; simple-name fallback, so a ns that merely uses the built-in resolves nil.
+(define (hc-deftype-ctor-class ctx class)
+  (let* ((nm (jolt-str-render-one class))
+         (cns (hc-current-ns ctx))
+         (key (string-append cns "/->" nm)))
+    (if (hashtable-ref chez-record-shapes-tbl key #f)
+        (string-append cns "." nm)
+        jolt-nil)))
 ;; record + protocol-method shapes for the inference, from the runtime registries
 ;; (records.ss) populated as deftype/defprotocol forms load.
 (define (hc-record-shapes ctx) (chez-record-shapes-map))
@@ -505,6 +518,7 @@
   (def-var! "jolt.host" "form-syntax-quote-lower" hc-syntax-quote-lower)
   (def-var! "jolt.host" "record-type?" hc-record-type?)
   (def-var! "jolt.host" "record-ctor-key" hc-record-ctor-key)
+  (def-var! "jolt.host" "deftype-ctor-class" hc-deftype-ctor-class)
   (def-var! "jolt.host" "record-shapes" hc-record-shapes)
   (def-var! "jolt.host" "protocol-methods" hc-protocol-methods)
   (def-var! "jolt.host" "inline-enabled?" hc-inline-enabled?)

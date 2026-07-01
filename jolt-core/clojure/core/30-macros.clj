@@ -385,11 +385,18 @@
                     ;; field binds / live-read instance (see defrecord's mk-clause).
                     (let [argv (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
                           inst (first argv)
+                          ;; A method param shadows a same-named field (Clojure
+                          ;; semantics): don't let-bind a field the param already
+                          ;; provides, and treat those params as shadowing so a
+                          ;; mutable field's live-read rewrite doesn't override them.
+                          pnames (set (map name argv))
                           ;; let-bind only immutable fields; mutable ones are read live
                           ;; via rewrite-body so a set! within the method is observed.
                           binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))])
-                                             (filter (fn [f] (not (mutable? f))) fields)))
-                          mbody (map (fn [bf] (rewrite-body inst #{} bf)) (drop 2 spec))]
+                                             (filter (fn [f] (and (not (mutable? f))
+                                                                  (not (contains? pnames (name f)))))
+                                                     fields)))
+                          mbody (map (fn [bf] (rewrite-body inst (set argv) bf)) (drop 2 spec))]
                       (list argv (list* 'let binds mbody))))
         groups (group-by-head body)
         ;; merge clauses by method NAME across ALL protocols into one multi-arity
@@ -616,7 +623,11 @@
                     (let [argv (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
                           inst (first argv)
                           hinted (assoc argv 0 (vary-meta inst assoc :tag (name name-sym)))
-                          binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))]) fields))]
+                          ;; a method param shadows a same-named field (Clojure
+                          ;; semantics), so don't rebind a field the param provides.
+                          pnames (set (map name argv))
+                          binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))])
+                                             (remove (fn [f] (contains? pnames (name f))) fields)))]
                       (list hinted (list* 'let binds (drop 2 spec)))))
         groups (group-by-head body)
         ;; merge clauses by name across protocols into one multi-arity fn (see

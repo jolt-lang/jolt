@@ -19,7 +19,10 @@
     ; concat/lazy-seq) walk too — without this, postwalk-replace silently no-op'd
     ; a quoted list, breaking clojure.template/apply-template
     (list? form) (outer (with-meta (apply list (map inner form)) (meta form)))
-    (seq? form) (outer (with-meta (map inner form) (meta form)))
+    ; doall like Clojure: walk must be eager so an `inner` with side effects
+    ; (rewrite-clj's #() reader bumps an arg-count atom during the walk, read right
+    ; after) runs now, not lazily when the result is later realized.
+    (seq? form) (outer (with-meta (doall (map inner form)) (meta form)))
     :else (outer form)))
 
 (defn postwalk

@@ -268,7 +268,12 @@
   (list (cons "isUpperCase" (lambda (c) (let ((n (char-code c))) (and (>= n 65) (<= n 90)))))
         (cons "isLowerCase" (lambda (c) (let ((n (char-code c))) (and (>= n 97) (<= n 122)))))
         (cons "isDigit" (lambda (c) (let ((n (char-code c))) (and (>= n 48) (<= n 57)))))
-        (cons "isWhitespace" (lambda (c) (char<=? (integer->char (char-code c)) #\space)))))
+        ;; JVM Character.isWhitespace: Unicode whitespace (so U+2028 line separator
+        ;; counts, like the JVM) MINUS the no-break spaces the JVM excludes
+        ;; (U+00A0/U+2007/U+202F). char<=?space missed everything above ASCII.
+        (cons "isWhitespace" (lambda (c) (let ((cp (char-code c)))
+                                           (and (char-whitespace? (integer->char cp))
+                                                (not (fx=? cp #xA0)) (not (fx=? cp #x2007)) (not (fx=? cp #x202F))))))))
 
 ;; String/valueOf(Object): "null" for nil, else jolt's str semantics.
 ;; String/format(fmt args…) / (locale fmt args…) -> the clojure.core format engine.
