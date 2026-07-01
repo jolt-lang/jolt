@@ -748,7 +748,12 @@
             (if fn (jolt-invoke fn inner)
                 (let ((dfn (rdr-default-data-reader-fn)))
                   (if dfn (jolt-invoke dfn (rdr-tag->symbol tag) inner)
-                      (rdr-make-tagged tag inner))))))))
+                      ;; no reader for the tag: a proper tagged-literal value, like
+                      ;; Clojure's *default-data-reader-fn* (tagged-literal), so
+                      ;; tagged-literal? / :tag / :form / printing all work — not the
+                      ;; internal reader form. clojure.edn reads raw forms via
+                      ;; __read-form-raw, so its :readers/:default path is unaffected.
+                      (jolt-tagged-literal (rdr-tag->symbol tag) inner))))))))
 
 ;; rdr-form->data*: convert the VALUE structure (set/tagged/nested forms). The
 ;; wrapper below adds the metadata, so the unchanged branches return x bare.

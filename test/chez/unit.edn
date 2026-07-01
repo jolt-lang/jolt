@@ -312,6 +312,8 @@
   {:suite "reader" :expr "(nil? (read-string \"nil\"))" :expected "true"}
   {:suite "reader" :expr "(true? (read-string \"true\"))" :expected "true"}
   {:suite "reader" :expr "(false? (read-string \"false\"))" :expected "true"}
+  {:suite "reader" :expr "(let [r (read-string \"#foo bar\")] (and (tagged-literal? r) (= (quote foo) (:tag r)) (= (quote bar) (:form r)) (= \"#foo bar\" (pr-str r))))" :expected "true"}
+  {:suite "reader" :expr "(let [t (first (quote [#foo bar]))] (and (tagged-literal? t) (= (quote foo) (:tag t)) (= \"#foo bar\" (pr-str t))))" :expected "true"}
   {:suite "reader" :expr "(= \\a (read-string \"\\\\a\"))" :expected "true"}
   {:suite "reader" :expr "(= \\newline (read-string \"\\\\newline\"))" :expected "true"}
   {:suite "reader" :expr "(= \\space (read-string \"\\\\space\"))" :expected "true"}
