@@ -121,7 +121,7 @@
     ;; Windows (ta6nt, MinGW-w64 under MSYS2): the Chez kernel pulls in
     ;; compression, winsock, COM/UUID, and the registry.
     (bld-nt?
-     "-llz4 -lz -lws2_32 -lrpcrt4 -lole32 -ladvapi32 -luser32 -lshell32 -lm")
+     "-llz4 -lz -lws2_32 -lrpcrt4 -lole32 -luuid -ladvapi32 -luser32 -lshell32 -lm")
     ;; Linux: the Chez kernel pulls in compression (lz4/z), the expression
     ;; editor (ncurses + terminfo), threads, dlopen, libuuid, and clock_gettime.
     (else "-llz4 -lz -lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt")))
