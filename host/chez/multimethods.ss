@@ -61,26 +61,36 @@
 
 (define (jolt-defmulti-setup name-sym dispatch . opts)
   (let-values (((dk h) (parse-mm-opts opts)))
-    (let ((mf (make-jolt-multifn (symbol-t-name name-sym) dispatch
-                                 (new-mm-table) dk h (new-mm-table))))
-      (def-var! (chez-current-ns) (symbol-t-name name-sym) mf)
+    (let* ((sns (symbol-t-ns name-sym))
+           ;; the macro qualifies the name with its EXPANSION ns, so a defmulti
+           ;; deferred inside a fn (a deftest body) still defines in the ns it
+           ;; was written in, not whatever ns is current when it finally runs.
+           (ns (if (string? sns) sns (chez-current-ns)))
+           (mf (make-jolt-multifn (symbol-t-name name-sym) dispatch
+                                  (new-mm-table) dk h (new-mm-table))))
+      (def-var! ns (symbol-t-name name-sym) mf)
       mf)))
 
 ;; (defmethod-setup 'mm dispatch-val impl) — add a method. Auto-creates the multifn
 ;; if absent (defmethod before defmulti — rare; identity dispatch as a fallback).
-(define (jolt-defmethod-setup mm-sym dval impl)
+(define (jolt-defmethod-setup mm-sym dval impl . rest)
   (let* ((nm (symbol-t-name mm-sym))
          (sns (symbol-t-ns mm-sym))
          (qns (and sns (not (jolt-nil? sns)) (not (null? sns)) sns))
+         ;; the macro passes its EXPANSION ns so a defmethod deferred inside a
+         ;; fn resolves like the JVM (against the ns it was written in, not the
+         ;; ns current when it runs); absent (old emitted code) fall back to the
+         ;; runtime ns.
+         (here (if (and (pair? rest) (string? (car rest))) (car rest) (chez-current-ns)))
          ;; qualified (cf.mm/ext) resolves in its own ns (cross-ns defmethod);
-         ;; unqualified resolves in the current ns, else a :refer's home ns (so a
+         ;; unqualified resolves in the writing ns, else a :refer's home ns (so a
          ;; defmethod on a referred multifn lands on the real one), else stays in
-         ;; the current ns (a shadow, as before).
+         ;; the writing ns (a shadow, as before).
          (mns (cond
-                (qns (or (chez-resolve-alias (chez-current-ns) qns) qns))
-                ((var-cell-lookup (chez-current-ns) nm) (chez-current-ns))
-                ((chez-resolve-refer (chez-current-ns) nm) => values)
-                (else (chez-current-ns))))
+                (qns (or (chez-resolve-alias here qns) qns))
+                ((var-cell-lookup here nm) here)
+                ((chez-resolve-refer here nm) => values)
+                (else here)))
          (cur (var-deref mns nm))
          (mf (if (jolt-multifn? cur) cur
                  ;; auto-create: copy the dispatch fn + default from a same-named

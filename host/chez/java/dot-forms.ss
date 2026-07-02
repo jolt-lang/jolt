@@ -60,6 +60,12 @@
     ;; branch and is mis-read as a missing :iterator key (nil). Some libraries
     ;; (e.g. malli's -vmap) iterate a map this way.
     ((string=? name "iterator") (list (make-jiterator (jolt-seq obj))))
+    ;; (.reduce coll f) / (.reduce coll f init): clojure.lang.IReduce — every
+    ;; persistent collection reduces itself on the JVM.
+    ((string=? name "reduce")
+     (list (if (pair? (cdr args))
+               (jolt-reduce (car args) (cadr args) obj)
+               (jolt-reduce (car args) obj))))
     (else #f)))
 
 ;; Universal object-methods: on a

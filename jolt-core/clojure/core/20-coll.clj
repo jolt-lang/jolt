@@ -155,8 +155,43 @@
   (when-let [s (seq coll)]
     (or (pred (first s)) (recur pred (next s)))))
 
-(defn some-fn [& preds]
-  (fn [& xs] (some (fn [p] (some p xs)) preds)))
+;; Reference arities: at least one predicate ((some-fn) is an arity error), and
+;; the returned fn chains with or — a no-match result is the last predicate's
+;; own falsy value (false stays false, not nil).
+(defn some-fn
+  ([p]
+   (fn sp1
+     ([] nil)
+     ([x] (p x))
+     ([x y] (or (p x) (p y)))
+     ([x y z] (or (p x) (p y) (p z)))
+     ([x y z & args] (or (sp1 x y z)
+                         (some p args)))))
+  ([p1 p2]
+   (fn sp2
+     ([] nil)
+     ([x] (or (p1 x) (p2 x)))
+     ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
+     ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
+     ([x y z & args] (or (sp2 x y z)
+                         (some (fn [q] (or (p1 q) (p2 q))) args)))))
+  ([p1 p2 p3]
+   (fn sp3
+     ([] nil)
+     ([x] (or (p1 x) (p2 x) (p3 x)))
+     ([x y] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y)))
+     ([x y z] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y) (p1 z) (p2 z) (p3 z)))
+     ([x y z & args] (or (sp3 x y z)
+                         (some (fn [q] (or (p1 q) (p2 q) (p3 q))) args)))))
+  ([p1 p2 p3 & ps]
+   (let [ps (cons p1 (cons p2 (cons p3 ps)))]
+     (fn spn
+       ([] nil)
+       ([x] (some (fn [p] (p x)) ps))
+       ([x y] (or (spn x) (spn y)))
+       ([x y z] (or (spn x) (spn y) (spn z)))
+       ([x y z & args] (or (spn x y z)
+                           (some (fn [p] (some p args)) ps)))))))
 
 (defn not-any? [pred coll] (not (some pred coll)))
 

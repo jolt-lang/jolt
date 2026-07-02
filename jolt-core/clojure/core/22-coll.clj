@@ -183,10 +183,16 @@
      ([x y z & args] (f (apply g x y z args)))))
   ([f g & fs] (reduce comp (comp f g) fs)))
 
-;; Canonical IFn set: fns, keywords, symbols, maps (sorted incl.),
-;; sets, vectors, and vars — NOT lists ((ifn? '(1 2)) is false in Clojure).
+;; Canonical IFn set: fns, keywords, symbols, maps (sorted incl.), sets,
+;; vectors, vars — NOT lists ((ifn? '(1 2)) is false in Clojure) — plus the
+;; host callables (multimethods, promises) and a deftype/record implementing
+;; clojure.lang.IFn's invoke.
 (defn ifn? [x]
-  (or (fn? x) (keyword? x) (symbol? x) (map? x) (set? x) (vector? x) (var? x)))
+  (if (or (fn? x) (keyword? x) (symbol? x) (map? x) (set? x) (vector? x) (var? x)
+          (jolt.host/callable-host? x)
+          (jolt.host/jrec-method? x "invoke"))
+    true
+    false))
 
 ;; Auto-promoting (') and unchecked arithmetic. Jolt numbers don't overflow,
 ;; so all of these are the checked ops; fixed arities mirror Clojure's

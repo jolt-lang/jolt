@@ -624,6 +624,31 @@
 ;; (Long. n) / (Long. "n"): a Long is just jolt's integer; return it (parse a string).
 (register-class-ctor! "Long" (lambda (x) (if (string? x) (parse-int-or-throw x 10 "Long") (->num (jnum->exact x)))))
 (register-class-ctor! "java.lang.Long" (lambda (x) (if (string? x) (parse-int-or-throw x 10 "Long") (->num (jnum->exact x)))))
+;; (Integer. n) / (Integer. "n"): jolt's integer, range-checked like intCast.
+(define (integer-ctor x)
+  (jolt-int-cast (if (string? x) (parse-int-or-throw x 10 "Integer") x)))
+(register-class-ctor! "Integer" integer-ctor)
+(register-class-ctor! "java.lang.Integer" integer-ctor)
+;; (Double. x) / (Double. "x"): jolt's double.
+(define (double-ctor x)
+  (if (string? x)
+      (let ((n (string->number x)))
+        (if n (exact->inexact n)
+            (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                                             (string-append "For input string: \"" x "\"")))))
+      (jolt-double x)))
+(register-class-ctor! "Double" double-ctor)
+(register-class-ctor! "java.lang.Double" double-ctor)
+
+;; (Boolean. "true") / (Boolean. b): true for the string "true" (case-insensitive,
+;; anything else false) or the boolean itself — Boolean.valueOf semantics; the
+;; box is jolt's plain boolean.
+(define (boolean-ctor x)
+  (cond ((string? x) (string-ci=? x "true"))
+        ((boolean? x) x)
+        (else #f)))
+(register-class-ctor! "Boolean" boolean-ctor)
+(register-class-ctor! "java.lang.Boolean" boolean-ctor)
 
 ;; --- java.net.URI -----------------------------------------------------------
 ;; A minimal RFC-3986 split into scheme/authority/host/port/path/query/fragment,

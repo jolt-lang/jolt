@@ -301,6 +301,16 @@
 (def-var! "clojure.core" "future-cancelled?" jolt-native-future-cancelled?)
 (def-var! "clojure.core" "promise" jolt-promise-new)
 (def-var! "clojure.core" "deliver" jolt-deliver)
+;; a promise is an IFn on the JVM: (p val) delivers. Registered as a cold
+;; invoke arm; callable-host? feeds the ifn? overlay (multimethods included).
+(register-invoke-arm! jolt-promise?
+  (lambda (p args)
+    (if (and (pair? args) (null? (cdr args)))
+        (jolt-deliver p (car args))
+        (jolt-throw (jolt-host-throwable "clojure.lang.ArityException"
+                                         "Wrong number of args passed to a promise")))))
+(def-var! "jolt.host" "callable-host?"
+  (lambda (x) (if (or (jolt-multifn? x) (jolt-promise? x)) #t jolt-nil)))
 (def-var! "clojure.core" "agent" jolt-agent-new)
 (def-var! "clojure.core" "agent?" jolt-agent?)
 (def-var! "clojure.core" "send" jolt-agent-send)

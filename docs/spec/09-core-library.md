@@ -321,6 +321,39 @@ in the watch namespaces is their STM `ref` section — refs are out of scope,
 
 ---
 
+### clojure.string coercion, some-fn, ifn? — since 1.2/1.3
+
+```
+(clojure.string/upper-case s) …    (some-fn p & ps)    (ifn? x)
+```
+
+**Semantics**
+
+- S1. The clojure.string case fns and searches (`upper-case`, `lower-case`,
+  `capitalize`, `starts-with?`, `ends-with?`, `includes?`, `index-of`,
+  `replace`) take any Object `s` through its `toString`, like the reference's
+  `^CharSequence`+`.toString` signatures: `(upper-case :kw)` is `":KW"`,
+  `(capitalize 1)` is `"1"`. nil throws (method call on null); a nil `substr`
+  throws.
+- S2. `some-fn` follows the reference arities: at least one predicate
+  (`(some-fn)` is an arity error) and the returned fn chains with `or`, so a
+  no-match result is the last predicate's own falsy value (`false` stays
+  `false`).
+- S3. `ifn?` covers fns, keywords, symbols, maps, sets, vectors, vars,
+  multimethods, promises (invoking a promise delivers it), and a
+  deftype/defrecord implementing `clojure.lang.IFn`'s `invoke`.
+- S4. A `defmulti`/`defmethod` deferred inside a fn body interns/resolves in
+  the namespace it was WRITTEN in (the macros bake their expansion ns), not
+  whatever namespace is current when it runs.
+
+**Conformance**
+
+S1–S4 → corpus `string / toString coercion`, `core / some-fn`, `core / ifn?`,
+`multimethods / deferred definition`; clojure-test-suite string/some-fn/
+ifn-qmark/boolean-qmark/reduce namespaces (all fully passing).
+
+---
+
 ## Authoring notes
 
 - Source examples from the ClojureDocs export (`clojuredocs-export.edn`,

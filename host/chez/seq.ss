@@ -436,6 +436,16 @@
 ;; can't statically resolve to a procedure (a keyword/coll/proc held in a local)
 ;; routes here. Off the arithmetic/self-recursion hot path by construction.
 ;; ============================================================================
+;; (pred . handler) arms making a host type invocable; handler gets (f args).
+(define jolt-invoke-arms '())
+(define (register-invoke-arm! pred handler)
+  (set! jolt-invoke-arms (cons (cons pred handler) jolt-invoke-arms)))
+(define (jolt-invoke-arm-for f)
+  (let loop ((as jolt-invoke-arms))
+    (cond ((null? as) #f)
+          (((caar as) f) (cdar as))
+          (else (loop (cdr as))))))
+
 (define (jolt-invoke f . args)
   (cond
     ((procedure? f) (apply f args))
@@ -449,6 +459,9 @@
      => (lambda (m) (apply jolt-invoke m f args)))
     ((and (reified-methods f) (hashtable-ref (reified-methods f) "invoke" #f))
      => (lambda (m) (apply jolt-invoke m f args)))
+    ;; host types registered as callable (promise delivers, …): consulted only
+    ;; after every built-in case missed, so the hot dispatch pays nothing.
+    ((jolt-invoke-arm-for f) => (lambda (h) (h f args)))
     ;; calling a non-fn: a ClassCastException naming the operator's CLASS (like
     ;; the JVM's "class clojure.lang.LazySeq cannot be cast to ... IFn" — never
     ;; the value, whose printed form may be unbounded: ((range)) must throw, not
