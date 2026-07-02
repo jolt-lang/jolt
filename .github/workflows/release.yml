@@ -104,6 +104,7 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-lz4
             mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-ntldd
 
       - name: Cache Chez Scheme (Windows)
         if: runner.os == 'Windows'
@@ -153,6 +154,15 @@ jobs:
       # dev-machine check — see jolt-8479). `make joltc-release`, not `make joltc`.
       - name: Build joltc (release)
         run: make joltc-release
+
+      - name: Inspect the binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set +e
+          ls -la target/release/
+          ntldd target/release/joltc.exe 2>&1 | head -20
+          ./target/release/joltc.exe -e '(+ 1 2)'
+          echo "exit=$?"
 
       # Sanity: the built binary runs (no Chez needed) and self-reports a value.
       - name: Smoke the binary
