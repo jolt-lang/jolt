@@ -17,13 +17,17 @@
 
 ;; Hot clojure.core primitives lowered to native Scheme.
 ;; `=` is the exactness-aware jolt= from values.ss; inc/dec/
-;; not are rt shims; mod/rem/quot map to Scheme's (Scheme has all three).
+;; not are rt shims. Arithmetic and comparisons lower to the jolt-n* checked
+;; macros (host/chez/seq.ss): the both-Chez-numbers fast path is open-coded and
+;; anything else (BigDecimal, a non-number) takes the Numbers.ops-style category
+;; dispatch, with JVM contagion (a double operand wins; an exact zero divisor is
+;; ArithmeticException; a double zero divisor is ##Inf/##NaN).
 (def ^:private native-ops
-  {"+" "+" "-" "-" "*" "*" "/" "/"
-   "<" "<" ">" ">" "<=" "<=" ">=" ">="
+  {"+" "jolt-n+" "-" "jolt-n-" "*" "jolt-n*" "/" "jolt-n-div"
+   "<" "jolt-n<" ">" "jolt-n>" "<=" "jolt-n<=" ">=" "jolt-n>="
    "=" "jolt=" "inc" "jolt-inc" "dec" "jolt-dec" "not" "jolt-not"
-   "min" "min" "max" "max"
-   "mod" "modulo" "rem" "remainder" "quot" "quotient"
+   "min" "jolt-n-min" "max" "jolt-n-max"
+   "mod" "jolt-mod" "rem" "jolt-rem" "quot" "jolt-quot"
    "vector" "jolt-vector" "hash-map" "jolt-hash-map-fn" "hash-set" "jolt-hash-set"
    "conj" "jolt-conj" "get" "jolt-get" "nth" "jolt-nth" "count" "jolt-count"
    "assoc" "jolt-assoc" "dissoc" "jolt-dissoc" "contains?" "jolt-contains?"
@@ -53,12 +57,12 @@
    "protocol-dispatch3" "protocol-dispatch3"})
 
 ;; Value-position resolution for a clojure.core ref passed AS A VALUE (to map /
-;; filter / reduce / apply). Arithmetic is the exception — Scheme's +/-/*// return
-;; EXACT results for exact/zero-arg inputs, breaking the all-double model in
-;; higher-order use, so value-position arithmetic routes to the flonum wrappers.
+;; filter / reduce / apply). The jolt-n* call-position forms are macros, so value
+;; position substitutes the variadic procedures over the same binary dispatch.
 (def ^:private core-value-procs
   (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"
-                     "min" "jolt-min" "max" "jolt-max"}))
+                     "min" "jolt-min" "max" "jolt-max"
+                     "<" "jolt-lt" ">" "jolt-gt" "<=" "jolt-le" ">=" "jolt-ge"}))
 
 ;; Per-op arity gate: only lower when the Scheme prim and the jolt fn agree at
 ;; this arity. Ops absent from the table are variadic (legal at any arity).
@@ -83,7 +87,7 @@
 
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg,
 ;; but Scheme's < demands a number even there — special-case.
-(def ^:private cmp1-ops #{"<" ">" "<=" ">="})
+(def ^:private cmp1-ops #{"jolt-n<" "jolt-n>" "jolt-n<=" "jolt-n>="})
 
 ;; Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
 ;; call on any other method routes to record-method-dispatch (a reify/record
@@ -93,7 +97,7 @@
 ;; Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
 ;; :if test built from them needs no jolt-truthy? wrapper.
 (def ^:private bool-returning-ops
-  #{"<" "<=" ">" ">=" "jolt=" "jolt-not"
+  #{"jolt-n<" "jolt-n<=" "jolt-n>" "jolt-n>=" "jolt=" "jolt-not"
     "jolt-even?" "jolt-odd?" "jolt-pos?" "jolt-neg?"
     "jolt-zero?" "jolt-empty?" "jolt-contains?" "jolt-nil?" "jolt-some?"})
 

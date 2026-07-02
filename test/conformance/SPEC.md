@@ -127,10 +127,36 @@ arithmetic, `=`, and `hash` behave exactly as the JVM — but report `Long`, not
 `Byte`/`Short`/`Integer`, so `(class (byte 5))` and `(instance? Byte (byte 5))`
 diverge. This is substrate-inherent: a Chez fixnum is an immediate `identical?`
 to the plain integer (nothing to tag, and numbers carry no metadata), so the only
-faithful representation is a boxed type — which would crash raw compiled `(+ …)`
-(arithmetic emits a bare Chez `+`) or force every `+`/`-`/`*` through an
-unwrapping dispatcher, de-optimizing all arithmetic. Same shape as the accepted
-BigInt-vs-Long unification.
+faithful representation is a boxed type — which would crash the compiled
+arithmetic fast path (both operands Chez numbers → the raw Chez op) or force
+every `+`/`-`/`*` through an unwrapping dispatcher, de-optimizing all
+arithmetic. Same shape as the accepted BigInt-vs-Long unification.
+
+## Number operations
+
+Binary arithmetic and comparisons follow the JVM's `Numbers.ops(x, y)` category
+dispatch. Every position (call, value, higher-order) funnels a binary op through
+one seam (`host/chez/seq.ss`): operands inside Chez's tower take the native op
+with the JVM contagion rules patched in; an operand outside it (BigDecimal)
+falls to a slow hook the numeric shim extends (`host/chez/java/bigdec.ss`); a
+non-numeric operand throws `ClassCastException`. The rules the corpus pins
+(`numbers / ops dispatch`, `numbers / with-precision`, `numbers / rationalize`):
+
+- A double operand wins: `(* 1.0 0)` is `0.0` (Chez's exact-zero shortcut must
+  not leak), `(* ##Inf 0)` is `##NaN`, `(+ 1.5M 2.0)` is `3.5`.
+- Division: an exact zero divisor throws `ArithmeticException`; a double zero
+  divisor yields `##Inf`/`##-Inf`/`##NaN`. `(/ 1M 3M)` with no bound
+  `*math-context*` throws (non-terminating); under `with-precision` it rounds.
+- `quot`/`rem`/`mod` cover the full tower (ratios truncate; doubles keep double;
+  `mod` takes the divisor's sign; zero divisor throws in both worlds).
+- `min`/`max` return the *original* operand (`(min 1 2.0)` is `1`, exact); a
+  `##NaN` operand wins.
+- `with-precision` binds `*math-context*`; BigDecimal results round to the
+  precision with the `java.math.RoundingMode` semantics (default `HALF_UP`,
+  `UNNECESSARY` throws).
+- `rationalize` routes a double through its shortest decimal print
+  (`BigDecimal.valueOf`), so `(rationalize 1.1)` is `11/10`, not the exact
+  binary expansion.
 
 ## Hosting jolt on a new runtime
 

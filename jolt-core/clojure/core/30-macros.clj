@@ -109,11 +109,15 @@
          (with-open ~(vec (drop 2 bindings)) ~@body)
          (finally (__close ~(first bindings)))))))
 
-;; jolt numbers are doubles — there is no BigDecimal math context, so the
-;; precision (and optional :rounding mode) is accepted and ignored.
+;; Binds *math-context*; BigDecimal arithmetic in the dynamic scope rounds its
+;; results to the precision with the rounding mode (default HALF_UP, like
+;; java.math.MathContext).
 (defmacro with-precision [precision & exprs]
-  (let [body (if (= :rounding (first exprs)) (drop 2 exprs) exprs)]
-    `(do ~@body)))
+  (let [[rounding body] (if (= :rounding (first exprs))
+                          [(second exprs) (drop 2 exprs)]
+                          ['HALF_UP exprs])]
+    `(binding [clojure.core/*math-context* {:precision ~precision :rounding '~rounding}]
+       ~@body)))
 
 (defmacro with-bindings [binding-map & body]
   `(with-bindings* ~binding-map (fn [] ~@body)))

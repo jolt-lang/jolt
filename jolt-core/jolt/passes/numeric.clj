@@ -183,7 +183,12 @@
             ls (lng-spec nm n)
             bs (bd-spec nm n)]
         (cond
-          (and ds (ok? :double :double))
+          (and ds (ok? :double :double)
+               ;; min/max return the ORIGINAL operand (Numbers.min: an integer
+               ;; literal stays exact), so an int-literal operand blocks the
+               ;; flonum lowering there — flmin would coerce it.
+               (or (not (contains? #{"min" "max"} nm))
+                   (every? (fn [c] (= c :double)) cls)))
           ;; coerce integer-literal operands to flonum so fl-ops never see an exact int.
           (let [args' (mapv (fn [nd] (if (int-lit? nd) (assoc nd :val (double (get nd :val))) nd))
                             argnodes)]
