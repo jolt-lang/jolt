@@ -33,6 +33,15 @@
 
 (define (jch-direct-supers name) (hashtable-ref jvm-class-parents name '()))
 
+;; Replace a class's direct supers outright (defrecord re-declares the row its
+;; deftype half registered). Same cache invalidation as a register.
+(define (jch-set-supers! name supers)
+  (hashtable-set! jvm-class-parents name supers)
+  (hashtable-clear! jch-closure-cache)
+  (hashtable-clear! jch-tags-cache)
+  (set! jch-known-cache #f)
+  (set! jch-simple->fqn-cache #f))
+
 ;; transitive supers of NAME (canonical), excluding NAME and Object; Object is the
 ;; universal root supplied by callers. Breadth-first, deduped, stable order.
 (define (jch-closure name)
@@ -45,6 +54,11 @@
                                  (cons (car pending) seen)))))))
         (hashtable-set! jch-closure-cache name result)
         result)))
+
+;; ns segment munging for a JVM-spelled class name: dashes become underscores
+;; (clojure.core-test.x -> clojure.core_test.x).
+(define (jch-munge-segments s)
+  (list->string (map (lambda (c) (if (char=? c #\-) #\_ c)) (string->list s))))
 
 (define (jch-last-segment s)
   (let loop ((i (- (string-length s) 1)))
@@ -129,6 +143,30 @@
     (set! jch-known-cache #f)
     (set! jch-simple->fqn-cache #f)
     (jch-register-supers!-inner name supers)))
+
+;; ---- interface marking ---------------------------------------------------------
+;; The JVM distinguishes a concrete class (whose bases/supers chain roots at
+;; Object) from an interface (whose don't). The graph marks the modeled
+;; interfaces; anything unmarked is treated as a concrete class.
+(define jch-interface-set (make-hashtable string-hash string=?))
+(define (jch-mark-interface! name) (hashtable-set! jch-interface-set name #t))
+(define (jch-interface? name) (hashtable-ref jch-interface-set name #f))
+(for-each jch-mark-interface!
+          '("clojure.lang.Seqable" "clojure.lang.Sequential" "clojure.lang.Sorted"
+            "clojure.lang.Reversible" "clojure.lang.Indexed" "clojure.lang.Counted"
+            "clojure.lang.Named" "clojure.lang.Fn" "clojure.lang.IFn"
+            "clojure.lang.IPersistentCollection" "clojure.lang.ISeq"
+            "clojure.lang.Associative" "clojure.lang.ILookup"
+            "clojure.lang.IPersistentStack" "clojure.lang.IPersistentVector"
+            "clojure.lang.IPersistentMap" "clojure.lang.IPersistentSet"
+            "clojure.lang.IPersistentList" "clojure.lang.IObj" "clojure.lang.IMeta"
+            "clojure.lang.IDeref" "clojure.lang.IRecord" "clojure.lang.IType"
+            "clojure.lang.IHashEq" "clojure.lang.IEditableCollection"
+            "clojure.lang.IExceptionInfo" "clojure.lang.IReduceInit"
+            "java.util.List" "java.util.Set" "java.util.Collection" "java.util.Map"
+            "java.util.Iterator" "java.lang.Iterable" "java.lang.CharSequence"
+            "java.lang.Comparable" "java.lang.Runnable"
+            "java.util.concurrent.Callable" "java.io.Serializable"))
 
 ;; ---- seed the built-in graph: direct supers only, faithful to the JVM ---------
 ;; core clojure.lang interfaces

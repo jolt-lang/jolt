@@ -298,15 +298,27 @@
 (defn val [e] (if (map-entry? e) (nth e 1) (throw (ex-info "val requires a map entry" {}))))
 
 ;; --- Ad-hoc hierarchies (stage 3) — Clojure's canonical pure-map port. -----
-;; A hierarchy is {:parents {tag #{parents}} :ancestors {tag #{all}} 
+;; A hierarchy is {:parents {tag #{parents}} :ancestors {tag #{all}}
 ;; :descendants {tag #{all}}}. The 3-arity forms are PURE; the 1/2-arity forms
 ;; operate on the private global hierarchy atom. Multimethod dispatch
 ;; (evaluator defmulti-setup) calls isa? through the interned var.
+;;
+;; Ported from clojure.core with the reference's argument assertions and throw
+;; contracts intact — bad shapes throw exactly where they do there (a non-map h
+;; fails on the (parent-map tag) call, invalid tags fail the asserts). The class
+;; arms answer through the host class graph (jolt.host/class-* seams).
 
 (defn make-hierarchy []
   {:parents {} :descendants {} :ancestors {}})
 
 (def ^:private global-hierarchy (atom (make-hierarchy)))
+
+(defn- hier-assert [ok form]
+  (when-not ok (throw (new AssertionError (str "Assert failed: " form)))))
+
+;; a hierarchy tag naming a class — a class value, or the name string of a class
+;; the host graph models (jolt classes are their name strings).
+(defn- class-tag? [tag] (if (jolt.host/class-value? tag) true false))
 
 (defn isa?
   ([child parent] (isa? (deref global-hierarchy) child parent))
@@ -316,6 +328,10 @@
        ;; so a class-keyed multimethod / (isa? (class x) C) dispatches like the JVM.
        (jolt.host/class-isa? child parent)
        (contains? (get (get h :ancestors) child #{}) parent)
+       ;; a hierarchy relationship established on one of a class's supers
+       (and (class-tag? child)
+            (some (fn [s] (contains? (get (get h :ancestors) s #{}) parent))
+                  (jolt.host/class-supers child)))
        (and (vector? parent) (vector? child)
             (= (count parent) (count child))
             (loop [ret true i 0]
@@ -325,24 +341,44 @@
 
 (defn parents
   ([tag] (parents (deref global-hierarchy) tag))
-  ([h tag] (not-empty (get (get h :parents) tag))))
+  ([h tag] (not-empty
+            (let [tp (get (get h :parents) tag)]
+              (if (class-tag? tag)
+                (into (set (jolt.host/class-bases tag)) tp)
+                tp)))))
 
 (defn ancestors
   ([tag] (ancestors (deref global-hierarchy) tag))
-  ([h tag]
-   ;; the user hierarchy plus any modeled JVM ancestry (jolt.host/class-ancestors)
-   ;; so (ancestors (class x)) answers like the JVM for the common interfaces.
-   (let [hier (get (get h :ancestors) tag)
-         host (jolt.host/class-ancestors tag)]
-     (not-empty (if host (into (or hier #{}) host) hier)))))
+  ([h tag] (not-empty
+            (let [ta (get (get h :ancestors) tag)]
+              (if (class-tag? tag)
+                ;; the class's own ancestry plus hierarchy relationships derived
+                ;; on the class or any of its supers
+                (let [superclasses (set (jolt.host/class-supers tag))]
+                  (reduce into superclasses
+                          (cons ta (map (fn [s] (get (get h :ancestors) s))
+                                        superclasses))))
+                ta)))))
 
 (defn descendants
   ([tag] (descendants (deref global-hierarchy) tag))
-  ([h tag] (not-empty (get (get h :descendants) tag))))
+  ([h tag] (if (class-tag? tag)
+             (throw (new UnsupportedOperationException "Can't get descendants of classes"))
+             (not-empty (get (get h :descendants) tag)))))
 
 (defn derive
-  ([tag parent] (swap! global-hierarchy derive tag parent) nil)
+  ([tag parent]
+   (hier-assert (namespace parent) "(namespace parent)")
+   (hier-assert (or (class-tag? tag)
+                    (and (or (keyword? tag) (symbol? tag)) (namespace tag)))
+                "(or (class? tag) (and (instance? clojure.lang.Named tag) (namespace tag)))")
+   (swap! global-hierarchy derive tag parent) nil)
   ([h tag parent]
+   (hier-assert (not= tag parent) "(not= tag parent)")
+   (hier-assert (or (class-tag? tag) (keyword? tag) (symbol? tag))
+                "(or (class? tag) (instance? clojure.lang.Named tag))")
+   (hier-assert (or (keyword? parent) (symbol? parent))
+                "(instance? clojure.lang.Named parent)")
    (let [tp (get h :parents)
          td (get h :descendants)
          ta (get h :ancestors)
@@ -350,14 +386,14 @@
               (reduce (fn [ret k]
                         (assoc ret k
                                (reduce conj (get targets k #{})
-                                       (cons target (get targets target)))))
-                      m (cons source (get sources source))))]
+                                       (cons target (targets target)))))
+                      m (cons source (sources source))))]
      (or
-      (when-not (contains? (get tp tag #{}) parent)
-        (when (contains? (get ta tag #{}) parent)
-          (throw (str tag " already has " parent " as ancestor")))
-        (when (contains? (get ta parent #{}) tag)
-          (throw (str "Cyclic derivation: " parent " has " tag " as ancestor")))
+      (when-not (contains? (tp tag) parent)
+        (when (contains? (ta tag) parent)
+          (throw (new Exception (str tag " already has " parent " as ancestor"))))
+        (when (contains? (ta parent) tag)
+          (throw (new Exception (str "Cyclic derivation: " parent " has " tag " as ancestor"))))
         {:parents (assoc tp tag (conj (get tp tag #{}) parent))
          :ancestors (tf ta tag td parent ta)
          :descendants (tf td parent ta tag td)})
@@ -367,15 +403,15 @@
   ([tag parent] (swap! global-hierarchy underive tag parent) nil)
   ([h tag parent]
    (let [parent-map (get h :parents)
-         childs-parents (if (get parent-map tag)
-                          (disj (get parent-map tag) parent)
+         childs-parents (if (parent-map tag)
+                          (disj (parent-map tag) parent)
                           #{})
          new-parents (if (not-empty childs-parents)
                        (assoc parent-map tag childs-parents)
                        (dissoc parent-map tag))
          deriv-seq (mapcat (fn [e] (cons (key e) (interpose (key e) (val e))))
                            (seq new-parents))]
-     (if (contains? (get parent-map tag #{}) parent)
+     (if (contains? (parent-map tag) parent)
        (reduce (fn [p [t pr]] (derive p t pr))
                (make-hierarchy) (partition 2 deriv-seq))
        h))))

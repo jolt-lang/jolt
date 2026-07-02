@@ -258,6 +258,14 @@ transitivity is computed):
 ;; (catch java.io.IOException e …) now matches it; (instance? java.lang.Exception e) is true
 ```
 
+deftype/defrecord classes join the same graph automatically at definition: a
+record's ancestry carries the record interfaces (`clojure.lang.IRecord`,
+`IPersistentMap`, `Associative`, …), a bare deftype carries
+`clojure.lang.IType`, and every protocol the type implements inline appears as
+an implemented interface — so `(ancestors MyRecord)`, `(isa? MyRecord
+clojure.lang.IPersistentMap)`, and hierarchy relationships `derive`d on a
+class's supers all answer like the JVM.
+
 Extending a *built-in* class instead (adding a method to core's `String` shim,
 say) means editing the relevant `host/chez/*.ss` file and running `make remint`
 — see [building-and-deps.md](building-and-deps.md).

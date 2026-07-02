@@ -232,6 +232,56 @@ clojure-test-suite `core_test/special_symbol_qmark.cljc` and every
 
 ---
 
+### make-hierarchy, derive, underive, isa?, parents, ancestors, descendants — since 1.0
+
+```
+(make-hierarchy)
+(derive tag parent)            (derive h tag parent)
+(underive tag parent)          (underive h tag parent)
+(isa? child parent)            (isa? h child parent)
+(parents tag)  (ancestors tag)  (descendants tag)   ; + (f h tag) forms
+```
+
+**Semantics**
+
+- S1. A hierarchy is a pure value `{:parents {tag #{...}} :ancestors {...}
+  :descendants {...}}`; the 3-arity forms are pure, the shorter arities read and
+  mutate the global hierarchy.
+- S2. `isa?` is true when `(= child parent)`, when the host type system says
+  parent is assignable from child (both classes), when the relationship was
+  `derive`d — including a relationship derived on one of a class child's
+  supers — or component-wise for equal-length vectors.
+- S3. Class tags answer through the host type hierarchy: `(parents c)` includes
+  the class's direct supers (`bases` — a concrete class's chain roots at
+  `java.lang.Object`, an interface's does not); `(ancestors c)` is the
+  transitive set plus anything `derive`d on the class or its supers. A
+  deftype/defrecord class's ancestry includes its implemented protocol
+  interfaces and, for records, the record interfaces
+  (`clojure.lang.IRecord`/`IPersistentMap`/`Associative`/…; `clojure.lang.IType`
+  for a bare deftype).
+- S4. `derive` returns the updated hierarchy (3-arity) or nil (2-arity);
+  deriving a relationship that already holds transitively, or one that would
+  create a cycle, throws.
+
+**Errors**
+
+- X1. `derive` asserts its argument shapes: parent must be a namespaced Named
+  value; tag must be a class or a Named value (namespaced in the 2-arity
+  global form); `(derive h tag tag)` fails the `not=` assert. AssertionError.
+- X2. `underive`/`derive` with a non-hierarchy `h` throw at the parents
+  lookup (the map is called as a function, like the reference).
+- X3. `(descendants h SomeClass)` throws UnsupportedOperationException
+  ("Can't get descendants of classes") — Java type inheritance is not
+  enumerable downward.
+
+**Conformance**
+
+S1–S4, X1–X3 → corpus `hierarchy / *` rows; clojure-test-suite
+`core_test/{derive,underive,isa_…,parents,ancestors,descendants}.cljc`
+(all fully passing).
+
+---
+
 ## Authoring notes
 
 - Source examples from the ClojureDocs export (`clojuredocs-export.edn`,
