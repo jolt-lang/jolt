@@ -306,13 +306,24 @@
         (loop (cddr a)))))
   jolt-nil)
 
-;; alter-meta! / reset-meta!: update a var's metadata (var-meta-table, rt.ss).
+;; alter-meta! / reset-meta!: a var's metadata lives in var-meta-table (rt.ss);
+;; any other reference (atom/agent/namespace) uses the identity meta side-table
+;; jolt-meta reads.
 (define (jolt-alter-meta! ref f . args)
-  (let* ((cur (or (hashtable-ref var-meta-table ref #f) (jolt-hash-map)))
-         (new (apply jolt-invoke f cur args)))
-    (hashtable-set! var-meta-table ref new)
-    new))
-(define (jolt-reset-meta! ref m) (hashtable-set! var-meta-table ref m) m)
+  (if (var-cell? ref)
+      (let* ((cur (or (hashtable-ref var-meta-table ref #f) (jolt-hash-map)))
+             (new (apply jolt-invoke f cur args)))
+        (hashtable-set! var-meta-table ref new)
+        new)
+      (let* ((cur (let ((m (jolt-meta ref))) (if (jolt-nil? m) (jolt-hash-map) m)))
+             (new (apply jolt-invoke f cur args)))
+        (hashtable-set! meta-table ref new)
+        new)))
+(define (jolt-reset-meta! ref m)
+  (if (var-cell? ref)
+      (hashtable-set! var-meta-table ref m)
+      (hashtable-set! meta-table ref m))
+  m)
 
 ;; --- RESOLVE FRICTION: native-op cells -------------------------------------
 ;; Native-op primitives (+ map reduce …) are INLINED at emit, so they have no

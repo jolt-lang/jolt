@@ -27,9 +27,9 @@
     ;; so dispatch to its meta method rather than the identity side-table — which
     ;; the deftype's reconstructed instances would not share.
     ((and (jrec? x) (jrec-cl x "meta")) => (lambda (m) (jolt-invoke m x)))
-    ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x))
-     (hashtable-ref meta-table x jolt-nil))
-    (else jolt-nil)))
+    ;; everything else (collections, fns, reify, atoms/agents and any reference
+    ;; type) reads the identity side-table; a value with no entry is nil meta.
+    (else (hashtable-ref meta-table x jolt-nil))))
 
 ;; fresh-identity copy of a metadatable value (so attaching meta doesn't mutate
 ;; the original). cseq/procedure can't be copied meaningfully — keyed in place.

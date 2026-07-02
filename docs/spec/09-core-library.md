@@ -282,6 +282,45 @@ S1–S4, X1–X3 → corpus `hierarchy / *` rows; clojure-test-suite
 
 ---
 
+### atom, add-watch, remove-watch, set-validator!, get-validator — since 1.0
+
+```
+(atom x & {:keys [meta validator]})
+(add-watch iref key f)   (remove-watch iref key)
+(set-validator! iref f)  (get-validator iref)
+```
+
+**Semantics**
+
+- S1. Watches, validators, and reference metadata are one contract (the JVM's
+  ARef/IRef) shared by atoms, vars, and agents. `add-watch`/`remove-watch`
+  return the reference; re-adding a key replaces that watch in place.
+- S2. A watch is called `(f key ref old new)` after a state change: atom
+  swap!/reset!/compare-and-set!, var ROOT changes (`def` on a watched var,
+  `var-set` outside a thread binding, `alter-var-root` — a thread-binding set
+  does not notify), and each agent action's state change.
+- S3. A validator gates every state change and, via the `:validator` ctor
+  option, the initial value — an invalid initial value never constructs the
+  reference.
+- S4. The `:meta` ctor option attaches reference metadata (`meta` reads it,
+  `alter-meta!`/`reset-meta!` update it); nil is allowed.
+
+**Errors**
+
+- X1. A rejected value (validator returns logical false or the ctor option
+  fails on the initial value) throws IllegalStateException "Invalid reference
+  state".
+- X2. A non-map `:meta` ctor option throws ClassCastException.
+
+**Conformance**
+
+S1–S4, X1–X2 → corpus `iref / *` rows; clojure-test-suite
+`core_test/{atom,add-watch,remove-watch}.cljc` (the remaining baselined error
+in the watch namespaces is their STM `ref` section — refs are out of scope,
+`stm-refs` in `coverage.md`).
+
+---
+
 ## Authoring notes
 
 - Source examples from the ClojureDocs export (`clojuredocs-export.edn`,
