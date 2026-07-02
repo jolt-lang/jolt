@@ -99,11 +99,12 @@
       [row :kept])))
 
 ;; --- corpus writer (preserves the one-row-per-line layout) -------------------
-(defn row-str [{:keys [suite label expected actual]}]
+(defn row-str [{:keys [suite label expected actual portability]}]
   (str "  {:suite " (pr-str suite)
        " :label " (pr-str label)
        " :expected " (if (= expected :throws) ":throws" (pr-str expected))
-       " :actual " (pr-str actual) "}"))
+       " :actual " (pr-str actual)
+       (when portability (str " :portability " portability)) "}"))
 
 (defn -main [& _]
   (let [corpus (edn/read-string (slurp corpus-path))
