@@ -26,6 +26,12 @@ static int self_path(char *buf, uint32_t size) {
   /* _NSGetExecutablePath fills buf and reports the needed size on overflow. */
   return _NSGetExecutablePath(buf, &size);
 }
+#elif defined(_WIN32)
+#include <windows.h>
+static int self_path(char *buf, uint32_t size) {
+  DWORD n = GetModuleFileNameA(NULL, buf, size);
+  return (n == 0 || n >= size) ? -1 : 0;
+}
 #else
 #include <unistd.h>
 static int self_path(char *buf, uint32_t size) {
