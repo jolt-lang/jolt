@@ -2,7 +2,7 @@
  "Rows of test/chez/corpus.edn whose :expected differs from reference JVM Clojure. The corpus is JVM-sourced (regen-corpus.clj), so this list is only the rows whose JVM value is an opaque host object that cannot round-trip to readable source — Java arrays, transients, atoms, beans, proxies, and chunks print as #object[..@addr] with a per-run identity — plus the (fn* foo) strictness case. For that the corpus keeps jolt's value. certify.clj gates on NEW (unlisted) divergences and STALE entries. Keyed by [suite label].",
  :legend
  {:numeric-model
-  "jolt has a numeric tower (exact integer / Ratio / double); no BigDecimal",
+  "jolt has the full numeric tower (exact integer / Ratio / double / BigDecimal); binary ops dispatch by operand category with JVM contagion rules",
   :host-model
   "no JVM host: classes->name strings, type->symbol, *in* is a map, inline-impl extenders, duck-typed with-open close",
   :reader-model

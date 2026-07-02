@@ -133,8 +133,8 @@
          (concat (map first ss)
                  (apply interleave (map rest ss))))))))
 
-;; No ratio type on Jolt, so rationalize is identity.
-(defn rationalize [x] x)
+;; rationalize is host-native (java/bigdec.ss): a double routes through its
+;; shortest decimal print like BigDecimal.valueOf, so (rationalize 1.1) is 11/10.
 
 ;; 0-arg: a stateful transducer (tracks [seen? prev] in a volatile, so no sentinel
 ;; value is needed). 1-arg: eager dedupe of consecutive equal elements.

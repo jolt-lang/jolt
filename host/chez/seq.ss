@@ -158,17 +158,209 @@
               ((fx=? i 0) (seq-first s))
               (else (loop (jolt-seq (seq-more s)) (fx- i 1)))))))
 
+;; --- checked arithmetic: JVM Numbers.ops-style category dispatch -------------
+;; Every arithmetic/comparison site (the inlined jolt-n* macros in call position,
+;; the variadic shims in value position) funnels a binary op through ONE dispatch:
+;; both operands inside Chez's tower take the native op with JVM contagion rules
+;; patched in (a double operand wins — Chez's exact-zero shortcut must not leak:
+;; (* 1.5 0) is 0.0, not 0; an exact zero divisor throws ArithmeticException, a
+;; double zero divisor yields ##Inf/##NaN); an operand OUTSIDE the tower (e.g.
+;; BigDecimal) falls to a slow hook the numeric shim extends (java/bigdec.ss).
+;; A non-numeric operand is a ClassCastException, like the JVM.
+(define (jolt-num-cast-throw x)
+  (if (jolt-nil? x)
+      (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" ""))
+      (jolt-throw (jolt-host-throwable
+                   "java.lang.ClassCastException"
+                   (string-append "class " (jolt-class-name x)
+                                  " cannot be cast to class java.lang.Number")))))
+(define (jolt-div0-throw)
+  (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
+
+;; slow hooks: one per op, taking over when an operand is outside Chez's tower.
+;; A numeric shim (java/bigdec.ss) set!-extends them; the base case is the JVM's:
+;; not a number -> ClassCastException. The hooks are BINARY and never re-enter
+;; the variadic shims, so extension order can't recurse.
+(define (jolt-add-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-sub-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-mul-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-div-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+;; comparison of operands outside the Chez tower: numeric shims extend this to a
+;; 3-way compare; anything left over is not a number.
+(define (jolt-num-cmp-slow a b)
+  (jolt-num-cast-throw (if (number? a) b a)))
+
+(define (jolt-add2 a b)
+  (if (and (number? a) (number? b)) (+ a b) (jolt-add-slow a b)))
+(define (jolt-sub2 a b)
+  (if (and (number? a) (number? b)) (- a b) (jolt-sub-slow a b)))
+(define (jolt-mul2 a b)
+  (if (and (number? a) (number? b))
+      (if (or (flonum? a) (flonum? b))
+          (fl* (real->flonum a) (real->flonum b))
+          (* a b))
+      (jolt-mul-slow a b)))
+(define (jolt-div2 a b)
+  (if (and (number? a) (number? b))
+      (if (or (flonum? a) (flonum? b))
+          (fl/ (real->flonum a) (real->flonum b))
+          (if (eqv? b 0) (jolt-div0-throw) (/ a b)))
+      (jolt-div-slow a b)))
+(define (jolt-lt2 a b)
+  (if (and (number? a) (number? b)) (< a b) (< (jolt-num-cmp-slow a b) 0)))
+(define (jolt-gt2 a b)
+  (if (and (number? a) (number? b)) (> a b) (> (jolt-num-cmp-slow a b) 0)))
+(define (jolt-le2 a b)
+  (if (and (number? a) (number? b)) (<= a b) (<= (jolt-num-cmp-slow a b) 0)))
+(define (jolt-ge2 a b)
+  (if (and (number? a) (number? b)) (>= a b) (>= (jolt-num-cmp-slow a b) 0)))
+;; min/max return the ORIGINAL operand (type and exactness kept, like
+;; Numbers.min): (min 1 2.0) is 1, not 1.0. A NaN operand wins.
+(define (jolt-min2 a b)
+  (cond ((and (flonum? a) (nan? a)) a)
+        ((and (flonum? b) (nan? b)) b)
+        (else (if (jolt-lt2 a b) a b))))
+(define (jolt-max2 a b)
+  (cond ((and (flonum? a) (nan? a)) a)
+        ((and (flonum? b) (nan? b)) b)
+        (else (if (jolt-gt2 a b) a b))))
+
+;; quot/rem/mod over the full tower: truncating division; a double operand makes
+;; the result a double; mod has floor semantics (result takes the divisor's
+;; sign). A zero divisor throws ArithmeticException in both worlds (JVM double
+;; quot/rem check the divisor before dividing). Non-tower operands hit the
+;; set!-extensible slow hooks.
+(define (jolt-quot-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-rem-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-mod-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-quot a b)
+  (cond ((not (and (number? a) (number? b))) (jolt-quot-slow a b))
+        ((or (flonum? a) (flonum? b))
+         (let ((n (real->flonum a)) (d (real->flonum b)))
+           (if (fl= d 0.0) (jolt-div0-throw) (fltruncate (fl/ n d)))))
+        ((eqv? b 0) (jolt-div0-throw))
+        ((and (integer? a) (integer? b)) (quotient a b))
+        (else (truncate (/ a b)))))
+(define (jolt-rem a b)
+  (cond ((not (and (number? a) (number? b))) (jolt-rem-slow a b))
+        ((or (flonum? a) (flonum? b))
+         (let ((n (real->flonum a)) (d (real->flonum b)))
+           (if (fl= d 0.0) (jolt-div0-throw)
+               (fl- n (fl* d (fltruncate (fl/ n d)))))))
+        ((eqv? b 0) (jolt-div0-throw))
+        ((and (integer? a) (integer? b)) (remainder a b))
+        (else (- a (* b (truncate (/ a b)))))))
+(define (jolt-mod a b)
+  (cond ((not (and (number? a) (number? b))) (jolt-mod-slow a b))
+        ((and (integer? a) (integer? b) (not (flonum? a)) (not (flonum? b)))
+         (if (eqv? b 0) (jolt-div0-throw) (modulo a b)))
+        (else
+         (let ((m (jolt-rem a b)))
+           (if (or (zero? m) (eq? (negative? m) (negative? b))) m (jolt-add2 m b))))))
+
 ;; value-position arithmetic (the higher-order forms: (reduce + []), (apply * xs)).
-;; Scheme's +/-/*// already implement the JVM-parity numeric tower: exact+exact ->
-;; exact, exact/exact -> Ratio, any flonum -> flonum. Identities (+)=0 / (*)=1 are
-;; exact, matching exact integer arithmetic. The hot path uses the inlined native
-;; ops, not these.
-(define (jolt-add . xs) (apply + xs))
-(define (jolt-sub . xs) (apply - xs))
-(define (jolt-mul . xs) (apply * xs))
-(define (jolt-div . xs) (apply / xs))
-(define (jolt-min . xs) (apply min xs))
-(define (jolt-max . xs) (apply max xs))
+;; Folded through the binary dispatch so contagion/edge rules hold; identities
+;; (+)=0 / (*)=1 are exact, matching exact integer arithmetic. The hot path uses
+;; the inlined native ops, not these.
+;; recognizer for slow-path numeric types; numeric shims extend it.
+(define (jolt-num-slow? x) #f)
+(define (jolt-num-check1 x)   ; (+ x)/(* x) return x but still type-check it
+  (if (or (number? x) (jolt-num-slow? x)) x (jolt-num-cast-throw x)))
+(define (jolt-add . xs)
+  (cond ((null? xs) 0)
+        ((null? (cdr xs)) (jolt-num-check1 (car xs)))
+        (else (fold-left jolt-add2 (car xs) (cdr xs)))))
+(define (jolt-arity0-throw name)
+  (jolt-throw (jolt-host-throwable
+               "clojure.lang.ArityException"
+               (string-append "Wrong number of args (0) passed to: clojure.core/" name))))
+(define (jolt-sub . xs)
+  (cond ((null? xs) (jolt-arity0-throw "-"))
+        ((null? (cdr xs)) (jolt-sub2 0 (car xs)))
+        (else (fold-left jolt-sub2 (car xs) (cdr xs)))))
+(define (jolt-mul . xs)
+  (cond ((null? xs) 1)
+        ((null? (cdr xs)) (jolt-num-check1 (car xs)))
+        (else (fold-left jolt-mul2 (car xs) (cdr xs)))))
+(define (jolt-div . xs)
+  (cond ((null? xs) (jolt-arity0-throw "/"))
+        ((null? (cdr xs)) (jolt-div2 1 (car xs)))
+        (else (fold-left jolt-div2 (car xs) (cdr xs)))))
+(define (jolt-min x . xs) (fold-left jolt-min2 x xs))
+(define (jolt-max x . xs) (fold-left jolt-max2 x xs))
+;; variadic comparison chains for value position ((apply < xs)).
+(define (jolt-cmp-chain op2)
+  (lambda (x . xs)
+    (let loop ((a x) (rest xs))
+      (cond ((null? rest) #t)
+            ((op2 a (car rest)) (loop (car rest) (cdr rest)))
+            (else #f)))))
+(define jolt-lt (jolt-cmp-chain jolt-lt2))
+(define jolt-gt (jolt-cmp-chain jolt-gt2))
+(define jolt-le (jolt-cmp-chain jolt-le2))
+(define jolt-ge (jolt-cmp-chain jolt-ge2))
+
+;; call-position arithmetic: inlined macros with the both-Chez-numbers fast path
+;; open-coded; anything else falls to the binary dispatch above. Comparisons
+;; return a genuine Scheme boolean (the backend's truthy elision relies on it).
+(define-syntax jolt-n+
+  (syntax-rules ()
+    ((_) 0)
+    ((_ a) (jolt-add a))
+    ((_ ea eb) (let ((a ea) (b eb))
+                 (if (and (number? a) (number? b)) (+ a b) (jolt-add a b))))
+    ((_ a b c ...) (jolt-n+ (jolt-n+ a b) c ...))))
+(define-syntax jolt-n-
+  (syntax-rules ()
+    ((_) (jolt-sub))
+    ((_ a) (jolt-sub a))
+    ((_ ea eb) (let ((a ea) (b eb))
+                 (if (and (number? a) (number? b)) (- a b) (jolt-sub a b))))
+    ((_ a b c ...) (jolt-n- (jolt-n- a b) c ...))))
+(define-syntax jolt-n*
+  (syntax-rules ()
+    ((_) 1)
+    ((_ a) (jolt-mul a))
+    ((_ ea eb) (let ((a ea) (b eb))
+                 (if (and (number? a) (number? b))
+                     (if (or (flonum? a) (flonum? b))
+                         (fl* (real->flonum a) (real->flonum b))
+                         (* a b))
+                     (jolt-mul a b))))
+    ((_ a b c ...) (jolt-n* (jolt-n* a b) c ...))))
+(define-syntax jolt-n-div
+  (syntax-rules ()
+    ((_) (jolt-div))
+    ((_ a) (jolt-div a))
+    ((_ a b) (jolt-div2 a b))
+    ((_ a b c ...) (jolt-n-div (jolt-div2 a b) c ...))))
+(define-syntax define-n-cmp
+  (syntax-rules ()
+    ((_ name op op2)
+     (define-syntax name
+       (syntax-rules ()
+         ((_) (op2))
+         ((_ a) (begin a #t))
+         ((_ ea eb) (let ((a ea) (b eb))
+                      (if (and (number? a) (number? b)) (op a b) (op2 a b))))
+         ((_ ea eb c (... ...)) (let ((a ea) (b eb))
+                                  (and (name a b) (name b c (... ...))))))))))
+(define-n-cmp jolt-n<  <  jolt-lt2)
+(define-n-cmp jolt-n>  >  jolt-gt2)
+(define-n-cmp jolt-n<= <= jolt-le2)
+(define-n-cmp jolt-n>= >= jolt-ge2)
+(define-syntax jolt-n-min
+  (syntax-rules ()
+    ((_) (jolt-min))
+    ((_ a) (jolt-min a))
+    ((_ a b) (jolt-min2 a b))
+    ((_ a b c ...) (jolt-n-min (jolt-min2 a b) c ...))))
+(define-syntax jolt-n-max
+  (syntax-rules ()
+    ((_) (jolt-max))
+    ((_ a) (jolt-max a))
+    ((_ a b) (jolt-max2 a b))
+    ((_ a b c ...) (jolt-n-max (jolt-max2 a b) c ...))))
 
 ;; --- unchecked (Java long) arithmetic: wrap to signed 64 bits ----------------
 ;; Clojure's unchecked-* (and +/-/* under *unchecked-math*) are long ops that

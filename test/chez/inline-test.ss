@@ -36,7 +36,7 @@
 (ev "(def add1 (fn* ([x] (+ x 1))))")
 (let ((e (emitf "u" "(fn* ([y] (add1 y)))")))
   (ok "plain fn is inlined (call to add1 gone)" (not (has? e "add1")))
-  (ok "inlined body present (+ ... 1)" (has? e "(+")))
+  (ok "inlined body present (jolt-n+ ... 1)" (has? e "(jolt-n+")))
 (ok "inlined plain fn runtime: (add1 41) = 42" (= 42 (jnum->exact (ev "((fn* ([y] (add1 y))) 41)"))))
 
 ;; a ^double fn: body fl-ops fire after inlining, and the call is gone.

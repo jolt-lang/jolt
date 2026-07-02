@@ -1,7 +1,7 @@
 # clojure-test-suite known failures: <namespace> <fail> <error>
 # The gate fails on any per-namespace change, worse OR better; regenerate
 # with: JOLT_CTS_WRITE_BASELINE=1 host/chez/cts.sh
-clojure.core-test.abs 1 1
+clojure.core-test.abs 1 0
 clojure.core-test.add-watch 0 3
 clojure.core-test.ancestors 9 0
 clojure.core-test.atom 14 0
@@ -34,10 +34,8 @@ clojure.core-test.intern 2 0
 clojure.core-test.keys 0 4
 clojure.core-test.lazy-seq 3 0
 clojure.core-test.long 2 5
-clojure.core-test.max 3 1
-clojure.core-test.min 3 1
 clojure.core-test.minus 2 0
-clojure.core-test.mod 12 34
+clojure.core-test.mod 23 0
 clojure.core-test.neg-int-qmark 1 0
 clojure.core-test.not-eq 3 0
 clojure.core-test.nth 0 1
@@ -52,32 +50,29 @@ clojure.core-test.plus 11 0
 clojure.core-test.plus-squote 11 0
 clojure.core-test.pop 0 1
 clojure.core-test.pos-int-qmark 1 0
-clojure.core-test.quot 12 23
+clojure.core-test.quot 30 0
 clojure.core-test.rand-nth 0 1
 clojure.core-test.rational-qmark 3 0
-clojure.core-test.rationalize 10 0
 clojure.core-test.realized-qmark 3 0
 clojure.core-test.reduce 0 1
-clojure.core-test.rem 12 22
+clojure.core-test.rem 21 0
 clojure.core-test.remove-watch 0 1
 clojure.core-test.run-bang 1 0
 clojure.core-test.select-keys 2 0
 clojure.core-test.seqable-qmark 1 0
 clojure.core-test.short 7 5
 clojure.core-test.shuffle 1 0
-clojure.core-test.slash 2 22
 clojure.core-test.some-fn 3 0
 clojure.core-test.sort-by 2 0
 clojure.core-test.special-symbol-qmark 4 0
-clojure.core-test.star 22 0
-clojure.core-test.star-squote 19 0
+clojure.core-test.star 13 0
+clojure.core-test.star-squote 13 0
 clojure.core-test.transient 23 0
 clojure.core-test.underive 7 0
 clojure.core-test.update 1 0
 clojure.core-test.vals 0 3
 clojure.core-test.vec 1 0
 clojure.core-test.when-let 1 0
-clojure.core-test.with-precision 17 0
 clojure.edn-test.read-string 46 5
 clojure.string-test.capitalize 0 4
 clojure.string-test.ends-with-qmark 1 4
