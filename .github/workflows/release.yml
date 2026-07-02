@@ -122,18 +122,13 @@ jobs:
       - name: Put chez on PATH (Windows)
         if: runner.os == 'Windows'
         run: |
-          printf '#!/bin/sh
-exec "%s/chez-install/bin/scheme" "$@"
-' "$GITHUB_WORKSPACE" > "$GITHUB_WORKSPACE/chez-install/bin/chez"
-          chmod +x "$GITHUB_WORKSPACE/chez-install/bin/chez"
-          echo "$GITHUB_WORKSPACE/chez-install/bin" >> "$GITHUB_PATH"
+          bindir="$GITHUB_WORKSPACE/chez-install/bin"
+          { echo '#!/bin/sh'; echo "exec \"$bindir/scheme\" \"\$@\""; } > "$bindir/chez"
+          chmod +x "$bindir/chez"
+          echo "$bindir" >> "$GITHUB_PATH"
           # cc is the build's compiler name; alias it to mingw gcc
-          printf '#!/bin/sh
-exec gcc "$@"
-' > /usr/local/bin/cc || printf '#!/bin/sh
-exec gcc "$@"
-' > "$GITHUB_WORKSPACE/chez-install/bin/cc"
-          chmod +x /usr/local/bin/cc 2>/dev/null || chmod +x "$GITHUB_WORKSPACE/chez-install/bin/cc"
+          { echo '#!/bin/sh'; echo 'exec gcc "$@"'; } > "$bindir/cc"
+          chmod +x "$bindir/cc"
 
       - name: Show Chez version
         run: chez --version
