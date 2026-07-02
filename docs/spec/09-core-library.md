@@ -196,6 +196,42 @@ cases; clojure-test-suite `core_test/parse_uuid.cljc`,
 
 ---
 
+### clojure.template/apply-template, clojure.test/are — since 1.1
+
+```
+(apply-template argv expr values)
+(are argv expr & args)
+```
+
+**Semantics**
+
+- S1. `apply-template` MUST replace every occurrence of each `argv` symbol
+  in `expr` with its corresponding value by structural walk (postwalk symbol
+  substitution), not by lexical binding. Occurrences inside `quote` and at
+  any nesting depth substitute: `(apply-template '[x] '(f 'x) '[if])` ⇒
+  `(f 'if)`.
+- S2. `do-template` MUST partition `args` by `(count argv)` and expand to a
+  `do` of one substituted `expr` per group.
+- S3. `clojure.test/are` MUST expand through `do-template` with `expr`
+  wrapped in `is`. Consequently `(are [x] (special-symbol? 'x) if def)`
+  asserts `(special-symbol? 'if)` and `(special-symbol? 'def)` — a
+  let-binding implementation is non-conforming (the quoted symbol would not
+  substitute).
+
+**Errors**
+
+- X1. `are` MUST throw at macroexpansion when `(count args)` is not a
+  positive multiple of a non-empty `(count argv)` (empty/empty is allowed).
+- X2. `apply-template` MUST throw when `argv` is not a vector of symbols.
+
+**Conformance**
+
+S1–S3 → `test/chez/clojure-test.clj` (are with quoted template var);
+clojure-test-suite `core_test/special_symbol_qmark.cljc` and every
+`are`-based suite namespace.
+
+---
+
 ## Authoring notes
 
 - Source examples from the ClojureDocs export (`clojuredocs-export.edn`,
