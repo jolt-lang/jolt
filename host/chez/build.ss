@@ -57,6 +57,7 @@
 ;; --- toolchain discovery ----------------------------------------------------
 (define bld-machine (symbol->string (machine-type)))
 (define bld-osx? (bld-contains? bld-machine "osx"))
+(define bld-nt? (bld-contains? bld-machine "nt"))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
 (define bld-chez
@@ -94,14 +95,19 @@
 
 ;; Link flags. macOS Homebrew layout for the kernel's lz4/zlib/ncurses deps.
 (define (bld-link-libs)
-  (if bld-osx?
-      (let ((lz4 (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
-        (string-append
-          (if (> (string-length lz4) 0) (string-append "-L" lz4 "/lib ") "")
-          "-llz4 -lz -lncurses -framework Foundation -liconv -lm"))
-      ;; Linux: the Chez kernel pulls in compression (lz4/z), the expression
-      ;; editor (ncurses + terminfo), threads, dlopen, libuuid, and clock_gettime.
-      "-llz4 -lz -lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt"))
+  (cond
+    (bld-osx?
+     (let ((lz4 (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
+       (string-append
+         (if (> (string-length lz4) 0) (string-append "-L" lz4 "/lib ") "")
+         "-llz4 -lz -lncurses -framework Foundation -liconv -lm")))
+    ;; Windows (ta6nt, MinGW-w64 under MSYS2): the Chez kernel pulls in
+    ;; compression, winsock, COM/UUID, and the registry.
+    (bld-nt?
+     "-llz4 -lz -lws2_32 -lrpcrt4 -lole32 -ladvapi32 -luser32 -lshell32 -lm")
+    ;; Linux: the Chez kernel pulls in compression (lz4/z), the expression
+    ;; editor (ncurses + terminfo), threads, dlopen, libuuid, and clock_gettime.
+    (else "-llz4 -lz -lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt")))
 
 ;; --- runtime manifest (mirrors host/chez/cli.ss's load order) ---------------
 ;; A line is either literal Scheme text to inline, or a tag whose emission the build
@@ -411,7 +417,15 @@
 ;; direct-link?: opt-in closed-world direct-linking (app->app calls bind directly,
 ;; no runtime redefinition). Off by default in every mode — release stays
 ;; dynamically linked.
+(define (bld-suffix? s suf)
+  (let ((n (string-length s)) (m (string-length suf)))
+    (and (>= n m) (string=? (substring s (- n m) n) suf))))
 (define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake?)
+  ;; Windows executables carry .exe; normalize here so the append-payload and
+  ;; cc paths agree and the shell can run the result.
+  (let ((out-path (if (and bld-nt? (not (bld-suffix? out-path ".exe")))
+                      (string-append out-path ".exe")
+                      out-path)))
   ;; The self-contained path (jolt-embedded-bytes "stub/launcher") needs no csv
   ;; kernel files, no Chez, no cc — only the legacy cc path does.
   (unless (jolt-embedded-bytes "stub/launcher") (bld-check-toolchain))
@@ -558,7 +572,7 @@
             (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot
                                   (bld-native-link-flags natives))
             (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c
-                           (bld-native-link-flags natives))))))))
+                           (bld-native-link-flags natives)))))))))
 
 ;; --- self-contained link (in-process compile + append the boot to the stub) ---
 ;; compile-file runs against the DEFAULT interaction environment, so the boot's

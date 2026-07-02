@@ -12,6 +12,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch: {}   # dry-run the build matrix without tagging
 
 permissions:
   contents: write   # create/update the GitHub Release and upload assets
@@ -26,10 +27,18 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-linux
+            shell: bash
           # No x86_64-macos: GitHub is retiring the macos-13 Intel runner (jobs
           # queue forever). Intel Macs build from source. macos-14 is arm64.
           - os: macos-14
             target: aarch64-macos
+            shell: bash
+          - os: windows-latest
+            target: x86_64-windows
+            shell: msys2 {0}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -77,6 +86,54 @@ jobs:
       - name: Install Chez Scheme (macOS)
         if: runner.os == 'macOS'
         run: brew install chezscheme lz4
+
+      # --- Windows: MSYS2/MinGW-w64 toolchain + Chez built from source (ta6nt).
+      # The whole job runs in the msys2 shell so cc/xxd/paths behave; the
+      # produced joltc.exe is a plain Windows binary (no MSYS runtime dep). ---
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            git make vim unzip zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-lz4
+            mingw-w64-x86_64-zlib
+
+      - name: Cache Chez Scheme (Windows)
+        if: runner.os == 'Windows'
+        id: cache-chez-win
+        uses: actions/cache@v4
+        with:
+          path: chez-install
+          key: chez-${{ runner.os }}-v10.4.1-mingw64
+
+      - name: Build Chez Scheme from source (Windows)
+        if: runner.os == 'Windows' && steps.cache-chez-win.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
+          cd /tmp/chez-src
+          ./configure --threads --installprefix="$GITHUB_WORKSPACE/chez-install"
+          make -j"$(nproc)"
+          make install
+
+      - name: Put chez on PATH (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          printf '#!/bin/sh
+exec "%s/chez-install/bin/scheme" "$@"
+' "$GITHUB_WORKSPACE" > "$GITHUB_WORKSPACE/chez-install/bin/chez"
+          chmod +x "$GITHUB_WORKSPACE/chez-install/bin/chez"
+          echo "$GITHUB_WORKSPACE/chez-install/bin" >> "$GITHUB_PATH"
+          # cc is the build's compiler name; alias it to mingw gcc
+          printf '#!/bin/sh
+exec gcc "$@"
+' > /usr/local/bin/cc || printf '#!/bin/sh
+exec gcc "$@"
+' > "$GITHUB_WORKSPACE/chez-install/bin/cc"
+          chmod +x /usr/local/bin/cc 2>/dev/null || chmod +x "$GITHUB_WORKSPACE/chez-install/bin/cc"
 
       - name: Show Chez version
         run: chez --version
@@ -132,16 +189,24 @@ jobs:
           ver="${GITHUB_REF_NAME}"
           name="joltc-${ver}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
-          cp target/release/joltc "dist/${name}/joltc"
           cp README.md LICENSE "dist/${name}/"
-          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/joltc.exe "dist/${name}/joltc.exe"
+            ( cd dist && zip -r "${name}.zip" "${name}" && sha256sum "${name}.zip" > "${name}.zip.sha256" )
+          else
+            cp target/release/joltc "dist/${name}/joltc"
+            tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+            ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          fi
           ls -la dist
 
       - name: Upload to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
-          fail_on_unmatched_files: true
+            dist/*.zip
+            dist/*.zip.sha256
+          fail_on_unmatched_files: false

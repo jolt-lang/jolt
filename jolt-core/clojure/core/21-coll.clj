@@ -66,9 +66,10 @@
    \backspace "backspace" \space "space"})
 (defn char-name-string [c] (get char-name-strings c))
 
-;; Random selection over the host rand primitives.
+;; Random selection over the host rand primitives — the reference shape:
+;; nth directly (nil returns nil via RT.nth; a set throws like the JVM).
 (defn rand-nth [coll]
-  (let [v (vec coll)] (nth v (rand-int (count v)))))
+  (nth coll (rand-int (count coll))))
 
 (defn random-sample
   ([prob] (filter (fn [_] (< (rand) prob))))

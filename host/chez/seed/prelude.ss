@@ -361,7 +361,7 @@
 (guard (e (#t #f))
   (def-var! "clojure.core" "char-name-string" (letrec ((char-name-string (lambda (c) (let fnrec4381 ((c c)) (jolt-get (var-deref "clojure.core" "char-name-strings") c))))) char-name-string)))
 (guard (e (#t #f))
-  (def-var! "clojure.core" "rand-nth" (letrec ((rand-nth (lambda (coll) (let fnrec4382 ((coll coll)) (let* ((v (jolt-invoke (var-deref "clojure.core" "vec") coll))) (jolt-nth v (jolt-invoke (var-deref "clojure.core" "rand-int") (jolt-count v)))))))) rand-nth)))
+  (def-var! "clojure.core" "rand-nth" (letrec ((rand-nth (lambda (coll) (let fnrec4382 ((coll coll)) (jolt-nth coll (jolt-invoke (var-deref "clojure.core" "rand-int") (jolt-count coll))))))) rand-nth)))
 (guard (e (#t #f))
   (def-var! "clojure.core" "random-sample" (letrec ((random-sample (case-lambda ((prob) (let fnrec4383 ((prob prob)) (jolt-invoke jolt-filter (lambda (_) (let fnrec4384 ((_ _)) (jolt-n< (jolt-invoke (var-deref "clojure.core" "rand")) prob)))))) ((prob coll) (let fnrec4385 ((prob prob) (coll coll)) (jolt-filter (lambda (_) (let fnrec4386 ((_ _)) (jolt-n< (jolt-invoke (var-deref "clojure.core" "rand")) prob))) coll)))))) random-sample)))
 (guard (e (#t #f))

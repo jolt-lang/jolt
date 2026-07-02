@@ -7,7 +7,7 @@ test` from the repo root.
 
 ## The spec corpus
 
-`corpus.edn` is the contract: ~2920 rows `{:suite :label :expected :actual}`, with
+`corpus.edn` is the contract: ~3570 rows `{:suite :label :expected :actual :portability}`, with
 `:expected` sourced from reference JVM Clojure by `test/conformance/regen-corpus.clj`.
 It is frozen (the canonical source) — add or change cases here, then re-source the
 answers with `regen-corpus.clj` and re-certify with `test/conformance/certify.clj`.
@@ -22,7 +22,7 @@ answers with `regen-corpus.clj` and re-certify with `test/conformance/certify.cl
 
       chez --script host/chez/run-corpus.ss
       JOLT_CORPUS_LIMIT=200 …            # every-Nth stride, fast iteration
-      JOLT_CHEZ_ZJ_FLOOR=N …            # override the floor (default 2678)
+      JOLT_CHEZ_ZJ_FLOOR=N …            # override the floor (see run-corpus.ss)
 
 - `run-unit.ss` — host-specific unit cases (`test/chez/unit.edn`) that aren't in the
   JVM-portable corpus: dot-forms, java statics, io, reader, walk, vars/namespaces,
