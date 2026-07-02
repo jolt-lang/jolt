@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke staticnativesmoke selfhost sci certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke
+.PHONY: test ci values corpus unit smoke buildsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
@@ -15,7 +15,7 @@ test: selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: values corpus unit smoke buildsmoke staticnativesmoke sci ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
+ci: values corpus unit smoke buildsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -67,6 +67,12 @@ joltcsmoke:
 # SCI conformance: load borkdude/sci's source through joltc (floor-gated).
 sci:
 	@chez --script host/chez/run-sci.ss
+
+# clojure-test-suite conformance: run the vendored jank-lang/clojure-test-suite
+# per-namespace under joltc, gated on the per-namespace baseline
+# (test/chez/cts-known-failures.txt).
+cts:
+	@bash host/chez/cts.sh
 
 # FFI: bind native functions (typed foreign-procedure), memory, and that a
 # :blocking call is collect-safe (a parked thread doesn't pin the collector).

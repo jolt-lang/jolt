@@ -426,7 +426,9 @@
     (future? x) (boolean (get x :cached))
     (= :jolt/lazy-seq (get x :jolt/type)) (boolean (get x :realized))
     (atom? x) true
-    :else (throw (str "realized? not supported on: " x))))
+    ;; name the class, never the value — an error message must not render an
+    ;; arbitrary (possibly infinite) argument.
+    :else (throw (str "realized? not supported on: " (class x)))))
 
 (defn force [x] (if (delay? x) (deref x) x))
 

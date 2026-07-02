@@ -19,8 +19,8 @@
 (def jolt-report counters)                ;; alias used by the suite harness
 (def ctx-stack (atom []))
 (def registry (atom []))                ;; [{:name sym :fn thunk}]
-(def once-fixtures (atom []))
-(def each-fixtures (atom []))
+(def once-fixtures (atom {}))           ;; ns-sym -> [fixture-fns]
+(def each-fixtures (atom {}))           ;; ns-sym -> [fixture-fns]
 
 ;; clojure.test/*testing-vars* — the stack of vars under test. Real clojure.test
 ;; binds it around each test var; test.check's default reporter reads it, so a
@@ -32,8 +32,8 @@
   (reset! counters {:test 0 :pass 0 :fail 0 :error 0 :fails []})
   (reset! ctx-stack [])
   (reset! registry [])
-  (reset! once-fixtures [])
-  (reset! each-fixtures []))
+  (reset! once-fixtures {})
+  (reset! each-fixtures {}))
 
 (defn- ctx-str [] (str/join " " @ctx-stack))
 
@@ -135,6 +135,15 @@
   ([form] `(is ~form nil))
   ([form msg]
    (cond
+     ;; a library-registered custom assertion (the assert-expr extension point)
+     ;; wins over every inline path, like clojure.test, where each `is` dispatches
+     ;; assert-expr on the exact head symbol and the built-ins are just
+     ;; pre-registered methods. In particular a registered alias-qualified
+     ;; `p/thrown?` must not be captured by the by-name thrown? path below.
+     (and (seq? form) (symbol? (first form))
+          (contains? (methods clojure.test/assert-expr) (first form)))
+     (clojure.test/assert-expr msg form)
+
      ;; (is (thrown? Class body...))
      (thrown-form? form "thrown?")
      (let [klass-sym (second form)
@@ -172,13 +181,6 @@
                 (clojure.test/inc-pass!)
                 (clojure.test/fail! (str "expected throw of " ~klass " matching " ~re " but got " (clojure.core/class e#) ": " m#)))))))
 
-     ;; a library-registered custom assertion (the assert-expr extension point);
-     ;; only fires for a symbol with an explicitly registered method, so built-in
-     ;; predicate forms keep the inline path below.
-     (and (seq? form) (symbol? (first form))
-          (contains? (methods clojure.test/assert-expr) (first form)))
-     (clojure.test/assert-expr msg form)
-
      ;; a predicate call — (= a b), (< x y), (pred? v): evaluate the args so a
      ;; failure shows the actual values, like clojure.test's assert-predicate.
      (and (seq? form) (contains? clojure.test/reported-preds (first form)))
@@ -209,7 +211,9 @@
 (defmacro deftest [name & body]
   `(do
      (defn ~name [] ~@body)
-     (swap! clojure.test/registry conj {:name '~name :fn ~name})
+     (swap! clojure.test/registry conj {:name '~name
+                                        :ns (clojure.core/ns-name clojure.core/*ns*)
+                                        :fn ~name})
      (var ~name)))
 
 (defmacro are [argv expr & data]
@@ -222,10 +226,15 @@
 
 ;; --- fixtures + run --------------------------------------------------------
 
+;; Fixtures are per-namespace, like clojure.test (which stores them in ns
+;; metadata): use-fixtures records them under the calling ns, and only that
+;; ns's tests run through them — a suite loading many test namespaces into one
+;; process doesn't cross-apply or clobber another ns's fixtures.
 (defn use-fixtures [kind & fns]
-  (cond
-    (= kind :once) (reset! once-fixtures (vec fns))
-    (= kind :each) (reset! each-fixtures (vec fns))))
+  (let [n (ns-name *ns*)]
+    (cond
+      (= kind :once) (swap! once-fixtures assoc n (vec fns))
+      (= kind :each) (swap! each-fixtures assoc n (vec fns)))))
 
 (defn- wrap-fixtures [fixtures body-fn]
   (if (empty? fixtures)
@@ -234,25 +243,46 @@
 
 (defn- run-one [t]
   (swap! counters update :test inc)
-  (wrap-fixtures @each-fixtures
+  (wrap-fixtures (get @each-fixtures (:ns t) [])
     (fn []
       (try
         ((:fn t))
         (catch Throwable e
           (err! (str (:name t) " crashed: " (err-text e))))))))
 
-(defn run-registered []
-  (doseq [t @registry] (run-one t))
+;; Run the registered tests grouped by namespace (registration order preserved
+;; within each ns), each group wrapped in its ns's :once fixtures. ns-set nil
+;; means all.
+(defn- run-selected [ns-set]
+  (let [ts (if ns-set (filter (fn [t] (contains? ns-set (:ns t))) @registry) @registry)]
+    (doseq [n (distinct (map :ns ts))]
+      (wrap-fixtures (get @once-fixtures n [])
+        (fn [] (doseq [t ts :when (= n (:ns t))] (run-one t))))))
   nil)
 
-(defn run-tests [& _nses]
-  (wrap-fixtures @once-fixtures (fn [] (run-registered)))
-  (let [r @counters]
-    (println)
-    (println (str "Ran " (:test r) " tests. "
-                  (:pass r) " assertions passed, "
-                  (:fail r) " failures, " (:error r) " errors."))
-    r))
+(defn run-registered [] (run-selected nil))
+
+;; (run-tests 'ns1 'ns2 …) runs only those namespaces' tests, like clojure.test.
+;; With no args it runs everything registered (a deliberate superset of the
+;; JVM's current-ns default — jolt's harnesses load then run whole suites).
+;; Prints and returns THIS call's summary; the global counters stay cumulative
+;; for the n-pass/n-fail harness API.
+(defn run-tests [& nses]
+  (let [before @counters
+        ns-set (when (seq nses)
+                 (set (map (fn [n] (if (symbol? n) n (ns-name n))) nses)))]
+    (run-selected ns-set)
+    (let [r @counters
+          d {:type :summary
+             :test  (- (:test r)  (:test before))
+             :pass  (- (:pass r)  (:pass before))
+             :fail  (- (:fail r)  (:fail before))
+             :error (- (:error r) (:error before))}]
+      (println)
+      (println (str "Ran " (:test d) " tests. "
+                    (:pass d) " assertions passed, "
+                    (:fail d) " failures, " (:error d) " errors."))
+      d)))
 
 (defn run-test [& _] nil)
 (defn test-var [& _] nil)

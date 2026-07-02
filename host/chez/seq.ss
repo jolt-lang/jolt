@@ -257,12 +257,18 @@
      => (lambda (m) (apply jolt-invoke m f args)))
     ((and (reified-methods f) (hashtable-ref (reified-methods f) "invoke" #f))
      => (lambda (m) (apply jolt-invoke m f args)))
-    ;; calling a non-fn: a ClassCastException naming the operator, thrown via
-    ;; jolt-throw so it is catchable and carries the throw-site continuation for a
-    ;; stack trace.
+    ;; calling a non-fn: a ClassCastException naming the operator's CLASS (like
+    ;; the JVM's "class clojure.lang.LazySeq cannot be cast to ... IFn" — never
+    ;; the value, whose printed form may be unbounded: ((range)) must throw, not
+    ;; hang rendering an infinite seq). Thrown via jolt-throw so it is catchable
+    ;; and carries the throw-site continuation for a stack trace.
     (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                        (string-append (guard (e (#t "value")) (jolt-pr-str f))
-                                       " cannot be cast to clojure.lang.IFn"))))))
+                        (string-append
+                          "class "
+                          (guard (e (#t "value"))
+                            (let ((c (jolt-class-name f)))
+                              (if (string? c) c (jolt-pr-str f))))
+                          " cannot be cast to class clojure.lang.IFn"))))))
 
 ;; ============================================================================
 ;; chunked-seq accessors — the host side of the Clojure IChunkedSeq contract

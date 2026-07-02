@@ -96,10 +96,16 @@
     ((and (jolt-coll? a) (jolt-coll? b)) (jolt-coll=? a b))
     (else (eq? a b))))
 (define (jolt=2 a b)
-  (let loop ((as jolt-eq-arms))
-    (cond ((null? as) (jolt=2-base a b))
-          (((caar as) a b) ((cdar as) a b))
-          (else (loop (cdr as))))))
+  ;; identity fast path, like Util.equiv's k1 == k2: the same object equals
+  ;; itself without a structural walk — (= s s) on an infinite lazy seq must not
+  ;; realize it. Numbers keep the exactness-aware arm (Chez may intern flonum
+  ;; literals, and (= ##NaN ##NaN) is false like the JVM's).
+  (if (and (eq? a b) (not (number? a)))
+      #t
+      (let loop ((as jolt-eq-arms))
+        (cond ((null? as) (jolt=2-base a b))
+              (((caar as) a b) ((cdar as) a b))
+              (else (loop (cdr as)))))))
 (define (jolt= a . rest)
   (let loop ((a a) (rest rest))
     (cond ((null? rest) #t)
