@@ -77,14 +77,23 @@
       (let ((p (dyn-find-binding v)))
         (if p
             (begin (set-cdr! p val) val)
-            (begin (var-cell-root-set! v val) (var-cell-defined?-set! v #t) val)))
+            ;; a ROOT change is Var.bindRoot: validate, set, notify watches
+            ;; (a thread-binding set does not notify, like the JVM).
+            (let ((old (var-cell-root v)))
+              (iref-validate v val)
+              (var-cell-root-set! v val) (var-cell-defined?-set! v #t)
+              (iref-notify v old val)
+              val)))
       (error #f "var-set: not a var" v)))
 
 ;; alter-var-root: atomically apply f to the current root plus args.
 (define (jolt-alter-var-root v f . args)
-  (let ((new (apply jolt-invoke f (var-cell-root v) args)))
+  (let* ((old (var-cell-root v))
+         (new (apply jolt-invoke f old args)))
+    (iref-validate v new)
     (var-cell-root-set! v new)
     (var-cell-defined?-set! v #t)
+    (iref-notify v old new)
     new))
 
 ;; __local-var: a fresh free-standing var cell (not interned). with-local-vars

@@ -23,21 +23,38 @@
   (fields (mutable val) (mutable watches) (mutable validator) lock)
   (nongenerative jolt-atom-v3))
 
-;; (atom init) / (atom init :validator f :meta m): scan the trailing keyword opts
-;; for :validator (the only one with runtime behaviour; :meta is accepted/ignored).
+;; a rejected reference value is IllegalStateException, like ARef.validate.
+(define (jolt-iref-state-throw)
+  (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "Invalid reference state")))
+
+;; (atom init :meta m :validator f) — the ARef ctor contract: the validator runs
+;; against the initial value (an invalid init never constructs), :meta must be a
+;; map (anything else is the JVM's IPersistentMap cast failure).
 (define (jolt-atom-new v . opts)
-  (let loop ((o opts) (validator jolt-nil))
+  (let loop ((o opts) (validator jolt-nil) (m #f))
     (cond
-      ((or (null? o) (null? (cdr o))) (make-jolt-atom v '() validator (make-mutex)))
+      ((or (null? o) (null? (cdr o)))
+       (let ((a (make-jolt-atom v '() validator (make-mutex))))
+         (jolt-atom-validate a v)
+         (when (and m (not (jolt-nil? m)))
+           (unless (jolt-map? m)
+             (jolt-throw (jolt-host-throwable
+                          "java.lang.ClassCastException"
+                          (string-append "class " (jolt-class-name m)
+                                         " cannot be cast to class clojure.lang.IPersistentMap"))))
+           (hashtable-set! meta-table a m))
+         a))
       ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
-       (loop (cddr o) (cadr o)))
-      (else (loop (cddr o) validator)))))
+       (loop (cddr o) (cadr o) m))
+      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "meta"))
+       (loop (cddr o) validator (cadr o)))
+      (else (loop (cddr o) validator m)))))
 
 ;; validate a candidate value: a non-nil validator that returns falsey rejects.
 (define (jolt-atom-validate a v)
   (let ((vf (jolt-atom-validator a)))
     (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf v)))
-      (error #f "Invalid reference state"))))
+      (jolt-iref-state-throw))))
 
 ;; notify each watch (k ref old new), in insertion order (alist is reverse-built,
 ;; so walk it reversed to match add order).
@@ -106,27 +123,87 @@
     (jolt-atom-notify a old v)
     (jolt-vector old v)))
 
-;; --- watches / validators ---------------------------------------------------
+;; --- watches / validators: the IRef seam --------------------------------------
+;; On the JVM these are the ARef contract shared by atom/var/agent/ref. The atom
+;; keeps its record slots (the hot swap!/reset! path); every OTHER watchable
+;; reference type registers a predicate here and stores its watches/validator in
+;; identity-keyed side tables. A ref type makes itself notify by calling
+;; iref-notify at its mutation points (vars do at root set).
+(define iref-arms '())
+(define (register-iref-arm! pred) (set! iref-arms (cons pred iref-arms)))
+(define (iref? r)
+  (let loop ((as iref-arms))
+    (cond ((null? as) #f) (((car as) r) #t) (else (loop (cdr as))))))
+(define iref-watch-tbl (make-weak-eq-hashtable))
+(define iref-validator-tbl (make-weak-eq-hashtable))
+(define (iref-notify r old new)
+  (for-each (lambda (kv) (jolt-invoke (cdr kv) (car kv) r old new))
+            (reverse (hashtable-ref iref-watch-tbl r '()))))
+(define (iref-validate r v)
+  (let ((vf (hashtable-ref iref-validator-tbl r jolt-nil)))
+    (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf v)))
+      (jolt-iref-state-throw))))
+
 ;; add-watch interns (key . fn) (replacing any existing key, keeping order);
-;; remove-watch drops it; both return the atom. set-validator! installs a
+;; remove-watch drops it; both return the reference. set-validator! installs a
 ;; validator and validates the CURRENT value immediately (Clojure throws if it's
 ;; already invalid); get-validator reads the slot.
+(define (jolt-watch-add alist key f)
+  (cons (cons key f) (remp (lambda (kv) (jolt=2 (car kv) key)) alist)))
 (define (jolt-add-watch a key f)
-  (jolt-atom-watches-set! a
-    (cons (cons key f)
-          (remp (lambda (kv) (jolt=2 (car kv) key)) (jolt-atom-watches a))))
-  a)
+  (cond
+    ((jolt-atom? a)
+     (jolt-atom-watches-set! a (jolt-watch-add (jolt-atom-watches a) key f))
+     a)
+    ((iref? a)
+     (hashtable-set! iref-watch-tbl a (jolt-watch-add (hashtable-ref iref-watch-tbl a '()) key f))
+     a)
+    (else (error #f "add-watch: not a watchable reference" a))))
 (define (jolt-remove-watch a key)
-  (jolt-atom-watches-set! a
-    (remp (lambda (kv) (jolt=2 (car kv) key)) (jolt-atom-watches a)))
-  a)
+  (cond
+    ((jolt-atom? a)
+     (jolt-atom-watches-set! a
+       (remp (lambda (kv) (jolt=2 (car kv) key)) (jolt-atom-watches a)))
+     a)
+    ((iref? a)
+     (hashtable-set! iref-watch-tbl a
+       (remp (lambda (kv) (jolt=2 (car kv) key)) (hashtable-ref iref-watch-tbl a '())))
+     a)
+    (else (error #f "remove-watch: not a watchable reference" a))))
 (define (jolt-set-validator! a f)
   (let ((vf (if (jolt-nil? f) jolt-nil f)))
-    (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf (jolt-atom-val a))))
-      (error #f "Invalid reference state"))
-    (jolt-atom-validator-set! a vf)
+    (cond
+      ((jolt-atom? a)
+       (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf (jolt-atom-val a))))
+         (jolt-iref-state-throw))
+       (jolt-atom-validator-set! a vf))
+      ((iref? a)
+       (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf (jolt-deref a))))
+         (jolt-iref-state-throw))
+       (hashtable-set! iref-validator-tbl a vf))
+      (else (error #f "set-validator!: not a reference" a)))
     jolt-nil))
-(define (jolt-get-validator a) (jolt-atom-validator a))
+(define (jolt-get-validator a)
+  (cond ((jolt-atom? a) (jolt-atom-validator a))
+        ((iref? a) (hashtable-ref iref-validator-tbl a jolt-nil))
+        (else jolt-nil)))
+
+;; vars are watchable IRefs: a root change (def / var-set on the root /
+;; alter-var-root) validates and notifies like Var.bindRoot. The def-var! wrap
+;; pays two weak-table probes per def and only does IRef work on a watched var.
+(register-iref-arm! var-cell?)
+(define def-var!-pre-iref def-var!)
+(set! def-var!
+  (lambda (ns name v)
+    (let ((c (jolt-var ns name)))
+      (if (or (pair? (hashtable-ref iref-watch-tbl c '()))
+              (not (jolt-nil? (hashtable-ref iref-validator-tbl c jolt-nil))))
+          (let ((old (var-cell-root c)))
+            (iref-validate c v)
+            (let ((r (def-var!-pre-iref ns name v)))
+              (iref-notify c old v)
+              r))
+          (def-var!-pre-iref ns name v)))))
 
 (def-var! "clojure.core" "atom" jolt-atom-new)
 (def-var! "clojure.core" "deref" jolt-deref)

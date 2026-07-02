@@ -151,16 +151,31 @@
           (mutable queue) (mutable running?) mu cv)
   (nongenerative jolt-agent-v1))
 
-;; (agent state) / (agent state :validator f :error-mode m :meta x): only :validator
-;; has runtime behaviour here; other opts are accepted/ignored.
+;; (agent state :meta m :validator f :error-mode e): the ARef ctor contract like
+;; atom's — the validator runs against the initial state, :meta must be a map.
+;; :error-mode is accepted/ignored (jolt agents are always :fail).
 (define (jolt-agent-new state . opts)
-  (let loop ((o opts) (validator jolt-nil))
+  (let loop ((o opts) (validator jolt-nil) (m #f))
     (cond
       ((or (null? o) (null? (cdr o)))
-       (make-jolt-agent state jolt-nil validator (vector '() '()) #f (make-mutex) (make-condition)))
+       (let ((a (make-jolt-agent state jolt-nil validator (vector '() '()) #f (make-mutex) (make-condition))))
+         (when (and (not (jolt-nil? validator)) (jolt-not (jolt-invoke validator state)))
+           (jolt-iref-state-throw))
+         (when (and m (not (jolt-nil? m)))
+           (unless (jolt-map? m)
+             (jolt-throw (jolt-host-throwable
+                          "java.lang.ClassCastException"
+                          (string-append "class " (jolt-class-name m)
+                                         " cannot be cast to class clojure.lang.IPersistentMap"))))
+           (hashtable-set! meta-table a m))
+         a))
       ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
-       (loop (cddr o) (cadr o)))
-      (else (loop (cddr o) validator)))))
+       (loop (cddr o) (cadr o) m))
+      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "meta"))
+       (loop (cddr o) validator (cadr o)))
+      (else (loop (cddr o) validator m)))))
+;; agents are watchable IRefs; the worker notifies on each state change.
+(register-iref-arm! jolt-agent?)
 
 ;; The action queue is an amortized-O(1) FIFO held as a mutable #(out in): `out` is
 ;; the front, `in` holds sends reversed onto it (an append-to-a-list send was O(n)).
@@ -189,11 +204,13 @@
         (guard (e (#t (with-mutex (jolt-agent-mu a)
                         (jolt-agent-err-set! a e)
                         (condition-broadcast (jolt-agent-cv a)))))
-          (let ((nv (apply jolt-invoke (car act) (jolt-agent-state a) (cdr act))))
+          (let* ((old (jolt-agent-state a))
+                 (nv (apply jolt-invoke (car act) old (cdr act))))
             (let ((vf (jolt-agent-validator a)))
               (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf nv)))
-                (error #f "Invalid reference state")))
-            (jolt-agent-state-set! a nv)))
+                (jolt-iref-state-throw)))
+            (jolt-agent-state-set! a nv)
+            (iref-notify a old nv)))
         (loop)))))
 
 ;; send / send-off: enqueue the action, start the worker if idle. (jolt treats them
