@@ -561,21 +561,67 @@
                            (bld-native-link-flags natives))))))))
 
 ;; --- self-contained link (in-process compile + append the boot to the stub) ---
-;; compile-file runs with a FRESH scheme-environment as the interaction
-;; environment: the loaded jolt runtime redefines `error` (regex.ss), and flat.ss
-;; inlines that same runtime, so an early reference to `error` (before its define
-;; runs) must bind to the kernel primitive — a clean env gives exactly that, the
-;; same as the legacy path compiling in a fresh Chez process. Without it the boot
-;; dies at startup with "variable error is not bound".
+;; compile-file runs against the DEFAULT interaction environment, so the boot's
+;; top-level defines land in the real symbol cells — the runtime compiler's
+;; eval'd code must resolve them (var-deref, jolt-invoke, the jolt-n* macros)
+;; when the built binary dynamically requires a namespace. Compiling in a clean
+;; copy-environment instead orphans every define in locations eval can't see,
+;; and the binary dies with "variable var-deref is not bound" the moment a
+;; runtime require compiles source.
+;;
+;; The default env has a wrinkle the legacy fresh-Chez path doesn't: THIS
+;; process's cells hold jolt's redefinitions of some kernel names (`error`,
+;; regex.ss), so references to them compile as cell reads — and a read that
+;; runs before the redefining form would find the fresh binary's cell unbound.
+;; The prologue closes that: it first binds each redefined kernel name's cell
+;; to its kernel value, making the boot's earliest reads identical to the
+;; legacy path's primitive references.
+
+;; every top-level (define nm …)/(define (nm …) …) name in the flat file that
+;; shadows a scheme-environment VARIABLE (syntax names don't eval; skip them).
+(define (bld-kernel-prologue flat-ss)
+  (let ((seen (make-eq-hashtable))
+        (kenv (scheme-environment))
+        (names '()))
+    (let ((ip (open-input-file flat-ss)))
+      (let loop ()
+        (let ((f (read ip)))
+          (unless (eof-object? f)
+            (when (and (pair? f) (eq? (car f) 'define) (pair? (cdr f)))
+              (let* ((h (cadr f))
+                     (nm (if (pair? h) (car h) h)))
+                (when (and (symbol? nm)
+                           (not (hashtable-ref seen nm #f))
+                           (guard (e (#t #f)) (begin (eval nm kenv) #t)))
+                  (hashtable-set! seen nm #t)
+                  (set! names (cons nm names)))))
+            (loop))))
+      (close-port ip))
+    (apply string-append
+           (map (lambda (nm)
+                  (let ((s (symbol->string nm)))
+                    (string-append "(define " s " (eval '" s " (scheme-environment)))\n")))
+                (reverse names)))))
+
+;; prepend the prologue to the flat file in place.
+(define (bld-prepend-prologue! flat-ss)
+  (let ((prologue (bld-kernel-prologue flat-ss))
+        (body (read-file-string flat-ss)))
+    (let ((out (open-output-file flat-ss 'replace)))
+      (put-string out ";; kernel-name cells pre-bound so early reads match the kernel primitives\n")
+      (put-string out prologue)
+      (put-string out body)
+      (close-port out))))
+
 (define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link)
   (let ((petite (string-append builddir "/petite.boot"))
         (scheme (string-append builddir "/scheme.boot")))
     (jolt-spill-embedded! "csv/petite.boot" petite)
     (jolt-spill-embedded! "csv/scheme.boot" scheme)
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
-    (parameterize ((interaction-environment (copy-environment (scheme-environment))))
-      (compile-file flat-ss flat-so)
-      (make-boot-file boot '() petite scheme flat-so))
+    (bld-prepend-prologue! flat-ss)
+    (compile-file flat-ss flat-so)
+    (make-boot-file boot '() petite scheme flat-so)
     ;; The stub is the native launcher the boot is appended to. With no :static
     ;; natives it's the prebuilt one bundled in joltc (no cc needed); with :static
     ;; natives it's re-linked here from the bundled kernel + launcher source so the

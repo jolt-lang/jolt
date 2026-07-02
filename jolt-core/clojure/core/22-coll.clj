@@ -198,10 +198,9 @@
 (def inc' inc)
 (def dec' dec)
 ;; unchecked-add / -subtract / -multiply / -negate / -inc / -dec (+ the -int
-;; variants) and -divide-int / -remainder-int are host-defined (host/chez/seq.ss):
-;; they WRAP to signed 64 bits like the JVM, which a plain (+ x y) overlay can't do.
-(defn unchecked-int [x] (int x))
-(def unchecked-long unchecked-int)
+;; variants), -divide-int / -remainder-int, and the unchecked-long/-int casts are
+;; host-defined (host/chez/seq.ss, converters.ss): they WRAP like the JVM
+;; primitive conversions, which a plain overlay over checked casts can't do.
 
 ;; int? is integer? on jolt: one number type, so fixed-precision and
 ;; arbitrary-precision integers coincide.
@@ -263,12 +262,14 @@
 
 (defn to-array-2d [coll] (to-array (map to-array coll)))
 
-;; Masking integer coercions (not aliases): byte/short wrap to their width.
-;; unchecked-byte/short truncate to a number; unchecked-char returns a char (as on
-;; the JVM). int handles chars, so (unchecked-byte \a) works.
-(defn unchecked-byte [x] (bit-and (int x) 0xff))
-(defn unchecked-short [x] (bit-and (int x) 0xffff))
-(defn unchecked-char [x] (char (bit-and (int x) 0xffff)))
+;; Wrapping (unchecked) coercions: truncate to the width and sign-fold like the
+;; JVM primitive conversions ((unchecked-byte 200) is -56); unchecked-char wraps
+;; into char range. unchecked-long/int are host natives (converters.ss).
+(defn unchecked-byte [x]
+  (let [b (bit-and (unchecked-long x) 0xff)] (if (< b 128) b (- b 256))))
+(defn unchecked-short [x]
+  (let [s (bit-and (unchecked-long x) 0xffff)] (if (< s 32768) s (- s 65536))))
+(defn unchecked-char [x] (char (bit-and (unchecked-long x) 0xffff)))
 (defn unchecked-float [x] (double x))
 (defn unchecked-double [x] (double x))
 
@@ -338,3 +339,14 @@
 (defn proxy-super [& args] (throw "proxy-super: JVM proxies are not supported in Jolt"))
 (defn construct-proxy [c & args] (throw "construct-proxy: not supported in Jolt"))
 (defn get-proxy-class [& interfaces] (throw "get-proxy-class: not supported in Jolt"))
+
+;; resolve, requiring the symbol's namespace first when it isn't loaded yet —
+;; the dynamic-require pattern (tooling, plugin registries). The require and
+;; resolve are the runtime fns, so this works identically under joltc run and
+;; in an AOT binary (which compiles the namespace from the source roots).
+(defn requiring-resolve [sym]
+  (if (qualified-symbol? sym)
+    (or (resolve sym)
+        (do (require (symbol (namespace sym)))
+            (resolve sym)))
+    (throw (new IllegalArgumentException (str "Not a qualified symbol: " sym)))))

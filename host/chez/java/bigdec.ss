@@ -355,6 +355,19 @@
         (else (jolt-num-cast-throw x))))
 (def-var! "clojure.core" "rationalize" jolt-rationalize)
 
+;; double/float of a bigdec is its flonum value.
+(set! jolt-double-slow
+  (let ((prev jolt-double-slow))
+    (lambda (x) (if (jbigdec? x) (jbigdec->flonum x) (prev x)))))
+
+;; narrow casts truncate a bigdec like Number.longValue.
+(set! jolt-cast-truncate-slow
+  (let ((prev jolt-cast-truncate-slow))
+    (lambda (x)
+      (if (jbigdec? x)
+          (truncate (/ (jbigdec-unscaled x) (expt 10 (jbigdec-scale x))))
+          (prev x)))))
+
 ;; compare: add a bigdec arm (enables compare / sort / sorted collections). A
 ;; bigdec vs a plain number compares by value; bigdec vs bigdec is scale-independent.
 (define jbd-prev-compare jolt-compare)

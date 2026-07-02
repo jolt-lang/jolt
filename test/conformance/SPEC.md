@@ -132,6 +132,19 @@ arithmetic fast path (both operands Chez numbers → the raw Chez op) or force
 every `+`/`-`/`*` through an unwrapping dispatcher, de-optimizing all
 arithmetic. Same shape as the accepted BigInt-vs-Long unification.
 
+The cast RANGE contract is full parity (corpus `casts / *`): `byte`/`short`/
+`int`/`long`/`char` range-check like `RT.byteCast` — an out-of-range value is
+IllegalArgumentException "Value out of range for byte: 128". A double operand
+range-checks ITSELF before truncating (`(byte 1.1)` is `1`, `(byte 127.000001)`
+throws), NaN casts to 0, ratios and bigdecs truncate, a non-number is
+ClassCastException. `float` range-checks against Float/MAX_VALUE. The
+`unchecked-*` casts wrap and sign-fold like the JVM primitive conversions
+(`(unchecked-byte 200)` is `-56`; a double saturates instead of wrapping).
+What jolt does NOT model is a distinct single-float type: `(float x)` keeps
+the double VALUE, so a double below Float/MIN_VALUE stays nonzero and float
+rounding does not occur (the accepted no-single-float residue, baselined with
+`:integer-box-model`'s class residue).
+
 ## Number operations
 
 Binary arithmetic and comparisons follow the JVM's `Numbers.ops(x, y)` category

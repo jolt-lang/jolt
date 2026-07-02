@@ -109,6 +109,24 @@ jobs:
           out="$("$work/app/app")"
           test "$out" = "built: 45" || { echo "self-contained build ran '$out', want 'built: 45'"; exit 1; }
 
+      # A built binary must also run the DYNAMIC require path: a namespace not
+      # in the static ns graph compiles from the source roots at runtime, so the
+      # boot's top-level defines must be visible to the runtime compiler's eval
+      # (issue #290: this died with "variable var-deref is not bound").
+      - name: Smoke a runtime require in a built binary
+        run: |
+          joltc="$(pwd)/target/release/joltc"
+          work="$(mktemp -d)"
+          mkdir -p "$work/app/src/app"
+          printf '{:paths ["src"]}\n' > "$work/app/deps.edn"
+          printf '(ns app.extra)\n(defn greet [s] (str "Hello, " s "!"))\n' \
+            > "$work/app/src/app/extra.clj"
+          printf '(ns app.core)\n(defn -main [& _]\n  (println ((requiring-resolve (quote app.extra/greet)) "runtime")))\n' \
+            > "$work/app/src/app/core.clj"
+          ( cd "$work/app" && "$joltc" build -m app.core -o app )
+          out="$(cd "$work/app" && ./app)"
+          test "$out" = "Hello, runtime!" || { echo "runtime require ran '$out', want 'Hello, runtime!'"; exit 1; }
+
       - name: Package
         run: |
           ver="${GITHUB_REF_NAME}"

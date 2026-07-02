@@ -155,7 +155,12 @@
 ;; int/long: truncate toward zero to an EXACT integer (= JVM long). char -> code
 ;; point (exact). double: always a flonum (= JVM double).
 (define (jolt-int x) (if (char? x) (char->integer x) (exact (truncate x))))
-(define (jolt-double x) (if (char? x) (exact->inexact (char->integer x)) (exact->inexact x)))
+;; a numeric type outside Chez's tower converts through this hook (bigdec).
+(define (jolt-double-slow x) (jolt-num-cast-throw x))
+(define (jolt-double x)
+  (cond ((char? x) (exact->inexact (char->integer x)))
+        ((number? x) (exact->inexact x))
+        (else (jolt-double-slow x))))
 
 ;; compare: 3-way, returns an EXACT integer (= JVM compare -> int).
 (define (jolt-cmp3 x y) (cond ((< x y) -1) ((> x y) 1) (else 0)))
@@ -195,16 +200,72 @@
 (def-var! "clojure.core" "keyword" jolt-keyword)
 (def-var! "clojure.core" "symbol" jolt-symbol-new)
 (def-var! "clojure.core" "gensym" jolt-gensym)
-(def-var! "clojure.core" "int" jolt-int)
-;; char: coerce a code point (jolt's all-flonum number) to a Chez char; pass a
-;; char through. Inverse of int on chars. The cross-compiled emitter's
-;; chez-str-lit needs it for printable-ASCII escaping.
-(define (jolt-char x) (if (char? x) x (integer->char (exact (round x)))))
+;; --- checked narrow casts (RT.byteCast/shortCast/intCast/longCast/charCast) --
+;; One helper carries the JVM ranges: truncate toward zero, then range-check.
+;; NaN casts to 0 (Java (long)NaN); an out-of-range value (including a float
+;; infinity) is IllegalArgumentException "Value out of range for <type>: x".
+;; A non-numeric operand is the usual ClassCastException. Numeric types outside
+;; Chez's tower truncate through a hook the shim extends (BigDecimal).
+(define (jolt-cast-range-throw name x)
+  (jolt-throw (jolt-host-throwable
+               "java.lang.IllegalArgumentException"
+               (string-append "Value out of range for " name ": " (jolt-str x)))))
+(define (jolt-cast-truncate-slow x) (jolt-num-cast-throw x))
+(define (jolt-checked-cast name lo hi x)
+  (let ((n (cond ((char? x) (char->integer x))
+                 ((and (number? x) (exact? x)) (truncate x))
+                 ;; a double range-checks ITSELF (before truncation): (byte
+                 ;; 127.000001) throws, (byte 1.1) is 1; NaN casts to 0; an
+                 ;; infinity always fails the compare.
+                 ((flonum? x) (cond ((nan? x) 0)
+                                    ((or (< x lo) (> x hi)) (+ hi 1))
+                                    (else (exact (truncate x)))))
+                 (else (jolt-cast-truncate-slow x)))))
+    (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x))))
+(define (jolt-byte-cast x)  (jolt-checked-cast "byte" -128 127 x))
+(define (jolt-short-cast x) (jolt-checked-cast "short" -32768 32767 x))
+(define (jolt-int-cast x)   (jolt-checked-cast "int" -2147483648 2147483647 x))
+(define (jolt-long-cast x)  (jolt-checked-cast "long" -9223372036854775808 9223372036854775807 x))
+(def-var! "clojure.core" "int" jolt-int-cast)
+(def-var! "clojure.core" "long" jolt-long-cast)
+(def-var! "clojure.core" "byte" jolt-byte-cast)
+(def-var! "clojure.core" "short" jolt-short-cast)
+;; char: pass a char through; a code point must be in [0, 0xFFFF] (charCast).
+(define (jolt-char x)
+  (if (char? x) x (integer->char (jolt-checked-cast "char" 0 65535 x))))
 (def-var! "clojure.core" "char" jolt-char)
-;; long: same truncation as int in jolt's all-flonum model (seed core-long =
-;; math/trunc; char -> code point). Distinct cell so (long ...) resolves.
-(def-var! "clojure.core" "long" jolt-int)
+;; unchecked-long: truncate + wrap to 64 bits (RT.uncheckedLongCast — a float
+;; infinity saturates, NaN is 0). unchecked-int wraps and sign-folds to 32.
+(define (jolt-cast-saturate n lo hi) (cond ((< n lo) lo) ((> n hi) hi) (else n)))
+(define (jolt-unchecked-long x)
+  (cond ((char? x) (char->integer x))
+        ;; an exact integer wraps (long narrowing); a double SATURATES (Java's
+        ;; double->long conversion clamps at the bounds, NaN is 0).
+        ((and (number? x) (exact? x)) (jolt-wrap64 (truncate x)))
+        ((flonum? x) (if (nan? x) 0
+                         (jolt-cast-saturate (if (infinite? x) (if (> x 0.0) unc-2^63 (- unc-2^63)) (exact (truncate x)))
+                                             -9223372036854775808 9223372036854775807)))
+        (else (jolt-wrap64 (jolt-cast-truncate-slow x)))))
+(define (jolt-unchecked-int x)
+  (if (flonum? x)
+      ;; double->int clamps like Java
+      (if (nan? x) 0
+          (jolt-cast-saturate (if (infinite? x) (if (> x 0.0) #x80000000 (- #x80000000)) (exact (truncate x)))
+                              -2147483648 2147483647))
+      (let ((i (bitwise-and (jolt-unchecked-long x) #xffffffff)))
+        (if (>= i #x80000000) (- i #x100000000) i))))
+(def-var! "clojure.core" "unchecked-long" jolt-unchecked-long)
+(def-var! "clojure.core" "unchecked-int" jolt-unchecked-int)
 (def-var! "clojure.core" "double" jolt-double)
-;; float: Chez has no single-float type, so float coerces to a flonum like double.
-(def-var! "clojure.core" "float" jolt-double)
+;; float: Chez has no single-float type, so the value stays a flonum — but the
+;; cast range-checks against Float/MAX_VALUE like RT.floatCast (an infinity is
+;; out of range; NaN passes).
+(define fl-float-max 3.4028234663852886e38)
+(define (jolt-float x)
+  (let ((d (jolt-double x)))
+    (if (and (flonum? d) (not (nan? d))
+             (or (< d (- fl-float-max)) (> d fl-float-max)))
+        (jolt-cast-range-throw "float" x)
+        d)))
+(def-var! "clojure.core" "float" jolt-float)
 (def-var! "clojure.core" "compare" jolt-compare)
