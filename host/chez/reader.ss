@@ -48,12 +48,24 @@
 
 (define (rdr-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
 (define (rdr-octal? c) (and (char>=? c #\0) (char<=? c #\7)))
+(define (rdr-all-digits? s from to)
+  (and (> to from)
+       (let loop ((i from))
+         (cond ((>= i to) #t)
+               ((rdr-digit? (string-ref s i)) (loop (+ i 1)))
+               (else #f)))))
 ;; every char of s in [from,to) is an octal digit (and the span is non-empty).
 (define (rdr-all-octal? s from to)
   (and (fx<? from to)
        (let loop ((i from)) (cond ((fx=? i to) #t) ((rdr-octal? (string-ref s i)) (loop (fx+ i 1))) (else #f)))))
 
 ;; Advance past whitespace, commas, and ;-to-end-of-line comments.
+;; EDN strict mode (clojure.edn): auto-resolved keywords are invalid, and each
+;; discarded (#_) form is handed to rdr-discard-cb so the edn layer validates
+;; its tagged elements through :readers/:default like the JVM.
+(define rdr-edn-mode (make-parameter #f))
+(define rdr-discard-cb (make-parameter #f))
+
 (define (rdr-skip-ws s i end)
   (let loop ((i i))
     (cond
@@ -61,7 +73,8 @@
       ((rdr-ws? (string-ref s i)) (loop (+ i 1)))
       ((char=? (string-ref s i) #\;)
        (let eol ((j (+ i 1)))
-         (if (or (>= j end) (char=? (string-ref s j) #\newline))
+         (if (or (>= j end) (char=? (string-ref s j) #\newline)
+                 (char=? (string-ref s j) #\return))
              (loop j)
              (eol (+ j 1)))))
       (else i))))
@@ -115,12 +128,17 @@
          (slash (rdr-string-index-char body #\/)))
     (cond
       ;; ratio a/b -> exact rational (= JVM Ratio); reduces to an exact integer
-      ;; when d divides n.
+      ;; when d divides n. Both parts must be plain digit runs (1/-1 is an
+      ;; invalid token); a zero denominator is the JVM's divide error.
       (slash
-       (let ((n (string->number (substring body 0 slash)))
-             (d (string->number (substring body (+ slash 1) blen))))
-         (and (integer? n) (integer? d) (not (= d 0))
-              (* sign (/ n d)))))
+       (let ((ns (substring body 0 slash))
+             (ds (substring body (+ slash 1) blen)))
+         (and (rdr-all-digits? ns 0 (string-length ns))
+              (rdr-all-digits? ds 0 (string-length ds))
+              (let ((n (string->number ns)) (d (string->number ds)))
+                (when (= d 0)
+                  (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
+                (* sign (/ n d))))))
       ;; hex 0x..
       ((and (>= blen 2) (char=? (string-ref body 0) #\0)
             (or (char=? (string-ref body 1) #\x) (char=? (string-ref body 1) #\X)))
@@ -139,6 +157,11 @@
       ;; elsewhere or fall through (a non-octal digit fails rdr-all-octal?).
       ((and (>= blen 2) (char=? (string-ref body 0) #\0) (rdr-all-octal? body 1 blen))
        (let ((o (rdr-parse-radix (substring body 1 blen) 8))) (and o (* sign o))))
+      ;; a leading zero on a plain multi-digit integer is invalid (the octal
+      ;; branch above accepted real octals; 08/09 match the JVM's trailing
+      ;; "invalid number" alternative)
+      ((and (>= blen 2) (char=? (string-ref body 0) #\0) (rdr-all-digits? body 1 blen))
+       #f)
       ;; bigint suffix N
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\N))
        (let ((n (string->number (substring body 0 (- blen 1)))))
@@ -190,7 +213,10 @@
               (let oct ((j (+ i 1)) (val 0) (cnt 0))
                 (if (and (fx<? cnt 3) (fx<? j end) (rdr-octal? (string-ref s j)))
                     (oct (fx+ j 1) (fx+ (fx* val 8) (fx- (char->integer (string-ref s j)) 48)) (fx+ cnt 1))
-                    (loop j (cons (integer->char val) acc)))))
+                    (begin
+                      (when (> val 255)
+                        (jolt-throw (jolt-ex-info "Octal escape sequence must be in range [0, 377]" empty-pmap)))
+                      (loop j (cons (integer->char val) acc))))))
              ((#\u)
               (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
                 ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,
@@ -208,7 +234,8 @@
                          (loop j (cons #\xFFFD acc)))))
                   ((and (fx>=? cp #xD800) (fx<=? cp #xDFFF)) (loop j (cons #\xFFFD acc)))
                   (else (loop j (cons (integer->char cp) acc))))))
-             (else (loop (+ i 2) (cons e acc))))))
+             (else (jolt-throw (jolt-ex-info (string-append "Unsupported escape character: \\" (string e))
+                                             empty-pmap))))))
         (else (loop (+ i 1) (cons c acc)))))))
 
 ;; backslash already consumed; read a Clojure character literal.
@@ -240,7 +267,10 @@
     ((char=? (string-ref name 0) #\u)
      (integer->char (string->number (substring name 1 (string-length name)) 16)))
     ((char=? (string-ref name 0) #\o)
-     (integer->char (string->number (substring name 1 (string-length name)) 8)))
+     (let ((v (string->number (substring name 1 (string-length name)) 8)))
+       (when (or (not v) (> v 255))
+         (jolt-throw (jolt-ex-info "Octal escape sequence must be in range [0, 377]" empty-pmap)))
+       (integer->char v)))
     (else (jolt-throw (jolt-ex-info (string-append "Unsupported character: \\" name)
                                     empty-pmap)))))
 
@@ -258,14 +288,39 @@
         (values #f tok)
         (values (substring tok 0 slash) (substring tok (+ slash 1) (string-length tok))))))
 
+(define (rdr-numeric-lead? tok)
+  (let ((len (string-length tok)))
+    (and (> len 0)
+         (let ((c0 (string-ref tok 0)))
+           (or (rdr-digit? c0)
+               (and (or (char=? c0 #\+) (char=? c0 #\-)) (> len 1)
+                    (rdr-digit? (string-ref tok 1))))))))
+(define (rdr-invalid-token tok)
+  (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
+                                   (string-append "Invalid token: " tok))))
 (define (rdr-token->value tok)
   (let ((n (rdr-try-number tok)))
     (cond
       (n n)
+      ;; a token that starts like a number but doesn't parse as one is an
+      ;; invalid number (1a, 08, 0x2g, 2r2), never a symbol — like the JVM.
+      ((rdr-numeric-lead? tok)
+       (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                                        (string-append "Invalid number: " tok))))
       ((string=? tok "nil") jolt-nil)
       ((string=? tok "true") #t)
       ((string=? tok "false") #f)
-      (else (let-values (((ns name) (rdr-sym-parts tok))) (jolt-symbol ns name))))))
+      (else
+       (let ((len (string-length tok)))
+         ;; a lone "/" is the division symbol, and "ns//" names it in a
+         ;; namespace (clojure.core//); otherwise a leading or trailing slash
+         ;; leaves an empty ns/name part — an invalid token.
+         (when (and (> len 1)
+                    (or (char=? (string-ref tok 0) #\/)
+                        (and (char=? (string-ref tok (- len 1)) #\/)
+                             (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/))))))
+           (rdr-invalid-token tok))
+         (let-values (((ns name) (rdr-sym-parts tok))) (jolt-symbol ns name)))))))
 
 ;; --- collections ------------------------------------------------------------
 ;; Read forms until the close delimiter; returns (values reversed?-no list j).
@@ -289,6 +344,14 @@
 ;; sequence in a weak side-table the host contract's form-map-pairs consults.
 (define rdr-map-order (make-weak-eq-hashtable))
 (define (rdr-make-map es)
+  ;; the JVM reader rejects duplicate literal keys before building the map
+  (let dupchk ((kvs es) (seen empty-pset))
+    (when (pair? kvs)
+      (let ((k (car kvs)))
+        (when (jolt-truthy? (jolt-contains? seen k))
+          (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                           (string-append "Duplicate key: " (jolt-pr-str k)))))
+        (dupchk (cddr kvs) (pset-conj seen k)))))
   (let ((m (apply jolt-hash-map es)))
     (when (pair? es) (hashtable-set! rdr-map-order m es))
     m))
@@ -548,8 +611,12 @@
        (let-values (((src j) (rdr-read-regex s (+ i 1) end)))
          (values (jolt-re-pattern src) j)))
       ((char=? c #\_)                    ; #_ discard the next form
-       (let-values (((_ j) (rdr-read-form s (+ i 1) end)))
-         (when (rdr-eof? _) (jolt-throw (jolt-ex-info "EOF after #_" empty-pmap)))
+       (let-values (((d j) (rdr-read-form s (+ i 1) end)))
+         (when (rdr-eof? d) (jolt-throw (jolt-ex-info "EOF after #_" empty-pmap)))
+         ;; edn validates the discarded element (its tags go through the same
+         ;; :readers/:default pipeline; an unreadable one throws)
+         (let ((cb (rdr-discard-cb)))
+           (when cb (jolt-invoke cb d)))
          (rdr-read-form s j end)))
       ((char=? c #\')                    ; #'x var-quote -> (var x)
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
@@ -601,6 +668,17 @@
   (let ((auto? (and (< i end) (char=? (string-ref s i) #\:))))
     (let ((i (if auto? (+ i 1) i)))
       (let-values (((tok j) (rdr-read-token s i end)))
+        (let ((len (string-length tok)))
+          ;; ":" and "::" alone, a leading or trailing slash (a name of exactly
+          ;; "/" is fine, :ns//), or an auto-resolved keyword in edn (no
+          ;; resolution context) are invalid tokens.
+          (when (or (= len 0)
+                    (and (> len 1) (char=? (string-ref tok 0) #\/))
+                    (and (> len 1) (char=? (string-ref tok (- len 1)) #\/)
+                         (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/)))))
+            (rdr-invalid-token (string-append (if auto? "::" ":") tok)))
+          (when (and auto? (rdr-edn-mode))
+            (rdr-invalid-token (string-append "::" tok))))
         (let-values (((ns name) (rdr-sym-parts tok)))
           (if auto?
               (let* ((cur (chez-current-ns))
@@ -735,15 +813,76 @@
     (let ((v (var-deref "clojure.core" "*default-data-reader-fn*")))
       (and (not (jolt-nil? v)) (procedure? v) v))))
 
+;; strict #inst validation: RFC-3339 calendar fields must be real (month 1-12,
+;; day valid for the month incl. leap years, hour < 24, minute/second < 60).
+(define (rdr-2dig s i)
+  (and (< (+ i 1) (string-length s))
+       (rdr-digit? (string-ref s i)) (rdr-digit? (string-ref s (+ i 1)))
+       (+ (* 10 (- (char->integer (string-ref s i)) 48))
+          (- (char->integer (string-ref s (+ i 1))) 48))))
+(define (rdr-leap? y) (and (= 0 (modulo y 4)) (or (not (= 0 (modulo y 100))) (= 0 (modulo y 400)))))
+(define (rdr-inst-throw s)
+  (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
+                                   (string-append "Unrecognized date/time syntax: " s))))
+(define (rdr-validate-inst! s)
+  ;; progressive RFC-3339 like clojure.instant: yyyy[-MM[-dd[Thh[:mm[:ss[.f]]]]]]
+  ;; with an optional Z/±hh:mm offset; each present field must be in range
+  ;; (months 1-12, day valid for the month incl. leap years, hour < 24, min < 60).
+  (let* ((len (string-length s))
+         (y (and (>= len 4) (rdr-all-digits? s 0 4) (string->number (substring s 0 4)))))
+    (unless y (rdr-inst-throw s))
+    (when (>= len 5)
+      (unless (char=? (string-ref s 4) #\-) (rdr-inst-throw s))
+      (let ((mo (rdr-2dig s 5)))
+        (unless (and mo (>= mo 1) (<= mo 12)) (rdr-inst-throw s))
+        (when (>= len 8)
+          (unless (char=? (string-ref s 7) #\-) (rdr-inst-throw s))
+          (let ((d (rdr-2dig s 8)))
+            (unless (and d (>= d 1)
+                         (<= d (vector-ref (if (rdr-leap? y)
+                                               '#(31 29 31 30 31 30 31 31 30 31 30 31)
+                                               '#(31 28 31 30 31 30 31 31 30 31 30 31))
+                                           (- mo 1))))
+              (rdr-inst-throw s))
+            (when (>= len 11)
+              (unless (char=? (string-ref s 10) #\T) (rdr-inst-throw s))
+              (let ((h (rdr-2dig s 11)))
+                (unless (and h (<= h 23)) (rdr-inst-throw s))
+                (when (>= len 14)
+                  (when (char=? (string-ref s 13) #\:)
+                    (let ((mi (rdr-2dig s 14)))
+                      (unless (and mi (<= mi 59)) (rdr-inst-throw s)))))))))))))
+;; strict #uuid: canonical 8-4-4-4-12 hex groups.
+(define (rdr-validate-uuid! s)
+  (define (hexrun? from to)
+    (let loop ((i from))
+      (cond ((>= i to) #t)
+            ((let ((c (char-downcase (string-ref s i))))
+               (or (rdr-digit? c) (and (char>=? c #\a) (char<=? c #\f))))
+             (loop (+ i 1)))
+            (else #f))))
+  (unless (and (= (string-length s) 36)
+               (char=? (string-ref s 8) #\-) (char=? (string-ref s 13) #\-)
+               (char=? (string-ref s 18) #\-) (char=? (string-ref s 23) #\-)
+               (hexrun? 0 8) (hexrun? 9 13) (hexrun? 14 18) (hexrun? 19 23) (hexrun? 24 36))
+    (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                     (string-append "Invalid UUID string: " s)))))
+
 ;; read-string / read data seam: construct the value for a #tag literal. #inst,
 ;; #uuid and #"regex" are built in; any other tag is applied from *data-readers*,
 ;; then *default-data-reader-fn*. An unregistered tag with no default handler stays
 ;; a tagged FORM (lenient — clojure.edn raises instead).
 (define (rdr-construct-tag tag inner)
   (cond
-    ((eq? tag (keyword #f "#inst")) (jolt-inst-from-string inner))
-    ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string inner))
+    ((eq? tag (keyword #f "#inst"))
+     (when (string? inner) (rdr-validate-inst! inner))
+     (jolt-inst-from-string inner))
+    ((eq? tag (keyword #f "#uuid"))
+     (when (string? inner) (rdr-validate-uuid! inner))
+     (jolt-uuid-from-string inner))
     ((eq? tag (keyword #f "regex")) (jolt-re-pattern inner))
+    ;; the M-literal form: construct the BigDecimal from its numeric text
+    ((eq? tag (keyword #f "bigdec")) (jolt-bigdec-from-string inner))
     (else (let ((fn (rdr-data-reader-fn tag)))
             (if fn (jolt-invoke fn inner)
                 (let ((dfn (rdr-default-data-reader-fn)))
@@ -765,7 +904,11 @@
      (let ((items (jolt-get x rdr-kw-value)))
        (let loop ((i 0) (s empty-pset))
          (if (fx>=? i (pvec-count items)) s
-             (loop (fx+ i 1) (pset-conj s (rdr-form->data (pvec-nth-d items i jolt-nil))))))))
+             (let ((v (rdr-form->data (pvec-nth-d items i jolt-nil))))
+               (when (jolt-truthy? (jolt-contains? s v))
+                 (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                                  (string-append "Duplicate key: " (jolt-pr-str v)))))
+               (loop (fx+ i 1) (pset-conj s v)))))))
     ((pvec? x)
      (let-values (((items changed) (rdr-conv-each (vector->list (pvec-v x)))))
        (if changed (apply jolt-vector items) x)))
@@ -790,12 +933,35 @@
     (if (jolt-nil? m) v (jolt-with-meta v (rdr-form->data m)))))
 
 ;; --- the two host seams -----------------------------------------------------
+;; a top-level read: a stray close delimiter is unmatched (read-seq consumes the
+;; close of an open collection; anything reaching here is unbalanced input).
+(define (rdr-read-top s i end)
+  (let ((k (rdr-skip-ws s i end)))
+    (when (and (< k end)
+               (let ((c (string-ref s k)))
+                 (or (char=? c #\)) (char=? c #\]) (char=? c #\}))))
+      (jolt-throw (jolt-ex-info (string-append "Unmatched delimiter: "
+                                               (string (string-ref s k)))
+                                empty-pmap)))
+    (rdr-read-form s k end)))
+
 ;; clojure.core/read-string: first form, or nil for blank / comment-only input
 ;; (parse-string wart, matched deliberately). jolt-read-form-raw keeps set FORMS
 ;; for the compiler spine (compile-eval); the data seam converts them to sets.
 (define (jolt-read-form-raw s)
-  (let-values (((form j) (rdr-read-form s 0 (string-length s))))
+  (let-values (((form j) (rdr-read-top s 0 (string-length s))))
     (if (rdr-eof? form) jolt-nil form)))
+
+;; the edn seam: strict mode (no auto-resolved keywords), each #_ discard handed
+;; to the callback for tag validation, and a distinct EOF sentinel so the edn
+;; layer can honor its :eof option (nil input is a plain EOF).
+(define (jolt-read-form-edn s cb)
+  (if (jolt-nil? s)
+      (keyword "jolt" "reader-eof")
+      (parameterize ((rdr-edn-mode #t)
+                     (rdr-discard-cb (if (jolt-nil? cb) #f cb)))
+        (let-values (((form j) (rdr-read-top s 0 (string-length s))))
+          (if (rdr-eof? form) (keyword "jolt" "reader-eof") form)))))
 (define (jolt-read-string s)
   (let ((form (jolt-read-form-raw s)))
     (if (jolt-nil? form) form (rdr-form->data form))))
@@ -803,7 +969,7 @@
 ;; __parse-next: [form rest-of-string] or nil when only whitespace/comments left.
 (define (jolt-parse-next s)
   (let ((end (string-length s)))
-    (let-values (((form j) (rdr-read-form s 0 end)))
+    (let-values (((form j) (rdr-read-top s 0 end)))
       (if (rdr-eof? form)
           jolt-nil
           (jolt-vector (rdr-form->data form) (substring s j end))))))
@@ -812,8 +978,13 @@
 ;; is the :#name keyword the reader produced; #uuid/#inst reuse the inst-time ctors.
 (define (jolt-read-tagged tag form)
   (cond
-    ((eq? tag (keyword #f "#uuid")) (jolt-uuid-from-string form))
-    ((eq? tag (keyword #f "#inst")) (jolt-inst-from-string form))
+    ((eq? tag (keyword #f "#uuid"))
+     (when (string? form) (rdr-validate-uuid! form))
+     (jolt-uuid-from-string form))
+    ((eq? tag (keyword #f "#inst"))
+     (when (string? form) (rdr-validate-inst! form))
+     (jolt-inst-from-string form))
+    ((eq? tag (keyword #f "bigdec")) (jolt-bigdec-from-string form))
     ;; No registered reader: consult *default-data-reader-fn*, else throw a clean,
     ;; catchable ex-info naming the tag, like the JVM's "No reader function for tag
     ;; foobar" (empty-pmap is a VALUE — the old (empty-pmap) applied it as a
@@ -833,3 +1004,4 @@
 ;; :default (a #inst can be overridden to defer), rather than read-string building
 ;; the built-in #inst eagerly (which fails on a non-string like #inst ^:ref […]).
 (def-var! "clojure.core" "__read-form-raw" jolt-read-form-raw)
+(def-var! "clojure.core" "__read-form-edn" jolt-read-form-edn)
