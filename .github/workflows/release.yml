@@ -115,17 +115,29 @@ jobs:
         run: |
           git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
           cd /tmp/chez-src
-          ./configure --threads --installprefix="$GITHUB_WORKSPACE/chez-install"
+          ./configure --threads
           make -j"$(nproc)"
-          make install
+          # `make install` drives the unix installsh through cmd and dies; the
+          # build tree has everything — assemble the layout by hand. Boot files
+          # sit next to scheme.exe (that's where the Windows kernel looks).
+          inst="$GITHUB_WORKSPACE/chez-install"
+          mkdir -p "$inst/bin" "$inst/csv"
+          cp ta6nt/bin/ta6nt/*.exe "$inst/bin/"
+          cp ta6nt/bin/ta6nt/*.dll "$inst/bin/" 2>/dev/null || true
+          cp ta6nt/boot/ta6nt/petite.boot ta6nt/boot/ta6nt/scheme.boot "$inst/bin/"
+          cp ta6nt/boot/ta6nt/petite.boot ta6nt/boot/ta6nt/scheme.boot "$inst/csv/"
+          cp ta6nt/boot/ta6nt/scheme.h "$inst/csv/"
+          cp ta6nt/boot/ta6nt/equates.h "$inst/csv/" 2>/dev/null || true
+          cp ta6nt/boot/ta6nt/libkernel.a "$inst/csv/" || { echo "libkernel.a not found:"; find ta6nt -name "*.a" -o -name "kernel*"; exit 1; }
 
       - name: Put chez on PATH (Windows)
         if: runner.os == 'Windows'
         run: |
           bindir="$GITHUB_WORKSPACE/chez-install/bin"
-          { echo '#!/bin/sh'; echo "exec \"$bindir/scheme\" \"\$@\""; } > "$bindir/chez"
+          { echo '#!/bin/sh'; echo "exec \"$bindir/scheme.exe\" \"\$@\""; } > "$bindir/chez"
           chmod +x "$bindir/chez"
           echo "$bindir" >> "$GITHUB_PATH"
+          echo "JOLT_CHEZ_CSV=$GITHUB_WORKSPACE/chez-install/csv" >> "$GITHUB_ENV"
           # cc is the build's compiler name; alias it to mingw gcc
           { echo '#!/bin/sh'; echo 'exec gcc "$@"'; } > "$bindir/cc"
           chmod +x "$bindir/cc"
