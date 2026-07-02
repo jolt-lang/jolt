@@ -23,7 +23,7 @@
 ;; --- shell helpers ----------------------------------------------------------
 ;; Run a command, return its stdout as one trimmed string ("" on no output).
 (define (bld-sh-capture cmd)
-  (let* ((p (process cmd)) (in (car p)))
+  (let* ((p (process (bld-sh-wrap cmd))) (in (car p)))
     (let loop ((acc '()))
       (let ((l (get-line in)))
         (if (eof-object? l)
@@ -37,7 +37,7 @@
             (loop (cons l acc)))))))
 
 (define (bld-system cmd)
-  (let ((rc (system cmd)))
+  (let ((rc (system (bld-sh-wrap cmd))))
     (unless (zero? rc)
       (error 'jolt-build (string-append "command failed (" (number->string rc) "): " cmd)))))
 
@@ -58,6 +58,23 @@
 (define bld-machine (symbol->string (machine-type)))
 (define bld-osx? (bld-contains? bld-machine "osx"))
 (define bld-nt? (bld-contains? bld-machine "nt"))
+
+;; Chez's system/process run through cmd.exe on Windows; every build command
+;; here is written for sh (MSYS2 provides it). On nt, spill the command to a
+;; script and run `sh <file>` — workspace paths carry no spaces, and the
+;; script file sidesteps cmd's quoting entirely. Identity elsewhere.
+(define bld-shell-counter 0)
+(define (bld-sh-wrap cmd)
+  (if bld-nt?
+      (let* ((tmp (or (getenv "TEMP") (getenv "TMP") "."))
+             (f (begin (set! bld-shell-counter (+ bld-shell-counter 1))
+                       (string-append tmp "\\jolt-sh-"
+                                      (number->string bld-shell-counter) ".sh"))))
+        (let ((p (open-output-file f 'replace)))
+          (put-string p cmd)
+          (close-port p))
+        (string-append "sh " f))
+      cmd))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
 (define bld-chez
