@@ -115,10 +115,11 @@
                  (let ((v (jolt-array-vec c)) (j (exact (na-idx i))))
                    (if (and (>= j 0) (< j (vector-length v))) (vector-ref v j) d))
                  (%na-nth c i d)))))
+(def-var! "jolt.host" "array-value?" (lambda (x) (if (jolt-array? x) #t jolt-nil)))
 (define %na-get jolt-get)
 (set! jolt-get
   (case-lambda
-    ((c k)   (if (jolt-array? c) (jolt-nth c k) (%na-get c k)))
+    ((c k)   (if (jolt-array? c) (jolt-nth c k jolt-nil) (%na-get c k)))
     ((c k d) (if (jolt-array? c) (jolt-nth c k d) (%na-get c k d)))))
 ;; aset (overlay) writes through jolt.host/ref-put! — mutate the slot, return arr.
 ;; count/nth/seq/get above are NATIVE-OPS (inlined at call sites), so aget/alength/

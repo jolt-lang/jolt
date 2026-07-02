@@ -44,7 +44,16 @@
      (let ((ht (make-hashtable key-hash jolt=2)))
        (pset-fold coll (lambda (e acc) (hashtable-set! ht e #t) acc) 0)
        (make-jolt-transient 'set ht 0 #t #f)))
-    (else (make-jolt-transient 'cow coll 0 #t #f))))
+    ;; RFC 0003: any COLLECTION transients (the sorted/list/seq superset rides
+    ;; the copy-on-write fallback); a non-collection is the JVM's cast failure.
+    ((or (cseq? coll) (empty-list-t? coll) (jolt-lazyseq? coll)
+         (htable? coll) (jrec? coll))
+     (make-jolt-transient 'cow coll 0 #t #f))
+    (else
+     (jolt-throw (jolt-host-throwable
+                  "java.lang.ClassCastException"
+                  (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                                 " cannot be cast to class clojure.lang.IEditableCollection"))))))
 
 ;; map put/delete that maintain the reverse insertion-order list in `ord`.
 (define (tmap-put! t k v)

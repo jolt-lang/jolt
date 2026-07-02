@@ -545,6 +545,8 @@
 ;; name binds only in the taken branch (temp# tests the value); via `let` so the
 ;; binding form may itself destructure, matching Clojure.
 (defmacro when-let [bindings & body]
+  (when (not= 2 (count bindings))
+    (throw (new IllegalArgumentException "when-let requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if temp# (let [~form temp#] ~@body) nil))))

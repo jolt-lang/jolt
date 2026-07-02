@@ -67,8 +67,13 @@
         ;; chain is a cseq under jolt's seq model, and (realized? (rest s)) after
         ;; a next must be true like the JVM's realized LazySeq — never a throw
         ;; whose message renders the (possibly infinite) seq.
-        ((cseq? x) (if (cseq-forced? x) #t #f))
-        ((empty-list-t? x) #t)
+        ;; a PLAIN seq (list/cons/range — not a lazy-seq wrapper) is not an
+        ;; IPending on the JVM: realized? throws.
+        ((or (cseq? x) (empty-list-t? x))
+         (jolt-throw (jolt-host-throwable
+                      "java.lang.ClassCastException"
+                      (string-append "class " (guard (e (#t "?")) (jolt-class-name x))
+                                     " cannot be cast to class clojure.lang.IPending"))))
         (else (jolt-invoke overlay-realized? x))))))
 ;; clojure.edn/read over a reader: drain the jhost reader, then read through the
 ;; overlay read-string so the opts map (:readers/:default/:eof) is honored.

@@ -12,7 +12,8 @@
 ;; Clojure. Collections only — a string is seqable but not shuffleable, as on
 ;; the JVM (Collections/shuffle wants a Collection).
 (defn shuffle [coll]
-  (when-not (coll? coll)
+  ;; Collections/shuffle wants a java.util.Collection — a map is not one
+  (when (or (not (coll? coll)) (map? coll))
     (throw (ex-info (str "shuffle requires a collection, got: " coll) {})))
   (loop [v (vec coll) i (dec (count v))]
     (if (pos? i)
@@ -28,6 +29,10 @@
 (defn sort-by
   ([keyfn coll] (sort-by keyfn compare coll))
   ([keyfn comp coll]
+   ;; a collection is never a Comparator (the JVM cast would fail); catching it
+   ;; here beats silently "sorting" through coll-as-fn lookups
+   (when (coll? comp)
+     (throw (new ClassCastException (str (class comp) " cannot be cast to java.util.Comparator"))))
    (sort (fn [x y] (comp (keyfn x) (keyfn y))) coll)))
 
 ;; parse-uuid: nil unless s is a canonical 8-4-4-4-12 hex UUID string; throws
@@ -348,8 +353,8 @@
 (defn clojure-version [] "1.11.0-jolt")
 
 ;; bigdec is a host fn (host/chez/java/bigdec.ss) — a real BigDecimal value type.
-(defn numerator [x] (throw (ex-info "numerator requires a ratio (Jolt has no ratios)" {})))
-(defn denominator [x] (throw (ex-info "denominator requires a ratio (Jolt has no ratios)" {})))
+;; numerator/denominator are host natives (converters.ss) over Chez's exact
+;; rationals; a non-ratio is the Ratio cast failure.
 
 ;; jolt has no reflection, but a few common JVM interfaces carry a modeled
 ;; ancestry (jolt.host/class-supers) so reflective checks like

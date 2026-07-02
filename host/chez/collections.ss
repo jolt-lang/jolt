@@ -404,9 +404,11 @@
   (if (null? args)
       (jolt-vector)
       (let ((coll (car args)) (xs (cdr args)))
-        (if (jolt-nil? coll)
-            (fold-left jolt-conj1 jolt-empty-list xs)
-            (meta-carry coll (fold-left jolt-conj1 coll xs))))))
+        (cond
+          ;; 1-arity returns the coll untouched — (conj nil) is nil
+          ((null? xs) coll)
+          ((jolt-nil? coll) (fold-left jolt-conj1 jolt-empty-list xs))
+          (else (meta-carry coll (fold-left jolt-conj1 coll xs)))))))
 
 ;; A host shim registers a type's get via register-get-arm! (handler: (coll k d) ->
 ;; value) instead of set!-wrapping jolt-get — disjoint coll types, checked before the
@@ -443,11 +445,16 @@
 (define (rec-coll-method coll name)
   (and (jrec? coll) (find-method-any-protocol (jrec-tag coll) name)))
 
+(define (jolt-nth-nil-idx! i)
+  (when (jolt-nil? i)
+    (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))))
 (define jolt-nth
   (case-lambda
     ((coll i)
+     (jolt-nth-nil-idx! i)
      (let ((i (->idx i)))
-       (cond ((pvec? coll) (let ((v (pvec-v coll)))
+       (cond ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
+             ((pvec? coll) (let ((v (pvec-v coll)))
                              (if (and (fx>=? i 0) (fx<? i (vector-length v))) (vector-ref v i)
                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
@@ -456,8 +463,10 @@
              ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i)))
              (else (error 'nth "unsupported collection")))))
     ((coll i d)
+     (jolt-nth-nil-idx! i)
      (let ((i (->idx i)))
-       (cond ((pvec? coll) (pvec-nth-d coll i d))
+       (cond ((jolt-nil? coll) d)                 ; RT.nth(nil, i, notFound) is notFound
+             ((pvec? coll) (pvec-nth-d coll i d))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #t d))
              ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i d)))
@@ -502,6 +511,21 @@
         ((pset? coll) (pset-contains? coll k))
         ((pvec? coll) (let ((k (->idx k))) (and (fixnum? k) (fx>=? k 0) (fx<? k (pvec-count coll)))))
         ((jolt-nil? coll) #f)
+        ;; a string supports contains? by INDEX only (RT.contains: CharSequence +
+        ;; Number key); any other key — or any unsupported type — is the JVM's
+        ;; IllegalArgumentException.
+        ((string? coll)
+         (if (and (number? k) (exact? k) (integer? k))
+             (and (>= k 0) (< k (string-length coll)))
+             (jolt-throw (jolt-host-throwable
+                          "java.lang.IllegalArgumentException"
+                          "contains? not supported on type: java.lang.String"))))
+        ((or (cseq? coll) (empty-list-t? coll) (number? coll) (boolean? coll)
+             (keyword? coll) (jolt-symbol? coll) (char? coll))
+         (jolt-throw (jolt-host-throwable
+                      "java.lang.IllegalArgumentException"
+                      (string-append "contains? not supported on type: "
+                                     (guard (e (#t "?")) (jolt-class-name coll))))))
         (else #f)))
 
 (define (jolt-empty? coll)
@@ -514,15 +538,25 @@
         ((cseq? coll) #f)                            ; a cseq is non-empty by construction
         (else (error 'empty? "unsupported collection"))))
 
+(define (jolt-stack-throw coll)
+  (jolt-throw (jolt-host-throwable
+               "java.lang.ClassCastException"
+               (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                              " cannot be cast to class clojure.lang.IPersistentStack"))))
 (define (jolt-peek coll)
   (cond ((pvec? coll) (pvec-peek coll))
-        ((or (cseq? coll) (empty-list-t? coll)) (jolt-first coll))   ; list peek = first
-        ((jolt-nil? coll) jolt-nil) (else (error 'peek "unsupported collection"))))
+        ;; list peek = first; a non-list seq (range, a rest chain) is not an
+        ;; IPersistentStack on the JVM
+        ((and (cseq? coll) (cseq-list? coll)) (jolt-first coll))
+        ((empty-list-t? coll) (jolt-first coll))
+        ((jolt-nil? coll) jolt-nil)
+        (else (jolt-stack-throw coll))))
 (define (jolt-pop coll)
-  (cond ((pvec? coll) (meta-carry coll (pvec-pop coll)))
-        ((cseq? coll) (meta-carry coll (jolt-rest coll)))            ; list pop = rest
+  (cond ((jolt-nil? coll) jolt-nil)                                 ; RT.pop(nil) is nil
+        ((pvec? coll) (meta-carry coll (pvec-pop coll)))
+        ((and (cseq? coll) (cseq-list? coll)) (meta-carry coll (jolt-rest coll)))
         ((empty-list-t? coll) (error 'pop "can't pop empty list"))
-        (else (error 'pop "unsupported collection"))))
+        (else (jolt-stack-throw coll))))
 
 ;; ============================================================================
 ;; equality / hash hooks called from values.ss (jolt=2 / jolt-hash)

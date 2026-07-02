@@ -260,6 +260,9 @@
 ;; intern: create/set a var ns/sym to val (or an unbound cell). Returns the var.
 (define (jolt-intern ns-desig sym . vopt)
   (let ((nm (ns-desig->name ns-desig)) (s (symbol-t-name sym)))
+    ;; the namespace must exist (Namespace.find), like the JVM's intern
+    (unless (hashtable-ref ns-registry nm #f)
+      (jolt-throw (jolt-ex-info (string-append "No namespace: " nm " found") empty-pmap)))
     (if (pair? vopt) (def-var! nm s (car vopt)) (declare-var! nm s))))
 
 ;; alias / ns-unalias: register/drop an :as alias under the current (or given) ns.

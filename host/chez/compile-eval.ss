@@ -211,7 +211,13 @@
 ;; A top-level (do ...) is UNROLLED — each subform compiled+eval'd in turn, like
 ;; Clojure's top-level do — so a runtime defmacro/def in an earlier subform is
 ;; visible (macro flag set, var interned) before a later subform is analyzed.
+;; a non-form VALUE (a function object, a BigDecimal, a reference type)
+;; self-evaluates, like eval on the JVM.
 (define (jolt-compile-eval-form form ns)
+  (if (or (procedure? form) (jbigdec? form) (jolt-atom? form) (jolt-multifn? form))
+      form
+      (jolt-compile-eval-form* form ns)))
+(define (jolt-compile-eval-form* form ns)
   (cond
     ;; thread the current ns: an earlier subform may switch it (ns/in-ns call
     ;; set-chez-ns!), and the next subform must be ANALYZED in that ns so its defs

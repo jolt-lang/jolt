@@ -636,11 +636,16 @@
         (if idx
           (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit fnode) ")")))
           (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))
-      ;; (coll k [default]) -> (jolt-get coll k [default]) — coll (fnode) is the
-      ;; callee, evaluated before the key/default args.
+      ;; (coll k [default]) -> lookup — coll (fnode) is the callee, evaluated
+      ;; before the key/default args. A VECTOR literal invokes as nth (a bad
+      ;; index throws, IPersistentVector.invoke); maps/sets invoke as get.
       (= kind :coll)
       (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
-                    (fn [[c & as]] (str "(jolt-get " c " " (str/join " " as) ")")))
+                    (fn [[c & as]]
+                      (str (if (and (= :vector (:op fnode)) (= 1 (count as)))
+                             "(jolt-nth "
+                             "(jolt-get ")
+                           c " " (str/join " " as) ")")))
       (and (stdlib-var? fnode) (not (deref prelude-mode?)))
       (throw (ex-info (str "emit: unsupported stdlib fn `" (:ns fnode) "/" (:name fnode)
                            "` (no core on Chez yet)") {}))

@@ -136,6 +136,9 @@
     ;; a deftype/record with its own empty (IPersistentCollection) — e.g.
     ;; data.priority-map — uses it, before the generic map/set/vector arms.
     (jolt.host/jrec-method? coll "empty") (.empty coll)
+    ;; a defrecord without its own empty can't have one (RT: UnsupportedOperation)
+    (record? coll) (throw (new UnsupportedOperationException
+                               (str "Can't create empty: " (.getName (class coll)))))
     (sorted? coll) ((get (jolt.host/ref-get coll :ops) :empty) coll)
     (map? coll) (with-meta {} (meta coll))
     (set? coll) (with-meta #{} (meta coll))
@@ -330,7 +333,8 @@
 ;; stays an unevaluated reader form on jolt and contains? can't see into it.
 (def ^:private special-syms
   #{'if 'do 'let* 'fn* 'quote 'var 'def 'loop* 'recur 'throw 'try 'catch
-    'finally 'new 'set! '. 'monitor-enter 'monitor-exit})
+    'finally 'new 'set! '. 'monitor-enter 'monitor-exit
+    '& 'case* 'deftype* 'letfn* 'reify*})
 
 (defn special-symbol? [s] (contains? special-syms s))
 
