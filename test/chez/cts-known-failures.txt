@@ -57,4 +57,3 @@ clojure.core-test.update 1 0
 clojure.core-test.vals 0 3
 clojure.core-test.vec 1 0
 clojure.core-test.when-let 1 0
-clojure.edn-test.read-string 46 5

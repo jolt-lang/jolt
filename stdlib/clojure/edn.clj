@@ -16,7 +16,15 @@
     ;; Reader FORMS are detected by :jolt/type tag, never by map? — strict map?
     ;; (correctly) excludes tagged structs, so the old (and (map? x) ...) guard
     ;; would skip them.
-    (= :jolt/set (get x :jolt/type)) (with-meta (set (map (fn [v] (edn->value opts v)) (get x :value))) (edn->value opts (meta x)))
+    (= :jolt/set (get x :jolt/type))
+      (let [vs (map (fn [v] (edn->value opts v)) (get x :value))
+            st (set vs)]
+        ;; duplicate literal elements are invalid edn
+        (when (< (count st) (count vs))
+          (throw (new IllegalArgumentException
+                      (str "Duplicate key: " (pr-str (some (fn [[k n]] (when (< 1 n) k))
+                                                           (frequencies vs)))))))
+        (with-meta st (edn->value opts (meta x))))
     ;; Tagged elements: a reader from the :readers opt wins, then the built-in
     ;; data readers (#uuid/#inst + registered); an unknown tag falls to the
     ;; :default opt fn (called with tag and value, as in Clojure) or throws.
@@ -30,6 +38,9 @@
             custom (get (get opts :readers) tag-sym)]
         (cond
           custom (custom v)
+          ;; the built-in edn tags win over :default (a :readers entry can
+          ;; override them; an unknown-tag :default never sees #inst/#uuid)
+          (contains? #{'inst 'uuid 'bigdec} tag-sym) (__read-tagged tag v)
           ;; Clojure calls :default with the tag as a SYMBOL and the value.
           (get opts :default) ((get opts :default) tag-sym v)
           :else (__read-tagged tag v)))
@@ -39,25 +50,30 @@
     ;; a constructed set: recurse into its elements too, so a tagged literal
     ;; inside #{…} gets the :readers/:default treatment (aero's #ref in a set).
     (set? x) (with-meta (set (map (fn [v] (edn->value opts v)) x)) (edn->value opts (meta x)))
-    (seq? x) (with-meta (map (fn [v] (edn->value opts v)) x) (edn->value opts (meta x)))
+    ;; edn lists are lists (list? holds), not lazy seqs
+    (seq? x) (with-meta (apply list (map (fn [v] (edn->value opts v)) x)) (edn->value opts (meta x)))
     :else x))
 
 ;; Private helper, NOT named read-string: an unqualified (read-string …) call
 ;; dispatches the core read-string SPECIAL FORM (by name, regardless of ns), so
 ;; the 1-arity can't delegate to the 2-arity through that name.
 (defn- read-edn [opts s]
-  (if (or (nil? s) (cstr/blank? s))
-    (get opts :eof nil)
-    ;; read the RAW form (tagged/set literals stay forms) so edn->value applies
-    ;; every #tag through :readers/:default — read-string would build the built-in
-    ;; #inst/#uuid eagerly, ignoring an override and failing on a non-string form.
-    (edn->value opts (__read-form-raw s))))
+  ;; the strict edn seam: no auto-resolved keywords, invalid tokens throw, and
+  ;; each #_ discard is validated through the same :readers/:default pipeline.
+  ;; EOF (blank/comment-only/nil input) honors :eof; an opts map WITHOUT :eof
+  ;; makes end-of-input an error, like the reference.
+  (let [v (__read-form-edn s (fn [form] (edn->value opts form) nil))]
+    (if (= v :jolt/reader-eof)
+      (if (contains? opts :eof)
+        (get opts :eof)
+        (throw (ex-info "EOF while reading" {})))
+      (edn->value opts v))))
 
 (defn read-string
-  "Reads one object from the string s. Returns the :eof option value (default
-  nil) for nil or blank input. opts is an options map; :eof sets the value
-  returned at end of input."
-  ([s] (read-edn {} s))
+  "Reads one object from the string s. The no-opts arity returns nil at end of
+  input; with an opts map, :eof sets the value returned at end of input and its
+  absence makes end-of-input an error."
+  ([s] (read-edn {:eof nil} s))
   ([opts s] (read-edn opts s)))
 
 (defn- drain-reader

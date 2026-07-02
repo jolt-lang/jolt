@@ -225,3 +225,31 @@ reader functions are the deliberate exception, S20). Forms read identically
 whether or not they will be evaluated; `read-string` of any printable value
 `v` followed by evaluation yields a value equal to `v` for the
 self-evaluating types (§4 print/read round-trip contract).
+
+## Strict tokens and edn mode
+
+The reader rejects what the reference rejects (corpus `edn / strictness`,
+`reader / strict tokens`):
+
+- A token that starts like a number but doesn't parse as one is
+  NumberFormatException, never a symbol: `1a`, `08` (a leading zero demands
+  octal digits; `042` is 34), `0x2g`, `2r2`. A ratio's parts are plain digit
+  runs (`1/-1` is invalid); a zero denominator is ArithmeticException.
+- Empty ns/name parts are invalid tokens: `:`, `::`, `foo/`, `/foo`, `:/foo`.
+  `/` (division), `ns//` and `:/` (a name of exactly `/`) are valid.
+- Map literals with duplicate keys and set literals with duplicate elements
+  throw IllegalArgumentException at read.
+- An unsupported string escape (`"\q"`) and an octal escape past `\377`
+  (string or `\o` char) throw. A stray close delimiter at top level is
+  "Unmatched delimiter". `\r` terminates a line comment like `\n`.
+- `#inst` validates its calendar fields progressively (month 1–12, day valid
+  for the month including leap years, hour < 24, minute < 60); `#uuid`
+  demands canonical 8-4-4-4-12 hex.
+
+clojure.edn adds on top of that (`__read-form-edn` seam): auto-resolved
+keywords (`::k`) are invalid (no resolution context), each `#_` discarded
+form is validated through the same `:readers`/`:default` pipeline (an
+unreadable tagged element throws even when discarded), `M` literals
+construct BigDecimals, lists satisfy `list?`, and end-of-input honors the
+`:eof` option — an opts map without `:eof` makes EOF an error, while the
+no-opts arity returns nil.

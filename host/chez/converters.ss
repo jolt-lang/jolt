@@ -117,20 +117,21 @@
      (let ((a (car args)))
        (cond
          ((jolt-symbol? a) a)
-         ;; (symbol "ns/name") splits the namespace at the LAST "/" (JVM
-         ;; Symbol.intern), so (namespace (symbol "foo/bar")) => "foo". A lone "/"
-         ;; or a leading slash has no namespace. The no-ns sentinel is #f — matches
-         ;; emit's quoted-symbol lowering (jolt-symbol #f "x"), so (= 'x (symbol
-         ;; "x")) holds (jolt= compares ns with strict equal?).
+         ;; (symbol "ns/name") splits the namespace at the FIRST "/" (JVM
+         ;; Symbol.intern), so (namespace (symbol "foo/bar/baz")) => "foo" with
+         ;; name "bar/baz". A lone "/" or a leading slash has no namespace. The
+         ;; no-ns sentinel is #f — matches emit's quoted-symbol lowering
+         ;; (jolt-symbol #f "x"), so (= 'x (symbol "x")) holds (jolt= compares
+         ;; ns with strict equal?).
          ((string? a)
           (let ((slen (string-length a)))
             (if (string=? a "/")
                 (jolt-symbol #f "/")
-                (let loop ((i (- slen 1)))
-                  (cond ((<= i 0) (jolt-symbol #f a))
+                (let loop ((i 1))
+                  (cond ((>= i slen) (jolt-symbol #f a))
                         ((char=? (string-ref a i) #\/)
                          (jolt-symbol (substring a 0 i) (substring a (+ i 1) slen)))
-                        (else (loop (- i 1))))))))
+                        (else (loop (+ i 1))))))))
          ((keyword? a) (jolt-symbol (keyword-t-ns a) (keyword-t-name a)))
          ;; (symbol a-var) -> the var's qualified symbol (clojure.spec.alpha/->sym).
          ((var-cell? a) (jolt-symbol (var-cell-ns a) (var-cell-name a)))
