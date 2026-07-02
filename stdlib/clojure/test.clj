@@ -11,7 +11,8 @@
 ; is a drop-in superset.
 
 (ns clojure.test
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [clojure.template :as temp]))
 
 ;; --- state -----------------------------------------------------------------
 
@@ -216,13 +217,16 @@
                                         :fn ~name})
      (var ~name)))
 
-(defmacro are [argv expr & data]
-  (let [n (count argv)
-        rows (partition n data)]
-    `(do ~@(map (fn [row]
-                  `(let [~@(interleave argv row)]
-                     (clojure.test/is ~expr)))
-                rows))))
+;; Template substitution (not let-binding), so argv symbols substitute inside
+;; quote and nested forms: (are [x] (special-symbol? 'x) if def) tests 'if.
+(defmacro are [argv expr & args]
+  (if (or (and (empty? argv) (empty? args))
+          (and (pos? (count argv))
+               (pos? (count args))
+               (zero? (mod (count args) (count argv)))))
+    `(clojure.template/do-template ~argv (clojure.test/is ~expr) ~@args)
+    (throw (IllegalArgumentException.
+            "The number of args doesn't match are's argv or neither are empty"))))
 
 ;; --- fixtures + run --------------------------------------------------------
 

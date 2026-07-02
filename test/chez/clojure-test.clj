@@ -36,6 +36,10 @@
   (are [x y] (= x y)
     2 (+ 1 1)
     6 (* 2 3))
+  ;; template vars substitute inside quote (are is clojure.template, not let)
+  (are [x] (special-symbol? 'x)
+    if
+    def)
   (is (thrown? clojure.lang.ExceptionInfo (throw (ex-info "x" {}))))
   (is (thrown-with-msg? Exception #"bad" (throw (ex-info "bad" {}))))
   (is (near? 1.0 1.005))
@@ -52,10 +56,10 @@
 (t/do-report {:type ::trial})
 (t/do-report {:type ::trial})
 
-;; 8 pass (= + vector? + 2 are rows + thrown? + thrown-with-msg? + near? + p/thrown?),
+;; 10 pass (= + vector? + 4 are rows + thrown? + thrown-with-msg? + near? + p/thrown?),
 ;; 2 fail (= 1 2, near? 1.0 5.0), 0 error, 2 fixture runs, 2 custom reports
-(let [ok (and (= (t/n-pass) 8) (= (t/n-fail) 2) (= (t/n-error) 0)
-              (= 2 (:test r1)) (= 8 (:pass r1)) (= 2 (:fail r1))
+(let [ok (and (= (t/n-pass) 10) (= (t/n-fail) 2) (= (t/n-error) 0)
+              (= 2 (:test r1)) (= 10 (:pass r1)) (= 2 (:fail r1))
               (= 0 (:test r2)) (= 0 (:pass r2))
               (= @setups 2) (= @trials 2))]
   (println (if ok
