@@ -56,7 +56,11 @@ jobs:
       - name: Install JDK + Clojure (certify oracle)
         run: |
           sudo apt-get install -y default-jdk rlwrap
-          curl -L -O https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+          # --retry + --fail so a transient CDN error retries instead of handing
+          # bash an HTML error page (a 2min timeout page flaked a run)
+          curl --fail --retry 5 --retry-delay 10 --retry-all-errors -L -O \
+            https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+          head -1 linux-install.sh | grep -q '^#!' || { echo "installer download corrupt"; cat linux-install.sh | head -5; exit 1; }
           sudo bash linux-install.sh
           clojure --version
 
