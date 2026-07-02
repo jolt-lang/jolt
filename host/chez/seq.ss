@@ -237,7 +237,12 @@
   (cond ((not (and (number? a) (number? b))) (jolt-quot-slow a b))
         ((or (flonum? a) (flonum? b))
          (let ((n (real->flonum a)) (d (real->flonum b)))
-           (if (fl= d 0.0) (jolt-div0-throw) (fltruncate (fl/ n d)))))
+           (if (fl= d 0.0) (jolt-div0-throw)
+               (let ((q (fl/ n d)))
+                 (when (or (nan? q) (infinite? q))
+                   (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                                                    "Infinite or NaN")))
+                 (fltruncate q)))))
         ((eqv? b 0) (jolt-div0-throw))
         ((and (integer? a) (integer? b)) (quotient a b))
         (else (truncate (/ a b)))))
@@ -246,7 +251,11 @@
         ((or (flonum? a) (flonum? b))
          (let ((n (real->flonum a)) (d (real->flonum b)))
            (if (fl= d 0.0) (jolt-div0-throw)
-               (fl- n (fl* d (fltruncate (fl/ n d)))))))
+               (let ((q (fl/ n d)))
+                 (when (or (nan? q) (infinite? q))
+                   (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                                                    "Infinite or NaN")))
+                 (fl- n (fl* d (fltruncate q)))))))
         ((eqv? b 0) (jolt-div0-throw))
         ((and (integer? a) (integer? b)) (remainder a b))
         (else (- a (* b (truncate (/ a b)))))))
@@ -451,6 +460,11 @@
     ((procedure? f) (apply f args))
     ((keyword? f) (apply jolt-get (car args) f (cdr args)))   ; (:k m [d]) -> (get m :k [d])
     ((jolt-symbol? f) (apply jolt-get (car args) f (cdr args)))   ; ('s m [d]) -> (get m 's [d])
+    ;; a VECTOR invokes as nth (a bad index throws, like IPersistentVector.invoke);
+    ;; maps and sets invoke as get.
+    ((pvec? f) (if (and (pair? args) (null? (cdr args)))
+                   (jolt-nth f (car args))
+                   (apply jolt-get f args)))
     ((jolt-coll? f) (apply jolt-get f args))                  ; (coll k [d]) -> (get coll k [d])
     ((jolt-transient? f) (apply jolt-get f args))             ; a transient vec/map/set is callable on the JVM
     ;; a record/reify implementing clojure.lang.IFn is callable: dispatch to its
@@ -647,8 +661,14 @@
 ;; falls back to a copy-on-write wrapper for other targets (lists, sorted colls,
 ;; nil), so those keep the old per-step jolt-conj behaviour.
 (define (jolt-into to from)
-  (meta-carry to
-    (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from)))))
+  ;; only an editable collection rides the transient path; anything else
+  ;; (PersistentQueue, sorted colls, seqs) folds through conj, like RT's
+  ;; instanceof IEditableCollection split.
+  (if (or (pvec? to) (pmap? to) (pset? to))
+      (meta-carry to
+        (jolt-persistent! (reduce-seq (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) (jolt-seq from))))
+      (meta-carry to
+        (reduce-seq (lambda (acc x) (jolt-conj1 acc x)) to (jolt-seq from)))))
 
 (define (range-from n) (cseq-lazy n (lambda () (range-from (+ n 1)))))
 ;; A bounded range is a real chunked-seq, like clojure.lang.LongRange: eager, with
@@ -753,8 +773,14 @@
 ;; Parity over the full integer range (JVM even?/odd? accept any integer,
 ;; bignums included); a fixnum-only fxand crashes on a large value (e.g. a hash).
 (define (parity-int n) (if (flonum? n) (exact (floor n)) n))
-(define (jolt-even? n) (even? (parity-int n)))
-(define (jolt-odd? n) (odd? (parity-int n)))
+(define (jolt-parity-check n)
+  (unless (and (number? n) (exact? n) (integer? n))
+    (jolt-throw (jolt-host-throwable
+                 "java.lang.IllegalArgumentException"
+                 (string-append "Argument must be an integer: "
+                                (guard (e (#t "?")) (jolt-str n)))))))
+(define (jolt-even? n) (jolt-parity-check n) (even? (parity-int n)))
+(define (jolt-odd? n) (jolt-parity-check n) (odd? (parity-int n)))
 (define (jolt-pos? n) (> n 0))
 (define (jolt-neg? n) (< n 0))
 (define (jolt-zero? n) (= n 0))
@@ -763,8 +789,18 @@
 ;; ============================================================================
 ;; keys / vals — return seqs (nil on the empty map), HAMT-iteration order
 ;; ============================================================================
-(define (jolt-keys m) (if (jolt-nil? m) jolt-nil (list->cseq (pmap-fold m (lambda (k v a) (cons k a)) '()))))
-(define (jolt-vals m) (if (jolt-nil? m) jolt-nil (list->cseq (pmap-fold m (lambda (k v a) (cons v a)) '()))))
+;; keys/vals of anything empty is nil (RT.keys over a nil seq); a non-empty
+;; non-map still fails (its elements are not MapEntries).
+(define (jolt-keys m)
+  (cond ((jolt-nil? m) jolt-nil)
+        ((pmap? m) (list->cseq (pmap-fold m (lambda (k v a) (cons k a)) '())))
+        ((jolt-nil? (jolt-seq m)) jolt-nil)
+        (else (list->cseq (pmap-fold m (lambda (k v a) (cons k a)) '())))))
+(define (jolt-vals m)
+  (cond ((jolt-nil? m) jolt-nil)
+        ((pmap? m) (list->cseq (pmap-fold m (lambda (k v a) (cons v a)) '())))
+        ((jolt-nil? (jolt-seq m)) jolt-nil)
+        (else (list->cseq (pmap-fold m (lambda (k v a) (cons v a)) '())))))
 
 ;; ============================================================================
 ;; sequential equality + hash (hooks called from values.ss / collections.ss);

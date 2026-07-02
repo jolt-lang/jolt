@@ -219,7 +219,8 @@
 ;; compiler emit/inference path) — see predicates.ss.
 (defn ratio? [x]
   (and (number? x) (jolt.host/exact? x) (jolt.host/rational-type? x) (not (integer? x))))
-(defn rational? [x] (and (number? x) (jolt.host/exact? x)))
+(defn rational? [x]
+  (or (and (number? x) (jolt.host/exact? x)) (decimal? x)))
 ;; No first-class Class objects: class names are symbols the evaluator handles in
 ;; instance?/new positions, never values — so nothing is a class.
 (defn class? [x] false)
@@ -274,7 +275,8 @@
     (loop [i 0 s (seq coll)]
       (if (and s (< i n)) (recur (inc i) (next s)) i))))
 
-(defn run! [proc coll] (reduce (fn [_ x] (proc x) nil) nil coll) nil)
+;; the reducing fn returns proc's result, so a Reduced from proc short-circuits
+(defn run! [proc coll] (reduce (fn [_ x] (proc x)) nil coll) nil)
 
 (defn completing
   ([f] (completing f identity))
@@ -457,7 +459,8 @@
 (defn sequential? [x] (or (vector? x) (seq? x)))
 (defn associative? [x] (or (map? x) (vector? x)))
 (defn counted? [x]
-  (or (vector? x) (map? x) (set? x) (list? x) (string? x)))
+  ;; a String is not Counted on the JVM (count works via CharSequence, not O(1))
+  (or (vector? x) (map? x) (set? x) (list? x)))
 (defn indexed? [x] (vector? x))
 ;; sorted? is defined by the next tier (25-sorted) — declared here so this
 ;; tier compiles (forward references are analysis errors).
@@ -465,7 +468,7 @@
 
 (defn reversible? [x] (or (vector? x) (sorted? x)))
 (defn seqable? [x]
-  (or (nil? x) (coll? x) (string? x)))
+  (if (or (nil? x) (coll? x) (string? x) (jolt.host/array-value? x)) true false))
 
 (defn boolean? [x] (or (true? x) (false? x)))
 (defn double? [x] (and (number? x) (not (integer? x))))

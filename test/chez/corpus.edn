@@ -1885,7 +1885,7 @@
   {:suite "reader / comments inside maps" :label "comment with parens" :expected "{:a {:b 1}}" :actual "{:a ; dev (REPL, etc)\n {:b 1}}"}
   {:suite "reader / comments inside maps" :label "nested with comments" :expected "{:x {:y 2}}" :actual "{:x ; outer\n {:y ; inner\n 2}}"}
   {:suite "regex / literals & predicate" :label "regex? literal" :expected "true" :actual "(regex? #\"\\d+\")"}
-  {:suite "regex / literals & predicate" :label "regex? non-regex" :expected "false" :actual "(regex? \"\\d+\")"}
+  {:suite "regex / literals & predicate" :label "regex? non-regex" :expected "false" :actual "(regex? \"\\\\d+\")"}
   {:suite "regex / literals & predicate" :label "escaped digits" :expected "\"42\"" :actual "(re-find #\"\\d+\" \"x42y\")"}
   {:suite "regex / literals & predicate" :label "escaped ws/non-ws" :expected "\"x a\"" :actual "(re-find #\"\\S\\s\\S\" \"x a b y\")"}
   {:suite "regex / re-find" :label "match" :expected "\"123\"" :actual "(re-find #\"\\d+\" \"abc123def\")"}
@@ -2959,7 +2959,7 @@
   {:suite "dynamic vars / *print-meta*" :label "*print-meta* is a bindable dynamic var" :expected "true" :actual "(binding [*print-meta* true] (true? *print-meta*))"}
   {:suite "tagged literals / value equality" :label "equal tag+form are =" :expected "true" :actual "(= (tagged-literal (quote x) [1 2]) (tagged-literal (quote x) [1 2]))"}
   {:suite "tagged literals / value equality" :label "different tag is not =" :expected "false" :actual "(= (tagged-literal (quote x) [1]) (tagged-literal (quote y) [1]))"}
-  {:suite "tagged literals / value equality" :label "dedup as map keys" :expected "1" :actual "(count {(tagged-literal (quote x) [1]) :a (tagged-literal (quote x) [1]) :b})"}
+  {:suite "tagged literals / value equality" :label "duplicate literal keys throw at read (same form twice)" :expected :throws :actual "(count {(tagged-literal (quote x) [1]) :a (tagged-literal (quote x) [1]) :b})"}
   {:suite "interop / clojure.lang interfaces" :label "vector is IObj" :expected "true" :actual "(instance? clojure.lang.IObj [1])"}
   {:suite "interop / clojure.lang interfaces" :label "map entry is IMapEntry" :expected "true" :actual "(instance? clojure.lang.IMapEntry (first {:a 1}))"}
   {:suite "interop / clojure.lang interfaces" :label "record is IRecord" :expected "true" :actual "(do (defrecord R [a]) (instance? clojure.lang.IRecord (->R 1)))"}
@@ -3574,4 +3574,13 @@
   {:suite "edn / strictness" :label "#inst and #uuid validate their fields" :expected "[:t :t :t]" :actual "[(try (clojure.edn/read-string \"#inst \\\"2010-02-29T00:00:00.000Z\\\"\") (catch Throwable _ :t)) (try (clojure.edn/read-string \"#inst \\\"2010-01-01T24:00:00.000Z\\\"\") (catch Throwable _ :t)) (try (clojure.edn/read-string \"#uuid \\\"not-a-uuid\\\"\") (catch Throwable _ :t))]"}
   {:suite "reader / strict tokens" :label "the core reader rejects invalid numbers and duplicate keys too" :expected "[:nfe :dup 34]" :actual "[(try (read-string \"1a\") (catch NumberFormatException _ :nfe)) (try (read-string \"{:a 1 :a 2}\") (catch IllegalArgumentException _ :dup)) (read-string \"042\")]"}
   {:suite "reader / symbol intern" :label "1-arg symbol splits ns at the first slash (Symbol.intern)" :expected "[\"foo\" \"bar/baz\" \"/\"]" :actual "[(namespace (symbol \"foo/bar/baz\")) (name (symbol \"foo/bar/baz\")) (name (symbol \"foo//\"))]"}
+  {:suite "contracts / stacks and pending" :label "peek/pop demand a stack; realized? demands IPending; pop nil is nil" :expected "[:cce :cce nil nil nil]" :actual "[(try (peek (range 10)) (catch ClassCastException _ :cce)) (try (realized? (quote (1 2))) (catch ClassCastException _ :cce)) (pop nil) (nth nil 10) (conj nil)]"}
+  {:suite "contracts / collection fns" :label "keys/vals of empties are nil; contains? on a string is index-only" :expected "[nil nil nil :iae true false]" :actual "[(keys []) (vals #{}) (keys \"\") (try (contains? \"abc\" \"a\") (catch IllegalArgumentException _ :iae)) (contains? \"abc\" 1) (contains? \"abc\" 5)]"}
+  {:suite "contracts / collection fns" :label "transient demands an editable collection; empty on a record throws" :expected "[:cce :uoe]" :actual "[(try (transient 1) (catch ClassCastException _ :cce)) (do (defrecord EmptyRec [a]) (try (empty (->EmptyRec 1)) (catch UnsupportedOperationException _ :uoe)))]"}
+  {:suite "contracts / numbers" :label "numerator/denominator over real ratios; even?/odd? demand integers" :expected "[1 3 :cce :iae]" :actual "[(numerator 1/2) (denominator 2/3) (try (numerator 2) (catch ClassCastException _ :cce)) (try (even? 1.5) (catch IllegalArgumentException _ :iae))]"}
+  {:suite "contracts / numbers" :label "number?/rational?/num accept BigDecimal; NaN quotient throws" :expected "[true true 1.5M :nfe]" :actual "[(number? 1.5M) (rational? 1M) (num 1.5M) (try (quot ##NaN 1) (catch NumberFormatException _ :nfe))]"}
+  {:suite "contracts / ordering" :label "keywords order namespace-first with nil first, like symbols" :expected "[true true true]" :actual "[(neg? (compare :cat :animal/cat)) (neg? (compare :animal/cat :b/cat)) (zero? (compare :dog :dog))]"}
+  {:suite "contracts / misc" :label "vector invocation has nth semantics; run! honors reduced; eval self-evaluates values" :expected "[:ioob 1 true]" :actual "[(try ([1 2] 5) (catch IndexOutOfBoundsException _ :ioob)) (let [c (atom 0)] (run! (fn [x] (swap! c inc) (reduced x)) [1 2 3]) (deref c)) (fn? (eval +))]"}
+  {:suite "contracts / misc" :label "intern demands an existing ns; counted? excludes strings; seqable? includes arrays" :expected "[:t false true]" :actual "[(try (intern (quote no-such-ns-xyz) (quote v) 1) (catch Throwable _ :t)) (counted? \"s\") (seqable? (object-array 2))]"}
+  {:suite "contracts / misc" :label "nth of nil honors notFound; a nil index throws; the starred specials are special" :expected "[:default :npe [true true true true true]]" :actual "[(nth nil 5 :default) (try (nth [1] nil) (catch NullPointerException _ :npe)) [(special-symbol? (quote case*)) (special-symbol? (quote deftype*)) (special-symbol? (quote letfn*)) (special-symbol? (quote reify*)) (special-symbol? (quote &))]]"}
 ]

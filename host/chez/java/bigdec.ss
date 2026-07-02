@@ -334,6 +334,11 @@
 (set! jolt-zero? (let ((prev jolt-zero?)) (lambda (x) (if (jbigdec? x) (jbd-zero? x) (prev x)))))
 (set! jolt-pos? (let ((prev jolt-pos?)) (lambda (x) (if (jbigdec? x) (jbd-pos? x) (prev x)))))
 (set! jolt-neg? (let ((prev jolt-neg?)) (lambda (x) (if (jbigdec? x) (jbd-neg? x) (prev x)))))
+;; a BigDecimal IS a number (java.lang.Number): extend the number? native so the
+;; predicate — and everything defined over it (num, =='s guard) — accepts it.
+;; The compiled fast paths test Chez number? directly and are unaffected.
+(set! jolt-number? (let ((prev jolt-number?)) (lambda (x) (if (jbigdec? x) #t (prev x)))))
+(def-var! "clojure.core" "number?" jolt-number?)
 (def-var! "clojure.core" "inc" jolt-inc)
 (def-var! "clojure.core" "dec" jolt-dec)
 (def-var! "clojure.core" "zero?" jolt-zero?)

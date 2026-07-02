@@ -178,7 +178,11 @@
     ((jolt-nil? b) 1)
     ((and (number? a) (number? b)) (jolt-cmp3 a b))
     ((and (string? a) (string? b)) (jolt-strcmp a b))
-    ((and (keyword? a) (keyword? b)) (jolt-strcmp (jolt-kw->string a) (jolt-kw->string b)))
+    ;; keywords order like symbols: a nil namespace sorts before any namespace,
+    ;; then by namespace, then by name (Keyword.compareTo -> Symbol.compareTo)
+    ((and (keyword? a) (keyword? b))
+     (let ((r (jolt-strcmp (or (keyword-t-ns a) "") (or (keyword-t-ns b) ""))))
+       (if (= r 0) (jolt-strcmp (keyword-t-name a) (keyword-t-name b)) r)))
     ((and (jolt-symbol? a) (jolt-symbol? b))
      (let ((r (jolt-strcmp (jolt-sym-ns-string a) (jolt-sym-ns-string b))))
        (if (= r 0) (jolt-strcmp (symbol-t-name a) (symbol-t-name b)) r)))
@@ -269,4 +273,16 @@
         (jolt-cast-range-throw "float" x)
         d)))
 (def-var! "clojure.core" "float" jolt-float)
+;; numerator/denominator: jolt ratios are Chez exact rationals; a non-ratio is
+;; the JVM's Ratio cast failure.
+(define (jolt-ratio-part name f)
+  (lambda (x)
+    (if (and (number? x) (exact? x) (rational? x) (not (integer? x)))
+        (f x)
+        (jolt-throw (jolt-host-throwable
+                     "java.lang.ClassCastException"
+                     (string-append "class " (guard (e (#t "?")) (jolt-class-name x))
+                                    " cannot be cast to class clojure.lang.Ratio"))))))
+(def-var! "clojure.core" "numerator" (jolt-ratio-part "numerator" numerator))
+(def-var! "clojure.core" "denominator" (jolt-ratio-part "denominator" denominator))
 (def-var! "clojure.core" "compare" jolt-compare)

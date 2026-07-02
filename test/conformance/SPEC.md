@@ -205,3 +205,40 @@ corpus`.
   deliberate delta (classify it in `known-divergences.edn`).
 - **Refresh the profile**: re-run with `--profile test/conformance/profile.edn`.
 - **Re-floor the runtime gate** when parity rises (`host/chez/run-corpus.ss`).
+
+## clojure-test-suite baseline traceability
+
+Every residual entry in `test/chez/cts-known-failures.txt` traces to one
+documented model divergence — nothing in the baseline is an unexplained bug:
+
+- `:integer-box-model` (this file, above): every `big-int?`/`instance?
+  Byte…BigInt` class check, the overflow-throw rows (`(+ max-long 1)` is a
+  bignum, not ArithmeticException — abs/inc/dec/minus/plus/star/quot/rem/mod/
+  bit-set and the `+'`/`*'` promotion-identity namespaces), boxed-identity
+  rows (`(identical? (Boolean. "true") true)`, `(= x x)` on a boxed NaN — jolt
+  numbers are immediates, there is no box to distinguish), and `num`'s
+  primitive-overload reflection rows.
+- **no single float** (Narrow integer types, above): `(float Double/MIN_VALUE)`
+  keeps the double value instead of rounding to 0.0f; `(double? (float x))`
+  is true.
+- **RFC 0003 transients**: `(transient sorted/list/lazy-seq)` succeeds through
+  the copy-on-write fallback (a deliberate superset; non-collections now throw
+  like the JVM), and double-transient is idempotent rather than throwing.
+- `:seq-type-model`/`:chunking-model` (Seq semantics, above): `realized?` on
+  the rest of a realized chain (a plain seq cell on jolt, a cached LazySeq on
+  the JVM), `p/lazy-seq?` on forced rest chains, and chunk-granularity
+  realization counts (lazy-seq namespace).
+- **stm-refs** (`coverage.md`): the `(ref …)`/`dosync` sections of the watch
+  namespaces (add-watch/remove-watch) — refs are out of scope pending the
+  concurrency design note.
+- **parse-uuid strictness** (spec §9, parse-uuid S3): jolt is deliberately
+  strict where the reference's java.util.UUID accepts non-canonical forms
+  like `"0-0-0-0-0"`.
+- **vec of an array copies**: the reference ADOPTS an Object array (mutating
+  the array mutates the vector); jolt copies — immutable semantics win over
+  the implementation leak (`vec` namespace, one row).
+- **eval of JVM shapes** (`rand-nth`/`eval` residue): rows needing JVM-only
+  evaluation shapes (e.g. evaluating a Java array literal).
+
+A future change that makes any of these rows pass will fail the cts gate as
+STALE, forcing this section and the baseline to be updated together.
