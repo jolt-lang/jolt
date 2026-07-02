@@ -1,0 +1,2 @@
+{:paths ["src" "../../../vendor/clojure-test-suite/test"]
+ :aliases {:cts {:main-opts ["-m" "cts-run"]}}}

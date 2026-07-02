@@ -32,6 +32,16 @@ answers with `regen-corpus.clj` and re-certify with `test/conformance/certify.cl
 - `selfcheck.sh` — self-host fixpoint: `bootstrap.ss` rebuild byte-equals the
   checked-in seed (`host/chez/seed/`).
 - `smoke.sh` — real `bin/joltc -e` CLI smoke.
+- `cts.sh` — the vendored [jank-lang/clojure-test-suite](https://github.com/jank-lang/clojure-test-suite)
+  (`vendor/clojure-test-suite`, a per-core-fn clojure.test suite shared across
+  Clojure dialects), run one namespace per `joltc` process (a hang or crash is
+  contained) through the `test/chez/cts-app` project and `cts-run` runner.
+  Per-namespace fail/error counts must exactly match the checked-in baseline
+  `test/chez/cts-known-failures.txt` — a namespace doing worse fails the gate,
+  and one doing better fails as stale until the baseline is updated in the same
+  change. `make cts`;
+  `JOLT_CTS_NS=ns1,ns2` runs a subset verbosely,
+  `JOLT_CTS_WRITE_BASELINE=1` regenerates the baseline.
 
 ## Other Chez tests
 
