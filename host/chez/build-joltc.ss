@@ -245,6 +245,8 @@
 ;; table so `build` can foreign-entry them to spill the bundled Chez boots. On
 ;; Linux dlsym can't see executable symbols otherwise (macOS exports them anyway).
 (bld-system (string-append
-  "cc -O2 " (if bld-nt? "" "-rdynamic ") "-I'" bld-csv-dir "' -I'" jb-build "' '" jb-main-c "' '"
+  ;; the embedded jolt_* arrays must be foreign-entry-visible at runtime:
+  ;; -rdynamic on ELF; on Windows an exe needs an export table (GetProcAddress).
+  "cc -O2 " (if bld-nt? "-Wl,--export-all-symbols " "-rdynamic ") "-I'" bld-csv-dir "' -I'" jb-build "' '" jb-main-c "' '"
   bld-csv-dir "/libkernel.a' -o '" jb-out "' " (bld-link-libs)))
 (display (string-append "build-joltc: wrote " jb-out "\n"))
