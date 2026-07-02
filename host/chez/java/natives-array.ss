@@ -85,10 +85,8 @@
 (define (na-bytes x) (if (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) x (na-byte-array x)))
 (define (na-bytes? x) (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)))
 (define (na-identity x) x)
-(define (na-byte x)
-  (let ((b (bitwise-and (exact (floor x)) #xff))) (if (>= b 128) (- b 256) b)))
-(define (na-short x)
-  (let ((s (bitwise-and (exact (floor x)) #xffff))) (if (>= s #x8000) (- s #x10000) s)))
+(define (na-byte x) (jolt-byte-cast x))
+(define (na-short x) (jolt-short-cast x))
 
 ;; --- chunked seqs -----------------------------------------------------------
 ;; The chunked-seq accessors (chunked-seq? / chunk-first / chunk-rest / chunk-next)
