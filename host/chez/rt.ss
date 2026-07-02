@@ -11,6 +11,17 @@
 ;; Emitted programs do `(load "host/chez/rt.ss")`; this loads values.ss in turn.
 
 (load "host/chez/values.ss")
+;; Resolve a libc entry point at RUN time. A literal (foreign-procedure "name" …)
+;; in COMPILED code becomes a fasl relocation resolved when the boot loads — on a
+;; platform lacking the symbol (chmod/sigaddset on Windows) that kills the boot
+;; before any guard can run. eval defers the lookup to evaluation time, where the
+;; guard works; returns #f when the entry doesn't exist.
+(define (jolt-foreign-proc-safe name args res)
+  (guard (e (#t #f))
+    (load-shared-object #f)
+    (and (foreign-entry? name)
+         (eval `(foreign-procedure ,name ,args ,res)))))
+
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 

@@ -80,13 +80,18 @@
 ;; every Chez binary) — no external toolchain. Falls back to /bin/sh chmod if the
 ;; symbol can't be resolved.
 (define jolt-chmod-755
-  (let ((c (guard (e (#t #f))
-             (load-shared-object #f)
-             (foreign-procedure "chmod" (string int) int))))
+  (let ((c (jolt-foreign-proc-safe "chmod" '(string int) 'int)))
     (lambda (path)
-      (if c
-          (c path #o755)
-          (system (string-append "chmod 755 '" path "'"))))))
+      (cond
+        (c (c path #o755))
+        ;; Windows has no chmod and needs none (execute is by extension)
+        ((let ((m (symbol->string (machine-type))))
+           (let loop ((i 0))
+             (cond ((> (+ i 2) (string-length m)) #f)
+                   ((string=? (substring m i (+ i 2)) "nt") #t)
+                   (else (loop (+ i 1))))))
+         0)
+        (else (system (string-append "chmod 755 '" path "'")))))))
 
 ;; A user-facing relative path resolves against JOLT_PWD — the user's cwd before
 ;; the launcher cd'd to the jolt repo root — matching the JVM, where io/file is

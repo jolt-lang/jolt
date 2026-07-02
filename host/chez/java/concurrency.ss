@@ -579,9 +579,9 @@
 ;; pthread_sigmask"). Guard so a non-POSIX host yields #f; jolt-set-sigint-blocked
 ;; then no-ops (Windows delivers ^C through the console, not a per-thread mask).
 (define c-pthread-sigmask
-  (guard (e (#t #f)) (foreign-procedure "pthread_sigmask" (int u8* u8*) int)))
-(define c-sigemptyset (guard (e (#t #f)) (foreign-procedure "sigemptyset" (u8*) int)))
-(define c-sigaddset (guard (e (#t #f)) (foreign-procedure "sigaddset" (u8* int) int)))
+  (jolt-foreign-proc-safe "pthread_sigmask" '(int u8* u8*) 'int))
+(define c-sigemptyset (jolt-foreign-proc-safe "sigemptyset" '(u8*) 'int))
+(define c-sigaddset (jolt-foreign-proc-safe "sigaddset" '(u8* int) 'int))
 ;; POSIX SIG_BLOCK/SIG_UNBLOCK numerics differ by platform: Linux/glibc 0/1,
 ;; Darwin/macOS 1/2 (SIG_UNBLOCK is SIG_BLOCK+1 on both). Resolve SIG_BLOCK for
 ;; this host from the machine-type symbol — macOS builds contain "osx".

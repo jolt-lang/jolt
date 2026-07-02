@@ -55,9 +55,7 @@
     (lambda ()
       (unless tried?
         (set! tried? #t)
-        (set! fp (guard (e (#t #f))
-                   (load-shared-object #f)
-                   (foreign-procedure "sched_yield" () int))))
+        (set! fp (jolt-foreign-proc-safe "sched_yield" '() 'int)))
       (if fp (fp) (sleep (make-time 'time-duration 0 0)))
       jolt-nil)))
 
