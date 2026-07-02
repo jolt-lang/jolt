@@ -24,11 +24,17 @@ the canonical, frozen contract**: it is what every runtime consumes, what
 ## Row schema
 
 ```edn
-{:suite    "numbers / arithmetic"      ; grouping; "<suite> :: <label>" is the case id
- :label    "integer add"               ; unique within a suite
- :actual   "(+ 1 2)"                    ; Clojure source to evaluate
- :expected "3"}                         ; Clojure source whose value it must equal,
+{:suite       "numbers / arithmetic"   ; grouping; "<suite> :: <label>" is the case id
+ :label       "integer add"            ; unique within a suite
+ :actual      "(+ 1 2)"                 ; Clojure source to evaluate
+ :expected    "3"                       ; Clojure source whose value it must equal,
                                         ; or the keyword :throws
+ :portability :common}                  ; :common = portable Clojure any dialect
+                                        ; must satisfy; :jvm = exercises host
+                                        ; interop (java.*/clojure.lang.* classes,
+                                        ; dot forms, ctors, statics, arrays,
+                                        ; proxy/bean) — skip on a non-JVM-shaped
+                                        ; dialect
 ```
 
 - `[:suite :label]` is the **canonical, unique case id** (the generator
