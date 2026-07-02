@@ -11,6 +11,26 @@
 
 (define cli-args (cdr (command-line)))   ; drop the script name
 
+;; Fail early and actionably when the vendored submodules aren't checked out —
+;; a plain `git clone` or GitHub's auto-generated "Source code" release archive
+;; lacks them, and the raw failure ("load failed for vendor/irregex/irregex.scm")
+;; doesn't say how to fix it. (The self-contained joltc binary embeds these and
+;; never runs this file.)
+(unless (file-exists? "vendor/irregex/irregex.scm")
+  (display "jolt: vendor submodules are missing (vendor/irregex).
+" (current-error-port))
+  (display "GitHub's 'Source code' release archives don't include submodules.
+" (current-error-port))
+  (display "Clone the repo instead:
+" (current-error-port))
+  (display "  git clone --recurse-submodules https://github.com/jolt-lang/jolt.git
+" (current-error-port))
+  (display "or, in an existing checkout:
+" (current-error-port))
+  (display "  git submodule update --init --recursive
+" (current-error-port))
+  (exit 1))
+
 (load "host/chez/rt.ss")
 (set-chez-ns! "clojure.core")
 (load "host/chez/seed/prelude.ss")

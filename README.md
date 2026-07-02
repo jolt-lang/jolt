@@ -9,8 +9,12 @@ runs it on Chez. The compiler is self-hosted: it is written in Clojure
 
 ## Install
 
-Grab the self-contained `joltc` binary (Linux/macOS) — it bundles the runtime,
-compiler, and standard library, so there is nothing else to install.
+Grab the self-contained `joltc` binary (Linux/macOS/Windows) — it bundles the
+runtime, compiler, and standard library, so there is nothing else to install.
+Download the binary archive for your platform from the
+[releases page](https://github.com/jolt-lang/jolt/releases) (`joltc-<ver>-<platform>.tar.gz`,
+or the `.zip` on Windows). The "Source code" archives GitHub attaches to every
+release are not binaries — see [Build](#build) before using one.
 
 With Homebrew:
 
@@ -44,6 +48,18 @@ git clone --recurse-submodules https://github.com/jolt-lang/jolt.git
 cd jolt
 bin/joltc -e '(+ 1 2)'        # => 3
 ```
+
+The `--recurse-submodules` matters: jolt vendors its regex engine and test
+suites as git submodules. In a checkout that's missing them (a plain
+`git clone`, or after pulling a commit that adds one), fetch them with:
+
+```bash
+git submodule update --init --recursive
+```
+
+Note that GitHub's auto-generated "Source code (zip/tar.gz)" archives on the
+releases page do **not** contain submodules, so they can't run or build —
+clone the repo instead (or grab a prebuilt binary from the same page).
 
 After changing a compiler source — the reader (`host/chez/reader.ss`), the
 analyzer/IR/backend (`jolt-core/jolt/*.clj`), or the `clojure.core` overlay
