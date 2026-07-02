@@ -5,7 +5,6 @@ clojure.core-test.abs 1 0
 clojure.core-test.add-watch 0 1
 clojure.core-test.bigint 6 0
 clojure.core-test.bit-set 1 0
-clojure.core-test.boolean-qmark 0 3
 clojure.core-test.compare 1 0
 clojure.core-test.conj 1 0
 clojure.core-test.contains-qmark 3 0
@@ -19,7 +18,6 @@ clojure.core-test.eval 0 3
 clojure.core-test.even-qmark 1 0
 clojure.core-test.float 1 0
 clojure.core-test.get 0 1
-clojure.core-test.ifn-qmark 2 0
 clojure.core-test.inc 1 0
 clojure.core-test.int-qmark 3 0
 clojure.core-test.intern 2 0
@@ -44,14 +42,12 @@ clojure.core-test.quot 30 0
 clojure.core-test.rand-nth 0 1
 clojure.core-test.rational-qmark 3 0
 clojure.core-test.realized-qmark 3 0
-clojure.core-test.reduce 0 1
 clojure.core-test.rem 21 0
 clojure.core-test.remove-watch 0 1
 clojure.core-test.run-bang 1 0
 clojure.core-test.select-keys 2 0
 clojure.core-test.seqable-qmark 1 0
 clojure.core-test.shuffle 1 0
-clojure.core-test.some-fn 3 0
 clojure.core-test.sort-by 2 0
 clojure.core-test.special-symbol-qmark 4 0
 clojure.core-test.star 13 0
@@ -62,9 +58,3 @@ clojure.core-test.vals 0 3
 clojure.core-test.vec 1 0
 clojure.core-test.when-let 1 0
 clojure.edn-test.read-string 46 5
-clojure.string-test.capitalize 0 4
-clojure.string-test.ends-with-qmark 1 4
-clojure.string-test.escape 1 0
-clojure.string-test.lower-case 0 4
-clojure.string-test.starts-with-qmark 1 10
-clojure.string-test.upper-case 0 4

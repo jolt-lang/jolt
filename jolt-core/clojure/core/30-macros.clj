@@ -28,11 +28,18 @@
   (let [args (if (string? (first args)) (rest args) args)
         args (if (and (map? (first args)) (not (symbol? (first args)))) (rest args) args)
         dispatch (first args)
-        opts (rest args)]
-    `(defmulti-setup (quote ~name) ~dispatch ~@opts)))
+        opts (rest args)
+        ;; qualify with the EXPANSION ns: a defmulti deferred inside a fn (a
+        ;; deftest body) must still define in the ns it was written in.
+        qname (symbol (str (clojure.core/ns-name clojure.core/*ns*))
+                      (clojure.core/name name))]
+    `(defmulti-setup (quote ~qname) ~dispatch ~@opts)))
 
 (defmacro defmethod [mm dispatch-val & fn-tail]
-  `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)))
+  ;; the expansion ns rides along so a deferred defmethod resolves its multifn
+  ;; against the ns it was written in (aliases and refers included).
+  `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)
+                    ~(str (clojure.core/ns-name clojure.core/*ns*))))
 
 ;; Multimethod table ops: a multimethod's method table lives on its
 ;; VAR (the value is just the dispatch closure), so these pass the name quoted

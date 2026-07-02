@@ -202,7 +202,8 @@
                 (bitwise-ior (bitwise-arithmetic-shift-left r 1)
                              (bitwise-and (bitwise-arithmetic-shift-right v i) 1)))))))
 (register-class-statics! "Long"
-  (list (cons "MAX_VALUE" (->num 9223372036854775807))
+  (list (cons "TYPE" "long")
+        (cons "MAX_VALUE" (->num 9223372036854775807))
         (cons "MIN_VALUE" (->num -9223372036854775808))
         (cons "bitCount" (lambda (n) (->num (bitwise-bit-count (bitwise-and (jnum->exact n) long-mask64)))))
         (cons "numberOfLeadingZeros" (lambda (n) (->num (long-nlz n))))
@@ -214,6 +215,8 @@
 (define (int->u32 n) (if (< n 0) (+ n 4294967296) n))
 (register-class-statics! "Integer"
   (list (cons "MAX_VALUE" (->num 2147483647)) (cons "MIN_VALUE" (->num -2147483648))
+        ;; the primitive class token (int.class); jolt models a class as its name
+        (cons "TYPE" "int")
         (cons "valueOf" (lambda (x . r)
                           (if (number? x) (->num x)
                               (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "valueOf"))))
@@ -227,12 +230,14 @@
 ;; Byte / Short bounds (their values are plain integers on jolt; the statics let
 ;; libraries reference the JVM ranges — clojure.test.check generates over them).
 (register-class-statics! "Byte"
-  (list (cons "MAX_VALUE" (->num 127)) (cons "MIN_VALUE" (->num -128))
+  (list (cons "TYPE" "byte")
+        (cons "MAX_VALUE" (->num 127)) (cons "MIN_VALUE" (->num -128))
         (cons "valueOf" (lambda (x . r) (->num (if (number? x) x (parse-int-or-throw x 10 "valueOf")))))
         (cons "parseByte" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseByte")))
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
 (register-class-statics! "Short"
-  (list (cons "MAX_VALUE" (->num 32767)) (cons "MIN_VALUE" (->num -32768))
+  (list (cons "TYPE" "short")
+        (cons "MAX_VALUE" (->num 32767)) (cons "MIN_VALUE" (->num -32768))
         (cons "valueOf" (lambda (x . r) (->num (if (number? x) x (parse-int-or-throw x 10 "valueOf")))))
         (cons "parseShort" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseShort")))
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
@@ -247,13 +252,15 @@
         (cons "ROOT" "und") (cons "US" "en-US") (cons "ENGLISH" "en")))
 
 (register-class-statics! "Boolean"
-  (list (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))
+  (list (cons "TYPE" "boolean")
+        (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))
         (cons "TRUE" #t) (cons "FALSE" #f)))
 
 (register-class-ctor! "Double" ->double)
 (register-class-ctor! "Float" ->double)
 (register-class-statics! "Double"
-  (list (cons "parseDouble" parse-double-or-throw)
+  (list (cons "TYPE" "double")
+        (cons "parseDouble" parse-double-or-throw)
         (cons "valueOf" ->double)
         (cons "toString" (lambda (x) (jolt-str-render-one (->double x))))
         (cons "isNaN" (lambda (x) (and (flonum? x) (nan? x))))
@@ -261,11 +268,13 @@
         (cons "MAX_VALUE" 1.7976931348623157e308) (cons "MIN_VALUE" 4.9e-324)
         (cons "POSITIVE_INFINITY" +inf.0) (cons "NEGATIVE_INFINITY" -inf.0) (cons "NaN" +nan.0)))
 (register-class-statics! "Float"
-  (list (cons "parseFloat" parse-double-or-throw) (cons "valueOf" ->double)))
+  (list (cons "TYPE" "float")
+        (cons "parseFloat" parse-double-or-throw) (cons "valueOf" ->double)))
 
 ;; Character: ASCII predicates (the engine is byte/ASCII oriented).
 (register-class-statics! "Character"
-  (list (cons "isUpperCase" (lambda (c) (let ((n (char-code c))) (and (>= n 65) (<= n 90)))))
+  (list (cons "TYPE" "char")
+        (cons "isUpperCase" (lambda (c) (let ((n (char-code c))) (and (>= n 65) (<= n 90)))))
         (cons "isLowerCase" (lambda (c) (let ((n (char-code c))) (and (>= n 97) (<= n 122)))))
         (cons "isDigit" (lambda (c) (let ((n (char-code c))) (and (>= n 48) (<= n 57)))))
         ;; JVM Character.isWhitespace: Unicode whitespace (so U+2028 line separator

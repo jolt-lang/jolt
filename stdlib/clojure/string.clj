@@ -6,28 +6,32 @@
   (if (nil? s) true
     (= 0 (count (str-trim s)))))
 
+;; The case fns and the searches take any Object s through its toString, like
+;; the reference ((upper-case :kw) is ":KW", (capitalize 1) is "1"); nil throws
+;; like calling a method on null.
+(defn- to-str [s]
+  (if (nil? s)
+    (throw (new NullPointerException "s"))
+    (.toString s)))
 (defn capitalize
-  
   [s]
-  (if (< 1 (count s))
-    (str (str-upper (subs s 0 1))
-         (str-lower (subs s 1)))
-    (str-upper s)))
+  (let [s (to-str s)]
+    (if (< 1 (count s))
+      (str (str-upper (subs s 0 1))
+           (str-lower (subs s 1)))
+      (str-upper s))))
 
 (defn lower-case
-  
   [s]
-  (str-lower s))
+  (str-lower (to-str s)))
 
 (defn upper-case
-  
   [s]
-  (str-upper s))
+  (str-upper (to-str s)))
 
 (defn includes?
-  
   [s substr]
-  (not (nil? (str-find substr s))))
+  (not (nil? (str-find substr (to-str s)))))
 
 (defn join
   
@@ -36,11 +40,11 @@
 
 (defn replace
   [s match replacement]
-  (str-replace-all match replacement s))
+  (str-replace-all match replacement (to-str s)))
 
 (defn replace-first
   [s match replacement]
-  (str-replace match replacement s))
+  (str-replace match replacement (to-str s)))
 
 (defn reverse
   [s]
@@ -68,16 +72,18 @@
   (vec (str-split #"\r?\n" s)))
 
 (defn starts-with?
-  
   [s substr]
-  (let [slen (count s) slen2 (count substr)]
+  (when (nil? substr) (throw (new NullPointerException "substr")))
+  (let [s (to-str s)
+        slen (count s) slen2 (count substr)]
     (and (>= slen slen2)
          (= (subs s 0 slen2) substr))))
 
 (defn ends-with?
-  
   [s substr]
-  (let [slen (count s) slen2 (count substr)]
+  (when (nil? substr) (throw (new NullPointerException "substr")))
+  (let [s (to-str s)
+        slen (count s) slen2 (count substr)]
     (and (>= slen slen2)
          (= (subs s (- slen slen2)) substr))))
 
@@ -97,8 +103,8 @@
   (str-trimr s))
 
 (defn escape
-  
   [s cmap]
+  (when (nil? s) (throw (new NullPointerException "s")))
   (apply str
     (map (fn [ch]
            (if-let [rep (cmap ch)] rep (str ch)))
@@ -107,9 +113,9 @@
 (defn index-of
   "0-based index of the first occurrence of value in s, or nil."
   ([s value]
-   (str-find value s))
+   (str-find value (to-str s)))
   ([s value from]
-   (let [idx (str-find value (subs s from))]
+   (let [idx (str-find value (subs (to-str s) from))]
      (when idx (+ from idx)))))
 
 (defn last-index-of
