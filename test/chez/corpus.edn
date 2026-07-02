@@ -501,12 +501,12 @@
   {:suite "hierarchy / pure 3-arity" :label "cyclic derive throws" :expected :throws :actual "(-> (make-hierarchy) (derive :a :b) (derive :b :a))"}
   {:suite "hierarchy / pure 3-arity" :label "duplicate derive ok" :expected "true" :actual "(let [h (-> (make-hierarchy) (derive :a :b) (derive :a :b))] (isa? h :a :b))"}
   {:suite "hierarchy / pure 3-arity" :label "parents nil when none" :expected "nil" :actual "(parents (make-hierarchy) :x)"}
-  {:suite "hierarchy / global + multimethod dispatch" :label "global derive + isa?" :expected "true" :actual "(do (derive :gsq :grect) (isa? :gsq :grect))"}
-  {:suite "hierarchy / global + multimethod dispatch" :label "global ancestors" :expected "true" :actual "(do (derive :ga :gb) (derive :gb :gc) (contains? (ancestors :ga) :gc))"}
-  {:suite "hierarchy / global + multimethod dispatch" :label "global underive" :expected "false" :actual "(do (derive :gu :gv) (underive :gu :gv) (isa? :gu :gv))"}
-  {:suite "hierarchy / global + multimethod dispatch" :label "dispatch via hierarchy" :expected ":is-shape" :actual "(do (derive :hsq :hshape) (defmulti hmm identity) (defmethod hmm :hshape [_] :is-shape) (hmm :hsq))"}
+  {:suite "hierarchy / global + multimethod dispatch" :label "global derive + isa?" :expected "true" :actual "(do (derive :g/sq :g/rect) (isa? :g/sq :g/rect))"}
+  {:suite "hierarchy / global + multimethod dispatch" :label "global ancestors" :expected "true" :actual "(do (derive :g/a :g/b) (derive :g/b :g/c) (contains? (ancestors :g/a) :g/c))"}
+  {:suite "hierarchy / global + multimethod dispatch" :label "global underive" :expected "false" :actual "(do (derive :g/u :g/v) (underive :g/u :g/v) (isa? :g/u :g/v))"}
+  {:suite "hierarchy / global + multimethod dispatch" :label "dispatch via hierarchy" :expected ":is-shape" :actual "(do (derive :h/sq :h/shape) (defmulti hmm identity) (defmethod hmm :h/shape [_] :is-shape) (hmm :h/sq))"}
   {:suite "hierarchy / global + multimethod dispatch" :label "dispatch custom hierarchy" :expected ":parent" :actual "(do (def hh (atom (derive (make-hierarchy) :c :p))) (defmulti cmm identity :hierarchy hh) (defmethod cmm :p [_] :parent) (cmm :c))"}
-  {:suite "hierarchy / global + multimethod dispatch" :label "dispatch exact beats isa" :expected ":exact" :actual "(do (derive :de1 :de2) (defmulti emm identity) (defmethod emm :de2 [_] :parent) (defmethod emm :de1 [_] :exact) (emm :de1))"}
+  {:suite "hierarchy / global + multimethod dispatch" :label "dispatch exact beats isa" :expected ":exact" :actual "(do (derive :de/e1 :de/e2) (defmulti emm identity) (defmethod emm :de/e2 [_] :parent) (defmethod emm :de/e1 [_] :exact) (emm :de/e1))"}
   {:suite "interop / dot forms" :label "method call" :expected "\"v=41\"" :actual "(. {:value 41 :describe (fn [self] (str \"v=\" (:value self)))} describe)"}
   {:suite "interop / dot forms" :label "method with args" :expected "\"Hello Alice\"" :actual "(. {:greet (fn [self n] (str \"Hello \" n))} greet \"Alice\")"}
   {:suite "interop / dot forms" :label "field access .-" :expected "41" :actual "(.-value {:value 41})"}
@@ -3534,4 +3534,12 @@
   {:suite "numbers / with-precision" :label "division rounds to precision (default HALF_UP)" :expected "\"0.3333\"" :actual "(str (with-precision 4 (/ 1M 3M)))"}
   {:suite "numbers / rationalize" :label "doubles go through shortest decimal print" :expected "[11/10 3/2 1 0 -1]" :actual "[(rationalize 1.1) (rationalize 1.5) (rationalize 1.0) (rationalize 0.0) (rationalize -1.0)]"}
   {:suite "numbers / rationalize" :label "bigdec and exacts pass through exactly" :expected "[3/2 1/3 7]" :actual "[(rationalize 1.5M) (rationalize 1/3) (rationalize 7)]"}
+  {:suite "hierarchy / derive asserts" :label "tag and parent must be namespaced Named (or a class)" :expected "[:ae :ae :ae :ae]" :actual "[(try (derive :a :user/p) (catch AssertionError _ :ae)) (try (derive :user/a :p) (catch AssertionError _ :ae)) (try (derive (make-hierarchy) :user/a :user/a) (catch AssertionError _ :ae)) (try (derive (make-hierarchy) :user/a \"p\") (catch AssertionError _ :ae))]"}
+  {:suite "hierarchy / derive throws" :label "redundant ancestor and cyclic derivation throw" :expected "[:anc :cyc]" :actual "(let [h (derive (derive (make-hierarchy) :user/b :user/a) :user/c :user/b)] [(try (derive h :user/c :user/a) (catch Exception _ :anc)) (try (derive h :user/a :user/c) (catch Exception _ :cyc))])"}
+  {:suite "hierarchy / underive" :label "a non-hierarchy first arg throws at the parents lookup" :expected "[:t :t :t]" :actual "[(try (underive {} :user/a :user/b) (catch Throwable _ :t)) (try (underive 42 :user/a :user/b) (catch Throwable _ :t)) (try (underive nil :user/a :user/b) (catch Throwable _ :t))]"}
+  {:suite "hierarchy / underive" :label "underive removes the relationship" :expected "[nil false]" :actual "(let [h (derive (make-hierarchy) :user/b :user/a) h2 (underive h :user/b :user/a)] [(parents h2 :user/b) (isa? h2 :user/b :user/a)])"}
+  {:suite "hierarchy / classes" :label "descendants of a class throws" :expected ":uoe" :actual "(try (descendants (make-hierarchy) java.lang.String) (catch UnsupportedOperationException _ :uoe))"}
+  {:suite "hierarchy / classes" :label "ancestors of a concrete class roots at Object" :expected "[true true]" :actual "[(contains? (ancestors (class #{})) java.lang.Object) (contains? (ancestors (class [])) java.lang.Object)]"}
+  {:suite "hierarchy / classes" :label "parents of a class are its direct supers" :expected "true" :actual "(contains? (parents (class [])) clojure.lang.APersistentVector)"}
+  {:suite "hierarchy / classes" :label "a relationship derived on a super applies to the class (isa? supers arm)" :expected "true" :actual "(let [h (derive (make-hierarchy) java.util.Collection :user/coll-like)] (isa? h (class []) :user/coll-like))"}
 ]

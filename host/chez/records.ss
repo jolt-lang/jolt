@@ -44,6 +44,10 @@
 ;; resolves "Raw" to its real tag "a.util.Raw" here instead of prepending the
 ;; calling ns. The local ns is preferred, so a same-named local type still wins.
 (define chez-deftype-tag-set (make-hashtable string-hash string=?))
+;; ctor procedure -> its class tag: the type NAME var holds the ctor (a jolt-ism;
+;; the JVM resolves it to the class), so class-key maps the ctor back to the
+;; class for (ancestors TypeName) / (isa? x TypeName) / derive on the type.
+(define chez-deftype-ctor-tag (make-weak-eq-hashtable))
 (define chez-simple-name-tag (make-hashtable string-hash string=?))
 ;; a jrec that is coll? — a record, or a deftype implementing a collection
 ;; interface (its seq/count/nth/valAt/cons method is registered). find-method-any-
@@ -618,6 +622,11 @@
     ;; index the tag so a cross-ns extend-protocol resolves the bare type name.
     (hashtable-set! chez-deftype-tag-set tag #t)
     (hashtable-set! chez-simple-name-tag (symbol-t-name name-sym) tag)
+    ;; graft the type onto the class graph so isa?/supers/ancestors see it. A
+    ;; bare deftype is an IType; defrecord (which runs register-record-type!
+    ;; right after) replaces the row with the record interface set.
+    (jch-set-supers! tag '("clojure.lang.IType"))
+    (hashtable-set! chez-deftype-ctor-tag ctor tag)
     ;; record the shape for whole-program inference, keyed by the positional
     ;; ctor var "ns/->Name" the analyzer resolves a (->Name …) call to.
     (register-record-shape! (string-append (chez-current-ns) "/->" (symbol-t-name name-sym))
@@ -689,9 +698,14 @@
                   type-name)))
     ;; a host class if the literal set lists it OR the class graph models it — both
     ;; feed value-host-tags (which emits the same bare segment), so a protocol
-    ;; extended to any modeled class keys under a tag the value reports.
+    ;; extended to any modeled class keys under a tag the value reports. A
+    ;; deftype/defrecord is in the graph too (its ancestry), but its VALUES report
+    ;; the ns-qualified tag, not the bare segment — so a name that resolves to a
+    ;; deftype never canonicalizes through the graph arm.
     (and (or (hashtable-ref host-type-set base #f)
-             (jch-known? base) (jch-known? type-name))
+             (and (not (hashtable-ref chez-simple-name-tag type-name #f))
+                  (not (hashtable-ref chez-deftype-tag-set type-name #f))
+                  (or (jch-known? base) (jch-known? type-name))))
          base)))
 ;; An extend/extend-type/extend-protocol registration marks the tag as an
 ;; extender of the protocol (recorded inside type-registry so the per-case prune
@@ -731,6 +745,12 @@
                  (let ((h (make-hashtable string-hash string=?))) (hashtable-set! type-registry tag h) h))))
     (unless (hashtable-ref ti proto-name #f)
       (hashtable-set! ti proto-name (make-hashtable string-hash string=?))))
+  ;; the protocol's interface joins the type's class ancestry, spelled like the
+  ;; JVM interface (munged ns; the defining ns is assumed to be the current one —
+  ;; the macro passes only the simple protocol name).
+  (let ((iface (string-append (jch-munge-segments (chez-current-ns)) "." proto-name)))
+    (jch-mark-interface! iface)
+    (jch-register-supers! (string-append (chez-current-ns) "." type-name) (list iface)))
   jolt-nil)
 
 ;; protocol-resolve: the impl procedure for obj — by record type tag, a reify's
@@ -1050,8 +1070,18 @@
 ;; defrecord marks its type a record (deftype does not), keyed by the same
 ;; "ns.Name" tag make-deftype-ctor bakes — so jrec-record? distinguishes the two.
 (define (register-record-type! name-sym)
-  (hashtable-set! chez-record-type-tbl
-                  (string-append (chez-current-ns) "." (symbol-t-name name-sym)) #t)
+  (let ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym))))
+    (hashtable-set! chez-record-type-tbl tag #t)
+    ;; a defrecord's class ancestry: replace the deftype IType row with the
+    ;; record interfaces (their closure supplies Associative/Seqable/ILookup/…),
+    ;; keeping any protocol interfaces already grafted by the inline
+    ;; registrations that ran between the deftype ctor and this call.
+    (let ((protos (filter (lambda (s) (not (string=? s "clojure.lang.IType")))
+                          (jch-direct-supers tag))))
+      (jch-set-supers! tag (append protos
+                                   '("clojure.lang.IRecord" "clojure.lang.IObj"
+                                     "clojure.lang.IPersistentMap" "java.util.Map"
+                                     "clojure.lang.IHashEq" "java.io.Serializable")))))
   jolt-nil)
 (def-var! "clojure.core" "register-record-type!" register-record-type!)
 (def-var! "clojure.core" "make-protocol" make-protocol)

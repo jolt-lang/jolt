@@ -3,7 +3,6 @@
 # with: JOLT_CTS_WRITE_BASELINE=1 host/chez/cts.sh
 clojure.core-test.abs 1 0
 clojure.core-test.add-watch 0 3
-clojure.core-test.ancestors 9 0
 clojure.core-test.atom 14 0
 clojure.core-test.bigint 6 0
 clojure.core-test.bit-set 1 0
@@ -16,8 +15,6 @@ clojure.core-test.contains-qmark 3 0
 clojure.core-test.counted-qmark 1 0
 clojure.core-test.dec 1 0
 clojure.core-test.denominator 0 3
-clojure.core-test.derive 21 0
-clojure.core-test.descendants 4 0
 clojure.core-test.double 0 4
 clojure.core-test.double-qmark 3 0
 clojure.core-test.empty 1 0
@@ -43,7 +40,6 @@ clojure.core-test.num 2 1
 clojure.core-test.number-qmark 3 0
 clojure.core-test.numerator 0 3
 clojure.core-test.odd-qmark 1 0
-clojure.core-test.parents 10 0
 clojure.core-test.parse-uuid 3 0
 clojure.core-test.peek 2 0
 clojure.core-test.plus 11 0
@@ -68,7 +64,6 @@ clojure.core-test.special-symbol-qmark 4 0
 clojure.core-test.star 13 0
 clojure.core-test.star-squote 13 0
 clojure.core-test.transient 23 0
-clojure.core-test.underive 7 0
 clojure.core-test.update 1 0
 clojure.core-test.vals 0 3
 clojure.core-test.vec 1 0

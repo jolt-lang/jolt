@@ -841,7 +841,12 @@
 (define (make-class-obj name) (make-jhost "class" (vector name)))
 (define (jclass? x) (and (jhost? x) (string=? (jhost-tag x) "class")))
 (define (jclass-name x) (vector-ref (jhost-state x) 0))
-(define (class-key x) (cond ((jclass? x) (jclass-name x)) ((string? x) x) (else #f)))
+(define (class-key x)
+  (cond ((jclass? x) (jclass-name x))
+        ((string? x) x)
+        ;; a deftype/defrecord NAME var holds its ctor; treat it as the class
+        ((procedure? x) (hashtable-ref chez-deftype-ctor-tag x #f))
+        (else #f)))
 (register-eq-arm! (lambda (a b) (or (jclass? a) (jclass? b)))
                   (lambda (a b) (let ((ka (class-key a)) (kb (class-key b)))
                                   (and ka kb (string=? ka kb) #t))))
@@ -1047,19 +1052,62 @@
                 #t jolt-nil))
           jolt-nil))))
 
+;; is NAME a class the host models (registered in the class graph, a legacy
+;; supers-table entry, or a fn class)? Object itself is modeled.
+(define (hsc-class-known? name)
+  (or (string=? name "java.lang.Object")
+      (jch-known? name)
+      (and (hashtable-ref class-supers-tbl name #f) #t)
+      (str-has-dollar? name)))
+
+;; transitive ancestry, rooted at Object for a concrete class like (supers c);
+;; an interface's chain has no Object (its getSuperclass is null). '() for
+;; Object itself and for a name the host doesn't model.
+(define (class-ancestors-rooted name)
+  (if (or (string=? name "java.lang.Object") (jch-interface? name))
+      (class-ancestors-list name)
+      (let ((as (class-ancestors-list name)))
+        (cond ((member "java.lang.Object" as) as)
+              ((null? as) (if (hsc-class-known? name) '("java.lang.Object") '()))
+              (else (append as '("java.lang.Object")))))))
+
 ;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
-;; super / ancestor class-name strings, or nil when jolt models no hierarchy for it.
+;; super / ancestor class-name strings (transitive, Object-rooted), or nil when
+;; jolt models no hierarchy for it. class-bases is the DIRECT supers (clojure.core
+;; `bases` / the class arm of `parents`).
 (def-var! "jolt.host" "class-supers"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let ((as (class-ancestors-list name)))   ; transitive, like the JVM
+          (let ((as (class-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq as)))
           jolt-nil))))
 (def-var! "jolt.host" "class-ancestors"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let ((as (class-ancestors-list name)))
+          (let ((as (class-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq as)))
           jolt-nil))))
+(def-var! "jolt.host" "class-bases"
+  (lambda (x)
+    (let ((name (class-key x)))
+      (if name
+          (let* ((ds (class-direct-supers name))
+                 ;; a concrete class's bases include its superclass — Object when
+                 ;; nothing more specific is modeled (interfaces have none).
+                 (ds (if (or (string=? name "java.lang.Object")
+                             (jch-interface? name)
+                             (member "java.lang.Object" ds))
+                         ds
+                         (append ds '("java.lang.Object")))))
+            (if (null? ds) jolt-nil (list->cseq ds)))
+          jolt-nil))))
+;; is X a class value — a jclass, a deftype ctor, or a name string the host
+;; graph models?
+(def-var! "jolt.host" "class-value?"
+  (lambda (x)
+    (if (jclass? x)
+        #t
+        (let ((n (class-key x)))
+          (if (and n (hsc-class-known? n)) #t jolt-nil)))))
