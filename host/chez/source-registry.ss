@@ -145,10 +145,11 @@
 ;;      TCO-truncated non-tail spine.
 ;; Each frame maps to "ns/name (file:line)" when registered, else its bare name.
 ;; #f when neither source yields a frame (the caller then prints just the location).
-(define (jolt-backtrace-string v)
+;; The tail-frame history ring rendered as a backtrace, or #f when tracing is off /
+;; empty. A mapped frame is kept; else drop plumbing (same rule as the continuation
+;; path) so the two sources read consistently.
+(define (jolt-history-backtrace)
   (let* ((hist (jolt-trace-snapshot))
-         ;; a mapped frame is always kept; else drop plumbing (same rule as the
-         ;; continuation path) so the two backtrace sources read consistently
          (recs (let loop ((ns hist) (acc '()))
                  (if (null? ns)
                      (reverse acc)
@@ -156,12 +157,23 @@
                        (loop (cdr ns)
                              (if (or src (not (srcreg-plumbing-name? nm)))
                                  (cons (cons nm src) acc) acc)))))))
-    (if (pair? recs)
-        (jolt-render-recs recs)
-        (let ((k (jolt-error-continuation v)))
-          (and k
-               (let ((recs (jolt-frame-records k)))
-                 (and (pair? recs) (jolt-render-recs recs))))))))
+    (and (pair? recs) (jolt-render-recs recs))))
+
+(define (jolt-backtrace-string v)
+  (or (jolt-history-backtrace)
+      (let ((k (jolt-error-continuation v)))
+        (and k
+             (let ((recs (jolt-frame-records k)))
+               (and (pair? recs) (jolt-render-recs recs)))))))
+
+;; Exposed for the REPL / nREPL error paths, which catch errors themselves instead
+;; of going through the uncaught reporter. Returns the "  trace:\n<frames>" block
+;; from the tail-frame HISTORY only — the live continuation in a REPL is just the
+;; REPL's own machinery — or nil when tracing is off (so a caller can when-let).
+(def-var! "jolt.host" "backtrace-string"
+  (lambda ()
+    (let ((bt (jolt-history-backtrace)))
+      (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is

@@ -147,6 +147,9 @@
   ;; loaded — same context a run gets, so (require '[some.lib]) works in the REPL.
   (try (apply-project! (deps/resolve-project (project-dir)))
        (catch :default _ nil))
+  ;; REPL-driven development: trace by default so an uncaught error in evaluated
+  ;; code shows a tail-frame backtrace, no JOLT_TRACE needed (JOLT_TRACE=0 opts out).
+  (jolt.host/enable-trace!)
   (println (str ";; jolt " (version) " repl — :repl/quit or ^D to exit"))
   (loop []
     (let [form (repl-read-form)]
@@ -160,7 +163,9 @@
                  (catch :default e
                    (println "error:" (or (ex-message e)
                                          (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
-                                         (pr-str e)))))
+                                         (pr-str e)))
+                   (when-let [bt (jolt.host/backtrace-string)]
+                     (print bt))))
             (recur)))))))
 
 ;; A deps.edn :tasks entry: a string is a shell command; a map is {:main-opts …}.

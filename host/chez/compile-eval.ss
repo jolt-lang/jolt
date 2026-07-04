@@ -110,13 +110,24 @@
 ;; older seed during the first re-mint pass.
 (let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
   (when (procedure? scv) (scv #t)))
-;; JOLT_TRACE opts into tail-frame history: the emitter prepends a frame-recording
-;; push to every runtime-compiled fn, and the ring buffer is allocated for this
-;; thread. Off by default, so a normal run emits and pays exactly as before.
-(when (getenv "JOLT_TRACE")
-  (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
-    (when (procedure? stf) (stf #t)))
-  (jolt-trace-enable!))
+;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
+;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
+;; JOLT_TRACE is explicitly falsey, so JOLT_TRACE=0 disables it even in dev mode.
+(define (jolt-enable-trace!)
+  (let ((e (getenv "JOLT_TRACE")))
+    (unless (and e (member e '("0" "false" "no")))
+      (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
+        (when (procedure? stf) (stf #t)))
+      (jolt-trace-enable!))))
+;; Exposed so the REPL / nREPL entrypoints (jolt.main, jolt.nrepl) can turn tracing
+;; on for REPL-driven development without the user setting JOLT_TRACE. Because the
+;; push is baked in at compile time, only code compiled after this call is traced —
+;; which is exactly the code you eval / reload in a live session.
+(def-var! "jolt.host" "enable-trace!" jolt-enable-trace!)
+;; Explicit opt-in for a whole run (JOLT_TRACE=1): enable at load, BEFORE any app
+;; namespace is compiled, so a plain `-M:run` traces the app's own code too.
+(let ((e (getenv "JOLT_TRACE")))
+  (when (and e (not (member e '("0" "false" "no" "")))) (jolt-enable-trace!)))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.

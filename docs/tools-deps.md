@@ -190,11 +190,21 @@ binary the frames map to `ns/name (file:line)`; on the runtime eval path they ar
 the surviving fn names. Tail-call optimization erases tail-called frames, so the
 default trace shows only the non-tail spine.
 
-Set `JOLT_TRACE=1` to opt into a fuller **tail-frame history**. Each compiled fn
-then records itself on entry into a bounded ring-of-rings buffer, so the trace
-recovers TCO-elided frames (including the immediate error site) while a tight tail
-loop stays bounded and its non-tail caller context is preserved. It costs a small
-per-call overhead, so it is off by default and never emitted into a built binary.
+A fuller **tail-frame history** recovers the frames TCO erases: each compiled fn
+records itself on entry into a bounded ring-of-rings buffer, so the trace shows
+TCO-elided frames (including the immediate error site) while a tight tail loop
+stays bounded and its non-tail caller context is preserved.
+
+It is **on by default in REPL-driven development** — a `repl` or nREPL session
+turns it on, so an error in code you evaluate or reload shows a tail-frame trace
+with no setup. Because the recording is baked in at compile time, only code
+compiled while a session is live is traced; reload a namespace to trace code that
+was already loaded (e.g. an app's initial `-M:run` load before its nREPL started).
+
+Elsewhere it is off (a small per-call cost, and never emitted into a `jolt build`
+binary). Override with the environment: `JOLT_TRACE=1` forces it on for a whole
+run — including a plain `-M:run`, so the app's own load is traced — and
+`JOLT_TRACE=0` forces it off, even in a REPL/nREPL session.
 
 ## Conformance
 

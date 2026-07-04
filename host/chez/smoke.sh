@@ -224,5 +224,25 @@ else
   fails=$((fails + 1))
 fi
 
+# REPL-driven development traces by default: an error in an evaluated form shows a
+# tail-frame backtrace with no JOLT_TRACE set. rb tail-calls ra tail-calls +, all
+# TCO-elided from the continuation — only the history recovers them.
+repl_err="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | bin/joltc repl 2>&1)"
+if printf '%s' "$repl_err" | grep -q '  trace:' && printf '%s' "$repl_err" | grep -q 'rb'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a REPL error should show a tail-frame trace by default"
+  printf '%s\n' "$repl_err" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+# JOLT_TRACE=0 opts out — no trace in the REPL.
+repl_off="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | JOLT_TRACE=0 bin/joltc repl 2>&1)"
+if printf '%s' "$repl_off" | grep -q '  trace:'; then
+  echo "  FAIL: JOLT_TRACE=0 should suppress the REPL trace"
+  fails=$((fails + 1))
+else
+  pass=$((pass + 1))
+fi
+
 echo "cli smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]
