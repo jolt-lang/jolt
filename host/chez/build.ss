@@ -580,6 +580,12 @@
                             ;; render an uncaught throw (+ Clojure backtrace) instead
                             ;; of Chez's opaque dump, then exit non-zero.
                             "      (guard (v (#t (jolt-report-throwable v (current-error-port)) (exit 1)))\n"
+                            ;; Loading the app left the current ns at the entry ns; reset
+                            ;; it to `user` before -main, matching clojure.main (*ns* is
+                            ;; `user` when a `-m` -main runs, so a runtime resolve of an
+                            ;; aliased symbol behaves the same as on the JVM / interpreted
+                            ;; joltc, not off the entry ns's alias table).
+                            "        (set-chez-ns! \"user\")\n"
                             "        (when (and maincell (var-cell-defined? maincell))\n"
                             "          (apply jolt-invoke (var-cell-root maincell) args))))\n"
                             "    (exit 0)))\n"))

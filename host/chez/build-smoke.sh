@@ -94,6 +94,28 @@ for frame in 'app.util/deep-boom' 'app.util/mid-boom' 'app.core/-main'; do
     exit 1
   fi
 done
+# A built binary runs -main with *ns* = user, like clojure.main — so a runtime
+# resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
+# matching the JVM and interpreted joltc rather than the entry ns's alias table. A
+# separate app: `resolve` defeats tree-shaking, so keep it out of the shake test's
+# app above.
+nsp="$(dirname "$out")/nsparity"
+mkdir -p "$nsp/src/nsp"
+printf '{:paths ["src"]}\n' > "$nsp/deps.edn"
+printf '(ns nsp.lib)\n(defn thing [] 1)\n' > "$nsp/src/nsp/lib.clj"
+printf '(ns nsp.main (:require [nsp.lib :as l]))\n(defn -main [& _]\n  (println "ns:" (str *ns*))\n  (println "resolve:" (pr-str (resolve (quote l/thing))))\n  (println "ns-resolve:" (pr-str (ns-resolve (quote nsp.lib) (quote thing)))))\n' > "$nsp/src/nsp/main.clj"
+nspout="$(dirname "$out")/nsparity-bin"
+if ! JOLT_PWD="$nsp" bin/joltc build -m nsp.main -o "$nspout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of the ns-parity app exited non-zero"; exit 1
+fi
+nsp_out="$(cd / && "$nspout" 2>&1)"
+if ! printf '%s' "$nsp_out" | grep -q 'ns: user' \
+   || ! printf '%s' "$nsp_out" | grep -q '^resolve: nil' \
+   || ! printf '%s' "$nsp_out" | grep -q "ns-resolve: #'nsp.lib/thing"; then
+  echo "  FAIL: built binary -main ns parity — want 'ns: user', 'resolve: nil', ns-resolve found"
+  echo "--- got ----"; echo "$nsp_out"
+  exit 1
+fi
 # Tree-shaking (opt-in): same result, and an unreachable def (the `twice` macro,
 # expanded at AOT and never called at runtime) is dropped.
 if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --tree-shake >/dev/null 2>&1; then
