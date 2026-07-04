@@ -790,6 +790,21 @@
        (returns-scheme-bool? (:body node) bools'))
      :else false)))
 
+;; In trace mode, a fn def also registers its source so the tail-frame history maps
+;; the recorded frame-name to "ns/name (file:line)" instead of a bare name. Keyed by
+;; the SAME munged name the entry push records (emit-fn's letrec self-binding = the
+;; fn's own name). Returns "" when off / not a positioned fn def, so trace-off output
+;; (seed mint, `jolt build`) is byte-identical. Direct-link builds already register
+;; via emit-def-cached; this covers the open-world eval path.
+(defn- trace-source-reg [node]
+  (let [init (:init node) pos (:pos node)]
+    (if (and @trace-frames? (= :fn (:op init)) (:name init) pos)
+      (str " (jolt-register-source! " (chez-str-lit (munge-name (:name init))) " "
+           (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+           (if (:file pos) (chez-str-lit (:file pos)) "jolt-nil") " "
+           (or (:line pos) 0) ")")
+      "")))
+
 (defn emit* [node]
   (case (:op node)
     :const (emit-const (:val node))
@@ -889,15 +904,17 @@
     :fn (emit-fn node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).
-    :def (cond
-           (:no-init node)
-           (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
-           (jmeta-nonempty? (:meta node))
-           (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
-           :else
-           (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                (emit-with-cells #(emit (:init node))) ")"))
+    :def (let [reg (trace-source-reg node)
+               d (cond
+                   (:no-init node)
+                   (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
+                   (jmeta-nonempty? (:meta node))
+                   (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                        (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
+                   :else
+                   (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                        (emit-with-cells #(emit (:init node))) ")"))]
+           (if (= reg "") d (str "(begin " d reg ")")))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
 
 ;; ^:dynamic / ^:redef on a def opts it out of direct-linking: it stays redefinable,

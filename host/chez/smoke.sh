@@ -124,6 +124,21 @@ if printf '%s' "$err_stale" | grep -q 'h1'; then
 else
   pass=$((pass + 1))
 fi
+# A file-backed project run maps each runtime-compiled frame to ns/name (file:line)
+# — the eval path registers source in trace mode, so the trace isn't bare names.
+tr_proj="$(mktemp -d)"
+mkdir -p "$tr_proj/src/tp"
+printf '{:paths ["src"] :aliases {:run {:main-opts ["-m" "tp.core"]}}}\n' > "$tr_proj/deps.edn"
+printf '(ns tp.core)\n(defn deep [x] (+ x 1))\n(defn mid [x] (inc (deep x)))\n(defn -main [& _] (mid :nan))\n' > "$tr_proj/src/tp/core.clj"
+tr_out="$(JOLT_TRACE=1 JOLT_PWD="$tr_proj" bin/joltc -M:run 2>&1)"
+if printf '%s' "$tr_out" | grep -Eq 'tp\.core/deep \(.*/tp/core\.clj:2\)'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: JOLT_TRACE trace should map a frame to ns/name (file:line)"
+  printf '%s\n' "$tr_out" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+rm -rf "$tr_proj"
 
 # --help prints usage, and lists the nREPL server under its real flag name.
 help_out="$(bin/joltc --help 2>/dev/null)"
