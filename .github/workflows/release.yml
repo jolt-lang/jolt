@@ -154,6 +154,10 @@ jobs:
       # dev-machine check — see jolt-8479). `make joltc-release`, not `make joltc`.
       - name: Build joltc (release)
         run: make joltc-release
+        env:
+          # Bake the release tag into the binary (build-joltc falls back to
+          # `git describe` when this is empty, e.g. a workflow_dispatch dry run).
+          JOLT_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
 
       - name: Inspect the binary (Windows)
         if: runner.os == 'Windows'

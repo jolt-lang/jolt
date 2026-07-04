@@ -21,25 +21,66 @@
             [jolt.ffi :as ffi]))
 
 ;; --- sockets (loopback server) ---------------------------------------------
-;; Load libc (the running process's symbols) BEFORE the foreign-fn bindings below
-;; — defcfn resolves the C entry point when the def is evaluated (at ns load), so
-;; the socket symbols must already be available.
-(ffi/load-library)
+(def ^:private os-name
+  (str/lower-case (or (System/getProperty "os.name") "")))
+(def ^:private macos?   (str/includes? os-name "mac"))
+(def ^:private windows? (str/includes? os-name "win"))
+
+;; Load the library that provides the socket symbols BEFORE the foreign-fn
+;; bindings below — defcfn resolves the C entry point when the def is evaluated
+;; (at ns load), so the symbols must already be available. POSIX: the running
+;; process's own libc symbols. Windows: the Winsock DLL (ws2_32), whose symbols
+;; are NOT in joltc.exe's export table even though it's linked in — without this
+;; explicit load, (ffi/defcfn c-socket "socket" ...) fails at load with
+;; "no entry for socket".
+(if windows?
+  (ffi/load-library "ws2_32.dll")
+  (ffi/load-library))
+
+;; A socket is an int fd on POSIX; on Win64 it's a SOCKET (uintptr_t) handle, but
+;; those are small kernel handle values that round-trip through :int, and the
+;; INVALID_SOCKET error sentinel (~0) reads back as -1 — so the fd checks below
+;; work unchanged on both.
 (ffi/defcfn c-socket     "socket"     [:int :int :int] :int)
 (ffi/defcfn c-bind       "bind"       [:int :pointer :int] :int)
 (ffi/defcfn c-listen     "listen"     [:int :int] :int)
 (ffi/defcfn c-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
-  (ffi/defcfn c-accept     "accept"     [:int :pointer :pointer] :int :blocking)
-  (ffi/defcfn c-recv       "recv"       [:int :pointer :size_t :int] :ssize_t :blocking)
-  (ffi/defcfn c-send       "send"       [:int :pointer :size_t :int] :ssize_t :blocking)
-(ffi/defcfn c-close      "close"      [:int] :int)
+(ffi/defcfn c-accept     "accept"     [:int :pointer :pointer] :int :blocking)
+
+;; recv/send and the socket-close call differ by platform. Winsock's recv/send
+;; take an int length and return int (not ssize_t), and a socket is closed with
+;; closesocket, not close. A symbol that exists on only one OS (closesocket on
+;; Windows, close on POSIX) can only be bound there, so these live in the taken
+;; platform branch — jolt interns the vars from both branches at analysis time,
+;; so later references resolve either way.
+(if windows?
+  (do
+    (ffi/defcfn c-recv  "recv"        [:int :pointer :int :int] :int :blocking)
+    (ffi/defcfn c-send  "send"        [:int :pointer :int :int] :int :blocking)
+    (ffi/defcfn c-close "closesocket" [:int] :int)
+    ;; Winsock must be initialized once per process before any socket call.
+    (ffi/defcfn c-wsastartup "WSAStartup" [:int :pointer] :int))
+  (do
+    (ffi/defcfn c-recv  "recv"  [:int :pointer :size_t :int] :ssize_t :blocking)
+    (ffi/defcfn c-send  "send"  [:int :pointer :size_t :int] :ssize_t :blocking)
+    (ffi/defcfn c-close "close" [:int] :int)))
 
 (def ^:private AF-INET 2)
 (def ^:private SOCK-STREAM 1)
-(def ^:private macos?
-  (str/includes? (str/lower-case (or (System/getProperty "os.name") "")) "mac"))
-(def ^:private sol-socket (if macos? 0xffff 1))
-(def ^:private so-reuse   (if macos? 4 2))
+;; SOL_SOCKET / SO_REUSEADDR: 0xffff / 4 on macOS and Windows, 1 / 2 on Linux.
+(def ^:private sol-socket (if (or macos? windows?) 0xffff 1))
+(def ^:private so-reuse   (if (or macos? windows?) 4 2))
+
+;; Initialize Winsock (a no-op off Windows). WSAStartup is refcounted and must
+;; precede any socket call; WSADATA is ~408 bytes on x64, so 512 is ample.
+(defn- ensure-winsock! []
+  (when windows?
+    (let [wsadata (ffi/alloc 512)]
+      (try
+        (let [r (c-wsastartup 0x0202 wsadata)]
+          (when-not (zero? r)
+            (throw (ex-info (str "WSAStartup failed: " r) {}))))
+        (finally (ffi/free wsadata))))))
 
 (defn- make-sockaddr [port]
   (let [sa (ffi/alloc 16)]
@@ -53,7 +94,7 @@
     sa))
 
 (defn- listen-socket [port]
-  (ffi/load-library)                                         ; libc process symbols
+  (ensure-winsock!)                                          ; no-op off Windows
   (let [fd (c-socket AF-INET SOCK-STREAM 0)]
     (when (neg? fd) (throw (ex-info "socket() failed" {})))
     (let [opt (ffi/alloc 4)] (ffi/write opt :int 0 1) (c-setsockopt fd sol-socket so-reuse opt 4) (ffi/free opt))
@@ -240,7 +281,8 @@
          fd (listen-socket port)                  ; throws on bind/listen failure
          stopped (atom false)]
      (try (spit ".nrepl-port" (str port)) (catch :default _ nil))
-     (println (str "nREPL server started on port " port " (127.0.0.1) — .nrepl-port written"))
+     (println (str "jolt " (jolt.host/jolt-version) " nREPL server started on port "
+                   port " (127.0.0.1) — .nrepl-port written"))
      (when (seq middleware) (println (str ";; middleware: " (str/join " " middleware))))
      (println ";; connect your editor; ^C to stop")
       (future

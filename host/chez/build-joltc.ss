@@ -46,6 +46,15 @@
 (unless (or jb-release? (string=? jb-profile "debug"))
   (error 'build-joltc "profile must be \"release\" or \"debug\"" jb-profile))
 
+;; Version baked into the binary's saved heap. Prefer $JOLT_VERSION (CI sets it to
+;; the release tag); else derive it from git in this checkout; else "dev".
+(define jb-version
+  (let ((env (getenv "JOLT_VERSION")))
+    (if (and env (> (string-length env) 0))
+        env
+        (let ((s (bld-sh-capture "git describe --tags --always --dirty 2>/dev/null")))
+          (if (> (string-length s) 0) s "dev")))))
+
 (define jb-build (string-append jb-out ".build"))
 (bld-check-toolchain)
 (bld-system (string-append "mkdir -p '" (path-parent jb-out) "' '" jb-build "'"))
@@ -164,6 +173,10 @@
   (jb-emit-runtime-embeds out)
   (put-string out "\n;; === embedded jolt-core + stdlib source ===\n")
   (jb-emit-source-embeds out)
+  ;; Bake the version into the saved heap (runs at heap-build; loader.ss defined
+  ;; jolt-baked-version above, so this set! resolves).
+  (put-string out (string-append "\n;; === baked version ===\n(set! jolt-baked-version "
+                                 (ei-str-lit jb-version) ")\n"))
   (put-string out "\n;; === joltc launcher ===\n")
   (jb-emit-launcher out)
   (close-port out))

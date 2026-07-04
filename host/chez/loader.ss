@@ -384,3 +384,14 @@
 (def-var! "jolt.host" "load-namespace" (lambda (n) (load-namespace n) jolt-nil))
 (def-var! "jolt.host" "file-exists?" (lambda (p) (if (file-exists? p) #t #f)))
 (def-var! "jolt.host" "getenv" (lambda (n) (let ((v (getenv n))) (if v v jolt-nil))))
+
+;; jolt version string. A self-contained binary build bakes the real tag into the
+;; saved heap by emitting (set! jolt-baked-version "…") in flat.ss; a dev run off
+;; the seed leaves it #f and falls back to $JOLT_VERSION (bin/joltc sets it from
+;; `git describe`), then "dev".
+(define jolt-baked-version #f)
+(def-var! "jolt.host" "jolt-version"
+  (lambda ()
+    (or jolt-baked-version
+        (let ((v (getenv "JOLT_VERSION"))) (and v (> (string-length v) 0) v))
+        "dev")))
