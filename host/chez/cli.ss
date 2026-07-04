@@ -66,6 +66,9 @@
       (when bt (display "  trace:\n" port) (display bt port)))
     (exit 1)))
 
+;; JOLT_TRACE opt-in, at runtime (before any app ns compiles) so the app is traced.
+(jolt-trace-init-from-env!)
+
 (guard (v (#t (jolt-report-uncaught v)))
   (cond
     ;; -e EXPR — evaluate one expression and print it (blank for nil). Wrapped in

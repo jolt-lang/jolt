@@ -132,11 +132,16 @@
 ;; push is baked in at compile time, only code compiled after this call is traced —
 ;; which is exactly the code you eval / reload in a live session.
 (def-var! "jolt.host" "enable-trace!" jolt-enable-trace!)
-;; Explicit opt-in for a whole run (JOLT_TRACE=1): enable at load, BEFORE any app
-;; namespace is compiled, so a plain `-M:run` traces the app's own code too. Only an
-;; affirmative value (set, non-empty, not falsey) forces it on here.
-(let ((e (getenv "JOLT_TRACE")))
-  (when (and e (fx>? (string-length e) 0) (not (jolt-trace-env-off? e))) (jolt-enable-trace!)))
+;; Explicit opt-in for a whole run (JOLT_TRACE=1): turn tracing on BEFORE any app
+;; namespace is compiled, so a plain `-M:run` traces the app's own code too. Called
+;; from the runtime entrypoints (cli.ss, and the built joltc launcher) — NOT at load
+;; time: a built joltc runs top-level forms at heap-build time, where JOLT_TRACE is
+;; always unset, so a load-time check would never see the user's runtime env. Only an
+;; affirmative value (set, non-empty, not falsey) forces it on.
+(define (jolt-trace-init-from-env!)
+  (let ((e (getenv "JOLT_TRACE")))
+    (when (and e (fx>? (string-length e) 0) (not (jolt-trace-env-off? e)))
+      (jolt-enable-trace!))))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
