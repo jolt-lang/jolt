@@ -66,6 +66,10 @@
       (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
     (:jolt/module spec)
     (do (warn "skipping janet dependency " coord " (:jolt/module is obsolete on Chez)") nil)
+    ;; jolt IS Clojure — a dependency on org.clojure/clojure is satisfied
+    ;; intrinsically, so skip it silently rather than warning about the (unusable)
+    ;; :mvn/version coordinate.
+    (= coord 'org.clojure/clojure) nil
     :else
     (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)) nil)))
 
