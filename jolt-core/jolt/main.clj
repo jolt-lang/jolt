@@ -8,6 +8,8 @@
 
 (defn- project-dir [] (or (jolt.host/getenv "JOLT_PWD") "."))
 
+(defn- version [] (jolt.host/jolt-version))
+
 (defn- current-platform []
   (let [os (str/lower-case (or (System/getProperty "os.name") ""))]
     (cond (str/includes? os "mac") :darwin
@@ -145,7 +147,7 @@
   ;; loaded — same context a run gets, so (require '[some.lib]) works in the REPL.
   (try (apply-project! (deps/resolve-project (project-dir)))
        (catch :default _ nil))
-  (println ";; jolt repl — :repl/quit or ^D to exit")
+  (println (str ";; jolt " (version) " repl — :repl/quit or ^D to exit"))
   (loop []
     (let [form (repl-read-form)]
       (when form
@@ -294,7 +296,9 @@
         (when stop (stop))))))
 
 (defn- usage []
+  (println (str "jolt " (version)))
   (println "usage: jolt <command> [args]")
+  (println "  -e EXPR                evaluate EXPR and print the result")
   (println "  run -m NS [args]       resolve deps.edn, load NS, call its -main")
   (println "  run FILE               load a Clojure file")
   (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--tree-shake] [--dynamic]  compile a standalone binary")
@@ -304,6 +308,7 @@
   (println "  --nrepl-server [port]  start an nREPL server (default 7888) for editors")
   (println "  path                   print the resolved source roots")
   (println "  <task>                 run a deps.edn :tasks entry")
+  (println "  --version              print the jolt version")
   (println "  --help                 print this message"))
 
 (defn -main [& args]
@@ -312,6 +317,7 @@
       (nil? cmd)                  (usage)
       (= cmd "--help")            (usage)
       (= cmd "-h")                (usage)
+      (#{"--version" "-V"} cmd)   (println (str "jolt " (version)))
       (= cmd "run")               (cmd-run more)
       (= cmd "repl")              (repl)
       (= cmd "--nrepl-server")    (nrepl more)
