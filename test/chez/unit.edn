@@ -576,4 +576,26 @@
   {:suite "deftype-method" :expr "(do (defprotocol P (m [_ o])) (defrecord R [n] P (m [_ _] n)) (m (->R 5) :x))" :expected "5"}
   {:suite "deftype-method" :expr "(do (defprotocol P2 (m2 [_ o])) (deftype T [n] P2 (m2 [_ _] n)) (m2 (->T 7) :x))" :expected "7"}
   {:suite "protocol-host" :expr "(do (defprotocol Q (e [_])) (extend-protocol Q clojure.lang.Var (e [_] :var)) [(satisfies? Q (var map)) (e (var map))])" :expected "[true :var]"}
+
+  ;; Clojure 1.13 (1.13.0-alpha1) parity. Ahead of the JVM 1.12.5 the corpus
+  ;; certifies against, so these live here rather than as certified corpus rows.
+  {:suite "clj-1.13 req!" :expr "(req! {:a 1} :a)" :expected "1"}
+  {:suite "clj-1.13 req!" :expr "(req! [10 20 30] 1)" :expected "20"}
+  {:suite "clj-1.13 req!" :expr "(nil? (req! {:a nil} :a))" :expected "true"}
+  {:suite "clj-1.13 req!" :expr "(req! {:a 1} :b)" :expected :throws}
+  {:suite "clj-1.13 amp-binding" :expr "(let [& 42] &)" :expected :throws}
+  {:suite "clj-1.13 amp-binding" :expr "(loop [& 42] &)" :expected :throws}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a b]} {:a 1 :b 2}] [a b])" :expected "[1 2]"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a b]} {:a 1}] [a b])" :expected :throws}
+  {:suite "clj-1.13 checked-keys" :expr "(nil? (let [{:keys! [a]} {:a nil}] a))" :expected "true"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:strs! [a]} {\"a\" 5}] a)" :expected "5"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & b]} {:a 1 :b 2}] a)" :expected "1"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & b]} {:a 1}] a)" :expected :throws}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys [a & b]} {:a 1 :b 2}] a)" :expected "1"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:foo/keys! [a]} {:foo/a 7}] a)" :expected "7"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:foo/keys! [a]} {}] a)" :expected :throws}
+  {:suite "clj-1.13 array-map-64" :expr "(keys {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10})" :expected "(:a :b :c :d :e :f :g :h :i :j)"}
+  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 20)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 20)))))" :expected "true"}
+  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 64)) (keys (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64))))" :expected "true"}
+  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 65)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 65)))))" :expected "false"}
 ]

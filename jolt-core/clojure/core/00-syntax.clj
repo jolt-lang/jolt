@@ -188,9 +188,23 @@
                      [false nil]
                      (if or-map (keys or-map) [])))
          amp? (fn* [x] (and (symbol? x) (= "&" (name x))))
+         ;; split a :keys/:syms/:strs name list at & into [sym bind?] pairs. Names
+         ;; before & bind normally (bind? true); names after & are declared-only
+         ;; (bind? false) — accepted keys (:keys) or required keys (:keys!), per
+         ;; CLJ-2961.
+         classify
+           (fn* [names]
+             (nth (reduce (fn* [st x]
+                            (if (amp? x)
+                              [(nth st 0) false]
+                              [(conj (nth st 0) [x (nth st 1)]) (nth st 1)]))
+                          [[] true] names)
+                  0))
          proc
            (fn* proc [pat init acc]
              (cond
+               ;; CLJ-2954: & is reserved for destructuring rest, never a binding.
+               (amp? pat) (throw (new IllegalArgumentException "Can't use & as a local binding"))
                (symbol? pat) (conj (conj acc pat) init)
                (vector? pat)
                  (let* [g (symbol (str (gensym)))
@@ -231,30 +245,45 @@
                         ;; group binds a :keys/:strs/:syms list. dnsp is the destructuring
                         ;; namespace from a qualified key like :ns/keys — it both prefixes
                         ;; the lookup key and overrides a bare symbol's namespace.
+                        ;; group binds a :keys/:strs/:syms list. checked? marks the
+                        ;; :keys!/:strs!/:syms! variants (CLJ-2961): lookups use req!
+                        ;; (throw on missing) instead of get. A pair is [sym bind?];
+                        ;; bind? false (names after &) is declared-only — for checked
+                        ;; groups it still runs req! (bound to a throwaway gensym) to
+                        ;; enforce the key, for unchecked groups it's a no-op.
                         group
-                          (fn* group [a names kind dnsp]
+                          (fn* group [a names kind dnsp checked?]
                             (if names
                                 (reduce
                                   ;; s is a symbol (a b) or a keyword (:a :b); name/
                                   ;; namespace handle both, so :keys [:major] binds
                                   ;; `major` looking up :major (str would keep the colon).
-                                  (fn* [aa s]
-                                    (let* [local (name s)
+                                  (fn* [aa pair]
+                                    (let* [s (nth pair 0)
+                                           bind? (nth pair 1)
+                                           local (name s)
                                            nsp (or (namespace s) dnsp)
                                            keyform (cond
                                                      (= kind :kw) (keyword (if nsp (str nsp "/" local) local))
                                                      (= kind :str) local
                                                      :else `(quote ~(symbol nsp local)))
-                                           fo (find-or or-map local)]
-                                      (conj (conj aa (symbol local))
-                                            (if (nth fo 0)
-                                              `(get ~gm ~keyform ~(nth fo 1))
-                                              `(get ~gm ~keyform)))))
-                                  a names)
+                                           fo (find-or or-map local)
+                                           lookup (cond
+                                                    checked? `(req! ~gm ~keyform)
+                                                    (nth fo 0) `(get ~gm ~keyform ~(nth fo 1))
+                                                    :else `(get ~gm ~keyform))]
+                                      (cond
+                                        bind?    (conj (conj aa (symbol local)) lookup)
+                                        checked? (conj (conj aa (symbol (str (gensym)))) lookup)
+                                        :else    aa)))
+                                  a (classify names))
                                 a))
-                        g1 (group base (get pat :keys) :kw nil)
-                        g2 (group g1 (get pat :strs) :str nil)
-                        g3 (group g2 (get pat :syms) :sym nil)]
+                        g1 (group base (get pat :keys)  :kw  nil false)
+                        g2 (group g1   (get pat :strs)  :str nil false)
+                        g3 (group g2   (get pat :syms)  :sym nil false)
+                        g4 (group g3   (get pat :keys!) :kw  nil true)
+                        g5 (group g4   (get pat :strs!) :str nil true)
+                        g6 (group g5   (get pat :syms!) :sym nil true)]
                    ;; remaining keys: a qualified :ns/keys|:ns/strs|:ns/syms groups under
                    ;; its namespace; any other keyword is skipped; a non-keyword is a
                    ;; nested binding pattern.
@@ -262,9 +291,12 @@
                              (if (keyword? k)
                                (let* [kn (name k) kns (namespace k)]
                                  (cond
-                                   (and kns (= kn "keys")) (group a (get pat k) :kw kns)
-                                   (and kns (= kn "strs")) (group a (get pat k) :str kns)
-                                   (and kns (= kn "syms")) (group a (get pat k) :sym kns)
+                                   (and kns (= kn "keys"))  (group a (get pat k) :kw  kns false)
+                                   (and kns (= kn "strs"))  (group a (get pat k) :str kns false)
+                                   (and kns (= kn "syms"))  (group a (get pat k) :sym kns false)
+                                   (and kns (= kn "keys!")) (group a (get pat k) :kw  kns true)
+                                   (and kns (= kn "strs!")) (group a (get pat k) :str kns true)
+                                   (and kns (= kn "syms!")) (group a (get pat k) :sym kns true)
                                    :else a))
                                ;; a direct binding {x :x}: apply its :or default
                                ;; (keyed by the local symbol) when the key is absent.
@@ -273,7 +305,7 @@
                                            `(get ~gm ~(get pat k) ~(nth fo 1))
                                            `(get ~gm ~(get pat k)))
                                        a))))
-                           g3 (keys pat)))
+                           g6 (keys pat)))
                :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
          ploop
            (fn* ploop [i acc]

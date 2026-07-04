@@ -89,6 +89,21 @@
              (recur nxt (next ks))))
          m)))))
 
+(defn req!
+  "Returns the value mapped to key k in map m, like `get`, but throws
+  IllegalArgumentException when k is not present. Unlike `get`, does not nil-pun:
+  a key present with a nil value returns nil, an absent key throws. The primitive
+  behind checked-keys destructuring (:keys! / :syms! / :strs!)."
+  {:added "1.13"}
+  [m k]
+  ;; a fresh map is its own identity, so a present-but-nil value is distinguished
+  ;; from an absent key (same trick as get-in's sentinel).
+  (let [sentinel (hash-map)
+        v (get m k sentinel)]
+    (if (identical? sentinel v)
+      (throw (new IllegalArgumentException (str "Expected key: " k)))
+      v)))
+
 ;; find-based, so nil RESULTS are cached too; args canonicalize as a collection key.
 (defn memoize [f]
   (let [mem (atom (hash-map))]

@@ -298,8 +298,21 @@
 (define empty-pmap-hash (make-pmap empty-hnode 0 #f))      ; hash-order backing (sets)
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
 ;; PersistentArrayMap threshold: assoc of a new key promotes to hash mode once the
-;; map already holds 8 entries (array.length >= 16 in the reference).
+;; map already holds 8 entries (array.length >= 16 in the reference). Clojure 1.13
+;; raised the limit to 64 for maps whose keys are ALL keywords (the common
+;; keyword-map case); mixed-key maps still cap at 8.
 (define array-map-limit 8)
+(define array-map-limit-kw 64)
+(define (all-keywords? ks)
+  (or (null? ks) (and (keyword? (car ks)) (all-keywords? (cdr ks)))))
+;; Should a map of `cnt` entries with insertion order `ord` stay in array mode
+;; when key `k` is added? Under 8 always; a keyword-only map (existing keys + the
+;; new key all keywords) grows to 64; otherwise it caps at 8.
+(define (pmap-array-keep? cnt ord k)
+  (cond ((fx<? cnt array-map-limit) #t)
+        ((fx>=? cnt array-map-limit-kw) #f)
+        ((and (keyword? k) (all-keywords? ord)) #t)
+        (else #f)))
 (define (append-key ord k) (append ord (list k)))
 (define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (car o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
 
@@ -310,7 +323,7 @@
   (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added))
          (cnt (pmap-cnt m)) (ord (pmap-order m)))
     (if (unbox added)
-        (if (and ord (fx<? cnt array-map-limit))
+        (if (and ord (pmap-array-keep? cnt ord k))
             (make-pmap r (fx+ cnt 1) (append-key ord k))
             (make-pmap r (fx+ cnt 1) #f))
         (make-pmap r cnt ord))))
@@ -352,10 +365,14 @@
         (let loop ((ks ord) (a acc))
           (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
         (node-fold (pmap-root m) proc acc))))
-;; map LITERAL ({...}): array map up to 8 entries, hash map beyond (RT.map).
+;; map LITERAL ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
+;; hash map beyond (RT.map).
 (define (jolt-hash-map . kvs)
   (let loop ((m empty-pmap) (kvs kvs))
-    (cond ((null? kvs) (if (fx>? (pmap-cnt m) array-map-limit) (pmap->hash m) m))
+    (cond ((null? kvs)
+           (let ((cnt (pmap-cnt m)) (ord (pmap-order m)))
+             (if (fx>? cnt (if (all-keywords? ord) array-map-limit-kw array-map-limit))
+                 (pmap->hash m) m)))
           ((null? (cdr kvs)) (error 'hash-map "odd number of map literal entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
 ;; array-map ctor: insertion-ordered regardless of size (createAsIfByAssoc).

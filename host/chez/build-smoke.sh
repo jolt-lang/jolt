@@ -129,4 +129,20 @@ if [ "$got_dr" != "42" ]; then
   echo "  FAIL: built #code data reader — want 42, got \`$got_dr\`"; exit 1
 fi
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader)"
+# A script namespace with no -main (just top-level side effects) must build and
+# run its top-level forms, then exit cleanly — not crash calling a nil -main.
+nomain="$(dirname "$out")/nomain"
+mkdir -p "$nomain/src"
+printf '{:paths ["src"]}\n' > "$nomain/deps.edn"
+printf '(ns script)\n(println "no-main script ran")\n' > "$nomain/src/script.clj"
+nmout="$(dirname "$out")/nomain-bin"
+if ! JOLT_PWD="$nomain" bin/joltc build -m script -o "$nmout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of a no-main script exited non-zero"; exit 1
+fi
+got_nm="$(cd / && "$nmout" 2>&1)"; rc_nm=$?
+if [ "$got_nm" != "no-main script ran" ] || [ "$rc_nm" != "0" ]; then
+  echo "  FAIL: no-main script binary — want 'no-main script ran' rc 0, got \`$got_nm\` rc $rc_nm"
+  exit 1
+fi
+
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main)"
