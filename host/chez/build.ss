@@ -571,11 +571,17 @@
                             "))\n"
                             "                (list \"jolt-core\" \"stdlib\"))))\n"))
           (put-string out (string-append
-                            "    (let ((mainv (var-deref " (ei-str-lit entry-ns) " \"-main\")))\n"
+                            ;; Call -main only if the entry namespace defines one;
+                            ;; a script ns (top-level side effects, no -main) has
+                            ;; already run its forms at heap build, so invoking a nil
+                            ;; -main would crash ("nil cannot be cast to IFn") — just
+                            ;; exit cleanly instead.
+                            "    (let ((maincell (var-cell-lookup " (ei-str-lit entry-ns) " \"-main\")))\n"
                             ;; render an uncaught throw (+ Clojure backtrace) instead
                             ;; of Chez's opaque dump, then exit non-zero.
                             "      (guard (v (#t (jolt-report-throwable v (current-error-port)) (exit 1)))\n"
-                            "        (apply jolt-invoke mainv args)))\n"
+                            "        (when (and maincell (var-cell-defined? maincell))\n"
+                            "          (apply jolt-invoke (var-cell-root maincell) args))))\n"
                             "    (exit 0)))\n"))
           (close-port out))
         ;; 4. compile -> boot -> link. Two paths, chosen by whether this process
