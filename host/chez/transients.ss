@@ -86,7 +86,11 @@
                (if (fx<? i cnt) (begin (vector-set! out i (vector-ref buf i)) (loop (fx+ i 1)))
                    (make-pvec out)))))))
     ((map)
-     (let* ((ht (jolt-transient-buf t)) (cnt (hashtable-size ht)) (cap (jolt-transient-n t)))
+     (let* ((ht (jolt-transient-buf t)) (cnt (hashtable-size ht)) (cap (jolt-transient-n t))
+            ;; Clojure 1.13: a keyword-only map stays an array map up to 64 entries,
+            ;; so a keyword map built through a transient (into {} …) keeps insertion
+            ;; order to 64, matching the literal/assoc paths.
+            (cap (if (all-keywords? (jolt-transient-ord t)) (fxmax array-map-limit-kw cap) cap)))
        (if (fx>? cnt cap)
            ;; promoted past the array capacity: hash order
            (let ((m empty-pmap-hash))
