@@ -110,6 +110,13 @@
 ;; older seed during the first re-mint pass.
 (let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
   (when (procedure? scv) (scv #t)))
+;; JOLT_TRACE opts into tail-frame history: the emitter prepends a frame-recording
+;; push to every runtime-compiled fn, and the ring buffer is allocated for this
+;; thread. Off by default, so a normal run emits and pays exactly as before.
+(when (getenv "JOLT_TRACE")
+  (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
+    (when (procedure? stf) (stf #t)))
+  (jolt-trace-enable!))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
@@ -235,6 +242,9 @@
      ;; record this form's source location first, so a compile- or run-time error
      ;; in it reports the right place.
      (jolt-enter-form! form)
+     ;; drop tail-frame history from earlier top-level forms, so an error's trace
+     ;; shows only this form's own call history (a no-op unless JOLT_TRACE is on).
+     (jolt-trace-reset!)
      (eval (read (open-input-string (jolt-analyze-emit-form form ns)))
            (interaction-environment)))))
 

@@ -46,6 +46,10 @@
 ;; after it). Guarded for the first re-mint pass off an older seed.
 (let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
   (when (procedure? scv) (scv #f)))
+;; Tail-frame tracing off for the mint + `jolt build`: the seed must stay a
+;; byte-fixpoint, and a built app should carry no per-call trace overhead.
+(let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
+  (when (procedure? stf) (stf #f)))
 (define (ei-compile-form ctx f optimize?)
   (let ((ir (jolt-ce-analyze ctx f)))
     (jolt-ce-emit-top (if optimize? (jolt-ce-run-passes ir ctx) ir))))

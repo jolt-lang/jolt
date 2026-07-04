@@ -60,6 +60,112 @@
 ;; stack trace (source-registry.ss). call/cc is paid only on a throw, never per
 ;; call; the captured k is walked, never invoked.
 (define jolt-throw-cont (make-thread-parameter #f))
+
+;; --- tail-frame history: a ring of rings (opt-in) ----------------------------
+;; TCO erases tail-called frames from the native continuation, so an uncaught
+;; error's backtrace shows only the surviving non-tail spine — the immediate error
+;; site is often a tail call and is missing. When tracing is enabled (JOLT_TRACE,
+;; wired in compile-eval.ss), each compiled fn records its frame-name on entry, and
+;; the reporter reads this history to recover TCO-elided frames.
+;;
+;; The store is MIT-Scheme's "history" shape — a ring of rings. The OUTER ring
+;; holds one RIB per non-tail subproblem (the real call spine); each rib's INNER
+;; ring holds the recent tail-calls made AT that subproblem. A non-tail entry
+;; advances the outer ring (a fresh rib); a tail entry rotates the current rib's
+;; inner ring. So a tight tail loop (mutual recursion, a non-recur self-tail-call)
+;; churns ONE rib's small inner ring instead of flushing the outer spine — the
+;; caller context that led into the loop survives. Both rings are fixed-size, so
+;; the whole history is bounded: a constant space factor, NOT a change to the
+;; asymptotic space TCO guarantees.
+;;
+;; Whether an entry is tail or non-tail is set by the CALLER: the emitter marks a
+;; tail call with (jolt-trace-mark! #t) right before it; a non-tail entry is the
+;; default. NOTE this is best-effort: a tail call routed through jolt-invoke to a
+;; target that has no entry prologue (a core/native fn, an anonymous fn held in a
+;; var) does not consume the mark, so a following non-tail frame can be mislabeled
+;; as a tail rotation — a cosmetic mis-grouping in the trace, never a wrong result.
+(define jolt-trace-outer-size 48)          ; ribs (non-tail spine depth kept)
+(define jolt-trace-inner-size 6)           ; tail-calls kept per subproblem
+;; A history: #(ribs-vector outer-head outer-count). A rib: #(name-vector head count).
+(define (jolt-make-rib) (vector (make-vector jolt-trace-inner-size #f) 0 0))
+(define (jolt-make-history)
+  (let ((ribs (make-vector jolt-trace-outer-size #f)))
+    (let loop ((i 0))
+      (when (fx<? i jolt-trace-outer-size)
+        (vector-set! ribs i (jolt-make-rib)) (loop (fx+ i 1))))
+    (vector ribs 0 0)))
+;; A global switch (all threads) plus a per-thread ring, lazily created on first
+;; use — so code run on a spawned thread (a future/agent) records into ITS OWN
+;; history, not the enabling thread's (make-thread-parameter hands a new thread the
+;; initial #f, so we can't rely on inheritance).
+(define jolt-trace-on? #f)
+(define jolt-trace-ring (make-thread-parameter #f))
+(define jolt-trace-tail? (make-thread-parameter #f))   ; caller-set, consumed per entry
+(define (jolt-trace-enable!) (set! jolt-trace-on? #t) (jolt-trace-ring (jolt-make-history)))
+;; this thread's ring, created on demand while tracing is on
+(define (jolt-trace-cur-ring)
+  (or (jolt-trace-ring)
+      (and jolt-trace-on? (let ((h (jolt-make-history))) (jolt-trace-ring h) h))))
+;; Drop accumulated history at a top-level boundary (compile-eval.ss calls this per
+;; top-level form) so an error's trace shows only the forms that led to it, not the
+;; frames of earlier, already-returned REPL/eval forms.
+(define (jolt-trace-reset!)
+  (when (jolt-trace-ring) (jolt-trace-ring (jolt-make-history)) (jolt-trace-tail? #f)))
+(define (jolt-trace-mark! t) (jolt-trace-tail? t))
+
+;; push name into a rib's inner ring
+(define (jolt-rib-push! rib name)
+  (let ((buf (vector-ref rib 0)) (i (vector-ref rib 1)) (cnt (vector-ref rib 2)))
+    (vector-set! buf i name)
+    (vector-set! rib 1 (fxmod (fx+ i 1) jolt-trace-inner-size))
+    (when (fx<? cnt jolt-trace-inner-size) (vector-set! rib 2 (fx+ cnt 1)))))
+;; a non-tail entry: advance the outer ring, reset the new rib, seed it with name
+(define (jolt-history-nontail! h name)
+  (let* ((ribs (vector-ref h 0)) (oh (vector-ref h 1)) (oc (vector-ref h 2))
+         (rib (vector-ref ribs oh)))
+    (vector-set! rib 1 0) (vector-set! rib 2 0)
+    (jolt-rib-push! rib name)
+    (vector-set! h 1 (fxmod (fx+ oh 1) jolt-trace-outer-size))
+    (when (fx<? oc jolt-trace-outer-size) (vector-set! h 2 (fx+ oc 1)))))
+;; a tail entry: rotate the CURRENT rib's inner ring (bootstrap a rib if none yet)
+(define (jolt-history-tail! h name)
+  (if (fx=? (vector-ref h 2) 0)
+      (jolt-history-nontail! h name)
+      (let* ((ribs (vector-ref h 0))
+             (cur (fxmod (fx+ (fx- (vector-ref h 1) 1) jolt-trace-outer-size)
+                         jolt-trace-outer-size)))
+        (jolt-rib-push! (vector-ref ribs cur) name))))
+;; Record a frame entry, routed by the caller's tail mark; then reset the mark so a
+;; subsequent entry reached WITHOUT a mark (e.g. via apply) defaults to non-tail.
+(define (jolt-trace-push! name)
+  (let ((h (jolt-trace-cur-ring)))
+    (when h
+      (if (jolt-trace-tail?) (jolt-history-tail! h name) (jolt-history-nontail! h name))
+      (jolt-trace-tail? #f)))
+  jolt-nil)
+
+;; a rib's inner names, most-recent (deepest) tail first
+(define (jolt-rib-names rib)
+  (let ((buf (vector-ref rib 0)) (head (vector-ref rib 1)) (cnt (vector-ref rib 2)))
+    (let loop ((k 1) (acc '()))
+      (if (fx>? k cnt)
+          (reverse acc)
+          (loop (fx+ k 1)
+                (cons (vector-ref buf (fxmod (fx+ (fx- head k) jolt-trace-inner-size)
+                                             jolt-trace-inner-size))
+                      acc))))))
+;; The whole history flattened to frame-names, most-recent (deepest) first:
+;; current rib's tail-history, then its non-tail caller's, and so on outward.
+(define (jolt-trace-snapshot)
+  (let ((h (jolt-trace-ring)))
+    (if (not h) '()
+        (let* ((ribs (vector-ref h 0)) (oh (vector-ref h 1)) (oc (vector-ref h 2)))
+          (let loop ((k 1) (acc '()))
+            (if (fx>? k oc)
+                (apply append (reverse acc))
+                (let ((idx (fxmod (fx+ (fx- oh k) jolt-trace-outer-size) jolt-trace-outer-size)))
+                  (loop (fx+ k 1) (cons (jolt-rib-names (vector-ref ribs idx)) acc)))))))))
+
 (define-condition-type &jolt-throw &condition
   make-jolt-throw-condition jolt-throw-condition?
   (value jolt-throw-condition-value))

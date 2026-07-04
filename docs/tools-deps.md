@@ -182,6 +182,20 @@ a root, transitively.
 - Source only; compiled `.class` files in a git dep are ignored.
 - git `:git/sha` must be a full SHA (`git fetch` can't resolve a short one).
 
+## Stack traces
+
+An uncaught error prints the message, the top-level source location, and — when
+frames are available — a `trace:` backtrace. In an AOT `jolt build --direct-link`
+binary the frames map to `ns/name (file:line)`; on the runtime eval path they are
+the surviving fn names. Tail-call optimization erases tail-called frames, so the
+default trace shows only the non-tail spine.
+
+Set `JOLT_TRACE=1` to opt into a fuller **tail-frame history**. Each compiled fn
+then records itself on entry into a bounded ring-of-rings buffer, so the trace
+recovers TCO-elided frames (including the immediate error site) while a tight tail
+loop stays bounded and its non-tail caller context is preserved. It costs a small
+per-call overhead, so it is off by default and never emitted into a built binary.
+
 ## Conformance
 
 The known-working libraries (see [libraries.md](libraries.md)) and the
