@@ -145,11 +145,10 @@
 (scheme-start
   (lambda args
     (set-source-roots! (list \"jolt-core\" \"stdlib\"))
-    (guard (v (#t (jolt-report-throwable v (current-error-port))
-                  (let ((bt (jolt-backtrace-string v)))
-                    (when bt (display \"  trace:\\n\" (current-error-port))
-                          (display bt (current-error-port))))
-                  (exit 1)))
+    ;; JOLT_TRACE at RUNTIME (the env is unset at heap-build), before any app ns
+    ;; compiles, so a `-M:run` traces the app's own code.
+    (jolt-trace-init-from-env!)
+    (guard (v (#t (jolt-report-throwable v (current-error-port)) (exit 1)))
       (cond
         ((and (= (length args) 2) (string=? (car args) \"-e\"))
          (let ((result (jolt-final-str

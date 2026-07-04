@@ -42,6 +42,20 @@ if [ "$got_e" != "45" ]; then
   exit 1
 fi
 
+# 2b. JOLT_TRACE must take effect in the BUILT binary. The env check runs at
+# runtime (the launcher), NOT at heap-build where JOLT_TRACE is always unset — so
+# an uncaught error shows a tail-frame trace recovering the TCO-elided chain, and
+# exactly ONE trace block (the launcher must not double-print it).
+got_tr="$(env -i HOME="$HOME" JOLT_TRACE=1 "$joltc" -e '(defn a [x] (+ x 1)) (defn b [x] (a x)) (b :x)' 2>&1)"
+if ! printf '%s' "$got_tr" | grep -q '  trace:' || ! printf '%s' "$got_tr" | grep -q 'b'; then
+  echo "  FAIL: JOLT_TRACE=1 in the built joltc produced no tail-frame trace"
+  echo "--- got ---"; echo "$got_tr"; exit 1
+fi
+if [ "$(printf '%s' "$got_tr" | grep -c '  trace:')" != "1" ]; then
+  echo "  FAIL: built joltc double-printed the trace block"
+  echo "--- got ---"; echo "$got_tr"; exit 1
+fi
+
 # 3. Build an app through the distributed joltc with an EMPTY environment — no
 # PATH at all, so no chez, no cc, no shell tools are reachable. This is the core
 # guarantee: joltc compiles apps entirely on its own.
