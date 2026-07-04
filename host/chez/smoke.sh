@@ -30,6 +30,39 @@ check_loc() {
   fi
 }
 
+# An uncaught error's stack trace must name the runtime-eval'd fn frames that
+# survive TCO (the non-tail spine), even though the eval path registers no source
+# map — "print what is available". Asserts a substring appears under "  trace:".
+check_trace() {
+  err="$(bin/joltc -e "$1" 2>&1 >/dev/null)"
+  if printf '%s' "$err" | grep -q '  trace:' && printf '%s' "$err" | grep -q "$2"; then
+    pass=$((pass + 1))
+  else
+    echo "  FAIL (trace): $1"
+    echo "    want stderr trace to contain \`$2\`, got \`$err\`"
+    fails=$((fails + 1))
+  fi
+}
+
+# JOLT_TRACE opts into the tail-frame history (the ring of rings): every $2 (an
+# ERE) must match the "  trace:" block. Used to assert TCO-elided frames are
+# recovered and non-tail caller context survives a tail loop.
+check_trace_on() {
+  err="$(JOLT_TRACE=1 bin/joltc -e "$1" 2>&1 >/dev/null)"
+  ok=1
+  printf '%s' "$err" | grep -q '  trace:' || ok=0
+  shift
+  for want in "$@"; do
+    printf '%s' "$err" | grep -Eq "$want" || ok=0
+  done
+  if [ "$ok" = 1 ]; then
+    pass=$((pass + 1))
+  else
+    echo "  FAIL (trace-on): want [$*] in trace, got \`$err\`"
+    fails=$((fails + 1))
+  fi
+}
+
 check '(+ 1 2)' '3'
 check '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 15)' '610'
 check '(->> (range 10) (filter even?) (map (fn [x] (* x x))) (reduce +))' '120'
@@ -59,6 +92,38 @@ check '(try (load-string "(+") (catch :default e (ex-message e)))' 'EOF while re
 # An uncaught throw prints the ex-info message alongside its source location.
 check_loc '(throw (ex-info "boom" {}))' 'boom'
 check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
+
+# Runtime-eval'd fns aren't source-mapped, but their native frame names survive on
+# the non-tail spine; the trace must show them. deepest/+ are tail calls (erased);
+# middle and outer wait on a non-tail (inc …) so their frames are live at the throw.
+trace_prog='(defn deepest [x] (+ x 1)) (defn middle [x] (inc (deepest x))) (defn outer [x] (inc (middle x))) (outer :nan)'
+check_trace "$trace_prog" 'middle'
+check_trace "$trace_prog" 'outer'
+
+# JOLT_TRACE (tail-frame history / ring of rings). An all-tail chain is entirely
+# TCO-erased from the continuation, but the history recovers every frame — incl.
+# `deepest`, the actual error site.
+check_trace_on '(defn deepest [x] (+ x 1)) (defn middle [x] (deepest x)) (defn outer [x] (middle x)) (outer :nan)' \
+  'deepest' 'middle' 'outer'
+# A tail loop (a<->b) under a NON-tail caller: the loop is confined to one rib's
+# bounded inner ring, so the caller context (`driver`, `top`) is NOT flushed out —
+# the point of the ring of rings.
+check_trace_on '(declare b) (defn a [n] (if (zero? n) (+ :x 1) (b (dec n)))) (defn b [n] (a n)) (defn driver [] (inc (a 6))) (defn top [] (inc (driver))) (top)' \
+  'driver' 'top'
+# A ^long/^double return hint wraps the body in a coercion, so the hinted fn's call
+# is NOT a tail call — its own frame is still live and must appear (not be elided).
+check_trace_on '(defn g [n] (+ :x n)) (defn ^long f [n] (g n)) (f 3)' 'f' 'g'
+# History is per top-level form: a later form's error trace shows its own frames
+# (h2/u2), not frames from an earlier, already-returned form (h1/u1).
+check_trace_on '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' \
+  'h2' 'u2'
+err_stale="$(JOLT_TRACE=1 bin/joltc -e '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' 2>&1 >/dev/null)"
+if printf '%s' "$err_stale" | grep -q 'h1'; then
+  echo "  FAIL (trace-on): stale frame h1 from an earlier form leaked into the trace"
+  fails=$((fails + 1))
+else
+  pass=$((pass + 1))
+fi
 
 # --help prints usage, and lists the nREPL server under its real flag name.
 help_out="$(bin/joltc --help 2>/dev/null)"
@@ -157,6 +222,26 @@ else
   echo "  FAIL: repl should evaluate a one-line regex literal, not wait for more input"
   printf '%s\n' "$repl_out" | sed 's/^/    | /'
   fails=$((fails + 1))
+fi
+
+# REPL-driven development traces by default: an error in an evaluated form shows a
+# tail-frame backtrace with no JOLT_TRACE set. rb tail-calls ra tail-calls +, all
+# TCO-elided from the continuation — only the history recovers them.
+repl_err="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | bin/joltc repl 2>&1)"
+if printf '%s' "$repl_err" | grep -q '  trace:' && printf '%s' "$repl_err" | grep -q 'rb'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a REPL error should show a tail-frame trace by default"
+  printf '%s\n' "$repl_err" | sed 's/^/    | /'
+  fails=$((fails + 1))
+fi
+# JOLT_TRACE=0 opts out — no trace in the REPL.
+repl_off="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | JOLT_TRACE=0 bin/joltc repl 2>&1)"
+if printf '%s' "$repl_off" | grep -q '  trace:'; then
+  echo "  FAIL: JOLT_TRACE=0 should suppress the REPL trace"
+  fails=$((fails + 1))
+else
+  pass=$((pass + 1))
 fi
 
 echo "cli smoke: $pass passed, $fails failed"

@@ -110,6 +110,33 @@
 ;; older seed during the first re-mint pass.
 (let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
   (when (procedure? scv) (scv #t)))
+;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
+;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
+;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so
+;; dev mode still traces and a whole run still doesn't.
+(define (jolt-trace-env-off? e)
+  (and (string? e)
+       (let ((s (string-downcase e)))
+         (or (string=? s "0") (string=? s "false") (string=? s "no")
+             (string=? s "off") (string=? s "n")))))
+;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
+;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
+;; JOLT_TRACE is a falsey value, so JOLT_TRACE=0 / off / no disables it in dev mode.
+(define (jolt-enable-trace!)
+  (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
+    (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
+      (when (procedure? stf) (stf #t)))
+    (jolt-trace-enable!)))
+;; Exposed so the REPL / nREPL entrypoints (jolt.main, jolt.nrepl) can turn tracing
+;; on for REPL-driven development without the user setting JOLT_TRACE. Because the
+;; push is baked in at compile time, only code compiled after this call is traced —
+;; which is exactly the code you eval / reload in a live session.
+(def-var! "jolt.host" "enable-trace!" jolt-enable-trace!)
+;; Explicit opt-in for a whole run (JOLT_TRACE=1): enable at load, BEFORE any app
+;; namespace is compiled, so a plain `-M:run` traces the app's own code too. Only an
+;; affirmative value (set, non-empty, not falsey) forces it on here.
+(let ((e (getenv "JOLT_TRACE")))
+  (when (and e (fx>? (string-length e) 0) (not (jolt-trace-env-off? e))) (jolt-enable-trace!)))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
@@ -235,6 +262,9 @@
      ;; record this form's source location first, so a compile- or run-time error
      ;; in it reports the right place.
      (jolt-enter-form! form)
+     ;; drop tail-frame history from earlier top-level forms, so an error's trace
+     ;; shows only this form's own call history (a no-op unless JOLT_TRACE is on).
+     (jolt-trace-reset!)
      (eval (read (open-input-string (jolt-analyze-emit-form form ns)))
            (interaction-environment)))))
 

@@ -57,10 +57,36 @@
                       ((symbol? nm) (symbol->string nm))
                       (else #f)))))))
 
-;; Walk a continuation, returning the registered jolt frames (innermost first) as
-;; (frame-name . record) pairs, where record is #(ns name file line) or the symbol
-;; 'ambiguous. Unmapped frames (host spine, anonymous lambdas) are skipped; raw
-;; depth is capped.
+;; Frame names that are pure Chez / jolt-runtime plumbing — the eval boundary,
+;; the var-cell trampoline, continuation/winder internals. They carry no Clojure
+;; meaning, so an unmapped frame with one of these names is dropped from the trace
+;; (a MAPPED frame is always kept — a jolt fn that happens to share the name still
+;; resolves to its source). Any name Chez prefixes with `$` (system) or that jolt
+;; prefixes with `jolt-` (host runtime) is plumbing too.
+(define srcreg-plumbing-names
+  (let ((h (make-hashtable string-hash string=?)))
+    (for-each (lambda (s) (hashtable-set! h s #t))
+              '("dynamic-wind" "winder-dummy" "ksrc" "invoke" "apply"
+                "call-with-values" "call/cc" "call-with-current-continuation"
+                "raise" "raise-continuable" "with-exception-handler" "guard"
+                "eval" "compile" "interpret" "expand" "read" "load"
+                ;; host dispatch/coercion helpers (not `jolt-` prefixed) that carry
+                ;; no Clojure meaning in a trace
+                "record-method-dispatch" "protocol-resolve" "devirt-resolve"
+                "list->cseq" "host-static-call" "host-call"))
+    h))
+(define (srcreg-plumbing-name? nm)
+  (or (hashtable-ref srcreg-plumbing-names nm #f)
+      (and (fx>? (string-length nm) 0) (char=? (string-ref nm 0) #\$))
+      (and (fx>=? (string-length nm) 5) (string=? (substring nm 0 5) "jolt-"))))
+
+;; Walk a continuation, returning its frames (innermost first) as (frame-name .
+;; record) pairs. record is a source vector #(ns name file line) for a frame that
+;; maps to registered Clojure source, the symbol 'ambiguous for a short name shared
+;; across namespaces, or #f for an unmapped-but-named frame (the common case on the
+;; open-world eval path, where nothing is registered — the bare frame name is still
+;; a useful trace line). Plumbing frames (host spine, eval boundary) and unnamed
+;; frames are skipped; raw depth is capped.
 (define (jolt-frame-records k)
   ;; read the env at call time, not load time: a built binary runs top-level forms
   ;; at heap-build time, where this would always be unset.
@@ -70,39 +96,84 @@
       (if (or (not io) (fx>=? n 400))
           (reverse acc)
           (let* ((nm (srcreg-frame-name io))
-                 (src (and nm (hashtable-ref source-registry nm #f))))
+                 (src (and nm (hashtable-ref source-registry nm #f)))
+                 ;; keep a frame that maps, or any named frame that isn't plumbing
+                 (keep? (and nm (or src (not (srcreg-plumbing-name? nm))))))
             (when (and debug? nm)
-              (display (string-append "  [frame] " nm (if src " *MAPPED*" "") "\n")
+              (display (string-append "  [frame] " nm (if src " *MAPPED*"
+                                                          (if keep? "" " (skipped)")) "\n")
                        (current-error-port)))
             (loop (guard (e (#t #f)) (io 'link)) (fx+ n 1)
-                  (if src (cons (cons nm src) acc) acc))))))))
+                  (if keep? (cons (cons nm src) acc) acc))))))))
 
-;; Multi-line backtrace for an uncaught value — "  ns/name (file:line)" for a
-;; mapped frame, the bare frame name for an ambiguous one — or #f when no jolt
-;; frame maps (the caller then prints just the top-level location). Capped to the
-;; innermost frames.
+;; Render a list of (frame-name . record) pairs (innermost/deepest first) to a
+;; backtrace string. record is a source vector #(ns name file line) -> "ns/name
+;; (file:line)", or 'ambiguous / #f -> the bare frame name. A run of the same
+;; frame-name collapses to one "name (xN)" line (deep recursion, or a hot fn a
+;; loop re-enters), and the number of distinct lines is capped.
+(define (jolt-render-recs recs)
+  (let ((port (open-output-string)))
+    (let loop ((rs recs) (shown 0))
+      (if (or (null? rs) (fx>=? shown 30))
+          (get-output-string port)
+          (let* ((p (car rs)) (frame-name (car p)) (r (cdr p)))
+            ;; count a maximal run of the same frame-name
+            (let run ((tail (cdr rs)) (cnt 1))
+              (if (and (pair? tail) (string=? (car (car tail)) frame-name))
+                  (run (cdr tail) (fx+ cnt 1))
+                  (begin
+                    (put-string port "    ")
+                    (if (vector? r)
+                        (let ((ns (vector-ref r 0)) (nm (vector-ref r 1))
+                              (file (vector-ref r 2)) (line (vector-ref r 3)))
+                          (put-string port ns) (put-string port "/") (put-string port nm)
+                          (when (string? file)
+                            (put-string port " (") (put-string port file)
+                            (put-string port ":") (put-string port (number->string line))
+                            (put-string port ")")))
+                        (put-string port frame-name))   ; 'ambiguous / unmapped: bare name
+                    (when (fx>? cnt 1)
+                      (put-string port " (x") (put-string port (number->string cnt)) (put-string port ")"))
+                    (put-char port #\newline)
+                    (loop tail (fx+ shown 1))))))))))
+
+;; Multi-line backtrace for an uncaught value. Two sources, in preference order:
+;;   1. The tail-frame history ring (rt.ss), when JOLT_TRACE enabled it — an
+;;      execution history of the runtime-compiled fns entered before the throw,
+;;      INCLUDING ones TCO erased from the live continuation. Most-recent first.
+;;   2. Otherwise the live continuation (jolt-frame-records) — the accurate but
+;;      TCO-truncated non-tail spine.
+;; Each frame maps to "ns/name (file:line)" when registered, else its bare name.
+;; #f when neither source yields a frame (the caller then prints just the location).
+;; The tail-frame history ring rendered as a backtrace, or #f when tracing is off /
+;; empty. A mapped frame is kept; else drop plumbing (same rule as the continuation
+;; path) so the two sources read consistently.
+(define (jolt-history-backtrace)
+  (let* ((hist (jolt-trace-snapshot))
+         (recs (let loop ((ns hist) (acc '()))
+                 (if (null? ns)
+                     (reverse acc)
+                     (let* ((nm (car ns)) (src (hashtable-ref source-registry nm #f)))
+                       (loop (cdr ns)
+                             (if (or src (not (srcreg-plumbing-name? nm)))
+                                 (cons (cons nm src) acc) acc)))))))
+    (and (pair? recs) (jolt-render-recs recs))))
+
 (define (jolt-backtrace-string v)
-  (let ((k (jolt-error-continuation v)))
-    (and k
-         (let ((recs (jolt-frame-records k)))
-           (and (pair? recs)
-                (let ((port (open-output-string)))
-                  (let loop ((rs recs) (shown 0))
-                    (when (and (pair? rs) (fx<? shown 30))
-                      (let* ((p (car rs)) (frame-name (car p)) (r (cdr p)))
-                        (put-string port "    ")
-                        (if (vector? r)
-                            (let ((ns (vector-ref r 0)) (nm (vector-ref r 1))
-                                  (file (vector-ref r 2)) (line (vector-ref r 3)))
-                              (put-string port ns) (put-string port "/") (put-string port nm)
-                              (when (string? file)
-                                (put-string port " (") (put-string port file)
-                                (put-string port ":") (put-string port (number->string line))
-                                (put-string port ")")))
-                            (put-string port frame-name))   ; 'ambiguous: bare name
-                        (put-char port #\newline))
-                      (loop (cdr rs) (fx+ shown 1))))
-                  (get-output-string port)))))))
+  (or (jolt-history-backtrace)
+      (let ((k (jolt-error-continuation v)))
+        (and k
+             (let ((recs (jolt-frame-records k)))
+               (and (pair? recs) (jolt-render-recs recs)))))))
+
+;; Exposed for the REPL / nREPL error paths, which catch errors themselves instead
+;; of going through the uncaught reporter. Returns the "  trace:\n<frames>" block
+;; from the tail-frame HISTORY only — the live continuation in a REPL is just the
+;; REPL's own machinery — or nil when tracing is off (so a caller can when-let).
+(def-var! "jolt.host" "backtrace-string"
+  (lambda ()
+    (let ((bt (jolt-history-backtrace)))
+      (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is

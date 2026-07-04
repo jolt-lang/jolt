@@ -188,7 +188,10 @@
               (try (when (and ns-str (not (str/blank? ns-str)) (find-ns (symbol ns-str)))
                      (in-ns (symbol ns-str)))
                    (reset! result (load-string code))
-                   (catch :default e (reset! err (err-msg e)))))]
+                   (catch :default e
+                     (reset! err (str (err-msg e)
+                                      (when-let [bt (jolt.host/backtrace-string)]
+                                        (str "\n" bt)))))))]
     {:value (when (nil? @err) (pr-str @result))
      :out out
      :ns (str (ns-name *ns*))
@@ -277,6 +280,11 @@
   no-op."
   ([port] (start port nil))
   ([port middleware]
+   ;; An nREPL session is REPL-driven development: trace by default so an uncaught
+   ;; error in code evaluated over the connection shows a tail-frame backtrace, with
+   ;; no JOLT_TRACE needed. Covers both `--nrepl-server` and an app that starts its
+   ;; own server under `-M:run` (reload a namespace to trace already-loaded code).
+   (jolt.host/enable-trace!)
    (let [handler (build-handler (resolve-middleware (or middleware [])))
          fd (listen-socket port)                  ; throws on bind/listen failure
          stopped (atom false)]

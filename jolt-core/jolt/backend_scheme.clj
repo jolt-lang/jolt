@@ -172,6 +172,14 @@
 (def var-cache? (atom false))
 (defn set-var-cache! [on] (reset! var-cache? on))
 
+;; Opt-in tail-frame history (JOLT_TRACE): emit a (jolt-trace-push! "name") at the
+;; head of every named fn body, so an entry records the frame into the runtime ring
+;; buffer (rt.ss) and a TCO-elided frame still shows in an error's backtrace. OFF
+;; during the seed mint and `jolt build` (byte-determinism + no runtime cost);
+;; compile-eval.ss turns it on for runtime-eval'd user code when JOLT_TRACE is set.
+(def trace-frames? (atom false))
+(defn set-trace-frames! [on] (reset! trace-frames? on))
+
 ;; A direct-link Scheme binding name for a var. The fqn maps to a unique identifier
 ;; jv$<ns>$<name>; chars that break a Scheme identifier or the `$` separator are
 ;; escaped so distinct vars never collide.
@@ -191,6 +199,13 @@
 ;; recursion auto-restores them (no manual save/restore, no throw-leak).
 (def ^:dynamic *recur-target* nil)
 (def ^:dynamic *known-procs* #{})
+;; True while emitting a node in TAIL position. Only used, in trace mode, to mark a
+;; tail call so the runtime routes its callee into the current history rib instead
+;; of a new one (rt.ss). It never affects semantics — a wrong value only mislabels
+;; a debug trace line — so partial propagation is safe. `emit` (the wrapper below)
+;; clears it by default; the tail-transparent forms (fn body, if/do/let/loop) pass
+;; it to their tail child. Default false so a top-level form is treated non-tail.
+(def ^:dynamic *tail?* false)
 
 (def ^:private gensym-counter (atom 0))
 (defn- fresh-label [prefix] (str prefix (swap! gensym-counter inc)))
@@ -253,6 +268,17 @@
     (if (or (contains? scheme-reserved s) (contains? bare-native-names s)) (str "_" s) s)))
 
 (declare emit)
+(declare emit*)
+;; Ops that pass tail position through to a child (the child can itself be a tail
+;; call): if/do carry it to their tail branch/last form, let/loop to their body,
+;; and invoke reads it to decide whether the call is tail. Every other op's
+;; children are non-tail, so `emit` clears *tail?* before dispatching them — that
+;; way a stray true can't leak into, say, a call sitting in a vector literal.
+(def ^:private tail-transparent-ops #{:if :do :let :loop :invoke})
+(defn emit [node]
+  (if (and *tail?* (not (tail-transparent-ops (:op node))))
+    (binding [*tail?* false] (emit* node))
+    (emit* node)))
 
 ;; A Chez string literal. Every char outside printable ASCII becomes a
 ;; codepoint hex escape \x<cp>; ; the named escapes (\n \t \r \" \\) match what
@@ -413,9 +439,10 @@
 ;; letfn lowers to a :let flagged :letrec (mutually-recursive named local fns):
 ;; Scheme `letrec*` binds them so each sees its siblings. A plain let uses let*.
 (defn- emit-let [node]
-  (let [kw (if (:letrec node) "letrec*" "let*")]
-    (str "(" kw " (" (str/join " " (map emit-binding (:bindings node))) ") "
-         (emit (:body node)) ")")))
+  (let [kw (if (:letrec node) "letrec*" "let*")
+        ;; bindings are non-tail; the body inherits the let's tail position
+        binds (binding [*tail?* false] (str/join " " (mapv emit-binding (:bindings node))))]
+    (str "(" kw " (" binds ") " (emit (:body node)) ")")))
 
 (defn- emit-loop [node]
   (let [label (fresh-label "loop")
@@ -423,9 +450,10 @@
         names (map #(munge-name (nth % 0)) pairs)
         ;; inits evaluate in the OUTER scope (recur-target unchanged) and, like
         ;; Clojure loop/let, SEQUENTIALLY — wrap a let* around the named let.
-        inits (map #(emit (nth % 1)) pairs)
+        inits (binding [*tail?* false] (mapv #(emit (nth % 1)) pairs))
         seq-bs (str/join " " (map (fn [n i] (str "(" n " " i ")")) names inits))
         rebinds (str/join " " (map (fn [n] (str "(" n " " n ")")) names))
+        ;; the loop body inherits the loop's tail position
         body (binding [*recur-target* label] (emit (:body node)))]
     (str "(let* (" seq-bs ") (let " label " (" rebinds ") " body "))")))
 
@@ -486,7 +514,11 @@
         params (map munge-name orig)
         restp (when-let [r (:rest a)] (munge-name r))
         label (fresh-label "fnrec")
-        body (binding [*recur-target* label] (emit (:body a)))
+        ret (:ret-nhint a)
+        ;; the body is the fn's tail position — UNLESS a ^double/^long return hint
+        ;; wraps it in a coercion below, which puts the body back in non-tail.
+        body-tail? (not (or (= ret :double) (= ret :long)))
+        body (binding [*recur-target* label *tail?* body-tail?] (emit (:body a)))
         paramlist (cond
                     (and restp (empty? params)) restp
                     restp (str "(" (str/join " " params) " . " restp ")")
@@ -511,6 +543,16 @@
         self (when-let [nm (:name node)] (munge-name nm))
         clauses (binding [*known-procs* (if self (conj *known-procs* self) *known-procs*)]
                   (mapv emit-arity-clause arities))
+        ;; trace mode: record this frame on entry (before the body), so a frame
+        ;; the body then tail-calls away is still in the ring at throw time. A
+        ;; `recur` re-enters via the named-let, not the lambda, so a tight loop
+        ;; records once, not per iteration.
+        clauses (if (and @trace-frames? self)
+                  (mapv (fn [c] [(nth c 0)
+                                 (str "(begin (jolt-trace-push! " (chez-str-lit self) ") "
+                                      (nth c 1) ")")])
+                        clauses)
+                  clauses)
         lambda (if (= 1 (count clauses))
                  (let [c (first clauses)] (str "(lambda " (nth c 0) " " (nth c 1) ")"))
                  (str "(case-lambda "
@@ -573,8 +615,31 @@
             (= (nth shape i) kw) i
             :else (recur (inc i))))))
 
+;; A plain Scheme application: (callee op ...).
+(defn- plain-call [callee operand-strs]
+  (str "(" callee (if (seq operand-strs) (str " " (str/join " " operand-strs)) "") ")"))
+;; A tail call in trace mode. Force-bind the operands to temps FIRST (so any
+;; operand whose own evaluation records a trace entry runs before our mark), THEN
+;; set the tail mark, THEN apply — the callee's entry prologue consumes the mark
+;; with nothing in between, so it can't be clobbered. Still a tail call: the let*'s
+;; last form is the application, so TCO is preserved.
+(defn- tail-marked-call [callee operand-strs]
+  (let [tmps (mapv (fn [_] (fresh-label "_tt$")) operand-strs)
+        binds (str/join " " (map (fn [t a] (str "(" t " " a ")")) tmps operand-strs))]
+    (str "(let* (" binds ") (jolt-trace-mark! #t) " (plain-call callee tmps) ")")))
+;; Emit a call, tail-marked when we're in tail position and tracing is on; a plain
+;; application otherwise. The mark is consumed by the callee's entry prologue —
+;; direct calls (:local known-proc, direct-link) always have one; a jolt-invoke
+;; call usually reaches one but not always (see the best-effort note in rt.ss).
+(defn- emit-call [tail? callee operand-strs]
+  (if (and @trace-frames? tail?)
+    (tail-marked-call callee operand-strs)
+    (plain-call callee operand-strs)))
+
 (defn- emit-invoke [node]
-  (let [fnode (:fn node)
+  (let [tail? *tail?*]           ; capture: children below emit non-tail
+   (binding [*tail?* false]
+    (let [fnode (:fn node)
         arg-nodes (:args node)
         args (mapv emit arg-nodes)
         nop (native-op fnode (count args))
@@ -586,8 +651,7 @@
         ;; order [callee & args] together when ordering is observable.
         invoke (fn []
                  (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
-                               (fn [[f & as]]
-                                 (str "(jolt-invoke " f (if (seq as) (str " " (str/join " " as)) "") ")"))))]
+                               (fn [operands] (emit-call tail? "jolt-invoke" operands))))]
     (cond
       ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
       ;; one record type, so resolve the impl by that static tag instead of routing
@@ -662,8 +726,7 @@
       ;; holds an arbitrary IFn -> dynamic dispatch.
       (= :local (:op fnode))
       (if (*known-procs* (munge-name (:name fnode)))
-        (order-args (fn [as] (str "(" (munge-name (:name fnode))
-                                  (if (seq as) (str " " (str/join " " as)) "") ")")))
+        (order-args (fn [as] (emit-call tail? (munge-name (:name fnode)) as)))
         (invoke))
       ;; closed-world direct call: the callee var is an app fn def already emitted
       ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
@@ -672,8 +735,7 @@
       ;; below (which still uses the direct binding as the invoke target).
       (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode))
            (direct-link-fn? (:ns fnode) (:name fnode)))
-      (order-args (fn [as] (str "(" (dl-name (:ns fnode) (:name fnode))
-                                (if (seq as) (str " " (str/join " " as)) "") ")")))
+      (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as)))
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
@@ -681,7 +743,7 @@
       (invoke)
       ;; a computed callee can yield ANY IFn — route through jolt-invoke.
       :else
-      (invoke))))
+      (invoke))))))
 
 ;; try/catch/finally. throw raises a Chez condition wrapping the jolt value
 ;; (jolt-throw = Scheme `raise` of a &jolt-throw condition); catch lowers to
@@ -728,7 +790,7 @@
        (returns-scheme-bool? (:body node) bools'))
      :else false)))
 
-(defn emit [node]
+(defn emit* [node]
   (case (:op node)
     :const (emit-const (:val node))
     :local (munge-name (:name node))
@@ -776,11 +838,14 @@
     :host-new (str "(host-new " (chez-str-lit (:class node))
                    (let [args (map emit (:args node))]
                      (if (empty? args) "" (str " " (str/join " " args)))) ")")
+    ;; the test is non-tail; then/else inherit the if's tail position
     :if (let [test (:test node)
-              t (if (returns-scheme-bool? test) (emit test)
-                    (str "(jolt-truthy? " (emit test) ")"))]
+              t (binding [*tail?* false]
+                  (if (returns-scheme-bool? test) (emit test)
+                      (str "(jolt-truthy? " (emit test) ")")))]
           (str "(if " t " " (emit (:then node)) " " (emit (:else node)) ")"))
-    :do (str "(begin " (str/join " " (map emit (:statements node)))
+    ;; non-last statements are non-tail; the ret inherits the do's tail position
+    :do (str "(begin " (binding [*tail?* false] (str/join " " (mapv emit (:statements node))))
              (if (empty? (:statements node)) "" " ") (emit (:ret node)) ")")
     :invoke (emit-invoke node)
     ;; collection literals -> rt constructors (collections.ss). Elements are
