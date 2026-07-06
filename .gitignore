@@ -4,6 +4,7 @@ CLAUDE.md
 build/
 target/
 .clj-kondo/
+.cpcache/
 .dirge/
 .claude/
 .lsp/

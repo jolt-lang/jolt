@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke submodules
+.PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -20,7 +20,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -46,6 +46,10 @@ smoke:
 # `jolt build` produces a working standalone binary.
 buildsmoke:
 	@sh host/chez/build-smoke.sh
+
+# `jolt build --library` produces a shared object callable from C/C++/Rust.
+buildlibsmoke:
+	@sh host/chez/build-lib-smoke.sh
 
 # `jolt build` cc-links a :jolt/native :static archive into the binary (the
 # default), and --dynamic keeps the runtime load-shared-object path.

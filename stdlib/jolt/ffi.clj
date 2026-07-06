@@ -51,3 +51,16 @@
   (if (= opt :collect-safe)
     (list 'jolt.ffi/__ccallable f argtypes rettype :collect-safe)
     (list 'jolt.ffi/__ccallable f argtypes rettype)))
+
+;; (export! name f [argtypes] rettype [:collect-safe]) — publish `f` as a
+;; C-callable entry point under `name`, for `jolt build --library`. An embedder
+;; resolves it via jolt_lookup("name") after jolt_library_init. Expands to a
+;; register-export of a foreign-callable (the __ccallable special form), so the
+;; callable is built with compile-time-typed argtypes and registered by name:
+;;   (export! "add" (fn [x y] (+ x y)) [:int :int] :int)
+;; The argtypes/rettype keywords are the same as foreign-fn/foreign-callable.
+(defmacro export! [name f argtypes rettype & [opt]]
+  (let [addr (if (= opt :collect-safe)
+               (list 'jolt.ffi/__ccallable f argtypes rettype :collect-safe)
+               (list 'jolt.ffi/__ccallable f argtypes rettype))]
+    (list 'jolt.ffi/register-export name addr)))
