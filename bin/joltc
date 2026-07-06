@@ -14,7 +14,28 @@
 # JOLT_PWD.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 export JOLT_PWD="${JOLT_PWD:-$PWD}"
+
+# Identify the Chez Scheme executable
+while read -r CHEZ
+do
+    if [ `which ${CHEZ}` ]
+    then
+	break;
+    fi
+done <<EOF
+chez
+chezscheme
+EOF
+
+# If we failed to find one, whinge and exit.
+if [ ! `which ${CHEZ}` ]
+then
+    echo "No valid Chez Scheme executable found: please install Chez Scheme."
+    exit 1
+fi
+
 # Version for --version / banners: git describe of this checkout, else "dev".
 export JOLT_VERSION="${JOLT_VERSION:-$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)}"
 cd "$root" || exit 1
-exec chez --script host/chez/cli.ss "$@"
+exec ${CHEZ} --script host/chez/cli.ss "$@"
+
