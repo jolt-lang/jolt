@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
   init_fn init = (init_fn)dlsym(h, "jolt_library_init");
   lookup_fn lookup = (lookup_fn)dlsym(h, "jolt_lookup");
   if (!init || !lookup) { fprintf(stderr, "missing init/lookup: %s\n", dlerror()); return 1; }
-  if (init(1, NULL) != 0) { fprintf(stderr, "jolt_library_init failed\n"); return 1; }
+  if (init(0, NULL) != 0) { fprintf(stderr, "jolt_library_init failed\n"); return 1; }
   add_fn add = (add_fn)lookup("add");
   if (!add) { fprintf(stderr, "jolt_lookup(\"add\") returned NULL\n"); return 1; }
   printf("%d\n", add(2, 3));

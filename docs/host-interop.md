@@ -300,9 +300,18 @@ add_fn add = (add_fn)((lookup_fn)dlsym(h, "jolt_lookup"))("add");
 add(2, 3);                          /* => 5 */
 ```
 
-Two things to keep in mind across the boundary. The library carries its own GC,
-so call `jolt_library_init` exactly once on the host thread before any `jolt_lookup`
-result, and call `jolt_library_shutdown` to tear it down. A value returned as
-`:pointer`/`:void*` is not GC-tracked by the caller — if Jolt hands back a
-pointer into managed memory you must keep it alive on the Jolt side (e.g. hold it
-in a top-level ref) for as long as C uses it.
+Things to keep in mind across the boundary:
+
+- **Single thread.** The library carries its own GC. Call `jolt_library_init`
+  exactly once, and make `jolt_lookup` and every exported-function call from that
+  same thread — the callbacks are not registered as collect-safe, so entering
+  them from another OS thread the runtime never activated is undefined behavior.
+  Call `jolt_library_shutdown` to tear it down.
+- **Pointer lifetimes.** A value returned as `:pointer`/`:void*` is not GC-tracked
+  by the caller — if Jolt hands back a pointer into managed memory you must keep
+  it alive on the Jolt side (e.g. hold it in a top-level ref) for as long as C
+  uses it.
+- **Linux needs a PIC kernel.** The link folds Chez's `libkernel.a` into the
+  shared object. On Linux that archive must be position-independent; a kernel
+  built without `-fPIC` fails the `-shared` link with a relocation error. macOS is
+  always PIC. Build Chez from source with a PIC kernel if your distro's isn't.
