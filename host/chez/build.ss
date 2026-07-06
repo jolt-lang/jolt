@@ -439,7 +439,7 @@
 (define (bld-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
-(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake?)
+(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? library?)
   ;; Windows executables carry .exe; normalize here so the append-payload and
   ;; cc paths agree and the shell can run the result.
   (let ((out-path (if (and bld-nt? (not (bld-suffix? out-path ".exe")))
@@ -570,7 +570,9 @@
                             (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
                             "))\n"
                             "                (list \"jolt-core\" \"stdlib\"))))\n"))
-          (put-string out (string-append
+          (if library?
+              (put-string out (bld-library-launcher-tail))
+              (put-string out (string-append
                             ;; Call -main only if the entry namespace defines one;
                             ;; a script ns (top-level side effects, no -main) has
                             ;; already run its forms at heap build, so invoking a nil
@@ -588,7 +590,7 @@
                             "        (set-chez-ns! \"user\")\n"
                             "        (when (and maincell (var-cell-defined? maincell))\n"
                             "          (apply jolt-invoke (var-cell-root maincell) args))))\n"
-                            "    (exit 0)))\n"))
+                            "    (exit 0)))\n")))
           (close-port out))
         ;; 4. compile -> boot -> link. Two paths, chosen by whether this process
         ;; carries the bundled Chez boots + launcher stub:
@@ -599,11 +601,16 @@
         ;;  - LEGACY (dev bin/joltc): spawn a fresh Chez for compile-file/
         ;;    make-boot-file, then xxd the boot into a C array and cc-link against
         ;;    libkernel.a. Kept so `make buildsmoke` still exercises the cc path.
-        (if (jolt-embedded-bytes "stub/launcher")
-            (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot
-                                  (bld-native-link-flags natives))
-            (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c
-                           (bld-native-link-flags natives)))))))))
+        (cond
+          (library?
+           (build-shared entry-ns out-path mode builddir flat-ss flat-so boot boot-h
+                         (bld-native-link-flags natives)))
+          ((jolt-embedded-bytes "stub/launcher")
+           (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot
+                                 (bld-native-link-flags natives)))
+          (else
+           (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c
+                          (bld-native-link-flags natives))))))))))
 
 ;; --- self-contained link (in-process compile + append the boot to the stub) ---
 ;; compile-file runs against the DEFAULT interaction environment, so the boot's
@@ -742,10 +749,82 @@
     "-o '" out-path "' " (bld-link-libs) native-link))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
+;; --- shared-library link (jolt build --library) -----------------------------
+;; The cc path adapted to emit a shared object instead of an executable: the same
+;; compile-file + make-boot-file + xxd boot embedding, but a library.c stub
+;; (jolt_library_init / jolt_lookup / jolt_library_shutdown instead of main) and
+;; a -shared/-dynamiclib link. Only the cc path supports libraries today — the
+;; self-contained append-to-prebuilt-stub path would need a library stub variant
+;; baked into the distributed joltc (a follow-up).
+(define (bld-library-stub)
+  (string-append
+    "#include \"scheme.h\"\n"
+    "#include <string.h>\n"
+    "#include \"boot_data.h\"\n"
+    "/* jolt_set_lookup_addr is called from the built library's scheme-start\n"
+    "   handler (registered via Sforeign_symbol after Sbuild_heap) to hand the\n"
+    "   stub the Scheme lookup callable's address. */\n"
+    "static void* (*jolt_lookup_fn)(const char*) = 0;\n"
+    "void jolt_set_lookup_addr(void* fn) { jolt_lookup_fn = (void*(*)(const char*))fn; }\n"
+    "void* jolt_lookup(const char* name) { return jolt_lookup_fn ? jolt_lookup_fn(name) : 0; }\n"
+    "int jolt_library_init(int argc, char** argv) {\n"
+    "  Sscheme_init(0);\n"
+    "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, (iptr)jolt_boot_len);\n"
+    "  Sbuild_heap(0, 0);\n"
+    "  Sforeign_symbol(\"jolt_set_lookup_addr\", (void*)jolt_set_lookup_addr);\n"
+    "  return Sscheme_start(argc, (const char**)argv); }\n"
+    "void jolt_library_shutdown(void) { Sscheme_deinit(); }\n"))
+
+;; The library's scheme-start tail: instead of calling -main and exiting, wrap
+;; the export lookup as a C-callable, hand its address to the stub, then return
+;; so Sscheme_start returns to the embedder (jolt_library_init's caller).
+(define (bld-library-launcher-tail)
+  (string-append
+    "    ;; publish the export table to the embedder\n"
+    "    (let* ((lk (foreign-callable jolt-ffi-lookup-export (string) uptr))\n"
+    "           (lk-addr (jolt-ffi-register-callable! lk)))\n"
+    "      ((foreign-procedure \"jolt_set_lookup_addr\" (void*) void) lk-addr))\n"
+    "    0))\n"))
+
+(define (build-shared entry-ns out-path mode builddir flat-ss flat-so boot boot-h native-link)
+  (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, shared library)\n"))
+  (let ((cs (string-append builddir "/compile.ss")))
+    (let ((p (open-output-file cs 'replace)))
+      (put-string p
+        (string-append
+          "(import (chezscheme))\n"
+          "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
+          "(make-boot-file " (ei-str-lit boot) " '()\n  "
+          (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
+          (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "
+          (ei-str-lit flat-so) ")\n"))
+      (close-port p))
+    (bld-system (string-append bld-chez " --script '" cs "'")))
+  (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
+  (bld-system (string-append
+    "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/unsigned char jolt_boot[]/; "
+    "s/unsigned int [A-Za-z0-9_]+_len/unsigned int jolt_boot_len/' '" boot-h "'"))
+  (let ((lc (string-append builddir "/library.c")))
+    (let ((p (open-output-file lc 'replace)))
+      (put-string p (bld-library-stub))
+      (close-port p))
+    (bld-system (string-append
+      "cc -O2 -fPIC " (if bld-osx? "-dynamiclib " "-shared ")
+      "-I'" bld-csv-dir "' '" lc "' '" bld-csv-dir "/libkernel.a' "
+      "-o '" out-path "' " (bld-link-libs) native-link)))
+  (display (string-append "jolt build: wrote " out-path "\n")))
+
 (def-var! "jolt.host" "build-binary"
   (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)
     (build-binary (jolt-str-render-one entry)
                   (jolt-str-render-one out)
                   (jolt-str-render-one mode)
-                  natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?))
+                  natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?) #f)
+    jolt-nil))
+(def-var! "jolt.host" "build-library"
+  (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)
+    (build-binary (jolt-str-render-one entry)
+                  (jolt-str-render-one out)
+                  (jolt-str-render-one mode)
+                  natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?) #t)
     jolt-nil))

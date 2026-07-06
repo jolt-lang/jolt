@@ -134,6 +134,30 @@
     (when co (unlock-object co) (hashtable-delete! ffi-callable-table a))
     jolt-nil))
 
+;; --- library exports: name -> entry-point address ---------------------------
+;; `jolt build --library` publishes C-callable entry points under names so an
+;; embedder resolves them via the stub's jolt_lookup(name). export! wraps a jolt
+;; fn as a foreign-callable (locked + retained as above) and records name->addr
+;; here. The built library's scheme-start handler wraps THIS lookup as a single
+;; C-callable and hands its address to the stub (jolt_set_lookup_addr), so
+;; jolt_lookup(name) reads this table. export! only touches Scheme state, so it
+;; also runs harmlessly during the build's app load (the table is discarded).
+;; NOTE: keyed with equal? (make-hashtable) not eq? — keys are strings, and the
+;; app's "add" and the lookup's C-string-derived "add" are different objects, so
+;; eq?-hashtable would always miss. (ffi-callable-table above is eq?-keyed but
+;; keyed by integer addresses, where eq? is correct.)
+(define ffi-export-table (make-hashtable string-hash equal?))  ; name(string) -> addr(integer)
+(define (jolt-ffi-register-export! name addr)
+  (hashtable-set! ffi-export-table name addr) addr)
+;; lookup for the C stub: name (a Scheme string) -> addr, or 0 if unknown.
+(define (jolt-ffi-lookup-export name)
+  (let ((a (hashtable-ref ffi-export-table name #f))) (if a a 0)))
+;; export! is a MACRO in stdlib/jolt/ffi.clj (it needs compile-time-typed
+;; argtypes to build the foreign-callable, like foreign-callable). It expands to
+;; (jolt.ffi/register-export name (jolt.ffi/__ccallable f [argtypes] rettype)),
+;; so the callable is built with literal types and register-export records
+;; name -> its entry-point address here.
+
 ;; --- native libraries for a standalone binary -------------------------------
 ;; `jolt build` bakes a project's deps.edn :jolt/native declarations into the
 ;; launcher, which loads them at startup (load-shared-object isn't part of the
@@ -154,6 +178,7 @@
 
 ;; --- expose under jolt.ffi ---------------------------------------------------
 (def-var! "jolt.ffi" "free-callable" ffi-free-callable)
+(def-var! "jolt.ffi" "register-export" jolt-ffi-register-export!)
 (def-var! "jolt.ffi" "load-library" ffi-load-library)
 (def-var! "jolt.ffi" "loaded?" (lambda (n) (if (ffi-loaded? n) #t #f)))
 (def-var! "jolt.ffi" "alloc" ffi-alloc)

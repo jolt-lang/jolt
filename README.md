@@ -143,6 +143,48 @@ compiler. They come with a from-source Chez install; a distro `chezscheme`
 package ships only the runtime, so `build` won't link a binary there.
 RFC 0007 (`docs/rfc/`) covers the design and the three-mode model.
 
+## Compile a library
+
+`bin/joltc build --library` compiles a project into a shared object
+(`.so`/`.dylib`/`.dll`) that a C/C++/Rust host links or `dlopen`s and calls
+through a small C ABI. Like `build`, the whole runtime is embedded — the result
+is a *managed-runtime* library: it carries its own GC and must be entered
+through `jolt_library_init` before any call.
+
+The Jolt side publishes entry points with `jolt.ffi/export!`:
+
+```clojure
+(ns libadd.core
+  (:require [jolt.ffi :as ffi]))
+
+(defn add [x y] (+ x y))
+(ffi/export! "add" add [:int :int] :int)
+```
+
+```bash
+bin/joltc build --library -m libadd.core -o libadd   # => libadd.so / libadd.dylib
+```
+
+The C side calls `jolt_library_init` once, then resolves each entry by name with
+`jolt_lookup` and casts to its type:
+
+```c
+#include <dlfcn.h>
+typedef int (*init_fn)(int, char**);
+typedef void* (*lookup_fn)(const char*);
+typedef int (*add_fn)(int, int);
+
+void* h = dlopen("./libadd.so", RTLD_NOW | RTLD_LOCAL);
+((init_fn)dlsym(h, "jolt_library_init"))(0, NULL);        /* runs top-level, registers exports */
+add_fn add = (add_fn)((lookup_fn)dlsym(h, "jolt_lookup"))("add");
+add(2, 3);                                                 /* => 5 */
+```
+
+The type keywords (`:int`, `:string`, …) are the same ones `foreign-fn` uses;
+see [docs/host-interop.md](docs/host-interop.md) for the full list and limits.
+The same `--opt`/`--dev`/`--direct-link`/`--tree-shake` flags apply, and the
+same Chez kernel development files + C compiler are required to link.
+
 ## Standalone joltc binary
 
 `make` builds joltc itself into a single self-contained native binary — the

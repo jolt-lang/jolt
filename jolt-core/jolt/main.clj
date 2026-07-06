@@ -260,10 +260,15 @@
             direct-link? (boolean (or (some #{"--direct-link"} more) (:direct-link build)))
             ;; tree-shaking (drop library code not reachable from -main): --tree-shake
             ;; or deps.edn :jolt/build {:tree-shake true}.
-            tree-shake? (boolean (or (some #{"--tree-shake"} more) (:tree-shake build)))]
+            tree-shake? (boolean (or (some #{"--tree-shake"} more) (:tree-shake build)))
+            ;; a shared library (callable from C/C++/Rust via jolt_library_init +
+            ;; jolt_lookup) instead of an executable: --library.
+            library? (some #{"--library"} more)]
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
-        (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake?)))))
+        (if library?
+          (jolt.host/build-library entry out mode natives embed-dirs project-paths direct-link? tree-shake?)
+          (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake?))))))
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the

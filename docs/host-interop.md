@@ -269,3 +269,40 @@ class's supers all answer like the JVM.
 Extending a *built-in* class instead (adding a method to core's `String` shim,
 say) means editing the relevant `host/chez/*.ss` file and running `make remint`
 — see [building-and-deps.md](building-and-deps.md).
+
+## Calling into Jolt from C
+
+`bin/joltc build --library` (see the README) produces a shared object whose
+entry points you reach through a C ABI instead of JVM-style interop. The Jolt
+side uses `jolt.ffi/export!`; the C side uses `jolt_library_init` +
+`jolt_lookup`. This is the inverse of `foreign-fn`: `foreign-fn` calls *out* of
+Jolt into C; `export!` lets C call *in*.
+
+```clojure
+(defn add [x y] (+ x y))
+(jolt.ffi/export! "add" add [:int :int] :int)
+```
+
+The argtype/rettype keywords are the same set `foreign-fn`/`ffi-type->chez`
+accepts: `:int :uint :long :ulong :int64 :uint64 :size_t :ssize_t :iptr :uptr
+:double :float :pointer` (alias `:void*`) `:string :void :uint8` (aliases
+`:u8`/`:byte`) `:char`. A `:pointer`/`:void*` returns an opaque address you pass
+back unchanged; `:string` copies a C string in/out.
+
+```c
+typedef int (*init_fn)(int, char**);
+typedef void* (*lookup_fn)(const char*);
+typedef int (*add_fn)(int, int);
+
+void* h = dlopen("./libadd.so", RTLD_NOW | RTLD_LOCAL);
+((init_fn)dlsym(h, "jolt_library_init"))(0, NULL);
+add_fn add = (add_fn)((lookup_fn)dlsym(h, "jolt_lookup"))("add");
+add(2, 3);                          /* => 5 */
+```
+
+Two things to keep in mind across the boundary. The library carries its own GC,
+so call `jolt_library_init` exactly once on the host thread before any `jolt_lookup`
+result, and call `jolt_library_shutdown` to tear it down. A value returned as
+`:pointer`/`:void*` is not GC-tracked by the caller — if Jolt hands back a
+pointer into managed memory you must keep it alive on the Jolt side (e.g. hold it
+in a top-level ref) for as long as C uses it.
