@@ -389,16 +389,16 @@
         (when (and (get env :strict?) iscall-var)
           (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
             (when usig (check-user-call k usig ats pos env))))))
-     (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
-           rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
-           ;; Annotate EVERY recognized protocol call with :proto/:method so the back
-           ;; end can build a per-site inline cache even at a megamorphic site (where
-           ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
-           ;; site additionally carries :devirt-type and takes the faster devirt path.
-           base (if pm
-                  (assoc node :proto (nth pm 0) :method (nth pm 1)
-                               :fn fnode' :args (mapv (fn [r] (nd r)) ares))
-                  (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
+       (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
+            rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
+            ;; Annotate EVERY recognized protocol call with :proto/:method so the back
+            ;; end can build a per-site inline cache even at a megamorphic site (where
+            ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
+            ;; site additionally carries :devirt-type and takes the faster devirt path.
+            base (if pm
+                   (assoc node :proto (nth pm 0) :method (nth pm 1)
+                                :fn fnode' :args (mapv (fn [r] (nd r)) ares))
+                   (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
        [(cond
           (= cn "range") (mk-vec :num)
           (and cn (contains? elem-fns cn) (> n 0))
@@ -727,13 +727,26 @@
                  (or (= "register-inline-method" (get f :name))
                      (= "register-method" (get f :name)))
                  (= 4 (count args)))
-        (let [proto (get (nth args 1) :val)
+        (let [type-name (get (nth args 0) :val)
+              proto (get (nth args 1) :val)
               method (get (nth args 2) :val)
               fnn (nth args 3)]
           (when (and (string? proto) (string? method)
                      (= :fn (get fnn :op)) (seq (get fnn :arities)))
-            [(str proto "/" method)
-             (nth (infer-body (get (first (get fnn :arities)) :body) {}) 0)]))))))
+            (let [arity (first (get fnn :arities))
+                  params (get arity :params)
+                  shapes (get @config-box :record-shapes)
+                  ;; seed param 0 (the receiver) with the record type from the
+                  ;; type-name string in args[0] (e.g. "Circle" for ->Circle).
+                  ;; The shapes map is keyed by "ns/->Name"; find by suffix match.
+                  ctor-key (when (and type-name shapes (seq params))
+                             (let [target (str "->" type-name)]
+                               (some (fn [[k _]] (.endsWith k target)) shapes)))
+                  rtype (when ctor-key
+                          (record-type-from-entry (get shapes ctor-key) type-depth shapes))
+                  tenv (if rtype {(first params) rtype} {})]
+              [(str proto "/" method)
+               (nth (infer-body (get arity :body) tenv) 0)])))))))
 
 (defn- walk-pm-rets [node acc]
   (let [kr (impl-reg-ret node)
