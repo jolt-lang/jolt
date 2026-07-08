@@ -24,17 +24,19 @@
 ;; (proto . method) identity -> impl fn (populated lazily/mirrored from the
 ;; string-keyed type-registry at register time). protocol-resolve's record branch
 ;; reads it with one field read + one eq?-ref instead of recomputing the tag and
-;; walking three nested string tables. pepoch is the jolt-proto-epoch at which
-;; ptable was last synced; a stale (re-def'd) descriptor falls back to the string
-;; registry. See register-protocol-method / protocol-resolve.
+;; protocol-resolution reads it with one field read + one eq?-ref instead of
+;; recomputing the tag and walking three nested string tables. ptable is #f
+;; (uninitialized) until the first register-protocol-method for this desc; a
+;; stale (pre-redef) descriptor has its ptable set to #f explicitly so lookups
+;; fall back to the string registry. See register-protocol-method / protocol-resolve.
 (define-record-type (jrdesc make-jrdesc-rec jrdesc?)
-  (fields tag fkeys index (mutable ptable) (mutable pepoch))
-  (nongenerative chez-jrdesc-v2))
+  (fields tag fkeys index (mutable ptable))
+  (nongenerative chez-jrdesc-v3))
 (define (make-jrdesc tag fkey-list)
   (let ((index (make-eq-hashtable)))
     (let loop ((ks fkey-list) (i 0))
       (unless (null? ks) (hashtable-set! index (car ks) i) (loop (cdr ks) (+ i 1))))
-    (make-jrdesc-rec tag (list->vector fkey-list) index #f 0)))
+    (make-jrdesc-rec tag (list->vector fkey-list) index #f)))
 ;; An instance: the shared descriptor, the field-value vector, and an extension
 ;; map (jolt-nil unless non-field keys have been assoc'd on).
 (define-record-type (jrec make-jrec jrec?) (fields desc vals ext) (nongenerative chez-jrec-v2))
@@ -473,9 +475,9 @@
 ;; branch resolves by descriptor identity instead of re-walking this string tree.
 (define type-registry (make-hashtable string-hash string=?))
 ;; Global protocol epoch: bumped on EVERY register-protocol-method. A per-site
-;; inline cache (the PIC the back end emits) and a descriptor's ptable both tag
-;; themselves with the epoch at populate time; a later extension (a new bump)
-;; invalidates them so a cached site re-resolves instead of serving a stale impl.
+;; inline cache (the PIC the back end emits) tags itself with the epoch at
+;; populate time; a later extension (a new bump) invalidates it so a cached
+;; site re-resolves instead of serving a stale impl.
 (define jolt-proto-epoch 0)
 ;; interned (proto . method) -> eq?-comparable key, keyed by "proto<nul>method"
 ;; so two pairs that print alike but split differently never collide. Minted once
@@ -487,14 +489,11 @@
     (or k (let ((nk (gensym (string-append proto "." method))))
             (hashtable-set! proto-method-keys s nk) nk))))
 ;; descriptor ptable lookup (the record fast path): one eq?-ref keyed by the
-;; interned identity, valid only while the desc's pepoch matches the global epoch
-;; (else a re-def happened — caller falls back to find-protocol-method). #f on
-;; any miss so protocol-resolve drops to the string registry / value-host-tags.
+;; interned identity, valid while this desc is current (not invalidated by a
+;; type re-def). #f on any miss so protocol-resolve drops to the string registry.
 (define (find-protocol-method-desc desc proto method)
   (let ((pt (jrdesc-ptable desc)))
-    (and pt
-         (fx= (jrdesc-pepoch desc) jolt-proto-epoch)
-         (hashtable-ref pt (intern-pm-key proto method) #f))))
+    (and pt (hashtable-ref pt (intern-pm-key proto method) #f))))
 (define (register-protocol-method type-tag proto method fn)
   (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
   (let* ((ti (or (hashtable-ref type-registry type-tag #f)
@@ -503,16 +502,13 @@
                  (let ((h (make-hashtable string-hash string=?))) (hashtable-set! ti proto h) h))))
     (hashtable-set! pi method fn))
   ;; mirror onto the type's descriptor ptable (record types only — a host tag
-  ;; like "String"/"Object" has no desc). Stamps pepoch to the new epoch so the
-  ;; record fast path trusts this desc; a stale (pre-redef) desc misses on pepoch
-  ;; and falls back to find-protocol-method. A re-def installed a fresh desc with
-  ;; an empty ptable, so this also re-populates it after redef.
+  ;; like "String"/"Object" has no desc). A re-def invalidated the old desc's
+  ;; ptable (set it to #f), and this call populates the new desc's ptable.
   (let ((desc (hashtable-ref chez-tag-desc type-tag #f)))
     (when desc
       (let ((pt (or (jrdesc-ptable desc)
                     (let ((h (make-eq-hashtable))) (jrdesc-ptable-set! desc h) h))))
-        (hashtable-set! pt (intern-pm-key proto method) fn)
-        (jrdesc-pepoch-set! desc jolt-proto-epoch))))
+        (hashtable-set! pt (intern-pm-key proto method) fn))))
   (if #f #f))
 (define (find-protocol-method type-tag proto method)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
@@ -657,12 +653,15 @@
          ;; primitive-field parity), so reading them back is a genuine flonum.
          (dbl-flags (list->vector (map chez-double-tag? field-tags)))
          (ndbl (vector-length dbl-flags))
-         (desc (make-jrdesc tag kws))
-         ;; index the descriptor so register-protocol-method can mirror impls
-         ;; onto its ptable (protocol-resolve's record fast path). A re-def of
-         ;; the same type tag installs a fresh desc here; the old desc's pepoch
-         ;; is left behind, so lookups against it fall back to the string registry.
-         (_ (hashtable-set! chez-tag-desc tag desc))
+          (desc (make-jrdesc tag kws))
+          ;; index the descriptor so register-protocol-method can mirror impls
+          ;; onto its ptable (protocol-resolve's record fast path). A re-def of
+          ;; the same type tag installs a fresh desc here; first invalidate the
+          ;; old desc's ptable (set to #f) so pre-redef instances fall back to
+          ;; the string registry on the next protocol-resolve.
+          (old-desc (hashtable-ref chez-tag-desc tag #f))
+          (_ (when old-desc (jrdesc-ptable-set! old-desc #f)))
+          (_ (hashtable-set! chez-tag-desc tag desc))
          (nf (length kws))
          (ctor (lambda args
                  ;; fill the value vector from the positional args, padding missing

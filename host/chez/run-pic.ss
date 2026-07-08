@@ -110,6 +110,35 @@
     (check "monomorphic site uses devirt, not PIC" (has-sub? e "devirt-resolve") #t)
     (check "monomorphic site emits no PIC vector"   (has-sub? e "jolt-pic-make") #f)))
 
+;; ---- per-descriptor fast path regression (perf/round1 fix) ----------------  
+;; find-protocol-method-desc must return non-#f for ALL types registered in
+;; sequence (not just the last one). Before the fix the global-epoch guard in
+;; find-protocol-method-desc made every desc except the most recently
+;; registered miss the (fx= pepoch epoch) check.
+(let* ((cd (hashtable-ref chez-tag-desc "user.Circle" #f))
+       (sd (hashtable-ref chez-tag-desc "user.Square" #f))
+       (td (hashtable-ref chez-tag-desc "user.Triangle" #f))
+       (k  (intern-pm-key "Shape" "area")))
+  (check "Circle desc ptable resolves" (not (not (find-protocol-method-desc cd "Shape" "area"))) #t)
+  (check "Square desc ptable resolves" (not (not (find-protocol-method-desc sd "Shape" "area"))) #t)
+  (check "Triangle desc ptable resolves" (not (not (find-protocol-method-desc td "Shape" "area"))) #t))
+
+;; re-def Circle via defrecord to test old-desc invalidation. The old desc's
+;; ptable must be set to #f so pre-redef instances fall back to the string
+;; registry; the new desc resolves via its own ptable.
+(let* ((old-desc (hashtable-ref chez-tag-desc "user.Circle" #f))
+       (_ (evals "(defrecord Circle [r] Shape (area [s] (:r s)))"))
+       (new-desc (hashtable-ref chez-tag-desc "user.Circle" #f)))
+  (check "old desc invalidated after redef"     (jrdesc-ptable old-desc) #f)
+  (check "find-protocol-method-desc misses on old desc"
+         (find-protocol-method-desc old-desc "Shape" "area") #f)
+  (check "new desc ptable resolves after redef"
+         (not (not (find-protocol-method-desc new-desc "Shape" "area"))) #t)
+  ;; protocol-resolve on a pre-redef instance still works (falls back to string
+  ;; registry when the desc's ptable is #f).
+  (check "protocol-resolve old instance after redef"
+         (not (not (protocol-resolve "Shape" "area" (var-deref "user" "c")))) #t))
+
 (if (= fails 0)
     (begin (printf "pic gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "pic gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
