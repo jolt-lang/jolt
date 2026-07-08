@@ -26,9 +26,12 @@
 (set! jolt-deref (lambda (x) (if (var-cell? x) (jolt-var-get x) (%v-deref x))))
 
 ;; a var is an IFn — invoking it invokes its root value ((var f) args -> (f args)).
-(define %v-invoke jolt-invoke)
-(set! jolt-invoke (lambda (f . args)
-  (if (var-cell? f) (apply jolt-invoke (var-cell-root f) args) (apply %v-invoke f args))))
+;; Folded into jolt-invoke's prefix arms (seq.ss) instead of set!-wrapping it, so a
+;; dynamic call pays one lambda, one rest-list, no re-apply. (jolt-invoke here is
+;; the collapsed seq.ss definition: re-entering it with the root value runs the
+;; raw-procedure fast path.)
+(register-invoke-prefix-arm! var-cell?
+  (lambda (f args) (apply jolt-invoke (var-cell-root f) args)))
 
 ;; two var cells are = iff same ns/name (Clojure var identity).
 (register-eq-arm! (lambda (a b) (or (var-cell? a) (var-cell? b)))

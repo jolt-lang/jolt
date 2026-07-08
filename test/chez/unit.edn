@@ -598,4 +598,12 @@
   {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 20)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 20)))))" :expected "true"}
   {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 64)) (keys (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64))))" :expected "true"}
   {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 65)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 65)))))" :expected "false"}
+  ;; WP-A: per-site var-cell cache stays correct under redefinition (g's (f x) is a
+  ;; cached ref; after redef f, the next call sees the new root).
+  {:suite "wp-invoke-cache" :expr "(do (def f (fn [x] :a)) (def g (fn [x] (f x))) (def r1 (g 1)) (def f (fn [x] :b)) (def r2 (g 1)) [r1 r2])" :expected "[:a :b]"}
+  ;; WP-A: binding on a ^:dynamic var is observed through a cached ref site.
+  {:suite "wp-invoke-cache" :expr "(do (def ^:dynamic wpi-d 1) (def wpi-gd (fn [] wpi-d)) [(wpi-gd) (binding [wpi-d 99] (wpi-gd))])" :expected "[1 99]"}
+  ;; WP-A: keyword/map/pvec/multimethod callables all dispatch through the
+  ;; fixed-arity jolt-invoke1 slow path (non-procedure callee).
+  {:suite "wp-invoke-cache" :expr "(do (defmulti wpi-mm (fn [x] (:t x))) (defmethod wpi-mm :foo [x] (:v x)) [(wpi-mm {:t :foo :v 7}) (:k {:k 9}) ({:a 1} :a) ([1 2 3] 1)])" :expected "[7 9 1 2]"}
 ]

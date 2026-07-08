@@ -493,6 +493,13 @@
                 (when direct-link?
                   ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
                   ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
+                ;; Cache resolved var cells per reference site in the APP forms
+                ;; (bld-emit-ns / ei-emit-ns-records). A user build is a single
+                ;; compile of fixed source, so the gensym-numbered cell names are
+                ;; deterministic — the byte-fixpoint concern (the compiler re-
+                ;; compiling itself) does NOT apply here, only to the seed mint,
+                ;; which keeps var-cache OFF (emit-image.ss). ON in both modes.
+                ((var-deref "jolt.backend-scheme" "set-var-cache!") #t)
                 ;; whole-program param-type fixpoint before per-form emit
                 (when (string=? mode "optimized") (bld-wp-infer! ordered)))
               (lambda ()
@@ -528,7 +535,8 @@
                             #f))))
               (lambda ()
                 (set-optimize! #f)
-                ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)))))
+                ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
+                ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))

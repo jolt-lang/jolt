@@ -156,13 +156,10 @@
       (else (error #f (string-append "No method in multimethod '" (jolt-multifn-name mf)
                                      "' for dispatch value: " (jolt-pr-str dv)))))))
 
-;; jolt-invoke dispatches a multifn (otherwise falls through to the prior logic).
-(define %prev-jolt-invoke jolt-invoke)
-(set! jolt-invoke
-  (lambda (f . args)
-    (if (jolt-multifn? f)
-        (apply multifn-dispatch f args)
-        (apply %prev-jolt-invoke f args))))
+;; jolt-invoke dispatches a multifn via a prefix arm (seq.ss) instead of
+;; set!-wrapping it, so a dynamic call pays one lambda, one rest-list, no re-apply.
+(register-invoke-prefix-arm! jolt-multifn?
+  (lambda (f args) (apply multifn-dispatch f args)))
 
 ;; --- table ops ---------------------------------------------------------------
 ;; prefer-method/remove-method/remove-all-methods/prefers take the name QUOTED;

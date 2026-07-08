@@ -455,9 +455,26 @@
           (((caar as) f) (cdar as))
           (else (loop (cdr as))))))
 
+;; prefix arms: predicates consulted BEFORE the built-in cond below, so a later-
+;; loaded module folds its dispatch into this single jolt-invoke instead of
+;; set!-wrapping it (which cost an extra lambda + rest-list + apply per call).
+;; vars.ss registers var-cell? (invoke a var -> invoke its root) and
+;; multimethods.ss registers jolt-multifn?. Those types are never raw procedures,
+;; so checking them after the procedure? fast path is safe and keeps the hot path
+;; (a raw procedure) first. Handler signature: (lambda (f args) ...).
+(define jolt-invoke-prefix-arms '())
+(define (register-invoke-prefix-arm! pred handler)
+  (set! jolt-invoke-prefix-arms (cons (cons pred handler) jolt-invoke-prefix-arms)))
+(define (jolt-invoke-prefix-arm-for f)
+  (let loop ((as jolt-invoke-prefix-arms))
+    (cond ((null? as) #f)
+          (((caar as) f) (cdar as))
+          (else (loop (cdr as))))))
+
 (define (jolt-invoke f . args)
   (cond
     ((procedure? f) (apply f args))
+    ((jolt-invoke-prefix-arm-for f) => (lambda (h) (h f args)))
     ((keyword? f) (apply jolt-get (car args) f (cdr args)))   ; (:k m [d]) -> (get m :k [d])
     ((jolt-symbol? f) (apply jolt-get (car args) f (cdr args)))   ; ('s m [d]) -> (get m 's [d])
     ;; a VECTOR invokes as nth (a bad index throws, like IPersistentVector.invoke);
@@ -488,6 +505,18 @@
                             (let ((c (jolt-class-name f)))
                               (if (string? c) c (jolt-pr-str f))))
                           " cannot be cast to class clojure.lang.IFn"))))))
+
+;; Fixed-arity entry points: the fast path is a raw-procedure application with NO
+;; rest-list allocation (the overwhelmingly common case — a compiled call to a
+;; clojure.core/app fn). Anything else (a var-cell, multimethod, keyword, map/vec/
+;; set callable) delegates to the full variadic jolt-invoke above, which after the
+;; prefix-arm collapse is one lambda, one rest-list, no re-apply. The back end
+;; picks jolt-invokeN by arg count (N<=4); apply/variadic cases keep jolt-invoke.
+(define (jolt-invoke0 f) (if (procedure? f) (f) (jolt-invoke f)))
+(define (jolt-invoke1 f a) (if (procedure? f) (f a) (jolt-invoke f a)))
+(define (jolt-invoke2 f a b) (if (procedure? f) (f a b) (jolt-invoke f a b)))
+(define (jolt-invoke3 f a b c) (if (procedure? f) (f a b c) (jolt-invoke f a b c)))
+(define (jolt-invoke4 f a b c d) (if (procedure? f) (f a b c d) (jolt-invoke f a b c d)))
 
 ;; ============================================================================
 ;; chunked-seq accessors — the host side of the Clojure IChunkedSeq contract
@@ -554,17 +583,22 @@
 ;; into a fresh chunk — and chunk-cons it onto a lazy map of chunk-rest, so the
 ;; result is itself a chunked-seq. A non-chunked source maps one element at a time.
 (define (map-seq f s)
-  (cond
-    ((jolt-nil? s) jolt-empty-list)
-    ((na-chunked-seq? s)
-     (let* ((c (na-chunk-first s)) (n (pvec-count c)) (out (make-vector n)))
-       (let loop ((i 0))
-         (if (fx<? i n)
-             (begin (vector-set! out i (jolt-invoke f (pvec-nth-d c i jolt-nil))) (loop (fx+ i 1)))
-             (cseq-chunked (make-pvec out) 0
-                           (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (na-chunk-rest s)))))))))))
-    (else
-     (cseq-lazy (jolt-invoke f (seq-first s)) (lambda () (map-seq f (jolt-seq (seq-more s))))))))
+  ;; g: f itself when it's a raw procedure (the common case), so the per-element
+  ;; step is a direct (g x); a wrapper applying jolt-invoke otherwise. Bound once
+  ;; per call (a local, not a per-element closure) — chunked map amortizes it
+  ;; across a whole 32-element chunk.
+  (let ((g (if (procedure? f) f (lambda (x) (jolt-invoke f x)))))
+    (cond
+      ((jolt-nil? s) jolt-empty-list)
+      ((na-chunked-seq? s)
+       (let* ((c (na-chunk-first s)) (n (pvec-count c)) (out (make-vector n)))
+         (let loop ((i 0))
+           (if (fx<? i n)
+               (begin (vector-set! out i (g (pvec-nth-d c i jolt-nil))) (loop (fx+ i 1)))
+               (cseq-chunked (make-pvec out) 0
+                             (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (na-chunk-rest s)))))))))))
+      (else
+       (cseq-lazy (g (seq-first s)) (lambda () (map-seq f (jolt-seq (seq-more s)))))))))
 (define (map-seq* f seqs)              ; multi-collection map; stops at the shortest
   (if (any-nil? seqs) jolt-empty-list
       (cseq-lazy (apply jolt-invoke f (map seq-first seqs))
@@ -586,26 +620,32 @@
 ;; no empty cell — it recurses straight into chunk-rest (chunk-cons of an empty
 ;; chunk == its rest). A non-chunked source filters one element at a time.
 (define (filter-seq pred s keep)
-  (cond
-    ((jolt-nil? s) jolt-empty-list)         ; empty result is () (see map-seq)
-    ((na-chunked-seq? s)
-     (let* ((c (na-chunk-first s)) (n (pvec-count c)))
-       (let loop ((i 0) (acc '()))
-         (if (fx<? i n)
-             (let ((x (pvec-nth-d c i jolt-nil)))
-               (loop (fx+ i 1) (if (eq? keep (jolt-truthy? (jolt-invoke pred x))) (cons x acc) acc)))
-             (let ((kept (reverse acc)))
-               (if (null? kept)
-                   (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)
-                   (cseq-chunked (make-pvec (list->vector kept)) 0
-                                 (jolt-make-lazy-seq
-                                  (lambda () (jolt-seq (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)))))))))))
-    (else
-     (let walk ((s s))
-       (cond ((jolt-nil? s) jolt-empty-list)
-             ((eq? keep (jolt-truthy? (jolt-invoke pred (seq-first s))))
-              (cseq-lazy (seq-first s) (lambda () (filter-seq pred (jolt-seq (seq-more s)) keep))))
-             (else (walk (jolt-seq (seq-more s)))))))))
+  ;; tp: a per-element test returning a Scheme boolean. pred itself when raw (the
+  ;; common case), wrapped in jolt-truthy?; else jolt-invoke then jolt-truthy?.
+  ;; Bound once per call, consulted in both loops below.
+  (let ((tp (if (procedure? pred)
+                (lambda (x) (jolt-truthy? (pred x)))
+                (lambda (x) (jolt-truthy? (jolt-invoke pred x))))))
+    (cond
+      ((jolt-nil? s) jolt-empty-list)         ; empty result is () (see map-seq)
+      ((na-chunked-seq? s)
+       (let* ((c (na-chunk-first s)) (n (pvec-count c)))
+         (let loop ((i 0) (acc '()))
+           (if (fx<? i n)
+               (let ((x (pvec-nth-d c i jolt-nil)))
+                 (loop (fx+ i 1) (if (eq? keep (tp x)) (cons x acc) acc)))
+               (let ((kept (reverse acc)))
+                 (if (null? kept)
+                     (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)
+                     (cseq-chunked (make-pvec (list->vector kept)) 0
+                                   (jolt-make-lazy-seq
+                                    (lambda () (jolt-seq (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)))))))))))
+      (else
+       (let walk ((s s))
+         (cond ((jolt-nil? s) jolt-empty-list)
+               ((eq? keep (tp (seq-first s)))
+                (cseq-lazy (seq-first s) (lambda () (filter-seq pred (jolt-seq (seq-more s)) keep))))
+               (else (walk (jolt-seq (seq-more s))))))))))
 ;; filter/remove are fully lazy (LazySeq): defer the predicate and the source seq
 ;; until forced, like Clojure. (lazy-seq* = a 0-arg lazy node coercing to cseq|nil.)
 (define (jolt-filter pred coll)
@@ -623,23 +663,36 @@
 ;; see early termination instead of folding it back into the running value.
 (define (vec-reduce f acc v i)
   (let ((n (pvec-count v)) (raw (pvec-v v)))
-    (let loop ((i i) (acc acc))
-      (cond ((jolt-reduced? acc) acc)
-            ((fx>=? i n) acc)
-            (else (loop (fx+ i 1) (jolt-invoke f acc (vector-ref raw i))))))))
+    ;; hoist the procedure? check out of the per-element loop: a raw fn (the common
+    ;; case) steps with a direct (f acc x) and no per-element rest-list/apply.
+    (if (procedure? f)
+        (let loop ((i i) (acc acc))
+          (cond ((jolt-reduced? acc) acc)
+                ((fx>=? i n) acc)
+                (else (loop (fx+ i 1) (f acc (vector-ref raw i))))))
+        (let loop ((i i) (acc acc))
+          (cond ((jolt-reduced? acc) acc)
+                ((fx>=? i n) acc)
+                (else (loop (fx+ i 1) (jolt-invoke f acc (vector-ref raw i)))))))))
 (define (reduce-seq f acc s)
-  (cond
-    ((jolt-reduced? acc) (jolt-reduced-val acc))
-    ((jolt-nil? s) acc)
-    ;; a chunked seq reduces its chunk pvec directly, in a tight loop. A vector seq
-    ;; (crest #f) reduces the whole backing vector and is then done; a ChunkedCons
-    ;; reduces this chunk and continues into its after-chunk rest.
-    ((and (cseq? s) (cseq-cvec s))
-     (let ((acc2 (vec-reduce f acc (cseq-cvec s) (cseq-ci s))))
-       (cond ((jolt-reduced? acc2) (jolt-reduced-val acc2))
-             ((cseq-crest s) (reduce-seq f acc2 (jolt-seq (cseq-crest s))))
-             (else acc2))))
-    (else (reduce-seq f (jolt-invoke f acc (seq-first s)) (jolt-seq (seq-more s))))))
+  ;; direct? is bound once (a boolean, no allocation) and consulted in the
+  ;; non-chunked step so a raw fn steps with (f acc x) instead of jolt-invoke.
+  ;; The chunked branch already hoists via vec-reduce.
+  (let ((direct? (procedure? f)))
+    (let rec ((acc acc) (s s))
+      (cond
+        ((jolt-reduced? acc) (jolt-reduced-val acc))
+        ((jolt-nil? s) acc)
+        ;; a chunked seq reduces its chunk pvec directly, in a tight loop. A vector seq
+        ;; (crest #f) reduces the whole backing vector and is then done; a ChunkedCons
+        ;; reduces this chunk and continues into its after-chunk rest.
+        ((and (cseq? s) (cseq-cvec s))
+         (let ((acc2 (vec-reduce f acc (cseq-cvec s) (cseq-ci s))))
+           (cond ((jolt-reduced? acc2) (jolt-reduced-val acc2))
+                 ((cseq-crest s) (rec acc2 (jolt-seq (cseq-crest s))))
+                 (else acc2))))
+        (else (rec (if direct? (f acc (seq-first s)) (jolt-invoke f acc (seq-first s)))
+                   (jolt-seq (seq-more s))))))))
 (define jolt-reduce
   (case-lambda
     ((f coll) (let ((s (jolt-seq coll)))

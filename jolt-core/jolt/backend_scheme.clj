@@ -648,10 +648,16 @@
         order-args (fn [build] (ordered-call arg-nodes args build))
         defstr (fn [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
         ;; jolt-invoke dispatch: Clojure evaluates the fn expr before the args, so
-        ;; order [callee & args] together when ordering is observable.
+        ;; order [callee & args] together when ordering is observable. Pick a
+        ;; fixed-arity entry point (jolt-invoke0..4) by arg count so the common
+        ;; raw-procedure fast path allocates no rest-list; keep variadic jolt-invoke
+        ;; for larger arities / apply tails.
         invoke (fn []
-                 (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
-                               (fn [operands] (emit-call tail? "jolt-invoke" operands))))]
+                 (let [callee (if (<= (count args) 4)
+                                (str "jolt-invoke" (count args))
+                                "jolt-invoke")]
+                   (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
+                                 (fn [operands] (emit-call tail? callee operands)))))]
     (cond
       ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
       ;; one record type, so resolve the impl by that static tag instead of routing
