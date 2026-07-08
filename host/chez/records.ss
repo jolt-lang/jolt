@@ -71,6 +71,12 @@
 ;; mirrors an impl into desc's ptable through this index so protocol-resolve's
 ;; record branch can resolve by descriptor identity.
 (define chez-tag-desc (make-hashtable string-hash string=?))
+;; type-tag STRING -> fixed-arity ctor procedure: (lambda (f0 .. fn) (make-jrec ...))
+;; with one arg per field, no rest-list walk. Used by the backend's emit-invoke
+;; for direct ctor calls. Built alongside the variadic ctor in make-deftype-ctor.
+(define chez-deftype-fixed-ctor-tbl (make-hashtable string-hash string=?))
+(define (deftype-fixed-ctor tag)
+  (hashtable-ref chez-deftype-fixed-ctor-tbl tag #f))
 ;; a jrec that is coll? — a record, or a deftype implementing a collection
 ;; interface (its seq/count/nth/valAt/cons method is registered). find-method-any-
 ;; protocol is defined later; resolved at call time. An opaque deftype is not coll?.
@@ -122,7 +128,19 @@
   (hashtable-set! chez-record-dbl-tbl type-tag
                   (list->vector (map chez-double-tag? field-tags))))
 
-;; simple name of a dotted/slashed string: the segment after the last . or /.
+;; Coerce ^double fields to flonums in-place on a freshly-built field vector.
+;; The dbl-flags vector (from chez-record-dbl-tbl or the ctor's closure) has a
+;; true at each index that must be a flonum. No-op when the type has no ^double
+;; fields (most records). Used by the fixed-arity ctors.
+(define (coerce-double-fields! v dbl-flags)
+  (let ((ndbl (vector-length dbl-flags)))
+    (when (fx> ndbl 0)
+      (let ((n (min ndbl (vector-length v))))
+        (do ((i 0 (fx+ i 1))) ((fx= i n))
+          (let ((a (vector-ref v i)))
+            (when (and (vector-ref dbl-flags i)
+                       (number? a) (not (flonum? a)))
+              (vector-set! v i (exact->inexact a)))))))));; simple name of a dotted/slashed string: the segment after the last . or /.
 (define (chez-shape-simple-name s)
   (let loop ((i (- (string-length s) 1)))
     (cond ((< i 0) s)
@@ -663,18 +681,32 @@
           (_ (when old-desc (jrdesc-ptable-set! old-desc #f)))
           (_ (hashtable-set! chez-tag-desc tag desc))
          (nf (length kws))
-         (ctor (lambda args
-                 ;; fill the value vector from the positional args, padding missing
-                 ;; trailing fields with nil and ignoring any extras.
-                 (let ((v (make-vector nf jolt-nil)))
-                   (let loop ((as args) (i 0))
-                     (if (or (null? as) (= i nf)) (make-jrec desc v jolt-nil)
-                         (let ((a (car as)))
-                           (vector-set! v i
-                                        (if (and (fx< i ndbl) (vector-ref dbl-flags i)
-                                                 (number? a) (not (flonum? a)))
-                                            (exact->inexact a) a))
-                           (loop (cdr as) (+ i 1)))))))))
+          (ctor (lambda args
+                  ;; fill the value vector from the positional args, padding missing
+                  ;; trailing fields with nil and ignoring any extras.
+                  (let ((v (make-vector nf jolt-nil)))
+                    (let loop ((as args) (i 0))
+                      (if (or (null? as) (= i nf)) (make-jrec desc v jolt-nil)
+                          (let ((a (car as)))
+                            (vector-set! v i
+                                         (if (and (fx< i ndbl) (vector-ref dbl-flags i)
+                                                  (number? a) (not (flonum? a)))
+                                             (exact->inexact a) a))
+                            (loop (cdr as) (+ i 1))))))))
+          (fixed-ctor
+            ;; Fixed-arity positional ctor: one arg per field, no rest-list walk.
+            ;; The backend emits a direct call to this when it recognizes a ctor call
+            ;; with matching arity, bypassing jolt-invoke / var-deref / list alloc.
+            ;; For >6 fields, fall back to the variadic ctor (rare in practice).
+            (case nf
+              ((0) (lambda ()                  (make-jrec desc (vector) jolt-nil)))
+              ((1) (lambda (a0)                (let ((v (vector a0)))               (coerce-double-fields! v dbl-flags) (make-jrec desc v jolt-nil))))
+              ((2) (lambda (a0 a1)             (let ((v (vector a0 a1)))            (coerce-double-fields! v dbl-flags) (make-jrec desc v jolt-nil))))
+              ((3) (lambda (a0 a1 a2)          (let ((v (vector a0 a1 a2)))         (coerce-double-fields! v dbl-flags) (make-jrec desc v jolt-nil))))
+              ((4) (lambda (a0 a1 a2 a3)       (let ((v (vector a0 a1 a2 a3)))      (coerce-double-fields! v dbl-flags) (make-jrec desc v jolt-nil))))
+              ((5) (lambda (a0 a1 a2 a3 a4)    (let ((v (vector a0 a1 a2 a3 a4)))   (coerce-double-fields! v dbl-flags) (make-jrec desc v jolt-nil))))
+              ((6) (lambda (a0 a1 a2 a3 a4 a5) (let ((v (vector a0 a1 a2 a3 a4 a5))) (coerce-double-fields! v dbl-flags) (make-jrec desc v jolt-nil))))
+              (else #f))))
     ;; Register the ctor under its fully-qualified tag ("ns.Name") — a bare
     ;; (Name. …) in the DEFINING ns is qualified to this by the analyzer, so a
     ;; deftype whose simple name collides with a built-in host class (tools.reader's
@@ -695,6 +727,8 @@
     ;; right after) replaces the row with the record interface set.
     (jch-set-supers! tag '("clojure.lang.IType"))
     (hashtable-set! chez-deftype-ctor-tag ctor tag)
+    ;; register fixed-arity ctor for direct-call emit (or clear stale on redef)
+    (hashtable-set! chez-deftype-fixed-ctor-tbl tag fixed-ctor)
     ;; record the shape for whole-program inference, keyed by the positional
     ;; ctor var "ns/->Name" the analyzer resolves a (->Name …) call to.
     (register-record-shape! (string-append (chez-current-ns) "/->" (symbol-t-name name-sym))

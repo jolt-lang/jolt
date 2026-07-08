@@ -23,7 +23,8 @@
                                        set-record-shapes! set-map-shapes! set-protocol-methods!
                                        reset-escapes! collected-escapes
                                        wp-infer! param-seeds-for param-num-seeds-for
-                                       set-check-mode! take-diags!]]))
+                                       set-check-mode! take-diags!]]
+            [jolt.backend-scheme :refer [set-ctor-shapes!]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
@@ -75,6 +76,7 @@
   (numeric/annotate
     (if (inline-enabled? ctx)
       (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
+            _ (set-ctor-shapes! (record-shapes ctx))  ;; backend direct ctor calls
             ;; resolve ^Record param hints (incl. defrecord/extend-type method
             ;; `this`) to bare field reads per-form, not only under whole-program.
             ;; Same shapes the inline pass uses.

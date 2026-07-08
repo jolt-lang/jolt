@@ -572,6 +572,15 @@
           ;; io/resource that wasn't embedded still resolves next to the binary.
           (put-string out "\n;; === launcher ===\n")
           (put-string out "(suppress-greeting #t)\n")
+          ;; GC tuning: larger nursery for allocation-heavy workloads (binary-trees,
+          ;; ray tracer, etc.). Default 16 MB; override via JOLT_GC_TRIP_BYTES
+          ;; environment variable (integer bytes, e.g. \"33554432\" for 32 MB).
+          (put-string out
+            (string-append
+              "(collect-trip-bytes\n"
+              "  (let ((trip (getenv \"JOLT_GC_TRIP_BYTES\"))\n"
+              "        (default (* 16 1024 1024)))\n"
+              "    (if trip (or (string->number trip) default) default)))\n"))
           (put-string out "(scheme-start\n  (lambda args\n")
           (bld-emit-natives out natives 'optional)
           (put-string out (string-append

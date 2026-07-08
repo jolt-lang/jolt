@@ -172,6 +172,12 @@
 (def var-cache? (atom false))
 (defn set-var-cache! [on] (reset! var-cache? on))
 
+;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
+;; run-passes before each form's emit so emit-invoke can recognize ctor calls with
+;; matching arity and emit a direct fixed-arity call instead of jolt-invoke dispatch.
+(def ctor-shapes (atom {}))
+(defn set-ctor-shapes! [m] (reset! ctor-shapes (or m {})))
+
 ;; Opt-in tail-frame history (JOLT_TRACE): emit a (jolt-trace-push! "name") at the
 ;; head of every named fn body, so an entry records the frame into the runtime ring
 ;; buffer (rt.ss) and a TCO-elided frame still shows in an error's backtrace. OFF
@@ -794,6 +800,29 @@
       (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode))
            (direct-link-fn? (:ns fnode) (:name fnode)))
       (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as)))
+      ;; record ctor with matching arity: inline the field vector + make-jrec
+      ;; directly, eliminating jolt-invoke / var-deref / rest-list / ctor call /
+      ;; hashtable lookup entirely. After per-site desc-cell warmup, the hot path
+      ;; is: cell read -> vector -> make-jrec — 2 allocs, no lookups, no dispatch.
+      ;; The shape is set by run-passes (set-ctor-shapes!) before emit.
+      (let [key (str (:ns fnode) "/" (:name fnode))
+            shape (get @ctor-shapes key)]
+        (and (= :var (:op fnode)) shape
+             (= (count (get shape :fields)) (count args))
+             (<= (count args) 6)
+             ;; skip if any ^double field — the inlined path doesn't coerce
+             (not-any? #{"double"} (get shape :tags))))
+      (let [s (get @ctor-shapes (str (:ns fnode) "/" (:name fnode)))
+            tag (:type s)
+            cells @cache-cells
+            desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
+            cached-desc (if cells
+                          (let [c (fresh-label "_cdesc$")]
+                            (swap! cells conj c)
+                            (str "(or " c " (let ((_d " desc-lookup ")) (set! " c " _d) _d))"))
+                          desc-lookup)]
+        (order-args (fn [as]
+                      (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))"))))
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
