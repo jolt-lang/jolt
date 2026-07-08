@@ -586,6 +586,20 @@
     (:map :set :vector) :coll
     nil))
 
+;; Polymorphic inline-cache width. MUST match jolt-pic-n in host/chez/records.ss:
+;; the emitted scan reads slots [0..2N) and the epoch slot at 2N+1 of the cache
+;; vector jolt-pic-make allocates, so the two must agree.
+(def ^:private pic-n 4)
+(def ^:private pic-epoch-idx (+ (* 2 pic-n) 1))
+;; the eq? scan over a PIC cache's N (desc . impl) pairs: each clause returns the
+;; impl when its cached desc is eq? to d. Strung together with `or` so a hit short-
+;; circuits; a full miss falls through to the install helper (the caller appends it).
+(defn- pic-scan-clauses [v d]
+  (str/join " "
+            (for [i (range pic-n)]
+              (str "(and (eq? (vector-ref " v " " (* 2 i) ") " d ")"
+                   " (vector-ref " v " " (+ (* 2 i) 1) "))"))))
+
 ;; A reference into the Clojure stdlib (clojure.*) with no impl on Chez yet.
 (defn- stdlib-var? [n]
   (and (= :var (:op n)) (str/starts-with? (or (:ns n) "") "clojure.")))
@@ -685,6 +699,44 @@
                                      dv)]
                       (str "(let* ((" r " " (first as) ")) ("
                            resolver " " (str/join " " (cons r (rest as))) "))"))))
+      ;; polymorphic inline cache: a protocol call the inference recognized (:proto)
+      ;; but could NOT prove monomorphic (no :devirt-type — a megamorphic / unknown
+      ;; receiver). Emit a per-site cache keyed on the receiver's descriptor identity:
+      ;; after warmup each call is one field read + an eq? scan over <= jolt-pic-n
+      ;; cached descs + a direct apply, with no string hashing or table walk. The
+      ;; cache lives in a def-closure cell (emit-with-cells); a register-protocol-
+      ;; method after population bumps jolt-proto-epoch and the cache re-resolves,
+      ;; so an extend-type at runtime can't strand a stale impl. Falls back to a
+      ;; direct protocol-resolve (still the per-descriptor fast path) when not inside
+      ;; a def. The receiver is bound once and feeds both the resolve and the apply.
+      (:proto node)
+      (order-args (fn [as]
+                    (let [r (fresh-label "_r$")
+                          d (fresh-label "_d$")
+                          v (fresh-label "_v$")
+                          cells @cache-cells
+                          proto (chez-str-lit (:proto node))
+                          method (chez-str-lit (:method node))
+                          apply-args (str/join " " (cons r (rest as)))]
+                      (if cells
+                        (let [c (fresh-label "_picv$")
+                              scan (pic-scan-clauses v d)]
+                          (swap! cells conj c)
+                          ;; hot path inlined: bind the receiver, the cache vector
+                          ;; (lazily allocated on first call), and its desc; then, if
+                          ;; the epoch still matches, eq?-scan the cached descs and
+                          ;; apply the hit impl directly — no helper call after warmup.
+                          ;; A miss (no cached desc / stale epoch) resolves + (re)fills
+                          ;; via the jolt-pic-install/-rebuild helpers.
+                          (str "(let* ((" r " " (first as) ")"
+                               " (" v " (or " c " (let ((_nv (jolt-pic-make))) (set! " c " _nv) _nv)))"
+                               " (" d " (jrec-pic-desc " r ")))"
+                               " ((if (and " d " (fx= (vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
+                                " (or " scan " (jolt-pic-install " v " " d " " proto " " method " " r "))"
+                                " (jolt-pic-rebuild " v " " d " " proto " " method " " r "))"
+                                " " apply-args "))"))
+                        (str "(let* ((" r " " (first as) "))"
+                             " ((protocol-resolve " proto " " method " " r ") " apply-args "))")))))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)

@@ -20,7 +20,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -134,6 +134,14 @@ fieldnum:
 # a field read off the result bare-indexes; a disagreeing impl keeps the generic path.
 protoret:
 	@chez --script host/chez/run-protoret.ss
+
+# Protocol-dispatch polymorphic inline cache: a protocol call the inference tags
+# :proto/:method but can't prove monomorphic emits a per-site cache keyed on the
+# receiver's descriptor identity (eq? scan + a global epoch guard). Pins the
+# emission, megamorphic correctness across record types, and that an extend-type at
+# runtime invalidates the cache (the epoch bump) so the new impl is served.
+pic:
+	@chez --script host/chez/run-pic.ss
 
 # Nilable record types + flow-sensitive narrowing: a record-or-nil types as a nilable
 # record (some?/nil? don't fold, so a runtime guard stays); inside (if (some? x) ..)

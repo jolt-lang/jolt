@@ -18,19 +18,31 @@
 ;; (the dispatchers it wraps + chez-current-ns).
 
 ;; The per-type descriptor: built once at deftype/defrecord definition and shared
-;; by every instance. Holds the tag, the field keywords in declared order, and an
-;; eq?-keyed keyword->index table (field keys are interned, so identity lookup).
+;; by every instance. Holds the tag, the field keywords in declared order, an
+;; eq?-keyed keyword->index table (field keys are interned, so identity lookup),
+;; and a per-type protocol-method cache: an eq?-hashtable keyed by an INTERNED
+;; (proto . method) identity -> impl fn (populated lazily/mirrored from the
+;; string-keyed type-registry at register time). protocol-resolve's record branch
+;; reads it with one field read + one eq?-ref instead of recomputing the tag and
+;; walking three nested string tables. pepoch is the jolt-proto-epoch at which
+;; ptable was last synced; a stale (re-def'd) descriptor falls back to the string
+;; registry. See register-protocol-method / protocol-resolve.
 (define-record-type (jrdesc make-jrdesc-rec jrdesc?)
-  (fields tag fkeys index) (nongenerative chez-jrdesc-v1))
+  (fields tag fkeys index (mutable ptable) (mutable pepoch))
+  (nongenerative chez-jrdesc-v2))
 (define (make-jrdesc tag fkey-list)
   (let ((index (make-eq-hashtable)))
     (let loop ((ks fkey-list) (i 0))
       (unless (null? ks) (hashtable-set! index (car ks) i) (loop (cdr ks) (+ i 1))))
-    (make-jrdesc-rec tag (list->vector fkey-list) index)))
+    (make-jrdesc-rec tag (list->vector fkey-list) index #f 0)))
 ;; An instance: the shared descriptor, the field-value vector, and an extension
 ;; map (jolt-nil unless non-field keys have been assoc'd on).
 (define-record-type (jrec make-jrec jrec?) (fields desc vals ext) (nongenerative chez-jrec-v2))
 (define (jrec-tag r) (jrdesc-tag (jrec-desc r)))
+;; descriptor or #f — the dispatch key the inline cache eq?-scans. #f for a
+;; non-record so a PIC site (and protocol-resolve's record branch) cheaply falls
+;; through to the value-host-tags path without a separate type test.
+(define (jrec-pic-desc x) (and (jrec? x) (jrec-desc x)))
 
 ;; defrecord vs deftype: a defrecord IS a map (map?/seq/keys/assoc over its
 ;; fields); a bare deftype is an opaque object with only its declared interfaces,
@@ -49,6 +61,14 @@
 ;; class for (ancestors TypeName) / (isa? x TypeName) / derive on the type.
 (define chez-deftype-ctor-tag (make-weak-eq-hashtable))
 (define chez-simple-name-tag (make-hashtable string-hash string=?))
+;; type-tag STRING -> the shared jrdesc for that type (set at deftype/defrecord
+;; ctor construction). Strong: a desc lives as long as any instance does (every
+;; instance references it), so this never outlives the type. string=? because the
+;; tag strings registered by extend-type/inline-method are fresh allocations, not
+;; the ctor's exact object — equal tags must match. register-protocol-method
+;; mirrors an impl into desc's ptable through this index so protocol-resolve's
+;; record branch can resolve by descriptor identity.
+(define chez-tag-desc (make-hashtable string-hash string=?))
 ;; a jrec that is coll? — a record, or a deftype implementing a collection
 ;; interface (its seq/count/nth/valAt/cons method is registered). find-method-any-
 ;; protocol is defined later; resolved at call time. An opaque deftype is not coll?.
@@ -446,23 +466,65 @@
 (def-var! "clojure.core" "coll?" (lambda (x) (or (jrec-collection? x) (jolt-coll-pred? x))))
 
 ;; ---- protocol registry ------------------------------------------------------
-;; type-tag -> (proto-name -> (method-name -> fn))
+;; type-tag -> (proto-name -> (method-name -> fn)) — the source of truth for the
+;; open world (extend-type/extend-protocol at any time, incl. mode A REPL).
+;; register-protocol-method also mirrors the impl into the type's jrdesc ptable
+;; (keyed by an interned proto-method identity) so protocol-resolve's record
+;; branch resolves by descriptor identity instead of re-walking this string tree.
 (define type-registry (make-hashtable string-hash string=?))
+;; Global protocol epoch: bumped on EVERY register-protocol-method. A per-site
+;; inline cache (the PIC the back end emits) and a descriptor's ptable both tag
+;; themselves with the epoch at populate time; a later extension (a new bump)
+;; invalidates them so a cached site re-resolves instead of serving a stale impl.
+(define jolt-proto-epoch 0)
+;; interned (proto . method) -> eq?-comparable key, keyed by "proto<nul>method"
+;; so two pairs that print alike but split differently never collide. Minted once
+;; per pair; reused by the descriptor ptable (eq?-ref).
+(define proto-method-keys (make-hashtable string-hash string=?))
+(define (intern-pm-key proto method)
+  (let* ((s (string-append proto (string (integer->char 0)) method))
+         (k (hashtable-ref proto-method-keys s #f)))
+    (or k (let ((nk (gensym (string-append proto "." method))))
+            (hashtable-set! proto-method-keys s nk) nk))))
+;; descriptor ptable lookup (the record fast path): one eq?-ref keyed by the
+;; interned identity, valid only while the desc's pepoch matches the global epoch
+;; (else a re-def happened — caller falls back to find-protocol-method). #f on
+;; any miss so protocol-resolve drops to the string registry / value-host-tags.
+(define (find-protocol-method-desc desc proto method)
+  (let ((pt (jrdesc-ptable desc)))
+    (and pt
+         (fx= (jrdesc-pepoch desc) jolt-proto-epoch)
+         (hashtable-ref pt (intern-pm-key proto method) #f))))
 (define (register-protocol-method type-tag proto method fn)
+  (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
   (let* ((ti (or (hashtable-ref type-registry type-tag #f)
                  (let ((h (make-hashtable string-hash string=?))) (hashtable-set! type-registry type-tag h) h)))
          (pi (or (hashtable-ref ti proto #f)
                  (let ((h (make-hashtable string-hash string=?))) (hashtable-set! ti proto h) h))))
-    (hashtable-set! pi method fn)))
+    (hashtable-set! pi method fn))
+  ;; mirror onto the type's descriptor ptable (record types only — a host tag
+  ;; like "String"/"Object" has no desc). Stamps pepoch to the new epoch so the
+  ;; record fast path trusts this desc; a stale (pre-redef) desc misses on pepoch
+  ;; and falls back to find-protocol-method. A re-def installed a fresh desc with
+  ;; an empty ptable, so this also re-populates it after redef.
+  (let ((desc (hashtable-ref chez-tag-desc type-tag #f)))
+    (when desc
+      (let ((pt (or (jrdesc-ptable desc)
+                    (let ((h (make-eq-hashtable))) (jrdesc-ptable-set! desc h) h))))
+        (hashtable-set! pt (intern-pm-key proto method) fn)
+        (jrdesc-pepoch-set! desc jolt-proto-epoch))))
+  (if #f #f))
 (define (find-protocol-method type-tag proto method)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
     (and ti (let ((pi (hashtable-ref ti proto #f))) (and pi (hashtable-ref pi method #f))))))
 (define (find-method-any-protocol type-tag method)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
-    (and ti (let loop ((protos (vector->list (hashtable-keys ti))))
-              (and (pair? protos)
-                   (let ((f (hashtable-ref (hashtable-ref ti (car protos) #f) method #f)))
-                     (or f (loop (cdr protos)))))))))
+    (and ti
+         (let* ((ks (hashtable-keys ti)) (n (vector-length ks)))
+           (let loop ((i 0))
+             (and (fx< i n)
+                  (let ((f (hashtable-ref (hashtable-ref ti (vector-ref ks i) #f) method #f)))
+                    (or f (loop (fx+ i 1))))))))))
 ;; A deftype can implement a method NAME at two arities from two interfaces (e.g.
 ;; data.priority-map's seq: Seqable.seq[this] and Sorted.seq[this ascending]),
 ;; registered under different protocols. Pick the impl whose procedure accepts
@@ -471,12 +533,14 @@
   (and (procedure? f) (bitwise-bit-set? (procedure-arity-mask f) n)))
 (define (find-method-any-protocol-arity type-tag method nargs)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
-    (and ti (let loop ((protos (vector->list (hashtable-keys ti))) (fallback #f))
-              (if (null? protos)
-                  fallback
-                  (let ((f (hashtable-ref (hashtable-ref ti (car protos) #f) method #f)))
-                    (cond ((and f (proc-accepts? f nargs)) f)
-                          (else (loop (cdr protos) (or fallback f))))))))))
+    (and ti
+         (let* ((ks (hashtable-keys ti)) (n (vector-length ks)))
+           (let loop ((i 0) (fallback #f))
+             (if (fx>= i n)
+                 fallback
+                 (let ((f (hashtable-ref (hashtable-ref ti (vector-ref ks i) #f) method #f)))
+                   (cond ((and f (proc-accepts? f nargs)) f)
+                         (else (loop (fx+ i 1) (or fallback f)))))))))))
 (define (type-satisfies? type-tag proto)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
     (and ti (hashtable-ref ti proto #f) #t)))
@@ -594,6 +658,11 @@
          (dbl-flags (list->vector (map chez-double-tag? field-tags)))
          (ndbl (vector-length dbl-flags))
          (desc (make-jrdesc tag kws))
+         ;; index the descriptor so register-protocol-method can mirror impls
+         ;; onto its ptable (protocol-resolve's record fast path). A re-def of
+         ;; the same type tag installs a fresh desc here; the old desc's pepoch
+         ;; is left behind, so lookups against it fall back to the string registry.
+         (_ (hashtable-set! chez-tag-desc tag desc))
          (nf (length kws))
          (ctor (lambda args
                  ;; fill the value vector from the positional args, padding missing
@@ -757,10 +826,16 @@
 ;; instance-local method, or the protocol's extended impls over obj's host tags.
 ;; Raises if none implements the method. The dispatchN entry points apply it
 ;; directly so a protocol call doesn't cons a rest-list (the impl fn is always a
-;; procedure, registered by register-(inline-)method/extend).
+;; procedure, registered by register-(inline-)method/extend). The record branch
+;; reads the per-type descriptor once and tries its eq?-keyed ptable (the interned
+;; proto-method identity, current-epoch) before walking the nested string tables —
+;; one field read + one eq?-ref instead of two field reads + three string hashes.
 (define (protocol-resolve proto-name method-name obj)
   (cond
-    ((and (jrec? obj) (find-protocol-method (jrec-tag obj) proto-name method-name)))
+    ((and (jrec? obj)
+          (let* ((desc (jrec-desc obj))
+                 (f (find-protocol-method-desc desc proto-name method-name)))
+            (or f (find-protocol-method (jrdesc-tag desc) proto-name method-name)))))
     ((reified-methods obj)
      => (lambda (rm)
           (or (hashtable-ref rm method-name #f)
@@ -789,6 +864,49 @@
 (define (protocol-dispatch proto-name method-name obj rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (apply (protocol-resolve proto-name method-name obj) obj rest)))
+
+;; ---- per-site polymorphic inline cache (PIC) --------------------------------
+;; The back end emits, at each protocol call site it recognizes under --opt, a
+;; cache keyed on the receiver's descriptor identity: a small mutable vector cell
+;; holding N (desc . impl) pairs + a round-robin write cursor + the epoch at which
+;; the cache was populated. The emitted call inlines the eq? scan over the cached
+;; descs (no string hashing, no table walk, no helper call after warmup); a miss
+;; (uncached desc) or a stale epoch resolves via these helpers and (re)fills the
+;; cache. The epoch guard invalidates the whole cache when ANY register-protocol-
+;; method runs after it was populated, so an extend-type at runtime can't leave a
+;; cached site serving a pre-extension impl. jolt-pic-n is the cache width — 4
+;; covers the megamorphic bench; a monomorphic site stays on the devirt path above.
+(define jolt-pic-n 4)
+(define (jolt-pic-make)
+  ;; #(d0 i0 d1 i1 d2 i2 d3 i3 cursor epoch): 2N entries + cursor + epoch.
+  ;; epoch starts at -1 (jolt-proto-epoch is always >= 0) so the very first call
+  ;; misses the epoch guard and rebuilds, seeding slot 0 + stamping the real epoch.
+  (let ((v (make-vector (+ (* jolt-pic-n 2) 2) #f)))
+    (vector-set! v (* jolt-pic-n 2) 0)
+    (vector-set! v (+ (* jolt-pic-n 2) 1) -1)
+    v))
+;; cache current, desc not found: resolve + round-robin install into the cursor slot.
+(define (jolt-pic-install v d proto method obj)
+  (let ((f (protocol-resolve proto method obj)))
+    (when d
+      (let ((slot (* (vector-ref v (* jolt-pic-n 2)) 2)))
+        (vector-set! v slot d)
+        (vector-set! v (fx+ slot 1) f)
+        (vector-set! v (* jolt-pic-n 2)
+                     (if (fx= (vector-ref v (* jolt-pic-n 2)) (fx- jolt-pic-n 1))
+                         0 (fx+ (vector-ref v (* jolt-pic-n 2)) 1)))))
+    f))
+;; epoch stale (an extension ran) or first population: clear, resolve, seed slot 0.
+(define (jolt-pic-rebuild v d proto method obj)
+  (let ((f (protocol-resolve proto method obj)))
+    (when d
+      (let loop ((i 0))
+        (when (fx< i (* jolt-pic-n 2)) (vector-set! v i #f) (loop (fx+ i 1))))
+      (vector-set! v 0 d)
+      (vector-set! v 1 f)
+      (vector-set! v (* jolt-pic-n 2) 1)
+      (vector-set! v (+ (* jolt-pic-n 2) 1) jolt-proto-epoch))
+    f))
 
 ;; devirt-resolve: the impl for a call the inference proved monomorphic. Try the
 ;; static type tag directly (the fast path that skips receiver-type computation),

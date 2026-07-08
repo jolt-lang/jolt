@@ -389,20 +389,27 @@
         (when (and (get env :strict?) iscall-var)
           (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
             (when usig (check-user-call k usig ats pos env))))))
-    (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
-          rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
-          base (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares))]
-      [(cond
-         (= cn "range") (mk-vec :num)
-         (and cn (contains? elem-fns cn) (> n 0))
-         (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
-         ;; flonum arithmetic yields a flonum — flows :double into a callee param
-         ;; (and into the fixpoint's return type) so hintless double code unboxes.
-         (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args)) :double
-         :else (call-ret-type fnode env))
-       (if rtype
-         (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-         base)])))
+     (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
+           rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
+           ;; Annotate EVERY recognized protocol call with :proto/:method so the back
+           ;; end can build a per-site inline cache even at a megamorphic site (where
+           ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
+           ;; site additionally carries :devirt-type and takes the faster devirt path.
+           base (if pm
+                  (assoc node :proto (nth pm 0) :method (nth pm 1)
+                               :fn fnode' :args (mapv (fn [r] (nd r)) ares))
+                  (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
+       [(cond
+          (= cn "range") (mk-vec :num)
+          (and cn (contains? elem-fns cn) (> n 0))
+          (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
+          ;; flonum arithmetic yields a flonum — flows :double into a callee param
+          ;; (and into the fixpoint's return type) so hintless double code unboxes.
+          (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args)) :double
+          :else (call-ret-type fnode env))
+        (if rtype
+          (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
+          base)])))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."
