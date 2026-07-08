@@ -570,6 +570,14 @@
       (let [m (munge-name nm)] (str "(letrec ((" m " " lambda ")) " m ")"))
       lambda)))
 
+;; Fixed-arity fast-path overrides: at these exact arities, emit the direct
+;; fixed-arity Scheme helper instead of the variadic wrapper (no rest list, no
+;; fold-left overhead). Checked before the general native-ops lookup.
+(def ^:private fixed-arity-ops
+  {"assoc" {3 "jolt-assoc3"}
+   "conj" {2 "jolt-conj2"}
+   "dissoc" {2 "jolt-dissoc2"}})
+
 ;; If fnode is a clojure.core (or host) ref to a native-op primitive, return the
 ;; Scheme op string — only at an arity where the Scheme op and the jolt fn agree.
 (defn- native-op [fnode nargs]
@@ -577,7 +585,8 @@
              :var (when (= "clojure.core" (:ns fnode)) (:name fnode))
              :host (:name fnode)
              nil)
-        op (when nm (native-ops nm))
+        fixed (when nm (get (fixed-arity-ops nm) nargs))
+        op (or fixed (when nm (native-ops nm)))
         arity-ok (when nm (op-arity nm))]
     (cond
       (nil? op) nil

@@ -372,6 +372,7 @@
   (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
         ((jrec? coll) (+ (vector-length (jrec-vals coll))
                          (let ((ext (jrec-ext coll))) (if (jolt-nil? ext) 0 (%r-jolt-count ext)))))
+        ((jolt-transient? coll) (t-count coll))
         (else (%r-jolt-count coll)))))
 ;; contains?: a deftype implementing Associative/containsKey (e.g. core.cache's
 ;; caches) answers through that; a plain defrecord checks its fields.
@@ -379,7 +380,25 @@
 (set! jolt-contains? (lambda (coll k)
   (cond ((jrec-cl coll "containsKey") => (lambda (m) (if (jolt-truthy? (jolt-invoke m coll k)) #t #f)))
         ((jrec? coll) (jrec-has? coll k))
+        ((jolt-transient? coll) (t-contains? coll k))
         (else (%r-jolt-contains? coll k)))))
+;; nth: transient unwrapping (vec→direct buf access, other→fallback), then original
+(define %r-jolt-nth jolt-nth)
+(set! jolt-nth
+  (case-lambda
+    ((coll i)
+     (if (jolt-transient? coll)
+         (if (eq? (jolt-transient-kind coll) 'vec)
+             (let ((idx (->idx i)))
+               (if (tvec-in-bounds? coll idx) (vector-ref (jolt-transient-buf coll) idx) (error 'nth "index out of bounds")))
+             (%r-jolt-nth (jolt-transient-buf coll) i))
+         (%r-jolt-nth coll i)))
+    ((coll i d)
+     (if (jolt-transient? coll)
+         (if (eq? (jolt-transient-kind coll) 'vec)
+             (let ((idx (->idx i))) (if (tvec-in-bounds? coll idx) (vector-ref (jolt-transient-buf coll) idx) d))
+             (%r-jolt-nth (jolt-transient-buf coll) i d))
+         (%r-jolt-nth coll i d)))))
 ;; assoc: replacing a declared field copies the value vector; any other key grows
 ;; the extension map (the value vector is shared — fields are immutable).
 (define %r-jolt-assoc1 jolt-assoc1)

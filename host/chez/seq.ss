@@ -661,19 +661,31 @@
 ;; Reduce a chunk pvec from index i. Returns the accumulator RAW — a `reduced` box
 ;; is returned unwrapped-by reduce-seq, not here — so a ChunkedCons continuation can
 ;; see early termination instead of folding it back into the running value.
-(define (vec-reduce f acc v i)
-  (let ((n (pvec-count v)) (raw (pvec-v v)))
-    ;; hoist the procedure? check out of the per-element loop: a raw fn (the common
-    ;; case) steps with a direct (f acc x) and no per-element rest-list/apply.
+(define (vec-reduce f acc v start)
+  (let ((n (pvec-count v)))
     (if (procedure? f)
-        (let loop ((i i) (acc acc))
+        (let outer ((i start) (acc acc))
           (cond ((jolt-reduced? acc) acc)
                 ((fx>=? i n) acc)
-                (else (loop (fx+ i 1) (f acc (vector-ref raw i))))))
-        (let loop ((i i) (acc acc))
+                (else
+                 (let* ((chunk (pv-chunk-for v i))
+                        (clen (vector-length chunk))
+                        (offset (fxand i pv-mask)))
+                   (let inner ((j offset) (k i) (acc acc))
+                     (cond ((jolt-reduced? acc) acc)
+                           ((fx>=? j clen) (outer k acc))
+                           (else (inner (fx+ j 1) (fx+ k 1) (f acc (vector-ref chunk j))))))))))
+        (let outer ((i start) (acc acc))
           (cond ((jolt-reduced? acc) acc)
                 ((fx>=? i n) acc)
-                (else (loop (fx+ i 1) (jolt-invoke f acc (vector-ref raw i)))))))))
+                (else
+                 (let* ((chunk (pv-chunk-for v i))
+                        (clen (vector-length chunk))
+                        (offset (fxand i pv-mask)))
+                   (let inner ((j offset) (k i) (acc acc))
+                     (cond ((jolt-reduced? acc) acc)
+                           ((fx>=? j clen) (outer k acc))
+                           (else (inner (fx+ j 1) (fx+ k 1) (jolt-invoke f acc (vector-ref chunk j)))))))))))))
 (define (reduce-seq f acc s)
   ;; direct? is bound once (a boolean, no allocation) and consulted in the
   ;; non-chunked step so a raw fn steps with (f acc x) instead of jolt-invoke.

@@ -211,27 +211,9 @@
 
 ;; Redefine the native get/count/contains?/nth (captured first) so the existing
 ;; emit lowerings unwrap a transient; non-transients are untouched.
+;; count/contains?/nth wrappers are collapsed into records.ss (loaded later) —
+;; only the get-arm registration lives here.
 (register-get-arm! jolt-transient? (lambda (coll k d) (t-get coll k d)))
-(define %prev-jolt-count jolt-count)
-(set! jolt-count (lambda (coll) (if (jolt-transient? coll) (t-count coll) (%prev-jolt-count coll))))
-(define %prev-jolt-contains? jolt-contains?)
-(set! jolt-contains? (lambda (coll k) (if (jolt-transient? coll) (t-contains? coll k) (%prev-jolt-contains? coll k))))
-(define %prev-jolt-nth jolt-nth)
-(set! jolt-nth
-  (case-lambda
-    ((coll i)
-     (if (jolt-transient? coll)
-         (if (eq? (jolt-transient-kind coll) 'vec)
-             (let ((idx (->idx i)))
-               (if (tvec-in-bounds? coll idx) (vector-ref (jolt-transient-buf coll) idx) (error 'nth "index out of bounds")))
-             (%prev-jolt-nth (jolt-transient-buf coll) i))
-         (%prev-jolt-nth coll i)))
-    ((coll i d)
-     (if (jolt-transient? coll)
-         (if (eq? (jolt-transient-kind coll) 'vec)
-             (let ((idx (->idx i))) (if (tvec-in-bounds? coll idx) (vector-ref (jolt-transient-buf coll) idx) d))
-             (%prev-jolt-nth (jolt-transient-buf coll) i d))
-         (%prev-jolt-nth coll i d)))))
 
 (def-var! "clojure.core" "transient" jolt-transient-new)
 (def-var! "clojure.core" "transient?" jolt-transient?)
