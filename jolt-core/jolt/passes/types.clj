@@ -5,7 +5,7 @@
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
-  (:require [jolt.ir :refer [reduce-ir-children]]
+  (:require [jolt.ir :refer [reduce-ir-children map-ir-children]]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
@@ -94,6 +94,7 @@
 ;; defined after infer but referenced from it (the rest of the checker lives in
 ;; jolt.passes.types.check, required above)
 (declare check-user-call)
+(declare inline-impl-receiver-type)
 
 (defn- var-key [fnode] (str (get fnode :ns) "/" (get fnode :name)))
 
@@ -734,17 +735,8 @@
           (when (and (string? proto) (string? method)
                      (= :fn (get fnn :op)) (seq (get fnn :arities)))
             (let [arity (first (get fnn :arities))
-                  params (get arity :params)
-                  shapes (get @config-box :record-shapes)
-                  ;; seed param 0 (the receiver) with the record type from the
-                  ;; type-name string in args[0] (e.g. "Circle" for ->Circle).
-                  ;; The shapes map is keyed by "ns/->Name"; find by suffix match.
-                  ctor-key (when (and type-name shapes (seq params))
-                             (let [target (str "->" type-name)]
-                               (some (fn [[k v]] (when (.endsWith k target) k)) shapes)))
-                  rtype (when ctor-key
-                          (record-type-from-entry (get shapes ctor-key) type-depth shapes))
-                  tenv (if rtype {(first params) rtype} {})]
+                  rtype (inline-impl-receiver-type type-name (get arity :params))
+                  tenv (if rtype {(first (get arity :params)) rtype} {})]
               [(str proto "/" method)
                (nth (infer-body (get arity :body) tenv) 0)])))))))
 
@@ -758,6 +750,64 @@
   method's joined impl-return type (record-shapes must already be installed)."
   [nodes]
   (reset! pm-rets-box (reduce (fn [acc n] (walk-pm-rets n acc)) {} nodes)))
+
+;; --- inline method body receiver typing ------------------------------------
+;; A defrecord/deftype inline method body reads its fields via (get this :field).
+;; With the receiver param seeded as the record type, those reads resolve to
+;; jrec-field-at (bare index) instead of jolt-get. The receiver-typed node is
+;; spliced into the register-inline-method's fn arg so the backend emits the
+;; fast-path body. See also collect-pm-rets! (return-type inference only).
+
+(defn- inline-impl-receiver-type
+  "Given the type-name string from args[0] of register-inline-method (e.g.
+  \"Circle\") and the fn's param names, return the record type for seeding
+  param 0, or nil if type-name is not a known record (e.g. a host type name
+  from extend-type)."
+  [type-name params]
+  (when (and type-name (seq params))
+    (let [shapes (get @config-box :record-shapes)
+          target (str "->" type-name)
+          ctor-key (some (fn [[k v]] (when (.endsWith k target) k)) shapes)]
+      (when ctor-key
+        (record-type-from-entry (get shapes ctor-key) type-depth shapes)))))
+
+(defn reinfer-inline-method-bodies
+  "Walk node and re-infer the fn bodies of register-inline-method and
+  register-method invocations with param 0 (the receiver) seeded as the
+  record type. This lets field reads in inline method bodies emit
+  jrec-field-at (bare index) instead of jolt-get + keyword.
+  Must be called after record-shapes are installed (set-record-shapes!).
+  Skips host type names (no record shape). Returns the node with annotated
+  fn bodies spliced into the invoke args."
+  [node]
+  (let [walk (fn walk [n]
+               (if (= :invoke (get n :op))
+                 (let [f (get n :fn) args (get n :args)]
+                   (if (and (= :var (get f :op))
+                            (or (= "register-inline-method" (get f :name))
+                                (= "register-method" (get f :name)))
+                            (= 4 (count args)))
+                     (let [type-name (get (nth args 0) :val)
+                           fnn (nth args 3)]
+                       (if (and type-name (= :fn (get fnn :op)) (seq (get fnn :arities)))
+                         (let [rtype (inline-impl-receiver-type type-name
+                                        (get (first (get fnn :arities)) :params))
+                               env (mk-env false false)]
+                           (if rtype
+                             ;; re-infer every arity with param 0 seeded as record type
+                             (let [annotated (mapv (fn [arity]
+                                                     (let [params (get arity :params)
+                                                           tenv (if (seq params)
+                                                                  {(first params) rtype} {})]
+                                                       (assoc arity :body
+                                                              (nth (infer (get arity :body) tenv env) 1))))
+                                                   (get fnn :arities))]
+                               (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
+                             (map-ir-children walk n)))
+                         (map-ir-children walk n)))
+                     (map-ir-children walk n)))
+                 (map-ir-children walk n)))]
+    (walk node)))
 
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded

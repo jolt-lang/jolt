@@ -750,6 +750,22 @@
       (and nop (empty? args) (= nop "+")) "0"
       (and nop (empty? args) (= nop "*")) "1"
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
+      ;; (get coll k [default]) with a struct-typed coll — the inference marked the
+      ;; receiver with :hint :struct and a :shape matching the declared field layout.
+      ;; Read the field by its static slot (jrec-field-at) instead of the generic
+      ;; jolt-get dispatch. Only the 2-arg (no-default) form takes this path since a
+      ;; declared field is always present. The key must be a compile-time keyword
+      ;; literal so (struct-field-index) can resolve it.
+      (and (= nop "jolt-get") (<= 2 (count arg-nodes) 3))
+      (let [recv (first arg-nodes) key-node (second arg-nodes)
+            idx (when (and (= 2 (count arg-nodes))
+                           (= :struct (:hint recv))
+                           (= :const (:op key-node))
+                           (keyword? (:val key-node)))
+                  (struct-field-index (:shape recv) (:val key-node)))]
+        (if idx
+          (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
+          (order-args (fn [as] (str "(jolt-get " (str/join " " as) ")")))))
       nop (order-args (fn [as] (str "(" nop " " (str/join " " as) ")")))
       ;; (:k coll [default]) -> (jolt-get coll :k [default]) — the key (fnode) is a
       ;; const, so only the coll/default args carry order. When the inference typed
