@@ -78,3 +78,5 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
 * [tick](https://github.com/juxt/tick) — date/time over Jolt's `java.time`;
   `#time/…` literals via `time-literals`.
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write
+* [yamlstar](https://github.com/yaml/yamlstar) — YAML load/dump (pure-Clojure
+  parser, JSON-safe integer policy).
