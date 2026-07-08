@@ -741,7 +741,7 @@
                   ;; The shapes map is keyed by "ns/->Name"; find by suffix match.
                   ctor-key (when (and type-name shapes (seq params))
                              (let [target (str "->" type-name)]
-                               (some (fn [[k _]] (.endsWith k target)) shapes)))
+                               (some (fn [[k v]] (when (.endsWith k target) k)) shapes)))
                   rtype (when ctor-key
                           (record-type-from-entry (get shapes ctor-key) type-depth shapes))
                   tenv (if rtype {(first params) rtype} {})]
