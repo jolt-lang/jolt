@@ -201,10 +201,12 @@
 ;; sorted return their own hash) and Chez's equal-hash can yield a BIGNUM, so a
 ;; key's hash isn't guaranteed to be a fixnum. Masking with the 58-bit window via
 ;; the generic bitwise-and always lands in fixnum range for the HAMT's fx slicing.
-(define (key-hash k) (bitwise-and (jolt-hash k) hmask))
+(define (key-hash k)
+  (let ((h (jolt-hash k)))
+    (if (fixnum? h) (fxand h hmask) (bitwise-and h hmask))))
 (define (chunk h shift) (fxand (fxsra h shift) 31))
 (define (bitpos h shift) (fxsll 1 (chunk h shift)))
-(define (popcount n) (let loop ((n n) (c 0)) (if (fx=? n 0) c (loop (fxand n (fx- n 1)) (fx+ c 1)))))
+(define (popcount n) (fxbit-count n))
 (define (arr-index bm bit) (popcount (fxand bm (fx- bit 1))))
 
 ;; jolt= alist ops (for hash-collision buckets)
@@ -313,7 +315,7 @@
         ((fx>=? cnt array-map-limit-kw) #f)
         ((and (keyword? k) (all-keywords? ord)) #t)
         (else #f)))
-(define (append-key ord k) (append ord (list k)))
+(define (append-key ord k) (cons k ord))  ; O(1) prepend — reversed order, reversed at iteration
 (define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (car o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
 
 ;; growth rule (PersistentArrayMap.assoc): a new key appends to the order while in
@@ -355,14 +357,15 @@
 (define (pmap-fold m proc acc)
   (let ((ord (pmap-order m)))
     (if ord
-        (fold-right (lambda (k a) (proc k (pmap-get m k jolt-nil) a)) acc ord)  ; visits last->first
+        ;; ord is reverse-insertion-order (newest first); fold-left + cons = insertion order
+        (fold-left (lambda (a k) (proc k (pmap-get m k jolt-nil) a)) acc ord)
         (node-fold (pmap-root m) proc acc))))
 ;; visit entries in iteration (insertion) order — for code that builds a new map /
 ;; ordered value directly rather than via cons-accumulation.
 (define (pmap-fold-fwd m proc acc)
   (let ((ord (pmap-order m)))
     (if ord
-        (let loop ((ks ord) (a acc))
+        (let loop ((ks (reverse ord)) (a acc))
           (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
         (node-fold (pmap-root m) proc acc))))
 ;; map LITERAL ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
@@ -426,6 +429,10 @@
           ((null? xs) coll)
           ((jolt-nil? coll) (fold-left jolt-conj1 jolt-empty-list xs))
           (else (meta-carry coll (fold-left jolt-conj1 coll xs)))))))
+(define jolt-conj2 (lambda (coll x)
+  (if (jolt-nil? coll)
+      (jolt-conj1 jolt-empty-list x)
+      (meta-carry coll (jolt-conj1 coll x)))))
 
 ;; A host shim registers a type's get via register-get-arm! (handler: (coll k d) ->
 ;; value) instead of set!-wrapping jolt-get — disjoint coll types, checked before the
@@ -441,15 +448,16 @@
                           (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
         (else d)))
 ;; jrec? / jrec-ref live in records.ss (loaded later); these are forward references
-;; resolved at call time. A record field read is the hottest get, so check it first
-;; and skip the get-arm walk.
+;; resolved at call time. Check concrete types first, then records, then arms.
 (define (jolt-get-dispatch coll k d)
-  (if (jrec? coll)
-      (jrec-ref coll k d)
-      (let loop ((as jolt-get-arms))
-        (cond ((null? as) (jolt-get-base coll k d))
-              (((caar as) coll) ((cdar as) coll k d))
-              (else (loop (cdr as)))))))
+  (cond ((pmap? coll) (pmap-get coll k d))
+        ((pvec? coll) (pvec-nth-d coll k d))
+        ((pset? coll) (if (pset-contains? coll k) k d))
+        ((jrec? coll) (jrec-ref coll k d))
+        (else (let loop ((as jolt-get-arms))
+                (cond ((null? as) (jolt-get-base coll k d))
+                      (((caar as) coll) ((cdar as) coll k d))
+                      (else (loop (cdr as))))))))
 (define jolt-get
   (case-lambda
     ((coll k) (jolt-get-dispatch coll k jolt-nil))
@@ -471,9 +479,10 @@
      (jolt-nth-nil-idx! i)
      (let ((i (->idx i)))
        (cond ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
-             ((pvec? coll) (let ((v (pvec-v coll)))
-                             (if (and (fx>=? i 0) (fx<? i (vector-length v))) (vector-ref v i)
-                                 (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))
+      ((pvec? coll) (let ((cnt (pvec-count coll)))
+                              (if (and (fixnum? i) (fx>=? i 0) (fx<? i cnt))
+                                  (vector-ref (pv-chunk-for coll i) (fxand i pv-mask))
+                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))
@@ -517,11 +526,16 @@
       (cond ((null? kvs) coll)
             ((null? (cdr kvs)) (error 'assoc "assoc expects an even number of key/vals"))
             (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs)))))))
+(define jolt-assoc3 (lambda (coll k v) (meta-carry coll (jolt-assoc1 coll k v))))
 
 (define (jolt-dissoc coll . ks)
   (cond ((jolt-nil? coll) jolt-nil)
         ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
         (else (error 'dissoc "unsupported collection"))))
+(define jolt-dissoc2 (lambda (coll k)
+  (cond ((jolt-nil? coll) jolt-nil)
+        ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
+        (else (error 'dissoc "unsupported collection")))))
 
 (define (jolt-contains? coll k)
   (cond ((pmap? coll) (pmap-contains? coll k))
@@ -582,11 +596,17 @@
 (define (jolt-coll=? a b)
   (cond
     ((and (pvec? a) (pvec? b))
-     (let ((va (pvec-v a)) (vb (pvec-v b)))
-       (and (fx=? (vector-length va) (vector-length vb))
+     (let ((na (pvec-count a)))
+       (and (fx=? na (pvec-count b))
             (let loop ((i 0))
-              (or (fx=? i (vector-length va))
-                  (and (jolt= (vector-ref va i) (vector-ref vb i)) (loop (fx+ i 1))))))))
+              (if (fx=? i na) #t
+                  (let* ((ca (pv-chunk-for a i))
+                         (cb (pv-chunk-for b i))
+                         (clen (vector-length ca)))
+                    (let cloop ((j 0) (k i))
+                      (if (fx>=? j clen) (loop k)
+                          (and (jolt= (vector-ref ca j) (vector-ref cb j))
+                               (cloop (fx+ j 1) (fx+ k 1)))))))))))
     ((and (pmap? a) (pmap? b))
      (and (fx=? (pmap-cnt a) (pmap-cnt b))
           (pmap-fold a (lambda (k v ok) (and ok (jolt= (pmap-get b k pmap-absent) v))) #t)))
@@ -597,10 +617,14 @@
 (define (jolt-coll-hash x)
   (cond
     ((pvec? x)
-     (let ((v (pvec-v x)))
+     (let ((n (pvec-count x)))
        (let loop ((i 0) (h 1))
-         (if (fx=? i (vector-length v)) (bitwise-and h hmask)
-             (loop (fx+ i 1) (bitwise-and (+ (* 31 h) (key-hash (vector-ref v i))) hmask))))))
+         (if (fx=? i n) (bitwise-and h hmask)
+             (let* ((chunk (pv-chunk-for x i)) (clen (vector-length chunk)))
+               (let cloop ((j 0) (k i) (h h))
+                 (if (fx>=? j clen) (loop k h)
+                     (cloop (fx+ j 1) (fx+ k 1)
+                            (bitwise-and (+ (* 31 h) (key-hash (vector-ref chunk j))) hmask)))))))))
     ;; maps/sets hash order-independently (sum), consistent with unordered =
     ((pmap? x) (bitwise-and (pmap-fold x (lambda (k v a) (+ a (fxxor (key-hash k) (key-hash v)))) 0) hmask))
     ((pset? x) (bitwise-and (pset-fold x (lambda (e a) (+ a (key-hash e))) 0) hmask))))

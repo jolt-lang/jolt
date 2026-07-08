@@ -18,12 +18,14 @@
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
             [jolt.passes.types :refer [run-inference
-                                       check-form infer-body reinfer-def phint-seed
-                                       set-rtenv! set-vtypes! join-types
-                                       set-record-shapes! set-map-shapes! set-protocol-methods!
-                                       reset-escapes! collected-escapes
-                                       wp-infer! param-seeds-for param-num-seeds-for
-                                       set-check-mode! take-diags!]]))
+                                        check-form infer-body reinfer-def phint-seed
+                                        set-rtenv! set-vtypes! join-types
+                                        set-record-shapes! set-map-shapes! set-protocol-methods!
+                                        reset-escapes! collected-escapes
+                                        wp-infer! param-seeds-for param-num-seeds-for
+                                        set-check-mode! take-diags!
+                                        reinfer-inline-method-bodies]]
+            [jolt.backend-scheme :refer [set-ctor-shapes!]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
@@ -75,6 +77,7 @@
   (numeric/annotate
     (if (inline-enabled? ctx)
       (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
+            _ (set-ctor-shapes! (record-shapes ctx))  ;; backend direct ctor calls
             ;; resolve ^Record param hints (incl. defrecord/extend-type method
             ;; `this`) to bare field reads per-form, not only under whole-program.
             ;; Same shapes the inline pass uses.
@@ -91,7 +94,9 @@
             ;; everything else takes the ordinary per-form inference.
             seeds (when (= :def (:op opt)) (param-seeds-for (str (:ns opt) "/" (:name opt))))]
         ;; a final const-fold after inference propagates any predicate folded to a
-        ;; constant, collapsing the `if` it gates to the taken branch; then inject
-        ;; any whole-program :double param hints for the numeric pass that follows.
-        (inject-wp-nhints (const-fold (if seeds (reinfer-def opt seeds) (run-inference opt)))))
+        ;; constant, collapsing the `if` it gates to the taken branch; re-infer
+        ;; inline method bodies with the receiver seeded (field reads → jrec-field-at);
+        ;; then inject any whole-program :double param hints for the numeric pass.
+        (inject-wp-nhints (const-fold (reinfer-inline-method-bodies
+                                        (if seeds (reinfer-def opt seeds) (run-inference opt))))))
       (const-fold node))))

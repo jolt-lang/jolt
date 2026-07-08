@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline shakesmoke remint joltc joltc-release joltc-debug joltcsmoke submodules
+.PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body shakesmoke remint joltc joltc-release joltc-debug joltcsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -20,7 +20,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret narrow directlink numeric inline certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -116,12 +116,24 @@ devirt:
 fieldread:
 	@chez --script host/chez/run-fieldread.ss
 
+# Inline method body field-read gate: when the optimize pipeline re-infers
+# defrecord/deftype inline method bodies with the receiver typed, field reads
+# must emit jrec-field-at (bare index) instead of jolt-get.
+inline-body:
+	@chez --script host/chez/run-inline-body.ss
+
 # Hintless whole-program double inference: a fn whose every call site passes a
 # flonum has its param typed :double by the closed-world fixpoint and unboxed to
 # fl-ops with no ^double hint; an integer caller leaves it generic, an escaped fn
 # keeps :any.
 numwp:
 	@chez --script host/chez/run-numwp.ss
+
+# Mandelbrot count-point hot loop: whole-program fixpoint must seed cr/ci as
+# :double from caller type, and the numeric pass must emit fl-ops with zero
+# jolt-n* generic arith in the double arithmetic path.
+mandelbrot-num:
+	@chez --script host/chez/run-mandelbrot-num.ss
 
 # Double record fields: a ^double-tagged field reads back as a flonum (coerced at
 # construction and set!), so hintless arithmetic over those fields unboxes to fl-ops;
@@ -134,6 +146,14 @@ fieldnum:
 # a field read off the result bare-indexes; a disagreeing impl keeps the generic path.
 protoret:
 	@chez --script host/chez/run-protoret.ss
+
+# Protocol-dispatch polymorphic inline cache: a protocol call the inference tags
+# :proto/:method but can't prove monomorphic emits a per-site cache keyed on the
+# receiver's descriptor identity (eq? scan + a global epoch guard). Pins the
+# emission, megamorphic correctness across record types, and that an extend-type at
+# runtime invalidates the cache (the epoch bump) so the new impl is served.
+pic:
+	@chez --script host/chez/run-pic.ss
 
 # Nilable record types + flow-sensitive narrowing: a record-or-nil types as a nilable
 # record (some?/nil? don't fold, so a runtime guard stays); inside (if (some? x) ..)

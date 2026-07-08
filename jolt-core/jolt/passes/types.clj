@@ -5,7 +5,7 @@
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
-  (:require [jolt.ir :refer [reduce-ir-children]]
+  (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node]]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
@@ -94,6 +94,7 @@
 ;; defined after infer but referenced from it (the rest of the checker lives in
 ;; jolt.passes.types.check, required above)
 (declare check-user-call)
+(declare inline-impl-receiver-type)
 
 (defn- var-key [fnode] (str (get fnode :ns) "/" (get fnode :name)))
 
@@ -216,13 +217,17 @@
 (def ^:private dbl-arith-ops #{"+" "-" "*" "/" "min" "max" "inc" "dec"})
 (defn- int-lit-node? [n]
   (and (= :const (get n :op)) (let [v (get n :val)] (and (number? v) (integer? v)))))
-;; an arithmetic result is :double when every operand is a proven flonum or an
-;; integer literal (a wildcard the fl-op coerces) and at least one is a flonum — so
-;; (* x 2) with x:double is :double, but (* a b) with both :num stays :num (no
-;; flonum proof, no fl-op).
+;; an arithmetic result is :double when every operand is a proven flonum or a
+;; proven numeric type (:num, :long, or an integer literal — all coercible to
+;; double) and at least one operand is a proven flonum — so (* x 2) with x:double
+;; is :double, and (* x y) with x:double y:num is :double (y coerced at emission).
+;; A bare (* a b) with both :num stays :num (no flonum proof, no fl-op).
 (defn- dbl-arith? [ares argnodes]
   (and (pos? (count ares))
-       (every? (fn [i] (or (= :double (ty (nth ares i))) (int-lit-node? (nth argnodes i))))
+       (every? (fn [i]
+                 (let [t (ty (nth ares i))]
+                   (or (= :double t) (= :num t) (= :long t)
+                       (int-lit-node? (nth argnodes i)))))
                (range (count ares)))
        (some (fn [r] (= :double (ty r))) ares)))
 
@@ -389,20 +394,42 @@
         (when (and (get env :strict?) iscall-var)
           (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
             (when usig (check-user-call k usig ats pos env))))))
-    (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
-          rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
-          base (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares))]
-      [(cond
-         (= cn "range") (mk-vec :num)
-         (and cn (contains? elem-fns cn) (> n 0))
-         (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
-         ;; flonum arithmetic yields a flonum — flows :double into a callee param
-         ;; (and into the fixpoint's return type) so hintless double code unboxes.
-         (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args)) :double
-         :else (call-ret-type fnode env))
-       (if rtype
-         (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-         base)])))
+       (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
+            rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
+            ;; Annotate EVERY recognized protocol call with :proto/:method so the back
+            ;; end can build a per-site inline cache even at a megamorphic site (where
+            ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
+            ;; site additionally carries :devirt-type and takes the faster devirt path.
+            base (if pm
+                   (assoc node :proto (nth pm 0) :method (nth pm 1)
+                                :fn fnode' :args (mapv (fn [r] (nd r)) ares))
+                   (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
+        (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
+              rt (cond
+                   (= cn "range") (mk-vec :num)
+                   (and cn (contains? elem-fns cn) (> n 0))
+                   (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
+                   ;; flonum arithmetic yields a flonum — flows :double into a callee
+                   ;; param (and into the fixpoint's return type) so hintless double
+                   ;; code unboxes.
+                   maybe-dbl :double
+                   :else (call-ret-type fnode env))
+              ;; When dbl-arith? proves :double, wrap non-double operands in coerce
+              ;; :double nodes so the numeric pass sees :double and emits fl-ops.
+              base* (if maybe-dbl
+                      (let [coerced (mapv (fn [r a]
+                                           (let [t (ty r)]
+                                             (cond (int-lit-node? a)
+                                                   (assoc a :val (double (get a :val)))
+                                                   (= t :num) (coerce-node :double (nd r))
+                                                   (= t :long) (coerce-node :double (nd r))
+                                                   :else (nd r))))
+                                         ares args)]
+                        (assoc base :args coerced))
+                      base)]
+          [rt (if rtype
+                (assoc base* :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
+                base*)]))))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."
@@ -720,13 +747,17 @@
                  (or (= "register-inline-method" (get f :name))
                      (= "register-method" (get f :name)))
                  (= 4 (count args)))
-        (let [proto (get (nth args 1) :val)
+        (let [type-name (get (nth args 0) :val)
+              proto (get (nth args 1) :val)
               method (get (nth args 2) :val)
               fnn (nth args 3)]
           (when (and (string? proto) (string? method)
                      (= :fn (get fnn :op)) (seq (get fnn :arities)))
-            [(str proto "/" method)
-             (nth (infer-body (get (first (get fnn :arities)) :body) {}) 0)]))))))
+            (let [arity (first (get fnn :arities))
+                  rtype (inline-impl-receiver-type type-name (get arity :params))
+                  tenv (if rtype {(first (get arity :params)) rtype} {})]
+              [(str proto "/" method)
+               (nth (infer-body (get arity :body) tenv) 0)])))))))
 
 (defn- walk-pm-rets [node acc]
   (let [kr (impl-reg-ret node)
@@ -738,6 +769,64 @@
   method's joined impl-return type (record-shapes must already be installed)."
   [nodes]
   (reset! pm-rets-box (reduce (fn [acc n] (walk-pm-rets n acc)) {} nodes)))
+
+;; --- inline method body receiver typing ------------------------------------
+;; A defrecord/deftype inline method body reads its fields via (get this :field).
+;; With the receiver param seeded as the record type, those reads resolve to
+;; jrec-field-at (bare index) instead of jolt-get. The receiver-typed node is
+;; spliced into the register-inline-method's fn arg so the backend emits the
+;; fast-path body. See also collect-pm-rets! (return-type inference only).
+
+(defn- inline-impl-receiver-type
+  "Given the type-name string from args[0] of register-inline-method (e.g.
+  \"Circle\") and the fn's param names, return the record type for seeding
+  param 0, or nil if type-name is not a known record (e.g. a host type name
+  from extend-type)."
+  [type-name params]
+  (when (and type-name (seq params))
+    (let [shapes (get @config-box :record-shapes)
+          target (str "->" type-name)
+          ctor-key (some (fn [[k v]] (when (.endsWith k target) k)) shapes)]
+      (when ctor-key
+        (record-type-from-entry (get shapes ctor-key) type-depth shapes)))))
+
+(defn reinfer-inline-method-bodies
+  "Walk node and re-infer the fn bodies of register-inline-method and
+  register-method invocations with param 0 (the receiver) seeded as the
+  record type. This lets field reads in inline method bodies emit
+  jrec-field-at (bare index) instead of jolt-get + keyword.
+  Must be called after record-shapes are installed (set-record-shapes!).
+  Skips host type names (no record shape). Returns the node with annotated
+  fn bodies spliced into the invoke args."
+  [node]
+  (let [walk (fn walk [n]
+               (if (= :invoke (get n :op))
+                 (let [f (get n :fn) args (get n :args)]
+                   (if (and (= :var (get f :op))
+                            (or (= "register-inline-method" (get f :name))
+                                (= "register-method" (get f :name)))
+                            (= 4 (count args)))
+                     (let [type-name (get (nth args 0) :val)
+                           fnn (nth args 3)]
+                       (if (and type-name (= :fn (get fnn :op)) (seq (get fnn :arities)))
+                         (let [rtype (inline-impl-receiver-type type-name
+                                        (get (first (get fnn :arities)) :params))
+                               env (mk-env false false)]
+                           (if rtype
+                             ;; re-infer every arity with param 0 seeded as record type
+                             (let [annotated (mapv (fn [arity]
+                                                     (let [params (get arity :params)
+                                                           tenv (if (seq params)
+                                                                  {(first params) rtype} {})]
+                                                       (assoc arity :body
+                                                              (nth (infer (get arity :body) tenv env) 1))))
+                                                   (get fnn :arities))]
+                               (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
+                             (map-ir-children walk n)))
+                         (map-ir-children walk n)))
+                     (map-ir-children walk n)))
+                 (map-ir-children walk n)))]
+    (walk node)))
 
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded

@@ -96,16 +96,13 @@
     ((and (jolt-coll? a) (jolt-coll? b)) (jolt-coll=? a b))
     (else (eq? a b))))
 (define (jolt=2 a b)
-  ;; identity fast path, like Util.equiv's k1 == k2: the same object equals
-  ;; itself without a structural walk — (= s s) on an infinite lazy seq must not
-  ;; realize it. Numbers keep the exactness-aware arm (Chez may intern flonum
-  ;; literals, and (= ##NaN ##NaN) is false like the JVM's).
-  (if (and (eq? a b) (not (number? a)))
-      #t
-      (let loop ((as jolt-eq-arms))
-        (cond ((null? as) (jolt=2-base a b))
-              (((caar as) a b) ((cdar as) a b))
-              (else (loop (cdr as)))))))
+  (cond ((and (fixnum? a) (fixnum? b)) (= a b)) 
+        ((and (flonum? a) (flonum? b)) (= a b)) 
+        ((and (eq? a b) (not (number? a))) #t) 
+        (else (let loop ((as jolt-eq-arms)) 
+                (cond ((null? as) (jolt=2-base a b)) 
+                      (((caar as) a b) ((cdar as) a b)) 
+                      (else (loop (cdr as))))))))
 (define (jolt= a . rest)
   (let loop ((a a) (rest rest))
     (cond ((null? rest) #t)
@@ -138,7 +135,12 @@
     ((jolt-coll? x) (jolt-coll-hash x))   ; map/set; forward to collections.ss
     (else (equal-hash x))))
 (define (jolt-hash x)
-  (let loop ((as jolt-hash-arms))
-    (cond ((null? as) (jolt-hash-base x))
-          (((caar as) x) ((cdar as) x))
-          (else (loop (cdr as))))))
+  ;; fast path for common types: skip the arm walk entirely
+  (cond ((jolt-nil? x) 0) 
+        ((keyword-t? x) (keyword-t-khash x)) 
+        ((fixnum? x) (equal-hash x)) 
+        ((string? x) (string-hash x)) 
+        (else (let loop ((as jolt-hash-arms)) 
+                (cond ((null? as) (jolt-hash-base x)) 
+                      (((caar as) x) ((cdar as) x)) 
+                      (else (loop (cdr as))))))))
