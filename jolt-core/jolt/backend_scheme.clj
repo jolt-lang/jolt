@@ -83,7 +83,8 @@
    "ex-info" #(or (= % 2) (= % 3))
    "bit-and" #(= % 2) "bit-or" #(= % 2) "bit-xor" #(= % 2) "bit-not" #(= % 1)
    "bit-shift-left" #(= % 2) "bit-shift-right" #(= % 2)
-   "unsigned-bit-shift-right" #(= % 2)})
+    "unsigned-bit-shift-right" #(= % 2)
+    "=" #(>= % 2)})
 
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg,
 ;; but Scheme's < demands a number even there — special-case.
@@ -574,7 +575,8 @@
 ;; fixed-arity Scheme helper instead of the variadic wrapper (no rest list, no
 ;; fold-left overhead). Checked before the general native-ops lookup.
 (def ^:private fixed-arity-ops
-  {"assoc" {3 "jolt-assoc3"}
+  {"=" {2 "jolt=2"}
+   "assoc" {3 "jolt-assoc3"}
    "conj" {2 "jolt-conj2"}
    "dissoc" {2 "jolt-dissoc2"}})
 

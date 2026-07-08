@@ -427,6 +427,7 @@
           (let ((fk (vector-ref fkeys i)))
             (loop (+ i 1) (if (eq? fk drop-k) m (%r-jolt-assoc1 m fk (vector-ref vals i)))))))))
 (define %r-jolt-dissoc jolt-dissoc)
+(define %r-jolt-dissoc2 jolt-dissoc2)
 (define (jrec-dissoc1 coll k)
   (if (not (jrec? coll))
       (%r-jolt-dissoc coll k)            ; an earlier declared-field dissoc downgraded it
@@ -442,6 +443,11 @@
          => (lambda (m) (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
         ((jrec? coll) (fold-left jrec-dissoc1 coll ks))
         (else (apply %r-jolt-dissoc coll ks)))))
+(set! jolt-dissoc2
+  (lambda (coll k)
+    (cond ((jrec-cl coll "without") => (lambda (m) (jolt-invoke m coll k)))
+          ((jrec? coll) (jrec-dissoc1 coll k))
+          (else (%r-jolt-dissoc2 coll k)))))
 ;; keys/vals over a jrec read its entry seq (jolt-seq is method-first, so a
 ;; map-like deftype delegates to its Seqable; a defrecord's seq is its fields, so
 ;; the result is unchanged for records).
