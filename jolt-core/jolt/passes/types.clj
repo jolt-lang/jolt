@@ -5,7 +5,7 @@
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
-  (:require [jolt.ir :refer [reduce-ir-children map-ir-children]]
+  (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node]]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
@@ -217,13 +217,17 @@
 (def ^:private dbl-arith-ops #{"+" "-" "*" "/" "min" "max" "inc" "dec"})
 (defn- int-lit-node? [n]
   (and (= :const (get n :op)) (let [v (get n :val)] (and (number? v) (integer? v)))))
-;; an arithmetic result is :double when every operand is a proven flonum or an
-;; integer literal (a wildcard the fl-op coerces) and at least one is a flonum — so
-;; (* x 2) with x:double is :double, but (* a b) with both :num stays :num (no
-;; flonum proof, no fl-op).
+;; an arithmetic result is :double when every operand is a proven flonum or a
+;; proven numeric type (:num, :long, or an integer literal — all coercible to
+;; double) and at least one operand is a proven flonum — so (* x 2) with x:double
+;; is :double, and (* x y) with x:double y:num is :double (y coerced at emission).
+;; A bare (* a b) with both :num stays :num (no flonum proof, no fl-op).
 (defn- dbl-arith? [ares argnodes]
   (and (pos? (count ares))
-       (every? (fn [i] (or (= :double (ty (nth ares i))) (int-lit-node? (nth argnodes i))))
+       (every? (fn [i]
+                 (let [t (ty (nth ares i))]
+                   (or (= :double t) (= :num t) (= :long t)
+                       (int-lit-node? (nth argnodes i)))))
                (range (count ares)))
        (some (fn [r] (= :double (ty r))) ares)))
 
@@ -400,17 +404,32 @@
                    (assoc node :proto (nth pm 0) :method (nth pm 1)
                                 :fn fnode' :args (mapv (fn [r] (nd r)) ares))
                    (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
-       [(cond
-          (= cn "range") (mk-vec :num)
-          (and cn (contains? elem-fns cn) (> n 0))
-          (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
-          ;; flonum arithmetic yields a flonum — flows :double into a callee param
-          ;; (and into the fixpoint's return type) so hintless double code unboxes.
-          (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args)) :double
-          :else (call-ret-type fnode env))
-        (if rtype
-          (assoc base :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-          base)])))
+        (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
+              rt (cond
+                   (= cn "range") (mk-vec :num)
+                   (and cn (contains? elem-fns cn) (> n 0))
+                   (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
+                   ;; flonum arithmetic yields a flonum — flows :double into a callee
+                   ;; param (and into the fixpoint's return type) so hintless double
+                   ;; code unboxes.
+                   maybe-dbl :double
+                   :else (call-ret-type fnode env))
+              ;; When dbl-arith? proves :double, wrap non-double operands in coerce
+              ;; :double nodes so the numeric pass sees :double and emits fl-ops.
+              base* (if maybe-dbl
+                      (let [coerced (mapv (fn [r a]
+                                           (let [t (ty r)]
+                                             (cond (int-lit-node? a)
+                                                   (assoc a :val (double (get a :val)))
+                                                   (= t :num) (coerce-node :double (nd r))
+                                                   (= t :long) (coerce-node :double (nd r))
+                                                   :else (nd r))))
+                                         ares args)]
+                        (assoc base :args coerced))
+                      base)]
+          [rt (if rtype
+                (assoc base* :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
+                base*)]))))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."

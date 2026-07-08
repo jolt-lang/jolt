@@ -129,6 +129,12 @@ inline-body:
 numwp:
 	@chez --script host/chez/run-numwp.ss
 
+# Mandelbrot count-point hot loop: whole-program fixpoint must seed cr/ci as
+# :double from caller type, and the numeric pass must emit fl-ops with zero
+# jolt-n* generic arith in the double arithmetic path.
+mandelbrot-num:
+	@chez --script host/chez/run-mandelbrot-num.ss
+
 # Double record fields: a ^double-tagged field reads back as a flonum (coerced at
 # construction and set!), so hintless arithmetic over those fields unboxes to fl-ops;
 # an untagged field stays generic.
