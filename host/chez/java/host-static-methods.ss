@@ -141,6 +141,7 @@
     (if (fx<? d radix) d -1)))
 (define character-statics
   (list (cons "digit" (lambda (ch radix) (->num (char-digit-value (char->cp ch) (jnum->exact radix)))))
+        (cons "toChars" (lambda (cp) (na-char-array (jolt-vector (integer->char (char->cp cp))))))
         (cons "isDigit" (lambda (ch) (let ((cp (char->cp ch))) (and (fx>=? cp 48) (fx<=? cp 57)))))
         (cons "isWhitespace" (lambda (ch) (char-whitespace? (integer->char (char->cp ch)))))
         (cons "valueOf" (lambda (ch) (if (char? ch) ch (integer->char (char->cp ch)))))))

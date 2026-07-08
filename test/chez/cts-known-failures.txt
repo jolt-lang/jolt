@@ -3,7 +3,7 @@
 # with: JOLT_CTS_WRITE_BASELINE=1 host/chez/cts.sh
 clojure.core-test.abs 1 0
 clojure.core-test.add-watch 0 1
-clojure.core-test.bigint 6 0
+clojure.core-test.bigint 1 0
 clojure.core-test.bit-set 1 0
 clojure.core-test.dec 1 0
 clojure.core-test.double-qmark 3 0

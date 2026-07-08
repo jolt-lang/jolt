@@ -541,6 +541,8 @@
   {:suite "interop / String methods" :label ".contains" :expected "true" :actual "(.contains \"abc\" \"b\")" :portability :jvm}
   {:suite "interop / String methods" :label ".replace" :expected "\"axc\"" :actual "(.replace \"abc\" \"b\" \"x\")" :portability :jvm}
   {:suite "interop / String methods" :label ".charAt" :expected "\\b" :actual "(.charAt \"abc\" 1)" :portability :jvm}
+  {:suite "interop / String methods" :label ".codePointAt" :expected "97" :actual "(.codePointAt \"abc\" 0)" :portability :jvm}
+  {:suite "interop / String methods" :label ".codePointAt astral" :expected "26085" :actual "(.codePointAt \"日\" 0)" :portability :jvm}
   {:suite "interop / String methods" :label ".equalsIgnoreCase" :expected "true" :actual "(.equalsIgnoreCase \"AbC\" \"aBc\")" :portability :jvm}
   {:suite "interop / String methods" :label "Long/MAX_VALUE" :expected "true" :actual "(pos? Long/MAX_VALUE)" :portability :jvm}
   {:suite "interop / String methods" :label "String/valueOf num" :expected "\"42\"" :actual "(String/valueOf 42)" :portability :jvm}
@@ -656,6 +658,8 @@
   {:suite "host-interop / migratus class shims" :label "IllegalArgumentException." :expected "\"bad\"" :actual "(try (throw (IllegalArgumentException. \"bad\")) (catch Exception e (.getMessage e)))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "InterruptedException." :expected "\"stop\"" :actual "(try (throw (InterruptedException. \"stop\")) (catch Throwable e (.getMessage e)))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "Character/isUpperCase" :expected "true" :actual "(Character/isUpperCase \\A)" :portability :jvm}
+  {:suite "host-interop / migratus class shims" :label "Character/toChars + String ctor" :expected "\"é\"" :actual "(String. (Character/toChars 233))" :portability :jvm}
+  {:suite "host-interop / migratus class shims" :label "Character/toChars astral" :expected "\"😀\"" :actual "(String. (Character/toChars 128512))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "Character/isLowerCase" :expected "true" :actual "(Character/isLowerCase \\a)" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "Character/isUpperCase neg" :expected "false" :actual "(Character/isUpperCase \\a)" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "Thread/interrupted" :expected "false" :actual "(Thread/interrupted)" :portability :jvm}
@@ -1471,6 +1475,9 @@
   {:suite "numbers / bit-ops & math" :label "bit-clear" :expected "13" :actual "(bit-clear 15 1)" :portability :common}
   {:suite "numbers / bit-ops & math" :label "bit-test true" :expected "true" :actual "(bit-test 4 2)" :portability :common}
   {:suite "numbers / bit-ops & math" :label "bigint 64-bit" :expected "\"9000000000\"" :actual "(str (bigint 9000000000))" :portability :common}
+  {:suite "numbers / bit-ops & math" :label "bigint from string" :expected "123" :actual "(bigint \"123\")" :portability :common}
+  {:suite "numbers / bit-ops & math" :label "bigint from double" :expected "3" :actual "(bigint 3.7)" :portability :common}
+  {:suite "numbers / bit-ops & math" :label "biginteger from string" :expected "42" :actual "(biginteger \"42\")" :portability :common}
   {:suite "numbers / random (invariants — non-deterministic)" :label "rand-int in range" :expected "true" :actual "(let [r (rand-int 5)] (and (integer? r) (>= r 0) (< r 5)))" :portability :common}
   {:suite "numbers / random (invariants — non-deterministic)" :label "rand-int zero" :expected "0" :actual "(rand-int 1)" :portability :common}
   {:suite "numbers / random (invariants — non-deterministic)" :label "rand in [0,1)" :expected "true" :actual "(let [r (rand)] (and (>= r 0) (< r 1)))" :portability :common}
