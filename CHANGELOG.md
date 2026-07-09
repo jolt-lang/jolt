@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes. HEAD tracks the latest tag.
 
+## [0.2.1] - 2026-07-09
+
+### Added
+
+- `Throwable->map` (`:via`/`:cause`/`:data` over the `ex-cause` chain).
+- The 11 core dynamic vars the JVM defines that were missing (`*agent*`,
+  `*repl*`, `*compile-path*`, `*source-path*`, …), with real context behavior:
+  `*agent*` is bound inside agent actions, `*repl*` and the `*1`/`*2`/`*3`/`*e`
+  history work in `joltc repl`, `*file*`/`*source-path*` bind during loads, and
+  `*command-line-args*` carries app args for `run` and `-m`.
+- `clojure.test/test-var` and `test-vars`; `run-tests` discovers tests attached
+  via `:test` var metadata, and `deftest` vars carry `:test` metadata.
+
+### Changed
+
+- `ns-map` returns every visible mapping (imports, refers, interns) and
+  `ns-refers` includes the implicit `refer-clojure`, matching the JVM.
+- Maps print with comma-separated entries (`{:a 1, :b 2}`).
+- Double printing follows `Double.toString` (plain decimal only in
+  `[1e-3, 1e7)`, otherwise `d.dddE±x`); `pr` of a beyond-long integer carries
+  the BigInt `N` suffix.
+- `hash-map` results iterate in insertion order up to the array-map threshold,
+  like ClojureScript.
+
+### Fixed
+
+- `(?x)` COMMENTS-mode regexes follow Java: whitespace (including newlines —
+  multi-line patterns previously matched nothing) and `#`-comments are
+  stripped, even inside character classes, and a mid-pattern cluster works.
+- `$` matches before a final newline like Java; `\<`/`\>` are literal escapes;
+  regex literals keep the backslash of an escaped quote in their source.
+- `clojure.string/split-lines` drops trailing empty strings.
+- `clojure.pprint` no longer emits trailing spaces before line breaks.
+
 ## [0.2.0] - 2026-07-09
 
 ### Added
@@ -217,7 +251,8 @@ Clojure-compatible standard library.
 - **Distribution**: a self-contained `joltc` binary, a Homebrew tap, and an
   install script.
 
-[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/jolt-lang/jolt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jolt-lang/jolt/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/jolt-lang/jolt/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/jolt-lang/jolt/compare/v0.1.5...v0.1.6
