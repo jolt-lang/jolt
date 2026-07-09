@@ -49,6 +49,7 @@
 (defn- run-ns
   "Require ns-name and invoke its -main with the string app args."
   [ns-name app-args]
+  (push-thread-bindings {#'clojure.core/*command-line-args* (seq app-args)})
   (require (symbol ns-name))
   (if-let [mainv (ns-resolve (symbol ns-name) (symbol "-main"))]
     (apply (deref mainv) app-args)
@@ -72,7 +73,9 @@
   (apply-project! (deps/resolve-project (project-dir)))
   (cond
     (= "-m" (first more)) (run-ns (second more) (drop 2 more))
-    (seq more)            (do (load-file (first more)) nil)
+    (seq more)            (do (push-thread-bindings
+                                {#'clojure.core/*command-line-args* (seq (rest more))})
+                              (load-file (first more)) nil)
     :else (throw (ex-info "run needs -m NS or a FILE" {}))))
 
 ;; -M:alias…  — resolve with the aliases, run their :main-opts
@@ -151,6 +154,11 @@
   ;; code shows a tail-frame backtrace, no JOLT_TRACE needed (JOLT_TRACE=0 opts out).
   (jolt.host/enable-trace!)
   (println (str ";; jolt " (version) " repl — :repl/quit or ^D to exit"))
+  ;; *repl* reads true inside the session, and the result/exception history
+  ;; vars update per evaluation, like clojure.main's REPL.
+  (push-thread-bindings {#'clojure.core/*repl* true
+                         #'clojure.core/*1 nil #'clojure.core/*2 nil
+                         #'clojure.core/*3 nil #'clojure.core/*e nil})
   (loop []
     (let [form (repl-read-form)]
       (when form
@@ -159,8 +167,13 @@
         (if (#{:repl/quit :exit} (try (read-string form) (catch :default _ nil)))
           nil
           (do
-            (try (println (pr-str (load-string form)))
+            (try (let [v (load-string form)]
+                   (var-set #'clojure.core/*3 *2)
+                   (var-set #'clojure.core/*2 *1)
+                   (var-set #'clojure.core/*1 v)
+                   (println (pr-str v)))
                  (catch :default e
+                   (var-set #'clojure.core/*e e)
                    (println "error:" (or (ex-message e)
                                          (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
                                          (pr-str e)))

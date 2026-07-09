@@ -160,9 +160,22 @@
       (hashtable-keys ns-alias-table))
     m))
 
-;; ns-refers: the {sym -> var} referred into `desig` via refer/use.
+;; ns-refers: the {sym -> var} referred into `desig` via refer/use, plus the
+;; implicit refer-clojure every namespace gets — clojure.core's publics are
+;; visible everywhere, minus names the ns interns itself (an intern replaces
+;; the mapping in the JVM's namespace table).
 (define (jolt-ns-refers desig)
-  (let ((cns (ns-desig->name desig)) (m (jolt-hash-map)))
+  (let* ((cns (ns-desig->name desig))
+         (m (if (string=? cns "clojure.core")
+                (jolt-hash-map)
+                (pmap-fold (ns-vars-pmap-when "clojure.core"
+                                              (lambda (c) (not (var-private? c))))
+                           (lambda (k v acc)
+                             (let ((local (var-cell-lookup cns (symbol-t-name k))))
+                               (if (and local (var-cell-defined? local))
+                                   acc
+                                   (jolt-assoc acc k v))))
+                           (jolt-hash-map)))))
     (vector-for-each
       (lambda (k)
         (when (string=? (car k) cns)
@@ -202,6 +215,16 @@
         (loop (cdr ns)
               (jolt-assoc m (jolt-symbol #f (car ns)) (string-append "java.lang." (car ns)))))))
 (define (jolt-ns-imports . _) jolt-default-imports)
+
+;; ns-map: every mapping visible in the ns — the java.lang imports, the refers
+;; (including the implicit clojure.core publics), and the ns's own interns,
+;; later groups replacing earlier ones like the JVM's single mapping table.
+(define (jolt-ns-map desig)
+  (let* ((m (jolt-ns-imports desig))
+         (m (pmap-fold (jolt-ns-refers desig)
+                       (lambda (k v acc) (jolt-assoc acc k v)) m)))
+    (pmap-fold (jolt-ns-interns desig)
+               (lambda (k v acc) (jolt-assoc acc k v)) m)))
 
 ;; resolve: an unqualified symbol resolves in the current ns then clojure.core; a
 ;; qualified one in its own ns. Returns the var iff genuinely defined, else nil —
@@ -382,7 +405,7 @@
 (def-var! "clojure.core" "in-ns" jolt-in-ns)
 (def-var! "clojure.core" "all-ns" jolt-all-ns)
 (def-var! "clojure.core" "ns-publics" jolt-ns-publics)
-(def-var! "clojure.core" "ns-map" jolt-ns-interns)
+(def-var! "clojure.core" "ns-map" jolt-ns-map)
 (def-var! "clojure.core" "ns-interns" jolt-ns-interns)
 (def-var! "clojure.core" "ns-aliases" jolt-ns-aliases)
 (def-var! "clojure.core" "ns-refers" jolt-ns-refers)

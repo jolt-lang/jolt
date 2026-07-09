@@ -636,4 +636,5 @@
   {:suite "instance? / bound-class" :expr "(do (def icv-k clojure.lang.Keyword) (instance? icv-k :k))" :expected "true"}
   {:suite "maps / hash-map order" :expr "(seq (hash-map :xmap 1 :! 2))" :expected "([:xmap 1] [:! 2])"}
   {:suite "maps / hash-map order" :expr "(do (def sq-log (atom [])) (defmacro sq-m3 [] `{:a ~(list 'swap! 'sq-log 'conj 1) :b ~(list 'swap! 'sq-log 'conj 2)}) (sq-m3) (deref sq-log))" :expected "[1 2]"}
+  {:suite "core / dynamic-vars" :expr "*source-path*" :expected "NO_SOURCE_FILE"}
 ]

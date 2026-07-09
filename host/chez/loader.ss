@@ -218,22 +218,48 @@
 ;; comment — yields rdr-eof but still advances. parse-next collapses that to "no
 ;; more forms", which would silently drop the entire rest of the file; here we
 ;; skip the no-op form and continue to true end-of-string.
+;; A file load binds *file* to the path and *source-path* to the bare file
+;; name around its forms (the reference binds both in Compiler.load), so loaded
+;; code can read its own location. Cells resolve lazily — the vars' defaults
+;; load after this file.
+(define ldr-file-cell #f)
+(define ldr-spath-cell #f)
+(define (ldr-with-file-vars path thunk)
+  (unless ldr-file-cell
+    (set! ldr-file-cell (var-cell-lookup "clojure.core" "*file*"))
+    (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*")))
+  (if (not (and ldr-file-cell ldr-spath-cell))
+      (thunk)
+      (let ((name (let loop ((i (- (string-length path) 1)))
+                    (cond ((< i 0) path)
+                          ((char=? (string-ref path i) #\/)
+                           (substring path (+ i 1) (string-length path)))
+                          (else (loop (- i 1)))))))
+        (dynamic-wind
+          (lambda () (dyn-binding-stack
+                      (cons (list (cons ldr-file-cell path) (cons ldr-spath-cell name))
+                            (dyn-binding-stack))))
+          thunk
+          (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
+
 (define (load-jolt-file path)
   (let* ((src (ldr-read-source path)) (end (string-length src)))
     ;; parameterize (not a bare set!) so a require nested in this file's ns form
     ;; restores path when control returns to the rest of this file.
     (parameterize ((rdr-source-file path))   ; list forms read here carry :file = path
-      (let loop ((i 0))
-        (when (< i end)
-          (let-values (((form j) (rdr-read-form src i end)))
-            (when (> j i)
-              (unless (rdr-eof? form)
-                (when (getenv "JOLT_TRACE_LOAD")
-                  (display "  [load-form] " (current-error-port))
-                  (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
-                (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
-                                        (chez-current-ns)))
-              (loop j))))))))
+      (ldr-with-file-vars path
+        (lambda ()
+          (let loop ((i 0))
+            (when (< i end)
+              (let-values (((form j) (rdr-read-form src i end)))
+                (when (> j i)
+                  (unless (rdr-eof? form)
+                    (when (getenv "JOLT_TRACE_LOAD")
+                      (display "  [load-form] " (current-error-port))
+                      (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
+                    (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
+                                            (chez-current-ns)))
+                  (loop j))))))))))
 
 ;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
 ;; dependency cycle terminates (Clojure's behavior). The caller's current ns is

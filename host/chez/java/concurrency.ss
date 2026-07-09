@@ -190,6 +190,21 @@
       (vector-set! q 0 (reverse (vector-ref q 1))) (vector-set! q 1 '()))
     (let ((out (vector-ref q 0))) (vector-set! q 0 (cdr out)) (car out))))
 
+;; Each action runs with *agent* bound to its agent, like the JVM's action
+;; binding frame — (send a (fn [s] (send *agent* …))) works. The cell resolves
+;; lazily (dynamic-var-defaults.ss loads after this file).
+(define agent-star-cell #f)
+(define (with-agent-binding a thunk)
+  (let ((cell (or agent-star-cell
+                  (let ((c (var-cell-lookup "clojure.core" "*agent*")))
+                    (set! agent-star-cell c) c))))
+    (if (not cell)
+        (thunk)
+        (dynamic-wind
+          (lambda () (dyn-binding-stack (cons (list (cons cell a)) (dyn-binding-stack))))
+          thunk
+          (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
+
 ;; Drain the queue, applying each action (f state arg*) outside the lock (an action
 ;; may send/deref the same agent). A validator rejection or a thrown action puts the
 ;; agent in an error state and halts the queue (JVM :fail mode).
@@ -205,7 +220,8 @@
                         (jolt-agent-err-set! a e)
                         (condition-broadcast (jolt-agent-cv a)))))
           (let* ((old (jolt-agent-state a))
-                 (nv (apply jolt-invoke (car act) old (cdr act))))
+                 (nv (with-agent-binding a
+                       (lambda () (apply jolt-invoke (car act) old (cdr act))))))
             (let ((vf (jolt-agent-validator a)))
               (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf nv)))
                 (jolt-iref-state-throw)))
