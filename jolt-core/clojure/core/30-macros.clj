@@ -67,12 +67,13 @@
 (defmacro prefers [mm]
   `(prefers-setup (quote ~mm)))
 
-;; instance?: class names don't evaluate to values on jolt, so the type arg is
-;; passed quoted to the ctx-capturing checker; the value evaluates normally.
-;; A LIST in type position is a class-valued expression (e.g. Selmer's
-;; (Class/forName "[C")) — evaluate it instead.
+;; instance?: class names don't evaluate to values on jolt, so bare class-name
+;; symbols are passed quoted to the ctx-capturing checker. A LIST in type
+;; position is a class-valued expression (e.g. Selmer's (Class/forName "[C"))
+;; — evaluate it. A LOCAL in &env may hold a class value (string or jhost)
+;; from a (let [c java.util.Map] (instance? c x)) binding — evaluate it too.
 (defmacro instance? [t x]
-  (if (seq? t)
+  (if (or (seq? t) (contains? &env t))
     `(instance-check ~t ~x)
     `(instance-check (quote ~t) ~x)))
 

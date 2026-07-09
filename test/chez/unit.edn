@@ -618,4 +618,8 @@
   ;; yamlscript ys.v0 re-export idiom: intern a wrapper fn, merge the source
   ;; macro's meta onto it.
   {:suite "intern" :expr "(do (defmacro am-src [x] (list (quote +) x 1)) (def am-tgt @#'am-src) (alter-meta! #'am-tgt merge (meta #'am-src)) (load-string \"(am-tgt 5)\"))" :expected "6"}
+  {:suite "instance? / bound-class" :expr "(let [c java.util.Map] (instance? c {:a 1}))" :expected "true"}
+  {:suite "instance? / bound-class" :expr "(let [c java.util.Map] (instance? c 42))" :expected "false"}
+  {:suite "instance? / bound-class" :expr "(instance? (class \"hello\") \"hello\")" :expected "true"}
+  {:suite "instance? / bound-class" :expr "(let [c (class \"hello\")] (instance? c \"hi\"))" :expected "true"}
 ]

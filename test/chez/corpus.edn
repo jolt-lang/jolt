@@ -3603,4 +3603,8 @@
   {:suite "contracts / misc" :label "intern demands an existing ns; counted? excludes strings; seqable? includes arrays" :expected "[:t false true]" :actual "[(try (intern (quote no-such-ns-xyz) (quote v) 1) (catch Throwable _ :t)) (counted? \"s\") (seqable? (object-array 2))]" :portability :jvm}
   {:suite "contracts / misc" :label "nth of nil honors notFound; a nil index throws; the starred specials are special" :expected "[:default :npe [true true true true true]]" :actual "[(nth nil 5 :default) (try (nth [1] nil) (catch NullPointerException _ :npe)) [(special-symbol? (quote case*)) (special-symbol? (quote deftype*)) (special-symbol? (quote letfn*)) (special-symbol? (quote reify*)) (special-symbol? (quote &))]]" :portability :common}
   {:suite "contracts / misc" :label "rand-nth of nil is nil; of a set throws" :expected "[nil :t]" :actual "[(rand-nth nil) (try (rand-nth #{1 2}) (catch Throwable _ :t))]" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var (String)" :expected "true" :actual "(let [c String] (instance? c \"hello\"))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var negative (String)" :expected "false" :actual "(let [c String] (instance? c 42))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var (qualified, IPersistentMap)" :expected "true" :actual "(let [c clojure.lang.IPersistentMap] (instance? c {:a 1}))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var (java.util.Map on a jrec)" :expected "true" :actual "(let [c java.util.Map] (instance? c {:a 1}))" :portability :common}
 ]
