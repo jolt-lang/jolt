@@ -258,12 +258,19 @@
     jolt-nil))
 
 ;; intern: create/set a var ns/sym to val (or an unbound cell). Returns the var.
+;; The symbol's metadata becomes the var's metadata (Var.setMeta), and a truthy
+;; :macro marks the var as a macro so later-compiled forms expand it.
 (define (jolt-intern ns-desig sym . vopt)
   (let ((nm (ns-desig->name ns-desig)) (s (symbol-t-name sym)))
     ;; the namespace must exist (Namespace.find), like the JVM's intern
     (unless (hashtable-ref ns-registry nm #f)
       (jolt-throw (jolt-ex-info (string-append "No namespace: " nm " found") empty-pmap)))
-    (if (pair? vopt) (def-var! nm s (car vopt)) (declare-var! nm s))))
+    (let ((cell (if (pair? vopt) (def-var! nm s (car vopt)) (declare-var! nm s)))
+          (m (jolt-meta sym)))
+      (unless (jolt-nil? m)
+        (hashtable-set! var-meta-table cell m)
+        (var-meta-sync-macro! cell m))
+      cell)))
 
 ;; alias / ns-unalias: register/drop an :as alias under the current (or given) ns.
 ;; A runtime alias is registered into the SAME table the analyzer consults, so a
@@ -311,12 +318,20 @@
 
 ;; alter-meta! / reset-meta!: a var's metadata lives in var-meta-table (rt.ss);
 ;; any other reference (atom/agent/namespace) uses the identity meta side-table
-;; jolt-meta reads.
+;; jolt-meta reads. A truthy :macro in the new meta marks the var as a macro
+;; (JVM parity: Var.isMacro reads meta), so re-export idioms that copy a macro's
+;; meta onto a fresh var — (alter-meta! v merge (meta macro-var)) — work. Marking
+;; is one-way: meta without :macro does not demote an existing macro, since
+;; defmacro vars derive :macro rather than storing it.
+(define (var-meta-sync-macro! cell m)
+  (when (jolt-truthy? (jolt-get m jolt-kw-var-macro))
+    (hashtable-set! var-macro-table cell #t)))
 (define (jolt-alter-meta! ref f . args)
   (if (var-cell? ref)
       (let* ((cur (or (hashtable-ref var-meta-table ref #f) (jolt-hash-map)))
              (new (apply jolt-invoke f cur args)))
         (hashtable-set! var-meta-table ref new)
+        (var-meta-sync-macro! ref new)
         new)
       (let* ((cur (let ((m (jolt-meta ref))) (if (jolt-nil? m) (jolt-hash-map) m)))
              (new (apply jolt-invoke f cur args)))
@@ -324,7 +339,9 @@
         new)))
 (define (jolt-reset-meta! ref m)
   (if (var-cell? ref)
-      (hashtable-set! var-meta-table ref m)
+      (begin
+        (hashtable-set! var-meta-table ref m)
+        (var-meta-sync-macro! ref m))
       (hashtable-set! meta-table ref m))
   m)
 

@@ -15,13 +15,17 @@
 (define (jolt-meta x)
   (cond
     ((symbol-t? x) (let ((m (symbol-t-meta x))) (if (jolt-nil? m) jolt-nil m)))
-    ;; a var's meta is {:ns :name} (derived from the cell) + any def-time user
-    ;; meta from rt.ss's var-meta-table.
+    ;; a var's meta is {:ns :name} (derived from the cell) + :macro true for a
+    ;; macro var (derived from var-macro-table, like Var.isMacro reading meta on
+    ;; the JVM) + any def-time user meta from rt.ss's var-meta-table.
     ((var-cell? x)
-     (let ((user (hashtable-ref var-meta-table x #f)))
-       (jolt-assoc (if user user (jolt-hash-map))
-                   jolt-kw-var-ns (var-cell-ns x)
-                   jolt-kw-var-name (var-cell-name x))))
+     (let* ((user (hashtable-ref var-meta-table x #f))
+            (base (jolt-assoc (if user user (jolt-hash-map))
+                              jolt-kw-var-ns (var-cell-ns x)
+                              jolt-kw-var-name (var-cell-name x))))
+       (if (macro-var? x)
+           (jolt-assoc base jolt-kw-var-macro #t)
+           base)))
     ;; a deftype implementing clojure.lang.IObj stores meta in a field and threads
     ;; it through its own assoc/withMeta (core.logic's Substitutions/LVar/LCons),
     ;; so dispatch to its meta method rather than the identity side-table — which

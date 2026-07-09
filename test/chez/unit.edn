@@ -606,4 +606,16 @@
   ;; WP-A: keyword/map/pvec/multimethod callables all dispatch through the
   ;; fixed-arity jolt-invoke1 slow path (non-procedure callee).
   {:suite "wp-invoke-cache" :expr "(do (defmulti wpi-mm (fn [x] (:t x))) (defmethod wpi-mm :foo [x] (:v x)) [(wpi-mm {:t :foo :v 7}) (:k {:k 9}) ({:a 1} :a) ([1 2 3] 1)])" :expected "[7 9 1 2]"}
+  ;; intern: symbol meta lands on the var; :macro true makes the var expand as a
+  ;; macro (load-string compiles after the intern, so the use site sees it).
+  {:suite "intern" :expr "(do (defmacro im-src [x] (list (quote +) x 1)) (intern 'user (with-meta 'im-macro {:macro true}) @#'im-src) (load-string \"(im-macro 5)\"))" :expected "6"}
+  {:suite "intern" :expr "(do (intern 'user (with-meta 'iv-doc {:doc \"d\"}) 42) [(:doc (meta #'iv-doc)) iv-doc])" :expected "[d 42]"}
+  {:suite "intern" :expr "(do (intern 'user 'iv-plain 7) iv-plain)" :expected "7"}
+  ;; a defmacro var reports :macro true in its meta (JVM parity), so re-export
+  ;; idioms that copy (meta var) onto a new var carry macro-ness with it.
+  {:suite "intern" :expr "(do (defmacro mmeta1 [x] x) (:macro (meta #'mmeta1)))" :expected "true"}
+  ;; alter-meta! adding :macro true makes the var expand as a macro — the
+  ;; yamlscript ys.v0 re-export idiom: intern a wrapper fn, merge the source
+  ;; macro's meta onto it.
+  {:suite "intern" :expr "(do (defmacro am-src [x] (list (quote +) x 1)) (def am-tgt @#'am-src) (alter-meta! #'am-tgt merge (meta #'am-src)) (load-string \"(am-tgt 5)\"))" :expected "6"}
 ]
