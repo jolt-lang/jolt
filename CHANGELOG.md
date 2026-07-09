@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes. HEAD tracks the latest tag.
+### Added
+
+- Refs and STM: `ref` (with `:validator`/`:meta`), `dosync`, `alter`, `commute`,
+  `ref-set`, `ensure`, `sync`, `io!`, with serialized transactions on a single
+  global lock; refs participate in watches/validators/metadata, and
+  `*loaded-libs*` is a real ref over the loader registry (the tools.namespace
+  reload pattern works).
 
 ## [0.2.1] - 2026-07-09
 
