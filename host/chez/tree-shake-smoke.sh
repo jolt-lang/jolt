@@ -101,6 +101,10 @@ echo "shake smoke: correctness fixtures (ns-publics, defonce, data-readers)"
 run_local_case ns-publics-app   app.core  ""   ""
 run_local_case defonce-app      app.core  ""   "def-var! \"app.core\" \"dead\""
 run_local_case datareader-app   app.core  ""   ""
+# multi-path: the same app exercised down BOTH argv branches — a def wrongly
+# shaken off the non-default path diffs on the second invocation.
+run_local_case multipath-app    app.core  ""     ""
+run_local_case multipath-app    app.core  "alt"  ""
 
 [ "$fail" = 0 ] && echo "shake smoke: passed" || echo "shake smoke: FAILED"
 exit $fail

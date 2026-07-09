@@ -116,6 +116,14 @@
               (let ((b (dce-unwrap form))
                     (str (with-output-to-string (lambda () (write form))))
                     (refs (dce-sexp-refs form '())))
+                ;; the shaken prelude is this re-serialization — a datum that
+                ;; does not round-trip (shared structure, unwritable value)
+                ;; would silently corrupt clojure.core, so prove it reads back
+                ;; identical before using it.
+                (unless (equal? form (with-input-from-string str read))
+                  (error 'jolt-build
+                         "tree-shake: a prelude form does not round-trip through write/read"
+                         (if (pair? form) (car form) form)))
                 (loop (cons
                         (if (and (pair? b) (eq? (car b) 'def-var!) (pair? (cdr b)) (string? (cadr b))
                                  (pair? (cddr b)) (string? (caddr b)))

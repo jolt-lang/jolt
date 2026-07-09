@@ -45,7 +45,11 @@
 (define (bld-mkdir-p dir)
   (unless (or (string=? dir "") (string=? dir "/") (string=? dir ".") (file-exists? dir))
     (bld-mkdir-p (path-parent dir))
-    (guard (e (#t #f)) (mkdir dir))))
+    ;; tolerate only the benign race (someone else created it) — a real mkdir
+    ;; failure (permissions) used to surface later as a less specific
+    ;; open-output-file error.
+    (guard (e (#t (unless (file-exists? dir) (raise e))))
+      (mkdir dir))))
 
 (define (bld-contains? s sub)
   (let ((ns (string-length s)) (nsub (string-length sub)))
@@ -266,7 +270,15 @@
               (lambda (f)
                 (ce-scan-requires! f (car nf))
                 (unless (or (ei-ns-form? f) (ce-macro-form? f))
-                  (guard (e (#t #f))
+                  ;; a form the analyzer rejects here only loses whole-program
+                  ;; type info (per-form emit still errors the build if it's
+                  ;; truly broken) — but say so, or an optimized build silently
+                  ;; loses inference for the namespace.
+                  (guard (e (#t (display (string-append
+                                          "jolt build: note: whole-program inference skipped a form in "
+                                          (car nf) "\n")
+                                         (current-error-port))
+                                #f))
                     (set! nodes (cons (jolt-ce-analyze (make-analyze-ctx (car nf)) f) nodes)))))
               (ei-read-all src)))))
       ordered)
@@ -614,6 +626,11 @@
                 (set-release! #f)
                 (set-direct-link-flag! #f)
                 ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
+                ;; drop the accumulated direct-link fqn set too — a later
+                ;; in-process build would otherwise bind calls against defs
+                ;; recorded for THIS one. (bld-wp-infer!'s record/protocol
+                ;; seeds self-heal: the next build replaces them wholesale.)
+                ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))
