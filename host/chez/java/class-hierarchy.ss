@@ -181,8 +181,8 @@
 (jch-register-supers! "clojure.lang.IPersistentSet" '("clojure.lang.IPersistentCollection" "clojure.lang.Counted"))
 (jch-register-supers! "clojure.lang.IPersistentList" '("clojure.lang.Sequential" "clojure.lang.IPersistentStack"))
 (jch-register-supers! "clojure.lang.IObj" '("clojure.lang.IMeta"))
-(jch-register-supers! "clojure.lang.IFn" '("java.lang.Runnable" "java.util.concurrent.Callable"))
-(jch-register-supers! "clojure.lang.Fn" '("clojure.lang.IFn"))
+(jch-register-supers! "clojure.lang.IFn" '("clojure.lang.Fn" "java.lang.Runnable" "java.util.concurrent.Callable"))
+;; Fn is a marker interface (no supers).
 (jch-register-supers! "clojure.lang.AFn" '("clojure.lang.IFn"))
 (jch-register-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.Fn"))
 ;; java.util collection interfaces

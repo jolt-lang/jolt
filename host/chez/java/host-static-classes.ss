@@ -940,74 +940,20 @@
                   (lambda (a b) (and (opt? a) (opt? b) (eq? (opt-present? a) (opt-present? b))
                                      (or (not (opt-present? a)) (jolt=2 (opt-value a) (opt-value b))))))
 
-;; --- minimal JVM class/interface ancestry -----------------------------------
-;; A handful of libraries reflect over the class hierarchy — e.g. core.memoize
-;; validates its first argument with (some #{IFn AFn Runnable Callable}
-;; (ancestors (class f))). jolt models a class as its name string and has no
-;; reflection, so supers/ancestors return nothing on their own. This table gives
-;; the common interfaces the direct supers the JVM reports, and the overlay's
-;; supers/ancestors fold it in. Keyed by canonical class name; value = direct
-;; supers. Extend as more interfaces are exercised.
-(define class-supers-tbl (make-hashtable string-hash string=?))
-(define (reg-class-supers! name supers) (hashtable-set! class-supers-tbl name supers))
-(reg-class-supers! "clojure.lang.IFn" '("java.lang.Runnable" "java.util.concurrent.Callable"))
-(reg-class-supers! "clojure.lang.AFn" '("clojure.lang.IFn" "java.lang.Runnable" "java.util.concurrent.Callable"))
-(reg-class-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.IFn" "clojure.lang.Fn"
-                                              "java.lang.Runnable" "java.util.concurrent.Callable"))
-;; common exception hierarchy, so (instance? IOException e) / (catch IOException e)
-;; match a more specific throwable a library threw (e.g. http-client's
-;; UnknownHostException, caught by clj-http-lite's :ignore-unknown-host?).
-(reg-class-supers! "java.lang.Throwable" '("java.lang.Object"))
-(reg-class-supers! "java.lang.Exception" '("java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.lang.RuntimeException" '("java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.io.IOException" '("java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.io.InterruptedIOException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.net.SocketException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.net.UnknownHostException" '("java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.net.ConnectException" '("java.net.SocketException" "java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-(reg-class-supers! "java.net.SocketTimeoutException" '("java.io.InterruptedIOException" "java.io.IOException" "java.lang.Exception" "java.lang.Throwable" "java.lang.Object"))
-;; clojure.lang / java.util ancestry for the builtins (class) reports, so a
-;; class-keyed multimethod / (isa? (class x) SomeClass) dispatches like the JVM.
-;; (Object is supplied universally by class-isa?, so it need not be listed.)
-(reg-class-supers! "clojure.lang.IFn" '("clojure.lang.Fn" "java.lang.Runnable" "java.util.concurrent.Callable"))
-;; Keyword and Symbol implement IFn (they are callable: (:k m) / ('s m)), so a
-;; (class x)-dispatched multimethod with an IFn method matches them, like the JVM.
-(reg-class-supers! "clojure.lang.Keyword" '("clojure.lang.Named" "java.lang.Comparable"
-                                            "clojure.lang.IFn" "clojure.lang.Fn"
-                                            "java.lang.Runnable" "java.util.concurrent.Callable"))
-(reg-class-supers! "clojure.lang.Symbol" '("clojure.lang.Named" "java.lang.Comparable"
-                                           "clojure.lang.IFn" "clojure.lang.Fn"
-                                           "java.lang.Runnable" "java.util.concurrent.Callable"))
-(reg-class-supers! "java.lang.String" '("java.lang.CharSequence" "java.lang.Comparable"))
-(reg-class-supers! "clojure.lang.PersistentHashSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.PersistentTreeSet" '("clojure.lang.APersistentSet" "clojure.lang.IPersistentSet" "clojure.lang.IPersistentCollection" "java.util.Set" "java.util.Collection" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.PersistentVector" '("clojure.lang.APersistentVector" "clojure.lang.IPersistentVector" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Associative" "java.util.List" "java.util.Collection" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.PersistentArrayMap" '("clojure.lang.APersistentMap" "clojure.lang.IPersistentMap" "clojure.lang.IPersistentCollection" "clojure.lang.Associative" "java.util.Map" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.PersistentHashMap" '("clojure.lang.APersistentMap" "clojure.lang.IPersistentMap" "clojure.lang.IPersistentCollection" "clojure.lang.Associative" "java.util.Map" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.PersistentList" '("clojure.lang.ASeq" "clojure.lang.ISeq" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.util.List" "java.util.Collection" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.LazySeq" '("clojure.lang.ISeq" "clojure.lang.IPersistentCollection" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.lang.Iterable"))
-(reg-class-supers! "clojure.lang.Cons" '("clojure.lang.ASeq" "clojure.lang.ISeq" "clojure.lang.Sequential" "clojure.lang.Seqable" "java.lang.Iterable"))
-
+;; class hierarchy lives in class-hierarchy.ss (jvm-class-parents).
+;; fn classes (ns$name) inherit AFunction.
 ;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the table;
 ;; like the JVM (a fn extends clojure.lang.AFunction) its super is AFunction, whose
 ;; registered supers give AFn / IFn / Fn / Runnable / Callable transitively.
 (define (str-has-dollar? s)
   (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
 (define (class-direct-supers name)
-  ;; union the modeled class graph (jch, direct edges) with any legacy table entry,
-  ;; so isa?/supers/ancestors see the single hierarchy source plus anything not yet
-  ;; migrated. The closure below traverses these to the full transitive set.
-  (let ((jch (jch-direct-supers name))
-        (old (hashtable-ref class-supers-tbl name #f)))
-    (cond ((and (pair? jch) old)
-           (let merge ((ss old) (acc jch))
-             (cond ((null? ss) acc)
-                   ((member (car ss) acc) (merge (cdr ss) acc))
-                   (else (merge (cdr ss) (append acc (list (car ss))))))))
-          ((pair? jch) jch)
-          (old old)
-          ((str-has-dollar? name) '("clojure.lang.AFunction"))
-          (else '()))))
+  ;; reads the modeled class graph (jch, direct edges) only — the legacy table has
+  ;; been folded into class-hierarchy.ss.
+  (let ((jch (jch-direct-supers name)))
+    (if (pair? jch) jch
+        (if (str-has-dollar? name) '("clojure.lang.AFunction")
+            '()))))
 ;; transitive closure of direct supers (set semantics via an accumulator list)
 (define (class-ancestors-list name)
   (let loop ((pending (class-direct-supers name)) (seen '()))
@@ -1057,7 +1003,6 @@
 (define (hsc-class-known? name)
   (or (string=? name "java.lang.Object")
       (jch-known? name)
-      (and (hashtable-ref class-supers-tbl name #f) #t)
       (str-has-dollar? name)))
 
 ;; transitive ancestry, rooted at Object for a concrete class like (supers c);
