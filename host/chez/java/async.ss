@@ -247,9 +247,9 @@
          (on-caller? (if (and (pair? rest) (pair? (cdr rest))) (jolt-truthy? (cadr rest)) #t))
          (call-cb (lambda (ok) (unless (jolt-nil? cb) (jolt-invoke cb ok)))))
     (case (ac-try-give! ch v)
-      ((ok) (if on-caller? (call-cb #t) (fork-thread (lambda () (call-cb #t)))) #t)
-      ((closed) (if on-caller? (call-cb #f) (fork-thread (lambda () (call-cb #f)))) #f)
-      (else (fork-thread (lambda () (call-cb (jolt-async-give ch v)))) #t))))
+      ((ok) (if on-caller? (call-cb #t) (fork-thread (lambda () (*txn* #f) (call-cb #t)))) #t)
+      ((closed) (if on-caller? (call-cb #f) (fork-thread (lambda () (*txn* #f) (call-cb #f)))) #f)
+      (else (fork-thread (lambda () (*txn* #f) (call-cb (jolt-async-give ch v)))) #t))))
 
 ;; (take! ch cb [on-caller?]) — async take. Same on-caller? rule as put!.
 (define (jolt-async-take! ch cb . rest)
@@ -257,9 +257,9 @@
          (call-cb (lambda (v) (unless (jolt-nil? cb) (jolt-invoke cb v))))
          (r (ac-poll! ch)))
     (cond
-      ((eq? r ac-poll-empty) (fork-thread (lambda () (call-cb (jolt-async-take ch)))))
+      ((eq? r ac-poll-empty) (fork-thread (lambda () (*txn* #f) (call-cb (jolt-async-take ch)))))
       (on-caller? (call-cb r))
-      (else (fork-thread (lambda () (call-cb r)))))
+      (else (fork-thread (lambda () (*txn* #f) (call-cb r)))))
     jolt-nil))
 
 ;; (go-spawn thunk) — run thunk on a thread; return a buffered(1) channel that

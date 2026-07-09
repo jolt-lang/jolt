@@ -17,7 +17,7 @@
 ;; IRef arm: refs are watchable/validatable through the iref tables.
 (register-iref-arm! jolt-ref?)
 
-;; Per-ref min/max history: stored in side tables (e.g., 0 and 10 defaults).
+;; Per-ref min/max history (defaults 0 and 10), stored in weak side tables.
 (define ref-min-history-tbl (make-weak-eq-hashtable))
 (define ref-max-history-tbl (make-weak-eq-hashtable))
 
@@ -33,7 +33,7 @@
   (nongenerative jolt-txn-v1))
 
 (define (make-txn)
-  (make-jolt-txn (make-weak-eq-hashtable) (make-weak-eq-hashtable) '()))
+  (make-jolt-txn (make-eq-hashtable) (make-eq-hashtable) '()))
 
 ;; --- transaction state -------------------------------------------------------
 ;; A single global mutex serializes all transactions.  Per-thread *txn* detects
@@ -204,19 +204,11 @@
         (begin (hashtable-set! ref-min-history-tbl ref (cadr args)) ref)
         (hashtable-ref ref-min-history-tbl ref 0))))
 
-(define (jolt-ref-set-min-history! ref n)
-  (hashtable-set! ref-min-history-tbl ref n)
-  jolt-nil)
-
 (define (jolt-ref-max-history . args)
   (let ((ref (car args)))
     (if (= (length args) 2)
         (begin (hashtable-set! ref-max-history-tbl ref (cadr args)) ref)
         (hashtable-ref ref-max-history-tbl ref 10))))
-
-(define (jolt-ref-set-max-history! ref n)
-  (hashtable-set! ref-max-history-tbl ref n)
-  jolt-nil)
 
 ;; --- deref -------------------------------------------------------------------
 ;; Inside a transaction, return the in-txn value from the log (falling back

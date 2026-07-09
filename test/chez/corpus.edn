@@ -3687,7 +3687,7 @@
   {:suite "refs / loaded-libs-dosync" :label "*loaded-libs* can be altered inside dosync" :expected "true" :actual "(do (dosync (alter @(var *loaded-libs*) disj (quote non-existent-lib))) true)" :portability :common}
   {:suite "refs / io!-lazy" :label "io! body does not evaluate when it throws" :expected "0" :actual "(do (def iol (atom [])) (try (dosync (io! (swap! iol conj 1))) (catch IllegalStateException e nil)) (count @iol))" :portability :common}
   {:suite "refs / io!-message" :label "a leading literal string is the io! exception message" :expected "\"boom\"" :actual "(try (dosync (io! \"boom\" 1)) (catch IllegalStateException e (ex-message e)))" :portability :common}
-   {:suite "refs / sync" :label "sync has the (sync flags & body) shape" :expected "3" :actual "(let [r (ref 0)] (sync nil (ref-set r 1) (ref-set r 3)) @r)" :portability :common}
+  {:suite "refs / sync" :label "sync has the (sync flags & body) shape" :expected "3" :actual "(let [r (ref 0)] (sync nil (ref-set r 1) (ref-set r 3)) @r)" :portability :common}
   ;; Round 1 — commit-log: rollback on throw, read-your-writes, deferred watches
   {:suite "refs / rollback" :label "ref-set rolls back on exception" :expected "0" :actual "(let [r (ref 0)] (try (dosync (ref-set r 5) (throw (ex-info \"x\" {}))) (catch Exception e nil)) @r)" :portability :common}
   {:suite "refs / rollback-alter" :label "alter rolls back on exception" :expected "0" :actual "(let [r (ref 0)] (try (dosync (alter r + 10) (throw (ex-info \"x\" {}))) (catch Exception e nil)) @r)" :portability :common}
@@ -3696,9 +3696,9 @@
   {:suite "refs / commute-read" :label "in-txn deref sees commute value" :expected "10" :actual "(let [r (ref 0)] (dosync (commute r + 10) @r))" :portability :common}
   {:suite "refs / ensure-read" :label "ensure inside dosync returns current in-txn value" :expected "7" :actual "(let [r (ref 0)] (dosync (ref-set r 7) (ensure r)))" :portability :common}
   {:suite "refs / watch-after-commit" :label "watch fires once after commit with (pre-txn, committed)" :expected "[[0 8]]" :actual "(let [r (ref 0) hits (atom [])] (add-watch r :w (fn [_ _ o n] (swap! hits conj [o n]))) (try (dosync (ref-set r 1) (ref-set r 2) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (dosync (ref-set r 7) (ref-set r 8)) @hits)" :portability :common}
-   {:suite "refs / watch-no-fire-on-rollback" :label "no watch notification on rolled-back txn" :expected "0" :actual "(let [r (ref 0) hits (atom [])] (add-watch r :w (fn [_ _ o n] (swap! hits conj 1))) (try (dosync (ref-set r 5) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (count @hits))" :portability :common}
+  {:suite "refs / watch-no-fire-on-rollback" :label "no watch notification on rolled-back txn" :expected "0" :actual "(let [r (ref 0) hits (atom [])] (add-watch r :w (fn [_ _ o n] (swap! hits conj 1))) (try (dosync (ref-set r 5) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (count @hits))" :portability :common}
   ;; Round 2 — *txn* thread isolation
-  {:suite "refs / txn-leak" :label "future spawned in txn does not inherit *txn*" :expected ":caught" :actual "(do (def tl-r (ref 0)) (try (dosync (deref (future (ref-set tl-r 1)))) (catch IllegalStateException e :caught)))" :portability :common}
+  {:suite "refs / txn-leak" :label "future spawned in txn does not inherit *txn*" :expected ":ise" :actual "(do (def tl-r (ref 0)) (dosync (deref (future (try (ref-set tl-r 1) :wrote (catch IllegalStateException e :ise))))))" :portability :common}
   {:suite "refs / io!-in-future" :label "io! inside future inside dosync runs normally" :expected ":ok" :actual "(let [r (ref 0)] (dosync (deref (future (io! :ok)))))" :portability :common}
   ;; Round 3 — agent-sends held until commit
   {:suite "refs / agent-send-rollback" :label "agent action discarded on txn rollback" :expected "0" :actual "(let [a (agent 0)] (try (dosync (send a inc) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (await a) @a)" :portability :common}
@@ -3707,4 +3707,4 @@
   {:suite "refs / ref-min-history-setter" :label "ref-min-history setter stores value and returns ref" :expected "[5 20]" :actual "(let [r (ref 0)] [(ref-min-history (ref-min-history r 5)) (ref-max-history (ref-max-history r 20))])" :portability :common}
   {:suite "refs / ref-min-history-reader" :label "ref-min-history reader returns stored default" :expected "0" :actual "(ref-min-history (ref 0))" :portability :common}
   {:suite "refs / ref-max-history-reader" :label "ref-max-history reader returns stored default" :expected "10" :actual "(ref-max-history (ref 0))" :portability :common}
- ]
+]
