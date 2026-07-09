@@ -403,6 +403,14 @@
 ;; re-binds it. (ns-name is overridden natively in post-prelude.ss.)
 (def-var! "clojure.core" "*ns*" (intern-ns! "user"))
 
+;; Host seam: bare var-cell lookup (no alias resolution) for the defonce macro
+;; expansion, which must NOT reference clojure.core/resolve (a tree-shake bail ref).
+;; Returns the var cell if found and defined, else nil.
+(def-var! "jolt.host" "find-var"
+  (lambda (ns name)
+    (let ((c (var-cell-lookup ns name)))
+      (if (and c (var-cell-defined? c)) c jolt-nil))))
+
 ;; --- printer patches: a namespace renders as its name (str / pr-str / -e) ----
 (register-pr-arm! jns? jns-name)
 (register-str-render! jns? jns-name)

@@ -52,12 +52,27 @@
   '("clojure.core/eval" "clojure.core/resolve" "clojure.core/ns-resolve"
     "clojure.core/requiring-resolve" "clojure.core/find-var" "clojure.core/intern"
     "clojure.core/load-string" "clojure.core/load-file" "clojure.core/load-reader"
-    "clojure.core/load"))
+    "clojure.core/load"
+    ;; Reflective enumeration — a program that walks a namespace's var table at
+    ;; runtime via ns-publics/ns-interns/&c finds vars invisible to the static
+    ;; IR graph, so any such reference bails the shake.
+    "clojure.core/ns-publics" "clojure.core/ns-interns" "clojure.core/ns-map"
+    "clojure.core/ns-refers" "clojure.core/all-ns" "clojure.core/ns-aliases"))
 
 ;; A reference that needs the analyzer/back end at runtime (compile-from-source). If
 ;; reachable code uses none of these, the compiler image is dropped from the binary —
 ;; an AOT app is fully compiled. (resolve/require don't need it: resolve is a
 ;; var-table lookup; a require of a baked ns no-ops.)
+;;
+;; NOTE: dce-compile-refs is a SUBSET of dce-bail-refs — every form needing the
+;; compiler at runtime (eval, load-string/…) also bails the tree-shake because the
+;; static graph can't track what the compiler will compile. A successful shake (no
+;; bail) ALWAYS drops the compiler. Conversely, a bail may OR may not need the
+;; compiler — a resolve-only bail keeps the shake bail-kept prelude but can still
+;; drop the compiler image since resolve is a var-table lookup, not compilation.
+;; The subset relationship is load-bearing for load-string/eval: those ARE in both
+;; lists because eval'd code might reference any core def, and once the prelude is
+;; shaken a missing def would fail — so the bail keeps everything and the compiler.
 (define dce-compile-refs
   '("clojure.core/eval" "clojure.core/load-string" "clojure.core/load-file"
     "clojure.core/load-reader" "clojure.core/load"))
@@ -109,12 +124,39 @@
                             (dce-rec #t #f refs str))
                         acc)))))))))
 
+;; A reader fn reached ONLY via runtime (read-string "#my/tag ..") resolves through
+;; *data-readers* var-deref — invisible to the IR graph. Scan source-roots for
+;; data_readers.{clj,cljc} and add their reader-fn symbols as roots.
+(define (dce-data-reader-roots)
+  (let ((roots '()))
+    (for-each
+      (lambda (root)
+        (let ((paths (list (string-append root "/data_readers.clj")
+                           (string-append root "/data_readers.cljc"))))
+          (for-each (lambda (path)
+            (when (file-exists? path)
+              (let ((src (read-file-string path)))
+                (guard (e (#t #f))
+                  (let-values (((m j) (rdr-read-form src 0 (string-length src))))
+                    (when (pmap? m)
+                      (pmap-fold m
+                        (lambda (k v a)
+                          (when (symbol-t? v)
+                            (let ((ns-part (symbol-t-ns v)) (nm-part (symbol-t-name v)))
+                              (when (and ns-part (not (jolt-nil? ns-part)) nm-part)
+                                (set! roots (cons (string-append ns-part "/" nm-part) roots))))))
+                        #f)))))))
+            paths)))
+      (get-source-roots))
+    roots))
+
 ;; --- the shake: graph -> reachable -> bail check -> partition ----------------
 ;; edges: fqn -> refs (prunable defs only). roots: -main + the runtime-core roots +
 ;; every non-def form's refs.
 (define (dce-build-graph records entry-main)
   (let ((edges (make-hashtable string-hash string=?))
-        (roots (cons entry-main dce-runtime-core-roots)))
+        (roots (append (dce-data-reader-roots)
+                       (cons entry-main dce-runtime-core-roots))))
     (for-each (lambda (r)
                 (if (dce-rec-keep? r)
                     (set! roots (append (dce-rec-refs r) roots))
