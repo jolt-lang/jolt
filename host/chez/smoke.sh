@@ -161,6 +161,25 @@ else
   fails=$((fails + 1))
 fi
 
+# A throwing go/thread body reports to stderr (the JVM's uncaught-exception
+# handler behavior) while the channel still just closes: <!! stays nil.
+thr_out="$(bin/joltc -e "(do (require '[clojure.core.async :as a]) (pr (a/<!! (a/thread (/ 1 0)))))" 2>/tmp/jolt-smoke-thr-err)"
+if [ "$thr_out" = "nil" ] && grep -q "Exception in go/thread body" /tmp/jolt-smoke-thr-err; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: throwing (thread ...) should print an uncaught report and <!! nil"
+  echo "    stdout \`$thr_out\`; stderr: $(head -1 /tmp/jolt-smoke-thr-err)"
+  fails=$((fails + 1))
+fi
+# Same for a raw Thread body.
+bin/joltc -e '(do (.start (Thread. (fn [] (throw (ex-info "boom" {}))))) (Thread/sleep 200))' 2>/tmp/jolt-smoke-thr2-err >/dev/null
+if grep -q "Exception in Thread body" /tmp/jolt-smoke-thr2-err; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a throwing Thread body should print an uncaught report"
+  fails=$((fails + 1))
+fi
+
 # jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
 # move, mtime round-trip, which). The file self-checks and prints one marker.
 fs_out="$(bin/joltc run test/chez/fs-test.clj 2>/dev/null)"

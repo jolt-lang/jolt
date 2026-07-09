@@ -394,7 +394,13 @@
           (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
             (fork-thread (lambda ()
               (dyn-binding-stack snap)
-              (guard (e (#t #f)) (jolt-invoke (vector-ref st 0)))
+              ;; surface a thread body's throw like the JVM's default uncaught-
+              ;; exception handler; the thread still completes (isAlive/join
+              ;; semantics unchanged). Reporting failures are swallowed.
+              (guard (e (#t (guard (_ (#t #f))
+                              (display "Exception in Thread body:\n" (current-error-port))
+                              (jolt-report-throwable e (current-error-port)))))
+                (jolt-invoke (vector-ref st 0)))
               (with-mutex (vector-ref st 2)
                 (vector-set! st 1 #t)
                 (condition-broadcast (vector-ref st 3)))))
