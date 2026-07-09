@@ -161,6 +161,17 @@ else
   fails=$((fails + 1))
 fi
 
+# jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
+# move, mtime round-trip, which). The file self-checks and prints one marker.
+fs_out="$(bin/joltc run test/chez/fs-test.clj 2>/dev/null)"
+if printf '%s' "$fs_out" | grep -q 'FS-TEST OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: jolt.fs"
+  printf '%s\n' "$fs_out" | grep FAIL | head -5 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # A data reader that returns a CODE form (deps.edn data_readers.clj -> reader fn)
 # must have its result spliced in and COMPILED, like Clojure — #code [:x] becomes
 # (+ 40 2) and evaluates to 42, not the literal list. A project run so the source

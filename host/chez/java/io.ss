@@ -143,6 +143,19 @@
       (let ((t (file-modification-time p)))
         (+ (* (time-second t) 1000) (div (time-nanosecond t) 1000000)))
       0))
+;; set atime+mtime from epoch milliseconds via utimes(2). struct timeval is
+;; sec + usec, 16 bytes each on the 64-bit platforms Chez targets; usec fits
+;; its field (< 1e6) so a signed 64-bit native-endian write covers the layout.
+(define c-utimes (foreign-procedure "utimes" (string u8*) int))
+(define (set-file-mtime-millis! p ms)
+  (let ((tv (make-bytevector 32 0))
+        (sec (div ms 1000))
+        (usec (* (mod ms 1000) 1000)))
+    (bytevector-s64-set! tv 0 sec (native-endianness))
+    (bytevector-s64-set! tv 8 usec (native-endianness))
+    (bytevector-s64-set! tv 16 sec (native-endianness))
+    (bytevector-s64-set! tv 24 usec (native-endianness))
+    (= (c-utimes p tv) 0)))
 ;; mkdir -p: create p and any missing parents. Returns #t if p ends up a dir.
 (define (mkdirs! p)
   (unless (or (= 0 (string-length p)) (file-exists? p))
@@ -221,7 +234,9 @@
       ((string=? name "mkdirs")         (list (if (mkdirs! fp) #t #f)))
       ((string=? name "delete")         (list (if (delete-path! fp) #t #f)))
       ((string=? name "deleteOnExit")   (list jolt-nil))
-      ((string=? name "setLastModified")(list #t))
+      ((string=? name "setLastModified")
+       (list (guard (e (#t #f))
+               (set-file-mtime-millis! fp (exact (floor (car args)))))))
       ((string=? name "createNewFile")
        (list (if (file-exists? fp) #f
                  (guard (e (#t #f)) (close-port (open-output-file fp 'truncate)) #t))))

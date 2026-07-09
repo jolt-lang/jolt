@@ -543,6 +543,7 @@
   {:suite "interop / String methods" :label ".charAt" :expected "\\b" :actual "(.charAt \"abc\" 1)" :portability :jvm}
   {:suite "interop / String methods" :label ".codePointAt" :expected "97" :actual "(.codePointAt \"abc\" 0)" :portability :jvm}
   {:suite "interop / String methods" :label ".codePointAt multibyte" :expected "26085" :actual "(.codePointAt \"日\" 0)" :portability :jvm}
+  {:suite "interop / String methods" :label ".setLastModified round-trip" :expected "1600000000000" :actual "(let [f (java.io.File/createTempFile \"slm\" \".t\")] (.setLastModified f 1600000000000) (let [r (.lastModified f)] (.delete f) r))" :portability :jvm}
   {:suite "interop / String methods" :label ".codePointAt astral" :expected "128512" :actual "(.codePointAt \"😀\" 0)" :portability :jvm}
   {:suite "interop / String methods" :label ".equalsIgnoreCase" :expected "true" :actual "(.equalsIgnoreCase \"AbC\" \"aBc\")" :portability :jvm}
   {:suite "interop / String methods" :label "Long/MAX_VALUE" :expected "true" :actual "(pos? Long/MAX_VALUE)" :portability :jvm}

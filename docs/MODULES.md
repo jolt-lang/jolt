@@ -10,7 +10,7 @@ Where things live and what to read before changing them. Start here to answer
 | Chez runtime | `host/chez/*.ss` | The substrate: value model, persistent collections, seqs, vars/namespaces, host interop, native `clojure.core` shims, regex, FFI, IO, the **reader**. Composed by `rt.ss`. | only `reader.ss` |
 | Compiler | `jolt-core/jolt/*.clj` | analyzer → IR → backend, the optimization passes, the CLI, the deps resolver, nREPL. Baked into the seed. | **yes** |
 | `clojure.core` overlay | `jolt-core/clojure/core/NN-*.clj` | Portable `clojure.core` in dependency-ordered tiers (`00-syntax` … `50-io`); the `NN` prefix *is* the load order. | **yes** |
-| Stdlib | `stdlib/clojure/*.clj` | Lazily-loaded portable namespaces (string/set/walk/edn/pprint/zip/test/data). | no |
+| Stdlib | `stdlib/clojure/*.clj`, `stdlib/jolt/*.clj` | Lazily-loaded portable namespaces (string/set/walk/edn/pprint/zip/test/data) and Jolt's own (`jolt.ffi`, `jolt.fs` — file-system utilities, babashka.fs-shaped). | no |
 | Build & tooling | `host/chez/build.ss`, `emit-image.ss`, `compile-eval.ss`, `loader.ss`, `cli.ss`, `bootstrap.ss` | AOT binary build, cross-compile, runtime eval/load, CLI spine, seed mint. | no (except via `reader.ss`) |
 | Tests & gate | `test/chez/`, `test/conformance/`, `host/chez/run-*.ss`, `Makefile` | Corpus (JVM oracle), unit, per-feature tests. Every `make` target has a comment. | no |
 
