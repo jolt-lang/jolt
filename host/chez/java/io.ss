@@ -42,21 +42,25 @@
   (let ((v (hashtable-ref embedded-resources name #f)))
     (and (bytevector? v) v)))
 
+;; --- with-port: open a port, do work, close on success or throw ----------------
+(define (with-port port proc)
+  (guard (e (#t (guard (_ (#t #f)) (close-port port)) (raise e)))
+    (let ((result (proc port)))
+      (close-port port)
+      result)))
+
 ;; Read a whole file as a bytevector ("" -> empty). Used to slurp boot/stub files.
 (define (read-file-bytes path)
-  (let ((p (open-file-input-port path)))
-    (let ((bv (get-bytevector-all p)))
-      (close-port p)
-      (if (eof-object? bv) (bytevector) bv))))
+  (with-port (open-file-input-port path)
+    (lambda (p) (let ((bv (get-bytevector-all p))) (if (eof-object? bv) (bytevector) bv)))))
 
 ;; Write an embedded bytevector resource out to a path. make-boot-file needs the
 ;; petite/scheme boots as files, so they are spilled to scratch before the call.
 (define (jolt-spill-embedded! name path)
   (let ((bv (jolt-embedded-bytes name)))
     (unless bv (error 'jolt-spill-embedded! "no embedded bytes for" name))
-    (let ((p (open-file-output-port path (file-options no-fail) (buffer-mode block))))
-      (put-bytevector p bv)
-      (close-port p))))
+    (with-port (open-file-output-port path (file-options no-fail) (buffer-mode block))
+      (lambda (p) (put-bytevector p bv)))))
 
 ;; Frame an app boot onto a file that already holds the stub bytes. Layout:
 ;; [stub][boot][boot-length:le64]["JOLTBOOT"]. The stub (host/chez/stub/launcher.c)
@@ -65,15 +69,15 @@
 ;; magic bytes can't be mistaken for the frame.
 (define jolt-payload-magic (string->utf8 "JOLTBOOT"))
 (define (jolt-append-payload! path boot-bv)
-  (let ((head (read-file-bytes path)))           ; the stub bytes already written
-    (let ((p (open-file-output-port path (file-options no-fail) (buffer-mode block)))
-          (lb (make-bytevector 8 0)))
-      (bytevector-u64-set! lb 0 (bytevector-length boot-bv) (endianness little))
-      (put-bytevector p head)
-      (put-bytevector p boot-bv)
-      (put-bytevector p lb)
-      (put-bytevector p jolt-payload-magic)
-      (close-port p))))
+  (let* ((head (read-file-bytes path))           ; the stub bytes already written
+         (lb (make-bytevector 8 0)))
+    (bytevector-u64-set! lb 0 (bytevector-length boot-bv) (endianness little))
+    (with-port (open-file-output-port path (file-options no-fail) (buffer-mode block))
+      (lambda (p)
+        (put-bytevector p head)
+        (put-bytevector p boot-bv)
+        (put-bytevector p lb)
+        (put-bytevector p jolt-payload-magic)))))
 
 ;; chmod 0755 via libc, so the produced binary is executable. load-shared-object
 ;; with #f pulls the running process's own symbols (chmod is in libc, linked into
@@ -283,8 +287,8 @@
 
 ;; --- slurp / spit / flush ---------------------------------------------------
 (define (read-file-string path)
-  (let ((p (open-input-file path)))
-    (let ((s (get-string-all p))) (close-port p) (if (eof-object? s) "" s))))
+  (with-port (open-input-file path)
+    (lambda (p) (let ((s (get-string-all p))) (if (eof-object? s) "" s)))))
 
 ;; Drain a jhost reader (StringReader / PushbackReader): read code units from the
 ;; current position to EOF (-1) and assemble the string. Used by slurp; advances
@@ -372,11 +376,25 @@
                 (jolt-truthy? (cadr o))) #t)
           (else (loop (cddr o))))))
 
+(define spit-tmp-counter 0)
 (define (jolt-spit path content . opts)
+  ;; Render BEFORE any file is touched — a throwing toString used to leave the
+  ;; target truncated. The non-append write goes to a temp file in the same
+  ;; directory and renames over the target, so a mid-write failure (disk full)
+  ;; never destroys the original. Append keeps writing in place.
   (let* ((p (project-relative (file-path-of path)))
-         (port (open-output-file p (if (spit-append? opts) 'append 'truncate))))
-    (put-string port (jolt-str-render-one content))
-    (close-port port)
+         (text (jolt-str-render-one content)))
+    (if (spit-append? opts)
+        (with-port (open-output-file p 'append)
+          (lambda (port) (put-string port text)))
+        (let ((tmp (string-append p ".spit-tmp-"
+                                   (number->string (real-time)) "-"
+                                   (number->string (begin (set! spit-tmp-counter (+ spit-tmp-counter 1))
+                                                          spit-tmp-counter)))))
+          (with-port (open-output-file tmp 'replace)
+            (lambda (port) (put-string port text)))
+          (guard (e (#t (guard (_ (#t #f)) (delete-file tmp)) (raise e)))
+            (rename-file tmp p))))
     jolt-nil))
 
 (define (jolt-flush) (flush-output-port (current-output-port)) jolt-nil)
