@@ -1905,6 +1905,16 @@
   {:suite "reader / comments inside maps" :label "nested with comments" :expected "{:x {:y 2}}" :actual "{:x ; outer\n {:y ; inner\n 2}}" :portability :common}
   {:suite "regex / literals & predicate" :label "regex? literal" :expected "true" :actual "(regex? #\"\\d+\")" :portability :common}
   {:suite "regex / literals & predicate" :label "regex? non-regex" :expected "false" :actual "(regex? \"\\\\d+\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined cluster modifiers (?sx)" :expected "\"foobar\"" :actual "(re-find #\"(?sx)foo bar\" \"foobar\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined cluster modifiers (?si)" :expected "\"axb\"" :actual "(re-find #\"(?si)A.B\" \"axb\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined cluster modifiers (?xs) order" :expected "\"foo\\n\"" :actual "(re-find #\"(?xs)f oo.\" \"foo\\nx\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "scoped combined modifiers (?si:...)" :expected "\"AXbc\"" :actual "(re-find #\"(?si:a.b)c\" \"AXbc\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined (?sm) still works" :expected "\"b\"" :actual "(re-find #\"(?sm)^b\" \"a\\nb\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "re-quote-replacement of a regex" :expected "\"x+y\"" :actual "(clojure.string/re-quote-replacement #\"x+y\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "escaped ] in a char class" :expected "\"]x\"" :actual "(re-find #\"[\\]]x\" \"]x\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "escaped ] amid class members" :expected "\")\"" :actual "(re-find #\"[\\.\\,\\s\\]\\}\\)]\" \")\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "replacement backslash escape" :expected "4" :actual "(count (clojure.string/replace \"abc\" #\"b\" \"\\\\\\\\d\"))" :portability :common}
+  {:suite "regex / literals & predicate" :label "replacement escaped dollar" :expected "3" :actual "(count (clojure.string/replace \"abc\" #\"b\" \"\\\\$\"))" :portability :common}
   {:suite "regex / literals & predicate" :label "escaped digits" :expected "\"42\"" :actual "(re-find #\"\\d+\" \"x42y\")" :portability :common}
   {:suite "regex / literals & predicate" :label "escaped ws/non-ws" :expected "\"x a\"" :actual "(re-find #\"\\S\\s\\S\" \"x a b y\")" :portability :common}
   {:suite "regex / re-find" :label "match" :expected "\"123\"" :actual "(re-find #\"\\d+\" \"abc123def\")" :portability :common}
@@ -3603,6 +3613,12 @@
   {:suite "contracts / misc" :label "intern demands an existing ns; counted? excludes strings; seqable? includes arrays" :expected "[:t false true]" :actual "[(try (intern (quote no-such-ns-xyz) (quote v) 1) (catch Throwable _ :t)) (counted? \"s\") (seqable? (object-array 2))]" :portability :jvm}
   {:suite "contracts / misc" :label "nth of nil honors notFound; a nil index throws; the starred specials are special" :expected "[:default :npe [true true true true true]]" :actual "[(nth nil 5 :default) (try (nth [1] nil) (catch NullPointerException _ :npe)) [(special-symbol? (quote case*)) (special-symbol? (quote deftype*)) (special-symbol? (quote letfn*)) (special-symbol? (quote reify*)) (special-symbol? (quote &))]]" :portability :common}
   {:suite "contracts / misc" :label "rand-nth of nil is nil; of a set throws" :expected "[nil :t]" :actual "[(rand-nth nil) (try (rand-nth #{1 2}) (catch Throwable _ :t))]" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var (String)" :expected "true" :actual "(let [c String] (instance? c \"hello\"))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var negative (String)" :expected "false" :actual "(let [c String] (instance? c 42))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var (qualified, IPersistentMap)" :expected "true" :actual "(let [c clojure.lang.IPersistentMap] (instance? c {:a 1}))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? through a var" :expected "true" :actual "(do (def icv1 java.util.Map) (instance? icv1 {:a 1}))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? through a var negative" :expected "false" :actual "(do (def icv2 java.util.Map) (instance? icv2 5))" :portability :common}
+  {:suite "instance? / bound-class" :label "instance? with a local class-var (java.util.Map on a jrec)" :expected "true" :actual "(let [c java.util.Map] (instance? c {:a 1}))" :portability :common}
   {:suite "defonce / semantics" :label "keeps the first value, ignores the second" :expected "1" :actual "(do (defonce defonce-a 1) (defonce defonce-a 2) defonce-a)" :portability :common}
   {:suite "defonce / semantics" :label "returns the var (like def)" :expected "true" :actual "(var? (defonce defonce-b 3))" :portability :common}
   {:suite "defonce / semantics" :label "defonce on a declared (unbound) name defs it" :expected "7" :actual "(do (declare defonce-c) (defonce defonce-c 7) defonce-c)" :portability :common}

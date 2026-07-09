@@ -276,22 +276,28 @@
           (first (loop (cdr xs) #f (cons (car xs) acc)))
           (else (loop (cdr xs) #f (cons (car xs) (cons sep acc)))))))
 
-;; $0/$1... expansion in a string replacement against an irregex match (the
-;; JVM/seed replacement syntax). $N -> group N's text (dropped if non-matching).
+;; Replacement-string expansion against an irregex match, with the JVM's
+;; Matcher.appendReplacement syntax: $N inserts group N's text (dropped when the
+;; group didn't participate) and a backslash escapes the next character — so
+;; \\ inserts one backslash and \$ a literal dollar. re-quote-replacement's
+;; output round-trips through this.
 (define (expand-dollar repl m)
   (let ((len (string-length repl)))
     (let loop ((i 0) (acc '()))
       (if (fx>=? i len)
           (apply string-append (reverse acc))
           (let ((c (string-ref repl i)))
-            (if (and (char=? c #\$) (fx<? (fx+ i 1) len)
-                     (char<=? #\0 (string-ref repl (fx+ i 1)))
-                     (char<=? (string-ref repl (fx+ i 1)) #\9))
-                (let* ((n (fx- (char->integer (string-ref repl (fx+ i 1))) 48))
-                       (g (and (fx<=? n (irregex-match-num-submatches m))
-                               (irregex-match-substring m n))))
-                  (loop (fx+ i 2) (if g (cons g acc) acc)))
-                (loop (fx+ i 1) (cons (string c) acc))))))))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (loop (fx+ i 2) (cons (string (string-ref repl (fx+ i 1))) acc)))
+              ((and (char=? c #\$) (fx<? (fx+ i 1) len)
+                    (char<=? #\0 (string-ref repl (fx+ i 1)))
+                    (char<=? (string-ref repl (fx+ i 1)) #\9))
+               (let* ((n (fx- (char->integer (string-ref repl (fx+ i 1))) 48))
+                      (g (and (fx<=? n (irregex-match-num-submatches m))
+                              (irregex-match-substring m n))))
+                 (loop (fx+ i 2) (if g (cons g acc) acc))))
+              (else (loop (fx+ i 1) (cons (string c) acc)))))))))
 
 ;; One match's replacement text. A string gets $N expansion; a fn (jolt closure)
 ;; is called with the match result (whole string, or [whole g1 ...] when grouped)

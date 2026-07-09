@@ -100,6 +100,123 @@
                (write-char c out) (loop (fx+ i 1) #f))
               (else (write-char c out) (loop (fx+ i 1) in-class))))))))
 
+;; Inside a [...] class, irregex reads backslash POSIX-style: '\]' is a literal
+;; backslash and the ']' ends the class (Java reads it as an escaped ']').
+;; Rewrite a class-internal '\]' to '\x5D' — accepted standalone and as a range
+;; endpoint, so no reordering games. Outside a class '\]' passes through.
+(define (escape-class-bracket src)
+  (let ((len (string-length src)) (out (open-output-string)))
+    (let loop ((i 0) (in-class #f))
+      (if (fx>=? i len)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (let ((n (string-ref src (fx+ i 1))))
+                 (if (and in-class (char=? n #\]))
+                     (put-string out "\\x5D")
+                     (begin (write-char c out) (write-char n out)))
+                 (loop (fx+ i 2) in-class)))
+              ((and (not in-class) (char=? c #\[))
+               (write-char c out) (loop (fx+ i 1) #t))
+              ((and in-class (char=? c #\]))
+               (write-char c out) (loop (fx+ i 1) #f))
+              (else (write-char c out) (loop (fx+ i 1) in-class))))))))
+
+;; Java accepts any combination of inline flags — (?sx), (?si:...) — while
+;; irregex rejects combined clusters ("unknown regex cluster modifier") and
+;; accepts only i/x/u inline (s never inline; leading s/i/m are peeled into
+;; constructor options by regex-parse-flags below). Normalize toward what the
+;; layers downstream can express:
+;;   prefix (?sx)   -> (?s)(?x), SORTED so strippable flags (s,i,m) lead and
+;;                     parse-flags consumes them; x/u remain inline for irregex.
+;;   scoped (?ix:B) -> (?i:(?x:B)) via nesting of inline-supported flags.
+;;   scoped s       -> the s is dropped from the flags and the group body's
+;;                     unescaped dots become [\s\S] (dot-all by construction).
+;; '(?' inside a [...] class is literal and left alone.
+(define (split-cluster-modifiers src)
+  (define (flag-char? c) (memv c '(#\s #\x #\i #\m #\u)))
+  (define (flag-rank c) (case c ((#\s) 0) ((#\i) 1) ((#\m) 2) ((#\x) 3) (else 4)))
+  ;; index just past the ) that closes the group opening at open-idx (the char
+  ;; AFTER "(?flags:"). Honors escapes and [...] classes.
+  (define (group-end body-start)
+    (let scan ((i body-start) (depth 1) (in-class #f))
+      (if (fx>=? i (string-length src))
+          #f
+          (let ((c (string-ref src i)))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) (string-length src))) (scan (fx+ i 2) depth in-class))
+              (in-class (scan (fx+ i 1) depth (not (char=? c #\]))))
+              ((char=? c #\[) (scan (fx+ i 1) depth #t))
+              ((char=? c #\() (scan (fx+ i 1) (fx+ depth 1) #f))
+              ((char=? c #\))
+               (if (fx=? depth 1) i (scan (fx+ i 1) (fx- depth 1) #f)))
+              (else (scan (fx+ i 1) depth #f)))))))
+  ;; a group body with each unescaped '.' outside a class replaced by [\s\S]
+  (define (dot-all body)
+    (let ((out (open-output-string)) (n (string-length body)))
+      (let walk ((i 0) (in-class #f))
+        (if (fx>=? i n)
+            (get-output-string out)
+            (let ((c (string-ref body i)))
+              (cond
+                ((and (char=? c #\\) (fx<? (fx+ i 1) n))
+                 (write-char c out) (write-char (string-ref body (fx+ i 1)) out)
+                 (walk (fx+ i 2) in-class))
+                (in-class (write-char c out) (walk (fx+ i 1) (not (char=? c #\]))))
+                ((char=? c #\[) (write-char c out) (walk (fx+ i 1) #t))
+                ((char=? c #\.) (put-string out "[\\s\\S]") (walk (fx+ i 1) #f))
+                (else (write-char c out) (walk (fx+ i 1) #f))))))))
+  (let ((len (string-length src)) (out (open-output-string)))
+    (let loop ((i 0) (in-class #f))
+      (if (fx>=? i len)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (write-char c out) (write-char (string-ref src (fx+ i 1)) out)
+               (loop (fx+ i 2) in-class))
+              ((and (not in-class) (char=? c #\[))
+               (write-char c out) (loop (fx+ i 1) #t))
+              ((and in-class (char=? c #\]))
+               (write-char c out) (loop (fx+ i 1) #f))
+              ((and (not in-class) (char=? c #\() (fx<? (fx+ i 1) len)
+                    (char=? (string-ref src (fx+ i 1)) #\?))
+               (let scan ((j (fx+ i 2)) (flags '()))
+                 (cond
+                   ((and (fx<? j len) (flag-char? (string-ref src j)))
+                    (scan (fx+ j 1) (cons (string-ref src j) flags)))
+                   ;; prefix cluster (?fs) with 2+ flags: emit sorted singles
+                   ((and (fx<? j len) (>= (length flags) 2)
+                         (char=? (string-ref src j) #\)))
+                    (for-each (lambda (f) (write-char #\( out) (write-char #\? out)
+                                          (write-char f out) (write-char #\) out))
+                              (sort (lambda (a b) (< (flag-rank a) (flag-rank b)))
+                                    flags))
+                    (loop (fx+ j 1) in-class))
+                   ;; scoped cluster (?fs:BODY): nest inline flags; s becomes a
+                   ;; dot-all rewrite of the body
+                   ((and (fx<? j len) (pair? flags) (char=? (string-ref src j) #\:)
+                         (or (>= (length flags) 2) (memv #\s flags)))
+                    (let ((end (group-end (fx+ j 1))))
+                      (if (not end)
+                          (begin (write-char c out) (loop (fx+ i 1) in-class))
+                          (let* ((body (substring src (fx+ j 1) end))
+                                 (body (if (memv #\s flags) (dot-all body) body))
+                                 (inline (sort (lambda (a b) (< (flag-rank a) (flag-rank b)))
+                                               (remv #\s flags))))
+                            (put-string out "(?:")
+                            (for-each (lambda (f)
+                                        (put-string out "(?") (write-char f out)
+                                        (write-char #\: out))
+                                      inline)
+                            (put-string out body)
+                            (for-each (lambda (_) (write-char #\) out)) inline)
+                            (write-char #\) out)
+                            (loop (fx+ end 1) in-class)))))
+                   (else (write-char c out) (loop (fx+ i 1) in-class)))))
+              (else (write-char c out) (loop (fx+ i 1) in-class))))))))
+
 ;; Inside a [...] class, irregex reads a '-' that follows a shorthand class
 ;; (\w \d \s \W \D \S) as the start of a range and errors ("bad char-set"); Java
 ;; reads it as a literal hyphen (a shorthand can't be a range endpoint). Escape
@@ -169,8 +286,10 @@
 ;; a first cheap compile; a capturing pattern is recompiled once (patterns compile
 ;; once and cache in the regex-t).
 (define (jolt-regex source)
-  (let-values (((opts pat) (regex-parse-flags source)))
-    (let* ((p (translate-prop-classes (escape-class-shorthand-dash pat)))
+  ;; normalize combined clusters FIRST so a leading (?sx) becomes (?s)(?x) and
+  ;; regex-parse-flags can peel the strippable singles into options
+  (let-values (((opts pat) (regex-parse-flags (split-cluster-modifiers source))))
+    (let* ((p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket pat))))
            (irx (apply irregex p opts)))
       (make-regex-t source
                     (if (> (irregex-num-submatches irx) 0)

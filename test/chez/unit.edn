@@ -618,4 +618,13 @@
   ;; yamlscript ys.v0 re-export idiom: intern a wrapper fn, merge the source
   ;; macro's meta onto it.
   {:suite "intern" :expr "(do (defmacro am-src [x] (list (quote +) x 1)) (def am-tgt @#'am-src) (alter-meta! #'am-tgt merge (meta #'am-src)) (load-string \"(am-tgt 5)\"))" :expected "6"}
+  {:suite "instance? / bound-class" :expr "(let [c java.util.Map] (instance? c {:a 1}))" :expected "true"}
+  {:suite "instance? / bound-class" :expr "(let [c java.util.Map] (instance? c 42))" :expected "false"}
+  {:suite "instance? / bound-class" :expr "(instance? (class \"hello\") \"hello\")" :expected "true"}
+  {:suite "instance? / bound-class" :expr "(let [c (class \"hello\")] (instance? c \"hi\"))" :expected "true"}
+  ;; a VAR holding a class value evaluates like the JVM (ns mappings win over
+  ;; class-name quoting): (def mc java.util.Map) (instance? mc {}) => true.
+  {:suite "instance? / bound-class" :expr "(do (def icv-m java.util.Map) (instance? icv-m {:a 1}))" :expected "true"}
+  {:suite "instance? / bound-class" :expr "(do (def icv-n java.util.Map) (instance? icv-n 42))" :expected "false"}
+  {:suite "instance? / bound-class" :expr "(do (def icv-k clojure.lang.Keyword) (instance? icv-k :k))" :expected "true"}
 ]
