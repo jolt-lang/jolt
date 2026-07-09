@@ -54,26 +54,43 @@
             ((string=? (substring s i (+ i nsub)) sub) #t)
             (else (loop (+ i 1)))))))
 
+;; Shell-quote a path: wrap in single quotes. Paths in this project are assumed
+;; to not contain single quotes (which would break the quoting).
+(define (bld-sh-quote s)
+  (string-append "'" s "'"))
+
 ;; --- toolchain discovery ----------------------------------------------------
 (define bld-machine (symbol->string (machine-type)))
 (define bld-osx? (bld-contains? bld-machine "osx"))
 (define bld-nt? (bld-contains? bld-machine "nt"))
+
+;; Platform-appropriate flag to export executable symbols so a statically-linked
+;; native lib's symbols resolve via (load-shared-object #f). macOS keeps unstripped
+;; dlsym visibility; Windows needs an explicit export table; ELF (Linux) needs -rdynamic.
+(define (bld-export-symbols-flag)
+  (cond (bld-osx? "")
+        (bld-nt? "-Wl,--export-all-symbols ")
+        (else "-rdynamic ")))
 
 ;; Chez's system/process run through cmd.exe on Windows; every build command
 ;; here is written for sh (MSYS2 provides it). On nt, spill the command to a
 ;; script and run `sh <file>` — workspace paths carry no spaces, and the
 ;; script file sidesteps cmd's quoting entirely. Identity elsewhere.
 (define bld-shell-counter 0)
+;; On nt, spill the command to a script and run `sh <file>`. Use pid + counter in
+;; the filename so concurrent builds (same TEMP, different PIDs) don't collide.
+;; Delete the script on success; leave it on failure for debugging.
 (define (bld-sh-wrap cmd)
   (if bld-nt?
-      (let* ((tmp (or (getenv "TEMP") (getenv "TMP") "."))
+      (let* ((pid (getpid))
+             (tmp (or (getenv "TEMP") (getenv "TMP") "."))
              (f (begin (set! bld-shell-counter (+ bld-shell-counter 1))
-                       (string-append tmp "\\jolt-sh-"
+                       (string-append tmp "\\jolt-sh-" (number->string pid) "-"
                                       (number->string bld-shell-counter) ".sh"))))
         (let ((p (open-output-file f 'replace)))
           (put-string p cmd)
           (close-port p))
-        (string-append "sh " f))
+        (string-append "sh " f " && rm -f " f))
       cmd))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
@@ -115,9 +132,15 @@
   (cond
     (bld-osx?
      (let ((lz4 (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
-       (string-append
-         (if (> (string-length lz4) 0) (string-append "-L" lz4 "/lib ") "")
-         "-llz4 -lz -lncurses -framework Foundation -liconv -lm")))
+       (if (> (string-length lz4) 0)
+           (string-append "-L" lz4 "/lib -llz4 -lz -lncurses -framework Foundation -liconv -lm")
+           (let ((pc (bld-sh-capture "pkg-config --libs-only-L liblz4 2>/dev/null")))
+             (if (> (string-length pc) 0)
+                 (string-append pc " -llz4 -lz -lncurses -framework Foundation -liconv -lm")
+                 (begin
+                   (display "jolt build: warning: lz4 library path not found via brew or pkg-config")
+                   (display " — linker may not find -llz4\n")
+                   "-llz4 -lz -lncurses -framework Foundation -liconv -lm"))))))
     ;; Windows (ta6nt, MinGW-w64 under MSYS2): the Chez kernel pulls in
     ;; compression, winsock, COM/UUID, and the registry.
     (bld-nt?
@@ -383,16 +406,16 @@
       ((string=? kind "archive")
        (let ((path (cadr form)))
          (if bld-osx?
-             (string-append "-Wl,-force_load," path)
-             (string-append "-Wl,--whole-archive " path " -Wl,--no-whole-archive"))))
+             (string-append "-Wl,-force_load," (bld-sh-quote path))
+             (string-append "-Wl,--whole-archive " (bld-sh-quote path) " -Wl,--no-whole-archive"))))
       ((string=? kind "lib")
        (let* ((lib (cadr form)) (dir (caddr form))
               (L (if (> (string-length dir) 0) (string-append "-L" dir " ") "")))
          ;; -Bstatic forces the .a over a .so of the same -l name (GNU ld). macOS's
          ;; ld64 has no -Bstatic; there an :archive path is the reliable form.
          (if bld-osx?
-             (string-append L "-l" lib)
-             (string-append L "-Wl,-Bstatic -l" lib " -Wl,-Bdynamic"))))
+             (string-append (if (> (string-length dir) 0) (string-append "-L" (bld-sh-quote dir) " ") "") "-l" lib)
+             (string-append (if (> (string-length dir) 0) (string-append "-L" (bld-sh-quote dir) " ") "") "-Wl,-Bstatic -l" lib " -Wl,-Bdynamic"))))
       (else ""))))
 
 ;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
@@ -803,9 +826,9 @@
     (jolt-spill-embedded! "stub/launcher.c" lc)
     (display "jolt build: relinking launcher stub with static native libraries\n")
     (bld-system (string-append
-      "cc -O2 " (if bld-osx? "" "-rdynamic ")
+      "cc -O2 " (bld-export-symbols-flag)
       "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
-      (bld-link-libs) native-link))))
+      native-link " " (bld-link-libs)))))
 
 ;; --- legacy cc link (dev bin/joltc): fresh Chez compile + xxd + cc ------------
 (define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link)
@@ -843,9 +866,9 @@
   ;; a statically-linked native lib's symbols resolve via (load-shared-object #f)
   ;; at startup. macOS keeps unstripped executable symbols dlsym-visible already.
   (bld-system (string-append
-    "cc -O2 " (if (and (not bld-osx?) (> (string-length native-link) 0)) "-rdynamic " "")
+    "cc -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "")
     "-I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
-    "-o '" out-path "' " (bld-link-libs) native-link))
+    "-o '" out-path "' " native-link " " (bld-link-libs)))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 ;; --- shared-library link (jolt build --library) -----------------------------
@@ -928,7 +951,7 @@
           (string-append "-dynamiclib -install_name '@rpath/" (bld-basename out-path) "' ")
           "-shared ")
       "-I'" bld-csv-dir "' '" lc "' '" bld-csv-dir "/libkernel.a' "
-      "-o '" out-path "' " (bld-link-libs) native-link)))
+      "-o '" out-path "' " native-link " " (bld-link-libs))))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 (def-var! "jolt.host" "build-binary"
