@@ -98,19 +98,6 @@
                        (string-append ":" (pad2 s) (if (= nano 0) "" (string-append "." (frac-digits nano))))))))
 (define (iso-datetime-str ed nod)
   (string-append (iso-date-str ed) "T" (iso-time-str nod)))
-;; Instant: always UTC with a trailing Z; seconds always shown, millis only when nonzero.
-(define (iso-instant-str ms)
-  (let* ((ems (exact (truncate ms)))
-         (secs (jt-floor-div ems 1000))
-         (frac (- ems (* secs 1000)))
-         (ed (jt-floor-div secs 86400))
-         (sod (jt-floor-mod secs 86400))
-         (nod (* (+ (* (quotient sod 3600) 3600) (* (quotient (modulo sod 3600) 60) 60) (modulo sod 60))
-                 nanos-per-sec)))
-    (string-append (iso-date-str ed) "T"
-                   (pad2 (quotient sod 3600)) ":" (pad2 (modulo (quotient sod 60) 60)) ":" (pad2 (modulo sod 60))
-                   (if (= frac 0) "" (string-append "." (frac-digits (* frac 1000000))))
-                   "Z")))
 ;; nano-precise ISO instant. The fraction is shown in groups of 3 digits (millis,
 ;; micros, or nanos), matching DateTimeFormatter.ISO_INSTANT.
 (define (iso-instant-str-nanos en)
@@ -1209,10 +1196,6 @@
            (and (member f '("YEAR" "MONTH_OF_YEAR" "PROLEPTIC_MONTH" "YEAR_OF_ERA" "ERA")) #t))
           (else #f))))
 
-;; isSupported / get / getLong / with / range / plus / minus / until accept a
-;; chrono-unit OR chrono-field jhost (or a string). These method names extend the
-;; existing per-tag tables.
-(define (unit-or-field-arg x) x)
 (define (arg-is-unit? x) (and (jhost? x) (string=? (jhost-tag x) "chrono-unit")))
 (define (arg-is-field? x) (and (jhost? x) (string=? (jhost-tag x) "chrono-field")))
 (define (arg-is-amount? x) (and (jhost? x) (member (jhost-tag x) '("duration" "period"))))

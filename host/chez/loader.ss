@@ -133,8 +133,7 @@
 ;; --- namespace -> file path -------------------------------------------------
 ;; "app.commonmark-test" -> "app/commonmark_test": split on '.', munge '-'->'_'
 ;; per segment, join with '/'. Matches Clojure's ns->file munging.
-(define (ns-seg-munge seg)
-  (list->string (map (lambda (c) (if (char=? c #\-) #\_ c)) (string->list seg))))
+(define (ns-seg-munge seg) (jch-munge-segments seg)) ; shared with the class graph
 (define (ns-name->rel name)
   (let loop ((cs (string->list name)) (seg '()) (segs '()))
     (cond

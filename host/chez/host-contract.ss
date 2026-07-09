@@ -36,7 +36,6 @@
 (define hc-kw-num-ret (keyword #f "num-ret"))
 (define hc-kw-double (keyword #f "double"))
 (define hc-kw-long (keyword #f "long"))
-(define hc-kw-regex (keyword #f "regex"))
 (define hc-kw-inst  (keyword #f "#inst"))
 (define hc-kw-uuid  (keyword #f "#uuid"))
 (define hc-kw-bigdec (keyword #f "bigdec"))
