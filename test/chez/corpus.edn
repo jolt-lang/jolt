@@ -1905,6 +1905,11 @@
   {:suite "reader / comments inside maps" :label "nested with comments" :expected "{:x {:y 2}}" :actual "{:x ; outer\n {:y ; inner\n 2}}" :portability :common}
   {:suite "regex / literals & predicate" :label "regex? literal" :expected "true" :actual "(regex? #\"\\d+\")" :portability :common}
   {:suite "regex / literals & predicate" :label "regex? non-regex" :expected "false" :actual "(regex? \"\\\\d+\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined cluster modifiers (?sx)" :expected "\"foobar\"" :actual "(re-find #\"(?sx)foo bar\" \"foobar\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined cluster modifiers (?si)" :expected "\"axb\"" :actual "(re-find #\"(?si)A.B\" \"axb\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined cluster modifiers (?xs) order" :expected "\"foo\\n\"" :actual "(re-find #\"(?xs)f oo.\" \"foo\\nx\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "scoped combined modifiers (?si:...)" :expected "\"AXbc\"" :actual "(re-find #\"(?si:a.b)c\" \"AXbc\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "combined (?sm) still works" :expected "\"b\"" :actual "(re-find #\"(?sm)^b\" \"a\\nb\")" :portability :common}
   {:suite "regex / literals & predicate" :label "escaped digits" :expected "\"42\"" :actual "(re-find #\"\\d+\" \"x42y\")" :portability :common}
   {:suite "regex / literals & predicate" :label "escaped ws/non-ws" :expected "\"x a\"" :actual "(re-find #\"\\S\\s\\S\" \"x a b y\")" :portability :common}
   {:suite "regex / re-find" :label "match" :expected "\"123\"" :actual "(re-find #\"\\d+\" \"abc123def\")" :portability :common}
