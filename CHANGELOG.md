@@ -13,7 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ref-set`, `ensure`, `sync`, `io!`, with serialized transactions on a single
   global lock; refs participate in watches/validators/metadata, and
   `*loaded-libs*` is a real ref over the loader registry (the tools.namespace
-  reload pattern works).
+  reload pattern works). Transactions buffer writes and commit atomically:
+  a thrown `dosync` rolls back, other threads never see uncommitted values,
+  watches fire once per changed ref after commit, agent sends inside a
+  transaction are held until commit, and transaction state does not leak into
+  threads spawned inside a `dosync`. `(class (ref 0))` is `clojure.lang.Ref`,
+  and `ref-min-history`/`ref-max-history` take the setter arity.
 
 ## [0.2.1] - 2026-07-09
 
