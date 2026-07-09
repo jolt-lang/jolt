@@ -56,7 +56,7 @@
                        (pset-fold x (lambda (e a) (cons (jolt-pr-readable e) a)) '()))) "}"))))
     ((pmap? x) (if (jolt-print-hash?) "#"
                    (with-deeper-print
-                     (string-append "{" (jolt-str-join (jolt-limited-list-strs
+                     (string-append "{" (jolt-str-join-comma (jolt-limited-list-strs
                        (pmap-fold x (lambda (k v a)
                                       (cons (string-append (jolt-pr-readable k) " " (jolt-pr-readable v)) a)) '()))) "}"))))
     ((empty-list-t? x) (if (jolt-print-hash?) "#" "()"))

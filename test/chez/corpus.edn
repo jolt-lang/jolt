@@ -3623,4 +3623,21 @@
   {:suite "defonce / semantics" :label "keeps the first value, ignores the second" :expected "1" :actual "(do (defonce defonce-a 1) (defonce defonce-a 2) defonce-a)" :portability :common}
   {:suite "defonce / semantics" :label "returns the var (like def)" :expected "true" :actual "(var? (defonce defonce-b 3))" :portability :common}
   {:suite "defonce / semantics" :label "defonce on a declared (unbound) name defs it" :expected "7" :actual "(do (declare defonce-c) (defonce defonce-c 7) defonce-c)" :portability :common}
+  {:suite "printer / map-commas" :label "pr-str separates map entries with comma-space" :expected "\"{:a 1, :b 2, :c 3}\"" :actual "(pr-str {:a 1 :b 2 :c 3})" :portability :common}
+  {:suite "printer / map-commas" :label "str of a map has comma-separated entries" :expected "\"{:a 1, :b 2}\"" :actual "(str {:a 1 :b 2})" :portability :common}
+  {:suite "printer / map-commas" :label "single-entry map has no comma" :expected "\"{:a 1}\"" :actual "(pr-str {:a 1})" :portability :common}
+  {:suite "printer / map-commas" :label "nested map entries comma-separate at each level" :expected "\"{:a {:b 1, :c 2}}\"" :actual "(pr-str {:a {:b 1 :c 2}})" :portability :common}
+  {:suite "string / split-lines" :label "drops the trailing newline's empty" :expected "[\"a\" \"b\"]" :actual "(clojure.string/split-lines \"a\\nb\\n\")" :portability :common}
+  {:suite "string / split-lines" :label "keeps interior empties, drops trailing" :expected "[\"a\" \"\" \"b\"]" :actual "(clojure.string/split-lines \"a\\n\\nb\\n\\n\")" :portability :common}
+  {:suite "string / split-lines" :label "no-newline input is one line" :expected "[\"a\"]" :actual "(clojure.string/split-lines \"a\")" :portability :common}
+  {:suite "string / split-lines" :label "crlf splits like lf" :expected "[\"a\" \"b\"]" :actual "(clojure.string/split-lines \"a\\r\\nb\\r\\n\")" :portability :common}
+  {:suite "core / Throwable->map" :label "cause is the root message" :expected "\"boom\"" :actual "(:cause (Throwable->map (ex-info \"boom\" {:a 1})))" :portability :common}
+  {:suite "core / Throwable->map" :label "data is the root ex-data" :expected "{:a 1}" :actual "(:data (Throwable->map (ex-info \"boom\" {:a 1})))" :portability :common}
+  {:suite "core / Throwable->map" :label "via first type is the exception class symbol" :expected "'clojure.lang.ExceptionInfo" :actual "(-> (Throwable->map (ex-info \"boom\" {:a 1})) :via first :type)" :portability :common}
+  {:suite "regex / comments-mode" :label "(?x) ignores newlines in the pattern" :expected "\"foo\"" :actual "(re-find (re-pattern \"(?x)\\nfoo | bar\\n\") \"foo\")" :portability :common}
+  {:suite "regex / comments-mode" :label "(?x) ignores whitespace inside a character class" :expected "\"ab\"" :actual "(re-find (re-pattern \"(?x)[a b]+\") \"ab\")" :portability :common}
+  {:suite "regex / comments-mode" :label "(?x) strips # comments to end of line" :expected "\"baz\"" :actual "(re-find (re-pattern \"(?x) foo # comment\\n| baz\") \"baz\")" :portability :common}
+  {:suite "regex / comments-mode" :label "escaped space stays literal under (?x)" :expected "\"a b\"" :actual "(re-find (re-pattern \"(?x)a\\\\ b\") \"a b\")" :portability :common}
+  {:suite "regex / comments-mode" :label "(?sx) combines dot-all with comments mode" :expected "\"a\\nb\"" :actual "(re-find (re-pattern \"(?sx)a.\\nb\") \"a\\nb\")" :portability :common}
+  {:suite "pprint / line-breaks" :label "broken lines carry no trailing spaces" :expected "\"(defn\\n foo\\n ([a b c] [c b a])\\n ([a b] (foo a b \\\"OK\\\"))\\n ([a] (foo a 42 \\\"OK\\\")))\"" :actual "(with-out-str (clojure.pprint/write '(defn foo ([a b c] [c b a]) ([a b] (foo a b \"OK\")) ([a] (foo a 42 \"OK\")))))" :portability :common}
 ]

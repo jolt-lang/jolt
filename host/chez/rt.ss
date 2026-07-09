@@ -335,6 +335,10 @@
 (define (jolt-str-join strs)
   (cond ((null? strs) "") ((null? (cdr strs)) (car strs))
         (else (string-append (car strs) " " (jolt-str-join (cdr strs))))))
+;; map ENTRIES join with ", " like the reference printer: {:a 1, :b 2}
+(define (jolt-str-join-comma strs)
+  (cond ((null? strs) "") ((null? (cdr strs)) (car strs))
+        (else (string-append (car strs) ", " (jolt-str-join-comma (cdr strs))))))
 (define (jolt-char->string c)
   (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
                         ((#\return) "return") (else (string c)))))
@@ -424,7 +428,7 @@
                        (pset-fold x (lambda (e a) (cons (jolt-pr-str e) a)) '()))) "}"))))
     ((pmap? x) (if (jolt-print-hash?) "#"
                    (with-deeper-print
-                     (string-append "{" (jolt-str-join (jolt-limited-list-strs
+                     (string-append "{" (jolt-str-join-comma (jolt-limited-list-strs
                        (pmap-fold x (lambda (k v a) (cons (string-append (jolt-pr-str k) " " (jolt-pr-str v)) a)) '()))) "}"))))
     ;; lists / cons / lazy seqs all print as (...) — forces a finite seq (or up to
     ;; *print-length* of an infinite one).
