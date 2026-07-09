@@ -112,4 +112,13 @@ if [ "$rc" -eq 0 ]; then
   echo "  FAIL: --dynamic binary still ran with its shared object removed"; exit 1
 fi
 
-echo "static-native smoke: passed (static default + --dynamic runtime load)"
+# --- structural: link order (GNU ld left-to-right) --------------------------
+# Static archives that reference system symbols (libm, libpthread) must appear
+# BEFORE the -l flags for those libraries. grep build.ss for the pattern that
+# indicates the OPPOSITE (syslibs before archives — bad on Linux).
+if grep -qn 'bld-link-libs.*native-link' host/chez/build.ss; then
+  echo "  FAIL: native-link appears after (bld-link-libs) in build.ss — GNU ld would get undefined references"
+  exit 1
+fi
+
+echo "static-native smoke: passed (static default + --dynamic runtime load + link order)"

@@ -29,8 +29,9 @@
       (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx)))))
 (define (ev s) (jolt-compile-eval s "u"))
 
-;; inlining is a closed-world optimization — only under optimize.
+;; inlining is a closed-world optimization — requires optimize + direct-link.
 (set-optimize! #t)
+(set-direct-link-flag! #t)
 
 ;; a small plain fn is spliced; the call to it disappears.
 (ev "(def add1 (fn* ([x] (+ x 1))))")
@@ -63,5 +64,6 @@
 (ok "accumulator over inlined ^double call: 3*4.0 = 12" (= 12 (jnum->exact (ev "((fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (sq 2.0)) (inc i)) acc)))))"))))
 
 (set-optimize! #f)
+(set-direct-link-flag! #f)
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

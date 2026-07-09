@@ -1,0 +1,7 @@
+{:paths ["src"]
+
+ ;; Same optional missing lib. The -main below tries to call the defcfn against
+ ;; it, which should produce a catchable error at CALL time, not a startup abort.
+ :jolt/native [{:name "no-such-lib" :optional true
+                :darwin "/usr/lib/libDoesNotExist.dylib"
+                :linux "/usr/lib/libDoesNotExist.so"}]}

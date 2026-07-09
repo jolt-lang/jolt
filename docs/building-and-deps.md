@@ -111,3 +111,60 @@ Git clones land in a global, sha-immutable cache shared across projects —
   functions working and a few not.
 
 See [`tools-deps.md`](tools-deps.md) for the design rationale.
+
+## Building binaries
+
+`jolt build` compiles a namespace and its dependencies into a standalone binary:
+
+```bash
+JOLT_PWD=/path/to/project bin/joltc build -m my.app
+```
+
+The binary contains the runtime + app forms + native launcher — no Jolt source or Chez
+install needed on the target machine (a C compiler and Chez kernel dev files are needed
+at build time only).
+
+### Build modes
+
+Three modes control which optimization passes apply. A mode is selected by the CLI flag
+`--opt`, `--dev`, or by the `:jolt/build {:opt true}` key in `deps.edn`; the default is
+`release`. CLI flags win over `deps.edn`.
+
+| Mode | `--opt` / `{:opt true}` | `--dev` | Release (default) |
+|------|--------------------------|---------|-------------------|
+| const-fold | yes | yes | yes |
+| numeric-annotate | yes | yes | yes |
+| type inference (run-inference) | yes | - | yes |
+| record-shape + protocol-method caches | yes | - | yes |
+| inline + scalar-replace fixpoint | with `--direct-link` | - | - |
+
+`--opt` enables the annotation-producing passes (type inference, PIC/devirtualization,
+record-ctor caches) for better runtime performance without committing to a closed world.
+Add `--direct-link` to also enable the inline + scalar-replace fixpoint — this gives the
+best performance but gives up runtime redefinition of direct-linked vars. For fully
+closed-world binaries, combine `--opt --direct-link --tree-shake` to drop dead code.
+
+`--dev` produces a debug binary under `target/debug/` (const-fold + numeric annotate
+only), typically used during development for faster build times.
+
+### deps.edn build options
+
+The `:jolt/build` map in `deps.edn` accepts these keys:
+
+- **`:opt true`** — build in optimized mode (like `--opt`)
+- **`:direct-link true`** — closed-world direct linking (like `--direct-link`)
+- **`:tree-shake true`** — drop unreachable library code (like `--tree-shake`)
+- **`:embed [dirs]`** — bake resource files into the binary so `io/resource` resolves
+  with no files on disk
+- **`:dynamic-natives true`** — load native shared objects at runtime instead of
+  statically linking
+
+Example:
+
+```clojure
+{:paths ["src"]
+ :jolt/build {:opt true
+              :direct-link true
+              :tree-shake true
+              :embed ["resources"]}}
+```

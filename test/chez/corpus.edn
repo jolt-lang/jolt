@@ -3619,4 +3619,7 @@
   {:suite "instance? / bound-class" :label "instance? through a var" :expected "true" :actual "(do (def icv1 java.util.Map) (instance? icv1 {:a 1}))" :portability :common}
   {:suite "instance? / bound-class" :label "instance? through a var negative" :expected "false" :actual "(do (def icv2 java.util.Map) (instance? icv2 5))" :portability :common}
   {:suite "instance? / bound-class" :label "instance? with a local class-var (java.util.Map on a jrec)" :expected "true" :actual "(let [c java.util.Map] (instance? c {:a 1}))" :portability :common}
+  {:suite "defonce / semantics" :label "keeps the first value, ignores the second" :expected "1" :actual "(do (defonce defonce-a 1) (defonce defonce-a 2) defonce-a)" :portability :common}
+  {:suite "defonce / semantics" :label "returns the var (like def)" :expected "true" :actual "(var? (defonce defonce-b 3))" :portability :common}
+  {:suite "defonce / semantics" :label "defonce on a declared (unbound) name defs it" :expected "7" :actual "(do (declare defonce-c) (defonce defonce-c 7) defonce-c)" :portability :common}
 ]

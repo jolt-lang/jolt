@@ -403,6 +403,19 @@
 ;; re-binds it. (ns-name is overridden natively in post-prelude.ss.)
 (def-var! "clojure.core" "*ns*" (intern-ns! "user"))
 
+;; Host seam: bare var-cell lookup (no alias resolution) for the defonce macro
+;; expansion, which must NOT reference clojure.core/resolve (a tree-shake bail ref).
+;; Returns the var cell only when it holds a real root value: a declared cell is
+;; "defined" (interned/resolvable) but its root is the unbound sentinel — and in a
+;; top-level (do (defonce x 1) …) the analyzer interns x before the form runs, so
+;; the bound check is what makes the first defonce actually def.
+(def-var! "jolt.host" "find-var"
+  (lambda (ns name)
+    (let ((c (var-cell-lookup ns name)))
+      (if (and c (var-cell-defined? c)
+               (not (eq? (var-cell-root c) jolt-unbound)))
+          c jolt-nil))))
+
 ;; --- printer patches: a namespace renders as its name (str / pr-str / -e) ----
 (register-pr-arm! jns? jns-name)
 (register-str-render! jns? jns-name)

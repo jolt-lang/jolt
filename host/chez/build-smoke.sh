@@ -167,4 +167,37 @@ if [ "$got_nm" != "no-main script ran" ] || [ "$rc_nm" != "0" ]; then
   exit 1
 fi
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main)"
+# Optional :jolt/native with a MISSING lib: the defcfn is lazy, so the build
+# succeeds and the binary runs when -main never calls it; calling it fails with
+# a catchable error, not a kernel abort.
+olout="$(dirname "$out")/optional-lib-bin"
+if ! JOLT_PWD="$root/test/chez/optional-lib-app" bin/joltc build -m app.optional-lib -o "$olout" >/dev/null 2>&1; then
+  echo "  FAIL: build with a missing optional native lib exited non-zero"; exit 1
+fi
+got_ol="$(cd / && "$olout" 2>&1)"
+if [ "$got_ol" != "optional lib app ran successfully" ]; then
+  echo "  FAIL: optional-lib binary — got \`$got_ol\`"; exit 1
+fi
+ocout="$(dirname "$out")/optional-call-bin"
+if ! JOLT_PWD="$root/test/chez/optional-lib-call-app" bin/joltc build -m app.optional-lib-call -o "$ocout" >/dev/null 2>&1; then
+  echo "  FAIL: build of optional-lib-call app exited non-zero"; exit 1
+fi
+got_oc="$(cd / && "$ocout" 2>&1 | tail -1)"
+case "$got_oc" in
+  "caught expected error:"*) : ;;
+  *) echo "  FAIL: calling a missing optional-lib fn — want a caught error, got \`$got_oc\`"; exit 1 ;;
+esac
+
+# deps.edn :jolt/build {:opt true} puts the build in optimized mode without a CLI flag.
+optproj="$(dirname "$out")/optproj"
+mkdir -p "$optproj/src"
+printf '{:paths ["src"] :jolt/build {:opt true}}\n' > "$optproj/deps.edn"
+printf '(ns app)\n(defn -main [& _] (println "opt project ran"))\n' > "$optproj/src/app.clj"
+opout="$(dirname "$out")/optproj-bin"
+modeline="$(JOLT_PWD="$optproj" bin/joltc build -m app -o "$opout" 2>&1 | grep 'compiling app (')"
+case "$modeline" in
+  *"(optimized mode"*) : ;;
+  *) echo "  FAIL: deps.edn :jolt/build {:opt true} did not select optimized mode — got \`$modeline\`"; exit 1 ;;
+esac
+
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt)"

@@ -54,26 +54,43 @@
             ((string=? (substring s i (+ i nsub)) sub) #t)
             (else (loop (+ i 1)))))))
 
+;; Shell-quote a path: wrap in single quotes. Paths in this project are assumed
+;; to not contain single quotes (which would break the quoting).
+(define (bld-sh-quote s)
+  (string-append "'" s "'"))
+
 ;; --- toolchain discovery ----------------------------------------------------
 (define bld-machine (symbol->string (machine-type)))
 (define bld-osx? (bld-contains? bld-machine "osx"))
 (define bld-nt? (bld-contains? bld-machine "nt"))
+
+;; Platform-appropriate flag to export executable symbols so a statically-linked
+;; native lib's symbols resolve via (load-shared-object #f). macOS keeps unstripped
+;; dlsym visibility; Windows needs an explicit export table; ELF (Linux) needs -rdynamic.
+(define (bld-export-symbols-flag)
+  (cond (bld-osx? "")
+        (bld-nt? "-Wl,--export-all-symbols ")
+        (else "-rdynamic ")))
 
 ;; Chez's system/process run through cmd.exe on Windows; every build command
 ;; here is written for sh (MSYS2 provides it). On nt, spill the command to a
 ;; script and run `sh <file>` — workspace paths carry no spaces, and the
 ;; script file sidesteps cmd's quoting entirely. Identity elsewhere.
 (define bld-shell-counter 0)
+;; On nt, spill the command to a script and run `sh <file>`. Use pid + counter in
+;; the filename so concurrent builds (same TEMP, different PIDs) don't collide.
+;; Delete the script on success; leave it on failure for debugging.
 (define (bld-sh-wrap cmd)
   (if bld-nt?
-      (let* ((tmp (or (getenv "TEMP") (getenv "TMP") "."))
+      (let* ((pid (getpid))
+             (tmp (or (getenv "TEMP") (getenv "TMP") "."))
              (f (begin (set! bld-shell-counter (+ bld-shell-counter 1))
-                       (string-append tmp "\\jolt-sh-"
+                       (string-append tmp "\\jolt-sh-" (number->string pid) "-"
                                       (number->string bld-shell-counter) ".sh"))))
         (let ((p (open-output-file f 'replace)))
           (put-string p cmd)
           (close-port p))
-        (string-append "sh " f))
+        (string-append "sh " f " && rm -f " f))
       cmd))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
@@ -115,9 +132,15 @@
   (cond
     (bld-osx?
      (let ((lz4 (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
-       (string-append
-         (if (> (string-length lz4) 0) (string-append "-L" lz4 "/lib ") "")
-         "-llz4 -lz -lncurses -framework Foundation -liconv -lm")))
+       (if (> (string-length lz4) 0)
+           (string-append "-L" lz4 "/lib -llz4 -lz -lncurses -framework Foundation -liconv -lm")
+           (let ((pc (bld-sh-capture "pkg-config --libs-only-L liblz4 2>/dev/null")))
+             (if (> (string-length pc) 0)
+                 (string-append pc " -llz4 -lz -lncurses -framework Foundation -liconv -lm")
+                 (begin
+                   (display "jolt build: warning: lz4 library path not found via brew or pkg-config")
+                   (display " — linker may not find -llz4\n")
+                   "-llz4 -lz -lncurses -framework Foundation -liconv -lm"))))))
     ;; Windows (ta6nt, MinGW-w64 under MSYS2): the Chez kernel pulls in
     ;; compression, winsock, COM/UUID, and the registry.
     (bld-nt?
@@ -210,8 +233,10 @@
     bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
-;; Re-emit one app namespace to a list of Scheme strings: optimize (run-passes)
-;; and stay strict — a form that fails to emit must fail the build, not vanish.
+;; Re-emit one app namespace to a list of Scheme strings: run-passes (const-fold +
+;; numeric-annotate in every mode; inference also in release/optimized; inline +
+;; scalar-replace additionally with direct-link) and stay strict — a form that
+;; fails to emit must fail the build, not vanish.
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
@@ -313,14 +338,15 @@
 ;; encode-natives produced: each entry is ["process"] | ["static" form…] |
 ;; ["req" cand…] | ["opt" cand…]. `which` selects 'required (process + static +
 ;; req) or 'optional. Required loads are emitted before the app forms (the app's
-;; defcfn foreign-procedures resolve their symbols at top-level eval during
-;; startup, so the libs must be loaded first); a load-shared-object failure there
-;; is fatal — correct for a required lib. A "static" lib is cc-linked into the
-;; binary (see bld-native-link-flags), so its symbols are already in the process:
-;; it loads them the same way a "process" lib does. Optional loads run in the
-;; scheme-start launcher, where guard catches a missing lib (an optional lib's
-;; namespace is only present when the app requires it, so its foreign-procedures
-;; aren't among the baked top-level forms).
+;; defcfn foreign-procedures are now lazily resolved on first call, so they can
+;; be emitted before the library is loaded — the binding only becomes callable
+;; after the lib loads); a load-shared-object failure there is fatal — correct
+;; for a required lib. A "static" lib is cc-linked into the binary (see
+;; bld-native-link-flags), so its symbols are already in the process: it loads
+;; them the same way a "process" lib does. Optional loads run in the scheme-start
+;; launcher, where guard catches a missing lib (the defcfn's foreign-procedure is
+;; only resolved when the closure is first called, so the defining form can
+;; evaluate before the library is loaded).
 (define (bld-emit-natives out natives which)
   (for-each
     (lambda (entry)
@@ -383,16 +409,16 @@
       ((string=? kind "archive")
        (let ((path (cadr form)))
          (if bld-osx?
-             (string-append "-Wl,-force_load," path)
-             (string-append "-Wl,--whole-archive " path " -Wl,--no-whole-archive"))))
+             (string-append "-Wl,-force_load," (bld-sh-quote path))
+             (string-append "-Wl,--whole-archive " (bld-sh-quote path) " -Wl,--no-whole-archive"))))
       ((string=? kind "lib")
        (let* ((lib (cadr form)) (dir (caddr form))
               (L (if (> (string-length dir) 0) (string-append "-L" dir " ") "")))
          ;; -Bstatic forces the .a over a .so of the same -l name (GNU ld). macOS's
          ;; ld64 has no -Bstatic; there an :archive path is the reliable form.
          (if bld-osx?
-             (string-append L "-l" lib)
-             (string-append L "-Wl,-Bstatic -l" lib " -Wl,-Bdynamic"))))
+             (string-append (if (> (string-length dir) 0) (string-append "-L" (bld-sh-quote dir) " ") "") "-l" lib)
+             (string-append (if (> (string-length dir) 0) (string-append "-L" (bld-sh-quote dir) " ") "") "-Wl,-Bstatic -l" lib " -Wl,-Bdynamic"))))
       (else ""))))
 
 ;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
@@ -439,6 +465,47 @@
 (define (bld-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
+;; Data-reader namespaces load during project setup, before build-binary arms its
+;; ns-loaded hook, so the entry walk records nothing for them. Synthesize their
+;; (name . file) pairs so reader fns reachable only through *data-readers* (a
+;; runtime read-string of a custom tag) ship in the binary. `known` is the pairs
+;; the entry walk did record — an ns already there is not duplicated. The reader
+;; ns's own requires are not walked: a reader namespace must be self-contained
+;; (require only clojure.core/stdlib), or be reachable from the entry ns too.
+(define (bld-data-reader-ns-pairs known)
+  (let ((tbl (var-deref "clojure.core" "*data-readers*")) (acc '()))
+    (when (pmap? tbl)
+      (pmap-fold tbl
+        (lambda (k v a)
+          (when (and (symbol-t? v) (symbol-t-ns v) (not (jolt-nil? (symbol-t-ns v))))
+            (let ((nm (symbol-t-ns v)))
+              (unless (or (assoc nm acc) (assoc nm known))
+                (let ((f (find-ns-file nm)))
+                  (when f (set! acc (cons (cons nm f) acc)))))))
+          a)
+        #f))
+    (reverse acc)))
+
+;; Bake the *data-readers* table into the binary so a runtime (read-string
+;; "#my/tag …") resolves its reader fn like it does under joltc run. Tag and
+;; reader are symbols; the reader path var-derefs the fn at use time.
+(define (bld-sym-lit s)
+  (let ((ns (symbol-t-ns s)))
+    (if (and ns (not (jolt-nil? ns)))
+        (string-append "(jolt-symbol " (ei-str-lit ns) " " (ei-str-lit (symbol-t-name s)) ")")
+        (string-append "(jolt-symbol #f " (ei-str-lit (symbol-t-name s)) ")"))))
+(define (bld-emit-data-readers out)
+  (let ((tbl (var-deref "clojure.core" "*data-readers*")))
+    (when (and (pmap? tbl) (> (pmap-cnt tbl) 0))
+      (put-string out "\n;; === data readers ===\n")
+      (put-string out "(def-var! \"clojure.core\" \"*data-readers*\"\n  (jolt-assoc empty-pmap")
+      (pmap-fold tbl
+        (lambda (k v a)
+          (put-string out (string-append "\n    " (bld-sym-lit k) " " (bld-sym-lit v)))
+          a)
+        #f)
+      (put-string out "))\n"))))
+
 (define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? library?)
   ;; Windows executables carry .exe; normalize here so the append-payload and
   ;; cc paths agree and the shell can run the result. A library keeps its own
@@ -470,12 +537,19 @@
       (lambda (name file) (set! app-order (cons (cons name file) app-order))))
     (load-namespace entry-ns)
     (set-ns-loaded-hook! (lambda (name file) #f))
-    (let ((ordered (reverse app-order)))   ; deps first, entry last
+    (let ((ordered (let ((walked (reverse app-order)))
+                     ;; reader namespaces first: nothing in the entry walk
+                     ;; depends on load order against them (they only reach the
+                     ;; app through *data-readers* lookups at runtime).
+                     (append (bld-data-reader-ns-pairs walked) walked))))   ; deps first, entry last
       (when (null? ordered)
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
-      ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
-      ;; + scalar-replace passes; release/dev get const-fold only.
+      ;; 2. emit each app namespace. Release and optimized modes enable the
+      ;; inference + record-shape setup passes (inference-enabled?); optimized
+      ;; mode with direct-link additionally runs the inline + flatten +
+      ;; scalar-replace fixpoint (inline-enabled?). Dev mode gets const-fold +
+      ;; numeric-annotate only.
       ;; direct-link? (opt-in) commits to a closed world: app->app calls bind
       ;; directly, giving up runtime redefinition of those vars. Off by default in
       ;; every mode. The defined-set accumulates across the dependency-ordered
@@ -490,9 +564,11 @@
             (dynamic-wind
               (lambda ()
                 (set-optimize! (string=? mode "optimized"))
+                (set-release! (string=? mode "release"))
                 (when direct-link?
                   ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
-                  ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
+                  ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
+                  (set-direct-link-flag! #t))
                 ;; Cache resolved var cells per reference site in the APP forms
                 ;; (bld-emit-ns / ei-emit-ns-records). A user build is a single
                 ;; compile of fixed source, so the gensym-numbered cell names are
@@ -535,6 +611,8 @@
                             #f))))
               (lambda ()
                 (set-optimize! #f)
+                (set-release! #f)
+                (set-direct-link-flag! #f)
                 ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
@@ -558,6 +636,7 @@
           (bld-emit-natives out natives 'required)
           (put-string out "\n;; === embedded resources ===\n")
           (bld-emit-embeds out embed-dirs)
+          (bld-emit-data-readers out)
           (put-string out (string-append
                             "(set-source-roots! (list "
                             (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) ""
@@ -685,6 +764,28 @@
       (put-string out body)
       (close-port out))))
 
+;; Per-mode Chez compile parameters for app binaries. Mirrors the pattern in
+;; build-joltc.ss (optimize-level 3, fasl-compressed #t for release/optimized).
+;; "release" keeps inspector + proc-source ON so Clojure backtraces (via
+;; inspect/object walking the continuation) survive. "optimized" turns them OFF
+;; for max speed. "dev" leaves Chez defaults (optimize-level 2, inspector ON,
+;; proc-source ON, fasl uncompressed — full debuggability).
+(define (bld-chez-param-forms mode)
+  (cond
+    ((string=? mode "optimized")
+     (string-append
+       "(optimize-level 3)\n"
+       "(generate-inspector-information #f)\n"
+       "(generate-procedure-source-information #f)\n"
+       "(fasl-compressed #t)\n"))
+    ((string=? mode "release")
+     (string-append
+       "(optimize-level 3)\n"
+       "(generate-inspector-information #t)\n"
+       "(generate-procedure-source-information #t)\n"
+       "(fasl-compressed #t)\n"))
+    (else "")))
+
 (define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link)
   (let ((petite (string-append builddir "/petite.boot"))
         (scheme (string-append builddir "/scheme.boot")))
@@ -692,7 +793,17 @@
     (jolt-spill-embedded! "csv/scheme.boot" scheme)
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
     (bld-prepend-prologue! flat-ss)
-    (compile-file flat-ss flat-so)
+    (cond
+      ((string=? mode "optimized")
+       (parameterize ((optimize-level 3) (generate-inspector-information #f)
+                       (generate-procedure-source-information #f) (fasl-compressed #t))
+         (compile-file flat-ss flat-so)))
+      ((string=? mode "release")
+       (parameterize ((optimize-level 3) (generate-inspector-information #t)
+                       (generate-procedure-source-information #t) (fasl-compressed #t))
+         (compile-file flat-ss flat-so)))
+      (else
+       (compile-file flat-ss flat-so)))
     (make-boot-file boot '() petite scheme flat-so)
     ;; The stub is the native launcher the boot is appended to. With no :static
     ;; natives it's the prebuilt one bundled in joltc (no cc needed); with :static
@@ -725,9 +836,9 @@
     (jolt-spill-embedded! "stub/launcher.c" lc)
     (display "jolt build: relinking launcher stub with static native libraries\n")
     (bld-system (string-append
-      "cc -O2 " (if bld-osx? "" "-rdynamic ")
+      "cc -O2 " (bld-export-symbols-flag)
       "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
-      (bld-link-libs) native-link))))
+      native-link " " (bld-link-libs)))))
 
 ;; --- legacy cc link (dev bin/joltc): fresh Chez compile + xxd + cc ------------
 (define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link)
@@ -737,6 +848,7 @@
       (put-string p
         (string-append
           "(import (chezscheme))\n"
+          (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
           (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
@@ -764,9 +876,9 @@
   ;; a statically-linked native lib's symbols resolve via (load-shared-object #f)
   ;; at startup. macOS keeps unstripped executable symbols dlsym-visible already.
   (bld-system (string-append
-    "cc -O2 " (if (and (not bld-osx?) (> (string-length native-link) 0)) "-rdynamic " "")
+    "cc -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "")
     "-I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
-    "-o '" out-path "' " (bld-link-libs) native-link))
+    "-o '" out-path "' " native-link " " (bld-link-libs)))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 ;; --- shared-library link (jolt build --library) -----------------------------
@@ -825,6 +937,7 @@
       (put-string p
         (string-append
           "(import (chezscheme))\n"
+          (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
           (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
@@ -848,7 +961,7 @@
           (string-append "-dynamiclib -install_name '@rpath/" (bld-basename out-path) "' ")
           "-shared ")
       "-I'" bld-csv-dir "' '" lc "' '" bld-csv-dir "/libkernel.a' "
-      "-o '" out-path "' " (bld-link-libs) native-link)))
+      "-o '" out-path "' " native-link " " (bld-link-libs))))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 (def-var! "jolt.host" "build-binary"
