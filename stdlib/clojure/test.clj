@@ -212,6 +212,9 @@
 (defmacro deftest [name & body]
   `(do
      (defn ~name [] ~@body)
+     ;; the var carries :test metadata like clojure.test's deftest, so tooling
+     ;; that discovers tests by scanning var meta finds it.
+     (alter-meta! (var ~name) assoc :test ~name)
      (swap! clojure.test/registry conj {:name '~name
                                         :ns (clojure.core/ns-name clojure.core/*ns*)
                                         :fn ~name})
@@ -264,6 +267,20 @@
         (fn [] (doseq [t ts :when (= n (:ns t))] (run-one t))))))
   nil)
 
+;; Tests attached to a namespace's vars via :test metadata but never registered
+;; through deftest — clojure.test discovers tests by scanning ns-interns, so a
+;; suite that interns test vars directly (yamltest-style intern + vary-meta)
+;; must be visible to (run-tests 'ns) too. deftest'd vars also carry :test
+;; meta, so names already in the registry are excluded.
+(defn- interned-tests [n]
+  (let [known (set (map :name (filter #(= n (:ns %)) @registry)))]
+    (->> (ns-interns n)
+         (keep (fn [[s v]]
+                 (when-let [t (:test (meta v))]
+                   (when-not (contains? known s)
+                     {:name s :ns n :fn t}))))
+         (sort-by (fn [t] (str (:name t)))))))
+
 (defn run-registered [] (run-selected nil))
 
 ;; (run-tests 'ns1 'ns2 …) runs only those namespaces' tests, like clojure.test.
@@ -273,9 +290,14 @@
 ;; for the n-pass/n-fail harness API.
 (defn run-tests [& nses]
   (let [before @counters
-        ns-set (when (seq nses)
-                 (set (map (fn [n] (if (symbol? n) n (ns-name n))) nses)))]
+        ns-syms (map (fn [n] (if (symbol? n) n (ns-name n))) nses)
+        ns-set (when (seq ns-syms) (set ns-syms))]
     (run-selected ns-set)
+    ;; interned (:test meta) tests run after the registered ones, per ns,
+    ;; through the same each-fixtures path.
+    (doseq [n ns-syms
+            t (interned-tests n)]
+      (run-one t))
     (let [r @counters
           d {:type :summary
              :test  (- (:test r)  (:test before))
@@ -288,5 +310,40 @@
                     (:fail d) " failures, " (:error d) " errors."))
       d)))
 
-(defn run-test [& _] nil)
-(defn test-var [& _] nil)
+;; --- var-level API (clojure.test parity) -------------------------------------
+
+(def *initial-report-counters* {:test 0, :pass 0, :fail 0, :error 0})
+
+(defn inc-report-counter [k]
+  (swap! counters update k (fnil inc 0)))
+
+(defn test-var
+  "Run the test attached to var v via its :test metadata, with *testing-vars*
+  bound like clojure.test."
+  [v]
+  (when-let [t (:test (meta v))]
+    (binding [*testing-vars* (conj *testing-vars* v)]
+      (swap! counters update :test inc)
+      (try
+        (t)
+        (catch Throwable e
+          (err! (str (:name (meta v)) " crashed: " (err-text e))))))))
+
+(defn test-vars
+  "Run the vars' :test fns, each namespace group wrapped in its :once fixtures
+  and each var in its :each fixtures."
+  [vars]
+  (doseq [[n vs] (group-by (fn [v] (:ns (meta v))) vars)]
+    (let [n (cond (nil? n) nil
+                  (symbol? n) n
+                  :else (ns-name n))]
+      (wrap-fixtures (get @once-fixtures n [])
+        (fn []
+          (doseq [v vs]
+            (wrap-fixtures (get @each-fixtures n [])
+              (fn [] (test-var v)))))))))
+
+(defmacro run-test
+  "Run a single test var: (run-test my-test)."
+  [v]
+  `(clojure.test/test-var (var ~v)))
