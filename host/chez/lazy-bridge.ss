@@ -64,8 +64,8 @@
 ;; nth / the printers don't, so coerce those explicitly.
 (define %ls-sequential? jolt-sequential?)
 (set! jolt-sequential? (lambda (x) (or (jolt-lazyseq? x) (%ls-sequential? x))))
-(define %ls-count jolt-count)
-(set! jolt-count (lambda (x) (if (jolt-lazyseq? x) (%ls-count (jolt-seq x)) (%ls-count x))))
+(register-count-arm! jolt-lazyseq?
+  (lambda (x) (jolt-count (jolt-seq x))))
 (define %ls-empty? jolt-empty?)
 (set! jolt-empty? (lambda (x) (if (jolt-lazyseq? x) (%ls-empty? (jolt-seq x)) (%ls-empty? x))))
 (define %ls-nth jolt-nth)

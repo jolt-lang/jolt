@@ -358,13 +358,16 @@
              (find-method-any-protocol (jrec-tag v) method)))
         ((jreify? v) (let ((rm (reified-methods v))) (and rm (hashtable-ref rm method #f))))
         (else #f)))
-(define %r-jolt-count jolt-count)
-(set! jolt-count (lambda (coll)
-  (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
-        ((jrec? coll) (+ (vector-length (jrec-vals coll))
-                         (let ((ext (jrec-ext coll))) (if (jolt-nil? ext) 0 (%r-jolt-count ext)))))
-        ((jolt-transient? coll) (t-count coll))
-        (else (%r-jolt-count coll)))))
+(register-count-arm! (lambda (coll) (or (jrec? coll) (jolt-transient? coll)))
+  (lambda (coll)
+    (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
+          ((jrec? coll) (+ (vector-length (jrec-vals coll))
+                           (let ((ext (jrec-ext coll))) (if (jolt-nil? ext) 0 (jolt-count ext)))))
+          ((jolt-transient? coll) (t-count coll))
+          (else (error 'count "uncountable record"))))
+  ;; note: the else arm is unreachable since the predicate matches both
+  ;; jrec? and jolt-transient? — kept as a safety net
+)
 ;; contains?: a deftype implementing Associative/containsKey (e.g. core.cache's
 ;; caches) answers through that; a plain defrecord checks its fields.
 (define %r-jolt-contains? jolt-contains?)
@@ -428,7 +431,7 @@
               (if (jolt-nil? ext) coll
                   (let ((ne (%r-jolt-dissoc ext k)))
                     (make-jrec (jrec-desc coll) (jrec-vals coll)
-                               (if (= 0 (%r-jolt-count ne)) jolt-nil ne)))))))))
+                                (if (= 0 (jolt-count ne)) jolt-nil ne)))))))))
 (set! jolt-dissoc (lambda (coll . ks)
   (cond ((jrec-cl coll "without")
          => (lambda (m) (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))

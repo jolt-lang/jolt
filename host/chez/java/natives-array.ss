@@ -103,8 +103,7 @@
   (if (fx=? 0 (pvec-count chunk)) rest (cseq-chunked chunk 0 rest)))
 
 ;; --- extend the collection dispatchers to see a jolt-array ------------------
-(define %na-count jolt-count)
-(set! jolt-count (lambda (c) (if (jolt-array? c) (vector-length (jolt-array-vec c)) (%na-count c))))
+(register-count-arm! jolt-array? (lambda (c) (vector-length (jolt-array-vec c))))
 (define %na-seq jolt-seq)
 (set! jolt-seq (lambda (c) (if (jolt-array? c) (list->cseq (vector->list (jolt-array-vec c))) (%na-seq c))))
 (define %na-nth jolt-nth)
@@ -116,6 +115,12 @@
                    (if (and (>= j 0) (< j (vector-length v))) (vector-ref v j) d))
                  (%na-nth c i d)))))
 (def-var! "jolt.host" "array-value?" (lambda (x) (if (jolt-array? x) #t jolt-nil)))
+;; jolt-get on arrays stays as a set!-wrap rather than register-get-arm! because
+;; the arm dispatch (collections.ss jolt-get-dispatch) already handles the common
+;; pmap/pvec/pset cases BEFORE it reaches the arm loop — and jolt-array? extends
+;; jolt-nth (not jolt-get directly). The set!-wrap here REUSES jolt-nth (which
+;; itself has a count-arm registry) so arrays get the same nth semantics without
+;; re-entering the get arm loop. This is the documented fast-path exception.
 (define %na-get jolt-get)
 (set! jolt-get
   (case-lambda

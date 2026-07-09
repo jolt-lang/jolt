@@ -501,18 +501,33 @@
 ;; a count is an exact integer (JVM parity: count returns a long). jolt= is
 ;; exactness-aware, so this must be exact to match an exact integer literal:
 ;; (= 2 (count m)) -> 2 vs exact 2 -> true.
+;; Arm registry for host-type count extensions (lazyseq, sorted, queue, array, etc.)
+;; A host shim registers its type's count via register-count-arm! instead of
+;; set!-wrapping jolt-count (cf. register-hash-arm!). Arms dispatch newest-
+;; registration-first, matching the precedence the set! chains had. The builtin
+;; types stay inline in jolt-count itself, so the arm walk only runs for
+;; extension types. jolt-seq / jolt-empty? / jolt-conj1 / jolt-nth /
+;; jolt-contains? still use set! chains — migrate them to this registry the
+;; same way when touched (each needs its own bench guard; seq is the hottest).
+(define jolt-count-arms '())
+(define (register-count-arm! pred handler)
+  (set! jolt-count-arms (cons (cons pred handler) jolt-count-arms)))
+(define (jolt-count-base coll)
+  ;; arms exhausted: a deftype/record counts through its declared method.
+  (cond ((rec-coll-method coll "count") => (lambda (m) (jolt-invoke m coll)))
+        (else (error 'count "uncountable"))))
 (define (jolt-count coll)
-  (begin
-    (cond ((pvec? coll) (pvec-count coll))
-          ((pmap? coll) (pmap-cnt coll))
-          ((pset? coll) (pset-count coll))
-          ((string? coll) (string-length coll))
-          ((jolt-nil? coll) 0)
-          ((empty-list-t? coll) 0)
-          ((cseq? coll) (let loop ((s coll) (n 0))   ; walk (forces a finite seq)
-                          (if (jolt-nil? s) n (loop (jolt-seq (seq-more s)) (fx+ n 1)))))
-          ((rec-coll-method coll "count") => (lambda (m) (jolt-invoke m coll)))
-          (else (error 'count "uncountable")))))
+  (cond ((pvec? coll) (pvec-count coll))
+        ((pmap? coll) (pmap-cnt coll))
+        ((pset? coll) (pset-count coll))
+        ((string? coll) (string-length coll))
+        ((or (jolt-nil? coll) (empty-list-t? coll)) 0)
+        ((cseq? coll) (let loop ((s coll) (n 0))
+                        (if (jolt-nil? s) n (loop (jolt-seq (seq-more s)) (fx+ n 1)))))
+        (else (let loop ((as jolt-count-arms))
+                (cond ((null? as) (jolt-count-base coll))
+                      (((caar as) coll) ((cdar as) coll))
+                      (else (loop (cdr as))))))))
 
 (define (jolt-assoc1 coll k v)
   (cond ((pmap? coll) (pmap-assoc coll k v))
