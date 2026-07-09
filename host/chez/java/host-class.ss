@@ -109,60 +109,20 @@
     (if (not (jolt-nil? override)) override (jolt-class x))))
 (def-var! "clojure.core" "type" jolt-type-pub)
 
-;; bare class-name tokens -> canonical JVM class-name strings.
+;; bare class-name tokens -> canonical JVM class-name strings, derived from the
+;; modeled class graph (jvm-class-parents) so this list stays current with any
+;; additions to class-hierarchy.ss.
 (define class-token-alist
-  '(("String" . "java.lang.String") ("Number" . "java.lang.Number")
-    ("Boolean" . "java.lang.Boolean") ("Long" . "java.lang.Long")
-    ("Integer" . "java.lang.Integer") ("Double" . "java.lang.Double")
-    ("Float" . "java.lang.Float") ("Byte" . "java.lang.Byte") ("Short" . "java.lang.Short")
-    ("Object" . "java.lang.Object") ("Character" . "java.lang.Character")
-    ("InputStream" . "java.io.InputStream") ("OutputStream" . "java.io.OutputStream")
-    ("File" . "java.io.File") ("Reader" . "java.io.Reader") ("Writer" . "java.io.Writer")
-    ("ISeq" . "clojure.lang.ISeq") ("Keyword" . "clojure.lang.Keyword")
-    ("Symbol" . "clojure.lang.Symbol") ("MapEntry" . "clojure.lang.MapEntry")
-    ("StringReader" . "java.io.StringReader") ("StringWriter" . "java.io.StringWriter")
-    ("StringBuilder" . "java.lang.StringBuilder")
-    ("StringTokenizer" . "java.util.StringTokenizer")
-    ("Charset" . "java.nio.charset.Charset") ("Base64" . "java.util.Base64")
-    ("Exception" . "java.lang.Exception")
-    ("IllegalArgumentException" . "java.lang.IllegalArgumentException")
-    ("ArityException" . "clojure.lang.ArityException")
-    ("IllegalStateException" . "java.lang.IllegalStateException")
-    ("RuntimeException" . "java.lang.RuntimeException")
-    ("UnsupportedOperationException" . "java.lang.UnsupportedOperationException")
-    ("InterruptedException" . "java.lang.InterruptedException")
-    ("IOException" . "java.io.IOException")
-    ("UnknownHostException" . "java.net.UnknownHostException")
-    ("ConnectException" . "java.net.ConnectException")
-    ("SocketTimeoutException" . "java.net.SocketTimeoutException")
-    ("MalformedURLException" . "java.net.MalformedURLException")
-    ("SSLException" . "javax.net.ssl.SSLException")
-    ("ExceptionInfo" . "clojure.lang.ExceptionInfo")
-    ("IExceptionInfo" . "clojure.lang.IExceptionInfo")
-    ("Pattern" . "java.util.regex.Pattern")
-    ("URI" . "java.net.URI") ("UUID" . "java.util.UUID")
-    ("ArrayList" . "java.util.ArrayList") ("PersistentQueue" . "clojure.lang.PersistentQueue")
-    ("NumberFormatException" . "java.lang.NumberFormatException")
-    ("ArithmeticException" . "java.lang.ArithmeticException")
-    ("NullPointerException" . "java.lang.NullPointerException")
-    ("ClassCastException" . "java.lang.ClassCastException")
-    ("IndexOutOfBoundsException" . "java.lang.IndexOutOfBoundsException")
-    ("UnsupportedEncodingException" . "java.io.UnsupportedEncodingException")
-    ("FileNotFoundException" . "java.io.FileNotFoundException")
-    ("Throwable" . "java.lang.Throwable")
-    ;; clojure.lang / java.util types that class-based multimethods dispatch on.
-    ("Fn" . "clojure.lang.Fn") ("IFn" . "clojure.lang.IFn")
-    ("Namespace" . "clojure.lang.Namespace") ("Named" . "clojure.lang.Named")
-    ("Set" . "java.util.Set") ("List" . "java.util.List") ("Map" . "java.util.Map")
-    ("Collection" . "java.util.Collection") ("Iterable" . "java.lang.Iterable")
-    ("CharSequence" . "java.lang.CharSequence") ("Comparable" . "java.lang.Comparable")
-    ("Runnable" . "java.lang.Runnable") ("Callable" . "java.util.concurrent.Callable")
-    ("IPersistentSet" . "clojure.lang.IPersistentSet")
-    ("IPersistentVector" . "clojure.lang.IPersistentVector")
-    ("IPersistentMap" . "clojure.lang.IPersistentMap")
-    ("IPersistentCollection" . "clojure.lang.IPersistentCollection")
-    ("Sequential" . "clojure.lang.Sequential") ("Seqable" . "clojure.lang.Seqable")
-    ("Associative" . "clojure.lang.Associative")))
+  (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+    (let ((result '()) (seen (make-hashtable string-hash string=?)))
+      (vector-for-each
+        (lambda (k _)
+          (let ((s (jch-last-segment k)))
+            (when (not (hashtable-ref seen s #f))
+              (hashtable-set! seen s #t)
+              (set! result (cons (cons s k) result)))))
+        keys vals)
+      (reverse result))))
 (for-each
   (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
   class-token-alist)
@@ -183,23 +143,12 @@
 ;; which downstream code (e.g. SCI) references as protocols/interfaces.
 (for-each
   (lambda (nm) (def-var! "clojure.core" nm nm))
-  '("java.lang.Long" "java.lang.Integer" "java.lang.Double" "java.lang.Float"
-    "java.lang.Byte" "java.lang.Short"
-    "java.lang.Number" "java.lang.String" "java.lang.Boolean" "java.lang.Character"
-    "java.lang.Object"
-    ;; exception classes compared against (class e): (= java.net.SocketTimeoutException (class e))
-    "java.lang.Exception" "java.lang.Throwable" "java.lang.RuntimeException"
-    "java.lang.IllegalArgumentException" "java.lang.IllegalStateException"
-    "java.lang.UnsupportedOperationException" "java.io.IOException"
-    "java.net.UnknownHostException" "java.net.ConnectException"
-    "java.net.SocketTimeoutException" "java.net.MalformedURLException"
-    "javax.net.ssl.SSLException"
-    "java.lang.NumberFormatException" "java.lang.ArithmeticException"
-    "java.lang.NullPointerException" "java.lang.ClassCastException"
-    "java.lang.IndexOutOfBoundsException" "java.io.FileNotFoundException"
-    "java.io.UnsupportedEncodingException"
-    ;; clojure.lang.ExceptionInfo / IExceptionInfo compared against (class e)
-    "clojure.lang.ExceptionInfo" "clojure.lang.IExceptionInfo" "clojure.lang.ArityException"
-    "java.util.regex.Pattern" "java.net.URI" "java.util.UUID"
-    "clojure.lang.PersistentQueue"
-    "clojure.lang.Keyword" "clojure.lang.Symbol" "clojure.lang.Ratio" "clojure.lang.Atom"))
+  (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+    (let ((result '()))
+      (vector-for-each
+        (lambda (k _)
+          (when (or (not (jch-interface? k))
+                    (string=? k "clojure.lang.IExceptionInfo"))
+            (set! result (cons k result))))
+        keys vals)
+      (reverse result))))
