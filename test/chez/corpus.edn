@@ -1910,6 +1910,11 @@
   {:suite "regex / literals & predicate" :label "combined cluster modifiers (?xs) order" :expected "\"foo\\n\"" :actual "(re-find #\"(?xs)f oo.\" \"foo\\nx\")" :portability :common}
   {:suite "regex / literals & predicate" :label "scoped combined modifiers (?si:...)" :expected "\"AXbc\"" :actual "(re-find #\"(?si:a.b)c\" \"AXbc\")" :portability :common}
   {:suite "regex / literals & predicate" :label "combined (?sm) still works" :expected "\"b\"" :actual "(re-find #\"(?sm)^b\" \"a\\nb\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "re-quote-replacement of a regex" :expected "\"x+y\"" :actual "(clojure.string/re-quote-replacement #\"x+y\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "escaped ] in a char class" :expected "\"]x\"" :actual "(re-find #\"[\\]]x\" \"]x\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "escaped ] amid class members" :expected "\")\"" :actual "(re-find #\"[\\.\\,\\s\\]\\}\\)]\" \")\")" :portability :common}
+  {:suite "regex / literals & predicate" :label "replacement backslash escape" :expected "4" :actual "(count (clojure.string/replace \"abc\" #\"b\" \"\\\\\\\\d\"))" :portability :common}
+  {:suite "regex / literals & predicate" :label "replacement escaped dollar" :expected "3" :actual "(count (clojure.string/replace \"abc\" #\"b\" \"\\\\$\"))" :portability :common}
   {:suite "regex / literals & predicate" :label "escaped digits" :expected "\"42\"" :actual "(re-find #\"\\d+\" \"x42y\")" :portability :common}
   {:suite "regex / literals & predicate" :label "escaped ws/non-ws" :expected "\"x a\"" :actual "(re-find #\"\\S\\s\\S\" \"x a b y\")" :portability :common}
   {:suite "regex / re-find" :label "match" :expected "\"123\"" :actual "(re-find #\"\\d+\" \"abc123def\")" :portability :common}

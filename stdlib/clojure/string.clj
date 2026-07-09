@@ -133,11 +133,13 @@
   "Escape special characters (backslash and dollar) in a regex replacement
   string so it is used literally rather than interpreted."
   [replacement]
+  ;; str first: the JVM takes any CharSequence-able value — a regex passed as
+  ;; the replacement quotes its pattern source (yamlscript's re templates).
   (apply str
     (map (fn [ch]
            (let [c (str ch)]
              (if (or (= c "\\") (= c "$")) (str "\\" c) c)))
-         (seq replacement))))
+         (seq (str replacement)))))
 
 ;; Ported from clojure.string/trim-newline (CharSequence interop replaced with
 ;; portable count/subs). Removes all trailing \n or \r characters.

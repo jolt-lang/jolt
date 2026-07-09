@@ -100,6 +100,29 @@
                (write-char c out) (loop (fx+ i 1) #f))
               (else (write-char c out) (loop (fx+ i 1) in-class))))))))
 
+;; Inside a [...] class, irregex reads backslash POSIX-style: '\]' is a literal
+;; backslash and the ']' ends the class (Java reads it as an escaped ']').
+;; Rewrite a class-internal '\]' to '\x5D' — accepted standalone and as a range
+;; endpoint, so no reordering games. Outside a class '\]' passes through.
+(define (escape-class-bracket src)
+  (let ((len (string-length src)) (out (open-output-string)))
+    (let loop ((i 0) (in-class #f))
+      (if (fx>=? i len)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (let ((n (string-ref src (fx+ i 1))))
+                 (if (and in-class (char=? n #\]))
+                     (put-string out "\\x5D")
+                     (begin (write-char c out) (write-char n out)))
+                 (loop (fx+ i 2) in-class)))
+              ((and (not in-class) (char=? c #\[))
+               (write-char c out) (loop (fx+ i 1) #t))
+              ((and in-class (char=? c #\]))
+               (write-char c out) (loop (fx+ i 1) #f))
+              (else (write-char c out) (loop (fx+ i 1) in-class))))))))
+
 ;; Java accepts any combination of inline flags — (?sx), (?si:...) — while
 ;; irregex rejects combined clusters ("unknown regex cluster modifier") and
 ;; accepts only i/x/u inline (s never inline; leading s/i/m are peeled into
@@ -266,7 +289,7 @@
   ;; normalize combined clusters FIRST so a leading (?sx) becomes (?s)(?x) and
   ;; regex-parse-flags can peel the strippable singles into options
   (let-values (((opts pat) (regex-parse-flags (split-cluster-modifiers source))))
-    (let* ((p (translate-prop-classes (escape-class-shorthand-dash pat)))
+    (let* ((p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket pat))))
            (irx (apply irregex p opts)))
       (make-regex-t source
                     (if (> (irregex-num-submatches irx) 0)
