@@ -3640,4 +3640,9 @@
   {:suite "regex / comments-mode" :label "escaped space stays literal under (?x)" :expected "\"a b\"" :actual "(re-find (re-pattern \"(?x)a\\\\ b\") \"a b\")" :portability :common}
   {:suite "regex / comments-mode" :label "(?sx) combines dot-all with comments mode" :expected "\"a\\nb\"" :actual "(re-find (re-pattern \"(?sx)a.\\nb\") \"a\\nb\")" :portability :common}
   {:suite "pprint / line-breaks" :label "broken lines carry no trailing spaces" :expected "\"(defn\\n foo\\n ([a b c] [c b a])\\n ([a b] (foo a b \\\"OK\\\"))\\n ([a] (foo a 42 \\\"OK\\\")))\"" :actual "(with-out-str (clojure.pprint/write '(defn foo ([a b c] [c b a]) ([a b] (foo a b \"OK\")) ([a] (foo a 42 \"OK\")))))" :portability :common}
+  {:suite "regex / dollar-eol" :label "$ matches before a final newline" :expected "\"foo\"" :actual "(re-find #\"foo$\" \"foo\\n\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "$ does not match before two trailing newlines" :expected "nil" :actual "(re-find #\"foo$\" \"foo\\n\\n\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "re-matches stays whole-input (trailing newline unmatched)" :expected "nil" :actual "(re-matches #\"foo$\" \"foo\\n\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "anchored replace strips through a final newline" :expected "\"x\\n\"" :actual "(clojure.string/replace \"(x)\\n\" #\"(?s)^\\((.*)\\)$\" \"$1\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "$ inside a character class stays literal" :expected "\"$\"" :actual "(re-find #\"[$]\" \"a$b\")" :portability :common}
 ]

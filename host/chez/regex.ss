@@ -298,6 +298,30 @@
               (else src)))
           src))))
 
+;; Java's $ (without MULTILINE) matches at end of input OR just before a FINAL
+;; line terminator ((re-find #"foo$" "foo\n") => "foo"); irregex's $ is absolute
+;; end only. Rewrite each unescaped $ outside a character class to a lookahead
+;; with those semantics. The emitted inner $ is irregex's own end anchor.
+;; Multi-line patterns skip this (both engines treat $ as a line boundary there).
+(define (rewrite-dollar-eol src)
+  (let ((n (string-length src)) (out (open-output-string)))
+    (let loop ((i 0) (in-class #f))
+      (if (fx>=? i n)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) n))
+               (write-char c out) (write-char (string-ref src (fx+ i 1)) out)
+               (loop (fx+ i 2) in-class))
+              ((and (not in-class) (char=? c #\[))
+               (write-char c out) (loop (fx+ i 1) #t))
+              ((and in-class (char=? c #\]))
+               (write-char c out) (loop (fx+ i 1) #f))
+              ((and (not in-class) (char=? c #\$))
+               (put-string out "(?=(?:\\r?\\n)?$)")
+               (loop (fx+ i 1) in-class))
+              (else (write-char c out) (loop (fx+ i 1) in-class))))))))
+
 ;; Java/Clojure inline flags: a leading (?imsx…) group sets a flag over the whole
 ;; pattern. irregex has the same semantics but as constructor OPTIONS, not inline
 ;; syntax (it rejects (?s)/(?s:…)), so peel any leading flag groups off the source
@@ -341,7 +365,8 @@
   ;; combined clusters so a leading (?sx) becomes (?s)(?x) and regex-parse-flags
   ;; can peel the strippable singles into options
   (let-values (((opts pat) (regex-parse-flags (split-cluster-modifiers (apply-global-x source)))))
-    (let* ((p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket pat))))
+    (let* ((pat (if (memq 'multi-line opts) pat (rewrite-dollar-eol pat)))
+           (p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket pat))))
            (irx (apply irregex p opts)))
       (make-regex-t source
                     (if (> (irregex-num-submatches irx) 0)
