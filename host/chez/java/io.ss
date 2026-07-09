@@ -150,16 +150,30 @@
 ;; set atime+mtime from epoch milliseconds via utimes(2). struct timeval is
 ;; sec + usec, 16 bytes each on the 64-bit platforms Chez targets; usec fits
 ;; its field (< 1e6) so a signed 64-bit native-endian write covers the layout.
-(define c-utimes (foreign-procedure "utimes" (string u8*) int))
+;; Resolved via jolt-foreign-proc-safe — a literal foreign-procedure here is a
+;; fasl relocation that aborts the boot on platforms lacking the symbol.
+;; Windows has no utimes; its CRT _utime64 takes {actime, modtime} as two
+;; signed 64-bit seconds (16 bytes, second resolution).
+(define c-utimes (jolt-foreign-proc-safe "utimes" '(string u8*) 'int))
+(define c-utime64 (and (not c-utimes)
+                       (jolt-foreign-proc-safe "_utime64" '(string u8*) 'int)))
 (define (set-file-mtime-millis! p ms)
-  (let ((tv (make-bytevector 32 0))
-        (sec (div ms 1000))
-        (usec (* (mod ms 1000) 1000)))
-    (bytevector-s64-set! tv 0 sec (native-endianness))
-    (bytevector-s64-set! tv 8 usec (native-endianness))
-    (bytevector-s64-set! tv 16 sec (native-endianness))
-    (bytevector-s64-set! tv 24 usec (native-endianness))
-    (= (c-utimes p tv) 0)))
+  (let ((sec (div ms 1000)))
+    (cond
+      (c-utimes
+       (let ((tv (make-bytevector 32 0))
+             (usec (* (mod ms 1000) 1000)))
+         (bytevector-s64-set! tv 0 sec (native-endianness))
+         (bytevector-s64-set! tv 8 usec (native-endianness))
+         (bytevector-s64-set! tv 16 sec (native-endianness))
+         (bytevector-s64-set! tv 24 usec (native-endianness))
+         (= (c-utimes p tv) 0)))
+      (c-utime64
+       (let ((tb (make-bytevector 16 0)))
+         (bytevector-s64-set! tb 0 sec (native-endianness))
+         (bytevector-s64-set! tb 8 sec (native-endianness))
+         (= (c-utime64 p tb) 0)))
+      (else #f))))
 ;; mkdir -p: create p and any missing parents. Returns #t if p ends up a dir.
 (define (mkdirs! p)
   (unless (or (= 0 (string-length p)) (file-exists? p))
