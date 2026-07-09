@@ -117,7 +117,6 @@
 ;; defined (ns.ss loaded earlier); chez-current-ns consults it too.
 (set! star-ns-cell (jolt-var "clojure.core" "*ns*"))
 
-(define %dyn-rt-var-deref var-deref)
 (set! var-deref
   (lambda (ns name)
     (let ((cell (jolt-var ns name)))

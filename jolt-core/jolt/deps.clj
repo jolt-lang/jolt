@@ -14,7 +14,6 @@
 (defn- getenv [n] (jolt.host/getenv n))
 (defn- file-exists? [p] (jolt.host/file-exists? p))
 (defn- sh [cmd] (jolt.host/sh cmd))           ; exit code, inherits stdout/stderr
-(defn- sh-out [cmd] (jolt.host/sh-out cmd))   ; captured stdout
 (defn- warn [& xs] (println (str "[jolt.deps] " (apply str xs))))
 
 (defn- read-edn [path]

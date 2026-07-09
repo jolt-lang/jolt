@@ -364,9 +364,6 @@
     (make-jhost "local-date-time" (vector ed (* mod 1000000)))))
 ;; local-date from epoch-ms: the epoch-day of the UTC day containing ms.
 (define (mk-local-date ms) (make-jhost "local-date" (vector (inst-floor-div (exact (truncate ms)) 86400000))))
-;; start of the UTC day containing ms.
-(define (start-of-utc-day ms)
-  (* (inst-floor-div (exact (truncate ms)) 86400000) 86400000))
 ;; a formatter carries its pattern and a locale id (default "en"); the locale
 ;; selects month/day names in the java-time.ss format engine.
 (define (mk-formatter pat . loc) (make-jhost "dt-formatter" (vector pat (if (null? loc) "en" (car loc)))))

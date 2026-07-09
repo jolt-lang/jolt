@@ -153,9 +153,6 @@
                  (string-append (if (string? p) p (jolt-str-render-one p))
                                 (number->string jolt-gensym-counter)))))
 
-;; int/long: truncate toward zero to an EXACT integer (= JVM long). char -> code
-;; point (exact). double: always a flonum (= JVM double).
-(define (jolt-int x) (if (char? x) (char->integer x) (exact (truncate x))))
 ;; a numeric type outside Chez's tower converts through this hook (bigdec).
 (define (jolt-double-slow x) (jolt-num-cast-throw x))
 (define (jolt-double x)
@@ -166,8 +163,6 @@
 ;; compare: 3-way, returns an EXACT integer (= JVM compare -> int).
 (define (jolt-cmp3 x y) (cond ((< x y) -1) ((> x y) 1) (else 0)))
 (define (jolt-strcmp a b) (cond ((string<? a b) -1) ((string>? a b) 1) (else 0)))
-(define (jolt-kw->string k)
-  (let ((ns (keyword-t-ns k))) (if ns (string-append ns "/" (keyword-t-name k)) (keyword-t-name k))))
 (define (jolt-sym-ns-string s)
   (let ((n (symbol-t-ns s))) (if (or (jolt-nil? n) (not n) (eq? n '())) "" n)))
 ;; compare returns an EXACT integer -1/0/1 (= JVM compare -> int).
