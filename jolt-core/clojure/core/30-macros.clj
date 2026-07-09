@@ -92,6 +92,24 @@
 (defmacro locking [x & body]
   `(jolt.host/with-monitor ~x (fn* [] ~@body)))
 
+;; STM macros over the host transaction seams (refs.ss). sync keeps the
+;; reference's (sync flags & body) shape — flags are ignored, like the JVM.
+(defmacro sync [flags & body]
+  `(clojure.core/__sync-call (fn* [] ~@body)))
+
+;; dosync: run body in a serialized transaction (single global mutex).
+(defmacro dosync [& body]
+  `(clojure.core/__sync-call (fn* [] ~@body)))
+
+;; io!: inside a transaction, throws WITHOUT evaluating body; an optional
+;; leading literal string is the exception message.
+(defmacro io! [& body]
+  (let [message (when (string? (first body)) (first body))
+        body (if message (rest body) body)]
+    `(if (clojure.core/__txn-running?)
+       (throw (new IllegalStateException ~(or message "I/O in transaction")))
+       (do ~@body))))
+
 ;; defonce: define name only if it isn't already bound to a non-nil root;
 ;; returns the existing var untouched otherwise.
 ;; time: evaluate expr, print the elapsed wall-clock, return the value.

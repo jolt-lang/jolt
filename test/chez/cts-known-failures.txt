@@ -2,7 +2,7 @@
 # The gate fails on any per-namespace change, worse OR better; regenerate
 # with: JOLT_CTS_WRITE_BASELINE=1 host/chez/cts.sh
 clojure.core-test.abs 1 0
-clojure.core-test.add-watch 0 1
+clojure.core-test.add-watch 1 0
 clojure.core-test.bigint 1 0
 clojure.core-test.bit-set 1 0
 clojure.core-test.dec 1 0
@@ -25,7 +25,6 @@ clojure.core-test.pos-int-qmark 1 0
 clojure.core-test.quot 25 0
 clojure.core-test.realized-qmark 1 0
 clojure.core-test.rem 16 0
-clojure.core-test.remove-watch 0 1
 clojure.core-test.star 13 0
 clojure.core-test.star-squote 13 0
 clojure.core-test.transient 4 0
