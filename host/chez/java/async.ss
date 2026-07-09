@@ -114,7 +114,9 @@
 (define (ac-close! ch)
   (unless (async-chan-closed? ch)
     (async-chan-closed?-set! ch #t)
-    (when (async-chan-xrf ch) (guard (e (#t #f)) (ac-xrf-apply ch)))
+    (when (async-chan-xrf ch)
+      (guard (e (#t (async-report-uncaught! "transducer completion on close!" e)))
+        (ac-xrf-apply ch)))
     (condition-broadcast (async-chan-cv ch)))
   jolt-nil)
 (define (jolt-async-close! ch) (with-mutex (async-chan-mu ch) (ac-close! ch)))
@@ -263,13 +265,26 @@
 ;; (go-spawn thunk) — run thunk on a thread; return a buffered(1) channel that
 ;; conveys its value once then closes (a nil result just closes). Dynamic bindings
 ;; are conveyed (Chez inherits the thread-parameter at fork; we install explicitly).
+
+;; Print an uncaught-exception report to stderr — the JVM routes a thread body's
+;; throw to the default uncaught-exception handler; silence here made a throwing
+;; worker indistinguishable from one that returned nil. Reporting failures are
+;; themselves swallowed (a worker must never die reporting).
+(define (async-report-uncaught! where e)
+  (guard (_ (#t #f))
+    (display (string-append "Exception in " where ":\n") (current-error-port))
+    (jolt-report-throwable e (current-error-port)))
+  #f)
+
 (define (async-go-spawn thunk)
   (let ((w (ac-make 1 'fixed #f)) (snap (dyn-binding-stack)))
     (fork-thread
      (lambda ()
        (dyn-binding-stack snap)
        (let ((r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
-         (when (and (car r) (not (jolt-nil? (cdr r)))) (jolt-async-give w (cdr r)))
+         (if (car r)
+             (when (not (jolt-nil? (cdr r))) (jolt-async-give w (cdr r)))
+             (async-report-uncaught! "go/thread body (channel closed)" (cdr r)))
          (jolt-async-close! w))))
     w))
 

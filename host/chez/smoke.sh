@@ -161,6 +161,61 @@ else
   fails=$((fails + 1))
 fi
 
+# A throwing go/thread body reports to stderr (the JVM's uncaught-exception
+# handler behavior) while the channel still just closes: <!! stays nil.
+thr_out="$(bin/joltc -e "(do (require '[clojure.core.async :as a]) (pr (a/<!! (a/thread (/ 1 0)))))" 2>/tmp/jolt-smoke-thr-err)"
+if [ "$thr_out" = "nil" ] && grep -q "Exception in go/thread body" /tmp/jolt-smoke-thr-err; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: throwing (thread ...) should print an uncaught report and <!! nil"
+  echo "    stdout \`$thr_out\`; stderr: $(head -1 /tmp/jolt-smoke-thr-err)"
+  fails=$((fails + 1))
+fi
+# Same for a raw Thread body.
+bin/joltc -e '(do (.start (Thread. (fn [] (throw (ex-info "boom" {}))))) (Thread/sleep 200))' 2>/tmp/jolt-smoke-thr2-err >/dev/null
+if grep -q "Exception in Thread body" /tmp/jolt-smoke-thr2-err; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a throwing Thread body should print an uncaught report"
+  fails=$((fails + 1))
+fi
+
+# A reader error in a required source file names the file and position.
+rp="$(mktemp -d)/rproj"; mkdir -p "$rp/src"
+printf '{:paths ["src"]}\n' > "$rp/deps.edn"
+printf '(ns app)\n(def broken "unterminated\n' > "$rp/src/app.clj"
+rerr="$(JOLT_PWD="$rp" bin/joltc run -m app 2>&1)"
+if printf '%s' "$rerr" | grep -q 'src/app.clj:'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a reader error in a file should name file:line:col"
+  echo "    got: $(printf '%s' "$rerr" | head -1)"
+  fails=$((fails + 1))
+fi
+
+# A malformed PROJECT deps.edn is a hard error naming the file; a git dep
+# without :git/sha names the coordinate.
+bp="$(mktemp -d)/badproj"; mkdir -p "$bp/src"
+printf '{:paths ["src" :oops\n' > "$bp/deps.edn"
+berr="$(JOLT_PWD="$bp" bin/joltc run -m app 2>&1)"
+if printf '%s' "$berr" | grep -q 'deps.edn'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: malformed project deps.edn should be a hard error naming the file"
+  fails=$((fails + 1))
+fi
+gp="$(mktemp -d)/gitproj"; mkdir -p "$gp/src"
+printf '{:paths ["src"] :deps {some/dep {:git/url "https://example.com/x.git"}}}\n' > "$gp/deps.edn"
+printf '(ns app)\n(defn -main [& _] (println :ok))\n' > "$gp/src/app.clj"
+gerr="$(JOLT_PWD="$gp" bin/joltc run -m app 2>&1)"
+if printf '%s' "$gerr" | grep -q 'needs :git/sha'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a git dep without :git/sha should say so"
+  echo "    got: $(printf '%s' "$gerr" | head -1)"
+  fails=$((fails + 1))
+fi
+
 # jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
 # move, mtime round-trip, which). The file self-checks and prints one marker.
 fs_out="$(bin/joltc run test/chez/fs-test.clj 2>/dev/null)"

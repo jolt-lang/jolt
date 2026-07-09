@@ -278,8 +278,12 @@
   ;; built-in handler — sessions / interruptible-eval / completion etc.
   (let [resolved (deps/resolve-project (project-dir))]
     (apply-project! resolved)
-    (let [port (or (some-> (first (filter #(not (str/starts-with? % "-")) more)) parse-long)
-                   (parse-long (or (jolt.host/getenv "JOLT_NREPL_PORT") "7888")))]
+    (let [raw-port (first (filter #(not (str/starts-with? % "-")) more))
+          parsed (some-> raw-port parse-long)
+          default (parse-long (or (jolt.host/getenv "JOLT_NREPL_PORT") "7888"))
+          port (or parsed default)]
+      (when (and raw-port (nil? parsed))
+        (println (str "warning: ignoring invalid nREPL port '" raw-port "', using " default)))
       (require 'jolt.nrepl)
       ;; start binds the socket synchronously on this (primordial) thread, so a
       ;; failure like the port already being in use surfaces here and exits rather
