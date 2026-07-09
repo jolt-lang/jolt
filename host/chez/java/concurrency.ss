@@ -264,6 +264,90 @@
   (jolt-agent-state-set! a new-state)
   a)
 
+;; --- taps (tap>/add-tap/remove-tap) -----------------------------------------
+;; Mirrors the JVM tap system: a bounded (1024) FIFO of queued values plus a
+;; single daemon delivery thread. tap> offers without blocking (true if the value
+;; was enqueued, false if the queue is full); the delivery thread blocks on take
+;; and applies every registered fn to the value, catching throws so a failing tap
+;; can't kill the loop. nil is queued as a private sentinel so a real nil
+;; round-trips through the queue.
+(define tapq-capacity 1024)
+(define tapq-sentinel (list 'jolt 'tapq-nil))   ; unique; never a user value
+
+(define-record-type jolt-tap-queue
+  (fields (mutable out) (mutable in) (mutable len) cap mu cv)
+  (nongenerative jolt-tap-queue-v1))
+
+(define tapq (make-jolt-tap-queue '() '() 0 tapq-capacity (make-mutex) (make-condition)))
+
+;; The registered taps are a set (a fn registers once). Held as a Scheme list
+;; under a lock; identity comparison matches the JVM's set semantics for fns.
+(define tapset-mu (make-mutex))
+(define tapset (box '()))
+(define (tapset-add! f)
+  (with-mutex tapset-mu
+    (unless (memq f (unbox tapset))
+      (set-box! tapset (cons f (unbox tapset))))))
+(define (tapset-remove! f)
+  (with-mutex tapset-mu
+    (set-box! tapset (filter (lambda (x) (not (eq? x f))) (unbox tapset)))))
+(define (tapset-snapshot)
+  (with-mutex tapset-mu (unbox tapset)))
+
+(define (tapq-offer! v)
+  (with-mutex (jolt-tap-queue-mu tapq)
+    (if (>= (jolt-tap-queue-len tapq) tapq-capacity)
+        #f
+        (begin
+          (jolt-tap-queue-in-set! tapq (cons v (jolt-tap-queue-in tapq)))
+          (jolt-tap-queue-len-set! tapq (fx+ 1 (jolt-tap-queue-len tapq)))
+          (condition-broadcast (jolt-tap-queue-cv tapq))
+          #t))))
+
+(define (tapq-take!)
+  (with-mutex (jolt-tap-queue-mu tapq)
+    (let loop ()
+      (cond
+        ((fx> (jolt-tap-queue-len tapq) 0)
+         (when (null? (jolt-tap-queue-out tapq))
+           (jolt-tap-queue-out-set! tapq (reverse (jolt-tap-queue-in tapq)))
+           (jolt-tap-queue-in-set! tapq '()))
+         (let ((v (car (jolt-tap-queue-out tapq))))
+           (jolt-tap-queue-out-set! tapq (cdr (jolt-tap-queue-out tapq)))
+           (jolt-tap-queue-len-set! tapq (fx- (jolt-tap-queue-len tapq) 1))
+           v))
+        (else (condition-wait (jolt-tap-queue-cv tapq) (jolt-tap-queue-mu tapq)) (loop))))))
+
+;; The delivery thread starts lazily on the first add-tap/tap>, like the JVM's
+;; `(delay (doto (Thread. …) (.start)))`.
+(define tap-thread-started? (box #f))
+(define (start-tap-thread!)
+  (unless (unbox tap-thread-started?)
+    (set-box! tap-thread-started? #t)
+    (fork-thread
+     (lambda ()
+       (*txn* #f)
+       (let loop ()
+         (let* ((t (tapq-take!))
+                (x (if (eq? t tapq-sentinel) jolt-nil t))
+                (taps (tapset-snapshot)))
+           (for-each
+             (lambda (tap)
+               (guard (e (#t #f)) (jolt-invoke tap x)))
+             taps)
+           (loop)))))))
+
+(define (jolt-add-tap f)
+  (start-tap-thread!)
+  (tapset-add! f)
+  jolt-nil)
+(define (jolt-remove-tap f)
+  (tapset-remove! f)
+  jolt-nil)
+(define (jolt-tap> x)
+  (start-tap-thread!)
+  (tapq-offer! (if (jolt-nil? x) tapq-sentinel x)))
+
 ;; --- delay (lazy once-forced computation) -----------------------------------
 ;; (delay body) -> (make-delay (fn [] body)) (overlay macro); force/deref run the
 ;; thunk once under a lock and cache the value (JVM delays are thread-safe). force
@@ -341,6 +425,9 @@
 (def-var! "clojure.core" "await" jolt-agent-await)
 (def-var! "clojure.core" "agent-error" jolt-agent-error)
 (def-var! "clojure.core" "restart-agent" jolt-agent-restart)
+(def-var! "clojure.core" "tap>" jolt-tap>)
+(def-var! "clojure.core" "add-tap" jolt-add-tap)
+(def-var! "clojure.core" "remove-tap" jolt-remove-tap)
 (def-var! "clojure.core" "make-delay" jolt-make-delay)
 (def-var! "clojure.core" "delay?" jolt-delay?)
 (def-var! "clojure.core" "deref" jolt-deref)

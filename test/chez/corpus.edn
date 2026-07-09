@@ -3723,4 +3723,5 @@
   {:suite "refs / ref-min-history-setter" :label "ref-min-history setter stores value and returns ref" :expected "[5 20]" :actual "(let [r (ref 0)] [(ref-min-history (ref-min-history r 5)) (ref-max-history (ref-max-history r 20))])" :portability :common}
   {:suite "refs / ref-min-history-reader" :label "ref-min-history reader returns stored default" :expected "0" :actual "(ref-min-history (ref 0))" :portability :common}
   {:suite "refs / ref-max-history-reader" :label "ref-max-history reader returns stored default" :expected "10" :actual "(ref-max-history (ref 0))" :portability :common}
+  {:suite "conformance / taps" :label "tap> enqueues and returns true" :expected "true" :actual "(tap> 1)" :portability :jvm}
 ]

@@ -130,6 +130,11 @@
      (and (jhost? val) (string=? (jhost-tag val) "uri")))
     ((member tname '("File" "java.io.File")) (jfile? val))
     ((member tname '("UUID" "java.util.UUID")) (juuid? val))
+    ;; clojure.lang.IPending — the realized?-able types (Promise/Future/Delay/
+    ;; LazySeq all implement isRealized on the JVM). A tap> that hands a promise to
+    ;; a tap fn relies on this so the fn can deliver it.
+    ((member tname '("IPending" "clojure.lang.IPending"))
+     (or (jolt-promise? val) (jolt-future? val) (jolt-delay? val) (jolt-lazyseq? val)))
     (else #f)))
 
 ;; str of a record uses a custom (Object toString) impl if the type defines one
