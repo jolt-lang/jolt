@@ -68,3 +68,21 @@
 (def-var! "clojure.core" "*2" jolt-nil)
 (def-var! "clojure.core" "*3" jolt-nil)
 (def-var! "clojure.core" "*e" jolt-nil)
+
+;; *agent* — the agent whose action is currently running; the agent worker
+;; binds it around each action (concurrency.ss), nil elsewhere like the JVM.
+(def-var! "clojure.core" "*agent*" jolt-nil)
+;; *repl* — true inside an interactive session; joltc's repl and the nREPL
+;; eval path bind it. False in a plain run, like clojure.main.
+(def-var! "clojure.core" "*repl*" #f)
+;; Compiler/loader flags with no separate machinery here — the defaults match
+;; the JVM so reads and (binding …) behave; setting them has no further effect.
+(def-var! "clojure.core" "*allow-unresolved-vars*" #f)
+(def-var! "clojure.core" "*compile-path*" "classes")
+(def-var! "clojure.core" "*compiler-options*" jolt-nil)
+(def-var! "clojure.core" "*fn-loader*" jolt-nil)
+(def-var! "clojure.core" "*reader-resolver*" jolt-nil)
+(def-var! "clojure.core" "*source-path*" "NO_SOURCE_FILE")
+(def-var! "clojure.core" "*suppress-read*" jolt-nil)
+(def-var! "clojure.core" "*use-context-classloader*" #t)
+(def-var! "clojure.core" "*verbose-defrecords*" #f)

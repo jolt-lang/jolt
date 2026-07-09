@@ -3656,4 +3656,15 @@
   {:suite "regex / redundant-escapes" :label "backslash-> is a literal >" :expected "\"a>b\"" :actual "(re-find #\"a\\>b\" \"a>b\")" :portability :common}
   {:suite "regex / redundant-escapes" :label "backslash-< is a literal <" :expected "\"<x>\"" :actual "(re-find #\"\\<x\\>\" \"<x>\")" :portability :common}
   {:suite "regex / redundant-escapes" :label "escaped backslash before > keeps both chars" :expected "\"a\\\\>\"" :actual "(re-find #\"a\\\\>\" \"a\\\\>\")" :portability :common}
+  {:suite "core / dynamic-vars" :label "*agent* is nil outside an action" :expected "nil" :actual "*agent*" :portability :common}
+  {:suite "core / dynamic-vars" :label "*agent* is the agent inside its action" :expected "true" :actual "(do (def dv-ag (agent 0)) (def dv-seen (atom nil)) (send dv-ag (fn [s] (reset! dv-seen (identical? *agent* dv-ag)) s)) (await dv-ag) (deref dv-seen))" :portability :common}
+  {:suite "core / dynamic-vars" :label "*repl* is false outside a REPL" :expected "false" :actual "*repl*" :portability :common}
+  {:suite "core / dynamic-vars" :label "*compile-path* default" :expected "\"classes\"" :actual "*compile-path*" :portability :common}
+  {:suite "core / dynamic-vars" :label "*allow-unresolved-vars* default" :expected "false" :actual "*allow-unresolved-vars*" :portability :common}
+  {:suite "core / dynamic-vars" :label "*verbose-defrecords* default" :expected "false" :actual "*verbose-defrecords*" :portability :common}
+  {:suite "core / dynamic-vars" :label "*use-context-classloader* default" :expected "true" :actual "*use-context-classloader*" :portability :common}
+  {:suite "core / dynamic-vars" :label "*suppress-read* default" :expected "nil" :actual "*suppress-read*" :portability :common}
+  {:suite "ns / ns-map" :label "ns-map of user resolves core fns" :expected "true" :actual "(var? (get (ns-map *ns*) 'inc))" :portability :common}
+  {:suite "ns / ns-map" :label "ns-refers of user includes the implicit refer-clojure" :expected "true" :actual "(var? (get (ns-refers 'user) 'map))" :portability :common}
+  {:suite "ns / ns-map" :label "an intern shadows the refer in ns-refers" :expected "false" :actual "(do (def nsr-shadow-inc 1) (contains? (ns-refers 'user) 'nsr-shadow-inc))" :portability :common}
 ]

@@ -216,6 +216,17 @@ else
   fails=$((fails + 1))
 fi
 
+# context-bound dynamic vars: *file*/*source-path* during a load,
+# *command-line-args*, *agent* inside an action, ns-map/ns-refers visibility.
+ctx_out="$(bin/joltc run test/chez/ctxvars-test.clj a1 a2 2>/dev/null)"
+if printf '%s' "$ctx_out" | grep -q 'CTXVARS OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: context vars"
+  printf '%s\n' "$ctx_out" | grep FAIL | head -5 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
 # move, mtime round-trip, which). The file self-checks and prints one marker.
 fs_out="$(bin/joltc run test/chez/fs-test.clj 2>/dev/null)"
