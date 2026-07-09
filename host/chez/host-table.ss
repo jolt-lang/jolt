@@ -167,10 +167,8 @@
 (define %h-value-host-tags value-host-tags)
 (set! value-host-tags (lambda (obj)
   (cond
-    ((htable-sorted-map? obj) '("PersistentTreeMap" "Sorted" "IPersistentMap" "Associative"
-                                "Map" "java.util.Map" "IPersistentCollection" "Object"))
-    ((htable-sorted-set? obj) '("PersistentTreeSet" "Sorted" "IPersistentSet"
-                                "Set" "java.util.Set" "Collection" "IPersistentCollection" "Object"))
+    ((htable-sorted-map? obj) (jch-tags "clojure.lang.PersistentTreeMap"))
+    ((htable-sorted-set? obj) (jch-tags "clojure.lang.PersistentTreeSet"))
     (else (%h-value-host-tags obj)))))
 
 ;; (class e) on a throwable tagged-table (a library's ex-info envelope carrying a
