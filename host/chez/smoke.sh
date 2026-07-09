@@ -227,6 +227,16 @@ else
   fails=$((fails + 1))
 fi
 
+# STM (refs) threaded tests: isolation, txn-leak, io! in future.
+stm_out="$(bin/joltc run test/chez/stm-test.clj 2>/dev/null)"
+if printf '%s' "$stm_out" | grep -q 'STM OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: STM threaded tests"
+  printf '%s\n' "$stm_out" | grep FAIL | head -5 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
 # move, mtime round-trip, which). The file self-checks and prints one marker.
 fs_out="$(bin/joltc run test/chez/fs-test.clj 2>/dev/null)"

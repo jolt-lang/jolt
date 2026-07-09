@@ -44,6 +44,7 @@
         (snap (dyn-binding-stack)))
     (fork-thread
      (lambda ()
+       (*txn* #f)                          ; child thread must not inherit parent's txn
        (dyn-binding-stack snap)
        (let ((r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
          (with-mutex (jolt-future-mu f)
@@ -209,6 +210,7 @@
 ;; may send/deref the same agent). A validator rejection or a thrown action puts the
 ;; agent in an error state and halts the queue (JVM :fail mode).
 (define (jolt-agent-worker a)
+  (*txn* #f)                          ; agent worker must not inherit parent's txn
   (let loop ()
     (let ((act (with-mutex (jolt-agent-mu a)
                  (if (or (not (jolt-nil? (jolt-agent-err a))) (jagent-q-empty? a))
@@ -231,13 +233,18 @@
 
 ;; send / send-off: enqueue the action, start the worker if idle. (jolt treats them
 ;; identically — one serialized worker per agent — which is observably a superset of
-;; the JVM's fixed/cached pool split.)
+;; the JVM's fixed/cached pool split.)  Inside a transaction, the action is deferred
+;; until the txn commits; on rollback it is discarded.
 (define (jolt-agent-send a f . args)
-  (with-mutex (jolt-agent-mu a)
-    (jagent-q-push! a (cons f args))
-    (unless (jolt-agent-running? a)
-      (jolt-agent-running?-set! a #t)
-      (fork-thread (lambda () (jolt-agent-worker a)))))
+  (if (*txn*)
+      (let ((txn (*txn*)))
+        (jolt-txn-pending-sends-set! txn
+          (cons (apply list a f args) (jolt-txn-pending-sends txn))))
+      (with-mutex (jolt-agent-mu a)
+        (jagent-q-push! a (cons f args))
+        (unless (jolt-agent-running? a)
+          (jolt-agent-running?-set! a #t)
+          (fork-thread (lambda () (*txn* #f) (jolt-agent-worker a))))))
   a)
 
 ;; (await & agents): block until each agent's queue has drained.
@@ -409,8 +416,9 @@
   (list (cons "start" (lambda (self)
           (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
             (fork-thread (lambda ()
-              (dyn-binding-stack snap)
-              ;; surface a thread body's throw like the JVM's default uncaught-
+               (*txn* #f)                          ; child thread must not inherit parent's txn
+               (dyn-binding-stack snap)
+               ;; surface a thread body's throw like the JVM's default uncaught-
               ;; exception handler; the thread still completes (isAlive/join
               ;; semantics unchanged). Reporting failures are swallowed.
               (guard (e (#t (guard (_ (#t #f))
