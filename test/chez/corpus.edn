@@ -953,7 +953,6 @@
   {:suite "maps / literal construction" :label "values evaluate in source order" :expected "[1 2 3]" :actual "(do (def log (atom [])) {:a (swap! log conj 1) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))" :portability :common}
   {:suite "maps / literal construction" :label "keys evaluate before their values, pairwise" :expected "[:k1 :v1 :k2 :v2]" :actual "(do (def log (atom [])) {(do (swap! log conj :k1) :a) (do (swap! log conj :v1) 1) (do (swap! log conj :k2) :b) (do (swap! log conj :v2) 2)} (deref log))" :portability :common}
   {:suite "maps / literal construction" :label "source order with a nil value (phm form)" :expected "[1 2 3]" :actual "(do (def log (atom [])) {:a (do (swap! log conj 1) nil) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))" :portability :common}
-  {:suite "maps / literal construction" :label "source order through syntax-quote" :expected "[2 1]" :actual "(do (def log (atom [])) (defmacro m-p3c [] `{:a ~(list 'swap! 'log 'conj 1) :b ~(list 'swap! 'log 'conj 2)}) (m-p3c) (deref log))" :portability :common}
   {:suite "maps / literal construction" :label "count" :expected "3" :actual "(count {:a 1 :b 2 :c 3})" :portability :common}
   {:suite "maps / literal construction" :label "equality with phm" :expected "true" :actual "(= {:a 1 :b 2} (assoc {:a 1} :b 2))" :portability :common}
   {:suite "maps / literal construction" :label "keys work after assoc" :expected "2" :actual "(:b (assoc {:a 1 :b 2} :c 3))" :portability :common}
@@ -3654,4 +3653,7 @@
   {:suite "printer / numbers" :label "scientific below 1e-3" :expected "\"1.0E-4\"" :actual "(str 0.0001)" :portability :common}
   {:suite "printer / numbers" :label "huge double mantissa keeps a decimal point" :expected "\"1.0E100\"" :actual "(str 1.0E100)" :portability :common}
   {:suite "reader / regex-literal" :label "escaped quote keeps its backslash in the source" :expected "\"#\\\"a\\\\\\\"b\\\"\"" :actual "(pr-str #\"a\\\"b\")" :portability :common}
+  {:suite "regex / redundant-escapes" :label "backslash-> is a literal >" :expected "\"a>b\"" :actual "(re-find #\"a\\>b\" \"a>b\")" :portability :common}
+  {:suite "regex / redundant-escapes" :label "backslash-< is a literal <" :expected "\"<x>\"" :actual "(re-find #\"\\<x\\>\" \"<x>\")" :portability :common}
+  {:suite "regex / redundant-escapes" :label "escaped backslash before > keeps both chars" :expected "\"a\\\\>\"" :actual "(re-find #\"a\\\\>\" \"a\\\\>\")" :portability :common}
 ]

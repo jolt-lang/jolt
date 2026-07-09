@@ -306,6 +306,24 @@
                    (else (loop (fx+ i 1) in-class)))))
               (else (loop (fx+ i 1) in-class))))))))
 
+;; Java reads a backslash before any punctuation as a literal escape; irregex
+;; gives \< and \> word-boundary meaning, so a Java-literal \> silently never
+;; matches. '<' and '>' are plain literals unescaped in both engines — drop the
+;; backslash. A preceding \\ pair is consumed first, so an escaped backslash
+;; followed by an angle keeps its meaning.
+(define (strip-angle-escapes src)
+  (let ((n (string-length src)) (out (open-output-string)))
+    (let loop ((i 0))
+      (if (fx>=? i n)
+          (get-output-string out)
+          (let ((c (string-ref src i)))
+            (if (and (char=? c #\\) (fx<? (fx+ i 1) n))
+                (let ((d (string-ref src (fx+ i 1))))
+                  (if (memv d '(#\< #\>))
+                      (begin (write-char d out) (loop (fx+ i 2)))
+                      (begin (write-char c out) (write-char d out) (loop (fx+ i 2)))))
+                (begin (write-char c out) (loop (fx+ i 1)))))))))
+
 ;; Java's $ (without MULTILINE) matches at end of input OR just before a FINAL
 ;; line terminator ((re-find #"foo$" "foo\n") => "foo"); irregex's $ is absolute
 ;; end only. Rewrite each unescaped $ outside a character class to a lookahead
@@ -373,7 +391,8 @@
   ;; combined clusters so a leading (?sx) becomes (?s)(?x) and regex-parse-flags
   ;; can peel the strippable singles into options
   (let-values (((opts pat) (regex-parse-flags (split-cluster-modifiers (apply-global-x source)))))
-    (let* ((pat (if (memq 'multi-line opts) pat (rewrite-dollar-eol pat)))
+    (let* ((pat (strip-angle-escapes pat))
+           (pat (if (memq 'multi-line opts) pat (rewrite-dollar-eol pat)))
            (p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket pat))))
            (irx (apply irregex p opts)))
       (make-regex-t source
