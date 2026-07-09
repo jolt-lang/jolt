@@ -120,6 +120,21 @@
 (def-var! "clojure.core" "__sync-call" jolt-sync)
 (def-var! "clojure.core" "__txn-running?" jolt-txn-running?)
 (def-var! "clojure.core" "loaded-libs" (lambda () (jolt-deref (var-deref "clojure.core" "*loaded-libs*"))))
+;; re-assert refs instance? arms after records-interop.ss registers instance-check.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (symbol-t? type-sym) (jolt-ref? val))
+        (let* ((tname (symbol-t-name type-sym))
+               (tl (string-length tname))
+               (dot (let loop ((i (- tl 1)))
+                      (if (< i 0) -1
+                          (if (char=? (string-ref tname i) #\.) i
+                              (loop (- i 1))))))
+               (short (if (< dot 0) tname (substring tname (+ dot 1) tl))))
+          (or (string=? short "Ref")
+              (string=? short "IRef")
+              (string=? short "IDeref")))
+        'pass)))
 ;; record? is a host type check — true only for a defrecord, not a bare deftype
 ;; (jrec-record?), matching the JVM (instance? IRecord). The overlay's
 ;; (some? (get x :jolt/deftype)) get-trick would invoke a sorted-map comparator.

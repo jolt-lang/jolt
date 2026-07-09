@@ -211,6 +211,8 @@
 (jch-register-supers! "clojure.lang.Symbol" '("clojure.lang.IObj" "clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable"))
 (jch-register-supers! "clojure.lang.Var" '("clojure.lang.IDeref" "clojure.lang.IFn"))
 (jch-register-supers! "clojure.lang.Atom" '("clojure.lang.IDeref"))
+(jch-register-supers! "clojure.lang.Ref" '("clojure.lang.IRef"))
+(jch-register-supers! "clojure.lang.IRef" '("clojure.lang.IDeref"))
 (jch-register-supers! "clojure.lang.Ratio" '("java.lang.Number" "java.lang.Comparable"))
 (jch-register-supers! "clojure.lang.BigInt" '("java.lang.Number"))
 (jch-register-supers! "java.lang.String" '("java.lang.CharSequence" "java.lang.Comparable"))
