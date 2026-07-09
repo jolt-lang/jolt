@@ -542,7 +542,8 @@
   {:suite "interop / String methods" :label ".replace" :expected "\"axc\"" :actual "(.replace \"abc\" \"b\" \"x\")" :portability :jvm}
   {:suite "interop / String methods" :label ".charAt" :expected "\\b" :actual "(.charAt \"abc\" 1)" :portability :jvm}
   {:suite "interop / String methods" :label ".codePointAt" :expected "97" :actual "(.codePointAt \"abc\" 0)" :portability :jvm}
-  {:suite "interop / String methods" :label ".codePointAt astral" :expected "26085" :actual "(.codePointAt \"日\" 0)" :portability :jvm}
+  {:suite "interop / String methods" :label ".codePointAt multibyte" :expected "26085" :actual "(.codePointAt \"日\" 0)" :portability :jvm}
+  {:suite "interop / String methods" :label ".codePointAt astral" :expected "128512" :actual "(.codePointAt \"😀\" 0)" :portability :jvm}
   {:suite "interop / String methods" :label ".equalsIgnoreCase" :expected "true" :actual "(.equalsIgnoreCase \"AbC\" \"aBc\")" :portability :jvm}
   {:suite "interop / String methods" :label "Long/MAX_VALUE" :expected "true" :actual "(pos? Long/MAX_VALUE)" :portability :jvm}
   {:suite "interop / String methods" :label "String/valueOf num" :expected "\"42\"" :actual "(String/valueOf 42)" :portability :jvm}
@@ -1308,6 +1309,13 @@
   {:suite "namespaces / ns operations" :label "find-ns missing" :expected "nil" :actual "(find-ns 'does.not.exist)" :portability :common}
   {:suite "namespaces / ns operations" :label "resolve var" :expected "true" :actual "(var? (resolve '+))" :portability :common}
   {:suite "namespaces / ns operations" :label "resolve missing" :expected "nil" :actual "(resolve 'totally-undefined-xyz)" :portability :common}
+  {:suite "namespaces / ns operations" :label "require same-file in-memory ns" :expected "5" :actual "(load-string \"(ns sfa1) (def sfx 5) (ns sfb1 (:require [sfa1])) sfa1/sfx\")" :portability :common}
+  {:suite "namespaces / ns operations" :label "refer :all one level" :expected "7" :actual "(load-string \"(ns ola1) (defn olf [] 7) (ns olb1 (:require [ola1 :refer :all])) (olf)\")" :portability :common}
+  {:suite "namespaces / ns operations" :label "refer :all does not cascade" :expected :throws :actual "(load-string \"(ns tra1) (defn trf [] 1) (ns trb1 (:require [tra1 :refer :all])) (ns trc1 (:require [trb1 :refer :all])) (trf)\")" :portability :common}
+  {:suite "namespaces / ns operations" :label "defmacro var meta :macro" :expected "true" :actual "(do (defmacro cmac1 [x] x) (:macro (meta #'cmac1)))" :portability :common}
+  {:suite "namespaces / ns operations" :label "intern symbol meta -> var meta" :expected "\"d\"" :actual "(do (intern 'user (with-meta 'idoc1 {:doc \"d\"}) 42) (:doc (meta #'idoc1)))" :portability :common}
+  {:suite "namespaces / ns operations" :label "intern :macro meta makes a macro" :expected "6" :actual "(do (defmacro cmac2 [x] (list (quote +) x 1)) (intern 'user (with-meta 'cmac3 {:macro true}) @#'cmac2) (load-string \"(cmac3 5)\"))" :portability :common}
+  {:suite "namespaces / ns operations" :label "alter-meta! :macro makes a macro" :expected "6" :actual "(do (defmacro amac1 [x] (list (quote +) x 1)) (def amac2 @#'amac1) (alter-meta! #'amac2 merge (meta #'amac1)) (load-string \"(amac2 5)\"))" :portability :common}
   {:suite "namespaces / require & refer" :label "require :as" :expected "\"AB\"" :actual "(do (require '[clojure.string :as s]) (s/upper-case \"ab\"))" :portability :common}
   {:suite "namespaces / require & refer" :label "require :refer" :expected "true" :actual "(do (require '[clojure.string :refer [blank?]]) (blank? \"\"))" :portability :common}
   {:suite "namespaces / require & refer" :label "require :as + :refer" :expected "true" :actual "(do (require '[clojure.string :as s :refer [blank?]]) (and (blank? \"\") (= \"X\" (s/upper-case \"x\"))))" :portability :common}
@@ -1476,6 +1484,9 @@
   {:suite "numbers / bit-ops & math" :label "bit-test true" :expected "true" :actual "(bit-test 4 2)" :portability :common}
   {:suite "numbers / bit-ops & math" :label "bigint 64-bit" :expected "\"9000000000\"" :actual "(str (bigint 9000000000))" :portability :common}
   {:suite "numbers / bit-ops & math" :label "bigint from string" :expected "123" :actual "(bigint \"123\")" :portability :common}
+  {:suite "numbers / bit-ops & math" :label "bigint from big string" :expected "\"9999999999999999999\"" :actual "(str (bigint \"9999999999999999999\"))" :portability :common}
+  {:suite "numbers / bit-ops & math" :label "bigint bad string throws" :expected :throws :actual "(bigint \"abc\")" :portability :common}
+  {:suite "numbers / bit-ops & math" :label "bigint from ratio" :expected "3" :actual "(bigint 7/2)" :portability :common}
   {:suite "numbers / bit-ops & math" :label "bigint from double" :expected "3" :actual "(bigint 3.7)" :portability :common}
   {:suite "numbers / bit-ops & math" :label "biginteger from string" :expected "42" :actual "(biginteger \"42\")" :portability :common}
   {:suite "numbers / random (invariants — non-deterministic)" :label "rand-int in range" :expected "true" :actual "(let [r (rand-int 5)] (and (integer? r) (>= r 0) (< r 5)))" :portability :common}
