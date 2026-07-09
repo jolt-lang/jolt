@@ -192,6 +192,17 @@
 ;; (like clojure.test); the primitives stay defined either way.
 (hashtable-delete! loaded-ns "clojure.core.async")
 
+;; Seed *loaded-libs* ref from the initial loaded-ns set (for tools.namespace
+;; and core.typed which conj/disj on it).  Must happen after the async deletion.
+(let* ((libs-cell (var-cell-lookup "clojure.core" "*loaded-libs*"))
+       (libs-ref (and libs-cell (var-cell-root libs-cell))))
+  (when (and libs-ref (jolt-ref? libs-ref))
+    (vector-for-each
+      (lambda (k) (jolt-ref-val-set! libs-ref
+                     (pset-conj (jolt-ref-val libs-ref)
+                       (jolt-symbol #f k))))
+      (hashtable-keys loaded-ns))))
+
 ;; Does `name` already have vars in the var-table? A namespace baked into the
 ;; image after the snapshot above — an AOT'd app namespace in a `jolt build`
 ;; binary — exists in memory with no source file; a later `require` of it must
@@ -261,15 +272,31 @@
                                             (chez-current-ns)))
                   (loop j))))))))))
 
+;; Mark a namespace as loaded in both the host hashtable and the *loaded-libs* ref.
+(define (ldr-mark-loaded! name)
+  (hashtable-set! loaded-ns name #t)
+  (let* ((libs-cell (var-cell-lookup "clojure.core" "*loaded-libs*"))
+         (libs-ref (and libs-cell (var-cell-root libs-cell))))
+    (when (and libs-ref (jolt-ref? libs-ref))
+      (jolt-ref-val-set! libs-ref
+        (pset-conj (jolt-ref-val libs-ref) (jolt-symbol #f name))))))
+
 ;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
 ;; dependency cycle terminates (Clojure's behavior). The caller's current ns is
 ;; restored afterward, since loading the file switched it.
+;; Checks BOTH loaded-ns and *loaded-libs*: disj from *loaded-libs* (as
+;; tools.namespace does) causes require to reload.
 (define (load-namespace name)
-  (unless (hashtable-ref loaded-ns name #f)
+  (unless (let* ((libs-cell (var-cell-lookup "clojure.core" "*loaded-libs*"))
+                 (libs-ref (and libs-cell (var-cell-root libs-cell))))
+            (and (hashtable-ref loaded-ns name #f)
+                 (or (not libs-ref)
+                     (not (jolt-ref? libs-ref))
+                     (jolt-contains? (jolt-ref-val libs-ref) (jolt-symbol #f name)))))
     (let ((file (find-ns-file name)))
       (cond
         (file
-         (hashtable-set! loaded-ns name #t)   ; mark before load so a cycle terminates
+         (ldr-mark-loaded! name)            ; mark before load so a cycle terminates
          (let ((saved (chez-current-ns)))
            (load-jolt-file file)
            ;; restore the current ns (thread-local); *ns* reads derive from it.
@@ -278,11 +305,11 @@
         ;; No source file but the namespace exists in memory (AOT'd into a built
         ;; binary): it's already defined — mark loaded and move on.
         ((ns-has-vars? name)
-         (hashtable-set! loaded-ns name #t))
+         (ldr-mark-loaded! name))
         ;; Same-file namespace (inlined ns form in a Jolt file): registered via
         ;; intern-ns! in the runtime registry even if no vars bear its ns name yet.
         ((hashtable-ref ns-registry name #f)
-         (hashtable-set! loaded-ns name #t))
+         (ldr-mark-loaded! name))
         (else
          (error #f (string-append "Could not locate " (ns-name->rel name)
                                   ".clj (or .cljc) on the source roots") name))))))

@@ -72,10 +72,10 @@
 (register-class-statics! "Thread" thread-statics)
 (register-class-statics! "java.lang.Thread" thread-statics)
 
-;; clojure.lang.LockingTransaction: jolt has no STM (no refs/dosync), so a
-;; transaction is never running. isRunning -> false.
-(register-class-statics! "LockingTransaction" (list (cons "isRunning" (lambda () #f))))
-(register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () #f))))
+;; clojure.lang.LockingTransaction: jolt refs with serialized transactions.
+;; isRunning -> true when a transaction is active on this thread.
+(register-class-statics! "LockingTransaction" (list (cons "isRunning" (lambda () (and (*txn*) #t)))))
+(register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () (and (*txn*) #t)))))
 
 ;; clojure.lang.LazilyPersistentVector/createOwning: build a vector from an array
 ;; (malli's -vmap fills an object-array then hands it over). jolt has no array

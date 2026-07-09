@@ -92,6 +92,10 @@
 (defmacro locking [x & body]
   `(jolt.host/with-monitor ~x (fn* [] ~@body)))
 
+;; dosync: run body in a serialized transaction (single global mutex).
+(defmacro dosync [& body]
+  `(sync (fn* [] ~@body)))
+
 ;; defonce: define name only if it isn't already bound to a non-nil root;
 ;; returns the existing var untouched otherwise.
 ;; time: evaluate expr, print the elapsed wall-clock, return the value.
