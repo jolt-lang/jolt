@@ -1,0 +1,10 @@
+{:paths ["src"]
+
+ ;; A :jolt/native entry with :optional true pointing to a lib that does NOT exist.
+ ;; The defcfn against this lib's symbol must be lazy: the build SUCCEEDS and the
+ ;; binary RUNS as long as -main doesn't call that defcfn. If -main DOES call it,
+ ;; the error must be a catchable foreign-procedure resolution failure, not a
+ ;; startup abort.
+ :jolt/native [{:name "no-such-lib" :optional true
+                :darwin "/usr/lib/libDoesNotExist.dylib"
+                :linux "/usr/lib/libDoesNotExist.so"}]}
