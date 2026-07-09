@@ -60,10 +60,17 @@
                   (lambda (a b) (and (juuid? a) (juuid? b) (string=? (juuid-s a) (juuid-s b)))))
 
 ;; --- bigint / biginteger -----------------------------------------------------
-;; jolt models every number as a double; an integer-valued double prints without
-;; a ".0" (jolt-num->string), so bigint is just the number for the corpus range.
-;; (Arbitrary-precision beyond 2^53 is a separate concern.)
-(define (jolt-bigint x) x)
+;; JVM bigint/biginteger coerce: string → parsed integer, double/float →
+;; truncated integer, ratio → quotient, integer → exact integer.
+(define (jolt-bigint x)
+  (cond ((string? x) (parse-int-or-throw x 10 "bigint"))
+        ((flonum? x)
+         (if (or (finite? x) (zero? x))
+             (inexact->exact (truncate x))
+             (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
+                           (string-append "For input string: \""
+                                          (jolt-str-render-one x) "\"")))))
+        (else (inexact->exact (truncate x)))))
 (def-var! "clojure.core" "bigint" jolt-bigint)
 (def-var! "clojure.core" "biginteger" jolt-bigint)
 

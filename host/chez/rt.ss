@@ -274,6 +274,7 @@
 (define var-meta-table (make-eq-hashtable))
 (define jolt-kw-var-ns (keyword #f "ns"))
 (define jolt-kw-var-name (keyword #f "name"))
+(define jolt-kw-var-macro (keyword #f "macro"))
 (define (def-var-with-meta! ns name v m)
   (let ((c (def-var! ns name v))) (hashtable-set! var-meta-table c m) c))
 ;; runtime-macro registry: a var whose root holds a macro

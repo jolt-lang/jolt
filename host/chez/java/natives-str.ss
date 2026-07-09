@@ -138,6 +138,8 @@
     ((string=? method "length") (string-length s))   ; exact int (= JVM)
     ((string=? method "isEmpty") (fx=? (string-length s) 0))
     ((string=? method "charAt") (string-ref s (jolt->idx (arg 0))))
+    ((string=? method "codePointAt")
+     (char->integer (string-ref s (jolt->idx (arg 0)))))
     ((string=? method "substring")
      (substring s (jolt->idx (arg 0))
                 (if (fx>? (length rest) 1) (jolt->idx (arg 1)) (string-length s))))
