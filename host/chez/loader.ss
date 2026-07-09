@@ -243,6 +243,10 @@
         ;; binary): it's already defined — mark loaded and move on.
         ((ns-has-vars? name)
          (hashtable-set! loaded-ns name #t))
+        ;; Same-file namespace (inlined ns form in a Jolt file): registered via
+        ;; intern-ns! in the runtime registry even if no vars bear its ns name yet.
+        ((hashtable-ref ns-registry name #f)
+         (hashtable-set! loaded-ns name #t))
         (else
          (error #f (string-append "Could not locate " (ns-name->rel name)
                                   ".clj (or .cljc) on the source roots") name))))))
