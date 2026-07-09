@@ -69,7 +69,9 @@
 (defn split-lines
   "Split s on \\n or \\r\\n, returning a vector of lines."
   [s]
-  (vec (str-split #"\r?\n" s)))
+  ;; through split, not the raw native, for the limit-0 semantics: trailing
+  ;; empty strings drop, like the reference (split-lines "a\nb\n") => ["a" "b"].
+  (split s #"\r?\n"))
 
 (defn starts-with?
   [s substr]

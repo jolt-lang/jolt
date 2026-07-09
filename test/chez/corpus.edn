@@ -953,7 +953,6 @@
   {:suite "maps / literal construction" :label "values evaluate in source order" :expected "[1 2 3]" :actual "(do (def log (atom [])) {:a (swap! log conj 1) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))" :portability :common}
   {:suite "maps / literal construction" :label "keys evaluate before their values, pairwise" :expected "[:k1 :v1 :k2 :v2]" :actual "(do (def log (atom [])) {(do (swap! log conj :k1) :a) (do (swap! log conj :v1) 1) (do (swap! log conj :k2) :b) (do (swap! log conj :v2) 2)} (deref log))" :portability :common}
   {:suite "maps / literal construction" :label "source order with a nil value (phm form)" :expected "[1 2 3]" :actual "(do (def log (atom [])) {:a (do (swap! log conj 1) nil) :b (swap! log conj 2) :c (swap! log conj 3)} (deref log))" :portability :common}
-  {:suite "maps / literal construction" :label "source order through syntax-quote" :expected "[2 1]" :actual "(do (def log (atom [])) (defmacro m-p3c [] `{:a ~(list 'swap! 'log 'conj 1) :b ~(list 'swap! 'log 'conj 2)}) (m-p3c) (deref log))" :portability :common}
   {:suite "maps / literal construction" :label "count" :expected "3" :actual "(count {:a 1 :b 2 :c 3})" :portability :common}
   {:suite "maps / literal construction" :label "equality with phm" :expected "true" :actual "(= {:a 1 :b 2} (assoc {:a 1} :b 2))" :portability :common}
   {:suite "maps / literal construction" :label "keys work after assoc" :expected "2" :actual "(:b (assoc {:a 1 :b 2} :c 3))" :portability :common}
@@ -3623,4 +3622,38 @@
   {:suite "defonce / semantics" :label "keeps the first value, ignores the second" :expected "1" :actual "(do (defonce defonce-a 1) (defonce defonce-a 2) defonce-a)" :portability :common}
   {:suite "defonce / semantics" :label "returns the var (like def)" :expected "true" :actual "(var? (defonce defonce-b 3))" :portability :common}
   {:suite "defonce / semantics" :label "defonce on a declared (unbound) name defs it" :expected "7" :actual "(do (declare defonce-c) (defonce defonce-c 7) defonce-c)" :portability :common}
+  {:suite "printer / map-commas" :label "pr-str separates map entries with comma-space" :expected "\"{:a 1, :b 2, :c 3}\"" :actual "(pr-str {:a 1 :b 2 :c 3})" :portability :common}
+  {:suite "printer / map-commas" :label "str of a map has comma-separated entries" :expected "\"{:a 1, :b 2}\"" :actual "(str {:a 1 :b 2})" :portability :common}
+  {:suite "printer / map-commas" :label "single-entry map has no comma" :expected "\"{:a 1}\"" :actual "(pr-str {:a 1})" :portability :common}
+  {:suite "printer / map-commas" :label "nested map entries comma-separate at each level" :expected "\"{:a {:b 1, :c 2}}\"" :actual "(pr-str {:a {:b 1 :c 2}})" :portability :common}
+  {:suite "string / split-lines" :label "drops the trailing newline's empty" :expected "[\"a\" \"b\"]" :actual "(clojure.string/split-lines \"a\\nb\\n\")" :portability :common}
+  {:suite "string / split-lines" :label "keeps interior empties, drops trailing" :expected "[\"a\" \"\" \"b\"]" :actual "(clojure.string/split-lines \"a\\n\\nb\\n\\n\")" :portability :common}
+  {:suite "string / split-lines" :label "no-newline input is one line" :expected "[\"a\"]" :actual "(clojure.string/split-lines \"a\")" :portability :common}
+  {:suite "string / split-lines" :label "crlf splits like lf" :expected "[\"a\" \"b\"]" :actual "(clojure.string/split-lines \"a\\r\\nb\\r\\n\")" :portability :common}
+  {:suite "core / Throwable->map" :label "cause is the root message" :expected "\"boom\"" :actual "(:cause (Throwable->map (ex-info \"boom\" {:a 1})))" :portability :common}
+  {:suite "core / Throwable->map" :label "data is the root ex-data" :expected "{:a 1}" :actual "(:data (Throwable->map (ex-info \"boom\" {:a 1})))" :portability :common}
+  {:suite "core / Throwable->map" :label "via first type is the exception class symbol" :expected "'clojure.lang.ExceptionInfo" :actual "(-> (Throwable->map (ex-info \"boom\" {:a 1})) :via first :type)" :portability :common}
+  {:suite "regex / comments-mode" :label "(?x) ignores newlines in the pattern" :expected "\"foo\"" :actual "(re-find (re-pattern \"(?x)\\nfoo | bar\\n\") \"foo\")" :portability :common}
+  {:suite "regex / comments-mode" :label "(?x) ignores whitespace inside a character class" :expected "\"ab\"" :actual "(re-find (re-pattern \"(?x)[a b]+\") \"ab\")" :portability :common}
+  {:suite "regex / comments-mode" :label "(?x) strips # comments to end of line" :expected "\"baz\"" :actual "(re-find (re-pattern \"(?x) foo # comment\\n| baz\") \"baz\")" :portability :common}
+  {:suite "regex / comments-mode" :label "escaped space stays literal under (?x)" :expected "\"a b\"" :actual "(re-find (re-pattern \"(?x)a\\\\ b\") \"a b\")" :portability :common}
+  {:suite "regex / comments-mode" :label "(?sx) combines dot-all with comments mode" :expected "\"a\\nb\"" :actual "(re-find (re-pattern \"(?sx)a.\\nb\") \"a\\nb\")" :portability :common}
+  {:suite "pprint / line-breaks" :label "broken lines carry no trailing spaces" :expected "\"(defn\\n foo\\n ([a b c] [c b a])\\n ([a b] (foo a b \\\"OK\\\"))\\n ([a] (foo a 42 \\\"OK\\\")))\"" :actual "(with-out-str (clojure.pprint/write '(defn foo ([a b c] [c b a]) ([a b] (foo a b \"OK\")) ([a] (foo a 42 \"OK\")))))" :portability :common}
+  {:suite "regex / dollar-eol" :label "$ matches before a final newline" :expected "\"foo\"" :actual "(re-find #\"foo$\" \"foo\\n\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "$ does not match before two trailing newlines" :expected "nil" :actual "(re-find #\"foo$\" \"foo\\n\\n\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "re-matches stays whole-input (trailing newline unmatched)" :expected "nil" :actual "(re-matches #\"foo$\" \"foo\\n\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "anchored replace strips through a final newline" :expected "\"x\\n\"" :actual "(clojure.string/replace \"(x)\\n\" #\"(?s)^\\((.*)\\)$\" \"$1\")" :portability :common}
+  {:suite "regex / dollar-eol" :label "$ inside a character class stays literal" :expected "\"$\"" :actual "(re-find #\"[$]\" \"a$b\")" :portability :common}
+  {:suite "printer / numbers" :label "pr of a beyond-long integer carries the N suffix" :expected "\"12345678901234567890N\"" :actual "(pr-str 12345678901234567890)" :portability :common}
+  {:suite "printer / numbers" :label "str of a beyond-long integer has no N suffix" :expected "\"12345678901234567890\"" :actual "(str 12345678901234567890)" :portability :common}
+  {:suite "printer / numbers" :label "small exponent renders scientific uppercase" :expected "\"2.3E-4\"" :actual "(str 2.3e-4)" :portability :common}
+  {:suite "printer / numbers" :label "large double switches to scientific at 1e7" :expected "\"1.2345678E7\"" :actual "(str 12345678.0)" :portability :common}
+  {:suite "printer / numbers" :label "below 1e7 stays plain" :expected "\"1234567.0\"" :actual "(str 1234567.0)" :portability :common}
+  {:suite "printer / numbers" :label "plain decimal above 1e-3" :expected "\"0.001\"" :actual "(str 0.001)" :portability :common}
+  {:suite "printer / numbers" :label "scientific below 1e-3" :expected "\"1.0E-4\"" :actual "(str 0.0001)" :portability :common}
+  {:suite "printer / numbers" :label "huge double mantissa keeps a decimal point" :expected "\"1.0E100\"" :actual "(str 1.0E100)" :portability :common}
+  {:suite "reader / regex-literal" :label "escaped quote keeps its backslash in the source" :expected "\"#\\\"a\\\\\\\"b\\\"\"" :actual "(pr-str #\"a\\\"b\")" :portability :common}
+  {:suite "regex / redundant-escapes" :label "backslash-> is a literal >" :expected "\"a>b\"" :actual "(re-find #\"a\\>b\" \"a>b\")" :portability :common}
+  {:suite "regex / redundant-escapes" :label "backslash-< is a literal <" :expected "\"<x>\"" :actual "(re-find #\"\\<x\\>\" \"<x>\")" :portability :common}
+  {:suite "regex / redundant-escapes" :label "escaped backslash before > keeps both chars" :expected "\"a\\\\>\"" :actual "(re-find #\"a\\\\>\" \"a\\\\>\")" :portability :common}
 ]

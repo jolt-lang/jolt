@@ -41,6 +41,9 @@
     ((and (flonum? x) (fl= x +inf.0)) "##Inf")
     ((and (flonum? x) (fl= x -inf.0)) "##-Inf")
     ((and (flonum? x) (not (fl= x x))) "##NaN")
+    ;; pr of an exact integer outside long range carries the BigInt N suffix
+    ;; ((pr-str 12345678901234567890) => "12345678901234567890N"); str doesn't.
+    ((jolt-bigint-print? x) (string-append (number->string x) "N"))
     ;; transients print as a cold tagged type (print-method routes this through a
     ;; multimethod; the readable fallback renders it directly).
     ;; forward refs to transients.ss (loaded later) — resolved at call time.
@@ -56,7 +59,7 @@
                        (pset-fold x (lambda (e a) (cons (jolt-pr-readable e) a)) '()))) "}"))))
     ((pmap? x) (if (jolt-print-hash?) "#"
                    (with-deeper-print
-                     (string-append "{" (jolt-str-join (jolt-limited-list-strs
+                     (string-append "{" (jolt-str-join-comma (jolt-limited-list-strs
                        (pmap-fold x (lambda (k v a)
                                       (cons (string-append (jolt-pr-readable k) " " (jolt-pr-readable v)) a)) '()))) "}"))))
     ((empty-list-t? x) (if (jolt-print-hash?) "#" "()"))

@@ -307,18 +307,15 @@
   (cond
     (nil? v) "jolt-nil"
     (boolean? v) (if v "#t" "#f")
-    ;; Numeric tower: emit a literal Chez re-reads as the SAME number.
-    ;; Exact integers -> "42", exact ratios -> "1/2" (str renders both faithfully);
-    ;; a flonum must carry a decimal point/exponent or Chez reads it back as exact,
-    ;; so a whole flonum (str drops its .0) gets ".0" appended. ##Inf/##-Inf/##NaN
-    ;; -> Chez's flonum literals.
+    ;; Numeric tower: emit a literal Chez re-reads as the SAME number, via the
+    ;; host's own writer (jolt.host/chez-number-literal) — NOT jolt's str, whose
+    ;; rendering follows the reference printer (bigint N suffix, E exponents)
+    ;; and is not Chez-readable. ##Inf/##-Inf/##NaN -> Chez's flonum literals.
     (number? v) (cond
                   (= v ##Inf) "+inf.0"
                   (= v ##-Inf) "-inf.0"
                   (not= v v) "+nan.0"
-                  (float? v) (let [s (str v)]
-                               (if (or (str/includes? s ".") (str/includes? s "e")) s (str s ".0")))
-                  :else (str v))
+                  :else (jolt.host/chez-number-literal v))
     (string? v) (chez-str-lit v)
     ;; keyword literal -> (keyword ns name)
     (keyword? v) (if-let [kns (namespace v)]

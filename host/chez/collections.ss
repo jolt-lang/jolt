@@ -385,11 +385,12 @@
           ((null? (cdr kvs)) (error 'array-map "odd number of map entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
 ;; hash-map ctor: hash order (PersistentHashMap).
+;; hash-map follows the literal ctor: insertion-ordered up to the array-map
+;; threshold, hash order beyond (ClojureScript's hash-map does the same; the
+;; JVM's is always hash-ordered, but that order is not a contract and real
+;; libraries iterate small hash-maps expecting construction order).
 (define (jolt-hash-map-build kvs)
-  (let loop ((m empty-pmap-hash) (kvs kvs))
-    (cond ((null? kvs) m)
-          ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
-          (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
+  (apply jolt-hash-map kvs))
 
 (define-record-type pset (fields m) (nongenerative chez-pset-v1))
 (define empty-pset (make-pset empty-pmap-hash))            ; sets are hash-ordered

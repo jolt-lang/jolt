@@ -140,9 +140,8 @@
 (register-hash-arm! htable-sorted? (lambda (x) (jolt-hash (sorted->plain x))))
 
 ;; --- printing ----------------------------------------------------------------
-;; sorted colls render in SORTED order (the value's :seq), not HAMT order — and
-;; a sorted-map prints "{k v, k v}" (", " between pairs),
-;; NOT the space-only form the unordered pmap arm uses.
+;; sorted colls render in SORTED order (the value's :seq), not HAMT order; a
+;; sorted-map prints "{k v, k v}" (", " between pairs) like the pmap arm.
 (define (sorted-map-render sc render)
   (string-append "{"
     (let loop ((es (seq->list (sc-call sc kw-op-seq))) (first #t) (acc ""))

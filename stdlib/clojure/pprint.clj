@@ -340,16 +340,20 @@
   (setf :trailing-white-space nil))
 
 (defn- write-tokens [this tokens force-trailing-whitespace]
+  ;; Trailing whitespace stays PENDING between tokens even when forced — the
+  ;; next token decides its fate (an nl-t that emits a newline discards it, so
+  ;; a buffered separator before a line break can't leak a trailing space).
+  ;; Only whitespace still pending after the last token is force-written.
   (doseq [token tokens]
     (if-not (= (:type-tag token) :nl-t)
       (if-let [tws (getf :trailing-white-space)]
         (-write (getf :base) tws)))
     (write-token this token)
-    (setf :trailing-white-space (:trailing-white-space token))
-    (let [tws (getf :trailing-white-space)]
-      (when (and force-trailing-whitespace tws)
-        (-write (getf :base) tws)
-        (setf :trailing-white-space nil)))))
+    (setf :trailing-white-space (:trailing-white-space token)))
+  (let [tws (getf :trailing-white-space)]
+    (when (and force-trailing-whitespace tws)
+      (-write (getf :base) tws)
+      (setf :trailing-white-space nil))))
 
 (defn- tokens-fit? [this tokens]
   (let [maxcol (get-max-column (getf :base))]

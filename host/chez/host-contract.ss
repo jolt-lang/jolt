@@ -513,6 +513,10 @@
   (def-var! "jolt.host" "form-inst-source" hc-inst-source)
   (def-var! "jolt.host" "form-uuid-source" hc-uuid-source)
   (def-var! "jolt.host" "form-position" hc-form-position)
+  ;; a number literal in CHEZ syntax for the backend's emitted source — jolt's
+  ;; own str follows the reference printer (bigint N suffix, E exponents),
+  ;; which Chez's reader rejects
+  (def-var! "jolt.host" "chez-number-literal" (lambda (n) (number->string n)))
   (def-var! "jolt.host" "form-special?" hc-special?)
   (def-var! "jolt.host" "compile-ns" hc-current-ns)
   (def-var! "jolt.host" "late-bind?" hc-late-bind?)

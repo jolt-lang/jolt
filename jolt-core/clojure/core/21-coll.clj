@@ -228,6 +228,24 @@
 (defn ex-cause [e]
   (let [e (ex-unwrap e)] (if (ex-info-val? e) (get e :cause) nil)))
 
+;; Throwable->map: the reference data rendering of a throwable. :via chains
+;; through ex-cause the way the reference walks getCause; :cause/:data come
+;; from the root cause. Throwables carry no stack-trace elements here, so
+;; :trace is empty and :via entries have no :at.
+(defn Throwable->map [o]
+  (let [msg-of (fn [t] (or (ex-message t) (jolt.host/condition-message t)))
+        entry (fn [t]
+                (let [c (class t)
+                      m {:type (symbol (if (string? c) c (.getName c)))
+                         :message (msg-of t)}]
+                  (if-let [d (ex-data t)] (assoc m :data d) m)))
+        via (loop [acc [] t o]
+              (if (some? t) (recur (conj acc t) (ex-cause t)) acc))
+        root (peek via)
+        m {:via (mapv entry via) :trace []}
+        m (if-let [c (msg-of root)] (assoc m :cause c) m)]
+    (if-let [d (ex-data root)] (assoc m :data d) m)))
+
 ;; inst-ms: epoch milliseconds of an instant; throws on a non-inst (Clojure
 ;; protocol behavior).
 (defn inst-ms [x]
