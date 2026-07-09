@@ -254,7 +254,35 @@
 (jch-register-supers! "javax.net.ssl.SSLException" '("java.io.IOException"))
 (jch-register-supers! "java.lang.Error" '("java.lang.Throwable"))
 (jch-register-supers! "java.lang.AssertionError" '("java.lang.Error"))
-;; Throwable's only super is Object (universal), so no row needed for it.
+;; leaf/root classes with only Object as super
+(jch-register-supers! "java.lang.Object" '())
+(jch-register-supers! "java.lang.Throwable" '())
+(jch-register-supers! "java.lang.Byte" '("java.lang.Number"))
+(jch-register-supers! "java.lang.Short" '("java.lang.Number"))
+(jch-register-supers! "java.io.InputStream" '())
+(jch-register-supers! "java.io.OutputStream" '())
+(jch-register-supers! "java.io.Reader" '())
+(jch-register-supers! "java.io.Writer" '())
+(jch-register-supers! "java.io.File" '())
+(jch-register-supers! "java.io.StringReader" '("java.io.Reader"))
+(jch-register-supers! "java.io.StringWriter" '("java.io.Writer"))
+(jch-register-supers! "java.lang.StringBuilder" '())
+(jch-register-supers! "java.util.StringTokenizer" '())
+(jch-register-supers! "java.nio.charset.Charset" '())
+(jch-register-supers! "java.util.Base64" '())
+(jch-register-supers! "clojure.lang.MapEntry" '())
+(jch-register-supers! "clojure.lang.Namespace" '())
+(jch-register-supers! "java.util.regex.Pattern" '())
+(jch-register-supers! "java.net.URI" '())
+(jch-register-supers! "java.util.ArrayList" '())
+;; base interfaces used as super targets — need keys for simple-name resolution
+(jch-register-supers! "java.lang.Number" '())
+(jch-register-supers! "java.lang.Iterable" '())
+(jch-register-supers! "java.util.Map" '())
+(jch-register-supers! "java.lang.CharSequence" '())
+(jch-register-supers! "java.lang.Comparable" '())
+(jch-register-supers! "java.lang.Runnable" '())
+(jch-register-supers! "java.util.concurrent.Callable" '())
 
 ;; Public seam: libraries extend the modeled hierarchy.
 (def-var! "jolt.host" "register-class-supers!"
