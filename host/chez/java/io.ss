@@ -272,18 +272,16 @@
           (if r (car r) (error #f "no File method" method-name)))
         'pass)))
 
-;; .isDirectory / .listFiles emit to jolt-host-call (rt.ss), not record-method-
-;; dispatch — the shims there assume a path STRING target. Make them jfile-aware
-;; so file-seq's File branch works.
+;; File methods emitted via jolt-host-call (rt.ss) need jfile dispatch,
+;; not the string-path shims in the base jolt-host-call. Route through
+;; the jfile-method table so all File methods share one dispatch point.
 (define %io-host-call jolt-host-call)
 (set! jolt-host-call
   (lambda (method target . args)
-    (cond
-      ((and (jfile? target) (string=? method "isDirectory"))
-       (if (file-directory? (jfile-fs target)) #t #f))
-      ((and (jfile? target) (string=? method "listFiles"))
-       (list->cseq (map make-jfile (jolt-list-dir target))))
-      (else (apply %io-host-call method target args)))))
+    (if (jfile? target)
+        (let ((r (jfile-method target method args)))
+          (if r (car r) (apply %io-host-call method target args)))
+        (apply %io-host-call method target args))))
 
 ;; --- slurp / spit / flush ---------------------------------------------------
 (define (read-file-string path)
@@ -409,12 +407,10 @@
 (def-var! "clojure.core" "__stdin-read-line"
   (lambda () (let ((l (get-line (current-input-port)))) (if (eof-object? l) jolt-nil l))))
 
-;; (type f) -> :jolt/file (the tagged-file :jolt/type). Re-def-var!
-;; "type": natives-meta.ss already bound the var to the old jolt-type value, so the
-;; set! alone (which updates the symbol for internal callers) wouldn't reach it.
+;; (type f) -> :jolt/file (the tagged-file :jolt/type). Registered through the
+;; type-arm registry (natives-meta.ss) so the dispatcher picks it up.
 (define io-kw-file (keyword "jolt" "file"))
-(define %io-type jolt-type)
-(set! jolt-type (lambda (x) (if (jfile? x) io-kw-file (%io-type x))))
+(register-type-arm! jfile? (lambda (x) io-kw-file))
 
 ;; (instance? java.io.File f): the instance? macro passes the class-name symbol;
 ;; match "File" / "java.io.File" (and any *.File) against a jfile.

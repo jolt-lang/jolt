@@ -117,7 +117,17 @@
 (define ty-sorted-set (keyword "jolt" "sorted-set"))
 (define ty-object (keyword #f "object"))
 
-(define (jolt-type x)
+;; Arm registry for host-type extensions (jinst, jolt-array, jfile, etc.)
+;; A host shim registers its type's tag via register-type-arm! instead of
+;; set!-wrapping jolt-type — disjoint types, checked before the base cases,
+;; so the full behavior is gathered here plus the registry rather than
+;; scattered across a set! chain (cf. register-hash-arm!).
+;; Arms dispatch newest-registration-first: a later-loaded type's predicate
+;; wins when predicates overlap (transients/records both answer some ops).
+(define jolt-type-arms '())
+(define (register-type-arm! pred handler)
+  (set! jolt-type-arms (cons (cons pred handler) jolt-type-arms)))
+(define (jolt-type-base x)
   (let* ((m (jolt-meta x))
          (override (if (jolt-nil? m) jolt-nil (jolt-get m ty-kw-type jolt-nil))))
     (cond
@@ -151,6 +161,15 @@
       ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)) ty-seq)
       ((procedure? x) ty-fn)
       (else ty-object))))
+(define (jolt-type x)
+  (let* ((m (jolt-meta x))
+         (override (if (jolt-nil? m) jolt-nil (jolt-get m ty-kw-type jolt-nil))))
+    (cond
+      ((not (jolt-nil? override)) override)             ; :type meta wins
+      (else (let loop ((as jolt-type-arms))
+              (cond ((null? as) (jolt-type-base x))
+                    (((caar as) x) ((cdar as) x))
+                    (else (loop (cdr as)))))))))
 
 ;; jolt-type is the keyword TAXONOMY (:string/:set/:jolt/inst/…) — jolt's native
 ;; value model, with no JVM in it. print-method/print-dup dispatch on it (via

@@ -70,8 +70,8 @@
 ;; --- extend the collection dispatchers with a sorted arm ---------------------
 (define %h-seq jolt-seq)
 (set! jolt-seq (lambda (x) (if (htable-sorted? x) (sc-call x kw-op-seq) (%h-seq x))))
-(define %h-count jolt-count)
-(set! jolt-count (lambda (coll) (if (htable-sorted? coll) (sc-call coll kw-op-count) (%h-count coll))))
+(register-count-arm! htable-sorted?
+  (lambda (coll) (sc-call coll kw-op-count)))
 (register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))
 (define %h-contains? jolt-contains?)
 (set! jolt-contains? (lambda (coll k)

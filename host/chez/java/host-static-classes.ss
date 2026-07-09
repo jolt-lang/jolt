@@ -284,8 +284,8 @@
 ;; count / contains? over the mutable map shim (clojure.core/count + contains?,
 ;; which core.cache's SoftCache uses on its backing ConcurrentHashMap).
 (define (jhost-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
-(let ((prev-count jolt-count) (prev-contains jolt-contains?))
-  (set! jolt-count (lambda (c) (if (jhost-hashmap? c) (hashtable-size (hm-tbl c)) (prev-count c))))
+(register-count-arm! jhost-hashmap? (lambda (c) (hashtable-size (hm-tbl c))))
+(let ((prev-contains jolt-contains?))
   (set! jolt-contains? (lambda (c k) (if (jhost-hashmap? c)
                                          (if (hashtable-contains? (hm-tbl c) k) #t #f)
                                          (prev-contains c k)))))
