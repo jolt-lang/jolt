@@ -280,6 +280,7 @@
   (let ((w (ac-make 1 'fixed #f)) (snap (dyn-binding-stack)))
     (fork-thread
      (lambda ()
+       (*txn* #f)                          ; go/thread body must not inherit parent's txn
        (dyn-binding-stack snap)
        (let ((r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
          (if (car r)

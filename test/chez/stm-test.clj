@@ -1,6 +1,5 @@
 ;; STM threaded tests: isolation, txn-leak prevention, io! in txn with threads.
 ;; Prints STM OK when all pass.
-;; Rounds 2-3 add txn-leak (future inside dosync) and agent-send-hold tests.
 (def failures (atom []))
 (defn chk [label ok] (when-not ok (swap! failures conj label)))
 
@@ -21,6 +20,24 @@
        (= @done 0))
   (chk "isolation: final value is rolled back"
        (= @r 0)))
+
+;; --- Txn-leak (#5): future spawned inside dosync must not inherit *txn*
+(let [r (ref 0)]
+  (try
+    (dosync
+      (deref (future (ref-set r 1))))
+    (catch Exception e
+      (chk "txn-leak: ref-set in future throws IllegalStateException"
+           (instance? IllegalStateException e))))
+  (chk "txn-leak: ref unchanged after failed future ref-set"
+       (= @r 0)))
+
+;; --- io! in txn with thread (#6): future inside dosync must not throw io!
+(let [r (ref 0)]
+  (dosync
+    (deref (future (io! :ok))))
+  ;; if we reach here, io! inside future didn't throw inside the dosync's txn
+  (chk "io!-in-future: io! inside future inside dosync does not throw" true))
 
 (if (empty? @failures)
   (println "STM OK")

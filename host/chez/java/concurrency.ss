@@ -44,6 +44,7 @@
         (snap (dyn-binding-stack)))
     (fork-thread
      (lambda ()
+       (*txn* #f)                          ; child thread must not inherit parent's txn
        (dyn-binding-stack snap)
        (let ((r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
          (with-mutex (jolt-future-mu f)
@@ -209,6 +210,7 @@
 ;; may send/deref the same agent). A validator rejection or a thrown action puts the
 ;; agent in an error state and halts the queue (JVM :fail mode).
 (define (jolt-agent-worker a)
+  (*txn* #f)                          ; agent worker must not inherit parent's txn
   (let loop ()
     (let ((act (with-mutex (jolt-agent-mu a)
                  (if (or (not (jolt-nil? (jolt-agent-err a))) (jagent-q-empty? a))
@@ -409,8 +411,9 @@
   (list (cons "start" (lambda (self)
           (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
             (fork-thread (lambda ()
-              (dyn-binding-stack snap)
-              ;; surface a thread body's throw like the JVM's default uncaught-
+               (*txn* #f)                          ; child thread must not inherit parent's txn
+               (dyn-binding-stack snap)
+               ;; surface a thread body's throw like the JVM's default uncaught-
               ;; exception handler; the thread still completes (isAlive/join
               ;; semantics unchanged). Reporting failures are swallowed.
               (guard (e (#t (guard (_ (#t #f))

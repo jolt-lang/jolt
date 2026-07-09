@@ -3696,7 +3696,10 @@
   {:suite "refs / commute-read" :label "in-txn deref sees commute value" :expected "10" :actual "(let [r (ref 0)] (dosync (commute r + 10) @r))" :portability :common}
   {:suite "refs / ensure-read" :label "ensure inside dosync returns current in-txn value" :expected "7" :actual "(let [r (ref 0)] (dosync (ref-set r 7) (ensure r)))" :portability :common}
   {:suite "refs / watch-after-commit" :label "watch fires once after commit with (pre-txn, committed)" :expected "[[0 8]]" :actual "(let [r (ref 0) hits (atom [])] (add-watch r :w (fn [_ _ o n] (swap! hits conj [o n]))) (try (dosync (ref-set r 1) (ref-set r 2) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (dosync (ref-set r 7) (ref-set r 8)) @hits)" :portability :common}
-  {:suite "refs / watch-no-fire-on-rollback" :label "no watch notification on rolled-back txn" :expected "0" :actual "(let [r (ref 0) hits (atom [])] (add-watch r :w (fn [_ _ o n] (swap! hits conj 1))) (try (dosync (ref-set r 5) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (count @hits))" :portability :common}
+   {:suite "refs / watch-no-fire-on-rollback" :label "no watch notification on rolled-back txn" :expected "0" :actual "(let [r (ref 0) hits (atom [])] (add-watch r :w (fn [_ _ o n] (swap! hits conj 1))) (try (dosync (ref-set r 5) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (count @hits))" :portability :common}
+  ;; Round 2 — *txn* thread isolation
+  {:suite "refs / txn-leak" :label "future spawned in txn does not inherit *txn*" :expected ":caught" :actual "(do (def tl-r (ref 0)) (try (dosync (deref (future (ref-set tl-r 1)))) (catch IllegalStateException e :caught)))" :portability :common}
+  {:suite "refs / io!-in-future" :label "io! inside future inside dosync runs normally" :expected ":ok" :actual "(let [r (ref 0)] (dosync (deref (future (io! :ok)))))" :portability :common}
   ;; Round 3 — agent-sends held until commit
   {:suite "refs / agent-send-rollback" :label "agent action discarded on txn rollback" :expected "0" :actual "(let [a (agent 0)] (try (dosync (send a inc) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (await a) @a)" :portability :common}
   {:suite "refs / agent-send-commit" :label "agent action dispatched after commit" :expected "1" :actual "(let [a (agent 0)] (dosync (send a inc)) (await a) @a)" :portability :common}
