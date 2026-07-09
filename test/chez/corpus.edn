@@ -3603,4 +3603,7 @@
   {:suite "contracts / misc" :label "intern demands an existing ns; counted? excludes strings; seqable? includes arrays" :expected "[:t false true]" :actual "[(try (intern (quote no-such-ns-xyz) (quote v) 1) (catch Throwable _ :t)) (counted? \"s\") (seqable? (object-array 2))]" :portability :jvm}
   {:suite "contracts / misc" :label "nth of nil honors notFound; a nil index throws; the starred specials are special" :expected "[:default :npe [true true true true true]]" :actual "[(nth nil 5 :default) (try (nth [1] nil) (catch NullPointerException _ :npe)) [(special-symbol? (quote case*)) (special-symbol? (quote deftype*)) (special-symbol? (quote letfn*)) (special-symbol? (quote reify*)) (special-symbol? (quote &))]]" :portability :common}
   {:suite "contracts / misc" :label "rand-nth of nil is nil; of a set throws" :expected "[nil :t]" :actual "[(rand-nth nil) (try (rand-nth #{1 2}) (catch Throwable _ :t))]" :portability :common}
+  {:suite "defonce / semantics" :label "keeps the first value, ignores the second" :expected "1" :actual "(do (defonce defonce-a 1) (defonce defonce-a 2) defonce-a)" :portability :common}
+  {:suite "defonce / semantics" :label "returns the var (like def)" :expected "true" :actual "(var? (defonce defonce-b 3))" :portability :common}
+  {:suite "defonce / semantics" :label "defonce on a declared (unbound) name defs it" :expected "7" :actual "(do (declare defonce-c) (defonce defonce-c 7) defonce-c)" :portability :common}
 ]

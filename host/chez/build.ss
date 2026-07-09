@@ -439,6 +439,47 @@
 (define (bld-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
+;; Data-reader namespaces load during project setup, before build-binary arms its
+;; ns-loaded hook, so the entry walk records nothing for them. Synthesize their
+;; (name . file) pairs so reader fns reachable only through *data-readers* (a
+;; runtime read-string of a custom tag) ship in the binary. `known` is the pairs
+;; the entry walk did record — an ns already there is not duplicated. The reader
+;; ns's own requires are not walked: a reader namespace must be self-contained
+;; (require only clojure.core/stdlib), or be reachable from the entry ns too.
+(define (bld-data-reader-ns-pairs known)
+  (let ((tbl (var-deref "clojure.core" "*data-readers*")) (acc '()))
+    (when (pmap? tbl)
+      (pmap-fold tbl
+        (lambda (k v a)
+          (when (and (symbol-t? v) (symbol-t-ns v) (not (jolt-nil? (symbol-t-ns v))))
+            (let ((nm (symbol-t-ns v)))
+              (unless (or (assoc nm acc) (assoc nm known))
+                (let ((f (find-ns-file nm)))
+                  (when f (set! acc (cons (cons nm f) acc)))))))
+          a)
+        #f))
+    (reverse acc)))
+
+;; Bake the *data-readers* table into the binary so a runtime (read-string
+;; "#my/tag …") resolves its reader fn like it does under joltc run. Tag and
+;; reader are symbols; the reader path var-derefs the fn at use time.
+(define (bld-sym-lit s)
+  (let ((ns (symbol-t-ns s)))
+    (if (and ns (not (jolt-nil? ns)))
+        (string-append "(jolt-symbol " (ei-str-lit ns) " " (ei-str-lit (symbol-t-name s)) ")")
+        (string-append "(jolt-symbol #f " (ei-str-lit (symbol-t-name s)) ")"))))
+(define (bld-emit-data-readers out)
+  (let ((tbl (var-deref "clojure.core" "*data-readers*")))
+    (when (and (pmap? tbl) (> (pmap-cnt tbl) 0))
+      (put-string out "\n;; === data readers ===\n")
+      (put-string out "(def-var! \"clojure.core\" \"*data-readers*\"\n  (jolt-assoc empty-pmap")
+      (pmap-fold tbl
+        (lambda (k v a)
+          (put-string out (string-append "\n    " (bld-sym-lit k) " " (bld-sym-lit v)))
+          a)
+        #f)
+      (put-string out "))\n"))))
+
 (define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? library?)
   ;; Windows executables carry .exe; normalize here so the append-payload and
   ;; cc paths agree and the shell can run the result. A library keeps its own
@@ -470,7 +511,11 @@
       (lambda (name file) (set! app-order (cons (cons name file) app-order))))
     (load-namespace entry-ns)
     (set-ns-loaded-hook! (lambda (name file) #f))
-    (let ((ordered (reverse app-order)))   ; deps first, entry last
+    (let ((ordered (let ((walked (reverse app-order)))
+                     ;; reader namespaces first: nothing in the entry walk
+                     ;; depends on load order against them (they only reach the
+                     ;; app through *data-readers* lookups at runtime).
+                     (append (bld-data-reader-ns-pairs walked) walked))))   ; deps first, entry last
       (when (null? ordered)
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
@@ -558,6 +603,7 @@
           (bld-emit-natives out natives 'required)
           (put-string out "\n;; === embedded resources ===\n")
           (bld-emit-embeds out embed-dirs)
+          (bld-emit-data-readers out)
           (put-string out (string-append
                             "(set-source-roots! (list "
                             (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) ""
@@ -685,6 +731,28 @@
       (put-string out body)
       (close-port out))))
 
+;; Per-mode Chez compile parameters for app binaries. Mirrors the pattern in
+;; build-joltc.ss (optimize-level 3, fasl-compressed #t for release/optimized).
+;; "release" keeps inspector + proc-source ON so Clojure backtraces (via
+;; inspect/object walking the continuation) survive. "optimized" turns them OFF
+;; for max speed. "dev" leaves Chez defaults (optimize-level 2, inspector ON,
+;; proc-source ON, fasl uncompressed — full debuggability).
+(define (bld-chez-param-forms mode)
+  (cond
+    ((string=? mode "optimized")
+     (string-append
+       "(optimize-level 3)\n"
+       "(generate-inspector-information #f)\n"
+       "(generate-procedure-source-information #f)\n"
+       "(fasl-compressed #t)\n"))
+    ((string=? mode "release")
+     (string-append
+       "(optimize-level 3)\n"
+       "(generate-inspector-information #t)\n"
+       "(generate-procedure-source-information #t)\n"
+       "(fasl-compressed #t)\n"))
+    (else "")))
+
 (define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link)
   (let ((petite (string-append builddir "/petite.boot"))
         (scheme (string-append builddir "/scheme.boot")))
@@ -692,7 +760,17 @@
     (jolt-spill-embedded! "csv/scheme.boot" scheme)
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
     (bld-prepend-prologue! flat-ss)
-    (compile-file flat-ss flat-so)
+    (cond
+      ((string=? mode "optimized")
+       (parameterize ((optimize-level 3) (generate-inspector-information #f)
+                       (generate-procedure-source-information #f) (fasl-compressed #t))
+         (compile-file flat-ss flat-so)))
+      ((string=? mode "release")
+       (parameterize ((optimize-level 3) (generate-inspector-information #t)
+                       (generate-procedure-source-information #t) (fasl-compressed #t))
+         (compile-file flat-ss flat-so)))
+      (else
+       (compile-file flat-ss flat-so)))
     (make-boot-file boot '() petite scheme flat-so)
     ;; The stub is the native launcher the boot is appended to. With no :static
     ;; natives it's the prebuilt one bundled in joltc (no cc needed); with :static
@@ -737,6 +815,7 @@
       (put-string p
         (string-append
           "(import (chezscheme))\n"
+          (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
           (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
@@ -825,6 +904,7 @@
       (put-string p
         (string-append
           "(import (chezscheme))\n"
+          (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
           (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
