@@ -103,7 +103,7 @@
   (letfn [(cands [k] (let [v (get spec k)] (cond (string? v) [v] (sequential? v) (vec v) :else [])))]
     (if (:process spec)
       [:process (:name spec)]
-      [:native (or (:name spec) (vec (sort (concat (cands :darwin) (cands :linux)))))])))
+      [:native (or (:name spec) (vec (sort (concat (cands :darwin) (cands :linux) (cands :win)))))])))
 
 (defn- resolve-deps
   "Breadth-first walk of a deps map; returns {:roots [...] :natives [...]} — the
