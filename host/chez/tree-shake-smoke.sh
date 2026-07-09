@@ -99,7 +99,7 @@ run_case hiccup-app     app.core  ""
 # def ("app.core/dead") is absent from the shaken output.
 echo "shake smoke: correctness fixtures (ns-publics, defonce, data-readers)"
 run_local_case ns-publics-app   app.core  ""   ""
-run_local_case defonce-app      app.core  ""   "app.core/dead"
+run_local_case defonce-app      app.core  ""   "def-var! \"app.core\" \"dead\""
 run_local_case datareader-app   app.core  ""   ""
 
 [ "$fail" = 0 ] && echo "shake smoke: passed" || echo "shake smoke: FAILED"

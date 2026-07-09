@@ -66,13 +66,12 @@
 ;;
 ;; NOTE: dce-compile-refs is a SUBSET of dce-bail-refs — every form needing the
 ;; compiler at runtime (eval, load-string/…) also bails the tree-shake because the
-;; static graph can't track what the compiler will compile. A successful shake (no
-;; bail) ALWAYS drops the compiler. Conversely, a bail may OR may not need the
-;; compiler — a resolve-only bail keeps the shake bail-kept prelude but can still
-;; drop the compiler image since resolve is a var-table lookup, not compilation.
-;; The subset relationship is load-bearing for load-string/eval: those ARE in both
-;; lists because eval'd code might reference any core def, and once the prelude is
-;; shaken a missing def would fail — so the bail keeps everything and the compiler.
+;; static graph can't track what the compiler will compile. So a successful shake
+;; (no bail) always drops the compiler, and ANY bail keeps it (drop-compiler? is
+;; (and (not bail) (not needs-compiler)) in dce-shake) — conservative on purpose:
+;; a requiring-resolve bail may load and compile source at runtime. The subset
+;; relationship is load-bearing: eval'd code might reference any core def, and a
+;; shaken prelude would be missing some — bail keeps everything and the compiler.
 (define dce-compile-refs
   '("clojure.core/eval" "clojure.core/load-string" "clojure.core/load-file"
     "clojure.core/load-reader" "clojure.core/load"))
