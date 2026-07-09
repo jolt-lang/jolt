@@ -80,6 +80,8 @@
                (jolt-get obj jolt-kw-message jolt-nil)
                (jolt-str-render-one obj))))
     ((string=? name "getCause")  (list (jolt-get obj jolt-kw-cause jolt-nil)))
+    ;; java.text.ParseException.getErrorOffset — the int offset stashed by its ctor.
+    ((string=? name "getErrorOffset") (list (jolt-get obj jolt-kw-error-offset 0)))
     ;; java.sql.SQLException chaining — ex-info / host throwables don't chain.
     ((string=? name "getNextException") (list jolt-nil))
     ((string=? name "getStackTrace") (list (jolt-vector)))

@@ -3164,7 +3164,18 @@
   {:suite "conformance / numbers / math" :label "Math/sinh" :expected "0.0" :actual "(Math/sinh 0.0)" :portability :jvm}
   {:suite "conformance / numbers / math" :label "Math/cosh" :expected "1.0" :actual "(Math/cosh 0.0)" :portability :jvm}
   {:suite "conformance / numbers / math" :label "Math/tanh" :expected "0.0" :actual "(Math/tanh 0.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/cbrt" :expected "2.0" :actual "(Math/cbrt 8.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/hypot" :expected "5.0" :actual "(Math/hypot 3.0 4.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/rint" :expected "2.0" :actual "(Math/rint 2.5)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/floorDiv" :expected "3" :actual "(Math/floorDiv 7 2)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/floorMod" :expected "1" :actual "(Math/floorMod 7 3)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/copySign" :expected "-3.0" :actual "(Math/copySign 3.0 -1.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/toRadians" :expected "0.0" :actual "(Math/toRadians 0.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/toDegrees" :expected "0.0" :actual "(Math/toDegrees 0.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/log1p" :expected "0.0" :actual "(Math/log1p 0.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/expm1" :expected "0.0" :actual "(Math/expm1 0.0)" :portability :jvm}
   {:suite "conformance / host interop / exceptions" :label "java.text.ParseException" :expected "\"boom\"" :actual "(try (throw (java.text.ParseException. \"boom\" 3)) (catch java.text.ParseException e (.getMessage e)))" :portability :jvm}
+  {:suite "conformance / host interop / exceptions" :label "ParseException getErrorOffset" :expected "7" :actual "(try (throw (java.text.ParseException. \"boom\" 7)) (catch java.text.ParseException e (.getErrorOffset e)))" :portability :jvm}
   {:suite "conformance / numbers / math" :label "min-key" :expected "1" :actual "(min-key abs 1 -2 3)" :portability :common}
   {:suite "conformance / numbers / math" :label "max-key" :expected "-4" :actual "(max-key abs 1 -2 -4 3)" :portability :common}
   {:suite "conformance / strings (clojure.string)" :label "str/trim" :expected "\"hi\"" :actual "(do (require (quote [clojure.string :as s])) (s/trim \"  hi  \"))" :portability :common}

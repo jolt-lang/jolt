@@ -536,15 +536,17 @@
     "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"
     "Error" "AssertionError"))
 
-;; java.text.ParseException(String s, int errorOffset): unlike the exceptions above,
-;; its second ctor arg is an int offset, not a cause — take the message and drop the
-;; offset (nothing reads getErrorOffset here) rather than misfiling it as a cause.
+;; java.text.ParseException(String s, int errorOffset): unlike the exceptions
+;; above, its second ctor arg is an int offset (getErrorOffset), not a cause.
+;; Keep the offset under :jolt/error-offset (invisible to ex-data) so .getErrorOffset
+;; can read it back, rather than misfiling it as a cause.
 (register-class-ctor! "ParseException"
   (lambda args
-    (let ((a0 (if (pair? args) (car args) jolt-nil)))
-      (if (string? a0)
-          (jolt-host-throwable "java.text.ParseException" a0)
-          (jolt-host-throwable "java.text.ParseException" (jolt-str-render-one a0))))))
+    (let* ((a0 (if (pair? args) (car args) jolt-nil))
+           (off (if (and (pair? args) (pair? (cdr args))) (cadr args) 0))
+           (msg (if (string? a0) a0 (jolt-str-render-one a0))))
+      (jolt-assoc (jolt-host-throwable "java.text.ParseException" msg)
+                  jolt-kw-error-offset off))))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)

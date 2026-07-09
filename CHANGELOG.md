@@ -26,8 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raise a jolt `ex-info`.
 - `jolt.infix`: built-in infix math notation via the `infix`/`$=` macros and
   `from-string` (ported from rm-hull/infix), built on `jolt.parser`.
-- `Math/atan2`, `Math/sinh`, `Math/cosh`, `Math/tanh` static methods.
-- `java.text.ParseException` as a constructable/catchable host exception class.
+- Rounded out the `java.lang.Math` static surface: `atan2`, `sinh`, `cosh`,
+  `tanh`, `cbrt`, `hypot`, `rint`, `floorDiv`, `floorMod`, `copySign`,
+  `toRadians`, `toDegrees`, `log1p`, `expm1`.
+- `java.text.ParseException` as a constructable/catchable host exception class,
+  including `.getErrorOffset`.
 
 ## [0.2.1] - 2026-07-09
 
