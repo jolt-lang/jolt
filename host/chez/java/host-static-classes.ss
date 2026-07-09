@@ -772,55 +772,16 @@
             (or (member (symbol-t-name type-sym) tags) (member iface tags)))
           #t
       (let ((hit (cond
+                   ;; IObj/IMeta — metadata-bearing values not tagged via jch-tags
+                   ;; (cseq, empty-list, procedure, sorted-map/set)
                    ((or (string=? iface "IObj") (string=? iface "IMeta")) (hsc-imeta? val))
                    ((or (string=? iface "IMapEntry") (string=? iface "MapEntry")) (jolt-map-entry? val))
                    ((string=? iface "IRecord") (jrec? val))
-                   ((string=? iface "IPersistentMap") (or (pmap? val) (htable-sorted-map? val)))
-                   ((string=? iface "IPersistentVector") (and (pvec? val) (not (jolt-map-entry? val))))
-                   ((string=? iface "IPersistentSet") (or (pset? val) (htable-sorted-set? val)))
-                   ((string=? iface "ISeq")
-                    (or (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
-                   ((string=? iface "LazySeq") (jolt-lazyseq? val))
-                   ;; Seqable is anything (seq x) works on — every persistent
-                   ;; collection, not just seqs (a vector IS Seqable, not an ISeq).
-                   ((string=? iface "Seqable")
-                    (or (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)
-                        (pvec? val) (pmap? val) (pset? val)
-                        (htable-sorted-map? val) (htable-sorted-set? val)))
-                   ((string=? iface "Sequential")
-                    (or (pvec? val) (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
+                   ;; IFn — maps/sets/vectors are callable in jolt beyond the JVM
+                   ;; class hierarchy, so jch-tags doesn't cover them for these types.
                    ((string=? iface "IFn")
                     (or (procedure? val) (keyword? val) (symbol-t? val)
                         (pmap? val) (pset? val) (pvec? val)))
-                   ;; host-class interfaces libraries branch on (data.json, etc.).
-                   ;; Matched by last segment, so java.util.Map and Map both hit.
-                   ((string=? iface "Named") (or (keyword? val) (symbol-t? val)))
-                   ((string=? iface "CharSequence") (string? val))
-                   ((string=? iface "Number") (number? val))
-                   ((string=? iface "Map") (or (pmap? val) (htable-sorted-map? val)))
-                   ((string=? iface "Set") (or (pset? val) (htable-sorted-set? val)))
-                   ;; a Java List is a vector or a seq/list — not a set or map.
-                   ((string=? iface "List")
-                    (or (and (pvec? val) (not (jolt-map-entry? val)))
-                        (cseq? val) (empty-list-t? val) (jolt-lazyseq? val)))
-                   ;; a Java Collection is any of those plus a set — but NOT a map.
-                   ((string=? iface "Collection")
-                    (or (pvec? val) (pset? val) (cseq? val) (empty-list-t? val)
-                        (jolt-lazyseq? val) (htable-sorted-set? val)))
-                   ((string=? iface "Associative")
-                    (or (pmap? val) (htable-sorted-map? val)
-                        (and (pvec? val) (not (jolt-map-entry? val)))))
-                   ;; ILookup (valAt): maps and vectors; Indexed (nth): vectors;
-                   ;; Counted: the counted collections. A deftype that declares one
-                   ;; is matched by type-satisfies? in instance-check-base.
-                   ((string=? iface "ILookup")
-                    (or (pmap? val) (htable-sorted-map? val)
-                        (and (pvec? val) (not (jolt-map-entry? val)))))
-                   ((string=? iface "Indexed")
-                    (and (pvec? val) (not (jolt-map-entry? val))))
-                   ((string=? iface "Counted")
-                    (or (pmap? val) (pset? val) (pvec? val)
-                        (htable-sorted-map? val) (htable-sorted-set? val)))
                    ;; reader jhosts — data.json re-wraps a reader in a new
                    ;; PushbackReader unless (instance? PushbackReader r), so this
                    ;; must hold for repeated reads from one reader to work.
