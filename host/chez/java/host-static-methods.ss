@@ -9,18 +9,38 @@
 ;; JVM (Chez's sqrt/expt return EXACT for exact args, e.g. (sqrt 9) -> 3), so coerce
 ;; to flonum. round -> long (exact); abs/max/min preserve the argument's type.
 (define (->dbl x) (exact->inexact x))
+(define math-pi (acos -1.0))
+;; sign-aware cube root: expt of a negative flonum to 1/3 goes complex.
+(define (math-cbrt x)
+  (let ((x (exact->inexact x)))
+    (if (< x 0.0) (- (expt (- x) (/ 1.0 3.0))) (expt x (/ 1.0 3.0)))))
 (register-class-statics! "Math"
   (list (cons "sqrt" (lambda (x) (->dbl (sqrt x))))
+        (cons "cbrt" (lambda (x) (math-cbrt x)))
         (cons "pow" (lambda (a b) (->dbl (expt a b))))
+        (cons "hypot" (lambda (a b) (->dbl (sqrt (+ (* a a) (* b b))))))
         (cons "floor" (lambda (x) (->dbl (floor x))))
         (cons "ceil" (lambda (x) (->dbl (ceiling x))))
         (cons "round" (lambda (x) (exact (floor (+ x 1/2)))))   ; JVM round-half-up -> long
+        (cons "rint" (lambda (x) (->dbl (round x))))            ; round-half-even -> double
+        ;; Math.floorDiv/floorMod: integer floor division / modulus (long -> long).
+        (cons "floorDiv" (lambda (a b) (exact (floor (/ a b)))))
+        (cons "floorMod" (lambda (a b) (exact (- a (* b (floor (/ a b)))))))
         (cons "abs" (lambda (x) (abs x)))
         (cons "sin" (lambda (x) (->dbl (sin x)))) (cons "cos" (lambda (x) (->dbl (cos x))))
         (cons "tan" (lambda (x) (->dbl (tan x)))) (cons "asin" (lambda (x) (->dbl (asin x))))
         (cons "acos" (lambda (x) (->dbl (acos x)))) (cons "atan" (lambda (x) (->dbl (atan x))))
+        ;; Math.atan2(y, x) — Chez's 2-arg atan is (atan y x).
+        (cons "atan2" (lambda (y x) (->dbl (atan y x))))
+        (cons "sinh" (lambda (x) (->dbl (sinh x)))) (cons "cosh" (lambda (x) (->dbl (cosh x))))
+        (cons "tanh" (lambda (x) (->dbl (tanh x))))
         (cons "log" (lambda (x) (->dbl (log x)))) (cons "log10" (lambda (x) (->dbl (/ (log x) (log 10)))))
+        (cons "log1p" (lambda (x) (->dbl (log (+ 1.0 x)))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
+        (cons "expm1" (lambda (x) (->dbl (- (exp x) 1.0))))
+        (cons "toRadians" (lambda (d) (->dbl (/ (* d math-pi) 180.0))))
+        (cons "toDegrees" (lambda (r) (->dbl (/ (* r 180.0) math-pi))))
+        (cons "copySign" (lambda (m s) (->dbl (if (< s 0.0) (- (abs m)) (abs m)))))
         ;; getExponent: the unbiased binary exponent of a double (floor(log2|x|));
         ;; scalb: x * 2^n. test.check's double generator uses both.
         (cons "getExponent" (lambda (x) (if (= x 0.0) -1023

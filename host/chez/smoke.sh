@@ -248,6 +248,28 @@ else
   fails=$((fails + 1))
 fi
 
+# jolt.parser — the general parser-combinator core, running rm-hull/jasentaa's
+# own suite for the adopted pieces plus jolt's added combinators. Self-checks.
+parser_out="$(bin/joltc run test/chez/parser-test.clj 2>/dev/null)"
+if printf '%s' "$parser_out" | grep -q 'PARSER OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: jolt.parser"
+  printf '%s\n' "$parser_out" | grep FAIL | head -5 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
+# jolt.infix — jolt's built-in infix math notation, running rm-hull/infix's own
+# suite (macros/grammar/core tests). The file self-checks and prints one marker.
+infix_out="$(bin/joltc run test/chez/infix-test.clj 2>/dev/null)"
+if printf '%s' "$infix_out" | grep -q 'INFIX OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: infix"
+  printf '%s\n' "$infix_out" | grep FAIL | head -5 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # A data reader that returns a CODE form (deps.edn data_readers.clj -> reader fn)
 # must have its result spliced in and COMPILED, like Clojure — #code [:x] becomes
 # (+ 40 2) and evaluates to 42, not the literal list. A project run so the source

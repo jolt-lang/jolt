@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transaction are held until commit, and transaction state does not leak into
   threads spawned inside a `dosync`. `(class (ref 0))` is `clojure.lang.Ref`,
   and `ref-min-history`/`ref-max-history` take the setter arity.
+- `jolt.parser`: a general monadic parser-combinator core (`jolt.parser` +
+  `jolt.parser.{basic,combinators,monad,position}`), adapted from rm-hull/jasentaa,
+  with added combinators (`eof`, `between`, `sep-by`, an `optional` default-value
+  arity, and the `digit`/`letter`/`alpha-num` character classes). Parse failures
+  raise a jolt `ex-info`.
+- `jolt.infix`: built-in infix math notation via the `infix`/`$=` macros and
+  `from-string` (ported from rm-hull/infix), built on `jolt.parser`.
+- Rounded out the `java.lang.Math` static surface: `atan2`, `sinh`, `cosh`,
+  `tanh`, `cbrt`, `hypot`, `rint`, `floorDiv`, `floorMod`, `copySign`,
+  `toRadians`, `toDegrees`, `log1p`, `expm1`.
+- `java.text.ParseException` as a constructable/catchable host exception class,
+  including `.getErrorOffset`.
 
 ## [0.2.1] - 2026-07-09
 

@@ -202,6 +202,10 @@
 ;; ex-message all reflect the real type. Plain ex-info has no :jolt/class (its class
 ;; defaults to clojure.lang.ExceptionInfo), so those maps stay byte-identical.
 (define jolt-kw-class (keyword "jolt" "class"))
+;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
+;; under a jolt-namespaced key so it never shows up in (ex-data …), which reads
+;; the :data key.
+(define jolt-kw-error-offset (keyword "jolt" "error-offset"))
 (define (jolt-host-throwable class-name msg . more)
   (jolt-hash-map jolt-kw-ex-type jolt-kw-ex-info
                  jolt-kw-class class-name
