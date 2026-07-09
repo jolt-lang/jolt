@@ -193,7 +193,7 @@
 ;; opening quote already consumed; read to the closing quote, processing escapes.
 (define (rdr-read-string-lit s i end)
   (let loop ((i i) (acc '()))
-    (when (>= i end) (jolt-throw (jolt-ex-info "EOF while reading string" empty-pmap)))
+    (when (>= i end) (rdr-error s i "EOF while reading string"))
     (let ((c (string-ref s i)))
       (cond
         ((char=? c #\") (values (list->string (reverse acc)) (+ i 1)))
@@ -215,7 +215,7 @@
                     (oct (fx+ j 1) (fx+ (fx* val 8) (fx- (char->integer (string-ref s j)) 48)) (fx+ cnt 1))
                     (begin
                       (when (> val 255)
-                        (jolt-throw (jolt-ex-info "Octal escape sequence must be in range [0, 377]" empty-pmap)))
+                        (rdr-error s i "Octal escape sequence must be in range [0, 377]"))
                       (loop j (cons (integer->char val) acc))))))
              ((#\u)
               (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
@@ -234,13 +234,13 @@
                          (loop j (cons #\xFFFD acc)))))
                   ((and (fx>=? cp #xD800) (fx<=? cp #xDFFF)) (loop j (cons #\xFFFD acc)))
                   (else (loop j (cons (integer->char cp) acc))))))
-             (else (jolt-throw (jolt-ex-info (string-append "Unsupported escape character: \\" (string e))
-                                             empty-pmap))))))
+             (else (rdr-error s i (string-append "Unsupported escape character: \\" (string e))
+)))))
         (else (loop (+ i 1) (cons c acc)))))))
 
 ;; backslash already consumed; read a Clojure character literal.
 (define (rdr-read-char s i end)
-  (when (>= i end) (jolt-throw (jolt-ex-info "EOF while reading char" empty-pmap)))
+  (when (>= i end) (rdr-error s i "EOF while reading char"))
   (let ((c0 (string-ref s i)))
     (if (char-alphabetic? c0)
         ;; named / unicode / single-letter: collect the alnum run
@@ -328,7 +328,7 @@
   (let loop ((i i) (acc '()))
     (let ((i (rdr-skip-ws s i end)))
       (cond
-        ((>= i end) (jolt-throw (jolt-ex-info "EOF while reading" empty-pmap)))
+        ((>= i end) (rdr-error s i "EOF while reading"))
         ((char=? (string-ref s i) close) (values (reverse acc) (+ i 1)))
         (else
          (let-values (((form j) (rdr-read-form s i end)))
@@ -440,6 +440,15 @@
         (jolt-hash-map rdr-kw-line line rdr-kw-column col rdr-kw-file f)
         (jolt-hash-map rdr-kw-line line rdr-kw-column col))))
 
+;; rdr-error: format an error with the current source position, throw ex-info.
+;; The message is "msg (file:line:col)" when rdr-source-file is bound,
+;; just "msg" for bare -e strings. ex-data carries :line :column and :file.
+(define (rdr-error s i msg)
+  (let-values (((line col) (rdr-line-col-at s i)))
+    (let* ((file (rdr-source-file))
+           (loc (if file (string-append " (" file ":" (number->string line) ":" (number->string col) ")") "")))
+      (jolt-throw (jolt-ex-info (string-append msg loc) (rdr-pos-meta line col))))))
+
 (define (rdr-attach-pos lst line col)
   (if (empty-list-t? lst)            ; () is interned, can't carry meta (= Clojure)
       lst
@@ -515,7 +524,7 @@
   (let* ((splice (and (< i end) (char=? (string-ref s i) #\@)))
          (start (if splice (+ i 1) i)))
     (let-values (((form j) (rdr-read-form s start end)))
-      (when (rdr-eof? form) (jolt-throw (jolt-ex-info "EOF after #?" empty-pmap)))
+      (when (rdr-eof? form) (rdr-error s i "EOF after #?"))
       (let ((items (cond ((pvec? form) (seq->list form))
                          ((or (cseq? form) (empty-list-t? form)) (seq->list form))
                          (else '()))))
@@ -584,7 +593,7 @@
          (i2 (if auto? (+ i 1) i)))
     (let loop ((j i2))
       (cond
-        ((>= j end) (jolt-throw (jolt-ex-info "EOF in namespaced map literal" empty-pmap)))
+        ((>= j end) (rdr-error s j "EOF in namespaced map literal"))
         ((char=? (string-ref s j) #\{)
          (let* ((nstok (substring s i2 j))
                 (mapns (if auto?
@@ -596,7 +605,7 @@
         (else (loop (+ j 1)))))))
 
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'
-  (when (>= i end) (jolt-throw (jolt-ex-info "EOF after #" empty-pmap)))
+  (when (>= i end) (rdr-error s i "EOF after #"))
   (let ((c (string-ref s i)))
     (cond
       ((char=? c #\{)                    ; #{...} set
@@ -612,7 +621,7 @@
          (values (jolt-re-pattern src) j)))
       ((char=? c #\_)                    ; #_ discard the next form
        (let-values (((d j) (rdr-read-form s (+ i 1) end)))
-         (when (rdr-eof? d) (jolt-throw (jolt-ex-info "EOF after #_" empty-pmap)))
+         (when (rdr-eof? d) (rdr-error s i "EOF after #_"))
          ;; edn validates the discarded element (its tags go through the same
          ;; :readers/:default pipeline; an unreadable one throws)
          (let ((cb (rdr-discard-cb)))
@@ -625,15 +634,15 @@
        (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
          (let-values (((target k) (rdr-read-form s j end)))
            (when (rdr-eof? target)
-             (jolt-throw (jolt-ex-info "EOF after #^meta" empty-pmap)))
+             (rdr-error s j "EOF after #^meta"))
            (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
       ((char=? c #\#)                    ; ## symbolic value: ##Inf / ##-Inf / ##NaN
        (let-values (((tok j) (rdr-read-token s (+ i 1) end)))
          (values (cond ((string=? tok "Inf") +inf.0)
                        ((string=? tok "-Inf") -inf.0)
                        ((string=? tok "NaN") +nan.0)
-                       (else (jolt-throw (jolt-ex-info (string-append "unknown ## literal: " tok)
-                                                       empty-pmap))))
+                       (else (rdr-error s j (string-append "unknown ## literal: " tok)
+)))
                  j)))
       ((char=? c #\?)                    ; #?(...) / #?@(...) reader conditional
        (rdr-read-reader-cond s (+ i 1) end))
@@ -642,7 +651,7 @@
       (else                              ; #tag form -> tagged {:tag :#tag :form ...}
        (let-values (((tok j) (rdr-read-token s i end)))
          (let-values (((form k) (rdr-read-form s j end)))
-           (when (rdr-eof? form) (jolt-throw (jolt-ex-info "EOF after #tag" empty-pmap)))
+           (when (rdr-eof? form) (rdr-error s j "EOF after #tag"))
            (if (rdr-record-tag? tok)       ; #ns.Type{..}/[..] record literal
                (values (rdr-record-ctor-form tok form) k)
                (values (rdr-make-tagged (keyword #f (string-append "#" tok)) form) k))))))))
@@ -651,7 +660,7 @@
 ;; every other backslash sequence is kept verbatim (regex engine semantics).
 (define (rdr-read-regex s i end)
   (let loop ((i i) (acc '()))
-    (when (>= i end) (jolt-throw (jolt-ex-info "EOF while reading regex" empty-pmap)))
+    (when (>= i end) (rdr-error s i "EOF while reading regex"))
     (let ((c (string-ref s i)))
       (cond
         ((char=? c #\") (values (list->string (reverse acc)) (+ i 1)))
@@ -716,7 +725,7 @@
             ;; inert: ``42 reads as 42, ```"meow" as "meow".
             ((char=? c #\`)
              (let-values (((form j) (rdr-read-form s (+ i 1) end)))
-               (when (rdr-eof? form) (jolt-throw (jolt-ex-info "EOF after `" empty-pmap)))
+               (when (rdr-eof? form) (rdr-error s i "EOF after `"))
                (values (if (rdr-self-eval-literal? form)
                            form
                            (jolt-list (jolt-symbol #f "syntax-quote") form))
@@ -733,7 +742,7 @@
              (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
                (let-values (((target k) (rdr-read-form s j end)))
                  (when (rdr-eof? target)
-                   (jolt-throw (jolt-ex-info "EOF after ^meta" empty-pmap)))
+                   (rdr-error s i "EOF after ^meta"))
                  (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
             (else
              (let-values (((tok j) (rdr-read-token s i end)))
@@ -748,7 +757,7 @@
 (define (rdr-wrap s i end head)
   (let-values (((form j) (rdr-read-form s i end)))
     (when (rdr-eof? form)
-      (jolt-throw (jolt-ex-info "EOF while reading reader macro" empty-pmap)))
+      (rdr-error s i "EOF while reading reader macro"))
     (values (jolt-list head form) j)))
 
 ;; --- form -> data -----------------------------------------------------------

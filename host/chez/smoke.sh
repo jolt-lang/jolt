@@ -180,6 +180,19 @@ else
   fails=$((fails + 1))
 fi
 
+# A reader error in a required source file names the file and position.
+rp="$(mktemp -d)/rproj"; mkdir -p "$rp/src"
+printf '{:paths ["src"]}\n' > "$rp/deps.edn"
+printf '(ns app)\n(def broken "unterminated\n' > "$rp/src/app.clj"
+rerr="$(JOLT_PWD="$rp" bin/joltc run -m app 2>&1)"
+if printf '%s' "$rerr" | grep -q 'src/app.clj:'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a reader error in a file should name file:line:col"
+  echo "    got: $(printf '%s' "$rerr" | head -1)"
+  fails=$((fails + 1))
+fi
+
 # jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
 # move, mtime round-trip, which). The file self-checks and prints one marker.
 fs_out="$(bin/joltc run test/chez/fs-test.clj 2>/dev/null)"
