@@ -447,12 +447,18 @@
 ;; (records.ss) populated as deftype/defprotocol forms load.
 (define (hc-record-shapes ctx) (chez-record-shapes-map))
 (define (hc-protocol-methods ctx) (chez-protocol-methods-map))
-;; Optimization gate. Off for ordinary runs (open world, redefinition); `jolt
-;; build` flips it on during app emission for release/optimized modes (closed
-;; world), turning on the inference + flatten + scalar-replace passes.
+;; Optimization gate. On for --opt / :opt builds; off for release and dev.
+;; Inference + inline + scalar-replace passes are gated on this.
 (define hc-optimize? #f)
 (define (set-optimize! on) (set! hc-optimize? on))
-(define (hc-inline-enabled? ctx) hc-optimize?)
+;; Inference gate. On for release builds too (inference without inline/scalar).
+(define hc-release? #f)
+(define (set-release! on) (set! hc-release? on))
+(define (hc-inference-enabled? ctx) (or hc-optimize? hc-release?))
+;; Inline additionally requires direct-link (closed-world guarantee).
+(define hc-direct-link? #f)
+(define (set-direct-link-flag! on) (set! hc-direct-link? on))
+(define (hc-inline-enabled? ctx) (and hc-optimize? hc-direct-link?))
 ;; Inline-body registry: jolt.passes stashes an inline-eligible defn's
 ;; {:params :body :nhints :ret} here (keyed ns/name) as its form is optimized;
 ;; jolt.passes.inline fetches it to splice the body at a call site. The stash is an
@@ -522,6 +528,7 @@
   (def-var! "jolt.host" "record-shapes" hc-record-shapes)
   (def-var! "jolt.host" "protocol-methods" hc-protocol-methods)
   (def-var! "jolt.host" "inline-enabled?" hc-inline-enabled?)
+  (def-var! "jolt.host" "inference-enabled?" hc-inference-enabled?)
   (def-var! "jolt.host" "inline-ir" hc-inline-ir)
   (def-var! "jolt.host" "stash-inline!" hc-stash-inline!))
 

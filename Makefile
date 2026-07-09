@@ -172,8 +172,9 @@ directlink:
 numeric:
 	@chez --script test/chez/numeric-test.ss
 
-# IR inlining: a small single-arity defn is spliced at call sites (under optimize),
-# with ^double/^long entry/return coercions carried through via :coerce nodes.
+# IR inlining: a small single-arity defn is spliced at call sites (under optimize
+# + direct-link, closed-world guarantee), with ^double/^long entry/return
+# coercions carried through via :coerce nodes.
 inline:
 	@chez --script test/chez/inline-test.ss
 

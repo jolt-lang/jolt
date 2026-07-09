@@ -13,7 +13,7 @@
   :refer, so jolt.passes stays the only namespace the back end imports.
 
   Portable Clojure: kernel-tier fns + seed primitives only."
-  (:require [jolt.host :refer [inline-enabled? record-shapes protocol-methods stash-inline!]]
+  (:require [jolt.host :refer [inline-enabled? inference-enabled? record-shapes protocol-methods stash-inline!]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
@@ -59,15 +59,26 @@
       node)))
 
 (defn run-passes
-  "All passes, in order. The back end applies this to every analyzed form. When
-  inlining is enabled for the unit (user code under direct-linking),
-  run inline + flatten + scalar-replace + const-fold to a capped fixpoint —
-  inlining exposes map literals to lookups, scalar-replace collapses them, which
-  may expose more — then a collection-type inference pass (optionally
-  also emitting success diagnostics) that auto-drops the lookup guard where the
-  type is proven. Otherwise (core + bootstrap) just const-fold, as before.
+  "All passes, in order. The back end applies this to every analyzed form.
 
-  numeric/annotate runs last in both branches (hint-directed fl*/fx* arithmetic);
+  Three modes, determined by host-contract flags:
+
+  **Full optimization** (optimize + direct-link enabled):
+    run inline + flatten + scalar-replace + const-fold to a capped fixpoint —
+    inlining exposes map literals to lookups, scalar-replace collapses them,
+    which may expose more — then a collection-type inference pass (optionally
+    also emitting success diagnostics) that auto-drops the lookup guard where
+    the type is proven. Used for --opt --direct-link builds.
+
+  **Inference mode** (release or optimize without direct-link):
+    setup record/protocol shapes (redefinition-safe caches), then run const-fold,
+    collection-type inference (with seeds if available), and numeric annotate —
+    without inline/scalar. Used for release builds and --opt (no --direct-link).
+
+  **Dev/normal** (optimize off, no release):
+    just const-fold + numeric annotate, as before.
+
+  numeric/annotate runs last in all branches (hint-directed fl*/fx* arithmetic);
   it benefits open builds too, so it is not gated on inlining."
   [node ctx]
   ;; stash an inline-eligible defn so later call sites can splice it (closed-world
@@ -75,7 +86,9 @@
   (when (and (inline-enabled? ctx) (inline-eligible? node))
     (stash-inline! ctx (:ns node) (:name node) (stash-of node)))
   (numeric/annotate
-    (if (inline-enabled? ctx)
+    (cond
+      ;; Full inline + inference (optimize + direct-link)
+      (inline-enabled? ctx)
       (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
             _ (set-ctor-shapes! (record-shapes ctx))  ;; backend direct ctor calls
             ;; resolve ^Record param hints (incl. defrecord/extend-type method
@@ -99,4 +112,19 @@
         ;; then inject any whole-program :double param hints for the numeric pass.
         (inject-wp-nhints (const-fold (reinfer-inline-method-bodies
                                         (if seeds (reinfer-def opt seeds) (run-inference opt))))))
+
+      ;; Inference mode (release/optimize without direct-link): inference without
+      ;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.
+      (inference-enabled? ctx)
+      (let [_ (set-rec-shapes! (record-shapes ctx))
+            _ (set-ctor-shapes! (record-shapes ctx))
+            _ (set-record-shapes! (record-shapes ctx))
+            _ (set-protocol-methods! (protocol-methods ctx))
+            opt (const-fold node)
+            seeds (when (= :def (:op opt)) (param-seeds-for (str (:ns opt) "/" (:name opt))))]
+        (inject-wp-nhints (const-fold (reinfer-inline-method-bodies
+                                        (if seeds (reinfer-def opt seeds) (run-inference opt))))))
+
+      ;; Dev/normal: const-fold + numeric only
+      :else
       (const-fold node))))
