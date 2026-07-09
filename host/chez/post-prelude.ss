@@ -107,17 +107,18 @@
 ;; chunked-seq? is true for a vector's seq (a real chunked-seq); the overlay's
 ;; always-false stub loaded over the host fn, so re-assert it.
 (def-var! "clojure.core" "chunked-seq?" na-chunked-seq?)
- ;; refs: native record (jolt-ref) not a :jolt/type-tagged map. The overlay has no
-;; Clojure-level ref?/ref-set/alter/commute/ensure/sync/io!/loaded-libs yet, but
-;; establish the priority so a future overlay tier can't clobber the host fns.
+;; refs: native record (jolt-ref) not a :jolt/type-tagged map. The overlay has
+;; no Clojure-level ref?/ref-set/alter/commute/ensure/loaded-libs, but establish
+;; the priority so a future overlay tier can't clobber the host fns. sync/io!
+;; are overlay MACROS (30-macros.clj) over the __sync-call/__txn-running? seams.
 (def-var! "clojure.core" "ref" jolt-ref-new)
 (def-var! "clojure.core" "ref?" jolt-ref?)
 (def-var! "clojure.core" "ref-set" jolt-ref-set)
 (def-var! "clojure.core" "alter" jolt-alter)
 (def-var! "clojure.core" "commute" jolt-commute)
 (def-var! "clojure.core" "ensure" jolt-ensure)
-(def-var! "clojure.core" "sync" jolt-sync)
-(def-var! "clojure.core" "io!" jolt-io!)
+(def-var! "clojure.core" "__sync-call" jolt-sync)
+(def-var! "clojure.core" "__txn-running?" jolt-txn-running?)
 (def-var! "clojure.core" "loaded-libs" (lambda () (jolt-deref (var-deref "clojure.core" "*loaded-libs*"))))
 ;; record? is a host type check — true only for a defrecord, not a bare deftype
 ;; (jrec-record?), matching the JVM (instance? IRecord). The overlay's

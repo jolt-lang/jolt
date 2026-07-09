@@ -90,7 +90,9 @@
   (jolt-ref-ensure-txn)
   (jolt-ref-val ref))
 
-;; sync: run a thunk inside a serialized transaction.  Nested calls join the
+;; __sync-call: run a thunk inside a serialized transaction — the seam the
+;; sync/dosync MACROS (30-macros.clj) expand through; sync itself is a macro
+;; with the reference's (sync flags & body) shape.  Nested calls join the
 ;; outer transaction (re-entrant through the thread-local flag).
 (define (jolt-sync thunk)
   (if (*txn*)
@@ -100,17 +102,9 @@
         (parameterize ((*txn* #t))
           (jolt-invoke thunk)))))
 
-;; io!: throws if called inside a transaction; runs the thunk otherwise
-;; (matching the JVM's clojure.lang.LockingTransaction/io!).
-(define (jolt-io! . body)
-  (when (*txn*)
-    (jolt-throw (jolt-host-throwable
-                 "java.lang.IllegalStateException"
-                 "I/O in transaction")))
-  (if (null? body) jolt-nil
-      (let loop ((body body))
-        (if (null? (cdr body)) (car body)
-            (begin (car body) (loop (cdr body)))))))
+;; io! is a MACRO (30-macros.clj): its body must NOT evaluate when the
+;; transaction check throws. The macro tests this seam.
+(define (jolt-txn-running?) (and (*txn*) #t))
 
 ;; --- history ops (stubs — no MVCC) ------------------------------------------
 ;; On the JVM these control how many prior values a ref keeps for snapshot
@@ -145,34 +139,17 @@
         (jolt-ref-deref x)
         (apply %pre-ref-deref x opts))))
 
-;; --- dosync macro (host-level, for corpus/standalone use) --------------------
-;; The overlay (30-macros.clj) re-defines this.  This one lets corpus/seed tests
-;; use dosync before the overlay loads.  Syntax: (dosync & body) -> (sync (fn* [] ~@body))
-(guard (e (#t #f))
-  (def-var! "clojure.core" "dosync"
-    (lambda body
-      (let* ((sqcat (var-deref "clojure.core" "__sqcat"))
-             (sq1   (var-deref "clojure.core" "__sq1"))
-             ;; body is a raw Scheme rest list; convert to cseq for sq-flatten
-             (body  (list->cseq body)))
-        (jolt-invoke2 sqcat
-          (jolt-invoke1 sq1 (jolt-symbol "clojure.core" "sync"))
-          (jolt-invoke1 sq1
-            (jolt-invoke3 sqcat
-              (jolt-invoke1 sq1 (jolt-symbol #f "fn*"))
-              (jolt-invoke1 sq1 (jolt-invoke0 (var-deref "clojure.core" "__sqvec")))
-              body))))))
-  (mark-macro! "clojure.core" "dosync"))
-
 ;; --- bind into clojure.core -------------------------------------------------
+;; sync/dosync/io! are macros in the overlay (30-macros.clj) over the
+;; __sync-call / __txn-running? seams.
 (def-var! "clojure.core" "ref" jolt-ref-new)
 (def-var! "clojure.core" "ref?" jolt-ref?)
 (def-var! "clojure.core" "ref-set" jolt-ref-set)
 (def-var! "clojure.core" "alter" jolt-alter)
 (def-var! "clojure.core" "commute" jolt-commute)
 (def-var! "clojure.core" "ensure" jolt-ensure)
-(def-var! "clojure.core" "sync" jolt-sync)
-(def-var! "clojure.core" "io!" jolt-io!)
+(def-var! "clojure.core" "__sync-call" jolt-sync)
+(def-var! "clojure.core" "__txn-running?" jolt-txn-running?)
 (def-var! "clojure.core" "ref-history-count" jolt-ref-history-count)
 (def-var! "clojure.core" "ref-min-history" jolt-ref-min-history)
 (def-var! "clojure.core" "ref-max-history" jolt-ref-max-history)
