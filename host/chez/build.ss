@@ -81,15 +81,21 @@
 ;; script and run `sh <file>` — workspace paths carry no spaces, and the
 ;; script file sidesteps cmd's quoting entirely. Identity elsewhere.
 (define bld-shell-counter 0)
-;; On nt, spill the command to a script and run `sh <file>`. Use pid + counter in
-;; the filename so concurrent builds (same TEMP, different PIDs) don't collide.
+;; On nt, spill the command to a script and run `sh <file>`. Chez has no getpid,
+;; so per-process uniqueness comes from first-use millis + a counter (the same
+;; scheme spit's temp files use) — concurrent builds sharing TEMP don't collide.
+;; The stamp resolves lazily: joltc bakes this file into a saved heap, and a
+;; load-time stamp would freeze identical across every process run from it.
 ;; Delete the script on success; leave it on failure for debugging.
+(define bld-shell-stamp #f)
 (define (bld-sh-wrap cmd)
   (if bld-nt?
-      (let* ((pid (getpid))
+      (let* ((stamp (or bld-shell-stamp
+                        (let ((s (number->string (real-time))))
+                          (set! bld-shell-stamp s) s)))
              (tmp (or (getenv "TEMP") (getenv "TMP") "."))
              (f (begin (set! bld-shell-counter (+ bld-shell-counter 1))
-                       (string-append tmp "\\jolt-sh-" (number->string pid) "-"
+                       (string-append tmp "\\jolt-sh-" stamp "-"
                                       (number->string bld-shell-counter) ".sh"))))
         (let ((p (open-output-file f 'replace)))
           (put-string p cmd)
