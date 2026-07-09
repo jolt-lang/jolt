@@ -144,22 +144,42 @@
 
 ;; --- agents (async, per-agent serialized dispatch) --------------------------
 ;; JVM semantics: send/send-off enqueue an action and a single worker thread
-;; applies them to the state IN ORDER; deref reads the
-;; (possibly not-yet-updated) state without blocking; await blocks until the queue
-;; drains. An action error is captured (agent-error) and stops the queue.
+;; applies them to the state IN ORDER; deref reads the (possibly not-yet-updated)
+;; state without blocking; await blocks until the queue drains. An action error
+;; is handled per the agent's error-mode (:fail halts and stores the error;
+;; :continue swallows it and keeps going), with an optional error-handler fired
+;; in either mode. Sends made from inside an action are held until it completes.
+;; After shutdown-agents, new sends throw RejectedExecutionException.
 (define-record-type jolt-agent
   (fields (mutable state) (mutable err) (mutable validator)
-          (mutable queue) (mutable running?) mu cv)
-  (nongenerative jolt-agent-v1))
+          (mutable queue) (mutable running?) mu cv
+          (mutable err-mode) (mutable err-handler))
+  (nongenerative jolt-agent-v2))
 
-;; (agent state :meta m :validator f :error-mode e): the ARef ctor contract like
-;; atom's — the validator runs against the initial state, :meta must be a map.
-;; :error-mode is accepted/ignored (jolt agents are always :fail).
+;; A global gate: once shutdown-agents runs, new sends are rejected (running
+;; workers still drain their queues). Mirrors the JVM executor shutdown.
+(define agents-shutdown? (box #f))
+(define (jolt-agents-shutdown?) (unbox agents-shutdown?))
+(define (jolt-shutdown-agents) (set-box! agents-shutdown? #t) jolt-nil)
+
+;; Thread-local list of (agent f . args) sent from within the action currently
+;; running on this thread (#f outside an action). Holds nested sends until the
+;; action completes, like the JVM's ThreadLocal `nested`. Its box-ness is also
+;; the signal that *agent* is bound (an action is in flight on this thread).
+(define *agent-nested* (make-thread-parameter #f))
+(define (jolt-in-agent-action?) (box? (*agent-nested*)))
+
+;; (agent state :meta m :validator f :error-handler h :error-mode e): the ARef
+;; ctor contract like atom's — the validator runs against the initial state,
+;; :meta must be a map. Default error-mode is :fail, unless an :error-handler is
+;; given (then :continue), matching clojure.core.
 (define (jolt-agent-new state . opts)
-  (let loop ((o opts) (validator jolt-nil) (m #f))
+  (let loop ((o opts) (validator jolt-nil) (m #f) (handler jolt-nil) (mode #f))
     (cond
       ((or (null? o) (null? (cdr o)))
-       (let ((a (make-jolt-agent state jolt-nil validator (vector '() '()) #f (make-mutex) (make-condition))))
+       (let* ((em (or mode (if (jolt-nil? handler) 'fail 'continue)))
+              (a (make-jolt-agent state jolt-nil validator (vector '() '()) #f
+                                  (make-mutex) (make-condition) em handler)))
          (when (and (not (jolt-nil? validator)) (jolt-not (jolt-invoke validator state)))
            (jolt-iref-state-throw))
          (when (and m (not (jolt-nil? m)))
@@ -171,10 +191,16 @@
            (hashtable-set! meta-table a m))
          a))
       ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
-       (loop (cddr o) (cadr o) m))
+       (loop (cddr o) (cadr o) m handler mode))
       ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "meta"))
-       (loop (cddr o) validator (cadr o)))
-      (else (loop (cddr o) validator m)))))
+       (loop (cddr o) validator (cadr o) handler mode))
+      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "error-handler"))
+       (loop (cddr o) validator m (cadr o) mode))
+      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "error-mode"))
+       (loop (cddr o) validator m handler (kw->mode (cadr o))))
+      (else (loop (cddr o) validator m handler mode)))))
+(define (kw->mode k)
+  (let ((n (keyword-t-name k))) (if (string=? n "continue") 'continue 'fail)))
 ;; agents are watchable IRefs; the worker notifies on each state change.
 (register-iref-arm! jolt-agent?)
 
@@ -190,10 +216,12 @@
     (when (null? (vector-ref q 0))
       (vector-set! q 0 (reverse (vector-ref q 1))) (vector-set! q 1 '()))
     (let ((out (vector-ref q 0))) (vector-set! q 0 (cdr out)) (car out))))
+(define (jagent-q-clear! a)
+  (jolt-agent-queue-set! a (vector '() '())))
 
 ;; Each action runs with *agent* bound to its agent, like the JVM's action
 ;; binding frame — (send a (fn [s] (send *agent* …))) works. The cell resolves
-;; lazily (dynamic-var-defaults.ss loads after this file).
+;; lazily (dynamicvar-defaults.ss loads after this file).
 (define agent-star-cell #f)
 (define (with-agent-binding a thunk)
   (let ((cell (or agent-star-cell
@@ -206,9 +234,36 @@
           thunk
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
 
-;; Drain the queue, applying each action (f state arg*) outside the lock (an action
-;; may send/deref the same agent). A validator rejection or a thrown action puts the
-;; agent in an error state and halts the queue (JVM :fail mode).
+;; Enqueue an action and start the worker if the agent is idle. No precondition
+;; checks — used by the direct send path (after checks), by nested-send release,
+;; and by restart resuming a held queue.
+(define (jolt-agent-enqueue! a f args)
+  (with-mutex (jolt-agent-mu a)
+    (jagent-q-push! a (cons f args))
+    (unless (jolt-agent-running? a)
+      (jolt-agent-running?-set! a #t)
+      (fork-thread (lambda () (*txn* #f) (jolt-agent-worker a)))))
+  a)
+
+;; Dispatch the held nested sends accumulated on this thread, returning the count
+;; dispatched (0 outside an action). Release empties the list first so the
+;; dispatched sends (which call jolt-agent-enqueue! directly, bypassing the hold)
+;; are not re-held.
+(define (jolt-release-pending-sends)
+  (let ((nested (*agent-nested*)))
+    (if (not (box? nested))
+        0
+        (let ((sends (unbox nested)))
+          (set-box! nested '())
+          (for-each (lambda (e) (jolt-agent-enqueue! (car e) (cadr e) (cddr e)))
+                    (reverse sends))
+          (length sends)))))
+
+;; Drain the queue, applying each action (f state arg*) outside the lock (an
+;; action may send/deref the same agent). A successful action flushes any nested
+;; sends it accumulated; a thrown action invokes the error-handler (if any, its
+;; throws swallowed) and then either continues (:continue, state left untouched)
+;; or fails the agent (:fail, error stored, queue halted).
 (define (jolt-agent-worker a)
   (*txn* #f)                          ; agent worker must not inherit parent's txn
   (let loop ()
@@ -218,50 +273,127 @@
                             (condition-broadcast (jolt-agent-cv a)) #f)
                      (jagent-q-pop! a)))))
       (when act
-        (guard (e (#t (with-mutex (jolt-agent-mu a)
-                        (jolt-agent-err-set! a e)
-                        (condition-broadcast (jolt-agent-cv a)))))
-          (let* ((old (jolt-agent-state a))
-                 (nv (with-agent-binding a
-                       (lambda () (apply jolt-invoke (car act) old (cdr act))))))
-            (let ((vf (jolt-agent-validator a)))
-              (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf nv)))
-                (jolt-iref-state-throw)))
-            (jolt-agent-state-set! a nv)
-            (iref-notify a old nv)))
+        (parameterize ((*agent-nested* (box '())))
+          (let ((err #f))
+            (guard (e (#t (set! err (jolt-unwrap-throw e))))
+              (let* ((old (jolt-agent-state a))
+                     (nv (with-agent-binding a
+                           (lambda () (apply jolt-invoke (car act) old (cdr act))))))
+                (let ((vf (jolt-agent-validator a)))
+                  (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf nv)))
+                    (jolt-iref-state-throw)))
+                (jolt-agent-state-set! a nv)
+                (iref-notify a old nv)))
+            ;; post-action handling runs while *agent-nested* is still the box, so
+            ;; the success flush sees the held sends.
+            (if err
+                (let ((handler (jolt-agent-err-handler a)))
+                  (when (not (jolt-nil? handler))
+                    ;; the handler runs as if outside the action: its sends go direct
+                    (parameterize ((*agent-nested* #f))
+                      (guard (_ (#t #f)) (jolt-invoke handler a err))))
+                  (when (eq? (jolt-agent-err-mode a) 'fail)
+                    (with-mutex (jolt-agent-mu a)
+                      (jolt-agent-err-set! a err)
+                      (condition-broadcast (jolt-agent-cv a)))))
+                (jolt-release-pending-sends))))   ; success: flush nested sends
         (loop)))))
 
-;; send / send-off: enqueue the action, start the worker if idle. (jolt treats them
-;; identically — one serialized worker per agent — which is observably a superset of
-;; the JVM's fixed/cached pool split.)  Inside a transaction, the action is deferred
-;; until the txn commits; on rollback it is discarded.
+;; send / send-off: enqueue the action, start the worker if idle. (jolt treats
+;; them identically — one serialized worker per agent — observably a superset of
+;; the JVM fixed/cached pool split.) A send after shutdown-agents, to a failed
+;; agent, inside a transaction, or from within an action is handled specially.
 (define (jolt-agent-send a f . args)
-  (if (*txn*)
-      (let ((txn (*txn*)))
-        (jolt-txn-pending-sends-set! txn
-          (cons (apply list a f args) (jolt-txn-pending-sends txn))))
-      (with-mutex (jolt-agent-mu a)
-        (jagent-q-push! a (cons f args))
-        (unless (jolt-agent-running? a)
-          (jolt-agent-running?-set! a #t)
-          (fork-thread (lambda () (*txn* #f) (jolt-agent-worker a))))))
+  (cond
+    ((jolt-agents-shutdown?)
+     (jolt-throw (jolt-host-throwable
+                  "java.util.concurrent.RejectedExecutionException"
+                  "Agent pool has been shut down")))
+    ((not (jolt-nil? (jolt-agent-err a)))
+     (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
+                                      "Agent is failed, needs restart")))
+    ((*txn*)
+     (let ((txn (*txn*)))
+       (jolt-txn-pending-sends-set! txn
+         (cons (apply list a f args) (jolt-txn-pending-sends txn)))))
+    ((jolt-in-agent-action?)
+     (let ((nested (*agent-nested*)))
+       (set-box! nested (cons (cons* a f args) (unbox nested)))))
+    (else (jolt-agent-enqueue! a f args)))
   a)
 
-;; (await & agents): block until each agent's queue has drained.
+;; (await & agents) / (await-for ms & agents): block until each agent's queue has
+;; drained. Illegal inside a transaction or an agent action; a failed agent
+;; rethrows its stored error (the JVM dispatches a sentinel action that would
+;; throw on a failed agent). await-for returns false on timeout.
+(define (jolt-agent-await-check)
+  (when (*txn*)
+    (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "await in transaction")))
+  (when (jolt-in-agent-action?)
+    (jolt-throw (jolt-host-throwable "java.lang.Exception" "Can't await in agent action"))))
 (define (jolt-agent-await . agents)
+  (jolt-agent-await-check)
   (for-each
-   (lambda (a)
-     (with-mutex (jolt-agent-mu a)
-       (let loop ()
-         (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
-           (condition-wait (jolt-agent-cv a) (jolt-agent-mu a)) (loop)))))
-   agents)
+    (lambda (a)
+      (with-mutex (jolt-agent-mu a)
+        (unless (jolt-nil? (jolt-agent-err a)) (raise (jolt-agent-err a)))
+        (let loop ()
+          (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
+            (condition-wait (jolt-agent-cv a) (jolt-agent-mu a)) (loop)))))
+    agents)
   jolt-nil)
+(define (jolt-agent-await-for ms . agents)
+  (jolt-agent-await-check)
+  (let ((deadline (ms->deadline ms)) (ok #t))
+    (for-each
+      (lambda (a)
+        (when ok
+          (with-mutex (jolt-agent-mu a)
+            (unless (jolt-nil? (jolt-agent-err a)) (raise (jolt-agent-err a)))
+            (let loop ()
+              (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
+                (if (condition-wait (jolt-agent-cv a) (jolt-agent-mu a) deadline)
+                    (loop)
+                    (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
+                      (set! ok #f))))))))
+      agents)
+    ok))
 
 (define (jolt-agent-error a) (jolt-agent-err a))
-(define (jolt-agent-restart a new-state . _opts)
-  (jolt-agent-err-set! a jolt-nil)
-  (jolt-agent-state-set! a new-state)
+(define (jolt-agent-get-error-mode a)
+  (keyword #f (symbol->string (jolt-agent-err-mode a))))
+(define (jolt-agent-set-error-mode! a k)
+  (jolt-agent-err-mode-set! a (kw->mode k)) a)
+(define (jolt-agent-get-error-handler a) (jolt-agent-err-handler a))
+(define (jolt-agent-set-error-handler! a f) (jolt-agent-err-handler-set! a f) a)
+;; Deprecated JVM helpers: agent-errors is a seq of the error or nil; clear-agent
+;; -errors restarts with the current state (so it throws on a healthy agent, as on
+;; the JVM).
+(define (jolt-agent-errors a)
+  (let ((e (jolt-agent-err a))) (if (jolt-nil? e) jolt-nil (list e))))
+(define (jolt-clear-agent-errors a) (jolt-agent-restart a (jolt-agent-state a)))
+
+;; restart-agent: un-fail the agent with new-state. Throws if not failed; the
+;; new-state must pass the validator (else the agent stays failed); :clear-actions
+;; discards the held queue, otherwise the queued actions resume. Watchers are NOT
+;; notified (per the JVM contract).
+(define (jolt-agent-restart a new-state . opts)
+  (let ((clear? (and (pair? opts) (keyword-t? (car opts))
+                     (string=? (keyword-t-name (car opts)) "clear-actions")
+                     (pair? (cdr opts)) (eq? (cadr opts) #t))))
+    (with-mutex (jolt-agent-mu a)
+      (when (jolt-nil? (jolt-agent-err a))
+        (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
+                                         "Agent does not need a restart")))
+      (let ((vf (jolt-agent-validator a)))
+        (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf new-state)))
+          (jolt-iref-state-throw)))
+      (jolt-agent-state-set! a new-state)
+      (jolt-agent-err-set! a jolt-nil)
+      (cond (clear? (jagent-q-clear! a))
+            ((and (not (jagent-q-empty? a)) (not (jolt-agent-running? a)))
+             (jolt-agent-running?-set! a #t)
+             (fork-thread (lambda () (*txn* #f) (jolt-agent-worker a)))))))
   a)
 
 ;; --- taps (tap>/add-tap/remove-tap) -----------------------------------------
@@ -422,9 +554,25 @@
 (def-var! "clojure.core" "agent?" jolt-agent?)
 (def-var! "clojure.core" "send" jolt-agent-send)
 (def-var! "clojure.core" "send-off" jolt-agent-send)
+;; send-via takes an executor jolt has no model for; behave as send and ignore it.
+(def-var! "clojure.core" "send-via"
+  (lambda (_exec a f . args) (apply jolt-agent-send a f args)))
+;; Documented superset no-ops: jolt has no executor pool, so these accept and
+;; ignore their argument, returning nil (as the JVM setters would).
+(def-var! "clojure.core" "set-agent-send-executor!" (lambda (_e) jolt-nil))
+(def-var! "clojure.core" "set-agent-send-off-executor!" (lambda (_e) jolt-nil))
 (def-var! "clojure.core" "await" jolt-agent-await)
+(def-var! "clojure.core" "await-for" jolt-agent-await-for)
+(def-var! "clojure.core" "release-pending-sends" (lambda () (jolt-release-pending-sends)))
 (def-var! "clojure.core" "agent-error" jolt-agent-error)
+(def-var! "clojure.core" "agent-errors" jolt-agent-errors)
+(def-var! "clojure.core" "clear-agent-errors" jolt-clear-agent-errors)
+(def-var! "clojure.core" "error-mode" jolt-agent-get-error-mode)
+(def-var! "clojure.core" "set-error-mode!" jolt-agent-set-error-mode!)
+(def-var! "clojure.core" "error-handler" jolt-agent-get-error-handler)
+(def-var! "clojure.core" "set-error-handler!" jolt-agent-set-error-handler!)
 (def-var! "clojure.core" "restart-agent" jolt-agent-restart)
+(def-var! "clojure.core" "shutdown-agents" jolt-shutdown-agents)
 (def-var! "clojure.core" "tap>" jolt-tap>)
 (def-var! "clojure.core" "add-tap" jolt-add-tap)
 (def-var! "clojure.core" "remove-tap" jolt-remove-tap)

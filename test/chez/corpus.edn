@@ -3724,4 +3724,12 @@
   {:suite "refs / ref-min-history-reader" :label "ref-min-history reader returns stored default" :expected "0" :actual "(ref-min-history (ref 0))" :portability :common}
   {:suite "refs / ref-max-history-reader" :label "ref-max-history reader returns stored default" :expected "10" :actual "(ref-max-history (ref 0))" :portability :common}
   {:suite "conformance / taps" :label "tap> enqueues and returns true" :expected "true" :actual "(tap> 1)" :portability :jvm}
+  {:suite "conformance / agents" :label "error-mode defaults to :fail" :expected ":fail" :actual "(error-mode (agent 0))" :portability :jvm}
+  {:suite "conformance / agents" :label ":error-handler opts imply :continue" :expected ":continue" :actual "(error-mode (agent 0 :error-handler (fn [_ _])))" :portability :jvm}
+  {:suite "conformance / agents" :label "agent-error nil when healthy" :expected "nil" :actual "(agent-error (agent 0))" :portability :jvm}
+  {:suite "conformance / agents" :label ":continue keeps state after a failing action" :expected "0" :actual "(let [a (agent 0 :error-mode :continue)] (send a (fn [_] (throw (ex-info \"x\" {})))) (await a) @a)" :portability :jvm}
+  {:suite "conformance / agents" :label "restart-agent on a healthy agent throws" :expected ":caught" :actual "(try (restart-agent (agent 0) 0) (catch Throwable _ :caught))" :portability :jvm}
+  {:suite "conformance / agents" :label "release-pending-sends outside an action is 0" :expected "0" :actual "(release-pending-sends)" :portability :jvm}
+  {:suite "conformance / agents" :label "await-for returns true when actions drain" :expected "true" :actual "(let [a (agent 0)] (send a inc) (await-for 1000 a))" :portability :jvm}
+  {:suite "conformance / agents" :label "error-handler getter returns the set fn" :expected "true" :actual "(let [a (agent 0) f (fn [_ _])] (set-error-handler! a f) (identical? (error-handler a) f))" :portability :jvm}
 ]
