@@ -232,6 +232,7 @@
           entry (:entry opts)
           mode  (cond (some #{"--opt"} more) "optimized"
                       (some #{"--dev"} more) "dev"
+                      (:opt build)           "optimized"
                       :else                  "release")]
       (when (nil? entry)
         (throw (ex-info "build needs an entry: -m NS" {})))

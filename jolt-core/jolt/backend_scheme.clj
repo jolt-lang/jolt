@@ -477,9 +477,20 @@
 (defn- ffi-type->chez [t]
   (or (ffi-types t) (throw (ex-info (str "jolt.ffi: unknown foreign type :" t) {}))))
 (defn- emit-ffi-fn [node]
-  (str "(foreign-procedure " (when (:blocking node) "__collect_safe ") (chez-str-lit (:csym node))
-       " (" (str/join " " (map ffi-type->chez (:argtypes node))) ") "
-       (ffi-type->chez (:rettype node)) ")"))
+  (let [n (count (:argtypes node))
+        params (mapv (fn [i] (str "a" i)) (range n))
+        fp (str "(foreign-procedure " (when (:blocking node) "__collect_safe ")
+                (chez-str-lit (:csym node))
+                " (" (str/join " " (map ffi-type->chez (:argtypes node))) ") "
+                (ffi-type->chez (:rettype node)) ")")]
+    ;; Lazy resolution: the foreign-procedure form is deferred inside a closure.
+    ;; On first call, the cell `p` is set to the FP and then invoked; subsequent
+    ;; calls skip the set!. This lets a defcfn's defining form (top-level def)
+    ;; evaluate to a callable closure before the shared library is loaded —
+    ;; critical for :optional :jolt/native libs whose load-object runs in the
+    ;; scheme-start launcher, after the heap is already built.
+    (str "(let ((p #f)) (lambda (" (str/join " " params) ") "
+         "((or p (begin (set! p " fp ") p)) " (str/join " " params) ")))")))
 
 ;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
 ;; locked + registered (jolt-ffi-register-callable!, host/chez/java/ffi.ss) so the

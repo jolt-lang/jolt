@@ -233,8 +233,10 @@
     bld-runtime-manifest))
 
 ;; --- app emission -----------------------------------------------------------
-;; Re-emit one app namespace to a list of Scheme strings: optimize (run-passes)
-;; and stay strict — a form that fails to emit must fail the build, not vanish.
+;; Re-emit one app namespace to a list of Scheme strings: run-passes (const-fold +
+;; numeric-annotate in every mode; inference also in release/optimized; inline +
+;; scalar-replace additionally with direct-link) and stay strict — a form that
+;; fails to emit must fail the build, not vanish.
 ;; The loop itself is emit-image's ei-emit-ns* (optimize? #t, guard? #f).
 (define (bld-emit-ns ns-name src) (ei-emit-ns* ns-name src #t #f))
 
@@ -336,14 +338,15 @@
 ;; encode-natives produced: each entry is ["process"] | ["static" form…] |
 ;; ["req" cand…] | ["opt" cand…]. `which` selects 'required (process + static +
 ;; req) or 'optional. Required loads are emitted before the app forms (the app's
-;; defcfn foreign-procedures resolve their symbols at top-level eval during
-;; startup, so the libs must be loaded first); a load-shared-object failure there
-;; is fatal — correct for a required lib. A "static" lib is cc-linked into the
-;; binary (see bld-native-link-flags), so its symbols are already in the process:
-;; it loads them the same way a "process" lib does. Optional loads run in the
-;; scheme-start launcher, where guard catches a missing lib (an optional lib's
-;; namespace is only present when the app requires it, so its foreign-procedures
-;; aren't among the baked top-level forms).
+;; defcfn foreign-procedures are now lazily resolved on first call, so they can
+;; be emitted before the library is loaded — the binding only becomes callable
+;; after the lib loads); a load-shared-object failure there is fatal — correct
+;; for a required lib. A "static" lib is cc-linked into the binary (see
+;; bld-native-link-flags), so its symbols are already in the process: it loads
+;; them the same way a "process" lib does. Optional loads run in the scheme-start
+;; launcher, where guard catches a missing lib (the defcfn's foreign-procedure is
+;; only resolved when the closure is first called, so the defining form can
+;; evaluate before the library is loaded).
 (define (bld-emit-natives out natives which)
   (for-each
     (lambda (entry)
@@ -542,8 +545,11 @@
       (when (null? ordered)
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
-      ;; 2. emit each app namespace. `optimized` turns on the inference + flatten
-      ;; + scalar-replace passes; release/dev get const-fold only.
+      ;; 2. emit each app namespace. Release and optimized modes enable the
+      ;; inference + record-shape setup passes (inference-enabled?); optimized
+      ;; mode with direct-link additionally runs the inline + flatten +
+      ;; scalar-replace fixpoint (inline-enabled?). Dev mode gets const-fold +
+      ;; numeric-annotate only.
       ;; direct-link? (opt-in) commits to a closed world: app->app calls bind
       ;; directly, giving up runtime redefinition of those vars. Off by default in
       ;; every mode. The defined-set accumulates across the dependency-ordered
@@ -558,9 +564,11 @@
             (dynamic-wind
               (lambda ()
                 (set-optimize! (string=? mode "optimized"))
+                (set-release! (string=? mode "release"))
                 (when direct-link?
                   ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
-                  ((var-deref "jolt.backend-scheme" "direct-link-reset!")))
+                  ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
+                  (set-direct-link-flag! #t))
                 ;; Cache resolved var cells per reference site in the APP forms
                 ;; (bld-emit-ns / ei-emit-ns-records). A user build is a single
                 ;; compile of fixed source, so the gensym-numbered cell names are
@@ -603,6 +611,8 @@
                             #f))))
               (lambda ()
                 (set-optimize! #f)
+                (set-release! #f)
+                (set-direct-link-flag! #f)
                 ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
