@@ -80,3 +80,5 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
 * [transit-jolt](https://github.com/jolt-lang/transit-jolt) — Transit (JSON) read/write
 * [yamlstar](https://github.com/yaml/yamlstar) — YAML load/dump (pure-Clojure
   parser, JSON-safe integer policy).
+* [jolt-yaml](https://github.com/jolt-lang/yaml) — YAML over the system libyaml
+  (`jolt.yaml` load/dump, `clj-yaml.core` compat, SnakeYAML engine surface).
