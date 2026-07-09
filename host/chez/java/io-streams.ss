@@ -297,8 +297,8 @@
     ((or (jfile? output) (string? output))
      (let ((bv (and (not (string? input)) (not (jfile? input)) (input-bytes input))))
        (if bv
-           (let ((port (open-file-output-port (path-of output) (file-options no-fail) (buffer-mode block))))
-             (put-bytevector port bv) (close-port port))
+           (with-port (open-file-output-port (path-of output) (file-options no-fail) (buffer-mode block))
+             (lambda (port) (put-bytevector port bv)))
            (jolt-spit output (input-text input)))))
     ;; a byte-output-stream shim (a host tagged-table with :jolt/output-stream,
     ;; e.g. http-client's ByteArrayOutputStream): write through its .write method,

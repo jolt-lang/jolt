@@ -112,9 +112,11 @@
 (define (ffi-string->ptr s)
   (let* ((bv (string->utf8 (jolt-str-render-one s))) (n (bytevector-length bv))
          (p (foreign-alloc (+ n 1))))
-    (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bytevector-u8-ref bv i)))
-    (foreign-set! 'unsigned-8 p n 0)
-    p))
+    ;; free on a mid-copy throw — the caller only ever sees a whole buffer
+    (guard (e (#t (guard (_ (#t #f)) (foreign-free p)) (raise e)))
+      (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bytevector-u8-ref bv i)))
+      (foreign-set! 'unsigned-8 p n 0)
+      p)))
 
 ;; --- callbacks: receive calls FROM C ----------------------------------------
 ;; jolt.ffi/foreign-callable lowers to (jolt-ffi-register-callable! (foreign-callable …)).

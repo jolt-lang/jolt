@@ -15,12 +15,13 @@
 (defn- file-exists? [p] (jolt.host/file-exists? p))
 (defn- sh [cmd] (jolt.host/sh cmd))           ; exit code, inherits stdout/stderr
 (defn- sh-out [cmd] (jolt.host/sh-out cmd))   ; captured stdout
-(defn- warn [& xs] (println (str "[jolt.deps] " (apply str xs))))
+(defn- warn [& xs] (binding [*out* *err*] (println (str "[jolt.deps] " (apply str xs)))))
 
 (defn- read-edn [path]
   (when (file-exists? path)
     (try (edn/read-string (slurp path))
-         (catch :default e (warn "could not read " path ": " (ex-message e)) nil))))
+         (catch :default e
+           (throw (ex-info (str path ": " (ex-message e)) {:path path :error e}))))))
 
 (defn- abspath [dir p]
   (if (str/starts-with? p "/") p (str dir "/" p)))
@@ -52,7 +53,8 @@
         (when-not (zero? (sh (str "git -C " (pr-str dir) " checkout --quiet " (pr-str sha))))
           (throw (ex-info (str "git checkout failed: " sha " in " url) {:url url :sha sha})))
         ;; submodules are pinned in the checkout; pull them if the dep uses any.
-        (sh (str "git -C " (pr-str dir) " submodule update --init --recursive --quiet"))
+        (when-not (zero? (sh (str "git -C " (pr-str dir) " submodule update --init --recursive --quiet")))
+          (throw (ex-info (str "git submodule update failed for " url) {:url url})))
         dir))))
 
 ;; --- coordinate -> root dir -------------------------------------------------
@@ -64,6 +66,8 @@
     (and (:git/url spec) (:git/sha spec))
     (let [checkout (ensure-git (:git/url spec) (:git/sha spec))]
       (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
+    (:git/url spec)
+    (throw (ex-info (str "git dep " coord " needs :git/sha") {:coord coord :spec spec}))
     (:jolt/module spec)
     (do (warn "skipping janet dependency " coord " (:jolt/module is obsolete on Chez)") nil)
     ;; jolt IS Clojure — a dependency on org.clojure/clojure is satisfied
@@ -77,7 +81,8 @@
   "Source roots a resolved dep contributes: its deps.edn :paths (default [\"src\"])
   resolved under its root dir."
   [root]
-  (let [edn (read-edn (str root "/deps.edn"))
+  (let [edn (try (read-edn (str root "/deps.edn"))
+                 (catch :default e (warn (ex-message e)) nil))
         paths (or (:paths edn) ["src"])]
     (map #(abspath root %) paths)))
 
@@ -127,8 +132,15 @@
           (let [root (coord-root coord spec bd)]
             (if (nil? root)
               (recur queue i (conj seen coord) roots natives)
-              (let [edn (read-edn (str root "/deps.edn"))
-                    child (mapv (fn [[c s]] [c s root]) (seq (:deps edn)))]
+              ;; a DEP repo's malformed deps.edn warns and contributes nothing;
+              ;; only the project's own deps.edn is a hard error (resolve-project).
+              (let [edn (try (read-edn (str root "/deps.edn"))
+                             (catch :default e (warn (ex-message e)) nil))
+                    deps (:deps edn)
+                    _ (when (and edn deps (not (map? deps)))
+                        (throw (ex-info (str "malformed :deps in " root "/deps.edn: expected a map")
+                                        {:path root :given (class deps)})))
+                    child (mapv (fn [[c s]] [c s root]) (seq deps))]
                 (recur (into queue child)
                        i
                        (conj seen coord)

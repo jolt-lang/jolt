@@ -1237,6 +1237,11 @@
       (if f (jolt-invoke f v)
           (let ((s (jrec-pr v))) (substring s 1 (string-length s)))))))
 
+;; a reify with a toString method renders through it, like the JVM.
+(register-str-render! (lambda (v) (and (jreify? v) (reified-methods v)
+                                       (hashtable-ref (reified-methods v) "toString" #f) #t))
+  (lambda (v) (jolt-invoke (hashtable-ref (reified-methods v) "toString" #f) v)))
+
 ;; `type` lives in natives-meta.ss: it needs jolt-meta for the :type
 ;; override and a total value->taxonomy mapping, so it sits with meta — a record
 ;; yields (jolt-symbol #f (jrec-tag x)), the ns.Name class-name symbol.
