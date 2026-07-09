@@ -3160,6 +3160,11 @@
   {:suite "conformance / numbers / math" :label "bit-shift" :expected "[8 2]" :actual "[(bit-shift-left 1 3) (bit-shift-right 8 2)]" :portability :common}
   {:suite "conformance / numbers / math" :label "Math/sqrt" :expected "3.0" :actual "(Math/sqrt 9)" :portability :jvm}
   {:suite "conformance / numbers / math" :label "Math/pow" :expected "8.0" :actual "(Math/pow 2 3)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/atan2" :expected "0.0" :actual "(Math/atan2 0.0 1.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/sinh" :expected "0.0" :actual "(Math/sinh 0.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/cosh" :expected "1.0" :actual "(Math/cosh 0.0)" :portability :jvm}
+  {:suite "conformance / numbers / math" :label "Math/tanh" :expected "0.0" :actual "(Math/tanh 0.0)" :portability :jvm}
+  {:suite "conformance / host interop / exceptions" :label "java.text.ParseException" :expected "\"boom\"" :actual "(try (throw (java.text.ParseException. \"boom\" 3)) (catch java.text.ParseException e (.getMessage e)))" :portability :jvm}
   {:suite "conformance / numbers / math" :label "min-key" :expected "1" :actual "(min-key abs 1 -2 3)" :portability :common}
   {:suite "conformance / numbers / math" :label "max-key" :expected "-4" :actual "(max-key abs 1 -2 -4 3)" :portability :common}
   {:suite "conformance / strings (clojure.string)" :label "str/trim" :expected "\"hi\"" :actual "(do (require (quote [clojure.string :as s])) (s/trim \"  hi  \"))" :portability :common}

@@ -243,6 +243,7 @@
 (jch-register-supers! "java.io.UncheckedIOException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.time.DateTimeException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.time.format.DateTimeParseException" '("java.time.DateTimeException"))
+(jch-register-supers! "java.text.ParseException" '("java.lang.Exception"))
 (jch-register-supers! "java.lang.InterruptedException" '("java.lang.Exception"))
 (jch-register-supers! "java.io.IOException" '("java.lang.Exception"))
 (jch-register-supers! "java.io.InterruptedIOException" '("java.io.IOException"))

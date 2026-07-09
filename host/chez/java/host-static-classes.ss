@@ -536,6 +536,16 @@
     "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"
     "Error" "AssertionError"))
 
+;; java.text.ParseException(String s, int errorOffset): unlike the exceptions above,
+;; its second ctor arg is an int offset, not a cause — take the message and drop the
+;; offset (nothing reads getErrorOffset here) rather than misfiling it as a cause.
+(register-class-ctor! "ParseException"
+  (lambda args
+    (let ((a0 (if (pair? args) (car args) jolt-nil)))
+      (if (string? a0)
+          (jolt-host-throwable "java.text.ParseException" a0)
+          (jolt-host-throwable "java.text.ParseException" (jolt-str-render-one a0))))))
+
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
   (or (and (>= b 48) (<= b 57)) (and (>= b 65) (<= b 90)) (and (>= b 97) (<= b 122))

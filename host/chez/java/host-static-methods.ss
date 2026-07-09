@@ -19,6 +19,10 @@
         (cons "sin" (lambda (x) (->dbl (sin x)))) (cons "cos" (lambda (x) (->dbl (cos x))))
         (cons "tan" (lambda (x) (->dbl (tan x)))) (cons "asin" (lambda (x) (->dbl (asin x))))
         (cons "acos" (lambda (x) (->dbl (acos x)))) (cons "atan" (lambda (x) (->dbl (atan x))))
+        ;; Math.atan2(y, x) — Chez's 2-arg atan is (atan y x).
+        (cons "atan2" (lambda (y x) (->dbl (atan y x))))
+        (cons "sinh" (lambda (x) (->dbl (sinh x)))) (cons "cosh" (lambda (x) (->dbl (cosh x))))
+        (cons "tanh" (lambda (x) (->dbl (tanh x))))
         (cons "log" (lambda (x) (->dbl (log x)))) (cons "log10" (lambda (x) (->dbl (/ (log x) (log 10)))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
         ;; getExponent: the unbiased binary exponent of a double (floor(log2|x|));
