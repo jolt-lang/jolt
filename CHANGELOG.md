@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes. HEAD tracks the latest tag.
 
+## [0.2.0] - 2026-07-09
+
+### Added
+
+- `jolt.fs` — file-system utilities in the standard library (predicates, glob,
+  recursive copy/delete, move, `which`, temp dirs), shaped after `babashka.fs`.
+- Data readers work in ahead-of-time binaries: reader namespaces are compiled in
+  and `*data-readers*` is baked, so runtime `read-string` of `#tag` literals
+  works in built executables.
+- Reader errors report `file:line:column` in the message and carry
+  `:file`/`:line`/`:column` in `ex-data`.
+- [yamlstar](https://github.com/yaml/yamlstar) and
+  [jolt-lang/yaml](https://github.com/jolt-lang/yaml) (libyaml bindings with a
+  `clj-yaml.core` compat layer) are listed as supported libraries.
+
+### Changed
+
+- Performance round one: protocol dispatch goes through per-descriptor tables
+  with polymorphic inline caches, record constructors inline, dynamic invoke and
+  var access are cheaper, and collection equality/hash/reduce walk vector chunks
+  directly. Geometric mean on the benchmark suite improved from ~6x to ~2.8x of
+  JVM Clojure.
+- Release builds run the inference passes (dispatch caches, devirtualization,
+  constructor inlining) by default — 3.4x on dispatch-heavy code. Inlining and
+  scalar replacement additionally require `--opt` with direct linking; projects
+  can opt in via `deps.edn` `:jolt/build {:opt true}`.
+- Optimized builds compile at Chez optimize-level 3 with compressed fasl output
+  (−37% binary size).
+- `defcfn` resolves its foreign symbol lazily on first call, so an optional
+  `:jolt/native` library that is missing no longer aborts startup — a missing
+  symbol is a catchable error at the call site.
+- `spit` writes atomically (temp file + rename), so a crash mid-write can no
+  longer truncate the target.
+- The host class model (`instance?`, class tokens, type tags, `supers`) derives
+  from a single class graph instead of parallel hand-maintained tables.
+
+### Fixed
+
+- Tree shaking soundness: `ns-publics`-family reflection triggers the
+  keep-everything bail, a `defonce` no longer silently disables the whole shake,
+  and data-reader functions are kept as roots.
+- Native build link line: static archives precede system `-l` flags, paths are
+  quoted, and Windows builds pass `--export-all-symbols`.
+- Exceptions from `go`/`thread`/`Thread` bodies and data-reader load failures
+  surface on stderr instead of being swallowed.
+- A malformed `deps.edn` fails with a clear error instead of being ignored.
+- `instance?` evaluates a local or var operand holding a class value instead of
+  quoting it as a literal class name.
+- Regex parity with Java: combined inline flag clusters (`(?sx)`, `(?si:…)`),
+  scoped dot-all, escaped `]` inside character classes, and
+  `Matcher.appendReplacement` escape semantics in replacement strings.
+- `intern` and `alter-meta!` carry `:macro` through, and macro vars report
+  `:macro` metadata.
+- `require` of a namespace defined earlier in the same file is satisfied.
+- `File.setLastModified` actually sets the file's mtime.
+- `String.codePointAt` and `Character/toChars`; bigint edge-case coercions.
+
 ## [0.1.7] - 2026-07-06
 
 ### Added
@@ -160,7 +217,8 @@ Clojure-compatible standard library.
 - **Distribution**: a self-contained `joltc` binary, a Homebrew tap, and an
   install script.
 
-[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jolt-lang/jolt/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/jolt-lang/jolt/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/jolt-lang/jolt/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/jolt-lang/jolt/compare/v0.1.4...v0.1.5
