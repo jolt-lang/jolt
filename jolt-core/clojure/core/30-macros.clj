@@ -72,8 +72,18 @@
 ;; position is a class-valued expression (e.g. Selmer's (Class/forName "[C"))
 ;; — evaluate it. A LOCAL in &env may hold a class value (string or jhost)
 ;; from a (let [c java.util.Map] (instance? c x)) binding — evaluate it too.
+;; A symbol resolving to a var that HOLDS A CLASS VALUE (a name string — jolt's
+;; class model) also evaluates: on the JVM ns mappings win over class
+;; resolution, so (def mc java.util.Map) (instance? mc x) reads the var. The
+;; string check keeps (instance? RecordName x) quoting — a defrecord interns a
+;; var of that name holding its ctor fn, and the record NAME is the class.
+;; resolve/var-get run at expansion time only and never appear in emitted code.
 (defmacro instance? [t x]
-  (if (or (seq? t) (contains? &env t))
+  (if (or (seq? t) (contains? &env t)
+          (and (symbol? t)
+               (when-let [v (clojure.core/resolve t)]
+                 (and (clojure.core/bound? v)
+                      (string? (clojure.core/var-get v))))))
     `(instance-check ~t ~x)
     `(instance-check (quote ~t) ~x)))
 
