@@ -29,7 +29,7 @@
 ;;                 (captured once per ref for the single watch notification)
 ;;   pending-sends — list of (agent f args) enqueued during this txn (Round 3)
 (define-record-type jolt-txn
-  (fields (mutable log) (mutable old-vals) pending-sends)
+  (fields (mutable log) (mutable old-vals) (mutable pending-sends))
   (nongenerative jolt-txn-v1))
 
 (define (make-txn)
@@ -171,7 +171,17 @@
               (txn-commit! txn))))
         ;; after with-mutex releases lock and parameterize restores *txn* to #f
         (unless aborted
-          (txn-fire-watches! txn))
+          (txn-fire-watches! txn)
+          ;; dispatch deferred agent sends inside a txn.  Look up send from
+          ;; clojure.core (resolved at runtime, after concurrency.ss loads).
+          (let ((sends (jolt-txn-pending-sends txn)))
+            (when (pair? sends)
+              (let ((send-fn (or jolt-txn-send-fn
+                                 (let ((v (var-deref "clojure.core" "send")))
+                                   (set! jolt-txn-send-fn v) v))))
+                (for-each (lambda (entry)
+                            (apply send-fn entry))
+                          (reverse sends))))))
         (if aborted (raise result) result))))
 
 ;; io! is a MACRO (30-macros.clj): its body must NOT evaluate when the
@@ -246,3 +256,7 @@
 ;; loaded-libs fn returns the derefed set.
 (def-var! "clojure.core" "loaded-libs"
   (lambda () (jolt-deref (var-deref "clojure.core" "*loaded-libs*"))))
+
+;; Cached send fn for dispatching deferred agent sends after txn commit.
+;; Resolved lazily at runtime (after concurrency.ss has loaded send into core).
+(define jolt-txn-send-fn #f)

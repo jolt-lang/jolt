@@ -233,13 +233,18 @@
 
 ;; send / send-off: enqueue the action, start the worker if idle. (jolt treats them
 ;; identically — one serialized worker per agent — which is observably a superset of
-;; the JVM's fixed/cached pool split.)
+;; the JVM's fixed/cached pool split.)  Inside a transaction, the action is deferred
+;; until the txn commits; on rollback it is discarded.
 (define (jolt-agent-send a f . args)
-  (with-mutex (jolt-agent-mu a)
-    (jagent-q-push! a (cons f args))
-    (unless (jolt-agent-running? a)
-      (jolt-agent-running?-set! a #t)
-      (fork-thread (lambda () (jolt-agent-worker a)))))
+  (if (*txn*)
+      (let ((txn (*txn*)))
+        (jolt-txn-pending-sends-set! txn
+          (cons (apply list a f args) (jolt-txn-pending-sends txn))))
+      (with-mutex (jolt-agent-mu a)
+        (jagent-q-push! a (cons f args))
+        (unless (jolt-agent-running? a)
+          (jolt-agent-running?-set! a #t)
+          (fork-thread (lambda () (*txn* #f) (jolt-agent-worker a))))))
   a)
 
 ;; (await & agents): block until each agent's queue has drained.
