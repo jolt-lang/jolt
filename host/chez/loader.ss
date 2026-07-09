@@ -107,7 +107,18 @@
       ;; eagerly load each reader fn's namespace so the rewritten call resolves.
       (pmap-fold m (lambda (k v a)
                      (when (and (symbol-t? v) (symbol-t-ns v) (not (jolt-nil? (symbol-t-ns v))))
-                       (guard (e (#t #f)) (load-namespace (symbol-t-ns v))))
+                       ;; tolerant — a data_readers entry must not kill the project
+                       ;; load — but say WHICH reader ns failed and why, or the
+                       ;; miss surfaces later as an unrelated unresolved-var error
+                       ;; at first #tag read.
+                       (guard (e (#t (display
+                                      (string-append "jolt: warning: data-reader namespace "
+                                                     (symbol-t-ns v) " failed to load: "
+                                                     (guard (_ (#t "(unprintable error)"))
+                                                       ((var-deref "jolt.host" "condition-message") e))
+                                                     "\n")
+                                      (current-error-port))))
+                         (load-namespace (symbol-t-ns v))))
                      a)
                  #f)))))
 (define (load-data-readers!)
