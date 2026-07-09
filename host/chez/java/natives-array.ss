@@ -135,8 +135,7 @@
 ;; --- array identity: type / class / instance? recognize arrays ---------------
 ;; (type arr) / (class arr) -> the JVM array class name; (class …) delegates to
 ;; (jolt-type …) for arrays, so extending jolt-type covers both.
-(define %na-type jolt-type)
-(set! jolt-type (lambda (x) (if (jolt-array? x) (na-array-class-name x) (%na-type x))))
+(register-type-arm! jolt-array? (lambda (x) (na-array-class-name x)))
 
 ;; instance? over an array class token ([I, [C, …). An array token reaches us as
 ;; a string ("[C", from (Class/forName "[C")) — the dispatcher leaves it a string

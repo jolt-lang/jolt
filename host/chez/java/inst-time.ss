@@ -305,8 +305,7 @@
 (register-pr-arm! jinst? inst-pr)
 (register-str-render! jinst? inst-rfc3339)
 
-(define %it-type jolt-type)
-(set! jolt-type (lambda (x) (if (jinst? x) inst-type-kw (%it-type x))))
+(register-type-arm! jinst? (lambda (x) inst-type-kw))
 
 ;; instance? java.util.Date -> a jinst; java.time.Instant/LocalDateTime -> the
 ;; matching jhost tag. The instance? macro passes the class-name symbol.
