@@ -3645,4 +3645,13 @@
   {:suite "regex / dollar-eol" :label "re-matches stays whole-input (trailing newline unmatched)" :expected "nil" :actual "(re-matches #\"foo$\" \"foo\\n\")" :portability :common}
   {:suite "regex / dollar-eol" :label "anchored replace strips through a final newline" :expected "\"x\\n\"" :actual "(clojure.string/replace \"(x)\\n\" #\"(?s)^\\((.*)\\)$\" \"$1\")" :portability :common}
   {:suite "regex / dollar-eol" :label "$ inside a character class stays literal" :expected "\"$\"" :actual "(re-find #\"[$]\" \"a$b\")" :portability :common}
+  {:suite "printer / numbers" :label "pr of a beyond-long integer carries the N suffix" :expected "\"12345678901234567890N\"" :actual "(pr-str 12345678901234567890)" :portability :common}
+  {:suite "printer / numbers" :label "str of a beyond-long integer has no N suffix" :expected "\"12345678901234567890\"" :actual "(str 12345678901234567890)" :portability :common}
+  {:suite "printer / numbers" :label "small exponent renders scientific uppercase" :expected "\"2.3E-4\"" :actual "(str 2.3e-4)" :portability :common}
+  {:suite "printer / numbers" :label "large double switches to scientific at 1e7" :expected "\"1.2345678E7\"" :actual "(str 12345678.0)" :portability :common}
+  {:suite "printer / numbers" :label "below 1e7 stays plain" :expected "\"1234567.0\"" :actual "(str 1234567.0)" :portability :common}
+  {:suite "printer / numbers" :label "plain decimal above 1e-3" :expected "\"0.001\"" :actual "(str 0.001)" :portability :common}
+  {:suite "printer / numbers" :label "scientific below 1e-3" :expected "\"1.0E-4\"" :actual "(str 0.0001)" :portability :common}
+  {:suite "printer / numbers" :label "huge double mantissa keeps a decimal point" :expected "\"1.0E100\"" :actual "(str 1.0E100)" :portability :common}
+  {:suite "reader / regex-literal" :label "escaped quote keeps its backslash in the source" :expected "\"#\\\"a\\\\\\\"b\\\"\"" :actual "(pr-str #\"a\\\"b\")" :portability :common}
 ]

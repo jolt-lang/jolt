@@ -664,8 +664,8 @@
     (let ((c (string-ref s i)))
       (cond
         ((char=? c #\") (values (list->string (reverse acc)) (+ i 1)))
-        ((and (char=? c #\\) (< (+ i 1) end) (char=? (string-ref s (+ i 1)) #\"))
-         (loop (+ i 2) (cons #\" acc)))
+        ;; \" delimits without ending the literal, and the pattern SOURCE keeps
+        ;; the backslash — (pr-str #"a\"b") round-trips as #"a\"b" like the JVM.
         ((char=? c #\\)
          (loop (+ i 2) (cons (string-ref s (+ i 1)) (cons #\\ acc))))
         (else (loop (+ i 1) (cons c acc)))))))

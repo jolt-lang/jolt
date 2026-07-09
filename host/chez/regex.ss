@@ -271,32 +271,40 @@
               ((memv c '(#\space #\tab #\newline #\return #\x0B #\x0C))
                (loop (fx+ i 1)))
               (else (write-char c out) (loop (fx+ i 1)))))))))
-;; A leading global flag cluster containing x — (?x), (?sx), (?s)(?x) — engages
-;; COMMENTS mode for the whole pattern: strip the tail, drop x, keep the other
-;; flags as singles. Scoped (?x:…) groups are not rewritten (none of the
-;; conformance libraries scope x; extend group-end-style scanning if one does).
+;; A flag cluster containing x — (?x), (?sx) — engages COMMENTS mode from its
+;; position to the end of the pattern (Java allows a mid-pattern cluster; a
+;; template-composed pattern like "\$(?x)\n…" puts one after a literal prefix).
+;; Strip the tail, drop x, keep the cluster's other flags as singles. Scoped
+;; (?x:…) groups are not rewritten (nothing in the conformance libraries scopes
+;; x; extend group-end-style scanning if one does).
 (define (apply-global-x src)
   (let ((n (string-length src)))
-    (let scan-clusters ((i 0))
-      (if (and (fx<? (fx+ i 3) n)
-               (char=? (string-ref src i) #\()
-               (char=? (string-ref src (fx+ i 1)) #\?))
-          (let scan ((j (fx+ i 2)) (flags '()))
+    (let loop ((i 0) (in-class #f))
+      (if (fx>=? (fx+ i 2) n)
+          src
+          (let ((c (string-ref src i)))
             (cond
-              ((fx>=? j n) src)
-              ((memv (string-ref src j) '(#\s #\i #\m #\x #\u))
-               (scan (fx+ j 1) (cons (string-ref src j) flags)))
-              ((and (char=? (string-ref src j) #\)) (pair? flags))
-               (if (memv #\x flags)
-                   (let ((others (reverse (remv #\x flags))))
-                     (string-append
-                       (substring src 0 i)
-                       (apply string-append
-                              (map (lambda (f) (string #\( #\? f #\))) others))
-                       (regex-x-strip src (fx+ j 1))))
-                   (scan-clusters (fx+ j 1))))
-              (else src)))
-          src))))
+              ((and (char=? c #\\) (fx<? (fx+ i 1) n)) (loop (fx+ i 2) in-class))
+              ((and (not in-class) (char=? c #\[)) (loop (fx+ i 1) #t))
+              ((and in-class (char=? c #\])) (loop (fx+ i 1) #f))
+              ((and (not in-class) (char=? c #\()
+                    (char=? (string-ref src (fx+ i 1)) #\?))
+               (let scan ((j (fx+ i 2)) (flags '()))
+                 (cond
+                   ((fx>=? j n) src)
+                   ((memv (string-ref src j) '(#\s #\i #\m #\x #\u))
+                    (scan (fx+ j 1) (cons (string-ref src j) flags)))
+                   ((and (char=? (string-ref src j) #\)) (pair? flags)
+                         (memv #\x flags))
+                    (let ((others (reverse (remv #\x flags))))
+                      (string-append
+                        (substring src 0 i)
+                        (apply string-append
+                               (map (lambda (f) (string #\( #\? f #\))) others))
+                        (regex-x-strip src (fx+ j 1)))))
+                   ;; not an x flag cluster — (?:…), (?=…), (?s) alone, etc.
+                   (else (loop (fx+ i 1) in-class)))))
+              (else (loop (fx+ i 1) in-class))))))))
 
 ;; Java's $ (without MULTILINE) matches at end of input OR just before a FINAL
 ;; line terminator ((re-find #"foo$" "foo\n") => "foo"); irregex's $ is absolute
