@@ -357,6 +357,10 @@
   {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (= :end (e0/read-string {:eof :end} \"\")))" :expected "true"}
   {:suite "reader" :expr "(do (require (quote [clojure.edn :as e0])) (= [:custom 5] (e0/read-string {:readers {(quote custom) (fn [v] [:custom v])}} \"#custom 5\")))" :expected "true"}
   {:suite "reader" :expr "(do (require (quote clojure.edn)) (= {:a 1 :b 2} (clojure.edn/read-string \"{:a 1\\n :b 2}\")))" :expected "true"}
+  {:suite "reader-errors" :expr "(try (read-string \"\\\"unterminated\") (catch Exception e [(:line (ex-data e)) (:column (ex-data e))]))" :expected "[1 14]"}
+  {:suite "reader-errors" :expr "(try (read-string \"[1 2 3\") (catch Exception e [(:line (ex-data e)) (:column (ex-data e))]))" :expected "[1 7]"}
+  {:suite "reader-errors" :expr "(try (read-string \"#?\") (catch Exception e [(:line (ex-data e)) (:column (ex-data e))]))" :expected "[1 3]"}
+  {:suite "reader-errors" :expr "(try (read-string \"[1 2 3]\") (catch Exception e :caught))" :expected "[1 2 3]"}
   {:suite "seqpred" :expr "(seq? (map inc [1 2 3]))" :expected "true"}
   {:suite "seqpred" :expr "(seq? (filter odd? [1 2 3]))" :expected "true"}
   {:suite "seqpred" :expr "(seq? (lazy-seq (cons 1 nil)))" :expected "true"}
