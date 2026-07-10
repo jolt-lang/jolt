@@ -9,9 +9,14 @@
 # default gate — run with `make shakesmoke`.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
+# SHAKESMOKE_SCOPE=local runs ONLY the no-git-dep correctness fixtures under
+# test/chez (ns-publics/defonce/data-reader apps) — these build in seconds and
+# don't need the examples repo, so they're wired into `make shakelocal` / ci. The
+# git-dep apps (markdown/malli/…) stay in the manual `make shakesmoke`.
+scope="${SHAKESMOKE_SCOPE:-all}"
 examples="$root/../examples"
 [ -d "$examples" ] || examples="$HOME/src/jolt-lang/examples"
-if [ ! -d "$examples" ]; then echo "shake smoke: skipped (examples repo not found)"; exit 0; fi
+if [ "$scope" != "local" ] && [ ! -d "$examples" ]; then echo "shake smoke: skipped (examples repo not found)"; exit 0; fi
 
 csv="$JOLT_CHEZ_CSV"
 if [ -z "$csv" ]; then
@@ -89,10 +94,12 @@ run_local_case() {
 # tree-shaking a binary that pulled libraries drops a reachable lib (or, later, core)
 # fn. A timing/benchmark app (e.g. ray-tracer) is unsuitable: its output varies.
 echo "shake smoke: building each app default vs --tree-shake (output must match)"
+if [ "$scope" = all ]; then
 run_case markdown-app   app.core  ""
 run_case malli-app      app.core  ""
 run_case commonmark-app app.core  ""
 run_case hiccup-app     app.core  ""
+fi
 
 # Tree-shake correctness fixtures: apps whose output IDENTICAL default vs --tree-shake
 # verifies the fixes in jolt-2f87. The defonce-app additionally asserts a never-referenced

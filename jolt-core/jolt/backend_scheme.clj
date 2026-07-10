@@ -389,13 +389,13 @@
 ;; procedure-argument evaluation order is unspecified (in practice right-to-left),
 ;; but Clojure evaluates collection-literal elements left to right, so a literal
 ;; like [(read r) (read r)] over side-effecting reads must bind in source order.
-;; Bind each arg to a fresh temp in a let* then construct. Only wraps at >= 2 args.
-(defn- emit-ordered [ctor arg-strs]
-  (if (< (count arg-strs) 2)
-    (str "(" ctor (if (empty? arg-strs) "" (str " " (str/join " " arg-strs))) ")")
-    (let [tmps (map (fn [_] (fresh-label "_o$")) arg-strs)
-          binds (str/join " " (map (fn [t a] (str "(" t " " a ")")) tmps arg-strs))]
-      (str "(let* (" binds ") (" ctor " " (str/join " " tmps) "))"))))
+;; Delegates to ordered-call (needs-order?): wrap in a let* of fresh temps only
+;; when two or more operands could have observable effects, so a literal over
+;; locals/consts stays un-wrapped. `nodes` are the item IR nodes (for the
+;; side-effect check); each is emitted once here.
+(defn- emit-ordered [ctor nodes]
+  (ordered-call nodes (mapv emit nodes)
+    (fn [strs] (str "(" ctor (if (empty? strs) "" (str " " (str/join " " strs))) ")"))))
 
 ;; An operand whose evaluation has no observable effect and whose result doesn't
 ;; depend on when it runs: constants, locals, var/the-var reads, quoted literals.
@@ -1038,12 +1038,13 @@
     :do (str "(begin " (binding [*tail?* false] (str/join " " (mapv emit (:statements node))))
              (if (empty? (:statements node)) "" " ") (emit (:ret node)) ")")
     :invoke (emit-invoke node)
-    ;; collection literals -> rt constructors (collections.ss). Elements are
-    ;; already-analyzed IR nodes; evaluate LEFT-TO-RIGHT (emit-ordered).
-    :vector (emit-ordered "jolt-vector" (map emit (:items node)))
-    :set (emit-ordered "jolt-hash-set" (map emit (:items node)))
-    :map (emit-ordered "jolt-hash-map"
-                       (mapcat (fn [p] [(emit (nth p 0)) (emit (nth p 1))]) (:pairs node)))
+     ;; collection literals -> rt constructors (collections.ss). Elements are
+     ;; already-analyzed IR nodes; evaluate LEFT-TO-RIGHT (emit-ordered, which
+     ;; wraps only when two or more operands could have observable effects).
+     :vector (emit-ordered "jolt-vector" (:items node))
+     :set (emit-ordered "jolt-hash-set" (:items node))
+     :map (emit-ordered "jolt-hash-map"
+                       (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs node)))
     :quote (emit-quoted (:form node))
     :throw (str "(jolt-throw " (emit (:expr node)) ")")
     ;; numeric coercion (from an inlined ^double/^long param or return).

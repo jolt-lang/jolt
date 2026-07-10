@@ -4,7 +4,7 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
-.PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke remint joltc joltc-release joltc-debug joltcsmoke submodules
+.PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -20,7 +20,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -189,6 +189,18 @@ inline:
 # default gate. Skips without the examples repo / Chez kernel dev files.
 shakesmoke:
 	@sh host/chez/tree-shake-smoke.sh
+
+# The no-git-dep tree-shake correctness fixtures only (ns-publics/defonce/
+# data-reader apps under test/chez) — build in seconds, no examples repo needed,
+# so they run in `make test`/ci. The git-dep apps stay in the manual shakesmoke.
+shakelocal:
+	@SHAKESMOKE_SCOPE=local sh host/chez/tree-shake-smoke.sh
+
+# Runtime load-manifest drift guard: cli.ss (the live entry) and bootstrap.ss
+# (the seed rebuilder's reduced set) hand-mirror build.ss's bld-runtime-manifest;
+# this diffs them so a load added to one but not the other fails the gate.
+manifestcheck:
+	@sh host/chez/manifest-check.sh
 
 # JVM oracle: certify the corpus against reference Clojure. Skips if clojure absent.
 certify:

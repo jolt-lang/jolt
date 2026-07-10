@@ -56,6 +56,65 @@
 (define str3 "(var-deref (f) (g))")
 (check "computed var-deref args not matched" (dce-sexp-refs-str str3) '())
 
+;; --- dce-runtime-core-roots guard -------------------------------------------
+;; A runtime .ss shim that references a clojure.core fn by name (a literal
+;; (var-deref "clojure.core" "NAME") or jolt-var) is invisible to the app IR
+;; graph, so the named fn must survive the prelude shake — i.e. be a root in
+;; dce-runtime-core-roots — or a tree-shaken app silently ships a prunable var
+;; the shim dereferences at runtime. Scan the runtime shims (everything under
+;; host/chez except the test drivers run-*.ss, the build/cli entry build*.ss /
+;; bootstrap.ss / emit-image.ss, and the seed compiler) and assert every
+;; clojure.core FN reference (dynamic vars, names starting with *, are never
+;; pruned and are excluded) is rooted. A new shim reference that isn't rooted
+;; fails this gate instead of shipping a shakeable root.
+(define (dce-shim-files)
+  (let ((skip? (lambda (f)
+                 (or (and (fx>? (string-length f) 4)
+                          (string=? (substring f 0 4) "run-"))
+                     (string=? f "dce.ss")            ; this gate's own machinery
+                     (string=? f "emit-image.ss")     ; compiler-image emitter
+                     (and (fx>? (string-length f) 5)
+                          (string=? (substring f 0 5) "build"))
+                     (string=? f "bootstrap.ss")))))
+    (let loop-top ((fs (directory-list "host/chez")) (acc '()))
+      (cond
+        ((null? fs)
+         (let loop-java ((js (directory-list "host/chez/java")) (a acc))
+           (cond ((null? js) (reverse a))
+                 ((string=? (substring (car js) (- (string-length (car js)) 3) (string-length (car js))) ".ss")
+                  (loop-java (cdr js) (cons (string-append "host/chez/java/" (car js)) a)))
+                 (else (loop-java (cdr js) a)))))
+        ((and (fx>? (string-length (car fs)) 3)
+              (string=? (substring (car fs) (- (string-length (car fs)) 3) (string-length (car fs))) ".ss")
+              (not (skip? (car fs))))
+         (loop-top (cdr fs) (cons (string-append "host/chez/" (car fs)) acc)))
+        (else (loop-top (cdr fs) acc))))))
+
+;; the clojure.core/ FN names (not dynamic vars) a shim references by name.
+(define (dce-shim-core-fn-refs path)
+  (let ((p (open-input-file path)))
+    (let loop ((acc '()))
+      (let ((form (read p)))
+        (cond ((eof-object? form) (close-port p) acc)
+              (else (loop (dce-sexp-refs form acc))))))))
+
+(let ((rooted (make-hashtable string-hash string=?)))
+  (for-each (lambda (r) (hashtable-set! rooted r #t)) dce-runtime-core-roots)
+  (let loop-files ((files (dce-shim-files)))
+    (unless (null? files)
+      (let loop-refs ((refs (dce-shim-core-fn-refs (car files))))
+        (cond
+          ((null? refs) (loop-files (cdr files)))
+          ;; only clojure.core fns (dynamic vars — names beginning with * — are
+          ;; never pruned and don't need rooting). "clojure.core/" is 13 chars.
+          ((and (fx>? (string-length (car refs)) 13)
+                (string=? (substring (car refs) 0 13) "clojure.core/")
+                (not (char=? (string-ref (car refs) 13) #\*)))
+           (check (string-append "core-root: " (car refs) " (" (car files) ")")
+                  (hashtable-ref rooted (car refs) #f) #t)
+           (loop-refs (cdr refs)))
+          (else (loop-refs (cdr refs))))))))
+
 (if (= fails 0)
     (begin (printf "dce-refs gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "dce-refs gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
