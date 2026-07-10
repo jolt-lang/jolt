@@ -69,13 +69,14 @@
 ;; precision (no fx* overflow).
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc))))")))
   (ok "loop integer accumulator is NOT fx-specialized" (not (has? e "(fx*"))))
-;; a literal-init increment counter types as a fixnum (fx1+), even with no hint.
+;; a literal-init increment counter stays generic — :long flows only from a ^long
+;; hint, never a bare int literal, so an un-hinted integer counter keeps arbitrary
+;; precision (no fixnum overflow surprise).
 (let ((e (emitf "u" "(fn* ([] (loop [i 0] (if (< i 5) (recur (inc i)) i))))")))
-  (ok "literal-init increment counter lowers to jolt-l-inc" (has? e "(jolt-l-inc")))
-;; but a multiplicative accumulator in the SAME loop stays generic (bignum-safe);
-;; only the counter types.
+  (ok "literal-init increment counter is NOT fx/long-typed" (and (not (has? e "(fx")) (not (has? e "(jolt-l-inc")))))
+;; a multiplicative accumulator in the SAME loop also stays generic (bignum-safe).
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 0] (if (< i 100) (recur (* acc i) (inc i)) acc))))")))
-  (ok "counter beside a * accumulator: counter is jolt-l-inc" (has? e "(jolt-l-inc"))
+  (ok "counter beside a * accumulator: counter is NOT long-typed" (not (has? e "(jolt-l-inc")))
   (ok "the * accumulator is NOT fx-specialized (bignum-safe)" (not (has? e "(fx*"))))
 (ok "counter+bignum-accumulator stays exact (1*2*...*99 is a bignum)"
     (jolt-truthy? (ev "(< 1000000000000000000000 ((fn* ([] (loop [acc 1 i 1] (if (< i 100) (recur (* acc i) (inc i)) acc))))))")))

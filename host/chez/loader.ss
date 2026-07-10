@@ -14,7 +14,9 @@
 ;; The CLI seeds this with the project's resolved deps roots (jolt.deps) plus the
 ;; jolt-core roots so jolt.main/jolt.deps themselves load.
 (define source-roots '("."))
-(define (set-source-roots! roots) (set! source-roots roots))
+(define (set-source-roots! roots)
+  (set! source-roots roots)
+  (load-data-readers!))   ; scan every entry point (cli startup + jolt.host wrapper)
 (define (get-source-roots) source-roots)
 
 ;; --- data readers (#tag literals) -------------------------------------------
@@ -43,7 +45,21 @@
                               (jolt-symbol #f bare)))
                      (t (data-readers-table))
                      (v (and (pmap? t) (jolt-get t sym))))
-                (and v (not (jolt-nil? v)) v))))))
+                 (and v (not (jolt-nil? v)) v))))))
+;; Invoke a resolved data-reader fn at load time, letting a throw surface as an
+;; ex-info naming the tag (with the reader's own error as the cause) instead of
+;; silently degrading to the runtime-call fallback.
+(define (ldr-invoke-reader tag-kw rfn inner)
+  (guard (e (else
+              (let* ((orig (jolt-unwrap-throw e))
+                     (orig-msg (guard (_ (#t #f))
+                                 (let ((m ((var-deref "jolt.host" "condition-message") e)))
+                                   (and (string? m) m))))
+                     (msg (string-append "data reader " (keyword-t-name tag-kw) " threw"
+                                         (if orig-msg (string-append ": " orig-msg) ""))))
+                (jolt-throw
+                  (jolt-ex-info msg (jolt-hash-map (keyword #f "tag") tag-kw) orig)))))
+    (jolt-invoke rfn inner)))
 ;; change-tracking walk: rewrite registered #tag forms, keep everything else
 ;; (and its identity/metadata) intact. Mirrors reader.ss rdr-form->data but keeps
 ;; set FORMS for the compiler spine instead of building real sets.
@@ -58,22 +74,27 @@
      (let ((rdr (data-reader-symbol (jolt-get x rdr-kw-tag)))
            (inner (ldr-apply-readers (jolt-get x rdr-kw-form))))
        (cond
-         (rdr
-          ;; Clojure applies a data reader at read time and substitutes its result
-          ;; as code. A reader that returns a FORM (a list — e.g. borkdude.html's
-          ;; #html expands to (->Html (str …))) must be compiled, so splice it in.
-          ;; A reader that returns a VALUE (time-literals #time/date -> a Date) is
-          ;; left as a runtime call (reader-fn 'inner): the value rebuilds at
-          ;; startup, which also keeps a non-serializable constant out of an AOT
-          ;; build. Apply is guarded — a reader that can't run at load time (its
-          ;; deps not ready) falls back to the runtime call too.
-          (let ((result (and (symbol-t? rdr) (not (jolt-nil? (symbol-t-ns rdr)))
-                             (guard (e (#t #f))
-                               (let ((fn (var-deref (symbol-t-ns rdr) (symbol-t-name rdr))))
-                                 (and (procedure? fn) (jolt-invoke fn inner)))))))
-            (if (cseq? result)
-                result
-                (jolt-list rdr (jolt-list (jolt-symbol #f "quote") inner)))))
+          (rdr
+           ;; Clojure applies a data reader at read time and substitutes its result
+           ;; as code. A reader that returns a FORM (a list — e.g. borkdude.html's
+           ;; #html expands to (->Html (str …))) must be compiled, so splice it in.
+           ;; A reader that returns a VALUE (time-literals #time/date -> a Date) is
+           ;; left as a runtime call (reader-fn 'inner): the value rebuilds at
+           ;; startup, which also keeps a non-serializable constant out of an AOT
+           ;; build. The reader runs at load time only when its var RESOLVES — a
+           ;; reader whose ns isn't loaded yet falls back to the runtime call. A
+           ;; resolved reader that throws surfaces (the prior catch-all guard
+           ;; silently downgraded every reader bug to a runtime call).
+           (let ((rfn (and (symbol-t? rdr) (not (jolt-nil? (symbol-t-ns rdr)))
+                           (let ((v (var-deref (symbol-t-ns rdr) (symbol-t-name rdr))))
+                             (and (procedure? v) v)))))
+             (if rfn
+                 (let ((result (ldr-invoke-reader (jolt-get x rdr-kw-tag) rfn inner)))
+                   (if (cseq? result)
+                       result
+                       (jolt-list rdr (jolt-list (jolt-symbol #f "quote") inner))))
+                 ;; unresolved reader (ns not loaded yet): runtime-call fallback
+                 (jolt-list rdr (jolt-list (jolt-symbol #f "quote") inner)))))
          ((eq? inner (jolt-get x rdr-kw-form)) x)
          (else (rdr-make-tagged (jolt-get x rdr-kw-tag) inner)))))
     ((rdr-set-form? x)
@@ -281,38 +302,67 @@
       (jolt-ref-val-set! libs-ref
         (pset-conj (jolt-ref-val libs-ref) (jolt-symbol #f name))))))
 
+;; Undo ldr-mark-loaded! — a failed load rolls its mark back so a retry loads.
+(define (ldr-unmark-loaded! name)
+  (hashtable-delete! loaded-ns name)
+  (let* ((libs-cell (var-cell-lookup "clojure.core" "*loaded-libs*"))
+         (libs-ref (and libs-cell (var-cell-root libs-cell))))
+    (when (and libs-ref (jolt-ref? libs-ref))
+      (jolt-ref-val-set! libs-ref
+        (pset-disj (jolt-ref-val libs-ref) (jolt-symbol #f name))))))
+
+;; Has `name` cleared the loaded-ns / *loaded-libs* dedup? A tools.namespace disj
+;; from *loaded-libs* forces a reload even though loaded-ns still holds.
+(define (ns-dedup-loaded? name)
+  (let* ((libs-cell (var-cell-lookup "clojure.core" "*loaded-libs*"))
+         (libs-ref (and libs-cell (var-cell-root libs-cell))))
+    (and (hashtable-ref loaded-ns name #f)
+         (or (not libs-ref)
+             (not (jolt-ref? libs-ref))
+             (jolt-contains? (jolt-ref-val libs-ref) (jolt-symbol #f name))))))
+
+;; :reload-all forces the dedup off for the whole dynamic extent of a load (the
+;; loader learns dependencies only as it loads them), so every namespace pulled in
+;; reloads too — mirroring clojure.core. :verbose prints each load to stderr.
+(define ldr-reload-all? (make-thread-parameter #f))
+(define ldr-verbose? (make-thread-parameter #f))
+
 ;; load-namespace: load `name`'s source once. Marked loaded BEFORE eval so a
-;; dependency cycle terminates (Clojure's behavior). The caller's current ns is
-;; restored afterward, since loading the file switched it.
-;; Checks BOTH loaded-ns and *loaded-libs*: disj from *loaded-libs* (as
-;; tools.namespace does) causes require to reload.
-(define (load-namespace name)
-  (unless (let* ((libs-cell (var-cell-lookup "clojure.core" "*loaded-libs*"))
-                 (libs-ref (and libs-cell (var-cell-root libs-cell))))
-            (and (hashtable-ref loaded-ns name #f)
-                 (or (not libs-ref)
-                     (not (jolt-ref? libs-ref))
-                     (jolt-contains? (jolt-ref-val libs-ref) (jolt-symbol #f name)))))
-    (let ((file (find-ns-file name)))
-      (cond
-        (file
-         (ldr-mark-loaded! name)            ; mark before load so a cycle terminates
-         (let ((saved (chez-current-ns)))
-           (load-jolt-file file)
-           ;; restore the current ns (thread-local); *ns* reads derive from it.
-           (set-chez-ns! saved))
-         (ns-loaded-hook name file))
-        ;; No source file but the namespace exists in memory (AOT'd into a built
-        ;; binary): it's already defined — mark loaded and move on.
-        ((ns-has-vars? name)
-         (ldr-mark-loaded! name))
-        ;; Same-file namespace (inlined ns form in a Jolt file): registered via
-        ;; intern-ns! in the runtime registry even if no vars bear its ns name yet.
-        ((hashtable-ref ns-registry name #f)
-         (ldr-mark-loaded! name))
-        (else
-         (error #f (string-append "Could not locate " (ns-name->rel name)
-                                  ".clj (or .cljc) on the source roots") name))))))
+;; dependency cycle terminates (Clojure's behavior). force? (a :reload of the
+;; named lib) bypasses the dedup for THIS load only; ldr-reload-all? bypasses it
+;; for this load and every nested one in its extent. On a throw the mark is rolled
+;; back IF this call made it (a retry then loads) and the caller's ns is restored —
+;; matching Clojure, which marks a lib loaded only after success.
+(define (load-namespace name) (load-namespace* name #f))
+(define (load-namespace* name force?)
+  (let ((was-loaded? (ns-dedup-loaded? name)))
+    (unless (and (not force?) (not (ldr-reload-all?)) was-loaded?)
+      (let ((file (find-ns-file name)))
+        (cond
+          (file
+           (when (ldr-verbose?)
+             (display (string-append "Loading " name " from " file "\n")
+                      (current-error-port)))
+           (ldr-mark-loaded! name)            ; mark before load so a cycle terminates
+           (let ((saved (chez-current-ns)))
+             (guard (e (else
+                         (set-chez-ns! saved)          ; restore ns, then roll the mark back
+                         (unless was-loaded? (ldr-unmark-loaded! name))
+                         (raise e)))
+               (load-jolt-file file))
+             (set-chez-ns! saved)             ; restore the current ns (thread-local)
+             (ns-loaded-hook name file)))
+          ;; No source file but the namespace exists in memory (AOT'd into a built
+          ;; binary): it's already defined — mark loaded and move on.
+          ((ns-has-vars? name)
+           (ldr-mark-loaded! name))
+          ;; Same-file namespace (inlined ns form in a Jolt file): registered via
+          ;; intern-ns! in the runtime registry even if no vars bear its ns name yet.
+          ((hashtable-ref ns-registry name #f)
+           (ldr-mark-loaded! name))
+          (else
+            (error #f (string-append "Could not locate " (ns-name->rel name)
+                                     ".clj (or .cljc) on the source roots") name)))))))
 
 ;; load-file: load an explicit path (a `run FILE`), in the current ns.
 (define (jolt-load-file path)
@@ -354,26 +404,49 @@
 ;; Override the alias-only versions from natives-str.ss. Load each spec's target
 ;; (no-op if baked/already loaded), THEN register its :as/:refer under the caller
 ;; ns (chez-register-spec! reads the current ns, restored by load-namespace).
-(define (loader-require . specs)
+;;
+;; keyword flags (clojure.core load-libs) are collected from the arg list before
+;; the libspecs: :reload forces the named libs past the dedup, :reload-all forces
+;; it off for the whole load (so transitively-required libs reload too), :verbose
+;; prints each load.
+(define (ldr-flag-names specs)
+  (let loop ((xs specs) (acc '()))
+    (cond ((null? xs) (reverse acc))
+          ((keyword? (car xs)) (loop (cdr xs) (cons (keyword-t-name (car xs)) acc)))
+          (else (loop (cdr xs) acc)))))
+
+(define (ldr-load+register specs force-named?)
   (for-each
     (lambda (s0)
       (for-each
         (lambda (s)
           (let ((target (spec-target-name s)))
-            (when target (load-namespace target)))
+            (when target (load-namespace* target force-named?)))
           (chez-register-spec! (chez-current-ns) s))
         (expand-spec s0)))
-    specs)
+    specs))
+
+(define (loader-require . specs)
+  (let* ((flags (ldr-flag-names specs))
+         (real (filter (lambda (s) (not (keyword? s))) specs))
+         (reload-all? (member "reload-all" flags))
+         (reload? (and (not reload-all?) (member "reload" flags)))
+         (verbose? (member "verbose" flags)))
+    (if reload-all?
+        (parameterize ((ldr-reload-all? #t) (ldr-verbose? verbose?))
+          (ldr-load+register real #f))
+        (parameterize ((ldr-verbose? verbose?))
+          (ldr-load+register real (and reload? #t)))))
   jolt-nil)
 (def-var! "clojure.core" "require" loader-require)
 
-(define (loader-use . specs0)
+(define (ldr-use-specs specs force-named?)
   (for-each
     (lambda (spec0)
       (for-each
         (lambda (spec)
           (let ((target (spec-target-name spec)))
-            (when target (load-namespace target)))
+            (when target (load-namespace* target force-named?)))
           (chez-register-spec! (chez-current-ns) spec)
           (let* ((items (cond ((pvec? spec) (seq->list spec))
                               ((symbol-t? spec) (list spec))
@@ -387,7 +460,19 @@
             (when (and target (not filtered))
               (chez-register-refer-all! (chez-current-ns) target))))
         (expand-spec spec0)))
-    specs0)
+    specs))
+
+(define (loader-use . specs0)
+  (let* ((flags (ldr-flag-names specs0))
+         (real (filter (lambda (s) (not (keyword? s))) specs0))
+         (reload-all? (member "reload-all" flags))
+         (reload? (and (not reload-all?) (member "reload" flags)))
+         (verbose? (member "verbose" flags)))
+    (if reload-all?
+        (parameterize ((ldr-reload-all? #t) (ldr-verbose? verbose?))
+          (ldr-use-specs real #f))
+        (parameterize ((ldr-verbose? verbose?))
+          (ldr-use-specs real (and reload? #t)))))
   jolt-nil)
 (def-var! "clojure.core" "use" loader-use)
 
@@ -446,7 +531,7 @@
 
 ;; Expose source-root control + ns loading to Clojure (jolt.main / jolt.deps).
 (def-var! "jolt.host" "set-source-roots!"
-  (lambda (roots) (set-source-roots! (seq->list roots)) (load-data-readers!) jolt-nil))
+  (lambda (roots) (set-source-roots! (seq->list roots)) jolt-nil))
 (def-var! "jolt.host" "source-roots" (lambda () (list->cseq source-roots)))
 (def-var! "jolt.host" "load-namespace" (lambda (n) (load-namespace n) jolt-nil))
 (def-var! "jolt.host" "file-exists?" (lambda (p) (if (file-exists? p) #t #f)))

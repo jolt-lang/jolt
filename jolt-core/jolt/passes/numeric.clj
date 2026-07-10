@@ -80,41 +80,6 @@
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
 
-;; The recur-arg NODE lists for the recurs at THIS loop level (structural, no env),
-;; parallel to recur-kinds. Used to recognise a counter.
-(defn- recur-arg-lists [node]
-  (let [op (get node :op)]
-    (cond
-      (= op :recur) [(get node :args)]
-      (= op :let) (recur-arg-lists (get node :body))
-      (= op :if) (concat (recur-arg-lists (get node :then)) (recur-arg-lists (get node :else)))
-      (= op :do) (recur-arg-lists (get node :ret))
-      :else [])))
-
-;; Is `arg` an increment-style step of loop var `vname`: the var unchanged, or
-;; inc/dec/unchecked-inc/dec, or (+/- var <int-literal>)? Bounded growth that a
-;; fixnum-range counter can sustain for any realistic loop — unlike (* acc x), which
-;; overflows fast, so a multiplicative accumulator never qualifies and stays
-;; arbitrary-precision.
-(defn- counter-step? [arg vname]
-  (cond
-    (and (= :local (get arg :op)) (= vname (get arg :name))) true
-    (= :invoke (get arg :op))
-    (let [f (get arg :fn) as (get arg :args)]
-      (and (= :var (get f :op)) (= "clojure.core" (get f :ns))
-           (let [nm (get f :name)
-                 v? (fn [n] (and (= :local (get n :op)) (= vname (get n :name))))]
-             (cond
-               (and (contains? #{"inc" "dec" "unchecked-inc" "unchecked-dec"} nm) (= 1 (count as)))
-               (v? (nth as 0))
-               (and (contains? #{"+" "unchecked-add"} nm) (= 2 (count as)))
-               (or (and (v? (nth as 0)) (int-lit? (nth as 1)))
-                   (and (v? (nth as 1)) (int-lit? (nth as 0))))
-               (and (contains? #{"-" "unchecked-subtract"} nm) (= 2 (count as)))
-               (and (v? (nth as 0)) (int-lit? (nth as 1)))
-               :else false))))
-    :else false))
-
 ;; Loop-var kinds by bounded fixpoint. A var keeps its init kind (:double or :long)
 ;; only if every recur arg in that slot is the same kind (under the current
 ;; assumption) — a monotone demotion that stops at a fixpoint, bounded by the var
@@ -183,12 +148,14 @@
             ls (lng-spec nm n)
             bs (bd-spec nm n)]
         (cond
-          (and ds (ok? :double :double)
-               ;; min/max return the ORIGINAL operand (Numbers.min: an integer
-               ;; literal stays exact), so an int-literal operand blocks the
-               ;; flonum lowering there — flmin would coerce it.
-               (or (not (contains? #{"min" "max"} nm))
-                   (every? (fn [c] (= c :double)) cls)))
+           (and ds (ok? :double :double)
+                ;; min/max return the ORIGINAL operand (Numbers.min: an integer
+                ;; literal stays exact), and `=` is exactness-aware (0 != 0.0), so
+                ;; an int-literal operand blocks the flonum lowering for those —
+                ;; flmin/fl= would coerce it away. fl< and friends compare
+                ;; numerically, so coercing their operands stays sound.
+                (or (not (contains? #{"min" "max" "="} nm))
+                    (every? (fn [c] (= c :double)) cls)))
           ;; coerce integer-literal operands to flonum so fl-ops never see an exact int.
           (let [args' (mapv (fn [nd] (if (int-lit? nd) (assoc nd :val (double (get nd :val))) nd))
                             argnodes)]
@@ -226,24 +193,10 @@
       (let [binds (get node :bindings)
             names (mapv (fn [b] (nth b 0)) binds)
             ik (mapv (fn [b] (nth (an (nth b 1) tenv) 0)) binds)
-            rlists (recur-arg-lists (get node :body))
-            ;; seed each var: an already-typed init keeps its kind; an integer-literal
-            ;; init whose recur args are all counter steps is a fixnum counter (:long).
-            seed (mapv (fn [j]
-                         (let [k (nth ik j) b (nth binds j)]
-                           (cond
-                             k k
-                             ;; an int-literal var is a fixnum counter only in a real
-                             ;; iterating loop (>= 1 recur) whose every step is bounded.
-                             ;; A recur-less loop is a let — its int literal stays
-                             ;; generic (arbitrary precision), like a let binding.
-                             (and (seq rlists)
-                                  (int-lit? (nth b 1))
-                                  (every? (fn [args] (counter-step? (nth args j) (nth b 0))) rlists))
-                             :long
-                             :else nil)))
-                       (range (count names)))
-            lk (loop-kinds names seed (get node :body) tenv)
+            ;; seed each var with its init kind only — :long flows from an explicit
+            ;; ^long hint (or an fx op), never a bare int literal, so an un-hinted
+            ;; integer loop keeps arbitrary precision.
+            lk (loop-kinds names ik (get node :body) tenv)
             te (reduce (fn [t i] (assoc t (nth names i) (nth lk i))) tenv (range (count names)))]
         [nil (assoc node
                     :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)

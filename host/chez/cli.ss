@@ -69,15 +69,33 @@
 ;; JOLT_TRACE opt-in, at runtime (before any app ns compiles) so the app is traced.
 (jolt-trace-init-from-env!)
 
+;; POSIX end-of-options: drop the first standalone "--" in an argv list; any
+;; later "--" stays literal program data. Returns a Scheme list.
+(define (drop-end-of-options args)
+  (let loop ((in args) (acc '()))
+    (cond
+      ((null? in) (reverse acc))
+      ((string=? (car in) "--") (append (reverse acc) (cdr in)))
+      (else (loop (cdr in) (cons (car in) acc))))))
+
 (guard (v (#t (jolt-report-uncaught v)))
   (cond
-    ;; -e EXPR — evaluate one expression and print it (blank for nil). Wrapped in
-    ;; (do …) so a multi-form string evaluates every form and returns the last.
-    ((and (= (length cli-args) 2) (string=? (car cli-args) "-e"))
-     (let ((result (jolt-final-str
-                     (jolt-compile-eval (string-append "(do " (cadr cli-args) ")") "user"))))
-       (unless (string=? result "")
-         (display result) (newline))))
+    ;; -e EXPR [args…] — evaluate one expression and print it (blank for nil).
+    ;; Wrapped in (do …) so a multi-form string evaluates every form and returns
+    ;; the last. The argv after EXPR are *command-line-args* (nil when empty),
+    ;; with the first standalone "--" consumed as POSIX end-of-options.
+    ((and (pair? cli-args) (string=? (car cli-args) "-e")
+          (pair? (cdr cli-args)))
+     (let* ((expr (cadr cli-args))
+            (app-args (drop-end-of-options (cddr cli-args)))
+            (cla (if (null? app-args) jolt-nil (list->cseq app-args))))
+       (jolt-push-thread-bindings
+         (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
+       (let ((result (jolt-final-str
+                       (jolt-compile-eval (string-append "(do " expr ")") "user"))))
+         (jolt-pop-thread-bindings)
+         (unless (string=? result "")
+           (display result) (newline)))))
     ;; otherwise dispatch the argv through jolt.main/-main
     (else
      ;; `build` AOT-compiles an app to a standalone binary — load the build

@@ -46,14 +46,27 @@
   (jolt.host/set-source-roots! (vec (distinct (concat roots (jolt.host/source-roots)))))
   (load-natives! natives))
 
+;; Consume the first standalone "--" (POSIX end-of-options marker); everything
+;; else — including any later "--" — is left as literal program data.
+(defn- drop-end-of-options [args]
+  (loop [in (seq args) acc []]
+    (cond
+      (nil? in)              (seq acc)
+      (= "--" (first in))    (concat (seq acc) (rest in))
+      :else                  (recur (next in) (conj acc (first in))))))
+
 (defn- run-ns
-  "Require ns-name and invoke its -main with the string app args."
+  "Require ns-name and invoke its -main with the string app args. A leading
+  standalone \"--\" in app-args is consumed as POSIX end-of-options, so this is
+  the single end-of-options point for every ns-based entry form — `run -m`,
+  `-m`, `-M`/`-A` aliases, and a :main-opts task all route through here."
   [ns-name app-args]
-  (push-thread-bindings {#'clojure.core/*command-line-args* (seq app-args)})
-  (require (symbol ns-name))
-  (if-let [mainv (ns-resolve (symbol ns-name) (symbol "-main"))]
-    (apply (deref mainv) app-args)
-    (throw (ex-info (str "namespace " ns-name " has no -main") {:ns ns-name}))))
+  (let [app-args (drop-end-of-options app-args)]
+    (push-thread-bindings {#'clojure.core/*command-line-args* (seq app-args)})
+    (require (symbol ns-name))
+    (if-let [mainv (ns-resolve (symbol ns-name) (symbol "-main"))]
+      (apply (deref mainv) app-args)
+      (throw (ex-info (str "namespace " ns-name " has no -main") {:ns ns-name})))))
 
 ;; main-opts is a vector like ["-m" "app.core"] (optionally trailing args). Apply
 ;; it with the user-supplied extra args appended.
@@ -74,7 +87,7 @@
   (cond
     (= "-m" (first more)) (run-ns (second more) (drop 2 more))
     (seq more)            (do (push-thread-bindings
-                                {#'clojure.core/*command-line-args* (seq (rest more))})
+                                {#'clojure.core/*command-line-args* (seq (drop-end-of-options (rest more)))})
                               (load-file (first more)) nil)
     :else (throw (ex-info "run needs -m NS or a FILE" {}))))
 
@@ -235,18 +248,22 @@
   (let [{:keys [project-paths embed-dirs build] :as resolved}
         (deps/resolve-project (project-dir))]
     (apply-project! resolved)
-    (let [opts (loop [a more, entry nil, out nil]
-                 (cond
-                   (empty? a)          {:entry entry :out out}
-                   (= "-m" (first a))  (recur (drop 2 a) (second a) out)
-                   (= "-o" (first a))  (recur (drop 2 a) entry (second a))
-                   (str/starts-with? (first a) "-") (recur (rest a) entry out)
-                   :else               (recur (rest a) (or entry (first a)) out)))
+    (let [opts (loop [a more, entry nil, out nil, end-opts? false]
+                 (let [cur (first a)]
+                   (cond
+                     (empty? a)                              {:entry entry :out out}
+                     (and (not end-opts?) (= "--" cur))      (recur (rest a) entry out true)
+                     (and (not end-opts?) (= "-m" cur))      (recur (drop 2 a) (second a) out false)
+                     (and (not end-opts?) (= "-o" cur))      (recur (drop 2 a) entry (second a) false)
+                     (and (not end-opts?) (str/starts-with? cur "-")) (recur (rest a) entry out false)
+                     :else                                   (recur (rest a) (or entry cur) out end-opts?))))
           entry (:entry opts)
-          mode  (cond (some #{"--opt"} more) "optimized"
-                      (some #{"--dev"} more) "dev"
-                      (:opt build)           "optimized"
-                      :else                  "release")]
+          ;; flags are only recognized before the end-of-options marker
+          flag-args (take-while #(not= "--" %) more)
+          mode  (cond (some #{"--opt"} flag-args) "optimized"
+                      (some #{"--dev"} flag-args) "dev"
+                      (:opt build)                "optimized"
+                      :else                       "release")]
       (when (nil? entry)
         (throw (ex-info "build needs an entry: -m NS" {})))
       ;; Output paths resolve against the project dir (JOLT_PWD), not the CLI's
@@ -267,17 +284,17 @@
             ;; :jolt/native libs with a :static archive are cc-linked into the
             ;; binary by default; --dynamic (or deps.edn :jolt/build {:dynamic-natives
             ;; true}) keeps the old behavior — load a shared object at runtime.
-            dynamic-natives? (boolean (or (some #{"--dynamic"} more) (:dynamic-natives build)))
+            dynamic-natives? (boolean (or (some #{"--dynamic"} flag-args) (:dynamic-natives build)))
             natives (encode-natives (:natives resolved) dynamic-natives?)
             ;; closed-world direct-linking is opt-in: the --direct-link flag or a
             ;; deps.edn :jolt/build {:direct-link true}. Off otherwise.
-            direct-link? (boolean (or (some #{"--direct-link"} more) (:direct-link build)))
+            direct-link? (boolean (or (some #{"--direct-link"} flag-args) (:direct-link build)))
             ;; tree-shaking (drop library code not reachable from -main): --tree-shake
             ;; or deps.edn :jolt/build {:tree-shake true}.
-            tree-shake? (boolean (or (some #{"--tree-shake"} more) (:tree-shake build)))
+            tree-shake? (boolean (or (some #{"--tree-shake"} flag-args) (:tree-shake build)))
             ;; a shared library (callable from C/C++/Rust via jolt_library_init +
             ;; jolt_lookup) instead of an executable: --library.
-            library? (some #{"--library"} more)]
+            library? (some #{"--library"} flag-args)]
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
         (if library?
