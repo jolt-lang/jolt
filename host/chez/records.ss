@@ -97,13 +97,24 @@
               (cond ,@(map set-branch (range 1 mn))
                     ((jrec*? r) (vector-set! (jrec*-vals r) i v))
                     (else (error 'jrec-field-set! "not a fielded record" r)))))
+         (define (fieldat-branch k)
+           `((,(pred k) r)
+             (case i
+               ,@(map (lambda (i) `((,i) (,(acc k i) r))) (range 0 (- k 1)))
+               (else (jolt-get r k)))))
+         (define fieldat-def
+           `(define (jrec-field-at r i k)
+              (cond ,@(map fieldat-branch (range 1 mn))
+                    ((jrec*? r) (if (fx< i (vector-length (jrec*-vals r)))
+                                    (vector-ref (jrec*-vals r) i) (jolt-get r k)))
+                    (else (jolt-get r k)))))
          (define ctor-vec-def
            `(define jrec-ctor-vec (vector ,@(map mkname (range 0 mn)))))
          (datum->syntax tid
            `(begin ,base-def
                    ,@(map child-def (range 1 mn))
                    ,spill-def
-                   ,nfields-def ,fieldref-def ,fieldset-def ,ctor-vec-def)))))))
+                   ,nfields-def ,fieldref-def ,fieldset-def ,fieldat-def ,ctor-vec-def)))))))
 (define-jrec-family 8)
 ;; compatibility ctor (desc vals-vector ext): dispatches to the native per-arity
 ;; ctor. The hot ctor paths (make-deftype-ctor / backend inline emission) build
@@ -343,19 +354,9 @@
                    (v (if (jolt-nil? ext) jrec-absent (jolt-get ext k jrec-absent))))
               (if (eq? v jrec-absent)
                   (cond ((find-method-any-protocol (jrec-tag coll) "valAt")
-                         => (lambda (m) (jolt-invoke m coll k d)))
-                        (else d))
-                  v))))))
-;; bare-index field read for a statically-known record field — emitted by `jolt
-;; build --opt` for a struct-typed receiver, where i is the field's declared slot.
-;; When r is a record it reads the inline slot directly: no field-key hashtable
-;; lookup, no jolt-get dispatch. Falls back to jolt-get otherwise (a map
-;; downgraded by dissoc, or a value the inference mistyped), so it stays correct
-;; even if the static type is wrong.
-(define (jrec-field-at r i k)
-  (if (and (jrec? r) (fx< i (jrec-nfields r)))
-      (jrec-field-ref r i)
-      (jolt-get r k)))
+                          => (lambda (m) (jolt-invoke m coll k d)))
+                         (else d))
+                   v))))))
 
 ;; mutate a deftype's mutable field in place: fields are mutable slots, so
 ;; jrec-field-set! updates the field. (set! field v) inside a method lowers to
