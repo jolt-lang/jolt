@@ -3742,5 +3742,5 @@
   {:suite "conformance / core misc" :label "iteration paginates a step fn" :expected "[0 1 2]" :actual "(vec (iteration (fn [k] (when (< k 3) (list k (inc k)))) :kf second :vf first :initk 0))" :portability :jvm}
   {:suite "conformance / core misc" :label "iteration is reducible" :expected "3" :actual "(reduce + 0 (iteration (fn [k] (when (< k 3) [k (inc k)])) :kf second :vf first :initk 0))" :portability :jvm}
   {:suite "conformance / core misc" :label "unquote is a resolvable var" :expected "true" :actual "(some? (resolve (quote unquote)))" :portability :jvm}
-  {:suite "conformance / core misc" :label "definline stamps a callable fn" :expected "3" :actual "(do (definline din [x] (+ x 1)) (din 2))" :portability :common}
+  {:suite "conformance / core misc" :label "definline instantiates the expansion template" :expected "9" :actual "(do (definline din-sq [x] `(* ~x ~x)) (din-sq 3))" :portability :common}
 ]

@@ -66,9 +66,13 @@
       handled (atom [])]
   (set-error-handler! a (fn [_ e] (swap! handled conj e)))
   (send a (fn [_] (throw (ex-info "boom" {}))))
-  (await a)
+  ;; no await here: awaiting an agent that has already failed throws (JVM shape),
+  ;; so racing the worker would make this flaky — poll for the failure instead.
   (chk "agents:fail: agent-error set after a throwing action"
-       (instance? Throwable (agent-error a)))
+       (wait-for #(instance? Throwable (agent-error a)) 400))
+  (chk "agents:fail: await on a failed agent throws needs-restart"
+       (try (await a) false
+            (catch RuntimeException e (= (ex-message e) "Agent is failed, needs restart"))))
   (chk "agents:fail: deref holds last good state" (= @a 0))
   (chk "agents:fail: error-handler was invoked"
        (wait-for #(pos? (count @handled)) 100))

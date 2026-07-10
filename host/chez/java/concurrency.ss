@@ -221,7 +221,7 @@
 
 ;; Each action runs with *agent* bound to its agent, like the JVM's action
 ;; binding frame — (send a (fn [s] (send *agent* …))) works. The cell resolves
-;; lazily (dynamicvar-defaults.ss loads after this file).
+;; lazily (dynamic-var-defaults.ss loads after this file).
 (define agent-star-cell #f)
 (define (with-agent-binding a thunk)
   (let ((cell (or agent-star-cell
@@ -331,25 +331,36 @@
     (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "await in transaction")))
   (when (jolt-in-agent-action?)
     (jolt-throw (jolt-host-throwable "java.lang.Exception" "Can't await in agent action"))))
+;; An already-failed agent rejects the await like it rejects a send — the JVM's
+;; await dispatches a latch action to each agent and the send throws. (An agent
+;; that fails DURING the await returns once the queue halts — friendlier than
+;; the JVM, whose latch action never runs so await blocks forever.)
+(define (jolt-agent-failed-throw a)
+  (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
+                                   "Agent is failed, needs restart"
+                                   (jolt-agent-err a))))
 (define (jolt-agent-await . agents)
   (jolt-agent-await-check)
   (for-each
     (lambda (a)
       (with-mutex (jolt-agent-mu a)
-        (unless (jolt-nil? (jolt-agent-err a)) (raise (jolt-agent-err a)))
+        (unless (jolt-nil? (jolt-agent-err a)) (jolt-agent-failed-throw a))
         (let loop ()
           (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
             (condition-wait (jolt-agent-cv a) (jolt-agent-mu a)) (loop)))))
     agents)
   jolt-nil)
 (define (jolt-agent-await-for ms . agents)
-  (jolt-agent-await-check)
+  (when (*txn*)
+    (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "await-for in transaction")))
+  (when (jolt-in-agent-action?)
+    (jolt-throw (jolt-host-throwable "java.lang.Exception" "Can't await in agent action")))
   (let ((deadline (ms->deadline ms)) (ok #t))
     (for-each
       (lambda (a)
         (when ok
           (with-mutex (jolt-agent-mu a)
-            (unless (jolt-nil? (jolt-agent-err a)) (raise (jolt-agent-err a)))
+            (unless (jolt-nil? (jolt-agent-err a)) (jolt-agent-failed-throw a))
             (let loop ()
               (when (or (jolt-agent-running? a) (not (jagent-q-empty? a)))
                 (if (condition-wait (jolt-agent-cv a) (jolt-agent-mu a) deadline)
