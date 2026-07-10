@@ -659,12 +659,15 @@
           (bld-emit-natives out natives 'required)
           (put-string out "\n;; === embedded resources ===\n")
           (bld-emit-embeds out embed-dirs)
-          (bld-emit-data-readers out)
-          (put-string out (string-append
-                            "(set-source-roots! (list "
-                            (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) ""
-                                       (get-source-roots))
-                            "))\n"))
+           (bld-emit-data-readers out)
+           ;; set-source-roots!* (not the scanning set-source-roots!): data readers
+           ;; are baked just above, and re-scanning would eagerly reload reader
+           ;; namespaces via jolt-compile-eval-form — dropped by a tree-shaken binary.
+           (put-string out (string-append
+                             "(set-source-roots!* (list "
+                             (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) ""
+                                        (get-source-roots))
+                             "))\n"))
           (put-string out "\n;; === app ===\n")
           (for-each (lambda (s) (put-string out s) (put-string out "\n")) app-strs)
           ;; The launcher runs as Chez's scheme-start (so argv reaches -main —
@@ -684,26 +687,33 @@
               "        (default (* 16 1024 1024)))\n"
               "    (if trip (or (string->number trip) default) default)))\n"))
           (put-string out "(scheme-start\n  (lambda args\n")
+          ;; The prologue (optional native loads + source-root setup) and the -main
+          ;; call (or library export publish) run under one guard so a throw in
+          ;; either surfaces as jolt-report-throwable + a non-zero exit/return
+          ;; instead of Chez's opaque dump — the prologue previously ran before any
+          ;; guard. A library returns 1 (so Sscheme_start returns non-zero to its
+          ;; caller); an executable exits 1.
+          (put-string out
+            (string-append
+              "    (guard (v (#t (jolt-report-throwable v (current-error-port))"
+              (if library? " 1))\n" " (exit 1)))\n")))
           (bld-emit-natives out natives 'optional)
-          (put-string out (string-append
-                            "    (let ((base (or (getenv \"JOLT_PWD\") \".\")))\n"
-                            "      (set-source-roots!\n"
-                            "        (append (map (lambda (r) (string-append base \"/\" r)) (list "
-                            (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
-                            "))\n"
-                            "                (list \"jolt-core\" \"stdlib\"))))\n"))
+           (put-string out (string-append
+                              "      (let ((base (or (getenv \"JOLT_PWD\") \".\")))\n"
+                              "        (set-source-roots!*\n"
+                              "          (append (map (lambda (r) (string-append base \"/\" r)) (list "
+                             (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
+                             "))\n"
+                             "                  (list \"jolt-core\" \"stdlib\"))))\n"))
           (if library?
-              (put-string out (bld-library-launcher-tail))
+              (put-string out (bld-library-launcher-body))
               (put-string out (string-append
                             ;; Call -main only if the entry namespace defines one;
                             ;; a script ns (top-level side effects, no -main) has
                             ;; already run its forms at heap build, so invoking a nil
                             ;; -main would crash ("nil cannot be cast to IFn") — just
                             ;; exit cleanly instead.
-                            "    (let ((maincell (var-cell-lookup " (ei-str-lit entry-ns) " \"-main\")))\n"
-                            ;; render an uncaught throw (+ Clojure backtrace) instead
-                            ;; of Chez's opaque dump, then exit non-zero.
-                            "      (guard (v (#t (jolt-report-throwable v (current-error-port)) (exit 1)))\n"
+                            "      (let ((maincell (var-cell-lookup " (ei-str-lit entry-ns) " \"-main\")))\n"
                             ;; Loading the app left the current ns at the entry ns; reset
                             ;; it to `user` before -main, matching clojure.main (*ns* is
                             ;; `user` when a `-m` -main runs, so a runtime resolve of an
@@ -938,15 +948,13 @@
     "  return Sscheme_start(argc, (const char**)argv); }\n"
     "void jolt_library_shutdown(void) { Sscheme_deinit(); }\n"))
 
-;; The library's scheme-start tail: instead of calling -main and exiting, wrap
-;; the export lookup as a C-callable, hand its address to the stub, then return
-;; so Sscheme_start returns to the embedder (jolt_library_init's caller). Guarded
-;; like the -main launcher: on any init failure, report to stderr and return
-;; non-zero, so jolt_library_init's caller sees it — otherwise jolt_set_lookup_addr
-;; never runs and jolt_lookup silently returns NULL for every name.
-(define (bld-library-launcher-tail)
+;; The library scheme-start tail BODY: publish the export table to the embedder,
+;; then return 0 so Sscheme_start returns to jolt_library_init's caller. The guard
+;; (returning 1 on failure) is emitted by build-binary around the whole launcher —
+;; prologue + this body — so an init failure anywhere reports and returns non-zero;
+;; otherwise jolt_set_lookup_addr never runs and jolt_lookup silently returns NULL.
+(define (bld-library-launcher-body)
   (string-append
-    "    (guard (v (#t (jolt-report-throwable v (current-error-port)) 1))\n"
     "      ;; publish the export table to the embedder\n"
     "      (let* ((lk (foreign-callable jolt-ffi-lookup-export (string) uptr))\n"
     "             (lk-addr (jolt-ffi-register-callable! lk)))\n"

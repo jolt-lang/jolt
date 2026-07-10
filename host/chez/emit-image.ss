@@ -74,34 +74,44 @@
 ;; transform, so emit-image.ss carries no loader dependency.
 (define ei-emit-form-hook (make-parameter #f))
 
-(define (ei-emit-ns* ns-name src optimize? guard?)
-  ;; set the ns before reading so ::kw auto-resolves against this ns (the runtime
-  ;; loader reads form-by-form after the ns form sets it; the cross-compile reads
-  ;; all forms up front, so set it here).
-  (set-chez-ns! ns-name)
+;; Read every form of a namespace's source once — ns set for ::kw resolution, the
+;; per-form hook (the data-reader rewrite under `jolt build`) applied, requires
+;; scanned — and dispatch each classified form to proc. Shared by the direct-emit
+;; path (ei-emit-ns*) and the record path (ei-emit-ns-records) so a --tree-shake
+;; build applies the SAME form transforms as a plain build. The two forked once and
+;; the record path dropped the hook, emitting a semantically different binary off the
+;; same source (a #tag literal the plain path rewrites crashed uncompilable).
+(define (ei-for-each-form ns-name src proc)
+  (set-chez-ns! ns-name)               ; ::kw resolves against this ns
   (let ((hook (ei-emit-form-hook)))
-   (let loop ((forms (ei-read-all src)) (acc '()))
-    (if (null? forms)
-        (reverse acc)
-        (let ((f (let ((f0 (car forms))) (if hook (hook f0) f0))))
+    (let loop ((forms (ei-read-all src)))
+      (unless (null? forms)
+        (let ((f (if hook (hook (car forms)) (car forms))))
           (ce-scan-requires! f ns-name)
           (cond
-            ((ei-ns-form? f) (loop (cdr forms) acc))
+            ((ei-ns-form? f) (loop (cdr forms)))
             ((ce-macro-form? f)
              (let-values (((nm fn-form) (ce-defmacro->fn f)))
-               (let ((scm (if guard?
-                              (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns-name) fn-form optimize?))
-                              (ei-compile-form (make-analyze-ctx ns-name) fn-form optimize?))))
-                 (loop (cdr forms)
-                       (if (and guard? (not scm)) acc
-                           (cons (ei-macro-string ns-name nm scm guard?) acc))))))
+               (proc ns-name 'macro nm fn-form))
+             (loop (cdr forms)))
             (else
-             (let ((scm (if guard?
-                            (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns-name) f optimize?))
-                            (ei-compile-form (make-analyze-ctx ns-name) f optimize?))))
-               (loop (cdr forms)
-                     (if (and guard? (not scm)) acc
-                         (cons (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm) acc)))))))))))
+             (proc ns-name 'form #f f)
+             (loop (cdr forms)))))))))
+
+(define (ei-emit-ns* ns-name src optimize? guard?)
+  (let ((acc '()))
+    (ei-for-each-form ns-name src
+      (lambda (ns kind nm f)
+        (let ((scm (if guard?
+                       (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns) f optimize?))
+                       (ei-compile-form (make-analyze-ctx ns) f optimize?))))
+          (unless (and guard? (not scm))
+            (set! acc
+                  (cons (if (eq? kind 'macro)
+                            (ei-macro-string ns nm scm guard?)
+                            (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm))
+                        acc))))))
+    (reverse acc)))
 
 (define (ei-emit-ns ns-name src) (ei-emit-ns* ns-name src #f #t))
 
@@ -111,31 +121,22 @@
 ;; helpers live in dce.ss; this stays here because it drives the ei-* compiler. A
 ;; top-level def becomes a prunable record; any other form a kept (side-effecting)
 ;; record whose refs are roots. A macro is prunable — its expander isn't called at
-;; runtime in an AOT build.
+;; runtime in an AOT build. Refs come from dce-app-refs (IR walk UNIONED with a text
+;; scan of the emitted Scheme) so a var-deref the back end emits outside a :var node
+;; still roots its target.
 (define (ei-emit-ns-records ns-name src)
-  (set-chez-ns! ns-name)               ; ::kw resolves against this ns (see ei-emit-ns*)
-  (let loop ((forms (ei-read-all src)) (acc '()))
-    (if (null? forms)
-        (reverse acc)
-        (let ((f (car forms)))
-          (ce-scan-requires! f ns-name)
-          (cond
-            ((ei-ns-form? f) (loop (cdr forms) acc))
-            ((ce-macro-form? f)
-             (let-values (((nm fn-form) (ce-defmacro->fn f)))
-               (let* ((ctx (make-analyze-ctx ns-name))
-                      (ir (jolt-ce-run-passes (jolt-ce-analyze ctx fn-form) ctx))
-                      (str (ei-macro-string ns-name nm (jolt-ce-emit-top ir) #f))
-                      (refs (dce-collect-refs '() ir)))
-                 (loop (cdr forms) (cons (dce-rec #f (string-append ns-name "/" nm) refs str) acc)))))
-            (else
-             (let* ((ctx (make-analyze-ctx ns-name))
-                    (ir (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))
-                    (str (jolt-ce-emit-top ir))
-                    (fqn (dce-def-fqn ir))
-                    (refs (dce-collect-refs '() ir)))
-               (loop (cdr forms)
-                     (cons (if fqn (dce-rec #f fqn refs str) (dce-rec #t #f refs str)) acc)))))))))
+  (let ((acc '()))
+    (ei-for-each-form ns-name src
+      (lambda (ns kind nm f)
+        (let* ((ctx (make-analyze-ctx ns))
+               (ir (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))
+               (str (if (eq? kind 'macro)
+                        (ei-macro-string ns nm (jolt-ce-emit-top ir) #f)
+                        (jolt-ce-emit-top ir)))
+               (fqn (if (eq? kind 'macro) (string-append ns "/" nm) (dce-def-fqn ir)))
+               (refs (dce-app-refs ir str)))
+          (set! acc (cons (if fqn (dce-rec #f fqn refs str) (dce-rec #t #f refs str)) acc)))))
+    (reverse acc)))
 
 ;; Scheme string literal for a ns/name — uses the runtime's own writer
 ;; (printable ASCII identifiers only here).

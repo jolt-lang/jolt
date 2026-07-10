@@ -101,6 +101,14 @@ echo "shake smoke: correctness fixtures (ns-publics, defonce, data-readers)"
 run_local_case ns-publics-app   app.core  ""   ""
 run_local_case defonce-app      app.core  ""   "def-var! \"app.core\" \"dead\""
 run_local_case datareader-app   app.core  ""   ""
+# data-reader literal rewriting: a #tag whose reader returns a FORM must splice
+# identically under a plain and a --tree-shake build (the tree-shake path once
+# skipped the per-form reader hook and crashed on the raw tagged literal).
+run_local_case datareader-tag-app app.core "" ""
+# a PROGRAMMATICALLY-registered reader (alter-var-root on *data-readers*, no
+# data_readers.clj): its reader fn is reachable only through the baked data-readers
+# map, so it must be a DCE root or the shake prunes it and read-string degrades.
+run_local_case progreader-app     app.core "" ""
 # multi-path: the same app exercised down BOTH argv branches — a def wrongly
 # shaken off the non-default path diffs on the second invocation.
 run_local_case multipath-app    app.core  ""     ""

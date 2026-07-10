@@ -715,13 +715,18 @@
                                   " " r ")")
                           cells @cache-cells
                           ;; cache the resolved impl in a per-site cell when inside a
-                          ;; def (resolved once on first call, then reused); else
-                          ;; resolve per call.
+                          ;; def; else resolve per call. The cell carries (epoch . fn):
+                          ;; each call compares its epoch against jolt-proto-epoch and
+                          ;; re-resolves on mismatch, so an extend-type after warmup
+                          ;; (a register-protocol-method epoch bump) invalidates this
+                          ;; site like every other dispatch path, mirroring the PIC.
                           resolver (if cells
-                                     (let [c (fresh-label "_dvc$")]
-                                       (swap! cells conj c)
-                                       (str "(or " c " (let ((_f " dv ")) (set! " c " _f) _f))"))
-                                     dv)]
+                                      (let [c (fresh-label "_dvc$")]
+                                        (swap! cells conj c)
+                                        (str "(if (and (pair? " c ") (fx= (car " c ") jolt-proto-epoch))"
+                                             " (cdr " c ")"
+                                             " (let ((_f " dv ")) (set! " c " (cons jolt-proto-epoch _f)) _f))"))
+                                      dv)]
                       (str "(let* ((" r " " (first as) ")) ("
                            resolver " " (str/join " " (cons r (rest as))) "))"))))
       ;; polymorphic inline cache: a protocol call the inference recognized (:proto)
