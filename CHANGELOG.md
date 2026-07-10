@@ -52,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads + source-root setup) as well as the export-publish body, so an init
   failure anywhere reports and returns non-zero instead of leaving
   `jolt_lookup` silently returning `NULL` for every name.
+- A warmed monomorphic protocol-call site in a direct-linked build now honors a
+  runtime `extend-type`: the per-site cache carries the protocol epoch and
+  re-resolves when an extension bumps it, so every dispatch path serves the new
+  implementation.
+- `--opt` builds no longer fold away a throwing operation: `/`, `quot`, `rem`,
+  `mod`, `even?`, and `odd?` are not treated as pure, so
+  `(:a {:a 1 :b (/ 1 0)})` raises `ArithmeticException` like Clojure instead of
+  folding to `1`.
 
 ## [0.2.1] - 2026-07-09
 
