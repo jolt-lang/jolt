@@ -223,6 +223,30 @@
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) ""))))
 
+;; PrintWriter-on — a writer that accumulates writes and, on flush, hands the
+;; accumulated string to flush-fn and clears it; close calls close-fn if given.
+;; (binding [*out* (PrintWriter-on f nil)] …) routes print/pr through it because
+;; they write via the jhost's "write" method.
+(define (pwo-buf self) (vector-ref (jhost-state self) 0))
+(define (pwo-flush-fn self) (vector-ref (jhost-state self) 1))
+(define (pwo-close-fn self) (vector-ref (jhost-state self) 2))
+(define (jolt-print-writer-on flush-fn close-fn)
+  (make-jhost "print-writer-on" (vector (box "") flush-fn close-fn)))
+(register-host-methods! "print-writer-on"
+  (list (cons "write" (lambda (self x) (set-box! (pwo-buf self)
+                                  (string-append (unbox (pwo-buf self)) (writer-piece x))) jolt-nil))
+        (cons "append" (lambda (self x . rest) (set-box! (pwo-buf self)
+                                  (string-append (unbox (pwo-buf self)) (append-text x rest))) self))
+        (cons "flush" (lambda (self)
+                        (let ((b (pwo-buf self)) (ff (pwo-flush-fn self)))
+                          (unless (jolt-nil? ff) (jolt-invoke ff (unbox b)))
+                          (set-box! b "") jolt-nil)))
+        (cons "close" (lambda (self)
+                        (let ((cf (pwo-close-fn self)))
+                          (unless (jolt-nil? cf) (jolt-invoke cf)) jolt-nil)))
+        (cons "toString" (lambda (self) (unbox (pwo-buf self))))))
+(def-var! "clojure.core" "PrintWriter-on" jolt-print-writer-on)
+
 ;; ---- java.util.HashMap ------------------------------------------------------
 ;; A mutable map keyed by jolt values (jolt-hash / jolt=2). State #(chez-hashtable).
 ;; Constructors: () | (capacity) | (capacity load-factor) [sizing args ignored] |

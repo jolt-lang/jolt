@@ -637,4 +637,8 @@
   {:suite "maps / hash-map order" :expr "(seq (hash-map :xmap 1 :! 2))" :expected "([:xmap 1] [:! 2])"}
   {:suite "maps / hash-map order" :expr "(do (def sq-log (atom [])) (defmacro sq-m3 [] `{:a ~(list 'swap! 'sq-log 'conj 1) :b ~(list 'swap! 'sq-log 'conj 2)}) (sq-m3) (deref sq-log))" :expected "[1 2]"}
   {:suite "core / dynamic-vars" :expr "*source-path*" :expected "NO_SOURCE_FILE"}
+  {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"hi\") (.flush w)) @sb)" :expected "hi"}
+  {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"a\") (.write w \"b\") (.flush w)) @sb)" :expected "ab"}
+  {:suite "core / print-simple" :expr "(with-out-str (print-simple {:a 1} *out*))" :expected "{:a 1}"}
+  {:suite "core / StackTraceElement->vec" :expr "(vec (map StackTraceElement->vec (.getStackTrace (Thread/currentThread))))" :expected "[]"}
 ]

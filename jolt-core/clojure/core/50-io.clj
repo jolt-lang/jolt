@@ -211,3 +211,52 @@
   "jolt agents never enter an error state."
   [_a]
   nil)
+
+;; cast — (cast c x): nil passes through (Class.cast of null), otherwise x must
+;; be an instance of c or ClassCastException is thrown.
+(defn cast [c x]
+  (cond
+    (nil? x) nil
+    (instance? c x) x
+    :else (throw (ClassCastException. (str "Cannot cast " x " to " c)))))
+
+;; iteration — a seqable/reducible pager over a step fn of a continuation token k.
+;; jolt has no Seqable reify dispatch, so this returns a lazy-seq (seqable, and
+;; reducible through seq); the step/kf/vf/somef contract matches clojure.core.
+(defn iteration
+  "Creates a seqable/reducible via repeated calls to step, a function of some
+  (continuation token) 'k'. The first call to step will be passed initk,
+  returning 'ret'. Iff (somef ret) is true, (vf ret) will be included in the
+  iteration, else iteration will terminate and vf/kf will not be called. If
+  (kf ret) is non-nil it will be passed to the next step call, else iteration
+  will terminate.
+
+   step - (possibly impure) fn of 'k' -> 'ret'
+   :somef - fn of 'ret' -> logical true/false, default 'some?'
+   :vf - fn of 'ret' -> 'v', a value produced by the iteration, default 'identity'
+   :kf - fn of 'ret' -> 'next-k' or nil (signaling 'do not continue'), default 'identity'
+   :initk - the first value passed to step, default 'nil'"
+  {:added "1.11"}
+  [step & {:keys [somef vf kf initk]
+           :or {vf identity
+                kf identity
+                somef some?
+                initk nil}}]
+  ((fn step* [ret]
+     (lazy-seq
+       (when (somef ret)
+         (cons (vf ret)
+               (when-some [k (kf ret)]
+                 (step* (step k)))))))
+   (step initk)))
+
+;; print-simple — print without print-method dispatch (no print-meta in jolt).
+(defn print-simple [o w]
+  (.write w (str o)))
+
+;; StackTraceElement->vec — [class method file line]. jolt stack traces are
+;; empty, so this exists for API compatibility; nil -> [].
+(defn StackTraceElement->vec [o]
+  (if (nil? o)
+    []
+    [(.getClassName o) (.getMethodName o) (.getFileName o) (.getLineNumber o)]))

@@ -605,3 +605,8 @@
 
 ;; unreduced here: the seq tier's reduce machinery unwraps with it.
 (defn unreduced [x] (if (reduced? x) (deref x) x))
+
+;; unquote/unquote-splicing: the reader lowers ~x to (clojure.core/unquote x)
+;; and ~@x to (clojure.core/unquote-splicing x). Declare them so (resolve
+;; 'unquote) is non-nil, as on the JVM (they are otherwise unbound).
+(declare unquote unquote-splicing)
