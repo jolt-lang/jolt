@@ -3743,4 +3743,6 @@
   {:suite "conformance / core misc" :label "iteration is reducible" :expected "3" :actual "(reduce + 0 (iteration (fn [k] (when (< k 3) [k (inc k)])) :kf second :vf first :initk 0))" :portability :jvm}
   {:suite "conformance / core misc" :label "unquote is a resolvable var" :expected "true" :actual "(some? (resolve (quote unquote)))" :portability :jvm}
   {:suite "conformance / core misc" :label "definline instantiates the expansion template" :expected "9" :actual "(do (definline din-sq [x] `(* ~x ~x)) (din-sq 3))" :portability :common}
+  {:suite "conformance / numeric pass" :label "= keeps exactness across a hinted double and an int literal" :expected "false" :actual "(do (defn f [^double x] (= x 0)) (f 0.0))" :portability :common}
+  {:suite "conformance / numeric pass" :label "loop counter seeded only from a ^long hint, not a bare int literal" :expected "5000000000000000000" :actual "(loop [i 0] (if (< i 3) (recur (+ i 5000000000000000000)) i))" :portability :common}
 ]
