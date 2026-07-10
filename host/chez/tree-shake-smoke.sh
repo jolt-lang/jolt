@@ -15,7 +15,7 @@ if [ ! -d "$examples" ]; then echo "shake smoke: skipped (examples repo not foun
 
 csv="$JOLT_CHEZ_CSV"
 if [ -z "$csv" ]; then
-  chez_bin="$(command -v chez || command -v scheme || command -v petite || true)"
+  chez_bin="$(command -v chez || command -v chezscheme || command -v scheme || command -v petite || true)"
   if [ -n "$chez_bin" ]; then
     base="$(cd "$(dirname "$chez_bin")/.." 2>/dev/null && pwd)"
     for d in "$base"/lib/csv*/*/; do [ -f "${d}libkernel.a" ] && csv="${d%/}" && break; done
