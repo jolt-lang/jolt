@@ -6,6 +6,7 @@
 set -e
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
+CHEZ="${CHEZ:-$(command -v chez || command -v chezscheme || command -v scheme)}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -14,7 +15,7 @@ cp host/chez/seed/image.ss   "$tmp/cur-i.ss"
 i=0
 while [ "$i" -lt 8 ]; do
   i=$((i + 1))
-  chez --script host/chez/bootstrap.ss \
+  "$CHEZ" --script host/chez/bootstrap.ss \
     "$tmp/cur-p.ss" "$tmp/cur-i.ss" "$tmp/new-p.ss" "$tmp/new-i.ss" >/dev/null
   if diff -q "$tmp/cur-p.ss" "$tmp/new-p.ss" >/dev/null \
      && diff -q "$tmp/cur-i.ss" "$tmp/new-i.ss" >/dev/null; then

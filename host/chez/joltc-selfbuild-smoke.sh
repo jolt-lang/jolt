@@ -11,7 +11,7 @@ cd "$root"
 # ships neither, so skip there (CI included).
 csv="$JOLT_CHEZ_CSV"
 if [ -z "$csv" ]; then
-  chez_bin="$(command -v chez || command -v scheme || command -v petite || true)"
+  chez_bin="$(command -v chez || command -v chezscheme || command -v scheme || command -v petite || true)"
   if [ -n "$chez_bin" ]; then
     base="$(cd "$(dirname "$chez_bin")/.." 2>/dev/null && pwd)"
     for d in "$base"/lib/csv*/*/; do
@@ -29,7 +29,7 @@ export JOLT_CHEZ_CSV="$csv"
 # is identical to release, only Chez compile settings differ).
 joltc="$root/target/debug/joltc"
 echo "joltc self-build smoke: building $joltc"
-if ! chez --script host/chez/build-joltc.ss debug "$joltc" >/dev/null 2>&1; then
+if ! "$chez_bin" --script host/chez/build-joltc.ss debug "$joltc" >/dev/null 2>&1; then
   echo "  FAIL: build-joltc.ss exited non-zero"
   exit 1
 fi
