@@ -327,8 +327,9 @@ else
   fails=$((fails + 1))
 fi
 
-# Loader: require :reload / :reload-all, failed-load rollback, and that a
-# data-reader fn whose var resolves surfaces a throw (not silently degraded).
+# Loader: require :reload / :reload-all, failed-load rollback, a data-reader fn
+# whose var resolves surfaces a throw (not silently degraded), the LIST-libspec
+# superset (use '(ns :only [x])), and the prefix-list form ((require '(pfx [c :as s]))).
 # The fixture writes its own scratch ns files under a temp dir and requires them.
 loader_out="$(bin/joltc run test/chez/loader-test.clj 2>/dev/null)"
 if printf '%s' "$loader_out" | grep -q 'LOADER OK'; then

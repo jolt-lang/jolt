@@ -59,6 +59,26 @@
   (chk "reader-throw: load surfaces the tag" (and msg (re-find #"boom" msg)))
   (chk "reader-throw: load surfaces the reader's message" (and msg (re-find #"READER-BOOM" msg))))
 
+;; --- (5) a LIST libspec (jolt superset) loads + refers, not a prefix list ----
+;; (use '(e :only [v])) — the list (e :only [v]) has a KEYWORD second element, so
+;; it is a libspec (target e, :only [v]), NOT the prefix-list form. On the JVM
+;; this shape throws; jolt accepts it. expand-spec used to misread it as a prefix
+;; list and try to load e.v.
+(spit (str root "/e.clj") "(ns e) (def v :e-v) (def w :e-w)")
+(use '(e :only [v]))
+(chk "list-libspec: target e is loaded" (= (vof 'e 'v) :e-v))
+(chk "list-libspec: :only [v] refers v into the current ns" (= (vof 'loader-test 'v) :e-v))
+(chk "list-libspec: :only filters out w (not referred)" (nil? (vof 'loader-test 'w)))
+
+;; --- (6) the prefix-list form still works (JVM parity) ----------------------
+;; (require '(pfx [leaf :as lf])) — list whose second element is a VECTOR (not a
+;; keyword), so it stays a prefix list: loads pfx.leaf, alias lf.
+(.mkdirs (java.io.File. (str root "/pfx")))
+(spit (str root "/pfx/leaf.clj") "(ns pfx.leaf) (def x :leaf-x)")
+(require '(pfx [leaf :as lf]))
+(chk "prefix-list: pfx.leaf is loaded" (= (vof 'pfx.leaf 'x) :leaf-x))
+(chk "prefix-list: alias lf resolves pfx.leaf/x" (= lf/x :leaf-x))
+
 (if (empty? @failures)
   (println "LOADER OK")
   (doseq [f @failures] (println "FAIL:" f)))
