@@ -303,6 +303,18 @@ else
   fails=$((fails + 1))
 fi
 
+# Loader: require :reload / :reload-all, failed-load rollback, and that a
+# data-reader fn whose var resolves surfaces a throw (not silently degraded).
+# The fixture writes its own scratch ns files under a temp dir and requires them.
+loader_out="$(bin/joltc run test/chez/loader-test.clj 2>/dev/null)"
+if printf '%s' "$loader_out" | grep -q 'LOADER OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: loader reload/rollback/reader-throw"
+  printf '%s\n' "$loader_out" | grep FAIL | head -8 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # Unit-checks the REPL read-until-complete predicate over balanced/unbalanced,
 # string, comment and regex-literal inputs. A multi-form `joltc run` so jolt.main
 # is loaded and its private var resolves; the file self-checks and prints a sentinel.
