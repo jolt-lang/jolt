@@ -11,6 +11,10 @@
 #   bench/run.sh fib             # one benchmark, default size
 #   bench/run.sh fib 32          # one benchmark, custom size
 #   NO_JVM=1 bench/run.sh        # jolt only (skip the JVM reference)
+#   MODE_A=1 bench/run.sh        # also time a plain-release build (no
+#                                # --direct-link --opt) per bench — the default
+#                                # `jolt build` most users get; roughly doubles
+#                                # the suite's build time, so it's on demand
 #
 # Building needs Chez's kernel dev files (libkernel.a + scheme.h) and a C compiler,
 # the same as `jolt build`; set JOLT_CHEZ_CSV to override the detected csv dir.
@@ -50,10 +54,26 @@ run_one() {
     printf '%-16s  jolt build FAILED\n' "$ns"; return
   fi
   jmean=$("$bindir/$ns" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
+  # mode A: the plain-release binary (no --direct-link --opt) — what a default
+  # `jolt build` ships. Tracked so a release-mode win or regression is visible.
+  rmean=""
+  if [ -n "$MODE_A" ]; then
+    if "$joltc" build -m "$ns" -o "$bindir/$ns-rel" >/dev/null 2>&1; then
+      rmean=$("$bindir/$ns-rel" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
+    fi
+  fi
   if [ -z "$NO_JVM" ]; then
     vmean=$(clojure -Sdeps '{:paths ["."]}' -M -m "$ns" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
     ratio=$(awk "BEGIN{ if (\"$vmean\"+0>0 && \"$jmean\"+0>0) printf \"%.1fx\", (\"$jmean\"+0)/(\"$vmean\"+0); else printf \"-\" }")
-    printf '%-16s jolt %9s ms   jvm %8s ms   %s\n' "$ns" "${jmean:--}" "${vmean:--}" "$ratio"
+    if [ -n "$MODE_A" ]; then
+      rratio=$(awk "BEGIN{ if (\"$vmean\"+0>0 && \"$rmean\"+0>0) printf \"%.1fx\", (\"$rmean\"+0)/(\"$vmean\"+0); else printf \"-\" }")
+      printf '%-16s opt %9s ms (%s)   release %9s ms (%s)   jvm %8s ms\n' \
+        "$ns" "${jmean:--}" "$ratio" "${rmean:--}" "$rratio" "${vmean:--}"
+    else
+      printf '%-16s jolt %9s ms   jvm %8s ms   %s\n' "$ns" "${jmean:--}" "${vmean:--}" "$ratio"
+    fi
+  elif [ -n "$MODE_A" ]; then
+    printf '%-16s opt %9s ms   release %9s ms\n' "$ns" "${jmean:--}" "${rmean:--}"
   else
     printf '%-16s jolt %9s ms\n' "$ns" "${jmean:--}"
   fi

@@ -40,25 +40,27 @@ source — the jolt/JVM scorecard. jolt's optimizing passes fire only in a build
 `joltc run -m` is unoptimized, so the harness always builds.
 
 Indicative ratios (M-series, single isolated run — numbers are machine-specific,
-regenerate locally), ascending:
+regenerate locally), ascending. **opt** = `--direct-link --opt`; **release** = a
+plain `jolt build` (`MODE_A=1` adds this column):
 
-| benchmark | ratio | axis |
-|---|---|---|
-| `fib` | ~0.6× | call + integer arith |
-| `collections` | ~3.5× | persistent map/vector churn |
-| `mandelbrot` | ~7.5× | pure float compute |
-| `binary-trees` | ~10× | escaping short-lived records (allocation/GC) |
-| `dispatch` | ~12× | megamorphic protocol dispatch |
-| `mono-dispatch` | ~15× | monomorphic protocol dispatch |
+| benchmark | opt | release | axis |
+|---|---|---|---|
+| `fib` | ~1.1× | ~1.0× | call + integer arith |
+| `collections` | ~1.2× | ~1.1× | persistent map/vector churn |
+| `mandelbrot` | ~2.0× | ~6.5× | pure float compute (fl-unboxing needs `--opt`) |
+| `dispatch` | ~2.8× | ~2.8× | megamorphic protocol dispatch |
+| `binary-trees` | ~6.6× | ~6.5× | escaping short-lived records (allocation/GC) |
+| `mono-dispatch` | ~7.8× | ~8.5× | monomorphic protocol dispatch |
 
-- **Compute (~0.6–7.5×)** is the substrate floor: Chez is a native-compiling AOT
-  Scheme, not a profiling JIT. With native arith + direct-linking + inlining jolt
-  is at parity here — `fib` runs *faster* than JVM Clojure (no JIT warmup over a
-  short run), `collections` is within ~3.5×, and `mandelbrot` (~7.5×) is the
-  pure-tight-loop float ceiling that only native codegen moves further.
-- **Dispatch & allocation (~10–15×)** are the remaining architectural gaps, though
-  the type-proving / native-record / bare-field-read work has collapsed them by an
-  order of magnitude (`binary-trees` ~140×→~10×, `mono-dispatch` ~330×→~15×). On a
+- **Compute and collections (~1–2.8×)** sit at or near the substrate floor:
+  Chez is a native-compiling AOT Scheme, not a profiling JIT. `fib` and
+  `collections` are at JVM parity in both modes; `mandelbrot` is ~2× under
+  `--opt` (fl-unboxing) and ~6.5× in a release build — the release gap is the
+  cost of not direct-linking, which is why the scorecard tracks both modes.
+- **Dispatch & allocation (~6.6–8.5×)** are the remaining architectural gaps,
+  though the type-proving / native-record / bare-field-read work has collapsed
+  them by well over an order of magnitude (`binary-trees` ~140×→~6.6×,
+  `mono-dispatch` ~330×→~7.8×). On a
   *statically proven* monomorphic receiver — which whole-program inference now gives
   for a record iterated out of a vector — devirt resolves the impl and a per-site
   inline cache holds it (resolved once, not per call), so `mono-dispatch` is no
@@ -107,7 +109,15 @@ bench/run.sh                 # full suite + JVM scorecard
 bench/run.sh fib             # one benchmark, default size
 bench/run.sh fib 32          # one benchmark, custom size
 NO_JVM=1 bench/run.sh        # jolt only (skip the JVM reference)
+MODE_A=1 bench/run.sh        # also time each bench as a plain release build
 ```
+
+Two build modes matter: **optimized** (`--direct-link --opt`, the default
+scorecard — inlining, scalar replacement, closed-world direct linking) and
+**release** (plain `jolt build`, what a default build ships — inference passes
+but no direct-link/inlining). `MODE_A=1` adds the release column so a
+release-mode win or regression is visible; it roughly doubles build time, so
+it's on demand.
 
 Needs Chez's kernel dev files (`libkernel.a` + `scheme.h`) and `cc` for the build,
 like `jolt build`; set `JOLT_CHEZ_CSV` to override the detected csv dir.
