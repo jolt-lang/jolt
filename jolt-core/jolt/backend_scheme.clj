@@ -15,76 +15,176 @@
                                form-regex? form-regex-source
                                form-inst? form-inst-source form-uuid? form-uuid-source]]))
 
-;; Hot clojure.core primitives lowered to native Scheme.
-;; `=` is the exactness-aware jolt= from values.ss; inc/dec/
-;; not are rt shims. Arithmetic and comparisons lower to the jolt-n* checked
-;; macros (host/chez/seq.ss): the both-Chez-numbers fast path is open-coded and
+;; Hot clojure.core primitives lowered to native Scheme. Every per-op fact —
+;; the call-position Scheme name, the value-position proc, the arity gate, any
+;; fixed-arity fast-path helper, the flonum/fixnum/bigdec specializations, and
+;; whether the result is a Scheme boolean — lives in ONE entry in op-registry,
+;; so the derived accessor tables can never drift against each other (two
+;; shipped bugs were table-drift artifacts: the =/fl=? exactness bug, and
+;; jolt=2 missing from bool-returning-ops so truthy-elision never fired for
+;; 2-arg =). Add a fact to an op's entry and every consumer sees it.
+;;
+;; `=` is the exactness-aware jolt= from values.ss; inc/dec/not are rt shims.
+;; Arithmetic and comparisons lower to the jolt-n* checked macros
+;; (host/chez/seq.ss): the both-Chez-numbers fast path is open-coded and
 ;; anything else (BigDecimal, a non-number) takes the Numbers.ops-style category
 ;; dispatch, with JVM contagion (a double operand wins; an exact zero divisor is
 ;; ArithmeticException; a double zero divisor is ##Inf/##NaN).
-(def ^:private native-ops
-  {"+" "jolt-n+" "-" "jolt-n-" "*" "jolt-n*" "/" "jolt-n-div"
-   "<" "jolt-n<" ">" "jolt-n>" "<=" "jolt-n<=" ">=" "jolt-n>="
-   "=" "jolt=" "inc" "jolt-inc" "dec" "jolt-dec" "not" "jolt-not"
-   "min" "jolt-n-min" "max" "jolt-n-max"
-   "mod" "jolt-mod" "rem" "jolt-rem" "quot" "jolt-quot"
-   "vector" "jolt-vector" "hash-map" "jolt-hash-map-fn" "hash-set" "jolt-hash-set"
-   "conj" "jolt-conj" "get" "jolt-get" "nth" "jolt-nth" "count" "jolt-count"
-   "assoc" "jolt-assoc" "dissoc" "jolt-dissoc" "contains?" "jolt-contains?"
-   "empty?" "jolt-empty?" "peek" "jolt-peek" "pop" "jolt-pop"
-   "first" "jolt-first" "rest" "jolt-rest" "next" "jolt-next" "seq" "jolt-seq"
-   "cons" "jolt-cons" "list" "jolt-list" "reverse" "jolt-reverse" "last" "jolt-last"
-   "map" "jolt-map" "filter" "jolt-filter" "remove" "jolt-remove"
-   "reduce" "jolt-reduce" "into" "jolt-into" "concat" "jolt-concat" "apply" "jolt-apply"
-   "range" "jolt-range" "take" "jolt-take" "drop" "jolt-drop"
-   "keys" "jolt-keys" "vals" "jolt-vals"
-   "even?" "jolt-even?" "odd?" "jolt-odd?" "pos?" "jolt-pos?" "neg?" "jolt-neg?"
-   "zero?" "jolt-zero?" "identity" "jolt-identity" "nil?" "jolt-nil?" "some?" "jolt-some?"
-   "ex-info" "jolt-ex-info"
-   ;; bit ops: and/or/xor/not are Chez bitwise primitives (inlined to native code,
-   ;; no helper call); operands must be integers (a non-integer errors, like the
-   ;; JVM). The shifts keep their helpers (Java >>> masking / arithmetic shift) but
-   ;; emit a direct call instead of var-deref + the variadic overlay.
-   ;; and/or/xor/not map to variadic Chez bitwise prims (safe as a value at any
-   ;; arity). bit-and-not is left to its overlay: its only Scheme impl is 2-arg, so
-   ;; a value-position arity-3 use (via the variadic overlay) would mis-emit.
-   "bit-and" "bitwise-and" "bit-or" "bitwise-ior" "bit-xor" "bitwise-xor" "bit-not" "bitwise-not"
-   "bit-shift-left" "jolt-bit-shift-left" "bit-shift-right" "jolt-bit-shift-right"
-   "unsigned-bit-shift-right" "jolt-unsigned-bit-shift-right"
+;;
+;; Entry keys:
+;;   :call   Scheme name emitted in call position (a jolt-n* macro or prim).
+;;   :value  Scheme proc emitted when the op is passed AS A VALUE (to map /
+;;           reduce / apply); defaults to :call. The jolt-n* call forms are
+;;           macros, so value position substitutes the variadic procedures over
+;;           the same binary dispatch.
+;;   :arity  predicate gating which arities lower; absent means variadic.
+;;   :fixed  {arity helper} fast-path overrides — emit the direct fixed-arity
+;;           helper at that exact arity (no rest list, no fold-left overhead),
+;;           checked before the :call lookup.
+;;   :dbl/:lng/:bd  Chez flonum/fixnum/bigdec op jolt.passes.numeric lowers to
+;;           when every operand is that num-kind. ^long is 64-bit but a Chez
+;;           fixnum is only 61-bit, so +/-/* keep the raw fx ops while
+;;           comparisons / min/max / quot/rem/mod use the jolt-l* fast-path-
+;;           with-fallback macros so a full 64-bit operand falls back instead of
+;;           raising; unchecked-* WRAP to signed 64 bits so they use jolt-unc*
+;;           helpers, not the raising fx ops. inc/dec (and unchecked-inc/dec)
+;;           are special-cased in emit-numeric, not listed. / has no :lng
+;;           specialization (integer division stays on quot/rem).
+;;   :bool?  the emitted proc(s) return a genuine Scheme boolean, so an :if test
+;;           built from one needs no jolt-truthy? wrapper.
+(def ^:private op-registry
+  ;; arithmetic
+  {"+"   {:call "jolt-n+"    :value "jolt-add"   :dbl "fl+"  :lng "fx+"        :bd "jbd-add"}
+   "-"   {:call "jolt-n-"    :value "jolt-sub"   :dbl "fl-"  :lng "fx-"        :bd "jbd-sub"}
+   "*"   {:call "jolt-n*"    :value "jolt-mul"   :dbl "fl*"  :lng "fx*"        :bd "jbd-mul"}
+   "/"   {:call "jolt-n-div" :value "jolt-div"   :dbl "fl/"                   :bd "jbd-div"}
+   ;; comparisons: vacuously true at arity 1 and don't inspect the arg, but
+   ;; Scheme's < demands a number even there — cmp1-ops special-cases that.
+   "<"   {:call "jolt-n<"   :value "jolt-lt" :bool? true
+          :dbl "fl<?"  :lng "jolt-l<"  :bd "jbd-lt?"}
+   ">"   {:call "jolt-n>"   :value "jolt-gt" :bool? true
+          :dbl "fl>?"  :lng "jolt-l>"  :bd "jbd-gt?"}
+   "<="  {:call "jolt-n<="  :value "jolt-le" :bool? true
+          :dbl "fl<=?" :lng "jolt-l<=" :bd "jbd-le?"}
+   ">="  {:call "jolt-n>="  :value "jolt-ge" :bool? true
+          :dbl "fl>=?" :lng "jolt-l>=" :bd "jbd-ge?"}
+   "="   {:call "jolt=" :bool? true :arity #(>= % 2)
+          :fixed {2 "jolt=2"} :dbl "fl=?" :lng "jolt-l="}
+   "=="  {:dbl "fl=?" :lng "jolt-l="}  ; numeric-only, not a native op
+   "inc" {:call "jolt-inc" :arity #(= % 1)}
+   "dec" {:call "jolt-dec" :arity #(= % 1)}
+   "not" {:call "jolt-not" :arity #(= % 1) :bool? true}
+   "min" {:call "jolt-n-min" :value "jolt-min"
+          :dbl "flmin" :lng "jolt-l-min" :bd "jbd-min"}
+   "max" {:call "jolt-n-max" :value "jolt-max"
+          :dbl "flmax" :lng "jolt-l-max" :bd "jbd-max"}
+   "mod"   {:call "jolt-mod"  :arity #(= % 2)
+            :lng "jolt-l-mod"  :bd "jbd-mod"}
+   "rem"   {:call "jolt-rem"  :arity #(= % 2)
+            :lng "jolt-l-rem"  :bd "jbd-rem"}
+   "quot"  {:call "jolt-quot" :arity #(= % 2)
+            :lng "jolt-l-quot" :bd "jbd-quot"}
+   "unchecked-add"      {:lng "jolt-uncadd2"}
+   "unchecked-subtract" {:lng "jolt-uncsub2"}
+   "unchecked-multiply" {:lng "jolt-uncmul2"}
+   ;; collections
+   "vector"      {:call "jolt-vector"}
+   "hash-map"    {:call "jolt-hash-map-fn"}
+   "hash-set"    {:call "jolt-hash-set"}
+   "conj"        {:call "jolt-conj"    :arity #(>= % 1) :fixed {2 "jolt-conj2"}}
+   "get"         {:call "jolt-get"     :arity #(or (= % 2) (= % 3))}
+   "nth"         {:call "jolt-nth"     :arity #(or (= % 2) (= % 3))}
+   "count"       {:call "jolt-count"   :arity #(= % 1)}
+   "assoc"       {:call "jolt-assoc"   :arity #(and (>= % 3) (odd? %))
+                  :fixed {3 "jolt-assoc3"}}
+   "dissoc"      {:call "jolt-dissoc"  :arity #(>= % 1) :fixed {2 "jolt-dissoc2"}}
+   "contains?"   {:call "jolt-contains?" :arity #(= % 2) :bool? true}
+   "empty?"      {:call "jolt-empty?"   :arity #(= % 1) :bool? true}
+   "peek"        {:call "jolt-peek"    :arity #(= % 1)}
+   "pop"         {:call "jolt-pop"     :arity #(= % 1)}
+   ;; seq
+   "first"   {:call "jolt-first"   :arity #(= % 1)}
+   "rest"    {:call "jolt-rest"    :arity #(= % 1)}
+   "next"    {:call "jolt-next"    :arity #(= % 1)}
+   "seq"     {:call "jolt-seq"     :arity #(= % 1)}
+   "cons"    {:call "jolt-cons"    :arity #(= % 2)}
+   "list"    {:call "jolt-list"}
+   "reverse" {:call "jolt-reverse" :arity #(= % 1)}
+   "last"    {:call "jolt-last"    :arity #(= % 1)}
+   "map"     {:call "jolt-map"     :arity #(>= % 2)}
+   "filter"  {:call "jolt-filter"  :arity #(= % 2)}
+   "remove"  {:call "jolt-remove"  :arity #(= % 2)}
+   "reduce"  {:call "jolt-reduce"  :arity #(or (= % 2) (= % 3))}
+   "into"    {:call "jolt-into"    :arity #(= % 2)}
+   "concat"  {:call "jolt-concat"}
+   "apply"   {:call "jolt-apply"   :arity #(>= % 2)}
+   "range"   {:call "jolt-range"   :arity #(and (>= % 0) (<= % 3))}
+   "take"    {:call "jolt-take"    :arity #(= % 2)}
+   "drop"    {:call "jolt-drop"    :arity #(= % 2)}
+   "keys"    {:call "jolt-keys"    :arity #(= % 1)}
+   "vals"    {:call "jolt-vals"    :arity #(= % 1)}
+   ;; predicates
+   "even?"    {:call "jolt-even?"  :arity #(= % 1) :bool? true}
+   "odd?"     {:call "jolt-odd?"   :arity #(= % 1) :bool? true}
+   "pos?"     {:call "jolt-pos?"   :arity #(= % 1) :bool? true :bd "jbd-pos?"}
+   "neg?"     {:call "jolt-neg?"   :arity #(= % 1) :bool? true :bd "jbd-neg?"}
+   "zero?"    {:call "jolt-zero?"  :arity #(= % 1) :bool? true :bd "jbd-zero?"}
+   "identity" {:call "jolt-identity" :arity #(= % 1)}
+   "nil?"     {:call "jolt-nil?"   :arity #(= % 1) :bool? true}
+   "some?"    {:call "jolt-some?"  :arity #(= % 1) :bool? true}
+   "ex-info"  {:call "jolt-ex-info" :arity #(or (= % 2) (= % 3))}
+   ;; bit ops: and/or/xor/not are Chez bitwise primitives (inlined to native
+   ;; code, no helper call); operands must be integers (a non-integer errors,
+   ;; like the JVM). The shifts keep their helpers (Java >>> masking /
+   ;; arithmetic shift) but emit a direct call instead of var-deref + the
+   ;; variadic overlay. and/or/xor/not are variadic Chez prims (safe as a value
+   ;; at any arity); bit-and-not is left to its overlay: its only Scheme impl is
+   ;; 2-arg, so a value-position arity-3 use (via the variadic overlay) would
+   ;; mis-emit.
+   "bit-and"                 {:call "bitwise-and"  :arity #(= % 2)}
+   "bit-or"                  {:call "bitwise-ior"  :arity #(= % 2)}
+   "bit-xor"                 {:call "bitwise-xor"  :arity #(= % 2)}
+   "bit-not"                 {:call "bitwise-not"  :arity #(= % 1)}
+   "bit-shift-left"          {:call "jolt-bit-shift-left"          :arity #(= % 2)}
+   "bit-shift-right"         {:call "jolt-bit-shift-right"         :arity #(= % 2)}
+   "unsigned-bit-shift-right" {:call "jolt-unsigned-bit-shift-right" :arity #(= % 2)}
    ;; positional protocol-method dispatch (defprotocol-emitted shims) — bind
-   ;; directly to the records.ss entry points so a protocol call doesn't var-deref.
-   "protocol-dispatch1" "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch2"
-   "protocol-dispatch3" "protocol-dispatch3"})
+   ;; directly to the records.ss entry points so a protocol call doesn't
+   ;; var-deref. Emitted bare (call name == op name).
+   "protocol-dispatch1" {:call "protocol-dispatch1" :arity #(= % 3)}
+   "protocol-dispatch2" {:call "protocol-dispatch2" :arity #(= % 4)}
+   "protocol-dispatch3" {:call "protocol-dispatch3" :arity #(= % 5)}})
 
-;; Value-position resolution for a clojure.core ref passed AS A VALUE (to map /
-;; filter / reduce / apply). The jolt-n* call-position forms are macros, so value
-;; position substitutes the variadic procedures over the same binary dispatch.
+;; Derived accessor tables. Every consumer below looks these up by op name (or,
+;; for bool-returning-ops, by emitted Scheme name); content is fixed entirely by
+;; op-registry, so edit per-op facts there, not here.
+(def ^:private native-ops
+  (into {} (keep (fn [[op spec]] (when (:call spec) [op (:call spec)]))) op-registry))
 (def ^:private core-value-procs
-  (merge native-ops {"+" "jolt-add" "-" "jolt-sub" "*" "jolt-mul" "/" "jolt-div"
-                     "min" "jolt-min" "max" "jolt-max"
-                     "<" "jolt-lt" ">" "jolt-gt" "<=" "jolt-le" ">=" "jolt-ge"}))
-
-;; Per-op arity gate: only lower when the Scheme prim and the jolt fn agree at
-;; this arity. Ops absent from the table are variadic (legal at any arity).
+  (into {} (keep (fn [[op spec]]
+                   (when (:call spec) [op (or (:value spec) (:call spec))]))
+                 op-registry)))
+;; Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so
+;; an :if test built from them needs no jolt-truthy? wrapper. Covers EVERY
+;; procedure name a :bool? op can emit — its :call name plus each :fixed helper
+;; — so jolt=2 (the 2-arg = helper) is covered, not just jolt=.
+(def ^:private bool-returning-ops
+  (into #{}
+        (for [[_ spec] op-registry
+              :when (:bool? spec)
+              proc (cons (:call spec) (vals (:fixed spec)))
+              :when proc]
+          proc)))
 (def ^:private op-arity
-  {"inc" #(= % 1) "dec" #(= % 1) "not" #(= % 1)
-   "count" #(= % 1) "empty?" #(= % 1) "peek" #(= % 1) "pop" #(= % 1)
-   "mod" #(= % 2) "rem" #(= % 2) "quot" #(= % 2) "contains?" #(= % 2)
-   "get" #(or (= % 2) (= % 3)) "nth" #(or (= % 2) (= % 3))
-   "assoc" #(and (>= % 3) (odd? %)) "dissoc" #(>= % 1) "conj" #(>= % 1)
-   "first" #(= % 1) "rest" #(= % 1) "next" #(= % 1) "seq" #(= % 1)
-   "reverse" #(= % 1) "last" #(= % 1) "keys" #(= % 1) "vals" #(= % 1)
-   "even?" #(= % 1) "odd?" #(= % 1) "pos?" #(= % 1) "neg?" #(= % 1)
-   "zero?" #(= % 1) "identity" #(= % 1) "nil?" #(= % 1) "some?" #(= % 1)
-   "protocol-dispatch1" #(= % 3) "protocol-dispatch2" #(= % 4) "protocol-dispatch3" #(= % 5)
-   "cons" #(= % 2) "filter" #(= % 2) "remove" #(= % 2) "into" #(= % 2)
-   "take" #(= % 2) "drop" #(= % 2) "map" #(>= % 2) "apply" #(>= % 2)
-   "reduce" #(or (= % 2) (= % 3)) "range" #(and (>= % 0) (<= % 3))
-   "ex-info" #(or (= % 2) (= % 3))
-   "bit-and" #(= % 2) "bit-or" #(= % 2) "bit-xor" #(= % 2) "bit-not" #(= % 1)
-   "bit-shift-left" #(= % 2) "bit-shift-right" #(= % 2)
-    "unsigned-bit-shift-right" #(= % 2)
-    "=" #(>= % 2)})
+  (into {} (keep (fn [[op spec]] (when (:arity spec) [op (:arity spec)]))) op-registry))
+(def ^:private fixed-arity-ops
+  (into {} (keep (fn [[op spec]] (when (:fixed spec) [op (:fixed spec)]))) op-registry))
+(def ^:private dbl-ops
+  (into {} (keep (fn [[op spec]] (when (:dbl spec) [op (:dbl spec)]))) op-registry))
+(def ^:private lng-ops
+  (into {} (keep (fn [[op spec]] (when (:lng spec) [op (:lng spec)]))) op-registry))
+(def ^:private bd-ops
+  (into {} (keep (fn [[op spec]] (when (:bd spec) [op (:bd spec)]))) op-registry))
 
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg,
 ;; but Scheme's < demands a number even there — special-case.
@@ -94,49 +194,6 @@
 ;; call on any other method routes to record-method-dispatch (a reify/record
 ;; protocol method).
 (def ^:private supported-host-methods #{"isDirectory" "listFiles"})
-
-;; Native-op Scheme procedures that return a genuine Scheme boolean (#t/#f), so an
-;; :if test built from them needs no jolt-truthy? wrapper.
-(def ^:private bool-returning-ops
-  #{"jolt-n<" "jolt-n<=" "jolt-n>" "jolt-n>=" "jolt=" "jolt-not"
-    "jolt-even?" "jolt-odd?" "jolt-pos?" "jolt-neg?"
-    "jolt-zero?" "jolt-empty?" "jolt-contains?" "jolt-nil?" "jolt-some?"})
-
-;; Numeric-specialized op strings. jolt.passes.numeric tags an arithmetic invoke
-;; :num-kind :double|:long when every operand is that kind; these are the Chez
-;; flonum/fixnum ops it lowers to — no generic dispatch, fixnums unboxed. fl?/fx?
-;; comparisons carry the question mark; fl+/fx+ don't.
-;;
-;; CONTRACT: every op name jolt.passes.numeric/dbl-spec (resp. lng-spec) tags must
-;; have an entry here, or emit-numeric splices a nil op string into the output. Keep
-;; these tables and those specializers in sync.
-(def ^:private dbl-ops
-  {"+" "fl+" "-" "fl-" "*" "fl*" "/" "fl/" "min" "flmin" "max" "flmax"
-   "<" "fl<?" ">" "fl>?" "<=" "fl<=?" ">=" "fl>=?" "=" "fl=?" "==" "fl=?"})
-;; A ^long is 64-bit; a Chez fixnum is only 61-bit. Arithmetic +/-/* keep the raw
-;; fx ops (the fast-arith path; under *unchecked-math* they're already rewritten to
-;; the wrapping unchecked-*). The comparisons / min/max / quot/rem/mod use the
-;; jolt-l* fast-path-with-fallback macros (host/chez/seq.ss) so a full 64-bit
-;; operand falls back to the generic op instead of raising.
-(def ^:private lng-ops
-  {"+" "fx+" "-" "fx-" "*" "fx*" "min" "jolt-l-min" "max" "jolt-l-max"
-   ;; unchecked-* WRAP to signed 64 bits (Java long), so they can't use the raising
-   ;; fx ops — the backend emits the wrapping jolt-unc* helpers (host/chez/seq.ss).
-   "unchecked-add" "jolt-uncadd2" "unchecked-subtract" "jolt-uncsub2" "unchecked-multiply" "jolt-uncmul2"
-   "quot" "jolt-l-quot" "rem" "jolt-l-rem" "mod" "jolt-l-mod"
-   "<" "jolt-l<" ">" "jolt-l>" "<=" "jolt-l<=" ">=" "jolt-l>=" "=" "jolt-l=" "==" "jolt-l="})
-
-;; BigDecimal ops. jolt.passes.numeric tags an arithmetic/comparison invoke
-;; :num-kind :bigdec when every operand is a bigdec (or an integer literal); these
-;; are the bigdec.ss engine procedures it lowers to. Variadic where the source op
-;; is; an integer-literal operand is coerced to a bigdec at runtime, so unlike the
-;; flonum path no literal rewrite is needed.
-(def ^:private bd-ops
-  {"+" "jbd-add" "-" "jbd-sub" "*" "jbd-mul" "/" "jbd-div"
-   "min" "jbd-min" "max" "jbd-max"
-   "quot" "jbd-quot" "rem" "jbd-rem"
-   "<" "jbd-lt?" ">" "jbd-gt?" "<=" "jbd-le?" ">=" "jbd-ge?"
-   "zero?" "jbd-zero?" "pos?" "jbd-pos?" "neg?" "jbd-neg?"})
 
 ;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
@@ -578,15 +635,6 @@
     (if-let [nm (:name node)]
       (let [m (munge-name nm)] (str "(letrec ((" m " " lambda ")) " m ")"))
       lambda)))
-
-;; Fixed-arity fast-path overrides: at these exact arities, emit the direct
-;; fixed-arity Scheme helper instead of the variadic wrapper (no rest list, no
-;; fold-left overhead). Checked before the general native-ops lookup.
-(def ^:private fixed-arity-ops
-  {"=" {2 "jolt=2"}
-   "assoc" {3 "jolt-assoc3"}
-   "conj" {2 "jolt-conj2"}
-   "dissoc" {2 "jolt-dissoc2"}})
 
 ;; If fnode is a clojure.core (or host) ref to a native-op primitive, return the
 ;; Scheme op string — only at an arity where the Scheme op and the jolt fn agree.
