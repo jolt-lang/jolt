@@ -3732,4 +3732,15 @@
   {:suite "conformance / agents" :label "release-pending-sends outside an action is 0" :expected "0" :actual "(release-pending-sends)" :portability :jvm}
   {:suite "conformance / agents" :label "await-for returns true when actions drain" :expected "true" :actual "(let [a (agent 0)] (send a inc) (await-for 1000 a))" :portability :jvm}
   {:suite "conformance / agents" :label "error-handler getter returns the set fn" :expected "true" :actual "(let [a (agent 0) f (fn [_ _])] (set-error-handler! a f) (identical? (error-handler a) f))" :portability :jvm}
+  {:suite "conformance / core misc" :label "cast passes an instance through" :expected "5" :actual "(cast java.lang.Number 5)" :portability :jvm}
+  {:suite "conformance / core misc" :label "cast passes nil through" :expected "nil" :actual "(cast java.lang.String nil)" :portability :jvm}
+  {:suite "conformance / core misc" :label "cast throws on a non-instance" :expected ":cce" :actual "(try (cast java.lang.String 5) (catch ClassCastException _ :cce))" :portability :jvm}
+  {:suite "conformance / core misc" :label "bases of Long includes Number" :expected "true" :actual "(boolean (some (fn [b] (re-find #\"Number\" (str b))) (bases java.lang.Long)))" :portability :common}
+  {:suite "conformance / core misc" :label "bases of nil is nil" :expected "nil" :actual "(bases nil)" :portability :jvm}
+  {:suite "conformance / core misc" :label "mix-collection-hash is an integer" :expected "true" :actual "(int? (mix-collection-hash 42 3))" :portability :common}
+  {:suite "conformance / core misc" :label "mix-collection-hash is deterministic" :expected "true" :actual "(= (mix-collection-hash 42 3) (mix-collection-hash 42 3))" :portability :common}
+  {:suite "conformance / core misc" :label "iteration paginates a step fn" :expected "[0 1 2]" :actual "(vec (iteration (fn [k] (when (< k 3) (list k (inc k)))) :kf second :vf first :initk 0))" :portability :jvm}
+  {:suite "conformance / core misc" :label "iteration is reducible" :expected "3" :actual "(reduce + 0 (iteration (fn [k] (when (< k 3) [k (inc k)])) :kf second :vf first :initk 0))" :portability :jvm}
+  {:suite "conformance / core misc" :label "unquote is a resolvable var" :expected "true" :actual "(some? (resolve (quote unquote)))" :portability :jvm}
+  {:suite "conformance / core misc" :label "definline stamps a callable fn" :expected "3" :actual "(do (definline din [x] (+ x 1)) (din 2))" :portability :common}
 ]

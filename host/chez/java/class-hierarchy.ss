@@ -241,6 +241,7 @@
 (jch-register-supers! "java.util.ConcurrentModificationException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.util.NoSuchElementException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.io.UncheckedIOException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.util.concurrent.RejectedExecutionException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.time.DateTimeException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.time.format.DateTimeParseException" '("java.time.DateTimeException"))
 (jch-register-supers! "java.text.ParseException" '("java.lang.Exception"))
@@ -290,3 +291,15 @@
 ;; Public seam: libraries extend the modeled hierarchy.
 (def-var! "jolt.host" "register-class-supers!"
   (lambda (name supers) (jch-register-supers! name (seq->list supers)) jolt-nil))
+
+;; bases — the direct supers of a class from the jch graph. jolt classes are name
+;; strings (a documented superset of the JVM's Class objects), so the seq holds
+;; name strings; nil for an unknown class or a nil arg.
+(define (jolt-bases c)
+  (cond
+    ((jolt-nil? c) jolt-nil)
+    (else
+     (let ((name (if (string? c) c (jolt-class-name c))))
+       (let ((supers (jch-direct-supers name)))
+         (if (null? supers) jolt-nil (list->cseq supers)))))))
+(def-var! "clojure.core" "bases" jolt-bases)

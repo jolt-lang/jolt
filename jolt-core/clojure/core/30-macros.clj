@@ -712,3 +712,11 @@
 (defmacro memfn [method-name & args]
   `(fn [target# ~@args]
      (~(symbol (str "." (name method-name))) target# ~@args)))
+
+;; definline — experimental: defines a named fn whose body is the expansion; in
+;; jolt it behaves as defn (the inline expansion is not stored, so calls are not
+;; macro-expanded — behavior-compatible for the defn it produces).
+(defmacro definline
+  [name & decl]
+  (let [[pre-args [args expr]] (split-with (comp not vector?) decl)]
+    `(defn ~name ~@pre-args ~args ~expr)))
