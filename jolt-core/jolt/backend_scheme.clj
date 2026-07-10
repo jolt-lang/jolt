@@ -898,29 +898,34 @@
       (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode))
            (direct-link-fn? (:ns fnode) (:name fnode)))
       (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as)))
-      ;; record ctor with matching arity: inline the field vector + make-jrec
-      ;; directly, eliminating jolt-invoke / var-deref / rest-list / ctor call /
-      ;; hashtable lookup entirely. After per-site desc-cell warmup, the hot path
-      ;; is: cell read -> vector -> make-jrec — 2 allocs, no lookups, no dispatch.
-      ;; The shape is set by run-passes (set-ctor-shapes!) before emit.
-      (let [key (str (:ns fnode) "/" (:name fnode))
-            shape (get @ctor-shapes key)]
-        (and (= :var (:op fnode)) shape
-             (= (count (get shape :fields)) (count args))
-             (<= (count args) 6)
-             ;; skip if any ^double field — the inlined path doesn't coerce
-             (not-any? #{"double"} (get shape :tags))))
-      (let [s (get @ctor-shapes (str (:ns fnode) "/" (:name fnode)))
-            tag (:type s)
-            cells @cache-cells
-            desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
-            cached-desc (if cells
-                          (let [c (fresh-label "_cdesc$")]
-                            (swap! cells conj c)
-                            (str "(or " c " (let ((_d " desc-lookup ")) (set! " c " _d) _d))"))
-                          desc-lookup)]
-        (order-args (fn [as]
-                      (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))"))))
+       ;; record ctor with matching arity: inline the native per-arity ctor
+       ;; (make-jrecN) directly — desc + ext + one inline slot per field —
+       ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
+       ;; lookup AND the field vector. After per-site desc-cell warmup the hot
+       ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
+       ;; dispatch. The shape is set by run-passes (set-ctor-shapes!) before emit.
+       (let [key (str (:ns fnode) "/" (:name fnode))
+             shape (get @ctor-shapes key)]
+         (and (= :var (:op fnode)) shape
+              (= (count (get shape :fields)) (count args))
+              (<= (count args) 6)
+              ;; skip if any ^double field — the inlined path doesn't coerce
+              (not-any? #{"double"} (get shape :tags))))
+       (let [s (get @ctor-shapes (str (:ns fnode) "/" (:name fnode)))
+             tag (:type s)
+             cells @cache-cells
+             desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
+             cached-desc (if cells
+                           (let [c (fresh-label "_cdesc$")]
+                             (swap! cells conj c)
+                             (str "(or " c " (let ((_d " desc-lookup ")) (set! " c " _d) _d))"))
+                           desc-lookup)]
+         (order-args (fn [as]
+                       (let [n (count as)]
+                         (if (<= n 8)
+                           (str "(make-jrec" n " " cached-desc " jolt-nil"
+                                (when (pos? n) (str " " (str/join " " as))) ")")
+                           (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))"))))))
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
