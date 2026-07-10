@@ -397,18 +397,28 @@
   (ordered-call nodes (mapv emit nodes)
     (fn [strs] (str "(" ctor (if (empty? strs) "" (str " " (str/join " " strs))) ")"))))
 
-;; An operand whose evaluation has no observable effect and whose result doesn't
-;; depend on when it runs: constants, locals, var/the-var reads, quoted literals.
-;; Re-ordering such operands relative to others is invisible.
+;; An operand whose evaluation has no observable effect: constants, locals,
+;; var/the-var reads, quoted literals.
 (defn- side-effect-free? [n]
   (contains? #{:const :local :var :the-var :quote} (:op n)))
 
-;; Clojure evaluates a call's operands (and recur's args) left to right; Chez's
-;; application order is unspecified (right-to-left in practice). Force source
-;; order by binding operands to fresh temps in a let* — but only when two or more
-;; could have observable effects, so hot calls over locals/consts stay un-wrapped.
+;; A var VALUE read is effect-free but order-SENSITIVE: a mutating sibling
+;; (def/alter-var-root/set!) changes what it yields, so it must not move across
+;; an effectful operand in either direction. A :the-var read (the var object)
+;; is a stable reference — insensitive.
+(defn- order-sensitive-read? [n]
+  (= :var (:op n)))
+
+;; Clojure evaluates a call's operands (and recur's args, and collection-literal
+;; elements) left to right; Chez's application order is unspecified
+;; (right-to-left in practice). Force source order by binding operands to fresh
+;; temps in a let* — but only when an effectful operand coexists with another
+;; order-sensitive one (effectful or a var read), so hot calls over
+;; locals/consts stay un-wrapped.
 (defn- needs-order? [nodes]
-  (> (count (remove side-effect-free? nodes)) 1))
+  (let [e (count (remove side-effect-free? nodes))]
+    (and (>= e 1)
+         (>= (+ e (count (filter order-sensitive-read? nodes))) 2))))
 
 ;; Build a call from operand strings, forcing left-to-right evaluation when
 ;; needed. `nodes`/`strs` are the operands (parallel); `build` receives the

@@ -3745,4 +3745,6 @@
   {:suite "conformance / core misc" :label "definline instantiates the expansion template" :expected "9" :actual "(do (definline din-sq [x] `(* ~x ~x)) (din-sq 3))" :portability :common}
   {:suite "conformance / numeric pass" :label "= keeps exactness across a hinted double and an int literal" :expected "false" :actual "(do (defn f [^double x] (= x 0)) (f 0.0))" :portability :common}
   {:suite "conformance / numeric pass" :label "loop counter seeded only from a ^long hint, not a bare int literal" :expected "5000000000000000000" :actual "(loop [i 0] (if (< i 3) (recur (+ i 5000000000000000000)) i))" :portability :common}
+  {:suite "conformance / eval order" :label "call arg var read after a mutating sibling sees the mutation" :expected "[0 2]" :actual "(do (def eo-y 1) (defn eo-f [a b] [a b]) (eo-f (do (def eo-y 2) 0) eo-y))" :portability :common}
+  {:suite "conformance / eval order" :label "vector literal var read after a mutating sibling sees the mutation" :expected "[0 2]" :actual "(do (def eo-x 1) [(do (def eo-x 2) 0) eo-x])" :portability :common}
 ]
