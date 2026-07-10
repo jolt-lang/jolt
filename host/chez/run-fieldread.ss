@@ -67,6 +67,21 @@
 (let ((e (mark-emit "(:y a 99)")))
   (check "default-arg keeps jolt-get" (has-sub? e "jrec-field-at") #f))
 
+;; field-tag resolution across same-named records: two namespaces each define
+;; Node; a record's simple ^Node field tag resolves to the SAME-NS Node, and a
+;; qualified ^nsa.Node tag resolves to exactly that namespace's Node from
+;; anywhere — never last-writer-wins on the simple name.
+(register-record-shape! "nsa/->Node" (list (kw "x")) (list jolt-nil) "nsa.Node")
+(register-record-shape! "nsb/->Node" (list (kw "x")) (list jolt-nil) "nsb.Node")
+(register-record-shape! "nsa/->Holder"  (list (kw "n")) (list "Node")     "nsa.Holder")
+(register-record-shape! "nsb/->Holder"  (list (kw "n")) (list "Node")     "nsb.Holder")
+(register-record-shape! "nsb/->HolderQ" (list (kw "n")) (list "nsa.Node") "nsb.HolderQ")
+(let* ((m (chez-record-shapes-map))
+       (tag-of (lambda (ck) (jolt-nth (jolt-get (jolt-get m ck) (kw "tags")) 0))))
+  (check "simple ^Node in nsa -> nsa's Node" (tag-of "nsa/->Holder") "nsa/->Node")
+  (check "simple ^Node in nsb -> nsb's Node" (tag-of "nsb/->Holder") "nsb/->Node")
+  (check "qualified ^nsa.Node from nsb -> nsa's Node" (tag-of "nsb/->HolderQ") "nsa/->Node"))
+
 (if (= fails 0)
     (begin (printf "fieldread gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "fieldread gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))

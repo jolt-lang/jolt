@@ -147,12 +147,27 @@
 ;; resolve a field's declared type tag to what jolt.passes.types wants: "num"
 ;; passes through; a record name (simple "Vec3" or qualified "ns.Vec3") resolves
 ;; to its ctor-key (so the field reads back as that record); anything else -> nil.
-(define (chez-resolve-field-tag tag by-name)
+;; Resolution order: the tag as written (a qualified "ns.Vec3" hits its exact
+;; entry), then the owner namespace's record of that simple name (two namespaces
+;; can each define a Node — a simple ^Node means the local one), then any record
+;; with that simple name (imported/cross-ns).
+(define (chez-resolve-field-tag tag by-name owner-ns)
   (cond ((or (not tag) (jolt-nil-t? tag)) jolt-nil)
         ((string=? tag "num") "num")
         ((string=? tag "double") "double")   ; a ^double field reads back as a flonum
-        (else (let ((ck (hashtable-ref by-name (chez-shape-simple-name tag) #f)))
+        (else (let* ((simple (chez-shape-simple-name tag))
+                     (qualified? (not (string=? simple tag)))
+                     (ck (or (and qualified? (hashtable-ref by-name tag #f))
+                             (hashtable-ref by-name (string-append owner-ns "." simple) #f)
+                             (hashtable-ref by-name simple #f))))
                 (if ck ck jolt-nil)))))
+
+;; namespace part of a ctor-key "ns/->Name" (up to the /).
+(define (chez-ctor-key-ns k)
+  (let loop ((i 0))
+    (cond ((>= i (string-length k)) k)
+          ((char=? (string-ref k i) #\/) (substring k 0 i))
+          (else (loop (+ i 1))))))
 
 ;; materialize chez-record-shapes-tbl into "ns/->Name" -> {:fields :tags :type},
 ;; the shape record-type-from-entry consumes.
@@ -160,15 +175,21 @@
   (let ((by-name (make-hashtable string-hash string=?))
         (kw-fields (keyword #f "fields")) (kw-tags (keyword #f "tags")) (kw-type (keyword #f "type"))
         (out (jolt-hash-map)))
-    ;; index simple record name (from the type tag "ns.Name") -> ctor-key for
-    ;; nested-field-tag resolution.
+    ;; index the full type tag "ns.Name" AND the simple record name -> ctor-key
+    ;; for nested-field-tag resolution (qualified entries are unambiguous; the
+    ;; simple entry is the cross-ns fallback and may be overwritten on collision).
     (let-values (((ks vs) (hashtable-entries chez-record-shapes-tbl)))
       (vector-for-each
-        (lambda (k v) (hashtable-set! by-name (chez-shape-simple-name (vector-ref v 2)) k)) ks vs)
+        (lambda (k v)
+          (let ((type-tag (vector-ref v 2)))
+            (hashtable-set! by-name type-tag k)
+            (hashtable-set! by-name (chez-shape-simple-name type-tag) k)))
+        ks vs)
       (vector-for-each
         (lambda (k v)
           (let* ((fields (vector-ref v 0)) (tags (vector-ref v 1)) (type-tag (vector-ref v 2))
-                 (rtags (map (lambda (t) (chez-resolve-field-tag t by-name)) tags)))
+                 (owner-ns (chez-ctor-key-ns k))
+                 (rtags (map (lambda (t) (chez-resolve-field-tag t by-name owner-ns)) tags)))
             (set! out (jolt-assoc out k
                                   (jolt-hash-map kw-fields (apply jolt-vector fields)
                                                  kw-tags   (apply jolt-vector rtags)
