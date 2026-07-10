@@ -99,6 +99,31 @@
     (check "cached devirt == dispatch (1st call)" (jolt-invoke (var-deref "user" "usearea") (var-deref "user" "c")) 7)
     (check "cached devirt == dispatch (2nd call, from cell)" (jolt-invoke (var-deref "user" "usearea") (var-deref "user" "c")) 7)))
 
+;; a warmed mono devirt cell must re-resolve after a runtime extend-type bumps
+;; jolt-proto-epoch, mirroring the PIC: register-protocol-method bumps the epoch
+;; on every extension, so a cached site that ignores it keeps serving the stale
+;; impl while every other dispatch path serves the new one. The cell carries
+;; (epoch . fn); a mismatch re-resolves.
+(let* ((set-direct-link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
+       (emit-top-form    (var-deref "jolt.backend-scheme" "emit-top-form"))
+       (dn (analyze (make-analyze-ctx "user") (jolt-ce-read "(def usearea2 (fn [x] (area x)))")))
+       (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
+       (inv (jolt-get ar0 (kw "body")))
+       (inv2 (jolt-assoc inv (kw "devirt-type") "user.Circle" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+       (dn2 (jolt-assoc dn (kw "init")
+                        (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
+                                    (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
+  (set-direct-link! #t)
+  (let ((e (emit-top-form dn2)))
+    (set-direct-link! #f)
+    (run-emit e)
+    ;; warm: first call caches Circle's original impl (:r -> 7)
+    (check "re-ext: warmed to original impl" (jolt-invoke (var-deref "user" "usearea2") (var-deref "user" "c")) 7)
+    ;; re-extend Circle with a NEW impl; bumps jolt-proto-epoch
+    (evals "(extend-type Circle Shape (area [s] (* (:r s) 100)))")
+    ;; the warmed cell must re-resolve -> 700, not the stale 7
+    (check "re-ext: re-resolves to new impl after extend-type" (jolt-invoke (var-deref "user" "usearea2") (var-deref "user" "c")) 700)))
+
 (if (= fails 0)
     (begin (printf "devirt gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "devirt gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
