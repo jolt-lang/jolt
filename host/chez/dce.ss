@@ -101,6 +101,24 @@
     ((pair? form) (dce-sexp-refs (cdr form) (dce-sexp-refs (car form) acc)))
     (else acc)))
 
+;; All "ns/name" refs a text scan of an emitted Scheme string carries — read every
+;; top-level form and fold dce-sexp-refs. Mirrors how dce-blob-records scans the
+;; minted prelude; run over emitted app strings so a literal (var-deref "ns" "nm")
+;; spliced into an emitted form (with no :var IR node) still roots its target.
+(define (dce-sexp-refs-str str)
+  (let ((p (open-input-string str)))
+    (let loop ((acc '()))
+      (let ((form (read p)))
+        (if (eof-object? form) acc (loop (dce-sexp-refs form acc)))))))
+
+;; Refs an app record roots: the IR walk (every :var/:the-var node) UNIONED with the
+;; text scan of its emitted Scheme. The IR walk is structural truth for compiled
+;; Clojure; the text scan defends a var-deref the back end emits outside a :var node
+;; (a macro splicing raw scheme, or a future emit path) that the IR walk would miss
+;; but the prelude's text scan catches.
+(define (dce-app-refs ir str)
+  (append (dce-collect-refs '() ir) (dce-sexp-refs-str str)))
+
 ;; str re-serializes the read form (compiled identically; comments/whitespace are
 ;; irrelevant).
 (define (dce-blob-records path)
@@ -132,10 +150,25 @@
                         acc)))))))))
 
 ;; A reader fn reached ONLY via runtime (read-string "#my/tag ..") resolves through
-;; *data-readers* var-deref — invisible to the IR graph. Scan source-roots for
-;; data_readers.{clj,cljc} and add their reader-fn symbols as roots.
+;; *data-readers* var-deref — invisible to the IR graph. The baked *data-readers* map
+;; is the source of truth: it carries every reader-fn symbol whether registered via a
+;; data_readers.{clj,cljc} file OR programmatically (alter-var-root), so every symbol
+;; in the live map is a root. The source scan below additionally roots a reader whose
+;; ns failed to load (its symbol still in data_readers.clj, unresolved at bake time).
+(define (dce-reader-sym-roots tbl roots)
+  (if (not (pmap? tbl)) roots
+      (pmap-fold tbl
+        (lambda (k v a)
+          (if (symbol-t? v)
+              (let ((ns-part (symbol-t-ns v)) (nm-part (symbol-t-name v)))
+                (if (and ns-part (not (jolt-nil? ns-part)) nm-part)
+                    (cons (string-append ns-part "/" nm-part) a)
+                    a))
+              a))
+        roots)))
+
 (define (dce-data-reader-roots)
-  (let ((roots '()))
+  (let ((roots (dce-reader-sym-roots (var-deref "clojure.core" "*data-readers*") '())))
     (for-each
       (lambda (root)
         (let ((paths (list (string-append root "/data_readers.clj")
@@ -146,13 +179,7 @@
                 (guard (e (#t #f))
                   (let-values (((m j) (rdr-read-form src 0 (string-length src))))
                     (when (pmap? m)
-                      (pmap-fold m
-                        (lambda (k v a)
-                          (when (symbol-t? v)
-                            (let ((ns-part (symbol-t-ns v)) (nm-part (symbol-t-name v)))
-                              (when (and ns-part (not (jolt-nil? ns-part)) nm-part)
-                                (set! roots (cons (string-append ns-part "/" nm-part) roots))))))
-                        #f)))))))
+                      (set! roots (dce-reader-sym-roots m roots))))))))
             paths)))
       (get-source-roots))
     roots))

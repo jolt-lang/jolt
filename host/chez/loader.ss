@@ -17,6 +17,13 @@
 (define (set-source-roots! roots)
   (set! source-roots roots)
   (load-data-readers!))   ; scan every entry point (cli startup + jolt.host wrapper)
+;; Roots setter that does NOT re-scan data_readers — for an emitted binary's
+;; prologue/launcher, where *data-readers* and the reader namespaces are already
+;; baked (bld-emit-data-readers + the app ns walk). Re-scanning would eagerly
+;; reload each reader namespace via load-jolt-file/jolt-compile-eval-form, which a
+;; tree-shaken no-eval binary has dropped, crashing startup. joltc/build entry
+;; points keep the scanning set-source-roots!.
+(define (set-source-roots!* roots) (set! source-roots roots))
 (define (get-source-roots) source-roots)
 
 ;; --- data readers (#tag literals) -------------------------------------------

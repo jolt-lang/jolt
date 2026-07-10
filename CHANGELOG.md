@@ -32,6 +32,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `java.text.ParseException` as a constructable/catchable host exception class,
   including `.getErrorOffset`.
 
+### Fixed
+
+- A tree-shaken binary crashed at startup when the project registered data
+  readers (`data_readers.clj`): the emitted launcher re-scanned the source roots
+  and eagerly reloaded each reader namespace through `jolt-compile-eval-form`,
+  which a no-eval `--tree-shake` build has dropped. Data readers and reader
+  namespaces are now baked once and not re-scanned at runtime, so a
+  `(read-string "#my/tag …")` resolves its reader in the binary as it does under
+  `joltc run`.
+- Tree-shake soundness: a reader fn reached only through the baked
+  `*data-readers*` map — including one registered programmatically via
+  `alter-var-root`, not just via `data_readers.clj` — is now a DCE root, so the
+  shake no longer prunes it and degrades `read-string` to a call error. App-form
+  reference collection unions an IR walk (`:var`/`:the-var` nodes) with a text
+  scan of the emitted Scheme, so a `(var-deref "ns" "nm")` a macro splices in
+  with no IR node still roots its target.
+- `jolt build --library`: the launcher guard now wraps the prologue (native
+  loads + source-root setup) as well as the export-publish body, so an init
+  failure anywhere reports and returns non-zero instead of leaving
+  `jolt_lookup` silently returning `NULL` for every name.
+
 ## [0.2.1] - 2026-07-09
 
 ### Added
