@@ -58,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The numeric fast path keeps `=` exactness-aware: `(= ^double-x 0)` is `false`
+  like the JVM, and `:long` typing comes only from an explicit `^long` hint —
+  an unhinted integer loop keeps arbitrary precision instead of raising a
+  fixnum overflow.
+- `require` honors `:reload`, `:reload-all`, and `:verbose`; a namespace whose
+  load throws can be required again after the file is fixed; a data reader
+  that resolves but throws surfaces its error (naming the tag) instead of
+  silently degrading.
+- `joltc -e EXPR args…` binds the trailing args as `*command-line-args*`
+  (nil when empty), and the first standalone `--` is consumed as the POSIX
+  end-of-options marker in every arg-taking path (`-e`, `run FILE`, `-m`,
+  `-M` aliases, tasks, and `build` flags); later `--` stay literal.
 - `(?x)` COMMENTS-mode regexes follow Java: whitespace (including newlines —
   multi-line patterns previously matched nothing) and `#`-comments are
   stripped, even inside character classes, and a mid-pattern cluster works.
