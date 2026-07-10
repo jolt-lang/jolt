@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reading a declared-but-unset var returns the `Var$Unbound` sentinel from
+  every surface — a plain read, `@#'x`, and `var-get` all yield the same
+  object (printing as `#object[clojure.lang.Var$Unbound …]`) instead of two
+  of the three throwing; `bound?` still reports false.
+- The self-host byte-fixpoint runs in CI: the seed rebuild is byte-identical
+  on the pinned source-built Chez, so a seed source edited without a remint
+  fails the gate on every platform.
 - A tree-shaken binary crashed at startup when the project registered data
   readers (`data_readers.clj`): the emitted launcher re-scanned the source roots
   and eagerly reloaded each reader namespace through `jolt-compile-eval-form`,

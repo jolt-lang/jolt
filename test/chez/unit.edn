@@ -641,4 +641,14 @@
   {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"a\") (.write w \"b\") (.flush w)) @sb)" :expected "ab"}
   {:suite "core / print-simple" :expr "(with-out-str (print-simple {:a 1} *out*))" :expected "{:a 1}"}
   {:suite "core / StackTraceElement->vec" :expr "(vec (map StackTraceElement->vec (.getStackTrace (Thread/currentThread))))" :expected "[]"}
+  ;; an unbound var reads as a per-cell sentinel naming its var (JVM Var$Unbound
+  ;; parity) on every read surface: a plain compiled read, var-get, and deref/@.
+  {:suite "vars / unbound" :expr "(do (declare uv-a) (pr-str uv-a))" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-a\"]"}
+  {:suite "vars / unbound" :expr "(do (declare uv-b) (pr-str (var-get (var uv-b))))" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-b\"]"}
+  {:suite "vars / unbound" :expr "(do (declare uv-c) (pr-str (deref (var uv-c))))" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-c\"]"}
+  {:suite "vars / unbound" :expr "(do (declare uv-d) (bound? (var uv-d)))" :expected "false"}
+  {:suite "vars / unbound" :expr "(do (declare uv-e) (identical? uv-e (var-get (var uv-e))))" :expected "true"}
+  {:suite "vars / unbound" :expr "(do (declare uv-f) (str uv-f))" :expected "Unbound: #'user/uv-f"}
+  {:suite "vars / unbound" :expr "(pr-str uv-late-undef-xyz)" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-late-undef-xyz\"]"}
+  {:suite "vars / unbound" :expr "(do (declare uv-g) (binding [uv-g 42] (deref (var uv-g))))" :expected "42"}
 ]
