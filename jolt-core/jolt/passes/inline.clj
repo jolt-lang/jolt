@@ -220,10 +220,14 @@
 ;; Both require the dropped sibling values to be pure (we duplicate/discard them).
 ;; ---------------------------------------------------------------------------
 
+;; Pure = no side effects AND total (never throws), so a fold may duplicate or
+;; discard the call. / quot rem mod throw on a zero divisor; even?/odd? throw on
+;; a non-integer — admitting them let scalar-replace drop (:b (/ 1 0)) and swallow
+;; the ArithmeticException. Add nothing here that can throw on a legal input.
 (def ^:private pure-fns
-  #{"+" "-" "*" "/" "<" ">" "<=" ">=" "=" "not=" "inc" "dec"
-    "mod" "rem" "quot" "min" "max" "abs"
-    "nil?" "some?" "not" "get" "zero?" "pos?" "neg?" "even?" "odd?"
+  #{"+" "-" "*" "<" ">" "<=" ">=" "=" "not=" "inc" "dec"
+    "min" "max" "abs"
+    "nil?" "some?" "not" "get" "zero?" "pos?" "neg?"
     "bit-and" "bit-or" "bit-xor"})
 
 (defn- pure-fn? [f]

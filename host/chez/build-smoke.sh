@@ -94,6 +94,21 @@ for frame in 'app.util/deep-boom' 'app.util/mid-boom' 'app.core/-main'; do
     exit 1
   fi
 done
+
+# A pure-fn fold must not discard a throwing op. scalar-replace folds
+# (:a {:a 1 :b (/ 1 0)}) -> 1 under --opt --direct-link, dropping the sibling;
+# / (and quot/rem/mod/even?/odd?) are NOT pure, so the divisor still evaluates,
+# the ArithmeticException fires, and -main prints THROW OK, not the folded 1.
+inline_throw_app="$root/test/chez/inline-throw-app"
+inline_throw_out="$(dirname "$out")/inline-throw-bin"
+if ! JOLT_PWD="$inline_throw_app" bin/joltc build -m app.core -o "$inline_throw_out" --opt --direct-link >/dev/null 2>&1; then
+  echo "  FAIL: inline-throw --opt --direct-link build exited non-zero"; exit 1
+fi
+inline_throw_got="$(cd "$inline_throw_app" && "$inline_throw_out" 2>&1)"
+if [ "$inline_throw_got" != "THROW OK" ]; then
+  echo "  FAIL: pure-fn fold discarded a throwing op — got \`$inline_throw_got\`, want THROW OK"; exit 1
+fi
+
 # A built binary runs -main with *ns* = user, like clojure.main — so a runtime
 # resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
 # matching the JVM and interpreted joltc rather than the entry ns's alias table. A
