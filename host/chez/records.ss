@@ -37,9 +37,89 @@
     (let loop ((ks fkey-list) (i 0))
       (unless (null? ks) (hashtable-set! index (car ks) i) (loop (cdr ks) (+ i 1))))
     (make-jrdesc-rec tag (list->vector fkey-list) index #f)))
-;; An instance: the shared descriptor, the field-value vector, and an extension
-;; map (jolt-nil unless non-field keys have been assoc'd on).
-(define-record-type (jrec make-jrec jrec?) (fields desc vals ext) (nongenerative chez-jrec-v2))
+;; An instance: the shared descriptor + an extension map (jolt-nil unless
+;; non-field keys have been assoc'd on) + the field values INLINE in the record.
+;; Fields are flattened into per-field-count native record types jrec1..jrec8,
+;; each a child of jrec carrying desc+ext as inherited fields; a record with more
+;; than 8 fields spills into jrec* (desc+ext+ a vals vector). One heap object per
+;; record (two for spill), and a field read is a direct slot, not a vector
+;; indirection. jrec-desc/jrec-ext are inherited accessors, so every child (and
+;; spill) answers them — desc-keyed dispatch/PIC stays uniform.
+(define-syntax define-jrec-family
+  (lambda (x)
+    (syntax-case x ()
+      ((_ max-n)
+       (let ((tid (car (syntax->list x))) (mn (syntax->datum #'max-n)))
+         (define (range lo hi)
+           (let loop ((i hi) (acc '())) (if (< i lo) acc (loop (- i 1) (cons i acc)))))
+         (define (sym fmt . args) (string->symbol (apply format #f fmt args)))
+         (define (fsym i) (sym "f~a" i))
+         (define (pred k) (sym "jrec~a?" k))
+         (define (rtname k) (sym "jrec~a" k))
+         (define (mkname k) (sym "make-jrec~a" k))
+         (define (ngname k) (sym "chez-jrec~av1" k))
+         (define (acc k i) (sym "jrec~a-f~a" k i))
+         (define (mut k i) (sym "jrec~a-f~a-set!" k i))
+         (define (fsyms k) (map fsym (range 0 (- k 1))))
+         (define base-def
+           '(define-record-type (jrec make-jrec0 jrec?)
+             (fields (immutable desc) (immutable ext)) (nongenerative chez-jrec-v4)))
+         (define (child-def k)
+           `(define-record-type (,(rtname k) ,(mkname k) ,(pred k))
+              (parent jrec)
+              (fields ,@(map (lambda (f) `(mutable ,f)) (fsyms k)))
+              (nongenerative ,(ngname k))))
+         (define spill-def
+           '(define-record-type (jrec* make-jrec* jrec*?)
+             (parent jrec) (fields (mutable vals)) (nongenerative chez-jrecsp-v1)))
+         (define nfields-def
+           `(define (jrec-nfields r)
+              (cond ,@(map (lambda (k) `((,(pred k) r) ,k)) (range 1 mn))
+                    ((jrec*? r) (vector-length (jrec*-vals r)))
+                    (else 0))))
+         (define (ref-branch k)
+           `((,(pred k) r)
+             (case i
+               ,@(map (lambda (i) `((,i) (,(acc k i) r))) (range 0 (- k 1)))
+               (else (error 'jrec-field-ref "index out of range" i)))))
+         (define fieldref-def
+           `(define (jrec-field-ref r i)
+              (cond ,@(map ref-branch (range 1 mn))
+                    ((jrec*? r) (vector-ref (jrec*-vals r) i))
+                    (else (error 'jrec-field-ref "not a fielded record" r)))))
+         (define (set-branch k)
+           `((,(pred k) r)
+             (case i
+               ,@(map (lambda (i) `((,i) (,(mut k i) r v))) (range 0 (- k 1)))
+               (else (error 'jrec-field-set! "index out of range" i)))))
+         (define fieldset-def
+           `(define (jrec-field-set! r i v)
+              (cond ,@(map set-branch (range 1 mn))
+                    ((jrec*? r) (vector-set! (jrec*-vals r) i v))
+                    (else (error 'jrec-field-set! "not a fielded record" r)))))
+         (define ctor-vec-def
+           `(define jrec-ctor-vec (vector ,@(map mkname (range 0 mn)))))
+         (datum->syntax tid
+           `(begin ,base-def
+                   ,@(map child-def (range 1 mn))
+                   ,spill-def
+                   ,nfields-def ,fieldref-def ,fieldset-def ,ctor-vec-def)))))))
+(define-jrec-family 8)
+;; compatibility ctor (desc vals-vector ext): dispatches to the native per-arity
+;; ctor. The hot ctor paths (make-deftype-ctor / backend inline emission) build
+;; the native ctor directly; this remains for meta-copy and callers still holding
+;; a field vector.
+(define (make-jrec desc vals ext)
+  (let ((n (vector-length vals)))
+    (if (fx<= n 8)
+        (apply (vector-ref jrec-ctor-vec n) desc ext (vector->list vals))
+        (make-jrec* desc ext vals))))
+;; compatibility accessor: rebuilds a fresh field vector from the inline slots.
+;; Read-only — never set! through this, it returns a copy.
+(define (jrec-vals r)
+  (let* ((n (jrec-nfields r)) (v (make-vector n)))
+    (do ((i 0 (fx+ i 1))) ((fx= i n) v)
+      (vector-set! v i (jrec-field-ref r i)))))
 (define (jrec-tag r) (jrdesc-tag (jrec-desc r)))
 ;; descriptor or #f — the dispatch key the inline cache eq?-scans. #f for a
 ;; non-record so a PIC site (and protocol-resolve's record branch) cheaply falls
@@ -241,7 +321,7 @@
   (if (eq? k jolt-deftype-kw)
       (jrec-tag r)
       (let ((i (jrec-field-index r k)))
-        (if i (vector-ref (jrec-vals r) i)
+        (if i (jrec-field-ref r i)
             (let ((ext (jrec-ext r)))
               (if (jolt-nil? ext) d
                   (let ((v (jolt-get ext k jrec-absent)))
@@ -258,7 +338,7 @@
   (if (eq? k jolt-deftype-kw)
       (jrec-tag coll)
       (let ((i (jrec-field-index coll k)))
-        (if i (vector-ref (jrec-vals coll) i)
+        (if i (jrec-field-ref coll i)
             (let* ((ext (jrec-ext coll))
                    (v (if (jolt-nil? ext) jrec-absent (jolt-get ext k jrec-absent))))
               (if (eq? v jrec-absent)
@@ -268,18 +348,18 @@
                   v))))))
 ;; bare-index field read for a statically-known record field — emitted by `jolt
 ;; build --opt` for a struct-typed receiver, where i is the field's declared slot.
-;; When r is the expected record it reads the value vector directly: no field-key
-;; hashtable lookup, no jolt-get dispatch. Falls back to jolt-get otherwise (a map
+;; When r is a record it reads the inline slot directly: no field-key hashtable
+;; lookup, no jolt-get dispatch. Falls back to jolt-get otherwise (a map
 ;; downgraded by dissoc, or a value the inference mistyped), so it stays correct
 ;; even if the static type is wrong.
 (define (jrec-field-at r i k)
-  (if (and (jrec? r) (fx< i (vector-length (jrec-vals r))))
-      (vector-ref (jrec-vals r) i)
+  (if (and (jrec? r) (fx< i (jrec-nfields r)))
+      (jrec-field-ref r i)
       (jolt-get r k)))
 
-;; mutate a deftype's mutable field in place: the value vector is mutable, so
-;; vector-set! updates the field. (set! field v) inside a method lowers to this;
-;; returns v, as set! does.
+;; mutate a deftype's mutable field in place: fields are mutable slots, so
+;; jrec-field-set! updates the field. (set! field v) inside a method lowers to
+;; this; returns v, as set! does.
 (define (jolt-set-field! inst k v)
   (if (jrec? inst)
       (let ((i (jrec-field-index inst k)))
@@ -289,7 +369,7 @@
                      (v2 (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
                                   (number? v) (not (flonum? v)))
                              (exact->inexact v) v)))
-                (vector-set! (jrec-vals inst) i v2) v2)
+                (jrec-field-set! inst i v2) v2)
             (error #f "set! of an unknown field" k)))
       (error #f "set! of a field on a non-record" inst)))
 (define (jrec-ext=? ea eb)
@@ -298,24 +378,24 @@
         (else (jolt=2 ea eb))))
 (define (jrec=? a b)
   (and (string=? (jrec-tag a) (jrec-tag b))
-       (= (vector-length (jrec-vals a)) (vector-length (jrec-vals b)))
-       (let ((va (jrec-vals a)) (vb (jrec-vals b)) (n (vector-length (jrec-vals a))))
-         (let loop ((i 0))
-           (or (= i n)
-               (and (jolt=2 (vector-ref va i) (vector-ref vb i)) (loop (+ i 1))))))
+       (let ((n (jrec-nfields a)))
+         (and (= n (jrec-nfields b))
+              (let loop ((i 0))
+                (or (= i n)
+                    (and (jolt=2 (jrec-field-ref a i) (jrec-field-ref b i)) (loop (+ i 1)))))))
        (jrec-ext=? (jrec-ext a) (jrec-ext b))))
 (define (jrec-hash r)
-  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)) (n (vector-length vals))
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (n (jrec-nfields r))
          (base (let loop ((i 0) (acc (string-hash (jrec-tag r))))
                  (if (= i n) acc
                      (loop (+ i 1) (+ acc (jolt-hash (vector-ref fkeys i))
-                                       (jolt-hash (vector-ref vals i))))))))
+                                       (jolt-hash (jrec-field-ref r i))))))))
     (let ((ext (jrec-ext r)))
       (if (jolt-nil? ext) base (+ base (jolt-hash ext))))))
 (define (jrec-pr r)                      ; #ns.Name{:k v, :k v}
-  (let ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)))
+  (let ((fkeys (jrdesc-fkeys (jrec-desc r))))
     (string-append "#" (jrec-tag r) "{"
-      (let ((n (vector-length vals)))
+      (let ((n (vector-length fkeys)))
         (let loop ((i 0) (first #t) (acc ""))
           (if (= i n)
               (let ((ext (jrec-ext r)))
@@ -327,7 +407,7 @@
                                    (jolt-pr-readable (caar es)) " " (jolt-pr-readable (cdar es))))))))
               (loop (+ i 1) #f
                     (string-append acc (if first "" ", ")
-                      (jolt-pr-readable (vector-ref fkeys i)) " " (jolt-pr-readable (vector-ref vals i)))))))
+                      (jolt-pr-readable (vector-ref fkeys i)) " " (jolt-pr-readable (jrec-field-ref r i)))))))
       "}")))
 
 ;; ---- extend the collection dispatchers with a jrec arm ----------------------
@@ -382,7 +462,7 @@
 (register-count-arm! (lambda (coll) (or (jrec? coll) (jolt-transient? coll)))
   (lambda (coll)
     (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
-          ((jrec? coll) (+ (vector-length (jrec-vals coll))
+          ((jrec? coll) (+ (jrec-nfields coll)
                            (let ((ext (jrec-ext coll))) (if (jolt-nil? ext) 0 (jolt-count ext)))))
           ((jolt-transient? coll) (t-count coll))
           (else (error 'count "uncountable record"))))
@@ -433,14 +513,14 @@
 ;; Removing a declared field downgrades a plain record to a map (JVM parity); an
 ;; extension key drops from the ext map (normalized back to jolt-nil when empty).
 (define (jrec->map-without r drop-k)
-  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)) (n (vector-length vals)))
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (n (vector-length fkeys)))
     (let loop ((i 0) (m empty-pmap))
       (if (= i n)
           (let ((ext (jrec-ext r)))
             (if (jolt-nil? ext) m
                 (fold-left (lambda (mm p) (%r-jolt-assoc1 mm (car p) (cdr p))) m (jrec-ext-pairs ext))))
           (let ((fk (vector-ref fkeys i)))
-            (loop (+ i 1) (if (eq? fk drop-k) m (%r-jolt-assoc1 m fk (vector-ref vals i)))))))))
+            (loop (+ i 1) (if (eq? fk drop-k) m (%r-jolt-assoc1 m fk (jrec-field-ref r i)))))))))
 (define %r-jolt-dissoc jolt-dissoc)
 (define %r-jolt-dissoc2 jolt-dissoc2)
 (define (jrec-dissoc1 coll k)
@@ -476,14 +556,14 @@
 (set! jolt-vals (lambda (m) (if (jrec? m) (jrec-seq-col m 1) (%r-jolt-vals m))))
 ;; a record's seq is its field map-entries in declared order, then any extensions.
 (define (jrec-entry-list r)
-  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (vals (jrec-vals r)) (n (vector-length vals)))
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (n (vector-length fkeys)))
     (let loop ((i 0) (acc '()))
       (if (= i n)
           (let ((ext (jrec-ext r)))
             (append (reverse acc)
                     (if (jolt-nil? ext) '()
                         (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-ext-pairs ext)))))
-          (loop (+ i 1) (cons (make-map-entry (vector-ref fkeys i) (vector-ref vals i)) acc))))))
+          (loop (+ i 1) (cons (make-map-entry (vector-ref fkeys i) (jrec-field-ref r i)) acc))))))
 (define %r-jolt-seq jolt-seq)
 (set! jolt-seq (lambda (x)
   (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
