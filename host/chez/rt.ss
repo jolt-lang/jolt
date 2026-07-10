@@ -231,10 +231,11 @@
 ;; A var is a mutable cell keyed by "ns/name". A `:def` sets the root; a `:var`
 ;; reference reads it at use time (late binding), so a forward/mutually-recursive
 ;; reference resolves to whatever the cell holds when the call actually runs.
-;; declare / (def name) with no init reserves a cell holding this placeholder
-;; until the real def overwrites it (a forward reference resolves to the cell, and
-;; correct code never reads it before the binding def runs).
-(define jolt-unbound (string->symbol "#<jolt-unbound>"))
+;; declare / (def name) with no init, and a forward var-deref on a not-yet-defined
+;; name, reserve a cell whose root is a per-cell unbound sentinel. Per-cell (not a
+;; single global) so it names its var like the JVM's Var$Unbound, and every read
+;; surface (a plain read, var-get, deref/@) returns the SAME object.
+(define-record-type jolt-var-unbound (fields ns name) (nongenerative jolt-var-unbound-v1))
 ;; `defined?` distinguishes a genuinely interned var (def / declare / a native-op
 ;; cell) from a cell lazily materialised by a forward `var-deref` / `(var x)` on a
 ;; not-yet-defined name — `resolve` returns the cell iff defined?.
@@ -244,7 +245,7 @@
 (define (jolt-var ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
-        (let ((c (make-var-cell ns name jolt-nil #f)))
+        (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #f)))
           (hashtable-set! var-table k c)
           c))))
 ;; non-creating lookup (resolve / find-var / ns-unmap): #f when absent, so a
@@ -298,7 +299,7 @@
 (define (declare-var! ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
-        (let ((c (make-var-cell ns name jolt-unbound #t)))  ; declared => interned/resolvable
+        (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #t)))  ; declared => interned/resolvable
           (hashtable-set! var-table k c)
           c))))
 

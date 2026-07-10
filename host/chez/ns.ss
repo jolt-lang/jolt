@@ -287,7 +287,8 @@
 ;; later resolve returns nil.
 (define (jolt-ns-unmap ns-desig sym)
   (let ((c (var-cell-lookup (ns-desig->name ns-desig) (symbol-t-name sym))))
-    (when c (var-cell-defined?-set! c #f) (var-cell-root-set! c jolt-unbound)))
+    (when c (var-cell-defined?-set! c #f)
+           (var-cell-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c)))))
   jolt-nil)
 
 ;; --- ns runtime fns ---------------------------------------------------------
@@ -471,7 +472,7 @@
   (lambda (ns name)
     (let ((c (var-cell-lookup ns name)))
       (if (and c (var-cell-defined? c)
-               (not (eq? (var-cell-root c) jolt-unbound)))
+               (not (jolt-var-unbound? (var-cell-root c))))
           c jolt-nil))))
 
 ;; --- printer patches: a namespace renders as its name (str / pr-str / -e) ----

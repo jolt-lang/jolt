@@ -14,11 +14,12 @@
 
 (define (jolt-var-pred? x) (var-cell? x))
 
-;; the var's current root; unbound is an error (Clojure throws on an unbound var).
+;; the var's current root. Lenient on an unbound root: returns the sentinel, so
+;; var-get / @ on an unbound var match a plain read (JVM Var$Unbound parity —
+;; nothing throws).
 (define (jolt-var-get v)
   (if (var-cell? v)
-      (let ((r (var-cell-root v)))
-        (if (eq? r jolt-unbound) (error #f "Unbound var" v) r))
+      (var-cell-root v)
       (error #f "var-get: not a var" v)))
 
 ;; deref of a var -> its root.
@@ -44,8 +45,18 @@
 (register-pr-arm! var-cell? var->str)
 (register-str-render! var-cell? var->str)
 
+;; an unbound var's sentinel names its var: str -> "Unbound: #'ns/name",
+;; pr-str -> #object[clojure.lang.Var$Unbound 0 "Unbound: #'ns/name"].
+(define (unbound-marker-str u)
+  (string-append "Unbound: #'" (jolt-var-unbound-ns u) "/" (jolt-var-unbound-name u)))
+(define (unbound-marker-pr u)
+  (string-append "#object[clojure.lang.Var$Unbound 0 \"" (unbound-marker-str u) "\"]"))
+(register-pr-str-arm! jolt-var-unbound? unbound-marker-str)
+(register-str-render! jolt-var-unbound? unbound-marker-str)
+(register-pr-readable-arm! jolt-var-unbound? unbound-marker-pr)
+
 ;; bound? — native (the overlay's (get v :root) is nil on a var-cell record).
-(define (jolt-var-bound-one? v) (and (var-cell? v) (not (eq? (var-cell-root v) jolt-unbound))))
+(define (jolt-var-bound-one? v) (and (var-cell? v) (not (jolt-var-unbound? (var-cell-root v)))))
 (define (jolt-bound? . vars) (if (for-all jolt-var-bound-one? vars) #t #f))
 
 (def-var! "clojure.core" "var?" jolt-var-pred?)
