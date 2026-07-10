@@ -71,3 +71,24 @@ jobs:
         # dev-machine check — it only holds on the Chez that minted the seed. See
         # jolt-8479.
         run: make ci
+
+      # jolt-8479 probe: does the seed byte-fixpoint hold on a non-minting Chez?
+      # Rebuilds the seed and dumps the first divergences instead of a bare fail,
+      # so the probe names the drift (hashtable order vs gensym numbering).
+      - name: Selfhost probe (jolt-8479)
+        run: |
+          tmp=$(mktemp -d)
+          scheme --script host/chez/bootstrap.ss \
+            host/chez/seed/prelude.ss host/chez/seed/image.ss "$tmp/p.ss" "$tmp/i.ss" >/dev/null
+          st=0
+          for pair in "prelude host/chez/seed/prelude.ss $tmp/p.ss" "image host/chez/seed/image.ss $tmp/i.ss"; do
+            set -- $pair
+            if diff -q "$2" "$3" >/dev/null; then
+              echo "$1: byte-identical"
+            else
+              st=1
+              echo "=== $1 DIVERGED: $(diff "$2" "$3" | grep -c '^<') changed lines; first 40 diff lines ==="
+              diff "$2" "$3" | head -40
+            fi
+          done
+          exit $st
