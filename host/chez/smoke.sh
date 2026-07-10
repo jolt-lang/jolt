@@ -140,6 +140,30 @@ else
 fi
 rm -rf "$tr_proj"
 
+# CLI trailing-args / POSIX end-of-options. After -e EXPR the remaining argv are
+# *command-line-args* (nil when empty); a leading "--" terminates option parsing
+# and is consumed, so everything after it is literal program data.
+cla_check() {
+  out="$(eval "$1" 2>/dev/null | tail -1)"
+  if [ "$out" = "$2" ]; then pass=$((pass + 1))
+  else echo "  FAIL: $1"; echo "    want \`$2\` got \`$out\`"; fails=$((fails + 1)); fi
+}
+cla_check "bin/joltc -e '(println *command-line-args*)' one two three" '(one two three)'
+cla_check "bin/joltc -e '(println *command-line-args*)' -- one two"      '(one two)'
+cla_check "bin/joltc -e '(println *command-line-args*)' -- -e"           '(-e)'
+cla_check "bin/joltc -e '(println *command-line-args*)' a -- b -- c"     '(a b -- c)'
+cla_check "bin/joltc -e '(println *command-line-args*)'"                 'nil'
+# run FILE -- ... : the "--" is consumed, "-e" stays a program arg.
+rc_dir="$(mktemp -d)"; rc="$rc_dir/rc.clj"; printf '(prn *command-line-args*)\n' > "$rc"
+cla_check "bin/joltc run \"$rc\" -- -e x" '("-e" "x")'
+rm -rf "$rc_dir"
+# -m NS -- ... : same end-of-options rule for a namespace -main.
+mp="$(mktemp -d)"; mkdir -p "$mp/src"
+printf '{:paths ["src"]}\n' > "$mp/deps.edn"
+printf '(ns mcmd) (defn -main [& a] (prn *command-line-args*))\n' > "$mp/src/mcmd.clj"
+cla_check "JOLT_PWD=\"$mp\" bin/joltc -m mcmd -- a b" '("a" "b")'
+rm -rf "$mp"
+
 # --help prints usage, and lists the nREPL server under its real flag name.
 help_out="$(bin/joltc --help 2>/dev/null)"
 if printf '%s' "$help_out" | grep -q -- '--nrepl-server'; then
