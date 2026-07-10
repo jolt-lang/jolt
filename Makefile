@@ -4,6 +4,8 @@
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
+CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
+
 .PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
@@ -29,15 +31,15 @@ selfhost:
 
 # Value-model unit tests (nil/truthiness/collections on Chez).
 values:
-	@chez --script test/chez/values-test.ss
+	@$(CHEZ) --script test/chez/values-test.ss
 
 # Corpus conformance vs JVM-sourced expecteds (allowlist + floor).
 corpus:
-	@chez --script host/chez/run-corpus.ss
+	@$(CHEZ) --script host/chez/run-corpus.ss
 
 # Host-specific unit cases.
 unit:
-	@chez --script host/chez/run-unit.ss
+	@$(CHEZ) --script host/chez/run-unit.ss
 
 # Real-CLI smoke over bin/joltc.
 smoke:
@@ -62,9 +64,9 @@ staticnativesmoke:
 # machine. Built on a dev/CI host that HAS Chez + cc. release = optimize-level 3,
 # no inspector info, compressed; debug = optimize-level 0 + inspector + debug info.
 joltc-release:
-	@chez --script host/chez/build-joltc.ss release target/release/joltc
+	@$(CHEZ) --script host/chez/build-joltc.ss release target/release/joltc
 joltc-debug:
-	@chez --script host/chez/build-joltc.ss debug target/debug/joltc
+	@$(CHEZ) --script host/chez/build-joltc.ss debug target/debug/joltc
 # Re-mint the seed first so the embedded compiler image is current, then both builds.
 joltc: selfhost joltc-release joltc-debug
 	@echo "OK: target/release/joltc and target/debug/joltc built"
@@ -75,7 +77,7 @@ joltcsmoke:
 
 # SCI conformance: load borkdude/sci's source through joltc (floor-gated).
 sci:
-	@chez --script host/chez/run-sci.ss
+	@$(CHEZ) --script host/chez/run-sci.ss
 
 # clojure-test-suite conformance: run the vendored jank-lang/clojure-test-suite
 # per-namespace under joltc, gated on the per-namespace baseline
@@ -86,72 +88,72 @@ cts:
 # FFI: bind native functions (typed foreign-procedure), memory, and that a
 # :blocking call is collect-safe (a parked thread doesn't pin the collector).
 ffi:
-	@chez --script test/chez/ffi-binding-test.ss
+	@$(CHEZ) --script test/chez/ffi-binding-test.ss
 
 # Transients: mutable backing, snapshot on persistent!, and linear-time builds.
 transient:
-	@chez --script test/chez/transient-test.ss
+	@$(CHEZ) --script test/chez/transient-test.ss
 
 # Inference / success-type checking: drive jolt.passes.types directly and assert
 # diagnostic counts + collected calls/escapes (the optimization pass the other
 # gates don't exercise).
 infer:
-	@chez --script host/chez/run-infer.ss
+	@$(CHEZ) --script host/chez/run-infer.ss
 
 # Whole-program param-type fixpoint: record types flowing across fn boundaries
 # (a callee's param picks up its callers' ctor return types), the foundation the
 # bare-index field reads + protocol devirtualization build on.
 wp:
-	@chez --script host/chez/run-wp.ss
+	@$(CHEZ) --script host/chez/run-wp.ss
 
 # Protocol-call devirtualization: a monomorphic call resolves its impl by the
 # inferred record tag (find-protocol-method) instead of routing through the
 # protocol var; the result must match ordinary dispatch.
 devirt:
-	@chez --script host/chez/run-devirt.ss
+	@$(CHEZ) --script host/chez/run-devirt.ss
 
 # Native record field reads: a keyword lookup on a statically-known record reads
 # the field by its declared slot (jrec-field-at) instead of jolt-get; the value
 # must match, and a non-field key / default-arg form keeps the generic path.
 fieldread:
-	@chez --script host/chez/run-fieldread.ss
+	@$(CHEZ) --script host/chez/run-fieldread.ss
 
 # Inline method body field-read gate: when the optimize pipeline re-infers
 # defrecord/deftype inline method bodies with the receiver typed, field reads
 # must emit jrec-field-at (bare index) instead of jolt-get.
 inline-body:
-	@chez --script host/chez/run-inline-body.ss
+	@$(CHEZ) --script host/chez/run-inline-body.ss
 
 # DCE reference collection (dce.ss): an app form's refs must union an IR walk
 # (:var/:the-var nodes) with a text scan of the emitted Scheme, so a macro-spliced
 # (var-deref "ns" "nm") with no :var node still roots its target. Pins both halves.
 dcerefs:
-	@chez --script host/chez/run-dce-refs.ss
+	@$(CHEZ) --script host/chez/run-dce-refs.ss
 
 # Hintless whole-program double inference: a fn whose every call site passes a
 # flonum has its param typed :double by the closed-world fixpoint and unboxed to
 # fl-ops with no ^double hint; an integer caller leaves it generic, an escaped fn
 # keeps :any.
 numwp:
-	@chez --script host/chez/run-numwp.ss
+	@$(CHEZ) --script host/chez/run-numwp.ss
 
 # Mandelbrot count-point hot loop: whole-program fixpoint must seed cr/ci as
 # :double from caller type, and the numeric pass must emit fl-ops with zero
 # jolt-n* generic arith in the double arithmetic path.
 mandelbrot-num:
-	@chez --script host/chez/run-mandelbrot-num.ss
+	@$(CHEZ) --script host/chez/run-mandelbrot-num.ss
 
 # Double record fields: a ^double-tagged field reads back as a flonum (coerced at
 # construction and set!), so hintless arithmetic over those fields unboxes to fl-ops;
 # an untagged field stays generic.
 fieldnum:
-	@chez --script host/chez/run-fieldnum.ss
+	@$(CHEZ) --script host/chez/run-fieldnum.ss
 
 # Protocol-method return inference: a method whose impls all return the same record
 # type has a monomorphic return, so a (method recv ..) call types as that record and
 # a field read off the result bare-indexes; a disagreeing impl keeps the generic path.
 protoret:
-	@chez --script host/chez/run-protoret.ss
+	@$(CHEZ) --script host/chez/run-protoret.ss
 
 # Protocol-dispatch polymorphic inline cache: a protocol call the inference tags
 # :proto/:method but can't prove monomorphic emits a per-site cache keyed on the
@@ -159,30 +161,30 @@ protoret:
 # emission, megamorphic correctness across record types, and that an extend-type at
 # runtime invalidates the cache (the epoch bump) so the new impl is served.
 pic:
-	@chez --script host/chez/run-pic.ss
+	@$(CHEZ) --script host/chez/run-pic.ss
 
 # Nilable record types + flow-sensitive narrowing: a record-or-nil types as a nilable
 # record (some?/nil? don't fold, so a runtime guard stays); inside (if (some? x) ..)
 # the then-branch narrows x to non-nil, so its field reads bare-index and unbox.
 narrow:
-	@chez --script host/chez/run-narrow.ss
+	@$(CHEZ) --script host/chez/run-narrow.ss
 
 # Direct-linking emission: a closed-world build binds top-level app defs to jv$
 # Scheme bindings and routes app->app calls/refs to them, skipping var-deref +
 # jolt-invoke; ^:dynamic/^:redef and nested defs opt out.
 directlink:
-	@chez --script test/chez/directlink-test.ss
+	@$(CHEZ) --script test/chez/directlink-test.ss
 
 # Hint-directed fast arithmetic: ^double/^long param hints (and float literals)
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.
 numeric:
-	@chez --script test/chez/numeric-test.ss
+	@$(CHEZ) --script test/chez/numeric-test.ss
 
 # IR inlining: a small single-arity defn is spliced at call sites (under optimize
 # + direct-link, closed-world guarantee), with ^double/^long entry/return
 # coercions carried through via :coerce nodes.
 inline:
-	@chez --script test/chez/inline-test.ss
+	@$(CHEZ) --script test/chez/inline-test.ss
 
 # Tree-shake soundness: build example apps (incl. deps.edn git-lib apps) default vs
 # --tree-shake and require identical output. Slow (two builds per app); not in the

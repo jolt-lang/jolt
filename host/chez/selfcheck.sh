@@ -5,9 +5,10 @@
 set -e
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
+CHEZ="${CHEZ:-$(command -v chez || command -v chezscheme || command -v scheme)}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-chez --script host/chez/bootstrap.ss \
+"$CHEZ" --script host/chez/bootstrap.ss \
   host/chez/seed/prelude.ss host/chez/seed/image.ss "$tmp/p.ss" "$tmp/i.ss" >/dev/null
 if diff -q host/chez/seed/prelude.ss "$tmp/p.ss" >/dev/null \
    && diff -q host/chez/seed/image.ss "$tmp/i.ss" >/dev/null; then

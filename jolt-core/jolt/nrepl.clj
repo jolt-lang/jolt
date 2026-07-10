@@ -203,6 +203,46 @@
   "Register op name(s) so `describe` advertises them. Call at middleware load."
   [& ops] (swap! extra-ops into (map name ops)))
 
+(defn completions
+  "Return nREPL completion entries for `prefix` in request namespace `ns-str`.
+  This intentionally stays small: vars from ns-map/ns-publics plus alias and
+  namespace-name candidates."
+  [prefix ns-str]
+  (let [prefix (or prefix "")
+        ns-str (if (str/blank? ns-str) (str (ns-name *ns*)) ns-str)
+        ns (or (find-ns (symbol ns-str)) (the-ns 'user))
+        entry (fn ([candidate] {"candidate" candidate})
+                ([candidate type] {"candidate" candidate "type" type}))
+        var-entry (fn [candidate v]
+                    (if-let [n (:ns (meta v))]
+                      {"candidate" candidate "ns" (str n)}
+                      {"candidate" candidate}))
+        keep (fn [s p] (str/starts-with? (str s) p))]
+    (if-let [slash (str/index-of prefix "/")]
+      (let [ns-prefix (subs prefix 0 slash)
+            sym-prefix (subs prefix (inc slash))
+            target (or (get (ns-aliases ns) (symbol ns-prefix))
+                       (find-ns (symbol ns-prefix)))]
+        (if target
+          (vec (for [[sym v] (ns-publics target)
+                     :let [sym-name (str sym)]
+                     :when (keep sym-name sym-prefix)]
+                 (var-entry (str ns-prefix "/" sym-name) v)))
+          []))
+      (vec (concat
+             (for [[sym v] (ns-map ns)
+                   :let [candidate (str sym)]
+                   :when (keep candidate prefix)]
+               (var-entry candidate v))
+             (for [[alias _] (ns-aliases ns)
+                   :let [candidate (str alias "/")]
+                   :when (keep candidate prefix)]
+               (entry candidate "namespace"))
+             (for [n (all-ns)
+                   :let [candidate (str (ns-name n) "/")]
+                   :when (keep candidate prefix)]
+               (entry candidate "namespace")))))))
+
 ;; --- built-in handler ------------------------------------------------------
 (defn- built-in-handler [request]
   (let [op (get request "op")]
@@ -211,9 +251,15 @@
       (= op "close")    (respond request {"status" ["session-closed" "done"]})
       (= op "describe") (respond request {"status" ["done"]
                                           "versions" {"jolt-nrepl" {"major" 0 "minor" 1}}
-                                          "ops" (zipmap (into #{"clone" "close" "describe" "eval" "load-file"}
+                                          "ops" (zipmap (into #{"clone" "close" "describe" "eval" "load-file"
+                                                                "completions" "complete"}
                                                               @extra-ops)
                                                         (repeat {}))})
+      (or (= op "completions") (= op "complete"))
+      (respond request {"completions" (completions (or (get request "prefix")
+                                                       (get request "symbol"))
+                                                   (get request "ns"))
+                        "status" ["done"]})
       (or (= op "eval") (= op "load-file"))
       (let [code (wire-> (if (= op "load-file") (get request "file") (get request "code")))
             {:keys [value out ns err]} (evaluate code (get request "ns"))]
