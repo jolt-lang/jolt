@@ -51,35 +51,70 @@
         (cond ((null? ts) #f)
               ((let ((c (var-cell-lookup (car ts) name))) (and c (var-cell-defined? c))) (car ts))
               (else (loop (cdr ts)))))))
-;; parse a require/use spec FORM and register its :as alias + :refer names under
-;; `cns`. spec: [ns :as a :refer [x y] ...] / (ns ...) / bare ns. opts are
-;; keyword/value pairs after the ns symbol.
+;; --- libspec parsing (shared by the loader + compile-eval) ------------------
+;; A libspec is one of: a bare symbol `foo`; a vector `[foo :as f :refer [x]]`;
+;; or a LIST with keyword options `(foo :only [x])` (jolt superset — see below).
+;; parse-libspec returns (target-name . opts) where opts is an alist of
+;; (keyword-name-string . value-form), or #f if `spec` isn't a recognizable
+;; libspec. This is the single spec->target+opts parser routed through by
+;; loader-require / loader-use (loader.ss), chez-register-spec!, and — via it —
+;; ce-scan-requires! (compile-eval.ss).
+;;
+;; JOLT SUPERSET: a bare LIST libspec — (ns :only [x]) or (ns :as a) — is
+;; accepted here. On reference Clojure this shape is FATAL: the list is treated
+;; as a prefix list whose second element must be a lib, so a keyword there throws
+;; "Don't know how to create ISeq from: clojure.lang.Keyword". Accepting it is a
+;; safe superset — no JVM-valid program changes meaning — and keeps the loader's
+;; expand-spec consistent with this parser (both treat a list with a keyword
+;; second element as one libspec). A list whose second element is NOT a keyword
+;; stays a PREFIX list (JVM parity): (clojure [string :as str]).
+(define (spec-items spec)
+  (cond ((pvec? spec) (seq->list spec))
+        ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
+        ((symbol-t? spec) (list spec))
+        (else '())))
+
+(define (parse-libspec spec)
+  (let ((items (spec-items spec)))
+    (and (pair? items) (symbol-t? (car items))
+         (let loop ((xs (cdr items)) (opts '()))
+           (cond ((or (null? xs) (null? (cdr xs))) (cons (symbol-t-name (car items)) (reverse opts)))
+                 ((keyword? (car xs))
+                  (loop (cddr xs) (cons (cons (keyword-t-name (car xs)) (cadr xs)) opts)))
+                 (else (cons (symbol-t-name (car items)) (reverse opts))))))))
+
+;; A LIST-shaped spec is a PREFIX list (not a single libspec) iff its second
+;; element is NOT a keyword — the JVM (clojure [string :as str]) form. A list
+;; whose second element IS a keyword is the list-libspec superset above.
+(define (prefix-list-items? items)
+  (and (pair? items) (symbol-t? (car items))
+       (pair? (cdr items))
+       (not (keyword? (cadr items)))))
+
+;; Register a parsed libspec's :as alias + :refer/:only names under `cns`.
 (define (chez-register-spec! cns spec)
-  (let ((items (cond ((pvec? spec) (seq->list spec))
-                     ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
-                     (else '()))))
-    (when (and (pair? items) (symbol-t? (car items)))
-      (let ((target (symbol-t-name (car items))))
-        (let loop ((xs (cdr items)))
-          (when (and (pair? xs) (pair? (cdr xs)))
-            (let ((k (car xs)) (v (cadr xs)))
-              (when (keyword? k)
-                (cond
-                  ((string=? (keyword-t-name k) "as")
-                   (when (symbol-t? v) (chez-register-alias! cns (symbol-t-name v) target)))
-                  ;; :refer (require) and :only (use) both bring unqualified names
-                  ;; into cns resolving to target/name.
-                  ((or (string=? (keyword-t-name k) "refer") (string=? (keyword-t-name k) "only"))
-                   (cond
-                     ;; :refer :all — bring in every public var (require :refer :all)
-                     ((and (keyword? v) (string=? (keyword-t-name v) "all"))
-                      (chez-register-refer-all! cns target))
-                     ;; :refer [a b] or :refer (a b) — both forms list names to bring in.
-                     ((or (pvec? v) (cseq? v) (empty-list-t? v))
-                      (for-each (lambda (n)
-                                  (when (symbol-t? n) (chez-register-refer! cns (symbol-t-name n) target)))
-                                (seq->list v))))))))
-            (loop (cddr xs))))))))
+  (let ((parsed (parse-libspec spec)))
+    (when parsed
+      (let ((target (car parsed)))
+        (for-each
+          (lambda (opt)
+            (let ((k (car opt)) (v (cdr opt)))
+              (cond
+                ((string=? k "as")
+                 (when (symbol-t? v) (chez-register-alias! cns (symbol-t-name v) target)))
+                ;; :refer (require) and :only (use) both bring unqualified names
+                ;; into cns resolving to target/name.
+                ((or (string=? k "refer") (string=? k "only"))
+                 (cond
+                   ;; :refer :all — bring in every public var (require :refer :all)
+                   ((and (keyword? v) (string=? (keyword-t-name v) "all"))
+                    (chez-register-refer-all! cns target))
+                   ;; :refer [a b] or :refer (a b) — both forms list names to bring in.
+                   ((or (pvec? v) (cseq? v) (empty-list-t? v))
+                    (for-each (lambda (n)
+                                (when (symbol-t? n) (chez-register-refer! cns (symbol-t-name n) target)))
+                              (seq->list v))))))))
+          (cdr parsed))))))
 
 ;; a namespace designator -> its name string (a jns or a symbol; the corpus never
 ;; passes a bare string).

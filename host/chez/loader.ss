@@ -376,14 +376,6 @@
   (load-jolt-file path)
   jolt-nil)
 
-;; The target ns name of a require/use spec ([ns …] / (ns …) / bare ns).
-(define (spec-target-name spec)
-  (let ((items (cond ((pvec? spec) (seq->list spec))
-                     ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
-                     ((symbol-t? spec) (list spec))
-                     (else '()))))
-    (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items)))))
-
 ;; A libspec under a prefix joins onto it: a bare symbol `string` -> `prefix.string`,
 ;; a vector `[string :as s]` -> `[prefix.string :as s]` (opts preserved).
 (define (prefix-join prefix lib)
@@ -398,11 +390,13 @@
 
 ;; The prefix-list form of a require/use spec: a LIST `(prefix lib …)` expands to
 ;; one spec per lib (prefix.lib), so (:require (clojure [string :as str])) means
-;; clojure.string :as str. A vector / symbol spec is already a single lib.
+;; clojure.string :as str. A list with a KEYWORD second element is a single
+;; libspec (the jolt superset — see parse-libspec in ns.ss), not a prefix list;
+;; a vector / symbol spec is already a single lib.
 (define (expand-spec s)
   (if (or (cseq? s) (empty-list-t? s))
       (let ((items (seq->list s)))
-        (if (and (pair? items) (symbol-t? (car items)) (pair? (cdr items)))
+        (if (prefix-list-items? items)
             (map (lambda (lib) (prefix-join (symbol-t-name (car items)) lib)) (cdr items))
             (list s)))
       (list s)))
@@ -422,14 +416,25 @@
           ((keyword? (car xs)) (loop (cdr xs) (cons (keyword-t-name (car xs)) acc)))
           (else (loop (cdr xs) acc)))))
 
-(define (ldr-load+register specs force-named?)
+;; Load each expanded libspec's target (no-op if baked/already loaded), register
+;; its :as/:refer under the caller ns, and — for `use` (use? #t) — refer every
+;; public var when the spec has no :only/:refer filter. Target + opts both come
+;; from the shared parse-libspec (ns.ss): the single spec->target+opts parser
+;; routed through by loader-require / loader-use / chez-register-spec! /
+;; ce-scan-requires!.
+(define (ldr-load+register specs force-named? use?)
   (for-each
     (lambda (s0)
       (for-each
         (lambda (s)
-          (let ((target (spec-target-name s)))
-            (when target (load-namespace* target force-named?)))
-          (chez-register-spec! (chez-current-ns) s))
+          (let* ((parsed (parse-libspec s))
+                 (target (and parsed (car parsed)))
+                 (opt-names (if parsed (map car (cdr parsed)) '())))
+            (when target (load-namespace* target force-named?))
+            (chez-register-spec! (chez-current-ns) s)
+            (when (and use? target
+                       (not (or (member "only" opt-names) (member "refer" opt-names))))
+              (chez-register-refer-all! (chez-current-ns) target))))
         (expand-spec s0)))
     specs))
 
@@ -441,33 +446,11 @@
          (verbose? (member "verbose" flags)))
     (if reload-all?
         (parameterize ((ldr-reload-all? #t) (ldr-verbose? verbose?))
-          (ldr-load+register real #f))
+          (ldr-load+register real #f #f))
         (parameterize ((ldr-verbose? verbose?))
-          (ldr-load+register real (and reload? #t)))))
+          (ldr-load+register real (and reload? #t) #f))))
   jolt-nil)
 (def-var! "clojure.core" "require" loader-require)
-
-(define (ldr-use-specs specs force-named?)
-  (for-each
-    (lambda (spec0)
-      (for-each
-        (lambda (spec)
-          (let ((target (spec-target-name spec)))
-            (when target (load-namespace* target force-named?)))
-          (chez-register-spec! (chez-current-ns) spec)
-          (let* ((items (cond ((pvec? spec) (seq->list spec))
-                              ((symbol-t? spec) (list spec))
-                              (else '())))
-                 (target (and (pair? items) (symbol-t? (car items)) (symbol-t-name (car items))))
-                 (filtered (let scan ((xs (if (pair? items) (cdr items) '())))
-                             (cond ((null? xs) #f)
-                                   ((and (keyword? (car xs))
-                                         (member (keyword-t-name (car xs)) '("only" "refer"))) #t)
-                                   (else (scan (cdr xs)))))))
-            (when (and target (not filtered))
-              (chez-register-refer-all! (chez-current-ns) target))))
-        (expand-spec spec0)))
-    specs))
 
 (define (loader-use . specs0)
   (let* ((flags (ldr-flag-names specs0))
@@ -477,9 +460,9 @@
          (verbose? (member "verbose" flags)))
     (if reload-all?
         (parameterize ((ldr-reload-all? #t) (ldr-verbose? verbose?))
-          (ldr-use-specs real #f))
+          (ldr-load+register real #f #t))
         (parameterize ((ldr-verbose? verbose?))
-          (ldr-use-specs real (and reload? #t)))))
+          (ldr-load+register real (and reload? #t) #t))))
   jolt-nil)
 (def-var! "clojure.core" "use" loader-use)
 

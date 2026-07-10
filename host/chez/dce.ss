@@ -78,11 +78,17 @@
 
 ;; clojure.core fns the runtime .ss shims reference by name (via var-deref) — they
 ;; aren't visible in the IR call graph, so seed them as roots. (Found by grepping the
-;; runtime shims; the smoke harness catches a miss as a diff/crash.)
+;; runtime shims; run-dce-refs.ss's core-root guard now keeps this list honest — a
+;; new shim reference that isn't here fails that gate instead of shipping a prunable
+;; var a tree-shaken app dereferences at runtime.) `send` is rooted because the STM
+;; commit path (refs.ss) dispatches every queued agent send — including send-off /
+;; send-via queued inside a dosync — through clojure.core/send, so an app that uses
+;; send-off in a transaction roots send-off but not send in its own IR.
 (define dce-runtime-core-roots
   '("clojure.core/identity" "clojure.core/isa?" "clojure.core/line-seq"
     "clojure.core/make-hierarchy" "clojure.core/read" "clojure.core/read-string"
-    "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"))
+    "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"
+    "clojure.core/send"))
 
 ;; --- reading a minted blob (prelude.ss) into records ------------------------
 ;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the

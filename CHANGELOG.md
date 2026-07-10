@@ -60,6 +60,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mod`, `even?`, and `odd?` are not treated as pure, so
   `(:a {:a 1 :b (/ 1 0)})` raises `ArithmeticException` like Clojure instead of
   folding to `1`.
+- A var read in a call or collection literal now evaluates in source order
+  against a mutating sibling: `(f (do (def y 2) 0) y)` passes `[0 2]` like
+  Clojure instead of reading `y` before the mutation.
+- List libspecs whose second element is a keyword — `(:require (ns :only [x]))`
+  — parse as libspecs everywhere (previously `require`/`use` mis-read them as
+  prefix lists); the JVM rejects that shape outright, so this is a documented
+  superset.
+- A tree-shaken binary that queues agent sends inside a `dosync` no longer
+  prunes `send` (the STM commit path resolves it by name at runtime); a new
+  gate asserts every such runtime reference is a shake root.
 
 ## [0.2.1] - 2026-07-09
 
