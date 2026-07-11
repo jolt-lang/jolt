@@ -654,6 +654,10 @@
       (let ((pt (or (jrdesc-ptable desc)
                     (let ((h (make-eq-hashtable))) (jrdesc-ptable-set! desc h) h))))
         (hashtable-set! pt (intern-pm-key proto method) fn))))
+  ;; a (re)registration of this impl invalidates any contagion clone built for it —
+  ;; the clone captured the prior body. Keyed exactly (type/proto/method) so a
+  ;; sibling type's clone survives; devirt-resolve-fl then falls back to devirt-resolve.
+  (remove-clone! type-tag proto method)
   (if #f #f))
 (define (find-protocol-method type-tag proto method)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
@@ -1060,6 +1064,47 @@
 (define (devirt-resolve type-tag proto-name method-name obj)
   (or (find-protocol-method type-tag proto-name method-name)
       (protocol-resolve proto-name method-name obj)))
+
+;; ---- contagion clone registry -----------------------------------
+;; A devirtualized call site over an impl whose body has a :num field beside a
+;; proven :double operand resolves a contagion-specialized clone (fl* + the :num
+;; operand coerced via exact->inexact) instead of the shared impl body. The clone is
+;; emitted once per (impl, record-type) in a whole-program build and registered here,
+;; keyed exactly like devirt-resolve's lookup. PIC and the generic protocol registry
+;; never see it — a megamorphic site resolves the shared impl through type-registry,
+;; so the contagion is gated to monomorphic call sites by construction.
+;; register-protocol-method invalidates a key's clone on (re)registration, so a
+;; re-extend that replaces the impl makes devirt-resolve-fl fall back to the fresh
+;; devirt-resolve. Startup order is sound: the impl registers first (bumping the
+;; epoch and removing a not-yet-present clone), then the clone's sibling def registers.
+(define clone-registry (make-hashtable string-hash string=?))
+(define (register-clone type-tag proto method fn)
+  (let* ((ti (or (hashtable-ref clone-registry type-tag #f)
+                 (let ((h (make-hashtable string-hash string=?))) (hashtable-set! clone-registry type-tag h) h)))
+         (pi (or (hashtable-ref ti proto #f)
+                 (let ((h (make-hashtable string-hash string=?))) (hashtable-set! ti proto h) h))))
+    (hashtable-set! pi method fn)
+    jolt-nil))
+;; the back end emits this alongside a register-inline-method call, passing the bare
+;; type-name (the call's first arg); the runtime tags it via the current ns exactly
+;; as register-inline-method does, so the clone and the impl land under the same tag
+;; the devirt site's full :devirt-type names. No ns bookkeeping in the back end.
+(define (register-clone* type-name proto method fn)
+  (register-clone (string-append (chez-current-ns) "." type-name) proto method fn))
+(define (find-clone type-tag proto method)
+  (let ((ti (hashtable-ref clone-registry type-tag #f)))
+    (and ti (let ((pi (hashtable-ref ti proto #f))) (and pi (hashtable-ref pi method #f))))))
+(define (remove-clone! type-tag proto method)
+  (let ((ti (hashtable-ref clone-registry type-tag #f)))
+    (when ti
+      (let ((pi (hashtable-ref ti proto #f)))
+        (when pi (hashtable-delete! pi method))))))
+;; a devirt site whose (type/proto/method) has a clone resolves it; otherwise the
+;; ordinary devirt-resolve. The non-specialized path is byte-identical to before —
+;; the back end emits devirt-resolve-fl only at a site it knows has a clone.
+(define (devirt-resolve-fl type-tag proto-name method-name obj)
+  (or (find-clone type-tag proto-name method-name)
+      (devirt-resolve type-tag proto-name method-name obj)))
 
 ;; dot-dispatch fallback used by emit for (.method record args): find the method
 ;; in ANY protocol the record's type implements.

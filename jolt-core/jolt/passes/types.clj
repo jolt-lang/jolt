@@ -72,6 +72,30 @@
 ;; reads narrow to the direct accessor); a conflicting/escaping/mutable field is
 ;; absent here (reads :any). Consulted by record-type-from-entry for UNTAGGED fields.
 (def ^:private field-types-box (atom {}))
+;; rich variant: same ctor-arg joins but :num is kept (an integer/mixed join), so a
+;; specialized clone built off it sees :num field reads as :double-contagion operands.
+;; Populated alongside field-types-box in wp-infer!, but consulted ONLY through
+;; *field-type-box* (bound by contagion-specialize-arity) — the shared fixpoint,
+;; pm-rets, and the ordinary impl-body path read the lean field-types-box, so they
+;; never see :num. That isolation is what keeps Option A's mega-regression fix.
+(def ^:private rich-field-types-box (atom {}))
+(def ^:dynamic *field-type-box* nil)
+
+;; clone-resolving devirt sites whose contagion clone returns :double. Populated by
+;; the whole-program pre-pass (backend contagion-prepass!) AFTER wp-infer! has set
+;; rich-field-types-box; empty outside a whole-program build. infer-call consults it
+;; at a devirt site to type the call's return :double per-site — so a caller's
+;; accumulator add over that site fires dbl-arith? and lowers to fl+ — WITHOUT
+;; touching global pm-rets (the leak that sank Option A's :double-everywhere). A
+;; PIC/megamorphic site has no :devirt-type, so it never sees this. Sound because the
+;; clone's body lowered under the :double-sibling invariant, so its return is a
+;; flonum; double-ret? is the clone's inferred return type, not assumed.
+(def ^:private clone-double-ret-box (atom #{}))
+(defn reset-clone-double-ret! [] (reset! clone-double-ret-box #{}))
+(defn add-clone-double-ret! [type-tag proto method]
+  (swap! clone-double-ret-box conj (str type-tag "|" proto "|" method)))
+(defn- clone-double-ret? [type-tag proto method]
+  (contains? @clone-double-ret-box (str type-tag "|" proto "|" method)))
 
 ;; per-wp-pass ctor-site collection. collecting-fields? gates the infer-call hook so
 ;; only the wp fixpoint's final pass collects (not check-form / pm-rets / reinfer).
@@ -119,7 +143,8 @@
     (= tag "num") :num
     (some? tag) (let [e (get shapes tag)]
                   (if e (record-type-from-entry e tag depth shapes) :any))
-    :else (let [inf (get-in @field-types-box [ctor-key field-kw])]
+    :else (let [box (or *field-type-box* field-types-box)
+                inf (get-in @box [ctor-key field-kw])]
             (if inf inf :any))))
 (defn- record-type-from-entry [rs ctor-key depth shapes]
   (let [fields (get rs :fields)
@@ -495,8 +520,8 @@
                    (assoc node :proto (nth pm 0) :method (nth pm 1)
                                 :fn fnode' :args (mapv (fn [r] (nd r)) ares))
                    (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
-         (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
-               rt (cond
+          (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
+                rt (cond
                    (= cn "range") (mk-vec :num)
                    (and cn (contains? elem-fns cn) (> n 0))
                    (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
@@ -518,12 +543,19 @@
                                          ares args)]
                         (assoc base :args coerced))
                       base)]
-           (let [rt1 (if (and (= rt :double) (not maybe-dbl))
+           (let [;; a devirt site whose contagion clone returns :double types its
+                 ;; return :double per-site — so a caller accumulator add over it
+                 ;; fires dbl-arith? and lowers to fl+. global pm-rets is untouched;
+                 ;; PIC/megamorphic sites (no rtype) never reach here.
+                 devirt-double? (and rtype pm
+                                     (clone-double-ret? rtype (nth pm 0) (nth pm 1)))
+                 rt* (if devirt-double? :double rt)
+                 rt1 (if (and (= rt* :double) (not maybe-dbl))
                        (assoc base* :num-read :double) base*)
                  rt2 (if rtype
                        (assoc rt1 :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
                        rt1)]
-             [rt rt2])))))
+             [rt* rt2])))))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."
@@ -933,6 +965,53 @@
                  (map-ir-children walk n)))]
     (walk node)))
 
+;; count :coerce :double nodes anywhere in a subtree (reduce-ir-children is one
+;; level, so walk it). Used to tell whether contagion added a coercion the shared
+;; (lean) path leaves out — the clone-worth-emitting signal.
+(defn- count-coerce-double [node]
+  (letfn [(walk [n]
+            (let [self (if (and (= :coerce (get n :op)) (= :double (get n :kind))) 1 0)]
+              (+ self (reduce-ir-children (fn [acc c] (+ acc (walk c))) 0 n))))]
+    (walk node)))
+
+(defn contagion-specialize-arity
+  "Build a contagion-specialized clone of a protocol-method impl's fn `arity` for the
+  receiver record `type-name`. Returns [specialized-arity eligible?].
+
+  The receiver (param 0) is seeded as the record type with its :num fields surfaced
+  (rich-field-types-box, via *field-type-box*), so dbl-arith? contagions a :num field
+  read that sits beside a proven :double operand — wrapping it in coerce :double,
+  emitted as exact->inexact. That is the same machinery a genuine ^double field
+  reaches; contagion is sound because Clojure double contagion makes the result a
+  double regardless, so eagerly converting the :num operand is value-identical
+  (the same rule dbl-arith? already encodes). A pure-:num expression (no proven :double operand)
+  contagions nothing — dbl-arith? requires a :double sibling.
+
+  eligible? is true only when contagion fired a site the shared (lean) path leaves
+  generic — more coerce :double nodes than the lean receiver type yields — so a clone
+  is emitted exactly when it recovers fl* the shared body lacks. Isolated from the
+  shared fixpoint: it reads rich-field-types-box, never field-types-box, so pm-rets
+  and the ordinary impl body stay Option-A lean. Returns [arity false] when the
+  receiver isn't a known record (a host type, or no record shape)."
+  [arity type-name]
+  (let [params (get arity :params)
+        body (get arity :body)
+        rich-rtype (binding [*field-type-box* rich-field-types-box]
+                     (inline-impl-receiver-type type-name params))]
+    (if (not rich-rtype)
+      [arity false false]
+      (let [env (mk-env false false)
+            rich-res (infer body (if (seq params) {(first params) rich-rtype} {}) env)
+            rich-body (nth rich-res 1)
+            rich-ret (nth rich-res 0)
+            lean-rtype (inline-impl-receiver-type type-name params)
+            lean-body (if lean-rtype
+                        (nth (infer body (if (seq params) {(first params) lean-rtype} {}) env) 1)
+                        body)]
+        (if (> (count-coerce-double rich-body) (count-coerce-double lean-body))
+          [(assoc arity :body rich-body) true (= :double rich-ret)]
+          [arity false false])))))
+
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded
   (ptmap: param-name -> type), returning the def with annotated bodies. The back
@@ -1068,7 +1147,16 @@
     (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
                        (if (nilable? t) (assoc base :nilable true) base))
     :else :any))
-(defn- derive-field-types [joins demoted escaped]
+;; the rich variant keeps :num, so a specialized clone's :num field reads type :num
+;; and dbl-arith? contagions them beside a proven :double operand (the invariant).
+;; Feeds rich-field-types-box only; never the shared path.
+(defn- shallow-field-type-rich [t]
+  (cond
+    (or (= t :double) (= t :num)) t
+    (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
+                       (if (nilable? t) (assoc base :nilable true) base))
+    :else :any))
+(defn- derive-field-types [joins demoted escaped shallow]
   (reduce-kv
     (fn [m ctor-key argts]
       (if (or (contains? demoted ctor-key) (contains? escaped ctor-key))
@@ -1077,7 +1165,7 @@
           (reduce (fn [m2 i]
                     (let [fw (nth fields i nil) t (nth argts i nil)]
                       (if (and fw t (not= t :any))
-                        (assoc-in m2 [ctor-key fw] (shallow-field-type t)) m2)))
+                        (assoc-in m2 [ctor-key fw] (shallow t)) m2)))
                   m (range (count argts))))))
     {} joins))
 
@@ -1127,8 +1215,9 @@
         (reset! field-types-box ftypes)
         (let [[param-converged? new-ptypes] (wp-param-fixpoint nodes spec ks)
               escaped (set (collected-escapes))
-              new-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped)
-              ft-stable? (= new-ftypes ftypes)
+               new-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped shallow-field-type)
+               new-rich-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped shallow-field-type-rich)
+               ft-stable? (= new-ftypes ftypes)
               sound? (and param-converged? ft-stable?)]
           (if (or sound? (>= ft-iter 8))
             (let [seed-ptypes (if sound?
@@ -1136,6 +1225,7 @@
                                 (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
                                         new-ptypes ks))
                   _ (reset! field-types-box (if sound? new-ftypes {}))
+                  _ (reset! rich-field-types-box (if sound? new-rich-ftypes {}))
                   ;; re-derive the protocol-method return types now that field types
                   ;; are known: an impl body that reads a field unboxes once the field
                   ;; proves :double, so its joined return (the callers' pm-ret)

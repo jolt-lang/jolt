@@ -263,15 +263,18 @@
 (define jolt-wp-set-proto-methods! (var-deref "jolt.passes.types" "set-protocol-methods!"))
 (define jolt-wp-host-record-shapes (var-deref "jolt.host" "record-shapes"))
 (define jolt-wp-host-proto-methods (var-deref "jolt.host" "protocol-methods"))
+(define jolt-contagion-prepass!      (var-deref "jolt.backend-scheme" "contagion-prepass!"))
+(define jolt-contagion-prepass-done! (var-deref "jolt.backend-scheme" "contagion-prepass-done!"))
+(define jolt-reset-clone-prepass!    (var-deref "jolt.backend-scheme" "reset-clone-prepass!"))
 
 (define (bld-wp-infer! ordered)
   (jolt-wp-set-record-shapes! (jolt-wp-host-record-shapes #f))
   (jolt-wp-set-proto-methods! (jolt-wp-host-proto-methods #f))
-  (let ((nodes '()))
+  (let ((nodes '()) (ns-nodes '()))
     (for-each
       (lambda (nf)
         (set-chez-ns! (car nf))
-        (let ((src (ldr-read-source (cdr nf))))
+        (let ((src (ldr-read-source (cdr nf))) (per-ns '()))
           (parameterize ((rdr-source-file (cdr nf)))
             (for-each
               (lambda (f)
@@ -286,10 +289,20 @@
                                           (car nf) "\n")
                                          (current-error-port))
                                 #f))
-                    (set! nodes (cons (jolt-ce-analyze (make-analyze-ctx (car nf)) f) nodes)))))
-              (ei-read-all src)))))
+                    (let ((n (jolt-ce-analyze (make-analyze-ctx (car nf)) f)))
+                      (set! nodes (cons n nodes))
+                      (set! per-ns (cons n per-ns))))))
+              (ei-read-all src)))
+          (set! ns-nodes (cons (cons (car nf) (reverse per-ns)) ns-nodes))))
       ordered)
-    (jolt-wp-infer! (apply jolt-vector (reverse nodes)))))
+    (jolt-wp-infer! (apply jolt-vector (reverse nodes)))
+    ;; contagion clone-site pre-pass: an impl worth a specialized clone is one that is
+    ;; BOTH contagion-eligible (:num field beside a proven :double) AND reached by a
+    ;; devirtualized call site. Run per-ns after wp-infer! (rich field types must be
+    ;; live) so a devirt site can resolve the clone regardless of emit order.
+    (jolt-reset-clone-prepass!)
+    (for-each (lambda (p) (jolt-contagion-prepass! (apply jolt-vector (cdr p)) (car p))) ns-nodes)
+    (jolt-contagion-prepass-done!)))
 
 ;; Strings emitted before each app ns's forms, replaying what the source loader
 ;; does per file: (1) set chez-current-ns so runtime ns-sensitive setup forms
