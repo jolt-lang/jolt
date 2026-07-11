@@ -243,15 +243,25 @@
 (defn reset-clone-sites! [] (reset! clone-sites nil))
 (defn- clone-site-key [tag proto method] (str tag "|" proto "|" method))
 (defn- clone-site? [tag proto method] (and @clone-sites (contains? @clone-sites (clone-site-key tag proto method))))
-;; whole-program pre-pass accumulators: impl keys (ns.type|proto|method) for
-;; contagion-eligible impls, and devirt keys (devirt-type|proto|method) for the call
-;; sites that target them. The build driver calls contagion-prepass! per-ns (it knows
-;; the ns) then contagion-prepass-done!, which intersects them — a clone is worth
-;; emitting only where an eligible impl is also reached by a devirtualized call site.
+;; whole-program pre-pass accumulator: impl keys (ns.type|proto|method) for
+;; contagion-eligible impls. The build driver calls contagion-prepass! per-ns (it
+;; knows the ns) then contagion-prepass-done!, which makes clone-sites the
+;; eligible-impl set. clone-sites is consulted ONLY by the :devirt-type emit clause
+;; — PIC and generic protocol dispatch never look at it — so a devirt site over an
+;; eligible impl resolves the clone (the win, gated to monomorphic call sites) while
+;; a megamorphic site over the same impl stays on the PIC path (untouched). That is
+;; the brief's design: "the gate must be the call site's dispatch mode," not the
+;; impl's. We do NOT intersect with devirt-reached sites: the devirt annotation only
+;; lands on nodes during the emit re-analysis (after wp-infer! has populated pm-rets),
+;; so it is absent from the pre-pass's first-analysis nodes — intersecting would
+;; silently drop every site (the clones would be emitted but never resolved).
+;; Resolving at a devirt site over an eligible impl is value-identical by the
+;; invariant, so there is no correctness cost; a clone for an eligible impl that no
+;; devirt site reaches is dead (kept by DCE via register-clone*) — a size, not
+;; correctness, concern, checked via the binary-size gate.
 (def ^:private clone-impl-keys (atom nil))
-(def ^:private clone-devirt-keys (atom nil))
 (defn reset-clone-prepass! []
-  (reset! clone-impl-keys #{}) (reset! clone-devirt-keys #{}) (reset! clone-sites nil))
+  (reset! clone-impl-keys #{}) (reset! clone-sites nil))
 (defn contagion-prepass! [nodes ns]
   (letfn [(walk [n]
             (when-some [[type-name proto method fc] (register-impl-invoke n)]
@@ -259,15 +269,11 @@
                 (when (and (= 1 (count ars))
                            (nth (types/contagion-specialize-arity (first ars) type-name) 1))
                   (swap! clone-impl-keys conj (clone-site-key (str ns "." type-name) proto method)))))
-            (when (:devirt-type n)
-              (swap! clone-devirt-keys conj
-                     (clone-site-key (:devirt-type n) (:devirt-proto n) (:devirt-method n))))
             (ir/reduce-ir-children (fn [_ c] (walk c) nil) nil n))]
     (run! walk nodes)
     nil))
 (defn contagion-prepass-done! []
-  (let [sites (set/intersection (or @clone-impl-keys #{}) (or @clone-devirt-keys #{}))]
-    (reset! clone-sites (not-empty sites)) nil))
+  (reset! clone-sites (not-empty @clone-impl-keys)) nil)
 
 ;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
 ;; run-passes before each form's emit so emit-invoke can recognize ctor calls with
