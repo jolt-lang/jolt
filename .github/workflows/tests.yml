@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/chez
-          key: chez-${{ runner.os }}-v10.4.1-x11off
+          key: chez-${{ runner.os }}-${{ env.ImageOS }}-v10.4.1-x11off
 
       - name: Build Chez Scheme from source
         if: steps.cache-chez.outputs.cache-hit != 'true'

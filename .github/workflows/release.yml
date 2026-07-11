@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/chez
-          key: chez-${{ runner.os }}-v10.4.1-x11off
+          key: chez-${{ matrix.os }}-v10.4.1-x11off
 
       - name: Build Chez Scheme from source (Linux)
         if: runner.os == 'Linux' && steps.cache-chez.outputs.cache-hit != 'true'
@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: chez-install
-          key: chez-${{ runner.os }}-v10.4.1-mingw64
+          key: chez-${{ matrix.os }}-v10.4.1-mingw64
 
       - name: Build Chez Scheme from source (Windows)
         if: runner.os == 'Windows' && steps.cache-chez-win.outputs.cache-hit != 'true'
