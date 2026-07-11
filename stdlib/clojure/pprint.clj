@@ -806,7 +806,7 @@
 
 (defn- absolute-reposition [navigator position]
   (if (>= position (:pos navigator))
-    (relative-reposition navigator (- (:pos navigator) position))
+    (relative-reposition navigator (- position (:pos navigator)))
     (->arg-navigator (:seq navigator) (drop position (:seq navigator)) position)))
 
 (defn- relative-reposition [navigator position]
@@ -925,6 +925,269 @@
                                :padchar (:padchar params) :at true}
                     (init-navigator [arg]) nil))
     arg-navigator))
+
+;;======================================================================
+;; real-number formatting (~F, ~$) — lifted from the JVM cl_format.clj. jolt is
+;; JVM-like (real chars, ratios), so the JVM mantissa/exponent decomposition via
+;; (.toString Double) ports directly. convert-ratio collapses to (double x); the
+;; bigdec subnormal-precision fallback is a documented residual corner.
+;;======================================================================
+
+(defn- convert-ratio [x]
+  (if (ratio? x) (double x) x))
+
+(defn- float-parts-base [f]
+  (let [s (.toLowerCase (.toString f))
+        exploc (.indexOf s (int \e))
+        dotloc (.indexOf s (int \.))]
+    (if (neg? exploc)
+      (if (neg? dotloc)
+        [s (str (dec (count s)))]
+        [(str (subs s 0 dotloc) (subs s (inc dotloc))) (str (dec dotloc))])
+      (if (neg? dotloc)
+        [(subs s 0 exploc) (subs s (inc exploc))]
+        [(str (subs s 0 1) (subs s 2 exploc)) (subs s (inc exploc))]))))
+
+(defn- float-parts [f]
+  (let [[m e] (float-parts-base f)
+        m1 (rtrim m \0)
+        m2 (ltrim m1 \0)
+        delta (- (count m1) (count m2))
+        e (if (and (pos? (count e)) (= (nth e 0) \+)) (subs e 1) e)]
+    (if (empty? m2)
+      ["0" 0]
+      [m2 (- (Long/parseLong e) delta)])))
+
+(defn- inc-s [s]
+  (let [len-1 (dec (count s))]
+    (loop [i len-1]
+      (cond
+        (neg? i) (apply str "1" (repeat (inc len-1) "0"))
+        (= \9 (nth s i)) (recur (dec i))
+        :else (apply str (subs s 0 i)
+                     (char (inc (int (nth s i))))
+                     (repeat (- len-1 i) "0"))))))
+
+(defn- round-str [m e d w]
+  (if (or d w)
+    (let [len (count m)
+          w (if w (max 2 w))
+          round-pos (cond
+                      d (+ e d 1)
+                      (>= e 0) (max (inc e) (dec w))
+                      :else (+ w e))
+          [m1 e1 round-pos len] (if (= round-pos 0)
+                                  [(str "0" m) (inc e) 1 (inc len)]
+                                  [m e round-pos len])]
+      (if round-pos
+        (if (neg? round-pos)
+          ["0" 0 false]
+          (if (> len round-pos)
+            (let [round-char (nth m1 round-pos)
+                  result (subs m1 0 round-pos)]
+              (if (>= (int round-char) (int \5))
+                (let [round-up-result (inc-s result)
+                      expanded (> (count round-up-result) (count result))]
+                  [(if expanded
+                     (subs round-up-result 0 (dec (count round-up-result)))
+                     round-up-result)
+                   e1 expanded])
+                [result e1 false]))
+            [m e false]))
+        [m e false]))
+    [m e false]))
+
+(defn- expand-fixed [m e d]
+  (let [[m1 e1] (if (neg? e)
+                  [(str (apply str (repeat (dec (- e)) \0)) m) -1]
+                  [m e])
+        len (count m1)
+        target-len (if d (+ e1 d 1) (inc e1))]
+    (if (< len target-len)
+      (str m1 (apply str (repeat (- target-len len) \0)))
+      m1)))
+
+(defn- insert-decimal [m e]
+  (if (neg? e)
+    (str "." m)
+    (let [loc (inc e)]
+      (str (subs m 0 loc) "." (subs m loc)))))
+
+(defn- get-fixed [m e d]
+  (insert-decimal (expand-fixed m e d) e))
+
+(defn- fixed-float [params navigator offsets]
+  (let [w (:w params)
+        d (:d params)
+        [arg navigator] (next-arg navigator)
+        [sign abs] (if (neg? arg) ["-" (- arg)] ["+" arg])
+        abs (convert-ratio abs)
+        [mantissa exp] (float-parts abs)
+        scaled-exp (+ exp (:k params))
+        add-sign (or (:at params) (neg? arg))
+        append-zero (and (not d) (<= (dec (count mantissa)) scaled-exp))
+        [rounded-mantissa scaled-exp expanded] (round-str mantissa scaled-exp
+                                                          d (if w (- w (if add-sign 1 0))))
+        fixed-repr (get-fixed rounded-mantissa (if expanded (inc scaled-exp) scaled-exp) d)
+        fixed-repr (if (and w d
+                            (>= d 1)
+                            (= (nth fixed-repr 0) \0)
+                            (= (nth fixed-repr 1) \.)
+                            (> (count fixed-repr) (- w (if add-sign 1 0))))
+                     (subs fixed-repr 1)
+                     fixed-repr)
+        prepend-zero (= (first fixed-repr) \.)]
+    (if w
+      (let [len (count fixed-repr)
+            signed-len (if add-sign (inc len) len)
+            prepend-zero (and prepend-zero (not (>= signed-len w)))
+            append-zero (and append-zero (not (>= signed-len w)))
+            full-len (if (or prepend-zero append-zero) (inc signed-len) signed-len)]
+        (if (and (> full-len w) (:overflowchar params))
+          (print (apply str (repeat w (:overflowchar params))))
+          (print (str (apply str (repeat (- w full-len) (:padchar params)))
+                      (if add-sign sign)
+                      (if prepend-zero "0")
+                      fixed-repr
+                      (if append-zero "0")))))
+      (print (str (if add-sign sign)
+                  (if prepend-zero "0")
+                  fixed-repr
+                  (if append-zero "0"))))
+    navigator))
+
+(defn- dollar-float [params navigator offsets]
+  (let [[arg navigator] (next-arg navigator)
+        [mantissa exp] (float-parts (Math/abs (convert-ratio arg)))
+        d (:d params)
+        n (:n params)
+        w (:w params)
+        add-sign (or (:at params) (neg? arg))
+        [rounded-mantissa scaled-exp expanded] (round-str mantissa exp d nil)
+        fixed-repr (get-fixed rounded-mantissa (if expanded (inc scaled-exp) scaled-exp) d)
+        full-repr (str (apply str (repeat (- n (.indexOf fixed-repr (int \.))) \0)) fixed-repr)
+        full-len (+ (count full-repr) (if add-sign 1 0))]
+    (print (str
+             (if (and (:colon params) add-sign) (if (neg? arg) \- \+))
+             (apply str (repeat (- w full-len) (:padchar params)))
+             (if (and (not (:colon params)) add-sign) (if (neg? arg) \- \+))
+             full-repr))
+    navigator))
+
+;;======================================================================
+;; ~C character formatting
+;;======================================================================
+
+(def ^:private special-chars {8 "Backspace", 9 "Tab", 10 "Newline", 13 "Return", 32 "Space"})
+
+(defn- pretty-character [params navigator offsets]
+  (let [[c navigator] (next-arg navigator)
+        as-int (int c)
+        base-char (bit-and as-int 127)
+        meta (bit-and as-int 128)
+        special (get special-chars base-char)]
+    (if (> meta 0) (print "Meta-"))
+    (print (cond
+             special special
+             (< base-char 32) (str "Control-" (char (+ base-char 64)))
+             (= base-char 127) "Control-?"
+             :else (char base-char)))
+    navigator))
+
+(defn- readable-character [params navigator offsets]
+  (let [[c navigator] (next-arg navigator)]
+    (cond
+      (= (:char-format params) \o) (cl-format true "\\o~3,'0o" (int c))
+      (= (:char-format params) \u) (cl-format true "\\u~4,'0x" (int c))
+      :else (pr c))
+    navigator))
+
+(defn- plain-character [params navigator offsets]
+  (let [[c navigator] (next-arg navigator)]
+    (print c)
+    navigator))
+
+;;======================================================================
+;; ~R radix / english / roman. Roman (the tested path) is fully lifted; the
+;; cardinal/ordinal English branches are a documented residual (format-error).
+;;======================================================================
+
+(def ^:private old-roman-table
+  [["I" "II" "III" "IIII" "V" "VI" "VII" "VIII" "VIIII"]
+   ["X" "XX" "XXX" "XXXX" "L" "LX" "LXX" "LXXX" "LXXXX"]
+   ["C" "CC" "CCC" "CCCC" "D" "DC" "DCC" "DCCC" "DCCCC"]
+   ["M" "MM" "MMM"]])
+
+(def ^:private new-roman-table
+  [["I" "II" "III" "IV" "V" "VI" "VII" "VIII" "IX"]
+   ["X" "XX" "XXX" "XL" "L" "LX" "LXX" "LXXX" "XC"]
+   ["C" "CC" "CCC" "CD" "D" "DC" "DCC" "DCCC" "CM"]
+   ["M" "MM" "MMM"]])
+
+(defn- format-roman [table params navigator offsets]
+  (let [[arg navigator] (next-arg navigator)]
+    (if (and (number? arg) (> arg 0) (< arg 4000))
+      (let [digits (remainders 10 arg)]
+        (loop [acc []
+               pos (dec (count digits))
+               digits digits]
+          (if (empty? digits)
+            (print (apply str acc))
+            (let [digit (first digits)]
+              (recur (if (= 0 digit)
+                       acc
+                       (conj acc (nth (nth table pos) (dec digit))))
+                     (dec pos)
+                     (next digits))))))
+      (format-integer 10
+                      {:mincol 0, :padchar \space, :commachar \, :commainterval 3, :colon true}
+                      (init-navigator [arg])
+                      {:mincol 0, :padchar 0, :commachar 0, :commainterval 0}))
+    navigator))
+
+(defn- format-old-roman [params navigator offsets]
+  (format-roman old-roman-table params navigator offsets))
+
+(defn- format-new-roman [params navigator offsets]
+  (format-roman new-roman-table params navigator offsets))
+
+(defn- format-cardinal-english [_params _navigator _offsets]
+  (format-error "cardinal-English ~R is not implemented (use ~@R for roman)" 0))
+
+(defn- format-ordinal-english [_params _navigator _offsets]
+  (format-error "ordinal-English ~:R is not implemented (use ~@R for roman)" 0))
+
+;;======================================================================
+;; ~( ~) case conversion. The JVM streams through a proxy Writer; jolt accumulates
+;; into a StringBuilder, so we capture the clause output then apply the transform.
+;;======================================================================
+
+(defn- str-downcase [s] (clojure.string/lower-case s))
+(defn- str-upcase [s] (clojure.string/upper-case s))
+
+(defn- str-capitalize-words [s]
+  (let [s (clojure.string/lower-case s)
+        s (clojure.string/replace s #"\W\w" (fn [m] (clojure.string/upper-case m)))]
+    (if (and (pos? (count s)) (re-find #"[a-zA-Z]" (subs s 0 1)))
+      (str (clojure.string/upper-case (subs s 0 1)) (subs s 1))
+      s)))
+
+(defn- str-init-cap [s]
+  (let [s (clojure.string/lower-case s)]
+    (loop [i 0]
+      (cond
+        (>= i (count s)) s
+        (re-find #"[a-zA-Z]" (subs s i (inc i)))
+        (str (subs s 0 i) (clojure.string/upper-case (subs s i (inc i))) (subs s (inc i)))
+        :else (recur (inc i))))))
+
+(defn- modify-case [transform params navigator offsets]
+  (let [clause (first (:clauses params))
+        sb (StringBuilder.)]
+    (binding [*out* (->StringBufferWriter sb)]
+      (execute-sub-format clause navigator (:base-args params)))
+    (print (transform (str sb)))
+    navigator))
 
 ;; Check to see if a result is an abort (~^) construct
 (defn- abort? [context]
@@ -1260,6 +1523,37 @@
     #{:at :colon :both} {}
     #(format-integer 16 %1 %2 %3))
 
+  (\R
+    [:base [nil Long] :mincol [0 Long] :padchar [\space Character] :commachar [\, Character]
+     :commainterval [3 Long]]
+    #{:at :colon :both} {}
+    (do
+      (cond
+        (first (:base params)) #(format-integer (:base %1) %1 %2 %3)
+        (and (:at params) (:colon params)) format-old-roman
+        (:at params) format-new-roman
+        (:colon params) format-ordinal-english
+        true format-cardinal-english)))
+
+  (\C
+    [:char-format [nil Character]]
+    #{:at :colon :both} {}
+    (cond
+      (:colon params) pretty-character
+      (:at params) readable-character
+      :else plain-character))
+
+  (\F
+    [:w [nil Long] :d [nil Long] :k [0 Long] :overflowchar [nil Character]
+     :padchar [\space Character]]
+    #{:at} {}
+    fixed-float)
+
+  (\$
+    [:d [2 Long] :n [1 Long] :w [0 Long] :padchar [\space Character]]
+    #{:at :colon :both} {}
+    dollar-float)
+
   (\%
     [:count [1 Long]]
     #{} {}
@@ -1317,6 +1611,18 @@
         (if (:at params)
           (absolute-reposition navigator n)
           (relative-reposition navigator (if (:colon params) (- n) n))))))
+
+  (\(
+    []
+    #{:colon :at :both} {:right \), :allows-separator nil, :else nil}
+    (let [transform (cond
+                      (and (:at params) (:colon params)) str-upcase
+                      (:colon params) str-capitalize-words
+                      (:at params) str-init-cap
+                      :else str-downcase)]
+      #(modify-case transform %1 %2 %3)))
+
+  (\) [] #{} {} nil)
 
   (\?
     []
@@ -1508,8 +1814,12 @@
       (second (first params))))
   (doall
     (map #(let [val (first %1)]
-            (if (not (or (nil? val) (contains? special-params val)))
-              nil))
+            (if (not (or (nil? val) (contains? special-params val)
+                         (instance? (second (second %2)) val)))
+              (format-error (str "Parameter " (name (first %2))
+                                 " has bad type in directive \"" (:directive dirdef) "\": "
+                                 (class val))
+                            (second %1))))
          params (:params dirdef)))
 
   (merge

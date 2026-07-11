@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `clojure.pprint`'s cl-format engine: parametrized directives (`~5A`, `~2{`,
+  `~20<`, …) rejected their own parameters, and a forward `~n@*` goto never
+  moved. Both fixed, and the missing `~F`, `~$`, `~C`, `~R` (radix/roman), and
+  `~(` case-conversion directives are implemented, so `(cl-format nil "~,2f" x)`
+  and friends work. A JVM-certified subset of the upstream cl-format suite now
+  runs as a standing gate.
+
 ### Changed
 
 - `(double x)`, `(long x)`, `(int x)`, and `(float x)` casts feed the typed-
