@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Record fields fed a mix of integers and floats (`:num`) unbox in protocol-impl
+  arithmetic at monomorphic call sites: whole-program builds emit a
+  flonum-specialized clone per eligible impl (a `:num` field read beside a
+  proven-double operand, where Clojure double contagion already fixes the
+  result type), and devirtualized call sites resolve the clone while
+  megamorphic dispatch keeps the shared impl. Mono-dispatch ~9% faster;
+  results are bit-identical.
 - Proven numeric sites and the protocol inline cache's warm-hit scan compile
   to Chez's per-site unsafe primitives (`#3%fl*`, `#3%vector-ref`): the type
   and bounds checks they skip are exactly the ones the compiler already
