@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-11
+
 ### Fixed
 
 - Release and optimized builds compile at Chez optimize-level 2, not 3 — level
