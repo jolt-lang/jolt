@@ -130,3 +130,8 @@ To measure a pass, run the suite on `main`, then on the branch, back to back
 (same machine, quiet). Each benchmark prints `runs: [...]` and `mean: N ms`;
 compare the means. A pass is worth landing when it moves a benchmark whose axis it
 targets, even if the ray tracer stays flat.
+
+`bench/aba.sh` automates an A1/B/A2 over the six benches: it checks out the
+parent's compiler files (`host/chez/seed/image.ss` +
+`jolt-core/jolt/passes/types.clj`), builds and times each bench against `HEAD`,
+then restores the working tree. A1≈A2 rules out drift; B vs A is the change.
