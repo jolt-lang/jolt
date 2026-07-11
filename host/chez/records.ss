@@ -1085,6 +1085,12 @@
                  (let ((h (make-hashtable string-hash string=?))) (hashtable-set! ti proto h) h))))
     (hashtable-set! pi method fn)
     jolt-nil))
+;; the back end emits this alongside a register-inline-method call, passing the bare
+;; type-name (the call's first arg); the runtime tags it via the current ns exactly
+;; as register-inline-method does, so the clone and the impl land under the same tag
+;; the devirt site's full :devirt-type names. No ns bookkeeping in the back end.
+(define (register-clone* type-name proto method fn)
+  (register-clone (string-append (chez-current-ns) "." type-name) proto method fn))
 (define (find-clone type-tag proto method)
   (let ((ti (hashtable-ref clone-registry type-tag #f)))
     (and ti (let ((pi (hashtable-ref ti proto #f))) (and pi (hashtable-ref pi method #f))))))

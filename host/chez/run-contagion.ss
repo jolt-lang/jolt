@@ -113,6 +113,38 @@
        (eq? (devirt-resolve-fl "user.Circle" "Shape" "area" (var-deref "user" "c"))
             (devirt-resolve "user.Circle" "Shape" "area" (var-deref "user" "c"))) #t)
 
+;; === (5) backend emits a contagion clone for an eligible impl ==================
+;; A :num field beside a proven :double operand -> the register-inline-method call
+;; for that impl is wrapped with a clone def + register-clone*, the clone body
+;; lowering to fl* with the :num operand coerced via exact->inexact.
+(define run-passes (var-deref "jolt.passes" "run-passes"))
+(define emit-top-form (var-deref "jolt.backend-scheme" "emit-top-form"))
+(define set-direct-link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
+(set-optimize! #t)
+(set-direct-link! #t)
+(evals "(defprotocol P (m [s]))")
+(evals "(defrecord IBag [n] P (m [s] (* 3.14159 (:n s))))")
+(set-record-shapes! (chez-record-shapes-map))
+(set-protocol-methods! (chez-protocol-methods-map))
+(define bag-def (anode "(defrecord IBag [n] P (m [s] (* 3.14159 (:n s))))"))
+(define bag-ctor (anode "(def bag-use (fn [] (->IBag 7)))"))
+(wp-infer! (jolt-vector bag-def bag-ctor))
+(let ((emitted (emit-top-form (run-passes bag-def (make-analyze-ctx "user")))))
+  (check "(5) eligible impl emits a clone registration" (sub? emitted "register-clone*") #t)
+  (check "(5) clone body lowers to fl*" (sub? emitted "fl*") #t)
+  (check "(5) clone coerces the :num operand via exact->inexact" (sub? emitted "exact->inexact") #t))
+
+;; === (6) a pure-:num impl (no :double operand) emits NO clone ==================
+(evals "(defrecord IPlain [n] P (m [s] (* (:n s) (:n s))))")
+(set-record-shapes! (chez-record-shapes-map))
+(define plain-def (anode "(defrecord IPlain [n] P (m [s] (* (:n s) (:n s))))"))
+(define plain-ctor (anode "(def plain-use (fn [] (->IPlain 7)))"))
+(wp-infer! (jolt-vector plain-def plain-ctor))
+(let ((emitted (emit-top-form (run-passes plain-def (make-analyze-ctx "user")))))
+  (check "(6) pure-:num impl emits NO clone" (sub? emitted "register-clone*") #f))
+(set-direct-link! #f)
+(set-optimize! #f)
+
 (if (= fails 0)
     (begin (printf "contagion gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "contagion gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))

@@ -13,7 +13,9 @@
                                form-literal? form-elements form-vec-items
                                form-map-pairs form-set-items form-char-code
                                form-regex? form-regex-source
-                               form-inst? form-inst-source form-uuid? form-uuid-source]]))
+                               form-inst? form-inst-source form-uuid? form-uuid-source]]
+            [jolt.passes.types :as types]
+            [jolt.passes.numeric :as numeric]))
 
 ;; Hot clojure.core primitives lowered to native Scheme. Every per-op fact —
 ;; the call-position Scheme name, the value-position proc, the arity gate, any
@@ -229,6 +231,16 @@
 ;; runtime eval path turns it on for user code, where it's the big win.
 (def var-cache? (atom false))
 (defn set-var-cache! [on] (reset! var-cache? on))
+
+;; contagion clone sites (jolt devirt-gated fl* contagion for :num fields). A set of
+;; "tag|proto|method" keys for impls whose body has a :num field beside a proven
+;; :double operand — worth a contagion-specialized clone at the devirt site. Populated
+;; by a whole-program pre-pass (register-contagion-clones! below) so the devirt-site
+;; resolution can consult it regardless of emit order; empty in non-WP builds.
+(def ^:private clone-sites (atom nil))
+(defn reset-clone-sites! [] (reset! clone-sites nil))
+(defn- clone-site-key [tag proto method] (str tag "|" proto "|" method))
+(defn- clone-site? [tag proto method] (and @clone-sites (contains? @clone-sites (clone-site-key tag proto method))))
 
 ;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
 ;; run-passes before each form's emit so emit-invoke can recognize ctor calls with
@@ -1021,6 +1033,48 @@
            (or (:line pos) 0) ")")
       "")))
 
+;; A (register-inline-method type-name proto method fn) / register-method call whose
+;; fn arg is a single-arity impl literal. Returns [type-name proto method fn-node] or
+;; nil — the seed of a contagion-specialized clone.
+(defn- register-impl-invoke [node]
+  (let [f (:fn node) a (:args node)]
+    (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
+               (#{"register-inline-method" "register-method"} (:name f))
+               (= 4 (count a)))
+      (let [[tc pc mc fc] a]
+        (when (and (= :const (:op tc)) (string? (:val tc))
+                   (= :const (:op pc)) (string? (:val pc))
+                   (= :const (:op mc)) (string? (:val mc))
+                   (= :fn (:op fc)))
+          [(:val tc) (:val pc) (:val mc) fc])))))
+
+;; Emit a contagion-specialized clone of an impl alongside its registration, when the
+;; impl body has a :num field beside a proven :double operand. Re-specializes on the
+;; emit (run-passes'd) IR — eligibility is deterministic, so it agrees with whatever
+;; populated clone-sites. Returns "(define <sym> <fn>) (register-clone* ..)" or nil.
+;; register-clone* tags via the runtime current ns, exactly like register-inline-method,
+;; so the clone and impl land under the same tag the devirt site's :devirt-type names.
+(defn- emit-impl-clone [node]
+  (when-some [[type-name proto method fc] (register-impl-invoke node)]
+    (let [ars (:arities fc)]
+      (when (= 1 (count ars))
+        (let [res (types/contagion-specialize-arity (first ars) type-name)]
+          (when (nth res 1)
+            (let [spar (nth res 0)
+                  sym (fresh-label "_jcf$")
+                  clone (emit (numeric/annotate {:op :fn :arities [spar]}))]
+              (str "(define " sym " " clone ") (register-clone* "
+                   (chez-str-lit type-name) " " (chez-str-lit proto) " "
+                   (chez-str-lit method) " " sym ")"))))))))
+
+;; Wrap emit-invoke so an eligible impl registration also emits its contagion clone as
+;; a sibling. The non-eligible path is byte-identical to before (no clone emitted).
+(defn- emit-invoke-maybe-clone [node]
+  (let [base (emit-invoke node)]
+    (if-some [c (emit-impl-clone node)]
+      (str "(begin " c " " base ")")
+      base)))
+
 (defn emit* [node]
   (case (:op node)
     :const (emit-const (:val node))
@@ -1078,7 +1132,7 @@
     ;; non-last statements are non-tail; the ret inherits the do's tail position
     :do (str "(begin " (binding [*tail?* false] (str/join " " (mapv emit (:statements node))))
              (if (empty? (:statements node)) "" " ") (emit (:ret node)) ")")
-    :invoke (emit-invoke node)
+    :invoke (emit-invoke-maybe-clone node)
      ;; collection literals -> rt constructors (collections.ss). Elements are
      ;; already-analyzed IR nodes; evaluate LEFT-TO-RIGHT (emit-ordered, which
      ;; wraps only when two or more operands could have observable effects).
