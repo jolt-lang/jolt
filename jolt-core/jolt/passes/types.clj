@@ -1061,7 +1061,10 @@
 ;; :type/:shape/:nilable, not nested fields — a nilable struct's subfields read :any).
 (defn- shallow-field-type [t]
   (cond
-    (or (= t :double) (= t :num)) t
+    ;; Option B: only a genuine all-flonum ctor-arg join unboxes. A :num (integer/
+    ;; mixed) join reads :any, so flonum arithmetic over it stays generic — dbl
+    ;; contagion is reserved for :double fields (the all-flonum->:double spec).
+    (= t :double) t
     (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
                        (if (nilable? t) (assoc base :nilable true) base))
     :else :any))
@@ -1135,7 +1138,7 @@
                   _ (reset! field-types-box (if sound? new-ftypes {}))
                   ;; re-derive the protocol-method return types now that field types
                   ;; are known: an impl body that reads a field unboxes once the field
-                  ;; proves :num/:double, so its joined return (the callers' pm-ret)
+                  ;; proves :double, so its joined return (the callers' pm-ret)
                   ;; tightens from :any/:num to :double — that's what unboxes the caller.
                   _ (when sound? (collect-pm-rets! nodes))
                   ;; build both seed maps from the same converged ptypes: the

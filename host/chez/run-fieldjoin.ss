@@ -7,11 +7,13 @@
 ;; emission a ^double hint reaches today (protoret/fieldnum) is reached by portable
 ;; hint-free code.
 ;;
-;;   (a) every ctor site passes a flonum  -> field :double -> impl body fl*,
-;;       caller accumulator fl+ (the bead's required regression).
+;;   (a) every ctor site passes a flonum (a statically :double arg) -> field :double
+;;       -> impl body fl*, caller accumulator fl+ (the bead's required regression).
 ;;   (b) ctor sites pass a record or nil   -> nilable field; a guarded read narrows
 ;;       to the direct accessor, an unguarded read stays nil-safe.
 ;;   (c) a conflicting join (one site passes a string) -> reads stay generic.
+;;   (d) an integer-fed (:num-joined) field must NOT unbox: dbl contagion is restricted
+;;       to genuine :double fields, so flonum arithmetic over a :num field stays generic.
 ;;
 ;;   chez --script host/chez/run-fieldjoin.ss
 (import (chezscheme))
@@ -47,10 +49,10 @@
 (set-record-shapes! (chez-record-shapes-map))
 (set-protocol-methods! (chez-protocol-methods-map))
 (set-optimize! #t)
-;; ctor site: mk passes a flonum to :r (build-shapes passes (+ 1 (mod i 7)) — :num,
-;; enough for dbl contagion; here a flonum proves :double outright).
+;; ctor site: a flonum literal is statically :double, so :r proves :double outright
+;; (NOT via dbl contagion from a :num arg — case (d) pins that restriction).
 (define cdef (anode "(defrecord Circle [r] Sh (area [s] (* 3.14159 (:r s))))"))
-(define mk   (anode "(def mk (fn [n] (->Circle (* n 1.0))))"))
+(define mk   (anode "(def mk (fn [] (->Circle 1.0)))"))
 (define sum  (anode "(def sum (fn [cs] (reduce (fn [acc c] (+ acc (area c))) 0.0 cs)))"))
 (wp-infer! (jolt-vector cdef mk sum))
 ;; the impl body reads :r; once :r proves :double the (* 3.14159 (:r s)) unboxes.
@@ -59,6 +61,19 @@
 ;; the caller's (+ acc (area c)) goes fl+ via the concrete protocol-method return.
 (define sum-e (emit (run-passes sum (make-analyze-ctx "user"))))
 (check "(a) caller accumulator goes fl+" (sub? sum-e "fl+") #t)
+
+;; === (d) integer-fed (:num-joined) field must NOT unbox (Option B) ==============
+;; dbl contagion is restricted to genuine :double fields. A field whose ctor sites
+;; pass integers joins :num (an int literal is :num); under Option B that reads :any,
+;; so flonum arithmetic over it stays generic (no fl*) — unlike the all-flonum (a).
+;; iuse seeds iscale's `a` as IBox (a ctor return) so the :n read resolves.
+(evals "(defrecord IBox [n])")
+(set-record-shapes! (chez-record-shapes-map))
+(define iscale (anode "(def iscale (fn [a] (* 3.14159 (:n a))))"))
+(define iuse   (anode "(def iuse (fn [] (iscale (->IBox 7))))"))   ; integer ctor arg -> :num
+(wp-infer! (jolt-vector iscale iuse))
+(define iscale-e (emit (run-passes iscale (make-analyze-ctx "user"))))
+(check "(d) integer-fed :num-joined field stays generic (no fl*)" (sub? iscale-e "fl*") #f)
 
 ;; === (b) record-or-nil ctor sites -> nilable field =============================
 ;; Outer's :child is filled with an Inner or nil across ctor sites -> nilable-Inner.
