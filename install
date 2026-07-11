@@ -90,8 +90,11 @@ esac
 
 # --- resolve version ---------------------------------------------------------
 if [[ -z "$version" ]]; then
+    # awk consumes the whole response: an early-exiting filter (grep -m1 /
+    # sed q / head) SIGPIPEs curl mid-stream, and under `set -o pipefail`
+    # curl's exit 23 kills the script before the download ever starts.
     version="$(fetch "https://api.github.com/repos/${repo}/releases/latest" \
-        | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+        | awk -F'"' '/"tag_name"/ && !v { v=$4 } END { if (v) print v }')"
     if [[ -z "$version" ]]; then
         >&2 echo "Could not determine the latest release. Pass --version explicitly."
         exit 1

@@ -164,12 +164,35 @@ printf '(ns mcmd) (defn -main [& a] (prn *command-line-args*))\n' > "$mp/src/mcm
 cla_check "JOLT_PWD=\"$mp\" bin/joltc -m mcmd -- a b" '("a" "b")'
 rm -rf "$mp"
 
-# --help prints usage, and lists the nREPL server under its real flag name.
-help_out="$(bin/joltc --help 2>/dev/null)"
-if printf '%s' "$help_out" | grep -q -- '--nrepl-server'; then
+# help prints usage (bare `help` and --help/-h are synonyms) and lists the
+# nREPL server as a bare command.
+help_out="$(bin/joltc help 2>/dev/null)"
+if printf '%s' "$help_out" | grep -q 'nrepl-server'; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: --help should list --nrepl-server"
+  echo "  FAIL: help should list nrepl-server"
+  fails=$((fails + 1))
+fi
+if [ "$(bin/joltc --help 2>/dev/null)" = "$help_out" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: --help should print the same usage as help"
+  fails=$((fails + 1))
+fi
+# version / --version are synonyms and name the version.
+if bin/joltc version 2>/dev/null | grep -q '^jolt ' \
+   && [ "$(bin/joltc version 2>/dev/null)" = "$(bin/joltc --version 2>/dev/null)" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: version / --version"
+  fails=$((fails + 1))
+fi
+# bare joltc starts a REPL (bb/clj parity): piped stdin evaluates and exits.
+repl_out="$(printf '(+ 1 2)\n' | bin/joltc 2>/dev/null)"
+if printf '%s' "$repl_out" | grep -q '3'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: bare joltc should start a REPL (got \`$repl_out\`)"
   fails=$((fails + 1))
 fi
 
