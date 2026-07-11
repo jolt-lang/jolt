@@ -19,8 +19,13 @@ cd "$root"
 suite="vendor/clojure-test-suite/test"
 baseline="test/chez/cts-known-failures.txt"
 app="$root/test/chez/cts-app"
-jobs="${JOLT_CTS_JOBS:-4}"
+# one process per namespace; default the worker count to the CPU count
+cpus="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+jobs="${JOLT_CTS_JOBS:-$cpus}"
 tmo="${JOLT_CTS_TIMEOUT:-120}"
+# JOLT_BIN overrides the joltc under test (make test points it at the freshly
+# built target/release/joltc — 10x faster boot than script mode)
+joltc="${JOLT_BIN:-$root/bin/joltc}"
 
 if [ ! -d "$suite/clojure" ]; then
   echo "cts: skipped (git submodule update --init vendor/clojure-test-suite)"
@@ -43,7 +48,7 @@ awk -v j="$jobs" '{print > ("'"$work"'/chunk." (NR % j))}' "$work/nses"
 run_chunk() {
   chunk="$1"; out="$2"
   while IFS= read -r ns; do
-    res=$(JOLT_PWD="$app" perl -e "alarm $tmo; exec @ARGV" -- "$root/bin/joltc" -M:cts "$ns" 2>&1 </dev/null)
+    res=$(JOLT_PWD="$app" perl -e "alarm $tmo; exec @ARGV" -- "$joltc" -M:cts "$ns" 2>&1 </dev/null)
     rc=$?
     line=$(echo "$res" | grep '^CTS-RESULT' | head -1)
     if [ -n "$line" ]; then

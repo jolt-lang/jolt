@@ -148,17 +148,10 @@
     ;; JOLT_TRACE at RUNTIME (the env is unset at heap-build), before any app ns
     ;; compiles, so a `-M:run` traces the app's own code.
     (jolt-trace-init-from-env!)
-    (guard (v (#t (jolt-report-throwable v (current-error-port)) (exit 1)))
-      (cond
-        ((and (= (length args) 2) (string=? (car args) \"-e\"))
-         (let ((result (jolt-final-str
-                         (jolt-compile-eval (string-append \"(do \" (cadr args) \")\") \"user\"))))
-           (unless (string=? result \"\") (display result) (newline))))
-        (else
-         (when (and (pair? args) (string=? (car args) \"build\"))
-           (jolt-materialize-bundles!))
-         (load-namespace \"jolt.main\")
-         (apply jolt-invoke (var-deref \"jolt.main\" \"-main\") args))))
+    ;; shared dispatch (cli-core.ss, inlined via the runtime manifest): the -e
+    ;; arm, end-of-options, and uncaught reporting are the same code the script
+    ;; driver runs — the launcher once carried a stale fork of the -e arm.
+    (jolt-cli-run args (lambda () (jolt-materialize-bundles!)))
     (exit 0)))
 "))
 
@@ -199,7 +192,9 @@
     (put-string p
       (string-append
         "(import (chezscheme))\n"
-        "(optimize-level " (if jb-release? "3" "0") ")\n"
+        ;; level 2 not 3: 3 is unsafe mode (no fx/car type checks) and jolt error
+        ;; paths rely on those raising — see bld-chez-param-forms.
+        "(optimize-level " (if jb-release? "2" "0") ")\n"
         "(generate-inspector-information " (jb-bool (not jb-release?)) ")\n"
         "(generate-procedure-source-information " (jb-bool (not jb-release?)) ")\n"
         "(debug-on-exception " (jb-bool (not jb-release?)) ")\n"

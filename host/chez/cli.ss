@@ -39,6 +39,7 @@
 (load "host/chez/host-contract.ss")
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
+(load "host/chez/cli-core.ss")
 (load "host/chez/png.ss")          ; jolt.png — a baked namespace before the snapshot
 (load "host/chez/loader.ss")
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
@@ -51,58 +52,15 @@
 ;; A project's resolved deps roots are prepended to these by jolt.main.
 (set-source-roots! (list "jolt-core" "stdlib"))
 
-;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
-;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
-;; message/ex-data/cause + a mapped Clojure backtrace come from the shared
-;; renderer (source-registry.ss); the cli adds the top-level source location.
-(define (jolt-report-uncaught raw)
-  (let ((v (jolt-unwrap-throw raw))
-        (port (current-error-port)))
-    (jolt-render-throwable v port)
-    ;; The top-level form that was evaluating when this propagated (file:line:col).
-    (let ((loc (jolt-current-source-string)))
-      (when loc (display "  at " port) (display loc port) (newline port)))
-    (let ((bt (jolt-backtrace-string v)))
-      (when bt (display "  trace:\n" port) (display bt port)))
-    (exit 1)))
+;; jolt-report-uncaught / drop-end-of-options / the -e arm live in cli-core.ss,
+;; shared with the standalone binary's launcher (build-joltc.ss).
 
 ;; JOLT_TRACE opt-in, at runtime (before any app ns compiles) so the app is traced.
 (jolt-trace-init-from-env!)
 
-;; POSIX end-of-options: drop the first standalone "--" in an argv list; any
-;; later "--" stays literal program data. Returns a Scheme list.
-(define (drop-end-of-options args)
-  (let loop ((in args) (acc '()))
-    (cond
-      ((null? in) (reverse acc))
-      ((string=? (car in) "--") (append (reverse acc) (cdr in)))
-      (else (loop (cdr in) (cons (car in) acc))))))
 
-(guard (v (#t (jolt-report-uncaught v)))
-  (cond
-    ;; -e EXPR [args…] — evaluate one expression and print it (blank for nil).
-    ;; Wrapped in (do …) so a multi-form string evaluates every form and returns
-    ;; the last. The argv after EXPR are *command-line-args* (nil when empty),
-    ;; with the first standalone "--" consumed as POSIX end-of-options.
-    ((and (pair? cli-args) (string=? (car cli-args) "-e")
-          (pair? (cdr cli-args)))
-     (let* ((expr (cadr cli-args))
-            (app-args (drop-end-of-options (cddr cli-args)))
-            (cla (if (null? app-args) jolt-nil (list->cseq app-args))))
-       (jolt-push-thread-bindings
-         (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
-       (let ((result (jolt-final-str
-                       (jolt-compile-eval (string-append "(do " expr ")") "user"))))
-         (jolt-pop-thread-bindings)
-         (unless (string=? result "")
-           (display result) (newline)))))
-    ;; otherwise dispatch the argv through jolt.main/-main
-    (else
-     ;; `build` AOT-compiles an app to a standalone binary — load the build
-     ;; driver (the cross-compiler emitter) on demand so a normal run never pays
-     ;; for it. It defines jolt.host/build-binary, which jolt.main's build cmd calls.
-     (when (and (pair? cli-args) (string=? (car cli-args) "build"))
-       (load "host/chez/build.ss"))
-     (load-namespace "jolt.main")
-     (let ((mainv (var-deref "jolt.main" "-main")))
-       (apply jolt-invoke mainv cli-args)))))
+(jolt-cli-run cli-args
+  ;; `build` AOT-compiles an app to a standalone binary — load the build driver
+  ;; (the cross-compiler emitter) on demand so a normal run never pays for it.
+  ;; It defines jolt.host/build-binary, which jolt.main's build cmd calls.
+  (lambda () (load "host/chez/build.ss")))

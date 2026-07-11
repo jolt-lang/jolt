@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Release and optimized builds compile at Chez optimize-level 2, not 3 — level
+  3 is unsafe mode (fx/fl/car operations skip their type checks) and jolt's
+  error semantics depend on those raising: an optimized binary returned
+  `(take nil coll)` instead of throwing and looped forever on a nil-count
+  `repeat`. Costs ~8-13% on dispatch/allocation benchmarks, nothing on
+  numeric ones.
+- The standalone `joltc` binary's `-e` matches the script driver: trailing
+  args bind `*command-line-args*`, the first `--` ends option parsing, and an
+  uncaught throw reports its source location. Both entry points now share one
+  dispatch (`cli-core.ss`), guarded against re-diverging by the load-manifest
+  check.
+
+### Changed
+
+- The smoke and clojure-test-suite gates run against a freshly built joltc
+  binary (10x faster boot than script mode): `make test` drops from ~12 to
+  ~3 minutes (`make -j` parallelizes the rest), and the gates now exercise
+  the shipped artifact — which is how both fixes above were found.
+
 ## [0.2.2] - 2026-07-10
 
 ### Added
