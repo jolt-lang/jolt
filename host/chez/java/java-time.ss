@@ -2290,3 +2290,34 @@
         ((and (jhost? val) (string=? (jhost-tag val) "dt-formatter")) (if (string=? tn "DateTimeFormatter") #t 'pass))
         ((and (jhost? val) (string=? (jhost-tag val) "temporal-adjuster")) (if (member tn '("TemporalAdjuster")) #t 'pass))
         (else 'pass)))))
+
+;; DateTimeFormatterBuilder — the builder collects a pattern and defaults, and
+;; toFormatter yields a lenient ISO formatter: parse accepts a full ISO instant
+;; or a bare date, with missing time-of-day/offset defaulting to 0/UTC
+;; (parseDefaulting semantics for the patterns real libraries build —
+;; "yyyy-MM-dd['T'HH:mm:ss…]" in spec-tools). parse returns an Instant, which
+;; Instant/from passes through.
+(register-class-ctor! "DateTimeFormatterBuilder"
+  (lambda _ (make-jhost "dtf-builder" (vector '()))))
+(register-host-methods! "dtf-builder"
+  (list (cons "appendPattern" (lambda (self p) self))
+        (cons "appendOptional" (lambda (self x) self))
+        (cons "appendValue" (lambda (self . _) self))
+        (cons "parseDefaulting" (lambda (self f v) self))
+        (cons "parseCaseInsensitive" (lambda (self) self))
+        (cons "toFormatter" (lambda (self . _) (make-jhost "lenient-iso-dtf" (vector #f))))))
+(register-host-methods! "lenient-iso-dtf"
+  (list (cons "parse" (lambda (self s . _)
+          (let ((str (jt-str s)))
+            (if (and (>= (string-length str) 10)
+                     (or (= 10 (string-length str))
+                         (char=? (string-ref str 10) #\T))
+                     (char=? (string-ref str 4) #\-))
+                (if (= 10 (string-length str))
+                    (mk-instant-nanos (* (parse-iso-date str) 86400 nanos-per-sec))
+                    (guard (e (#t (mk-instant (jinst-ms (jolt-inst-from-string str)))))
+                      (mk-instant-nanos (parse-iso-instant-nanos
+                                         (if (char=? (string-ref str (- (string-length str) 1)) #\Z)
+                                             str (string-append str "Z"))))))
+                (error #f (string-append "could not parse: " str))))))
+        (cons "format" (lambda (self t . _) (jolt-str-render-one t)))))

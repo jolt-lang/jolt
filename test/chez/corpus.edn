@@ -3781,4 +3781,9 @@
   {:suite "interop / exceptions" :label "StackOverflowError is an Error with its own class" :expected "[true true]" :actual "(let [e (java.lang.StackOverflowError. \"so\")] [(instance? Error e) (= java.lang.StackOverflowError (class e))])" :portability :jvm}
   {:suite "interop / exceptions" :label "NoSuchElementException is a RuntimeException" :expected "true" :actual "(instance? RuntimeException (java.util.NoSuchElementException. \"n\"))" :portability :jvm}
   {:suite "interop / exceptions" :label "ArityException carries the JVM message" :expected "\"Wrong number of args (3) passed to: foo\"" :actual "(ex-message (clojure.lang.ArityException. 3 \"foo\"))" :portability :jvm}
+  {:suite "conformance / destructuring" :label "rest-pattern positional elements walk the seq (a map destructures)" :expected "[:a 1 ([:b 2])]" :actual "(let [[[k v] & ks] {:a 1 :b 2}] [k v ks])" :portability :common}
+  {:suite "conformance / destructuring" :label "rest-pattern over a vector unchanged" :expected "[1 2 (3 4)]" :actual "(let [[a b & r] [1 2 3 4]] [a b r])" :portability :common}
+  {:suite "conformance / regex" :label "hex escapes match their characters" :expected "\"aAb\"" :actual "(re-find #\"a\\x41b\" \"aAb\")" :portability :common}
+  {:suite "interop / class model" :label "str of a named fn is class@hash" :expected "true" :actual "(boolean (re-find #\"^clojure\\.core\\$inc@\" (str inc)))" :portability :jvm}
+  {:suite "interop / java.time" :label "DateTimeFormatterBuilder lenient ISO date parse defaults to midnight UTC" :expected "\"2019-06-01T00:00:00Z\"" :actual "(str (java.time.Instant/from (.parse (.toFormatter (.appendPattern (java.time.format.DateTimeFormatterBuilder.) \"yyyy-MM-dd['T'HH:mm:ss]\")) \"2019-06-01\")))" :portability :jvm}
 ]

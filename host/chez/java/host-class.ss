@@ -160,3 +160,11 @@
             (set! result (cons k result))))
         keys vals)
       (reverse result))))
+
+;; (str f) of a fn renders JVM-style — "ns$name@hexhash" — so code that parses
+;; fn identity out of the string (expound's pprint-fn) finds the $-separated
+;; class name instead of a raw Chez #<procedure> form.
+(register-str-render!
+  (lambda (x) (procedure? x))
+  (lambda (x) (string-append (jolt-class-name x) "@"
+                             (number->string (abs (equal-hash x)) 16))))

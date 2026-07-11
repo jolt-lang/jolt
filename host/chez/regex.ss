@@ -386,6 +386,41 @@
 ;; groups to read, its whole-match result is all a caller sees. The count comes from
 ;; a first cheap compile; a capturing pattern is recompiled once (patterns compile
 ;; once and cache in the regex-t).
+;; Java \xHH / \x{H...} hex escapes -> the literal character, escaped when it
+;; is a regex metacharacter. irregex's PCRE reader mis-parses \xHH, throwing
+;; off the group balance ("\\x1b\\[..." reads the [ as part of the escape).
+(define (translate-hex-escapes src)
+  (define (hexv c)
+    (cond ((and (char<=? #\0 c) (char<=? c #\9)) (- (char->integer c) 48))
+          ((and (char<=? #\a c) (char<=? c #\f)) (- (char->integer c) 87))
+          ((and (char<=? #\A c) (char<=? c #\F)) (- (char->integer c) 55))
+          (else #f)))
+  (define (emit-char out cp)
+    (let ((ch (integer->char cp)))
+      (when (memv ch (list #\\ #\[ #\] #\( #\) #\{ #\} #\. #\* #\+ #\? #\^ #\$ #\|))
+        (write-char #\\ out))
+      (write-char ch out)))
+  (let ((n (string-length src)) (out (open-output-string)))
+    (let loop ((i 0))
+      (if (>= i n)
+          (get-output-string out)
+          (if (and (char=? (string-ref src i) #\\) (< (+ i 1) n)
+                   (char=? (string-ref src (+ i 1)) #\x))
+              (cond
+                ((and (< (+ i 2) n) (char=? (string-ref src (+ i 2)) #\{))
+                 (let scan ((j (+ i 3)) (v 0))
+                   (cond ((>= j n) (write-char #\\ out) (loop (+ i 1)))
+                         ((char=? (string-ref src j) #\})
+                          (emit-char out v) (loop (+ j 1)))
+                         ((hexv (string-ref src j)) =>
+                          (lambda (h) (scan (+ j 1) (+ (* v 16) h))))
+                         (else (write-char #\\ out) (loop (+ i 1))))))
+                ((and (< (+ i 3) n) (hexv (string-ref src (+ i 2))) (hexv (string-ref src (+ i 3))))
+                 (emit-char out (+ (* 16 (hexv (string-ref src (+ i 2)))) (hexv (string-ref src (+ i 3)))))
+                 (loop (+ i 4)))
+                (else (write-char #\\ out) (loop (+ i 1))))
+              (begin (write-char (string-ref src i) out) (loop (+ i 1))))))))
+
 (define (jolt-regex source)
   ;; COMMENTS mode first (strips whitespace/comments, drops x), then normalize
   ;; combined clusters so a leading (?sx) becomes (?s)(?x) and regex-parse-flags
@@ -393,7 +428,7 @@
   (let-values (((opts pat) (regex-parse-flags (split-cluster-modifiers (apply-global-x source)))))
     (let* ((pat (strip-angle-escapes pat))
            (pat (if (memq 'multi-line opts) pat (rewrite-dollar-eol pat)))
-           (p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket pat))))
+           (p (translate-prop-classes (escape-class-shorthand-dash (escape-class-bracket (translate-hex-escapes pat)))))
            (irx (apply irregex p opts)))
       (make-regex-t source
                     (if (> (irregex-num-submatches irx) 0)
