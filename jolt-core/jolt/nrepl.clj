@@ -328,7 +328,7 @@
   ([port middleware]
    ;; An nREPL session is REPL-driven development: trace by default so an uncaught
    ;; error in code evaluated over the connection shows a tail-frame backtrace, with
-   ;; no JOLT_TRACE needed. Covers both `--nrepl-server` and an app that starts its
+   ;; no JOLT_TRACE needed. Covers both `nrepl-server` and an app that starts its
    ;; own server under `-M:run` (reload a namespace to trace already-loaded code).
    (jolt.host/enable-trace!)
    (let [handler (build-handler (resolve-middleware (or middleware [])))

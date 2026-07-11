@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/chez
-          key: chez-${{ runner.os }}-v10.4.1-x11off
+          key: chez-${{ runner.os }}-${{ env.ImageOS }}-v10.4.1-x11off
 
       - name: Build Chez Scheme from source
         if: steps.cache-chez.outputs.cache-hit != 'true'
@@ -70,5 +70,7 @@ jobs:
         # source-built Chez) + the behavior gates (`make ci`: corpus/unit/smoke/
         # buildsmoke/sci/certify). buildsmoke links a real binary (the source
         # build ships the kernel dev files).
-        run: make test
+        # -j overlaps the independent gates (ci is a plain dependency list);
+        # -Oline keeps per-recipe output contiguous for failure reading.
+        run: make -j"$(nproc)" -Oline test
 

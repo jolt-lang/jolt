@@ -25,7 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Oldest supported runner on purpose: the binary requires the glibc it
+          # was built against, so building on 22.04 (glibc 2.35) keeps the
+          # prebuilt runnable on Ubuntu 22.04+/Debian 12+/RHEL 9+. ubuntu-latest
+          # (24.04, glibc 2.39) shipped a binary older distros couldn't load.
+          - os: ubuntu-22.04
             target: x86_64-linux
             shell: bash
           # No x86_64-macos: GitHub is retiring the macos-13 Intel runner (jobs
@@ -59,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/chez
-          key: chez-${{ runner.os }}-v10.4.1-x11off
+          key: chez-${{ matrix.os }}-v10.4.1-x11off
 
       - name: Build Chez Scheme from source (Linux)
         if: runner.os == 'Linux' && steps.cache-chez.outputs.cache-hit != 'true'
@@ -112,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: chez-install
-          key: chez-${{ runner.os }}-v10.4.1-mingw64
+          key: chez-${{ matrix.os }}-v10.4.1-mingw64
 
       - name: Build Chez Scheme from source (Windows)
         if: runner.os == 'Windows' && steps.cache-chez-win.outputs.cache-hit != 'true'
