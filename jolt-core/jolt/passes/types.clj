@@ -65,25 +65,69 @@
      :diags (atom []) :calls (atom []) :checking-set (atom #{}) :diag-memo (atom {})
      :escapes escapes-box :user-sigs user-sig-box}))
 
+;; inferred record field types: ctor-key "ns/->Name" -> {field-kw -> type}. Each
+;; field's type is the CLOSED join of its ctor-argument types across every reachable
+;; (->Ctor ...) site, derived by wp-infer! A field every ctor site fills with a
+;; flonum -> :double (reads unbox); a record-or-nil field -> nilable record (guarded
+;; reads narrow to the direct accessor); a conflicting/escaping/mutable field is
+;; absent here (reads :any). Consulted by record-type-from-entry for UNTAGGED fields.
+(def ^:private field-types-box (atom {}))
+
+;; per-wp-pass ctor-site collection. collecting-fields? gates the infer-call hook so
+;; only the wp fixpoint's final pass collects (not check-form / pm-rets / reinfer).
+;; wp-field-joins: ctor-key -> [field-type-or-nil ...] positional arg joins. A field
+;; appears when at least one ctor site was seen; absent fields (no site) read :any.
+(def ^:private collecting-fields?-box (atom false))
+(def ^:private wp-field-joins-box (atom {}))
+;; ctor-keys whose join can't be closed (a ctor value escapes — apply/value — or a
+;; map->Name site, or an assoc the WP can't attribute to a proven record) -> all
+;; fields :any (drop the inferred types for that record).
+(def ^:private wp-field-demote-box (atom #{}))
+
+;; simple record name from a ctor-key "ns/->Name".
+(defn- ctor-simple-name [ctor-key]
+  (let [i (.indexOf ^String ctor-key "/->")]
+    (if (>= i 0) (.substring ^String ctor-key (+ i 3)) ctor-key)))
+;; defrecord emits a map->Name fn whose body is the (->Name (get m :f) ...) site —
+;; the untyped-map ctor path. Its positional ->Name call is excluded from the direct
+;; join (a map->Name call demotes the record instead, via wp-field-demote-box), so a
+;; never-called map->Name can't poison every field to :any.
+(defn- map->-self-for-record? [self-name ctor-key]
+  (and self-name (.startsWith ^String self-name "map->")
+       (= (.substring ^String self-name 5) (ctor-simple-name ctor-key))))
+;; join one ctor site's positional arg types into the per-pass accumulator.
+(defn- join-ctor-args [joins ctor-key fields argtypes]
+  (let [cur (or (get joins ctor-key) (vec (repeat (count fields) nil)))]
+    (assoc joins ctor-key
+           (vec (for [i (range (count cur))]
+                  (let [c (nth cur i) a (nth argtypes i nil)]
+                    (cond (nil? c) a (nil? a) c :else (join c a))))))))
+
 ;; build a record's struct TYPE from its registry entry, resolving each field's
 ;; declared type hint against `shapes` ("ns/->Name" -> entry). A field tagged with
 ;; a record type (its ctor-key) recurses, so a Vec3 stored in a Ray field reads
 ;; back as Vec3 — not :any — which is what lets nested-record code prove its reads.
 ;; Depth-bounded so a self/cyclic-referencing record type can't loop.
 (declare record-type-from-entry)
-(defn- field-type-from-tag [tag depth shapes]
+;; the type a field reads back as. A declared coercible ^double hint always wins
+;; (the ctor coerces the arg to a flonum). A declared ^Record hint recurses. An
+;; UNTAGGED field takes the inferred ctor-arg join from field-types-box (or :any).
+(defn- field-type-from-tag [tag depth shapes ctor-key field-kw]
   (cond
-    (or (nil? tag) (<= depth 0)) :any
+    (<= depth 0) :any
+    (= tag "double") :double
     (= tag "num") :num
-    (= tag "double") :double   ; a ^double field reads back as a flonum
-    :else (let [e (get shapes tag)]
-            (if e (record-type-from-entry e depth shapes) :any))))
-(defn- record-type-from-entry [rs depth shapes]
+    (some? tag) (let [e (get shapes tag)]
+                  (if e (record-type-from-entry e tag depth shapes) :any))
+    :else (let [inf (get-in @field-types-box [ctor-key field-kw])]
+            (if inf inf :any))))
+(defn- record-type-from-entry [rs ctor-key depth shapes]
   (let [fields (get rs :fields)
         tags (get rs :tags)
         fmap (reduce (fn [m i]
-                       (assoc m (nth fields i)
-                              (field-type-from-tag (when tags (nth tags i)) (dec depth) shapes)))
+                       (let [fw (nth fields i)]
+                         (assoc m fw (field-type-from-tag (when tags (nth tags i))
+                                                           (dec depth) shapes ctor-key fw))))
                      {} (range (count fields)))]
     (assoc (mk-struct fmap) :shape (vec fields) :type (get rs :type))))
 
@@ -108,8 +152,8 @@
                       ;; record ctor -> struct of declared shape; :shape
                       ;; is the DECLARED field order the back end indexes by, :type
                       ;; the record tag (devirt), and field types come from the
-                      ;; declared hints so nested records stay typed
-                      (record-type-from-entry rs type-depth shapes)
+                       ;; declared hints so nested records stay typed
+                       (record-type-from-entry rs (var-key fnode) type-depth shapes)
                       (let [r (get (get env :rtenv) (var-key fnode))]
                         (if r r
                           ;; a protocol-method call types as its impls' joined return
@@ -252,8 +296,17 @@
                                               (let [s (get seeds i)] (if s s :any))))
                                      tenv (range (count params)))
                           pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
+                          ;; a seeded :double param (a reduce accumulator over 0.0, or
+                          ;; a :double vector element) becomes a ^double nhint so the
+                          ;; numeric pass unboxes arithmetic on it — without this a
+                          ;; reduce closure's acc stays generic even when the callee's
+                          ;; pm-ret is :double.
+                          nh (reduce (fn [h i]
+                                       (let [s (get seeds i)]
+                                         (if (= s :double) (assoc h (nth params i) :double) h)))
+                                     {} (range (count params)))
                           br (infer (get a :body) pe env)]
-                      [(ty br) (assoc a :body (nd br))]))
+                      [(ty br) (assoc a :body (nd br) :nhints nh)]))
                   (get node :arities))
         rets (mapv (fn [r] (ty r)) res)
         ret (if (empty? rets) :any (reduce join (first rets) (rest rets)))]
@@ -348,6 +401,41 @@
              :else (call-ret-type fnode env))]
     [rt (assoc node :args (mapv (fn [r] (nd r)) ares))]))
 
+;; record a ctor site's contribution to field-type inference. Called from infer-call
+;; only while collecting-fields? is set (the wp fixpoint's final pass). A direct
+;; (->Name ...) with matching arity joins each arg's type into its field slot; the
+;; map->Name body's ->Name call is excluded (a map->Name CALL demotes instead). A
+;; (map->Name m) site demotes (its arg is an untyped map). A (assoc c :k v) the WP
+;; can't attribute to a proven record demotes every record declaring :k (sound: an
+;; untyped c could be any of them). Escapes/apply are caught via the escapes box
+;; (a ->Name in value position -> demote), handled in wp-infer!.
+(defn- record-ctor-site! [fnode args ares env]
+  (let [vk (var-key fnode)
+        shapes (get env :record-shapes)
+        entry (get shapes vk)
+        n (count args)
+        ats (mapv ty ares)]
+    (cond
+      ;; direct positional ctor ->Name with matching arity. Skip the auto-generated
+      ;; map->Name template body (:map->-ctor-key / a specializable map-> self-name):
+      ;; that site reads an untyped map, so a CALLED map->Name demotes instead.
+      (and entry (= n (count (get entry :fields)))
+           (not (= (get env :map->-ctor-key) vk))
+           (not (map->-self-for-record? (get env :self-name) vk)))
+      (swap! wp-field-joins-box
+             #(join-ctor-args % vk (get entry :fields) ats))
+      (and (nil? entry) (.startsWith ^String (get fnode :name) "map->"))
+      (let [ck (str (get fnode :ns) "/->" (.substring ^String (get fnode :name) 5))]
+        (when (contains? shapes ck) (swap! wp-field-demote-box conj ck)))
+      (and (= "clojure.core" (get fnode :ns)) (= (get fnode :name) "assoc")
+           (= n 3) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
+      (let [coll-t (ty (nth ares 0)) kw (get (nth args 1) :val)]
+        (when-not (record-t? coll-t)
+          (doseq [[ck e] shapes]
+            (when (contains? (into #{} (get e :fields)) kw)
+              (swap! wp-field-demote-box conj ck)))))
+      :else nil)))
+
 (defn- infer-call
   "Everything else: type the args, collect the call (var callee) for whole-program
   inference, run the success-type check, and use the declared/estimated return type.
@@ -382,6 +470,9 @@
                (= (get fnode :name) (get env :self-name)))
       (swap! (get env :calls) conj
              [(get env :self-key) (self-rec-argtys args ares (get env :self-params))]))
+    ;; collect ctor-site arg types for field-type inference (wp fixpoint's final pass)
+    (when (and iscall-var @collecting-fields?-box)
+      (record-ctor-site! fnode args ares env))
     ;; success-type check at this call, reusing the arg types just computed (jolt
     ;; audit): core error domains always, user-fn domains in strict mode.
     (when (get env :checking?)
@@ -404,8 +495,8 @@
                    (assoc node :proto (nth pm 0) :method (nth pm 1)
                                 :fn fnode' :args (mapv (fn [r] (nd r)) ares))
                    (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
-        (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
-              rt (cond
+         (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
+               rt (cond
                    (= cn "range") (mk-vec :num)
                    (and cn (contains? elem-fns cn) (> n 0))
                    (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
@@ -427,9 +518,12 @@
                                          ares args)]
                         (assoc base :args coerced))
                       base)]
-          [rt (if rtype
-                (assoc base* :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-                base*)]))))
+           (let [rt1 (if (and (= rt :double) (not maybe-dbl))
+                       (assoc base* :num-read :double) base*)
+                 rt2 (if rtype
+                       (assoc rt1 :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
+                       rt1)]
+             [rt rt2])))))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."
@@ -581,14 +675,25 @@
                                    pe (reduce (fn [e p]
                                                 (assoc e p
                                                        (let [ent (get shapes (get phm p))]
-                                                         (if ent (record-type-from-entry ent type-depth shapes) :any))))
+                                                          (if ent (record-type-from-entry ent (get phm p) type-depth shapes) :any))))
                                               tenv (get a :params))
                                    pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)]
                                (assoc a :body (nth (infer (get a :body) pe fenv) 1))))
                            (get node :arities)))])
-      (= op :def)
-      (do (when (get env :checking?) (register-user-fn! node env))
-          [:any (assoc node :init (nth (infer (get node :init) tenv env) 1))])
+       (= op :def)
+       (do (when (get env :checking?) (register-user-fn! node env))
+           (let [nm (get node :name)
+                 ;; a defrecord emits (def map->Name (fn [m] (->Name (get m :f) ...)))
+                 ;; whose body is the untyped-map ctor path. Mark it so record-ctor-site!
+                 ;; skips that template site (a CALLED/escaped map->Name demotes the
+                 ;; record separately — see record-ctor-site!/derive-field-types), else a
+                 ;; never-called map-> would poison every field to :any.
+                 env' (if (and nm (.startsWith ^String nm "map->"))
+                        (let [ck (str (get node :ns) "/->" (.substring ^String nm 5))
+                              shapes (get env :record-shapes)]
+                          (if (contains? shapes ck) (assoc env :map->-ctor-key ck) env))
+                        env)]
+             [:any (assoc node :init (nth (infer (get node :init) tenv env') 1))]))
       (= op :try)
       [:any (assoc node
                    :body (nth (infer (get node :body) tenv env) 1)
@@ -788,7 +893,7 @@
           target (str "->" type-name)
           ctor-key (some (fn [[k v]] (when (.endsWith k target) k)) shapes)]
       (when ctor-key
-        (record-type-from-entry (get shapes ctor-key) type-depth shapes)))))
+        (record-type-from-entry (get shapes ctor-key) ctor-key type-depth shapes)))))
 
 (defn reinfer-inline-method-bodies
   "Walk node and re-infer the fn bodies of register-inline-method and
@@ -849,9 +954,9 @@
                             (let [pt (reduce (fn [m pr]
                                                (let [nm (nth pr 0)
                                                      e (get shapes (nth pr 1))]
-                                                 (if (and e (not (contains? m nm)))
-                                                   (assoc m nm (record-type-from-entry e type-depth shapes))
-                                                   m)))
+                                                  (if (and e (not (contains? m nm)))
+                                                    (assoc m nm (record-type-from-entry e (nth pr 1) type-depth shapes))
+                                                    m)))
                                              ptmap (get a :phints))]
                               (assoc a :body (nth (infer (get a :body) pt env) 1))))
                           (get fnode :arities))))
@@ -873,7 +978,7 @@
     (mapv (fn [nm]
             (let [ck (get m nm)
                   e (and ck (get shapes ck))]
-              (when e (record-type-from-entry e type-depth shapes))))
+               (when e (record-type-from-entry e ck type-depth shapes))))
           params)))
 
 ;; --- whole-program param-type fixpoint --------------------------------------
@@ -946,6 +1051,55 @@
           (update acc :ptypes wp-accum spec (nth (infer-body node {}) 2)))))
     {:rets {} :ptypes (wp-empty-ptypes spec ks)} nodes))
 
+;; fold a pass's positional ctor-arg joins into a {ctor-key {field-kw type}} map,
+;; dropping demoted/escaped records (their fields read :any) and :any/conflicting
+;; fields (the sound default — a conflicting join unboxes nothing). Field types are
+;; projected to a SHALLOW form (type + shape + nilable, no nested :struct) — a deep
+;; nilable-Node would embed Node (which re-embeds nilable-Node), deepening each
+;; fixpoint round and never value-equaling, so the field-type loop wouldn't converge.
+;; The shallow form is stable and all the read/mark machinery needs (it keys off
+;; :type/:shape/:nilable, not nested fields — a nilable struct's subfields read :any).
+(defn- shallow-field-type [t]
+  (cond
+    (or (= t :double) (= t :num)) t
+    (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
+                       (if (nilable? t) (assoc base :nilable true) base))
+    :else :any))
+(defn- derive-field-types [joins demoted escaped]
+  (reduce-kv
+    (fn [m ctor-key argts]
+      (if (or (contains? demoted ctor-key) (contains? escaped ctor-key))
+        m
+        (let [fields (get-in @config-box [:record-shapes ctor-key :fields])]
+          (reduce (fn [m2 i]
+                    (let [fw (nth fields i nil) t (nth argts i nil)]
+                      (if (and fw t (not= t :any))
+                        (assoc-in m2 [ctor-key fw] (shallow-field-type t)) m2)))
+                  m (range (count argts))))))
+    {} joins))
+
+;; inner param-type fixpoint, run with field-types-box held FIXED by the caller.
+;; returns [converged? ptypes]. The outer field-type loop in wp-infer! re-runs this
+;; until field types stabilize, so the param fixpoint converges on its own each round
+;; (folding field types into the SAME loop produced a ptypes<->rets 2-cycle).
+(defn- wp-param-fixpoint [nodes spec ks]
+  (loop [iter 0 ptypes (wp-empty-ptypes spec ks) rets {}]
+    (set-rtenv! (reduce (fn [m k] (let [v (get rets k)] (if (some? v) (assoc m k v) m))) {} ks))
+    (reset-escapes!)
+    (reset! wp-field-joins-box {})
+    (reset! wp-field-demote-box #{})
+    (let [pass (wp-pass nodes spec ks ptypes)
+          escaped (set (collected-escapes))
+          new-ptypes (reduce (fn [m k]
+                               (if (contains? escaped k)
+                                 (assoc m k (vec (repeat (count (get m k)) :any))) m))
+                             (:ptypes pass) ks)
+          new-rets (:rets pass)
+          converged? (and (= new-ptypes ptypes) (= new-rets rets))]
+      (if (or converged? (>= iter 16))
+        [converged? new-ptypes]
+        (recur (inc iter) new-ptypes new-rets)))))
+
 (defn wp-infer!
   "Run the closed-world param-type fixpoint over the unit's analyzed top-level
   nodes and stash the resulting per-def seed maps (read via param-seeds-for).
@@ -955,43 +1109,55 @@
   (collect-pm-rets! nodes)
   (let [spec (wp-specializable nodes)
         ks (keys spec)]
-    (loop [iter 0 ptypes (wp-empty-ptypes spec ks) rets {}]
-      (set-rtenv! (reduce (fn [m k] (let [v (get rets k)] (if (some? v) (assoc m k v) m))) {} ks))
-      (reset-escapes!)
-      (let [pass (wp-pass nodes spec ks ptypes)
-            escaped (set (collected-escapes))
-            ;; a fn used in value position has callers we can't see -> :any params
-            new-ptypes (reduce (fn [m k]
-                                 (if (contains? escaped k)
-                                   (assoc m k (vec (repeat (count (get m k)) :any))) m))
-                               (:ptypes pass) ks)
-            new-rets (:rets pass)
-            converged? (and (= new-ptypes ptypes) (= new-rets rets))]
-        (if (or converged? (>= iter 16))
-          ;; On convergence new-ptypes is the least fixpoint (sound). On hitting the
-          ;; cap without convergence it's a pre-fixpoint — more specific than the
-          ;; fixpoint, so seeding it would be unsound; widen every param to :any
-          ;; (emit no seeds). The cap isn't reached in practice (~2 passes), this is
-          ;; a defensive floor.
-          (let [seed-ptypes (if converged?
-                              new-ptypes
-                              (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
-                                      new-ptypes ks))
-                ;; build both seed maps from the same converged ptypes: the
-                ;; structural one (struct/vec, drives reinfer-def's field-read/
-                ;; devirt) excludes :double; the numeric one keeps only :double.
-                pick (fn [keep?]
-                       (reduce (fn [m k]
-                                 (let [s (get spec k)
-                                       pm (reduce (fn [pm pr]
-                                                    (let [nm (nth pr 0) t (nth pr 1)]
-                                                      (if (and t (keep? t)) (assoc pm nm t) pm)))
-                                                  {} (map vector (:params s) (get seed-ptypes k)))]
-                                   (if (seq pm) (assoc m k pm) m)))
-                               {} ks))]
-            (reset! wp-seeds-box (pick (fn [t] (and (not= t :any) (not= t :double)))))
-            (reset! wp-num-seeds-box (pick (fn [t] (= t :double)))))
-          (recur (inc iter) new-ptypes new-rets))))))
+    (try
+      (reset! collecting-fields?-box true)
+      ;; OUTER loop over field types: run the (converging) param fixpoint with the
+      ;; current field types installed, derive field types from the converged pass's
+      ;; ctor-site joins, repeat until field types stabilize. Separating the loops
+      ;; keeps the param fixpoint monotone (record-type-from-entry sees a fixed
+      ;; field-types-box each round); field types converge in ~2 rounds because a
+      ;; record's ctor-arg join depends on the record TAG (intrinsic) not on field
+      ;; types. Only when BOTH the param fixpoint AND field types have converged do we
+      ;; trust the result — otherwise we widen every param to :any and drop field
+      ;; types (a pre-fixpoint is more specific than the truth, so unsound to seed).
+      (loop [ft-iter 0 ftypes {}]
+        (reset! field-types-box ftypes)
+        (let [[param-converged? new-ptypes] (wp-param-fixpoint nodes spec ks)
+              escaped (set (collected-escapes))
+              new-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped)
+              ft-stable? (= new-ftypes ftypes)
+              sound? (and param-converged? ft-stable?)]
+          (if (or sound? (>= ft-iter 8))
+            (let [seed-ptypes (if sound?
+                                new-ptypes
+                                (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
+                                        new-ptypes ks))
+                  _ (reset! field-types-box (if sound? new-ftypes {}))
+                  ;; re-derive the protocol-method return types now that field types
+                  ;; are known: an impl body that reads a field unboxes once the field
+                  ;; proves :num/:double, so its joined return (the callers' pm-ret)
+                  ;; tightens from :any/:num to :double — that's what unboxes the caller.
+                  _ (when sound? (collect-pm-rets! nodes))
+                  ;; build both seed maps from the same converged ptypes: the
+                  ;; structural one (struct/vec, drives reinfer-def's field-read/
+                  ;; devirt) excludes :double and nilable (a nilable param's reads are
+                  ;; generic anyway, and a fn recursing on a nilable field must not be
+                  ;; specialized — its param can't be soundly typed non-nil); the
+                  ;; numeric one keeps only :double.
+                  pick (fn [keep?]
+                         (reduce (fn [m k]
+                                   (let [s (get spec k)
+                                         pm (reduce (fn [pm pr]
+                                                      (let [nm (nth pr 0) t (nth pr 1)]
+                                                        (if (and t (keep? t)) (assoc pm nm t) pm)))
+                                                    {} (map vector (:params s) (get seed-ptypes k)))]
+                                     (if (seq pm) (assoc m k pm) m)))
+                                 {} ks))]
+              (reset! wp-seeds-box (pick (fn [t] (and (not= t :any) (not= t :double) (not (nilable? t))))))
+              (reset! wp-num-seeds-box (pick (fn [t] (= t :double))))
+              sound?)
+            (recur (inc ft-iter) new-ftypes))))
+      (finally (reset! collecting-fields?-box false)))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
 ;; one inference pass for specialization; turning checking? on during it makes

@@ -68,14 +68,16 @@
 (check "^V param hint unboxes arithmetic" (contains-sub? hint-emit "fl*") #t)
 (check "^V param hint leaves no generic jolt-get" (contains-sub? hint-emit "jolt-get") #f)
 
-;; an UNTAGGED field stays generic — no fl-op (the read is :any, not :double).
+;; an UNTAGGED field whose every ctor site passes a flonum now unboxes too —
+;; whole-program field-type inference (run-fieldjoin) derives :double from the ctor
+;; joins, so portable hint-free code reaches the same fl* as the ^double case above.
 (evals "(defrecord W [p q])")
 (define dotw (anode "(def dotw (fn [a b] (* (:p a) (:p b))))"))
 (define usew (anode "(def usew (fn [] (dotw (->W 1.0 2.0) (->W 3.0 4.0))))"))
 (set-record-shapes! (chez-record-shapes-map))
 (wp-infer! (jolt-vector dotw usew))
-(check "untagged field stays generic (no fl*)"
-       (contains-sub? (emit (run-passes dotw (make-analyze-ctx "user"))) "fl*") #f)
+(check "untagged all-flonum field unboxes to fl* (field-typed)"
+       (contains-sub? (emit (run-passes dotw (make-analyze-ctx "user"))) "fl*") #t)
 
 (if (= fails 0)
     (begin (printf "fieldnum gate: ~a/~a passed\n" total total) (exit 0))

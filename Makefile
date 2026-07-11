@@ -22,7 +22,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -144,10 +144,18 @@ mandelbrot-num:
 	@$(CHEZ) --script host/chez/run-mandelbrot-num.ss
 
 # Double record fields: a ^double-tagged field reads back as a flonum (coerced at
-# construction and set!), so hintless arithmetic over those fields unboxes to fl-ops;
-# an untagged field stays generic.
+# construction and set!), so hintless arithmetic over those fields unboxes to fl-ops.
 fieldnum:
 	@$(CHEZ) --script host/chez/run-fieldnum.ss
+
+# Whole-program record field-type inference: wp-infer! joins the ctor-argument types
+# across every (->Ctor ...) site to derive each field's type — all-flonum -> :double
+# (reads unbox, protocol-method return concretizes, caller accumulator goes fl+);
+# record-or-nil -> nilable record (guarded reads narrow to the direct accessor);
+# conflicting/escaping/mutable/map-> -> :any. Portable hint-free code now reaches the
+# same emission the ^double hint reaches above.
+fieldjoin:
+	@$(CHEZ) --script host/chez/run-fieldjoin.ss
 
 # Protocol-method return inference: a method whose impls all return the same record
 # type has a monomorphic return, so a (method recv ..) call types as that record and
