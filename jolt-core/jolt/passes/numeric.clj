@@ -26,6 +26,14 @@
   (and (= :const (get n :op))
        (let [v (get n :val)] (and (number? v) (float? v)))))
 
+;; A bigdec (1.5M) LITERAL operand — its node op, not a let-bound copy of one.
+(defn- bigdec-lit? [n] (= :bigdec (get n :op)))
+;; A bigdec literal promoted to a flonum const for double contagion: (+ 1.5M 2.0)
+;; => 3.5 Double, the bigdec contributing its double value (BigDecimal.doubleValue).
+;; The source is the bare numeric text (M stripped at read); double-rounding the
+;; parsed value yields the nearest double — identical to the JVM conversion.
+(defn- bigdec-lit->flonum [n] {:op :const :val (double (read-string (get n :source)))})
+
 ;; result kind of a double-specialized op at this name/arity, or nil if N/A.
 ;; arithmetic -> :double; comparison -> :bool (operands specialized, result not numeric).
 ;; Every op name dbl-spec / lng-spec returns non-nil for must have a Chez op in
@@ -148,16 +156,26 @@
             ls (lng-spec nm n)
             bs (bd-spec nm n)]
         (cond
-           (and ds (ok? :double :double)
-                ;; min/max return the ORIGINAL operand (Numbers.min: an integer
-                ;; literal stays exact), and `=` is exactness-aware (0 != 0.0), so
-                ;; an int-literal operand blocks the flonum lowering for those —
-                ;; flmin/fl= would coerce it away. fl< and friends compare
-                ;; numerically, so coercing their operands stays sound.
+           ;; double specialization. Operands are :double, :wild (an integer literal
+           ;; coerced to flonum), or a bigdec LITERAL — double contagion: (+ 1.5M 2.0)
+           ;; => 3.5 Double, the bigdec contributing its double value. A let-bound
+           ;; bigdec (kind :bigdec, not a literal) can't be turned into a compile-time
+           ;; flonum, so it de-opts to the generic bigdec-aware op. min/max return the
+           ;; ORIGINAL operand and `=` is exactness-aware (0 != 0.0), so int/bigdec-
+           ;; literal contagion is blocked for those — every operand must be pure
+           ;; :double. fl< and friends compare numerically, so coercing stays sound.
+           (and ds (pos? n)
+                (some (fn [c] (= c :double)) cls)
+                (every? (fn [[c nd]] (or (= c :double) (= c :wild)
+                                         (and (= c :bigdec) (bigdec-lit? nd))))
+                        (map vector cls argnodes))
                 (or (not (contains? #{"min" "max" "="} nm))
                     (every? (fn [c] (= c :double)) cls)))
-          ;; coerce integer-literal operands to flonum so fl-ops never see an exact int.
-          (let [args' (mapv (fn [nd] (if (int-lit? nd) (assoc nd :val (double (get nd :val))) nd))
+          ;; coerce integer-literal and bigdec-literal operands to flonum so fl-ops
+          ;; only ever see flonums (an exact int or a jbigdec record would crash fl+).
+          (let [args' (mapv (fn [nd] (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
+                                           (bigdec-lit? nd) (bigdec-lit->flonum nd)
+                                           :else nd))
                             argnodes)]
             [(propagate ds) (assoc node1 :args args' :num-kind :double)])
           (and ls (ok? :long :long))

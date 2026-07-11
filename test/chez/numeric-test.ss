@@ -193,5 +193,24 @@
 (ok "(* (double 3) 2.0) => 6.0" (fl= (ev "(* (double 3) 2.0)") 6.0))
 (ok "(+ (long 7.9) 1) => 8" (= (ev "(+ (long 7.9) 1)") 8))
 
+;; --- Part 2 (jolt-isgk): bigdec call-position contagion ---
+;; JVM: (+ 1.5M 2.0) => 3.5 Double (flonum wins); (+ 1.5M 1) => 2.5M bigdec.
+(ok "(+ 1.5M 2.0) => 3.5 Double contagion"
+    (let ((r (ev "(+ 1.5M 2.0)"))) (and (flonum? r) (fl= r 3.5))))
+(ok "(+ 1.5M 1) => 2.5M bigdec"
+    (let ((r (ev "(+ 1.5M 1)"))) (and (jbigdec? r) (jolt= r (ev "2.5M")))))
+(ok "(* 1.5M 2.0) => 3.0 Double contagion"
+    (let ((r (ev "(* 1.5M 2.0)"))) (and (flonum? r) (fl= r 3.0))))
+(ok "(- 1.5M 2.0) => -0.5 Double contagion"
+    (let ((r (ev "(- 1.5M 2.0)"))) (and (flonum? r) (fl= r -0.5))))
+;; SPECIALIZATION (the Part 2 coverage goal): a static bigdec + a :double operand
+;; lowers to the flonum path (bigdec coerced to flonum), not the generic jolt op.
+(let ((e (emitf "u" "(fn* ([^double y] (+ 1.5M y)))")))
+  (ok "bigdec+double operand lowers + to fl+" (has? e "(fl+")))
+;; a statically-bigdec operand mixed with an untyped (:any) value routes through
+;; the generic bigdec-aware jolt op, not the raw Chez op (de-opt to correct).
+(ok "(+ 1.5M x) with x untyped => 4.5M bigdec"
+    (let ((r ((ev "(fn* ([x] (+ 1.5M x)))") 3))) (and (jbigdec? r) (jolt= r (ev "4.5M")))))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
