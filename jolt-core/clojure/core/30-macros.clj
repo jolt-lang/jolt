@@ -83,7 +83,10 @@
           (and (symbol? t)
                (when-let [v (clojure.core/resolve t)]
                  (and (clojure.core/bound? v)
-                      (string? (clojure.core/var-get v))))))
+                      (let [cv (clojure.core/var-get v)]
+                        ;; a name string or a Class value ((class y) captured in
+                        ;; a var, e.g. (def c (class (transient []))))
+                        (or (string? cv) (jolt.host/class-object? cv)))))))
     `(instance-check ~t ~x)
     `(instance-check (quote ~t) ~x)))
 

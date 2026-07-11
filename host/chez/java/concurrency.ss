@@ -885,3 +885,29 @@
 (def-var! "jolt.host" "block-sigint" (lambda () (jolt-set-sigint-blocked #t)))
 (def-var! "jolt.host" "park-until-interrupt" jolt-park-until-interrupt)
 (def-var! "jolt.host" "delete-file" delete-file)
+
+;; reference types report their JVM classes and answer the IDeref/IRef taxonomy
+;; ((class (agent 1)) is clojure.lang.Agent; derefables are IDeref; the mutable
+;; references — Atom/Ref/Agent/Var — are IRef; Ref and Var are also IFn).
+(register-class-arm! jolt-agent? (lambda (x) "clojure.lang.Agent"))
+(register-class-arm! jolt-delay? (lambda (x) "clojure.lang.Delay"))
+(register-class-arm! (lambda (x) (jvol? x)) (lambda (x) "clojure.lang.Volatile"))
+(register-class-arm! (lambda (x) (var-cell? x)) (lambda (x) "clojure.lang.Var"))
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (symbol-t? type-sym)
+        (let ((tn (symbol-t-name type-sym)))
+          (cond
+            ((or (string=? tn "IDeref") (string=? tn "clojure.lang.IDeref"))
+             (if (or (jolt-atom? val) (jolt-ref? val) (jolt-agent? val) (var-cell? val)
+                     (jvol? val) (jolt-delay? val) (jolt-future? val) (jolt-promise? val))
+                 #t 'pass))
+            ((or (string=? tn "IRef") (string=? tn "clojure.lang.IRef"))
+             (if (or (jolt-atom? val) (jolt-ref? val) (jolt-agent? val) (var-cell? val))
+                 #t 'pass))
+            ((or (string=? tn "IFn") (string=? tn "clojure.lang.IFn"))
+             (if (or (jolt-ref? val) (var-cell? val)) #t 'pass))
+            ((or (string=? tn "IPending") (string=? tn "clojure.lang.IPending"))
+             (if (or (jolt-delay? val) (jolt-future? val) (jolt-promise? val)) #t 'pass))
+            (else 'pass)))
+        'pass)))

@@ -88,7 +88,9 @@
   '("clojure.core/identity" "clojure.core/isa?" "clojure.core/line-seq"
     "clojure.core/make-hierarchy" "clojure.core/read" "clojure.core/read-string"
     "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"
-    "clojure.core/send"))
+    "clojure.core/send"
+    ;; post-prelude taxonomy wrappers close over the overlay versions
+    "clojure.core/ifn?" "clojure.core/seqable?" "clojure.core/inst-ms"))
 
 ;; --- reading a minted blob (prelude.ss) into records ------------------------
 ;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the

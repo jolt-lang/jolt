@@ -221,9 +221,9 @@
   (and (number? x) (jolt.host/exact? x) (jolt.host/rational-type? x) (not (integer? x))))
 (defn rational? [x]
   (or (and (number? x) (jolt.host/exact? x)) (decimal? x)))
-;; No first-class Class objects: class names are symbols the evaluator handles in
-;; instance?/new positions, never values — so nothing is a class.
-(defn class? [x] false)
+;; A Class value is what (class x) returns — a host class object. Record/type
+;; ctor fns and name strings are not classes.
+(defn class? [x] (if (jolt.host/class-object? x) true false))
 ;; list?: a list-marked cseq node or the empty list (). A lazy/vector-backed seq,
 ;; (rest list), (seq coll), (map …) are seqs but not lists. Not extended like
 ;; map?/set?/seq?, so it migrates cleanly.
