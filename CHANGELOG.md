@@ -36,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `joltc` with no arguments starts a REPL, like `bb` and `clj` (piped stdin
   evaluates and exits). The nREPL server is the bare command
-  `joltc nrepl-server [port]` (`--nrepl-server` still accepted); `help` and
-  `version` work as bare commands; an unknown command points at `joltc help`.
+  `joltc nrepl-server [port]` — the flag spelling `--nrepl-server` is removed;
+  `help` and `version` work as bare commands; an unknown command points at
+  `joltc help`.
 - Records store their fields inline (one heap object per record instead of a
   descriptor + separate values vector), and a typed non-nilable field read
   emits the receiver's direct per-arity slot accessor — no dispatch, one load.

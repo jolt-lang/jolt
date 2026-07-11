@@ -153,6 +153,22 @@ fi
 mv -f "$extracted" "$install_dir/joltc"
 chmod +x "$install_dir/joltc"
 
+# verify the binary actually runs here — a glibc older than the build baseline
+# fails with an opaque loader error, so diagnose it explicitly.
+if ! run_err="$("$install_dir/joltc" --version 2>&1 >/dev/null)"; then
+    >&2 echo "The installed binary does not run on this system:"
+    >&2 echo "  ${run_err}"
+    if [[ "$run_err" == *GLIBC_* ]]; then
+        need="$(printf '%s' "$run_err" | sed -nE "s/.*GLIBC_([0-9.]+).*/\1/p" | head -1)"
+        have="$(ldd --version 2>/dev/null | sed -nE '1s/.* ([0-9.]+)$/\1/p')"
+        >&2 echo ""
+        >&2 echo "The prebuilt joltc needs glibc ${need:-?} but this system has ${have:-?}."
+        >&2 echo "Either upgrade the OS, or build from source (needs Chez Scheme + cc):"
+        >&2 echo "  git clone --recurse-submodules https://github.com/${repo} && cd jolt && make joltc-release"
+    fi
+    exit 1
+fi
+
 # clear the macOS quarantine flag so Gatekeeper doesn't block the fresh download
 if [[ "$platform" == "macos" ]] && has xattr; then
     xattr -d com.apple.quarantine "$install_dir/joltc" 2>/dev/null || true

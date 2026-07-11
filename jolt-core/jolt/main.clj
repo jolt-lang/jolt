@@ -376,8 +376,7 @@
       (#{"version" "--version" "-V"} cmd) (println (str "jolt " (version)))
       (= cmd "run")                      (cmd-run more)
       (= cmd "repl")                     (repl)
-      ;; --nrepl-server is the deprecated spelling, kept for compatibility
-      (#{"nrepl-server" "--nrepl-server"} cmd) (nrepl more)
+      (= cmd "nrepl-server")             (nrepl more)
       (= cmd "path")                     (cmd-path)
       (str/starts-with? cmd "-M")        (cmd-M cmd more)
       (str/starts-with? cmd "-A")        (cmd-A cmd more)
