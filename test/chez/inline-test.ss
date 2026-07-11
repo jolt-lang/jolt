@@ -43,7 +43,7 @@
 ;; a ^double fn: body fl-ops fire after inlining, and the call is gone.
 (ev "(def ^double dwork (fn* ([^double a ^double b] (+ (* a a) (* b b)))))")
 (let ((e (emitf "u" "(fn* ([] (dwork 3.0 4.0)))")))
-  (ok "inlined ^double fn body uses fl*" (has? e "(fl*"))
+  (ok "inlined ^double fn body uses fl*" (has? e "(#3%fl*"))
   (ok "inlined ^double fn call to dwork is gone" (not (has? e "dwork"))))
 (ok "inlined ^double call: 3^2+4^2 = 25" (= 25 (jnum->exact (ev "((fn* ([] (dwork 3.0 4.0))))"))))
 ;; coercion travels with the splice: int args become doubles, so the result is a
@@ -59,7 +59,7 @@
 ;; an accumulator over an inlined ^double call: the whole loop body fuses to fl-ops.
 (ev "(def ^double sq (fn* ([^double x] (* x x))))")
 (let ((e (emitf "u" "(fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (sq 2.0)) (inc i)) acc))))")))
-  (ok "accumulator over inlined ^double call lowers to fl+" (has? e "(fl+"))
+  (ok "accumulator over inlined ^double call lowers to fl+" (has? e "(#3%fl+"))
   (ok "the sq call is inlined away" (not (has? e "sq"))))
 (ok "accumulator over inlined ^double call: 3*4.0 = 12" (= 12 (jnum->exact (ev "((fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (sq 2.0)) (inc i)) acc)))))"))))
 

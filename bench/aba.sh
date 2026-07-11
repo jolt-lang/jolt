@@ -17,9 +17,13 @@ fi
 export JOLT_CHEZ_CSV="$csv"
 [ -f "$csv/libkernel.a" ] || { echo "no chez csv"; exit 1; }
 
-COMPILER_FILES="host/chez/seed/image.ss jolt-core/jolt/passes/types.clj"
+# All three are overridable so a stage can be A/B'd against an exact commit pair
+# (ABA_BASE/ABA_TARGET) and include the runtime .ss files it touches (COMPILER_FILES).
+COMPILER_FILES="${COMPILER_FILES:-host/chez/seed/image.ss jolt-core/jolt/passes/types.clj}"
 BENCHES="fib:30 mandelbrot:200 collections:30000 mono-dispatch:2000 dispatch:2000 binary-trees:14"
 RUNS=5
+BASE="${ABA_BASE:-HEAD~1}"
+TARGET="${ABA_TARGET:-HEAD}"
 
 stash_compiler () { # $1 = ref
   git checkout "$1" -- $COMPILER_FILES
@@ -42,20 +46,21 @@ time_bench () { # echoes "mean" value (ms) averaged over RUNS builds... no: one 
 }
 
 echo "compiler files: $COMPILER_FILES"
-echo "bench order: A1(parent) -> B(mine) -> A2(parent), $RUNS runs each"
+echo "A = $BASE  (parent);  B = $TARGET  (mine)"
+echo "bench order: A1 -> B -> A2, $RUNS runs each"
 
-echo; echo "=== A1 (parent HEAD~1) ==="
-stash_compiler "HEAD~1"
+echo; echo "=== A1 ($BASE) ==="
+stash_compiler "$BASE"
 for s in $BENCHES; do printf "%-16s %s ms\n" "${s%%:*}" "$(time_bench "$s")"; done
 
-echo; echo "=== B (mine HEAD) ==="
-stash_compiler "HEAD"
+echo; echo "=== B ($TARGET) ==="
+stash_compiler "$TARGET"
 for s in $BENCHES; do printf "%-16s %s ms\n" "${s%%:*}" "$(time_bench "$s")"; done
 
-echo; echo "=== A2 (parent HEAD~1) ==="
-stash_compiler "HEAD~1"
+echo; echo "=== A2 ($BASE) ==="
+stash_compiler "$BASE"
 for s in $BENCHES; do printf "%-16s %s ms\n" "${s%%:*}" "$(time_bench "$s")"; done
 
-echo; echo "=== restoring working tree to HEAD (mine) ==="
-stash_compiler "HEAD"
+echo; echo "=== restoring working tree to $TARGET ==="
+stash_compiler "$TARGET"
 git status --short

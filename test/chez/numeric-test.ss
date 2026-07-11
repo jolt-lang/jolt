@@ -34,37 +34,37 @@
 
 ;; --- emission: ^double -> fl-ops, ^long -> fx-ops ---
 (let ((e (emitf "u" "(fn* ([^double a ^double b] (+ (* a a) (* b b))))")))
-  (ok "double + lowers to fl+" (has? e "(fl+"))
-  (ok "double * lowers to fl*" (has? e "(fl*"))
+  (ok "double + lowers to fl+" (has? e "(#3%fl+"))
+  (ok "double * lowers to fl*" (has? e "(#3%fl*"))
   (ok "double arith is NOT generic +" (not (has? e "(jolt-invoke"))))
 
 (ok "long + lowers to fx+"        (has? (emitf "u" "(fn* ([^long a ^long b] (+ a b)))") "(fx+"))
 (ok "long * lowers to fx*"        (has? (emitf "u" "(fn* ([^long a ^long b] (* a b)))") "(fx*"))
-(ok "double < lowers to fl<?"     (has? (emitf "u" "(fn* ([^double x] (< x 1.0)))") "(fl<?"))
+(ok "double < lowers to fl<?"     (has? (emitf "u" "(fn* ([^double x] (< x 1.0)))") "(#3%fl<?"))
 ;; ^long comparisons / inc / dec / quot use the jolt-l* fast-path-with-fallback
 ;; helpers so a full 64-bit operand (past the 61-bit fixnum range) is handled.
 (ok "long < lowers to jolt-l<"    (has? (emitf "u" "(fn* ([^long a ^long b] (< a b)))") "(jolt-l<"))
 (ok "long inc lowers to jolt-l-inc" (has? (emitf "u" "(fn* ([^long n] (inc n)))") "(jolt-l-inc"))
-(ok "double inc lowers to fl+ 1.0" (has? (emitf "u" "(fn* ([^double x] (inc x)))") "(fl+"))
+(ok "double inc lowers to fl+ 1.0" (has? (emitf "u" "(fn* ([^double x] (inc x)))") "(#3%fl+"))
 (ok "long dec lowers to jolt-l-dec" (has? (emitf "u" "(fn* ([^long n] (dec n)))") "(jolt-l-dec"))
 ;; unchecked-* WRAP to signed 64 bits (Java long), so they emit the wrapping
 ;; jolt-unc* helpers, not the raising fx ops.
 (ok "unchecked-add lowers to jolt-uncadd2" (has? (emitf "u" "(fn* ([^long n] (unchecked-add n 1)))") "(jolt-uncadd2"))
 (ok "long quot lowers to jolt-l-quot" (has? (emitf "u" "(fn* ([^long a ^long b] (quot a b)))") "(jolt-l-quot"))
-(ok "double == lowers to fl=?"    (has? (emitf "u" "(fn* ([^double a ^double b] (== a b)))") "(fl=?"))
+(ok "double == lowers to fl=?"    (has? (emitf "u" "(fn* ([^double a ^double b] (== a b)))") "(#3%fl=?"))
 
 ;; integer literal in a double op is coerced to a flonum (fl+ never sees an exact int)
 (let ((e (emitf "u" "(fn* ([^double x] (+ x 1)))")))
-  (ok "double op with int literal coerces it to 1.0" (and (has? e "(fl+") (has? e "1.0"))))
+  (ok "double op with int literal coerces it to 1.0" (and (has? e "(#3%fl+") (has? e "1.0"))))
 
 ;; let init kind propagates: d is double from (* x x)
 (let ((e (emitf "u" "(fn* ([^double x] (let [d (* x x)] (+ d 1.0))))")))
-  (ok "let-bound double propagates (fl* then fl+)" (and (has? e "(fl*") (has? e "(fl+"))))
+  (ok "let-bound double propagates (fl* then fl+)" (and (has? e "(#3%fl*") (has? e "(#3%fl+"))))
 
 ;; --- loop-carried variable typing (round 2) ---
 ;; a double accumulator types via fixpoint, so its recur arithmetic is fl-ops.
 (let ((e (emitf "u" "(fn* ([] (loop [acc 0.0 i 0] (if (< i 5) (recur (+ acc 1.5) (inc i)) acc))))")))
-  (ok "loop double accumulator lowers (+ acc 1.5) to fl+" (has? e "(fl+")))
+  (ok "loop double accumulator lowers (+ acc 1.5) to fl+" (has? e "(#3%fl+")))
 ;; an integer accumulator stays generic — a bignum-producing loop keeps arbitrary
 ;; precision (no fx* overflow).
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc))))")))
@@ -97,14 +97,14 @@
 
 ;; --- soundness: un-hinted / integer-literal code stays generic ---
 (let ((e (emitf "u" "(fn* ([a b] (+ a b)))")))
-  (ok "un-hinted + stays generic (no fl/fx)" (and (not (has? e "(fl+")) (not (has? e "(fx+")))))
+  (ok "un-hinted + stays generic (no fl/fx)" (and (not (has? e "(#3%fl+")) (not (has? e "(fx+")))))
 (let ((e (emitf "u" "(+ 1 2)")))
   (ok "bare integer literals stay generic (arbitrary precision)" (not (has? e "(fx+"))))
 ;; a constant float op like (+ 1.0 2.0) is const-folded to 3.0 (no op at all); a
 ;; float-literal-bound local is double-typed and its body op isn't foldable (a
 ;; local operand), so numeric specializes it.
 (ok "float-literal-bound local specializes to fl+"
-    (has? (emitf "u" "(fn* ([] (let [a 2.0] (+ a 3.0))))") "(fl+"))
+    (has? (emitf "u" "(fn* ([] (let [a 2.0] (+ a 3.0))))") "(#3%fl+"))
 ;; (/ ^long ^long) is a Ratio in Clojure, not a long -> must NOT lower to a fixnum op
 (let ((e (emitf "u" "(fn* ([^long a ^long b] (/ a b)))")))
   (ok "long division is NOT specialized (stays generic /)" (not (has? e "(fx"))))
@@ -136,12 +136,12 @@
 
 ;; caller propagation: a call to a ^double-returning fn types an accumulator over it.
 (let ((e (emitf "u" "(fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (dsq 2.0)) (inc i)) acc))))")))
-  (ok "accumulator over a ^double-returning call lowers to fl+" (has? e "(fl+")))
+  (ok "accumulator over a ^double-returning call lowers to fl+" (has? e "(#3%fl+")))
 (ok "accumulator over ^double call runtime: 3 * (2*2) = 12.0"
     (= 12 (jnum->exact (ev "((fn* ([] (loop [acc 0.0 i 0] (if (< i 3) (recur (+ acc (dsq 2.0)) (inc i)) acc)))))"))))
 ;; a ^double call result also specializes a straight-line op
 (let ((e (emitf "u" "(fn* ([^double y] (+ y (dsq 2.0))))")))
-  (ok "straight-line op over ^double call lowers to fl+" (has? e "(fl+")))
+  (ok "straight-line op over ^double call lowers to fl+" (has? e "(#3%fl+")))
 
 ;; --- Part 1 (jolt-30q9): (double x)/(long x)/(int x)/(float x) casts ---
 ;; A non-shadowed clojure.core cast becomes a :coerce node carrying the checked
@@ -150,7 +150,7 @@
 
 ;; (double x) in arithmetic yields fl-ops AND the checked helper.
 (let ((e (emitf "u" "(fn* ([x] (* (double x) 2.0)))")))
-  (ok "(double x) operand lowers * to fl*" (has? e "(fl*"))
+  (ok "(double x) operand lowers * to fl*" (has? e "(#3%fl*"))
   (ok "(double x) lowers to jolt-double helper" (has? e "(jolt-double")))
 ;; (long x) in arithmetic yields fx-ops AND the checked helper.
 (let ((e (emitf "u" "(fn* ([x] (+ (long x) 1)))")))
@@ -162,18 +162,18 @@
   (ok "(int x) lowers to jolt-int-cast helper" (has? e "(jolt-int-cast")))
 ;; (float x) is double-kind but routes to jolt-float (Float range check).
 (let ((e (emitf "u" "(fn* ([x] (* (float x) 2.0)))")))
-  (ok "(float x) operand lowers * to fl*" (has? e "(fl*"))
+  (ok "(float x) operand lowers * to fl*" (has? e "(#3%fl*"))
   (ok "(float x) lowers to jolt-float helper" (has? e "(jolt-float")))
 ;; a (double x) accumulator loop runs on fl+ (the headline use case).
 (let ((e (emitf "u" "(fn* ([f] (loop [acc (double 0) i 0] (if (< i 3) (recur (+ acc (double (f i))) (inc i)) acc))))")))
-  (ok "(double x) accumulator loop lowers to fl+" (has? e "(fl+")))
+  (ok "(double x) accumulator loop lowers to fl+" (has? e "(#3%fl+")))
 ;; a shadowing local named `double` does NOT trigger the cast: (double double)
 ;; is a call to the local fn, emitting a normal invoke (no jolt-double helper).
 (let ((e (emitf "u" "(fn* ([double] (+ (double double) 1)))")))
   (ok "shadowing local `double` does NOT lower to jolt-double" (not (has? e "(jolt-double"))))
 ;; a clojure.core-qualified cast (from syntax-quote) also specializes.
 (let ((e (emitf "u" "(fn* ([x] (* (clojure.core/double x) 2.0)))")))
-  (ok "clojure.core/double operand lowers * to fl*" (has? e "(fl*")))
+  (ok "clojure.core/double operand lowers * to fl*" (has? e "(#3%fl*")))
 
 ;; --- cast runtime semantics (JVM-certified corpus rows) ---
 (ok "(double 5) => 5.0 flonum" (let ((r (ev "(double 5)"))) (and (flonum? r) (fl= r 5.0))))
@@ -206,7 +206,7 @@
 ;; SPECIALIZATION (the Part 2 coverage goal): a static bigdec + a :double operand
 ;; lowers to the flonum path (bigdec coerced to flonum), not the generic jolt op.
 (let ((e (emitf "u" "(fn* ([^double y] (+ 1.5M y)))")))
-  (ok "bigdec+double operand lowers + to fl+" (has? e "(fl+")))
+  (ok "bigdec+double operand lowers + to fl+" (has? e "(#3%fl+")))
 ;; a statically-bigdec operand mixed with an untyped (:any) value routes through
 ;; the generic bigdec-aware jolt op, not the raw Chez op (de-opt to correct).
 (ok "(+ 1.5M x) with x untyped => 4.5M bigdec"

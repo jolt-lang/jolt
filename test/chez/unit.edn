@@ -651,4 +651,9 @@
   {:suite "vars / unbound" :expr "(do (declare uv-f) (str uv-f))" :expected "Unbound: #'user/uv-f"}
   {:suite "vars / unbound" :expr "(pr-str uv-late-undef-xyz)" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-late-undef-xyz\"]"}
   {:suite "vars / unbound" :expr "(do (declare uv-g) (binding [uv-g 42] (deref (var uv-g))))" :expected "42"}
+  ;; seq error semantics that guard the per-site unsafe-op work: a nil count
+  ;; routes through a checked fx comparison in the take fast path, which must
+  ;; keep raising. (Host-specific: real Clojure returns nil here, so this stays
+  ;; out of the JVM-certified corpus.)
+  {:suite "seq error semantics" :expr "(take nil [1 2 3])" :expected :throws}
 ]

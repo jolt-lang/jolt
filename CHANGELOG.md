@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Proven numeric sites and the protocol inline cache's warm-hit scan compile
+  to Chez's per-site unsafe primitives (`#3%fl*`, `#3%vector-ref`): the type
+  and bounds checks they skip are exactly the ones the compiler already
+  proved redundant, so semantics are unchanged while megamorphic protocol
+  dispatch gets ~4% faster. Checked `^long` arithmetic keeps its raising
+  overflow behavior — fixnum ops are never emitted unsafe.
 - `(double x)`, `(long x)`, `(int x)`, and `(float x)` casts feed the typed-
   arithmetic fast path the way `^double`/`^long` hints do: `(* (double x) 2.0)`
   compiles to flonum ops. The casts keep their full checked semantics

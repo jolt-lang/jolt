@@ -677,11 +677,14 @@
 ;; the eq? scan over a PIC cache's N (desc . impl) pairs: each clause returns the
 ;; impl when its cached desc is eq? to d. Strung together with `or` so a hit short-
 ;; circuits; a full miss falls through to the install helper (the caller appends it).
+;; v is always a length-(2N+2) jolt-pic-make vector (the cache cell starts #f and is
+;; only ever set to one), and the indices are constants below its length, so the
+;; vector type/bounds checks are redundant -- emit the per-site unsafe variant.
 (defn- pic-scan-clauses [v d]
   (str/join " "
             (for [i (range pic-n)]
-              (str "(and (eq? (vector-ref " v " " (* 2 i) ") " d ")"
-                   " (vector-ref " v " " (+ (* 2 i) 1) "))"))))
+              (str "(and (eq? (#3%vector-ref " v " " (* 2 i) ") " d ")"
+                   " (#3%vector-ref " v " " (+ (* 2 i) 1) "))"))))
 
 ;; A reference into the Clojure stdlib (clojure.*) with no impl on Chez yet.
 (defn- stdlib-var? [n]
@@ -690,10 +693,15 @@
 ;; Emit a :num-kind-tagged arithmetic call as a Chez flonum/fixnum op. inc/dec are
 ;; unary (fl +/- 1.0, fx1+/fx1-); the rest map through dbl-ops/lng-ops. Integer
 ;; literal operands of a :double op were coerced to flonums by jolt.passes.numeric.
+;; A :double op is only emitted once the numeric pass has PROVEN every operand is a
+;; flonum (that proof gates the fl* specialization itself), so the flonum type check
+;; the safe fl ops run is redundant there — emit the per-site unsafe #3% variant.
+;; fx arithmetic stays on the safe ops: #3%fx+ also drops the overflow check, and
+;; jolt's ^long contract raises on 61-bit overflow rather than wrapping.
 (defn- emit-numeric [kind nm args order-args]
   (cond
-    (and (= kind :double) (= nm "inc")) (str "(fl+ " (first args) " 1.0)")
-    (and (= kind :double) (= nm "dec")) (str "(fl- " (first args) " 1.0)")
+    (and (= kind :double) (= nm "inc")) (str "(#3%fl+ " (first args) " 1.0)")
+    (and (= kind :double) (= nm "dec")) (str "(#3%fl- " (first args) " 1.0)")
     ;; inc/dec tolerate a 64-bit operand (jolt-l-inc/dec fall back past fixnum range);
     ;; unchecked-inc/dec wrap (Java long). Neither can use the raising fx1+/fx1-.
     (and (= kind :long) (= nm "inc")) (str "(jolt-l-inc " (first args) ")")
@@ -701,7 +709,8 @@
     (and (= kind :long) (= nm "unchecked-inc")) (str "(jolt-uncinc " (first args) ")")
     (and (= kind :long) (= nm "unchecked-dec")) (str "(jolt-uncdec " (first args) ")")
     :else
-    (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))]
+    (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))
+          op (if (= kind :double) (str "#3%" op) op)]
       (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
 
 ;; slot of a declared field key in a record's field-order shape, or nil.
@@ -826,7 +835,7 @@
                           (str "(let* ((" r " " (first as) ")"
                                " (" v " (or " c " (let ((_nv (jolt-pic-make))) (set! " c " _nv) _nv)))"
                                " (" d " (jrec-pic-desc " r ")))"
-                               " ((if (and " d " (fx= (vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
+                               " ((if (and " d " (#3%fx= (#3%vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
                                 " (or " scan " (jolt-pic-install " v " " d " " proto " " method " " r "))"
                                 " (jolt-pic-rebuild " v " " d " " proto " " method " " r "))"
                                 " " apply-args "))"))
