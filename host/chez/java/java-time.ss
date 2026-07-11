@@ -1218,7 +1218,9 @@
                                                         (temporal-plus-period t a -1)))
                                 (else (error #f "minus: bad amount"))))
                    ((t n u) (temporal-plus-unit t (- (jt->exact n)) (arg-unit-name u)))))
-   (cons "until" (lambda (t o u) (unit-between (arg-unit-name u) t o)))
+   (cons "until" (case-lambda
+                   ((t o) (per-between t o))                                ; (.until start end) -> Period
+                   ((t o u) (unit-between (arg-unit-name u) t o))))
    (cons "get" (lambda (t f) (temporal-get-field t (arg-field-name f))))
    (cons "getLong" (lambda (t f) (temporal-get-field t (arg-field-name f))))
    (cons "with" (case-lambda
