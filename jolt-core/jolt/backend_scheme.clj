@@ -261,14 +261,22 @@
 ;; correctness, concern, checked via the binary-size gate.
 (def ^:private clone-impl-keys (atom nil))
 (defn reset-clone-prepass! []
-  (reset! clone-impl-keys #{}) (reset! clone-sites nil))
+  (reset! clone-impl-keys #{}) (reset! clone-sites nil)
+  (types/reset-clone-double-ret!))
 (defn contagion-prepass! [nodes ns]
   (letfn [(walk [n]
             (when-some [[type-name proto method fc] (register-impl-invoke n)]
               (let [ars (:arities fc)]
-                (when (and (= 1 (count ars))
-                           (nth (types/contagion-specialize-arity (first ars) type-name) 1))
-                  (swap! clone-impl-keys conj (clone-site-key (str ns "." type-name) proto method)))))
+                (when (= 1 (count ars))
+                  (let [res (types/contagion-specialize-arity (first ars) type-name)]
+                    (when (nth res 1)
+                      (let [tag (str ns "." type-name)]
+                        (swap! clone-impl-keys conj (clone-site-key tag proto method))
+                        ;; the clone's return is :double -> the devirt sites that
+                        ;; resolve it type their return :double per-site (infer-call),
+                        ;; so a caller accumulator add over them lowers to fl+.
+                        (when (nth res 2)
+                          (types/add-clone-double-ret! tag proto method))))))))
             (ir/reduce-ir-children (fn [_ c] (walk c) nil) nil n))]
     (run! walk nodes)
     nil))

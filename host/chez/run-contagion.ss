@@ -200,6 +200,42 @@
 (set-direct-link! #f)
 (set-optimize! #f)
 
+;; === (8) caller accumulator over a clone-resolving devirt site -> fl+ ============
+;; Stage 5: a devirt site whose contagion clone returns :double types its return
+;; :double per-site, so a caller's accumulator add over it fires dbl-arith? and
+;; lowers to fl+ — the caller-side win the bead noted ("with caller fl+"), recovered
+;; WITHOUT a global pm-rets :double leak (a PIC/megamorphic site keeps returning :any).
+(evals "(defprotocol P3 (m3 [s]))")
+(evals "(defrecord IBag3 [n] P3 (m3 [s] (* 3.14159 (:n s))))")
+(set-record-shapes! (chez-record-shapes-map))
+(set-protocol-methods! (chez-protocol-methods-map))
+(define ibag3-def  (anode "(defrecord IBag3 [n] P3 (m3 [s] (* 3.14159 (:n s))))"))
+(define ibag3-ctor (anode "(def ibag3-use (fn [] (->IBag3 7)))"))
+(define acc8-def   (anode "(def acc8 (fn [s] (+ 0.0 (m3 s))))"))
+(define acc8-use   (anode "(def acc8-use (fn [] (acc8 (->IBag3 7))))"))
+;; wp-infer! seeds acc8's `s` as IBag3 (acc8-use passes a fresh ctor) so the (m3 s)
+;; site devirt-annotates on user.IBag3 during run-passes.
+(wp-infer! (jolt-vector ibag3-def ibag3-ctor acc8-def acc8-use))
+(reset-clone-prepass!)
+(contagion-prepass! (jolt-vector ibag3-def acc8-def) "user")
+(contagion-prepass-done!)
+(set-optimize! #t)
+(set-direct-link! #t)
+(let ((e (emit-top-form (run-passes acc8-def (make-analyze-ctx "user")))))
+  (check "(8) caller accumulator over clone-resolving devirt site -> fl+" (sub? e "fl+") #t)
+  (check "(8) ...and the devirt call resolves the clone (devirt-resolve-fl)" (sub? e "devirt-resolve-fl") #t))
+;; the SAME caller shape over a PIC/megamorphic site (unseeded `s`) does not resolve
+;; the contagion clone — no devirt-resolve-fl. (Whether it lowers to fl+ depends on
+;; shared rtinfo/pm-rets state and is unreliable in this synthetic gate; the real
+;; guarantee — no clone path at a PIC site — is pinned in run-pic and verified in the
+;; dispatch build's emitted scheme, where stage 5 leaves fl+ counts byte-identical to
+;; baseline.)
+(define acc8-pic (anode "(def acc8-pic (fn [s] (+ 0.0 (m3 s))))"))
+(let ((e (emit-top-form (run-passes acc8-pic (make-analyze-ctx "user")))))
+  (check "(8) PIC/megamorphic site does NOT resolve the contagion clone" (sub? e "devirt-resolve-fl") #f))
+(set-direct-link! #f)
+(set-optimize! #f)
+
 (if (= fails 0)
     (begin (printf "contagion gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "contagion gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
