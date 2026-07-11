@@ -6,7 +6,7 @@
 
 CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
 
-.PHONY: test ci values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke submodules
+.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -42,8 +42,15 @@ unit:
 	@$(CHEZ) --script host/chez/run-unit.ss
 
 # Real-CLI smoke over bin/joltc.
-smoke:
-	@sh host/chez/smoke.sh
+# smoke and cts spawn a joltc process per case; a prebuilt binary boots ~10x
+# faster than script mode (0.14s vs 1.5s), so both build one first (12s,
+# always rebuilt so it can't go stale against edited sources). JOLT_BIN=bin/joltc
+# forces script mode.
+testbin:
+	@$(CHEZ) --script host/chez/build-joltc.ss release target/release/joltc
+
+smoke: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/joltc}" sh host/chez/smoke.sh
 
 # `jolt build` produces a working standalone binary.
 buildsmoke:
@@ -82,8 +89,8 @@ sci:
 # clojure-test-suite conformance: run the vendored jank-lang/clojure-test-suite
 # per-namespace under joltc, gated on the per-namespace baseline
 # (test/chez/cts-known-failures.txt).
-cts:
-	@bash host/chez/cts.sh
+cts: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/joltc}" bash host/chez/cts.sh
 
 # FFI: bind native functions (typed foreign-procedure), memory, and that a
 # :blocking call is collect-safe (a parked thread doesn't pin the collector).

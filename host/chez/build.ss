@@ -176,6 +176,7 @@
     "(load \"host/chez/host-contract.ss\")"
     'image
     'compile-eval
+    "(load \"host/chez/cli-core.ss\")"
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
     "(load \"host/chez/java/ffi.ss\")"
@@ -798,22 +799,26 @@
       (close-port out))))
 
 ;; Per-mode Chez compile parameters for app binaries. Mirrors the pattern in
-;; build-joltc.ss (optimize-level 3, fasl-compressed #t for release/optimized).
+;; build-joltc.ss (optimize-level 2, fasl-compressed #t for release/optimized).
 ;; "release" keeps inspector + proc-source ON so Clojure backtraces (via
 ;; inspect/object walking the continuation) survive. "optimized" turns them OFF
 ;; for max speed. "dev" leaves Chez defaults (optimize-level 2, inspector ON,
 ;; proc-source ON, fasl uncompressed — full debuggability).
 (define (bld-chez-param-forms mode)
+  ;; optimize-level 2, not 3: level 3 is Chez's UNSAFE mode — fx/fl/car/vector
+  ;; ops skip their type checks, and jolt's error semantics depend on those
+  ;; raising ((take nil coll) must throw, not walk off a nil count). Level 2
+  ;; keeps every check with nearly all of the optimization.
   (cond
     ((string=? mode "optimized")
      (string-append
-       "(optimize-level 3)\n"
+       "(optimize-level 2)\n"
        "(generate-inspector-information #f)\n"
        "(generate-procedure-source-information #f)\n"
        "(fasl-compressed #t)\n"))
     ((string=? mode "release")
      (string-append
-       "(optimize-level 3)\n"
+       "(optimize-level 2)\n"
        "(generate-inspector-information #t)\n"
        "(generate-procedure-source-information #t)\n"
        "(fasl-compressed #t)\n"))
@@ -828,11 +833,11 @@
     (bld-prepend-prologue! flat-ss)
     (cond
       ((string=? mode "optimized")
-       (parameterize ((optimize-level 3) (generate-inspector-information #f)
+       (parameterize ((optimize-level 2) (generate-inspector-information #f)
                        (generate-procedure-source-information #f) (fasl-compressed #t))
          (compile-file flat-ss flat-so)))
       ((string=? mode "release")
-       (parameterize ((optimize-level 3) (generate-inspector-information #t)
+       (parameterize ((optimize-level 2) (generate-inspector-information #t)
                        (generate-procedure-source-information #t) (fasl-compressed #t))
          (compile-file flat-ss flat-so)))
       (else

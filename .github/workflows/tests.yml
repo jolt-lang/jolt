@@ -70,5 +70,7 @@ jobs:
         # source-built Chez) + the behavior gates (`make ci`: corpus/unit/smoke/
         # buildsmoke/sci/certify). buildsmoke links a real binary (the source
         # build ships the kernel dev files).
-        run: make test
+        # -j overlaps the independent gates (ci is a plain dependency list);
+        # -Oline keeps per-recipe output contiguous for failure reading.
+        run: make -j"$(nproc)" -Oline test
 
