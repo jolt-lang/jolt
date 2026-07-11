@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Whole-program builds infer record field types from the constructor
+  arguments: a field every `(->Ctor …)` site fills with a flonum reads as a
+  double (arithmetic over it unboxes, through protocol-method returns and
+  reduce accumulators), and a field holding a record-or-nil narrows guarded
+  reads to the direct accessor. No hints needed; conflicting or escaping
+  constructors soundly leave fields untyped.
+
 ## [0.2.3] - 2026-07-11
 
 ### Fixed
