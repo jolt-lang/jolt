@@ -139,6 +139,36 @@
   (check "protocol-resolve old instance after redef"
          (not (not (protocol-resolve "Shape" "area" (var-deref "user" "c")))) #t))
 
+;; ---- contagion: a PIC (megamorphic) site never resolves a contagion clone ------
+;; Contagion clones are gated to monomorphic devirt sites by construction — only the
+;; :devirt-type emit clause consults clone-sites. Make Ring/Shape/area a clone-site
+;; (a contagion-eligible impl reached by a devirt site), then a PIC site over the
+;; same proto/method must still use the PIC path and never devirt-resolve-fl.
+(let* ((set-record-shapes!   (var-deref "jolt.passes.types" "set-record-shapes!"))
+       (set-protocol-methods! (var-deref "jolt.passes.types" "set-protocol-methods!"))
+       (wp-infer!            (var-deref "jolt.passes.types" "wp-infer!"))
+       (contagion-prepass!    (var-deref "jolt.backend-scheme" "contagion-prepass!"))
+       (contagion-prepass-done! (var-deref "jolt.backend-scheme" "contagion-prepass-done!"))
+       (reset-clone-prepass!  (var-deref "jolt.backend-scheme" "reset-clone-prepass!")))
+  (evals "(defrecord Ring [n] Shape (area [s] (* 3.14159 (:n s))))")
+  (set-record-shapes! (chez-record-shapes-map))
+  (set-protocol-methods! (chez-protocol-methods-map))
+  (let* ((ring-def  (analyze (make-analyze-ctx "user") (jolt-ce-read "(defrecord Ring [n] Shape (area [s] (* 3.14159 (:n s))))")))
+         (ring-ctor (analyze (make-analyze-ctx "user") (jolt-ce-read "(def ring-use (fn [] (->Ring 7)))")))
+         (ddn  (analyze (make-analyze-ctx "user") (jolt-ce-read "(def dvring (fn [x] (area x)))")))
+         (ar0  (jolt-nth (jolt-get (jolt-get ddn (kw "init")) (kw "arities")) 0))
+         (inv  (jolt-get ar0 (kw "body")))
+         (inv2 (jolt-assoc inv (kw "devirt-type") "user.Ring" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+         (ddn2 (jolt-assoc ddn (kw "init") (jolt-assoc (jolt-get ddn (kw "init")) (kw "arities")
+                                                       (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
+    (wp-infer! (jolt-vector ring-def ring-ctor))
+    (reset-clone-prepass!)
+    (contagion-prepass! (jolt-vector ring-def ddn2) "user")
+    (contagion-prepass-done!)
+    (let ((e (pic-emit)))
+      (check "PIC over eligible impl still uses the PIC path" (has-sub? e "jolt-pic-make") #t)
+      (check "PIC over eligible impl never emits devirt-resolve-fl" (has-sub? e "devirt-resolve-fl") #f))))
+
 (if (= fails 0)
     (begin (printf "pic gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "pic gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
