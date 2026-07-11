@@ -15,7 +15,9 @@
                                form-regex? form-regex-source
                                form-inst? form-inst-source form-uuid? form-uuid-source]]
             [jolt.passes.types :as types]
-            [jolt.passes.numeric :as numeric]))
+            [jolt.passes.numeric :as numeric]
+            [jolt.ir :as ir]
+            [clojure.set :as set]))
 
 ;; Hot clojure.core primitives lowered to native Scheme. Every per-op fact —
 ;; the call-position Scheme name, the value-position proc, the arity gate, any
@@ -241,6 +243,31 @@
 (defn reset-clone-sites! [] (reset! clone-sites nil))
 (defn- clone-site-key [tag proto method] (str tag "|" proto "|" method))
 (defn- clone-site? [tag proto method] (and @clone-sites (contains? @clone-sites (clone-site-key tag proto method))))
+;; whole-program pre-pass accumulators: impl keys (ns.type|proto|method) for
+;; contagion-eligible impls, and devirt keys (devirt-type|proto|method) for the call
+;; sites that target them. The build driver calls contagion-prepass! per-ns (it knows
+;; the ns) then contagion-prepass-done!, which intersects them — a clone is worth
+;; emitting only where an eligible impl is also reached by a devirtualized call site.
+(def ^:private clone-impl-keys (atom nil))
+(def ^:private clone-devirt-keys (atom nil))
+(defn reset-clone-prepass! []
+  (reset! clone-impl-keys #{}) (reset! clone-devirt-keys #{}) (reset! clone-sites nil))
+(defn contagion-prepass! [nodes ns]
+  (letfn [(walk [n]
+            (when-some [[type-name proto method fc] (register-impl-invoke n)]
+              (let [ars (:arities fc)]
+                (when (and (= 1 (count ars))
+                           (nth (types/contagion-specialize-arity (first ars) type-name) 1))
+                  (swap! clone-impl-keys conj (clone-site-key (str ns "." type-name) proto method)))))
+            (when (:devirt-type n)
+              (swap! clone-devirt-keys conj
+                     (clone-site-key (:devirt-type n) (:devirt-proto n) (:devirt-method n))))
+            (ir/reduce-ir-children (fn [_ c] (walk c) nil) nil n))]
+    (run! walk nodes)
+    nil))
+(defn contagion-prepass-done! []
+  (let [sites (set/intersection (or @clone-impl-keys #{}) (or @clone-devirt-keys #{}))]
+    (reset! clone-sites (not-empty sites)) nil))
 
 ;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
 ;; run-passes before each form's emit so emit-invoke can recognize ctor calls with
@@ -795,8 +822,15 @@
       ;; The receiver is bound once — it feeds both the resolve and the application.
       (:devirt-type node)
       (order-args (fn [as]
-                    (let [r (fresh-label "_r$")
-                          dv (str "(devirt-resolve " (chez-str-lit (:devirt-type node)) " "
+                     (let [r (fresh-label "_r$")
+                          ;; a site whose impl has a contagion clone resolves the clone
+                          ;; (fl* + exact->inexact on the :num operand) instead of the
+                          ;; shared impl; otherwise the ordinary devirt-resolve. The
+                          ;; non-specialized path is byte-identical (clone-sites empty
+                          ;; outside a whole-program build).
+                          resolver-name (if (clone-site? (:devirt-type node) (:devirt-proto node) (:devirt-method node))
+                                           "devirt-resolve-fl" "devirt-resolve")
+                          dv (str "(" resolver-name " " (chez-str-lit (:devirt-type node)) " "
                                   (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
                                   " " r ")")
                           cells @cache-cells

@@ -145,6 +145,61 @@
 (set-direct-link! #f)
 (set-optimize! #f)
 
+;; === (7) a devirt site over an eligible impl resolves the contagion clone ======
+;; stage 3: the devirt call site emits devirt-resolve-fl (consults the clone table
+;; first) when its (type/proto/method) is a clone-site, and the resolved clone returns
+;; a value identical to ordinary dispatch. A pure-:num impl has no clone-site, so its
+;; devirt site stays on devirt-resolve — the non-specialized path byte-identical.
+(define contagion-prepass!     (var-deref "jolt.backend-scheme" "contagion-prepass!"))
+(define contagion-prepass-done! (var-deref "jolt.backend-scheme" "contagion-prepass-done!"))
+(define reset-clone-prepass!   (var-deref "jolt.backend-scheme" "reset-clone-prepass!"))
+(define (run-emit scm) (eval (read (open-input-string scm)) (interaction-environment)))
+;; (def usem2 (fn [x] (m2 x))) with the (m2 x) invoke annotated a devirt site on `type`.
+(define (devirt-def type)
+  (let* ((dn (anode "(def usem2 (fn [x] (m2 x)))"))
+         (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
+         (inv (jolt-get ar0 (kw "body")))
+         (inv2 (jolt-assoc inv (kw "devirt-type") type (kw "devirt-proto") "P2" (kw "devirt-method") "m2")))
+    (jolt-assoc dn (kw "init")
+                (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
+                            (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
+(evals "(defprotocol P2 (m2 [s]))")
+(evals "(defrecord IBag2 [n] P2 (m2 [s] (* 3.14159 (:n s))))")
+(set-record-shapes! (chez-record-shapes-map))
+(set-protocol-methods! (chez-protocol-methods-map))
+(define ibag2-def (anode "(defrecord IBag2 [n] P2 (m2 [s] (* 3.14159 (:n s))))"))
+(define ibag2-ctor (anode "(def ibag2-use (fn [] (->IBag2 7)))"))
+(wp-infer! (jolt-vector ibag2-def ibag2-ctor))
+;; eligible impl + a devirt site targeting it -> a clone-site.
+(reset-clone-prepass!)
+(contagion-prepass! (jolt-vector ibag2-def (devirt-def "user.IBag2")) "user")
+(contagion-prepass-done!)
+(set-optimize! #t)
+(set-direct-link! #t)
+(let ((e (emit-top-form (run-passes (devirt-def "user.IBag2") (make-analyze-ctx "user")))))
+  (check "(7) devirt site over eligible impl emits devirt-resolve-fl" (sub? e "devirt-resolve-fl") #t))
+;; emit + eval the defrecord (registers the clone), then the devirt site resolves it.
+(let ((rec-e (emit-top-form (run-passes ibag2-def (make-analyze-ctx "user"))))
+      (site-e (emit-top-form (run-passes (devirt-def "user.IBag2") (make-analyze-ctx "user")))))
+  (run-emit rec-e)
+  (run-emit site-e)
+  (evals "(def an-ibag2 (->IBag2 7))")
+  (check "(7) devirt-resolve-fl resolves the clone, value == dispatch"
+         (jolt-invoke (var-deref "user" "usem2") (var-deref "user" "an-ibag2"))
+         (evals "(m2 an-ibag2)")))
+;; a pure-:num impl has no clone-site -> its devirt site stays on devirt-resolve.
+(define iplain2-def (anode "(defrecord IPlain2 [n] P2 (m2 [s] (* (:n s) (:n s))))"))
+(define iplain2-ctor (anode "(def iplain2-use (fn [] (->IPlain2 7)))"))
+(wp-infer! (jolt-vector iplain2-def iplain2-ctor))
+(reset-clone-prepass!)
+(contagion-prepass! (jolt-vector iplain2-def (devirt-def "user.IPlain2")) "user")
+(contagion-prepass-done!)
+(let ((e (emit-top-form (run-passes (devirt-def "user.IPlain2") (make-analyze-ctx "user")))))
+  (check "(7) devirt site over pure-:num impl is NOT devirt-resolve-fl" (sub? e "devirt-resolve-fl") #f)
+  (check "(7) ...it stays on the ordinary devirt-resolve" (sub? e "devirt-resolve ") #t))
+(set-direct-link! #f)
+(set-optimize! #f)
+
 (if (= fails 0)
     (begin (printf "contagion gate: ~a/~a passed\n" total total) (exit 0))
     (begin (printf "contagion gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
