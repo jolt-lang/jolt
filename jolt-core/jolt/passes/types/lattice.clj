@@ -162,10 +162,13 @@
 ;; a lookup whose SUBJECT is that node — this is what makes nested access work:
 ;; (:direction ray) is tagged struct, so (:r (:direction ray)) drops its guard.
 ;; tag a lookup subject as a struct, carrying the complete shape when known
-;; (so the back end bare-indexes).
+;; (so the back end bare-indexes). A nilable struct keeps its :shape (so a guard
+;; can narrow it back to a bare read), but is marked :nilable so the back end
+;; keeps the nil-safe read path instead of a direct (nil-unsafe) slot accessor.
 (defn mark-struct [node t]
-  (let [n (assoc node :hint :struct)]
-    (if (get t :shape) (assoc n :shape (get t :shape)) n)))
+  (let [n (assoc node :hint :struct)
+        n (if (get t :shape) (assoc n :shape (get t :shape)) n)]
+    (if (nilable? t) (assoc n :nilable true) n)))
 ;; a value provably neither nil nor false — the back end only builds a struct
 ;; (vs a phm) when every value is non-nil/non-false, so a map literal is a struct
 ;; only when all its values have such a type. Collections are non-nil.

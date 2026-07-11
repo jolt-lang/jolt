@@ -45,22 +45,24 @@ plain `jolt build` (`MODE_A=1` adds this column):
 
 | benchmark | opt | release | axis |
 |---|---|---|---|
-| `fib` | ~1.1× | ~1.0× | call + integer arith |
-| `collections` | ~1.2× | ~1.1× | persistent map/vector churn |
+| `fib` | ~1.0× | ~1.0× | call + integer arith |
+| `collections` | ~1.1× | ~1.1× | persistent map/vector churn |
+| `dispatch` | ~1.1× | ~1.1× | megamorphic protocol dispatch |
 | `mandelbrot` | ~2.0× | ~6.5× | pure float compute (fl-unboxing needs `--opt`) |
-| `dispatch` | ~2.8× | ~2.8× | megamorphic protocol dispatch |
-| `binary-trees` | ~6.6× | ~6.5× | escaping short-lived records (allocation/GC) |
-| `mono-dispatch` | ~7.8× | ~8.5× | monomorphic protocol dispatch |
+| `mono-dispatch` | ~2.8× | ~3.3× | monomorphic protocol dispatch |
+| `binary-trees` | ~6.4× | ~6.4× | escaping short-lived records (allocation/GC) |
 
-- **Compute and collections (~1–2.8×)** sit at or near the substrate floor:
-  Chez is a native-compiling AOT Scheme, not a profiling JIT. `fib` and
-  `collections` are at JVM parity in both modes; `mandelbrot` is ~2× under
-  `--opt` (fl-unboxing) and ~6.5× in a release build — the release gap is the
-  cost of not direct-linking, which is why the scorecard tracks both modes.
-- **Dispatch & allocation (~6.6–8.5×)** are the remaining architectural gaps,
-  though the type-proving / native-record / bare-field-read work has collapsed
-  them by well over an order of magnitude (`binary-trees` ~140×→~6.6×,
-  `mono-dispatch` ~330×→~7.8×). On a
+- **Parity (~1.0–1.1×, both modes)**: integer recursion, persistent-collection
+  churn, and megamorphic protocol dispatch — inline record fields made the
+  PIC's field-reading method bodies cheap enough to close the megamorphic gap.
+- **`mandelbrot`** is ~2× under `--opt` (fl-unboxing) and ~6.5× in a release
+  build — that release gap is the cost of not direct-linking, and is why the
+  scorecard tracks both modes.
+- **Dispatch & allocation (~2.8–6.4×)** are the remaining gaps, collapsed from
+  two orders of magnitude by the type-proving / inline-field / bare-read work
+  (`binary-trees` ~140×→~6.4×, `mono-dispatch` ~330×→~2.8×). `binary-trees`'
+  residual is generic reads over untyped nilable fields (field-type inference
+  territory); `mono-dispatch`'s is per-call cache bookkeeping. On a
   *statically proven* monomorphic receiver — which whole-program inference now gives
   for a record iterated out of a vector — devirt resolves the impl and a per-site
   inline cache holds it (resolved once, not per call), so `mono-dispatch` is no

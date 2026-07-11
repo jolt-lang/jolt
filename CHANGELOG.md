@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `java.text.ParseException` as a constructable/catchable host exception class,
   including `.getErrorOffset`.
 
+### Changed
+
+- Records store their fields inline (one heap object per record instead of a
+  descriptor + separate values vector), and a typed non-nilable field read
+  emits the receiver's direct per-arity slot accessor — no dispatch, one load.
+  A retention-heavy construction microbenchmark allocates 25% less and runs
+  ~44% faster; the mono-dispatch benchmark improves ~2.6x (101 → 39 ms,
+  ~2.8x of JVM from ~7.8x). Nilable receivers keep the nil-safe read path
+  (gate-pinned), and generic reads dispatch on the descriptor's field count.
+
 ### Fixed
 
 - Reading a declared-but-unset var returns the `Var$Unbound` sentinel from

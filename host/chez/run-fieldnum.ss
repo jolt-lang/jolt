@@ -64,7 +64,7 @@
 ;; the hint is dead and the reads fall back to generic jolt-get + boxed arithmetic.
 (define hinted (anode "(def hyp (fn [^V v] (+ (* (:x v) (:x v)) (* (:y v) (:y v)))))"))
 (define hint-emit (emit (run-passes hinted (make-analyze-ctx "user"))))
-(check "^V param hint bare-indexes field reads" (contains-sub? hint-emit "jrec-field-at") #t)
+(check "^V param hint direct-accesses field reads" (contains-sub? hint-emit "jrec2-f0") #t)
 (check "^V param hint unboxes arithmetic" (contains-sub? hint-emit "fl*") #t)
 (check "^V param hint leaves no generic jolt-get" (contains-sub? hint-emit "jolt-get") #f)
 

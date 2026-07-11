@@ -711,6 +711,13 @@
       (cond (>= i (count shape)) nil
             (= (nth shape i) kw) i
             :else (recur (inc i))))))
+;; the direct per-arity slot accessor (jrecN-fI) for a field at idx in `shape`, or
+;; nil when there is no per-arity accessor (>8 fields spill into jrec*, which stores
+;; fields in a vector, not inline slots). Sound only for a proven-non-nil receiver.
+(defn- direct-field-accessor [shape idx]
+  (let [n (count shape)]
+    (when (<= n 8)
+      (str "jrec" n "-f" idx))))
 
 ;; A plain Scheme application: (callee op ...).
 (defn- plain-call [callee operand-strs]
@@ -834,34 +841,44 @@
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
       ;; (get coll k [default]) with a struct-typed coll — the inference marked the
       ;; receiver with :hint :struct and a :shape matching the declared field layout.
-      ;; Read the field by its static slot (jrec-field-at) instead of the generic
-      ;; jolt-get dispatch. Only the 2-arg (no-default) form takes this path since a
-      ;; declared field is always present. The key must be a compile-time keyword
-      ;; literal so (struct-field-index) can resolve it.
+      ;; Read the field by its static slot instead of the generic jolt-get dispatch.
+      ;; A proven-NON-NIL receiver emits the direct per-arity accessor (jrecN-fI) —
+      ;; zero dispatch, one load; a nilable receiver keeps jrec-field-at, which falls
+      ;; back to jolt-get on nil. Only the 2-arg (no-default) form takes this path
+      ;; since a declared field is always present. The key must be a compile-time
+      ;; keyword literal so (struct-field-index) can resolve it.
       (and (= nop "jolt-get") (<= 2 (count arg-nodes) 3))
       (let [recv (first arg-nodes) key-node (second arg-nodes)
             idx (when (and (= 2 (count arg-nodes))
                            (= :struct (:hint recv))
                            (= :const (:op key-node))
                            (keyword? (:val key-node)))
-                  (struct-field-index (:shape recv) (:val key-node)))]
-        (if idx
-          (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
-          (order-args (fn [as] (str "(jolt-get " (str/join " " as) ")")))))
+                  (struct-field-index (:shape recv) (:val key-node)))
+            dir (when (and idx (not (:nilable recv)))
+                  (direct-field-accessor (:shape recv) idx))]
+        (cond
+          dir  (order-args (fn [as] (str "(" dir " " (first as) ")")))
+          idx  (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
+          :else (order-args (fn [as] (str "(jolt-get " (str/join " " as) ")")))))
       nop (order-args (fn [as] (str "(" nop " " (str/join " " as) ")")))
       ;; (:k coll [default]) -> (jolt-get coll :k [default]) — the key (fnode) is a
       ;; const, so only the coll/default args carry order. When the inference typed
       ;; the receiver as a record whose declared fields include :k (it carries the
       ;; field-order :shape), read the field by its static slot — no field-key
-      ;; lookup, no jolt-get dispatch. Only the no-default form (a declared field is
-      ;; always present, so a default is never taken).
+      ;; lookup, no jolt-get dispatch. A proven-non-nil receiver emits the direct
+      ;; per-arity accessor (jrecN-fI); a nilable one keeps jrec-field-at. Only the
+      ;; no-default form (a declared field is always present, so a default is never
+      ;; taken).
       (= kind :keyword)
       (let [recv (first arg-nodes)
             idx (when (and (= :struct (:hint recv)) (= 1 (count arg-nodes)))
-                  (struct-field-index (:shape recv) (:val fnode)))]
-        (if idx
-          (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit fnode) ")")))
-          (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))
+                  (struct-field-index (:shape recv) (:val fnode)))
+            dir (when (and idx (not (:nilable recv)))
+                  (direct-field-accessor (:shape recv) idx))]
+        (cond
+          dir  (order-args (fn [as] (str "(" dir " " (first as) ")")))
+          idx  (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit fnode) ")")))
+          :else (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))
       ;; (coll k [default]) -> lookup — coll (fnode) is the callee, evaluated
       ;; before the key/default args. A VECTOR literal invokes as nth (a bad
       ;; index throws, IPersistentVector.invoke); maps/sets invoke as get.
@@ -898,29 +915,34 @@
       (and (= :var (:op fnode)) (direct-linkable? (:ns fnode) (:name fnode))
            (direct-link-fn? (:ns fnode) (:name fnode)))
       (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as)))
-      ;; record ctor with matching arity: inline the field vector + make-jrec
-      ;; directly, eliminating jolt-invoke / var-deref / rest-list / ctor call /
-      ;; hashtable lookup entirely. After per-site desc-cell warmup, the hot path
-      ;; is: cell read -> vector -> make-jrec — 2 allocs, no lookups, no dispatch.
-      ;; The shape is set by run-passes (set-ctor-shapes!) before emit.
-      (let [key (str (:ns fnode) "/" (:name fnode))
-            shape (get @ctor-shapes key)]
-        (and (= :var (:op fnode)) shape
-             (= (count (get shape :fields)) (count args))
-             (<= (count args) 6)
-             ;; skip if any ^double field — the inlined path doesn't coerce
-             (not-any? #{"double"} (get shape :tags))))
-      (let [s (get @ctor-shapes (str (:ns fnode) "/" (:name fnode)))
-            tag (:type s)
-            cells @cache-cells
-            desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
-            cached-desc (if cells
-                          (let [c (fresh-label "_cdesc$")]
-                            (swap! cells conj c)
-                            (str "(or " c " (let ((_d " desc-lookup ")) (set! " c " _d) _d))"))
-                          desc-lookup)]
-        (order-args (fn [as]
-                      (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))"))))
+       ;; record ctor with matching arity: inline the native per-arity ctor
+       ;; (make-jrecN) directly — desc + ext + one inline slot per field —
+       ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
+       ;; lookup AND the field vector. After per-site desc-cell warmup the hot
+       ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
+       ;; dispatch. The shape is set by run-passes (set-ctor-shapes!) before emit.
+       (let [key (str (:ns fnode) "/" (:name fnode))
+             shape (get @ctor-shapes key)]
+         (and (= :var (:op fnode)) shape
+              (= (count (get shape :fields)) (count args))
+              (<= (count args) 6)
+              ;; skip if any ^double field — the inlined path doesn't coerce
+              (not-any? #{"double"} (get shape :tags))))
+       (let [s (get @ctor-shapes (str (:ns fnode) "/" (:name fnode)))
+             tag (:type s)
+             cells @cache-cells
+             desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
+             cached-desc (if cells
+                           (let [c (fresh-label "_cdesc$")]
+                             (swap! cells conj c)
+                             (str "(or " c " (let ((_d " desc-lookup ")) (set! " c " _d) _d))"))
+                           desc-lookup)]
+         (order-args (fn [as]
+                       (let [n (count as)]
+                         (if (<= n 8)
+                           (str "(make-jrec" n " " cached-desc " jolt-nil"
+                                (when (pos? n) (str " " (str/join " " as))) ")")
+                           (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))"))))))
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
