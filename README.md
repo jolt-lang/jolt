@@ -34,9 +34,18 @@ Then `joltc -e '(+ 1 2)'`. To run from source instead (needs Chez), see
 
 ## Requirements
 
-Only [Chez Scheme](https://cisco.github.io/ChezScheme/) (the gate invokes it as
-`chez`). The conformance gate additionally uses Clojure on the JVM as an oracle,
-but running jolt does not.
+The prebuilt binaries are self-contained (runtime, compiler, and stdlib in one
+executable) and need only the base system libraries:
+
+- **Linux x86_64**: glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, RHEL 9+).
+  The installer verifies the binary runs and reports the exact glibc mismatch
+  if not.
+- **macOS arm64**: macOS 14+.
+- Anything else (Intel Mac, musl/Alpine, older glibc): build from source.
+
+Building from source needs only [Chez Scheme](https://cisco.github.io/ChezScheme/)
+(the gate invokes it as `chez`) and a C compiler. The conformance gate
+additionally uses Clojure on the JVM as an oracle, but running jolt does not.
 
 ## Build
 
@@ -86,12 +95,12 @@ $ bin/joltc -e '(/ 1 2)'
 
 ```bash
 bin/joltc repl                  # a line REPL with the project's deps loaded
-bin/joltc --nrepl-server [port] # an nREPL server (default 7888) for editors
+bin/joltc nrepl-server [port]   # an nREPL server (default 7888) for editors
 ```
 
 Both resolve the `deps.edn` in the current directory first, so the project's
 source roots and native libraries are loaded — `(require '[my.ns])` works live.
-`--nrepl-server` writes a `.nrepl-port` file in the project dir, so CIDER / Calva / Cursive
+`nrepl-server` writes a `.nrepl-port` file in the project dir, so CIDER / Calva / Cursive
 auto-detect the port; override it with the argument or `JOLT_NREPL_PORT`.
 
 The server runs in dev mode — calls deref their var, so redefining a function
