@@ -143,5 +143,55 @@
 (let ((e (emitf "u" "(fn* ([^double y] (+ y (dsq 2.0))))")))
   (ok "straight-line op over ^double call lowers to fl+" (has? e "(fl+")))
 
+;; --- Part 1 (jolt-30q9): (double x)/(long x)/(int x)/(float x) casts ---
+;; A non-shadowed clojure.core cast becomes a :coerce node carrying the checked
+;; runtime helper, so it feeds the numeric lattice like a ^double/^long hint:
+;; (* (double x) 2.0) emits fl*, (+ (long x) 1) emits fx+.
+
+;; (double x) in arithmetic yields fl-ops AND the checked helper.
+(let ((e (emitf "u" "(fn* ([x] (* (double x) 2.0)))")))
+  (ok "(double x) operand lowers * to fl*" (has? e "(fl*"))
+  (ok "(double x) lowers to jolt-double helper" (has? e "(jolt-double")))
+;; (long x) in arithmetic yields fx-ops AND the checked helper.
+(let ((e (emitf "u" "(fn* ([x] (+ (long x) 1)))")))
+  (ok "(long x) operand lowers + to fx+" (has? e "(fx+"))
+  (ok "(long x) lowers to jolt-long-cast helper" (has? e "(jolt-long-cast")))
+;; (int x) is long-kind (feeds fx) but routes to jolt-int-cast (JVM int range).
+(let ((e (emitf "u" "(fn* ([x] (+ (int x) 1)))")))
+  (ok "(int x) operand lowers + to fx+" (has? e "(fx+"))
+  (ok "(int x) lowers to jolt-int-cast helper" (has? e "(jolt-int-cast")))
+;; (float x) is double-kind but routes to jolt-float (Float range check).
+(let ((e (emitf "u" "(fn* ([x] (* (float x) 2.0)))")))
+  (ok "(float x) operand lowers * to fl*" (has? e "(fl*"))
+  (ok "(float x) lowers to jolt-float helper" (has? e "(jolt-float")))
+;; a (double x) accumulator loop runs on fl+ (the headline use case).
+(let ((e (emitf "u" "(fn* ([f] (loop [acc (double 0) i 0] (if (< i 3) (recur (+ acc (double (f i))) (inc i)) acc))))")))
+  (ok "(double x) accumulator loop lowers to fl+" (has? e "(fl+")))
+;; a shadowing local named `double` does NOT trigger the cast: (double double)
+;; is a call to the local fn, emitting a normal invoke (no jolt-double helper).
+(let ((e (emitf "u" "(fn* ([double] (+ (double double) 1)))")))
+  (ok "shadowing local `double` does NOT lower to jolt-double" (not (has? e "(jolt-double"))))
+;; a clojure.core-qualified cast (from syntax-quote) also specializes.
+(let ((e (emitf "u" "(fn* ([x] (* (clojure.core/double x) 2.0)))")))
+  (ok "clojure.core/double operand lowers * to fl*" (has? e "(fl*")))
+
+;; --- cast runtime semantics (JVM-certified corpus rows) ---
+(ok "(double 5) => 5.0 flonum" (let ((r (ev "(double 5)"))) (and (flonum? r) (fl= r 5.0))))
+(ok "(double 1/2) => 0.5" (fl= (ev "(double 1/2)") 0.5))
+(ok "(double 5M) => 5.0 flonum (bigdec->double)" (let ((r (ev "(double 5M)"))) (and (flonum? r) (fl= r 5.0))))
+(ok "(double \"s\") throws" (guard (e (#t #t)) (ev "(double \"s\")") #f))
+(ok "(double nil) throws" (guard (e (#t #t)) (ev "(double nil)") #f))
+(ok "(long 1.5) => 1 (truncate toward zero)" (= (ev "(long 1.5)") 1))
+(ok "(long -1.5) => -1 (truncate toward zero)" (= (ev "(long -1.5)") -1))
+(ok "(long ##NaN) => 0 (JVM (long)NaN)" (= (ev "(long ##NaN)") 0))
+(ok "(long ##Inf) throws (out of range)" (guard (e (#t #t)) (ev "(long ##Inf)") #f))
+(ok "(long 5/2) => 2 (ratio truncate)" (= (ev "(long 5/2)") 2))
+(ok "(long \"s\") throws" (guard (e (#t #t)) (ev "(long \"s\")") #f))
+(ok "(int 5.7) => 5" (= (ev "(int 5.7)") 5))
+(ok "(int -5.7) => -5" (= (ev "(int -5.7)") -5))
+;; a cast result composes with arithmetic at runtime.
+(ok "(* (double 3) 2.0) => 6.0" (fl= (ev "(* (double 3) 2.0)") 6.0))
+(ok "(+ (long 7.9) 1) => 8" (= (ev "(+ (long 7.9) 1)") 8))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
