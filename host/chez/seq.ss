@@ -674,7 +674,7 @@
                    (let inner ((j offset) (k i) (acc acc))
                      (cond ((jolt-reduced? acc) acc)
                            ((fx>=? j clen) (outer k acc))
-                           (else (inner (fx+ j 1) (fx+ k 1) (f acc (#3%vector-ref chunk j))))))))))
+                           (else (inner (fx+ j 1) (fx+ k 1) (f acc (vector-ref chunk j))))))))))
         (let outer ((i start) (acc acc))
           (cond ((jolt-reduced? acc) acc)
                 ((fx>=? i n) acc)
@@ -685,7 +685,7 @@
                    (let inner ((j offset) (k i) (acc acc))
                      (cond ((jolt-reduced? acc) acc)
                            ((fx>=? j clen) (outer k acc))
-                           (else (inner (fx+ j 1) (fx+ k 1) (jolt-invoke f acc (#3%vector-ref chunk j)))))))))))))
+                           (else (inner (fx+ j 1) (fx+ k 1) (jolt-invoke f acc (vector-ref chunk j)))))))))))))
 (define (reduce-seq f acc s)
   ;; direct? is bound once (a boolean, no allocation) and consulted in the
   ;; non-chunked step so a raw fn steps with (f acc x) instead of jolt-invoke.
