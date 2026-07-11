@@ -68,13 +68,16 @@
 
 (define (pv-tailoff cnt)
   (if (fx<? cnt pv-width) 0 (fxsll (fxsra (fx- cnt 1) pv-bits) pv-bits)))
-;; the 32-chunk Scheme vector holding index i (the tail or a trie leaf)
+;; the 32-chunk Scheme vector holding index i (the tail or a trie leaf). Trie
+;; nodes are Scheme vectors grown left-to-right to their live child count, so for a
+;; VALID i (every caller passes 0<=i<cnt) the masked index at each level reaches an
+;; existing child -- the vector type/bounds checks are redundant there.
 (define (pv-chunk-for p i)
   (if (fx>=? i (pv-tailoff (pvec-cnt p)))
       (pvec-tail p)
       (let loop ((node (pvec-root p)) (level (pvec-shift p)))
         (if (fx>? level 0)
-            (loop (vector-ref node (fxand (fxsra i level) pv-mask)) (fx- level pv-bits))
+            (loop (#3%vector-ref node (fxand (fxsra i level) pv-mask)) (fx- level pv-bits))
             node))))
 
 ;; jolt models every number as a double, so vector indices arrive as flonums —
@@ -84,7 +87,7 @@
 (define (pvec-nth-d p i d)
   (let ((i (->idx i)))
     (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
-        (vector-ref (pv-chunk-for p i) (fxand i pv-mask))
+        (#3%vector-ref (pv-chunk-for p i) (fxand i pv-mask))
         d)))
 
 ;; new-path: wrap a node in single-child nodes up `level` bits.
@@ -482,7 +485,7 @@
        (cond ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
       ((pvec? coll) (let ((cnt (pvec-count coll)))
                               (if (and (fixnum? i) (fx>=? i 0) (fx<? i cnt))
-                                  (vector-ref (pv-chunk-for coll i) (fxand i pv-mask))
+                                   (#3%vector-ref (pv-chunk-for coll i) (fxand i pv-mask))
                                   (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))
