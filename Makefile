@@ -22,7 +22,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -163,6 +163,15 @@ fieldnum:
 # same emission the ^double hint reaches above.
 fieldjoin:
 	@$(CHEZ) --script host/chez/run-fieldjoin.ss
+
+# Devirt-gated fl* contagion for :num record fields: a :num field read
+# beside a proven :double operand contagion-coerces (exact->inexact) and lowers to
+# fl* in a specialized clone resolved only at devirtualized call sites — recovering
+# the win Option B gave up without touching the megamorphic/PIC regime. Pins the
+# types contagion-specialize API (the invariant: contagion fires only beside a
+# proven :double; a pure-:num body stays generic) and the runtime clone registry.
+contagion:
+	@$(CHEZ) --script host/chez/run-contagion.ss
 
 # Protocol-method return inference: a method whose impls all return the same record
 # type has a monomorphic return, so a (method recv ..) call types as that record and
