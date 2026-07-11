@@ -45,33 +45,33 @@ plain `jolt build` (`MODE_A=1` adds this column):
 
 | benchmark | opt | release | axis |
 |---|---|---|---|
-| `fib` | ~1.0× | ~1.0× | call + integer arith |
-| `collections` | ~1.1× | ~1.1× | persistent map/vector churn |
-| `dispatch` | ~1.1× | ~1.1× | megamorphic protocol dispatch |
+| `fib` | ~1.1× | ~1.1× | call + integer arith |
+| `dispatch` | ~1.2× | ~1.3× | megamorphic protocol dispatch |
+| `collections` | ~1.3× | ~1.3× | persistent map/vector churn |
 | `mandelbrot` | ~2.0× | ~6.5× | pure float compute (fl-unboxing needs `--opt`) |
-| `mono-dispatch` | ~2.8× | ~3.3× | monomorphic protocol dispatch |
-| `binary-trees` | ~6.4× | ~6.4× | escaping short-lived records (allocation/GC) |
+| `mono-dispatch` | ~2.6× | ~4.0× | monomorphic protocol dispatch |
+| `binary-trees` | ~7.0× | ~7.0× | escaping short-lived records (allocation/GC) |
 
-- **Parity (~1.0–1.1×, both modes)**: integer recursion, persistent-collection
-  churn, and megamorphic protocol dispatch — inline record fields made the
-  PIC's field-reading method bodies cheap enough to close the megamorphic gap.
+- **Parity (~1.1–1.3×, both modes)**: integer recursion, persistent-collection
+  churn, and megamorphic protocol dispatch. A megamorphic site runs a per-site
+  polymorphic inline cache (4-slot descriptor scan, unsafe `#3%` vector reads
+  since the cache shape is proven), so it no longer pays a registry lookup per
+  call.
 - **`mandelbrot`** is ~2× under `--opt` (fl-unboxing) and ~6.5× in a release
   build — that release gap is the cost of not direct-linking, and is why the
   scorecard tracks both modes.
-- **Dispatch & allocation (~2.8–6.4×)** are the remaining gaps, collapsed from
+- **Dispatch & allocation (~2.6–7×)** are the remaining gaps, collapsed from
   two orders of magnitude by the type-proving / inline-field / bare-read work
-  (`binary-trees` ~140×→~6.4×, `mono-dispatch` ~330×→~2.8×). `binary-trees`'
+  (`binary-trees` ~140×→~7×, `mono-dispatch` ~330×→~2.6×). `binary-trees`'
   residual is generic reads over untyped nilable fields (field-type inference
   territory); `mono-dispatch`'s is per-call cache bookkeeping. On a
   *statically proven* monomorphic receiver — which whole-program inference now gives
   for a record iterated out of a vector — devirt resolves the impl and a per-site
-  inline cache holds it (resolved once, not per call), so `mono-dispatch` is no
-  longer worse than megamorphic. The remaining lever is `dispatch`: a *megamorphic*
-  site has no static type, so it pays a full protocol-registry lookup every call
-  where the JVM uses a polymorphic inline cache — a runtime (receiver-type-keyed)
-  cache is the missing piece. `binary-trees`
-  nodes escape into the tree, so scalar-replace can't remove them — residual GC
-  pressure.
+  inline cache holds it (resolved once, not per call), and an impl whose
+  mixed-numeric (`:num`) field reads sit beside a proven double resolves a
+  flonum-specialized clone, so `mono-dispatch` is no longer worse than
+  megamorphic. `binary-trees` nodes escape into the tree, so scalar-replace
+  can't remove them — residual GC pressure.
 
 ## 64-bit integer arithmetic & generators (test.check)
 
