@@ -3358,6 +3358,7 @@
   {:suite "interop / java.time" :label "Instant getNano of negative nano" :expected "999999999" :actual "(.getNano (.plusNanos (java.time.Instant/ofEpochSecond 0) -1))" :portability :jvm}
   {:suite "interop / java.time" :label "Instant toEpochMilli floors sub-milli" :expected "1000" :actual "(.toEpochMilli (.plusNanos (java.time.Instant/ofEpochSecond 1) 999999))" :portability :jvm}
   {:suite "interop / java.time" :label "Instant truncatedTo SECONDS drops nanos" :expected "\"1970-01-01T00:00:05Z\"" :actual "(str (.truncatedTo (.plusNanos (java.time.Instant/ofEpochSecond 5) 123) java.time.temporal.ChronoUnit/SECONDS))" :portability :jvm}
+  {:suite "interop / java.time" :label "LocalDate until without unit yields a Period" :expected "\"P6M10D\"" :actual "(str (.until (java.time.LocalDate/of 2026 1 1) (java.time.LocalDate/of 2026 7 11)))" :portability :jvm}
   {:suite "stdlib / pprint cl-format" :label "~,2f rounds to two decimals" :expected "\"3.14\"" :actual "(do (require (quote [clojure.pprint :as ppc])) (ppc/cl-format nil \"~,2f\" 3.14159))" :portability :common}
   {:suite "stdlib / pprint cl-format" :label "~d ~a ~s basics" :expected "\"42 hi \\\"hi\\\"\"" :actual "(do (require (quote [clojure.pprint :as ppc])) (ppc/cl-format nil \"~d ~a ~s\" 42 \"hi\" \"hi\"))" :portability :common}
   {:suite "stdlib / pprint cl-format" :label "~{~} iteration with separator" :expected "\"1, 2, 3\"" :actual "(do (require (quote [clojure.pprint :as ppc])) (ppc/cl-format nil \"~{~a~^, ~}\" [1 2 3]))" :portability :common}
