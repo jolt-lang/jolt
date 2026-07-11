@@ -15,6 +15,7 @@
   declared — the bootstrap compiles forward refs through var cells, but keeping
   them to one keeps the compiled namespace simple."
   (:require [jolt.ir :refer [const local var-ref the-var host-ref if-node do-node invoke
+                             coerce-node
                              def-node let-node fn-node vector-node map-node set-node
                              quote-node throw-node host-static host-new]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
@@ -637,6 +638,21 @@
     (= hname "dec") "unchecked-dec"
     :else nil))
 
+;; A non-shadowed clojure.core numeric cast (double/long/int/float of one arg)
+;; becomes a :coerce node carrying the checked runtime helper, so it feeds the
+;; numeric lattice like a ^double/^long hint: (* (double x) 2.0) emits fl*. The
+;; helper preserves clojure.core's full JVM semantics (checked, not bare
+;; exact->inexact). float -> double-kind (Jolt has no single-float); int ->
+;; long-kind (Jolt's integer-box model), routing to jolt-int-cast so the JVM int
+;; range is still enforced. Returns {:kind .. :cast-fn ..} or nil. n is the full
+;; item count (head + args).
+(defn- num-cast [hname n]
+  (when (= n 2)
+    (cond (= hname "double") {:kind :double :cast-fn "jolt-double"}
+          (= hname "long")   {:kind :long   :cast-fn "jolt-long-cast"}
+          (= hname "int")    {:kind :long   :cast-fn "jolt-int-cast"}
+          (= hname "float")  {:kind :double :cast-fn "jolt-float"})))
+
 (defn- analyze-list [ctx form env]
   (let [items (vec (form-elements form))]
     (if (zero? (count items))
@@ -661,7 +677,14 @@
                   (let [opn (cond (and hname (not shadowed)) hname
                                   (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
                                   (form-sym-name head))]
-                    (when opn (unchecked-arith opn (count items)))))]
+                    (when opn (unchecked-arith opn (count items)))))
+            ;; a non-shadowed clojure.core numeric cast (bare or clojure.core/-
+            ;; qualified, the latter from syntax-quote) becomes a checked :coerce
+            ;; node. qn mirrors unm's opn so (clojure.core/double x) specializes too.
+            cast (let [qn (cond (and hname (not shadowed)) hname
+                                (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
+                                (form-sym-name head))]
+                   (when qn (num-cast qn (count items))))]
         (cond
           ;; *unchecked-math* rewrite, before macro/special dispatch (these are
           ;; ordinary core fns). The unchecked-* form re-analyzes normally.
@@ -715,6 +738,13 @@
             (analyze-field ctx hname items env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
+          ;; (double/long/int/float x) — a 1-arg numeric cast lowers to a checked
+          ;; :coerce node carrying the runtime helper, feeding the numeric lattice
+          ;; like a ^double/^long hint. nil for non-casts / other arities / shadowed.
+          cast (let [node (coerce-node (:kind cast) (analyze ctx (second items) env)
+                                       (:cast-fn cast))
+                     p (form-position form)]
+                 (if p (assoc node :pos p) node))
           :else
             ;; stamp the list form's source offset onto the :invoke
             ;; so the success checker can report file:line:col. nil when the

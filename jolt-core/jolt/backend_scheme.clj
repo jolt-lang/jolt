@@ -1079,11 +1079,16 @@
                        (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs node)))
     :quote (emit-quoted (:form node))
     :throw (str "(jolt-throw " (emit (:expr node)) ")")
-    ;; numeric coercion (from an inlined ^double/^long param or return).
-    :coerce (let [e (emit (:expr node))]
-              (cond (= :double (:kind node)) (str "(exact->inexact " e ")")
-                    (= :long (:kind node)) (str "(jolt->fx " e ")")
-                    :else e))
+     ;; numeric coercion. A :cast-fn (from a user (double x)/(long x)/… cast)
+     ;; emits the checked runtime helper — clojure.core's full JVM semantics —
+     ;; NOT the bare exact->inexact a proven typed-param coercion uses. The 2-arg
+     ;; :coerce (inlined ^double/^long param or return) has no :cast-fn and keeps
+     ;; the bare fast-path coercion.
+     :coerce (let [e (emit (:expr node))]
+               (cond (:cast-fn node) (str "(" (:cast-fn node) " " e ")")
+                     (= :double (:kind node)) (str "(exact->inexact " e ")")
+                     (= :long (:kind node)) (str "(jolt->fx " e ")")
+                     :else e))
     :try (emit-try node)
     ;; regex literal #"…" -> a jolt-regex value (regex.ss, vendored irregex).
     :regex (str "(jolt-regex " (chez-str-lit (:source node)) ")")

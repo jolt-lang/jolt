@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `(double x)`, `(long x)`, `(int x)`, and `(float x)` casts feed the typed-
+  arithmetic fast path the way `^double`/`^long` hints do: `(* (double x) 2.0)`
+  compiles to flonum ops. The casts keep their full checked semantics
+  (ClassCastException on a non-number, `(long ##NaN)` is 0, int range
+  enforced), so they are a portable escape hatch where inference can't prove
+  a type.
+- BigDecimal literals follow JVM double contagion in compiled arithmetic:
+  `(+ 1.5M 2.0)` is 3.5 (a Double) on the flonum fast path. Mixed
+  bigdec/double expressions with non-literal bigdecs keep the generic
+  (already correct) path.
+
 - Whole-program builds infer record field types from the constructor
   arguments: a field every `(->Ctor …)` site fills with a flonum reads as a
   double (arithmetic over it unboxes, through protocol-method returns and
