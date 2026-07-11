@@ -213,6 +213,19 @@ else
   fails=$((fails + 1))
 fi
 
+# clojure.pprint cl-format: a representative, JVM-certified subset of the upstream
+# test_cl_format suite (~A ~S ~D ~F ~$ ~% ~& ~C ~( ~) ~{ ~} ~[ ~] ~< ~> ~T ~* ~R).
+# The file tallies per-case pass/fail and emits a PPRINT OK / PPRINT FAIL sentinel.
+pp_out="$($joltc run test/chez/pprint-test.clj 2>/dev/null)"
+if printf '%s' "$pp_out" | grep -q 'PPRINT OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: clojure.pprint cl-format suite"
+  echo "    $(printf '%s' "$pp_out" | grep PPRINT-RESULT | tail -1)"
+  printf '%s' "$pp_out" | grep 'pprint FAIL' | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # A throwing go/thread body reports to stderr (the JVM's uncaught-exception
 # handler behavior) while the channel still just closes: <!! stays nil.
 thr_out="$($joltc -e "(do (require '[clojure.core.async :as a]) (pr (a/<!! (a/thread (/ 1 0)))))" 2>/tmp/jolt-smoke-thr-err)"
