@@ -147,6 +147,32 @@ closed-world binaries, combine `--opt --direct-link --tree-shake` to drop dead c
 `--dev` produces a debug binary under `target/debug/` (const-fold + numeric annotate
 only), typically used during development for faster build times.
 
+### Typed arithmetic and inference
+
+Numeric code compiles to raw Chez flonum/fixnum operations (`fl*`, `fx+`) when
+the compiler can prove every operand's type. Three things prove types, in order
+of preference:
+
+1. **Inference.** Whole-program builds (`build`, or running a program with
+   `-m`) infer types with no annotations: float literals and their arithmetic,
+   `^double`/`^long` signatures across call sites, record fields whose every
+   constructor site passes a flonum, protocol-method returns, and reduce/HOF
+   accumulators all propagate. Most hot float code needs nothing else.
+2. **`^double` / `^long` hints** on fn params, returns, loop bindings, and
+   record fields. A hint is a contract enforced by coercion at the boundary:
+   a `^double` param converts its argument on entry, a `^long` param is a
+   fixnum promise — arithmetic on it raises on 61-bit overflow instead of
+   promoting to bignum. Use `^long` only where overflow is impossible.
+3. **`(double x)` / `(long x)` casts** where inference can't see — a value
+   from I/O, an untyped map, a dynamic call. The cast keeps its full Clojure
+   semantics (throws on non-numbers, `(long 1.5)` truncates) and types the
+   result like a hint. Portable: the same code speeds up on the JVM.
+
+Inference stays sound by widening: a conflicting, escaping, or unprovable type
+falls back to the generic (boxed, correct) path, never a wrong answer.
+Interactive modes (`repl`, `-e`, `nrepl-server`) skip whole-program passes so
+redefinition keeps working.
+
 ### deps.edn build options
 
 The `:jolt/build` map in `deps.edn` accepts these keys:

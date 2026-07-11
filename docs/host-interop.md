@@ -110,6 +110,10 @@ aren't implemented; a few are accepted but no-ops (noted inline).
 
 - **`java.util.ArrayList`** — `add` `get` `set` `size` `isEmpty` `remove` `clear`
   `contains` `toArray` `iterator`.
+- **`java.util.Map` views on persistent maps** — a Jolt map answers the read-only
+  Map surface directly: `.keySet` `.values` `.entrySet` `.size` `.isEmpty`
+  `.containsKey` `.get`, so library code that walks a map through the Java
+  interface works unchanged.
 - **`java.util.HashMap`** / **`java.util.concurrent.ConcurrentHashMap`** — `put`
   `get` `getOrDefault` `containsKey` `containsValue` `size` `isEmpty` `remove`
   `clear` `putAll` `keySet` `values` `entrySet`; `clojure.core`'s `get` / `count` /
@@ -147,7 +151,10 @@ aren't implemented; a few are accepted but no-ops (noted inline).
 ### Time and date
 
 - **`java.util.Date`** — `(Date.)` / `(Date. ms)`; `getTime` `toInstant`
-  `toLocalDate(Time)` `before` `after` `equals` `toString` (RFC 3339).
+  `toLocalDate(Time)` `before` `after` `equals` `toString` (RFC 3339). The
+  deprecated calendar surface works too: `getYear` (1900-based) `getMonth`
+  (0-based) `getDate` `getDay` `getHours` `getMinutes` `getSeconds`, and the
+  multi-arg `(Date. year-1900 month0 date [hrs min [sec]])` constructor.
 - **`java.time`** — `Instant` (`now`, `ofEpochMilli`, `toEpochMilli`, `atZone`),
   `LocalDateTime`, `ZoneId`, `DateTimeFormatter` (`ofPattern`, `ISO_LOCAL_*`,
   localized styles), `FormatStyle`.
@@ -265,6 +272,15 @@ record's ancestry carries the record interfaces (`clojure.lang.IRecord`,
 an implemented interface — so `(ancestors MyRecord)`, `(isa? MyRecord
 clojure.lang.IPersistentMap)`, and hierarchy relationships `derive`d on a
 class's supers all answer like the JVM.
+
+A deftype *implementing* a `clojure.lang` collection interface drives the core
+functions through its methods, like the JVM: `Indexed` → `nth`, `Counted` →
+`count`, `ILookup` → `get`/keyword lookup, `Associative` → `assoc`, `ISeq`/
+`Seqable` → `seq`/`first`/`rest`, `IPersistentCollection` → `conj`, `Reversible`
+→ `rseq`, `Sorted` → `subseq`/`rsubseq`, `IDeref` → `deref`/`@`, `IFn` → the
+value is callable, `IReduceInit` → `reduce`. Methods can be arity-overloaded
+across interfaces (`seq [this]` and `seq [this ascending]`), and a marker
+protocol with no methods still answers `satisfies?`/`instance?`.
 
 Extending a *built-in* class instead (adding a method to core's `String` shim,
 say) means editing the relevant `host/chez/*.ss` file and running `make remint`
