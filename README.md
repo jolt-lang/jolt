@@ -133,6 +133,12 @@ Modes trade dynamism for speed: the default (release) build uses the proven code
 generator; `--opt` also runs the inference + inlining + scalar-replacement passes
 over the closed-world program; `--dev` is unoptimized.
 
+Numeric code unboxes to raw flonum/fixnum machine ops when types are proven —
+by whole-program inference (float literals, record fields, protocol returns:
+no annotations needed), by JVM-style `^double`/`^long` hints, or by
+`(double x)`/`(long x)` casts where inference can't see. See
+[docs/building-and-deps.md](docs/building-and-deps.md#typed-arithmetic-and-inference).
+
 Two opt-in closed-world flags cut dispatch cost and binary size:
 
 ```bash
