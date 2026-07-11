@@ -37,6 +37,10 @@
     (let loop ((ks fkey-list) (i 0))
       (unless (null? ks) (hashtable-set! index (car ks) i) (loop (cdr ks) (+ i 1))))
     (make-jrdesc-rec tag (list->vector fkey-list) index #f)))
+;; declared field count of a descriptor (== the record's arity: a desc is built from
+;; the same field list as its ctor). jrec-field-ref dispatches on this fixnum so Chez
+;; compiles the case to a jump/binary search instead of an arity-predicate chain.
+(define (jrdesc-nfields d) (vector-length (jrdesc-fkeys d)))
 ;; An instance: the shared descriptor + an extension map (jolt-nil unless
 ;; non-field keys have been assoc'd on) + the field values INLINE in the record.
 ;; Fields are flattened into per-field-count native record types jrec1..jrec8,
@@ -77,16 +81,18 @@
               (cond ,@(map (lambda (k) `((,(pred k) r) ,k)) (range 1 mn))
                     ((jrec*? r) (vector-length (jrec*-vals r)))
                     (else 0))))
-         (define (ref-branch k)
-           `((,(pred k) r)
-             (case i
-               ,@(map (lambda (i) `((,i) (,(acc k i) r))) (range 0 (- k 1)))
-               (else (error 'jrec-field-ref "index out of range" i)))))
-         (define fieldref-def
-           `(define (jrec-field-ref r i)
-              (cond ,@(map ref-branch (range 1 mn))
-                    ((jrec*? r) (vector-ref (jrec*-vals r) i))
-                    (else (error 'jrec-field-ref "not a fielded record" r)))))
+          (define (ref-case k)
+            `((,k)
+              (case i
+                ,@(map (lambda (i) `((,i) (,(acc k i) r))) (range 0 (- k 1)))
+                (else (error 'jrec-field-ref "index out of range" i)))))
+          (define fieldref-def
+            `(define (jrec-field-ref r i)
+               (let ((n (jrdesc-nfields (jrec-desc r))))
+                 (case n
+                   ,@(map ref-case (range 1 mn))
+                   (else (if (jrec*? r) (vector-ref (jrec*-vals r) i)
+                             (error 'jrec-field-ref "not a fielded record" r)))))))
          (define (set-branch k)
            `((,(pred k) r)
              (case i

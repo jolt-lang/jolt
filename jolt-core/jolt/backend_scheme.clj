@@ -711,6 +711,13 @@
       (cond (>= i (count shape)) nil
             (= (nth shape i) kw) i
             :else (recur (inc i))))))
+;; the direct per-arity slot accessor (jrecN-fI) for a field at idx in `shape`, or
+;; nil when there is no per-arity accessor (>8 fields spill into jrec*, which stores
+;; fields in a vector, not inline slots). Sound only for a proven-non-nil receiver.
+(defn- direct-field-accessor [shape idx]
+  (let [n (count shape)]
+    (when (<= n 8)
+      (str "jrec" n "-f" idx))))
 
 ;; A plain Scheme application: (callee op ...).
 (defn- plain-call [callee operand-strs]
@@ -834,34 +841,44 @@
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
       ;; (get coll k [default]) with a struct-typed coll — the inference marked the
       ;; receiver with :hint :struct and a :shape matching the declared field layout.
-      ;; Read the field by its static slot (jrec-field-at) instead of the generic
-      ;; jolt-get dispatch. Only the 2-arg (no-default) form takes this path since a
-      ;; declared field is always present. The key must be a compile-time keyword
-      ;; literal so (struct-field-index) can resolve it.
+      ;; Read the field by its static slot instead of the generic jolt-get dispatch.
+      ;; A proven-NON-NIL receiver emits the direct per-arity accessor (jrecN-fI) —
+      ;; zero dispatch, one load; a nilable receiver keeps jrec-field-at, which falls
+      ;; back to jolt-get on nil. Only the 2-arg (no-default) form takes this path
+      ;; since a declared field is always present. The key must be a compile-time
+      ;; keyword literal so (struct-field-index) can resolve it.
       (and (= nop "jolt-get") (<= 2 (count arg-nodes) 3))
       (let [recv (first arg-nodes) key-node (second arg-nodes)
             idx (when (and (= 2 (count arg-nodes))
                            (= :struct (:hint recv))
                            (= :const (:op key-node))
                            (keyword? (:val key-node)))
-                  (struct-field-index (:shape recv) (:val key-node)))]
-        (if idx
-          (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
-          (order-args (fn [as] (str "(jolt-get " (str/join " " as) ")")))))
+                  (struct-field-index (:shape recv) (:val key-node)))
+            dir (when (and idx (not (:nilable recv)))
+                  (direct-field-accessor (:shape recv) idx))]
+        (cond
+          dir  (order-args (fn [as] (str "(" dir " " (first as) ")")))
+          idx  (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
+          :else (order-args (fn [as] (str "(jolt-get " (str/join " " as) ")")))))
       nop (order-args (fn [as] (str "(" nop " " (str/join " " as) ")")))
       ;; (:k coll [default]) -> (jolt-get coll :k [default]) — the key (fnode) is a
       ;; const, so only the coll/default args carry order. When the inference typed
       ;; the receiver as a record whose declared fields include :k (it carries the
       ;; field-order :shape), read the field by its static slot — no field-key
-      ;; lookup, no jolt-get dispatch. Only the no-default form (a declared field is
-      ;; always present, so a default is never taken).
+      ;; lookup, no jolt-get dispatch. A proven-non-nil receiver emits the direct
+      ;; per-arity accessor (jrecN-fI); a nilable one keeps jrec-field-at. Only the
+      ;; no-default form (a declared field is always present, so a default is never
+      ;; taken).
       (= kind :keyword)
       (let [recv (first arg-nodes)
             idx (when (and (= :struct (:hint recv)) (= 1 (count arg-nodes)))
-                  (struct-field-index (:shape recv) (:val fnode)))]
-        (if idx
-          (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit fnode) ")")))
-          (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))
+                  (struct-field-index (:shape recv) (:val fnode)))
+            dir (when (and idx (not (:nilable recv)))
+                  (direct-field-accessor (:shape recv) idx))]
+        (cond
+          dir  (order-args (fn [as] (str "(" dir " " (first as) ")")))
+          idx  (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit fnode) ")")))
+          :else (order-args (fn [as] (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))
       ;; (coll k [default]) -> lookup — coll (fnode) is the callee, evaluated
       ;; before the key/default args. A VECTOR literal invokes as nth (a bad
       ;; index throws, IPersistentVector.invoke); maps/sets invoke as get.

@@ -50,7 +50,7 @@
 (define f (anode "(def f (fn [a] (let [s (m a)] (if (some? s) (* (:k s) 2.0) 0.0))))"))
 (wp-infer! (jolt-vector na nb f))
 (define fe (emit (run-passes f (make-analyze-ctx "user"))))
-(check "guarded nullable read bare-indexes" (sub? fe "jrec-field-at") #t)
+(check "guarded nullable read direct-accesses" (sub? fe "jrec1-f0") #t)
 (check "guarded nullable read unboxes to fl*" (sub? fe "fl*") #t)
 
 ;; CORRECTNESS + the load-bearing soundness check: the nil case must take the else
@@ -66,6 +66,10 @@
 ;; nil. (Its result type is conservative — no unbox — so this just checks no crash.)
 (define g (anode "(def g (fn [a] (let [s (m a)] (:k s))))"))
 (define ge (emit (run-passes g (make-analyze-ctx "user"))))
+;; an UNGUARDED nullable read must NOT take the direct (nil-unsafe) accessor — it
+;; keeps the nil-safe jrec-field-at path, so a nil receiver returns nil instead of
+;; crashing a bare slot load.
+(check "unguarded nilable read stays nil-safe (no direct accessor)" (sub? ge "jrec1-f0") #f)
 (built ge)
 (define gg (var-deref "user" "g"))
 (check "unguarded nullable read on nil returns nil" (jolt-nil? (jolt-invoke gg (evals "(->B 5)"))) #t)

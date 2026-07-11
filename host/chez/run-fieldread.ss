@@ -50,8 +50,8 @@
 
 ;; a declared field -> bare-index path, value matches jolt-get
 (let ((e (mark-emit "(:y a)")))
-  (check "declared field uses jrec-field-at" (has-sub? e "jrec-field-at") #t)
-  (check "field 1 -> static slot 1" (has-sub? e " 1 ") #t)
+  (check "declared field uses direct accessor jrec3-f1" (has-sub? e "jrec3-f1") #t)
+  (check "direct path leaves no jrec-field-at cond" (has-sub? e "jrec-field-at") #f)
   (check "bare read == jolt-get" (run-emit e) (evals "(:y a)")))   ; 20
 
 ;; first/last fields too

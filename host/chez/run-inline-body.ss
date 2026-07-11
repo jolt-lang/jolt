@@ -53,8 +53,8 @@
   ;; reinfer pass should have seeded the receiver param so field reads emit
   ;; jrec-field-at.  Not checking jolt-get absence — the :do also contains
   ;; defs that use jolt-get for other purposes.
-  (check "inline method body field read uses jrec-field-at"
-         (has-sub? emitted "jrec-field-at") #t))
+  (check "inline method body field read uses direct accessor"
+         (has-sub? emitted "jrec1-f0") #t))
 
 ;; Also check that a deftype (non-record protocol impl) does NOT break anything.
 ;; deftype bodies use register-method, not register-inline-method.
@@ -65,8 +65,8 @@
        (_ (set-record-shapes! shapes2))
        (passed2 (run-passes ir2 (make-analyze-ctx "user")))
        (emitted2 (emit passed2)))
-  (check "deftype field read uses jrec-field-at"
-         (has-sub? emitted2 "jrec-field-at") #t))
+  (check "deftype field read uses direct accessor"
+         (has-sub? emitted2 "jrec1-f0") #t))
 
 (if (= fails 0)
     (begin (printf "inline-body gate: ~a/~a passed\n" total total) (exit 0))

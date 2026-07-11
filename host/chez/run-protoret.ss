@@ -57,7 +57,7 @@
 
 ;; m's impls all return R -> (:k (m a)) reads off an R -> bare-index + unbox.
 (define fe (emit (run-passes f (make-analyze-ctx "user"))))
-(check "monomorphic protocol return bare-indexes the field read" (sub? fe "jrec-field-at") #t)
+(check "monomorphic protocol return direct-accesses the field read" (sub? fe "jrec1-f0") #t)
 (check "monomorphic protocol return unboxes the ^double field" (sub? fe "fl") #t)
 
 ;; q's impls return R and a number -> joined to non-record -> stays generic (sound).
