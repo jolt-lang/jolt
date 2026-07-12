@@ -32,6 +32,102 @@
         ((memv m '(4 6 9 11)) 30)
         (else 31)))
 
+;; --- libc locale/strftime FFI (graceful-degradation, mutex-guarded) ----------
+;; LC_TIME varies by platform: 5 on macOS, 2 on Linux/glibc, 2 on Windows/MinGW.
+(define LC_TIME
+  (case (machine-type)
+    ((a6osx t3osx i3osx ta6osx) 5)
+    (else 2)))
+(define tz-mutex (make-mutex))
+
+;; Guard-wrapped FFI: eval defers symbol lookup so a missing entry doesn't abort
+;; boot. nil on failure → graceful fallback.
+(define %setlocale
+  (guard (e (#t #f))
+    (load-shared-object #f)
+    (and (foreign-entry? "setlocale")
+         (eval `(foreign-procedure "setlocale" (integer-32 string) void*)))))
+(define %strftime
+  (guard (e (#t #f))
+    (load-shared-object #f)
+    (and (foreign-entry? "strftime")
+         (eval `(foreign-procedure "strftime" (void* size_t string void*) size_t)))))
+(define libc-locale-available?
+  (and %setlocale %strftime
+       (guard (e (#t #f))
+         (let ((r (%setlocale LC_TIME "de_DE.UTF-8")))
+           (and r (not (eq? r 0)))))))
+(define libc-locale-checked? #t) ; let runtime inspect the probe
+
+;; locale-id → libc locale string (for setlocale).
+(define locale->libc-table
+  '(("de" . "de_DE.UTF-8") ("fr" . "fr_FR.UTF-8") ("it" . "it_IT.UTF-8")
+    ("ja" . "ja_JP.UTF-8") ("es" . "es_ES.UTF-8") ("ko" . "ko_KR.UTF-8")
+    ("zh" . "zh_CN.UTF-8") ("pt" . "pt_BR.UTF-8") ("ru" . "ru_RU.UTF-8")
+    ("en" . "en_US.UTF-8") ("und" . "en_US.UTF-8")))
+(define (locale->libc loc)
+  (cond ((not (string? loc)) "C")
+        ((let ((e (assoc loc locale->libc-table))) (and e (cdr e))) => values)
+        ((>= (string-length loc) 2)
+         (let ((prefix (ascii-string-down (substring loc 0 2))))
+           (or (let ((e (assoc prefix locale->libc-table))) (and e (cdr e))) "C")))
+        (else "C")))
+
+;; strftime-based locale name lookup. Builds a struct tm, calls strftime under
+;; the tz-mutex, decodes the UTF-8 bytevector to a jolt string. Falls back to
+;; English (C locale) when libc is unavailable or setlocale returns NULL.
+(define (locale-name-via-strftime locale tm-mon tm-wday fmt full?)
+  (if libc-locale-available?
+      (let* ((libc-loc (locale->libc locale))
+             (buf (foreign-alloc 128))      ; output buffer for strftime
+             (tm (foreign-alloc 56)))       ; struct tm
+        (foreign-set! 'integer-32 tm 0 0)    ; tm_sec
+        (foreign-set! 'integer-32 tm 4 0)    ; tm_min
+        (foreign-set! 'integer-32 tm 8 0)    ; tm_hour
+        (foreign-set! 'integer-32 tm 12 1)   ; tm_mday
+        (foreign-set! 'integer-32 tm 16 tm-mon) ; tm_mon
+        (foreign-set! 'integer-32 tm 20 70)  ; tm_year (1970)
+        (foreign-set! 'integer-32 tm 24 tm-wday) ; tm_wday
+        (foreign-set! 'integer-32 tm 28 0)   ; tm_yday
+        (foreign-set! 'integer-32 tm 32 -1)  ; tm_isdst (unknown)
+        (let ((result
+               (with-mutex tz-mutex
+                 (let ((saved (%setlocale LC_TIME libc-loc)))
+                   (if saved
+                       (let ((n (%strftime buf 128 fmt tm)))
+                         (%setlocale LC_TIME "C")
+                         (and (> n 0) n))
+                       (begin
+                         (when saved (%setlocale LC_TIME saved))
+                         #f))))))
+          (let ((r result))
+            (foreign-free tm)
+            (if r
+                (let* ((bv (make-bytevector r)))
+                  (bytevector-copy! (make-foreign-bytevector buf r) bv)
+                  (foreign-free buf)
+                  (utf8->string bv))
+                (begin
+                  (foreign-free buf)
+                  (english-locale-name tm-mon tm-wday fmt full?))))))
+      (english-locale-name tm-mon tm-wday fmt full?)))
+
+(define (english-locale-name tm-mon tm-wday fmt full?)
+  (define en-months
+    (if full?
+        (vector "January" "February" "March" "April" "May" "June" "July"
+                "August" "September" "October" "November" "December")
+        (vector "Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec")))
+  (define en-days
+    (if full?
+        (vector "Sunday" "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday")
+        (vector "Sun" "Mon" "Tue" "Wed" "Thu" "Fri" "Sat")))
+  (cond ((string=? fmt "%B") (vector-ref en-months tm-mon))
+        ((string=? fmt "%b") (vector-ref en-months tm-mon))
+        ((string=? fmt "%A") (vector-ref en-days tm-wday))
+        ((string=? fmt "%a") (vector-ref en-days tm-wday))
+        (else "???")))
+
 ;; constructors
 (define (jt-local-date ed) (make-jhost "local-date" (vector ed)))
 (define (jt-local-time nod) (make-jhost "local-time" (vector nod)))
@@ -2101,29 +2197,14 @@
     ((jt-offset-time? v) (let ((t (jt-local-time (ot-nod v)))) (vector 1970 1 1 (lt-hour t) (lt-minute t) (lt-second t) (lt-nano t) 4 (ot-offset v) #f)))
     ((jt-instant? v) #f)                  ; instants render via format-ms (UTC)
     (else #f)))
-;; Locale month/day names. Only the locales tick exercises (en, fr) are tabled;
-;; an unknown locale falls back to English. French abbreviations follow CLDR/
-;; java.time (most carry a trailing period; "mars"/"mai"/"juin"/"août" don't).
-(define fr-month-full
-  (vector "janvier" "février" "mars" "avril" "mai" "juin"
-          "juillet" "août" "septembre" "octobre" "novembre" "décembre"))
-(define fr-month-abbr
-  (vector "janv." "févr." "mars" "avr." "mai" "juin"
-          "juil." "août" "sept." "oct." "nov." "déc."))
-(define fr-day-full   ; indexed by day-of-week 0=Sunday
-  (vector "dimanche" "lundi" "mardi" "mercredi" "jeudi" "vendredi" "samedi"))
-(define fr-day-abbr
-  (vector "dim." "lun." "mar." "mer." "jeu." "ven." "sam."))
-(define (locale-fr? loc) (and (>= (string-length loc) 2) (string=? (substring loc 0 2) "fr")))
-;; month display name for a 1-based month under a locale; full? picks MMMM over MMM.
+;; Locale month/day names via libc strftime (primary) with English fallback.
+;; The locale id (e.g. "de", "fr") is mapped to a libc locale string and strftime
+;; with %B/%b/%A/%a produces localized names in UTF-8. Mutex-guarded (setlocale
+;; mutates process-global state). Falls back to English on unavailable locale.
 (define (locale-month-name loc mo full?)
-  (if (locale-fr? loc)
-      (vector-ref (if full? fr-month-full fr-month-abbr) (- mo 1))
-      (if full? (vector-ref month-names (- mo 1)) (substring (vector-ref month-names (- mo 1)) 0 3))))
+  (locale-name-via-strftime loc (- mo 1) 0 (if full? "%B" "%b") full?))
 (define (locale-day-name loc dow full?)
-  (if (locale-fr? loc)
-      (vector-ref (if full? fr-day-full fr-day-abbr) dow)
-      (if full? (vector-ref day-names dow) (substring (vector-ref day-names dow) 0 3))))
+  (locale-name-via-strftime loc 0 dow (if full? "%A" "%a") full?))
 
 ;; the pattern engine for java.time values (extends inst-time.ss's format-ms letters
 ;; with fractional S and real X/x/Z/z from the value's own offset/zone).
