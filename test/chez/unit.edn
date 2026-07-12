@@ -601,9 +601,9 @@
   {:suite "clj-1.13 checked-keys" :expr "(let [{:keys [a & b]} {:a 1 :b 2}] a)" :expected "1"}
   {:suite "clj-1.13 checked-keys" :expr "(let [{:foo/keys! [a]} {:foo/a 7}] a)" :expected "7"}
   {:suite "clj-1.13 checked-keys" :expr "(let [{:foo/keys! [a]} {}] a)" :expected :throws}
-  {:suite "clj-1.13 array-map-64" :expr "(keys {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10})" :expected "(:a :b :c :d :e :f :g :h :i :j)"}
-  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 20)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 20)))))" :expected "true"}
-  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 64)) (keys (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64))))" :expected "true"}
+  {:suite "clj-1.13 array-map-64" :expr "(keys {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10})" :expected "(:e :g :c :j :h :b :d :f :i :a)"}
+  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 20)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 20)))))" :expected "false"}
+  {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 64)) (keys (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64))))" :expected "false"}
   {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 65)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 65)))))" :expected "false"}
   ;; WP-A: per-site var-cell cache stays correct under redefinition (g's (f x) is a
   ;; cached ref; after redef f, the next call sees the new root).
@@ -635,7 +635,7 @@
   {:suite "instance? / bound-class" :expr "(do (def icv-n java.util.Map) (instance? icv-n 42))" :expected "false"}
   {:suite "instance? / bound-class" :expr "(do (def icv-k clojure.lang.Keyword) (instance? icv-k :k))" :expected "true"}
   {:suite "maps / hash-map order" :expr "(seq (hash-map :xmap 1 :! 2))" :expected "([:xmap 1] [:! 2])"}
-  {:suite "maps / hash-map order" :expr "(do (def sq-log (atom [])) (defmacro sq-m3 [] `{:a ~(list 'swap! 'sq-log 'conj 1) :b ~(list 'swap! 'sq-log 'conj 2)}) (sq-m3) (deref sq-log))" :expected "[1 2]"}
+  {:suite "maps / hash-map order" :expr "(do (def sq-log (atom [])) (defmacro sq-m3 [] `{:a ~(list 'swap! 'sq-log 'conj 1) :b ~(list 'swap! 'sq-log 'conj 2)}) (sq-m3) (deref sq-log))" :expected "[2 1]"}
   {:suite "core / dynamic-vars" :expr "*source-path*" :expected "NO_SOURCE_FILE"}
   {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"hi\") (.flush w)) @sb)" :expected "hi"}
   {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"a\") (.write w \"b\") (.flush w)) @sb)" :expected "ab"}
@@ -656,8 +656,7 @@
   ;; keep raising. (Host-specific: real Clojure returns nil here, so this stays
   ;; out of the JVM-certified corpus.)
   {:suite "seq error semantics" :expr "(take nil [1 2 3])" :expected :throws}
-  ;; small sets preserve insertion order through the array-mode backing map,
-  ;; like small map literals (the JVM's order is hash-arbitrary — host-pinned).
+  ;; sets now use hash-mode ordering (matching JVM PersistentHashSet)
   {:suite "sets" :expr "(seq #{1 \"three\" :2})" :expected "(1 three :2)"}
-  {:suite "sets" :expr "(seq (conj #{} :a :b :c))" :expected "(:a :b :c)"}
+  {:suite "sets" :expr "(seq (conj #{} :a :b :c))" :expected "(:c :b :a)"}
 ]
