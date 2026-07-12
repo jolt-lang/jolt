@@ -626,12 +626,12 @@
 (define (jolt-coll-hash x)
   (cond
     ((pvec? x) (hash-ordered (jolt-seq x)))
-    ;; maps hash as hashUnordered of entries; each entry contributes hasheq(k) ^ hasheq(v)
-    ;; (APersistentMap.mapHasheq = Murmur3.hashUnordered, MapEntry.hasheq = k.hasheq ^ v.hasheq)
+    ;; maps hash as hashUnordered of entries; each entry contributes hash-ordered of [k v]
+    ;; (APersistentMap.mapHasheq = Murmur3.hashUnordered, MapEntry.hasheq = ordered [k v])
     ((pmap? x)
      (let ((result (pmap-fold x
                     (lambda (k v acc)
-                      (cons (+ (car acc) (bitwise-xor (jolt-hasheq k) (jolt-hasheq v)))
+                      (cons (add32 (car acc) (entry-hasheq k v))
                             (fx+ (cdr acc) 1)))
                     (cons 0 0))))
        (mix-coll-hash (car result) (cdr result))))

@@ -3825,6 +3825,10 @@
   {:suite "conformance / hasheq" :label "hash set #{1 2 3}" :expected "439094965" :actual "(hash #{1 2 3})" :portability :common}
   {:suite "conformance / hasheq" :label "hash empty set" :expected "-15128758" :actual "(hash #{})" :portability :common}
   {:suite "conformance / hasheq" :label "hash empty map" :expected "-15128758" :actual "(hash {})" :portability :common}
+  {:suite "conformance / hasheq" :label "hash {:a 1}" :expected "1772842048" :actual "(hash {:a 1})" :portability :common}
+  {:suite "conformance / hasheq" :label "hash {:a [1 #{:x}]}" :expected "-134480633" :actual "(hash {:a [1 #{:x}]})" :portability :common}
+  {:suite "conformance / hasheq" :label "(= (hash (sorted-map :a 1)) (hash {:a 1}))" :expected "true" :actual "(= (hash (sorted-map :a 1)) (hash {:a 1}))" :portability :common}
+  {:suite "conformance / hasheq" :label "(= (hash (first {:a 1})) (hash [:a 1]))" :expected "true" :actual "(= (hash (first {:a 1})) (hash [:a 1]))" :portability :common}
   {:suite "conformance / hasheq" :label "hash vector [:a :b]" :expected "-781497396" :actual "(hash [:a :b])" :portability :common}
   {:suite "conformance / hasheq" :label "hash seq (seq [1 2])" :expected "156247261" :actual "(hash (seq [1 2]))" :portability :common}
   {:suite "conformance / hasheq" :label "ordered colls unify: (= (hash [1 2 3]) (hash '(1 2 3)))" :expected "true" :actual "(= (hash [1 2 3]) (hash '(1 2 3)))" :portability :common}

@@ -198,9 +198,14 @@
               (fx+ n 1)
               (i32 (+ (* 31 h) (jolt-hasheq (seq-first xs))))))))
 
+;; Compute hash-ordered of a 2-element sequence [k v] — exactly what
+;; MapEntry-as-vector yields on the JVM. Inlined to avoid cseq allocs.
+(define (entry-hasheq k v)
+  (let* ((h1 (i32 (+ 31 (jolt-hasheq k))))
+         (h2 (i32 (+ (* 31 h1) (jolt-hasheq v)))))
+    (mix-coll-hash h2 2)))
+
 (define (hash-unordered xs)
-  ;; Each element's contribution is its jolt-hasheq.
-  ;; Map entries are pairs (key . value); their hasheq = hasheq(k) ^ hasheq(v).
   (let loop ((xs xs) (n 0) (h 0))
     (if (jolt-nil? xs)
         (mix-coll-hash h n)
@@ -208,7 +213,7 @@
           (loop (jolt-seq (seq-more xs))
                 (fx+ n 1)
                 (+ h (if (pair? e)
-                         (bitwise-xor (jolt-hasheq (car e)) (jolt-hasheq (cdr e)))
+                         (entry-hasheq (car e) (cdr e))
                          (jolt-hasheq e))))))))
 
 ;; ============================================================================
@@ -321,7 +326,7 @@
     ((pmap? x)
      (let ((result (pmap-fold x
                     (lambda (k v acc)
-                      (cons (+ (car acc) (bitwise-xor (jolt-hasheq k) (jolt-hasheq v)))
+                      (cons (add32 (car acc) (entry-hasheq k v))
                             (fx+ (cdr acc) 1)))
                     (cons 0 0))))
        (mix-coll-hash (car result) (cdr result))))
