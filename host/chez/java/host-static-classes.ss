@@ -123,14 +123,11 @@
 
 ;; ArrayList / LinkedList are Iterable: (seq al) walks the elements (nil if empty),
 ;; so (seq pending-forms) and reduce/into over one work like the JVM.
-(define %al-seq jolt-seq)
-(set! jolt-seq
-  (lambda (x)
-    (if (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
-                            (string=? (jhost-tag x) "linkedlist")
-                            (string=? (jhost-tag x) "arraydeque")))
-        (list->cseq (al->list x))
-        (%al-seq x))))
+(define (al-family? x)
+  (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
+                       (string=? (jhost-tag x) "linkedlist")
+                       (string=? (jhost-tag x) "arraydeque"))))
+(register-seq-arm! al-family? (lambda (x) (list->cseq (al->list x))))
 
 ;; Appendable.append text: append(x) renders x; append(csq,start,end) appends the
 ;; subsequence csq[start,end) (data.json's writer appends string runs this way).
@@ -371,9 +368,7 @@
         (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
         (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) (hm-ord! self '()) jolt-nil))
         (cons "toString" (lambda (self) (jolt-pr-str (apply jolt-hash-set (hs->list self)))))))
-(define %hs-seq jolt-seq)
-(set! jolt-seq
-  (lambda (x) (if (hs-hashset? x) (list->cseq (hs->list x)) (%hs-seq x))))
+(register-seq-arm! hs-hashset? (lambda (x) (list->cseq (hs->list x))))
 (register-get-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
                    (lambda (coll k d) (hashtable-ref (hm-tbl coll) k d)))
 ;; count / contains? over the mutable map shim (clojure.core/count + contains?,
@@ -1260,9 +1255,7 @@
             (else 'pass)))
         'pass)))
 ;; (seq a-HashMap) walks its entries, like RT.seqFrom over a java.util.Map.
-(define %hm-seq jolt-seq)
-(set! jolt-seq
-  (lambda (x) (if (hm-hashmap? x) (jolt-seq (hm->pmap x)) (%hm-seq x))))
+(register-seq-arm! hm-hashmap? (lambda (x) (jolt-seq (hm->pmap x))))
 ;; a MapEntry does not carry meta on the JVM (AMapEntry); deny IObj/IMeta so the
 ;; pvec backing doesn't claim it.
 (register-instance-check-arm!
@@ -1305,8 +1298,6 @@
 (def-var! "jolt.host" "class-object?" (lambda (x) (if (jclass? x) #t #f)))
 ;; nth over the java.util List shims, like RT.nth on a java.util.List.
 (define %shim-nth jolt-nth)
-(define (al-family? x)
-  (and (jhost? x) (member (jhost-tag x) '("arraylist" "linkedlist" "arraydeque"))))
 (set! jolt-nth
   (case-lambda
     ((coll i) (if (al-family? coll) (%shim-nth (list->cseq (al->list coll)) i) (%shim-nth coll i)))

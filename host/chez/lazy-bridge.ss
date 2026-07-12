@@ -38,8 +38,7 @@
 (define (jolt-coll->cells c) (jolt-seq c))
 
 ;; extend jolt-seq to force a lazyseq (a lazyseq is seqable -> its realized seq).
-(define %ls-seq jolt-seq)
-(set! jolt-seq (lambda (x) (if (jolt-lazyseq? x) (force-lazyseq x) (%ls-seq x))))
+(register-seq-arm! jolt-lazyseq? force-lazyseq)
 
 ;; (cons x lazyseq): keep the tail lazy — force it only when the cseq cell is
 ;; walked, so an infinite (repeat/iterate/cycle) stays productive.

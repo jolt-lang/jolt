@@ -104,8 +104,7 @@
 
 ;; --- extend the collection dispatchers to see a jolt-array ------------------
 (register-count-arm! jolt-array? (lambda (c) (vector-length (jolt-array-vec c))))
-(define %na-seq jolt-seq)
-(set! jolt-seq (lambda (c) (if (jolt-array? c) (list->cseq (vector->list (jolt-array-vec c))) (%na-seq c))))
+(register-seq-arm! jolt-array? (lambda (c) (list->cseq (vector->list (jolt-array-vec c)))))
 (define %na-nth jolt-nth)
 (set! jolt-nth
   (case-lambda

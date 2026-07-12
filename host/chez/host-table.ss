@@ -68,8 +68,7 @@
 (define (sc-call sc op-kw . args) (apply jolt-invoke (sc-op sc op-kw) sc args))
 
 ;; --- extend the collection dispatchers with a sorted arm ---------------------
-(define %h-seq jolt-seq)
-(set! jolt-seq (lambda (x) (if (htable-sorted? x) (sc-call x kw-op-seq) (%h-seq x))))
+(register-seq-arm! htable-sorted? (lambda (x) (sc-call x kw-op-seq)))
 (register-count-arm! htable-sorted?
   (lambda (coll) (sc-call coll kw-op-count)))
 (register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))

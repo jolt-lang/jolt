@@ -593,14 +593,12 @@
                     (if (jolt-nil? ext) '()
                         (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-ext-pairs ext)))))
           (loop (+ i 1) (cons (make-map-entry (vector-ref fkeys i) (jrec-field-ref r i)) acc))))))
-(define %r-jolt-seq jolt-seq)
-(set! jolt-seq (lambda (x)
-  (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
-        ;; a record seqs its fields; a bare deftype is not seqable (falls through
-        ;; to %r-jolt-seq, which errors like the JVM).
-        ((jrec-record? x) (list->cseq (jrec-entry-list x)))
-        ((jrec-declares-coll-iface? x) (jrec-abstract-method-error x "seq"))
-        (else (%r-jolt-seq x)))))
+(register-seq-arm! (lambda (x) (and (jrec? x) (jrec-declares-coll-iface? x)))
+  (lambda (x) (jrec-abstract-method-error x "seq")))
+(register-seq-arm! jrec-record?
+  (lambda (x) (list->cseq (jrec-entry-list x))))
+(register-seq-arm! (lambda (x) (jrec-cl x "seq"))
+  (lambda (x) (jolt-seq (jolt-invoke (jrec-cl x "seq") x))))
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
   (cond ((jrec-cl coll "cons") => (lambda (m) (jolt-invoke m coll x)))
@@ -1145,8 +1143,7 @@
 (define-record-type jiterator (fields (mutable cur)) (nongenerative jolt-iterator-v1))
 ;; (seq an-iterator) / (iterator-seq it): a jiterator wraps the remaining seq in
 ;; cur, so seq just yields it — clojure.test's (iterator-seq (.iterator coll)).
-(let ((prev-seq jolt-seq))
-  (set! jolt-seq (lambda (x) (if (jiterator? x) (jiterator-cur x) (prev-seq x)))))
+(register-seq-arm! jiterator? jiterator-cur)
 ;; A Chez condition's message string (for Throwable .getMessage/.toString): the
 ;; &message text plus any &irritants, or display-condition output as a fallback.
 (define (condition->message-string c)

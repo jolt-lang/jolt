@@ -26,10 +26,9 @@
           (else (make-jolt-queue (cdr f) (jolt-queue-rear q) (fx- (jolt-queue-cnt q) 1))))))
 
 ;; --- extend the collection dispatchers to see a jolt-queue ------------------
-(define %q-seq jolt-seq)
-(set! jolt-seq (lambda (x) (if (jolt-queue? x)
-                               (let ((l (queue->list x))) (if (null? l) jolt-nil (list->cseq l)))
-                               (%q-seq x))))
+(define (queue->seq x)
+  (let ((l (queue->list x))) (if (null? l) jolt-nil (list->cseq l))))
+(register-seq-arm! jolt-queue? queue->seq)
 (register-count-arm! jolt-queue? (lambda (x) (jolt-queue-cnt x)))
 (define %q-empty? jolt-empty?)
 (set! jolt-empty? (lambda (x) (if (jolt-queue? x) (fx=? 0 (jolt-queue-cnt x)) (%q-empty? x))))
