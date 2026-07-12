@@ -500,12 +500,10 @@
 )
 ;; contains?: a deftype implementing Associative/containsKey (e.g. core.cache's
 ;; caches) answers through that; a plain defrecord checks its fields.
-(define %r-jolt-contains? jolt-contains?)
-(set! jolt-contains? (lambda (coll k)
-  (cond ((jrec-cl coll "containsKey") => (lambda (m) (if (jolt-truthy? (jolt-invoke m coll k)) #t #f)))
-        ((jrec? coll) (jrec-has? coll k))
-        ((jolt-transient? coll) (t-contains? coll k))
-        (else (%r-jolt-contains? coll k)))))
+(register-contains-arm! (lambda (coll) (jrec-cl coll "containsKey"))
+  (lambda (coll k) (if (jolt-truthy? (jolt-invoke (jrec-cl coll "containsKey") coll k)) #t #f)))
+(register-contains-arm! jrec? (lambda (coll k) (jrec-has? coll k)))
+(register-contains-arm! jolt-transient? t-contains?)
 ;; nth: transient unwrapping (vec→direct buf access, other→fallback), then original
 (define %r-jolt-nth jolt-nth)
 (set! jolt-nth
@@ -593,26 +591,20 @@
                     (if (jolt-nil? ext) '()
                         (map (lambda (p) (make-map-entry (car p) (cdr p))) (jrec-ext-pairs ext)))))
           (loop (+ i 1) (cons (make-map-entry (vector-ref fkeys i) (jrec-field-ref r i)) acc))))))
-(define %r-jolt-seq jolt-seq)
-(set! jolt-seq (lambda (x)
-  (cond ((jrec-cl x "seq") => (lambda (m) (jolt-seq (jolt-invoke m x))))
-        ;; a record seqs its fields; a bare deftype is not seqable (falls through
-        ;; to %r-jolt-seq, which errors like the JVM).
-        ((jrec-record? x) (list->cseq (jrec-entry-list x)))
-        ((jrec-declares-coll-iface? x) (jrec-abstract-method-error x "seq"))
-        (else (%r-jolt-seq x)))))
-(define %r-jolt-conj1 jolt-conj1)
-(set! jolt-conj1 (lambda (coll x)
-  (cond ((jrec-cl coll "cons") => (lambda (m) (jolt-invoke m coll x)))
-        ((jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))
-        (else (%r-jolt-conj1 coll x)))))
+(register-seq-arm! (lambda (x) (and (jrec? x) (jrec-declares-coll-iface? x)))
+  (lambda (x) (jrec-abstract-method-error x "seq")))
+(register-seq-arm! jrec-record?
+  (lambda (x) (list->cseq (jrec-entry-list x))))
+(register-seq-arm! (lambda (x) (jrec-cl x "seq"))
+  (lambda (x) (jolt-seq (jolt-invoke (jrec-cl x "seq") x))))
+(register-conj-arm! (lambda (coll) (jrec-cl coll "cons"))
+  (lambda (coll x) (jolt-invoke (jrec-cl coll "cons") coll x)))
+(register-conj-arm! jrec? (lambda (coll x) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
 ;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
 ;; core.cache's LRU/LU caches lean on) dispatch to its methods.
 ;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
 ;; .priority-map's peek calls (.isEmpty this) -> empty?). jolt-seq is method-first.
-(define %r-jolt-empty? jolt-empty?)
-(set! jolt-empty? (lambda (coll)
-  (if (jrec-collection? coll) (jolt-nil? (jolt-seq coll)) (%r-jolt-empty? coll))))
+(register-empty-arm! jrec-collection? (lambda (coll) (jolt-nil? (jolt-seq coll))))
 (define %r-jolt-peek jolt-peek)
 (set! jolt-peek (lambda (coll)
   (cond ((jrec-cl coll "peek") => (lambda (m) (jolt-invoke m coll)))
@@ -630,8 +622,7 @@
 ;; only a defrecord is a map (Clojure: a record IS an associative map); a bare
 ;; deftype is not. coll? additionally covers a deftype implementing a collection
 ;; interface. predicates.ss vars hold a snapshot, so re-def-var! after extending.
-(define %r-jolt-map? jolt-map?)
-(set! jolt-map? (lambda (x) (or (jrec-maplike? x) (%r-jolt-map? x))))
+(register-map-pred-arm! jrec-maplike?)
 (def-var! "clojure.core" "map?" jolt-map?)
 (def-var! "clojure.core" "coll?" (lambda (x) (or (jrec-collection? x) (jolt-coll-pred? x))))
 
@@ -1145,8 +1136,7 @@
 (define-record-type jiterator (fields (mutable cur)) (nongenerative jolt-iterator-v1))
 ;; (seq an-iterator) / (iterator-seq it): a jiterator wraps the remaining seq in
 ;; cur, so seq just yields it — clojure.test's (iterator-seq (.iterator coll)).
-(let ((prev-seq jolt-seq))
-  (set! jolt-seq (lambda (x) (if (jiterator? x) (jiterator-cur x) (prev-seq x)))))
+(register-seq-arm! jiterator? jiterator-cur)
 ;; A Chez condition's message string (for Throwable .getMessage/.toString): the
 ;; &message text plus any &irritants, or display-condition output as a fallback.
 (define (condition->message-string c)

@@ -407,6 +407,11 @@
 ;; ============================================================================
 ;; leaf ops the emitter lowers core/clojure fns to (mirrors native-ops)
 ;; ============================================================================
+;; ---- conj arms: host types register here instead of set!-wrapping jolt-conj1 ----
+(define jolt-conj1-arms '())
+(define (register-conj-arm! pred handler)
+  (set! jolt-conj1-arms (cons (cons pred handler) jolt-conj1-arms)))
+
 (define (jolt-conj1 coll x)
   (cond ((pvec? coll) (pvec-conj coll x))   ; nil is a valid vector/set element
         ((pset? coll) (pset-conj coll x))
@@ -421,10 +426,14 @@
                ((and (pvec? x) (fx=? 2 (pvec-count x)))
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
                (else (error 'conj "conj on a map expects a [k v] pair or a map"))))
-        ((rec-coll-method coll "cons") => (lambda (m) (jolt-invoke m coll x)))
-        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
-                                          " cannot be cast to class clojure.lang.IPersistentCollection"))))))
+        (else (let loop ((as jolt-conj1-arms))
+                (cond ((null? as)
+                       (cond ((rec-coll-method coll "cons") => (lambda (m) (jolt-invoke m coll x)))
+                             (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                                                (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                                                               " cannot be cast to class clojure.lang.IPersistentCollection"))))))
+                      (((caar as) coll) ((cdar as) coll x))
+                      (else (loop (cdr as))))))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
 (define (jolt-conj . args)
   (if (null? args)
@@ -584,7 +593,22 @@
                       "java.lang.IllegalArgumentException"
                       (string-append "contains? not supported on type: "
                                      (guard (e (#t "?")) (jolt-class-name coll))))))
-        (else #f)))
+        (else (let loop ((as jolt-contains-arms))
+                (cond ((null? as) #f)
+                      (((caar as) coll) ((cdar as) coll k))
+                      (else (loop (cdr as))))))))
+
+;; ---- contains? arms: host types register here instead of set!-wrapping jolt-contains? ---
+(define jolt-contains-arms '())
+(define (register-contains-arm! pred handler)
+  (set! jolt-contains-arms (cons (cons pred handler) jolt-contains-arms)))
+
+;; ---- empty? arms: host types register here instead of set!-wrapping jolt-empty? ---
+;; Arms dispatch newest-registration-first, matching the set!-chain precedence.
+;; The built-in types stay inline; arms checked before the seq-based fallback.
+(define jolt-empty-arms '())
+(define (register-empty-arm! pred handler)
+  (set! jolt-empty-arms (cons (cons pred handler) jolt-empty-arms)))
 
 (define (jolt-empty? coll)
   (cond ((jolt-nil? coll) #t)
@@ -594,9 +618,11 @@
         ((string? coll) (fx=? 0 (string-length coll)))
         ((empty-list-t? coll) #t)
         ((cseq? coll) #f)                            ; a cseq is non-empty by construction
-        ;; RT parity: empty? is (not (seq coll)) — anything seqable answers,
-        ;; and seq's own error surfaces for a non-seqable.
-        (else (jolt-nil? (jolt-seq coll)))))
+        ;; arm dispatch before the general seq-based fallback
+        (else (let loop ((as jolt-empty-arms))
+                (cond ((null? as) (jolt-nil? (jolt-seq coll)))
+                      (((caar as) coll) ((cdar as) coll))
+                      (else (loop (cdr as))))))))
 
 (define (jolt-stack-throw coll)
   (jolt-throw (jolt-host-throwable

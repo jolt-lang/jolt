@@ -31,7 +31,18 @@
   (hashtable-clear! jch-closure-cache)
   (hashtable-clear! jch-tags-cache))
 
-(define (jch-direct-supers name) (hashtable-ref jvm-class-parents name '()))
+;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the
+;; table; like the JVM (a fn extends clojure.lang.AFunction) its super is
+;; AFunction, whose registered supers give AFn / IFn / Fn / Runnable / Callable
+;; transitively.
+(define (str-has-dollar? s)
+  (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
+
+(define (jch-direct-supers name)
+  (let ((direct (hashtable-ref jvm-class-parents name '())))
+    (if (pair? direct) direct
+        (if (str-has-dollar? name) '("clojure.lang.AFunction")
+            '()))))
 
 ;; Replace a class's direct supers outright (defrecord re-declares the row its
 ;; deftype half registered). Same cache invalidation as a register.
@@ -250,6 +261,7 @@
 (jch-register-supers! "java.io.InterruptedIOException" '("java.io.IOException"))
 (jch-register-supers! "java.io.FileNotFoundException" '("java.io.IOException"))
 (jch-register-supers! "java.io.UnsupportedEncodingException" '("java.io.IOException"))
+(jch-register-supers! "java.io.EOFException" '("java.io.IOException"))
 (jch-register-supers! "java.net.UnknownHostException" '("java.io.IOException"))
 (jch-register-supers! "java.net.SocketException" '("java.io.IOException"))
 (jch-register-supers! "java.net.ConnectException" '("java.net.SocketException"))
@@ -320,10 +332,62 @@
 (jch-register-supers! "java.lang.Comparable" '())
 (jch-register-supers! "java.lang.Runnable" '())
 (jch-register-supers! "java.util.concurrent.Callable" '())
+;; java.time temporal interfaces — base abstractions the concrete time classes implement
+(jch-register-supers! "java.time.temporal.TemporalAccessor" '())
+(jch-mark-interface! "java.time.temporal.TemporalAccessor")
+(jch-register-supers! "java.time.temporal.Temporal" '("java.time.temporal.TemporalAccessor"))
+(jch-mark-interface! "java.time.temporal.Temporal")
+(jch-register-supers! "java.time.temporal.TemporalAdjuster" '())
+(jch-mark-interface! "java.time.temporal.TemporalAdjuster")
+(jch-register-supers! "java.time.temporal.TemporalAmount" '())
+(jch-mark-interface! "java.time.temporal.TemporalAmount")
+;; java.time.chrono super-interfaces the concrete date/time classes implement
+(jch-register-supers! "java.time.chrono.ChronoLocalDate" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable"))
+(jch-mark-interface! "java.time.chrono.ChronoLocalDate")
+(jch-register-supers! "java.time.chrono.ChronoLocalDateTime" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable"))
+(jch-mark-interface! "java.time.chrono.ChronoLocalDateTime")
+(jch-register-supers! "java.time.chrono.ChronoZonedDateTime" '("java.time.temporal.Temporal" "java.lang.Comparable"))
+(jch-mark-interface! "java.time.chrono.ChronoZonedDateTime")
+;; java.time concrete classes with their real JVM interfaces (all are Serializable)
+(jch-register-supers! "java.time.Instant" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.LocalDate" '("java.time.chrono.ChronoLocalDate" "java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.LocalTime" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.LocalDateTime" '("java.time.chrono.ChronoLocalDateTime" "java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.ZonedDateTime" '("java.time.chrono.ChronoZonedDateTime" "java.time.temporal.Temporal" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.OffsetDateTime" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.OffsetTime" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.Duration" '("java.time.temporal.TemporalAmount" "java.lang.Comparable" "java.io.Serializable"))
+(jch-register-supers! "java.time.Period" '("java.time.temporal.TemporalAmount" "java.io.Serializable"))
+(jch-register-supers! "java.time.Year" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable"))
+(jch-register-supers! "java.time.YearMonth" '("java.time.temporal.Temporal" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable"))
+(jch-register-supers! "java.time.ZoneId" '())
+(jch-register-supers! "java.time.ZoneOffset" '("java.time.ZoneId" "java.time.temporal.TemporalAccessor" "java.time.temporal.TemporalAdjuster" "java.lang.Comparable"))
+(jch-register-supers! "java.time.zone.ZoneRules" '())
+(jch-register-supers! "java.time.temporal.ChronoUnit" '())
+(jch-register-supers! "java.time.temporal.ChronoField" '())
+(jch-register-supers! "java.time.Month" '("java.time.temporal.TemporalAccessor" "java.time.temporal.TemporalAdjuster"))
+(jch-register-supers! "java.time.DayOfWeek" '("java.time.temporal.TemporalAccessor" "java.time.temporal.TemporalAdjuster"))
+(jch-register-supers! "java.time.Clock" '())
+(jch-register-supers! "java.time.format.DateTimeFormatter" '())
+;; text / util classes with host shims
+(jch-register-supers! "java.text.SimpleDateFormat" '())
+(jch-register-supers! "java.util.GregorianCalendar" '())
+(jch-register-supers! "java.util.Locale" '())
+(jch-register-supers! "java.util.TimeZone" '())
 
 ;; Public seam: libraries extend the modeled hierarchy.
 (def-var! "jolt.host" "register-class-supers!"
   (lambda (name supers) (jch-register-supers! name (seq->list supers)) jolt-nil))
+
+;; transitive ancestry rooted at Object for a concrete class; an interface's chain
+;; has no Object (its getSuperclass is null). '() for Object itself.
+(define (jch-ancestors-rooted name)
+  (if (or (string=? name "java.lang.Object") (jch-interface? name))
+      (jch-closure name)
+      (let ((as (jch-closure name)))
+        (cond ((member "java.lang.Object" as) as)
+              ((null? as) (if (jch-known? name) '("java.lang.Object") '()))
+              (else (append as '("java.lang.Object")))))))
 
 ;; bases — the direct supers of a class from the jch graph. c may be a class-name
 ;; string, a jclass object (class token), or a JVM-typed value (number, string, etc.).

@@ -38,8 +38,7 @@
 (define (jolt-coll->cells c) (jolt-seq c))
 
 ;; extend jolt-seq to force a lazyseq (a lazyseq is seqable -> its realized seq).
-(define %ls-seq jolt-seq)
-(set! jolt-seq (lambda (x) (if (jolt-lazyseq? x) (force-lazyseq x) (%ls-seq x))))
+(register-seq-arm! jolt-lazyseq? force-lazyseq)
 
 ;; (cons x lazyseq): keep the tail lazy — force it only when the cseq cell is
 ;; walked, so an infinite (repeat/iterate/cycle) stays productive.
@@ -52,9 +51,7 @@
 ;; (conj lazyseq x): conj onto a seq prepends, like any seq — (conj (rest xs) y).
 ;; rest returns a lazyseq, so this is a common path; without it conj reports the
 ;; lazyseq as an "unsupported collection".
-(define %ls-conj1 jolt-conj1)
-(set! jolt-conj1 (lambda (coll x)
-  (if (jolt-lazyseq? coll) (jolt-cons x coll) (%ls-conj1 coll x))))
+(register-conj-arm! jolt-lazyseq? (lambda (coll x) (jolt-cons x coll)))
 
 ;; A lazyseq is a NEW value type, so the dispatchers that DON'T route through
 ;; jolt-seq must learn it or a raw (unrealized) lazyseq escapes — e.g. the corpus
@@ -66,8 +63,7 @@
 (set! jolt-sequential? (lambda (x) (or (jolt-lazyseq? x) (%ls-sequential? x))))
 (register-count-arm! jolt-lazyseq?
   (lambda (x) (jolt-count (jolt-seq x))))
-(define %ls-empty? jolt-empty?)
-(set! jolt-empty? (lambda (x) (if (jolt-lazyseq? x) (%ls-empty? (jolt-seq x)) (%ls-empty? x))))
+(register-empty-arm! jolt-lazyseq? (lambda (x) (jolt-empty? (jolt-seq x))))
 (define %ls-nth jolt-nth)
 (set! jolt-nth (case-lambda
   ((coll i)   (if (jolt-lazyseq? coll) (%ls-nth (jolt-seq coll) i)   (%ls-nth coll i)))

@@ -68,14 +68,12 @@
 (define (sc-call sc op-kw . args) (apply jolt-invoke (sc-op sc op-kw) sc args))
 
 ;; --- extend the collection dispatchers with a sorted arm ---------------------
-(define %h-seq jolt-seq)
-(set! jolt-seq (lambda (x) (if (htable-sorted? x) (sc-call x kw-op-seq) (%h-seq x))))
+(register-seq-arm! htable-sorted? (lambda (x) (sc-call x kw-op-seq)))
 (register-count-arm! htable-sorted?
   (lambda (coll) (sc-call coll kw-op-count)))
 (register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))
-(define %h-contains? jolt-contains?)
-(set! jolt-contains? (lambda (coll k)
-  (if (htable-sorted? coll) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f) (%h-contains? coll k))))
+(register-contains-arm! htable-sorted?
+  (lambda (coll k) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f)))
 (define %h-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
   (if (htable-sorted-map? coll) (sc-call coll kw-op-assoc (jolt-vector k v)) (%h-assoc1 coll k v))))
@@ -85,15 +83,12 @@
 (define %h-dissoc2 jolt-dissoc2)
 (set! jolt-dissoc2 (lambda (coll k)
   (if (htable-sorted-map? coll) (sc-call coll kw-op-dissoc (jolt-vector k)) (%h-dissoc2 coll k))))
-(define %h-conj1 jolt-conj1)
-(set! jolt-conj1 (lambda (coll x)
-  (if (htable-sorted? coll) (sc-call coll kw-op-conj (jolt-vector x)) (%h-conj1 coll x))))
+(register-conj-arm! htable-sorted? (lambda (coll x) (sc-call coll kw-op-conj (jolt-vector x))))
 (define %h-disj jolt-disj)
 (set! jolt-disj (lambda (s . xs)
   (if (htable-sorted-set? s) (sc-call s kw-op-disj (apply jolt-vector xs)) (apply %h-disj s xs))))
 (def-var! "clojure.core" "disj" jolt-disj)
-(define %h-empty? jolt-empty?)
-(set! jolt-empty? (lambda (coll) (if (htable-sorted? coll) (zero? (sc-call coll kw-op-count)) (%h-empty? coll))))
+(register-empty-arm! htable-sorted? (lambda (coll) (zero? (sc-call coll kw-op-count))))
 (define %h-keys jolt-keys)
 (set! jolt-keys (lambda (m)
   (if (htable-sorted-map? m)
@@ -123,8 +118,7 @@
 
 ;; public predicates: a sorted-map is map?, a sorted-set is set?, both coll?.
 ;; predicates.ss/records.ss def-var!'d a snapshot, so re-def-var! after set!.
-(define %h-map? jolt-map?)
-(set! jolt-map? (lambda (x) (or (htable-sorted-map? x) (%h-map? x))))
+(register-map-pred-arm! htable-sorted-map?)
 (def-var! "clojure.core" "map?" jolt-map?)
 (define %h-set? jolt-set?)
 (set! jolt-set? (lambda (x) (or (htable-sorted-set? x) (%h-set? x))))

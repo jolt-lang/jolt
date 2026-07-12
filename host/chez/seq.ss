@@ -83,6 +83,14 @@
 (define (str->seq s i)
   (if (fx>=? i (string-length s)) jolt-nil
       (cseq-lazy (string-ref s i) (lambda () (str->seq s (fx+ i 1))))))
+;; ---- seq arms: host types register here instead of set!-wrapping jolt-seq ----
+;; Arms dispatch newest-registration-first (cons front, walk head-first), matching
+;; the precedence the set! chains produced. The built-in types stay inline in
+;; jolt-seq itself.
+(define jolt-seq-arms '())
+(define (register-seq-arm! pred handler)
+  (set! jolt-seq-arms (cons (cons pred handler) jolt-seq-arms)))
+
 (define (jolt-seq x)
   (cond
     ((jolt-nil? x) jolt-nil)
@@ -92,9 +100,12 @@
     ((pmap? x) (list->cseq (pmap-fold x (lambda (k v a) (cons (make-map-entry k v) a)) '())))
     ((pset? x) (list->cseq (pset-fold x cons '())))
     ((string? x) (str->seq x 0))
-    (else (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
-                        (string-append "Don't know how to create ISeq from: "
-                                       (guard (e (#t "?")) (jolt-class-name x))))))))
+    (else (let loop ((as jolt-seq-arms))
+            (cond ((null? as) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                          (string-append "Don't know how to create ISeq from: "
+                                                         (guard (e (#t "?")) (jolt-class-name x))))))
+                  (((caar as) x) ((cdar as) x))
+                  (else (loop (cdr as))))))))
 
 (define (jolt-sequential? x) (or (pvec? x) (cseq? x) (empty-list-t? x)))
 (define (seq->list s)                  ; force a finite seq to a Scheme list

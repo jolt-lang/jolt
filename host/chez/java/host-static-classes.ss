@@ -123,14 +123,11 @@
 
 ;; ArrayList / LinkedList are Iterable: (seq al) walks the elements (nil if empty),
 ;; so (seq pending-forms) and reduce/into over one work like the JVM.
-(define %al-seq jolt-seq)
-(set! jolt-seq
-  (lambda (x)
-    (if (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
-                            (string=? (jhost-tag x) "linkedlist")
-                            (string=? (jhost-tag x) "arraydeque")))
-        (list->cseq (al->list x))
-        (%al-seq x))))
+(define (al-family? x)
+  (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
+                       (string=? (jhost-tag x) "linkedlist")
+                       (string=? (jhost-tag x) "arraydeque"))))
+(register-seq-arm! al-family? (lambda (x) (list->cseq (al->list x))))
 
 ;; Appendable.append text: append(x) renders x; append(csq,start,end) appends the
 ;; subsequence csq[start,end) (data.json's writer appends string runs this way).
@@ -371,19 +368,15 @@
         (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
         (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) (hm-ord! self '()) jolt-nil))
         (cons "toString" (lambda (self) (jolt-pr-str (apply jolt-hash-set (hs->list self)))))))
-(define %hs-seq jolt-seq)
-(set! jolt-seq
-  (lambda (x) (if (hs-hashset? x) (list->cseq (hs->list x)) (%hs-seq x))))
+(register-seq-arm! hs-hashset? (lambda (x) (list->cseq (hs->list x))))
 (register-get-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
                    (lambda (coll k d) (hashtable-ref (hm-tbl coll) k d)))
 ;; count / contains? over the mutable map shim (clojure.core/count + contains?,
 ;; which core.cache's SoftCache uses on its backing ConcurrentHashMap).
 (define (jhost-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
 (register-count-arm! jhost-hashmap? (lambda (c) (hashtable-size (hm-tbl c))))
-(let ((prev-contains jolt-contains?))
-  (set! jolt-contains? (lambda (c k) (if (jhost-hashmap? c)
-                                         (if (hashtable-contains? (hm-tbl c) k) #t #f)
-                                         (prev-contains c k)))))
+(register-contains-arm! jhost-hashmap?
+  (lambda (c k) (if (hashtable-contains? (hm-tbl c) k) #t #f)))
 
 ;; ---- java.lang.ref.Soft/WeakReference + ReferenceQueue ----------------------
 ;; Real GC reclamation via Chez's generational collector: the referent is held
@@ -611,35 +604,36 @@
 ;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
 ;; (so class / instance? / getMessage / ex-message reflect the real type) and the
 ;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.).
-(for-each
-  (lambda (nm)
-    (let ((canonical (or (resolve-class-hint nm) nm)))
-      (register-class-ctor! nm
-        (lambda args
-          (let* ((a0 (if (pair? args) (car args) jolt-nil))
-                 (rest (if (pair? args) (cdr args) '()))
-                 (cause (if (pair? rest) (car rest) jolt-nil)))
-            (cond
-              ((string? a0) (jolt-host-throwable canonical a0 cause))
-              ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
-              ;; (E. cause): a lone throwable arg is the cause, message nil.
-              ((and (null? rest) (ex-info-map? a0)) (jolt-host-throwable canonical jolt-nil a0))
-              (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))))
-  '("Throwable" "Exception" "RuntimeException" "IllegalArgumentException" "IllegalStateException"
-    "InterruptedException" "UnsupportedOperationException" "IOException" "NumberFormatException"
-    "ArithmeticException" "NullPointerException" "ClassCastException" "IndexOutOfBoundsException"
-    "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"
-    "Error" "AssertionError"
-    "ArrayIndexOutOfBoundsException" "StringIndexOutOfBoundsException"
-    "ReflectiveOperationException" "ClassNotFoundException" "NoSuchMethodException"
-    "IllegalAccessException" "CloneNotSupportedException" "NoSuchElementException"
-    "CancellationException" "SocketException" "SQLException"
-    "LinkageError" "ClassCircularityError" "NoClassDefFoundError" "UnsatisfiedLinkError"
-    "VirtualMachineError" "InternalError" "OutOfMemoryError" "StackOverflowError"
-    "ThreadDeath" "IOError"))
+;; Derived from the ONE exception hierarchy in class-hierarchy.ss: every
+;; jch-isa? -> Throwable gets a ctor with no second list to maintain.
+(define (make-exc-ctor canonical)
+  (lambda args
+    (let* ((a0 (if (pair? args) (car args) jolt-nil))
+           (rest (if (pair? args) (cdr args) '()))
+           (cause (if (pair? rest) (car rest) jolt-nil)))
+      (cond
+        ((string? a0) (jolt-host-throwable canonical a0 cause))
+        ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
+        ;; (E. cause): a lone throwable arg is the cause, message nil.
+        ((and (null? rest) (ex-info-map? a0)) (jolt-host-throwable canonical jolt-nil a0))
+        (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))
+(let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+  (vector-for-each
+    (lambda (canonical supers)
+      (when (jch-isa? canonical "Throwable")
+        (let ((short (jch-last-segment canonical)))
+          (register-class-ctor! short (make-exc-ctor canonical))
+          (unless (string=? short canonical)
+            (register-class-ctor! canonical (make-exc-ctor canonical))))))
+    keys vals))
 
 ;; clojure.lang.ArityException(int actual, String name) builds the JVM message.
 (register-class-ctor! "ArityException"
+  (lambda (actual name . _)
+    (jolt-host-throwable "clojure.lang.ArityException"
+      (string-append "Wrong number of args (" (jolt-str-render-one actual)
+                     ") passed to: " (if (string? name) name (jolt-str-render-one name))))))
+(register-class-ctor! "clojure.lang.ArityException"
   (lambda (actual name . _)
     (jolt-host-throwable "clojure.lang.ArityException"
       (string-append "Wrong number of args (" (jolt-str-render-one actual)
@@ -648,14 +642,16 @@
 ;; java.text.ParseException(String s, int errorOffset): unlike the exceptions
 ;; above, its second ctor arg is an int offset (getErrorOffset), not a cause.
 ;; Store the offset in the record's error-offset field (invisible to ex-data).
-(register-class-ctor! "ParseException"
-  (lambda args
-    (let* ((a0 (if (pair? args) (car args) jolt-nil))
-           (off (if (and (pair? args) (pair? (cdr args))) (cadr args) 0))
-           (msg (if (string? a0) a0 (jolt-str-render-one a0)))
-           (rec (jolt-host-throwable "java.text.ParseException" msg)))
-      (jolt-ex-info-record-error-offset-set! rec off)
-      rec)))
+(let ((parse-exc-ctor
+       (lambda args
+         (let* ((a0 (if (pair? args) (car args) jolt-nil))
+                (off (if (and (pair? args) (pair? (cdr args))) (cadr args) 0))
+                (msg (if (string? a0) a0 (jolt-str-render-one a0)))
+                (rec (jolt-host-throwable "java.text.ParseException" msg)))
+           (jolt-ex-info-record-error-offset-set! rec off)
+           rec))))
+  (register-class-ctor! "ParseException" parse-exc-ctor)
+  (register-class-ctor! "java.text.ParseException" parse-exc-ctor))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
@@ -1051,26 +1047,7 @@
                                      (or (not (opt-present? a)) (jolt=2 (opt-value a) (opt-value b))))))
 
 ;; class hierarchy lives in class-hierarchy.ss (jvm-class-parents).
-;; fn classes (ns$name) inherit AFunction.
-;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the table;
-;; like the JVM (a fn extends clojure.lang.AFunction) its super is AFunction, whose
-;; registered supers give AFn / IFn / Fn / Runnable / Callable transitively.
-(define (str-has-dollar? s)
-  (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
-(define (class-direct-supers name)
-  ;; reads the modeled class graph (jch, direct edges) only — the legacy table has
-  ;; been folded into class-hierarchy.ss.
-  (let ((jch (jch-direct-supers name)))
-    (if (pair? jch) jch
-        (if (str-has-dollar? name) '("clojure.lang.AFunction")
-            '()))))
-;; transitive closure of direct supers (set semantics via an accumulator list)
-(define (class-ancestors-list name)
-  (let loop ((pending (class-direct-supers name)) (seen '()))
-    (cond ((null? pending) (reverse seen))
-          ((member (car pending) seen) (loop (cdr pending) seen))
-          (else (loop (append (class-direct-supers (car pending)) (cdr pending))
-                      (cons (car pending) seen))))))
+;; fn classes (ns$name) inherit AFunction (handled by jch-direct-supers).
 
 ;; (instance? Class e) on a throwable tagged-table carrying a JVM :class matches the
 ;; carried class or any of its ancestors (full name or last segment), so a library's
@@ -1083,7 +1060,7 @@
         (let* ((cls (hashtable-ref (htable-h val) "class" #f))
                (want (symbol-t-name type-sym))
                (want-seg (hsc-last-segment want)))
-          (let loop ((names (cons cls (class-ancestors-list cls))))
+          (let loop ((names (cons cls (jch-closure cls))))
             (cond ((null? names) 'pass)
                   ((or (string=? want (car names))
                        (string=? want-seg (hsc-last-segment (car names)))) #t)
@@ -1099,7 +1076,7 @@
     (let ((cc (class-key child)) (pp (class-key parent)))
       (if (and cc pp)
           (let ((pseg (hsc-last-segment pp)))
-            (if (let loop ((names (cons cc (class-ancestors-list cc))))
+            (if (let loop ((names (cons cc (jch-closure cc))))
                   (cond ((string=? pp "java.lang.Object") #t)
                         ((null? names) #f)
                         ((or (string=? pp (car names))
@@ -1108,23 +1085,12 @@
                 #t jolt-nil))
           jolt-nil))))
 
-;; is NAME a class the host models (registered in the class graph, a legacy
-;; supers-table entry, or a fn class)? Object itself is modeled.
+;; is NAME a class the host models (registered in the class graph, or a fn class)?
+;; Object itself is modeled.
 (define (hsc-class-known? name)
   (or (string=? name "java.lang.Object")
       (jch-known? name)
       (str-has-dollar? name)))
-
-;; transitive ancestry, rooted at Object for a concrete class like (supers c);
-;; an interface's chain has no Object (its getSuperclass is null). '() for
-;; Object itself and for a name the host doesn't model.
-(define (class-ancestors-rooted name)
-  (if (or (string=? name "java.lang.Object") (jch-interface? name))
-      (class-ancestors-list name)
-      (let ((as (class-ancestors-list name)))
-        (cond ((member "java.lang.Object" as) as)
-              ((null? as) (if (hsc-class-known? name) '("java.lang.Object") '()))
-              (else (append as '("java.lang.Object")))))))
 
 ;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
 ;; super / ancestor class-name strings (transitive, Object-rooted), or nil when
@@ -1135,21 +1101,21 @@
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let ((as (class-ancestors-rooted name)))
+          (let ((as (jch-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
 (def-var! "jolt.host" "class-ancestors"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let ((as (class-ancestors-rooted name)))
+          (let ((as (jch-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
 (def-var! "jolt.host" "class-bases"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let* ((ds (class-direct-supers name))
+          (let* ((ds (jch-direct-supers name))
                  ;; a concrete class's bases include its superclass — Object when
                  ;; nothing more specific is modeled (interfaces have none).
                  (ds (if (or (string=? name "java.lang.Object")
@@ -1287,9 +1253,7 @@
             (else 'pass)))
         'pass)))
 ;; (seq a-HashMap) walks its entries, like RT.seqFrom over a java.util.Map.
-(define %hm-seq jolt-seq)
-(set! jolt-seq
-  (lambda (x) (if (hm-hashmap? x) (jolt-seq (hm->pmap x)) (%hm-seq x))))
+(register-seq-arm! hm-hashmap? (lambda (x) (jolt-seq (hm->pmap x))))
 ;; a MapEntry does not carry meta on the JVM (AMapEntry); deny IObj/IMeta so the
 ;; pvec backing doesn't claim it.
 (register-instance-check-arm!
@@ -1332,8 +1296,6 @@
 (def-var! "jolt.host" "class-object?" (lambda (x) (if (jclass? x) #t #f)))
 ;; nth over the java.util List shims, like RT.nth on a java.util.List.
 (define %shim-nth jolt-nth)
-(define (al-family? x)
-  (and (jhost? x) (member (jhost-tag x) '("arraylist" "linkedlist" "arraydeque"))))
 (set! jolt-nth
   (case-lambda
     ((coll i) (if (al-family? coll) (%shim-nth (list->cseq (al->list coll)) i) (%shim-nth coll i)))
