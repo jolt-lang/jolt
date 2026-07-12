@@ -7,6 +7,14 @@
 ;; All arithmetic is 32-bit signed wrapping — the i32/u32 helpers below
 ;; implement Java's int semantics on Chez's 61-bit fixnum tower.
 ;;
+;; SOUNDNESS of #3% unsafe primitives: every primitive marked #3% below
+;; operates on values that are PROVABLY fixnums — either masked to ≤32 bits
+;; (fxand #xFFFFFFFF, fxand #xFFFF), the product of two ≤2^31 inputs (|p| ≤ 2^47
+;; ≪ 2^60), or a fixnum loop index. The #3% prefix drops Chez's runtime fixnum?
+;; check per call site, which is sound because (a) all intermediates are bounded
+;; far below the 61-bit fixnum ceiling, and (b) the entry point (jolt-hasheq)
+;; only reaches these paths after `fixnum?` guards or type dispatch.
+;;
 ;; Loaded from rt.ss BEFORE collections.ss so key-hash can use jolt-hasheq.
 
 ;; ============================================================================
@@ -17,25 +25,25 @@
 ;; Mask to unsigned 32 bits (0 .. 2^32-1).
 (define-syntax u32
   (syntax-rules ()
-    ((_ x) (bitwise-and x #xFFFFFFFF))))
+    ((_ x) (#3%bitwise-and x #xFFFFFFFF))))
 
 ;; Interpret unsigned 32 bits as signed 32-bit (-2^31 .. 2^31-1).
 (define-syntax i32
   (syntax-rules ()
     ((_ x) (let ((u (u32 x)))
-             (if (fx>=? u #x80000000) (fx- u #x100000000) u)))))
+             (if (#3%fx>=? u #x80000000) (#3%fx- u #x100000000) u)))))
 
 ;; 32-bit wrapping multiply — fixnum-pure via 16-bit split.
 ;; Proof no step exceeds Chez's signed 61-bit fixnum range (±2^60−1):
 ;;   Let a ∈ [−2^31, 2^31−1] (after i32), b likewise.
 ;;   hi = low 16 bits of (b >>> 16) ∈ [0, 0xFFFF]
 ;;   lo = low 16 bits of b          ∈ [0, 0xFFFF]
-;;   (fx* a hi) : |a| ≤ 2^31, hi ≤ 0xFFFF → |p| ≤ 2^47        ≪ 2^60  ✓
-;;   (fxand p #xFFFF) ∈ [0, 0xFFFF]                              ≪ 2^60  ✓
-;;   (fxsll ... 16)  ∈ [0, 0xFFFF0000] ≤ 2^32                   ≪ 2^60  ✓
-;;   (fx* a lo) : |a| ≤ 2^31, lo ≤ 0xFFFF → |p| ≤ 2^47          ≪ 2^60  ✓
-;;   (fx+ hi_part lo_part) : each ≤ max(2^32, 2^47) = 2^47 → sum ≤ 2^48 ≪ 2^60 ✓
-;;   final (fxand sum #xFFFFFFFF) ∈ [0, 2^32−1]                  ≪ 2^60  ✓
+;;   (#3%fx* a hi) : |a| ≤ 2^31, hi ≤ 0xFFFF → |p| ≤ 2^47        ≪ 2^60  ✓
+;;   (#3%fxand p #xFFFF) ∈ [0, 0xFFFF]                              ≪ 2^60  ✓
+;;   (#3%fxsll ... 16)  ∈ [0, 0xFFFF0000] ≤ 2^32                   ≪ 2^60  ✓
+;;   (#3%fx* a lo) : |a| ≤ 2^31, lo ≤ 0xFFFF → |p| ≤ 2^47          ≪ 2^60  ✓
+;;   (#3%fx+ hi_part lo_part) : each ≤ max(2^32, 2^47) = 2^47 → sum ≤ 2^48 ≪ 2^60 ✓
+;;   final (#3%fxand sum #xFFFFFFFF) ∈ [0, 2^32−1]                  ≪ 2^60  ✓
 ;; After the unsigned 32-bit result is obtained, i32 converts back to signed.
 ;; a and b are each evaluated exactly once (let*-bound as a*/b*).
 (define-syntax mul32
@@ -43,21 +51,21 @@
     ((_ a b)
      (let* ((a* (i32 a))
             (b* (i32 b))
-            (hi (fxand (fxsra b* 16) #xFFFF))
-            (lo (fxand b* #xFFFF))
-            (hi-part (fxsll (fxand (fx* a* hi) #xFFFF) 16))
-            (lo-part (fx* a* lo)))
-       (i32 (fxand (fx+ hi-part lo-part) #xFFFFFFFF))))))
+            (hi (#3%fxand (#3%fxsra b* 16) #xFFFF))
+            (lo (#3%fxand b* #xFFFF))
+            (hi-part (#3%fxsll (#3%fxand (#3%fx* a* hi) #xFFFF) 16))
+            (lo-part (#3%fx* a* lo)))
+       (i32 (#3%fxand (#3%fx+ hi-part lo-part) #xFFFFFFFF))))))
 
 ;; 32-bit wrapping add. a and b each evaluated once.
 (define-syntax add32
   (syntax-rules ()
-    ((_ a b) (i32 (+ (i32 a) (i32 b))))))
+    ((_ a b) (i32 (#3%fx+ (i32 a) (i32 b))))))
 
 ;; Unsigned right shift (Java >>>).
 (define-syntax urs32
   (syntax-rules ()
-    ((_ x n) (bitwise-arithmetic-shift-right (u32 x) n))))
+    ((_ x n) (#3%bitwise-arithmetic-shift-right (u32 x) n))))
 
 ;; Rotate left (Java Integer.rotateLeft). x and n each evaluated once.
 (define-syntax rotl32
@@ -65,8 +73,8 @@
     ((_ x n)
      (let ((n* (remainder n 32))
            (x* x))
-       (i32 (bitwise-ior (bitwise-arithmetic-shift-left (u32 x*) n*)
-                         (urs32 x* (fx- 32 n*))))))))
+       (i32 (#3%bitwise-ior (#3%bitwise-arithmetic-shift-left (u32 x*) n*)
+                           (urs32 x* (#3%fx- 32 n*))))))))
 
 ;; ============================================================================
 ;; Murmur3 — exact port of clojure.lang.Murmur3.
@@ -112,10 +120,10 @@
 ;; ---------------------------------------------------------------------------
 (define (murmur3-hash-int-flat k)
   ;; k: fixnum in signed 32-bit range.
-  (if (fx=? k 0) 0
+  (if (#3%fx=? k 0) 0
       (let* (;; --- i32(k): signed 32-bit ---
-             (u (fxand k #xFFFFFFFF))
-             (ik (if (fx>=? u #x80000000) (fx- u #x100000000) u))
+             (u (#3%fxand k #xFFFFFFFF))
+             (ik (if (#3%fx>=? u #x80000000) (#3%fx- u #x100000000) u))
              ;; --- mixK1(ik): step 1/3 mul32(ik, C1) ---
              (k1 (mul32 ik murmur3-C1))
              ;; --- mixK1(ik): step 2/3 rotl32(k1, 15) ---
@@ -123,7 +131,7 @@
              ;; --- mixK1(ik): step 3/3 mul32(k1, C2) ---
              (k1 (mul32 k1 murmur3-C2))
              ;; --- mixH1(seed, k1): step 1/4 xor ---
-             (h1 (fxxor murmur3-seed k1))
+             (h1 (#3%fxxor murmur3-seed k1))
              ;; --- mixH1: step 2/4 rotl32(h1, 13) ---
              (h1 (rotl32 h1 13))
              ;; --- mixH1: step 3/4 mul32(h1, 5) ---
@@ -131,17 +139,17 @@
              ;; --- mixH1: step 4/4 add32(h1, 0xe6546b64) ---
              (h1 (add32 h1 #xe6546b64))
              ;; --- fmix(h1, 4): step 1/6 xor len ---
-             (h1 (fxxor h1 4))
+             (h1 (#3%fxxor h1 4))
              ;; --- fmix: step 2/6 xor urs32(h1, 16) ---
-             (h1 (fxxor h1 (urs32 h1 16)))
+             (h1 (#3%fxxor h1 (urs32 h1 16)))
              ;; --- fmix: step 3/6 mul32(h1, 0x85ebca6b) ---
              (h1 (mul32 h1 #x85ebca6b))
              ;; --- fmix: step 4/6 xor urs32(h1, 13) ---
-             (h1 (fxxor h1 (urs32 h1 13)))
+             (h1 (#3%fxxor h1 (urs32 h1 13)))
              ;; --- fmix: step 5/6 mul32(h1, 0xc2b2ae35) ---
              (h1 (mul32 h1 #xc2b2ae35))
              ;; --- fmix: step 6/6 xor urs32(h1, 16) ---
-             (h1 (fxxor h1 (urs32 h1 16))))
+             (h1 (#3%fxxor h1 (urs32 h1 16))))
         h1)))
 
 ;; ---------------------------------------------------------------------------
@@ -153,7 +161,7 @@
 (define (murmur3-hash-long-flat input)
   ;; input: fixnum. Java Long.hasheq: (int)(input ^ (input >>> 32))
   ;; If 0 → return 0; otherwise murmur3-hash-long with count=8.
-  (if (fx=? input 0) 0
+  (if (#3%fx=? input 0) 0
       (let* ((low (i32 input))
              (high (i32 (bitwise-arithmetic-shift-right input 32)))
              ;; --- mixK1(low): mul32(low, C1) ---
@@ -161,7 +169,7 @@
              (k1 (rotl32 k1 15))
              (k1 (mul32 k1 murmur3-C2))
              ;; --- mixH1(seed, k1) ---
-             (h1 (fxxor murmur3-seed k1))
+             (h1 (#3%fxxor murmur3-seed k1))
              (h1 (rotl32 h1 13))
              (h1 (add32 (mul32 h1 5) #xe6546b64))
              ;; --- mixK1(high) ---
@@ -169,16 +177,16 @@
              (k1 (rotl32 k1 15))
              (k1 (mul32 k1 murmur3-C2))
              ;; --- mixH1(h1 from low, k1 from high) ---
-             (h1 (fxxor h1 k1))
+             (h1 (#3%fxxor h1 k1))
              (h1 (rotl32 h1 13))
              (h1 (add32 (mul32 h1 5) #xe6546b64))
              ;; --- fmix(h1, 8) ---
-             (h1 (fxxor h1 8))
-             (h1 (fxxor h1 (urs32 h1 16)))
+             (h1 (#3%fxxor h1 8))
+             (h1 (#3%fxxor h1 (urs32 h1 16)))
              (h1 (mul32 h1 #x85ebca6b))
-             (h1 (fxxor h1 (urs32 h1 13)))
+             (h1 (#3%fxxor h1 (urs32 h1 13)))
              (h1 (mul32 h1 #xc2b2ae35))
-             (h1 (fxxor h1 (urs32 h1 16))))
+             (h1 (#3%fxxor h1 (urs32 h1 16))))
         h1)))
 
 ;; Legacy entry points — kept for cold paths (strings, bignums).
@@ -241,9 +249,9 @@
   (let* ((units (string->utf16-units s))
          (n (vector-length units)))
     (let loop ((i 0) (h 0))
-      (if (fx>=? i n)
+      (if (#3%fx>=? i n)
           (i32 h)
-          (loop (fx+ i 1) (i32 (+ (* 31 h) (vector-ref units i))))))))
+          (loop (#3%fx+ i 1) (i32 (#3%fx+ (#3%fx* 31 h) (vector-ref units i))))))))
 
 (define (murmur3-hash-unencoded-chars s)
   ;; Match Java's Murmur3.hashUnencodedChars(CharSequence) over the
@@ -251,17 +259,17 @@
   (let ((units (string->utf16-units s)))
     (let ((n (vector-length units)))
       (let loop ((i 1) (h1 murmur3-seed))
-        (if (fx>=? i n)
-            (if (fx=? (fxand n 1) 1)
-                (let* ((k1 (murmur3-mix-k1 (vector-ref units (fx- n 1))))
-                       (h1 (bitwise-xor h1 k1)))
-                  (murmur3-fmix h1 (fx* 2 n)))
-                (murmur3-fmix h1 (fx* 2 n)))
-            (let* ((lo (vector-ref units (fx- i 1)))
+        (if (#3%fx>=? i n)
+            (if (#3%fx=? (#3%fxand n 1) 1)
+                (let* ((k1 (murmur3-mix-k1 (vector-ref units (#3%fx- n 1))))
+                       (h1 (#3%bitwise-xor h1 k1)))
+                  (murmur3-fmix h1 (#3%fx* 2 n)))
+                (murmur3-fmix h1 (#3%fx* 2 n)))
+            (let* ((lo (vector-ref units (#3%fx- i 1)))
                    (hi (vector-ref units i))
-                   (k1 (murmur3-mix-k1 (bitwise-ior lo (bitwise-arithmetic-shift-left hi 16))))
+                   (k1 (murmur3-mix-k1 (#3%bitwise-ior lo (#3%bitwise-arithmetic-shift-left hi 16))))
                    (h1 (murmur3-mix-h1 h1 k1)))
-              (loop (fx+ i 2) h1)))))))
+              (loop (#3%fx+ i 2) h1)))))))
 
 ;; ============================================================================
 ;; Long.hashCode (Java): (int)(value ^ (value >>> 32))
@@ -317,14 +325,14 @@
     (if (jolt-nil? xs)
         (mix-coll-hash h n)
         (loop (jolt-seq (seq-more xs))
-              (fx+ n 1)
-              (i32 (+ (* 31 h) (jolt-hasheq (seq-first xs))))))))
+              (#3%fx+ n 1)
+              (i32 (#3%fx+ (#3%fx* 31 h) (jolt-hasheq (seq-first xs))))))))
 
 ;; Compute hash-ordered of a 2-element sequence [k v] — exactly what
 ;; MapEntry-as-vector yields on the JVM. Inlined to avoid cseq allocs.
 (define (entry-hasheq k v)
-  (let* ((h1 (i32 (+ 31 (jolt-hasheq k))))
-         (h2 (i32 (+ (* 31 h1) (jolt-hasheq v)))))
+  (let* ((h1 (i32 (#3%fx+ 31 (jolt-hasheq k))))
+         (h2 (i32 (#3%fx+ (#3%fx* 31 h1) (jolt-hasheq v)))))
     (mix-coll-hash h2 2)))
 
 (define (hash-unordered xs)
@@ -333,7 +341,7 @@
         (mix-coll-hash h n)
         (let ((e (seq-first xs)))
           (loop (jolt-seq (seq-more xs))
-                (fx+ n 1)
+                (#3%fx+ n 1)
                 (+ h (if (pair? e)
                          (entry-hasheq (car e) (cdr e))
                          (jolt-hasheq e))))))))
