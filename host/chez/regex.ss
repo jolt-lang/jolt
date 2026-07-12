@@ -52,11 +52,23 @@
 ;; Java regex feature set: escapes, char classes, Unicode \p{...}, quantifiers,
 ;; groups, flags, anchors, etc. The pattern is parsed ONCE and emitted as SRE
 ;; directly, so features compose correctly.
+(define (sre-has-backref? sre)
+  (let walk ((x sre))
+    (cond ((pair? x)
+           (if (memq (car x) '(backref backref-ci))
+               #t
+               (let lp ((xs (cdr x)))
+                 (and (pair? xs) (or (walk (car xs)) (lp (cdr xs)))))))
+          ((vector? x) (let lp ((i 0))
+                         (and (< i (vector-length x))
+                              (or (walk (vector-ref x i)) (lp (+ i 1))))))
+          (else #f))))
 (define (jolt-regex source)
   (let-values (((sre opts) (java-pattern->sre source)))
     (let ((irx (apply irregex sre opts)))
       (make-regex-t source
-                    (if (> (irregex-num-submatches irx) 0)
+                    (if (or (> (irregex-num-submatches irx) 0)
+                            (sre-has-backref? sre))
                         (apply irregex sre 'backtrack opts)
                         irx)))))
 
