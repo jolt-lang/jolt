@@ -956,6 +956,11 @@
 (register-hash-arm! jclass? (lambda (x) (jolt-hash (jclass-name x))))
 (register-str-render! jclass? (lambda (x) (string-append "class " (jclass-name x))))
 (register-pr-arm! jclass? (lambda (x) (jclass-name x)))
+;; print/println of a Class prints the bare name (getName), like pr — the JVM's
+;; print-method for Class ignores *print-readably*. Only str is "class <name>".
+(let ((prev (var-deref "clojure.core" "__print1")))
+  (def-var! "clojure.core" "__print1"
+    (lambda (x) (if (jclass? x) (jclass-name x) (jolt-invoke1 prev x)))))
 (register-host-methods! "class"
   (list (cons "getName" (lambda (self) (jclass-name self)))
         (cons "getCanonicalName" (lambda (self) (jclass-name self)))

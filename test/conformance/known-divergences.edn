@@ -36,7 +36,7 @@
    :label "bean is the map",
    :category :host-model}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)",
-   :label "proxy resolves nil",
+   :label "unsupported proxy throws",
    :category :host-model}
   {:suite "untested / chunk family (eager equivalents) + cat",
    :label "chunk round-trip",
