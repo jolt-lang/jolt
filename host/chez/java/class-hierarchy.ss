@@ -261,6 +261,7 @@
 (jch-register-supers! "java.io.InterruptedIOException" '("java.io.IOException"))
 (jch-register-supers! "java.io.FileNotFoundException" '("java.io.IOException"))
 (jch-register-supers! "java.io.UnsupportedEncodingException" '("java.io.IOException"))
+(jch-register-supers! "java.io.EOFException" '("java.io.IOException"))
 (jch-register-supers! "java.net.UnknownHostException" '("java.io.IOException"))
 (jch-register-supers! "java.net.SocketException" '("java.io.IOException"))
 (jch-register-supers! "java.net.ConnectException" '("java.net.SocketException"))

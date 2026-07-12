@@ -611,35 +611,36 @@
 ;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
 ;; (so class / instance? / getMessage / ex-message reflect the real type) and the
 ;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.).
-(for-each
-  (lambda (nm)
-    (let ((canonical (or (resolve-class-hint nm) nm)))
-      (register-class-ctor! nm
-        (lambda args
-          (let* ((a0 (if (pair? args) (car args) jolt-nil))
-                 (rest (if (pair? args) (cdr args) '()))
-                 (cause (if (pair? rest) (car rest) jolt-nil)))
-            (cond
-              ((string? a0) (jolt-host-throwable canonical a0 cause))
-              ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
-              ;; (E. cause): a lone throwable arg is the cause, message nil.
-              ((and (null? rest) (ex-info-map? a0)) (jolt-host-throwable canonical jolt-nil a0))
-              (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))))
-  '("Throwable" "Exception" "RuntimeException" "IllegalArgumentException" "IllegalStateException"
-    "InterruptedException" "UnsupportedOperationException" "IOException" "NumberFormatException"
-    "ArithmeticException" "NullPointerException" "ClassCastException" "IndexOutOfBoundsException"
-    "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"
-    "Error" "AssertionError"
-    "ArrayIndexOutOfBoundsException" "StringIndexOutOfBoundsException"
-    "ReflectiveOperationException" "ClassNotFoundException" "NoSuchMethodException"
-    "IllegalAccessException" "CloneNotSupportedException" "NoSuchElementException"
-    "CancellationException" "SocketException" "SQLException"
-    "LinkageError" "ClassCircularityError" "NoClassDefFoundError" "UnsatisfiedLinkError"
-    "VirtualMachineError" "InternalError" "OutOfMemoryError" "StackOverflowError"
-    "ThreadDeath" "IOError"))
+;; Derived from the ONE exception hierarchy in class-hierarchy.ss: every
+;; jch-isa? -> Throwable gets a ctor with no second list to maintain.
+(define (make-exc-ctor canonical)
+  (lambda args
+    (let* ((a0 (if (pair? args) (car args) jolt-nil))
+           (rest (if (pair? args) (cdr args) '()))
+           (cause (if (pair? rest) (car rest) jolt-nil)))
+      (cond
+        ((string? a0) (jolt-host-throwable canonical a0 cause))
+        ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
+        ;; (E. cause): a lone throwable arg is the cause, message nil.
+        ((and (null? rest) (ex-info-map? a0)) (jolt-host-throwable canonical jolt-nil a0))
+        (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))
+(let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+  (vector-for-each
+    (lambda (canonical supers)
+      (when (jch-isa? canonical "Throwable")
+        (let ((short (jch-last-segment canonical)))
+          (register-class-ctor! short (make-exc-ctor canonical))
+          (unless (string=? short canonical)
+            (register-class-ctor! canonical (make-exc-ctor canonical))))))
+    keys vals))
 
 ;; clojure.lang.ArityException(int actual, String name) builds the JVM message.
 (register-class-ctor! "ArityException"
+  (lambda (actual name . _)
+    (jolt-host-throwable "clojure.lang.ArityException"
+      (string-append "Wrong number of args (" (jolt-str-render-one actual)
+                     ") passed to: " (if (string? name) name (jolt-str-render-one name))))))
+(register-class-ctor! "clojure.lang.ArityException"
   (lambda (actual name . _)
     (jolt-host-throwable "clojure.lang.ArityException"
       (string-append "Wrong number of args (" (jolt-str-render-one actual)
@@ -648,14 +649,16 @@
 ;; java.text.ParseException(String s, int errorOffset): unlike the exceptions
 ;; above, its second ctor arg is an int offset (getErrorOffset), not a cause.
 ;; Store the offset in the record's error-offset field (invisible to ex-data).
-(register-class-ctor! "ParseException"
-  (lambda args
-    (let* ((a0 (if (pair? args) (car args) jolt-nil))
-           (off (if (and (pair? args) (pair? (cdr args))) (cadr args) 0))
-           (msg (if (string? a0) a0 (jolt-str-render-one a0)))
-           (rec (jolt-host-throwable "java.text.ParseException" msg)))
-      (jolt-ex-info-record-error-offset-set! rec off)
-      rec)))
+(let ((parse-exc-ctor
+       (lambda args
+         (let* ((a0 (if (pair? args) (car args) jolt-nil))
+                (off (if (and (pair? args) (pair? (cdr args))) (cadr args) 0))
+                (msg (if (string? a0) a0 (jolt-str-render-one a0)))
+                (rec (jolt-host-throwable "java.text.ParseException" msg)))
+           (jolt-ex-info-record-error-offset-set! rec off)
+           rec))))
+  (register-class-ctor! "ParseException" parse-exc-ctor)
+  (register-class-ctor! "java.text.ParseException" parse-exc-ctor))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
