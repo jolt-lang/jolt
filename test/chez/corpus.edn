@@ -3923,4 +3923,9 @@
   {:suite "regex / V2 sre-parser" :label "\\x{1F600} supplementary hex" :expected "\"😀\"" :actual "(re-find #\"\\x{1F600}\" \"hello😀world\")" :portability :common}
   {:suite "regex / V2 sre-parser" :label "scoped dot-all (?s:.)" :expected "\"a\\nz\"" :actual "(re-find #\"a(?s:.)z\" \"a\\nz\")" :portability :common}
   {:suite "regex / V2 sre-parser" :label "scoped case-insensitive (?i:)" :expected "\"Hello\"" :actual "(re-find #\"(?i:HELLO)\" \"HelloWorld\")" :portability :common}
-  {:suite "regex / V2 sre-parser" :label "$ before final newline" :expected "'(\"d\")" :actual "(re-seq #\".$\" \"ab\\ncd\\n\")" :portability :common}]
+  {:suite "regex / V2 sre-parser" :label "$ before final newline" :expected "'(\"d\")" :actual "(re-seq #\".$\" \"ab\\ncd\\n\")" :portability :common}
+  {:suite "interop / java.util.Random seeded LCG" :label "nextInt matches Java" :expected "[-1170105035 234785527]" :actual "(let [r (java.util.Random. 42)] [(.nextInt r) (.nextInt r)])" :portability :common}
+  {:suite "interop / java.util.Random seeded LCG" :label "nextInt bound matches Java" :expected "30" :actual "(let [r (java.util.Random. 42)] (.nextInt r 100))" :portability :common}
+  {:suite "interop / java.util.Random seeded LCG" :label "nextLong matches Java" :expected "-5025562857975149833" :actual "(let [r (java.util.Random. 42)] (.nextLong r))" :portability :common}
+  {:suite "interop / java.util.Random seeded LCG" :label "nextDouble matches Java" :expected "0.7275636800328681" :actual "(let [r (java.util.Random. 42)] (.nextDouble r))" :portability :common}
+  {:suite "interop / java.util.Random seeded LCG" :label "nextBoolean matches Java" :expected "true" :actual "(let [r (java.util.Random. 42)] (.nextBoolean r))" :portability :common}]
