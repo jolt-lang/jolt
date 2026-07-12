@@ -3845,4 +3845,28 @@
   {:suite "conformance / stage3" :label "set of strings hash-ordered" :expected "'(\"aa\" \"mm\" \"zz\")" :actual "(seq (conj #{} \"zz\" \"aa\" \"mm\"))" :portability :common}
   {:suite "conformance / stage3" :label "map literal ≤8 is PersistentArrayMap" :expected "true" :actual "(= clojure.lang.PersistentArrayMap (class {:a 1}))" :portability :common}
   {:suite "conformance / stage3" :label "hash-map fn always PersistentHashMap" :expected "true" :actual "(= clojure.lang.PersistentHashMap (class (hash-map :a 1)))" :portability :common}
-  {:suite "conformance / stage3" :label "20-keyword map via hash-map is PersistentHashMap" :expected "true" :actual "(= clojure.lang.PersistentHashMap (class (apply hash-map (interleave (map #(keyword (str \"k\" %)) (range 20)) (range 20)))))" :portability :common}]
+  {:suite "conformance / stage3" :label "20-keyword map via hash-map is PersistentHashMap" :expected "true" :actual "(= clojure.lang.PersistentHashMap (class (apply hash-map (interleave (map #(keyword (str \"k\" %)) (range 20)) (range 20)))))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / throwable-record — ex-info record type (not pmap)
+  ;; ============================================================================
+  {:suite "conformance / throwable-record" :label "map? false" :expected "false" :actual "(map? (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "coll? false" :expected "false" :actual "(coll? (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "seqable? false" :expected "false" :actual "(seqable? (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "associative? false" :expected "false" :actual "(associative? (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "counted? false" :expected "false" :actual "(counted? (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "ifn? false" :expected "false" :actual "(ifn? (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "(:k ex-info) is nil (not a map)" :expected "nil" :actual "(:a (ex-info \"x\" {:a 1}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "get returns default" :expected ":dflt" :actual "(get (ex-info \"x\" {:a 1}) :a :dflt)" :portability :common}
+  {:suite "conformance / throwable-record" :label "= identity only (not equal)" :expected "false" :actual "(= (ex-info \"x\" {}) (ex-info \"x\" {}))" :portability :common}
+  {:suite "conformance / throwable-record" :label "= self is true" :expected "true" :actual "(let [e (ex-info \"x\" {})] (= e e))" :portability :common}
+  {:suite "conformance / throwable-record" :label "seq throws IAE" :expected ":iae" :actual "(try (seq (ex-info \"x\" {})) (catch IllegalArgumentException e :iae))" :portability :common}
+  {:suite "conformance / throwable-record" :label "count throws UnsupportedOperationException with correct message" :expected "\"count not supported on this type: ExceptionInfo\"" :actual "(try (count (ex-info \"x\" {})) (catch UnsupportedOperationException e (ex-message e)))" :portability :common}
+  {:suite "conformance / throwable-record" :label "str renders ClassName: message data" :expected "\"clojure.lang.ExceptionInfo: boom {:a 1}\"" :actual "(str (ex-info \"boom\" {:a 1}))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / throwable-record — reader-conditional record type (not pmap)
+  ;; ============================================================================
+  {:suite "conformance / throwable-record" :label "reader-conditional map? false" :expected "false" :actual "(map? (reader-conditional (quote (:clj 1)) false))" :portability :common}
+  {:suite "conformance / throwable-record" :label "reader-conditional :form" :expected "'(:clj 1)" :actual "(:form (reader-conditional (quote (:clj 1)) false))" :portability :common}
+  {:suite "conformance / throwable-record" :label "reader-conditional :splicing?" :expected "true" :actual "(:splicing? (reader-conditional (quote (:clj 1)) true))" :portability :common}
+  {:suite "conformance / throwable-record" :label "reader-conditional = self" :expected "true" :actual "(= (reader-conditional (quote (:clj 1)) false) (reader-conditional (quote (:clj 1)) false))" :portability :common}
+  {:suite "conformance / throwable-record" :label "reader-conditional pr-str" :expected "\"#?(:clj 1)\"" :actual "(pr-str (reader-conditional (quote (:clj 1)) false))" :portability :common}]

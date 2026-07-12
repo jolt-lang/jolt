@@ -659,4 +659,8 @@
   ;; sets are always hash-ordered (JVM PersistentHashSet behavior)
   {:suite "sets" :expr "(seq #{1 \"three\" :2})" :expected "(1 three :2)"}
   {:suite "sets" :expr "(seq (conj #{} :a :b :c))" :expected "(:c :b :a)"}
+  ;; #error form must be readable: strings inside the map are quoted.
+  ;; Neither JVM nor Jolt can roundtrip #error via edn/read-string (no reader
+  ;; function for tag error), so this pins the pr-str output shape directly.
+  {:suite "ex-info #error readable" :expr "(pr-str (ex-info \"boom\" {:a 1}))" :expected "#error {\n :cause \"boom\"\n :data {:a 1}\n :via [ {:type clojure.lang.ExceptionInfo :message \"boom\" :data {:a 1} :at nil}]\n :trace []}"}
 ]

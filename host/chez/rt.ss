@@ -48,6 +48,18 @@
 ;; jolt `not`: only nil and false are falsey.
 (define (jolt-not x) (if (jolt-truthy? x) #f #t))
 
+;; --- ex-info record type -----------------------------------------------------
+;; A throwable (ex-info or host-constructed typed throwable) is a distinct
+;; record type — NOT a pmap — so pmap?/coll?/seqable?/ifn?/associative?/
+;; counted? are naturally false without per-kind exclusion arms.
+;; Equality: identity (records default to identity equality — (= e e2) false,
+;; (= e e) true, matching the JVM where ExceptionInfo does NOT implement
+;; equals). get / keyword lookup: MISS (record is NOT ILookup).
+;; error-offset stores ParseException.getErrorOffset (0 when not set).
+(define-record-type jolt-ex-info-record
+  (fields class-name message cause data (mutable error-offset))
+  (nongenerative jolt-ex-info-record-v1))
+
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
 ;; `guard`) and jolt-report-uncaught unwrap it back via jolt-unwrap-throw.
@@ -173,9 +185,8 @@
 ;; Fallback &message for a leaked condition; the real message always comes from
 ;; the unwrapped value via ex-message.
 (define (jolt-throw-message v)
-  (if (and (pmap? v)
-           (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info))
-      (let ((m (jolt-get v jolt-kw-message jolt-nil)))
+  (if (jolt-ex-info-record? v)
+      (let ((m (jolt-ex-info-record-message v)))
         (if (string? m) m "jolt error"))
       "jolt error"))
 (define (jolt-throw v)
@@ -185,34 +196,30 @@
                                (make-jolt-throw-condition v))))))
 (define (jolt-unwrap-throw x)
   (if (jolt-throw-condition? x) (jolt-throw-condition-value x) x))
-;; ex-info builds the tagged map {:jolt/type :jolt/ex-info :message :data :cause}
-;; — a real jolt-hash-map, so the ex-data/ex-message/ex-cause tier fns read it
-;; via jolt-get for free. Arity 2 (msg data) or 3 (msg data cause).
+;; ex-info builds a jolt-ex-info-record (NOT a pmap — pmap?/coll?/seqable?/ifn?
+;; /associative?/counted? are naturally false). Arity 2 (msg data) or 3 (msg data cause).
+;; No :jolt/class field on plain ex-info — class defaults to clojure.lang.ExceptionInfo
+;; via ex-info-class in records-interop.ss.
 (define jolt-kw-ex-type (keyword "jolt" "type"))
 (define jolt-kw-ex-info (keyword "jolt" "ex-info"))
 (define jolt-kw-message (keyword #f "message"))
 (define jolt-kw-data (keyword #f "data"))
 (define jolt-kw-cause (keyword #f "cause"))
 (define (jolt-ex-info msg data . more)
-  (jolt-hash-map jolt-kw-ex-type jolt-kw-ex-info
-                 jolt-kw-message msg
-                 jolt-kw-data data
-                 jolt-kw-cause (if (null? more) jolt-nil (car more))))
-;; A host-constructed throwable (RuntimeException. etc.): an ex-info-shaped map
-;; carrying its canonical JVM :jolt/class, so (class …) / instance? / .getMessage /
-;; ex-message all reflect the real type. Plain ex-info has no :jolt/class (its class
-;; defaults to clojure.lang.ExceptionInfo), so those maps stay byte-identical.
+  (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
+                             (if (null? more) jolt-nil (car more))
+                             data 0))
+;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record
+;; carrying its canonical JVM class-name, so (class …) / instance? / .getMessage /
+;; ex-message all reflect the real type.
 (define jolt-kw-class (keyword "jolt" "class"))
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
-;; under a jolt-namespaced key so it never shows up in (ex-data …), which reads
-;; the :data key.
+;; in the record's error-offset field.
 (define jolt-kw-error-offset (keyword "jolt" "error-offset"))
 (define (jolt-host-throwable class-name msg . more)
-  (jolt-hash-map jolt-kw-ex-type jolt-kw-ex-info
-                 jolt-kw-class class-name
-                 jolt-kw-message msg
-                 jolt-kw-data jolt-nil
-                 jolt-kw-cause (if (null? more) jolt-nil (car more))))
+  (make-jolt-ex-info-record class-name msg
+                             (if (null? more) jolt-nil (car more))
+                             jolt-nil 0))
 
 ;; --- host interop ------------------------------------------------------------
 ;; (.method target arg*) lowers to (jolt-host-call "method" target arg*). JVM

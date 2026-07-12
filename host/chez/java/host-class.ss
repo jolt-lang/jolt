@@ -41,9 +41,9 @@
     ;; recognize it as anonymous and return ::s/unknown. A named fn is registered
     ;; (proc-name-tbl) and handled by a class-arm with its real ns$name.
     ((procedure? x) "clojure.lang.AFunction$fn__0")
-    ;; an exception value (ex-info / host-constructed throwable) reports its JVM
+    ;; an exception value (ex-info record / host-constructed throwable) reports its JVM
     ;; class, so (= clojure.lang.ExceptionInfo (class e)) and clojure.test's
-    ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
+    ;; (thrown? Class …) match (records-interop.ss ex-info-map?/ex-info-class).
     ((ex-info-map? x) (ex-info-class x))
     ;; persistent collections + namespace report their JVM class names (not jolt's
     ;; internal :vector/:set/… type keyword), so class-based dispatch — e.g. a

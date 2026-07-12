@@ -3,13 +3,11 @@
 ;; / case-string (the (instance? Class x) decision table). Loaded right after
 ;; records.ss; instance-check forward-refs nothing in records.ss at load time.
 
-;; pmap? guard: ex-info maps are plain hash-maps, never sorted-map htables — and a
-;; bare jolt-get on a sorted-map would invoke its comparator on :jolt/type and throw.
+;; jolt-ex-info-record predicate (defined in rt.ss).
 (define (ex-info-map? v)
-  (and (pmap? v) (jolt=2 (jolt-get v jolt-kw-ex-type jolt-nil) jolt-kw-ex-info)))
+  (jolt-ex-info-record? v))
 (define (ex-info-class v)
-  (let ((c (jolt-get v jolt-kw-class jolt-nil)))
-    (if (string? c) c "clojure.lang.ExceptionInfo")))
+  (jolt-ex-info-record-class-name v))
 ;; Is `wanted` (simple name) `cls` or a supertype of it? The exception hierarchy
 ;; lives in the one class graph (class-hierarchy.ss) — resolve the simple name to
 ;; its graph key and ask jch-isa?, so exceptions and every other class share a
@@ -152,8 +150,8 @@
 ;; condition or a raw raised value carries no jolt exception class, so instance?
 ;; can't place it; a Clojure (catch C e) over such a value matches when C is
 ;; RuntimeException (or a subclass) / Exception / Throwable — most host runtime
-;; errors are RuntimeExceptions. Typed throwables (ex-info, (SomeException. …)) are
-;; recognized by instance? as Throwable, so untyped? is false and they dispatch
+;; errors are RuntimeExceptions. Typed throwables (ex-info records, (SomeException. …))
+;; are recognized by instance? as Throwable, so untyped? is false and they dispatch
 ;; precisely through the instance? arm instead.
 (define throwable-type-sym (jolt-symbol #f "Throwable"))
 (define (simple-class-name nm)
