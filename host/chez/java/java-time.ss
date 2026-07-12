@@ -33,29 +33,21 @@
         (else 31)))
 
 ;; --- libc locale/strftime FFI (graceful-degradation, mutex-guarded) ----------
-;; LC_TIME varies by platform: 5 on macOS, 2 on Linux/glibc, 2 on Windows/MinGW.
+;; LC_TIME varies by platform: 5 on macOS, 2 on Linux/glibc.
 (define LC_TIME
   (case (machine-type)
-    ((a6osx t3osx i3osx ta6osx) 5)
+    ((a6osx t3osx i3osx ta6osx tarm64osx arm64osx) 5)
     (else 2)))
 (define tz-mutex (make-mutex))
 
-;; Guard-wrapped FFI: eval defers symbol lookup so a missing entry doesn't abort
-;; boot. nil on failure → graceful fallback.
-(define %setlocale
-  (guard (e (#t #f))
-    (load-shared-object #f)
-    (and (foreign-entry? "setlocale")
-         (eval `(foreign-procedure "setlocale" (integer-32 string) void*)))))
-(define %strftime
-  (guard (e (#t #f))
-    (load-shared-object #f)
-    (and (foreign-entry? "strftime")
-         (eval `(foreign-procedure "strftime" (void* size_t string void*) size_t)))))
+;; Guard-wrapped FFI via jolt-foreign-proc-safe (deferred symbol lookup so a
+;; missing entry doesn't abort boot). nil on failure → graceful fallback.
+(define %setlocale (jolt-foreign-proc-safe "setlocale" '(int string) 'void*))
+(define %strftime  (jolt-foreign-proc-safe "strftime"  '(u8* size_t string void*) 'size_t))
 (define libc-locale-available?
   (and %setlocale %strftime
        (guard (e (#t #f))
-         (let ((r (%setlocale LC_TIME "de_DE.UTF-8")))
+         (let ((r (%setlocale LC_TIME "en_US.UTF-8")))
            (and r (not (eq? r 0)))))))
 (define libc-locale-checked? #t) ; let runtime inspect the probe
 
@@ -79,8 +71,8 @@
 (define (locale-name-via-strftime locale tm-mon tm-wday fmt full?)
   (if libc-locale-available?
       (let* ((libc-loc (locale->libc locale))
-             (buf (foreign-alloc 128))      ; output buffer for strftime
-             (tm (foreign-alloc 56)))       ; struct tm
+             (buf (make-bytevector 128))
+             (tm (foreign-alloc 56)))      ; struct tm
         (foreign-set! 'integer-32 tm 0 0)    ; tm_sec
         (foreign-set! 'integer-32 tm 4 0)    ; tm_min
         (foreign-set! 'integer-32 tm 8 0)    ; tm_hour
@@ -104,11 +96,9 @@
             (foreign-free tm)
             (if r
                 (let* ((bv (make-bytevector r)))
-                  (bytevector-copy! (make-foreign-bytevector buf r) bv)
-                  (foreign-free buf)
+                  (bytevector-copy! buf 0 bv 0 r)
                   (utf8->string bv))
                 (begin
-                  (foreign-free buf)
                   (english-locale-name tm-mon tm-wday fmt full?))))))
       (english-locale-name tm-mon tm-wday fmt full?)))
 
@@ -2293,7 +2283,7 @@
 ;; DateTimeFormatter ISO constants (richer engine; the pattern strings drive parse +
 ;; format). Re-registers ofPattern so the format-aware Local*/parse statics see them.
 (register-class-statics! "DateTimeFormatter"
-  (list (cons "ofPattern" (lambda (p . _) (mk-formatter (jt-str p))))
+  (list (cons "ofPattern" (lambda (p . rest) (mk-formatter (jt-str p) (if (pair? rest) (locale-id (car rest)) "en"))))
         (cons "ISO_LOCAL_DATE" (mk-formatter "yyyy-MM-dd"))
         (cons "ISO_LOCAL_TIME" (mk-formatter "HH:mm:ss"))
         (cons "ISO_LOCAL_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ss"))

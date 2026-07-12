@@ -445,6 +445,7 @@
   (register-class-ctor! "java.util.Locale" locale-ctor))
 (register-class-statics! "Locale"
   (list (cons "getDefault" (lambda () (make-jhost "locale" (vector "default"))))
+        (cons "forLanguageTag" (lambda (tag) (make-jhost "locale" (vector (if (string? tag) tag (jolt-str-render-one tag))))))
         (cons "ENGLISH" (make-jhost "locale" (vector "en")))
         (cons "US" (make-jhost "locale" (vector "en-US")))
         (cons "FRENCH" (make-jhost "locale" (vector "fr")))
