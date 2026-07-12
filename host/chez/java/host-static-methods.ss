@@ -261,14 +261,6 @@
         (cons "parseShort" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseShort")))
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
 
-;; java.util.Locale — jolt's case ops are codepoint-based (locale-independent), so
-;; the default locale is a no-op token. Libraries set/restore it around formatting
-;; to prove output is locale-stable (honeysql's Turkish-İ regression guard).
-(register-class-statics! "Locale"
-  (list (cons "getDefault" (lambda () "und"))
-        (cons "setDefault" (lambda (x) jolt-nil))
-        (cons "forLanguageTag" (lambda (tag) (if (string? tag) tag (jolt-str-render-one tag))))
-        (cons "ROOT" "und") (cons "US" "en-US") (cons "ENGLISH" "en")))
 
 (register-class-statics! "Boolean"
   (list (cons "TYPE" "boolean")

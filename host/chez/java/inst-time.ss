@@ -203,6 +203,16 @@
             ((or (char=? (string-ref input ii) #\+) (char=? (string-ref input ii) #\-))
              (let loop ((j (+ ii 1))) (if (and (< j inn) (or (digit? (string-ref input j)) (char=? (string-ref input j) #\:))) (loop (+ j 1)) j)))
             (else ii)))
+    ;; skip a '[' optional section to just past its matching ']' (nestable;
+    ;; ']' inside a '…' literal is not a delimiter). `j` is just past the '['.
+    (define (skip-optional pj)
+      (let loop ((j pj) (depth 0) (inq #f))
+        (cond ((>= j pn) j)
+              (inq (loop (+ j 1) depth (not (char=? (string-ref pattern j) #\'))))
+              ((char=? (string-ref pattern j) #\') (loop (+ j 1) depth #t))
+              ((char=? (string-ref pattern j) #\[) (loop (+ j 1) (+ depth 1) #f))
+              ((char=? (string-ref pattern j) #\]) (if (= depth 0) (+ j 1) (loop (+ j 1) (- depth 1) #f)))
+              (else (loop (+ j 1) depth #f)))))
     (let loop ((pi 0) (ii 0))
       (if (>= pi pn)
           (begin
@@ -258,6 +268,11 @@
                            ((char=? (string-ref pattern pj) #\') (loop (+ pj 1) ij))
                            ((and (< ij inn) (char=? (string-ref input ij) (string-ref pattern pj))) (lit (+ pj 1) (+ ij 1)))
                            (else (pfail))))))
+              ;; [ ] Java optional section: if the input is exhausted, skip the
+              ;; whole section to its matching ] (absent fields keep defaults —
+              ;; a bare yyyy-MM-dd yields midnight UTC); otherwise parse through.
+              ((char=? c #\[) (if (>= ii inn) (loop (skip-optional (+ pi 1)) ii) (loop (+ pi 1) ii)))
+              ((char=? c #\]) (loop (+ pi 1) ii))
               ;; literal: match it; a pattern space tolerates missing/extra spaces.
               ((char=? c #\space)
                (let skip ((ij ii)) (if (and (< ij inn) (char=? (string-ref input ij) #\space)) (skip (+ ij 1)) (loop (+ pi 1) ij))))
@@ -445,12 +460,30 @@
   (register-class-ctor! "java.util.Locale" locale-ctor))
 (register-class-statics! "Locale"
   (list (cons "getDefault" (lambda () (make-jhost "locale" (vector "default"))))
+        (cons "setDefault" (lambda (x) jolt-nil))
+        (cons "forLanguageTag" (lambda (tag) (make-jhost "locale" (vector (if (string? tag) tag (jolt-str-render-one tag))))))
         (cons "ENGLISH" (make-jhost "locale" (vector "en")))
-        (cons "US" (make-jhost "locale" (vector "en-US")))
         (cons "FRENCH" (make-jhost "locale" (vector "fr")))
-        (cons "FRANCE" (make-jhost "locale" (vector "fr-FR")))
         (cons "GERMAN" (make-jhost "locale" (vector "de")))
-        (cons "ROOT" (make-jhost "locale" (vector "root")))))
+        (cons "ITALIAN" (make-jhost "locale" (vector "it")))
+        (cons "JAPANESE" (make-jhost "locale" (vector "ja")))
+        (cons "KOREAN" (make-jhost "locale" (vector "ko")))
+        (cons "CHINESE" (make-jhost "locale" (vector "zh")))
+        (cons "SIMPLIFIED_CHINESE" (make-jhost "locale" (vector "zh-CN")))
+        (cons "TRADITIONAL_CHINESE" (make-jhost "locale" (vector "zh-TW")))
+        (cons "FRANCE" (make-jhost "locale" (vector "fr-FR")))
+        (cons "GERMANY" (make-jhost "locale" (vector "de-DE")))
+        (cons "ITALY" (make-jhost "locale" (vector "it-IT")))
+        (cons "JAPAN" (make-jhost "locale" (vector "ja-JP")))
+        (cons "KOREA" (make-jhost "locale" (vector "ko-KR")))
+        (cons "CHINA" (make-jhost "locale" (vector "zh-CN")))
+        (cons "PRC" (make-jhost "locale" (vector "zh-CN")))
+        (cons "TAIWAN" (make-jhost "locale" (vector "zh-TW")))
+        (cons "UK" (make-jhost "locale" (vector "en-GB")))
+        (cons "US" (make-jhost "locale" (vector "en-US")))
+        (cons "CANADA" (make-jhost "locale" (vector "en-CA")))
+        (cons "CANADA_FRENCH" (make-jhost "locale" (vector "fr-CA")))
+        (cons "ROOT" (make-jhost "locale" (vector "")))))
 
 ;; java.util.Date / java.sql.Timestamp: #inst's classes. (Date.) = now, (Date. ms)
 ;; or (Date. another-date) -> a jinst (ms-of accepts a number / jinst / instant), so

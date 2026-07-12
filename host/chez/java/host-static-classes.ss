@@ -999,25 +999,84 @@
   (register-class-statics! "java.util.Arrays" arrays-statics))
 
 ;; --- java.util.Random -------------------------------------------------------
-;; A non-cryptographic PRNG over Chez's `random`. A seed argument is accepted but
-;; not honored for reproducibility (jolt has no seedable Random state); callers
-;; that need determinism use SecureRandom or their own generator.
+;; Java-compatible LCG: java.util.Random's exact algorithm.
+;; State is #(seed) where seed is a 48-bit exact integer.
+;; Reference: JDK java.util.Random source.
+
+(define random-multiplier #x5DEECE66D)
+(define random-addend #xB)
+(define random-mask #xFFFFFFFFFFFF)  ;; (1<<48)-1
+
+(define (random-init-seed given-seed)
+  (bitwise-and (bitwise-xor (exact (truncate given-seed)) random-multiplier) random-mask))
+
+(define (random-next bits seed-vec)
+  (let* ((old-seed (vector-ref seed-vec 0))
+         (new-seed (bitwise-and (+ (* old-seed random-multiplier) random-addend) random-mask)))
+    (vector-set! seed-vec 0 new-seed)
+    (bitwise-arithmetic-shift-right new-seed (- 48 bits))))
+
+;; Convert an unsigned 32-bit value to signed 32-bit (Java's (int) cast).
+(define (random-u32->s32 v)
+  (if (>= v #x80000000) (- v #x100000000) v))
+
+;; Simulate Java's 32-bit signed addition/subtraction overflow — used for the
+;; rejection-sampling check in nextInt(bound): (u - r + bound - 1) < 0,
+;; where the overflow of the intermediate 32-bit signed expression is the
+;; rejection criterion.
+(define (random-overflow-lt0 u r bound)
+  (let ((raw (+ (- u r) bound -1)))
+    (< (random-u32->s32 (bitwise-and raw #xFFFFFFFF)) 0)))
+
 (for-each
-  (lambda (nm) (register-class-ctor! nm (lambda args (make-jhost "random" (vector)))))
+  (lambda (nm)
+    (register-class-ctor! nm
+      (lambda args
+        (let ((given (if (pair? args) (car args) (exact (truncate (current-time))))))
+          (make-jhost "random" (vector (random-init-seed given)))))))
   '("Random" "java.util.Random"))
 (register-host-methods! "random"
   (list
     (cons "nextBytes" (lambda (self ba)
-                        (let ((v (jolt-array-vec ba)))
+                        (let ((v (jolt-array-vec ba))
+                              (st (jhost-state self)))
                           (do ((i 0 (fx+ i 1))) ((fx=? i (vector-length v)))
-                            (vector-set! v i (random 256))))
-                        jolt-nil))
+                            (vector-set! v i (random-next 8 st)))
+                          jolt-nil)))
     (cons "nextInt" (lambda (self . a)
-                      (->num (if (pair? a) (random (jnum->exact (car a))) (- (random 4294967296) 2147483648)))))
-    (cons "nextLong" (lambda (self) (->num (- (random 18446744073709551616) 9223372036854775808))))
-    (cons "nextDouble" (lambda (self) (random 1.0)))
-    (cons "nextFloat" (lambda (self) (random 1.0)))
-    (cons "nextBoolean" (lambda (self) (fx=? 0 (random 2))))))
+                      (let ((st (jhost-state self)))
+                        (if (pair? a)
+                            (let ((bound (exact (truncate (car a)))))
+                              (if (<= bound 0)
+                                  (error #f "Random.nextInt: bound must be positive")
+                                  (let ((m (- bound 1)))
+                                    (if (fx=? (bitwise-and bound m) 0)
+                                        ;; power of two
+                                        (->num (random-u32->s32
+                                                 (bitwise-arithmetic-shift-right
+                                                   (* bound (random-next 31 st)) 31)))
+                                        ;; rejection sample with 32-bit overflow semantics
+                                        (let loop ((u (random-u32->s32 (random-next 31 st))))
+                                          (let ((r (modulo u bound)))
+                                            (if (random-overflow-lt0 u r bound)
+                                                (loop (random-u32->s32 (random-next 31 st)))
+                                                (->num r))))))))
+                            (->num (random-u32->s32 (random-next 32 st)))))))
+    (cons "nextLong" (lambda (self)
+                       (let ((st (jhost-state self)))
+                         (let* ((hi (random-u32->s32 (random-next 32 st)))
+                                (lo (random-u32->s32 (random-next 32 st))))
+                           (->num (+ (* hi (expt 2 32)) lo))))))
+    (cons "nextDouble" (lambda (self)
+                         (let* ((st (jhost-state self))
+                                (hi (random-next 26 st))
+                                (lo (random-next 27 st)))
+                           (* (+ (* hi (expt 2 27)) lo)
+                              (/ 1.0 (expt 2 53))))))
+    (cons "nextFloat" (lambda (self)
+                        (let ((st (jhost-state self)))
+                          (/ (random-next 24 st) (exact->inexact (expt 2 24))))))
+    (cons "nextBoolean" (lambda (self) (fx=? 1 (random-next 1 (jhost-state self)))))))
 
 ;; --- java.util.Optional -----------------------------------------------------
 ;; Returned by getters across java.time / java.net.http (e.g. HttpRequest.timeout,
