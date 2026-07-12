@@ -107,6 +107,19 @@
 ;; sorted colls are collections (callable as fns via jolt-invoke, conj-able).
 (define %h-coll? jolt-coll?)
 (set! jolt-coll? (lambda (x) (or (htable-sorted? x) (%h-coll? x))))
+;; sorted colls invoke like their unordered counterparts: a sorted-map is
+;; IFn(get k [d]), a sorted-set is IFn(get k). Registered as invoke arms so
+;; jolt-invoke dispatches them before the final ClassCastException fallback.
+(register-invoke-arm! htable-sorted-map?
+  (lambda (f args)
+    (let ((n (length args)))
+      (jolt-check-arity-1or2 "clojure.lang.PersistentTreeMap" n)
+      (apply jolt-get f args))))
+(register-invoke-arm! htable-sorted-set?
+  (lambda (f args)
+    (let ((n (length args)))
+      (jolt-check-arity-1 "clojure.lang.PersistentTreeSet" n)
+      (apply jolt-get f args))))
 
 ;; public predicates: a sorted-map is map?, a sorted-set is set?, both coll?.
 ;; predicates.ss/records.ss def-var!'d a snapshot, so re-def-var! after set!.
