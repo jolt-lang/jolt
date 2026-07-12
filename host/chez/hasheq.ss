@@ -55,7 +55,13 @@
                       (urs32 x (fx- 32 n))))))
 
 ;; ============================================================================
-;; Murmur3 — exact port of clojure.lang.Murmur3
+;; Murmur3 — exact port of clojure.lang.Murmur3.
+;;
+;; murmur3-mix-k1 / murmur3-mix-h1 / murmur3-fmix are the building blocks,
+;; kept for cold paths (strings, bignums). The hot fixnum paths below
+;; (hash-int-flat, hash-long-flat) hand-inline them to avoid procedure-call
+;; overhead — the A/B/A shows +220ns per key-hash from the layered
+;; key-hash→jolt-hasheq→cond→hashLong→mixK1→mixH1→fmix chain.
 ;; ============================================================================
 
 (define murmur3-seed (i32 0))
@@ -83,6 +89,87 @@
          (h1 (bitwise-xor h1 (urs32 h1 16))))
     h1))
 
+;; ---------------------------------------------------------------------------
+;; Flat-inlined murmur3-hash-int for int32-range fixnums.
+;; Every intermediate < 2^49 (well within Chez 61-bit fixnums).
+;; NO calls to murmur3-mix-k1/murmur3-mix-h1/murmur3-fmix —
+;; the mix logic is hand-expanded as a single let* chain of fx ops.
+;; mul32/rotl32/add32/i32 are small leaf helpers (fixnum-pure, one expression).
+;; ---------------------------------------------------------------------------
+(define (murmur3-hash-int-flat k)
+  ;; k: fixnum in signed 32-bit range.
+  (if (fx=? k 0) 0
+      (let* (;; --- i32(k): signed 32-bit ---
+             (u (fxand k #xFFFFFFFF))
+             (ik (if (fx>=? u #x80000000) (fx- u #x100000000) u))
+             ;; --- mixK1(ik): step 1/3 mul32(ik, C1) ---
+             (k1 (mul32 ik murmur3-C1))
+             ;; --- mixK1(ik): step 2/3 rotl32(k1, 15) ---
+             (k1 (rotl32 k1 15))
+             ;; --- mixK1(ik): step 3/3 mul32(k1, C2) ---
+             (k1 (mul32 k1 murmur3-C2))
+             ;; --- mixH1(seed, k1): step 1/4 xor ---
+             (h1 (fxxor murmur3-seed k1))
+             ;; --- mixH1: step 2/4 rotl32(h1, 13) ---
+             (h1 (rotl32 h1 13))
+             ;; --- mixH1: step 3/4 mul32(h1, 5) ---
+             (h1 (mul32 h1 5))
+             ;; --- mixH1: step 4/4 add32(h1, 0xe6546b64) ---
+             (h1 (add32 h1 #xe6546b64))
+             ;; --- fmix(h1, 4): step 1/6 xor len ---
+             (h1 (fxxor h1 4))
+             ;; --- fmix: step 2/6 xor urs32(h1, 16) ---
+             (h1 (fxxor h1 (urs32 h1 16)))
+             ;; --- fmix: step 3/6 mul32(h1, 0x85ebca6b) ---
+             (h1 (mul32 h1 #x85ebca6b))
+             ;; --- fmix: step 4/6 xor urs32(h1, 13) ---
+             (h1 (fxxor h1 (urs32 h1 13)))
+             ;; --- fmix: step 5/6 mul32(h1, 0xc2b2ae35) ---
+             (h1 (mul32 h1 #xc2b2ae35))
+             ;; --- fmix: step 6/6 xor urs32(h1, 16) ---
+             (h1 (fxxor h1 (urs32 h1 16))))
+        h1)))
+
+;; ---------------------------------------------------------------------------
+;; Flat-inlined murmur3-hash-long for fixnums wider than int32.
+;; Same hand-inlined mix logic as above, applied to two 32-bit halves;
+;; the second half chains through the h1 from the first half.
+;; Cold bignum path kept below in murmur3-hash-long.
+;; ---------------------------------------------------------------------------
+(define (murmur3-hash-long-flat input)
+  ;; input: fixnum. Java Long.hasheq: (int)(input ^ (input >>> 32))
+  ;; If 0 → return 0; otherwise murmur3-hash-long with count=8.
+  (if (fx=? input 0) 0
+      (let* ((low (i32 input))
+             (high (i32 (bitwise-arithmetic-shift-right input 32)))
+             ;; --- mixK1(low): mul32(low, C1) ---
+             (k1 (mul32 low murmur3-C1))
+             (k1 (rotl32 k1 15))
+             (k1 (mul32 k1 murmur3-C2))
+             ;; --- mixH1(seed, k1) ---
+             (h1 (fxxor murmur3-seed k1))
+             (h1 (rotl32 h1 13))
+             (h1 (add32 (mul32 h1 5) #xe6546b64))
+             ;; --- mixK1(high) ---
+             (k1 (mul32 high murmur3-C1))
+             (k1 (rotl32 k1 15))
+             (k1 (mul32 k1 murmur3-C2))
+             ;; --- mixH1(h1 from low, k1 from high) ---
+             (h1 (fxxor h1 k1))
+             (h1 (rotl32 h1 13))
+             (h1 (add32 (mul32 h1 5) #xe6546b64))
+             ;; --- fmix(h1, 8) ---
+             (h1 (fxxor h1 8))
+             (h1 (fxxor h1 (urs32 h1 16)))
+             (h1 (mul32 h1 #x85ebca6b))
+             (h1 (fxxor h1 (urs32 h1 13)))
+             (h1 (mul32 h1 #xc2b2ae35))
+             (h1 (fxxor h1 (urs32 h1 16))))
+        h1)))
+
+;; Legacy entry points — kept for cold paths (strings, bignums).
+;; The hot fixnum path in jolt-hasheq and key-hash calls the flat versions above.
+
 (define (murmur3-hash-int input)
   (if (fx=? (i32 input) 0) 0
       (let* ((k1 (murmur3-mix-k1 (i32 input)))
@@ -90,26 +177,13 @@
         (murmur3-fmix h1 4))))
 
 (define (murmur3-hash-long input)
-  ;; input is an exact integer (may be bignum > 64 bits).
-  ;; Java: int low = (int) input; int high = (int) (input >>> 32);
-  ;; Hot fixnum path: every map key in normal use is a fixnum; avoid
-  ;; generic bitwise-and which allocates bignums on negative fixnums.
+  ;; Hot fixnum path: use the hand-inlined flat version.
+  ;; All fixnums use hashLong (count=8) — matching JVM's Long.hasheq.
+  ;; Bignum fallback below for the rare >64-bit integer.
   (if (= input 0) 0
       (if (fixnum? input)
-          ;; Fixnum fast path (no bignum allocation possible).
-          ;; For a 61-bit fixnum, i32 gives the low 32 bits signed;
-          ;; arithmetic shift right 32 gives the high bits (sign-extended
-          ;; for negative values — i32 truncates back to the unsigned
-          ;; word, matching Java's (int)(input >>> 32)).
-          (let* ((low (i32 input))
-                 (high (i32 (bitwise-arithmetic-shift-right input 32)))
-                 (k1 (murmur3-mix-k1 low))
-                 (h1 (murmur3-mix-h1 murmur3-seed k1))
-                 (k1 (murmur3-mix-k1 high))
-                 (h1 (murmur3-mix-h1 h1 k1)))
-            (murmur3-fmix h1 8))
-          ;; Cold bignum path: generic ops are fine; the allocation
-          ;; cost is amortized over the rare case.
+          (murmur3-hash-long-flat input)
+          ;; Cold bignum path
           (let* ((u64 (bitwise-and input #xFFFFFFFFFFFFFFFF))
                  (low (i32 u64))
                  (high (i32 (bitwise-arithmetic-shift-right u64 32)))
@@ -315,7 +389,11 @@
   (cond
     ((jolt-nil? x) 0)
     ((keyword? x) (keyword-t-khash x))
-    ((fixnum? x) (murmur3-hash-long x))
+    ;; Fixnum: hot path for integer-keyed maps. Hand-inlined murmur to
+    ;; avoid the layered dispatch chain (key-hash→jolt-hasheq→cond→
+    ;; hashLong→mixK1→mixH1→fmix). All fixnums use hashLong (count=8)
+    ;; matching JVM's Long.hasheq.
+    ((fixnum? x) (murmur3-hash-long-flat x))
     ((string? x) (murmur3-hash-int (java-string-hashcode x)))
     (else
      ;; New hasheq arms (jrec via records.ss, etc.)

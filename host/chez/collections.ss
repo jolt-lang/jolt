@@ -201,7 +201,8 @@
 ;; always a fixnum. But keep the generic fallback for extension types that might
 ;; return bignums via equal-hash.
 (define (key-hash k)
-  ;; jolt-hasheq returns a signed 32-bit int (JVM-compatible).
+  ;; jolt-hasheq now has a flat-inlined fixnum fast path (murmur3-hash-long-flat)
+  ;; and a keyword cached-field read — no re-dispatch needed here.
   ;; Mask to unsigned 32 bits for the HAMT's fx ops.
   (let ((h (jolt-hasheq k)))
     (if (fixnum? h) (fxand h hmask) (bitwise-and h hmask))))
