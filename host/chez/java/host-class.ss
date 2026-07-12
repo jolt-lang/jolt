@@ -131,9 +131,6 @@
               (set! result (cons (cons s k) result)))))
         keys vals)
       (reverse result))))
-(for-each
-  (lambda (pair) (def-var! "clojure.core" (car pair) (cdr pair)))
-  class-token-alist)
 
 ;; resolve a ^Type hint symbol-name to its canonical class name at def time:
 ;; "String" -> "java.lang.String", matching the JVM compiler. An
@@ -144,13 +141,12 @@
 (define (resolve-class-hint name) (hashtable-ref class-hint-table name #f))
 (def-var! "jolt.host" "resolve-class-hint" resolve-class-hint)
 
-;; fully-qualified canonical class names self-evaluate to their own name string,
-;; so (= (class 1) java.lang.Long) and (instance? clojure.lang.Atom x) resolve the
-;; class token (= what jolt-class / instance-check key on).
-;; Value classes only — NOT the collection interfaces (ISeq/IPersistentMap/...),
-;; which downstream code (e.g. SCI) references as protocols/interfaces.
-(for-each
-  (lambda (nm) (def-var! "clojure.core" nm nm))
+;; fully-qualified canonical class names — value classes only, NOT the collection
+;; interfaces (ISeq/IPersistentMap/...), which downstream code (e.g. SCI) references
+;; as protocols/interfaces. def-var! into clojure.core happens in
+;; host-static-classes.ss (after make-class-obj is loaded) so tokens evaluate to
+;; Class objects.
+(define class-fqn-list
   (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
     (let ((result '()))
       (vector-for-each

@@ -59,4 +59,5 @@
   {:suite "integer-box-model / narrow int class collapses to Long", :label "short class", :category :integer-box-model}
   {:suite "integer-box-model / narrow int class collapses to Long", :label "int class", :category :integer-box-model}
   {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Byte is false", :category :integer-box-model}
-  {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Long is true", :category :integer-box-model}]}
+   {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Long is true", :category :integer-box-model}
+   {:suite "metadata / def metadata", :label "^Type tag on var", :category :host-model}]}

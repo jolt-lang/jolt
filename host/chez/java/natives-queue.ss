@@ -64,8 +64,9 @@
 (register-class-statics! "PersistentQueue" (list (cons "EMPTY" jolt-queue-empty)))
 (register-class-statics! "clojure.lang.PersistentQueue" (list (cons "EMPTY" jolt-queue-empty)))
 (def-var! "clojure.core" "queue?" (lambda (x) (jolt-queue? x)))
-;; the FQ class token self-evaluates (for (instance? clojure.lang.PersistentQueue …)).
-(def-var! "clojure.core" "clojure.lang.PersistentQueue" "clojure.lang.PersistentQueue")
+;; the FQ class token self-evaluates to the interned Class object (for
+;; (instance? clojure.lang.PersistentQueue …) and (= clojure.lang.PersistentQueue (type q))).
+(def-var! "clojure.core" "clojure.lang.PersistentQueue" (jolt-class-for "clojure.lang.PersistentQueue"))
 
 ;; PersistentQueue's JVM taxonomy: an IPersistentStack (peek/pop), an ordinary
 ;; persistent collection, and a meta carrier.

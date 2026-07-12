@@ -325,14 +325,23 @@
 (def-var! "jolt.host" "register-class-supers!"
   (lambda (name supers) (jch-register-supers! name (seq->list supers)) jolt-nil))
 
-;; bases — the direct supers of a class from the jch graph. jolt classes are name
-;; strings (a documented superset of the JVM's Class objects), so the seq holds
-;; name strings; nil for an unknown class or a nil arg.
+;; bases — the direct supers of a class from the jch graph. c may be a class-name
+;; string, a jclass object (class token), or a JVM-typed value (number, string, etc.).
+;; nil for an unknown class or a nil arg.
 (define (jolt-bases c)
   (cond
     ((jolt-nil? c) jolt-nil)
+    ((string? c)
+     (let ((supers (jch-direct-supers c)))
+       (if (null? supers) jolt-nil (list->cseq supers))))
     (else
-     (let ((name (if (string? c) c (jolt-class-name c))))
+     ;; For a jclass object (e.g. java.lang.Long after class-token eval), extract
+     ;; the represented class name via jclass-name (defined in host-static-classes.ss,
+     ;; loaded after us — resolved at call time). For other values (number, string,
+     ;; etc.), jolt-class-name gives their JVM class name (java.lang.Long, etc.).
+     (let ((name (if (and (jhost? c) (string=? (jhost-tag c) "class"))
+                    (vector-ref (jhost-state c) 0)
+                    (jolt-class-name c))))
        (let ((supers (jch-direct-supers name)))
          (if (null? supers) jolt-nil (list->cseq supers)))))))
 (def-var! "clojure.core" "bases" jolt-bases)

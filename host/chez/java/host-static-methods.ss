@@ -362,11 +362,14 @@
 ;; tools.logging's java.util.logging) are absent from the graph and get
 ;; a definitive ClassNotFoundException.
 (define (forname-known? nm)
-  ;; exact lookups only — lookup-class would fall back to the short class name, so
-  ;; any "x.y.Class" would spuriously match the registered java.lang.Class.
+  ;; exact FQN lookups only — no suffix matching. The JVM throws
+  ;; ClassNotFoundException for any unknown FQN even when the last segment
+  ;; matches a known class (e.g. "com.acme.String" when "java.lang.String"
+  ;; exists). jch-known? does last-segment matching and is NOT used here;
+  ;; it lives on for jch-isa?'s suffix matching (round-6 territory).
   (or (hashtable-ref class-statics-tbl nm #f)
       (hashtable-ref class-ctors-tbl nm #f)
-      (jch-known? nm)))
+      (hashtable-ref jvm-class-parents nm #f)))
 (register-class-statics! "Class"
   (list (cons "forName"
               (lambda (nm . _)

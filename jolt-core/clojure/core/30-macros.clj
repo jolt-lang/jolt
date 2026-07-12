@@ -84,9 +84,10 @@
                (when-let [v (clojure.core/resolve t)]
                  (and (clojure.core/bound? v)
                       (let [cv (clojure.core/var-get v)]
-                        ;; a name string or a Class value ((class y) captured in
-                        ;; a var, e.g. (def c (class (transient []))))
-                        (or (string? cv) (jolt.host/class-object? cv)))))))
+                        ;; a Class value ((class y) captured in a var, e.g.
+                        ;; (def c (class (transient [])))). Class tokens now
+                        ;; evaluate to interned Class objects.
+                        (jolt.host/class-object? cv))))))
     `(instance-check ~t ~x)
     `(instance-check (quote ~t) ~x)))
 
@@ -529,7 +530,7 @@
 ;; record name matches its "ns.Name" tag, and a query for a qualified host class
 ;; (java.util.Map) matches the canonical short tag (Map) extend registered it as.
 (defn extends? [protocol atype]
-  (let [want (if (nil? atype) "nil" (name atype))
+  (let [want (if (nil? atype) "nil" (if (jolt.host/class-object? atype) (.getName atype) (name atype)))
         suffix? (fn [long short]
                   (let [d (str "." short)]
                     (and (> (count long) (count d))

@@ -123,15 +123,14 @@
     (if i (subs s (inc i)) s)))
 
 (defn class-match?
-  "True if thrown value `e` matches the wanted class simple-name `wanted`.
-  Exception/Throwable match anything."
+  "True when a raw Chez condition (no mapped jolt throwable class) was caught via
+  __catch-broad? and the wanted class is one of the three universal triage types:
+  Throwable, Exception, or RuntimeException. R3's typed throws + this round's
+  Class value model let instance? cover everything else."
   [e wanted]
   (let [w (last-seg wanted)]
-    (if (or (= w "Exception") (= w "Throwable"))
-      true
-      (let [c (class e)
-            cn (cond (nil? c) nil (string? c) c :else (.getName c))]
-        (and cn (= (last-seg cn) w))))))
+    (and (or (= w "Exception") (= w "Throwable") (= w "RuntimeException"))
+         (not (instance? Throwable e)))))
 
 ;; --- assertion macros ------------------------------------------------------
 
