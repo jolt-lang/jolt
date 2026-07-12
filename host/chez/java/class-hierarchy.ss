@@ -31,7 +31,18 @@
   (hashtable-clear! jch-closure-cache)
   (hashtable-clear! jch-tags-cache))
 
-(define (jch-direct-supers name) (hashtable-ref jvm-class-parents name '()))
+;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the
+;; table; like the JVM (a fn extends clojure.lang.AFunction) its super is
+;; AFunction, whose registered supers give AFn / IFn / Fn / Runnable / Callable
+;; transitively.
+(define (str-has-dollar? s)
+  (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
+
+(define (jch-direct-supers name)
+  (let ((direct (hashtable-ref jvm-class-parents name '())))
+    (if (pair? direct) direct
+        (if (str-has-dollar? name) '("clojure.lang.AFunction")
+            '()))))
 
 ;; Replace a class's direct supers outright (defrecord re-declares the row its
 ;; deftype half registered). Same cache invalidation as a register.
@@ -359,6 +370,16 @@
 ;; Public seam: libraries extend the modeled hierarchy.
 (def-var! "jolt.host" "register-class-supers!"
   (lambda (name supers) (jch-register-supers! name (seq->list supers)) jolt-nil))
+
+;; transitive ancestry rooted at Object for a concrete class; an interface's chain
+;; has no Object (its getSuperclass is null). '() for Object itself.
+(define (jch-ancestors-rooted name)
+  (if (or (string=? name "java.lang.Object") (jch-interface? name))
+      (jch-closure name)
+      (let ((as (jch-closure name)))
+        (cond ((member "java.lang.Object" as) as)
+              ((null? as) (if (jch-known? name) '("java.lang.Object") '()))
+              (else (append as '("java.lang.Object")))))))
 
 ;; bases — the direct supers of a class from the jch graph. c may be a class-name
 ;; string, a jclass object (class token), or a JVM-typed value (number, string, etc.).

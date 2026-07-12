@@ -1051,26 +1051,7 @@
                                      (or (not (opt-present? a)) (jolt=2 (opt-value a) (opt-value b))))))
 
 ;; class hierarchy lives in class-hierarchy.ss (jvm-class-parents).
-;; fn classes (ns$name) inherit AFunction.
-;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the table;
-;; like the JVM (a fn extends clojure.lang.AFunction) its super is AFunction, whose
-;; registered supers give AFn / IFn / Fn / Runnable / Callable transitively.
-(define (str-has-dollar? s)
-  (let loop ((i 0)) (and (< i (string-length s)) (or (char=? (string-ref s i) #\$) (loop (+ i 1))))))
-(define (class-direct-supers name)
-  ;; reads the modeled class graph (jch, direct edges) only — the legacy table has
-  ;; been folded into class-hierarchy.ss.
-  (let ((jch (jch-direct-supers name)))
-    (if (pair? jch) jch
-        (if (str-has-dollar? name) '("clojure.lang.AFunction")
-            '()))))
-;; transitive closure of direct supers (set semantics via an accumulator list)
-(define (class-ancestors-list name)
-  (let loop ((pending (class-direct-supers name)) (seen '()))
-    (cond ((null? pending) (reverse seen))
-          ((member (car pending) seen) (loop (cdr pending) seen))
-          (else (loop (append (class-direct-supers (car pending)) (cdr pending))
-                      (cons (car pending) seen))))))
+;; fn classes (ns$name) inherit AFunction (handled by jch-direct-supers).
 
 ;; (instance? Class e) on a throwable tagged-table carrying a JVM :class matches the
 ;; carried class or any of its ancestors (full name or last segment), so a library's
@@ -1083,7 +1064,7 @@
         (let* ((cls (hashtable-ref (htable-h val) "class" #f))
                (want (symbol-t-name type-sym))
                (want-seg (hsc-last-segment want)))
-          (let loop ((names (cons cls (class-ancestors-list cls))))
+          (let loop ((names (cons cls (jch-closure cls))))
             (cond ((null? names) 'pass)
                   ((or (string=? want (car names))
                        (string=? want-seg (hsc-last-segment (car names)))) #t)
@@ -1099,7 +1080,7 @@
     (let ((cc (class-key child)) (pp (class-key parent)))
       (if (and cc pp)
           (let ((pseg (hsc-last-segment pp)))
-            (if (let loop ((names (cons cc (class-ancestors-list cc))))
+            (if (let loop ((names (cons cc (jch-closure cc))))
                   (cond ((string=? pp "java.lang.Object") #t)
                         ((null? names) #f)
                         ((or (string=? pp (car names))
@@ -1108,23 +1089,12 @@
                 #t jolt-nil))
           jolt-nil))))
 
-;; is NAME a class the host models (registered in the class graph, a legacy
-;; supers-table entry, or a fn class)? Object itself is modeled.
+;; is NAME a class the host models (registered in the class graph, or a fn class)?
+;; Object itself is modeled.
 (define (hsc-class-known? name)
   (or (string=? name "java.lang.Object")
       (jch-known? name)
       (str-has-dollar? name)))
-
-;; transitive ancestry, rooted at Object for a concrete class like (supers c);
-;; an interface's chain has no Object (its getSuperclass is null). '() for
-;; Object itself and for a name the host doesn't model.
-(define (class-ancestors-rooted name)
-  (if (or (string=? name "java.lang.Object") (jch-interface? name))
-      (class-ancestors-list name)
-      (let ((as (class-ancestors-list name)))
-        (cond ((member "java.lang.Object" as) as)
-              ((null? as) (if (hsc-class-known? name) '("java.lang.Object") '()))
-              (else (append as '("java.lang.Object")))))))
 
 ;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
 ;; super / ancestor class-name strings (transitive, Object-rooted), or nil when
@@ -1135,21 +1105,21 @@
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let ((as (class-ancestors-rooted name)))
+          (let ((as (jch-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
 (def-var! "jolt.host" "class-ancestors"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let ((as (class-ancestors-rooted name)))
+          (let ((as (jch-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
 (def-var! "jolt.host" "class-bases"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
-          (let* ((ds (class-direct-supers name))
+          (let* ((ds (jch-direct-supers name))
                  ;; a concrete class's bases include its superclass — Object when
                  ;; nothing more specific is modeled (interfaces have none).
                  (ds (if (or (string=? name "java.lang.Object")
