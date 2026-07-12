@@ -119,6 +119,19 @@
 
 ;; --- ISO parsing -------------------------------------------------------------
 (define (jt-str x) (if (string? x) x (jolt-str-render-one x)))
+(define (jt-str-replace s old new)
+  (let* ((oldn (string-length old)) (newn (string-length new))
+         (out (open-output-string)))
+    (let loop ((i 0))
+      (if (>= i (string-length s))
+          (get-output-string out)
+          (let ((j (string-index s old i)))
+            (if j
+                (begin (display (substring s i j) out)
+                       (display new out)
+                       (loop (+ j oldn)))
+                (begin (display (substring s i (string-length s)) out)
+                       (get-output-string out))))))))
 ;; "yyyy-MM-dd" -> epoch-day
 (define (parse-iso-date s)
   (let ((y (digits-at s 0 4)) (m (digits-at s 5 2)) (d (digits-at s 8 2)))
@@ -2189,6 +2202,9 @@
 ;; richer engine; .parse picks the value type from the parsed fields.
 (register-host-methods! "dt-formatter"
   (list (cons "format" (lambda (self d) (jt-format-pattern (fmt-pat self) d (fmt-locale self))))
+        (cons "parse" (lambda (self s) (mk-instant (jinst-ms (parse-ms (fmt-pat self) (jt-str s))))))
+        (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self) (locale-id locale))))
+        (cons "withZone" (lambda (self zone) (mk-formatter (fmt-pat self) (fmt-locale self))))
         (cons "getZone" (lambda (self) (jt-zone-id "Z" 0)))
         (cons "getLocale" (lambda (self) (make-jhost "locale" (vector (fmt-locale self)))))
         (cons "toString" (lambda (self) (fmt-pat self)))))
@@ -2291,21 +2307,46 @@
         ((and (jhost? val) (string=? (jhost-tag val) "temporal-adjuster")) (if (member tn '("TemporalAdjuster")) #t 'pass))
         (else 'pass)))))
 
-;; DateTimeFormatterBuilder — the builder collects a pattern and defaults, and
-;; toFormatter yields a lenient ISO formatter: parse accepts a full ISO instant
-;; or a bare date, with missing time-of-day/offset defaulting to 0/UTC
-;; (parseDefaulting semantics for the patterns real libraries build —
-;; "yyyy-MM-dd['T'HH:mm:ss…]" in spec-tools). parse returns an Instant, which
-;; Instant/from passes through.
+;; DateTimeFormatterBuilder — accumulates a pattern and defaults; toFormatter
+;; builds a dt-formatter from the accumulated pattern via mk-formatter (the same
+;; engine DateTimeFormatter/ofPattern uses). When no pattern was appended the
+;; builder falls back to the lenient-ISO formatter, preserving the spec-tools path.
+(define (builder-pat self) (vector-ref (jhost-state self) 0))
+(define (builder-defs self) (vector-ref (jhost-state self) 1))
+(define (builder-pat-set! self v) (vector-set! (jhost-state self) 0 v))
+(define (builder-defs-set! self v) (vector-set! (jhost-state self) 1 v))
+(define (append-pattern-str self p)
+  (builder-pat-set! self (string-append (builder-pat self) (jt-str p)))
+  self)
+(define (builder-append-literal self lit)
+  (let ((s (jt-str lit)))
+    (builder-pat-set! self
+      (string-append (builder-pat self) "'" (jt-str-replace s "'" "''") "'"))
+    self))
 (register-class-ctor! "DateTimeFormatterBuilder"
-  (lambda _ (make-jhost "dtf-builder" (vector '()))))
+  (lambda _ (make-jhost "dtf-builder" (vector "" '()))))
 (register-host-methods! "dtf-builder"
-  (list (cons "appendPattern" (lambda (self p) self))
-        (cons "appendOptional" (lambda (self x) self))
+  (list (cons "appendPattern" append-pattern-str)
+        (cons "appendLiteral" builder-append-literal)
+        (cons "appendOptional"
+              (lambda (self x)
+                (let ((p (if (and (jhost? x) (string=? (jhost-tag x) "dt-formatter"))
+                             (fmt-pat x)
+                             (jt-str x))))
+                  (builder-pat-set! self (string-append (builder-pat self) "[" p "]"))
+                  self)))
         (cons "appendValue" (lambda (self . _) self))
-        (cons "parseDefaulting" (lambda (self f v) self))
+        (cons "parseDefaulting"
+              (lambda (self f v)
+                (builder-defs-set! self (cons (cons f v) (builder-defs self)))
+                self))
         (cons "parseCaseInsensitive" (lambda (self) self))
-        (cons "toFormatter" (lambda (self . _) (make-jhost "lenient-iso-dtf" (vector #f))))))
+        (cons "toFormatter"
+              (lambda (self . _)
+                (let ((p (builder-pat self)))
+                  (if (string=? p "")
+                      (make-jhost "lenient-iso-dtf" (vector #f))
+                      (mk-formatter p)))))))
 (register-host-methods! "lenient-iso-dtf"
   (list (cons "parse" (lambda (self s . _)
           (let ((str (jt-str s)))
