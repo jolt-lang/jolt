@@ -647,15 +647,15 @@
 
 ;; java.text.ParseException(String s, int errorOffset): unlike the exceptions
 ;; above, its second ctor arg is an int offset (getErrorOffset), not a cause.
-;; Keep the offset under :jolt/error-offset (invisible to ex-data) so .getErrorOffset
-;; can read it back, rather than misfiling it as a cause.
+;; Store the offset in the record's error-offset field (invisible to ex-data).
 (register-class-ctor! "ParseException"
   (lambda args
     (let* ((a0 (if (pair? args) (car args) jolt-nil))
            (off (if (and (pair? args) (pair? (cdr args))) (cadr args) 0))
-           (msg (if (string? a0) a0 (jolt-str-render-one a0))))
-      (jolt-assoc (jolt-host-throwable "java.text.ParseException" msg)
-                  jolt-kw-error-offset off))))
+           (msg (if (string? a0) a0 (jolt-str-render-one a0)))
+           (rec (jolt-host-throwable "java.text.ParseException" msg)))
+      (jolt-ex-info-record-error-offset-set! rec off)
+      rec)))
 
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 (define (url-unreserved? b)
@@ -1251,11 +1251,10 @@
                               ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn)))
                               (else (loop (- i 1)))))))
           (cond
-            ((string=? short "IEditableCollection")
-             ;; a MapEntry is pvec-backed but not editable on the JVM
-             (if (or (and (pvec? val) (not (jolt-map-entry? val))) (pset? val)
-                     (and (pmap? val) (not (ex-info-map? val))
-                          (not (reader-conditional-value? val))))
+             ((string=? short "IEditableCollection")
+              ;; a MapEntry is pvec-backed but not editable on the JVM
+              (if (or (and (pvec? val) (not (jolt-map-entry? val))) (pset? val)
+                      (and (pmap? val) (not (reader-conditional-value? val))))
                  #t 'pass))
             ((string=? short "ITransientCollection")
              (if (jolt-transient? val) #t 'pass))
@@ -1271,14 +1270,13 @@
 (define %hm-seq jolt-seq)
 (set! jolt-seq
   (lambda (x) (if (hm-hashmap? x) (jolt-seq (hm->pmap x)) (%hm-seq x))))
-;; A throwable answers the Throwable family only — not the collection/meta
-;; interfaces its pmap representation would otherwise claim (JVM parity: an
-;; ExceptionInfo is not an IObj or a map). Registered late so it runs before
-;; the base taxonomy.
+;; A reader-conditional value is a pmap but not a collection/meta carrier
+;; on the JVM — deny the interfaces its pmap backing would otherwise claim.
+;; (ex-info is now a distinct record type, not a pmap, so it needs no denial.)
 (register-instance-check-arm!
   (lambda (type-sym val)
     (if (and (symbol-t? type-sym)
-             (or (ex-info-map? val) (reader-conditional-value? val)))
+             (reader-conditional-value? val))
         (let* ((tn (symbol-t-name type-sym))
                (short (let loop ((i (- (string-length tn) 1)))
                         (cond ((< i 0) tn)
@@ -1306,7 +1304,7 @@
 (define kw-rc-jtype (keyword "jolt" "type"))
 (define kw-rc (keyword "jolt" "reader-conditional"))
 (define (reader-conditional-value? x)
-  (and (pmap? x) (not (ex-info-map? x))
+  (and (pmap? x)
        (jolt=2 kw-rc (pmap-get x kw-rc-jtype jolt-nil))))
 (register-class-arm! reader-conditional-value? (lambda (x) "clojure.lang.ReaderConditional"))
 ;; a multimethod reports its JVM class.

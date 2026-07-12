@@ -193,15 +193,25 @@
               ((instant? x) (quotient (inst-nanos x) 1000000))
               (else (jolt-invoke ov-inst-ms x)))))))
 
-;; A throwable is not a collection, function, or meta carrier on the JVM; jolt's
-;; pmap-backed ex-info representation must not leak through the public taxonomy.
-;; (ex-data / ex-message / (:k (ex-data e)) are unaffected — only the predicates.)
-(for-each
-  (lambda (nm)
-    (let ((prev (var-deref "clojure.core" nm)))
-      (def-var! "clojure.core" nm
-        (lambda (x) (if (ex-info-map? x) #f (jolt-invoke1 prev x))))))
-  '("map?" "coll?" "seqable?" "ifn?" "associative?" "counted?"))
+;; A throwable is not a collection, function, or meta carrier on the JVM. The
+;; ex-info record type is NOT a pmap, so pmap?/coll?/seqable?/ifn?/associative?
+;; /counted? are naturally false — no exclusion arms needed.
+;;
+;; Override the seed prelude's ex-info accessors (which read :jolt/type + jolt-get
+;; on the old pmap backing) with record-field-based native implementations.
+;; matched at call time, so remint is not required.
+(def-var! "clojure.core" "ex-info-val?"
+  (lambda (x) (jolt-ex-info-record? x)))
+(def-var! "clojure.core" "ex-unwrap"
+  (lambda (e) e))
+(def-var! "clojure.core" "ex-data"
+  (lambda (e) (if (jolt-ex-info-record? e) (jolt-ex-info-record-data e) jolt-nil)))
+(def-var! "clojure.core" "ex-message"
+  (lambda (e) (if (jolt-ex-info-record? e) (jolt-ex-info-record-message e) jolt-nil)))
+(def-var! "clojure.core" "ex-cause"
+  (lambda (e) (if (jolt-ex-info-record? e) (jolt-ex-info-record-cause e) jolt-nil)))
+;; Throwable->map: the seed prelude version reads ex-data/ex-message/ex-cause
+;; through the old var-deref chain; re-assert with the native versions.
 ;; seqable? additionally covers the iterable java.util shims (Iterable on the JVM).
 (let ((prev (var-deref "clojure.core" "seqable?")))
   (def-var! "clojure.core" "seqable?"

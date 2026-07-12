@@ -76,12 +76,12 @@
 (define (dot-object-method obj name args)
   (cond
     ((string=? name "getMessage")
-     (list (if (jolt=2 (jolt-get obj jolt-kw-ex-type jolt-nil) jolt-kw-ex-info)
-               (jolt-get obj jolt-kw-message jolt-nil)
+     (list (if (jolt-ex-info-record? obj)
+               (jolt-ex-info-record-message obj)
                (jolt-str-render-one obj))))
-    ((string=? name "getCause")  (list (jolt-get obj jolt-kw-cause jolt-nil)))
+    ((string=? name "getCause")  (list (if (jolt-ex-info-record? obj) (jolt-ex-info-record-cause obj) jolt-nil)))
     ;; java.text.ParseException.getErrorOffset — the int offset stashed by its ctor.
-    ((string=? name "getErrorOffset") (list (jolt-get obj jolt-kw-error-offset 0)))
+    ((string=? name "getErrorOffset") (list (if (jolt-ex-info-record? obj) (jolt-ex-info-record-error-offset obj) 0)))
     ;; java.sql.SQLException chaining — ex-info / host throwables don't chain.
     ((string=? name "getNextException") (list jolt-nil))
     ((string=? name "getStackTrace") (list (jolt-vector)))
@@ -148,4 +148,10 @@
            (else
             (let ((v (jolt-get obj (keyword #f mname) jolt-nil)))
               (if (procedure? v) (apply jolt-invoke v obj rest) v)))))
+        ;; ex-info record: universal object-methods (getMessage/getCause/toString/...)
+        ;; only — NO field lookup (ExceptionInfo is not ILookup on the JVM).
+        ((jolt-ex-info-record? obj)
+         (cond
+           ((dot-object-method obj mname rest) => car)
+           (else 'pass)))
         (else 'pass)))))
