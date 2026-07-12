@@ -40,7 +40,7 @@
     ;; concrete ns$fn__N subclass. The $fn marker lets clojure.spec.alpha's fn-sym
     ;; recognize it as anonymous and return ::s/unknown. A named fn is registered
     ;; (proc-name-tbl) and handled by a class-arm with its real ns$name.
-    ((procedure? x) "clojure.lang.AFunction$fn")
+    ((procedure? x) "clojure.lang.AFunction$fn__0")
     ;; an exception value (ex-info / host-constructed throwable) reports its JVM
     ;; class, so (= clojure.lang.ExceptionInfo (class e)) and clojure.test's
     ;; (thrown? Class …) match (records.ss ex-info-map?/ex-info-class).
@@ -49,9 +49,14 @@
     ;; internal :vector/:set/… type keyword), so class-based dispatch — e.g. a
     ;; defmulti on [(class a) (class b)] — sees a real clojure.lang.* class.
     ((jns? x) "clojure.lang.Namespace")
+    ;; a map entry is a pvec with the entry flag; the JVM class is MapEntry
+    ((jolt-map-entry? x) "clojure.lang.MapEntry")
     ((pvec? x) "clojure.lang.PersistentVector")
     ((pset? x) "clojure.lang.PersistentHashSet")
-    ((pmap? x) "clojure.lang.PersistentArrayMap")
+    ;; array mode (insertion-ordered, small literal maps) is PersistentArrayMap;
+    ;; hash mode (hash-map, or grown past the array limit) is PersistentHashMap
+    ((pmap? x) (if (pmap-order x) "clojure.lang.PersistentArrayMap"
+                   "clojure.lang.PersistentHashMap"))
     ((jolt-lazyseq? x) "clojure.lang.LazySeq")
     ((empty-list-t? x) "clojure.lang.PersistentList$EmptyList")
     ((cseq? x) "clojure.lang.PersistentList")
@@ -84,7 +89,9 @@
 (register-class-arm!
   (lambda (x) (and (procedure? x) (hashtable-ref proc-name-tbl x #f)))
   (lambda (x) (let ((p (hashtable-ref proc-name-tbl x #f)))
-                (string-append (car p) "$" (class-munge-name (cdr p))))))
+                ;; the ns segment munges too (a-b.core -> a_b.core), like
+                ;; Compiler.munge; dots stay.
+                (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p))))))
 
 (define (jolt-class-name x)
   (let loop ((as jolt-class-arms))
@@ -153,3 +160,11 @@
             (set! result (cons k result))))
         keys vals)
       (reverse result))))
+
+;; (str f) of a fn renders JVM-style — "ns$name@hexhash" — so code that parses
+;; fn identity out of the string (expound's pprint-fn) finds the $-separated
+;; class name instead of a raw Chez #<procedure> form.
+(register-str-render!
+  (lambda (x) (procedure? x))
+  (lambda (x) (string-append (jolt-class-name x) "@"
+                             (number->string (abs (equal-hash x)) 16))))

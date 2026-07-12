@@ -238,6 +238,15 @@
 ;; has none, so it defaults to {}.
 (define hc-amp-form-cell (declare-var! "clojure.core" "&form"))
 (define hc-amp-env-cell (declare-var! "clojure.core" "&env"))
+;; &form meta matches the JVM's {:line :column}. The reader also stamps :file
+;; for the compiler's position tracking, but a macro reading (meta &form) must
+;; not see it — libraries branch on its presence (fireworks' file-info).
+(define hc-kw-file (keyword #f "file"))
+(define (hc-form-sans-file form)
+  (let ((m (jolt-meta form)))
+    (if (or (jolt-nil? m) (jolt-nil? (jolt-get m hc-kw-file jolt-nil)))
+        form
+        (jolt-with-meta form (jolt-dissoc2 m hc-kw-file)))))
 (define (hc-expand-1 ctx form . maybe-env)
   (let* ((items (seq->list form))
          (head (car items))
@@ -246,7 +255,7 @@
          (amp-env (if (pair? maybe-env) (car maybe-env) (jolt-hash-map))))
     (dynamic-wind
       (lambda () (jolt-push-thread-bindings
-                  (jolt-hash-map hc-amp-form-cell form hc-amp-env-cell amp-env)))
+                  (jolt-hash-map hc-amp-form-cell (hc-form-sans-file form) hc-amp-env-cell amp-env)))
       (lambda () (hc-propagate-pos form (apply jolt-invoke expander args)))
       (lambda () (jolt-pop-thread-bindings)))))
 

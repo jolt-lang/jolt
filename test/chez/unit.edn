@@ -484,14 +484,14 @@
   {:suite "type" :expr "(type #{1})" :expected "clojure.lang.PersistentHashSet"}
   {:suite "type" :expr "(type '(1 2))" :expected "clojure.lang.PersistentList"}
   {:suite "type" :expr "(type '())" :expected "clojure.lang.PersistentList$EmptyList"}
-  {:suite "type" :expr "(type (first {:a 1}))" :expected "clojure.lang.PersistentVector"}
+  {:suite "type" :expr "(type (first {:a 1}))" :expected "clojure.lang.MapEntry"}
   {:suite "type" :expr "(type (map inc [1 2]))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type (filter odd? [1 2 3]))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type (lazy-seq (cons 1 nil)))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type (take 2 (iterate inc 0)))" :expected "clojure.lang.LazySeq"}
   {:suite "type" :expr "(type inc)" :expected "clojure.core$inc"}
-  {:suite "type" :expr "(type (sorted-map :a 1))" :expected ":map"}
-  {:suite "type" :expr "(type (sorted-set 1))" :expected ":jolt/sorted-set"}
+  {:suite "type" :expr "(type (sorted-map :a 1))" :expected "clojure.lang.PersistentTreeMap"}
+  {:suite "type" :expr "(type (sorted-set 1))" :expected "clojure.lang.PersistentTreeSet"}
   {:suite "type" :expr "(type (with-meta [1] {:type :custom}))" :expected ":custom"}
   {:suite "type" :expr "(type (with-meta {:a 1} {:type :rec}))" :expected ":rec"}
   {:suite "type" :expr "(type (with-meta [1] {:other 9}))" :expected "clojure.lang.PersistentVector"}
@@ -499,10 +499,10 @@
   {:suite "type" :expr "(do (defrecord TyR [a]) (= (symbol (str (type (->TyR 1)))) (type (->TyR 1))))" :expected "false"}
   {:suite "type" :expr "(do (defrecord TyR [a]) (symbol? (type (->TyR 1))))" :expected "false"}
   {:suite "type" :expr "(type (atom 1))" :expected "clojure.lang.Atom"}
-  {:suite "type" :expr "(type (volatile! 1))" :expected ":jolt/volatile"}
+  {:suite "type" :expr "(type (volatile! 1))" :expected "clojure.lang.Volatile"}
   {:suite "type" :expr "(type #\"re\")" :expected "java.util.regex.Pattern"}
-  {:suite "type" :expr "(do (def vx 1) (type (var vx)))" :expected ":jolt/var"}
-  {:suite "type" :expr "(type (transient []))" :expected ":jolt/transient"}
+  {:suite "type" :expr "(do (def vx 1) (type (var vx)))" :expected "clojure.lang.Var"}
+  {:suite "type" :expr "(type (transient []))" :expected "clojure.lang.PersistentVector$TransientVector"}
   {:suite "type" :expr "(type (random-uuid))" :expected "java.util.UUID"}
   {:suite "type" :expr "(type (ex-info \"x\" {}))" :expected "clojure.lang.ExceptionInfo"}
   {:suite "var_meta" :expr "(do (def ^:private pv 1) (:private (meta (var pv))))" :expected "true"}

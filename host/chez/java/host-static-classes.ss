@@ -109,12 +109,26 @@
   (register-class-ctor! "LinkedList" ctor)
   (register-class-ctor! "java.util.LinkedList" ctor))
 
+;; ArrayDeque: the same deque surface over the growable-array backing. (An int
+;; capacity arg is a hint on the JVM — an empty deque here.)
+(define (make-arraydeque xs)
+  (let ((al (make-arraylist xs))) (make-jhost "arraydeque" (jhost-state al))))
+(register-host-methods! "arraydeque" linkedlist-methods)
+(let ((ctor (lambda args
+              (cond ((null? args) (make-arraydeque '()))
+                    ((number? (car args)) (make-arraydeque '()))
+                    (else (make-arraydeque (seq->list (jolt-seq (car args)))))))))
+  (register-class-ctor! "ArrayDeque" ctor)
+  (register-class-ctor! "java.util.ArrayDeque" ctor))
+
 ;; ArrayList / LinkedList are Iterable: (seq al) walks the elements (nil if empty),
 ;; so (seq pending-forms) and reduce/into over one work like the JVM.
 (define %al-seq jolt-seq)
 (set! jolt-seq
   (lambda (x)
-    (if (and (jhost? x) (or (string=? (jhost-tag x) "arraylist") (string=? (jhost-tag x) "linkedlist")))
+    (if (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
+                            (string=? (jhost-tag x) "linkedlist")
+                            (string=? (jhost-tag x) "arraydeque")))
         (list->cseq (al->list x))
         (%al-seq x))))
 
@@ -303,6 +317,32 @@
     (make-jhost "hashmap" (vector ht))))
 (register-class-ctor! "ConcurrentHashMap" make-hashmap-jhost)
 (register-class-ctor! "java.util.concurrent.ConcurrentHashMap" make-hashmap-jhost)
+
+;; A mutable set over the same value-keyed hashtable (element -> #t).
+;; Constructors: () | (capacity) [ignored] | (coll) [copy].
+(define (hs-hashset? x) (and (jhost? x) (string=? (jhost-tag x) "hashset")))
+(define (hs->list self) (vector->list (hashtable-keys (hm-tbl self))))
+(let ((ctor (lambda args
+              (let ((ht (make-hashtable hm-hash jolt=2)))
+                (when (and (pair? args) (not (number? (car args))))
+                  (for-each (lambda (e) (hashtable-set! ht e #t))
+                            (seq->list (jolt-seq (car args)))))
+                (make-jhost "hashset" (vector ht))))))
+  (register-class-ctor! "HashSet" ctor)
+  (register-class-ctor! "java.util.HashSet" ctor))
+(register-host-methods! "hashset"
+  (list (cons "add" (lambda (self x) (let ((had (hashtable-contains? (hm-tbl self) x)))
+                                        (hashtable-set! (hm-tbl self) x #t) (not had))))
+        (cons "remove" (lambda (self x) (let ((had (hashtable-contains? (hm-tbl self) x)))
+                                           (hashtable-delete! (hm-tbl self) x) (if had #t #f))))
+        (cons "contains" (lambda (self x) (if (hashtable-contains? (hm-tbl self) x) #t #f)))
+        (cons "size" (lambda (self) (hashtable-size (hm-tbl self))))
+        (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
+        (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) jolt-nil))
+        (cons "toString" (lambda (self) (jolt-pr-str (apply jolt-hash-set (hs->list self)))))))
+(define %hs-seq jolt-seq)
+(set! jolt-seq
+  (lambda (x) (if (hs-hashset? x) (list->cseq (hs->list x)) (%hs-seq x))))
 (register-get-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
                    (lambda (coll k d) (hashtable-ref (hm-tbl coll) k d)))
 ;; count / contains? over the mutable map shim (clojure.core/count + contains?,
@@ -558,7 +598,21 @@
     "InterruptedException" "UnsupportedOperationException" "IOException" "NumberFormatException"
     "ArithmeticException" "NullPointerException" "ClassCastException" "IndexOutOfBoundsException"
     "FileNotFoundException" "UnsupportedEncodingException" "EOFException" "java.io.EOFException"
-    "Error" "AssertionError"))
+    "Error" "AssertionError"
+    "ArrayIndexOutOfBoundsException" "StringIndexOutOfBoundsException"
+    "ReflectiveOperationException" "ClassNotFoundException" "NoSuchMethodException"
+    "IllegalAccessException" "CloneNotSupportedException" "NoSuchElementException"
+    "CancellationException" "SocketException" "SQLException"
+    "LinkageError" "ClassCircularityError" "NoClassDefFoundError" "UnsatisfiedLinkError"
+    "VirtualMachineError" "InternalError" "OutOfMemoryError" "StackOverflowError"
+    "ThreadDeath" "IOError"))
+
+;; clojure.lang.ArityException(int actual, String name) builds the JVM message.
+(register-class-ctor! "ArityException"
+  (lambda (actual name . _)
+    (jolt-host-throwable "clojure.lang.ArityException"
+      (string-append "Wrong number of args (" (jolt-str-render-one actual)
+                     ") passed to: " (if (string? name) name (jolt-str-render-one name))))))
 
 ;; java.text.ParseException(String s, int errorOffset): unlike the exceptions
 ;; above, its second ctor arg is an int offset (getErrorOffset), not a cause.
@@ -1053,3 +1107,179 @@
         #t
         (let ((n (class-key x)))
           (if (and n (hsc-class-known? n)) #t jolt-nil)))))
+
+;; ---- (class x) for host-shim values ------------------------------------------
+;; jhost-backed shims report their JVM class instead of falling through to the
+;; opaque :object rendering, so class-driven dispatch (and type-classification
+;; libraries reading (type x)) see the real name.
+(define jhost-class-names
+  '(("instant" . "java.time.Instant")
+    ("local-date" . "java.time.LocalDate")
+    ("local-time" . "java.time.LocalTime")
+    ("local-date-time" . "java.time.LocalDateTime")
+    ("zoned-dt" . "java.time.ZonedDateTime")
+    ("zoned-date-time" . "java.time.ZonedDateTime")
+    ("offset-date-time" . "java.time.OffsetDateTime")
+    ("offset-time" . "java.time.OffsetTime")
+    ("duration" . "java.time.Duration")
+    ("period" . "java.time.Period")
+    ("year" . "java.time.Year")
+    ("year-month" . "java.time.YearMonth")
+    ("zone-id" . "java.time.ZoneId")
+    ("zone-offset" . "java.time.ZoneOffset")
+    ("zone-rules" . "java.time.zone.ZoneRules")
+    ("chrono-unit" . "java.time.temporal.ChronoUnit")
+    ("chrono-field" . "java.time.temporal.ChronoField")
+    ("month-enum" . "java.time.Month")
+    ("dow-enum" . "java.time.DayOfWeek")
+    ("clock" . "java.time.Clock")
+    ("dt-formatter" . "java.time.format.DateTimeFormatter")
+    ("sdf" . "java.text.SimpleDateFormat")
+    ("calendar" . "java.util.GregorianCalendar")
+    ("locale" . "java.util.Locale")
+    ("timezone" . "java.util.TimeZone")
+    ("arraylist" . "java.util.ArrayList")
+    ("linkedlist" . "java.util.LinkedList")
+    ("arraydeque" . "java.util.ArrayDeque")
+    ("hashmap" . "java.util.HashMap")
+    ("hashset" . "java.util.HashSet")
+    ;; io writer/reader shims: *out* is a PrintWriter like the JVM REPL's
+    ("port-writer" . "java.io.PrintWriter")
+    ("print-writer" . "java.io.PrintWriter")
+    ("file-writer" . "java.io.FileWriter")
+    ("writer" . "java.io.StringWriter")
+    ("string-reader" . "java.io.StringReader")
+    ("pushback-reader" . "java.io.PushbackReader")
+    ("char-writer" . "java.io.OutputStreamWriter")
+    ("char-reader" . "java.io.InputStreamReader")))
+(register-class-arm!
+  (lambda (x) (and (jhost? x) (assoc (jhost-tag x) jhost-class-names) #t))
+  (lambda (x) (cdr (assoc (jhost-tag x) jhost-class-names))))
+;; sorted collections and transients report their JVM classes. jolt's one
+;; transient-map representation reports TransientHashMap (the JVM also has
+;; PersistentArrayMap$TransientArrayMap for small maps).
+(register-class-arm! htable-sorted-map? (lambda (x) "clojure.lang.PersistentTreeMap"))
+(register-class-arm! htable-sorted-set? (lambda (x) "clojure.lang.PersistentTreeSet"))
+(register-class-arm!
+  (lambda (x) (and (jolt-transient? x) #t))
+  (lambda (x)
+    (case (jolt-transient-kind x)
+      ((vec) "clojure.lang.PersistentVector$TransientVector")
+      ((map) "clojure.lang.PersistentHashMap$TransientHashMap")
+      ((set) "clojure.lang.PersistentHashSet$TransientHashSet")
+      (else "clojure.lang.ATransientCollection"))))
+;; instance? for these shims derives from the class graph: the value's class name
+;; (jhost-class-names) walked through jch-isa? answers interface questions —
+;; (instance? java.util.List an-ArrayList), Deque/Queue/Collection/Iterable chains.
+;; Widening only: an unknown pairing passes to the other arms, never denies.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (jhost? val) (symbol-t? type-sym))
+        (let ((p (assoc (jhost-tag val) jhost-class-names)))
+          (if p
+              (let* ((tname (symbol-t-name type-sym))
+                     (q (or (resolve-class-hint tname) tname)))
+                (if (jch-isa? (cdr p) q) #t 'pass))
+              'pass))
+        'pass)))
+;; count over the mutable collection shims, like RT.count over a java.util
+;; Collection/Map on the JVM.
+(define %shim-count jolt-count)
+(set! jolt-count
+  (lambda (x)
+    (if (jhost? x)
+        (let ((tag (jhost-tag x)))
+          (cond ((or (string=? tag "arraylist") (string=? tag "linkedlist")
+                     (string=? tag "arraydeque"))
+                 (al-cnt x))
+                ((or (string=? tag "hashmap") (string=? tag "hashset"))
+                 (hashtable-size (hm-tbl x)))
+                (else (%shim-count x))))
+        (%shim-count x))))
+;; IEditableCollection / ITransient* answer from the representation: the
+;; transient-able persistent collections are editable; a transient reports its
+;; kind's interfaces. Widening only — anything else passes to the other arms.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (symbol-t? type-sym)
+        (let* ((tn (symbol-t-name type-sym))
+               (short (let loop ((i (- (string-length tn) 1)))
+                        (cond ((< i 0) tn)
+                              ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn)))
+                              (else (loop (- i 1)))))))
+          (cond
+            ((string=? short "IEditableCollection")
+             ;; a MapEntry is pvec-backed but not editable on the JVM
+             (if (or (and (pvec? val) (not (jolt-map-entry? val))) (pset? val)
+                     (and (pmap? val) (not (ex-info-map? val))
+                          (not (reader-conditional-value? val))))
+                 #t 'pass))
+            ((string=? short "ITransientCollection")
+             (if (jolt-transient? val) #t 'pass))
+            ((string=? short "ITransientVector")
+             (if (and (jolt-transient? val) (eq? 'vec (jolt-transient-kind val))) #t 'pass))
+            ((or (string=? short "ITransientMap") (string=? short "ITransientAssociative"))
+             (if (and (jolt-transient? val) (eq? 'map (jolt-transient-kind val))) #t 'pass))
+            ((string=? short "ITransientSet")
+             (if (and (jolt-transient? val) (eq? 'set (jolt-transient-kind val))) #t 'pass))
+            (else 'pass)))
+        'pass)))
+;; (seq a-HashMap) walks its entries, like RT.seqFrom over a java.util.Map.
+(define %hm-seq jolt-seq)
+(set! jolt-seq
+  (lambda (x) (if (hm-hashmap? x) (jolt-seq (hm->pmap x)) (%hm-seq x))))
+;; A throwable answers the Throwable family only — not the collection/meta
+;; interfaces its pmap representation would otherwise claim (JVM parity: an
+;; ExceptionInfo is not an IObj or a map). Registered late so it runs before
+;; the base taxonomy.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (symbol-t? type-sym)
+             (or (ex-info-map? val) (reader-conditional-value? val)))
+        (let* ((tn (symbol-t-name type-sym))
+               (short (let loop ((i (- (string-length tn) 1)))
+                        (cond ((< i 0) tn)
+                              ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn)))
+                              (else (loop (- i 1)))))))
+          (if (member short '("IObj" "IMeta" "IPersistentMap" "APersistentMap" "Map"
+                              "Associative" "Seqable" "IPersistentCollection" "Collection"
+                              "IFn" "Iterable" "ILookup" "Counted" "IKVReduce"
+                              "PersistentArrayMap" "PersistentHashMap"
+                              "IEditableCollection"))
+              #f
+              'pass))
+        'pass)))
+;; a MapEntry does not carry meta on the JVM (AMapEntry); deny IObj/IMeta so the
+;; pvec backing doesn't claim it.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (symbol-t? type-sym) (jolt-map-entry? val))
+        (let ((tn (symbol-t-name type-sym)))
+          (if (or (string=? tn "IObj") (string=? tn "clojure.lang.IObj")
+                  (string=? tn "IMeta") (string=? tn "clojure.lang.IMeta"))
+              #f 'pass))
+        'pass)))
+;; a reader-conditional value reports its JVM class, not its tagged-map backing.
+(define kw-rc-jtype (keyword "jolt" "type"))
+(define kw-rc (keyword "jolt" "reader-conditional"))
+(define (reader-conditional-value? x)
+  (and (pmap? x) (not (ex-info-map? x))
+       (jolt=2 kw-rc (pmap-get x kw-rc-jtype jolt-nil))))
+(register-class-arm! reader-conditional-value? (lambda (x) "clojure.lang.ReaderConditional"))
+;; a multimethod reports its JVM class.
+(register-class-arm! (lambda (x) (jolt-multifn? x)) (lambda (x) "clojure.lang.MultiFn"))
+;; exact-own-class fallback: (instance? C x) is true when C names x's own class —
+;; covers checks against a captured (class y) value (transient classes, MultiFn)
+;; that no interface arm models. Widening only.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (symbol-t? type-sym)
+        (let* ((tn (symbol-t-name type-sym))
+               (q (or (resolve-class-hint tn) tn))
+               (cn (jolt-class-name val)))
+          (if (and (string? cn) (string=? cn q)) #t 'pass))
+        'pass)))
+;; a Class OBJECT specifically ((class x) result) — narrower than class-value?,
+;; which also admits deftype ctors and modeled name strings. The instance?
+;; macro needs exactly this: evaluate a var-held Class, keep quoting record names.
+(def-var! "jolt.host" "class-object?" (lambda (x) (if (jclass? x) #t #f)))

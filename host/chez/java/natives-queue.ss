@@ -66,3 +66,19 @@
 (def-var! "clojure.core" "queue?" (lambda (x) (jolt-queue? x)))
 ;; the FQ class token self-evaluates (for (instance? clojure.lang.PersistentQueue …)).
 (def-var! "clojure.core" "clojure.lang.PersistentQueue" "clojure.lang.PersistentQueue")
+
+;; PersistentQueue's JVM taxonomy: an IPersistentStack (peek/pop), an ordinary
+;; persistent collection, and a meta carrier.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (jolt-queue? val) (symbol-t? type-sym))
+        (let* ((tn (symbol-t-name type-sym))
+               (short (let loop ((i (- (string-length tn) 1)))
+                        (cond ((< i 0) tn)
+                              ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn)))
+                              (else (loop (- i 1)))))))
+          (if (member short '("IPersistentStack" "IPersistentCollection" "IPersistentList"
+                              "Collection" "Seqable" "Sequential" "Counted" "IObj" "IMeta"
+                              "Iterable"))
+              #t 'pass))
+        'pass)))

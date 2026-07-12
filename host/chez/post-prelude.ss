@@ -133,7 +133,9 @@
                (short (if (< dot 0) tname (substring tname (+ dot 1) tl))))
           (or (string=? short "Ref")
               (string=? short "IRef")
-              (string=? short "IDeref")))
+              (string=? short "IDeref")
+              ;; clojure.lang.Ref implements IFn (invoke derefs)
+              (string=? short "IFn")))
         'pass)))
 ;; record? is a host type check — true only for a defrecord, not a bare deftype
 ;; (jrec-record?), matching the JVM (instance? IRecord). The overlay's
@@ -176,3 +178,52 @@
                    (reader-refill! stream rest)
                    (jolt-vector (jolt-nth pr 0) (substring s 0 (- (string-length s) (string-length rest)))))))
            (jolt-invoke ov-rps stream e? ev))))))
+
+;; inst? / inst-ms are host instance checks (the JVM's Inst protocol covers
+;; java.util.Date, its java.sql subclasses, and java.time.Instant). The overlay's
+;; tagged-:jolt/type read crashes on a sorted collection (get dispatches into the
+;; comparator with an incomparable key) and misses the Instant shim.
+(let ((instant? (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "instant")))))
+  (def-var! "clojure.core" "inst?"
+    (lambda (x) (if (or (jinst? x) (instant? x)) #t #f)))
+  (let ((ov-inst-ms (var-deref "clojure.core" "inst-ms")))
+    (def-var! "clojure.core" "inst-ms"
+      (lambda (x)
+        (cond ((jinst? x) (jinst-ms x))
+              ((instant? x) (quotient (inst-nanos x) 1000000))
+              (else (jolt-invoke ov-inst-ms x)))))))
+
+;; A throwable is not a collection, function, or meta carrier on the JVM; jolt's
+;; pmap-backed ex-info representation must not leak through the public taxonomy.
+;; (ex-data / ex-message / (:k (ex-data e)) are unaffected — only the predicates.)
+(for-each
+  (lambda (nm)
+    (let ((prev (var-deref "clojure.core" nm)))
+      (def-var! "clojure.core" nm
+        (lambda (x) (if (ex-info-map? x) #f (jolt-invoke1 prev x))))))
+  '("map?" "coll?" "seqable?" "ifn?" "associative?" "counted?"))
+;; seqable? additionally covers the iterable java.util shims (Iterable on the JVM).
+(let ((prev (var-deref "clojure.core" "seqable?")))
+  (def-var! "clojure.core" "seqable?"
+    (lambda (x)
+      (if (and (jhost? x)
+               (member (jhost-tag x) '("arraylist" "linkedlist" "arraydeque" "hashset" "hashmap")))
+          #t
+          (jolt-invoke1 prev x)))))
+;; transients are IFn on the JVM (invoke = lookup); the queue is a full
+;; sequential persistent collection; a reader-conditional is not a map.
+(let ((prev (var-deref "clojure.core" "ifn?")))
+  (def-var! "clojure.core" "ifn?"
+    (lambda (x) (if (or (jolt-transient? x) (jolt-ref? x)) #t (jolt-invoke1 prev x)))))
+(for-each
+  (lambda (nm)
+    (let ((prev (var-deref "clojure.core" nm)))
+      (def-var! "clojure.core" nm
+        (lambda (x) (if (jolt-queue? x) #t (jolt-invoke1 prev x))))))
+  '("coll?" "sequential?" "seqable?"))
+(for-each
+  (lambda (nm)
+    (let ((prev (var-deref "clojure.core" nm)))
+      (def-var! "clojure.core" nm
+        (lambda (x) (if (reader-conditional-value? x) #f (jolt-invoke1 prev x))))))
+  '("map?" "coll?" "seqable?" "ifn?" "associative?"))

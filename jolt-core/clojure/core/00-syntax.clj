@@ -209,6 +209,7 @@
                (vector? pat)
                  (let* [g (symbol (str (gensym)))
                         n (count pat)
+                        has-amp (reduce (fn* [st x] (if st st (amp? x))) false pat)
                         vloop
                           (fn* vloop [i idx a]
                             (if (< i n)
@@ -220,8 +221,29 @@
                                     (vloop (+ i 2) idx (proc (nth pat (inc i)) g a))
                                   :else
                                     (vloop (inc i) (inc idx) (proc elem `(nth ~g ~idx nil) a))))
+                              a))
+                        ;; a pattern with & walks (seq v) via first/next like the
+                        ;; JVM, so a map (or any non-indexed seqable) destructures
+                        ;; positionally through its seq — nth on it would not.
+                        gs (symbol (str (gensym)))
+                        sloop
+                          (fn* sloop [i a]
+                            (if (< i n)
+                              (let* [elem (nth pat i)]
+                                (cond
+                                  (amp? elem)
+                                    (sloop (+ i 2) (proc (nth pat (inc i)) gs a))
+                                  (= elem :as)
+                                    (sloop (+ i 2) (proc (nth pat (inc i)) g a))
+                                  :else
+                                    (let* [gf (symbol (str (gensym)))
+                                           a2 (conj (conj a gf) `(first ~gs))
+                                           a3 (conj (conj a2 gs) `(next ~gs))]
+                                      (sloop (inc i) (proc elem gf a3)))))
                               a))]
-                   (vloop 0 0 (conj (conj acc g) init)))
+                   (if has-amp
+                     (sloop 0 (conj (conj (conj (conj acc g) init) gs) `(seq ~g)))
+                     (vloop 0 0 (conj (conj acc g) init))))
                (map? pat)
                  (let* [g (symbol (str (gensym)))
                         gm (symbol (str (gensym)))

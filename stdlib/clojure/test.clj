@@ -28,6 +28,9 @@
 ;; defspec run through its :test metadata doesn't blow up on an unbound var.
 (def ^:dynamic *testing-vars* (list))
 (def ^:dynamic *report-counters* nil)
+;; the stack of testing strings, innermost first — bindable like the JVM's
+;; (test.chuck rebinds it around its property reports).
+(def ^:dynamic *testing-contexts* (list))
 
 (defn reset-report! []
   (reset! counters {:test 0 :pass 0 :fail 0 :error 0 :fails []})
@@ -36,15 +39,18 @@
   (reset! once-fixtures {})
   (reset! each-fixtures {}))
 
-(defn- ctx-str [] (str/join " " @ctx-stack))
+(defn- ctx-str []
+  (if (seq *testing-contexts*)
+    (str/join " " (reverse *testing-contexts*))
+    (str/join " " @ctx-stack)))
 
 (defn inc-pass! [] (swap! counters update :pass inc))
 (defn fail! [form]
-  (let [line (str (ctx-str) (when (seq @ctx-stack) " ") "FAIL: " form)]
+  (let [line (str (ctx-str) (when (or (seq *testing-contexts*) (seq @ctx-stack)) " ") "FAIL: " form)]
     (swap! counters (fn [r] (-> r (update :fail inc) (update :fails conj line))))
     (println line)))
 (defn err! [form]
-  (let [line (str (ctx-str) (when (seq @ctx-stack) " ") "ERROR: " form)]
+  (let [line (str (ctx-str) (when (or (seq *testing-contexts*) (seq @ctx-stack)) " ") "ERROR: " form)]
     (swap! counters (fn [r] (-> r (update :error inc) (update :fails conj line))))
     (println line)))
 
@@ -203,11 +209,13 @@
           (clojure.test/err! (str (pr-str '~form) " threw: " (clojure.test/err-text e#))))))))
 
 (defmacro testing [s & body]
-  `(do
-     (swap! clojure.test/ctx-stack conj ~s)
-     (try
-       (do ~@body)
-       (finally (swap! clojure.test/ctx-stack pop)))))
+  `(binding [clojure.test/*testing-contexts* (conj clojure.test/*testing-contexts* ~s)]
+     ~@body))
+
+(defn testing-contexts-str
+  "Returns a string representation of the current test context, innermost last."
+  []
+  (str/join " " (reverse *testing-contexts*)))
 
 (defmacro deftest [name & body]
   `(do
