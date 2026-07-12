@@ -1,0 +1,40 @@
+Stage 1 — java.util.Random seeded LCG
+make -j8 test
+
+=== STAGE 3 GAP (supervisor) — complete before requesting the battery ===
+Locale strftime works for de/fr/en (verified: "Mai Montag", "mai lundi") but
+ITALIAN/JAPANESE/KOREAN/CHINESE/SPANISH/UK/GERMANY/ITALY/JAPAN/CHINA still
+CRASH: "No static java.util.Locale/ITALIAN". The strftime path is fine — the
+Locale STATIC CONSTANTS are unregistered, and there are still TWO Locale shims
+(finding 26, not yet consolidated):
+  host/chez/java/host-static-methods.ss:269 (jolt-locale, has setDefault/
+    forLanguageTag) and host/chez/java/inst-time.ss:446 (jhost objects, more
+    language constants) — reconciled only by load order.
+DO (this is the R6-deferred consolidation the brief's Stage 3 asked for):
+1. Consolidate to ONE Locale registration (keep the richer jhost-object form
+   in inst-time.ss; migrate setDefault + forLanguageTag into it; DELETE the
+   host-static-methods.ss:269 duplicate). Verify getDefault/forLanguageTag/
+   setDefault callers still work.
+2. Register the full standard java.util.Locale constant set, each → its
+   language[-region] id (strftime localizes from the id):
+     ENGLISH en, FRENCH fr, GERMAN de, ITALIAN it, JAPANESE ja, KOREAN ko,
+     CHINESE zh, SIMPLIFIED_CHINESE zh-CN, TRADITIONAL_CHINESE zh-TW,
+     FRANCE fr-FR, GERMANY de-DE, ITALY it-IT, JAPAN ja-JP, KOREA ko-KR,
+     CHINA zh-CN, PRC zh-CN, TAIWAN zh-TW, UK en-GB, US en-US, CANADA en-CA,
+     CANADA_FRENCH fr-CA, ROOT "".
+3. An UNKNOWN/untabled locale constant must NOT crash — but these are all
+   KNOWN constants, so registering them fixes the crash. The strftime path
+   already English-falls-back when the OS lacks the locale data.
+Verify: (.format (DateTimeFormatter/ofPattern "MMMM EEEE" java.util.Locale/ITALIAN)
+(LocalDate/parse "2026-05-04")) => "maggio lunedì" (JVM). Do NOT add locale-NAME
+rows to the CI-gated corpus (host-locale-dependent) — local check only.
+Commit Stage 3 completion + your uncommitted Stage 4 work as separate commits,
+each with its SHA in this file, before the battery.
+
+STAGE 3 COMMIT: b38f09b — consolidate Locale registration, full constant set
+              9d6f1fb — no-CRASH corpus rows
+STAGE 4 COMMITS: 1dd31f9 (DST/zone offset via libc localtime, rule-table fallback)
+               332d0ef (capability probe, resolve-zone/zone-id-of, tz-backend guard)
+               eff5581 (zone offset corpus rows: AU/US/IN DST/non-DST)
+               e0e19e7 (Stages 4+5 final: restored DST rule table, TimeZone/SDF zone-aware)
+STAGE 5 SHA: e0e19e7 — TimeZone/SDF zone-aware, ISO_ZONED_DATE_TIME [VV] zone-id
