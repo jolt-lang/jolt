@@ -10,16 +10,20 @@
 ;; Loaded from rt.ss BEFORE collections.ss so key-hash can use jolt-hasheq.
 
 ;; ============================================================================
-;; 32-bit signed integer helpers
+;; 32-bit signed integer helpers — all macros (syntax-rules) so they textually
+;; inline at every call site with zero procedure-call overhead.
 ;; ============================================================================
 
 ;; Mask to unsigned 32 bits (0 .. 2^32-1).
-(define (u32 x) (bitwise-and x #xFFFFFFFF))
+(define-syntax u32
+  (syntax-rules ()
+    ((_ x) (bitwise-and x #xFFFFFFFF))))
 
 ;; Interpret unsigned 32 bits as signed 32-bit (-2^31 .. 2^31-1).
-(define (i32 x)
-  (let ((u (u32 x)))
-    (if (fx>=? u #x80000000) (fx- u #x100000000) u)))
+(define-syntax i32
+  (syntax-rules ()
+    ((_ x) (let ((u (u32 x)))
+             (if (fx>=? u #x80000000) (fx- u #x100000000) u)))))
 
 ;; 32-bit wrapping multiply — fixnum-pure via 16-bit split.
 ;; Proof no step exceeds Chez's signed 61-bit fixnum range (±2^60−1):
@@ -33,26 +37,36 @@
 ;;   (fx+ hi_part lo_part) : each ≤ max(2^32, 2^47) = 2^47 → sum ≤ 2^48 ≪ 2^60 ✓
 ;;   final (fxand sum #xFFFFFFFF) ∈ [0, 2^32−1]                  ≪ 2^60  ✓
 ;; After the unsigned 32-bit result is obtained, i32 converts back to signed.
-(define (mul32 a b)
-  (let* ((a (i32 a))
-         (b (i32 b))
-         (hi (fxand (fxsra b 16) #xFFFF))
-         (lo (fxand b #xFFFF))
-         (hi-part (fxsll (fxand (fx* a hi) #xFFFF) 16))
-         (lo-part (fx* a lo)))
-    (i32 (fxand (fx+ hi-part lo-part) #xFFFFFFFF))))
+;; a and b are each evaluated exactly once (let*-bound as a*/b*).
+(define-syntax mul32
+  (syntax-rules ()
+    ((_ a b)
+     (let* ((a* (i32 a))
+            (b* (i32 b))
+            (hi (fxand (fxsra b* 16) #xFFFF))
+            (lo (fxand b* #xFFFF))
+            (hi-part (fxsll (fxand (fx* a* hi) #xFFFF) 16))
+            (lo-part (fx* a* lo)))
+       (i32 (fxand (fx+ hi-part lo-part) #xFFFFFFFF))))))
 
-;; 32-bit wrapping add.
-(define (add32 a b) (i32 (+ (i32 a) (i32 b))))
+;; 32-bit wrapping add. a and b each evaluated once.
+(define-syntax add32
+  (syntax-rules ()
+    ((_ a b) (i32 (+ (i32 a) (i32 b))))))
 
 ;; Unsigned right shift (Java >>>).
-(define (urs32 x n) (bitwise-arithmetic-shift-right (u32 x) n))
+(define-syntax urs32
+  (syntax-rules ()
+    ((_ x n) (bitwise-arithmetic-shift-right (u32 x) n))))
 
-;; Rotate left (Java Integer.rotateLeft).
-(define (rotl32 x n)
-  (let ((n (remainder n 32)))
-    (i32 (bitwise-ior (bitwise-arithmetic-shift-left (u32 x) n)
-                      (urs32 x (fx- 32 n))))))
+;; Rotate left (Java Integer.rotateLeft). x and n each evaluated once.
+(define-syntax rotl32
+  (syntax-rules ()
+    ((_ x n)
+     (let ((n* (remainder n 32))
+           (x* x))
+       (i32 (bitwise-ior (bitwise-arithmetic-shift-left (u32 x*) n*)
+                         (urs32 x* (fx- 32 n*))))))))
 
 ;; ============================================================================
 ;; Murmur3 — exact port of clojure.lang.Murmur3.
