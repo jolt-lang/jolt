@@ -59,15 +59,16 @@
 (define %tzset     (jolt-foreign-proc-safe "tzset"     '() 'void))
 (define %localtime (jolt-foreign-proc-safe "localtime" '(void*) 'void*))
 
-;; FFI available check only — zone-offset-seconds is defined later.
-(define libc-tz-available?* (and %setenv %tzset %localtime))
+;; FFI symbols present? (setenv is POSIX-only, so this is #f on Windows).
+(define libc-tz-symbols? (and %setenv %tzset %localtime))
 
 ;; zone offset in seconds east of UTC at an epoch-second instant, via libc.
-;; Returns #f when libc is unavailable or the zone is unknown.
+;; Returns #f when the symbols are absent; a number otherwise (0 for an unknown
+;; zone or a host with no tzdata — the correctness probe below rejects those).
 ;; struct tm layout (64-bit macOS/glibc): 9 ints(36) + pad(4) + long tm_gmtoff(8).
 ;; localtime returns a STATIC buffer — do NOT foreign-free it.
-(define (zone-offset-seconds zone epoch)
-  (and libc-tz-available?*
+(define (zone-offset-seconds-raw zone epoch)
+  (and libc-tz-symbols?
        (with-mutex tz-mutex
          (%setenv "TZ" zone 1)
          (%tzset)
@@ -77,6 +78,22 @@
              (foreign-free tp)
               (and tm (not (eq? tm 0))
                     (foreign-ref 'long tm 40)))))))
+
+;; Capability probe: libc is USABLE only if it returns known-correct offsets for
+;; known zones/instants. This rejects Windows (no tm_gmtoff → garbage) AND a
+;; host whose tzdata is missing (localtime returns 0/UTC for a named zone).
+(define libc-tz-available?*
+  (and libc-tz-symbols?
+       (guard (e (#t #f))
+         (let ((jan 1768478400))  ; 2026-01-15T12:00:00Z
+           (and (eqv? (zone-offset-seconds-raw "America/New_York" jan) -18000)
+                (eqv? (zone-offset-seconds-raw "Australia/Sydney" jan) 39600)
+                (eqv? (zone-offset-seconds-raw "UTC" jan) 0))))))
+
+;; zone offset via libc, gated on the capability probe (so an unusable libc
+;; yields #f and the caller degrades to the rule table).
+(define (zone-offset-seconds zone epoch)
+  (and libc-tz-available?* (zone-offset-seconds-raw zone epoch)))
 
 ;; locale-id → libc locale string (for setlocale).
 (define locale->libc-table
@@ -1638,12 +1655,17 @@
   (and (> (string-length id) 0) (memv (string-ref id 0) '(#\+ #\-))))
 
 ;; offset for a zone at a UTC instant (epoch-seconds). Named zones route through
-;; libc localtime; fixed offsets are parsed directly.
+;; libc localtime; fixed offsets are parsed directly. When libc is unavailable
+;; (Windows / no-tzdata), degrade to the built-in DST rule table.
 (define (zone-offset-at-instant id std secs)
   (cond ((fixed-offset-zone? id) (parse-zone-offset id))
         ((zone-has-slash? id)
-         (let ((o (zone-offset-seconds id secs)))
-           (if o o std)))
+         (or (zone-offset-seconds id secs)
+             (let ((de (dst-entry id)))
+               (if de
+                   (dst-offset-at-instant id (cadr de) (cddr de) secs)
+                   (cond ((assoc id zone-offset-table) => cdr)
+                         (else std))))))
         (else std)))
 ;; offset for a zone at a local wall-time (epoch-seconds).
 (define (zone-offset-at-local id std lsecs)
@@ -1728,23 +1750,30 @@
              (fall   (+ (* (nth-dow-epoch-day year 10 0 -1) 86400) 3600)))
          (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
       ;; AU: DST from 1st Sun Oct 02:00 local → 1st Sun Apr 03:00 local.
+      ;; Southern hemisphere: the DST period WRAPS the new year, so in-DST is
+      ;; after this year's spring OR before this year's fall (not between).
       ((au)
        (let ((spring (- (+ (* (nth-dow-epoch-day year 10 0 1) 86400) (* 2 3600)) std))
              (fall   (- (+ (* (nth-dow-epoch-day year 4 0 1) 86400) (* 3 3600)) (+ std dst-saving))))
-         (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
+         (if (or (>= secs spring) (< secs fall)) (+ std dst-saving) std)))
       ;; NZ: DST from last Sun Sep 02:00 local → 1st Sun Apr 03:00 local.
       ((nz)
        (let ((spring (- (+ (* (nth-dow-epoch-day year 9 0 -1) 86400) (* 2 3600)) std))
              (fall   (- (+ (* (nth-dow-epoch-day year 4 0 1) 86400) (* 3 3600)) (+ std dst-saving))))
-         (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
+         (if (or (>= secs spring) (< secs fall)) (+ std dst-saving) std)))
       (else std))))
 ;; offset for a zone at a UTC instant (epoch-seconds). Named zones route through
-;; libc localtime; fixed offsets are parsed directly.
+;; libc localtime; fixed offsets are parsed directly. When libc is unavailable
+;; (Windows / no-tzdata), degrade to the built-in DST rule table.
 (define (zone-offset-at-instant id std secs)
   (cond ((fixed-offset-zone? id) (parse-zone-offset id))
         ((zone-has-slash? id)
-         (let ((o (zone-offset-seconds id secs)))
-           (if o o std)))
+         (or (zone-offset-seconds id secs)
+             (let ((de (dst-entry id)))
+               (if de
+                   (dst-offset-at-instant id (cadr de) (cddr de) secs)
+                   (cond ((assoc id zone-offset-table) => cdr)
+                         (else std))))))
         (else std)))
 ;; offset for a zone at a local wall-time (epoch-seconds).
 (define (zone-offset-at-local id std lsecs)
