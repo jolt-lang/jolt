@@ -204,3 +204,81 @@
   (jolt-render-throwable v port)
   (let ((bt (jolt-backtrace-string v)))
     (when bt (display "  trace:\n" port) (display bt port))))
+
+;; ---- #error print form (pr/pr-str) and toString (str) for ex-info records ----
+
+;; Walk the cause chain of a jolt-ex-info-record, returning a list of cause entries
+;; (innermost first). Each entry is a vector [class-name message data].
+(define (jolt-error-via-chain rec)
+  (let loop ((r rec) (acc '()))
+    (let ((class-name (jolt-ex-info-record-class-name r))
+          (msg (jolt-ex-info-record-message r))
+          (data (jolt-ex-info-record-data r))
+          (cause (jolt-ex-info-record-cause r)))
+      (let ((new-acc (cons (vector class-name msg data) acc)))
+        (if (jolt-ex-info-record? cause)
+            (loop cause new-acc)
+            (reverse new-acc))))))
+
+;; Render a single :via entry as a string map.
+(define (jolt-error-render-via-entry entry)
+  (let* ((class-name (vector-ref entry 0))
+         (msg (vector-ref entry 1))
+         (data (vector-ref entry 2))
+         (type-str (jolt-pr-str (jolt-symbol #f class-name)))
+         (msg-str (jolt-pr-str msg))
+         (has-data (not (jolt-nil? data))))
+    (string-append " {:type " type-str
+                   " :message " msg-str
+                   (if has-data (string-append " :data " (jolt-pr-str data)) "")
+                   " :at nil}")))
+
+;; Render the :via chain list.
+(define (jolt-error-render-via chain)
+  (string-append "[" (jolt-str-join (map jolt-error-render-via-entry chain)) "]"))
+
+;; Render frame records as :trace vectors. Each record is (name . src-vec-or-#f).
+(define (jolt-error-render-trace recs)
+  (if (null? recs)
+      "[]"
+      (let ((port (open-output-string)))
+        (put-string port "[")
+        (let loop ((rs recs) (first? #t))
+          (unless (null? rs)
+            (unless first? (put-string port " "))
+            (let* ((p (car rs)) (r (cdr p)))
+              (if (vector? r)
+                  (let ((ns (vector-ref r 0)) (nm (vector-ref r 1))
+                        (file (vector-ref r 2)) (line (vector-ref r 3)))
+                    (put-string port (string-append "[" (jolt-pr-str ns) " " (jolt-pr-str nm) " "
+                                                    (if (string? file) (string-append "\"" file "\" ") "")
+                                                    (number->string line) "]")))
+                  (put-string port (jolt-pr-str (car p))))
+              (loop (cdr rs) #f))))
+        (put-string port "]")
+        (get-output-string port))))
+
+;; #error print form for jolt-ex-info-records (pr/pr-str). Matches JVM shape:
+;; #error {:cause <root-msg> :data {...} :via [{...}] :trace [[...]...]}
+;; :trace is always [] here — frame records are only accessible during a throw.
+(register-pr-arm! jolt-ex-info-record?
+  (lambda (x)
+    (let* ((chain (jolt-error-via-chain x))
+           (root-cause (vector-ref (car (reverse chain)) 1))
+           (data (jolt-ex-info-record-data x))
+           (via-str (jolt-error-render-via chain)))
+      (string-append "#error {\n :cause " (jolt-pr-str root-cause)
+                     (if (jolt-nil? data) "" (string-append "\n :data " (jolt-pr-str data)))
+                     "\n :via " via-str
+                     "\n :trace []"
+                     "}"))))
+
+;; toString (str/print) for ex-info records: "ClassName: message data"
+(register-str-render! jolt-ex-info-record?
+  (lambda (x)
+    (let* ((class-name (jolt-ex-info-record-class-name x))
+           (msg (jolt-ex-info-record-message x))
+           (data (jolt-ex-info-record-data x)))
+      (string-append class-name ": " (jolt-str-render-one msg)
+                     (if (jolt-nil? data) ""
+                         (string-append " " (jolt-pr-str data)))))))
