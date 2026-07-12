@@ -64,13 +64,13 @@
 ;; the class NAME of x (string), or nil for nil. (class x) wraps it in a Class
 ;; value (make-class-obj, host-static-classes.ss) so it renders like a JVM Class
 ;; while staying = its name string.
-;; a raw Chez condition Clojure raises a specific class for (records-interop.ss
-;; chez-condition-exc-class) reports that JVM class, so (class e) and a
-;; (thrown? ArityException …) test match — not the opaque :object fallback.
+;; a raw Chez condition: all operation sites now throw typed jolt throwables, so
+;; any raw condition that escapes is a runtime error — classify it as
+;; RuntimeException (not IllegalArgumentException, which was always a lie).
 (register-class-arm!
-  (lambda (x) (and (chez-condition-exc-class x) #t))
-  (lambda (x) (let ((p (assoc (chez-condition-exc-class x) class-token-alist)))
-                (if p (cdr p) "java.lang.IllegalArgumentException"))))
+  (lambda (x) (condition? x))
+  (lambda (x) (let ((p (assoc "RuntimeException" class-token-alist)))
+                (if p (cdr p) "java.lang.RuntimeException"))))
 ;; A fn def'd into a var reports a JVM-style class name "ns$munged-name" (the
 ;; forward CHAR_MAP), so clojure.spec.alpha's fn-sym (which splits on $ and
 ;; demunges) recovers the predicate's symbol. Anonymous / unregistered fns stay
