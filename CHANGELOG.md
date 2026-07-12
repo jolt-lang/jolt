@@ -7,8 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-11
+
 ### Fixed
 
+- Destructuring a rest pattern positionally walks the seq like the JVM:
+  `(let [[[k v] & ks] a-map] …)` bound `k`/`v` to nil because the positional
+  elements read `(nth coll i nil)` even when `&` is present. This silently
+  broke `clojure.spec.alpha`'s `keys` conform — `s/valid?` accepted maps whose
+  nested key specs failed.
+- `empty?` is seq-based like the reference implementation: any seqable value
+  answers (including the `java.util` collection shims) and a non-seqable
+  raises `IllegalArgumentException` instead of an opaque host error.
+- A deftype declaring a `clojure.lang` collection interface now matches the
+  JVM at both ends: `instance?`/`map?`/`coll?`/`associative?` answer through
+  the declared interface and its ancestry, and calling a declared-but-
+  unimplemented method throws `AbstractMethodError` instead of falling back to
+  the bare-deftype fields-as-map behavior.
+- `inst?` is a real instance check covering `java.util.Date`, its `java.sql`
+  subclasses, and `java.time.Instant` — the old tagged-map probe crashed on
+  sorted collections and missed `Instant`.
+- Throwables and reader conditionals no longer leak their internal map
+  representation through `map?`/`coll?`/`ifn?`/`seqable?`/`instance? IObj`.
+- Java regex hex and unicode escapes (`\xHH`, `\x{…}`, `\uHHHH`) translate to
+  their characters before reaching the regex engine, which mis-parsed them.
+- `keys`/`vals` accept any seq of map entries — `(keys (filter pred a-map))`
+  works like `RT.keys`.
+- A transient carries its source map's representation: an array map round-trips
+  through `transient`/`persistent!` as an array map and reports
+  `TransientArrayMap`; a hash map stays hash-ordered (previously everything
+  came back in array mode).
+- The `instance?` macro evaluates a var or local holding a Class value —
+  `(def c (class x)) (instance? c y)` works — and `class?` recognizes Class
+  values instead of always returning false.
 - `clojure.pprint`'s cl-format engine: parametrized directives (`~5A`, `~2{`,
   `~20<`, …) rejected their own parameters, and a forward `~n@*` goto never
   moved. Both fixed, and the missing `~F`, `~$`, `~C`, `~R` (radix/roman), and
@@ -16,8 +47,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and friends work. A JVM-certified subset of the upstream cl-format suite now
   runs as a standing gate.
 
+### Added
+
+- The JVM class model fills out across the board, driven by running type-
+  introspection libraries (lasertag, expound, fireworks all pass or reach
+  their documented ceilings): ~20 exception/error constructors with hierarchy
+  placement, `java.util.ArrayDeque` and `HashSet`, `(class x)` for the
+  `java.time` values, Agent/Volatile/Var/Delay/MultiFn/ReaderConditional/
+  MapEntry, sorted and transient collections and hash-mode maps, JVM-shaped
+  function class names and the `#object[…]` printed form, `Matcher`
+  `.start`/`.end`, `String` `.repeat`/`.isBlank`, `getDeclaredFields`
+  reflection over modeled types, a minimal `DateTimeFormatterBuilder`, and a
+  `clojure.main` namespace with `demunge`.
+- `clojure.test/*testing-contexts*` is a real bindable dynamic var and
+  `testing` binds it; `testing-contexts-str` added.
+
 ### Changed
 
+- Small sets preserve insertion order through the same array-mode backing that
+  small map literals use (past 8 elements they go hash-ordered), so sets and
+  maps share one deterministic iteration story. The `java.util` HashMap and
+  HashSet shims iterate in insertion order too.
 - Record fields fed a mix of integers and floats (`:num`) unbox in protocol-impl
   arithmetic at monomorphic call sites: whole-program builds emit a
   flonum-specialized clone per eligible impl (a `:num` field read beside a
@@ -414,7 +464,10 @@ Clojure-compatible standard library.
 - **Distribution**: a self-contained `joltc` binary, a Homebrew tap, and an
   install script.
 
-[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/jolt-lang/jolt/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/jolt-lang/jolt/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/jolt-lang/jolt/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/jolt-lang/jolt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jolt-lang/jolt/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/jolt-lang/jolt/compare/v0.1.6...v0.1.7
