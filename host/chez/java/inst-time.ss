@@ -203,6 +203,16 @@
             ((or (char=? (string-ref input ii) #\+) (char=? (string-ref input ii) #\-))
              (let loop ((j (+ ii 1))) (if (and (< j inn) (or (digit? (string-ref input j)) (char=? (string-ref input j) #\:))) (loop (+ j 1)) j)))
             (else ii)))
+    ;; skip a '[' optional section to just past its matching ']' (nestable;
+    ;; ']' inside a '…' literal is not a delimiter). `j` is just past the '['.
+    (define (skip-optional pj)
+      (let loop ((j pj) (depth 0) (inq #f))
+        (cond ((>= j pn) j)
+              (inq (loop (+ j 1) depth (not (char=? (string-ref pattern j) #\'))))
+              ((char=? (string-ref pattern j) #\') (loop (+ j 1) depth #t))
+              ((char=? (string-ref pattern j) #\[) (loop (+ j 1) (+ depth 1) #f))
+              ((char=? (string-ref pattern j) #\]) (if (= depth 0) (+ j 1) (loop (+ j 1) (- depth 1) #f)))
+              (else (loop (+ j 1) depth #f)))))
     (let loop ((pi 0) (ii 0))
       (if (>= pi pn)
           (begin
@@ -258,6 +268,11 @@
                            ((char=? (string-ref pattern pj) #\') (loop (+ pj 1) ij))
                            ((and (< ij inn) (char=? (string-ref input ij) (string-ref pattern pj))) (lit (+ pj 1) (+ ij 1)))
                            (else (pfail))))))
+              ;; [ ] Java optional section: if the input is exhausted, skip the
+              ;; whole section to its matching ] (absent fields keep defaults —
+              ;; a bare yyyy-MM-dd yields midnight UTC); otherwise parse through.
+              ((char=? c #\[) (if (>= ii inn) (loop (skip-optional (+ pi 1)) ii) (loop (+ pi 1) ii)))
+              ((char=? c #\]) (loop (+ pi 1) ii))
               ;; literal: match it; a pattern space tolerates missing/extra spaces.
               ((char=? c #\space)
                (let skip ((ij ii)) (if (and (< ij inn) (char=? (string-ref input ij) #\space)) (skip (+ ij 1)) (loop (+ pi 1) ij))))
