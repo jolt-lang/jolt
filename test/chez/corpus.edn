@@ -52,6 +52,7 @@
   {:suite "interop / ConcurrentHashMap" :label "put + get/count/contains?" :expected "[1 1 true]" :actual "(let [m (java.util.concurrent.ConcurrentHashMap.)] (.put m :a 1) [(get m :a) (count m) (contains? m :a)])" :portability :jvm}
   {:suite "interop / Class.forName" :label "unknown class throws ClassNotFoundException" :expected ":nf" :actual "(try (Class/forName \"no.such.Klass\") (catch ClassNotFoundException _ :nf))" :portability :jvm}
   {:suite "interop / Class.forName" :label "known class resolves" :expected "\"java.lang.String\"" :actual "(.getName (Class/forName \"java.lang.String\"))" :portability :jvm}
+  {:suite "interop / Class.forName" :label "miss with known last-segment throws ClassNotFoundException" :expected ":cnfe" :actual "(try (Class/forName \"com.acme.String\") (catch ClassNotFoundException _ :cnfe))" :portability :jvm}
   {:suite "clojure.string / replace" :label "char match and replacement" :expected "\"a-b-c\"" :actual "(clojure.string/replace \"a/b/c\" \\/ \\-)" :portability :common}
   {:suite "clojure.string / replace" :label "char match, string replacement" :expected "\"x_y\"" :actual "(clojure.string/replace \"x.y\" \\. \"_\")" :portability :common}
   {:suite "interop-fixes / deprecated #^ metadata reader" :label "#^ type hint on a param" :expected "\"x\"" :actual "(do (defn f1 [#^String s] s) (f1 \"x\"))" :portability :common}
