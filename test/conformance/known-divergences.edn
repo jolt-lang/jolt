@@ -11,8 +11,8 @@
   "jolt printer renders transients/atoms/print-method overrides differently from JVM #object",
   :strictness
   "jolt is intentionally stricter: throws on odd assoc! args / defn with no param vector",
-  :impl-detail
-  "representation detail: syntax-quote yields a list? (JVM yields a Cons); small hash-map iterates in insertion order (JVM hash order — not a contract; ClojureScript is also insertion-ordered), so entry-evaluation order through a syntax-quoted map literal is source order, pinned in unit.edn",
+   :impl-detail
+   "representation detail: syntax-quote yields a list? (JVM yields a Cons)",
   :seq-type-model
   "jolt models every seq as PersistentList (eager) or LazySeq (deferred); JVM reifies a specialized class per producer (Cons/Iterate/LongRange/Repeat/Cycle/ChunkedSeq/StringSeq/KeySeq/RSeq/ArraySeq/SubVector). Values and laziness are correct, only (class …) differs. jolt-aei7",
   :chunking-model

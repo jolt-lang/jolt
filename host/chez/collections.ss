@@ -195,14 +195,16 @@
 (define-record-type hnode (fields bm arr) (nongenerative chez-hnode-v1))
 (define-record-type hcoll (fields hash alist) (nongenerative chez-hcoll-v1))
 (define empty-hnode (make-hnode 0 (vector)))
-(define hmask #x3FFFFFFFFFFFFFF)       ; 58-bit non-negative hash window
-(define max-shift 55)
-;; bitwise-and (not fxand): jolt-hash is set!-decorated per type (records/inst/
-;; sorted return their own hash) and Chez's equal-hash can yield a BIGNUM, so a
-;; key's hash isn't guaranteed to be a fixnum. Masking with the 58-bit window via
-;; the generic bitwise-and always lands in fixnum range for the HAMT's fx slicing.
+(define hmask #xFFFFFFFF)                ; 32-bit unsigned hash window (JVM int range)
+(define max-shift 30)                     ; 7 levels × 5 bits = 35 > 32; last level shift 30
+;; bitwise-and (not fxand): jolt-hasheq returns a signed 32-bit int, so it's
+;; always a fixnum. But keep the generic fallback for extension types that might
+;; return bignums via equal-hash.
 (define (key-hash k)
-  (let ((h (jolt-hash k)))
+  ;; jolt-hasheq now has a flat-inlined fixnum fast path (murmur3-hash-long-flat)
+  ;; and a keyword cached-field read — no re-dispatch needed here.
+  ;; Mask to unsigned 32 bits for the HAMT's fx ops.
+  (let ((h (jolt-hasheq k)))
     (if (fixnum? h) (fxand h hmask) (bitwise-and h hmask))))
 (define (chunk h shift) (fxand (fxsra h shift) 31))
 (define (bitpos h shift) (fxsll 1 (chunk h shift)))
@@ -240,8 +242,8 @@
              (let ((al (hcoll-alist child)))
                (if (assoc-jolt k al)
                    (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (alist-replace k v al))))
-                   (begin (set-box! added #t)
-                          (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (cons (cons k v) al))))))))
+                    (begin (set-box! added #t)
+                           (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (append al (list (cons k v))))))))))
             ((jolt= (car child) k) (make-hnode bm (vec-set arr i (cons k v))))   ; replace
             (else (set-box! added #t)
                   (make-hnode bm (vec-set arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v)))))))))
@@ -273,18 +275,18 @@
              (set-box! removed #t) (make-hnode (fxand bm (fxnot bit)) (vec-remove arr i)))
             (else node))))))
 
-(define (node-fold node proc acc)     ; (proc k v acc) over every leaf
+(define (node-fold node proc acc)     ; (proc k v acc) over every leaf, JVM (ascending) order
   (let ((arr (hnode-arr node)))
-    (let loop ((i 0) (acc acc))
-      (if (fx<? i (vector-length arr))
+    (let loop ((i (fx- (vector-length arr) 1)) (acc acc))
+      (if (fx<? i 0)
+          acc
           (let ((child (vector-ref arr i)))
-            (loop (fx+ i 1)
+            (loop (fx- i 1)
                   (cond ((hnode? child) (node-fold child proc acc))
                         ((hcoll? child)
                          (let cl ((al (hcoll-alist child)) (a acc))
                            (if (null? al) a (cl (cdr al) (proc (caar al) (cdar al) a)))))
-                        (else (proc (car child) (cdr child) acc)))))
-          acc))))
+                        (else (proc (car child) (cdr child) acc)))))))))
 
 ;; ============================================================================
 ;; persistent map / set over the HAMT
@@ -300,7 +302,7 @@
 (define empty-pmap-hash (make-pmap empty-hnode 0 #f))      ; hash-order backing (sets)
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
 ;; PersistentArrayMap threshold: assoc of a new key promotes to hash mode once the
-;; map already holds 8 entries (array.length >= 16 in the reference). Clojure 1.13
+;; map already holds 8 entries (matching JVM HASHTABLE_THRESHOLD = 16 array slots).
 ;; raised the limit to 64 for maps whose keys are ALL keywords (the common
 ;; keyword-map case); mixed-key maps still cap at 8.
 (define array-map-limit 8)
@@ -309,7 +311,7 @@
   (or (null? ks) (and (keyword? (car ks)) (all-keywords? (cdr ks)))))
 ;; Should a map of `cnt` entries with insertion order `ord` stay in array mode
 ;; when key `k` is added? Under 8 always; a keyword-only map (existing keys + the
-;; new key all keywords) grows to 64; otherwise it caps at 8.
+;; new key all keywords) grows to 64; otherwise caps at 8.
 (define (pmap-array-keep? cnt ord k)
   (cond ((fx<? cnt array-map-limit) #t)
         ((fx>=? cnt array-map-limit-kw) #f)
@@ -368,7 +370,7 @@
         (let loop ((ks (reverse ord)) (a acc))
           (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
         (node-fold (pmap-root m) proc acc))))
-;; map LITERAL ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
+;; map LITERAL ctor ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
 ;; hash map beyond (RT.map).
 (define (jolt-hash-map . kvs)
   (let loop ((m empty-pmap) (kvs kvs))
@@ -378,25 +380,23 @@
                  (pmap->hash m) m)))
           ((null? (cdr kvs)) (error 'hash-map "odd number of map literal entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
-;; array-map ctor: insertion-ordered regardless of size (createAsIfByAssoc).
+;; array-map ctor: insertion-ordered (PersistentArrayMap, createAsIfByAssoc).
+;; Promotes past 8 entries to hash-ordered.
 (define (jolt-array-map-build kvs)
   (let loop ((m empty-pmap) (kvs kvs))
     (cond ((null? kvs) m)
           ((null? (cdr kvs)) (error 'array-map "odd number of map entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
-;; hash-map ctor: hash order (PersistentHashMap).
-;; hash-map follows the literal ctor: insertion-ordered up to the array-map
-;; threshold, hash order beyond (ClojureScript's hash-map does the same; the
-;; JVM's is always hash-ordered, but that order is not a contract and real
-;; libraries iterate small hash-maps expecting construction order).
+;; hash-map-build: CL function hash-map — always hash-ordered (JVM PersistentHashMap).
 (define (jolt-hash-map-build kvs)
-  (apply jolt-hash-map kvs))
+  (let loop ((m empty-pmap-hash) (kvs kvs))
+    (cond ((null? kvs) m)
+          ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
+          (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
 
 (define-record-type pset (fields m) (nongenerative chez-pset-v1))
-; small sets preserve insertion order through the same array-mode backing map
-; the small-map literals use (>8 elements, or >64 all-keyword, go hash-ordered);
-; real libraries iterate small sets expecting construction order, like maps.
-(define empty-pset (make-pset empty-pmap))
+;; sets are ALWAYS hash-ordered (JVM PersistentHashSet), backed by pmap in hash mode.
+(define empty-pset (make-pset empty-pmap-hash))   ; sets are ALWAYS hash-ordered (JVM PersistentHashSet)
 (define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
 (define (pset-disj s e) (make-pset (pmap-dissoc (pset-m s) e)))
 (define (pset-contains? s e) (pmap-contains? (pset-m s) e))
@@ -637,15 +637,20 @@
     (else #f)))
 (define (jolt-coll-hash x)
   (cond
-    ((pvec? x)
-     (let ((n (pvec-count x)))
-       (let loop ((i 0) (h 1))
-         (if (fx=? i n) (bitwise-and h hmask)
-             (let* ((chunk (pv-chunk-for x i)) (clen (vector-length chunk)))
-               (let cloop ((j 0) (k i) (h h))
-                 (if (fx>=? j clen) (loop k h)
-                     (cloop (fx+ j 1) (fx+ k 1)
-                            (bitwise-and (+ (* 31 h) (key-hash (vector-ref chunk j))) hmask)))))))))
-    ;; maps/sets hash order-independently (sum), consistent with unordered =
-    ((pmap? x) (bitwise-and (pmap-fold x (lambda (k v a) (+ a (fxxor (key-hash k) (key-hash v)))) 0) hmask))
-    ((pset? x) (bitwise-and (pset-fold x (lambda (e a) (+ a (key-hash e))) 0) hmask))))
+    ((pvec? x) (hash-ordered (jolt-seq x)))
+    ;; maps hash as hashUnordered of entries; each entry contributes hash-ordered of [k v]
+    ;; (APersistentMap.mapHasheq = Murmur3.hashUnordered, MapEntry.hasheq = ordered [k v])
+    ((pmap? x)
+     (let ((result (pmap-fold x
+                    (lambda (k v acc)
+                      (cons (add32 (car acc) (entry-hasheq k v))
+                            (fx+ (cdr acc) 1)))
+                    (cons 0 0))))
+       (mix-coll-hash (car result) (cdr result))))
+    ;; sets hash as hashUnordered of elements
+    ((pset? x)
+     (let ((result (pset-fold x
+                    (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
+                    (cons 0 0))))
+       (mix-coll-hash (car result) (cdr result))))
+    (else (equal-hash x))))

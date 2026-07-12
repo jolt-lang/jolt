@@ -3797,4 +3797,52 @@
   {:suite "conformance / regex" :label "Matcher start and end after find" :expected "[1 4]" :actual "(let [m (re-matcher #\"b+\" \"abbbc\")] (.find m) [(.start m) (.end m)])" :portability :jvm}
   {:suite "interop / reflection" :label "getDeclaredFields names a deftype's fields" :expected "[\"a\" \"b\"]" :actual "(do (deftype RfT [a b]) (mapv (fn [f] (.getName f)) (.getDeclaredFields (class (->RfT 1 2)))))" :portability :jvm}
   {:suite "interop / class model" :label "a transient over an array-map reports TransientArrayMap and round-trips" :expected "[true true]" :actual "(let [t (transient (array-map :a 1 :b 2))] [(= clojure.lang.PersistentArrayMap$TransientArrayMap (class t)) (= clojure.lang.PersistentArrayMap (class (persistent! t)))])" :portability :jvm}
-]
+  {:suite "interop / class model" :label "a transient over an array-map reports TransientArrayMap and round-trips" :expected "[true true]" :actual "(let [t (transient (array-map :a 1 :b 2))] [(= clojure.lang.PersistentArrayMap$TransientArrayMap (class t)) (= clojure.lang.PersistentArrayMap (class (persistent! t)))])" :portability :jvm}
+  ;; ============================================================================
+  ;; conformance / hasheq — JVM-compatible Murmur3 hashing (Stage 1)
+  ;; ============================================================================
+  {:suite "conformance / hasheq" :label "hash nil" :expected "0" :actual "(hash nil)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash keyword :a" :expected "-2123407586" :actual "(hash :a)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash keyword :foo/bar" :expected "-1386151538" :actual "(hash :foo/bar)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash symbol a" :expected "-482876059" :actual "(hash 'a)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash symbol foo/bar" :expected "254379989" :actual "(hash 'foo/bar)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash string s" :expected "1975881410" :actual "(hash \"s\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash string hello" :expected "1715862179" :actual "(hash \"hello\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash empty string" :expected "0" :actual "(hash \"\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash fixnum 42" :expected "1871679806" :actual "(hash 42)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash fixnum 0" :expected "0" :actual "(hash 0)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash fixnum -7" :expected "-1703207563" :actual "(hash -7)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash large long" :expected "-427027581" :actual "(hash 5000000000000000000)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash double 1.5" :expected "1073217536" :actual "(hash 1.5)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash double -0.5" :expected "-1075838976" :actual "(hash -0.5)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash ratio 1/2" :expected "3" :actual "(hash 1/2)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash char \\x" :expected "120" :actual "(hash \\x)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash true" :expected "1231" :actual "(hash true)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash false" :expected "1237" :actual "(hash false)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash vector [1 2 3]" :expected "736442005" :actual "(hash [1 2 3])" :portability :common}
+  {:suite "conformance / hasheq" :label "hash empty vector" :expected "-2017569654" :actual "(hash [])" :portability :common}
+  {:suite "conformance / hasheq" :label "hash list (1 2 3)" :expected "736442005" :actual "(hash '(1 2 3))" :portability :common}
+  {:suite "conformance / hasheq" :label "hash set #{1 2 3}" :expected "439094965" :actual "(hash #{1 2 3})" :portability :common}
+  {:suite "conformance / hasheq" :label "hash empty set" :expected "-15128758" :actual "(hash #{})" :portability :common}
+  {:suite "conformance / hasheq" :label "hash empty map" :expected "-15128758" :actual "(hash {})" :portability :common}
+  {:suite "conformance / hasheq" :label "hash {:a 1}" :expected "1772842048" :actual "(hash {:a 1})" :portability :common}
+  {:suite "conformance / hasheq" :label "hash {:a [1 #{:x}]}" :expected "-134480633" :actual "(hash {:a [1 #{:x}]})" :portability :common}
+  {:suite "conformance / hasheq" :label "(= (hash (sorted-map :a 1)) (hash {:a 1}))" :expected "true" :actual "(= (hash (sorted-map :a 1)) (hash {:a 1}))" :portability :common}
+  {:suite "conformance / hasheq" :label "(= (hash (first {:a 1})) (hash [:a 1]))" :expected "true" :actual "(= (hash (first {:a 1})) (hash [:a 1]))" :portability :common}
+  {:suite "conformance / hasheq" :label "hash vector [:a :b]" :expected "-781497396" :actual "(hash [:a :b])" :portability :common}
+  {:suite "conformance / hasheq" :label "hash seq (seq [1 2])" :expected "156247261" :actual "(hash (seq [1 2]))" :portability :common}
+  {:suite "conformance / hasheq" :label "ordered colls unify: (= (hash [1 2 3]) (hash '(1 2 3)))" :expected "true" :actual "(= (hash [1 2 3]) (hash '(1 2 3)))" :portability :common}
+  {:suite "conformance / hasheq" :label "unordered empty colls unify: (= (hash {}) (hash #{}))" :expected "true" :actual "(= (hash {}) (hash #{}))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / hamt-order — JVM PersistentHashMap/HashSet iteration order (Stage 2)
+  ;; ============================================================================
+  {:suite "conformance / hamt-order" :label "zipmap 12 entries hash-iteration order" :expected "([0 0] [7 7] [1 1] [4 4] [6 6] [3 3] [2 2] [11 11] [9 9] [5 5] [10 10] [8 8])" :actual "(pr-str (seq (zipmap (range 12) (range 12))))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / stage3 — drop insertion-order accommodations
+  ;; ============================================================================
+  {:suite "conformance / stage3" :label "all sets hash-ordered: (seq (conj #{} 3 1 2))" :expected "'(1 3 2)" :actual "(seq (conj #{} 3 1 2))" :portability :common}
+  {:suite "conformance / stage3" :label "hash-map always hash-ordered" :expected "'([:c 3] [:b 2] [:a 1])" :actual "(seq (hash-map :a 1 :b 2 :c 3))" :portability :common}
+  {:suite "conformance / stage3" :label "set of strings hash-ordered" :expected "'(\"aa\" \"mm\" \"zz\")" :actual "(seq (conj #{} \"zz\" \"aa\" \"mm\"))" :portability :common}
+  {:suite "conformance / stage3" :label "map literal ≤8 is PersistentArrayMap" :expected "true" :actual "(= clojure.lang.PersistentArrayMap (class {:a 1}))" :portability :common}
+  {:suite "conformance / stage3" :label "hash-map fn always PersistentHashMap" :expected "true" :actual "(= clojure.lang.PersistentHashMap (class (hash-map :a 1)))" :portability :common}
+  {:suite "conformance / stage3" :label "20-keyword map via hash-map is PersistentHashMap" :expected "true" :actual "(= clojure.lang.PersistentHashMap (class (apply hash-map (interleave (map #(keyword (str \"k\" %)) (range 20)) (range 20)))))" :portability :common}]

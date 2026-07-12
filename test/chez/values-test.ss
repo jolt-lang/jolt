@@ -2,7 +2,7 @@
 ;; symbols, exactness-aware =, hashing). Run from repo root:
 ;;   chez --script test/chez/values-test.ss
 (import (chezscheme))
-(load "host/chez/values.ss")
+(load "host/chez/rt.ss")
 
 (define total 0)
 (define fails 0)

@@ -888,6 +888,5 @@
           ((jolt= (seq-first sa) (seq-first sb)) (loop (jolt-seq (seq-more sa)) (jolt-seq (seq-more sb))))
           (else #f))))
 (define (seq-hash x)
-  (let loop ((s (jolt-seq x)) (h 1))
-    (if (jolt-nil? s) (bitwise-and h hmask)
-        (loop (jolt-seq (seq-more s)) (bitwise-and (+ (* 31 h) (key-hash (seq-first s))) hmask)))))
+  ;; JVM-compatible ordered-collection hash (Murmur3.hashOrdered via mixCollHash).
+  (hash-ordered (jolt-seq x)))

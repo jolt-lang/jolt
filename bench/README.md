@@ -47,16 +47,21 @@ plain `jolt build` (`MODE_A=1` adds this column):
 |---|---|---|---|
 | `fib` | ~1.1× | ~1.1× | call + integer arith |
 | `dispatch` | ~1.2× | ~1.3× | megamorphic protocol dispatch |
-| `collections` | ~1.3× | ~1.3× | persistent map/vector churn |
+| `collections` | ~2.0× | ~2.0× | persistent map/vector churn |
 | `mandelbrot` | ~2.0× | ~6.5× | pure float compute (fl-unboxing needs `--opt`) |
 | `mono-dispatch` | ~2.6× | ~4.0× | monomorphic protocol dispatch |
 | `binary-trees` | ~7.0× | ~7.0× | escaping short-lived records (allocation/GC) |
 
-- **Parity (~1.1–1.3×, both modes)**: integer recursion, persistent-collection
-  churn, and megamorphic protocol dispatch. A megamorphic site runs a per-site
-  polymorphic inline cache (4-slot descriptor scan, unsafe `#3%` vector reads
-  since the cache shape is proven), so it no longer pays a registry lookup per
-  call.
+- **Parity (~1.1–1.3×, both modes)**: integer recursion and megamorphic
+  protocol dispatch. A megamorphic site runs a per-site polymorphic inline
+  cache (4-slot descriptor scan, unsafe `#3%` vector reads since the cache
+  shape is proven), so it no longer pays a registry lookup per call.
+- **`collections`** is ~2× since jolt adopted JVM-exact hashing: every map/set
+  key hashes with Clojure's Murmur3 `hasheq` (so `hash`, set/map iteration
+  order, and hash-dependent output match the JVM byte-for-byte). Keywords and
+  symbols cache their hash; the residual is Murmur3 on integer keys, which the
+  JVM JITs to a handful of instructions and jolt runs as (unsafe, proven) fx
+  ops — this benchmark's integer-keyed churn is the worst case.
 - **`mandelbrot`** is ~2× under `--opt` (fl-unboxing) and ~6.5× in a release
   build — that release gap is the cost of not direct-linking, and is why the
   scorecard tracks both modes.

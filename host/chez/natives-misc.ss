@@ -99,24 +99,13 @@
 (def-var! "clojure.core" "tagged-literal" jolt-tagged-literal)
 ;; tagged-literal? is OVERLAY (reads :jolt/type) — asserted in post-prelude.ss.
 
-;; --- hash family (24-bit masked so int? holds) -------------------------------
-;; The public hash API over jolt-hash (values.ss). hash-ordered/-unordered-coll
-;; fold the element hashes the way Clojure's IHash mixers do.
-(define (nm-h24 x) (bitwise-and (jolt-hash x) #xffffff))
-(define (nm-hash x) (nm-h24 x))
-(define (nm-hash-combine a b)
-  (bitwise-and (bitwise-xor (nm-h24 a) (+ (nm-h24 b) #x9e3779)) #xffffff))
-(define (nm-hash-ordered-coll coll)
-  (let loop ((xs (seq->list (jolt-seq coll))) (h 1))
-    (if (null? xs) h (loop (cdr xs) (bitwise-and (+ (* 31 h) (nm-h24 (car xs))) #xffffff)))))
-(define (nm-hash-unordered-coll coll)
-  (let loop ((xs (seq->list (jolt-seq coll))) (h 0))
-    (if (null? xs) h (loop (cdr xs) (bitwise-and (+ h (nm-h24 (car xs))) #xffffff)))))
-(define (nm-mix-collection-hash hash-basis count)
-  ;; documented superset: jolt hashes are 24-bit, not JVM Murmur3, so the result
-  ;; is a jolt integer (never a JVM hash number); equal inputs hash equal.
-  (nm-h24 (bitwise-xor (nm-h24 hash-basis)
-                       (* (jnum->exact count) #x9e3779))))
+;; --- hash family (JVM-compatible via hasheq.ss) ------------------------------
+;; Replaces the old 24-bit masked hash with JVM Murmur3 hasheq.
+(define (nm-hash x) (jolt-hasheq x))
+(define (nm-hash-combine a b) (hash-combine a b))
+(define (nm-hash-ordered-coll coll) (hash-ordered (jolt-seq coll)))
+(define (nm-hash-unordered-coll coll) (hash-unordered (jolt-seq coll)))
+(define (nm-mix-collection-hash hash-basis count) (mix-coll-hash hash-basis count))
 (def-var! "clojure.core" "hash" nm-hash)
 (def-var! "clojure.core" "hash-combine" nm-hash-combine)
 (def-var! "clojure.core" "hash-ordered-coll" nm-hash-ordered-coll)

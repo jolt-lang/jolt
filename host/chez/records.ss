@@ -730,7 +730,9 @@
         ((keyword? obj) (jch-tags "clojure.lang.Keyword"))
         ((jolt-symbol? obj) (jch-tags "clojure.lang.Symbol"))
         ((pvec? obj) (jch-tags "clojure.lang.PersistentVector"))
-        ((pmap? obj) (jch-tags "clojure.lang.PersistentArrayMap"))
+        ((pmap? obj) (if (pmap-order obj)
+                        (jch-tags "clojure.lang.PersistentArrayMap")
+                        (jch-tags "clojure.lang.PersistentHashMap")))
         ((pset? obj) (jch-tags "clojure.lang.PersistentHashSet"))
         ;; jolt models every seq as a list (no distinct LazySeq), so a seq also
         ;; reports PersistentList / IPersistentList / IPersistentStack — extend-protocol
