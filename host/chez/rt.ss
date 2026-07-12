@@ -314,6 +314,7 @@
 ;; regex: defines regex-t + the re-* fns (def-var!'d into
 ;; clojure.core), so it loads after def-var! and before the printer below (which
 ;; renders a regex-t as #"source").
+(load "host/chez/regex-translate.ss")
 (load "host/chez/regex.ss")
 
 ;; atoms: host-coupled mutable cells; def-var!'d into clojure.core
