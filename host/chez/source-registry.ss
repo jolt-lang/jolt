@@ -226,11 +226,11 @@
          (msg (vector-ref entry 1))
          (data (vector-ref entry 2))
          (type-str (jolt-pr-str (jolt-symbol #f class-name)))
-         (msg-str (jolt-pr-str msg))
+         (msg-str (jolt-pr-readable msg))
          (has-data (not (jolt-nil? data))))
     (string-append " {:type " type-str
                    " :message " msg-str
-                   (if has-data (string-append " :data " (jolt-pr-str data)) "")
+                   (if has-data (string-append " :data " (jolt-pr-readable data)) "")
                    " :at nil}")))
 
 ;; Render the :via chain list.
@@ -267,8 +267,8 @@
            (root-cause (vector-ref (car (reverse chain)) 1))
            (data (jolt-ex-info-record-data x))
            (via-str (jolt-error-render-via chain)))
-      (string-append "#error {\n :cause " (jolt-pr-str root-cause)
-                     (if (jolt-nil? data) "" (string-append "\n :data " (jolt-pr-str data)))
+      (string-append "#error {\n :cause " (jolt-pr-readable root-cause)
+                     (if (jolt-nil? data) "" (string-append "\n :data " (jolt-pr-readable data)))
                      "\n :via " via-str
                      "\n :trace []"
                      "}"))))
@@ -282,3 +282,11 @@
       (string-append class-name ": " (jolt-str-render-one msg)
                      (if (jolt-nil? data) ""
                          (string-append " " (jolt-pr-str data)))))))
+
+;; count on ex-info / host throwable records throws UnsupportedOperationException
+;; matching JVM: "count not supported on this type: <SimpleClassName>"
+(register-count-arm! jolt-ex-info-record?
+  (lambda (coll)
+    (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException"
+                   (string-append "count not supported on this type: "
+                                  (simple-class-name (jolt-ex-info-record-class-name coll)))))))
