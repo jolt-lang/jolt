@@ -3828,4 +3828,8 @@
   {:suite "conformance / hasheq" :label "hash vector [:a :b]" :expected "-781497396" :actual "(hash [:a :b])" :portability :common}
   {:suite "conformance / hasheq" :label "hash seq (seq [1 2])" :expected "156247261" :actual "(hash (seq [1 2]))" :portability :common}
   {:suite "conformance / hasheq" :label "ordered colls unify: (= (hash [1 2 3]) (hash '(1 2 3)))" :expected "true" :actual "(= (hash [1 2 3]) (hash '(1 2 3)))" :portability :common}
-  {:suite "conformance / hasheq" :label "unordered empty colls unify: (= (hash {}) (hash #{}))" :expected "true" :actual "(= (hash {}) (hash #{}))" :portability :common}]
+  {:suite "conformance / hasheq" :label "unordered empty colls unify: (= (hash {}) (hash #{}))" :expected "true" :actual "(= (hash {}) (hash #{}))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / hamt-order — JVM PersistentHashMap/HashSet iteration order (Stage 2)
+  ;; ============================================================================
+  {:suite "conformance / hamt-order" :label "zipmap 12 entries hash-iteration order" :expected "([0 0] [7 7] [1 1] [4 4] [6 6] [3 3] [2 2] [11 11] [9 9] [5 5] [10 10] [8 8])" :actual "(pr-str (seq (zipmap (range 12) (range 12))))" :portability :common}]

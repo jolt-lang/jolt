@@ -241,8 +241,8 @@
              (let ((al (hcoll-alist child)))
                (if (assoc-jolt k al)
                    (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (alist-replace k v al))))
-                   (begin (set-box! added #t)
-                          (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (cons (cons k v) al))))))))
+                    (begin (set-box! added #t)
+                           (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (append al (list (cons k v))))))))))
             ((jolt= (car child) k) (make-hnode bm (vec-set arr i (cons k v))))   ; replace
             (else (set-box! added #t)
                   (make-hnode bm (vec-set arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v)))))))))
@@ -274,18 +274,18 @@
              (set-box! removed #t) (make-hnode (fxand bm (fxnot bit)) (vec-remove arr i)))
             (else node))))))
 
-(define (node-fold node proc acc)     ; (proc k v acc) over every leaf
+(define (node-fold node proc acc)     ; (proc k v acc) over every leaf, JVM (ascending) order
   (let ((arr (hnode-arr node)))
-    (let loop ((i 0) (acc acc))
-      (if (fx<? i (vector-length arr))
+    (let loop ((i (fx- (vector-length arr) 1)) (acc acc))
+      (if (fx<? i 0)
+          acc
           (let ((child (vector-ref arr i)))
-            (loop (fx+ i 1)
+            (loop (fx- i 1)
                   (cond ((hnode? child) (node-fold child proc acc))
                         ((hcoll? child)
                          (let cl ((al (hcoll-alist child)) (a acc))
                            (if (null? al) a (cl (cdr al) (proc (caar al) (cdar al) a)))))
-                        (else (proc (car child) (cdr child) acc)))))
-          acc))))
+                        (else (proc (car child) (cdr child) acc)))))))))
 
 ;; ============================================================================
 ;; persistent map / set over the HAMT
