@@ -212,3 +212,27 @@
              (loop)))))))
   jolt-nil)
 (def-var! "clojure.java.io" "copy" jolt-io-copy)
+
+;; java.lang.reflect.Field over the modeled class registry: getDeclaredFields on
+;; a Class naming a deftype/defrecord returns its declared fields, each
+;; answering getName / setAccessible / get — the reflective field walk
+;; (fireworks' datatype->map) works because the model already holds the field
+;; list in the type's descriptor.
+(define (reflect-field-name self) (vector-ref (jhost-state self) 0))
+(register-host-methods! "reflect-field"
+  (list (cons "getName" (lambda (self) (let ((k (reflect-field-name self)))
+                                         (if (keyword? k) (keyword-t-name k) (jolt-str-render-one k)))))
+        (cons "setAccessible" (lambda (self v) jolt-nil))
+        (cons "get" (lambda (self obj)
+                      (jolt-get obj (reflect-field-name self) jolt-nil)))
+        (cons "toString" (lambda (self) (jolt-str-render-one (reflect-field-name self))))))
+(register-host-methods! "class"
+  (list (cons "getDeclaredFields"
+              (lambda (self)
+                (let ((desc (hashtable-ref chez-tag-desc (jclass-name self) #f)))
+                  (make-jolt-array
+                   (if desc
+                       (vector-map (lambda (k) (make-jhost "reflect-field" (vector k)))
+                                   (jrdesc-fkeys desc))
+                       (vector))
+                   'objects))))))

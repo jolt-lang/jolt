@@ -167,4 +167,23 @@
 (register-str-render!
   (lambda (x) (procedure? x))
   (lambda (x) (string-append (jolt-class-name x) "@"
-                             (number->string (abs (equal-hash x)) 16))))
+                             (string-downcase (number->string (abs (equal-hash x)) 16)))))
+;; pr/print of a fn uses the JVM object form — #object[ns$name 0xHASH
+;; "ns$name@HASH"] — which fn-identity parsers (lasertag's resolve-fn-name)
+;; read the class name out of.
+(register-pr-arm!
+  (lambda (x) (procedure? x))
+  (lambda (x)
+    (let ((cn (jolt-class-name x))
+          (h (string-downcase (number->string (abs (equal-hash x)) 16))))
+      (string-append "#object[" cn " 0x" h " \"" cn "@" h "\"]"))))
+;; print of a fn uses the same #object form as pr (the JVM prints fns through
+;; print-method Object on both paths); str keeps the bare cn@hash.
+(let ((prev (var-deref "clojure.core" "__print1")))
+  (def-var! "clojure.core" "__print1"
+    (lambda (x)
+      (if (procedure? x)
+          (let ((cn (jolt-class-name x))
+                (h (string-downcase (number->string (abs (equal-hash x)) 16))))
+            (string-append "#object[" cn " 0x" h " \"" cn "@" h "\"]"))
+          (jolt-invoke1 prev x)))))

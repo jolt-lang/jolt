@@ -90,7 +90,9 @@
     "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"
     "clojure.core/send"
     ;; post-prelude taxonomy wrappers close over the overlay versions
-    "clojure.core/ifn?" "clojure.core/seqable?" "clojure.core/inst-ms"))
+    "clojure.core/ifn?" "clojure.core/seqable?" "clojure.core/inst-ms"
+    ;; the fn print form wraps the overlay __print1
+    "clojure.core/__print1"))
 
 ;; --- reading a minted blob (prelude.ss) into records ------------------------
 ;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the

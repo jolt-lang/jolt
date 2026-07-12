@@ -227,3 +227,23 @@
       (def-var! "clojure.core" nm
         (lambda (x) (if (reader-conditional-value? x) #f (jolt-invoke1 prev x))))))
   '("map?" "coll?" "seqable?" "ifn?" "associative?"))
+
+;; a deftype implementing a persistent-collection interface answers the
+;; corresponding predicate, like the JVM's instance?-backed map?/vector?/set?
+;; (a bare deftype stays out of all of them; records already answer via
+;; jrec-record?).
+(define (jrec-iface-pred? x iface)
+  (and (jrec? x) (not (jrec-record? x))
+       (eq? #t (instance-check (jolt-symbol #f iface) x))))
+(for-each
+  (lambda (p)
+    (let ((nm (car p)) (iface (cdr p)))
+      (let ((prev (var-deref "clojure.core" nm)))
+        (def-var! "clojure.core" nm
+          (lambda (x) (if (jrec-iface-pred? x iface) #t (jolt-invoke1 prev x)))))))
+  '(("coll?" . "clojure.lang.IPersistentCollection")
+    ("map?" . "clojure.lang.IPersistentMap")
+    ("vector?" . "clojure.lang.IPersistentVector")
+    ("set?" . "clojure.lang.IPersistentSet")
+    ("associative?" . "clojure.lang.Associative")
+    ("sequential?" . "clojure.lang.Sequential")))

@@ -90,7 +90,10 @@
              ;; interface; (instance? SomeProtocol record) is true when the record
              ;; implements it — core.match dispatches on instance? IPatternCompile).
              (type-satisfies? tag tname)
-             (type-satisfies? tag (last-dot tname)))))
+             (type-satisfies? tag (last-dot tname))
+             ;; the class graph: a declared interface's own ancestry answers too
+             ;; (IPersistentMap is an Associative is an IPersistentCollection).
+             (jch-isa? tag tname))))
       ((jreify? val) (let ((short (last-dot tname)))
                        ;; every Clojure reify implements IObj/IMeta (carries metadata).
                        (or (member short '("IObj" "IMeta"))

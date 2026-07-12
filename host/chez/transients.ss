@@ -36,9 +36,12 @@
        (let loop ((i 0)) (when (fx<? i cnt) (vector-set! buf i (vector-ref v i)) (loop (fx+ i 1))))
        (make-jolt-transient 'vec buf cnt #t #f)))
     ((pmap? coll)
-     (let ((ht (make-hashtable key-hash jolt=2)) (ord '()) (cnt 0))
+     ;; the source's mode rides along: an array-mode map keeps `ord` (and comes
+     ;; back an array map from persistent!); a hash-mode map carries ord = #f
+     ;; and stays hash-ordered, like the JVM's TransientArrayMap/TransientHashMap.
+     (let ((ht (make-hashtable key-hash jolt=2)) (ord (if (pmap-order coll) '() #f)) (cnt 0))
        ;; visit in iteration order so `ord` ends up reverse-insertion (persistent! reverses it back)
-       (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (set! ord (cons k ord)) (set! cnt (fx+ cnt 1)) acc) 0)
+       (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (when ord (set! ord (cons k ord))) (set! cnt (fx+ cnt 1)) acc) 0)
        (make-jolt-transient 'map ht (fxmax tmap-min-cap cnt) #t ord)))
     ((pset? coll)
      (let ((ht (make-hashtable key-hash jolt=2)))
@@ -58,11 +61,13 @@
 ;; map put/delete that maintain the reverse insertion-order list in `ord`.
 (define (tmap-put! t k v)
   (let ((ht (jolt-transient-buf t)))
-    (unless (hashtable-contains? ht k) (jolt-transient-ord-set! t (cons k (jolt-transient-ord t))))
+    (unless (or (not (jolt-transient-ord t)) (hashtable-contains? ht k))
+      (jolt-transient-ord-set! t (cons k (jolt-transient-ord t))))
     (hashtable-set! ht k v)))
 (define (tmap-del! t k)
   (let ((ht (jolt-transient-buf t)))
-    (when (hashtable-contains? ht k) (jolt-transient-ord-set! t (remove-key (jolt-transient-ord t) k)))
+    (when (and (jolt-transient-ord t) (hashtable-contains? ht k))
+      (jolt-transient-ord-set! t (remove-key (jolt-transient-ord t) k)))
     (hashtable-delete! ht k)))
 
 (define (jolt-trans-check t who)
@@ -90,8 +95,9 @@
             ;; Clojure 1.13: a keyword-only map stays an array map up to 64 entries,
             ;; so a keyword map built through a transient (into {} …) keeps insertion
             ;; order to 64, matching the literal/assoc paths.
-            (cap (if (all-keywords? (jolt-transient-ord t)) (fxmax array-map-limit-kw cap) cap)))
-       (if (fx>? cnt cap)
+            (cap (if (and (jolt-transient-ord t) (all-keywords? (jolt-transient-ord t)))
+                     (fxmax array-map-limit-kw cap) cap)))
+       (if (or (not (jolt-transient-ord t)) (fx>? cnt cap))
            ;; promoted past the array capacity: hash order
            (let ((m empty-pmap-hash))
              (vector-for-each (lambda (k) (set! m (pmap-put-hash m k (hashtable-ref ht k jolt-nil)))) (hashtable-keys ht))

@@ -455,6 +455,27 @@
 ;; Same lookup as collections.ss rec-coll-method — one definition, aliased here.
 (define jrec-cl rec-coll-method)
 
+;; A deftype that DECLARES a clojure.lang collection interface but leaves one of
+;; its methods unimplemented throws AbstractMethodError when a core fn reaches
+;; for it, like the JVM — it must not fall back to the bare-deftype
+;; fields-as-map behavior (fireworks renders such types by catching this).
+;; Records are exempt: defrecord generates the full map implementation.
+(define jrec-coll-iface-names
+  '("IPersistentCollection" "IPersistentMap" "IPersistentVector" "IPersistentSet"
+    "IPersistentStack" "IPersistentList" "ISeq" "Seqable" "Indexed" "Counted"
+    "Associative" "ILookup" "Reversible" "Sorted"))
+(define (jrec-declares-coll-iface? x)
+  (and (jrec? x) (not (jrec-record? x))
+       (let ((ti (hashtable-ref type-registry (jrec-tag x) #f)))
+         (and ti
+              (let loop ((ps (vector->list (hashtable-keys ti))))
+                (cond ((null? ps) #f)
+                      ((member (jch-last-segment (car ps)) jrec-coll-iface-names) #t)
+                      (else (loop (cdr ps)))))))))
+(define (jrec-abstract-method-error x method)
+  (jolt-throw (jolt-host-throwable "java.lang.AbstractMethodError"
+    (string-append "Method " (jrec-tag x) "/" method "() is abstract"))))
+
 ;; iface-method: the single deftype/reify interface-method lookup. Returns the
 ;; impl fn for METHOD declared by V (a deftype/record OR a reify), or #f. NARGS
 ;; (including `this`) selects the matching arity for a deftype; #f means any
@@ -469,6 +490,7 @@
 (register-count-arm! (lambda (coll) (or (jrec? coll) (jolt-transient? coll)))
   (lambda (coll)
     (cond ((jrec-cl coll "count") => (lambda (m) (jolt-invoke m coll)))
+          ((jrec-declares-coll-iface? coll) (jrec-abstract-method-error coll "count"))
           ((jrec? coll) (+ (jrec-nfields coll)
                            (let ((ext (jrec-ext coll))) (if (jolt-nil? ext) 0 (jolt-count ext)))))
           ((jolt-transient? coll) (t-count coll))
@@ -577,6 +599,7 @@
         ;; a record seqs its fields; a bare deftype is not seqable (falls through
         ;; to %r-jolt-seq, which errors like the JVM).
         ((jrec-record? x) (list->cseq (jrec-entry-list x)))
+        ((jrec-declares-coll-iface? x) (jrec-abstract-method-error x "seq"))
         (else (%r-jolt-seq x)))))
 (define %r-jolt-conj1 jolt-conj1)
 (set! jolt-conj1 (lambda (coll x)
@@ -962,9 +985,15 @@
     (unless (hashtable-ref ti proto-name #f)
       (hashtable-set! ti proto-name (make-hashtable string-hash string=?))))
   ;; the protocol's interface joins the type's class ancestry, spelled like the
-  ;; JVM interface (munged ns; the defining ns is assumed to be the current one —
-  ;; the macro passes only the simple protocol name).
-  (let ((iface (string-append (jch-munge-segments (chez-current-ns)) "." proto-name)))
+  ;; JVM interface. A dotted name (clojure.lang.IPersistentMap, a java interface)
+  ;; is already canonical; a simple protocol name qualifies against the defining
+  ;; ns (assumed current — the macro passes only the simple name).
+  (let ((iface (if (let dotted ((i 0))
+                     (cond ((fx=? i (string-length proto-name)) #f)
+                           ((char=? (string-ref proto-name i) #\.) #t)
+                           (else (dotted (fx+ i 1)))))
+                   proto-name
+                   (string-append (jch-munge-segments (chez-current-ns)) "." proto-name))))
     (jch-mark-interface! iface)
     (jch-register-supers! (string-append (chez-current-ns) "." type-name) (list iface)))
   jolt-nil)

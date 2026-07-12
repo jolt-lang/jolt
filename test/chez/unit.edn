@@ -656,4 +656,8 @@
   ;; keep raising. (Host-specific: real Clojure returns nil here, so this stays
   ;; out of the JVM-certified corpus.)
   {:suite "seq error semantics" :expr "(take nil [1 2 3])" :expected :throws}
+  ;; small sets preserve insertion order through the array-mode backing map,
+  ;; like small map literals (the JVM's order is hash-arbitrary — host-pinned).
+  {:suite "sets" :expr "(seq #{1 \"three\" :2})" :expected "(1 three :2)"}
+  {:suite "sets" :expr "(seq (conj #{} :a :b :c))" :expected "(:a :b :c)"}
 ]
