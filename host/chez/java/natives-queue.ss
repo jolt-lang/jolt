@@ -35,8 +35,7 @@
 (set! jolt-peek (lambda (x) (if (jolt-queue? x) (queue-peek x) (%q-peek x))))
 (define %q-pop jolt-pop)
 (set! jolt-pop (lambda (x) (if (jolt-queue? x) (queue-pop x) (%q-pop x))))
-(define %q-conj1 jolt-conj1)
-(set! jolt-conj1 (lambda (coll x) (if (jolt-queue? coll) (queue-conj coll x) (%q-conj1 coll x))))
+(register-conj-arm! jolt-queue? queue-conj)
 ;; sequential => seq=?/seq-hash handle queue equality + hashing.
 (define %q-sequential? jolt-sequential?)
 (set! jolt-sequential? (lambda (x) (or (jolt-queue? x) (%q-sequential? x))))

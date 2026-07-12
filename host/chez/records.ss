@@ -599,11 +599,9 @@
   (lambda (x) (list->cseq (jrec-entry-list x))))
 (register-seq-arm! (lambda (x) (jrec-cl x "seq"))
   (lambda (x) (jolt-seq (jolt-invoke (jrec-cl x "seq") x))))
-(define %r-jolt-conj1 jolt-conj1)
-(set! jolt-conj1 (lambda (coll x)
-  (cond ((jrec-cl coll "cons") => (lambda (m) (jolt-invoke m coll x)))
-        ((jrec? coll) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))
-        (else (%r-jolt-conj1 coll x)))))
+(register-conj-arm! (lambda (coll x) (jrec-cl coll "cons"))
+  (lambda (coll x) (jolt-invoke (jrec-cl coll "cons") coll x)))
+(register-conj-arm! jrec? (lambda (coll x) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
 ;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
 ;; core.cache's LRU/LU caches lean on) dispatch to its methods.
 ;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
