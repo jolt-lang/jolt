@@ -51,6 +51,17 @@
            (and r (not (eq? r 0)))))))
 (define libc-locale-checked? #t) ; let runtime inspect the probe
 
+;; --- libc zone-offset FFI (setenv/tzset/localtime, mutex-guarded) ------------
+;; setenv("TZ", zone, 1) + tzset() tell libc which timezone to use for localtime.
+;; localtime fills a struct tm (56 bytes) with tm_gmtoff at byte 40 (long, 8 bytes).
+;; All guarded by tz-mutex — setenv/tzset mutate process-global state.
+(define %setenv    (jolt-foreign-proc-safe "setenv"    '(string string int) 'int))
+(define %tzset     (jolt-foreign-proc-safe "tzset"     '() 'void))
+(define %localtime (jolt-foreign-proc-safe "localtime" '(void*) 'void*))
+
+;; FFI available check only — zone-offset-seconds is defined later.
+(define libc-tz-available?* (and %setenv %tzset %localtime))
+
 ;; locale-id → libc locale string (for setlocale).
 (define locale->libc-table
   '(("de" . "de_DE.UTF-8") ("fr" . "fr_FR.UTF-8") ("it" . "it_IT.UTF-8")
@@ -64,6 +75,22 @@
          (let ((prefix (ascii-string-down (substring loc 0 2))))
            (or (let ((e (assoc prefix locale->libc-table))) (and e (cdr e))) "C")))
         (else "C")))
+
+;; zone offset in seconds east of UTC at an epoch-second instant, via libc.
+;; Returns #f when libc is unavailable or the zone is unknown.
+;; struct tm layout (64-bit macOS/glibc): 9 ints(36) + pad(4) + long tm_gmtoff(8).
+;; localtime returns a STATIC buffer — do NOT foreign-free it.
+(define (zone-offset-seconds zone epoch)
+  (and libc-tz-available?*
+       (with-mutex tz-mutex
+         (%setenv "TZ" zone 1)
+         (%tzset)
+         (let ((tp (foreign-alloc 8)))
+           (foreign-set! 'long tp 0 epoch)
+           (let ((tm (%localtime tp)))
+             (foreign-free tp)
+             (and tm (not (eq? tm 0))
+                  (foreign-ref 'long tm 40)))))))
 
 ;; strftime-based locale name lookup. Builds a struct tm, calls strftime under
 ;; the tz-mutex, decodes the UTF-8 bytevector to a jolt string. Falls back to
@@ -1575,15 +1602,17 @@
         (cons "toString" (lambda (z) (zo-id (zo-secs z))))))
 
 ;; --- ZoneId ------------------------------------------------------------------
-;; Named-zone offsets the corpus/tick set the JVM tz to. A fixed best-effort offset;
-;; arbitrary-instant DST is not modeled.
-(define zone-offset-table
-  '(("UTC" . 0) ("GMT" . 0) ("Z" . 0) ("Etc/UTC" . 0) ("Etc/GMT" . 0)
-    ("America/New_York" . -18000) ("America/Chicago" . -21600) ("America/Denver" . -25200)
-    ("America/Los_Angeles" . -28800) ("America/Toronto" . -18000) ("America/Sao_Paulo" . -10800)
-    ("Europe/London" . 0) ("Europe/Paris" . 3600) ("Europe/Berlin" . 3600) ("Europe/Madrid" . 3600)
-    ("Europe/Moscow" . 10800) ("Asia/Tokyo" . 32400) ("Asia/Shanghai" . 28800)
-    ("Asia/Kolkata" . 19800) ("Australia/Sydney" . 36000) ("Pacific/Auckland" . 43200)))
+;; Fixed-offset zone ids are parsed directly. Named zones (containing "/" or
+;; matching known short ids) route through libc localtime → tm_gmtoff, which
+;; reads /usr/share/zoneinfo and correctly handles DST for all regions.
+(define (jt-zone-id id off) (make-jhost "zone-id" (vector id off)))
+(define (zid-id z) (vector-ref (jhost-state z) 0))
+(define (zid-off z) (vector-ref (jhost-state z) 1))
+(define (jt-zone-id? x) (and (jhost? x) (string=? (jhost-tag x) "zone-id")))
+;; system zone offset. The inst/SimpleDateFormat layer is UTC-centric (tz-free,
+;; machine-independent by design), so systemDefault resolves to UTC: a LocalDateTime
+;; round-tripped through atZone/toInstant stays aligned with the UTC #inst model.
+(define (system-zone-offset-secs) 0)
 ;; java.time ZoneId.SHORT_IDS: 3-letter ids -> region/offset ids.
 (define short-ids-pairs
   '(("ACT" . "Australia/Darwin") ("AET" . "Australia/Sydney") ("AGT" . "America/Argentina/Buenos_Aires")
@@ -1595,81 +1624,111 @@
     ("NST" . "Pacific/Auckland") ("PLT" . "Asia/Karachi") ("PNT" . "America/Phoenix")
     ("PRT" . "America/Puerto_Rico") ("PST" . "America/Los_Angeles") ("SST" . "Pacific/Guadalcanal")
     ("VST" . "Asia/Ho_Chi_Minh") ("EST" . "-05:00") ("MST" . "-07:00") ("HST" . "-10:00")))
-(define (jt-zone-id id off) (make-jhost "zone-id" (vector id off)))
-(define (zid-id z) (vector-ref (jhost-state z) 0))
-(define (zid-off z) (vector-ref (jhost-state z) 1))
-(define (jt-zone-id? x) (and (jhost? x) (string=? (jhost-tag x) "zone-id")))
-;; system zone offset. The inst/SimpleDateFormat layer is UTC-centric (tz-free,
-;; machine-independent by design), so systemDefault resolves to UTC: a LocalDateTime
-;; round-tripped through atZone/toInstant stays aligned with the UTC #inst model.
-;; (Chez's real machine offset is available via date-zone-offset, but using it would
-;; make results machine-tz-dependent and break that round-trip.)
-(define (system-zone-offset-secs) 0)
-;; --- DST rules ---------------------------------------------------------------
-;; A DST-observing named zone has a standard offset plus a rule family (US/Canada
-;; or EU) that puts the clock one hour ahead for part of the year. The rule yields
-;; the two transition points; outside the table a zone keeps a fixed offset.
-;; Southern-hemisphere zones (Sydney/Auckland) stay fixed — their reversed DST
-;; isn't exercised and a fixed offset preserves existing behavior.
-(define dst-saving 3600)
-;; day-of-week of an epoch-day, 0=Sunday (1970-01-01 is a Thursday).
-(define (epoch-day-dow ed) (modulo (+ ed 4) 7))
-;; epoch-day of the nth (1-based) weekday `dow` in (year, month); n<0 counts from the end.
-(define (nth-dow-epoch-day year month dow n)
-  (if (> n 0)
-      (let* ((first-ed (ymd->epoch-day year month 1))
-             (shift (modulo (- dow (epoch-day-dow first-ed)) 7)))
-        (+ first-ed shift (* 7 (- n 1))))
-      (let* ((last-ed (ymd->epoch-day year month (jt-len-of-month year month)))
-             (shift (modulo (- (epoch-day-dow last-ed) dow) 7)))
-        (- last-ed shift))))
-;; year of a UTC/local epoch-seconds value.
-(define (secs->year s)
-  (call-with-values (lambda () (civil-from-days (jt-floor-div s 86400)))
-    (lambda (y m d) y)))
-;; zone-id -> (standard-offset-secs . rule-symbol: us | eu).
+;; resolve a short id or return the original.
+(define (resolve-short-id id)
+  (let ((e (assoc id short-ids-pairs))) (if e (cdr e) id)))
+;; is the zone id a named (IANA) zone (contains "/")?
+(define (zone-has-slash? id)
+  (let ((len (string-length id)))
+    (let loop ((i 0))
+      (and (< i len)
+           (or (char=? (string-ref id i) #\/)
+               (loop (+ i 1)))))))
+(define (fixed-offset-zone? id)
+  (and (> (string-length id) 0) (memv (string-ref id 0) '(#\+ #\-))))
+
+;; --- DST rule table (fallback when libc is unavailable) ----------------------
+;; Standard-offset table for known zones (base offset, no DST).
+(define zone-offset-table
+  '(("UTC" . 0) ("GMT" . 0) ("Z" . 0) ("Etc/UTC" . 0) ("Etc/GMT" . 0)
+    ("America/New_York" . -18000) ("America/Chicago" . -21600) ("America/Denver" . -25200)
+    ("America/Los_Angeles" . -28800) ("America/Toronto" . -18000) ("America/Sao_Paulo" . -10800)
+    ("America/Mexico_City" . -21600) ("America/Argentina/Buenos_Aires" . -10800)
+    ("Europe/London" . 0) ("Europe/Paris" . 3600) ("Europe/Berlin" . 3600)
+    ("Europe/Madrid" . 3600) ("Europe/Rome" . 3600) ("Europe/Amsterdam" . 3600)
+    ("Europe/Stockholm" . 3600) ("Europe/Zurich" . 3600) ("Europe/Moscow" . 10800)
+    ("Asia/Tokyo" . 32400) ("Asia/Shanghai" . 28800) ("Asia/Kolkata" . 19800)
+    ("Asia/Singapore" . 28800) ("Asia/Dubai" . 14400) ("Asia/Hong_Kong" . 28800)
+    ("Australia/Sydney" . 36000) ("Australia/Melbourne" . 36000) ("Australia/Brisbane" . 36000)
+    ("Australia/Perth" . 28800) ("Australia/Adelaide" . 34200)
+    ("Pacific/Auckland" . 43200) ("Pacific/Fiji" . 43200)
+    ("Africa/Johannesburg" . 7200) ("Africa/Cairo" . 7200) ("Africa/Lagos" . 3600)))
+
+;; DST rule families: US (2nd Sun Mar→1st Sun Nov), EU (last Sun Mar→last Sun Oct),
+;; AU (1st Sun Oct→1st Sun Apr), NZ (last Sun Sep→1st Sun Apr).
 (define dst-zone-table
   '(("America/New_York" -18000 . us) ("America/Toronto" -18000 . us)
     ("America/Chicago" -21600 . us) ("America/Denver" -25200 . us)
     ("America/Los_Angeles" -28800 . us)
     ("Europe/London" 0 . eu) ("Europe/Paris" 3600 . eu)
-    ("Europe/Berlin" 3600 . eu) ("Europe/Madrid" 3600 . eu)))
+    ("Europe/Berlin" 3600 . eu) ("Europe/Madrid" 3600 . eu)
+    ("Europe/Rome" 3600 . eu) ("Europe/Amsterdam" 3600 . eu)
+    ("Europe/Stockholm" 3600 . eu) ("Europe/Zurich" 3600 . eu)
+    ("Australia/Sydney" 36000 . au) ("Australia/Melbourne" 36000 . au)
+    ("Australia/Adelaide" 34200 . au) ("Pacific/Auckland" 43200 . nz)))
 (define (dst-entry id) (assoc id dst-zone-table))
-;; offset for a DST zone at a UTC instant (epoch-seconds).
+(define dst-saving 3600)
+(define (secs->year secs)
+  (call-with-values (lambda () (civil-from-days (jt-floor-div secs 86400)))
+    (lambda (y m d) y)))
+
+;; epoch-day of the nth (1-based) weekday `dow` in (year, month); n<0 counts from end.
+(define (nth-dow-epoch-day year month dow n)
+  (if (> n 0)
+      (let* ((first-ed (ymd->epoch-day year month 1))
+             (shift (modulo (- dow (epoch-day-dow first-ed)) 7)))
+        (+ first-ed shift (* (- n 1) 7)))
+      (let* ((last-ed (- (ymd->epoch-day year (+ month 1) 1) 1))
+             (shift (modulo (- (epoch-day-dow last-ed) dow) 7)))
+        (- last-ed shift (* (- (- n) 1) 7)))))
+(define (epoch-day-dow ed) (modulo (+ ed 4) 7))
+
 (define (dst-offset-at-instant id std rule secs)
   (let ((year (secs->year secs)))
     (case rule
-      ;; US: spring 2nd Sun Mar 02:00 local std; fall 1st Sun Nov 02:00 local DST.
       ((us)
        (let ((spring (- (+ (* (nth-dow-epoch-day year 3 0 2) 86400) (* 2 3600)) std))
              (fall   (- (+ (* (nth-dow-epoch-day year 11 0 1) 86400) (* 2 3600)) (+ std dst-saving))))
          (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
-      ;; EU: spring last Sun Mar 01:00 UTC; fall last Sun Oct 01:00 UTC.
       ((eu)
        (let ((spring (+ (* (nth-dow-epoch-day year 3 0 -1) 86400) 3600))
              (fall   (+ (* (nth-dow-epoch-day year 10 0 -1) 86400) 3600)))
          (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
+      ;; AU: DST from 1st Sun Oct 02:00 local → 1st Sun Apr 03:00 local.
+      ((au)
+       (let ((spring (- (+ (* (nth-dow-epoch-day year 10 0 1) 86400) (* 2 3600)) std))
+             (fall   (- (+ (* (nth-dow-epoch-day year 4 0 1) 86400) (* 3 3600)) (+ std dst-saving))))
+         (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
+      ;; NZ: DST from last Sun Sep 02:00 local → 1st Sun Apr 03:00 local.
+      ((nz)
+       (let ((spring (- (+ (* (nth-dow-epoch-day year 9 0 -1) 86400) (* 2 3600)) std))
+             (fall   (- (+ (* (nth-dow-epoch-day year 4 0 1) 86400) (* 3 3600)) (+ std dst-saving))))
+         (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
       (else std))))
-;; offset for a DST zone given a local wall-time (epoch-seconds in local time).
-;; Boundary hours (the spring gap / fall overlap) resolve to the simple window test.
-(define (dst-offset-at-local id std rule lsecs)
-  (let ((year (secs->year lsecs)))
-    (case rule
-      ((us)
-       (let ((spring (+ (* (nth-dow-epoch-day year 3 0 2) 86400) (* 2 3600)))
-             (fall   (+ (* (nth-dow-epoch-day year 11 0 1) 86400) (* 2 3600))))
-         (if (and (<= spring lsecs) (< lsecs fall)) (+ std dst-saving) std)))
-      ((eu)
-       (let ((spring (+ (* (nth-dow-epoch-day year 3 0 -1) 86400) 3600 std))
-             (fall   (+ (* (nth-dow-epoch-day year 10 0 -1) 86400) 7200 std)))
-         (if (and (<= spring lsecs) (< lsecs fall)) (+ std dst-saving) std)))
-      (else std))))
-;; DST-aware offset for a resolved (id . std-off) at a UTC instant / local wall-time.
-;; Falls back to the resolved fixed offset for non-DST zones.
+;; offset for a zone at a UTC instant (epoch-seconds). Resolution order:
+;; 1. fixed-offset id ("+05:30", "Z", "UTC") → parse directly
+;; 2. named zone → libc localtime (if libc-tz-available?)
+;; 3. named zone → DST rule table (fallback for AU/NZ/US/EU when no libc)
+;; 4. otherwise → standard offset (base offset from zone-offset-table or 0)
 (define (zone-offset-at-instant id std secs)
-  (let ((e (dst-entry id))) (if e (dst-offset-at-instant id (cadr e) (cddr e) secs) std)))
+  (cond ((fixed-offset-zone? id) (parse-zone-offset id))
+        ((string-contains id "/")
+         (let ((o (zone-offset-seconds id secs)))
+           (if o o
+               (let ((e (dst-entry id)))
+                 (if e (dst-offset-at-instant id (cadr e) (cddr e) secs) std)))))
+        (else std)))
+;; offset for a zone at a local wall-time (epoch-seconds).
 (define (zone-offset-at-local id std lsecs)
-  (let ((e (dst-entry id))) (if e (dst-offset-at-local id (cadr e) (cddr e) lsecs) std)))
+  ;; approximate: treat the local time as UTC, get the offset, then re-derive.
+  ;; libc localtime can handle this more precisely but the simple approach
+  ;; covers all current use cases.
+  (let ((o (zone-offset-at-instant id std lsecs)))
+    (zone-offset-at-instant id std (- lsecs o))))
+
+;; Expose which tz resolution backend is active: :libc when the capability probe
+;; passed, :fallback when using the built-in rule table.
+(def-var! "jolt.host" "tz-backend" (if libc-tz-available? ':libc ':fallback))
 
 ;; resolve any zone designator (string / ZoneId / ZoneOffset) to a (id . offset).
 (define (resolve-zone z)
@@ -1680,18 +1739,21 @@
      (let ((id (jt-str z)))
        (cond
          ((string=? id "system") (cons (zo-id (system-zone-offset-secs)) (system-zone-offset-secs)))
-         ((or (string=? id "Z") (string=? id "UTC") (string=? id "GMT")) (cons "Z" 0))
-         ((and (> (string-length id) 0) (memv (string-ref id 0) '(#\+ #\-)))
-          (let ((s (parse-zone-offset id))) (cons (zo-id s) s)))
-         ((assoc id zone-offset-table) (cons id (cdr (assoc id zone-offset-table))))
-         (else (cons id 0)))))))           ; unknown named zone: treat as UTC, id preserved
+         ((or (string=? id "Z") (string=? id "UTC") (string=? id "GMT") (string=? id "Etc/UTC") (string=? id "Etc/GMT"))
+          (cons "Z" 0))
+         ((fixed-offset-zone? id) (let ((s (parse-zone-offset id))) (cons (zo-id s) s)))
+         (else (let ((rid (resolve-short-id id)))
+                 (if (zone-has-slash? rid)
+                     (let ((off (zone-offset-seconds rid 0)))
+                       (cons rid (or off 0)))
+                     (cons id 0)))))))))
 (define (zone-id-of z)
   (let ((r (resolve-zone z))) (jt-zone-id (car r) (cdr r))))
 
 (register-class-statics! "ZoneId"
   (list (cons "of" (lambda (id . _) (zone-id-of id)))
         (cons "systemDefault" (lambda () (let ((s (system-zone-offset-secs))) (jt-zone-id (zo-id s) s))))
-        (cons "getAvailableZoneIds" (lambda () (fold-left pset-conj empty-pset (map car zone-offset-table))))
+        (cons "getAvailableZoneIds" (lambda () (fold-left pset-conj empty-pset (map car short-ids-pairs))))
         (cons "SHORT_IDS" (apply jolt-hash-map (apply append (map (lambda (p) (list (car p) (cdr p))) short-ids-pairs))))
         (cons "from" (lambda (t) (cond ((jt-zone-id? t) t) ((jt-zone-offset? t) (jt-zone-id (zo-id (zo-secs t)) (zo-secs t)))
                                        ((jt-zoned-dt? t) (zdt-zone t)) (else (error #f "ZoneId/from: unsupported")))))))
@@ -1724,9 +1786,9 @@
                          (jt-zone-offset (zone-offset-at-local (zr-id r) (zr-std r)
                                           (+ (* (ldt-epoch-day a) 86400) (jt-floor-div (ldt-nano-of-day a) nanos-per-sec)))))
                         (else (jt-zone-offset (zr-std r))))))))
-        (cons "isFixedOffset" (lambda (r) (not (dst-entry (zr-id r)))))
+        (cons "isFixedOffset" (lambda (r) (not (zone-has-slash? (zr-id r)))))
         (cons "getStandardOffset" (lambda (r . _) (jt-zone-offset (zr-std r))))
-        (cons "toString" (lambda (r) (if (dst-entry (zr-id r)) "ZoneRules" "ZoneRules[fixed]")))))
+        (cons "toString" (lambda (r) (if (zone-has-slash? (zr-id r)) "ZoneRules" "ZoneRules[fixed]")))))
 
 ;; --- OffsetTime --------------------------------------------------------------
 (define (jt-offset-time nod off) (make-jhost "offset-time" (vector nod off)))
