@@ -106,13 +106,13 @@
                     (values (reverse opts) i)
                     (let ((c (string-ref src j)))
                       (cond
+                       ((memv c '(#\u #\U #\d)) (scan (+ j 1) fs))
+                       ((regex-flag->opt c) =>
+                        (lambda (opt) (scan (+ j 1) (cons opt fs))))
                        ((char=? c #\))
-                        (let ((mapped (map regex-flag->opt fs)))
-                          (if (and (pair? fs) (for-all (lambda (x) x) mapped))
-                              (loop (+ j 1) (append opts mapped))
-                              (values (reverse opts) i))))
+                        (loop (+ j 1) (append opts (reverse fs))))
                        ((char=? c #\:) (values (reverse opts) i))
-                       (else (scan (+ j 1) (cons c fs)))))))
+                       (else (values (reverse opts) i))))))
               (values (reverse opts) i))))))
 
 ;; ── \p{...} property class → SRE char-set ─────────────────────────────────────
