@@ -588,6 +588,15 @@
   {:suite "interop / class + isa?" :label "isa? class keyword Object" :expected "true" :actual "(isa? (class :k) java.lang.Object)" :portability :jvm}
   {:suite "interop / java.time shims" :label "Instant/now is current" :expected "true" :actual "(> (.toEpochMilli (Instant/now)) 1500000000000)" :portability :jvm}
   {:suite "interop / java.time shims" :label "sql types are not" :expected "false" :actual "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")" :portability :jvm}
+  {:suite "interop / java.time shims" :label "Instant is a Temporal" :expected "true" :actual "(instance? java.time.temporal.Temporal (java.time.Instant/now))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "LocalDate is TemporalAccessor" :expected "true" :actual "(instance? java.time.temporal.TemporalAccessor (java.time.LocalDate/now))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "Duration is TemporalAmount" :expected "true" :actual "(instance? java.time.temporal.TemporalAmount (java.time.Duration/ofHours 1))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "Instant is TemporalAdjuster" :expected "true" :actual "(instance? java.time.temporal.TemporalAdjuster (java.time.Instant/now))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "Month is TemporalAccessor" :expected "true" :actual "(instance? java.time.temporal.TemporalAccessor java.time.Month/JANUARY)" :portability :jvm}
+  {:suite "interop / java.time shims" :label "LocalTime is Comparable" :expected "true" :actual "(instance? java.lang.Comparable (java.time.LocalTime/now))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "ZonedDateTime is Temporal" :expected "true" :actual "(instance? java.time.temporal.Temporal (java.time.ZonedDateTime/now))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "ArrayList is List" :expected "true" :actual "(instance? java.util.List (java.util.ArrayList.))" :portability :jvm}
+  {:suite "interop / java.time shims" :label "HashMap is Map" :expected "true" :actual "(instance? java.util.Map (java.util.HashMap.))" :portability :jvm}
   {:suite "interop / StringReader & StringBuilder" :label "StringReader read" :expected "[97 98 -1]" :actual "(let [r (java.io.StringReader. \"ab\")] [(.read r) (.read r) (.read r)])" :portability :jvm}
   {:suite "interop / StringReader & StringBuilder" :label "mark/reset" :expected "[97 97]" :actual "(let [r (StringReader. \"ab\")] (.mark r 1) [(.read r) (do (.reset r) (.read r))])" :portability :jvm}
   {:suite "interop / StringReader & StringBuilder" :label "StringBuilder append" :expected "\"ab1\"" :actual "(.toString (-> (StringBuilder.) (.append \"a\") (.append \\b) (.append 1)))" :portability :jvm}
