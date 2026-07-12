@@ -15,35 +15,15 @@
 (define (exception-isa? cls wanted)
   (jch-isa? (jch-fqn-of-simple cls) wanted))
 
-;; A raw Chez condition (an arity or non-seqable error Chez itself raised, not a
-;; jolt ex-info) carries no jolt exception class. Map the ones Clojure raises a
-;; specific class for, by message, so (class e) and (instance? C e) match the JVM.
-;; Returns a simple class name or #f.
-(define (ri-substring? needle hay)
-  (let ((nl (string-length needle)) (hl (string-length hay)))
-    (let loop ((i 0))
-      (cond ((> (+ i nl) hl) #f)
-            ((string=? needle (substring hay i (+ i nl))) #t)
-            (else (loop (+ i 1)))))))
+;; A raw Chez condition (an arity or non-seqable error Chez itself raised) carries
+;; no jolt exception class. All operation sites now throw typed jolt throwables
+;; (ArityException, IllegalArgumentException, ClassCastException, etc.) BEFORE
+;; Chez can raise a raw condition. Any raw condition that still escapes is a
+;; runtime error — classify it as RuntimeException.
+;; Returns #f (no special class — the generic condition->RuntimeException arm
+;; in host-class.ss applies).
 (define (chez-condition-exc-class v)
-  (and (condition? v) (message-condition? v)
-       (let ((m (condition-message v)))
-         (and (string? m)
-              (cond ((ri-substring? "incorrect number of arguments" m) "ArityException")
-                    ((ri-substring? "not seqable" m) "IllegalArgumentException")
-                    ;; Chez's numeric ops raise "~s is not a real number" on a bad
-                    ;; operand. The JVM throws NullPointerException for a nil operand
-                    ;; (null deref) and ClassCastException for a non-number (can't
-                    ;; cast to Number) — clojure.spec.alpha's conform-explain relies
-                    ;; on the distinction. The offending value rides in the irritants.
-                    ((or (ri-substring? "is not a real number" m)
-                         (ri-substring? "is not a number" m))
-                     (if (and (irritants-condition? v)
-                              (let loop ((xs (condition-irritants v)))
-                                (and (pair? xs) (or (jolt-nil? (car xs)) (loop (cdr xs))))))
-                         "NullPointerException"
-                         "ClassCastException"))
-                    (else #f))))))
+  #f)
 
 ;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded
 ;; later (io, inst-time, natives-array, natives-queue, host-static-classes)

@@ -92,7 +92,9 @@
     ((pmap? x) (list->cseq (pmap-fold x (lambda (k v a) (cons (make-map-entry k v) a)) '())))
     ((pset? x) (list->cseq (pset-fold x cons '())))
     ((string? x) (str->seq x 0))
-    (else (error 'seq "not seqable" x))))
+    (else (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                        (string-append "Don't know how to create ISeq from: "
+                                       (guard (e (#t "?")) (jolt-class-name x))))))))
 
 (define (jolt-sequential? x) (or (pvec? x) (cseq? x) (empty-list-t? x)))
 (define (seq->list s)                  ; force a finite seq to a Scheme list
@@ -471,19 +473,59 @@
           (((caar as) f) (cdar as))
           (else (loop (cdr as))))))
 
+;; --- arity pre-check: throw typed ArityException BEFORE applying a proc or
+;; invokable, so the site is classified structurally, not by matching Chez's
+;; error message text after the fact.
+(define (jolt-proc-arity-name f)
+  (let ((p (hashtable-ref proc-name-tbl f #f)))
+    (if p (string-append (car p) "/" (cdr p)) "fn")))
+(define (jolt-arity-error-name name nargs)
+  (jolt-throw (jolt-host-throwable "clojure.lang.ArityException"
+                (string-append "Wrong number of args ("
+                               (number->string nargs)
+                               ") passed to: " name))))
+(define (jolt-proc-arity-error f nargs)
+  (jolt-arity-error-name (jolt-proc-arity-name f) nargs))
+;; check one-arg-or-two: the common arity rule for keywords, symbols, maps.
+(define (jolt-check-arity-1or2 name nargs)
+  (unless (or (fx=? nargs 1) (fx=? nargs 2))
+    (jolt-arity-error-name name nargs)))
+;; check exactly-one-arg: vectors and sets on the JVM accept exactly 1 arg.
+(define (jolt-check-arity-1 name nargs)
+  (unless (fx=? nargs 1)
+    (jolt-arity-error-name name nargs)))
+
 (define (jolt-invoke f . args)
   (cond
-    ((procedure? f) (apply f args))
+    ((procedure? f) (let ((n (length args)))
+                      (unless (fxlogbit? n (procedure-arity-mask f))
+                        (jolt-proc-arity-error f n))
+                      (apply f args)))
     ((jolt-invoke-prefix-arm-for f) => (lambda (h) (h f args)))
-    ((keyword? f) (apply jolt-get (car args) f (cdr args)))   ; (:k m [d]) -> (get m :k [d])
-    ((jolt-symbol? f) (apply jolt-get (car args) f (cdr args)))   ; ('s m [d]) -> (get m 's [d])
-    ;; a VECTOR invokes as nth (a bad index throws, like IPersistentVector.invoke);
-    ;; maps and sets invoke as get.
-    ((pvec? f) (if (and (pair? args) (null? (cdr args)))
-                   (jolt-nth f (car args))
-                   (apply jolt-get f args)))
-    ((jolt-coll? f) (apply jolt-get f args))                  ; (coll k [d]) -> (get coll k [d])
-    ((jolt-transient? f) (apply jolt-get f args))             ; a transient vec/map/set is callable on the JVM
+    ((keyword? f) (let ((n (length args)))
+                    (jolt-check-arity-1or2 (if (keyword-t-ns f) 
+                                              (string-append ":" (keyword-t-ns f) "/" (keyword-t-name f))
+                                              (string-append ":" (keyword-t-name f)))
+                                           n)
+                    (apply jolt-get (car args) f (cdr args))))   ; (:k m [d]) -> (get m :k [d])
+    ((jolt-symbol? f) (let ((n (length args)))
+                        (jolt-check-arity-1or2 (symbol-t-name f) n)
+                        (apply jolt-get (car args) f (cdr args))))   ; ('s m [d]) -> (get m 's [d])
+    ;; a VECTOR invokes as nth, exactly one arg (a bad index throws, like
+    ;; IPersistentVector.invoke); 0 or 2+ args are an ArityException.
+    ((pvec? f) (let ((n (length args)))
+                 (jolt-check-arity-1 (jolt-class-name f) n)
+                 (jolt-nth f (car args))))
+    ;; a map invokes as get with 1 or 2 args; a set invokes as get with exactly 1.
+    ((pmap? f) (let ((n (length args)))
+                 (jolt-check-arity-1or2 (jolt-class-name f) n)
+                 (apply jolt-get f args)))
+    ((pset? f) (let ((n (length args)))
+                 (jolt-check-arity-1 (jolt-class-name f) n)
+                 (apply jolt-get f args)))
+    ((jolt-transient? f) (let ((n (length args)))
+                           (jolt-check-arity-1or2 (jolt-class-name f) n)
+                           (apply jolt-get f args)))             ; a transient vec/map/set is callable on the JVM
     ;; a record/reify implementing clojure.lang.IFn is callable: dispatch to its
     ;; inline `invoke` method with the value itself as the leading `this`.
     ((and (jrec? f) (find-method-any-protocol (jrec-tag f) "invoke"))
@@ -512,11 +554,13 @@
 ;; set callable) delegates to the full variadic jolt-invoke above, which after the
 ;; prefix-arm collapse is one lambda, one rest-list, no re-apply. The back end
 ;; picks jolt-invokeN by arg count (N<=4); apply/variadic cases keep jolt-invoke.
-(define (jolt-invoke0 f) (if (procedure? f) (f) (jolt-invoke f)))
-(define (jolt-invoke1 f a) (if (procedure? f) (f a) (jolt-invoke f a)))
-(define (jolt-invoke2 f a b) (if (procedure? f) (f a b) (jolt-invoke f a b)))
-(define (jolt-invoke3 f a b c) (if (procedure? f) (f a b c) (jolt-invoke f a b c)))
-(define (jolt-invoke4 f a b c d) (if (procedure? f) (f a b c d) (jolt-invoke f a b c d)))
+;; Each embeds an arity pre-check — one fxlogbit? test, predicted taken — so a
+;; wrong-arity call throws a typed ArityException BEFORE Chez raises a raw condition.
+(define (jolt-invoke0 f) (if (procedure? f) (if (fxlogbit? 0 (procedure-arity-mask f)) (f) (jolt-proc-arity-error f 0)) (jolt-invoke f)))
+(define (jolt-invoke1 f a) (if (procedure? f) (if (fxlogbit? 1 (procedure-arity-mask f)) (f a) (jolt-proc-arity-error f 1)) (jolt-invoke f a)))
+(define (jolt-invoke2 f a b) (if (procedure? f) (if (fxlogbit? 2 (procedure-arity-mask f)) (f a b) (jolt-proc-arity-error f 2)) (jolt-invoke f a b)))
+(define (jolt-invoke3 f a b c) (if (procedure? f) (if (fxlogbit? 3 (procedure-arity-mask f)) (f a b c) (jolt-proc-arity-error f 3)) (jolt-invoke f a b c)))
+(define (jolt-invoke4 f a b c d) (if (procedure? f) (if (fxlogbit? 4 (procedure-arity-mask f)) (f a b c d) (jolt-proc-arity-error f 4)) (jolt-invoke f a b c d)))
 
 ;; ============================================================================
 ;; chunked-seq accessors — the host side of the Clojure IChunkedSeq contract

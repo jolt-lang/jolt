@@ -422,7 +422,9 @@
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
                (else (error 'conj "conj on a map expects a [k v] pair or a map"))))
         ((rec-coll-method coll "cons") => (lambda (m) (jolt-invoke m coll x)))
-        (else (error 'conj "unsupported collection"))))
+        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                                          " cannot be cast to class clojure.lang.IPersistentCollection"))))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
 (define (jolt-conj . args)
   (if (null? args)
@@ -538,7 +540,9 @@
         ((pvec? coll) (pvec-assoc coll k v))
         ((jolt-nil? coll) (pmap-assoc empty-pmap k v))
         ((rec-coll-method coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
-        (else (error 'assoc "unsupported collection"))))
+        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                                          " cannot be cast to class clojure.lang.Associative"))))))
 (define (jolt-assoc coll . kvs)
   (meta-carry coll
     (let loop ((coll coll) (kvs kvs))
@@ -550,11 +554,15 @@
 (define (jolt-dissoc coll . ks)
   (cond ((jolt-nil? coll) jolt-nil)
         ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
-        (else (error 'dissoc "unsupported collection"))))
+        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                                          " cannot be cast to class clojure.lang.IPersistentMap"))))))
 (define jolt-dissoc2 (lambda (coll k)
   (cond ((jolt-nil? coll) jolt-nil)
         ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
-        (else (error 'dissoc "unsupported collection")))))
+        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                                          " cannot be cast to class clojure.lang.IPersistentMap")))))))
 
 (define (jolt-contains? coll k)
   (cond ((pmap? coll) (pmap-contains? coll k))

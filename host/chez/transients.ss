@@ -193,8 +193,12 @@
   ;; (disj nil ...) is nil on the JVM (disj is otherwise set-only).
   (if (jolt-nil? s)
       jolt-nil
-      (meta-carry s
-        (let loop ((s s) (xs xs)) (if (null? xs) s (loop (pset-disj s (car xs)) (cdr xs)))))))
+      (if (pset? s)
+          (meta-carry s
+            (let loop ((s s) (xs xs)) (if (null? xs) s (loop (pset-disj s (car xs)) (cdr xs)))))
+          (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                        (string-append "class " (guard (e (#t "?")) (jolt-class-name s))
+                                       " cannot be cast to class clojure.lang.IPersistentSet"))))))
 
 ;; --- see-through accessors ---------------------------------------------------
 (define (tvec-in-bounds? t i) (and (fixnum? i) (fx>=? i 0) (fx<? i (jolt-transient-n t))))
