@@ -302,10 +302,20 @@
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
 ;; PersistentArrayMap threshold: assoc of a new key promotes to hash mode once the
 ;; map already holds 8 entries (matching JVM HASHTABLE_THRESHOLD = 16 array slots).
+;; raised the limit to 64 for maps whose keys are ALL keywords (the common
+;; keyword-map case); mixed-key maps still cap at 8.
 (define array-map-limit 8)
-;; Should a map stay in array mode when adding key `k`? Only if under 8 entries.
+(define array-map-limit-kw 64)
+(define (all-keywords? ks)
+  (or (null? ks) (and (keyword? (car ks)) (all-keywords? (cdr ks)))))
+;; Should a map of `cnt` entries with insertion order `ord` stay in array mode
+;; when key `k` is added? Under 8 always; a keyword-only map (existing keys + the
+;; new key all keywords) grows to 64; otherwise caps at 8.
 (define (pmap-array-keep? cnt ord k)
-  (fx<? cnt array-map-limit))
+  (cond ((fx<? cnt array-map-limit) #t)
+        ((fx>=? cnt array-map-limit-kw) #f)
+        ((and (keyword? k) (all-keywords? ord)) #t)
+        (else #f)))
 (define (append-key ord k) (cons k ord))  ; O(1) prepend — reversed order, reversed at iteration
 (define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (car o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
 
@@ -359,13 +369,14 @@
         (let loop ((ks (reverse ord)) (a acc))
           (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
         (node-fold (pmap-root m) proc acc))))
-;; map LITERAL ctor ({...}): array-ordered up to 8 entries, hash-ordered beyond.
-;; Mirrors the JVM's PersistentArrayMap.create which returns PersistentArrayMap
-;; up to 8 entries, then promotes to PersistentHashMap.
+;; map LITERAL ctor ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
+;; hash map beyond (RT.map).
 (define (jolt-hash-map . kvs)
   (let loop ((m empty-pmap) (kvs kvs))
     (cond ((null? kvs)
-           (if (fx>? (pmap-cnt m) array-map-limit) (pmap->hash m) m))
+           (let ((cnt (pmap-cnt m)) (ord (pmap-order m)))
+             (if (fx>? cnt (if (all-keywords? ord) array-map-limit-kw array-map-limit))
+                 (pmap->hash m) m)))
           ((null? (cdr kvs)) (error 'hash-map "odd number of map literal entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
 ;; array-map ctor: insertion-ordered (PersistentArrayMap, createAsIfByAssoc).

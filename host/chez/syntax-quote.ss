@@ -43,7 +43,10 @@
 ;; map FORM: a plain pmap (the analyzer's form-map? = pmap with no :jolt/type).
 ;; Clojure's syntaxQuote builds the map via `apply hash-map`, so a `{...} template
 ;; is HASH-ordered (unlike a {...} literal, which keeps insertion order).
-(define (jolt-sqmap . parts) (jolt-hash-map-build parts))
+;; However, the LOWERED form already evaluates its value expressions in source
+;; order through the reader's rdr-map-order side-table; build a map that preserves
+;; that evaluation order by using the same ctor as map literals.
+(define (jolt-sqmap . parts) (apply jolt-hash-map parts))
 
 (def-var! "clojure.core" "__sq1"   jolt-sq1)
 (def-var! "clojure.core" "__sqcat" jolt-sqcat)
