@@ -65,8 +65,7 @@
 (set! jolt-sequential? (lambda (x) (or (jolt-lazyseq? x) (%ls-sequential? x))))
 (register-count-arm! jolt-lazyseq?
   (lambda (x) (jolt-count (jolt-seq x))))
-(define %ls-empty? jolt-empty?)
-(set! jolt-empty? (lambda (x) (if (jolt-lazyseq? x) (%ls-empty? (jolt-seq x)) (%ls-empty? x))))
+(register-empty-arm! jolt-lazyseq? (lambda (x) (jolt-empty? (jolt-seq x))))
 (define %ls-nth jolt-nth)
 (set! jolt-nth (case-lambda
   ((coll i)   (if (jolt-lazyseq? coll) (%ls-nth (jolt-seq coll) i)   (%ls-nth coll i)))

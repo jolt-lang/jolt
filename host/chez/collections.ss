@@ -586,6 +586,13 @@
                                      (guard (e (#t "?")) (jolt-class-name coll))))))
         (else #f)))
 
+;; ---- empty? arms: host types register here instead of set!-wrapping jolt-empty? ---
+;; Arms dispatch newest-registration-first, matching the set!-chain precedence.
+;; The built-in types stay inline; arms checked before the seq-based fallback.
+(define jolt-empty-arms '())
+(define (register-empty-arm! pred handler)
+  (set! jolt-empty-arms (cons (cons pred handler) jolt-empty-arms)))
+
 (define (jolt-empty? coll)
   (cond ((jolt-nil? coll) #t)
         ((pvec? coll) (fx=? 0 (pvec-count coll)))
@@ -594,9 +601,11 @@
         ((string? coll) (fx=? 0 (string-length coll)))
         ((empty-list-t? coll) #t)
         ((cseq? coll) #f)                            ; a cseq is non-empty by construction
-        ;; RT parity: empty? is (not (seq coll)) — anything seqable answers,
-        ;; and seq's own error surfaces for a non-seqable.
-        (else (jolt-nil? (jolt-seq coll)))))
+        ;; arm dispatch before the general seq-based fallback
+        (else (let loop ((as jolt-empty-arms))
+                (cond ((null? as) (jolt-nil? (jolt-seq coll)))
+                      (((caar as) coll) ((cdar as) coll))
+                      (else (loop (cdr as))))))))
 
 (define (jolt-stack-throw coll)
   (jolt-throw (jolt-host-throwable

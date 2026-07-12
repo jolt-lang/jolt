@@ -608,9 +608,7 @@
 ;; core.cache's LRU/LU caches lean on) dispatch to its methods.
 ;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
 ;; .priority-map's peek calls (.isEmpty this) -> empty?). jolt-seq is method-first.
-(define %r-jolt-empty? jolt-empty?)
-(set! jolt-empty? (lambda (coll)
-  (if (jrec-collection? coll) (jolt-nil? (jolt-seq coll)) (%r-jolt-empty? coll))))
+(register-empty-arm! jrec-collection? (lambda (coll) (jolt-nil? (jolt-seq coll))))
 (define %r-jolt-peek jolt-peek)
 (set! jolt-peek (lambda (coll)
   (cond ((jrec-cl coll "peek") => (lambda (m) (jolt-invoke m coll)))
