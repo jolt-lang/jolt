@@ -1254,7 +1254,7 @@
              ((string=? short "IEditableCollection")
               ;; a MapEntry is pvec-backed but not editable on the JVM
               (if (or (and (pvec? val) (not (jolt-map-entry? val))) (pset? val)
-                      (and (pmap? val) (not (reader-conditional-value? val))))
+                      (pmap? val))
                  #t 'pass))
             ((string=? short "ITransientCollection")
              (if (jolt-transient? val) #t 'pass))
@@ -1270,26 +1270,6 @@
 (define %hm-seq jolt-seq)
 (set! jolt-seq
   (lambda (x) (if (hm-hashmap? x) (jolt-seq (hm->pmap x)) (%hm-seq x))))
-;; A reader-conditional value is a pmap but not a collection/meta carrier
-;; on the JVM — deny the interfaces its pmap backing would otherwise claim.
-;; (ex-info is now a distinct record type, not a pmap, so it needs no denial.)
-(register-instance-check-arm!
-  (lambda (type-sym val)
-    (if (and (symbol-t? type-sym)
-             (reader-conditional-value? val))
-        (let* ((tn (symbol-t-name type-sym))
-               (short (let loop ((i (- (string-length tn) 1)))
-                        (cond ((< i 0) tn)
-                              ((char=? (string-ref tn i) #\.) (substring tn (+ i 1) (string-length tn)))
-                              (else (loop (- i 1)))))))
-          (if (member short '("IObj" "IMeta" "IPersistentMap" "APersistentMap" "Map"
-                              "Associative" "Seqable" "IPersistentCollection" "Collection"
-                              "IFn" "Iterable" "ILookup" "Counted" "IKVReduce"
-                              "PersistentArrayMap" "PersistentHashMap"
-                              "IEditableCollection"))
-              #f
-              'pass))
-        'pass)))
 ;; a MapEntry does not carry meta on the JVM (AMapEntry); deny IObj/IMeta so the
 ;; pvec backing doesn't claim it.
 (register-instance-check-arm!
@@ -1304,8 +1284,7 @@
 (define kw-rc-jtype (keyword "jolt" "type"))
 (define kw-rc (keyword "jolt" "reader-conditional"))
 (define (reader-conditional-value? x)
-  (and (pmap? x)
-       (jolt=2 kw-rc (pmap-get x kw-rc-jtype jolt-nil))))
+  (jolt-reader-conditional-record? x))
 (register-class-arm! reader-conditional-value? (lambda (x) "clojure.lang.ReaderConditional"))
 ;; a multimethod reports its JVM class.
 (register-class-arm! (lambda (x) (jolt-multifn? x)) (lambda (x) "clojure.lang.MultiFn"))

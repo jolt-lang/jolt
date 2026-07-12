@@ -221,7 +221,8 @@
           #t
           (jolt-invoke1 prev x)))))
 ;; transients are IFn on the JVM (invoke = lookup); the queue is a full
-;; sequential persistent collection; a reader-conditional is not a map.
+;; sequential persistent collection; a reader-conditional is a record, not a
+;; map — pmap?/coll?/seqable?/ifn?/associative? are naturally false.
 (let ((prev (var-deref "clojure.core" "ifn?")))
   (def-var! "clojure.core" "ifn?"
     (lambda (x) (if (or (jolt-transient? x) (jolt-ref? x)) #t (jolt-invoke1 prev x)))))
@@ -231,12 +232,10 @@
       (def-var! "clojure.core" nm
         (lambda (x) (if (jolt-queue? x) #t (jolt-invoke1 prev x))))))
   '("coll?" "sequential?" "seqable?"))
-(for-each
-  (lambda (nm)
-    (let ((prev (var-deref "clojure.core" nm)))
-      (def-var! "clojure.core" nm
-        (lambda (x) (if (reader-conditional-value? x) #f (jolt-invoke1 prev x))))))
-  '("map?" "coll?" "seqable?" "ifn?" "associative?"))
+;; reader-conditional? override: the seed prelude checks (get x :jolt/type);
+;; a record has no :jolt/type key — override with the native predicate.
+(def-var! "clojure.core" "reader-conditional?"
+  (lambda (x) (jolt-reader-conditional-record? x)))
 
 ;; a deftype implementing a persistent-collection interface answers the
 ;; corresponding predicate, like the JVM's instance?-backed map?/vector?/set?

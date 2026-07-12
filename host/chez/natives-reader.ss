@@ -16,19 +16,62 @@
              (seq->list (jolt-seq names))))
   jolt-nil)
 
-;; --- reader-conditional: a tagged map (reader-conditional? is an overlay
-;; tagged-value predicate that reads :jolt/type). STAYS NATIVE: building a
-;; :jolt/type-tagged map is part of the native value model — an overlay defn
-;; returning {:jolt/type ...} silently fails to bind during the seed mint (the
-;; guard around each prelude form swallows the load-time error), the same reason
-;; every other tagged-value constructor (atom/volatile!/tagged-literal) is native.
+;; --- reader-conditional record type -----------------------------------------
+;; A reader-conditional is a distinct record type — NOT a pmap — so pmap?/
+;; coll?/map?/seqable?/ifn?/associative? are naturally false. Value equality:
+;; (= rc1 rc2) true when form and splicing? match (JVM parity). ILookup for
+;; :form and :splicing? only (NOT a general map — (:other rc) is nil).
+(define-record-type jolt-reader-conditional-record
+  (fields form splicing?)
+  (nongenerative jolt-reader-conditional-record-v1))
+
 ;; re-matcher / re-find / re-groups are the stateful matcher API in regex.ss.
 (define nr-kw-type (keyword "jolt" "type"))
 (define nr-kw-rc   (keyword "jolt" "reader-conditional"))
 (define nr-kw-form (keyword #f "form"))
 (define nr-kw-spl  (keyword #f "splicing?"))
 (define (nr-reader-conditional form splicing?)
-  (jolt-hash-map nr-kw-type nr-kw-rc nr-kw-form form nr-kw-spl splicing?))
+  (make-jolt-reader-conditional-record form splicing?))
+
+;; Register ILookup arm for :form and :splicing? — ReaderConditional IS ILookup
+;; on the JVM for these two keys only (not a general map).
+(let ((kw-form (keyword #f "form")) (kw-spl (keyword #f "splicing?")))
+  (register-get-arm! jolt-reader-conditional-record?
+    (lambda (coll k d)
+      (cond ((jolt= k kw-form) (jolt-reader-conditional-record-form coll))
+            ((jolt= k kw-spl) (if (jolt-reader-conditional-record-splicing? coll) #t #f))
+            (else d)))))
+
+;; Register value-equality arm: two reader-conditionals are = when their form
+;; and splicing? fields match.
+(register-eq-arm!
+  (lambda (a b) (or (jolt-reader-conditional-record? a) (jolt-reader-conditional-record? b)))
+  (lambda (a b)
+    (and (jolt-reader-conditional-record? a) (jolt-reader-conditional-record? b)
+         (jolt= (jolt-reader-conditional-record-form a)
+                (jolt-reader-conditional-record-form b))
+         (eq? (jolt-reader-conditional-record-splicing? a)
+              (jolt-reader-conditional-record-splicing? b)))))
+
+;; Register hash arm — matches JVM hasheq which hashes form + splicing?.
+(register-hash-arm! jolt-reader-conditional-record?
+  (lambda (x)
+    (hash-combine (jolt-hash (jolt-reader-conditional-record-form x))
+                  (if (jolt-reader-conditional-record-splicing? x) 1231 1237))))
+
+;; pr form: #?(form ...) or #?@(form ...). Matches JVM output exactly — the form
+;; is a list whose elements are rendered inline (not as a nested list).
+(register-pr-arm! jolt-reader-conditional-record?
+  (lambda (x)
+    (let* ((form (jolt-reader-conditional-record-form x))
+           (prefix (if (jolt-reader-conditional-record-splicing? x) "#?@(" "#?("))
+           (s (jolt-pr-str form)))
+      (string-append prefix
+                     (if (and (> (string-length s) 1)
+                              (char=? (string-ref s 0) #\())
+                         (substring s 1 (- (string-length s) 1))
+                         s)
+                     ")"))))
 
 ;; --- macroexpand-1 / macroexpand: expand a (quoted) call form via the runtime
 ;; macro table (host-contract hc-macro?/hc-expand-1; forward-referenced, resolved
