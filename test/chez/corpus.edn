@@ -3901,4 +3901,14 @@
   ;; ArityException for named fn — class
   {:suite "conformance / r3" :label "arity error is ArityException" :expected ":ae" :actual "(try ((fn [x y] x) 1) (catch clojure.lang.ArityException e :ae))" :portability :common}
   ;; ArityException for named fn — message (certifiable if jolt renders user/f2)
-  {:suite "conformance / r3" :label "arity error message names the fn" :expected "\"Wrong number of args (1) passed to: user/f2\"" :actual "(do (defn f2 [x y] x) (try (f2 1) (catch clojure.lang.ArityException e (ex-message e))))" :portability :jvm}]
+  {:suite "conformance / r3" :label "arity error message names the fn" :expected "\"Wrong number of args (1) passed to: user/f2\"" :actual "(do (defn f2 [x y] x) (try (f2 1) (catch clojure.lang.ArityException e (ex-message e))))" :portability :jvm}
+  {:suite "regex / V2 sre-parser" :label "p{L} supplementary" :expected "\"Hello𐀀World\"" :actual "(re-matches #\"^\\p{L}+$\" \"Hello𐀀World\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "intersection class" :expected "\"h\"" :actual "(re-find #\"[a-z&&[^aeiou]]+\" \"hello\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "word boundary \\b" :expected "\"word\"" :actual "(re-find #\"\\bword\\b\" \"a word here\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "named group" :expected "[\"42\" \"42\"]" :actual "(re-find #\"(?<num>\\d+)\" \"x42y\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "\\Q..\\E literal quote" :expected "\".+*?\"" :actual "(re-find #\"\\Q.+*?\\E\" \"abc.+*?def\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "lazy bounded {2,5}?" :expected "\"12\"" :actual "(re-find #\"\\d{2,5}?\" \"12345\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "\\x{1F600} supplementary hex" :expected "\"😀\"" :actual "(re-find #\"\\x{1F600}\" \"hello😀world\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "scoped dot-all (?s:.)" :expected "\"a\\nz\"" :actual "(re-find #\"a(?s:.)z\" \"a\\nz\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "scoped case-insensitive (?i:)" :expected "\"Hello\"" :actual "(re-find #\"(?i:HELLO)\" \"HelloWorld\")" :portability :common}
+  {:suite "regex / V2 sre-parser" :label "$ before final newline" :expected "(\"d\")" :actual "(re-seq #\".$\" \"ab\\ncd\\n\")" :portability :common}]
