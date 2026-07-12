@@ -62,20 +62,6 @@
 ;; FFI available check only — zone-offset-seconds is defined later.
 (define libc-tz-available?* (and %setenv %tzset %localtime))
 
-;; locale-id → libc locale string (for setlocale).
-(define locale->libc-table
-  '(("de" . "de_DE.UTF-8") ("fr" . "fr_FR.UTF-8") ("it" . "it_IT.UTF-8")
-    ("ja" . "ja_JP.UTF-8") ("es" . "es_ES.UTF-8") ("ko" . "ko_KR.UTF-8")
-    ("zh" . "zh_CN.UTF-8") ("pt" . "pt_BR.UTF-8") ("ru" . "ru_RU.UTF-8")
-    ("en" . "en_US.UTF-8") ("und" . "en_US.UTF-8")))
-(define (locale->libc loc)
-  (cond ((not (string? loc)) "C")
-        ((let ((e (assoc loc locale->libc-table))) (and e (cdr e))) => values)
-        ((>= (string-length loc) 2)
-         (let ((prefix (ascii-string-down (substring loc 0 2))))
-           (or (let ((e (assoc prefix locale->libc-table))) (and e (cdr e))) "C")))
-        (else "C")))
-
 ;; zone offset in seconds east of UTC at an epoch-second instant, via libc.
 ;; Returns #f when libc is unavailable or the zone is unknown.
 ;; struct tm layout (64-bit macOS/glibc): 9 ints(36) + pad(4) + long tm_gmtoff(8).
@@ -89,8 +75,22 @@
            (foreign-set! 'long tp 0 epoch)
            (let ((tm (%localtime tp)))
              (foreign-free tp)
-             (and tm (not (eq? tm 0))
-                  (foreign-ref 'long tm 40)))))))
+              (and tm (not (eq? tm 0))
+                    (foreign-ref 'long tm 40)))))))
+
+;; locale-id → libc locale string (for setlocale).
+(define locale->libc-table
+  '(("de" . "de_DE.UTF-8") ("fr" . "fr_FR.UTF-8") ("it" . "it_IT.UTF-8")
+    ("ja" . "ja_JP.UTF-8") ("es" . "es_ES.UTF-8") ("ko" . "ko_KR.UTF-8")
+    ("zh" . "zh_CN.UTF-8") ("pt" . "pt_BR.UTF-8") ("ru" . "ru_RU.UTF-8")
+    ("en" . "en_US.UTF-8") ("und" . "en_US.UTF-8")))
+(define (locale->libc loc)
+  (cond ((not (string? loc)) "C")
+        ((let ((e (assoc loc locale->libc-table))) (and e (cdr e))) => values)
+        ((>= (string-length loc) 2)
+         (let ((prefix (ascii-string-down (substring loc 0 2))))
+           (or (let ((e (assoc prefix locale->libc-table))) (and e (cdr e))) "C")))
+        (else "C")))
 
 ;; strftime-based locale name lookup. Builds a struct tm, calls strftime under
 ;; the tz-mutex, decodes the UTF-8 bytevector to a jolt string. Falls back to
@@ -1637,6 +1637,39 @@
 (define (fixed-offset-zone? id)
   (and (> (string-length id) 0) (memv (string-ref id 0) '(#\+ #\-))))
 
+;; offset for a zone at a UTC instant (epoch-seconds). Named zones route through
+;; libc localtime; fixed offsets are parsed directly.
+(define (zone-offset-at-instant id std secs)
+  (cond ((fixed-offset-zone? id) (parse-zone-offset id))
+        ((zone-has-slash? id)
+         (let ((o (zone-offset-seconds id secs)))
+           (if o o std)))
+        (else std)))
+;; offset for a zone at a local wall-time (epoch-seconds).
+(define (zone-offset-at-local id std lsecs)
+  (let ((o (zone-offset-at-instant id std lsecs)))
+    (zone-offset-at-instant id std (- lsecs o))))
+
+;; resolve any zone designator (string / ZoneId / ZoneOffset) to a (id . offset).
+(define (resolve-zone z)
+  (cond
+    ((jt-zone-offset? z) (cons (zo-id (zo-secs z)) (zo-secs z)))
+    ((jt-zone-id? z) (cons (zid-id z) (zid-off z)))
+    (else
+     (let ((id (jt-str z)))
+       (cond
+         ((string=? id "system") (cons (zo-id (system-zone-offset-secs)) (system-zone-offset-secs)))
+         ((or (string=? id "Z") (string=? id "UTC") (string=? id "GMT") (string=? id "Etc/UTC") (string=? id "Etc/GMT"))
+          (cons "Z" 0))
+         ((fixed-offset-zone? id) (let ((s (parse-zone-offset id))) (cons (zo-id s) s)))
+         (else (let ((rid (resolve-short-id id)))
+                 (if (zone-has-slash? rid)
+                     (let ((off (zone-offset-seconds rid 0)))
+                       (cons rid (or off 0)))
+                     (cons id 0)))))))))
+(define (zone-id-of z)
+  (let ((r (resolve-zone z))) (jt-zone-id (car r) (cdr r))))
+
 ;; --- DST rule table (fallback when libc is unavailable) ----------------------
 ;; Standard-offset table for known zones (base offset, no DST).
 (define zone-offset-table
@@ -1705,18 +1738,13 @@
              (fall   (- (+ (* (nth-dow-epoch-day year 4 0 1) 86400) (* 3 3600)) (+ std dst-saving))))
          (if (and (<= spring secs) (< secs fall)) (+ std dst-saving) std)))
       (else std))))
-;; offset for a zone at a UTC instant (epoch-seconds). Resolution order:
-;; 1. fixed-offset id ("+05:30", "Z", "UTC") → parse directly
-;; 2. named zone → libc localtime (if libc-tz-available?)
-;; 3. named zone → DST rule table (fallback for AU/NZ/US/EU when no libc)
-;; 4. otherwise → standard offset (base offset from zone-offset-table or 0)
+;; offset for a zone at a UTC instant (epoch-seconds). Named zones route through
+;; libc localtime; fixed offsets are parsed directly.
 (define (zone-offset-at-instant id std secs)
   (cond ((fixed-offset-zone? id) (parse-zone-offset id))
-        ((string-contains id "/")
+        ((zone-has-slash? id)
          (let ((o (zone-offset-seconds id secs)))
-           (if o o
-               (let ((e (dst-entry id)))
-                 (if e (dst-offset-at-instant id (cadr e) (cddr e) secs) std)))))
+           (if o o std)))
         (else std)))
 ;; offset for a zone at a local wall-time (epoch-seconds).
 (define (zone-offset-at-local id std lsecs)
@@ -1727,28 +1755,11 @@
     (zone-offset-at-instant id std (- lsecs o))))
 
 ;; Expose which tz resolution backend is active: :libc when the capability probe
-;; passed, :fallback when using the built-in rule table.
-(def-var! "jolt.host" "tz-backend" (if libc-tz-available? ':libc ':fallback))
-
-;; resolve any zone designator (string / ZoneId / ZoneOffset) to a (id . offset).
-(define (resolve-zone z)
-  (cond
-    ((jt-zone-offset? z) (cons (zo-id (zo-secs z)) (zo-secs z)))
-    ((jt-zone-id? z) (cons (zid-id z) (zid-off z)))
-    (else
-     (let ((id (jt-str z)))
-       (cond
-         ((string=? id "system") (cons (zo-id (system-zone-offset-secs)) (system-zone-offset-secs)))
-         ((or (string=? id "Z") (string=? id "UTC") (string=? id "GMT") (string=? id "Etc/UTC") (string=? id "Etc/GMT"))
-          (cons "Z" 0))
-         ((fixed-offset-zone? id) (let ((s (parse-zone-offset id))) (cons (zo-id s) s)))
-         (else (let ((rid (resolve-short-id id)))
-                 (if (zone-has-slash? rid)
-                     (let ((off (zone-offset-seconds rid 0)))
-                       (cons rid (or off 0)))
-                     (cons id 0)))))))))
-(define (zone-id-of z)
-  (let ((r (resolve-zone z))) (jt-zone-id (car r) (cdr r))))
+;; passed, :fallback when using the built-in rule table. Guard-wrapped so a
+;; tree-shake or static build (which may not have the libc symbol) doesn't crash.
+(def-var! "jolt.host" "tz-backend"
+  (guard (e (#t ':fallback))
+    (if libc-tz-available?* ':libc ':fallback)))
 
 (register-class-statics! "ZoneId"
   (list (cons "of" (lambda (id . _) (zone-id-of id)))
