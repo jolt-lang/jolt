@@ -1777,6 +1777,48 @@
         (cons "equals" (lambda (z o) (and (jt-zone-id? o) (string=? (zid-id z) (zid-id o)))))
         (cons "hashCode" (lambda (z) (string-hash (zid-id z))))
         (cons "toString" (lambda (z) (zid-id z)))))
+;; --- java.util.TimeZone: resolve via ZoneId.of (non-UTC aware) ---------------
+;; Override the inst-time.ss opaque-id holder with a zone-aware variant.
+(define (timezone-of id) (zone-id-of id))
+(register-class-statics! "TimeZone"
+  (list (cons "getTimeZone" timezone-of)
+        (cons "getDefault" (lambda () (zone-id-of "UTC")))))
+(register-class-statics! "java.util.TimeZone"
+  (list (cons "getTimeZone" timezone-of)
+        (cons "getDefault" (lambda () (zone-id-of "UTC")))))
+(register-host-methods! "timezone"
+  (list (cons "getID" (lambda (tz) (zid-id tz)))
+        (cons "getDisplayName" (lambda (tz . _) (zid-id tz)))
+        (cons "getRawOffset" (lambda (tz) (* (zid-off tz) 1000)))
+        (cons "getDSTSavings" (lambda (tz) 0))
+        (cons "inDaylightTime" (lambda (tz d) #f))
+        (cons "toString" (lambda (tz) (zid-id tz)))))
+
+;; --- java.text.SimpleDateFormat: honor non-UTC TimeZone overlay ---------------
+;; sdf state: [pattern, timezone-id-or-#f]. setTimeZone stores the zone id;
+;; .format applies the zone offset at the instant if a zone is set.
+(register-class-ctor! "SimpleDateFormat"
+  (lambda (pat . _) (make-jhost "sdf" (vector (jolt-str-render-one pat) #f))))
+(register-class-ctor! "java.text.SimpleDateFormat"
+  (lambda (pat . _) (make-jhost "sdf" (vector (jolt-str-render-one pat) #f))))
+(register-host-methods! "sdf"
+  (list (cons "setTimeZone" (lambda (self tz)
+                              (let ((zid (if (jt-zone-id? tz) (zid-id tz) #f)))
+                                (vector-set! (jhost-state self) 1 zid)
+                                jolt-nil)))
+        (cons "setLenient" (lambda (self b) jolt-nil))
+        (cons "applyPattern" (lambda (self p) (vector-set! (jhost-state self) 0 (jolt-str-render-one p)) jolt-nil))
+        (cons "toPattern" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "parse" (lambda (self s) (parse-ms (vector-ref (jhost-state self) 0) (jolt-str-render-one s))))
+        (cons "format" (lambda (self d)
+                         (let* ((pattern (vector-ref (jhost-state self) 0))
+                                (tz (vector-ref (jhost-state self) 1))
+                                (ms (ms-of d)))
+                           (if tz
+                               (let* ((off (zone-offset-seconds tz (jt-floor-div ms 1000)))
+                                      (adjusted-ms (if off (+ ms (* off 1000)) ms)))
+                                 (format-ms pattern adjusted-ms))
+                               (format-ms pattern ms)))))))
 ;; ZoneRules carries the zone id + standard offset. getOffset is DST-aware: given
 ;; an Instant it resolves the offset at that instant, given a LocalDateTime at that
 ;; local wall time; with no argument it yields the standard offset.
@@ -2367,7 +2409,7 @@
         (cons "ISO_OFFSET_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssXXX"))
         (cons "ISO_OFFSET_TIME" (mk-formatter "HH:mm:ssXXX"))
         (cons "ISO_OFFSET_DATE" (mk-formatter "yyyy-MM-ddXXX"))
-        (cons "ISO_ZONED_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        (cons "ISO_ZONED_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ss.SSSXXX'['VV']'"))
         (cons "ISO_ORDINAL_DATE" (mk-formatter "yyyy-DDD"))
         (cons "ISO_WEEK_DATE" (mk-formatter "yyyy-'W'ww-e"))
         (cons "BASIC_ISO_DATE" (mk-formatter "yyyyMMdd"))
