@@ -90,23 +90,18 @@
              (let loop ((i 0))
                (if (fx<? i cnt) (begin (vector-set! out i (vector-ref buf i)) (loop (fx+ i 1)))
                    (make-pvec out)))))))
-    ((map)
-     (let* ((ht (jolt-transient-buf t)) (cnt (hashtable-size ht)) (cap (jolt-transient-n t))
-            ;; Clojure 1.13: a keyword-only map stays an array map up to 64 entries,
-            ;; so a keyword map built through a transient (into {} …) keeps insertion
-            ;; order to 64, matching the literal/assoc paths.
-            (cap (if (and (jolt-transient-ord t) (all-keywords? (jolt-transient-ord t)))
-                     (fxmax array-map-limit-kw cap) cap)))
-       (if (or (not (jolt-transient-ord t)) (fx>? cnt cap))
-           ;; promoted past the array capacity: hash order
-           (let ((m empty-pmap-hash))
-             (vector-for-each (lambda (k) (set! m (pmap-put-hash m k (hashtable-ref ht k jolt-nil)))) (hashtable-keys ht))
-             m)
-           ;; array map: rebuild in insertion order
-           (let ((m empty-pmap))
-             (for-each (lambda (k) (set! m (pmap-put-ordered m k (hashtable-ref ht k jolt-nil))))
-                       (reverse (jolt-transient-ord t)))
-             m))))
+     ((map)
+      (let* ((ht (jolt-transient-buf t)) (cnt (hashtable-size ht)) (cap (jolt-transient-n t)))
+        (if (or (not (jolt-transient-ord t)) (fx>? cnt cap))
+            ;; promoted past the array capacity: hash order
+            (let ((m empty-pmap-hash))
+              (vector-for-each (lambda (k) (set! m (pmap-put-hash m k (hashtable-ref ht k jolt-nil)))) (hashtable-keys ht))
+              m)
+            ;; array map: rebuild in insertion order
+            (let ((m empty-pmap))
+              (for-each (lambda (k) (set! m (pmap-put-ordered m k (hashtable-ref ht k jolt-nil))))
+                        (reverse (jolt-transient-ord t)))
+              m))))
     ((set)
      (let ((ht (jolt-transient-buf t)) (s empty-pset))
        (vector-for-each (lambda (e) (set! s (pset-conj s e))) (hashtable-keys ht))

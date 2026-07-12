@@ -3832,4 +3832,13 @@
   ;; ============================================================================
   ;; conformance / hamt-order — JVM PersistentHashMap/HashSet iteration order (Stage 2)
   ;; ============================================================================
-  {:suite "conformance / hamt-order" :label "zipmap 12 entries hash-iteration order" :expected "([0 0] [7 7] [1 1] [4 4] [6 6] [3 3] [2 2] [11 11] [9 9] [5 5] [10 10] [8 8])" :actual "(pr-str (seq (zipmap (range 12) (range 12))))" :portability :common}]
+  {:suite "conformance / hamt-order" :label "zipmap 12 entries hash-iteration order" :expected "([0 0] [7 7] [1 1] [4 4] [6 6] [3 3] [2 2] [11 11] [9 9] [5 5] [10 10] [8 8])" :actual "(pr-str (seq (zipmap (range 12) (range 12))))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / stage3 — drop insertion-order accommodations
+  ;; ============================================================================
+  {:suite "conformance / stage3" :label "all sets hash-ordered: (seq (conj #{} 3 1 2))" :expected "(1 3 2)" :actual "(pr-str (seq (conj #{} 3 1 2)))" :portability :common}
+  {:suite "conformance / stage3" :label "hash-map always hash-ordered" :expected "([:c 3] [:b 2] [:a 1])" :actual "(pr-str (seq (hash-map :a 1 :b 2 :c 3)))" :portability :common}
+  {:suite "conformance / stage3" :label "set of strings hash-ordered" :expected "(\"aa\" \"mm\" \"zz\")" :actual "(pr-str (seq (conj #{} \"zz\" \"aa\" \"mm\")))" :portability :common}
+  {:suite "conformance / stage3" :label "map literal ≤8 is PersistentArrayMap" :expected "clojure.lang.PersistentArrayMap" :actual "(pr-str (class {:a 1}))" :portability :common}
+  {:suite "conformance / stage3" :label "hash-map fn always PersistentHashMap" :expected "clojure.lang.PersistentHashMap" :actual "(pr-str (class (hash-map :a 1)))" :portability :common}
+  {:suite "conformance / stage3" :label "20-keyword map via hash-map is PersistentHashMap" :expected "clojure.lang.PersistentHashMap" :actual "(pr-str (class (apply hash-map (interleave (map #(keyword (str \"k\" %)) (range 20)) (range 20)))))" :portability :common}]

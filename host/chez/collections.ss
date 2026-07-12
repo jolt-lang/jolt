@@ -301,21 +301,11 @@
 (define empty-pmap-hash (make-pmap empty-hnode 0 #f))      ; hash-order backing (sets)
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
 ;; PersistentArrayMap threshold: assoc of a new key promotes to hash mode once the
-;; map already holds 8 entries (array.length >= 16 in the reference). Clojure 1.13
-;; raised the limit to 64 for maps whose keys are ALL keywords (the common
-;; keyword-map case); mixed-key maps still cap at 8.
+;; map already holds 8 entries (matching JVM HASHTABLE_THRESHOLD = 16 array slots).
 (define array-map-limit 8)
-(define array-map-limit-kw 64)
-(define (all-keywords? ks)
-  (or (null? ks) (and (keyword? (car ks)) (all-keywords? (cdr ks)))))
-;; Should a map of `cnt` entries with insertion order `ord` stay in array mode
-;; when key `k` is added? Under 8 always; a keyword-only map (existing keys + the
-;; new key all keywords) grows to 64; otherwise it caps at 8.
+;; Should a map stay in array mode when adding key `k`? Only if under 8 entries.
 (define (pmap-array-keep? cnt ord k)
-  (cond ((fx<? cnt array-map-limit) #t)
-        ((fx>=? cnt array-map-limit-kw) #f)
-        ((and (keyword? k) (all-keywords? ord)) #t)
-        (else #f)))
+  (fx<? cnt array-map-limit))
 (define (append-key ord k) (cons k ord))  ; O(1) prepend — reversed order, reversed at iteration
 (define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (car o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
 
@@ -369,35 +359,32 @@
         (let loop ((ks (reverse ord)) (a acc))
           (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
         (node-fold (pmap-root m) proc acc))))
-;; map LITERAL ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
-;; hash map beyond (RT.map).
+;; map LITERAL ctor ({...}): array-ordered up to 8 entries, hash-ordered beyond.
+;; Mirrors the JVM's PersistentArrayMap.create which returns PersistentArrayMap
+;; up to 8 entries, then promotes to PersistentHashMap.
 (define (jolt-hash-map . kvs)
   (let loop ((m empty-pmap) (kvs kvs))
     (cond ((null? kvs)
-           (let ((cnt (pmap-cnt m)) (ord (pmap-order m)))
-             (if (fx>? cnt (if (all-keywords? ord) array-map-limit-kw array-map-limit))
-                 (pmap->hash m) m)))
+           (if (fx>? (pmap-cnt m) array-map-limit) (pmap->hash m) m))
           ((null? (cdr kvs)) (error 'hash-map "odd number of map literal entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
-;; array-map ctor: insertion-ordered regardless of size (createAsIfByAssoc).
+;; array-map ctor: insertion-ordered (PersistentArrayMap, createAsIfByAssoc).
+;; Promotes past 8 entries to hash-ordered.
 (define (jolt-array-map-build kvs)
   (let loop ((m empty-pmap) (kvs kvs))
     (cond ((null? kvs) m)
           ((null? (cdr kvs)) (error 'array-map "odd number of map entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
-;; hash-map ctor: hash order (PersistentHashMap).
-;; hash-map follows the literal ctor: insertion-ordered up to the array-map
-;; threshold, hash order beyond (ClojureScript's hash-map does the same; the
-;; JVM's is always hash-ordered, but that order is not a contract and real
-;; libraries iterate small hash-maps expecting construction order).
+;; hash-map-build: CL function hash-map — always hash-ordered (JVM PersistentHashMap).
 (define (jolt-hash-map-build kvs)
-  (apply jolt-hash-map kvs))
+  (let loop ((m empty-pmap-hash) (kvs kvs))
+    (cond ((null? kvs) m)
+          ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
+          (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
 
 (define-record-type pset (fields m) (nongenerative chez-pset-v1))
-; small sets preserve insertion order through the same array-mode backing map
-; the small-map literals use (>8 elements, or >64 all-keyword, go hash-ordered);
-; real libraries iterate small sets expecting construction order, like maps.
-(define empty-pset (make-pset empty-pmap))
+;; sets are ALWAYS hash-ordered (JVM PersistentHashSet), backed by pmap in hash mode.
+(define empty-pset (make-pset empty-pmap-hash))   ; sets are ALWAYS hash-ordered (JVM PersistentHashSet)
 (define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
 (define (pset-disj s e) (make-pset (pmap-dissoc (pset-m s) e)))
 (define (pset-contains? s e) (pmap-contains? (pset-m s) e))
