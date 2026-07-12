@@ -432,7 +432,16 @@
                 (else (write-char #\\ out) (loop (+ i 1))))
               (begin (write-char (string-ref src i) out) (loop (+ i 1)))))))))
 
+(define jolt-regex-v2-enabled
+  (let ((v (getenv "JOLT_REGEX_V2")))
+    (and v (or (string=? v "1") (string=? v "true")))))
+
 (define (jolt-regex source)
+  (if jolt-regex-v2-enabled
+      (jolt-regex-v2 source)
+      (jolt-regex-v1 source)))
+
+(define (jolt-regex-v1 source)
   ;; COMMENTS mode first (strips whitespace/comments, drops x), then normalize
   ;; combined clusters so a leading (?sx) becomes (?s)(?x) and regex-parse-flags
   ;; can peel the strippable singles into options
@@ -444,6 +453,17 @@
       (make-regex-t source
                     (if (> (irregex-num-submatches irx) 0)
                         (apply irregex p 'backtrack opts)
+                        irx)))))
+
+(define (jolt-regex-v2 source)
+  ;; V2: parse Java pattern → SRE, compile via irregex SRE API.
+  (let-values (((sre opts) (java-pattern->sre source)))
+    (let ((irx (if (memq 'backtrack opts)
+                   (apply irregex sre opts)
+                   (apply irregex sre opts))))
+      (make-regex-t source
+                    (if (> (irregex-num-submatches irx) 0)
+                        (apply irregex sre 'backtrack opts)
                         irx)))))
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
