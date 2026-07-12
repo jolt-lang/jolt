@@ -3911,4 +3911,4 @@
   {:suite "regex / V2 sre-parser" :label "\\x{1F600} supplementary hex" :expected "\"😀\"" :actual "(re-find #\"\\x{1F600}\" \"hello😀world\")" :portability :common}
   {:suite "regex / V2 sre-parser" :label "scoped dot-all (?s:.)" :expected "\"a\\nz\"" :actual "(re-find #\"a(?s:.)z\" \"a\\nz\")" :portability :common}
   {:suite "regex / V2 sre-parser" :label "scoped case-insensitive (?i:)" :expected "\"Hello\"" :actual "(re-find #\"(?i:HELLO)\" \"HelloWorld\")" :portability :common}
-  {:suite "regex / V2 sre-parser" :label "$ before final newline" :expected "(\"d\")" :actual "(re-seq #\".$\" \"ab\\ncd\\n\")" :portability :common}]
+  {:suite "regex / V2 sre-parser" :label "$ before final newline" :expected "'(\"d\")" :actual "(re-seq #\".$\" \"ab\\ncd\\n\")" :portability :common}]
