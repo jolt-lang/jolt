@@ -147,7 +147,7 @@
 (define (pvec-pop p)
   (let ((cnt (pvec-cnt p)) (shift (pvec-shift p)))
     (cond
-      ((fx=? cnt 0) (error 'pop "can't pop empty vector"))
+      ((fx=? cnt 0) (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "Can't pop empty vector")))
       ((fx=? cnt 1) empty-pvec)
       ((fx>? (fx- cnt (pv-tailoff cnt)) 1)
        (mk-pvec (fx- cnt 1) shift (pvec-root p) (vec-drop-last (pvec-tail p)) #f))
@@ -615,7 +615,7 @@
   (cond ((jolt-nil? coll) jolt-nil)                                 ; RT.pop(nil) is nil
         ((pvec? coll) (meta-carry coll (pvec-pop coll)))
         ((and (cseq? coll) (cseq-list? coll)) (meta-carry coll (jolt-rest coll)))
-        ((empty-list-t? coll) (error 'pop "can't pop empty list"))
+        ((empty-list-t? coll) (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "Can't pop empty list")))
         (else (jolt-stack-throw coll))))
 
 ;; ============================================================================
