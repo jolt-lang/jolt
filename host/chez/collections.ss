@@ -393,7 +393,10 @@
   (apply jolt-hash-map kvs))
 
 (define-record-type pset (fields m) (nongenerative chez-pset-v1))
-(define empty-pset (make-pset empty-pmap-hash))            ; sets are hash-ordered
+; small sets preserve insertion order through the same array-mode backing map
+; the small-map literals use (>8 elements, or >64 all-keyword, go hash-ordered);
+; real libraries iterate small sets expecting construction order, like maps.
+(define empty-pset (make-pset empty-pmap))
 (define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
 (define (pset-disj s e) (make-pset (pmap-dissoc (pset-m s) e)))
 (define (pset-contains? s e) (pmap-contains? (pset-m s) e))
@@ -583,7 +586,9 @@
         ((string? coll) (fx=? 0 (string-length coll)))
         ((empty-list-t? coll) #t)
         ((cseq? coll) #f)                            ; a cseq is non-empty by construction
-        (else (error 'empty? "unsupported collection"))))
+        ;; RT parity: empty? is (not (seq coll)) — anything seqable answers,
+        ;; and seq's own error surfaces for a non-seqable.
+        (else (jolt-nil? (jolt-seq coll)))))
 
 (define (jolt-stack-throw coll)
   (jolt-throw (jolt-host-throwable

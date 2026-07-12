@@ -269,6 +269,17 @@
 (define (hm-hash k) (let ((h (jolt-hash k)))
                       (bitwise-and (if (and (integer? h) (exact? h)) (abs h) 0) #x3FFFFFFF)))
 (define (hm-tbl self) (vector-ref (jhost-state self) 0))
+;; insertion order for iteration (seq/keySet/values/entrySet render
+;; deterministically; the JVM's hash order is arbitrary, insertion order is the
+;; deterministic superset jolt's small maps already use).
+(define (hm-ord self) (vector-ref (jhost-state self) 1))
+(define (hm-ord! self v) (vector-set! (jhost-state self) 1 v))
+(define (hm-note-key! self k)
+  (when (not (hashtable-contains? (hm-tbl self) k))
+    (hm-ord! self (cons k (hm-ord self)))))
+(define (hm-drop-key! self k)
+  (hm-ord! self (remove (lambda (e) (jolt=2 e k)) (hm-ord self))))
+(define (hm-keys-ordered self) (reverse (hm-ord self)))
 (define (hm-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
 (define (hm-copy-into! ht src)            ; src: a jolt map or another hashmap
   (if (hm-hashmap? src)
@@ -276,19 +287,31 @@
                        (hashtable-keys (hm-tbl src)))
       (for-each (lambda (e) (hashtable-set! ht (jolt-nth e 0) (jolt-nth e 1)))
                 (seq->list (jolt-seq src)))))
+(define (hm-copy-into-ordered! self src)  ; like hm-copy-into!, keeping insertion order
+  (if (hm-hashmap? src)
+      (for-each (lambda (k)
+                  (hm-note-key! self k)
+                  (hashtable-set! (hm-tbl self) k (hashtable-ref (hm-tbl src) k jolt-nil)))
+                (hm-keys-ordered src))
+      (for-each (lambda (e)
+                  (hm-note-key! self (jolt-nth e 0))
+                  (hashtable-set! (hm-tbl self) (jolt-nth e 0) (jolt-nth e 1)))
+                (seq->list (jolt-seq src)))))
 (register-class-ctor! "HashMap"
   (lambda args
-    (let ((ht (make-hashtable hm-hash jolt=2)))
+    (let* ((ht (make-hashtable hm-hash jolt=2))
+           (self (make-jhost "hashmap" (vector ht '()))))
       (when (and (pair? args) (or (pmap? (car args)) (hm-hashmap? (car args))))
-        (hm-copy-into! ht (car args)))
-      (make-jhost "hashmap" (vector ht)))))
+        (hm-copy-into-ordered! self (car args)))
+      self)))
 (define (hm->pmap self)
   (let ((m (jolt-hash-map)))
-    (vector-for-each (lambda (k) (set! m (jolt-assoc m k (hashtable-ref (hm-tbl self) k jolt-nil))))
-                     (hashtable-keys (hm-tbl self)))
+    (for-each (lambda (k) (set! m (jolt-assoc m k (hashtable-ref (hm-tbl self) k jolt-nil))))
+              (hm-keys-ordered self))
     m))
 (register-host-methods! "hashmap"
   (list (cons "put" (lambda (self k v) (let ((old (hashtable-ref (hm-tbl self) k jolt-nil)))
+                                          (hm-note-key! self k)
                                           (hashtable-set! (hm-tbl self) k v) old)))
         (cons "get" (lambda (self k) (hashtable-ref (hm-tbl self) k jolt-nil)))
         (cons "getOrDefault" (lambda (self k d) (hashtable-ref (hm-tbl self) k d)))
@@ -300,45 +323,53 @@
         (cons "size" (lambda (self) (hashtable-size (hm-tbl self))))
         (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
         (cons "remove" (lambda (self k) (let ((old (hashtable-ref (hm-tbl self) k jolt-nil)))
-                                           (hashtable-delete! (hm-tbl self) k) old)))
-        (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) jolt-nil))
-        (cons "putAll" (lambda (self m) (hm-copy-into! (hm-tbl self) m) jolt-nil))
-        (cons "keySet" (lambda (self) (apply jolt-hash-set (vector->list (hashtable-keys (hm-tbl self))))))
+                                           (hashtable-delete! (hm-tbl self) k)
+                                           (hm-drop-key! self k) old)))
+        (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) (hm-ord! self '()) jolt-nil))
+        (cons "putAll" (lambda (self m) (hm-copy-into-ordered! self m) jolt-nil))
+        (cons "keySet" (lambda (self) (apply jolt-hash-set (hm-keys-ordered self))))
         (cons "values" (lambda (self) (apply jolt-vector
                           (map (lambda (k) (hashtable-ref (hm-tbl self) k jolt-nil))
-                               (vector->list (hashtable-keys (hm-tbl self)))))))
+                               (hm-keys-ordered self)))))
         (cons "entrySet" (lambda (self) (jolt-seq (hm->pmap self))))
         (cons "toString" (lambda (self) (jolt-pr-str (hm->pmap self))))))
 ;; java.util.concurrent.ConcurrentHashMap — one shared heap, so the mutable
 ;; HashMap shim serves. (get a-hashmap k) reads the map (clojure.core/get).
 (define (make-hashmap-jhost . args)
-  (let ((ht (make-hashtable hm-hash jolt=2)))
-    (when (and (pair? args) (or (pmap? (car args)) (hm-hashmap? (car args)))) (hm-copy-into! ht (car args)))
-    (make-jhost "hashmap" (vector ht))))
+  (let* ((ht (make-hashtable hm-hash jolt=2))
+         (self (make-jhost "hashmap" (vector ht '()))))
+    (when (and (pair? args) (or (pmap? (car args)) (hm-hashmap? (car args))))
+      (hm-copy-into-ordered! self (car args)))
+    self))
 (register-class-ctor! "ConcurrentHashMap" make-hashmap-jhost)
 (register-class-ctor! "java.util.concurrent.ConcurrentHashMap" make-hashmap-jhost)
 
 ;; A mutable set over the same value-keyed hashtable (element -> #t).
 ;; Constructors: () | (capacity) [ignored] | (coll) [copy].
 (define (hs-hashset? x) (and (jhost? x) (string=? (jhost-tag x) "hashset")))
-(define (hs->list self) (vector->list (hashtable-keys (hm-tbl self))))
+(define (hs->list self) (hm-keys-ordered self))
 (let ((ctor (lambda args
-              (let ((ht (make-hashtable hm-hash jolt=2)))
+              (let* ((ht (make-hashtable hm-hash jolt=2))
+                     (self (make-jhost "hashset" (vector ht '()))))
                 (when (and (pair? args) (not (number? (car args))))
-                  (for-each (lambda (e) (hashtable-set! ht e #t))
+                  (for-each (lambda (e)
+                              (hm-note-key! self e)
+                              (hashtable-set! ht e #t))
                             (seq->list (jolt-seq (car args)))))
-                (make-jhost "hashset" (vector ht))))))
+                self))))
   (register-class-ctor! "HashSet" ctor)
   (register-class-ctor! "java.util.HashSet" ctor))
 (register-host-methods! "hashset"
   (list (cons "add" (lambda (self x) (let ((had (hashtable-contains? (hm-tbl self) x)))
+                                        (hm-note-key! self x)
                                         (hashtable-set! (hm-tbl self) x #t) (not had))))
         (cons "remove" (lambda (self x) (let ((had (hashtable-contains? (hm-tbl self) x)))
-                                           (hashtable-delete! (hm-tbl self) x) (if had #t #f))))
+                                           (hashtable-delete! (hm-tbl self) x)
+                                           (hm-drop-key! self x) (if had #t #f))))
         (cons "contains" (lambda (self x) (if (hashtable-contains? (hm-tbl self) x) #t #f)))
         (cons "size" (lambda (self) (hashtable-size (hm-tbl self))))
         (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
-        (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) jolt-nil))
+        (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) (hm-ord! self '()) jolt-nil))
         (cons "toString" (lambda (self) (jolt-pr-str (apply jolt-hash-set (hs->list self)))))))
 (define %hs-seq jolt-seq)
 (set! jolt-seq
@@ -755,6 +786,15 @@
                ((string=? method-name "find") (not (jolt-nil? (jolt-re-find obj))))
                ((string=? method-name "group") (apply jolt-matcher-group obj rest))
                ((string=? method-name "groupCount") (jolt-matcher-group-count obj))
+               ;; start/end of the last successful find (whole match, or group n)
+               ((string=? method-name "start")
+                (let ((mm (matcher-t-last obj)))
+                  (if mm (irregex-match-start-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
+                      (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match available")))))
+               ((string=? method-name "end")
+                (let ((mm (matcher-t-last obj)))
+                  (if mm (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
+                      (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match available")))))
                (else (error #f (string-append "No method " method-name " on Matcher")))))
         (else 'pass)))))
 
@@ -1165,7 +1205,10 @@
   (lambda (x)
     (case (jolt-transient-kind x)
       ((vec) "clojure.lang.PersistentVector$TransientVector")
-      ((map) "clojure.lang.PersistentHashMap$TransientHashMap")
+      ;; a transient over an array-mode map carries its insertion order
+      ((map) (if (jolt-transient-ord x)
+                 "clojure.lang.PersistentArrayMap$TransientArrayMap"
+                 "clojure.lang.PersistentHashMap$TransientHashMap"))
       ((set) "clojure.lang.PersistentHashSet$TransientHashSet")
       (else "clojure.lang.ATransientCollection"))))
 ;; instance? for these shims derives from the class graph: the value's class name
@@ -1283,3 +1326,12 @@
 ;; which also admits deftype ctors and modeled name strings. The instance?
 ;; macro needs exactly this: evaluate a var-held Class, keep quoting record names.
 (def-var! "jolt.host" "class-object?" (lambda (x) (if (jclass? x) #t #f)))
+;; nth over the java.util List shims, like RT.nth on a java.util.List.
+(define %shim-nth jolt-nth)
+(define (al-family? x)
+  (and (jhost? x) (member (jhost-tag x) '("arraylist" "linkedlist" "arraydeque"))))
+(set! jolt-nth
+  (case-lambda
+    ((coll i) (if (al-family? coll) (%shim-nth (list->cseq (al->list coll)) i) (%shim-nth coll i)))
+    ((coll i d) (if (al-family? coll) (%shim-nth (list->cseq (al->list coll)) i d) (%shim-nth coll i d)))))
+(def-var! "clojure.core" "nth" jolt-nth)
