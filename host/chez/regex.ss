@@ -405,6 +405,17 @@
       (if (>= i n)
           (get-output-string out)
           (if (and (char=? (string-ref src i) #\\) (< (+ i 1) n)
+                   (char=? (string-ref src (+ i 1)) #\u)
+                   (< (+ i 5) n)
+                   (hexv (string-ref src (+ i 2))) (hexv (string-ref src (+ i 3)))
+                   (hexv (string-ref src (+ i 4))) (hexv (string-ref src (+ i 5))))
+              (begin
+                (emit-char out (+ (* 4096 (hexv (string-ref src (+ i 2))))
+                                  (* 256 (hexv (string-ref src (+ i 3))))
+                                  (* 16 (hexv (string-ref src (+ i 4))))
+                                  (hexv (string-ref src (+ i 5)))))
+                (loop (+ i 6)))
+          (if (and (char=? (string-ref src i) #\\) (< (+ i 1) n)
                    (char=? (string-ref src (+ i 1)) #\x))
               (cond
                 ((and (< (+ i 2) n) (char=? (string-ref src (+ i 2)) #\{))
@@ -419,7 +430,7 @@
                  (emit-char out (+ (* 16 (hexv (string-ref src (+ i 2)))) (hexv (string-ref src (+ i 3)))))
                  (loop (+ i 4)))
                 (else (write-char #\\ out) (loop (+ i 1))))
-              (begin (write-char (string-ref src i) out) (loop (+ i 1))))))))
+              (begin (write-char (string-ref src i) out) (loop (+ i 1)))))))))
 
 (define (jolt-regex source)
   ;; COMMENTS mode first (strips whitespace/comments, drops x), then normalize

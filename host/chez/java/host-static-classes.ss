@@ -1142,7 +1142,16 @@
     ("linkedlist" . "java.util.LinkedList")
     ("arraydeque" . "java.util.ArrayDeque")
     ("hashmap" . "java.util.HashMap")
-    ("hashset" . "java.util.HashSet")))
+    ("hashset" . "java.util.HashSet")
+    ;; io writer/reader shims: *out* is a PrintWriter like the JVM REPL's
+    ("port-writer" . "java.io.PrintWriter")
+    ("print-writer" . "java.io.PrintWriter")
+    ("file-writer" . "java.io.FileWriter")
+    ("writer" . "java.io.StringWriter")
+    ("string-reader" . "java.io.StringReader")
+    ("pushback-reader" . "java.io.PushbackReader")
+    ("char-writer" . "java.io.OutputStreamWriter")
+    ("char-reader" . "java.io.InputStreamReader")))
 (register-class-arm!
   (lambda (x) (and (jhost? x) (assoc (jhost-tag x) jhost-class-names) #t))
   (lambda (x) (cdr (assoc (jhost-tag x) jhost-class-names))))

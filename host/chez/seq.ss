@@ -856,16 +856,25 @@
 ;; ============================================================================
 ;; keys/vals of anything empty is nil (RT.keys over a nil seq); a non-empty
 ;; non-map still fails (its elements are not MapEntries).
+;; Like RT.keys/vals, a non-map argument is any seq of map entries — (keys
+;; (filter pred a-map)) walks the entries.
+(define (entry-seq-part m idx)
+  (let loop ((s (jolt-seq m)) (acc '()))
+    (if (jolt-nil? s)
+        (list->cseq (reverse acc))
+        (loop (jolt-seq (seq-more s)) (cons (jolt-nth (seq-first s) idx jolt-nil) acc)))))
 (define (jolt-keys m)
   (cond ((jolt-nil? m) jolt-nil)
         ((pmap? m) (list->cseq (pmap-fold m (lambda (k v a) (cons k a)) '())))
         ((jolt-nil? (jolt-seq m)) jolt-nil)
-        (else (list->cseq (pmap-fold m (lambda (k v a) (cons k a)) '())))))
+        ((pmap? (jolt-seq m)) (list->cseq (pmap-fold m (lambda (k v a) (cons k a)) '())))
+        (else (entry-seq-part m 0))))
 (define (jolt-vals m)
   (cond ((jolt-nil? m) jolt-nil)
         ((pmap? m) (list->cseq (pmap-fold m (lambda (k v a) (cons v a)) '())))
         ((jolt-nil? (jolt-seq m)) jolt-nil)
-        (else (list->cseq (pmap-fold m (lambda (k v a) (cons v a)) '())))))
+        ((pmap? (jolt-seq m)) (list->cseq (pmap-fold m (lambda (k v a) (cons v a)) '())))
+        (else (entry-seq-part m 1))))
 
 ;; ============================================================================
 ;; sequential equality + hash (hooks called from values.ss / collections.ss);
