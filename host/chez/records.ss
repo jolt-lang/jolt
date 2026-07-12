@@ -718,6 +718,7 @@
         ((number? obj) '("Long" "Integer" "BigInteger" "BigInt" "Number" "Object"))
         ((string? obj) '("String" "CharSequence" "Object"))
         ((boolean? obj) '("Boolean" "Object"))
+        ((char? obj) (jch-tags "java.lang.Character"))
         ((keyword? obj) (jch-tags "clojure.lang.Keyword"))
         ((jolt-symbol? obj) (jch-tags "clojure.lang.Symbol"))
         ((pvec? obj) (jch-tags "clojure.lang.PersistentVector"))

@@ -375,9 +375,12 @@
         thead (when (and ti (pos? (count ti)) (form-sym? (first ti)))
                 (form-sym-name (first ti)))]
     (cond
-      (and thead (field-head? thead))
+      ;; (set! (.-field obj) v) and (set! (.field obj) v) both set an instance
+      ;; field in Clojure; accept either. The "." static-field head is handled
+      ;; by the next arm (it isn't a .-/.name field head).
+      (and thead (> (count thead) 1) (= \. (first thead)))
       {:op :set-field :obj (analyze ctx (nth ti 1) env)
-       :field (subs thead 2) :val val-node}
+       :field (if (field-head? thead) (subs thead 2) (subs thead 1)) :val val-node}
       ;; (set! (. Class member) val) — a host static-field set. clojure.spec.alpha
       ;; toggles clojure.lang.RT/checkSpecAsserts this way. Lowered to a runtime
       ;; jolt.host/set-static-field! call (the read side is a :host-static ref).
