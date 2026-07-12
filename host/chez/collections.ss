@@ -195,14 +195,15 @@
 (define-record-type hnode (fields bm arr) (nongenerative chez-hnode-v1))
 (define-record-type hcoll (fields hash alist) (nongenerative chez-hcoll-v1))
 (define empty-hnode (make-hnode 0 (vector)))
-(define hmask #x3FFFFFFFFFFFFFF)       ; 58-bit non-negative hash window
-(define max-shift 55)
-;; bitwise-and (not fxand): jolt-hash is set!-decorated per type (records/inst/
-;; sorted return their own hash) and Chez's equal-hash can yield a BIGNUM, so a
-;; key's hash isn't guaranteed to be a fixnum. Masking with the 58-bit window via
-;; the generic bitwise-and always lands in fixnum range for the HAMT's fx slicing.
+(define hmask #xFFFFFFFF)                ; 32-bit unsigned hash window (JVM int range)
+(define max-shift 30)                     ; 7 levels × 5 bits = 35 > 32; last level shift 30
+;; bitwise-and (not fxand): jolt-hasheq returns a signed 32-bit int, so it's
+;; always a fixnum. But keep the generic fallback for extension types that might
+;; return bignums via equal-hash.
 (define (key-hash k)
-  (let ((h (jolt-hash k)))
+  ;; jolt-hasheq returns a signed 32-bit int (JVM-compatible).
+  ;; Mask to unsigned 32 bits for the HAMT's fx ops.
+  (let ((h (jolt-hasheq k)))
     (if (fixnum? h) (fxand h hmask) (bitwise-and h hmask))))
 (define (chunk h shift) (fxand (fxsra h shift) 31))
 (define (bitpos h shift) (fxsll 1 (chunk h shift)))
@@ -637,15 +638,20 @@
     (else #f)))
 (define (jolt-coll-hash x)
   (cond
-    ((pvec? x)
-     (let ((n (pvec-count x)))
-       (let loop ((i 0) (h 1))
-         (if (fx=? i n) (bitwise-and h hmask)
-             (let* ((chunk (pv-chunk-for x i)) (clen (vector-length chunk)))
-               (let cloop ((j 0) (k i) (h h))
-                 (if (fx>=? j clen) (loop k h)
-                     (cloop (fx+ j 1) (fx+ k 1)
-                            (bitwise-and (+ (* 31 h) (key-hash (vector-ref chunk j))) hmask)))))))))
-    ;; maps/sets hash order-independently (sum), consistent with unordered =
-    ((pmap? x) (bitwise-and (pmap-fold x (lambda (k v a) (+ a (fxxor (key-hash k) (key-hash v)))) 0) hmask))
-    ((pset? x) (bitwise-and (pset-fold x (lambda (e a) (+ a (key-hash e))) 0) hmask))))
+    ((pvec? x) (hash-ordered (jolt-seq x)))
+    ;; maps hash as hashUnordered of entries; each entry contributes hasheq(k) ^ hasheq(v)
+    ;; (APersistentMap.mapHasheq = Murmur3.hashUnordered, MapEntry.hasheq = k.hasheq ^ v.hasheq)
+    ((pmap? x)
+     (let ((result (pmap-fold x
+                    (lambda (k v acc)
+                      (cons (+ (car acc) (bitwise-xor (jolt-hasheq k) (jolt-hasheq v)))
+                            (fx+ (cdr acc) 1)))
+                    (cons 0 0))))
+       (mix-coll-hash (car result) (cdr result))))
+    ;; sets hash as hashUnordered of elements
+    ((pset? x)
+     (let ((result (pset-fold x
+                    (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
+                    (cons 0 0))))
+       (mix-coll-hash (car result) (cdr result))))
+    (else (equal-hash x))))

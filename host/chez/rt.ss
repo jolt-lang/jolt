@@ -11,6 +11,7 @@
 ;; Emitted programs do `(load "host/chez/rt.ss")`; this loads values.ss in turn.
 
 (load "host/chez/values.ss")
+(load "host/chez/hasheq.ss")
 ;; Resolve a libc entry point at RUN time. A literal (foreign-procedure "name" …)
 ;; in COMPILED code becomes a fasl relocation resolved when the boot loads — on a
 ;; platform lacking the symbol (chmod/sigaddset on Windows) that kills the boot
