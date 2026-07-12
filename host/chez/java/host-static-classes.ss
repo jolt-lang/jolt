@@ -375,10 +375,8 @@
 ;; which core.cache's SoftCache uses on its backing ConcurrentHashMap).
 (define (jhost-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
 (register-count-arm! jhost-hashmap? (lambda (c) (hashtable-size (hm-tbl c))))
-(let ((prev-contains jolt-contains?))
-  (set! jolt-contains? (lambda (c k) (if (jhost-hashmap? c)
-                                         (if (hashtable-contains? (hm-tbl c) k) #t #f)
-                                         (prev-contains c k)))))
+(register-contains-arm! jhost-hashmap?
+  (lambda (c k) (if (hashtable-contains? (hm-tbl c) k) #t #f)))
 
 ;; ---- java.lang.ref.Soft/WeakReference + ReferenceQueue ----------------------
 ;; Real GC reclamation via Chez's generational collector: the referent is held

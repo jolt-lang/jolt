@@ -6,7 +6,18 @@
 ;; true only for real sequences, coll? is the union. Record arms are added by
 ;; records.ss, which extends these dispatchers.
 
-(define (jolt-map? x) (pmap? x))
+;; ---- map? arms: host types register here instead of set!-wrapping jolt-map? ---
+;; Each entry is just a predicate (returns truthy → map? is true).
+(define jolt-map-pred-arms '())
+(define (register-map-pred-arm! pred)
+  (set! jolt-map-pred-arms (cons pred jolt-map-pred-arms)))
+
+(define (jolt-map? x)
+  (or (pmap? x)
+      (let loop ((as jolt-map-pred-arms))
+        (and (pair? as)
+             (or ((car as) x)
+                 (loop (cdr as)))))))
 ;; a map entry is a pvec under the hood AND is vector? — Clojure's MapEntry
 ;; implements IPersistentVector, so (vector? (first {:a 1})) is true.
 (define (jolt-vector? x) (pvec? x))

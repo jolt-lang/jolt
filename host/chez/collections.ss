@@ -432,7 +432,7 @@
                              (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
                                                 (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
                                                                " cannot be cast to class clojure.lang.IPersistentCollection"))))))
-                      (((caar as) coll x) ((cdar as) coll x))
+                      (((caar as) coll) ((cdar as) coll x))
                       (else (loop (cdr as))))))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
 (define (jolt-conj . args)
@@ -593,7 +593,15 @@
                       "java.lang.IllegalArgumentException"
                       (string-append "contains? not supported on type: "
                                      (guard (e (#t "?")) (jolt-class-name coll))))))
-        (else #f)))
+        (else (let loop ((as jolt-contains-arms))
+                (cond ((null? as) #f)
+                      (((caar as) coll) ((cdar as) coll k))
+                      (else (loop (cdr as))))))))
+
+;; ---- contains? arms: host types register here instead of set!-wrapping jolt-contains? ---
+(define jolt-contains-arms '())
+(define (register-contains-arm! pred handler)
+  (set! jolt-contains-arms (cons (cons pred handler) jolt-contains-arms)))
 
 ;; ---- empty? arms: host types register here instead of set!-wrapping jolt-empty? ---
 ;; Arms dispatch newest-registration-first, matching the set!-chain precedence.

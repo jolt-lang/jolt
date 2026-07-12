@@ -500,12 +500,10 @@
 )
 ;; contains?: a deftype implementing Associative/containsKey (e.g. core.cache's
 ;; caches) answers through that; a plain defrecord checks its fields.
-(define %r-jolt-contains? jolt-contains?)
-(set! jolt-contains? (lambda (coll k)
-  (cond ((jrec-cl coll "containsKey") => (lambda (m) (if (jolt-truthy? (jolt-invoke m coll k)) #t #f)))
-        ((jrec? coll) (jrec-has? coll k))
-        ((jolt-transient? coll) (t-contains? coll k))
-        (else (%r-jolt-contains? coll k)))))
+(register-contains-arm! (lambda (coll) (jrec-cl coll "containsKey"))
+  (lambda (coll k) (if (jolt-truthy? (jolt-invoke (jrec-cl coll "containsKey") coll k)) #t #f)))
+(register-contains-arm! jrec? (lambda (coll k) (jrec-has? coll k)))
+(register-contains-arm! jolt-transient? t-contains?)
 ;; nth: transient unwrapping (vec→direct buf access, other→fallback), then original
 (define %r-jolt-nth jolt-nth)
 (set! jolt-nth
@@ -599,7 +597,7 @@
   (lambda (x) (list->cseq (jrec-entry-list x))))
 (register-seq-arm! (lambda (x) (jrec-cl x "seq"))
   (lambda (x) (jolt-seq (jolt-invoke (jrec-cl x "seq") x))))
-(register-conj-arm! (lambda (coll x) (jrec-cl coll "cons"))
+(register-conj-arm! (lambda (coll) (jrec-cl coll "cons"))
   (lambda (coll x) (jolt-invoke (jrec-cl coll "cons") coll x)))
 (register-conj-arm! jrec? (lambda (coll x) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
 ;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
@@ -624,8 +622,7 @@
 ;; only a defrecord is a map (Clojure: a record IS an associative map); a bare
 ;; deftype is not. coll? additionally covers a deftype implementing a collection
 ;; interface. predicates.ss vars hold a snapshot, so re-def-var! after extending.
-(define %r-jolt-map? jolt-map?)
-(set! jolt-map? (lambda (x) (or (jrec-maplike? x) (%r-jolt-map? x))))
+(register-map-pred-arm! jrec-maplike?)
 (def-var! "clojure.core" "map?" jolt-map?)
 (def-var! "clojure.core" "coll?" (lambda (x) (or (jrec-collection? x) (jolt-coll-pred? x))))
 

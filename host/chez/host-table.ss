@@ -72,9 +72,8 @@
 (register-count-arm! htable-sorted?
   (lambda (coll) (sc-call coll kw-op-count)))
 (register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))
-(define %h-contains? jolt-contains?)
-(set! jolt-contains? (lambda (coll k)
-  (if (htable-sorted? coll) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f) (%h-contains? coll k))))
+(register-contains-arm! htable-sorted?
+  (lambda (coll k) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f)))
 (define %h-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
   (if (htable-sorted-map? coll) (sc-call coll kw-op-assoc (jolt-vector k v)) (%h-assoc1 coll k v))))
@@ -119,8 +118,7 @@
 
 ;; public predicates: a sorted-map is map?, a sorted-set is set?, both coll?.
 ;; predicates.ss/records.ss def-var!'d a snapshot, so re-def-var! after set!.
-(define %h-map? jolt-map?)
-(set! jolt-map? (lambda (x) (or (htable-sorted-map? x) (%h-map? x))))
+(register-map-pred-arm! htable-sorted-map?)
 (def-var! "clojure.core" "map?" jolt-map?)
 (define %h-set? jolt-set?)
 (set! jolt-set? (lambda (x) (or (htable-sorted-set? x) (%h-set? x))))
