@@ -629,8 +629,8 @@
   {:suite "core / reify" :label "multi-arity method dispatches by arg count" :expected "[:z 9]" :actual "(do (defprotocol P (m [_] [_ a])) (let [r (reify P (m [_] :z) (m [_ x] x))] [(m r) (m r 9)]))" :portability :common}
   {:suite "core / reify" :label "reify implements IObj and carries metadata" :expected "[true 2]" :actual "(do (defprotocol Q (qq [_])) (let [r (reify Q (qq [_] 1))] [(instance? clojure.lang.IObj r) (:k (meta (with-meta r {:k 2})))]))" :portability :jvm}
   {:suite "core / reify" :label "with-meta leaves the original untouched and keeps dispatch" :expected "[nil {:k 2} 1]" :actual "(do (defprotocol Q (qq [_])) (let [r (reify Q (qq [_] 1)) r2 (with-meta r {:k 2})] [(meta r) (meta r2) (qq r2)]))" :portability :common}
-  {:suite "host-interop / class tokens & readers" :label "class name evaluates to canonical string" :expected "java.lang.String" :actual "String" :portability :common}
-  {:suite "host-interop / class tokens & readers" :label "dispatch-only class name" :expected "\"java.io.InputStream\"" :actual "InputStream" :portability :common}
+  {:suite "host-interop / class tokens & readers" :label "class name evaluates to canonical string" :expected "String" :actual "String" :portability :common}
+  {:suite "host-interop / class tokens & readers" :label "dispatch-only class name" :expected "InputStream" :actual "InputStream" :portability :common}
   {:suite "host-interop / class tokens & readers" :label "(class x) matches the token" :expected "true" :actual "(= String (class \"abc\"))" :portability :common}
   {:suite "host-interop / class tokens & readers" :label "defmulti on class dispatches" :expected ":str" :actual "(do (defmulti cm (fn [x] (class x))) (defmethod cm String [x] :str) (cm \"a\"))" :portability :common}
   {:suite "host-interop / class tokens & readers" :label "defmethod on nil dispatch value" :expected ":nil" :actual "(do (defmulti cn (fn [x] (class x))) (defmethod cn nil [x] :nil) (defmethod cn String [x] :str) (cn nil))" :portability :common}
@@ -1226,7 +1226,7 @@
   {:suite "metadata / collection ops preserve meta" :label "empty vector literal unaffected" :expected "nil" :actual "(do (with-meta [] {:leak 1}) (meta []))" :portability :common}
   {:suite "metadata / def metadata" :label "^:dynamic var binds" :expected "9" :actual "(do (def ^:dynamic *d* 1) (binding [*d* 9] *d*))" :portability :common}
   {:suite "metadata / def metadata" :label "^:private on var" :expected "true" :actual "(do (def ^:private pv 1) (:private (meta (var pv))))" :portability :common}
-  {:suite "metadata / def metadata" :label "^Type tag on var" :expected "java.lang.String" :actual "(do (def ^String tv \"a\") (:tag (meta (var tv))))" :portability :common}
+  {:suite "metadata / def metadata" :label "^Type tag on var" :expected "\"java.lang.String\"" :actual "(do (def ^String tv \"a\") (:tag (meta (var tv))))" :portability :common}
   {:suite "metadata / def metadata" :label "^{:doc} on var" :expected "\"hi\"" :actual "(do (def ^{:doc \"hi\"} dv 1) (:doc (meta (var dv))))" :portability :common}
   {:suite "metadata / def metadata" :label "(def name doc val) doc" :expected "\"d\"" :actual "(do (def dd \"d\" 5) (:doc (meta (var dd))))" :portability :common}
   {:suite "core / find-keyword + inst-ms*" :label "find-keyword" :expected ":a" :actual "(find-keyword \"a\")" :portability :common}
@@ -3869,4 +3869,35 @@
   {:suite "conformance / throwable-record" :label "reader-conditional :form" :expected "'(:clj 1)" :actual "(:form (reader-conditional (quote (:clj 1)) false))" :portability :common}
   {:suite "conformance / throwable-record" :label "reader-conditional :splicing?" :expected "true" :actual "(:splicing? (reader-conditional (quote (:clj 1)) true))" :portability :common}
   {:suite "conformance / throwable-record" :label "reader-conditional = self" :expected "true" :actual "(= (reader-conditional (quote (:clj 1)) false) (reader-conditional (quote (:clj 1)) false))" :portability :common}
-  {:suite "conformance / throwable-record" :label "reader-conditional pr-str" :expected "\"#?(:clj 1)\"" :actual "(pr-str (reader-conditional (quote (:clj 1)) false))" :portability :common}]
+  {:suite "conformance / throwable-record" :label "reader-conditional pr-str" :expected "\"#?(:clj 1)\"" :actual "(pr-str (reader-conditional (quote (:clj 1)) false))" :portability :common}
+  ;; ============================================================================
+  ;; conformance / r3 — typed throws at operation sites
+  ;; ============================================================================
+  ;; seq on non-seqable → IAE with portable JVM message
+  {:suite "conformance / r3" :label "seq 42 is IAE with portable message" :expected "\"Don't know how to create ISeq from: java.lang.Long\"" :actual "(try (seq 42) (catch IllegalArgumentException e (ex-message e)))" :portability :jvm}
+  ;; conj on non-coll → CCE (IPersistentCollection)
+  {:suite "conformance / r3" :label "conj on non-coll is CCE" :expected ":cce" :actual "(try (conj 3 1) (catch ClassCastException e :cce))" :portability :common}
+  ;; assoc on non-associative → CCE (Associative)
+  {:suite "conformance / r3" :label "assoc on non-associative is CCE" :expected ":cce" :actual "(try (assoc 3 :a 1) (catch ClassCastException e :cce))" :portability :common}
+  ;; dissoc on non-map → CCE (IPersistentMap)
+  {:suite "conformance / r3" :label "dissoc on non-map is CCE" :expected ":cce" :actual "(try (dissoc 3 :a) (catch ClassCastException e :cce))" :portability :common}
+  ;; disj on non-set → CCE (IPersistentSet)
+  {:suite "conformance / r3" :label "disj on non-set is CCE" :expected ":cce" :actual "(try (disj 3 1) (catch ClassCastException e :cce))" :portability :common}
+  ;; pop empty vector → IllegalStateException
+  {:suite "conformance / r3" :label "pop empty vector is IllegalStateException" :expected "\"Can't pop empty vector\"" :actual "(try (pop []) (catch IllegalStateException e (ex-message e)))" :portability :common}
+  ;; pop empty list → IllegalStateException
+  {:suite "conformance / r3" :label "pop empty list is IllegalStateException" :expected "\"Can't pop empty list\"" :actual "(try (pop ()) (catch IllegalStateException e (ex-message e)))" :portability :common}
+  ;; + with nil → NPE (class only; JVM message is JDK-internal)
+  {:suite "conformance / r3" :label "+ nil operand is NPE" :expected ":npe" :actual "(try (+ nil 1) (catch NullPointerException e :npe))" :portability :common}
+  ;; < with nil → NPE
+  {:suite "conformance / r3" :label "< nil operand is NPE" :expected ":npe" :actual "(try (< nil 1) (catch NullPointerException e :npe))" :portability :common}
+  ;; inc with nil → NPE
+  {:suite "conformance / r3" :label "inc nil is NPE" :expected ":npe" :actual "(try (inc nil) (catch NullPointerException e :npe))" :portability :common}
+  ;; + string operand → CCE (class only — message has JVM module suffix)
+  {:suite "conformance / r3" :label "+ string operand is CCE" :expected ":cce" :actual "(try (+ \"a\" 1) (catch ClassCastException e :cce))" :portability :common}
+  ;; < string operand → CCE
+  {:suite "conformance / r3" :label "< string operand is CCE" :expected ":cce" :actual "(try (< 1 \"a\") (catch ClassCastException e :cce))" :portability :common}
+  ;; ArityException for named fn — class
+  {:suite "conformance / r3" :label "arity error is ArityException" :expected ":ae" :actual "(try ((fn [x y] x) 1) (catch clojure.lang.ArityException e :ae))" :portability :common}
+  ;; ArityException for named fn — message (certifiable if jolt renders user/f2)
+  {:suite "conformance / r3" :label "arity error message names the fn" :expected "\"Wrong number of args (1) passed to: user/f2\"" :actual "(do (defn f2 [x y] x) (try (f2 1) (catch clojure.lang.ArityException e (ex-message e))))" :portability :jvm}]

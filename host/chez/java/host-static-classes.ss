@@ -925,20 +925,36 @@
         (if (eq? hit 'none) 'pass (if hit #t #f)))))))
 
 ;; java.lang.Class value: (class x) / (.getClass x) return one. It renders like
-;; the JVM — str/.toString -> "class <name>", pr -> "<name>", .getName -> "<name>"
-;; — but stays = and hash equal to its name STRING, so (= (class x) String),
-;; class-keyed maps/sets, multimethod dispatch on class, and instance? all keep
-;; working against the bare class-name tokens.
+;; the JVM — str/.toString -> "class <name>", pr -> "<name>", .getName -> "<name>".
+;; A class token (java.util.Date) now evaluates to a Class object (not a name
+;; string), so (= (class x) java.util.Date) works by jclass identity.
 (define (make-class-obj name) (make-jhost "class" (vector name)))
 (define (jclass? x) (and (jhost? x) (string=? (jhost-tag x) "class")))
 (define (jclass-name x) (vector-ref (jhost-state x) 0))
+
+;; Global interner: class tokens resolve to the same eq? object per name, so
+;; identity, =, and defmethod table keys are stable. Called by the analyzer for
+;; every class-name symbol (java.util.Date, clojure.lang.Atom) at evaluation time.
+(define jolt-class-for-tbl (make-hashtable string-hash string=?))
+(define (jolt-class-for name)
+  (let ((existing (hashtable-ref jolt-class-for-tbl name #f)))
+    (if existing
+        existing
+        (let ((obj (make-class-obj name)))
+          (hashtable-set! jolt-class-for-tbl name obj)
+          obj))))
+(def-var! "jolt.host" "jolt-class-for" jolt-class-for)
+
 (define (class-key x)
   (cond ((jclass? x) (jclass-name x))
         ((string? x) x)
         ;; a deftype/defrecord NAME var holds its ctor; treat it as the class
         ((procedure? x) (hashtable-ref chez-deftype-ctor-tag x #f))
         (else #f)))
-(register-eq-arm! (lambda (a b) (or (jclass? a) (jclass? b)))
+;; = compares jclass values by name (stable interning makes this eq?-level);
+;; strings are no longer = to a jclass — class-key survives for internal
+;; dispatch boundaries only (multimethod tables, catch dispatch, isa?).
+(register-eq-arm! (lambda (a b) (and (jclass? a) (jclass? b)))
                   (lambda (a b) (let ((ka (class-key a)) (kb (class-key b)))
                                   (and ka kb (string=? ka kb) #t))))
 (register-hash-arm! jclass? (lambda (x) (jolt-hash (jclass-name x))))
@@ -955,6 +971,9 @@
         ;; uses (.. this getClass (isInstance o)).
         (cons "isInstance" (lambda (self o) (if (instance-check self o) #t #f)))
         (cons "getClass" (lambda (self) (make-class-obj "java.lang.Class")))))
+;; (class x) on a jclass value returns java.lang.Class, so (instance? Class
+;; (class y)) and class-based dispatch see the correct JVM class.
+(register-class-arm! jclass? (lambda (x) "java.lang.Class"))
 
 ;; (jolt.host/table? x) — is x a host tagged-table?
 (def-var! "jolt.host" "table?" (lambda (x) (if (htable? x) #t #f)))
@@ -1110,20 +1129,21 @@
 ;; (jolt.host/class-supers name) / (jolt.host/class-ancestors name) — a jolt seq of
 ;; super / ancestor class-name strings (transitive, Object-rooted), or nil when
 ;; jolt models no hierarchy for it. class-bases is the DIRECT supers (clojure.core
-;; `bases` / the class arm of `parents`).
+;; `bases` / the class arm of `parents`). Each result element is an interned jclass
+;; so (= (first (parents Long)) Number) and contains? work against class tokens.
 (def-var! "jolt.host" "class-supers"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
           (let ((as (class-ancestors-rooted name)))
-            (if (null? as) jolt-nil (list->cseq as)))
+            (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
 (def-var! "jolt.host" "class-ancestors"
   (lambda (x)
     (let ((name (class-key x)))
       (if name
           (let ((as (class-ancestors-rooted name)))
-            (if (null? as) jolt-nil (list->cseq as)))
+            (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
 (def-var! "jolt.host" "class-bases"
   (lambda (x)
@@ -1137,7 +1157,7 @@
                              (member "java.lang.Object" ds))
                          ds
                          (append ds '("java.lang.Object")))))
-            (if (null? ds) jolt-nil (list->cseq ds)))
+            (if (null? ds) jolt-nil (list->cseq (map jolt-class-for ds))))
           jolt-nil))))
 ;; is X a class value — a jclass, a deftype ctor, or a name string the host
 ;; graph models?
@@ -1299,6 +1319,13 @@
                (cn (jolt-class-name val)))
           (if (and (string? cn) (string=? cn q)) #t 'pass))
         'pass)))
+;; (instance? Class x) / (instance? java.lang.Class x): a jclass value IS a Class.
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (let ((tn (symbol-t-name type-sym)))
+      (if (member tn '("Class" "java.lang.Class"))
+          (if (jclass? val) #t #f)
+          'pass))))
 ;; a Class OBJECT specifically ((class x) result) — narrower than class-value?,
 ;; which also admits deftype ctors and modeled name strings. The instance?
 ;; macro needs exactly this: evaluate a var-held Class, keep quoting record names.
@@ -1312,3 +1339,16 @@
     ((coll i) (if (al-family? coll) (%shim-nth (list->cseq (al->list coll)) i) (%shim-nth coll i)))
     ((coll i d) (if (al-family? coll) (%shim-nth (list->cseq (al->list coll)) i d) (%shim-nth coll i d)))))
 (def-var! "clojure.core" "nth" jolt-nth)
+
+;; --- class-token def-vars as Class objects -----------------------------------
+;; Short names (String, Long, HashMap) and FQN value-class names (java.lang.Long,
+;; clojure.lang.Atom) evaluate to interned Class objects via the global interner
+;; (jolt-class-for), so (= (class x) String) and (instance? Long x) work without
+;; a string=class bridge. class-token-alist and class-fqn-list come from
+;; host-class.ss (loaded earlier).
+(for-each
+  (lambda (pair) (def-var! "clojure.core" (car pair) (jolt-class-for (cdr pair))))
+  class-token-alist)
+(for-each
+  (lambda (nm) (def-var! "clojure.core" nm (jolt-class-for nm)))
+  class-fqn-list)
