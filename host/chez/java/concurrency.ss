@@ -702,6 +702,56 @@
           jolt-nil))
          (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))
 
+;; --- java.util.concurrent.ExecutorService / Executors ----------------------
+;; jolt runs real OS threads, so every Executors factory behaves as a
+;; thread-per-task executor (which is exactly newVirtualThreadPerTaskExecutor).
+;; submit runs the task on a forked thread and returns a Future whose .get waits
+;; for the result (re-raising the task's throw, like the JVM). shutdown is a
+;; no-op flag; the shared heap needs no pool teardown.
+;; j-future state: #(done? result error mutex condition)
+(define (make-j-future thunk)
+  (let ((st (vector #f jolt-nil #f (make-mutex) (make-condition))))
+    (fork-thread (lambda ()
+      (let ((r (guard (e (#t (vector-set! st 2 e) #f)) (jolt-invoke thunk))))
+        (with-mutex (vector-ref st 3)
+          (unless (vector-ref st 2) (vector-set! st 1 r))
+          (vector-set! st 0 #t)
+          (condition-broadcast (vector-ref st 4))))))
+    (make-jhost "j-future" st)))
+(register-host-methods! "j-future"
+  (list (cons "get" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 3)
+              (let loop () (unless (vector-ref st 0) (condition-wait (vector-ref st 4) (vector-ref st 3)) (loop))))
+            (if (vector-ref st 2) (jolt-throw (vector-ref st 2)) (vector-ref st 1)))))
+        (cons "isDone" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "isCancelled" (lambda (self) #f))
+        (cons "cancel" (lambda (self . _) #f))))
+(define (make-executor) (make-jhost "executor-service" (vector #f)))  ; #(shutdown?)
+(let ((factory (lambda _ (make-executor))))
+  (for-each (lambda (nm) (register-class-statics! nm
+              (list (cons "newVirtualThreadPerTaskExecutor" factory)
+                    (cons "newFixedThreadPool" factory) (cons "newSingleThreadExecutor" factory)
+                    (cons "newCachedThreadPool" factory) (cons "newWorkStealingPool" factory)
+                    (cons "newScheduledThreadPool" factory) (cons "newSingleThreadScheduledExecutor" factory))))
+            '("Executors" "java.util.concurrent.Executors")))
+(register-host-methods! "executor-service"
+  (list (cons "submit" (lambda (self thunk) (make-j-future thunk)))
+        (cons "execute" (lambda (self thunk)
+          (let ((snap (dyn-binding-stack)))
+            (fork-thread (lambda () (dyn-binding-stack snap)
+              (guard (e (#t (guard (_ (#t #f))
+                              (display "Exception in executor task:\n" (current-error-port))
+                              (jolt-report-throwable e (current-error-port)))))
+                (jolt-invoke thunk)))))
+          jolt-nil))
+        (cons "shutdown" (lambda (self) (vector-set! (jhost-state self) 0 #t) jolt-nil))
+        (cons "shutdownNow" (lambda (self) (vector-set! (jhost-state self) 0 #t) (jolt-vector)))
+        (cons "close" (lambda (self) (vector-set! (jhost-state self) 0 #t) jolt-nil))
+        (cons "isShutdown" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "isTerminated" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "awaitTermination" (lambda (self . _) #t))))
+
 ;; --- main-thread executor ---------------------------------------------------
 ;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread
 ;; that owns the GUI main loop. On macOS GTK quartz, g_application_run must run
