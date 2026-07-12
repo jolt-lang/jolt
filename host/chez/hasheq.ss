@@ -21,8 +21,26 @@
   (let ((u (u32 x)))
     (if (fx>=? u #x80000000) (fx- u #x100000000) u)))
 
-;; 32-bit wrapping multiply.
-(define (mul32 a b) (i32 (* (i32 a) (i32 b))))
+;; 32-bit wrapping multiply — fixnum-pure via 16-bit split.
+;; Proof no step exceeds Chez's signed 61-bit fixnum range (±2^60−1):
+;;   Let a ∈ [−2^31, 2^31−1] (after i32), b likewise.
+;;   hi = low 16 bits of (b >>> 16) ∈ [0, 0xFFFF]
+;;   lo = low 16 bits of b          ∈ [0, 0xFFFF]
+;;   (fx* a hi) : |a| ≤ 2^31, hi ≤ 0xFFFF → |p| ≤ 2^47        ≪ 2^60  ✓
+;;   (fxand p #xFFFF) ∈ [0, 0xFFFF]                              ≪ 2^60  ✓
+;;   (fxsll ... 16)  ∈ [0, 0xFFFF0000] ≤ 2^32                   ≪ 2^60  ✓
+;;   (fx* a lo) : |a| ≤ 2^31, lo ≤ 0xFFFF → |p| ≤ 2^47          ≪ 2^60  ✓
+;;   (fx+ hi_part lo_part) : each ≤ max(2^32, 2^47) = 2^47 → sum ≤ 2^48 ≪ 2^60 ✓
+;;   final (fxand sum #xFFFFFFFF) ∈ [0, 2^32−1]                  ≪ 2^60  ✓
+;; After the unsigned 32-bit result is obtained, i32 converts back to signed.
+(define (mul32 a b)
+  (let* ((a (i32 a))
+         (b (i32 b))
+         (hi (fxand (fxsra b 16) #xFFFF))
+         (lo (fxand b #xFFFF))
+         (hi-part (fxsll (fxand (fx* a hi) #xFFFF) 16))
+         (lo-part (fx* a lo)))
+    (i32 (fxand (fx+ hi-part lo-part) #xFFFFFFFF))))
 
 ;; 32-bit wrapping add.
 (define (add32 a b) (i32 (+ (i32 a) (i32 b))))
@@ -74,16 +92,32 @@
 (define (murmur3-hash-long input)
   ;; input is an exact integer (may be bignum > 64 bits).
   ;; Java: int low = (int) input; int high = (int) (input >>> 32);
-  ;; Use unsigned 64-bit mask, then split.
+  ;; Hot fixnum path: every map key in normal use is a fixnum; avoid
+  ;; generic bitwise-and which allocates bignums on negative fixnums.
   (if (= input 0) 0
-      (let* ((u64 (bitwise-and input #xFFFFFFFFFFFFFFFF))
-             (low (i32 u64))
-             (high (i32 (bitwise-arithmetic-shift-right u64 32)))
-             (k1 (murmur3-mix-k1 low))
-             (h1 (murmur3-mix-h1 murmur3-seed k1))
-             (k1 (murmur3-mix-k1 high))
-             (h1 (murmur3-mix-h1 h1 k1)))
-        (murmur3-fmix h1 8))))
+      (if (fixnum? input)
+          ;; Fixnum fast path (no bignum allocation possible).
+          ;; For a 61-bit fixnum, i32 gives the low 32 bits signed;
+          ;; arithmetic shift right 32 gives the high bits (sign-extended
+          ;; for negative values — i32 truncates back to the unsigned
+          ;; word, matching Java's (int)(input >>> 32)).
+          (let* ((low (i32 input))
+                 (high (i32 (bitwise-arithmetic-shift-right input 32)))
+                 (k1 (murmur3-mix-k1 low))
+                 (h1 (murmur3-mix-h1 murmur3-seed k1))
+                 (k1 (murmur3-mix-k1 high))
+                 (h1 (murmur3-mix-h1 h1 k1)))
+            (murmur3-fmix h1 8))
+          ;; Cold bignum path: generic ops are fine; the allocation
+          ;; cost is amortized over the rare case.
+          (let* ((u64 (bitwise-and input #xFFFFFFFFFFFFFFFF))
+                 (low (i32 u64))
+                 (high (i32 (bitwise-arithmetic-shift-right u64 32)))
+                 (k1 (murmur3-mix-k1 low))
+                 (h1 (murmur3-mix-h1 murmur3-seed k1))
+                 (k1 (murmur3-mix-k1 high))
+                 (h1 (murmur3-mix-h1 h1 k1)))
+            (murmur3-fmix h1 8)))))
 
 ;; ============================================================================
 ;; String hash — Java String.hashCode() over UTF-16 code units
