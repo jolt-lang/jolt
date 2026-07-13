@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `newDirectoryStream`, attributes), `FileTime`, `PosixFilePermissions`,
   `FileVisitor`/`FileVisitResult`, and the `LinkOption`/`CopyOption`/`OpenOption`
   enums.
+- `jolt.util/import-vars` — re-export a namespace's public vars as bakeable
+  delegating definitions (functions and macros, with an `:exclude` set). The
+  pattern for putting a public face on a vendored library; how `jolt.fs` wraps
+  babashka.fs. Works in an AOT-built binary, unlike an `intern` over
+  `ns-publics`.
 
 ### Fixed
 
