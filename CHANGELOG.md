@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-13
+
+### Added
+
+- `jolt.fs` is now the [babashka.fs](https://github.com/babashka/fs) API. Jolt
+  vendors babashka.fs over a new `java.nio.file` host shim — `Path`, `Files`,
+  `FileTime`, file attributes, POSIX permissions, symbolic links, and directory
+  walking with symlink-cycle detection. `jolt.fs` re-exports it as the public
+  surface (require `babashka.fs` directly if you prefer). Symbolic links,
+  creation time, and permissions — which the previous `java.io.File`-based
+  `jolt.fs` could not do — now work through the shim's `stat`, `realpath`,
+  `symlink`, `chmod`, and `getpwuid` bindings.
+- A `java.nio.file` interop surface: `Paths`/`Path`, `Files` (predicates,
+  create/delete/copy/move, read/write, temp files, `walkFileTree`,
+  `newDirectoryStream`, attributes), `FileTime`, `PosixFilePermissions`,
+  `FileVisitor`/`FileVisitResult`, and the `LinkOption`/`CopyOption`/`OpenOption`
+  enums.
+
+### Changed
+
+- The documentation moved to the site ([jolt-lang.github.io](https://jolt-lang.github.io));
+  the repo `docs/` folder is gone and the README links to the live pages.
+
+### Notes
+
+- `zip`/`unzip`/`gzip`/`gunzip` need `java.util.zip`, which Jolt does not shim
+  yet, so those babashka.fs functions are excluded from `jolt.fs`.
+
 ## [0.2.7] - 2026-07-13
 
 ### Fixed
