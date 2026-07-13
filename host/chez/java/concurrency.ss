@@ -112,6 +112,13 @@
 
 (define (jolt-promise-new) (make-jolt-promise #f jolt-nil (make-mutex) (make-condition)))
 
+;; (class a-future)/(class a-promise): both are anonymous reify instances of a
+;; clojure.core fn on the JVM — clojure.core$future_call$reify__N /
+;; clojure.core$promise$reify__N. The __N counter is unstable per eval; jolt
+;; matches the stable enclosing-fn prefix and pins __0 (rather than :object).
+(register-class-arm! jolt-future? (lambda (f) "clojure.core$future_call$reify__0"))
+(register-class-arm! jolt-promise? (lambda (p) "clojure.core$promise$reify__0"))
+
 (define (jolt-deliver p v)
   (if (jolt-promise? p)
       (let ((won (with-mutex (jolt-promise-mu p)
