@@ -54,6 +54,18 @@
 (register-pr-str-arm! jolt-var-unbound? unbound-marker-str)
 (register-str-render! jolt-var-unbound? unbound-marker-str)
 (register-pr-readable-arm! jolt-var-unbound? unbound-marker-pr)
+;; (class an-unbound-var) is clojure.lang.Var$Unbound, like the JVM — without
+;; this arm it fell through to :object, so using a var's value inside its own
+;; definition ((def x (+ x 1)), or a macro's expander referencing the var it
+;; defines) reported "class :object cannot be cast to …" instead of the JVM's
+;; "class clojure.lang.Var$Unbound cannot be cast to …" / "ISeq from Var$Unbound".
+(register-class-arm! jolt-var-unbound? (lambda (u) "clojure.lang.Var$Unbound"))
+;; (class a-reify) is a generated "ns$reify__N" class on the JVM — an unstable
+;; per-eval name jolt can't reproduce, so (like the fixed AFunction$fn__0 stand-in
+;; for an anonymous fn) it reports a stable reify-shaped placeholder rather than
+;; the :object fallback. Covers promise/future too (both reify instances). The
+;; protocols it satisfies drive instance?/satisfies?, not this name.
+(register-class-arm! jreify? (lambda (r) "clojure.lang.IObj$reify__0"))
 
 ;; bound? — native (the overlay's (get v :root) is nil on a var-cell record).
 (define (jolt-var-bound-one? v) (and (var-cell? v) (not (jolt-var-unbound? (var-cell-root v)))))
