@@ -3452,6 +3452,10 @@
   {:suite "transducers / map multi-input" :label "the map transducer applies f across all inputs" :expected "[6]" :actual "(((map +) conj) [] 1 2 3)" :portability :common}
   {:suite "transducers / map multi-input" :label "single input is unchanged" :expected "[3]" :actual "(((map +) conj) [] 3)" :portability :common}
   {:suite "records / deftype is not a map" :label "a bare deftype is neither map? nor record?, a defrecord is both" :expected "[false false true true]" :actual "(do (deftype DT [a]) (defrecord DR [a]) [(map? (->DT 1)) (record? (->DT 1)) (map? (->DR 1)) (record? (->DR 1))])" :portability :common}
+  {:suite "records / literal data" :label "a list value is data, not code" :expected "true" :actual "(do (defrecord RlFoo [a]) (= (list (quote +) 1 2) (:a #user.RlFoo{:a (+ 1 2)})))" :portability :common}
+  {:suite "records / literal data" :label "a symbol value is the symbol, not its binding" :expected "true" :actual "(do (defrecord RlSym [a]) (let [x 5] (= (quote x) (:a #user.RlSym{:a x}))))" :portability :common}
+  {:suite "records / literal data" :label "nested record literal still constructs" :expected "5" :actual "(do (defrecord RlBar [c]) (defrecord RlBox [b]) (:c (:b #user.RlBox{:b #user.RlBar{:c 5}})))" :portability :common}
+  {:suite "records / literal data" :label "a data list of strings is a list, not a call" :expected "true" :actual "(do (defrecord RlS [content]) (= (list \"x\" \"y\") (:content #user.RlS{:content (\"x\" \"y\")})))" :portability :common}
   {:suite "printer / str vs print" :label "str of a vector quotes nested strings" :expected "true" :actual "(= \"[\\\"x\\\"]\" (str [\"x\"]))" :portability :common}
   {:suite "printer / str vs print" :label "print-str of a vector leaves strings raw" :expected "true" :actual "(= \"[x]\" (print-str [\"x\"]))" :portability :common}
   {:suite "printer / str vs print" :label "str of a map quotes nested strings" :expected "true" :actual "(= \"{\\\"a\\\" \\\"b\\\"}\" (str {\"a\" \"b\"}))" :portability :common}
