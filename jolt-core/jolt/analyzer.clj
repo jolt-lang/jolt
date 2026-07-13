@@ -595,6 +595,13 @@
     (cond
       (and (nil? ns) (local? env nm))
         (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
+      ;; Qualified instance method (Clojure 1.12) used as a value — not yet
+      ;; supported as a method reference. The call form (Class/.method target ...)
+      ;; works; a bare Class/.method as a value is a residual.
+      (and ns (> (count nm) 1) (= "." (subs nm 0 1)))
+        (uncompilable
+         (str "Qualified instance method " (str ns "/" nm)
+              " used as value; value form not yet supported. Use (.method target ...) or (Class/.method target ...) instead."))
       ns (let [r (resolve-global ctx form)]
            (if (= :var (:kind r))
              (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))
@@ -742,9 +749,12 @@
             (analyze-field ctx hname items env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
-          ;; (double/long/int/float x) — a 1-arg numeric cast lowers to a checked
-          ;; :coerce node carrying the runtime helper, feeding the numeric lattice
-          ;; like a ^double/^long hint. nil for non-casts / other arities / shadowed.
+          ;; (Class/.method target arg*) — qualified instance method call (Clojure 1.12).
+          ;; The class part is a type hint; dispatch on the first arg's runtime type.
+          (and (form-sym? head) (form-sym-ns head)
+               (let [n (form-sym-name head)]
+                 (and (> (count n) 1) (= "." (subs n 0 1)))))
+            (analyze-host-call ctx (form-sym-name head) items env)
           cast (let [node (coerce-node (:kind cast) (analyze ctx (second items) env)
                                        (:cast-fn cast))
                      p (form-position form)]
