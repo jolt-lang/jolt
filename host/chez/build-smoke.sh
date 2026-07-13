@@ -215,4 +215,30 @@ case "$modeline" in
   *) echo "  FAIL: deps.edn :jolt/build {:opt true} did not select optimized mode — got \`$modeline\`"; exit 1 ;;
 esac
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt)"
+# A namespace with a cljs-only reader conditional (`#?(:cljs …)`) between two clj
+# defns must not truncate emission at the conditional — the fn AFTER it must be
+# emitted into the binary, or a call to it crashes on an unbound var.
+ccapp="$root/test/chez/cljc-cond-app"
+ccout="$(dirname "$out")/cljc-cond-bin"
+if ! JOLT_PWD="$ccapp" bin/joltc build -m cljccond.main -o "$ccout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of a cljs-conditional app exited non-zero"; exit 1
+fi
+got_cc="$(cd / && "$ccout" 2>&1 | tail -1)"
+if [ "$got_cc" != "CLJC-COND :before :after" ]; then
+  echo "  FAIL: cljs-only conditional truncated emission — want 'CLJC-COND :before :after', got \`$got_cc\`"; exit 1
+fi
+
+# A built binary must have the vendored babashka.fs (via jolt.fs) available and
+# runnable — including functions defined after babashka.fs's cljs-only reader
+# conditionals (directory?/cwd/which). Guards the vendored-namespace baking.
+fsapp="$root/test/chez/fs-app"
+fsout="$(dirname "$out")/fs-app-bin"
+if ! JOLT_PWD="$fsapp" bin/joltc build -m fsapp.main -o "$fsout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of a jolt.fs / babashka.fs app exited non-zero"; exit 1
+fi
+got_fs="$(cd / && "$fsout" 2>&1 | tail -1)"
+if [ "$got_fs" != "FS-APP a/b true true" ]; then
+  echo "  FAIL: built binary missing vendored babashka.fs — want 'FS-APP a/b true true', got \`$got_fs\`"; exit 1
+fi
+
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs)"

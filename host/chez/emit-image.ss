@@ -11,13 +11,19 @@
 
 ;; Read every top-level form from a source string (a Chez read-all).
 ;; Uses the same reader the spine reads single forms with.
+;; Loop by READING POSITION, not by the first eof-form: a non-matching reader
+;; conditional (e.g. `#?(:cljs …)` with no :clj branch) reads as "no form" — an
+;; eof marker mid-source — and must be skipped, not treated as end of file, or a
+;; namespace's forms after it are silently dropped. Mirrors load-jolt-file.
 (define (ei-read-all src)
   (let ((end (string-length src)))
     (let loop ((i 0) (acc '()))
-      (let-values (((form j) (rdr-read-form src i end)))
-        (if (rdr-eof? form)
-            (reverse acc)
-            (loop j (cons form acc)))))))
+      (if (>= i end)
+          (reverse acc)
+          (let-values (((form j) (rdr-read-form src i end)))
+            (if (> j i)
+                (loop j (if (rdr-eof? form) acc (cons form acc)))
+                (reverse acc)))))))
 
 ;; Is `f` an (ns ...) form? (Its only role in the image is alias registration; we
 ;; never emit it — the def-var!s carry explicit ns names.)
