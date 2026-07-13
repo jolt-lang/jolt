@@ -240,3 +240,113 @@
 (register-eq-arm! (lambda (a b) (and (nio-path? a) (nio-path? b)))
                   (lambda (a b) (string=? (nio-path-str a) (nio-path-str b))))
 (register-hash-arm! nio-path? (lambda (p) (string-hash (nio-path-str p))))
+
+;; ---- Files statics ----------------------------------------------------------
+;; Each Files op takes Path / File / String args plus trailing varargs (options /
+;; attributes) it ignores here; the on-disk path resolves against JOLT_PWD the
+;; same way java.io.File does (project-relative), so File and Path see one tree.
+(define (nfp x) (project-relative (npath-string-of x)))       ; on-disk path
+(define (->path x) (if (nio-path? x) x (make-nio-path (npath-string-of x))))
+
+(define (nio-size fp)
+  (if (or (not (file-exists? fp)) (file-directory? fp)) 0
+      (let ((port (open-file-input-port fp)))
+        (let ((n (file-length port))) (close-port port) n))))
+
+(define (nio-read-bv fp)
+  (let ((port (open-file-input-port fp)))
+    (let ((bv (get-bytevector-all port)))
+      (close-port port)
+      (if (eof-object? bv) (make-bytevector 0) bv))))
+
+(define (nio-write-bv! fp bv)
+  (let ((port (open-file-output-port fp (file-options no-fail))))
+    (put-bytevector port bv) (close-port port)))
+
+;; readAllLines: split content on line terminators, drop a single trailing empty.
+(define (nio-read-lines fp)
+  (let* ((s (utf8->string (nio-read-bv fp)))
+         (n (string-length s)))
+    (let loop ((i 0) (start 0) (acc '()))
+      (cond
+        ((= i n)
+         (let ((segs (reverse (if (> i start) (cons (substring s start i) acc) acc))))
+           (make-pvec (list->vector
+                       (map (lambda (ln)
+                              (let ((k (string-length ln)))
+                                (if (and (> k 0) (char=? (string-ref ln (- k 1)) #\return))
+                                    (substring ln 0 (- k 1)) ln)))
+                            segs)))))
+        ((char=? (string-ref s i) #\newline)
+         (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
+        (else (loop (+ i 1) start acc))))))
+
+(define (nio-write! fp data)
+  (cond
+    ((jolt-array? data) (nio-write-bv! fp (na-bytearray->bv data)))
+    ((string? data) (nio-write-bv! fp (string->utf8 data)))
+    (else                                    ; Iterable<CharSequence>: line + separator each
+     (let ((body (fold-left (lambda (acc ln) (string-append acc (jolt-str-render-one ln) "\n"))
+                            "" (seq->list (jolt-seq data)))))
+       (nio-write-bv! fp (string->utf8 body))))))
+
+(define (nio-delete1 fp missing-ok?)
+  (cond ((not (file-exists? fp))
+         (if missing-ok? #f (jolt-throw (jolt-ex-info (string-append fp) (empty-pmap)))))
+        ((file-directory? fp) (delete-directory fp) #t)
+        (else (delete-file fp) #t)))
+
+(define nio-temp-counter 0)
+(define (nio-tmp-dir) (or (getenv "TMPDIR") "/tmp"))
+(define (nio-temp-name prefix suffix)
+  (set! nio-temp-counter (+ nio-temp-counter 1))
+  (string-append (let ((d (nio-tmp-dir)))
+                   (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/")))
+                 (if (string? prefix) prefix "")
+                 (number->string (+ (* 100000 nio-temp-counter) (modulo (* nio-temp-counter 2654435761) 100000)))
+                 (if (string? suffix) suffix "")))
+
+(let ((files-statics
+       (list
+        (cons "exists"        (lambda (p . _) (if (file-exists? (nfp p)) #t #f)))
+        (cons "notExists"     (lambda (p . _) (if (file-exists? (nfp p)) #f #t)))
+        (cons "isDirectory"   (lambda (p . _) (if (file-directory? (nfp p)) #t #f)))
+        (cons "isRegularFile" (lambda (p . _) (let ((fp (nfp p))) (if (and (file-exists? fp) (not (file-directory? fp))) #t #f))))
+        (cons "isReadable"    (lambda (p . _) (if (file-exists? (nfp p)) #t #f)))
+        (cons "isWritable"    (lambda (p . _) (if (file-exists? (nfp p)) #t #f)))
+        (cons "isExecutable"  (lambda (p . _) (if (file-exists? (nfp p)) #t #f)))
+        (cons "isHidden"      (lambda (p . _) (let ((nm (npath-string-of (npath-file-name (npath-string-of p)))))
+                                                (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\.)))))
+        (cons "size"          (lambda (p . _) (nio-size (nfp p))))
+        (cons "createDirectory"   (lambda (p . _) (mkdir (nfp p)) (->path p)))
+        (cons "createDirectories" (lambda (p . _) (mkdirs! (nfp p)) (->path p)))
+        (cons "createFile"    (lambda (p . _) (close-port (open-file-output-port (nfp p) (file-options no-fail))) (->path p)))
+        (cons "delete"        (lambda (p) (nio-delete1 (nfp p) #f) jolt-nil))
+        (cons "deleteIfExists"(lambda (p) (nio-delete1 (nfp p) #t)))
+        (cons "move"          (lambda (src dst . _) (let ((d (nfp dst)))
+                                                      (when (file-exists? d) (nio-delete1 d #t))
+                                                      (rename-file (nfp src) d)) (->path dst)))
+        (cons "copy"          (lambda (src dst . _) (nio-write-bv! (nfp dst) (nio-read-bv (nfp src))) (->path dst)))
+        (cons "readAllBytes"  (lambda (p) (make-jolt-array (list->vector (bytevector->u8-list (nio-read-bv (nfp p)))) 'byte)))
+        (cons "readAllLines"  (lambda (p . _) (nio-read-lines (nfp p))))
+        (cons "write"         (lambda (p data . _) (nio-write! (nfp p) data) (->path p)))
+        (cons "newInputStream"(lambda (p . _) (make-in-stream (open-file-input-port (nfp p)))))
+        (cons "createTempFile"      (lambda args (nio-files-create-temp args #f)))
+        (cons "createTempDirectory" (lambda args (nio-files-create-temp args #t))))))
+  (register-class-statics! "Files" files-statics)
+  (register-class-statics! "java.nio.file.Files" files-statics))
+
+;; createTempFile(prefix, suffix, attrs*) | createTempFile(dir, prefix, suffix, attrs*)
+;; createTempDirectory(prefix, attrs*)    | createTempDirectory(dir, prefix, attrs*)
+(define (nio-files-create-temp args dir?)
+  (let* ((args (filter (lambda (x) (not (jolt-array? x))) args))
+         (has-dir (and (pair? args) (or (nio-path? (car args)) (jfile? (car args)))))
+         (base (if has-dir (npath-string-of (car args)) #f))
+         (rest (if has-dir (cdr args) args))
+         (prefix (if (and (pair? rest) (string? (car rest))) (car rest) ""))
+         (suffix (if (and (not dir?) (pair? rest) (pair? (cdr rest)) (string? (cadr rest))) (cadr rest) ""))
+         (name (nio-temp-name prefix suffix))
+         (full (if base (string-append base "/" (npath-string-of (npath-file-name name))) name))
+         (fp (project-relative full)))
+    (if dir? (mkdir fp) (close-port (open-file-output-port fp (file-options no-fail))))
+    (make-nio-path full)))
