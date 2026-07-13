@@ -32,25 +32,44 @@
 ;; `build` — the script driver loads the build driver from the repo, the
 ;; standalone binary materializes its bundled boots/stub (build.ss itself is
 ;; already inlined there).
+;; Read all of stdin as a string (a `-` program / expression source).
+(define (jolt-read-all-stdin)
+  (let ((out (open-output-string)) (in (current-input-port)))
+    (let loop ()
+      (let ((c (read-char in)))
+        (if (eof-object? c)
+            (get-output-string out)
+            (begin (write-char c out) (loop)))))))
+
+;; Evaluate EXPR (a string of one-or-more forms) with *command-line-args* bound
+;; to app-args. print? echoes the final value (blank for nil), as `-e` does; a
+;; `-` stdin PROGRAM runs as a script and suppresses it.
+(define (jolt-run-expr-string expr app-args print?)
+  (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args))))
+    (jolt-push-thread-bindings
+      (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
+    (let ((result (jolt-final-str
+                    (jolt-compile-eval (string-append "(do " expr ")") "user"))))
+      (jolt-pop-thread-bindings)
+      (when (and print? (not (string=? result "")))
+        (display result) (newline)))))
+
 (define (jolt-cli-run cli-args prepare-build!)
   (guard (v (#t (jolt-report-uncaught v)))
     (cond
       ;; -e EXPR [args…] — evaluate one expression and print it (blank for nil).
       ;; Wrapped in (do …) so a multi-form string evaluates every form and returns
       ;; the last. The argv after EXPR are *command-line-args* (nil when empty),
-      ;; with the first standalone "--" consumed as POSIX end-of-options.
+      ;; with the first standalone "--" consumed as POSIX end-of-options. `-e -`
+      ;; reads the expression from stdin.
       ((and (pair? cli-args) (string=? (car cli-args) "-e")
             (pair? (cdr cli-args)))
-       (let* ((expr (cadr cli-args))
-              (app-args (drop-end-of-options (cddr cli-args)))
-              (cla (if (null? app-args) jolt-nil (list->cseq app-args))))
-         (jolt-push-thread-bindings
-           (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
-         (let ((result (jolt-final-str
-                         (jolt-compile-eval (string-append "(do " expr ")") "user"))))
-           (jolt-pop-thread-bindings)
-           (unless (string=? result "")
-             (display result) (newline)))))
+       (let ((expr (if (string=? (cadr cli-args) "-") (jolt-read-all-stdin) (cadr cli-args))))
+         (jolt-run-expr-string expr (drop-end-of-options (cddr cli-args)) #t)))
+      ;; `-` [args…] — read a PROGRAM from stdin and run it as a script (the final
+      ;; value is not echoed, like `clojure -M -`); args after it are the argv.
+      ((and (pair? cli-args) (string=? (car cli-args) "-"))
+       (jolt-run-expr-string (jolt-read-all-stdin) (drop-end-of-options (cdr cli-args)) #f))
       ;; otherwise dispatch the argv through jolt.main/-main
       (else
        (when (and (pair? cli-args) (string=? (car cli-args) "build"))
