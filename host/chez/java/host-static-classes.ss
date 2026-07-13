@@ -644,10 +644,20 @@
        (utf32->string bv (endianness big)))
       ((string=? cs "utf-32le") (utf32->string bv (endianness little)))
       (else (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))))
+;; (String. bytes offset length [charset]) — decode a SLICE. Returns (bv . rest')
+;; where rest' is the charset args; a plain (String. bytes [charset]) is unsliced.
+(define (bytes-slice-for-string bv rest)
+  (if (and (pair? rest) (number? (car rest)) (pair? (cdr rest)) (number? (cadr rest)))
+      (let* ((off (jnum->exact (car rest))) (len (jnum->exact (cadr rest)))
+             (out (make-bytevector len)))
+        (bytevector-copy! bv off out 0 len)
+        (cons out (cddr rest)))
+      (cons bv rest)))
 (register-class-ctor! "String"
   (lambda (x . rest)
-    (cond ((bytevector? x) (decode-bytevector x rest))
-          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (decode-bytevector (na-bytearray->bv x) rest))
+    (cond ((bytevector? x) (let ((p (bytes-slice-for-string x rest))) (decode-bytevector (car p) (cdr p))))
+          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte))
+           (let ((p (bytes-slice-for-string (na-bytearray->bv x) rest))) (decode-bytevector (car p) (cdr p))))
           ;; (String. char[] [offset count]) — the whole array or a slice. Buffered
           ;; readers (data.json) build a string from a fill buffer this way.
           ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))
