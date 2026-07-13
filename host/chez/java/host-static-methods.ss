@@ -202,7 +202,16 @@
         (cons "setProperty" (lambda (k v) (sys-set-property k v)))
         (cons "clearProperty" (lambda (k) (sys-clear-property k)))
         (cons "getProperties" (lambda () (sys-properties-map)))
-        (cons "getenv" (lambda k (apply sys-getenv k)))))
+        (cons "getenv" (lambda k (apply sys-getenv k)))
+        ;; System/console is nil when there is no attached terminal (piped /
+        ;; redirected) — the safe default here; libraries (pretty) use it to
+        ;; decide whether to emit ANSI, and a nil means "not a tty".
+        (cons "console" (lambda _ jolt-nil))
+        (cons "lineSeparator" (lambda _ "\n"))
+        (cons "identityHashCode" (lambda (x) (->num (equal-hash x))))))
+(register-class-statics! "java.lang.System"
+  (list (cons "console" (lambda _ jolt-nil))
+        (cons "lineSeparator" (lambda _ "\n"))))
 
 ;; java.lang.Long.bitCount: the population count of the value's 64-bit two's-
 ;; complement (mask to 64 bits so a negative long counts like the JVM, e.g.
