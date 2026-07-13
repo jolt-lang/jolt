@@ -1,10 +1,17 @@
 (ns jolt.fs
-  "File-system utilities. This is babashka.fs re-exported under the jolt.fs name;
-  see https://github.com/babashka/fs for the API. Prefer requiring babashka.fs
-  directly in new code — jolt.fs stays for backward compatibility."
+  "File-system utilities: paths, files, directories, globbing, copy/move,
+  timestamps, POSIX permissions, and symbolic links. The implementation is the
+  vendored babashka.fs; jolt.fs is the public surface and exposes only the
+  operations Jolt fully supports on this host.
+
+  Path-valued results are java.nio.file.Path values. See
+  https://github.com/babashka/fs for the API of each function."
   (:require [babashka.fs]))
 
-;; Re-export every public var (functions and macros) from babashka.fs, carrying
-;; its metadata so macros stay macros and docstrings/arglists survive.
-(doseq [[sym v] (ns-publics 'babashka.fs)]
+;; zip / gzip need java.util.zip, which Jolt does not shim yet — keep them out
+;; of the public surface rather than exposing operations that fail.
+(def ^:private unsupported '#{zip unzip gzip gunzip})
+
+(doseq [[sym v] (ns-publics 'babashka.fs)
+        :when (not (contains? unsupported sym))]
   (intern 'jolt.fs (with-meta sym (meta v)) @v))
