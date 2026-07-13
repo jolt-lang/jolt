@@ -752,6 +752,16 @@
             (analyze-field ctx hname items env)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
+          ;; (ns/Name. args*) — a QUALIFIED trailing-dot constructor (a cross-ns or
+          ;; aliased deftype, e.g. sci.impl.types/Reified.). hname is nil for a
+          ;; namespaced head, so the bare ctor-head? arm above never sees it;
+          ;; reconstruct the "ns/Name" class and let analyze-ctor resolve it.
+          (and (form-sym? head) (form-sym-ns head) (not shadowed)
+               (let [n (form-sym-name head)]
+                 (and (> (count n) 1) (= "." (subs n (dec (count n)))))))
+            (let [n (form-sym-name head)]
+              (analyze-ctor ctx (str (form-sym-ns head) "/" (subs n 0 (dec (count n))))
+                            (rest items) env))
           ;; (Class/.method target arg*) — qualified instance method call (Clojure 1.12).
           ;; The class part is a type hint; dispatch on the first arg's runtime type.
           (and (form-sym? head) (form-sym-ns head)

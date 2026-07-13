@@ -447,9 +447,22 @@
 (define (hc-deftype-ctor-class ctx class)
   (let* ((nm (jolt-str-render-one class))
          (cns (hc-current-ns ctx))
-         (key (string-append cns "/->" nm)))
+         ;; a QUALIFIED ctor (ns/Name. or alias/Name., a cross-ns deftype — SCI
+         ;; builds sci.impl.types/Reified this way) resolves the ns segment (an
+         ;; alias -> its real ns) and looks the factory up there; a bare Name.
+         ;; resolves against THIS ns (a deftype named like a host class stays local).
+         (slash (let loop ((i 0))
+                  (cond ((fx>=? i (string-length nm)) #f)
+                        ((char=? (string-ref nm i) #\/) i)
+                        (else (loop (fx+ i 1))))))
+         (rns (if slash
+                  (let ((seg (substring nm 0 slash)))
+                    (or (chez-resolve-alias cns seg) seg))
+                  cns))
+         (base (if slash (substring nm (fx+ slash 1) (string-length nm)) nm))
+         (key (string-append rns "/->" base)))
     (if (hashtable-ref chez-record-shapes-tbl key #f)
-        (string-append cns "." nm)
+        (string-append rns "." base)
         jolt-nil)))
 ;; record + protocol-method shapes for the inference, from the runtime registries
 ;; (records.ss) populated as deftype/defprotocol forms load.

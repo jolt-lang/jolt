@@ -955,10 +955,139 @@
                       ;; __read-form-raw, so its :readers/:default path is unaffected.
                       (jolt-tagged-literal (rdr-tag->symbol tag) inner))))))))
 
+;; --- syntax-quote lowering for the data path ---------------------------------
+;; Expands `(syntax-quote FORM)` to the JVM-compatible seq/concat/list form at
+;; read time, so read-string / read return the same data as clojure.core's reader.
+;; Symbol resolution uses the current *ns* (chez-current-ns), auto-gensym sharing
+;; is stable within one backquote, and the output is DATA (not construction IR).
+;; Self-evaluating literals collapse at read time (line ~778 already does this
+;; for the top-level backquote, this handles nested backquotes on non-literals).
+
+(define rdr-sq-gensym-counter 0)
+(define (rdr-sq-gensym base)
+  (set! rdr-sq-gensym-counter (fx+ rdr-sq-gensym-counter 1))
+  (jolt-symbol #f (string-append base "__" (number->string rdr-sq-gensym-counter) "__auto")))
+
+;; special forms / interop heads stay bare in backquote, like the JVM reader
+(define rdr-sq-specials
+  '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
+    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
+    "new" "."))
+
+(define (rdr-sq-head-is? x nm)
+  (and (cseq? x)
+       (let ((h (seq-first x)))
+         (and (symbol-t? h) (string=? (symbol-t-name h) nm)
+              (let ((ns (symbol-t-ns h)))
+                (or (jolt-nil? ns) (null? ns) (not ns)
+                    (and (string? ns) (string=? ns "clojure.core"))))))))
+
+(define (rdr-sq-literal? x)
+  (or (jolt-nil? x) (boolean? x) (number? x) (string? x) (keyword? x) (char? x)))
+
+;; Resolve a bare or qualified symbol against the current ns, like Clojure's
+;; syntax-quote reader. A trailing # triggers auto-gensym (stable within one `).
+(define (rdr-sq-symbol sym gsmap)
+  (let ((sns (symbol-t-ns sym)) (nm (symbol-t-name sym)))
+    (if (or (jolt-nil? sns) (null? sns) (not sns))
+        (cond
+          ((and (fx>? (string-length nm) 0)
+                (char=? (string-ref nm (fx- (string-length nm) 1)) #\#))
+           (or (hashtable-ref gsmap nm #f)
+               (let ((g (rdr-sq-gensym (substring nm 0 (fx- (string-length nm) 1)))))
+                 (hashtable-set! gsmap nm g) g)))
+          ((member nm rdr-sq-specials) sym)
+          (else (jolt-symbol (chez-current-ns) nm)))
+        (let ((target (chez-resolve-alias (chez-current-ns) sns)))
+          (if target (jolt-symbol target nm) sym)))))
+
+(define (rdr-sq-lower form gsmap)
+  (cond
+    ((rdr-sq-head-is? form "unquote")
+     (seq-first (seq-more form)))
+    ((rdr-sq-head-is? form "unquote-splicing")
+     (jolt-throw (jolt-ex-info "~@ used outside of a list or vector in syntax-quote"
+                               empty-pmap)))
+    ((rdr-sq-literal? form) form)
+    ((symbol-t? form)
+     (jolt-list (jolt-symbol #f "quote")
+                (rdr-sq-symbol form gsmap)))
+    ((empty-list-t? form)
+     (jolt-list (jolt-symbol "clojure.core" "list") form))
+    ((cseq? form)
+     (if (rdr-syntax-quote-form? form)
+         ;; nested backquote: lower it first (with a fresh gsmap — auto-gensyms in
+         ;; the nested backquote are independent), then reprocess the result through
+         ;; the outer lowering.
+         (rdr-sq-lower (rdr-syntax-quote-lower (seq-first (seq-more form))) gsmap)
+         (jolt-list (jolt-symbol "clojure.core" "seq")
+                    (apply jolt-list (jolt-symbol "clojure.core" "concat")
+                           (map (lambda (it) (rdr-sq-lower-part it gsmap))
+                                (seq->list form))))))
+    ((pvec? form)
+     (jolt-list (jolt-symbol "clojure.core" "apply")
+                (jolt-symbol "clojure.core" "vector")
+                (jolt-list (jolt-symbol "clojure.core" "seq")
+                           (apply jolt-list (jolt-symbol "clojure.core" "concat")
+                                  (map (lambda (it) (rdr-sq-lower-part it gsmap))
+                                       (vector->list (pvec-v form)))))))
+    ((rdr-set-form? form)
+     (let ((items (jolt-get form rdr-kw-value)))
+       (jolt-list (jolt-symbol "clojure.core" "apply")
+                  (jolt-symbol "clojure.core" "hash-set")
+                  (jolt-list (jolt-symbol "clojure.core" "seq")
+                             (apply jolt-list (jolt-symbol "clojure.core" "concat")
+                                    (map (lambda (it) (rdr-sq-lower-part it gsmap))
+                                         (vector->list (pvec-v items))))))))
+    ((pmap? form)
+     (let ((order (hashtable-ref rdr-map-order form #f)))
+       (let ((pairs (if order
+                        (let r ((xs order) (acc '()))
+                          (if (null? xs) (reverse acc)
+                              (r (cddr xs) (cons (list (car xs) (cadr xs)) acc))))
+                        (let r ((xs (pmap-fold form (lambda (k v a) (cons k (cons v a))) '()))
+                                (acc '()))
+                          (if (null? xs) (reverse acc)
+                              (r (cddr xs) (cons (list (car xs) (cadr xs)) acc)))))))
+         (jolt-list (jolt-symbol "clojure.core" "apply")
+                    (jolt-symbol "clojure.core" "hash-map")
+                     (jolt-list (jolt-symbol "clojure.core" "seq")
+                                (apply jolt-list (jolt-symbol "clojure.core" "concat")
+                                       (let loop ((ps pairs) (acc '()))
+                                         (if (null? ps) (reverse acc)
+                                             (loop (cdr ps)
+                                                   (cons (jolt-list (jolt-symbol "clojure.core" "list")
+                                                                    (rdr-sq-lower (cadar ps) gsmap))
+                                                         (cons (jolt-list (jolt-symbol "clojure.core" "list")
+                                                                          (rdr-sq-lower (caar ps) gsmap))
+                                                               acc)))))))))))
+    (else
+     (jolt-list (jolt-symbol #f "quote") form))))
+
+(define (rdr-sq-lower-part item gsmap)
+  (if (rdr-sq-head-is? item "unquote-splicing")
+      (seq-first (seq-more item))
+      (jolt-list (jolt-symbol "clojure.core" "list")
+                 (rdr-sq-lower item gsmap))))
+
+(define (rdr-syntax-quote-lower form)
+  (rdr-sq-lower form (make-hashtable string-hash string=?)))
+
+;; Check if a cseq form is (syntax-quote ...) — the raw form the reader emits for `.
+(define (rdr-syntax-quote-form? x)
+  (and (cseq? x)
+       (let ((h (seq-first x)))
+         (and (symbol-t? h) (string=? (symbol-t-name h) "syntax-quote")
+              (let ((ns (symbol-t-ns h)))
+                (or (jolt-nil? ns) (null? ns) (not ns)))))))
+
 ;; rdr-form->data*: convert the VALUE structure (set/tagged/nested forms). The
 ;; wrapper below adds the metadata, so the unchanged branches return x bare.
 (define (rdr-form->data* x)
   (cond
+    ((rdr-syntax-quote-form? x)
+     ;; Lower (syntax-quote FORM) to JVM-compatible data and convert the result.
+     (rdr-form->data (rdr-syntax-quote-lower (seq-first (seq-more x)))))
     ((and (pmap? x) (eq? (jolt-get x rdr-kw-jolt-type) rdr-kw-jolt-tagged))
      (rdr-construct-tag (jolt-get x rdr-kw-tag) (rdr-form->data (jolt-get x rdr-kw-form))))
     ((rdr-set-form? x)
