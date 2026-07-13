@@ -1835,7 +1835,15 @@
   {:suite "reader / syntax-quote" :label "splice values" :expected "(quote (clojure.core/str 1 2 3))" :actual "(let [a [1 2 3]] `(str ~@a))" :portability :common}
   {:suite "reader / syntax-quote" :label "splice in vector" :expected "[1 2 3 0 1 2 3]" :actual "(let [b [0] a [1 2 3] e []] `[~@e ~@a ~@b ~@a ~@e])" :portability :common}
   {:suite "reader / syntax-quote" :label "splice in set" :expected "#{0 1 3 2}" :actual "(let [b [0] a [1 2 3] e []] `#{~@e ~@a ~@b})" :portability :common}
-  {:suite "reader / syntax-quote" :label "unquote in set" :expected "#{9 5}" :actual "(let [x 5] `#{~x 9})" :portability :common}
+   {:suite "reader / syntax-quote" :label "unquote in set" :expected "#{9 5}" :actual "(let [x 5] `#{~x 9})" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote x)" :expected "true" :actual "(= (read-string \"`x\") '(quote user/x))" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote ~x)" :expected "true" :actual "(= (read-string \"`~x\") 'x)" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote (a ~b c))" :expected "true" :actual "(= (read-string \"`(a ~b c)\") '(clojure.core/seq (clojure.core/concat (clojure.core/list (quote user/a)) (clojure.core/list b) (clojure.core/list (quote user/c)))))" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote #{1 2})" :expected "true" :actual "(= (read-string \"`#{1 2}\") '(clojure.core/apply clojure.core/hash-set (clojure.core/seq (clojure.core/concat (clojure.core/list 1) (clojure.core/list 2)))))" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote [a ~b c])" :expected "true" :actual "(= (read-string \"`[a ~b c]\") '(clojure.core/apply clojure.core/vector (clojure.core/seq (clojure.core/concat (clojure.core/list (quote user/a)) (clojure.core/list b) (clojure.core/list (quote user/c))))))" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote {:a 1 :b ~x})" :expected "true" :actual "(= (read-string \"`{:a 1 :b ~x}\") '(clojure.core/apply clojure.core/hash-map (clojure.core/seq (clojure.core/concat (clojure.core/list :a) (clojure.core/list 1) (clojure.core/list :b) (clojure.core/list x)))))" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote (a# a#)) gensym stable" :expected "true" :actual "(let [f (read-string \"`(a# a#)\") f2 (second (second f)) f3 (nth (second f) 2)] (= (second f2) (second f3)))" :portability :common}
+   {:suite "reader / read-string backquote" :label "read (quote (quote x))" :expected "true" :actual "(= (read-string \"'`x\") '(quote (quote user/x)))" :portability :common}
   {:suite "reader / discard, symbolic values, conditionals (spec 2.3)" :label "discard simple" :expected "2" :actual "(do #_1 2)" :portability :common}
   {:suite "reader / discard, symbolic values, conditionals (spec 2.3)" :label "discard in vector" :expected "[1 3]" :actual "[1 #_2 3]" :portability :common}
   {:suite "reader / discard, symbolic values, conditionals (spec 2.3)" :label "discard stacks" :expected "3" :actual "(do #_ #_ 1 2 3)" :portability :common}
