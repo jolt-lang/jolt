@@ -403,8 +403,9 @@
      (lambda (stop)
        (define (walk path-obj depth)
          (let ((fp (nfp path-obj)))
-           ;; a symlink is a leaf unless following — never descend into its target
-           (if (and (file-directory? fp) (or follow? (not (nio-is-symlink? fp))))
+           ;; a symlink is a leaf unless following (never descend its target); a
+           ;; directory at max depth is visited as a file, like java.nio.file
+           (if (and (file-directory? fp) (< depth md) (or follow? (not (nio-is-symlink? fp))))
                (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp))))
                  (cond
                    ((eq? r 'terminate) (stop #t))
@@ -497,18 +498,30 @@
   (let ((i (let loop ((j 0)) (cond ((>= j (string-length a)) #f)
                                    ((char=? (string-ref a j) #\:) j) (else (loop (+ j 1)))))))
     (if i (substring a (+ i 1) (string-length a)) a)))
+(define (nio-attr-value fp nm)
+  (cond
+    ((string=? nm "lastModifiedTime") (make-file-time (file-mtime-millis fp)))
+    ((string=? nm "lastAccessTime")   (make-file-time (file-mtime-millis fp)))
+    ((string=? nm "creationTime")     (make-file-time (file-mtime-millis fp)))
+    ((string=? nm "size")             (nio-size fp))
+    ((string=? nm "isDirectory")      (if (file-directory? fp) #t #f))
+    ((string=? nm "isRegularFile")    (if (and (file-exists? fp) (not (file-directory? fp))) #t #f))
+    ((string=? nm "isSymbolicLink")   (if (nio-is-symlink? fp) #t #f))
+    ((string=? nm "isOther")          #f)
+    ((string=? nm "fileKey")          jolt-nil)
+    (else jolt-nil)))
 (define (nio-get-attribute path attr . _)
-  (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
-    (cond
-      ((string=? nm "lastModifiedTime") (make-file-time (file-mtime-millis fp)))
-      ((string=? nm "lastAccessTime")   (make-file-time (file-mtime-millis fp)))
-      ((string=? nm "creationTime")     (make-file-time (file-mtime-millis fp)))
-      ((string=? nm "size")             (nio-size fp))
-      ((string=? nm "isDirectory")      (if (file-directory? fp) #t #f))
-      ((string=? nm "isRegularFile")    (if (and (file-exists? fp) (not (file-directory? fp))) #t #f))
-      ((string=? nm "isSymbolicLink")   (if (nio-is-symlink? fp) #t #f))
-      ((string=? nm "isOther")          #f)
-      (else jolt-nil))))
+  (nio-attr-value (nfp path) (nio-attr-name (npath-string-of attr))))
+(define nio-basic-attr-names
+  '("lastModifiedTime" "lastAccessTime" "creationTime" "size"
+    "isDirectory" "isRegularFile" "isSymbolicLink" "isOther" "fileKey"))
+(define (nio-split-commas s)
+  (let loop ((i 0) (start 0) (acc '()))
+    (cond ((= i (string-length s))
+           (reverse (if (> i start) (cons (substring s start i) acc) acc)))
+          ((char=? (string-ref s i) #\,)
+           (loop (+ i 1) (+ i 1) (if (> i start) (cons (substring s start i) acc) acc)))
+          (else (loop (+ i 1) start acc)))))
 (define (nio-set-attribute path attr value . _)
   (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
     (cond
@@ -516,17 +529,18 @@
        (set-file-mtime-millis! fp (if (file-time? value) (file-time-ms value) (jnum->exact value))))
       (else jolt-nil))
     (->path path)))
+(define (nio-str-suffix? s suf)
+  (let ((n (string-length s)) (m (string-length suf)))
+    (and (>= n m) (string=? (substring s (- n m) n) suf))))
 (define (nio-read-attributes path what . _)
   (let ((w (npath-string-of what)))
-    (if (let loop ((j 0)) (cond ((>= j (string-length w)) #f)   ; a "view:" / "*" string form
-                                ((or (char=? (string-ref w j) #\:) (char=? (string-ref w j) #\*)) #t)
-                                (else (loop (+ j 1)))))
-        (let ((fp (nfp path)))                                  ; return a small attribute map
-          (jolt-hash-map "lastModifiedTime" (make-file-time (file-mtime-millis fp))
-                         "size" (nio-size fp)
-                         "isDirectory" (if (file-directory? fp) #t #f)
-                         "isRegularFile" (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
-        (make-basic-attrs (nfp path)))))                        ; the class form -> BasicFileAttributes
+    (if (nio-str-suffix? w "Attributes")   ; the Class form -> a BasicFileAttributes value
+        (make-basic-attrs (nfp path))
+        ;; the string form ("view:a,b" / "*" / "a") -> a map of just those attributes
+        (let* ((fp (nfp path))
+               (attr-part (nio-attr-name w))
+               (names (if (string=? attr-part "*") nio-basic-attr-names (nio-split-commas attr-part))))
+          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-attr-value fp nm))) empty-pmap names)))))
 
 ;; PosixFilePermissions <-> "rwxr-xr-x" strings, and chmod-based set.
 (define posix-order '("OWNER_READ" "OWNER_WRITE" "OWNER_EXECUTE"
@@ -809,7 +823,12 @@
                                 ((and (file-exists? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
                                  (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
                                 ((file-directory? s) (unless (file-exists? d) (mkdir d)) (->path dst))
-                                (else (nio-write-bv! d (nio-read-bv s)) (->path dst))))))
+                                (else (nio-write-bv! d (nio-read-bv s))
+                                      (when (nio-opts-have? opts copt-sym 'copy-attributes)  ; preserve mtime + perms
+                                        (let ((mode (nio-stat-mode s)))
+                                          (when (and mode c-chmod) (c-chmod d (bitwise-and mode #o777))))
+                                        (set-file-mtime-millis! d (file-mtime-millis s)))
+                                      (->path dst))))))
              (cons "move" (lambda (src dst . opts)
                             (let ((s (nfp src)) (d (nfp dst)))
                               (cond
