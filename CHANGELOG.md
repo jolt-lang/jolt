@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FileVisitor`/`FileVisitResult`, and the `LinkOption`/`CopyOption`/`OpenOption`
   enums.
 
+### Fixed
+
+- A built binary now includes a namespace's forms that follow a non-matching
+  reader conditional. The AOT emission reader stopped at the first `#?(:cljs …)`
+  (with no `:clj` branch), silently dropping every later `def` — so an AOT-built
+  app crashed on an unbound var when it called one. This surfaced with
+  babashka.fs (many cljs-only conditionals); a build-smoke fixture now builds a
+  binary that uses the vendored library and checks it runs.
+
 ### Changed
 
 - The documentation moved to the site ([jolt-lang.github.io](https://jolt-lang.github.io));
