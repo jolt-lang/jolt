@@ -655,6 +655,7 @@
 ;; arm wraps the fully-built record-method-dispatch and the str/type/instance-check
 ;; extensions sit over every prior shim.
 (load "host/chez/java/io.ss")
+(load "host/chez/java/nio-file.ss")             ; java.nio.file: Path / Paths / PathMatcher
 
 ;; #inst values + java.time formatting: jinst (RFC3339 ms) +
 ;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads

@@ -265,6 +265,7 @@
          (cond ((< i 0) (list jolt-nil))
                ((char=? (string-ref p i) #\/) (list (make-jfile (if (= i 0) "/" (substring p 0 i)))))
                (else (loop (- i 1))))))
+      ((string=? name "toPath")           (list (make-nio-path p)))  ; -> java.nio.file.Path (nio-file.ss)
       ((string=? name "getAbsoluteFile")  (list (make-jfile (jfile-abs p))))
       ((string=? name "getCanonicalFile") (list (make-jfile (jfile-abs p))))
       ((string=? name "compareTo")      (list (->num (let ((o (file-path-of (car args))))
