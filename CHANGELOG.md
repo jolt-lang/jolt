@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-13
+
+### Fixed
+
+- `defmacro` re-heads its generated expander with `clojure.core/fn`, not a bare
+  `fn`, so a macro *named* `fn` — like prismatic/schema's `s/fn`, whose namespace
+  does `:refer-clojure :exclude [fn]` — no longer resolves `fn` to the
+  half-defined macro and fail at load with "Don't know how to create ISeq from:
+  :object". Fixed in both the spine and the analyzer.
+- `(class x)` returns a real class rather than the `:object` fallback for a few
+  values whose class wasn't registered, so using one where a cast or `seq` is
+  expected now reports the JVM's message: an unbound var value is
+  `clojure.lang.Var$Unbound` (an exact match — the JVM throws the same
+  `ClassCastException` for `(def x (+ x 1))`); a `reify` is a stable
+  `clojure.lang.IObj$reify__0` placeholder (its JVM name is an unreproducible
+  per-eval `ns$eval$reify__N`); `promise`/`future` match the JVM's stable
+  enclosing-fn prefix, `clojure.core$promise$reify__0` / `$future_call$reify__0`.
+
+### Added
+
+- `resolve` gets the 2-arg `(resolve &env sym)` arity (nil when `sym` is a local).
+- A `deftype`/`defrecord` type token (its constructor closure) is a full class
+  value: `class?` is true, it carries `java.lang.Class` dispatch tags, `instance?`
+  works when it's passed by value, and `.getName`/`.getSimpleName` answer off its
+  tag. A named fn reports its own `ns$name` class plus `AFunction`/`IFn` tags —
+  so a protocol extended to a Class value or a specific fn's class dispatches.
+  (These, with `clojure.lang.MultiFn` `.addMethod` interop, `with-test`, and an
+  `IdentityHashMap` shim, are what let prismatic/schema load, compile, and run.)
+- The joltc CLI reads from stdin: `joltc -` runs a program read from stdin as a
+  script, `joltc -e -` reads the expression from stdin; both set
+  `*command-line-args*` from the trailing argv.
+
 ## [0.2.5] - 2026-07-12
 
 Driven by running more libraries: camel-snake-kebab and clj-rss now pass their
