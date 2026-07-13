@@ -38,6 +38,12 @@
   {:suite "untested / JVM-shape stubs (documented jolt behavior)",
    :label "unsupported proxy throws",
    :category :host-model}
+  ;; jolt represents a record TYPE by its make-deftype-ctor closure — the same
+  ;; value as ->Ctor — so class? is true for both, where the JVM distinguishes the
+  ;; class (true) from the ->ctor fn (false). One value, one answer here.
+  {:suite "interop / class model",
+   :label "class? is true for a Class and for a record type token (jolt unifies a record with its ->ctor)",
+   :category :host-model}
   {:suite "untested / chunk family (eager equivalents) + cat",
    :label "chunk round-trip",
    :category :host-model}

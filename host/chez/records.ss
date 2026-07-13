@@ -378,7 +378,13 @@
                              (exact->inexact v) v)))
                 (jrec-field-set! inst i v2) v2)
             (error #f "set! of an unknown field" k)))
-      (error #f "set! of a field on a non-record" inst)))
+      ;; (set! (.__methodImplCache f) …) on a plain fn: jolt has no protocol-method
+      ;; cache, so this is a harmless no-op (the paired read is nil). See the
+      ;; __methodImplCache method arm — schema's fn instrumentation drives both.
+      (if (let ((kn (cond ((string? k) k) ((keyword-t? k) (keyword-t-name k)) (else #f))))
+            (and kn (string=? kn "__methodImplCache")))
+          v
+          (error #f "set! of a field on a non-record" inst))))
 (define (jrec-ext=? ea eb)
   (cond ((and (jolt-nil? ea) (jolt-nil? eb)) #t)
         ((or (jolt-nil? ea) (jolt-nil? eb)) #f)
@@ -737,6 +743,22 @@
         ;; a var is clojure.lang.Var (also IDeref / IFn) — reitit's Expand protocol
         ;; extends to Var so a #'handler route dispatches.
         ((var-cell? obj) (jch-tags "clojure.lang.Var"))
+        ;; a Class VALUE — a modeled host Class (jhost "class") or a deftype/record
+        ;; type token (its make-deftype-ctor closure). Both are java.lang.Class on the
+        ;; JVM, so a protocol extended to Class dispatches on them (schema extends its
+        ;; Schema protocol to Class, then calls (spec SomeClass)).
+        ((jclass? obj) '("Class" "java.lang.Class" "Object"))
+        ((and (procedure? obj) (hashtable-ref chez-deftype-ctor-tag obj #f))
+         '("Class" "java.lang.Class" "Object"))
+        ;; a named fn reports its own JVM-style class "ns$munged-name" (the same
+        ;; (class the-fn) yields) ahead of the generic IFn tags, so a protocol
+        ;; extended to a SPECIFIC fn's class dispatches on it — schema keys its
+        ;; primitive schemas by (class @(resolve 'double)) and friends.
+        ((and (procedure? obj) (hashtable-ref proc-name-tbl obj #f))
+         => (lambda (p)
+              (list (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
+                    "AFunction" "clojure.lang.AFunction" "AFn" "clojure.lang.AFn"
+                    "IFn" "clojure.lang.IFn" "Fn" "clojure.lang.Fn" "Object")))
         ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
         ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
         ;; a ByteBuffer — extend-protocol java.nio.ByteBuffer (aws-api util).
@@ -935,11 +957,22 @@
     ;; deftype/defrecord is in the graph too (its ancestry), but its VALUES report
     ;; the ns-qualified tag, not the bare segment — so a name that resolves to a
     ;; deftype never canonicalizes through the graph arm.
-    (and (or (hashtable-ref host-type-set base #f)
-             (and (not (hashtable-ref chez-simple-name-tag type-name #f))
-                  (not (hashtable-ref chez-deftype-tag-set type-name #f))
-                  (or (jch-known? base) (jch-known? type-name))))
-         base)))
+    (cond
+      ;; a "ns$name" fn-class / inner-class name (from a Class value, e.g.
+      ;; (class some-fn) -> "clojure.core$double") is always a host tag — the
+      ;; value reports the same string in value-host-tags — so use it verbatim
+      ;; rather than localizing it to the current ns (schema extends its Schema
+      ;; protocol to (class @(resolve 'double)) and friends).
+      ((let loop ((i 0)) (cond ((fx>=? i (string-length type-name)) #f)
+                               ((char=? (string-ref type-name i) #\$) #t)
+                               (else (loop (fx+ i 1)))))
+       type-name)
+      ((or (hashtable-ref host-type-set base #f)
+           (and (not (hashtable-ref chez-simple-name-tag type-name #f))
+                (not (hashtable-ref chez-deftype-tag-set type-name #f))
+                (or (jch-known? base) (jch-known? type-name))))
+       base)
+      (else #f))))
 ;; An extend/extend-type/extend-protocol registration marks the tag as an
 ;; extender of the protocol (recorded inside type-registry so the per-case prune
 ;; restores it). deftype/defrecord inline impls go through register-inline-method
@@ -1166,6 +1199,35 @@
 (define (record-method-dispatch-base obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
+      ;; a deftype/defrecord TYPE token (its make-deftype-ctor closure) answers the
+      ;; java.lang.Class reflection methods off the "ns.Name" tag it carries, so
+      ;; (.getName Bar)/(.getSimpleName Bar) work when the type is held by value —
+      ;; schema resolves class schemas by calling these on the record class.
+      ((and (procedure? obj) (hashtable-ref chez-deftype-ctor-tag obj #f))
+       => (lambda (tag)
+            (cond ((or (string=? method-name "getName") (string=? method-name "getCanonicalName")
+                       (string=? method-name "getTypeName")) tag)
+                  ((string=? method-name "getSimpleName") (last-dot tag))
+                  ((string=? method-name "toString") (string-append "class " tag))
+                  (else (error #f (string-append "No method " method-name " on class " tag))))))
+      ;; clojure.lang.MultiFn interop on a defmulti value: addMethod/removeMethod/
+      ;; getMethod/getMethodTable, the same table (defmethod) fills — schema's
+      ;; abstract-map registers dispatch methods by calling .addMethod directly.
+      ((jolt-multifn? obj)
+       (cond
+         ((string=? method-name "addMethod")
+          (hashtable-set! (jolt-multifn-methods obj) (car rest) (cadr rest)) obj)
+         ((string=? method-name "removeMethod")
+          (hashtable-delete! (jolt-multifn-methods obj) (car rest)) obj)
+         ((string=? method-name "getMethod")
+          (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f) jolt-nil))
+         ((string=? method-name "getMethodTable")
+          (let ((tbl (jolt-multifn-methods obj)) (m (jolt-hash-map)))
+            (vector-for-each (lambda (k) (set! m (jolt-assoc1 m k (hashtable-ref tbl k #f))))
+                             (hashtable-keys tbl))
+            m))
+         ((string=? method-name "toString") (jolt-str-render-one obj))
+         (else (error #f (string-append "No method " method-name " on MultiFn")))))
       ((and (jrec? obj) (find-method-any-protocol-arity (jrec-tag obj) method-name (+ 1 (length rest))))
        => (lambda (f) (apply jolt-invoke f obj rest)))
       ;; (.field inst): a deftype/record field read with no matching method.
@@ -1294,6 +1356,11 @@
       ((string=? method-name "toString") (jolt-str-render-one obj))
       ((string=? method-name "hashCode") (jolt-hash obj))
       ((string=? method-name "equals") (and (pair? rest) (if (jolt= obj (car rest)) #t #f)))
+      ;; __methodImplCache is the JVM's per-fn protocol-method cache. jolt does not
+      ;; cache protocol dispatch, so a read is nil (and the paired set! is a no-op):
+      ;; libraries that wrap protocol methods sync this cache (schema's fn
+      ;; instrumentation) and a consistent nil makes that a safe no-op.
+      ((string=? method-name "__methodImplCache") jolt-nil)
       (else (error #f (string-append "No method " method-name " for value: "
                                      (jolt-pr-str obj)))))))
 
