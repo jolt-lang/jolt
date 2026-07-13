@@ -267,7 +267,7 @@
 ;; resolve `sym` in the current ns: a qualified ns part is read as an :as alias
 ;; (then a real ns); an unqualified name resolves in the current ns, its :refers,
 ;; then clojure.core. (ns-resolve does the same against an explicit ns.)
-(define (jolt-resolve sym)
+(define (jolt-resolve-1 sym)
   (let* ((cns (chez-current-ns))
          (sns (symbol-t-ns sym)) (nm (symbol-t-name sym))
          (c (if (string? sns)
@@ -276,6 +276,14 @@
                     (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
                     (var-cell-lookup "clojure.core" nm)))))
     (if (and c (var-cell-defined? c)) c jolt-nil)))
+;; (resolve sym) resolves globally; (resolve &env sym) additionally answers nil
+;; when sym names a local in env (the &env map's keys) — a macro's resolve avoids
+;; mistaking a local binding for a global var. schema's macros use the 2-arity.
+(define (jolt-resolve a . rest)
+  (if (null? rest)
+      (jolt-resolve-1 a)
+      (let ((env a) (sym (car rest)))
+        (if (and (pmap? env) (pmap-contains? env sym)) jolt-nil (jolt-resolve-1 sym)))))
 
 (define (jolt-find-var sym)
   (let ((sns (symbol-t-ns sym)) (nm (symbol-t-name sym)))

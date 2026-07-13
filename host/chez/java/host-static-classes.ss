@@ -345,6 +345,11 @@
 ;; the same trade-off as SoftReference on this host.
 (register-class-ctor! "WeakHashMap" make-hashmap-jhost)
 (register-class-ctor! "java.util.WeakHashMap" make-hashmap-jhost)
+;; IdentityHashMap keys on reference identity; the HashMap shim keys on value
+;; equality. Close enough for its usual role (tracking visited nodes during a
+;; walk — schema/clojure.walk cycle detection), where the tracked values differ.
+(register-class-ctor! "IdentityHashMap" make-hashmap-jhost)
+(register-class-ctor! "java.util.IdentityHashMap" make-hashmap-jhost)
 ;; java.util.concurrent.atomic.Atomic{Reference,Integer,Long,Boolean}: a
 ;; thread-safe mutable cell (mutex-guarded, shared heap). One "atomic" jhost
 ;; serves all four; the numeric ops are meaningful only on Integer/Long.
@@ -1432,7 +1437,15 @@
 ;; a Class OBJECT specifically ((class x) result) — narrower than class-value?,
 ;; which also admits deftype ctors and modeled name strings. The instance?
 ;; macro needs exactly this: evaluate a var-held Class, keep quoting record names.
-(def-var! "jolt.host" "class-object?" (lambda (x) (if (jclass? x) #t #f)))
+;; class? is true for a modeled host Class value AND for a deftype/defrecord type
+;; token — jolt represents a record type by its make-deftype-ctor closure (the
+;; same value instance?/ancestors dispatch on), so (class? Bar) holds like the JVM.
+;; (jolt unifies Bar with ->Bar, so (class? ->Bar) also holds — a record's name and
+;; its positional ctor are one value here.)
+(def-var! "jolt.host" "class-object?"
+  (lambda (x) (if (or (jclass? x)
+                      (and (procedure? x) (hashtable-ref chez-deftype-ctor-tag x #f) #t))
+                  #t #f)))
 ;; nth over the java.util List shims, like RT.nth on a java.util.List.
 (define %shim-nth jolt-nth)
 (set! jolt-nth

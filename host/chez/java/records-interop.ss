@@ -81,7 +81,13 @@
 
 (define (instance-check type-sym0 val)
   ;; a Class value as the type arg (instance? (class x) y) -> use its name string.
-  (let* ((type-sym (if (jclass? type-sym0) (jclass-name type-sym0) type-sym0))
+  ;; A deftype/defrecord type token is its make-deftype-ctor closure; use the tag
+  ;; ("ns.Name") it carries so (instance? Bar x) works when Bar is passed by value
+  ;; (schema's record*/class-schema hold the type as a value, not a literal symbol).
+  (let* ((type-sym (cond ((jclass? type-sym0) (jclass-name type-sym0))
+                         ((and (procedure? type-sym0)
+                               (hashtable-ref chez-deftype-ctor-tag type-sym0 #f)))
+                         (else type-sym0)))
          (ts (if (and (string? type-sym)
                      (or (= 0 (string-length type-sym))
                          (not (char=? (string-ref type-sym 0) #\[))))

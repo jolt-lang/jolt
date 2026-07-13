@@ -231,7 +231,9 @@
 ;; Strips a leading docstring (native string) + attr-map (a non-symbol pmap), then
 ;; re-heads the rest with `fn` so a destructured macro arglist desugars. Emits the
 ;; BARE fn (the caller wraps it in def-var! + mark-macro!), never a (def NAME ...) —
-;; interning NAME would make require skip the real macro.
+;; interning NAME would make require skip the real macro. The head is the QUALIFIED
+;; clojure.core/fn, not a bare `fn`, so it resolves to the real fn macro even when
+;; the macro being defined IS `fn` (schema's s/fn) or the ns excluded it.
 (define (ce-defmacro->fn f)
   (let* ((items (seq->list f))
          (name-sym (cadr items))
@@ -240,7 +242,7 @@
                  (cdr after-name) after-name))
          (after-meta (if (and (pair? a1) (pmap? (car a1)))
                          (cdr a1) a1))
-         (fn-sym (jolt-symbol #f "fn")))
+         (fn-sym (jolt-symbol "clojure.core" "fn")))
     (values (symbol-t-name name-sym)
             (apply jolt-list (cons fn-sym after-meta)))))
 

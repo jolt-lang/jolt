@@ -293,6 +293,7 @@
 (jch-register-supers! "java.io.IOError" '("java.lang.Error"))
 ;; leaf/root classes with only Object as super
 (jch-register-supers! "java.lang.Object" '())
+(jch-register-supers! "java.lang.Class" '())
 (jch-register-supers! "java.lang.Throwable" '())
 (jch-register-supers! "java.lang.Byte" '("java.lang.Number"))
 (jch-register-supers! "java.lang.Short" '("java.lang.Number"))

@@ -227,6 +227,11 @@
                                         :fn ~name})
      (var ~name)))
 
+;; with-test attaches a test body as :test metadata on a var-defining form (which
+;; must return the var), like clojure.test's — schema's tests wrap s/defn this way.
+(defmacro with-test [definition & body]
+  `(doto ~definition (alter-meta! assoc :test (fn [] ~@body))))
+
 ;; Template substitution (not let-binding), so argv symbols substitute inside
 ;; quote and nested forms: (are [x] (special-symbol? 'x) if def) tests 'if.
 (defmacro are [argv expr & args]

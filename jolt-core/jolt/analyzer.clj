@@ -461,8 +461,11 @@
                      after (if (form-map? (first after)) (rest after) after)
                      ;; build (fn params body…) and analyze it through the fn MACRO
                      ;; so a destructuring macro arglist desugars (the fn* primitive
-                     ;; would not), then def it and mark the var a macro.
-                     fn-form (cons (symbol "fn") after)]
+                     ;; would not), then def it and mark the var a macro. Head with
+                     ;; the QUALIFIED clojure.core/fn so it resolves to the real fn
+                     ;; macro even when the macro being defined is `fn` (schema/s/fn)
+                     ;; or the ns excluded it.
+                     fn-form (cons (symbol "clojure.core" "fn") after)]
                  (host-intern! ctx cur nm)
                  {:op :defmacro :ns cur :name nm
                   :fn (analyze ctx fn-form env)})
