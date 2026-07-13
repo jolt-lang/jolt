@@ -170,29 +170,32 @@
 ;; ---- glob / regex PathMatcher -----------------------------------------------
 ;; Translate a "glob:" pattern to a Java-style regex string. ** crosses "/", *
 ;; and ? stay within a segment, {a,b} alternates, [..] is a char class, \ escapes.
+(define (nio-bad-glob msg) (jolt-throw (jolt-ex-info (string-append "invalid glob: " msg) empty-pmap)))
 (define (npath-glob->regex pattern)
   (let ((n (string-length pattern)))
-    (let loop ((i 0) (out "^"))
+    (let loop ((i 0) (out "^") (brace #f) (class #f))   ; brace = inside {}, class = inside []
       (if (>= i n)
-          (string-append out "$")
+          (cond (brace (nio-bad-glob "missing '}'"))
+                (class (nio-bad-glob "missing ']'"))
+                (else (string-append out "$")))
           (let ((c (string-ref pattern i)))
             (cond
               ((and (char=? c #\*) (< (+ i 1) n) (char=? (string-ref pattern (+ i 1)) #\*))
-               (loop (+ i 2) (string-append out ".*")))
-              ((char=? c #\*) (loop (+ i 1) (string-append out "[^/]*")))
-              ((char=? c #\?) (loop (+ i 1) (string-append out "[^/]")))
-              ((char=? c #\{) (loop (+ i 1) (string-append out "(")))
-              ((char=? c #\}) (loop (+ i 1) (string-append out ")")))
-              ((char=? c #\,) (loop (+ i 1) (string-append out "|")))
-              ((char=? c #\[) (loop (+ i 1) (string-append out "[")))
-              ((char=? c #\]) (loop (+ i 1) (string-append out "]")))
+               (loop (+ i 2) (string-append out ".*") brace class))
+              ((char=? c #\*) (loop (+ i 1) (string-append out "[^/]*") brace class))
+              ((char=? c #\?) (loop (+ i 1) (string-append out "[^/]") brace class))
+              ((char=? c #\{) (if brace (nio-bad-glob "nested '{'") (loop (+ i 1) (string-append out "(") #t class)))
+              ((char=? c #\}) (loop (+ i 1) (string-append out ")") #f class))
+              ((char=? c #\,) (loop (+ i 1) (string-append out (if brace "|" ",")) brace class))
+              ((char=? c #\[) (loop (+ i 1) (string-append out "[") brace #t))
+              ((char=? c #\]) (loop (+ i 1) (string-append out "]") brace #f))
               ((char=? c #\\)
                (if (< (+ i 1) n)
-                   (loop (+ i 2) (string-append out "\\" (string (string-ref pattern (+ i 1)))))
-                   (loop (+ i 1) (string-append out "\\\\"))))
+                   (loop (+ i 2) (string-append out "\\" (string (string-ref pattern (+ i 1)))) brace class)
+                   (nio-bad-glob "no character to escape after '\\'")))
               ((memv c '(#\. #\( #\) #\^ #\$ #\+ #\|))
-               (loop (+ i 1) (string-append out "\\" (string c))))
-              (else (loop (+ i 1) (string-append out (string c))))))))))
+               (loop (+ i 1) (string-append out "\\" (string c)) brace class))
+              (else (loop (+ i 1) (string-append out (string c)) brace class))))))))
 
 ;; getPathMatcher("glob:..."|"regex:...") -> a matcher jhost; .matches(path) is
 ;; a whole-string match of the compiled pattern against the path's string form.
@@ -409,28 +412,34 @@
         (follow? (nio-opts-follow? opts)))
     (call/cc
      (lambda (stop)
-       (define (walk path-obj depth)
+       (define (walk path-obj depth ancestors)
          (let ((fp (nfp path-obj)))
            ;; a symlink is a leaf unless following (never descend its target); a
            ;; directory at max depth is visited as a file, like java.nio.file
            (if (and (file-directory? fp) (< depth md) (or follow? (not (nio-is-symlink? fp))))
-               (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp))))
-                 (cond
-                   ((eq? r 'terminate) (stop #t))
-                   ((eq? r 'skip-subtree) 'continue)
-                   ((eq? r 'skip-siblings) 'skip-siblings)
-                   (else
-                    (when (< depth md)
-                      (let loop ((names (sort string<? (directory-list fp))))
-                        (unless (null? names)
-                          (let ((cr (walk (make-nio-path (nio-path-join (nio-path-str path-obj) (car names)))
-                                          (+ depth 1))))
-                            (unless (eq? cr 'skip-siblings) (loop (cdr names)))))))
-                    (let ((pr (nio-call-visitor visitor "postVisitDirectory" path-obj jolt-nil)))
-                      (if (eq? pr 'terminate) (stop #t) 'continue)))))
+               (let ((ino (and follow? (nio-stat-ino fp))))
+                 ;; following a link back into an ancestor is a cycle -> visitFileFailed
+                 (if (and ino (member ino ancestors))
+                     (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj jolt-nil)))
+                       (if (eq? r 'terminate) (stop #t) r))
+                     (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp))))
+                       (cond
+                         ((eq? r 'terminate) (stop #t))
+                         ((eq? r 'skip-subtree) 'continue)
+                         ((eq? r 'skip-siblings) 'skip-siblings)
+                         (else
+                          (let ((anc (if ino (cons ino ancestors) ancestors)))
+                            (when (< depth md)
+                              (let loop ((names (sort string<? (directory-list fp))))
+                                (unless (null? names)
+                                  (let ((cr (walk (make-nio-path (nio-path-join (nio-path-str path-obj) (car names)))
+                                                  (+ depth 1) anc)))
+                                    (unless (eq? cr 'skip-siblings) (loop (cdr names))))))))
+                          (let ((pr (nio-call-visitor visitor "postVisitDirectory" path-obj jolt-nil)))
+                            (if (eq? pr 'terminate) (stop #t) 'continue)))))))
                (let ((r (nio-call-visitor visitor "visitFile" path-obj (make-basic-attrs fp))))
                  (if (eq? r 'terminate) (stop #t) r)))))
-       (walk (->path start) 0)))
+       (walk (->path start) 0 '())))
     (->path start)))
 
 ;; ---- newDirectoryStream: a closeable, seqable listing of a directory's kids --
@@ -440,10 +449,18 @@
   (let* ((base (npath-string-of dir))
          (fp (project-relative base))
          (names (sort string<? (directory-list fp)))
-         (glob (and (pair? rest) (string? (car rest)) (car rest)))
-         (rx (and glob (jolt-re-pattern (npath-glob->regex glob))))
-         (kept (if rx (filter (lambda (nm) (jolt-truthy? (jolt-re-matches rx nm))) names) names)))
-    (make-dir-stream (map (lambda (nm) (make-nio-path (nio-path-join base nm))) kept))))
+         (arg (and (pair? rest) (car rest)))
+         (paths (map (lambda (nm) (make-nio-path (nio-path-join base nm))) names)))
+    (make-dir-stream
+     (cond
+       ;; a glob string filters by file name
+       ((string? arg)
+        (let ((rx (jolt-re-pattern (npath-glob->regex arg))))
+          (filter (lambda (p) (jolt-truthy? (jolt-re-matches rx (npath-string-of (npath-file-name (nio-path-str p)))))) paths)))
+       ;; a DirectoryStream$Filter reify filters by its accept method
+       ((and arg (reified-methods arg) (hashtable-ref (reified-methods arg) "accept" #f))
+        => (lambda (m) (filter (lambda (p) (jolt-truthy? (jolt-invoke m arg p))) paths)))
+       (else paths)))))
 
 ;; dir-stream is seqable (its child Paths) and closeable (a no-op) so
 ;; (with-open [s (newDirectoryStream d)] (mapv f s)) works.
@@ -981,3 +998,75 @@
                                  (->path path)))))))
   (register-class-statics! "Files" files-throwing-setters)
   (register-class-statics! "java.nio.file.Files" files-throwing-setters))
+
+;; isSameFile compares inodes (so hard links are the same file); copy preserves
+;; the source permissions by default, like java.nio.file on this host.
+(define (nio-stat-ino fp)
+  (and c-stat (let ((buf (make-bytevector 256 0)))
+                (and (= 0 (c-stat fp buf)) (bytevector-u64-ref buf 8 (native-endianness))))))
+(let ((files-final
+       (list
+        (cons "isSameFile" (lambda (a b)
+                             (or (string=? (nfp a) (nfp b))
+                                 (let ((ia (nio-stat-ino (nfp a))) (ib (nio-stat-ino (nfp b))))
+                                   (and ia ib (= ia ib) #t)))))
+        (cons "copy" (lambda (src dst . opts)
+                       (let ((s (nfp src)) (d (nfp dst)))
+                         (cond
+                           ((string=? s d) (->path dst))
+                           ((and (nio-dest-present? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
+                            (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
+                           (else
+                            (when (nio-dest-present? d) (nio-delete1 d #t))
+                            (cond
+                              ((and (nio-opts-nofollow? opts) (nio-is-symlink? s))
+                               (when c-symlink (c-symlink (or (nio-readlink s) "") d)))
+                              ((file-directory? s) (unless (file-exists? d) (mkdir d)))
+                              (else
+                               (nio-write-bv! d (nio-read-bv s))
+                               (let ((mode (nio-stat-mode s)))            ; preserve source perms
+                                 (when (and mode c-chmod) (c-chmod d (bitwise-and mode #o777))))
+                               (when (nio-opts-have? opts copt-sym 'copy-attributes)
+                                 (set-file-mtime-millis! d (file-mtime-millis s)))))
+                            (->path dst))))))) ))
+  (register-class-statics! "Files" files-final)
+  (register-class-statics! "java.nio.file.Files" files-final))
+
+;; getOwner resolves the real owning user (stat st_uid -> getpwuid -> pw_name),
+;; so it distinguishes root-owned paths from user files.
+(define c-getpwuid (jolt-foreign-proc-safe "getpwuid" '(unsigned-int) 'iptr))
+(define (nio-cstr-at addr)                      ; a NUL-terminated C string at a raw address
+  (let loop ((i 0) (acc '()))
+    (let ((b (foreign-ref 'unsigned-8 addr i)))
+      (if (= b 0) (list->string (map integer->char (reverse acc)))
+          (loop (+ i 1) (cons b acc))))))
+(define (nio-stat-uid fp)
+  (and c-stat (let ((buf (make-bytevector 256 0)))
+                (and (= 0 (c-stat fp buf)) (bytevector-u32-ref buf (if nio-macos? 16 28) (native-endianness))))))
+(define (nio-uid->name uid)
+  (and c-getpwuid (let ((pw (c-getpwuid uid))) (and (not (= 0 pw)) (nio-cstr-at (foreign-ref 'iptr pw 0))))))
+(let ((files-owner
+       (list (cons "getOwner" (lambda (p . _)
+                                (let ((uid (nio-stat-uid (nfp p))))
+                                  (make-jhost "user-principal"
+                                              (or (and uid (nio-uid->name uid)) (getenv "USER") ""))))))))
+  (register-class-statics! "Files" files-owner)
+  (register-class-statics! "java.nio.file.Files" files-owner))
+
+;; user-principal values compare and hash by name; getOwner honors NOFOLLOW.
+(define (nio-userprin? x) (and (jhost? x) (string=? (jhost-tag x) "user-principal")))
+(register-eq-arm! (lambda (a b) (and (nio-userprin? a) (nio-userprin? b)))
+                  (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
+(register-hash-arm! nio-userprin? (lambda (x) (string-hash (jhost-state x))))
+(define (nio-lstat-uid fp)
+  (and c-lstat (let ((buf (make-bytevector 256 0)))
+                 (and (= 0 (c-lstat fp buf)) (bytevector-u32-ref buf (if nio-macos? 16 28) (native-endianness))))))
+(let ((files-owner2
+       (list (cons "getOwner" (lambda (p . opts)
+                                (let* ((fp (nfp p))
+                                       (uid (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp))
+                                                (nio-lstat-uid fp) (nio-stat-uid fp))))
+                                  (make-jhost "user-principal"
+                                              (or (and uid (nio-uid->name uid)) (getenv "USER") ""))))))))
+  (register-class-statics! "Files" files-owner2)
+  (register-class-statics! "java.nio.file.Files" files-owner2))
