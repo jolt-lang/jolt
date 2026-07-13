@@ -298,13 +298,17 @@
 
 (define nio-temp-counter 0)
 (define (nio-tmp-dir) (or (getenv "TMPDIR") "/tmp"))
-(define (nio-temp-name prefix suffix)
-  (set! nio-temp-counter (+ nio-temp-counter 1))
-  (string-append (let ((d (nio-tmp-dir)))
-                   (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/")))
-                 (if (string? prefix) prefix "")
-                 (number->string (+ (* 100000 nio-temp-counter) (modulo (* nio-temp-counter 2654435761) 100000)))
-                 (if (string? suffix) suffix "")))
+;; A temp path in `dir` (default the system temp dir), unique across processes
+;; via now-millis + a retry counter, like java.nio.file's createTemp*.
+(define (nio-temp-path dir prefix suffix)
+  (let ((d (let ((d (or dir (nio-tmp-dir))))
+             (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/")))))
+    (let loop ()
+      (set! nio-temp-counter (+ nio-temp-counter 1))
+      (let ((full (string-append d (if (string? prefix) prefix "")
+                                 (number->string (now-millis)) "-" (number->string nio-temp-counter)
+                                 (if (string? suffix) suffix ""))))
+        (if (file-exists? (project-relative full)) (loop) full)))))
 
 (let ((files-statics
        (list
@@ -345,8 +349,106 @@
          (rest (if has-dir (cdr args) args))
          (prefix (if (and (pair? rest) (string? (car rest))) (car rest) ""))
          (suffix (if (and (not dir?) (pair? rest) (pair? (cdr rest)) (string? (cadr rest))) (cadr rest) ""))
-         (name (nio-temp-name prefix suffix))
-         (full (if base (string-append base "/" (npath-string-of (npath-file-name name))) name))
+         (full (nio-temp-path base prefix suffix))
          (fp (project-relative full)))
     (if dir? (mkdir fp) (close-port (open-file-output-port fp (file-options no-fail))))
     (make-nio-path full)))
+
+;; ---- walkFileTree + FileVisitor ---------------------------------------------
+;; FileVisitResult values — distinct tokens; babashka.fs maps :continue etc. to
+;; these and hands them back to walkFileTree, which reads them for control flow.
+(define (make-fvr sym) (make-jhost "fvr" sym))
+(define (fvr? x) (and (jhost? x) (string=? (jhost-tag x) "fvr")))
+(define fvr-continue      (make-fvr 'continue))
+(define fvr-skip-subtree  (make-fvr 'skip-subtree))
+(define fvr-skip-siblings (make-fvr 'skip-siblings))
+(define fvr-terminate     (make-fvr 'terminate))
+(define (fvr-sym r) (if (fvr? r) (jhost-state r) 'continue))
+(define fvo-follow-links  (make-jhost "fvo" 'follow-links))
+
+;; BasicFileAttributes — the subset the visitors read (times land with the
+;; attributes increment).
+(define (make-basic-attrs fp) (make-jhost "basic-attrs" fp))
+(register-host-methods! "basic-attrs"
+  (list (cons "isDirectory"    (lambda (self) (if (file-directory? (jhost-state self)) #t #f)))
+        (cons "isRegularFile"  (lambda (self) (let ((fp (jhost-state self)))
+                                                (if (and (file-exists? fp) (not (file-directory? fp))) #t #f))))
+        (cons "isSymbolicLink" (lambda (self) #f))
+        (cons "isOther"        (lambda (self) #f))
+        (cons "size"           (lambda (self) (nio-size (jhost-state self))))))
+
+(define (nio-call-visitor visitor name . args)
+  (let ((m (and (reified-methods visitor) (hashtable-ref (reified-methods visitor) name #f))))
+    (if m (fvr-sym (apply jolt-invoke m visitor args)) 'continue)))
+
+;; Files/walkFileTree(start, opts, max-depth, visitor): pre-order directory walk
+;; calling the visitor and honoring CONTINUE / SKIP_SUBTREE / SKIP_SIBLINGS /
+;; TERMINATE. Returns the start path. (Symlink following via opts is not yet
+;; distinct — there are no symlinks to follow on this host layer.)
+(define (nio-path-join base name)
+  (if (char=? (string-ref base (- (string-length base) 1)) #\/)
+      (string-append base name) (string-append base "/" name)))
+(define (nio-walk-file-tree start opts max-depth visitor)
+  (let ((md (if (number? max-depth) (exact (truncate max-depth)) 2147483647)))
+    (call/cc
+     (lambda (stop)
+       (define (walk path-obj depth)
+         (let ((fp (nfp path-obj)))
+           (if (file-directory? fp)
+               (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp))))
+                 (cond
+                   ((eq? r 'terminate) (stop #t))
+                   ((eq? r 'skip-subtree) 'continue)
+                   ((eq? r 'skip-siblings) 'skip-siblings)
+                   (else
+                    (when (< depth md)
+                      (let loop ((names (sort string<? (directory-list fp))))
+                        (unless (null? names)
+                          (let ((cr (walk (make-nio-path (nio-path-join (nio-path-str path-obj) (car names)))
+                                          (+ depth 1))))
+                            (unless (eq? cr 'skip-siblings) (loop (cdr names)))))))
+                    (let ((pr (nio-call-visitor visitor "postVisitDirectory" path-obj jolt-nil)))
+                      (if (eq? pr 'terminate) (stop #t) 'continue)))))
+               (let ((r (nio-call-visitor visitor "visitFile" path-obj (make-basic-attrs fp))))
+                 (if (eq? r 'terminate) (stop #t) r)))))
+       (walk (->path start) 0)))
+    (->path start)))
+
+;; ---- newDirectoryStream: a closeable, seqable listing of a directory's kids --
+(define (make-dir-stream paths) (make-jhost "dir-stream" paths))  ; state: list of Path
+(define (dir-stream? x) (and (jhost? x) (string=? (jhost-tag x) "dir-stream")))
+(define (nio-new-directory-stream dir . rest)
+  (let* ((base (npath-string-of dir))
+         (fp (project-relative base))
+         (names (sort string<? (directory-list fp)))
+         (glob (and (pair? rest) (string? (car rest)) (car rest)))
+         (rx (and glob (jolt-re-pattern (npath-glob->regex glob))))
+         (kept (if rx (filter (lambda (nm) (jolt-truthy? (jolt-re-matches rx nm))) names) names)))
+    (make-dir-stream (map (lambda (nm) (make-nio-path (nio-path-join base nm))) kept))))
+
+;; dir-stream is seqable (its child Paths) and closeable (a no-op) so
+;; (with-open [s (newDirectoryStream d)] (mapv f s)) works.
+(let ((prev jolt-seq))
+  (set! jolt-seq (lambda (x) (if (dir-stream? x) (list->cseq (jhost-state x)) (prev x)))))
+(let ((prev jolt-close))
+  (set! jolt-close (lambda (x) (if (dir-stream? x) jolt-nil (prev x))))
+  (def-var! "clojure.core" "__close" jolt-close))
+
+;; register the Files walk/stream ops + the FileVisitResult / FileVisitOption enums.
+(let ((files-walk (list (cons "walkFileTree" nio-walk-file-tree)
+                        (cons "newDirectoryStream" nio-new-directory-stream))))
+  (register-class-statics! "Files" files-walk)
+  (register-class-statics! "java.nio.file.Files" files-walk))
+(let ((fvr-statics (list (cons "CONTINUE" fvr-continue) (cons "SKIP_SUBTREE" fvr-skip-subtree)
+                         (cons "SKIP_SIBLINGS" fvr-skip-siblings) (cons "TERMINATE" fvr-terminate))))
+  (register-class-statics! "FileVisitResult" fvr-statics)
+  (register-class-statics! "java.nio.file.FileVisitResult" fvr-statics))
+(let ((fvo-statics (list (cons "FOLLOW_LINKS" fvo-follow-links))))
+  (register-class-statics! "FileVisitOption" fvo-statics)
+  (register-class-statics! "java.nio.file.FileVisitOption" fvo-statics))
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (symbol-t? type-sym) (fvr? val))
+        (let ((n (symbol-t-name type-sym)))
+          (if (or (string=? n "FileVisitResult") (string=? n "java.nio.file.FileVisitResult")) #t 'pass))
+        'pass)))
