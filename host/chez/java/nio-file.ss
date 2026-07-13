@@ -143,7 +143,8 @@
                                                (npath-resolve (if (jolt-nil? par) (make-nio-path "") par) (car rest)))))
       ((string=? name "relativize")    (list (npath-relativize self (car rest))))
       ((string=? name "toAbsolutePath")(list (make-nio-path (if (npath-absolute? s) s (jfile-abs s)))))
-      ((string=? name "toRealPath")    (list (make-nio-path (npath-normalize (if (npath-absolute? s) s (jfile-abs s))))))
+      ((string=? name "toRealPath")    (list (let ((abs (if (npath-absolute? s) s (jfile-abs s))))
+                                               (make-nio-path (or (nio-realpath (project-relative abs)) (npath-normalize abs))))))
       ((string=? name "toFile")        (list (make-jfile s)))
       ((string=? name "toUri")         (list (string-append "file:" (jfile-abs s))))
       ((string=? name "startsWith")    (list (npath-starts-with self (car rest))))
@@ -245,7 +246,7 @@
 ;; Each Files op takes Path / File / String args plus trailing varargs (options /
 ;; attributes) it ignores here; the on-disk path resolves against JOLT_PWD the
 ;; same way java.io.File does (project-relative), so File and Path see one tree.
-(define (nfp x) (project-relative (npath-string-of x)))       ; on-disk path
+(define (nfp x) (let ((s (npath-string-of x))) (project-relative (if (string=? s "") "." s))))  ; on-disk path; "" is the cwd
 (define (->path x) (if (nio-path? x) x (make-nio-path (npath-string-of x))))
 
 (define (nio-size fp)
@@ -291,8 +292,9 @@
        (nio-write-bv! fp (string->utf8 body))))))
 
 (define (nio-delete1 fp missing-ok?)
-  (cond ((not (file-exists? fp))
-         (if missing-ok? #f (jolt-throw (jolt-ex-info (string-append fp) (empty-pmap)))))
+  (cond ((nio-is-symlink? fp) (delete-file fp) #t)   ; the link itself, even if dangling
+        ((not (file-exists? fp))
+         (if missing-ok? #f (jolt-throw (jolt-ex-info fp empty-pmap))))
         ((file-directory? fp) (delete-directory fp) #t)
         (else (delete-file fp) #t)))
 
@@ -352,6 +354,7 @@
          (full (nio-temp-path base prefix suffix))
          (fp (project-relative full)))
     (if dir? (mkdir fp) (close-port (open-file-output-port fp (file-options no-fail))))
+    (when c-chmod (c-chmod fp (if dir? #o700 #o600)))
     (make-nio-path full)))
 
 ;; ---- walkFileTree + FileVisitor ---------------------------------------------
@@ -388,13 +391,20 @@
 (define (nio-path-join base name)
   (if (char=? (string-ref base (- (string-length base) 1)) #\/)
       (string-append base name) (string-append base "/" name)))
+(define (nio-opts-follow? opts)   ; does the opts set carry FileVisitOption/FOLLOW_LINKS?
+  (and opts (not (jolt-nil? opts))
+       (guard (e (#t #f))
+         (exists (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "fvo")))
+                 (seq->list (jolt-seq opts))))))
 (define (nio-walk-file-tree start opts max-depth visitor)
-  (let ((md (if (number? max-depth) (exact (truncate max-depth)) 2147483647)))
+  (let ((md (if (number? max-depth) (exact (truncate max-depth)) 2147483647))
+        (follow? (nio-opts-follow? opts)))
     (call/cc
      (lambda (stop)
        (define (walk path-obj depth)
          (let ((fp (nfp path-obj)))
-           (if (file-directory? fp)
+           ;; a symlink is a leaf unless following — never descend into its target
+           (if (and (file-directory? fp) (or follow? (not (nio-is-symlink? fp))))
                (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp))))
                  (cond
                    ((eq? r 'terminate) (stop #t))
@@ -429,7 +439,10 @@
 ;; dir-stream is seqable (its child Paths) and closeable (a no-op) so
 ;; (with-open [s (newDirectoryStream d)] (mapv f s)) works.
 (let ((prev jolt-seq))
-  (set! jolt-seq (lambda (x) (if (dir-stream? x) (list->cseq (jhost-state x)) (prev x)))))
+  (set! jolt-seq (lambda (x)
+                   (cond ((dir-stream? x) (list->cseq (jhost-state x)))
+                         ((nio-path? x) (list->cseq (map make-nio-path (npath-segs (nio-path-str x)))))
+                         (else (prev x))))))
 (let ((prev jolt-close))
   (set! jolt-close (lambda (x) (if (dir-stream? x) jolt-nil (prev x))))
   (def-var! "clojure.core" "__close" jolt-close))
@@ -505,8 +518,9 @@
     (->path path)))
 (define (nio-read-attributes path what . _)
   (let ((w (npath-string-of what)))
-    (if (let loop ((j 0)) (cond ((>= j (string-length w)) #f)   ; a "view:" string form
-                                ((char=? (string-ref w j) #\:) #t) (else (loop (+ j 1)))))
+    (if (let loop ((j 0)) (cond ((>= j (string-length w)) #f)   ; a "view:" / "*" string form
+                                ((or (char=? (string-ref w j) #\:) (char=? (string-ref w j) #\*)) #t)
+                                (else (loop (+ j 1)))))
         (let ((fp (nfp path)))                                  ; return a small attribute map
           (jolt-hash-map "lastModifiedTime" (make-file-time (file-mtime-millis fp))
                          "size" (nio-size fp)
@@ -521,6 +535,10 @@
 (define posix-bits '(#o400 #o200 #o100 #o40 #o20 #o10 #o4 #o2 #o1))
 (define (make-pfp name) (make-jhost "posix-perm" name))
 (define (pfp? x) (and (jhost? x) (string=? (jhost-tag x) "posix-perm")))
+;; A permission set is a mutable java.util.Set (like the JVM): callers do
+;; (.add perms OWNER_WRITE) before setPosixFilePermissions.
+(define (make-perm-set elems)
+  ((hashtable-ref class-ctors-tbl "HashSet" #f) (list->cseq elems)))
 (define (posix-set->mode s)                    ; a jolt set of PosixFilePermission -> mode int
   (fold-left (lambda (acc p)
                (let ((nm (if (pfp? p) (jhost-state p) (npath-string-of p))))
@@ -542,7 +560,7 @@
            (loop (cdr bs) (cdr ch) (cons (if (> (bitwise-and mode (car bs)) 0) (car ch) #\-) acc)))))))
 (define (posix-str->set str)                   ; "rwxr-xr-x" -> jolt set of PosixFilePermission
   (let loop ((i 0) (os posix-order) (acc '()))
-    (if (or (>= i (string-length str)) (null? os)) (apply jolt-hash-set (reverse acc))
+    (if (or (>= i (string-length str)) (null? os)) (make-perm-set (reverse acc))
         (loop (+ i 1) (cdr os)
               (if (memv (string-ref str i) '(#\r #\w #\x #\s #\t)) (cons (make-pfp (car os)) acc) acc)))))
 (let ((pfp-statics (list (cons "toString" (lambda (s) (posix-set->str s)))
@@ -582,13 +600,13 @@
              (cons "isSymbolicLink" (lambda (p . _) (if (nio-is-symlink? (nfp p)) #t #f)))
              (cons "createSymbolicLink" (lambda (link target . _)
                                           (if c-symlink (c-symlink (npath-string-of target) (nfp link))
-                                              (jolt-throw (jolt-ex-info "symlink unavailable" (empty-pmap))))
+                                              (jolt-throw (jolt-ex-info "symlink unavailable" empty-pmap)))
                                           (->path link)))
              (cons "createLink" (lambda (link existing . _)
                                   (when c-link (c-link (nfp existing) (nfp link))) (->path link)))
              (cons "readSymbolicLink" (lambda (p) (let ((t (nio-readlink (nfp p))))
                                                     (if t (make-nio-path t)
-                                                        (jolt-throw (jolt-ex-info (npath-string-of p) (empty-pmap)))))))
+                                                        (jolt-throw (jolt-ex-info (npath-string-of p) empty-pmap))))))
              (cons "setPosixFilePermissions" (lambda (p perms . _)
                                                (when c-chmod (c-chmod (nfp p) (posix-set->mode perms))) (->path p))))))
   (register-class-statics! "Files" files-attr)
@@ -636,13 +654,13 @@
                             (let ((d (nfp dst)))
                               (when (and (file-exists? d)
                                          (not (nio-opts-have? opts copt-sym 'replace-existing)))
-                                (jolt-throw (jolt-ex-info (string-append d " already exists") (empty-pmap))))
+                                (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
                               (nio-write-bv! d (nio-read-bv (nfp src))) (->path dst))))
              (cons "move" (lambda (src dst . opts)
                             (let ((d (nfp dst)))
                               (when (and (file-exists? d)
                                          (not (nio-opts-have? opts copt-sym 'replace-existing)))
-                                (jolt-throw (jolt-ex-info (string-append d " already exists") (empty-pmap))))
+                                (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
                               (when (file-exists? d) (nio-delete1 d #t))
                               (rename-file (nfp src) d) (->path dst))))
              (cons "write" (lambda (p data . opts)
@@ -657,3 +675,148 @@
                                                      (file-options no-fail)))))))))
   (register-class-statics! "Files" files-opt)
   (register-class-statics! "java.nio.file.Files" files-opt))
+
+;; ---- stat-backed perms + real path (increment: what the fs suite exercises) --
+;; st_mode lives at a platform-specific offset in struct stat; read only that.
+(define nio-macos?
+  (let ((m (symbol->string (machine-type))))
+    (let loop ((i 0))
+      (cond ((> (+ i 3) (string-length m)) #f)
+            ((string=? (substring m i (+ i 3)) "osx") #t)
+            (else (loop (+ i 1)))))))
+(define c-stat (jolt-foreign-proc-safe "stat" '(string u8*) 'int))
+(define c-realpath (jolt-foreign-proc-safe "realpath" '(string u8*) 'iptr))
+(define (nio-stat-mode fp)
+  (and c-stat
+       (let ((buf (make-bytevector 256 0)))
+         (and (= 0 (c-stat fp buf))
+              (if nio-macos?
+                  (bytevector-u16-ref buf 4 (native-endianness))
+                  (bytevector-u32-ref buf 24 (native-endianness)))))))
+(define (nio-cstr buf)                          ; buf up to the first NUL, as a string
+  (let loop ((i 0))
+    (cond ((>= i (bytevector-length buf)) (utf8->string buf))
+          ((= 0 (bytevector-u8-ref buf i))
+           (let ((bv (make-bytevector i)))
+             (do ((j 0 (+ j 1))) ((= j i) (utf8->string bv))
+               (bytevector-u8-set! bv j (bytevector-u8-ref buf j)))))
+          (else (loop (+ i 1))))))
+(define (nio-realpath fp)                        ; resolve symlinks; #f if the path is absent
+  (and c-realpath
+       (let ((buf (make-bytevector 4096 0)))
+         (and (not (= 0 (c-realpath fp buf))) (nio-cstr buf)))))
+(define (nio-mode->perm-set mode)
+  (let ((low (bitwise-and mode #o777)))
+    (make-perm-set
+      (let loop ((os posix-order) (bs posix-bits) (acc '()))
+        (cond ((null? os) (reverse acc))
+              ((> (bitwise-and low (car bs)) 0) (loop (cdr os) (cdr bs) (cons (make-pfp (car os)) acc)))
+              (else (loop (cdr os) (cdr bs) acc)))))))
+(let ((files-stat
+       (list (cons "getPosixFilePermissions"
+                   (lambda (p . _) (nio-mode->perm-set (or (nio-stat-mode (nfp p)) #o755))))
+             (cons "isSameFile"
+                   (lambda (a b) (let ((ra (nio-realpath (nfp a))) (rb (nio-realpath (nfp b))))
+                                   (and ra rb (string=? ra rb))))))))
+  (register-class-statics! "Files" files-stat)
+  (register-class-statics! "java.nio.file.Files" files-stat))
+;; instance? FileTime
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (and (symbol-t? type-sym) (file-time? val))
+        (let ((n (symbol-t-name type-sym)))
+          (if (or (string=? n "FileTime") (string=? n "java.nio.file.attribute.FileTime")) #t 'pass))
+        'pass)))
+
+;; ---- NOFOLLOW predicates, directory copy, owner, file-attribute perms -------
+;; With NOFOLLOW_LINKS a symlink is examined as itself: it is neither a
+;; directory nor a regular file, and it "exists" as long as the link is present.
+(define (nio-opts-nofollow? args)
+  (exists (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "link-option")))
+          (npath-spread-args args)))
+(let ((files-nofollow
+       (list
+        (cons "exists" (lambda (p . opts)
+                         (let ((fp (nfp p)))
+                           (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp)) #t
+                               (if (file-exists? fp) #t #f)))))
+        (cons "isDirectory" (lambda (p . opts)
+                              (let ((fp (nfp p)))
+                                (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp)) #f
+                                    (if (file-directory? fp) #t #f)))))
+        (cons "isRegularFile" (lambda (p . opts)
+                                (let ((fp (nfp p)))
+                                  (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp)) #f
+                                      (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))))
+        ;; copy(dir, dst) creates an empty directory, like java.nio.file
+        (cons "copy" (lambda (src dst . opts)
+                       (let ((s (nfp src)) (d (nfp dst)))
+                         (when (and (file-exists? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
+                           (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
+                         (if (file-directory? s)
+                             (unless (file-exists? d) (mkdir d))
+                             (nio-write-bv! d (nio-read-bv s)))
+                         (->path dst))))
+        (cons "getOwner" (lambda (p . _) (make-jhost "user-principal" (or (getenv "USER") ""))))
+        (cons "getLastModifiedTime" (lambda (p . _) (make-file-time (file-mtime-millis (nfp p))))))))
+  (register-class-statics! "Files" files-nofollow)
+  (register-class-statics! "java.nio.file.Files" files-nofollow))
+(register-host-methods! "user-principal"
+  (list (cons "getName" (lambda (self) (jhost-state self)))
+        (cons "toString" (lambda (self) (jhost-state self)))))
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "user-principal")))
+                      (lambda (x) (jhost-state x)))
+
+;; PosixFilePermissions/asFileAttribute -> a FileAttribute the create ops apply
+;; by chmod after making the entry.
+(define (file-attr? x) (and (jhost? x) (string=? (jhost-tag x) "file-attribute")))
+(define (nio-apply-attrs! fp args)
+  (for-each (lambda (a) (when (and (file-attr? a) c-chmod) (c-chmod fp (posix-set->mode (jhost-state a)))))
+            (npath-spread-args args)))
+(register-class-statics! "PosixFilePermissions"
+  (list (cons "asFileAttribute" (lambda (perms) (make-jhost "file-attribute" perms)))))
+(register-class-statics! "java.nio.file.attribute.PosixFilePermissions"
+  (list (cons "asFileAttribute" (lambda (perms) (make-jhost "file-attribute" perms)))))
+(let ((files-attr-create
+       (list (cons "createDirectory" (lambda (p . attrs) (mkdir (nfp p)) (nio-apply-attrs! (nfp p) attrs) (->path p)))
+             (cons "createFile" (lambda (p . attrs)
+                                  (close-port (open-file-output-port (nfp p) (file-options no-fail)))
+                                  (nio-apply-attrs! (nfp p) attrs) (->path p))))))
+  (register-class-statics! "Files" files-attr-create)
+  (register-class-statics! "java.nio.file.Files" files-attr-create))
+
+;; java.util.regex.Pattern/quote — escape regex metacharacters in a literal.
+(define (nio-pattern-quote s)
+  (list->string
+   (fold-right (lambda (c acc)
+                 (if (memv c '(#\\ #\. #\* #\+ #\? #\( #\) #\[ #\] #\{ #\} #\^ #\$ #\|))
+                     (cons #\\ (cons c acc)) (cons c acc)))
+               '() (string->list s))))
+(register-class-statics! "Pattern" (list (cons "quote" nio-pattern-quote)))
+(register-class-statics! "java.util.regex.Pattern" (list (cons "quote" nio-pattern-quote)))
+
+;; copy/move to the same file are no-ops; isSameFile is true for equal paths
+;; without touching disk (matches java.nio.file).
+(let ((files-samefile
+       (list (cons "isSameFile"
+                   (lambda (a b) (or (string=? (nfp a) (nfp b))
+                                     (let ((ra (nio-realpath (nfp a))) (rb (nio-realpath (nfp b))))
+                                       (and ra rb (string=? ra rb) #t)))))
+             (cons "copy" (lambda (src dst . opts)
+                            (let ((s (nfp src)) (d (nfp dst)))
+                              (cond
+                                ((string=? s d) (->path dst))          ; same file: no-op
+                                ((and (file-exists? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
+                                 (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
+                                ((file-directory? s) (unless (file-exists? d) (mkdir d)) (->path dst))
+                                (else (nio-write-bv! d (nio-read-bv s)) (->path dst))))))
+             (cons "move" (lambda (src dst . opts)
+                            (let ((s (nfp src)) (d (nfp dst)))
+                              (cond
+                                ((string=? s d) (->path dst))          ; same file: no-op
+                                ((and (file-exists? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
+                                 (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
+                                (else (when (file-exists? d) (nio-delete1 d #t))
+                                      (rename-file s d) (->path dst)))))))))
+  (register-class-statics! "Files" files-samefile)
+  (register-class-statics! "java.nio.file.Files" files-samefile))
