@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-13
+
+### Added
+
+- `jolt.fs` is now the [babashka.fs](https://github.com/babashka/fs) API. Jolt
+  vendors babashka.fs over a new `java.nio.file` host shim — `Path`, `Files`,
+  `FileTime`, file attributes, POSIX permissions, symbolic links, and directory
+  walking with symlink-cycle detection. `jolt.fs` re-exports it as the public
+  surface (require `babashka.fs` directly if you prefer). Symbolic links,
+  creation time, and permissions — which the previous `java.io.File`-based
+  `jolt.fs` could not do — now work through the shim's `stat`, `realpath`,
+  `symlink`, `chmod`, and `getpwuid` bindings.
+- A `java.nio.file` interop surface: `Paths`/`Path`, `Files` (predicates,
+  create/delete/copy/move, read/write, temp files, `walkFileTree`,
+  `newDirectoryStream`, attributes), `FileTime`, `PosixFilePermissions`,
+  `FileVisitor`/`FileVisitResult`, and the `LinkOption`/`CopyOption`/`OpenOption`
+  enums.
+- `jolt.util/import-vars` — re-export a namespace's public vars as bakeable
+  delegating definitions (functions and macros, with an `:exclude` set). The
+  pattern for putting a public face on a vendored library; how `jolt.fs` wraps
+  babashka.fs. Works in an AOT-built binary, unlike an `intern` over
+  `ns-publics`.
+
+### Fixed
+
+- A built binary now includes a namespace's forms that follow a non-matching
+  reader conditional. The AOT emission reader stopped at the first `#?(:cljs …)`
+  (with no `:clj` branch), silently dropping every later `def` — so an AOT-built
+  app crashed on an unbound var when it called one. This surfaced with
+  babashka.fs (many cljs-only conditionals); a build-smoke fixture now builds a
+  binary that uses the vendored library and checks it runs.
+
+### Changed
+
+- The documentation moved to the site ([jolt-lang.github.io](https://jolt-lang.github.io));
+  the repo `docs/` folder is gone and the README links to the live pages.
+
+### Notes
+
+- `zip`/`unzip`/`gzip`/`gunzip` need `java.util.zip`, which Jolt does not shim
+  yet, so those babashka.fs functions are excluded from `jolt.fs`.
+
 ## [0.2.7] - 2026-07-13
 
 ### Fixed

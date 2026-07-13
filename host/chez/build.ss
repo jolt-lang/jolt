@@ -180,7 +180,7 @@
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
     "(load \"host/chez/java/ffi.ss\")"
-    "(set-source-roots! (list \"jolt-core\" \"stdlib\"))"))
+    "(set-source-roots! (list \"jolt-core\" \"stdlib\" \"vendor/fs/src\"))"))
 
 (define bld-tagged-loads
   '((prelude . "(load \"host/chez/seed/prelude.ss\")")
@@ -718,7 +718,7 @@
                               "          (append (map (lambda (r) (string-append base \"/\" r)) (list "
                              (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
                              "))\n"
-                             "                  (list \"jolt-core\" \"stdlib\"))))\n"))
+                             "                  (list \"jolt-core\" \"stdlib\" \"vendor/fs/src\"))))\n"))
           (if library?
               (put-string out (bld-library-launcher-body))
               (put-string out (string-append
