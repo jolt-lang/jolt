@@ -35,7 +35,7 @@
 (load "host/chez/png.ss")
 (load "host/chez/loader.ss")
 (load "host/chez/java/ffi.ss")
-(set-source-roots! (list "jolt-core" "stdlib"))
+(set-source-roots! (list "jolt-core" "stdlib" "vendor/fs/src"))
 (load "host/chez/build.ss")   ; bld-* helpers, ei-* (emit-image), dce
 
 (define jb-args (cdr (command-line)))
@@ -87,7 +87,7 @@
                 "(register-embedded-resource! " (ei-str-lit rel) " "
                 (ei-str-lit (read-file-string abs)) ")\n")))))
         (bld-walk-files root "" '())))
-    (list "jolt-core" "stdlib")))
+    (list "jolt-core" "stdlib" "vendor/fs/src")))
 
 ;; Embed every runtime .ss the build inlines into an app (the transitive closure of
 ;; the manifest's loads: rt.ss + all it loads, the seed, compile-eval, loader, ffi,
@@ -144,7 +144,7 @@
 (suppress-greeting #t)
 (scheme-start
   (lambda args
-    (set-source-roots! (list \"jolt-core\" \"stdlib\"))
+    (set-source-roots! (list \"jolt-core\" \"stdlib\" \"vendor/fs/src\"))
     ;; JOLT_TRACE at RUNTIME (the env is unset at heap-build), before any app ns
     ;; compiles, so a `-M:run` traces the app's own code.
     (jolt-trace-init-from-env!)
