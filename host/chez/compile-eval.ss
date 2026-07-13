@@ -72,8 +72,20 @@
               ((char=? (string-ref s i) #\_) (write-char #\- out) (loop (+ i 1)))
               ((char=? (string-ref s i) #\$) (write-char #\/ out) (loop (+ i 1)))
               (else (write-char (string-ref s i) out) (loop (+ i 1)))))))))
+;; clojure.lang.Compiler/CHAR_MAP — the forward munge map (special char -> escape
+;; token), the inverse of demunge-token-map. Derived from that single source so
+;; the two can't drift: drop _DOT_ (a '.' is never munged in CHAR_MAP) and add the
+;; hyphen -> "_" entry (demunge treats a lone _ as '-' via a separate rule).
+(define compiler-char-map
+  (fold-left (lambda (m pair)
+               (if (string=? (car pair) "_DOT_")
+                   m
+                   (jolt-assoc1 m (string-ref (cdr pair) 0) (car pair))))
+             (jolt-assoc1 (jolt-hash-map) #\- "_")
+             demunge-token-map))
 (let ((members (list (cons "LINE" compiler-line-cell) (cons "COLUMN" compiler-column-cell)
                      (cons "specials" compiler-specials)
+                     (cons "CHAR_MAP" compiler-char-map)
                      (cons "demunge" compiler-demunge))))
   (register-class-statics! "Compiler" members)
   (register-class-statics! "clojure.lang.Compiler" members))

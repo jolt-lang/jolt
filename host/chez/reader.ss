@@ -551,18 +551,70 @@
 ;; a dot — Clojure routes those to a constructor instead of a data reader.
 (define (rdr-record-tag? tok) (and (rdr-string-rindex-char tok #\.) #t))
 
-;; #a.b.C{..} -> (a.b/map->C {..}); #a.b.C[..] -> (a.b/->C ..). The factory call
-;; compiles like any invoke; defrecord interns map->C/->C in the type's ns.
+;; Is v a cseq whose head symbol names a record constructor — "map->" or "->"
+;; prefix — produced by the reader for a nested #ns.Type{...}/[...]?  Those
+;; factory calls must stay live so the outer literal still constructs them.
+(define (rdr-ctor-call? v)
+  (and (cseq? v)
+       (let ((lst (seq->list v)))
+         (and (pair? lst)
+              (symbol-t? (car lst))
+              (let* ((nm (symbol-t-name (car lst)))
+                     (len (string-length nm)))
+                (or (and (>= len 5) (string=? (substring nm 0 5) "map->"))
+                    (and (>= len 2) (string=? (substring nm 0 2) "->"))))))))
+
+;; Is v a tagged-literal pmap (#inst/#uuid/#regex/#bigdec at read time)?
+(define (rdr-tagged-form? v)
+  (and (pmap? v) (eq? (jolt-get v rdr-kw-jolt-type) rdr-kw-jolt-tagged)))
+
+;; Recursively datafy a VALUE inside a record literal: quote plain data (symbols,
+;; data lists), keep nested record-ctor calls and value-constructors evaluating.
+(define (rdr-datafy v)
+  (cond
+   ((rdr-ctor-call? v) v)               ; nested record ctor — keep evaluating
+   ((rdr-tagged-form? v) v)             ; #inst/#uuid/#regex/#bigdec — keep
+   ((and (pmap? v) (eq? (jolt-get v rdr-kw-jolt-type) rdr-kw-jolt-set)) v)  ; #{…} set — keep
+   ((pmap? v)
+    (let ((kv (hashtable-ref rdr-map-order v #f)))
+      (if kv
+          (rdr-make-map
+           (let loop ((kvs kv))
+             (if (null? kvs) '()
+                 (cons (car kvs)
+                       (cons (rdr-datafy (cadr kvs))
+                             (loop (cddr kvs)))))))
+          (apply jolt-hash-map
+                 (pmap-fold v (lambda (k val a)
+                                (cons k (cons (rdr-datafy val) a)))
+                            '())))))
+   ((pvec? v)
+    (apply jolt-list
+           (jolt-symbol "clojure.core" "vector")
+           (map rdr-datafy (vector->list (pvec-v v)))))
+   ((or (cseq? v) (empty-list-t? v))
+    (apply jolt-list
+           (jolt-symbol "clojure.core" "list")
+           (map rdr-datafy (seq->list v))))
+   ((or (keyword? v) (string? v) (number? v) (boolean? v) (jolt-nil? v) (char? v))
+    v)                                   ; self-evaluating — as-is
+   (else
+    (jolt-list (jolt-symbol #f "quote") v)))) ; symbol or other — quote it
+
+;; #a.b.C{..} -> (a.b/map->C {:keys (datafy vals)...})
+;; #a.b.C[..] -> (a.b/->C  (datafy val)...).  The factory call compiles like any
+;; invoke; defrecord interns map->C/->C in the type's ns.
 (define (rdr-record-ctor-form tok form)
   (let* ((di (rdr-string-rindex-char tok #\.))
          (ns (substring tok 0 di))
          (simple (substring tok (+ di 1) (string-length tok))))
     (cond
       ((pmap? form)
-       (jolt-list (jolt-symbol ns (string-append "map->" simple)) form))
+       (jolt-list (jolt-symbol ns (string-append "map->" simple))
+                  (rdr-datafy form)))
       ((pvec? form)
        (apply jolt-list (jolt-symbol ns (string-append "->" simple))
-              (vector->list (pvec-v form))))
+              (map rdr-datafy (vector->list (pvec-v form)))))
       (else (jolt-throw (jolt-ex-info
                          (string-append "Unreadable constructor form: #" tok)
                          empty-pmap))))))

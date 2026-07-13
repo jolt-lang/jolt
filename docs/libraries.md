@@ -10,6 +10,9 @@ e.g. the [ring-app example](https://github.com/jolt-lang/examples/tree/main/ring
 * [Selmer](https://github.com/yogthos/Selmer) — Django-style templates
 * [medley](https://github.com/weavejester/medley) — collection utilities
 * [cuerdas](https://github.com/funcool/cuerdas) — string manipulation
+* [camel-snake-kebab](https://github.com/clj-commons/camel-snake-kebab) — word-case conversions
+* [clj-rss](https://github.com/yogthos/clj-rss) — RSS feed generation, over
+  [jolt-lang/xml](https://github.com/jolt-lang/xml)'s `clojure.data.xml` emit
 * [ring-core](https://github.com/ring-clojure/ring) — via `:deps/root "ring-core"`,
   on the ring-app example
 * [ring-codec](https://github.com/ring-clojure/ring-codec) — URL/form encoding

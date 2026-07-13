@@ -764,7 +764,14 @@
     :else
     (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))
           op (if (= kind :double) (str "#3%" op) op)]
-      (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
+      (if (and (contains? #{"<" "<=" ">" ">=" "==" "="} nm) (> (count args) 2))
+        ;; a chained comparison (<= a b c) means (and (<= a b) (<= b c)); the fast
+        ;; binary op is 2-ary, so expand rather than pass 3+ args to it. order-args
+        ;; binds each operand to a temp once, so reusing a temp across pairs is safe.
+        (order-args (fn [as]
+          (str "(and " (str/join " " (map (fn [pair] (str "(" op " " (first pair) " " (second pair) ")"))
+                                          (partition 2 1 as))) ")")))
+        (order-args (fn [as] (str "(" op " " (str/join " " as) ")")))))))
 
 ;; slot of a declared field key in a record's field-order shape, or nil.
 (defn- struct-field-index [shape kw]

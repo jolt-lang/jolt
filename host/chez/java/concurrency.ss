@@ -702,6 +702,108 @@
           jolt-nil))
          (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))
 
+;; --- java.util.concurrent.ExecutorService / Executors ----------------------
+;; A real task QUEUE served by a fixed number of worker threads (FIFO). A single
+;; worker (newSingleThreadExecutor) runs tasks strictly in submission order —
+;; code relies on that ordering (claxon dispatches handlers on a single-thread
+;; executor and a later empty task acts as a barrier). submit returns a Future
+;; whose .get waits for the result (re-raising the task's throw, like the JVM).
+;; j-future state: #(done? result error mutex condition)
+(define (make-j-future) (make-jhost "j-future" (vector #f jolt-nil #f (make-mutex) (make-condition))))
+(define (j-future-complete! self thunk)
+  (let ((st (jhost-state self)))
+    (let ((r (guard (e (#t (vector-set! st 2 e) #f)) (jolt-invoke thunk))))
+      (with-mutex (vector-ref st 3)
+        (unless (vector-ref st 2) (vector-set! st 1 r))
+        (vector-set! st 0 #t)
+        (condition-broadcast (vector-ref st 4))))))
+(register-host-methods! "j-future"
+  (list (cons "get" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (with-mutex (vector-ref st 3)
+              (let loop () (unless (vector-ref st 0) (condition-wait (vector-ref st 4) (vector-ref st 3)) (loop))))
+            (if (vector-ref st 2) (jolt-throw (vector-ref st 2)) (vector-ref st 1)))))
+        (cons "isDone" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "isCancelled" (lambda (self) #f))
+        (cons "cancel" (lambda (self . _) #f))))
+;; executor-service state: #(shutdown? queue-tail-box queue-mutex queue-cond)
+;; the queue is a simple list held in a box, appended at the tail, popped at head.
+(define (make-executor n-workers)
+  (let ((self (make-jhost "executor-service" (vector #f (box '()) (make-mutex) (make-condition)))))
+    (let ((st (jhost-state self)))
+      (let spawn ((k n-workers))
+        (when (> k 0)
+          (fork-thread (lambda ()
+            (let loop ()
+              (let ((job (with-mutex (vector-ref st 2)
+                           (let poll ()
+                             (cond ((pair? (unbox (vector-ref st 1)))
+                                    (let ((q (unbox (vector-ref st 1))))
+                                      (set-box! (vector-ref st 1) (cdr q)) (car q)))
+                                   ((vector-ref st 0) #f)   ; shutdown + empty -> exit
+                                   (else (condition-wait (vector-ref st 3) (vector-ref st 2)) (poll)))))))
+                (when job (job) (loop))))))
+          (spawn (- k 1))))
+      self)))
+(define (executor-enqueue! self job)
+  (let ((st (jhost-state self)))
+    (with-mutex (vector-ref st 2)
+      (set-box! (vector-ref st 1) (append (unbox (vector-ref st 1)) (list job)))
+      (condition-broadcast (vector-ref st 3)))))
+(let ((single (lambda _ (make-executor 1)))
+      (fixed  (lambda (n . _) (make-executor (max 1 (jnum->exact n)))))
+      ;; per-task / cached / virtual: enough workers to not serialize; a generous
+      ;; fixed pool preserves concurrency without unbounded thread growth.
+      (many   (lambda _ (make-executor 32))))
+  (for-each (lambda (nm) (register-class-statics! nm
+              (list (cons "newSingleThreadExecutor" single)
+                    (cons "newSingleThreadScheduledExecutor" single)
+                    (cons "newFixedThreadPool" fixed) (cons "newScheduledThreadPool" fixed)
+                    (cons "newVirtualThreadPerTaskExecutor" many)
+                    (cons "newCachedThreadPool" many) (cons "newWorkStealingPool" many))))
+            '("Executors" "java.util.concurrent.Executors")))
+(register-host-methods! "executor-service"
+  (list (cons "submit" (lambda (self thunk)
+          (let ((fut (make-j-future)) (snap (dyn-binding-stack)))
+            (executor-enqueue! self (lambda () (dyn-binding-stack snap) (j-future-complete! fut thunk)))
+            fut)))
+        (cons "execute" (lambda (self thunk)
+          (let ((snap (dyn-binding-stack)))
+            (executor-enqueue! self (lambda () (dyn-binding-stack snap)
+              (guard (e (#t (guard (_ (#t #f))
+                              (display "Exception in executor task:\n" (current-error-port))
+                              (jolt-report-throwable e (current-error-port)))))
+                (jolt-invoke thunk)))))
+          jolt-nil))
+        (cons "shutdown" (lambda (self) (let ((st (jhost-state self)))
+          (vector-set! st 0 #t) (with-mutex (vector-ref st 2) (condition-broadcast (vector-ref st 3)))) jolt-nil))
+        (cons "shutdownNow" (lambda (self) (let ((st (jhost-state self)))
+          (vector-set! st 0 #t) (with-mutex (vector-ref st 2) (condition-broadcast (vector-ref st 3)))) (jolt-vector)))
+        (cons "close" (lambda (self) (let ((st (jhost-state self)))
+          (vector-set! st 0 #t) (with-mutex (vector-ref st 2) (condition-broadcast (vector-ref st 3)))) jolt-nil))
+        (cons "isShutdown" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "isTerminated" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "awaitTermination" (lambda (self . _) #t))))
+
+;; java.util.concurrent.locks.ReentrantLock — a mutual-exclusion lock over a Chez
+;; mutex (claxon serializes socket writes with it). Chez has no reentrant mutex
+;; primitive; this is non-reentrant — a lock() while already held by the same
+;; thread would block, which claxon's single write critical section never does.
+(define (make-reentrant-lock) (make-jhost "reentrant-lock" (vector (make-mutex) #f)))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-reentrant-lock))))
+          '("ReentrantLock" "java.util.concurrent.locks.ReentrantLock"))
+(register-host-methods! "reentrant-lock"
+  (list (cons "lock" (lambda (self)
+          (let ((st (jhost-state self))) (mutex-acquire (vector-ref st 0)) (vector-set! st 1 #t) jolt-nil)))
+        (cons "unlock" (lambda (self)
+          (let ((st (jhost-state self))) (vector-set! st 1 #f) (mutex-release (vector-ref st 0)) jolt-nil)))
+        (cons "tryLock" (lambda (self . _)
+          (let ((st (jhost-state self)))
+            (if (mutex-acquire (vector-ref st 0) #f) (begin (vector-set! st 1 #t) #t) #f))))
+        (cons "lockInterruptibly" (lambda (self)
+          (let ((st (jhost-state self))) (mutex-acquire (vector-ref st 0)) (vector-set! st 1 #t) jolt-nil)))
+        (cons "isLocked" (lambda (self) (vector-ref (jhost-state self) 1)))))
+
 ;; --- main-thread executor ---------------------------------------------------
 ;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread
 ;; that owns the GUI main loop. On macOS GTK quartz, g_application_run must run

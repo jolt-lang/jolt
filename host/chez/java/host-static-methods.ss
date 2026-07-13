@@ -202,7 +202,16 @@
         (cons "setProperty" (lambda (k v) (sys-set-property k v)))
         (cons "clearProperty" (lambda (k) (sys-clear-property k)))
         (cons "getProperties" (lambda () (sys-properties-map)))
-        (cons "getenv" (lambda k (apply sys-getenv k)))))
+        (cons "getenv" (lambda k (apply sys-getenv k)))
+        ;; System/console is nil when there is no attached terminal (piped /
+        ;; redirected) — the safe default here; libraries (pretty) use it to
+        ;; decide whether to emit ANSI, and a nil means "not a tty".
+        (cons "console" (lambda _ jolt-nil))
+        (cons "lineSeparator" (lambda _ "\n"))
+        (cons "identityHashCode" (lambda (x) (->num (equal-hash x))))))
+(register-class-statics! "java.lang.System"
+  (list (cons "console" (lambda _ jolt-nil))
+        (cons "lineSeparator" (lambda _ "\n"))))
 
 ;; java.lang.Long.bitCount: the population count of the value's 64-bit two's-
 ;; complement (mask to 64 bits so a negative long counts like the JVM, e.g.
@@ -253,6 +262,9 @@
         (cons "MAX_VALUE" (->num 127)) (cons "MIN_VALUE" (->num -128))
         (cons "valueOf" (lambda (x . r) (->num (if (number? x) x (parse-int-or-throw x 10 "valueOf")))))
         (cons "parseByte" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseByte")))
+        ;; interpret the low 8 bits as unsigned (0..255): a signed byte -1 -> 255.
+        (cons "toUnsignedLong" (lambda (x) (->num (bitwise-and (jnum->exact x) #xFF))))
+        (cons "toUnsignedInt" (lambda (x) (->num (bitwise-and (jnum->exact x) #xFF))))
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
 (register-class-statics! "Short"
   (list (cons "TYPE" "short")

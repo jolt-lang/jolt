@@ -340,6 +340,71 @@
     self))
 (register-class-ctor! "ConcurrentHashMap" make-hashmap-jhost)
 (register-class-ctor! "java.util.concurrent.ConcurrentHashMap" make-hashmap-jhost)
+;; WeakHashMap: a HashMap shim. Chez has no weak-value hashtable, so entries are
+;; not GC-evicted — a cache backed by it never shrinks (correct, just unbounded),
+;; the same trade-off as SoftReference on this host.
+(register-class-ctor! "WeakHashMap" make-hashmap-jhost)
+(register-class-ctor! "java.util.WeakHashMap" make-hashmap-jhost)
+;; java.util.concurrent.atomic.Atomic{Reference,Integer,Long,Boolean}: a
+;; thread-safe mutable cell (mutex-guarded, shared heap). One "atomic" jhost
+;; serves all four; the numeric ops are meaningful only on Integer/Long.
+(define (make-atomic init)
+  (make-jhost "atomic" (vector (box init) (make-mutex))))
+(define (atomic-box self) (vector-ref (jhost-state self) 0))
+(define (atomic-lock self) (vector-ref (jhost-state self) 1))
+(let ((ref-ctor (lambda args (make-atomic (if (pair? args) (car args) jolt-nil))))
+      (num-ctor (lambda args (make-atomic (if (pair? args) (car args) 0))))
+      (bool-ctor (lambda args (make-atomic (if (pair? args) (car args) #f)))))
+  (for-each (lambda (n) (register-class-ctor! n ref-ctor))
+            '("AtomicReference" "java.util.concurrent.atomic.AtomicReference"))
+  (for-each (lambda (n) (register-class-ctor! n num-ctor))
+            '("AtomicInteger" "java.util.concurrent.atomic.AtomicInteger"
+              "AtomicLong" "java.util.concurrent.atomic.AtomicLong"))
+  (for-each (lambda (n) (register-class-ctor! n bool-ctor))
+            '("AtomicBoolean" "java.util.concurrent.atomic.AtomicBoolean")))
+(register-host-methods! "atomic"
+  (list (cons "get" (lambda (self) (unbox (atomic-box self))))
+        (cons "set" (lambda (self v) (set-box! (atomic-box self) v) jolt-nil))
+        (cons "getAndSet" (lambda (self v) (with-mutex (atomic-lock self)
+                            (let ((o (unbox (atomic-box self)))) (set-box! (atomic-box self) v) o))))
+        (cons "compareAndSet" (lambda (self o n) (with-mutex (atomic-lock self)
+                                (if (jolt=2 (unbox (atomic-box self)) o)
+                                    (begin (set-box! (atomic-box self) n) #t) #f))))
+        (cons "updateAndGet" (lambda (self f) (with-mutex (atomic-lock self)
+                               (let ((n (jolt-invoke f (unbox (atomic-box self)))))
+                                 (set-box! (atomic-box self) n) n))))
+        (cons "getAndUpdate" (lambda (self f) (with-mutex (atomic-lock self)
+                               (let ((o (unbox (atomic-box self))))
+                                 (set-box! (atomic-box self) (jolt-invoke f o)) o))))
+        (cons "incrementAndGet" (lambda (self) (with-mutex (atomic-lock self)
+                                  (let ((n (+ (unbox (atomic-box self)) 1))) (set-box! (atomic-box self) n) n))))
+        (cons "decrementAndGet" (lambda (self) (with-mutex (atomic-lock self)
+                                  (let ((n (- (unbox (atomic-box self)) 1))) (set-box! (atomic-box self) n) n))))
+        (cons "getAndIncrement" (lambda (self) (with-mutex (atomic-lock self)
+                                  (let ((o (unbox (atomic-box self)))) (set-box! (atomic-box self) (+ o 1)) o))))
+        (cons "getAndDecrement" (lambda (self) (with-mutex (atomic-lock self)
+                                  (let ((o (unbox (atomic-box self)))) (set-box! (atomic-box self) (- o 1)) o))))
+        (cons "addAndGet" (lambda (self d) (with-mutex (atomic-lock self)
+                            (let ((n (+ (unbox (atomic-box self)) (jnum->exact d)))) (set-box! (atomic-box self) n) n))))
+        (cons "getAndAdd" (lambda (self d) (with-mutex (atomic-lock self)
+                            (let ((o (unbox (atomic-box self)))) (set-box! (atomic-box self) (+ o (jnum->exact d))) o))))
+        (cons "intValue" (lambda (self) (jnum->exact (unbox (atomic-box self)))))
+        (cons "longValue" (lambda (self) (jnum->exact (unbox (atomic-box self)))))
+        (cons "toString" (lambda (self) (jolt-str-render-one (unbox (atomic-box self)))))))
+;; java.util.Collections/synchronizedMap|List|Set wrap a collection for
+;; thread-safe access. The shared-heap HashMap/ArrayList shims already serialize
+;; individual ops adequately for these uses, so the wrapper returns its argument.
+(let ((ident (lambda (c . _) c)))
+  (register-class-statics! "Collections"
+    (list (cons "synchronizedMap" ident) (cons "synchronizedList" ident)
+          (cons "synchronizedSet" ident) (cons "unmodifiableMap" ident)
+          (cons "unmodifiableList" ident) (cons "unmodifiableSet" ident)
+          (cons "emptyList" (lambda _ (jolt-vector))) (cons "emptyMap" (lambda _ (jolt-hash-map)))))
+  (register-class-statics! "java.util.Collections"
+    (list (cons "synchronizedMap" ident) (cons "synchronizedList" ident)
+          (cons "synchronizedSet" ident) (cons "unmodifiableMap" ident)
+          (cons "unmodifiableList" ident) (cons "unmodifiableSet" ident)
+          (cons "emptyList" (lambda _ (jolt-vector))) (cons "emptyMap" (lambda _ (jolt-hash-map))))))
 
 ;; A mutable set over the same value-keyed hashtable (element -> #t).
 ;; Constructors: () | (capacity) [ignored] | (coll) [copy].
@@ -579,10 +644,20 @@
        (utf32->string bv (endianness big)))
       ((string=? cs "utf-32le") (utf32->string bv (endianness little)))
       (else (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))))
+;; (String. bytes offset length [charset]) — decode a SLICE. Returns (bv . rest')
+;; where rest' is the charset args; a plain (String. bytes [charset]) is unsliced.
+(define (bytes-slice-for-string bv rest)
+  (if (and (pair? rest) (number? (car rest)) (pair? (cdr rest)) (number? (cadr rest)))
+      (let* ((off (jnum->exact (car rest))) (len (jnum->exact (cadr rest)))
+             (out (make-bytevector len)))
+        (bytevector-copy! bv off out 0 len)
+        (cons out (cddr rest)))
+      (cons bv rest)))
 (register-class-ctor! "String"
   (lambda (x . rest)
-    (cond ((bytevector? x) (decode-bytevector x rest))
-          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (decode-bytevector (na-bytearray->bv x) rest))
+    (cond ((bytevector? x) (let ((p (bytes-slice-for-string x rest))) (decode-bytevector (car p) (cdr p))))
+          ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte))
+           (let ((p (bytes-slice-for-string (na-bytearray->bv x) rest))) (decode-bytevector (car p) (cdr p))))
           ;; (String. char[] [offset count]) — the whole array or a slice. Buffered
           ;; readers (data.json) build a string from a fill buffer this way.
           ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))

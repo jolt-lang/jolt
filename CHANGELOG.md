@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-12
+
+Driven by running more libraries: camel-snake-kebab and clj-rss now pass their
+suites, claxon passes its byte-parsing tests, and pretty passes four of its six
+test namespaces. clj-rss runs over a new `clojure.data.xml` emitter shipped in
+[jolt-lang/xml](https://github.com/jolt-lang/xml) v0.0.2.
+
+### Fixed
+
+- A char value reports `java.lang.Character` for protocol dispatch, so a
+  protocol extended to `Character` matches a char. It reported nothing, so
+  `(extend Character …)` never dispatched (camel-snake-kebab's separator split).
+- Record literals `#pkg.Record{…}` read their map/vector values as data, like
+  the JVM: `#user.Foo{:content ("a" "b")}` keeps the list instead of evaluating
+  it as a call, while a nested record literal is still constructed.
+- `(set! (.field obj) v)` compiles, matching `(set! (.-field obj) v)` — an
+  instance-field write via the `.name` form was rejected.
+- A chained numeric comparison with a `^long`/`^double` operand,
+  `(<= 0x21 value 0x7e)`, expands to `(and (op a b) (op b c))` — the fast binary
+  op received three arguments and emitted invalid code.
+- `(String. bytes offset length charset)` decodes the requested slice; it
+  decoded the whole array, ignoring offset/length.
+
+### Added
+
+- Clojure 1.12 qualified instance-method syntax `(ClassName/.method target
+  args…)`, lowering to `(.method target args…)`.
+- `clojure.lang.Compiler/CHAR_MAP` (the munge map).
+- `java.util.WeakHashMap`, `java.util.Collections` (synchronized/unmodifiable/
+  empty views), and `java.util.concurrent.atomic.Atomic{Reference,Integer,Long,
+  Boolean}`.
+- `java.util.concurrent.ExecutorService` / `Executors` backed by a real task
+  queue and worker threads — a single-thread executor runs tasks strictly FIFO.
+- `java.util.concurrent.locks.ReentrantLock`, `java.net.URI` `getUserInfo`,
+  `System/console`/`lineSeparator`, `java.lang.Byte/toUnsignedLong`, and
+  `java.nio.ByteBuffer` `slice` plus absolute/relative single-byte `get`.
+
 ## [0.2.4] - 2026-07-11
 
 ### Fixed
