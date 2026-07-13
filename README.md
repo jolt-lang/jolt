@@ -137,7 +137,7 @@ Numeric code unboxes to raw flonum/fixnum machine ops when types are proven —
 by whole-program inference (float literals, record fields, protocol returns:
 no annotations needed), by JVM-style `^double`/`^long` hints, or by
 `(double x)`/`(long x)` casts where inference can't see. See
-[docs/building-and-deps.md](docs/building-and-deps.md#typed-arithmetic-and-inference).
+[Building & Running](https://jolt-lang.github.io/docs/building-and-deps.html#typed-arithmetic-and-inference).
 
 Two opt-in closed-world flags cut dispatch cost and binary size:
 
@@ -151,12 +151,12 @@ bin/joltc build -m myapp.core --tree-shake    # ship only code reachable from -m
 when the app never `eval`s), and typically removes 1–2 MB. It stays sound by bailing
 out — keeping everything, and reporting which library is responsible — when reachable
 code resolves vars by name at runtime (`eval`/`resolve`/`ns-resolve`/…). See
-[docs/tools-deps.md](docs/tools-deps.md) and `docs/rfc/0007`.
+[deps.edn internals](https://jolt-lang.github.io/docs/tools-deps.html) and [RFC 0007](https://jolt-lang.github.io/docs/rfc/0007-compilation-modes-and-binary-output.html).
 
 This needs Chez's kernel development files (`libkernel.a`, `scheme.h`) and a C
 compiler. They come with a from-source Chez install; a distro `chezscheme`
 package ships only the runtime, so `build` won't link a binary there.
-RFC 0007 (`docs/rfc/`) covers the design and the three-mode model.
+[RFC 0007](https://jolt-lang.github.io/docs/rfc/0007-compilation-modes-and-binary-output.html) covers the design and the three-mode model.
 
 ## Compile a library
 
@@ -196,7 +196,7 @@ add(2, 3);                                                 /* => 5 */
 ```
 
 The type keywords (`:int`, `:string`, …) are the same ones `foreign-fn` uses;
-see [docs/host-interop.md](docs/host-interop.md) for the full list and limits.
+see [Host Interop](https://jolt-lang.github.io/docs/host-interop.html) for the full list and limits.
 The same `--opt`/`--dev`/`--direct-link`/`--tree-shake` flags apply, and the
 same Chez kernel development files + C compiler are required to link.
 
@@ -253,7 +253,7 @@ Clojure. The genuine divergences:
 - **No JVM, no Java interop.** No reflection, no `gen-class`/`proxy`. Interop
   syntax (`Class.`, `Class/static`, `.method`) resolves only against a shimmed
   subset of the `java.*` standard library; a class token is a name, not a loaded
-  class. See [docs/host-interop.md](docs/host-interop.md). To call C libraries
+  class. See [Host Interop](https://jolt-lang.github.io/docs/host-interop.html). To call C libraries
   directly, use the `jolt.ffi` foreign-function interface (how the db and
   http-client libraries bind SQLite/libpq and sockets/OpenSSL/zlib).
 - **No `BigDecimal`.** `decimal?` is always false and there is no `M` literal;
