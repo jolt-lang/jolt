@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-07-13
+
+### Fixed
+
+- `read-string`/`read` expand a syntax-quote at read time, like the JVM reader:
+  `` (read-string "`(a ~b c)") `` returns the `(seq (concat (list 'ns/a) …))`
+  form with symbols namespace-qualified against `*ns*` and auto-gensyms shared
+  within a form, instead of a raw `(syntax-quote …)`. (edn and tools.reader are
+  unaffected.)
+- A qualified or aliased trailing-dot constructor — `(some.ns/Type. args)` or
+  `(alias/Type. args)`, as SCI builds `sci.impl.types/Reified.` — now
+  constructs the cross-namespace deftype instead of erroring "Unknown class
+  \<ns\>"; a namespaced head never reached the constructor path before.
+
+### Added
+
+- The joltc CLI runs a bare file: `joltc FILE` (the `run` subcommand is now
+  optional, like bb), and a `FILE` of `-` reads the program from stdin — so
+  `joltc run -`, `joltc FILE`, and `joltc -` all work with piped input. A token
+  that isn't a file still resolves as a deps.edn `:tasks` entry.
+
 ## [0.2.6] - 2026-07-13
 
 ### Fixed
