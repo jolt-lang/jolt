@@ -110,12 +110,14 @@
 
 (define (npath-starts-with self other)
   (let ((a (nio-path-str self)) (b (npath-string-of other)))
-    (and (eq? (npath-absolute? a) (npath-absolute? b))
-         (let loop ((sa (npath-segs a)) (sb (npath-segs b)))
-           (cond ((null? sb) #t)
-                 ((null? sa) #f)
-                 ((string=? (car sa) (car sb)) (loop (cdr sa) (cdr sb)))
-                 (else #f))))))
+    ;; the empty path is a single empty component: only another empty path starts with it
+    (if (string=? b "") (string=? a "")
+        (and (eq? (npath-absolute? a) (npath-absolute? b))
+             (let loop ((sa (npath-segs a)) (sb (npath-segs b)))
+               (cond ((null? sb) #t)
+                     ((null? sa) #f)
+                     ((string=? (car sa) (car sb)) (loop (cdr sa) (cdr sb)))
+                     (else #f)))))))
 
 (define (npath-ends-with self other)
   (let ((a (nio-path-str self)) (b (npath-string-of other)))
@@ -143,8 +145,12 @@
                                                (npath-resolve (if (jolt-nil? par) (make-nio-path "") par) (car rest)))))
       ((string=? name "relativize")    (list (npath-relativize self (car rest))))
       ((string=? name "toAbsolutePath")(list (make-nio-path (if (npath-absolute? s) s (jfile-abs s)))))
-      ((string=? name "toRealPath")    (list (let ((abs (if (npath-absolute? s) s (jfile-abs s))))
-                                               (make-nio-path (or (nio-realpath (project-relative abs)) (npath-normalize abs))))))
+      ((string=? name "toRealPath")    (list (let* ((abs (if (npath-absolute? s) s (jfile-abs s)))
+                                                    (fp (project-relative abs))
+                                                    (rp (nio-realpath fp)))
+                                               (cond (rp (make-nio-path rp))
+                                                     ((file-exists? fp) (make-nio-path (npath-normalize abs)))
+                                                     (else (jolt-throw (jolt-ex-info abs empty-pmap)))))))  ; missing path throws
       ((string=? name "toFile")        (list (make-jfile s)))
       ((string=? name "toUri")         (list (string-append "file:" (jfile-abs s))))
       ((string=? name "startsWith")    (list (npath-starts-with self (car rest))))
@@ -246,7 +252,9 @@
 ;; Each Files op takes Path / File / String args plus trailing varargs (options /
 ;; attributes) it ignores here; the on-disk path resolves against JOLT_PWD the
 ;; same way java.io.File does (project-relative), so File and Path see one tree.
-(define (nfp x) (let ((s (npath-string-of x))) (project-relative (if (string=? s "") "." s))))  ; on-disk path; "" is the cwd
+(define (nfp x)                                ; on-disk path; "" is the cwd, nil is nothing
+  (if (jolt-nil? x) ""
+      (let ((s (npath-string-of x))) (project-relative (if (string=? s "") "." s)))))
 (define (->path x) (if (nio-path? x) x (make-nio-path (npath-string-of x))))
 
 (define (nio-size fp)
@@ -442,7 +450,9 @@
 (let ((prev jolt-seq))
   (set! jolt-seq (lambda (x)
                    (cond ((dir-stream? x) (list->cseq (jhost-state x)))
-                         ((nio-path? x) (list->cseq (map make-nio-path (npath-segs (nio-path-str x)))))
+                         ((nio-path? x) (let ((segs (npath-segs (nio-path-str x))))
+                                          ;; the empty path iterates as one empty component (java parity)
+                                          (list->cseq (map make-nio-path (if (null? segs) '("") segs)))))
                          (else (prev x))))))
 (let ((prev jolt-close))
   (set! jolt-close (lambda (x) (if (dir-stream? x) jolt-nil (prev x))))
@@ -839,3 +849,135 @@
                                       (rename-file s d) (->path dst)))))))))
   (register-class-statics! "Files" files-samefile)
   (register-class-statics! "java.nio.file.Files" files-samefile))
+
+;; ---- umask-masked create perms, symlink-aware move/copy ---------------------
+(define c-umask (jolt-foreign-proc-safe "umask" '(int) 'int))
+(define (nio-current-umask) (if c-umask (let ((old (c-umask 0))) (c-umask old) old) 0))
+;; chmod a created entry to the requested permission file-attribute, masked by
+;; the umask — exactly what java.nio.file's create* do.
+(define (nio-apply-attrs-umask! fp args)
+  (let ((um (nio-current-umask)))
+    (for-each (lambda (a) (when (and (file-attr? a) c-chmod)
+                            (c-chmod fp (bitwise-and (posix-set->mode (jhost-state a)) (bitwise-not um)))))
+              (npath-spread-args args))))
+(define (nio-parent-of fp)
+  (let loop ((i (- (string-length fp) 1)))
+    (cond ((< i 0) "") ((char=? (string-ref fp i) #\/) (substring fp 0 i)) (else (loop (- i 1))))))
+(define (nio-missing-ancestors fp)   ; the not-yet-existing path chain, shallowest first
+  (let loop ((p fp) (acc '()))
+    (cond ((or (string=? p "") (string=? p "/") (file-exists? p)) acc)
+          (else (loop (nio-parent-of p) (cons p acc))))))
+;; is the dest present as a link (even broken) or a real file?
+(define (nio-dest-present? d) (or (file-exists? d) (nio-is-symlink? d)))
+(let ((files-create+move
+       (list
+        (cons "createDirectory" (lambda (p . attrs) (mkdir (nfp p)) (nio-apply-attrs-umask! (nfp p) attrs) (->path p)))
+        (cons "createFile" (lambda (p . attrs)
+                             (close-port (open-file-output-port (nfp p) (file-options no-fail)))
+                             (nio-apply-attrs-umask! (nfp p) attrs) (->path p)))
+        (cons "createDirectories" (lambda (p . attrs)
+                                    (let ((missing (nio-missing-ancestors (nfp p))))
+                                      (mkdirs! (nfp p))
+                                      (for-each (lambda (d) (nio-apply-attrs-umask! d attrs)) missing))
+                                    (->path p)))
+        (cons "copy" (lambda (src dst . opts)
+                       (let ((s (nfp src)) (d (nfp dst)))
+                         (cond
+                           ((string=? s d) (->path dst))
+                           ((and (nio-dest-present? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
+                            (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
+                           (else
+                            (when (nio-dest-present? d) (nio-delete1 d #t))   ; replace a symlink dest as itself
+                            (cond
+                              ;; :nofollow-links on a symlink copies the link itself
+                              ((and (nio-opts-nofollow? opts) (nio-is-symlink? s))
+                               (when c-symlink (c-symlink (or (nio-readlink s) "") d)))
+                              ((file-directory? s) (unless (file-exists? d) (mkdir d)))
+                              (else (nio-write-bv! d (nio-read-bv s))
+                                    (when (nio-opts-have? opts copt-sym 'copy-attributes)
+                                      (let ((mode (nio-stat-mode s)))
+                                        (when (and mode c-chmod) (c-chmod d (bitwise-and mode #o777))))
+                                      (set-file-mtime-millis! d (file-mtime-millis s)))))
+                            (->path dst))))))
+        (cons "move" (lambda (src dst . opts)
+                       (let ((s (nfp src)) (d (nfp dst)))
+                         (cond
+                           ((string=? s d) (->path dst))
+                           ((and (nio-dest-present? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
+                            (jolt-throw (jolt-ex-info (string-append d " already exists") empty-pmap)))
+                           (else (when (nio-dest-present? d) (nio-delete1 d #t))
+                                 (rename-file s d) (->path dst)))))))))
+  (register-class-statics! "Files" files-create+move)
+  (register-class-statics! "java.nio.file.Files" files-create+move))
+
+;; ---- nofollow timestamps (the link's own mtime, via lstat/lutimes) ----------
+(define c-lstat (jolt-foreign-proc-safe "lstat" '(string u8*) 'int))
+(define c-lutimes (jolt-foreign-proc-safe "lutimes" '(string u8*) 'int))
+(define (nio-lstat-mtime-millis fp)              ; the symlink's own mtime
+  (and c-lstat
+       (let ((buf (make-bytevector 256 0)))
+         (and (= 0 (c-lstat fp buf))
+              (* 1000 (if nio-macos? (bytevector-s64-ref buf 48 (native-endianness))
+                                     (bytevector-s64-ref buf 88 (native-endianness))))))))
+(define (nio-set-lmtime! fp ms opts)             ; nofollow on a link sets the link's own time
+  (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp) c-lutimes)
+      (let ((tv (make-bytevector 32 0)) (sec (div ms 1000)) (usec (* (mod ms 1000) 1000)))
+        (bytevector-s64-set! tv 0 sec (native-endianness)) (bytevector-s64-set! tv 8 usec (native-endianness))
+        (bytevector-s64-set! tv 16 sec (native-endianness)) (bytevector-s64-set! tv 24 usec (native-endianness))
+        (c-lutimes fp tv))
+      (set-file-mtime-millis! fp ms)))
+(define (nio-lmtime-millis fp opts)              ; read, honoring NOFOLLOW on a link
+  (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp))
+      (or (nio-lstat-mtime-millis fp) (file-mtime-millis fp))
+      (file-mtime-millis fp)))
+(let ((files-nofollow-time
+       (list
+        (cons "getLastModifiedTime" (lambda (p . opts) (make-file-time (nio-lmtime-millis (nfp p) opts))))
+        (cons "setLastModifiedTime" (lambda (p t) (set-file-mtime-millis! (nfp p) (file-time-ms t)) (->path p)))
+        (cons "getAttribute" (lambda (path attr . opts)
+                               (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
+                                 (if (member nm '("lastModifiedTime" "creationTime" "lastAccessTime"))
+                                     (make-file-time (nio-lmtime-millis fp opts))
+                                     (nio-attr-value fp nm)))))
+        (cons "setAttribute" (lambda (path attr value . opts)
+                               (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
+                                 (when (member nm '("lastModifiedTime" "creationTime" "lastAccessTime"))
+                                   (nio-set-lmtime! fp (if (file-time? value) (file-time-ms value) (jnum->exact value)) opts))
+                                 (->path path)))))))
+  (register-class-statics! "Files" files-nofollow-time)
+  (register-class-statics! "java.nio.file.Files" files-nofollow-time))
+
+;; java.nio.channels.FileChannel/open — babashka.fs/touch uses it only to create
+;; a file (CREATE + WRITE) inside with-open, so support open+close of a channel.
+(let ((fc-statics
+       (list (cons "open" (lambda (path . opts)
+                            (let ((fp (nfp path)))
+                              (when (and (nio-opts-have? opts oopt-sym 'create) (not (file-exists? fp)))
+                                (close-port (open-file-output-port fp (file-options no-fail))))
+                              (make-jhost "file-channel" fp)))))))
+  (register-class-statics! "FileChannel" fc-statics)
+  (register-class-statics! "java.nio.channels.FileChannel" fc-statics))
+(register-host-methods! "file-channel"
+  (list (cons "close" (lambda (self) jolt-nil))
+        (cons "size" (lambda (self) (nio-size (jhost-state self))))))
+(let ((prev jolt-close))
+  (set! jolt-close (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "file-channel")) jolt-nil (prev x))))
+  (def-var! "clojure.core" "__close" jolt-close))
+
+;; A missing target makes the time setters throw NoSuchFileException, as
+;; java.nio.file does — babashka.fs/touch relies on catching it to create the file.
+(define (nio-require-exists fp)
+  (unless (or (file-exists? fp) (nio-is-symlink? fp))
+    (jolt-throw (jolt-host-throwable "java.nio.file.NoSuchFileException" fp))))
+(let ((files-throwing-setters
+       (list
+        (cons "setLastModifiedTime" (lambda (p t) (let ((fp (nfp p))) (nio-require-exists fp)
+                                                    (set-file-mtime-millis! fp (file-time-ms t)) (->path p))))
+        (cons "setAttribute" (lambda (path attr value . opts)
+                               (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
+                                 (when (member nm '("lastModifiedTime" "creationTime" "lastAccessTime"))
+                                   (nio-require-exists fp)
+                                   (nio-set-lmtime! fp (if (file-time? value) (file-time-ms value) (jnum->exact value)) opts))
+                                 (->path path)))))))
+  (register-class-statics! "Files" files-throwing-setters)
+  (register-class-statics! "java.nio.file.Files" files-throwing-setters))
