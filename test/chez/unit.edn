@@ -193,16 +193,16 @@
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a\" \"b\")))" :expected "/a/b"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getName (io/file \"/a/b/c.txt\")))" :expected "c.txt"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (io/file \"/a\" \"b\")))" :expected "/a/b"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isDirectory (io/file \"docs\")))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isDirectory (io/file \"stdlib\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"README.md\")))" :expected "true"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"docs\")))" :expected "false"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.isFile (io/file \"stdlib\")))" :expected "false"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"/no/such/path/xyz\")))" :expected "false"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.exists (io/file \"README.md\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File (io/file \"/a/b\")))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (instance? java.io.File \"/a/b\"))" :expected "false"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (type (io/file \"/a\"))))" :expected "class java.io.File"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"docs\"))))" :expected "true"}
-  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"docs\"))))))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (every? (fn [f] (instance? java.io.File f)) (file-seq (io/file \"stdlib\"))))" :expected "true"}
+  {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (pos? (count (filter (fn [f] (.isFile f)) (file-seq (io/file \"stdlib\"))))))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.string :as s])) (boolean (some (fn [p] (s/ends-with? p \"README.md\")) (file-seq \".\"))))" :expected "true"}
   {:suite "io" :expr "(string? (slurp \"README.md\"))" :expected "true"}
   {:suite "io" :expr "(do (spit \"/tmp/jolt-io-test.txt\" \"hello\") (slurp \"/tmp/jolt-io-test.txt\"))" :expected "hello"}
