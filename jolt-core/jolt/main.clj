@@ -81,14 +81,25 @@
   (let [s (if (str/starts-with? s "-") (subs s 2) s)]
     (->> (str/split s #":") (remove str/blank?) (map keyword) vec)))
 
-;; run [-m NS args… | FILE]
+;; A FILE argument of "-" means stdin, like bb/ys and most CLIs; map it to
+;; /dev/stdin, which load-file reads.
+(defn- file-arg [x] (if (= "-" x) "/dev/stdin" x))
+
+;; Does a bare argv token name a file to run (rather than a deps.edn task)? A "-"
+;; (stdin), an existing file, or a *.clj/*.cljc/*.cljs path.
+(defn- run-file-arg? [x]
+  (or (= "-" x)
+      (some #(str/ends-with? x %) [".clj" ".cljc" ".cljs"])
+      (jolt.host/file-exists? x)))
+
+;; run [-m NS args… | FILE]  — FILE may be "-" (stdin)
 (defn- cmd-run [more]
   (apply-project! (deps/resolve-project (project-dir)))
   (cond
     (= "-m" (first more)) (run-ns (second more) (drop 2 more))
     (seq more)            (do (push-thread-bindings
                                 {#'clojure.core/*command-line-args* (seq (drop-end-of-options (rest more)))})
-                              (load-file (first more)) nil)
+                              (load-file (file-arg (first more))) nil)
     :else (throw (ex-info "run needs -m NS or a FILE" {}))))
 
 ;; -M:alias…  — resolve with the aliases, run their :main-opts
@@ -384,4 +395,7 @@
       (str/starts-with? cmd "-A")        (cmd-A cmd more)
       (= cmd "-m")                       (cmd-run (cons "-m" more))
       (= cmd "build")                    (cmd-build more)
+      ;; a bare FILE (or "-" for stdin) runs it, `run` optional — like bb; a
+      ;; non-file token falls through to a deps.edn :tasks lookup.
+      (run-file-arg? cmd)                (cmd-run (cons cmd more))
       :else                              (run-task cmd more))))
