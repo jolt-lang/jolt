@@ -452,3 +452,144 @@
         (let ((n (symbol-t-name type-sym)))
           (if (or (string=? n "FileVisitResult") (string=? n "java.nio.file.FileVisitResult")) #t 'pass))
         'pass)))
+
+;; ---- FileTime + attributes + POSIX permissions + symlinks -------------------
+;; FileTime carries epoch milliseconds; this host layer resolves timestamps at
+;; millisecond granularity (utimes(2)).
+(define (make-file-time ms) (make-jhost "file-time" ms))
+(define (file-time? x) (and (jhost? x) (string=? (jhost-tag x) "file-time")))
+(define (file-time-ms x) (if (file-time? x) (jhost-state x) 0))
+(register-host-methods! "file-time"
+  (list (cons "toMillis"   (lambda (self) (jhost-state self)))
+        (cons "toInstant"  (lambda (self) (mk-instant (jhost-state self))))
+        (cons "compareTo"  (lambda (self o) (let ((a (jhost-state self)) (b (file-time-ms o)))
+                                              (cond ((< a b) -1) ((> a b) 1) (else 0)))))
+        (cons "equals"     (lambda (self o) (and (file-time? o) (= (jhost-state self) (file-time-ms o)))))
+        (cons "hashCode"   (lambda (self) (jhost-state self)))
+        (cons "toString"   (lambda (self) (iso-instant-str-nanos (* (jhost-state self) 1000000))))))
+(let ((ft-statics (list (cons "fromMillis" (lambda (ms) (make-file-time (jnum->exact ms))))
+                        (cons "from" (lambda (inst . _) (make-file-time (inst-ms inst)))))))
+  (register-class-statics! "FileTime" ft-statics)
+  (register-class-statics! "java.nio.file.attribute.FileTime" ft-statics))
+
+;; A basic-attrs value also answers the time getters as FileTimes.
+(register-host-methods! "basic-attrs"
+  (list (cons "lastModifiedTime" (lambda (self) (make-file-time (file-mtime-millis (jhost-state self)))))
+        (cons "lastAccessTime"   (lambda (self) (make-file-time (file-mtime-millis (jhost-state self)))))
+        (cons "creationTime"     (lambda (self) (make-file-time (file-mtime-millis (jhost-state self)))))
+        (cons "fileKey"          (lambda (self) jolt-nil))))
+
+;; Files/getAttribute / setAttribute / readAttributes over the "basic:" view.
+(define (nio-attr-name a)                      ; strip a "view:" prefix
+  (let ((i (let loop ((j 0)) (cond ((>= j (string-length a)) #f)
+                                   ((char=? (string-ref a j) #\:) j) (else (loop (+ j 1)))))))
+    (if i (substring a (+ i 1) (string-length a)) a)))
+(define (nio-get-attribute path attr . _)
+  (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
+    (cond
+      ((string=? nm "lastModifiedTime") (make-file-time (file-mtime-millis fp)))
+      ((string=? nm "lastAccessTime")   (make-file-time (file-mtime-millis fp)))
+      ((string=? nm "creationTime")     (make-file-time (file-mtime-millis fp)))
+      ((string=? nm "size")             (nio-size fp))
+      ((string=? nm "isDirectory")      (if (file-directory? fp) #t #f))
+      ((string=? nm "isRegularFile")    (if (and (file-exists? fp) (not (file-directory? fp))) #t #f))
+      ((string=? nm "isSymbolicLink")   (if (nio-is-symlink? fp) #t #f))
+      ((string=? nm "isOther")          #f)
+      (else jolt-nil))))
+(define (nio-set-attribute path attr value . _)
+  (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
+    (cond
+      ((or (string=? nm "lastModifiedTime") (string=? nm "creationTime") (string=? nm "lastAccessTime"))
+       (set-file-mtime-millis! fp (if (file-time? value) (file-time-ms value) (jnum->exact value))))
+      (else jolt-nil))
+    (->path path)))
+(define (nio-read-attributes path what . _)
+  (let ((w (npath-string-of what)))
+    (if (let loop ((j 0)) (cond ((>= j (string-length w)) #f)   ; a "view:" string form
+                                ((char=? (string-ref w j) #\:) #t) (else (loop (+ j 1)))))
+        (let ((fp (nfp path)))                                  ; return a small attribute map
+          (jolt-hash-map "lastModifiedTime" (make-file-time (file-mtime-millis fp))
+                         "size" (nio-size fp)
+                         "isDirectory" (if (file-directory? fp) #t #f)
+                         "isRegularFile" (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
+        (make-basic-attrs (nfp path)))))                        ; the class form -> BasicFileAttributes
+
+;; PosixFilePermissions <-> "rwxr-xr-x" strings, and chmod-based set.
+(define posix-order '("OWNER_READ" "OWNER_WRITE" "OWNER_EXECUTE"
+                      "GROUP_READ" "GROUP_WRITE" "GROUP_EXECUTE"
+                      "OTHERS_READ" "OTHERS_WRITE" "OTHERS_EXECUTE"))
+(define posix-bits '(#o400 #o200 #o100 #o40 #o20 #o10 #o4 #o2 #o1))
+(define (make-pfp name) (make-jhost "posix-perm" name))
+(define (pfp? x) (and (jhost? x) (string=? (jhost-tag x) "posix-perm")))
+(define (posix-set->mode s)                    ; a jolt set of PosixFilePermission -> mode int
+  (fold-left (lambda (acc p)
+               (let ((nm (if (pfp? p) (jhost-state p) (npath-string-of p))))
+                 (let loop ((os posix-order) (bs posix-bits))
+                   (cond ((null? os) acc)
+                         ((string=? (car os) nm) (+ acc (car bs)))
+                         (else (loop (cdr os) (cdr bs)))))))
+             0 (seq->list (jolt-seq s))))
+(define (posix-str->mode str)                  ; "rwxr-xr-x" -> mode int
+  (let loop ((i 0) (bs posix-bits) (acc 0))
+    (if (or (>= i (string-length str)) (null? bs)) acc
+        (loop (+ i 1) (cdr bs)
+              (if (memv (string-ref str i) '(#\r #\w #\x #\s #\t)) (+ acc (car bs)) acc)))))
+(define (posix-set->str s)
+  (let ((mode (posix-set->mode s)))
+    (list->string
+     (let loop ((bs posix-bits) (ch '(#\r #\w #\x #\r #\w #\x #\r #\w #\x)) (acc '()))
+       (if (null? bs) (reverse acc)
+           (loop (cdr bs) (cdr ch) (cons (if (> (bitwise-and mode (car bs)) 0) (car ch) #\-) acc)))))))
+(define (posix-str->set str)                   ; "rwxr-xr-x" -> jolt set of PosixFilePermission
+  (let loop ((i 0) (os posix-order) (acc '()))
+    (if (or (>= i (string-length str)) (null? os)) (apply jolt-hash-set (reverse acc))
+        (loop (+ i 1) (cdr os)
+              (if (memv (string-ref str i) '(#\r #\w #\x #\s #\t)) (cons (make-pfp (car os)) acc) acc)))))
+(let ((pfp-statics (list (cons "toString" (lambda (s) (posix-set->str s)))
+                         (cons "fromString" (lambda (s) (posix-str->set (npath-string-of s)))))))
+  (register-class-statics! "PosixFilePermissions" pfp-statics)
+  (register-class-statics! "java.nio.file.attribute.PosixFilePermissions" pfp-statics))
+(register-str-render! pfp? (lambda (p) (jhost-state p)))
+(register-eq-arm! (lambda (a b) (and (pfp? a) (pfp? b))) (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
+(register-hash-arm! pfp? (lambda (p) (string-hash (jhost-state p))))
+
+;; symlinks + hard links + chmod, via libc (jolt-foreign-proc-safe resolves the
+;; already-loaded process symbol; a literal foreign-procedure would be a fasl
+;; relocation that aborts the boot where the symbol is absent).
+(define c-symlink  (jolt-foreign-proc-safe "symlink"  '(string string) 'int))
+(define c-link     (jolt-foreign-proc-safe "link"     '(string string) 'int))
+(define c-readlink (jolt-foreign-proc-safe "readlink" '(string u8* unsigned-long) 'long))
+(define c-chmod    (jolt-foreign-proc-safe "chmod"    '(string int) 'int))
+(define (nio-is-symlink? fp)
+  (and c-readlink (> (c-readlink fp (make-bytevector 1 0) 1) 0)))   ; readlink succeeds only on a link
+(define (nio-readlink fp)
+  (and c-readlink
+       (let* ((buf (make-bytevector 4096 0)) (n (c-readlink fp buf 4096)))
+         (and (> n 0)
+              (let ((bv (make-bytevector n)))
+                (do ((i 0 (+ i 1))) ((= i n) (utf8->string bv))
+                  (bytevector-u8-set! bv i (bytevector-u8-ref buf i))))))))
+(define fvo-nofollow (make-jhost "link-option" 'nofollow-links))
+(let ((files-attr
+       (list (cons "getAttribute" nio-get-attribute)
+             (cons "setAttribute" nio-set-attribute)
+             (cons "readAttributes" nio-read-attributes)
+             (cons "getLastModifiedTime" (lambda (p . _) (make-file-time (file-mtime-millis (nfp p)))))
+             (cons "setLastModifiedTime" (lambda (p t) (set-file-mtime-millis! (nfp p) (file-time-ms t)) (->path p)))
+             (cons "isSymbolicLink" (lambda (p . _) (if (nio-is-symlink? (nfp p)) #t #f)))
+             (cons "createSymbolicLink" (lambda (link target . _)
+                                          (if c-symlink (c-symlink (npath-string-of target) (nfp link))
+                                              (jolt-throw (jolt-ex-info "symlink unavailable" (empty-pmap))))
+                                          (->path link)))
+             (cons "createLink" (lambda (link existing . _)
+                                  (when c-link (c-link (nfp existing) (nfp link))) (->path link)))
+             (cons "readSymbolicLink" (lambda (p) (let ((t (nio-readlink (nfp p))))
+                                                    (if t (make-nio-path t)
+                                                        (jolt-throw (jolt-ex-info (npath-string-of p) (empty-pmap)))))))
+             (cons "setPosixFilePermissions" (lambda (p perms . _)
+                                               (when c-chmod (c-chmod (nfp p) (posix-set->mode perms))) (->path p))))))
+  (register-class-statics! "Files" files-attr)
+  (register-class-statics! "java.nio.file.Files" files-attr))
+(let ((lo-statics (list (cons "NOFOLLOW_LINKS" fvo-nofollow))))
+  (register-class-statics! "LinkOption" lo-statics)
+  (register-class-statics! "java.nio.file.LinkOption" lo-statics))
