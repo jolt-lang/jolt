@@ -43,6 +43,15 @@
     (cons "hasArray" (lambda (self) #t))
     (cons "array" (lambda (self) (bb-backing self)))
     (cons "duplicate" (lambda (self) (make-byte-buffer (bb-backing self) (bb-pos self) (bb-limit self))))
+    (cons "asReadOnlyBuffer" (lambda (self) (make-byte-buffer (bb-backing self) (bb-pos self) (bb-limit self))))
+    ;; slice(): a 0-based buffer over the remaining bytes [position, limit). The
+    ;; JVM shares the backing; here it is a copy, so writes don't propagate back
+    ;; (read paths — hexdumps, decoders — are unaffected).
+    (cons "slice" (lambda (self)
+                    (let* ((src (jolt-array-vec (bb-backing self))) (p (bb-pos self))
+                           (n (- (bb-limit self) p)) (nv (make-vector n 0)))
+                      (do ((i 0 (fx+ i 1))) ((fx=? i n)) (vector-set! nv i (vector-ref src (+ p i))))
+                      (make-byte-buffer (make-jolt-array nv 'byte) 0 n))))
     (cons "rewind" (lambda (self) (bb-pos! self 0) self))
     (cons "flip" (lambda (self) (bb-limit! self (bb-pos self)) (bb-pos! self 0) self))
     (cons "clear" (lambda (self) (bb-pos! self 0) (bb-limit! self (bb-capacity self)) self))
@@ -66,16 +75,25 @@
                          (bb-pos! self (+ dp n))))
                       (else (vector-set! dv dp (jnum->exact src)) (bb-pos! self (+ dp 1))))
                     self)))
-    (cons "get" (lambda (self dst . rest)
-                  (let* ((src (jolt-array-vec (bb-backing self)))
-                         (dv (jolt-array-vec dst))
-                         (off (if (pair? rest) (jnum->exact (car rest)) 0))
-                         (len (if (and (pair? rest) (pair? (cdr rest))) (jnum->exact (cadr rest)) (vector-length dv)))
-                         (p (bb-pos self)))
-                    (do ((i 0 (+ i 1))) ((= i len))
-                      (vector-set! dv (+ off i) (vector-ref src (+ p i))))
-                    (bb-pos! self (+ p len))
-                    self)))))
+    ;; get(): relative single byte at position, advancing it.
+    ;; get(int i): absolute single byte at index i (position unchanged).
+    ;; get(byte[] dst [off len]): bulk copy from position, advancing it.
+    (cons "get" (lambda (self . args)
+                  (let ((src (jolt-array-vec (bb-backing self))))
+                    (cond
+                      ((null? args)
+                       (let ((p (bb-pos self))) (bb-pos! self (+ p 1)) (->num (vector-ref src p))))
+                      ((number? (car args))
+                       (->num (vector-ref src (jnum->exact (car args)))))
+                      (else
+                       (let* ((dst (car args)) (rest (cdr args)) (dv (jolt-array-vec dst))
+                              (off (if (pair? rest) (jnum->exact (car rest)) 0))
+                              (len (if (and (pair? rest) (pair? (cdr rest))) (jnum->exact (cadr rest)) (vector-length dv)))
+                              (p (bb-pos self)))
+                         (do ((i 0 (+ i 1))) ((= i len))
+                           (vector-set! dv (+ off i) (vector-ref src (+ p i))))
+                         (bb-pos! self (+ p len))
+                         self))))))))
 
 (register-class-arm! bb? (lambda (x) "java.nio.ByteBuffer"))
 (register-instance-check-arm!

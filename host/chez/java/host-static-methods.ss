@@ -262,6 +262,9 @@
         (cons "MAX_VALUE" (->num 127)) (cons "MIN_VALUE" (->num -128))
         (cons "valueOf" (lambda (x . r) (->num (if (number? x) x (parse-int-or-throw x 10 "valueOf")))))
         (cons "parseByte" (lambda (x . r) (parse-int-or-throw x (if (null? r) 10 (jnum->exact (car r))) "parseByte")))
+        ;; interpret the low 8 bits as unsigned (0..255): a signed byte -1 -> 255.
+        (cons "toUnsignedLong" (lambda (x) (->num (bitwise-and (jnum->exact x) #xFF))))
+        (cons "toUnsignedInt" (lambda (x) (->num (bitwise-and (jnum->exact x) #xFF))))
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
 (register-class-statics! "Short"
   (list (cons "TYPE" "short")
