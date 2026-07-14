@@ -956,6 +956,40 @@
 (def-var! "clojure.core" "__register-instance-check!"
   (lambda (f) (set! user-instance-checks (append user-instance-checks (list f))) jolt-nil))
 
+;; ---- value-semantics seams -------------------------------------------------
+;; A library that models its own host values (java.time via jolt-lang/time) needs
+;; those values to compare, hash, print, and order like the real thing. These
+;; expose the internal arm registries to Clojure: pred/handler are Clojure fns,
+;; and results are coerced to the Scheme forms each arm expects (a boolean for
+;; eq, an integer for hash/compare, a string for str/pr). pred should be cheap
+;; and return false for values it doesn't own — it runs on the slow path of every
+;; =/hash/compare/print.
+(def-var! "clojure.core" "__register-eq!"
+  (lambda (pred handler)
+    (register-eq-arm! (lambda (a b) (jolt-truthy? (jolt-invoke pred a b)))
+                      (lambda (a b) (jolt-truthy? (jolt-invoke handler a b))))
+    jolt-nil))
+(def-var! "clojure.core" "__register-hash!"
+  (lambda (pred handler)
+    (register-hash-arm! (lambda (x) (jolt-truthy? (jolt-invoke pred x)))
+                        (lambda (x) (jolt-invoke handler x)))
+    jolt-nil))
+(def-var! "clojure.core" "__register-str!"
+  (lambda (pred render)
+    (register-str-render! (lambda (x) (jolt-truthy? (jolt-invoke pred x)))
+                          (lambda (x) (jolt-invoke render x)))
+    jolt-nil))
+(def-var! "clojure.core" "__register-pr!"
+  (lambda (pred render)
+    (register-pr-arm! (lambda (x) (jolt-truthy? (jolt-invoke pred x)))
+                      (lambda (x) (jolt-invoke render x)))
+    jolt-nil))
+(def-var! "clojure.core" "__register-compare!"
+  (lambda (pred handler)
+    (register-compare-arm! (lambda (a b) (jolt-truthy? (jolt-invoke pred a b)))
+                           (lambda (a b) (jolt-invoke handler a b)))
+    jolt-nil))
+
 ;; (instance? clojure.lang.IFoo x) for the core clojure.lang interfaces libraries
 ;; branch on — jolt's value model satisfies them, so report it. Matched by the
 ;; interface's last dotted segment, so "clojure.lang.IObj" and "IObj" both hit.
