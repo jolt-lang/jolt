@@ -990,6 +990,31 @@
                            (lambda (a b) (jolt-invoke handler a b)))
     jolt-nil))
 
+;; __register-class! makes a library's own host values answer (class x)/(type x)
+;; AND dispatch protocols extended to their class. class-fn returns the class name;
+;; tags-fn returns the list of class/interface names the value satisfies (its own
+;; plus supertypes), which value-host-tags (records.ss) feeds to protocol dispatch.
+;; Without this, (class x) is :object and (extend-protocol P TheClass …) never fires.
+(define jt-user-value-tags-arms '())
+(let ((prev value-host-tags))
+  (set! value-host-tags
+    (lambda (obj)
+      (let loop ((as jt-user-value-tags-arms))
+        (cond ((null? as) (prev obj))
+              (((caar as) obj) ((cdar as) obj))
+              (else (loop (cdr as))))))))
+(define (jt-jolt-strs->list v)
+  (let loop ((s (jolt-seq v)) (acc '()))
+    (if (jolt-nil? s) (reverse acc) (loop (jolt-seq (jolt-rest s)) (cons (jolt-first s) acc)))))
+(def-var! "clojure.core" "__register-class!"
+  (lambda (pred class-fn tags-fn)
+    (let ((p (lambda (x) (jolt-truthy? (jolt-invoke pred x)))))
+      (register-class-arm! p (lambda (x) (jolt-invoke class-fn x)))
+      (set! jt-user-value-tags-arms
+            (append jt-user-value-tags-arms
+                    (list (cons p (lambda (x) (jt-jolt-strs->list (jolt-invoke tags-fn x))))))))
+    jolt-nil))
+
 ;; (instance? clojure.lang.IFoo x) for the core clojure.lang interfaces libraries
 ;; branch on — jolt's value model satisfies them, so report it. Matched by the
 ;; interface's last dotted segment, so "clojure.lang.IObj" and "IObj" both hit.

@@ -295,6 +295,11 @@
 
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
+;; a java.util.Date is Comparable (compareTo / clojure.core compare), by epoch ms.
+(register-compare-arm! (lambda (a b) (and (jinst? a) (jinst? b)))
+                       (lambda (a b) (let ((x (jinst-ms a)) (y (jinst-ms b)))
+                                       (cond ((< x y) -1) ((> x y) 1) (else 0)))))
+
 ;; #inst is a java.util.Date — (class x) / (type x) report that, not the internal
 ;; :jolt/inst tag (which print-method still dispatches on via __type-tag).
 (register-class-arm! jinst? (lambda (x) "java.util.Date"))
@@ -367,7 +372,15 @@
 ;; inst-nanos the nano accessor (java-time.ss owns the nano-aware arithmetic).
 (define (mk-instant-nanos n) (make-jhost "instant" (vector (exact (truncate n)))))
 (define (inst-nanos x) (vector-ref (jhost-state x) 0))
-(define (mk-instant ms) (mk-instant-nanos (* (ms->exact ms) 1000000)))
+;; The jolt-lang/time library owns java.time.Instant; when it is loaded it sets
+;; this hook so Date/Calendar/#-derived .toInstant yields ITS instant, not a second
+;; representation. Unset by default (java.time comes from java-time.ss in core).
+(define jt-instant-hook #f)
+(define (mk-instant ms)
+  (let ((nanos (* (ms->exact ms) 1000000)))
+    (if jt-instant-hook (jt-instant-hook nanos) (mk-instant-nanos nanos))))
+(def-var! "jolt.host" "set-instant-ctor!"
+  (lambda (f) (set! jt-instant-hook (lambda (nanos) (jolt-invoke f nanos))) jolt-nil))
 (define (mk-zoned ms) (make-jhost "zoned-dt" (vector ms)))
 ;; LocalDateTime from epoch-ms (UTC): the java-time.ss "local-date-time" jhost,
 ;; state [epoch-day nano-of-day].
