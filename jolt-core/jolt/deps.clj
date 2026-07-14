@@ -56,6 +56,67 @@
           (throw (ex-info (str "git submodule update failed for " url) {:url url})))
         dir))))
 
+;; --- maven cache ------------------------------------------------------------
+;; jolt has no JVM, but a Clojure library's Maven JAR carries its .clj/.cljc/.cljs
+;; SOURCE (Clojure ships source, not just bytecode). So a :mvn/version coordinate
+;; resolves by fetching the JAR (Clojars, then Central), extracting it, and using
+;; the extraction as a source root — its pom.xml supplies the transitive deps.
+;; A JAR of pure Java classes has no source to run and simply contributes nothing.
+(defn- mvnlibs-dir []
+  (or (getenv "JOLT_MVNLIBS")
+      (str (or (getenv "HOME") ".") "/.jolt/mvnlibs")))
+
+(def ^:private mvn-repos
+  ["https://repo.clojars.org" "https://repo1.maven.org/maven2"])
+
+(defn- mvn-group [coord] (or (namespace coord) (name coord)))
+
+(defn- ensure-maven
+  "Fetch coord@version's JAR and extract its source into the cache (once). Returns
+  the extraction dir, or nil if no repo has it (a non-fatal skip)."
+  [coord version]
+  (let [group (mvn-group coord) artifact (name coord)
+        rel (str (str/replace group "." "/") "/" artifact "/" version "/" artifact "-" version ".jar")
+        dir (str (mvnlibs-dir) "/" (sanitize (str coord)) "/" (sanitize version))]
+    (if (file-exists? (str dir "/.jolt-ok"))
+      dir
+      (let [jar (str dir "/dep.jar")]
+        (sh (str "mkdir -p " (pr-str dir)))
+        (loop [repos mvn-repos]
+          (if (empty? repos)
+            (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
+            (if (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" rel)) " -o " (pr-str jar))))
+              (do (warn "fetching " coord " " version)
+                  (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
+                  (sh (str "rm -f " (pr-str jar)))
+                  (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
+                  dir)
+              (recur (rest repos)))))))))
+
+(defn- pom-deps
+  "Transitive deps of an extracted Maven dep, from its pom.xml — as a deps map so
+  the BFS walks them like any other. Skips test/provided/system scope, org.clojure/
+  clojure (intrinsic), and non-literal versions (ranges / ${properties})."
+  [root coord]
+  (let [pom (str root "/META-INF/maven/" (mvn-group coord) "/" (name coord) "/pom.xml")]
+    (when (file-exists? pom)
+      (let [xml (slurp pom)
+            grab (fn [tag block] (second (re-find (re-pattern (str "<" tag ">(.*?)</" tag ">")) block)))]
+        (into {}
+          (for [[_ block] (re-seq #"(?s)<dependency>(.*?)</dependency>" xml)
+                :let [g (grab "groupId" block) a (grab "artifactId" block)
+                      v (grab "version" block) scope (grab "scope" block)
+                      optional (grab "optional" block)]
+                ;; Maven does not inherit optional deps or test/provided/system
+                ;; scope transitively — so a cljc lib's optional ClojureScript
+                ;; toolchain (clojurescript, closure-compiler) stays out.
+                :when (and g a v
+                           (not (#{"test" "provided" "system"} scope))
+                           (not= "true" optional)
+                           (not (and (= g "org.clojure") (= a "clojure")))
+                           (re-matches #"[0-9A-Za-z.\-]+" v))]
+            [(symbol g a) {:mvn/version v}]))))))
+
 ;; --- coordinate -> root dir -------------------------------------------------
 (defn- coord-root
   "The on-disk root directory for one dependency coordinate, or nil to skip."
@@ -73,17 +134,33 @@
     ;; intrinsically, so skip it silently rather than warning about the (unusable)
     ;; :mvn/version coordinate.
     (= coord 'org.clojure/clojure) nil
+    ;; jolt has no ClojureScript compiler, so clojurescript (and the closure /
+    ;; rhino toolchain it drags in) is unusable dead weight — a cljc library
+    ;; declares it for its :cljs branch, which jolt never takes. Skip its subtree.
+    (= coord 'org.clojure/clojurescript) nil
+    (:mvn/version spec) (ensure-maven coord (:mvn/version spec))
     :else
     (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)) nil)))
 
-(defn- dep-source-roots
-  "Source roots a resolved dep contributes: its deps.edn :paths (default [\"src\"])
-  resolved under its root dir."
+(defn- has-clj-source?
+  "Does the tree hold any jolt-loadable source (.clj/.cljc)? A Maven JAR that is
+  pure-Java (closure-compiler) or ClojureScript-only (cljs.java-time) has none —
+  it contributes nothing to run and its transitive deps are the cljs/JVM toolchain,
+  so the walk skips it rather than dragging in that whole subtree."
   [root]
-  (let [edn (try (read-edn (str root "/deps.edn"))
-                 (catch :default e (warn (ex-message e)) nil))
-        paths (or (:paths edn) ["src"])]
-    (map #(abspath root %) paths)))
+  (zero? (sh (str "find " (pr-str root)
+                  " \\( -name '*.clj' -o -name '*.cljc' \\) -print -quit 2>/dev/null | grep -q ."))))
+
+(defn- dep-source-roots
+  "Source roots a resolved dep contributes. A Maven extraction's classpath root IS
+  its source root; a git/local dep uses its deps.edn :paths (default [\"src\"])."
+  [root maven?]
+  (if maven?
+    [root]
+    (let [edn (try (read-edn (str root "/deps.edn"))
+                   (catch :default e (warn (ex-message e)) nil))
+          paths (or (:paths edn) ["src"])]
+      (map #(abspath root %) paths))))
 
 ;; --- reconciliation ---------------------------------------------------------
 ;; Dependencies are resolved as a TREE (resolve-deps' BFS, which visits each
@@ -133,9 +210,15 @@
               (recur queue i (conj seen coord) roots natives)
               ;; a DEP repo's malformed deps.edn warns and contributes nothing;
               ;; only the project's own deps.edn is a hard error (resolve-project).
-              (let [edn (try (read-edn (str root "/deps.edn"))
-                             (catch :default e (warn (ex-message e)) nil))
-                    deps (:deps edn)
+              ;; A Maven dep has no deps.edn — its children come from its pom.xml.
+              (let [maven? (boolean (:mvn/version spec))
+                    ;; a Maven dep with no jolt-loadable source contributes nothing
+                    ;; and its transitive deps are cljs/JVM tooling — don't walk them.
+                    usable? (or (not maven?) (has-clj-source? root))
+                    edn (when (and usable? (not maven?))
+                          (try (read-edn (str root "/deps.edn"))
+                               (catch :default e (warn (ex-message e)) nil)))
+                    deps (when usable? (if maven? (pom-deps root coord) (:deps edn)))
                     _ (when (and edn deps (not (map? deps)))
                         (throw (ex-info (str "malformed :deps in " root "/deps.edn: expected a map")
                                         {:path root :given (class deps)})))
@@ -143,7 +226,7 @@
                 (recur (into queue child)
                        i
                        (conj seen coord)
-                       (into roots (dep-source-roots root))
+                       (into roots (if usable? (dep-source-roots root maven?) []))
                        (into natives (:jolt/native edn)))))))))))
 
 ;; --- public -----------------------------------------------------------------
