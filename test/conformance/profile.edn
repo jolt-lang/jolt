@@ -299,43 +299,33 @@
    :label "method with args",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "Instant instance",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "Instant/now is current",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "fix-date chain",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "localized style",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "month name + ampm",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "ofPattern formats #inst",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "pattern shape",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "quoted literal",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "toEpochMilli round trip",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}
-  {:suite "interop / java.time shims",
    :label "withLocale chain",
    :bucket :jvm-error,
    :features [:host/jvm-interop]}

@@ -667,15 +667,9 @@
 (load "host/chez/java/tz-primitives.ss")
 (load "host/chez/java/inst-time.ss")
 
-;; java.time value types: LocalDate / LocalTime / LocalDateTime / Instant as
-;; tz-free jhost values (epoch-day / nano-of-day / epoch-ms). Loads after
-;; inst-time.ss — it reuses its civil<->days helpers, the jhost registries, and
-;; re-registers a few LocalDateTime/Instant statics to use the richer reps.
-;; JOLT_NO_JAVA_TIME lets the jolt-lang/time library be the sole java.time
-;; provider (it registers the same classes from Clojure); the #inst / Date layer
-;; in inst-time.ss above stays regardless.
-(unless (getenv "JOLT_NO_JAVA_TIME")
-  (load "host/chez/java/java-time.ss"))
+;; The full java.time.* surface is the jolt-lang/time library — portable Clojure
+;; over the __register-class-* seams and the tz-primitives above. Core keeps only
+;; the #inst / java.util.Date layer (inst-time.ss).
 
 ;; Chez-side data reader: read-string / __parse-next /
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst
