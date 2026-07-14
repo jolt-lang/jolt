@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-14
+
+### Changed
+
+- **Breaking:** `java.time.*` is no longer built into core — it is the
+  [jolt-lang/time](https://github.com/jolt-lang/time) library. The full surface
+  (`LocalDate`/`Time`/`DateTime`, `Instant`, `ZonedDateTime`, `OffsetDateTime`,
+  `Duration`, `Period`, `Year`/`YearMonth`, zones with DST, `DateTimeFormatter`)
+  is now portable Clojure over the value-semantics seams below, with
+  [juxt/tick](https://github.com/juxt/tick) on top; tick's full suite passes. A
+  program using `java.time.*` must depend on the library. Core keeps the `#inst`
+  / `java.util.Date` layer and the libc zone/locale primitives (`tz-primitives`).
+
+### Added
+
+- `jolt.deps` resolves Maven coordinates. A Clojure library's Maven JAR carries
+  its `.clj`/`.cljc` source, so a `:mvn/version` dep — including one pulled in
+  transitively (tick declares its deps as Maven) — is fetched from Clojars/Central,
+  extracted, and its `pom.xml` read for further transitive deps, with no JVM.
+  Skips test/provided/optional deps, pure-Java or ClojureScript-only artifacts,
+  and the clojurescript toolchain.
+- Core value-semantics seams a library uses to give its own host values full
+  Clojure semantics: `__register-eq!` / `__register-hash!` / `__register-str!` /
+  `__register-pr!` / `__register-compare!`, and `__register-class!` so those
+  values answer `class`/`type` and dispatch protocols extended to their class.
+- `jolt.host/set-instant-ctor!` — the `#inst`/`Date` layer's `.toInstant` yields
+  a library-owned instant, so `Date` and a library `Instant` are one representation.
+- `java.util.Date` is now `Comparable` (`compareTo` / `clojure.core/compare`).
+
 ## [0.2.8] - 2026-07-13
 
 ### Added

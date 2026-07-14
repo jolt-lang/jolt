@@ -661,13 +661,15 @@
 ;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads
 ;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
 ;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
+;; libc time primitives (zone offset, locale names) exposed as jolt.host vars.
+;; The java.time.* implementation is the jolt-lang/time library (portable Clojure);
+;; these are the two things it can't express without libc.
+(load "host/chez/java/tz-primitives.ss")
 (load "host/chez/java/inst-time.ss")
 
-;; java.time value types: LocalDate / LocalTime / LocalDateTime / Instant as
-;; tz-free jhost values (epoch-day / nano-of-day / epoch-ms). Loads after
-;; inst-time.ss — it reuses its civil<->days helpers, the jhost registries, and
-;; re-registers a few LocalDateTime/Instant statics to use the richer reps.
-(load "host/chez/java/java-time.ss")
+;; The full java.time.* surface is the jolt-lang/time library — portable Clojure
+;; over the __register-class-* seams and the tz-primitives above. Core keeps only
+;; the #inst / java.util.Date layer (inst-time.ss).
 
 ;; Chez-side data reader: read-string / __parse-next /
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst

@@ -956,6 +956,65 @@
 (def-var! "clojure.core" "__register-instance-check!"
   (lambda (f) (set! user-instance-checks (append user-instance-checks (list f))) jolt-nil))
 
+;; ---- value-semantics seams -------------------------------------------------
+;; A library that models its own host values (java.time via jolt-lang/time) needs
+;; those values to compare, hash, print, and order like the real thing. These
+;; expose the internal arm registries to Clojure: pred/handler are Clojure fns,
+;; and results are coerced to the Scheme forms each arm expects (a boolean for
+;; eq, an integer for hash/compare, a string for str/pr). pred should be cheap
+;; and return false for values it doesn't own — it runs on the slow path of every
+;; =/hash/compare/print.
+(def-var! "clojure.core" "__register-eq!"
+  (lambda (pred handler)
+    (register-eq-arm! (lambda (a b) (jolt-truthy? (jolt-invoke pred a b)))
+                      (lambda (a b) (jolt-truthy? (jolt-invoke handler a b))))
+    jolt-nil))
+(def-var! "clojure.core" "__register-hash!"
+  (lambda (pred handler)
+    (register-hash-arm! (lambda (x) (jolt-truthy? (jolt-invoke pred x)))
+                        (lambda (x) (jolt-invoke handler x)))
+    jolt-nil))
+(def-var! "clojure.core" "__register-str!"
+  (lambda (pred render)
+    (register-str-render! (lambda (x) (jolt-truthy? (jolt-invoke pred x)))
+                          (lambda (x) (jolt-invoke render x)))
+    jolt-nil))
+(def-var! "clojure.core" "__register-pr!"
+  (lambda (pred render)
+    (register-pr-arm! (lambda (x) (jolt-truthy? (jolt-invoke pred x)))
+                      (lambda (x) (jolt-invoke render x)))
+    jolt-nil))
+(def-var! "clojure.core" "__register-compare!"
+  (lambda (pred handler)
+    (register-compare-arm! (lambda (a b) (jolt-truthy? (jolt-invoke pred a b)))
+                           (lambda (a b) (jolt-invoke handler a b)))
+    jolt-nil))
+
+;; __register-class! makes a library's own host values answer (class x)/(type x)
+;; AND dispatch protocols extended to their class. class-fn returns the class name;
+;; tags-fn returns the list of class/interface names the value satisfies (its own
+;; plus supertypes), which value-host-tags (records.ss) feeds to protocol dispatch.
+;; Without this, (class x) is :object and (extend-protocol P TheClass …) never fires.
+(define jt-user-value-tags-arms '())
+(let ((prev value-host-tags))
+  (set! value-host-tags
+    (lambda (obj)
+      (let loop ((as jt-user-value-tags-arms))
+        (cond ((null? as) (prev obj))
+              (((caar as) obj) ((cdar as) obj))
+              (else (loop (cdr as))))))))
+(define (jt-jolt-strs->list v)
+  (let loop ((s (jolt-seq v)) (acc '()))
+    (if (jolt-nil? s) (reverse acc) (loop (jolt-seq (jolt-rest s)) (cons (jolt-first s) acc)))))
+(def-var! "clojure.core" "__register-class!"
+  (lambda (pred class-fn tags-fn)
+    (let ((p (lambda (x) (jolt-truthy? (jolt-invoke pred x)))))
+      (register-class-arm! p (lambda (x) (jolt-invoke class-fn x)))
+      (set! jt-user-value-tags-arms
+            (append jt-user-value-tags-arms
+                    (list (cons p (lambda (x) (jt-jolt-strs->list (jolt-invoke tags-fn x))))))))
+    jolt-nil))
+
 ;; (instance? clojure.lang.IFoo x) for the core clojure.lang interfaces libraries
 ;; branch on — jolt's value model satisfies them, so report it. Matched by the
 ;; interface's last dotted segment, so "clojure.lang.IObj" and "IObj" both hit.

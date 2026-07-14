@@ -166,6 +166,14 @@
 (define (jolt-sym-ns-string s)
   (let ((n (symbol-t-ns s))) (if (or (jolt-nil? n) (not n) (eq? n '())) "" n)))
 ;; compare returns an EXACT integer -1/0/1 (= JVM compare -> int).
+;; A host shim registers a type's ordering via register-compare-arm! (cf.
+;; register-eq-arm!): an arm is (pred . handler) on (a b); the arm applies when
+;; pred holds (typically either arg is the type) and handler returns -1/0/1.
+;; Arms are the last resort before the "cannot compare" error, so a library can
+;; make its own values Comparable without editing this file.
+(define jolt-compare-arms '())
+(define (register-compare-arm! pred handler)
+  (set! jolt-compare-arms (cons (cons pred handler) jolt-compare-arms)))
 (define (jolt-compare a b)
   (cond
     ((and (jolt-nil? a) (jolt-nil? b)) 0)
@@ -192,7 +200,10 @@
                  0
                  (let ((r (jolt-compare (pvec-nth-d a i jolt-nil) (pvec-nth-d b i jolt-nil))))
                    (if (= r 0) (loop (+ i 1)) r)))))))
-    (else (error #f "compare: cannot compare these types" a b))))
+    (else (let loop ((as jolt-compare-arms))
+            (cond ((null? as) (error #f "compare: cannot compare these types" a b))
+                  (((caar as) a b) ((cdar as) a b))
+                  (else (loop (cdr as))))))))
 
 (def-var! "clojure.core" "str" jolt-str)
 (def-var! "clojure.core" "subs" jolt-subs)
