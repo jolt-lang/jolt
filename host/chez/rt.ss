@@ -661,6 +661,10 @@
 ;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads
 ;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
 ;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
+;; libc time primitives (zone offset, locale names) exposed as jolt.host vars.
+;; The java.time.* implementation is the jolt-lang/time library (portable Clojure);
+;; these are the two things it can't express without libc.
+(load "host/chez/java/tz-primitives.ss")
 (load "host/chez/java/inst-time.ss")
 
 ;; java.time value types: LocalDate / LocalTime / LocalDateTime / Instant as
