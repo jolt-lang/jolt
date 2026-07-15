@@ -1,4 +1,5 @@
-(ns app.readers)
+(ns app.readers
+  (:require app.util))
 
 (defn reverse-str [s]
-  (apply str (reverse s)))
+  (app.util/shout (apply str (reverse s))))

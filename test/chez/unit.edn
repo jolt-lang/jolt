@@ -689,4 +689,26 @@
   {:suite "reify class" :expr "(str (class (reify java.lang.Runnable (run [_] nil))))" :expected "class clojure.lang.IObj$reify__0"}
   {:suite "promise class" :expr "(str (class (promise)))" :expected "class clojure.core$promise$reify__0"}
   {:suite "future class" :expr "(str (class (future 1)))" :expected "class clojure.core$future_call$reify__0"}
+
+  ;; --- core.async alts -------------------------------------------------------
+  ;; 1. alts-put vs alts-take rendezvous on unbuffered channel (the livelock fix)
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [[c :v]])) [v p] (a/alts!! [c (a/timeout 3000)])] (if (= p c) [v (first @f)] :timeout)))" :expected "[:v true]"}
+  ;; 2. alts-take vs alts-put rendezvous (reversed: future takes, main puts)
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [c (a/timeout 3000)])) [v p] (a/alts!! [[c :v]])] (if (= p c) [v (first @f)] :timeout)))" :expected "[true :v]"}
+  ;; 3. alts take vs blocking put (>!! in future)
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/>!! c :x)) [v p] (a/alts!! [c (a/timeout 3000)])] (if (= p c) [v] :timeout)))" :expected "[:x]"}
+  ;; 4. alts put vs blocking take (<!! in future)
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/<!! c))] (Thread/sleep 50) (let [[v p] (a/alts!! [[c :y]])] (if (= p c) [v @f] :timeout))))" :expected "[true :y]"}
+  ;; 5. :default returns immediately when nothing ready
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan)] (a/alts!! [c] :default :fallback)))" :expected "[:fallback :default]"}
+  ;; 6. :priority true picks first ready port in declared order
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c1 (a/chan 1) c2 (a/chan 1)] (a/>!! c1 :a) (a/>!! c2 :b) (let [[v p] (a/alts!! [c1 c2] :priority true)] [v (if (= p c1) :c1 :c2)])))" :expected "[:a :c1]"}
+  ;; 7. close! wakes parked alts take with nil
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [c (a/timeout 3000)]))] (Thread/sleep 50) (a/close! c) (let [[v p] @f] (and (nil? v) (= p c)))))" :expected "true"}
+  ;; 8. close! wakes parked alts put with false
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [[c :v]]))] (Thread/sleep 50) (a/close! c) (let [[v p] @f] [v (= p c)])))" :expected "[false true]"}
+  ;; 9. transducer chan works through alts put
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc))] (a/alts!! [[c 1]]) (a/<!! c)))" :expected "2"}
+  ;; 10. mult/tap smoke — proves the dataflow layer still works
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) m (a/mult c) t1 (a/chan) t2 (a/chan)] (a/tap m t1) (a/tap m t2) (a/>!! c :x) [(a/<!! t1) (a/<!! t2)]))" :expected "[:x :x]"}
 ]

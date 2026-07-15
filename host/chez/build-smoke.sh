@@ -55,6 +55,24 @@ if [ "$got" != "$want" ]; then
   exit 1
 fi
 
+# Portable embed: remove the build-time source tree and run from / — the
+# embedded resource must still resolve (contents baked as literals, not
+# read-file-string at startup).
+echo "build smoke: portable-embed check"
+app_copy="$(mktemp -d)/app-copy"
+cp -R "$app" "$app_copy"
+pe_out="$(dirname "$out")/pe-bin"
+if ! JOLT_PWD="$app_copy" bin/joltc build -m app.core -o "$pe_out" >/dev/null 2>&1; then
+  echo "  FAIL: portable-embed build exited non-zero"; exit 1
+fi
+rm -rf "$app_copy"
+pe_got="$(cd / && "$pe_out" 2>&1)"
+if ! printf '%s' "$pe_got" | grep -q 'embedded resource ok'; then
+  echo "  FAIL: portable-embed — embedded resource not found after source tree removed"
+  echo "--- got ----"; echo "$pe_got"
+  exit 1
+fi
+
 # Optimized mode (inference + flatten + scalar-replace) must produce the same
 # result — a sanity check that the passes don't miscompile this app.
 if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --opt >/dev/null 2>&1; then
@@ -156,14 +174,22 @@ fi
 # A registered data reader that returns a CODE form must be compiled into the
 # binary (the emit path applies it too, not just the interpreted loader): the
 # datareader-app's #code literal builds to 42, not the literal list.
+# Also exercises transitive reader requires: #my/rev calls app.readers/reverse-str
+# which requires app.util, proving the require-graph closure pulls in helper
+# namespaces reachable only through the data-readers table.
 drapp="$root/test/chez/datareader-app"
 drout="$(dirname "$out")/dr-bin"
 if ! JOLT_PWD="$drapp" bin/joltc build -m drtest.main -o "$drout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a data-reader app exited non-zero"; exit 1
 fi
-got_dr="$(cd / && "$drout" 2>&1 | tail -1)"
-if [ "$got_dr" != "42" ]; then
-  echo "  FAIL: built #code data reader — want 42, got \`$got_dr\`"; exit 1
+got_dr="$(cd / && "$drout" 2>&1)"
+dr_want='42
+olleh!'
+if [ "$got_dr" != "$dr_want" ]; then
+  echo "  FAIL: built data-reader output mismatch"
+  echo "--- want ---"; echo "$dr_want"
+  echo "--- got ----"; echo "$got_dr"
+  exit 1
 fi
 
 # A script namespace with no -main (just top-level side effects) must build and

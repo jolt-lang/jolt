@@ -13,18 +13,17 @@
   (:refer-clojure :exclude [reduce transduce into merge map take partition partition-by]))
 
 ;; --- alts -------------------------------------------------------------------
-;; do-alts polls each port non-blockingly under its own channel lock; the first
-;; ready op wins. A take port is ready when a value (or closed nil) is available;
-;; a put spec [ch val] is ready when the value can be offered. Polls with a 1ms
-;; backoff (no cross-channel wait-set).
+;; do-alts uses a per-call handler registered on each channel (no poll loop).
+;; The __do-alts host primitive handles the fast pass, registration, wait, and
+;; unregistration atomically under per-channel locks.
 
 (defn- alt-attempt [port]
   (if (vector? port)
     (let [ch (nth port 0) v (nth port 1)]
       (assert (some? v) "Can't put nil on channel")
-      (let [r (clojure.core.async/__offer! ch v)]   ; true | false (closed) | nil (would block)
+      (let [r (clojure.core.async/__offer! ch v)]
         (when (some? r) [r ch])))
-    (let [r (clojure.core.async/__poll! port)]       ; value | nil (closed) | ::none
+    (let [r (clojure.core.async/__poll! port)]
       (when (not= r ::none) [r port]))))
 
 (defn do-alts
@@ -34,23 +33,20 @@
   [ports opts]
   (assert (pos? (count ports)) "alts must have at least one channel operation")
   (let [ports (vec ports)
-        n (count ports)
-        priority (:priority opts)
         has-default (contains? opts :default)]
-    ;; Scan ports from a random start (sequential, wrapping) so a non-priority alts
-    ;; is fair without allocating a fresh shuffle every poll. With :priority the scan
-    ;; starts at 0 (declared order). Returns the first ready op.
-    (loop [first? true]
-      (let [start (if priority 0 (rand-int n))
-            hit (loop [k 0]
-                  (when (< k n)
-                    (let [j (+ start k) i (if (< j n) j (- j n))]
-                      (or (alt-attempt (nth ports i))
-                          (recur (inc k))))))]
-        (cond
-          hit hit
-          (and first? has-default) [(:default opts) :default]
-          :else (do (Thread/sleep 1) (recur false)))))))
+    ;; one fast non-blocking scan for :default support
+    (let [start (if (:priority opts) 0 (rand-int (count ports)))
+          n (count ports)
+          hit (loop [k 0]
+                (when (< k n)
+                  (let [j (+ start k) i (if (< j n) j (- j n))]
+                    (or (alt-attempt (nth ports i))
+                        (recur (inc k))))))]
+      (if hit
+        hit
+        (if has-default
+          [(:default opts) :default]
+          (clojure.core.async/__do-alts ports (boolean (:priority opts))))))))
 
 (defn alts!!
   "Completes at most one of several channel operations. ports is a vector of take
