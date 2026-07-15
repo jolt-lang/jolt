@@ -111,11 +111,14 @@
       (apply-main-opts main-opts more)
       (throw (ex-info (str "alias(es) " (pr-str aliases) " have no :main-opts") {})))))
 
-;; -A:alias… — add the aliases' paths/deps, then run the remaining argv as a command
+;; -A:alias… — add the aliases' paths/deps, then run the remaining argv as a command.
+;; apply-project! concats with current source-roots, so the alias-added paths survive
+;; the cmd-run re-resolution — re-dispatching through -main is safe and avoids
+;; duplicating the dispatch table.
 (defn- cmd-A [arg more]
   (let [aliases (parse-aliases arg)]
     (apply-project! (deps/resolve-project (project-dir) aliases))
-    (when (seq more) (run-ns (second more) (drop 2 more)))))
+    (apply -main more)))
 
 (defn- cmd-path []
   (let [{:keys [roots]} (deps/resolve-project (project-dir))]

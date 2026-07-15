@@ -126,7 +126,7 @@
       (= op :recur)  (assoc node :args (mapv f (get node :args)))
       (= op :fn)     (assoc node :arities (mapv (fn [a] (assoc a :body (f (get a :body))))
                                                 (get node :arities)))
-      (= op :def)    (let [n (assoc node :init (f (get node :init)))]
+      (= op :def)    (let [n (if (get node :init) (assoc node :init (f (get node :init))) node)]
                        (if (get node :meta-expr)
                          (assoc n :meta-expr (f (get node :meta-expr)))
                          n))
