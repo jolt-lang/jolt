@@ -614,7 +614,6 @@
          (cond
            (struct-safe? t) (let [n (assoc node :hint :struct)]
                               (if (type-shape t) (assoc n :shape (type-shape t)) n))
-           (vec-type? t) (assoc node :hint :vector)
            :else node)])
       (= op :map)
       (let [pairs (get node :pairs)
@@ -730,10 +729,10 @@
                         env)]
              [:any (assoc node :init (nth (infer (get node :init) tenv env') 1))]))
       (= op :try)
-      [:any (assoc node
-                   :body (nth (infer (get node :body) tenv env) 1)
-                   :catch-body (when (get node :catch-body) (nth (infer (get node :catch-body) tenv env) 1))
-                   :finally (when (get node :finally) (nth (infer (get node :finally) tenv env) 1)))]
+      (let [n (assoc node :body (nth (infer (get node :body) tenv env) 1))
+            n (if (get node :catch-body) (assoc n :catch-body (nth (infer (get node :catch-body) tenv env) 1)) n)
+            n (if (get node :finally) (assoc n :finally (nth (infer (get node :finally) tenv env) 1)) n)]
+        [:any n])
       :else [:any node])))
 
 (defn- infer-top [node env] (nth (infer node {} env) 1))
@@ -833,11 +832,6 @@
   "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy
   (non-nil), def vars carry their inferred init type."
   [m] (swap! config-box assoc :vtypes (or m {})))
-
-(defn join-types
-  "Public structural join (lub), used by the orchestrator's fixpoint so param/
-  return types join field-wise/element-wise instead of collapsing to :any."
-  [a b] (join-t a b))
 
 (defn reset-escapes! [] (reset! escapes-box #{}))
 (defn collected-escapes [] (vec @escapes-box))
@@ -1048,25 +1042,6 @@
                               (assoc a :body (nth (infer (get a :body) pt env) 1))))
                           (get fnode :arities))))
       def-node)))
-
-(defn phint-seed
-  "Positional declared-hint type seeds for a fn arity. Given the param-name
-  vector and the arity's :phints (a seq of [name ctor-key] pairs), return a
-  vector parallel to params whose slot i is the resolved record TYPE of that
-  param's ^Record hint (via the record-shapes registry), or nil. The
-  whole-program fixpoint seeds these as a param-type FLOOR so a declared hint
-  propagates to a fn's callees DURING inference — not only at the final re-emit
-  (reinfer-def). Without it a hinted param with no callers stays :any through the
-  fixpoint, so a field read off it (e.g. (:origin ^Ray r)) never tells a shared
-  callee its arg is a Vec3."
-  [params phints]
-  (let [shapes (get @config-box :record-shapes)
-        m (reduce (fn [acc pr] (assoc acc (nth pr 0) (nth pr 1))) {} phints)]
-    (mapv (fn [nm]
-            (let [ck (get m nm)
-                  e (and ck (get shapes ck))]
-               (when e (record-type-from-entry e ck type-depth shapes))))
-          params)))
 
 ;; --- whole-program param-type fixpoint --------------------------------------
 ;; Re-derive each app fn's param types from its call sites under closed world

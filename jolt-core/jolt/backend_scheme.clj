@@ -240,7 +240,6 @@
 ;; by a whole-program pre-pass (register-contagion-clones! below) so the devirt-site
 ;; resolution can consult it regardless of emit order; empty in non-WP builds.
 (def ^:private clone-sites (atom nil))
-(defn reset-clone-sites! [] (reset! clone-sites nil))
 (defn- clone-site-key [tag proto method] (str tag "|" proto "|" method))
 (defn- clone-site? [tag proto method] (and @clone-sites (contains? @clone-sites (clone-site-key tag proto method))))
 ;; whole-program pre-pass accumulator: impl keys (ns.type|proto|method) for
@@ -946,9 +945,6 @@
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
-      ;; zero-arg + / * : exact integer identity (= JVM long: (+) -> 0, (*) -> 1).
-      (and nop (empty? args) (= nop "+")) "0"
-      (and nop (empty? args) (= nop "*")) "1"
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
       ;; (get coll k [default]) with a struct-typed coll — the inference marked the
       ;; receiver with :hint :struct and a :shape matching the declared field layout.
