@@ -237,27 +237,6 @@
 (define (jolt-error-render-via chain)
   (string-append "[" (jolt-str-join (map jolt-error-render-via-entry chain)) "]"))
 
-;; Render frame records as :trace vectors. Each record is (name . src-vec-or-#f).
-(define (jolt-error-render-trace recs)
-  (if (null? recs)
-      "[]"
-      (let ((port (open-output-string)))
-        (put-string port "[")
-        (let loop ((rs recs) (first? #t))
-          (unless (null? rs)
-            (unless first? (put-string port " "))
-            (let* ((p (car rs)) (r (cdr p)))
-              (if (vector? r)
-                  (let ((ns (vector-ref r 0)) (nm (vector-ref r 1))
-                        (file (vector-ref r 2)) (line (vector-ref r 3)))
-                    (put-string port (string-append "[" (jolt-pr-str ns) " " (jolt-pr-str nm) " "
-                                                    (if (string? file) (string-append "\"" file "\" ") "")
-                                                    (number->string line) "]")))
-                  (put-string port (jolt-pr-str (car p))))
-              (loop (cdr rs) #f))))
-        (put-string port "]")
-        (get-output-string port))))
-
 ;; #error print form for jolt-ex-info-records (pr/pr-str). Matches JVM shape:
 ;; #error {:cause <root-msg> :data {...} :via [{...}] :trace [[...]...]}
 ;; :trace is always [] here — frame records are only accessible during a throw.

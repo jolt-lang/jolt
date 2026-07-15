@@ -226,15 +226,16 @@
                         (rdr-error s i "Octal escape sequence must be in range [0, 377]"))
                       (loop j (cons (integer->char val) acc))))))
               ((#\u)
+               (when (>= (+ i 5) end) (rdr-error s i "EOF while reading string"))
                (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
                  ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,
                  ;; so combine a high+low surrogate pair into the one scalar char.
                  ;; Lone surrogates have no scalar — throw Invalid character constant
                  ;; (JVM-visible divergence, bead jolt-445k.34).
                  (cond
-                   ((and (fx>=? cp #xD800) (fx<=? cp #xDBFF)
-                         (fx<? (fx+ j 1) end)
-                         (char=? (string-ref s j) #\\) (char=? (string-ref s (fx+ j 1)) #\u))
+                    ((and (fx>=? cp #xD800) (fx<=? cp #xDBFF)
+                          (fx<? (fx+ j 5) end)
+                          (char=? (string-ref s j) #\\) (char=? (string-ref s (fx+ j 1)) #\u))
                     (let-values (((lo k) (rdr-hex->int s (+ j 2) 4)))
                       (if (and (fx>=? lo #xDC00) (fx<=? lo #xDFFF))
                           (loop k (cons (integer->char
@@ -738,6 +739,7 @@
         ;; \" delimits without ending the literal, and the pattern SOURCE keeps
         ;; the backslash — (pr-str #"a\"b") round-trips as #"a\"b" like the JVM.
         ((char=? c #\\)
+         (when (>= (+ i 1) end) (rdr-error s i "EOF while reading regex"))
          (loop (+ i 2) (cons (string-ref s (+ i 1)) (cons #\\ acc))))
         (else (loop (+ i 1) (cons c acc)))))))
 

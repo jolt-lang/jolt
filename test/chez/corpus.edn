@@ -636,7 +636,7 @@
   {:suite "host-interop / exception + HashMap shims" :label "HashMap put + size" :expected "2" :actual "(let [m (HashMap. {})] (.put m :x 1) (.put m :y 2) (.size m))" :portability :jvm}
   {:suite "host-interop / reader-feature toggle" :label "features default to jolt+default" :expected "true" :actual "(contains? (set (__reader-features)) \"jolt\")" :portability :common}
   {:suite "host-interop / reader-feature toggle" :label "set + read back" :expected "true" :actual "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\" \"jolt\" \"default\"]) (def r (contains? (set (__reader-features)) \"clj\")) (__reader-features-set! prev) r)" :portability :common}
-  {:suite "host-interop / reader-feature toggle" :label "restore returns to default" :expected "false" :actual "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\"]) (__reader-features-set! prev) (contains? (set (__reader-features)) \"clj\"))" :portability :common}
+  {:suite "host-interop / reader-feature toggle" :label "restore returns to default" :expected "true" :actual "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\"]) (__reader-features-set! prev) (contains? (set (__reader-features)) \"clj\"))" :portability :common}
   {:suite "host-interop / migratus class shims" :label "Exception. message" :expected "\"boom\"" :actual "(try (throw (Exception. \"boom\")) (catch Throwable e (.getMessage e)))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "IllegalArgumentException." :expected "\"bad\"" :actual "(try (throw (IllegalArgumentException. \"bad\")) (catch Exception e (.getMessage e)))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "InterruptedException." :expected "\"stop\"" :actual "(try (throw (InterruptedException. \"stop\")) (catch Throwable e (.getMessage e)))" :portability :jvm}
@@ -3918,4 +3918,11 @@
   {:suite "reader / surrogate in string" :label "\\ud800 in string throws Invalid character constant" :expected "throws" :actual "(read-string \"\\\"\\\\ud800\\\"\")" :portability :common}
   {:suite "reader / top-level splice" :label "#?@ at top level throws" :expected "throws" :actual "(read-string \"#?@(:clj [1])\")" :portability :common}
   {:suite "reader / record literal" :label "#ns.Type{} constructs record in read-string" :expected "42" :actual "(do (defrecord Rdlit [a]) (:a (read-string \"#user.Rdlit{:a 42}\")))" :portability :common}
-  {:suite "reader / record vector ctor" :label "#ns.Type[] constructs record from vector" :expected "\"a\"" :actual "(do (defrecord Rdlvec [x y]) (:x (read-string \"#user.Rdlvec[\\\"a\\\" 2]\")))" :portability :common}]
+  {:suite "reader / record vector ctor" :label "#ns.Type[] constructs record from vector" :expected "\"a\"" :actual "(do (defrecord Rdlvec [x y]) (:x (read-string \"#user.Rdlvec[\\\"a\\\" 2]\")))" :portability :common}
+  {:suite "reader / EOF in unicode escape" :label "\\\\u with <4 hex digits throws" :expected "throws" :actual "(read-string \"\\\"\\\\uD\\\"\")" :portability :common}
+  {:suite "reader / EOF in regex backslash" :label "trailing backslash in regex throws" :expected "throws" :actual "(read-string \"#\\\"a\\\\\")" :portability :common}
+  {:suite "syntax-quote / defmacro qualified" :label "`defmacro qualifies to ns, not bare" :expected "true" :actual "(not= 'defmacro (second (read-string \"`defmacro\")))" :portability :common}
+  {:suite "syntax-quote / catch bare" :label "`catch stays bare (special form)" :expected "true" :actual "(= 'catch (second (read-string \"`catch\")))" :portability :common}
+  {:suite "syntax-quote / reify* bare" :label "`reify* stays bare (special form)" :expected "true" :actual "(= 'reify* (second (read-string \"`reify*\")))" :portability :common}
+  {:suite "compile-eval / quoted require not scanned" :label "quoted require does not leak aliases" :expected "false" :actual "(do (def xce '(require '[clojure.string :as zzz9x])) (contains? (ns-aliases *ns*) 'zzz9x))" :portability :common}
+  {:suite "ns / ns-unmap refer-all name" :label "ns-unmap removes refer-all name from resolve" :expected "nil" :actual "(do (require '[clojure.set :refer :all]) (ns-unmap *ns* 'union) (resolve 'union))" :portability :common}]

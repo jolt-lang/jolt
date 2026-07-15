@@ -185,7 +185,9 @@
     (let ((items (seq->list form)))
       (when (pair? items)
         (let* ((h (car items)) (hn (and (symbol-t? h) (symbol-t-name h))))
+          ;; skip quoted data: (quote ...) must not be scanned for require specs
           (cond
+            ((and hn (string=? hn "quote")) #t)
             ;; (require spec...) / (use spec...) — specs are quoted
             ((and hn (or (string=? hn "require") (string=? hn "use")))
              (for-each (lambda (a) (chez-register-spec! ns (ce-unquote a))) (cdr items)))

@@ -46,11 +46,15 @@
     (unless (member target cur)
       (hashtable-set! ns-refer-all-table cns (cons target cur)))))
 (define (chez-resolve-refer cns name)
-  (or (hashtable-ref ns-refer-table (cons cns name) #f)
+  (let ((r (hashtable-ref ns-refer-table (cons cns name) #f)))
+    (cond
+     ((eq? r 'unmapped) #f)
+     (r r)
+     (else
       (let loop ((ts (hashtable-ref ns-refer-all-table cns '())))
         (cond ((null? ts) #f)
               ((let ((c (var-cell-lookup (car ts) name))) (and c (var-cell-defined? c))) (car ts))
-              (else (loop (cdr ts)))))))
+              (else (loop (cdr ts)))))))))
 ;; --- libspec parsing (shared by the loader + compile-eval) ------------------
 ;; A libspec is one of: a bare symbol `foo`; a vector `[foo :as f :refer [x]]`;
 ;; or a LIST with keyword options `(foo :only [x])` (jolt superset — see below).
@@ -310,11 +314,16 @@
         (error #f "find-var requires a fully-qualified symbol" sym))))
 
 ;; ns-unmap: clear the mapping — drop defined? and reset the root to unbound, so a
-;; later resolve returns nil.
+;; later resolve returns nil. Also records an 'unmapped tombstone in the refer table
+;; so the name won't resolve through a refer/all mapping.
 (define (jolt-ns-unmap ns-desig sym)
-  (let ((c (var-cell-lookup (ns-desig->name ns-desig) (symbol-t-name sym))))
+  (let* ((cns (ns-desig->name ns-desig))
+         (nm  (symbol-t-name sym))
+         (c   (var-cell-lookup cns nm)))
     (when c (var-cell-defined?-set! c #f)
-           (var-cell-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c)))))
+            (var-cell-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c))))
+    ;; tombstone: block resolution of this name in this ns via refers/all
+    (hashtable-set! ns-refer-table (cons cns nm) 'unmapped))
   jolt-nil)
 
 ;; --- ns runtime fns ---------------------------------------------------------

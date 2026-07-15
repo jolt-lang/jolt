@@ -331,8 +331,9 @@
 ;; clojure.core / the compile ns; a foo# auto-gensym is stable within one `.
 (define hc-special-symbols
   '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
-    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
-    "new" "."))
+    "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var" "new" "."
+    "&" "catch" "finally" "case*" "letfn*" "monitor-enter" "monitor-exit"
+    "reify*" "deftype*"))
 (define (hc-special-symbol? nm) (and (member nm hc-special-symbols) #t))
 
 (define hc-sq-gensym-counter 0)
