@@ -389,6 +389,7 @@
                 (jolt-truthy? (cadr o))) #t)
           (else (loop (cddr o))))))
 
+(define io-counter-mutex (make-mutex))
 (define spit-tmp-counter 0)
 (define (jolt-spit path content . opts)
   ;; Render BEFORE any file is touched — a throwing toString used to leave the
@@ -402,8 +403,9 @@
           (lambda (port) (put-string port text)))
         (let ((tmp (string-append p ".spit-tmp-"
                                    (number->string (real-time)) "-"
-                                   (number->string (begin (set! spit-tmp-counter (+ spit-tmp-counter 1))
-                                                          spit-tmp-counter)))))
+                                   (number->string (with-mutex io-counter-mutex
+                                                     (begin (set! spit-tmp-counter (+ spit-tmp-counter 1))
+                                                            spit-tmp-counter))))))
           (with-port (open-output-file tmp 'replace)
             (lambda (port) (put-string port text)))
           (guard (e (#t (guard (_ (#t #f)) (delete-file tmp)) (raise e)))
@@ -576,9 +578,10 @@
 ;; getAndIncrement), used by id generators such as core.logic's lvar.
 (define rt-next-id-counter 1)
 (define (rt-next-id)
-  (let ((v rt-next-id-counter))
-    (set! rt-next-id-counter (+ rt-next-id-counter 1))
-    v))
+  (with-mutex io-counter-mutex
+    (let ((v rt-next-id-counter))
+      (set! rt-next-id-counter (+ rt-next-id-counter 1))
+      v)))
 (register-class-statics! "RT" (list (cons "nextID" rt-next-id)))
 (register-class-statics! "clojure.lang.RT" (list (cons "nextID" rt-next-id)))
 ;; clojure.lang.Util — hash/equality helpers libraries call directly (core.logic's
@@ -627,12 +630,14 @@
                   ((getenv "TMPDIR") => (lambda (t) t))
                   (else "/tmp")))
          (sfx (if (or (null? (list suffix)) (jolt-nil? suffix)) ".tmp" (jolt-str-render-one suffix))))
-    (set! temp-file-counter (+ temp-file-counter 1))
-    (let loop ((n temp-file-counter))
+    (let ((n (with-mutex io-counter-mutex
+              (set! temp-file-counter (+ temp-file-counter 1))
+              temp-file-counter)))
+    (let loop ((n n))
       (let ((p (string-append d "/" (jolt-str-render-one prefix)
                               (number->string (now-millis)) "-" (number->string n) sfx)))
         (if (file-exists? p) (loop (+ n 1))
-            (begin (close-port (open-output-file p 'truncate)) (make-jfile p)))))))
+            (begin (close-port (open-output-file p 'truncate)) (make-jfile p))))))))
 (let ((statics (list (cons "separator" "/")
                      (cons "separatorChar" #\/)
                      (cons "pathSeparator" ":")

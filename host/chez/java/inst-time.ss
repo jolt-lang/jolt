@@ -103,7 +103,9 @@
 
 ;; --- canonical print form: yyyy-MM-ddThh:mm:ss.fff-00:00 (UTC) ---------------
 (define (pad2 n) (if (< n 10) (string-append "0" (number->string n)) (number->string n)))
-(define (pad4 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 4 (string-length s))) #\0) s)))
+(define (pad4 n) (if (< n 0)
+    (string-append "-" (pad4 (- n)))
+    (let ((s (number->string n))) (string-append (make-string (max 0 (- 4 (string-length s))) #\0) s))))
 (define (pad3 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 3 (string-length s))) #\0) s)))
 (define (inst-floor-div a b) (let ((q (quotient a b)) (r (remainder a b))) (if (and (not (= r 0)) (< (* a b) 0)) (- q 1) q)))
 (define (inst-floor-mod a b) (- a (* (inst-floor-div a b) b)))

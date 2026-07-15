@@ -16,6 +16,7 @@
 ;; canonical-name -> list of direct super canonical-names. Mutable + extensible.
 (define jvm-class-parents (make-hashtable string-hash string=?))
 ;; closure cache, invalidated whenever the graph is extended.
+(define jch-cache-mutex (make-mutex))
 (define jch-closure-cache (make-hashtable string-hash string=?))
 (define jch-tags-cache (make-hashtable string-hash string=?))
 
@@ -28,8 +29,9 @@
                       (cond ((null? ss) acc)
                             ((member (car ss) acc) (add (cdr ss) acc))
                             (else (add (cdr ss) (append acc (list (car ss)))))))))
-  (hashtable-clear! jch-closure-cache)
-  (hashtable-clear! jch-tags-cache))
+  (with-mutex jch-cache-mutex
+    (hashtable-clear! jch-closure-cache)
+    (hashtable-clear! jch-tags-cache)))
 
 ;; A munged fn class name "ns$name" (jolt-class for a def'd fn) isn't in the
 ;; table; like the JVM (a fn extends clojure.lang.AFunction) its super is
@@ -48,8 +50,9 @@
 ;; deftype half registered). Same cache invalidation as a register.
 (define (jch-set-supers! name supers)
   (hashtable-set! jvm-class-parents name supers)
-  (hashtable-clear! jch-closure-cache)
-  (hashtable-clear! jch-tags-cache)
+  (with-mutex jch-cache-mutex
+    (hashtable-clear! jch-closure-cache)
+    (hashtable-clear! jch-tags-cache))
   (set! jch-known-cache #f)
   (set! jch-simple->fqn-cache #f))
 

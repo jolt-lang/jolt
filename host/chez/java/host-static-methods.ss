@@ -401,11 +401,16 @@
 ;; os.name reflects the actual platform (Chez's machine-type names it): a *osx
 ;; machine is macOS, otherwise Linux. Code that branches on the OS (socket struct
 ;; layout, path handling) needs the truth, not a fixed value.
+;; Optimized: character-by-character scan, no substring allocation per position.
 (define (substring-index needle hay)
   (let ((nl (string-length needle)) (hl (string-length hay)))
-    (let loop ((i 0)) (cond ((> (+ i nl) hl) #f)
-                            ((string=? (substring hay i (+ i nl)) needle) i)
-                            (else (loop (+ i 1)))))))
+    (let outer ((i 0))
+      (if (> (+ i nl) hl)
+          #f
+          (let inner ((j 0))
+            (cond ((= j nl) i)
+                  ((char=? (string-ref hay (+ i j)) (string-ref needle j)) (inner (+ j 1)))
+                  (else (outer (+ i 1)))))))))
 (define sys-os-name
   (let ((m (symbol->string (machine-type))))
     (cond ((or (substring-index "osx" m) (substring-index "macos" m)) "Mac OS X")
