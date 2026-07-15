@@ -3894,4 +3894,6 @@
   {:suite "interop / qualified instance method" :label "(String/.length \"hello\")" :expected "5" :actual "(String/.length \"hello\")" :portability :common}
   {:suite "interop / qualified instance method" :label "(String/.toUpperCase \"abc\")" :expected "\"ABC\"" :actual "(String/.toUpperCase \"abc\")" :portability :common}
   {:suite "interop / qualified instance method" :label "(String/.substring \"hello\" 1 3)" :expected "\"el\"" :actual "(String/.substring \"hello\" 1 3)" :portability :common}
-  {:suite "interop / qualified instance method" :label "fully-qualified class (java.util.List/.size coll)" :expected "3" :actual "(java.util.List/.size (java.util.ArrayList. [1 2 3]))" :portability :common}]
+  {:suite "interop / qualified instance method" :label "fully-qualified class (java.util.List/.size coll)" :expected "3" :actual "(java.util.List/.size (java.util.ArrayList. [1 2 3]))" :portability :common}
+  {:suite "reduce / double seed nil-returning closure" :label "reduce over double literal with nil-returning fn returns nil without crash" :expected "nil" :actual "(reduce (fn [acc x] (when (and acc (< x 100)) (+ acc x))) 0.0 [1 200 3])" :portability :jvm}
+  {:suite "reduce / double seed non-nil closure" :label "reduce over double literal with always-returning fn returns the double sum" :expected "6.0" :actual "(reduce (fn [acc x] (+ acc x)) 0.0 [1 2 3])" :portability :jvm}]

@@ -330,8 +330,9 @@
                                        (let [s (get seeds i)]
                                          (if (= s :double) (assoc h (nth params i) :double) h)))
                                      {} (range (count params)))
-                          br (infer (get a :body) pe env)]
-                      [(ty br) (assoc a :body (nd br) :nhints nh)]))
+                          br (infer (get a :body) pe env)
+                          ret-ty (ty br)]
+                      [(ty br) (assoc a :body (nd br) :nhints (if (= ret-ty :double) nh {}))]))
                   (get node :arities))
         rets (mapv (fn [r] (ty r)) res)
         ret (if (empty? rets) :any (reduce join (first rets) (rest rets)))]
