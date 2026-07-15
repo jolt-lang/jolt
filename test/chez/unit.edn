@@ -696,5 +696,5 @@
   {:suite "record resolution / two ns same record name" :expr "(do (ns unit.rr.a) (defprotocol P1 (rr-foo [_])) (defrecord Circle [x y] P1 (rr-foo [this] [(:x this) (:y this)])) (ns unit.rr.b) (defrecord Circle [a b c]) (ns unit.rr.a) (rr-foo (->Circle 10 20)))" :expected "[10 20]"}
   ;; user fn named register-method must not be confused with
   ;; clojure.core/register-method — the ns check prevents the warp
-  {:suite "register-method user fn" :expr "(do (defn register-method [a b c d] (str a b c)) (register-method \"X\" \"Y\" \"Z\" (fn [x] x)))" :expected "\"XYZ\""}
+  {:suite "register-method user fn" :expr "(do (defn register-method [a b c d] (str a b c)) (register-method \"X\" \"Y\" \"Z\" (fn [x] x)))" :expected "XYZ"}
 ]
