@@ -456,6 +456,32 @@ else
   pass=$((pass + 1))
 fi
 
+# -A:alias adds paths/deps then dispatches the remaining argv. An alias that
+# adds a source root must NOT be clobbered by a later cmd-run re-resolving the
+# project without aliases — *aliased-resolve* guards against that.
+ad="$(mktemp -d)"
+mkdir -p "$ad/src/app" "$ad/dev-src/app"
+printf '{:paths ["src"] :aliases {:dev {:paths ["dev-src"]}}}\n' > "$ad/deps.edn"
+printf '(ns app.core)\n' > "$ad/src/app/core.clj"
+printf '(ns app.devtool)\n(defn -main [& _] (println "adev-ok"))\n' > "$ad/dev-src/app/devtool.clj"
+# run -m via -A:dev
+ad_out="$(JOLT_PWD="$ad" $joltc -A:dev run -m app.devtool 2>/dev/null | tail -1)"
+if [ "$ad_out" = "adev-ok" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: -A:dev run -m app.devtool — got \`$ad_out\`, want \`adev-ok\`"
+  fails=$((fails + 1))
+fi
+# file dispatch via -A:dev
+ad_out2="$(JOLT_PWD="$ad" $joltc -A:dev "$ad/dev-src/app/devtool.clj" 2>/dev/null | tail -1)"
+if [ "$ad_out2" = "adev-ok" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: -A:dev <file> — got \`$ad_out2\`, want \`adev-ok\`"
+  fails=$((fails + 1))
+fi
+rm -rf "$ad"
+
 # script-mode boot: bin/joltc (chez --script over the seed source) must still
 # work even when the rest of the smoke runs against a prebuilt JOLT_BIN.
 if [ "$(bin/joltc -e '(+ 20 22)' 2>/dev/null | tail -1)" = "42" ]; then

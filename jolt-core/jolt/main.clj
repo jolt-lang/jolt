@@ -93,8 +93,10 @@
       (jolt.host/file-exists? x)))
 
 ;; run [-m NS args… | FILE]  — FILE may be "-" (stdin)
+(def ^:dynamic *aliased-resolve* false)
 (defn- cmd-run [more]
-  (apply-project! (deps/resolve-project (project-dir)))
+  (when-not *aliased-resolve*
+    (apply-project! (deps/resolve-project (project-dir))))
   (cond
     (= "-m" (first more)) (run-ns (second more) (drop 2 more))
     (seq more)            (do (push-thread-bindings
@@ -115,7 +117,8 @@
 (defn- cmd-A [arg more]
   (let [aliases (parse-aliases arg)]
     (apply-project! (deps/resolve-project (project-dir) aliases))
-    (apply -main more)))
+    (binding [*aliased-resolve* true]
+      (apply -main more))))
 
 (defn- cmd-path []
   (let [{:keys [roots]} (deps/resolve-project (project-dir))]
