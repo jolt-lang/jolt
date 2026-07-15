@@ -1727,7 +1727,7 @@
   {:suite "predicates / seqable, reduced & emptiness" :label "not-empty full" :expected "[1]" :actual "(not-empty [1])" :portability :common}
   {:suite "predicates / seqable, reduced & emptiness" :label "not-empty empty" :expected "nil" :actual "(not-empty [])" :portability :common}
   {:suite "predicates / seqable, reduced & emptiness" :label "not-empty string" :expected "nil" :actual "(not-empty \"\")" :portability :common}
-  {:suite "predicates / seqable, reduced & emptiness" :label "not-empty lazy — uses seq not count (O(1), doesn't hang)" :expected "(1 2 3)" :actual "(pr-str (not-empty (map inc (take 3 (range)))))" :portability :common}
+  {:suite "predicates / seqable, reduced & emptiness" :label "not-empty lazy — uses seq not count (O(1), doesn't hang)" :expected "'(1 2 3)" :actual "(not-empty (map inc (take 3 (range))))" :portability :common}
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare =" :expected "0" :actual "(compare 1 1)" :portability :common}
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare <" :expected "-1" :actual "(compare 1 2)" :portability :common}
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare nil first" :expected "-1" :actual "(compare nil 1)" :portability :common}
