@@ -215,8 +215,10 @@
 ;; Lazy-safe: take only the head via first (Clojure uses (seq coll), but Jolt's
 ;; eager seq would realize an infinite coll like (repeat nil) and hang).
 (defmacro when-first [bindings & body]
-  (let [x (bindings 0) coll (bindings 1)]
-    `(when-let [~x (first ~coll)] ~@body)))
+  (let [[x xs] bindings]
+    `(when-let [xs# (seq ~xs)]
+       (let [~x (first xs#)]
+         ~@body))))
 
 ;; doto threads a single fresh-bound value as the first arg of each form (side
 ;; effects), returning the value. A shared explicit gensym is needed because the
