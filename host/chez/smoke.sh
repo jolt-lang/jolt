@@ -472,8 +472,11 @@ else
   echo "  FAIL: -A:dev run -m app.devtool — got \`$ad_out\`, want \`adev-ok\`"
   fails=$((fails + 1))
 fi
-# file dispatch via -A:dev
-ad_out2="$(JOLT_PWD="$ad" $joltc -A:dev "$ad/dev-src/app/devtool.clj" 2>/dev/null | tail -1)"
+# file dispatch via -A:dev — loading a file runs its top-level forms only (JVM
+# semantics), so the script prints at load; it requires the alias-added ns to
+# prove the alias roots survived into the load.
+printf '(require (quote app.devtool))\n(app.devtool/-main)\n' > "$ad/run.clj"
+ad_out2="$(JOLT_PWD="$ad" $joltc -A:dev "$ad/run.clj" 2>/dev/null | tail -1)"
 if [ "$ad_out2" = "adev-ok" ]; then
   pass=$((pass + 1))
 else
