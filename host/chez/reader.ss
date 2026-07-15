@@ -206,6 +206,7 @@
       (cond
         ((char=? c #\") (values (list->string (reverse acc)) (+ i 1)))
         ((char=? c #\\)
+         (when (>= (+ i 1) end) (rdr-error s i "EOF while reading string"))
          (let ((e (string-ref s (+ i 1))))
            (case e
              ((#\n) (loop (+ i 2) (cons #\newline acc)))
@@ -1020,10 +1021,17 @@
                  (hashtable-set! gsmap nm g) g)))
            ((member nm rdr-sq-specials) sym)
            (else
-            (let ((resolved (chez-resolve-refer (chez-current-ns) nm)))
-              (if resolved
-                  (jolt-symbol resolved nm)
-                  (jolt-symbol (chez-current-ns) nm)))))
+            ;; JVM syntax-quote resolution: the ns's own interned var wins, then
+            ;; refers/aliased refers, then the implicit clojure.core default,
+            ;; else qualify to the current ns.
+            (let* ((cns (chez-current-ns))
+                   (own (let ((c (var-cell-lookup cns nm))) (and c (var-cell-defined? c))))
+                   (resolved (and (not own) (chez-resolve-refer cns nm)))
+                   (core (and (not own) (not resolved)
+                              (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
+                              (let ((c (var-cell-lookup "clojure.core" nm)))
+                                (and c (var-cell-defined? c))))))
+              (jolt-symbol (cond (own cns) (resolved resolved) (core "clojure.core") (else cns)) nm))))
         (let ((target (chez-resolve-alias (chez-current-ns) sns)))
           (if target (jolt-symbol target nm) sym)))))
 

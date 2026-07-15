@@ -3925,4 +3925,11 @@
   {:suite "syntax-quote / catch bare" :label "`catch stays bare (special form)" :expected "true" :actual "(= 'catch (second (read-string \"`catch\")))" :portability :common}
   {:suite "syntax-quote / reify* bare" :label "`reify* stays bare (special form)" :expected "true" :actual "(= 'reify* (second (read-string \"`reify*\")))" :portability :common}
   {:suite "compile-eval / quoted require not scanned" :label "quoted require does not leak aliases" :expected "false" :actual "(do (def xce '(require '[clojure.string :as zzz9x])) (contains? (ns-aliases *ns*) 'zzz9x))" :portability :common}
-  {:suite "ns / ns-unmap refer-all name" :label "ns-unmap removes refer-all name from resolve" :expected "nil" :actual "(do (require '[clojure.set :refer :all]) (ns-unmap *ns* 'union) (resolve 'union))" :portability :common}]
+  {:suite "ns / ns-unmap refer-all name" :label "ns-unmap removes refer-all name from resolve" :expected "nil" :actual "(do (require '[clojure.set :refer :all]) (ns-unmap *ns* 'union) (resolve 'union))" :portability :common}  {:suite "reader / EOF errors" :label "trailing backslash in string is a positioned EOF error" :expected ":eof" :actual "(try (read-string \"\\\"ab\\\\\") (catch Exception e (if (re-find #\"EOF\" (.getMessage e)) :eof :other)))" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "core-default name qualifies to clojure.core" :expected "'(quote clojure.core/map)" :actual "(read-string \"`map\")" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "core macro name qualifies to clojure.core" :expected "'(quote clojure.core/when)" :actual "(read-string \"`when\")" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "& stays bare" :expected "'(quote &)" :actual "(read-string \"`&\")" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "alias qualifies through the alias" :expected "'(quote clojure.string/join)" :actual "(do (require '[clojure.string :as sx9]) (read-string \"`sx9/join\"))" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "unmapped name qualifies to current ns" :expected "'(quote user/zz-undefined)" :actual "(read-string \"`zz-undefined\")" :portability :common}
+  {:suite "ns / ns-unmap" :label "unmap blocks the implicit core refer" :expected "nil" :actual "(do (ns-unmap *ns* 'map) (resolve 'map))" :portability :common}
+]

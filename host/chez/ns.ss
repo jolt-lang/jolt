@@ -296,7 +296,9 @@
                 (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
                 (or (var-cell-lookup cns nm)
                     (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
-                    (var-cell-lookup "clojure.core" nm)))))
+                    ;; the implicit clojure.core refer — blocked by an ns-unmap tombstone
+                    (and (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
+                         (var-cell-lookup "clojure.core" nm))))))
     (if (and c (var-cell-defined? c)) c jolt-nil)))
 ;; (resolve sym) resolves globally; (resolve &env sym) additionally answers nil
 ;; when sym names a local in env (the &env map's keys) — a macro's resolve avoids
@@ -337,7 +339,8 @@
                 (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
                 (or (var-cell-lookup cns nm)
                     (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
-                    (var-cell-lookup "clojure.core" nm)))))
+                    (and (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
+                         (var-cell-lookup "clojure.core" nm))))))
     (if (and c (var-cell-defined? c)) c jolt-nil)))
 
 ;; remove-ns: drop the namespace from the registry AND its vars, so find-ns
