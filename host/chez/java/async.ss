@@ -328,52 +328,55 @@
 
 ;; non-blocking take for alts!/poll!: a value, jolt-nil (closed+empty), or ac-poll-empty.
 ;; Drains pending alt-putters when the queue is empty (same drain path as jolt-async-take).
+;; ac-poll!/locked: mutex must already be held.
 (define ac-poll-empty (list 'empty))
+(define (ac-poll!/locked ch)
+  (cond ((and (eq? (async-chan-kind ch) 'promise) (not (ac-qempty? ch))) (ac-peek ch))
+        ((not (ac-qempty? ch)) (ac-take-head! ch))
+        ((async-chan-closed? ch) jolt-nil)
+        ((and (pair? (async-chan-alt-putters ch)) (not (async-chan-xrf ch)))
+         (let* ((hp (car (async-chan-alt-putters ch)))
+                (h (car hp)) (v (cdr hp)))
+           (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
+           (if (alt-claim! h)
+               (begin
+                 (alt-deliver! h #t ch)
+                 (let ((box (vector #f)))
+                   (ac-qpush! ch (cons v box))
+                   (condition-broadcast (async-chan-cv ch)))
+                 (ac-take-head! ch))
+               ac-poll-empty)))
+        (else ac-poll-empty)))
 (define (ac-poll! ch)
-  (with-mutex (async-chan-mu ch)
-    (cond ((and (eq? (async-chan-kind ch) 'promise) (not (ac-qempty? ch))) (ac-peek ch))
-          ((not (ac-qempty? ch)) (ac-take-head! ch))
-          ((async-chan-closed? ch) jolt-nil)
-          ;; drain an alt-putter if parked (no xform chans)
-          ((and (pair? (async-chan-alt-putters ch)) (not (async-chan-xrf ch)))
-           (let* ((hp (car (async-chan-alt-putters ch)))
-                  (h (car hp)) (v (cdr hp)))
-             (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
-             (if (alt-claim! h)
-                 (begin
-                   (alt-deliver! h #t ch)
-                   (let ((box (vector #f)))
-                     (ac-qpush! ch (cons v box))
-                     (condition-broadcast (async-chan-cv ch)))
-                   (ac-take-head! ch))
-                 ac-poll-empty)))  ; dead registration
-          (else ac-poll-empty))))
+  (with-mutex (async-chan-mu ch) (ac-poll!/locked ch)))
 
 ;; non-blocking give: 'ok (accepted), 'full (would block), or 'closed.
+;; ac-try-give!/locked: mutex must already be held.
+(define (ac-try-give!/locked ch v)
+  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
+  (cond
+    ((async-chan-closed? ch) 'closed)
+    ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
+                           (when (jolt-reduced? r) (ac-close! ch)) 'ok))
+    (else
+     (case (async-chan-kind ch)
+       ((dropping sliding) (ac-buf-give! ch v) 'ok)
+       ((promise) (when (ac-qempty? ch) (ac-qpush! ch (cons v #f))) (ac-notify! ch) 'ok)
+       (else
+        (cond
+          ((> (async-chan-cap ch) 0)
+           (if (< (ac-qlen ch) (async-chan-cap ch))
+               (begin (ac-qpush! ch (cons v #f)) (ac-notify! ch) 'ok)
+               'full))
+          ((> (async-chan-takew ch) 0)
+           (let ((box (vector #f)))
+             (ac-qpush! ch (cons v box))
+             (ac-notify! ch)
+             'ok))
+          (else 'full)))))))
 (define (ac-try-give! ch v)
   (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
-  (with-mutex (async-chan-mu ch)
-    (cond
-      ((async-chan-closed? ch) 'closed)
-      ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
-                             (when (jolt-reduced? r) (ac-close! ch)) 'ok))
-      (else
-       (case (async-chan-kind ch)
-         ((dropping sliding) (ac-buf-give! ch v) 'ok)
-         ((promise) (when (ac-qempty? ch) (ac-qpush! ch (cons v #f))) (ac-notify! ch) 'ok)
-         (else
-          (cond
-            ((> (async-chan-cap ch) 0)
-             (if (< (ac-qlen ch) (async-chan-cap ch))
-                 (begin (ac-qpush! ch (cons v #f)) (ac-notify! ch) 'ok)
-                 'full))
-            ;; unbuffered: only immediate if a taker is parked to receive it.
-            ((> (async-chan-takew ch) 0)
-             (let ((box (vector #f)))
-               (ac-qpush! ch (cons v box))
-               (ac-notify! ch)
-               'ok))
-            (else 'full))))))))
+  (with-mutex (async-chan-mu ch) (ac-try-give!/locked ch v)))
 
 ;; offer! / poll! — never block. offer! returns #t/#f(closed) on completion, nil if
 ;; it would block; poll! returns a value, nil (closed+empty), or the ::none sentinel.
@@ -476,7 +479,7 @@
                                   (with-mutex (async-chan-mu ch)
                                     (if is-put
                                         (async-chan-alt-putters-set! ch
-                                          (remove (lambda (hp) (eq? (car hp) h))
+                                          (remp (lambda (hp) (eq? (car hp) h))
                                                   (async-chan-alt-putters ch)))
                                         (async-chan-alt-takers-set! ch
                                           (remove (lambda (x) (eq? x h))
@@ -494,7 +497,7 @@
                                 (let ((ch (pvec-nth-d port 0 jolt-nil)) (v (pvec-nth-d port 1 jolt-nil)))
                                   (with-mutex (async-chan-mu ch)
                                     ;; re-check readiness under lock
-                                    (case (ac-try-give! ch v)
+                                    (case (ac-try-give!/locked ch v)
                                       ((ok)
                                        (if (alt-claim! h)
                                            (jolt-vector #t ch)
@@ -512,7 +515,7 @@
                                 ;; take from bare channel
                                 (let ((ch port))
                                   (with-mutex (async-chan-mu ch)
-                                    (let ((r (ac-poll! ch)))
+                                    (let ((r (ac-poll!/locked ch)))
                                       (if (eq? r ac-poll-empty)
                                           ;; not ready — register
                                           (begin
