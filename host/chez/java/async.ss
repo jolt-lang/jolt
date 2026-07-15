@@ -29,8 +29,9 @@
 (define-record-type alt-handler
   (fields fmu (mutable active?) wmu wcv mailbox)
   (nongenerative alt-handler-v1))
-(define (make-alt-handler)
-  (make-alt-handler (make-mutex) #t (make-mutex) (make-condition) (vector #f #f #f)))
+(define (alt-handler-alloc)
+  ((record-constructor (record-type-descriptor alt-handler))
+   (make-mutex) #t (make-mutex) (make-condition) (vector #f #f #f)))
 
 ;; --- channels ---------------------------------------------------------------
 ;; items: an amortized-O(1) FIFO held as a mutable #(out in len) — `out` is the
@@ -455,7 +456,7 @@
             (let fast-loop ((k 0))
               (if (fx=? k n)
                   ;; No fast hit — register a handler and wait.
-                  (let* ((h (make-alt-handler))
+                  (let* ((h (alt-handler-alloc))
                          (registered '()))
                     ;; REGISTRATION PASS with re-check under lock
                     (let reg-loop ((j 0))
