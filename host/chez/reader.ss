@@ -145,13 +145,17 @@
        (let ((h (string->number (substring body 2 blen) 16)))
          (and h (* sign h))))
       ;; radix NrDDD (Clojure 2r1010 / 16rFF / 36rZ): N in decimal, DDD in base N
-      ((let ((ri (or (rdr-string-index-char body #\r) (rdr-string-index-char body #\R))))
-         (and ri (> ri 0) (< (+ ri 1) blen) ri))
-       => (lambda (ri)
-            (let ((radix (string->number (substring body 0 ri))))
-              (and radix (integer? radix) (>= radix 2) (<= radix 36)
-                   (let ((v (rdr-parse-radix (substring body (+ ri 1) blen) radix)))
-                     (and v (* sign v)))))))
+       ((let ((ri (or (rdr-string-index-char body #\r) (rdr-string-index-char body #\R))))
+          (and ri (> ri 0) (< (+ ri 1) blen) ri))
+        => (lambda (ri)
+             (let* ((raw (substring body (+ ri 1) blen))
+                    (raw-len (string-length raw))
+                    (has-bigint (and (> raw-len 0) (char=? (string-ref raw (- raw-len 1)) #\N)))
+                    (digits (if has-bigint (substring raw 0 (- raw-len 1)) raw))
+                    (radix (string->number (substring body 0 ri))))
+               (and radix (integer? radix) (>= radix 2) (<= radix 36)
+                    (let ((v (rdr-parse-radix digits radix)))
+                      (and v (* sign v)))))))
       ;; octal 0NNN: a leading 0 followed by octal digits (Clojure reads 042 as 34,
       ;; not decimal 42). "0" alone, 0x.., 0r.. and a float "0.5" are handled
       ;; elsewhere or fall through (a non-octal digit fails rdr-all-octal?).
@@ -672,13 +676,19 @@
        (let-values (((src j) (rdr-read-regex s (+ i 1) end)))
          (values (jolt-re-pattern src) j)))
       ((char=? c #\_)                    ; #_ discard the next form
-       (let-values (((d j) (rdr-read-form s (+ i 1) end)))
-         (when (rdr-eof? d) (rdr-error s i "EOF after #_"))
-         ;; edn validates the discarded element (its tags go through the same
-         ;; :readers/:default pipeline; an unreadable one throws)
-         (let ((cb (rdr-discard-cb)))
-           (when cb (jolt-invoke cb d)))
-         (rdr-read-form s j end)))
+        (let-values (((d j) (rdr-read-form s (+ i 1) end)))
+          (when (rdr-eof? d) (rdr-error s i "EOF after #_"))
+          ;; edn validates the discarded element (its tags go through the same
+          ;; :readers/:default pipeline; an unreadable one throws)
+          (let ((cb (rdr-discard-cb)))
+            (when cb (jolt-invoke cb d)))
+          (rdr-read-form s j end)))
+       ((char=? c #\!)                    ; #! shebang line comment — skip to EOL
+        (let eol ((j (+ i 1)))
+          (if (or (>= j end) (char=? (string-ref s j) #\newline)
+                  (char=? (string-ref s j) #\return))
+              (rdr-read-form s j end)
+              (eol (+ j 1)))))
       ((char=? c #\')                    ; #'x var-quote -> (var x)
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
          (values (jolt-list (jolt-symbol #f "var") form) j)))
