@@ -578,16 +578,16 @@
            ((char=? c #\-) (scan (+ j 1) fs #t))
            ((char=? c #\i)
             (scan (+ j 1)
-                  (cons (if neg 'w/case 'case-insensitive) fs) neg))
+                  (cons (if neg 'case-sensitive 'case-insensitive) fs) neg))
            ((char=? c #\s)
             (scan (+ j 1)
-                  (cons (if neg 'w/noutf8 'single-line) fs) neg))
+                  (cons (if neg 'not-single-line 'single-line) fs) neg))
            ((char=? c #\m)
             (scan (+ j 1)
-                  (cons (if neg 'w/noutf8 'multi-line) fs) neg))
-            ((char=? c #\x)
-             (scan (+ j 1)
-                   (cons (if neg 'w/noutf8 'ignore-space) fs) neg))
+                  (cons (if neg 'not-multi-line 'multi-line) fs) neg))
+           ((char=? c #\x)
+            (scan (+ j 1)
+                  (cons (if neg 'not-ignore-space 'ignore-space) fs) neg))
             ;; u (UNICODE_CASE), U (UNICODE_CHARACTER_CLASS), d (UNIX_LINES):
             ;; accept and ignore — they don't change matching for our engine.
             ((memv c '(#\u #\U #\d))
@@ -599,8 +599,10 @@
                     (values (wrap-case-flag sre fs) (+ i2 1))
                     (error 'java-pattern->sre "unterminated scoped flags group" src)))))
            ((char=? c #\))
-            ;; Unscoped toggle (?i) — apply to remainder via returned flags
-            (values 'epsilon (+ j 1)))
+            ;; Unscoped toggle (?i) — parse remainder with new flags
+            (let ((new-flags (apply-inline-flags flags fs)))
+              (let-values (((sre i2) (parse-expr src (+ j 1) end new-flags (+ depth 1))))
+                (values (wrap-flags-sre sre fs) i2))))
            (else
             (error 'java-pattern->sre "unrecognized inline flag" src)))))))
 
@@ -608,20 +610,24 @@
   (let loop ((fs fs) (flags flags))
     (if (null? fs) flags
         (let ((f (car fs)))
-          (loop (cdr fs)
-                (if (memq f '(w/case w/noutf8))
-                    flags
-                    (cons f (remq (negated-flag f) flags))))))))
-
-(define (negated-flag f)
-  (case f
-    ((case-insensitive) 'w/case)
-    ((single-line) 'w/noutf8)
-    ((multi-line) 'w/noutf8)
-    ((ignore-space) 'w/noutf8)
-    (else f)))
+          (cond
+           ((eq? f 'case-sensitive) (loop (cdr fs) (remq 'case-insensitive flags)))
+           ((eq? f 'not-single-line) (loop (cdr fs) (remq 'single-line flags)))
+           ((eq? f 'not-multi-line) (loop (cdr fs) (remq 'multi-line flags)))
+           ((eq? f 'not-ignore-space) (loop (cdr fs) (remq 'ignore-space flags)))
+           (else (loop (cdr fs) (cons f flags))))))))
 
 (define (wrap-case-flag sre fs)
   (if (memq 'case-insensitive fs)
       `(w/nocase ,sre)
       sre))
+
+(define (wrap-flags-sre sre fs)
+  (let loop ((fs fs) (sre sre))
+    (if (null? fs) sre
+        (let ((f (car fs)))
+          (cond
+           ((eq? f 'case-insensitive) (loop (cdr fs) `(w/nocase ,sre)))
+           ((memq f '(case-sensitive not-single-line not-multi-line not-ignore-space))
+            (loop (cdr fs) sre))
+           (else (loop (cdr fs) sre)))))))
