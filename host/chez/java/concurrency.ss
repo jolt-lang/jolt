@@ -665,12 +665,13 @@
 ;; Real OS threads over Chez fork-thread (shared heap — a captured atom/var is
 ;; shared). A Thread runs its Runnable thunk; start forks, join waits on a
 ;; condition latched at completion. CountDownLatch is a counting barrier.
-(define (make-jthread thunk) (make-jhost "user-thread" (vector thunk #f (make-mutex) (make-condition) (box #f))))
+(define (make-jthread thunk) (make-jhost "user-thread" (vector thunk #f (make-mutex) (make-condition) (box #f) #f)))
 (for-each (lambda (nm) (register-class-ctor! nm (lambda (thunk . _) (make-jthread thunk))))
           '("Thread" "java.lang.Thread"))
 (register-host-methods! "user-thread"
   (list (cons "start" (lambda (self)
           (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
+            (vector-set! st 5 #t)  ; mark started before forking
             (fork-thread (lambda ()
                (*txn* #f)                          ; child thread must not inherit parent's txn
                (dyn-binding-stack snap)
@@ -737,10 +738,12 @@
         (cons "isDone" (lambda (self) (vector-ref (jhost-state self) 0)))
         (cons "isCancelled" (lambda (self) #f))
         (cons "cancel" (lambda (self . _) #f))))
-;; executor-service state: #(shutdown? queue-tail-box queue-mutex queue-cond active-workers)
-;; the queue is a simple list held in a box, appended at the tail, popped at head.
+;; executor-service state: #(shutdown? queue-box queue-mutex queue-cond worker-count)
+;; queue-box holds a pair (out . in) — out is the dequeue head-list, in is the
+;; enqueue tail-list (reversed). Enqueue conses onto in (O(1)); dequeue pops from
+;; out, reversing in into out when out is empty (amortized O(1)).
 (define (make-executor n-workers)
-  (let ((self (make-jhost "executor-service" (vector #f (box '()) (make-mutex) (make-condition) n-workers))))
+  (let ((self (make-jhost "executor-service" (vector #f (box (cons '() '())) (make-mutex) (make-condition) n-workers))))
     (let ((st (jhost-state self)))
       (let spawn ((k n-workers))
         (when (> k 0)
@@ -748,11 +751,19 @@
             (let loop ()
               (let ((job (with-mutex (vector-ref st 2)
                            (let poll ()
-                             (cond ((pair? (unbox (vector-ref st 1)))
-                                    (let ((q (unbox (vector-ref st 1))))
-                                      (set-box! (vector-ref st 1) (cdr q)) (car q)))
-                                   ((vector-ref st 0) #f)   ; shutdown + empty -> exit
-                                   (else (condition-wait (vector-ref st 3) (vector-ref st 2)) (poll)))))))
+                             (let ((q (unbox (vector-ref st 1))))
+                               (cond ((pair? (car q))
+                                      (let ((out (car q)))
+                                        (set-car! q (cdr out))
+                                        (car out)))
+                                     ((pair? (cdr q))
+                                      (set-car! q (reverse (cdr q)))
+                                      (set-cdr! q '())
+                                      (let ((out (car q)))
+                                        (set-car! q (cdr out))
+                                        (car out)))
+                                     ((vector-ref st 0) #f)   ; shutdown + empty -> exit
+                                     (else (condition-wait (vector-ref st 3) (vector-ref st 2)) (poll))))))))
                 (if job
                     (begin (job) (loop))
                     (with-mutex (vector-ref st 2)
@@ -763,7 +774,8 @@
 (define (executor-enqueue! self job)
   (let ((st (jhost-state self)))
     (with-mutex (vector-ref st 2)
-      (set-box! (vector-ref st 1) (append (unbox (vector-ref st 1)) (list job)))
+      (let ((q (unbox (vector-ref st 1))))
+        (set-cdr! q (cons job (cdr q))))
       (condition-broadcast (vector-ref st 3)))))
 (let ((single (lambda _ (make-executor 1)))
       (fixed  (lambda (n . _) (make-executor (max 1 (jnum->exact n)))))
@@ -797,8 +809,8 @@
         (cons "close" (lambda (self) (let ((st (jhost-state self)))
           (vector-set! st 0 #t) (with-mutex (vector-ref st 2) (condition-broadcast (vector-ref st 3)))) jolt-nil))
         (cons "isShutdown" (lambda (self) (vector-ref (jhost-state self) 0)))
-        (cons "isTerminated" (lambda (self) (let ((st (jhost-state self)))
-          (and (vector-ref st 0) (null? (unbox (vector-ref st 1))) (fx=? 0 (vector-ref st 4))))))
+        (cons "isTerminated" (lambda (self) (let* ((st (jhost-state self)) (q (unbox (vector-ref st 1))))
+          (and (vector-ref st 0) (null? (car q)) (null? (cdr q)) (fx=? 0 (vector-ref st 4))))))
         (cons "awaitTermination" (lambda (self ms . _)
           (let* ((st (jhost-state self))
                  (deadline (+ (now-millis) (if (number? ms) (jnum->exact ms) 0))))
