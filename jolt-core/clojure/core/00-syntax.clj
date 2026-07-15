@@ -268,14 +268,12 @@
                                 (or ld? kd?)
                                   (if req?
                                     (throw (new Exception (str "Can't supply default value for required key: " (pr-str bk))))
-                                    `(if (contains? ~gm ~bk)
-                                       (get ~gm ~bk)
-                                       ~(get defaults (if ld? local bk))))
+                                    `(get ~gm ~bk ~(get defaults (if ld? local bk))))
                                 req? `(req! ~gm ~bk)
                                 :else `(get ~gm ~bk))))
                         ;; bind bb (a plain ident, a throwaway gignore, or a nested
                         ;; pattern) to key bk. :or default expressions are inlined
-                        ;; by getter at the binding position (lazy evaluation).
+                        ;; as get's not-found arg (eager, JVM-exact).
                         push1
                           (fn* [a bb bk req?]
                             (let* [bv (getter bb bk req?)]

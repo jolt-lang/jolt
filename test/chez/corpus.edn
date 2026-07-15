@@ -8,7 +8,7 @@
   {:suite "destructure / :or" :label "map default when key absent" :expected "9" :actual "(let [{x :x :or {x 9}} {}] x)" :portability :common}
   {:suite "destructure / :or" :label "kwargs default when key absent" :expected "9" :actual "((fn [& {x :x :or {x 9}}] x))" :portability :common}
   {:suite "destructure / :or" :label "default not used when key present" :expected "5" :actual "(let [{x :x :or {x 9}} {:x 5}] x)" :portability :common}
-  {:suite "destructure / :or" :label ":keys :or default lazy — does not evaluate when key present" :expected "\"\"" :actual "(let [o (with-out-str (let [{:keys [b] :or {b (do (print \"E\") 0)}} {:b 5}] b))] o)" :portability :common}
+  {:suite "destructure / :or" :label ":keys :or default eager — evaluates as get not-found arg even when key present" :expected "\"E\"" :actual "(let [o (with-out-str (let [{:keys [b] :or {b (do (print \"E\") 0)}} {:b 5}] b))] o)" :portability :common}
   {:suite "destructure / :or" :label ":keys :or default uses sibling binding (lazy eval order)" :expected "2" :actual "(let [{:keys [a b] :or {b (inc a)}} {:a 1}] b)" :portability :common}
   {:suite "destructure / for :let" :label "a for/doseq :let binding may itself destructure" :expected "[10 20]" :actual "(vec (for [x [1 2] :let [{:keys [y]} {:y (* x 10)}]] y))" :portability :common}
   {:suite "deftype / method param shadows field" :label "a method param named like a field shadows it (Clojure scope)" :expected "9" :actual "(do (defprotocol P (setm [this q])) (defrecord R [k m] P (setm [this m] (assoc this :m m))) (:m (setm (->R 1 nil) 9)))" :portability :common}
