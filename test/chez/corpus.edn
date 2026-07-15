@@ -3913,4 +3913,9 @@
   {:suite "reduce / user ^double hint survives seeding" :label "reduce with ^double param hints and num init coerces and unboxes" :expected "7.0" :actual "(reduce (fn [^double acc ^double x] (+ acc x)) 1 [1 2 3])" :portability :common}
   {:suite "munging / jolt-nil local" :label "a local named jolt-nil must not shadow the runtime nil" :expected "nil" :actual "(let [jolt-nil 5] nil)" :portability :common}
   {:suite "munging / fl+ local" :label "a local named fl+ must not shadow the flonum add" :expected "3.0" :actual "(let [fl+ 1] (+ fl+ 2.0))" :portability :common}
-  {:suite "munging / var-deref local" :label "a local named var-deref must not shadow the runtime var-deref" :expected "9" :actual "(let [var-deref 9] var-deref)" :portability :common}]
+  {:suite "munging / var-deref local" :label "a local named var-deref must not shadow the runtime var-deref" :expected "9" :actual "(let [var-deref 9] var-deref)" :portability :common}
+  {:suite "reader / float N suffix" :label "1e2N rejects float with N suffix" :expected "throws" :actual "(read-string \"1e2N\")" :portability :common}
+  {:suite "reader / surrogate in string" :label "\\ud800 in string throws Invalid character constant" :expected "throws" :actual "(read-string \"\\\"\\\\ud800\\\"\")" :portability :common}
+  {:suite "reader / top-level splice" :label "#?@ at top level throws" :expected "throws" :actual "(read-string \"#?@(:clj [1])\")" :portability :common}
+  {:suite "reader / record literal" :label "#ns.Type{} constructs record in read-string" :expected "42" :actual "(do (defrecord Rdlit [a]) (:a (read-string \"#user.Rdlit{:a 42}\")))" :portability :common}
+  {:suite "reader / record vector ctor" :label "#ns.Type[] constructs record from vector" :expected "\"a\"" :actual "(do (defrecord Rdlvec [x y]) (:x (read-string \"#user.Rdlvec[\\\"a\\\" 2]\")))" :portability :common}]

@@ -170,10 +170,10 @@
       ;; "invalid number" alternative)
       ((and (>= blen 2) (char=? (string-ref body 0) #\0) (rdr-all-digits? body 1 blen))
        #f)
-      ;; bigint suffix N
+      ;; bigint suffix N — must be an exact integer (reject floats like 1e2N)
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\N))
        (let ((n (string->number (substring body 0 (- blen 1)))))
-         (and n (integer? n) (* sign n))))
+         (and n (exact? n) (integer? n) (* sign n))))
       ;; bigdecimal suffix M -> a :bigdec form carrying the numeric text; the back
       ;; end lowers it to a runtime jbigdec.
       ((and (> blen 1) (char=? (string-ref body (- blen 1)) #\M))
@@ -225,23 +225,24 @@
                       (when (> val 255)
                         (rdr-error s i "Octal escape sequence must be in range [0, 377]"))
                       (loop j (cons (integer->char val) acc))))))
-             ((#\u)
-              (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
-                ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,
-                ;; so combine a high+low surrogate pair (😃 -> U+1F603) into
-                ;; the one scalar char. A lone surrogate has no scalar — emit U+FFFD
-                ;; rather than crash (the irreducible UTF-16/scalar divergence).
-                (cond
-                  ((and (fx>=? cp #xD800) (fx<=? cp #xDBFF)
-                        (fx<? (fx+ j 1) end)
-                        (char=? (string-ref s j) #\\) (char=? (string-ref s (fx+ j 1)) #\u))
-                   (let-values (((lo k) (rdr-hex->int s (+ j 2) 4)))
-                     (if (and (fx>=? lo #xDC00) (fx<=? lo #xDFFF))
-                         (loop k (cons (integer->char
-                                        (fx+ #x10000 (fx* (fx- cp #xD800) 1024) (fx- lo #xDC00))) acc))
-                         (loop j (cons #\xFFFD acc)))))
-                  ((and (fx>=? cp #xD800) (fx<=? cp #xDFFF)) (loop j (cons #\xFFFD acc)))
-                  (else (loop j (cons (integer->char cp) acc))))))
+              ((#\u)
+               (let-values (((cp j) (rdr-hex->int s (+ i 2) 4)))
+                 ;; A \u escape is a UTF-16 code unit. jolt chars are Unicode scalars,
+                 ;; so combine a high+low surrogate pair into the one scalar char.
+                 ;; Lone surrogates have no scalar — throw Invalid character constant
+                 ;; (JVM-visible divergence, bead jolt-445k.34).
+                 (cond
+                   ((and (fx>=? cp #xD800) (fx<=? cp #xDBFF)
+                         (fx<? (fx+ j 1) end)
+                         (char=? (string-ref s j) #\\) (char=? (string-ref s (fx+ j 1)) #\u))
+                    (let-values (((lo k) (rdr-hex->int s (+ j 2) 4)))
+                      (if (and (fx>=? lo #xDC00) (fx<=? lo #xDFFF))
+                          (loop k (cons (integer->char
+                                         (fx+ #x10000 (fx* (fx- cp #xD800) 1024) (fx- lo #xDC00))) acc))
+                          (rdr-error s i "Invalid character constant: \\u escape not followed by low surrogate"))))
+                   ((and (fx>=? cp #xD800) (fx<=? cp #xDFFF))
+                    (rdr-error s i "Invalid character constant: lone surrogate \\u escape"))
+                   (else (loop j (cons (integer->char cp) acc))))))
              (else (rdr-error s i (string-append "Unsupported escape character: \\" (string e))
 )))))
         (else (loop (+ i 1) (cons c acc)))))))
@@ -273,7 +274,10 @@
     ((string=? name "backspace") #\backspace)
     ((string=? name "formfeed") #\page)
     ((char=? (string-ref name 0) #\u)
-     (integer->char (string->number (substring name 1 (string-length name)) 16)))
+      (let ((cp (string->number (substring name 1 (string-length name)) 16)))
+        (if (and cp (>= cp #xD800) (<= cp #xDFFF))
+            (jolt-throw (jolt-ex-info "Invalid character constant: lone surrogate \\u escape" empty-pmap))
+            (integer->char cp))))
     ((char=? (string-ref name 0) #\o)
      (let ((v (string->number (substring name 1 (string-length name)) 8)))
        (when (or (not v) (> v 255))
@@ -560,13 +564,14 @@
 (define (rdr-record-tag? tok) (and (rdr-string-rindex-char tok #\.) #t))
 
 ;; Is v a cseq whose head symbol names a record constructor — "map->" or "->"
-;; prefix — produced by the reader for a nested #ns.Type{...}/[...]?  Those
-;; factory calls must stay live so the outer literal still constructs them.
+;; prefix WITH a namespace (produced by the reader for #ns.Type{...}/[...])?
+;; Unqualified "->" is the threading macro, not a record ctor.
 (define (rdr-ctor-call? v)
   (and (cseq? v)
        (let ((lst (seq->list v)))
          (and (pair? lst)
               (symbol-t? (car lst))
+              (symbol-t-ns (car lst))               ; must be qualified
               (let* ((nm (symbol-t-name (car lst)))
                      (len (string-length nm)))
                 (or (and (>= len 5) (string=? (substring nm 0 5) "map->"))
@@ -1100,6 +1105,31 @@
               (let ((ns (symbol-t-ns h)))
                 (or (jolt-nil? ns) (null? ns) (not ns)))))))
 
+;; rdr-un-datafy: reverse rdr-datafy. (quote x) → x, (clojure.core/vector ...)
+;; → vector, (clojure.core/list ...) → list. pmap args (from jolt-hash-map) are
+;; already real values and returned as-is.
+(define (rdr-un-datafy x)
+  (cond
+   ((pmap? x) x)
+   ((cseq? x)
+    (let ((lst (seq->list x)))
+      (if (null? lst) x
+          (let ((h (car lst)))
+            (cond
+             ((and (symbol-t? h) (string=? (symbol-t-name h) "quote")
+                   (pair? (cdr lst)) (null? (cddr lst)))
+              (cadr lst))
+             ((and (symbol-t? h) (string=? (symbol-t-name h) "vector")
+                   (let ((ns (symbol-t-ns h)))
+                     (and ns (string=? ns "clojure.core"))))
+              (apply jolt-vector (map rdr-un-datafy (cdr lst))))
+             ((and (symbol-t? h) (string=? (symbol-t-name h) "list")
+                   (let ((ns (symbol-t-ns h)))
+                     (and ns (string=? ns "clojure.core"))))
+              (apply jolt-list (map rdr-un-datafy (cdr lst))))
+             (else (rdr-form->data x)))))))
+   (else x)))
+
 ;; rdr-form->data*: convert the VALUE structure (set/tagged/nested forms). The
 ;; wrapper below adds the metadata, so the unchanged branches return x bare.
 (define (rdr-form->data* x)
@@ -1126,13 +1156,20 @@
        (if order
            (let-values (((kvs changed) (rdr-conv-each order)))
              (if changed (rdr-make-map kvs) x))
-           (let-values (((kvs changed)
-                         (rdr-conv-each (pmap-fold x (lambda (k v a) (cons k (cons v a))) '()))))
-             (if changed (apply jolt-hash-map kvs) x)))))
-    ((cseq? x)
-     (let-values (((items changed) (rdr-conv-each (seq->list x))))
-       (if changed (apply jolt-list items) x)))
-    (else x)))
+            (let-values (((kvs changed)
+                          (rdr-conv-each (pmap-fold x (lambda (k v a) (cons k (cons v a))) '()))))
+              (if changed (apply jolt-hash-map kvs) x)))))
+     ((cseq? x)
+      (if (rdr-ctor-call? x)
+          ;; Record/type literal: resolve constructor and apply to data-converted args
+          (let* ((lst (seq->list x))
+                 (ctor-sym (car lst))
+                 (ctor (var-deref (symbol-t-ns ctor-sym) (symbol-t-name ctor-sym)))
+                 (args (map rdr-un-datafy (cdr lst))))
+            (apply ctor args))
+          (let-values (((items changed) (rdr-conv-each (seq->list x))))
+            (if changed (apply jolt-list items) x))))
+     (else x)))
 ;; Read DATA always carries metadata, converting its nested forms too — Clojure's
 ;; reader reads a ^{…} map with the same read() as any value, so a set/tagged
 ;; literal in metadata is a value, not a form. Carry it whether or not the value
@@ -1147,12 +1184,24 @@
 (define (rdr-read-top s i end)
   (let ((k (rdr-skip-ws s i end)))
     (when (and (< k end)
-               (let ((c (string-ref s k)))
-                 (or (char=? c #\)) (char=? c #\]) (char=? c #\}))))
+                (let ((c (string-ref s k)))
+                  (or (char=? c #\)) (char=? c #\]) (char=? c #\}))))
       (jolt-throw (jolt-ex-info (string-append "Unmatched delimiter: "
                                                (string (string-ref s k)))
                                 empty-pmap)))
-    (rdr-read-form s k end)))
+    (let-values (((form j) (rdr-read-form s k end)))
+      (when (rdr-splice-t? form)
+        (jolt-throw (jolt-ex-info
+                     "Reader conditional splicing not allowed at the top level."
+                     empty-pmap)))
+      (values form j))))
+
+(define (rdr-read-top-splice-guard form)
+  (when (rdr-splice-t? form)
+    (jolt-throw (jolt-ex-info
+                 "Reader conditional splicing not allowed at the top level."
+                 empty-pmap)))
+  form)
 
 ;; clojure.core/read-string: first form, or nil for blank / comment-only input
 ;; (parse-string wart, matched deliberately). jolt-read-form-raw keeps set FORMS
