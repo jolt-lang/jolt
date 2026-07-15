@@ -730,4 +730,16 @@
   ;; Stage C — Math/getExponent via IEEE 754 bit extraction
   {:suite "javastatic" :expr "(Math/getExponent 2.0)" :expected "1"}
   {:suite "javastatic" :expr "(Math/getExponent 0.0)" :expected "-1023"}
+  ;; Stage D — executor awaitTermination blocks until workers drain
+  {:suite "concurrency" :expr "(do (require '[clojure.core.async :refer [<!!]]) (let [e (java.util.concurrent.Executors/newSingleThreadExecutor) c (java.util.concurrent.CountDownLatch. 1)] (.execute e (fn [] (.countDown c))) (.shutdown e) (.await c) (.awaitTermination e 5000) (.isTerminated e)))" :expected "true"}
+  ;; Stage D — ReentrantLock reentrant lock/unlock + hold count
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) (.lock l) (let [locked (.isLocked l) held (.isHeldByCurrentThread l)] (.unlock l) (.unlock l) [locked held (.isLocked l)]))" :expected "[true true false]"}
+  ;; Stage D — ReentrantLock tryLock
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) [(.tryLock l) (.getHoldCount l)])" :expected "[true 2]"}
+  ;; Stage D — ReentrantLock.getHoldCount
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) [(.getHoldCount l) (.isLocked l) (.isHeldByCurrentThread l)])" :expected "[1 true true]"}
+  ;; Stage D — thread interrupt flag propagation
+  {:suite "concurrency" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(.isInterrupted t) (Thread/interrupted)])" :expected "[true true]"}
+  ;; Stage D — Thread.interrupted clears the flag
+  {:suite "concurrency" :expr "(do (.interrupt (Thread/currentThread)) (Thread/interrupted) (Thread/interrupted))" :expected "false"}
 ]
