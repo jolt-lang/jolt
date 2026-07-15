@@ -596,11 +596,33 @@
   {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a b]} {:a 1}] [a b])" :expected :throws}
   {:suite "clj-1.13 checked-keys" :expr "(nil? (let [{:keys! [a]} {:a nil}] a))" :expected "true"}
   {:suite "clj-1.13 checked-keys" :expr "(let [{:strs! [a]} {\"a\" 5}] a)" :expected "5"}
-  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & b]} {:a 1 :b 2}] a)" :expected "1"}
-  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & b]} {:a 1}] a)" :expected :throws}
-  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys [a & b]} {:a 1 :b 2}] a)" :expected "1"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & :b]} {:a 1 :b 2}] a)" :expected "1"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & :b]} {:a 1}] a)" :expected :throws}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys [a & :b]} {:a 1 :b 2}] a)" :expected "1"}
+  {:suite "clj-1.13 checked-keys" :expr "(let [{:keys! [a & b]} {:a 1 :b 2}] a)" :expected :throws}
   {:suite "clj-1.13 checked-keys" :expr "(let [{:foo/keys! [a]} {:foo/a 7}] a)" :expected "7"}
   {:suite "clj-1.13 checked-keys" :expr "(let [{:foo/keys! [a]} {}] a)" :expected :throws}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:keys [a & :c :z]} {:a 1 :b 2 :c 3}] a)" :expected "1"}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:keys! [a & :c]} {:a 1 :c 3}] a)" :expected "1"}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:keys! [a & :c]} {:a 1}] a)" :expected :throws}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:syms! [a & (quote b)]} {(quote a) 1 (quote b) 2}] a)" :expected "1"}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:strs! [a & \"c\"]} {\"a\" 1 \"c\" 3}] a)" :expected "1"}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:keys! [a & (quote b) \"c\"]} {:a 1 (quote b) 2 \"c\" 3}] a)" :expected "1"}
+  {:suite "clj-1.13 keys-after-&" :expr "(let [{:keys [a & b]} {:a 1 :b 2}] a)" :expected :throws}
+  {:suite "clj-1.13 :or by key" :expr "(let [{:keys [a] :or {:a 9}} {}] a)" :expected "9"}
+  {:suite "clj-1.13 :or by key" :expr "(let [{:keys [a] :or {a 9}} {}] a)" :expected "9"}
+  {:suite "clj-1.13 :or by key" :expr "(let [{:keys [a] :or {:a 1 a 1}} {}] a)" :expected :throws}
+  {:suite "clj-1.13 :defaults" :expr "(let [{:defaults d :or {}} {}] d)" :expected "{}"}
+  {:suite "clj-1.13 :defaults" :expr "(let [{:keys [a] :defaults d :or {:a 1}} {}] d)" :expected "{:a 1}"}
+  {:suite "clj-1.13 :defaults" :expr "(let [{:keys [a] :defaults d :or {a 1}} {}] d)" :expected "{:a 1}"}
+  {:suite "clj-1.13 :defaults" :expr "(let [{:defaults d} {}] d)" :expected :throws}
+  {:suite "destructure / hints" :expr "(some (fn [x] (when (and (symbol? x) (= \"a\" (name x)) (meta x)) (:tag (meta x)))) (destructure (quote [{^String a :a} {}])))" :expected "String"}
+  {:suite "destructure / hints" :expr "(some (fn [x] (when (and (symbol? x) (= \"a\" (name x)) (meta x)) (:tag (meta x)))) (destructure (quote [{:keys [^long a]} {}])))" :expected "long"}
+  {:suite "clj-1.13 :select" :expr "(= {:a 1 :b 2 :c 3 :d 4} (let [{:keys [a b & :c :z] :keys! [d] :select s} {:a 1 :b 2 :c 3 :d 4 :e 5}] s))" :expected "true"}
+  {:suite "clj-1.13 :select" :expr "(= {:a 1 :b 2 :c 3 :z 42} (let [{:keys [a b z & :c] :or {z 42} :select s} {:a 1 :b 2 :c 3}] s))" :expected "true"}
+  {:suite "clj-1.13 :select" :expr "(= {\"g\" 6 \"h\" 7} (let [{:strs [g h] :select m} {\"g\" 6 \"h\" 7 \"x\" 9}] m))" :expected "true"}
+  {:suite "clj-1.13 :select" :expr "(= (quote {sa 10 sb 20 sc 30}) (let [{:syms [sa sb & (quote sc)] :select m} {(quote sa) 10 (quote sb) 20 (quote sc) 30 (quote sd) 40}] m))" :expected "true"}
+  {:suite "clj-1.13 :select" :expr "(= [{:aa 1} {:nested {:aa 1} :x 9}] (let [{{aa :aa :select ns} :nested aqx :x :select tl} {:nested {:aa 1 :bb 2} :x 9}] [ns tl]))" :expected "true"}
   {:suite "clj-1.13 array-map-64" :expr "(keys {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10})" :expected "(:a :b :c :d :e :f :g :h :i :j)"}
   {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 20)) (keys (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 20)))))" :expected "true"}
   {:suite "clj-1.13 array-map-64" :expr "(= (map (fn [i] (keyword (str \"k\" i))) (range 64)) (keys (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64))))" :expected "true"}

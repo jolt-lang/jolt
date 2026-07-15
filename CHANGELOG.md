@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-14
+
+### Added
+
+- Map destructuring follows Clojure 1.13.0-alpha4: idents after `&` in
+  `:keys`/`:syms`/`:strs` (and the `!` variants) are keys, not binding symbols;
+  `:or` accepts key→val entries; `:defaults name` binds a map of the resolved
+  defaults; `:select name` binds a map of the mentioned keys, filled from `:or`
+  and selecting deeply through nested map patterns. Adds `some-vals`.
+
+### Fixed
+
+- `(. Class staticMethod args)` now dispatches statically for the value classes
+  (`Long`/`Integer`/`String`) and any registered/fully-qualified class, matching
+  the `Class/staticMethod` slash form.
+- `load-string` and `eval` handle source containing reader literals (`#inst`,
+  `#uuid`, `#"regex"`): `load-string` reads raw forms like file loading, and
+  `eval` self-evaluates opaque host values built by `read-string`.
+
 ## [0.3.0] - 2026-07-14
 
 ### Changed

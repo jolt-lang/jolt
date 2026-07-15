@@ -31,7 +31,7 @@
                                form-macro? form-expand-1 resolve-global
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key deftype-ctor-class form-position late-bind?
-                               resolve-class-hint]]))
+                               resolve-class-hint host-class-name?]]))
 
 (declare analyze)
 
@@ -566,11 +566,17 @@
         member (nth items 2)
         ;; (. Class method args*) with a class target is a static call —
         ;; equivalent to (Class/method args*). resolve-global tags a class
-        ;; symbol :kind :class; a local of the same name shadows it.
+        ;; symbol :kind :class; a local of the same name shadows it. The value
+        ;; classes (Long/Integer/String) self-evaluate through a clojure.core var,
+        ;; so they resolve :var, not :class — host-class-name? catches those, so
+        ;; (. Long parseLong x) dispatches statically like (Long/parseLong x).
         class-target (when (and (form-sym? target)
                                 (not (local? env (form-sym-name target))))
-                       (let [r (resolve-global ctx target)]
-                         (when (= :class (:kind r)) (:name r))))]
+                       (let [nm (form-sym-name target)
+                             r (resolve-global ctx target)]
+                         (cond
+                           (= :class (:kind r)) (:name r)
+                           (host-class-name? nm) nm)))]
     (cond
       (and class-target (form-sym? member))
         (invoke (host-static class-target (form-sym-name member))

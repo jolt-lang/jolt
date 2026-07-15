@@ -289,6 +289,17 @@
              (and (fx<? (fx+ i 1) n) (char-upper-case? (string-ref nm (fx+ i 1)))))
             (else (loop (fx- i 1)))))))
 
+;; Does `nm` name a host class? A fully-qualified class name (java.time.Instant),
+;; or a short name registered with statics or a constructor (Long, Math, File).
+;; The value classes (Long/Integer/String) also self-evaluate to a class through
+;; a clojure.core var, so resolve-global tags them :var — this predicate lets the
+;; analyzer still treat `(. Long parseLong x)` as a static call, mirroring the
+;; `(Long/parseLong x)` slash form.
+(define (hc-host-class-name? nm)
+  (or (hc-fq-class-name? nm)
+      (and (hashtable-ref class-statics-tbl nm #f) #t)
+      (and (hashtable-ref class-ctors-tbl nm #f) #t)))
+
 (define (hc-resolve-global ctx sym)
   (let* ((nm (symbol-t-name sym))
          (cell (hc-resolve-cell ctx sym)))
@@ -545,6 +556,7 @@
   (def-var! "jolt.host" "form-macro?" hc-macro?)
   (def-var! "jolt.host" "form-expand-1" hc-expand-1)
   (def-var! "jolt.host" "resolve-global" hc-resolve-global)
+  (def-var! "jolt.host" "host-class-name?" hc-host-class-name?)
   (def-var! "jolt.host" "host-intern!" hc-intern!)
   (def-var! "jolt.host" "form-syntax-quote-lower" hc-syntax-quote-lower)
   (def-var! "jolt.host" "record-type?" hc-record-type?)
