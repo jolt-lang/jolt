@@ -35,7 +35,7 @@
 (load "host/chez/png.ss")
 (load "host/chez/loader.ss")
 (load "host/chez/java/ffi.ss")
-(set-source-roots! (list "jolt-core" "stdlib" "vendor/fs/src"))
+(set-source-roots! ldr-install-roots)
 (load "host/chez/build.ss")   ; bld-* helpers, ei-* (emit-image), dce
 
 (define jb-args (cdr (command-line)))
@@ -87,7 +87,7 @@
                 "(register-embedded-resource! " (ei-str-lit rel) " "
                 (ei-str-lit (read-file-string abs)) ")\n")))))
         (bld-walk-files root "" '())))
-    (list "jolt-core" "stdlib" "vendor/fs/src")))
+    ldr-install-roots))
 
 ;; Embed every runtime .ss the build inlines into an app (the transitive closure of
 ;; the manifest's loads: rt.ss + all it loads, the seed, compile-eval, loader, ffi,
@@ -121,7 +121,7 @@
 ;; inlined, so `build` dispatches straight to jolt.host/build-binary after the
 ;; bundled boots/stub are materialized from the binary's own C arrays.
 (define (jb-emit-launcher out)
-  (put-string out "
+  (put-string out (string-append "
 ;; Materialize the bundled Chez boots + launcher stub (cc-linked into this binary
 ;; as C arrays) into the embedded-bytes store, so build-self-contained can spill
 ;; them. Done lazily on `build` only.
@@ -144,7 +144,7 @@
 (suppress-greeting #t)
 (scheme-start
   (lambda args
-    (set-source-roots! (list \"jolt-core\" \"stdlib\" \"vendor/fs/src\"))
+    (set-source-roots! " (ldr-install-roots-str) ")
     ;; JOLT_TRACE at RUNTIME (the env is unset at heap-build), before any app ns
     ;; compiles, so a `-M:run` traces the app's own code.
     (jolt-trace-init-from-env!)
@@ -153,7 +153,7 @@
     ;; driver runs — the launcher once carried a stale fork of the -e arm.
     (jolt-cli-run args (lambda () (jolt-materialize-bundles!)))
     (exit 0)))
-"))
+")))
 
 (display "build-joltc: emitting flat source\n")
 (let ((out (open-output-file jb-flat-ss 'replace)))

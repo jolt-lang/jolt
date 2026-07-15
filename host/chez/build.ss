@@ -180,7 +180,7 @@
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
     "(load \"host/chez/java/ffi.ss\")"
-    "(set-source-roots! (list \"jolt-core\" \"stdlib\" \"vendor/fs/src\"))"))
+    (string-append "(set-source-roots! " (ldr-install-roots-str) ")")))
 
 (define bld-tagged-loads
   '((prelude . "(load \"host/chez/seed/prelude.ss\")")
@@ -567,8 +567,12 @@
 ;; Post-order DFS from a list of root namespace names: for each name, find its
 ;; file, recurse into its requires, then append (name . file). Already-visited
 ;; names are skipped (cycles terminate). Names whose source file can't be found
-;; (stdlib/AOT/in-memory) are skipped — they resolve elsewhere. Result: deps
-;; first, roots last.
+;; (stdlib/AOT/in-memory) are skipped — they resolve elsewhere.
+;; IMPORTANT: namespaces whose resolved file is jolt-runtime-owned (embedded
+;; resource or under ldr-install-roots) are also skipped — they are either
+;; preloaded at joltc boot or loaded via the hook flow, and emitting them into
+;; the app section would bloat the binary and break direct-link bindings.
+;; Result: deps first, roots last.
 (define (bld-require-closure names)
   (let ((visited (make-hashtable string-hash string=?))
         (order '()))
@@ -578,7 +582,7 @@
           (unless (hashtable-ref visited name #f)
             (hashtable-set! visited name #t)
             (let ((file (find-ns-file name)))
-              (when file
+              (when (and file (not (ldr-install-file? file)))
                 (dfs (bld-ns-requires file))
                 (set! order (cons (cons name file) order)))))
           (dfs (cdr ns)))))
@@ -668,7 +672,7 @@
            (entry-pair (or (assoc entry-ns merged)
                            (assoc entry-ns walked)
                            (cons entry-ns (find-ns-file entry-ns))))
-           (ordered (append (remove (lambda (p) (string=? (car p) entry-ns)) merged)
+           (ordered (append (remp (lambda (p) (string=? (car p) entry-ns)) merged)
                             (list entry-pair))))
       (when (null? ordered)
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
@@ -814,7 +818,7 @@
                               "          (append (map (lambda (r) (string-append base \"/\" r)) (list "
                              (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
                              "))\n"
-                             "                  (list \"jolt-core\" \"stdlib\" \"vendor/fs/src\"))))\n"))
+                             "                  " (ldr-install-roots-str) "))))\n"))
           (if library?
               (put-string out (bld-library-launcher-body))
               (put-string out (string-append

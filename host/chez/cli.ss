@@ -50,7 +50,7 @@
 ;; jolt.main + jolt.deps live under jolt-core; keep them (and stdlib) on the
 ;; roots so the CLI's own namespaces — and any jolt.* an app pulls in — resolve.
 ;; A project's resolved deps roots are prepended to these by jolt.main.
-(set-source-roots! (list "jolt-core" "stdlib" "vendor/fs/src"))
+(set-source-roots! ldr-install-roots)
 
 ;; jolt-report-uncaught / drop-end-of-options / the -e arm live in cli-core.ss,
 ;; shared with the standalone binary's launcher (build-joltc.ss).
