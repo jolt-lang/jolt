@@ -582,6 +582,8 @@
   {:suite "interop / PushbackReader & parse statics" :label "edn/read from reader" :expected "5432" :actual "(do (require (quote clojure.edn)) (clojure.edn/read (java.io.PushbackReader. (java.io.StringReader. \"{:db {:port 5432}}\\nrest\"))) (get-in (clojure.edn/read-string \"{:db {:port 5432}}\") [:db :port]))" :portability :jvm}
   {:suite "interop / PushbackReader & parse statics" :label "edn/read multi-line" :expected "true" :actual "(do (require (quote clojure.edn)) (= {:a 1 :b 2} (clojure.edn/read (PushbackReader. (StringReader. \"{:a 1\\n :b 2}\")))))" :portability :jvm}
   {:suite "interop / PushbackReader & parse statics" :label "Long/parseLong" :expected "42" :actual "(Long/parseLong \"42\")" :portability :jvm}
+  {:suite "interop / PushbackReader & parse statics" :label "(. Class staticMethod) dot form" :expected "42" :actual "(. Long parseLong \"42\")" :portability :jvm}
+  {:suite "interop / PushbackReader & parse statics" :label "(. FQ.Class staticMethod) dot form" :expected "7" :actual "(. java.lang.Integer parseInt \"7\")" :portability :jvm}
   {:suite "interop / PushbackReader & parse statics" :label "parseLong rejects non-numeric" :expected :throws :actual "(Long/parseLong \"4x\")" :portability :jvm}
   {:suite "interop / PushbackReader & parse statics" :label "BigInteger." :expected "123" :actual "(BigInteger. \"123\")" :portability :jvm}
   {:suite "interop / PushbackReader & parse statics" :label "Boolean/parseBoolean" :expected "[true false false]" :actual "[(Boolean/parseBoolean \"true\") (Boolean/parseBoolean \"false\") (Boolean/parseBoolean \"yes\")]" :portability :jvm}
@@ -2444,6 +2446,8 @@
   {:suite "eval & load-string as values" :label "load-string evals all" :expected "3" :actual "(load-string \"(def lsv 1) (+ lsv 2)\")" :portability :common}
   {:suite "eval & load-string as values" :label "eval as value" :expected "[2 3]" :actual "(mapv eval [(quote (+ 1 1)) (quote (+ 1 2))])" :portability :common}
   {:suite "eval & load-string as values" :label "eval special still works" :expected "3" :actual "(eval (quote (+ 1 2)))" :portability :common}
+  {:suite "eval & load-string as values" :label "load-string applies #inst literal" :expected "0" :actual "(load-string \"(.getTime #inst \\\"1970-01-01T00:00:00Z\\\")\")" :portability :common}
+  {:suite "eval & load-string as values" :label "eval of a read-string #inst value" :expected "0" :actual "(.getTime (eval (read-string \"#inst \\\"1970-01-01T00:00:00Z\\\"\")))" :portability :common}
   {:suite "clojure.edn / opts" :label "set literal" :expected "#{1 2}" :actual "(do (require (quote [clojure.edn :as e0])) (e0/read-string \"#{1 2}\"))" :portability :common}
   {:suite "clojure.edn / opts" :label "uuid tag" :expected "true" :actual "(do (require (quote [clojure.edn :as e0])) (uuid? (e0/read-string \"#uuid \\\"550e8400-e29b-41d4-a716-446655440000\\\"\")))" :portability :common}
   {:suite "clojure.edn / opts" :label "inst tag" :expected "true" :actual "(do (require (quote [clojure.edn :as e0])) (inst? (e0/read-string \"#inst \\\"2020-01-01T00:00:00Z\\\"\")))" :portability :common}

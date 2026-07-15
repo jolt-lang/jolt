@@ -257,12 +257,16 @@
 ;; A top-level (do ...) is UNROLLED — each subform compiled+eval'd in turn, like
 ;; Clojure's top-level do — so a runtime defmacro/def in an earlier subform is
 ;; visible (macro flag set, var interned) before a later subform is analyzed.
-;; a non-form VALUE (a function object, a BigDecimal, a reference type)
-;; self-evaluates, like eval on the JVM.
+;; Only lists, symbols, and the persistent collections may carry code the
+;; analyzer must compile; every other value — numbers, strings, keywords, and
+;; opaque host objects (a #inst Date, a #uuid, a regex, a record, a function) —
+;; evaluates to itself, as eval does on the JVM. (read-string builds those host
+;; values eagerly, so eval must accept them without trying to analyze them.)
 (define (jolt-compile-eval-form form ns)
-  (if (or (procedure? form) (jbigdec? form) (jolt-atom? form) (jolt-multifn? form))
-      form
-      (jolt-compile-eval-form* form ns)))
+  (if (or (cseq? form) (jolt-lazyseq? form) (empty-list-t? form) (symbol-t? form)
+          (pvec? form) (pmap? form) (pset? form))
+      (jolt-compile-eval-form* form ns)
+      form))
 (define (jolt-compile-eval-form* form ns)
   (cond
     ;; thread the current ns: an earlier subform may switch it (ns/in-ns call
@@ -294,13 +298,25 @@
 
 ;; clojure.core/load-string: read every form from the source string and compile+
 ;; eval each in the current ns, returning the last value (nil for blank input).
+;; Reads RAW forms (like loading a file) so reader literals — #inst/#uuid/#"regex"
+;; and user #tag readers — stay as forms the analyzer compiles, rather than being
+;; built into opaque values the way read-string does. `data-readers-active` and
+;; `ldr-apply-readers` come from the loader, present in the CLI runtime; guard the
+;; read so load-string still works in a bootstrap/build context without it.
 (define (jolt-load-string s)
-  (let loop ((src s) (result jolt-nil))
-    (let ((pn (jolt-parse-next src)))
-      (if (jolt-nil? pn)
+  (let ((end (string-length s))
+        (drl (guard (_ (#t #f)) data-readers-active)))
+    (let loop ((i 0) (result jolt-nil))
+      (if (>= i end)
           result
-          (loop (jolt-nth pn 1)
-                (jolt-compile-eval-form (jolt-nth pn 0) (chez-current-ns)))))))
+          (let-values (((form j) (rdr-read-form s i end)))
+            (if (> j i)
+                (loop j (if (rdr-eof? form)
+                            result
+                            (jolt-compile-eval-form
+                             (if drl (ldr-apply-readers form) form)
+                             (chez-current-ns))))
+                result))))))
 
 ;; eval / load-string are FUNCTIONS on the spine (the compiler image is resident
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and
