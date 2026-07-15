@@ -103,7 +103,9 @@
 
 ;; --- canonical print form: yyyy-MM-ddThh:mm:ss.fff-00:00 (UTC) ---------------
 (define (pad2 n) (if (< n 10) (string-append "0" (number->string n)) (number->string n)))
-(define (pad4 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 4 (string-length s))) #\0) s)))
+(define (pad4 n) (if (< n 0)
+    (string-append "-" (pad4 (- n)))
+    (let ((s (number->string n))) (string-append (make-string (max 0 (- 4 (string-length s))) #\0) s))))
 (define (pad3 n) (let ((s (number->string n))) (string-append (make-string (max 0 (- 3 (string-length s))) #\0) s)))
 (define (inst-floor-div a b) (let ((q (quotient a b)) (r (remainder a b))) (if (and (not (= r 0)) (< (* a b) 0)) (- q 1) q)))
 (define (inst-floor-mod a b) (- a (* (inst-floor-div a b) b)))
@@ -179,7 +181,7 @@
             (else (loop (+ i 1)))))))
 (define (parse-ms pattern input)
   (let ((pn (string-length pattern)) (inn (string-length input))
-        (y 1970) (mo 1) (d 1) (hh 0) (mi 0) (ss 0) (frac-ms 0) (pm 'none))
+        (y 1970) (mo 1) (d 1) (hh 0) (mi 0) (ss 0) (frac-ms 0) (pm 'none) (off-s 0))
     ;; a parse failure is a java.time.format.DateTimeParseException (typed, so a
     ;; (catch DateTimeParseException …) over a bad date matches), like the JVM.
     (define (pfail)
@@ -197,11 +199,19 @@
     (define (read-alpha ii)              ; -> (str . next)
       (let loop ((j ii)) (if (and (< j inn) (char-alphabetic? (string-ref input j))) (loop (+ j 1))
                              (cons (substring input ii j) j))))
-    (define (read-tz ii)                 ; consume GMT/UTC/Z or ±hhmm; -> next
+    (define (read-tz ii)                 ; consume GMT/UTC/Z or ±hh[:]mm; -> next, sets off-s
       (cond ((>= ii inn) ii)
             ((char-alphabetic? (string-ref input ii)) (cdr (read-alpha ii)))
             ((or (char=? (string-ref input ii) #\+) (char=? (string-ref input ii) #\-))
-             (let loop ((j (+ ii 1))) (if (and (< j inn) (or (digit? (string-ref input j)) (char=? (string-ref input j) #\:))) (loop (+ j 1)) j)))
+             (let* ((sign (if (char=? (string-ref input ii) #\-) -1 1))
+                    (oh (or (and (< (+ ii 1) inn) (digits-at input (+ ii 1) 2)) 0))
+                    (has-colon (and (> oh 0) (< (+ ii 3) inn) (char=? (string-ref input (+ ii 3)) #\:)))
+                    (om (if has-colon
+                            (or (digits-at input (+ ii 4) 2) 0)
+                            (or (digits-at input (+ ii 3) 2) 0)))
+                    (end (+ ii (if (> oh 0) (if has-colon 6 (if (> om 0) 5 3)) 0))))
+               (set! off-s (* sign (+ (* oh 3600) (* om 60))))
+               end))
             (else ii)))
     ;; skip a '[' optional section to just past its matching ']' (nestable;
     ;; ']' inside a '…' literal is not a delimiter). `j` is just past the '['.
@@ -218,7 +228,7 @@
           (begin
             (when (eq? pm 'pm) (when (< hh 12) (set! hh (+ hh 12))))
             (when (eq? pm 'am) (when (= hh 12) (set! hh 0)))
-            (make-jinst (+ (* 1000 (+ (* (days-from-civil y mo d) 86400) (* hh 3600) (* mi 60) ss)) frac-ms)))
+            (make-jinst (- (+ (* 1000 (+ (* (days-from-civil y mo d) 86400) (* hh 3600) (* mi 60) ss)) frac-ms) (* off-s 1000))))
           (let ((c (string-ref pattern pi)))
             (cond
               ((char-alphabetic? c)

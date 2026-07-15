@@ -719,4 +719,35 @@
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc))] (a/alts!! [[c 1]]) (a/<!! c)))" :expected "2"}
   ;; 10. mult/tap smoke — proves the dataflow layer still works
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) m (a/mult c) t1 (a/chan) t2 (a/chan)] (a/tap m t1) (a/tap m t2) (a/>!! c :x) [(a/<!! t1) (a/<!! t2)]))" :expected "[:x :x]"}
+  ;; Stage A — binary io/copy File→File preserves bytes
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :expected "[255 254 0 65]"}
+  ;; Stage A — File.delete on non-empty directory returns false
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [d (doto (java.io.File/createTempFile \"jtd\" \".d\") (.delete) (.mkdir)) child (java.io.File. d \"child.txt\")] (spit child \"x\") (let [deleted (.delete d)] (.delete child) (.delete d) deleted)))" :expected "false"}
+  ;; Stage B — fixed-buffer transducer puts block when full
+  {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc)) p (future (a/>!! c 1) (a/>!! c 2) (a/>!! c 3) :done)] (Thread/sleep 100) (let [parked (not (realized? p)) v1 (a/<!! c) v2 (a/<!! c) v3 (a/<!! c) result @p] [parked v1 v2 v3 result])))" :expected "[true 2 3 4 :done]"}
+  ;; Stage B — pending rendezvous put parks until consumed (does NOT complete on close)
+  {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (future (a/>!! c :v))] (Thread/sleep 50) (a/close! c) [(a/<!! c) @p]))" :expected "[:v true]"}
+  ;; Stage C — pattern-driven tz offset parse applies offset
+  {:suite "insttime" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"yyyy-MM-dd'T'HH:mm:ssX\") \"2024-01-01T00:00:00+05\"))" :expected "1704049200000"}
+  {:suite "insttime" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"yyyy-MM-dd'T'HH:mm:ssX\") \"2024-01-01T00:00:00Z\"))" :expected "1704067200000"}
+  {:suite "insttime" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"yyyy-MM-dd'T'HH:mm:ssXX\") \"2024-01-01T00:00:00-0330\"))" :expected "1704079800000"}
+  ;; Stage C — FQN statics share one table with short names
+  {:suite "javastatic" :expr "(java.lang.Character/isWhitespace \\ )" :expected "true"}
+  {:suite "javastatic" :expr "(= (Character/isWhitespace \\ ) (java.lang.Character/isWhitespace \\ ))" :expected "true"}
+  {:suite "javastatic" :expr "(pos? (java.lang.System/currentTimeMillis))" :expected "true"}
+  ;; Stage C — Math/getExponent via IEEE 754 bit extraction
+  {:suite "javastatic" :expr "(Math/getExponent 2.0)" :expected "1"}
+  {:suite "javastatic" :expr "(Math/getExponent 0.0)" :expected "-1023"}
+  ;; Stage D — executor awaitTermination blocks until workers drain
+  {:suite "concurrency" :expr "(do (require '[clojure.core.async :refer [<!!]]) (let [e (java.util.concurrent.Executors/newSingleThreadExecutor) c (java.util.concurrent.CountDownLatch. 1)] (.execute e (fn [] (.countDown c))) (.shutdown e) (.await c) (.awaitTermination e 5000) (.isTerminated e)))" :expected "true"}
+  ;; Stage D — ReentrantLock reentrant lock/unlock + hold count
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) (.lock l) (let [locked (.isLocked l) held (.isHeldByCurrentThread l)] (.unlock l) (.unlock l) [locked held (.isLocked l)]))" :expected "[true true false]"}
+  ;; Stage D — ReentrantLock tryLock
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) [(.tryLock l) (.getHoldCount l)])" :expected "[true 2]"}
+  ;; Stage D — ReentrantLock.getHoldCount
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) [(.getHoldCount l) (.isLocked l) (.isHeldByCurrentThread l)])" :expected "[1 true true]"}
+  ;; Stage D — thread interrupt flag propagation
+  {:suite "concurrency" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(.isInterrupted t) (Thread/interrupted)])" :expected "[true true]"}
+  ;; Stage D — Thread.interrupted clears the flag
+  {:suite "concurrency" :expr "(do (.interrupt (Thread/currentThread)) (Thread/interrupted) (Thread/interrupted))" :expected "false"}
 ]

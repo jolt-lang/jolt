@@ -249,9 +249,21 @@
     (cond
       ((async-chan-closed? ch) #f)
       ((async-chan-xrf ch)
-       (let ((r (ac-xrf-apply ch v)))
-         (when (jolt-reduced? r) (ac-close! ch))
-         #t))
+       (if (> (async-chan-cap ch) 0)
+           ;; Fixed buffered with xform: wait for room, then apply xform.
+           ;; The xform step may overfill transiently (e.g. mapcat); the NEXT put
+           ;; will wait again.
+           (let loop ()
+             (cond ((async-chan-closed? ch) #f)
+                   ((< (ac-qlen ch) (async-chan-cap ch))
+                    (let ((r (ac-xrf-apply ch v)))
+                      (when (jolt-reduced? r) (ac-close! ch))
+                      #t))
+                   (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))
+           ;; Unbuffered with xform: apply immediately (output goes to rendezvous queue)
+           (let ((r (ac-xrf-apply ch v)))
+             (when (jolt-reduced? r) (ac-close! ch))
+             #t)))
       (else
        (case (async-chan-kind ch)
          ((dropping sliding) (ac-buf-give! ch v) #t)
@@ -271,10 +283,10 @@
                (let ((box (vector #f)))                        ; unbuffered: rendezvous
                  (ac-qpush! ch (cons v box))
                  (ac-notify! ch)
-                 (let loop ()
-                  (cond ((vector-ref box 0) #t)
-                        ((async-chan-closed? ch) #f)
-                        (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))))))))
+                  (let loop ()
+                   (if (vector-ref box 0)
+                       #t
+                       (begin (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))))))))
 
 ;; remove + return the head value, waking a parked rendezvous putter.
 (define (ac-take-head! ch)
@@ -356,8 +368,11 @@
   (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
   (cond
     ((async-chan-closed? ch) 'closed)
-    ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
-                           (when (jolt-reduced? r) (ac-close! ch)) 'ok))
+    ((async-chan-xrf ch) (if (and (> (async-chan-cap ch) 0)
+                            (>= (ac-qlen ch) (async-chan-cap ch)))
+                       'full
+                       (let ((r (ac-xrf-apply ch v)))
+                         (when (jolt-reduced? r) (ac-close! ch)) 'ok)))
     (else
      (case (async-chan-kind ch)
        ((dropping sliding) (ac-buf-give! ch v) 'ok)

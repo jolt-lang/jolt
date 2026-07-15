@@ -646,8 +646,11 @@
                          (k interrupt-sentinel)
                          (begin (set-timer interrupt-check-ticks) (void)))))
                  (set-timer interrupt-check-ticks)
-                 (let ((v (thunk))) (set-timer 0) v)))))
-      ;; restore the prior timer state regardless of outcome.
+                 ;; guard ensures timer+handler are disarmed on EVERY exit from
+                 ;; the thunk — normal return, exception raise, and escape-continuation
+                 ;; jump (the outer set-timer/handler handles the interrupt case).
+                 (guard (e (#t (set-timer 0) (timer-interrupt-handler prev-handler) (raise e)))
+                   (let ((v (thunk))) (set-timer 0) v))))))
       (set-timer 0)
       (timer-interrupt-handler prev-handler)
       (if (eq? r interrupt-sentinel)
@@ -662,12 +665,13 @@
 ;; Real OS threads over Chez fork-thread (shared heap — a captured atom/var is
 ;; shared). A Thread runs its Runnable thunk; start forks, join waits on a
 ;; condition latched at completion. CountDownLatch is a counting barrier.
-(define (make-jthread thunk) (make-jhost "user-thread" (vector thunk #f (make-mutex) (make-condition))))
+(define (make-jthread thunk) (make-jhost "user-thread" (vector thunk #f (make-mutex) (make-condition) (box #f) #f)))
 (for-each (lambda (nm) (register-class-ctor! nm (lambda (thunk . _) (make-jthread thunk))))
           '("Thread" "java.lang.Thread"))
 (register-host-methods! "user-thread"
   (list (cons "start" (lambda (self)
           (let ((st (jhost-state self)) (snap (dyn-binding-stack)))
+            (vector-set! st 5 #t)  ; mark started before forking
             (fork-thread (lambda ()
                (*txn* #f)                          ; child thread must not inherit parent's txn
                (dyn-binding-stack snap)
@@ -688,8 +692,11 @@
             (with-mutex (vector-ref st 2)
               (let loop () (unless (vector-ref st 1) (condition-wait (vector-ref st 3) (vector-ref st 2)) (loop)))))
           jolt-nil))
-        (cons "isAlive" (lambda (self) (not (vector-ref (jhost-state self) 1))))
-        (cons "interrupt" (lambda (self . _) jolt-nil))
+        ;; alive = started and not yet completed (JVM: false before .start)
+        (cons "isAlive" (lambda (self) (let ((st (jhost-state self)))
+          (and (vector-ref st 5) (not (vector-ref st 1))))))
+        (cons "interrupt" (lambda (self . _) (set-box! (vector-ref (jhost-state self) 4) #t) jolt-nil))
+        (cons "isInterrupted" (lambda (self) (and (unbox (vector-ref (jhost-state self) 4)) #t)))
         (cons "setDaemon" (lambda (self . _) jolt-nil))))
 
 (define (make-jlatch n) (make-jhost "count-down-latch" (vector n (make-mutex) (make-condition))))
@@ -733,10 +740,12 @@
         (cons "isDone" (lambda (self) (vector-ref (jhost-state self) 0)))
         (cons "isCancelled" (lambda (self) #f))
         (cons "cancel" (lambda (self . _) #f))))
-;; executor-service state: #(shutdown? queue-tail-box queue-mutex queue-cond)
-;; the queue is a simple list held in a box, appended at the tail, popped at head.
+;; executor-service state: #(shutdown? queue-box queue-mutex queue-cond worker-count)
+;; queue-box holds a pair (out . in) — out is the dequeue head-list, in is the
+;; enqueue tail-list (reversed). Enqueue conses onto in (O(1)); dequeue pops from
+;; out, reversing in into out when out is empty (amortized O(1)).
 (define (make-executor n-workers)
-  (let ((self (make-jhost "executor-service" (vector #f (box '()) (make-mutex) (make-condition)))))
+  (let ((self (make-jhost "executor-service" (vector #f (box (cons '() '())) (make-mutex) (make-condition) n-workers))))
     (let ((st (jhost-state self)))
       (let spawn ((k n-workers))
         (when (> k 0)
@@ -744,18 +753,31 @@
             (let loop ()
               (let ((job (with-mutex (vector-ref st 2)
                            (let poll ()
-                             (cond ((pair? (unbox (vector-ref st 1)))
-                                    (let ((q (unbox (vector-ref st 1))))
-                                      (set-box! (vector-ref st 1) (cdr q)) (car q)))
-                                   ((vector-ref st 0) #f)   ; shutdown + empty -> exit
-                                   (else (condition-wait (vector-ref st 3) (vector-ref st 2)) (poll)))))))
-                (when job (job) (loop))))))
+                             (let ((q (unbox (vector-ref st 1))))
+                               (cond ((pair? (car q))
+                                      (let ((out (car q)))
+                                        (set-car! q (cdr out))
+                                        (car out)))
+                                     ((pair? (cdr q))
+                                      (set-car! q (reverse (cdr q)))
+                                      (set-cdr! q '())
+                                      (let ((out (car q)))
+                                        (set-car! q (cdr out))
+                                        (car out)))
+                                     ((vector-ref st 0) #f)   ; shutdown + empty -> exit
+                                     (else (condition-wait (vector-ref st 3) (vector-ref st 2)) (poll))))))))
+                (if job
+                    (begin (job) (loop))
+                    (with-mutex (vector-ref st 2)
+                      (vector-set! st 4 (fx- (vector-ref st 4) 1))
+                      (condition-broadcast (vector-ref st 3))))))))
           (spawn (- k 1))))
       self)))
 (define (executor-enqueue! self job)
   (let ((st (jhost-state self)))
     (with-mutex (vector-ref st 2)
-      (set-box! (vector-ref st 1) (append (unbox (vector-ref st 1)) (list job)))
+      (let ((q (unbox (vector-ref st 1))))
+        (set-cdr! q (cons job (cdr q))))
       (condition-broadcast (vector-ref st 3)))))
 (let ((single (lambda _ (make-executor 1)))
       (fixed  (lambda (n . _) (make-executor (max 1 (jnum->exact n)))))
@@ -789,27 +811,71 @@
         (cons "close" (lambda (self) (let ((st (jhost-state self)))
           (vector-set! st 0 #t) (with-mutex (vector-ref st 2) (condition-broadcast (vector-ref st 3)))) jolt-nil))
         (cons "isShutdown" (lambda (self) (vector-ref (jhost-state self) 0)))
-        (cons "isTerminated" (lambda (self) (vector-ref (jhost-state self) 0)))
-        (cons "awaitTermination" (lambda (self . _) #t))))
+        (cons "isTerminated" (lambda (self) (let* ((st (jhost-state self)) (q (unbox (vector-ref st 1))))
+          (and (vector-ref st 0) (null? (car q)) (null? (cdr q)) (fx=? 0 (vector-ref st 4))))))
+        (cons "awaitTermination" (lambda (self ms . _)
+          (let* ((st (jhost-state self))
+                 (deadline (+ (now-millis) (if (number? ms) (jnum->exact ms) 0))))
+            ;; check under the mutex, but SLEEP OUTSIDE it — a worker's exit
+            ;; decrement needs this mutex, so sleeping while holding it starves
+            ;; the very transition awaited (the wait always rode to deadline).
+            (let waiting ()
+              (let ((done (with-mutex (vector-ref st 2)
+                            (and (vector-ref st 0) (fx=? 0 (vector-ref st 4))))))
+                (cond (done #t)
+                      ((> (now-millis) deadline) #f)
+                      (else
+                       (let ((remaining (- deadline (now-millis))))
+                         (sleep (ms->duration (max 10 (min remaining 100))))
+                         (waiting)))))))))))
 
-;; java.util.concurrent.locks.ReentrantLock — a mutual-exclusion lock over a Chez
-;; mutex (claxon serializes socket writes with it). Chez has no reentrant mutex
-;; primitive; this is non-reentrant — a lock() while already held by the same
-;; thread would block, which claxon's single write critical section never does.
-(define (make-reentrant-lock) (make-jhost "reentrant-lock" (vector (make-mutex) #f)))
+;; java.util.concurrent.locks.ReentrantLock — a reentrant mutual-exclusion lock.
+;; State: #(mutex owner-box hold-count). owner-box is the owning thread's interrupt
+;; box (nil if unlocked). The same thread may acquire multiple times (hold count
+;; incremented); each unlock balances one lock — unlock from a non-owner throws.
+(define (make-reentrant-lock) (make-jhost "reentrant-lock" (vector (make-mutex) #f 0)))
 (for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-reentrant-lock))))
           '("ReentrantLock" "java.util.concurrent.locks.ReentrantLock"))
 (register-host-methods! "reentrant-lock"
   (list (cons "lock" (lambda (self)
-          (let ((st (jhost-state self))) (mutex-acquire (vector-ref st 0)) (vector-set! st 1 #t) jolt-nil)))
+          (let* ((st (jhost-state self)) (mu (vector-ref st 0)) (me (current-interrupt-box)))
+            (if (eq? (vector-ref st 1) me)
+                (vector-set! st 2 (fx+ (vector-ref st 2) 1))
+                (begin (mutex-acquire mu) (vector-set! st 1 me) (vector-set! st 2 1)))
+            jolt-nil)))
         (cons "unlock" (lambda (self)
-          (let ((st (jhost-state self))) (vector-set! st 1 #f) (mutex-release (vector-ref st 0)) jolt-nil)))
+          (let* ((st (jhost-state self)) (me (current-interrupt-box)))
+            (unless (eq? (vector-ref st 1) me)
+              (jolt-throw (jolt-host-throwable "java.lang.IllegalMonitorStateException" "not lock owner")))
+            (vector-set! st 2 (fx- (vector-ref st 2) 1))
+            (when (fx=? 0 (vector-ref st 2))
+              (vector-set! st 1 #f)
+              (mutex-release (vector-ref st 0)))
+            jolt-nil)))
         (cons "tryLock" (lambda (self . _)
-          (let ((st (jhost-state self)))
-            (if (mutex-acquire (vector-ref st 0) #f) (begin (vector-set! st 1 #t) #t) #f))))
+          (let* ((st (jhost-state self)) (mu (vector-ref st 0)) (me (current-interrupt-box)))
+            (cond ((eq? (vector-ref st 1) me) (vector-set! st 2 (fx+ (vector-ref st 2) 1)) #t)
+                  ((mutex-acquire mu #f) (vector-set! st 1 me) (vector-set! st 2 1) #t)
+                  (else #f)))))
         (cons "lockInterruptibly" (lambda (self)
-          (let ((st (jhost-state self))) (mutex-acquire (vector-ref st 0)) (vector-set! st 1 #t) jolt-nil)))
-        (cons "isLocked" (lambda (self) (vector-ref (jhost-state self) 1)))))
+          (let* ((st (jhost-state self)) (mu (vector-ref st 0)) (me (current-interrupt-box)))
+            (when (unbox me)
+              (set-box! me #f)
+              (jolt-throw (jolt-host-throwable "java.lang.InterruptedException" "lock interrupted")))
+            (if (eq? (vector-ref st 1) me)
+                (vector-set! st 2 (fx+ (vector-ref st 2) 1))
+                (let loop ()
+                  (when (unbox me)
+                    (set-box! me #f)
+                    (jolt-throw (jolt-host-throwable "java.lang.InterruptedException" "lock interrupted")))
+                  (if (mutex-acquire mu #f)
+                      (begin (vector-set! st 1 me) (vector-set! st 2 1))
+                      (begin (sleep (make-time 'time-duration 10000000 0)) (loop)))))
+            jolt-nil)))
+        (cons "isLocked" (lambda (self) (fx>? (vector-ref (jhost-state self) 2) 0)))
+        (cons "getHoldCount" (lambda (self) (vector-ref (jhost-state self) 2)))
+        (cons "isHeldByCurrentThread" (lambda (self)
+          (eq? (vector-ref (jhost-state self) 1) (current-interrupt-box))))))
 
 ;; --- main-thread executor ---------------------------------------------------
 ;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread
