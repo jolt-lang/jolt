@@ -306,7 +306,9 @@
   (cond ((nio-is-symlink? fp) (delete-file fp) #t)   ; the link itself, even if dangling
         ((not (file-exists? fp))
          (if missing-ok? #f (jolt-throw (jolt-ex-info fp empty-pmap))))
-        ((file-directory? fp) (delete-directory fp) #t)
+        ((file-directory? fp) (if (delete-directory fp) #t
+                                (jolt-throw (jolt-host-throwable "java.nio.file.DirectoryNotEmptyException"
+                                                                 (npath-string-of fp)))))
         (else (delete-file fp) #t)))
 
 (define nio-temp-counter 0)

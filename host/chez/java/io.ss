@@ -188,7 +188,7 @@
 (define (delete-path! p)
   (guard (e (#t #f))
     (cond ((not (file-exists? p)) #f)
-          ((file-directory? p) (delete-directory p) #t)
+          ((file-directory? p) (delete-directory p))
           (else (delete-file p) #t))))
 
 ;; --- java.net.URL (a jhost "url", state #(spec)) ----------------------------
