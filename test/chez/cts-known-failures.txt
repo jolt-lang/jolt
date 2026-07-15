@@ -28,3 +28,6 @@ clojure.core-test.star 11 0
 clojure.core-test.star-squote 13 0
 clojure.core-test.transient 4 0
 clojure.core-test.vec 1 0
+# (short 0) is not a java.lang.Short under jolt's numeric model — bead jolt-445k.95;
+# latent until the R5 is/instance? fix stopped these asserts from auto-passing
+clojure.core-test.short 1 0
