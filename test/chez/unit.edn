@@ -689,6 +689,14 @@
   {:suite "reify class" :expr "(str (class (reify java.lang.Runnable (run [_] nil))))" :expected "class clojure.lang.IObj$reify__0"}
   {:suite "promise class" :expr "(str (class (promise)))" :expected "class clojure.core$promise$reify__0"}
   {:suite "future class" :expr "(str (class (future 1)))" :expected "class clojure.core$future_call$reify__0"}
+  ;; two same-named records in different namespaces: suffix match has >1
+  ;; candidate — inline-impl-receiver-type must return nil (no seeding) so
+  ;; the protocol method body uses generic field access, not the wrong
+  ;; jrec-field-at index from the wrong record
+  {:suite "record resolution / two ns same record name" :expr "(do (ns unit.rr.a) (defprotocol P1 (rr-foo [_])) (defrecord Circle [x y] P1 (rr-foo [this] [(:x this) (:y this)])) (ns unit.rr.b) (defrecord Circle [a b c]) (ns unit.rr.a) (rr-foo (->Circle 10 20)))" :expected "[10 20]"}
+  ;; user fn named register-method must not be confused with
+  ;; clojure.core/register-method — the ns check prevents the warp
+  {:suite "register-method user fn" :expr "(do (defn register-method [a b c d] (str a b c)) (register-method \"X\" \"Y\" \"Z\" (fn [x] x)))" :expected "XYZ"}
 
   ;; --- core.async alts -------------------------------------------------------
   ;; 1. alts-put vs alts-take rendezvous on unbuffered channel (the livelock fix)
