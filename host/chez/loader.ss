@@ -26,6 +26,30 @@
 (define (set-source-roots!* roots) (set! source-roots roots))
 (define (get-source-roots) source-roots)
 
+;; Install roots — the directories that ship with Jolt (compiler + stdlib + vendored
+;; deps). Shared by cli.ss, build-joltc.ss, and the bld-require-closure filter so the
+;; literal list stays in one place.
+(define ldr-install-roots '("jolt-core" "stdlib" "vendor/fs/src"))
+
+;; True when `f` is a file owned by the Jolt runtime (compiler + stdlib) — either
+;; an embedded-resource key or a path under one of ldr-install-roots.
+(define (ldr-install-file? f)
+  (or (string? (hashtable-ref embedded-resources f #f))
+      (let loop ((roots ldr-install-roots))
+        (and (pair? roots)
+             (or (let ((root (car roots)))
+                   (and (>= (string-length f) (+ (string-length root) 1))
+                        (string=? (substring f 0 (string-length root)) root)
+                        (char=? (string-ref f (string-length root)) #\/)))
+                 (loop (cdr roots)))))))
+
+;; A Chez source string for the install roots list — "(list \"jolt-core\" \"stdlib\" \"vendor/fs/src\")".
+;; Used by build templates so the literal stays in one place.
+(define (ldr-install-roots-str)
+  (string-append "(list"
+    (fold-left (lambda (s r) (string-append s " \"" r "\"")) "" ldr-install-roots)
+    ")"))
+
 ;; --- data readers (#tag literals) -------------------------------------------
 ;; A project's data_readers.{clj,cljc} at a source root maps a tag symbol to a
 ;; qualified reader fn (e.g. {time/date time-literals.data-readers/date}). We
