@@ -818,7 +818,7 @@
                               "          (append (map (lambda (r) (string-append base \"/\" r)) (list "
                              (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
                              "))\n"
-                             "                  " (ldr-install-roots-str) "))))\n"))
+                             "                  " (ldr-install-roots-str) ")))\n"))
           (if library?
               (put-string out (bld-library-launcher-body))
               (put-string out (string-append
