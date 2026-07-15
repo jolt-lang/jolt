@@ -120,6 +120,9 @@ run_local_case progreader-app     app.core "" ""
 # shaken off the non-default path diffs on the second invocation.
 run_local_case multipath-app    app.core  ""     ""
 run_local_case multipath-app    app.core  "alt"  ""
+# duplicate-fqn regression: a twice-defined var whose first def references a
+# helper referenced nowhere else — the union (not overwrite) keeps the helper alive.
+run_local_case dupfqn-app      app.core  ""     ""
 
 [ "$fail" = 0 ] && echo "shake smoke: passed" || echo "shake smoke: FAILED"
 exit $fail

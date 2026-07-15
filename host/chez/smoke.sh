@@ -349,11 +349,13 @@ fi
 # must have its result spliced in and COMPILED, like Clojure — #code [:x] becomes
 # (+ 40 2) and evaluates to 42, not the literal list. A project run so the source
 # root's data_readers.clj is picked up.
-dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" $joltc run -m drtest.main 2>/dev/null | tail -1)"
-if [ "$dr_out" = "42" ]; then
+dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" $joltc run -m drtest.main 2>/dev/null)"
+dr_want="42
+olleh!"
+if [ "$dr_out" = "$dr_want" ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: code-returning data reader (#code) not compiled — got \`$dr_out\`, want 42"
+  echo "  FAIL: data readers — got \`$dr_out\`, want 42 + olleh! (#code compiled; transitive reader-ns require)"
   fails=$((fails + 1))
 fi
 
@@ -455,6 +457,35 @@ if printf '%s' "$repl_off" | grep -q '  trace:'; then
 else
   pass=$((pass + 1))
 fi
+
+# -A:alias adds paths/deps then dispatches the remaining argv. An alias that
+# adds a source root must NOT be clobbered by a later cmd-run re-resolving the
+# project without aliases — *aliased-resolve* guards against that.
+ad="$(mktemp -d)"
+mkdir -p "$ad/src/app" "$ad/dev-src/app"
+printf '{:paths ["src"] :aliases {:dev {:extra-paths ["dev-src"]}}}\n' > "$ad/deps.edn"
+printf '(ns app.core)\n' > "$ad/src/app/core.clj"
+printf '(ns app.devtool)\n(defn -main [& _] (println "adev-ok"))\n' > "$ad/dev-src/app/devtool.clj"
+# run -m via -A:dev
+ad_out="$(JOLT_PWD="$ad" $joltc -A:dev run -m app.devtool 2>/dev/null | tail -1)"
+if [ "$ad_out" = "adev-ok" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: -A:dev run -m app.devtool — got \`$ad_out\`, want \`adev-ok\`"
+  fails=$((fails + 1))
+fi
+# file dispatch via -A:dev — loading a file runs its top-level forms only (JVM
+# semantics), so the script prints at load; it requires the alias-added ns to
+# prove the alias roots survived into the load.
+printf '(require (quote app.devtool))\n(app.devtool/-main)\n' > "$ad/run.clj"
+ad_out2="$(JOLT_PWD="$ad" $joltc -A:dev "$ad/run.clj" 2>/dev/null | tail -1)"
+if [ "$ad_out2" = "adev-ok" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: -A:dev <file> — got \`$ad_out2\`, want \`adev-ok\`"
+  fails=$((fails + 1))
+fi
+rm -rf "$ad"
 
 # script-mode boot: bin/joltc (chez --script over the seed source) must still
 # work even when the rest of the smoke runs against a prebuilt JOLT_BIN.

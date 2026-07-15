@@ -18,6 +18,12 @@
 (load "host/chez/host-contract.ss")
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
+;; The loader + install source roots, so a row's (require 'stdlib.ns) resolves the
+;; .clj overlay from source exactly like joltc — without this, a require of a ns
+;; whose NATIVE vars exist (e.g. clojure.core.async) silently no-ops via the
+;; ns-has-vars? arm and the overlay fns are missing at analysis.
+(load "host/chez/loader.ss")
+(set-source-roots! ldr-install-roots)
 
 (define (slurp path)
   (call-with-input-file path
@@ -45,6 +51,7 @@
   (lambda (k) (unless (hashtable-ref base k #f) (hashtable-delete! ht k))) (hashtable-keys ht)))
 (define zj-ns-base (zj-snap ns-registry))
 (define zj-type-base (zj-snap type-registry))
+(define zj-loaded-base (zj-snap loaded-ns))
 (define zj-ghier (var-cell-lookup "clojure.core" "global-hierarchy"))
 (define (zj-reset!)
   (vector-for-each (lambda (k) (unless (hashtable-ref zj-base k #f) (hashtable-delete! var-table k)))
@@ -53,6 +60,11 @@
                            (var-cell-root-set! (car cr) (cdr cr)))) zj-roots)
   (zj-prune! ns-registry zj-ns-base)
   (zj-prune! type-registry zj-type-base)
+  ;; roll back the loader dedup — a row's require must reload for the next row,
+  ;; since the vars it defined were just pruned from var-table
+  (vector-for-each (lambda (k) (unless (hashtable-ref zj-loaded-base k #f)
+                                 (ldr-unmark-loaded! k)))
+                   (hashtable-keys loaded-ns))
   (hashtable-clear! ns-alias-table)
   (hashtable-clear! ns-refer-table)
   (hashtable-clear! ns-refer-all-table)

@@ -25,6 +25,14 @@
 (define (jolt-async-unblocking-buffer? b)
   (if (and (async-buffer? b) (memq (async-buffer-kind b) '(dropping sliding promise))) #t #f))
 
+;; --- alt-handler (one per alts! call, shared across ports) -------------------
+(define-record-type alt-handler
+  (fields fmu (mutable active?) wmu wcv mailbox)
+  (nongenerative alt-handler-v1))
+(define (alt-handler-alloc)
+  ((record-constructor (record-type-descriptor alt-handler))
+   (make-mutex) #t (make-mutex) (make-condition) (vector #f #f #f)))
+
 ;; --- channels ---------------------------------------------------------------
 ;; items: an amortized-O(1) FIFO held as a mutable #(out in len) — `out` is the
 ;; front (pop from its head), `in` holds pushed entries reversed onto it, `len` is
@@ -33,11 +41,13 @@
 ;; for an unbuffered rendezvous put (set #t when taken, waking the putter).
 ;; cap 0 + kind 'unbuffered = rendezvous; cap>0 with kind fixed/dropping/sliding.
 ;; takew counts threads parked in a blocking take (so a non-blocking offer! to an
-;; unbuffered channel can tell a taker is waiting). xrf is the transducer reducing
-;; fn (or #f); exh the ex-handler (or #f).
+;; unbuffered channel can tell a taker is waiting). alt-takers/alt-putters are
+;; pending alt-handler registrations (alts! ops parked on this channel). xrf is the
+;; transducer reducing fn (or #f); exh the ex-handler (or #f).
 (define-record-type async-chan
-  (fields mu cv (mutable items) cap kind (mutable closed?) (mutable xrf) (mutable takew) exh)
-  (nongenerative async-chan-v2))
+  (fields mu cv (mutable items) cap kind (mutable closed?) (mutable xrf) (mutable takew)
+          exh (mutable alt-takers) (mutable alt-putters))
+  (nongenerative async-chan-v3))
 
 (define (ac-qnew) (vector '() '() 0))
 (define (ac-qlen ch) (vector-ref (async-chan-items ch) 2))
@@ -70,6 +80,106 @@
     ((sliding)  (when (>= (ac-qlen ch) (async-chan-cap ch)) (ac-qdrop-oldest! ch))
                 (ac-qpush! ch (cons v #f)))
     (else       (ac-qpush! ch (cons v #f))))      ; fixed: caller ensured room
+  (ac-notify! ch))
+
+;; --- alt handler claim/deliver -----------------------------------------------
+;; alt-claim! returns #t exactly once per handler (first claim wins).
+;; LOCK ORDER: channel mu → fmu → wmu. Never hold two channel mutexes at once.
+(define (alt-claim! h)
+  (with-mutex (alt-handler-fmu h)
+    (and (alt-handler-active? h)
+         (begin (alt-handler-active?-set! h #f) #t))))
+
+;; alt-deliver! — call ONLY after alt-claim! returned #t.
+(define (alt-deliver! h val port)
+  (with-mutex (alt-handler-wmu h)
+    (let ((mb (alt-handler-mailbox h)))
+      (vector-set! mb 1 val) (vector-set! mb 2 port) (vector-set! mb 0 #t))
+    (condition-signal (alt-handler-wcv h))))
+
+;; ac-notify! — drain pending alt registrations after any channel state mutation.
+;; Called with the channel mutex held. Loops steps 1→2→3 until a full pass makes
+;; no progress.
+(define (ac-notify! ch)
+  (let loop ()
+    (let ((progress #f))
+      ;; Step 1: drain queue → alt-takers
+      (let ((q (async-chan-items ch)))
+        (let drain-takers ()
+          (when (and (fx>? (vector-ref q 2) 0) (pair? (async-chan-alt-takers ch)))
+            (let ((h (car (async-chan-alt-takers ch))))
+              (async-chan-alt-takers-set! ch (cdr (async-chan-alt-takers ch)))
+              (if (alt-claim! h)
+                  (begin (alt-deliver! h (ac-take-head! ch) ch) (set! progress #t))
+                  (set! progress #t)) ; dead registration — dropped
+              (drain-takers)))))
+      ;; Step 2: drain alt-putters → capacity
+      (let drain-putters ()
+        (when (pair? (async-chan-alt-putters ch))
+          (let* ((hp (car (async-chan-alt-putters ch)))
+                 (h (car hp)) (v (cdr hp)))
+            (cond
+              ;; can accept right now?
+              ((case (async-chan-kind ch)
+                 ((dropping sliding) #t)
+                 ((promise) (and (ac-qempty? ch) #t))
+                 (else
+                  (if (> (async-chan-cap ch) 0)
+                      (< (ac-qlen ch) (async-chan-cap ch))
+                      (> (async-chan-takew ch) 0))))
+               (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
+               (if (alt-claim! h)
+                   (begin
+                     ;; Same acceptance logic as ac-try-give!'s body
+                     (cond
+                       ((async-chan-xrf ch)
+                        (let ((r (ac-xrf-apply ch v)))
+                          (when (jolt-reduced? r) (ac-close! ch))))
+                       (else
+                        (case (async-chan-kind ch)
+                          ((dropping sliding)
+                           (ac-buf-give! ch v))
+                          ((promise)
+                           (ac-qpush! ch (cons v #f))
+                           (condition-broadcast (async-chan-cv ch)))
+                          (else
+                           (if (> (async-chan-cap ch) 0)
+                               (begin (ac-qpush! ch (cons v #f))
+                                      (condition-broadcast (async-chan-cv ch)))
+                               (let ((box (vector #f)))
+                                 (ac-qpush! ch (cons v box))
+                                 (condition-broadcast (async-chan-cv ch))))))))
+                     (alt-deliver! h #t ch)
+                     (set! progress #t))
+                   (set! progress #t)) ; dead registration
+               (drain-putters))
+              (else #f)))))
+      ;; Step 3: pair alt-putters with alt-takers directly (unbuffered channels
+      ;; where a putter and taker are both parked). Only when a blocking taker
+      ;; or active alt-taker exists to consume the value.
+      (let pair-loop ()
+        (when (and (pair? (async-chan-alt-putters ch))
+                   (pair? (async-chan-alt-takers ch))
+                   (or (> (async-chan-takew ch) 0)
+                       (ormap (lambda (h) (alt-handler-active? h))
+                              (async-chan-alt-takers ch))))
+          (let* ((hp (car (async-chan-alt-putters ch)))
+                 (h (car hp)) (v (cdr hp)))
+            (if (alt-claim! h)
+                (begin
+                  (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
+                  ;; Commit the value: unbuffered rendezvous push
+                  (let ((box (vector #f)))
+                    (ac-qpush! ch (cons v box))
+                    (condition-broadcast (async-chan-cv ch)))
+                  (alt-deliver! h #t ch)
+                  (set! progress #t)
+                  (pair-loop))
+                (begin
+                  (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
+                  (set! progress #t)
+                  (pair-loop))))))
+      (when progress (loop))))
   (condition-broadcast (async-chan-cv ch)))
 
 ;; A transducer is a jolt fn (xform); (xform add-rf) yields the channel's reducing
@@ -92,8 +202,8 @@
                       (raise e))))
       (apply jolt-invoke xrf ch v))))
 
-(define (ac-make cap kind xrf) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f xrf 0 #f))
-(define (ac-make/exh cap kind exh) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f #f 0 exh))
+(define (ac-make cap kind xrf) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f xrf 0 #f '() '()))
+(define (ac-make/exh cap kind exh) (make-async-chan (make-mutex) (make-condition) (ac-qnew) cap kind #f #f 0 exh '() '()))
 
 ;; (chan) | (chan n) | (chan buf) | (chan n|buf xform) | (chan n|buf xform exh)
 (define (jolt-async-chan . args)
@@ -109,14 +219,23 @@
           (async-chan-xrf-set! ch (jolt-invoke xform (ac-make-add-rf ch))))
         ch))))
 
-;; close! (idempotent): mark closed, flush a stateful transducer's completion, and
-;; wake everyone. ac-close! assumes the lock is held; the public form takes it.
+;; close! (idempotent): mark closed, flush a stateful transducer's completion,
+;; notify pending alt handlers, and wake everyone. ac-close! assumes the lock is
+;; held; the public form takes it.
 (define (ac-close! ch)
   (unless (async-chan-closed? ch)
     (async-chan-closed?-set! ch #t)
     (when (async-chan-xrf ch)
       (guard (e (#t (async-report-uncaught! "transducer completion on close!" e)))
         (ac-xrf-apply ch)))
+    (ac-notify! ch)
+    ;; claim+deliver to every remaining alt-taker (nil) and alt-putter (#f)
+    (for-each (lambda (h) (when (alt-claim! h) (alt-deliver! h jolt-nil ch)))
+              (async-chan-alt-takers ch))
+    (async-chan-alt-takers-set! ch '())
+    (for-each (lambda (hp) (when (alt-claim! (car hp)) (alt-deliver! (car hp) #f ch)))
+              (async-chan-alt-putters ch))
+    (async-chan-alt-putters-set! ch '())
     (condition-broadcast (async-chan-cv ch)))
   jolt-nil)
 (define (jolt-async-close! ch) (with-mutex (async-chan-mu ch) (ac-close! ch)))
@@ -136,22 +255,23 @@
       (else
        (case (async-chan-kind ch)
          ((dropping sliding) (ac-buf-give! ch v) #t)
-         ;; a promise channel takes ONE value, delivered to every taker; further
-         ;; puts are dropped. Never blocks.
-         ((promise) (when (ac-qempty? ch)
-                      (ac-qpush! ch (cons v #f)) (condition-broadcast (async-chan-cv ch)))
-                    #t)
-         (else
-          (if (> (async-chan-cap ch) 0)
-              (let loop ()                                    ; buffered fixed: wait for room
-                (cond ((async-chan-closed? ch) #f)
-                      ((< (ac-qlen ch) (async-chan-cap ch))
-                       (ac-qpush! ch (cons v #f)) (condition-broadcast (async-chan-cv ch)) #t)
-                      (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))
-              (let ((box (vector #f)))                        ; unbuffered: rendezvous
-                (ac-qpush! ch (cons v box))
-                (condition-broadcast (async-chan-cv ch))
-                (let loop ()
+          ;; a promise channel takes ONE value, delivered to every taker; further
+          ;; puts are dropped. Never blocks.
+          ((promise) (when (ac-qempty? ch)
+                       (ac-qpush! ch (cons v #f)))
+                     (ac-notify! ch)
+                     #t)
+          (else
+           (if (> (async-chan-cap ch) 0)
+               (let loop ()                                    ; buffered fixed: wait for room
+                 (cond ((async-chan-closed? ch) #f)
+                       ((< (ac-qlen ch) (async-chan-cap ch))
+                        (ac-qpush! ch (cons v #f)) (ac-notify! ch) #t)
+                       (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))
+               (let ((box (vector #f)))                        ; unbuffered: rendezvous
+                 (ac-qpush! ch (cons v box))
+                 (ac-notify! ch)
+                 (let loop ()
                   (cond ((vector-ref box 0) #t)
                         ((async-chan-closed? ch) #f)
                         (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))))))))
@@ -160,7 +280,7 @@
 (define (ac-take-head! ch)
   (let* ((entry (ac-qpop! ch)) (v (car entry)) (box (cdr entry)))
     (when box (vector-set! box 0 #t))
-    (condition-broadcast (async-chan-cv ch))
+    (ac-notify! ch)
     v))
 
 ;; peek the front value without removing it (promise channels keep their value).
@@ -171,6 +291,7 @@
 
 ;; <! / <!! — take, blocking. Drains buffered values, then nil once closed + empty.
 ;; A promise channel PEEKS — its one value stays for every taker.
+;; When the queue is empty, drains pending alt-putters before parking.
 (define (jolt-async-take ch)
   (with-mutex (async-chan-mu ch)
     (let loop ()
@@ -180,6 +301,22 @@
                    (else (ac-take-wait ch) (loop))))
             ((not (ac-qempty? ch)) (ac-take-head! ch))
             ((async-chan-closed? ch) jolt-nil)
+            ;; drain an alt-putter if one is parked (no xform chans — those
+            ;; complete immediately into the buffer via ac-buf-give!)
+            ((and (pair? (async-chan-alt-putters ch))
+                  (not (async-chan-xrf ch)))
+             (let* ((hp (car (async-chan-alt-putters ch)))
+                    (h (car hp)) (v (cdr hp)))
+               (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
+               (if (alt-claim! h)
+                   (begin
+                     (alt-deliver! h #t ch)
+                     ;; commit value (unbuffered rendezvous)
+                     (let ((box (vector #f)))
+                       (ac-qpush! ch (cons v box))
+                       (condition-broadcast (async-chan-cv ch)))
+                     (ac-take-head! ch))
+                   (loop))))  ; dead registration, retry
             (else (ac-take-wait ch) (loop))))))
 
 ;; park in a take, tracking the waiter count so a concurrent offer! to an
@@ -190,40 +327,56 @@
   (async-chan-takew-set! ch (fx- (async-chan-takew ch) 1)))
 
 ;; non-blocking take for alts!/poll!: a value, jolt-nil (closed+empty), or ac-poll-empty.
+;; Drains pending alt-putters when the queue is empty (same drain path as jolt-async-take).
+;; ac-poll!/locked: mutex must already be held.
 (define ac-poll-empty (list 'empty))
+(define (ac-poll!/locked ch)
+  (cond ((and (eq? (async-chan-kind ch) 'promise) (not (ac-qempty? ch))) (ac-peek ch))
+        ((not (ac-qempty? ch)) (ac-take-head! ch))
+        ((async-chan-closed? ch) jolt-nil)
+        ((and (pair? (async-chan-alt-putters ch)) (not (async-chan-xrf ch)))
+         (let* ((hp (car (async-chan-alt-putters ch)))
+                (h (car hp)) (v (cdr hp)))
+           (async-chan-alt-putters-set! ch (cdr (async-chan-alt-putters ch)))
+           (if (alt-claim! h)
+               (begin
+                 (alt-deliver! h #t ch)
+                 (let ((box (vector #f)))
+                   (ac-qpush! ch (cons v box))
+                   (condition-broadcast (async-chan-cv ch)))
+                 (ac-take-head! ch))
+               ac-poll-empty)))
+        (else ac-poll-empty)))
 (define (ac-poll! ch)
-  (with-mutex (async-chan-mu ch)
-    (cond ((and (eq? (async-chan-kind ch) 'promise) (not (ac-qempty? ch))) (ac-peek ch))
-          ((not (ac-qempty? ch)) (ac-take-head! ch))
-          ((async-chan-closed? ch) jolt-nil)
-          (else ac-poll-empty))))
+  (with-mutex (async-chan-mu ch) (ac-poll!/locked ch)))
 
 ;; non-blocking give: 'ok (accepted), 'full (would block), or 'closed.
+;; ac-try-give!/locked: mutex must already be held.
+(define (ac-try-give!/locked ch v)
+  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
+  (cond
+    ((async-chan-closed? ch) 'closed)
+    ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
+                           (when (jolt-reduced? r) (ac-close! ch)) 'ok))
+    (else
+     (case (async-chan-kind ch)
+       ((dropping sliding) (ac-buf-give! ch v) 'ok)
+       ((promise) (when (ac-qempty? ch) (ac-qpush! ch (cons v #f))) (ac-notify! ch) 'ok)
+       (else
+        (cond
+          ((> (async-chan-cap ch) 0)
+           (if (< (ac-qlen ch) (async-chan-cap ch))
+               (begin (ac-qpush! ch (cons v #f)) (ac-notify! ch) 'ok)
+               'full))
+          ((> (async-chan-takew ch) 0)
+           (let ((box (vector #f)))
+             (ac-qpush! ch (cons v box))
+             (ac-notify! ch)
+             'ok))
+          (else 'full)))))))
 (define (ac-try-give! ch v)
   (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
-  (with-mutex (async-chan-mu ch)
-    (cond
-      ((async-chan-closed? ch) 'closed)
-      ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
-                             (when (jolt-reduced? r) (ac-close! ch)) 'ok))
-      (else
-       (case (async-chan-kind ch)
-         ((dropping sliding) (ac-buf-give! ch v) 'ok)
-         ((promise) (when (ac-qempty? ch) (ac-qpush! ch (cons v #f))
-                          (condition-broadcast (async-chan-cv ch))) 'ok)
-         (else
-          (cond
-            ((> (async-chan-cap ch) 0)
-             (if (< (ac-qlen ch) (async-chan-cap ch))
-                 (begin (ac-qpush! ch (cons v #f)) (condition-broadcast (async-chan-cv ch)) 'ok)
-                 'full))
-            ;; unbuffered: only immediate if a taker is parked to receive it.
-            ((> (async-chan-takew ch) 0)
-             (let ((box (vector #f)))
-               (ac-qpush! ch (cons v box))
-               (condition-broadcast (async-chan-cv ch))
-               'ok))
-            (else 'full))))))))
+  (with-mutex (async-chan-mu ch) (ac-try-give!/locked ch v)))
 
 ;; offer! / poll! — never block. offer! returns #t/#f(closed) on completion, nil if
 ;; it would block; poll! returns a value, nil (closed+empty), or the ::none sentinel.
@@ -286,8 +439,126 @@
          (if (car r)
              (when (not (jolt-nil? (cdr r))) (jolt-async-give w (cdr r)))
              (async-report-uncaught! "go/thread body (channel closed)" (cdr r)))
-         (jolt-async-close! w))))
+          (jolt-async-close! w))))
     w))
+
+;; --- alts! entry point -------------------------------------------------------
+;; (__do-alts ports priority?) — ports is a jolt vector of channels or [ch val]
+;; put specs. Returns a jolt vector [val port]. priority? is a boolean: #t
+;; starts scanning at index 0 (declared order); #f picks a random start.
+;; LOCK ORDER: channel mu → fmu → wmu. Never hold two channel mutexes at once.
+(define (jolt-async-do-alts ports priority?)
+  (let* ((n (pvec-count ports))
+         (start (if (jolt-truthy? priority?) 0 (random n)))
+         (idx-of (lambda (k) (let ((m (fx+ start k))) (if (fx<? m n) m (fx- m n))))))
+    ;; FAST PASS: one non-blocking attempt per op, no handler. Consumption here IS
+    ;; the alts result, so consuming directly is correct on this pass only.
+    (let fast-loop ((k 0))
+      (if (fx<? k n)
+          (let ((port (pvec-nth-d ports (idx-of k) jolt-nil)))
+            (if (pvec? port)
+                (let ((ch (pvec-nth-d port 0 jolt-nil)) (v (pvec-nth-d port 1 jolt-nil)))
+                  (case (ac-try-give! ch v)
+                    ((ok) (jolt-vector #t ch))
+                    ((closed) (jolt-vector #f ch))
+                    (else (fast-loop (fx+ k 1)))))
+                (let ((r (ac-poll! port)))
+                  (if (eq? r ac-poll-empty)
+                      (fast-loop (fx+ k 1))
+                      (jolt-vector r port)))))
+          ;; No fast hit — one shared handler across all ports. Per op, under the
+          ;; channel mutex: compute readiness with NO side effects; if ready, CLAIM
+          ;; FIRST, then consume (a failed claim means a deliverer on an earlier
+          ;; registration won — stop and read the mailbox). If not ready, register
+          ;; and ac-notify! under the same lock so a fresh taker pairs with parked
+          ;; alt-putters (and vice versa) via notify's pairing step.
+          (let ((h (alt-handler-alloc))
+                (registered '()))
+            (let* ((unregister!
+                    (lambda ()
+                      (for-each
+                        (lambda (entry)
+                          (let ((ch (car entry)) (is-put (cdr entry)))
+                            (with-mutex (async-chan-mu ch)
+                              (if is-put
+                                  (async-chan-alt-putters-set! ch
+                                    (remp (lambda (hp) (eq? (car hp) h))
+                                          (async-chan-alt-putters ch)))
+                                  (async-chan-alt-takers-set! ch
+                                    (remp (lambda (x) (eq? x h))
+                                          (async-chan-alt-takers ch)))))))
+                        registered)))
+                   (finish (lambda (val port) (unregister!) (jolt-vector val port)))
+                   (await
+                    (lambda ()
+                      (with-mutex (alt-handler-wmu h)
+                        (let ((mb (alt-handler-mailbox h)))
+                          (let wait-loop ()
+                            (unless (vector-ref mb 0)
+                              (condition-wait (alt-handler-wcv h) (alt-handler-wmu h))
+                              (wait-loop)))))
+                      (unregister!)
+                      (let ((mb (alt-handler-mailbox h)))
+                        (jolt-vector (vector-ref mb 1) (vector-ref mb 2))))))
+              (let reg-loop ((j 0))
+                (if (fx=? j n)
+                    (await)
+                    (let ((port (pvec-nth-d ports (idx-of j) jolt-nil)))
+                      (if (pvec? port)
+                          ;; put spec [ch val]
+                          (let* ((ch (pvec-nth-d port 0 jolt-nil))
+                                 (v (pvec-nth-d port 1 jolt-nil))
+                                 (res
+                                  (with-mutex (async-chan-mu ch)
+                                    (let ((ready?
+                                           (or (async-chan-closed? ch)
+                                               (async-chan-xrf ch)
+                                               (memq (async-chan-kind ch) '(dropping sliding promise))
+                                               (and (> (async-chan-cap ch) 0)
+                                                    (< (ac-qlen ch) (async-chan-cap ch)))
+                                               (and (fx=? (async-chan-cap ch) 0)
+                                                    (> (async-chan-takew ch) 0)))))
+                                      (cond
+                                        ((not ready?)
+                                         (async-chan-alt-putters-set! ch
+                                           (append (async-chan-alt-putters ch) (list (cons h v))))
+                                         (set! registered (cons (cons ch #t) registered))
+                                         (ac-notify! ch)
+                                         'registered)
+                                        ((alt-claim! h)
+                                         ;; ready? holds under this lock — the locked
+                                         ;; give cannot return 'full here.
+                                         (case (ac-try-give!/locked ch v)
+                                           ((closed) (cons #f ch))
+                                           (else (cons #t ch))))
+                                        (else 'lost))))))
+                            (cond
+                              ((eq? res 'registered) (reg-loop (fx+ j 1)))
+                              ((eq? res 'lost) (await))
+                              (else (finish (car res) (cdr res)))))
+                          ;; take from bare channel
+                          (let* ((ch port)
+                                 (res
+                                  (with-mutex (async-chan-mu ch)
+                                    (let ((ready?
+                                           (or (not (ac-qempty? ch))
+                                               (async-chan-closed? ch))))
+                                      (cond
+                                        ((not ready?)
+                                         (async-chan-alt-takers-set! ch
+                                           (append (async-chan-alt-takers ch) (list h)))
+                                         (set! registered (cons (cons ch #f) registered))
+                                         (ac-notify! ch)
+                                         'registered)
+                                        ((alt-claim! h)
+                                         ;; ready? holds — the locked poll cannot
+                                         ;; return the empty sentinel.
+                                         (cons (ac-poll!/locked ch) ch))
+                                        (else 'lost))))))
+                            (cond
+                              ((eq? res 'registered) (reg-loop (fx+ j 1)))
+                              ((eq? res 'lost) (await))
+                              (else (finish (car res) (cdr res)))))))))))))))
 
 ;; --- macros (expander fns over the reader forms) ----------------------------
 (define cca-go-spawn-sym (jolt-symbol "clojure.core.async" "go-spawn"))
@@ -323,9 +594,11 @@
 (cca-def! "take!" jolt-async-take!)
 (cca-def! "offer!" jolt-async-offer!)
 (cca-def! "go-spawn" async-go-spawn)
-;; non-blocking primitives the Clojure overlay's do-alts polls over.
+;; non-blocking primitives also used by the Clojure overlay and external callers.
 (cca-def! "__poll!" jolt-async-poll!)
 (cca-def! "__offer!" jolt-async-offer!)
+;; alts! entry point — handler-registration, not poll loop
+(cca-def! "__do-alts" jolt-async-do-alts)
 (cca-def! "go" cca-go-macro)           (mark-macro! "clojure.core.async" "go")
 (cca-def! "go-loop" cca-go-loop-macro) (mark-macro! "clojure.core.async" "go-loop")
 (cca-def! "thread" cca-thread-macro)   (mark-macro! "clojure.core.async" "thread")
