@@ -13,6 +13,14 @@
 
 ;; ── helpers ───────────────────────────────────────────────────────────────────
 
+(define (oct-value ch)
+  (let ((n (char->integer ch)))
+    (and (>= n 48) (<= n 55) (- n 48))))
+
+(define (oct-value? ch)
+  (let ((n (char->integer ch)))
+    (and (>= n 48) (<= n 55))))
+
 (define (hex-value c)
   (cond ((and (char<=? #\0 c) (char<=? c #\9)) (- (char->integer c) 48))
         ((and (char<=? #\a c) (char<=? c #\f)) (- (char->integer c) 87))
@@ -618,9 +626,10 @@
            (else (loop (cdr fs) (cons f flags))))))))
 
 (define (wrap-case-flag sre fs)
-  (if (memq 'case-insensitive fs)
-      `(w/nocase ,sre)
-      sre))
+  (cond
+   ((memq 'case-insensitive fs) `(w/nocase ,sre))
+   ((memq 'case-sensitive fs)   `(w/case ,sre))
+   (else sre)))
 
 (define (wrap-flags-sre sre fs)
   (let loop ((fs fs) (sre sre))
@@ -628,6 +637,7 @@
         (let ((f (car fs)))
           (cond
            ((eq? f 'case-insensitive) (loop (cdr fs) `(w/nocase ,sre)))
-           ((memq f '(case-sensitive not-single-line not-multi-line not-ignore-space))
+           ((eq? f 'case-sensitive)   (loop (cdr fs) `(w/case ,sre)))
+           ((memq f '(not-single-line not-multi-line not-ignore-space))
             (loop (cdr fs) sre))
            (else (loop (cdr fs) sre)))))))

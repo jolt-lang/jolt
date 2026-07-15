@@ -1997,6 +1997,11 @@
   {:suite "regex / backreferences" :label "repeated word" :expected "[\"the the\" \"the\"]" :actual "(re-find #\"(\\w+) \\1\" \"say the the word\")" :portability :common}
   {:suite "regex / backreferences" :label "group still captures" :expected "[\"x=x\" \"x\"]" :actual "(re-matches #\"(\\w+)=\\1\" \"x=x\")" :portability :common}
   {:suite "regex / backreferences" :label "html tag pair" :expected "true" :actual "(boolean (re-matches #\"<(\\w+)>.*</\\1>\" \"<b>hi</b>\"))" :portability :common}
+  {:suite "regex / inline flags" :label "a(?i)b embeds case insensitivity" :expected "\"aB\"" :actual "(re-find #\"a(?i)b\" \"aB\")" :portability :common}
+  {:suite "regex / inline flags" :label "(a(?i)b)c groupscopes the flag" :expected "nil" :actual "(re-find #\"(a(?i)b)c\" \"aBC\")" :portability :common}
+  {:suite "regex / inline flags" :label "(?i)a(?-i)b toggles case off again — \"Ab\" matches" :expected "\"Ab\"" :actual "(re-find #\"(?i)a(?-i)b\" \"Ab\")" :portability :common}
+  {:suite "regex / inline flags" :label "(?i)a(?-i)b — \"AB\" does NOT match (case restored)" :expected "nil" :actual "(re-find #\"(?i)a(?-i)b\" \"AB\")" :portability :common}
+  {:suite "regex / inline flags" :label "(?i:a(?-i:b)) — nested case-off, \"AB\" does NOT match" :expected "nil" :actual "(re-find #\"(?i:a(?-i:b))\" \"AB\")" :portability :common}
   {:suite "seq / access" :label "first of vector" :expected "1" :actual "(first [1 2 3])" :portability :common}
   {:suite "seq / access" :label "first of list" :expected "1" :actual "(first (list 1 2 3))" :portability :common}
   {:suite "seq / access" :label "first of empty is nil" :expected "nil" :actual "(first [])" :portability :common}
