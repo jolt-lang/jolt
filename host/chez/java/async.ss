@@ -283,13 +283,10 @@
                (let ((box (vector #f)))                        ; unbuffered: rendezvous
                  (ac-qpush! ch (cons v box))
                  (ac-notify! ch)
-                 (let loop ()
-                  (cond ((vector-ref box 0) #t)
-                        ((async-chan-closed? ch)
-                         ;; Pending puts complete with true on close — their value
-                         ;; stays in the queue for takers to consume.
-                         #t)
-                        (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))))))))
+                  (let loop ()
+                   (if (vector-ref box 0)
+                       #t
+                       (begin (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))))))))
 
 ;; remove + return the head value, waking a parked rendezvous putter.
 (define (ac-take-head! ch)
@@ -371,8 +368,11 @@
   (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
   (cond
     ((async-chan-closed? ch) 'closed)
-    ((async-chan-xrf ch) (let ((r (ac-xrf-apply ch v)))
-                           (when (jolt-reduced? r) (ac-close! ch)) 'ok))
+    ((async-chan-xrf ch) (if (and (> (async-chan-cap ch) 0)
+                            (>= (ac-qlen ch) (async-chan-cap ch)))
+                       'full
+                       (let ((r (ac-xrf-apply ch v)))
+                         (when (jolt-reduced? r) (ac-close! ch)) 'ok)))
     (else
      (case (async-chan-kind ch)
        ((dropping sliding) (ac-buf-give! ch v) 'ok)
