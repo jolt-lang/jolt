@@ -461,7 +461,7 @@ fi
 # project without aliases — *aliased-resolve* guards against that.
 ad="$(mktemp -d)"
 mkdir -p "$ad/src/app" "$ad/dev-src/app"
-printf '{:paths ["src"] :aliases {:dev {:paths ["dev-src"]}}}\n' > "$ad/deps.edn"
+printf '{:paths ["src"] :aliases {:dev {:extra-paths ["dev-src"]}}}\n' > "$ad/deps.edn"
 printf '(ns app.core)\n' > "$ad/src/app/core.clj"
 printf '(ns app.devtool)\n(defn -main [& _] (println "adev-ok"))\n' > "$ad/dev-src/app/devtool.clj"
 # run -m via -A:dev
