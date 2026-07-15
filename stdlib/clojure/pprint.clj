@@ -1643,7 +1643,6 @@
           (execute-sub-format subformat sub-navigator (:base-args params))
           navigator))))
 
-  (\) [] #{} {} nil)
 
   (\[
     [:selector [nil Long]]
@@ -2064,7 +2063,6 @@
           (pprint-newline :linear)
           (recur (next aseq)))))))
 
-(def ^{:private true} pprint-array (formatter-out "~<[~;~@{~w~^, ~:_~}~;]~:>"))
 
 (defn- pprint-map [amap]
   (pprint-logical-block :prefix "{" :suffix "}"
