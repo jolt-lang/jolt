@@ -981,8 +981,9 @@
 ;; special forms / interop heads stay bare in backquote, like the JVM reader
 (define rdr-sq-specials
   '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
-    "defmacro" "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var"
-    "new" "."))
+    "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var" "new" "."
+    "&" "catch" "finally" "case*" "letfn*" "monitor-enter" "monitor-exit"
+    "reify*" "deftype*"))
 
 (define (rdr-sq-head-is? x nm)
   (and (cseq? x)
@@ -1006,8 +1007,12 @@
            (or (hashtable-ref gsmap nm #f)
                (let ((g (rdr-sq-gensym (substring nm 0 (fx- (string-length nm) 1)))))
                  (hashtable-set! gsmap nm g) g)))
-          ((member nm rdr-sq-specials) sym)
-          (else (jolt-symbol (chez-current-ns) nm)))
+           ((member nm rdr-sq-specials) sym)
+           (else
+            (let ((resolved (chez-resolve-refer (chez-current-ns) nm)))
+              (if resolved
+                  (jolt-symbol resolved nm)
+                  (jolt-symbol (chez-current-ns) nm)))))
         (let ((target (chez-resolve-alias (chez-current-ns) sns)))
           (if target (jolt-symbol target nm) sym)))))
 
