@@ -349,11 +349,13 @@ fi
 # must have its result spliced in and COMPILED, like Clojure — #code [:x] becomes
 # (+ 40 2) and evaluates to 42, not the literal list. A project run so the source
 # root's data_readers.clj is picked up.
-dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" $joltc run -m drtest.main 2>/dev/null | tail -1)"
-if [ "$dr_out" = "42" ]; then
+dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" $joltc run -m drtest.main 2>/dev/null)"
+dr_want="42
+olleh!"
+if [ "$dr_out" = "$dr_want" ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: code-returning data reader (#code) not compiled — got \`$dr_out\`, want 42"
+  echo "  FAIL: data readers — got \`$dr_out\`, want 42 + olleh! (#code compiled; transitive reader-ns require)"
   fails=$((fails + 1))
 fi
 
