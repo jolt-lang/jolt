@@ -237,10 +237,6 @@
                         select (get pat :select)
                         as-sym (get pat :as)
                         or-keys (if defaults (keys defaults) [])
-                        ;; each :or key gets a gensym holding its default; the defaults
-                        ;; are bound eagerly (before the map) so :defaults can collect
-                        ;; them and repeated lookups share one evaluation.
-                        gdefaults (reduce (fn* [m k] (assoc m k (symbol (str (gensym))))) {} or-keys)
                         ;; kwargs: a map pattern may bind against the sequential rest of
                         ;; a fn — (& {:keys [...]}) — a seq of alternating k/v args,
                         ;; optionally with a trailing map (Clojure 1.11: (f :a 1 {:b 2})
@@ -253,9 +249,7 @@
                                     (merge (apply hash-map (butlast ~g)) (last ~g))
                                     (apply hash-map ~g))
                                   ~g)
-                        acc-d (reduce (fn* [a k] (conj (conj a (get gdefaults k)) (get defaults k)))
-                                      acc or-keys)
-                        acc-m (conj (conj (conj (conj acc-d g) init) gm) coerce)
+                        acc-m (conj (conj (conj (conj acc g) init) gm) coerce)
                         base  (if as-sym (conj (conj acc-m as-sym) gm) acc-m)
                         has-def? (fn* [k] (and defaults (contains? defaults k)))
                         ;; init form reading key bk for binding form bb; a checked (!)
@@ -274,11 +268,12 @@
                                 (or ld? kd?)
                                   (if req?
                                     (throw (new Exception (str "Can't supply default value for required key: " (pr-str bk))))
-                                    `(get ~gm ~bk ~(get gdefaults (if ld? local bk))))
+                                    `(get ~gm ~bk ~(get defaults (if ld? local bk))))
                                 req? `(req! ~gm ~bk)
                                 :else `(get ~gm ~bk))))
                         ;; bind bb (a plain ident, a throwaway gignore, or a nested
-                        ;; pattern) to key bk.
+                        ;; pattern) to key bk. :or default expressions are inlined
+                        ;; as get's not-found arg (eager, JVM-exact).
                         push1
                           (fn* [a bb bk req?]
                             (let* [bv (getter bb bk req?)]
@@ -372,9 +367,10 @@
                         ;; resolve each :or key to the actual map key: a binding symbol
                         ;; maps through b->k; a key-style :or entry is the key itself.
                         dm-pairs (reduce (fn* [ps k]
-                                           (let* [rk (if (symbol? k) (get b->k k) k)]
-                                             (if (nil? rk) ps (conj (conj ps rk) (get gdefaults k)))))
-                                         [] or-keys)
+                                            (let* [rk (if (symbol? k) (get b->k k) k)
+                                                   ls (if (symbol? k) k (symbol (name k)))]
+                                              (if (nil? rk) ps (conj (conj ps rk) ls))))
+                                          [] or-keys)
                         subm-pairs (reduce (fn* [ps k] (conj (conj ps k) (get subm k))) [] (keys subm))
                         mmg (symbol (str (gensym)))
                         ;; :select binds a map of the selected keys — the source map with

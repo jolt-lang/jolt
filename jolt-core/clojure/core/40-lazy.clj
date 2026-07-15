@@ -184,12 +184,22 @@
 ;; --- pmap family: parallel map over real-thread futures ----------------------
 ;; Each element's work runs on its own OS thread with SNAPSHOT semantics
 ;; (futures marshal captured state — pure fns only, mutations don't propagate
-;; back). All futures are spawned up front (doall), then derefed in order:
+;; back). Semi-lazy: spawns (+ 2 procs) futures ahead of consumption so the
+;; realization window is bounded, like Clojure's pmap. Does not force the
+;; entire input collection — (first (take 2 (pmap inc (range)))) terminates.
+;; All futures are spawned up front (doall), then derefed in order:
 ;; coarse-grained work only, as with Clojure's pmap.
 
 (defn pmap
   ([f coll]
-   (map deref (doall (map (fn [x] (future (f x))) coll))))
+   (let [n (+ 2 2)  ;; bounded look-ahead window
+         rets (map (fn [x] (future (f x))) coll)]
+     (letfn [(step [vs fs]
+               (lazy-seq
+                 (if-let [s (seq fs)]
+                   (cons (deref (first vs)) (step (rest vs) (rest s)))
+                   (map deref vs))))]
+       (step rets (drop n rets)))))
   ([f coll & colls]
    (pmap (fn [xs] (apply f xs)) (apply map vector coll colls))))
 

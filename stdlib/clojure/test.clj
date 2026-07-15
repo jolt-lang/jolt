@@ -150,62 +150,73 @@
           (contains? (methods clojure.test/assert-expr) (first form)))
      (clojure.test/assert-expr msg form)
 
-     ;; (is (thrown? Class body...))
-     (thrown-form? form "thrown?")
-     (let [klass-sym (second form)
-           klass (name klass-sym)
-           body  (nthrest form 2)]
-       `(try
-          ~@body
-          (clojure.test/fail! (str "expected " '~form " to throw" (when ~msg (str " — " ~msg))))
-          (catch Throwable e#
-            ;; instance? honors the exception hierarchy (a literal class symbol), so
-            ;; (thrown? IllegalArgumentException …) matches an ArityException subclass
-            ;; like the JVM; class-match? is the simple-name fallback for a class jolt
-            ;; models only by name.
-            (if (or (clojure.core/instance? ~klass-sym e#)
-                    (clojure.test/class-match? e# ~klass))
-              (clojure.test/inc-pass!)
-              (clojure.test/fail! (str "expected throw of " ~klass " but got " (clojure.core/class e#)))))))
+      ;; (is (thrown? Class body...))
+      (thrown-form? form "thrown?")
+      (let [klass-sym (second form)
+            klass (name klass-sym)
+            body  (nthrest form 2)]
+        `(try
+           ~@body
+           (clojure.test/do-report {:type :fail :message (str "expected " '~form " to throw" (when ~msg (str " — " ~msg)))})
+           (catch Throwable e#
+             ;; instance? honors the exception hierarchy (a literal class symbol), so
+             ;; (thrown? IllegalArgumentException …) matches an ArityException subclass
+             ;; like the JVM; class-match? is the simple-name fallback for a class jolt
+             ;; models only by name.
+             (if (or (clojure.core/instance? ~klass-sym e#)
+                     (clojure.test/class-match? e# ~klass))
+               (clojure.test/do-report {:type :pass})
+               (clojure.test/do-report {:type :fail :message (str "expected throw of " ~klass " but got " (clojure.core/class e#))})))))
 
-     ;; (is (thrown-with-msg? Class re body...))
-     (thrown-form? form "thrown-with-msg?")
-     (let [klass-sym (second form)
-           klass (name klass-sym)
-           re    (nth form 2)
-           body  (nthrest form 3)]
-       `(try
-          ~@body
-          (clojure.test/fail! (str "expected " '~form " to throw"))
-          (catch Throwable e#
-            (let [m# (or (clojure.core/ex-message e#) (str e#))]
-              ;; honor the class hierarchy (ExceptionInfo IS a RuntimeException),
-              ;; then fall back to a simple-name match like thrown? does.
-              (if (and (or (clojure.core/instance? ~klass-sym e#)
-                           (clojure.test/class-match? e# ~klass))
-                       (re-find ~re m#))
-                (clojure.test/inc-pass!)
-                (clojure.test/fail! (str "expected throw of " ~klass " matching " ~re " but got " (clojure.core/class e#) ": " m#)))))))
+      ;; (is (thrown-with-msg? Class re body...))
+      (thrown-form? form "thrown-with-msg?")
+      (let [klass-sym (second form)
+            klass (name klass-sym)
+            re    (nth form 2)
+            body  (nthrest form 3)]
+        `(try
+           ~@body
+           (clojure.test/do-report {:type :fail :message (str "expected " '~form " to throw")})
+           (catch Throwable e#
+             (let [m# (or (clojure.core/ex-message e#) (str e#))]
+               ;; honor the class hierarchy (ExceptionInfo IS a RuntimeException),
+               ;; then fall back to a simple-name match like thrown? does.
+               (if (and (or (clojure.core/instance? ~klass-sym e#)
+                            (clojure.test/class-match? e# ~klass))
+                        (re-find ~re m#))
+                 (clojure.test/do-report {:type :pass})
+                 (clojure.test/do-report {:type :fail :message (str "expected throw of " ~klass " matching " ~re " but got " (clojure.core/class e#) ": " m#)}))))))
 
-     ;; a predicate call — (= a b), (< x y), (pred? v): evaluate the args so a
-     ;; failure shows the actual values, like clojure.test's assert-predicate.
-     (and (seq? form) (contains? clojure.test/reported-preds (first form)))
-     `(try
-        (let [vs# (list ~@(rest form))]
-          (if (apply ~(first form) vs#)
-            (clojure.test/inc-pass!)
-            (clojure.test/fail! (str (pr-str (list '~'not (cons '~(first form) vs#)))
-                                     (when ~msg (str " — " ~msg))))))
-        (catch Throwable e#
-          (clojure.test/err! (str (pr-str '~form) " threw: " (clojure.test/err-text e#)))))
+      ;; instance? is a macro, not a function — applying it as a value yields its
+      ;; expansion form (always truthy). Expand it directly like the default path.
+      (and (seq? form) (= 'instance? (first form)))
+      `(try
+         (if (instance? ~(second form) ~(nth form 2))
+           (clojure.test/do-report {:type :pass})
+           (clojure.test/do-report {:type :fail :message ~msg :form '~form}))
+         (catch Throwable e#
+           (clojure.test/do-report {:type :error :message ~msg :form '~form
+                                    :actual (clojure.test/err-text e#)})))
+
+      ;; a predicate call — (= a b), (< x y), (pred? v): evaluate the args so a
+      ;; failure shows the actual values, like clojure.test's assert-predicate.
+      (and (seq? form) (contains? clojure.test/reported-preds (first form)))
+      `(try
+         (let [vs# (list ~@(rest form))]
+           (if (apply ~(first form) vs#)
+             (clojure.test/do-report {:type :pass})
+             (clojure.test/do-report {:type :fail :message (str (pr-str (list '~'not (cons '~(first form) vs#)))
+                                                                  (when ~msg (str " — " ~msg)))})))
+         (catch Throwable e#
+           (clojure.test/do-report {:type :error :message (str (pr-str '~form) " threw: " (clojure.test/err-text e#))})))
 
      :else
      `(try
         (if ~form
-          (clojure.test/inc-pass!)
-          (clojure.test/fail! (str (pr-str '~form) (when ~msg (str " — " ~msg)))))
+          (clojure.test/do-report {:type :pass})
+          (clojure.test/do-report {:type :fail :message (str (pr-str '~form) (when ~msg (str " — " ~msg)))}))
         (catch Throwable e#
-          (clojure.test/err! (str (pr-str '~form) " threw: " (clojure.test/err-text e#))))))))
+          (clojure.test/do-report {:type :error :message (str (pr-str '~form) " threw: " (clojure.test/err-text e#))}))))))
 
 (defmacro testing [s & body]
   `(binding [clojure.test/*testing-contexts* (conj clojure.test/*testing-contexts* ~s)]
@@ -305,11 +316,13 @@
         ns-syms (map (fn [n] (if (symbol? n) n (ns-name n))) nses)
         ns-set (when (seq ns-syms) (set ns-syms))]
     (run-selected ns-set)
-    ;; interned (:test meta) tests run after the registered ones, per ns,
-    ;; through the same each-fixtures path.
+    ;; interned (:test meta) tests discovered up front and run inside the same
+    ;; :once fixtures as registered tests, matching JVM test-ns.
     (doseq [n ns-syms
-            t (interned-tests n)]
-      (run-one t))
+            :let [its (interned-tests n)]
+            :when (seq its)]
+      (wrap-fixtures (get @once-fixtures n [])
+        (fn [] (doseq [t its] (run-one t)))))
     (let [r @counters
           d {:type :summary
              :test  (- (:test r)  (:test before))

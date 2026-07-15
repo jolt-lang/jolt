@@ -719,6 +719,12 @@
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc))] (a/alts!! [[c 1]]) (a/<!! c)))" :expected "2"}
   ;; 10. mult/tap smoke — proves the dataflow layer still works
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) m (a/mult c) t1 (a/chan) t2 (a/chan)] (a/tap m t1) (a/tap m t2) (a/>!! c :x) [(a/<!! t1) (a/<!! t2)]))" :expected "[:x :x]"}
+  ;; clojure.test — instance? in is expands correctly (macro, not applied as fn)
+  {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (t/deftest t1 (t/is (instance? String 5))) (t/run-tests) [(t/n-pass) (t/n-fail)])" :expected "[0 1]"}
+  ;; clojure.test — report multimethod override fires on assertion outcomes
+  {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def rpt (atom false)) (defmethod t/report :fail [m] (reset! rpt true)) (t/deftest t2 (t/is (= 1 2))) (t/run-tests) @rpt)" :expected "true"}
+  ;; clojure.test — interned (:test meta) tests run inside :once fixtures
+  {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def st (atom 0)) (t/use-fixtures :once (fn [f] (swap! st inc) (f))) (intern 'user 'itest (fn [] (t/is (= @st 1)))) (alter-meta! (var itest) assoc :test @(var itest)) (t/run-tests 'user) @st)" :expected "1"}
   ;; Stage A — binary io/copy File→File preserves bytes
   {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :expected "[255 254 0 65]"}
   ;; Stage A — File.delete on non-empty directory returns false

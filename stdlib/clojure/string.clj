@@ -117,7 +117,10 @@
   ([s value]
    (str-find value (to-str s)))
   ([s value from]
-   (let [idx (str-find value (subs (to-str s) from))]
+   ;; JVM String.indexOf clamps: negative from -> 0, from past the end -> nil
+   (let [st (to-str s)
+         from (min (max 0 (long from)) (count st))
+         idx (str-find value (subs st from))]
      (when idx (+ from idx)))))
 
 (defn last-index-of
@@ -127,9 +130,13 @@
          idx (str-find sval r)]
      (when idx (- (count s) (+ idx (count value))))))
   ([s value from]
-   (let [sub (subs s 0 from) r (str-reverse-b sub) sval (str-reverse-b value)
+   ;; JVM lastIndexOf: largest k <= from where the match STARTS (the match may
+   ;; extend past from), negative from -> nil, from past the end clamps
+   (let [from (min (max -1 (long from)) (dec (count s)))
+         sub (if (neg? from) "" (subs s 0 (min (count s) (+ from (count value)))))
+         r (str-reverse-b sub) sval (str-reverse-b value)
          idx (str-find sval r)]
-     (when idx (- from (+ idx (count value)))))))
+     (when idx (- (count sub) (+ idx (count value)))))))
 
 (defn re-quote-replacement
   "Escape special characters (backslash and dollar) in a regex replacement
