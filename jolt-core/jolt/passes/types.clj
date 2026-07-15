@@ -332,7 +332,9 @@
                                      {} (range (count params)))
                           br (infer (get a :body) pe env)
                           ret-ty (ty br)]
-                      [(ty br) (assoc a :body (nd br) :nhints (if (= ret-ty :double) nh (get a :nhints)))]))
+                      [(ty br) (assoc a :body (nd br) :nhints
+                                 (let [existing (into {} (get a :nhints))]
+                                   (if (= ret-ty :double) (merge nh existing) existing)))]))
                   (get node :arities))
         rets (mapv (fn [r] (ty r)) res)
         ret (if (empty? rets) :any (reduce join (first rets) (rest rets)))]
