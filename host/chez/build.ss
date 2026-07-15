@@ -560,8 +560,8 @@
                            (when parsed
                              (set! reqs (cons (car parsed) reqs)))))
                        (expand-spec unquoted))))
-                 (cdr items)))))))
-      (ei-read-all src))
+                  (cdr items)))))))
+      (map rdr-form->data (ei-read-all src)))
     (reverse reqs)))
 
 ;; Post-order DFS from a list of root namespace names: for each name, find its
