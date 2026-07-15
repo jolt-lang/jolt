@@ -115,7 +115,7 @@
 (defn- cmd-A [arg more]
   (let [aliases (parse-aliases arg)]
     (apply-project! (deps/resolve-project (project-dir) aliases))
-    (when (seq more) (run-ns (second more) (drop 2 more)))))
+    (apply -main more)))
 
 (defn- cmd-path []
   (let [{:keys [roots]} (deps/resolve-project (project-dir))]
