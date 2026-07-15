@@ -174,14 +174,22 @@ fi
 # A registered data reader that returns a CODE form must be compiled into the
 # binary (the emit path applies it too, not just the interpreted loader): the
 # datareader-app's #code literal builds to 42, not the literal list.
+# Also exercises transitive reader requires: #my/rev calls app.readers/reverse-str
+# which requires app.util, proving the require-graph closure pulls in helper
+# namespaces reachable only through the data-readers table.
 drapp="$root/test/chez/datareader-app"
 drout="$(dirname "$out")/dr-bin"
 if ! JOLT_PWD="$drapp" bin/joltc build -m drtest.main -o "$drout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a data-reader app exited non-zero"; exit 1
 fi
-got_dr="$(cd / && "$drout" 2>&1 | tail -1)"
-if [ "$got_dr" != "42" ]; then
-  echo "  FAIL: built #code data reader — want 42, got \`$got_dr\`"; exit 1
+got_dr="$(cd / && "$drout" 2>&1)"
+dr_want='42
+olleh!'
+if [ "$got_dr" != "$dr_want" ]; then
+  echo "  FAIL: built data-reader output mismatch"
+  echo "--- want ---"; echo "$dr_want"
+  echo "--- got ----"; echo "$got_dr"
+  exit 1
 fi
 
 # A script namespace with no -main (just top-level side effects) must build and

@@ -497,26 +497,92 @@
 (define (bld-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
+;; --- derive namespace roots from the require graph ---------------------------
 ;; Data-reader namespaces load during project setup, before build-binary arms its
-;; ns-loaded hook, so the entry walk records nothing for them. Synthesize their
-;; (name . file) pairs so reader fns reachable only through *data-readers* (a
-;; runtime read-string of a custom tag) ship in the binary. `known` is the pairs
-;; the entry walk did record — an ns already there is not duplicated. The reader
-;; ns's own requires are not walked: a reader namespace must be self-contained
-;; (require only clojure.core/stdlib), or be reachable from the entry ns too.
-(define (bld-data-reader-ns-pairs known)
+;; ns-loaded hook, so the entry walk records nothing for them. Collect their ns
+;; names (symbol ns parts) from *data-readers*; build-binary runs the require
+;; closure over them to pull in their transitive deps too.
+(define (bld-data-reader-ns-names)
   (let ((tbl (var-deref "clojure.core" "*data-readers*")) (acc '()))
     (when (pmap? tbl)
       (pmap-fold tbl
         (lambda (k v a)
           (when (and (symbol-t? v) (symbol-t-ns v) (not (jolt-nil? (symbol-t-ns v))))
             (let ((nm (symbol-t-ns v)))
-              (unless (or (assoc nm acc) (assoc nm known))
-                (let ((f (find-ns-file nm)))
-                  (when f (set! acc (cons (cons nm f) acc)))))))
+              (unless (member nm acc)
+                (set! acc (cons nm acc)))))
           a)
         #f))
     (reverse acc)))
+
+;; Walk top-level forms in a source file and return the list of namespace name
+;; STRINGS that this file requires (via ns :require/:use clauses and top-level
+;; require/use forms). Only top-level forms are inspected — no recursion into
+;; subforms (the quoted-data bug ce-scan-requires! has). Specs are parsed through
+;; the shared expand-spec + parse-libspec (loader.ss / ns.ss), matching the
+;; loader's semantics exactly.
+(define (bld-ns-requires file)
+  (let ((src (ldr-read-source file)) (reqs '()))
+    (for-each
+      (lambda (form)
+        (when (and (cseq? form) (cseq-list? form))
+          (let* ((items (seq->list form))
+                 (h (and (pair? items) (car items)))
+                 (hn (and (symbol-t? h) (symbol-t-name h))))
+            (cond
+              ;; (ns name (:require spec...) ...)
+              ((and hn (string=? hn "ns"))
+               (for-each
+                 (lambda (clause)
+                   (when (and (cseq? clause) (cseq-list? clause))
+                     (let ((cl (seq->list clause)))
+                       (when (and (pair? cl) (keyword? (car cl))
+                                  (let ((kn (keyword-t-name (car cl))))
+                                    (or (string=? kn "require") (string=? kn "use"))))
+                         (for-each
+                           (lambda (spec)
+                             (for-each
+                               (lambda (s)
+                                 (let ((parsed (parse-libspec s)))
+                                   (when parsed
+                                     (set! reqs (cons (car parsed) reqs)))))
+                               (expand-spec spec)))
+                           (cdr cl))))))
+                 (if (pair? (cdr items)) (cddr items) '())))
+              ;; (require spec...) / (use spec...) — specs are quoted
+              ((and hn (or (string=? hn "require") (string=? hn "use")))
+               (for-each
+                 (lambda (a)
+                   (let ((unquoted (ce-unquote a)))
+                     (for-each
+                       (lambda (s)
+                         (let ((parsed (parse-libspec s)))
+                           (when parsed
+                             (set! reqs (cons (car parsed) reqs)))))
+                       (expand-spec unquoted))))
+                 (cdr items)))))))
+      (ei-read-all src))
+    (reverse reqs)))
+
+;; Post-order DFS from a list of root namespace names: for each name, find its
+;; file, recurse into its requires, then append (name . file). Already-visited
+;; names are skipped (cycles terminate). Names whose source file can't be found
+;; (stdlib/AOT/in-memory) are skipped — they resolve elsewhere. Result: deps
+;; first, roots last.
+(define (bld-require-closure names)
+  (let ((visited (make-hashtable string-hash string=?))
+        (order '()))
+    (let dfs ((ns names))
+      (unless (null? ns)
+        (let ((name (car ns)))
+          (unless (hashtable-ref visited name #f)
+            (hashtable-set! visited name #t)
+            (let ((file (find-ns-file name)))
+              (when file
+                (dfs (bld-ns-requires file))
+                (set! order (cons (cons name file) order)))))
+          (dfs (cdr ns)))))
+    (reverse order)))
 
 ;; Bake the *data-readers* table into the binary so a runtime (read-string
 ;; "#my/tag …") resolves its reader fn like it does under joltc run. Tag and
@@ -569,11 +635,41 @@
       (lambda (name file) (set! app-order (cons (cons name file) app-order))))
     (load-namespace entry-ns)
     (set-ns-loaded-hook! (lambda (name file) #f))
-    (let ((ordered (let ((walked (reverse app-order)))
-                     ;; reader namespaces first: nothing in the entry walk
-                     ;; depends on load order against them (they only reach the
-                     ;; app through *data-readers* lookups at runtime).
-                     (append (bld-data-reader-ns-pairs walked) walked))))   ; deps first, entry last
+    ;; Build ordered ns list from the require graph (static scan of source files)
+    ;; merged with the hook's load order. The graph gives post-order deps; the
+    ;; hook captures dynamic requires the static scan can't see.
+    (let* ((graph (bld-require-closure (list entry-ns)))
+           (walked (reverse app-order))
+           ;; graph without the entry-ns pair (it goes last)
+           (graph-rest (if (and (pair? graph)
+                                (string=? (caar (reverse graph)) entry-ns))
+                           (reverse (cdr (reverse graph)))
+                           graph))
+           ;; reader namespaces with transitive closure
+           (reader-ns-names (bld-data-reader-ns-names))
+           (reader-pairs (bld-require-closure reader-ns-names))
+           ;; only keep reader pairs not already in graph-rest or walked
+           (reader-pairs
+             (filter (lambda (p)
+                       (not (or (assoc (car p) graph-rest)
+                                (assoc (car p) walked))))
+                     reader-pairs))
+           ;; merge: reader pairs + graph-rest + walked novelties (preserving
+           ;; walked order for dynamic requires the scan missed)
+           (merged (append reader-pairs graph-rest))
+           (merged
+             (let loop ((w walked) (m merged))
+               (if (null? w)
+                   m
+                   (if (assoc (caar w) m)
+                       (loop (cdr w) m)
+                       (loop (cdr w) (append m (list (car w))))))))
+           ;; ensure entry-ns is last
+           (entry-pair (or (assoc entry-ns merged)
+                           (assoc entry-ns walked)
+                           (cons entry-ns (find-ns-file entry-ns))))
+           (ordered (append (remove (lambda (p) (string=? (car p) entry-ns)) merged)
+                            (list entry-pair))))
       (when (null? ordered)
         (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                           " — is it on the source roots?")))
