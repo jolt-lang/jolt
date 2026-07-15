@@ -1092,16 +1092,7 @@
 ;; fn arg is a single-arity impl literal. Returns [type-name proto method fn-node] or
 ;; nil — the seed of a contagion-specialized clone.
 (defn- register-impl-invoke [node]
-  (let [f (:fn node) a (:args node)]
-    (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
-               (#{"register-inline-method" "register-method"} (:name f))
-               (= 4 (count a)))
-      (let [[tc pc mc fc] a]
-        (when (and (= :const (:op tc)) (string? (:val tc))
-                   (= :const (:op pc)) (string? (:val pc))
-                   (= :const (:op mc)) (string? (:val mc))
-                   (= :fn (:op fc)))
-          [(:val tc) (:val pc) (:val mc) fc])))))
+  (types/register-impl-invoke? node))
 
 ;; Emit a contagion-specialized clone of an impl alongside its registration, when the
 ;; impl body has a :num field beside a proven :double operand. Re-specializes on the

@@ -878,24 +878,32 @@
 ;; An impl is emitted as (register-(inline-)method TAG "Proto" "method" (fn ...)).
 ;; Its fn body's return type is one impl's contribution to the method's return; the
 ;; join over every impl is the method's return type (monomorphic when all agree).
+
+(defn register-impl-invoke?
+  "Recognize a register-inline-method / register-method invoke node whose first
+  three args are const strings and whose fn arg is a fn literal. Returns
+  [type-name proto method fn-node] or nil. The one shared predicate — the
+  backend and both inference paths use it so the checks can't drift."
+  [node]
+  (let [f (:fn node) a (:args node)]
+    (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
+               (#{"register-inline-method" "register-method"} (:name f))
+               (= 4 (count a)))
+      (let [[tc pc mc fc] a]
+        (when (and (= :const (:op tc)) (string? (:val tc))
+                   (= :const (:op pc)) (string? (:val pc))
+                   (= :const (:op mc)) (string? (:val mc))
+                   (= :fn (:op fc)))
+          [(:val tc) (:val pc) (:val mc) fc])))))
+
 (defn- impl-reg-ret [node]
-  (when (= :invoke (get node :op))
-    (let [f (get node :fn) args (get node :args)]
-      (when (and (= :var (get f :op))
-                 (or (= "register-inline-method" (get f :name))
-                     (= "register-method" (get f :name)))
-                 (= 4 (count args)))
-        (let [type-name (get (nth args 0) :val)
-              proto (get (nth args 1) :val)
-              method (get (nth args 2) :val)
-              fnn (nth args 3)]
-          (when (and (string? proto) (string? method)
-                     (= :fn (get fnn :op)) (seq (get fnn :arities)))
-            (let [arity (first (get fnn :arities))
-                  rtype (inline-impl-receiver-type type-name (get arity :params))
-                  tenv (if rtype {(first (get arity :params)) rtype} {})]
-              [(str proto "/" method)
-               (nth (infer-body (get arity :body) tenv) 0)])))))))
+  (when-some [[type-name proto method fnn] (register-impl-invoke? node)]
+    (when (seq (get fnn :arities))
+      (let [arity (first (get fnn :arities))
+            rtype (inline-impl-receiver-type type-name (get arity :params))
+            tenv (if rtype {(first (get arity :params)) rtype} {})]
+        [(str proto "/" method)
+         (nth (infer-body (get arity :body) tenv) 0)]))))
 
 (defn- walk-pm-rets [node acc]
   (let [kr (impl-reg-ret node)
@@ -924,9 +932,13 @@
   (when (and type-name (seq params))
     (let [shapes (get @config-box :record-shapes)
           target (str "->" type-name)
-          ctor-key (some (fn [[k v]] (when (.endsWith k target) k)) shapes)]
-      (when ctor-key
-        (record-type-from-entry (get shapes ctor-key) ctor-key type-depth shapes)))))
+          matches (filterv (fn [[k v]] (.endsWith k target)) shapes)]
+      ;; only use suffix match when exactly one shape matches; zero or >1
+      ;; is ambiguous (two same-named records in different namespaces) and
+      ;; no seeding is safer than wrong seeding
+      (when (= 1 (count matches))
+        (let [ctor-key (key (first matches))]
+          (record-type-from-entry (get shapes ctor-key) ctor-key type-depth shapes))))))
 
 (defn reinfer-inline-method-bodies
   "Walk node and re-infer the fn bodies of register-inline-method and
@@ -938,31 +950,24 @@
   fn bodies spliced into the invoke args."
   [node]
   (let [walk (fn walk [n]
-               (if (= :invoke (get n :op))
-                 (let [f (get n :fn) args (get n :args)]
-                   (if (and (= :var (get f :op))
-                            (or (= "register-inline-method" (get f :name))
-                                (= "register-method" (get f :name)))
-                            (= 4 (count args)))
-                     (let [type-name (get (nth args 0) :val)
-                           fnn (nth args 3)]
-                       (if (and type-name (= :fn (get fnn :op)) (seq (get fnn :arities)))
-                         (let [rtype (inline-impl-receiver-type type-name
-                                        (get (first (get fnn :arities)) :params))
-                               env (mk-env false false)]
-                           (if rtype
-                             ;; re-infer every arity with param 0 seeded as record type
-                             (let [annotated (mapv (fn [arity]
-                                                     (let [params (get arity :params)
-                                                           tenv (if (seq params)
-                                                                  {(first params) rtype} {})]
-                                                       (assoc arity :body
-                                                              (nth (infer (get arity :body) tenv env) 1))))
-                                                   (get fnn :arities))]
-                               (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
-                             (map-ir-children walk n)))
-                         (map-ir-children walk n)))
-                     (map-ir-children walk n)))
+               (if-some [[type-name _ _ fnn] (register-impl-invoke? n)]
+                 (if (seq (get fnn :arities))
+                   (let [rtype (inline-impl-receiver-type type-name
+                                  (get (first (get fnn :arities)) :params))
+                         env (mk-env false false)
+                         args (:args n)]
+                     (if rtype
+                       ;; re-infer every arity with param 0 seeded as record type
+                       (let [annotated (mapv (fn [arity]
+                                               (let [params (get arity :params)
+                                                     tenv (if (seq params)
+                                                            {(first params) rtype} {})]
+                                                 (assoc arity :body
+                                                        (nth (infer (get arity :body) tenv env) 1))))
+                                             (get fnn :arities))]
+                         (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
+                       (map-ir-children walk n)))
+                   (map-ir-children walk n))
                  (map-ir-children walk n)))]
     (walk node)))
 
