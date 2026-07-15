@@ -450,7 +450,7 @@
 (define (jolt-async-do-alts ports priority?)
   (let* ((n (pvec-count ports))
          (start (if (jolt-truthy? priority?) 0 (random n)))
-         (boxed-val (lambda (v) (if (jolt-nil? v) v (box v)))))
+         )
     ;; Normalize to a Scheme list of (ch . (box v)) for puts, (ch . #f) for takes.
     (let loop ((i 0) (acc '()))
       (if (fx=? i n)
@@ -482,9 +482,9 @@
                                           (remp (lambda (hp) (eq? (car hp) h))
                                                   (async-chan-alt-putters ch)))
                                         (async-chan-alt-takers-set! ch
-                                          (remove (lambda (x) (eq? x h))
+                                          (remp (lambda (x) (eq? x h))
                                                   (async-chan-alt-takers ch)))))
-                                  (ac-notify! ch)))
+))
                               registered)
                             ;; Return result
                             (let ((mb (alt-handler-mailbox h)))
@@ -494,41 +494,51 @@
                                  (port (pvec-nth-d ports idx jolt-nil)))
                             (if (pvec? port)
                                 ;; put spec [ch val]
-                                (let ((ch (pvec-nth-d port 0 jolt-nil)) (v (pvec-nth-d port 1 jolt-nil)))
-                                  (with-mutex (async-chan-mu ch)
-                                    ;; re-check readiness under lock
-                                    (case (ac-try-give!/locked ch v)
-                                      ((ok)
-                                       (if (alt-claim! h)
-                                           (jolt-vector #t ch)
-                                           ;; concurrent deliver won — wait
-                                           (begin (set! registered (cons (cons ch #t) registered))
-                                                  (reg-loop (fx+ j 1)))))
-                                      ((closed)
-                                       (jolt-vector #f ch))
-                                      (else
-                                       ;; not ready — register
-                                       (async-chan-alt-putters-set! ch
-                                         (append (async-chan-alt-putters ch) (list (cons h (boxed-val v)))))
-                                       (set! registered (cons (cons ch #t) registered))
-                                       (reg-loop (fx+ j 1))))))
+                                (let ((ch (pvec-nth-d port 0 jolt-nil))
+                                      (v (pvec-nth-d port 1 jolt-nil)))
+                                  (let ((val
+                                          (with-mutex (async-chan-mu ch)
+                                            ;; re-check readiness under lock
+                                            (case (ac-try-give!/locked ch v)
+                                              ((ok)
+                                               (if (alt-claim! h)
+                                                   (jolt-vector #t ch)
+                                                   ;; concurrent deliver won — wait
+                                                   (begin (set! registered (cons (cons ch #t) registered))
+                                                          (fx+ j 1))))
+                                              ((closed)
+                                               (jolt-vector #f ch))
+                                              (else
+                                               ;; not ready — register
+                                               (async-chan-alt-putters-set! ch
+                                                 (append (async-chan-alt-putters ch) (list (cons h v))))
+                                               (set! registered (cons (cons ch #t) registered))
+                                               (fx+ j 1))))))
+                                    (if (fixnum? val)
+                                        (reg-loop val)
+                                        val)))
                                 ;; take from bare channel
                                 (let ((ch port))
-                                  (with-mutex (async-chan-mu ch)
-                                    (let ((r (ac-poll!/locked ch)))
-                                      (if (eq? r ac-poll-empty)
-                                          ;; not ready — register
-                                          (begin
-                                            (async-chan-alt-takers-set! ch
-                                              (append (async-chan-alt-takers ch) (list h)))
-                                            (set! registered (cons (cons ch #f) registered))
-                                            (reg-loop (fx+ j 1)))
-                                          ;; ready — claim and return
-                                          (if (alt-claim! h)
-                                              (jolt-vector r ch)
-                                              (begin
-                                                (set! registered (cons (cons ch #f) registered))
-                                                (reg-loop (fx+ j 1)))))))))))))
+                                  (let ((val
+                                          (with-mutex (async-chan-mu ch)
+                                            (let ((r (ac-poll!/locked ch)))
+                                              (if (eq? r ac-poll-empty)
+                                                  ;; not ready — register
+                                                  (begin
+                                                    (async-chan-alt-takers-set! ch
+                                                      (append (async-chan-alt-takers ch) (list h)))
+                                                    (set! registered (cons (cons ch #f) registered))
+                                                    (fx+ j 1))
+                                                  ;; ready — claim and return
+                                                  (if (alt-claim! h)
+                                                      (jolt-vector r ch)
+                                                      (begin
+                                                        (set! registered (cons (cons ch #f) registered))
+                                                        (fx+ j 1))))))))
+                                    (if (fixnum? val)
+                                        (reg-loop val)
+                                        val)))
+)))))
                   (let* ((idx (let ((m (fx+ start k)))
                                 (if (fx<? m n) m (fx- m n))))
                          (port (pvec-nth-d ports idx jolt-nil)))
@@ -546,7 +556,7 @@
             (loop (fx+ i 1)
                   (if (pvec? port)
                       (let ((ch (pvec-nth-d port 0 jolt-nil)) (v (pvec-nth-d port 1 jolt-nil)))
-                        (cons (cons ch (boxed-val v)) acc))
+                        (cons (cons ch v) acc))
                       (cons (cons port #f) acc))))))))
 
 ;; --- macros (expander fns over the reader forms) ----------------------------
