@@ -692,7 +692,9 @@
             (with-mutex (vector-ref st 2)
               (let loop () (unless (vector-ref st 1) (condition-wait (vector-ref st 3) (vector-ref st 2)) (loop)))))
           jolt-nil))
-        (cons "isAlive" (lambda (self) (not (vector-ref (jhost-state self) 1))))
+        ;; alive = started and not yet completed (JVM: false before .start)
+        (cons "isAlive" (lambda (self) (let ((st (jhost-state self)))
+          (and (vector-ref st 5) (not (vector-ref st 1))))))
         (cons "interrupt" (lambda (self . _) (set-box! (vector-ref (jhost-state self) 4) #t) jolt-nil))
         (cons "isInterrupted" (lambda (self) (and (unbox (vector-ref (jhost-state self) 4)) #t)))
         (cons "setDaemon" (lambda (self . _) jolt-nil))))
@@ -814,15 +816,18 @@
         (cons "awaitTermination" (lambda (self ms . _)
           (let* ((st (jhost-state self))
                  (deadline (+ (now-millis) (if (number? ms) (jnum->exact ms) 0))))
+            ;; check under the mutex, but SLEEP OUTSIDE it — a worker's exit
+            ;; decrement needs this mutex, so sleeping while holding it starves
+            ;; the very transition awaited (the wait always rode to deadline).
             (let waiting ()
-              (with-mutex (vector-ref st 2)
-                (if (and (vector-ref st 0) (fx=? 0 (vector-ref st 4)))
-                    #t
-                    (if (> (now-millis) deadline)
-                        #f
-                        (let ((remaining (- deadline (now-millis))))
-                          (sleep (ms->duration (max 10 (min remaining 100))))
-                          (waiting)))))))))))
+              (let ((done (with-mutex (vector-ref st 2)
+                            (and (vector-ref st 0) (fx=? 0 (vector-ref st 4))))))
+                (cond (done #t)
+                      ((> (now-millis) deadline) #f)
+                      (else
+                       (let ((remaining (- deadline (now-millis))))
+                         (sleep (ms->duration (max 10 (min remaining 100))))
+                         (waiting)))))))))))
 
 ;; java.util.concurrent.locks.ReentrantLock — a reentrant mutual-exclusion lock.
 ;; State: #(mutex owner-box hold-count). owner-box is the owning thread's interrupt
