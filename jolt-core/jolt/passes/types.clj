@@ -330,8 +330,11 @@
                                        (let [s (get seeds i)]
                                          (if (= s :double) (assoc h (nth params i) :double) h)))
                                      {} (range (count params)))
-                          br (infer (get a :body) pe env)]
-                      [(ty br) (assoc a :body (nd br) :nhints nh)]))
+                          br (infer (get a :body) pe env)
+                          ret-ty (ty br)]
+                      [(ty br) (assoc a :body (nd br) :nhints
+                                 (let [existing (into {} (get a :nhints))]
+                                   (if (= ret-ty :double) (merge nh existing) existing)))]))
                   (get node :arities))
         rets (mapv (fn [r] (ty r)) res)
         ret (if (empty? rets) :any (reduce join (first rets) (rest rets)))]
@@ -611,7 +614,6 @@
          (cond
            (struct-safe? t) (let [n (assoc node :hint :struct)]
                               (if (type-shape t) (assoc n :shape (type-shape t)) n))
-           (vec-type? t) (assoc node :hint :vector)
            :else node)])
       (= op :map)
       (let [pairs (get node :pairs)
@@ -727,10 +729,10 @@
                         env)]
              [:any (assoc node :init (nth (infer (get node :init) tenv env') 1))]))
       (= op :try)
-      [:any (assoc node
-                   :body (nth (infer (get node :body) tenv env) 1)
-                   :catch-body (when (get node :catch-body) (nth (infer (get node :catch-body) tenv env) 1))
-                   :finally (when (get node :finally) (nth (infer (get node :finally) tenv env) 1)))]
+      (let [n (assoc node :body (nth (infer (get node :body) tenv env) 1))
+            n (if (get node :catch-body) (assoc n :catch-body (nth (infer (get node :catch-body) tenv env) 1)) n)
+            n (if (get node :finally) (assoc n :finally (nth (infer (get node :finally) tenv env) 1)) n)]
+        [:any n])
       :else [:any node])))
 
 (defn- infer-top [node env] (nth (infer node {} env) 1))
@@ -831,11 +833,6 @@
   (non-nil), def vars carry their inferred init type."
   [m] (swap! config-box assoc :vtypes (or m {})))
 
-(defn join-types
-  "Public structural join (lub), used by the orchestrator's fixpoint so param/
-  return types join field-wise/element-wise instead of collapsing to :any."
-  [a b] (join-t a b))
-
 (defn reset-escapes! [] (reset! escapes-box #{}))
 (defn collected-escapes [] (vec @escapes-box))
 
@@ -877,24 +874,32 @@
 ;; An impl is emitted as (register-(inline-)method TAG "Proto" "method" (fn ...)).
 ;; Its fn body's return type is one impl's contribution to the method's return; the
 ;; join over every impl is the method's return type (monomorphic when all agree).
+
+(defn register-impl-invoke?
+  "Recognize a register-inline-method / register-method invoke node whose first
+  three args are const strings and whose fn arg is a fn literal. Returns
+  [type-name proto method fn-node] or nil. The one shared predicate — the
+  backend and both inference paths use it so the checks can't drift."
+  [node]
+  (let [f (:fn node) a (:args node)]
+    (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
+               (#{"register-inline-method" "register-method"} (:name f))
+               (= 4 (count a)))
+      (let [[tc pc mc fc] a]
+        (when (and (= :const (:op tc)) (string? (:val tc))
+                   (= :const (:op pc)) (string? (:val pc))
+                   (= :const (:op mc)) (string? (:val mc))
+                   (= :fn (:op fc)))
+          [(:val tc) (:val pc) (:val mc) fc])))))
+
 (defn- impl-reg-ret [node]
-  (when (= :invoke (get node :op))
-    (let [f (get node :fn) args (get node :args)]
-      (when (and (= :var (get f :op))
-                 (or (= "register-inline-method" (get f :name))
-                     (= "register-method" (get f :name)))
-                 (= 4 (count args)))
-        (let [type-name (get (nth args 0) :val)
-              proto (get (nth args 1) :val)
-              method (get (nth args 2) :val)
-              fnn (nth args 3)]
-          (when (and (string? proto) (string? method)
-                     (= :fn (get fnn :op)) (seq (get fnn :arities)))
-            (let [arity (first (get fnn :arities))
-                  rtype (inline-impl-receiver-type type-name (get arity :params))
-                  tenv (if rtype {(first (get arity :params)) rtype} {})]
-              [(str proto "/" method)
-               (nth (infer-body (get arity :body) tenv) 0)])))))))
+  (when-some [[type-name proto method fnn] (register-impl-invoke? node)]
+    (when (seq (get fnn :arities))
+      (let [arity (first (get fnn :arities))
+            rtype (inline-impl-receiver-type type-name (get arity :params))
+            tenv (if rtype {(first (get arity :params)) rtype} {})]
+        [(str proto "/" method)
+         (nth (infer-body (get arity :body) tenv) 0)]))))
 
 (defn- walk-pm-rets [node acc]
   (let [kr (impl-reg-ret node)
@@ -923,9 +928,13 @@
   (when (and type-name (seq params))
     (let [shapes (get @config-box :record-shapes)
           target (str "->" type-name)
-          ctor-key (some (fn [[k v]] (when (.endsWith k target) k)) shapes)]
-      (when ctor-key
-        (record-type-from-entry (get shapes ctor-key) ctor-key type-depth shapes)))))
+          matches (filterv (fn [[k v]] (.endsWith k target)) shapes)]
+      ;; only use suffix match when exactly one shape matches; zero or >1
+      ;; is ambiguous (two same-named records in different namespaces) and
+      ;; no seeding is safer than wrong seeding
+      (when (= 1 (count matches))
+        (let [ctor-key (key (first matches))]
+          (record-type-from-entry (get shapes ctor-key) ctor-key type-depth shapes))))))
 
 (defn reinfer-inline-method-bodies
   "Walk node and re-infer the fn bodies of register-inline-method and
@@ -937,31 +946,24 @@
   fn bodies spliced into the invoke args."
   [node]
   (let [walk (fn walk [n]
-               (if (= :invoke (get n :op))
-                 (let [f (get n :fn) args (get n :args)]
-                   (if (and (= :var (get f :op))
-                            (or (= "register-inline-method" (get f :name))
-                                (= "register-method" (get f :name)))
-                            (= 4 (count args)))
-                     (let [type-name (get (nth args 0) :val)
-                           fnn (nth args 3)]
-                       (if (and type-name (= :fn (get fnn :op)) (seq (get fnn :arities)))
-                         (let [rtype (inline-impl-receiver-type type-name
-                                        (get (first (get fnn :arities)) :params))
-                               env (mk-env false false)]
-                           (if rtype
-                             ;; re-infer every arity with param 0 seeded as record type
-                             (let [annotated (mapv (fn [arity]
-                                                     (let [params (get arity :params)
-                                                           tenv (if (seq params)
-                                                                  {(first params) rtype} {})]
-                                                       (assoc arity :body
-                                                              (nth (infer (get arity :body) tenv env) 1))))
-                                                   (get fnn :arities))]
-                               (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
-                             (map-ir-children walk n)))
-                         (map-ir-children walk n)))
-                     (map-ir-children walk n)))
+               (if-some [[type-name _ _ fnn] (register-impl-invoke? n)]
+                 (if (seq (get fnn :arities))
+                   (let [rtype (inline-impl-receiver-type type-name
+                                  (get (first (get fnn :arities)) :params))
+                         env (mk-env false false)
+                         args (:args n)]
+                     (if rtype
+                       ;; re-infer every arity with param 0 seeded as record type
+                       (let [annotated (mapv (fn [arity]
+                                               (let [params (get arity :params)
+                                                     tenv (if (seq params)
+                                                            {(first params) rtype} {})]
+                                                 (assoc arity :body
+                                                        (nth (infer (get arity :body) tenv env) 1))))
+                                             (get fnn :arities))]
+                         (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
+                       (map-ir-children walk n)))
+                   (map-ir-children walk n))
                  (map-ir-children walk n)))]
     (walk node)))
 
@@ -1040,25 +1042,6 @@
                               (assoc a :body (nth (infer (get a :body) pt env) 1))))
                           (get fnode :arities))))
       def-node)))
-
-(defn phint-seed
-  "Positional declared-hint type seeds for a fn arity. Given the param-name
-  vector and the arity's :phints (a seq of [name ctor-key] pairs), return a
-  vector parallel to params whose slot i is the resolved record TYPE of that
-  param's ^Record hint (via the record-shapes registry), or nil. The
-  whole-program fixpoint seeds these as a param-type FLOOR so a declared hint
-  propagates to a fn's callees DURING inference — not only at the final re-emit
-  (reinfer-def). Without it a hinted param with no callers stays :any through the
-  fixpoint, so a field read off it (e.g. (:origin ^Ray r)) never tells a shared
-  callee its arg is a Vec3."
-  [params phints]
-  (let [shapes (get @config-box :record-shapes)
-        m (reduce (fn [acc pr] (assoc acc (nth pr 0) (nth pr 1))) {} phints)]
-    (mapv (fn [nm]
-            (let [ck (get m nm)
-                  e (and ck (get shapes ck))]
-               (when e (record-type-from-entry e ck type-depth shapes))))
-          params)))
 
 ;; --- whole-program param-type fixpoint --------------------------------------
 ;; Re-derive each app fn's param types from its call sites under closed world
