@@ -204,7 +204,9 @@
     (for-each (lambda (r)
                 (if (dce-rec-keep? r)
                     (set! roots (append (dce-rec-refs r) roots))
-                    (hashtable-set! edges (dce-rec-fqn r) (dce-rec-refs r))))
+                    (hashtable-update! edges (dce-rec-fqn r)
+                      (lambda (old) (append (dce-rec-refs r) old))
+                      '())))
               records)
     (values edges roots)))
 
