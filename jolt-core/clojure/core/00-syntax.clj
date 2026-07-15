@@ -237,10 +237,6 @@
                         select (get pat :select)
                         as-sym (get pat :as)
                         or-keys (if defaults (keys defaults) [])
-                        ;; each :or key gets a gensym for use in the :defaults/:select
-                        ;; map; the default expression is bound lazily at the key's
-                        ;; binding position (not eagerly before the map binding).
-                        gdefaults (reduce (fn* [m k] (assoc m k (symbol (str (gensym))))) {} or-keys)
                         ;; kwargs: a map pattern may bind against the sequential rest of
                         ;; a fn — (& {:keys [...]}) — a seq of alternating k/v args,
                         ;; optionally with a trailing map (Clojure 1.11: (f :a 1 {:b 2})

@@ -109,7 +109,7 @@
     (persistent! tm)))
 
 (defn not-empty [coll]
-  (if (or (nil? coll) (zero? (count coll))) nil coll))
+  (when (seq coll) coll))
 
 (defn filterv [pred coll]
   (vec (filter pred coll)))

@@ -57,10 +57,15 @@
          nil)))
 
 (defmacro print-length-loop
-  "A loop for pretty-printer dispatch functions. (Length limiting via
-  *print-length* is enforced by write-out, not by truncating the loop.)"
+  "A loop for pretty-printer dispatch functions. Stops after *print-length*
+  items (if set), printing a single \"...\" as an extra element and terminating."
   [bindings & body]
-  `(loop ~bindings ~@body))
+  `(loop ~bindings
+     (if (and clojure.pprint/*current-length*
+              clojure.pprint/*print-length*
+              (>= clojure.pprint/*current-length* clojure.pprint/*print-length*))
+       (do (-write *out* "...") nil)
+       (do ~@body))))
 
 (defmacro formatter-out
   "Returns a function (fn [& args]) that runs the compiled format against *out*.
