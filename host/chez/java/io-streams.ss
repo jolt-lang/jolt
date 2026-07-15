@@ -295,7 +295,10 @@
     ((and (jhost? output) (member (jhost-tag output) '("writer" "file-writer" "port-writer" "print-writer")))
      (record-method-dispatch output "write" (list->cseq (list (input-text input)))))
     ((or (jfile? output) (string? output))
-     (let ((bv (and (not (string? input)) (not (jfile? input)) (input-bytes input))))
+     (let ((bv (cond
+                 ((jfile? input) (read-file-bytes (path-of input)))
+                 ((not (string? input)) (input-bytes input))
+                 (else #f))))
        (if bv
            (with-port (open-file-output-port (path-of output) (file-options no-fail) (buffer-mode block))
              (lambda (port) (put-bytevector port bv)))

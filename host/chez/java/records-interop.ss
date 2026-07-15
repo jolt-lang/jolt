@@ -20,11 +20,6 @@
 ;; (ArityException, IllegalArgumentException, ClassCastException, etc.) BEFORE
 ;; Chez can raise a raw condition. Any raw condition that still escapes is a
 ;; runtime error — classify it as RuntimeException.
-;; Returns #f (no special class — the generic condition->RuntimeException arm
-;; in host-class.ss applies).
-(define (chez-condition-exc-class v)
-  #f)
-
 ;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded
 ;; later (io, inst-time, natives-array, natives-queue, host-static-classes)
 ;; register an arm with register-instance-check-arm! instead of set!-wrapping
@@ -34,13 +29,6 @@
 (define instance-check-registry '())
 (define (register-instance-check-arm! f)   ; f: (type-sym val) -> #t | #f | 'pass
   (set! instance-check-registry (cons f instance-check-registry)))
-
-;; (instance? C raw-condition): match when C is the condition's mapped class or a
-;; supertype of it (ArityException is also an IllegalArgumentException, etc.).
-(register-instance-check-arm!
-  (lambda (type-sym val)
-    (let ((k (chez-condition-exc-class val)))
-      (if k (if (exception-isa? k (last-dot (symbol-t-name type-sym))) #t #f) 'pass))))
 
 ;; Object / java.lang.Object is the root of the type hierarchy: every non-nil
 ;; value is an instance of Object; nil is not an instance of anything.
