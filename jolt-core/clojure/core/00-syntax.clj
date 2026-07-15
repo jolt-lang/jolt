@@ -179,27 +179,7 @@
 ;; def+fn* (not defn) because the defn macro is not defined until later in the tier.
 (def destructure
  (fn* destructure [bindings]
-  (let* [find-or
-           (fn* [or-map nm]
-             (reduce (fn* [acc k]
-                       (if (and (symbol? k) (= nm (name k)))
-                         [true (get or-map k)]
-                         acc))
-                     [false nil]
-                     (if or-map (keys or-map) [])))
-         amp? (fn* [x] (and (symbol? x) (= "&" (name x))))
-         ;; split a :keys/:syms/:strs name list at & into [sym bind?] pairs. Names
-         ;; before & bind normally (bind? true); names after & are declared-only
-         ;; (bind? false) — accepted keys (:keys) or required keys (:keys!), per
-         ;; CLJ-2961.
-         classify
-           (fn* [names]
-             (nth (reduce (fn* [st x]
-                            (if (amp? x)
-                              [(nth st 0) false]
-                              [(conj (nth st 0) [x (nth st 1)]) (nth st 1)]))
-                          [[] true] names)
-                  0))
+  (let* [amp? (fn* [x] (and (symbol? x) (= "&" (name x))))
          proc
            (fn* proc [pat init acc]
              (cond
@@ -245,89 +225,172 @@
                      (sloop 0 (conj (conj (conj (conj acc g) init) gs) `(seq ~g)))
                      (vloop 0 0 (conj (conj acc g) init))))
                (map? pat)
-                 (let* [g (symbol (str (gensym)))
-                        gm (symbol (str (gensym)))
-                        ;; kwargs: a map pattern may bind against the sequential rest
-                        ;; of a fn — (& {:keys [...]}) — a seq of alternating k/v args,
+                 (let* [g       (symbol (str (gensym)))
+                        gm      (symbol (str (gensym)))
+                        gignore (symbol (str (gensym)))
+                        defaults    (get pat :or)
+                        defaults-as (get pat :defaults)
+                        ;; :defaults binds a map of the resolved :or defaults, so it
+                        ;; requires :or (CLJ-2966).
+                        _ (if (and defaults-as (not defaults))
+                            (throw (new IllegalArgumentException "Can't specify :defaults without :or")))
+                        select (get pat :select)
+                        as-sym (get pat :as)
+                        or-keys (if defaults (keys defaults) [])
+                        ;; each :or key gets a gensym holding its default; the defaults
+                        ;; are bound eagerly (before the map) so :defaults can collect
+                        ;; them and repeated lookups share one evaluation.
+                        gdefaults (reduce (fn* [m k] (assoc m k (symbol (str (gensym))))) {} or-keys)
+                        ;; kwargs: a map pattern may bind against the sequential rest of
+                        ;; a fn — (& {:keys [...]}) — a seq of alternating k/v args,
                         ;; optionally with a trailing map (Clojure 1.11: (f :a 1 {:b 2})
-                        ;; merges the map over the pairs; (f {:a 1}) is just the map).
-                        ;; An odd count means the last arg is that trailing map. A real
-                        ;; map value is used as-is, so ordinary map destructuring is
-                        ;; unaffected. g holds init once; gm is the coerced map every
+                        ;; merges the map over the pairs; (f {:a 1}) is just the map). An
+                        ;; odd count means the last arg is that trailing map. A real map
+                        ;; is used as-is. g holds init once; gm is the coerced map every
                         ;; lookup (and :as) reads from.
                         coerce `(if (sequential? ~g)
                                   (if (odd? (count ~g))
                                     (merge (apply hash-map (butlast ~g)) (last ~g))
                                     (apply hash-map ~g))
                                   ~g)
-                        or-map (get pat :or)
-                        as-sym (get pat :as)
-                        bound (conj (conj (conj (conj acc g) init) gm) coerce)
-                        base (if as-sym (conj (conj bound as-sym) gm) bound)
-                        ;; group binds a :keys/:strs/:syms list. dnsp is the destructuring
-                        ;; namespace from a qualified key like :ns/keys — it both prefixes
-                        ;; the lookup key and overrides a bare symbol's namespace.
-                        ;; group binds a :keys/:strs/:syms list. checked? marks the
-                        ;; :keys!/:strs!/:syms! variants (CLJ-2961): lookups use req!
-                        ;; (throw on missing) instead of get. A pair is [sym bind?];
-                        ;; bind? false (names after &) is declared-only — for checked
-                        ;; groups it still runs req! (bound to a throwaway gensym) to
-                        ;; enforce the key, for unchecked groups it's a no-op.
-                        group
-                          (fn* group [a names kind dnsp checked?]
-                            (if names
-                                (reduce
-                                  ;; s is a symbol (a b) or a keyword (:a :b); name/
-                                  ;; namespace handle both, so :keys [:major] binds
-                                  ;; `major` looking up :major (str would keep the colon).
-                                  (fn* [aa pair]
-                                    (let* [s (nth pair 0)
-                                           bind? (nth pair 1)
-                                           local (name s)
-                                           nsp (or (namespace s) dnsp)
-                                           keyform (cond
-                                                     (= kind :kw) (keyword (if nsp (str nsp "/" local) local))
-                                                     (= kind :str) local
-                                                     :else `(quote ~(symbol nsp local)))
-                                           fo (find-or or-map local)
-                                           lookup (cond
-                                                    checked? `(req! ~gm ~keyform)
-                                                    (nth fo 0) `(get ~gm ~keyform ~(nth fo 1))
-                                                    :else `(get ~gm ~keyform))]
-                                      (cond
-                                        bind?    (conj (conj aa (symbol local)) lookup)
-                                        checked? (conj (conj aa (symbol (str (gensym)))) lookup)
-                                        :else    aa)))
-                                  a (classify names))
-                                a))
-                        g1 (group base (get pat :keys)  :kw  nil false)
-                        g2 (group g1   (get pat :strs)  :str nil false)
-                        g3 (group g2   (get pat :syms)  :sym nil false)
-                        g4 (group g3   (get pat :keys!) :kw  nil true)
-                        g5 (group g4   (get pat :strs!) :str nil true)
-                        g6 (group g5   (get pat :syms!) :sym nil true)]
-                   ;; remaining keys: a qualified :ns/keys|:ns/strs|:ns/syms groups under
-                   ;; its namespace; any other keyword is skipped; a non-keyword is a
-                   ;; nested binding pattern.
-                   (reduce (fn* [a k]
-                             (if (keyword? k)
-                               (let* [kn (name k) kns (namespace k)]
-                                 (cond
-                                   (and kns (= kn "keys"))  (group a (get pat k) :kw  kns false)
-                                   (and kns (= kn "strs"))  (group a (get pat k) :str kns false)
-                                   (and kns (= kn "syms"))  (group a (get pat k) :sym kns false)
-                                   (and kns (= kn "keys!")) (group a (get pat k) :kw  kns true)
-                                   (and kns (= kn "strs!")) (group a (get pat k) :str kns true)
-                                   (and kns (= kn "syms!")) (group a (get pat k) :sym kns true)
-                                   :else a))
-                               ;; a direct binding {x :x}: apply its :or default
-                               ;; (keyed by the local symbol) when the key is absent.
-                               (let* [fo (if (symbol? k) (find-or or-map (name k)) [false nil])]
-                                 (proc k (if (nth fo 0)
-                                           `(get ~gm ~(get pat k) ~(nth fo 1))
-                                           `(get ~gm ~(get pat k)))
-                                       a))))
-                           g6 (keys pat)))
+                        acc-d (reduce (fn* [a k] (conj (conj a (get gdefaults k)) (get defaults k)))
+                                      acc or-keys)
+                        acc-m (conj (conj (conj (conj acc-d g) init) gm) coerce)
+                        base  (if as-sym (conj (conj acc-m as-sym) gm) acc-m)
+                        has-def? (fn* [k] (and defaults (contains? defaults k)))
+                        ;; init form reading key bk for binding form bb; a checked (!)
+                        ;; directive uses req! (throw on missing). An :or default applies
+                        ;; when the local name (binding-style :or) or the key itself
+                        ;; (key-style :or) has one; a default for a required key errors.
+                        getter
+                          (fn* [bb bk req?]
+                            (let* [ident (or (symbol? bb) (keyword? bb))
+                                   local (if ident (symbol (name bb)) bb)
+                                   ld? (and ident (has-def? local))
+                                   kd? (has-def? bk)]
+                              (cond
+                                (and ld? kd?)
+                                  (throw (new Exception (str "Multiple :or defaults for same key: " (pr-str bk))))
+                                (or ld? kd?)
+                                  (if req?
+                                    (throw (new Exception (str "Can't supply default value for required key: " (pr-str bk))))
+                                    `(get ~gm ~bk ~(get gdefaults (if ld? local bk))))
+                                req? `(req! ~gm ~bk)
+                                :else `(get ~gm ~bk))))
+                        ;; bind bb (a plain ident, a throwaway gignore, or a nested
+                        ;; pattern) to key bk.
+                        push1
+                          (fn* [a bb bk req?]
+                            (let* [bv (getter bb bk req?)]
+                              (if (or (symbol? bb) (keyword? bb))
+                                ;; carry a type hint / metadata onto the local, like
+                                ;; the reference's localize (drops only the namespace).
+                                (conj (conj a (with-meta (symbol (name bb)) (meta bb))) bv)
+                                (proc bb bv a))))
+                        ;; a directive name -> its lookup key. dnsp (a qualified :ns/keys)
+                        ;; takes precedence over a bare name's own namespace.
+                        mk-key
+                          (fn* [kind dnsp s]
+                            (let* [nsp (or dnsp (namespace s)) nm (name s)]
+                              (cond
+                                (= kind :kw)  (keyword (if nsp (str nsp "/" nm) nm))
+                                (= kind :sym) `(quote ~(symbol nsp nm))
+                                :else nm)))
+                        ;; walk one directive's name list. Names before & bind and are
+                        ;; transformed to keys; names after & are the keys themselves
+                        ;; (a bare symbol there is an error — quote it for :syms), used
+                        ;; to declare :select membership and, for a checked directive, to
+                        ;; enforce the key. st is [acc sel b->k].
+                        do-dir
+                          (fn* do-dir [st names kind dnsp req? preamp?]
+                            (if (seq names)
+                              (let* [bb (first names)]
+                                (if (amp? bb)
+                                  (if preamp?
+                                    (do-dir st (next names) kind dnsp req? false)
+                                    (throw (new IllegalArgumentException "& can only appear once in a directive")))
+                                  (let* [_ (if (and (not preamp?) (symbol? bb))
+                                             (throw (new IllegalArgumentException
+                                                      (str "'" bb "' - binding symbols can only appear before '&', use keys after"))))
+                                         a    (nth st 0)
+                                         sel  (nth st 1)
+                                         b->k (nth st 2)
+                                         bk   (if preamp? (mk-key kind dnsp bb) bb)
+                                         a2   (if (or preamp? req?)
+                                                (push1 a (if preamp? bb gignore) bk req?)
+                                                a)
+                                         b->k2 (if preamp? (assoc b->k (symbol (name bb)) bk) b->k)]
+                                    (do-dir [a2 (conj sel bk) b->k2] (next names) kind dnsp req? preamp?))))
+                              st))
+                        ;; a keyword key is a directive: split :keys/:syms/:strs from its
+                        ;; ! (checked) suffix. Returns [kind req?].
+                        dir-kind
+                          (fn* [dir]
+                            (let* [nm (name dir)
+                                   n  (count nm)
+                                   req? (and (> n 0) (= "!" (subs nm (dec n) n)))
+                                   b  (if req? (subs nm 0 (dec n)) nm)]
+                              (cond
+                                (= b "keys") [:kw req?]
+                                (= b "syms") [:sym req?]
+                                (= b "strs") [:str req?]
+                                :else (throw (new Exception (str "Unsupported map directive: " dir))))))
+                        ;; process one entry key. st is [acc sel b->k subm], where subm
+                        ;; maps a nested-map key to its :select var (for deep :select).
+                        do-entry
+                          (fn* [st k]
+                            (let* [a    (nth st 0)
+                                   sel  (nth st 1)
+                                   b->k (nth st 2)
+                                   subm (nth st 3)]
+                              (if (keyword? k)
+                                (let* [dk   (dir-kind k)
+                                       kind (nth dk 0)
+                                       req? (nth dk 1)
+                                       r    (do-dir [a sel b->k] (get pat k) kind (namespace k) req? true)]
+                                  [(nth r 0) (nth r 1) (nth r 2) subm])
+                                ;; a direct binding {bb key}. Under an active :select, a
+                                ;; nested map subselects: give it a :select if it lacks
+                                ;; one, and thread its selected submap up through subm.
+                                (let* [bk      (get pat k)
+                                       subsel? (and select (map? k))
+                                       k2      (if (or (not subsel?) (get k :select))
+                                                 k
+                                                 (assoc k :select (symbol (str (gensym)))))
+                                       subm2   (if subsel? (assoc subm bk (get k2 :select)) subm)
+                                       b->k2   (if (symbol? k2) (assoc b->k k2 bk) b->k)]
+                                  [(push1 a k2 bk false) (conj sel bk) b->k2 subm2]))))
+                        entry-keys (reduce (fn* [ks k]
+                                             (if (or (= k :or) (= k :as) (= k :select) (= k :defaults))
+                                               ks (conj ks k)))
+                                           [] (keys pat))
+                        st1  (reduce do-entry [base [] {} {}] entry-keys)
+                        acc-e (nth st1 0)
+                        sel   (nth st1 1)
+                        b->k  (nth st1 2)
+                        subm  (nth st1 3)
+                        ;; resolve each :or key to the actual map key: a binding symbol
+                        ;; maps through b->k; a key-style :or entry is the key itself.
+                        dm-pairs (reduce (fn* [ps k]
+                                           (let* [rk (if (symbol? k) (get b->k k) k)]
+                                             (if (nil? rk) ps (conj (conj ps rk) (get gdefaults k)))))
+                                         [] or-keys)
+                        subm-pairs (reduce (fn* [ps k] (conj (conj ps k) (get subm k))) [] (keys subm))
+                        mmg (symbol (str (gensym)))
+                        ;; :select binds a map of the selected keys — the source map with
+                        ;; missing keys filled from the defaults and nested submaps
+                        ;; replaced by their own selections (CLJ-2964).
+                        acc-sel (if select
+                                  (conj (conj acc-e select)
+                                        `(let* [~mmg (merge (some-vals (select-keys (hash-map ~@dm-pairs)
+                                                                                    (hash-set ~@sel)))
+                                                            ~gm
+                                                            (some-vals (hash-map ~@subm-pairs)))]
+                                           (if ~mmg (select-keys ~mmg (hash-set ~@sel)) nil)))
+                                  acc-e)]
+                   (if defaults-as
+                     (conj (conj acc-sel defaults-as) `(hash-map ~@dm-pairs))
+                     acc-sel))
                :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
          ploop
            (fn* ploop [i acc]

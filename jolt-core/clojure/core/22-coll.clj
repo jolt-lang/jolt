@@ -28,6 +28,12 @@
   (reduce (fn [m k] (if (contains? map k) (assoc m k (get map k)) m))
           {} keyseq))
 
+(defn some-vals
+  "Returns a map with only the non-nil values of map m. Returns nil if m has no
+  non-nil vals."
+  [m]
+  (reduce-kv (fn [m k v] (if (some? v) (assoc m k v) m)) nil m))
+
 (defn zipmap [keys vals]
   (loop [m {} ks (seq keys) vs (seq vals)]
     (if (and ks vs)
