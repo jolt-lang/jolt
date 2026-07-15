@@ -237,8 +237,24 @@ if ! JOLT_PWD="$fsapp" bin/joltc build -m fsapp.main -o "$fsout" >/dev/null 2>&1
   echo "  FAIL: jolt build of a jolt.fs / babashka.fs app exited non-zero"; exit 1
 fi
 got_fs="$(cd / && "$fsout" 2>&1 | tail -1)"
-if [ "$got_fs" != "FS-APP a/b true true" ]; then
-  echo "  FAIL: built binary missing vendored babashka.fs — want 'FS-APP a/b true true', got \`$got_fs\`"; exit 1
+if [ "$got_fs" != "FS-APP a/b true true rw-------" ]; then
+  echo "  FAIL: built binary missing vendored babashka.fs — want 'FS-APP a/b true true rw-------', got \`$got_fs\`"; exit 1
 fi
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs)"
+# The same fs app tree-shaken: a compiler-dropped binary boots from petite alone
+# (no scheme.boot), so its libc calls through jolt-foreign-proc-safe (stat &co
+# under jolt.fs) must resolve as compiled foreign-procedures — an eval'd form
+# would silently return #f under the interpreter and the output would change.
+fsshake="$(dirname "$out")/fs-app-shake-bin"
+if ! JOLT_PWD="$fsapp" bin/joltc build -m fsapp.main -o "$fsshake" --tree-shake >/dev/null 2>&1; then
+  echo "  FAIL: jolt build --tree-shake of the jolt.fs app exited non-zero"; exit 1
+fi
+if grep -q 'scheme.boot' "$fsshake.build/compile.ss" 2>/dev/null; then
+  echo "  FAIL: tree-shaken fs app still bundles scheme.boot (petite-only boot expected)"; exit 1
+fi
+got_fss="$(cd / && "$fsshake" 2>&1 | tail -1)"
+if [ "$got_fss" != "FS-APP a/b true true rw-------" ]; then
+  echo "  FAIL: petite-only fs binary output mismatch — want 'FS-APP a/b true true rw-------', got \`$got_fss\`"; exit 1
+fi
+
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs + petite-only-fs)"

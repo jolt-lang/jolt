@@ -12,16 +12,33 @@
 
 (load "host/chez/values.ss")
 (load "host/chez/hasheq.ss")
-;; Resolve a libc entry point at RUN time. A literal (foreign-procedure "name" …)
-;; in COMPILED code becomes a fasl relocation resolved when the boot loads — on a
-;; platform lacking the symbol (chmod/sigaddset on Windows) that kills the boot
-;; before any guard can run. eval defers the lookup to evaluation time, where the
-;; guard works; returns #f when the entry doesn't exist.
-(define (jolt-foreign-proc-safe name args res)
-  (guard (e (#t #f))
-    (load-shared-object #f)
-    (and (foreign-entry? name)
-         (eval `(foreign-procedure ,name ,args ,res)))))
+;; Resolve a libc entry point at RUN time; #f when the entry doesn't exist
+;; (chmod/sigaddset on Windows). A macro so the platforms can differ:
+;;
+;; - POSIX: a compiled (foreign-procedure …) guarded at creation time. The
+;;   foreign entry resolves when the closure is created (this define running),
+;;   not when the fasl loads, so a missing symbol raises here and the guard
+;;   returns #f. Compiled creation is what lets these run under a petite-only
+;;   boot (a compiler-dropped binary): Chez's interpreter cannot build a
+;;   foreign-procedure, so an eval'd form would silently yield #f there.
+;;
+;; - Windows: eval the form instead. A foreign reference in compiled fasl is a
+;;   load-time relocation there and a missing symbol aborts the boot (exit 3)
+;;   before any guard runs; eval keeps the form out of the fasl entirely.
+;;   Windows builds always carry the compiler boot, so eval compiles.
+(define-syntax jolt-foreign-proc-safe
+  (lambda (x)
+    (syntax-case x (quote)
+      ((_ name (quote args) (quote res))
+       (if (memq (machine-type) '(a6nt ta6nt i3nt ti3nt))
+           #'(guard (e (#t #f))
+               (load-shared-object #f)
+               (and (foreign-entry? name)
+                    (eval `(foreign-procedure ,name ,'args ,'res))))
+           #'(guard (e (#t #f))
+               (load-shared-object #f)
+               (and (foreign-entry? name)
+                    (foreign-procedure name args res))))))))
 
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")

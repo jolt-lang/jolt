@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-15
+
+### Changed
+
+- Built binaries use roughly a third less memory. The launcher registers the
+  appended boot image as a region of the executable (read through a file
+  descriptor at startup) instead of holding a resident copy — 7–14 MB less
+  depending on the app, on every platform. Tree-shaken binaries with no runtime
+  eval now boot from `petite.boot` alone, dropping the bundled Chez compiler:
+  another ~5 MB of memory and ~1 MB of binary size (macOS/Linux). A hello world
+  goes from ~34 MB to ~22 MB resident; default (REPL-capable) builds keep the
+  compiler and still save the boot copy.
+
 ## [0.3.1] - 2026-07-14
 
 ### Added
