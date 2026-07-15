@@ -751,12 +751,17 @@
           (library?
            (build-shared entry-ns out-path mode builddir flat-ss flat-so boot boot-h
                          (bld-native-link-flags natives)))
+          ;; petite-only is POSIX-only: on Windows jolt-foreign-proc-safe still
+          ;; evals its foreign-procedure forms (fasl relocations abort the boot
+          ;; there), and eval needs the compiler boot resident.
           ((jolt-embedded-bytes "stub/launcher")
            (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot
-                                 (bld-native-link-flags natives)))
+                                 (bld-native-link-flags natives)
+                                 (and drop-compiler? (not bld-nt?))))
           (else
            (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c
-                          (bld-native-link-flags natives))))))))))
+                          (bld-native-link-flags natives)
+                          (and drop-compiler? (not bld-nt?)))))))))))
 
 ;; --- self-contained link (in-process compile + append the boot to the stub) ---
 ;; compile-file runs against the DEFAULT interaction environment, so the boot's
@@ -837,11 +842,11 @@
        "(fasl-compressed #t)\n"))
     (else "")))
 
-(define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link)
+(define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link petite-only?)
   (let ((petite (string-append builddir "/petite.boot"))
         (scheme (string-append builddir "/scheme.boot")))
     (jolt-spill-embedded! "csv/petite.boot" petite)
-    (jolt-spill-embedded! "csv/scheme.boot" scheme)
+    (unless petite-only? (jolt-spill-embedded! "csv/scheme.boot" scheme))
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
     (bld-prepend-prologue! flat-ss)
     (cond
@@ -855,7 +860,14 @@
          (compile-file flat-ss flat-so)))
       (else
        (compile-file flat-ss flat-so)))
-    (make-boot-file boot '() petite scheme flat-so)
+    ;; A compiler-dropped binary (no runtime eval) boots from petite alone —
+    ;; scheme.boot is the Chez compiler, ~5 MB of heap and ~1 MB of binary it
+    ;; would never call. Chez's interpreter (petite) can't create a
+    ;; foreign-procedure at runtime, but every defcfn in the image was
+    ;; AOT-compiled, so the FFI is unaffected.
+    (if petite-only?
+        (make-boot-file boot '() petite flat-so)
+        (make-boot-file boot '() petite scheme flat-so))
     ;; The stub is the native launcher the boot is appended to. With no :static
     ;; natives it's the prebuilt one bundled in joltc (no cc needed); with :static
     ;; natives it's re-linked here from the bundled kernel + launcher source so the
@@ -892,7 +904,7 @@
       native-link " " (bld-link-libs)))))
 
 ;; --- legacy cc link (dev bin/joltc): fresh Chez compile + xxd + cc ------------
-(define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link)
+(define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link petite-only?)
   (display (string-append "jolt build: compiling " entry-ns " (" mode " mode)\n"))
   (let ((cs (string-append builddir "/compile.ss")))
     (let ((p (open-output-file cs 'replace)))
@@ -901,9 +913,13 @@
           "(import (chezscheme))\n"
           (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
+          ;; petite-only boot when the compiler image was dropped (see
+          ;; build-self-contained).
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
           (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
-          (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "
+          (if petite-only?
+              ""
+              (string-append (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "))
           (ei-str-lit flat-so) ")\n"))
       (close-port p))
     (bld-system (string-append bld-chez " --script '" cs "'")))

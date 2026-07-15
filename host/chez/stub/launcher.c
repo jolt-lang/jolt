@@ -22,6 +22,7 @@
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <fcntl.h>
 static int self_path(char *buf, uint32_t size) {
   /* _NSGetExecutablePath fills buf and reports the needed size on overflow. */
   return _NSGetExecutablePath(buf, &size);
@@ -34,6 +35,7 @@ static int self_path(char *buf, uint32_t size) {
 }
 #else
 #include <unistd.h>
+#include <fcntl.h>
 static int self_path(char *buf, uint32_t size) {
   ssize_t n = readlink("/proc/self/exe", buf, (size_t)size - 1);
   if (n < 0) return -1;
@@ -87,8 +89,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  /* The kernel keeps the boot bytes for the life of the process (demand-loaded),
-   * so this buffer is freed only after Sscheme_deinit. */
+#if defined(_WIN32)
+  /* Windows: read the payload into memory. (The fd-region path below is POSIX;
+   * a CRT-fd equivalent is untested against the Chez kernel's Windows I/O, so
+   * the copying path stays until it's verified there.) */
   void *boot = malloc((size_t)boot_len);
   if (!boot) { fclose(f); return 1; }
   if (fseek(f, boot_off, SEEK_SET) != 0 ||
@@ -106,4 +110,23 @@ int main(int argc, char *argv[]) {
   Sscheme_deinit();
   free(boot);
   return status;
+#else
+  /* Register the boot as a region of the executable itself: the kernel reads it
+   * through the fd during Sbuild_heap and closes it when done. No resident copy —
+   * a malloc'd payload here stayed dirty for the life of the process (7-14 MB
+   * depending on the app). */
+  fclose(f);
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    fprintf(stderr, "jolt: cannot reopen self for boot\n");
+    return 1;
+  }
+
+  Sscheme_init(0);
+  Sregister_boot_file_fd_region("jolt", fd, (iptr)boot_off, (iptr)boot_len, 1);
+  Sbuild_heap(0, 0);
+  int status = Sscheme_start(argc, (const char **)argv);
+  Sscheme_deinit();
+  return status;
+#endif
 }
