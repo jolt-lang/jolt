@@ -34,9 +34,17 @@
           (else (loop (- i 1))))))
 
 (define (register-class-statics! name members)  ; members: list of (str . val/proc)
-  (let ((h (or (hashtable-ref class-statics-tbl name #f)
-               (let ((h (make-hashtable string-hash string=?)))
-                 (hashtable-set! class-statics-tbl name h) h))))
+  (let* ((short (short-class-name name))
+         (h (or (hashtable-ref class-statics-tbl name #f)
+                (hashtable-ref class-statics-tbl short #f)
+                (let ((h (make-hashtable string-hash string=?)))
+                  h))))
+    ;; Both the FQN and short name share the same member table — registration
+    ;; under either name lands in the merged table, so re-registrations under one
+    ;; name are visible through the other.
+    (hashtable-set! class-statics-tbl name h)
+    (unless (string=? name short)
+      (hashtable-set! class-statics-tbl short h))
     (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
 
 (define (register-class-ctor! name proc) (hashtable-set! class-ctors-tbl name proc))
