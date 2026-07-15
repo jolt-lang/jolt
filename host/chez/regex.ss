@@ -63,14 +63,29 @@
                          (and (< i (vector-length x))
                               (or (walk (vector-ref x i)) (lp (+ i 1))))))
           (else #f))))
+(define regex-cache (make-hashtable string-hash string=?))
+(define regex-cache-mutex (make-mutex 'regex-cache))
+
+(define (cached-regex-entry source)
+  "Return (count . irx) for source, compiling if needed."
+  (mutex-acquire regex-cache-mutex)
+  (let ((entry (hashtable-ref regex-cache source #f)))
+    (if entry
+        (begin (mutex-release regex-cache-mutex) entry)
+        (let-values (((sre opts) (java-pattern->sre source)))
+          (let* ((irx (apply irregex sre opts))
+                 (has-caps? (sre-has-backref? sre))
+                 (count (irregex-num-submatches irx))
+                 (entry (if (or has-caps? (> count 0))
+                           (cons count (apply irregex sre 'backtrack opts))
+                           (cons 0 irx))))
+            (hashtable-set! regex-cache source entry)
+            (mutex-release regex-cache-mutex)
+            entry)))))
+
 (define (jolt-regex source)
-  (let-values (((sre opts) (java-pattern->sre source)))
-    (let ((irx (apply irregex sre opts)))
-      (make-regex-t source
-                    (if (or (> (irregex-num-submatches irx) 0)
-                            (sre-has-backref? sre))
-                        (apply irregex sre 'backtrack opts)
-                        irx)))))
+  (let ((entry (cached-regex-entry source)))
+    (make-regex-t source (cdr entry))))
 
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
