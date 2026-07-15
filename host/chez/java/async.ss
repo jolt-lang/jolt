@@ -249,9 +249,21 @@
     (cond
       ((async-chan-closed? ch) #f)
       ((async-chan-xrf ch)
-       (let ((r (ac-xrf-apply ch v)))
-         (when (jolt-reduced? r) (ac-close! ch))
-         #t))
+       (if (> (async-chan-cap ch) 0)
+           ;; Fixed buffered with xform: wait for room, then apply xform.
+           ;; The xform step may overfill transiently (e.g. mapcat); the NEXT put
+           ;; will wait again.
+           (let loop ()
+             (cond ((async-chan-closed? ch) #f)
+                   ((< (ac-qlen ch) (async-chan-cap ch))
+                    (let ((r (ac-xrf-apply ch v)))
+                      (when (jolt-reduced? r) (ac-close! ch))
+                      #t))
+                   (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))
+           ;; Unbuffered with xform: apply immediately (output goes to rendezvous queue)
+           (let ((r (ac-xrf-apply ch v)))
+             (when (jolt-reduced? r) (ac-close! ch))
+             #t)))
       (else
        (case (async-chan-kind ch)
          ((dropping sliding) (ac-buf-give! ch v) #t)
@@ -273,7 +285,10 @@
                  (ac-notify! ch)
                  (let loop ()
                   (cond ((vector-ref box 0) #t)
-                        ((async-chan-closed? ch) #f)
+                        ((async-chan-closed? ch)
+                         ;; Pending puts complete with true on close — their value
+                         ;; stays in the queue for takers to consume.
+                         #t)
                         (else (condition-wait (async-chan-cv ch) (async-chan-mu ch)) (loop))))))))))))
 
 ;; remove + return the head value, waking a parked rendezvous putter.

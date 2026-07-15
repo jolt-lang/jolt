@@ -715,4 +715,8 @@
   {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :expected "[255 254 0 65]"}
   ;; Stage A — File.delete on non-empty directory returns false
   {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [d (doto (java.io.File/createTempFile \"jtd\" \".d\") (.delete) (.mkdir)) child (java.io.File. d \"child.txt\")] (spit child \"x\") (let [deleted (.delete d)] (.delete child) (.delete d) deleted)))" :expected "false"}
+  ;; Stage B — fixed-buffer transducer puts block when full
+  {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc)) p (future (a/>!! c 1) (a/>!! c 2) (a/>!! c 3) :done)] (Thread/sleep 100) (let [parked (not (realized? p)) v1 (a/<!! c) v2 (a/<!! c) v3 (a/<!! c) result @p] [parked v1 v2 v3 result])))" :expected "[true 2 3 4 :done]"}
+  ;; Stage B — pending rendezvous put completes with true on close
+  {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (future (a/>!! c :v))] (Thread/sleep 50) (a/close! c) [@p (a/<!! c)]))" :expected "[true :v]"}
 ]
