@@ -139,11 +139,15 @@
                 (when (= d 0)
                   (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
                 (* sign (/ n d))))))
-      ;; hex 0x..
-      ((and (>= blen 2) (char=? (string-ref body 0) #\0)
-            (or (char=? (string-ref body 1) #\x) (char=? (string-ref body 1) #\X)))
-       (let ((h (string->number (substring body 2 blen) 16)))
-         (and h (* sign h))))
+       ;; hex 0x..
+       ((and (>= blen 2) (char=? (string-ref body 0) #\0)
+             (or (char=? (string-ref body 1) #\x) (char=? (string-ref body 1) #\X)))
+        (let* ((raw (substring body 2 blen))
+               (raw-len (string-length raw))
+               (has-bigint (and (> raw-len 0) (char=? (string-ref raw (- raw-len 1)) #\N)))
+               (digits (if has-bigint (substring raw 0 (- raw-len 1)) raw))
+               (h (string->number digits 16)))
+          (and h (* sign h))))
       ;; radix NrDDD (Clojure 2r1010 / 16rFF / 36rZ): N in decimal, DDD in base N
        ((let ((ri (or (rdr-string-index-char body #\r) (rdr-string-index-char body #\R))))
           (and ri (> ri 0) (< (+ ri 1) blen) ri))

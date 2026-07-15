@@ -211,14 +211,32 @@
                                    acc
                                    (jolt-assoc acc k v))))
                            (jolt-hash-map)))))
-    (vector-for-each
-      (lambda (k)
-        (when (string=? (car k) cns)
-          (let* ((target (hashtable-ref ns-refer-table k #f))
-                 (c (and target (var-cell-lookup target (cdr k)))))
-            (when c (set! m (jolt-assoc m (jolt-symbol #f (cdr k)) c))))))
-      (hashtable-keys ns-refer-table))
-    m))
+     (vector-for-each
+       (lambda (k)
+         (when (string=? (car k) cns)
+           (let* ((target (hashtable-ref ns-refer-table k #f))
+                  (c (and target (var-cell-lookup target (cdr k)))))
+             (when c (set! m (jolt-assoc m (jolt-symbol #f (cdr k)) c))))))
+       (hashtable-keys ns-refer-table))
+     ;; refer-all: merge all public vars from :refer :all namespaces
+     (let ((all-refs (hashtable-ref ns-refer-all-table cns #f)))
+       (when all-refs
+         (set! m
+               (fold-left
+                (lambda (acc target-ns)
+                  (let ((publics (ns-vars-pmap-when target-ns
+                                                   (lambda (c) (not (var-private? c))))))
+                    (pmap-fold
+                     publics
+                     (lambda (k v acc)
+                       (let ((nm (symbol-t-name k)))
+                         (if (jolt-contains? acc (jolt-symbol #f nm))
+                             acc
+                             (jolt-assoc acc (jolt-symbol #f nm) v))))
+                     acc)))
+                m
+                all-refs))))
+     m))
 
 ;; ns-imports: clojure.core auto-imports the 96 public java.lang classes into
 ;; every ns. jolt has no classloader, but returns that map (short symbol ->
