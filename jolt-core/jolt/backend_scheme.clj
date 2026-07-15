@@ -369,11 +369,41 @@
 (def ^:private bare-native-names
   (set (keep (fn [[k v]] (when (= k v) k)) native-ops)))
 
+;; All Scheme identifiers the back end emits bare — every :call, :dbl, :lng,
+;; :fixed, :value, and :bd name from op-registry, plus a closed set of runtime
+;; helpers the registry doesn't enumerate (devirt dispatchers, jolt-invokeN,
+;; var-deref, list->cseq, etc.). Derived from op-registry so it stays in sync
+;; with per-op facts. A local whose munged name matches ANY of these would shadow
+;; the emitted runtime procedure (e.g. (let [jolt-nil 5] nil) returns 5 if the
+;; local is emitted verbatim).
+(def ^:private rt-emitted-names
+  (let [from-registry
+        (into #{} (comp (mapcat (fn [[_ spec]]
+                                  (keep identity
+                                        (concat [(:call spec) (:dbl spec) (:lng spec)
+                                                 (:value spec) (:bd spec)]
+                                                (vals (:fixed spec))))))
+                        (remove nil?))
+              op-registry)
+        helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
+                  "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
+                  "var-deref" "list->cseq" "cseq->list"
+                  "make-jrec" "jrec-field-at" "jrec-field-set!"
+                  "devirt-resolve" "devirt-resolve-fl"
+                  "register-clone*" "protocol-resolve"
+                  "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch3"
+                  "exact->inexact" "jolt->fx"
+                  "jolt-register-source!" "jolt-proto-epoch"}]
+    (into from-registry helpers)))
+
 ;; Most jolt names are already valid Scheme identifiers. The one that isn't is
 ;; `#`, which jolt auto-gensyms use as a suffix (p1__0000X4# from #(...)) — `#`
 ;; starts a datum in Scheme, so replace it with `_`. A name that collides with a
-;; Scheme keyword OR a bare-emitted native op is prefixed with `_` so it can never
-;; shadow the emitted form.
+;; Scheme keyword, a bare-emitted native op, or ANY runtime-emitted identifier
+;; (prefix "jolt-", "jv$", or in rt-emitted-names) is prefixed with `_` so it
+;; can never shadow the emitted form. The "jolt-"/"jv$" prefix rules are a
+;; safety net for identifiers added to the runtime that aren't yet in the
+;; registry — they catch future additions without manual enumeration.
 (defn- munge-name [s]
   ;; A Clojure symbol may contain chars that break a Scheme identifier: ' is the
   ;; quote reader macro (a bare f' would read as f then 'rest), # already maps to
@@ -382,7 +412,12 @@
   (let [s (-> s
               (str/replace "#" "_")
               (str/replace "'" "_PRIME_"))]
-    (if (or (contains? scheme-reserved s) (contains? bare-native-names s)) (str "_" s) s)))
+    (if (or (contains? scheme-reserved s)
+            (contains? bare-native-names s)
+            (contains? rt-emitted-names s)
+            (.startsWith ^String s "jolt-")
+            (.startsWith ^String s "jv$"))
+      (str "_" s) s)))
 
 (declare emit)
 (declare emit*)
