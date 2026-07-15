@@ -55,6 +55,24 @@ if [ "$got" != "$want" ]; then
   exit 1
 fi
 
+# Portable embed: remove the build-time source tree and run from / — the
+# embedded resource must still resolve (contents baked as literals, not
+# read-file-string at startup).
+echo "build smoke: portable-embed check"
+app_copy="$(mktemp -d)/app-copy"
+cp -R "$app" "$app_copy"
+pe_out="$(dirname "$out")/pe-bin"
+if ! JOLT_PWD="$app_copy" bin/joltc build -m app.core -o "$pe_out" >/dev/null 2>&1; then
+  echo "  FAIL: portable-embed build exited non-zero"; exit 1
+fi
+rm -rf "$app_copy"
+pe_got="$(cd / && "$pe_out" 2>&1)"
+if ! printf '%s' "$pe_got" | grep -q 'embedded resource ok'; then
+  echo "  FAIL: portable-embed — embedded resource not found after source tree removed"
+  echo "--- got ----"; echo "$pe_got"
+  exit 1
+fi
+
 # Optimized mode (inference + flatten + scalar-replace) must produce the same
 # result — a sanity check that the passes don't miscompile this app.
 if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --opt >/dev/null 2>&1; then

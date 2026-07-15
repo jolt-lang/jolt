@@ -468,9 +468,9 @@
       (directory-list dir))))
 
 ;; Emit register-embedded-resource! per file under each embed dir. Emitted BEFORE
-;; the app forms so the (read-file-string ABSPATH) runs at heap build — the file's
-;; contents bake into the boot image and io/resource serves them with no file on
-;; disk. ABSPATH only has to exist at build time.
+;; the app forms. File contents are read at BUILD time and emitted as string
+;; literals — flat.ss top-level forms run at every startup with no source on disk,
+;; so read-file-string at runtime would fail. The bytes are baked into the binary.
 (define (bld-emit-embeds out embed-dirs)
   (for-each
     (lambda (root)
@@ -479,7 +479,7 @@
           (lambda (rp)
             (put-string out (string-append
                               "(register-embedded-resource! " (ei-str-lit (car rp))
-                              " (read-file-string " (ei-str-lit (cdr rp)) "))\n")))
+                              " " (ei-str-lit (read-file-string (cdr rp))) ")\n")))
           (bld-walk-files root "" '()))))
     (bld-strs embed-dirs)))
 
