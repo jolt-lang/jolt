@@ -3975,4 +3975,7 @@
  {:suite "macros / refer-clojure resolve" :label "refer-clojure is in ns-map" :expected "true" :actual "(contains? (ns-map 'clojure.core) 'refer-clojure)" :portability :common}
   {:suite "macros / vswap! divergence" :label "vswap! is a macro on JVM, fn on jolt" :expected "false" :actual "(boolean (:macro (meta (resolve 'vswap!))))" :portability :common}
  {:suite "reader / ::alias resolution" :label "unknown alias throws RuntimeException" :expected "\"java.lang.RuntimeException\"" :actual "(try (read-string \"::nosuch-alias/foo\") (catch RuntimeException e (.getName (class e))))" :portability :jvm}
+ {:suite "format / nil arg" :label "%s with nil produces \"null\"" :expected "\"null\"" :actual "(format \"%s\" nil)" :portability :jvm}
+ {:suite "format / nil arg" :label "%s with mixed nil and value" :expected "\"null 1\"" :actual "(format \"%s %s\" nil 1)" :portability :jvm}
+ {:suite "format / unknown directive" :label "unknown directive throws" :expected "\"java.util.UnknownFormatConversionException\"" :actual "(try (format \"%e\" 5) (catch Throwable e (.getName (class e))))" :portability :jvm}
 ]
