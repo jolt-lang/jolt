@@ -3989,4 +3989,9 @@
  {:suite "transient / used after persistent!" :label "count on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (count t)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
  {:suite "transient / used after persistent!" :label "nth on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (nth t 0)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
  {:suite "transient / used after persistent!" :label "get on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (get t 0)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
+ {:suite "printer / backspace formfeed" :label "pr-str of backspace char uses \\backspace" :expected "\"\\\\backspace\"" :actual "(pr-str (char 8))" :portability :jvm}
+ {:suite "printer / backspace formfeed" :label "pr-str of formfeed char uses \\formfeed" :expected "\"\\\\formfeed\"" :actual "(pr-str (char 12))" :portability :jvm}
+ {:suite "printer / backspace formfeed" :label "pr-str string has escaped backspace" :expected "4" :actual "(count (pr-str (str (char 8))))" :portability :jvm}
+ {:suite "printer / namespace-maps" :label "pr-str of ns-qualified map uses #:ns shorthand" :expected "true" :actual "(clojure.string/starts-with? (pr-str {:my/key \"v\"}) \"#:my{\")" :portability :jvm}
+ {:suite "printer / namespace-maps" :label "binding *print-namespace-maps* false disables shorthand" :expected "true" :actual "(clojure.string/starts-with? (binding [*print-namespace-maps* false] (pr-str {:my/key \"v\"})) \"{:my/key\")" :portability :jvm}
 ]

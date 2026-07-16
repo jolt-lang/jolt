@@ -434,8 +434,11 @@
   (cond ((null? strs) "") ((null? (cdr strs)) (car strs))
         (else (string-append (car strs) ", " (jolt-str-join-comma (cdr strs))))))
 (define (jolt-char->string c)
-  (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
-                        ((#\return) "return") (else (string c)))))
+  (if (jolt-truthy? (jolt-var-get (jolt-var "clojure.core" "*print-readably*")))
+      (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
+                                  ((#\return) "return") ((#\backspace) "backspace") ((#\page) "formfeed")
+                                  (else (string c))))
+      (string c)))
 ;; Program-final printer: jolt's `-e` is str-style at the top level, where a
 ;; bare nil renders as the empty string (a nil ELEMENT inside a collection still
 ;; prints "nil", which jolt-pr-str handles).
