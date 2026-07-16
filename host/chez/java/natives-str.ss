@@ -18,8 +18,16 @@
 (define (ascii-down-char c)
   (if (and (char<=? #\A c) (char<=? c #\Z))
       (integer->char (fx+ (char->integer c) 32)) c))
-(define (ascii-string-up s) (list->string (map ascii-up-char (string->list s))))
-(define (ascii-string-down s) (list->string (map ascii-down-char (string->list s))))
+(define (ascii-string-up s)
+  (let* ((n (string-length s)) (r (make-string n)))
+    (do ((i 0 (fx+ i 1)))
+        ((fx=? i n) r)
+      (string-set! r i (ascii-up-char (string-ref s i))))))
+(define (ascii-string-down s)
+  (let* ((n (string-length s)) (r (make-string n)))
+    (do ((i 0 (fx+ i 1)))
+        ((fx=? i n) r)
+      (string-set! r i (ascii-down-char (string-ref s i))))))
 
 ;; --- ASCII trim: drop leading/trailing chars with code <= space (JVM .trim) ---
 (define (str-trim s)
@@ -44,17 +52,22 @@
           (else (substring s 0 (fx+ j 1))))))
 
 ;; --- substring search: first index of `needle` in `s` at/after `from`, or -1 --
+(define (char-by-char-match? s si needle nlen)
+  (let loop ((j 0))
+    (cond ((fx=? j nlen) #t)
+          ((char=? (string-ref s (fx+ si j)) (string-ref needle j)) (loop (fx+ j 1)))
+          (else #f))))
 (define (str-index-of s needle from)
   (let ((nlen (string-length needle)) (slen (string-length s)))
     (let loop ((i (max 0 from)))
       (cond ((fx>? (fx+ i nlen) slen) -1)
-            ((string=? (substring s i (fx+ i nlen)) needle) i)
+            ((char-by-char-match? s i needle nlen) i)
             (else (loop (fx+ i 1)))))))
 (define (str-last-index-of s needle)
   (let ((nlen (string-length needle)) (slen (string-length s)))
     (let loop ((i (fx- slen nlen)) (found -1))
       (cond ((fx<? i 0) found)
-            ((string=? (substring s i (fx+ i nlen)) needle) i)
+            ((char-by-char-match? s i needle nlen) i)
             (else (loop (fx- i 1) found))))))
 
 ;; A needle arg: a char value -> its 1-char string; a number -> the char at that
@@ -69,12 +82,18 @@
 (define (str-replace-literal s a b)
   (let ((alen (string-length a)) (slen (string-length s)))
     (if (fx=? alen 0) s
-        (let loop ((i 0) (acc '()))
-          (cond ((fx>? (fx+ i alen) slen)
-                 (apply string-append (reverse (cons (substring s i slen) acc))))
-                ((string=? (substring s i (fx+ i alen)) a)
-                 (loop (fx+ i alen) (cons b acc)))
-                (else (loop (fx+ i 1) (cons (substring s i (fx+ i 1)) acc))))))))
+        (let ((op (open-output-string)))
+          (let loop ((i 0))
+            (cond
+             ((fx>? (fx+ i alen) slen)
+              (display (substring s i slen) op)
+              (get-output-string op))
+             ((char-by-char-match? s i a alen)
+              (display b op)
+              (loop (fx+ i alen)))
+             (else
+              (write-char (string-ref s i) op)
+              (loop (fx+ i 1)))))))))
 
 ;; A compiled irregex for a plain-string Java-regex pattern (or a jolt-regex).
 (define (str-irx pat) (regex-t-irx (jolt-re-pattern pat)))
