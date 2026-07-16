@@ -695,6 +695,8 @@
             (when cb (jolt-invoke cb d)))
           (rdr-read-form s j end)))
        ((char=? c #\!)                    ; #! shebang line comment — skip to EOL
+        ;; a clojure-reader extension only: EDN rejects #! (No dispatch macro)
+        (when (rdr-edn-mode) (rdr-error s i "No dispatch macro for: !"))
         (let eol ((j (+ i 1)))
           (if (or (>= j end) (char=? (string-ref s j) #\newline)
                   (char=? (string-ref s j) #\return))
