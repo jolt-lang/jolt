@@ -19,15 +19,27 @@
   (if (and (char<=? #\A c) (char<=? c #\Z))
       (integer->char (fx+ (char->integer c) 32)) c))
 (define (ascii-string-up s)
-  (let* ((n (string-length s)) (r (make-string n)))
-    (do ((i 0 (fx+ i 1)))
-        ((fx=? i n) r)
-      (string-set! r i (ascii-up-char (string-ref s i))))))
+  (let ((n (string-length s)))
+    (let check ((i 0))
+      (if (fx=? i n)
+          s
+          (if (and (char<=? #\a (string-ref s i)) (char<=? (string-ref s i) #\z))
+              (let ((r (make-string n)))
+                (do ((j 0 (fx+ j 1)))
+                    ((fx=? j n) r)
+                  (string-set! r j (ascii-up-char (string-ref s j)))))
+              (check (fx+ i 1)))))))
 (define (ascii-string-down s)
-  (let* ((n (string-length s)) (r (make-string n)))
-    (do ((i 0 (fx+ i 1)))
-        ((fx=? i n) r)
-      (string-set! r i (ascii-down-char (string-ref s i))))))
+  (let ((n (string-length s)))
+    (let check ((i 0))
+      (if (fx=? i n)
+          s
+          (if (and (char<=? #\A (string-ref s i)) (char<=? (string-ref s i) #\Z))
+              (let ((r (make-string n)))
+                (do ((j 0 (fx+ j 1)))
+                    ((fx=? j n) r)
+                  (string-set! r j (ascii-down-char (string-ref s j)))))
+              (check (fx+ i 1)))))))
 
 ;; --- ASCII trim: drop leading/trailing chars with code <= space (JVM .trim) ---
 (define (str-trim s)
@@ -82,18 +94,20 @@
 (define (str-replace-literal s a b)
   (let ((alen (string-length a)) (slen (string-length s)))
     (if (fx=? alen 0) s
-        (let ((op (open-output-string)))
-          (let loop ((i 0))
-            (cond
-             ((fx>? (fx+ i alen) slen)
-              (display (substring s i slen) op)
-              (get-output-string op))
-             ((char-by-char-match? s i a alen)
-              (display b op)
-              (loop (fx+ i alen)))
-             (else
-              (write-char (string-ref s i) op)
-              (loop (fx+ i 1)))))))))
+        (let ((first-match (str-index-of s a 0)))
+          (if (fx<? first-match 0) s
+              (let ((op (open-output-string)))
+                (let loop ((i 0))
+                  (cond
+                   ((fx>? (fx+ i alen) slen)
+                    (display (substring s i slen) op)
+                    (get-output-string op))
+                   ((char-by-char-match? s i a alen)
+                    (display b op)
+                    (loop (fx+ i alen)))
+                   (else
+                    (write-char (string-ref s i) op)
+                    (loop (fx+ i 1)))))))))))
 
 ;; A compiled irregex for a plain-string Java-regex pattern (or a jolt-regex).
 (define (str-irx pat) (regex-t-irx (jolt-re-pattern pat)))
