@@ -369,7 +369,9 @@
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (read-file-string (jfile-fs src)))
-    ((embedded-res? src) (embedded-res-content src))
+    ((embedded-res? src)
+     (let ((c (embedded-res-content src)))
+       (if (bytevector? c) (utf8->string c) c)))
     ((reader-jhost? src) (drain-reader src))
     ;; bytes (a bytevector or a jolt byte-array): decode with :encoding (UTF-8
     ;; default). clj-http-lite slurps response-body byte arrays.
@@ -488,7 +490,9 @@
   (cond
     ((reader-jhost? x) x)
     ((jfile? x) (host-new "StringReader" (read-file-string (jfile-fs x))))
-    ((embedded-res? x) (host-new "StringReader" (embedded-res-content x)))
+    ((embedded-res? x)
+     (let ((c (embedded-res-content x)))
+       (host-new "StringReader" (if (bytevector? c) (utf8->string c) c))))
     ((and (jhost? x) (string=? (jhost-tag x) "url"))
      (host-new "StringReader" (read-file-string (url-strip-scheme (url-spec x)))))
     ((string? x) (host-new "StringReader" (read-file-string (project-relative x))))

@@ -172,6 +172,11 @@
 ;; (printable ASCII identifiers only here).
 (define (ei-str-lit s) (with-output-to-string (lambda () (write s))))
 
+;; Emit (string->utf8 "...") so the embedded value is a bytevector (1B/char)
+;; instead of a UCS-4 string (4B/char) — saves ~9MB heap per 3MB of source.
+(define (ei-bytes-lit s)
+  (string-append "(string->utf8 " (ei-str-lit s) ")"))
+
 ;; The compiler namespaces, in load order. The passes (fold/inline/types + the
 ;; jolt.passes façade) load after ir so run-passes is available to the back end;
 ;; fold/inline/types come before the façade that :refers them.

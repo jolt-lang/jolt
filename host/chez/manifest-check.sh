@@ -17,10 +17,11 @@ fail=0
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
 # cli.ss's runtime loads, in order: the block from the first rt.ss load to the
-# set-source-roots! line (cli.ss loads build.ss later, conditionally, which is
-# not part of the runtime skeleton).
-sed -n '/(load "host\/chez\/rt.ss")/,/(set-source-roots!/p' host/chez/cli.ss \
-  | grep -oE 'host/chez/[a-zA-Z0-9_/.-]+\.ss' > "$tmp/cli"
+# shared entry tail (cli-tail.ss — source roots + jolt-cli-run; it loads
+# build.ss later, conditionally, which is not part of the runtime skeleton).
+sed -n '/(load "host\/chez\/rt.ss")/,/(load "host\/chez\/cli-tail.ss")/p' host/chez/cli.ss \
+  | grep -oE 'host/chez/[a-zA-Z0-9_/.-]+\.ss' \
+  | grep -v '^host/chez/cli-tail\.ss$' > "$tmp/cli"
 
 # build.ss's bld-runtime-manifest loads, in order, with the three tags resolved
 # to the concrete seed/compile-eval loads they stand for (via bld-tagged-loads).

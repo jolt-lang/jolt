@@ -85,7 +85,7 @@
             (when (or (str-suffix? rel ".clj") (str-suffix? rel ".cljc"))
               (put-string out (string-append
                 "(register-embedded-resource! " (ei-str-lit rel) " "
-                (ei-str-lit (read-file-string abs)) ")\n")))))
+                (ei-bytes-lit (read-file-string abs)) ")\n")))))
         (bld-walk-files root "" '())))
     ldr-install-roots))
 
@@ -112,7 +112,7 @@
     (lambda (path)
       (put-string out (string-append
         "(register-embedded-resource! " (ei-str-lit path) " "
-        (ei-str-lit (read-file-string path)) ")\n")))
+        (ei-bytes-lit (read-file-string path)) ")\n")))
     (jb-collect-load-paths)))
 
 ;; The launcher (Chez scheme-start): replicates host/chez/cli.ss but reads argv
@@ -142,6 +142,12 @@
         (\"stub/launcher.c\" \"jolt_launcher_c\" \"jolt_launcher_c_len\")))))
 
 (suppress-greeting #t)
+;; GC tuning: larger nursery for allocation-heavy workloads. Default 16 MB;
+;; override via JOLT_GC_TRIP_BYTES env (integer bytes).
+(collect-trip-bytes
+  (let ((trip (getenv \"JOLT_GC_TRIP_BYTES\"))
+        (default (* 16 1024 1024)))
+    (if trip (or (string->number trip) default) default)))
 (scheme-start
   (lambda args
     (set-source-roots! " (ldr-install-roots-str) ")
@@ -169,6 +175,11 @@
   ;; jolt-baked-version above, so this set! resolves).
   (put-string out (string-append "\n;; === baked version ===\n(set! jolt-baked-version "
                                  (ei-str-lit jb-version) ")\n"))
+  ;; Preload jolt.main + jolt.deps into the image so CLI dispatch (every
+  ;; run/build/path/repl command) skips the ~0.14s source-load.
+  (put-string out "\n;; === AOT jolt.main + jolt.deps ===\n")
+  (put-string out "(load-namespace \"jolt.main\")\n")
+  (put-string out "(load-namespace \"jolt.deps\")\n")
   (put-string out "\n;; === joltc launcher ===\n")
   (jb-emit-launcher out)
   (close-port out))
