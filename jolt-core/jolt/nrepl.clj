@@ -18,7 +18,8 @@
   Writes .nrepl-port in the project dir so editors auto-detect the port."
   (:require [clojure.string :as str]
             [clojure.java.io :as io]
-            [jolt.ffi :as ffi]))
+            [jolt.ffi :as ffi]
+            [jolt.analyzer :as ana]))
 
 ;; --- sockets (loopback server) ---------------------------------------------
 (def ^:private os-name
@@ -187,7 +188,8 @@
         out (with-out-str
               (try (when (and ns-str (not (str/blank? ns-str)) (find-ns (symbol ns-str)))
                      (in-ns (symbol ns-str)))
-                   (reset! result (load-string code))
+                   (reset! result (binding [ana/*allow-unresolved-vars* true]
+                                    (load-string code)))
                    (catch :default e
                      (reset! err (str (err-msg e)
                                       (when-let [bt (jolt.host/backtrace-string)]

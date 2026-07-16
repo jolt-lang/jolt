@@ -46,6 +46,12 @@
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
 
+;; Default false: typos and missing requires are compile-time errors,
+;; matching JVM. The nREPL server binds this to true so interactive
+;; development (where defmulti/defmethod forward references are
+;; legitimate) still works.
+(def ^:dynamic *allow-unresolved-vars* false)
+
 (def ^:private gensym-counter (atom 0))
 (defn- gen-name [prefix]
   (let [n @gensym-counter]
@@ -628,21 +634,14 @@
                 ;; Class object via the runtime interner, so (= (class x) java.util.Date),
                 ;; identity, and defmethod dispatch keys are all stable.
                 :class (invoke (var-ref "jolt.host" "jolt-class-for") [(const (:name r))])
-                ;; :unresolved — emitting a var-ref here would auto-intern an
-                ;; UNBOUND var, so a typo'd symbol would die later as 'Cannot call
-                ;; nil as a function' with no hint which symbol.
-                ;; Punt to the interpreter: its resolver raises Clojure's
-                ;; 'Unable to resolve symbol' when the form actually runs (at
-                ;; eval for top-level forms, at call for fn bodies). A punt
-                ;; rather than a hard throw because runtime-interning forms
-                ;; (defmulti's setup call) legitimately reference the var they
-                ;; are about to create when nested in a non-top-level do. Real
-                ;; forward references want (declare ...), as in Clojure.
-                ;; Under late-bind? (the Chez back end, which has no interpreter
-                ;; to punt to) an unresolved symbol instead lowers to a var-ref
-                ;; against the compile ns — resolved at runtime, the open-world
-                ;; semantics of -e — so defmulti/defmethod forward references work.
-                (if (late-bind? ctx)
+                ;; :unresolved — throw "Unable to resolve symbol" at the
+                ;; compilation-unit top level, matching JVM Clojure. Inside a
+                ;; scope (fn / loop / let body — indicated by :recur or non-empty
+                ;; :locals), late-bind so defmulti/defmethod forward references
+                ;; still work. *allow-unresolved-vars* overrides for nREPL.
+                (if (or *allow-unresolved-vars*
+                        (:recur env)
+                        (seq (:locals env)))
                   (var-ref (compile-ns ctx) nm)
                   (uncompilable (str "Unable to resolve symbol: " nm " in this context"))))))))
 
