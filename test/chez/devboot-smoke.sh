@@ -80,6 +80,37 @@ fi
 # Clean up: rebuild so subsequent tests don't inherit the touched state.
 make devboot
 
+# (e) project commands under the cache: build an app from a project dir and run
+# it. Guards the cached entry's source-roots/JOLT_PWD handling — a drifted
+# launcher once resolved no roots and every project build failed.
+echo "=== (e) cached project build ==="
+projdir="$(mktemp -d)"
+mkdir -p "$projdir/src/app"
+cat > "$projdir/src/app/core.clj" <<'CLJ'
+(ns app.core)
+(defn -main [& args] (println "devboot-project-ok"))
+CLJ
+printf '{:paths ["src"]}' > "$projdir/deps.edn"
+build_out="$( (cd "$projdir" && JOLT_DEVCACHE=1 "$root/$joltc" build -m app.core -o "$projdir/app-bin") 2>&1 )" || true
+if echo "$build_out" | grep -q "devcache:"; then
+  binpath="$projdir/app-bin"
+  run_out="$( [ -x "$binpath" ] && "$binpath" 2>&1 )" || true
+  if [ "$run_out" = "devboot-project-ok" ]; then
+    echo "  PASS: cached build produced a working binary"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL: cached build binary missing or wrong output"
+    echo "    build: $build_out"
+    echo "    run:   $run_out"
+    fails=$((fails + 1))
+  fi
+else
+  echo "  FAIL: cache was not used for the project build"
+  echo "    output: $build_out"
+  fails=$((fails + 1))
+fi
+rm -rf "$projdir"
+
 echo ""
 echo "devboot smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]

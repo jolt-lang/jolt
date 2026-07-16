@@ -58,21 +58,10 @@ if [ -f "$CACHE_SO" ] && [ -f "$CACHE_INPUTS" ] && [ $# -gt 0 ] && [ "$1" != "re
   fi
 fi
 
+# The devcache entry is a checked-in script sharing cli.ss's tail (cli-tail.ss)
+# — an inline heredoc here once drifted from cli.ss and broke project commands.
 if [ "$use_cache" = 1 ]; then
-  exec ${CHEZ} --script /dev/stdin "$@" <<JOLT_DEVCACHE_LAUNCHER
-(load "target/dev/flat.so")
-(let ((marker (getenv "JOLT_DEVCACHE")))
-  (when (and marker (not (string=? marker "")))
-    (display "devcache: using target/dev/flat.so\n" (current-error-port))))
-;; GC tuning (same as the binary's launcher).
-(collect-trip-bytes
-  (let ((trip (getenv "JOLT_GC_TRIP_BYTES"))
-        (default (* 16 1024 1024)))
-    (if trip (or (string->number trip) default) default)))
-(jolt-trace-init-from-env!)
-(jolt-cli-run (cdr (command-line))
-  (lambda () (load "host/chez/build.ss")))
-JOLT_DEVCACHE_LAUNCHER
+  exec ${CHEZ} --script host/chez/cli-devcache.ss "$@"
 fi
 
 # Fallback: source mode. Hint for devs (only when interactive).

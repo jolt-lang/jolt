@@ -106,6 +106,10 @@
 ;; compile-file must run against a clean chezscheme env so `error` and other
 ;; primitives the runtime shadows bind to the kernel versions.
 (display "make-devboot: compiling flat.so (fresh Chez)\n")
+;; Compile to a temp path and rename into place: a concurrent bin/joltc (e.g.
+;; parallel make ci gates) must never load a partially written image — a
+;; truncated fasl can load a prefix of the runtime and fail on late defines.
+(define jb-flat-so-tmp (string-append jb-flat-so ".tmp"))
 (let ((cs (string-append jb-build "/dev-compile.ss")))
   (let ((p (open-output-file cs 'replace)))
     (put-string p
@@ -116,8 +120,10 @@
         "(generate-procedure-source-information #f)\n"
         "(debug-on-exception #f)\n"
         "(fasl-compressed #t)\n"
-        "(compile-file " (ei-str-lit jb-flat-ss) " " (ei-str-lit jb-flat-so) ")\n"))
+        "(compile-file " (ei-str-lit jb-flat-ss) " " (ei-str-lit jb-flat-so-tmp) ")\n"))
     (close-port p))
   (bld-system (string-append bld-chez " --script '" cs "'")))
+(when (file-exists? jb-flat-so) (delete-file jb-flat-so))
+(rename-file jb-flat-so-tmp jb-flat-so)
 
 (display (string-append "make-devboot: wrote " jb-flat-so "\n"))
