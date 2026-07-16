@@ -494,6 +494,12 @@
 (def-var! "clojure.core" "ns-unalias" jolt-ns-unalias)
 (def-var! "clojure.core" "refer" jolt-refer)
 (def-var! "clojure.core" "refer-clojure" jolt-refer-clojure)
+(mark-macro! "clojure.core" "refer-clojure")
+;; defmacro — special form; the var cell exists so (resolve 'defmacro) works.
+;; The expander re-emits the form (the special-form path handles analysis).
+(def-var! "clojure.core" "defmacro"
+  (lambda args (apply jolt-list (cons (jolt-symbol #f "defmacro") (list->cseq args)))))
+(mark-macro! "clojure.core" "defmacro")
 (def-var! "clojure.core" "alter-meta!" jolt-alter-meta!)
 (def-var! "clojure.core" "reset-meta!" jolt-reset-meta!)
 ;; *ns* starts at the user namespace (the current ns for -e user code). in-ns

@@ -771,6 +771,25 @@
  {:suite "records-assoc-double" :expr "(do (deftype DblC10 [^double x]) (.getName (class (.-x (assoc (->DblC10 1) :x 2)))))" :expected "java.lang.Double"}
  ;; Stage D — range step 0 repeats start infinitely
  {:suite "seq-range-step-zero" :expr "(take 3 (range 5 10 0))" :expected "(5 5 5)"}
+ ;; Stage D — binding does not auto-deref var-cell
+ {:suite "binding-no-autoderef" :expr "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :expected "clojure.lang.Var"}
+ ;; naa9 — JVM-only macro vars absent on jolt
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'import))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(nil? (:macro (meta (resolve 'import))))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-class))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-interface))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'proxy-super))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(boolean (:macro (meta (resolve 'proxy-super))))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'when-class))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'with-loading-context))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'add-doc-and-meta))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'assert-args))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'amap))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'areduce))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'def-aset))" :expected "false"}
+ ;; naa9 — vswap! is a fn on jolt, macro on JVM
+ {:suite "naa9-vswap-fn" :expr "(boolean (:macro (meta (resolve 'vswap!))))" :expected "false"}
+ {:suite "naa9-vswap-fn" :expr "(some? (resolve 'vswap!))" :expected "true"}
   ;; Stage D — binding does not auto-deref var-cell
   {:suite "binding-no-autoderef" :expr "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :expected "clojure.lang.Var"}
   ;; Stage B — getAbsoluteFile/getCanonicalFile share getAbsolutePath's JOLT_PWD base
