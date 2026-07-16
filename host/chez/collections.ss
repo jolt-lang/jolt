@@ -388,29 +388,6 @@
         (let loop ((ks (reverse ord)) (a acc))
           (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
         (node-fold (pmap-root m) proc acc))))
-
-;; PROTOTYPE: pmap-fold-entries — same as pmap-fold array-mode path (status quo),
-;; factored out for micro-bench comparison with the cached variant.
-(define (pmap-fold-entries m proc acc)
-  (let ((ord (pmap-order m)))
-    (if ord
-        (fold-left (lambda (a k) (proc k (pmap-get m k jolt-nil) a)) acc ord)
-        (node-fold (pmap-root m) proc acc))))
-
-;; PROTOTYPE: pmap-fold-entries-cached — one full HAMT fold into an alist, then
-;; look up each key from the order list in the alist. Avoids n HAMT lookups
-;; (O(n log n) → O(n) fold + O(n²) linear scans), which may beat the status quo
-;; above a crossover in map size. If it doesn't win by >5% on the micro-bench,
-;; this prototype gets reverted.
-(define (pmap-fold-entries-cached m proc acc)
-  (let ((ord (pmap-order m)))
-    (if ord
-        (let* ((alist (node-fold (pmap-root m)
-                                 (lambda (k v a) (cons (cons k v) a))
-                                 '()))
-               (pairs (map (lambda (k) (cons k (cdr (assoc-jolt k alist)))) ord)))
-          (fold-left (lambda (a pair) (proc (car pair) (cdr pair) a)) acc pairs))
-        (node-fold (pmap-root m) proc acc))))
 ;; map LITERAL ctor ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
 ;; hash map beyond (RT.map).
 (define (jolt-hash-map . kvs)
