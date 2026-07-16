@@ -18,11 +18,11 @@
     ;; a var's meta is {:ns :name} (derived from the cell) + :macro true for a
     ;; macro var (derived from var-macro-table, like Var.isMacro reading meta on
     ;; the JVM) + any def-time user meta from rt.ss's var-meta-table.
-    ((var-cell? x)
-     (let* ((user (hashtable-ref var-meta-table x #f))
-            (base (jolt-assoc (if user user (jolt-hash-map))
-                              jolt-kw-var-ns (var-cell-ns x)
-                              jolt-kw-var-name (var-cell-name x))))
+     ((var-cell? x)
+      (let* ((user (hashtable-ref var-meta-table x #f))
+             (base (jolt-assoc (if user user (jolt-hash-map))
+                               jolt-kw-var-ns (var-cell-ns x)
+                               jolt-kw-var-name (jolt-symbol #f (var-cell-name x)))))
        (if (macro-var? x)
            (jolt-assoc base jolt-kw-var-macro #t)
            base)))

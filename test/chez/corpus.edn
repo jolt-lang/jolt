@@ -3980,6 +3980,28 @@
  {:suite "macros / refer-clojure resolve" :label "refer-clojure has :macro true meta" :expected "true" :actual "(:macro (meta (resolve 'refer-clojure)))" :portability :common}
  {:suite "macros / refer-clojure resolve" :label "refer-clojure is in ns-map" :expected "true" :actual "(contains? (ns-map 'clojure.core) 'refer-clojure)" :portability :common}
   {:suite "macros / vswap! divergence" :label "vswap! is a macro on JVM, fn on jolt" :expected "false" :actual "(boolean (:macro (meta (resolve 'vswap!))))" :portability :common}
+ {:suite "reader / ::alias resolution" :label "unknown alias throws RuntimeException" :expected "\"java.lang.RuntimeException\"" :actual "(try (read-string \"::nosuch-alias/foo\") (catch RuntimeException e (.getName (class e))))" :portability :jvm}
+ {:suite "format / nil arg" :label "%s with nil produces \"null\"" :expected "\"null\"" :actual "(format \"%s\" nil)" :portability :jvm}
+ {:suite "format / nil arg" :label "%s with mixed nil and value" :expected "\"null 1\"" :actual "(format \"%s %s\" nil 1)" :portability :jvm}
+ {:suite "format / unknown directive" :label "unknown directive throws" :expected "\"java.util.UnknownFormatConversionException\"" :actual "(try (format \"%q\" 5) (catch Throwable e (.getName (class e))))" :portability :jvm}
+ {:suite "future / ExecutionException" :label "deref of failed future wraps cause — some? + ex-message" :expected "[true \"m\"]" :actual "(try @(future (throw (ex-info \"m\" {:a 1}))) (catch java.util.concurrent.ExecutionException e [(some? (ex-cause e)) (ex-message (ex-cause e))]))" :portability :jvm}
+ {:suite "future / ExecutionException" :label "deref of failed future wraps non-ex-info cause" :expected "\"java.lang.ArithmeticException\"" :actual "(try @(future (/ 1 0)) (catch java.util.concurrent.ExecutionException e (.getName (class (ex-cause e)))))" :portability :jvm}
+ {:suite "string/split zero-width" :label "split on #\"\" returns individual chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"\")" :portability :jvm}
+ {:suite "string/split zero-width" :label "split on #\"x*\" splits between chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"x*\")" :portability :jvm}
+ {:suite "bit-shift / count masking" :label "shift by 64 is shift by 0 (6-bit mask)" :expected "1" :actual "(bit-shift-left 1 64)" :portability :jvm}
+ {:suite "bit-shift / count masking" :label "shift by -1 is shift by 63" :expected "-9223372036854775808" :actual "(bit-shift-left 1 -1)" :portability :jvm}
+ {:suite "bit-shift / count masking" :label "shift by 65 is shift by 1" :expected "2" :actual "(bit-shift-left 1 65)" :portability :jvm}
+ {:suite "var meta / :name symbol" :label "(:name (meta #'map)) is a symbol" :expected "true" :actual "(symbol? (:name (meta #'map)))" :portability :jvm}
+ {:suite "var meta / :name symbol" :label "(:name (meta #'clojure.string/join)) name is \"join\"" :expected "\"join\"" :actual "(name (:name (meta #'clojure.string/join)))" :portability :jvm}
+ {:suite "transient / used after persistent!" :label "count on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (count t)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
+ {:suite "transient / used after persistent!" :label "nth on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (nth t 0)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
+ {:suite "transient / used after persistent!" :label "get on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (get t 0)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
+ {:suite "printer / backspace formfeed" :label "pr-str of backspace char uses \\backspace" :expected "\"\\\\backspace\"" :actual "(pr-str (char 8))" :portability :jvm}
+ {:suite "printer / backspace formfeed" :label "pr-str of formfeed char uses \\formfeed" :expected "\"\\\\formfeed\"" :actual "(pr-str (char 12))" :portability :jvm}
+ {:suite "printer / backspace formfeed" :label "pr-str string has escaped backspace" :expected "4" :actual "(count (pr-str (str (char 8))))" :portability :jvm}
+ {:suite "printer / namespace-maps" :label "pr-str of ns-qualified map uses #:ns shorthand" :expected "true" :actual "(clojure.string/starts-with? (pr-str {:my/key \"v\"}) \"#:my{\")" :portability :jvm}
+ {:suite "printer / namespace-maps" :label "binding *print-namespace-maps* false disables shorthand" :expected "true" :actual "(clojure.string/starts-with? (binding [*print-namespace-maps* false] (pr-str {:my/key \"v\"})) \"{:my/key\")" :portability :jvm}
+ {:suite "bit-ops / bignum operand" :label "bit-and with bignum truncates to long (integer-box-model)" :expected "0" :actual "(bit-and 9223372036854775808N 1)" :portability :common}
   {:suite "string-model / codepoint strings" :label "count of astral string" :expected "1" :actual "(count \"😀\")" :portability :common}
   {:suite "string-model / codepoint strings" :label "seq counts codepoints" :expected "2" :actual "(count (seq \"😀x\"))" :portability :common}
   {:suite "string-model / codepoint strings" :label "subs across astral boundary" :expected "\"😀\"" :actual "(subs \"a😀b\" 1 2)" :portability :common}

@@ -665,7 +665,8 @@
          (let* ((nstok (substring s i2 j))
                 (mapns (if auto?
                            (if (string=? nstok "") (chez-current-ns)
-                               (let ((a (chez-resolve-alias (chez-current-ns) nstok))) (if a a nstok)))
+                               (let ((a (chez-resolve-alias (chez-current-ns) nstok)))
+                                 (if a a (rdr-invalid-token (string-append "::" nstok)))))
                            nstok)))
            (let-values (((es k) (rdr-read-seq s (+ j 1) end #\})))
              (values (rdr-make-map (rdr-nsmap-kvs mapns es)) k))))
@@ -768,7 +769,8 @@
           (if auto?
               (let* ((cur (chez-current-ns))
                      (rns (if (string? ns)
-                              (let ((a (chez-resolve-alias cur ns))) (if a a ns))
+                              (let ((a (chez-resolve-alias cur ns)))
+                                (if a a (rdr-invalid-token (string-append "::" tok))))
                               cur)))
                 (values (keyword rns name) j))
               (values (keyword ns name) j)))))))

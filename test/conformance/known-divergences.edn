@@ -72,7 +72,7 @@
   {:suite "integer-box-model / narrow int class collapses to Long", :label "int class", :category :integer-box-model}
   {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Byte is false", :category :integer-box-model}
    {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Long is true", :category :integer-box-model}
-   {:suite "metadata / def metadata", :label "^Type tag on var", :category :host-model}
+    {:suite "metadata / def metadata", :label "^Type tag on var", :category :host-model}
    ;; naa9: vswap! is a macro on the JVM (:macro true) for inline performance;
    ;; jolt implements it as a regular function. Semantics are equivalent — the
    ;; JVM macro is a perf inline, not a semantic difference.

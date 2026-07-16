@@ -5,13 +5,19 @@
 
 ;; bit ops return EXACT integers (= JVM long). ->int coerces the operand.
 (define (->int x) (exact (truncate x)))
+;; Mask shift count to low 6 bits (JVM long shift semantics), then wrap result
+;; to 64-bit signed two's complement.
+(define (shift-mask n) (bitwise-and (->int n) 63))
+(define (wrap64 x)
+  (let ((m (bitwise-and x #xFFFFFFFFFFFFFFFF)))
+    (if (>= m #x8000000000000000) (- m #x10000000000000000) m)))
 (define (jolt-bit-and a b)     (bitwise-and (->int a) (->int b)))
 (define (jolt-bit-or a b)      (bitwise-ior (->int a) (->int b)))
 (define (jolt-bit-xor a b)     (bitwise-xor (->int a) (->int b)))
 (define (jolt-bit-and-not a b) (bitwise-and (->int a) (bitwise-not (->int b))))
 (define (jolt-bit-not a)       (bitwise-not (->int a)))
-(define (jolt-bit-shift-left x n)  (bitwise-arithmetic-shift-left (->int x) (->int n)))
-(define (jolt-bit-shift-right x n) (bitwise-arithmetic-shift-right (->int x) (->int n)))
+(define (jolt-bit-shift-left x n)  (wrap64 (bitwise-arithmetic-shift-left (->int x) (shift-mask n))))
+(define (jolt-bit-shift-right x n) (wrap64 (bitwise-arithmetic-shift-right (->int x) (shift-mask n))))
 (define (bit-mask n) (bitwise-arithmetic-shift-left 1 (->int n)))
 (define (jolt-bit-set x n)   (bitwise-ior (->int x) (bit-mask n)))
 (define (jolt-bit-clear x n) (bitwise-and (->int x) (bitwise-not (bit-mask n))))

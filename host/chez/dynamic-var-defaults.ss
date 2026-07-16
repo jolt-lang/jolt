@@ -49,8 +49,8 @@
 ;; *print-dup* — gates print-dup (a multimethod that exists); default false.
 (def-var! "clojure.core" "*print-dup*" #f)
 ;; *print-namespace-maps* — jolt never prints the #:ns{…} map shorthand, so the
-;; var reads false (accurate); settable for code that toggles it.
-(def-var! "clojure.core" "*print-namespace-maps*" #f)
+;; var reads true (accurate); settable for code that toggles it.
+(def-var! "clojure.core" "*print-namespace-maps*" #t)
 ;; *flush-on-newline* — jolt flushes line output; default true.
 (def-var! "clojure.core" "*flush-on-newline*" #t)
 ;; *compile-files* — jolt has no separate compile phase that emits .class files.

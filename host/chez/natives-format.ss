@@ -37,26 +37,31 @@
                            (scan (fx+ j 1) left zero width (fx+ (fx* (or prec 0) 10) (fx- (char->integer d) 48)) seen-dot)
                            (scan (fx+ j 1) left zero (fx+ (fx* (or width 0) 10) (fx- (char->integer d) 48)) prec seen-dot)))
                       (else
-                       (let* ((a (if (null? as) jolt-nil (car as)))
-                              (rest (if (null? as) '() (cdr as)))
-                              (s (case d
-                                   ((#\d) (number->string (->long a)))
-                                   ((#\s) (jolt-str-render-one a))
-                                   ((#\f) (fmt-float a (or prec 6)))
-                                   ((#\x) (string-downcase (number->string (->long a) 16)))
-                                   ((#\X) (string-upcase (number->string (->long a) 16)))
-                                   ((#\o) (number->string (->long a) 8))
-                                   ((#\b) (if (jolt-truthy? a) "true" "false"))
-                                   ((#\c) (string (integer->char (->long a))))
-                                   (else (string #\% d))))
-                              ;; pad to width: left-justify with spaces, else right-justify
-                              ;; (zero-pad only a right-justified number).
-                              (s (if (and width (fx<? (string-length s) width))
-                                     (let ((p (fx- width (string-length s))))
-                                       (if left (string-append s (make-string p #\space))
-                                           (string-append (make-string p (if (and zero (memv d '(#\d #\f #\x #\X #\o))) #\0 #\space)) s)))
-                                     s)))
-                         (display s out)
-                         (loop (fx+ j 1) rest))))))
+                       ;; %n: literal newline, consumes no argument
+                       (if (char=? d #\n)
+                           (begin (write-char #\newline out) (loop (fx+ j 1) as))
+                           (let* ((a (if (null? as) jolt-nil (car as)))
+                                  (rest (if (null? as) '() (cdr as)))
+                                  (s (case d
+                                       ((#\d) (number->string (->long a)))
+                                       ((#\s) (if (jolt-nil? a) "null" (jolt-str-render-one a)))
+                                       ((#\S) (string-upcase (if (jolt-nil? a) "null" (jolt-str-render-one a))))
+                                       ((#\f) (fmt-float a (or prec 6)))
+                                       ((#\x) (string-downcase (number->string (->long a) 16)))
+                                       ((#\X) (string-upcase (number->string (->long a) 16)))
+                                       ((#\o) (number->string (->long a) 8))
+                                       ((#\b) (if (jolt-truthy? a) "true" "false"))
+                                       ((#\c) (string (integer->char (->long a))))
+                                       (else (jolt-throw (jolt-host-throwable "java.util.UnknownFormatConversionException"
+                                                        (string-append "Conversion = '" (string d) "'"))))))
+                                  ;; pad to width: left-justify with spaces, else right-justify
+                                  ;; (zero-pad only a right-justified number).
+                                  (s (if (and width (fx<? (string-length s) width))
+                                         (let ((p (fx- width (string-length s))))
+                                           (if left (string-append s (make-string p #\space))
+                                               (string-append (make-string p (if (and zero (memv d '(#\d #\f #\x #\X #\o))) #\0 #\space)) s)))
+                                         s)))
+                             (display s out)
+                             (loop (fx+ j 1) rest)))))))
                 (begin (write-char c out) (loop (fx+ i 1) as))))))))
 (def-var! "clojure.core" "format" jolt-format)
