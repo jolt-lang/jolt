@@ -105,7 +105,7 @@
 
 (define (dce-sexp-refs form acc)
   (cond
-    ((and (pair? form) (memq (car form) '(var-deref jolt-var))
+    ((and (pair? form) (memq (car form) '(var-deref jolt-var var-cell-lookup))
           (pair? (cdr form)) (string? (cadr form)) (pair? (cddr form)) (string? (caddr form)))
      (cons (string-append (cadr form) "/" (caddr form)) acc))
     ((pair? form) (dce-sexp-refs (cdr form) (dce-sexp-refs (car form) acc)))

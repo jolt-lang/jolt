@@ -43,6 +43,12 @@
 (define str3 "(var-deref (f) (g))")
 (gate-check "computed var-deref args not matched" (dce-sexp-refs-str str3) '())
 
+;; a var-cell-lookup literal (the host shim's native form for looking up a var cell
+;; by ns + name) is caught the same as var-deref and jolt-var.
+(define str4 "(var-cell-lookup \"app.core\" \"target\")")
+(gate-check "text scan catches var-cell-lookup literal" (has? "app.core/target" (dce-sexp-refs-str str4)) #t)
+(gate-check "union catches var-cell-lookup form" (has? "app.core/target" (dce-app-refs ir str4)) #t)
+
 ;; --- dce-runtime-core-roots guard -------------------------------------------
 ;; A runtime .ss shim that references a clojure.core fn by name (a literal
 ;; (var-deref "clojure.core" "NAME") or jolt-var) is invisible to the app IR
@@ -100,6 +106,29 @@
            (gate-check (string-append "core-root: " (car refs) " (" (car files) ")")
                   (hashtable-ref rooted (car refs) #f) #t)
            (loop-refs (cdr refs)))
-          (else (loop-refs (cdr refs))))))))
+           (else (loop-refs (cdr refs))))))))
+
+;; --- dce-bail-refs / dce-compile-refs existence gate -------------------------
+;; Every name in the hand-maintained bail/compile lists must resolve to a runtime
+;; binding. A stale entry (one that no longer exists in the runtime) fails here
+;; instead of silently widening the bail set — the static graph treats an unknown
+;; bail name as "everything is reachable" and drops no code, but the list rot is
+;; invisible. This gate makes it visible.
+(let ((missing (lambda (lst label)
+                  (let loop ((ns lst) (bad '()))
+                    (if (null? ns) bad
+                        (let* ((name (car ns))
+                               (slash (let loop2 ((i 0))
+                                        (if (char=? (string-ref name i) #\/) i
+                                            (loop2 (+ i 1))))))
+                          (if (var-cell-lookup (substring name 0 slash)
+                                               (substring name (+ slash 1)
+                                                          (string-length name)))
+                              (loop (cdr ns) bad)
+                              (loop (cdr ns) (cons name bad)))))))))
+  (for-each (lambda (n) (gate-check (string-append "bail-ref exists: " n) #f #t))
+            (missing dce-bail-refs "bail-refs"))
+  (for-each (lambda (n) (gate-check (string-append "compile-ref exists: " n) #f #t))
+            (missing dce-compile-refs "compile-refs")))
 
 (gate-summary "dce-refs")
