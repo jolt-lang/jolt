@@ -776,4 +776,8 @@
   ;; Stage B — getAbsoluteFile/getCanonicalFile share getAbsolutePath's JOLT_PWD base
   {:suite "io-file-base" :expr "(= (.getAbsolutePath (java.io.File. \"rel.txt\")) (.getPath (.getAbsoluteFile (java.io.File. \"rel.txt\"))))" :expected "true"}
   {:suite "io-file-base" :expr "(.exists (.getCanonicalFile (java.io.File. \".\")))" :expected "true"}
+  ;; Stage C — getenv single-key matches map lookup
+  {:suite "getenv" :expr "(= (get (System/getenv) \"HOME\") (System/getenv \"HOME\"))" :expected "true"}
+  ;; Stage C — setProperty visible in getProperties
+  {:suite "sysprops" :expr "(do (System/setProperty \"zz.k\" \"v\") (get (System/getProperties) \"zz.k\"))" :expected "v"}
 ]

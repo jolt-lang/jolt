@@ -401,11 +401,73 @@
 (define (jolt-async-poll! ch)
   (let ((r (ac-poll! ch))) (if (eq? r ac-poll-empty) cca-none r)))
 
+;; --- shared timeout timer ---------------------------------------------------
+;; One timer thread serves all (timeout ms) calls — no per-call OS thread.
+;; Pending timeouts are kept as a sorted list of (deadline-ms . channel) by
+;; ascending deadline. The timer thread sleeps until the nearest deadline,
+;; closes expired channels, and repeats. Inserting a new earliest deadline
+;; signals the condition to wake a sleeping timer.
+(define timeout-mu (make-mutex))
+(define timeout-cv (make-condition))
+(define timeout-pending '())       ; ((deadline-ms . channel) ...) sorted asc
+(define timeout-running? #f)
+
+(define (timeout-insert! deadline-ms ch)
+  (let loop ((prev '()) (cur timeout-pending))
+    (cond ((null? cur)
+           (let ((entry (cons deadline-ms ch)))
+             (if (null? prev)
+                 (set! timeout-pending (list entry))
+                 (begin (set-cdr! prev (list entry))
+                        (set! timeout-pending
+                          (let restore ((h timeout-pending)) h)))))
+           #t)  ; inserted at end (or only entry)
+          ((< deadline-ms (caar cur))
+           (let ((entry (cons deadline-ms ch)))
+             (if (null? prev)
+                 (set! timeout-pending (cons entry cur))
+                 (begin (set-cdr! prev (cons entry cur))
+                        (set! timeout-pending
+                          (let restore ((h timeout-pending)) h))))
+             (null? prev)))  ; #t iff inserted at head
+          (else (loop cur (cdr cur))))))
+
+(define (timeout-thread)
+  (mutex-acquire timeout-mu)
+  (let loop ()
+    (let cleanup ()
+      (if (and (pair? timeout-pending) (<= (caar timeout-pending) (now-millis)))
+          (begin
+            (jolt-async-close! (cdar timeout-pending))
+            (set! timeout-pending (cdr timeout-pending))
+            (cleanup))
+          (if (null? timeout-pending)
+              (begin
+                (set! timeout-running? #f)
+                (condition-wait timeout-cv timeout-mu)
+                (set! timeout-running? #t)
+                (loop))
+              (let ((wait-ms (- (caar timeout-pending) (now-millis))))
+                (if (> wait-ms 0)
+                    (begin
+                      (mutex-release timeout-mu)
+                      (sleep (ms->duration wait-ms))
+                      (mutex-acquire timeout-mu)))
+                (loop)))))))
+
 ;; (timeout ms) — a channel that closes after ms milliseconds.
 (define (jolt-async-timeout ms)
-  (let ((w (ac-make 0 'unbuffered #f)))
-    (fork-thread (lambda () (sleep (ms->duration ms)) (jolt-async-close! w)))
-    w))
+  (let* ((w (ac-make 0 'unbuffered #f))
+         (dl (+ (now-millis) (exact (floor ms)))))
+    (mutex-acquire timeout-mu)
+    (let ((head? (timeout-insert! dl w)))
+      (when head?
+        (condition-signal timeout-cv))
+      (unless timeout-running?
+        (set! timeout-running? #t)
+        (fork-thread timeout-thread))
+      (mutex-release timeout-mu)
+      w)))
 
 ;; (put! ch v [cb [on-caller?]]) — async put, optional completion callback. If the
 ;; put completes immediately and on-caller? (default #t), the callback runs on the
