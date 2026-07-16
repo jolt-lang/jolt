@@ -26,10 +26,6 @@
   (nongenerative jolt-reader-conditional-record-v1))
 
 ;; re-matcher / re-find / re-groups are the stateful matcher API in regex.ss.
-(define nr-kw-type (keyword "jolt" "type"))
-(define nr-kw-rc   (keyword "jolt" "reader-conditional"))
-(define nr-kw-form (keyword #f "form"))
-(define nr-kw-spl  (keyword #f "splicing?"))
 (define (nr-reader-conditional form splicing?)
   (make-jolt-reader-conditional-record form splicing?))
 

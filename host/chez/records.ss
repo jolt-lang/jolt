@@ -222,18 +222,7 @@
                   (list->vector (map chez-double-tag? field-tags))))
 
 ;; Coerce ^double fields to flonums in-place on a freshly-built field vector.
-;; The dbl-flags vector (from chez-record-dbl-tbl or the ctor's closure) has a
-;; true at each index that must be a flonum. No-op when the type has no ^double
-;; fields (most records). Used by the fixed-arity ctors.
-(define (coerce-double-fields! v dbl-flags)
-  (let ((ndbl (vector-length dbl-flags)))
-    (when (fx> ndbl 0)
-      (let ((n (min ndbl (vector-length v))))
-        (do ((i 0 (fx+ i 1))) ((fx= i n))
-          (let ((a (vector-ref v i)))
-            (when (and (vector-ref dbl-flags i)
-                       (number? a) (not (flonum? a)))
-              (vector-set! v i (exact->inexact a)))))))));; simple name of a dotted/slashed string: the segment after the last . or /.
+;; simple name of a dotted/slashed string: the segment after the last . or /.
 (define (chez-shape-simple-name s)
   (let loop ((i (- (string-length s) 1)))
     (cond ((< i 0) s)
