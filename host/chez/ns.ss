@@ -494,6 +494,7 @@
 (def-var! "clojure.core" "ns-unalias" jolt-ns-unalias)
 (def-var! "clojure.core" "refer" jolt-refer)
 (def-var! "clojure.core" "refer-clojure" jolt-refer-clojure)
+(mark-macro! "clojure.core" "refer-clojure")
 (def-var! "clojure.core" "alter-meta!" jolt-alter-meta!)
 (def-var! "clojure.core" "reset-meta!" jolt-reset-meta!)
 ;; *ns* starts at the user namespace (the current ns for -e user code). in-ns

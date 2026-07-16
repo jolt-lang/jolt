@@ -73,6 +73,15 @@
     (lambda (fn-name . body) (let fnrec7513 ((fn-name fn-name) (body (list->cseq body))) (let* ((_a$7519 (var-deref "clojure.core" "__sqcat")) (_a$7520 (jolt-invoke1 (var-deref "clojure.core" "__sq1") (jolt-symbol "clojure.core" "defn"))) (_a$7521 (let* ((_a$7517 (var-deref "clojure.core" "__sq1")) (_a$7518 (let* ((_a$7514 (var-deref "clojure.core" "with-meta")) (_a$7515 fn-name) (_a$7516 (jolt-assoc3 (if (jolt-truthy? (jolt-invoke1 (var-deref "clojure.core" "meta") fn-name)) (jolt-invoke1 (var-deref "clojure.core" "meta") fn-name) (jolt-hash-map)) (keyword #f "private") #t))) (jolt-invoke2 _a$7514 _a$7515 _a$7516)))) (jolt-invoke1 _a$7517 _a$7518))) (_a$7522 body)) (jolt-invoke3 _a$7519 _a$7520 _a$7521 _a$7522)))))
   (mark-macro! "clojure.core" "defn-"))
 (guard (e (#t #f))
+  (def-var! "clojure.core" "defmacro"
+    (lambda args
+      (let ((args (list->cseq args)))
+        (let* ((sqcat (var-deref "clojure.core" "__sqcat"))
+               (head (jolt-invoke1 (var-deref "clojure.core" "__sq1") (jolt-symbol #f "defmacro")))
+               (sq-args (jolt-map (lambda (a) (jolt-invoke1 (var-deref "clojure.core" "__sq1") a)) args)))
+          (jolt-invoke2 sqcat head sq-args)))))
+  (mark-macro! "clojure.core" "defmacro"))
+(guard (e (#t #f))
   (def-var-with-meta! "clojure.core" "fresh-sym" (letrec ((fresh-sym (lambda () (let fnrec7523 () (let* ((_a$7526 (var-deref "clojure.core" "symbol")) (_a$7527 (let* ((_a$7524 (var-deref "clojure.core" "str")) (_a$7525 (jolt-invoke0 (var-deref "clojure.core" "gensym")))) (jolt-invoke1 _a$7524 _a$7525)))) (jolt-invoke1 _a$7526 _a$7527)))))) fresh-sym) (jolt-hash-map (keyword #f "private") #t)))
 (guard (e (#t #f))
   (def-var! "clojure.core" "cond->"
