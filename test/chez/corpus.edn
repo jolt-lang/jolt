@@ -3794,6 +3794,8 @@
   {:suite "conformance / hasheq" :label "hash string s" :expected "1975881410" :actual "(hash \"s\")" :portability :common}
   {:suite "conformance / hasheq" :label "hash string hello" :expected "1715862179" :actual "(hash \"hello\")" :portability :common}
   {:suite "conformance / hasheq" :label "hash empty string" :expected "0" :actual "(hash \"\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash string astral-plane (emoji)" :expected "-1934073014" :actual "(hash \"😀\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash string mixed BMP+astral" :expected "1898100721" :actual "(hash \"a😀b\")" :portability :common}
   {:suite "conformance / hasheq" :label "hash fixnum 42" :expected "1871679806" :actual "(hash 42)" :portability :common}
   {:suite "conformance / hasheq" :label "hash fixnum 0" :expected "0" :actual "(hash 0)" :portability :common}
   {:suite "conformance / hasheq" :label "hash fixnum -7" :expected "-1703207563" :actual "(hash -7)" :portability :common}
@@ -3818,6 +3820,10 @@
   {:suite "conformance / hasheq" :label "hash seq (seq [1 2])" :expected "156247261" :actual "(hash (seq [1 2]))" :portability :common}
   {:suite "conformance / hasheq" :label "ordered colls unify: (= (hash [1 2 3]) (hash '(1 2 3)))" :expected "true" :actual "(= (hash [1 2 3]) (hash '(1 2 3)))" :portability :common}
   {:suite "conformance / hasheq" :label "unordered empty colls unify: (= (hash {}) (hash #{}))" :expected "true" :actual "(= (hash {}) (hash #{}))" :portability :common}
+  {:suite "conformance / hasheq" :label "hash bigint 2^63" :expected "-2147483648" :actual "(hash 9223372036854775808N)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash bigint -2^63-1" :expected "2147483647" :actual "(hash -9223372036854775809N)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash bigint 10^99" :expected "838100522" :actual "(hash 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000N)" :portability :common}
+  {:suite "conformance / hasheq" :label "hash bigint 5N equals hash 5" :expected "true" :actual "(= (hash 5N) (hash 5))" :portability :common}
   ;; ============================================================================
   ;; conformance / hamt-order — JVM PersistentHashMap/HashSet iteration order (Stage 2)
   ;; ============================================================================
