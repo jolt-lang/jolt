@@ -3977,7 +3977,7 @@
  {:suite "reader / ::alias resolution" :label "unknown alias throws RuntimeException" :expected "\"java.lang.RuntimeException\"" :actual "(try (read-string \"::nosuch-alias/foo\") (catch RuntimeException e (.getName (class e))))" :portability :jvm}
  {:suite "format / nil arg" :label "%s with nil produces \"null\"" :expected "\"null\"" :actual "(format \"%s\" nil)" :portability :jvm}
  {:suite "format / nil arg" :label "%s with mixed nil and value" :expected "\"null 1\"" :actual "(format \"%s %s\" nil 1)" :portability :jvm}
- {:suite "format / unknown directive" :label "unknown directive throws" :expected "\"java.util.UnknownFormatConversionException\"" :actual "(try (format \"%e\" 5) (catch Throwable e (.getName (class e))))" :portability :jvm}
+ {:suite "format / unknown directive" :label "unknown directive throws" :expected "\"java.util.UnknownFormatConversionException\"" :actual "(try (format \"%q\" 5) (catch Throwable e (.getName (class e))))" :portability :jvm}
  {:suite "future / ExecutionException" :label "deref of failed future wraps cause — some? + ex-message" :expected "[true \"m\"]" :actual "(try @(future (throw (ex-info \"m\" {:a 1}))) (catch java.util.concurrent.ExecutionException e [(some? (ex-cause e)) (ex-message (ex-cause e))]))" :portability :jvm}
  {:suite "future / ExecutionException" :label "deref of failed future wraps non-ex-info cause" :expected "\"java.lang.ArithmeticException\"" :actual "(try @(future (/ 1 0)) (catch java.util.concurrent.ExecutionException e (.getName (class (ex-cause e)))))" :portability :jvm}
  {:suite "string/split zero-width" :label "split on #\"\" returns individual chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"\")" :portability :jvm}
