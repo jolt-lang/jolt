@@ -63,9 +63,10 @@
     ((jolt-future-cancelled? f)
      (jolt-throw (jolt-ex-info "Future cancelled" (jolt-hash-map))))
     ((jolt-future-ok? f) (jolt-future-payload f))
-    (else (jolt-throw (jolt-host-throwable "java.util.concurrent.ExecutionException"
-                        (jolt-str-render-one (jolt-future-payload f))
-                        (jolt-future-payload f))))))
+    (else (let ((cause (jolt-unwrap-throw (jolt-future-payload f))))
+            (jolt-throw (jolt-host-throwable "java.util.concurrent.ExecutionException"
+                          (jolt-str-render-one cause)
+                          cause))))))
 
 (define (jolt-future-deref f)
   (with-mutex (jolt-future-mu f)
