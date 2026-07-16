@@ -800,13 +800,17 @@
 ;; empty seqs in Clojure, so (= () (range 0)) holds, and () seqs back to nil so it
 ;; also terminates the chunked tail (see jolt-take).
 (define (range-chunked n end step)
-  (if (if (> step 0.0) (< n end) (> n end))
-      (let loop ((i 0) (v n) (acc '()))
-        (if (and (fx<? i seq-chunk-size) (if (> step 0.0) (< v end) (> v end)))
-            (loop (fx+ i 1) (+ v step) (cons v acc))
-            (cseq-chunked (make-pvec (list->vector (reverse acc))) 0
-                          (jolt-make-lazy-seq (lambda () (jolt-seq (range-chunked v end step)))))))
-      jolt-empty-list))
+  (cond
+    ((= step 0)
+     ;; JVM: (range start end 0) repeats start infinitely
+     (cseq-lazy n (lambda () (range-chunked n end step))))
+    ((if (> step 0.0) (< n end) (> n end))
+     (let loop ((i 0) (v n) (acc '()))
+       (if (and (fx<? i seq-chunk-size) (if (> step 0.0) (< v end) (> v end)))
+           (loop (fx+ i 1) (+ v step) (cons v acc))
+           (cseq-chunked (make-pvec (list->vector (reverse acc))) 0
+                         (jolt-make-lazy-seq (lambda () (jolt-seq (range-chunked v end step))))))))
+    (else jolt-empty-list)))
 ;; numeric tower: exact 0/1 defaults so (range 3) yields exact ints
 ;; (= JVM longs); flonum args still produce flonums (Scheme arithmetic preserves).
 ;; (range) with no bound is the lazy, NON-chunked (iterate inc' 0) form.
