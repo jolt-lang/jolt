@@ -387,13 +387,31 @@
                     (and (jolt=2 (jrec-field-ref a i) (jrec-field-ref b i)) (loop (+ i 1)))))))
        (jrec-ext=? (jrec-ext a) (jrec-ext b))))
 (define (jrec-hash r)
-  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (n (jrec-nfields r))
-         (base (let loop ((i 0) (acc (string-hash (jrec-tag r))))
-                 (if (= i n) acc
-                     (loop (+ i 1) (+ acc (jolt-hash (vector-ref fkeys i))
-                                       (jolt-hash (jrec-field-ref r i))))))))
-    (let ((ext (jrec-ext r)))
-      (if (jolt-nil? ext) base (+ base (jolt-hash ext))))))
+  ;; JVM defrecord hasheq: (bit-xor class-hash map-hasheq)
+  ;; class-hash = (hash classname-symbol).
+  ;; Jolt symbols store qualified names as a single flat string (e.g. "user.Point")
+  ;; with ns=#f, so class-hash = compute-symbol-hasheq(#f, tag).
+  ;; map-hasheq = Murmur3.hashUnordered over fields+ext entries
+  (let* ((class-hash (compute-symbol-hasheq #f (jrec-tag r)))
+         (fkeys (jrdesc-fkeys (jrec-desc r)))
+         (n (jrec-nfields r))
+         (result (let loop ((i 0) (acc 0) (cnt 0))
+                   (if (= i n)
+                       (cons acc cnt)
+                       (loop (+ i 1)
+                             (add32 acc (entry-hasheq (vector-ref fkeys i)
+                                                      (jrec-field-ref r i)))
+                             (+ cnt 1)))))
+         (ext (jrec-ext r))
+         (total (if (jolt-nil? ext)
+                    result
+                    (pmap-fold ext
+                               (lambda (k v a)
+                                 (cons (add32 (car a) (entry-hasheq k v))
+                                       (+ (cdr a) 1)))
+                               result)))
+         (map-hash (mix-coll-hash (car total) (cdr total))))
+    (i32 (bitwise-xor class-hash map-hash))))
 (define (jrec-pr r)                      ; #ns.Name{:k v, :k v}
   (let ((fkeys (jrdesc-fkeys (jrec-desc r))))
     (string-append "#" (jrec-tag r) "{"

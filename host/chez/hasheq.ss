@@ -389,7 +389,7 @@
               ;; that still register via register-hash-arm!).
               (let loop2 ((bs jolt-hash-arms))
                 (cond ((null? bs) (jolt-hasheq-fallback x))
-                      (((caar bs) x) ((cdar bs) x))
+                      (((caar bs) x) (i32 ((cdar bs) x)))
                       (else (loop2 (cdr bs))))))
              (((caar as) x) ((cdar as) x))
              (else (loop (cdr as))))))))
