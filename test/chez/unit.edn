@@ -800,4 +800,29 @@
   ;; Stage C — setProperty visible in getProperties
   {:suite "sysprops" :expr "(do (System/setProperty \"zz.k\" \"v\") (get (System/getProperties) \"zz.k\"))" :expected "v"}
   {:suite "sorted / subseq laziness" :expr "(first (subseq (into (sorted-map) (map (fn [i] [i i]) (range 100000))) > 50000))" :expected "[50001 50001]"}
+  ;; Stage B — nio Files consolidation: members from 6 original blocks (files-statics,
+  ;; files-nofollow-time, files-throwing-setters, files-create+move, files-final, files-nofollow)
+  ;; all resolve through one consolidated registration.
+  {:suite "nio-files" :expr
+   "(do (let [d (Files/createTempDirectory \"jnf\" (into-array java.nio.file.attribute.FileAttribute []))
+             f (Paths/get \"f\" (into-array String []))
+             g (Paths/get \"g\" (into-array String []))
+             fp (.resolve d f)
+             gp (.resolve d g)]
+         (Files/createFile fp (into-array java.nio.file.attribute.FileAttribute []))
+         (Files/write fp (.getBytes \"hello\") (into-array java.nio.file.OpenOption []))
+         (let [sz (Files/size fp)                                  ;; files-statics (size)
+               ex (Files/exists fp (into-array java.nio.file.LinkOption []))  ;; files-nofollow (exists)
+               _  (Files/setLastModifiedTime fp (java.nio.file.attribute.FileTime/fromMillis 1000))  ;; files-throwing-setters
+               mt (.toMillis (Files/getLastModifiedTime fp (into-array java.nio.file.LinkOption [])))  ;; files-nofollow-time
+               _  (Files/copy fp gp (into-array java.nio.file.CopyOption []))  ;; files-final (copy)
+               cpsz (Files/size gp)                               ;; copy preserved size
+               gp2 (.resolve d (Paths/get \"h\" (into-array String [])))
+               _  (Files/move gp gp2 (into-array java.nio.file.CopyOption []))  ;; files-create+move (move)
+               mvsz (Files/size gp2)                              ;; move preserved size
+               _  (Files/delete fp)
+               _  (Files/delete gp2)
+               _  (Files/deleteIfExists d)]
+           [sz ex mt cpsz mvsz (pos? sz)])))"
+   :expected "[5 true 1000 5 5 true]"}
 ]
