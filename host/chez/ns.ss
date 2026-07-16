@@ -46,11 +46,15 @@
     (unless (member target cur)
       (hashtable-set! ns-refer-all-table cns (cons target cur)))))
 (define (chez-resolve-refer cns name)
-  (or (hashtable-ref ns-refer-table (cons cns name) #f)
+  (let ((r (hashtable-ref ns-refer-table (cons cns name) #f)))
+    (cond
+     ((eq? r 'unmapped) #f)
+     (r r)
+     (else
       (let loop ((ts (hashtable-ref ns-refer-all-table cns '())))
         (cond ((null? ts) #f)
               ((let ((c (var-cell-lookup (car ts) name))) (and c (var-cell-defined? c))) (car ts))
-              (else (loop (cdr ts)))))))
+              (else (loop (cdr ts)))))))))
 ;; --- libspec parsing (shared by the loader + compile-eval) ------------------
 ;; A libspec is one of: a bare symbol `foo`; a vector `[foo :as f :refer [x]]`;
 ;; or a LIST with keyword options `(foo :only [x])` (jolt superset — see below).
@@ -211,14 +215,32 @@
                                    acc
                                    (jolt-assoc acc k v))))
                            (jolt-hash-map)))))
-    (vector-for-each
-      (lambda (k)
-        (when (string=? (car k) cns)
-          (let* ((target (hashtable-ref ns-refer-table k #f))
-                 (c (and target (var-cell-lookup target (cdr k)))))
-            (when c (set! m (jolt-assoc m (jolt-symbol #f (cdr k)) c))))))
-      (hashtable-keys ns-refer-table))
-    m))
+     (vector-for-each
+       (lambda (k)
+         (when (string=? (car k) cns)
+           (let* ((target (hashtable-ref ns-refer-table k #f))
+                  (c (and target (var-cell-lookup target (cdr k)))))
+             (when c (set! m (jolt-assoc m (jolt-symbol #f (cdr k)) c))))))
+       (hashtable-keys ns-refer-table))
+     ;; refer-all: merge all public vars from :refer :all namespaces
+     (let ((all-refs (hashtable-ref ns-refer-all-table cns #f)))
+       (when all-refs
+         (set! m
+               (fold-left
+                (lambda (acc target-ns)
+                  (let ((publics (ns-vars-pmap-when target-ns
+                                                   (lambda (c) (not (var-private? c))))))
+                    (pmap-fold
+                     publics
+                     (lambda (k v acc)
+                       (let ((nm (symbol-t-name k)))
+                         (if (jolt-contains? acc (jolt-symbol #f nm))
+                             acc
+                             (jolt-assoc acc (jolt-symbol #f nm) v))))
+                     acc)))
+                m
+                all-refs))))
+     m))
 
 ;; ns-imports: clojure.core auto-imports the 96 public java.lang classes into
 ;; every ns. jolt has no classloader, but returns that map (short symbol ->
@@ -274,7 +296,9 @@
                 (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
                 (or (var-cell-lookup cns nm)
                     (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
-                    (var-cell-lookup "clojure.core" nm)))))
+                    ;; the implicit clojure.core refer — blocked by an ns-unmap tombstone
+                    (and (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
+                         (var-cell-lookup "clojure.core" nm))))))
     (if (and c (var-cell-defined? c)) c jolt-nil)))
 ;; (resolve sym) resolves globally; (resolve &env sym) additionally answers nil
 ;; when sym names a local in env (the &env map's keys) — a macro's resolve avoids
@@ -292,11 +316,16 @@
         (error #f "find-var requires a fully-qualified symbol" sym))))
 
 ;; ns-unmap: clear the mapping — drop defined? and reset the root to unbound, so a
-;; later resolve returns nil.
+;; later resolve returns nil. Also records an 'unmapped tombstone in the refer table
+;; so the name won't resolve through a refer/all mapping.
 (define (jolt-ns-unmap ns-desig sym)
-  (let ((c (var-cell-lookup (ns-desig->name ns-desig) (symbol-t-name sym))))
+  (let* ((cns (ns-desig->name ns-desig))
+         (nm  (symbol-t-name sym))
+         (c   (var-cell-lookup cns nm)))
     (when c (var-cell-defined?-set! c #f)
-           (var-cell-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c)))))
+            (var-cell-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c))))
+    ;; tombstone: block resolution of this name in this ns via refers/all
+    (hashtable-set! ns-refer-table (cons cns nm) 'unmapped))
   jolt-nil)
 
 ;; --- ns runtime fns ---------------------------------------------------------
@@ -310,7 +339,8 @@
                 (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
                 (or (var-cell-lookup cns nm)
                     (let ((ref (chez-resolve-refer cns nm))) (and ref (var-cell-lookup ref nm)))
-                    (var-cell-lookup "clojure.core" nm)))))
+                    (and (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
+                         (var-cell-lookup "clojure.core" nm))))))
     (if (and c (var-cell-defined? c)) c jolt-nil)))
 
 ;; remove-ns: drop the namespace from the registry AND its vars, so find-ns

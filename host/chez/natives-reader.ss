@@ -6,12 +6,12 @@
 ;; after the spine loads. The hash / transient? / rseq / cat natives that used to
 ;; live here moved to natives-misc, transients, natives-seq, and natives-transduce.
 
-;; --- reader feature set (for #?() conditionals) — mutable list of name strings,
-;; default jolt + default. __reader-features returns the strings; -set! replaces.
-(define nr-reader-features (list "jolt" "default"))
-(define (nr-reader-features-get) (list->cseq nr-reader-features))
+;; --- reader feature set (for #?() conditionals) — delegates to rdr-features
+;; from reader.ss so that __reader-features and __reader-features-set! directly
+;; affect #? reads.
+(define (nr-reader-features-get) (list->cseq rdr-features))
 (define (nr-reader-features-set! names)
-  (set! nr-reader-features
+  (set! rdr-features
         (map (lambda (n) (cond ((keyword-t? n) (keyword-t-name n)) ((string? n) n) (else (jolt-pr-str n))))
              (seq->list (jolt-seq names))))
   jolt-nil)

@@ -639,7 +639,7 @@
   {:suite "host-interop / exception + HashMap shims" :label "HashMap put + size" :expected "2" :actual "(let [m (HashMap. {})] (.put m :x 1) (.put m :y 2) (.size m))" :portability :jvm}
   {:suite "host-interop / reader-feature toggle" :label "features default to jolt+default" :expected "true" :actual "(contains? (set (__reader-features)) \"jolt\")" :portability :common}
   {:suite "host-interop / reader-feature toggle" :label "set + read back" :expected "true" :actual "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\" \"jolt\" \"default\"]) (def r (contains? (set (__reader-features)) \"clj\")) (__reader-features-set! prev) r)" :portability :common}
-  {:suite "host-interop / reader-feature toggle" :label "restore returns to default" :expected "false" :actual "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\"]) (__reader-features-set! prev) (contains? (set (__reader-features)) \"clj\"))" :portability :common}
+  {:suite "host-interop / reader-feature toggle" :label "restore returns to default" :expected "true" :actual "(do (def prev (__reader-features)) (__reader-features-set! [\"clj\"]) (__reader-features-set! prev) (contains? (set (__reader-features)) \"clj\"))" :portability :common}
   {:suite "host-interop / migratus class shims" :label "Exception. message" :expected "\"boom\"" :actual "(try (throw (Exception. \"boom\")) (catch Throwable e (.getMessage e)))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "IllegalArgumentException." :expected "\"bad\"" :actual "(try (throw (IllegalArgumentException. \"bad\")) (catch Exception e (.getMessage e)))" :portability :jvm}
   {:suite "host-interop / migratus class shims" :label "InterruptedException." :expected "\"stop\"" :actual "(try (throw (InterruptedException. \"stop\")) (catch Throwable e (.getMessage e)))" :portability :jvm}
@@ -2002,6 +2002,11 @@
   {:suite "regex / backreferences" :label "repeated word" :expected "[\"the the\" \"the\"]" :actual "(re-find #\"(\\w+) \\1\" \"say the the word\")" :portability :common}
   {:suite "regex / backreferences" :label "group still captures" :expected "[\"x=x\" \"x\"]" :actual "(re-matches #\"(\\w+)=\\1\" \"x=x\")" :portability :common}
   {:suite "regex / backreferences" :label "html tag pair" :expected "true" :actual "(boolean (re-matches #\"<(\\w+)>.*</\\1>\" \"<b>hi</b>\"))" :portability :common}
+  {:suite "regex / inline flags" :label "a(?i)b embeds case insensitivity" :expected "\"aB\"" :actual "(re-find #\"a(?i)b\" \"aB\")" :portability :common}
+  {:suite "regex / inline flags" :label "(a(?i)b)c groupscopes the flag" :expected "nil" :actual "(re-find #\"(a(?i)b)c\" \"aBC\")" :portability :common}
+  {:suite "regex / inline flags" :label "(?i)a(?-i)b toggles case off again — \"Ab\" matches" :expected "\"Ab\"" :actual "(re-find #\"(?i)a(?-i)b\" \"Ab\")" :portability :common}
+  {:suite "regex / inline flags" :label "(?i)a(?-i)b — \"AB\" does NOT match (case restored)" :expected "nil" :actual "(re-find #\"(?i)a(?-i)b\" \"AB\")" :portability :common}
+  {:suite "regex / inline flags" :label "(?i:a(?-i:b)) — nested case-off, \"AB\" does NOT match" :expected "nil" :actual "(re-find #\"(?i:a(?-i:b))\" \"AB\")" :portability :common}
   {:suite "seq / access" :label "first of vector" :expected "1" :actual "(first [1 2 3])" :portability :common}
   {:suite "seq / access" :label "first of list" :expected "1" :actual "(first (list 1 2 3))" :portability :common}
   {:suite "seq / access" :label "first of empty is nil" :expected "nil" :actual "(first [])" :portability :common}
@@ -3905,8 +3910,15 @@
   {:suite "string / last-index-of from" :label "largest start <= from" :expected "1" :actual "(clojure.string/last-index-of \"aaa\" \"a\" 1)" :portability :common}
   {:suite "string / last-index-of from" :label "no match at or before from" :expected "nil" :actual "(clojure.string/last-index-of \"banana\" \"na\" 1)" :portability :common}
   {:suite "assert / message" :label "message expression evaluates at failure time" :expected "\"Assert failed: x=3\"" :actual "(try (assert false (str \"x=\" (+ 1 2))) (catch Throwable e (first (clojure.string/split-lines (.getMessage e)))))" :portability :common}
-]
   {:suite "interop / qualified instance method" :label "fully-qualified class (java.util.List/.size coll)" :expected "3" :actual "(java.util.List/.size (java.util.ArrayList. [1 2 3]))" :portability :common}
+  {:suite "regex / \\Q..\\E quantifier" :label "quantifier after \\Q..\\E scopes only last char" :expected "\"abbb\"" :actual "(re-find #\"\\Qab\\E+\" \"abbb\")" :portability :common}
+  {:suite "regex / brace-less \\pL" :label "\\pL matches Unicode letter" :expected "\"a\"" :actual "(re-find #\"\\pL\" \"a\")" :portability :common}
+  {:suite "regex / possessive *+" :label "a*+ is possessive (no backtracking)" :expected "nil" :actual "(re-find #\"a*+ab\" \"aaab\")" :portability :common}
+  {:suite "regex / possessive ++" :label "a++ is possessive" :expected "\"aaa\"" :actual "(re-find #\"a++\" \"aaa\")" :portability :common}
+  {:suite "regex / possessive {n,m}+" :label "bounded possessive {n,m}+" :expected "\"aaa\"" :actual "(re-find #\"a{2,3}+\" \"aaaa\")" :portability :common}
+  {:suite "reader / hex N suffix" :label "0xFFN reads as integer 255" :expected "255" :actual "(read-string \"0xFFN\")" :portability :common}
+  {:suite "reader / radix N suffix" :label "2r1010N reads as integer 10" :expected "10" :actual "(read-string \"2r1010N\")" :portability :common}
+  {:suite "ns / refer-all in ns-refers" :label ":refer :all names appear in ns-refers" :expected "true" :actual "(do (require '[clojure.set :refer :all]) (contains? (ns-refers *ns*) 'union))" :portability :common}
   {:suite "io / binary copy File→File" :label "io/copy preserves raw bytes when both sides are files" :expected "[255 254 0 65]" :actual "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :portability :jvm}
   {:suite "io / File.delete non-empty dir" :label "File.delete returns false for non-empty directory" :expected "false" :actual "(do (require '[clojure.java.io :as io]) (let [d (doto (java.io.File/createTempFile \"jtd\" \".d\") (.delete) (.mkdir)) child (java.io.File. d \"child.txt\")] (spit child \"x\") (let [deleted (.delete d)] (.delete child) (.delete d) deleted)))" :portability :jvm}
   {:suite "async / transducer backpressure" :label "fixed-buffer transducer put blocks when full" :expected "[true 2 3 4 :done]" :actual "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc)) p (future (a/>!! c 1) (a/>!! c 2) (a/>!! c 3) :done)] (Thread/sleep 100) (let [parked (not (realized? p)) v1 (a/<!! c) v2 (a/<!! c) v3 (a/<!! c) result @p] [parked v1 v2 v3 result])))" :portability :jvm}
@@ -3918,10 +3930,28 @@
   {:suite "host-interop / FQN statics" :label "java.lang.Character/isWhitespace matches short form" :expected "true" :actual "(= (Character/isWhitespace \\space) (java.lang.Character/isWhitespace \\space))" :portability :jvm}
   {:suite "host-interop / Math" :label "Math/getExponent 2.0 => 1 via IEEE 754 bit extraction" :expected "1" :actual "(Math/getExponent 2.0)" :portability :jvm}
   {:suite "host-interop / Math" :label "Math/getExponent 0.0 => -1023" :expected "-1023" :actual "(Math/getExponent 0.0)" :portability :jvm}
-]
   {:suite "reduce / double seed nil-returning closure" :label "reduce over double literal with nil-returning fn returns nil without crash" :expected "nil" :actual "(reduce (fn [acc x] (when (and acc (< x 100)) (+ acc x))) 0.0 [1 200 3])" :portability :common}
   {:suite "reduce / double seed non-nil closure" :label "reduce over double literal with always-returning fn returns the double sum" :expected "6.0" :actual "(reduce (fn [acc x] (+ acc x)) 0.0 [1 2 3])" :portability :common}
   {:suite "reduce / user ^double hint survives seeding" :label "reduce with ^double param hints and num init coerces and unboxes" :expected "7.0" :actual "(reduce (fn [^double acc ^double x] (+ acc x)) 1 [1 2 3])" :portability :common}
   {:suite "munging / jolt-nil local" :label "a local named jolt-nil must not shadow the runtime nil" :expected "nil" :actual "(let [jolt-nil 5] nil)" :portability :common}
   {:suite "munging / fl+ local" :label "a local named fl+ must not shadow the flonum add" :expected "3.0" :actual "(let [fl+ 1] (+ fl+ 2.0))" :portability :common}
-  {:suite "munging / var-deref local" :label "a local named var-deref must not shadow the runtime var-deref" :expected "9" :actual "(let [var-deref 9] var-deref)" :portability :common}]
+  {:suite "munging / var-deref local" :label "a local named var-deref must not shadow the runtime var-deref" :expected "9" :actual "(let [var-deref 9] var-deref)" :portability :common}
+  {:suite "reader / float N suffix" :label "1e2N rejects float with N suffix" :expected "throws" :actual "(read-string \"1e2N\")" :portability :common}
+  {:suite "reader / surrogate in string" :label "\\ud800 in string throws Invalid character constant" :expected "throws" :actual "(read-string \"\\\"\\\\ud800\\\"\")" :portability :common}
+  {:suite "reader / top-level splice" :label "#?@ at top level throws" :expected "throws" :actual "(read-string \"#?@(:clj [1])\")" :portability :common}
+  {:suite "reader / record literal" :label "#ns.Type{} constructs record in read-string" :expected "42" :actual "(do (defrecord Rdlit [a]) (:a (read-string \"#user.Rdlit{:a 42}\")))" :portability :common}
+  {:suite "reader / record vector ctor" :label "#ns.Type[] constructs record from vector" :expected "\"a\"" :actual "(do (defrecord Rdlvec [x y]) (:x (read-string \"#user.Rdlvec[\\\"a\\\" 2]\")))" :portability :common}
+  {:suite "reader / EOF in unicode escape" :label "\\\\u with <4 hex digits throws" :expected "throws" :actual "(read-string \"\\\"\\\\uD\\\"\")" :portability :common}
+  {:suite "reader / EOF in regex backslash" :label "trailing backslash in regex throws" :expected "throws" :actual "(read-string \"#\\\"a\\\\\")" :portability :common}
+  {:suite "syntax-quote / defmacro qualified" :label "`defmacro qualifies to ns, not bare" :expected "true" :actual "(not= 'defmacro (second (read-string \"`defmacro\")))" :portability :common}
+  {:suite "syntax-quote / catch bare" :label "`catch stays bare (special form)" :expected "true" :actual "(= 'catch (second (read-string \"`catch\")))" :portability :common}
+  {:suite "syntax-quote / reify* bare" :label "`reify* stays bare (special form)" :expected "true" :actual "(= 'reify* (second (read-string \"`reify*\")))" :portability :common}
+  {:suite "compile-eval / quoted require not scanned" :label "quoted require does not leak aliases" :expected "false" :actual "(do (def xce '(require '[clojure.string :as zzz9x])) (contains? (ns-aliases *ns*) 'zzz9x))" :portability :common}
+  {:suite "ns / ns-unmap refer-all name" :label "ns-unmap removes refer-all name from resolve" :expected "nil" :actual "(do (require '[clojure.set :refer :all]) (ns-unmap *ns* 'union) (resolve 'union))" :portability :common}  {:suite "reader / EOF errors" :label "trailing backslash in string is a positioned EOF error" :expected ":eof" :actual "(try (read-string \"\\\"ab\\\\\") (catch Exception e (if (re-find #\"EOF\" (.getMessage e)) :eof :other)))" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "core-default name qualifies to clojure.core" :expected "'(quote clojure.core/map)" :actual "(read-string \"`map\")" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "core macro name qualifies to clojure.core" :expected "'(quote clojure.core/when)" :actual "(read-string \"`when\")" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "& stays bare" :expected "'(quote &)" :actual "(read-string \"`&\")" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "alias qualifies through the alias" :expected "'(quote clojure.string/join)" :actual "(do (require '[clojure.string :as sx9]) (read-string \"`sx9/join\"))" :portability :common}
+  {:suite "reader / syntax-quote resolution" :label "unmapped name qualifies to current ns" :expected "'(quote user/zz-undefined)" :actual "(read-string \"`zz-undefined\")" :portability :common}
+  {:suite "ns / ns-unmap" :label "unmap blocks the implicit core refer" :expected "nil" :actual "(do (ns-unmap *ns* 'map) (resolve 'map))" :portability :common}
+]
