@@ -263,3 +263,33 @@
       ;; nREPL middleware a library contributes (jolt.nrepl composes them over its
       ;; built-in handler) — symbols resolving to a middleware fn or a vector of them.
       :nrepl-middleware (:nrepl/middleware edn)})))
+
+(defn add-deps
+  "Resolve an inline deps map and add the resulting source roots to the loader,
+  so a following `require` can load them — the programmatic twin of a deps.edn
+  :deps entry, mirroring babashka.deps/add-deps:
+
+    (add-deps '{:deps {org.clojure/data.json {:mvn/version \"2.5.0\"}}})
+    (require '[clojure.data.json :as json])
+
+  Coordinates: :git/url + :git/sha, :local/root (resolved against JOLT_PWD),
+  and :mvn/version (JAR source fetched from Clojars, then Central). New roots
+  are appended AFTER the current roots, so an added dep can never shadow a
+  namespace the runtime already resolves. Returns the vector of roots added
+  (empty when everything was already on the roots).
+
+  :jolt/native declarations carried by added deps are NOT auto-loaded (that is
+  a project-launch concern — see jolt.main); a warning names them so the
+  caller can load via jolt.ffi. The second arity accepts an options map for
+  babashka call-shape compatibility; no options are currently honored."
+  ([deps-map] (add-deps deps-map nil))
+  ([{:keys [deps]} _opts]
+   (let [{:keys [roots natives]} (resolve-deps deps (or (jolt.host/getenv "JOLT_PWD") "."))
+         current (vec (jolt.host/source-roots))
+         added (vec (remove (set current) (dedup-by identity roots)))]
+     (when (seq added)
+       (jolt.host/set-source-roots! (into current added)))
+     (when (seq natives)
+       (warn "added deps declare :jolt/native libraries (not auto-loaded): "
+             (pr-str (dedup-by native-key natives))))
+     added)))
