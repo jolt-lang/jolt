@@ -79,6 +79,7 @@ implements. Current profile (≈2735 portable, ≈167 non-portable):
 | Feature | Meaning |
 |---------|---------|
 | `:numerics/double-only` | all-double numeric model — no Ratio/BigDecimal/float; `(/ 1 2)` ⇒ `0.5` |
+| `:numerics/long-only` | one integer type — `(short x)`/`(byte x)`/`(int x)` range-check but box as Long; `(instance? java.lang.Short (short 0))` ⇒ `false` |
 | `:concurrency/snapshot` | isolated-heap futures/agents/pmap — captured atoms are snapshotted, not shared |
 | `:host/jvm-interop` | Java classes / `instance?` on host classes / proxy / bean / definterface |
 | `:host/arrays` | Java arrays (`into-array`, `int-array`, …) |
