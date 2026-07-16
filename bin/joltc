@@ -64,6 +64,11 @@ if [ "$use_cache" = 1 ]; then
 (let ((marker (getenv "JOLT_DEVCACHE")))
   (when (and marker (not (string=? marker "")))
     (display "devcache: using target/dev/flat.so\n" (current-error-port))))
+;; GC tuning (same as the binary's launcher).
+(collect-trip-bytes
+  (let ((trip (getenv "JOLT_GC_TRIP_BYTES"))
+        (default (* 16 1024 1024)))
+    (if trip (or (string->number trip) default) default)))
 (jolt-trace-init-from-env!)
 (jolt-cli-run (cdr (command-line))
   (lambda () (load "host/chez/build.ss")))

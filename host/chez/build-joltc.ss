@@ -142,6 +142,12 @@
         (\"stub/launcher.c\" \"jolt_launcher_c\" \"jolt_launcher_c_len\")))))
 
 (suppress-greeting #t)
+;; GC tuning: larger nursery for allocation-heavy workloads. Default 16 MB;
+;; override via JOLT_GC_TRIP_BYTES env (integer bytes).
+(collect-trip-bytes
+  (let ((trip (getenv \"JOLT_GC_TRIP_BYTES\"))
+        (default (* 16 1024 1024)))
+    (if trip (or (string->number trip) default) default)))
 (scheme-start
   (lambda args
     (set-source-roots! " (ldr-install-roots-str) ")
