@@ -1,12 +1,16 @@
 (ns jolt.deps
-  "Resolve a deps.edn into an ordered list of source roots — git + local deps
-  only, no Maven. A reduced tools.deps: :paths, :deps (`:git/url`+`:git/sha` /
-  `:local/root`), :aliases (:extra-paths / :extra-deps / :main-opts), :tasks.
+  "Resolve a deps.edn into an ordered list of source roots. A reduced
+  tools.deps: :paths, :deps (`:git/url`+`:git/sha` / `:local/root` /
+  `:mvn/version`), :aliases (:extra-paths / :extra-deps / :main-opts), :tasks.
 
   The deps walk is breadth-first so a top-level coordinate registers before any
-  transitive one (a top-level pin wins). Git deps clone into a sha-immutable
-  cache ($JOLT_GITLIBS, else ~/.jolt/gitlibs) shared across projects. Resolution
-  shells out to `git` through jolt.host/sh; nothing here touches the JVM."
+  transitive one (a top-level pin wins). Git deps reuse an existing
+  tools.gitlibs checkout ($GITLIBS / ~/.gitlibs) when the JVM toolchain already
+  fetched them, else clone into a sha-immutable cache ($JOLT_GITLIBS, else
+  ~/.jolt/gitlibs) shared across projects. Maven jars live in the standard
+  local repository (~/.m2/repository, MAVEN_OPTS honored) shared with the JVM
+  toolchain in both directions. Resolution shells out to `git`/`curl`/`unzip`
+  through jolt.host/sh; nothing here touches the JVM."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -38,23 +42,38 @@
 (defn- sanitize [s]
   (str/join (map (fn [c] (if (or (alnum? c) (= c \.) (= c \-)) c \_)) (seq s))))
 
+(defn- gitlibs-shared-checkout
+  "An existing tools.gitlibs checkout for lib@sha ($GITLIBS or ~/.gitlibs,
+  layout libs/<group>/<name>/<sha>) — reused read-only when the JVM toolchain
+  already fetched this dep. jolt never writes there: tools.gitlibs keeps its
+  own bookkeeping (_repos bare clones + worktrees) that a foreign writer could
+  corrupt, so jolt's own fetches go to its cache below."
+  [lib sha]
+  (when (and lib (namespace lib))
+    (let [base (or (getenv "GITLIBS") (str (or (getenv "HOME") ".") "/.gitlibs"))
+          dir (str base "/libs/" (namespace lib) "/" (name lib) "/" sha)]
+      (when (file-exists? dir) dir))))
+
 (defn- ensure-git
-  "Clone url at sha into the cache (once); return the checkout dir."
-  [url sha]
+  "Return a checkout dir for url@sha: an existing tools.gitlibs checkout for
+  `lib` when present, else clone into jolt's cache (once)."
+  [lib url sha]
   (let [dir (str (gitlibs-dir) "/" (sanitize url) "/" sha)]
-    (if (file-exists? dir)
-      dir
-      (do
-        (warn "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
-        (sh (str "mkdir -p " (pr-str dir)))
-        (when-not (zero? (sh (str "git clone --quiet " (pr-str url) " " (pr-str dir))))
-          (throw (ex-info (str "git clone failed: " url) {:url url})))
-        (when-not (zero? (sh (str "git -C " (pr-str dir) " checkout --quiet " (pr-str sha))))
-          (throw (ex-info (str "git checkout failed: " sha " in " url) {:url url :sha sha})))
-        ;; submodules are pinned in the checkout; pull them if the dep uses any.
-        (when-not (zero? (sh (str "git -C " (pr-str dir) " submodule update --init --recursive --quiet")))
-          (throw (ex-info (str "git submodule update failed for " url) {:url url})))
-        dir))))
+    (if-let [shared (and (not (file-exists? dir)) (gitlibs-shared-checkout lib sha))]
+      shared
+      (if (file-exists? dir)
+        dir
+        (do
+          (warn "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
+          (sh (str "mkdir -p " (pr-str dir)))
+          (when-not (zero? (sh (str "git clone --quiet " (pr-str url) " " (pr-str dir))))
+            (throw (ex-info (str "git clone failed: " url) {:url url})))
+          (when-not (zero? (sh (str "git -C " (pr-str dir) " checkout --quiet " (pr-str sha))))
+            (throw (ex-info (str "git checkout failed: " sha " in " url) {:url url :sha sha})))
+          ;; submodules are pinned in the checkout; pull them if the dep uses any.
+          (when-not (zero? (sh (str "git -C " (pr-str dir) " submodule update --init --recursive --quiet")))
+            (throw (ex-info (str "git submodule update failed for " url) {:url url})))
+          dir)))))
 
 ;; --- maven cache ------------------------------------------------------------
 ;; jolt has no JVM, but a Clojure library's Maven JAR carries its .clj/.cljc/.cljs
@@ -62,9 +81,49 @@
 ;; resolves by fetching the JAR (Clojars, then Central), extracting it, and using
 ;; the extraction as a source root — its pom.xml supplies the transitive deps.
 ;; A JAR of pure Java classes has no source to run and simply contributes nothing.
-(defn- mvnlibs-dir []
-  (or (getenv "JOLT_MVNLIBS")
-      (str (or (getenv "HOME") ".") "/.jolt/mvnlibs")))
+;;
+;; JARs live at their standard path in the local Maven repository
+;; (~/.m2/repository), so they are shared with JVM Clojure/tools.deps in both
+;; directions: an artifact clj already fetched is reused without a download, and
+;; one jolt fetches is there for clj. The jolt-only source extraction sits in a
+;; "<artifact>-<version>.jar.jolt/" directory beside the jar. MAVEN_OPTS is
+;; honored the way the JVM toolchain honors it (parsed as Java -D properties):
+;; maven.repo.local points at the repository directly, and user.home relocates
+;; ~/.m2 — the hermetic-build idiom. Setting JOLT_MVNLIBS opts out of sharing
+;; entirely: the legacy self-contained layout under it, jar not kept.
+
+(defn parse-jvm-opts
+  "Parse a JVM options string (MAVEN_OPTS / JAVA_OPTS / JDK_JAVA_OPTIONS shape)
+  into a {property value} map from its -D entries, Java-style:
+  whitespace-separated tokens, -Dkey=value binds, -Dkey with no '=' binds \"\",
+  the last occurrence of a key wins, and non-property tokens (-Xmx…, flags)
+  are ignored. General-purpose: not tied to any particular variable."
+  [s]
+  (into {}
+        (keep (fn [tok]
+                (when (and (str/starts-with? tok "-D") (> (count tok) 2))
+                  (let [kv (subs tok 2)
+                        i (str/index-of kv "=")]
+                    (if i [(subs kv 0 i) (subs kv (inc i))] [kv ""])))))
+        (str/split (or s "") #"\s+")))
+
+(defn jvm-opts-props
+  "The -D properties carried by an environment variable of JVM-options shape,
+  as a map — (jvm-opts-props \"MAVEN_OPTS\"), (jvm-opts-props \"JAVA_OPTS\"), …
+  Empty map when the variable is unset."
+  [env-name]
+  (parse-jvm-opts (getenv env-name)))
+
+(defn- maven-props [] (jvm-opts-props "MAVEN_OPTS"))
+
+(defn- m2-repo-dir
+  "The local Maven repository dir, resolved like the JVM toolchain:
+  maven.repo.local (MAVEN_OPTS) wins, else .m2/repository under user.home
+  (MAVEN_OPTS), else under $HOME."
+  ([] (m2-repo-dir (maven-props) (getenv "HOME")))
+  ([props home]
+   (or (get props "maven.repo.local")
+       (str (or (get props "user.home") home ".") "/.m2/repository"))))
 
 (def ^:private mvn-repos
   ["https://repo.clojars.org" "https://repo1.maven.org/maven2"])
@@ -72,26 +131,43 @@
 (defn- mvn-group [coord] (or (namespace coord) (name coord)))
 
 (defn- ensure-maven
-  "Fetch coord@version's JAR and extract its source into the cache (once). Returns
-  the extraction dir, or nil if no repo has it (a non-fatal skip)."
+  "Ensure coord@version's JAR is in the local Maven repository (reusing one the
+  JVM toolchain already fetched; downloading from Clojars then Central when
+  absent) and extract its source beside it (once). Returns the extraction dir,
+  or nil if no repo has the artifact (a non-fatal skip)."
   [coord version]
   (let [group (mvn-group coord) artifact (name coord)
-        rel (str (str/replace group "." "/") "/" artifact "/" version "/" artifact "-" version ".jar")
-        dir (str (mvnlibs-dir) "/" (sanitize (str coord)) "/" (sanitize version))]
+        vdir-rel (str (str/replace group "." "/") "/" artifact "/" version)
+        jar-name (str artifact "-" version ".jar")
+        legacy (getenv "JOLT_MVNLIBS")
+        dir (if legacy
+              (str legacy "/" (sanitize (str coord)) "/" (sanitize version))
+              (str (m2-repo-dir) "/" vdir-rel "/" jar-name ".jolt"))
+        jar (if legacy
+              (str dir "/dep.jar")
+              (str (m2-repo-dir) "/" vdir-rel "/" jar-name))]
     (if (file-exists? (str dir "/.jolt-ok"))
       dir
-      (let [jar (str dir "/dep.jar")]
+      (do
         (sh (str "mkdir -p " (pr-str dir)))
-        (loop [repos mvn-repos]
-          (if (empty? repos)
-            (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
-            (if (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" rel)) " -o " (pr-str jar))))
-              (do (warn "fetching " coord " " version)
-                  (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
-                  (sh (str "rm -f " (pr-str jar)))
-                  (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
-                  dir)
-              (recur (rest repos)))))))))
+        (if (and (not legacy) (file-exists? jar))
+          (do (warn "using " jar-name " from the local Maven repository")
+              (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
+              (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
+              dir)
+          (loop [repos mvn-repos]
+            (if (empty? repos)
+              (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
+              (if (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" vdir-rel "/" jar-name))
+                                  " -o " (pr-str jar))))
+                (do (warn "fetching " coord " " version)
+                    (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
+                    ;; legacy layout never keeps the jar; the m2 layout does —
+                    ;; that IS the sharing.
+                    (when legacy (sh (str "rm -f " (pr-str jar))))
+                    (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
+                    dir)
+                (recur (rest repos))))))))))
 
 (defn- pom-deps
   "Transitive deps of an extracted Maven dep, from its pom.xml — as a deps map so
@@ -124,7 +200,7 @@
   (cond
     (:local/root spec) (abspath base-dir (:local/root spec))
     (and (:git/url spec) (:git/sha spec))
-    (let [checkout (ensure-git (:git/url spec) (:git/sha spec))]
+    (let [checkout (ensure-git coord (:git/url spec) (:git/sha spec))]
       (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
     (:git/url spec)
     (throw (ex-info (str "git dep " coord " needs :git/sha") {:coord coord :spec spec}))
