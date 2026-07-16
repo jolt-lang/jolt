@@ -3984,4 +3984,6 @@
  {:suite "bit-shift / count masking" :label "shift by 64 is shift by 0 (6-bit mask)" :expected "1" :actual "(bit-shift-left 1 64)" :portability :jvm}
  {:suite "bit-shift / count masking" :label "shift by -1 is shift by 63" :expected "-9223372036854775808" :actual "(bit-shift-left 1 -1)" :portability :jvm}
  {:suite "bit-shift / count masking" :label "shift by 65 is shift by 1" :expected "2" :actual "(bit-shift-left 1 65)" :portability :jvm}
+ {:suite "var meta / :name symbol" :label "(:name (meta #'map)) is a symbol" :expected "true" :actual "(symbol? (:name (meta #'map)))" :portability :jvm}
+ {:suite "var meta / :name symbol" :label "(:name (meta #'clojure.string/join)) name is \"join\"" :expected "\"join\"" :actual "(name (:name (meta #'clojure.string/join)))" :portability :jvm}
 ]
