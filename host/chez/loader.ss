@@ -32,16 +32,18 @@
 (define ldr-install-roots '("jolt-core" "stdlib" "vendor/fs/src"))
 
 ;; True when `f` is a file owned by the Jolt runtime (compiler + stdlib) — either
-;; an embedded-resource key or a path under one of ldr-install-roots.
+;; an embedded-resource key (string or bytevector value) or a path under one of
+;; ldr-install-roots.
 (define (ldr-install-file? f)
-  (or (string? (hashtable-ref embedded-resources f #f))
-      (let loop ((roots ldr-install-roots))
-        (and (pair? roots)
-             (or (let ((root (car roots)))
-                   (and (>= (string-length f) (+ (string-length root) 1))
-                        (string=? (substring f 0 (string-length root)) root)
-                        (char=? (string-ref f (string-length root)) #\/)))
-                 (loop (cdr roots)))))))
+  (let ((v (hashtable-ref embedded-resources f #f)))
+    (or (string? v) (bytevector? v)
+        (let loop ((roots ldr-install-roots))
+          (and (pair? roots)
+               (or (let ((root (car roots)))
+                     (and (>= (string-length f) (+ (string-length root) 1))
+                          (string=? (substring f 0 (string-length root)) root)
+                          (char=? (string-ref f (string-length root)) #\/)))
+                   (loop (cdr roots))))))))
 
 ;; A Chez source string for the install roots list — "(list \"jolt-core\" \"stdlib\" \"vendor/fs/src\")".
 ;; Used by build templates so the literal stays in one place.
@@ -207,8 +209,10 @@
 (define (resolve-on-roots rel)
   (let ((eclj (string-append rel ".clj")) (ecljc (string-append rel ".cljc")))
     (cond
-      ((string? (hashtable-ref embedded-resources eclj #f)) eclj)
-      ((string? (hashtable-ref embedded-resources ecljc #f)) ecljc)
+      ((let ((v (hashtable-ref embedded-resources eclj #f)))
+         (or (string? v) (bytevector? v))) eclj)
+      ((let ((v (hashtable-ref embedded-resources ecljc #f)))
+         (or (string? v) (bytevector? v))) ecljc)
       (else
         (let loop ((roots source-roots))
           (if (null? roots) #f
@@ -220,11 +224,13 @@
 
 ;; Read a namespace source. An embedded key (resolve-on-roots above, or the
 ;; build driver's app-order entries) reads its baked string; everything else is
-;; a real path read off disk. Bytevector entries (the bundled boots/stub) are not
-;; source, so a string? guard skips them.
+;; a real path read off disk. Bytevector entries (the bundled boots/stub, and
+;; source embeds stored as bytevectors to save heap) decode via utf8->string.
 (define (ldr-read-source path)
   (let ((emb (hashtable-ref embedded-resources path #f)))
-    (if (string? emb) emb (read-file-string path))))
+    (cond ((string? emb) emb)
+          ((bytevector? emb) (utf8->string emb))
+          (else (read-file-string path)))))
 
 (define (find-ns-file name) (resolve-on-roots (ns-name->rel name)))
 
@@ -255,16 +261,10 @@
                        (jolt-symbol #f k))))
       (hashtable-keys loaded-ns))))
 
-;; Does `name` already have vars in the var-table? A namespace baked into the
-;; image after the snapshot above — an AOT'd app namespace in a `jolt build`
-;; binary — exists in memory with no source file; a later `require` of it must
-;; no-op rather than hunt the (absent) source.
-(define (ns-has-vars? name)
-  (let ((found #f))
-    (vector-for-each
-      (lambda (c) (when (and (not found) (string=? (var-cell-ns c) name)) (set! found #t)))
-      (hashtable-values var-table))
-    found))
+;; ns-has-vars? (ns.ss) answers whether a namespace baked into the image after
+;; the snapshot above — an AOT'd app namespace in a `jolt build` binary — exists
+;; in memory with no source file; a later `require` of it must no-op rather than
+;; hunt the (absent) source.
 
 ;; Called after a file-backed namespace finishes loading, with (name file). The
 ;; build driver sets this to record app namespaces in dependency order for AOT

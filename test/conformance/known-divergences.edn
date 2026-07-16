@@ -6,7 +6,7 @@
   :host-model
   "no JVM host: classes->name strings, type->symbol, *in* is a map, inline-impl extenders, duck-typed with-open close",
   :reader-model
-  "jolt reader features (:jolt) + syntax-quote literal collapse (spec 2.4 S25); map source-order preserved",
+  "jolt reader features (:jolt) + syntax-quote literal collapse (spec 2.4 S25); map source-order preserved. #=(...) reads as inert data (never evaluates, regardless of *read-eval*); nested #() literals read where the JVM rejects them.",
   :printer-model
   "jolt printer renders transients/atoms/print-method overrides differently from JVM #object",
   :strictness
@@ -18,7 +18,13 @@
   :chunking-model
   "jolt now chunks range/vector seqs through map/filter like the JVM (forcing one element realizes the whole ~32-element chunk). What remains finer-grained: mapcat/dedupe realize 0 at construction where the JVM's (apply concat …) / sequence transformer force the first chunk just to build the seq. jolt-mm6v",
   :integer-box-model
-  "jolt unifies every integer as one exact-integer type. A Chez fixnum is an immediate identical to the plain integer (no distinct identity to tag, no metadata on numbers), so (byte/short/int n) report Long, not Byte/Short/Integer. Value/arithmetic/equality are correct; a faithful narrow box would crash raw compiled (+ …) or de-optimize all arithmetic. jolt-k9sw"},
+  "jolt unifies every integer as one exact-integer type. A Chez fixnum is an immediate identical to the plain integer (no distinct identity to tag, no metadata on numbers), so (byte/short/int n) report Long, not Byte/Short/Integer. Value/arithmetic/equality are correct; a faithful narrow box would crash raw compiled (+ …) or de-optimize all arithmetic. jolt-k9sw",
+  :string-model
+  "jolt strings are Chez strings: codepoint-indexed, no UTF-16 surrogate pairs. count/seq/subs/nth index codepoints, so an astral character counts 1 where the JVM counts 2 surrogate units. Substrate-inherent.",
+  :concurrency-model
+  "compare-and-set! compares with value equality (jolt=), not JVM reference identity — Chez immediates and reconstructed values have no stable identity to compare. Deliberate (atoms.ss).",
+  :permissive
+  "jolt succeeds where the JVM throws, on operations with one reasonable meaning: ex-info accepts nil data, count works on eduction, keys on a vector of pairs, (empty MapEntry) => []. A superset: portable JVM code behaves identically."},
  :entries
  [{:suite "forms / fn",
    :label "no param vector",
@@ -70,4 +76,10 @@
    ;; naa9: vswap! is a macro on the JVM (:macro true) for inline performance;
    ;; jolt implements it as a regular function. Semantics are equivalent — the
    ;; JVM macro is a perf inline, not a semantic difference.
-   {:suite "macros / vswap! divergence", :label "vswap! is a macro on JVM, fn on jolt", :category :host-model}]}
+   {:suite "macros / vswap! divergence", :label "vswap! is a macro on JVM, fn on jolt", :category :host-model}
+   {:suite "string-model / codepoint strings", :label "count of astral string", :category :string-model}
+   {:suite "string-model / codepoint strings", :label "seq counts codepoints", :category :string-model}
+   {:suite "string-model / codepoint strings", :label "subs across astral boundary", :category :string-model}
+   {:suite "concurrency-model / compare-and-set!", :label "value equality where JVM uses identity", :category :concurrency-model}
+   {:suite "reader-model / read-eval", :label "#= is inert data", :category :reader-model}
+   {:suite "permissive / empty MapEntry", :label "empty of a map entry", :category :permissive}]}

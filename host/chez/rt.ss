@@ -287,7 +287,12 @@
   ;; the SAME proc to a second var — doesn't rename inc.
   (when (and (procedure? v) (not (hashtable-contains? proc-name-tbl v)))
     (hashtable-set! proc-name-tbl v (cons ns name)))
+  (hashtable-set! ns-has-vars-set ns #t)
   (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
+;; Set of ns-name strings that have at least one var — makes ns-has-vars? O(1)
+;; instead of scanning the entire var-table per require-miss. Updated in def-var!
+;; (and wherever vars are removed, though removal is rare).
+(define ns-has-vars-set (make-hashtable string-hash string=?))
 ;; jolt.host/throwable — build a typed throwable a library can throw so (class …),
 ;; instance?, .getMessage and ex-message all reflect the named JVM class (e.g. an
 ;; http client throwing java.net.ConnectException). Strictly better than a

@@ -126,11 +126,7 @@
   (if (jns? d) (jns-name d) (symbol-t-name d)))
 
 (define (ns-has-vars? nm)
-  (let ((found #f))
-    (vector-for-each
-      (lambda (c) (when (and (not found) (string=? (var-cell-ns c) nm)) (set! found #t)))
-      (hashtable-values var-table))
-    found))
+  (hashtable-ref ns-has-vars-set nm #f))
 
 (define (jolt-find-ns desig)
   (let ((nm (ns-desig->name desig)))
@@ -348,6 +344,8 @@
 (define (jolt-remove-ns desig)
   (let ((nm (ns-desig->name desig)))
     (hashtable-delete! ns-registry nm)
+    (hashtable-delete! ns-has-vars-set nm)  ; keep the O(1) index honest, else a
+                                            ; later require of nm would no-op
     (vector-for-each
       (lambda (k) (let ((c (hashtable-ref var-table k #f)))
                     (when (and c (string=? (var-cell-ns c) nm)) (hashtable-delete! var-table k))))

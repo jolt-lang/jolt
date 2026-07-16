@@ -1210,13 +1210,6 @@
                      empty-pmap)))
       (values form j))))
 
-(define (rdr-read-top-splice-guard form)
-  (when (rdr-splice-t? form)
-    (jolt-throw (jolt-ex-info
-                 "Reader conditional splicing not allowed at the top level."
-                 empty-pmap)))
-  form)
-
 ;; clojure.core/read-string: first form, or nil for blank / comment-only input
 ;; (parse-string wart, matched deliberately). jolt-read-form-raw keeps set FORMS
 ;; for the compiler spine (compile-eval); the data seam converts them to sets.

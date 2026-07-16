@@ -762,8 +762,9 @@
  ;; Stage B — collection hasheq caching
  {:suite "hasheq-cache" :expr "(let [m {:x 1 :y 2} h1 (hash m) h2 (hash m)] (= h1 h2))" :expected "true"}
  {:suite "hasheq-cache" :expr "(let [s #{:a :b} h1 (hash s) h2 (hash s)] (= h1 h2))" :expected "true"}
- {:suite "hasheq-cache" :expr "(let [v [1 2 3] h1 (hash v) h2 (hash v)] (= h1 h2))" :expected "true"}
- ;; Stage C — positional ctor throws on wrong arity
+  {:suite "hasheq-cache" :expr "(let [v [1 2 3] h1 (hash v) h2 (hash v)] (= h1 h2))" :expected "true"}
+  {:suite "hasheq-cache" :expr "(let [s \"hello\" h1 (hash s) h2 (hash s)] (= h1 h2))" :expected "true"}
+  ;; Stage C — positional ctor throws on wrong arity
  {:suite "records-ctor-arity" :expr "(do (defrecord ArC9 [x y]) (try (->ArC9 1) (catch Exception e :arity-throw)))" :expected ":arity-throw"}
  {:suite "records-ctor-arity" :expr "(do (defrecord ArC9b [x y]) (try (->ArC9b 1 2 3) (catch Exception e :arity-throw)))" :expected ":arity-throw"}
  {:suite "records-ctor-arity" :expr "(do (defrecord ArC9c [x y]) (->ArC9c 1 2))" :expected "#user.ArC9c{:x 1, :y 2}"}

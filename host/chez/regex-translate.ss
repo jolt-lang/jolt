@@ -1,15 +1,12 @@
 ;; regex-translate.ss — Java regex pattern → irregex SRE translator.
 ;;
 ;; Parses a Java/Clojure regex pattern string ONCE via recursive descent and emits
-;; an irregex SRE (s-expression AST). The current string-rewriting pipeline in
-;; regex.ss is the fallback until V2 is proven >= V1 on all inputs.
+;; an irregex SRE (s-expression AST). This is the sole compile path: regex.ss
+;; compiles every pattern through (java-pattern->sre ...).
 ;;
 ;; Loaded before regex.ss; exports (java-pattern->sre pat-string) → values(sre opts).
 ;; The SRE is passed directly to (irregex sre . opts), bypassing irregex's PCRE
 ;; string reader entirely.
-;;
-;; STAGE 1: skeleton — delegates to irregex's string->sre for now.
-;; The recursive-descent parser is built up incrementally in Stage 2.
 
 ;; ── helpers ───────────────────────────────────────────────────────────────────
 

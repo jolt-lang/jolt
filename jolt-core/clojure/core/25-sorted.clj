@@ -340,7 +340,6 @@
 ;; Walks the red-black tree from the comparator bound (O(log n) seek) then
 ;; lazily walks in-order successors (subseq) or predecessors (rsubseq).
 
-(defn- sc-keyf [sc] (if (sorted-map? sc) first identity))
 (defn- sc-proj [sc] (if (sorted-map? sc) map-entry nd-key))
 
 ;; Find the leftmost node whose key satisfies (test (cmp key k) 0).
