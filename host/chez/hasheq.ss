@@ -118,40 +118,6 @@
 ;; the mix logic is hand-expanded as a single let* chain of fx ops.
 ;; mul32/rotl32/add32/i32 are small leaf helpers (fixnum-pure, one expression).
 ;; ---------------------------------------------------------------------------
-(define (murmur3-hash-int-flat k)
-  ;; k: fixnum in signed 32-bit range.
-  (if (#3%fx=? k 0) 0
-      (let* (;; --- i32(k): signed 32-bit ---
-             (u (#3%fxand k #xFFFFFFFF))
-             (ik (if (#3%fx>=? u #x80000000) (#3%fx- u #x100000000) u))
-             ;; --- mixK1(ik): step 1/3 mul32(ik, C1) ---
-             (k1 (mul32 ik murmur3-C1))
-             ;; --- mixK1(ik): step 2/3 rotl32(k1, 15) ---
-             (k1 (rotl32 k1 15))
-             ;; --- mixK1(ik): step 3/3 mul32(k1, C2) ---
-             (k1 (mul32 k1 murmur3-C2))
-             ;; --- mixH1(seed, k1): step 1/4 xor ---
-             (h1 (#3%fxxor murmur3-seed k1))
-             ;; --- mixH1: step 2/4 rotl32(h1, 13) ---
-             (h1 (rotl32 h1 13))
-             ;; --- mixH1: step 3/4 mul32(h1, 5) ---
-             (h1 (mul32 h1 5))
-             ;; --- mixH1: step 4/4 add32(h1, 0xe6546b64) ---
-             (h1 (add32 h1 #xe6546b64))
-             ;; --- fmix(h1, 4): step 1/6 xor len ---
-             (h1 (#3%fxxor h1 4))
-             ;; --- fmix: step 2/6 xor urs32(h1, 16) ---
-             (h1 (#3%fxxor h1 (urs32 h1 16)))
-             ;; --- fmix: step 3/6 mul32(h1, 0x85ebca6b) ---
-             (h1 (mul32 h1 #x85ebca6b))
-             ;; --- fmix: step 4/6 xor urs32(h1, 13) ---
-             (h1 (#3%fxxor h1 (urs32 h1 13)))
-             ;; --- fmix: step 5/6 mul32(h1, 0xc2b2ae35) ---
-             (h1 (mul32 h1 #xc2b2ae35))
-             ;; --- fmix: step 6/6 xor urs32(h1, 16) ---
-             (h1 (#3%fxxor h1 (urs32 h1 16))))
-        h1)))
-
 ;; ---------------------------------------------------------------------------
 ;; Flat-inlined murmur3-hash-long for fixnums wider than int32.
 ;; Same hand-inlined mix logic as above, applied to two 32-bit halves;
@@ -403,9 +369,7 @@
 ;; An arm is (pred . handler); pred takes the value, handler returns int.
 (define jolt-hasheq-arms '())
 
-(define (register-hasheq-arm! pred handler)
-  (set! jolt-hasheq-arms (cons (cons pred handler) jolt-hasheq-arms)))
-
+;; Dispatch: fast-path types first, then registered arms, then fallback.
 (define (jolt-hasheq x)
   ;; Fast path for the most common types (matching Util.hasheq order).
   (cond
@@ -473,17 +437,4 @@
 
 ;; ============================================================================
 ;; Quick sanity: export a helper for the natives to rebind clojure.core/hash
-;; ============================================================================
-;; The old natives-misc.ss binds clojure.core/hash, hash-combine, etc.
-;; After hasheq.ss loads, those are replaced via def-var! in this file
-;; or in the natives file that loads after.
 
-(define (hasheq-hash x) (jolt-hasheq x))
-(define (hasheq-hash-ordered-coll coll)
-  (hash-ordered (jolt-seq coll)))
-(define (hasheq-hash-unordered-coll coll)
-  (hash-unordered (jolt-seq coll)))
-(define (hasheq-mix-collection-hash hash-basis count)
-  (mix-coll-hash hash-basis count))
-(define (hasheq-hash-combine seed hash)
-  (hash-combine seed hash))
