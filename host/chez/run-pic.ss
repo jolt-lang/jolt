@@ -19,7 +19,6 @@
 (load "host/chez/run-gate-harness.ss")
 
 (define analyze         (var-deref "jolt.analyzer" "analyze"))
-(define emit            (var-deref "jolt.backend-scheme" "emit"))
 (define emit-top-form   (var-deref "jolt.backend-scheme" "emit-top-form"))
 (define set-direct-link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
 (define kw              (lambda (n) (keyword #f n)))
@@ -99,8 +98,7 @@
 ;; registered miss the (fx= pepoch epoch) check.
 (let* ((cd (hashtable-ref chez-tag-desc "user.Circle" #f))
        (sd (hashtable-ref chez-tag-desc "user.Square" #f))
-       (td (hashtable-ref chez-tag-desc "user.Triangle" #f))
-       (k  (intern-pm-key "Shape" "area")))
+       (td (hashtable-ref chez-tag-desc "user.Triangle" #f)))
   (gate-check "Circle desc ptable resolves" (not (not (find-protocol-method-desc cd "Shape" "area"))) #t)
   (gate-check "Square desc ptable resolves" (not (not (find-protocol-method-desc sd "Shape" "area"))) #t)
   (gate-check "Triangle desc ptable resolves" (not (not (find-protocol-method-desc td "Shape" "area"))) #t))
