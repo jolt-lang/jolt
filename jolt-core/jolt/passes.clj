@@ -20,7 +20,7 @@
              [jolt.passes.types :refer [run-inference
                                          check-form infer-body reinfer-def
                                          set-rtenv! set-vtypes!
-                                        set-record-shapes! set-map-shapes! set-protocol-methods!
+                                        set-record-shapes! set-protocol-methods!
                                         reset-escapes! collected-escapes
                                         wp-infer! param-seeds-for param-num-seeds-for
                                         set-check-mode! take-diags!

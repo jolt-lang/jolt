@@ -255,16 +255,10 @@
                        (jolt-symbol #f k))))
       (hashtable-keys loaded-ns))))
 
-;; Does `name` already have vars in the var-table? A namespace baked into the
-;; image after the snapshot above — an AOT'd app namespace in a `jolt build`
-;; binary — exists in memory with no source file; a later `require` of it must
-;; no-op rather than hunt the (absent) source.
-(define (ns-has-vars? name)
-  (let ((found #f))
-    (vector-for-each
-      (lambda (c) (when (and (not found) (string=? (var-cell-ns c) name)) (set! found #t)))
-      (hashtable-values var-table))
-    found))
+;; ns-has-vars? (ns.ss) answers whether a namespace baked into the image after
+;; the snapshot above — an AOT'd app namespace in a `jolt build` binary — exists
+;; in memory with no source file; a later `require` of it must no-op rather than
+;; hunt the (absent) source.
 
 ;; Called after a file-backed namespace finishes loading, with (name file). The
 ;; build driver sets this to record app namespaces in dependency order for AOT

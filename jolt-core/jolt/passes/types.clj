@@ -12,13 +12,13 @@
             [jolt.passes.types.lattice :refer
              [velem selem sfields vec-type? set-type? struct-type? mk-vec mk-set
               mk-struct union-cap scalar-t? union-type? umembers union-of merge-fields
-              join-t join type-depth cap struct-safe? field-type shape-order type-shape
+              join-t join type-depth cap struct-safe? field-type type-shape
               mark-struct truthy-type? num-ret-fns vector-ret-fns nilable? strip-nilable]]))
 
 ;; --- engine state ------------------------------------------------------------
 ;; The walk threads an immutable `env` (mk-env) instead of reading scattered
 ;; module atoms: it carries the read-only config (rtenv/vtypes/record-shapes/
-;; protocol-methods/map-shapes?) plus the per-run flags (checking?/strict?) and
+;; protocol-methods) plus the per-run flags (checking?/strict?) and
 ;; per-run accumulator/guard CELLS (diags/calls/checking-set/diag-memo). A fresh
 ;; env per run makes the pass re-entrant — a nested probe (isolated-diag-count)
 ;; runs under a sub-env with its own diags cell, no save/restore.
@@ -31,8 +31,7 @@
   (atom {:rtenv {}              ;; "ns/name" -> inferred return type
          :vtypes {}             ;; "ns/name" -> var VALUE type (fn=:truthy, def=init type)
          :record-shapes {}      ;; "ns/->Name" -> {:fields :tags :type}
-         :protocol-methods {}   ;; "ns/method" -> [proto method]
-         :map-shapes? false}))  ;; shape generic const-key maps (opt-in, JOLT_SHAPE)
+         :protocol-methods {}}));; "ns/method" -> [proto method]
 ;; var-keys used as a VALUE (not a call head) — accumulated across a whole sweep,
 ;; reset by reset-escapes! and read by collected-escapes.
 (def ^:private escapes-box (atom #{}))
@@ -60,7 +59,6 @@
   (let [c @config-box]
     {:rtenv (get c :rtenv) :vtypes (get c :vtypes)
      :record-shapes (get c :record-shapes) :protocol-methods (get c :protocol-methods)
-     :map-shapes? (get c :map-shapes?)
      :checking? checking? :strict? strict?
      :diags (atom []) :calls (atom []) :checking-set (atom #{}) :diag-memo (atom {})
      :escapes escapes-box :user-sigs user-sig-box}))
@@ -627,12 +625,9 @@
                          (every? (fn [r] (truthy-type? (nth r 2))) res))
             base (when struct?
                    (cap (mk-struct (reduce (fn [m r] (assoc m (nth r 3) (nth r 2))) {} res)) type-depth))
-            ;; a literal is a COMPLETE shape: carry its sorted key vector so the
-            ;; back end can lay it out and bare-index lookups
-            shp (when (and (get env :map-shapes?) base (struct-type? base)) (shape-order (keys (sfields base))))
-            t (if base (if shp (assoc base :shape shp) base) :any)
+            t (if base base :any)
             node' (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))]
-        [t (if shp (assoc node' :shape shp) node')])
+        [t node'])
       (= op :vector)
       (let [irs (mapv (fn [x] (infer x tenv env)) (get node :items))
             ets (mapv (fn [r] (nth r 0)) irs)
@@ -822,11 +817,9 @@
   type call results during the fixpoint."
   [m] (swap! config-box assoc :rtenv (or m {})))
 
-;; install record-ctor shapes ("ns/->Name" -> [field-kw ...]) and the
-;; map-shaping flag (opt-in JOLT_SHAPE), both read by infer.
+;; install record-ctor shapes ("ns/->Name" -> [field-kw ...]), read by infer.
 (defn set-record-shapes! [m] (swap! config-box assoc :record-shapes (or m {})))
 (defn set-protocol-methods! [m] (swap! config-box assoc :protocol-methods (or m {})))
-(defn set-map-shapes! [b] (swap! config-box assoc :map-shapes? (boolean b)))
 
 (defn set-vtypes!
   "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy

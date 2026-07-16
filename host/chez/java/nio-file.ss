@@ -533,8 +533,6 @@
     ((string=? nm "isOther")          #f)
     ((string=? nm "fileKey")          jolt-nil)
     (else jolt-nil)))
-(define (nio-get-attribute path attr . _)
-  (nio-attr-value (nfp path) (nio-attr-name (npath-string-of attr))))
 (define nio-basic-attr-names
   '("lastModifiedTime" "lastAccessTime" "creationTime" "size"
     "isDirectory" "isRegularFile" "isSymbolicLink" "isOther" "fileKey"))
@@ -545,13 +543,6 @@
           ((char=? (string-ref s i) #\,)
            (loop (+ i 1) (+ i 1) (if (> i start) (cons (substring s start i) acc) acc)))
           (else (loop (+ i 1) start acc)))))
-(define (nio-set-attribute path attr value . _)
-  (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
-    (cond
-      ((or (string=? nm "lastModifiedTime") (string=? nm "creationTime") (string=? nm "lastAccessTime"))
-       (set-file-mtime-millis! fp (if (file-time? value) (file-time-ms value) (jnum->exact value))))
-      (else jolt-nil))
-    (->path path)))
 (define (nio-str-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
@@ -790,9 +781,6 @@
 ;; PosixFilePermissions/asFileAttribute -> a FileAttribute the create ops apply
 ;; by chmod after making the entry.
 (define (file-attr? x) (and (jhost? x) (string=? (jhost-tag x) "file-attribute")))
-(define (nio-apply-attrs! fp args)
-  (for-each (lambda (a) (when (and (file-attr? a) c-chmod) (c-chmod fp (posix-set->mode (jhost-state a)))))
-            (npath-spread-args args)))
 (register-class-statics! "PosixFilePermissions"
   (list (cons "asFileAttribute" (lambda (perms) (make-jhost "file-attribute" perms)))))
 (register-class-statics! "java.nio.file.attribute.PosixFilePermissions"

@@ -3,10 +3,10 @@
 ;; bind *out* (this ns's own dynamic binding) to a pretty-writer over it and emit
 ;; the result through clojure.core/print, so with-out-str captures it.
 ;;
-;; Native print is not involved: this ns defines its own print/pr/prn/println
+;; Native print is not involved: this ns defines its own print/pr/prn
 ;; that route through (-write *out* ...).
 (ns clojure.pprint
-  (:refer-clojure :exclude [deftype print println pr prn]))
+  (:refer-clojure :exclude [deftype print pr prn]))
 
 ;;======================================================================
 ;; Macros (must precede their first use)
@@ -104,22 +104,6 @@
 (defn- print [& more]
   (-write *out* (apply print-str more)))
 
-(defn- println [& more]
-  (apply print more)
-  (-write *out* "\n"))
-
-(defn- print-char [c]
-  (-write *out* (condp = c
-                  \backspace "\\backspace"
-                  \space "\\space"
-                  \tab "\\tab"
-                  \newline "\\newline"
-                  \formfeed "\\formfeed"
-                  \return "\\return"
-                  \" "\\\""
-                  \\ "\\\\"
-                  (str "\\" c))))
-
 (defn- ^:dynamic pr [& more]
   (-write *out* (apply pr-str more)))
 
@@ -216,18 +200,8 @@
 (defn- get-column [this]
   (get-field this :cur))
 
-(defn- get-line [this]
-  (get-field this :line))
-
 (defn- get-max-column [this]
   (get-field this :max))
-
-(defn- set-max-column [this new-max]
-  (set-field this :max new-max)
-  nil)
-
-(defn- get-writer [this]
-  (get-field this :base))
 
 (defn- c-write-char [this c]
   (if (= c \newline)
@@ -2111,11 +2085,6 @@
 ;;; code dispatch
 
 (declare ^{:arglists '([alis])} pprint-simple-code-list)
-
-(defn- brackets [form]
-  (if (vector? form)
-    ["[" "]"]
-    ["(" ")"]))
 
 (defn- pprint-simple-code-list [alis]
   (pprint-logical-block :prefix "(" :suffix ")"
