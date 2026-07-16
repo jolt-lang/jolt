@@ -72,6 +72,11 @@
 ;; reads narrow to the direct accessor); a conflicting/escaping/mutable field is
 ;; absent here (reads :any). Consulted by record-type-from-entry for UNTAGGED fields.
 (def ^:private field-types-box (atom {}))
+;; generation counter bumped on every reset! of field-types-box, so
+;; record-type-from-entry can cache by [gen ctor-key depth] and flush
+;; stale entries when field types change across fixpoint rounds.
+(def ^:private field-gen (atom 0))
+(def ^:private record-type-cache (atom {}))
 ;; rich variant: same ctor-arg joins but :num is kept (an integer/mixed join), so a
 ;; specialized clone built off it sees :num field reads as :double-contagion operands.
 ;; Populated alongside field-types-box in wp-infer!, but consulted ONLY through
@@ -146,7 +151,7 @@
     :else (let [box (or *field-type-box* field-types-box)
                 inf (get-in @box [ctor-key field-kw])]
             (if inf inf :any))))
-(defn- record-type-from-entry [rs ctor-key depth shapes]
+(defn- record-type-from-entry-raw [rs ctor-key depth shapes]
   (let [fields (get rs :fields)
         tags (get rs :tags)
         fmap (reduce (fn [m i]
@@ -155,6 +160,15 @@
                                                            (dec depth) shapes ctor-key fw))))
                      {} (range (count fields)))]
     (assoc (mk-struct fmap) :shape (vec fields) :type (get rs :type))))
+(defn- record-type-from-entry [rs ctor-key depth shapes]
+  (let [gen @field-gen
+        k [gen ctor-key depth]
+        cached (get @record-type-cache k)]
+    (if (some? cached)
+      cached
+      (let [v (record-type-from-entry-raw rs ctor-key depth shapes)]
+        (swap! record-type-cache assoc k v)
+        v))))
 
 ;; fns that RETURN an element of their (first) collection arg, so a lookup on the
 ;; result of (rand-nth coll-of-structs) etc. types as the element.
@@ -1201,6 +1215,7 @@
       ;; types (a pre-fixpoint is more specific than the truth, so unsound to seed).
       (loop [ft-iter 0 ftypes {}]
         (reset! field-types-box ftypes)
+        (swap! field-gen inc)
         (let [[param-converged? new-ptypes] (wp-param-fixpoint nodes spec ks)
               escaped (set (collected-escapes))
                new-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped shallow-field-type)
@@ -1213,6 +1228,7 @@
                                 (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
                                         new-ptypes ks))
                   _ (reset! field-types-box (if sound? new-ftypes {}))
+                  _ (swap! field-gen inc)
                   _ (reset! rich-field-types-box (if sound? new-rich-ftypes {}))
                   ;; re-derive the protocol-method return types now that field types
                   ;; are known: an impl body that reads a field unboxes once the field
