@@ -3963,6 +3963,8 @@
  {:suite "seq / range-step-zero" :label "range step 0 repeats start infinitely" :expected "(5 5 5)" :actual "(take 3 (range 5 10 0))" :portability :jvm}
  ;; Stage D — binding does not auto-deref var-cell
  {:suite "binding / no-auto-deref" :label "binding does not auto-deref var-cell value" :expected "\"clojure.lang.Var\"" :actual "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :portability :common}
+  {:suite "sorted / subseq seek" :label "boundary comparators map+set batch" :expected "'[([2 :b] [3 :c]) ([1 :a] [2 :b]) ([1 :a] [2 :b]) ([3 :c] [2 :b]) (5 9) (5 1) nil nil]" :actual "[(subseq (sorted-map 1 :a 2 :b 3 :c) >= 2) (subseq (sorted-map 1 :a 2 :b 3 :c) < 3) (subseq (sorted-map 1 :a 2 :b 3 :c) <= 2) (rsubseq (sorted-map 1 :a 2 :b 3 :c) > 1) (subseq (sorted-set 1 5 9) > 4) (rsubseq (sorted-set 1 5 9) < 6) (subseq (sorted-map) > 1) (subseq (sorted-map 5 :e) > 5)]" :portability :common}
+  {:suite "string / scan parity" :label "indexOf contains replace case batch" :expected "'[2 true \"bbbbbb\" \"ABC\" \"abc\" -1]" :actual "[(.indexOf \"banana\" \"na\") (.contains \"abc\" \"bc\") (clojure.string/replace \"aaa\" \"a\" \"bb\") (.toUpperCase \"aBc\") (.toLowerCase \"ABC\") (.indexOf \"abc\" \"zz\")]" :portability :common}
  ;; naa9 — seed-bootstrap macro var cells
  {:suite "macros / defmacro resolve" :label "defmacro resolves as a macro var" :expected "true" :actual "(some? (resolve 'defmacro))" :portability :common}
  {:suite "macros / defmacro resolve" :label "defmacro has :macro true meta" :expected "true" :actual "(:macro (meta (resolve 'defmacro)))" :portability :common}
