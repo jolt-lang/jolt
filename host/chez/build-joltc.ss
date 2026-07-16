@@ -169,6 +169,11 @@
   ;; jolt-baked-version above, so this set! resolves).
   (put-string out (string-append "\n;; === baked version ===\n(set! jolt-baked-version "
                                  (ei-str-lit jb-version) ")\n"))
+  ;; Preload jolt.main + jolt.deps into the image so CLI dispatch (every
+  ;; run/build/path/repl command) skips the ~0.14s source-load.
+  (put-string out "\n;; === AOT jolt.main + jolt.deps ===\n")
+  (put-string out "(load-namespace \"jolt.main\")\n")
+  (put-string out "(load-namespace \"jolt.deps\")\n")
   (put-string out "\n;; === joltc launcher ===\n")
   (jb-emit-launcher out)
   (close-port out))
