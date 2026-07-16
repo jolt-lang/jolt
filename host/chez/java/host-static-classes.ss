@@ -278,13 +278,7 @@
   (hm-ord! self (remove (lambda (e) (jolt=2 e k)) (hm-ord self))))
 (define (hm-keys-ordered self) (reverse (hm-ord self)))
 (define (hm-hashmap? x) (and (jhost? x) (string=? (jhost-tag x) "hashmap")))
-(define (hm-copy-into! ht src)            ; src: a jolt map or another hashmap
-  (if (hm-hashmap? src)
-      (vector-for-each (lambda (k) (hashtable-set! ht k (hashtable-ref (hm-tbl src) k jolt-nil)))
-                       (hashtable-keys (hm-tbl src)))
-      (for-each (lambda (e) (hashtable-set! ht (jolt-nth e 0) (jolt-nth e 1)))
-                (seq->list (jolt-seq src)))))
-(define (hm-copy-into-ordered! self src)  ; like hm-copy-into!, keeping insertion order
+(define (hm-copy-into-ordered! self src)  ; copy a jolt map or hashmap, keeping insertion order
   (if (hm-hashmap? src)
       (for-each (lambda (k)
                   (hm-note-key! self k)

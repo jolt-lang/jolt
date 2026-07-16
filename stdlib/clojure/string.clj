@@ -50,10 +50,6 @@
   [s]
   (str-reverse-b s))
 
-(defn str-reverse
-  [s]
-  (str-reverse-b s))
-
 (defn split
   ([s re] (split s re 0))
   ([s re limit]

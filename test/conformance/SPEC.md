@@ -120,11 +120,12 @@ allowlisted in `known-divergences.edn`:
   `Cycle`, `PersistentVector$ChunkedSeq`, `StringSeq`, `KeySeq`/`ValSeq`, `RSeq`,
   `ArraySeq`, `SubVector`), so `(class …)` differs. `instance?
   clojure.lang.ISeq/Sequential` and all values/laziness are correct.
-- **`:chunking-model`** (`chunking-model / …` suite, jolt-mm6v) — jolt seqs are
-  unchunked: forcing one element realizes one, where JVM realizes a ~32-element
-  chunk; `mapcat`/`dedupe` realize 0 at construction where JVM forces the first
-  chunk. Strictly finer-grained laziness, decided after the chunk fast path
-  (jolt-j9dz) was made O(n).
+- **`:chunking-model`** (`chunking-model / …` suite, jolt-mm6v) — jolt chunks
+  range/vector seqs through `map`/`filter` like the JVM (forcing one element
+  realizes the whole ~32-element chunk). What remains finer-grained:
+  `mapcat`/`dedupe` realize 0 at construction, where the JVM's
+  `(apply concat …)` / `sequence` transformer force the first chunk just to
+  build the seq.
 
 ## Narrow integer types
 
@@ -151,6 +152,35 @@ What jolt does NOT model is a distinct single-float type: `(float x)` keeps
 the double VALUE, so a double below Float/MIN_VALUE stays nonzero and float
 rounding does not occur (the accepted no-single-float residue, baselined with
 `:integer-box-model`'s class residue).
+
+## Strings are codepoint-indexed
+
+jolt strings are Chez strings (`:string-model`, `string-model / …` suite):
+codepoint-indexed, no UTF-16 surrogate pairs. `count`/`seq`/`subs`/`nth`/
+`clojure.string/reverse` index whole codepoints, so an astral character is one
+element where the JVM counts two surrogate `char`s — `(count "😀")` is 1 (JVM
+2), and `subs` can never split a character in half. Values are correct per
+codepoint; only code that depends on UTF-16 unit arithmetic diverges.
+Substrate-inherent, same acceptance shape as the integer-box model. Note
+`hash` parity for strings is still JVM-exact — hashing converts to UTF-16
+units internally.
+
+Two adjacent accepted divergences: `compare-and-set!` compares with value
+equality (`:concurrency-model` — Chez immediates and reconstructed values have
+no stable reference identity), and `subvec` is an eager O(n) copy rather than
+an O(1) view (value-identical; the class residue is `:seq-type-model`, but the
+cost contract differs — don't rely on O(1) `subvec` of huge vectors).
+
+## Permissive supersets
+
+Where the JVM throws on an operation with one reasonable meaning, jolt may
+succeed (`:permissive`, `permissive / …` suites): `(ex-info msg nil)` is
+accepted, `count` works on an eduction, `keys` works on a vector of pairs,
+`(empty (first {:a 1}))` is `[]`. The reader also accepts nested `#()`
+literals, and `#=(…)` reads as inert data and never evaluates, regardless of
+`*read-eval*` (a deliberate hardening; JVM evaluates it by default). Portable
+code that runs on the JVM behaves identically on jolt; only code that RELIES
+on the JVM throwing observes a difference.
 
 ## Number operations
 
@@ -235,9 +265,6 @@ documented model divergence — nothing in the baseline is an unexplained bug:
   the rest of a realized chain (a plain seq cell on jolt, a cached LazySeq on
   the JVM), `p/lazy-seq?` on forced rest chains, and chunk-granularity
   realization counts (lazy-seq namespace).
-- **stm-refs** (`coverage.md`): the `(ref …)`/`dosync` sections of the watch
-  namespaces (add-watch/remove-watch) — refs are out of scope pending the
-  concurrency design note.
 - **parse-uuid strictness** (spec §9, parse-uuid S3): jolt is deliberately
   strict where the reference's java.util.UUID accepts non-canonical forms
   like `"0-0-0-0-0"`.

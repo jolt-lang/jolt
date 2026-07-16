@@ -263,6 +263,3 @@
       ;; nREPL middleware a library contributes (jolt.nrepl composes them over its
       ;; built-in handler) — symbols resolving to a middleware fn or a vector of them.
       :nrepl-middleware (:nrepl/middleware edn)})))
-
-(defn has-deps-edn? [project-dir]
-  (file-exists? (str project-dir "/deps.edn")))

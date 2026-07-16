@@ -3974,4 +3974,14 @@
  {:suite "macros / refer-clojure resolve" :label "refer-clojure has :macro true meta" :expected "true" :actual "(:macro (meta (resolve 'refer-clojure)))" :portability :common}
  {:suite "macros / refer-clojure resolve" :label "refer-clojure is in ns-map" :expected "true" :actual "(contains? (ns-map 'clojure.core) 'refer-clojure)" :portability :common}
   {:suite "macros / vswap! divergence" :label "vswap! is a macro on JVM, fn on jolt" :expected "false" :actual "(boolean (:macro (meta (resolve 'vswap!))))" :portability :common}
+  {:suite "string-model / codepoint strings" :label "count of astral string" :expected "1" :actual "(count \"😀\")" :portability :common}
+  {:suite "string-model / codepoint strings" :label "seq counts codepoints" :expected "2" :actual "(count (seq \"😀x\"))" :portability :common}
+  {:suite "string-model / codepoint strings" :label "subs across astral boundary" :expected "\"😀\"" :actual "(subs \"a😀b\" 1 2)" :portability :common}
+  {:suite "concurrency-model / compare-and-set!" :label "value equality where JVM uses identity" :expected "true" :actual "(compare-and-set! (atom [1]) [1] [2])" :portability :common}
+  {:suite "reader-model / read-eval" :label "#= is inert data" :expected "false" :actual "(= 3 (read-string \"#=(+ 1 2)\"))" :portability :common}
+  {:suite "reader-model / nested fn literals" :label "nested #() reads" :expected "true" :actual "(string? (str (read-string \"#(#(inc %))\")))" :portability :common}
+  {:suite "permissive / ex-info nil map" :label "ex-info accepts nil data" :expected "\"m\"" :actual "(ex-message (ex-info \"m\" nil))" :portability :common}
+  {:suite "permissive / eduction count" :label "count works on eduction" :expected "3" :actual "(count (eduction (map inc) [1 2 3]))" :portability :common}
+  {:suite "permissive / keys on pair vector" :label "keys works on vector of pairs" :expected "[:a :b]" :actual "(vec (keys [[:a 1] [:b 2]]))" :portability :common}
+  {:suite "permissive / empty MapEntry" :label "empty of a map entry" :expected "[]" :actual "(empty (first {:a 1}))" :portability :common}
 ]
