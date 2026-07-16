@@ -103,23 +103,38 @@
 (define (dce-unwrap form)
   (if (and (pair? form) (eq? (car form) 'guard) (pair? (cddr form))) (caddr form) form))
 
+;; "ns/name" of every (var-deref "ns" "nm"), (jolt-var "ns" "nm"), or
+;; (var-cell-lookup "ns" "nm") literal in a read form, inserted into ht.
+(define (dce-sexp-refs-into! form ht)
+  (cond
+    ((and (pair? form) (memq (car form) '(var-deref jolt-var var-cell-lookup))
+          (pair? (cdr form)) (string? (cadr form)) (pair? (cddr form)) (string? (caddr form)))
+     (hashtable-set! ht (string-append (cadr form) "/" (caddr form)) #t))
+    ((pair? form)
+     (dce-sexp-refs-into! (car form) ht)
+     (dce-sexp-refs-into! (cdr form) ht))))
+
+;; Deprecated: kept for backward compat with tests that call it directly.
+;; Prefer dce-sexp-refs-into! with a hash set.
 (define (dce-sexp-refs form acc)
   (cond
-    ((and (pair? form) (memq (car form) '(var-deref jolt-var))
+    ((and (pair? form) (memq (car form) '(var-deref jolt-var var-cell-lookup))
           (pair? (cdr form)) (string? (cadr form)) (pair? (cddr form)) (string? (caddr form)))
      (cons (string-append (cadr form) "/" (caddr form)) acc))
     ((pair? form) (dce-sexp-refs (cdr form) (dce-sexp-refs (car form) acc)))
     (else acc)))
 
-;; All "ns/name" refs a text scan of an emitted Scheme string carries — read every
-;; top-level form and fold dce-sexp-refs. Mirrors how dce-blob-records scans the
-;; minted prelude; run over emitted app strings so a literal (var-deref "ns" "nm")
-;; spliced into an emitted form (with no :var IR node) still roots its target.
+;; All "ns/name" refs a text scan of an emitted Scheme string carries, deduped via
+;; hash set. Read every top-level form and fold dce-sexp-refs-into!.
 (define (dce-sexp-refs-str str)
-  (let ((p (open-input-string str)))
-    (let loop ((acc '()))
+  (let ((p (open-input-string str))
+        (ht (make-hashtable string-hash string=?)))
+    (let loop ()
       (let ((form (read p)))
-        (if (eof-object? form) acc (loop (dce-sexp-refs form acc)))))))
+        (unless (eof-object? form)
+          (dce-sexp-refs-into! form ht)
+          (loop))))
+    (vector->list (hashtable-keys ht))))
 
 ;; Refs an app record roots: the IR walk (every :var/:the-var node) UNIONED with the
 ;; text scan of its emitted Scheme. The IR walk is structural truth for compiled
@@ -227,19 +242,24 @@
 
 ;; Scan the KEPT records: does any resolve a var at runtime (bail), and does any need
 ;; the compiler? Returns (values bail? bail-why needs-compiler?). bail-why is up to 6
-;; (def . bail-ref) pairs for the diagnostic.
+;; (def . bail-ref) pairs for the diagnostic. Uses hash sets for O(1) membership
+;; instead of O(n*m) linear scans over the bail/compile lists.
 (define (dce-bail-scan records reached)
-  (let ((bail #f) (why '()) (needs-compiler #f))
+  (let ((bail #f) (why '()) (needs-compiler #f)
+        (bail-ht (make-hashtable string-hash string=?))
+        (compile-ht (make-hashtable string-hash string=?)))
+    (for-each (lambda (b) (hashtable-set! bail-ht b #t)) dce-bail-refs)
+    (for-each (lambda (c) (hashtable-set! compile-ht c #t)) dce-compile-refs)
     (for-each
       (lambda (r)
         (when (dce-rec-reached? r reached)
-          (for-each (lambda (b)
-                      (when (member b (dce-rec-refs r))
+          (for-each (lambda (ref)
+                      (when (hashtable-ref bail-ht ref #f)
                         (set! bail #t)
                         (when (< (length why) 6)
-                          (set! why (cons (cons (or (dce-rec-fqn r) "<form>") b) why)))))
-                    dce-bail-refs)
-          (when (ormap (lambda (c) (and (member c (dce-rec-refs r)) #t)) dce-compile-refs)
+                          (set! why (cons (cons (or (dce-rec-fqn r) "<form>") ref) why)))))
+                    (dce-rec-refs r))
+          (when (ormap (lambda (ref) (and (hashtable-ref compile-ht ref #f) #t)) (dce-rec-refs r))
             (set! needs-compiler #t))))
       records)
     (values bail (reverse why) needs-compiler)))

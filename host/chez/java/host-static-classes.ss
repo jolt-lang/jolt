@@ -1468,8 +1468,6 @@
               #f 'pass))
         'pass)))
 ;; a reader-conditional value reports its JVM class, not its tagged-map backing.
-(define kw-rc-jtype (keyword "jolt" "type"))
-(define kw-rc (keyword "jolt" "reader-conditional"))
 (define (reader-conditional-value? x)
   (jolt-reader-conditional-record? x))
 (register-class-arm! reader-conditional-value? (lambda (x) "clojure.lang.ReaderConditional"))

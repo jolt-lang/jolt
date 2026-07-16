@@ -7,14 +7,7 @@
 ;;
 ;;   chez --script host/chez/run-wp.ss
 (import (chezscheme))
-(load "host/chez/rt.ss")
-(set-chez-ns! "clojure.core")
-(load "host/chez/seed/prelude.ss")
-(load "host/chez/post-prelude.ss")
-(set-chez-ns! "user")
-(load "host/chez/host-contract.ss")
-(load "host/chez/seed/image.ss")
-(load "host/chez/compile-eval.ss")
+(load "host/chez/run-gate-harness.ss")
 
 (define analyze            (var-deref "jolt.analyzer" "analyze"))
 (define run-inference      (var-deref "jolt.passes.types" "run-inference"))
@@ -26,19 +19,6 @@
 (define pr-str             (var-deref "clojure.core" "pr-str"))
 
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
-(define (contains-sub? s sub)
-  (let ((n (string-length s)) (m (string-length sub)))
-    (let loop ((i 0))
-      (cond ((> (+ i m) n) #f)
-            ((string=? (substring s i (+ i m)) sub) #t)
-            (else (loop (+ i 1)))))))
-
-(define fails 0) (define total 0)
-(define (check label actual expected)
-  (set! total (+ total 1))
-  (unless (equal? actual expected)
-    (set! fails (+ fails 1))
-    (printf "  FAIL ~a: got ~s expected ~s\n" label actual expected)))
 
 ;; Node record shape (left/right untagged), like binary-trees.
 (set-record-shapes!
@@ -58,21 +38,21 @@
 
 ;; check-tree's param `node` should be seeded with a struct carrying the Node type
 (define seed (param-seeds-for "user/check-tree"))
-(check "check-tree has a param seed" (jolt-truthy? seed) #t)
+(gate-check "check-tree has a param seed" (jolt-truthy? seed) #t)
 (when (jolt-truthy? seed)
-  (check "node seeded as user.Node struct"
-         (contains-sub? (pr-str seed) "user.Node") #t))
+  (gate-check "node seeded as user.Node struct"
+         (gate-sub? (pr-str seed) "user.Node") #t))
 
 ;; reinfer-def then must mark the (:left node) read site for the bare-index path
 (define marked (reinfer-def ct seed))
-(check "read site marked :hint :struct" (contains-sub? (pr-str marked) ":hint :struct") #t)
+(gate-check "read site marked :hint :struct" (gate-sub? (pr-str marked) ":hint :struct") #t)
 
 ;; a fn used only via value position (escape) must NOT be specialized — unknown
 ;; callers make a concrete seed unsound.
 (define ev (anode "(def use-it (fn [f] (f 1)))"))
 (define ec (anode "(def caller (fn [] (use-it check-tree)))"))  ; check-tree escapes
 (wp-infer! (jolt-vector mt ct rn ev ec))
-(check "escaped fn keeps no param seed" (jolt-truthy? (param-seeds-for "user/check-tree")) #f)
+(gate-check "escaped fn keeps no param seed" (jolt-truthy? (param-seeds-for "user/check-tree")) #f)
 
 ;; a self-recursive fn that recurses on a NILABLE field (an untagged record field
 ;; is :any, so the child can be nil) must NOT be specialized — the recursion can
@@ -80,7 +60,7 @@
 (define ctr (anode "(def walk (fn [node] (let [l (:left node)] (if (nil? l) 1 (walk l)))))"))
 (define rnr (anode "(def run2 (fn [d] (walk (make-tree d))))"))
 (wp-infer! (jolt-vector mt ctr rnr))
-(check "self-recursive nilable param not specialized"
+(gate-check "self-recursive nilable param not specialized"
        (jolt-truthy? (param-seeds-for "user/walk")) #f)
 
 ;; a self-recursive fn that recurses passing the SAME record type (make-tree always
@@ -88,7 +68,7 @@
 (define mtt (anode "(def grow (fn [n acc] (if (zero? n) acc (grow (dec n) (->Node acc acc)))))"))
 (define gcl (anode "(def gcaller (fn [] (grow 5 (->Node nil nil))))"))
 (wp-infer! (jolt-vector mtt gcl))
-(check "self-recursive same-type param keeps its seed"
+(gate-check "self-recursive same-type param keeps its seed"
        (jolt-truthy? (param-seeds-for "user/grow")) #t)
 
 ;; a recursive fn that threads a param STRAIGHT THROUGH its recursion (same arg at
@@ -100,9 +80,7 @@
 (define crec  (anode "(def crec (fn [hs d] (if (< d 0) nil (do (cwalk hs) (crec hs (- d 1))))))"))
 (define cdrv  (anode "(def cdrive (fn [] (crec [(->Node nil nil) (->Node nil nil)] 5)))"))
 (wp-infer! (jolt-vector cwalk crec cdrv))
-(check "recursion pass-through param keeps its vec element type"
-       (contains-sub? (pr-str (param-seeds-for "user/crec")) "user.Node") #t)
+(gate-check "recursion pass-through param keeps its vec element type"
+       (gate-sub? (pr-str (param-seeds-for "user/crec")) "user.Node") #t)
 
-(if (= fails 0)
-    (begin (printf "wp gate: ~a/~a passed\n" total total) (exit 0))
-    (begin (printf "wp gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
+(gate-summary "wp")

@@ -5,14 +5,7 @@
 ;;
 ;;   chez --script host/chez/run-inline-body.ss
 (import (chezscheme))
-(load "host/chez/rt.ss")
-(set-chez-ns! "clojure.core")
-(load "host/chez/seed/prelude.ss")
-(load "host/chez/post-prelude.ss")
-(set-chez-ns! "user")
-(load "host/chez/host-contract.ss")
-(load "host/chez/seed/image.ss")
-(load "host/chez/compile-eval.ss")
+(load "host/chez/run-gate-harness.ss")
 
 (define set-record-shapes! (var-deref "jolt.passes.types" "set-record-shapes!"))
 (define set-protocol-methods! (var-deref "jolt.passes.types" "set-protocol-methods!"))
@@ -20,17 +13,6 @@
 (define emit    (var-deref "jolt.backend-scheme" "emit"))
 (define analyze (var-deref "jolt.analyzer" "analyze"))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
-(define (has-sub? s sub)
-  (let ((n (string-length s)) (m (string-length sub)))
-    (let loop ((i 0)) (cond ((> (+ i m) n) #f)
-                            ((string=? (substring s i (+ i m)) sub) #t)
-                            (else (loop (+ i 1)))))))
-(define fails 0) (define total 0)
-(define (check label actual expected)
-  (set! total (+ total 1))
-  (unless (equal? actual expected)
-    (set! fails (+ fails 1))
-    (printf "  FAIL ~a: got ~s expected ~s\n" label actual expected)))
 
 ;; Populate runtime tables with a protocol and a defrecord with inline method impl.
 (evals "(defprotocol Shape (area [s]))")
@@ -53,8 +35,8 @@
   ;; reinfer pass should have seeded the receiver param so field reads emit
   ;; jrec-field-at.  Not checking jolt-get absence — the :do also contains
   ;; defs that use jolt-get for other purposes.
-  (check "inline method body field read uses direct accessor"
-         (has-sub? emitted "jrec1-f0") #t))
+  (gate-check "inline method body field read uses direct accessor"
+         (gate-sub? emitted "jrec1-f0") #t))
 
 ;; Also check that a deftype (non-record protocol impl) does NOT break anything.
 ;; deftype bodies use register-method, not register-inline-method.
@@ -65,9 +47,7 @@
        (_ (set-record-shapes! shapes2))
        (passed2 (run-passes ir2 (make-analyze-ctx "user")))
        (emitted2 (emit passed2)))
-  (check "deftype field read uses direct accessor"
-         (has-sub? emitted2 "jrec1-f0") #t))
+  (gate-check "deftype field read uses direct accessor"
+         (gate-sub? emitted2 "jrec1-f0") #t))
 
-(if (= fails 0)
-    (begin (printf "inline-body gate: ~a/~a passed\n" total total) (exit 0))
-    (begin (printf "inline-body gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
+(gate-summary "inline-body")

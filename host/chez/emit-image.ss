@@ -56,8 +56,31 @@
 ;; byte-fixpoint, and a built app should carry no per-call trace overhead.
 (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
   (when (procedure? stf) (stf #f)))
+;; --- whole-program analysis cache for --opt builds ----------------------------
+;; bld-wp-infer! populates this; ei-compile-form checks it to skip re-analysis.
+(define ei-cached-ir (make-hashtable string-hash string=?))
+(define ei-cached-ir-idx (make-hashtable string-hash string=?))
+
+(define (ei-set-cached! ns forms)
+  (hashtable-set! ei-cached-ir ns forms)
+  (hashtable-set! ei-cached-ir-idx ns 0))
+
+(define (ei-next-cached ns)
+  (let ((idx (hashtable-ref ei-cached-ir-idx ns #f))
+        (forms (hashtable-ref ei-cached-ir ns #f)))
+    (if (and idx forms (< idx (length forms)))
+        (begin (hashtable-set! ei-cached-ir-idx ns (+ idx 1))
+               (list-ref forms idx))
+        #f)))
+
+(define (ei-clear-cached!)
+  (hashtable-clear! ei-cached-ir)
+  (hashtable-clear! ei-cached-ir-idx))
+
 (define (ei-compile-form ctx f optimize?)
-  (let ((ir (jolt-ce-analyze ctx f)))
+  (let* ((ns (chez-actx-cns ctx))
+         (cached (and optimize? (ei-next-cached ns)))
+         (ir (or cached (jolt-ce-analyze ctx f))))
     (jolt-ce-emit-top (if optimize? (jolt-ce-run-passes ir ctx) ir))))
 
 ;; The emitted `(def-var! …)(mark-macro! …)` pair for a defmacro, guard-wrapped
@@ -135,7 +158,8 @@
     (ei-for-each-form ns-name src
       (lambda (ns kind nm f)
         (let* ((ctx (make-analyze-ctx ns))
-               (ir (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx))
+               (cached (ei-next-cached ns))
+               (ir (jolt-ce-run-passes (or cached (jolt-ce-analyze ctx f)) ctx))
                (str (if (eq? kind 'macro)
                         (ei-macro-string ns nm (jolt-ce-emit-top ir) #f)
                         (jolt-ce-emit-top ir)))

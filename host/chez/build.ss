@@ -188,17 +188,24 @@
     (compile-eval . "(load \"host/chez/compile-eval.ss\")")))
 
 ;; A single-line top-level `(load "PATH")` -> PATH, else #f.
+;; Bounded: each quote scan checks end-of-string; a missing quote raises
+;; a clear build error naming the offending line instead of blowing up with
+;; an opaque string-ref index-out-of-range.
 (define (bld-load-path line)
-  (let ((s (let trim ((i 0))
-             (if (and (< i (string-length line))
-                      (memv (string-ref line i) '(#\space #\tab)))
-                 (trim (+ i 1))
-                 (substring line i (string-length line))))))
+  (let ((s (let trim ((i 0) (n (string-length line)))
+             (if (and (< i n) (memv (string-ref line i) '(#\space #\tab)))
+                 (trim (+ i 1) n)
+                 (if (< i n) (substring line i n) "")))))
     (and (>= (string-length s) 7)
          (string=? (substring s 0 6) "(load ")
-         (let* ((q1 (let scan ((i 6)) (if (char=? (string-ref s i) #\") i (scan (+ i 1)))))
-                (q2 (let scan ((i (+ q1 1))) (if (char=? (string-ref s i) #\") i (scan (+ i 1))))))
-           (substring s (+ q1 1) q2)))))
+         (let ((end (string-length s)))
+           (let* ((q1 (let scan ((i 6))
+                        (if (>= i end) (die 'build-app "unterminated load quote" (list line))
+                            (if (char=? (string-ref s i) #\") i (scan (+ i 1))))))
+                  (q2 (let scan ((i (+ q1 1)))
+                        (if (>= i end) (die 'build-app "unterminated second load quote" (list line))
+                            (if (char=? (string-ref s i) #\") i (scan (+ i 1)))))))
+             (substring s (+ q1 1) q2))))))
 
 ;; runtime source for PATH: from the binary's embedded store if present (a
 ;; self-contained joltc building an app, with no jolt checkout on disk), else read
@@ -302,7 +309,8 @@
     ;; live) so a devirt site can resolve the clone regardless of emit order.
     (jolt-reset-clone-prepass!)
     (for-each (lambda (p) (jolt-contagion-prepass! (apply jolt-vector (cdr p)) (car p))) ns-nodes)
-    (jolt-contagion-prepass-done!)))
+    (jolt-contagion-prepass-done!)
+    (reverse ns-nodes)))
 
 ;; Strings emitted before each app ns's forms, replaying what the source loader
 ;; does per file: (1) set chez-current-ns so runtime ns-sensitive setup forms
@@ -709,7 +717,9 @@
                 ;; which keeps var-cache OFF (emit-image.ss). ON in both modes.
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #t)
                 ;; whole-program param-type fixpoint before per-form emit
-                (when (string=? mode "optimized") (bld-wp-infer! ordered)))
+                (when (string=? mode "optimized")
+                  (let ((wp-cached (bld-wp-infer! ordered)))
+                    (for-each (lambda (p) (ei-set-cached! (car p) (cdr p))) wp-cached))))
               (lambda ()
                 ;; A #tag data-reader literal must compile in the binary the same as
                 ;; it loads interpreted — apply the reader rewrite to each emitted
@@ -751,7 +761,8 @@
                 ;; recorded for THIS one. (bld-wp-infer!'s record/protocol
                 ;; seeds self-heal: the next build replaces them wholesale.)
                 ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
-                ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)))))
+                ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
+                (ei-clear-cached!)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))
@@ -920,27 +931,36 @@
 ;; build-joltc.ss (optimize-level 2, fasl-compressed #t for release/optimized).
 ;; "release" keeps inspector + proc-source ON so Clojure backtraces (via
 ;; inspect/object walking the continuation) survive. "optimized" turns them OFF
-;; for max speed. "dev" leaves Chez defaults (optimize-level 2, inspector ON,
-;; proc-source ON, fasl uncompressed — full debuggability).
+;; for max speed. "dev" has no entry (Chez defaults: optimize-level 2, inspector
+;; ON, proc-source ON, fasl uncompressed — full debuggability). Single table
+;; referenced by both the prologue-string builder and the parameterize block.
+;;
+;; optimize-level 2, not 3: level 3 is Chez's UNSAFE mode — fx/fl/car/vector
+;; ops skip their type checks, and jolt's error semantics depend on those
+;; raising ((take nil coll) must throw, not walk off a nil count). Level 2
+;; keeps every check with nearly all of the optimization.
+(define bld-chez-params
+  `(("optimized" (optimize-level 2)
+                 (generate-inspector-information #f)
+                 (generate-procedure-source-information #f)
+                 (fasl-compressed #t))
+    ("release"   (optimize-level 2)
+                 (generate-inspector-information #t)
+                 (generate-procedure-source-information #t)
+                 (fasl-compressed #t))))
+
 (define (bld-chez-param-forms mode)
-  ;; optimize-level 2, not 3: level 3 is Chez's UNSAFE mode — fx/fl/car/vector
-  ;; ops skip their type checks, and jolt's error semantics depend on those
-  ;; raising ((take nil coll) must throw, not walk off a nil count). Level 2
-  ;; keeps every check with nearly all of the optimization.
-  (cond
-    ((string=? mode "optimized")
-     (string-append
-       "(optimize-level 2)\n"
-       "(generate-inspector-information #f)\n"
-       "(generate-procedure-source-information #f)\n"
-       "(fasl-compressed #t)\n"))
-    ((string=? mode "release")
-     (string-append
-       "(optimize-level 2)\n"
-       "(generate-inspector-information #t)\n"
-       "(generate-procedure-source-information #t)\n"
-       "(fasl-compressed #t)\n"))
-    (else "")))
+  (let ((params (assoc mode bld-chez-params)))
+    (if params
+        (fold-left
+          (lambda (s p) (string-append s "(" (symbol->string (car p)) " "
+                                      (let ((v (cadr p)))
+                                        (cond ((boolean? v) (if v "#t" "#f"))
+                                              ((number? v) (number->string v))
+                                              (else (format "~s" v))))
+                                      ")\n"))
+          "" (cdr params))
+        "")))
 
 (define (build-self-contained entry-ns out-path mode builddir flat-ss flat-so boot native-link petite-only?)
   (let ((petite (string-append builddir "/petite.boot"))
@@ -949,17 +969,15 @@
     (unless petite-only? (jolt-spill-embedded! "csv/scheme.boot" scheme))
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
     (bld-prepend-prologue! flat-ss)
-    (cond
-      ((string=? mode "optimized")
-       (parameterize ((optimize-level 2) (generate-inspector-information #f)
-                       (generate-procedure-source-information #f) (fasl-compressed #t))
-         (compile-file flat-ss flat-so)))
-      ((string=? mode "release")
-       (parameterize ((optimize-level 2) (generate-inspector-information #t)
-                       (generate-procedure-source-information #t) (fasl-compressed #t))
-         (compile-file flat-ss flat-so)))
-      (else
-       (compile-file flat-ss flat-so)))
+    (let ((params (assoc mode bld-chez-params)))
+      (if params
+          (let ((pv (lambda (k) (cadr (assq k (cdr params))))))
+            (parameterize ((optimize-level (pv 'optimize-level))
+                           (generate-inspector-information (pv 'generate-inspector-information))
+                           (generate-procedure-source-information (pv 'generate-procedure-source-information))
+                           (fasl-compressed (pv 'fasl-compressed)))
+              (compile-file flat-ss flat-so)))
+          (compile-file flat-ss flat-so)))
     ;; A compiler-dropped binary (no runtime eval) boots from petite alone —
     ;; scheme.boot is the Chez compiler, ~5 MB of heap and ~1 MB of binary it
     ;; would never call. Chez's interpreter (petite) can't create a

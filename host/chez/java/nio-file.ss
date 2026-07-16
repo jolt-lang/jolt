@@ -595,11 +595,6 @@
                          ((string=? (car os) nm) (+ acc (car bs)))
                          (else (loop (cdr os) (cdr bs)))))))
              0 (seq->list (jolt-seq s))))
-(define (posix-str->mode str)                  ; "rwxr-xr-x" -> mode int
-  (let loop ((i 0) (bs posix-bits) (acc 0))
-    (if (or (>= i (string-length str)) (null? bs)) acc
-        (loop (+ i 1) (cdr bs)
-              (if (memv (string-ref str i) '(#\r #\w #\x #\s #\t)) (+ acc (car bs)) acc)))))
 (define (posix-set->str s)
   (let ((mode (posix-set->mode s)))
     (list->string
