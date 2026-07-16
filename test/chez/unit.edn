@@ -790,4 +790,13 @@
  ;; naa9 — vswap! is a fn on jolt, macro on JVM
  {:suite "naa9-vswap-fn" :expr "(boolean (:macro (meta (resolve 'vswap!))))" :expected "false"}
  {:suite "naa9-vswap-fn" :expr "(some? (resolve 'vswap!))" :expected "true"}
+  ;; Stage D — binding does not auto-deref var-cell
+  {:suite "binding-no-autoderef" :expr "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :expected "clojure.lang.Var"}
+  ;; Stage B — getAbsoluteFile/getCanonicalFile share getAbsolutePath's JOLT_PWD base
+  {:suite "io-file-base" :expr "(= (.getAbsolutePath (java.io.File. \"rel.txt\")) (.getPath (.getAbsoluteFile (java.io.File. \"rel.txt\"))))" :expected "true"}
+  {:suite "io-file-base" :expr "(.exists (.getCanonicalFile (java.io.File. \".\")))" :expected "true"}
+  ;; Stage C — getenv single-key matches map lookup
+  {:suite "getenv" :expr "(= (get (System/getenv) \"HOME\") (System/getenv \"HOME\"))" :expected "true"}
+  ;; Stage C — setProperty visible in getProperties
+  {:suite "sysprops" :expr "(do (System/setProperty \"zz.k\" \"v\") (get (System/getProperties) \"zz.k\"))" :expected "v"}
 ]

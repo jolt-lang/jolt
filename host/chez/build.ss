@@ -100,7 +100,12 @@
         (let ((p (open-output-file f 'replace)))
           (put-string p cmd)
           (close-port p))
-        (string-append "sh " f " && rm -f " f))
+        (let ((qf (string-append "'"
+                    (apply string-append
+                      (map (lambda (c) (if (char=? c #\') "'\\''" (string c)))
+                           (string->list f)))
+                    "'")))
+          (string-append "sh " qf " && rm -f " qf)))
       cmd))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).

@@ -23,6 +23,7 @@
 (define set-check-mode!    (var-deref "jolt.passes.types" "set-check-mode!"))
 (define run-inference      (var-deref "jolt.passes.types" "run-inference"))
 (define take-diags!        (var-deref "jolt.passes.types" "take-diags!"))
+(define reinfer-def        (var-deref "jolt.passes.types" "reinfer-def"))
 
 ;; analyze a source string to its IR node (fresh ctx, ns "user", no passes).
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
@@ -73,6 +74,21 @@
                                 (keyword #f "type")   "user.P")))
 (gate-check "ctor result struct w/ shapes" (diags "(+ (->P 1) 1)" #f) 1)
 (set-record-shapes! (jolt-hash-map))
+
+;; --- reinfer-def honors check-mode -----------------------------------------
+;; When check-mode is on and a def is reinferred with WP seeds, the diagnostics
+;; must be reported (they were silently lost before the fix).
+(set-check-mode! #t #f)
+(let* ((node (anode "(defn f [x] (+ x :k))"))
+       (ptmap (jolt-hash-map "x" (keyword #f "any"))))
+  (reinfer-def node ptmap)
+  (gate-check "reinfer-def check-mode reports diags" (jolt-count (take-diags!)) 1)
+  (gate-check "reinfer-def diags drained after take" (jolt-count (take-diags!)) 0))
+(set-check-mode! #f #f)
+(let* ((node (anode "(defn f [x] (+ x :k))"))
+       (ptmap (jolt-hash-map "x" (keyword #f "any"))))
+  (reinfer-def node ptmap)
+  (gate-check "reinfer-def no diags when check-mode off" (jolt-count (take-diags!)) 0))
 
 ;; --- the opt-path checker: run-inference emits, take-diags! drains -----------
 ;; (set-check-mode! on strict?) arms checking during the next run-inference; the
