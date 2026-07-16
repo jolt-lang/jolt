@@ -7,10 +7,12 @@
   transitive one (a top-level pin wins). Git deps reuse an existing
   tools.gitlibs checkout ($GITLIBS / ~/.gitlibs) when the JVM toolchain already
   fetched them, else clone into a sha-immutable cache ($JOLT_GITLIBS, else
-  ~/.jolt/gitlibs) shared across projects. Maven jars live in the standard
-  local repository (~/.m2/repository, MAVEN_OPTS honored) shared with the JVM
-  toolchain in both directions. Resolution shells out to `git`/`curl`/`unzip`
-  through jolt.host/sh; nothing here touches the JVM."
+  ~/.jolt/gitlibs, or a jolt/ subdir of $GITLIBS) shared across projects.
+  Maven jars live in the standard local repository (~/.m2/repository;
+  :mvn/local-repo in deps.edn relocates it like tools.deps, JOLT_LOCAL_REPO
+  overrides from the environment) shared with the JVM toolchain in both
+  directions. Resolution shells out to `git`/`curl`/`unzip` through
+  jolt.host/sh; nothing here touches the JVM."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -30,8 +32,13 @@
   (if (str/starts-with? p "/") p (str dir "/" p)))
 
 ;; --- git cache --------------------------------------------------------------
+;; jolt's own clone cache. $GITLIBS (the tools.gitlibs location knob) is
+;; respected for WHERE the cache lives — under a jolt/ subdir so tools.gitlibs'
+;; own _repos/ and libs/ namespaces are never written to. JOLT_GITLIBS pins an
+;; exact directory.
 (defn- gitlibs-dir []
   (or (getenv "JOLT_GITLIBS")
+      (when-let [g (getenv "GITLIBS")] (str g "/jolt"))
       (str (or (getenv "HOME") ".") "/.jolt/gitlibs")))
 
 (defn- alnum? [c]
@@ -86,44 +93,24 @@
 ;; (~/.m2/repository), so they are shared with JVM Clojure/tools.deps in both
 ;; directions: an artifact clj already fetched is reused without a download, and
 ;; one jolt fetches is there for clj. The jolt-only source extraction sits in a
-;; "<artifact>-<version>.jar.jolt/" directory beside the jar. MAVEN_OPTS is
-;; honored the way the JVM toolchain honors it (parsed as Java -D properties):
-;; maven.repo.local points at the repository directly, and user.home relocates
-;; ~/.m2 — the hermetic-build idiom. Setting JOLT_MVNLIBS opts out of sharing
-;; entirely: the legacy self-contained layout under it, jar not kept.
+;; "<artifact>-<version>.jar.jolt/" directory beside the jar. The repository
+;; location is configured the way tools.deps configures it — the :mvn/local-repo
+;; top key of deps.edn (also accepted in an add-deps map); anyone already using
+;; it gets the same behavior for free. JOLT_LOCAL_REPO overrides it from the
+;; environment as a jolt-specific convenience. Setting JOLT_MVNLIBS opts out of
+;; sharing entirely: the legacy self-contained layout under it, jar not kept.
 
-(defn parse-jvm-opts
-  "Parse a JVM options string (MAVEN_OPTS / JAVA_OPTS / JDK_JAVA_OPTIONS shape)
-  into a {property value} map from its -D entries, Java-style:
-  whitespace-separated tokens, -Dkey=value binds, -Dkey with no '=' binds \"\",
-  the last occurrence of a key wins, and non-property tokens (-Xmx…, flags)
-  are ignored. General-purpose: not tied to any particular variable."
-  [s]
-  (into {}
-        (keep (fn [tok]
-                (when (and (str/starts-with? tok "-D") (> (count tok) 2))
-                  (let [kv (subs tok 2)
-                        i (str/index-of kv "=")]
-                    (if i [(subs kv 0 i) (subs kv (inc i))] [kv ""])))))
-        (str/split (or s "") #"\s+")))
-
-(defn jvm-opts-props
-  "The -D properties carried by an environment variable of JVM-options shape,
-  as a map — (jvm-opts-props \"MAVEN_OPTS\"), (jvm-opts-props \"JAVA_OPTS\"), …
-  Empty map when the variable is unset."
-  [env-name]
-  (parse-jvm-opts (getenv env-name)))
-
-(defn- maven-props [] (jvm-opts-props "MAVEN_OPTS"))
+(def ^:private ^:dynamic *mvn-local-repo*
+  "The :mvn/local-repo of the resolution in progress (bound by resolve-project /
+  add-deps from their deps.edn / deps map), nil for the default." nil)
 
 (defn- m2-repo-dir
-  "The local Maven repository dir, resolved like the JVM toolchain:
-  maven.repo.local (MAVEN_OPTS) wins, else .m2/repository under user.home
-  (MAVEN_OPTS), else under $HOME."
-  ([] (m2-repo-dir (maven-props) (getenv "HOME")))
-  ([props home]
-   (or (get props "maven.repo.local")
-       (str (or (get props "user.home") home ".") "/.m2/repository"))))
+  "The local Maven repository dir, resolved like tools.deps: JOLT_LOCAL_REPO
+  (env, jolt-specific convenience) wins, then :mvn/local-repo, then
+  ~/.m2/repository."
+  ([] (m2-repo-dir (getenv "JOLT_LOCAL_REPO") *mvn-local-repo* (getenv "HOME")))
+  ([env-override cfg home]
+   (or env-override cfg (str (or home ".") "/.m2/repository"))))
 
 (def ^:private mvn-repos
   ["https://repo.clojars.org" "https://repo1.maven.org/maven2"])
@@ -322,7 +309,10 @@
          project-paths (concat (or (:paths edn) ["src"]) extra-paths)
          project-roots (map #(abspath project-dir %) project-paths)
          all-deps (merge (:deps edn) extra-deps)
-         {dep-roots :roots dep-natives :natives} (resolve-deps all-deps project-dir)]
+         {dep-roots :roots dep-natives :natives}
+         (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
+                                      (abspath project-dir r))]
+           (resolve-deps all-deps project-dir))]
      ;; reconcile: the project's own roots/natives + every dep's, deduped once.
      {:roots (dedup-by identity (concat project-roots dep-roots))
       :main-opts main-opts
@@ -349,7 +339,9 @@
     (require '[clojure.data.json :as json])
 
   Coordinates: :git/url + :git/sha, :local/root (resolved against JOLT_PWD),
-  and :mvn/version (JAR source fetched from Clojars, then Central). New roots
+  and :mvn/version (JAR source fetched from Clojars, then Central). A top-level
+  :mvn/local-repo in the map relocates the Maven repository for this call,
+  like the deps.edn key. New roots
   are appended AFTER the current roots, so an added dep can never shadow a
   namespace the runtime already resolves. Returns the vector of roots added
   (empty when everything was already on the roots).
@@ -359,8 +351,12 @@
   caller can load via jolt.ffi. The second arity accepts an options map for
   babashka call-shape compatibility; no options are currently honored."
   ([deps-map] (add-deps deps-map nil))
-  ([{:keys [deps]} _opts]
-   (let [{:keys [roots natives]} (resolve-deps deps (or (jolt.host/getenv "JOLT_PWD") "."))
+  ([{:keys [deps] :as m} _opts]
+   (let [base (or (jolt.host/getenv "JOLT_PWD") ".")
+         {:keys [roots natives]}
+         (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo m)]
+                                      (abspath base r))]
+           (resolve-deps deps base))
          current (vec (jolt.host/source-roots))
          added (vec (remove (set current) (dedup-by identity roots)))]
      (when (seq added)
