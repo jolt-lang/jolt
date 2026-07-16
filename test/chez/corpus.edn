@@ -3982,4 +3982,7 @@
   {:suite "resolution / unresolved symbol" :label "unresolved bare symbol throws at compile time" :expected ":throws" :actual "(try (eval 'undefined-xyz-jolt-mw442) :no-throw (catch :default e :throws))" :portability :common}
   {:suite "resolution / unresolved symbol" :label "unresolved in operator position throws" :expected ":throws" :actual "(try (eval '(undefined-fn-jolt-mw442 1 2)) :no-throw (catch :default e :throws))" :portability :common}
   {:suite "resolution / declare forward ref" :label "declared forward ref still works" :expected "42" :actual "(do (declare forward-ref-jolt-mw442) (defn forward-ref-jolt-mw442 [] 42) (forward-ref-jolt-mw442))" :portability :common}
+  {:suite "for / :while basic" :label ":while stops iteration" :expected "(0 1 2 3 4)" :actual "(for [x (range 10) :while (< x 5)] x)" :portability :common}
+  {:suite "for / :while sees :let" :label ":while can see preceding :let bindings" :expected "(0 1 2 3 4)" :actual "(for [x (range 10) :let [y (* x 2)] :while (< y 10)] x)" :portability :common}
+  {:suite "for / :while ordering" :label ":while runs after :when in source order" :expected "(1 3)" :actual "(for [x (range 10) :when (odd? x) :while (< x 5)] x)" :portability :common}
 ]

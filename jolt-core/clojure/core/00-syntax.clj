@@ -595,10 +595,8 @@
 ;; for: list comprehension, desugared to nested map/mapcat over the binding colls.
 ;; Per binding group: :when wraps the inner form in (if test (list inner) []) so
 ;; mapcat drops it when false; :let wraps it in a let*; :while wraps the coll in
-;; take-while. The last group with no modifiers is a plain map (no flatten needed).
-;; Single body expr. The body uses only kernel/seed fns so it runs at
-;; analyzer-build time. `fn` (not fn*) carries the binding so destructuring forms
-;; work.
+;; take-while after :let bindings have been processed so the predicate can see
+;; them. The last group with no modifiers is a plain map.
 (defmacro for [bindings body]
   (let [scan (fn scan [bvec i bind coll mods]
                (if (and (< i (count bvec)) (keyword? (nth bvec i)))
@@ -607,7 +605,7 @@
                    (cond
                      (= k :when)  (scan bvec (+ i 2) bind coll (conj mods [:when v]))
                      (= k :let)   (scan bvec (+ i 2) bind coll (conj mods [:let v]))
-                     (= k :while) (scan bvec (+ i 2) bind `(take-while (fn [~bind] ~v) ~coll) mods)
+                     (= k :while) (scan bvec (+ i 2) bind coll (conj mods [:while v]))
                      :else        (scan bvec (inc i) bind coll mods)))
                  [i bind coll mods]))
         parse-groups (fn parse-groups [bvec i groups]
@@ -616,10 +614,6 @@
                          (let [r (scan bvec (+ i 2) (nth bvec i) (nth bvec (inc i)) [])]
                            (parse-groups bvec (nth r 0)
                                          (conj groups [(nth r 1) (nth r 2) (nth r 3)])))))
-        ;; Apply the group's modifiers around a contribution that is ALREADY a seq
-        ;; (a (list body) for the last group, an inner comprehension otherwise), so
-        ;; :when just returns it or [] — no extra (list ...) that mapcat couldn't
-        ;; flatten. :let binds around it; mods apply outer-to-inner (left to right).
         wrap-mods (fn wrap-mods [mods inner]
                     (if (empty? mods)
                       inner
@@ -627,22 +621,37 @@
                             sub (wrap-mods (rest mods) inner)]
                         (if (= (first m) :when)
                           `(if ~(nth m 1) ~sub [])
-                          ;; `let` (not let*) so a :let binding may itself
-                          ;; destructure — (for [x xs :let [{:keys [y]} x]] …).
                           `(let ~(nth m 1) ~sub)))))
+        ;; separate :while from :let/:when — no reduce / filter / loop —
+        ;; just plain recursion on the mods vector
+        split-mods (fn split-mods [ms ws lets bs]
+                     (if (empty? ms)
+                       [ws lets bs]
+                       (let [m (first ms)
+                             k (first m)]
+                         (cond
+                           (= k :while) (split-mods (rest ms) (conj ws (nth m 1)) lets bs)
+                           (= k :let)   (split-mods (rest ms) ws (conj lets (nth m 1)) (conj bs m))
+                           :else        (split-mods (rest ms) ws lets (conj bs m))))))
         build (fn build [idx groups]
                 (let [g (nth groups idx)
                       my-bind (nth g 0)
                       my-coll (nth g 1)
                       my-mods (nth g 2)
-                      is-last (= idx (dec (count groups)))]
-                  (if (and is-last (empty? my-mods))
-                    ;; fast path: last group, no modifiers -> a plain map of body
-                    `(map (fn [~my-bind] ~body) ~my-coll)
-                    ;; general: mapcat over a seq contribution (wrap a last-group
-                    ;; body in a one-element list so mapcat yields the bodies).
+                      is-last (= idx (dec (count groups)))
+                      sb (split-mods my-mods [] [] [])
+                      while-pred (first (nth sb 0))
+                      let-binds  (nth sb 1)
+                      body-mods  (nth sb 2)
+                      coll (if while-pred
+                             (if (empty? let-binds)
+                               `(take-while (fn [~my-bind] ~while-pred) ~my-coll)
+                               `(take-while (fn [~my-bind] (let ~@let-binds ~while-pred)) ~my-coll))
+                             my-coll)]
+                  (if (and is-last (empty? body-mods))
+                    `(map (fn [~my-bind] ~body) ~coll)
                     (let [base (if is-last `(list ~body) (build (inc idx) groups))]
-                      `(mapcat (fn [~my-bind] ~(wrap-mods my-mods base)) ~my-coll)))))]
+                      `(mapcat (fn [~my-bind] ~(wrap-mods body-mods base)) ~coll)))))]
     (if (>= (count bindings) 2)
       (build 0 (parse-groups bindings 0 []))
       body)))
