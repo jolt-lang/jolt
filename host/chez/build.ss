@@ -962,9 +962,14 @@
     (unless petite-only? (jolt-spill-embedded! "csv/scheme.boot" scheme))
     (display (string-append "jolt build: compiling " entry-ns " (" mode " mode, self-contained)\n"))
     (bld-prepend-prologue! flat-ss)
-    (let ((params (cdr (assoc mode bld-chez-params))))
+    (let ((params (assoc mode bld-chez-params)))
       (if params
-          (apply parameterize (append params (list (lambda () (compile-file flat-ss flat-so)))))
+          (let ((pv (lambda (k) (cadr (assq k (cdr params))))))
+            (parameterize ((optimize-level (pv 'optimize-level))
+                           (generate-inspector-information (pv 'generate-inspector-information))
+                           (generate-procedure-source-information (pv 'generate-procedure-source-information))
+                           (fasl-compressed (pv 'fasl-compressed)))
+              (compile-file flat-ss flat-so)))
           (compile-file flat-ss flat-so)))
     ;; A compiler-dropped binary (no runtime eval) boots from petite alone —
     ;; scheme.boot is the Chez compiler, ~5 MB of heap and ~1 MB of binary it
