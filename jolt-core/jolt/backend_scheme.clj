@@ -1069,7 +1069,7 @@
   (let [core (if-let [cs (:catch-sym node)]
                (let [raw (munge-name (:catch-raw-sym node))]
                  (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
-                      (emit (:catch-body node)) "))) "
+                      "(let ((r " (emit (:catch-body node)) ")) (jolt-catch-complete!) r)))) "
                       (emit (:body node)) ")"))
                (emit (:body node)))]
     (if-let [fin (:finally node)]
