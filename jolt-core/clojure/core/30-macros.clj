@@ -215,8 +215,10 @@
 ;; Lazy-safe: take only the head via first (Clojure uses (seq coll), but Jolt's
 ;; eager seq would realize an infinite coll like (repeat nil) and hang).
 (defmacro when-first [bindings & body]
-  (let [x (bindings 0) coll (bindings 1)]
-    `(when-let [~x (first ~coll)] ~@body)))
+  (let [[x xs] bindings]
+    `(when-let [xs# (seq ~xs)]
+       (let [~x (first xs#)]
+         ~@body))))
 
 ;; doto threads a single fresh-bound value as the first arg of each form (side
 ;; effects), returning the value. A shared explicit gensym is needed because the
@@ -252,10 +254,12 @@
     `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
 
 (defmacro assert [x & [message]]
-  (let [msg (if message
-              (str "Assert failed: " message "\n" (pr-str x))
-              (str "Assert failed: " (pr-str x)))]
-    `(when-not ~x (throw (new AssertionError ~msg)))))
+  ;; the message EXPRESSION evaluates at failure time (JVM: (str "Assert failed: "
+  ;; message "\n" form)), not at expansion — it may embed runtime state
+  (if message
+    `(when-not ~x
+       (throw (new AssertionError (str "Assert failed: " ~message "\n" ~(pr-str x)))))
+    `(when-not ~x (throw (new AssertionError ~(str "Assert failed: " (pr-str x)))))))
 
 ;; (pvalues e1 e2 ...) — each expression evaluated in parallel (pcalls).
 (defmacro pvalues [& exprs]

@@ -43,8 +43,23 @@
         (cons "copySign" (lambda (m s) (->dbl (if (< s 0.0) (- (abs m)) (abs m)))))
         ;; getExponent: the unbiased binary exponent of a double (floor(log2|x|));
         ;; scalb: x * 2^n. test.check's double generator uses both.
-        (cons "getExponent" (lambda (x) (if (= x 0.0) -1023
-                                            (exact (floor (/ (log (abs (exact->inexact x))) (log 2.0)))))))
+        ;; Extracts the IEEE 754 exponent field via bit operations — the log-based
+        ;; approach loses precision for subnormals and large/small values.
+        (cons "getExponent" (lambda (x)
+                              (let ((bv (make-bytevector 8)))
+                                (bytevector-ieee-double-native-set! bv 0 x)
+                                ;; Detect native endianness: 1.0 = 0x3FF0000000000000.
+                                ;; On little-endian the LSB (0x00) is at offset 0.
+                                (let* ((end (let ((t (make-bytevector 8)))
+                                              (bytevector-ieee-double-native-set! t 0 1.0)
+                                              (if (= (bytevector-u8-ref t 0) 0)
+                                                  (endianness little)
+                                                  (endianness big))))
+                                       (bits (bytevector-u64-ref bv 0 end))
+                                       (raw-exp (bitwise-and (bitwise-arithmetic-shift-right bits 52) #x7FF)))
+                                  (cond ((= raw-exp 0) -1023)        ; zero or subnormal
+                                        ((= raw-exp #x7FF) 1024)     ; infinity or NaN
+                                        (else (- raw-exp 1023)))))))
         (cons "scalb" (lambda (x n) (->dbl (* (exact->inexact x) (expt 2.0 (jnum->exact n))))))
         (cons "max" (lambda (a b) (if (> a b) a b))) (cons "min" (lambda (a b) (if (< a b) a b)))
         (cons "signum" (lambda (x) (cond ((< x 0) -1.0) ((> x 0) 1.0) (else 0.0))))
@@ -386,11 +401,16 @@
 ;; os.name reflects the actual platform (Chez's machine-type names it): a *osx
 ;; machine is macOS, otherwise Linux. Code that branches on the OS (socket struct
 ;; layout, path handling) needs the truth, not a fixed value.
+;; Optimized: character-by-character scan, no substring allocation per position.
 (define (substring-index needle hay)
   (let ((nl (string-length needle)) (hl (string-length hay)))
-    (let loop ((i 0)) (cond ((> (+ i nl) hl) #f)
-                            ((string=? (substring hay i (+ i nl)) needle) i)
-                            (else (loop (+ i 1)))))))
+    (let outer ((i 0))
+      (if (> (+ i nl) hl)
+          #f
+          (let inner ((j 0))
+            (cond ((= j nl) i)
+                  ((char=? (string-ref hay (+ i j)) (string-ref needle j)) (inner (+ j 1)))
+                  (else (outer (+ i 1)))))))))
 (define sys-os-name
   (let ((m (symbol->string (machine-type))))
     (cond ((or (substring-index "osx" m) (substring-index "macos" m)) "Mac OS X")

@@ -8,6 +8,8 @@
   {:suite "destructure / :or" :label "map default when key absent" :expected "9" :actual "(let [{x :x :or {x 9}} {}] x)" :portability :common}
   {:suite "destructure / :or" :label "kwargs default when key absent" :expected "9" :actual "((fn [& {x :x :or {x 9}}] x))" :portability :common}
   {:suite "destructure / :or" :label "default not used when key present" :expected "5" :actual "(let [{x :x :or {x 9}} {:x 5}] x)" :portability :common}
+  {:suite "destructure / :or" :label ":keys :or default eager — evaluates as get not-found arg even when key present" :expected "\"E\"" :actual "(let [o (with-out-str (let [{:keys [b] :or {b (do (print \"E\") 0)}} {:b 5}] b))] o)" :portability :common}
+  {:suite "destructure / :or" :label ":keys :or default uses sibling binding (lazy eval order)" :expected "2" :actual "(let [{:keys [a b] :or {b (inc a)}} {:a 1}] b)" :portability :common}
   {:suite "destructure / for :let" :label "a for/doseq :let binding may itself destructure" :expected "[10 20]" :actual "(vec (for [x [1 2] :let [{:keys [y]} {:y (* x 10)}]] y))" :portability :common}
   {:suite "deftype / method param shadows field" :label "a method param named like a field shadows it (Clojure scope)" :expected "9" :actual "(do (defprotocol P (setm [this q])) (defrecord R [k m] P (setm [this m] (assoc this :m m))) (:m (setm (->R 1 nil) 9)))" :portability :common}
   {:suite "walk / eager" :label "clojure.walk is eager over a lazy seq (side effects run now)" :expected "3" :actual "(let [a (atom 0)] (clojure.walk/postwalk (fn [x] (when (number? x) (swap! a inc)) x) (map inc (list 1 2 3))) @a)" :portability :common}
@@ -488,6 +490,7 @@
   {:suite "clojure.core / pmap family" :label "pcalls" :expected "[1 2]" :actual "(vec (pcalls (fn [] 1) (fn [] 2)))" :portability :common}
   {:suite "clojure.core / pmap family" :label "pvalues" :expected "[3 7]" :actual "(vec (pvalues (+ 1 2) (+ 3 4)))" :portability :common}
   {:suite "clojure.core / pmap family" :label "snapshot semantics" :expected "2" :actual "(let [a (atom 0)] (dorun (pmap (fn [_] (swap! a inc)) [1 2])) (deref a))" :portability :common}
+  {:suite "clojure.core / pmap family" :label "pmap semi-lazy — first of infinite does not hang" :expected "1" :actual "(first (take 2 (pmap inc (range))))" :portability :common}
   {:suite "hierarchy / pure 3-arity" :label "derive returns new h" :expected "true" :actual "(let [h (derive (make-hierarchy) :rect :shape)] (and (map? h) (isa? h :rect :shape)))" :portability :common}
   {:suite "hierarchy / pure 3-arity" :label "original unchanged" :expected "false" :actual "(let [h0 (make-hierarchy) h1 (derive h0 :rect :shape)] (isa? h0 :rect :shape))" :portability :common}
   {:suite "hierarchy / pure 3-arity" :label "isa? self" :expected "true" :actual "(isa? (make-hierarchy) :a :a)" :portability :common}
@@ -688,6 +691,7 @@
   {:suite "host-interop / logging host shims" :label "LockingTransaction/isRunning" :expected "false" :actual "(clojure.lang.LockingTransaction/isRunning)" :portability :jvm}
   {:suite "host-interop / logging host shims" :label "pprint writes value" :expected "\"[1 2 3]\\n\"" :actual "(do (require '[clojure.pprint :as pp]) (with-out-str (pp/pprint [1 2 3])))" :portability :common}
   {:suite "host-interop / logging host shims" :label "with-pprint-dispatch runs body" :expected "42" :actual "(do (require '[clojure.pprint :as pp]) (pp/with-pprint-dispatch pp/code-dispatch 42))" :portability :common}
+  {:suite "host-interop / logging host shims" :label "pprint respects *print-length*" :expected "\"[1 2 ...]\\n\"" :actual "(do (require '[clojure.pprint :as pp]) (binding [pp/*print-length* 2] (with-out-str (pp/pprint [1 2 3 4 5]))))" :portability :common}
   {:suite "host-interop / macro dispatch & short-circuit patterns" :label "conditional-eval suppresses" :expected "0" :actual "(do (def ^:dynamic *enabled* false) (defmacro when-on [& body] `(when *enabled* ~@body)) (let [a (atom 0)] (when-on (reset! a 9)) @a))" :portability :common}
   {:suite "host-interop / macro dispatch & short-circuit patterns" :label "conditional-eval fires" :expected "9" :actual "(do (def ^:dynamic *enabled* true) (defmacro when-on [& body] `(when *enabled* ~@body)) (let [a (atom 0)] (when-on (reset! a 9)) @a))" :portability :common}
   {:suite "host-interop / macro dispatch & short-circuit patterns" :label "spy-like eval+print+return" :expected "3" :actual "(do (defmacro spylog [expr] `(let [v# ~expr] (println v#) v#)) (spylog (+ 1 2)))" :portability :common}
@@ -1723,6 +1727,7 @@
   {:suite "predicates / seqable, reduced & emptiness" :label "not-empty full" :expected "[1]" :actual "(not-empty [1])" :portability :common}
   {:suite "predicates / seqable, reduced & emptiness" :label "not-empty empty" :expected "nil" :actual "(not-empty [])" :portability :common}
   {:suite "predicates / seqable, reduced & emptiness" :label "not-empty string" :expected "nil" :actual "(not-empty \"\")" :portability :common}
+  {:suite "predicates / seqable, reduced & emptiness" :label "not-empty lazy — uses seq not count (O(1), doesn't hang)" :expected "'(1 2 3)" :actual "(not-empty (map inc (take 3 (range))))" :portability :common}
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare =" :expected "0" :actual "(compare 1 1)" :portability :common}
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare <" :expected "-1" :actual "(compare 1 2)" :portability :common}
   {:suite "predicates / compare, type, any? (stage 3)" :label "compare nil first" :expected "-1" :actual "(compare nil 1)" :portability :common}
@@ -3899,6 +3904,12 @@
   {:suite "interop / qualified instance method" :label "(String/.length \"hello\")" :expected "5" :actual "(String/.length \"hello\")" :portability :common}
   {:suite "interop / qualified instance method" :label "(String/.toUpperCase \"abc\")" :expected "\"ABC\"" :actual "(String/.toUpperCase \"abc\")" :portability :common}
   {:suite "interop / qualified instance method" :label "(String/.substring \"hello\" 1 3)" :expected "\"el\"" :actual "(String/.substring \"hello\" 1 3)" :portability :common}
+  {:suite "interop / qualified instance method" :label "fully-qualified class (java.util.List/.size coll)" :expected "3" :actual "(java.util.List/.size (java.util.ArrayList. [1 2 3]))" :portability :common}  {:suite "string / index-of clamps" :label "from past end -> nil" :expected "nil" :actual "(clojure.string/index-of \"abc\" \"b\" 10)" :portability :common}
+  {:suite "string / index-of clamps" :label "negative from clamps to 0" :expected "1" :actual "(clojure.string/index-of \"abc\" \"b\" -1)" :portability :common}
+  {:suite "string / last-index-of from" :label "match may start at from and extend past" :expected "4" :actual "(clojure.string/last-index-of \"banana\" \"na\" 4)" :portability :common}
+  {:suite "string / last-index-of from" :label "largest start <= from" :expected "1" :actual "(clojure.string/last-index-of \"aaa\" \"a\" 1)" :portability :common}
+  {:suite "string / last-index-of from" :label "no match at or before from" :expected "nil" :actual "(clojure.string/last-index-of \"banana\" \"na\" 1)" :portability :common}
+  {:suite "assert / message" :label "message expression evaluates at failure time" :expected "\"Assert failed: x=3\"" :actual "(try (assert false (str \"x=\" (+ 1 2))) (catch Throwable e (first (clojure.string/split-lines (.getMessage e)))))" :portability :common}
   {:suite "interop / qualified instance method" :label "fully-qualified class (java.util.List/.size coll)" :expected "3" :actual "(java.util.List/.size (java.util.ArrayList. [1 2 3]))" :portability :common}
   {:suite "regex / \\Q..\\E quantifier" :label "quantifier after \\Q..\\E scopes only last char" :expected "\"abbb\"" :actual "(re-find #\"\\Qab\\E+\" \"abbb\")" :portability :common}
   {:suite "regex / brace-less \\pL" :label "\\pL matches Unicode letter" :expected "\"a\"" :actual "(re-find #\"\\pL\" \"a\")" :portability :common}
@@ -3908,6 +3919,17 @@
   {:suite "reader / hex N suffix" :label "0xFFN reads as integer 255" :expected "255" :actual "(read-string \"0xFFN\")" :portability :common}
   {:suite "reader / radix N suffix" :label "2r1010N reads as integer 10" :expected "10" :actual "(read-string \"2r1010N\")" :portability :common}
   {:suite "ns / refer-all in ns-refers" :label ":refer :all names appear in ns-refers" :expected "true" :actual "(do (require '[clojure.set :refer :all]) (contains? (ns-refers *ns*) 'union))" :portability :common}
+  {:suite "io / binary copy File→File" :label "io/copy preserves raw bytes when both sides are files" :expected "[255 254 0 65]" :actual "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :portability :jvm}
+  {:suite "io / File.delete non-empty dir" :label "File.delete returns false for non-empty directory" :expected "false" :actual "(do (require '[clojure.java.io :as io]) (let [d (doto (java.io.File/createTempFile \"jtd\" \".d\") (.delete) (.mkdir)) child (java.io.File. d \"child.txt\")] (spit child \"x\") (let [deleted (.delete d)] (.delete child) (.delete d) deleted)))" :portability :jvm}
+  {:suite "async / transducer backpressure" :label "fixed-buffer transducer put blocks when full" :expected "[true 2 3 4 :done]" :actual "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc)) p (future (a/>!! c 1) (a/>!! c 2) (a/>!! c 3) :done)] (Thread/sleep 100) (let [parked (not (realized? p)) v1 (a/<!! c) v2 (a/<!! c) v3 (a/<!! c) result @p] [parked v1 v2 v3 result])))" :portability :jvm}
+  {:suite "async / close does not complete pending put" :label "pending rendezvous put parks until consumed, even on close" :expected "[:v true]" :actual "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (future (a/>!! c :v))] (Thread/sleep 50) (a/close! c) [(a/<!! c) @p]))" :portability :jvm}
+  {:suite "time / tz offset parse" :label "SimpleDateFormat X parses +05 offset" :expected "1704049200000" :actual "(.getTime (.parse (java.text.SimpleDateFormat. \"yyyy-MM-dd'T'HH:mm:ssX\") \"2024-01-01T00:00:00+05\"))" :portability :jvm}
+  {:suite "time / tz offset parse" :label "SimpleDateFormat X parses Z offset" :expected "1704067200000" :actual "(.getTime (.parse (java.text.SimpleDateFormat. \"yyyy-MM-dd'T'HH:mm:ssX\") \"2024-01-01T00:00:00Z\"))" :portability :jvm}
+  {:suite "time / tz offset parse" :label "SimpleDateFormat XX parses -0330 offset" :expected "1704079800000" :actual "(.getTime (.parse (java.text.SimpleDateFormat. \"yyyy-MM-dd'T'HH:mm:ssXX\") \"2024-01-01T00:00:00-0330\"))" :portability :jvm}
+  {:suite "host-interop / FQN statics" :label "java.lang.System/currentTimeMillis works" :expected "true" :actual "(pos? (java.lang.System/currentTimeMillis))" :portability :jvm}
+  {:suite "host-interop / FQN statics" :label "java.lang.Character/isWhitespace matches short form" :expected "true" :actual "(= (Character/isWhitespace \\space) (java.lang.Character/isWhitespace \\space))" :portability :jvm}
+  {:suite "host-interop / Math" :label "Math/getExponent 2.0 => 1 via IEEE 754 bit extraction" :expected "1" :actual "(Math/getExponent 2.0)" :portability :jvm}
+  {:suite "host-interop / Math" :label "Math/getExponent 0.0 => -1023" :expected "-1023" :actual "(Math/getExponent 0.0)" :portability :jvm}
   {:suite "reduce / double seed nil-returning closure" :label "reduce over double literal with nil-returning fn returns nil without crash" :expected "nil" :actual "(reduce (fn [acc x] (when (and acc (< x 100)) (+ acc x))) 0.0 [1 200 3])" :portability :common}
   {:suite "reduce / double seed non-nil closure" :label "reduce over double literal with always-returning fn returns the double sum" :expected "6.0" :actual "(reduce (fn [acc x] (+ acc x)) 0.0 [1 2 3])" :portability :common}
   {:suite "reduce / user ^double hint survives seeding" :label "reduce with ^double param hints and num init coerces and unboxes" :expected "7.0" :actual "(reduce (fn [^double acc ^double x] (+ acc x)) 1 [1 2 3])" :portability :common}

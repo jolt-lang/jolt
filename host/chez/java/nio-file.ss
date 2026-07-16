@@ -179,11 +179,13 @@
                 (class (nio-bad-glob "missing ']'"))
                 (else (string-append out "$")))
           (let ((c (string-ref pattern i)))
-            (cond
+             (cond
               ((and (char=? c #\*) (< (+ i 1) n) (char=? (string-ref pattern (+ i 1)) #\*))
-               (loop (+ i 2) (string-append out ".*") brace class))
-              ((char=? c #\*) (loop (+ i 1) (string-append out "[^/]*") brace class))
-              ((char=? c #\?) (loop (+ i 1) (string-append out "[^/]") brace class))
+               (loop (+ i 2) (string-append out (if class "\\*\\*" ".*")) brace class))
+              ((char=? c #\*) (loop (+ i 1) (string-append out (if class "\\*" "[^/]*")) brace class))
+              ((char=? c #\?) (loop (+ i 1) (string-append out (if class "\\?" "[^/]")) brace class))
+              ((and class (char=? c #\!) (char=? (string-ref out (- (string-length out) 1)) #\[))
+               (loop (+ i 1) (string-append out "^") brace class))
               ((char=? c #\{) (if brace (nio-bad-glob "nested '{'") (loop (+ i 1) (string-append out "(") #t class)))
               ((char=? c #\}) (loop (+ i 1) (string-append out ")") #f class))
               ((char=? c #\,) (loop (+ i 1) (string-append out (if brace "|" ",")) brace class))
@@ -306,10 +308,13 @@
   (cond ((nio-is-symlink? fp) (delete-file fp) #t)   ; the link itself, even if dangling
         ((not (file-exists? fp))
          (if missing-ok? #f (jolt-throw (jolt-ex-info fp empty-pmap))))
-        ((file-directory? fp) (delete-directory fp) #t)
+        ((file-directory? fp) (if (delete-directory fp) #t
+                                (jolt-throw (jolt-host-throwable "java.nio.file.DirectoryNotEmptyException"
+                                                                 (npath-string-of fp)))))
         (else (delete-file fp) #t)))
 
 (define nio-temp-counter 0)
+(define nio-temp-mutex (make-mutex))
 (define (nio-tmp-dir) (or (getenv "TMPDIR") "/tmp"))
 ;; A temp path in `dir` (default the system temp dir), unique across processes
 ;; via now-millis + a retry counter, like java.nio.file's createTemp*.
@@ -317,7 +322,9 @@
   (let ((d (let ((d (or dir (nio-tmp-dir))))
              (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/")))))
     (let loop ()
+      (mutex-acquire nio-temp-mutex)
       (set! nio-temp-counter (+ nio-temp-counter 1))
+      (mutex-release nio-temp-mutex)
       (let ((full (string-append d (if (string? prefix) prefix "")
                                  (number->string (now-millis)) "-" (number->string nio-temp-counter)
                                  (if (string? suffix) suffix ""))))
