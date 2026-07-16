@@ -3979,4 +3979,6 @@
  {:suite "format / nil arg" :label "%s with mixed nil and value" :expected "\"null 1\"" :actual "(format \"%s %s\" nil 1)" :portability :jvm}
  {:suite "format / unknown directive" :label "unknown directive throws" :expected "\"java.util.UnknownFormatConversionException\"" :actual "(try (format \"%e\" 5) (catch Throwable e (.getName (class e))))" :portability :jvm}
  {:suite "future / ExecutionException" :label "deref of failed future throws ExecutionException wrapping cause" :expected "\"m\"" :actual "(try @(future (throw (ex-info \"m\" {:a 1}))) (catch java.util.concurrent.ExecutionException e (.getMessage (ex-cause e))))" :portability :jvm}
+ {:suite "string/split zero-width" :label "split on #\"\" returns individual chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"\")" :portability :jvm}
+ {:suite "string/split zero-width" :label "split on #\"x*\" splits between chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"x*\")" :portability :jvm}
 ]
