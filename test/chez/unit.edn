@@ -79,7 +79,7 @@
   {:suite "hostobj" :expr "[(namespace (symbol \"foo/bar\")) (name (symbol \"foo/bar\"))]" :expected "[foo bar]"}
   {:suite "hostobj" :expr "(str (symbol \"a/b/c\"))" :expected "a/b/c"}
   {:suite "hostobj" :expr "(do (System/setProperty \"jolt.test.x\" \"z\") (System/getProperty \"jolt.test.x\"))" :expected "z"}
-  {:suite "hostobj" :expr "(set! *assert* false)" :expected "false"}
+   {:suite "hostobj" :expr "(do (def ^:dynamic *x4422* true) (binding [*x4422* false] *x4422*))" :expected "false"}
   {:suite "hostobj" :expr "(binding [*print-readably* false] *print-readably*)" :expected "false"}
   {:suite "hostobj" :expr "(do (defprotocol P (m [_])) (extend-protocol P clojure.lang.Fn (m [_] :fn)) (m (fn [x] x)))" :expected ":fn"}
   {:suite "hostobj" :expr "(do (defprotocol P (m [_])) (extend-protocol P clojure.lang.APersistentVector (m [_] :vec)) (m [1 2 3]))" :expected ":vec"}

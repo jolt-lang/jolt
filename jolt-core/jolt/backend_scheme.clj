@@ -1184,8 +1184,8 @@
                    (str "(var-cell-deref (or " c " (let ((_v (jolt-var " nslit " " nmlit "))) (set! " c " _v) _v)))"))
                  (str "(var-deref " nslit " " nmlit ")")))))
     :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
-    ;; (set! *var* val) -> set the var's innermost binding (else root); returns val.
-    :set-var (str "(jolt-var-set " (emit (:the-var node)) " " (emit (:val node)) ")")
+    ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
+    :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
     :set-field (str "(jolt-set-field! " (emit (:obj node)) " (keyword #f "
                     (chez-str-lit (:field node)) ") " (emit (:val node)) ")")
@@ -1261,12 +1261,12 @@
                d (cond
                    (:no-init node)
                    (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
-                   (jmeta-nonempty? (:meta node))
-                   (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                        (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
                    :else
-                   (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                        (emit-with-cells #(emit (:init node))) ")"))]
+                   (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                        (emit-with-cells #(emit (:init node))) " "
+                        (if (jmeta-nonempty? (:meta node))
+                          (emit-def-meta node)
+                          "(jolt-hash-map)") ")"))]
            (if (= reg "") d (str "(begin " d reg ")")))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
 
@@ -1308,15 +1308,18 @@
         init (emit-with-cells #(emit (:init node)))]
     (cond
       dl?
-      (if (jmeta-nonempty? (:meta node))
-        (str "(begin (define " b " " init ") (def-var-with-meta! "
-             (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) ")" (or reg "") ")")
-        (str "(begin (define " b " " init ") (def-var! "
-             (chez-str-lit ns) " " (chez-str-lit nm) " " b ")" (or reg "") ")"))
-      (jmeta-nonempty? (:meta node))
-      (str "(def-var-with-meta! " (chez-str-lit ns) " " (chez-str-lit nm) " " init " " (emit-def-meta node) ")")
+      (str "(begin (define " b " " init ") (def-var-with-meta! "
+           (chez-str-lit ns) " " (chez-str-lit nm) " " b " "
+           (if (jmeta-nonempty? (:meta node))
+             (emit-def-meta node)
+             "(jolt-hash-map)")
+           ")" (or reg "") ")")
       :else
-      (str "(def-var! " (chez-str-lit ns) " " (chez-str-lit nm) " " init ")"))))
+      (str "(def-var-with-meta! " (chez-str-lit ns) " " (chez-str-lit nm) " " init " "
+           (if (jmeta-nonempty? (:meta node))
+             (emit-def-meta node)
+             "(jolt-hash-map)")
+           ")"))))
 
 (defn emit-top-form [node]
   (cond

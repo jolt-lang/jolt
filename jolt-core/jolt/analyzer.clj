@@ -446,8 +446,8 @@
             (if (= :var (:kind r))
               (the-var (:ns r) (:name r))
               (uncompilable (str "var of non-var " (form-sym-name sym)))))
-    ;; (set! *var* val): set the var's innermost thread binding, else its root
-    ;; (jolt-var-set). A local target is a deftype mutable field — not yet
+    ;; (set! *var* val): set the var's innermost thread binding; throws if none.
+    ;; Uses jolt-set-var! (not jolt-var-set — that's the public root-setter).
     ;; supported (jolt binds fields immutably); an interop (.-field) target too.
     ;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
     ;; produced by a macro like (when … (defmacro …)). Lower it the way the spine

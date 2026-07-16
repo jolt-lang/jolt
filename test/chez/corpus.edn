@@ -3976,4 +3976,7 @@
   {:suite "macros / vswap! divergence" :label "vswap! is a macro on JVM, fn on jolt" :expected "false" :actual "(boolean (:macro (meta (resolve 'vswap!))))" :portability :common}
   {:suite "clojure.core / select-keys" :label "select-keys preserves metadata" :expected "{:type :test}" :actual "(meta (select-keys (with-meta {:a 1 :b 2} {:type :test}) [:a]))" :portability :common}
   {:suite "core / extenders" :label "extends? on inline defrecord impl" :expected "true" :actual "(do (defprotocol P6m (p6m [x])) (defrecord R6m [] P6m (p6m [x] 1)) (extends? P6m 'user.R6m))" :portability :common}
+  {:suite "vars / set! binding" :label "set! outside binding throws" :expected :throws :actual "(do (def ^:dynamic *set-test44* 0) (set! *set-test44* 9))" :portability :common}
+  {:suite "vars / set! binding" :label "set! inside binding works" :expected "[42 0]" :actual "(do (def ^:dynamic *set-test44b* 0) [(binding [*set-test44b* 99] (set! *set-test44b* 42) *set-test44b*) *set-test44b*])" :portability :common}
+  {:suite "vars / binding dynamic" :label "binding on non-dynamic var throws" :expected :throws :actual "(do (def not-dynamic-44c 0) (binding [not-dynamic-44c 1] not-dynamic-44c))" :portability :common}
 ]
