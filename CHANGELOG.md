@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-16
+
+Full-codebase audit release: seven review rounds plus follow-ups (PRs
+#362-#373), every behavioral fix certified against reference JVM Clojure.
+
+### Fixed
+
+- Build: `--embed` resources are baked into the binary at build time (shipped
+  binaries no longer re-read build-machine paths at startup); tree-shaking is
+  sound for redefined vars (duplicate-fqn refs union); binary namespace roots
+  derive from the require graph, so namespaces loaded before the build hook
+  (data-reader helpers and their requires) ship correctly.
+- core.async: `alts!`/`alts!!` use handler registration — an alts put and an
+  alts take on an unbuffered channel rendezvous instead of livelocking, and
+  blocked alts no longer busy-poll. Fixed-buffer channels with transducers get
+  real backpressure; pending rendezvous puts park through `close!` until a
+  taker consumes their value (JVM-verified); `timeout` channels share one
+  timer thread.
+- Hashing: record hashes are JVM-exact defrecord hasheq (a bignum overflow
+  into unchecked fixnum ops previously made equal values hash differently,
+  nondeterministically); collections cache their hasheq lazily; vector/map/
+  set hashes are value-identical to the JVM.
+- Inference soundness: a `reduce` accumulator seeded `:double` no longer
+  forces a coercion crash on nil-returning reducers; same-named records in
+  different namespaces resolve exactly instead of by suffix; user `^double`
+  hints survive HOF seeding; locals named like runtime identifiers
+  (`jolt-nil`, `fl+`, …) are munged instead of shadowing.
+- Reader/regex: mid-pattern `(?i)` applies to the remainder and `(?-i)`
+  actually removes flags; `\Q…\E` quantifier scope, strict `\p{…}`, Java
+  octal escapes, possessive quantifiers as atomic groups; radix-aware `N`
+  literals (`042N` ⇒ `34N`); positioned EOF errors in string escapes;
+  top-level `#?@` throws; record literals construct records; `#!` is a
+  to-EOL comment (clojure reader only — EDN rejects it); syntax-quote
+  resolves through the full alias/refer/core chain (`` `map `` ⇒
+  `clojure.core/map`); core macros resolve as vars with `:macro` meta.
+- clojure.test: `(is (instance? C x))` actually asserts; every assertion
+  dispatches through the `report` multimethod; interned `:test`-meta tests
+  run inside `:once` fixtures.
+- Destructuring `:or` defaults are `get`'s not-found argument (JVM-exact:
+  eager, sibling bindings in scope) — `{:or {b (inc a)}}` no longer throws.
+- Laziness: `not-empty` uses `seq` (no more hanging on infinite seqs);
+  `pmap` is semi-lazy with bounded look-ahead; `pprint` honors
+  `*print-length*` by stopping; `when-first` tests the seq.
+- Java compat: `io/copy` between files copies bytes (binary files no longer
+  corrupted through a UTF-8 round-trip); deleting a non-empty directory
+  throws/returns false; parsed timezone offsets apply; FQN and short class
+  names share one statics table; bitwise `Math/getExponent`;
+  `awaitTermination` actually waits; `ReentrantLock` is reentrant;
+  interruptible bodies unwind their timers; `getAbsoluteFile` shares
+  `getAbsolutePath`'s base; `(System/getenv)` reads the environment directly
+  (multi-line values intact); shared counters and caches are mutex-guarded;
+  string `index-of`/`last-index-of` from-args clamp like the JVM; `assert`
+  messages evaluate at failure time.
+- Memory: caught exceptions no longer root the captured continuation (a
+  catch-complete hook clears it after the handler finishes; traces intact).
+- On hosts with an unverified `struct stat` layout (e.g. aarch64 Linux),
+  `getPosixFilePermissions`/`getOwner` throw a clear
+  `UnsupportedOperationException` instead of reading garbage.
+
+### Changed
+
+- The whole-program shake's hand-maintained name lists are gate-verified; the
+  17 run-gate scripts share one harness; `--opt` builds reuse the
+  whole-program pass's analysis at emission; one mode→Chez-parameters table;
+  the layered `Files` registrations collapse to one block per class; dead
+  code across the runtime removed (shakesmoke byte-identity verified).
+- The long-only integer boxing model is documented as the SPEC feature
+  `:numerics/long-only` (`(short x)` range-checks but boxes as Long).
+
+### Performance
+
+- `subseq`/`rsubseq` seek from the comparator bound and walk lazily
+  (O(log n) instead of materializing the collection); string scans stop
+  allocating per candidate offset (`.indexOf` −20%, `replace` −12%);
+  regex literals compile once per source string (~30× on literal-in-loop
+  patterns); collection-as-map-key lookups no longer rehash O(n) per probe.
+
 ## [0.3.2] - 2026-07-15
 
 ### Changed
