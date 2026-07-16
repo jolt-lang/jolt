@@ -756,4 +756,21 @@
   {:suite "concurrency" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(.isInterrupted t) (Thread/interrupted)])" :expected "[true true]"}
   ;; Stage D — Thread.interrupted clears the flag
   {:suite "concurrency" :expr "(do (.interrupt (Thread/currentThread)) (Thread/interrupted) (Thread/interrupted))" :expected "false"}
+ ;; Stage A — defrecord hash is deterministic and matches JVM hasheq
+ {:suite "hasheq-defrecord" :expr "(do (defrecord UhqPoint [x y]) (hash (map->UhqPoint {:x 1 :y 2})))" :expected "1770210429"}
+ {:suite "hasheq-defrecord" :expr "(do (defrecord UhqPoint2 [x y]) (let [p (map->UhqPoint2 {:x 1 :y 2})] [(hash p) (hash (assoc p :z 3))]))" :expected "[2107010728 1619374452]"}
+ ;; Stage B — collection hasheq caching
+ {:suite "hasheq-cache" :expr "(let [m {:x 1 :y 2} h1 (hash m) h2 (hash m)] (= h1 h2))" :expected "true"}
+ {:suite "hasheq-cache" :expr "(let [s #{:a :b} h1 (hash s) h2 (hash s)] (= h1 h2))" :expected "true"}
+ {:suite "hasheq-cache" :expr "(let [v [1 2 3] h1 (hash v) h2 (hash v)] (= h1 h2))" :expected "true"}
+ ;; Stage C — positional ctor throws on wrong arity
+ {:suite "records-ctor-arity" :expr "(do (defrecord ArC9 [x y]) (try (->ArC9 1) (catch Exception e :arity-throw)))" :expected ":arity-throw"}
+ {:suite "records-ctor-arity" :expr "(do (defrecord ArC9b [x y]) (try (->ArC9b 1 2 3) (catch Exception e :arity-throw)))" :expected ":arity-throw"}
+ {:suite "records-ctor-arity" :expr "(do (defrecord ArC9c [x y]) (->ArC9c 1 2))" :expected "#user.ArC9c{:x 1, :y 2}"}
+ ;; Stage C — assoc applies ^double coercion on record fields
+ {:suite "records-assoc-double" :expr "(do (deftype DblC10 [^double x]) (.getName (class (.-x (assoc (->DblC10 1) :x 2)))))" :expected "java.lang.Double"}
+ ;; Stage D — range step 0 repeats start infinitely
+ {:suite "seq-range-step-zero" :expr "(take 3 (range 5 10 0))" :expected "(5 5 5)"}
+ ;; Stage D — binding does not auto-deref var-cell
+ {:suite "binding-no-autoderef" :expr "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :expected "clojure.lang.Var"}
 ]

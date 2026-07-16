@@ -53,8 +53,10 @@
 (define pv-width 32)
 (define pv-mask 31)
 (define pv-empty-node (vector))
-(define-record-type (pvec mk-pvec pvec?)
-  (fields cnt shift root tail ent) (nongenerative chez-pvec-v2))
+(define-record-type (pvec %mk-pvec pvec?)
+  (fields cnt shift root tail ent (mutable hasheq)) (nongenerative chez-pvec-v3))
+(define (mk-pvec cnt shift root tail ent)
+  (%mk-pvec cnt shift root tail ent 0))
 
 ;; trailing helpers over Scheme vectors used by the trie
 (define (vec-snoc v x)                 ; copy v with x appended
@@ -297,8 +299,14 @@
 ;; the map is in array mode, or #f once it has grown into hash mode. Equality and
 ;; hashing fold over the entries order-independently, so this only affects
 ;; iteration order (seq/keys/vals/print), matching the JVM.
-(define-record-type pmap (fields root cnt order) (nongenerative chez-pmap-v2))
+(define-record-type pmap (fields root cnt order (mutable hasheq) (mutable all-kw)) (nongenerative chez-pmap-v4))
+(define make-pmap
+  (let ((raw (record-constructor (record-type-descriptor pmap))))
+    (lambda (root cnt order)
+      (let ((m (raw root cnt order 0 #f)))
+        m))))
 (define empty-pmap (make-pmap empty-hnode 0 '()))          ; {} = empty array map
+(pmap-all-kw-set! empty-pmap #t)                            ; vacuously all keywords
 (define empty-pmap-hash (make-pmap empty-hnode 0 #f))      ; hash-order backing (sets)
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
 ;; PersistentArrayMap threshold: assoc of a new key promotes to hash mode once the
@@ -312,9 +320,10 @@
 ;; Should a map of `cnt` entries with insertion order `ord` stay in array mode
 ;; when key `k` is added? Under 8 always; a keyword-only map (existing keys + the
 ;; new key all keywords) grows to 64; otherwise caps at 8.
-(define (pmap-array-keep? cnt ord k)
+(define (pmap-array-keep? cnt ord k all-kw)
   (cond ((fx<? cnt array-map-limit) #t)
         ((fx>=? cnt array-map-limit-kw) #f)
+        (all-kw (keyword? k))     ;; cached: existing keys are all keywords
         ((and (keyword? k) (all-keywords? ord)) #t)
         (else #f)))
 (define (append-key ord k) (cons k ord))  ; O(1) prepend — reversed order, reversed at iteration
@@ -327,10 +336,16 @@
   (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added))
          (cnt (pmap-cnt m)) (ord (pmap-order m)))
     (if (unbox added)
-        (if (and ord (pmap-array-keep? cnt ord k))
-            (make-pmap r (fx+ cnt 1) (append-key ord k))
+        (if (and ord (pmap-array-keep? cnt ord k (pmap-all-kw m)))
+            (let ((new-m (make-pmap r (fx+ cnt 1) (append-key ord k))))
+              (pmap-all-kw-set! new-m
+                (and (pmap-all-kw m) (keyword? k)))
+              new-m)
             (make-pmap r (fx+ cnt 1) #f))
-        (make-pmap r cnt ord))))
+        (begin
+          (when (and ord (not (pmap-all-kw m)))
+            (pmap-all-kw-set! m (all-keywords? ord)))
+          (make-pmap r cnt ord)))))
 ;; force-ordered / force-hash inserts for rebuilding a map whose final mode is
 ;; already decided (array-map ctor, transient persistent!).
 (define (pmap-put-ordered m k v)
@@ -356,6 +371,9 @@
 ;; in reverse insertion order; a hash-mode map visits HAMT order (its iteration
 ;; order is unspecified, so reverse-of-HAMT is equivalent and matches prior
 ;; behaviour). Use pmap-fold-fwd when building a value directly in iteration order.
+;; PERF: array-mode iteration does n pmap-get calls (one HAMT lookup per key).
+;; An O(n) scan over a paired [k v] order list would beat n HAMT get calls,
+;; especially for the keyword-only 64-entry maps used in defrecord ext maps.
 (define (pmap-fold m proc acc)
   (let ((ord (pmap-order m)))
     (if ord
@@ -394,7 +412,10 @@
           ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
           (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
 
-(define-record-type pset (fields m) (nongenerative chez-pset-v1))
+(define-record-type pset (fields m (mutable hasheq)) (nongenerative chez-pset-v2))
+(define make-pset
+  (let ((raw (record-constructor (record-type-descriptor pset))))
+    (lambda (m) (raw m 0))))
 ;; sets are ALWAYS hash-ordered (JVM PersistentHashSet), backed by pmap in hash mode.
 (define empty-pset (make-pset empty-pmap-hash))   ; sets are ALWAYS hash-ordered (JVM PersistentHashSet)
 (define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
@@ -675,16 +696,22 @@
     ;; maps hash as hashUnordered of entries; each entry contributes hash-ordered of [k v]
     ;; (APersistentMap.mapHasheq = Murmur3.hashUnordered, MapEntry.hasheq = ordered [k v])
     ((pmap? x)
-     (let ((result (pmap-fold x
-                    (lambda (k v acc)
-                      (cons (add32 (car acc) (entry-hasheq k v))
-                            (fx+ (cdr acc) 1)))
-                    (cons 0 0))))
-       (mix-coll-hash (car result) (cdr result))))
+     (or (and (not (= 0 (pmap-hasheq x))) (pmap-hasheq x))
+         (let* ((result (pmap-fold x
+                        (lambda (k v acc)
+                          (cons (add32 (car acc) (entry-hasheq k v))
+                                (fx+ (cdr acc) 1)))
+                        (cons 0 0)))
+                (h (mix-coll-hash (car result) (cdr result))))
+           (pmap-hasheq-set! x h)
+           h)))
     ;; sets hash as hashUnordered of elements
     ((pset? x)
-     (let ((result (pset-fold x
-                    (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
-                    (cons 0 0))))
-       (mix-coll-hash (car result) (cdr result))))
+     (or (and (not (= 0 (pset-hasheq x))) (pset-hasheq x))
+         (let* ((result (pset-fold x
+                        (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
+                        (cons 0 0)))
+                (h (mix-coll-hash (car result) (cdr result))))
+           (pset-hasheq-set! x h)
+           h)))
     (else (equal-hash x))))

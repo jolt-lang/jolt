@@ -35,8 +35,8 @@
   (if (pair? (dyn-binding-stack))
       (let ((p (dyn-find-binding cell)))
         (if p
-            (let ((val (cdr p)))
-              (if (var-cell? val) (jolt-var-get val) val))  ; nested var deref (Clojure)
+             (let ((val (cdr p)))
+               val)   ; no auto-deref — a var-cell value is the value, like JVM
             dyn-no-binding))
       dyn-no-binding))
 

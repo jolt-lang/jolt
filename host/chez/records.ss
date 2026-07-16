@@ -387,13 +387,31 @@
                     (and (jolt=2 (jrec-field-ref a i) (jrec-field-ref b i)) (loop (+ i 1)))))))
        (jrec-ext=? (jrec-ext a) (jrec-ext b))))
 (define (jrec-hash r)
-  (let* ((fkeys (jrdesc-fkeys (jrec-desc r))) (n (jrec-nfields r))
-         (base (let loop ((i 0) (acc (string-hash (jrec-tag r))))
-                 (if (= i n) acc
-                     (loop (+ i 1) (+ acc (jolt-hash (vector-ref fkeys i))
-                                       (jolt-hash (jrec-field-ref r i))))))))
-    (let ((ext (jrec-ext r)))
-      (if (jolt-nil? ext) base (+ base (jolt-hash ext))))))
+  ;; JVM defrecord hasheq: (bit-xor class-hash map-hasheq)
+  ;; class-hash = (hash classname-symbol).
+  ;; Jolt symbols store qualified names as a single flat string (e.g. "user.Point")
+  ;; with ns=#f, so class-hash = compute-symbol-hasheq(#f, tag).
+  ;; map-hasheq = Murmur3.hashUnordered over fields+ext entries
+  (let* ((class-hash (compute-symbol-hasheq #f (jrec-tag r)))
+         (fkeys (jrdesc-fkeys (jrec-desc r)))
+         (n (jrec-nfields r))
+         (result (let loop ((i 0) (acc 0) (cnt 0))
+                   (if (= i n)
+                       (cons acc cnt)
+                       (loop (+ i 1)
+                             (add32 acc (entry-hasheq (vector-ref fkeys i)
+                                                      (jrec-field-ref r i)))
+                             (+ cnt 1)))))
+         (ext (jrec-ext r))
+         (total (if (jolt-nil? ext)
+                    result
+                    (pmap-fold ext
+                               (lambda (k v a)
+                                 (cons (add32 (car a) (entry-hasheq k v))
+                                       (+ (cdr a) 1)))
+                               result)))
+         (map-hash (mix-coll-hash (car total) (cdr total))))
+    (i32 (bitwise-xor class-hash map-hash))))
 (define (jrec-pr r)                      ; #ns.Name{:k v, :k v}
   (let ((fkeys (jrdesc-fkeys (jrec-desc r))))
     (string-append "#" (jrec-tag r) "{"
@@ -524,8 +542,12 @@
         ((jrec? coll)
          (let ((i (and (keyword? k) (jrec-field-index coll k))))
            (if i
-               (let ((nv (jrec-vec-copy (jrec-vals coll))))
-                 (vector-set! nv i v)
+               (let ((nv (jrec-vec-copy (jrec-vals coll)))
+                     (v2 (let ((flags (hashtable-ref chez-record-dbl-tbl (jrec-tag coll) #f)))
+                           (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
+                                    (number? v) (not (flonum? v)))
+                               (exact->inexact v) v))))
+                 (vector-set! nv i v2)
                  (make-jrec (jrec-desc coll) nv (jrec-ext coll)))
                (let ((ext (jrec-ext coll)))
                  (make-jrec (jrec-desc coll) (jrec-vals coll)
@@ -768,6 +790,9 @@
         ;; (Class/forName "[B") for byte[] (data.json, aws-api), "[C" for char[].
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'byte)) '("[B" "Object"))
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'char)) '("[C" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'int)) '("[I" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'long)) '("[J" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'double)) '("[D" "Object"))
         ((jolt-array? obj) '("[Ljava.lang.Object;" "Object"))
         ;; a regex VALUE — extend-protocol java.util.regex.Pattern (core.match.regex).
         ((regex-t? obj) '("Pattern" "java.util.regex.Pattern" "Object"))
@@ -839,13 +864,15 @@
           (_ (when old-desc (jrdesc-ptable-set! old-desc #f)))
           (_ (hashtable-set! chez-tag-desc tag desc))
          (nf (length kws))
-          (ctor (lambda args
-                  ;; fill the value vector from the positional args, padding missing
-                  ;; trailing fields with nil and ignoring any extras.
-                  (let ((v (make-vector nf jolt-nil)))
-                    (let loop ((as args) (i 0))
-                      (if (or (null? as) (= i nf)) (make-jrec desc v jolt-nil)
-                          (let ((a (car as)))
+           (ctor (lambda args
+                   ;; validate arg count — must match declared field count exactly
+                   (when (not (= (length args) nf))
+                     (jolt-throw (str "Wrong number of args (" (length args) ") passed to: "
+                                      (jrec-tag (make-jrec desc (make-vector 0 jolt-nil) jolt-nil)))))
+                   (let ((v (make-vector nf jolt-nil)))
+                     (let loop ((as args) (i 0))
+                       (if (null? as) (make-jrec desc v jolt-nil)
+                           (let ((a (car as)))
                             (vector-set! v i
                                          (if (and (fx< i ndbl) (vector-ref dbl-flags i)
                                                   (number? a) (not (flonum? a)))
