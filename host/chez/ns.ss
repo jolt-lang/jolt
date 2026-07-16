@@ -344,6 +344,8 @@
 (define (jolt-remove-ns desig)
   (let ((nm (ns-desig->name desig)))
     (hashtable-delete! ns-registry nm)
+    (hashtable-delete! ns-has-vars-set nm)  ; keep the O(1) index honest, else a
+                                            ; later require of nm would no-op
     (vector-for-each
       (lambda (k) (let ((c (hashtable-ref var-table k #f)))
                     (when (and c (string=? (var-cell-ns c) nm)) (hashtable-delete! var-table k))))
