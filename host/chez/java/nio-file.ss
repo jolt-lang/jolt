@@ -697,15 +697,38 @@
       (cond ((> (+ i 3) (string-length m)) #f)
             ((string=? (substring m i (+ i 3)) "osx") #t)
             (else (loop (+ i 1)))))))
+;; struct stat field offsets are platform ABIs, not portable: verified for
+;; Darwin (st_mode@4/st_uid@16, all arches) and x86_64 Linux glibc
+;; (st_mode@24/st_uid@28 -- ground-truthed via offsetof probes). aarch64 Linux
+;; DIFFERS (st_mode@16/st_uid@24), and other hosts are unknown -- reading the
+;; hardcoded offsets there returns garbage, so the mode/uid readers throw a
+;; clear error instead. st_mtim@88 is identical on both Linux ABIs, so the
+;; mtime readers stay unguarded. Add a verified branch (not a guess) when a
+;; new host is brought up.
+(define nio-x86-64-linux?
+  (let* ((m (symbol->string (machine-type))) (n (string-length m)))
+    (and (>= n 2) (string=? (substring m (- n 2) n) "le")
+         (let loop ((i 0))
+           (cond ((> (+ i 2) n) #f)
+                 ((string=? (substring m i (+ i 2)) "a6") #t)
+                 (else (loop (+ i 1))))))))
+(define nio-stat-layout-known? (or nio-macos? nio-x86-64-linux?))
+(define (nio-stat-layout-guard! who)
+  (unless nio-stat-layout-known?
+    (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException"
+      (string-append who " is not supported on this host: unverified struct stat layout for "
+                     (symbol->string (machine-type)))))))
 (define c-stat (jolt-foreign-proc-safe "stat" '(string u8*) 'int))
 (define c-realpath (jolt-foreign-proc-safe "realpath" '(string u8*) 'iptr))
 (define (nio-stat-mode fp)
   (and c-stat
-       (let ((buf (make-bytevector 256 0)))
-         (and (= 0 (c-stat fp buf))
-              (if nio-macos?
-                  (bytevector-u16-ref buf 4 (native-endianness))
-                  (bytevector-u32-ref buf 24 (native-endianness)))))))
+       (begin
+         (nio-stat-layout-guard! "getPosixFilePermissions")
+         (let ((buf (make-bytevector 256 0)))
+           (and (= 0 (c-stat fp buf))
+                (if nio-macos?
+                    (bytevector-u16-ref buf 4 (native-endianness))
+                    (bytevector-u32-ref buf 24 (native-endianness))))))))
 (define (nio-cstr buf)                          ; buf up to the first NUL, as a string
   (let loop ((i 0))
     (cond ((>= i (bytevector-length buf)) (utf8->string buf))
@@ -933,8 +956,10 @@
       (if (= b 0) (list->string (map integer->char (reverse acc)))
           (loop (+ i 1) (cons b acc))))))
 (define (nio-stat-uid fp)
-  (and c-stat (let ((buf (make-bytevector 256 0)))
-                (and (= 0 (c-stat fp buf)) (bytevector-u32-ref buf (if nio-macos? 16 28) (native-endianness))))))
+  (and c-stat (begin
+                (nio-stat-layout-guard! "getOwner")
+                (let ((buf (make-bytevector 256 0)))
+                  (and (= 0 (c-stat fp buf)) (bytevector-u32-ref buf (if nio-macos? 16 28) (native-endianness)))))))
 (define (nio-uid->name uid)
   (and c-getpwuid (let ((pw (c-getpwuid uid))) (and (not (= 0 pw)) (nio-cstr-at (foreign-ref 'iptr pw 0))))))
 ;; user-principal values compare and hash by name; getOwner honors NOFOLLOW.
@@ -943,8 +968,10 @@
                   (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
 (register-hash-arm! nio-userprin? (lambda (x) (string-hash (jhost-state x))))
 (define (nio-lstat-uid fp)
-  (and c-lstat (let ((buf (make-bytevector 256 0)))
-                 (and (= 0 (c-lstat fp buf)) (bytevector-u32-ref buf (if nio-macos? 16 28) (native-endianness))))))
+  (and c-lstat (begin
+                 (nio-stat-layout-guard! "getOwner")
+                 (let ((buf (make-bytevector 256 0)))
+                   (and (= 0 (c-lstat fp buf)) (bytevector-u32-ref buf (if nio-macos? 16 28) (native-endianness)))))))
 (let ((files-owner2
        (list (cons "getOwner" (lambda (p . opts)
                                 (let* ((fp (nfp p))
