@@ -1021,26 +1021,31 @@
   keep their specialization. Used by the inter-procedural recompile."
   [def-node ptmap]
   (let [fnode (get def-node :init)
-        env (mk-env false false)
+        env (if (get @check-mode-box :on)
+              (mk-env true (get @check-mode-box :strict))
+              (mk-env false false))
         shapes (get env :record-shapes)]
     (if (= :fn (get fnode :op))
-      (assoc def-node :init
-             (assoc fnode :arities
-                    (mapv (fn [a]
-                            ;; seed declared record param hints (:phints, name ->
-                            ;; ctor-key) so a record param is typed even with no
-                            ;; inferred caller type — the open-world / cross-ns
-                            ;; case. An inferred type in ptmap wins (it's at least
-                            ;; as precise), so this only fills the gaps.
-                            (let [pt (reduce (fn [m pr]
-                                               (let [nm (nth pr 0)
-                                                     e (get shapes (nth pr 1))]
-                                                  (if (and e (not (contains? m nm)))
-                                                    (assoc m nm (record-type-from-entry e (nth pr 1) type-depth shapes))
-                                                    m)))
-                                             ptmap (get a :phints))]
-                              (assoc a :body (nth (infer (get a :body) pt env) 1))))
-                          (get fnode :arities))))
+      (let [result (assoc def-node :init
+                    (assoc fnode :arities
+                           (mapv (fn [a]
+                                   ;; seed declared record param hints (:phints, name ->
+                                   ;; ctor-key) so a record param is typed even with no
+                                   ;; inferred caller type — the open-world / cross-ns
+                                   ;; case. An inferred type in ptmap wins (it's at least
+                                   ;; as precise), so this only fills the gaps.
+                                   (let [pt (reduce (fn [m pr]
+                                                      (let [nm (nth pr 0)
+                                                            e (get shapes (nth pr 1))]
+                                                        (if (and e (not (contains? m nm)))
+                                                          (assoc m nm (record-type-from-entry e (nth pr 1) type-depth shapes))
+                                                          m)))
+                                                    ptmap (get a :phints))]
+                                     (assoc a :body (nth (infer (get a :body) pt env) 1))))
+                                 (get fnode :arities))))]
+        (when (get @check-mode-box :on)
+          (reset! last-diags-box @(get env :diags)))
+        result)
       def-node)))
 
 ;; --- whole-program param-type fixpoint --------------------------------------
