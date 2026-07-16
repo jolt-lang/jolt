@@ -287,6 +287,7 @@
 (jch-register-supers! "java.lang.ClassCircularityError" '("java.lang.LinkageError"))
 (jch-register-supers! "java.lang.IncompatibleClassChangeError" '("java.lang.LinkageError"))
 (jch-register-supers! "java.lang.AbstractMethodError" '("java.lang.IncompatibleClassChangeError"))
+(jch-register-supers! "java.lang.IllegalAccessError" '("java.lang.IncompatibleClassChangeError"))
 (jch-register-supers! "java.lang.NoClassDefFoundError" '("java.lang.LinkageError"))
 (jch-register-supers! "java.lang.UnsatisfiedLinkError" '("java.lang.LinkageError"))
 (jch-register-supers! "java.lang.VirtualMachineError" '("java.lang.Error"))

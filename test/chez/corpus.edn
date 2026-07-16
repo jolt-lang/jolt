@@ -3986,4 +3986,7 @@
  {:suite "bit-shift / count masking" :label "shift by 65 is shift by 1" :expected "2" :actual "(bit-shift-left 1 65)" :portability :jvm}
  {:suite "var meta / :name symbol" :label "(:name (meta #'map)) is a symbol" :expected "true" :actual "(symbol? (:name (meta #'map)))" :portability :jvm}
  {:suite "var meta / :name symbol" :label "(:name (meta #'clojure.string/join)) name is \"join\"" :expected "\"join\"" :actual "(name (:name (meta #'clojure.string/join)))" :portability :jvm}
+ {:suite "transient / used after persistent!" :label "count on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (count t)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
+ {:suite "transient / used after persistent!" :label "nth on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (nth t 0)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
+ {:suite "transient / used after persistent!" :label "get on invalidated transient throws" :expected "\"java.lang.IllegalAccessError\"" :actual "(try (let [t (transient [1 2 3])] (persistent! t) (get t 0)) (catch IllegalAccessError e (.getName (class e))) (catch Throwable ex (.getName (class ex))))" :portability :jvm}
 ]

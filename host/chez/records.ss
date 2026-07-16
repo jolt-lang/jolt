@@ -521,13 +521,15 @@
 (define %r-jolt-nth jolt-nth)
 (set! jolt-nth
   (case-lambda
-    ((coll i)
-     (if (jolt-transient? coll)
-         (if (eq? (jolt-transient-kind coll) 'vec)
-             (let ((idx (->idx i)))
-               (if (tvec-in-bounds? coll idx) (vector-ref (jolt-transient-buf coll) idx) (error 'nth "index out of bounds")))
-             (%r-jolt-nth (jolt-transient-buf coll) i))
-         (%r-jolt-nth coll i)))
+     ((coll i)
+      (if (jolt-transient? coll)
+          (begin
+            (jolt-trans-check coll "nth")
+            (if (eq? (jolt-transient-kind coll) 'vec)
+                (let ((idx (->idx i)))
+                  (if (tvec-in-bounds? coll idx) (vector-ref (jolt-transient-buf coll) idx) (error 'nth "index out of bounds")))
+                (%r-jolt-nth (jolt-transient-buf coll) i)))
+          (%r-jolt-nth coll i)))
     ((coll i d)
      (if (jolt-transient? coll)
          (if (eq? (jolt-transient-kind coll) 'vec)
