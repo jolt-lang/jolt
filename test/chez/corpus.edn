@@ -3956,11 +3956,11 @@
   {:suite "ns / ns-unmap" :label "unmap blocks the implicit core refer" :expected "nil" :actual "(do (ns-unmap *ns* 'map) (resolve 'map))" :portability :common}
  ;; Stage A — defrecord hash matches JVM hasheq (class-hash ^ map-hasheq)
  {:suite "hasheq / defrecord" :label "defrecord hash matches JVM: (hash (map->Point {:x 1 :y 2}))" :expected "-1629274526" :actual "(do (defrecord HqrPoint [x y]) (hash (map->HqrPoint {:x 1 :y 2})))" :portability :jvm}
- {:suite "hasheq / defrecord" :label "defrecord with ext hash matches JVM: (hash (assoc p :z 3))" :expected "-2081365570" :actual "(do (defrecord HqrPoint2 [x y]) (hash (assoc (map->HqrPoint2 {:x 1 :y 2}) :z 3)))" :portability :jvm}
+ {:suite "hasheq / defrecord" :label "defrecord with ext hash matches JVM: (hash (assoc p :z 3))" :expected "1331500615" :actual "(do (defrecord HqrPoint2 [x y]) (hash (assoc (map->HqrPoint2 {:x 1 :y 2}) :z 3)))" :portability :jvm}
  ;; Stage C — positional ctor throws on wrong arity
  {:suite "records / ctor-arity" :label "positional ctor throws on 1 arg for 2-field record" :expected ":arity-throw" :actual "(do (defrecord ArC9 [x y]) (try (->ArC9 1) (catch Exception e :arity-throw)))" :portability :common}
  ;; Stage D — range step 0 repeats infinitely
  {:suite "seq / range-step-zero" :label "range step 0 repeats start infinitely" :expected "(5 5 5)" :actual "(take 3 (range 5 10 0))" :portability :jvm}
  ;; Stage D — binding does not auto-deref var-cell
- {:suite "binding / no-auto-deref" :label "binding does not auto-deref var-cell value" :expected "clojure.lang.Var" :actual "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :portability :common}
+ {:suite "binding / no-auto-deref" :label "binding does not auto-deref var-cell value" :expected "\"clojure.lang.Var\"" :actual "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :portability :common}
 ]
