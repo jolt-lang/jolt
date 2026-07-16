@@ -422,17 +422,23 @@
     ((jolt-sequential? x) (hash-ordered (jolt-seq x)))
     ;; Collections (map/set) → hashUnordered (Murmur3.hashUnordered)
     ((pmap? x)
-     (let ((result (pmap-fold x
-                    (lambda (k v acc)
-                      (cons (add32 (car acc) (entry-hasheq k v))
-                            (fx+ (cdr acc) 1)))
-                    (cons 0 0))))
-       (mix-coll-hash (car result) (cdr result))))
+     (or (and (not (= 0 (pmap-hasheq x))) (pmap-hasheq x))
+         (let* ((result (pmap-fold x
+                         (lambda (k v acc)
+                           (cons (add32 (car acc) (entry-hasheq k v))
+                                 (fx+ (cdr acc) 1)))
+                         (cons 0 0)))
+                (h (mix-coll-hash (car result) (cdr result))))
+           (pmap-hasheq-set! x h)
+           h)))
     ((pset? x)
-     (let ((result (pset-fold x
-                    (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
-                    (cons 0 0))))
-       (mix-coll-hash (car result) (cdr result))))
+     (or (and (not (= 0 (pset-hasheq x))) (pset-hasheq x))
+         (let* ((result (pset-fold x
+                         (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
+                         (cons 0 0)))
+                (h (mix-coll-hash (car result) (cdr result))))
+           (pset-hasheq-set! x h)
+           h)))
     (else (equal-hash x))))
 
 ;; ============================================================================

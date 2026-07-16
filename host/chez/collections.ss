@@ -53,8 +53,10 @@
 (define pv-width 32)
 (define pv-mask 31)
 (define pv-empty-node (vector))
-(define-record-type (pvec mk-pvec pvec?)
-  (fields cnt shift root tail ent) (nongenerative chez-pvec-v2))
+(define-record-type (pvec %mk-pvec pvec?)
+  (fields cnt shift root tail ent (mutable hasheq)) (nongenerative chez-pvec-v3))
+(define (mk-pvec cnt shift root tail ent)
+  (%mk-pvec cnt shift root tail ent 0))
 
 ;; trailing helpers over Scheme vectors used by the trie
 (define (vec-snoc v x)                 ; copy v with x appended
@@ -297,7 +299,10 @@
 ;; the map is in array mode, or #f once it has grown into hash mode. Equality and
 ;; hashing fold over the entries order-independently, so this only affects
 ;; iteration order (seq/keys/vals/print), matching the JVM.
-(define-record-type pmap (fields root cnt order) (nongenerative chez-pmap-v2))
+(define-record-type pmap (fields root cnt order (mutable hasheq)) (nongenerative chez-pmap-v3))
+(define make-pmap
+  (let ((raw (record-constructor (record-type-descriptor pmap))))
+    (lambda (root cnt order) (raw root cnt order 0))))
 (define empty-pmap (make-pmap empty-hnode 0 '()))          ; {} = empty array map
 (define empty-pmap-hash (make-pmap empty-hnode 0 #f))      ; hash-order backing (sets)
 (define pmap-absent (list 'absent))    ; unique missing-key sentinel
@@ -394,7 +399,10 @@
           ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
           (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
 
-(define-record-type pset (fields m) (nongenerative chez-pset-v1))
+(define-record-type pset (fields m (mutable hasheq)) (nongenerative chez-pset-v2))
+(define make-pset
+  (let ((raw (record-constructor (record-type-descriptor pset))))
+    (lambda (m) (raw m 0))))
 ;; sets are ALWAYS hash-ordered (JVM PersistentHashSet), backed by pmap in hash mode.
 (define empty-pset (make-pset empty-pmap-hash))   ; sets are ALWAYS hash-ordered (JVM PersistentHashSet)
 (define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
@@ -675,16 +683,22 @@
     ;; maps hash as hashUnordered of entries; each entry contributes hash-ordered of [k v]
     ;; (APersistentMap.mapHasheq = Murmur3.hashUnordered, MapEntry.hasheq = ordered [k v])
     ((pmap? x)
-     (let ((result (pmap-fold x
-                    (lambda (k v acc)
-                      (cons (add32 (car acc) (entry-hasheq k v))
-                            (fx+ (cdr acc) 1)))
-                    (cons 0 0))))
-       (mix-coll-hash (car result) (cdr result))))
+     (or (and (not (= 0 (pmap-hasheq x))) (pmap-hasheq x))
+         (let* ((result (pmap-fold x
+                        (lambda (k v acc)
+                          (cons (add32 (car acc) (entry-hasheq k v))
+                                (fx+ (cdr acc) 1)))
+                        (cons 0 0)))
+                (h (mix-coll-hash (car result) (cdr result))))
+           (pmap-hasheq-set! x h)
+           h)))
     ;; sets hash as hashUnordered of elements
     ((pset? x)
-     (let ((result (pset-fold x
-                    (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
-                    (cons 0 0))))
-       (mix-coll-hash (car result) (cdr result))))
+     (or (and (not (= 0 (pset-hasheq x))) (pset-hasheq x))
+         (let* ((result (pset-fold x
+                        (lambda (e acc) (cons (+ (car acc) (jolt-hasheq e)) (fx+ (cdr acc) 1)))
+                        (cons 0 0)))
+                (h (mix-coll-hash (car result) (cdr result))))
+           (pset-hasheq-set! x h)
+           h)))
     (else (equal-hash x))))
