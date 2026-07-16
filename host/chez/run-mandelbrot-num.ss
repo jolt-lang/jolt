@@ -3,14 +3,8 @@
 ;; WP-E numeric inference loop-var fixpoint + dbl-arith? :num/:long
 ;; contagion are working end-to-end.
 
-(load "host/chez/rt.ss")
-(set-chez-ns! "clojure.core")
-(load "host/chez/seed/prelude.ss")
-(load "host/chez/post-prelude.ss")
-(set-chez-ns! "user")
-(load "host/chez/host-contract.ss")
-(load "host/chez/seed/image.ss")
-(load "host/chez/compile-eval.ss")
+(import (chezscheme))
+(load "host/chez/run-gate-harness.ss")
 
 (define analyze          (var-deref "jolt.analyzer" "analyze"))
 (define run-passes       (var-deref "jolt.passes" "run-passes"))

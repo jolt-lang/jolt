@@ -10,14 +10,7 @@
 ;;   chez --script host/chez/run-unit.ss
 (import (chezscheme))
 
-(load "host/chez/rt.ss")
-(set-chez-ns! "clojure.core")
-(load "host/chez/seed/prelude.ss")
-(load "host/chez/post-prelude.ss")
-(set-chez-ns! "user")
-(load "host/chez/host-contract.ss")
-(load "host/chez/seed/image.ss")
-(load "host/chez/compile-eval.ss")
+(load "host/chez/run-gate-harness.ss")
 ;; The loader + install source roots, so a row's (require 'stdlib.ns) resolves the
 ;; .clj overlay from source exactly like joltc — without this, a require of a ns
 ;; whose NATIVE vars exist (e.g. clojure.core.async) silently no-ops via the

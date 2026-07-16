@@ -11,14 +11,7 @@
 ;;
 ;;   chez --script host/chez/run-contagion.ss
 (import (chezscheme))
-(load "host/chez/rt.ss")
-(set-chez-ns! "clojure.core")
-(load "host/chez/seed/prelude.ss")
-(load "host/chez/post-prelude.ss")
-(set-chez-ns! "user")
-(load "host/chez/host-contract.ss")
-(load "host/chez/seed/image.ss")
-(load "host/chez/compile-eval.ss")
+(load "host/chez/run-gate-harness.ss")
 
 (define analyze (var-deref "jolt.analyzer" "analyze"))
 (define set-record-shapes! (var-deref "jolt.passes.types" "set-record-shapes!"))
@@ -30,19 +23,6 @@
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 (define (kw n) (keyword #f n))
-(define (sub? s t)
-  (let ((n (string-length s)) (m (string-length t)))
-    (let loop ((i 0))
-      (cond ((> (+ i m) n) #f)
-            ((string=? (substring s i (+ i m)) t) #t)
-            (else (loop (+ i 1)))))))
-
-(define fails 0) (define total 0)
-(define (check label actual expected)
-  (set! total (+ total 1))
-  (unless (equal? actual expected)
-    (set! fails (+ fails 1))
-    (printf "  FAIL ~a: got ~s expected ~s\n" label actual expected)))
 
 ;; a def's fn arity, from "(def _ (fn [a] ..body..))"
 (define (fn-of src) (jolt-get (anode src) (kw "init")))
@@ -68,9 +48,9 @@
        (spar (jolt-nth res 0))
        (eligible? (jolt-nth res 1))
        (e (emit-spec src spar)))
-  (check "(1) :num beside :double is eligible" eligible? #t)
-  (check "(1) contagion lowers to fl*" (sub? e "fl*") #t)
-  (check "(1) contagion coerces :num operand via exact->inexact" (sub? e "exact->inexact") #t))
+  (gate-check "(1) :num beside :double is eligible" eligible? #t)
+  (gate-check "(1) contagion lowers to fl*" (gate-sub? e "fl*") #t)
+  (gate-check "(1) contagion coerces :num operand via exact->inexact" (gate-sub? e "exact->inexact") #t))
 
 ;; === (2) pure-:num (no :double operand) -> stays generic (the invariant) =========
 (let* ((src "(def _ (fn [a] (* (:n a) (:n a))))")
@@ -78,8 +58,8 @@
        (spar (jolt-nth res 0))
        (eligible? (jolt-nth res 1))
        (e (emit-spec src spar)))
-  (check "(2) pure-:num not eligible (no :double operand)" eligible? #f)
-  (check "(2) pure-:num stays generic (no fl*)" (sub? e "fl*") #f))
+  (gate-check "(2) pure-:num not eligible (no :double operand)" eligible? #f)
+  (gate-check "(2) pure-:num stays generic (no fl*)" (gate-sub? e "fl*") #f))
 
 ;; === (3) genuine :double field -> shared path already unboxes; no clone worth it ==
 (evals "(defrecord DBox [d])")
@@ -90,7 +70,7 @@
 (let* ((src "(def _ (fn [a] (* 2.0 (:d a))))")
        (res (contagion-specialize-arity (arity-of src) "DBox"))
        (eligible? (jolt-nth res 1)))
-  (check "(3) genuine :double field not eligible (shared path already unboxes)" eligible? #f))
+  (gate-check "(3) genuine :double field not eligible (shared path already unboxes)" eligible? #f))
 
 ;; === (4) runtime specialized clone registry + devirt-resolve-fl =================
 (evals "(defprotocol Shape (area [s]))")
@@ -98,18 +78,18 @@
 (evals "(def c (->Circle 7))")
 (define clone-fn (lambda (s) 'CLONE))
 (register-clone "user.Circle" "Shape" "area" clone-fn)
-(check "(4) devirt-resolve-fl finds the clone"
+(gate-check "(4) devirt-resolve-fl finds the clone"
        (eq? (devirt-resolve-fl "user.Circle" "Shape" "area" (var-deref "user" "c")) clone-fn) #t)
 ;; Square.area has no clone -> devirt-resolve-fl falls back to devirt-resolve.
 (evals "(defrecord Square [w] Shape (area [s] (* (:w s) (:w s))))")
 (evals "(def sq (->Square 5))")
-(check "(4) devirt-resolve-fl falls back when no clone (Square.area)"
+(gate-check "(4) devirt-resolve-fl falls back when no clone (Square.area)"
        (eq? (devirt-resolve-fl "user.Square" "Shape" "area" (var-deref "user" "sq"))
             (devirt-resolve "user.Square" "Shape" "area" (var-deref "user" "sq"))) #t)
 ;; a re-extend re-registers the impl -> register-protocol-method invalidates the clone
 ;; for exactly (Circle/Shape/area) -> devirt-resolve-fl falls back to the fresh impl.
 (evals "(extend-type Circle Shape (area [s] (:r s)))")
-(check "(4) clone invalidated on re-register (epoch)"
+(gate-check "(4) clone invalidated on re-register (epoch)"
        (eq? (devirt-resolve-fl "user.Circle" "Shape" "area" (var-deref "user" "c"))
             (devirt-resolve "user.Circle" "Shape" "area" (var-deref "user" "c"))) #t)
 
@@ -130,9 +110,9 @@
 (define bag-ctor (anode "(def bag-use (fn [] (->IBag 7)))"))
 (wp-infer! (jolt-vector bag-def bag-ctor))
 (let ((emitted (emit-top-form (run-passes bag-def (make-analyze-ctx "user")))))
-  (check "(5) eligible impl emits a clone registration" (sub? emitted "register-clone*") #t)
-  (check "(5) clone body lowers to fl*" (sub? emitted "fl*") #t)
-  (check "(5) clone coerces the :num operand via exact->inexact" (sub? emitted "exact->inexact") #t))
+  (gate-check "(5) eligible impl emits a clone registration" (gate-sub? emitted "register-clone*") #t)
+  (gate-check "(5) clone body lowers to fl*" (gate-sub? emitted "fl*") #t)
+  (gate-check "(5) clone coerces the :num operand via exact->inexact" (gate-sub? emitted "exact->inexact") #t))
 
 ;; === (6) a pure-:num impl (no :double operand) emits NO clone ==================
 (evals "(defrecord IPlain [n] P (m [s] (* (:n s) (:n s))))")
@@ -141,7 +121,7 @@
 (define plain-ctor (anode "(def plain-use (fn [] (->IPlain 7)))"))
 (wp-infer! (jolt-vector plain-def plain-ctor))
 (let ((emitted (emit-top-form (run-passes plain-def (make-analyze-ctx "user")))))
-  (check "(6) pure-:num impl emits NO clone" (sub? emitted "register-clone*") #f))
+  (gate-check "(6) pure-:num impl emits NO clone" (gate-sub? emitted "register-clone*") #f))
 (set-direct-link! #f)
 (set-optimize! #f)
 
@@ -177,14 +157,14 @@
 (set-optimize! #t)
 (set-direct-link! #t)
 (let ((e (emit-top-form (run-passes (devirt-def "user.IBag2") (make-analyze-ctx "user")))))
-  (check "(7) devirt site over eligible impl emits devirt-resolve-fl" (sub? e "devirt-resolve-fl") #t))
+  (gate-check "(7) devirt site over eligible impl emits devirt-resolve-fl" (gate-sub? e "devirt-resolve-fl") #t))
 ;; emit + eval the defrecord (registers the clone), then the devirt site resolves it.
 (let ((rec-e (emit-top-form (run-passes ibag2-def (make-analyze-ctx "user"))))
       (site-e (emit-top-form (run-passes (devirt-def "user.IBag2") (make-analyze-ctx "user")))))
   (run-emit rec-e)
   (run-emit site-e)
   (evals "(def an-ibag2 (->IBag2 7))")
-  (check "(7) devirt-resolve-fl resolves the clone, value == dispatch"
+  (gate-check "(7) devirt-resolve-fl resolves the clone, value == dispatch"
          (jolt-invoke (var-deref "user" "usem2") (var-deref "user" "an-ibag2"))
          (evals "(m2 an-ibag2)")))
 ;; a pure-:num impl has no clone-site -> its devirt site stays on devirt-resolve.
@@ -195,8 +175,8 @@
 (contagion-prepass! (jolt-vector iplain2-def (devirt-def "user.IPlain2")) "user")
 (contagion-prepass-done!)
 (let ((e (emit-top-form (run-passes (devirt-def "user.IPlain2") (make-analyze-ctx "user")))))
-  (check "(7) devirt site over pure-:num impl is NOT devirt-resolve-fl" (sub? e "devirt-resolve-fl") #f)
-  (check "(7) ...it stays on the ordinary devirt-resolve" (sub? e "devirt-resolve ") #t))
+  (gate-check "(7) devirt site over pure-:num impl is NOT devirt-resolve-fl" (gate-sub? e "devirt-resolve-fl") #f)
+  (gate-check "(7) ...it stays on the ordinary devirt-resolve" (gate-sub? e "devirt-resolve ") #t))
 (set-direct-link! #f)
 (set-optimize! #f)
 
@@ -222,8 +202,8 @@
 (set-optimize! #t)
 (set-direct-link! #t)
 (let ((e (emit-top-form (run-passes acc8-def (make-analyze-ctx "user")))))
-  (check "(8) caller accumulator over clone-resolving devirt site -> fl+" (sub? e "fl+") #t)
-  (check "(8) ...and the devirt call resolves the clone (devirt-resolve-fl)" (sub? e "devirt-resolve-fl") #t))
+  (gate-check "(8) caller accumulator over clone-resolving devirt site -> fl+" (gate-sub? e "fl+") #t)
+  (gate-check "(8) ...and the devirt call resolves the clone (devirt-resolve-fl)" (gate-sub? e "devirt-resolve-fl") #t))
 ;; the SAME caller shape over a PIC/megamorphic site (unseeded `s`) does not resolve
 ;; the contagion clone — no devirt-resolve-fl. (Whether it lowers to fl+ depends on
 ;; shared rtinfo/pm-rets state and is unreliable in this synthetic gate; the real
@@ -232,10 +212,8 @@
 ;; baseline.)
 (define acc8-pic (anode "(def acc8-pic (fn [s] (+ 0.0 (m3 s))))"))
 (let ((e (emit-top-form (run-passes acc8-pic (make-analyze-ctx "user")))))
-  (check "(8) PIC/megamorphic site does NOT resolve the contagion clone" (sub? e "devirt-resolve-fl") #f))
+  (gate-check "(8) PIC/megamorphic site does NOT resolve the contagion clone" (gate-sub? e "devirt-resolve-fl") #f))
 (set-direct-link! #f)
 (set-optimize! #f)
 
-(if (= fails 0)
-    (begin (printf "contagion gate: ~a/~a passed\n" total total) (exit 0))
-    (begin (printf "contagion gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
+(gate-summary "contagion")

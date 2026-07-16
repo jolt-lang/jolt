@@ -8,14 +8,7 @@
 ;;
 ;;   chez --script host/chez/run-protoret.ss
 (import (chezscheme))
-(load "host/chez/rt.ss")
-(set-chez-ns! "clojure.core")
-(load "host/chez/seed/prelude.ss")
-(load "host/chez/post-prelude.ss")
-(set-chez-ns! "user")
-(load "host/chez/host-contract.ss")
-(load "host/chez/seed/image.ss")
-(load "host/chez/compile-eval.ss")
+(load "host/chez/run-gate-harness.ss")
 
 (define analyze (var-deref "jolt.analyzer" "analyze"))
 (define set-record-shapes! (var-deref "jolt.passes.types" "set-record-shapes!"))
@@ -25,15 +18,7 @@
 (define emit (var-deref "jolt.backend-scheme" "emit"))
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
-(define (sub? s t)(let((n(string-length s))(m(string-length t)))(let loop((i 0))(cond((>(+ i m)n)#f)((string=?(substring s i(+ i m))t)#t)(else(loop(+ i 1)))))))
-
-(define fails 0) (define total 0)
-(define (check label actual expected)
-  (set! total (+ total 1))
-  (unless (equal? actual expected)
-    (set! fails (+ fails 1))
-    (printf "  FAIL ~a: got ~s expected ~s\n" label actual expected)))
-
+(define (gate-sub? s t)(let((n(string-length s))(m(string-length t)))(let loop((i 0))(cond((>(+ i m)n)#f)((string=?(substring s i(+ i m))t)#t)(else(loop(+ i 1)))))))
 (evals "(defrecord R [^double k])")
 (evals "(defprotocol P (m [x]))")
 (evals "(defrecord A [v] P (m [x] (->R 1.0)))")
@@ -57,14 +42,12 @@
 
 ;; m's impls all return R -> (:k (m a)) reads off an R -> bare-index + unbox.
 (define fe (emit (run-passes f (make-analyze-ctx "user"))))
-(check "monomorphic protocol return direct-accesses the field read" (sub? fe "jrec1-f0") #t)
-(check "monomorphic protocol return unboxes the ^double field" (sub? fe "fl") #t)
+(gate-check "monomorphic protocol return direct-accesses the field read" (gate-sub? fe "jrec1-f0") #t)
+(gate-check "monomorphic protocol return unboxes the ^double field" (gate-sub? fe "fl") #t)
 
 ;; q's impls return R and a number -> joined to non-record -> stays generic (sound).
 (define ge (emit (run-passes g (make-analyze-ctx "user"))))
-(check "mixed-return protocol keeps generic jolt-get" (sub? ge "jolt-get") #t)
-(check "mixed-return protocol does not bare-index" (sub? ge "jrec-field-at") #f)
+(gate-check "mixed-return protocol keeps generic jolt-get" (gate-sub? ge "jolt-get") #t)
+(gate-check "mixed-return protocol does not bare-index" (gate-sub? ge "jrec-field-at") #f)
 
-(if (= fails 0)
-    (begin (printf "protoret gate: ~a/~a passed\n" total total) (exit 0))
-    (begin (printf "protoret gate: ~a/~a passed (~a failed)\n" (- total fails) total fails) (exit 1)))
+(gate-summary "protoret")
