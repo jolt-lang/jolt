@@ -1512,5 +1512,6 @@
 (def-var! "clojure.core" "protocol-dispatch3" (lambda (pn mn obj a b) (protocol-dispatch3 pn mn obj a b)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)
+(def-var! "jolt.host" "type-satisfies?" type-satisfies?)
 (def-var! "clojure.core" "make-reified" (lambda (mm . rest) (apply make-reified mm rest)))
 (def-var! "clojure.core" "record-method-dispatch" (lambda (obj m rest) (record-method-dispatch obj m rest)))

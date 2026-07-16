@@ -538,11 +538,13 @@
         suffix? (fn [long short]
                   (let [d (str "." short)]
                     (and (> (count long) (count d))
-                         (= (subs long (- (count long) (count d))) d))))]
-    (boolean (some (fn [t]
-                     (let [tn (name t)]
-                       (or (= tn want) (suffix? tn want) (suffix? want tn))))
-                   (extenders protocol)))))
+                         (= (subs long (- (count long) (count d))) d))))
+        pn-str (some-> protocol :name name)]
+    (boolean (or (some (fn [t]
+                         (let [tn (name t)]
+                           (or (= tn want) (suffix? tn want) (suffix? want tn))))
+                       (extenders protocol))
+                 (and pn-str (jolt.host/type-satisfies? want pn-str))))))
 
 ;; The canonical name for a protocol-extension type: a symbol/keyword via name, a
 ;; string as-is, nil as "nil" (extends on nil values), and a Class VALUE — e.g.
