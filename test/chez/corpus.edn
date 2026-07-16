@@ -3974,4 +3974,5 @@
  {:suite "macros / refer-clojure resolve" :label "refer-clojure has :macro true meta" :expected "true" :actual "(:macro (meta (resolve 'refer-clojure)))" :portability :common}
  {:suite "macros / refer-clojure resolve" :label "refer-clojure is in ns-map" :expected "true" :actual "(contains? (ns-map 'clojure.core) 'refer-clojure)" :portability :common}
   {:suite "macros / vswap! divergence" :label "vswap! is a macro on JVM, fn on jolt" :expected "false" :actual "(boolean (:macro (meta (resolve 'vswap!))))" :portability :common}
+  {:suite "clojure.core / select-keys" :label "select-keys preserves metadata" :expected "{:type :test}" :actual "(meta (select-keys (with-meta {:a 1 :b 2} {:type :test}) [:a]))" :portability :common}
 ]

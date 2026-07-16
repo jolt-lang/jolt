@@ -26,7 +26,7 @@
 ;; canonicalizes collection keys).
 (defn select-keys [map keyseq]
   (reduce (fn [m k] (if (contains? map k) (assoc m k (get map k)) m))
-          {} keyseq))
+          (with-meta {} (meta map)) keyseq))
 
 (defn some-vals
   "Returns a map with only the non-nil values of map m. Returns nil if m has no
