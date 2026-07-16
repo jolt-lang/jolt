@@ -212,7 +212,6 @@
              (raise (condition (make-message-condition (jolt-throw-message v))
                                (make-jolt-throw-condition v))))))
 (define (jolt-unwrap-throw x)
-  (jolt-throw-cont #f)
   (if (jolt-throw-condition? x) (jolt-throw-condition-value x) x))
 ;; ex-info builds a jolt-ex-info-record (NOT a pmap — pmap?/coll?/seqable?/ifn?
 ;; /associative?/counted? are naturally false). Arity 2 (msg data) or 3 (msg data cause).
