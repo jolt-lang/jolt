@@ -256,6 +256,7 @@
 (jch-register-supers! "java.util.NoSuchElementException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.io.UncheckedIOException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.util.concurrent.RejectedExecutionException" '("java.lang.RuntimeException"))
+(jch-register-supers! "java.util.concurrent.ExecutionException" '("java.lang.Exception"))
 (jch-register-supers! "java.time.DateTimeException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.time.format.DateTimeParseException" '("java.time.DateTimeException"))
 (jch-register-supers! "java.text.ParseException" '("java.lang.Exception"))

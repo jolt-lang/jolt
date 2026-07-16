@@ -55,14 +55,17 @@
            (condition-broadcast (jolt-future-cv f))))))
     f))
 
-;; Final value of a settled future (called OUTSIDE the lock): re-raise a captured
-;; throw, signal a cancellation, else the value.
+;; Final value of a settled future (called OUTSIDE the lock): wrap a captured
+;; throw in an ExecutionException (JVM semantics), signal a cancellation, else
+;; the value. The original exception is stored as the cause so ex-cause works.
 (define (jolt-future-finish f)
   (cond
     ((jolt-future-cancelled? f)
      (jolt-throw (jolt-ex-info "Future cancelled" (jolt-hash-map))))
     ((jolt-future-ok? f) (jolt-future-payload f))
-    (else (raise (jolt-future-payload f)))))
+    (else (jolt-throw (jolt-host-throwable "java.util.concurrent.ExecutionException"
+                        (jolt-str-render-one (jolt-future-payload f))
+                        (jolt-future-payload f))))))
 
 (define (jolt-future-deref f)
   (with-mutex (jolt-future-mu f)
