@@ -120,11 +120,12 @@ allowlisted in `known-divergences.edn`:
   `Cycle`, `PersistentVector$ChunkedSeq`, `StringSeq`, `KeySeq`/`ValSeq`, `RSeq`,
   `ArraySeq`, `SubVector`), so `(class …)` differs. `instance?
   clojure.lang.ISeq/Sequential` and all values/laziness are correct.
-- **`:chunking-model`** (`chunking-model / …` suite, jolt-mm6v) — jolt seqs are
-  unchunked: forcing one element realizes one, where JVM realizes a ~32-element
-  chunk; `mapcat`/`dedupe` realize 0 at construction where JVM forces the first
-  chunk. Strictly finer-grained laziness, decided after the chunk fast path
-  (jolt-j9dz) was made O(n).
+- **`:chunking-model`** (`chunking-model / …` suite, jolt-mm6v) — jolt chunks
+  range/vector seqs through `map`/`filter` like the JVM (forcing one element
+  realizes the whole ~32-element chunk). What remains finer-grained:
+  `mapcat`/`dedupe` realize 0 at construction, where the JVM's
+  `(apply concat …)` / `sequence` transformer force the first chunk just to
+  build the seq.
 
 ## Narrow integer types
 
@@ -235,9 +236,6 @@ documented model divergence — nothing in the baseline is an unexplained bug:
   the rest of a realized chain (a plain seq cell on jolt, a cached LazySeq on
   the JVM), `p/lazy-seq?` on forced rest chains, and chunk-granularity
   realization counts (lazy-seq namespace).
-- **stm-refs** (`coverage.md`): the `(ref …)`/`dosync` sections of the watch
-  namespaces (add-watch/remove-watch) — refs are out of scope pending the
-  concurrency design note.
 - **parse-uuid strictness** (spec §9, parse-uuid S3): jolt is deliberately
   strict where the reference's java.util.UUID accepts non-canonical forms
   like `"0-0-0-0-0"`.

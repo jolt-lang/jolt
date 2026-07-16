@@ -241,10 +241,12 @@ reproduces the checked-in seed byte-for-byte).
 
 Jolt targets Clojure semantics but runs on Chez, not the JVM. Most portable
 Clojure runs unchanged — persistent collections (32-way-trie vectors, HAMT
-maps/sets), the numeric tower (exact integers, bignums, ratios, doubles), lazy
+maps/sets), the numeric tower (exact integers, bignums, ratios, doubles,
+`BigDecimal` with `M` literals and `with-precision`), lazy
 and infinite sequences, transducers, destructuring, multimethods with
 hierarchies, protocols/records (`deftype`/`defrecord`/`reify`/`extend-protocol`),
-metadata, namespaces, atoms, `future`/`promise`/`agent`/`pmap`,
+metadata, namespaces, atoms, refs/STM (`ref`/`dosync`/`alter`/`commute`),
+`future`/`promise`/`agent`/`pmap`,
 `clojure.core.async`, runtime `eval`/`load-string`/`defmacro`, and the full
 reader (`#()`, `#_`, `#?`, tagged literals, `#"…"`) all behave as on the JVM.
 `=` is category-aware (`(= 3 3.0)` ⇒ `false`) and `==` is value-equality, as in
@@ -256,11 +258,6 @@ Clojure. The genuine divergences:
   class. See [Host Interop](https://jolt-lang.github.io/docs/host-interop.html). To call C libraries
   directly, use the `jolt.ffi` foreign-function interface (how the db and
   http-client libraries bind SQLite/libpq and sockets/OpenSSL/zlib).
-- **No `BigDecimal`.** `decimal?` is always false and there is no `M` literal;
-  the rest of the numeric tower matches the JVM.
-- **No STM.** No `ref`/`dosync`/`alter`/`commute` — coordinated shared state uses
-  atoms (per-atom mutex, JVM-style CAS). The concurrency primitives above are
-  otherwise present and run on a shared heap.
 - **Regex engine.** Patterns compile through
   [irregex](https://github.com/ashinn/irregex) (vendored), not
   `java.util.regex`; common patterns work, Java-specific features can differ.
