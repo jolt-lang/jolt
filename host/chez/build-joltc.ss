@@ -85,7 +85,7 @@
             (when (or (str-suffix? rel ".clj") (str-suffix? rel ".cljc"))
               (put-string out (string-append
                 "(register-embedded-resource! " (ei-str-lit rel) " "
-                (ei-str-lit (read-file-string abs)) ")\n")))))
+                (ei-bytes-lit (read-file-string abs)) ")\n")))))
         (bld-walk-files root "" '())))
     ldr-install-roots))
 
@@ -112,7 +112,7 @@
     (lambda (path)
       (put-string out (string-append
         "(register-embedded-resource! " (ei-str-lit path) " "
-        (ei-str-lit (read-file-string path)) ")\n")))
+        (ei-bytes-lit (read-file-string path)) ")\n")))
     (jb-collect-load-paths)))
 
 ;; The launcher (Chez scheme-start): replicates host/chez/cli.ss but reads argv

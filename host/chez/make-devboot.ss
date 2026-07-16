@@ -57,15 +57,15 @@
   ;; build.ss inlined (for `jolt build` from the cache).
   (put-string out "\n;; === embedded build driver ===\n")
   (bld-inline-line "(load \"host/chez/build.ss\")" out 0)
-  ;; Runtime source embeds.
+  ;; Runtime source embeds (bytevector values, 1B/char).
   (put-string out "\n;; === embedded runtime source ===\n")
   (for-each (lambda (path)
               (put-string out
                 (string-append
                   "(register-embedded-resource! " (ei-str-lit path) " "
-                  (ei-str-lit (read-file-string path)) ")\n")))
+                  (ei-bytes-lit (read-file-string path)) ")\n")))
             db-paths)
-  ;; jolt-core + stdlib source embeds.
+  ;; jolt-core + stdlib source embeds (bytevector values, 1B/char).
   (put-string out "\n;; === embedded jolt-core + stdlib source ===\n")
   (for-each
     (lambda (root)
@@ -76,7 +76,7 @@
               (put-string out
                 (string-append
                   "(register-embedded-resource! " (ei-str-lit rel) " "
-                  (ei-str-lit (read-file-string abs)) ")\n")))))
+                  (ei-bytes-lit (read-file-string abs)) ")\n")))))
         (bld-walk-files root "" '())))
     ldr-install-roots)
   ;; Preload jolt.main + jolt.deps into the image.
