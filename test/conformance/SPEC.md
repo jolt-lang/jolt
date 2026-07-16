@@ -153,6 +153,35 @@ the double VALUE, so a double below Float/MIN_VALUE stays nonzero and float
 rounding does not occur (the accepted no-single-float residue, baselined with
 `:integer-box-model`'s class residue).
 
+## Strings are codepoint-indexed
+
+jolt strings are Chez strings (`:string-model`, `string-model / …` suite):
+codepoint-indexed, no UTF-16 surrogate pairs. `count`/`seq`/`subs`/`nth`/
+`clojure.string/reverse` index whole codepoints, so an astral character is one
+element where the JVM counts two surrogate `char`s — `(count "😀")` is 1 (JVM
+2), and `subs` can never split a character in half. Values are correct per
+codepoint; only code that depends on UTF-16 unit arithmetic diverges.
+Substrate-inherent, same acceptance shape as the integer-box model. Note
+`hash` parity for strings is still JVM-exact — hashing converts to UTF-16
+units internally.
+
+Two adjacent accepted divergences: `compare-and-set!` compares with value
+equality (`:concurrency-model` — Chez immediates and reconstructed values have
+no stable reference identity), and `subvec` is an eager O(n) copy rather than
+an O(1) view (value-identical; the class residue is `:seq-type-model`, but the
+cost contract differs — don't rely on O(1) `subvec` of huge vectors).
+
+## Permissive supersets
+
+Where the JVM throws on an operation with one reasonable meaning, jolt may
+succeed (`:permissive`, `permissive / …` suites): `(ex-info msg nil)` is
+accepted, `count` works on an eduction, `keys` works on a vector of pairs,
+`(empty (first {:a 1}))` is `[]`. The reader also accepts nested `#()`
+literals, and `#=(…)` reads as inert data and never evaluates, regardless of
+`*read-eval*` (a deliberate hardening; JVM evaluates it by default). Portable
+code that runs on the JVM behaves identically on jolt; only code that RELIES
+on the JVM throwing observes a difference.
+
 ## Number operations
 
 Binary arithmetic and comparisons follow the JVM's `Numbers.ops(x, y)` category

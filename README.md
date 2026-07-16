@@ -258,6 +258,9 @@ Clojure. The genuine divergences:
   class. See [Host Interop](https://jolt-lang.github.io/docs/host-interop.html). To call C libraries
   directly, use the `jolt.ffi` foreign-function interface (how the db and
   http-client libraries bind SQLite/libpq and sockets/OpenSSL/zlib).
+- **Codepoint strings.** Strings are Chez strings — codepoint-indexed, no
+  UTF-16 surrogate pairs. `(count "😀")` is 1 (JVM: 2) and `subs` never splits
+  a character; only code doing UTF-16 unit arithmetic notices.
 - **Regex engine.** Patterns compile through
   [irregex](https://github.com/ashinn/irregex) (vendored), not
   `java.util.regex`; common patterns work, Java-specific features can differ.
