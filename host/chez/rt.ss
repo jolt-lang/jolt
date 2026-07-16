@@ -43,6 +43,20 @@
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
+;; --- version ------------------------------------------------------------------
+;; One source of truth for the jolt version string, read by jolt.host/jolt-version
+;; (loader.ss), (System/getProperty "jolt.version"), and clojure.core/*jolt-version*
+;; (dynamic-var-defaults.ss). A self-contained binary bakes the release tag by
+;; emitting (define jolt-baked-version-early "…") at the TOP of flat.ss
+;; (build-joltc.ss) — early so every consumer that loads later sees it. A dev run
+;; has no baked define and falls back to $JOLT_VERSION (bin/joltc sets it from
+;; `git describe`), then "dev".
+(define (jolt-version-string)
+  (or (and (top-level-bound? 'jolt-baked-version-early)
+           (top-level-value 'jolt-baked-version-early))
+      (let ((v (getenv "JOLT_VERSION"))) (and v (> (string-length v) 0) v))
+      "dev"))
+
 ;; --- rt arithmetic / logic shims (named in the emitter's native-ops) ----------
 (define (jolt-inc x) (+ x 1))
 (define (jolt-dec x) (- x 1))

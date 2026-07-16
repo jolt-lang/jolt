@@ -163,6 +163,11 @@
 
 (display "build-joltc: emitting flat source\n")
 (let ((out (open-output-file jb-flat-ss 'replace)))
+  ;; Bake the version FIRST: rt.ss's jolt-version-string probes this binding via
+  ;; top-level-bound?, and load-time consumers (*jolt-version* in
+  ;; dynamic-var-defaults.ss) read it while the runtime below loads.
+  (put-string out (string-append ";; === baked version ===\n(define jolt-baked-version-early "
+                                 (ei-str-lit jb-version) ")\n"))
   ;; full runtime + compiler image: keep the compiler (joltc evals at runtime).
   (bld-emit-runtime out #f #f)
   (put-string out "\n;; === build driver (inlined for self-contained `jolt build`) ===\n")
@@ -171,10 +176,6 @@
   (jb-emit-runtime-embeds out)
   (put-string out "\n;; === embedded jolt-core + stdlib source ===\n")
   (jb-emit-source-embeds out)
-  ;; Bake the version into the saved heap (runs at heap-build; loader.ss defined
-  ;; jolt-baked-version above, so this set! resolves).
-  (put-string out (string-append "\n;; === baked version ===\n(set! jolt-baked-version "
-                                 (ei-str-lit jb-version) ")\n"))
   ;; Preload jolt.main + jolt.deps into the image so CLI dispatch (every
   ;; run/build/path/repl command) skips the ~0.14s source-load.
   (put-string out "\n;; === AOT jolt.main + jolt.deps ===\n")

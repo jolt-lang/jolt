@@ -430,6 +430,7 @@
   (let ((set-val (hashtable-ref sys-prop-table k #f)))
     (cond (set-val set-val)
           ((string=? k "os.name") sys-os-name)
+          ((string=? k "jolt.version") (jolt-version-string))
           ((string=? k "line.separator") "\n")
           ((string=? k "file.separator") "/")
           ((string=? k "path.separator") ":")
