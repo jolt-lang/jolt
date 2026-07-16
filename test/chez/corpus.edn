@@ -3981,4 +3981,7 @@
  {:suite "future / ExecutionException" :label "deref of failed future throws ExecutionException wrapping cause" :expected "\"m\"" :actual "(try @(future (throw (ex-info \"m\" {:a 1}))) (catch java.util.concurrent.ExecutionException e (.getMessage (ex-cause e))))" :portability :jvm}
  {:suite "string/split zero-width" :label "split on #\"\" returns individual chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"\")" :portability :jvm}
  {:suite "string/split zero-width" :label "split on #\"x*\" splits between chars" :expected "[\"a\" \"b\" \"c\"]" :actual "(clojure.string/split \"abc\" #\"x*\")" :portability :jvm}
+ {:suite "bit-shift / count masking" :label "shift by 64 is shift by 0 (6-bit mask)" :expected "1" :actual "(bit-shift-left 1 64)" :portability :jvm}
+ {:suite "bit-shift / count masking" :label "shift by -1 is shift by 63" :expected "-9223372036854775808" :actual "(bit-shift-left 1 -1)" :portability :jvm}
+ {:suite "bit-shift / count masking" :label "shift by 65 is shift by 1" :expected "2" :actual "(bit-shift-left 1 65)" :portability :jvm}
 ]
