@@ -780,4 +780,5 @@
   {:suite "getenv" :expr "(= (get (System/getenv) \"HOME\") (System/getenv \"HOME\"))" :expected "true"}
   ;; Stage C — setProperty visible in getProperties
   {:suite "sysprops" :expr "(do (System/setProperty \"zz.k\" \"v\") (get (System/getProperties) \"zz.k\"))" :expected "v"}
+  {:suite "sorted / subseq laziness" :expr "(first (subseq (into (sorted-map) (map (fn [i] [i i]) (range 100000))) > 50000))" :expected "[50001 50001]"}
 ]
