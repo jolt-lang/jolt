@@ -46,11 +46,11 @@
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
 
-;; Default false: typos and missing requires are compile-time errors,
-;; matching JVM. The nREPL server binds this to true so interactive
-;; development (where defmulti/defmethod forward references are
-;; legitimate) still works.
-(def ^:dynamic *allow-unresolved-vars* false)
+;; Default true: unresolved symbols auto-intern via late-bind, matching the
+;; preexisting Chez back-end behavior. The CLI -e path binds this to false so
+;; typos and missing requires throw at the top level. nREPL binds it back to
+;; true for interactive use.
+(def ^:dynamic *allow-unresolved-vars* true)
 
 (def ^:private gensym-counter (atom 0))
 (defn- gen-name [prefix]

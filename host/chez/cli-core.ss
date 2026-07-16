@@ -44,10 +44,17 @@
 ;; Evaluate EXPR (a string of one-or-more forms) with *command-line-args* bound
 ;; to app-args. print? echoes the final value (blank for nil), as `-e` does; a
 ;; `-` stdin PROGRAM runs as a script and suppresses it.
+;; Binds *allow-unresolved-vars* to #f so bare symbols that don't resolve in the
+;; global scope throw, matching JVM. Inside fn bodies the analyzer still
+;; late-binds so defmulti/defmethod forward references work.
 (define (jolt-run-expr-string expr app-args print?)
-  (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args))))
+  (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args)))
+        (av-cell (jolt-var "jolt.analyzer" "*allow-unresolved-vars*")))
     (jolt-push-thread-bindings
-      (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
+      (if av-cell
+          (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla
+                         av-cell #f)
+          (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla)))
     (let ((result (jolt-final-str
                     (jolt-compile-eval (string-append "(do " expr ")") "user"))))
       (jolt-pop-thread-bindings)

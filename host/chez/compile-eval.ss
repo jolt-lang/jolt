@@ -211,10 +211,45 @@
 
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
+;; Rewrite bare (require ...)/(use ...) into (require (quote ...)) — wrap
+;; every vector / list argument in quote so namespace-name symbols inside
+;; those arguments survive strict analysis. ce-scan-requires! has already
+;; registered the aliases by this point (it scans the ORIGINAL form before
+;; rewrite), so a subsequent form referencing the alias still resolves.
+(define (ce-require-quote-args form)
+  (if (and (cseq? form) (cseq-list? form))
+      (let ((items (seq->list form)))
+        (if (null? items)
+            form
+            (let* ((h (car items))
+                   (hn (and (symbol-t? h) (symbol-t-name h))))
+              (cond
+                ((and hn (string=? hn "quote")) form)
+                ((and hn (or (string=? hn "require") (string=? hn "use")))
+                 (list->cseq
+                   (cons h
+                     (map (lambda (a)
+                            (if (or (cseq? a) (jolt-vector? a))
+                                ;; don't double-quote an already-quoted arg
+                                (if (and (cseq? a) (cseq-list? a)
+                                         (let ((items2 (seq->list a)))
+                                           (and (pair? items2)
+                                                (let ((ah (car items2)))
+                                                  (and (symbol-t? ah)
+                                                       (string=? (symbol-t-name ah)
+                                                                  "quote"))))))
+                                    a
+                                    (list->cseq (list (jolt-symbol #f "quote") a)))
+                                a))
+                          (cdr items)))))
+                (else (list->cseq
+                        (map ce-require-quote-args items)))))))
+      form))
+
 (define (jolt-analyze-emit-form form ns)
   (ce-scan-requires! form ns)
   (let* ((ctx (make-analyze-ctx ns))
-         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx form) ctx)))
+         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (ce-require-quote-args form)) ctx)))
     (jolt-ce-emit ir)))
 
 ;; --- runtime defmacro -------------------------------------------------------
@@ -305,20 +340,30 @@
 ;; built into opaque values the way read-string does. `data-readers-active` and
 ;; `ldr-apply-readers` come from the loader, present in the CLI runtime; guard the
 ;; read so load-string still works in a bootstrap/build context without it.
+;; Establishes default thread bindings for JVM-compiler vars so vendored code
+;; that (set! *warn-on-reflection* …) at the file level finds a thread-local slot.
 (define (jolt-load-string s)
   (let ((end (string-length s))
         (drl (guard (_ (#t #f)) data-readers-active)))
-    (let loop ((i 0) (result jolt-nil))
-      (if (>= i end)
-          result
-          (let-values (((form j) (rdr-read-form s i end)))
-            (if (> j i)
-                (loop j (if (rdr-eof? form)
-                            result
-                            (jolt-compile-eval-form
-                             (if drl (ldr-apply-readers form) form)
-                             (chez-current-ns))))
-                result))))))
+    (jolt-push-thread-bindings
+      (jolt-hash-map
+        (jolt-var "clojure.core" "*warn-on-reflection*")
+          (var-cell-root (jolt-var "clojure.core" "*warn-on-reflection*"))
+        (jolt-var "clojure.core" "*assert*")
+          (var-cell-root (jolt-var "clojure.core" "*assert*"))))
+    (let ((result (let loop ((i 0) (result jolt-nil))
+                    (if (>= i end)
+                        result
+                        (let-values (((form j) (rdr-read-form s i end)))
+                          (if (> j i)
+                              (loop j (if (rdr-eof? form)
+                                          result
+                                          (jolt-compile-eval-form
+                                           (if drl (ldr-apply-readers form) form)
+                                           (chez-current-ns))))
+                              result))))))
+      (jolt-pop-thread-bindings)
+      result)))
 
 ;; eval / load-string are FUNCTIONS on the spine (the compiler image is resident
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and

@@ -287,11 +287,20 @@
 ;; load after this file.
 (define ldr-file-cell #f)
 (define ldr-spath-cell #f)
+(define ldr-warn-cell #f)
+(define ldr-assert-cell #f)
+(define ldr-allow-cells (make-hashtable string-hash string=?))
 (define (ldr-with-file-vars path thunk)
   (unless ldr-file-cell
     (set! ldr-file-cell (var-cell-lookup "clojure.core" "*file*"))
-    (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*")))
-  (if (not (and ldr-file-cell ldr-spath-cell))
+    (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*"))
+    (set! ldr-warn-cell (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
+    (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*"))
+    ;; allow unresolved vars inside loaded files so vendored code works
+    (let ((av-cell (var-cell-lookup "jolt.analyzer" "*allow-unresolved-vars*")))
+      (when av-cell
+        (hashtable-set! ldr-allow-cells "av" av-cell))))
+  (if (not (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell))
       (thunk)
       (let ((name (let loop ((i (- (string-length path) 1)))
                     (cond ((< i 0) path)
@@ -299,9 +308,16 @@
                            (substring path (+ i 1) (string-length path)))
                           (else (loop (- i 1)))))))
         (dynamic-wind
-          (lambda () (dyn-binding-stack
-                      (cons (list (cons ldr-file-cell path) (cons ldr-spath-cell name))
-                            (dyn-binding-stack))))
+          (lambda ()
+            (let* ((base (list (cons ldr-file-cell path)
+                               (cons ldr-spath-cell name)
+                               (cons ldr-warn-cell (var-cell-root ldr-warn-cell))
+                               (cons ldr-assert-cell (var-cell-root ldr-assert-cell))))
+                   (av-cell (hashtable-ref ldr-allow-cells "av" #f))
+                   (frame (if av-cell
+                              (cons (cons av-cell #t) base)
+                              base)))
+              (dyn-binding-stack (cons frame (dyn-binding-stack)))))
           thunk
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
 
