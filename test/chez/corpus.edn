@@ -3794,6 +3794,8 @@
   {:suite "conformance / hasheq" :label "hash string s" :expected "1975881410" :actual "(hash \"s\")" :portability :common}
   {:suite "conformance / hasheq" :label "hash string hello" :expected "1715862179" :actual "(hash \"hello\")" :portability :common}
   {:suite "conformance / hasheq" :label "hash empty string" :expected "0" :actual "(hash \"\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash string astral-plane (emoji)" :expected "-1934073014" :actual "(hash \"😀\")" :portability :common}
+  {:suite "conformance / hasheq" :label "hash string mixed BMP+astral" :expected "1898100721" :actual "(hash \"a😀b\")" :portability :common}
   {:suite "conformance / hasheq" :label "hash fixnum 42" :expected "1871679806" :actual "(hash 42)" :portability :common}
   {:suite "conformance / hasheq" :label "hash fixnum 0" :expected "0" :actual "(hash 0)" :portability :common}
   {:suite "conformance / hasheq" :label "hash fixnum -7" :expected "-1703207563" :actual "(hash -7)" :portability :common}

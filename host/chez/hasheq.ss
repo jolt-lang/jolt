@@ -185,57 +185,67 @@
 ;; String hash — Java String.hashCode() over UTF-16 code units
 ;; ============================================================================
 
-;; Convert a Chez codepoint string to a vector of UTF-16 code units.
-;; A codepoint >= #x10000 contributes a surrogate pair (high, low).
-(define (string->utf16-units s)
-  (let* ((len (string-length s))
-         (v (make-vector len)))
-    (let loop ((i 0) (j 0))
-      (if (fx>=? i len)
-          (let ((nv (make-vector j)))
-            (do ((k 0 (fx+ k 1))) ((fx>=? k j)) (vector-set! nv k (vector-ref v k)))
-            nv)
+;; Java String.hashCode(): s[0]*31^(n-1) + s[1]*31^(n-2) + ... + s[n-1]
+;; over UTF-16 code units. Iterates the string's codepoints directly,
+;; computing surrogate pairs inline for codepoints >= #x10000 — no
+;; intermediate vector allocation.
+(define (java-string-hashcode s)
+  (let ((len (string-length s)))
+    (let loop ((i 0) (h 0))
+      (if (#3%fx>=? i len)
+          (i32 h)
           (let ((cp (char->integer (string-ref s i))))
-            (if (fx<? cp #x10000)
-                (begin (vector-set! v j cp) (loop (fx+ i 1) (fx+ j 1)))
-                (let* ((cp2 (fx- cp #x10000))
+            (if (#3%fx<? cp #x10000)
+                (loop (#3%fx+ i 1) (i32 (#3%fx+ (#3%fx* 31 h) cp)))
+                (let* ((cp2 (#3%fx- cp #x10000))
                        (high (fxior #xD800 (fxsra cp2 10)))
                        (low  (fxior #xDC00 (fxand cp2 #x3FF))))
-                  (when (fx>=? (fx+ j 1) (vector-length v))
-                    (let ((nv (make-vector (fx* (vector-length v) 2))))
-                      (do ((k 0 (fx+ k 1))) ((fx>=? k j)) (vector-set! nv k (vector-ref v k)))
-                      (set! v nv)))
-                  (vector-set! v j high)
-                  (vector-set! v (fx+ j 1) low)
-                  (loop (fx+ i 1) (fx+ j 2)))))))))
-
-;; Java String.hashCode(): s[0]*31^(n-1) + s[1]*31^(n-2) + ... + s[n-1]
-;; over UTF-16 code units.
-(define (java-string-hashcode s)
-  (let* ((units (string->utf16-units s))
-         (n (vector-length units)))
-    (let loop ((i 0) (h 0))
-      (if (#3%fx>=? i n)
-          (i32 h)
-          (loop (#3%fx+ i 1) (i32 (#3%fx+ (#3%fx* 31 h) (vector-ref units i))))))))
+                  (let ((h* (i32 (#3%fx+ (#3%fx* 31 h) high))))
+                    (loop (#3%fx+ i 1) (i32 (#3%fx+ (#3%fx* 31 h*) low)))))))))))
 
 (define (murmur3-hash-unencoded-chars s)
   ;; Match Java's Murmur3.hashUnencodedChars(CharSequence) over the
-  ;; UTF-16 code-unit sequence. Processes 2 chars at a time.
-  (let ((units (string->utf16-units s)))
-    (let ((n (vector-length units)))
-      (let loop ((i 1) (h1 murmur3-seed))
-        (if (#3%fx>=? i n)
-            (if (#3%fx=? (#3%fxand n 1) 1)
-                (let* ((k1 (murmur3-mix-k1 (vector-ref units (#3%fx- n 1))))
-                       (h1 (#3%bitwise-xor h1 k1)))
-                  (murmur3-fmix h1 (#3%fx* 2 n)))
-                (murmur3-fmix h1 (#3%fx* 2 n)))
-            (let* ((lo (vector-ref units (#3%fx- i 1)))
-                   (hi (vector-ref units i))
-                   (k1 (murmur3-mix-k1 (#3%bitwise-ior lo (#3%bitwise-arithmetic-shift-left hi 16))))
-                   (h1 (murmur3-mix-h1 h1 k1)))
-              (loop (#3%fx+ i 2) h1)))))))
+  ;; UTF-16 code-unit sequence. Processes 2 code units at a time.
+  ;; Iterates codepoints directly (no intermediate vector), pairing
+  ;; BMP units across iterations and self-pairing astral surrogates.
+  (let ((len (string-length s)))
+    (let loop ((i 0) (h1 murmur3-seed) (pending #f) (count 0))
+      (if (#3%fx>=? i len)
+          (if pending
+              ;; One unpaired unit left — mix and finalize
+              (let* ((k1 (murmur3-mix-k1 pending))
+                     (h1 (#3%bitwise-xor h1 k1)))
+                (murmur3-fmix h1 (#3%fx* 2 (#3%fx+ count 1))))
+              (murmur3-fmix h1 (#3%fx* 2 count)))
+          (let ((cp (char->integer (string-ref s i))))
+            (if (#3%fx<? cp #x10000)
+                ;; BMP: one code unit
+                (if pending
+                    ;; Pair pending + this unit; both consumed
+                    (let* ((k1 (murmur3-mix-k1
+                                (#3%bitwise-ior pending
+                                 (#3%bitwise-arithmetic-shift-left cp 16))))
+                           (h1 (murmur3-mix-h1 h1 k1)))
+                      (loop (#3%fx+ i 1) h1 #f (#3%fx+ count 2)))
+                    ;; Hold as pending (not counted yet)
+                    (loop (#3%fx+ i 1) h1 cp count))
+                ;; Astral: surrogate pair (high, low) — always 2 units
+                (let* ((cp2 (#3%fx- cp #x10000))
+                       (high (fxior #xD800 (fxsra cp2 10)))
+                       (low  (fxior #xDC00 (fxand cp2 #x3FF))))
+                  (if pending
+                      ;; Pair pending + high (consumed), low becomes new pending
+                      (let* ((k1 (murmur3-mix-k1
+                                  (#3%bitwise-ior pending
+                                   (#3%bitwise-arithmetic-shift-left high 16))))
+                             (h1 (murmur3-mix-h1 h1 k1)))
+                        (loop (#3%fx+ i 1) h1 low (#3%fx+ count 2)))
+                      ;; High + low consumed together
+                      (let* ((k1 (murmur3-mix-k1
+                                  (#3%bitwise-ior high
+                                   (#3%bitwise-arithmetic-shift-left low 16))))
+                             (h1 (murmur3-mix-h1 h1 k1)))
+                        (loop (#3%fx+ i 1) h1 #f (#3%fx+ count 2)))))))))))
 
 ;; ============================================================================
 ;; Long.hashCode (Java): (int)(value ^ (value >>> 32))
@@ -361,6 +371,20 @@
         (hashtable-set! symbol-hasheq-cache sym h)
         h)))
 
+;; String hasheq cache — same pattern as symbol cache.
+;; JVM caches String.hashCode per object; Jolt strings aren't interned
+;; (they're regular Chez strings), so we cache in a weak-eq hashtable.
+(define string-hasheq-cache (make-weak-eq-hashtable))
+
+(define (compute-string-hasheq s)
+  (murmur3-hash-int (java-string-hashcode s)))
+
+(define (string-hasheq s)
+  (or (hashtable-ref string-hasheq-cache s #f)
+      (let ((h (compute-string-hasheq s)))
+        (hashtable-set! string-hasheq-cache s h)
+        h)))
+
 ;; ============================================================================
 ;; jolt-hasheq — the top-level dispatch (mirrors Util.hasheq)
 ;; ============================================================================
@@ -380,7 +404,7 @@
     ;; hashLong→mixK1→mixH1→fmix). All fixnums use hashLong (count=8)
     ;; matching JVM's Long.hasheq.
     ((fixnum? x) (murmur3-hash-long-flat x))
-    ((string? x) (murmur3-hash-int (java-string-hashcode x)))
+    ((string? x) (string-hasheq x))
     (else
      ;; New hasheq arms (jrec via records.ss, etc.)
      (let loop ((as jolt-hasheq-arms))
