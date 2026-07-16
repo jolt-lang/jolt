@@ -302,7 +302,8 @@
     ;; live) so a devirt site can resolve the clone regardless of emit order.
     (jolt-reset-clone-prepass!)
     (for-each (lambda (p) (jolt-contagion-prepass! (apply jolt-vector (cdr p)) (car p))) ns-nodes)
-    (jolt-contagion-prepass-done!)))
+    (jolt-contagion-prepass-done!)
+    (reverse ns-nodes)))
 
 ;; Strings emitted before each app ns's forms, replaying what the source loader
 ;; does per file: (1) set chez-current-ns so runtime ns-sensitive setup forms
@@ -709,7 +710,9 @@
                 ;; which keeps var-cache OFF (emit-image.ss). ON in both modes.
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #t)
                 ;; whole-program param-type fixpoint before per-form emit
-                (when (string=? mode "optimized") (bld-wp-infer! ordered)))
+                (when (string=? mode "optimized")
+                  (let ((wp-cached (bld-wp-infer! ordered)))
+                    (for-each (lambda (p) (ei-set-cached! (car p) (cdr p))) wp-cached))))
               (lambda ()
                 ;; A #tag data-reader literal must compile in the binary the same as
                 ;; it loads interpreted — apply the reader rewrite to each emitted
@@ -751,7 +754,8 @@
                 ;; recorded for THIS one. (bld-wp-infer!'s record/protocol
                 ;; seeds self-heal: the next build replaces them wholesale.)
                 ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
-                ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)))))
+                ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
+                (ei-clear-cached!)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))
              (flat-ss  (string-append builddir "/flat.ss"))
