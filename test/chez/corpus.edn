@@ -3985,4 +3985,5 @@
   {:suite "for / :while basic" :label ":while stops iteration" :expected "(0 1 2 3 4)" :actual "(for [x (range 10) :while (< x 5)] x)" :portability :common}
   {:suite "for / :while sees :let" :label ":while can see preceding :let bindings" :expected "(0 1 2 3 4)" :actual "(for [x (range 10) :let [y (* x 2)] :while (< y 10)] x)" :portability :common}
   {:suite "for / :while ordering" :label ":while runs after :when in source order" :expected "(1 3)" :actual "(for [x (range 10) :when (odd? x) :while (< x 5)] x)" :portability :common}
+  {:suite "for / :while whenskip" :label ":when skip does not trigger :while termination" :expected "(1)" :actual "(for [x [2 1] :when (odd? x) :while (< x 2)] x)" :portability :common}
 ]

@@ -624,29 +624,41 @@
                           `(let ~(nth m 1) ~sub)))))
         ;; separate :while from :let/:when — no reduce / filter / loop —
         ;; just plain recursion on the mods vector
-        split-mods (fn split-mods [ms ws lets bs]
+        split-mods (fn split-mods [ms ws lets whens bs]
                      (if (empty? ms)
-                       [ws lets bs]
+                       [ws lets whens bs]
                        (let [m (first ms)
                              k (first m)]
                          (cond
-                           (= k :while) (split-mods (rest ms) (conj ws (nth m 1)) lets bs)
-                           (= k :let)   (split-mods (rest ms) ws (conj lets (nth m 1)) (conj bs m))
-                           :else        (split-mods (rest ms) ws lets (conj bs m))))))
+                           (= k :while) (split-mods (rest ms) (conj ws (nth m 1)) lets whens bs)
+                           (= k :let)   (split-mods (rest ms) ws (conj lets (nth m 1)) whens (conj bs m))
+                           (= k :when)  (split-mods (rest ms) ws lets (conj whens (nth m 1)) (conj bs m))
+                           :else        (split-mods (rest ms) ws lets whens (conj bs m))))))
+        ;; fold :when preds into the while guard: :while only sees elements
+        ;; that passed every preceding :when, matching source-order nesting
+        while-guard (fn while-guard [whens base]
+                      (if (empty? whens)
+                        base
+                        `(or (not ~(first whens)) ~(while-guard (rest whens) base))))
         build (fn build [idx groups]
                 (let [g (nth groups idx)
                       my-bind (nth g 0)
                       my-coll (nth g 1)
                       my-mods (nth g 2)
                       is-last (= idx (dec (count groups)))
-                      sb (split-mods my-mods [] [] [])
+                      sb (split-mods my-mods [] [] [] [])
                       while-pred (first (nth sb 0))
                       let-binds  (nth sb 1)
-                      body-mods  (nth sb 2)
+                      when-preds (nth sb 2)
+                      body-mods  (nth sb 3)
                       coll (if while-pred
-                             (if (empty? let-binds)
-                               `(take-while (fn [~my-bind] ~while-pred) ~my-coll)
-                               `(take-while (fn [~my-bind] (let ~@let-binds ~while-pred)) ~my-coll))
+                             (let [pred (if (empty? let-binds)
+                                          while-pred
+                                          `(let ~@let-binds ~while-pred))
+                                   guard (if (seq when-preds)
+                                           (while-guard when-preds pred)
+                                           pred)]
+                               `(take-while (fn [~my-bind] ~guard) ~my-coll))
                              my-coll)]
                   (if (and is-last (empty? body-mods))
                     `(map (fn [~my-bind] ~body) ~coll)
