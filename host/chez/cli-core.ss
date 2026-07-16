@@ -4,6 +4,21 @@
 ;; end-of-options rule, and uncaught-throw reporting cannot drift apart — the
 ;; binary once carried a stale copy of the -e arm.
 
+;; Flush stdout/stderr on EVERY exit path. Buffered stdout is otherwise lost
+;; when the process ends while helper threads are winding down (the throwing
+;; (thread …) smoke flake: pr writes "nil" with no newline, so *flush-on-newline*
+;; never fires, and the exit-time console flush raced the async thread's
+;; teardown on loaded CI runs — stderr survived only because the __eprint seam
+;; flushes each write). Installing it as the exit handler covers explicit
+;; (exit n) calls from jolt.main as well as the normal return path. Each flush
+;; is guarded: a broken pipe must not turn exit into a second crash.
+(let ((base (exit-handler)))
+  (exit-handler
+    (lambda args
+      (guard (_ (#t #f)) (flush-output-port (current-output-port)))
+      (guard (_ (#t #f)) (flush-output-port (current-error-port)))
+      (apply base args))))
+
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
 ;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
 ;; message/ex-data/cause + a mapped Clojure backtrace come from the shared
@@ -56,6 +71,11 @@
 
 (define (jolt-cli-run cli-args prepare-build!)
   (guard (v (#t (jolt-report-uncaught v)))
+    (jolt-cli-dispatch cli-args prepare-build!)
+    ;; normal-return twin of the exit-handler flush above
+    (guard (_ (#t #f)) (flush-output-port (current-output-port)))))
+
+(define (jolt-cli-dispatch cli-args prepare-build!)
     (cond
       ;; -e EXPR [args…] — evaluate one expression and print it (blank for nil).
       ;; Wrapped in (do …) so a multi-form string evaluates every form and returns
@@ -76,4 +96,4 @@
          (prepare-build!))
        (load-namespace "jolt.main")
        (let ((mainv (var-deref "jolt.main" "-main")))
-         (apply jolt-invoke mainv cli-args))))))
+         (apply jolt-invoke mainv cli-args)))))
