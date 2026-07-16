@@ -91,6 +91,10 @@
 ;; call; the captured k is walked, never invoked.
 (define jolt-throw-cont (make-thread-parameter #f))
 
+;; Cleared after a catch handler completes normally so the parked continuation
+;; (and its captured frames) does not root live data until the next throw.
+(define (jolt-catch-complete!) (jolt-throw-cont #f))
+
 ;; --- tail-frame history: a ring of rings (opt-in) ----------------------------
 ;; TCO erases tail-called frames from the native continuation, so an uncaught
 ;; error's backtrace shows only the surviving non-tail spine — the immediate error
