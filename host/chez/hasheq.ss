@@ -256,6 +256,25 @@
 (define (long-hashcode x)
   (i32 (bitwise-xor x (bitwise-arithmetic-shift-right (bitwise-and x #xFFFFFFFFFFFFFFFF) 32))))
 
+;; BigInteger.hashCode — java.math.BigInteger.hashCode() for exact integers
+;; that don't fit in 64-bit. Iterates 32-bit magnitude limbs (big-endian),
+;; accumulating h = 31*h + limb with int32 wrapping, then multiplies by signum.
+(define (big-integer-hashcode x)
+  (let* ((signum (cond ((< x 0) -1) ((= x 0) 0) (else 1)))
+         (mag (abs x)))
+    (if (= mag 0)
+        0
+        (let ((nbits (integer-length mag)))
+          (let* ((nlimbs (fx+ (fxquotient (fx- nbits 1) 32) 1))
+                 (shift0 (fx* (fx- nlimbs 1) 32)))
+            (let loop ((i 0) (h 0) (shift shift0))
+              (if (fx>=? i nlimbs)
+                  (i32 (* signum h))
+                  (let ((limb (u32 (bitwise-arithmetic-shift-right mag shift))))
+                    (loop (fx+ i 1)
+                          (i32 (+ (* 31 h) limb))
+                          (fx- shift 32))))))))))
+
 ;; ============================================================================
 ;; Double.hasheq — exact port of Numbers.hasheq for Double.class
 ;; ============================================================================
@@ -436,9 +455,8 @@
        ((and (exact? x) (integer? x)
              (>= x -9223372036854775808) (<= x 9223372036854775807))
         (murmur3-hash-long x))
-       ;; Bignum > 64-bit: fallback to Chez equal-hash (not JVM BigInteger.hashCode,
-       ;; but bignum map keys are exceptionally rare).
-       (else (equal-hash x))))
+       ;; Bignum > 64-bit: BigInteger.hashCode (JVM parity).
+       (else (big-integer-hashcode x))))
     ((boolean? x) (if x 1231 1237))
     ((char? x) (char->integer x))    ;; Character.hashCode = (int) charValue
     ((jolt-symbol? x) (symbol-hasheq x))
