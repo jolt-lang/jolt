@@ -217,11 +217,6 @@
 ;; /associative?/counted? are naturally false). Arity 2 (msg data) or 3 (msg data cause).
 ;; No :jolt/class field on plain ex-info — class defaults to clojure.lang.ExceptionInfo
 ;; via ex-info-class in records-interop.ss.
-(define jolt-kw-ex-type (keyword "jolt" "type"))
-(define jolt-kw-ex-info (keyword "jolt" "ex-info"))
-(define jolt-kw-message (keyword #f "message"))
-(define jolt-kw-data (keyword #f "data"))
-(define jolt-kw-cause (keyword #f "cause"))
 (define (jolt-ex-info msg data . more)
   (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
                              (if (null? more) jolt-nil (car more))
@@ -229,10 +224,8 @@
 ;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record
 ;; carrying its canonical JVM class-name, so (class …) / instance? / .getMessage /
 ;; ex-message all reflect the real type.
-(define jolt-kw-class (keyword "jolt" "class"))
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
-(define jolt-kw-error-offset (keyword "jolt" "error-offset"))
 (define (jolt-host-throwable class-name msg . more)
   (make-jolt-ex-info-record class-name msg
                              (if (null? more) jolt-nil (car more))
