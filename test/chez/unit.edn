@@ -756,4 +756,7 @@
   {:suite "concurrency" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(.isInterrupted t) (Thread/interrupted)])" :expected "[true true]"}
   ;; Stage D — Thread.interrupted clears the flag
   {:suite "concurrency" :expr "(do (.interrupt (Thread/currentThread)) (Thread/interrupted) (Thread/interrupted))" :expected "false"}
+ ;; Stage A — defrecord hash is deterministic and matches JVM hasheq
+ {:suite "hasheq-defrecord" :expr "(do (defrecord UhqPoint [x y]) (hash (map->UhqPoint {:x 1 :y 2})))" :expected "-445655453"}
+ {:suite "hasheq-defrecord" :expr "(do (defrecord UhqPoint2 [x y]) (let [p (map->UhqPoint2 {:x 1 :y 2})] [(hash p) (hash (assoc p :z 3))]))" :expected "[-445655453 1331500615]"}
 ]
