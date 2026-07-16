@@ -3963,4 +3963,12 @@
  {:suite "seq / range-step-zero" :label "range step 0 repeats start infinitely" :expected "(5 5 5)" :actual "(take 3 (range 5 10 0))" :portability :jvm}
  ;; Stage D — binding does not auto-deref var-cell
  {:suite "binding / no-auto-deref" :label "binding does not auto-deref var-cell value" :expected "\"clojure.lang.Var\"" :actual "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :portability :common}
+ ;; naa9 — seed-bootstrap macro var cells
+ {:suite "macros / defmacro resolve" :label "defmacro resolves as a macro var" :expected "true" :actual "(some? (resolve 'defmacro))" :portability :common}
+ {:suite "macros / defmacro resolve" :label "defmacro has :macro true meta" :expected "true" :actual "(:macro (meta (resolve 'defmacro)))" :portability :common}
+ {:suite "macros / defmacro resolve" :label "defmacro is in ns-map" :expected "true" :actual "(contains? (ns-map 'clojure.core) 'defmacro)" :portability :common}
+ {:suite "macros / defmacro resolve" :label "syntax-quote defmacro resolves" :expected "'(quote clojure.core/defmacro)" :actual "(read-string \"`defmacro\")" :portability :common}
+ {:suite "macros / refer-clojure resolve" :label "refer-clojure resolves as a macro var" :expected "true" :actual "(some? (resolve 'refer-clojure))" :portability :common}
+ {:suite "macros / refer-clojure resolve" :label "refer-clojure has :macro true meta" :expected "true" :actual "(:macro (meta (resolve 'refer-clojure)))" :portability :common}
+ {:suite "macros / refer-clojure resolve" :label "refer-clojure is in ns-map" :expected "true" :actual "(contains? (ns-map 'clojure.core) 'refer-clojure)" :portability :common}
 ]
