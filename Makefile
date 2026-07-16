@@ -6,7 +6,7 @@
 
 CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
 
-.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke submodules
+.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke devboot devbootsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -239,3 +239,12 @@ certify:
 # Re-mint the seed after changing a seed source (reader/analyzer/backend/core).
 remint:
 	@sh host/chez/remint.sh
+
+# Precompile the runtime to target/dev/flat.so so dev bin/joltc boots ~10x faster
+# (loads the .so instead of compiling ~50 .ss files from source every invocation).
+devboot: submodules
+	@$(CHEZ) --script host/chez/make-devboot.ss
+
+# Smoke test: the dev boot cache is used when fresh and invalidated correctly.
+devbootsmoke: devboot
+	@sh test/chez/devboot-smoke.sh

@@ -37,5 +37,41 @@ fi
 # Version for --version / banners: git describe of this checkout, else "dev".
 export JOLT_VERSION="${JOLT_VERSION:-$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)}"
 cd "$root" || exit 1
-exec ${CHEZ} --script host/chez/cli.ss "$@"
 
+# Dev boot cache: precompiled target/dev/flat.so loads the runtime ~10x faster
+# than source mode. Check freshness against the input list emitted by make devboot.
+# The cache is not used for REPL (interactive stdin needed) or when the first
+# arg is "repl" (explicit REPL command).
+CACHE_SO="target/dev/flat.so"
+CACHE_INPUTS="target/dev/flat.inputs"
+use_cache=0
+if [ -f "$CACHE_SO" ] && [ -f "$CACHE_INPUTS" ] && [ $# -gt 0 ] && [ "$1" != "repl" ]; then
+  stale=0
+  while IFS= read -r f; do
+    if [ -n "$f" ] && [ "$CACHE_SO" -ot "$f" ]; then
+      stale=1
+      break
+    fi
+  done < "$CACHE_INPUTS"
+  if [ "$stale" = 0 ]; then
+    use_cache=1
+  fi
+fi
+
+if [ "$use_cache" = 1 ]; then
+  exec ${CHEZ} --script /dev/stdin "$@" <<JOLT_DEVCACHE_LAUNCHER
+(load "target/dev/flat.so")
+(let ((marker (getenv "JOLT_DEVCACHE")))
+  (when (and marker (not (string=? marker "")))
+    (display "devcache: using target/dev/flat.so\n" (current-error-port))))
+(jolt-trace-init-from-env!)
+(jolt-cli-run (cdr (command-line))
+  (lambda () (load "host/chez/build.ss")))
+JOLT_DEVCACHE_LAUNCHER
+fi
+
+# Fallback: source mode. Hint for devs (only when interactive).
+if [ -t 1 ] && [ -z "${JOLT_QUIET:-}" ]; then
+  echo "joltc: source mode; run 'make devboot' to precompile" >&2
+fi
+exec ${CHEZ} --script host/chez/cli.ss "$@"
