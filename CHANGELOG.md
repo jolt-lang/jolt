@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-17
+
+Correctness patch: the first round of a focused compiler review (correctness and
+architecture), plus two loader fixes surfaced while running a real dependency
+tree. Every behavioral change is regression-tested and, where it only shows in an
+optimized build, pinned by a `--opt` build-smoke assertion.
+
+### Fixed
+
+- **`nil?`/`some?` folded to the wrong constant in optimized builds.** When
+  inference proved a value nil, `jolt build --opt` folded `(nil? x)` to `false`
+  and `(some? x)` to `true` — inverted — so an `if`/`if-some`/`when-some` gated
+  on it took the wrong branch in a release binary (dev/interpreted mode was
+  unaffected). The fold now matches: nil? true, some? and every type predicate
+  false.
+- **A `loop` that rebinds a record-typed outer local crashed under `--opt`.** The
+  inference pass left the loop variable with the outer local's record type, so a
+  slot read like `(:x p)` devirtualized to a raw record access and blew up when
+  the loop actually carried something else — the common
+  `(let [x (init)] (loop [x x] … (recur (f x))))` shape. Loop variables (and a
+  `(fn f …)` self-reference) now correctly shadow the outer binding during
+  inference.
+- **`min`/`max` returned a float where they should return the original operand.**
+  `(min 2.5 1)` returned `1.0` in optimized/release builds instead of `1` (dev
+  gave `1`). Double contagion no longer applies to `min`/`max`, which return an
+  argument unchanged.
+- **`clojure.math` and `Math/*` leaked complex numbers.** Out-of-domain real
+  inputs returned a Chez complex — `(Math/sqrt -1.0)` gave `0.0+1.0i` — instead
+  of `##NaN`. `sqrt`, `pow`, `log`, `log10`, `log1p`, `asin`, and `acos` now
+  return `##NaN` off their real domain, matching Java; in-domain results and
+  `##NaN`/`##Inf` are unchanged.
+- **`compare-and-set!`, `swap-vals!`, and `reset-vals!` were not atomic.** The
+  overlay redefined them as check-then-act compositions that lost updates under
+  real threads (futures/agents), shadowing the atomic mutex/CAS implementations.
+  The atomic versions are restored.
+- **Any missing namespace crashed with an opaque error.** `require` of a
+  namespace with no source file raised `incorrect number of arguments 3 to
+  throw-jvm` instead of a catchable `FileNotFoundException` naming the file —
+  a stray argument in the loader's not-found path.
+- **A failed nested `require` was blamed on the wrong file.** The reported source
+  location pointed at the last form of a dependency that had just loaded
+  successfully, not the `ns` form that issued the failing require. The loader now
+  restores the source position after each nested load.
+
 ## [0.4.0] - 2026-07-17
 
 Strict-resolution and default-fast-builds release: a five-dimension audit

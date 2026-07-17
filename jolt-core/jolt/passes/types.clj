@@ -214,6 +214,12 @@
     ;; a nilable struct might be nil — nil?/some?/record? can't be proven, so the
     ;; runtime guard must stay (this is what makes the narrowing sound).
     (nilable? t) nil
+    ;; a provably-nil operand (a nil const initializer reaches the case table
+    ;; because :any/:truthy/nilable?/union? all miss it): nil? is true, some? and
+    ;; every type predicate are false. Without this arm the case table below folds
+    ;; nil?->false / some?->true — the wrong constants, since it assumes every
+    ;; concrete type is non-nil.
+    (= t :nil) (= pname "nil?")
     ;; a bounded scalar union folds only when every member agrees
     (union-type? t)
     (let [vs (map (fn [m] (pred-on pname m)) (umembers t))]
@@ -280,8 +286,11 @@
 ;; arithmetic core ops that yield a flonum when their operands are flonums — a
 ;; mirror of jolt.passes.numeric/dbl-spec's arithmetic set, used to flow :double
 ;; across fn boundaries so a hintless fn whose callers all pass doubles is unboxed.
-;; Comparisons are excluded: they yield a boolean, not a number.
-(def ^:private dbl-arith-ops #{"+" "-" "*" "/" "min" "max" "inc" "dec"})
+;; Comparisons are excluded: they yield a boolean, not a number. min/max are
+;; excluded too: they return an operand unchanged, so double contagion would
+;; change its type ((min 2.5 1) must stay 1, not 1.0). numeric.clj's an-invoke
+;; blocks min/max contagion for the same reason.
+(def ^:private dbl-arith-ops #{"+" "-" "*" "/" "inc" "dec"})
 (defn- int-lit-node? [n]
   (and (= :const (get n :op)) (let [v (get n :val)] (and (number? v) (integer? v)))))
 ;; an arithmetic result is :double when every operand is a proven flonum or a
@@ -672,10 +681,16 @@
       ;; track here, so they stay :any. Still descend to annotate any
       ;; known-type lookups inside the body. A recur inside this body targets the
       ;; loop, not the enclosing fn, so mark :in-loop? to suppress self-collection.
-      (let [lenv (assoc env :in-loop? true)]
+      ;; The loop vars MUST shadow any same-named outer local — a loop that rebinds
+      ;; a record-typed p would otherwise keep the record type and miscompile a bare
+      ;; slot read under --opt. Bind each to :any in the body env (numeric.clj's
+      ;; loop-kinds does the same); inits still infer in the outer tenv.
+      (let [lenv (assoc env :in-loop? true)
+            names (mapv (fn [b] (nth b 0)) (get node :bindings))
+            btenv (reduce (fn [t nm] (assoc t nm :any)) tenv names)]
         [:any (assoc node
                      :bindings (mapv (fn [b] [(nth b 0) (nth (infer (nth b 1) tenv env) 1)]) (get node :bindings))
-                     :body (nth (infer (get node :body) tenv lenv) 1))])
+                     :body (nth (infer (get node :body) btenv lenv) 1))])
       (= op :recur)
       (let [ares (mapv (fn [a] (infer a tenv env)) (get node :args))]
         ;; a fn-level recur (not inside a loop) rebinds the enclosing fn's params,
@@ -695,7 +710,8 @@
       ;; a nested closure resets the self/loop context: its own recur/self-call
       ;; targets IT, not the enclosing whole-program def, so it must not collect
       ;; into that def's param key.
-      (let [fenv (assoc env :self-name nil :self-key nil :self-params nil :in-loop? false)]
+      (let [fenv (assoc env :self-name nil :self-key nil :self-params nil :in-loop? false)
+            self (get node :name)]
         [:any (assoc node :arities
                      (mapv (fn [a]
                              (let [shapes (get env :record-shapes)
@@ -704,9 +720,14 @@
                                    pe (reduce (fn [e p]
                                                 (assoc e p
                                                        (let [ent (get shapes (get phm p))]
-                                                          (if ent (record-type-from-entry ent (get phm p) type-depth shapes) :any))))
+                                                         (if ent (record-type-from-entry ent (get phm p) type-depth shapes) :any))))
                                               tenv (get a :params))
-                                   pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)]
+                                   pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
+                                   ;; a (fn f [] …) self-reference shadows any
+                                   ;; same-named outer local — bind it :any (a fn's
+                                   ;; own type is opaque to the lattice), else it
+                                   ;; inherits the outer local's type.
+                                   pe (if self (assoc pe self :any) pe)]
                                (assoc a :body (nth (infer (get a :body) pe fenv) 1))))
                            (get node :arities)))])
        (= op :def)
