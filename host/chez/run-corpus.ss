@@ -87,10 +87,7 @@
     "reader conditional" "reader cond :jolt" "reader cond no match"
     "reader cond splice" "reader cond splice no match"
     "nil nested" "bool nested"
-    "no param vector"
-    ;; jolt-mw44.52: argument-validation gaps — these :throws rows do not raise
-    ;; yet; remove with the fix.
-    "symbol bad 2-arg" "bit-and single arg throws"))
+    "no param vector"))
 (define known-fail (make-hashtable string-hash string=?))
 (for-each (lambda (l) (hashtable-set! known-fail l #t)) known-fail-labels)
 

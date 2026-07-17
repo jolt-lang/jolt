@@ -141,13 +141,13 @@
    ;; code, no helper call); operands must be integers (a non-integer errors,
    ;; like the JVM). The shifts keep their helpers (Java >>> masking /
    ;; arithmetic shift) but emit a direct call instead of var-deref + the
-   ;; variadic overlay. and/or/xor/not are variadic Chez prims (safe as a value
-   ;; at any arity); bit-and-not is left to its overlay: its only Scheme impl is
+   ;; variadic overlay. and/or/xor get strict min-2 twins as their VALUE (the raw
+   ;; Chez prims accept arity 0/1, diverging from the JVM); bit-and-not is left to its overlay: its only Scheme impl is
    ;; 2-arg, so a value-position arity-3 use (via the variadic overlay) would
    ;; mis-emit.
-   "bit-and"                 {:call "bitwise-and"  :arity #(= % 2)}
-   "bit-or"                  {:call "bitwise-ior"  :arity #(= % 2)}
-   "bit-xor"                 {:call "bitwise-xor"  :arity #(= % 2)}
+   "bit-and"                 {:call "bitwise-and"  :value "jolt-bit-and*" :arity #(= % 2)}
+   "bit-or"                  {:call "bitwise-ior"  :value "jolt-bit-or*"  :arity #(= % 2)}
+   "bit-xor"                 {:call "bitwise-xor"  :value "jolt-bit-xor*" :arity #(= % 2)}
    "bit-not"                 {:call "bitwise-not"  :arity #(= % 1)}
    "bit-shift-left"          {:call "jolt-bit-shift-left"          :arity #(= % 2)}
    "bit-shift-right"         {:call "jolt-bit-shift-right"         :arity #(= % 2)}

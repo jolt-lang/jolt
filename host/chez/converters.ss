@@ -106,10 +106,10 @@
          ((jolt-symbol? a)
           (let ((ns (symbol-t-ns a)))
             (keyword (if (or (jolt-nil? ns) (not ns) (eq? ns '())) #f ns) (symbol-t-name a))))
-         (else (error #f "keyword: requires string/symbol/keyword" a)))))
+         (else jolt-nil))))
     ((= (length args) 2)
      (keyword (let ((ns (car args))) (if (jolt-nil? ns) #f ns)) (cadr args)))
-    (else (error #f "keyword: wrong arity"))))
+    (else (throw-jvm (quote ArityException) "Wrong number of args passed to: keyword"))))
 
 (define (jolt-symbol-new . args)
   (cond
@@ -135,14 +135,20 @@
          ((keyword? a) (jolt-symbol (keyword-t-ns a) (keyword-t-name a)))
          ;; (symbol a-var) -> the var's qualified symbol (clojure.spec.alpha/->sym).
          ((var-cell? a) (jolt-symbol (var-cell-ns a) (var-cell-name a)))
-         (else (error #f "symbol: requires string/symbol" a)))))
+         (else (throw-jvm (quote IllegalArgumentException) (string-append "no conversion to symbol: " (jolt-final-str a)))))))
     ;; (symbol ns name): a nil namespace is the no-ns sentinel #f (NOT jolt-nil),
     ;; so (symbol nil "x") equals (symbol "x") and the reader literal 'x — jolt=
     ;; compares ns with strict equal?, so a jolt-nil ns would differ from #f.
     ((= (length args) 2)
-     (let ((ns (car args)))
-       (jolt-symbol (if (jolt-nil? ns) #f ns) (cadr args))))
-    (else (error #f "symbol: wrong arity"))))
+     (let ((ns (car args)) (nm (cadr args)))
+       (unless (or (jolt-nil? ns) (string? ns))
+         (throw-jvm (quote ClassCastException)
+                    (string-append (jolt-final-str ns) " cannot be cast to java.lang.String")))
+       (unless (string? nm)
+         (throw-jvm (quote ClassCastException)
+                    (string-append (jolt-final-str nm) " cannot be cast to java.lang.String")))
+       (jolt-symbol (if (jolt-nil? ns) #f ns) nm)))
+    (else (throw-jvm (quote ArityException) "Wrong number of args passed to: symbol"))))
 
 ;; gensym: per-process counter.
 (define jolt-gensym-counter 0)
@@ -201,7 +207,7 @@
                  (let ((r (jolt-compare (pvec-nth-d a i jolt-nil) (pvec-nth-d b i jolt-nil))))
                    (if (= r 0) (loop (+ i 1)) r)))))))
     (else (let loop ((as jolt-compare-arms))
-            (cond ((null? as) (error #f "compare: cannot compare these types" a b))
+            (cond ((null? as) (throw-jvm (quote ClassCastException) (string-append (jolt-final-str a) " cannot be compared to " (jolt-final-str b))))
                   (((caar as) a b) ((cdar as) a b))
                   (else (loop (cdr as))))))))
 

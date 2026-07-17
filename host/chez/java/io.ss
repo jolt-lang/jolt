@@ -284,7 +284,7 @@
     (if (jfile? obj)
         (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                (r (jfile-method obj method-name rest)))
-          (if r (car r) (error #f "no File method" method-name)))
+          (if r (car r) (throw-jvm (quote IllegalArgumentException) (string-append "No matching method for File: " method-name))))
         'pass)))
 
 ;; File methods emitted via jolt-host-call (rt.ss) need jfile dispatch,
@@ -382,7 +382,7 @@
     ((and (htable? src) (jolt-truthy? (jolt-ref-get src (keyword "jolt" "input-stream"))))
      (decode-bytevector (drain-byte-stream src) (slurp-encoding opts)))
     ((string? src) (read-file-string (project-relative src)))
-    (else (error #f "slurp: unsupported source" src))))
+    (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-final-str src) "> as a Reader")))))
 
 (define (spit-append? opts)
   (let loop ((o opts))
@@ -473,7 +473,7 @@
      (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
        (if (and (not (jolt-nil? closef)) (procedure? closef))
            (begin (jolt-invoke closef) jolt-nil)
-           (error #f "with-open: don't know how to close" x))))))
+           (throw-jvm (quote IllegalArgumentException) "with-open: no .close method on value"))))))
 (def-var! "clojure.core" "__close" jolt-close)
 
 ;; --- clojure.java.io/reader: an in-memory java.io.Reader over the source. An
@@ -509,7 +509,7 @@
     ((and (jhost? x) (string=? (jhost-tag x) "file-writer")) x)
     ((jfile? x) (make-jhost "file-writer" (vector (jfile-path x) "")))
     ((string? x) (make-jhost "file-writer" (vector x "")))
-    (else (error #f "io/writer: don't know how to create a writer from" x))))
+    (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-final-str x) "> as a Writer")))))
 
 ;; --- clojure.java.io ns -----------------------------------------------------
 (def-var! "clojure.java.io" "file" jolt-make-file)

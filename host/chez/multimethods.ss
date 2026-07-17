@@ -141,7 +141,7 @@
          (for-each
           (lambda (k)
             (when (and (not (jolt= k best)) (not (dom? best k)))
-              (error #f (string-append "Multiple methods in multimethod '" (jolt-multifn-name mf)
+              (throw-jvm (quote IllegalArgumentException) (string-append "Multiple methods in multimethod '" (jolt-multifn-name mf)
                                        "' match dispatch value - and neither is preferred"))))
           matches)
          (hashtable-ref methods best #f))))))
@@ -199,8 +199,9 @@
                   m)))))))
 
 (define (mm-no-method mf dv)
-  (error #f (string-append "No method in multimethod '" (jolt-multifn-name mf)
-                           "' for dispatch value: " (jolt-pr-str dv))))
+  (throw-jvm (quote IllegalArgumentException)
+             (string-append "No method in multimethod '" (jolt-multifn-name mf)
+                            "' for dispatch value: " (jolt-pr-str dv))))
 
 ;; fixed-arity entry points: the common arities call the dispatch fn and the
 ;; resolved method through jolt-invoke1/2/3, skipping the rest-list + the two

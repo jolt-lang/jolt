@@ -12,6 +12,16 @@
   (let ((m (bitwise-and x #xFFFFFFFFFFFFFFFF)))
     (if (>= m #x8000000000000000) (- m #x10000000000000000) m)))
 (define (jolt-bit-and a b)     (bitwise-and (->int a) (->int b)))
+;; strict variadic twins (min arity 2, like clojure.core) — the backend emits
+;; these when a bit op is a VALUE or called at a non-open-coded arity, so
+;; (bit-and 5) raises like the JVM instead of hitting the identity of the raw
+;; variadic Chez prim (jolt-mw44.52).
+(define (jolt-bit-and* a b . more)
+  (fold-left (lambda (acc x) (bitwise-and acc (->int x))) (jolt-bit-and a b) more))
+(define (jolt-bit-or* a b . more)
+  (fold-left (lambda (acc x) (bitwise-ior acc (->int x))) (jolt-bit-or a b) more))
+(define (jolt-bit-xor* a b . more)
+  (fold-left (lambda (acc x) (bitwise-xor acc (->int x))) (jolt-bit-xor a b) more))
 (define (jolt-bit-or a b)      (bitwise-ior (->int a) (->int b)))
 (define (jolt-bit-xor a b)     (bitwise-xor (->int a) (->int b)))
 (define (jolt-bit-and-not a b) (bitwise-and (->int a) (bitwise-not (->int b))))
@@ -40,7 +50,7 @@
     (and (> n i0) (= (skip-digits s i0 n) n))))
 
 (define (jolt-parse-long s)
-  (if (not (string? s)) (error #f "parse-long requires a string" s)
+  (if (not (string? s)) (throw-jvm (quote IllegalArgumentException) (string-append "parse-long requires a string: " (jolt-final-str s)))
       (if (parse-long-shape? s) (string->number s) jolt-nil)))   ; exact long
 
 ;; strict float shape: [+-]? ( D+ (. D*)? | . D+ ) ([eE][+-]? D+)?  fully anchored.
@@ -70,7 +80,7 @@
             (= je n)))))))
 
 (define (jolt-parse-double s)
-  (if (not (string? s)) (error #f "parse-double requires a string" s)
+  (if (not (string? s)) (throw-jvm (quote IllegalArgumentException) (string-append "parse-double requires a string: " (jolt-final-str s)))
       (cond
         ((string=? s "Infinity") +inf.0)
         ((string=? s "-Infinity") -inf.0)

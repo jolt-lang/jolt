@@ -68,7 +68,7 @@
   (cond
     ((jolt-atom? x) (jolt-atom-val x))
     ((jolt-reduced? x) (jolt-reduced-val x))
-    (else (error #f "deref: unsupported reference type" x))))
+    (else (throw-jvm (quote ClassCastException) (string-append "deref: unsupported reference type " (jolt-final-str x))))))
 
 ;; CAS the val from `old` to `nv` by identity (eq?), atomically. Returns #t on
 ;; success. The compute step (f) runs outside this, so we re-check under the lock.
@@ -158,7 +158,7 @@
     ((iref? a)
      (hashtable-set! iref-watch-tbl a (jolt-watch-add (hashtable-ref iref-watch-tbl a '()) key f))
      a)
-    (else (error #f "add-watch: not a watchable reference" a))))
+    (else (throw-jvm (quote ClassCastException) "add-watch: not a watchable reference"))))
 (define (jolt-remove-watch a key)
   (cond
     ((jolt-atom? a)
@@ -169,7 +169,7 @@
      (hashtable-set! iref-watch-tbl a
        (remp (lambda (kv) (jolt=2 (car kv) key)) (hashtable-ref iref-watch-tbl a '())))
      a)
-    (else (error #f "remove-watch: not a watchable reference" a))))
+    (else (throw-jvm (quote ClassCastException) "remove-watch: not a watchable reference"))))
 (define (jolt-set-validator! a f)
   (let ((vf (if (jolt-nil? f) jolt-nil f)))
     (cond
@@ -181,7 +181,7 @@
        (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf (jolt-deref a))))
          (jolt-iref-state-throw))
        (hashtable-set! iref-validator-tbl a vf))
-      (else (error #f "set-validator!: not a reference" a)))
+      (else (throw-jvm (quote ClassCastException) "set-validator!: not a reference")))
     jolt-nil))
 (define (jolt-get-validator a)
   (cond ((jolt-atom? a) (jolt-atom-validator a))

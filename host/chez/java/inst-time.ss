@@ -52,7 +52,7 @@
   (define neg-year (and (> (string-length ts0) 0) (char=? (string-ref ts0 0) #\-)))
   (define ts (if neg-year (substring ts0 1 (string-length ts0)) ts0))
   (define len (string-length ts))
-  (define (fail) (error #f (string-append "Unrecognized #inst timestamp: " ts0)))
+  (define (fail) (throw-jvm (quote RuntimeException) (string-append "Unrecognized #inst timestamp: " ts0)))
   (define (read-year)
     ;; >=4 digits up to a non-digit; java.time uses min-4 but allows more.
     (let loop ((j 0) (acc 0) (n 0))
@@ -376,7 +376,7 @@
          (inst-floor-div (vector-ref (jhost-state d) 0) 1000000))
         ((and (jhost? d) (member (jhost-tag d) '("zoned-dt" "calendar" "sql-date")))
          (vector-ref (jhost-state d) 0))
-        (else (error #f "not a date value" d))))
+        (else (throw-jvm (quote IllegalArgumentException) (string-append "not a date value: " (jolt-final-str d))))))
 ;; A java.time.Instant stores epoch-nanos (exact integer). mk-instant takes ms,
 ;; for the many ms-based call sites; mk-instant-nanos is the nano-precise ctor and
 ;; inst-nanos the nano accessor (java-time.ss owns the nano-aware arithmetic).
@@ -636,7 +636,7 @@
                                                    (= (jinst-ms obj) (jinst-ms (car (seq->list rest-args))))))
              ((string=? method-name "before") (< (jinst-ms obj) (ms-of (car (seq->list rest-args)))))
              ((string=? method-name "after") (> (jinst-ms obj) (ms-of (car (seq->list rest-args)))))
-             (else (error #f (string-append "No method " method-name " on Date")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method-name " for java.util.Date")))))
       (else 'pass))))
 
 ;; Clojure's built-in data readers, so a library that merges default-data-readers

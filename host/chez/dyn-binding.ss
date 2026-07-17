@@ -127,7 +127,7 @@
               (var-cell-root-set! v val) (var-cell-defined?-set! v #t)
               (iref-notify v old val)
               val)))
-      (error #f "var-set: not a var" v)))
+      (throw-jvm (quote ClassCastException) "var-set: not a var")))
 
 ;; jolt-set-var!: the set! special form lowered to a call. Throws when there
 ;; is no active thread binding — set! never mutates the root, matching JVM.
@@ -141,7 +141,7 @@
               (string-append "Can't change/establish root binding of: "
                              (var-cell-name v) " with set")
               jolt-nil))))
-      (error #f "jolt-set-var!: not a var" v)))
+      (throw-jvm (quote ClassCastException) "set!: not a var")))
 
 ;; alter-var-root: atomically apply f to the current root plus args.
 (define (jolt-alter-var-root v f . args)

@@ -71,7 +71,7 @@
     (hashtable-delete! ht k)))
 
 (define (jolt-trans-check t who)
-  (unless (jolt-transient? t) (error #f (string-append who ": not a transient") t))
+  (unless (jolt-transient? t) (throw-jvm (quote ClassCastException) (string-append who ": not a transient")))
   (unless (jolt-transient-active t)
     (jolt-throw (jolt-host-throwable "java.lang.IllegalAccessError"
                   (string-append who ": transient used after persistent!")))))
@@ -132,14 +132,14 @@
   (let ((i (->idx i)) (cnt (jolt-transient-n t)))
     (cond ((and (fixnum? i) (fx>=? i 0) (fx<? i cnt)) (vector-set! (jolt-transient-buf t) i x))
           ((and (fixnum? i) (fx=? i cnt)) (tvec-conj1! t x))
-          (else (error #f "assoc!: index out of bounds")))))
+          (else (throw-jvm (quote IndexOutOfBoundsException) "assoc!: index out of bounds")))))
 ;; conj! onto a transient map: a [k v] pair (vector/map-entry) or a whole map.
 (define (tmap-conj-entry! t x)
   (cond
     ((jolt-nil? x) #t)
     ((pvec? x) (tmap-put! t (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
     ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
-    (else (error #f "conj!: a transient map takes a map entry or a map" x))))
+    (else (throw-jvm (quote IllegalArgumentException) "conj!: a transient map takes a map entry or a map"))))
 
 ;; (conj!) -> fresh transient vector; (conj! coll) -> the 1-arity transducer-
 ;; completion identity (JVM: no transient check). (conj! t x ...) mutates t.
@@ -163,7 +163,7 @@
 (define (jolt-assoc! t . kvs0)
   (jolt-trans-check t "assoc!")
   (let ((kvs (assoc-pad kvs0)))
-    (when (odd? (length kvs)) (error #f "assoc!: no value supplied for key"))
+    (when (odd? (length kvs)) (throw-jvm (quote IllegalArgumentException) "assoc!: no value supplied for key"))
     (case (jolt-transient-kind t)
       ((map) (let lp ((xs kvs)) (unless (null? xs) (tmap-put! t (car xs) (cadr xs)) (lp (cddr xs)))))
       ((vec) (let lp ((xs kvs)) (unless (null? xs) (tvec-assoc1! t (car xs) (cadr xs)) (lp (cddr xs)))))
@@ -185,7 +185,7 @@
   (jolt-trans-check t "pop!")
   (case (jolt-transient-kind t)
     ((vec) (let ((cnt (jolt-transient-n t)))
-             (if (fx=? cnt 0) (error #f "pop!: can't pop empty transient vector")
+             (if (fx=? cnt 0) (throw-jvm (quote IllegalStateException) "pop!: can't pop empty transient vector")
                  (jolt-transient-n-set! t (fx- cnt 1)))))
     (else (jolt-transient-buf-set! t (jolt-pop (jolt-transient-buf t)))))
   t)

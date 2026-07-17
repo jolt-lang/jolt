@@ -747,7 +747,7 @@
   (cond ((and (char<=? #\0 c) (char<=? c #\9)) (- (char->integer c) 48))
         ((and (char<=? #\A c) (char<=? c #\F)) (- (char->integer c) 55))
         ((and (char<=? #\a c) (char<=? c #\f)) (- (char->integer c) 87))
-        (else (error #f "URLDecoder: malformed escape"))))
+         (else (throw-jvm 'IllegalArgumentException "URLDecoder: illegal hex escape"))))
 (define (url-decode s . _)
   (let* ((str (if (string? s) s (jolt-str-render-one s))) (n (string-length str)) (out '()))
     (let loop ((i 0))
@@ -789,7 +789,7 @@
             (set! out (cons (if b2 (string-ref b64-alphabet (bitwise-and b2 63)) #\=) out))
             (loop (+ i 3)))))))
 (define (b64-char-val c)
-  (let loop ((i 0)) (cond ((= i 64) (error #f "Base64: illegal character")) ((char=? (string-ref b64-alphabet i) c) i) (else (loop (+ i 1))))))
+  (let loop ((i 0)) (cond ((= i 64) (throw-jvm 'IllegalArgumentException "Base64: illegal character")) ((char=? (string-ref b64-alphabet i) c) i) (else (loop (+ i 1))))))
 (define (b64-decode x)
   (let* ((str (let ((s (if (string? x) x (utf8->string (->bytevector x)))))
                 (list->string (filter (lambda (c) (not (char=? c #\=))) (string->list s)))))
@@ -848,7 +848,7 @@
                ((or (string=? method-name "toString")) (regex-t-source obj))
                ;; (.matcher pattern s) -> a Matcher (matcher-t) for stepping matches.
                ((string=? method-name "matcher") (jolt-re-matcher obj (car rest)))
-               (else (error #f (string-append "No method " method-name " on Pattern")))))
+               (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method-name " for java.util.regex.Pattern")))))
         ;; java.util.regex.Matcher: .matches (anchored whole-region), .find
         ;; (next match), .group [n], .groupCount.
         ((jolt-matcher? obj)
@@ -865,7 +865,7 @@
                 (let ((mm (matcher-t-last obj)))
                   (if mm (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
                       (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match available")))))
-               (else (error #f (string-append "No method " method-name " on Matcher")))))
+               (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method-name " for java.util.regex.Matcher")))))
         (else 'pass)))))
 
 ;; ---- def-var! the registry entry points so emit can also reach them ---------
@@ -1186,7 +1186,7 @@
                         (if (pair? a)
                             (let ((bound (exact (truncate (car a)))))
                               (if (<= bound 0)
-                                  (error #f "Random.nextInt: bound must be positive")
+                                  (throw-jvm (quote IllegalArgumentException) "bound must be positive")
                                   (let ((m (- bound 1)))
                                     (if (fx=? (bitwise-and bound m) 0)
                                         ;; power of two
@@ -1224,7 +1224,7 @@
 (define (opt? x) (and (jhost? x) (string=? (jhost-tag x) "optional")))
 (define (opt-present? o) (vector-ref (jhost-state o) 0))
 (define (opt-value o) (vector-ref (jhost-state o) 1))
-(let ((statics (list (cons "of" (lambda (v) (if (jolt-nil? v) (error #f "Optional.of(null)") (jt-optional #t v))))
+(let ((statics (list (cons "of" (lambda (v) (if (jolt-nil? v) (throw-jvm 'NullPointerException "Optional.of(null)") (jt-optional #t v))))
                      (cons "ofNullable" (lambda (v) (if (jolt-nil? v) jt-optional-empty (jt-optional #t v))))
                      (cons "empty" (lambda _ jt-optional-empty)))))
   (register-class-statics! "Optional" statics)
@@ -1232,7 +1232,7 @@
 (register-host-methods! "optional"
   (list (cons "isPresent" (lambda (o) (opt-present? o)))
         (cons "isEmpty" (lambda (o) (not (opt-present? o))))
-        (cons "get" (lambda (o) (if (opt-present? o) (opt-value o) (error #f "Optional.get() on empty Optional"))))
+        (cons "get" (lambda (o) (if (opt-present? o) (opt-value o) (throw-jvm 'NoSuchElementException "No value present"))))
         (cons "orElse" (lambda (o d) (if (opt-present? o) (opt-value o) d)))
         (cons "orElseGet" (lambda (o f) (if (opt-present? o) (opt-value o) (jolt-invoke f))))
         (cons "ifPresent" (lambda (o f) (when (opt-present? o) (jolt-invoke f (opt-value o))) jolt-nil))

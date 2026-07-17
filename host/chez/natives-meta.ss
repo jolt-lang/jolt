@@ -72,7 +72,7 @@
      (let ((c (meta-copy x)))
        (if (jolt-nil? m) (hashtable-delete! meta-table c) (hashtable-set! meta-table c m))
        c))
-    (else (error #f "with-meta: value does not support metadata" x))))
+    (else (throw-jvm (quote ClassCastException) (string-append (jolt-final-str x) " cannot be cast to clojure.lang.IObj")))))
 
 (def-var! "clojure.core" "meta" jolt-meta)
 (def-var! "clojure.core" "with-meta" jolt-with-meta)

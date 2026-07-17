@@ -127,9 +127,9 @@
   (let ((items (seq->list (jolt-seq arr))))
     (let loop ((xs items) (m (jolt-hash-map)))
       (if (null? xs) m
-          (if (null? (cdr xs)) (error #f "PersistentArrayMap: odd key/value count")
+          (if (null? (cdr xs)) (throw-jvm (quote IllegalArgumentException) "PersistentArrayMap: odd key/value count")
               (let ((k (car xs)))
-                (if (jolt-contains? m k) (error #f "Duplicate key")
+                (if (jolt-contains? m k) (throw-jvm (quote IllegalArgumentException) (string-append "Duplicate key: " (jolt-final-str k)))
                     (loop (cddr xs) (jolt-assoc m k (cadr xs))))))))))
 (register-class-statics! "PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
 (register-class-statics! "clojure.lang.PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
@@ -140,7 +140,7 @@
 (define (rt-map arr)
   (let loop ((xs (if (jolt-nil? arr) '() (seq->list (jolt-seq arr)))) (m (jolt-hash-map)))
     (cond ((null? xs) m)
-          ((null? (cdr xs)) (error #f "RT/map: odd key/value count"))
+          ((null? (cdr xs)) (throw-jvm (quote IllegalArgumentException) "RT/map: odd key/value count"))
           (else (loop (cddr xs) (jolt-assoc m (car xs) (cadr xs)))))))
 (register-class-statics! "RT" (list (cons "map" rt-map)))
 (register-class-statics! "clojure.lang.RT" (list (cons "map" rt-map)))
@@ -211,7 +211,12 @@
         (cons "exit" (lambda args (exit (if (null? args) 0 (jnum->exact (car args))))))
         ;; System/gc -> a full Chez collection (so weak references clear and their
         ;; guardians fire); Runtime.gc() routes here too.
-        (cons "gc" (lambda _ (collect (collect-maximum-generation)) jolt-nil))
+        (cons "gc" (lambda _
+                     ;; System.gc is a HINT on the JVM and never throws; Chez's
+                     ;; collect refuses when multiple threads are active, so a
+                     ;; guarded no-op is the faithful behavior under live threads.
+                     (guard (e (#t #f)) (collect (collect-maximum-generation)))
+                     jolt-nil))
         ;; wrapped in lambdas: the helpers are defined below, resolved at call time.
         (cons "getProperty" (lambda (k . d) (apply sys-get-property k d)))
         (cons "setProperty" (lambda (k v) (sys-set-property k v)))

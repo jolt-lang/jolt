@@ -44,7 +44,7 @@
                      ((hex-char? c) (loop (fx+ i 1)))
                      (else #f)))))))
 (define (jolt-parse-uuid s)
-  (cond ((not (string? s)) (error #f "parse-uuid: not a string" s))
+  (cond ((not (string? s)) (throw-jvm (quote ClassCastException) (string-append (jolt-final-str s) " cannot be cast to java.lang.String")))
         ((uuid-shape? s) (make-juuid (string-downcase s)))
         (else jolt-nil)))
 
