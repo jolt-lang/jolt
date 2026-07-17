@@ -98,6 +98,13 @@ check '(try (load-string "(+") (catch :default e (ex-message e)))' 'EOF while re
 check_loc '(throw (ex-info "boom" {}))' 'boom'
 check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
 
+# A missing dependency required in an ns form is blamed on the requiring file,
+# not the last form of a sibling dependency that loaded first: the loader
+# restores the source position after each nested load, and a throw keeps the
+# failing form's own position. `outer` requires `depa` (loads) then `missing.dep`
+# (fails); the error location must be outer.clj, never depa.clj.
+check_loc '(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/depa.clj") "(ns depa)\n(def a 1)\n(def b 2)\n(def z 9)\n") (spit (str r "/outer.clj") "(ns outer (:require depa missing.dep))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote outer)))' 'outer.clj:1'
+
 # Runtime-eval'd fns aren't source-mapped, but their native frame names survive on
 # the non-tail spine; the trace must show them. deepest/+ are tail calls (erased);
 # middle and outer wait on a non-tail (inc …) so their frames are live at the throw.

@@ -314,7 +314,15 @@
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
 
 (define (load-jolt-file path)
-  (let* ((src (ldr-read-source path)) (end (string-length src)))
+  (let* ((src (ldr-read-source path)) (end (string-length src))
+         ;; Restore the current-source position on NORMAL return only. Loading a
+         ;; required file advances the position per form; without restoring it, a
+         ;; later error in the requiring file (e.g. a second, missing require in
+         ;; the same ns form) would be blamed on the last form of the dependency
+         ;; that just loaded. On a throw we intentionally do NOT restore, so the
+         ;; error keeps the failing form's own position instead of unwinding to
+         ;; the requiring form — the report then points at the file that failed.
+         (saved-source (jolt-current-source)))
     ;; parameterize (not a bare set!) so a require nested in this file's ns form
     ;; restores path when control returns to the rest of this file.
     (parameterize ((rdr-source-file path))   ; list forms read here carry :file = path
@@ -330,7 +338,8 @@
                       (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
                     (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
                                             (chez-current-ns)))
-                  (loop j))))))))))
+                  (loop j))))))))
+    (jolt-current-source saved-source)))
 
 ;; Mark a namespace as loaded in both the host hashtable and the *loaded-libs* ref.
 (define (ldr-mark-loaded! name)
