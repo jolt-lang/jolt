@@ -932,4 +932,18 @@
   {:suite "r3-rt" :expr "(pr-str 1.0E7)" :expected "1.0E7"}
   {:suite "r3-rt" :expr "(pr-str 0.001)" :expected "0.001"}
   {:suite "r3-rt" :expr "(pr-str 1.0E-300)" :expected "1.0E-300"}
+  ;; compiler-review R3 stage 2 — bigdec for ratios / sci-notation doubles / typed
+  ;; errors (java/bigdec.ss). Ratio -> exact decimal (ArithmeticException if
+  ;; non-terminating); flonum + exponent strings parse; Inf/NaN/garbage raise
+  ;; NumberFormatException. jbigdec->string now matches BigDecimal.toString
+  ;; (scientific for scale<0 or adjusted-exp<-6).
+  {:suite "r3-bigdec" :expr "(bigdec 1/4)" :expected "0.25M"}
+  {:suite "r3-bigdec" :expr "(+ (bigdec 1/4) 1M)" :expected "1.25M"}
+  {:suite "r3-bigdec" :expr "(bigdec 1.0E300)" :expected "1.0E+300M"}
+  {:suite "r3-bigdec" :expr "(bigdec \"1.0E300\")" :expected "1.0E+300M"}
+  {:suite "r3-bigdec" :expr "(bigdec \"1.5e-7\")" :expected "1.5E-7M"}
+  {:suite "r3-bigdec" :expr "(bigdec 1/3)" :expected :throws}
+  {:suite "r3-bigdec" :expr "(bigdec ##Inf)" :expected :throws}
+  {:suite "r3-bigdec" :expr "(bigdec \"abc\")" :expected :throws}
+  {:suite "r3-bigdec" :expr "(bigdec \"\")" :expected :throws}
 ]
