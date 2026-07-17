@@ -218,13 +218,18 @@
       (map? task) (do (apply-project! resolved) (apply-main-opts (:main-opts task) more))
       :else (throw (ex-info (str "bad task " name) {})))))
 
-;; build [-m NS | FILE] [-o OUT] [--opt | --dev] [--direct-link] — AOT-compile the
-;; app into a standalone executable. Resolves deps + roots like `run`, then hands the
-;; entry namespace to the host build driver (jolt.host/build-binary, defined by
-;; build.ss). Default mode is release; --opt selects optimized, --dev unoptimized.
-;; --direct-link (or deps.edn :jolt/build {:direct-link true}) opts into closed-world
-;; direct-linking: app->app calls bind directly, giving up runtime redefinition of
-;; those vars and eval/load-string. Off by default — release stays dynamically linked.
+ ;; build [-m NS | FILE] [-o OUT] [--opt | --dev] [--no-direct-link] — AOT-compile
+ ;; the app into a standalone executable. Resolves deps + roots like `run`, then hands
+ ;; the entry namespace to the host build driver (jolt.host/build-binary, defined by
+ ;; build.ss). Default mode is release; --opt selects optimized (release + the riskier
+ ;; inline/scalar-replace passes), --dev unoptimized.
+ ;; Release and optimized default to closed-world direct-linking + whole-program
+ ;; inference (the throughput lever the perf audit identified). The tradeoff is runtime
+ ;; redefinition: a plain def is frozen in the built binary (its eval/load-string and
+ ;; redef no-op), so a def that must stay redefinable carries ^:redef — a ^:dynamic var
+ ;; stays var-routed automatically. --no-direct-link (or deps.edn :jolt/build
+ ;; {:direct-link false}) opts back out to dynamic var routing; --dev stays dynamically
+ ;; linked. --direct-link is kept as a now-redundant alias.
 ;; The static-link description of a :jolt/native spec for this platform, or nil.
 ;; :static may be flat ({:archive "…"} / {:lib "z" :libdir "…"}) or per-platform
 ;; ({:darwin {…} :linux {…}}). Returns a vector build.ss reads and wraps in the
@@ -300,9 +305,12 @@
             ;; true}) keeps the old behavior — load a shared object at runtime.
             dynamic-natives? (boolean (or (some #{"--dynamic"} flag-args) (:dynamic-natives build)))
             natives (encode-natives (:natives resolved) dynamic-natives?)
-            ;; closed-world direct-linking is opt-in: the --direct-link flag or a
-            ;; deps.edn :jolt/build {:direct-link true}. Off otherwise.
-            direct-link? (boolean (or (some #{"--direct-link"} flag-args) (:direct-link build)))
+            ;; closed-world direct-linking is the release default: ON for release and
+            ;; optimized (the throughput lever), OFF for --dev. --no-direct-link (or
+            ;; deps.edn :jolt/build {:direct-link false}) opts back out; --direct-link
+            ;; is a now-redundant alias. ^:redef/^:dynamic defs always stay var-routed.
+            no-dl?       (or (some #{"--no-direct-link"} flag-args) (false? (:direct-link build)))
+            direct-link? (and (not (= mode "dev")) (not no-dl?))
             ;; tree-shaking (drop library code not reachable from -main): --tree-shake
             ;; or deps.edn :jolt/build {:tree-shake true}.
             tree-shake? (boolean (or (some #{"--tree-shake"} flag-args) (:tree-shake build)))
