@@ -448,9 +448,18 @@
               (lambda (tn)
                 (when (symbol-t? tn)
                   (let ((c (var-cell-lookup from (symbol-t-name tn))))
-                    (when (and c (var-cell-defined? c))
-                      (def-var! (chez-current-ns) (symbol-t-name tn) (var-cell-root c))))))
+                    (if (and c (var-cell-defined? c))
+                        (def-var! (chez-current-ns) (symbol-t-name tn) (var-cell-root c))
+                        ;; a HOST class (no source var): bind the short name to
+                        ;; the interned class value, the same self-evaluating-var
+                        ;; pattern the core Long/Integer/String tokens use — so
+                        ;; (instance? FileAttribute x) / (into-array CopyOption …)
+                        ;; resolve after (:import [java.nio.file.attribute
+                        ;; FileAttribute]) under strict analysis.
+                        (def-var! (chez-current-ns) (symbol-t-name tn)
+                                  (jolt-class-for (string-append from "." (symbol-t-name tn))))))))
               (cdr items))))))
     specs)
   jolt-nil)
-(def-var! "clojure.core" "import" chez-runtime-import)
+;; clojure.core/import is a macro (00-syntax.clj) expanding to this runtime fn.
+(def-var! "clojure.core" "__import" chez-runtime-import)

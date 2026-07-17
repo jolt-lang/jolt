@@ -79,7 +79,7 @@
   {:suite "hostobj" :expr "[(namespace (symbol \"foo/bar\")) (name (symbol \"foo/bar\"))]" :expected "[foo bar]"}
   {:suite "hostobj" :expr "(str (symbol \"a/b/c\"))" :expected "a/b/c"}
   {:suite "hostobj" :expr "(do (System/setProperty \"jolt.test.x\" \"z\") (System/getProperty \"jolt.test.x\"))" :expected "z"}
-  {:suite "hostobj" :expr "(set! *assert* false)" :expected "false"}
+   {:suite "hostobj" :expr "(do (def ^:dynamic *x4422* true) (binding [*x4422* false] *x4422*))" :expected "false"}
   {:suite "hostobj" :expr "(binding [*print-readably* false] *print-readably*)" :expected "false"}
   {:suite "hostobj" :expr "(do (defprotocol P (m [_])) (extend-protocol P clojure.lang.Fn (m [_] :fn)) (m (fn [x] x)))" :expected ":fn"}
   {:suite "hostobj" :expr "(do (defprotocol P (m [_])) (extend-protocol P clojure.lang.APersistentVector (m [_] :vec)) (m [1 2 3]))" :expected ":vec"}
@@ -671,8 +671,8 @@
   {:suite "vars / unbound" :expr "(do (declare uv-d) (bound? (var uv-d)))" :expected "false"}
   {:suite "vars / unbound" :expr "(do (declare uv-e) (identical? uv-e (var-get (var uv-e))))" :expected "true"}
   {:suite "vars / unbound" :expr "(do (declare uv-f) (str uv-f))" :expected "Unbound: #'user/uv-f"}
-  {:suite "vars / unbound" :expr "(pr-str uv-late-undef-xyz)" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-late-undef-xyz\"]"}
-  {:suite "vars / unbound" :expr "(do (declare uv-g) (binding [uv-g 42] (deref (var uv-g))))" :expected "42"}
+   {:suite "vars / unbound" :expr "(do (declare uv-late-undef-xyz) (pr-str uv-late-undef-xyz))" :expected "#object[clojure.lang.Var$Unbound 0 \"Unbound: #'user/uv-late-undef-xyz\"]"}
+  {:suite "vars / unbound" :expr "(do (declare ^:dynamic uv-g) (binding [uv-g 42] (deref (var uv-g))))" :expected "42"}
   ;; seq error semantics that guard the per-site unsafe-op work: a nil count
   ;; routes through a checked fx comparison in the take fast path, which must
   ;; keep raising. (Host-specific: real Clojure returns nil here, so this stays
@@ -776,7 +776,7 @@
  {:suite "binding-no-autoderef" :expr "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :expected "clojure.lang.Var"}
  ;; naa9 — JVM-only macro vars absent on jolt
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'import))" :expected "true"}
- {:suite "naa9-jvm-only-macros" :expr "(nil? (:macro (meta (resolve 'import))))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (:macro (meta (resolve 'import))))" :expected "true"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-class))" :expected "false"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-interface))" :expected "false"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'proxy-super))" :expected "true"}
@@ -826,6 +826,10 @@
                _  (Files/deleteIfExists d)]
            [sz ex mt cpsz mvsz (pos? sz)])))"
    :expected "[5 true 1000 5 5 true]"}
+  {:suite "vars / set! binding" :expr "(do (def ^:dynamic *set-u44* 0) (set! *set-u44* 9))" :expected :throws}
+  {:suite "vars / set! binding" :expr "(do (def ^:dynamic *set-u44b* 0) [(binding [*set-u44b* 99] (set! *set-u44b* 42) *set-u44b*) *set-u44b*])" :expected "[42 0]"}
+  {:suite "vars / binding dynamic" :expr "(do (def not-dyn-u44 0) (binding [not-dyn-u44 1] not-dyn-u44))" :expected :throws}
+  {:suite "resolution / strict default" :expr "(binding [jolt.analyzer/*allow-unresolved-vars* false] jolt.analyzer/*allow-unresolved-vars*)" :expected "false"}
   {:suite "jolt-version" :label "*jolt-version* is a non-blank string" :expected "true" :expr "(and (string? *jolt-version*) (pos? (count *jolt-version*)))"}
   {:suite "jolt-version" :label "property and host fn match the var" :expected "true" :expr "(= *jolt-version* (System/getProperty \"jolt.version\") (jolt.host/jolt-version))"}
   {:suite "add-deps" :label "inline :local/root dep becomes requirable" :expected ":pong" :expr "(do (require 'jolt.deps) (let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-adddep-unit\")] (jolt.host/sh (str \"rm -rf \" d)) (jolt.host/sh (str \"mkdir -p \" d \"/src/adddep\")) (spit (str d \"/deps.edn\") \"{}\") (spit (str d \"/src/adddep/core.clj\") \"(ns adddep.core) (defn ping [] :pong)\") (jolt.deps/add-deps {:deps {'adddep/adddep {:local/root d}}}) (require 'adddep.core) ((resolve 'adddep.core/ping))))"}

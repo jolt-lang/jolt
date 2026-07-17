@@ -46,6 +46,12 @@
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
 
+;; Default false: unresolved symbols at the top level throw "Unable to resolve
+;; symbol", matching JVM Clojure. Inside fn bodies the analyzer still late-binds
+;; so defmulti/defmethod forward references work. nREPL binds this to true for
+;; interactive development where forward references are legitimate.
+(def ^:dynamic *allow-unresolved-vars* false)
+
 (def ^:private gensym-counter (atom 0))
 (defn- gen-name [prefix]
   (let [n @gensym-counter]
@@ -340,7 +346,10 @@
       ;; reference resolves; the back end keys on :no-init.
       (let [nm (form-sym-name name-sym) cur (compile-ns ctx)]
         (host-intern! ctx cur nm)
-        {:op :def :ns cur :name nm :no-init true})
+        ;; keep the reader meta: (def ^:dynamic *x*) must be bindable before
+        ;; its root is set (the backend emits set-var-meta! beside declare-var!).
+        {:op :def :ns cur :name nm :no-init true
+         :meta (or (form-sym-meta name-sym) {})})
       ;; (def name docstring value): docstring is form 2, value form 3 — matching
       ;; the interpreter, else the docstring is taken as the value.
       (let [nm (form-sym-name name-sym)
@@ -446,8 +455,8 @@
             (if (= :var (:kind r))
               (the-var (:ns r) (:name r))
               (uncompilable (str "var of non-var " (form-sym-name sym)))))
-    ;; (set! *var* val): set the var's innermost thread binding, else its root
-    ;; (jolt-var-set). A local target is a deftype mutable field — not yet
+    ;; (set! *var* val): set the var's innermost thread binding; throws if none.
+    ;; Uses jolt-set-var! (not jolt-var-set — that's the public root-setter).
     ;; supported (jolt binds fields immutably); an interop (.-field) target too.
     ;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
     ;; produced by a macro like (when … (defmacro …)). Lower it the way the spine
@@ -628,21 +637,14 @@
                 ;; Class object via the runtime interner, so (= (class x) java.util.Date),
                 ;; identity, and defmethod dispatch keys are all stable.
                 :class (invoke (var-ref "jolt.host" "jolt-class-for") [(const (:name r))])
-                ;; :unresolved — emitting a var-ref here would auto-intern an
-                ;; UNBOUND var, so a typo'd symbol would die later as 'Cannot call
-                ;; nil as a function' with no hint which symbol.
-                ;; Punt to the interpreter: its resolver raises Clojure's
-                ;; 'Unable to resolve symbol' when the form actually runs (at
-                ;; eval for top-level forms, at call for fn bodies). A punt
-                ;; rather than a hard throw because runtime-interning forms
-                ;; (defmulti's setup call) legitimately reference the var they
-                ;; are about to create when nested in a non-top-level do. Real
-                ;; forward references want (declare ...), as in Clojure.
-                ;; Under late-bind? (the Chez back end, which has no interpreter
-                ;; to punt to) an unresolved symbol instead lowers to a var-ref
-                ;; against the compile ns — resolved at runtime, the open-world
-                ;; semantics of -e — so defmulti/defmethod forward references work.
-                (if (late-bind? ctx)
+                ;; :unresolved — throw "Unable to resolve symbol" at the
+                ;; compilation-unit top level, matching JVM Clojure. Inside a
+                ;; scope (fn / loop / let body — indicated by :recur or non-empty
+                ;; :locals), late-bind so defmulti/defmethod forward references
+                ;; still work. *allow-unresolved-vars* overrides for nREPL.
+                (if (or *allow-unresolved-vars*
+                        (:recur env)
+                        (seq (:locals env)))
                   (var-ref (compile-ns ctx) nm)
                   (uncompilable (str "Unable to resolve symbol: " nm " in this context"))))))))
 

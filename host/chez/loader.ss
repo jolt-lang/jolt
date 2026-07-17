@@ -154,7 +154,7 @@
     (let-values (((m j) (rdr-read-form src 0 (string-length src))))
     (when (and (not (rdr-eof? m)) (pmap? m))
       (let ((cur (data-readers-table)))
-        (def-var! "clojure.core" "*data-readers*"
+        (def-dynvar! "clojure.core" "*data-readers*"
           (apply jolt-assoc (if (pmap? cur) cur empty-pmap)
                  (pmap-fold m (lambda (k v a) (cons k (cons v a))) '()))))
       (set! data-readers-active #t)
@@ -287,11 +287,16 @@
 ;; load after this file.
 (define ldr-file-cell #f)
 (define ldr-spath-cell #f)
+(define ldr-warn-cell #f)
+(define ldr-assert-cell #f)
+(define ldr-allow-cells (make-hashtable string-hash string=?))
 (define (ldr-with-file-vars path thunk)
   (unless ldr-file-cell
     (set! ldr-file-cell (var-cell-lookup "clojure.core" "*file*"))
-    (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*")))
-  (if (not (and ldr-file-cell ldr-spath-cell))
+    (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*"))
+    (set! ldr-warn-cell (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
+    (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*")))
+  (if (not (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell))
       (thunk)
       (let ((name (let loop ((i (- (string-length path) 1)))
                     (cond ((< i 0) path)
@@ -299,9 +304,12 @@
                            (substring path (+ i 1) (string-length path)))
                           (else (loop (- i 1)))))))
         (dynamic-wind
-          (lambda () (dyn-binding-stack
-                      (cons (list (cons ldr-file-cell path) (cons ldr-spath-cell name))
-                            (dyn-binding-stack))))
+          (lambda ()
+            (let ((frame (list (cons ldr-file-cell path)
+                               (cons ldr-spath-cell name)
+                               (cons ldr-warn-cell (var-cell-root ldr-warn-cell))
+                               (cons ldr-assert-cell (var-cell-root ldr-assert-cell)))))
+              (dyn-binding-stack (cons frame (dyn-binding-stack)))))
           thunk
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
 

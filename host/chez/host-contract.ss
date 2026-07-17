@@ -238,6 +238,10 @@
 ;; has none, so it defaults to {}.
 (define hc-amp-form-cell (declare-var! "clojure.core" "&form"))
 (define hc-amp-env-cell (declare-var! "clojure.core" "&env"))
+;; bound on every macro expansion (hc-expand-1's dynamic-wind) — tag :dynamic
+;; so the push passes the non-dynamic-var check.
+(set-var-meta! "clojure.core" "&form" (jolt-hash-map (keyword #f "dynamic") #t))
+(set-var-meta! "clojure.core" "&env" (jolt-hash-map (keyword #f "dynamic") #t))
 ;; &form meta matches the JVM's {:line :column}. hc-kw-file is defined above
 ;; with hc-kw-line/hc-kw-column. hc-form-sans-file strips :file from &form meta
 ;; so a macro reading (meta &form) doesn't see it — libraries branch on its presence.

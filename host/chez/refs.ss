@@ -244,7 +244,7 @@
 ;; concurrency.ss will re-chain over us.
 
 ;; *loaded-libs* — seeded empty; loader.ss populates and wires it.
-(def-var! "clojure.core" "*loaded-libs*" (jolt-ref-new (jolt-hash-set)))
+(def-dynvar! "clojure.core" "*loaded-libs*" (jolt-ref-new (jolt-hash-set)))
 ;; loaded-libs fn returns the derefed set.
 (def-var! "clojure.core" "loaded-libs"
   (lambda () (jolt-deref (var-deref "clojure.core" "*loaded-libs*"))))

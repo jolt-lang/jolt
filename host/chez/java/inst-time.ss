@@ -645,4 +645,4 @@
 (def-var! "clojure.core" "default-data-readers"
   (jolt-hash-map (jolt-symbol #f "inst") jolt-inst-from-string
                  (jolt-symbol #f "uuid") jolt-uuid-from-string))
-(def-var! "clojure.core" "*data-readers*" empty-pmap)
+(def-dynvar! "clojure.core" "*data-readers*" empty-pmap)

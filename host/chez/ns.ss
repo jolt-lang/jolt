@@ -502,7 +502,7 @@
 (def-var! "clojure.core" "reset-meta!" jolt-reset-meta!)
 ;; *ns* starts at the user namespace (the current ns for -e user code). in-ns
 ;; re-binds it. (ns-name is overridden natively in post-prelude.ss.)
-(def-var! "clojure.core" "*ns*" (intern-ns! "user"))
+(def-dynvar! "clojure.core" "*ns*" (intern-ns! "user"))
 
 ;; Host seam: bare var-cell lookup (no alias resolution) for the defonce macro
 ;; expansion, which must NOT reference clojure.core/resolve (a tree-shake bail ref).

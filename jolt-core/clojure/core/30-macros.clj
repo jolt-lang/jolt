@@ -33,7 +33,11 @@
         ;; deftest body) must still define in the ns it was written in.
         qname (symbol (str (clojure.core/ns-name clojure.core/*ns*))
                       (clojure.core/name name))]
-    `(defmulti-setup (quote ~qname) ~dispatch ~@opts)))
+    ;; (def ~name) declares at ANALYSIS time (analyze-def interns the cell), so
+    ;; a reference later in the same top-level form resolves under strict
+    ;; analysis — the JVM's defmulti interns the same way by expanding through
+    ;; def. defmulti-setup then fills the root; declare never resets one.
+    `(do (def ~name) (defmulti-setup (quote ~qname) ~dispatch ~@opts))))
 
 (defmacro defmethod [mm dispatch-val & fn-tail]
   ;; the expansion ns rides along so a deferred defmethod resolves its multifn
@@ -538,11 +542,13 @@
         suffix? (fn [long short]
                   (let [d (str "." short)]
                     (and (> (count long) (count d))
-                         (= (subs long (- (count long) (count d))) d))))]
-    (boolean (some (fn [t]
-                     (let [tn (name t)]
-                       (or (= tn want) (suffix? tn want) (suffix? want tn))))
-                   (extenders protocol)))))
+                         (= (subs long (- (count long) (count d))) d))))
+        pn-str (some-> protocol :name name)]
+    (boolean (or (some (fn [t]
+                         (let [tn (name t)]
+                           (or (= tn want) (suffix? tn want) (suffix? want tn))))
+                       (extenders protocol))
+                 (and pn-str (jolt.host/type-satisfies? want pn-str))))))
 
 ;; The canonical name for a protocol-extension type: a symbol/keyword via name, a
 ;; string as-is, nil as "nil" (extends on nil values), and a Class VALUE — e.g.

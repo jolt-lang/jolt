@@ -371,7 +371,20 @@
                 (for-each (lambda (spec)
                             (bld-scan-spec! ns-name spec
                                             (lambda (s) (set! acc (cons s acc)))))
-                          (cdr citems))))))
+                          (cdr citems)))
+              ;; :import must be reconstructed too: ei-for-each-form skips the
+              ;; ns form entirely, so without this a built binary never runs
+              ;; __import and the class-valued short-name vars (Path,
+              ;; FileAttribute, …) stay unbound — late-bind used to mask that.
+              (when (and (pair? citems) (keyword? (car citems))
+                         (string=? (keyword-t-name (car citems)) "import"))
+                (for-each
+                  (lambda (spec)
+                    (set! acc (cons (string-append
+                                      "(chez-runtime-import (jolt-read-string "
+                                      (ei-str-lit (jolt-pr-str spec)) "))")
+                                    acc)))
+                  (cdr citems))))))
         (seq->list nsf)))
     (reverse acc)))
 
@@ -741,10 +754,15 @@
                                ;; keeps original order.
                                (let ((src (ldr-read-source (cdr nf))))
                                  (parameterize ((rdr-source-file (cdr nf)))
+                                   ;; RT.load-parity bracket (dyn-binding.ss): the
+                                   ;; ns's replayed forms run under fresh
+                                   ;; *warn-on-reflection*/*assert* bindings.
                                    (append
+                                     (list (dce-rec #t #f '() "(jolt-ns-load-vars-push!)"))
                                      (map (lambda (s) (dce-rec #t #f '() s))
                                           (bld-ns-prelude (car nf) src))
-                                     (ei-emit-ns-records (car nf) src)))))
+                                     (ei-emit-ns-records (car nf) src)
+                                     (list (dce-rec #t #f '() "(jolt-ns-load-vars-pop!)"))))))
                              ordered))
                       (string-append entry-ns "/-main"))
                     (values #f
@@ -752,8 +770,12 @@
                               (map (lambda (nf)
                                      (let ((src (ldr-read-source (cdr nf))))
                                        (parameterize ((rdr-source-file (cdr nf)))
-                                         (append (bld-ns-prelude (car nf) src)
-                                                 (bld-emit-ns (car nf) src)))))
+                                         ;; RT.load-parity bracket, matching the
+                                         ;; tree-shake path above.
+                                         (append (list "(jolt-ns-load-vars-push!)")
+                                                 (bld-ns-prelude (car nf) src)
+                                                 (bld-emit-ns (car nf) src)
+                                                 (list "(jolt-ns-load-vars-pop!)")))))
                                    ordered))
                             #f))))
               (lambda ()

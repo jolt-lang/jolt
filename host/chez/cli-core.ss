@@ -59,15 +59,60 @@
 ;; Evaluate EXPR (a string of one-or-more forms) with *command-line-args* bound
 ;; to app-args. print? echoes the final value (blank for nil), as `-e` does; a
 ;; `-` stdin PROGRAM runs as a script and suppresses it.
+;; Reads, compiles, and evals each top-level form in sequence — NOT batch-wrapped
+;; in (do …) — so each form is visible to the next, matching JVM and file-load
+;; semantics. *allow-unresolved-vars* defaults to false; unresolved bare symbols
+;; throw, matching JVM. Inside fn bodies the analyzer still late-binds so
+;; defmulti/defmethod forward references work.
+;;
+;; The CLI auto-quotes require/use vector/list args (but NOT symbols — a plain
+;; (require sym) evaluates sym normally) so `(require [my.lib :as m])` works
+;; without an explicit quote, matching the convenience of JVM Clojure's ns macro.
 (define (jolt-run-expr-string expr app-args print?)
-  (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args))))
+  (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args)))
+        (end (string-length expr))
+        (quote-sym (jolt-symbol #f "quote")))
+    (define (already-quoted? a)
+      (and (cseq? a) (cseq-list? a)
+           (let ((ah (car (seq->list a))))
+             (and (symbol-t? ah)
+                  (string=? (symbol-t-name ah) "quote")))))
+    (define (maybe-quote-require-args form)
+      (if (and (cseq? form) (cseq-list? form)
+               (let ((items (seq->list form)))
+                 (and (pair? items)
+                      (let ((h (car items)))
+                        (and (symbol-t? h)
+                             (let ((hn (symbol-t-name h)))
+                               (or (string=? hn "require")
+                                   (string=? hn "use"))))))))
+          (let ((items (seq->list form)))
+            (list->cseq
+              (cons (car items)
+                    (map (lambda (a)
+                           (if (and (or (cseq? a) (jolt-vector? a))
+                                    (not (already-quoted? a)))
+                               (list->cseq (list quote-sym a))
+                               a))
+                         (cdr items)))))
+          form))
     (jolt-push-thread-bindings
       (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
-    (let ((result (jolt-final-str
-                    (jolt-compile-eval (string-append "(do " expr ")") "user"))))
+    (let ((result (let loop ((i 0) (result jolt-nil))
+                    (if (>= i end)
+                        result
+                        (let-values (((form j) (rdr-read-form expr i end)))
+                          (if (> j i)
+                              (loop j (if (rdr-eof? form)
+                                          result
+                                          (jolt-compile-eval-form
+                                            (maybe-quote-require-args form)
+                                            "user")))
+                              result))))))
       (jolt-pop-thread-bindings)
-      (when (and print? (not (string=? result "")))
-        (display result) (newline)))))
+      (let ((s (jolt-final-str result)))
+        (when (and print? (not (string=? s "")))
+          (display s) (newline))))))
 
 (define (jolt-cli-run cli-args prepare-build!)
   (guard (v (#t (jolt-report-uncaught v)))
@@ -78,8 +123,9 @@
 (define (jolt-cli-dispatch cli-args prepare-build!)
     (cond
       ;; -e EXPR [args…] — evaluate one expression and print it (blank for nil).
-      ;; Wrapped in (do …) so a multi-form string evaluates every form and returns
-      ;; the last. The argv after EXPR are *command-line-args* (nil when empty),
+      ;; Each top-level form is read, compiled, and evaled in sequence so each
+      ;; form is visible to the next, matching JVM load semantics. The argv after
+      ;; EXPR are *command-line-args* (nil when empty),
       ;; with the first standalone "--" consumed as POSIX end-of-options. `-e -`
       ;; reads the expression from stdin.
       ((and (pair? cli-args) (string=? (car cli-args) "-e")

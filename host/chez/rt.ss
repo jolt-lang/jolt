@@ -323,6 +323,16 @@
 (define jolt-kw-var-macro (keyword #f "macro"))
 (define (def-var-with-meta! ns name v m)
   (let ((c (def-var! ns name v))) (hashtable-set! var-meta-table c m) c))
+;; A runtime-defined DYNAMIC var (the *earmuffed* core vars): tagged :dynamic so
+;; push-thread-bindings accepts it — with no meta entry a var is non-dynamic and
+;; binding throws, like the JVM.
+(define (def-dynvar! ns name v)
+  (def-var-with-meta! ns name v
+    (jolt-hash-map (keyword #f "dynamic") #t)))
+;; Attach meta to an already-interned var (the declare/no-init emission path:
+;; (def ^:dynamic *x*) must be bindable before its root is set).
+(define (set-var-meta! ns name m)
+  (hashtable-set! var-meta-table (jolt-var ns name) m))
 ;; runtime-macro registry: a var whose root holds a macro
 ;; expander fn is flagged here, so the ON-CHEZ analyzer's form-macro?/form-expand-1
 ;; (host-contract.ss) expand it. The prelude emits each core/stdlib defmacro as a

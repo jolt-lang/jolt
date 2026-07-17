@@ -40,15 +40,57 @@
             dyn-no-binding))
       dyn-no-binding))
 
-;; push-thread-bindings: frame is a jolt map of var-cell -> value. Fold it into an
-;; identity-keyed alist of mutable pairs and push.
+;; push-thread-bindings: frame is a jolt map of var-cell -> value. Validate each
+;; var is ^:dynamic (matching JVM — non-dynamic vars throw), then fold into an
+;; identity-keyed alist of mutable pairs and push. Vars without metadata yet
+;; (early bootstrap) pass through: the check fires once metadata is settled.
 (define (jolt-push-thread-bindings frame)
-  (dyn-binding-stack
-   (cons (pmap-fold frame (lambda (k v acc) (cons (cons k v) acc)) '())
-         (dyn-binding-stack)))
-  jolt-nil)
+  (let ((pairs (pmap-fold frame
+                 (lambda (cell v acc)
+                   ;; JVM semantics: only an explicitly ^:dynamic var binds. No
+                   ;; meta entry = non-dynamic (runtime dynamic vars are tagged
+                   ;; via def-dynvar!/def-var-with-meta!; the declare path via
+                   ;; set-var-meta!).
+                   (let ((m (hashtable-ref var-meta-table cell #f)))
+                     (when (not (and m (jolt-truthy? (jolt-get m (keyword #f "dynamic")))))
+                       (jolt-throw
+                        (jolt-ex-info
+                         (string-append "Can't dynamically bind non-dynamic var: "
+                                        (var-cell-ns cell) "/" (var-cell-name cell))
+                         jolt-nil))))
+                   (cons (cons cell v) acc))
+                 '())))
+    (dyn-binding-stack (cons pairs (dyn-binding-stack)))
+    jolt-nil))
 
 (define (jolt-pop-thread-bindings)
+  (when (pair? (dyn-binding-stack))
+    (dyn-binding-stack (cdr (dyn-binding-stack))))
+  jolt-nil)
+
+;; RT.load parity for BUILT binaries. An AOT'd namespace's top-level forms
+;; replay at boot outside the loader, so a vendored library's top-level
+;; (set! *warn-on-reflection* true) would hit the no-thread-binding throw.
+;; `jolt build` brackets each emitted namespace's forms with this pair,
+;; mirroring ldr-with-file-vars (and the JVM's RT.load, which binds
+;; WARN_ON_REFLECTION/UNCHECKED_MATH around compiled-class inits as well as
+;; source loads). Frames push directly like the loader's; an empty frame keeps
+;; push/pop balanced if the cells are ever absent.
+(define jolt-nsload-cells #f)
+(define (jolt-ns-load-vars-push!)
+  (unless jolt-nsload-cells
+    (set! jolt-nsload-cells
+      (let ((w (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
+            (a (var-cell-lookup "clojure.core" "*assert*")))
+        (if (and w a) (cons w a) 'missing))))
+  (dyn-binding-stack
+    (cons (if (pair? jolt-nsload-cells)
+              (list (cons (car jolt-nsload-cells) (var-cell-root (car jolt-nsload-cells)))
+                    (cons (cdr jolt-nsload-cells) (var-cell-root (cdr jolt-nsload-cells))))
+              '())
+          (dyn-binding-stack)))
+  jolt-nil)
+(define (jolt-ns-load-vars-pop!)
   (when (pair? (dyn-binding-stack))
     (dyn-binding-stack (cdr (dyn-binding-stack))))
   jolt-nil)
@@ -71,20 +113,35 @@
 (define (jolt-thread-bound? v)
   (and (var-cell? v) (dyn-find-binding v) #t))
 
-;; var-set: update the innermost frame that binds v (in place); else set the root.
+;; var-set (clojure.core/var-set): set the var's root value, always allowed.
+;; This is the public API — different from set! (the special form), which only
+;; sets thread-local bindings.
 (define (jolt-var-set v val)
   (if (var-cell? v)
       (let ((p (dyn-find-binding v)))
         (if p
             (begin (set-cdr! p val) val)
             ;; a ROOT change is Var.bindRoot: validate, set, notify watches
-            ;; (a thread-binding set does not notify, like the JVM).
             (let ((old (var-cell-root v)))
               (iref-validate v val)
               (var-cell-root-set! v val) (var-cell-defined?-set! v #t)
               (iref-notify v old val)
               val)))
       (error #f "var-set: not a var" v)))
+
+;; jolt-set-var!: the set! special form lowered to a call. Throws when there
+;; is no active thread binding — set! never mutates the root, matching JVM.
+(define (jolt-set-var! v val)
+  (if (var-cell? v)
+      (let ((p (dyn-find-binding v)))
+        (if p
+            (begin (set-cdr! p val) val)
+            (jolt-throw
+             (jolt-ex-info
+              (string-append "Can't change/establish root binding of: "
+                             (var-cell-name v) " with set")
+              jolt-nil))))
+      (error #f "jolt-set-var!: not a var" v)))
 
 ;; alter-var-root: atomically apply f to the current root plus args.
 (define (jolt-alter-var-root v f . args)
@@ -160,6 +217,8 @@
 (def-var! "clojure.core" "var-set" jolt-var-set)
 (def-var! "clojure.core" "alter-var-root" jolt-alter-var-root)
 (def-var! "clojure.core" "__local-var" jolt-local-var)
+;; jolt-set-var! is the set! special form backend — throws when no thread binding.
+(def-var! "jolt.host" "set-var!" jolt-set-var!)
 ;; re-assert var-get / deref to the new (stack-aware) closures (vars.ss captured
 ;; the pre-chain values).
 (def-var! "clojure.core" "var-get" jolt-var-get)

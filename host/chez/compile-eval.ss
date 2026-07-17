@@ -305,20 +305,30 @@
 ;; built into opaque values the way read-string does. `data-readers-active` and
 ;; `ldr-apply-readers` come from the loader, present in the CLI runtime; guard the
 ;; read so load-string still works in a bootstrap/build context without it.
+;; Establishes default thread bindings for JVM-compiler vars so vendored code
+;; that (set! *warn-on-reflection* …) at the file level finds a thread-local slot.
 (define (jolt-load-string s)
   (let ((end (string-length s))
         (drl (guard (_ (#t #f)) data-readers-active)))
-    (let loop ((i 0) (result jolt-nil))
-      (if (>= i end)
-          result
-          (let-values (((form j) (rdr-read-form s i end)))
-            (if (> j i)
-                (loop j (if (rdr-eof? form)
-                            result
-                            (jolt-compile-eval-form
-                             (if drl (ldr-apply-readers form) form)
-                             (chez-current-ns))))
-                result))))))
+    (jolt-push-thread-bindings
+      (jolt-hash-map
+        (jolt-var "clojure.core" "*warn-on-reflection*")
+          (var-cell-root (jolt-var "clojure.core" "*warn-on-reflection*"))
+        (jolt-var "clojure.core" "*assert*")
+          (var-cell-root (jolt-var "clojure.core" "*assert*"))))
+    (let ((result (let loop ((i 0) (result jolt-nil))
+                    (if (>= i end)
+                        result
+                        (let-values (((form j) (rdr-read-form s i end)))
+                          (if (> j i)
+                              (loop j (if (rdr-eof? form)
+                                          result
+                                          (jolt-compile-eval-form
+                                           (if drl (ldr-apply-readers form) form)
+                                           (chez-current-ns))))
+                              result))))))
+      (jolt-pop-thread-bindings)
+      result)))
 
 ;; eval / load-string are FUNCTIONS on the spine (the compiler image is resident
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and

@@ -12,6 +12,11 @@
 ;;   chez --script host/chez/run-infer.ss
 (import (chezscheme))
 (load "host/chez/run-gate-harness.ss")
+;; Inference fixtures analyze fragments with intentionally-free symbols (foo,
+;; bar) — this gate tests TYPE inference, not resolution. Late-bind them like
+;; the analyzer's nREPL escape hatch; the corpus/unit gates stay strict.
+(jolt-push-thread-bindings
+  (jolt-hash-map (jolt-var "jolt.analyzer" "*allow-unresolved-vars*") #t))
 
 (define analyze            (var-deref "jolt.analyzer" "analyze"))
 (define check-form         (var-deref "jolt.passes.types" "check-form"))

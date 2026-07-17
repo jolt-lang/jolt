@@ -1184,8 +1184,8 @@
                    (str "(var-cell-deref (or " c " (let ((_v (jolt-var " nslit " " nmlit "))) (set! " c " _v) _v)))"))
                  (str "(var-deref " nslit " " nmlit ")")))))
     :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
-    ;; (set! *var* val) -> set the var's innermost binding (else root); returns val.
-    :set-var (str "(jolt-var-set " (emit (:the-var node)) " " (emit (:val node)) ")")
+    ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
+    :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
     :set-field (str "(jolt-set-field! " (emit (:obj node)) " (keyword #f "
                     (chez-str-lit (:field node)) ") " (emit (:val node)) ")")
@@ -1260,7 +1260,11 @@
     :def (let [reg (trace-source-reg node)
                d (cond
                    (:no-init node)
-                   (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
+                   (if (jmeta-nonempty? (:meta node))
+                     (str "(begin (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"
+                          " (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                          (emit-def-meta node) "))")
+                     (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
                    (jmeta-nonempty? (:meta node))
                    (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                         (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
