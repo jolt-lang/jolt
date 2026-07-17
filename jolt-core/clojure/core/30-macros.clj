@@ -188,6 +188,8 @@
 ;; auto-gensym temp# tests the value; the else/empty branch sees the surrounding
 ;; scope). temp# is a single template-local gensym — referenced twice, same symbol.
 (defmacro if-let [bindings then & [else]]
+  (when-not (= 2 (count bindings))
+    (throw (new IllegalArgumentException "if-let requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if temp# (let [~form temp#] ~then) ~else))))
@@ -195,11 +197,15 @@
 ;; when-let lives in 00-syntax (not here): 20-coll uses it, which loads before this tier.
 
 (defmacro if-some [bindings then & [else]]
+  (when-not (= 2 (count bindings))
+    (throw (new IllegalArgumentException "if-some requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if (some? temp#) (let [~form temp#] ~then) ~else))))
 
 (defmacro when-some [bindings & body]
+  (when-not (= 2 (count bindings))
+    (throw (new IllegalArgumentException "when-some requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if (some? temp#) (let [~form temp#] ~@body) nil))))
@@ -258,12 +264,15 @@
     `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
 
 (defmacro assert [x & [message]]
-  ;; the message EXPRESSION evaluates at failure time (JVM: (str "Assert failed: "
-  ;; message "\n" form)), not at expansion — it may embed runtime state
-  (if message
-    `(when-not ~x
-       (throw (new AssertionError (str "Assert failed: " ~message "\n" ~(pr-str x)))))
-    `(when-not ~x (throw (new AssertionError ~(str "Assert failed: " (pr-str x)))))))
+  ;; *assert* is read at COMPILE time (JVM elides the check entirely when it is
+  ;; false), so a false binding around the compile drops the assertion. The
+  ;; message EXPRESSION evaluates at failure time, not at expansion — it may
+  ;; embed runtime state.
+  (when *assert*
+    (if message
+      `(when-not ~x
+         (throw (new AssertionError (str "Assert failed: " ~message "\n" ~(pr-str x)))))
+      `(when-not ~x (throw (new AssertionError ~(str "Assert failed: " (pr-str x))))))))
 
 ;; (pvalues e1 e2 ...) — each expression evaluated in parallel (pcalls).
 (defmacro pvalues [& exprs]
@@ -302,7 +311,7 @@
                      more (drop n args)
                      cn (count clause)]
                  (cond
-                   (= 0 cn) `(throw (ex-info (str "No matching clause: " ~ge) {}))
+                   (= 0 cn) `(throw (new IllegalArgumentException (str "No matching clause: " ~ge)))
                    (= 1 cn) (first clause)
                    (= 2 cn) `(if (~gp ~(first clause) ~ge) ~(second clause) ~(emit more))
                    :else `(if-let [p# (~gp ~(first clause) ~ge)]

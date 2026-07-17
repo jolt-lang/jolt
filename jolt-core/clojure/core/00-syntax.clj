@@ -564,10 +564,12 @@
     `(let* [~g0 ~expr] ~(step g0 clauses))))
 
 ;; case: nested =/or tests (no jump table). Test constants are NOT evaluated —
-;; symbols and list constants are quoted; a list in test position is a set (or).
+;; symbols, lists, and composite literals (vectors/maps/sets) are quoted so their
+;; elements aren't resolved as code; a LIST in test position is an or-group of
+;; constants, while a vector/map/set is a single literal constant.
 (defmacro case [expr & clauses]
   (let [g (fresh-sym)
-        mk-const (fn [c] (if (or (symbol? c) (seq? c)) `(quote ~c) c))
+        mk-const (fn [c] (if (or (symbol? c) (seq? c) (vector? c) (map? c) (set? c)) `(quote ~c) c))
         mk-test (fn [c]
                   (if (seq? c)
                     `(or ~@(map (fn [v] `(= ~g ~(mk-const v))) c))
@@ -594,8 +596,9 @@
         dup (first-dup (collect clauses []) [])
         build (fn build [cls]
                 (if (empty? cls)
-                  ;; no clause matched and no default — Clojure throws here.
-                  `(throw (ex-info (str "No matching clause: " ~g) {}))
+                  ;; no clause matched and no default — Clojure throws
+                  ;; IllegalArgumentException here (catchable by class).
+                  `(throw (new IllegalArgumentException (str "No matching clause: " ~g)))
                   (if (empty? (rest cls))
                     (first cls)
                     `(if ~(mk-test (first cls)) ~(nth cls 1) ~(build (drop 2 cls))))))]

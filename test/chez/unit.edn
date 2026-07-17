@@ -1025,4 +1025,17 @@
   {:suite "r3-lowbatch" :expr "(== 9007199254740993 9007199254740992.0)" :expected "true"}
   {:suite "r3-lowbatch" :expr "(= 1 1.0)" :expected "false"}
   {:suite "r3-lowbatch" :expr "(== 1/2 0.5)" :expected "true"}
+  {:suite "r4-case" :expr "(let [v (quote [a b])] (case v [a b] :hit :miss))" :expected ":hit"}
+  {:suite "r4-case" :expr "(let [a 1 b 2] (case [1 2] [a b] :hit :miss))" :expected ":miss"}
+  {:suite "r4-case" :expr "(case 2 1 :one 2 :two :def)" :expected ":two"}
+  {:suite "r4-case" :expr "(case (quote b) (a b) :ab :def)" :expected ":ab"}
+  {:suite "r4-case" :expr "(case #{1 2} #{1 2} :set-hit :miss)" :expected ":set-hit"}
+  {:suite "r4-case" :expr "(try (case 9 1 :a) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r4-case" :expr "(try (condp = 9 1 :a) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r4-binding" :expr "(if-let [a 1] :t :f)" :expected ":t"}
+  {:suite "r4-binding" :expr "(if-some [a 0] :t :f)" :expected ":t"}
+  {:suite "r4-binding" :expr "(try (eval (read-string \"(if-let [a 1 b 2] :t :f)\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r4-binding" :expr "(try (eval (read-string \"(when-some [a 1 b 2] a)\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r4-binding" :expr "(try (assert false) (catch AssertionError e :ae))" :expected ":ae"}
+  {:suite "r4-binding" :expr "(nil? (assert true))" :expected "true"}
 ]
