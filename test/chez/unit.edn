@@ -917,4 +917,19 @@
   ;; # -> $H case is backend-only. Smoke-test that a #() still munges its gensym
   ;; params consistently at binding and reference.
   {:suite "munge-injective" :expr "(#(+ % %2) 1 2)" :expected "3"}
+  ;; compiler-review R3 stage 1 — subnormal double printing (rt.ss jolt-flonum->string).
+  ;; Chez tags subnormal number->string output with a "|prec" suffix that corrupted
+  ;; the exponent; round-trip rows prove the value is preserved, and the plain pr-str
+  ;; rows lock that normal-range printing is untouched. (Chez's shortest-round-trip
+  ;; digits for subnormals legitimately differ from JVM's, e.g. 5.0E-324 vs 4.9E-324,
+  ;; so these assert jolt's own round-trippable form, not the JVM literal.)
+  {:suite "r3-rt" :expr "(= (read-string (pr-str 4.9E-324)) 4.9E-324)" :expected "true"}
+  {:suite "r3-rt" :expr "(= (read-string (pr-str 2.5E-323)) 2.5E-323)" :expected "true"}
+  {:suite "r3-rt" :expr "(= (read-string (pr-str 1.0E-322)) 1.0E-322)" :expected "true"}
+  {:suite "r3-rt" :expr "(pr-str 4.9E-324)" :expected "5.0E-324"}
+  {:suite "r3-rt" :expr "(pr-str 2.5E-323)" :expected "2.5E-323"}
+  {:suite "r3-rt" :expr "(pr-str 1.0E-322)" :expected "1.0E-322"}
+  {:suite "r3-rt" :expr "(pr-str 1.0E7)" :expected "1.0E7"}
+  {:suite "r3-rt" :expr "(pr-str 0.001)" :expected "0.001"}
+  {:suite "r3-rt" :expr "(pr-str 1.0E-300)" :expected "1.0E-300"}
 ]

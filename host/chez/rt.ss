@@ -410,7 +410,16 @@
 (define (jolt-flonum->string x)
   (let* ((s (number->string x))
          (neg? (char=? (string-ref s 0) #\-))
-         (body (if neg? (substring s 1 (string-length s)) s))
+         (body0 (if neg? (substring s 1 (string-length s)) s))
+         ;; Chez appends a "|prec" suffix to subnormal strings (e.g. "5e-324|1").
+         ;; Strip it before the exponent substring is parsed, else string->number
+         ;; misreads "-324|1" as a precision-qualified flonum (-256.0) and corrupts
+         ;; the value.
+         (bar (let loop ((i 0))
+                (cond ((fx>=? i (string-length body0)) #f)
+                      ((char=? (string-ref body0 i) #\|) i)
+                      (else (loop (fx+ i 1))))))
+         (body (if bar (substring body0 0 bar) body0))
          (blen (string-length body))
          (epos (let loop ((i 0))
                  (cond ((fx>=? i blen) #f)
