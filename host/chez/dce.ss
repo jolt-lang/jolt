@@ -168,8 +168,10 @@
                          "tree-shake: a prelude form does not round-trip through write/read"
                          (if (pair? form) (car form) form)))
                 (loop (cons
-                        (if (and (pair? b) (eq? (car b) 'def-var!) (pair? (cdr b)) (string? (cadr b))
-                                 (pair? (cddr b)) (string? (caddr b)))
+                         (if (or (and (pair? b) (eq? (car b) 'def-var!) (pair? (cdr b)) (string? (cadr b))
+                                      (pair? (cddr b)) (string? (caddr b)))
+                                 (and (pair? b) (eq? (car b) 'def-var-with-meta!) (pair? (cdr b)) (string? (cadr b))
+                                      (pair? (cddr b)) (string? (caddr b))))
                             (dce-rec #f (string-append (cadr b) "/" (caddr b)) refs str)
                             (dce-rec #t #f refs str))
                         acc)))))))))
