@@ -22,7 +22,11 @@
   (list (cons "sqrt" (lambda (x) (real-or-nan (sqrt x))))
         (cons "cbrt" (lambda (x) (math-cbrt x)))
         (cons "pow" (lambda (a b) (real-or-nan (expt a b))))
-        (cons "hypot" (lambda (a b) (->dbl (sqrt (+ (* a a) (* b b))))))
+        ;; hypot/expm1/log1p route to the numerically-stable clojure.math impls
+        ;; (defined later in math.ss; the lambda body resolves at call time, after
+        ;; math.ss has loaded) so Math/hypot doesn't overflow and expm1/log1p keep
+        ;; full precision near zero.
+        (cons "hypot" (lambda (a b) (jolt-math-hypot (->dbl a) (->dbl b))))
         (cons "floor" (lambda (x) (->dbl (floor x))))
         (cons "ceil" (lambda (x) (->dbl (ceiling x))))
         (cons "round" (lambda (x) (jolt-math-round x)))     ; JVM Math.round -> long (NaN/Inf/saturate/half-up)
@@ -39,9 +43,9 @@
         (cons "sinh" (lambda (x) (->dbl (sinh x)))) (cons "cosh" (lambda (x) (->dbl (cosh x))))
         (cons "tanh" (lambda (x) (->dbl (tanh x))))
         (cons "log" (lambda (x) (real-or-nan (log x)))) (cons "log10" (lambda (x) (real-or-nan (/ (log x) (log 10)))))
-        (cons "log1p" (lambda (x) (real-or-nan (log (+ 1.0 x)))))
+        (cons "log1p" (lambda (x) (jolt-math-log1p (->dbl x))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
-        (cons "expm1" (lambda (x) (->dbl (- (exp x) 1.0))))
+        (cons "expm1" (lambda (x) (jolt-math-expm1 (->dbl x))))
         (cons "toRadians" (lambda (d) (->dbl (/ (* d math-pi) 180.0))))
         (cons "toDegrees" (lambda (r) (->dbl (/ (* r 180.0) math-pi))))
         (cons "copySign" (lambda (m s) (->dbl (if (< s 0.0) (- (abs m)) (abs m)))))

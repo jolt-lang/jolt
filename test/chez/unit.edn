@@ -988,4 +988,13 @@
   {:suite "r3-hash" :expr "(hash 1099511627776/3)" :expected "7939"}
   {:suite "r3-hash" :expr "(hash 5/7)" :expected "2"}
   {:suite "r3-hash" :expr "(= (hash 1.5M) (hash 1.50M))" :expected "true"}
+  {:suite "r3-math-stable" :expr "(clojure.math/expm1 1.0E-10)" :expected "1.00000000005E-10"}
+  {:suite "r3-math-stable" :expr "(clojure.math/log1p 1.0E-15)" :expected "9.999999999999995E-16"}
+  {:suite "r3-math-stable" :expr "(clojure.math/expm1 2.0)" :expected "6.38905609893065"}
+  {:suite "r3-math-stable" :expr "(clojure.math/hypot 3.0 4.0)" :expected "5.0"}
+  {:suite "r3-math-stable" :expr "(clojure.math/hypot 5.0 12.0)" :expected "13.0"}
+  {:suite "r3-math-stable" :expr "(< (clojure.math/hypot 1.0E300 1.0E300) ##Inf)" :expected "true"}
+  {:suite "r3-math-stable" :expr "(Math/expm1 1.0E-10)" :expected "1.00000000005E-10"}
+  {:suite "r3-math-stable" :expr "(Math/hypot 3.0 4.0)" :expected "5.0"}
+  {:suite "r3-math-stable" :expr "(< (Math/hypot 1.0E300 1.0E300) ##Inf)" :expected "true"}
 ]
