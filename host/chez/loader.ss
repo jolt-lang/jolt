@@ -401,7 +401,7 @@
            (ldr-mark-loaded! name))
           (else
             (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate " (ns-name->rel name)
-                                     ".clj (or .cljc) on the source roots") name)))))))
+                                     ".clj (or .cljc) on the source roots"))))))))
 
 ;; load-file: load an explicit path (a `run FILE`), in the current ns.
 (define (jolt-load-file path)
