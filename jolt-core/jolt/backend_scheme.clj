@@ -434,13 +434,24 @@
 ;; safety net for identifiers added to the runtime that aren't yet in the
 ;; registry — they catch future additions without manual enumeration.
 (defn- munge-name [s]
-  ;; A Clojure symbol may contain chars that break a Scheme identifier: ' is the
-  ;; quote reader macro (a bare f' would read as f then 'rest), # already maps to
-  ;; _. Munge both to safe tokens; the same mapping applies at the binding and at
-  ;; every reference, so resolution stays consistent.
+  ;; A Clojure symbol may carry chars that break a Scheme identifier or that
+  ;; collide once substituted: ' is the quote reader macro (a bare f' reads as f
+  ;; then 'rest), # is the auto-gensym suffix the reader puts on #() params
+  ;; (p__1#) and starts a Scheme datum, and $ is the escape marker used below.
+  ;; Map all three to safe tokens INJECTIVELY so two distinct Clojure locals can
+  ;; never munge to the same Scheme identifier: reserve $ as the escape char and
+  ;; escape it FIRST ($$ = a literal $), then ' -> $P and # -> $H. Decoding is an
+  ;; unambiguous left-to-right inverse ($$ -> $, $P -> ', $H -> #): every $ in
+  ;; the output is either doubled (came from a literal $) or single+P/+H (came
+  ;; from ' / #), so no two inputs share an output. The same mapping applies at
+  ;; the binding and at every reference, so resolution stays consistent. Only the
+  ;; char-substitution step changes; the reserved/emitted-name _-prefix below is
+  ;; untouched (it runs on the substituted string; a $ -> $$ still leaves the
+  ;; jv$/jolt- prefix tests true, and those runtime names never reach munge-name).
   (let [s (-> s
-              (str/replace "#" "_")
-              (str/replace "'" "_PRIME_"))]
+              (str/replace "$" "$$")
+              (str/replace "'" "$P")
+              (str/replace "#" "$H"))]
     (if (or (contains? scheme-reserved s)
             (contains? bare-native-names s)
             (contains? rt-emitted-names s)

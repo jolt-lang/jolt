@@ -906,4 +906,15 @@
   ;; / declare-var! / intern-ns! / define (top-level + forward-decl + ns-splice),
   ;; foreign-procedure (ffi lowering). A local shadowing these only clashes when
   ;; the def/ffi/var-cache form is emitted inside that local's scope.
+  ;; munge-injective (compiler-review R2 stage 2). munge-name maps ' -> $P, # -> $H,
+  ;; and $ -> $$ (escape-first) so distinct Clojure locals get distinct Scheme ids.
+  ;; Pre-remint a' and a_PRIME_ both emit a_PRIME_ (old ' -> _PRIME_ substitution),
+  ;; so (let [a' 1 a_PRIME_ 2] a') returned 2; post-remint a' emits a$P and returns 1.
+  {:suite "munge-injective" :expr "(let [a' 1 a_PRIME_ 2] a')" :expected "1"}
+  {:suite "munge-injective" :expr "(let [a' 1 a_PRIME_ 2] a_PRIME_)" :expected "2"}
+  ;; # reaches munge only as the reader's auto-gensym suffix on #() params
+  ;; (p__1#) — a user can't write a #-named local (# is a dispatch char) — so the
+  ;; # -> $H case is backend-only. Smoke-test that a #() still munges its gensym
+  ;; params consistently at binding and reference.
+  {:suite "munge-injective" :expr "(#(+ % %2) 1 2)" :expected "3"}
 ]
