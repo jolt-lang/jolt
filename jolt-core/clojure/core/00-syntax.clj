@@ -132,6 +132,17 @@
                 [] clauses)]
     `(do (in-ns (quote ~nm)) ~@calls)))
 
+;; import is a MACRO like the JVM's: its specs are never evaluated, so
+;; (import [java.nio.file Paths]) works bare — under strict resolution the
+;; old function-import analyzed java.nio.file as a value and threw. Specs
+;; arriving already quoted (the ns macro above quotes its clause args) are
+;; passed through, mirroring clojure.core/import's quote-unwrap. The runtime
+;; work happens in __import (host/chez/java/natives-str.ss).
+(defmacro import [& specs]
+  `(clojure.core/__import
+     ~@(map (fn [s] (if (and (seq? s) (= 'quote (first s))) s (list 'quote s)))
+            specs)))
+
 ;; Threading: a list form threads x in as the first (->) or last (->>) arg; a bare
 ;; symbol becomes (form x). Recursive; the expand-once cache makes that free.
 (defmacro -> [x & forms]

@@ -825,4 +825,8 @@
                _  (Files/deleteIfExists d)]
            [sz ex mt cpsz mvsz (pos? sz)])))"
    :expected "[5 true 1000 5 5 true]"}
+  {:suite "vars / set! binding" :expr "(do (def ^:dynamic *set-u44* 0) (set! *set-u44* 9))" :expected :throws}
+  {:suite "vars / set! binding" :expr "(do (def ^:dynamic *set-u44b* 0) [(binding [*set-u44b* 99] (set! *set-u44b* 42) *set-u44b*) *set-u44b*])" :expected "[42 0]"}
+  {:suite "vars / binding dynamic" :expr "(do (def not-dyn-u44 0) (binding [not-dyn-u44 1] not-dyn-u44))" :expected :throws}
+  {:suite "resolution / strict default" :expr "(binding [jolt.analyzer/*allow-unresolved-vars* false] jolt.analyzer/*allow-unresolved-vars*)" :expected "false"}
 ]
