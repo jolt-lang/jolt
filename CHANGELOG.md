@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`munge-name` is injective.** Distinct locals like `a'` and `a_PRIME_` munged
   to the same Scheme identifier, so one silently captured the other's value.
   Symbol characters are now escaped reversibly.
+- **Subnormal doubles print correctly.** `(pr-str 4.9E-324)` produced a corrupt
+  `"5.0E-256.0"` (a mangled Chez precision suffix); subnormals now round-trip.
+- **`bigdec` is exact for ratios and scientific notation.** `(bigdec 1/4)` was a
+  bigdec with a *ratio* in its unscaled field (so `(+ (bigdec 1/4) 1M)` gave
+  `5/4M`); it now yields `0.25M`, `(bigdec 1/3)` throws like the JVM, and Inf/NaN/
+  garbage strings throw `NumberFormatException`.
+- **`==` handles BigDecimal operands** (`(== 3M 3)` threw) and, on a mixed long/
+  double set, the `apply`/HOF path now agrees with the call-position result
+  instead of comparing exactly (`(apply == [9007199254740993 9007199254740992.0])`).
+- **`Math/round` / `clojure.math/round`** no longer crash on `##NaN`/`##Inf` or
+  overflow to a bignum — they follow Java semantics (0, saturate, half-up).
+- **`hash` of BigDecimals and negative/large ratios** matches the JVM (every
+  bigdec previously hashed to one constant; ratios used the wrong integer hash).
+- **`clojure.math` expm1/log1p keep precision near zero and hypot doesn't
+  overflow**; the `Math/*` statics route to the same implementations.
+- **Bit operations require a long operand** — a double/ratio (or `bit-not` on a
+  non-integer) throws `IllegalArgumentException` instead of truncating or leaking
+  a raw error; `bit-set`/`bit-flip` wrap to 64 bits.
+- **`clojure.math/floor-div`/`floor-mod` return a long**, and `parse-double`
+  trims whitespace and accepts a trailing `f`/`d` type suffix.
 
 ## [0.4.1] - 2026-07-17
 
