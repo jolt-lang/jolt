@@ -850,4 +850,28 @@
   ;; quietly alter it: after re-defmulti the prior method is gone (default used).
   {:suite "mm-cache" :label "re-defmulti clobbers prior methods (.30 behavior pin; .51 is open)" :expected "[:DEF :DEF]" :expr "(do (defmulti f (fn [x] x)) (defmethod f :a [x] :got-a) (defmulti f (fn [x] x) :default :d) (defmethod f :d [x] :DEF) [(f :a) (f :anything)])"}
   {:suite "multimethods / re-defmulti (jolt-mw44.51 pin)" :expr "(do (defmulti mmr identity) (defmethod mmr :a [_] :hit) (defmulti mmr identity) (mmr :a))" :expected :throws}
+  ;; clojure.math / java.lang.Math: Chez extends several real-domain ops onto the
+  ;; complex plane for out-of-domain real inputs, but Java returns NaN there. The
+  ;; run-unit harness compares the PRINTED form, so :expected "##NaN" is a string
+  ;; compare (sidesteps the (= ##NaN ##NaN) falsity). In-domain results are pinned
+  ;; unchanged, including negative-base integer exponents and -Inf passthrough.
+  {:suite "math-nan" :label "clojure.math/sqrt negative -> NaN" :expected "##NaN" :expr "(clojure.math/sqrt -1.0)"}
+  {:suite "math-nan" :label "clojure.math/pow neg base fractional exp -> NaN" :expected "##NaN" :expr "(clojure.math/pow -2.0 0.5)"}
+  {:suite "math-nan" :label "clojure.math/log negative -> NaN" :expected "##NaN" :expr "(clojure.math/log -1.0)"}
+  {:suite "math-nan" :label "clojure.math/asin out of domain -> NaN" :expected "##NaN" :expr "(clojure.math/asin 2.0)"}
+  {:suite "math-nan" :label "clojure.math/acos out of domain -> NaN" :expected "##NaN" :expr "(clojure.math/acos 2.0)"}
+  {:suite "math-nan" :label "clojure.math/log10 negative -> NaN" :expected "##NaN" :expr "(clojure.math/log10 -1.0)"}
+  {:suite "math-nan" :label "clojure.math/log1p below -1 -> NaN" :expected "##NaN" :expr "(clojure.math/log1p -2.0)"}
+  {:suite "math-nan" :label "Math/sqrt negative -> NaN" :expected "##NaN" :expr "(Math/sqrt -1.0)"}
+  {:suite "math-nan" :label "Math/pow neg base fractional exp -> NaN" :expected "##NaN" :expr "(Math/pow -2.0 0.5)"}
+  {:suite "math-nan" :label "Math/log negative -> NaN" :expected "##NaN" :expr "(Math/log -1.0)"}
+  {:suite "math-nan" :label "Math/asin out of domain -> NaN" :expected "##NaN" :expr "(Math/asin 2.0)"}
+  {:suite "math-nan" :label "Math/acos out of domain -> NaN" :expected "##NaN" :expr "(Math/acos 2.0)"}
+  {:suite "math-nan" :label "Math/log10 negative -> NaN" :expected "##NaN" :expr "(Math/log10 -1.0)"}
+  {:suite "math-nan" :label "Math/log1p below -1 -> NaN" :expected "##NaN" :expr "(Math/log1p -2.0)"}
+  {:suite "math-nan" :label "sqrt in-domain unchanged" :expected "2.0" :expr "(clojure.math/sqrt 4.0)"}
+  {:suite "math-nan" :label "pow in-domain unchanged" :expected "1.4142135623730951" :expr "(clojure.math/pow 2.0 0.5)"}
+  {:suite "math-nan" :label "pow neg base integer exp preserved" :expected "-8.0" :expr "(clojure.math/pow -2.0 3.0)"}
+  {:suite "math-nan" :label "log 0.0 -> -Inf (NaN/Inf passthrough)" :expected "##-Inf" :expr "(clojure.math/log 0.0)"}
+  {:suite "math-nan" :label "acos in-domain unchanged" :expected "3.141592653589793" :expr "(clojure.math/acos -1.0)"}
 ]
