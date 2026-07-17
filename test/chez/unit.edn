@@ -997,4 +997,16 @@
   {:suite "r3-math-stable" :expr "(Math/expm1 1.0E-10)" :expected "1.00000000005E-10"}
   {:suite "r3-math-stable" :expr "(Math/hypot 3.0 4.0)" :expected "5.0"}
   {:suite "r3-math-stable" :expr "(< (Math/hypot 1.0E300 1.0E300) ##Inf)" :expected "true"}
+  {:suite "r3-bitops" :expr "(try (bit-and 5.5 3) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-or 3 1.5) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-xor 3 1/2) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-not 2.7) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-test 5 2.9) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-shift-left 1 2.5) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (apply bit-not [2.7]) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(bit-and 12 10)" :expected "8"}
+  {:suite "r3-bitops" :expr "(bit-not 5)" :expected "-6"}
+  {:suite "r3-bitops" :expr "(bit-set 0 63)" :expected "-9223372036854775808"}
+  {:suite "r3-bitops" :expr "(bit-and 9223372036854775807 1)" :expected "1"}
+  {:suite "r3-bitops" :expr "(unsigned-bit-shift-right -1 1)" :expected "9223372036854775807"}
 ]

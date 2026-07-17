@@ -3,8 +3,20 @@
 ;; to an exact integer, operate, and return a flonum. parse-* use strict shapes
 ;; (Clojure 1.11: nil on malformed, throw on a non-string).
 
-;; bit ops return EXACT integers (= JVM long). ->int coerces the operand.
-(define (->int x) (exact (truncate x)))
+;; bit ops require a long operand. The JVM throws IllegalArgumentException for a
+;; double, ratio, or an integer outside signed 64-bit range (a BigInt); ->int
+;; enforces that. jolt's unified integer model can't distinguish (bigint 5) from
+;; 5, so any exact integer in [Long/MIN, Long/MAX] is accepted; only non-integers
+;; and out-of-range magnitudes are rejected (matching the JVM's "bit operation
+;; not supported for" as closely as the model allows).
+(define ->int-long-min -9223372036854775808)
+(define ->int-long-max 9223372036854775807)
+(define (->int x)
+  (if (and (number? x) (exact? x) (integer? x)
+           (>= x ->int-long-min) (<= x ->int-long-max))
+      x
+      (throw-jvm (quote IllegalArgumentException)
+                 (string-append "bit operation not supported for: " (jolt-final-str x)))))
 ;; Mask shift count to low 6 bits (JVM long shift semantics), then wrap result
 ;; to 64-bit signed two's complement.
 (define (shift-mask n) (bitwise-and (->int n) 63))
@@ -29,9 +41,12 @@
 (define (jolt-bit-shift-left x n)  (wrap64 (bitwise-arithmetic-shift-left (->int x) (shift-mask n))))
 (define (jolt-bit-shift-right x n) (wrap64 (bitwise-arithmetic-shift-right (->int x) (shift-mask n))))
 (define (bit-mask n) (bitwise-arithmetic-shift-left 1 (->int n)))
-(define (jolt-bit-set x n)   (bitwise-ior (->int x) (bit-mask n)))
+;; set/flip can turn on bit 63, producing 2^63 (out of long range) — wrap to
+;; 64-bit signed so (bit-set 0 63) is Long/MIN, like the JVM. clear only turns
+;; bits off, so it stays in range.
+(define (jolt-bit-set x n)   (wrap64 (bitwise-ior (->int x) (bit-mask n))))
 (define (jolt-bit-clear x n) (bitwise-and (->int x) (bitwise-not (bit-mask n))))
-(define (jolt-bit-flip x n)  (bitwise-xor (->int x) (bit-mask n)))
+(define (jolt-bit-flip x n)  (wrap64 (bitwise-xor (->int x) (bit-mask n))))
 (define (jolt-bit-test x n)  (not (zero? (bitwise-and (->int x) (bit-mask n)))))
 ;; unsigned-bit-shift-right: LOGICAL right shift over a 64-bit long (Java >>>),
 ;; so a negative operand shifts in zeros from its 64-bit two's-complement window
