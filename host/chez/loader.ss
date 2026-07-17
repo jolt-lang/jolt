@@ -400,7 +400,7 @@
           ((hashtable-ref ns-registry name #f)
            (ldr-mark-loaded! name))
           (else
-            (error #f (string-append "Could not locate " (ns-name->rel name)
+            (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate " (ns-name->rel name)
                                      ".clj (or .cljc) on the source roots") name)))))))
 
 ;; load-file: load an explicit path (a `run FILE`), in the current ns.
@@ -523,7 +523,7 @@
                             (if (string=? dir "") p (string-append dir "/" p))))))
              (f (resolve-on-roots rel)))
         (if f (load-jolt-file f)
-            (error #f "Could not locate resource on source roots" p))))
+            (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate resource on source roots: " p)))))
     paths)
   jolt-nil)
 (def-var! "clojure.core" "load" jolt-load)

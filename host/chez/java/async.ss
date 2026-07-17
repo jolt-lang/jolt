@@ -244,7 +244,7 @@
 ;; transducer the value is run through it (one put -> zero or more channel values);
 ;; a `reduced` result closes the channel.
 (define (jolt-async-give ch v)
-  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
+  (async-check-put! v)
   (with-mutex (async-chan-mu ch)
     (cond
       ((async-chan-closed? ch) #f)
@@ -365,7 +365,7 @@
 ;; non-blocking give: 'ok (accepted), 'full (would block), or 'closed.
 ;; ac-try-give!/locked: mutex must already be held.
 (define (ac-try-give!/locked ch v)
-  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
+  (async-check-put! v)
   (cond
     ((async-chan-closed? ch) 'closed)
     ((async-chan-xrf ch) (if (and (> (async-chan-cap ch) 0)
@@ -390,7 +390,7 @@
              'ok))
           (else 'full)))))))
 (define (ac-try-give! ch v)
-  (when (jolt-nil? v) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" "Can't put nil on a channel")))
+  (async-check-put! v)
   (with-mutex (async-chan-mu ch) (ac-try-give!/locked ch v)))
 
 ;; offer! / poll! — never block. offer! returns #t/#f(closed) on completion, nil if
@@ -505,6 +505,11 @@
     (display (string-append "Exception in " where ":\n") (current-error-port))
     (jolt-report-throwable e (current-error-port)))
   #f)
+
+;; shared nil-put guard (was pasted at three put sites)
+(define (async-check-put! v)
+  (when (jolt-nil? v)
+    (throw-jvm (quote IllegalArgumentException) "Can't put nil on a channel")))
 
 (define (async-go-spawn thunk)
   (let ((w (ac-make 1 'fixed #f)) (snap (dyn-binding-stack)))

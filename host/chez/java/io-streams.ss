@@ -79,7 +79,7 @@
                       (put-bytevector port bv (jnum->exact (car rest)) (jnum->exact (cadr rest)))
                       (put-bytevector port bv))))
                ((bytevector? x) (put-bytevector port x))
-               (else (error #f "OutputStream/write: unsupported" x)))
+               (else (throw-jvm (quote IllegalArgumentException) "OutputStream/write: unsupported argument")))
              jolt-nil)))
    (cons "flush" (lambda (self) (flush-output-port (out-stream-port self)) jolt-nil))
    (cons "close" (lambda (self) (flush-output-port (out-stream-port self))
@@ -153,7 +153,7 @@
 (define (src-bytevector x)   ; a byte[] or Chez bytevector -> bytevector
   (cond ((bytevector? x) x)
         ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (na-bytearray->bv x))
-        (else (error #f "expected a byte array" x))))
+        (else (throw-jvm (quote ClassCastException) "expected a byte array"))))
 
 (define (reg-ctor! names ctor) (for-each (lambda (n) (register-class-ctor! n ctor)) names))
 
@@ -235,7 +235,7 @@
         ((bytevector? x) (make-in-stream (open-bytevector-input-port x)))
         ((and (jhost? x) (string=? (jhost-tag x) "url")) (make-in-stream (open-file-input-port (url-strip-scheme (url-spec x)) (file-options) (buffer-mode block))))
         ((string? x) (make-in-stream (open-file-input-port (project-relative x) (file-options) (buffer-mode block))))
-        (else (error #f "io/input-stream: don't know how to open" x))))
+        (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-final-str x) "> as an InputStream")))))
 (define (jio-output-stream x . rest)
   (cond ((out-stream? x) x)
         ((or (jfile? x) (string? x))
@@ -245,7 +245,7 @@
            (make-out-stream (open-file-output-port (path-of x)
                               (if append? (file-options no-fail no-truncate append) (file-options no-fail))
                               (buffer-mode block)))))
-        (else (error #f "io/output-stream: don't know how to open" x))))
+        (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-final-str x) "> as an OutputStream")))))
 (def-var! "clojure.java.io" "input-stream" jio-input-stream)
 (def-var! "clojure.java.io" "output-stream" jio-output-stream)
 
@@ -265,7 +265,7 @@
   (let ((p (file-path-of f)))
     (if (delete-path! p) jolt-nil
         (if (and (pair? opts) (jolt-truthy? (car opts))) jolt-nil
-            (error #f (string-append "Couldn't delete " p))))))
+            (throw-jvm (quote java.io.IOException) (string-append "Couldn't delete " p))))))
 (def-var! "clojure.java.io" "delete-file" jio-delete-file)
 
 ;; io/copy: file/path/reader/stream/string/byte[] -> writer/stream/file/path.
@@ -311,7 +311,7 @@
        (record-method-dispatch output "write"
          (list->cseq (list (if bv (make-jolt-array (list->vector (bytevector->u8-list bv)) 'byte)
                                (input-text input)))))))
-    (else (error #f "io/copy: don't know how to write to" output)))
+    (else (throw-jvm (quote IllegalArgumentException) "io/copy: unsupported output type")))
   jolt-nil)
 (def-var! "clojure.java.io" "copy" jio-copy)
 

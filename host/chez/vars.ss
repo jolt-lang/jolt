@@ -20,7 +20,7 @@
 (define (jolt-var-get v)
   (if (var-cell? v)
       (var-cell-root v)
-      (error #f "var-get: not a var" v)))
+      (throw-jvm (quote ClassCastException) "var-get: not a var")))
 
 ;; deref of a var -> its root.
 (define %v-deref jolt-deref)

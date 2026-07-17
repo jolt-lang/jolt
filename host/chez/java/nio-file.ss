@@ -211,7 +211,7 @@
          (pat (if idx (substring syntax-and-pattern (+ idx 1) (string-length syntax-and-pattern)) syntax-and-pattern))
          (rx (jolt-re-pattern (cond ((string=? syntax "glob") (npath-glob->regex pat))
                                     ((string=? syntax "regex") pat)
-                                    (else (error #f "unrecognized path-matcher syntax" syntax))))))
+                                    (else (throw-jvm (quote UnsupportedOperationException) (string-append "unrecognized path-matcher syntax: " (jolt-final-str syntax))))))))
     (make-jhost "nio-path-matcher" rx)))
 
 (register-host-methods! "nio-path-matcher"
@@ -239,7 +239,7 @@
     (if (nio-path? obj)
         (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                (r (nio-path-method obj method-name rest)))
-          (if r (car r) (error #f "no Path method" method-name)))
+          (if r (car r) (throw-jvm (quote IllegalArgumentException) (string-append "No matching method for Path: " method-name))))
         'pass)))
 
 ;; instance? java.nio.file.Path, (class p), (str p), value equality + hashing.

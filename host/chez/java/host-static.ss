@@ -96,7 +96,7 @@
                               (if asc (>= c 0) (<= c 0))))
                           es)))
        (list->cseq (if asc keep (reverse keep)))))
-    (else (error #f (string-append "No method " method " on sorted collection")))))
+    (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method " on sorted collection")))))
 
 (register-method-arm! 44
   (lambda (obj method-name rest-args)
@@ -106,7 +106,7 @@
          (let ((f (and mh (hashtable-ref mh method-name #f))))
            (if f
                (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
-               (error #f (string-append "No method " method-name " on host " (jhost-tag obj)))))))
+               (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method-name " for " (jhost-tag obj)))))))
       ((number? obj) (apply number-method method-name obj (if (jolt-nil? rest-args) '() (seq->list rest-args))))
       (else 'pass))))
 
@@ -142,7 +142,7 @@
     ;; precision, so an arithmetic shift by the (positive) amount.
     ((string=? method "shiftLeft") (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
     ((string=? method "shiftRight") (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args)))))
-    (else (error #f (string-append "No method " method " for number")))))
+    (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method " for Number")))))
 
 ;; Mutable static fields: "Class" -> (member -> 1-vector cell). A library that
 ;; writes a static field — clojure.spec.alpha's (set! (. clojure.lang.RT
@@ -171,8 +171,8 @@
         (let ((h (lookup-class class-statics-tbl class)))
           (if h
               (let ((v (hashtable-ref h member #f)))
-                (if v v (error #f (string-append "No static " class "/" member))))
-              (error #f (string-append "Unknown class " class)))))))
+                (if v v (throw-jvm (quote IllegalArgumentException) (string-append "No matching field or method: " class "/" member))))
+              (throw-jvm (quote IllegalArgumentException) (string-append "Unknown class " class)))))))
 
 (define (host-static-call class member . args)
   (apply (host-static-ref class member) args))
@@ -190,7 +190,7 @@
                        (var-cell-lookup "clojure.core" class))))
          (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
              (apply (var-cell-root cell) args)
-             (error #f (string-append "No constructor for class " class))))))))
+             (throw-jvm (quote IllegalArgumentException) (string-append "No matching ctor found for class " class))))))))
 
 ;; ---- coercion helpers -------------------------------------------------------
 ;; numeric tower: currentTimeMillis/nanoTime are exact longs (JVM).

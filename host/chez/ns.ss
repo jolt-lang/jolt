@@ -137,7 +137,7 @@
 (define (jolt-the-ns desig)
   (if (jns? desig) desig
       (let ((n (jolt-find-ns desig)))
-        (if (jns? n) n (error #f "No namespace" desig)))))
+        (if (jns? n) n (throw-jvm (quote Exception) (string-append "No namespace: " (jolt-final-str desig) " found"))))))
 
 (define (jolt-create-ns desig) (intern-ns! (ns-desig->name desig)))
 
@@ -309,7 +309,7 @@
   (let ((sns (symbol-t-ns sym)) (nm (symbol-t-name sym)))
     (if (string? sns)
         (let ((c (var-cell-lookup sns nm))) (if (and c (var-cell-defined? c)) c jolt-nil))
-        (error #f "find-var requires a fully-qualified symbol" sym))))
+        (throw-jvm (quote IllegalArgumentException) "Symbol must be namespace-qualified"))))
 
 ;; ns-unmap: clear the mapping — drop defined? and reset the root to unbound, so a
 ;; later resolve returns nil. Also records an 'unmapped tombstone in the refer table
