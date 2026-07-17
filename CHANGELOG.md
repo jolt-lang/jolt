@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Locals named after emitted runtime heads no longer miscompile.** A local
+  bound to a name the back end emits as a bare Scheme head — `keyword`,
+  `integer->char`, `case-lambda`, `dynamic-wind`, `host-new`,
+  `record-method-dispatch`, and others — shadowed the emitted form and crashed
+  (`(let [keyword 5] :a)` errored instead of returning `:a`). The muncher's
+  shadow set now covers every such head.
+- **`munge-name` is injective.** Distinct locals like `a'` and `a_PRIME_` munged
+  to the same Scheme identifier, so one silently captured the other's value.
+  Symbol characters are now escaped reversibly.
+
 ## [0.4.1] - 2026-07-17
 
 Correctness patch: the first round of a focused compiler review (correctness and
