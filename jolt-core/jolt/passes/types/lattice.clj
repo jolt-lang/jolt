@@ -147,16 +147,11 @@
 (defn field-type [t k] (if (and (struct-type? t) (not (get t :nilable))) (get (sfields t) k :any) :any))
 (defn nilable? [t] (and (map? t) (get t :nilable) true))
 (defn strip-nilable [t] (if (and (map? t) (get t :nilable)) (dissoc t :nilable) t))
-;; Shape (hidden class). A struct type built from a map LITERAL carries
-;; its complete layout — :shape, the canonical (str-sorted) key vector. The back
-;; end represents such a map as a shape tuple and reads a field by bare index.
-;; A struct type from a JOIN or from field-access inference has no :shape
-;; (incomplete: the full key set isn't proven), so it keeps the dynamic path —
-;; never a bare index. No shape is hardcoded; any constant key set is one.
-(defn shape-order
-  "Canonical key order for a shape: keys sorted by their string form, so two
-  literals with the same keys in any order intern to the same shape."
-  [ks] (vec (sort (fn [a b] (compare (str a) (str b))) ks)))
+;; Shape (hidden class). A struct type for a RECORD carries its complete layout
+;; — :shape, the declared field vector — so the back end represents it as a
+;; tuple and reads a field by bare index. A struct type from a JOIN or from
+;; field-access inference has no :shape (incomplete: the full key set isn't
+;; proven), so it keeps the dynamic path — never a bare index.
 (defn type-shape [t] (get t :shape))
 ;; tag a node (any expression, not just a :local) so the back end can specialize
 ;; a lookup whose SUBJECT is that node — this is what makes nested access work:

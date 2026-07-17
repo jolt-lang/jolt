@@ -9,8 +9,6 @@
 ;; Run from the repo root (bin/joltc cd's there); the project dir is JOLT_PWD.
 (import (chezscheme))
 
-(define cli-args (cdr (command-line)))   ; drop the script name
-
 ;; Fail early and actionably when the vendored submodules aren't checked out —
 ;; a plain `git clone` or GitHub's auto-generated "Source code" release archive
 ;; lacks them, and the raw failure ("load failed for vendor/irregex/irregex.scm")
@@ -47,20 +45,8 @@
 ;; Clojure side (the foreign-fn / defcfn macros, stdlib/jolt/ffi.clj).
 (load "host/chez/java/ffi.ss")          ; jolt.ffi (FFI: a library binds native code)
 
-;; jolt.main + jolt.deps live under jolt-core; keep them (and stdlib) on the
-;; roots so the CLI's own namespaces — and any jolt.* an app pulls in — resolve.
-;; A project's resolved deps roots are prepended to these by jolt.main.
-(set-source-roots! ldr-install-roots)
-
 ;; jolt-report-uncaught / drop-end-of-options / the -e arm live in cli-core.ss,
-;; shared with the standalone binary's launcher (build-joltc.ss).
-
-;; JOLT_TRACE opt-in, at runtime (before any app ns compiles) so the app is traced.
-(jolt-trace-init-from-env!)
-
-
-(jolt-cli-run cli-args
-  ;; `build` AOT-compiles an app to a standalone binary — load the build driver
-  ;; (the cross-compiler emitter) on demand so a normal run never pays for it.
-  ;; It defines jolt.host/build-binary, which jolt.main's build cmd calls.
-  (lambda () (load "host/chez/build.ss")))
+;; shared with the standalone binary's launcher (build-joltc.ss). The entry
+;; tail (source roots, trace init, jolt-cli-run) is shared with the devcache
+;; entry (cli-devcache.ss) via cli-tail.ss.
+(load "host/chez/cli-tail.ss")

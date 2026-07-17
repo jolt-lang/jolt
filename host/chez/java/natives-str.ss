@@ -294,10 +294,16 @@
                 (reverse (cons (substring s last len) out))
                 (let ((ms (irregex-match-start-index m 0))
                       (me (irregex-match-end-index m 0)))
-                  (if (fx=? me ms)                 ; zero-width: step past to avoid a stall
+                  (if (fx=? me ms)                 ; zero-width: emit single-char segment
                       (if (fx>=? start len)
                           (reverse (cons (substring s last len) out))
-                          (loop (fx+ start 1) last out))
+                          ;; Emit the segment from last to this match point, skip
+                          ;; leading empty (JVM semantics for zero-width splits).
+                          (let ((seg (substring s last ms)))
+                            (loop (fx+ start 1) me
+                                  (if (and (string=? seg "") (null? out))
+                                      out
+                                      (cons seg out)))))
                       (loop me me (cons (substring s last ms) out))))))))))
 
 ;; (str-split pat s [limit]) -> parts. Regex or literal separator; a positive

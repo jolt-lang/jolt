@@ -1,12 +1,18 @@
 (ns jolt.deps
-  "Resolve a deps.edn into an ordered list of source roots — git + local deps
-  only, no Maven. A reduced tools.deps: :paths, :deps (`:git/url`+`:git/sha` /
-  `:local/root`), :aliases (:extra-paths / :extra-deps / :main-opts), :tasks.
+  "Resolve a deps.edn into an ordered list of source roots. A reduced
+  tools.deps: :paths, :deps (`:git/url`+`:git/sha` / `:local/root` /
+  `:mvn/version`), :aliases (:extra-paths / :extra-deps / :main-opts), :tasks.
 
   The deps walk is breadth-first so a top-level coordinate registers before any
-  transitive one (a top-level pin wins). Git deps clone into a sha-immutable
-  cache ($JOLT_GITLIBS, else ~/.jolt/gitlibs) shared across projects. Resolution
-  shells out to `git` through jolt.host/sh; nothing here touches the JVM."
+  transitive one (a top-level pin wins). Git deps reuse an existing
+  tools.gitlibs checkout ($GITLIBS / ~/.gitlibs) when the JVM toolchain already
+  fetched them, else clone into a sha-immutable cache ($JOLT_GITLIBS, else
+  ~/.jolt/gitlibs, or a jolt/ subdir of $GITLIBS) shared across projects.
+  Maven jars live in the standard local repository (~/.m2/repository;
+  :mvn/local-repo in deps.edn relocates it like tools.deps, JOLT_LOCAL_REPO
+  overrides from the environment) shared with the JVM toolchain in both
+  directions. Resolution shells out to `git`/`curl`/`unzip` through
+  jolt.host/sh; nothing here touches the JVM."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -26,8 +32,13 @@
   (if (str/starts-with? p "/") p (str dir "/" p)))
 
 ;; --- git cache --------------------------------------------------------------
+;; jolt's own clone cache. $GITLIBS (the tools.gitlibs location knob) is
+;; respected for WHERE the cache lives — under a jolt/ subdir so tools.gitlibs'
+;; own _repos/ and libs/ namespaces are never written to. JOLT_GITLIBS pins an
+;; exact directory.
 (defn- gitlibs-dir []
   (or (getenv "JOLT_GITLIBS")
+      (when-let [g (getenv "GITLIBS")] (str g "/jolt"))
       (str (or (getenv "HOME") ".") "/.jolt/gitlibs")))
 
 (defn- alnum? [c]
@@ -38,23 +49,38 @@
 (defn- sanitize [s]
   (str/join (map (fn [c] (if (or (alnum? c) (= c \.) (= c \-)) c \_)) (seq s))))
 
+(defn- gitlibs-shared-checkout
+  "An existing tools.gitlibs checkout for lib@sha ($GITLIBS or ~/.gitlibs,
+  layout libs/<group>/<name>/<sha>) — reused read-only when the JVM toolchain
+  already fetched this dep. jolt never writes there: tools.gitlibs keeps its
+  own bookkeeping (_repos bare clones + worktrees) that a foreign writer could
+  corrupt, so jolt's own fetches go to its cache below."
+  [lib sha]
+  (when (and lib (namespace lib))
+    (let [base (or (getenv "GITLIBS") (str (or (getenv "HOME") ".") "/.gitlibs"))
+          dir (str base "/libs/" (namespace lib) "/" (name lib) "/" sha)]
+      (when (file-exists? dir) dir))))
+
 (defn- ensure-git
-  "Clone url at sha into the cache (once); return the checkout dir."
-  [url sha]
+  "Return a checkout dir for url@sha: an existing tools.gitlibs checkout for
+  `lib` when present, else clone into jolt's cache (once)."
+  [lib url sha]
   (let [dir (str (gitlibs-dir) "/" (sanitize url) "/" sha)]
-    (if (file-exists? dir)
-      dir
-      (do
-        (warn "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
-        (sh (str "mkdir -p " (pr-str dir)))
-        (when-not (zero? (sh (str "git clone --quiet " (pr-str url) " " (pr-str dir))))
-          (throw (ex-info (str "git clone failed: " url) {:url url})))
-        (when-not (zero? (sh (str "git -C " (pr-str dir) " checkout --quiet " (pr-str sha))))
-          (throw (ex-info (str "git checkout failed: " sha " in " url) {:url url :sha sha})))
-        ;; submodules are pinned in the checkout; pull them if the dep uses any.
-        (when-not (zero? (sh (str "git -C " (pr-str dir) " submodule update --init --recursive --quiet")))
-          (throw (ex-info (str "git submodule update failed for " url) {:url url})))
-        dir))))
+    (if-let [shared (and (not (file-exists? dir)) (gitlibs-shared-checkout lib sha))]
+      shared
+      (if (file-exists? dir)
+        dir
+        (do
+          (warn "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
+          (sh (str "mkdir -p " (pr-str dir)))
+          (when-not (zero? (sh (str "git clone --quiet " (pr-str url) " " (pr-str dir))))
+            (throw (ex-info (str "git clone failed: " url) {:url url})))
+          (when-not (zero? (sh (str "git -C " (pr-str dir) " checkout --quiet " (pr-str sha))))
+            (throw (ex-info (str "git checkout failed: " sha " in " url) {:url url :sha sha})))
+          ;; submodules are pinned in the checkout; pull them if the dep uses any.
+          (when-not (zero? (sh (str "git -C " (pr-str dir) " submodule update --init --recursive --quiet")))
+            (throw (ex-info (str "git submodule update failed for " url) {:url url})))
+          dir)))))
 
 ;; --- maven cache ------------------------------------------------------------
 ;; jolt has no JVM, but a Clojure library's Maven JAR carries its .clj/.cljc/.cljs
@@ -62,9 +88,29 @@
 ;; resolves by fetching the JAR (Clojars, then Central), extracting it, and using
 ;; the extraction as a source root — its pom.xml supplies the transitive deps.
 ;; A JAR of pure Java classes has no source to run and simply contributes nothing.
-(defn- mvnlibs-dir []
-  (or (getenv "JOLT_MVNLIBS")
-      (str (or (getenv "HOME") ".") "/.jolt/mvnlibs")))
+;;
+;; JARs live at their standard path in the local Maven repository
+;; (~/.m2/repository), so they are shared with JVM Clojure/tools.deps in both
+;; directions: an artifact clj already fetched is reused without a download, and
+;; one jolt fetches is there for clj. The jolt-only source extraction sits in a
+;; "<artifact>-<version>.jar.jolt/" directory beside the jar. The repository
+;; location is configured the way tools.deps configures it — the :mvn/local-repo
+;; top key of deps.edn (also accepted in an add-deps map); anyone already using
+;; it gets the same behavior for free. JOLT_LOCAL_REPO overrides it from the
+;; environment as a jolt-specific convenience. Setting JOLT_MVNLIBS opts out of
+;; sharing entirely: the legacy self-contained layout under it, jar not kept.
+
+(def ^:private ^:dynamic *mvn-local-repo*
+  "The :mvn/local-repo of the resolution in progress (bound by resolve-project /
+  add-deps from their deps.edn / deps map), nil for the default." nil)
+
+(defn- m2-repo-dir
+  "The local Maven repository dir, resolved like tools.deps: JOLT_LOCAL_REPO
+  (env, jolt-specific convenience) wins, then :mvn/local-repo, then
+  ~/.m2/repository."
+  ([] (m2-repo-dir (getenv "JOLT_LOCAL_REPO") *mvn-local-repo* (getenv "HOME")))
+  ([env-override cfg home]
+   (or env-override cfg (str (or home ".") "/.m2/repository"))))
 
 (def ^:private mvn-repos
   ["https://repo.clojars.org" "https://repo1.maven.org/maven2"])
@@ -72,26 +118,43 @@
 (defn- mvn-group [coord] (or (namespace coord) (name coord)))
 
 (defn- ensure-maven
-  "Fetch coord@version's JAR and extract its source into the cache (once). Returns
-  the extraction dir, or nil if no repo has it (a non-fatal skip)."
+  "Ensure coord@version's JAR is in the local Maven repository (reusing one the
+  JVM toolchain already fetched; downloading from Clojars then Central when
+  absent) and extract its source beside it (once). Returns the extraction dir,
+  or nil if no repo has the artifact (a non-fatal skip)."
   [coord version]
   (let [group (mvn-group coord) artifact (name coord)
-        rel (str (str/replace group "." "/") "/" artifact "/" version "/" artifact "-" version ".jar")
-        dir (str (mvnlibs-dir) "/" (sanitize (str coord)) "/" (sanitize version))]
+        vdir-rel (str (str/replace group "." "/") "/" artifact "/" version)
+        jar-name (str artifact "-" version ".jar")
+        legacy (getenv "JOLT_MVNLIBS")
+        dir (if legacy
+              (str legacy "/" (sanitize (str coord)) "/" (sanitize version))
+              (str (m2-repo-dir) "/" vdir-rel "/" jar-name ".jolt"))
+        jar (if legacy
+              (str dir "/dep.jar")
+              (str (m2-repo-dir) "/" vdir-rel "/" jar-name))]
     (if (file-exists? (str dir "/.jolt-ok"))
       dir
-      (let [jar (str dir "/dep.jar")]
+      (do
         (sh (str "mkdir -p " (pr-str dir)))
-        (loop [repos mvn-repos]
-          (if (empty? repos)
-            (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
-            (if (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" rel)) " -o " (pr-str jar))))
-              (do (warn "fetching " coord " " version)
-                  (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
-                  (sh (str "rm -f " (pr-str jar)))
-                  (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
-                  dir)
-              (recur (rest repos)))))))))
+        (if (and (not legacy) (file-exists? jar))
+          (do (warn "using " jar-name " from the local Maven repository")
+              (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
+              (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
+              dir)
+          (loop [repos mvn-repos]
+            (if (empty? repos)
+              (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
+              (if (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" vdir-rel "/" jar-name))
+                                  " -o " (pr-str jar))))
+                (do (warn "fetching " coord " " version)
+                    (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
+                    ;; legacy layout never keeps the jar; the m2 layout does —
+                    ;; that IS the sharing.
+                    (when legacy (sh (str "rm -f " (pr-str jar))))
+                    (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
+                    dir)
+                (recur (rest repos))))))))))
 
 (defn- pom-deps
   "Transitive deps of an extracted Maven dep, from its pom.xml — as a deps map so
@@ -124,7 +187,7 @@
   (cond
     (:local/root spec) (abspath base-dir (:local/root spec))
     (and (:git/url spec) (:git/sha spec))
-    (let [checkout (ensure-git (:git/url spec) (:git/sha spec))]
+    (let [checkout (ensure-git coord (:git/url spec) (:git/sha spec))]
       (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
     (:git/url spec)
     (throw (ex-info (str "git dep " coord " needs :git/sha") {:coord coord :spec spec}))
@@ -246,7 +309,10 @@
          project-paths (concat (or (:paths edn) ["src"]) extra-paths)
          project-roots (map #(abspath project-dir %) project-paths)
          all-deps (merge (:deps edn) extra-deps)
-         {dep-roots :roots dep-natives :natives} (resolve-deps all-deps project-dir)]
+         {dep-roots :roots dep-natives :natives}
+         (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
+                                      (abspath project-dir r))]
+           (resolve-deps all-deps project-dir))]
      ;; reconcile: the project's own roots/natives + every dep's, deduped once.
      {:roots (dedup-by identity (concat project-roots dep-roots))
       :main-opts main-opts
@@ -264,5 +330,38 @@
       ;; built-in handler) — symbols resolving to a middleware fn or a vector of them.
       :nrepl-middleware (:nrepl/middleware edn)})))
 
-(defn has-deps-edn? [project-dir]
-  (file-exists? (str project-dir "/deps.edn")))
+(defn add-deps
+  "Resolve an inline deps map and add the resulting source roots to the loader,
+  so a following `require` can load them — the programmatic twin of a deps.edn
+  :deps entry, mirroring babashka.deps/add-deps:
+
+    (add-deps '{:deps {org.clojure/data.json {:mvn/version \"2.5.0\"}}})
+    (require '[clojure.data.json :as json])
+
+  Coordinates: :git/url + :git/sha, :local/root (resolved against JOLT_PWD),
+  and :mvn/version (JAR source fetched from Clojars, then Central). A top-level
+  :mvn/local-repo in the map relocates the Maven repository for this call,
+  like the deps.edn key. New roots
+  are appended AFTER the current roots, so an added dep can never shadow a
+  namespace the runtime already resolves. Returns the vector of roots added
+  (empty when everything was already on the roots).
+
+  :jolt/native declarations carried by added deps are NOT auto-loaded (that is
+  a project-launch concern — see jolt.main); a warning names them so the
+  caller can load via jolt.ffi. The second arity accepts an options map for
+  babashka call-shape compatibility; no options are currently honored."
+  ([deps-map] (add-deps deps-map nil))
+  ([{:keys [deps] :as m} _opts]
+   (let [base (or (jolt.host/getenv "JOLT_PWD") ".")
+         {:keys [roots natives]}
+         (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo m)]
+                                      (abspath base r))]
+           (resolve-deps deps base))
+         current (vec (jolt.host/source-roots))
+         added (vec (remove (set current) (dedup-by identity roots)))]
+     (when (seq added)
+       (jolt.host/set-source-roots! (into current added)))
+     (when (seq natives)
+       (warn "added deps declare :jolt/native libraries (not auto-loaded): "
+             (pr-str (dedup-by native-key natives))))
+     added)))

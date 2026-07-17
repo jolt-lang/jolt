@@ -72,7 +72,9 @@
 
 (define (jolt-trans-check t who)
   (unless (jolt-transient? t) (error #f (string-append who ": not a transient") t))
-  (unless (jolt-transient-active t) (error #f (string-append who ": transient used after persistent!"))))
+  (unless (jolt-transient-active t)
+    (jolt-throw (jolt-host-throwable "java.lang.IllegalAccessError"
+                  (string-append who ": transient used after persistent!")))))
 
 ;; --- persistent! : snapshot back to the immutable collection -----------------
 (define (jolt-persistent! t)
@@ -203,17 +205,20 @@
 ;; --- see-through accessors ---------------------------------------------------
 (define (tvec-in-bounds? t i) (and (fixnum? i) (fx>=? i 0) (fx<? i (jolt-transient-n t))))
 (define (t-get t k d)
+  (jolt-trans-check t "get")
   (case (jolt-transient-kind t)
     ((vec) (let ((i (->idx k))) (if (tvec-in-bounds? t i) (vector-ref (jolt-transient-buf t) i) d)))
     ((map) (hashtable-ref (jolt-transient-buf t) k d))
     ((set) (if (hashtable-contains? (jolt-transient-buf t) k) k d))
     (else (%prev-jolt-get (jolt-transient-buf t) k d))))
 (define (t-count t)
+  (jolt-trans-check t "count")
   (case (jolt-transient-kind t)
     ((vec) (jolt-transient-n t))
     ((map set) (hashtable-size (jolt-transient-buf t)))
     (else (%prev-jolt-count (jolt-transient-buf t)))))
 (define (t-contains? t k)
+  (jolt-trans-check t "contains?")
   (case (jolt-transient-kind t)
     ((vec) (tvec-in-bounds? t (->idx k)))
     ((map set) (hashtable-contains? (jolt-transient-buf t) k))

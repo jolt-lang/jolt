@@ -5,6 +5,13 @@
 ;; machinery (binding / var-set / thread-bound?) lives in dyn-binding.ss. Loaded
 ;; from rt.ss after the value model + def-var!.
 
+;; *jolt-version* — the jolt version string (baked release tag in a binary,
+;; `git describe` under bin/joltc, else "dev"). A plain constant var like
+;; *clojure-version*; same value as (System/getProperty "jolt.version") and
+;; jolt.host/jolt-version. Never nil, so it doubles as am-I-on-jolt detection
+;; the way babashka.version does on bb.
+(def-var! "clojure.core" "*jolt-version*" (jolt-version-string))
+
 ;; *clojure-version* — a map {:major 1 :minor 11 :incremental 0 :qualifier nil}.
 (def-dynvar! "clojure.core" "*clojure-version*"
   (jolt-hash-map (keyword #f "major") 1
@@ -51,8 +58,8 @@
 ;; *print-dup* — gates print-dup (a multimethod that exists); default false.
 (def-dynvar! "clojure.core" "*print-dup*" #f)
 ;; *print-namespace-maps* — jolt never prints the #:ns{…} map shorthand, so the
-;; var reads false (accurate); settable for code that toggles it.
-(def-dynvar! "clojure.core" "*print-namespace-maps*" #f)
+;; var reads true (matches JVM 1.12.5, verified); settable for code that toggles it.
+(def-dynvar! "clojure.core" "*print-namespace-maps*" #t)
 ;; *flush-on-newline* — jolt flushes line output; default true.
 (def-dynvar! "clojure.core" "*flush-on-newline*" #t)
 ;; *compile-files* — jolt has no separate compile phase that emits .class files.

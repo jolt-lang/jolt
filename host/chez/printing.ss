@@ -9,7 +9,7 @@
 ;; jolt-pr-str (already readable for those). The canonical ORDERED printer is
 ;; still future work — unordered colls render in HAMT order, compared via `=`.
 
-;; inner string escape (no surrounding quotes): " \ newline tab return.
+;; inner string escape (no surrounding quotes): " \ newline tab return backspace formfeed.
 (define (jolt-str-escape s)
   (let loop ((cs (string->list s)) (acc '()))
     (if (null? cs)
@@ -22,6 +22,8 @@
                   ((#\newline) (cons #\n (cons #\\ acc)))
                   ((#\tab) (cons #\t (cons #\\ acc)))
                   ((#\return) (cons #\r (cons #\\ acc)))
+                  ((#\backspace) (cons #\b (cons #\\ acc)))
+                  ((#\page) (cons #\f (cons #\\ acc)))
                   (else (cons c acc))))))))
 
 ;; A host shim registers a type's readable rendering via register-pr-readable-arm!,
@@ -33,6 +35,24 @@
 (define (register-pr-arm! pred render)
   (register-pr-str-arm! pred render)
   (register-pr-readable-arm! pred render))
+
+;; *print-namespace-maps* shared-ns detector: returns the namespace string when
+;; the map is non-empty, the var is true, every key is a namespace-qualified
+;; keyword, and they all share the same (non-nil) namespace. Otherwise #f.
+(define (pr-ns-maps-shared-ns pairs)
+  (and (pair? pairs)
+       (jolt-truthy? (jolt-var-get (jolt-var "clojure.core" "*print-namespace-maps*")))
+       (keyword? (caar pairs))
+       (let ((ns (keyword-t-ns (caar pairs))))
+         (and ns (not (string=? ns ""))
+              (let all-ns? ((rest (cdr pairs)))
+                (if (null? rest)
+                    ns   ;; all keys checked → return the shared namespace
+                    (and (keyword? (caar rest))
+                         (let ((n (keyword-t-ns (caar rest))))
+                           (and n (string=? n ns)
+                                (all-ns? (cdr rest)))))))))))
+
 (define (jolt-pr-readable-base x)
   (cond
     ((string? x) (string-append "\"" (jolt-str-escape x) "\""))
@@ -57,11 +77,30 @@
                    (with-deeper-print
                      (string-append "#{" (jolt-str-join (jolt-limited-list-strs
                        (pset-fold x (lambda (e a) (cons (jolt-pr-readable e) a)) '()))) "}"))))
-    ((pmap? x) (if (jolt-print-hash?) "#"
-                   (with-deeper-print
-                     (string-append "{" (jolt-str-join-comma (jolt-limited-list-strs
-                       (pmap-fold x (lambda (k v a)
-                                      (cons (string-append (jolt-pr-readable k) " " (jolt-pr-readable v)) a)) '()))) "}"))))
+    ((pmap? x)
+     (if (jolt-print-hash?) "#"
+         (with-deeper-print
+           (let* ((pairs (pmap-fold x (lambda (k v a) (cons (cons k v) a)) '()))
+                  (ns (pr-ns-maps-shared-ns pairs)))
+             (if ns
+                 ;; #:ns{:key val, …} — emit name-only keys in sorted order
+                 (string-append "#:" ns "{"
+                                (jolt-str-join-comma
+                                 (jolt-limited-list-strs
+                                  (map (lambda (pr)
+                                         (string-append (jolt-pr-readable (keyword #f (keyword-t-name (car pr))))
+                                                        " " (jolt-pr-readable (cdr pr))))
+                                       pairs)))
+                                "}")
+                 ;; standard {k v, …}
+                 (string-append "{"
+                                (jolt-str-join-comma
+                                 (jolt-limited-list-strs
+                                  (map (lambda (pr)
+                                         (string-append (jolt-pr-readable (car pr)) " "
+                                                        (jolt-pr-readable (cdr pr))))
+                                       pairs)))
+                                "}"))))))
     ((empty-list-t? x) (if (jolt-print-hash?) "#" "()"))
     ((cseq? x) (if (jolt-print-hash?) "#"
                    (with-deeper-print

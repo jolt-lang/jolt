@@ -114,8 +114,8 @@
      (dce-sexp-refs-into! (car form) ht)
      (dce-sexp-refs-into! (cdr form) ht))))
 
-;; Deprecated: kept for backward compat with tests that call it directly.
-;; Prefer dce-sexp-refs-into! with a hash set.
+;; List-accumulating variant, still live: the round-trip scan below (and the
+;; run-dce-refs gate) consume it. dce-sexp-refs-into! is the hash-set fast path.
 (define (dce-sexp-refs form acc)
   (cond
     ((and (pair? form) (memq (car form) '(var-deref jolt-var var-cell-lookup))

@@ -27,8 +27,11 @@
     (dosync
       (deref (future (ref-set r 1))))
     (catch Exception e
+      ;; deref of a failed future wraps in ExecutionException (JVM parity,
+      ;; jolt-mw44.9); the txn-leak ISE is its cause.
       (chk "txn-leak: ref-set in future throws IllegalStateException"
-           (instance? IllegalStateException e))))
+           (and (instance? java.util.concurrent.ExecutionException e)
+                (instance? IllegalStateException (ex-cause e))))))
   (chk "txn-leak: ref unchanged after failed future ref-set"
        (= @r 0)))
 

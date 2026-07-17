@@ -762,8 +762,9 @@
  ;; Stage B — collection hasheq caching
  {:suite "hasheq-cache" :expr "(let [m {:x 1 :y 2} h1 (hash m) h2 (hash m)] (= h1 h2))" :expected "true"}
  {:suite "hasheq-cache" :expr "(let [s #{:a :b} h1 (hash s) h2 (hash s)] (= h1 h2))" :expected "true"}
- {:suite "hasheq-cache" :expr "(let [v [1 2 3] h1 (hash v) h2 (hash v)] (= h1 h2))" :expected "true"}
- ;; Stage C — positional ctor throws on wrong arity
+  {:suite "hasheq-cache" :expr "(let [v [1 2 3] h1 (hash v) h2 (hash v)] (= h1 h2))" :expected "true"}
+  {:suite "hasheq-cache" :expr "(let [s \"hello\" h1 (hash s) h2 (hash s)] (= h1 h2))" :expected "true"}
+  ;; Stage C — positional ctor throws on wrong arity
  {:suite "records-ctor-arity" :expr "(do (defrecord ArC9 [x y]) (try (->ArC9 1) (catch Exception e :arity-throw)))" :expected ":arity-throw"}
  {:suite "records-ctor-arity" :expr "(do (defrecord ArC9b [x y]) (try (->ArC9b 1 2 3) (catch Exception e :arity-throw)))" :expected ":arity-throw"}
  {:suite "records-ctor-arity" :expr "(do (defrecord ArC9c [x y]) (->ArC9c 1 2))" :expected "#user.ArC9c{:x 1, :y 2}"}
@@ -829,4 +830,9 @@
   {:suite "vars / set! binding" :expr "(do (def ^:dynamic *set-u44b* 0) [(binding [*set-u44b* 99] (set! *set-u44b* 42) *set-u44b*) *set-u44b*])" :expected "[42 0]"}
   {:suite "vars / binding dynamic" :expr "(do (def not-dyn-u44 0) (binding [not-dyn-u44 1] not-dyn-u44))" :expected :throws}
   {:suite "resolution / strict default" :expr "(binding [jolt.analyzer/*allow-unresolved-vars* false] jolt.analyzer/*allow-unresolved-vars*)" :expected "false"}
+  {:suite "jolt-version" :label "*jolt-version* is a non-blank string" :expected "true" :expr "(and (string? *jolt-version*) (pos? (count *jolt-version*)))"}
+  {:suite "jolt-version" :label "property and host fn match the var" :expected "true" :expr "(= *jolt-version* (System/getProperty \"jolt.version\") (jolt.host/jolt-version))"}
+  {:suite "add-deps" :label "inline :local/root dep becomes requirable" :expected ":pong" :expr "(do (require 'jolt.deps) (let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-adddep-unit\")] (jolt.host/sh (str \"rm -rf \" d)) (jolt.host/sh (str \"mkdir -p \" d \"/src/adddep\")) (spit (str d \"/deps.edn\") \"{}\") (spit (str d \"/src/adddep/core.clj\") \"(ns adddep.core) (defn ping [] :pong)\") (jolt.deps/add-deps {:deps {'adddep/adddep {:local/root d}}}) (require 'adddep.core) ((resolve 'adddep.core/ping))))"}
+  {:suite "add-deps" :label "added roots append after existing roots" :expected "true" :expr "(do (require 'jolt.deps) (let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-adddep-unit\") before (vec (jolt.host/source-roots)) _ (jolt.deps/add-deps {:deps {'adddep/adddep {:local/root d}}}) after (vec (jolt.host/source-roots))] (= before (vec (take (count before) after)))))"}
+  {:suite "m2-repo" :label "JOLT_LOCAL_REPO wins, then :mvn/local-repo, then HOME/.m2" :expected "true" :expr "(do (require 'jolt.deps) (let [m2 @#'jolt.deps/m2-repo-dir] (and (= \"/o\" (m2 \"/o\" \"/cfg\" \"/h\")) (= \"/cfg\" (m2 nil \"/cfg\" \"/h\")) (= \"/h/.m2/repository\" (m2 nil nil \"/h\")))))"}
 ]

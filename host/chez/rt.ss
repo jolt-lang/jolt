@@ -43,6 +43,20 @@
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
+;; --- version ------------------------------------------------------------------
+;; One source of truth for the jolt version string, read by jolt.host/jolt-version
+;; (loader.ss), (System/getProperty "jolt.version"), and clojure.core/*jolt-version*
+;; (dynamic-var-defaults.ss). A self-contained binary bakes the release tag by
+;; emitting (define jolt-baked-version-early "…") at the TOP of flat.ss
+;; (build-joltc.ss) — early so every consumer that loads later sees it. A dev run
+;; has no baked define and falls back to $JOLT_VERSION (bin/joltc sets it from
+;; `git describe`), then "dev".
+(define (jolt-version-string)
+  (or (and (top-level-bound? 'jolt-baked-version-early)
+           (top-level-value 'jolt-baked-version-early))
+      (let ((v (getenv "JOLT_VERSION"))) (and v (> (string-length v) 0) v))
+      "dev"))
+
 ;; --- rt arithmetic / logic shims (named in the emitter's native-ops) ----------
 (define (jolt-inc x) (+ x 1))
 (define (jolt-dec x) (- x 1))
@@ -287,7 +301,12 @@
   ;; the SAME proc to a second var — doesn't rename inc.
   (when (and (procedure? v) (not (hashtable-contains? proc-name-tbl v)))
     (hashtable-set! proc-name-tbl v (cons ns name)))
+  (hashtable-set! ns-has-vars-set ns #t)
   (let ((c (jolt-var ns name))) (var-cell-root-set! c v) (var-cell-defined?-set! c #t) c))
+;; Set of ns-name strings that have at least one var — makes ns-has-vars? O(1)
+;; instead of scanning the entire var-table per require-miss. Updated in def-var!
+;; (and wherever vars are removed, though removal is rare).
+(define ns-has-vars-set (make-hashtable string-hash string=?))
 ;; jolt.host/throwable — build a typed throwable a library can throw so (class …),
 ;; instance?, .getMessage and ex-message all reflect the named JVM class (e.g. an
 ;; http client throwing java.net.ConnectException). Strictly better than a
@@ -444,8 +463,11 @@
   (cond ((null? strs) "") ((null? (cdr strs)) (car strs))
         (else (string-append (car strs) ", " (jolt-str-join-comma (cdr strs))))))
 (define (jolt-char->string c)
-  (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
-                        ((#\return) "return") (else (string c)))))
+  (if (jolt-truthy? (jolt-var-get (jolt-var "clojure.core" "*print-readably*")))
+      (string-append "\\" (case c ((#\newline) "newline") ((#\space) "space") ((#\tab) "tab")
+                                  ((#\return) "return") ((#\backspace) "backspace") ((#\page) "formfeed")
+                                  (else (string c))))
+      (string c)))
 ;; Program-final printer: jolt's `-e` is str-style at the top level, where a
 ;; bare nil renders as the empty string (a nil ELEMENT inside a collection still
 ;; prints "nil", which jolt-pr-str handles).
