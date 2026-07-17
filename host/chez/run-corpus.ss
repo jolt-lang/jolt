@@ -87,7 +87,10 @@
     "reader conditional" "reader cond :jolt" "reader cond no match"
     "reader cond splice" "reader cond splice no match"
     "nil nested" "bool nested"
-    "no param vector"))
+    "no param vector"
+    ;; jolt-mw44.52: argument-validation gaps — these :throws rows do not raise
+    ;; yet; remove with the fix.
+    "symbol bad 2-arg" "bit-and single arg throws"))
 (define known-fail (make-hashtable string-hash string=?))
 (for-each (lambda (l) (hashtable-set! known-fail l #t)) known-fail-labels)
 
@@ -102,6 +105,10 @@
 (define skip-blocking (make-hashtable string-hash string=?))
 (for-each (lambda (l) (hashtable-set! skip-blocking l #t))
           '("promise undelivered"
+            ;; the corpus runner deliberately loads NO loader (alias-only
+            ;; require) — a missing-lib require/use cannot throw here; the
+            ;; behavior is covered by smoke/unit through the real CLI.
+            "require missing lib throws" "use missing lib throws"
             "cancel an in-flight future returns true"
             "future-cancelled? after cancel"))
 
@@ -142,8 +149,24 @@
            (ev-src (jolt-get row kw-expected))
            (av-src (jolt-get row kw-actual)))
       (cond
-        ((or (eq? ev-src kw-throws) (hashtable-ref skip-blocking label #f))
+        ((hashtable-ref skip-blocking label #f)
          (set! throws (+ throws 1)))
+        ;; a :throws row asserts jolt RAISES evaluating :actual — a returned
+        ;; value is a divergence. (These rows were previously skipped on the
+        ;; jolt side and only certify checked the JVM half, so a jolt-side
+        ;; behavioral regression on a :throws row was invisible.)
+        ((eq? ev-src kw-throws)
+         (let* ((sink (open-output-string))
+                (outcome (guard (e (#t 'raised))
+                           (parameterize ((current-output-port sink))
+                             (jolt-compile-eval av-src "user"))
+                           'returned)))
+           (if (eq? outcome 'raised)
+               (set! throws (+ throws 1))
+               (if (hashtable-ref known-fail label #f)
+                   (set! known-hit (cons label known-hit))
+                   (set! diverged (cons (cons label "expected :throws, returned a value") diverged)))))
+         (zj-reset!))
         (else
          (guard (e (#t (let ((r (crash-reason (zj-clean (zj-err->str e)))))
                          (bucket! crash-keys r)
@@ -165,7 +188,7 @@
                (+ (time-second d) (/ (time-nanosecond d) 1e9))))
 (printf "\nCorpus parity: ~a/~a evaluated cases pass  (~as)\n"
         pass n-eval (/ (round (* secs 10)) 10.0))
-(printf "  crash: ~a   NEW divergence: ~a   known: ~a   (throws skipped: ~a)\n"
+(printf "  crash: ~a   NEW divergence: ~a   known: ~a   (throws verified: ~a)\n"
         (length crashes) (length diverged) (length known-hit) throws)
 
 (when (> (hashtable-size crash-keys) 0)
@@ -188,11 +211,50 @@
   (printf "\n~a known (allowlisted) failures tolerated.\n" (length known-hit)))
 
 ;; Regression floor: fail on any NEW divergence or if pass drops below the floor.
+;; Crash baseline (jolt-mw44.50): the crash bucket was ungated and silently
+;; absorbed 32 regressions during the audit. Exact-label gating like cts:
+;; a crash NOT in test/chez/corpus-crash-baseline.txt is a regression; a
+;; baseline label that no longer crashes is STALE (fails until the baseline
+;; is updated in the same change). JOLT_CORPUS_CRASH_WRITE=1 regenerates.
+(define crash-baseline-file "test/chez/corpus-crash-baseline.txt")
+(define crash-baseline
+  (let ((h (make-hashtable string-hash string=?)))
+    (when (file-exists? crash-baseline-file)
+      (call-with-input-file crash-baseline-file
+        (lambda (p)
+          (let loop ()
+            (let ((l (get-line p)))
+              (unless (eof-object? l)
+                (when (> (string-length l) 0) (hashtable-set! h l #t))
+                (loop)))))))
+    h))
+(define crash-labels (map car crashes))
+(define crash-new
+  (filter (lambda (l) (not (hashtable-ref crash-baseline l #f))) crash-labels))
+(define crash-stale
+  (let ((seen (make-hashtable string-hash string=?)))
+    (for-each (lambda (l) (hashtable-set! seen l #t)) crash-labels)
+    (filter (lambda (l) (not (hashtable-ref seen l #f)))
+            (vector->list (hashtable-keys crash-baseline)))))
+(when (getenv "JOLT_CORPUS_CRASH_WRITE")
+  (call-with-output-file crash-baseline-file
+    (lambda (p) (for-each (lambda (l) (put-string p l) (newline p))
+                          (list-sort string<? crash-labels)))
+    'replace)
+  (printf "crash baseline written: ~a labels\n" (length crash-labels)))
+(when (pair? crash-new)
+  (printf "\nNEW crashes (not in ~a) — gate FAILS:\n" crash-baseline-file)
+  (for-each (lambda (l) (printf "  ~a\n" l)) crash-new))
+(when (pair? crash-stale)
+  (printf "\nSTALE crash-baseline entries (no longer crash — update the baseline):\n")
+  (for-each (lambda (l) (printf "  ~a\n" l)) crash-stale))
+
 (define base-floor (let ((s (getenv "JOLT_CHEZ_ZJ_FLOOR")))
                      (if s (string->number s) 3390)))
 (define floor (if limit 0 base-floor))
-(when (or (> (length diverged) 0) (< pass floor))
-  (printf "REGRESSION: pass ~a < floor ~a or ~a new divergence(s)\n"
-          pass floor (length diverged)))
+(define crash-gate-fails (and (not limit) (or (pair? crash-new) (pair? crash-stale))))
+(when (or (> (length diverged) 0) (< pass floor) crash-gate-fails)
+  (printf "REGRESSION: pass ~a < floor ~a, ~a new divergence(s), ~a new / ~a stale crash(es)\n"
+          pass floor (length diverged) (length crash-new) (length crash-stale)))
 (flush-output-port)
-(exit (if (or (> (length diverged) 0) (< pass floor)) 1 0))
+(exit (if (or (> (length diverged) 0) (< pass floor) crash-gate-fails) 1 0))
