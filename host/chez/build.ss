@@ -218,7 +218,13 @@
 ;; .ss the manifest inlines, so `build` never touches the filesystem for them.
 (define (bld-source-string path)
   (let ((emb (hashtable-ref embedded-resources path #f)))
-    (if (string? emb) emb (read-file-string path))))
+    (cond ((string? emb) emb)
+          ;; source embeds are UTF-8 bytevectors since the heap-size work —
+          ;; missing this arm sent the standalone binary's `build` to disk for
+          ;; host/chez/*.ss, which only exists inside a checkout (v0.4.0
+          ;; release-smoke failure on all three platforms).
+          ((bytevector? emb) (utf8->string emb))
+          (else (read-file-string path)))))
 
 (define (bld-string-lines s)
   (let ((n (string-length s)))

@@ -496,5 +496,23 @@ else
   fails=$((fails + 1))
 fi
 
+# bare-directory build: the standalone binary must build an app with NO jolt
+# checkout on disk (embedded runtime sources only). The v0.4.0 release smoke
+# failed on all three platforms because the flat.ss inliner missed the
+# bytevector-embed arm and fell through to a disk read — every other gate runs
+# inside the repo, where the disk read accidentally works.
+bare="$(mktemp -d)"
+mkdir -p "$bare/app/src/app"
+printf '{:paths ["src"]}\n' > "$bare/app/deps.edn"
+printf '(ns app.core)\n(defn -main [& _] (println "bare:" (+ 40 2)))\n' > "$bare/app/src/app/core.clj"
+abs_jolt="$(cd "$(dirname "$JOLT_BIN")" && pwd)/$(basename "$JOLT_BIN")"
+if ( cd "$bare/app" && "$abs_jolt" build -m app.core -o app >/dev/null 2>&1 )    && [ "$("$bare/app/app" 2>/dev/null | tail -1)" = "bare: 42" ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: bare-directory standalone build (embedded runtime sources)"
+  fails=$((fails + 1))
+fi
+rm -rf "$bare"
+
 echo "cli smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]
