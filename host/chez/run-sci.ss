@@ -26,9 +26,13 @@
 
 ;; Load every form in a file, evaluating each in the current ns (an (ns ...) form
 ;; switches it). Returns (ok . fail); failures are tolerated (lenient — SCI requires
-;; host libs that don't exist here).
+;; host libs that don't exist here). Push thread bindings for *warn-on-reflection*
+;; and *assert* so vendored SCI code that (set! *warn-on-reflection* true) finds a
+;; thread-local slot instead of throwing "Can't change/establish root binding".
 (define (load-forms path verbose)
-  (let ((src (slurp path)) (ok 0) (fail 0))
+  (let ((src (slurp path)) (ok 0) (fail 0)
+        (warn-cell (guard (_ (#t #f)) (jolt-var "clojure.core" "*warn-on-reflection*")))
+        (assert-cell (guard (_ (#t #f)) (jolt-var "clojure.core" "*assert*"))))
     (let ((end (string-length src)))
       (let loop ((i 0))
         (call-with-values (lambda () (rdr-read-form src i end))
@@ -39,8 +43,17 @@
                               (printf "    FAIL: ~a\n" (call-with-string-output-port
                                 (lambda (p) (display-condition (if (condition? e) e
                                   (make-message-condition (jolt-final-str e))) p)))))))
-                (jolt-compile-eval-form form (chez-current-ns))
-                (set! ok (+ ok 1)))
+                (when warn-cell
+                  (jolt-push-thread-bindings
+                    (jolt-hash-map warn-cell (var-cell-root warn-cell)
+                                   assert-cell (var-cell-root assert-cell))))
+                (dynamic-wind
+                  (lambda () #f)
+                  (lambda ()
+                    (jolt-compile-eval-form form (chez-current-ns))
+                    (set! ok (+ ok 1)))
+                  (lambda ()
+                    (when warn-cell (jolt-pop-thread-bindings)))))
               (loop j))))))
     (cons ok fail)))
 

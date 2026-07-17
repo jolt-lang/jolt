@@ -44,29 +44,37 @@
 ;; Evaluate EXPR (a string of one-or-more forms) with *command-line-args* bound
 ;; to app-args. print? echoes the final value (blank for nil), as `-e` does; a
 ;; `-` stdin PROGRAM runs as a script and suppresses it.
-;; Binds *allow-unresolved-vars* to #f so bare symbols that don't resolve in the
-;; global scope throw, matching JVM. Inside fn bodies the analyzer still
-;; late-binds so defmulti/defmethod forward references work.
+;; Reads, compiles, and evals each top-level form in sequence — NOT batch-wrapped
+;; in (do …) — so each form is visible to the next, matching JVM and file-load
+;; semantics. *allow-unresolved-vars* defaults to false; unresolved bare symbols
+;; throw, matching JVM. Inside fn bodies the analyzer still late-binds so
+;; defmulti/defmethod forward references work.
 (define (jolt-run-expr-string expr app-args print?)
   (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args)))
-        (av-cell (jolt-var "jolt.analyzer" "*allow-unresolved-vars*")))
+        (end (string-length expr)))
     (jolt-push-thread-bindings
-      (if av-cell
-          (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla
-                         av-cell #f)
-          (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla)))
-    (let ((result (jolt-final-str
-                    (jolt-compile-eval (string-append "(do " expr ")") "user"))))
+      (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
+    (let ((result (let loop ((i 0) (result jolt-nil))
+                    (if (>= i end)
+                        result
+                        (let-values (((form j) (rdr-read-form expr i end)))
+                          (if (> j i)
+                              (loop j (if (rdr-eof? form)
+                                          result
+                                          (jolt-compile-eval-form form "user")))
+                              result))))))
       (jolt-pop-thread-bindings)
-      (when (and print? (not (string=? result "")))
-        (display result) (newline)))))
+      (let ((s (jolt-final-str result)))
+        (when (and print? (not (string=? s "")))
+          (display s) (newline))))))
 
 (define (jolt-cli-run cli-args prepare-build!)
   (guard (v (#t (jolt-report-uncaught v)))
     (cond
       ;; -e EXPR [args…] — evaluate one expression and print it (blank for nil).
-      ;; Wrapped in (do …) so a multi-form string evaluates every form and returns
-      ;; the last. The argv after EXPR are *command-line-args* (nil when empty),
+      ;; Each top-level form is read, compiled, and evaled in sequence so each
+      ;; form is visible to the next, matching JVM load semantics. The argv after
+      ;; EXPR are *command-line-args* (nil when empty),
       ;; with the first standalone "--" consumed as POSIX end-of-options. `-e -`
       ;; reads the expression from stdin.
       ((and (pair? cli-args) (string=? (car cli-args) "-e")

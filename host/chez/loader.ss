@@ -295,11 +295,7 @@
     (set! ldr-file-cell (var-cell-lookup "clojure.core" "*file*"))
     (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*"))
     (set! ldr-warn-cell (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
-    (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*"))
-    ;; allow unresolved vars inside loaded files so vendored code works
-    (let ((av-cell (var-cell-lookup "jolt.analyzer" "*allow-unresolved-vars*")))
-      (when av-cell
-        (hashtable-set! ldr-allow-cells "av" av-cell))))
+    (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*")))
   (if (not (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell))
       (thunk)
       (let ((name (let loop ((i (- (string-length path) 1)))
@@ -309,14 +305,10 @@
                           (else (loop (- i 1)))))))
         (dynamic-wind
           (lambda ()
-            (let* ((base (list (cons ldr-file-cell path)
+            (let ((frame (list (cons ldr-file-cell path)
                                (cons ldr-spath-cell name)
                                (cons ldr-warn-cell (var-cell-root ldr-warn-cell))
-                               (cons ldr-assert-cell (var-cell-root ldr-assert-cell))))
-                   (av-cell (hashtable-ref ldr-allow-cells "av" #f))
-                   (frame (if av-cell
-                              (cons (cons av-cell #t) base)
-                              base)))
+                               (cons ldr-assert-cell (var-cell-root ldr-assert-cell)))))
               (dyn-binding-stack (cons frame (dyn-binding-stack)))))
           thunk
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))

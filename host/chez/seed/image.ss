@@ -47,7 +47,7 @@
 (guard (e (#t #f))
   (def-var-with-meta! "jolt.analyzer" "uncompilable" (letrec ((uncompilable (lambda (why) (let fnrec11501 ((why why)) (jolt-throw (jolt-invoke2 (var-deref "clojure.core" "str") "jolt/uncompilable: " why)))))) uncompilable) (jolt-hash-map (keyword #f "private") #t)))
 (guard (e (#t #f))
-  (def-var-with-meta! "jolt.analyzer" "*allow-unresolved-vars*" #t (jolt-hash-map (keyword #f "dynamic") #t)))
+  (def-var-with-meta! "jolt.analyzer" "*allow-unresolved-vars*" #f (jolt-hash-map (keyword #f "dynamic") #t)))
 (guard (e (#t #f))
   (def-var-with-meta! "jolt.analyzer" "gensym-counter" (jolt-invoke1 (var-deref "clojure.core" "atom") 0) (jolt-hash-map (keyword #f "private") #t)))
 (guard (e (#t #f))
