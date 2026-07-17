@@ -205,8 +205,8 @@
         (cons "flush" (lambda (self) (flush-output-port (port-writer-port self)) jolt-nil))
         (cons "close" (lambda (self) jolt-nil))
         (cons "toString" (lambda (self) ""))))
-(def-var! "clojure.core" "*out*" (make-jhost "port-writer" (vector 'out)))
-(def-var! "clojure.core" "*err*" (make-jhost "port-writer" (vector 'err)))
+(def-dynvar! "clojure.core" "*out*" (make-jhost "port-writer" (vector 'out)))
+(def-dynvar! "clojure.core" "*err*" (make-jhost "port-writer" (vector 'err)))
 
 ;; PrintWriter — a thin wrapper over a target writer. write/append/print forward
 ;; the rendered text to the target. clojure.data.json's pretty printer builds

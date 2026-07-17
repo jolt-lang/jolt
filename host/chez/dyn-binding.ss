@@ -47,8 +47,12 @@
 (define (jolt-push-thread-bindings frame)
   (let ((pairs (pmap-fold frame
                  (lambda (cell v acc)
+                   ;; JVM semantics: only an explicitly ^:dynamic var binds. No
+                   ;; meta entry = non-dynamic (runtime dynamic vars are tagged
+                   ;; via def-dynvar!/def-var-with-meta!; the declare path via
+                   ;; set-var-meta!).
                    (let ((m (hashtable-ref var-meta-table cell #f)))
-                     (when (and m (not (jolt-truthy? (jolt-get m (keyword #f "dynamic")))))
+                     (when (not (and m (jolt-truthy? (jolt-get m (keyword #f "dynamic")))))
                        (jolt-throw
                         (jolt-ex-info
                          (string-append "Can't dynamically bind non-dynamic var: "

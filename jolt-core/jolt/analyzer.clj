@@ -346,7 +346,10 @@
       ;; reference resolves; the back end keys on :no-init.
       (let [nm (form-sym-name name-sym) cur (compile-ns ctx)]
         (host-intern! ctx cur nm)
-        {:op :def :ns cur :name nm :no-init true})
+        ;; keep the reader meta: (def ^:dynamic *x*) must be bindable before
+        ;; its root is set (the backend emits set-var-meta! beside declare-var!).
+        {:op :def :ns cur :name nm :no-init true
+         :meta (or (form-sym-meta name-sym) {})})
       ;; (def name docstring value): docstring is form 2, value form 3 — matching
       ;; the interpreter, else the docstring is taken as the value.
       (let [nm (form-sym-name name-sym)

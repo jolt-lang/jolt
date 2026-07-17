@@ -1260,7 +1260,11 @@
     :def (let [reg (trace-source-reg node)
                d (cond
                    (:no-init node)
-                   (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
+                   (if (jmeta-nonempty? (:meta node))
+                     (str "(begin (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"
+                          " (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                          (emit-def-meta node) "))")
+                     (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
                    (jmeta-nonempty? (:meta node))
                    (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                         (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")

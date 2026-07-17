@@ -152,7 +152,7 @@
     (let-values (((m j) (rdr-read-form src 0 (string-length src))))
     (when (and (not (rdr-eof? m)) (pmap? m))
       (let ((cur (data-readers-table)))
-        (def-var! "clojure.core" "*data-readers*"
+        (def-dynvar! "clojure.core" "*data-readers*"
           (apply jolt-assoc (if (pmap? cur) cur empty-pmap)
                  (pmap-fold m (lambda (k v a) (cons k (cons v a))) '()))))
       (set! data-readers-active #t)
