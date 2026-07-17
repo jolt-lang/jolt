@@ -211,7 +211,12 @@
         (cons "exit" (lambda args (exit (if (null? args) 0 (jnum->exact (car args))))))
         ;; System/gc -> a full Chez collection (so weak references clear and their
         ;; guardians fire); Runtime.gc() routes here too.
-        (cons "gc" (lambda _ (collect (collect-maximum-generation)) jolt-nil))
+        (cons "gc" (lambda _
+                     ;; System.gc is a HINT on the JVM and never throws; Chez's
+                     ;; collect refuses when multiple threads are active, so a
+                     ;; guarded no-op is the faithful behavior under live threads.
+                     (guard (e (#t #f)) (collect (collect-maximum-generation)))
+                     jolt-nil))
         ;; wrapped in lambdas: the helpers are defined below, resolved at call time.
         (cons "getProperty" (lambda (k . d) (apply sys-get-property k d)))
         (cons "setProperty" (lambda (k v) (sys-set-property k v)))
