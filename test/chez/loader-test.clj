@@ -79,6 +79,18 @@
 (chk "prefix-list: pfx.leaf is loaded" (= (vof 'pfx.leaf 'x) :leaf-x))
 (chk "prefix-list: alias lf resolves pfx.leaf/x" (= lf/x :leaf-x))
 
+;; --- (7) requiring a namespace with no source file surfaces a clean error ----
+;; The load-namespace* "else" branch used to pass a stray 3rd arg to throw-jvm
+;; (a strictly 2-arg proc), so any un-locatable ns crashed with an uncatchable
+;; "incorrect number of arguments 3 to throw-jvm" instead of naming the missing
+;; file. A missing transitive dep must surface as a catchable, named error.
+(let [e (try (require 'no.such.namespace.xyz)
+             (catch :default e (in-ns 'loader-test) e))
+      msg (ex-message e)]
+  (chk "missing-ns: require surfaces a catchable error" (some? msg))
+  (chk "missing-ns: error names the missing file"
+       (and msg (re-find #"no/such/namespace/xyz" msg) (re-find #"Could not locate" msg))))
+
 (if (empty? @failures)
   (println "LOADER OK")
   (doseq [f @failures] (println "FAIL:" f)))
