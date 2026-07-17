@@ -874,4 +874,15 @@
   {:suite "math-nan" :label "pow neg base integer exp preserved" :expected "-8.0" :expr "(clojure.math/pow -2.0 3.0)"}
   {:suite "math-nan" :label "log 0.0 -> -Inf (NaN/Inf passthrough)" :expected "##-Inf" :expr "(clojure.math/log 0.0)"}
   {:suite "math-nan" :label "acos in-domain unchanged" :expected "3.141592653589793" :expr "(clojure.math/acos -1.0)"}
+  ;; Atomic compare-and-set!/swap-vals!/reset-vals! — atoms.ss implements them
+  ;; atomically (mutex/CAS) and binds the clojure.core vars; the overlay used to
+  ;; redefine them as racy check-then-act compositions, losing updates under real
+  ;; threads. The contract rows pass under either (single-threaded); the stress row
+  ;; fails pre-remint (overlay loses updates => "false") and passes post-remint
+  ;; (native atomic => "true"). This stage edits the overlay => needs remint.
+  {:suite "atomics" :label "swap-vals! returns [old new]" :expected "[5 6]" :expr "(let [a (atom 5)] (swap-vals! a inc))"}
+  {:suite "atomics" :label "reset-vals! returns [old new]" :expected "[5 9]" :expr "(let [a (atom 5)] (reset-vals! a 9))"}
+  {:suite "atomics" :label "compare-and-set! true on match and sets" :expected "[true 6]" :expr "(let [a (atom 5)] [(compare-and-set! a 5 6) (deref a)])"}
+  {:suite "atomics" :label "compare-and-set! false on mismatch and no set" :expected "[false 5]" :expr "(let [a (atom 5)] [(compare-and-set! a 0 6) (deref a)])"}
+  {:suite "atomics" :label "CAS-retry increments across futures lose no updates (atomic native)" :expected "true" :expr "(do (let [a (atom 0) done (atom 0) n 4 per 2000 target (* n per)] (dotimes [_ n] (future (dotimes [_ per] (loop [] (let [cur (deref a)] (when-not (compare-and-set! a cur (inc cur)) (recur))))) (swap! done inc))) (loop [w 0] (cond (== (deref done) n) :fin (> w 1000000) :timeout :else (do (Thread/yield) (recur (inc w))))) (str (== (deref a) target))))"}
 ]
