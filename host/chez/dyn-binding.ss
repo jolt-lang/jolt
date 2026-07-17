@@ -64,6 +64,33 @@
     (dyn-binding-stack (cdr (dyn-binding-stack))))
   jolt-nil)
 
+;; RT.load parity for BUILT binaries. An AOT'd namespace's top-level forms
+;; replay at boot outside the loader, so a vendored library's top-level
+;; (set! *warn-on-reflection* true) would hit the no-thread-binding throw.
+;; `jolt build` brackets each emitted namespace's forms with this pair,
+;; mirroring ldr-with-file-vars (and the JVM's RT.load, which binds
+;; WARN_ON_REFLECTION/UNCHECKED_MATH around compiled-class inits as well as
+;; source loads). Frames push directly like the loader's; an empty frame keeps
+;; push/pop balanced if the cells are ever absent.
+(define jolt-nsload-cells #f)
+(define (jolt-ns-load-vars-push!)
+  (unless jolt-nsload-cells
+    (set! jolt-nsload-cells
+      (let ((w (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
+            (a (var-cell-lookup "clojure.core" "*assert*")))
+        (if (and w a) (cons w a) 'missing))))
+  (dyn-binding-stack
+    (cons (if (pair? jolt-nsload-cells)
+              (list (cons (car jolt-nsload-cells) (var-cell-root (car jolt-nsload-cells)))
+                    (cons (cdr jolt-nsload-cells) (var-cell-root (cdr jolt-nsload-cells))))
+              '())
+          (dyn-binding-stack)))
+  jolt-nil)
+(define (jolt-ns-load-vars-pop!)
+  (when (pair? (dyn-binding-stack))
+    (dyn-binding-stack (cdr (dyn-binding-stack))))
+  jolt-nil)
+
 ;; get-thread-bindings: a jolt map of every currently-bound cell -> value,
 ;; innermost wins. Merge oldest-frame-first (the stack head is innermost). The
 ;; result can be re-pushed by with-bindings* / bound-fn*.

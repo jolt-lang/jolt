@@ -741,10 +741,15 @@
                                ;; keeps original order.
                                (let ((src (ldr-read-source (cdr nf))))
                                  (parameterize ((rdr-source-file (cdr nf)))
+                                   ;; RT.load-parity bracket (dyn-binding.ss): the
+                                   ;; ns's replayed forms run under fresh
+                                   ;; *warn-on-reflection*/*assert* bindings.
                                    (append
+                                     (list (dce-rec #t #f '() "(jolt-ns-load-vars-push!)"))
                                      (map (lambda (s) (dce-rec #t #f '() s))
                                           (bld-ns-prelude (car nf) src))
-                                     (ei-emit-ns-records (car nf) src)))))
+                                     (ei-emit-ns-records (car nf) src)
+                                     (list (dce-rec #t #f '() "(jolt-ns-load-vars-pop!)"))))))
                              ordered))
                       (string-append entry-ns "/-main"))
                     (values #f
@@ -752,8 +757,12 @@
                               (map (lambda (nf)
                                      (let ((src (ldr-read-source (cdr nf))))
                                        (parameterize ((rdr-source-file (cdr nf)))
-                                         (append (bld-ns-prelude (car nf) src)
-                                                 (bld-emit-ns (car nf) src)))))
+                                         ;; RT.load-parity bracket, matching the
+                                         ;; tree-shake path above.
+                                         (append (list "(jolt-ns-load-vars-push!)")
+                                                 (bld-ns-prelude (car nf) src)
+                                                 (bld-emit-ns (car nf) src)
+                                                 (list "(jolt-ns-load-vars-pop!)")))))
                                    ordered))
                             #f))))
               (lambda ()
