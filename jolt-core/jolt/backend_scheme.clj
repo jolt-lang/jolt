@@ -371,10 +371,14 @@
 ;; All Scheme identifiers the back end emits bare — every :call, :dbl, :lng,
 ;; :fixed, :value, and :bd name from op-registry, plus a closed set of runtime
 ;; helpers the registry doesn't enumerate (devirt dispatchers, jolt-invokeN,
-;; var-deref, list->cseq, etc.). Derived from op-registry so it stays in sync
-;; with per-op facts. A local whose munged name matches ANY of these would shadow
-;; the emitted runtime procedure (e.g. (let [jolt-nil 5] nil) returns 5 if the
-;; local is emitted verbatim).
+;; var-deref, list->cseq, literal/interop heads, etc.). Derived from op-registry
+;; so it stays in sync with per-op facts. A local whose munged name matches ANY
+;; of these would shadow the emitted runtime procedure (e.g. (let [jolt-nil 5]
+;; nil) returns 5 if the local is emitted verbatim).
+;; INVARIANT: any NEW bare Scheme head an emit* clause outputs — a procedure or
+;; special-form name emitted as a call head that a user local could shadow —
+;; MUST be added to the `helpers` set below. The op-registry derivation covers
+;; registry-driven heads; everything else is enumerated there by emission site.
 (def ^:private rt-emitted-names
   (let [from-registry
         (into #{} (comp (mapcat (fn [[_ spec]]
@@ -392,7 +396,33 @@
                   "register-clone*" "protocol-resolve"
                   "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch3"
                   "exact->inexact" "jolt->fx"
-                  "jolt-register-source!" "jolt-proto-epoch"}]
+                  "jolt-register-source!" "jolt-proto-epoch"
+                  ;; --- bare heads emitted at sites the registry doesn't cover ---
+                  ;; INVARIANT: any new bare Scheme head an emit* clause outputs
+                  ;; (a head a user local could shadow) MUST be added here. Literal
+                  ;; + form emission (emit-const): keyword/char construction.
+                  "keyword" "integer->char"
+                  ;; fn forms (emit-fn): a multi-arity fn lowers to case-lambda.
+                  "case-lambda"
+                  ;; binding + try/finally (emit-try): both thread through
+                  ;; dynamic-wind; a binding form and a finally both emit it.
+                  "dynamic-wind"
+                  ;; host interop (emit-invoke static call, :host-new,
+                  ;; :host-static field ref).
+                  "host-new" "host-static-call" "host-static-ref"
+                  ;; record/reify protocol-method dispatch (:host-call fallback
+                  ;; for any .method not in supported-host-methods).
+                  "record-method-dispatch"
+                  ;; cell-cached var deref (the whole-program var-cache? path).
+                  "var-cell-deref"
+                  ;; devirt cached-desc lookup (emit-invoke ctor inlining).
+                  "hashtable-ref"
+                  ;; top-level def / forward-declare / ns-value splice
+                  ;; (emit-def-cached, :forward-decl, :the-ns).
+                  "define" "def-var!" "def-var-with-meta!"
+                  "declare-var!" "intern-ns!"
+                  ;; ffi lowering (emit-ffi-fn: a Chez foreign-procedure).
+                  "foreign-procedure"}]
     (into from-registry helpers)))
 
 ;; Most jolt names are already valid Scheme identifiers. The one that isn't is
