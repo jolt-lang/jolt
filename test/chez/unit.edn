@@ -960,4 +960,19 @@
   {:suite "r3-equiv" :expr "(= 3M 3)" :expected "false"}
   {:suite "r3-equiv" :expr "(= 1M 1.00M)" :expected "true"}
   {:suite "r3-equiv" :expr "(== \"a\" \"a\")" :expected :throws}
+  ;; compiler-review R3 stage 4 — Math.round semantics (math.ss jolt-math-round +
+  ;; host-static-methods Math/round). Was (exact (floor (+ x 0.5))): errored on
+  ;; NaN/Inf, returned bignums for huge values, and gave 1 for 0.49999999999999994.
+  ;; Now NaN->0, +/-Inf->Long/MAX,MIN, saturates out-of-range, half-up special case.
+  {:suite "r3-round" :expr "(clojure.math/round ##NaN)" :expected "0"}
+  {:suite "r3-round" :expr "(clojure.math/round ##Inf)" :expected "9223372036854775807"}
+  {:suite "r3-round" :expr "(clojure.math/round ##-Inf)" :expected "-9223372036854775808"}
+  {:suite "r3-round" :expr "(clojure.math/round 1.0E19)" :expected "9223372036854775807"}
+  {:suite "r3-round" :expr "(clojure.math/round -1.0E19)" :expected "-9223372036854775808"}
+  {:suite "r3-round" :expr "(clojure.math/round 0.49999999999999994)" :expected "0"}
+  {:suite "r3-round" :expr "(clojure.math/round 2.5)" :expected "3"}
+  {:suite "r3-round" :expr "(clojure.math/round -2.5)" :expected "-2"}
+  {:suite "r3-round" :expr "(Math/round ##Inf)" :expected "9223372036854775807"}
+  {:suite "r3-round" :expr "(Math/round 0.49999999999999994)" :expected "0"}
+  {:suite "r3-round" :expr "(Math/round 2.4)" :expected "2"}
 ]

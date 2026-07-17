@@ -25,7 +25,7 @@
         (cons "hypot" (lambda (a b) (->dbl (sqrt (+ (* a a) (* b b))))))
         (cons "floor" (lambda (x) (->dbl (floor x))))
         (cons "ceil" (lambda (x) (->dbl (ceiling x))))
-        (cons "round" (lambda (x) (exact (floor (+ x 1/2)))))   ; JVM round-half-up -> long
+        (cons "round" (lambda (x) (jolt-math-round x)))     ; JVM Math.round -> long (NaN/Inf/saturate/half-up)
         (cons "rint" (lambda (x) (->dbl (round x))))            ; round-half-even -> double
         ;; Math.floorDiv/floorMod: integer floor division / modulus (long -> long).
         (cons "floorDiv" (lambda (a b) (exact (floor (/ a b)))))

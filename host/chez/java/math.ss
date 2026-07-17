@@ -21,8 +21,24 @@
       (- (expt (- x) (/ 1.0 3.0)))
       (expt x (/ 1.0 3.0))))
 
-;; clojure.math/round returns a long (exact); floor/ceil/signum/rint return doubles.
-(define (jolt-math-round x) (exact (floor (+ x 0.5))))
+;; java.lang.Math.round(double) -> long: NaN->0, +Inf->Long/MAX_VALUE, -Inf->
+;; Long/MIN_VALUE, out-of-long-range saturates, and the greatest double below 0.5
+;; (0.49999999999999994) rounds to 0 — its x+0.5 sums to exactly 1.0. Else (long)
+;; floor(x + 0.5). clojure.math/round and Math/round both route here.
+(define jolt-math-long-max 9223372036854775807)
+(define jolt-math-long-min -9223372036854775808)
+(define (jolt-math-round x)
+  (let ((d (if (and (number? x) (real? x)) (exact->inexact x) x)))
+    (cond
+      ((nan? d) 0)
+      ((infinite? d) (if (fl> d 0.0) jolt-math-long-max jolt-math-long-min))
+      ;; 0.49999999999999994: largest double < 0.5, whose +0.5 rounds up to 1.0
+      ((and (fl< d 0.5) (fl>= (fl+ d 0.5) 1.0)) 0)
+      (else
+       (let ((r (floor (+ d 0.5))))
+         (cond ((> r jolt-math-long-max) jolt-math-long-max)
+               ((< r jolt-math-long-min) jolt-math-long-min)
+               (else (exact r))))))))
 (define (jolt-math-signum x) (cond ((< x 0.0) -1.0) ((> x 0.0) 1.0) (else 0.0)))
 (define (jolt-math-to-degrees r) (/ (* r 180.0) jolt-math-pi))
 (define (jolt-math-to-radians d) (/ (* d jolt-math-pi) 180.0))
