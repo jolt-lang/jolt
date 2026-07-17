@@ -286,8 +286,11 @@
 ;; arithmetic core ops that yield a flonum when their operands are flonums — a
 ;; mirror of jolt.passes.numeric/dbl-spec's arithmetic set, used to flow :double
 ;; across fn boundaries so a hintless fn whose callers all pass doubles is unboxed.
-;; Comparisons are excluded: they yield a boolean, not a number.
-(def ^:private dbl-arith-ops #{"+" "-" "*" "/" "min" "max" "inc" "dec"})
+;; Comparisons are excluded: they yield a boolean, not a number. min/max are
+;; excluded too: they return an operand unchanged, so double contagion would
+;; change its type ((min 2.5 1) must stay 1, not 1.0). numeric.clj's an-invoke
+;; blocks min/max contagion for the same reason.
+(def ^:private dbl-arith-ops #{"+" "-" "*" "/" "inc" "dec"})
 (defn- int-lit-node? [n]
   (and (= :const (get n :op)) (let [v (get n :val)] (and (number? v) (integer? v)))))
 ;; an arithmetic result is :double when every operand is a proven flonum or a

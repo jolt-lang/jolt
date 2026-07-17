@@ -198,6 +198,20 @@ if [ "$loop_shadow_got" != "$loop_shadow_want" ]; then
   echo "  FAIL: loop var did not shadow record local — got \`$loop_shadow_got\`, want \`$loop_shadow_want\`"; exit 1
 fi
 
+# min/max return an operand unchanged. A --opt/inference double-contagion bug
+# coerced the int operand to a flonum, so (min 2.5 1) printed 1.0 and (max 2.5 3)
+# printed 3.0. They must preserve the int.
+min_max_app="$root/test/chez/min-max-app"
+min_max_out="$(dirname "$out")/min-max-bin"
+if ! JOLT_PWD="$min_max_app" bin/joltc build -m app.core -o "$min_max_out" --opt >/dev/null 2>&1; then
+  echo "  FAIL: min-max --opt build exited non-zero"; exit 1
+fi
+min_max_got="$(cd "$min_max_app" && "$min_max_out" 2>&1)"
+min_max_want="$(printf '1\n3')"
+if [ "$min_max_got" != "$min_max_want" ]; then
+  echo "  FAIL: min/max coerced int to double — got \`$min_max_got\`, want \`$min_max_want\`"; exit 1
+fi
+
 # A built binary runs -main with *ns* = user, like clojure.main — so a runtime
 # resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
 # matching the JVM and interpreted joltc rather than the entry ns's alias table. A
