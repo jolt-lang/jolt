@@ -3985,11 +3985,11 @@
   {:suite "vars / set! binding" :label "set! outside binding throws" :expected :throws :actual "(do (def ^:dynamic *set-test44* 0) (set! *set-test44* 9))" :portability :common}
   {:suite "vars / set! binding" :label "set! inside binding works" :expected "[42 0]" :actual "(do (def ^:dynamic *set-test44b* 0) [(binding [*set-test44b* 99] (set! *set-test44b* 42) *set-test44b*) *set-test44b*])" :portability :common}
   {:suite "vars / binding dynamic" :label "binding on non-dynamic var throws" :expected :throws :actual "(do (def not-dynamic-44c 0) (binding [not-dynamic-44c 1] not-dynamic-44c))" :portability :common}
-   {:suite "resolution / unresolved symbol" :label "unresolved bare symbol throws at compile time" :expected :throws :actual "(try (eval 'undefined-xyz-jolt-mw442) :no-throw (catch :default e :throws))" :portability :common}
-   {:suite "resolution / unresolved symbol" :label "unresolved in operator position throws" :expected :throws :actual "(try (eval '(undefined-fn-jolt-mw442 1 2)) :no-throw (catch :default e :throws))" :portability :common}
+   {:suite "resolution / unresolved symbol" :label "unresolved bare symbol throws at compile time" :expected :throws :actual "(eval 'undefined-xyz-jolt-mw442)" :portability :common}
+   {:suite "resolution / unresolved symbol" :label "unresolved in operator position throws" :expected :throws :actual "(eval '(undefined-fn-jolt-mw442 1 2))" :portability :common}
    {:suite "resolution / declare forward ref" :label "declared forward ref still works" :expected "42" :actual "(do (declare forward-ref-jolt-mw442) (defn forward-ref-jolt-mw442 [] 42) (forward-ref-jolt-mw442))" :portability :common}
    {:suite "resolution / file load" :label "loading file with unresolved symbol throws" :expected :throws :actual "(try (load-file \"test/chez/resolution-bad-load.clj\") :no-throw (catch :default e :throws))" :portability :common}
-   {:suite "resolution / file load" :label "load-string with unresolved symbol throws" :expected :throws :actual "(try (load-string \"(do (def _mw44z 1) undefined-xyz-load-string-test-mw44)\") :no-throw (catch :default e :throws))" :portability :common}
+   {:suite "resolution / file load" :label "load-string with unresolved symbol throws" :expected :throws :actual "(load-string \"undefined-xyz-load-string-t\")" :portability :common}
   {:suite "for / :while basic" :label ":while stops iteration" :expected "'(0 1 2 3 4)" :actual "(for [x (range 10) :while (< x 5)] x)" :portability :common}
   {:suite "for / :while sees :let" :label ":while can see preceding :let bindings" :expected "'(0 1 2 3 4)" :actual "(for [x (range 10) :let [y (* x 2)] :while (< y 10)] x)" :portability :common}
   {:suite "for / :while ordering" :label ":while runs after :when in source order" :expected "'(1 3)" :actual "(for [x (range 10) :when (odd? x) :while (< x 5)] x)" :portability :common}
