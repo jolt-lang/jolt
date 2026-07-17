@@ -211,45 +211,10 @@
 
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
-;; Rewrite bare (require ...)/(use ...) into (require (quote ...)) — wrap
-;; every vector / list argument in quote so namespace-name symbols inside
-;; those arguments survive strict analysis. ce-scan-requires! has already
-;; registered the aliases by this point (it scans the ORIGINAL form before
-;; rewrite), so a subsequent form referencing the alias still resolves.
-(define (ce-require-quote-args form)
-  (if (and (cseq? form) (cseq-list? form))
-      (let ((items (seq->list form)))
-        (if (null? items)
-            form
-            (let* ((h (car items))
-                   (hn (and (symbol-t? h) (symbol-t-name h))))
-              (cond
-                ((and hn (string=? hn "quote")) form)
-                ((and hn (or (string=? hn "require") (string=? hn "use")))
-                 (list->cseq
-                   (cons h
-                     (map (lambda (a)
-                            (if (or (cseq? a) (jolt-vector? a))
-                                ;; don't double-quote an already-quoted arg
-                                (if (and (cseq? a) (cseq-list? a)
-                                         (let ((items2 (seq->list a)))
-                                           (and (pair? items2)
-                                                (let ((ah (car items2)))
-                                                  (and (symbol-t? ah)
-                                                       (string=? (symbol-t-name ah)
-                                                                  "quote"))))))
-                                    a
-                                    (list->cseq (list (jolt-symbol #f "quote") a)))
-                                a))
-                          (cdr items)))))
-                (else (list->cseq
-                        (map ce-require-quote-args items)))))))
-      form))
-
 (define (jolt-analyze-emit-form form ns)
   (ce-scan-requires! form ns)
   (let* ((ctx (make-analyze-ctx ns))
-         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (ce-require-quote-args form)) ctx)))
+         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx form) ctx)))
     (jolt-ce-emit ir)))
 
 ;; --- runtime defmacro -------------------------------------------------------

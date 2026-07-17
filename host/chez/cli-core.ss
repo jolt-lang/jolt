@@ -49,9 +49,38 @@
 ;; semantics. *allow-unresolved-vars* defaults to false; unresolved bare symbols
 ;; throw, matching JVM. Inside fn bodies the analyzer still late-binds so
 ;; defmulti/defmethod forward references work.
+;;
+;; The CLI auto-quotes require/use vector/list args (but NOT symbols — a plain
+;; (require sym) evaluates sym normally) so `(require [my.lib :as m])` works
+;; without an explicit quote, matching the convenience of JVM Clojure's ns macro.
 (define (jolt-run-expr-string expr app-args print?)
   (let ((cla (if (null? app-args) jolt-nil (list->cseq app-args)))
-        (end (string-length expr)))
+        (end (string-length expr))
+        (quote-sym (jolt-symbol #f "quote")))
+    (define (already-quoted? a)
+      (and (cseq? a) (cseq-list? a)
+           (let ((ah (car (seq->list a))))
+             (and (symbol-t? ah)
+                  (string=? (symbol-t-name ah) "quote")))))
+    (define (maybe-quote-require-args form)
+      (if (and (cseq? form) (cseq-list? form)
+               (let ((items (seq->list form)))
+                 (and (pair? items)
+                      (let ((h (car items)))
+                        (and (symbol-t? h)
+                             (let ((hn (symbol-t-name h)))
+                               (or (string=? hn "require")
+                                   (string=? hn "use"))))))))
+          (let ((items (seq->list form)))
+            (list->cseq
+              (cons (car items)
+                    (map (lambda (a)
+                           (if (and (or (cseq? a) (jolt-vector? a))
+                                    (not (already-quoted? a)))
+                               (list->cseq (list quote-sym a))
+                               a))
+                         (cdr items)))))
+          form))
     (jolt-push-thread-bindings
       (jolt-hash-map (jolt-var "clojure.core" "*command-line-args*") cla))
     (let ((result (let loop ((i 0) (result jolt-nil))
@@ -61,7 +90,9 @@
                           (if (> j i)
                               (loop j (if (rdr-eof? form)
                                           result
-                                          (jolt-compile-eval-form form "user")))
+                                          (jolt-compile-eval-form
+                                            (maybe-quote-require-args form)
+                                            "user")))
                               result))))))
       (jolt-pop-thread-bindings)
       (let ((s (jolt-final-str result)))
