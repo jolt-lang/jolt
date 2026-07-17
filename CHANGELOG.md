@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-17
+
+Strict-resolution and default-fast-builds release: a five-dimension audit
+(architecture, dead code, duplication, correctness, performance) followed by
+two implementation waves (PRs #376–#388), every behavioral change certified
+against reference JVM Clojure 1.12.5.
+
+### Changed
+
+- **Unresolved symbols are compile errors.** Top-level and operator-position
+  references to undefined symbols throw "Unable to resolve symbol" at analyze
+  time in every entry path (`-e`, files, `run`, built binaries) instead of
+  silently producing unbound-var values that pattern-matched as truthy. Fn
+  bodies still auto-declare (matching JVM-with-`declare` semantics); the nREPL
+  path keeps late binding for interactive redefinition.
+- **`-e` and file loading evaluate one top-level form at a time**, like the
+  JVM: a `require` in one form is visible to the reader and analyzer of the
+  next, so `joltc -e "(require '[x :as a]) ::a/k"` resolves. As a CLI
+  convenience, `-e` auto-quotes `require`/`use` vector args.
+- **Plain `jolt build` now direct-links and runs whole-program inference** —
+  measured 2.5x on cross-namespace call loops with no flags. A plain `def` is
+  frozen in the binary; `^:redef`/`^:dynamic` defs stay var-routed so runtime
+  redefinition and `binding` keep working. Opt out with `--no-direct-link`,
+  `--dev`, deps.edn `:jolt/build {:direct-link false}`, or
+  `JOLT_NO_WP_INFER=1` for the inference fixpoint alone.
+- **Vars are non-dynamic unless marked**, like the JVM: `binding` a var
+  without `^:dynamic` metadata throws, `set!` of a dynamic var with no thread
+  binding throws instead of mutating the root, and `(def ^:dynamic *x*)`
+  declares bindable. All runtime-defined dynamic vars (`*out*`, `*1`,
+  print flags, `&form`/`&env`, …) carry the tag.
+- **`import` is a macro** (its specs are never evaluated, so bare
+  `(import [java.nio.file Path])` works under strict analysis) and binds host
+  class short names to class values; built binaries now run their `:import`
+  clauses (they previously never did). `defmulti` interns its var at analysis
+  like the JVM, so a reference later in the same form resolves.
+- Errors across the runtime throw **typed JVM exceptions** — 79 sites that
+  raised untyped host conditions are catchable by class:
+  `(catch NoSuchElementException …)` for iterator exhaustion,
+  `FileNotFoundException` for missing requires, `NumberFormatException`,
+  `IndexOutOfBoundsException`, `ClassCastException`, `IllegalStateException`,
+  `ArityException`, and friends, all oracle-verified. Broad
+  `(catch Exception …)` continues to work everywhere.
+
+### Added
+
+- `jolt.deps/add-deps`: resolve an inline `:deps` map (git / local / Maven
+  coordinates) at runtime and add the roots to the loader — the
+  `babashka.deps/add-deps` idiom, detection included:
+  `(when (System/getProperty "jolt.version") ((requiring-resolve 'jolt.deps/add-deps) '{:deps {…}}))`.
+- `*jolt-version*` and `(System/getProperty "jolt.version")`: the release tag
+  baked into binaries (else `git describe`, else `"dev"`); never nil under
+  jolt, so it doubles as am-I-on-jolt detection.
+- **Maven/gitlibs cache sharing with the JVM toolchain**: jars live at their
+  standard `~/.m2/repository` paths (bidirectional reuse with clj);
+  `:mvn/local-repo` in deps.edn relocates the repository like tools.deps,
+  `JOLT_LOCAL_REPO` overrides from the environment; git deps reuse existing
+  tools.gitlibs checkouts read-only and honor `$GITLIBS` for cache placement.
+- Dev boot cache: `make devboot` precompiles the runtime so source-mode
+  `bin/joltc` starts in ~0.3s instead of ~1.5s, with automatic staleness
+  fallback. `jolt.main`/`jolt.deps` are AOT'd into the `joltc` binary
+  (CLI commands no longer recompile them per invocation).
+- Multimethods memoize isa?-resolved dispatch (invalidated by `defmethod`,
+  `remove-method`, `prefer-method`, and hierarchy changes) with fixed-arity
+  fast paths.
+
+### Fixed
+
+- for/doseq: `:while` can reference a preceding `:let` binding, and modifiers
+  nest in written order (`:when`-skipped elements never reach a later
+  `:while`).
+- `extends?` sees inline `defrecord`/`deftype` protocol implementations
+  without polluting `(extenders P)`; `select-keys` preserves metadata.
+- Reader: `::alias/kw` with an unknown alias throws Invalid token instead of
+  silently minting the wrong keyword; `\backspace`/`\formfeed` round-trip
+  through pr; `*print-readably*` and `*print-namespace-maps*` are honored.
+- `format`: unknown directives throw instead of emitting literal text while
+  consuming the argument; `%s` renders nil as `"null"`.
+- Deref of a failed future throws `ExecutionException` wrapping the original
+  as its cause. `clojure.string/split` on zero-width matches splits between
+  characters. Bit-shift counts mask to 6 bits; unary `bit-and`/`bit-or`/
+  `bit-xor` throw `ArityException` (the raw variadic host primitives no
+  longer leak through value positions). `(keyword 5)` returns nil. Var meta
+  `:name` is a symbol. Transient read ops throw after `persistent!`.
+  `System/gc` never throws (a guarded no-op while threads are active).
+- Records: `assoc`/`dissoc` build the new record with one allocation and
+  direct slot reads (~28% faster); `with-meta` on vectors shares structure
+  (O(1), ~173x on kilo-element vectors); string hashing drops a per-hash
+  UTF-16 allocation and caches like `String.hashCode` (18x on string-keyed
+  lookups); bignum hashes are JVM-exact int32.
+- Whole-program inference: the per-namespace IR cache stayed aligned past
+  macro forms — under `--opt` every form after the first macro in a namespace
+  had been silently compiled from the next form's IR, corrupting macro
+  expanders.
+- Startup/memory: embedded sources ship as UTF-8 bytevectors (~10MB steady
+  RSS); the `joltc` boot GC peak is tunable; `ns-has-vars?` is O(1);
+  stdout/stderr flush on every exit path (output no longer lost when the
+  process exits while helper threads wind down).
+
+### Internal
+
+- The conformance corpus gate asserts `:expected :throws` rows raise on jolt
+  and gates the crash bucket against an exact-label baseline; `jolt build`
+  brackets each baked namespace with RT.load-parity compiler-var bindings;
+  `jolt-load-string` no longer leaks a binding frame when the loaded source
+  throws; the tree-shaker recognizes metadata-carrying defs as prunable and
+  roots `global-hierarchy`.
+
 ## [0.3.3] - 2026-07-16
 
 Full-codebase audit release: seven review rounds plus follow-ups (PRs
