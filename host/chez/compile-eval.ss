@@ -310,25 +310,30 @@
 (define (jolt-load-string s)
   (let ((end (string-length s))
         (drl (guard (_ (#t #f)) data-readers-active)))
-    (jolt-push-thread-bindings
-      (jolt-hash-map
-        (jolt-var "clojure.core" "*warn-on-reflection*")
-          (var-cell-root (jolt-var "clojure.core" "*warn-on-reflection*"))
-        (jolt-var "clojure.core" "*assert*")
-          (var-cell-root (jolt-var "clojure.core" "*assert*"))))
-    (let ((result (let loop ((i 0) (result jolt-nil))
-                    (if (>= i end)
-                        result
-                        (let-values (((form j) (rdr-read-form s i end)))
-                          (if (> j i)
-                              (loop j (if (rdr-eof? form)
-                                          result
-                                          (jolt-compile-eval-form
-                                           (if drl (ldr-apply-readers form) form)
-                                           (chez-current-ns))))
-                              result))))))
-      (jolt-pop-thread-bindings)
-      result)))
+    ;; dynamic-wind: a throw mid-load must still pop, or the frame leaks into
+    ;; the caller's binding stack for the rest of the thread (observed poisoning
+    ;; every later corpus case in a shared-process run).
+    (dynamic-wind
+      (lambda ()
+        (jolt-push-thread-bindings
+          (jolt-hash-map
+            (jolt-var "clojure.core" "*warn-on-reflection*")
+              (var-cell-root (jolt-var "clojure.core" "*warn-on-reflection*"))
+            (jolt-var "clojure.core" "*assert*")
+              (var-cell-root (jolt-var "clojure.core" "*assert*")))))
+      (lambda ()
+        (let loop ((i 0) (result jolt-nil))
+          (if (>= i end)
+              result
+              (let-values (((form j) (rdr-read-form s i end)))
+                (if (> j i)
+                    (loop j (if (rdr-eof? form)
+                                result
+                                (jolt-compile-eval-form
+                                 (if drl (ldr-apply-readers form) form)
+                                 (chez-current-ns))))
+                    result)))))
+      (lambda () (jolt-pop-thread-bindings)))))
 
 ;; eval / load-string are FUNCTIONS on the spine (the compiler image is resident
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and
