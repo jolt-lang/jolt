@@ -371,7 +371,20 @@
                 (for-each (lambda (spec)
                             (bld-scan-spec! ns-name spec
                                             (lambda (s) (set! acc (cons s acc)))))
-                          (cdr citems))))))
+                          (cdr citems)))
+              ;; :import must be reconstructed too: ei-for-each-form skips the
+              ;; ns form entirely, so without this a built binary never runs
+              ;; __import and the class-valued short-name vars (Path,
+              ;; FileAttribute, …) stay unbound — late-bind used to mask that.
+              (when (and (pair? citems) (keyword? (car citems))
+                         (string=? (keyword-t-name (car citems)) "import"))
+                (for-each
+                  (lambda (spec)
+                    (set! acc (cons (string-append
+                                      "(chez-runtime-import (jolt-read-string "
+                                      (ei-str-lit (jolt-pr-str spec)) "))")
+                                    acc)))
+                  (cdr citems))))))
         (seq->list nsf)))
     (reverse acc)))
 
