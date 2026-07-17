@@ -249,6 +249,29 @@
                              (if (null? more) jolt-nil (car more))
                              jolt-nil 0))
 
+;; throw-jvm: raise a typed JVM throwable by simple class name.
+;; (throw-jvm 'NoSuchElementException msg) -> (jolt-throw (jolt-host-throwable
+;;   "java.util.NoSuchElementException" msg)). The symbol->FQN table covers the
+;; common exception types so call sites read as a bare symbol; an explicit FQN
+;; string is also accepted for anything not in the table.
+(define jvm-throwable-fqn
+  (lambda (sym)
+    (case sym
+      ((IllegalArgumentException) "java.lang.IllegalArgumentException")
+      ((IllegalStateException) "java.lang.IllegalStateException")
+      ((ArithmeticException) "java.lang.ArithmeticException")
+      ((NumberFormatException) "java.lang.NumberFormatException")
+      ((UnsupportedOperationException) "java.lang.UnsupportedOperationException")
+      ((NoSuchElementException) "java.util.NoSuchElementException")
+      ((IndexOutOfBoundsException) "java.lang.IndexOutOfBoundsException")
+      ((ClassCastException) "java.lang.ClassCastException")
+      ((NullPointerException) "java.lang.NullPointerException")
+      ((ArityException) "clojure.lang.ArityException")
+      ((IllegalAccessError) "java.lang.IllegalAccessError")
+      (else (symbol->string sym)))))
+(define (throw-jvm type msg)
+  (jolt-throw (jolt-host-throwable (jvm-throwable-fqn type) msg)))
+
 ;; --- host interop ------------------------------------------------------------
 ;; (.method target arg*) lowers to (jolt-host-call "method" target arg*). JVM
 ;; interop has no general Chez analog, but the few methods jolt-core's io tier
