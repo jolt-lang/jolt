@@ -449,6 +449,16 @@
 (register-str-render! jbigdec? jbigdec->string)
 (register-pr-arm! jbigdec? (lambda (x) (string-append (jbigdec->string x) "M")))
 
+;; hasheq: Clojure Numbers.hasheq(BigDecimal) — strip trailing zeros, then
+;; strippedUnscaled.hashCode() * 31 + stripped.scale() (int32). Matches JVM so
+;; bigdec keys collide correctly and (= 1.5M 1.50M) implies equal hashes.
+(define (jbigdec-hasheq bd)
+  (let loop ((u (jbigdec-unscaled bd)) (sc (jbigdec-scale bd)))
+    (if (or (<= sc 0) (= u 0) (not (= 0 (modulo u 10))))
+        (i32 (+ (* 31 (big-integer-hashcode u)) sc))
+        (loop (quotient u 10) (- sc 1)))))
+(register-hash-arm! jbigdec? jbigdec-hasheq)
+
 ;; class / decimal?
 (register-class-arm! jbigdec? (lambda (x) "java.math.BigDecimal"))
 (set! jolt-decimal? (lambda (x) (jbigdec? x)))
