@@ -291,19 +291,31 @@
             (for-each
               (lambda (f)
                 (ce-scan-requires! f (car nf))
-                (unless (or (ei-ns-form? f) (ce-macro-form? f))
-                  ;; a form the analyzer rejects here only loses whole-program
-                  ;; type info (per-form emit still errors the build if it's
-                  ;; truly broken) — but say so, or an optimized build silently
-                  ;; loses inference for the namespace.
-                  (guard (e (#t (display (string-append
-                                          "jolt build: note: whole-program inference skipped a form in "
-                                          (car nf) "\n")
-                                         (current-error-port))
-                                #f))
-                    (let ((n (jolt-ce-analyze (make-analyze-ctx (car nf)) f)))
-                      (set! nodes (cons n nodes))
-                      (set! per-ns (cons n per-ns))))))
+                ;; per-ns is consumed POSITIONALLY by the emit walk
+                ;; (ei-next-cached, one pop per form ei-for-each-form
+                ;; dispatches). The emit walk compiles MACRO forms too, and
+                ;; keeps going past a form this analysis rejects — so both get
+                ;; a #f placeholder (ei-compile-form falls back to a fresh
+                ;; analysis on #f). Skipping them here shifted every later
+                ;; form's cached IR by one: a macro's def-var! captured the
+                ;; NEXT def's emission — invalid Scheme under direct-link, a
+                ;; silently corrupted expander before it. Only the ns form is
+                ;; skipped by BOTH walks.
+                (unless (ei-ns-form? f)
+                  (if (ce-macro-form? f)
+                      (set! per-ns (cons #f per-ns))
+                      ;; a form the analyzer rejects here only loses
+                      ;; whole-program type info (per-form emit still errors
+                      ;; the build if it's truly broken) — but say so, or an
+                      ;; optimized build silently loses inference for the ns.
+                      (guard (e (#t (display (string-append
+                                              "jolt build: note: whole-program inference skipped a form in "
+                                              (car nf) "\n")
+                                             (current-error-port))
+                                    (set! per-ns (cons #f per-ns))))
+                        (let ((n (jolt-ce-analyze (make-analyze-ctx (car nf)) f)))
+                          (set! nodes (cons n nodes))
+                          (set! per-ns (cons n per-ns)))))))
               (ei-read-all src)))
           (set! ns-nodes (cons (cons (car nf) (reverse per-ns)) ns-nodes))))
       ordered)
@@ -313,7 +325,10 @@
     ;; devirtualized call site. Run per-ns after wp-infer! (rich field types must be
     ;; live) so a devirt site can resolve the clone regardless of emit order.
     (jolt-reset-clone-prepass!)
-    (for-each (lambda (p) (jolt-contagion-prepass! (apply jolt-vector (cdr p)) (car p))) ns-nodes)
+    ;; drop the #f alignment placeholders — the prepass wants real IR only.
+    (for-each (lambda (p) (jolt-contagion-prepass!
+                            (apply jolt-vector (filter (lambda (n) n) (cdr p))) (car p)))
+              ns-nodes)
     (jolt-contagion-prepass-done!)
     (reverse ns-nodes)))
 
@@ -512,14 +527,15 @@
 ;; --- the build --------------------------------------------------------------
 ;; entry-ns: the app's main namespace (a string). out-path: the binary to write.
 ;; mode: "dev" | "release" | "optimized". Every form runs through jolt.passes/
-;; run-passes (const-fold always; inline + type inference when optimized turns on
-;; direct-linking). Deps + source roots are already applied by the caller.
+;; run-passes (const-fold always; type inference in release+optimized; inline +
+;; scalar-replace additionally when optimized). Deps + source roots are already
+;; applied by the caller.
 ;; natives: encoded :jolt/native libs to load at startup. embed-dirs: dirs whose
 ;; files bake into the binary (single-file). ext-roots: project-relative io/resource
 ;; roots resolved at runtime against JOLT_PWD (ship-alongside resources).
-;; direct-link?: opt-in closed-world direct-linking (app->app calls bind directly,
-;; no runtime redefinition). Off by default in every mode — release stays
-;; dynamically linked.
+;; direct-link?: closed-world direct-linking (app->app calls bind directly; a plain
+;; def is frozen, ^:redef/^:dynamic stay var-routed). The caller (jolt.main) turns
+;; this ON for release and optimized and OFF for --dev / --no-direct-link.
 (define (bld-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
@@ -705,14 +721,14 @@
                                           " — is it on the source roots?")))
       ;; 2. emit each app namespace. Release and optimized modes enable the
       ;; inference + record-shape setup passes (inference-enabled?); optimized
-      ;; mode with direct-link additionally runs the inline + flatten +
-      ;; scalar-replace fixpoint (inline-enabled?). Dev mode gets const-fold +
-      ;; numeric-annotate only.
-      ;; direct-link? (opt-in) commits to a closed world: app->app calls bind
-      ;; directly, giving up runtime redefinition of those vars. Off by default in
-      ;; every mode. The defined-set accumulates across the dependency-ordered
-      ;; namespaces, so a dep's defs are direct-linkable by the time the entry that
-      ;; calls them is emitted.
+      ;; mode additionally runs the inline + flatten + scalar-replace fixpoint
+      ;; (inline-enabled?). Dev mode gets const-fold + numeric-annotate only.
+      ;; direct-link? commits to a closed world: app->app calls bind directly, a
+      ;; plain def is frozen in the binary (^:redef/^:dynamic stay var-routed).
+      ;; The caller (jolt.main) turns it ON for release and optimized and OFF for
+      ;; --dev / --no-direct-link. The defined-set accumulates across the
+      ;; dependency-ordered namespaces, so a dep's defs are direct-linkable by the
+      ;; time the entry that calls them is emitted.
       ;; set-optimize!/set-direct-link! are process-global flags in the back end;
       ;; dynamic-wind guarantees they revert even if a strict form errors mid-emit
       ;; (a failing form errors the build by design), so the compiler isn't left in
@@ -734,8 +750,13 @@
                 ;; compiling itself) does NOT apply here, only to the seed mint,
                 ;; which keeps var-cache OFF (emit-image.ss). ON in both modes.
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #t)
-                ;; whole-program param-type fixpoint before per-form emit
-                (when (string=? mode "optimized")
+                ;; whole-program param-type fixpoint before per-form emit — runs in
+                ;; release and optimized (the inference modes). JOLT_NO_WP_INFER=1
+                ;; skips it: a documented escape for very large apps where the
+                ;; fixpoint's cost matters; emit then falls back to per-ns inference
+                ;; (run-passes still annotates from explicit ^double/^long hints).
+                (when (and (not (getenv "JOLT_NO_WP_INFER"))
+                           (or (string=? mode "release") (string=? mode "optimized")))
                   (let ((wp-cached (bld-wp-infer! ordered)))
                     (for-each (lambda (p) (ei-set-cached! (car p) (cdr p))) wp-cached))))
               (lambda ()
