@@ -946,4 +946,18 @@
   {:suite "r3-bigdec" :expr "(bigdec ##Inf)" :expected :throws}
   {:suite "r3-bigdec" :expr "(bigdec \"abc\")" :expected :throws}
   {:suite "r3-bigdec" :expr "(bigdec \"\")" :expected :throws}
+  ;; compiler-review R3 stage 3 — == handles BigDecimal operands (predicates.ss
+  ;; jolt-num-equiv). Used to throw ClassCastException "== requires numbers" for any
+  ;; bigdec; now compares by value across the tower (mirrors compare), while = keeps
+  ;; its category rules ((= 1M 1) is false, (== 1M 1) is true).
+  {:suite "r3-equiv" :expr "(== 3M 3)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M 1.0M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M 2M)" :expected "false"}
+  {:suite "r3-equiv" :expr "(== 3M 3.0)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M 1.00M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 0M 0M 0M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(= 3M 3)" :expected "false"}
+  {:suite "r3-equiv" :expr "(= 1M 1.00M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== \"a\" \"a\")" :expected :throws}
 ]

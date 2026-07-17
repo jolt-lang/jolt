@@ -72,18 +72,36 @@
 (def-var! "clojure.core" "integer?" jolt-integer?)
 (def-var! "clojure.core" "float?" jolt-float?)
 (def-var! "clojure.core" "decimal?" jolt-decimal?)
-;; == numeric value-equality (ignores exactness, unlike =): (== 3 3.0) -> true.
-;; 1-arity is trivially true; 2+ args must all be numbers (Numbers.equiv throws
-;; otherwise). Uses Scheme = (value across the tower), not jolt= (category-aware).
+;; == numeric value-equality (ignores category/exactness, unlike =): (== 3 3.0),
+;; (== 3M 3) -> true. 1-arity is trivially true; 2+ args must all be numbers
+;; (Numbers.equiv throws otherwise). A BigDecimal operand compares by value across
+;; the tower — mirroring compare: when a double is present both sides compare as
+;; doubles, otherwise as bigdec — so (== 3M 3) is true while (= 3M 3) stays false.
+(define (jbd-equiv2 a b)
+  ;; a, b numeric (number or jbigdec); value-equal? Mirrors jolt-compare's dispatch.
+  (cond
+    ((or (flonum? a) (flonum? b))
+     (let ((fa (if (jbigdec? a) (jbigdec->flonum a) (if (flonum? a) a (exact->inexact a))))
+           (fb (if (jbigdec? b) (jbigdec->flonum b) (if (flonum? b) b (exact->inexact b)))))
+       (= fa fb)))
+    (else (jbigdec=? (jbd-coerce a) (jbd-coerce b)))))
 (define (jolt-num-equiv . xs)
   ;; 1-arity short-circuits to true for ANY value (Clojure's == 1-arg returns true
   ;; before the number check); 2+ args must all be numbers.
+  (define (numeric? x) (or (number? x) (jbigdec? x)))
   (if (and (pair? xs) (null? (cdr xs)))
       #t
       (let all-num? ((ys xs))
         (cond
-          ((null? ys) (or (null? xs) (apply = xs)))
-          ((number? (car ys)) (all-num? (cdr ys)))
+          ((null? ys)
+           (if (exists (lambda (x) (jbigdec? x)) xs)
+               ;; a BigDecimal operand: compare consecutive pairs by value
+               (let loop ((a (car xs)) (zs (cdr xs)))
+                 (cond ((null? zs) #t)
+                       ((jbd-equiv2 a (car zs)) (loop (car zs) (cdr zs)))
+                       (else #f)))
+               (or (null? xs) (apply = xs))))
+          ((numeric? (car ys)) (all-num? (cdr ys)))
           (else (throw-jvm (quote ClassCastException) "== requires numbers"))))))
 (def-var! "clojure.core" "==" jolt-num-equiv)
 (def-var! "clojure.core" "symbol?" jolt-symbol?)
