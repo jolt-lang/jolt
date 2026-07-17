@@ -1261,12 +1261,12 @@
                d (cond
                    (:no-init node)
                    (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
-                   :else
+                   (jmeta-nonempty? (:meta node))
                    (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                        (emit-with-cells #(emit (:init node))) " "
-                        (if (jmeta-nonempty? (:meta node))
-                          (emit-def-meta node)
-                          "(jolt-hash-map)") ")"))]
+                        (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
+                   :else
+                   (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                        (emit-with-cells #(emit (:init node))) ")"))]
            (if (= reg "") d (str "(begin " d reg ")")))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
 
@@ -1308,18 +1308,15 @@
         init (emit-with-cells #(emit (:init node)))]
     (cond
       dl?
-      (str "(begin (define " b " " init ") (def-var-with-meta! "
-           (chez-str-lit ns) " " (chez-str-lit nm) " " b " "
-           (if (jmeta-nonempty? (:meta node))
-             (emit-def-meta node)
-             "(jolt-hash-map)")
-           ")" (or reg "") ")")
+      (if (jmeta-nonempty? (:meta node))
+        (str "(begin (define " b " " init ") (def-var-with-meta! "
+             (chez-str-lit ns) " " (chez-str-lit nm) " " b " " (emit-def-meta node) ")" (or reg "") ")")
+        (str "(begin (define " b " " init ") (def-var! "
+             (chez-str-lit ns) " " (chez-str-lit nm) " " b ")" (or reg "") ")"))
+      (jmeta-nonempty? (:meta node))
+      (str "(def-var-with-meta! " (chez-str-lit ns) " " (chez-str-lit nm) " " init " " (emit-def-meta node) ")")
       :else
-      (str "(def-var-with-meta! " (chez-str-lit ns) " " (chez-str-lit nm) " " init " "
-           (if (jmeta-nonempty? (:meta node))
-             (emit-def-meta node)
-             "(jolt-hash-map)")
-           ")"))))
+      (str "(def-var! " (chez-str-lit ns) " " (chez-str-lit nm) " " init ")"))))
 
 (defn emit-top-form [node]
   (cond
