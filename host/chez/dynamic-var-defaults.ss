@@ -66,10 +66,10 @@
 
 ;; REPL result/exception history. Bound by the REPL after each evaluation; nil
 ;; outside a REPL, which is what reading them returns here.
-(def-var! "clojure.core" "*1" jolt-nil)
-(def-var! "clojure.core" "*2" jolt-nil)
-(def-var! "clojure.core" "*3" jolt-nil)
-(def-var! "clojure.core" "*e" jolt-nil)
+(def-dynvar! "clojure.core" "*1" jolt-nil)
+(def-dynvar! "clojure.core" "*2" jolt-nil)
+(def-dynvar! "clojure.core" "*3" jolt-nil)
+(def-dynvar! "clojure.core" "*e" jolt-nil)
 
 ;; *agent* — the agent whose action is currently running; the agent worker
 ;; binds it around each action (concurrency.ss), nil elsewhere like the JVM.
