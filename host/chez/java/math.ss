@@ -87,8 +87,13 @@
          (if (< (abs term) (* 1e-18 (max 1.0 (abs acc2)))) acc2
              (loop (+ n 1) (* xp x) acc2 (- sign))))))
     (else (real-or-nan (log (+ 1.0 x))))))
-(define (jolt-math-floor-div a b) (floor (/ a b)))
-(define (jolt-math-floor-mod a b) (- a (* b (floor (/ a b)))))
+;; floor-div/floor-mod take ^long args and return a long. Coerce each operand
+;; toward zero (Java's ^long cast) so a double like 7.0 becomes 7, then compute
+;; on exact integers so the result is a long, not a double.
+(define (jolt-math-floor-div a b)
+  (let ((a (exact (truncate a))) (b (exact (truncate b)))) (floor (/ a b))))
+(define (jolt-math-floor-mod a b)
+  (let ((a (exact (truncate a))) (b (exact (truncate b)))) (- a (* b (floor (/ a b))))))
 
 ;; clojure.math fns always return a DOUBLE; Chez's sqrt/expt/sin/floor/... return
 ;; EXACT for exact args ((sqrt 9) -> 3, (sin 0) -> 0), so coerce.

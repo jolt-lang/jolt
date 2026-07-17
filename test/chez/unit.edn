@@ -1009,4 +1009,17 @@
   {:suite "r3-bitops" :expr "(bit-set 0 63)" :expected "-9223372036854775808"}
   {:suite "r3-bitops" :expr "(bit-and 9223372036854775807 1)" :expected "1"}
   {:suite "r3-bitops" :expr "(unsigned-bit-shift-right -1 1)" :expected "9223372036854775807"}
+  {:suite "r3-lowbatch" :expr "(parse-double \"1f\")" :expected "1.0"}
+  {:suite "r3-lowbatch" :expr "(parse-double \"1.0d\")" :expected "1.0"}
+  {:suite "r3-lowbatch" :expr "(parse-double \" 1.5 \")" :expected "1.5"}
+  {:suite "r3-lowbatch" :expr "(nil? (parse-double \"abc\"))" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(nil? (parse-double \"f\"))" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(parse-double \"3.14\")" :expected "3.14"}
+  {:suite "r3-lowbatch" :expr "(clojure.math/floor-div 7.0 2)" :expected "3"}
+  {:suite "r3-lowbatch" :expr "(clojure.math/floor-mod 7.0 3)" :expected "1"}
+  {:suite "r3-lowbatch" :expr "(clojure.math/floor-div -7 2)" :expected "-4"}
+  {:suite "r3-lowbatch" :expr "(apply == [9007199254740993 9007199254740992.0])" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(== 9007199254740993 9007199254740992.0)" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(= 1 1.0)" :expected "false"}
+  {:suite "r3-lowbatch" :expr "(== 1/2 0.5)" :expected "true"}
 ]

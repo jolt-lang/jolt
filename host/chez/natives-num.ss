@@ -94,14 +94,31 @@
                          jm)))
             (= je n)))))))
 
+;; Double.parseDouble trims surrounding whitespace and accepts a trailing float/
+;; double type suffix (1.5f / 1.5d / 1.5F / 1.5D). Strip both before the shape
+;; check so parse-double matches the JVM on those forms.
+(define (pd-ws? c) (or (char=? c #\space) (char=? c #\tab) (char=? c #\newline) (char=? c #\return)))
+(define (pd-normalize s)
+  (let* ((n (string-length s))
+         (a (let loop ((i 0)) (if (and (< i n) (pd-ws? (string-ref s i))) (loop (+ i 1)) i)))
+         (b (let loop ((j n)) (if (and (> j a) (pd-ws? (string-ref s (- j 1)))) (loop (- j 1)) j)))
+         (t (substring s a b))
+         (tn (string-length t)))
+    ;; strip ONE trailing f/F/d/D suffix, but only when a digit precedes it
+    (if (and (> tn 1)
+             (let ((c (string-ref t (- tn 1)))) (memv c '(#\f #\F #\d #\D)))
+             (char-numeric? (string-ref t (- tn 2))))
+        (substring t 0 (- tn 1))
+        t)))
 (define (jolt-parse-double s)
   (if (not (string? s)) (throw-jvm (quote IllegalArgumentException) (string-append "parse-double requires a string: " (jolt-final-str s)))
-      (cond
-        ((string=? s "Infinity") +inf.0)
-        ((string=? s "-Infinity") -inf.0)
-        ((string=? s "NaN") +nan.0)
-        ((parse-double-shape? s) (exact->inexact (string->number s)))
-        (else jolt-nil))))
+      (let ((s (pd-normalize s)))
+        (cond
+          ((string=? s "Infinity") +inf.0)
+          ((string=? s "-Infinity") -inf.0)
+          ((string=? s "NaN") +nan.0)
+          ((parse-double-shape? s) (exact->inexact (string->number s)))
+          (else jolt-nil)))))
 
 (def-var! "clojure.core" "__bit-and" jolt-bit-and)
 (def-var! "clojure.core" "__bit-or" jolt-bit-or)

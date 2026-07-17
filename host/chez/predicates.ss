@@ -100,7 +100,16 @@
                  (cond ((null? zs) #t)
                        ((jbd-equiv2 a (car zs)) (loop (car zs) (cdr zs)))
                        (else #f)))
-               (or (null? xs) (apply = xs))))
+               ;; JVM == on a mixed long/double set compares as doubles (the
+               ;; category ops promote), so it agrees with the fl=? the numeric
+               ;; pass emits in call position: (== 9007199254740993 9e15-ish)
+               ;; is true because the long rounds to the same double. Chez `=`
+               ;; would instead promote the double to exact and answer false, so
+               ;; the fn path (apply/HOF) disagreed with the call path. Match the
+               ;; call path: if any operand is inexact, compare all as doubles.
+               (if (exists (lambda (x) (and (number? x) (inexact? x))) xs)
+                   (apply = (map (lambda (x) (exact->inexact x)) xs))
+                   (or (null? xs) (apply = xs)))))
           ((numeric? (car ys)) (all-num? (cdr ys)))
           (else (throw-jvm (quote ClassCastException) "== requires numbers"))))))
 (def-var! "clojure.core" "==" jolt-num-equiv)
