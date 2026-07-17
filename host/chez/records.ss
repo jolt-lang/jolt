@@ -366,14 +366,14 @@
                                   (number? v) (not (flonum? v)))
                              (exact->inexact v) v)))
                 (jrec-field-set! inst i v2) v2)
-            (error #f "set! of an unknown field" k)))
+            (throw-jvm (quote IllegalArgumentException) (string-append "set! of an unknown field: " (jolt-final-str k)))))
       ;; (set! (.__methodImplCache f) …) on a plain fn: jolt has no protocol-method
       ;; cache, so this is a harmless no-op (the paired read is nil). See the
       ;; __methodImplCache method arm — schema's fn instrumentation drives both.
       (if (let ((kn (cond ((string? k) k) ((keyword-t? k) (keyword-t-name k)) (else #f))))
             (and kn (string=? kn "__methodImplCache")))
           v
-          (error #f "set! of a field on a non-record" inst))))
+          (throw-jvm (quote IllegalArgumentException) "set! of a field on a non-record"))))
 (define (jrec-ext=? ea eb)
   (cond ((and (jolt-nil? ea) (jolt-nil? eb)) #t)
         ((or (jolt-nil? ea) (jolt-nil? eb)) #f)
@@ -1064,12 +1064,12 @@
               ;; extended impls over the reify's host tags (e.g. an Object/default
               ;; extension). malli reifies some protocols and leans on the default.
               (let loop ((tags (value-host-tags obj)))
-                (cond ((null? tags) (error #f (string-append "No reified method " method-name)))
+                (cond ((null? tags) (throw-jvm (quote IllegalArgumentException) (string-append "No reified method " method-name)))
                       ((find-protocol-method (car tags) proto-name method-name))
                       (else (loop (cdr tags))))))))
     (else
      (let loop ((tags (value-host-tags obj)))
-       (cond ((null? tags) (error #f (string-append "No method " method-name " in " proto-name)))
+       (cond ((null? tags) (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " in " proto-name)))
              ((find-protocol-method (car tags) proto-name method-name))
              (else (loop (cdr tags))))))))
 ;; Fixed-arity entry points the protocol-method shims call: no rest-list, no seq
@@ -1227,7 +1227,7 @@
                        (string=? method-name "getTypeName")) tag)
                   ((string=? method-name "getSimpleName") (last-dot tag))
                   ((string=? method-name "toString") (string-append "class " tag))
-                  (else (error #f (string-append "No method " method-name " on class " tag))))))
+                  (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on class " tag))))))
       ;; clojure.lang.MultiFn interop on a defmulti value: addMethod/removeMethod/
       ;; getMethod/getMethodTable, the same table (defmethod) fills — schema's
       ;; abstract-map registers dispatch methods by calling .addMethod directly.
@@ -1245,7 +1245,7 @@
                              (hashtable-keys tbl))
             m))
          ((string=? method-name "toString") (jolt-str-render-one obj))
-         (else (error #f (string-append "No method " method-name " on MultiFn")))))
+         (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on MultiFn")))))
       ((and (jrec? obj) (find-method-any-protocol-arity (jrec-tag obj) method-name (+ 1 (length rest))))
        => (lambda (f) (apply jolt-invoke f obj rest)))
       ;; (.field inst): a deftype/record field read with no matching method.
@@ -1277,7 +1277,7 @@
          (else jolt-nil)))   ; .empty of a record is nil on the JVM
       ((reified-methods obj)
        => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
-                         (if f (apply jolt-invoke f obj rest) (error #f (string-append "No method " method-name))))))
+                         (if f (apply jolt-invoke f obj rest) (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name))))))
       ;; java.lang.String interop: defined in natives-str.ss, loaded
       ;; after this file (free reference, resolved at call time).
       ((string? obj) (jolt-string-method method-name obj rest))
@@ -1285,9 +1285,9 @@
        (cond ((string=? method-name "hasNext") (not (jolt-nil? (jolt-seq (jiterator-cur obj)))))
              ((string=? method-name "next")
               (let ((s (jolt-seq (jiterator-cur obj))))
-                (if (jolt-nil? s) (error #f "iterator exhausted")
+                (if (jolt-nil? s) (throw-jvm (quote NoSuchElementException) "iterator exhausted")
                     (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
-             (else (error #f (string-append "No method " method-name " on Iterator")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on Iterator")))))
       ((string=? method-name "iterator") (make-jiterator (jolt-seq obj)))
       ;; clojure.lang.Keyword interop: a Keyword carries an interned `sym` field
       ;; (the symbol form, ns + name) plus the Named methods. honeysql/reitit read
@@ -1302,7 +1302,7 @@
                              (keyword-t-name obj)))
              ((string=? method-name "hashCode") (keyword-t-khash obj))
              ((string=? method-name "equals") (and (pair? rest) (eq? obj (car rest))))
-             (else (error #f (string-append "No method " method-name " on Keyword")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on Keyword")))))
       ;; clojure.lang.Symbol interop: the Named methods + getName/getNamespace.
       ((symbol-t? obj)
        (cond ((string=? method-name "getName") (symbol-t-name obj))
@@ -1313,14 +1313,14 @@
              ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
              ((string=? method-name "hashCode")
               (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
-             (else (error #f (string-append "No method " method-name " on Symbol")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on Symbol")))))
       ;; clojure.lang.Namespace: name/getName yield the ns name as a Symbol (JVM:
       ;; Namespace.name is a Symbol). clojure.spec.alpha reads (.name *ns*).
       ((jns? obj)
        (cond ((or (string=? method-name "name") (string=? method-name "getName"))
               (jolt-symbol #f (jns-name obj)))
              ((string=? method-name "toString") (jns-name obj))
-             (else (error #f (string-append "No method " method-name " on Namespace")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on Namespace")))))
       ;; clojure.lang.Var: ns -> its Namespace, sym -> the simple-name Symbol.
       ;; clojure.spec.alpha's ->sym reads (.name (.ns v)) and (.sym v).
       ((var-cell? obj)
@@ -1330,7 +1330,7 @@
              ((string=? method-name "getName")
               (jolt-symbol (var-cell-ns obj) (var-cell-name obj)))
              ((string=? method-name "toString") (string-append "#'" (var-cell-ns obj) "/" (var-cell-name obj)))
-             (else (error #f (string-append "No method " method-name " on Var")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on Var")))))
       ;; java.lang.Throwable interop over a Chez condition. A jolt host error
       ;; (`error`/`assertion-violationf`) raises a Chez condition; Clojure code
       ;; that catches it as a Throwable reads (.getMessage e) / (.toString e).
@@ -1343,7 +1343,7 @@
              ((string=? method-name "getNextException") jolt-nil)
              ((string=? method-name "getStackTrace") (jolt-vector))
              ((string=? method-name "printStackTrace") jolt-nil)
-             (else (error #f (string-append "No method " method-name " on Throwable")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on Throwable")))))
       ;; java.lang.Character interop: (.toString \+) -> "+", etc.
       ((char? obj)
        (cond ((string=? method-name "toString") (string obj))
@@ -1352,7 +1352,7 @@
              ((string=? method-name "equals") (and (pair? rest) (char? (car rest)) (char=? obj (car rest))))
              ((string=? method-name "compareTo")
               (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
-             (else (error #f (string-append "No method " method-name " on char")))))
+             (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " on char")))))
       ;; java.util.List .indexOf / .lastIndexOf over any seqable (vector / list /
       ;; seq) — -1 when absent, like the JVM (medley/index-of reads this).
       ((or (string=? method-name "indexOf") (string=? method-name "lastIndexOf"))

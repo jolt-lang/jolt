@@ -52,7 +52,8 @@
     ((and (number? x) (exact? x) (integer? x)) (make-jbigdec x 0))
     ((string? x) (jolt-bigdec-from-string x))
     ((number? x) (jolt-bigdec-from-string (jolt-num->string x)))
-    (else (error #f "bigdec: cannot coerce" x))))
+    (else (throw-jvm (if (string? x) (quote NumberFormatException) (quote IllegalArgumentException))
+                (string-append "bigdec: cannot coerce " (jolt-final-str x))))))
 
 ;; value equality: unscaled_a * 10^scale_b == unscaled_b * 10^scale_a.
 (define (jbigdec=? a b)
@@ -84,7 +85,8 @@
   (cond ((jbigdec? x) x)
         ((and (number? x) (exact? x) (integer? x)) (make-jbigdec x 0))
         ((and (number? x) (exact? x) (rational? x)) (jbd-rational->bigdec x))
-        (else (error #f "bigdec arithmetic: cannot coerce operand" x))))
+        (else (throw-jvm (if (string? x) (quote NumberFormatException) (quote IllegalArgumentException))
+               (string-append "bigdec arithmetic: cannot coerce operand " (jolt-final-str x))))))
 
 ;; --- core arithmetic on the {unscaled, scale} pair --------------------------
 ;; align two bigdecs to a common scale, returning (unscaled-a unscaled-b scale).
@@ -236,7 +238,7 @@
         ((null? (cdr xs)) (car xs))
         (else (jbd-fold + jbd2+ (car xs) (cdr xs)))))
 (define (jbd-sub . xs)
-  (cond ((null? xs) (error #f "- needs at least 1 arg"))
+  (cond ((null? xs) (throw-jvm (quote ArityException) "Wrong number of args (0) passed to: -"))
         ((null? (cdr xs)) (if (jbigdec? (car xs)) (jbd-negate (car xs)) (- (car xs))))
         (else (jbd-fold - jbd2- (car xs) (cdr xs)))))
 (define (jbd-mul . xs)
@@ -244,7 +246,7 @@
         ((null? (cdr xs)) (car xs))
         (else (jbd-fold * jbd2* (car xs) (cdr xs)))))
 (define (jbd-div . xs)
-  (cond ((null? xs) (error #f "/ needs at least 1 arg"))
+  (cond ((null? xs) (throw-jvm (quote ArityException) "Wrong number of args (0) passed to: /"))
         ((null? (cdr xs)) (jbd-binop / jbd2-div (make-jbigdec 1 0) (car xs)))
         (else (jbd-fold / jbd2-div (car xs) (cdr xs)))))
 
