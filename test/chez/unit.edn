@@ -775,7 +775,7 @@
  {:suite "binding-no-autoderef" :expr "(do (def ^:dynamic *bd11* 10) (def bd11v 20) (.getName (class (binding [*bd11* (var bd11v)] *bd11*))))" :expected "clojure.lang.Var"}
  ;; naa9 — JVM-only macro vars absent on jolt
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'import))" :expected "true"}
- {:suite "naa9-jvm-only-macros" :expr "(nil? (:macro (meta (resolve 'import))))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (:macro (meta (resolve 'import))))" :expected "true"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-class))" :expected "false"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-interface))" :expected "false"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'proxy-super))" :expected "true"}
