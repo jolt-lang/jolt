@@ -5,6 +5,13 @@
 ;; machinery (binding / var-set / thread-bound?) lives in dyn-binding.ss. Loaded
 ;; from rt.ss after the value model + def-var!.
 
+;; *jolt-version* — the jolt version string (baked release tag in a binary,
+;; `git describe` under bin/joltc, else "dev"). A plain constant var like
+;; *clojure-version*; same value as (System/getProperty "jolt.version") and
+;; jolt.host/jolt-version. Never nil, so it doubles as am-I-on-jolt detection
+;; the way babashka.version does on bb.
+(def-var! "clojure.core" "*jolt-version*" (jolt-version-string))
+
 ;; *clojure-version* — a map {:major 1 :minor 11 :incremental 0 :qualifier nil}.
 (def-var! "clojure.core" "*clojure-version*"
   (jolt-hash-map (keyword #f "major") 1
