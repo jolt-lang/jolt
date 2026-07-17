@@ -4029,4 +4029,7 @@
   {:suite "records / representation" :label "assoc a declared field to a new value equals the direct ctor" :expected "true" :actual "(do (defrecord Rfa [a b]) (= (assoc (->Rfa 1 2) :a 9) (->Rfa 9 2)))" :portability :common}
   {:suite "records / representation" :label "assoc leaves the source record unchanged" :expected "[9 1 2]" :actual "(do (defrecord Rfb [a b]) (let [r (->Rfb 1 2)] [(:a (assoc r :a 9)) (:a r) (:b r)]))" :portability :common}
   {:suite "records / representation" :label "assoc on a spill (>8 field) record equals the direct ctor" :expected "[99 9 true]" :actual "(do (defrecord Big [a b c d e f g h i]) (let [r (->Big 1 2 3 4 5 6 7 8 9)] [(:e (assoc r :e 99)) (:i r) (= (assoc r :e 99) (->Big 1 2 3 4 99 6 7 8 9))]))" :portability :common}
+  {:suite "metadata / with-meta & meta" :label "with-meta on a large vector preserves value equality" :expected "true" :actual "(let [v (vec (range 2000))] (= v (with-meta v {:a 1})))" :portability :common}
+  {:suite "metadata / with-meta & meta" :label "with-meta leaves the original's metadata intact" :expected "[{:orig 1} {:new 2}]" :actual "(let [v (with-meta (vec (range 2000)) {:orig 1}) w (with-meta v {:new 2})] [(meta v) (meta w)])" :portability :common}
+  {:suite "metadata / with-meta & meta" :label "with-meta on a record preserves fields and attaches meta" :expected "[1 2 {:k 9}]" :actual "(do (defrecord Rm [a b]) (let [r (with-meta (->Rm 1 2) {:k 9})] [(:a r) (:b r) (meta r)]))" :portability :common}
 ]
