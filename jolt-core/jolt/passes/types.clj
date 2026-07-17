@@ -214,6 +214,12 @@
     ;; a nilable struct might be nil — nil?/some?/record? can't be proven, so the
     ;; runtime guard must stay (this is what makes the narrowing sound).
     (nilable? t) nil
+    ;; a provably-nil operand (a nil const initializer reaches the case table
+    ;; because :any/:truthy/nilable?/union? all miss it): nil? is true, some? and
+    ;; every type predicate are false. Without this arm the case table below folds
+    ;; nil?->false / some?->true — the wrong constants, since it assumes every
+    ;; concrete type is non-nil.
+    (= t :nil) (= pname "nil?")
     ;; a bounded scalar union folds only when every member agrees
     (union-type? t)
     (let [vs (map (fn [m] (pred-on pname m)) (umembers t))]

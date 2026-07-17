@@ -106,4 +106,17 @@
 (run-inference (anode "(+ 1 :k)"))
 (gate-check "no diags when check-mode off"    (jolt-count (take-diags!)) 0)
 
+;; --- pred-on folds nil?/some? on a provably-nil operand ----------------------
+;; A nil const initializer types as :nil, and :nil reaches pred-on's case table
+;; (it slips past :any/:truthy/nilable?/union?). nil? must fold true, some? and
+;; every type predicate false — the case table used to fold them the other way
+;; because it assumed every concrete type is non-nil. These rows fail pre-remint
+;; (the baked seed still has the old case table) and pass once the seed is reminted.
+(let ((pred-on (var-deref "jolt.passes.types" "pred-on"))
+      (t-nil (keyword #f "nil")))
+  (gate-check "nil? on :nil folds true"      (pred-on "nil?"    t-nil) #t)
+  (gate-check "some? on :nil folds false"    (pred-on "some?"   t-nil) #f)
+  (gate-check "number? on :nil folds false"  (pred-on "number?" t-nil) #f)
+  (gate-check "record? on :nil folds false"  (pred-on "record?" t-nil) #f))
+
 (gate-summary "infer")

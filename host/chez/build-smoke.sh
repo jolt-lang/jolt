@@ -168,6 +168,20 @@ if [ "$inline_throw_got" != "THROW OK" ]; then
   echo "  FAIL: pure-fn fold discarded a throwing op — got \`$inline_throw_got\`, want THROW OK"; exit 1
 fi
 
+# Under --opt inference proves a nil-bound local is :nil, so nil? folds true and
+# some? folds false. The fold was inverted (nil?->false, some?->true), so a release
+# --opt build printed :b / :y instead of :a / :n.
+nil_fold_app="$root/test/chez/nil-fold-app"
+nil_fold_out="$(dirname "$out")/nil-fold-bin"
+if ! JOLT_PWD="$nil_fold_app" bin/joltc build -m app.core -o "$nil_fold_out" --opt >/dev/null 2>&1; then
+  echo "  FAIL: nil-fold --opt build exited non-zero"; exit 1
+fi
+nil_fold_got="$(cd "$nil_fold_app" && "$nil_fold_out" 2>&1)"
+nil_fold_want="$(printf ':a\n:n')"
+if [ "$nil_fold_got" != "$nil_fold_want" ]; then
+  echo "  FAIL: nil?/some? fold inverted — got \`$nil_fold_got\`, want \`$nil_fold_want\`"; exit 1
+fi
+
 # A built binary runs -main with *ns* = user, like clojure.main — so a runtime
 # resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
 # matching the JVM and interpreted joltc rather than the entry ns's alias table. A
