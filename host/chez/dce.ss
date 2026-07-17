@@ -92,7 +92,10 @@
     ;; post-prelude taxonomy wrappers close over the overlay versions
     "clojure.core/ifn?" "clojure.core/seqable?" "clojure.core/inst-ms"
     ;; the fn print form wraps the overlay __print1
-    "clojure.core/__print1"))
+    "clojure.core/__print1"
+    ;; the multimethod dispatch cache resolves the hierarchy value per call
+    ;; (mm-current-hierarchy, multimethods.ss)
+    "clojure.core/global-hierarchy"))
 
 ;; --- reading a minted blob (prelude.ss) into records ------------------------
 ;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the

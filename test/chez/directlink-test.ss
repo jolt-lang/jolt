@@ -44,6 +44,8 @@
 (jolt-compile-eval "(def hof (fn* ([] a)))" "app")
 (jolt-compile-eval "(def ^:dynamic d 5)" "app")
 (jolt-compile-eval "(def usesd (fn* ([] (d))))" "app")
+(jolt-compile-eval "(def ^:redef r 5)" "app")
+(jolt-compile-eval "(def usesr (fn* ([] (r))))" "app")
 (jolt-compile-eval "(def cfg {:a 1 :b 2})" "app")
 (jolt-compile-eval "(def usecfg (fn* ([] (cfg :a))))" "app")
 
@@ -90,6 +92,13 @@
 (let ((eu (emit-form "app" "(def usesd (fn* ([] (d))))")))
   (ok "on: call to a ^:dynamic var stays indirect" (contains? eu "(var-deref \"app\" \"d\")"))
   (ok "on: ^:dynamic var not direct-linked" (not (contains? eu "(jv$app$d)"))))
+
+;; ^:redef opts out too (a def redefinable after build stays var-routed).
+(let ((er (emit-form "app" "(def ^:redef r 5)")))
+  (ok "on: ^:redef def gets no jv$ binding" (not (contains? er "(define jv$app$r"))))
+(let ((eu (emit-form "app" "(def usesr (fn* ([] (r))))")))
+  (ok "on: call to a ^:redef var stays indirect" (contains? eu "(var-deref \"app\" \"r\")"))
+  (ok "on: ^:redef var not direct-linked" (not (contains? eu "(jv$app$r)"))))
 
 ;; A var only defined LATER in emission order is not yet in the set -> indirect.
 (direct-link-reset!)

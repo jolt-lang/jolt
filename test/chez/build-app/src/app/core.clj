@@ -16,6 +16,17 @@
   ;; native stack trace. Off the normal path, so default output is unchanged.
   (when (= (first args) "--boom")
     (util/mid-boom "not-a-number"))
+  ;; --num: call a hintless double fn so build-smoke can assert wp-infer ran in
+  ;; the release default build (the fl-op in flat.ss, not this output).
+  (when (= (first args) "--num")
+    (println "area:" (util/area 2.0)))
+  ;; --redef: with direct-link the release default, ^:redef/:dynamic must still
+  ;; opt out so runtime redefinition / binding take effect in the built binary.
+  (when (= (first args) "--redef")
+    (println "redef:" (with-redefs [util/redef-fn (fn [] :patched)]
+                        (util/redef-fn)))
+    (println "dyn:" (binding [util/*config* :bound]
+                      util/*config*)))
   ;; the resource is baked into the binary (deps.edn :jolt/build :embed), so this
   ;; resolves with no resources/ dir on disk, run from any cwd.
   (println (slurp (io/resource "greeting.txt")))

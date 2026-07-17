@@ -40,8 +40,9 @@
 (define (set-chez-ns! ns) (chez-current-ns-param ns))
 
 (define-record-type jolt-multifn
-  (fields name dispatch-fn methods default hierarchy prefers)
-  (nongenerative jolt-multifn-v1))
+  (fields name dispatch-fn methods default hierarchy prefers
+          cache (mutable cache-epoch) (mutable cache-hier))
+  (nongenerative jolt-multifn-v2))
 
 (define kw-default (keyword #f "default"))
 (define (new-mm-table) (make-hashtable key-hash jolt=))
@@ -67,7 +68,7 @@
            ;; was written in, not whatever ns is current when it finally runs.
            (ns (if (string? sns) sns (chez-current-ns)))
            (mf (make-jolt-multifn (symbol-t-name name-sym) dispatch
-                                  (new-mm-table) dk h (new-mm-table))))
+                                  (new-mm-table) dk h (new-mm-table) (new-mm-table) -1 #f)))
       (def-var! ns (symbol-t-name name-sym) mf)
       mf)))
 
@@ -102,9 +103,10 @@
                                   (jolt-multifn-dispatch-fn core)
                                   (var-deref "clojure.core" "identity")))
                         (deft (if (jolt-multifn? core) (jolt-multifn-default core) kw-default))
-                        (m (make-jolt-multifn nm disp (new-mm-table) deft #f (new-mm-table))))
+                        (m (make-jolt-multifn nm disp (new-mm-table) deft #f (new-mm-table) (new-mm-table) -1 #f)))
                    (def-var! mns nm m) m))))
     (hashtable-set! (jolt-multifn-methods mf) dval impl)
+    (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1))
     mf))
 
 ;; --- dispatch ----------------------------------------------------------------
@@ -144,22 +146,96 @@
           matches)
          (hashtable-ref methods best #f))))))
 
+;; --- dispatch cache ----------------------------------------------------------
+;; Clojure's MultiFn memoizes dispatch-value -> resolved method until the method
+;; table, the prefers, or the hierarchy it dispatches against changes. Each
+;; multifn holds its own cache (dv -> method fn); a global epoch (jolt-mm-epoch,
+;; mirroring jolt-proto-epoch in records.ss) is bumped on every defmethod /
+;; remove-method / remove-all-methods / prefer-method. derive/underive live in
+;; the baked prelude and swap! a fresh hierarchy map, so rather than patch them we
+;; invalidate when the hierarchy VALUE the multifn resolves against is no longer
+;; eq? to the one the cache was stamped with - correct without touching the
+;; prelude. A global epoch may over-invalidate across multifns (a miss, never a
+;; wrong answer); correctness first, per jolt-mw44.30.
+(define jolt-mm-epoch 0)
+
+;; the hierarchy object isa? resolves against for mf: its own :hierarchy atom/map
+;; when set, else the global-hierarchy atom's current value. deref'd lazily (the
+;; prelude loads after this file), exactly as mm-isa? does.
+(define (mm-current-hierarchy mf)
+  (let ((h (jolt-multifn-hierarchy mf)))
+    (cond
+      ((not h)
+       (let ((gh (var-deref "clojure.core" "global-hierarchy")))
+         (if (jolt-atom? gh) (jolt-atom-val gh) gh)))
+      ((jolt-atom? h) (jolt-atom-val h))
+      (else h))))
+
+;; drop the whole cache if the epoch advanced or the hierarchy value changed.
+(define (mm-cache-validate! mf)
+  (let ((hier (mm-current-hierarchy mf)))
+    (unless (and (fx= (jolt-multifn-cache-epoch mf) jolt-mm-epoch)
+                 (eq? (jolt-multifn-cache-hier mf) hier))
+      (hashtable-clear! (jolt-multifn-cache mf))
+      (jolt-multifn-cache-epoch-set! mf jolt-mm-epoch)
+      (jolt-multifn-cache-hier-set! mf hier))))
+
+;; resolve dv to its method fn. An exact table hit is always current (defmethod /
+;; remove mutate that table and bump the epoch), so it bypasses the cache. On a
+;; miss the cache is validated then consulted; a miss there runs the isa? scan
+;; (mm-find-isa) and falls back to the :default method, memoizing the result. #f
+;; only when nothing matches - the caller raises.
+(define (mm-resolve mf dv)
+  (let* ((methods (jolt-multifn-methods mf))
+         (direct (hashtable-ref methods dv #f)))
+    (or direct
+        (begin
+          (mm-cache-validate! mf)
+          (let ((cache (jolt-multifn-cache mf)))
+            (or (hashtable-ref cache dv #f)
+                (let ((m (or (mm-find-isa mf dv)
+                             (hashtable-ref methods (jolt-multifn-default mf) #f))))
+                  (when m (hashtable-set! cache dv m))
+                  m)))))))
+
+(define (mm-no-method mf dv)
+  (error #f (string-append "No method in multimethod '" (jolt-multifn-name mf)
+                           "' for dispatch value: " (jolt-pr-str dv))))
+
+;; fixed-arity entry points: the common arities call the dispatch fn and the
+;; resolved method through jolt-invoke1/2/3, skipping the rest-list + the two
+;; applys the fully-variadic multifn-dispatch pays (one apply for the dispatch
+;; fn, one for the method).
+(define (multifn-dispatch1 mf a)
+  (let* ((dv (jolt-invoke1 (jolt-multifn-dispatch-fn mf) a))
+         (m (mm-resolve mf dv)))
+    (if m (jolt-invoke1 m a) (mm-no-method mf dv))))
+
+(define (multifn-dispatch2 mf a b)
+  (let* ((dv (jolt-invoke2 (jolt-multifn-dispatch-fn mf) a b))
+         (m (mm-resolve mf dv)))
+    (if m (jolt-invoke2 m a b) (mm-no-method mf dv))))
+
+(define (multifn-dispatch3 mf a b c)
+  (let* ((dv (jolt-invoke3 (jolt-multifn-dispatch-fn mf) a b c))
+         (m (mm-resolve mf dv)))
+    (if m (jolt-invoke3 m a b c) (mm-no-method mf dv))))
+
+;; the generic path (arity > 3) keeps working and also uses the cache.
 (define (multifn-dispatch mf . args)
   (let* ((dv (apply jolt-invoke (jolt-multifn-dispatch-fn mf) args))
-         (methods (jolt-multifn-methods mf))
-         (direct (hashtable-ref methods dv #f)))
-    (cond
-      (direct (apply jolt-invoke direct args))
-      ((mm-find-isa mf dv) => (lambda (m) (apply jolt-invoke m args)))
-      ((hashtable-ref methods (jolt-multifn-default mf) #f)
-       => (lambda (m) (apply jolt-invoke m args)))
-      (else (error #f (string-append "No method in multimethod '" (jolt-multifn-name mf)
-                                     "' for dispatch value: " (jolt-pr-str dv)))))))
+         (m (mm-resolve mf dv)))
+    (if m (apply jolt-invoke m args) (mm-no-method mf dv))))
 
-;; jolt-invoke dispatches a multifn via a prefix arm (seq.ss) instead of
-;; set!-wrapping it, so a dynamic call pays one lambda, one rest-list, no re-apply.
+;; jolt-invoke dispatches a multifn via a prefix arm (seq.ss). The arm gets the
+;; args as a list; arity-dispatch the common cases to dispatch1/2/3 so they skip
+;; the rest-list + applys; arity > 3 falls through to the generic path.
 (register-invoke-prefix-arm! jolt-multifn?
-  (lambda (f args) (apply multifn-dispatch f args)))
+  (lambda (f args)
+    (cond ((null? (cdr args)) (multifn-dispatch1 f (car args)))
+          ((null? (cddr args)) (multifn-dispatch2 f (car args) (cadr args)))
+          ((null? (cdddr args)) (multifn-dispatch3 f (car args) (cadr args) (caddr args)))
+          (else (apply multifn-dispatch f args)))))
 
 ;; --- table ops ---------------------------------------------------------------
 ;; prefer-method/remove-method/remove-all-methods/prefers take the name QUOTED;
@@ -173,17 +249,22 @@
       (let ((sub (or (hashtable-ref (jolt-multifn-prefers mf) dval-a #f)
                      (let ((h (new-mm-table)))
                        (hashtable-set! (jolt-multifn-prefers mf) dval-a h) h))))
-        (hashtable-set! sub dval-b #t)))
+        (hashtable-set! sub dval-b #t))
+      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
     mf))
 
 (define (jolt-remove-method-setup mm-sym dval)
   (let ((mf (mm-of-sym mm-sym)))
-    (when mf (hashtable-delete! (jolt-multifn-methods mf) dval))
+    (when mf
+      (hashtable-delete! (jolt-multifn-methods mf) dval)
+      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
     mf))
 
 (define (jolt-remove-all-methods-setup mm-sym)
   (let ((mf (mm-of-sym mm-sym)))
-    (when mf (hashtable-clear! (jolt-multifn-methods mf)))
+    (when mf
+      (hashtable-clear! (jolt-multifn-methods mf))
+      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
     mf))
 
 (define (jolt-get-method-setup mf dval)
