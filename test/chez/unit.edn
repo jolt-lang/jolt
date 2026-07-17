@@ -885,4 +885,36 @@
   {:suite "atomics" :label "compare-and-set! true on match and sets" :expected "[true 6]" :expr "(let [a (atom 5)] [(compare-and-set! a 5 6) (deref a)])"}
   {:suite "atomics" :label "compare-and-set! false on mismatch and no set" :expected "[false 5]" :expr "(let [a (atom 5)] [(compare-and-set! a 0 6) (deref a)])"}
   {:suite "atomics" :label "CAS-retry increments across futures lose no updates (atomic native)" :expected "true" :expr "(do (let [a (atom 0) done (atom 0) n 4 per 2000 target (* n per)] (dotimes [_ n] (future (dotimes [_ per] (loop [] (let [cur (deref a)] (when-not (compare-and-set! a cur (inc cur)) (recur))))) (swap! done inc))) (loop [w 0] (cond (== (deref done) n) :fin (> w 1000000) :timeout :else (do (Thread/yield) (recur (inc w))))) (str (== (deref a) target))))"}
+  ;; shadow-emitted (compiler-review R2 stage 1). Each row binds a local whose
+  ;; name is a bare Scheme head the back end emits, in the scope of a construct
+  ;; that emits that head, so the local would shadow the emitted form. Pre-remint
+  ;; (old baked backend) these crash; post-remint they return the JVM value.
+  {:suite "shadow-emitted" :expr "(let [keyword 5] :a)" :expected ":a"}
+  {:suite "shadow-emitted" :expr "(let [integer->char 5] \\a)" :expected "\\a"}
+  {:suite "shadow-emitted" :expr "(let [case-lambda 5] ((fn ([x] x) ([x y] y)) 1))" :expected "1"}
+  {:suite "shadow-emitted" :expr "(let [dynamic-wind 5] (binding [*print-length* 3] 1))" :expected "1"}
+  {:suite "shadow-emitted" :expr "(let [host-new 5] (.size (java.util.ArrayList.)))" :expected "0"}
+  {:suite "shadow-emitted" :expr "(do (defrecord Rd [x]) (let [record-method-dispatch 5] (.toString (->Rd 1))))" :expected "user.Rd{:x 1}"}
+  {:suite "shadow-emitted" :expr "(let [host-static-call 5] (String/valueOf 42))" :expected "42"}
+  {:suite "shadow-emitted" :expr "(let [host-static-ref 5] (pos? Long/MAX_VALUE))" :expected "true"}
+  ;; hashtable-ref is emitted by the devirt ctor-inlining path; reproduces only
+  ;; when ctor-shapes is populated (run-passes in compile-eval should set it).
+  {:suite "shadow-emitted" :expr "(do (defrecord Hr [x]) (let [hashtable-ref 5] (->Hr 1)))" :expected "#user.Hr{:x 1}"}
+  ;; Backend-only heads added to the shadow set for invariant completeness, NOT
+  ;; unit-testable via compile-eval (they emit only on the whole-program path):
+  ;; var-cell-deref (cell-cached var-cache? deref), def-var! / def-var-with-meta!
+  ;; / declare-var! / intern-ns! / define (top-level + forward-decl + ns-splice),
+  ;; foreign-procedure (ffi lowering). A local shadowing these only clashes when
+  ;; the def/ffi/var-cache form is emitted inside that local's scope.
+  ;; munge-injective (compiler-review R2 stage 2). munge-name maps ' -> $P, # -> $H,
+  ;; and $ -> $$ (escape-first) so distinct Clojure locals get distinct Scheme ids.
+  ;; Pre-remint a' and a_PRIME_ both emit a_PRIME_ (old ' -> _PRIME_ substitution),
+  ;; so (let [a' 1 a_PRIME_ 2] a') returned 2; post-remint a' emits a$P and returns 1.
+  {:suite "munge-injective" :expr "(let [a' 1 a_PRIME_ 2] a')" :expected "1"}
+  {:suite "munge-injective" :expr "(let [a' 1 a_PRIME_ 2] a_PRIME_)" :expected "2"}
+  ;; # reaches munge only as the reader's auto-gensym suffix on #() params
+  ;; (p__1#) — a user can't write a #-named local (# is a dispatch char) — so the
+  ;; # -> $H case is backend-only. Smoke-test that a #() still munges its gensym
+  ;; params consistently at binding and reference.
+  {:suite "munge-injective" :expr "(#(+ % %2) 1 2)" :expected "3"}
 ]

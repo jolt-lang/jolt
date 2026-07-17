@@ -371,10 +371,14 @@
 ;; All Scheme identifiers the back end emits bare — every :call, :dbl, :lng,
 ;; :fixed, :value, and :bd name from op-registry, plus a closed set of runtime
 ;; helpers the registry doesn't enumerate (devirt dispatchers, jolt-invokeN,
-;; var-deref, list->cseq, etc.). Derived from op-registry so it stays in sync
-;; with per-op facts. A local whose munged name matches ANY of these would shadow
-;; the emitted runtime procedure (e.g. (let [jolt-nil 5] nil) returns 5 if the
-;; local is emitted verbatim).
+;; var-deref, list->cseq, literal/interop heads, etc.). Derived from op-registry
+;; so it stays in sync with per-op facts. A local whose munged name matches ANY
+;; of these would shadow the emitted runtime procedure (e.g. (let [jolt-nil 5]
+;; nil) returns 5 if the local is emitted verbatim).
+;; INVARIANT: any NEW bare Scheme head an emit* clause outputs — a procedure or
+;; special-form name emitted as a call head that a user local could shadow —
+;; MUST be added to the `helpers` set below. The op-registry derivation covers
+;; registry-driven heads; everything else is enumerated there by emission site.
 (def ^:private rt-emitted-names
   (let [from-registry
         (into #{} (comp (mapcat (fn [[_ spec]]
@@ -392,7 +396,33 @@
                   "register-clone*" "protocol-resolve"
                   "protocol-dispatch1" "protocol-dispatch2" "protocol-dispatch3"
                   "exact->inexact" "jolt->fx"
-                  "jolt-register-source!" "jolt-proto-epoch"}]
+                  "jolt-register-source!" "jolt-proto-epoch"
+                  ;; --- bare heads emitted at sites the registry doesn't cover ---
+                  ;; INVARIANT: any new bare Scheme head an emit* clause outputs
+                  ;; (a head a user local could shadow) MUST be added here. Literal
+                  ;; + form emission (emit-const): keyword/char construction.
+                  "keyword" "integer->char"
+                  ;; fn forms (emit-fn): a multi-arity fn lowers to case-lambda.
+                  "case-lambda"
+                  ;; binding + try/finally (emit-try): both thread through
+                  ;; dynamic-wind; a binding form and a finally both emit it.
+                  "dynamic-wind"
+                  ;; host interop (emit-invoke static call, :host-new,
+                  ;; :host-static field ref).
+                  "host-new" "host-static-call" "host-static-ref"
+                  ;; record/reify protocol-method dispatch (:host-call fallback
+                  ;; for any .method not in supported-host-methods).
+                  "record-method-dispatch"
+                  ;; cell-cached var deref (the whole-program var-cache? path).
+                  "var-cell-deref"
+                  ;; devirt cached-desc lookup (emit-invoke ctor inlining).
+                  "hashtable-ref"
+                  ;; top-level def / forward-declare / ns-value splice
+                  ;; (emit-def-cached, :forward-decl, :the-ns).
+                  "define" "def-var!" "def-var-with-meta!"
+                  "declare-var!" "intern-ns!"
+                  ;; ffi lowering (emit-ffi-fn: a Chez foreign-procedure).
+                  "foreign-procedure"}]
     (into from-registry helpers)))
 
 ;; Most jolt names are already valid Scheme identifiers. The one that isn't is
@@ -404,13 +434,24 @@
 ;; safety net for identifiers added to the runtime that aren't yet in the
 ;; registry — they catch future additions without manual enumeration.
 (defn- munge-name [s]
-  ;; A Clojure symbol may contain chars that break a Scheme identifier: ' is the
-  ;; quote reader macro (a bare f' would read as f then 'rest), # already maps to
-  ;; _. Munge both to safe tokens; the same mapping applies at the binding and at
-  ;; every reference, so resolution stays consistent.
+  ;; A Clojure symbol may carry chars that break a Scheme identifier or that
+  ;; collide once substituted: ' is the quote reader macro (a bare f' reads as f
+  ;; then 'rest), # is the auto-gensym suffix the reader puts on #() params
+  ;; (p__1#) and starts a Scheme datum, and $ is the escape marker used below.
+  ;; Map all three to safe tokens INJECTIVELY so two distinct Clojure locals can
+  ;; never munge to the same Scheme identifier: reserve $ as the escape char and
+  ;; escape it FIRST ($$ = a literal $), then ' -> $P and # -> $H. Decoding is an
+  ;; unambiguous left-to-right inverse ($$ -> $, $P -> ', $H -> #): every $ in
+  ;; the output is either doubled (came from a literal $) or single+P/+H (came
+  ;; from ' / #), so no two inputs share an output. The same mapping applies at
+  ;; the binding and at every reference, so resolution stays consistent. Only the
+  ;; char-substitution step changes; the reserved/emitted-name _-prefix below is
+  ;; untouched (it runs on the substituted string; a $ -> $$ still leaves the
+  ;; jv$/jolt- prefix tests true, and those runtime names never reach munge-name).
   (let [s (-> s
-              (str/replace "#" "_")
-              (str/replace "'" "_PRIME_"))]
+              (str/replace "$" "$$")
+              (str/replace "'" "$P")
+              (str/replace "#" "$H"))]
     (if (or (contains? scheme-reserved s)
             (contains? bare-native-names s)
             (contains? rt-emitted-names s)
