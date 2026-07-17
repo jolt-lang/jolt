@@ -1,0 +1,10 @@
+#?@ at top level throws
+1e2N rejects float with N suffix
+\\u with <4 hex digits throws
+\ud800 in string throws Invalid character constant
+keys and vals accept a seq of map entries
+range step 0 repeats start infinitely
+rest-pattern over a vector unchanged
+rest-pattern positional elements walk the seq (a map destructures)
+trailing backslash in regex throws
+zipmap 12 entries hash-iteration order
