@@ -1038,4 +1038,19 @@
   {:suite "r4-binding" :expr "(try (eval (read-string \"(when-some [a 1 b 2] a)\")) (catch Throwable e :threw))" :expected ":threw"}
   {:suite "r4-binding" :expr "(try (assert false) (catch AssertionError e :ae))" :expected ":ae"}
   {:suite "r4-binding" :expr "(nil? (assert true))" :expected "true"}
+  {:suite "r4-for" :expr "(for [x [2 4 3 6] :while (even? x) :when (> x 3)] x)" :expected "(4)"}
+  {:suite "r4-for" :expr "(for [x [2 4 3 6] :when (> x 3) :while (even? x)] x)" :expected "(4 6)"}
+  {:suite "r4-for" :expr "(for [x (range 10) :while (< x 8) :while (even? x)] x)" :expected "(0)"}
+  {:suite "r4-for" :expr "(for [x [1 2 3]] (inc x))" :expected "(2 3 4)"}
+  {:suite "r4-for" :expr "(for [x [1 2 3 4] :when (even? x)] x)" :expected "(2 4)"}
+  {:suite "r4-for" :expr "(for [x [1 2 3] :let [y (* 2 x)]] y)" :expected "(2 4 6)"}
+  {:suite "r4-for" :expr "(for [x [1 2] y [:a :b]] [x y])" :expected "([1 :a] [1 :b] [2 :a] [2 :b])"}
+  {:suite "r4-for" :expr "(take 3 (for [x (range)] x))" :expected "(0 1 2)"}
+  {:suite "r4-for" :expr "(count (for [x (range) :while (< x 100)] x))" :expected "100"}
+  {:suite "r4-for" :expr "(for [x (range 10) :let [y (* x x)] :while (< y 9)] x)" :expected "(0 1 2)"}
+  {:suite "r4-doseq" :expr "(let [a (atom [])] (doseq [x (range 3) :while (< x 2)] (swap! a conj x)) @a)" :expected "[0 1]"}
+  {:suite "r4-doseq" :expr "(let [a (atom [])] (doseq [x [1 2 3]] (swap! a conj x)) @a)" :expected "[1 2 3]"}
+  {:suite "r4-doseq" :expr "(let [a (atom [])] (doseq [x [1 2] y [:a :b]] (swap! a conj [x y])) @a)" :expected "[[1 :a] [1 :b] [2 :a] [2 :b]]"}
+  {:suite "r4-doseq" :expr "(let [a (atom 0)] (doseq [x [1 2 3] :when (odd? x)] (swap! a + x)) @a)" :expected "4"}
+  {:suite "r4-doseq" :expr "(nil? (doseq [x [1]] x))" :expected "true"}
 ]

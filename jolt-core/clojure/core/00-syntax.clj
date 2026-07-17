@@ -606,87 +606,91 @@
       (throw (str "Duplicate case test constant: " (first dup)))
       `(let* [~g ~expr] ~(build clauses)))))
 
-;; for: list comprehension, desugared to nested map/mapcat over the binding colls.
-;; Per binding group: :when wraps the inner form in (if test (list inner) []) so
-;; mapcat drops it when false; :let wraps it in a let*; :while wraps the coll in
-;; take-while after :let bindings have been processed so the predicate can see
-;; them. The last group with no modifiers is a plain map.
+;; for/doseq share these. for-parse-groups turns a binding vector into groups
+;; [bind coll mods], mods a vector of [kw form] in SOURCE ORDER.
+(defn- for-scan [bvec i bind coll mods]
+  (if (and (< i (count bvec)) (keyword? (nth bvec i)))
+    (let [k (nth bvec i) v (nth bvec (inc i))]
+      (cond
+        (= k :when)  (for-scan bvec (+ i 2) bind coll (conj mods [:when v]))
+        (= k :let)   (for-scan bvec (+ i 2) bind coll (conj mods [:let v]))
+        (= k :while) (for-scan bvec (+ i 2) bind coll (conj mods [:while v]))
+        :else        (for-scan bvec (inc i) bind coll mods)))
+    [i bind coll mods]))
+(defn- for-parse-groups [bvec i groups]
+  (if (>= i (count bvec))
+    groups
+    (let [r (for-scan bvec (+ i 2) (nth bvec i) (nth bvec (inc i)) [])]
+      (for-parse-groups bvec (nth r 0)
+                        (conj groups [(nth r 1) (nth r 2) (nth r 3)])))))
+;; thread the modifier chain for ONE element in SOURCE ORDER, matching the JVM:
+;; :let binds for the rest of the chain, :when skips this element and continues,
+;; :while stops the whole coll. proceed/skip/stop are the forms for those outcomes.
+(defn- comprehension-chain [mods proceed skip stop]
+  (if (empty? mods)
+    proceed
+    (let [m (first mods) k (first m) v (nth m 1) r (rest mods)]
+      (cond
+        (= k :let)   `(let ~v ~(comprehension-chain r proceed skip stop))
+        (= k :when)  `(if ~v ~(comprehension-chain r proceed skip stop) ~skip)
+        (= k :while) `(if ~v ~(comprehension-chain r proceed skip stop) ~stop)
+        :else        (comprehension-chain r proceed skip stop)))))
+
+;; for: lazy list comprehension. A group with no modifiers is a plain map (last)
+;; or mapcat (nested); a group with :let/:when/:while uses a lazy walk that applies
+;; them in source order — a :when skips one element (looping, so long skip runs
+;; don't grow the stack), a :while ends the seq.
 (defmacro for [bindings body]
-  (let [scan (fn scan [bvec i bind coll mods]
-               (if (and (< i (count bvec)) (keyword? (nth bvec i)))
-                 (let [k (nth bvec i)
-                       v (nth bvec (inc i))]
-                   (cond
-                     (= k :when)  (scan bvec (+ i 2) bind coll (conj mods [:when v]))
-                     (= k :let)   (scan bvec (+ i 2) bind coll (conj mods [:let v]))
-                     (= k :while) (scan bvec (+ i 2) bind coll (conj mods [:while v]))
-                     :else        (scan bvec (inc i) bind coll mods)))
-                 [i bind coll mods]))
-        parse-groups (fn parse-groups [bvec i groups]
-                       (if (>= i (count bvec))
-                         groups
-                         (let [r (scan bvec (+ i 2) (nth bvec i) (nth bvec (inc i)) [])]
-                           (parse-groups bvec (nth r 0)
-                                         (conj groups [(nth r 1) (nth r 2) (nth r 3)])))))
-        wrap-mods (fn wrap-mods [mods inner]
-                    (if (empty? mods)
-                      inner
-                      (let [m (first mods)
-                            sub (wrap-mods (rest mods) inner)]
-                        (if (= (first m) :when)
-                          `(if ~(nth m 1) ~sub [])
-                          `(let ~(nth m 1) ~sub)))))
-        ;; separate :while from :let/:when — no reduce / filter / loop —
-        ;; just plain recursion on the mods vector
-        split-mods (fn split-mods [ms ws lets whens bs]
-                     (if (empty? ms)
-                       [ws lets whens bs]
-                       (let [m (first ms)
-                             k (first m)]
-                         (cond
-                           (= k :while) (split-mods (rest ms) (conj ws (nth m 1)) lets whens bs)
-                           (= k :let)   (split-mods (rest ms) ws (conj lets (nth m 1)) whens (conj bs m))
-                           (= k :when)  (split-mods (rest ms) ws lets (conj whens (nth m 1)) (conj bs m))
-                           :else        (split-mods (rest ms) ws lets whens (conj bs m))))))
-        ;; fold :when preds into the while guard: :while only sees elements
-        ;; that passed every preceding :when, matching source-order nesting
-        while-guard (fn while-guard [whens base]
-                      (if (empty? whens)
-                        base
-                        `(or (not ~(first whens)) ~(while-guard (rest whens) base))))
-        build (fn build [idx groups]
+  (let [build (fn build [idx groups]
                 (let [g (nth groups idx)
                       my-bind (nth g 0)
                       my-coll (nth g 1)
                       my-mods (nth g 2)
                       is-last (= idx (dec (count groups)))
-                      sb (split-mods my-mods [] [] [] [])
-                      while-pred (first (nth sb 0))
-                      let-binds  (nth sb 1)
-                      when-preds (nth sb 2)
-                      body-mods  (nth sb 3)
-                      coll (if while-pred
-                             (let [pred (if (empty? let-binds)
-                                          while-pred
-                                          `(let ~@let-binds ~while-pred))
-                                   guard (if (seq when-preds)
-                                           (while-guard when-preds pred)
-                                           pred)]
-                               `(take-while (fn [~my-bind] ~guard) ~my-coll))
-                             my-coll)]
-                  (if (and is-last (empty? body-mods))
-                    `(map (fn [~my-bind] ~body) ~coll)
-                    (let [base (if is-last `(list ~body) (build (inc idx) groups))]
-                      `(mapcat (fn [~my-bind] ~(wrap-mods body-mods base)) ~coll)))))]
+                      k-form (if is-last `(list ~body) (build (inc idx) groups))]
+                  (if (empty? my-mods)
+                    (if is-last
+                      `(map (fn [~my-bind] ~body) ~my-coll)
+                      `(mapcat (fn [~my-bind] ~k-form) ~my-coll))
+                    (let [stepf (fresh-sym) colls (fresh-sym) sv (fresh-sym)]
+                      `((fn ~stepf [~colls]
+                          (lazy-seq
+                            (loop [~sv (seq ~colls)]
+                              (when ~sv
+                                (let [~my-bind (first ~sv)]
+                                  ~(comprehension-chain my-mods
+                                          `(concat ~k-form (~stepf (rest ~sv)))
+                                          `(recur (next ~sv))
+                                          nil))))))
+                        ~my-coll)))))]
     (if (>= (count bindings) 2)
-      (build 0 (parse-groups bindings 0 []))
+      (build 0 (for-parse-groups bindings 0 []))
       body)))
 
-;; doseq runs body for side effects across the bindings, returning nil. Realizes
-;; a `for` comprehension with count (for handles :when/:let/:while and multiple
-;; bindings).
+;; doseq runs body for side effects across the bindings in constant space,
+;; returning nil. A direct nested loop/recur per group (not (count (for …)),
+;; which allocated a lazy cell per iteration and held the seq head): :let binds,
+;; :when skips one element, :while stops the coll — same source-order semantics
+;; as for.
 (defmacro doseq [bindings & body]
-  `(do (count (for ~bindings (do ~@body nil))) nil))
+  (let [build (fn build [idx groups]
+                (let [g (nth groups idx)
+                      my-bind (nth g 0)
+                      my-coll (nth g 1)
+                      my-mods (nth g 2)
+                      is-last (= idx (dec (count groups)))
+                      k-form (if is-last `(do ~@body nil) (build (inc idx) groups))
+                      sv (fresh-sym)]
+                  `(loop [~sv (seq ~my-coll)]
+                     (when ~sv
+                       (let [~my-bind (first ~sv)]
+                         ~(comprehension-chain my-mods
+                                 `(do ~k-form (recur (next ~sv)))
+                                 `(recur (next ~sv))
+                                 nil))))))]
+    (if (>= (count bindings) 2)
+      `(do ~(build 0 (for-parse-groups bindings 0 [])) nil)
+      `(do ~@body nil))))
 
 ;; when-let must live in this (early) tier, not 30-macros with its if-let/if-some/
 ;; when-some siblings: 20-coll uses it (not-empty), and 20-coll loads before 30. The
