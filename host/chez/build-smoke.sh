@@ -182,6 +182,22 @@ if [ "$nil_fold_got" != "$nil_fold_want" ]; then
   echo "  FAIL: nil?/some? fold inverted — got \`$nil_fold_got\`, want \`$nil_fold_want\`"; exit 1
 fi
 
+# A loop var that shadows a record-typed outer local must shadow in the inference
+# tenv. The bug kept the outer type, so under --opt (:x p) devirtualized to a
+# record slot read that crashed on the vector [3 4]; the fix keeps the loop p :any
+# so (:x p) is a generic keyword lookup -> nil. The second line carries the record
+# straight through to prove field reads still devirtualize.
+loop_shadow_app="$root/test/chez/loop-shadow-app"
+loop_shadow_out="$(dirname "$out")/loop-shadow-bin"
+if ! JOLT_PWD="$loop_shadow_app" bin/joltc build -m app.core -o "$loop_shadow_out" --opt >/dev/null 2>&1; then
+  echo "  FAIL: loop-shadow --opt build exited non-zero"; exit 1
+fi
+loop_shadow_got="$(cd "$loop_shadow_app" && "$loop_shadow_out" 2>&1)"
+loop_shadow_want="$(printf 'nil\n1.0')"
+if [ "$loop_shadow_got" != "$loop_shadow_want" ]; then
+  echo "  FAIL: loop var did not shadow record local — got \`$loop_shadow_got\`, want \`$loop_shadow_want\`"; exit 1
+fi
+
 # A built binary runs -main with *ns* = user, like clojure.main — so a runtime
 # resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
 # matching the JVM and interpreted joltc rather than the entry ns's alias table. A

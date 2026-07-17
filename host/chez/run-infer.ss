@@ -119,4 +119,23 @@
   (gate-check "number? on :nil folds false"  (pred-on "number?" t-nil) #f)
   (gate-check "record? on :nil folds false"  (pred-on "record?" t-nil) #f))
 
+;; --- loop/fn-self bindings shadow in the inference tenv ----------------------
+;; A loop var (or a (fn f [] …) self-name) that rebinds a record-typed outer
+;; local must NOT keep the outer type — without shadowing (+ p 1) over the loop
+;; body reports a num-op-on-record diag, and under --opt a bare slot read
+;; miscompiles and crashes. With shadowing the rebound name is :any -> no diag.
+;; The positive row confirms record typing outside the shadow is unchanged.
+(set-record-shapes!
+  (jolt-hash-map "user/->P"
+                 (jolt-hash-map (keyword #f "fields") (jolt-vector (keyword #f "x"))
+                                (keyword #f "tags")   (jolt-vector jolt-nil)
+                                (keyword #f "type")   "user.P")))
+(gate-check "record local still num-op diag (unshadowed)"
+       (diags "(let [p (->P 1.0 2.0)] (+ p 1))" #f) 1)
+(gate-check "loop var shadows record local (no diag)"
+       (diags "(let [p (->P 1.0 2.0)] (loop [p [3 4]] (+ p 1)))" #f) 0)
+(gate-check "fn self-name shadows record local (no diag)"
+       (diags "(let [f (->P 1.0 2.0)] ((fn f [] (+ f 1))))" #f) 0)
+(set-record-shapes! (jolt-hash-map))
+
 (gate-summary "infer")
