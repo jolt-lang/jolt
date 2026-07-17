@@ -34,19 +34,27 @@
 ;; EXACT for exact args ((sqrt 9) -> 3, (sin 0) -> 0), so coerce.
 (define (m1 f) (lambda (x) (exact->inexact (f x))))
 (define (m2 f) (lambda (a b) (exact->inexact (f a b))))
-(def-var! "clojure.math" "sqrt" (m1 sqrt))
+;; a real result stays a flonum; a complex result becomes +nan.0. Chez extends
+;; several real-domain ops (sqrt/expt/log/asin/acos, and log's kin log10/log1p)
+;; onto the complex plane for out-of-domain real inputs, but Java/clojure.math
+;; returns NaN there. real? is #t for a flonum and #f for a Chez complex, so this
+;; guards exactly the complex leak; NaN/Inf are real and pass through unchanged.
+(define (real-or-nan x) (if (and (number? x) (real? x)) (exact->inexact x) +nan.0))
+(define (m1c f) (lambda (x) (real-or-nan (f x))))
+(define (m2c f) (lambda (a b) (real-or-nan (f a b))))
+(def-var! "clojure.math" "sqrt" (m1c sqrt))
 (def-var! "clojure.math" "cbrt" jolt-math-cbrt)
-(def-var! "clojure.math" "pow" (m2 expt))
+(def-var! "clojure.math" "pow" (m2c expt))
 (def-var! "clojure.math" "exp" (m1 exp))
 (def-var! "clojure.math" "expm1" (lambda (x) (- (exp x) 1.0)))
-(def-var! "clojure.math" "log" (m1 log))
-(def-var! "clojure.math" "log10" (lambda (x) (exact->inexact (log x 10.0))))
-(def-var! "clojure.math" "log1p" (lambda (x) (log (+ 1.0 x))))
+(def-var! "clojure.math" "log" (m1c log))
+(def-var! "clojure.math" "log10" (lambda (x) (real-or-nan (log x 10.0))))
+(def-var! "clojure.math" "log1p" (lambda (x) (real-or-nan (log (+ 1.0 x)))))
 (def-var! "clojure.math" "sin" (m1 sin))
 (def-var! "clojure.math" "cos" (m1 cos))
 (def-var! "clojure.math" "tan" (m1 tan))
-(def-var! "clojure.math" "asin" (m1 asin))
-(def-var! "clojure.math" "acos" (m1 acos))
+(def-var! "clojure.math" "asin" (m1c asin))
+(def-var! "clojure.math" "acos" (m1c acos))
 (def-var! "clojure.math" "atan" (m1 atan))
 ;; clojure.math/atan2 is atan2(y, x); Chez's 2-arg atan is (atan y x).
 (def-var! "clojure.math" "atan2" (lambda (y x) (exact->inexact (atan y x))))

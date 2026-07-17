@@ -168,6 +168,50 @@ if [ "$inline_throw_got" != "THROW OK" ]; then
   echo "  FAIL: pure-fn fold discarded a throwing op — got \`$inline_throw_got\`, want THROW OK"; exit 1
 fi
 
+# Under --opt inference proves a nil-bound local is :nil, so nil? folds true and
+# some? folds false. The fold was inverted (nil?->false, some?->true), so a release
+# --opt build printed :b / :y instead of :a / :n.
+nil_fold_app="$root/test/chez/nil-fold-app"
+nil_fold_out="$(dirname "$out")/nil-fold-bin"
+if ! JOLT_PWD="$nil_fold_app" bin/joltc build -m app.core -o "$nil_fold_out" --opt >/dev/null 2>&1; then
+  echo "  FAIL: nil-fold --opt build exited non-zero"; exit 1
+fi
+nil_fold_got="$(cd "$nil_fold_app" && "$nil_fold_out" 2>&1)"
+nil_fold_want="$(printf ':a\n:n')"
+if [ "$nil_fold_got" != "$nil_fold_want" ]; then
+  echo "  FAIL: nil?/some? fold inverted — got \`$nil_fold_got\`, want \`$nil_fold_want\`"; exit 1
+fi
+
+# A loop var that shadows a record-typed outer local must shadow in the inference
+# tenv. The bug kept the outer type, so under --opt (:x p) devirtualized to a
+# record slot read that crashed on the vector [3 4]; the fix keeps the loop p :any
+# so (:x p) is a generic keyword lookup -> nil. The second line carries the record
+# straight through to prove field reads still devirtualize.
+loop_shadow_app="$root/test/chez/loop-shadow-app"
+loop_shadow_out="$(dirname "$out")/loop-shadow-bin"
+if ! JOLT_PWD="$loop_shadow_app" bin/joltc build -m app.core -o "$loop_shadow_out" --opt >/dev/null 2>&1; then
+  echo "  FAIL: loop-shadow --opt build exited non-zero"; exit 1
+fi
+loop_shadow_got="$(cd "$loop_shadow_app" && "$loop_shadow_out" 2>&1)"
+loop_shadow_want="$(printf 'nil\n1.0')"
+if [ "$loop_shadow_got" != "$loop_shadow_want" ]; then
+  echo "  FAIL: loop var did not shadow record local — got \`$loop_shadow_got\`, want \`$loop_shadow_want\`"; exit 1
+fi
+
+# min/max return an operand unchanged. A --opt/inference double-contagion bug
+# coerced the int operand to a flonum, so (min 2.5 1) printed 1.0 and (max 2.5 3)
+# printed 3.0. They must preserve the int.
+min_max_app="$root/test/chez/min-max-app"
+min_max_out="$(dirname "$out")/min-max-bin"
+if ! JOLT_PWD="$min_max_app" bin/joltc build -m app.core -o "$min_max_out" --opt >/dev/null 2>&1; then
+  echo "  FAIL: min-max --opt build exited non-zero"; exit 1
+fi
+min_max_got="$(cd "$min_max_app" && "$min_max_out" 2>&1)"
+min_max_want="$(printf '1\n3')"
+if [ "$min_max_got" != "$min_max_want" ]; then
+  echo "  FAIL: min/max coerced int to double — got \`$min_max_got\`, want \`$min_max_want\`"; exit 1
+fi
+
 # A built binary runs -main with *ns* = user, like clojure.main — so a runtime
 # resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
 # matching the JVM and interpreted joltc rather than the entry ns's alias table. A

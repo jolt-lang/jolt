@@ -60,4 +60,19 @@
 (gate-check "unguarded nullable read on nil returns nil" (jolt-nil? (jolt-invoke gg (evals "(->B 5)"))) #t)
 (gate-check "unguarded nullable read on non-nil returns the field" (jolt-invoke gg (evals "(->A 5)")) 1.0)
 
+;; min/max return an operand unchanged, so double contagion would corrupt the
+;; result type: (min 2.5 1) must be 1 (int), not 1.0; (max 2.5 3) must be 3, not
+;; 3.0. dbl-arith-ops now excludes min/max — pre-fix the int literal was coerced
+;; to a flonum before min/max saw it, so the release/--opt build printed 1.0/3.0.
+(define mm (anode "(def mm (fn [] (let [x 2.5] (min x 1))))"))
+(define mme (emit (run-passes mm (make-analyze-ctx "user"))))
+(built mme)
+(gate-check "min preserves exact operand (no double contagion)"
+       (jolt-invoke0 (var-deref "user" "mm")) 1)
+(define mx (anode "(def mx (fn [] (let [x 2.5] (max x 3))))"))
+(define mxe (emit (run-passes mx (make-analyze-ctx "user"))))
+(built mxe)
+(gate-check "max preserves exact operand (no double contagion)"
+       (jolt-invoke0 (var-deref "user" "mx")) 3)
+
 (gate-summary "narrow")

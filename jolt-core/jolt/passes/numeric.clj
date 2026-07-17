@@ -231,9 +231,16 @@
             r (an (get node :ret) tenv)]
         [(nth r 0) (assoc node :statements stmts :ret (nth r 1))])
       (= op :fn)
-      [nil (assoc node :arities
-                  (mapv (fn [a] (assoc a :body (nth (an (get a :body) (arity-env tenv a)) 1)))
-                        (get node :arities)))]
+      ;; bind the self-name too (a (fn f [] …) reference shadows any same-named
+      ;; outer local), mirroring jolt.passes.types — else it inherits the outer
+      ;; kind and arithmetic over the fn mis-specializes.
+      (let [self (get node :name)]
+        [nil (assoc node :arities
+                    (mapv (fn [a]
+                            (let [e (arity-env tenv a)
+                                  e (if self (assoc e self nil) e)]
+                              (assoc a :body (nth (an (get a :body) e) 1))))
+                          (get node :arities)))])
       (= op :def) [nil (assoc node :init (nth (an (get node :init) tenv) 1))]
       ;; every other op introduces no bindings and isn't numeric: descend with the
       ;; same env to specialize nested arithmetic, no kind.
