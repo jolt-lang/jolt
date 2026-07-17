@@ -55,6 +55,47 @@ if [ "$got" != "$want" ]; then
   exit 1
 fi
 
+# --- release now defaults to direct-linking + whole-program inference ------------
+# A plain `jolt build` (release, no flags) must direct-link app->app calls (the
+# throughput lever the perf audit identified) AND run wp-infer — both were opt-in
+# (--direct-link / --opt) before. $out is still the plain release build here.
+
+# The cross-ns app.core -> app.util/shout call lowers to a direct jv$ binding in
+# the plain release build, not var-deref.
+if ! grep -q '(jv\$app.util\$shout' "$out.build/flat.ss"; then
+  echo "  FAIL: release build did not direct-link the app->app call"; exit 1
+fi
+
+# wp-infer ran: a hintless double fn (app.util/area, called with 2.0) gets its
+# param seeded :double, so its * lowers to a flonum op. The same build with
+# JOLT_NO_WP_INFER=1 skips the fixpoint — the fl-op count must drop (area is the
+# delta). Same numeric result either way; this is the emit-level proof it ran.
+if ! JOLT_PWD="$app" JOLT_NO_WP_INFER=1 bin/joltc build -m app.core -o "$out.noop" >/dev/null 2>&1; then
+  echo "  FAIL: JOLT_NO_WP_INFER build exited non-zero"; exit 1
+fi
+default_fl=$(grep -c '#3%fl' "$out.build/flat.ss" || true)
+noop_fl=$(grep -c '#3%fl' "$out.noop.build/flat.ss" || true)
+if [ "$default_fl" -le "$noop_fl" ]; then
+  echo "  FAIL: wp-infer added no fl-ops to the release build (default=$default_fl noop=$noop_fl)"; exit 1
+fi
+
+# --no-direct-link opts back out of the release default: the app->app call must
+# NOT lower to a jv$ binding (stays var-routed, dynamically linked).
+if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out.nodl" --no-direct-link >/dev/null 2>&1; then
+  echo "  FAIL: jolt build --no-direct-link exited non-zero"; exit 1
+fi
+if grep -q '(jv\$app.util\$shout' "$out.nodl.build/flat.ss"; then
+  echo "  FAIL: --no-direct-link still direct-linked the app->app call"; exit 1
+fi
+
+# ^:redef / ^:dynamic opt out of direct-linking, so runtime redef/binding still
+# take effect in the built binary even with direct-link the release default.
+got_rd="$(cd / && "$out" --redef 2>&1)"
+if ! printf '%s' "$got_rd" | grep -q '^redef: :patched$'    || ! printf '%s' "$got_rd" | grep -q '^dyn: :bound$'; then
+  echo "  FAIL: ^:redef/:dynamic opt-out — want 'redef: :patched' and 'dyn: :bound' lines"
+  echo "--- got ----"; echo "$got_rd"; exit 1
+fi
+
 # Portable embed: remove the build-time source tree and run from / — the
 # embedded resource must still resolve (contents baked as literals, not
 # read-file-string at startup).

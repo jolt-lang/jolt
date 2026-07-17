@@ -114,13 +114,34 @@
                     ((jrec*? r) (if (fx< i (vector-length (jrec*-vals r)))
                                     (vector-ref (jrec*-vals r) i) (jolt-get r k)))
                     (else (jolt-get r k)))))
-         (define ctor-vec-def
-           `(define jrec-ctor-vec (vector ,@(map mkname (range 0 mn)))))
-         (datum->syntax tid
-           `(begin ,base-def
-                   ,@(map child-def (range 1 mn))
-                   ,spill-def
-                   ,nfields-def ,fieldref-def ,fieldset-def ,fieldat-def ,ctor-vec-def)))))))
+          (define ctor-vec-def
+            `(define jrec-ctor-vec (vector ,@(map mkname (range 0 mn)))))
+          ;; make-jrec-from-existing: build a fresh jrec of SRC's type sharing its
+          ;; descriptor, with EXT and field values copied straight from SRC's inline
+          ;; slots (direct reads — no intermediate field vector, no vector->list, no
+          ;; rest-list allocation). When OV is a fixnum field index that one slot takes
+          ;; OV-VAL instead (the assoc path's changed field); OV #f copies every field
+          ;; verbatim (dissoc / meta-copy). Spill (>8 fields) copies the backing vals
+          ;; vector. Replaces the old jrec-vals + jrec-vec-copy + make-jrec triple-copy.
+          (define (fromexisting-clause k)
+            `((,k) (,(mkname k) desc ext
+                    ,@(map (lambda (j) `(if (eq? ov ,j) ov-val (,(acc k j) src)))
+                           (range 0 (- k 1))))))
+          (define fromexisting-def
+            `(define (make-jrec-from-existing src ov ov-val ext)
+               (let ((desc (jrec-desc src)))
+                 (case (jrec-nfields src)
+                   ((0) (make-jrec0 desc ext))
+                   ,@(map fromexisting-clause (range 1 mn))
+                   (else (let ((nv (jrec-vec-copy (jrec*-vals src))))
+                           (when ov (vector-set! nv ov ov-val))
+                           (make-jrec* desc ext nv)))))))
+          (datum->syntax tid
+            `(begin ,base-def
+                    ,@(map child-def (range 1 mn))
+                    ,spill-def
+                    ,nfields-def ,fieldref-def ,fieldset-def ,fieldat-def
+                    ,ctor-vec-def ,fromexisting-def)))))))
 (define-jrec-family 8)
 ;; compatibility ctor (desc vals-vector ext): dispatches to the native per-arity
 ;; ctor. The hot ctor paths (make-deftype-ctor / backend inline emission) build
@@ -543,17 +564,15 @@
   (cond ((jrec-cl coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
         ((jrec? coll)
          (let ((i (and (keyword? k) (jrec-field-index coll k))))
-           (if i
-               (let ((nv (jrec-vec-copy (jrec-vals coll)))
-                     (v2 (let ((flags (hashtable-ref chez-record-dbl-tbl (jrec-tag coll) #f)))
-                           (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
-                                    (number? v) (not (flonum? v)))
-                               (exact->inexact v) v))))
-                 (vector-set! nv i v2)
-                 (make-jrec (jrec-desc coll) nv (jrec-ext coll)))
-               (let ((ext (jrec-ext coll)))
-                 (make-jrec (jrec-desc coll) (jrec-vals coll)
-                            (%r-jolt-assoc1 (if (jolt-nil? ext) empty-pmap ext) k v))))))
+            (if i
+                (let ((v2 (let ((flags (hashtable-ref chez-record-dbl-tbl (jrec-tag coll) #f)))
+                            (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
+                                     (number? v) (not (flonum? v)))
+                                (exact->inexact v) v))))
+                  (make-jrec-from-existing coll i v2 (jrec-ext coll)))
+                (let ((ext (jrec-ext coll)))
+                  (make-jrec-from-existing coll #f #f
+                             (%r-jolt-assoc1 (if (jolt-nil? ext) empty-pmap ext) k v))))))
         (else (%r-jolt-assoc1 coll k v)))))
 ;; dissoc: a deftype implementing IPersistentMap/without answers through it.
 ;; Removing a declared field downgrades a plain record to a map (JVM parity); an
@@ -577,7 +596,7 @@
             (let ((ext (jrec-ext coll)))
               (if (jolt-nil? ext) coll
                   (let ((ne (%r-jolt-dissoc ext k)))
-                    (make-jrec (jrec-desc coll) (jrec-vals coll)
+                    (make-jrec-from-existing coll #f #f
                                 (if (= 0 (jolt-count ne)) jolt-nil ne)))))))))
 (set! jolt-dissoc (lambda (coll . ks)
   (cond ((jrec-cl coll "without")

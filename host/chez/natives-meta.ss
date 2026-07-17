@@ -36,13 +36,16 @@
     (else (hashtable-ref meta-table x jolt-nil))))
 
 ;; fresh-identity copy of a metadatable value (so attaching meta doesn't mutate
-;; the original). cseq/procedure can't be copied meaningfully — keyed in place.
+;; the original). The copy only needs a distinct identity for the meta side-table;
+;; pvec/jrec share their internal structure with the source (one allocation, no
+;; traversal) rather than deep-copying. cseq/procedure can't be copied meaningfully
+;; — keyed in place.
 (define (meta-copy x)
   (cond
-    ((pvec? x) (make-pvec (pvec-v x) (pvec-ent x)))
+    ((pvec? x) (mk-pvec (pvec-cnt x) (pvec-shift x) (pvec-root x) (pvec-tail x) (pvec-ent x)))
     ((pmap? x) (make-pmap (pmap-root x) (pmap-cnt x) (pmap-order x)))
     ((pset? x) (make-pset (pset-m x)))
-    ((jrec? x) (make-jrec (jrec-desc x) (jrec-vec-copy (jrec-vals x)) (jrec-ext x)))
+    ((jrec? x) (make-jrec-from-existing x #f #f (jrec-ext x)))
     ;; a reify shares its (read-only) method table + protos but gets a fresh
     ;; identity, so attaching meta leaves the original's meta untouched. Every
     ;; Clojure reify implements IObj.
