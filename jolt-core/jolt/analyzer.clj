@@ -46,11 +46,11 @@
 (defn- uncompilable [why]
   (throw (str "jolt/uncompilable: " why)))
 
-;; Default true: unresolved symbols auto-intern via late-bind, matching the
-;; preexisting Chez back-end behavior. The CLI -e path binds this to false so
-;; typos and missing requires throw at the top level. nREPL binds it back to
-;; true for interactive use.
-(def ^:dynamic *allow-unresolved-vars* true)
+;; Default false: unresolved symbols at the top level throw "Unable to resolve
+;; symbol", matching JVM Clojure. Inside fn bodies the analyzer still late-binds
+;; so defmulti/defmethod forward references work. nREPL binds this to true for
+;; interactive development where forward references are legitimate.
+(def ^:dynamic *allow-unresolved-vars* false)
 
 (def ^:private gensym-counter (atom 0))
 (defn- gen-name [prefix]
