@@ -127,6 +127,14 @@
              (proc ns-name 'form #f f)
              (loop (cdr forms)))))))))
 
+;; Count of forms silently dropped during a guarded emit (a source form that
+;; fails to compile is skipped so a partial overlay still boots). remint.sh reads
+;; this after the fixpoint pass and fails on a nonzero count — a regression that
+;; makes an overlay defn uncompilable would otherwise just delete the var while
+;; the byte-fixpoint still converges. Reset at the start of each full emit.
+(define ei-skipped-count 0)
+(define (ei-reset-skipped!) (set! ei-skipped-count 0))
+
 (define (ei-emit-ns* ns-name src optimize? guard?)
   (let ((acc '()))
     (ei-for-each-form ns-name src
@@ -134,12 +142,17 @@
         (let ((scm (if guard?
                        (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns) f optimize?))
                        (ei-compile-form (make-analyze-ctx ns) f optimize?))))
-          (unless (and guard? (not scm))
-            (set! acc
-                  (cons (if (eq? kind 'macro)
-                            (ei-macro-string ns nm scm guard?)
-                            (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm))
-                        acc))))))
+          (if (and guard? (not scm))
+              ;; a form the guard swallowed — report it so the drop isn't silent
+              (begin
+                (set! ei-skipped-count (+ ei-skipped-count 1))
+                (fprintf (current-error-port) "mint: skipped ~a/~a (failed to compile)\n"
+                         ns (or nm "<top-level-form>")))
+              (set! acc
+                    (cons (if (eq? kind 'macro)
+                              (ei-macro-string ns nm scm guard?)
+                              (if guard? (string-append "(guard (e (#t #f))\n  " scm ")") scm))
+                          acc))))))
     (reverse acc)))
 
 (define (ei-emit-ns ns-name src) (ei-emit-ns* ns-name src #f #t))
