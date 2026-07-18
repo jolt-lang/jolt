@@ -82,6 +82,106 @@
   ([kind expr cast-fn] {:op :coerce :kind kind :expr expr :cast-fn cast-fn}))
 
 ;; ---------------------------------------------------------------------------
+;; IR schema.
+;;
+;; Every node is a map with an :op tag. Some ops have a constructor above; the
+;; analyzer builds the rest as map literals (they carry host-specific leaf data —
+;; regex/inst/uuid/bigdec sources, ffi signatures, host-call method names — that a
+;; constructor would only wrap). The full op vocabulary and the keys each op
+;; carries are listed here so the schema has a single written source, and
+;; node-problems / tree-problems below check a node against it.
+;;
+;; op            required keys (besides :op)      child-node positions*
+;; ------------  ------------------------------   ------------------------------
+;; :const        :val                             —  (leaf; :val is a literal)
+;; :local        :name                            —
+;; :var          :ns :name                        —
+;; :the-var      :ns :name                        —
+;; :host         :name                            —
+;; :host-static  :class :member                   —
+;; :host-new     :class :args                     :args
+;; :if           :test :then :else                :test :then :else
+;; :do           :statements :ret                 :statements :ret
+;; :invoke       :fn :args                        :fn :args
+;; :def          :ns :name                        :init? :meta-expr?   (init absent = declare)
+;; :let          :bindings :body                  binding inits, :body
+;; :loop         :bindings :body                  binding inits, :body
+;; :recur        :args                            :args
+;; :fn           :arities                          each arity :body
+;; :vector       :items                           :items
+;; :map          :pairs                           each pair key + value
+;; :set          :items                           :items
+;; :quote        :form                            —  (:form is unanalyzed)
+;; :throw        :expr                            :expr
+;; :coerce       :kind :expr                       :expr
+;; :try          :body                            :body :catch-body? :finally?
+;; :host-call    :target :method :args            :target :args
+;; :set-var      :the-var :val                    :val   (:the-var is a leaf the-var node)
+;; :set-field    :obj :field :val                 :obj :val
+;; :defmacro     :ns :name :fn                     :fn
+;; :ffi-fn       :csym :argtypes :rettype         —
+;; :ffi-callable :fn :argtypes :rettype           :fn
+;; :regex        :source                          —
+;; :inst         :source                          —
+;; :uuid         :source                          —
+;; :bigdec       :source                          —
+;; :the-ns       :name                            —
+;;
+;;  * the positions map-ir-children / reduce-ir-children recurse. A `?` marks an
+;;    optional position recursed only when present.
+;;
+;; Annotation keys — optional, attached to any node by a later pass; a back end or
+;; pass reads them but a node is valid without them. WHO attaches / reads each:
+;;   :hint :shape :nilable   collection-type inference (jolt.passes.types) — the
+;;                           inferred type / struct shape / nilable flag on a node.
+;;   :num-kind :num-read     numeric pass (jolt.passes.numeric) — an :invoke's
+;;                           proven :double/:long arithmetic kind, and a field
+;;                           read's numeric kind.
+;;   :devirt-type :devirt-*  a monomorphic protocol call's resolved impl (backend).
+;;   :num-ret                a ^double/^long declared return, on a :var node.
+;;   :phints :nhints         per-arity ^Record / ^double param hints (analyzer).
+;;   :ret-nhint              a fn arity's declared numeric return kind.
+;;   :recur-name             the loop/fn recur target's emitted label.
+;;   :no-init                a :def with no initializer (declare).
+;;   :meta-expr              a :def's evaluated metadata expression.
+;;   :pos                    reader source position {:line :column :file}.
+;;   :letrec                 a :let that must lower to letrec* (mutual recursion).
+(def node-ops
+  #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
+    :let :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
+    :set-var :set-field :defmacro :ffi-fn :ffi-callable :regex :inst :uuid :bigdec
+    :the-ns})
+
+;; op -> the keys a node of that op must carry. Optional keys (:init, annotations)
+;; are not listed. Kept conservative for the leaf/host ops so a shape change
+;; upstream is a deliberate edit here, not a silent validator false-positive.
+(def required-node-keys
+  {:const [:val] :local [:name] :var [:ns :name] :the-var [:ns :name]
+   :host [:name] :host-static [:class :member] :host-new [:class :args]
+   :if [:test :then :else] :do [:statements :ret] :invoke [:fn :args]
+   :def [:ns :name] :let [:bindings :body] :loop [:bindings :body] :recur [:args]
+   :fn [:arities] :vector [:items] :map [:pairs] :set [:items] :quote [:form]
+   :throw [:expr] :coerce [:kind :expr] :try [:body]
+   :host-call [:target :method :args] :set-var [:the-var :val]
+   :set-field [:obj :field :val] :defmacro [:ns :name :fn]
+   :ffi-fn [:csym :argtypes :rettype] :ffi-callable [:fn :argtypes :rettype]
+   :regex [:source] :inst [:source] :uuid [:source] :bigdec [:source]
+   :the-ns [:name]})
+
+;; Problems with THIS node's shape (not its children): an unknown or missing :op,
+;; or a missing required key. Returns a seq of message strings (empty when valid).
+(defn node-problems [node]
+  (let [op (get node :op)]
+    (cond
+      (not (map? node)) (list (str "IR node is not a map: " (pr-str node)))
+      (nil? op)         (list (str "IR node has no :op: " (pr-str node)))
+      (not (contains? node-ops op)) (list (str "unknown IR :op " op))
+      :else (let [missing (remove (fn [k] (contains? node k))
+                                  (get required-node-keys op []))]
+              (when (seq missing)
+                (list (str op " node missing required key(s) " (vec missing))))))))
+
+;; ---------------------------------------------------------------------------
 ;; Structural recursion over IR child nodes.
 ;;
 ;; A tree-rewriting pass recurses into each op's child NODE positions and
@@ -181,3 +281,11 @@
         a)
       ;; leaves and any op with no child nodes
       :else acc)))
+
+;; All schema problems in the tree rooted at node, via reduce-ir-children (so an
+;; unknown op — which recurses over no children — is still reported for itself).
+;; Returns a seq of message strings, empty when the whole tree conforms.
+(defn tree-problems [node]
+  (reduce-ir-children (fn [acc child] (concat acc (tree-problems child)))
+                      (node-problems node)
+                      node))
