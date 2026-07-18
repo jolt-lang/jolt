@@ -174,8 +174,7 @@
 ;; it to their tail child. Default false so a top-level form is treated non-tail.
 (def ^:dynamic *tail?* false)
 
-(def ^:private gensym-counter (atom 0))
-(defn- fresh-label [prefix] (str prefix (swap! gensym-counter inc)))
+(defn- fresh-label [prefix] (str prefix (swap! (:gensym-counter (cur)) inc)))
 
 ;; Per-site cache cells collected while emitting one top-level def. A site that
 ;; resolves a STABLE value — a devirtualized impl (constant tag/proto/method) or a
@@ -184,8 +183,7 @@
 ;; def init is being emitted this holds an atom; each site appends a fresh cell name
 ;; (bound to #f in a let wrapping the def, so it persists across calls and is shared
 ;; by every invocation) and resolves into it on first use. nil outside a def (a site
-;; there falls back to a per-call resolve).
-(def ^:private cache-cells (atom nil))
+;; there falls back to a per-call resolve). Lives on the unit (:cache-cells).
 
 ;; Emit a def's init (via the supplied thunk) under a fresh cache-cell collector,
 ;; then wrap the result in a let binding any cells its body registered so they
@@ -193,10 +191,10 @@
 ;; defs. Used by both the runtime def emit and the direct-link top-level emit.
 (defn- emit-with-cells [emit-thunk]
   (let [cells (atom [])
-        prev @cache-cells
-        _ (reset! cache-cells cells)
+        prev @(:cache-cells (cur))
+        _ (reset! (:cache-cells (cur)) cells)
         raw (emit-thunk)
-        _ (reset! cache-cells prev)]
+        _ (reset! (:cache-cells (cur)) prev)]
     (if (seq @cells)
       (str "(let (" (str/join " " (map (fn [c] (str "(" c " #f)")) @cells)) ") " raw ")")
       raw)))
@@ -773,7 +771,7 @@
                           dv (str "(" resolver-name " " (chez-str-lit (:devirt-type node)) " "
                                   (chez-str-lit (:devirt-proto node)) " " (chez-str-lit (:devirt-method node))
                                   " " r ")")
-                          cells @cache-cells
+                          cells @(:cache-cells (cur))
                           ;; cache the resolved impl in a per-site cell when inside a
                           ;; def; else resolve per call. The cell carries (epoch . fn):
                           ;; each call compares its epoch against jolt-proto-epoch and
@@ -804,7 +802,7 @@
                     (let [r (fresh-label "_r$")
                           d (fresh-label "_d$")
                           v (fresh-label "_v$")
-                          cells @cache-cells
+                          cells @(:cache-cells (cur))
                           proto (chez-str-lit (:proto node))
                           method (chez-str-lit (:method node))
                           apply-args (str/join " " (cons r (rest as)))]
@@ -922,7 +920,7 @@
               (not-any? #{"double"} (get shape :tags))))
        (let [s (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))
              tag (:type s)
-             cells @cache-cells
+             cells @(:cache-cells (cur))
              desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
              cached-desc (if cells
                            (let [c (fresh-label "_cdesc$")]
@@ -1062,7 +1060,7 @@
              ;; jolt-var-get throws on a forward-declared var). Outside a def,
              ;; resolve per access.
              :else
-             (let [cells @cache-cells
+             (let [cells @(:cache-cells (cur))
                    nslit (chez-str-lit (:ns node)) nmlit (chez-str-lit (:name node))]
                (if (and (var-cache?) cells)
                  (let [c (fresh-label "_vc$")]

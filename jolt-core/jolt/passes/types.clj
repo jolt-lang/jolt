@@ -96,7 +96,11 @@
    :trace-frames? (atom false)
    :direct-link-defined (atom #{})
    :direct-link-fns (atom #{})
-   :ctor-shapes (atom {})})
+   :ctor-shapes (atom {})
+   ;; the back-end gensym label counter and the per-def cache-cell collector — emit
+   ;; scratch, per-unit so a build's labels are deterministic without a process-global.
+   :gensym-counter (atom 0)
+   :cache-cells (atom nil)})
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags and
 ;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level
