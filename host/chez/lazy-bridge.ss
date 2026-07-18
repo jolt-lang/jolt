@@ -17,22 +17,39 @@
 ;; jolt-seq (sorted-aware), so a lazy body returning a sorted coll still seqs.
 
 (define-record-type jolt-lazyseq
-  (fields (mutable thunk) (mutable val) (mutable realized?))
-  (nongenerative jolt-lazyseq-v1))
+  (fields (mutable thunk) (mutable val) (mutable realized?) (mutable error?) (mutable lock))
+  (nongenerative jolt-lazyseq-v2))
 
-(define (jolt-make-lazy-seq thunk) (make-jolt-lazyseq thunk jolt-nil #f))
+(define (jolt-make-lazy-seq thunk) (make-jolt-lazyseq thunk jolt-nil #f #f (make-mutex)))
 
 ;; force once and memoize. The thunk is (fn [] (coll->cells body)); coll->cells
 ;; already coerced the body to a seq (cseq | nil) via the live jolt-seq, so the
 ;; result needs no further coercion (a nested lazyseq was forced by coll->cells).
+;; The realize is guarded by a per-cell mutex: futures/agents/fork-thread share
+;; the heap, so without it two threads can run the thunk twice. A thrown failure
+;; is cached and re-raised on every later force, like the JVM (the body runs
+;; exactly once; a failed force rethrows). The captured Chez condition is re-raised
+;; verbatim, so a downstream catch unwraps the original jolt value. Double-checked
+;; locking: a thread that blocked on the mutex finds the cell already realized.
 (define (force-lazyseq x)
+  (define (deliver)
+    (if (jolt-lazyseq-error? x) (raise (jolt-lazyseq-val x)) (jolt-lazyseq-val x)))
   (if (jolt-lazyseq-realized? x)
-      (jolt-lazyseq-val x)
-      (let ((r (jolt-invoke (jolt-lazyseq-thunk x))))
-        (jolt-lazyseq-val-set! x r)
-        (jolt-lazyseq-realized?-set! x #t)
-        (jolt-lazyseq-thunk-set! x #f)
-        r)))
+      (deliver)
+      (with-mutex (jolt-lazyseq-lock x)
+        (if (jolt-lazyseq-realized? x)
+            (deliver)
+            (guard (e (#t
+                       (jolt-lazyseq-val-set! x e)
+                       (jolt-lazyseq-error?-set! x #t)
+                       (jolt-lazyseq-realized?-set! x #t)
+                       (jolt-lazyseq-thunk-set! x #f)
+                       (raise e)))
+              (let ((r (jolt-invoke (jolt-lazyseq-thunk x))))
+                (jolt-lazyseq-val-set! x r)
+                (jolt-lazyseq-realized?-set! x #t)
+                (jolt-lazyseq-thunk-set! x #f)
+                r))))))
 
 ;; coll->cells: coerce the body result to the cell representation = a seq | nil.
 (define (jolt-coll->cells c) (jolt-seq c))

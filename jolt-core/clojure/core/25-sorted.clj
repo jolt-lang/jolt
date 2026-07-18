@@ -416,8 +416,13 @@
           (cons (proj node)
                 (rsubseq-from root (inorder-pred root node cmp) cmp proj stop-test stop-k)))))))
 
+(defn- assert-sorted [sc]
+  (when-not (sorted? sc)
+    (throw (ClassCastException. (str "subseq/rsubseq require a sorted collection: " (class sc))))))
+
 (defn subseq
   ([sc test k]
+   (assert-sorted sc)
    (let [tree (sfield sc :tree)
          cmp (the-cmp sc)
          proj (sc-proj sc)
@@ -425,6 +430,7 @@
      (when start
        (subseq-from tree start cmp proj test k))))
   ([sc start-test start-k end-test end-k]
+   (assert-sorted sc)
    (let [tree (sfield sc :tree)
          cmp (the-cmp sc)
          proj (sc-proj sc)
@@ -434,6 +440,7 @@
 
 (defn rsubseq
   ([sc test k]
+   (assert-sorted sc)
    (let [tree (sfield sc :tree)
          cmp (the-cmp sc)
          proj (sc-proj sc)
@@ -441,9 +448,10 @@
      (when start
        (rsubseq-from tree start cmp proj test k))))
   ([sc start-test start-k end-test end-k]
+   (assert-sorted sc)
    (let [tree (sfield sc :tree)
          cmp (the-cmp sc)
          proj (sc-proj sc)
-         start (seek-rightmost tree cmp start-test start-k)]
+         start (seek-rightmost tree cmp end-test end-k)]
      (when start
-       (rsubseq-from tree start cmp proj end-test end-k)))))
+       (rsubseq-from tree start cmp proj start-test start-k)))))

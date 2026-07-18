@@ -1073,4 +1073,29 @@
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-mm2 (fn [x] x)) (defmethod r4-mm2 :a [x] :got-a) (defmethod r4-mm2 :b [x] :got-b) (sort (keys (first (map methods [r4-mm2])))))" :expected "(:a :b)"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-gm (fn [x] x)) (defmethod r4-gm :a [x] :got-a) (((partial get-method r4-gm) :a) :a))" :expected ":got-a"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-pm (fn [x] x)) (defmethod r4-pm :a [x] :a) (defmethod r4-pm [:a :b] [x] :ab) (prefer-method r4-pm [:a :b] :a) (count (first (map prefers [r4-pm]))))" :expected "1"}
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) (when (= 1 @a) (throw (ex-info \"boom\" {})))))] [(try (first s) (catch Throwable e :ex1)) (try (pr-str (first s)) (catch Throwable e :ex2)) @a])" :expected "[:ex1 :ex2 1]"}
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) [1]))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "1"}
+  {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
+  {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
+  {:suite "r7-rsubseq" :expr "(rsubseq (sorted-map 1 :a 2 :b 3 :c 4 :d 5 :e) >= 2 <= 4)" :expected "([4 :d] [3 :c] [2 :b])"}
+  {:suite "r7-sorted-throw" :expr "(subseq {:a 1 :b 2} > 1)" :expected :throws}
+  {:suite "r7-sorted-throw" :expr "(subseq {:a 1} > 0 <= 1)" :expected :throws}
+  {:suite "r7-sorted-throw" :expr "(rsubseq [1 2 3] <= 2)" :expected :throws}
+  {:suite "r7-sorted-throw" :expr "(rsubseq (range 5) <= 3)" :expected :throws}
+  {:suite "r7-meta" :expr "(meta (with-meta (sorted-map 1 :a) {:m 1}))" :expected "{:m 1}"}
+  {:suite "r7-meta" :expr "(meta (with-meta (sorted-set 1 2 3) {:m 2}))" :expected "{:m 2}"}
+  {:suite "r7-meta" :expr "(meta (assoc (with-meta (sorted-map 1 :a) {:m 1}) 2 :b))" :expected "{:m 1}"}
+  {:suite "r7-meta" :expr "(meta (conj (with-meta (sorted-set 1 2) {:m 1}) 3))" :expected "{:m 1}"}
+  {:suite "r7-meta" :expr "(meta (with-meta (lazy-seq [1 2 3]) {:k 1}))" :expected "{:k 1}"}
+  {:suite "r7-take" :expr "(let [a (atom 0)] (doall (take 0 (map #(do (swap! a inc) %) (range 100)))) @a)" :expected "0"}
+  {:suite "r7-take" :expr "(take 0 [1 2 3])" :expected "()"}
+  {:suite "r7-take" :expr "(take 3 (range 10))" :expected "(0 1 2)"}
+  {:suite "r7-contains" :expr "(contains? (map inc [1 2]) 0)" :expected :throws}
+  {:suite "r7-contains" :expr "(contains? inc 0)" :expected :throws}
+  {:suite "r7-contains" :expr "(contains? [1 2] 0)" :expected "true"}
+  {:suite "r7-contains" :expr "(contains? {:a 1} :a)" :expected "true"}
+  {:suite "r7-transient" :expr "(empty? (transient []))" :expected "true"}
+  {:suite "r7-transient" :expr "(empty? (transient [1 2]))" :expected "false"}
+  {:suite "r7-transient" :expr "[(empty? (transient {})) (empty? (transient #{})) (empty? (transient #{1}))]" :expected "[true true false]"}
+  {:suite "r7-transient" :expr "(let [t (transient [])] (conj! t 1) (empty? t))" :expected "false"}
 ]

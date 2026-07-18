@@ -55,6 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prefer-method`, `remove-method`, `remove-all-methods`, and `prefers` are
   functions, so they work under `map`/`apply`/`partial` like the JVM. (`instance?`
   stays a macro — jolt's class model precludes the fn form.)
+- **`lazy-seq` forces its body exactly once and caches a thrown failure.** Two
+  threads racing to realize the same cell could run the thunk twice; a thunk that
+  threw left the cell unrealized so the next access re-ran it. Forcing is now
+  guarded per cell, and a thrown condition is cached and re-raised.
+- **`rsubseq` with two bounds** no longer returns `()` — it seeks from the end
+  bound and walks predecessors (`(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)` is
+  `(4 3 2)`).
+- **`subseq`/`rsubseq` require a sorted collection** and throw `ClassCastException`
+  on a plain map/vector instead of silently returning `nil`.
+- **`with-meta`/`meta` work on sorted maps and sets** (previously threw).
+- **`(take 0 coll)` doesn't realize the source** (it was forcing the first chunk).
+- **`contains?` throws on a lazy seq or fn** like the JVM, instead of returning a
+  silent `false` (it already threw for eager seqs).
+- **`empty?` works on a transient collection.**
 
 ## [0.4.1] - 2026-07-17
 

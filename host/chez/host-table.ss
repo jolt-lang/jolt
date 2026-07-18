@@ -76,17 +76,17 @@
   (lambda (coll k) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f)))
 (define %h-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
-  (if (htable-sorted-map? coll) (sc-call coll kw-op-assoc (jolt-vector k v)) (%h-assoc1 coll k v))))
+  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-assoc (jolt-vector k v))) (%h-assoc1 coll k v))))
 (define %h-dissoc jolt-dissoc)
 (set! jolt-dissoc (lambda (coll . ks)
-  (if (htable-sorted-map? coll) (sc-call coll kw-op-dissoc (apply jolt-vector ks)) (apply %h-dissoc coll ks))))
+  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-dissoc (apply jolt-vector ks))) (apply %h-dissoc coll ks))))
 (define %h-dissoc2 jolt-dissoc2)
 (set! jolt-dissoc2 (lambda (coll k)
-  (if (htable-sorted-map? coll) (sc-call coll kw-op-dissoc (jolt-vector k)) (%h-dissoc2 coll k))))
-(register-conj-arm! htable-sorted? (lambda (coll x) (sc-call coll kw-op-conj (jolt-vector x))))
+  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-dissoc (jolt-vector k))) (%h-dissoc2 coll k))))
+(register-conj-arm! htable-sorted? (lambda (coll x) (meta-carry coll (sc-call coll kw-op-conj (jolt-vector x)))))
 (define %h-disj jolt-disj)
 (set! jolt-disj (lambda (s . xs)
-  (if (htable-sorted-set? s) (sc-call s kw-op-disj (apply jolt-vector xs)) (apply %h-disj s xs))))
+  (if (htable-sorted-set? s) (meta-carry s (sc-call s kw-op-disj (apply jolt-vector xs))) (apply %h-disj s xs))))
 (def-var! "clojure.core" "disj" jolt-disj)
 (register-empty-arm! htable-sorted? (lambda (coll) (zero? (sc-call coll kw-op-count))))
 (define %h-keys jolt-keys)
@@ -99,6 +99,31 @@
   (if (htable-sorted-map? m)
       (list->cseq (map (lambda (e) (jolt-nth e 1)) (seq->list (sc-call m kw-op-seq))))
       (%h-vals m))))
+;; sorted colls carry collection metadata like the natives-meta collections. htable?
+;; is only in scope here (host-table loads after natives-meta), so with-meta/meta-copy
+;; are extended by set!. A fresh-identity shallow copy of the inner table keys meta off
+;; the original; the :tree/:cmp/:ops it holds are immutable persistent values.
+(define %ht-meta-copy meta-copy)
+(set! meta-copy
+  (lambda (x)
+    (if (htable? x)
+        (let ((h (make-hashtable string-hash string=?)))
+          (vector-for-each (lambda (k) (hashtable-set! h k (hashtable-ref (htable-h x) k #f)))
+                           (hashtable-keys (htable-h x)))
+          (make-htable h))
+        (%ht-meta-copy x))))
+(define %ht-with-meta jolt-with-meta)
+(set! jolt-with-meta
+  (lambda (x m)
+    (if (htable? x)
+        (let ((c (meta-copy x)))
+          (if (jolt-nil? m) (hashtable-delete! meta-table c) (hashtable-set! meta-table c m))
+          c)
+        (%ht-with-meta x m))))
+;; the clojure.core var was def-var!'d in natives-meta.ss to the prior closure; user
+;; with-meta resolves the var, so re-bind it after the set! (cf. disj above).
+(def-var! "clojure.core" "with-meta" jolt-with-meta)
+
 ;; sorted colls are collections (callable as fns via jolt-invoke, conj-able).
 (define %h-coll? jolt-coll?)
 (set! jolt-coll? (lambda (x) (or (htable-sorted? x) (%h-coll? x))))

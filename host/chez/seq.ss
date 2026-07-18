@@ -840,11 +840,13 @@
       (if (and (flonum? n) (infinite? n))
           (if (> n 0.0) (jolt-seq coll) jolt-empty-list)
           (let ((n (->idx n)))
-            (let loop ((n n) (s (jolt-seq coll)))
-              (cond
-                ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
-                ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
-                (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s))))))))))))))
+            (if (fx<=? n 0)
+                jolt-empty-list                  ; (take 0 coll) must not seq its source
+                (let loop ((n n) (s (jolt-seq coll)))
+                  (cond
+                    ((or (fx<=? n 0) (jolt-nil? s)) jolt-empty-list)
+                    ((fx=? n 1) (cseq-lazy (seq-first s) (lambda () jolt-empty-list)))
+                    (else (cseq-lazy (seq-first s) (lambda () (loop (fx- n 1) (jolt-seq (seq-more s)))))))))))))))
 (define (jolt-drop n coll)
   (jolt-make-lazy-seq
    (lambda ()
