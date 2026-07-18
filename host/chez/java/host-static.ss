@@ -123,7 +123,7 @@
        (list->cseq (if asc keep (reverse keep)))))
     (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method " on sorted collection")))))
 
-(register-method-arm! 44
+(register-method-arm! arm-priority-host-type
   (lambda (obj method-name rest-args)
     (cond
       ((jhost? obj)

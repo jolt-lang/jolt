@@ -90,7 +90,7 @@
     ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))
     (else #f)))
 
-(register-method-arm! 30
+(register-method-arm! arm-priority-dotform
   (lambda (obj method-name rest-args)
     (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
            (field? (and (> (string-length method-name) 0)

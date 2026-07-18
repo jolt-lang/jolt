@@ -1399,6 +1399,19 @@
       (cond ((null? as) (list (cons priority arm)))
             ((< priority (caar as)) (cons (cons priority arm) as))
             (else (cons (car as) (ins (cdr as))))))))
+;; Named priorities for register-method-arm!, in ascending dispatch order
+;; (lowest is tried first — see record-method-dispatch). Each name mirrors its
+;; arm's role; two disjoint-type arms may share a tier (regex-t and nio-path
+;; both sit just above jfile at 42). Values are unchanged from the prior magic
+;; numbers — this is a readability rename only.
+(define arm-priority-getclass 5)      ; .getClass — universal Object method, first
+(define arm-priority-dotform 30)      ; -field accessor + dot-form method dispatch
+(define arm-priority-date 40)         ; java.util.Date (jinst) method surface
+(define arm-priority-file 41)         ; java.io.File (jfile) methods
+(define arm-priority-regex 42)        ; regex-t (Pattern) .split/.matcher surface
+(define arm-priority-nio-path 42)     ; java.nio.file.Path methods (above jfile)
+(define arm-priority-htable 43)       ; tagged htable method registry
+(define arm-priority-host-type 44)    ; jhost/number/string per-type dispatch
 (define (record-method-dispatch obj method-name rest-args)
   (let loop ((as method-dispatch-arms))
     (if (null? as)
@@ -1410,7 +1423,7 @@
 ;; per-type arm — the class token for the value (jolt has no Class objects; the
 ;; token is the canonical name string, on which .getName/.getSimpleName work).
 ;; One arm, so a type arm that only whitelists its own methods can't steal it.
-(register-method-arm! 5
+(register-method-arm! arm-priority-getclass
   (lambda (obj method-name rest-args)
     (if (string=? method-name "getClass") (jolt-class obj) 'pass)))
 

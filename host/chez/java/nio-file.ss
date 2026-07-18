@@ -233,8 +233,8 @@
   (register-class-statics! "FileSystems" fs-statics)
   (register-class-statics! "java.nio.file.FileSystems" fs-statics))
 
-;; nio-path method dispatch (priority above the jfile arm's 41).
-(register-method-arm! 42
+;; nio-path method dispatch (priority above the jfile arm).
+(register-method-arm! arm-priority-nio-path
   (lambda (obj method-name rest-args)
     (if (nio-path? obj)
         (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))

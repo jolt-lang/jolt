@@ -279,7 +279,7 @@
                (else (loop (- i 1))))))
       (else #f))))
 
-(register-method-arm! 41
+(register-method-arm! arm-priority-file
   (lambda (obj method-name rest-args)
     (if (jfile? obj)
         (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
