@@ -5,6 +5,7 @@
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir]]
             [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
+            [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]))
 
 ;; ---------------------------------------------------------------------------
@@ -224,11 +225,7 @@
 ;; discard the call. / quot rem mod throw on a zero divisor; even?/odd? throw on
 ;; a non-integer — admitting them let scalar-replace drop (:b (/ 1 0)) and swallow
 ;; the ArithmeticException. Add nothing here that can throw on a legal input.
-(def ^:private pure-fns
-  #{"+" "-" "*" "<" ">" "<=" ">=" "=" "not=" "inc" "dec"
-    "min" "max" "abs"
-    "nil?" "some?" "not" "get" "zero?" "pos?" "neg?"
-    "bit-and" "bit-or" "bit-xor"})
+(def ^:private pure-fns op-registry/pure-ops)
 
 (defn- pure-fn? [f]
   (let [op (get f :op)]

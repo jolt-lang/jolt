@@ -4,23 +4,28 @@
   ops pass through with folded children). Portable Clojure: kernel-tier fns +
   seed primitives only — it loads with the compiler namespaces, before the later
   core tiers."
-  (:require [jolt.ir :refer [map-ir-children]]))
+  (:require [jolt.ir :refer [map-ir-children]]
+            [jolt.op-registry :as op-registry]))
 
 ;; Folding computes with THE ACTUAL jolt fns, so a folded result matches what
 ;; the unfolded code would produce at runtime by construction. Conservative:
 ;; numbers only, the op table only names pure numeric fns, and any throw
 ;; during folding (e.g. (mod x 0)) leaves the node alone for runtime.
-(def ^:private foldable
-  ;; SEED fns only: this ns loads with the compiler, BEFORE the later core
-  ;; tiers — a name from 20-coll (min/max/abs) wouldn't resolve yet.
+;; op-name -> the ACTUAL jolt fn used to fold it. SEED fns only: this ns loads
+;; with the compiler, BEFORE the later core tiers — a name from 20-coll
+;; (min/max/abs) wouldn't resolve yet. The __bit-* seams back bit-and/or/xor
+;; because the public bit fns are 20-coll variadic shells that don't exist yet;
+;; folding stays 2-arg (a 3+-arg constant call throws arity in the fold and is
+;; left for runtime).
+(def ^:private foldable-fns
   {"+" + "-" - "*" * "/" /
    "<" < ">" > "<=" <= ">=" >= "=" =
    "inc" inc "dec" dec
    "mod" mod "rem" rem "quot" quot
-   ;; the __bit-* seams: the PUBLIC bit fns are 20-coll variadic shells now,
-   ;; which don't exist yet when this ns loads. Folding stays 2-arg (a 3+-arg
-   ;; constant call throws arity inside the fold and is left for runtime).
    "bit-and" __bit-and "bit-or" __bit-or "bit-xor" __bit-xor})
+;; the registry's :foldable? set is the authoritative membership; select-keys
+;; keeps only the impls it names, so the two can't drift.
+(def ^:private foldable (select-keys foldable-fns op-registry/foldable-ops))
 
 (defn- const? [n] (= :const (get n :op)))
 (defn- const-num? [n] (and (const? n) (number? (get n :val))))

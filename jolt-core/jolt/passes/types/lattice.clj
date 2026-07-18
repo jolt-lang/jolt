@@ -1,7 +1,8 @@
 (ns jolt.passes.types.lattice
   "Structural type lattice for jolt.passes.types: scalar/struct/vec/set/union
   types, join, depth-cap, shape, and the numeric/vector return-fn name sets. Pure
-  (no inference state) — the inference + checker in jolt.passes.types build on it.")
+  (no inference state) — the inference + checker in jolt.passes.types build on it."
+  (:require [jolt.op-registry :as op-registry]))
 
 ;; ---------------------------------------------------------------------------
 ;; Collection-type inference, intra-procedural. A forward,
@@ -173,8 +174,6 @@
       (vec-type? t) (set-type? t)))
 
 ;; core fns whose result is a number (so it is non-nil/non-false and, for the
-;; success-type checker, provably numeric).
-(def num-ret-fns
-  #{"+" "-" "*" "/" "inc" "dec" "mod" "rem" "quot" "min" "max" "abs"
-    "bit-and" "bit-or" "bit-xor" "count"})
+;; success-type checker, provably numeric) — the registry's :num-result? set.
+(def num-ret-fns op-registry/num-result-ops)
 (def vector-ret-fns #{"vec" "vector" "mapv" "filterv" "subvec"})

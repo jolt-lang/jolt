@@ -194,7 +194,8 @@
 ;; jolt.passes façade) load after ir so run-passes is available to the back end;
 ;; fold/inline/types come before the façade that :refers them.
 (define ei-compiler-ns-files
-  (list (cons "jolt.ir" "jolt-core/jolt/ir.clj")
+  (list (cons "jolt.op-registry" "jolt-core/jolt/op_registry.clj")
+        (cons "jolt.ir" "jolt-core/jolt/ir.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
