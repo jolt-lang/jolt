@@ -223,7 +223,7 @@
 (guard (e (#t #f))
   (def-var! "clojure.core" "class?" (letrec ((class? (lambda (x) (let fnrec6564 ((x x)) (if (jolt-truthy? (jolt-invoke1 (var-deref "jolt.host" "class-object?") x)) #t #f))))) class?)))
 (guard (e (#t #f))
-  (def-var! "clojure.core" "list?" (letrec ((list? (lambda (x) (let fnrec6565 ((x x)) (let* ((or__27__auto (let* ((and__26__auto (jolt-invoke1 (var-deref "jolt.host" "cseq?") x))) (if (jolt-truthy? and__26__auto) (jolt-invoke1 (var-deref "jolt.host" "cseq-list?") x) and__26__auto)))) (if (jolt-truthy? or__27__auto) or__27__auto (jolt-invoke1 (var-deref "jolt.host" "empty-list?") x))))))) list?)))
+  (def-var! "clojure.core" "list?" (letrec ((list? (lambda (x) (let fnrec6565 ((x x)) (if (jolt-truthy? (jolt-invoke1 (var-deref "jolt.host" "list?") x)) #t #f))))) list?)))
 (guard (e (#t #f))
   (def-var! "clojure.core" "nat-int?" (letrec ((nat-int? (lambda (x) (let fnrec6566 ((x x)) (let* ((and__26__auto (jolt-invoke1 (var-deref "clojure.core" "int?") x))) (if (jolt-truthy? and__26__auto) (jolt-n>= x 0) and__26__auto)))))) nat-int?)))
 (guard (e (#t #f))

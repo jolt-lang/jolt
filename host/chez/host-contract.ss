@@ -519,15 +519,20 @@
   (or (hashtable-ref inline-stash-table (string-append ns-name "/" nm) #f) jolt-nil))
 
 ;; --- declare the hot clojure.core primitives so resolve-global sees them ------
-;; (mirrors backend_scheme.clj native-ops keys — the emitter lowers these inline,
-;;  so the declared cell's unbound root is never deref'd.)
+;; Mirrors backend_scheme.clj native-ops keys (op-registry entries with a :call)
+;; minus the internal protocol-dispatch{1,2,3} emit helpers, which are not
+;; clojure.core names. The emitter lowers each of these inline, so the declared
+;; cell's unbound root is never deref'd. host/chez/manifest-check.sh fails CI if
+;; this list drifts from native-ops.
 (for-each (lambda (nm) (declare-var! "clojure.core" nm))
   '("+" "-" "*" "/" "<" ">" "<=" ">=" "=" "inc" "dec" "not" "min" "max"
     "mod" "rem" "quot" "vector" "hash-map" "hash-set" "conj" "get" "nth" "count"
     "assoc" "dissoc" "contains?" "empty?" "peek" "pop" "first" "rest" "next" "seq"
     "cons" "list" "reverse" "last" "map" "filter" "remove" "reduce" "into" "concat"
     "apply" "range" "take" "drop" "keys" "vals" "even?" "odd?" "pos?" "neg?"
-    "zero?" "identity" "ex-info"))
+    "zero?" "identity" "nil?" "some?" "ex-info"
+    "bit-and" "bit-or" "bit-xor" "bit-not"
+    "bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"))
 
 ;; --- install: bind the contract into the jolt.host namespace -----------------
 (define (hc-install!)

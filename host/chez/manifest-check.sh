@@ -54,5 +54,60 @@ while read -r p; do
   esac
 done < "$tmp/boot"
 
+# --- jolt.host surface manifest ---------------------------------------------
+# host/chez/jolt-host-manifest.txt is the canonical set of names bound into the
+# jolt.host namespace. The compiler and the clojure.core overlay reach these by
+# late-bound var-deref, so a typo or a removed def surfaces only as a runtime
+# unbound-var — invisible to mint/selfcheck/load. Pin the manifest against the
+# def-var! sites (an added/removed host fn must update the manifest) and against
+# every jolt.host reference in jolt-core (a reference to a name not in the
+# manifest would be a runtime unbound-var).
+grep -vE '^[[:space:]]*(#|$)' host/chez/jolt-host-manifest.txt | LC_ALL=C sort -u > "$tmp/hostman"
+grep -rhoE --include='*.ss' 'def-var! "jolt.host" "[^"]+"' host/ \
+  | sed -E 's/.*"jolt.host" "([^"]+)".*/\1/' | LC_ALL=C sort -u > "$tmp/hostdef"
+if ! diff -u "$tmp/hostman" "$tmp/hostdef" > "$tmp/hd"; then
+  echo "  FAIL: jolt.host def-var! sites != jolt-host-manifest.txt"
+  echo "        (< manifest, > actual def-var! sites; regenerate the manifest)"
+  sed 's/^/    /' "$tmp/hd"
+  fail=1
+fi
+# references from jolt-core: qualified jolt.host/NAME plus names pulled in via
+# [jolt.host :refer [...]]. Strip Clojure line comments first so a `; jolt.host/x`
+# mention (e.g. a prose reference to the class-* seams) isn't counted.
+{
+  find jolt-core -name '*.clj' -exec sed 's/;.*//' {} + \
+    | grep -oE 'jolt\.host/[a-zA-Z][a-zA-Z0-9!?*<>=+.-]*' | sed 's|jolt\.host/||'
+  reffiles=$(grep -rl '\[jolt.host :refer' jolt-core 2>/dev/null)
+  [ -n "$reffiles" ] && perl -0777 -ne 'while (/\[jolt\.host\s+:refer\s+\[(.*?)\]/gs){ print "$1\n" }' $reffiles \
+    | tr -s ' \t\n' '\n' | grep -E '^[a-zA-Z]'
+} | LC_ALL=C sort -u > "$tmp/hostref"
+missing=$(LC_ALL=C comm -23 "$tmp/hostref" "$tmp/hostman")
+if [ -n "$missing" ]; then
+  echo "  FAIL: jolt-core references jolt.host names absent from the manifest:"
+  echo "$missing" | sed 's/^/    /'
+  fail=1
+fi
+
+# --- host-contract primitive declares vs backend native-ops -----------------
+# host-contract.ss declares the hot clojure.core primitives so the analyzer's
+# resolve-global classifies them (the emitter lowers each inline, so the declared
+# cell's unbound root is never deref'd). The set must mirror backend_scheme.clj's
+# native-ops — op-registry entries with a :call — minus the internal
+# protocol-dispatch{1,2,3} emit helpers, which are not clojure.core names. The two
+# live in different layers (.ss vs .clj) and can't derive from each other in code,
+# so this pins them: a new native op that isn't declared (or vice versa) fails here.
+sed -n '/^(def ^:private op-registry/,/^;; Derived accessor tables/p' jolt-core/jolt/backend_scheme.clj \
+  | grep -E '^[[:space:]]*\{?"[^"]+"[[:space:]]+\{.*:call' \
+  | grep -oE '^[[:space:]]*\{?"[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' \
+  | grep -vxE 'protocol-dispatch[123]' | LC_ALL=C sort -u > "$tmp/native"
+sed -n '/declare the hot clojure.core primitives/,/^;; --- install/p' host/chez/host-contract.ss \
+  | grep -v 'declare-var!' | grep -oE '"[^"]+"' | tr -d '"' | LC_ALL=C sort -u > "$tmp/declare"
+if ! diff -u "$tmp/native" "$tmp/declare" > "$tmp/nd"; then
+  echo "  FAIL: host-contract.ss primitive declares != backend native-ops"
+  echo "        (< native-ops keys, > host-contract declares)"
+  sed 's/^/    /' "$tmp/nd"
+  fail=1
+fi
+
 [ "$fail" = 0 ] && echo "manifest check: passed" || echo "manifest check: FAILED"
 exit $fail

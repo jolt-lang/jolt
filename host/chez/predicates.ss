@@ -135,7 +135,7 @@
 ;; non-number); rational-type? already returns #f for a non-match.
 ;;
 ;; Only the tests consumed by the migrated predicates (ratio?/rational? -> exact?,
-;; rational-type?; list? -> cseq?/cseq-list?/empty-list?) are exposed. The rest of
+;; rational-type?; list? -> list?) are exposed. The rest of
 ;; the predicate web stays native and is NOT exposed: map?/set?/seq?/coll? are
 ;; extended at runtime with sorted/record/lazy arms, decimal? is extended by the
 ;; optional bigdec module, integer?/float? are on the compiler emit/inference path,
@@ -143,6 +143,8 @@
 (define (jh-exact? x) (and (number? x) (exact? x)))
 (def-var! "jolt.host" "exact?" jh-exact?)
 (def-var! "jolt.host" "rational-type?" rational?)
-(def-var! "jolt.host" "cseq?" cseq?)
-(def-var! "jolt.host" "empty-list?" empty-list-t?)
-(def-var! "jolt.host" "cseq-list?" cseq-list?)
+;; list?: a list-marked cseq node or the empty list. The cseq/empty-list-t
+;; representation is an internal detail — the overlay asks one semantic question
+;; rather than reaching for the concrete-rep predicates.
+(define (jh-list? x) (or (and (cseq? x) (cseq-list? x)) (empty-list-t? x)))
+(def-var! "jolt.host" "list?" jh-list?)

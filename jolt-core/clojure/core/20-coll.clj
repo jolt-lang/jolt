@@ -227,7 +227,7 @@
 ;; list?: a list-marked cseq node or the empty list (). A lazy/vector-backed seq,
 ;; (rest list), (seq coll), (map …) are seqs but not lists. Not extended like
 ;; map?/set?/seq?, so it migrates cleanly.
-(defn list? [x] (or (and (jolt.host/cseq? x) (jolt.host/cseq-list? x)) (jolt.host/empty-list? x)))
+(defn list? [x] (if (jolt.host/list? x) true false))
 (defn nat-int? [x] (and (int? x) (>= x 0)))
 (defn neg-int? [x] (and (int? x) (neg? x)))
 (defn pos-int? [x] (and (int? x) (pos? x)))
