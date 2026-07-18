@@ -1089,9 +1089,7 @@
 (defn- wp-specializable [nodes]
   (reduce (fn [m d]
             (let [f (get d :init)]
-              (if (and (= :def (get d :op)) (= :fn (get f :op))
-                       (= 1 (count (get f :arities)))
-                       (not (get (first (get f :arities)) :rest)))
+              (if (jolt.ir/single-fixed-arity-fn-def? d)
                 (let [a (first (get f :arities))]
                   (assoc m (str (get d :ns) "/" (get d :name))
                          {:name (get d :name) :params (get a :params) :body (get a :body)}))
