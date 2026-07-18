@@ -59,7 +59,8 @@
     ((cseq? x) (make-cseq (cseq-head x) (cseq-tail x) (cseq-forced? x)
                           (cseq-list? x) (cseq-cvec x) (cseq-ci x) (cseq-crest x)))
     ((jolt-lazyseq? x) (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x)
-                                          (jolt-lazyseq-realized? x)))
+                                          (jolt-lazyseq-realized? x) (jolt-lazyseq-error? x)
+                                          (make-mutex)))
     (else x)))                          ; procedure
 
 (define (jolt-with-meta x m)
