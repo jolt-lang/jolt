@@ -71,14 +71,22 @@
 (defn prefers [mm]
   (prefers-setup mm))
 
-;; instance? is a FUNCTION. jolt class names self-evaluate to Class values
-;; (java.util.Map, String) and a defrecord/deftype name evaluates to its ctor
-;; closure; instance-check normalizes either to a type name, so the type
-;; argument is always evaluated, exactly as on the JVM. (A defprotocol value is
-;; not a class; (instance? Proto x) is unsupported like on the JVM — use
-;; satisfies?.)
-(defn instance? [t x]
-  (instance-check t x))
+;; instance? stays a MACRO: jolt class names (and host-shim class names registered
+;; via __register-class-ctor!) don't uniformly evaluate to values, so a bare
+;; class-name symbol is passed QUOTED to the ctx-capturing checker. A LIST in type
+;; position is a class-valued expression (Class/forName "[C") — evaluate it. A LOCAL
+;; in &env may hold a class value from (let [c java.util.Map] (instance? c x)). A
+;; symbol resolving to a var that HOLDS A CLASS VALUE also evaluates. Because it's a
+;; macro, instance? can't be used as a value ((partial instance? …) is a compile
+;; error on jolt — the class model precludes the JVM's fn form; see known-divergences).
+(defmacro instance? [t x]
+  (if (or (seq? t) (contains? &env t)
+          (and (symbol? t)
+               (when-let [v (clojure.core/resolve t)]
+                 (and (clojure.core/bound? v)
+                      (jolt.host/class-object? (clojure.core/var-get v))))))
+    `(instance-check ~t ~x)
+    `(instance-check (quote ~t) ~x)))
 
 ;; Take x's monitor for the duration of body (futures/agents/threads share one
 ;; heap, so this is a real per-object lock), releasing on any exit.
