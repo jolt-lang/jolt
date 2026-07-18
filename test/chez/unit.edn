@@ -527,6 +527,11 @@
   {:suite "var_meta" :expr "(do (defn am ([x] x) ([x y] x)) (str (:arglists (meta (var am)))))" :expected "([x] [x y])"}
   {:suite "var_meta" :expr "(do (defn av [a & r] a) (str (:arglists (meta (var av)))))" :expected "([a & r])"}
   {:suite "var_meta" :expr "(do (defn ad \"doc\" [x] x) [(str (:arglists (meta (var ad)))) (:doc (meta (var ad)))])" :expected "[([x]) doc]"}
+  {:suite "var_meta" :expr "(do (def nsx 1) (class (:ns (meta (var nsx)))))" :expected "clojure.lang.Namespace"}
+  {:suite "var_meta" :expr "(do (def lp 1) (number? (:line (meta (var lp)))))" :expected "true"}
+  {:suite "var_meta" :expr "(do (def cp 1) (number? (:column (meta (var cp)))))" :expected "true"}
+  {:suite "var_meta" :expr "(do\n(def lx 1)\n(:line (meta (var lx))))" :expected "2"}
+  {:suite "var_meta" :expr "(do (defn dl [x] x) (number? (:line (meta (var dl)))))" :expected "true"}
   {:suite "walk" :expr "(list? (list 1 2))" :expected "true"}
   {:suite "walk" :expr "(list? (list 1))" :expected "true"}
   {:suite "walk" :expr "(list? '(1 2))" :expected "true"}

@@ -357,6 +357,23 @@
                            (analyze ctx v env))]))
                     (seq base)))))
 
+;; Stamp a top-level def's source position onto both the node (:pos, for the
+;; success checker / native stack traces) and its var metadata (:line/:column/
+;; :file, like the JVM Compiler). pos is the reader's {:line :column (:file)} for
+;; the ORIGINAL form. The position merges into the static :meta so a plain
+;; (def x 1) carries it; when the def already evaluates metadata (a defn's
+;; :arglists/:doc, or ^{:k (f)}), the :meta-expr is rebuilt from the merged meta so
+;; position rides the evaluated path too. Non-def nodes (a cast/:invoke) keep the
+;; :pos-only stamp.
+(defn- stamp-def-pos [ctx env node pos]
+  (if (and pos (= :def (:op node)))
+    (let [new-meta (merge (or (:meta node) {}) pos)
+          node (assoc node :pos pos :meta new-meta)]
+      (if (:meta-expr node)
+        (assoc node :meta-expr (def-meta-expr ctx new-meta env))
+        node))
+    (if pos (assoc node :pos pos) node)))
+
 (defn- analyze-def [ctx items env]
   (let [name-sym (nth items 1)]
     ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
@@ -778,7 +795,7 @@
             ;; (def …) with no metadata. So the back end can register fn defs.
             (let [node (analyze ctx (form-expand-1 ctx form (amp-env-map env)) env)
                   p (form-position form)]
-              (if (and p (= :def (:op node))) (assoc node :pos p) node))
+              (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
           ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
           ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).
           (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
@@ -797,7 +814,7 @@
             ;; can register it (jv$ns$name -> source) for native stack traces.
             (let [node (analyze-special ctx sf-name items env)
                   p (form-position form)]
-              (if (and p (= :def (:op node))) (assoc node :pos p) node))
+              (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
           (and hname (not shadowed) (method-head? hname))
             (analyze-host-call ctx hname items env)
           ;; (Class. args*) — trailing-dot constructor sugar.

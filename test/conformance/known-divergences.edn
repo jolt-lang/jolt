@@ -59,6 +59,16 @@
    :jvm "([f coll] [f c1 c2] …)"
    :jolt "nil"
    :note "map/reduce/+/… are host native-ops, not defns — no source arglists to carry. Overlay + user defns have :arglists."}
+  ;; a def/defn carries source position (:line/:column/:file) in its var meta, like
+  ;; the JVM Compiler, for user code and loaded files. A clojure.core var built
+  ;; during the seed mint (native-op or overlay defn) has no reader position, so it
+  ;; carries no :line/:file. Introspection tooling (spec instrument, expound) reads
+  ;; these off USER vars, which have them. jolt-ox7c.29
+  {:category :impl-detail
+   :behavior "(:line (meta #'clojure.core/reduce))"
+   :jvm "an int (source line in clojure/core.clj)"
+   :jolt "nil"
+   :note "core vars are minted without reader positions; user + loaded-file defns carry :line/:column/:file."}
   ;; resolve/ns-resolve ignore a :refer-clojure :exclude/:only — clojure.core always
   ;; resolves. The filter still governs syntax-quote qualification. jolt-ox7c.27
   {:category :namespace-model
