@@ -614,8 +614,14 @@
                       "java.lang.IllegalArgumentException"
                       (string-append "contains? not supported on type: "
                                      (guard (e (#t "?")) (jolt-class-name coll))))))
+        ;; any type with no contains arm (lazy seqs, fns, atoms, …) is not
+        ;; associative: throw like the eager-seq branch above, not a silent false.
         (else (let loop ((as jolt-contains-arms))
-                (cond ((null? as) #f)
+                (cond ((null? as)
+                       (jolt-throw (jolt-host-throwable
+                         "java.lang.IllegalArgumentException"
+                         (string-append "contains? not supported on type: "
+                                        (guard (e (#t "?")) (jolt-class-name coll))))))
                       (((caar as) coll) ((cdar as) coll k))
                       (else (loop (cdr as))))))))
 

@@ -1090,4 +1090,8 @@
   {:suite "r7-take" :expr "(let [a (atom 0)] (doall (take 0 (map #(do (swap! a inc) %) (range 100)))) @a)" :expected "0"}
   {:suite "r7-take" :expr "(take 0 [1 2 3])" :expected "()"}
   {:suite "r7-take" :expr "(take 3 (range 10))" :expected "(0 1 2)"}
+  {:suite "r7-contains" :expr "(contains? (map inc [1 2]) 0)" :expected :throws}
+  {:suite "r7-contains" :expr "(contains? inc 0)" :expected :throws}
+  {:suite "r7-contains" :expr "(contains? [1 2] 0)" :expected "true"}
+  {:suite "r7-contains" :expr "(contains? {:a 1} :a)" :expected "true"}
 ]
