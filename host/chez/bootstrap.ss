@@ -33,9 +33,14 @@
 (load "host/chez/compile-eval.ss")
 (load "host/chez/emit-image.ss")
 
-;; Rebuild both artifacts from source ON CHEZ and write them out.
+;; Rebuild both artifacts from source ON CHEZ and write them out. Any overlay/
+;; compiler form that fails to compile is skipped (guarded) so a partial build
+;; still boots; ei-skipped-count records how many, and the summary line lets
+;; remint.sh fail the fixpoint pass on a nonzero count.
+(ei-reset-skipped!)
 (let ((p (open-output-file bs-out-prelude 'replace)))
   (put-string p (jolt-emit-prelude)) (close-port p))
 (let ((p (open-output-file bs-out-image 'replace)))
   (put-string p (jolt-emit-image)) (close-port p))
+(fprintf (current-error-port) "mint: ~a form(s) skipped\n" ei-skipped-count)
 (display "bootstrap: rebuilt prelude + compiler image on Chez\n")
