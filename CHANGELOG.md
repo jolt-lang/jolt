@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-18
+
+The bulk of a focused compiler review: identifier hygiene, the numeric tower,
+macro fidelity, reader/namespace behavior, typed throws, laziness/sorted
+collections, syntax-quote, `eval`-embedded constants, and multimethod dispatch —
+each change regression-tested and gated (`--opt` soundness pinned by a build
+assertion). Deliberate divergences from the JVM are now documented in
+`known-divergences.edn`.
+
 ### Fixed
 
 - **Locals named after emitted runtime heads no longer miscompile.** A local
