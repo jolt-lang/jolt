@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(clojure.core/list)` = `()`. An interop head or fully-qualified class name in a
   read-time backquote (`` `.foo ``, `` `foo. ``) stays bare instead of being
   qualified to the current namespace, matching the compile path.
+- **`eval` accepts an embedded BigDecimal, `#inst`, or `#uuid` value.** A form
+  containing one of these values (read via `read-string`, or spliced by a macro)
+  failed with `unsupported form`; the analyzer now emits it as the same constant a
+  source literal produces. (Long / BigInt / Ratio already worked.)
 
 ## [0.4.1] - 2026-07-17
 
