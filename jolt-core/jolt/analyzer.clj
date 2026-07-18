@@ -348,10 +348,13 @@
     (map-node (mapv (fn [p]
                       (let [k (first p) v (second p)]
                         ;; :tag stays a literal (a resolved class-name string or a
-                        ;; primitive-hint symbol like `double`) — quote it rather
-                        ;; than evaluate it. Everything else is evaluated.
+                        ;; primitive-hint symbol like `double`) and :arglists is the
+                        ;; parameter-vector data defn attaches — quote both rather
+                        ;; than evaluate. Everything else is evaluated.
                         [(const k)
-                         (if (= k :tag) (quote-node v) (analyze ctx v env))]))
+                         (if (or (= k :tag) (= k :arglists))
+                           (quote-node v)
+                           (analyze ctx v env))]))
                     (seq base)))))
 
 (defn- analyze-def [ctx items env]

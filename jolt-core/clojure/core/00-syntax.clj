@@ -529,11 +529,22 @@
         fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))
         name-meta (meta fn-only-name)
         m1 (if attr-map (if name-meta (conj name-meta attr-map) attr-map) name-meta)
-        meta-map (if docstring (assoc (if m1 m1 {}) :doc docstring) m1)]
+        m2 (if docstring (assoc (if m1 m1 {}) :doc docstring) m1)
+        ;; :arglists — the parameter vectors as written (single arity: the one
+        ;; vector; multi-arity: each clause's), attached to the var like Clojure so
+        ;; doc/spec/expound tools can read it. tier-0 primitives only (loop, not
+        ;; map/reduce, which load later). def-meta-expr quotes it (data, not code).
+        arglists (if (vector? (first body))
+                   (list (first body))
+                   (loop [cs body acc []]
+                     (if (seq cs)
+                       (recur (rest cs) (conj acc (first (first cs))))
+                       (seq acc))))
+        meta-map (if arglists (assoc (if m2 m2 {}) :arglists arglists) m2)]
     ;; pass the name through to fn: the compiled fn's host name carries it, so
     ;; stack traces read app.deep/level3 instead of a gensym. All metadata
-    ;; (docstring + attr-map + the name's own) is attached to the def name symbol,
-    ;; which analyze-def reads and evaluates — so (meta #'f) reflects every source.
+    ;; (docstring + attr-map + the name's own + :arglists) is attached to the def
+    ;; name symbol, which analyze-def reads — so (meta #'f) reflects every source.
     (if meta-map
       `(def ~(with-meta fn-only-name meta-map) (fn ~(with-meta fn-only-name nil) ~@body))
       `(def ~fn-only-name (fn ~fn-only-name ~@body)))))

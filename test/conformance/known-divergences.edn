@@ -51,6 +51,14 @@
    :jvm "O(1) subview sharing the source vector"
    :jolt "O(n) copy"
    :note "Performance only; values are identical. Deferred this round."}
+  ;; defn attaches :arglists to the var (like the JVM); a clojure.core fn jolt
+  ;; models as a host native-op (map/reduce/+/…) is def-var!'d directly, not via
+  ;; defn, so it carries no :arglists. Overlay defns and all user defns do. jolt-ox7c.29
+  {:category :impl-detail
+   :behavior "(:arglists (meta #'clojure.core/map))"
+   :jvm "([f coll] [f c1 c2] …)"
+   :jolt "nil"
+   :note "map/reduce/+/… are host native-ops, not defns — no source arglists to carry. Overlay + user defns have :arglists."}
   ;; resolve/ns-resolve ignore a :refer-clojure :exclude/:only — clojure.core always
   ;; resolves. The filter still governs syntax-quote qualification. jolt-ox7c.27
   {:category :namespace-model
