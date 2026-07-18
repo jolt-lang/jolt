@@ -286,8 +286,11 @@
 (define jolt-reset-clone-prepass!    (var-deref "jolt.backend-scheme" "reset-clone-prepass!"))
 
 (define (bld-wp-infer! ordered)
-  (jolt-wp-set-record-shapes! (jolt-wp-host-record-shapes #f))
-  (jolt-wp-set-proto-methods! (jolt-wp-host-proto-methods #f))
+  ;; fresh inference context for this build, shared with emit-image's run-passes so
+  ;; the whole-program seeds set here flow into the per-form emit (ei-unit).
+  (ei-fresh-unit!)
+  (jolt-wp-set-record-shapes! (ei-unit) (jolt-wp-host-record-shapes #f))
+  (jolt-wp-set-proto-methods! (ei-unit) (jolt-wp-host-proto-methods #f))
   (let ((nodes '()) (ns-nodes '()))
     (for-each
       (lambda (nf)
@@ -325,14 +328,14 @@
               (ei-read-all src)))
           (set! ns-nodes (cons (cons (car nf) (reverse per-ns)) ns-nodes))))
       ordered)
-    (jolt-wp-infer! (apply jolt-vector (reverse nodes)))
+    (jolt-wp-infer! (ei-unit) (apply jolt-vector (reverse nodes)))
     ;; contagion clone-site pre-pass: an impl worth a specialized clone is one that is
     ;; BOTH contagion-eligible (:num field beside a proven :double) AND reached by a
     ;; devirtualized call site. Run per-ns after wp-infer! (rich field types must be
     ;; live) so a devirt site can resolve the clone regardless of emit order.
     (jolt-reset-clone-prepass!)
     ;; drop the #f alignment placeholders — the prepass wants real IR only.
-    (for-each (lambda (p) (jolt-contagion-prepass!
+    (for-each (lambda (p) (jolt-contagion-prepass! (ei-unit)
                             (apply jolt-vector (filter (lambda (n) n) (cdr p))) (car p)))
               ns-nodes)
     (jolt-contagion-prepass-done!)

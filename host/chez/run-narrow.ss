@@ -19,6 +19,8 @@
 (define wp-infer! (var-deref "jolt.passes.types" "wp-infer!"))
 (define run-passes (var-deref "jolt.passes" "run-passes"))
 (define emit (var-deref "jolt.backend-scheme" "emit"))
+(define U ((var-deref "jolt.passes.types" "new-unit")))
+((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 (define (built scm) (eval (read (open-input-string scm)) (interaction-environment)))
@@ -26,15 +28,15 @@
 (evals "(defprotocol P (m [x]))")
 (evals "(defrecord A [v] P (m [x] (->R 1.0)))")
 (evals "(defrecord B [v] P (m [x] (if (< (:v x) 0) (->R 2.0) nil)))")  ; B.m returns R-or-nil
-(set-record-shapes! (chez-record-shapes-map))
-(set-protocol-methods! (chez-protocol-methods-map))
+(set-record-shapes! U (chez-record-shapes-map))
+(set-protocol-methods! U (chez-protocol-methods-map))
 (set-optimize! #t)
 (define na (anode "(defrecord A [v] P (m [x] (->R 1.0)))"))
 (define nb (anode "(defrecord B [v] P (m [x] (if (< (:v x) 0) (->R 2.0) nil)))"))
 ;; guarded read: inside (some? s), s narrows to non-nil R -> (:k s) bare-indexes + unboxes
 (define f (anode "(def f (fn [a] (let [s (m a)] (if (some? s) (* (:k s) 2.0) 0.0))))"))
-(wp-infer! (jolt-vector na nb f))
-(define fe (emit (run-passes f (make-analyze-ctx "user"))))
+(wp-infer! U (jolt-vector na nb f))
+(define fe (emit (run-passes f (make-analyze-ctx "user") U)))
 (gate-check "guarded nullable read direct-accesses" (gate-sub? fe "jrec1-f0") #t)
 (gate-check "guarded nullable read unboxes to fl*" (gate-sub? fe "fl*") #t)
 
@@ -50,7 +52,7 @@
 ;; an UNGUARDED nullable read must stay safe: jrec-field-at falls back to jolt-get on
 ;; nil. (Its result type is conservative — no unbox — so this just checks no crash.)
 (define g (anode "(def g (fn [a] (let [s (m a)] (:k s))))"))
-(define ge (emit (run-passes g (make-analyze-ctx "user"))))
+(define ge (emit (run-passes g (make-analyze-ctx "user") U)))
 ;; an UNGUARDED nullable read must NOT take the direct (nil-unsafe) accessor — it
 ;; keeps the nil-safe jrec-field-at path, so a nil receiver returns nil instead of
 ;; crashing a bare slot load.
@@ -65,12 +67,12 @@
 ;; 3.0. dbl-arith-ops now excludes min/max — pre-fix the int literal was coerced
 ;; to a flonum before min/max saw it, so the release/--opt build printed 1.0/3.0.
 (define mm (anode "(def mm (fn [] (let [x 2.5] (min x 1))))"))
-(define mme (emit (run-passes mm (make-analyze-ctx "user"))))
+(define mme (emit (run-passes mm (make-analyze-ctx "user") U)))
 (built mme)
 (gate-check "min preserves exact operand (no double contagion)"
        (jolt-invoke0 (var-deref "user" "mm")) 1)
 (define mx (anode "(def mx (fn [] (let [x 2.5] (max x 3))))"))
-(define mxe (emit (run-passes mx (make-analyze-ctx "user"))))
+(define mxe (emit (run-passes mx (make-analyze-ctx "user") U)))
 (built mxe)
 (gate-check "max preserves exact operand (no double contagion)"
        (jolt-invoke0 (var-deref "user" "mx")) 3)

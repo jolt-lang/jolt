@@ -16,6 +16,8 @@
 (define wp-infer! (var-deref "jolt.passes.types" "wp-infer!"))
 (define run-passes (var-deref "jolt.passes" "run-passes"))
 (define emit (var-deref "jolt.backend-scheme" "emit"))
+(define U ((var-deref "jolt.passes.types" "new-unit")))
+((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 (define (gate-sub? s t)(let((n(string-length s))(m(string-length t)))(let loop((i 0))(cond((>(+ i m)n)#f)((string=?(substring s i(+ i m))t)#t)(else(loop(+ i 1)))))))
@@ -26,8 +28,8 @@
 (evals "(defprotocol Q (q [x]))")
 (evals "(defrecord C [v] Q (q [x] (->R 3.0)))")
 (evals "(defrecord D [v] Q (q [x] 7)))")     ; one impl returns a number, not R
-(set-record-shapes! (chez-record-shapes-map))
-(set-protocol-methods! (chez-protocol-methods-map))
+(set-record-shapes! U (chez-record-shapes-map))
+(set-protocol-methods! U (chez-protocol-methods-map))
 (set-optimize! #t)
 
 ;; analyze the impl-registering forms + a consumer; the fixpoint collects the
@@ -38,15 +40,15 @@
 (define nd (anode "(defrecord D [v] Q (q [x] 7))"))
 (define f  (anode "(def f (fn [a] (* (:k (m a)) 2.0)))"))
 (define g  (anode "(def g (fn [a] (:k (q a))))"))
-(wp-infer! (jolt-vector na nb nc nd f g))
+(wp-infer! U (jolt-vector na nb nc nd f g))
 
 ;; m's impls all return R -> (:k (m a)) reads off an R -> bare-index + unbox.
-(define fe (emit (run-passes f (make-analyze-ctx "user"))))
+(define fe (emit (run-passes f (make-analyze-ctx "user") U)))
 (gate-check "monomorphic protocol return direct-accesses the field read" (gate-sub? fe "jrec1-f0") #t)
 (gate-check "monomorphic protocol return unboxes the ^double field" (gate-sub? fe "fl") #t)
 
 ;; q's impls return R and a number -> joined to non-record -> stays generic (sound).
-(define ge (emit (run-passes g (make-analyze-ctx "user"))))
+(define ge (emit (run-passes g (make-analyze-ctx "user") U)))
 (gate-check "mixed-return protocol keeps generic jolt-get" (gate-sub? ge "jolt-get") #t)
 (gate-check "mixed-return protocol does not bare-index" (gate-sub? ge "jrec-field-at") #f)
 

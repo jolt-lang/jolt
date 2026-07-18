@@ -75,6 +75,16 @@
 (def var-cache? (atom false))
 (defn set-var-cache! [on] (reset! var-cache? on))
 
+;; The inference context (jolt.passes.types unit) the emit-time contagion clone reads.
+;; contagion-specialize-arity is a jolt.passes.types entry that needs the unit (record
+;; shapes etc.), but emit-impl-clone runs deep in the emitter with no unit threaded, so
+;; the driver publishes the current unit here right before emitting (emit-image sets it
+;; to the whole-program-seeded unit under --opt/tree-shake). nil off that path (the seed
+;; mint, plain runtime eval) — emit-impl-clone then emits no clone, exactly as a build
+;; with no eligible impls, so those outputs stay byte-identical.
+(def ^:private emit-unit (atom nil))
+(defn set-emit-unit! [u] (reset! emit-unit u))
+
 ;; contagion clone sites (jolt devirt-gated fl* contagion for :num fields). A set of
 ;; "tag|proto|method" keys for impls whose body has a :num field beside a proven
 ;; :double operand — worth a contagion-specialized clone at the devirt site. Populated
@@ -103,12 +113,12 @@
 (defn reset-clone-prepass! []
   (reset! clone-impl-keys #{}) (reset! clone-sites nil)
   (types/reset-clone-double-ret!))
-(defn contagion-prepass! [nodes ns]
+(defn contagion-prepass! [unit nodes ns]
   (letfn [(walk [n]
             (when-some [[type-name proto method fc] (register-impl-invoke n)]
               (let [ars (:arities fc)]
                 (when (= 1 (count ars))
-                  (let [res (types/contagion-specialize-arity (first ars) type-name)]
+                  (let [res (types/contagion-specialize-arity unit (first ars) type-name)]
                     (when (nth res 1)
                       (let [tag (str ns "." type-name)]
                         (swap! clone-impl-keys conj (clone-site-key tag proto method))
@@ -1007,17 +1017,18 @@
 ;; register-clone* tags via the runtime current ns, exactly like register-inline-method,
 ;; so the clone and impl land under the same tag the devirt site's :devirt-type names.
 (defn- emit-impl-clone [node]
-  (when-some [[type-name proto method fc] (register-impl-invoke node)]
+  (when-some [u @emit-unit]
+   (when-some [[type-name proto method fc] (register-impl-invoke node)]
     (let [ars (:arities fc)]
       (when (= 1 (count ars))
-        (let [res (types/contagion-specialize-arity (first ars) type-name)]
+        (let [res (types/contagion-specialize-arity u (first ars) type-name)]
           (when (nth res 1)
             (let [spar (nth res 0)
                   sym (fresh-label "_jcf$")
                   clone (emit (numeric/annotate {:op :fn :arities [spar]}))]
               (str "(define " sym " " clone ") (register-clone* "
                    (chez-str-lit type-name) " " (chez-str-lit proto) " "
-                   (chez-str-lit method) " " sym ")"))))))))
+                   (chez-str-lit method) " " sym ")")))))))))
 
 ;; Wrap emit-invoke so an eligible impl registration also emits its contagion clone as
 ;; a sibling. The non-eligible path is byte-identical to before (no clone emitted).
