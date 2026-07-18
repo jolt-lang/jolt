@@ -24,7 +24,9 @@
   :concurrency-model
   "compare-and-set! compares with value equality (jolt=), not JVM reference identity — Chez immediates and reconstructed values have no stable identity to compare. Deliberate (atoms.ss).",
   :permissive
-  "jolt succeeds where the JVM throws, on operations with one reasonable meaning: ex-info accepts nil data, count works on eduction, keys on a vector of pairs, (empty MapEntry) => []. A superset: portable JVM code behaves identically."},
+  "jolt succeeds where the JVM throws, on operations with one reasonable meaning: ex-info accepts nil data, count works on eduction, keys on a vector of pairs, (empty MapEntry) => []. A superset: portable JVM code behaves identically.",
+  :namespace-model
+  "jolt's namespace layer is permissive: clojure.core always resolves (a :refer-clojure :exclude/:only affects syntax-quote qualification but not resolve/ns-resolve), var privacy is not enforced across namespaces, and ns-resolve/ns-unmap on a missing ns return nil rather than throwing. A superset — code that resolves on the JVM resolves on jolt."},
  :documented
  [;; Deliberate/tracked divergences that are NOT corpus rows, so they live here (not in
   ;; :entries, which certify.clj gates for staleness against the corpus).
@@ -48,7 +50,50 @@
    :behavior "subvec allocates an O(n) copy"
    :jvm "O(1) subview sharing the source vector"
    :jolt "O(n) copy"
-   :note "Performance only; values are identical. Deferred this round."}]
+   :note "Performance only; values are identical. Deferred this round."}
+  ;; resolve/ns-resolve ignore a :refer-clojure :exclude/:only — clojure.core always
+  ;; resolves. The filter still governs syntax-quote qualification. jolt-ox7c.27
+  {:category :namespace-model
+   :behavior "(ns x (:refer-clojure :exclude [map])) then (resolve 'map)"
+   :jvm "nil"
+   :jolt "#'clojure.core/map"
+   :note "clojure.core always resolves; :exclude/:only affect syntax-quote, not resolve. Permissive."}
+  ;; a :private var is readable from another namespace (privacy is not enforced).
+  {:category :namespace-model
+   :behavior "reading a ^:private var from another namespace"
+   :jvm "throws (var is not public)"
+   :jolt "returns the value"
+   :note "Var privacy is not enforced across namespaces; ns-publics still filters privates out."}
+  ;; ns-resolve/ns-unmap/alias on a missing namespace are permissive.
+  {:category :namespace-model
+   :behavior "ns-resolve / ns-unmap / alias on a missing namespace"
+   :jvm "throws"
+   :jolt "returns nil (or no-ops)"
+   :note "Permissive; intern/the-ns do throw. Consistency deferred."}
+  ;; an unregistered reader tag reads as an inert tagged literal rather than throwing.
+  {:category :reader-model
+   :behavior "(read-string \"#foo/bar 5\") with no reader for foo/bar"
+   :jvm "throws: No reader function for tag foo/bar"
+   :jolt "#foo/bar 5 (a tagged literal)"
+   :note "The default data-reader tags rather than throwing, like #= reads as data. clojure.edn still throws on an unknown tag."}
+  ;; read-string of an empty string returns nil (JVM throws EOF).
+  {:category :permissive
+   :behavior "(read-string \"\")"
+   :jvm "throws (EOF while reading)"
+   :jolt "nil"
+   :note "Permissive."}
+  ;; #?(...) reader conditionals are read by default (JVM requires {:read-cond :allow}).
+  {:category :reader-model
+   :behavior "read-string of a #?(...) reader conditional"
+   :jvm "throws unless {:read-cond :allow}"
+   :jolt "reads the matching branch by default"
+   :note "jolt is single-platform-ish; conditionals always resolve. Deliberate."}
+  ;; a backquoted bare class name qualifies to clojure.core, not java.lang (class model).
+  {:category :host-model
+   :behavior "`String (syntax-quote of a bare class name)"
+   :jvm "java.lang.String"
+   :jolt "clojure.core/String"
+   :note "A consequence of the class model — a class name is not a java.lang-resolved token in syntax-quote."}]
  :entries
  [{:suite "forms / fn",
    :label "no param vector",
