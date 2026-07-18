@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expression after a `catch`, a second `finally` (or one that isn't last), and a
   `recur` whose argument count doesn't match the enclosing `loop`/`fn` are rejected
   at compile time instead of silently miscompiling or failing only at runtime.
+- **`read-string` of a syntax-quote matches the JVM in more cases.** `` `() ``
+  read as data was `(clojure.core/list ())` (evaluating to `(())`); it is now
+  `(clojure.core/list)` = `()`. An interop head or fully-qualified class name in a
+  read-time backquote (`` `.foo ``, `` `foo. ``) stays bare instead of being
+  qualified to the current namespace, matching the compile path.
 
 ## [0.4.1] - 2026-07-17
 
