@@ -91,6 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   containing one of these values (read via `read-string`, or spliced by a macro)
   failed with `unsupported form`; the analyzer now emits it as the same constant a
   source literal produces. (Long / BigInt / Ratio already worked.)
+- **Multimethods: preference conflicts, transitive preference, printing, and
+  errors match the JVM.** `prefer-method` now throws `IllegalStateException` on a
+  contradictory preference; a preference resolves an ambiguity transitively through
+  the hierarchy (a preferred parent settles a child); a multifn prints as
+  `#object[clojure.lang.MultiFn 0x0 "name"]` instead of dumping its record; the
+  ambiguous-dispatch error names the dispatch value and the conflicting methods; and
+  `defmulti` returns the var (not the multifn).
+- **`*data-readers*` entries may be a fn or var**, not only a symbol — a tag bound
+  to `inc` now applies it (`#t/tag 5` → `6`).
 
 ## [0.4.1] - 2026-07-17
 
