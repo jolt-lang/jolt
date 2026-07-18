@@ -69,6 +69,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`contains?` throws on a lazy seq or fn** like the JVM, instead of returning a
   silent `false` (it already threw for eager seqs).
 - **`empty?` works on a transient collection.**
+- **Kernel and collection errors throw typed exceptions.** `peek`/`subvec` and the
+  `conj`/`nth`/`count`/odd-map-literal error paths threw bare strings or untyped
+  conditions that a `(catch SomeException …)` wrongly caught; they now throw
+  `ClassCastException` / `IllegalArgumentException` / `IndexOutOfBoundsException` /
+  `UnsupportedOperationException`, and an odd-length map literal (`{1}`) raises
+  `IllegalArgumentException` instead of crashing.
+- **`throw-jvm` resolves any simple exception name through the class hierarchy**, so
+  `(class e)` reports the full name (e.g. `java.lang.RuntimeException`) rather than a
+  bare `RuntimeException` for names outside its short table.
+- **Misordered `try` clauses and wrong-arity `recur` are compile errors.** A body
+  expression after a `catch`, a second `finally` (or one that isn't last), and a
+  `recur` whose argument count doesn't match the enclosing `loop`/`fn` are rejected
+  at compile time instead of silently miscompiling or failing only at runtime.
 
 ## [0.4.1] - 2026-07-17
 
