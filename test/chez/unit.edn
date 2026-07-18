@@ -1113,4 +1113,7 @@
   {:suite "r6-kernel-throws" :expr "(try (count :x) (catch UnsupportedOperationException e :uoe) (catch Throwable t :other))" :expected ":uoe"}
   {:suite "r6-kernel-throws" :expr "(try (hash-map 1) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
   {:suite "r6-kernel-throws" :expr "(try (assoc {} :a) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
+  {:suite "r6-throwable-fqn" :expr "(str (class (try (read-string \"#inst \\\"garbage\\\"\") (catch Throwable e e))))" :expected "class java.lang.RuntimeException"}
+  {:suite "r6-throwable-fqn" :expr "(str (class (try (the-ns (quote no.such.ns.zzz)) (catch Throwable e e))))" :expected "class java.lang.Exception"}
+  {:suite "r6-throwable-fqn" :expr "(try (the-ns (quote no.such.ns.zzz)) (catch RuntimeException e :re) (catch Exception e :ex))" :expected ":ex"}
 ]

@@ -158,6 +158,13 @@
     (set! jch-simple->fqn-cache #f)
     (jch-register-supers!-inner name supers)))
 
+;; throw-jvm (rt.ss) resolves an unlisted simple exception name through this graph
+;; now that it exists — so (throw-jvm 'RuntimeException …) reports
+;; java.lang.RuntimeException, not a bare name. rt.ss loads first, so it defaults
+;; the fallback to symbol->string until this point.
+(set! jvm-throwable-fqn-fallback
+  (lambda (sym) (jch-fqn-of-simple (symbol->string sym))))
+
 ;; ---- interface marking ---------------------------------------------------------
 ;; The JVM distinguishes a concrete class (whose bases/supers chain roots at
 ;; Object) from an interface (whose don't). The graph marks the modeled
