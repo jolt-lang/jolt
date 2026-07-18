@@ -118,6 +118,29 @@
          (hval (and h (if (jolt-atom? h) (jolt-atom-val h) h))))
     (lambda (x y) (jolt-truthy? (if hval (jolt-invoke isa hval x y) (jolt-invoke isa x y))))))
 
+;; the parent dispatch values of x in mf's hierarchy, as a Scheme list.
+(define (mm-parents mf)
+  (let* ((par (var-deref "clojure.core" "parents"))
+         (h (jolt-multifn-hierarchy mf))
+         (hval (and h (if (jolt-atom? h) (jolt-atom-val h) h))))
+    (lambda (x)
+      (let ((r (if hval (jolt-invoke par hval x) (jolt-invoke par x))))
+        (if (or (jolt-nil? r) (jolt-nil? (jolt-seq r))) '()
+            (let loop ((s (jolt-seq r)) (acc '()))
+              (if (jolt-nil? s) (reverse acc)
+                  (loop (jolt-seq (seq-more s)) (cons (seq-first s) acc)))))))))
+
+;; Is x preferred over y? Like Clojure MultiFn.prefers: a direct preference, OR x
+;; preferred over a PARENT of y, OR a PARENT of x preferred over y — walking the
+;; hierarchy transitively (not just the direct prefers table).
+(define (mm-prefers? mf x y)
+  (let ((prefers (jolt-multifn-prefers mf))
+        (parents-of (mm-parents mf)))
+    (let pref? ((x x) (y y))
+      (or (let ((px (hashtable-ref prefers x #f))) (and px (hashtable-ref px y #f) #t))
+          (let scan ((ps (parents-of y))) (and (pair? ps) (or (pref? x (car ps)) (scan (cdr ps)))))
+          (let scan ((ps (parents-of x))) (and (pair? ps) (or (pref? (car ps) y) (scan (cdr ps)))))))))
+
 (define (mm-find-isa mf dv)
   (let* ((methods (jolt-multifn-methods mf))
          (isa? (mm-isa? mf))
@@ -132,17 +155,16 @@
        ;; >1 isa-match: pick the dominant key (x dominates y when x is
        ;; prefer-method'd over y, or (isa? x y)); ambiguity with no dominant is an
        ;; error, as in Clojure.
-       (let* ((prefers (jolt-multifn-prefers mf))
-              (pref? (lambda (x y)
-                       (let ((px (hashtable-ref prefers x #f)))
-                         (and px (hashtable-ref px y #f) #t))))
-              (dom? (lambda (x y) (or (pref? x y) (isa? x y))))
+       (let* ((dom? (lambda (x y) (or (mm-prefers? mf x y) (isa? x y))))
               (best (fold-left (lambda (b k) (if (dom? k b) k b)) (car matches) (cdr matches))))
          (for-each
           (lambda (k)
             (when (and (not (jolt= k best)) (not (dom? best k)))
-              (throw-jvm (quote IllegalArgumentException) (string-append "Multiple methods in multimethod '" (jolt-multifn-name mf)
-                                       "' match dispatch value - and neither is preferred"))))
+              (throw-jvm (quote IllegalArgumentException)
+                         (string-append "Multiple methods in multimethod '" (jolt-multifn-name mf)
+                                        "' match dispatch value: " (jolt-pr-str dv) " -> "
+                                        (jolt-pr-str best) " and " (jolt-pr-str k)
+                                        ", and neither is preferred"))))
           matches)
          (hashtable-ref methods best #f))))))
 
@@ -244,6 +266,12 @@
 
 (define (jolt-prefer-method-setup mf dval-a dval-b)
   (when (jolt-multifn? mf)
+    ;; a preference b-over-a (direct or transitive) makes a-over-b a conflict, as
+    ;; in Clojure MultiFn.preferMethod.
+    (when (mm-prefers? mf dval-b dval-a)
+      (throw-jvm (quote IllegalStateException)
+                 (string-append "Preference conflict in multimethod '" (jolt-multifn-name mf)
+                                "': " (jolt-pr-str dval-b) " is already preferred to " (jolt-pr-str dval-a))))
     (let ((sub (or (hashtable-ref (jolt-multifn-prefers mf) dval-a #f)
                    (let ((h (new-mm-table)))
                      (hashtable-set! (jolt-multifn-prefers mf) dval-a h) h))))
@@ -288,6 +316,13 @@
                     (jolt-assoc m (vector-ref ks i)
                                 (apply jolt-hash-set
                                        (vector->list (hashtable-keys (vector-ref vs i)))))))))))
+
+;; Print a multifn like the JVM's #object[clojure.lang.MultiFn 0x… "name"] rather
+;; than dumping the record's fields (methods table, hierarchy, cache, …).
+(define (multifn-pr mf)
+  (string-append "#object[clojure.lang.MultiFn 0x0 \"" (jolt-multifn-name mf) "\"]"))
+(register-pr-arm! jolt-multifn? multifn-pr)
+(register-str-render! jolt-multifn? multifn-pr)
 
 (def-var! "clojure.core" "defmulti-setup" jolt-defmulti-setup)
 (def-var! "clojure.core" "defmethod-setup" jolt-defmethod-setup)

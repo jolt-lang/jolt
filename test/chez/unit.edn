@@ -1116,6 +1116,12 @@
   {:suite "r5-eval-const" :expr "(eval (list (quote class) 1M))" :expected "java.math.BigDecimal"}
   {:suite "r5-eval-const" :expr "(str (eval (list (quote identity) (read-string \"#uuid \\\"00000000-0000-0000-0000-000000000000\\\"\"))))" :expected "00000000-0000-0000-0000-000000000000"}
   {:suite "r5-eval-const" :expr "(eval (list (quote identity) (read-string \"#inst \\\"2020-01-01T00:00:00.000-00:00\\\"\")))" :expected "#inst \"2020-01-01T00:00:00.000-00:00\""}
+  {:suite "r5-data-readers" :expr "(binding [*data-readers* {(quote t/tag) inc}] (read-string \"#t/tag 5\"))" :expected "6"}
+  {:suite "r5-prefer" :expr "(do (defmulti pf1 identity) (prefer-method pf1 :a :b) (try (prefer-method pf1 :b :a) :no (catch IllegalStateException e :conflict)))" :expected ":conflict"}
+  {:suite "r5-prefer" :expr "(do (derive ::pc ::pa) (derive ::pc ::pb) (derive ::pa ::pp) (defmulti pf2 identity) (defmethod pf2 ::pp [x] :pp) (defmethod pf2 ::pb [x] :pb) (prefer-method pf2 ::pp ::pb) (pf2 ::pc))" :expected ":pp"}
+  {:suite "r5-prefer" :expr "(do (derive ::qc ::qa) (derive ::qc ::qb) (derive ::qa ::qp) (defmulti pf3 identity) (defmethod pf3 ::qp [x] :pp) (defmethod pf3 ::qb [x] :pb) (try (pf3 ::qc) (catch IllegalArgumentException e :ambiguous)))" :expected ":ambiguous"}
+  {:suite "r5-multifn" :expr "(do (defmulti mfp identity) (pr-str mfp))" :expected "#object[clojure.lang.MultiFn 0x0 \"mfp\"]"}
+  {:suite "r5-multifn" :expr "(var? (defmulti mfv identity))" :expected "true"}
   {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
   {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch NullPointerException e :npe) (catch Throwable t :t))" :expected ":t"}
   {:suite "r6-kernel-throws" :expr "(try (nth :x 0) (catch UnsupportedOperationException e :uoe) (catch Throwable t :other))" :expected ":uoe"}

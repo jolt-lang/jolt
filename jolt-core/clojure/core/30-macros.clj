@@ -37,7 +37,8 @@
     ;; a reference later in the same top-level form resolves under strict
     ;; analysis — the JVM's defmulti interns the same way by expanding through
     ;; def. defmulti-setup then fills the root; declare never resets one.
-    `(do (def ~name) (defmulti-setup (quote ~qname) ~dispatch ~@opts))))
+    ;; defmulti returns the var (JVM), not the multifn value defmulti-setup returns.
+    `(do (def ~name) (defmulti-setup (quote ~qname) ~dispatch ~@opts) (var ~name))))
 
 (defmacro defmethod [mm dispatch-val & fn-tail]
   ;; the expansion ns rides along so a deferred defmethod resolves its multifn

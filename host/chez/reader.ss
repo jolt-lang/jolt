@@ -884,10 +884,18 @@
                               (jolt-symbol #f bare)))
                      (dr (var-deref "clojure.core" "*data-readers*"))
                      (v (and (pmap? dr) (jolt-get dr sym))))
-                (and v (not (jolt-nil? v)) (symbol-t? v) (not (jolt-nil? (symbol-t-ns v)))
-                     (guard (e (#t #f))
-                       (let ((fn (var-deref (symbol-t-ns v) (symbol-t-name v))))
-                         (and (procedure? fn) fn)))))))))
+                ;; *data-readers* maps a tag to a var or a fn (JVM). A fn value is
+                ;; applied as-is; a var yields its root fn; a qualified symbol is
+                ;; resolved to its var, as before.
+                (cond
+                  ((or (not v) (jolt-nil? v)) #f)
+                  ((procedure? v) v)
+                  ((var-cell? v) (let ((fn (var-cell-root v))) (and (procedure? fn) fn)))
+                  ((and (symbol-t? v) (not (jolt-nil? (symbol-t-ns v))))
+                   (guard (e (#t #f))
+                     (let ((fn (var-deref (symbol-t-ns v) (symbol-t-name v))))
+                       (and (procedure? fn) fn))))
+                  (else #f)))))))
 ;; the bare tag SYMBOL for a :#name / :#ns/name reader keyword (strip the leading
 ;; #, split a qualified tag on /). *default-data-reader-fn* receives it.
 (define (rdr-tag->symbol tag)
