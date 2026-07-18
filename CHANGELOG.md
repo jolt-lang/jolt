@@ -100,6 +100,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `defmulti` returns the var (not the multifn).
 - **`*data-readers*` entries may be a fn or var**, not only a symbol — a tag bound
   to `inc` now applies it (`#t/tag 5` → `6`).
+- **`--opt` no longer swallows an exception from dead code.** Scalar-replacement
+  treated arithmetic (`+`/`min`/`zero?`/…) as never-throwing, so a throwing but
+  unread initializer — `(let [m {:a (+ x "s")}] (:b m))` — was dropped and returned
+  `nil` in an optimized build where dev/release threw. A discarded expression must
+  now be *total* (never throws); merely-pure expressions are still relocated and
+  duplicated (record scalar-replacement is unaffected).
 
 ## [0.4.1] - 2026-07-17
 
