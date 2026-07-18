@@ -239,34 +239,29 @@
           (else (apply multifn-dispatch f args)))))
 
 ;; --- table ops ---------------------------------------------------------------
-;; prefer-method/remove-method/remove-all-methods/prefers take the name QUOTED;
-;; get-method/methods take the multifn VALUE (Clojure semantics).
-(define (mm-of-sym sym) (let ((v (var-deref (chez-current-ns) (symbol-t-name sym))))
-                          (and (jolt-multifn? v) v)))
+;; All table ops take the multifn VALUE (Clojure semantics): the multifn record
+;; carries its method/prefer tables, so the overlay fns pass the value directly.
 
-(define (jolt-prefer-method-setup mm-sym dval-a dval-b)
-  (let ((mf (mm-of-sym mm-sym)))
-    (when mf
-      (let ((sub (or (hashtable-ref (jolt-multifn-prefers mf) dval-a #f)
-                     (let ((h (new-mm-table)))
-                       (hashtable-set! (jolt-multifn-prefers mf) dval-a h) h))))
-        (hashtable-set! sub dval-b #t))
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-    mf))
+(define (jolt-prefer-method-setup mf dval-a dval-b)
+  (when (jolt-multifn? mf)
+    (let ((sub (or (hashtable-ref (jolt-multifn-prefers mf) dval-a #f)
+                   (let ((h (new-mm-table)))
+                     (hashtable-set! (jolt-multifn-prefers mf) dval-a h) h))))
+      (hashtable-set! sub dval-b #t))
+    (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+  mf)
 
-(define (jolt-remove-method-setup mm-sym dval)
-  (let ((mf (mm-of-sym mm-sym)))
-    (when mf
-      (hashtable-delete! (jolt-multifn-methods mf) dval)
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-    mf))
+(define (jolt-remove-method-setup mf dval)
+  (when (jolt-multifn? mf)
+    (hashtable-delete! (jolt-multifn-methods mf) dval)
+    (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+  mf)
 
-(define (jolt-remove-all-methods-setup mm-sym)
-  (let ((mf (mm-of-sym mm-sym)))
-    (when mf
-      (hashtable-clear! (jolt-multifn-methods mf))
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-    mf))
+(define (jolt-remove-all-methods-setup mf)
+  (when (jolt-multifn? mf)
+    (hashtable-clear! (jolt-multifn-methods mf))
+    (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+  mf)
 
 (define (jolt-get-method-setup mf dval)
   (if (jolt-multifn? mf)
@@ -283,17 +278,16 @@
               (loop (fx+ i 1) (jolt-assoc m (vector-ref ks i) (vector-ref vs i))))))
       jolt-nil))
 
-(define (jolt-prefers-setup mm-sym)
-  (let ((mf (mm-of-sym mm-sym)))
-    (if (not mf) (jolt-hash-map)
-        (let-values (((ks vs) (hashtable-entries (jolt-multifn-prefers mf))))
-          (let loop ((i 0) (m (jolt-hash-map)))
-            (if (fx>=? i (vector-length ks)) m
-                ;; each value is an inner set of preferred-over keys -> a jolt set
-                (loop (fx+ i 1)
-                      (jolt-assoc m (vector-ref ks i)
-                                  (apply jolt-hash-set
-                                         (vector->list (hashtable-keys (vector-ref vs i))))))))))))
+(define (jolt-prefers-setup mf)
+  (if (not (jolt-multifn? mf)) (jolt-hash-map)
+      (let-values (((ks vs) (hashtable-entries (jolt-multifn-prefers mf))))
+        (let loop ((i 0) (m (jolt-hash-map)))
+          (if (fx>=? i (vector-length ks)) m
+              ;; each value is an inner set of preferred-over keys -> a jolt set
+              (loop (fx+ i 1)
+                    (jolt-assoc m (vector-ref ks i)
+                                (apply jolt-hash-set
+                                       (vector->list (hashtable-keys (vector-ref vs i)))))))))))
 
 (def-var! "clojure.core" "defmulti-setup" jolt-defmulti-setup)
 (def-var! "clojure.core" "defmethod-setup" jolt-defmethod-setup)

@@ -45,53 +45,46 @@
   `(defmethod-setup (quote ~mm) ~dispatch-val (fn ~@fn-tail)
                     ~(str (clojure.core/ns-name clojure.core/*ns*))))
 
-;; Multimethod table ops: a multimethod's method table lives on its
-;; VAR (the value is just the dispatch closure), so these pass the name quoted
-;; to ctx-capturing setups — the same shape as defmulti/defmethod above.
-(defmacro prefer-method [mm dval-a dval-b]
-  `(prefer-method-setup (quote ~mm) ~dval-a ~dval-b))
+;; Multimethod table ops are FUNCTIONS (JVM parity): the multifn VALUE carries
+;; its method/prefer tables, so they take the value directly — the same shape
+;; methods/get-method always used — and work under apply/map/partial. The *-setup
+;; host fns take the value; the old name-quoting was incidental.
+(defn prefer-method [mm dval-a dval-b]
+  (prefer-method-setup mm dval-a dval-b))
 
-(defmacro remove-method [mm dval]
-  `(remove-method-setup (quote ~mm) ~dval))
+(defn remove-method [mm dval]
+  (remove-method-setup mm dval))
 
-(defmacro remove-all-methods [mm]
-  `(remove-all-methods-setup (quote ~mm)))
+(defn remove-all-methods [mm]
+  (remove-all-methods-setup mm))
 
 ;; methods/get-method take the multimethod VALUE (Clojure semantics); the setup
-;; maps it back to its var via the registry, so a bare multifn ref works from a
-;; compiled fn in any namespace.
-(defmacro get-method [mm dval]
-  `(get-method-setup ~mm ~dval))
+;; uses it directly, so a bare multifn ref works from a compiled fn in any
+;; namespace.
+(defn get-method [mm dval]
+  (get-method-setup mm dval))
 
-(defmacro methods [mm]
-  `(methods-setup ~mm))
+(defn methods [mm]
+  (methods-setup mm))
 
-;; prefers reads the store off the VAR (the multifn value can't carry it) —
-;; same symbol-passing shape as the other multimethod table ops.
-(defmacro prefers [mm]
-  `(prefers-setup (quote ~mm)))
+;; prefers reads the store off the multifn VALUE.
+(defn prefers [mm]
+  (prefers-setup mm))
 
-;; instance?: class names don't evaluate to values on jolt, so bare class-name
-;; symbols are passed quoted to the ctx-capturing checker. A LIST in type
-;; position is a class-valued expression (e.g. Selmer's (Class/forName "[C"))
-;; — evaluate it. A LOCAL in &env may hold a class value (string or jhost)
-;; from a (let [c java.util.Map] (instance? c x)) binding — evaluate it too.
-;; A symbol resolving to a var that HOLDS A CLASS VALUE (a name string — jolt's
-;; class model) also evaluates: on the JVM ns mappings win over class
-;; resolution, so (def mc java.util.Map) (instance? mc x) reads the var. The
-;; string check keeps (instance? RecordName x) quoting — a defrecord interns a
-;; var of that name holding its ctor fn, and the record NAME is the class.
-;; resolve/var-get run at expansion time only and never appear in emitted code.
+;; instance? stays a MACRO: jolt class names (and host-shim class names registered
+;; via __register-class-ctor!) don't uniformly evaluate to values, so a bare
+;; class-name symbol is passed QUOTED to the ctx-capturing checker. A LIST in type
+;; position is a class-valued expression (Class/forName "[C") — evaluate it. A LOCAL
+;; in &env may hold a class value from (let [c java.util.Map] (instance? c x)). A
+;; symbol resolving to a var that HOLDS A CLASS VALUE also evaluates. Because it's a
+;; macro, instance? can't be used as a value ((partial instance? …) is a compile
+;; error on jolt — the class model precludes the JVM's fn form; see known-divergences).
 (defmacro instance? [t x]
   (if (or (seq? t) (contains? &env t)
           (and (symbol? t)
                (when-let [v (clojure.core/resolve t)]
                  (and (clojure.core/bound? v)
-                      (let [cv (clojure.core/var-get v)]
-                        ;; a Class value ((class y) captured in a var, e.g.
-                        ;; (def c (class (transient [])))). Class tokens now
-                        ;; evaluate to interned Class objects.
-                        (jolt.host/class-object? cv))))))
+                      (jolt.host/class-object? (clojure.core/var-get v))))))
     `(instance-check ~t ~x)
     `(instance-check (quote ~t) ~x)))
 
@@ -188,6 +181,8 @@
 ;; auto-gensym temp# tests the value; the else/empty branch sees the surrounding
 ;; scope). temp# is a single template-local gensym — referenced twice, same symbol.
 (defmacro if-let [bindings then & [else]]
+  (when-not (= 2 (count bindings))
+    (throw (new IllegalArgumentException "if-let requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if temp# (let [~form temp#] ~then) ~else))))
@@ -195,11 +190,15 @@
 ;; when-let lives in 00-syntax (not here): 20-coll uses it, which loads before this tier.
 
 (defmacro if-some [bindings then & [else]]
+  (when-not (= 2 (count bindings))
+    (throw (new IllegalArgumentException "if-some requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if (some? temp#) (let [~form temp#] ~then) ~else))))
 
 (defmacro when-some [bindings & body]
+  (when-not (= 2 (count bindings))
+    (throw (new IllegalArgumentException "when-some requires exactly 2 forms in binding vector")))
   (let [form (bindings 0) tst (bindings 1)]
     `(let [temp# ~tst]
        (if (some? temp#) (let [~form temp#] ~@body) nil))))
@@ -258,12 +257,15 @@
     `(let [~g ~expr ~@(thread-binds g steps)] ~(if (empty? steps) g (last steps)))))
 
 (defmacro assert [x & [message]]
-  ;; the message EXPRESSION evaluates at failure time (JVM: (str "Assert failed: "
-  ;; message "\n" form)), not at expansion — it may embed runtime state
-  (if message
-    `(when-not ~x
-       (throw (new AssertionError (str "Assert failed: " ~message "\n" ~(pr-str x)))))
-    `(when-not ~x (throw (new AssertionError ~(str "Assert failed: " (pr-str x)))))))
+  ;; *assert* is read at COMPILE time (JVM elides the check entirely when it is
+  ;; false), so a false binding around the compile drops the assertion. The
+  ;; message EXPRESSION evaluates at failure time, not at expansion — it may
+  ;; embed runtime state.
+  (when *assert*
+    (if message
+      `(when-not ~x
+         (throw (new AssertionError (str "Assert failed: " ~message "\n" ~(pr-str x)))))
+      `(when-not ~x (throw (new AssertionError ~(str "Assert failed: " (pr-str x))))))))
 
 ;; (pvalues e1 e2 ...) — each expression evaluated in parallel (pcalls).
 (defmacro pvalues [& exprs]
@@ -302,7 +304,7 @@
                      more (drop n args)
                      cn (count clause)]
                  (cond
-                   (= 0 cn) `(throw (ex-info (str "No matching clause: " ~ge) {}))
+                   (= 0 cn) `(throw (new IllegalArgumentException (str "No matching clause: " ~ge)))
                    (= 1 cn) (first clause)
                    (= 2 cn) `(if (~gp ~(first clause) ~ge) ~(second clause) ~(emit more))
                    :else `(if-let [p# (~gp ~(first clause) ~ge)]

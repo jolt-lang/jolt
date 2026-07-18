@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a raw error; `bit-set`/`bit-flip` wrap to 64 bits.
 - **`clojure.math/floor-div`/`floor-mod` return a long**, and `parse-double`
   trims whitespace and accepts a trailing `f`/`d` type suffix.
+- **`case` treats composite constants as literals.** A vector/map/set test
+  constant was evaluated (so `(case [1 2] [a b] …)` matched on the values of
+  `a`/`b`); it is now quoted like a symbol or list constant.
+- **`case`/`condp` throw `IllegalArgumentException`** (not `ex-info`) when no
+  clause matches, so `(catch IllegalArgumentException …)` works like the JVM.
+- **`for`/`doseq` nest `:let`/`:when`/`:while` in source order.** A `:while`
+  after a `:when` no longer sees elements the `:when` filtered out, multiple
+  `:while` clauses all apply, and `doseq` runs in constant space instead of
+  realizing a `for` comprehension. `(for [x [2 4 3 6] :while (even? x) :when (> x 3)] x)`
+  is now `(4)`.
+- **`if-let`/`if-some`/`when-some` reject a malformed binding vector**, and
+  `assert` expands to nothing when `*assert*` is false at compile time.
+- **Taking the value of a macro is a compile error** (`(partial when …)` no longer
+  silently yields the macro's expansion as data), and `get-method`, `methods`,
+  `prefer-method`, `remove-method`, `remove-all-methods`, and `prefers` are
+  functions, so they work under `map`/`apply`/`partial` like the JVM. (`instance?`
+  stays a macro — jolt's class model precludes the fn form.)
 
 ## [0.4.1] - 2026-07-17
 
