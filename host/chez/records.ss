@@ -795,22 +795,14 @@
               (list (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
                     "AFunction" "clojure.lang.AFunction" "AFn" "clojure.lang.AFn"
                     "IFn" "clojure.lang.IFn" "Fn" "clojure.lang.Fn" "Object")))
-        ;; java.net.URI jhost — extend-protocol java.net.URI (hiccup ToURI/ToStr).
-        ((and (jhost? obj) (string=? (jhost-tag obj) "uri")) '("URI" "java.net.URI" "Object"))
-        ;; a ByteBuffer — extend-protocol java.nio.ByteBuffer (aws-api util).
-        ((and (jhost? obj) (string=? (jhost-tag obj) "byte-buffer")) '("ByteBuffer" "java.nio.ByteBuffer" "Object"))
-        ;; java.io readers/writers — so (extend-protocol java.io.Reader …) (data.csv)
-        ;; and the like dispatch on one. A PushbackReader is also a Reader.
-        ((and (jhost? obj) (string=? (jhost-tag obj) "string-reader"))
-         '("StringReader" "java.io.StringReader" "Reader" "java.io.Reader" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "pushback-reader"))
-         '("PushbackReader" "java.io.PushbackReader" "FilterReader" "java.io.FilterReader" "Reader" "java.io.Reader" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "char-reader"))
-         '("Reader" "java.io.Reader" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "char-writer"))
-         '("Writer" "java.io.Writer" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "writer"))
-         '("Writer" "java.io.Writer" "Object"))
+        ;; a value-layer shim value (java.time.*, URI, ByteBuffer, java.io reader/
+        ;; writer, ArrayList/HashMap, …) reports its class's whole ancestry from the
+        ;; single jhost-tag->fqn registry (class-hierarchy.ss). So (extend-protocol
+        ;; java.time.temporal.Temporal …) fires on an Instant, java.io.Reader on a
+        ;; PushbackReader, java.util.List on an ArrayList — each inheriting the
+        ;; modeled supers instead of a hand-copied literal that drifts. A tag naming
+        ;; no modeled class (in-stream, jolt-comparator) returns #f and falls through.
+        ((and (jhost? obj) (jhost-value-tags (jhost-tag obj))) => (lambda (tags) tags))
         ;; arrays dispatch by their JVM array-class name — extend-protocol to
         ;; (Class/forName "[B") for byte[] (data.json, aws-api), "[C" for char[].
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'byte)) '("[B" "Object"))
@@ -819,34 +811,14 @@
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'long)) '("[J" "Object"))
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'double)) '("[D" "Object"))
         ((jolt-array? obj) '("[Ljava.lang.Object;" "Object"))
-        ;; a regex VALUE — extend-protocol java.util.regex.Pattern (core.match.regex).
-        ((regex-t? obj) '("Pattern" "java.util.regex.Pattern" "Object"))
-        ;; host value types a library may extend a protocol to by class (data.json
-        ;; extends JSONWriter to java.util.UUID / java.util.Date / java.math.BigDecimal).
-        ((juuid? obj) '("UUID" "java.util.UUID" "Object"))
-        ((jinst? obj) '("Date" "java.util.Date" "Timestamp" "java.sql.Timestamp" "Object"))
-        ((jbigdec? obj) '("BigDecimal" "java.math.BigDecimal" "Number" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "instant")) '("Instant" "java.time.Instant" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "local-date")) '("LocalDate" "java.time.LocalDate" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "local-time")) '("LocalTime" "java.time.LocalTime" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "local-date-time")) '("LocalDateTime" "java.time.LocalDateTime" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "duration")) '("Duration" "java.time.Duration" "TemporalAmount" "java.time.temporal.TemporalAmount" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "period")) '("Period" "java.time.Period" "TemporalAmount" "java.time.temporal.TemporalAmount" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "month-enum")) '("Month" "java.time.Month" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "dow-enum")) '("DayOfWeek" "java.time.DayOfWeek" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "year")) '("Year" "java.time.Year" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "year-month")) '("YearMonth" "java.time.YearMonth" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "chrono-unit")) '("ChronoUnit" "java.time.temporal.ChronoUnit" "TemporalUnit" "java.time.temporal.TemporalUnit" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "chrono-field")) '("ChronoField" "java.time.temporal.ChronoField" "TemporalField" "java.time.temporal.TemporalField" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "zone-offset")) '("ZoneOffset" "java.time.ZoneOffset" "ZoneId" "java.time.ZoneId" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "zone-id")) '("ZoneId" "java.time.ZoneId" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "zoned-date-time")) '("ZonedDateTime" "java.time.ZonedDateTime" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "offset-date-time")) '("OffsetDateTime" "java.time.OffsetDateTime" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "offset-time")) '("OffsetTime" "java.time.OffsetTime" "Object"))
-        ((and (jhost? obj) (string=? (jhost-tag obj) "clock")) '("Clock" "java.time.Clock" "Object"))
-        ;; java.sql.Date — a distinct class from java.util.Date so a protocol
-        ;; extended to both (data.json's JSONWriter) routes a sql.Date to its impl.
-        ((and (jhost? obj) (string=? (jhost-tag obj) "sql-date")) '("java.sql.Date" "Date" "java.util.Date" "Object"))
+        ;; host value types with a distinct record repr (not jhost-backed): a regex,
+        ;; a #uuid, a #inst Date, a BigDecimal — each derives its ancestry from the
+        ;; class graph. A #inst is a java.util.Date (NOT a java.sql.Timestamp — the
+        ;; instance? arm in inst-time.ss agrees).
+        ((regex-t? obj) (jch-tags "java.util.regex.Pattern"))
+        ((juuid? obj) (jch-tags "java.util.UUID"))
+        ((jinst? obj) (jch-tags "java.util.Date"))
+        ((jbigdec? obj) (jch-tags "java.math.BigDecimal"))
         ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
         ((procedure? obj) (jch-tags "clojure.lang.AFunction"))
         ((jolt-nil? obj) '("nil"))
@@ -1008,11 +980,18 @@
                                ((char=? (string-ref type-name i) #\$) #t)
                                (else (loop (fx+ i 1)))))
        type-name)
-      ((or (hashtable-ref host-type-set base #f)
-           (and (not (hashtable-ref chez-simple-name-tag type-name #f))
-                (not (hashtable-ref chez-deftype-tag-set type-name #f))
-                (or (jch-known? base) (jch-known? type-name))))
-       base)
+      ;; a literal host-type-set member canonicalizes to its stripped base (which
+      ;; is already the simple segment or an FQN the value reports verbatim, e.g.
+      ;; "[Ljava.lang.Object;").
+      ((hashtable-ref host-type-set base #f) base)
+      ;; a graph-modeled class canonicalizes to its simple last segment — the tag
+      ;; value-host-tags emits via jch-tags. Using base here would leave a partial
+      ;; segment for nested packages (java.time.temporal.Temporal -> "temporal.Temporal"),
+      ;; which no dispatch tag matches, so a class-keyed protocol never fires.
+      ((and (not (hashtable-ref chez-simple-name-tag type-name #f))
+            (not (hashtable-ref chez-deftype-tag-set type-name #f))
+            (or (jch-known? base) (jch-known? type-name)))
+       (jch-last-segment type-name))
       (else #f))))
 ;; An extend/extend-type/extend-protocol registration marks the tag as an
 ;; extender of the protocol (recorded inside type-registry so the per-case prune

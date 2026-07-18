@@ -1335,49 +1335,12 @@
 ;; jhost-backed shims report their JVM class instead of falling through to the
 ;; opaque :object rendering, so class-driven dispatch (and type-classification
 ;; libraries reading (type x)) see the real name.
-(define jhost-class-names
-  '(("instant" . "java.time.Instant")
-    ("local-date" . "java.time.LocalDate")
-    ("local-time" . "java.time.LocalTime")
-    ("local-date-time" . "java.time.LocalDateTime")
-    ("zoned-dt" . "java.time.ZonedDateTime")
-    ("zoned-date-time" . "java.time.ZonedDateTime")
-    ("offset-date-time" . "java.time.OffsetDateTime")
-    ("offset-time" . "java.time.OffsetTime")
-    ("duration" . "java.time.Duration")
-    ("period" . "java.time.Period")
-    ("year" . "java.time.Year")
-    ("year-month" . "java.time.YearMonth")
-    ("zone-id" . "java.time.ZoneId")
-    ("zone-offset" . "java.time.ZoneOffset")
-    ("zone-rules" . "java.time.zone.ZoneRules")
-    ("chrono-unit" . "java.time.temporal.ChronoUnit")
-    ("chrono-field" . "java.time.temporal.ChronoField")
-    ("month-enum" . "java.time.Month")
-    ("dow-enum" . "java.time.DayOfWeek")
-    ("clock" . "java.time.Clock")
-    ("dt-formatter" . "java.time.format.DateTimeFormatter")
-    ("sdf" . "java.text.SimpleDateFormat")
-    ("calendar" . "java.util.GregorianCalendar")
-    ("locale" . "java.util.Locale")
-    ("timezone" . "java.util.TimeZone")
-    ("arraylist" . "java.util.ArrayList")
-    ("linkedlist" . "java.util.LinkedList")
-    ("arraydeque" . "java.util.ArrayDeque")
-    ("hashmap" . "java.util.HashMap")
-    ("hashset" . "java.util.HashSet")
-    ;; io writer/reader shims: *out* is a PrintWriter like the JVM REPL's
-    ("port-writer" . "java.io.PrintWriter")
-    ("print-writer" . "java.io.PrintWriter")
-    ("file-writer" . "java.io.FileWriter")
-    ("writer" . "java.io.StringWriter")
-    ("string-reader" . "java.io.StringReader")
-    ("pushback-reader" . "java.io.PushbackReader")
-    ("char-writer" . "java.io.OutputStreamWriter")
-    ("char-reader" . "java.io.InputStreamReader")))
+;; jhost value class names derive from the single jhost-tag->fqn registry
+;; (class-hierarchy.ss) — one row per shim tag, shared with value-host-tags and
+;; the instance? arm below so all three stay in agreement.
 (register-class-arm!
-  (lambda (x) (and (jhost? x) (assoc (jhost-tag x) jhost-class-names) #t))
-  (lambda (x) (cdr (assoc (jhost-tag x) jhost-class-names))))
+  (lambda (x) (and (jhost? x) (jhost-fqn (jhost-tag x)) #t))
+  (lambda (x) (jhost-fqn (jhost-tag x))))
 ;; sorted collections and transients report their JVM classes. jolt's one
 ;; transient-map representation reports TransientHashMap (the JVM also has
 ;; PersistentArrayMap$TransientArrayMap for small maps).
@@ -1395,17 +1358,17 @@
       ((set) "clojure.lang.PersistentHashSet$TransientHashSet")
       (else "clojure.lang.ATransientCollection"))))
 ;; instance? for these shims derives from the class graph: the value's class name
-;; (jhost-class-names) walked through jch-isa? answers interface questions —
+;; (jhost-fqn) walked through jch-isa? answers interface questions —
 ;; (instance? java.util.List an-ArrayList), Deque/Queue/Collection/Iterable chains.
 ;; Widening only: an unknown pairing passes to the other arms, never denies.
 (register-instance-check-arm!
   (lambda (type-sym val)
     (if (and (jhost? val) (symbol-t? type-sym))
-        (let ((p (assoc (jhost-tag val) jhost-class-names)))
-          (if p
+        (let ((fqn (jhost-fqn (jhost-tag val))))
+          (if fqn
               (let* ((tname (symbol-t-name type-sym))
                      (q (or (resolve-class-hint tname) tname)))
-                (if (jch-isa? (cdr p) q) #t 'pass))
+                (if (jch-isa? fqn q) #t 'pass))
               'pass))
         'pass)))
 ;; count over the mutable collection shims, like RT.count over a java.util
