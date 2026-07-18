@@ -362,9 +362,11 @@
 ;; sequence in a weak side-table the host contract's form-map-pairs consults.
 (define rdr-map-order (make-weak-eq-hashtable))
 (define (rdr-make-map es)
-  ;; the JVM reader rejects duplicate literal keys before building the map
+  ;; the JVM reader rejects duplicate literal keys before building the map. Guard
+  ;; the (cddr kvs) step so an odd-length literal ({:a}) stops here instead of
+  ;; crashing in cddr; the collections.ss ctor then raises IllegalArgumentException.
   (let dupchk ((kvs es) (seen empty-pset))
-    (when (pair? kvs)
+    (when (and (pair? kvs) (pair? (cdr kvs)))
       (let ((k (car kvs)))
         (when (jolt-truthy? (jolt-contains? seen k))
           (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"

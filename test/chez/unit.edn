@@ -1106,4 +1106,20 @@
   {:suite "r5-refer" :expr "(do (refer (quote clojure.set) :only (quote [union])) [(some? (resolve (quote union))) (resolve (quote difference))])" :expected "[true nil]"}
   {:suite "r5-refer" :expr "(do (refer (quote clojure.set) :exclude (quote [difference])) [(some? (resolve (quote union))) (resolve (quote difference))])" :expected "[true nil]"}
   {:suite "r5-refer" :expr "(do (refer (quote clojure.set) :only (quote [union])) (union #{1} #{2}))" :expected "#{1 2}"}
+  {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
+  {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch NullPointerException e :npe) (catch Throwable t :t))" :expected ":t"}
+  {:suite "r6-kernel-throws" :expr "(try (nth :x 0) (catch UnsupportedOperationException e :uoe) (catch Throwable t :other))" :expected ":uoe"}
+  {:suite "r6-kernel-throws" :expr "(try (nth :x 0) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":other"}
+  {:suite "r6-kernel-throws" :expr "(try (count :x) (catch UnsupportedOperationException e :uoe) (catch Throwable t :other))" :expected ":uoe"}
+  {:suite "r6-kernel-throws" :expr "(try (hash-map 1) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
+  {:suite "r6-kernel-throws" :expr "(try (assoc {} :a) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
+  {:suite "r6-throwable-fqn" :expr "(str (class (try (read-string \"#inst \\\"garbage\\\"\") (catch Throwable e e))))" :expected "class java.lang.RuntimeException"}
+  {:suite "r6-throwable-fqn" :expr "(str (class (try (the-ns (quote no.such.ns.zzz)) (catch Throwable e e))))" :expected "class java.lang.Exception"}
+  {:suite "r6-throwable-fqn" :expr "(try (the-ns (quote no.such.ns.zzz)) (catch RuntimeException e :re) (catch Exception e :ex))" :expected ":ex"}
+  {:suite "r6-analyzer-strictness" :expr "(try (eval (read-string \"(try :ok (catch Throwable e :c) (prn :after))\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r6-analyzer-strictness" :expr "(try (eval (read-string \"(try 1 (finally 2) (finally 3))\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r6-analyzer-strictness" :expr "(try (eval (read-string \"(loop [x 1] (recur 1 2))\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r6-analyzer-strictness" :expr "(try :ok (catch Throwable e :c) (finally 1))" :expected ":ok"}
+  {:suite "r6-analyzer-strictness" :expr "(loop [x 3] (if (pos? x) (recur (dec x)) x))" :expected "0"}
+  {:suite "r6-analyzer-strictness" :expr "((fn [a & b] (if (seq b) (recur a (rest b)) a)) 1 2 3)" :expected "1"}
 ]

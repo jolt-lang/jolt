@@ -20,23 +20,29 @@
     ;; vectors (incl. jolt's eager seq results): last element; lists/seqs: first.
     (vector? coll) (if (zero? (count coll)) nil (nth coll (dec (count coll))))
     (seq? coll) (first coll)
-    :else (throw (str "peek not supported on: " coll))))
+    :else (throw (jolt.host/throwable "java.lang.ClassCastException"
+                                       (str "peek not supported on: " coll)))))
 
 (defn subvec
   ([v start] (subvec v start (count v)))
   ([v start end]
-   (when (not (vector? v)) (throw (str "subvec requires a vector")))
+   (when (not (vector? v))
+     (throw (jolt.host/throwable "java.lang.ClassCastException"
+                                  (str "subvec requires a vector: " v))))
    ;; Clojure coerces indices with (int ...): NaN -> 0, floats/ratios truncate
    ;; toward zero; non-numbers throw. Only then range-check.
    (let [coerce (fn [x]
                   (cond
-                    (not (number? x)) (throw (str "subvec index must be a number"))
+                    (not (number? x))
+                      (throw (jolt.host/throwable "java.lang.IllegalArgumentException"
+                                                   (str "subvec index must be a number: " x)))
                     (not= x x) 0
                     :else (long x)))
          s (coerce start)
          e (coerce end)]
      (when (or (< s 0) (< e s) (< (count v) e))
-       (throw (str "subvec index out of range: " s " " e)))
+       (throw (jolt.host/throwable "java.lang.IndexOutOfBoundsException"
+                                    (str "subvec index out of range: " s " " e))))
      (loop [i s acc []]
        (if (< i e) (recur (inc i) (conj acc (nth v i))) acc)))))
 

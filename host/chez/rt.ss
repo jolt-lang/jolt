@@ -254,6 +254,10 @@
 ;;   "java.util.NoSuchElementException" msg)). The symbol->FQN table covers the
 ;; common exception types so call sites read as a bare symbol; an explicit FQN
 ;; string is also accepted for anything not in the table.
+;; An unlisted simple name resolves through the modeled class hierarchy once
+;; class-hierarchy.ss loads (it patches this to jch-fqn-of-simple). Until then —
+;; during early boot before that file loads — a bare name is the only answer.
+(define jvm-throwable-fqn-fallback (lambda (sym) (symbol->string sym)))
 (define jvm-throwable-fqn
   (lambda (sym)
     (case sym
@@ -268,7 +272,7 @@
       ((NullPointerException) "java.lang.NullPointerException")
       ((ArityException) "clojure.lang.ArityException")
       ((IllegalAccessError) "java.lang.IllegalAccessError")
-      (else (symbol->string sym)))))
+      (else (jvm-throwable-fqn-fallback sym)))))
 (define (throw-jvm type msg)
   (jolt-throw (jolt-host-throwable (jvm-throwable-fqn type) msg)))
 
