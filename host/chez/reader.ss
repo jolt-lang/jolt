@@ -1030,6 +1030,10 @@
                (let ((g (rdr-sq-gensym (substring nm 0 (fx- (string-length nm) 1)))))
                  (hashtable-set! gsmap nm g) g)))
            ((member nm rdr-sq-specials) sym)
+           ((hc-interop-head? nm) sym)   ; interop (.method / Class. / .-field): bare
+           ;; a fully-qualified class name (java.util.Map) is a class token, not a
+           ;; var to namespace-qualify — leave it bare like the compile path.
+           ((hc-fq-class-name? nm) sym)
            (else
             ;; JVM syntax-quote resolution: the ns's own interned var wins, then
             ;; refers/aliased refers, then the implicit clojure.core default,
@@ -1056,8 +1060,9 @@
     ((symbol-t? form)
      (jolt-list (jolt-symbol #f "quote")
                 (rdr-sq-symbol form gsmap)))
+    ;; `() is (clojure.core/list) => (), NOT (clojure.core/list ()) => (()).
     ((empty-list-t? form)
-     (jolt-list (jolt-symbol "clojure.core" "list") form))
+     (jolt-list (jolt-symbol "clojure.core" "list")))
     ((cseq? form)
      (if (rdr-syntax-quote-form? form)
          ;; nested backquote: lower it first (with a fresh gsmap — auto-gensyms in
