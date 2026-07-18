@@ -71,6 +71,20 @@
 (let ((e1 (emit-form "app" "(def a (fn* ([] 1)))")))
   (ok "U1 direct-link off again: no jv$ binding" (not (contains? e1 "(define jv$app$a "))))
 
+;; --- gensym labels are per-unit: two fresh units start their counter at 0, so
+;; the SAME form emits byte-identical output (a global counter would diverge) ----
+(let ((g1 (new-unit)) (g2 (new-unit)))
+  (set-emit-unit! g1)
+  ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
+  (let ((ea (emit-form "app" "(def gg (fn* ([] (loop [] 1))))")))
+    (set-emit-unit! g2)
+    ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
+    (let ((eb (emit-form "app" "(def gg (fn* ([] (loop [] 1))))")))
+      (ok "per-unit gensym: two fresh units emit the same form identically"
+          (string=? ea eb))
+      (ok "per-unit gensym: the emitted form actually uses a gensym label"
+          (contains? ea "fnrec1")))))
+
 (set-emit-unit! #f)
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

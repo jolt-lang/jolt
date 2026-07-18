@@ -16,7 +16,7 @@
   (:require [jolt.host :refer [inline-enabled? inference-enabled? record-shapes protocol-methods stash-inline!]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
-            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
+            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace]]
              [jolt.passes.types :refer [run-inference
                                          check-form infer-body reinfer-def
                                          set-rtenv! set-vtypes!
@@ -24,8 +24,7 @@
                                         reset-escapes! collected-escapes
                                         wp-infer! param-seeds-for param-num-seeds-for
                                         set-check-mode! take-diags!
-                                        reinfer-inline-method-bodies]]
-            [jolt.backend-scheme :refer [set-ctor-shapes!]]))
+                                        reinfer-inline-method-bodies]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
@@ -97,6 +96,10 @@
   per call (the runtime compile spine, which never optimizes, so it's unused there);
   build/emit-image call the 3-arg arity with the whole-program-seeded unit they share
   across forms, so param-seeds-for reaches the seeds wp-infer! stashed."
+  ;; the 2-arg arity (the runtime compile spine) makes a fresh unit: it never
+  ;; optimizes (the const-fold :else branch), so it never installs record-shapes and
+  ;; the emit reads an empty registry either way. build/emit-image pass their published
+  ;; unit as the 3-arg arity, so the inference branches and the emit share ONE unit.
   ([node ctx] (run-passes node ctx (jolt.passes.types/new-unit)))
   ([node ctx unit]
   (when ir-validate? (report-ir! "analyze" node))
@@ -109,17 +112,15 @@
           (cond
       ;; Full inline + inference (optimize + direct-link)
       (inline-enabled? ctx)
-      (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
-            _ (set-ctor-shapes! (record-shapes ctx))  ;; backend direct ctor calls
-            ;; resolve ^Record param hints (incl. defrecord/extend-type method
-            ;; `this`) to bare field reads per-form, not only under whole-program.
-            ;; Same shapes the inline pass uses.
-            _ (set-record-shapes! unit (record-shapes ctx))
-            _ (set-protocol-methods! unit (protocol-methods ctx))  ;; devirtualization
+      ;; install the record-ctor shapes ONCE on the unit — the inline record fold and
+      ;; the back end's direct-ctor emit read it from there (jolt.op-registry holds the
+      ;; unit pointer), no separate registries. Protocol methods for devirtualization.
+      (let [_ (set-record-shapes! unit (record-shapes ctx))
+            _ (set-protocol-methods! unit (protocol-methods ctx))
             opt (loop [i 0 n (const-fold node)]
-                  (reset! dirty false)
+                  (reset! (:dirty unit) false)
                   (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
-                    (if (and @dirty (< i inline-fixpoint-cap))
+                    (if (and @(:dirty unit) (< i inline-fixpoint-cap))
                       (recur (inc i) n2)
                       n2)))
             ;; a top-level def whose params the whole-program fixpoint typed gets
@@ -136,9 +137,7 @@
       ;; Inference mode (release/optimize without direct-link): inference without
       ;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.
       (inference-enabled? ctx)
-      (let [_ (set-rec-shapes! (record-shapes ctx))
-            _ (set-ctor-shapes! (record-shapes ctx))
-            _ (set-record-shapes! unit (record-shapes ctx))
+      (let [_ (set-record-shapes! unit (record-shapes ctx))
             _ (set-protocol-methods! unit (protocol-methods ctx))
             opt (const-fold node)
             seeds (when (= :def (:op opt)) (param-seeds-for unit (str (:ns opt) "/" (:name opt))))]

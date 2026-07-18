@@ -43,12 +43,15 @@
 ;; The current compilation-unit context (jolt.passes.types unit). ALL emit-session
 ;; state — the mode flags, the direct-link name registries, the record-ctor shape
 ;; registry, the gensym counter and the per-site cache cells — lives on it, read
-;; here through this pointer because the emitter threads no unit. A driver publishes
-;; the unit (set-emit-unit!); `cur` lazily installs a fresh one so a bare emit off
-;; the driver path (a unit test, the runtime spine's first form) never reads nil.
-(def ^:private emit-unit (atom nil))
-(defn set-emit-unit! [u] (reset! emit-unit u))
-(defn- cur [] (or @emit-unit (let [u (types/new-unit)] (reset! emit-unit u) u)))
+;; here because the emitter threads no unit. The pointer lives in jolt.op-registry
+;; (the leaf) so the passes reach the same unit — jolt.passes.inline can't require
+;; the back end (a cycle). A driver publishes the unit (set-emit-unit!); `cur` lazily
+;; installs a fresh one so a bare emit never reads nil. `current-unit` is the public
+;; entry run-passes uses to share this one unit as its inference context too.
+(defn set-emit-unit! [u] (reset! jolt.op-registry/current-unit-box u))
+(defn- cur [] (or @jolt.op-registry/current-unit-box
+                  (let [u (types/new-unit)] (reset! jolt.op-registry/current-unit-box u) u)))
+(defn current-unit [] (cur))
 
 ;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
@@ -92,7 +95,7 @@
 ;; and the non-specialized path stays byte-identical.
 (defn- clone-site-key [tag proto method] (str tag "|" proto "|" method))
 (defn- clone-site? [tag proto method]
-  (when-some [u @emit-unit]
+  (when-some [u @jolt.op-registry/current-unit-box]
     (let [cs @(:clone-sites u)] (and cs (contains? cs (clone-site-key tag proto method))))))
 ;; whole-program pre-pass accumulator: impl keys (ns.type|proto|method) for
 ;; contagion-eligible impls. The build driver calls contagion-prepass! per-ns (it
@@ -133,11 +136,12 @@
 (defn contagion-prepass-done! [unit]
   (reset! (:clone-sites unit) (not-empty @(:clone-impl-keys unit))) nil)
 
-;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
-;; run-passes before each form's emit so emit-invoke can recognize ctor calls with
-;; matching arity and emit a direct fixed-arity call instead of jolt-invoke dispatch.
-(defn set-ctor-shapes! [m] (reset! (:ctor-shapes (cur)) (or m {})))
-(defn- ctor-shapes [] @(:ctor-shapes (cur)))
+;; Record-ctor shapes ("ns/->Name" -> {:fields (:k ..) :type tag}): the direct
+;; fixed-arity ctor call emit-invoke recognizes reads the SAME record shapes the
+;; inference installed on the unit (set-record-shapes!) — one registry, not a
+;; separate backend copy. run-passes shares one unit for inference and emit, so it
+;; is populated before each form's emit.
+(defn- ctor-shapes [] (get @(:config (cur)) :record-shapes))
 
 ;; Opt-in tail-frame history (JOLT_TRACE): emit a (jolt-trace-push! "name") at the
 ;; head of every named fn body, so an entry records the frame into the runtime ring
@@ -910,7 +914,7 @@
        ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
        ;; lookup AND the field vector. After per-site desc-cell warmup the hot
        ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
-       ;; dispatch. The shape is set by run-passes (set-ctor-shapes!) before emit.
+       ;; dispatch. The shape comes from the unit's record-shapes (set-record-shapes!).
        (let [key (str (:ns fnode) "/" (:name fnode))
              shape (get (ctor-shapes) key)]
          (and (= :var (:op fnode)) shape
@@ -1015,7 +1019,7 @@
 ;; register-clone* tags via the runtime current ns, exactly like register-inline-method,
 ;; so the clone and impl land under the same tag the devirt site's :devirt-type names.
 (defn- emit-impl-clone [node]
-  (when-some [u @emit-unit]
+  (when-some [u @jolt.op-registry/current-unit-box]
    (when-some [[type-name proto method fc] (register-impl-invoke node)]
     (let [ars (:arities fc)]
       (when (= 1 (count ars))
