@@ -81,6 +81,22 @@
   ([kind expr] {:op :coerce :kind kind :expr expr})
   ([kind expr cast-fn] {:op :coerce :kind kind :expr expr :cast-fn cast-fn}))
 
+;; A :fn node with exactly one fixed (non-variadic) arity — the shape several
+;; passes gate on (inline eligibility, whole-program param specialization, the
+;; success-checker's user-fn registry). Single-sourced here so those tests can't
+;; drift apart. Callers that also require the def to be non-redefinable add that
+;; check themselves.
+(defn single-fixed-arity-fn? [f]
+  (and (= :fn (get f :op))
+       (= 1 (count (get f :arities)))
+       (not (get (first (get f :arities)) :rest))))
+
+;; A :def whose init is a single-fixed-arity :fn.
+(defn single-fixed-arity-fn-def? [node]
+  (and (= :def (get node :op))
+       (get node :init)
+       (single-fixed-arity-fn? (get node :init))))
+
 ;; ---------------------------------------------------------------------------
 ;; IR schema.
 ;;
@@ -141,7 +157,6 @@
 ;;   :num-ret                a ^double/^long declared return, on a :var node.
 ;;   :phints :nhints         per-arity ^Record / ^double param hints (analyzer).
 ;;   :ret-nhint              a fn arity's declared numeric return kind.
-;;   :recur-name             the loop/fn recur target's emitted label.
 ;;   :no-init                a :def with no initializer (declare).
 ;;   :meta-expr              a :def's evaluated metadata expression.
 ;;   :pos                    reader source position {:line :column :file}.

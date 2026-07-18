@@ -33,10 +33,7 @@
 
 ;; A top-level defn the inline pass may splice: a single fixed arity (no rest). The
 ;; pass itself checks body size + closedness, so any such fn is stashable.
-(defn- inline-eligible? [node]
-  (and (= :def (:op node)) (:init node) (= :fn (:op (:init node)))
-       (= 1 (count (:arities (:init node))))
-       (not (:rest (first (:arities (:init node)))))))
+(defn- inline-eligible? [node] (jolt.ir/single-fixed-arity-fn-def? node))
 
 (defn- stash-of [node]
   (let [a (first (:arities (:init node)))]
@@ -51,7 +48,7 @@
   [node]
   (let [seeds (when (= :def (:op node)) (param-num-seeds-for (str (:ns node) "/" (:name node))))
         f (:init node)]
-    (if (and seeds (= :fn (:op f)) (= 1 (count (:arities f))))
+    (if (and seeds (jolt.ir/single-fixed-arity-fn? f))
       (let [a (first (:arities f))
             have (into #{} (map first (:nhints a)))
             add (for [[p k] seeds :when (not (have p))] [p k])]

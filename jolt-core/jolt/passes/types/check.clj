@@ -91,12 +91,9 @@
   (let [init (get node :init)
         m (get node :meta)
         redefable (and m (or (get m :redef) (get m :dynamic)))]
-    (when (and (not redefable) (= :fn (get init :op)))
-      (let [arities (get init :arities)]
-        (when (= 1 (count arities))
-          (let [ar (first arities)]
-            (when (not (get ar :rest))
-              (swap! (get env :user-sigs) assoc
-                     (str (get node :ns) "/" (get node :name))
-                     {:name (get node :name)
-                      :params (get ar :params) :body (get ar :body)}))))))))
+    (when (and (not redefable) (jolt.ir/single-fixed-arity-fn? init))
+      (let [ar (first (get init :arities))]
+        (swap! (get env :user-sigs) assoc
+               (str (get node :ns) "/" (get node :name))
+               {:name (get node :name)
+                :params (get ar :params) :body (get ar :body)})))))

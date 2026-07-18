@@ -182,18 +182,17 @@
         ;; Always a recur target, variadic included: the back end gives the rest
         ;; param an ordinary positional slot (holding the collected seq), so recur
         ;; is a self-call carrying the rest seq directly — Clojure semantics.
-        ;; The recur target doubles as the COMPILED FN'S NAME, which is what a
-        ;; host stack trace shows — so carry the Clojure ns/fn-name:
-        ;; an error inside app.deep/level3 traces as _r$app.deep/level3--N
-        ;; (report-error demangles the _r$/--N wrapper). gen-name's counter
-        ;; keeps recur targets unique per compilation unit.
+        ;; rname is the env's recur target — a per-unit-unique token recur
+        ;; resolves against (gen-name's counter keeps it unique; the ns/fn-name
+        ;; prefix is only for readability). The back end labels the emitted frame
+        ;; itself, so rname isn't carried on the node.
         rname (gen-name (str (compile-ns ctx) "/" (or fn-name "fn") "--"))
         names (cond-> (vec fixed) rst (conj rst) fn-name (conj fn-name))
         ;; recur arity: fixed params, +1 for a rest param (it takes the collected
         ;; seq as one positional slot). fn-name is the self-ref, not a param.
         env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
-        arity {:params fixed :recur-name rname
+        arity {:params fixed
                :body (analyze-seq ctx body env*)}
         ;; carry record param hints (name -> ctor-key) for the inference to seed
         ;; the param type; only when present so a hintless arity stays a struct.
@@ -458,7 +457,7 @@
                   rname (gen-name "loop")
                   r (analyze-bindings ctx bvec env)
                   env** (with-recur (second r) rname (quot (count bvec) 2))]
-              {:op :loop :recur-name rname :bindings (first r)
+              {:op :loop :bindings (first r)
                :body (analyze-seq ctx (drop 2 items) env**)})
     "recur" (let [rt (:recur env)
                   arity (:recur-arity env)
@@ -467,7 +466,7 @@
               (when (and arity (not= n arity))
                 (throw (str "Mismatched argument count to recur, expected: " arity
                             " args, got: " n)))
-              {:op :recur :recur-name rt
+              {:op :recur
                :args (mapv #(analyze ctx % env) (rest items))})
     "try" (analyze-try ctx items env)
     "letfn*" (analyze-letfn* ctx items env)
