@@ -377,14 +377,29 @@
   (hashtable-delete! ns-alias-table (cons (ns-desig->name ns-desig) (symbol-t-name alias-sym)))
   jolt-nil)
 
-;; refer: bring every public var of `ns-sym` into the current ns as an unqualified
-;; name (filters accepted/ignored — the corpus uses the bare form). refer-clojure
-;; is a no-op (clojure.core always resolves on Chez).
-(define (jolt-refer ns-sym . _filters)
-  (let ((target (ns-desig->name ns-sym)) (cns (chez-current-ns)))
+;; refer: bring the public vars of `ns-sym` into the current ns as unqualified
+;; names. :only [names] restricts to those names; :exclude [names] drops them.
+;; (:rename is not yet supported — the refer table keys on the plain name.)
+(define (jolt-refer ns-sym . filters)
+  (let ((target (ns-desig->name ns-sym)) (cns (chez-current-ns))
+        (only #f) (excl '()))
+    ;; parse :only / :exclude name lists into string sets
+    (let loop ((a filters))
+      (when (and (pair? a) (pair? (cdr a)))
+        (let ((k (car a)) (v (cadr a)))
+          (when (keyword? k)
+            (let ((names (lambda () (let ((xs (seq->list v)))
+                                      (map symbol-t-name (filter symbol-t? xs))))))
+              (cond
+                ((string=? (keyword-t-name k) "only")    (set! only (names)))
+                ((string=? (keyword-t-name k) "exclude") (set! excl (names)))))))
+        (loop (cddr a))))
     (vector-for-each
-      (lambda (c) (when (and (string=? (var-cell-ns c) target) (var-cell-defined? c))
-                    (chez-register-refer! cns (var-cell-name c) target)))
+      (lambda (c)
+        (when (and (string=? (var-cell-ns c) target) (var-cell-defined? c))
+          (let ((nm (var-cell-name c)))
+            (when (and (or (not only) (member nm only)) (not (member nm excl)))
+              (chez-register-refer! cns nm target)))))
       (hashtable-values var-table))
     jolt-nil))
 ;; (:refer-clojure :exclude [names…]) — clojure.core always resolves on Chez, so

@@ -1098,4 +1098,12 @@
   {:suite "r7-transient" :expr "(empty? (transient [1 2]))" :expected "false"}
   {:suite "r7-transient" :expr "[(empty? (transient {})) (empty? (transient #{})) (empty? (transient #{1}))]" :expected "[true true false]"}
   {:suite "r7-transient" :expr "(let [t (transient [])] (conj! t 1) (empty? t))" :expected "false"}
+  {:suite "r5-reader" :expr "0177N" :expected "127"}
+  {:suite "r5-reader" :expr "0177" :expected "127"}
+  {:suite "r5-reader" :expr "042" :expected "34"}
+  {:suite "r5-reader" :expr "0" :expected "0"}
+  {:suite "r5-reader" :expr "(try (eval (read-string \"08\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r5-refer" :expr "(do (refer (quote clojure.set) :only (quote [union])) [(some? (resolve (quote union))) (resolve (quote difference))])" :expected "[true nil]"}
+  {:suite "r5-refer" :expr "(do (refer (quote clojure.set) :exclude (quote [difference])) [(some? (resolve (quote union))) (resolve (quote difference))])" :expected "[true nil]"}
+  {:suite "r5-refer" :expr "(do (refer (quote clojure.set) :only (quote [union])) (union #{1} #{2}))" :expected "#{1 2}"}
 ]
