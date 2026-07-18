@@ -194,13 +194,19 @@
   (let loop ((k 0) (acc 0) (j i))
     (if (= k n)
         (values acc j)
-        (loop (+ k 1) (+ (* acc 16) (rdr-hexdigit (string-ref s j))) (+ j 1)))))
+        (let ((d (and (< j (string-length s)) (rdr-hexdigit (string-ref s j)))))
+          ;; a non-hex digit or a run shorter than n is a reader error with the
+          ;; source position (ex-info), not a raw Chez "bad hex digit" condition.
+          (if d
+              (loop (+ k 1) (+ (* acc 16) d) (+ j 1))
+              (rdr-error s (if (< j (string-length s)) j i)
+                         "Invalid unicode escape (expected hex digits)"))))))
 
-(define (rdr-hexdigit c)
+(define (rdr-hexdigit c)                 ; hex digit value, or #f if not a hex char
   (cond ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
         ((and (char>=? c #\a) (char<=? c #\f)) (+ 10 (- (char->integer c) 97)))
         ((and (char>=? c #\A) (char<=? c #\F)) (+ 10 (- (char->integer c) 65)))
-        (else (error 'reader "bad hex digit" c))))
+        (else #f)))
 
 ;; opening quote already consumed; read to the closing quote, processing escapes.
 (define (rdr-read-string-lit s i end)
@@ -280,10 +286,20 @@
     ((string=? name "backspace") #\backspace)
     ((string=? name "formfeed") #\page)
     ((char=? (string-ref name 0) #\u)
-      (let ((cp (string->number (substring name 1 (string-length name)) 16)))
-        (if (and cp (>= cp #xD800) (<= cp #xDFFF))
-            (jolt-throw (jolt-ex-info "Invalid character constant: lone surrogate \\u escape" empty-pmap))
-            (integer->char cp))))
+      (let* ((hex (substring name 1 (string-length name)))
+             (cp (string->number hex 16)))
+        (cond
+          ;; \uXXXX takes exactly 4 hex digits; a bad digit or wrong length is a
+          ;; reader error (ex-info), not a raw integer->char crash on #f.
+          ((not (= (string-length hex) 4))
+           (jolt-throw (jolt-ex-info (string-append "Invalid unicode character escape length: "
+                                                    (number->string (string-length hex)) ", should be: 4")
+                                     empty-pmap)))
+          ((not cp)
+           (jolt-throw (jolt-ex-info (string-append "Invalid unicode character: \\u" hex) empty-pmap)))
+          ((and (>= cp #xD800) (<= cp #xDFFF))
+           (jolt-throw (jolt-ex-info "Invalid character constant: lone surrogate \\u escape" empty-pmap)))
+          (else (integer->char cp)))))
     ((char=? (string-ref name 0) #\o)
      (let ((v (string->number (substring name 1 (string-length name)) 8)))
        (when (or (not v) (> v 255))
@@ -762,9 +778,12 @@
       (let-values (((tok j) (rdr-read-token s i end)))
         (let ((len (string-length tok)))
           ;; ":" and "::" alone, a leading or trailing slash (a name of exactly
-          ;; "/" is fine, :ns//), or an auto-resolved keyword in edn (no
-          ;; resolution context) are invalid tokens.
+          ;; "/" is fine, :ns//), a token that STARTS with ':' (:::foo — the
+          ;; leading colon(s) are already consumed, and a keyword name can't begin
+          ;; with a colon, though :foo:bar is fine mid-name), or an auto-resolved
+          ;; keyword in edn (no resolution context) are invalid tokens.
           (when (or (= len 0)
+                    (char=? (string-ref tok 0) #\:)
                     (and (> len 1) (char=? (string-ref tok 0) #\/))
                     (and (> len 1) (char=? (string-ref tok (- len 1)) #\/)
                          (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/)))))

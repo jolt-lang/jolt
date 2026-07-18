@@ -26,7 +26,7 @@
   :permissive
   "jolt succeeds where the JVM throws, on operations with one reasonable meaning: ex-info accepts nil data, count works on eduction, keys on a vector of pairs, (empty MapEntry) => []. A superset: portable JVM code behaves identically.",
   :namespace-model
-  "jolt's namespace layer is permissive: clojure.core always resolves (a :refer-clojure :exclude/:only affects syntax-quote qualification but not resolve/ns-resolve), var privacy is not enforced across namespaces, and ns-resolve/ns-unmap on a missing ns return nil rather than throwing. A superset — code that resolves on the JVM resolves on jolt."},
+  "jolt's namespace layer is permissive: clojure.core always resolves (a :refer-clojure :exclude/:only affects syntax-quote qualification but not resolve/ns-resolve) and var privacy is not enforced across namespaces. A superset — code that resolves on the JVM resolves on jolt."},
  :documented
  [;; Deliberate/tracked divergences that are NOT corpus rows, so they live here (not in
   ;; :entries, which certify.clj gates for staleness against the corpus).
@@ -64,12 +64,8 @@
    :jvm "throws (var is not public)"
    :jolt "returns the value"
    :note "Var privacy is not enforced across namespaces; ns-publics still filters privates out."}
-  ;; ns-resolve/ns-unmap/alias on a missing namespace are permissive.
-  {:category :namespace-model
-   :behavior "ns-resolve / ns-unmap / alias on a missing namespace"
-   :jvm "throws"
-   :jolt "returns nil (or no-ops)"
-   :note "Permissive; intern/the-ns do throw. Consistency deferred."}
+  ;; (ns-resolve / ns-unmap / alias on a missing namespace now throw like the JVM —
+  ;;  jolt-ox7c.33 — so that divergence is gone.)
   ;; an unregistered reader tag reads as an inert tagged literal rather than throwing.
   {:category :reader-model
    :behavior "(read-string \"#foo/bar 5\") with no reader for foo/bar"
@@ -82,6 +78,12 @@
    :jvm "throws (EOF while reading)"
    :jolt "nil"
    :note "Permissive."}
+  ;; auto-gensym suffix differs by a trailing "__".
+  {:category :reader-model
+   :behavior "an auto-gensym x# expands to a symbol named"
+   :jvm "x__N__auto__"
+   :jolt "x__N__auto"
+   :note "Cosmetic; each x# in a syntax-quote is still consistently renamed. Only string comparison of gensym names would see it."}
   ;; #?(...) reader conditionals are read by default (JVM requires {:read-cond :allow}).
   {:category :reader-model
    :behavior "read-string of a #?(...) reader conditional"
