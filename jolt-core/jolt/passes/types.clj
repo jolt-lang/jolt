@@ -84,7 +84,19 @@
    ;; keys, and the resolved clone-site set the :devirt-type emit clause consults
    ;; (via the back-end emit-unit pointer). nil outside a whole-program build.
    :clone-impl-keys (atom nil)
-   :clone-sites (atom nil)})
+   :clone-sites (atom nil)
+   ;; back-end emit-session config (read through the emit-unit pointer, since emit
+   ;; threads no unit): the mode flags a driver sets before emitting, the direct-link
+   ;; name registries a build accumulates, and the per-form record-ctor shapes the
+   ;; direct-ctor-call emit consults. Per-invocation config, but held here so the
+   ;; whole compilation context is one value and nothing is process-global.
+   :prelude-mode? (atom false)
+   :direct-link? (atom false)
+   :var-cache? (atom false)
+   :trace-frames? (atom false)
+   :direct-link-defined (atom #{})
+   :direct-link-fns (atom #{})
+   :ctor-shapes (atom {})})
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags and
 ;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level

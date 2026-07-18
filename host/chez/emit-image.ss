@@ -65,10 +65,13 @@
 (define jolt-set-emit-unit! (var-deref "jolt.backend-scheme" "set-emit-unit!"))
 (define ei-unit-box #f)
 (define (ei-unit) (or ei-unit-box (begin (set! ei-unit-box (jolt-ei-new-unit)) ei-unit-box)))
-(define (ei-fresh-unit!) (set! ei-unit-box (jolt-ei-new-unit)) ei-unit-box)
-;; publish the current unit to the backend so emit-impl-clone reaches it. Guarded for
-;; the first re-mint off an older seed (no set-emit-unit! yet) — and only called on the
-;; optimize/tree-shake emit paths, never the plain mint, so mint output is unchanged.
+;; a build creates one unit per build and publishes it immediately, so the mode flags
+;; a build then sets (set-direct-link!/set-var-cache!) land on THIS unit — the same one
+;; the per-form emit reads its emit-session state from.
+(define (ei-fresh-unit!) (set! ei-unit-box (jolt-ei-new-unit)) (ei-publish-unit!) ei-unit-box)
+;; publish the current unit to the backend so the emit reads its emit-session state
+;; (flags, gensym, cache-cells, ctor-shapes) and the contagion clone reaches it.
+;; Guarded for the first re-mint off an older seed (no set-emit-unit! yet).
 (define (ei-publish-unit!) (when (procedure? jolt-set-emit-unit!) (jolt-set-emit-unit! (ei-unit))))
 ;; --- whole-program analysis cache for --opt builds ----------------------------
 ;; bld-wp-infer! populates this; ei-compile-form checks it to skip re-analysis.

@@ -286,9 +286,9 @@
 (define jolt-reset-clone-prepass!    (var-deref "jolt.backend-scheme" "reset-clone-prepass!"))
 
 (define (bld-wp-infer! ordered)
-  ;; fresh inference context for this build, shared with emit-image's run-passes so
-  ;; the whole-program seeds set here flow into the per-form emit (ei-unit).
-  (ei-fresh-unit!)
+  ;; the build's compilation unit (ei-unit) is created + published by the build setup
+  ;; before any flag is set, so the whole-program seeds set here — and the mode flags —
+  ;; land on the one unit the per-form emit reads.
   (jolt-wp-set-record-shapes! (ei-unit) (jolt-wp-host-record-shapes #f))
   (jolt-wp-set-proto-methods! (ei-unit) (jolt-wp-host-proto-methods #f))
   (let ((nodes '()) (ns-nodes '()))
@@ -746,6 +746,12 @@
           (((core-strs app-strs drop-compiler?)
             (dynamic-wind
               (lambda ()
+                ;; Create + publish this build's compilation unit FIRST, so every
+                ;; mode flag below lands on it (the unit the per-form emit reads).
+                ;; The build emits app + core forms that reference clojure.core, which
+                ;; must lower to var-deref, so prelude mode is on for the whole build.
+                (ei-fresh-unit!)
+                ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
                 (set-optimize! (string=? mode "optimized"))
                 (set-release! (string=? mode "release"))
                 (when direct-link?

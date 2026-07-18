@@ -24,6 +24,7 @@
 (define kw              (lambda (n) (keyword #f n)))
 (define U ((var-deref "jolt.passes.types" "new-unit")))
 ((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 ;; one protocol, three inline impls (distinct per-type results), instances.

@@ -14,6 +14,7 @@
 (define analyze (var-deref "jolt.analyzer" "analyze"))
 (define U ((var-deref "jolt.passes.types" "new-unit")))
 ((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 
 ;; Populate runtime tables with a protocol and a defrecord with inline method impl.

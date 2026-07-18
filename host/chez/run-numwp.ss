@@ -26,6 +26,7 @@
 (define pr-str               (var-deref "clojure.core" "pr-str"))
 (define U ((var-deref "jolt.passes.types" "new-unit")))
 ((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 

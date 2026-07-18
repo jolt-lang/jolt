@@ -40,50 +40,47 @@
 ;; protocol method).
 (def ^:private supported-host-methods #{"isDirectory" "listFiles"})
 
+;; The current compilation-unit context (jolt.passes.types unit). ALL emit-session
+;; state — the mode flags, the direct-link name registries, the record-ctor shape
+;; registry, the gensym counter and the per-site cache cells — lives on it, read
+;; here through this pointer because the emitter threads no unit. A driver publishes
+;; the unit (set-emit-unit!); `cur` lazily installs a fresh one so a bare emit off
+;; the driver path (a unit test, the runtime spine's first form) never reads nil.
+(def ^:private emit-unit (atom nil))
+(defn set-emit-unit! [u] (reset! emit-unit u))
+(defn- cur [] (or @emit-unit (let [u (types/new-unit)] (reset! emit-unit u) u)))
+
 ;; PRELUDE MODE. The default (subset) mode rejects any clojure.core ref
 ;; that isn't a native-op — a clean "out of subset" signal for user-facing `-e`.
 ;; When emitting clojure.core ITSELF as a prelude, core fns reference each other
 ;; constantly; those lower to var-deref (resolved at runtime).
-(def prelude-mode? (atom false))
-(defn set-prelude-mode! [on] (reset! prelude-mode? on))
+(defn set-prelude-mode! [on] (reset! (:prelude-mode? (cur)) (boolean on)))
+(defn- prelude-mode? [] @(:prelude-mode? (cur)))
 
 ;; DIRECT-LINK MODE. Off for ordinary runs, the seed mint, and `-e`/repl/load-string
 ;; (open world — vars are redefinable). `jolt build` (release/optimized) flips it on
 ;; during app emission: a closed-world program where every app def is final, so an
 ;; app->app call binds to the def's Scheme binding directly, skipping the var-table
 ;; lookup and the generic jolt-invoke dispatch.
-(def direct-link? (atom false))
-(defn set-direct-link! [on] (reset! direct-link? on))
+(defn set-direct-link! [on] (reset! (:direct-link? (cur)) (boolean on)))
+(defn- direct-link? [] @(:direct-link? (cur)))
 
 ;; Fully-qualified app var names ("ns/name") already emitted with a direct-link
-;; binding in the current unit. A call/value-ref direct-links only to a name in this
-;; set — one defined earlier in emission order (or itself), so the Scheme binding
-;; exists by the time the reference runs. Reset per build.
-(def direct-link-defined (atom #{}))
-;; Of those, the ones whose init is a fn literal — safe to call as a raw Scheme
-;; application. A def of a non-fn value (a map, set, keyword, …) is invokable in
-;; Clojure but is not a Scheme procedure, so its calls must still route through
-;; jolt-invoke even with a direct binding.
-(def direct-link-fns (atom #{}))
-(defn direct-link-reset! [] (reset! direct-link-defined #{}) (reset! direct-link-fns #{}))
+;; binding in the current unit; and, of those, the ones whose init is a fn literal
+;; (safe to call as a raw Scheme application — a non-fn value is invokable in Clojure
+;; but not a Scheme procedure, so its calls still route through jolt-invoke). A
+;; call/value-ref direct-links only to a name defined earlier in emission order (or
+;; itself), so the Scheme binding exists by the time the reference runs. Reset per build.
+(defn direct-link-reset! []
+  (reset! (:direct-link-defined (cur)) #{}) (reset! (:direct-link-fns (cur)) #{}))
 
 ;; Cache a resolved var cell in a per-site cell so a non-direct-linked var
 ;; reference skips the name lookup (string-append + hash) after the first use.
 ;; OFF during the seed mint (the seed must stay a byte-fixpoint, and caching the
 ;; compiler's own refs shifts the gensym-numbered cell names every pass); the
 ;; runtime eval path turns it on for user code, where it's the big win.
-(def var-cache? (atom false))
-(defn set-var-cache! [on] (reset! var-cache? on))
-
-;; The inference context (jolt.passes.types unit) the emit-time contagion clone reads.
-;; contagion-specialize-arity is a jolt.passes.types entry that needs the unit (record
-;; shapes etc.), but emit-impl-clone runs deep in the emitter with no unit threaded, so
-;; the driver publishes the current unit here right before emitting (emit-image sets it
-;; to the whole-program-seeded unit under --opt/tree-shake). nil off that path (the seed
-;; mint, plain runtime eval) — emit-impl-clone then emits no clone, exactly as a build
-;; with no eligible impls, so those outputs stay byte-identical.
-(def ^:private emit-unit (atom nil))
-(defn set-emit-unit! [u] (reset! emit-unit u))
+(defn set-var-cache! [on] (reset! (:var-cache? (cur)) (boolean on)))
+(defn- var-cache? [] @(:var-cache? (cur)))
 
 ;; contagion clone sites (jolt devirt-gated fl* contagion for :num fields): a set of
 ;; "tag|proto|method" keys for impls whose body has a :num field beside a proven
@@ -139,16 +136,16 @@
 ;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
 ;; run-passes before each form's emit so emit-invoke can recognize ctor calls with
 ;; matching arity and emit a direct fixed-arity call instead of jolt-invoke dispatch.
-(def ctor-shapes (atom {}))
-(defn set-ctor-shapes! [m] (reset! ctor-shapes (or m {})))
+(defn set-ctor-shapes! [m] (reset! (:ctor-shapes (cur)) (or m {})))
+(defn- ctor-shapes [] @(:ctor-shapes (cur)))
 
 ;; Opt-in tail-frame history (JOLT_TRACE): emit a (jolt-trace-push! "name") at the
 ;; head of every named fn body, so an entry records the frame into the runtime ring
 ;; buffer (rt.ss) and a TCO-elided frame still shows in an error's backtrace. OFF
 ;; during the seed mint and `jolt build` (byte-determinism + no runtime cost);
 ;; compile-eval.ss turns it on for runtime-eval'd user code when JOLT_TRACE is set.
-(def trace-frames? (atom false))
-(defn set-trace-frames! [on] (reset! trace-frames? on))
+(defn set-trace-frames! [on] (reset! (:trace-frames? (cur)) (boolean on)))
+(defn- trace-frames? [] @(:trace-frames? (cur)))
 
 ;; A direct-link Scheme binding name for a var. The fqn maps to a unique identifier
 ;; jv$<ns>$<name>; chars that break a Scheme identifier or the `$` separator are
@@ -158,11 +155,11 @@
 (defn- dl-name [ns nm] (str "jv$" (dl-munge ns) "$" (dl-munge nm)))
 (defn- dl-fqn [ns nm] (str ns "/" nm))
 (defn- direct-linkable? [ns nm]
-  (and @direct-link? (contains? @direct-link-defined (dl-fqn ns nm))))
+  (and (direct-link?) (contains? @(:direct-link-defined (cur)) (dl-fqn ns nm))))
 ;; A direct-linked var whose value is a fn literal — its binding is a Scheme
 ;; procedure, so a call site can apply it directly.
 (defn- direct-link-fn? [ns nm]
-  (contains? @direct-link-fns (dl-fqn ns nm)))
+  (contains? @(:direct-link-fns (cur)) (dl-fqn ns nm)))
 
 ;; recur-target and the set of munged local names known to hold a procedure (a
 ;; named fn's self-recursion name) are lexically scoped — dynamic vars so the
@@ -604,7 +601,7 @@
         ;; the body then tail-calls away is still in the ring at throw time. A
         ;; `recur` re-enters via the named-let, not the lambda, so a tight loop
         ;; records once, not per iteration.
-        clauses (if (and @trace-frames? self)
+        clauses (if (and (trace-frames?) self)
                   (mapv (fn [c] [(nth c 0)
                                  (str "(begin (jolt-trace-push! " (chez-str-lit self) ") "
                                       (nth c 1) ")")])
@@ -727,7 +724,7 @@
 ;; direct calls (:local known-proc, direct-link) always have one; a jolt-invoke
 ;; call usually reaches one but not always (see the best-effort note in rt.ss).
 (defn- emit-call [tail? callee operand-strs]
-  (if (and @trace-frames? tail?)
+  (if (and (trace-frames?) tail?)
     (tail-marked-call callee operand-strs)
     (plain-call callee operand-strs)))
 
@@ -884,7 +881,7 @@
                              "(jolt-nth "
                              "(jolt-get ")
                            c " " (str/join " " as) ")")))
-      (and (stdlib-var? fnode) (not (deref prelude-mode?)))
+      (and (stdlib-var? fnode) (not (prelude-mode?)))
       (throw (ex-info (str "emit: unsupported stdlib fn `" (:ns fnode) "/" (:name fnode)
                            "` (no core on Chez yet)") {}))
       ;; static method call (Class/method arg*) -> (host-static-call ...).
@@ -917,13 +914,13 @@
        ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
        ;; dispatch. The shape is set by run-passes (set-ctor-shapes!) before emit.
        (let [key (str (:ns fnode) "/" (:name fnode))
-             shape (get @ctor-shapes key)]
+             shape (get (ctor-shapes) key)]
          (and (= :var (:op fnode)) shape
               (= (count (get shape :fields)) (count args))
               (<= (count args) 6)
               ;; skip if any ^double field — the inlined path doesn't coerce
               (not-any? #{"double"} (get shape :tags))))
-       (let [s (get @ctor-shapes (str (:ns fnode) "/" (:name fnode)))
+       (let [s (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))
              tag (:type s)
              cells @cache-cells
              desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
@@ -1000,7 +997,7 @@
 ;; via emit-def-cached; this covers the open-world eval path.
 (defn- trace-source-reg [node]
   (let [init (:init node) pos (:pos node)]
-    (if (and @trace-frames? (= :fn (:op init)) (:name init) pos)
+    (if (and (trace-frames?) (= :fn (:op init)) (:name init) pos)
       (str " (jolt-register-source! " (chez-str-lit (munge-name (:name init))) " "
            (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
            (if (:file pos) (chez-str-lit (:file pos)) "jolt-nil") " "
@@ -1053,7 +1050,7 @@
              ;; direct-linked app var used as a value -> reference its binding (same
              ;; root as the var cell for a final var; helps DCE keep it live).
              (direct-linkable? (:ns node) (:name node)) (dl-name (:ns node) (:name node))
-             (and (stdlib-var? node) (not (deref prelude-mode?)))
+             (and (stdlib-var? node) (not (prelude-mode?)))
              (throw (ex-info (str "emit: unsupported stdlib ref `" (:ns node) "/" (:name node)
                                   "` (no core on Chez yet)") {}))
              ;; inside a def, cache the interned var cell in a per-site cell so the
@@ -1067,7 +1064,7 @@
              :else
              (let [cells @cache-cells
                    nslit (chez-str-lit (:ns node)) nmlit (chez-str-lit (:name node))]
-               (if (and @var-cache? cells)
+               (if (and (var-cache?) cells)
                  (let [c (fresh-label "_vc$")]
                    (swap! cells conj c)
                    (str "(var-cell-deref (or " c " (let ((_v (jolt-var " nslit " " nmlit "))) (set! " c " _v) _v)))"))
@@ -1179,7 +1176,7 @@
 ;; and registers it for app->app direct linking + a source-map frame.
 (defn- emit-def-cached [node]
   (let [ns (:ns node) nm (:name node)
-        dl? (and @direct-link? (not (dl-opt-out? (:meta node))))
+        dl? (and (direct-link?) (not (dl-opt-out? (:meta node))))
         b (dl-name ns nm)
         fn? (= :fn (:op (:init node)))
         ;; A fn def gets a source-registry entry so a native backtrace can map its
@@ -1196,8 +1193,8 @@
                    (if (get pos :file) (chez-str-lit (get pos :file)) "jolt-nil") " "
                    (or (get pos :line) 0) ")"))
         ;; register before emitting the init so a self-referential body direct-links.
-        _ (when dl? (swap! direct-link-defined conj (dl-fqn ns nm))
-                    (when fn? (swap! direct-link-fns conj (dl-fqn ns nm))))
+        _ (when dl? (swap! (:direct-link-defined (cur)) conj (dl-fqn ns nm))
+                    (when fn? (swap! (:direct-link-fns (cur)) conj (dl-fqn ns nm))))
         init (emit-with-cells #(emit (:init node)))]
     (cond
       dl?
@@ -1215,7 +1212,7 @@
   (cond
     ;; off direct-link (the seed mint + runtime-via-image) this is exactly `emit`,
     ;; whose :def case already wraps cache cells, so the seed stays byte-unchanged.
-    (not @direct-link?) (emit node)
+    (not (direct-link?)) (emit node)
     ;; top-level do splices: each statement/ret is itself a top-level form.
     (= :do (:op node))
     (str "(begin " (str/join " " (map emit-top-form (:statements node)))
