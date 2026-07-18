@@ -396,20 +396,20 @@
            (let ((cnt (pmap-cnt m)) (ord (pmap-order m)))
              (if (fx>? cnt (if (all-keywords? ord) array-map-limit-kw array-map-limit))
                  (pmap->hash m) m)))
-          ((null? (cdr kvs)) (error 'hash-map "odd number of map literal entries"))
+          ((null? (cdr kvs)) (throw-jvm (quote IllegalArgumentException) "odd number of map literal entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
 ;; array-map ctor: insertion-ordered (PersistentArrayMap, createAsIfByAssoc).
 ;; Promotes past 8 entries to hash-ordered.
 (define (jolt-array-map-build kvs)
   (let loop ((m empty-pmap) (kvs kvs))
     (cond ((null? kvs) m)
-          ((null? (cdr kvs)) (error 'array-map "odd number of map entries"))
+          ((null? (cdr kvs)) (throw-jvm (quote IllegalArgumentException) "odd number of map entries"))
           (else (loop (pmap-put-ordered m (car kvs) (cadr kvs)) (cddr kvs))))))
 ;; hash-map-build: CL function hash-map — always hash-ordered (JVM PersistentHashMap).
 (define (jolt-hash-map-build kvs)
   (let loop ((m empty-pmap-hash) (kvs kvs))
     (cond ((null? kvs) m)
-          ((null? (cdr kvs)) (error 'hash-map "odd number of map entries"))
+          ((null? (cdr kvs)) (throw-jvm (quote IllegalArgumentException) "odd number of map entries"))
           (else (loop (pmap-put-hash m (car kvs) (cadr kvs)) (cddr kvs))))))
 
 (define-record-type pset (fields m (mutable hasheq)) (nongenerative chez-pset-v2))
@@ -446,7 +446,7 @@
                ((pmap? x) (pmap-fold-fwd x (lambda (k v m) (pmap-assoc m k v)) coll))   ; merge in x's order
                ((and (pvec? x) (fx=? 2 (pvec-count x)))
                 (pmap-assoc coll (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
-               (else (error 'conj "conj on a map expects a [k v] pair or a map"))))
+               (else (throw-jvm (quote IllegalArgumentException) "conj on a map expects a [k v] pair or a map"))))
         (else (let loop ((as jolt-conj1-arms))
                 (cond ((null? as)
                        (cond ((rec-coll-method coll "cons") => (lambda (m) (jolt-invoke m coll x)))
@@ -523,7 +523,7 @@
                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))
              ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i)))
-             (else (error 'nth "unsupported collection")))))
+             (else (throw-jvm (quote UnsupportedOperationException) (string-append "nth not supported on this type: " (jolt-class-name coll)))))))
     ((coll i d)
      (jolt-nth-nil-idx! i)
      (let ((i (->idx i)))
@@ -551,7 +551,7 @@
 (define (jolt-count-base coll)
   ;; arms exhausted: a deftype/record counts through its declared method.
   (cond ((rec-coll-method coll "count") => (lambda (m) (jolt-invoke m coll)))
-        (else (error 'count "uncountable"))))
+        (else (throw-jvm (quote UnsupportedOperationException) (string-append "count not supported on this type: " (jolt-class-name coll))))))
 (define (jolt-count coll)
   (cond ((pvec? coll) (pvec-count coll))
         ((pmap? coll) (pmap-cnt coll))
@@ -577,7 +577,7 @@
   (meta-carry coll
     (let loop ((coll coll) (kvs kvs))
       (cond ((null? kvs) coll)
-            ((null? (cdr kvs)) (error 'assoc "assoc expects an even number of key/vals"))
+            ((null? (cdr kvs)) (throw-jvm (quote IllegalArgumentException) "assoc expects an even number of key/vals"))
             (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs)))))))
 (define jolt-assoc3 (lambda (coll k v) (meta-carry coll (jolt-assoc1 coll k v))))
 
