@@ -614,7 +614,7 @@
         (cons "format" (lambda (self d) (format-ms (vector-ref (jhost-state self) 0) (ms-of d))))))
 
 ;; a jinst's java.util.Date method surface (record-method-dispatch arm).
-(register-method-arm! 40
+(register-method-arm! arm-priority-date
   (lambda (obj method-name rest-args)
     (cond
       ((jinst? obj)

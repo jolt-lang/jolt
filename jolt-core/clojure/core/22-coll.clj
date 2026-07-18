@@ -1,13 +1,10 @@
-;; clojure.core — collection tier, part 3 (canonical Clojure ports: key/val/find,
-;; merge-with, memoize, group-by, frequencies, transduce/into/eduction, and the
-;; JVM-shape stubs). Continues 21-coll.clj; same constraints.
+;; clojure.core — collection tier, part 3 (canonical Clojure ports: find,
+;; merge-with, memoize, get-in/assoc-in/update-in, comp, transduce/into/eduction,
+;; and the JVM-shape stubs). Continues 21-coll.clj; same constraints.
+;; (key/val/group-by/frequencies live in 20-coll.clj.)
 
 ;; --- canonical Clojure ports -------------------------------------------------
-;; key/val/find first — merge-with and memoize below use them.
-
-;; Strict, as in Clojure: an entry is what (seq m) yields (a host tuple), NOT
-;; a plain vector — (key [1 2]) throws.
-;; key/val moved above the hierarchies section (underive uses them).
+;; find first — merge-with and memoize below use it.
 
 ;; find was previously missing from jolt entirely. Presence (contains?), not
 ;; value, decides — so (find {:a nil} :a) is [:a nil]. Works on vectors by
@@ -315,8 +312,6 @@
 ;; into stays a host primitive: it's perf-wall hot (the into-vec bench pays ~11%
 ;; through the overlay call layers — same lesson as even?/odd?).
 
-;; eduction is EAGER on jolt (documented divergence): the composed
-;; xforms applied to coll, realized into a vector.
 ;; A lazy application of the composed xforms to coll (sequence is lazy now), so an
 ;; infinite or expensive source isn't realized up front. Not a re-iterable Eduction
 ;; object, but reduce / into / seq / first over it all work.

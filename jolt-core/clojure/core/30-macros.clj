@@ -3,9 +3,9 @@
 ;; fn/macro.
 ;;
 ;; IMPORTANT — only macros NOT used by the self-hosted compiler (jolt-core/jolt/*)
-;; or by the earlier overlay tiers belong here; those (and/or/when/when-not/
-;; when-let/cond/case/doseq/declare/cond->/->) must stay available before this
-;; tier loads, so they remain host primitives for now. Everything here is user-facing.
+;; or by the earlier overlay tiers belong here. Those needed earlier
+;; (and/or/when/when-not/when-let/cond/case/doseq/declare/cond->/->) are defmacros
+;; in 00-syntax.clj, which loads first. Everything here is user-facing.
 ;;
 ;; Migration: remove the host core-X macro fn AND its core-macro-names entry when
 ;; moving a macro here (defmacro installs the :macro flag itself).
@@ -283,10 +283,9 @@
 
 ;; Build the fn* form via a template (a reader-list array): cons/list in a macro
 ;; body produce a plist the evaluator can't call as a form.
-;; letfn is a primitive special form (analyze-letfn -> letrec*), not a macro: its
-;; fns are mutually recursive, which a (let* …) expansion cannot express. Defining
-;; it as a macro would shadow the special once macroexpansion runs first (the
-;; canonical order), so it is intentionally NOT a macro here.
+;; letfn itself is a macro in 00-syntax.clj expanding to the letfn* special form
+;; (mutual recursion, which a plain (let* …) can't express); it lives there
+;; because earlier tiers use it.
 
 ;; Dynamic binding: install a thread-binding frame of var->value (array-map keeps
 ;; var-get happy, unlike a phm), restore on exit.

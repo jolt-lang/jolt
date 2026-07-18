@@ -184,8 +184,9 @@
 ;; --- pmap family: parallel map over real-thread futures ----------------------
 ;; Each element's work runs on its own OS thread with SNAPSHOT semantics
 ;; (futures marshal captured state — pure fns only, mutations don't propagate
-;; back). Semi-lazy: spawns (+ 2 procs) futures ahead of consumption so the
-;; realization window is bounded, like Clojure's pmap. Does not force the
+;; back). Semi-lazy: spawns a fixed look-ahead of 4 futures ahead of consumption
+;; so the realization window is bounded (Clojure sizes it 2 + availableProcessors;
+;; jolt has no processor-count seam, so a fixed window). Does not force the
 ;; entire input collection — (first (take 2 (pmap inc (range)))) terminates.
 ;; All futures are spawned up front (doall), then derefed in order:
 ;; coarse-grained work only, as with Clojure's pmap.

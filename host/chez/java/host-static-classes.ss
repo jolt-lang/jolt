@@ -834,7 +834,7 @@
 ;; record-method-dispatch already routes string? -> jolt-string-method. Add a
 ;; regex-t arm (Pattern .split / .matcher-less surface used by corpus) by wrapping
 ;; once more — a regex-t isn't a jhost.
-(register-method-arm! 42
+(register-method-arm! arm-priority-regex
   (lambda (obj method-name rest-args)
     (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
       (cond
@@ -909,7 +909,7 @@
 
 ;; htable arm: dispatch (.method obj a*) through the table's tag method registry;
 ;; an unregistered method falls through (sorted colls are htables too).
-(register-method-arm! 43
+(register-method-arm! arm-priority-htable
   (lambda (obj method-name rest-args)
     (let ((tag (and (htable? obj) (hashtable-ref (htable-h obj) "jolt/type" #f))))
       (let* ((mh (and tag (hashtable-ref tagged-methods-tbl (tag->method-key tag) #f)))
@@ -1373,19 +1373,12 @@
               'pass))
         'pass)))
 ;; count over the mutable collection shims, like RT.count over a java.util
-;; Collection/Map on the JVM.
-(define %shim-count jolt-count)
-(set! jolt-count
-  (lambda (x)
-    (if (jhost? x)
-        (let ((tag (jhost-tag x)))
-          (cond ((or (string=? tag "arraylist") (string=? tag "linkedlist")
-                     (string=? tag "arraydeque"))
-                 (al-cnt x))
-                ((or (string=? tag "hashmap") (string=? tag "hashset"))
-                 (hashtable-size (hm-tbl x)))
-                (else (%shim-count x))))
-        (%shim-count x))))
+;; Collection/Map on the JVM. Each shim registers a count arm (the hashmap arm
+;; is registered with its get/contains arms above); jolt-count walks the arms
+;; newest-first for jhost values, so these replace an earlier set!-wrap of
+;; jolt-count that duplicated the hashmap arm.
+(register-count-arm! al-family? (lambda (c) (al-cnt c)))
+(register-count-arm! hs-hashset? (lambda (c) (hashtable-size (hm-tbl c))))
 ;; IEditableCollection / ITransient* answer from the representation: the
 ;; transient-able persistent collections are editable; a transient reports its
 ;; kind's interfaces. Widening only — anything else passes to the other arms.
@@ -1462,6 +1455,13 @@
                       (and (procedure? x) (hashtable-ref chez-deftype-ctor-tag x #f) #t))
                   #t #f)))
 ;; nth over the java.util List shims, like RT.nth on a java.util.List.
+;; This stays a set!-wrap of jolt-nth rather than a registered arm: unlike
+;; jolt-count (which has a register-count-arm! registry), jolt-nth is an inline
+;; case-lambda with no nth-arm registry, so there is no arm mechanism to move
+;; this into. Converting an al-family List to a cseq here and delegating to the
+;; base jolt-nth is the only way nth reaches these shims. See the note by
+;; register-count-arm! in collections.ss — jolt-nth's migration to an arm
+;; registry is deferred until it gets its own bench guard.
 (define %shim-nth jolt-nth)
 (set! jolt-nth
   (case-lambda
