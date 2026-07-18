@@ -572,11 +572,9 @@
               (lambda (self name)
                 (let ((u (cl-get-resource self name)))
                   (if (jolt-nil? u) jolt-nil (host-new "StringReader" (jolt-slurp (url-strip-scheme (url-spec u))))))))))
-(register-class-statics! "ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
 (register-class-statics! "java.lang.ClassLoader" (list (cons "getSystemClassLoader" (lambda () the-classloader))))
 ;; clojure.lang.RT/baseLoader — the resource-resolving class loader (RT/baseLoader
 ;; is how libraries reach Clojure's base loader, e.g. aws-api's resources ns).
-(register-class-statics! "RT" (list (cons "baseLoader" (lambda () the-classloader))))
 (register-class-statics! "clojure.lang.RT" (list (cons "baseLoader" (lambda () the-classloader))))
 ;; clojure.lang.RT/nextID — process-unique increasing id (AtomicInteger(1)
 ;; getAndIncrement), used by id generators such as core.logic's lvar.
@@ -655,10 +653,8 @@
     (if (pair? rest)
         (jolt-make-file (string-append (file-path-of a) "/" (file-path-of (car rest))))
         (jolt-make-file a))))
-;; UUID: randomUUID / fromString statics + a (UUID. s) string ctor.
-(register-class-statics! "UUID"
-  (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
-        (cons "fromString" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))))
+;; UUID: randomUUID / fromString statics + a (UUID. s) string ctor. Registering
+;; under the FQN also registers the short name (shared member table).
 (register-class-statics! "java.util.UUID"
   (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
         (cons "fromString" (lambda (s) (jolt-parse-uuid (jolt-str-render-one s))))))
@@ -778,7 +774,6 @@
 (register-class-ctor! "URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
 (register-class-ctor! "java.net.URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
 ;; URI/create — the static factory, same as the (URI. s) constructor.
-(register-class-statics! "URI" (list (cons "create" (lambda (s) (uri-parse (jolt-str-render-one s))))))
 (register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-parse (jolt-str-render-one s))))))
 (register-host-methods! "uri"
   (list (cons "toString" (lambda (u) (uri-field u 'string)))

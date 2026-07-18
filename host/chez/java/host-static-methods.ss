@@ -14,13 +14,12 @@
 ;; real results stay flonums, NaN/Inf pass through. real? is #f on a Chez complex.
 (define (real-or-nan x) (if (and (number? x) (real? x)) (exact->inexact x) +nan.0))
 (define math-pi (acos -1.0))
-;; sign-aware cube root: expt of a negative flonum to 1/3 goes complex.
-(define (math-cbrt x)
-  (let ((x (exact->inexact x)))
-    (if (< x 0.0) (- (expt (- x) (/ 1.0 3.0))) (expt x (/ 1.0 3.0)))))
 (register-class-statics! "Math"
   (list (cons "sqrt" (lambda (x) (real-or-nan (sqrt x))))
-        (cons "cbrt" (lambda (x) (math-cbrt x)))
+        ;; cbrt/log10 (and hypot/expm1/log1p below) share the clojure.math impls
+        ;; in math.ss (loaded after; the lambda bodies resolve at call time) so
+        ;; Math/x and clojure.math/x never diverge.
+        (cons "cbrt" (lambda (x) (jolt-math-cbrt (->dbl x))))
         (cons "pow" (lambda (a b) (real-or-nan (expt a b))))
         ;; hypot/expm1/log1p route to the numerically-stable clojure.math impls
         ;; (defined later in math.ss; the lambda body resolves at call time, after
@@ -42,7 +41,7 @@
         (cons "atan2" (lambda (y x) (->dbl (atan y x))))
         (cons "sinh" (lambda (x) (->dbl (sinh x)))) (cons "cosh" (lambda (x) (->dbl (cosh x))))
         (cons "tanh" (lambda (x) (->dbl (tanh x))))
-        (cons "log" (lambda (x) (real-or-nan (log x)))) (cons "log10" (lambda (x) (real-or-nan (/ (log x) (log 10)))))
+        (cons "log" (lambda (x) (real-or-nan (log x)))) (cons "log10" (lambda (x) (jolt-math-log10 (->dbl x))))
         (cons "log1p" (lambda (x) (jolt-math-log1p (->dbl x))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
         (cons "expm1" (lambda (x) (jolt-math-expm1 (->dbl x))))
@@ -117,7 +116,6 @@
 
 ;; clojure.lang.LockingTransaction: jolt refs with serialized transactions.
 ;; isRunning -> true when a transaction is active on this thread.
-(register-class-statics! "LockingTransaction" (list (cons "isRunning" (lambda () (and (*txn*) #t)))))
 (register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () (and (*txn*) #t)))))
 
 ;; clojure.lang.LazilyPersistentVector/createOwning: build a vector from an array
@@ -182,19 +180,16 @@
                  ((and (fx>=? cp 65) (fx<=? cp 90)) (fx+ 10 (fx- cp 65)))   ; A-Z
                  (else 99))))
     (if (fx<? d radix) d -1)))
-(define character-statics
+;; Character's isDigit/isWhitespace/isUpperCase/isLowerCase/TYPE are registered
+;; in one block further below; these are the codepoint conversion statics.
+(register-class-statics! "java.lang.Character"
   (list (cons "digit" (lambda (ch radix) (->num (char-digit-value (char->cp ch) (jnum->exact radix)))))
         (cons "toChars" (lambda (cp) (na-char-array (jolt-vector (integer->char (char->cp cp))))))
-        (cons "isDigit" (lambda (ch) (let ((cp (char->cp ch))) (and (fx>=? cp 48) (fx<=? cp 57)))))
-        (cons "isWhitespace" (lambda (ch) (char-whitespace? (integer->char (char->cp ch)))))
         (cons "valueOf" (lambda (ch) (if (char? ch) ch (integer->char (char->cp ch)))))))
-(register-class-statics! "Character" character-statics)
-(register-class-statics! "java.lang.Character" character-statics)
 
-;; java.util.regex.Pattern/compile: a regex value from a string pattern.
-(define pattern-statics (list (cons "compile" (lambda (s) (jolt-regex (jolt-str-render-one s))))))
-(register-class-statics! "Pattern" pattern-statics)
-(register-class-statics! "java.util.regex.Pattern" pattern-statics)
+;; java.util.regex.Pattern statics (compile/quote/MULTILINE) are registered once
+;; in host-static-classes.ss — the flags-aware compile there subsumes the plain
+;; one-arg form this file used to register.
 
 ;; clojure.lang.BigInt / clojure.lang.Numbers: jolt has one exact-integer type
 ;; (Chez bignums auto-reduce), so BigInt.fromBigInteger and Numbers.reduceBigInt
@@ -202,8 +197,6 @@
 (define identity-num-statics (list (cons "fromBigInteger" (lambda (x) x))))
 (register-class-statics! "BigInt" identity-num-statics)
 (register-class-statics! "clojure.lang.BigInt" identity-num-statics)
-(register-class-statics! "Numbers"
-  (list (cons "reduceBigInt" (lambda (x) x)) (cons "toRatio" (lambda (x) x))))
 (register-class-statics! "clojure.lang.Numbers"
   (list (cons "reduceBigInt" (lambda (x) x)) (cons "toRatio" (lambda (x) x))))
 
@@ -237,9 +230,6 @@
         (cons "console" (lambda _ jolt-nil))
         (cons "lineSeparator" (lambda _ "\n"))
         (cons "identityHashCode" (lambda (x) (->num (equal-hash x))))))
-(register-class-statics! "java.lang.System"
-  (list (cons "console" (lambda _ jolt-nil))
-        (cons "lineSeparator" (lambda _ "\n"))))
 
 ;; java.lang.Long.bitCount: the population count of the value's 64-bit two's-
 ;; complement (mask to 64 bits so a negative long counts like the JVM, e.g.
@@ -323,7 +313,7 @@
         (cons "parseFloat" parse-double-or-throw) (cons "valueOf" ->double)))
 
 ;; Character: ASCII predicates (the engine is byte/ASCII oriented).
-(register-class-statics! "Character"
+(register-class-statics! "java.lang.Character"
   (list (cons "TYPE" "char")
         (cons "isUpperCase" (lambda (c) (let ((n (char-code c))) (and (>= n 65) (<= n 90)))))
         (cons "isLowerCase" (lambda (c) (let ((n (char-code c))) (and (>= n 97) (<= n 122)))))

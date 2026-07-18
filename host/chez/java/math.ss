@@ -117,7 +117,10 @@
 (def-var! "clojure.math" "exp" (m1 exp))
 (def-var! "clojure.math" "expm1" jolt-math-expm1)
 (def-var! "clojure.math" "log" (m1c log))
-(def-var! "clojure.math" "log10" (lambda (x) (real-or-nan (log x 10.0))))
+;; base-10 log via Chez's base-arg log — also backs java.lang.Math/log10 so the
+;; two never disagree.
+(define (jolt-math-log10 x) (real-or-nan (log x 10.0)))
+(def-var! "clojure.math" "log10" jolt-math-log10)
 (def-var! "clojure.math" "log1p" jolt-math-log1p)
 (def-var! "clojure.math" "sin" (m1 sin))
 (def-var! "clojure.math" "cos" (m1 cos))

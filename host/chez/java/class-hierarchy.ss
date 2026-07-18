@@ -387,6 +387,72 @@
 (jch-register-supers! "java.util.GregorianCalendar" '())
 (jch-register-supers! "java.util.Locale" '())
 (jch-register-supers! "java.util.TimeZone" '())
+;; #inst / (Date.) classes. java.sql.Date and java.sql.Timestamp are Date
+;; subclasses (jolt's one #inst value reports Date only — see inst-time.ss, which
+;; answers instance? Timestamp #f — so these rows exist for the sql-date shim and
+;; for isa?/supers of the class tokens, not for the #inst value's dispatch tags).
+(jch-register-supers! "java.util.Date" '("java.lang.Comparable"))
+(jch-register-supers! "java.sql.Date" '("java.util.Date"))
+(jch-register-supers! "java.sql.Timestamp" '("java.util.Date"))
+(jch-register-supers! "java.nio.ByteBuffer" '("java.lang.Comparable"))
+
+;; ---- jhost value tag -> FQN (single value-discriminator registry) --------------
+;; A value-layer shim value (make-jhost tag …) reports its JVM class by this map;
+;; value-host-tags (records.ss) and (class x)/instance? (host-static-classes.ss)
+;; both derive from it, so a shim value's protocol-dispatch tags, class name, and
+;; instance? answers stay in agreement and inherit the graph's supers (an Instant
+;; is a Temporal, a StringWriter is a Writer). Add a row here, not in three places.
+(define jhost-tag->fqn (make-hashtable string-hash string=?))
+(for-each (lambda (p) (hashtable-set! jhost-tag->fqn (car p) (cdr p)))
+  '(("instant" . "java.time.Instant")
+    ("local-date" . "java.time.LocalDate")
+    ("local-time" . "java.time.LocalTime")
+    ("local-date-time" . "java.time.LocalDateTime")
+    ("zoned-dt" . "java.time.ZonedDateTime")
+    ("zoned-date-time" . "java.time.ZonedDateTime")
+    ("offset-date-time" . "java.time.OffsetDateTime")
+    ("offset-time" . "java.time.OffsetTime")
+    ("duration" . "java.time.Duration")
+    ("period" . "java.time.Period")
+    ("year" . "java.time.Year")
+    ("year-month" . "java.time.YearMonth")
+    ("zone-id" . "java.time.ZoneId")
+    ("zone-offset" . "java.time.ZoneOffset")
+    ("zone-rules" . "java.time.zone.ZoneRules")
+    ("chrono-unit" . "java.time.temporal.ChronoUnit")
+    ("chrono-field" . "java.time.temporal.ChronoField")
+    ("month-enum" . "java.time.Month")
+    ("dow-enum" . "java.time.DayOfWeek")
+    ("clock" . "java.time.Clock")
+    ("dt-formatter" . "java.time.format.DateTimeFormatter")
+    ("sdf" . "java.text.SimpleDateFormat")
+    ("calendar" . "java.util.GregorianCalendar")
+    ("locale" . "java.util.Locale")
+    ("timezone" . "java.util.TimeZone")
+    ("sql-date" . "java.sql.Date")
+    ("uri" . "java.net.URI")
+    ("byte-buffer" . "java.nio.ByteBuffer")
+    ("arraylist" . "java.util.ArrayList")
+    ("linkedlist" . "java.util.LinkedList")
+    ("arraydeque" . "java.util.ArrayDeque")
+    ("hashmap" . "java.util.HashMap")
+    ("hashset" . "java.util.HashSet")
+    ;; io writer/reader shims: *out* is a PrintWriter like the JVM REPL's
+    ("port-writer" . "java.io.PrintWriter")
+    ("print-writer" . "java.io.PrintWriter")
+    ("file-writer" . "java.io.FileWriter")
+    ("writer" . "java.io.StringWriter")
+    ("string-reader" . "java.io.StringReader")
+    ("pushback-reader" . "java.io.PushbackReader")
+    ("char-writer" . "java.io.OutputStreamWriter")
+    ("char-reader" . "java.io.InputStreamReader")))
+;; FQN for a jhost tag, or #f if the tag names no modeled class (e.g. "class",
+;; "in-stream", "jolt-comparator") — callers fall through on #f.
+(define (jhost-fqn tag) (hashtable-ref jhost-tag->fqn tag #f))
+;; the protocol-dispatch / instance? tag list for a jhost value's tag, or #f.
+(define (jhost-value-tags tag)
+  (let ((fqn (hashtable-ref jhost-tag->fqn tag #f)))
+    (and fqn (jch-tags fqn))))
 
 ;; Public seam: libraries extend the modeled hierarchy.
 (def-var! "jolt.host" "register-class-supers!"

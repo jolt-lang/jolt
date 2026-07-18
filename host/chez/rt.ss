@@ -277,18 +277,18 @@
   (jolt-throw (jolt-host-throwable (jvm-throwable-fqn type) msg)))
 
 ;; --- host interop ------------------------------------------------------------
-;; (.method target arg*) lowers to (jolt-host-call "method" target arg*). JVM
-;; interop has no general Chez analog, but the few methods jolt-core's io tier
-;; calls map onto Chez equivalents: a writer's .write is a port display; a File's
-;; .isDirectory / .listFiles work over a path string (Chez has no File type, so
-;; file-seq's File branch is unreachable here — these keep the forms honest). An
-;; unsupported method raises rather than silently returning nil.
+;; (.method target arg*) with method in backend supported-host-methods
+;; (isDirectory/listFiles) lowers to (jolt-host-call "method" target arg*). Those
+;; map onto Chez path operations when the receiver is a path STRING; a File value
+;; is intercepted by io.ss's wrapper before reaching here. Any other receiver (a
+;; deftype/record with its own .isDirectory) routes to the normal method dispatch
+;; instead of misapplying file ops to it. record-method-dispatch is loaded later
+;; (records.ss) and resolved at call time.
 (define (jolt-host-call method target . args)
   (cond
-    ((string=? method "write") (display (car args) target) jolt-nil)
-    ((string=? method "isDirectory") (if (file-directory? target) #t #f))
-    ((string=? method "listFiles") (list->cseq (directory-list target)))
-    (else (error 'jolt-host-call (string-append "unsupported host method: ." method)))))
+    ((and (string=? method "isDirectory") (string? target)) (if (file-directory? target) #t #f))
+    ((and (string=? method "listFiles") (string? target)) (list->cseq (directory-list target)))
+    (else (record-method-dispatch target method (apply jolt-vector args)))))
 
 ;; --- var cells: late-bound global roots (Clojure vars) -----------------------
 ;; A var is a mutable cell keyed by "ns/name". A `:def` sets the root; a `:var`

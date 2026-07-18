@@ -25,6 +25,16 @@
 (define class-ctors-tbl   (make-hashtable string-hash string=?))   ; "Class" -> ctor proc
 (define host-methods-tbl  (make-hashtable string-hash string=?))   ; tag -> (method-ht)
 
+;; Does `nm` name a registered host class (has statics or a constructor)? The
+;; analyzer's contract layer asks this to treat a bare Capitalized symbol as a
+;; class; exposing it keeps the registry tables private to the java layer.
+(define (host-class-registered? nm)
+  (or (and (hashtable-ref class-statics-tbl nm #f) #t)
+      (and (hashtable-ref class-ctors-tbl nm #f) #t)))
+;; narrower: registered with STATICS (not just a constructor) — an imported class
+;; short name used as a static-call target, distinct from a deftype's bare name.
+(define (host-class-has-statics? nm) (and (hashtable-ref class-statics-tbl nm #f) #t))
+
 ;; A class token may arrive fully qualified (java.io.StringReader) or short
 ;; (StringReader). Register both; resolve by exact then by last dotted segment.
 (define (short-class-name s)
@@ -32,6 +42,17 @@
     (cond ((< i 0) s)
           ((char=? (string-ref s i) #\.) (substring s (+ i 1) (string-length s)))
           (else (loop (- i 1))))))
+
+;; A member re-registered with a DIFFERENT value across files is drift (two
+;; sources fighting over one static, last-wins silently deciding) — warn so it
+;; surfaces instead of shipping the wrong one (the Pattern/compile+quote bug).
+;; Registering the same member object twice (the FQN+short double-register below,
+;; or a value equal? to the prior one) is not a collision.
+(define (registry-collision! kind class member old new)
+  (when (and (not (eq? old new)) (not (equal? old new)))
+    (fprintf (current-error-port)
+             "warning: ~a member ~a/~a registered twice with different values\n"
+             kind class member)))
 
 (define (register-class-statics! name members)  ; members: list of (str . val/proc)
   (let* ((short (short-class-name name))
@@ -45,7 +66,11 @@
     (hashtable-set! class-statics-tbl name h)
     (unless (string=? name short)
       (hashtable-set! class-statics-tbl short h))
-    (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
+    (for-each (lambda (p)
+                (let ((old (hashtable-ref h (car p) #f)))
+                  (when old (registry-collision! "static" name (car p) old (cdr p))))
+                (hashtable-set! h (car p) (cdr p)))
+              members)))
 
 (define (register-class-ctor! name proc) (hashtable-set! class-ctors-tbl name proc))
 

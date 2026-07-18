@@ -781,23 +781,12 @@
 ;; PosixFilePermissions/asFileAttribute -> a FileAttribute the create ops apply
 ;; by chmod after making the entry.
 (define (file-attr? x) (and (jhost? x) (string=? (jhost-tag x) "file-attribute")))
-(register-class-statics! "PosixFilePermissions"
-  (list (cons "asFileAttribute" (lambda (perms) (make-jhost "file-attribute" perms)))))
 (register-class-statics! "java.nio.file.attribute.PosixFilePermissions"
   (list (cons "asFileAttribute" (lambda (perms) (make-jhost "file-attribute" perms)))))
 
 
-;; java.util.regex.Pattern/quote — escape regex metacharacters in a literal.
-(define (nio-pattern-quote s)
-  (list->string
-   (fold-right (lambda (c acc)
-                 (if (memv c '(#\\ #\. #\* #\+ #\? #\( #\) #\[ #\] #\{ #\} #\^ #\$ #\|))
-                     (cons #\\ (cons c acc)) (cons c acc)))
-               '() (string->list s))))
-(register-class-statics! "Pattern" (list (cons "quote" nio-pattern-quote)))
-(register-class-statics! "java.util.regex.Pattern" (list (cons "quote" nio-pattern-quote)))
-
-
+;; java.util.regex.Pattern statics (incl. quote) are registered once in
+;; host-static-classes.ss — no per-file copy here.
 
 ;; ---- umask-masked create perms, symlink-aware move/copy ---------------------
 (define c-umask (jolt-foreign-proc-safe "umask" '(int) 'int))
