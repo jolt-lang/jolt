@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now `(4)`.
 - **`if-let`/`if-some`/`when-some` reject a malformed binding vector**, and
   `assert` expands to nothing when `*assert*` is false at compile time.
+- **Taking the value of a macro is a compile error** (`(partial when …)` no longer
+  silently yields the macro's expansion as data), and `get-method`, `methods`,
+  `prefer-method`, `remove-method`, `remove-all-methods`, and `prefers` are
+  functions, so they work under `map`/`apply`/`partial` like the JVM. (`instance?`
+  stays a macro — jolt's class model precludes the fn form.)
 
 ## [0.4.1] - 2026-07-17
 
