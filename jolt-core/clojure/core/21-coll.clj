@@ -1,6 +1,7 @@
-;; clojure.core — collection tier, part 2 (rand/sort host seams, the
-;; clojure.test runner, fn combinators). Continues 20-coll.clj; same constraints
-;; (pure, eager, no macros), loaded in the 20 slot before 25-sorted.
+;; clojure.core — collection tier, part 2 (rand/shuffle/sort host seams, uuid,
+;; seq builders tree-seq/file-seq/xml-seq, fn combinators comparator/reductions).
+;; Continues 20-coll.clj; same constraints (pure, eager, no macros), loaded in the
+;; 20 slot before 25-sorted. (clojure.test lives in stdlib/clojure/test.clj.)
 
 ;; --- leaves over the rand / sort host seams ----------------------------------
 

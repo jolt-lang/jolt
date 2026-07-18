@@ -209,6 +209,9 @@
 ;; The clojure.core tiers + stdlib namespaces, in load order.
 ;; Re-emitting these on Chez is the
 ;; prelude half of the fixpoint (the whole emitted system reproducing itself).
+;; This list IS the load order — the numeric filename prefixes are only a hint and
+;; don't disambiguate a tie: 00-syntax loads BEFORE 00-kernel (it provides the
+;; when/and/or/cond macros the kernel-adjacent tiers lean on).
 (define ei-prelude-ns-files
   (append
     (map (lambda (tf) (cons "clojure.core" (string-append "jolt-core/clojure/core/" tf ".clj")))
