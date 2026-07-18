@@ -85,14 +85,18 @@
 (def ^:private emit-unit (atom nil))
 (defn set-emit-unit! [u] (reset! emit-unit u))
 
-;; contagion clone sites (jolt devirt-gated fl* contagion for :num fields). A set of
+;; contagion clone sites (jolt devirt-gated fl* contagion for :num fields): a set of
 ;; "tag|proto|method" keys for impls whose body has a :num field beside a proven
-;; :double operand — worth a contagion-specialized clone at the devirt site. Populated
-;; by a whole-program pre-pass (register-contagion-clones! below) so the devirt-site
-;; resolution can consult it regardless of emit order; empty in non-WP builds.
-(def ^:private clone-sites (atom nil))
+;; :double operand — worth a contagion-specialized clone at the devirt site. It lives
+;; on the compilation unit (:clone-sites), populated by a whole-program pre-pass
+;; (contagion-prepass!) so the devirt-site resolution can consult it regardless of emit
+;; order; nil in non-WP builds. The emit-time reader reaches it through the emit-unit
+;; pointer (emit threads no unit) — nil off the optimize path, so clone-site? is false
+;; and the non-specialized path stays byte-identical.
 (defn- clone-site-key [tag proto method] (str tag "|" proto "|" method))
-(defn- clone-site? [tag proto method] (and @clone-sites (contains? @clone-sites (clone-site-key tag proto method))))
+(defn- clone-site? [tag proto method]
+  (when-some [u @emit-unit]
+    (let [cs @(:clone-sites u)] (and cs (contains? cs (clone-site-key tag proto method))))))
 ;; whole-program pre-pass accumulator: impl keys (ns.type|proto|method) for
 ;; contagion-eligible impls. The build driver calls contagion-prepass! per-ns (it
 ;; knows the ns) then contagion-prepass-done!, which makes clone-sites the
@@ -109,10 +113,9 @@
 ;; invariant, so there is no correctness cost; a clone for an eligible impl that no
 ;; devirt site reaches is dead (kept by DCE via register-clone*) — a size, not
 ;; correctness, concern, checked via the binary-size gate.
-(def ^:private clone-impl-keys (atom nil))
-(defn reset-clone-prepass! []
-  (reset! clone-impl-keys #{}) (reset! clone-sites nil)
-  (types/reset-clone-double-ret!))
+(defn reset-clone-prepass! [unit]
+  (reset! (:clone-impl-keys unit) #{}) (reset! (:clone-sites unit) nil)
+  (types/reset-clone-double-ret! unit))
 (defn contagion-prepass! [unit nodes ns]
   (letfn [(walk [n]
             (when-some [[type-name proto method fc] (register-impl-invoke n)]
@@ -121,17 +124,17 @@
                   (let [res (types/contagion-specialize-arity unit (first ars) type-name)]
                     (when (nth res 1)
                       (let [tag (str ns "." type-name)]
-                        (swap! clone-impl-keys conj (clone-site-key tag proto method))
+                        (swap! (:clone-impl-keys unit) conj (clone-site-key tag proto method))
                         ;; the clone's return is :double -> the devirt sites that
                         ;; resolve it type their return :double per-site (infer-call),
                         ;; so a caller accumulator add over them lowers to fl+.
                         (when (nth res 2)
-                          (types/add-clone-double-ret! tag proto method))))))))
+                          (types/add-clone-double-ret! unit tag proto method))))))))
             (ir/reduce-ir-children (fn [_ c] (walk c) nil) nil n))]
     (run! walk nodes)
     nil))
-(defn contagion-prepass-done! []
-  (reset! clone-sites (not-empty @clone-impl-keys)) nil)
+(defn contagion-prepass-done! [unit]
+  (reset! (:clone-sites unit) (not-empty @(:clone-impl-keys unit))) nil)
 
 ;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), set by
 ;; run-passes before each form's emit so emit-invoke can recognize ctor calls with

@@ -71,7 +71,20 @@
    :wp-field-joins (atom {})
    :wp-field-demote (atom #{})
    :wp-seeds (atom {})
-   :wp-num-seeds (atom {})})
+   :wp-num-seeds (atom {})
+   ;; the contagion channel — inferred field types + the devirt-clone bookkeeping
+   ;; the back-end emit path reads (via the back-end emit-unit pointer, since emit
+   ;; threads no unit): the lean field-types the walk reads for an untagged record
+   ;; field, the rich variant (keeps :num) a contagion clone reads, and the set of
+   ;; "tag|proto|method" clone sites whose clone returns :double.
+   :field-types (atom {})
+   :rich-field-types (atom {})
+   :clone-double-ret (atom #{})
+   ;; backend contagion pre-pass state: the accumulator of contagion-eligible impl
+   ;; keys, and the resolved clone-site set the :devirt-type emit clause consults
+   ;; (via the back-end emit-unit pointer). nil outside a whole-program build.
+   :clone-impl-keys (atom nil)
+   :clone-sites (atom nil)})
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags and
 ;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level
@@ -91,31 +104,23 @@
 ;; flonum -> :double (reads unbox); a record-or-nil field -> nilable record (guarded
 ;; reads narrow to the direct accessor); a conflicting/escaping/mutable field is
 ;; absent here (reads :any). Consulted by record-type-from-entry for UNTAGGED fields.
-;; Still a module atom (with clone-double-ret + rich-field-types below): the backend's
-;; contagion emit (emit-impl-clone -> contagion-specialize-arity) reads these during
-;; emit without a unit in scope, so this whole contagion channel moves into the unit
-;; in the backend phase, not here.
-(def ^:private field-types-box (atom {}))
-;; rich variant: same joins keeping :num, consulted ONLY through *field-type-box*
-;; (contagion) so a specialized clone's :num field reads a :double-contagion operand;
-;; the shared fixpoint / pm-rets / ordinary impl body read the lean field-types-box.
-(def ^:private rich-field-types-box (atom {}))
-;; The field-types atom the walk reads for an UNTAGGED record field: field-types-box
-;; by default, rich-field-types-box while contagion-specialize-arity is bound.
+;; The field-types atom the walk reads for an UNTAGGED record field. Bound per
+;; read context to the unit's lean :field-types (the default) or its rich
+;; :rich-field-types (while contagion-specialize-arity runs). field-type-from-tag
+;; reads it; unbound (nil) it reads no inferred types, so a missed binding site
+;; only widens a field to :any (a perf, not a correctness, effect).
 (def ^:dynamic *field-type-box* nil)
 
-;; clone-resolving devirt sites whose contagion clone returns :double. Populated by
-;; the backend contagion pre-pass (contagion-prepass!) AFTER wp-infer!; empty outside
-;; a whole-program build. infer-call consults it at a devirt site to type the call's
-;; return :double per-site — so a caller's accumulator add over that site fires
-;; dbl-arith? and lowers to fl+. Still a module atom: it bridges the backend prepass
-;; to the infer walk and moves into the unit alongside the rest of the backend state.
-(def ^:private clone-double-ret-box (atom #{}))
-(defn reset-clone-double-ret! [] (reset! clone-double-ret-box #{}))
-(defn add-clone-double-ret! [type-tag proto method]
-  (swap! clone-double-ret-box conj (str type-tag "|" proto "|" method)))
-(defn- clone-double-ret? [type-tag proto method]
-  (contains? @clone-double-ret-box (str type-tag "|" proto "|" method)))
+;; clone-resolving devirt sites whose contagion clone returns :double (unit
+;; :clone-double-ret). Populated by the backend contagion pre-pass (contagion-prepass!)
+;; AFTER wp-infer!; empty outside a whole-program build. infer-call consults it at a
+;; devirt site to type the call's return :double per-site — so a caller's accumulator
+;; add over that site fires dbl-arith? and lowers to fl+.
+(defn reset-clone-double-ret! [unit] (reset! (:clone-double-ret unit) #{}))
+(defn add-clone-double-ret! [unit type-tag proto method]
+  (swap! (:clone-double-ret unit) conj (str type-tag "|" proto "|" method)))
+(defn- clone-double-ret? [unit type-tag proto method]
+  (contains? @(:clone-double-ret unit) (str type-tag "|" proto "|" method)))
 
 ;; simple record name from a ctor-key "ns/->Name".
 (defn- ctor-simple-name [ctor-key]
@@ -144,7 +149,7 @@
 (declare record-type-from-entry)
 ;; the type a field reads back as. A declared coercible ^double hint always wins
 ;; (the ctor coerces the arg to a flonum). A declared ^Record hint recurses. An
-;; UNTAGGED field takes the inferred ctor-arg join from field-types-box (or :any).
+;; UNTAGGED field takes the inferred ctor-arg join from the unit lean field types (or :any).
 (defn- field-type-from-tag [tag depth shapes ctor-key field-kw]
   (cond
     (<= depth 0) :any
@@ -152,8 +157,8 @@
     (= tag "num") :num
     (some? tag) (let [e (get shapes tag)]
                   (if e (record-type-from-entry e tag depth shapes) :any))
-    :else (let [box (or *field-type-box* field-types-box)
-                inf (get-in @box [ctor-key field-kw])]
+    :else (let [box *field-type-box*
+                inf (when box (get-in @box [ctor-key field-kw]))]
             (if inf inf :any))))
 (defn- record-type-from-entry [rs ctor-key depth shapes]
   (let [fields (get rs :fields)
@@ -567,7 +572,7 @@
                  ;; fires dbl-arith? and lowers to fl+. global pm-rets is untouched;
                  ;; PIC/megamorphic sites (no rtype) never reach here.
                  devirt-double? (and rtype pm
-                                     (clone-double-ret? rtype (nth pm 0) (nth pm 1)))
+                                     (clone-double-ret? (:unit env) rtype (nth pm 0) (nth pm 1)))
                  rt* (if devirt-double? :double rt)
                  rt1 (if (and (= rt* :double) (not maybe-dbl))
                        (assoc base* :num-read :double) base*)
@@ -968,7 +973,10 @@
   Skips host type names (no record shape). Returns the node with annotated
   fn bodies spliced into the invoke args."
   [unit node]
-  (let [walk (fn walk [n]
+  ;; the receiver-type build + body infer read the unit's lean field types, so an
+  ;; untagged record field a ctor site fills with a flonum reads :double and unboxes.
+  (binding [*field-type-box* (:field-types unit)]
+   (let [walk (fn walk [n]
                (if-some [[type-name _ _ fnn] (register-impl-invoke? n)]
                  (if (seq (get fnn :arities))
                    (let [rtype (inline-impl-receiver-type unit type-name
@@ -988,7 +996,7 @@
                        (map-ir-children walk n)))
                    (map-ir-children walk n))
                  (map-ir-children walk n)))]
-    (walk node)))
+    (walk node))))
 
 ;; count :coerce :double nodes anywhere in a subtree (reduce-ir-children is one
 ;; level, so walk it). Used to tell whether contagion added a coercion the shared
@@ -1004,7 +1012,7 @@
   receiver record `type-name`. Returns [specialized-arity eligible?].
 
   The receiver (param 0) is seeded as the record type with its :num fields surfaced
-  (rich-field-types-box, via *field-type-box*), so dbl-arith? contagions a :num field
+  (the unit rich field types, via *field-type-box*), so dbl-arith? contagions a :num field
   read that sits beside a proven :double operand — wrapping it in coerce :double,
   emitted as exact->inexact. That is the same machinery a genuine ^double field
   reaches; contagion is sound because Clojure double contagion makes the result a
@@ -1015,27 +1023,30 @@
   eligible? is true only when contagion fired a site the shared (lean) path leaves
   generic — more coerce :double nodes than the lean receiver type yields — so a clone
   is emitted exactly when it recovers fl* the shared body lacks. Isolated from the
-  shared fixpoint: it reads rich-field-types-box, never field-types-box, so pm-rets
+  shared fixpoint: it reads the rich field types, never the lean, so pm-rets
   and the ordinary impl body stay Option-A lean. Returns [arity false] when the
   receiver isn't a known record (a host type, or no record shape)."
   [unit arity type-name]
-  (let [params (get arity :params)
-        body (get arity :body)
-        rich-rtype (binding [*field-type-box* rich-field-types-box]
-                     (inline-impl-receiver-type unit type-name params))]
-    (if (not rich-rtype)
-      [arity false false]
-      (let [env (mk-env unit false false)
-            rich-res (infer body (if (seq params) {(first params) rich-rtype} {}) env)
-            rich-body (nth rich-res 1)
-            rich-ret (nth rich-res 0)
-            lean-rtype (inline-impl-receiver-type unit type-name params)
-            lean-body (if lean-rtype
-                        (nth (infer body (if (seq params) {(first params) lean-rtype} {}) env) 1)
-                        body)]
-        (if (> (count-coerce-double rich-body) (count-coerce-double lean-body))
-          [(assoc arity :body rich-body) true (= :double rich-ret)]
-          [arity false false])))))
+  ;; the lean field-types are the default the body infers read; the receiver TYPE is
+  ;; built under the rich box so its :num fields surface for dbl-arith? contagion.
+  (binding [*field-type-box* (:field-types unit)]
+    (let [params (get arity :params)
+          body (get arity :body)
+          rich-rtype (binding [*field-type-box* (:rich-field-types unit)]
+                       (inline-impl-receiver-type unit type-name params))]
+      (if (not rich-rtype)
+        [arity false false]
+        (let [env (mk-env unit false false)
+              rich-res (infer body (if (seq params) {(first params) rich-rtype} {}) env)
+              rich-body (nth rich-res 1)
+              rich-ret (nth rich-res 0)
+              lean-rtype (inline-impl-receiver-type unit type-name params)
+              lean-body (if lean-rtype
+                          (nth (infer body (if (seq params) {(first params) lean-rtype} {}) env) 1)
+                          body)]
+          (if (> (count-coerce-double rich-body) (count-coerce-double lean-body))
+            [(assoc arity :body rich-body) true (= :double rich-ret)]
+            [arity false false]))))))
 
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded
@@ -1043,7 +1054,9 @@
   end emits the result directly (no further passes), so the param-typed lookups
   keep their specialization. Used by the inter-procedural recompile."
   [unit def-node ptmap]
-  (let [fnode (get def-node :init)
+  ;; the walk reads the unit's lean field types for untagged record fields.
+  (binding [*field-type-box* (:field-types unit)]
+   (let [fnode (get def-node :init)
         env (if (get @(:check-mode unit) :on)
               (mk-env unit true (get @(:check-mode unit) :strict))
               (mk-env unit false false))
@@ -1069,7 +1082,7 @@
           (when (get @(:check-mode unit) :on)
             (reset! (:last-diags unit) @(get env :diags)))
           result)
-        def-node)))
+        def-node))))
 
 ;; --- whole-program param-type fixpoint --------------------------------------
 ;; Re-derive each app fn's param types from its call sites under closed world
@@ -1156,7 +1169,7 @@
     :else :any))
 ;; the rich variant keeps :num, so a specialized clone's :num field reads type :num
 ;; and dbl-arith? contagions them beside a proven :double operand (the invariant).
-;; Feeds rich-field-types-box only; never the shared path.
+;; Feeds the rich field types only; never the shared path.
 (defn- shallow-field-type-rich [t]
   (cond
     (or (= t :double) (= t :num)) t
@@ -1176,7 +1189,7 @@
                   m (range (count argts))))))
     {} joins))
 
-;; inner param-type fixpoint, run with field-types-box held FIXED by the caller.
+;; inner param-type fixpoint, run with the lean field types held FIXED by the caller.
 ;; returns [converged? ptypes]. The outer field-type loop in wp-infer! re-runs this
 ;; until field types stabilize, so the param fixpoint converges on its own each round
 ;; (folding field types into the SAME loop produced a ptypes<->rets 2-cycle).
@@ -1204,8 +1217,11 @@
   record-shapes / protocol-methods must already be installed. Idempotent — resets
   the seed box; called once per build before per-form emit."
   [unit nodes]
-  (collect-pm-rets! unit nodes)
-  (let [spec (wp-specializable nodes)
+  ;; the walk reads the unit's lean field types (reset per round below) for untagged
+  ;; record fields; the box is the atom, so a reset each round is seen by the reads.
+  (binding [*field-type-box* (:field-types unit)]
+   (collect-pm-rets! unit nodes)
+   (let [spec (wp-specializable nodes)
         ks (keys spec)]
     (try
       (reset! (:collecting-fields? unit) true)
@@ -1213,13 +1229,13 @@
       ;; current field types installed, derive field types from the converged pass's
       ;; ctor-site joins, repeat until field types stabilize. Separating the loops
       ;; keeps the param fixpoint monotone (record-type-from-entry sees a fixed
-      ;; field-types-box each round); field types converge in ~2 rounds because a
+      ;; lean field types each round); field types converge in ~2 rounds because a
       ;; record's ctor-arg join depends on the record TAG (intrinsic) not on field
       ;; types. Only when BOTH the param fixpoint AND field types have converged do we
       ;; trust the result — otherwise we widen every param to :any and drop field
       ;; types (a pre-fixpoint is more specific than the truth, so unsound to seed).
       (loop [ft-iter 0 ftypes {}]
-        (reset! field-types-box ftypes)
+        (reset! (:field-types unit) ftypes)
         (let [[param-converged? new-ptypes] (wp-param-fixpoint unit nodes spec ks)
               escaped (set (collected-escapes unit))
                new-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type)
@@ -1231,8 +1247,8 @@
                                 new-ptypes
                                 (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
                                         new-ptypes ks))
-                  _ (reset! field-types-box (if sound? new-ftypes {}))
-                  _ (reset! rich-field-types-box (if sound? new-rich-ftypes {}))
+                  _ (reset! (:field-types unit) (if sound? new-ftypes {}))
+                  _ (reset! (:rich-field-types unit) (if sound? new-rich-ftypes {}))
                   ;; re-derive the protocol-method return types now that field types
                   ;; are known: an impl body that reads a field unboxes once the field
                   ;; proves :double, so its joined return (the callers' pm-ret)
@@ -1257,7 +1273,7 @@
               (reset! (:wp-num-seeds unit) (pick (fn [t] (= t :double))))
               sound?)
             (recur (inc ft-iter) new-ftypes))))
-      (finally (reset! (:collecting-fields? unit) false)))))
+      (finally (reset! (:collecting-fields? unit) false))))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
 ;; one inference pass for specialization; turning checking? on during it makes
@@ -1279,9 +1295,11 @@
   success-type diagnostics, stashed for take-diags! to drain afterward. Pulled
   out of run-passes so the checking state stays private to this namespace."
   [unit opt]
-  (if (get @(:check-mode unit) :on)
-    (let [env (mk-env unit true (get @(:check-mode unit) :strict))
-          r (infer-top opt env)]
-      (reset! (:last-diags unit) @(get env :diags))
-      r)
-    (infer-top opt (mk-env unit false false))))
+  ;; the walk reads the unit's lean field types for untagged record fields.
+  (binding [*field-type-box* (:field-types unit)]
+    (if (get @(:check-mode unit) :on)
+      (let [env (mk-env unit true (get @(:check-mode unit) :strict))
+            r (infer-top opt env)]
+        (reset! (:last-diags unit) @(get env :diags))
+        r)
+      (infer-top opt (mk-env unit false false)))))

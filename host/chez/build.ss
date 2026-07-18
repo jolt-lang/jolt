@@ -333,12 +333,12 @@
     ;; BOTH contagion-eligible (:num field beside a proven :double) AND reached by a
     ;; devirtualized call site. Run per-ns after wp-infer! (rich field types must be
     ;; live) so a devirt site can resolve the clone regardless of emit order.
-    (jolt-reset-clone-prepass!)
+    (jolt-reset-clone-prepass! (ei-unit))
     ;; drop the #f alignment placeholders — the prepass wants real IR only.
     (for-each (lambda (p) (jolt-contagion-prepass! (ei-unit)
                             (apply jolt-vector (filter (lambda (n) n) (cdr p))) (car p)))
               ns-nodes)
-    (jolt-contagion-prepass-done!)
+    (jolt-contagion-prepass-done! (ei-unit))
     (reverse ns-nodes)))
 
 ;; Strings emitted before each app ns's forms, replaying what the source loader
