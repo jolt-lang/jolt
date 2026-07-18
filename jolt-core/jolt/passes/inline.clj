@@ -260,6 +260,36 @@
       (safe-op? op) (reduce-ir-children (fn [ok c] (and ok (pure? c))) true node)
       :else false)))
 
+;; A pure fn is safe to DUPLICATE / RELOCATE (it throws at the new site, same as the
+;; old), but DISCARDING one that throws would swallow the exception. total-fns is the
+;; subset of pure-fns that never throws on any input, so it is also safe to discard.
+;; The numeric ops in pure-fns throw on non-numeric args; scalar-replace runs before
+;; type inference, so their operand types aren't known here — they stay pure (for
+;; relocation) but are not total (for a drop).
+(def ^:private total-fns
+  #{"=" "not=" "nil?" "some?" "not" "get"})
+
+(defn- total-fn? [f]
+  (let [op (get f :op)]
+    (cond
+      (kw-callee? f) true
+      (= op :var) (and (= "clojure.core" (get f :ns)) (contains? total-fns (get f :name)))
+      (= op :host) (contains? total-fns (get f :name))
+      :else false)))
+
+(defn- total?
+  "Stronger than pure?: no side effects AND never throws, so the expression is safe
+  to DISCARD entirely (a merely-pure expression that throws would swallow the
+  exception if dropped). A record ctor is total when its args are — the alloc
+  itself doesn't throw."
+  [node]
+  (let [op (get node :op)]
+    (cond
+      (= op :invoke) (and (or (total-fn? (get node :fn)) (ctor-shape node))
+                          (every? total? (get node :args)))
+      (safe-op? op) (reduce-ir-children (fn [ok c] (and ok (total? c))) true node)
+      :else false)))
+
 (defn- const-key-map? [node]
   (let [prs (get node :pairs)]
     (and (> (count prs) 0)
@@ -267,6 +297,10 @@
 
 (defn- all-vals-pure? [node]
   (every? (fn [pr] (pure? (nth pr 1))) (get node :pairs)))
+;; total variant — for a map whose unread values would be DISCARDED when the map
+;; binding is dropped, so they must not throw.
+(defn- all-vals-total? [node]
+  (every? (fn [pr] (total? (nth pr 1))) (get node :pairs)))
 
 (defn- map-val
   "The value IR at scalar key k in a const-key map node, or a nil constant when k
@@ -435,6 +469,9 @@
     nil))
 
 (defn- ctor-all-args-pure? [node] (every? pure? (get node :args)))
+;; total variant — for the (:k (->Rec …)) fold, where every arg EXCEPT the one at k
+;; is discarded, so a discarded sibling must not throw.
+(defn- ctor-all-args-total? [node] (every? total? (get node :args)))
 
 (defn- field-index
   "Index of scalar key k in the declared field tuple fields, or nil."
@@ -505,10 +542,10 @@
   (let [f (get node :fn) args (get node :args)]
     (if (and (kw-callee? f) (= 1 (count args)))
       (let [m (nth args 0) k (get f :val)]
-        (if (and (= :map (get m :op)) (const-key-map? m) (all-vals-pure? m))
+        (if (and (= :map (get m :op)) (const-key-map? m) (all-vals-total? m))
           (do (mark!) (map-val m k))
           (let [rs (ctor-shape m)]
-            (if (and rs (ctor-all-args-pure? m) (field-index (get rs :fields) k))
+            (if (and rs (ctor-all-args-total? m) (field-index (get rs :fields) k))
               (do (mark!) (ctor-val m rs k))
               node))))
       node)))
@@ -524,7 +561,10 @@
     (loop [i 0]
       (if (< i n)
         (let [b (nth binds i) nm (nth b 0) init (nth b 1)
-              ismap (and (= :map (get init :op)) (const-key-map? init) (all-vals-pure? init))
+              ;; a map's unread values are DISCARDED when the binding is dropped (must
+              ;; be total); a record requires every field be read (lookups-all-fields?
+              ;; below), so its args are all relocated, not discarded — pure is enough.
+              ismap (and (= :map (get init :op)) (const-key-map? init) (all-vals-total? init))
               rs (when (not ismap) (ctor-shape init))
               isrec (and rs (ctor-all-args-pure? init))]
           (if (and (or ismap isrec)

@@ -50,4 +50,18 @@
   (gate-check "deftype field read uses direct accessor"
          (gate-sub? emitted2 "jrec1-f0") #t))
 
+;; jolt-ox7c.46: scalar-replace must not DISCARD a throwing sibling. A numeric op
+;; throws on a non-numeric arg, so a map value like (+ x "throwme") whose key is
+;; never read must NOT be dropped when the map binding is eliminated (that would
+;; swallow the exception under --opt). The emitted body still contains the op.
+(set-direct-link-flag! #t)
+(let* ((ir (analyze (make-analyze-ctx "user")
+                    (jolt-ce-read "(fn [x] (let [m {:a (+ x \"throwme\")}] (:b m)))")))
+       (_ (set-optimize! #t))
+       (passed (run-passes ir (make-analyze-ctx "user")))
+       (emitted (emit passed)))
+  (gate-check "throwing discarded map value survives scalar-replace"
+              (gate-sub? emitted "throwme") #t))
+(set-direct-link-flag! #f)
+
 (gate-summary "inline-body")
