@@ -1073,8 +1073,6 @@
   ;; Stage 3 (.18): the JVM fns that were jolt macros now work under HOF/partial.
   {:suite "r4-fn-macros" :expr "(instance? String \"x\")" :expected "true"}
   {:suite "r4-fn-macros" :expr "(instance? String 5)" :expected "false"}
-  ;; instance? stays a macro on jolt (class model), so using it as a value is a
-  ;; compile error like any macro — NOT the JVM's fn form. Known divergence.
   ;; (partial instance? …) now works: value-position instance? resolves to
   ;; instance-check (jolt-ox7c/c15p), so the eval returns true instead of throwing.
   {:suite "r4-fn-macros" :expr "(eval (read-string \"((partial instance? String) \\\"x\\\")\"))" :expected "true"}
@@ -1083,6 +1081,15 @@
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-gm (fn [x] x)) (defmethod r4-gm :a [x] :got-a) (((partial get-method r4-gm) :a) :a))" :expected ":got-a"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-pm (fn [x] x)) (defmethod r4-pm :a [x] :a) (defmethod r4-pm [:a :b] [x] :ab) (prefer-method r4-pm [:a :b] :a) (count (first (map prefers [r4-pm]))))" :expected "1"}
   {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) (when (= 1 @a) (throw (ex-info \"boom\" {})))))] [(try (first s) (catch Throwable e :ex1)) (try (pr-str (first s)) (catch Throwable e :ex2)) @a])" :expected "[:ex1 :ex2 1]"}
+  ;; ns-op consistency (jolt-ox7c.33): missing-ns ops throw, alias validates its
+  ;; target + rejects a conflicting re-alias, remove-ns returns the ns, calling an
+  ;; unbound var is IllegalStateException not a cast error.
+  {:suite "r8-ns" :expr "(try (ns-resolve (quote no.such.ns) (quote x)) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r8-ns" :expr "(ns-resolve (quote clojure.core) (quote map))" :expected "#'clojure.core/map"}
+  {:suite "r8-ns" :expr "(try (alias (quote zz33) (quote no.such.ns)) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r8-ns" :expr "(do (create-ns (quote r8a)) (create-ns (quote r8b)) (alias (quote a33) (quote r8a)) [(try (alias (quote a33) (quote r8a)) :ok (catch Throwable e :threw)) (try (alias (quote a33) (quote r8b)) :no (catch Throwable e :threw))])" :expected "[:ok :threw]"}
+  {:suite "r8-ns" :expr "(do (create-ns (quote r8rm)) (ns-name (remove-ns (quote r8rm))))" :expected "r8rm"}
+  {:suite "r8-ns" :expr "(do (declare r8-unbound) (try (r8-unbound 1) (catch java.lang.IllegalStateException e :ise) (catch Throwable e :other)))" :expected ":ise"}
   {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) [1]))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "1"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}

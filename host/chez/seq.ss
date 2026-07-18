@@ -546,6 +546,13 @@
     ;; host types registered as callable (promise delivers, …): consulted only
     ;; after every built-in case missed, so the hot dispatch pays nothing.
     ((jolt-invoke-arm-for f) => (lambda (h) (h f args)))
+    ;; calling an unbound var (a declared-but-undefined var's root sentinel) is an
+    ;; IllegalStateException on the JVM, not a cast error: "Attempting to call
+    ;; unbound fn: #'ns/name".
+    ((jolt-var-unbound? f)
+     (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException"
+                  (string-append "Attempting to call unbound fn: #'"
+                                 (jolt-var-unbound-ns f) "/" (jolt-var-unbound-name f)))))
     ;; calling a non-fn: a ClassCastException naming the operator's CLASS (like
     ;; the JVM's "class clojure.lang.LazySeq cannot be cast to ... IFn" — never
     ;; the value, whose printed form may be unbounded: ((range)) must throw, not
