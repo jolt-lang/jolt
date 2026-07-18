@@ -314,8 +314,7 @@
 ;; `(Long/parseLong x)` slash form.
 (define (hc-host-class-name? nm)
   (or (hc-fq-class-name? nm)
-      (and (hashtable-ref class-statics-tbl nm #f) #t)
-      (and (hashtable-ref class-ctors-tbl nm #f) #t)))
+      (host-class-registered? nm)))
 
 (define (hc-resolve-global ctx sym)
   (let* ((nm (symbol-t-name sym))
@@ -334,7 +333,7 @@
           ;; `(. ZonedDateTime parse s)`). Only when otherwise unresolved, so a
           ;; same-named var still wins.
           ((and (fx>? (string-length nm) 0) (char-upper-case? (string-ref nm 0))
-                (hashtable-ref class-statics-tbl nm #f))
+                (host-class-has-statics? nm))
            (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name nm))
           (else (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm))))))
 

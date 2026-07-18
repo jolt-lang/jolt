@@ -25,6 +25,16 @@
 (define class-ctors-tbl   (make-hashtable string-hash string=?))   ; "Class" -> ctor proc
 (define host-methods-tbl  (make-hashtable string-hash string=?))   ; tag -> (method-ht)
 
+;; Does `nm` name a registered host class (has statics or a constructor)? The
+;; analyzer's contract layer asks this to treat a bare Capitalized symbol as a
+;; class; exposing it keeps the registry tables private to the java layer.
+(define (host-class-registered? nm)
+  (or (and (hashtable-ref class-statics-tbl nm #f) #t)
+      (and (hashtable-ref class-ctors-tbl nm #f) #t)))
+;; narrower: registered with STATICS (not just a constructor) — an imported class
+;; short name used as a static-call target, distinct from a deftype's bare name.
+(define (host-class-has-statics? nm) (and (hashtable-ref class-statics-tbl nm #f) #t))
+
 ;; A class token may arrive fully qualified (java.io.StringReader) or short
 ;; (StringReader). Register both; resolve by exact then by last dotted segment.
 (define (short-class-name s)

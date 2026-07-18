@@ -14,13 +14,12 @@
 ;; real results stay flonums, NaN/Inf pass through. real? is #f on a Chez complex.
 (define (real-or-nan x) (if (and (number? x) (real? x)) (exact->inexact x) +nan.0))
 (define math-pi (acos -1.0))
-;; sign-aware cube root: expt of a negative flonum to 1/3 goes complex.
-(define (math-cbrt x)
-  (let ((x (exact->inexact x)))
-    (if (< x 0.0) (- (expt (- x) (/ 1.0 3.0))) (expt x (/ 1.0 3.0)))))
 (register-class-statics! "Math"
   (list (cons "sqrt" (lambda (x) (real-or-nan (sqrt x))))
-        (cons "cbrt" (lambda (x) (math-cbrt x)))
+        ;; cbrt/log10 (and hypot/expm1/log1p below) share the clojure.math impls
+        ;; in math.ss (loaded after; the lambda bodies resolve at call time) so
+        ;; Math/x and clojure.math/x never diverge.
+        (cons "cbrt" (lambda (x) (jolt-math-cbrt (->dbl x))))
         (cons "pow" (lambda (a b) (real-or-nan (expt a b))))
         ;; hypot/expm1/log1p route to the numerically-stable clojure.math impls
         ;; (defined later in math.ss; the lambda body resolves at call time, after
@@ -42,7 +41,7 @@
         (cons "atan2" (lambda (y x) (->dbl (atan y x))))
         (cons "sinh" (lambda (x) (->dbl (sinh x)))) (cons "cosh" (lambda (x) (->dbl (cosh x))))
         (cons "tanh" (lambda (x) (->dbl (tanh x))))
-        (cons "log" (lambda (x) (real-or-nan (log x)))) (cons "log10" (lambda (x) (real-or-nan (/ (log x) (log 10)))))
+        (cons "log" (lambda (x) (real-or-nan (log x)))) (cons "log10" (lambda (x) (jolt-math-log10 (->dbl x))))
         (cons "log1p" (lambda (x) (jolt-math-log1p (->dbl x))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
         (cons "expm1" (lambda (x) (jolt-math-expm1 (->dbl x))))
