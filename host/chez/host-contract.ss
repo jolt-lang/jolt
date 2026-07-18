@@ -345,12 +345,8 @@
 ;; __sqset/__sq1 + quote — that the analyzer re-analyzes, so a backtick compiles
 ;; with zero runtime cost (read -> macroexpand -> compile). Symbols resolve to
 ;; clojure.core / the compile ns; a foo# auto-gensym is stable within one `.
-(define hc-special-symbols
-  '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
-    "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var" "new" "."
-    "&" "catch" "finally" "case*" "letfn*" "monitor-enter" "monitor-exit"
-    "reify*" "deftype*"))
-(define (hc-special-symbol? nm) (and (member nm hc-special-symbols) #t))
+;; the syntax-quote specials + resolver live in reader.ss (jsq-specials /
+;; jsq-resolve-symbol), shared with the read-string data path.
 
 (define hc-sq-gensym-counter 0)
 (define (hc-sq-gensym base)
@@ -374,48 +370,11 @@
                 (or (jolt-nil? ns) (and (string? ns) (string=? ns "clojure.core"))))))))
 (define (hc-second x) (seq-first (jolt-seq (seq-more x))))
 
+;; compile path: resolve against the compile ns, via the shared resolver
+;; (reader.ss jsq-resolve-symbol). Same resolution the data path uses, so a
+;; compiled ` and a read-string ` agree on every name.
 (define (hc-sq-symbol ctx form gsmap)
-  (let ((sns (hc-sym-ns form)) (nm (symbol-t-name form)))
-    (if (jolt-nil? sns)
-        (cond
-          ;; foo# -> a stable per-` auto-gensym
-          ((and (> (string-length nm) 0)
-                (char=? (string-ref nm (- (string-length nm) 1)) #\#))
-           (or (hashtable-ref gsmap nm #f)
-               (let ((g (hc-sq-gensym (substring nm 0 (- (string-length nm) 1)))))
-                 (hashtable-set! gsmap nm g) g)))
-          ((hc-special-symbol? nm) form)               ; special form: leave bare
-          ((hc-interop-head? nm) form)                 ; interop (.method / Class. / .-field): bare
-          ;; a fully-qualified class name (java.util.Map, clojure.lang.ILookup) is
-          ;; a class token, not a var to namespace-qualify — leave it bare, as
-          ;; Clojure's syntax-quote resolves it to the class.
-          ((hc-fq-class-name? nm) form)
-          ;; the compile ns's OWN def shadows clojure.core — a name the ns
-          ;; excluded and redefined (e.g. core.logic's `==` after
-          ;; (:refer-clojure :exclude [==])), or any ns-local redefinition.
-          ;; Referred names live in a separate table, so this only hits a real
-          ;; local intern, matching how the analyzer resolves the bare symbol.
-          ((var-cell-lookup (chez-actx-cns ctx) nm) (jolt-symbol (chez-actx-cns ctx) nm))
-          ;; a name the compile ns excluded from clojure.core (:refer-clojure
-          ;; :exclude) is not clojure.core/nm even before the ns defines its own —
-          ;; qualify to the compile ns, like Clojure (core.logic.fd's `==`).
-          ((chez-core-excluded? (chez-actx-cns ctx) nm) (jolt-symbol (chez-actx-cns ctx) nm))
-          ((var-cell-lookup "clojure.core" nm) (jolt-symbol "clojure.core" nm))
-          ;; a name referred into the compile ns (:require :refer / :use :only)
-          ;; qualifies to its SOURCE ns, not the compile ns — so a macro that
-          ;; syntax-quotes a referred var (e.g. clojure.tools.logging/spy using
-          ;; clojure.pprint's pprint) expands to the real var.
-          ((chez-resolve-refer (chez-actx-cns ctx) nm)
-           => (lambda (target) (jolt-symbol target nm)))
-          (else (jolt-symbol (chez-actx-cns ctx) nm)))  ; else: qualify to compile ns
-        ;; qualified: if the ns part is an :as alias in the compile ns, resolve it
-        ;; to the target namespace — Clojure resolves the alias part of a qualified
-        ;; symbol in syntax-quote, so a macro's `impl/foo` expands to its real
-        ;; (clojure.tools.logging.impl/foo) name and stays unambiguous even when
-        ;; another loaded ns shares the alias's short name. Otherwise
-        ;; leave it as written (a real ns or an interop class token).
-        (let ((target (chez-resolve-alias (chez-actx-cns ctx) sns)))
-          (if target (jolt-symbol target nm) form)))))
+  (jsq-resolve-symbol (chez-actx-cns ctx) form gsmap hc-sq-gensym))
 
 (define (hc-sq-lower ctx form gsmap)
   (cond

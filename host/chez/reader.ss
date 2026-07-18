@@ -1028,11 +1028,48 @@
   (jolt-symbol #f (string-append base "__" (number->string rdr-sq-gensym-counter) "__auto")))
 
 ;; special forms / interop heads stay bare in backquote, like the JVM reader
-(define rdr-sq-specials
+;; The one list of names a syntax-quote leaves BARE (not namespace-qualified):
+;; the special-form heads plus the reader-macro markers. Shared by the data path
+;; (rdr-sq-symbol) and the compile path (host-contract.ss hc-sq-symbol), so a
+;; special added here is honored by both `read-string and a compiled `.
+(define jsq-specials
   '("quote" "syntax-quote" "unquote" "unquote-splicing" "do" "if" "def"
     "fn*" "let*" "loop*" "recur" "throw" "try" "set!" "var" "new" "."
     "&" "catch" "finally" "case*" "letfn*" "monitor-enter" "monitor-exit"
     "reify*" "deftype*"))
+
+;; The one syntax-quote symbol resolver, shared by both paths. `cns` is the
+;; namespace to resolve against (the compile ns / the current ns); `gensym-fn`
+;; makes a fresh auto-gensym for a trailing-# symbol (each path keeps its own
+;; counter, so a compiled ` and a read-string ` don't share gensym numbers).
+;; Resolution order (Clojure): a foo# auto-gensym; a bare special/interop/class
+;; token; the ns's own interned var; a :refer'd name (SOURCE ns) — BEFORE the
+;; implicit clojure.core, so an explicit :refer shadows core; then clojure.core
+;; unless the name is :refer-clojure-excluded or ns-unmapped; else qualify to cns.
+(define (jsq-resolve-symbol cns sym gsmap gensym-fn)
+  (let ((sns (symbol-t-ns sym)) (nm (symbol-t-name sym)))
+    (if (or (jolt-nil? sns) (null? sns) (not sns))
+        (cond
+          ((and (fx>? (string-length nm) 0)
+                (char=? (string-ref nm (fx- (string-length nm) 1)) #\#))
+           (or (hashtable-ref gsmap nm #f)
+               (let ((g (gensym-fn (substring nm 0 (fx- (string-length nm) 1)))))
+                 (hashtable-set! gsmap nm g) g)))
+          ((member nm jsq-specials) sym)
+          ((hc-interop-head? nm) sym)         ; interop (.method / Class. / .-field)
+          ((hc-fq-class-name? nm) sym)        ; a fully-qualified class token
+          ((var-cell-lookup cns nm) (jolt-symbol cns nm))          ; the ns's own var
+          ((chez-resolve-refer cns nm)                             ; a :refer'd name
+           => (lambda (target) (jolt-symbol target nm)))
+          ((and (not (chez-core-excluded? cns nm))                 ; else clojure.core,
+                (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
+                (var-cell-lookup "clojure.core" nm))               ; unless excluded/unmapped
+           (jolt-symbol "clojure.core" nm))
+          (else (jolt-symbol cns nm)))                             ; else the ns itself
+        ;; qualified: resolve an :as alias in cns to the target ns, else leave as
+        ;; written (a real ns or an interop class token).
+        (let ((target (chez-resolve-alias cns sns)))
+          (if target (jolt-symbol target nm) sym)))))
 
 (define (rdr-sq-head-is? x nm)
   (and (cseq? x)
@@ -1045,36 +1082,9 @@
 (define (rdr-sq-literal? x)
   (or (jolt-nil? x) (boolean? x) (number? x) (string? x) (keyword? x) (char? x)))
 
-;; Resolve a bare or qualified symbol against the current ns, like Clojure's
-;; syntax-quote reader. A trailing # triggers auto-gensym (stable within one `).
+;; data path: resolve against the current ns, via the shared resolver.
 (define (rdr-sq-symbol sym gsmap)
-  (let ((sns (symbol-t-ns sym)) (nm (symbol-t-name sym)))
-    (if (or (jolt-nil? sns) (null? sns) (not sns))
-        (cond
-          ((and (fx>? (string-length nm) 0)
-                (char=? (string-ref nm (fx- (string-length nm) 1)) #\#))
-           (or (hashtable-ref gsmap nm #f)
-               (let ((g (rdr-sq-gensym (substring nm 0 (fx- (string-length nm) 1)))))
-                 (hashtable-set! gsmap nm g) g)))
-           ((member nm rdr-sq-specials) sym)
-           ((hc-interop-head? nm) sym)   ; interop (.method / Class. / .-field): bare
-           ;; a fully-qualified class name (java.util.Map) is a class token, not a
-           ;; var to namespace-qualify — leave it bare like the compile path.
-           ((hc-fq-class-name? nm) sym)
-           (else
-            ;; JVM syntax-quote resolution: the ns's own interned var wins, then
-            ;; refers/aliased refers, then the implicit clojure.core default,
-            ;; else qualify to the current ns.
-            (let* ((cns (chez-current-ns))
-                   (own (let ((c (var-cell-lookup cns nm))) (and c (var-cell-defined? c))))
-                   (resolved (and (not own) (chez-resolve-refer cns nm)))
-                   (core (and (not own) (not resolved)
-                              (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f) 'unmapped))
-                              (let ((c (var-cell-lookup "clojure.core" nm)))
-                                (and c (var-cell-defined? c))))))
-              (jolt-symbol (cond (own cns) (resolved resolved) (core "clojure.core") (else cns)) nm))))
-        (let ((target (chez-resolve-alias (chez-current-ns) sns)))
-          (if target (jolt-symbol target nm) sym)))))
+  (jsq-resolve-symbol (chez-current-ns) sym gsmap rdr-sq-gensym))
 
 (define (rdr-sq-lower form gsmap)
   (cond

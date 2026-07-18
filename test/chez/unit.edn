@@ -334,6 +334,11 @@
   {:suite "reader" :expr "(= (quote (quote x)) (read-string \"'x\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (clojure.core/deref a)) (read-string \"@a\"))" :expected "true"}
    {:suite "reader" :expr "(= (quote (clojure.core/seq (clojure.core/concat (clojure.core/list (quote user/a)) (clojure.core/list b)))) (read-string \"`(a ~b)\"))" :expected "true"}
+   ;; shared syntax-quote resolver (jsq-resolve-symbol): a special stays bare, a
+   ;; core name qualifies to clojure.core, an unknown to the current ns.
+   {:suite "reader" :expr "(= (quote (quote if)) (read-string \"`if\"))" :expected "true"}
+   {:suite "reader" :expr "(= (quote (quote clojure.core/inc)) (read-string \"`inc\"))" :expected "true"}
+   {:suite "reader" :expr "(= (quote (quote user/undefined-xyz)) (read-string \"`undefined-xyz\"))" :expected "true"}
   {:suite "reader" :expr "(= (quote (clojure.core/unquote-splicing xs)) (read-string \"~@xs\"))" :expected "true"}
   {:suite "reader" :expr "(= 42 (read-string \"; comment\\n42\"))" :expected "true"}
   {:suite "reader" :expr "(= [1 2] (read-string \"[1 #_ 9 2]\"))" :expected "true"}
