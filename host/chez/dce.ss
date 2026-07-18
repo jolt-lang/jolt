@@ -94,8 +94,8 @@
     ;; the fn print form wraps the overlay __print1
     "clojure.core/__print1"
     ;; the multimethod dispatch cache resolves the hierarchy value per call
-    ;; (mm-current-hierarchy, multimethods.ss)
-    "clojure.core/global-hierarchy"))
+    ;; (mm-current-hierarchy, multimethods.ss); mm-prefers? walks parents
+    "clojure.core/global-hierarchy" "clojure.core/parents"))
 
 ;; --- reading a minted blob (prelude.ss) into records ------------------------
 ;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the
