@@ -33,6 +33,17 @@
           ((char=? (string-ref s i) #\.) (substring s (+ i 1) (string-length s)))
           (else (loop (- i 1))))))
 
+;; A member re-registered with a DIFFERENT value across files is drift (two
+;; sources fighting over one static, last-wins silently deciding) — warn so it
+;; surfaces instead of shipping the wrong one (the Pattern/compile+quote bug).
+;; Registering the same member object twice (the FQN+short double-register below,
+;; or a value equal? to the prior one) is not a collision.
+(define (registry-collision! kind class member old new)
+  (when (and (not (eq? old new)) (not (equal? old new)))
+    (fprintf (current-error-port)
+             "warning: ~a member ~a/~a registered twice with different values\n"
+             kind class member)))
+
 (define (register-class-statics! name members)  ; members: list of (str . val/proc)
   (let* ((short (short-class-name name))
          (h (or (hashtable-ref class-statics-tbl name #f)
@@ -45,7 +56,11 @@
     (hashtable-set! class-statics-tbl name h)
     (unless (string=? name short)
       (hashtable-set! class-statics-tbl short h))
-    (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
+    (for-each (lambda (p)
+                (let ((old (hashtable-ref h (car p) #f)))
+                  (when old (registry-collision! "static" name (car p) old (cdr p))))
+                (hashtable-set! h (car p) (cdr p)))
+              members)))
 
 (define (register-class-ctor! name proc) (hashtable-set! class-ctors-tbl name proc))
 

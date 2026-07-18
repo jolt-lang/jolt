@@ -394,11 +394,7 @@
 ;; thread-safe access. The shared-heap HashMap/ArrayList shims already serialize
 ;; individual ops adequately for these uses, so the wrapper returns its argument.
 (let ((ident (lambda (c . _) c)))
-  (register-class-statics! "Collections"
-    (list (cons "synchronizedMap" ident) (cons "synchronizedList" ident)
-          (cons "synchronizedSet" ident) (cons "unmodifiableMap" ident)
-          (cons "unmodifiableList" ident) (cons "unmodifiableSet" ident)
-          (cons "emptyList" (lambda _ (jolt-vector))) (cons "emptyMap" (lambda _ (jolt-hash-map)))))
+  ;; registering under the FQN also registers the short name (shared table)
   (register-class-statics! "java.util.Collections"
     (list (cons "synchronizedMap" ident) (cons "synchronizedList" ident)
           (cons "synchronizedSet" ident) (cons "unmodifiableMap" ident)
@@ -823,13 +819,18 @@
             (when (memv c (string->list meta)) (set! out (cons #\\ out)))
             (set! out (cons c out))
             (loop (+ i 1)))))))
-(register-class-statics! "Pattern"
-  (list (cons "compile" (lambda (s . flags)
-                          (if (and (pair? flags) (= (bitwise-and (jnum->exact (car flags)) 8) 8))
-                              (jolt-regex (string-append "(?m)" s))
-                              (jolt-regex s))))
-        (cons "quote" (lambda (s) (pattern-quote s)))
-        (cons "MULTILINE" pattern-multiline)))
+;; the one Pattern statics block (compile / quote / MULTILINE). nio-file and
+;; host-static-methods used to register competing compile/quote members that
+;; last-wins clobbered; this is now the single source.
+(let ((pattern-statics
+       (list (cons "compile" (lambda (s . flags)
+                               (if (and (pair? flags) (= (bitwise-and (jnum->exact (car flags)) 8) 8))
+                                   (jolt-regex (string-append "(?m)" s))
+                                   (jolt-regex s))))
+             (cons "quote" (lambda (s) (pattern-quote s)))
+             (cons "MULTILINE" pattern-multiline))))
+  (register-class-statics! "Pattern" pattern-statics)
+  (register-class-statics! "java.util.regex.Pattern" pattern-statics))
 ;; record-method-dispatch already routes string? -> jolt-string-method. Add a
 ;; regex-t arm (Pattern .split / .matcher-less surface used by corpus) by wrapping
 ;; once more — a regex-t isn't a jhost.
