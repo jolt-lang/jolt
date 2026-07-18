@@ -91,12 +91,12 @@ fi
 # --- host-contract primitive declares vs backend native-ops -----------------
 # host-contract.ss declares the hot clojure.core primitives so the analyzer's
 # resolve-global classifies them (the emitter lowers each inline, so the declared
-# cell's unbound root is never deref'd). The set must mirror backend_scheme.clj's
+# cell's unbound root is never deref'd). The set must mirror jolt.op-registry's
 # native-ops — op-registry entries with a :call — minus the internal
 # protocol-dispatch{1,2,3} emit helpers, which are not clojure.core names. The two
 # live in different layers (.ss vs .clj) and can't derive from each other in code,
 # so this pins them: a new native op that isn't declared (or vice versa) fails here.
-sed -n '/^(def ^:private op-registry/,/^;; Derived accessor tables/p' jolt-core/jolt/backend_scheme.clj \
+sed -n '/^(def op-registry/,/^;; --- derived accessor tables/p' jolt-core/jolt/op_registry.clj \
   | grep -E '^[[:space:]]*\{?"[^"]+"[[:space:]]+\{.*:call' \
   | grep -oE '^[[:space:]]*\{?"[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' \
   | grep -vxE 'protocol-dispatch[123]' | LC_ALL=C sort -u > "$tmp/native"

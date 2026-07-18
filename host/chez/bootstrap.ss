@@ -40,6 +40,16 @@
 (ei-reset-skipped!)
 (let ((p (open-output-file bs-out-prelude 'replace)))
   (put-string p (jolt-emit-prelude)) (close-port p))
+;; Load the op-registry compiler namespace from source into the running image
+;; before re-emitting the image, so that when the mint re-analyzes the back end
+;; and the passes their `op-registry/*` references resolve to var-derefs (a loaded
+;; ns) rather than host-static refs (an unknown class). On the first mint after
+;; this ns is introduced it isn't in the seed image yet; loading it here keeps the
+;; build self-contained, and it's a harmless re-def once it's also baked into the
+;; seed. Done AFTER the prelude emit so its gensym use doesn't renumber the prelude
+;; (the prelude doesn't reference op-registry).
+(jolt-load-string (read-file-string "jolt-core/jolt/op_registry.clj"))
+(set-chez-ns! "user")
 (let ((p (open-output-file bs-out-image 'replace)))
   (put-string p (jolt-emit-image)) (close-port p))
 (fprintf (current-error-port) "mint: ~a form(s) skipped\n" ei-skipped-count)

@@ -5,7 +5,8 @@
   inference — so the inferencer (jolt.passes.types) and these rules can't perturb
   each other. The inferencer calls these during its walk; the infer-coupled user
   call probes (re-inference) stay in the inferencer."
-  (:require [jolt.passes.types.lattice :refer
+  (:require [jolt.op-registry :as op-registry]
+            [jolt.passes.types.lattice :refer
              [union-type? umembers struct-type? vec-type? set-type?]]))
 
 ;; concrete non-numbers: arithmetic provably throws on these. A union is in the
@@ -34,10 +35,9 @@
     (every? not-callable? (umembers t))
     (or (= t :num) (= t :str))))
 
-;; arithmetic / numeric ops: EVERY argument must be a number.
-(def ^:private num-ops
-  #{"+" "-" "*" "/" "inc" "dec" "mod" "rem" "quot" "min" "max" "abs"
-    "bit-and" "bit-or" "bit-xor" "bit-not" "bit-shift-left" "bit-shift-right"})
+;; arithmetic / numeric ops: EVERY argument must be a number — the registry's
+;; :num-args? set.
+(def ^:private num-ops op-registry/num-arg-ops)
 ;; seq/count/index ops: argument 0 must be seqable/countable.
 (def ^:private seq-ops #{"count" "first" "rest" "next" "seq" "nth"})
 

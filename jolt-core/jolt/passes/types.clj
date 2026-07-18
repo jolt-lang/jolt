@@ -6,6 +6,7 @@
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
   (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node]]
+            [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
@@ -283,14 +284,12 @@
               (ty (nth ares i)))))
         (range (count ares))))
 
-;; arithmetic core ops that yield a flonum when their operands are flonums — a
-;; mirror of jolt.passes.numeric/dbl-spec's arithmetic set, used to flow :double
-;; across fn boundaries so a hintless fn whose callers all pass doubles is unboxed.
-;; Comparisons are excluded: they yield a boolean, not a number. min/max are
-;; excluded too: they return an operand unchanged, so double contagion would
-;; change its type ((min 2.5 1) must stay 1, not 1.0). numeric.clj's an-invoke
-;; blocks min/max contagion for the same reason.
-(def ^:private dbl-arith-ops #{"+" "-" "*" "/" "inc" "dec"})
+;; arithmetic core ops that yield a flonum when their operands are flonums, used
+;; to flow :double across fn boundaries so a hintless fn whose callers all pass
+;; doubles is unboxed. Comparisons are excluded (bool result); min/max are excluded
+;; (they return an operand unchanged, so contagion would change its type —
+;; (min 2.5 1) must stay 1). The membership is the registry's :dbl-contagion? set.
+(def ^:private dbl-arith-ops op-registry/dbl-arith-ops)
 (defn- int-lit-node? [n]
   (and (= :const (get n :op)) (let [v (get n :val)] (and (number? v) (integer? v)))))
 ;; an arithmetic result is :double when every operand is a proven flonum or a
