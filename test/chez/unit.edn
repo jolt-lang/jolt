@@ -1073,4 +1073,6 @@
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-mm2 (fn [x] x)) (defmethod r4-mm2 :a [x] :got-a) (defmethod r4-mm2 :b [x] :got-b) (sort (keys (first (map methods [r4-mm2])))))" :expected "(:a :b)"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-gm (fn [x] x)) (defmethod r4-gm :a [x] :got-a) (((partial get-method r4-gm) :a) :a))" :expected ":got-a"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-pm (fn [x] x)) (defmethod r4-pm :a [x] :a) (defmethod r4-pm [:a :b] [x] :ab) (prefer-method r4-pm [:a :b] :a) (count (first (map prefers [r4-pm]))))" :expected "1"}
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) (when (= 1 @a) (throw (ex-info \"boom\" {})))))] [(try (first s) (catch Throwable e :ex1)) (try (pr-str (first s)) (catch Throwable e :ex2)) @a])" :expected "[:ex1 :ex2 1]"}
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) [1]))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "1"}
 ]
