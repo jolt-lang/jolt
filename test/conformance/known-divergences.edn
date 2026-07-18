@@ -25,6 +25,30 @@
   "compare-and-set! compares with value equality (jolt=), not JVM reference identity — Chez immediates and reconstructed values have no stable identity to compare. Deliberate (atoms.ss).",
   :permissive
   "jolt succeeds where the JVM throws, on operations with one reasonable meaning: ex-info accepts nil data, count works on eduction, keys on a vector of pairs, (empty MapEntry) => []. A superset: portable JVM code behaves identically."},
+ :documented
+ [;; Deliberate/tracked divergences that are NOT corpus rows, so they live here (not in
+  ;; :entries, which certify.clj gates for staleness against the corpus).
+  ;; (str lazy-seq) renders the realized seq "(2 3)" rather than the JVM's opaque
+  ;; "clojure.lang.LazySeq@<hash>". Deliberately friendlier; left as is.
+  {:category :seq-type-model
+   :behavior "(str (map inc [1 2])) => \"(2 3)\""
+   :jvm "\"clojure.lang.LazySeq@<hash>\""
+   :jolt "\"(2 3)\""
+   :note "Deliberately friendlier rendering; intentionally left as is."}
+  ;; = / .equals do not respect numeric category: (= 1 1N) is true on jolt, false on
+  ;; the JVM (Long vs BigInt category). The root is jolt's numeric value-equality in =,
+  ;; not just .equals; no cheap isolated fix, so documented rather than fixed.
+  {:category :numeric-model
+   :behavior "(= 1 1N) and (.equals {:a 1} {:a 1N}) => true"
+   :jvm "false"
+   :jolt "true"
+   :note "Numeric-category-blind value equality; a deep = property, not a cheap fix."}
+  ;; subvec copies its slice (O(n)) instead of sharing the source vector's tail (JVM O(1)).
+  {:category :impl-detail
+   :behavior "subvec allocates an O(n) copy"
+   :jvm "O(1) subview sharing the source vector"
+   :jolt "O(n) copy"
+   :note "Performance only; values are identical. Deferred this round."}]
  :entries
  [{:suite "forms / fn",
    :label "no param vector",

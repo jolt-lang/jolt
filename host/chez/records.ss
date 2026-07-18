@@ -538,6 +538,10 @@
   (lambda (coll k) (if (jolt-truthy? (jolt-invoke (jrec-cl coll "containsKey") coll k)) #t #f)))
 (register-contains-arm! jrec? (lambda (coll k) (jrec-has? coll k)))
 (register-contains-arm! jolt-transient? t-contains?)
+;; empty?: a transient is empty when its count is 0 (transients gained empty?/
+;; bounded-count support in Clojure 1.12). Without this arm empty? fell through to
+;; (jolt-seq coll), which throws on a transient.
+(register-empty-arm! jolt-transient? (lambda (t) (zero? (t-count t))))
 ;; nth: transient unwrapping (vec→direct buf access, other→fallback), then original
 (define %r-jolt-nth jolt-nth)
 (set! jolt-nth

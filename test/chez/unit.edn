@@ -1094,4 +1094,8 @@
   {:suite "r7-contains" :expr "(contains? inc 0)" :expected :throws}
   {:suite "r7-contains" :expr "(contains? [1 2] 0)" :expected "true"}
   {:suite "r7-contains" :expr "(contains? {:a 1} :a)" :expected "true"}
+  {:suite "r7-transient" :expr "(empty? (transient []))" :expected "true"}
+  {:suite "r7-transient" :expr "(empty? (transient [1 2]))" :expected "false"}
+  {:suite "r7-transient" :expr "[(empty? (transient {})) (empty? (transient #{})) (empty? (transient #{1}))]" :expected "[true true false]"}
+  {:suite "r7-transient" :expr "(let [t (transient [])] (conj! t 1) (empty? t))" :expected "false"}
 ]
