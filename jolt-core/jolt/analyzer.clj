@@ -606,7 +606,17 @@
   {:op :host-call
    :method (subs hname 1)        ; ".-field" -> "-field"
    :target (analyze ctx (nth items 1) env)
-   :args []})
+    :args []})
+
+;; A macro referenced in VALUE position — a bare reference or an argument, never
+;; the head of a call (a macro head macroexpands in analyze-list before this is
+;; reached) — is a real compile error on the JVM: "Can't take value of a macro:
+;; #'ns/name". Plain throw (not uncompilable) so it surfaces rather than punting
+;; to an interpreter fallback. #'foo and (var foo) of a macro are handled in
+;; `analyze` (form-var-value?) and analyze-special ("var") and never reach here.
+(defn- deny-macro-value [ctx form r]
+  (when (form-macro? ctx form)
+    (throw (str "Can't take value of a macro: #'" (:ns r) "/" (:name r)))))
 
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
@@ -622,7 +632,8 @@
               " used as value; value form not yet supported. Use (.method target ...) or (Class/.method target ...) instead."))
       ns (let [r (resolve-global ctx form)]
            (if (= :var (:kind r))
-             (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))
+             (do (deny-macro-value ctx form r)
+                 (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r))))
              ;; A non-var qualified ref `Class/member` is a host class static
              ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
              ;; lowers it to a runtime static dispatch.
@@ -631,7 +642,8 @@
               (case (:kind r)
                 ;; :num-ret (a ^double/^long declared return) rides on the var node so
                 ;; jolt.passes.numeric types a call to it (an accumulator over the result).
-                :var (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))
+                :var (do (deny-macro-value ctx form r)
+                         (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r))))
                 :host (host-ref (:name r))
                 ;; a class-name symbol (java.util.Map) self-evaluates to an interned
                 ;; Class object via the runtime interner, so (= (class x) java.util.Date),

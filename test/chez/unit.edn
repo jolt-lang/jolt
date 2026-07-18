@@ -719,7 +719,7 @@
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc))] (a/alts!! [[c 1]]) (a/<!! c)))" :expected "2"}
   ;; 10. mult/tap smoke — proves the dataflow layer still works
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) m (a/mult c) t1 (a/chan) t2 (a/chan)] (a/tap m t1) (a/tap m t2) (a/>!! c :x) [(a/<!! t1) (a/<!! t2)]))" :expected "[:x :x]"}
-  ;; clojure.test — instance? in is expands correctly (macro, not applied as fn)
+  ;; clojure.test — instance? in is still reports correctly (instance? is a fn)
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (t/deftest t1 (t/is (instance? String 5))) (t/run-tests) [(t/n-pass) (t/n-fail)])" :expected "[0 1]"}
   ;; clojure.test — report multimethod override fires on assertion outcomes
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def rpt (atom false)) (defmethod t/report :fail [m] (reset! rpt true)) (t/deftest t2 (t/is (= 1 2))) (t/run-tests) @rpt)" :expected "true"}
@@ -1053,4 +1053,20 @@
   {:suite "r4-doseq" :expr "(let [a (atom [])] (doseq [x [1 2] y [:a :b]] (swap! a conj [x y])) @a)" :expected "[[1 :a] [1 :b] [2 :a] [2 :b]]"}
   {:suite "r4-doseq" :expr "(let [a (atom 0)] (doseq [x [1 2 3] :when (odd? x)] (swap! a + x)) @a)" :expected "4"}
   {:suite "r4-doseq" :expr "(nil? (doseq [x [1]] x))" :expected "true"}
+  ;; Stage 3 (.18): a macro used in VALUE position (bare ref or argument) is a
+  ;; compile error on the JVM, not silent expansion-as-data. var-quote #'foo and
+  ;; (var foo) of a macro must still yield the var.
+  {:suite "r4-macro-value" :expr "(try (eval (read-string \"((partial when true) 42)\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r4-macro-value" :expr "(try (eval (read-string \"when\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r4-macro-value" :expr "(try (eval (read-string \"(map when [true])\")) (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r4-macro-value" :expr "(:macro (meta #'when))" :expected "true"}
+  {:suite "r4-macro-value" :expr "(:macro (meta (var when)))" :expected "true"}
+  ;; Stage 3 (.18): the JVM fns that were jolt macros now work under HOF/partial.
+  {:suite "r4-fn-macros" :expr "(instance? String \"x\")" :expected "true"}
+  {:suite "r4-fn-macros" :expr "((partial instance? String) \"x\")" :expected "true"}
+  {:suite "r4-fn-macros" :expr "((partial instance? String) 5)" :expected "false"}
+  {:suite "r4-fn-macros" :expr "(do (defmulti r4-mm (fn [x] x)) (defmethod r4-mm :a [x] :got-a) (defmethod r4-mm :b [x] :got-b) (sort (keys (methods r4-mm))))" :expected "(:a :b)"}
+  {:suite "r4-fn-macros" :expr "(do (defmulti r4-mm2 (fn [x] x)) (defmethod r4-mm2 :a [x] :got-a) (defmethod r4-mm2 :b [x] :got-b) (sort (keys (first (map methods [r4-mm2])))))" :expected "(:a :b)"}
+  {:suite "r4-fn-macros" :expr "(do (defmulti r4-gm (fn [x] x)) (defmethod r4-gm :a [x] :got-a) (((partial get-method r4-gm) :a) :a))" :expected ":got-a"}
+  {:suite "r4-fn-macros" :expr "(do (defmulti r4-pm (fn [x] x)) (defmethod r4-pm :a [x] :a) (defmethod r4-pm [:a :b] [x] :ab) (prefer-method r4-pm [:a :b] :a) (count (first (map prefers [r4-pm]))))" :expected "1"}
 ]

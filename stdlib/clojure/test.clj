@@ -187,8 +187,8 @@
                  (clojure.test/do-report {:type :pass})
                  (clojure.test/do-report {:type :fail :message (str "expected throw of " ~klass " matching " ~re " but got " (clojure.core/class e#) ": " m#)}))))))
 
-      ;; instance? is a macro, not a function — applying it as a value yields its
-      ;; expansion form (always truthy). Expand it directly like the default path.
+      ;; instance? gets a dedicated report path for a clearer fail message
+      ;; (mirrors thrown? above); it is a function now, but keep the explicit form.
       (and (seq? form) (= 'instance? (first form)))
       `(try
          (if (instance? ~(second form) ~(nth form 2))
