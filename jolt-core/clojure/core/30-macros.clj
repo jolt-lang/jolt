@@ -77,9 +77,12 @@
 ;; class-name symbol is passed QUOTED to the ctx-capturing checker. A LIST in type
 ;; position is a class-valued expression (Class/forName "[C") — evaluate it. A LOCAL
 ;; in &env may hold a class value from (let [c java.util.Map] (instance? c x)). A
-;; symbol resolving to a var that HOLDS A CLASS VALUE also evaluates. Because it's a
-;; macro, instance? can't be used as a value ((partial instance? …) is a compile
-;; error on jolt — the class model precludes the JVM's fn form; see known-divergences).
+;; symbol resolving to a var that HOLDS A CLASS VALUE also evaluates. instance? is
+;; a macro so it can quote a bare class name, but the analyzer resolves a
+;; value-position reference — (partial instance? SomeClass) — to clojure.core/
+;; instance-check (the fn this expands to), so instance? works as a value for a
+;; class that evaluates to a Class (java.*/clojure.lang.*); only a bare deftype/
+;; shim name passed as a value can't (no evaluable Class).
 (defmacro instance? [t x]
   (if (or (seq? t) (contains? &env t)
           (and (symbol? t)

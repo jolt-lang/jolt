@@ -315,7 +315,7 @@
 ;; later resolve returns nil. Also records an 'unmapped tombstone in the refer table
 ;; so the name won't resolve through a refer/all mapping.
 (define (jolt-ns-unmap ns-desig sym)
-  (let* ((cns (ns-desig->name ns-desig))
+  (let* ((cns (jns-name (jolt-the-ns ns-desig)))   ; the-ns throws if the ns is missing (JVM parity)
          (nm  (symbol-t-name sym))
          (c   (var-cell-lookup cns nm)))
     (when c (var-cell-defined?-set! c #f)
@@ -329,7 +329,7 @@
 ;; syms consult that ns's :as aliases; unqualified resolve in the ns, its :refers,
 ;; then clojure.core. Returns the var or nil (never interns).
 (define (jolt-ns-resolve ns-desig sym)
-  (let* ((cns (ns-desig->name ns-desig))
+  (let* ((cns (jns-name (jolt-the-ns ns-desig)))   ; the-ns throws if the ns is missing (JVM parity)
          (sns (symbol-t-ns sym)) (nm (symbol-t-name sym))
          (c (if (string? sns)
                 (var-cell-lookup (or (chez-resolve-alias cns sns) sns) nm)
@@ -342,7 +342,8 @@
 ;; remove-ns: drop the namespace from the registry AND its vars, so find-ns
 ;; (which also derives existence from the var-table) returns nil afterward.
 (define (jolt-remove-ns desig)
-  (let ((nm (ns-desig->name desig)))
+  (let* ((nm (ns-desig->name desig))
+         (n  (jolt-find-ns desig)))            ; the removed Namespace (JVM returns it), or nil
     (hashtable-delete! ns-registry nm)
     (hashtable-delete! ns-has-vars-set nm)  ; keep the O(1) index honest, else a
                                             ; later require of nm would no-op
@@ -350,7 +351,7 @@
       (lambda (k) (let ((c (hashtable-ref var-table k #f)))
                     (when (and c (string=? (var-cell-ns c) nm)) (hashtable-delete! var-table k))))
       (hashtable-keys var-table))
-    jolt-nil))
+    n))
 
 ;; intern: create/set a var ns/sym to val (or an unbound cell). Returns the var.
 ;; The symbol's metadata becomes the var's metadata (Var.setMeta), and a truthy
@@ -371,8 +372,21 @@
 ;; A runtime alias is registered into the SAME table the analyzer consults, so a
 ;; later form in the program resolves alias/foo (the spine analyzes form by form).
 (define (jolt-alias alias-sym ns-sym)
-  (chez-register-alias! (chez-current-ns) (symbol-t-name alias-sym) (ns-desig->name ns-sym))
-  jolt-nil)
+  (let* ((cns    (chez-current-ns))
+         (alias  (symbol-t-name alias-sym))
+         ;; the-ns throws "No namespace: X found" if the target doesn't exist —
+         ;; JVM aliases the resolved Namespace, so aliasing a missing ns fails now
+         ;; instead of leaving a dangling alias that later dies with "Unknown class".
+         (target (jns-name (jolt-the-ns ns-sym)))
+         (existing (chez-resolve-alias cns alias)))
+    ;; re-aliasing an existing alias to a DIFFERENT ns is an error (JVM
+    ;; Namespace.addAlias); re-aliasing to the same target is a silent no-op.
+    (when (and existing (not (string=? existing target)))
+      (throw-jvm (quote IllegalStateException)
+                 (string-append "Alias " alias " already exists in namespace " cns
+                                ", aliasing " existing)))
+    (chez-register-alias! cns alias target)
+    jolt-nil))
 (define (jolt-ns-unalias ns-desig alias-sym)
   (hashtable-delete! ns-alias-table (cons (ns-desig->name ns-desig) (symbol-t-name alias-sym)))
   jolt-nil)

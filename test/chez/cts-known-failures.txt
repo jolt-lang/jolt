@@ -2,7 +2,6 @@
 # The gate fails on any per-namespace change, worse OR better; regenerate
 # with: JOLT_CTS_WRITE_BASELINE=1 host/chez/cts.sh
 clojure.core-test.abs 1 0
-clojure.core-test.atom 0 1
 clojure.core-test.bigint 1 0
 clojure.core-test.byte 1 0
 clojure.core-test.dec 1 0
