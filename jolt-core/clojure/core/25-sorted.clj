@@ -444,6 +444,6 @@
    (let [tree (sfield sc :tree)
          cmp (the-cmp sc)
          proj (sc-proj sc)
-         start (seek-rightmost tree cmp start-test start-k)]
+         start (seek-rightmost tree cmp end-test end-k)]
      (when start
-       (rsubseq-from tree start cmp proj end-test end-k)))))
+       (rsubseq-from tree start cmp proj start-test start-k)))))
