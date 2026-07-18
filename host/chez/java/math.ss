@@ -68,10 +68,14 @@
     (cond
       ((nan? x) x)
       ((infinite? x) (if (> x 0.0) x -1.0))
+      ((= x 0.0) x)                     ; expm1(0) = 0 (also ±0.0 passthrough)
       ((< ax 0.5)
        (let loop ((term x) (n 2) (acc x))
          (let* ((nt (* term (/ x n))) (acc2 (+ acc nt)))
-           (if (< (abs nt) (* 1e-18 (abs acc2))) acc2
+           ;; terminate on a term that adds nothing, or is negligible relative to
+           ;; the accumulator. Guard the threshold with (max 1.0 …) so an acc that
+           ;; rounds toward 0 can't make the bound 0 and spin forever (expm1 0).
+           (if (or (= nt 0.0) (< (abs nt) (* 1e-18 (max 1.0 (abs acc2))))) acc2
                (loop nt (+ n 1) acc2)))))
       (else (- (exp x) 1.0)))))
 ;; java.lang.Math.log1p — alternating series for |x|<0.3 (where 1+x rounds to 1),
