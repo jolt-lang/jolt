@@ -1078,4 +1078,8 @@
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-map 1 :a 2 :b 3 :c 4 :d 5 :e) >= 2 <= 4)" :expected "([4 :d] [3 :c] [2 :b])"}
+  {:suite "r7-sorted-throw" :expr "(subseq {:a 1 :b 2} > 1)" :expected :throws}
+  {:suite "r7-sorted-throw" :expr "(subseq {:a 1} > 0 <= 1)" :expected :throws}
+  {:suite "r7-sorted-throw" :expr "(rsubseq [1 2 3] <= 2)" :expected :throws}
+  {:suite "r7-sorted-throw" :expr "(rsubseq (range 5) <= 3)" :expected :throws}
 ]
