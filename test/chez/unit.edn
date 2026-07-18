@@ -518,6 +518,10 @@
   {:suite "var_meta" :expr "(do (def mv 1) (:name (meta (var mv))))" :expected "mv"}
   {:suite "var_meta" :expr "(do (def nv 1) (:ns (meta (var nv))))" :expected "user"}
   {:suite "var_meta" :expr "(do (def pl 1) (nil? (:private (meta (var pl)))))" :expected "true"}
+  {:suite "var_meta" :expr "(do (defn af [a b] a) (str (:arglists (meta (var af)))))" :expected "([a b])"}
+  {:suite "var_meta" :expr "(do (defn am ([x] x) ([x y] x)) (str (:arglists (meta (var am)))))" :expected "([x] [x y])"}
+  {:suite "var_meta" :expr "(do (defn av [a & r] a) (str (:arglists (meta (var av)))))" :expected "([a & r])"}
+  {:suite "var_meta" :expr "(do (defn ad \"doc\" [x] x) [(str (:arglists (meta (var ad)))) (:doc (meta (var ad)))])" :expected "[([x]) doc]"}
   {:suite "walk" :expr "(list? (list 1 2))" :expected "true"}
   {:suite "walk" :expr "(list? (list 1))" :expected "true"}
   {:suite "walk" :expr "(list? '(1 2))" :expected "true"}
