@@ -569,7 +569,15 @@
 ;; constants, while a vector/map/set is a single literal constant.
 (defmacro case [expr & clauses]
   (let [g (fresh-sym)
-        mk-const (fn [c] (if (or (symbol? c) (seq? c) (vector? c) (map? c) (set? c)) `(quote ~c) c))
+        ;; Quote symbols, lists, and composite literals (vector/map/set) so their
+        ;; elements aren't resolved as code. A reader tagged literal (#bigdec/#inst/
+        ;; #uuid/#regex, e.g. 4.0M) is represented as a pmap, so exclude it from the
+        ;; map? arm — it must flow to the back end as its constant, not be quoted as
+        ;; map data.
+        tagged? (fn [c] (and (map? c) (= (:jolt/type c) :jolt/tagged)))
+        mk-const (fn [c] (if (and (or (symbol? c) (seq? c) (vector? c) (map? c) (set? c))
+                                  (not (tagged? c)))
+                           `(quote ~c) c))
         mk-test (fn [c]
                   (if (seq? c)
                     `(or ~@(map (fn [v] `(= ~g ~(mk-const v))) c))
