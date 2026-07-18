@@ -160,11 +160,15 @@
                (and radix (integer? radix) (>= radix 2) (<= radix 36)
                     (let ((v (rdr-parse-radix digits radix)))
                       (and v (* sign v)))))))
-      ;; octal 0NNN: a leading 0 followed by octal digits (Clojure reads 042 as 34,
-      ;; not decimal 42). "0" alone, 0x.., 0r.. and a float "0.5" are handled
-      ;; elsewhere or fall through (a non-octal digit fails rdr-all-octal?).
-      ((and (>= blen 2) (char=? (string-ref body 0) #\0) (rdr-all-octal? body 1 blen))
-       (let ((o (rdr-parse-radix (substring body 1 blen) 8))) (and o (* sign o))))
+      ;; octal 0NNN, optionally with a bigint N suffix: a leading 0 followed by
+      ;; octal digits (Clojure reads 042 as 34 and 0177N as octal 127, not the
+      ;; decimal that the N-suffix branch below would otherwise produce). "0"
+      ;; alone, 0x.., 0r.. and a float "0.5" are handled elsewhere or fall through.
+      ((and (>= blen 2) (char=? (string-ref body 0) #\0)
+            (let ((end (if (char=? (string-ref body (- blen 1)) #\N) (- blen 1) blen)))
+              (and (> end 1) (rdr-all-octal? body 1 end) end)))
+       => (lambda (end)
+            (let ((o (rdr-parse-radix (substring body 1 end) 8))) (and o (* sign o)))))
       ;; a leading zero on a plain multi-digit integer is invalid (the octal
       ;; branch above accepted real octals; 08/09 match the JVM's trailing
       ;; "invalid number" alternative)
