@@ -66,7 +66,10 @@
 ;; core.logic's matche only read its keys to tell locals from fresh pattern vars).
 (defn- amp-env-map [env]
   (reduce (fn [m n] (assoc m (symbol n) nil)) {} (:locals env)))
-(defn- with-recur [env name] (assoc env :recur name))
+;; A recur target carries its name (the compiled self-call) and its ARITY (the
+;; binding count) so a recur with the wrong number of args is a compile error,
+;; like the JVM, instead of failing only at runtime on the branch that runs.
+(defn- with-recur [env name arity] (assoc env :recur name :recur-arity arity))
 
 ;; Type hints. The reader keeps ^hint metadata on the binding symbol.
 ;; Two hints resolve to the :struct fast path (a constant-keyword lookup skips
@@ -183,7 +186,9 @@
         ;; keeps recur targets unique per compilation unit.
         rname (gen-name (str (compile-ns ctx) "/" (or fn-name "fn") "--"))
         names (cond-> (vec fixed) rst (conj rst) fn-name (conj fn-name))
-        env0 (-> (add-locals env names) (with-recur rname))
+        ;; recur arity: fixed params, +1 for a rest param (it takes the collected
+        ;; seq as one positional slot). fn-name is the self-ref, not a param.
+        env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
         arity {:params fixed :recur-name rname
                :body (analyze-seq ctx body env*)}
@@ -237,10 +242,16 @@
   (let [clauses (rest items)
         body (atom [])
         catches (atom [])           ; ordered vector of (catch class binding body*) clauses
-        finally-body (atom nil)]
+        finally-body (atom nil)
+        seen-finally? (atom false)]
     (doseq [c clauses]
       (let [head (when (form-list? c) (first (vec (form-elements c))))
             hname (when (and head (form-sym? head)) (form-sym-name head))]
+        ;; Clause ordering, like the JVM: body exprs, then catches, then at most one
+        ;; finally which must be last. Enforced eagerly (plain throw) so a misplaced
+        ;; clause is a compile error rather than a silently-relocated body form.
+        (when @seen-finally?
+          (throw "finally clause must be last in try expression"))
         (cond
           (= hname "catch")
             (let [cl (vec (form-elements c))]
@@ -252,8 +263,14 @@
                 (throw "Unable to parse catch clause; expected (catch class binding body*)"))
               (swap! catches conj cl))
           (= hname "finally")
-            (reset! finally-body (rest (vec (form-elements c))))
-          :else (swap! body conj c))))
+            (do (reset! seen-finally? true)
+                (reset! finally-body (rest (vec (form-elements c)))))
+          :else
+            (do
+              ;; a body expr after a catch is illegal — only catch/finally may follow.
+              (when (seq @catches)
+                (throw "Only catch or finally clause can follow catch in try expression"))
+              (swap! body conj c)))))
     ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
     ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
     ;; clause's class with (instance? C e) — which respects the exception supertype
@@ -437,11 +454,16 @@
     "loop*" (let [bvec (vec (form-vec-items (nth items 1)))
                   rname (gen-name "loop")
                   r (analyze-bindings ctx bvec env)
-                  env** (with-recur (second r) rname)]
+                  env** (with-recur (second r) rname (quot (count bvec) 2))]
               {:op :loop :recur-name rname :bindings (first r)
                :body (analyze-seq ctx (drop 2 items) env**)})
-    "recur" (let [rt (:recur env)]
+    "recur" (let [rt (:recur env)
+                  arity (:recur-arity env)
+                  n (dec (count items))]
               (when-not rt (uncompilable "recur outside loop/fn"))
+              (when (and arity (not= n arity))
+                (throw (str "Mismatched argument count to recur, expected: " arity
+                            " args, got: " n)))
               {:op :recur :recur-name rt
                :args (mapv #(analyze ctx % env) (rest items))})
     "try" (analyze-try ctx items env)
