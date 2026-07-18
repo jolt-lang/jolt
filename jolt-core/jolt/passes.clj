@@ -58,6 +58,20 @@
         (assoc node :init (assoc f :arities [(assoc a :nhints (vec (concat (:nhints a) add)))])))
       node)))
 
+;; Dev IR validation. When JOLT_IR_VALIDATE is set, run-passes checks the node
+;; entering and the node leaving the pass pipeline against the jolt.ir schema and
+;; prints any problem (unknown :op, missing required key) — a fast way to catch a
+;; pass or analyzer producing malformed IR, which the TOTAL child-walk would
+;; otherwise turn into a silent no-op. Off, and free, otherwise (read once at load).
+;; jolt.host/getenv (defined in the runtime loader, absent during the seed mint)
+;; and jolt.ir/tree-problems (new on jolt.ir) are referenced fully-qualified, not
+;; :refer'd — a qualified ref to a loaded ns is late-bound, so the mint compiles
+;; this before those vars resolve.
+(def ^:private ir-validate? (jolt.host/getenv "JOLT_IR_VALIDATE"))
+(defn- report-ir! [phase node]
+  (run! (fn [p] (println (str "IR-VALIDATE [" phase "] " p)))
+        (jolt.ir/tree-problems node)))
+
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form.
 
@@ -81,12 +95,14 @@
   numeric/annotate runs last in all branches (hint-directed fl*/fx* arithmetic);
   it benefits open builds too, so it is not gated on inlining."
   [node ctx]
+  (when ir-validate? (report-ir! "analyze" node))
   ;; stash an inline-eligible defn so later call sites can splice it (closed-world
   ;; optimization only). Done before optimizing, from the analyzed node.
   (when (and (inline-enabled? ctx) (inline-eligible? node))
     (stash-inline! ctx (:ns node) (:name node) (stash-of node)))
-  (numeric/annotate
-    (cond
+  (let [result
+        (numeric/annotate
+          (cond
       ;; Full inline + inference (optimize + direct-link)
       (inline-enabled? ctx)
       (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
@@ -127,4 +143,6 @@
 
       ;; Dev/normal: const-fold + numeric only
       :else
-      (const-fold node))))
+      (const-fold node)))]
+    (when ir-validate? (report-ir! "passes" result))
+    result))

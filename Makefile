@@ -22,7 +22,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck devbootsmoke certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -51,6 +51,10 @@ testbin:
 
 smoke: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/joltc}" sh host/chez/smoke.sh
+
+# The IR schema validator (JOLT_IR_VALIDATE) reports no problems on real code.
+irvalidate:
+	@sh host/chez/ir-validate-smoke.sh
 
 # `jolt build` produces a working standalone binary.
 buildsmoke:
