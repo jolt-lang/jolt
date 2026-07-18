@@ -1090,6 +1090,13 @@
   {:suite "r8-ns" :expr "(do (create-ns (quote r8a)) (create-ns (quote r8b)) (alias (quote a33) (quote r8a)) [(try (alias (quote a33) (quote r8a)) :ok (catch Throwable e :threw)) (try (alias (quote a33) (quote r8b)) :no (catch Throwable e :threw))])" :expected "[:ok :threw]"}
   {:suite "r8-ns" :expr "(do (create-ns (quote r8rm)) (ns-name (remove-ns (quote r8rm))))" :expected "r8rm"}
   {:suite "r8-ns" :expr "(do (declare r8-unbound) (try (r8-unbound 1) (catch java.lang.IllegalStateException e :ise) (catch Throwable e :other)))" :expected ":ise"}
+  ;; reader low batch (jolt-ox7c.32): a further ':' in a keyword token is invalid;
+  ;; a bad \\u escape is a proper reader error (ExceptionInfo), not a raw condition.
+  {:suite "r8-reader" :expr "(try (read-string \":::foo\") (catch Throwable e :threw))" :expected ":threw"}
+  {:suite "r8-reader" :expr "[(read-string \":foo:bar\") (read-string \":ns/foo\") (read-string \":ns//\")]" :expected "[:foo:bar :ns/foo :ns//]"}
+  {:suite "r8-reader" :expr "(try (read-string \"\\\\uABCG\") (catch clojure.lang.ExceptionInfo e :ex) (catch Throwable e :other))" :expected ":ex"}
+  {:suite "r8-reader" :expr "(try (read-string \"\\\"\\\\u041\\\"\") (catch clojure.lang.ExceptionInfo e :ex) (catch Throwable e :other))" :expected ":ex"}
+  {:suite "r8-reader" :expr "[(int (read-string \"\\\\u0041\")) (count (read-string \"\\\"\\\\u0041\\\"\"))]" :expected "[65 1]"}
   {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) [1]))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "1"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
