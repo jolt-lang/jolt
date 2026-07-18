@@ -643,6 +643,20 @@
   (when (form-macro? ctx form)
     (throw (str "Can't take value of a macro: #'" (:ns r) "/" (:name r)))))
 
+;; instance? is a macro on jolt (so it can quote a bare class name — the class
+;; model has no evaluable Class for every name), but the JVM has it as a plain fn,
+;; so a value-position reference — (partial instance? SomeClass), (map (partial
+;; instance? String) xs) — must yield a callable. clojure.core/instance-check is
+;; the 2-arg (class-value obj) runtime fn the macro expands to, and a self-
+;; evaluating java.*/clojure.lang.* class name evaluates to a usable class value,
+;; so resolve the value-position ref to it. (A bare deftype/shim name passed as a
+;; value still can't produce a class value — that residual keeps the macro's
+;; known divergence.) Returns the node to emit, or nil to fall through.
+(defn- macro-value-fn [ctx form r]
+  (when (and (form-macro? ctx form)
+             (= "clojure.core" (:ns r)) (= "instance?" (:name r)))
+    (var-ref "clojure.core" "instance-check")))
+
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
@@ -657,8 +671,9 @@
               " used as value; value form not yet supported. Use (.method target ...) or (Class/.method target ...) instead."))
       ns (let [r (resolve-global ctx form)]
            (if (= :var (:kind r))
-             (do (deny-macro-value ctx form r)
-                 (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r))))
+             (or (macro-value-fn ctx form r)
+                 (do (deny-macro-value ctx form r)
+                     (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))))
              ;; A non-var qualified ref `Class/member` is a host class static
              ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
              ;; lowers it to a runtime static dispatch.
@@ -667,8 +682,9 @@
               (case (:kind r)
                 ;; :num-ret (a ^double/^long declared return) rides on the var node so
                 ;; jolt.passes.numeric types a call to it (an accumulator over the result).
-                :var (do (deny-macro-value ctx form r)
-                         (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r))))
+                :var (or (macro-value-fn ctx form r)
+                         (do (deny-macro-value ctx form r)
+                             (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))))
                 :host (host-ref (:name r))
                 ;; a class-name symbol (java.util.Map) self-evaluates to an interned
                 ;; Class object via the runtime interner, so (= (class x) java.util.Date),

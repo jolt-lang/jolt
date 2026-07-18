@@ -76,6 +76,13 @@
   {:suite "hostobj" :expr "[(instance? Double 1.5) (Double. \"3.5\") (Double/parseDouble \"2.5\")]" :expected "[true 3.5 2.5]"}
   {:suite "hostobj" :expr "(instance? java.util.regex.Pattern #\"x\")" :expected "true"}
   {:suite "hostobj" :expr "(class #\"x\")" :expected "java.util.regex.Pattern"}
+  ;; instance? usable as a value (a plain fn on the JVM; a macro on jolt that the
+  ;; analyzer resolves to instance-check in value position — jolt-ox7c/c15p)
+  {:suite "instance-value" :expr "((partial instance? java.lang.String) \"hi\")" :expected "true"}
+  {:suite "instance-value" :expr "((partial instance? java.lang.String) 5)" :expected "false"}
+  {:suite "instance-value" :expr "(map (partial instance? java.lang.Number) [1 \"x\" 2.0])" :expected "(true false true)"}
+  {:suite "instance-value" :expr "(let [f instance?] [(f java.util.Map {:a 1}) (f java.util.Map 5)])" :expected "[true false]"}
+  {:suite "instance-value" :expr "(instance? String \"y\")" :expected "true"}
   {:suite "hostobj" :expr "[(namespace (symbol \"foo/bar\")) (name (symbol \"foo/bar\"))]" :expected "[foo bar]"}
   {:suite "hostobj" :expr "(str (symbol \"a/b/c\"))" :expected "a/b/c"}
   {:suite "hostobj" :expr "(do (System/setProperty \"jolt.test.x\" \"z\") (System/getProperty \"jolt.test.x\"))" :expected "z"}
@@ -1068,7 +1075,9 @@
   {:suite "r4-fn-macros" :expr "(instance? String 5)" :expected "false"}
   ;; instance? stays a macro on jolt (class model), so using it as a value is a
   ;; compile error like any macro — NOT the JVM's fn form. Known divergence.
-  {:suite "r4-fn-macros" :expr "(try (eval (read-string \"((partial instance? String) \\\"x\\\")\")) (catch Throwable e :threw))" :expected ":threw"}
+  ;; (partial instance? …) now works: value-position instance? resolves to
+  ;; instance-check (jolt-ox7c/c15p), so the eval returns true instead of throwing.
+  {:suite "r4-fn-macros" :expr "(eval (read-string \"((partial instance? String) \\\"x\\\")\"))" :expected "true"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-mm (fn [x] x)) (defmethod r4-mm :a [x] :got-a) (defmethod r4-mm :b [x] :got-b) (sort (keys (methods r4-mm))))" :expected "(:a :b)"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-mm2 (fn [x] x)) (defmethod r4-mm2 :a [x] :got-a) (defmethod r4-mm2 :b [x] :got-b) (sort (keys (first (map methods [r4-mm2])))))" :expected "(:a :b)"}
   {:suite "r4-fn-macros" :expr "(do (defmulti r4-gm (fn [x] x)) (defmethod r4-gm :a [x] :got-a) (((partial get-method r4-gm) :a) :a))" :expected ":got-a"}
