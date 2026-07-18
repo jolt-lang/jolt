@@ -29,50 +29,101 @@
           ((char=? (string-ref s i) ch) i)
           (else (loop (+ i 1))))))
 
-;; "1.50" -> {150,2}; "3" -> {3,0}; "-0.0" -> {0,1}; ".5" -> {5,1}.
+;; "1.50" -> {150,2}; "3" -> {3,0}; "-0.0" -> {0,1}; ".5" -> {5,1};
+;; "1.0E300" -> {10,-299}; "1.5E-7" -> {15,8}. Throws NumberFormatException on
+;; anything that isn't an optional sign + decimal mantissa (>=1 digit) + optional
+;; signed exponent — i.e. the grammar java BigDecimal(String) accepts.
 (define (jolt-bigdec-from-string s)
-  (let* ((neg (and (> (string-length s) 0) (char=? (string-ref s 0) #\-)))
-         (sgn (and (> (string-length s) 0) (or neg (char=? (string-ref s 0) #\+))))
-         (s1 (if sgn (substring s 1 (string-length s)) s))
-         (sign (if neg -1 1))
-         (dot (bd-index-char s1 #\.)))
-    (if dot
-        (let* ((intp (substring s1 0 dot))
-               (fracp (substring s1 (+ dot 1) (string-length s1)))
-               (digs (string-append intp fracp))
-               (unscaled (if (= 0 (string-length digs)) 0 (string->number digs))))
-          (make-jbigdec (* sign unscaled) (string-length fracp)))
-        (make-jbigdec (* sign (string->number s1)) 0))))
+  (define n (string-length s))
+  (define (fail)
+    (throw-jvm (quote NumberFormatException)
+      (string-append "bigdec: cannot parse \"" s "\"")))
+  (define (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+  (when (= n 0) (fail))
+  ;; split mantissa / exponent at the first e/E
+  (let* ((epos (let loop ((i 0))
+                 (cond ((= i n) #f)
+                       ((memv (string-ref s i) '(#\e #\E)) i)
+                       (else (loop (+ i 1))))))
+         (mend (or epos n))
+         (expstr (and epos (substring s (+ epos 1) n))))
+    ;; parse the exponent (optional sign + >=1 digit), 0 if absent
+    (define exp
+      (if (not expstr) 0
+          (let* ((en (string-length expstr)))
+            (when (= en 0) (fail))
+            (let* ((c0 (string-ref expstr 0))
+                   (signed (or (char=? c0 #\+) (char=? c0 #\-)))
+                   (body (if signed (substring expstr 1 en) expstr)))
+              (when (= (string-length body) 0) (fail))
+              (let loop ((i 0))
+                (cond ((= i (string-length body)))
+                      ((digit? (string-ref body i)) (loop (+ i 1)))
+                      (else (fail))))
+              (* (if (and signed (char=? c0 #\-)) -1 1) (string->number body))))))
+    ;; mantissa: optional sign, >=1 digit, at most one '.'
+    (let* ((m0 (cond ((and (> mend 0) (char=? (string-ref s 0) #\-)) 1)
+                     ((and (> mend 0) (char=? (string-ref s 0) #\+)) 1)
+                     (else 0)))
+           (msign (if (= m0 1) (if (char=? (string-ref s 0) #\-) -1 1) 1))
+           (dot (let loop ((i m0) (d #f))
+                  (cond ((= i mend) d)
+                        ((char=? (string-ref s i) #\.) (if d (fail) (loop (+ i 1) i)))
+                        ((digit? (string-ref s i)) (loop (+ i 1) d))
+                        (else (fail))))))
+      (unless dot (unless (> (- mend m0) 0) (fail)))   ; need >=1 char
+      (let* ((intp (substring s m0 (or dot mend)))
+             (fracp (if dot (substring s (+ dot 1) mend) ""))
+             (mant (string-append intp fracp)))
+        ;; at least one digit somewhere in the mantissa
+        (let loop ((i 0) (any #f))
+          (cond ((= i (string-length mant))
+                 (unless any (fail)))
+                ((digit? (string-ref mant i)) (loop (+ i 1) #t))
+                (else (loop (+ i 1) any))))
+        (make-jbigdec (* msign (if (= (string-length mant) 0) 0 (string->number mant)))
+                      (- (string-length fracp) exp))))))
 
-;; bigdec coercion: a bigdec is itself; an exact integer keeps scale 0; a string
-;; or any other number routes through its decimal text.
+;; bigdec coercion: a bigdec is itself; an exact integer keeps scale 0; a ratio
+;; expands to its exact decimal (throwing ArithmeticException if non-terminating);
+;; a string parses as a BigDecimal literal; a flonum routes through its Double.toString
+;; text (BigDecimal/valueOf semantics). Inf/NaN/garbage raise NumberFormatException.
 (define (jolt-bigdec x)
   (cond
     ((jbigdec? x) x)
     ((and (number? x) (exact? x) (integer? x)) (make-jbigdec x 0))
+    ((and (number? x) (exact? x) (rational? x)) (jbd-rational->bigdec x))
     ((string? x) (jolt-bigdec-from-string x))
     ((number? x) (jolt-bigdec-from-string (jolt-num->string x)))
     (else (throw-jvm (if (string? x) (quote NumberFormatException) (quote IllegalArgumentException))
-                (string-append "bigdec: cannot coerce " (jolt-final-str x))))))
+                 (string-append "bigdec: cannot coerce " (jolt-final-str x))))))
 
 ;; value equality: unscaled_a * 10^scale_b == unscaled_b * 10^scale_a.
 (define (jbigdec=? a b)
   (= (* (jbigdec-unscaled a) (expt 10 (jbigdec-scale b)))
      (* (jbigdec-unscaled b) (expt 10 (jbigdec-scale a)))))
 
-;; render the decimal text (no M): insert the point `scale` digits from the right.
+;; render the decimal text (no M), matching java.math.BigDecimal.toString: plain
+;; decimal when the adjusted exponent (precision-1-scale) is >= -6 and scale >= 0,
+;; else scientific d(.ddd)E+/-exp. Zero prints "0" / "0.0" / "0.00" ...
 (define (jbigdec->string bd)
   (let* ((u (jbigdec-unscaled bd)) (sc (jbigdec-scale bd))
          (neg (< u 0)) (digs (number->string (abs u))))
-    (string-append
-      (if neg "-" "")
-      (if (<= sc 0)
-          digs
-          (let* ((padded (if (<= (string-length digs) sc)
-                             (string-append (make-string (- (+ sc 1) (string-length digs)) #\0) digs)
-                             digs))
-                 (pl (string-length padded)))
-            (string-append (substring padded 0 (- pl sc)) "." (substring padded (- pl sc) pl)))))))
+    (define (prefix body) (if neg (string-append "-" body) body))
+    (if (= u 0)
+        (prefix (if (<= sc 0) "0" (string-append "0." (make-string sc #\0))))
+        (let* ((dlen (string-length digs))
+               (adjexp (- (+ dlen -1) sc)))
+          (prefix
+            (if (or (< sc 0) (< adjexp -6))
+                (string-append
+                  (if (= dlen 1) digs
+                      (string-append (substring digs 0 1) "." (substring digs 1 dlen)))
+                  "E" (if (>= adjexp 0) "+" "-") (number->string (abs adjexp)))
+                (cond ((= sc 0) digs)
+                      ((<= dlen sc) (string-append "0." (make-string (- sc dlen) #\0) digs))
+                      (else (string-append (substring digs 0 (- dlen sc)) "."
+                                           (substring digs (- dlen sc) dlen))))))))))
 
 ;; value as a Chez flonum (for double contagion: a flonum operand wins).
 (define (jbigdec->flonum b)
@@ -397,6 +448,16 @@
 ;; str drops the M; pr/pr-str keep it.
 (register-str-render! jbigdec? jbigdec->string)
 (register-pr-arm! jbigdec? (lambda (x) (string-append (jbigdec->string x) "M")))
+
+;; hasheq: Clojure Numbers.hasheq(BigDecimal) — strip trailing zeros, then
+;; strippedUnscaled.hashCode() * 31 + stripped.scale() (int32). Matches JVM so
+;; bigdec keys collide correctly and (= 1.5M 1.50M) implies equal hashes.
+(define (jbigdec-hasheq bd)
+  (let loop ((u (jbigdec-unscaled bd)) (sc (jbigdec-scale bd)))
+    (if (or (<= sc 0) (= u 0) (not (= 0 (modulo u 10))))
+        (i32 (+ (* 31 (big-integer-hashcode u)) sc))
+        (loop (quotient u 10) (- sc 1)))))
+(register-hash-arm! jbigdec? jbigdec-hasheq)
 
 ;; class / decimal?
 (register-class-arm! jbigdec? (lambda (x) "java.math.BigDecimal"))

@@ -3,7 +3,6 @@
 # with: JOLT_CTS_WRITE_BASELINE=1 host/chez/cts.sh
 clojure.core-test.abs 1 0
 clojure.core-test.bigint 1 0
-clojure.core-test.bit-set 1 0
 clojure.core-test.byte 1 0
 clojure.core-test.dec 1 0
 clojure.core-test.double-qmark 3 0
@@ -25,10 +24,8 @@ clojure.core-test.pos-int-qmark 1 0
 clojure.core-test.quot 25 0
 clojure.core-test.realized-qmark 1 0
 clojure.core-test.rem 16 0
+clojure.core-test.short 1 0
 clojure.core-test.star 11 0
 clojure.core-test.star-squote 13 0
 clojure.core-test.transient 4 0
 clojure.core-test.vec 1 0
-# (short 0)/(byte 0) are not java.lang.Short/Byte under jolt's numeric model — bead jolt-445k.95;
-# latent until the R5 is/instance? fix stopped these asserts from auto-passing
-clojure.core-test.short 1 0

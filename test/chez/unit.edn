@@ -917,4 +917,112 @@
   ;; # -> $H case is backend-only. Smoke-test that a #() still munges its gensym
   ;; params consistently at binding and reference.
   {:suite "munge-injective" :expr "(#(+ % %2) 1 2)" :expected "3"}
+  ;; compiler-review R3 stage 1 — subnormal double printing (rt.ss jolt-flonum->string).
+  ;; Chez tags subnormal number->string output with a "|prec" suffix that corrupted
+  ;; the exponent; round-trip rows prove the value is preserved, and the plain pr-str
+  ;; rows lock that normal-range printing is untouched. (Chez's shortest-round-trip
+  ;; digits for subnormals legitimately differ from JVM's, e.g. 5.0E-324 vs 4.9E-324,
+  ;; so these assert jolt's own round-trippable form, not the JVM literal.)
+  {:suite "r3-rt" :expr "(= (read-string (pr-str 4.9E-324)) 4.9E-324)" :expected "true"}
+  {:suite "r3-rt" :expr "(= (read-string (pr-str 2.5E-323)) 2.5E-323)" :expected "true"}
+  {:suite "r3-rt" :expr "(= (read-string (pr-str 1.0E-322)) 1.0E-322)" :expected "true"}
+  {:suite "r3-rt" :expr "(pr-str 4.9E-324)" :expected "5.0E-324"}
+  {:suite "r3-rt" :expr "(pr-str 2.5E-323)" :expected "2.5E-323"}
+  {:suite "r3-rt" :expr "(pr-str 1.0E-322)" :expected "1.0E-322"}
+  {:suite "r3-rt" :expr "(pr-str 1.0E7)" :expected "1.0E7"}
+  {:suite "r3-rt" :expr "(pr-str 0.001)" :expected "0.001"}
+  {:suite "r3-rt" :expr "(pr-str 1.0E-300)" :expected "1.0E-300"}
+  ;; compiler-review R3 stage 2 — bigdec for ratios / sci-notation doubles / typed
+  ;; errors (java/bigdec.ss). Ratio -> exact decimal (ArithmeticException if
+  ;; non-terminating); flonum + exponent strings parse; Inf/NaN/garbage raise
+  ;; NumberFormatException. jbigdec->string now matches BigDecimal.toString
+  ;; (scientific for scale<0 or adjusted-exp<-6).
+  {:suite "r3-bigdec" :expr "(bigdec 1/4)" :expected "0.25M"}
+  {:suite "r3-bigdec" :expr "(+ (bigdec 1/4) 1M)" :expected "1.25M"}
+  {:suite "r3-bigdec" :expr "(bigdec 1.0E300)" :expected "1.0E+300M"}
+  {:suite "r3-bigdec" :expr "(bigdec \"1.0E300\")" :expected "1.0E+300M"}
+  {:suite "r3-bigdec" :expr "(bigdec \"1.5e-7\")" :expected "1.5E-7M"}
+  {:suite "r3-bigdec" :expr "(bigdec 1/3)" :expected :throws}
+  {:suite "r3-bigdec" :expr "(bigdec ##Inf)" :expected :throws}
+  {:suite "r3-bigdec" :expr "(bigdec \"abc\")" :expected :throws}
+  {:suite "r3-bigdec" :expr "(bigdec \"\")" :expected :throws}
+  ;; compiler-review R3 stage 3 — == handles BigDecimal operands (predicates.ss
+  ;; jolt-num-equiv). Used to throw ClassCastException "== requires numbers" for any
+  ;; bigdec; now compares by value across the tower (mirrors compare), while = keeps
+  ;; its category rules ((= 1M 1) is false, (== 1M 1) is true).
+  {:suite "r3-equiv" :expr "(== 3M 3)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M 1.0M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M 2M)" :expected "false"}
+  {:suite "r3-equiv" :expr "(== 3M 3.0)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M 1.00M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 0M 0M 0M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== 1M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(= 3M 3)" :expected "false"}
+  {:suite "r3-equiv" :expr "(= 1M 1.00M)" :expected "true"}
+  {:suite "r3-equiv" :expr "(== \"a\" \"a\")" :expected :throws}
+  ;; compiler-review R3 stage 4 — Math.round semantics (math.ss jolt-math-round +
+  ;; host-static-methods Math/round). Was (exact (floor (+ x 0.5))): errored on
+  ;; NaN/Inf, returned bignums for huge values, and gave 1 for 0.49999999999999994.
+  ;; Now NaN->0, +/-Inf->Long/MAX,MIN, saturates out-of-range, half-up special case.
+  {:suite "r3-round" :expr "(clojure.math/round ##NaN)" :expected "0"}
+  {:suite "r3-round" :expr "(clojure.math/round ##Inf)" :expected "9223372036854775807"}
+  {:suite "r3-round" :expr "(clojure.math/round ##-Inf)" :expected "-9223372036854775808"}
+  {:suite "r3-round" :expr "(clojure.math/round 1.0E19)" :expected "9223372036854775807"}
+  {:suite "r3-round" :expr "(clojure.math/round -1.0E19)" :expected "-9223372036854775808"}
+  {:suite "r3-round" :expr "(clojure.math/round 0.49999999999999994)" :expected "0"}
+  {:suite "r3-round" :expr "(clojure.math/round 2.5)" :expected "3"}
+  {:suite "r3-round" :expr "(clojure.math/round -2.5)" :expected "-2"}
+  {:suite "r3-round" :expr "(Math/round ##Inf)" :expected "9223372036854775807"}
+  {:suite "r3-round" :expr "(Math/round 0.49999999999999994)" :expected "0"}
+  {:suite "r3-round" :expr "(Math/round 2.4)" :expected "2"}
+  ;; compiler-review R3 stage 5 — hasheq for bigdec + ratio (bigdec.ss arm,
+  ;; hasheq.ss ratio). bigdec had no hash arm; ratio used long-hashcode (Long hash)
+  ;; instead of BigInteger.hashCode. Now bigdec = strip-trailing-zeros then
+  ;; 31*strippedUnscaled.hashCode + scale; ratio = num.hashCode ^ den.hashCode.
+  {:suite "r3-hash" :expr "(hash 3M)" :expected "93"}
+  {:suite "r3-hash" :expr "(hash 1.5M)" :expected "466"}
+  {:suite "r3-hash" :expr "(hash -1.5M)" :expected "-464"}
+  {:suite "r3-hash" :expr "(hash 1.50M)" :expected "466"}
+  {:suite "r3-hash" :expr "(hash -3M)" :expected "-93"}
+  {:suite "r3-hash" :expr "(hash -5/7)" :expected "-4"}
+  {:suite "r3-hash" :expr "(hash 1099511627776/3)" :expected "7939"}
+  {:suite "r3-hash" :expr "(hash 5/7)" :expected "2"}
+  {:suite "r3-hash" :expr "(= (hash 1.5M) (hash 1.50M))" :expected "true"}
+  {:suite "r3-math-stable" :expr "(clojure.math/expm1 1.0E-10)" :expected "1.00000000005E-10"}
+  {:suite "r3-math-stable" :expr "(clojure.math/log1p 1.0E-15)" :expected "9.999999999999995E-16"}
+  {:suite "r3-math-stable" :expr "(clojure.math/expm1 2.0)" :expected "6.38905609893065"}
+  {:suite "r3-math-stable" :expr "(clojure.math/expm1 0.0)" :expected "0.0"}
+  {:suite "r3-math-stable" :expr "(Math/expm1 0.0)" :expected "0.0"}
+  {:suite "r3-math-stable" :expr "(clojure.math/log1p 0.0)" :expected "0.0"}
+  {:suite "r3-math-stable" :expr "(clojure.math/hypot 3.0 4.0)" :expected "5.0"}
+  {:suite "r3-math-stable" :expr "(clojure.math/hypot 5.0 12.0)" :expected "13.0"}
+  {:suite "r3-math-stable" :expr "(< (clojure.math/hypot 1.0E300 1.0E300) ##Inf)" :expected "true"}
+  {:suite "r3-math-stable" :expr "(Math/expm1 1.0E-10)" :expected "1.00000000005E-10"}
+  {:suite "r3-math-stable" :expr "(Math/hypot 3.0 4.0)" :expected "5.0"}
+  {:suite "r3-math-stable" :expr "(< (Math/hypot 1.0E300 1.0E300) ##Inf)" :expected "true"}
+  {:suite "r3-bitops" :expr "(try (bit-and 5.5 3) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-or 3 1.5) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-xor 3 1/2) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-not 2.7) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-test 5 2.9) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (bit-shift-left 1 2.5) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(try (apply bit-not [2.7]) (catch IllegalArgumentException e :iae))" :expected ":iae"}
+  {:suite "r3-bitops" :expr "(bit-and 12 10)" :expected "8"}
+  {:suite "r3-bitops" :expr "(bit-not 5)" :expected "-6"}
+  {:suite "r3-bitops" :expr "(bit-set 0 63)" :expected "-9223372036854775808"}
+  {:suite "r3-bitops" :expr "(bit-and 9223372036854775807 1)" :expected "1"}
+  {:suite "r3-bitops" :expr "(unsigned-bit-shift-right -1 1)" :expected "9223372036854775807"}
+  {:suite "r3-lowbatch" :expr "(parse-double \"1f\")" :expected "1.0"}
+  {:suite "r3-lowbatch" :expr "(parse-double \"1.0d\")" :expected "1.0"}
+  {:suite "r3-lowbatch" :expr "(parse-double \" 1.5 \")" :expected "1.5"}
+  {:suite "r3-lowbatch" :expr "(nil? (parse-double \"abc\"))" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(nil? (parse-double \"f\"))" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(parse-double \"3.14\")" :expected "3.14"}
+  {:suite "r3-lowbatch" :expr "(clojure.math/floor-div 7.0 2)" :expected "3"}
+  {:suite "r3-lowbatch" :expr "(clojure.math/floor-mod 7.0 3)" :expected "1"}
+  {:suite "r3-lowbatch" :expr "(clojure.math/floor-div -7 2)" :expected "-4"}
+  {:suite "r3-lowbatch" :expr "(apply == [9007199254740993 9007199254740992.0])" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(== 9007199254740993 9007199254740992.0)" :expected "true"}
+  {:suite "r3-lowbatch" :expr "(= 1 1.0)" :expected "false"}
+  {:suite "r3-lowbatch" :expr "(== 1/2 0.5)" :expected "true"}
 ]

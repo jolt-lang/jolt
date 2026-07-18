@@ -446,10 +446,10 @@
     ((number? x)
      (cond
        ((flonum? x) (double-hasheq x))
-       ;; Ratio: exact non-integer. hashCode = numerator.hashCode ^ denominator.hashCode
+       ;; Ratio: exact non-integer. hasheq = BigInteger.hashCode(numer) ^ BigInteger.hashCode(denom)
        ((and (exact? x) (not (integer? x)))
-        (i32 (bitwise-xor (long-hashcode (numerator x))
-                          (long-hashcode (denominator x)))))
+        (i32 (bitwise-xor (big-integer-hashcode (numerator x))
+                          (big-integer-hashcode (denominator x)))))
        ;; BigInt / bignum: if fits in long → hashLong, else BigInteger.hashCode
        ;; For values within 64-bit signed range, use hashLong.
        ((and (exact? x) (integer? x)

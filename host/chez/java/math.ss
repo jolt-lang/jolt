@@ -21,14 +21,83 @@
       (- (expt (- x) (/ 1.0 3.0)))
       (expt x (/ 1.0 3.0))))
 
-;; clojure.math/round returns a long (exact); floor/ceil/signum/rint return doubles.
-(define (jolt-math-round x) (exact (floor (+ x 0.5))))
+;; java.lang.Math.round(double) -> long: NaN->0, +Inf->Long/MAX_VALUE, -Inf->
+;; Long/MIN_VALUE, out-of-long-range saturates, and the greatest double below 0.5
+;; (0.49999999999999994) rounds to 0 — its x+0.5 sums to exactly 1.0. Else (long)
+;; floor(x + 0.5). clojure.math/round and Math/round both route here.
+(define jolt-math-long-max 9223372036854775807)
+(define jolt-math-long-min -9223372036854775808)
+(define (jolt-math-round x)
+  (let ((d (if (and (number? x) (real? x)) (exact->inexact x) x)))
+    (cond
+      ((nan? d) 0)
+      ((infinite? d) (if (fl> d 0.0) jolt-math-long-max jolt-math-long-min))
+      ;; 0.49999999999999994: largest double < 0.5, whose +0.5 rounds up to 1.0
+      ((and (fl< d 0.5) (fl>= (fl+ d 0.5) 1.0)) 0)
+      (else
+       (let ((r (floor (+ d 0.5))))
+         (cond ((> r jolt-math-long-max) jolt-math-long-max)
+               ((< r jolt-math-long-min) jolt-math-long-min)
+               (else (exact r))))))))
 (define (jolt-math-signum x) (cond ((< x 0.0) -1.0) ((> x 0.0) 1.0) (else 0.0)))
 (define (jolt-math-to-degrees r) (/ (* r 180.0) jolt-math-pi))
 (define (jolt-math-to-radians d) (/ (* d jolt-math-pi) 180.0))
-(define (jolt-math-hypot a b) (sqrt (+ (* a a) (* b b))))
-(define (jolt-math-floor-div a b) (floor (/ a b)))
-(define (jolt-math-floor-mod a b) (- a (* b (floor (/ a b)))))
+;; java.lang.Math.hypot — scale by a power of 2 (exact) so a^2+b^2 can't overflow
+;; before the sqrt; the only rounding is the correctly-rounded sqrt. NaN->NaN,
+;; either Inf -> +Inf. (Naive sqrt(a^2+b^2) returns Inf for 3e200,4e200.)
+(define (jolt-math-hypot a b)
+  ;; Java Math.hypot: Inf if either is Inf (even if the other is NaN), else NaN if
+  ;; either is NaN. Otherwise la * sqrt(1 + (sm/la)^2), factoring out the larger
+  ;; magnitude so the squares never overflow (sm/la <= 1). This is exact for the
+  ;; scaled Pythagorean cases (e.g. 3e200,4e200 -> 5e200) and within 1 ULP
+  ;; elsewhere, matching Java's correctly-rounded result to ~15-16 digits.
+  (cond
+    ((or (infinite? a) (infinite? b)) +inf.0)
+    ((or (nan? a) (nan? b)) +nan.0)
+    (else
+     (let* ((ax (abs a)) (bx (abs b))
+            (la (max ax bx)) (sm (min ax bx)))
+       (if (= la 0.0)
+           0.0
+           (let ((r (/ sm la)))
+             (* la (sqrt (+ 1.0 (* r r))))))))))
+;; java.lang.Math.expm1 — Taylor series for |x|<0.5 (where exp(x)-1 cancels badly),
+;; else exp(x)-1. +Inf->+Inf, -Inf->-1.0, NaN->NaN.
+(define (jolt-math-expm1 x)
+  (let ((ax (abs x)))
+    (cond
+      ((nan? x) x)
+      ((infinite? x) (if (> x 0.0) x -1.0))
+      ((= x 0.0) x)                     ; expm1(0) = 0 (also ±0.0 passthrough)
+      ((< ax 0.5)
+       (let loop ((term x) (n 2) (acc x))
+         (let* ((nt (* term (/ x n))) (acc2 (+ acc nt)))
+           ;; terminate on a term that adds nothing, or is negligible relative to
+           ;; the accumulator. Guard the threshold with (max 1.0 …) so an acc that
+           ;; rounds toward 0 can't make the bound 0 and spin forever (expm1 0).
+           (if (or (= nt 0.0) (< (abs nt) (* 1e-18 (max 1.0 (abs acc2))))) acc2
+               (loop nt (+ n 1) acc2)))))
+      (else (- (exp x) 1.0)))))
+;; java.lang.Math.log1p — alternating series for |x|<0.3 (where 1+x rounds to 1),
+;; else log(1+x). log1p(-1)->-Inf, log1p(<-1)->NaN.
+(define (jolt-math-log1p x)
+  (cond
+    ((nan? x) x)
+    ((= x -1.0) -inf.0)
+    ((< x -1.0) +nan.0)
+    ((< (abs x) 0.3)
+     (let loop ((n 1) (xp x) (acc 0.0) (sign 1))
+       (let* ((term (* sign (/ xp n))) (acc2 (+ acc term)))
+         (if (< (abs term) (* 1e-18 (max 1.0 (abs acc2)))) acc2
+             (loop (+ n 1) (* xp x) acc2 (- sign))))))
+    (else (real-or-nan (log (+ 1.0 x))))))
+;; floor-div/floor-mod take ^long args and return a long. Coerce each operand
+;; toward zero (Java's ^long cast) so a double like 7.0 becomes 7, then compute
+;; on exact integers so the result is a long, not a double.
+(define (jolt-math-floor-div a b)
+  (let ((a (exact (truncate a))) (b (exact (truncate b)))) (floor (/ a b))))
+(define (jolt-math-floor-mod a b)
+  (let ((a (exact (truncate a))) (b (exact (truncate b)))) (- a (* b (floor (/ a b))))))
 
 ;; clojure.math fns always return a DOUBLE; Chez's sqrt/expt/sin/floor/... return
 ;; EXACT for exact args ((sqrt 9) -> 3, (sin 0) -> 0), so coerce.
@@ -46,10 +115,10 @@
 (def-var! "clojure.math" "cbrt" jolt-math-cbrt)
 (def-var! "clojure.math" "pow" (m2c expt))
 (def-var! "clojure.math" "exp" (m1 exp))
-(def-var! "clojure.math" "expm1" (lambda (x) (- (exp x) 1.0)))
+(def-var! "clojure.math" "expm1" jolt-math-expm1)
 (def-var! "clojure.math" "log" (m1c log))
 (def-var! "clojure.math" "log10" (lambda (x) (real-or-nan (log x 10.0))))
-(def-var! "clojure.math" "log1p" (lambda (x) (real-or-nan (log (+ 1.0 x)))))
+(def-var! "clojure.math" "log1p" jolt-math-log1p)
 (def-var! "clojure.math" "sin" (m1 sin))
 (def-var! "clojure.math" "cos" (m1 cos))
 (def-var! "clojure.math" "tan" (m1 tan))
