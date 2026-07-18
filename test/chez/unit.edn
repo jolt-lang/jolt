@@ -1111,6 +1111,11 @@
   {:suite "r5-syntax-quote" :expr "(pr-str (read-string \"`foo.\"))" :expected "(quote foo.)"}
   {:suite "r5-syntax-quote" :expr "(pr-str `())" :expected "()"}
   {:suite "r5-syntax-quote" :expr "(pr-str (eval (read-string \"`(a b)\")))" :expected "(user/a user/b)"}
+  {:suite "r5-eval-const" :expr "(eval (list (quote identity) 1M))" :expected "1M"}
+  {:suite "r5-eval-const" :expr "(= 1M (eval (list (quote identity) 1M)))" :expected "true"}
+  {:suite "r5-eval-const" :expr "(eval (list (quote class) 1M))" :expected "java.math.BigDecimal"}
+  {:suite "r5-eval-const" :expr "(str (eval (list (quote identity) (read-string \"#uuid \\\"00000000-0000-0000-0000-000000000000\\\"\"))))" :expected "00000000-0000-0000-0000-000000000000"}
+  {:suite "r5-eval-const" :expr "(eval (list (quote identity) (read-string \"#inst \\\"2020-01-01T00:00:00.000-00:00\\\"\")))" :expected "#inst \"2020-01-01T00:00:00.000-00:00\""}
   {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
   {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch NullPointerException e :npe) (catch Throwable t :t))" :expected ":t"}
   {:suite "r6-kernel-throws" :expr "(try (nth :x 0) (catch UnsupportedOperationException e :uoe) (catch Throwable t :other))" :expected ":uoe"}

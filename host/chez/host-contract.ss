@@ -131,6 +131,20 @@
 (define (hc-inst-source x) (jolt-get x hc-kw-form))
 (define (hc-uuid-source x) (jolt-get x hc-kw-form))
 
+;; A live bigdec / inst / uuid VALUE embedded in a form (read via read-string, or
+;; produced by evaluating a literal and spliced into a form handed to eval) — as
+;; opposed to the reader's tagged pmap the compile path sees. The analyzer emits it
+;; as the same :bigdec/:inst/:uuid leaf, reconstructing from the value's canonical
+;; string. Long/BigInt/Ratio already round-trip as plain number constants; these are
+;; the host-object constants that had no VALUE path (only a tagged-form path).
+;; jbigdec?/jinst?/juuid? and the string accessors resolve at call time (runtime).
+(define (hc-bigdec-value? x) (jbigdec? x))
+(define (hc-bigdec-value-source x) (jbigdec->string x))
+(define (hc-inst-value? x) (jinst? x))
+(define (hc-inst-value-source x) (inst-rfc3339 x))
+(define (hc-uuid-value? x) (juuid? x))
+(define (hc-uuid-value-source x) (juuid-s x))
+
 ;; Source position for a list form: the reader stamps :line/:column (+ :file when
 ;; compiling a file) into the form's metadata. Return a clean {:line :column
 ;; :file?} map, or nil for a synthetic/macro-built form that carries none.
@@ -542,6 +556,12 @@
   (def-var! "jolt.host" "unchecked-math?" hc-unchecked-math?)
   (def-var! "jolt.host" "form-bigdec?" hc-bigdec?)
   (def-var! "jolt.host" "form-bigdec-source" hc-bigdec-source)
+  (def-var! "jolt.host" "form-bigdec-value?" hc-bigdec-value?)
+  (def-var! "jolt.host" "form-bigdec-value-source" hc-bigdec-value-source)
+  (def-var! "jolt.host" "form-inst-value?" hc-inst-value?)
+  (def-var! "jolt.host" "form-inst-value-source" hc-inst-value-source)
+  (def-var! "jolt.host" "form-uuid-value?" hc-uuid-value?)
+  (def-var! "jolt.host" "form-uuid-value-source" hc-uuid-value-source)
   (def-var! "jolt.host" "form-elements" hc-elements)
   (def-var! "jolt.host" "form-vec-items" hc-vec-items)
   (def-var! "jolt.host" "form-set-items" hc-set-items)

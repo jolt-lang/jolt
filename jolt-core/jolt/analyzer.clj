@@ -25,6 +25,9 @@
                                form-regex? form-regex-source
                                form-inst? form-inst-source form-uuid? form-uuid-source
                                form-bigdec? form-bigdec-source
+                               form-bigdec-value? form-bigdec-value-source
+                               form-inst-value? form-inst-value-source
+                               form-uuid-value? form-uuid-value-source
                                form-ns-value? form-ns-value-name
                                form-var-value? form-var-value-ns form-var-value-name
                                unchecked-math?
@@ -859,6 +862,13 @@
      ;; bigdecimal literal (1.5M) -> a :bigdec leaf; the back end emits a runtime
      ;; jbigdec built from the numeric text.
      (form-bigdec? form) {:op :bigdec :source (form-bigdec-source form)}
+     ;; a live bigdec/inst/uuid VALUE embedded in a form handed to eval (read via
+     ;; read-string, or an evaluated literal spliced by a macro) -> the same leaf as
+     ;; the tagged literal, rebuilt from the value's canonical string. Without this
+     ;; an embedded 1M / #inst / #uuid value died as "unsupported form".
+     (form-bigdec-value? form) {:op :bigdec :source (form-bigdec-value-source form)}
+     (form-inst-value? form) {:op :inst :source (form-inst-value-source form)}
+     (form-uuid-value? form) {:op :uuid :source (form-uuid-value-source form)}
      ;; a live namespace value spliced into a form (~*ns* in a macro) -> a
      ;; :the-ns leaf the back end reconstructs by name at the call site.
      (form-ns-value? form) {:op :the-ns :name (form-ns-value-name form)}
