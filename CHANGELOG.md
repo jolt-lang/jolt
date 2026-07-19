@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Maven jar extraction re-extracts when the jar is newer than the last extraction
+  (`.jolt-ok` was trusted forever, so a rebuilt/refetched jar — a SNAPSHOT, or a
+  coord reinstalled into `~/.m2` — was never re-read), and the `.jolt-ok` marker
+  is written only after a successful `unzip`, so a failed/partial extraction is no
+  longer cached as complete.
+
 ## [0.4.6] - 2026-07-19
 
 Cross-compilation, and a stdin namespace-switch fix.
