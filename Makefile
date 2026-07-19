@@ -6,7 +6,7 @@
 
 CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
 
-.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke devboot devbootsmoke submodules
+.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke devboot devbootsmoke submodules httpsfetch
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -68,6 +68,11 @@ buildlibsmoke:
 # default), and --dynamic keeps the runtime load-shared-object path.
 staticnativesmoke:
 	@sh host/chez/static-native-smoke.sh
+
+# OPT-IN: jolt.mvn-http cert-verifying HTTPS fetch against Central + Clojars.
+# Not in `make test` — needs network + a working system OpenSSL.
+httpsfetch:
+	@sh host/chez/https-fetch-smoke.sh
 
 # Build joltc as a self-contained native binary into target/<profile>/joltc. The
 # binary bundles the runtime, compiler, jolt-core + stdlib source, the Chez boots,
