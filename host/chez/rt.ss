@@ -375,8 +375,15 @@
 ;; existing root is left intact — Clojure's (def x) with no init does not clobber
 ;; a prior binding (do (def x 7) (def x) x) => 7. Returns the cell either way.
 (define (declare-var! ns name)
-  (let ((k (string-append ns "/" name)))
-    (or (hashtable-ref var-table k #f)
+  (let* ((k (string-append ns "/" name))
+         (c (hashtable-ref var-table k #f)))
+    (if c
+        ;; a declare marks an ALREADY-interned cell resolvable — set-var-meta!
+        ;; (jolt-var) may have interned it undefined? first (the no-init def with
+        ;; metadata emits set-var-meta! then declare-var!), so without this a
+        ;; declaration-only var stays defined?=#f and resolve/find-var/ns-interns
+        ;; miss it in an AOT build. The existing root is left intact.
+        (begin (var-cell-defined?-set! c #t) c)
         (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #t)))  ; declared => interned/resolvable
           (hashtable-set! var-table k c)
           c))))

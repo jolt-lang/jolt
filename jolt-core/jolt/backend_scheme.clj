@@ -1136,9 +1136,12 @@
                d (cond
                    (:no-init node)
                    (if (jmeta-nonempty? (:meta node))
-                     (str "(begin (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"
-                          " (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                          (emit-def-meta node) "))")
+                     ;; set-var-meta! interns the same cell declare-var! returns, so
+                     ;; declare-var! runs LAST — a no-init def evaluates to its var,
+                     ;; like the JVM ((var? (def x)) is true), not set-var-meta!'s void.
+                     (str "(begin (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                          (emit-def-meta node) ")"
+                          " (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) "))")
                      (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
                    (jmeta-nonempty? (:meta node))
                    (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "

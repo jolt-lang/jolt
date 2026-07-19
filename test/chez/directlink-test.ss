@@ -54,8 +54,10 @@
   (ok "off: call to a routes through jolt-invoke + var-deref"
       (and (contains? eb "(jolt-invoke") (contains? eb "(var-deref \"app\" \"a\")")))
   (ok "off: no jv$ direct call" (not (contains? eb "(jv$app$a)")))
-  (ok "off: def emits plain def-var! (no jv$ binding)"
-      (and (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(def-var! \"app\" \"a\"")
+  ;; a def carries source position in its var meta (:line/:column/:file), so it
+  ;; emits def-var-with-meta! — but still NO jv$ binding off direct-link.
+  (ok "off: def emits def-var-with-meta! (no jv$ binding)"
+      (and (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(def-var-with-meta! \"app\" \"a\"")
            (not (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(define jv$app$a")))))
 
 ;; --- direct-link ON ---
@@ -65,7 +67,7 @@
 (let ((ea (emit-form "app" "(def a (fn* ([] 1)))")))   ; registers app/a in the set
   (ok "on: a's def emits a jv$ binding aliased to its var cell"
       (and (contains? ea "(begin (define jv$app$a ")
-           (contains? ea "(def-var! \"app\" \"a\" jv$app$a)"))))
+           (contains? ea "(def-var-with-meta! \"app\" \"a\" jv$app$a"))))
 
 (let ((eb (emit-form "app" "(def b (fn* ([] (a))))")))
   (ok "on: b's call to a is a direct (jv$app$a) call" (contains? eb "(jv$app$a)"))
