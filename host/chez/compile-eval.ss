@@ -14,6 +14,9 @@
 ;; jolt.passes/run-passes: const-fold every analyzed form, plus inline + type
 ;; inference when the unit opted into direct-linking (jolt build --opt). Off that
 ;; path it is a pure const-fold. Loaded from the compiler image (jolt.passes).
+;; 2-arg run-passes makes its own fresh per-form inference context (this spine never
+;; optimizes, so it's unused anyway); build/emit-image use the 3-arg form to share the
+;; whole-program-seeded context across forms.
 (define jolt-ce-run-passes (var-deref "jolt.passes" "run-passes"))
 ;; The compiler reads source as FORMS (set literals stay {:jolt/type :jolt/set},
 ;; which the analyzer lowers) — the raw reader, not clojure.core/read-string,

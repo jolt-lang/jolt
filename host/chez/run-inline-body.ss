@@ -12,6 +12,9 @@
 (define run-passes (var-deref "jolt.passes" "run-passes"))
 (define emit    (var-deref "jolt.backend-scheme" "emit"))
 (define analyze (var-deref "jolt.analyzer" "analyze"))
+(define U ((var-deref "jolt.passes.types" "new-unit")))
+((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 
 ;; Populate runtime tables with a protocol and a defrecord with inline method impl.
@@ -27,9 +30,9 @@
 (let* ((ir (analyze (make-analyze-ctx "user")
                     (jolt-ce-read "(defrecord Circle [^double r] Shape (area [_] (* r r 3.14159)))")))
        (_ (set-optimize! #t))
-       (_ (set-record-shapes! shapes))
-       (_ (set-protocol-methods! pmethods))
-       (passed (run-passes ir (make-analyze-ctx "user")))
+       (_ (set-record-shapes! U shapes))
+       (_ (set-protocol-methods! U pmethods))
+       (passed (run-passes ir (make-analyze-ctx "user") U))
        (emitted (emit passed)))
   ;; The register-inline-method's fn body is inside the :do statements; the
   ;; reinfer pass should have seeded the receiver param so field reads emit
@@ -44,8 +47,8 @@
 (define shapes2 (chez-record-shapes-map))
 (let* ((ir2 (analyze (make-analyze-ctx "user")
                      (jolt-ce-read "(defrecord Square [s] Shape (area [_] (* s s)))")))
-       (_ (set-record-shapes! shapes2))
-       (passed2 (run-passes ir2 (make-analyze-ctx "user")))
+       (_ (set-record-shapes! U shapes2))
+       (passed2 (run-passes ir2 (make-analyze-ctx "user") U))
        (emitted2 (emit passed2)))
   (gate-check "deftype field read uses direct accessor"
          (gate-sub? emitted2 "jrec1-f0") #t))
@@ -58,7 +61,7 @@
 (let* ((ir (analyze (make-analyze-ctx "user")
                     (jolt-ce-read "(fn [x] (let [m {:a (+ x \"throwme\")}] (:b m)))")))
        (_ (set-optimize! #t))
-       (passed (run-passes ir (make-analyze-ctx "user")))
+       (passed (run-passes ir (make-analyze-ctx "user") U))
        (emitted (emit passed)))
   (gate-check "throwing discarded map value survives scalar-replace"
               (gate-sub? emitted "throwme") #t))

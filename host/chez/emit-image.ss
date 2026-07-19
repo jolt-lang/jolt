@@ -56,6 +56,23 @@
 ;; byte-fixpoint, and a built app should carry no per-call trace overhead.
 (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
   (when (procedure? stf) (stf #f)))
+;; The per-compilation inference/pass context run-passes threads (jolt.passes.types/
+;; new-unit) instead of module-global state. Created LAZILY: the first re-mint off an
+;; older seed has no new-unit var yet, but the mint never optimizes so it never
+;; reaches ei-unit. bld-wp-infer! (build.ss) calls ei-fresh-unit! per build and shares
+;; this same context with the run-passes calls below, so whole-program seeds flow.
+(define jolt-ei-new-unit (var-deref "jolt.passes.types" "new-unit"))
+(define jolt-set-emit-unit! (var-deref "jolt.backend-scheme" "set-emit-unit!"))
+(define ei-unit-box #f)
+(define (ei-unit) (or ei-unit-box (begin (set! ei-unit-box (jolt-ei-new-unit)) ei-unit-box)))
+;; a build creates one unit per build and publishes it immediately, so the mode flags
+;; a build then sets (set-direct-link!/set-var-cache!) land on THIS unit — the same one
+;; the per-form emit reads its emit-session state from.
+(define (ei-fresh-unit!) (set! ei-unit-box (jolt-ei-new-unit)) (ei-publish-unit!) ei-unit-box)
+;; publish the current unit to the backend so the emit reads its emit-session state
+;; (flags, gensym, cache-cells, ctor-shapes) and the contagion clone reaches it.
+;; Guarded for the first re-mint off an older seed (no set-emit-unit! yet).
+(define (ei-publish-unit!) (when (procedure? jolt-set-emit-unit!) (jolt-set-emit-unit! (ei-unit))))
 ;; --- whole-program analysis cache for --opt builds ----------------------------
 ;; bld-wp-infer! populates this; ei-compile-form checks it to skip re-analysis.
 (define ei-cached-ir (make-hashtable string-hash string=?))
@@ -81,7 +98,8 @@
   (let* ((ns (chez-actx-cns ctx))
          (cached (and optimize? (ei-next-cached ns)))
          (ir (or cached (jolt-ce-analyze ctx f))))
-    (jolt-ce-emit-top (if optimize? (jolt-ce-run-passes ir ctx) ir))))
+    (when optimize? (ei-publish-unit!))
+    (jolt-ce-emit-top (if optimize? (jolt-ce-run-passes ir ctx (ei-unit)) ir))))
 
 ;; The emitted `(def-var! …)(mark-macro! …)` pair for a defmacro, guard-wrapped
 ;; (tolerant) or bare (strict) to match guard?.
@@ -167,12 +185,13 @@
 ;; scan of the emitted Scheme) so a var-deref the back end emits outside a :var node
 ;; still roots its target.
 (define (ei-emit-ns-records ns-name src)
+  (ei-publish-unit!)
   (let ((acc '()))
     (ei-for-each-form ns-name src
       (lambda (ns kind nm f)
         (let* ((ctx (make-analyze-ctx ns))
                (cached (ei-next-cached ns))
-               (ir (jolt-ce-run-passes (or cached (jolt-ce-analyze ctx f)) ctx))
+               (ir (jolt-ce-run-passes (or cached (jolt-ce-analyze ctx f)) ctx (ei-unit)))
                (str (if (eq? kind 'macro)
                         (ei-macro-string ns nm (jolt-ce-emit-top ir) #f)
                         (jolt-ce-emit-top ir)))

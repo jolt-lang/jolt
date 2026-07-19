@@ -286,8 +286,11 @@
 (define jolt-reset-clone-prepass!    (var-deref "jolt.backend-scheme" "reset-clone-prepass!"))
 
 (define (bld-wp-infer! ordered)
-  (jolt-wp-set-record-shapes! (jolt-wp-host-record-shapes #f))
-  (jolt-wp-set-proto-methods! (jolt-wp-host-proto-methods #f))
+  ;; the build's compilation unit (ei-unit) is created + published by the build setup
+  ;; before any flag is set, so the whole-program seeds set here — and the mode flags —
+  ;; land on the one unit the per-form emit reads.
+  (jolt-wp-set-record-shapes! (ei-unit) (jolt-wp-host-record-shapes #f))
+  (jolt-wp-set-proto-methods! (ei-unit) (jolt-wp-host-proto-methods #f))
   (let ((nodes '()) (ns-nodes '()))
     (for-each
       (lambda (nf)
@@ -325,17 +328,17 @@
               (ei-read-all src)))
           (set! ns-nodes (cons (cons (car nf) (reverse per-ns)) ns-nodes))))
       ordered)
-    (jolt-wp-infer! (apply jolt-vector (reverse nodes)))
+    (jolt-wp-infer! (ei-unit) (apply jolt-vector (reverse nodes)))
     ;; contagion clone-site pre-pass: an impl worth a specialized clone is one that is
     ;; BOTH contagion-eligible (:num field beside a proven :double) AND reached by a
     ;; devirtualized call site. Run per-ns after wp-infer! (rich field types must be
     ;; live) so a devirt site can resolve the clone regardless of emit order.
-    (jolt-reset-clone-prepass!)
+    (jolt-reset-clone-prepass! (ei-unit))
     ;; drop the #f alignment placeholders — the prepass wants real IR only.
-    (for-each (lambda (p) (jolt-contagion-prepass!
+    (for-each (lambda (p) (jolt-contagion-prepass! (ei-unit)
                             (apply jolt-vector (filter (lambda (n) n) (cdr p))) (car p)))
               ns-nodes)
-    (jolt-contagion-prepass-done!)
+    (jolt-contagion-prepass-done! (ei-unit))
     (reverse ns-nodes)))
 
 ;; Strings emitted before each app ns's forms, replaying what the source loader
@@ -743,6 +746,12 @@
           (((core-strs app-strs drop-compiler?)
             (dynamic-wind
               (lambda ()
+                ;; Create + publish this build's compilation unit FIRST, so every
+                ;; mode flag below lands on it (the unit the per-form emit reads).
+                ;; The build emits app + core forms that reference clojure.core, which
+                ;; must lower to var-deref, so prelude mode is on for the whole build.
+                (ei-fresh-unit!)
+                ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
                 (set-optimize! (string=? mode "optimized"))
                 (set-release! (string=? mode "release"))
                 (when direct-link?
@@ -816,6 +825,13 @@
                 ;; seeds self-heal: the next build replaces them wholesale.)
                 ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
+                ;; clear the build unit's record-shapes: the emit pointer still
+                ;; points at this finished build unit, and the direct-ctor emit
+                ;; (make-jrecN) is gated only on shape presence, not direct-link —
+                ;; so a hypothetical in-process build-then-eval would otherwise fire
+                ;; it off stale build-time shapes. Harmless under today's control
+                ;; flow (build XOR eval per process), cheap to make robust.
+                (jolt-wp-set-record-shapes! (ei-unit) (jolt-hash-map))
                 (ei-clear-cached!)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))

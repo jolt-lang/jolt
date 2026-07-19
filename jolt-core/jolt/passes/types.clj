@@ -28,41 +28,94 @@
 ;; config the orchestrator installs (set-*! before a sweep), the escapes and
 ;; user-sig registries (collected/registered across the forms of a sweep), and a
 ;; bridge holding the last checking run's diagnostics for take-diags!.
-(def ^:private config-box
-  (atom {:rtenv {}              ;; "ns/name" -> inferred return type
-         :vtypes {}             ;; "ns/name" -> var VALUE type (fn=:truthy, def=init type)
-         :record-shapes {}      ;; "ns/->Name" -> {:fields :tags :type}
-         :protocol-methods {}}));; "ns/method" -> [proto method]
-;; var-keys used as a VALUE (not a call head) — accumulated across a whole sweep,
-;; reset by reset-escapes! and read by collected-escapes.
-(def ^:private escapes-box (atom #{}))
-;; User-function error domains, opt-in. As the checker walks defs it registers
-;; each non-redefinable single-fixed-arity user fn's {:params :body} here, keyed
-;; "ns/name"; a later call site (strict mode) re-checks the body with one param
-;; bound to its concrete argument type. Accumulates ACROSS forms — a def must
-;; precede its call (the closed-world ordering RFC 0005 assumes).
-(def ^:private user-sig-box (atom {}))    ;; "ns/name" -> {:params [..] :body ir}
-;; Diagnostics from the last checking run-inference, for take-diags! to drain.
-(def ^:private last-diags-box (atom []))
-;; Whether run-inference also checks, and strictly. Set by set-check-mode!.
-(def ^:private check-mode-box (atom {:on false :strict false}))
-;; "Proto/method" -> the join of its impls' return types, so a protocol-method call
-;; types as that record when every impl returns the same one (monomorphic return —
-;; e.g. all Scatter impls return a ScatterResult). Set by collect-pm-rets! before
-;; the fixpoint, read by call-ret-type. A disagreeing impl widens it to :any.
-(def ^:private pm-rets-box (atom {}))
+;; A compilation-unit context: every piece of pass/inference state that used to be
+;; a module-level atom now lives here, as a map of atoms created fresh per unit by
+;; new-unit and threaded explicitly (the back-end drivers create one and pass it to
+;; run-passes / wp-infer! / the setters). Nothing is process-global, so the compiler
+;; is reentrant — two units never see each other's state, and nothing leaks between
+;; compilations. The recursive `infer` walk reaches the sweep-level cells through
+;; env's :unit (mk-env stashes it); driver fns take `unit` directly.
+;;
+;;   :config           {:rtenv :vtypes :record-shapes :protocol-methods}
+;;                     rtenv "ns/name"->return type; vtypes "ns/name"->var VALUE type
+;;                     (fn=:truthy, def=init type); record-shapes "ns/->Name"->{:fields
+;;                     :tags :type}; protocol-methods "ns/method"->[proto method].
+;;   :escapes          var-keys used as a VALUE (not a call head), accumulated across a
+;;                     sweep, reset by reset-escapes!, read by collected-escapes.
+;;   :user-sigs        opt-in user-fn error domains: "ns/name"->{:params :body}, each
+;;                     non-redefinable single-fixed-arity user fn the checker registers;
+;;                     a strict-mode call site re-checks the body with a param bound to
+;;                     its concrete arg type. Accumulates ACROSS forms — a def must
+;;                     precede its call (the closed-world ordering RFC 0005 assumes).
+;;   :last-diags       diagnostics from the last checking run, for take-diags! to drain.
+;;   :check-mode       {:on :strict} — whether run-inference also checks, and strictly.
+;;   :pm-rets          "Proto/method"->join of its impls' return types, so a protocol-
+;;                     method call types as that record when every impl returns the same
+;;                     one (monomorphic). A disagreeing impl widens it to :any.
+;;   :collecting-fields? gate: only the wp fixpoint's final pass collects ctor sites.
+;;   :wp-field-joins   ctor-key->[field-type-or-nil ..] positional arg joins per wp pass.
+;;   :wp-field-demote  ctor-keys whose join can't be closed (escape/map->/opaque assoc).
+;;   :wp-seeds         per-def structural param seeds param-seeds-for reads.
+;;   :wp-num-seeds     per-def :double param seeds param-num-seeds-for reads.
+(defn new-unit
+  "A fresh compilation-unit context (see the block comment above). The back end
+  creates one per compilation and threads it through the pass API."
+  []
+  {:config (atom {:rtenv {} :vtypes {} :record-shapes {} :protocol-methods {}})
+   :escapes (atom #{})
+   :user-sigs (atom {})
+   :last-diags (atom [])
+   :check-mode (atom {:on false :strict false})
+   :pm-rets (atom {})
+   :collecting-fields? (atom false)
+   :wp-field-joins (atom {})
+   :wp-field-demote (atom #{})
+   :wp-seeds (atom {})
+   :wp-num-seeds (atom {})
+   ;; the contagion channel — inferred field types + the devirt-clone bookkeeping
+   ;; the back-end emit path reads (via the back-end emit-unit pointer, since emit
+   ;; threads no unit): the lean field-types the walk reads for an untagged record
+   ;; field, the rich variant (keeps :num) a contagion clone reads, and the set of
+   ;; "tag|proto|method" clone sites whose clone returns :double.
+   :field-types (atom {})
+   :rich-field-types (atom {})
+   :clone-double-ret (atom #{})
+   ;; backend contagion pre-pass state: the accumulator of contagion-eligible impl
+   ;; keys, and the resolved clone-site set the :devirt-type emit clause consults
+   ;; (via the back-end emit-unit pointer). nil outside a whole-program build.
+   :clone-impl-keys (atom nil)
+   :clone-sites (atom nil)
+   ;; back-end emit-session config (read through the emit-unit pointer, since emit
+   ;; threads no unit): the mode flags a driver sets before emitting, the direct-link
+   ;; name registries a build accumulates, and the per-form record-ctor shapes the
+   ;; direct-ctor-call emit consults. Per-invocation config, but held here so the
+   ;; whole compilation context is one value and nothing is process-global.
+   :prelude-mode? (atom false)
+   :direct-link? (atom false)
+   :var-cache? (atom false)
+   :trace-frames? (atom false)
+   :direct-link-defined (atom #{})
+   :direct-link-fns (atom #{})
+   ;; the back-end gensym label counter and the per-def cache-cell collector — emit
+   ;; scratch, per-unit so a build's labels are deterministic without a process-global.
+   :gensym-counter (atom 0)
+   :cache-cells (atom nil)
+   ;; jolt.passes.inline scratch: the fixpoint dirty flag run-passes reads/resets and
+   ;; the alpha-rename counter for inlined binders.
+   :dirty (atom false)
+   :fresh-counter (atom 0)})
 
-;; build a per-run env: a snapshot of the installed config plus this run's flags
-;; and fresh accumulator/guard cells. escapes/user-sigs reference the sweep-level
-;; module cells (their lifecycle spans calls); diags/calls/checking-set/diag-memo
-;; are this run's own.
-(defn- mk-env [checking? strict?]
-  (let [c @config-box]
+;; build a per-run env: a snapshot of the installed config plus this run's flags and
+;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level
+;; cells (their lifecycle spans calls); diags/calls/checking-set/diag-memo are this
+;; run's own. :unit carries the whole context so the walk can reach the other cells.
+(defn- mk-env [unit checking? strict?]
+  (let [c @(:config unit)]
     {:rtenv (get c :rtenv) :vtypes (get c :vtypes)
      :record-shapes (get c :record-shapes) :protocol-methods (get c :protocol-methods)
      :checking? checking? :strict? strict?
      :diags (atom []) :calls (atom []) :checking-set (atom #{}) :diag-memo (atom {})
-     :escapes escapes-box :user-sigs user-sig-box}))
+     :escapes (:escapes unit) :user-sigs (:user-sigs unit) :unit unit}))
 
 ;; inferred record field types: ctor-key "ns/->Name" -> {field-kw -> type}. Each
 ;; field's type is the CLOSED join of its ctor-argument types across every reachable
@@ -70,42 +123,23 @@
 ;; flonum -> :double (reads unbox); a record-or-nil field -> nilable record (guarded
 ;; reads narrow to the direct accessor); a conflicting/escaping/mutable field is
 ;; absent here (reads :any). Consulted by record-type-from-entry for UNTAGGED fields.
-(def ^:private field-types-box (atom {}))
-;; rich variant: same ctor-arg joins but :num is kept (an integer/mixed join), so a
-;; specialized clone built off it sees :num field reads as :double-contagion operands.
-;; Populated alongside field-types-box in wp-infer!, but consulted ONLY through
-;; *field-type-box* (bound by contagion-specialize-arity) — the shared fixpoint,
-;; pm-rets, and the ordinary impl-body path read the lean field-types-box, so they
-;; never see :num. That isolation is what keeps Option A's mega-regression fix.
-(def ^:private rich-field-types-box (atom {}))
+;; The field-types atom the walk reads for an UNTAGGED record field. Bound per
+;; read context to the unit's lean :field-types (the default) or its rich
+;; :rich-field-types (while contagion-specialize-arity runs). field-type-from-tag
+;; reads it; unbound (nil) it reads no inferred types, so a missed binding site
+;; only widens a field to :any (a perf, not a correctness, effect).
 (def ^:dynamic *field-type-box* nil)
 
-;; clone-resolving devirt sites whose contagion clone returns :double. Populated by
-;; the whole-program pre-pass (backend contagion-prepass!) AFTER wp-infer! has set
-;; rich-field-types-box; empty outside a whole-program build. infer-call consults it
-;; at a devirt site to type the call's return :double per-site — so a caller's
-;; accumulator add over that site fires dbl-arith? and lowers to fl+ — WITHOUT
-;; touching global pm-rets (the leak that sank Option A's :double-everywhere). A
-;; PIC/megamorphic site has no :devirt-type, so it never sees this. Sound because the
-;; clone's body lowered under the :double-sibling invariant, so its return is a
-;; flonum; double-ret? is the clone's inferred return type, not assumed.
-(def ^:private clone-double-ret-box (atom #{}))
-(defn reset-clone-double-ret! [] (reset! clone-double-ret-box #{}))
-(defn add-clone-double-ret! [type-tag proto method]
-  (swap! clone-double-ret-box conj (str type-tag "|" proto "|" method)))
-(defn- clone-double-ret? [type-tag proto method]
-  (contains? @clone-double-ret-box (str type-tag "|" proto "|" method)))
-
-;; per-wp-pass ctor-site collection. collecting-fields? gates the infer-call hook so
-;; only the wp fixpoint's final pass collects (not check-form / pm-rets / reinfer).
-;; wp-field-joins: ctor-key -> [field-type-or-nil ...] positional arg joins. A field
-;; appears when at least one ctor site was seen; absent fields (no site) read :any.
-(def ^:private collecting-fields?-box (atom false))
-(def ^:private wp-field-joins-box (atom {}))
-;; ctor-keys whose join can't be closed (a ctor value escapes — apply/value — or a
-;; map->Name site, or an assoc the WP can't attribute to a proven record) -> all
-;; fields :any (drop the inferred types for that record).
-(def ^:private wp-field-demote-box (atom #{}))
+;; clone-resolving devirt sites whose contagion clone returns :double (unit
+;; :clone-double-ret). Populated by the backend contagion pre-pass (contagion-prepass!)
+;; AFTER wp-infer!; empty outside a whole-program build. infer-call consults it at a
+;; devirt site to type the call's return :double per-site — so a caller's accumulator
+;; add over that site fires dbl-arith? and lowers to fl+.
+(defn reset-clone-double-ret! [unit] (reset! (:clone-double-ret unit) #{}))
+(defn add-clone-double-ret! [unit type-tag proto method]
+  (swap! (:clone-double-ret unit) conj (str type-tag "|" proto "|" method)))
+(defn- clone-double-ret? [unit type-tag proto method]
+  (contains? @(:clone-double-ret unit) (str type-tag "|" proto "|" method)))
 
 ;; simple record name from a ctor-key "ns/->Name".
 (defn- ctor-simple-name [ctor-key]
@@ -134,7 +168,7 @@
 (declare record-type-from-entry)
 ;; the type a field reads back as. A declared coercible ^double hint always wins
 ;; (the ctor coerces the arg to a flonum). A declared ^Record hint recurses. An
-;; UNTAGGED field takes the inferred ctor-arg join from field-types-box (or :any).
+;; UNTAGGED field takes the inferred ctor-arg join from the unit lean field types (or :any).
 (defn- field-type-from-tag [tag depth shapes ctor-key field-kw]
   (cond
     (<= depth 0) :any
@@ -142,8 +176,8 @@
     (= tag "num") :num
     (some? tag) (let [e (get shapes tag)]
                   (if e (record-type-from-entry e tag depth shapes) :any))
-    :else (let [box (or *field-type-box* field-types-box)
-                inf (get-in @box [ctor-key field-kw])]
+    :else (let [box *field-type-box*
+                inf (when box (get-in @box [ctor-key field-kw]))]
             (if inf inf :any))))
 (defn- record-type-from-entry [rs ctor-key depth shapes]
   (let [fields (get rs :fields)
@@ -183,7 +217,7 @@
                           ;; a protocol-method call types as its impls' joined return
                           ;; (monomorphic): so (:ray (scatter m ..)) reads off a Ray.
                           (let [pm (get (get env :protocol-methods) (var-key fnode))
-                                pmr (when pm (get @pm-rets-box (str (nth pm 0) "/" (nth pm 1))))]
+                                pmr (when pm (get @(:pm-rets (:unit env)) (str (nth pm 0) "/" (nth pm 1))))]
                             (if (and pmr (not= pmr :any))
                               pmr
                               (let [nm (and (= "clojure.core" (get fnode :ns)) (get fnode :name))]
@@ -456,18 +490,18 @@
       (and entry (= n (count (get entry :fields)))
            (not (= (get env :map->-ctor-key) vk))
            (not (map->-self-for-record? (get env :self-name) vk)))
-      (swap! wp-field-joins-box
+      (swap! (:wp-field-joins (:unit env))
              #(join-ctor-args % vk (get entry :fields) ats))
       (and (nil? entry) (.startsWith ^String (get fnode :name) "map->"))
       (let [ck (str (get fnode :ns) "/->" (.substring ^String (get fnode :name) 5))]
-        (when (contains? shapes ck) (swap! wp-field-demote-box conj ck)))
+        (when (contains? shapes ck) (swap! (:wp-field-demote (:unit env)) conj ck)))
       (and (= "clojure.core" (get fnode :ns)) (= (get fnode :name) "assoc")
            (= n 3) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
       (let [coll-t (ty (nth ares 0)) kw (get (nth args 1) :val)]
         (when-not (record-t? coll-t)
           (doseq [[ck e] shapes]
             (when (contains? (into #{} (get e :fields)) kw)
-              (swap! wp-field-demote-box conj ck)))))
+              (swap! (:wp-field-demote (:unit env)) conj ck)))))
       :else nil)))
 
 (defn- infer-call
@@ -505,7 +539,7 @@
       (swap! (get env :calls) conj
              [(get env :self-key) (self-rec-argtys args ares (get env :self-params))]))
     ;; collect ctor-site arg types for field-type inference (wp fixpoint's final pass)
-    (when (and iscall-var @collecting-fields?-box)
+    (when (and iscall-var @(:collecting-fields? (:unit env)))
       (record-ctor-site! fnode args ares env))
     ;; success-type check at this call, reusing the arg types just computed (jolt
     ;; audit): core error domains always, user-fn domains in strict mode.
@@ -557,7 +591,7 @@
                  ;; fires dbl-arith? and lowers to fl+. global pm-rets is untouched;
                  ;; PIC/megamorphic sites (no rtype) never reach here.
                  devirt-double? (and rtype pm
-                                     (clone-double-ret? rtype (nth pm 0) (nth pm 1)))
+                                     (clone-double-ret? (:unit env) rtype (nth pm 0) (nth pm 1)))
                  rt* (if devirt-double? :double rt)
                  rt1 (if (and (= rt* :double) (not maybe-dbl))
                        (assoc base* :num-read :double) base*)
@@ -835,19 +869,19 @@
 (defn set-rtenv!
   "Install the current return-type estimates (a map \"ns/name\" -> type) used to
   type call results during the fixpoint."
-  [m] (swap! config-box assoc :rtenv (or m {})))
+  [unit m] (swap! (:config unit) assoc :rtenv (or m {})))
 
 ;; install record-ctor shapes ("ns/->Name" -> [field-kw ...]), read by infer.
-(defn set-record-shapes! [m] (swap! config-box assoc :record-shapes (or m {})))
-(defn set-protocol-methods! [m] (swap! config-box assoc :protocol-methods (or m {})))
+(defn set-record-shapes! [unit m] (swap! (:config unit) assoc :record-shapes (or m {})))
+(defn set-protocol-methods! [unit m] (swap! (:config unit) assoc :protocol-methods (or m {})))
 
 (defn set-vtypes!
   "Install var VALUE types (a map \"ns/name\" -> type): fn vars are :truthy
   (non-nil), def vars carry their inferred init type."
-  [m] (swap! config-box assoc :vtypes (or m {})))
+  [unit m] (swap! (:config unit) assoc :vtypes (or m {})))
 
-(defn reset-escapes! [] (reset! escapes-box #{}))
-(defn collected-escapes [] (vec @escapes-box))
+(defn reset-escapes! [unit] (reset! (:escapes unit) #{}))
+(defn collected-escapes [unit] (vec @(:escapes unit)))
 
 (defn check-form
   "Success-type check a single analyzed form (RFC 0006). Returns a vector of
@@ -859,14 +893,17 @@
   concrete argument types provably make the body throw (opt-in,
   closed-world). user-sig-box accumulates registered defs across forms, so a
   def must precede its call — the same ordering RFC 0005 already assumes."
-  ([node] (check-form node false))
-  ([node strict?]
+  ([unit node] (check-form unit node false))
+  ([unit node strict?]
    ;; the check IS the inference: one walk that types and emits diagnostics into
    ;; this run's env. The optimization fixpoint runs with checking? false so it
-   ;; stays silent.
-   (let [env (mk-env true strict?)]
-     (infer node {} env)
-     (vec @(get env :diags)))))
+   ;; stays silent. Self-bind the field-type box (this is a standalone entry, not
+   ;; only reached under wp-infer!'s binding) so an untagged record field reads its
+   ;; inferred type, not :any.
+   (binding [*field-type-box* (:field-types unit)]
+     (let [env (mk-env unit true strict?)]
+       (infer node {} env)
+       (vec @(get env :diags))))))
 
 (defn infer-body
   "Type `body` under tenv (local-name -> type). Returns [ret-type node' calls],
@@ -875,13 +912,16 @@
   collected-escapes after a full sweep). With self-name/self-key, a recursive
   self-call or fn-level recur in `body` is collected under self-key too, so a
   self-recursive fn's params are constrained by its recursion, not just callers."
-  ([body tenv] (infer-body body tenv nil nil nil))
-  ([body tenv self-name self-key] (infer-body body tenv self-name self-key nil))
-  ([body tenv self-name self-key self-params]
-   (let [env (assoc (mk-env false false)
-                    :self-name self-name :self-key self-key :self-params self-params)
-         r (infer body tenv env)]
-     [(nth r 0) (nth r 1) @(get env :calls)])))
+  ([unit body tenv] (infer-body unit body tenv nil nil nil))
+  ([unit body tenv self-name self-key] (infer-body unit body tenv self-name self-key nil))
+  ([unit body tenv self-name self-key self-params]
+   ;; self-bind the field-type box so a caller outside wp-infer!'s dynamic extent
+   ;; still reads inferred field types (a no-op re-bind when already under one).
+   (binding [*field-type-box* (:field-types unit)]
+     (let [env (assoc (mk-env unit false false)
+                      :self-name self-name :self-key self-key :self-params self-params)
+           r (infer body tenv env)]
+       [(nth r 0) (nth r 1) @(get env :calls)]))))
 
 ;; --- protocol-method return types -------------------------------------------
 ;; An impl is emitted as (register-(inline-)method TAG "Proto" "method" (fn ...)).
@@ -905,25 +945,28 @@
                    (= :fn (:op fc)))
           [(:val tc) (:val pc) (:val mc) fc])))))
 
-(defn- impl-reg-ret [node]
+(defn- impl-reg-ret [unit node]
   (when-some [[type-name proto method fnn] (register-impl-invoke? node)]
     (when (seq (get fnn :arities))
       (let [arity (first (get fnn :arities))
-            rtype (inline-impl-receiver-type type-name (get arity :params))
+            rtype (inline-impl-receiver-type unit type-name (get arity :params))
             tenv (if rtype {(first (get arity :params)) rtype} {})]
         [(str proto "/" method)
-         (nth (infer-body (get arity :body) tenv) 0)]))))
+         (nth (infer-body unit (get arity :body) tenv) 0)]))))
 
-(defn- walk-pm-rets [node acc]
-  (let [kr (impl-reg-ret node)
+(defn- walk-pm-rets [unit node acc]
+  (let [kr (impl-reg-ret unit node)
         acc (if kr (update acc (nth kr 0) (fn [t] (if t (join t (nth kr 1)) (nth kr 1)))) acc)]
-    (reduce-ir-children (fn [a c] (walk-pm-rets c a)) acc node)))
+    (reduce-ir-children (fn [a c] (walk-pm-rets unit c a)) acc node)))
 
 (defn collect-pm-rets!
   "Scan the unit's nodes for protocol-method impl registrations and stash each
   method's joined impl-return type (record-shapes must already be installed)."
-  [nodes]
-  (reset! pm-rets-box (reduce (fn [acc n] (walk-pm-rets n acc)) {} nodes)))
+  [unit nodes]
+  ;; walk-pm-rets -> impl-reg-ret reads field types (inline-impl-receiver-type /
+  ;; infer-body); self-bind so this public entry is correct off any caller.
+  (binding [*field-type-box* (:field-types unit)]
+    (reset! (:pm-rets unit) (reduce (fn [acc n] (walk-pm-rets unit n acc)) {} nodes))))
 
 ;; --- inline method body receiver typing ------------------------------------
 ;; A defrecord/deftype inline method body reads its fields via (get this :field).
@@ -937,9 +980,9 @@
   \"Circle\") and the fn's param names, return the record type for seeding
   param 0, or nil if type-name is not a known record (e.g. a host type name
   from extend-type)."
-  [type-name params]
+  [unit type-name params]
   (when (and type-name (seq params))
-    (let [shapes (get @config-box :record-shapes)
+    (let [shapes (get @(:config unit) :record-shapes)
           target (str "->" type-name)
           matches (filterv (fn [[k v]] (.endsWith k target)) shapes)]
       ;; only use suffix match when exactly one shape matches; zero or >1
@@ -957,13 +1000,16 @@
   Must be called after record-shapes are installed (set-record-shapes!).
   Skips host type names (no record shape). Returns the node with annotated
   fn bodies spliced into the invoke args."
-  [node]
-  (let [walk (fn walk [n]
+  [unit node]
+  ;; the receiver-type build + body infer read the unit's lean field types, so an
+  ;; untagged record field a ctor site fills with a flonum reads :double and unboxes.
+  (binding [*field-type-box* (:field-types unit)]
+   (let [walk (fn walk [n]
                (if-some [[type-name _ _ fnn] (register-impl-invoke? n)]
                  (if (seq (get fnn :arities))
-                   (let [rtype (inline-impl-receiver-type type-name
+                   (let [rtype (inline-impl-receiver-type unit type-name
                                   (get (first (get fnn :arities)) :params))
-                         env (mk-env false false)
+                         env (mk-env unit false false)
                          args (:args n)]
                      (if rtype
                        ;; re-infer every arity with param 0 seeded as record type
@@ -978,7 +1024,7 @@
                        (map-ir-children walk n)))
                    (map-ir-children walk n))
                  (map-ir-children walk n)))]
-    (walk node)))
+    (walk node))))
 
 ;; count :coerce :double nodes anywhere in a subtree (reduce-ir-children is one
 ;; level, so walk it). Used to tell whether contagion added a coercion the shared
@@ -994,7 +1040,7 @@
   receiver record `type-name`. Returns [specialized-arity eligible?].
 
   The receiver (param 0) is seeded as the record type with its :num fields surfaced
-  (rich-field-types-box, via *field-type-box*), so dbl-arith? contagions a :num field
+  (the unit rich field types, via *field-type-box*), so dbl-arith? contagions a :num field
   read that sits beside a proven :double operand — wrapping it in coerce :double,
   emitted as exact->inexact. That is the same machinery a genuine ^double field
   reaches; contagion is sound because Clojure double contagion makes the result a
@@ -1005,61 +1051,66 @@
   eligible? is true only when contagion fired a site the shared (lean) path leaves
   generic — more coerce :double nodes than the lean receiver type yields — so a clone
   is emitted exactly when it recovers fl* the shared body lacks. Isolated from the
-  shared fixpoint: it reads rich-field-types-box, never field-types-box, so pm-rets
+  shared fixpoint: it reads the rich field types, never the lean, so pm-rets
   and the ordinary impl body stay Option-A lean. Returns [arity false] when the
   receiver isn't a known record (a host type, or no record shape)."
-  [arity type-name]
-  (let [params (get arity :params)
-        body (get arity :body)
-        rich-rtype (binding [*field-type-box* rich-field-types-box]
-                     (inline-impl-receiver-type type-name params))]
-    (if (not rich-rtype)
-      [arity false false]
-      (let [env (mk-env false false)
-            rich-res (infer body (if (seq params) {(first params) rich-rtype} {}) env)
-            rich-body (nth rich-res 1)
-            rich-ret (nth rich-res 0)
-            lean-rtype (inline-impl-receiver-type type-name params)
-            lean-body (if lean-rtype
-                        (nth (infer body (if (seq params) {(first params) lean-rtype} {}) env) 1)
-                        body)]
-        (if (> (count-coerce-double rich-body) (count-coerce-double lean-body))
-          [(assoc arity :body rich-body) true (= :double rich-ret)]
-          [arity false false])))))
+  [unit arity type-name]
+  ;; the lean field-types are the default the body infers read; the receiver TYPE is
+  ;; built under the rich box so its :num fields surface for dbl-arith? contagion.
+  (binding [*field-type-box* (:field-types unit)]
+    (let [params (get arity :params)
+          body (get arity :body)
+          rich-rtype (binding [*field-type-box* (:rich-field-types unit)]
+                       (inline-impl-receiver-type unit type-name params))]
+      (if (not rich-rtype)
+        [arity false false]
+        (let [env (mk-env unit false false)
+              rich-res (infer body (if (seq params) {(first params) rich-rtype} {}) env)
+              rich-body (nth rich-res 1)
+              rich-ret (nth rich-res 0)
+              lean-rtype (inline-impl-receiver-type unit type-name params)
+              lean-body (if lean-rtype
+                          (nth (infer body (if (seq params) {(first params) lean-rtype} {}) env) 1)
+                          body)]
+          (if (> (count-coerce-double rich-body) (count-coerce-double lean-body))
+            [(assoc arity :body rich-body) true (= :double rich-ret)]
+            [arity false false]))))))
 
 (defn reinfer-def
   "Re-run inference on a stashed :def's fn arity bodies with param types seeded
   (ptmap: param-name -> type), returning the def with annotated bodies. The back
   end emits the result directly (no further passes), so the param-typed lookups
   keep their specialization. Used by the inter-procedural recompile."
-  [def-node ptmap]
-  (let [fnode (get def-node :init)
-        env (if (get @check-mode-box :on)
-              (mk-env true (get @check-mode-box :strict))
-              (mk-env false false))
+  [unit def-node ptmap]
+  ;; the walk reads the unit's lean field types for untagged record fields.
+  (binding [*field-type-box* (:field-types unit)]
+   (let [fnode (get def-node :init)
+        env (if (get @(:check-mode unit) :on)
+              (mk-env unit true (get @(:check-mode unit) :strict))
+              (mk-env unit false false))
         shapes (get env :record-shapes)]
     (if (= :fn (get fnode :op))
-      (let [result (assoc def-node :init
-                    (assoc fnode :arities
-                           (mapv (fn [a]
-                                   ;; seed declared record param hints (:phints, name ->
-                                   ;; ctor-key) so a record param is typed even with no
-                                   ;; inferred caller type — the open-world / cross-ns
-                                   ;; case. An inferred type in ptmap wins (it's at least
-                                   ;; as precise), so this only fills the gaps.
-                                   (let [pt (reduce (fn [m pr]
-                                                      (let [nm (nth pr 0)
-                                                            e (get shapes (nth pr 1))]
-                                                        (if (and e (not (contains? m nm)))
-                                                          (assoc m nm (record-type-from-entry e (nth pr 1) type-depth shapes))
-                                                          m)))
-                                                    ptmap (get a :phints))]
-                                     (assoc a :body (nth (infer (get a :body) pt env) 1))))
-                                 (get fnode :arities))))]
-        (when (get @check-mode-box :on)
-          (reset! last-diags-box @(get env :diags)))
-        result)
-      def-node)))
+        (let [result (assoc def-node :init
+                      (assoc fnode :arities
+                             (mapv (fn [a]
+                                     ;; seed declared record param hints (:phints, name ->
+                                     ;; ctor-key) so a record param is typed even with no
+                                     ;; inferred caller type — the open-world / cross-ns
+                                     ;; case. An inferred type in ptmap wins (it's at least
+                                     ;; as precise), so this only fills the gaps.
+                                     (let [pt (reduce (fn [m pr]
+                                                        (let [nm (nth pr 0)
+                                                              e (get shapes (nth pr 1))]
+                                                          (if (and e (not (contains? m nm)))
+                                                            (assoc m nm (record-type-from-entry e (nth pr 1) type-depth shapes))
+                                                            m)))
+                                                      ptmap (get a :phints))]
+                                       (assoc a :body (nth (infer (get a :body) pt env) 1))))
+                                   (get fnode :arities))))]
+          (when (get @(:check-mode unit) :on)
+            (reset! (:last-diags unit) @(get env :diags)))
+          result)
+        def-node))))
 
 ;; --- whole-program param-type fixpoint --------------------------------------
 ;; Re-derive each app fn's param types from its call sites under closed world
@@ -1070,20 +1121,18 @@
 ;; protocol call at those sites. Only single-fixed-arity fns are specialized;
 ;; anything called in value position (collected-escapes) keeps :any params —
 ;; its callers aren't all visible, so a concrete seed would be unsound.
-(def ^:private wp-seeds-box (atom {}))
 (defn param-seeds-for
   "The param-name -> type seed map a top-level def should be reinferred with, or
   nil. Set by wp-infer!, read by run-passes during the final per-def emit."
-  [k] (get @wp-seeds-box k))
+  [unit k] (get @(:wp-seeds unit) k))
 
 ;; numeric refinement of the same fixpoint: params the closed-world join proved
-;; are always flonums. Kept SEPARATE from the structural box — these don't reinfer
+;; are always flonums. Kept SEPARATE from the structural seeds — these don't reinfer
 ;; (field-read/devirt), they become synthetic ^double nhints (jolt.passes/inject-
 ;; wp-nhints) so the hint-directed pass unboxes the arithmetic.
-(def ^:private wp-num-seeds-box (atom {}))
 (defn param-num-seeds-for
   "The param-name -> :double seed map for a def's hintless flonum params, or nil."
-  [k] (get @wp-num-seeds-box k))
+  [unit k] (get @(:wp-num-seeds unit) k))
 
 ;; var-key -> {:params [names] :body ir} for each single-fixed-arity fn def.
 (defn- wp-specializable [nodes]
@@ -1117,16 +1166,16 @@
 ;; harvest its call sites and escapes. Returns {:rets :ptypes}, with ptypes
 ;; recomputed fresh each pass — :any is absorbing, so accumulating across passes
 ;; would pin a param at :any before its callers' return types are known.
-(defn- wp-pass [nodes spec ks ptypes]
+(defn- wp-pass [unit nodes spec ks ptypes]
   (reduce
     (fn [acc node]
       (let [k (when (= :def (get node :op)) (str (get node :ns) "/" (get node :name)))
             s (and k (get spec k))]
         (if s
-          (let [r (infer-body (:body s) (zipmap (:params s) (get ptypes k)) (:name s) k (:params s))]
+          (let [r (infer-body unit (:body s) (zipmap (:params s) (get ptypes k)) (:name s) k (:params s))]
             (-> acc (assoc-in [:rets k] (nth r 0))
                     (update :ptypes wp-accum spec (nth r 2))))
-          (update acc :ptypes wp-accum spec (nth (infer-body node {}) 2)))))
+          (update acc :ptypes wp-accum spec (nth (infer-body unit node {}) 2)))))
     {:rets {} :ptypes (wp-empty-ptypes spec ks)} nodes))
 
 ;; fold a pass's positional ctor-arg joins into a {ctor-key {field-kw type}} map,
@@ -1148,19 +1197,19 @@
     :else :any))
 ;; the rich variant keeps :num, so a specialized clone's :num field reads type :num
 ;; and dbl-arith? contagions them beside a proven :double operand (the invariant).
-;; Feeds rich-field-types-box only; never the shared path.
+;; Feeds the rich field types only; never the shared path.
 (defn- shallow-field-type-rich [t]
   (cond
     (or (= t :double) (= t :num)) t
     (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
                        (if (nilable? t) (assoc base :nilable true) base))
     :else :any))
-(defn- derive-field-types [joins demoted escaped shallow]
+(defn- derive-field-types [unit joins demoted escaped shallow]
   (reduce-kv
     (fn [m ctor-key argts]
       (if (or (contains? demoted ctor-key) (contains? escaped ctor-key))
         m
-        (let [fields (get-in @config-box [:record-shapes ctor-key :fields])]
+        (let [fields (get-in @(:config unit) [:record-shapes ctor-key :fields])]
           (reduce (fn [m2 i]
                     (let [fw (nth fields i nil) t (nth argts i nil)]
                       (if (and fw t (not= t :any))
@@ -1168,18 +1217,18 @@
                   m (range (count argts))))))
     {} joins))
 
-;; inner param-type fixpoint, run with field-types-box held FIXED by the caller.
+;; inner param-type fixpoint, run with the lean field types held FIXED by the caller.
 ;; returns [converged? ptypes]. The outer field-type loop in wp-infer! re-runs this
 ;; until field types stabilize, so the param fixpoint converges on its own each round
 ;; (folding field types into the SAME loop produced a ptypes<->rets 2-cycle).
-(defn- wp-param-fixpoint [nodes spec ks]
+(defn- wp-param-fixpoint [unit nodes spec ks]
   (loop [iter 0 ptypes (wp-empty-ptypes spec ks) rets {}]
-    (set-rtenv! (reduce (fn [m k] (let [v (get rets k)] (if (some? v) (assoc m k v) m))) {} ks))
-    (reset-escapes!)
-    (reset! wp-field-joins-box {})
-    (reset! wp-field-demote-box #{})
-    (let [pass (wp-pass nodes spec ks ptypes)
-          escaped (set (collected-escapes))
+    (set-rtenv! unit (reduce (fn [m k] (let [v (get rets k)] (if (some? v) (assoc m k v) m))) {} ks))
+    (reset-escapes! unit)
+    (reset! (:wp-field-joins unit) {})
+    (reset! (:wp-field-demote unit) #{})
+    (let [pass (wp-pass unit nodes spec ks ptypes)
+          escaped (set (collected-escapes unit))
           new-ptypes (reduce (fn [m k]
                                (if (contains? escaped k)
                                  (assoc m k (vec (repeat (count (get m k)) :any))) m))
@@ -1195,27 +1244,30 @@
   nodes and stash the resulting per-def seed maps (read via param-seeds-for).
   record-shapes / protocol-methods must already be installed. Idempotent — resets
   the seed box; called once per build before per-form emit."
-  [nodes]
-  (collect-pm-rets! nodes)
-  (let [spec (wp-specializable nodes)
+  [unit nodes]
+  ;; the walk reads the unit's lean field types (reset per round below) for untagged
+  ;; record fields; the box is the atom, so a reset each round is seen by the reads.
+  (binding [*field-type-box* (:field-types unit)]
+   (collect-pm-rets! unit nodes)
+   (let [spec (wp-specializable nodes)
         ks (keys spec)]
     (try
-      (reset! collecting-fields?-box true)
+      (reset! (:collecting-fields? unit) true)
       ;; OUTER loop over field types: run the (converging) param fixpoint with the
       ;; current field types installed, derive field types from the converged pass's
       ;; ctor-site joins, repeat until field types stabilize. Separating the loops
       ;; keeps the param fixpoint monotone (record-type-from-entry sees a fixed
-      ;; field-types-box each round); field types converge in ~2 rounds because a
+      ;; lean field types each round); field types converge in ~2 rounds because a
       ;; record's ctor-arg join depends on the record TAG (intrinsic) not on field
       ;; types. Only when BOTH the param fixpoint AND field types have converged do we
       ;; trust the result — otherwise we widen every param to :any and drop field
       ;; types (a pre-fixpoint is more specific than the truth, so unsound to seed).
       (loop [ft-iter 0 ftypes {}]
-        (reset! field-types-box ftypes)
-        (let [[param-converged? new-ptypes] (wp-param-fixpoint nodes spec ks)
-              escaped (set (collected-escapes))
-               new-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped shallow-field-type)
-               new-rich-ftypes (derive-field-types @wp-field-joins-box @wp-field-demote-box escaped shallow-field-type-rich)
+        (reset! (:field-types unit) ftypes)
+        (let [[param-converged? new-ptypes] (wp-param-fixpoint unit nodes spec ks)
+              escaped (set (collected-escapes unit))
+               new-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type)
+               new-rich-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type-rich)
                ft-stable? (= new-ftypes ftypes)
               sound? (and param-converged? ft-stable?)]
           (if (or sound? (>= ft-iter 8))
@@ -1223,13 +1275,13 @@
                                 new-ptypes
                                 (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
                                         new-ptypes ks))
-                  _ (reset! field-types-box (if sound? new-ftypes {}))
-                  _ (reset! rich-field-types-box (if sound? new-rich-ftypes {}))
+                  _ (reset! (:field-types unit) (if sound? new-ftypes {}))
+                  _ (reset! (:rich-field-types unit) (if sound? new-rich-ftypes {}))
                   ;; re-derive the protocol-method return types now that field types
                   ;; are known: an impl body that reads a field unboxes once the field
                   ;; proves :double, so its joined return (the callers' pm-ret)
                   ;; tightens from :any/:num to :double — that's what unboxes the caller.
-                  _ (when sound? (collect-pm-rets! nodes))
+                  _ (when sound? (collect-pm-rets! unit nodes))
                   ;; build both seed maps from the same converged ptypes: the
                   ;; structural one (struct/vec, drives reinfer-def's field-read/
                   ;; devirt) excludes :double and nilable (a nilable param's reads are
@@ -1245,11 +1297,11 @@
                                                     {} (map vector (:params s) (get seed-ptypes k)))]
                                      (if (seq pm) (assoc m k pm) m)))
                                  {} ks))]
-              (reset! wp-seeds-box (pick (fn [t] (and (not= t :any) (not= t :double) (not (nilable? t))))))
-              (reset! wp-num-seeds-box (pick (fn [t] (= t :double))))
+              (reset! (:wp-seeds unit) (pick (fn [t] (and (not= t :any) (not= t :double) (not (nilable? t))))))
+              (reset! (:wp-num-seeds unit) (pick (fn [t] (= t :double))))
               sound?)
             (recur (inc ft-iter) new-ftypes))))
-      (finally (reset! collecting-fields?-box false)))))
+      (finally (reset! (:collecting-fields? unit) false))))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs
 ;; one inference pass for specialization; turning checking? on during it makes
@@ -1260,20 +1312,22 @@
 ;; only drops provably-pure code, an accepted opt-mode divergence).
 (defn set-check-mode!
   "Enable/disable checking during the next run-passes inference (direct-link)."
-  [on strict?] (reset! check-mode-box {:on (if on true false) :strict (if strict? true false)}))
+  [unit on strict?] (reset! (:check-mode unit) {:on (if on true false) :strict (if strict? true false)}))
 (defn take-diags!
   "Diagnostics accumulated by the last checking run-passes; clears the buffer."
-  [] (let [d @last-diags-box] (reset! last-diags-box []) d))
+  [unit] (let [d @(:last-diags unit)] (reset! (:last-diags unit) []) d))
 
 (defn run-inference
   "Type-infer the optimized node (the inference walk specializes struct-safe
   lookups). When check mode is on (set-check-mode!), the same walk also emits
   success-type diagnostics, stashed for take-diags! to drain afterward. Pulled
   out of run-passes so the checking state stays private to this namespace."
-  [opt]
-  (if (get @check-mode-box :on)
-    (let [env (mk-env true (get @check-mode-box :strict))
-          r (infer-top opt env)]
-      (reset! last-diags-box @(get env :diags))
-      r)
-    (infer-top opt (mk-env false false))))
+  [unit opt]
+  ;; the walk reads the unit's lean field types for untagged record fields.
+  (binding [*field-type-box* (:field-types unit)]
+    (if (get @(:check-mode unit) :on)
+      (let [env (mk-env unit true (get @(:check-mode unit) :strict))
+            r (infer-top opt env)]
+        (reset! (:last-diags unit) @(get env :diags))
+        r)
+      (infer-top opt (mk-env unit false false)))))

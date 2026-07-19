@@ -6,7 +6,7 @@
 
 CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
 
-.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke devboot devbootsmoke submodules
+.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke devboot devbootsmoke submodules
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -22,7 +22,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink numeric inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke certify
+ci: submodules values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -202,6 +202,12 @@ narrow:
 # jolt-invoke; ^:dynamic/^:redef and nested defs opt out.
 directlink:
 	@$(CHEZ) --script test/chez/directlink-test.ss
+
+# Compilation-unit context: the emit-session state (mode flags, direct-link
+# registries, ctor shapes, gensym, cache cells) is per-unit, so two units are
+# isolated (reentrant) and a flag set under one never leaks into another.
+unitcontext:
+	@$(CHEZ) --script test/chez/unit-context-test.ss
 
 # Hint-directed fast arithmetic: ^double/^long param hints (and float literals)
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.

@@ -16,7 +16,7 @@
   (:require [jolt.host :refer [inline-enabled? inference-enabled? record-shapes protocol-methods stash-inline!]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
-            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace dirty set-rec-shapes!]]
+            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace]]
              [jolt.passes.types :refer [run-inference
                                          check-form infer-body reinfer-def
                                          set-rtenv! set-vtypes!
@@ -24,8 +24,7 @@
                                         reset-escapes! collected-escapes
                                         wp-infer! param-seeds-for param-num-seeds-for
                                         set-check-mode! take-diags!
-                                        reinfer-inline-method-bodies]]
-            [jolt.backend-scheme :refer [set-ctor-shapes!]]))
+                                        reinfer-inline-method-bodies]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
@@ -45,8 +44,8 @@
   all pass flonums (the entry coercion exact->inexact is a no-op on a proven
   flonum). Only un-hinted params are added — an explicit hint wins. A no-op unless
   the closed-world fixpoint typed a param :double (param-num-seeds-for)."
-  [node]
-  (let [seeds (when (= :def (:op node)) (param-num-seeds-for (str (:ns node) "/" (:name node))))
+  [unit node]
+  (let [seeds (when (= :def (:op node)) (param-num-seeds-for unit (str (:ns node) "/" (:name node))))
         f (:init node)]
     (if (and seeds (jolt.ir/single-fixed-arity-fn? f))
       (let [a (first (:arities f))
@@ -90,8 +89,25 @@
     just const-fold + numeric annotate, as before.
 
   numeric/annotate runs last in all branches (hint-directed fl*/fx* arithmetic);
-  it benefits open builds too, so it is not gated on inlining."
-  [node ctx]
+  it benefits open builds too, so it is not gated on inlining.
+
+  `unit` is the compilation-unit context (jolt.passes.types/new-unit): all inference/
+  checking state is per-unit, not module-global. The 2-arg arity makes a fresh unit
+  per call (the runtime compile spine, which never optimizes, so it's unused there);
+  build/emit-image call the 3-arg arity with the whole-program-seeded unit they share
+  across forms, so param-seeds-for reaches the seeds wp-infer! stashed."
+  ;; the 2-arg arity (the runtime compile spine) makes a fresh unit: it never
+  ;; optimizes (the const-fold :else branch), so it never installs record-shapes and
+  ;; the emit reads an empty registry either way. build/emit-image pass their published
+  ;; unit as the 3-arg arity, so the inference branches and the emit share ONE unit.
+  ([node ctx] (run-passes node ctx (jolt.passes.types/new-unit)))
+  ([node ctx unit]
+  ;; INVARIANT (optimize/inference branches): the caller must have published `unit`
+  ;; to the back end (set-emit-unit!) so it is @jolt.op-registry/current-unit-box.
+  ;; set-record-shapes!/set-protocol-methods! and (:dirty unit) write THIS unit, but
+  ;; the back end's direct-ctor emit and the inline pass read the current-unit-box —
+  ;; they must be the same object, or the record fold + inline fixpoint silently
+  ;; degrade. build/emit-image and the gates all publish then pass the same unit.
   (when ir-validate? (report-ir! "analyze" node))
   ;; stash an inline-eligible defn so later call sites can splice it (closed-world
   ;; optimization only). Done before optimizing, from the analyzed node.
@@ -102,44 +118,40 @@
           (cond
       ;; Full inline + inference (optimize + direct-link)
       (inline-enabled? ctx)
-      (let [_ (set-rec-shapes! (record-shapes ctx))   ;; record ctor fold
-            _ (set-ctor-shapes! (record-shapes ctx))  ;; backend direct ctor calls
-            ;; resolve ^Record param hints (incl. defrecord/extend-type method
-            ;; `this`) to bare field reads per-form, not only under whole-program.
-            ;; Same shapes the inline pass uses.
-            _ (set-record-shapes! (record-shapes ctx))
-            _ (set-protocol-methods! (protocol-methods ctx))  ;; devirtualization
+      ;; install the record-ctor shapes ONCE on the unit — the inline record fold and
+      ;; the back end's direct-ctor emit read it from there (jolt.op-registry holds the
+      ;; unit pointer), no separate registries. Protocol methods for devirtualization.
+      (let [_ (set-record-shapes! unit (record-shapes ctx))
+            _ (set-protocol-methods! unit (protocol-methods ctx))
             opt (loop [i 0 n (const-fold node)]
-                  (reset! dirty false)
+                  (reset! (:dirty unit) false)
                   (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
-                    (if (and @dirty (< i inline-fixpoint-cap))
+                    (if (and @(:dirty unit) (< i inline-fixpoint-cap))
                       (recur (inc i) n2)
                       n2)))
             ;; a top-level def whose params the whole-program fixpoint typed gets
             ;; reinferred with those seeds (record types flow in from its callers);
             ;; everything else takes the ordinary per-form inference.
-            seeds (when (= :def (:op opt)) (param-seeds-for (str (:ns opt) "/" (:name opt))))]
+            seeds (when (= :def (:op opt)) (param-seeds-for unit (str (:ns opt) "/" (:name opt))))]
         ;; a final const-fold after inference propagates any predicate folded to a
         ;; constant, collapsing the `if` it gates to the taken branch; re-infer
         ;; inline method bodies with the receiver seeded (field reads → jrec-field-at);
         ;; then inject any whole-program :double param hints for the numeric pass.
-        (inject-wp-nhints (const-fold (reinfer-inline-method-bodies
-                                        (if seeds (reinfer-def opt seeds) (run-inference opt))))))
+        (inject-wp-nhints unit (const-fold (reinfer-inline-method-bodies unit
+                                        (if seeds (reinfer-def unit opt seeds) (run-inference unit opt))))))
 
       ;; Inference mode (release/optimize without direct-link): inference without
       ;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.
       (inference-enabled? ctx)
-      (let [_ (set-rec-shapes! (record-shapes ctx))
-            _ (set-ctor-shapes! (record-shapes ctx))
-            _ (set-record-shapes! (record-shapes ctx))
-            _ (set-protocol-methods! (protocol-methods ctx))
+      (let [_ (set-record-shapes! unit (record-shapes ctx))
+            _ (set-protocol-methods! unit (protocol-methods ctx))
             opt (const-fold node)
-            seeds (when (= :def (:op opt)) (param-seeds-for (str (:ns opt) "/" (:name opt))))]
-        (inject-wp-nhints (const-fold (reinfer-inline-method-bodies
-                                        (if seeds (reinfer-def opt seeds) (run-inference opt))))))
+            seeds (when (= :def (:op opt)) (param-seeds-for unit (str (:ns opt) "/" (:name opt))))]
+        (inject-wp-nhints unit (const-fold (reinfer-inline-method-bodies unit
+                                        (if seeds (reinfer-def unit opt seeds) (run-inference unit opt))))))
 
       ;; Dev/normal: const-fold + numeric only
       :else
       (const-fold node)))]
     (when ir-validate? (report-ir! "passes" result))
-    result))
+    result)))

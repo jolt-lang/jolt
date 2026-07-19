@@ -29,11 +29,13 @@
 (define run-inference      (var-deref "jolt.passes.types" "run-inference"))
 (define take-diags!        (var-deref "jolt.passes.types" "take-diags!"))
 (define reinfer-def        (var-deref "jolt.passes.types" "reinfer-def"))
+;; one compilation-unit context threaded through the pass API (was module-global state).
+(define U ((var-deref "jolt.passes.types" "new-unit")))
 
 ;; analyze a source string to its IR node (fresh ctx, ns "user", no passes).
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 ;; number of success-type diagnostics check-form produces for src.
-(define (diags src strict?) (jolt-count (check-form (anode src) strict?)))
+(define (diags src strict?) (jolt-count (check-form U (anode src) strict?)))
 
 ;; --- core error-domain checking (strict not required) -----------------------
 (gate-check "num-op on keyword"        (diags "(+ 1 :k)" #f) 1)
@@ -63,48 +65,48 @@
        (diags "(do (defn rf [x] (+ x (rf x))) (rf :k))" #t) 1)
 
 ;; --- infer-body collects calls + escapes ------------------------------------
-(reset-escapes!)
-(let ((r (infer-body (anode "(do (foo 1) (bar 2) (map inc [1]))") (jolt-hash-map))))
+(reset-escapes! U)
+(let ((r (infer-body U (anode "(do (foo 1) (bar 2) (map inc [1]))") (jolt-hash-map))))
   (gate-check "infer-body calls" (jolt-count (jolt-nth r 2)) 3)        ; foo, bar, map
-  (gate-check "infer-body escapes" (jolt-count (collected-escapes)) 1)) ; inc (value position)
+  (gate-check "infer-body escapes" (jolt-count (collected-escapes U)) 1)) ; inc (value position)
 
 ;; --- the record-shapes registry feeds call-result types --------------------
 ;; without shapes a (->P …) call result is :any (accepted); with the registry it
 ;; types as a struct, so an arithmetic op over it is provably not-a-number.
 (gate-check "ctor result :any w/o shapes" (diags "(+ (->P 1) 1)" #f) 0)
-(set-record-shapes!
+(set-record-shapes! U
   (jolt-hash-map "user/->P"
                  (jolt-hash-map (keyword #f "fields") (jolt-vector (keyword #f "x"))
                                 (keyword #f "tags")   (jolt-vector jolt-nil)
                                 (keyword #f "type")   "user.P")))
 (gate-check "ctor result struct w/ shapes" (diags "(+ (->P 1) 1)" #f) 1)
-(set-record-shapes! (jolt-hash-map))
+(set-record-shapes! U (jolt-hash-map))
 
 ;; --- reinfer-def honors check-mode -----------------------------------------
 ;; When check-mode is on and a def is reinferred with WP seeds, the diagnostics
 ;; must be reported (they were silently lost before the fix).
-(set-check-mode! #t #f)
+(set-check-mode! U #t #f)
 (let* ((node (anode "(defn f [x] (+ x :k))"))
        (ptmap (jolt-hash-map "x" (keyword #f "any"))))
-  (reinfer-def node ptmap)
-  (gate-check "reinfer-def check-mode reports diags" (jolt-count (take-diags!)) 1)
-  (gate-check "reinfer-def diags drained after take" (jolt-count (take-diags!)) 0))
-(set-check-mode! #f #f)
+  (reinfer-def U node ptmap)
+  (gate-check "reinfer-def check-mode reports diags" (jolt-count (take-diags! U)) 1)
+  (gate-check "reinfer-def diags drained after take" (jolt-count (take-diags! U)) 0))
+(set-check-mode! U #f #f)
 (let* ((node (anode "(defn f [x] (+ x :k))"))
        (ptmap (jolt-hash-map "x" (keyword #f "any"))))
-  (reinfer-def node ptmap)
-  (gate-check "reinfer-def no diags when check-mode off" (jolt-count (take-diags!)) 0))
+  (reinfer-def U node ptmap)
+  (gate-check "reinfer-def no diags when check-mode off" (jolt-count (take-diags! U)) 0))
 
 ;; --- the opt-path checker: run-inference emits, take-diags! drains -----------
 ;; (set-check-mode! on strict?) arms checking during the next run-inference; the
 ;; diagnostics are stashed for take-diags! to drain once.
-(set-check-mode! #t #f)
-(run-inference (anode "(+ 1 :k)"))
-(gate-check "take-diags drains run-inference" (jolt-count (take-diags!)) 1)
-(gate-check "take-diags re-drained empty"     (jolt-count (take-diags!)) 0)
-(set-check-mode! #f #f)
-(run-inference (anode "(+ 1 :k)"))
-(gate-check "no diags when check-mode off"    (jolt-count (take-diags!)) 0)
+(set-check-mode! U #t #f)
+(run-inference U (anode "(+ 1 :k)"))
+(gate-check "take-diags drains run-inference" (jolt-count (take-diags! U)) 1)
+(gate-check "take-diags re-drained empty"     (jolt-count (take-diags! U)) 0)
+(set-check-mode! U #f #f)
+(run-inference U (anode "(+ 1 :k)"))
+(gate-check "no diags when check-mode off"    (jolt-count (take-diags! U)) 0)
 
 ;; --- pred-on folds nil?/some? on a provably-nil operand ----------------------
 ;; A nil const initializer types as :nil, and :nil reaches pred-on's case table
@@ -125,7 +127,7 @@
 ;; body reports a num-op-on-record diag, and under --opt a bare slot read
 ;; miscompiles and crashes. With shadowing the rebound name is :any -> no diag.
 ;; The positive row confirms record typing outside the shadow is unchanged.
-(set-record-shapes!
+(set-record-shapes! U
   (jolt-hash-map "user/->P"
                  (jolt-hash-map (keyword #f "fields") (jolt-vector (keyword #f "x"))
                                 (keyword #f "tags")   (jolt-vector jolt-nil)
@@ -136,6 +138,6 @@
        (diags "(let [p (->P 1.0 2.0)] (loop [p [3 4]] (+ p 1)))" #f) 0)
 (gate-check "fn self-name shadows record local (no diag)"
        (diags "(let [f (->P 1.0 2.0)] ((fn f [] (+ f 1))))" #f) 0)
-(set-record-shapes! (jolt-hash-map))
+(set-record-shapes! U (jolt-hash-map))
 
 (gate-summary "infer")

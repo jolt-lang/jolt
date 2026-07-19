@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-18
+
+Compiler architecture consolidation: the per-op fact tables, the IR schema, the
+`jolt.host` surface, and the class model each get a single source of truth, and all
+~25 module-level pass/inference/emit atoms fold into one per-compilation context so
+the compiler is reentrant. Plus var-metadata parity (`:ns` is a `Namespace`, defs
+carry source position) and a fix for declaration-only vars in built binaries.
+
+### Added
+
+- **Var metadata carries source position.** `def`/`defn` attach `:line`/`:column`/
+  `:file` to the var, like the JVM Compiler — what `spec` instrument and `expound`
+  read. User code and loaded files carry it; a `clojure.core` var minted without a
+  reader position does not (documented).
+- **`:ns` in var metadata is a `Namespace`.** `(class (:ns (meta #'x)))` is now
+  `clojure.lang.Namespace` instead of a string; it still prints as the namespace name.
+
+### Changed
+
+- **One compilation-unit context.** The pass/inference/emit state that lived in ~25
+  module-level atoms across the analyzer passes and the back end now lives on a single
+  per-compilation `unit`, threaded explicitly. A compilation is reentrant — two units
+  never see each other's state — and the whole-program fixpoint no longer mutates
+  shared config while a checker reads mid-estimates. The three record-shape registries
+  collapse into one install.
+- **Per-op facts derive from one registry.** The `native-ops`, fast-path, arity, and
+  classifier tables the back end and the passes need are derived from a single
+  `jolt.op-registry`, so a per-op fact is edited in one place and the mirrors can't
+  drift.
+- **The IR schema is written down and validated.** `jolt.ir` documents every op and its
+  required keys; `JOLT_IR_VALIDATE` checks each form entering and leaving the pass
+  pipeline in dev.
+- **The `jolt.host` surface is pinned.** A manifest lists every `jolt.host` name, checked
+  against the `def-var!` sites and the `jolt-core` references, so the host contract can't
+  silently drift.
+- **Java-layer dedup.** Class-model arms (count, str-render, instance checks) route
+  through named registries with priority instead of last-writer-wins `set!` chains;
+  `regex-translate.ss` moved into the java layer.
+
+### Fixed
+
+- **Declaration-only vars are discoverable in built binaries.** A no-init `def` now
+  carries position metadata, so it emits `set-var-meta!` then `declare-var!` — and
+  `declare-var!` must mark the already-interned cell resolvable. Without it, a
+  `(declare x)` or a no-root `(def ^:dynamic *x*)` was missed by `find-var`/`resolve`/
+  `ns-interns` in an AOT binary (only there — interactive use masked it).
+- **A no-init `def` with metadata evaluates to its var**, not `nil` (`(var? (def x))`).
+- **The seed mint fails loudly on a dropped overlay form.** A form that fails to compile
+  in the converged fixpoint pass now aborts the re-mint instead of silently deleting the
+  var while the byte-fixpoint still converges.
+
 ## [0.4.2] - 2026-07-18
 
 The bulk of a focused compiler review: identifier hygiene, the numeric tower,

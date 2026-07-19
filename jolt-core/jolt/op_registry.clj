@@ -223,3 +223,13 @@
 (def pure-ops (keys-with :pure?))
 ;; fold/foldable's key set: seed-tier pure numeric fns that constant-fold.
 (def foldable-ops (keys-with :foldable?))
+
+;; --- the current compilation unit ------------------------------------------
+;; A pointer to the unit the back end is emitting with, held in this leaf so both
+;; the back end and the passes (jolt.passes.inline, which the back end can't
+;; require without a cycle) reach the same emit-session state (the mode flags,
+;; record-ctor shapes, gensym counter, cache cells — all fields on the unit). Read
+;; in VALUE position only (@op-registry/current-unit-box, or as a reset! arg): a
+;; 0-arg qualified CALL to a fn here would be misread by the mint analyzer as a
+;; Class/staticField access, so this stays a bare atom, not an accessor fn.
+(def current-unit-box (atom nil))

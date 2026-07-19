@@ -9,27 +9,23 @@
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]))
 
 ;; ---------------------------------------------------------------------------
-;; Shared state: a dirty flag the fixpoint loop reads, and a fresh-name counter
-;; for alpha-renaming inlined bodies (same atom pattern as analyzer/gen-name).
+;; Shared state on the current compilation unit: the fixpoint `dirty` flag the
+;; run-passes loop reads/resets, an alpha-rename counter for inlined bodies, and
+;; the record-ctor shapes (the SAME shapes the inference installed on the unit).
+;; The unit pointer lives in jolt.op-registry (the leaf) — this namespace can't
+;; require the back end (a cycle), and the state must be shared with it.
 ;; ---------------------------------------------------------------------------
-(def dirty (atom false))   ;; read/reset by the run-passes fixpoint (jolt.passes)
-(defn- mark! [] (reset! dirty true))
+(defn- unit [] @jolt.op-registry/current-unit-box)
+(defn- mark! [] (reset! (:dirty (unit)) true))
 
-;; Record-ctor shape registry ("ns/->Name" -> {:fields (:k ..) :type tag}), fed
-;; per unit by run-passes (set-rec-shapes!) before the fixpoint so scalar-replace
-;; can recognize a (->Rec ..) call and map its positional args to declared fields
-;; — the record analogue of the inline keys a map literal already carries in the
-;; IR.
-(def ^:private rec-shapes (atom {}))
-(defn set-rec-shapes!
-  "Install the record-ctor shape registry the record fold consults."
-  [m] (reset! rec-shapes (or m {})))
+;; Record-ctor shapes ("ns/->Name" -> {:fields (:k ..) :type tag}) from the unit's
+;; installed record-shapes, so scalar-replace recognizes a (->Rec ..) call and maps
+;; its positional args to declared fields — the record analogue of the inline keys a
+;; map literal already carries in the IR.
+(defn- rec-shapes [] (get @(:config (unit)) :record-shapes))
 
-(def ^:private fresh-counter (atom 0))
 (defn- fresh [base]
-  (let [n @fresh-counter]
-    (swap! fresh-counter inc)
-    (str base "__il" n)))
+  (str base "__il" (swap! (:fresh-counter (unit)) inc)))
 
 ;; ---------------------------------------------------------------------------
 ;; Inlining. The back end stashes {:params [..] :body ir} on the var
@@ -458,7 +454,7 @@
   (if (= :invoke (get node :op))
     (let [f (get node :fn)]
       (if (= :var (get f :op))
-        (let [rs (get @rec-shapes (str (get f :ns) "/" (get f :name)))]
+        (let [rs (get (rec-shapes) (str (get f :ns) "/" (get f :name)))]
           (if (and rs (= (count (get rs :fields)) (count (get node :args))))
             rs
             nil))

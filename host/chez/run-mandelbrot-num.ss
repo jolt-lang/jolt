@@ -11,6 +11,9 @@
 (define wp-infer!        (var-deref "jolt.passes.types" "wp-infer!"))
 (define param-num-seeds  (var-deref "jolt.passes.types" "param-num-seeds-for"))
 (define emit             (var-deref "jolt.backend-scheme" "emit"))
+(define U ((var-deref "jolt.passes.types" "new-unit")))
+((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 
 (set-optimize! #t)
@@ -39,10 +42,10 @@
            acc))))"))
 
 ;; Run WP whole-program fixpoint on both defs together
-(wp-infer! (jolt-vector count-point run-def))
+(wp-infer! U (jolt-vector count-point run-def))
 
 ;; count-point's params must be :double from caller analysis
-(let ((seeds (param-num-seeds "user/count-point")))
+(let ((seeds (param-num-seeds U "user/count-point")))
   (if (not (jolt-truthy? seeds))
     (begin (printf "FAIL: param-num-seeds not found for count-point~%") (exit 1)))
   (if (not (eq? (jolt-get seeds "cr") (keyword #f "double")))
@@ -53,7 +56,7 @@
 
 ;; Process through the full pass pipeline and emit
 (define ctx (make-analyze-ctx "user"))
-(define processed (run-passes count-point ctx))
+(define processed (run-passes count-point ctx U))
 (define emitted (emit processed))
 
 ;; Count occurrences in the emitted string

@@ -25,26 +25,29 @@
 (define wp-infer!           (var-deref "jolt.passes.types" "wp-infer!"))
 (define run-passes          (var-deref "jolt.passes" "run-passes"))
 (define emit                (var-deref "jolt.backend-scheme" "emit"))
+(define U ((var-deref "jolt.passes.types" "new-unit")))
+((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 
 ;; === (a) all-flonum ctor sites -> field :double -> impl fl*, caller fl+ ==========
 (evals "(defprotocol Sh (area [s]))")
 (evals "(defrecord Circle [r] Sh (area [s] (* 3.14159 (:r s))))")
-(set-record-shapes! (chez-record-shapes-map))
-(set-protocol-methods! (chez-protocol-methods-map))
+(set-record-shapes! U (chez-record-shapes-map))
+(set-protocol-methods! U (chez-protocol-methods-map))
 (set-optimize! #t)
 ;; ctor site: a flonum literal is statically :double, so :r proves :double outright
 ;; (NOT via dbl contagion from a :num arg — case (d) pins that restriction).
 (define cdef (anode "(defrecord Circle [r] Sh (area [s] (* 3.14159 (:r s))))"))
 (define mk   (anode "(def mk (fn [] (->Circle 1.0)))"))
 (define sum  (anode "(def sum (fn [cs] (reduce (fn [acc c] (+ acc (area c))) 0.0 cs)))"))
-(wp-infer! (jolt-vector cdef mk sum))
+(wp-infer! U (jolt-vector cdef mk sum))
 ;; the impl body reads :r; once :r proves :double the (* 3.14159 (:r s)) unboxes.
-(define cdef-e (emit (run-passes cdef (make-analyze-ctx "user"))))
+(define cdef-e (emit (run-passes cdef (make-analyze-ctx "user") U)))
 (gate-check "(a) impl body unboxes :r to fl*" (gate-sub? cdef-e "fl*") #t)
 ;; the caller's (+ acc (area c)) goes fl+ via the concrete protocol-method return.
-(define sum-e (emit (run-passes sum (make-analyze-ctx "user"))))
+(define sum-e (emit (run-passes sum (make-analyze-ctx "user") U)))
 (gate-check "(a) caller accumulator goes fl+" (gate-sub? sum-e "fl+") #t)
 
 ;; === (d) integer-fed (:num-joined) field must NOT unbox (Option B) ==============
@@ -53,11 +56,11 @@
 ;; so flonum arithmetic over it stays generic (no fl*) — unlike the all-flonum (a).
 ;; iuse seeds iscale's `a` as IBox (a ctor return) so the :n read resolves.
 (evals "(defrecord IBox [n])")
-(set-record-shapes! (chez-record-shapes-map))
+(set-record-shapes! U (chez-record-shapes-map))
 (define iscale (anode "(def iscale (fn [a] (* 3.14159 (:n a))))"))
 (define iuse   (anode "(def iuse (fn [] (iscale (->IBox 7))))"))   ; integer ctor arg -> :num
-(wp-infer! (jolt-vector iscale iuse))
-(define iscale-e (emit (run-passes iscale (make-analyze-ctx "user"))))
+(wp-infer! U (jolt-vector iscale iuse))
+(define iscale-e (emit (run-passes iscale (make-analyze-ctx "user") U)))
 (gate-check "(d) integer-fed :num-joined field stays generic (no fl*)" (gate-sub? iscale-e "fl*") #f)
 
 ;; === (b) record-or-nil ctor sites -> nilable field =============================
@@ -68,7 +71,7 @@
 ;; — the signal is the INNER (:val) read.
 (evals "(defrecord Inner [a val])")
 (evals "(defrecord Outer [child])")
-(set-record-shapes! (chez-record-shapes-map))
+(set-record-shapes! U (chez-record-shapes-map))
 (define odef (anode "(defrecord Outer [child])"))
 (define idef (anode "(defrecord Inner [a val])"))
 (define mko  (anode "(def mko (fn [b] (if b (->Outer (->Inner 1 2)) (->Outer nil))))"))
@@ -78,23 +81,23 @@
 (define ou   (anode "(def ou (fn [o] (let [c (:child o)] (:val c))))"))
 ;; caller seeds og/ou's `o` (mko returns Outer)
 (define caller (anode "(def caller (fn [b] (+ (og (mko b)) (ou (mko b)))))"))
-(wp-infer! (jolt-vector odef idef mko og ou caller))
-(define og-e (emit (run-passes og (make-analyze-ctx "user"))))
+(wp-infer! U (jolt-vector odef idef mko og ou caller))
+(define og-e (emit (run-passes og (make-analyze-ctx "user") U)))
 (gate-check "(b) guarded nilable-field read direct-accesses (jrec2-f1)" (gate-sub? og-e "jrec2-f1") #t)
-(define ou-e (emit (run-passes ou (make-analyze-ctx "user"))))
+(define ou-e (emit (run-passes ou (make-analyze-ctx "user") U)))
 (gate-check "(b) unguarded nilable-field read stays nil-safe (no direct accessor)" (gate-sub? ou-e "jrec2-f1") #f)
 (gate-check "(b) unguarded nilable-field read uses nil-safe jrec-field-at" (gate-sub? ou-e "jrec-field-at") #t)
 
 ;; === (c) conflicting join -> reads stay generic ================================
 ;; Box's :v: one ctor site passes a flonum, another a string -> join :any -> no unbox.
 (evals "(defrecord Box [v])")
-(set-record-shapes! (chez-record-shapes-map))
+(set-record-shapes! U (chez-record-shapes-map))
 (define bdef (anode "(defrecord Box [v])"))
 (define bmk1 (anode "(def bmk1 (fn [] (->Box 1.0)))"))   ; :double
 (define bmk2 (anode "(def bmk2 (fn [] (->Box \"hi\")))")) ; :str  -> conflict
 (define brd  (anode "(def brd (fn [] (* (:v (bmk1)) 2.0)))"))
-(wp-infer! (jolt-vector bdef bmk1 bmk2 brd))
-(define brd-e (emit (run-passes brd (make-analyze-ctx "user"))))
+(wp-infer! U (jolt-vector bdef bmk1 bmk2 brd))
+(define brd-e (emit (run-passes brd (make-analyze-ctx "user") U)))
 (gate-check "(c) conflicting field join stays generic (no fl*)" (gate-sub? brd-e "fl*") #f)
 
 (gate-summary "fieldjoin")

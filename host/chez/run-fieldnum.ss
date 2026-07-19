@@ -17,6 +17,9 @@
 (define wp-infer!            (var-deref "jolt.passes.types" "wp-infer!"))
 (define run-passes           (var-deref "jolt.passes" "run-passes"))
 (define emit                 (var-deref "jolt.backend-scheme" "emit"))
+(define U ((var-deref "jolt.passes.types" "new-unit")))
+((var-deref "jolt.backend-scheme" "set-emit-unit!") U)
+((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
 
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
@@ -31,11 +34,11 @@
 ;; records, the ^double fields read :double, and the field-field arithmetic unboxes.
 (define dot  (anode "(def dot (fn [a b] (+ (* (:x a) (:x b)) (* (:y a) (:y b)))))"))
 (define used (anode "(def used (fn [] (dot (->V 1.0 2.0) (->V 3.0 4.0))))"))
-(set-record-shapes! (chez-record-shapes-map))
-(set-protocol-methods! (jolt-hash-map))
-(wp-infer! (jolt-vector dot used))
+(set-record-shapes! U (chez-record-shapes-map))
+(set-protocol-methods! U (jolt-hash-map))
+(wp-infer! U (jolt-vector dot used))
 (set-optimize! #t)
-(define dot-emit (emit (run-passes dot (make-analyze-ctx "user"))))
+(define dot-emit (emit (run-passes dot (make-analyze-ctx "user") U)))
 (gate-check "field-field arithmetic unboxes to fl*" (gate-sub? dot-emit "fl*") #t)
 (gate-check "field-field arithmetic unboxes to fl+" (gate-sub? dot-emit "fl+") #t)
 
@@ -43,7 +46,7 @@
 ;; the receiver isn't a ctor return). This is the record-ctor-key path — without it
 ;; the hint is dead and the reads fall back to generic jolt-get + boxed arithmetic.
 (define hinted (anode "(def hyp (fn [^V v] (+ (* (:x v) (:x v)) (* (:y v) (:y v)))))"))
-(define hint-emit (emit (run-passes hinted (make-analyze-ctx "user"))))
+(define hint-emit (emit (run-passes hinted (make-analyze-ctx "user") U)))
 (gate-check "^V param hint direct-accesses field reads" (gate-sub? hint-emit "jrec2-f0") #t)
 (gate-check "^V param hint unboxes arithmetic" (gate-sub? hint-emit "fl*") #t)
 (gate-check "^V param hint leaves no generic jolt-get" (gate-sub? hint-emit "jolt-get") #f)
@@ -54,9 +57,9 @@
 (evals "(defrecord W [p q])")
 (define dotw (anode "(def dotw (fn [a b] (* (:p a) (:p b))))"))
 (define usew (anode "(def usew (fn [] (dotw (->W 1.0 2.0) (->W 3.0 4.0))))"))
-(set-record-shapes! (chez-record-shapes-map))
-(wp-infer! (jolt-vector dotw usew))
+(set-record-shapes! U (chez-record-shapes-map))
+(wp-infer! U (jolt-vector dotw usew))
 (gate-check "untagged all-flonum field unboxes to fl* (field-typed)"
-       (gate-sub? (emit (run-passes dotw (make-analyze-ctx "user"))) "fl*") #t)
+       (gate-sub? (emit (run-passes dotw (make-analyze-ctx "user") U)) "fl*") #t)
 
 (gate-summary "fieldnum")
