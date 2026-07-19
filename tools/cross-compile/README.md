@@ -175,6 +175,21 @@ retired the Intel runners ("Intel Macs build from source"). Item 1–3 above
 would restore that artifact by cross-building `ta6osx` on the existing
 `macos-14` arm64 runner, POC'd here end to end.
 
+## CI integration
+
+- [`.github/workflows/cross-smoke.yml`](../../.github/workflows/cross-smoke.yml)
+  — manual-dispatch job that runs this POC end to end on one ubuntu runner
+  (ta6le → tarm64le, qemu-verified, byte-identical-output diff). It pins the
+  machine-neutrality invariant: a change that bakes host state into the
+  Scheme emission fails the diff. Not a per-push gate.
+- [`release-macos-x86_64.draft.yml`](release-macos-x86_64.draft.yml) — the
+  release.yml matrix row that restores the dropped x86_64-macos artifact by
+  cross-building on the arm64 runner (smoke via Rosetta, which GitHub's
+  macos-14 runners ship). Deliberately a draft outside `.github/workflows/`:
+  it is blocked on cross-target support in `build-joltc.ss` (the artifact is
+  joltc itself, which embeds the target's boots/stub/kernel). Move it into
+  release.yml with the `--target` PR.
+
 ## Observed timings (M-series Mac)
 
 - host Chez build: ~6 min (one-time)
