@@ -563,11 +563,14 @@
 ;; has membership, not keys) — (contains? an-ordered-set k) routes to it.
 (register-contains-arm! (lambda (coll) (and (jrec? coll) (jrec-cl coll "contains")))
   (lambda (coll k) (if (jolt-truthy? (jolt-invoke (jrec-cl coll "contains") coll k)) #t #f)))
-;; a plain defrecord (no containsKey of its own) checks its fields; guarded so the
-;; containsKey-method arm above (registered first, checked after this one) wins for
-;; a deftype that declares it — else contains?/find on such a type reads field
-;; presence, not the type's own membership (flatland's OrderedMap).
-(register-contains-arm! (lambda (coll) (and (jrec? coll) (not (jrec-cl coll "containsKey"))))
+;; a plain defrecord (no containsKey/contains of its own) checks its fields;
+;; guarded so the containsKey- and contains-method arms above (registered first,
+;; checked after this one in the newest-first walk) win for a deftype that declares
+;; either — else contains?/find on a map-like (OrderedMap: containsKey) or set-like
+;; (OrderedSet: contains) deftype reads field presence, not the type's membership.
+(register-contains-arm! (lambda (coll) (and (jrec? coll)
+                                            (not (jrec-cl coll "containsKey"))
+                                            (not (jrec-cl coll "contains"))))
   (lambda (coll k) (jrec-has? coll k)))
 (register-contains-arm! jolt-transient? t-contains?)
 ;; empty?: a transient is empty when its count is 0 (transients gained empty?/
