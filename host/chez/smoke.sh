@@ -176,6 +176,15 @@ printf '(ns mcmd) (defn -main [& a] (prn *command-line-args*))\n' > "$mp/src/mcm
 cla_check "JOLT_PWD=\"$mp\" $joltc -m mcmd -- a b" '("a" "b")'
 rm -rf "$mp"
 
+# stdin `-`: an (ns …) switch is honored for later forms, so a runtime refer
+# into the switched-to ns is visible to a following form's analysis — the same
+# as loading a file. Was lost when `-`/-e compiled every form in a hardcoded
+# "user" ns (broke `ys -T jolt prog.ys | jolt -`).
+ns_dir="$(mktemp -d)"; ns_prog="$ns_dir/p.clj"
+printf "(intern (create-ns 'aux) 'AAA 42)\n(ns main)\n(refer 'aux :only '[AAA])\n(println AAA)\n" > "$ns_prog"
+cla_check "$joltc - < \"$ns_prog\"" '42'
+rm -rf "$ns_dir"
+
 # help prints usage (bare `help` and --help/-h are synonyms) and lists the
 # nREPL server as a bare command.
 help_out="$($joltc help 2>/dev/null)"
