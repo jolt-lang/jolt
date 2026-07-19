@@ -1,0 +1,2 @@
+{:paths ["src"]
+ :tasks {run {:doc "hello cross-compile probe" :main-opts ["-m" "hello.core"]}}}
