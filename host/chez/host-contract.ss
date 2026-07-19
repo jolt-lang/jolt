@@ -335,6 +335,16 @@
           ((and (fx>? (string-length nm) 0) (char-upper-case? (string-ref nm 0))
                 (host-class-has-statics? nm))
            (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name nm))
+          ;; a bare Capitalized name that names a deftype/defrecord defined in this
+          ;; session resolves to its "ns.Name" class-name STRING (jolt models a class
+          ;; as its name), matching (type inst)/(class inst) — so (= SomeType
+          ;; (type inst)) holds and (instance? SomeType x) works whether the type was
+          ;; :import-ed or referenced locally. As with host classes, only fires when
+          ;; otherwise unresolved (a same-named var wins). chez-deftype-simple->tag
+          ;; is a forward ref to records.ss (bound by analyze time).
+          ((and (fx>? (string-length nm) 0) (char-upper-case? (string-ref nm 0))
+                (chez-deftype-simple->tag nm))
+           => (lambda (dtag) (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name dtag)))
           (else (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm))))))
 
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)

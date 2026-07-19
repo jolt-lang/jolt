@@ -47,6 +47,12 @@
      (let ((ht (make-hashtable key-hash jolt=2)))
        (pset-fold coll (lambda (e acc) (hashtable-set! ht e #t) acc) 0)
        (make-jolt-transient 'set ht 0 #t #f)))
+    ;; a deftype implementing clojure.lang.IEditableCollection.asTransient
+    ;; (flatland's OrderedMap/OrderedSet) returns its OWN transient type, which
+    ;; drives its declared ITransient* methods — not the copy-on-write wrapper.
+    ;; find-method-any-protocol is a forward ref to records.ss (bound by call time).
+    ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "asTransient"))
+     => (lambda (m) (jolt-invoke m coll)))
     ;; RFC 0003: any COLLECTION transients (the sorted/list/seq superset rides
     ;; the copy-on-write fallback); a non-collection is the JVM's cast failure.
     ((or (cseq? coll) (empty-list-t? coll) (jolt-lazyseq? coll)
@@ -77,7 +83,16 @@
                   (string-append who ": transient used after persistent!")))))
 
 ;; --- persistent! : snapshot back to the immutable collection -----------------
+;; A deftype implementing the clojure.lang.ITransient* interfaces (flatland's
+;; TransientOrderedMap/Set) is a plain jrec, not a jolt-transient — the transient
+;; ops route to its declared methods. jrec?/find-method-any-protocol/jolt-invoke
+;; are forward refs bound by call time.
+(define (jrec-trans-method t name) (and (jrec? t) (find-method-any-protocol (jrec-tag t) name)))
+
 (define (jolt-persistent! t)
+  (cond
+    ((jrec-trans-method t "persistent") => (lambda (m) (jolt-invoke m t)))
+    (else
   (jolt-trans-check t "persistent!")
   (jolt-transient-active-set! t #f)
   (case (jolt-transient-kind t)
@@ -113,7 +128,7 @@
      (let ((ht (jolt-transient-buf t)) (s empty-pset))
        (vector-for-each (lambda (e) (set! s (pset-conj s e))) (hashtable-keys ht))
        s))
-    (else (jolt-transient-buf t))))
+    (else (jolt-transient-buf t))))))
 
 ;; --- in-place mutation -------------------------------------------------------
 (define (tvec-ensure! t need)            ; grow capacity to >= need by doubling
@@ -149,18 +164,27 @@
     ((null? (cdr args)) (car args))
     (else
       (let ((t (car args)) (xs (cdr args)))
+        (cond
+          ((jrec-trans-method t "conj")
+           => (lambda (m) (fold-left (lambda (acc x) (jolt-invoke m acc x)) t xs)))
+          (else
         (jolt-trans-check t "conj!")
         (case (jolt-transient-kind t)
           ((vec) (for-each (lambda (x) (tvec-conj1! t x)) xs))
           ((set) (for-each (lambda (x) (hashtable-set! (jolt-transient-buf t) x #t)) xs))
           ((map) (for-each (lambda (x) (tmap-conj-entry! t x)) xs))
           (else (jolt-transient-buf-set! t (apply jolt-conj (jolt-transient-buf t) xs))))
-        t))))
+        t))))))
 
 ;; assoc! is variadic. JVM: a complete first key/val pair present (>=3 kvs) with a
 ;; trailing lone key fills nil; a lone key alone (1 kv) is a wrong-arity throw.
 (define (assoc-pad kvs) (if (and (>= (length kvs) 3) (odd? (length kvs))) (append kvs (list jolt-nil)) kvs))
 (define (jolt-assoc! t . kvs0)
+  (cond
+    ((jrec-trans-method t "assoc")
+     => (lambda (m) (let lp ((xs (assoc-pad kvs0)))
+                      (if (null? xs) t (begin (jolt-invoke m t (car xs) (cadr xs)) (lp (cddr xs)))))))
+    (else
   (jolt-trans-check t "assoc!")
   (let ((kvs (assoc-pad kvs0)))
     (when (odd? (length kvs)) (throw-jvm (quote IllegalArgumentException) "assoc!: no value supplied for key"))
@@ -168,41 +192,66 @@
       ((map) (let lp ((xs kvs)) (unless (null? xs) (tmap-put! t (car xs) (cadr xs)) (lp (cddr xs)))))
       ((vec) (let lp ((xs kvs)) (unless (null? xs) (tvec-assoc1! t (car xs) (cadr xs)) (lp (cddr xs)))))
       (else (jolt-transient-buf-set! t (apply jolt-assoc (jolt-transient-buf t) kvs)))))
-  t)
+  t)))
 (define (jolt-dissoc! t . ks)
+  (cond
+    ((jrec-trans-method t "without")
+     => (lambda (m) (fold-left (lambda (acc k) (jolt-invoke m acc k)) t ks)))
+    (else
   (jolt-trans-check t "dissoc!")
   (case (jolt-transient-kind t)
     ((map) (for-each (lambda (k) (tmap-del! t k)) ks))
     (else (jolt-transient-buf-set! t (apply jolt-dissoc (jolt-transient-buf t) ks))))
-  t)
+  t)))
 (define (jolt-disj! t . xs)
+  (cond
+    ((jrec-trans-method t "disjoin")
+     => (lambda (m) (fold-left (lambda (acc x) (jolt-invoke m acc x)) t xs)))
+    (else
   (jolt-trans-check t "disj!")
   (case (jolt-transient-kind t)
     ((set) (for-each (lambda (x) (hashtable-delete! (jolt-transient-buf t) x)) xs))
     (else (jolt-transient-buf-set! t (apply jolt-disj (jolt-transient-buf t) xs))))
-  t)
+  t)))
 (define (jolt-pop! t)
+  (cond
+    ((jrec-trans-method t "pop") => (lambda (m) (jolt-invoke m t)))
+    (else
   (jolt-trans-check t "pop!")
   (case (jolt-transient-kind t)
     ((vec) (let ((cnt (jolt-transient-n t)))
              (if (fx=? cnt 0) (throw-jvm (quote IllegalStateException) "pop!: can't pop empty transient vector")
                  (jolt-transient-n-set! t (fx- cnt 1)))))
     (else (jolt-transient-buf-set! t (jolt-pop (jolt-transient-buf t)))))
-  t)
+  t)))
 
 ;; persistent disj over sets (pset-disj already exists in collections.ss).
 (define (jolt-disj s . xs)
   ;; (disj nil ...) is nil on the JVM (disj is otherwise set-only).
   (if (jolt-nil? s)
       jolt-nil
-      (if (pset? s)
-          (meta-carry s
-            (let loop ((s s) (xs xs)) (if (null? xs) s (loop (pset-disj s (car xs)) (cdr xs)))))
-          (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                        (string-append "class " (guard (e (#t "?")) (jolt-class-name s))
-                                       " cannot be cast to class clojure.lang.IPersistentSet"))))))
+      (cond
+        ((pset? s)
+         (meta-carry s
+           (let loop ((s s) (xs xs)) (if (null? xs) s (loop (pset-disj s (car xs)) (cdr xs))))))
+        ;; a deftype implementing clojure.lang.IPersistentSet.disjoin (flatland's
+        ;; OrderedSet) disjoins through its own method. jrec?/jrec-cl are forward
+        ;; refs to records.ss (loaded after this file, bound by call time).
+        ((and (jrec? s) (jrec-cl s "disjoin"))
+         => (lambda (m) (meta-carry s (fold-left (lambda (acc x) (jolt-invoke m acc x)) s xs))))
+        (else
+         (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                       (string-append "class " (guard (e (#t "?")) (jolt-class-name s))
+                                      " cannot be cast to class clojure.lang.IPersistentSet")))))))
 
 ;; --- see-through accessors ---------------------------------------------------
+;; The copy-on-write ('cow) transient kind delegates reads to the plain collection
+;; ops on its wrapped immutable coll (never a transient itself, so no recursion
+;; through the transient get/count/contains? arms). collections.ss defines these
+;; before this file loads.
+(define %prev-jolt-get jolt-get)
+(define %prev-jolt-count jolt-count)
+(define %prev-jolt-contains? jolt-contains?)
 (define (tvec-in-bounds? t i) (and (fixnum? i) (fx>=? i 0) (fx<? i (jolt-transient-n t))))
 (define (t-get t k d)
   (jolt-trans-check t "get")

@@ -447,17 +447,15 @@
             (for-each
               (lambda (tn)
                 (when (symbol-t? tn)
-                  (let ((c (var-cell-lookup from (symbol-t-name tn))))
-                    (if (and c (var-cell-defined? c))
-                        (def-var! (chez-current-ns) (symbol-t-name tn) (var-cell-root c))
-                        ;; a HOST class (no source var): bind the short name to
-                        ;; the interned class value, the same self-evaluating-var
-                        ;; pattern the core Long/Integer/String tokens use — so
-                        ;; (instance? FileAttribute x) / (into-array CopyOption …)
-                        ;; resolve after (:import [java.nio.file.attribute
-                        ;; FileAttribute]) under strict analysis.
-                        (def-var! (chez-current-ns) (symbol-t-name tn)
-                                  (jolt-class-for (string-append from "." (symbol-t-name tn))))))))
+                  ;; bind the short name to the interned CLASS value (java.lang.Class
+                  ;; token) for its fully-qualified name — the same self-evaluating
+                  ;; pattern the core Long/Integer/String tokens use. For a deftype/
+                  ;; defrecord this is its "ns.Name" class, equal to (type inst) /
+                  ;; (class inst), so (= SomeType (type inst)) and (instance? SomeType
+                  ;; x) work; (SomeType. …) construction resolves through the ctor
+                  ;; registry (host-new), not this binding.
+                  (def-var! (chez-current-ns) (symbol-t-name tn)
+                            (jolt-class-for (string-append from "." (symbol-t-name tn))))))
               (cdr items))))))
     specs)
   jolt-nil)

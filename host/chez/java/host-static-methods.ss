@@ -140,6 +140,26 @@
 (register-class-statics! "PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
 (register-class-statics! "clojure.lang.PersistentArrayMap" (list (cons "createWithCheck" pam-create-with-check)))
 
+;; clojure.lang.APersistentMap/mapHash + mapHasheq: what a custom map type
+;; (flatland's OrderedMap) delegates to for .hashCode / .hasheq. mapHash is the
+;; java.util.Map hashCode — sum over entries of key.hashCode ^ val.hashCode, in a
+;; 32-bit int. It iterates the map's ENTRIES (via seq) rather than hashing the map
+;; as a whole, so a custom map type whose own .hashCode calls back here doesn't
+;; recurse. jolt.host/java-hashcode is a forward ref to dot-forms.ss (element
+;; hashCodes; bound by call time). mapHasheq is the Murmur3 hasheq (jolt-hash).
+(define (ap-map-hash m)
+  (let loop ((s (jolt-seq m)) (h 0))
+    (if (jolt-nil? s)
+        h
+        (let ((e (seq-first s)))
+          (loop (jolt-seq (seq-more s))
+                (i32 (+ h (bitwise-xor (jolt-java-hashcode (jolt-nth e 0))
+                                       (jolt-java-hashcode (jolt-nth e 1))))))))))
+(define ap-map-statics
+  (list (cons "mapHash" ap-map-hash) (cons "mapHasheq" jolt-hash)))
+(register-class-statics! "APersistentMap" ap-map-statics)
+(register-class-statics! "clojure.lang.APersistentMap" ap-map-statics)
+
 ;; clojure.lang.RT/map: build a map from a [k v k v…] array/seq (RT.map). Small
 ;; maps keep insertion order (PersistentArrayMap). tools.reader builds map and
 ;; namespaced-map literals this way.

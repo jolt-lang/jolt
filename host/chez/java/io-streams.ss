@@ -334,3 +334,25 @@
         ((and (char-writer? val) (member short '("Writer" "BufferedWriter" "FileWriter" "OutputStreamWriter"
                                                  "Closeable" "AutoCloseable" "Flushable" "Appendable"))) #t)
         (else 'pass))))))
+
+;; --- pr / pr-str honor a user (defmethod print-method SomeRecord …) ----------
+;; The readable printer's base jrec arm (records.ss) renders the default
+;; #ns.Name{…} form. A library often installs its own print form via
+;; (defmethod print-method OrderedMap [o ^Writer w] …). This arm, registered after
+;; that base one (so it is checked first) and after the char-writer Writer type it
+;; needs, renders such a record through its print-method into a StringWriter.
+;;
+;; Only a DIRECT method (keyed by the record's class-name tag) counts — the
+;; multimethod's :default falls back to __pr-str1, which returns here, so
+;; consulting the direct method table (not a full resolve) keeps a record with no
+;; user method on the default path and avoids infinite recursion.
+(define (jrec-user-print-method r)
+  (let ((mf (var-deref "clojure.core" "print-method")))
+    (and (jolt-multifn? mf)
+         (hashtable-ref (jolt-multifn-methods mf) (jrec-tag r) #f))))
+(register-pr-readable-arm!
+  (lambda (x) (and (jrec? x) (jrec-user-print-method x)))
+  (lambda (x)
+    (let ((port (open-output-string)))
+      (jolt-invoke (jrec-user-print-method x) x (make-char-writer port))
+      (get-output-string port))))
