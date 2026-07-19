@@ -897,10 +897,13 @@
   ([unit node strict?]
    ;; the check IS the inference: one walk that types and emits diagnostics into
    ;; this run's env. The optimization fixpoint runs with checking? false so it
-   ;; stays silent.
-   (let [env (mk-env unit true strict?)]
-     (infer node {} env)
-     (vec @(get env :diags)))))
+   ;; stays silent. Self-bind the field-type box (this is a standalone entry, not
+   ;; only reached under wp-infer!'s binding) so an untagged record field reads its
+   ;; inferred type, not :any.
+   (binding [*field-type-box* (:field-types unit)]
+     (let [env (mk-env unit true strict?)]
+       (infer node {} env)
+       (vec @(get env :diags))))))
 
 (defn infer-body
   "Type `body` under tenv (local-name -> type). Returns [ret-type node' calls],
@@ -912,10 +915,13 @@
   ([unit body tenv] (infer-body unit body tenv nil nil nil))
   ([unit body tenv self-name self-key] (infer-body unit body tenv self-name self-key nil))
   ([unit body tenv self-name self-key self-params]
-   (let [env (assoc (mk-env unit false false)
-                    :self-name self-name :self-key self-key :self-params self-params)
-         r (infer body tenv env)]
-     [(nth r 0) (nth r 1) @(get env :calls)])))
+   ;; self-bind the field-type box so a caller outside wp-infer!'s dynamic extent
+   ;; still reads inferred field types (a no-op re-bind when already under one).
+   (binding [*field-type-box* (:field-types unit)]
+     (let [env (assoc (mk-env unit false false)
+                      :self-name self-name :self-key self-key :self-params self-params)
+           r (infer body tenv env)]
+       [(nth r 0) (nth r 1) @(get env :calls)]))))
 
 ;; --- protocol-method return types -------------------------------------------
 ;; An impl is emitted as (register-(inline-)method TAG "Proto" "method" (fn ...)).
@@ -957,7 +963,10 @@
   "Scan the unit's nodes for protocol-method impl registrations and stash each
   method's joined impl-return type (record-shapes must already be installed)."
   [unit nodes]
-  (reset! (:pm-rets unit) (reduce (fn [acc n] (walk-pm-rets unit n acc)) {} nodes)))
+  ;; walk-pm-rets -> impl-reg-ret reads field types (inline-impl-receiver-type /
+  ;; infer-body); self-bind so this public entry is correct off any caller.
+  (binding [*field-type-box* (:field-types unit)]
+    (reset! (:pm-rets unit) (reduce (fn [acc n] (walk-pm-rets unit n acc)) {} nodes))))
 
 ;; --- inline method body receiver typing ------------------------------------
 ;; A defrecord/deftype inline method body reads its fields via (get this :field).

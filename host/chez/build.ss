@@ -825,6 +825,13 @@
                 ;; seeds self-heal: the next build replaces them wholesale.)
                 ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
                 ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
+                ;; clear the build unit's record-shapes: the emit pointer still
+                ;; points at this finished build unit, and the direct-ctor emit
+                ;; (make-jrecN) is gated only on shape presence, not direct-link —
+                ;; so a hypothetical in-process build-then-eval would otherwise fire
+                ;; it off stale build-time shapes. Harmless under today's control
+                ;; flow (build XOR eval per process), cheap to make robust.
+                (jolt-wp-set-record-shapes! (ei-unit) (jolt-hash-map))
                 (ei-clear-cached!)))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (let* ((builddir (string-append out-path ".build"))

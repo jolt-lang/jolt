@@ -102,6 +102,12 @@
   ;; unit as the 3-arg arity, so the inference branches and the emit share ONE unit.
   ([node ctx] (run-passes node ctx (jolt.passes.types/new-unit)))
   ([node ctx unit]
+  ;; INVARIANT (optimize/inference branches): the caller must have published `unit`
+  ;; to the back end (set-emit-unit!) so it is @jolt.op-registry/current-unit-box.
+  ;; set-record-shapes!/set-protocol-methods! and (:dirty unit) write THIS unit, but
+  ;; the back end's direct-ctor emit and the inline pass read the current-unit-box —
+  ;; they must be the same object, or the record fold + inline fixpoint silently
+  ;; degrade. build/emit-image and the gates all publish then pass the same unit.
   (when ir-validate? (report-ir! "analyze" node))
   ;; stash an inline-eligible defn so later call sites can splice it (closed-world
   ;; optimization only). Done before optimizing, from the analyzed node.
