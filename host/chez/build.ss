@@ -612,7 +612,11 @@
                              (set! reqs (cons (car parsed) reqs)))))
                        (expand-spec unquoted))))
                   (cdr items)))))))
-      (map rdr-form->data (ei-read-all src)))
+      ;; scan mode: this read happens BEFORE any namespace is loaded, so
+      ;; alias-resolved auto keywords (::alias/kw) can't resolve yet — read
+      ;; them leniently; only require clauses are extracted from these forms.
+      (parameterize ((rdr-scan-mode #t))
+        (map rdr-form->data (ei-read-all src))))
     (reverse reqs)))
 
 ;; Post-order DFS from a list of root namespace names: for each name, find its
