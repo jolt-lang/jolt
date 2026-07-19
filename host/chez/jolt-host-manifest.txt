@@ -79,6 +79,7 @@ inline-enabled?
 inline-ir
 interrupt!
 interrupted?
+java-hashcode
 jolt-class-for
 jolt-version
 jrec-method?

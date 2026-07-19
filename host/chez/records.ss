@@ -180,7 +180,20 @@
 ;; the JVM resolves it to the class), so class-key maps the ctor back to the
 ;; class for (ancestors TypeName) / (isa? x TypeName) / derive on the type.
 (define chez-deftype-ctor-tag (make-weak-eq-hashtable))
+;; A deftype/defrecord name used as a multimethod DISPATCH VALUE evaluates to its
+;; ctor token (a procedure). Normalize it to the "ns.Name" class-name STRING that
+;; __type-tag / class / type yield for an INSTANCE (jolt models a class as its name
+;; string), so a JVM-style (defmethod print-method SomeType …) matches a (class x)
+;; / __type-tag dispatch. Any non-deftype dispatch value passes through unchanged.
+;; Called from multimethods.ss (forward-referenced; records.ss loads after it but
+;; before any user defmethod runs).
+(define (mm-dispatch-val-canon dval)
+  (or (and (procedure? dval) (hashtable-ref chez-deftype-ctor-tag dval #f))
+      dval))
 (define chez-simple-name-tag (make-hashtable string-hash string=?))
+;; simple deftype/defrecord name -> its "ns.Name" tag, or #f. Used by the analyzer
+;; (host-contract.ss) to resolve a bare class name to its class-name string.
+(define (chez-deftype-simple->tag nm) (hashtable-ref chez-simple-name-tag nm #f))
 ;; type-tag STRING -> the shared jrdesc for that type (set at deftype/defrecord
 ;; ctor construction). Strong: a desc lives as long as any instance does (every
 ;; instance references it), so this never outlives the type. string=? because the
@@ -371,6 +384,11 @@
               (if (eq? v jrec-absent)
                   (cond ((find-method-any-protocol (jrec-tag coll) "valAt")
                           => (lambda (m) (jolt-invoke m coll k d)))
+                        ;; a deftype implementing clojure.lang.IPersistentSet.get
+                        ;; (get returns the element when present, else nil) — a
+                        ;; membership lookup, so (get an-ordered-set k) works.
+                        ((find-method-any-protocol (jrec-tag coll) "get")
+                          => (lambda (m) (let ((r (jolt-invoke m coll k))) (if (jolt-nil? r) d r))))
                          (else d))
                    v))))))
 
@@ -472,8 +490,13 @@
 ;; equals/equiv above so the hash/eq contract holds); a plain record hashes its
 ;; fields structurally via jrec-hash.
 (register-hash-arm! jrec?
-  (lambda (x) (let ((m (jrec-cl x "hashCode")))
-                (if m (jolt-invoke m x) (jrec-hash x)))))
+  (lambda (x) (cond
+                ;; clojure.core/hash uses hasheq (IHashEq); a deftype declaring
+                ;; hasheq (flatland's OrderedMap/OrderedSet) governs its value hash
+                ;; through it, so (hash a-record) == (hash an-equal-map).
+                ((jrec-cl x "hasheq") => (lambda (m) (jolt-invoke m x)))
+                ((jrec-cl x "hashCode") => (lambda (m) (jolt-invoke m x)))
+                (else (jrec-hash x)))))
 ;; get on a jrec: a real field reads raw (so a deftype method's own field bindings,
 ;; compiled to (get inst :field), never recurse); a NON-field key on a deftype that
 ;; implements clojure.lang.ILookup routes to its valAt (core.match's pattern types
@@ -536,7 +559,19 @@
 ;; caches) answers through that; a plain defrecord checks its fields.
 (register-contains-arm! (lambda (coll) (jrec-cl coll "containsKey"))
   (lambda (coll k) (if (jolt-truthy? (jolt-invoke (jrec-cl coll "containsKey") coll k)) #t #f)))
-(register-contains-arm! jrec? (lambda (coll k) (jrec-has? coll k)))
+;; a deftype implementing clojure.lang.IPersistentSet/Set.contains (a set-like type
+;; has membership, not keys) — (contains? an-ordered-set k) routes to it.
+(register-contains-arm! (lambda (coll) (and (jrec? coll) (jrec-cl coll "contains")))
+  (lambda (coll k) (if (jolt-truthy? (jolt-invoke (jrec-cl coll "contains") coll k)) #t #f)))
+;; a plain defrecord (no containsKey/contains of its own) checks its fields;
+;; guarded so the containsKey- and contains-method arms above (registered first,
+;; checked after this one in the newest-first walk) win for a deftype that declares
+;; either — else contains?/find on a map-like (OrderedMap: containsKey) or set-like
+;; (OrderedSet: contains) deftype reads field presence, not the type's membership.
+(register-contains-arm! (lambda (coll) (and (jrec? coll)
+                                            (not (jrec-cl coll "containsKey"))
+                                            (not (jrec-cl coll "contains"))))
+  (lambda (coll k) (jrec-has? coll k)))
 (register-contains-arm! jolt-transient? t-contains?)
 ;; empty?: a transient is empty when its count is 0 (transients gained empty?/
 ;; bounded-count support in Clojure 1.12). Without this arm empty? fell through to
@@ -641,7 +676,12 @@
   (lambda (x) (jolt-seq (jolt-invoke (jrec-cl x "seq") x))))
 (register-conj-arm! (lambda (coll) (jrec-cl coll "cons"))
   (lambda (coll x) (jolt-invoke (jrec-cl coll "cons") coll x)))
-(register-conj-arm! jrec? (lambda (coll x) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
+;; A plain defrecord (no IPersistentCollection.cons of its own) conjs a [k v] pair
+;; or map. Guarded to skip a deftype that declares its own cons — that method wins
+;; (registered above but checked after this newer arm), so the guard preserves the
+;; deftype's collection semantics (flatland.ordered's OrderedSet conjs a scalar).
+(register-conj-arm! (lambda (coll) (and (jrec? coll) (not (jrec-cl coll "cons"))))
+  (lambda (coll x) (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
 ;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
 ;; core.cache's LRU/LU caches lean on) dispatch to its methods.
 ;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
@@ -1040,7 +1080,16 @@
                            ((char=? (string-ref proto-name i) #\.) #t)
                            (else (dotted (fx+ i 1)))))
                    proto-name
-                   (string-append (jch-munge-segments (chez-current-ns)) "." proto-name))))
+                   ;; a SIMPLE name: an imported JVM interface (IPersistentMap, from
+                   ;; (:import (clojure.lang IPersistentMap))) resolves to its
+                   ;; canonical FQN so the type inherits that interface's own
+                   ;; ancestry (IPersistentMap → Associative → IPersistentCollection);
+                   ;; an unknown simple name is a local protocol, qualified against
+                   ;; the defining ns.
+                   (let ((fqn (jch-fqn-of-simple proto-name)))
+                     (if (string=? fqn proto-name)
+                         (string-append (jch-munge-segments (chez-current-ns)) "." proto-name)
+                         fqn)))))
     (jch-mark-interface! iface)
     (jch-register-supers! (string-append (chez-current-ns) "." type-name) (list iface)))
   jolt-nil)

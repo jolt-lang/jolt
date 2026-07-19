@@ -26,6 +26,40 @@
 (define (dot-coll? obj)
   (or (jolt-vector? obj) (jolt-map? obj) (pset? obj)))
 
+;; Java .hashCode() for a collection (java.util.Map/Set/List semantics), NOT the
+;; Murmur3 hasheq that clojure.core/hash uses. A library computing .hashCode on its
+;; own collection type (flatland's OrderedMap via APersistentMap/mapHash, OrderedSet
+;; summing element .hashCodes) must agree with jolt's builtins, so map/set/vector
+;; .hashCode go here. Recursive: a nested collection element hashes the same way; a
+;; scalar routes to its own .hashCode. Sums use exact ints (jolt + is unbounded, as
+;; a Clojure (reduce + …) over element hashCodes is) except the map form, which
+;; mirrors APersistentMap.mapHash's 32-bit int accumulation.
+(define (jolt-java-hashcode x)
+  (cond
+    ((jolt-nil? x) 0)
+    ((pmap? x)
+     (pmap-fold x (lambda (k v a)
+                    (i32 (+ a (bitwise-xor (jolt-java-hashcode k) (jolt-java-hashcode v))))) 0))
+    ((pset? x)
+     (pset-fold x (lambda (e a) (if (jolt-nil? e) a (+ a (jolt-java-hashcode e)))) 0))
+    ((pvec? x)
+     (let ((n (pvec-count x)))
+       (let loop ((i 0) (h 1))
+         (if (fx>=? i n) h
+             (loop (fx+ i 1) (i32 (+ (* 31 h) (jolt-java-hashcode (pvec-nth-d x i jolt-nil)))))))))
+    ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x))
+     (let loop ((s (jolt-seq x)) (h 1))
+       (if (jolt-nil? s) h
+           (loop (jolt-seq (seq-more s)) (i32 (+ (* 31 h) (jolt-java-hashcode (seq-first s))))))))
+    ;; a jrec is jolt-map? (so dot-coll?) — route it here directly, NOT through
+    ;; record-method-dispatch, which would re-enter the .hashCode arm and loop. A
+    ;; declared hashCode governs (flatland's types via APersistentMap/mapHash);
+    ;; else the structural record hash.
+    ((jrec? x) (let ((m (find-method-any-protocol (jrec-tag x) "hashCode")))
+                 (if m (jolt-invoke m x) (jrec-hash x))))
+    (else (record-method-dispatch x "hashCode" jolt-nil))))
+(def-var! "jolt.host" "java-hashcode" jolt-java-hashcode)
+
 ;; Mirror coll-interop: return a one-element list boxing the result (so a jolt-nil
 ;; result is still distinguishable from "not a collection method"), or #f.
 (define (dot-coll-method obj name args)
@@ -49,6 +83,31 @@
                          (else (loop (jolt-seq (seq-more s))))))))))
     ((string=? name "size")    (list (jolt-count obj)))
     ((string=? name "isEmpty") (list (jolt-empty? obj)))
+    ;; java.util.{Map,Set,List}.hashCode — the Java collection hashCode, so a
+    ;; jolt builtin matches a library's own type computing the same (flatland).
+    ((string=? name "hashCode") (list (jolt-java-hashcode obj)))
+    ;; IPersistentCollection / Associative / IPersistentVector / IPersistentMap /
+    ;; IPersistentSet mutators — a deftype built on the clojure.lang interfaces
+    ;; (e.g. flatland.ordered) calls these directly on its native backing
+    ;; map/vector/set. Each maps to the persistent op of the same meaning.
+    ((string=? name "cons")    (list (jolt-conj obj (car args))))
+    ((or (string=? name "assoc") (string=? name "assocN"))
+     (list (jolt-assoc obj (car args) (cadr args))))
+    ((string=? name "without") (list (jolt-dissoc obj (car args))))
+    ((string=? name "disjoin") (list (jolt-disj obj (car args))))
+    ((string=? name "pop")     (list (jolt-pop obj)))
+    ((string=? name "peek")    (list (jolt-peek obj)))
+    ((string=? name "equiv")   (list (if (jolt= obj (car args)) #t #f)))
+    ;; IEditableCollection.asTransient — hand back a transient over this coll.
+    ((string=? name "asTransient") (list (jolt-transient-new obj)))
+    ;; IObj — meta / withMeta thread metadata through the backing coll.
+    ((string=? name "meta")    (list (jolt-meta obj)))
+    ((string=? name "withMeta") (list (jolt-with-meta obj (car args))))
+    ;; MapEntry.key/val/getKey/getValue on a 2-elem entry (a flagged pvec).
+    ((and (jolt-map-entry? obj) (or (string=? name "key") (string=? name "getKey")))
+     (list (jolt-nth obj 0)))
+    ((and (jolt-map-entry? obj) (or (string=? name "val") (string=? name "getValue")))
+     (list (jolt-nth obj 1)))
     ;; java.util.Map views: keySet (a Set), values (a Collection), entrySet.
     ((and (jolt-map? obj) (string=? name "keySet"))
      (list (apply jolt-hash-set (seq->list (jolt-keys obj)))))
@@ -122,6 +181,16 @@
            ((or (string=? mname "valAt") (string=? mname "get"))
             (t-get obj (car rest) (if (null? (cdr rest)) jolt-nil (cadr rest))))
            ((string=? mname "count") (t-count obj))
+           ;; ITransient{Collection,Vector,Map,Set} mutators — a deftype built on
+           ;; the clojure.lang transient interfaces calls these on its native
+           ;; transient backing (flatland.ordered's TransientOrderedMap/Set).
+           ((string=? mname "conj") (apply jolt-conj! obj rest))
+           ((or (string=? mname "assoc") (string=? mname "assocN"))
+            (jolt-assoc! obj (car rest) (cadr rest)))
+           ((string=? mname "without") (jolt-dissoc! obj (car rest)))
+           ((string=? mname "disjoin") (jolt-disj! obj (car rest)))
+           ((string=? mname "pop") (jolt-pop! obj))
+           ((string=? mname "persistent") (jolt-persistent! obj))
            (else 'pass)))
         ;; a deftype/record's OWN declared method (matched by name AND arity) wins
         ;; over the generic collection interop below — e.g. data.priority-map

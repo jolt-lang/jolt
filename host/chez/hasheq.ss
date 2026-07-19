@@ -337,9 +337,13 @@
         (let ((e (seq-first xs)))
           (loop (jolt-seq (seq-more xs))
                 (#3%fx+ n 1)
-                (+ h (if (pair? e)
-                         (entry-hasheq (car e) (cdr e))
-                         (jolt-hasheq e))))))))
+                ;; add32: APersistentMap.mapHasheq/APersistentSet.setHasheq sum in a
+                ;; Java int (32-bit wrap), matching the native pmap/pset paths — so a
+                ;; custom coll that hashes via hash-unordered-coll (flatland's ordered
+                ;; types) hashes equal to a plain map/set with the same elements.
+                (add32 h (if (pair? e)
+                             (entry-hasheq (car e) (cdr e))
+                             (jolt-hasheq e))))))))
 
 ;; ============================================================================
 ;; Util.hashCombine — exact port of clojure.lang.Util.hashCombine

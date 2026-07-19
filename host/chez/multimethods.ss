@@ -89,8 +89,21 @@
          ;; the writing ns (a shadow, as before).
          (mns (cond
                 (qns (or (chez-resolve-alias here qns) qns))
-                ((var-cell-lookup here nm) here)
+                ;; a locally DEFINED var (a multifn interned in `here`) wins; an
+                ;; unbound forward-ref cell the analyzer interned for the multifn
+                ;; name while compiling the defmethod body does NOT — otherwise a
+                ;; library's unqualified (defmethod print-method …), loaded via
+                ;; require, would shadow the referred clojure.core multifn instead
+                ;; of extending it. An undefined local falls through to the refer.
+                ((let ((c (var-cell-lookup here nm))) (and c (var-cell-defined? c))) here)
                 ((chez-resolve-refer here nm) => values)
+                ;; implicit refer-clojure: an unqualified name that isn't defined
+                ;; or explicitly referred locally but names a clojure.core MULTIFN
+                ;; (print-method, print-dup, …) extends that multifn. refer-clojure
+                ;; is resolved at compile time, so chez-resolve-refer doesn't record
+                ;; it; without this a library's (defmethod print-method …) built a
+                ;; dead per-ns shadow the printer never consults.
+                ((jolt-multifn? (var-deref "clojure.core" nm)) "clojure.core")
                 (else here)))
          (cur (var-deref mns nm))
          (mf (if (jolt-multifn? cur) cur
@@ -105,7 +118,7 @@
                         (deft (if (jolt-multifn? core) (jolt-multifn-default core) kw-default))
                         (m (make-jolt-multifn nm disp (new-mm-table) deft #f (new-mm-table) (new-mm-table) -1 #f)))
                    (def-var! mns nm m) m))))
-    (hashtable-set! (jolt-multifn-methods mf) dval impl)
+    (hashtable-set! (jolt-multifn-methods mf) (mm-dispatch-val-canon dval) impl)
     (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1))
     mf))
 

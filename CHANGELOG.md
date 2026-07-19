@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pr`/`pr-str` honor a user `(defmethod print-method SomeType …)`** for a
+  deftype/defrecord, rendering through it into a `StringWriter` instead of the
+  default `#ns.Name{…}` form. An unqualified `(defmethod print-method …)` in a
+  library loaded via `require` now extends `clojure.core/print-method` (implicit
+  `refer-clojure`) instead of building a dead per-namespace shadow.
+- **Java collection interop on native collections.** `.cons`/`.assoc`/`.without`/
+  `.assocN`/`.disjoin`/`.pop`/`.asTransient`/`.hashCode` and the transient
+  `.conj`/`.persistent`/… now dispatch on a vector/map/set (and its transient), so
+  a deftype built on the `clojure.lang.*` interfaces (flatland/ordered) works.
+  `conj`/`contains?`/`disj`/`get`/`transient`/`persistent!`/`hash` route to a
+  deftype's own `cons`/`containsKey`/`disjoin`/`get`/`asTransient`/`persistent`/
+  `hasheq` methods. `instance?` on a deftype now walks its declared interfaces'
+  ancestry (a `IPersistentMap` is a `Counted`/`Associative`/`IPersistentCollection`).
+- A collection's `.hashCode` is now the `java.util.Map`/`Set`/`List` hashCode
+  (previously the Murmur3 hasheq), so a jolt collection hashes equal to a library
+  type computing the Java hashCode. `clojure.lang.APersistentMap/mapHash` is shimmed.
+
+### Fixed
+
+- A bare imported deftype/defrecord class name resolves to its class value, equal
+  to `(type instance)` — `(= SomeType (type inst))` holds, and a flat
+  `(:import a.b.Type)` binds the name.
+
 ## [0.4.6] - 2026-07-19
 
 Cross-compilation, and a stdin namespace-switch fix.

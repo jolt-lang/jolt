@@ -95,7 +95,10 @@
     "clojure.core/__print1"
     ;; the multimethod dispatch cache resolves the hierarchy value per call
     ;; (mm-current-hierarchy, multimethods.ss); mm-prefers? walks parents
-    "clojure.core/global-hierarchy" "clojure.core/parents"))
+    "clojure.core/global-hierarchy" "clojure.core/parents"
+    ;; the readable printer consults print-method for a record with a user method
+    ;; (io-streams.ss jrec-user-print-method), so it must survive tree-shaking
+    "clojure.core/print-method"))
 
 ;; --- reading a minted blob (prelude.ss) into records ------------------------
 ;; The prelude is a flat list of (guard CLAUSE (def-var! "ns" "name" V)) forms (+ the
