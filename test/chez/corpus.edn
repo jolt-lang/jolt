@@ -2849,7 +2849,7 @@
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "class nil" :expected "nil" :actual "(class nil)" :portability :common}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "bean is the map" :expected "{:a 1}" :actual "(bean {:a 1})" :portability :jvm}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "biginteger" :expected "\"5\"" :actual "(str (biginteger 5))" :portability :common}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "unsupported proxy throws" :expected :throws :actual "(proxy [Object] [] (toString [] \"x\"))" :portability :jvm}
+  {:suite "host-interop / interface proxy" :label "proxy desugars to reify (method dispatch works)" :expected "\"x\"" :actual "(.toString (proxy [Object] [] (toString [] \"x\")))" :portability :jvm}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "construct-proxy throws" :expected :throws :actual "(construct-proxy nil)" :portability :common}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "get-proxy-class throws" :expected :throws :actual "(get-proxy-class)" :portability :common}
   {:suite "untested / JVM-shape stubs (documented jolt behavior)" :label "init-proxy" :expected "nil" :actual "(init-proxy nil {})" :portability :common}
@@ -3530,6 +3530,7 @@
   {:suite "seq / take infinite count" :label "(take +Infinity coll) takes the whole coll" :expected "7" :actual "(count (take (/ 1.0 0.0) (range 7)))" :portability :common}
   {:suite "host-interop / UUID + Long + shiftLeft" :label "(UUID. msb lsb), .shiftLeft, (Long. n)" :expected "[\"00000000-0000-007b-0000-0000000001c8\" 40 10 42]" :actual "[(str (java.util.UUID. 123 456)) (.shiftLeft 5 3) (.shiftRight 40 2) (Long. 42)]" :portability :jvm}
   {:suite "host-interop / ThreadLocal proxy" :label "(proxy [ThreadLocal] [] (initialValue [] v)) get/set" :expected "[42 7]" :actual "(let [tl (proxy [ThreadLocal] [] (initialValue [] 42))] [(.get tl) (do (.set tl 7) (.get tl))])" :portability :jvm}
+  {:suite "host-interop / interface proxy" :label "(proxy [Iface] [] (m [args] body)) implements the interface, this bound" :expected "[42 true]" :actual "(let [c (proxy [java.util.concurrent.Callable] [] (call [] (* 6 7)))] [(.call c) (instance? java.util.concurrent.Callable c)])" :portability :jvm}
   {:suite "host-interop / Compiler/demunge" :label "demunge reverses name munging" :expected "\"a/b?\"" :actual "(clojure.lang.Compiler/demunge \"a$b_QMARK_\")" :portability :jvm}
   {:suite "host-interop / a fn reports its munged class" :label "(class a-def'd-fn) is ns$munged-name, with the IFn hierarchy as ancestors" :expected "[\"clojure.core$odd_QMARK_\" true]" :actual "[(.getName (class odd?)) (boolean (some #{java.lang.Runnable} (ancestors (class odd?))))]" :portability :jvm}
   {:suite "host-interop / MultiFn methods" :label ".getMethod / .dispatchFn on a multimethod" :expected "[true true true]" :actual "(do (defmulti mmc identity) (defmethod mmc :a [_] 1) [(some? (.getMethod mmc :a)) (nil? (.getMethod mmc :z)) (ifn? (.dispatchFn mmc))])" :portability :jvm}

@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `(proxy [SomeInterface] [] (method [args] body))` now works — it desugars to a
+  `reify` over the same interfaces (`this` is bound in the method body), instead of
+  throwing "proxy is unsupported". Only `(proxy [ThreadLocal] …)` keeps its
+  dedicated form. This unbreaks clj-http-lite (its trust-all `HostnameVerifier`)
+  and any library that proxies an interface. `proxy-super` / calling an inherited
+  concrete superclass method is still unsupported (jolt has no superclass).
 - A bare imported deftype/defrecord class name resolves to its class value, equal
   to `(type instance)` — `(= SomeType (type inst))` holds, and a flat
   `(:import a.b.Type)` binds the name.

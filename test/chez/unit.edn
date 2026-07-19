@@ -709,7 +709,7 @@
   ;; Neither JVM nor Jolt can roundtrip #error via edn/read-string (no reader
   ;; function for tag error), so this pins the pr-str output shape directly.
   {:suite "ex-info #error readable" :expr "(pr-str (ex-info \"boom\" {:a 1}))" :expected "#error {\n :cause \"boom\"\n :data {:a 1}\n :via [ {:type clojure.lang.ExceptionInfo :message \"boom\" :data {:a 1} :at nil}]\n :trace []}"}
-  {:suite "proxy unsupported" :expr "(try (proxy [java.lang.Object] [] (toString [] \"x\")) :no-throw (catch clojure.lang.ExceptionInfo e :threw))" :expected ":threw"}
+  {:suite "proxy over an interface" :expr "(.call (proxy [java.util.concurrent.Callable] [] (call [] (* 6 7))))" :expected "42"}
   {:suite "reify class" :expr "(str (class (reify java.lang.Runnable (run [_] nil))))" :expected "class clojure.lang.IObj$reify__0"}
   {:suite "promise class" :expr "(str (class (promise)))" :expected "class clojure.core$promise$reify__0"}
   {:suite "future class" :expr "(str (class (future 1)))" :expected "class clojure.core$future_call$reify__0"}

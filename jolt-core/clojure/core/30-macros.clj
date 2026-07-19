@@ -625,21 +625,22 @@
               (parse-extend-impls type-impls))))
 
 ;; extend is a real FUNCTION — defined above extend-type.
-;; JVM proxies are unsupported in general, EXCEPT (proxy [ThreadLocal] [] (initialValue
-;; [] body)) — a per-thread store with a lazy initial value (test.check's no-seed
-;; PRNG uses one). Other proxies stay nil.
+;; (proxy [ThreadLocal] [] (initialValue [] body)) is a per-thread store with a
+;; lazy initial value (test.check's no-seed PRNG uses one). Every other proxy
+;; desugars to reify over the same supers: jolt has no real superclass, so a proxy
+;; over an interface (clj-http-lite's trust-all HostnameVerifier, a servlet's
+;; HttpServlet, …) is exactly a reify of that interface's methods. A proxy method
+;; body takes the declared args with `this` implicit; reify takes `this` first, so
+;; prepend it. ctor-args are ignored (there is no super to construct), as the
+;; ThreadLocal case already ignores them. proxy-super / calling an inherited
+;; concrete method is still unsupported (no superclass exists).
 (defmacro proxy [supers ctor-args & methods]
   (if (and (vector? supers) (= 1 (count supers))
            (let [s (name (first supers))] (or (= s "ThreadLocal") (= s "InheritableThreadLocal"))))
     (let [init (some (fn [m] (when (= "initialValue" (name (first m))) m)) methods)]
       `(jolt.host/make-thread-local (fn [] ~@(when init (nnext init)))))
-    ;; jolt only implements (proxy [ThreadLocal] …). Emit a runtime throw (not a
-    ;; compile-time one) so a file with an unused proxy still loads, but actually
-    ;; evaluating an unsupported proxy fails loudly instead of yielding nil.
-    `(throw (ex-info
-             (str "proxy is unsupported for supers " '~supers
-                  " — jolt implements only (proxy [ThreadLocal] …); use reify/deftype")
-             {:supers '~supers}))))
+    `(reify ~@supers
+       ~@(map (fn [m] (list* (first m) (vec (cons 'this (second m))) (nnext m))) methods))))
 ;; definterface is JVM-only; bind the name to a marker and return the name (not a
 ;; var), matching the JVM where definterface yields the interface Class.
 (defmacro definterface [name-sym & body]
