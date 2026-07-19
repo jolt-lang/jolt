@@ -1,0 +1,87 @@
+# cross-smoke — pin the invariant the cross-compilation design rests on:
+# `jolt build`'s flat.ss is machine-neutral, and step 4 (compile-file ->
+# make-boot-file -> cc link) retargets cleanly under Chez's xpatch.
+#
+# Runs the tools/cross-compile POC end to end on one runner:
+#   ta6le (x86_64 Linux) host  ->  tarm64le (aarch64 Linux) target,
+# verified under qemu with a byte-identical-output diff against the native
+# build. A change that bakes host state into the Scheme emission (an absolute
+# path, a compile-time machine-type constant) fails this job.
+#
+# Manual-dispatch only: it is a guard for cross-compile work, not a per-push
+# gate. ~25 min cold, ~8 min with a warm Chez cache. (jolt-lang/jolt#375)
+name: cross-smoke
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  cross-smoke:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive   # vendor/irregex etc. — bin/joltc refuses to run without them
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev \
+            libncurses-dev uuid-dev gcc-aarch64-linux-gnu qemu-user-static
+
+      # One cache holds all three Chez artifacts: the ta6le host compiler,
+      # the tarm64le boot files + xpatch (bootquick), and the tarm64le cross
+      # kernel. Same pinned version as tests.yml/release.yml.
+      - name: Cache Chez Scheme (host + cross)
+        id: cache-chez
+        uses: actions/cache@v4
+        with:
+          path: ~/chez
+          key: chez-cross-v10.4.1-ta6le-tarm64le-v1
+
+      - name: Build Chez host + tarm64le boot files + cross kernel
+        if: steps.cache-chez.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v10.4.1 --recurse-submodules \
+            https://github.com/cisco/ChezScheme ~/chez
+          cd ~/chez
+          ./configure -m=ta6le --disable-x11
+          make -j"$(nproc)"
+          make bootquick XM=tarm64le
+          # --disable-curses/--disable-x11: the aarch64 cross sysroot has no
+          # ncurses or X11 headers (same reason the other workflows build x11off).
+          ./configure --cross --force -m=tarm64le \
+            --toolprefix=aarch64-linux-gnu- --disable-curses --disable-x11 \
+            CC_FOR_BUILD=cc
+          make -j"$(nproc)"
+
+      # bin/joltc wants a `chez` on PATH; the workarea scheme needs its boot
+      # dir. jolt build's legacy cc path reads the kernel/boots via JOLT_CHEZ_CSV.
+      - name: Wire up chez wrapper
+        run: |
+          mkdir -p ~/bin
+          printf '#!/bin/sh\nSCHEMEHEAPDIRS=%s exec %s "$@"\n' \
+            "$HOME/chez/ta6le/boot/ta6le" "$HOME/chez/ta6le/bin/ta6le/scheme" > ~/bin/chez
+          chmod +x ~/bin/chez
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "JOLT_CHEZ_CSV=$HOME/chez/ta6le/boot/ta6le" >> "$GITHUB_ENV"
+          echo "JOLT_QUIET=1" >> "$GITHUB_ENV"
+
+      - name: Native baseline (ta6le)
+        run: |
+          cd tools/cross-compile/hello
+          ../../../bin/joltc build -m hello.core -o hello-host
+          ./hello-host | tee native.out
+          grep -q "fib(30) = 832040" native.out
+
+      - name: Cross build (tarm64le) + qemu verification
+        run: |
+          cd tools/cross-compile/hello
+          HOST_M=ta6le TARGET_M=tarm64le ARCH_FLAG="" CC=aarch64-linux-gnu-gcc \
+            CHEZ_SRC="$HOME/chez" ../cross-build-poc.sh hello-host.build hello-arm64
+          file hello-arm64 | grep -q "ARM aarch64"
+          qemu-aarch64-static -L /usr/aarch64-linux-gnu ./hello-arm64 | tee cross.out
+          # the load-bearing assertion: cross output is byte-identical to native
+          diff native.out cross.out
+          echo "cross-smoke OK: tarm64le output byte-identical to ta6le"
