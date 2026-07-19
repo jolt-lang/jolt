@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-19
+
+Cross-compilation, and a stdin namespace-switch fix.
+
+### Added
+
+- **`jolt build --target <machine> --target-pack <dir>`** cross-compiles an app
+  for another Chez machine, and `build-joltc.ss` cross-builds joltc itself — which
+  restores the x86_64-macos release artifact (cross-built on the arm64 runner).
+  `build.ss` already split at the machine boundary (steps 1-3 emit machine-neutral
+  `flat.ss`); a cross build retargets only step 4 under the target pack's Chez
+  `xpatch` and links the target kernel with the target cc. A "target pack"
+  (assembled by `tools/cross-compile/make-pack.sh` from a ChezScheme cross
+  checkout) supplies the boots/kernel/`scheme.h` + xpatch + link-libs + static
+  lz4/zlib. `--library` and `:jolt/native` cross builds are not supported yet.
+
+### Fixed
+
+- **`jolt -` / `-e` honor an `(ns …)` switch.** Stdin and `-e` compiled every
+  top-level form in a hardcoded `user` namespace, so an `(ns …)` form's switch was
+  ignored — a later `(refer …)`/`def` into the switched-to namespace wasn't visible
+  to a following form's analysis. They now compile each form in the current
+  namespace, re-read per form, like loading a file. Fixes
+  `ys -T jolt prog.ys | jolt -` (a compiled YAMLScript program switches ns then
+  refers its stdlib in). Process substitution `jolt <(ys …)` already worked.
+
 ## [0.4.5] - 2026-07-19
 
 Sub-process working-directory fixes: a spawned child now runs in the user's cwd,
