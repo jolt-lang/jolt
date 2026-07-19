@@ -130,9 +130,6 @@
   {:suite "untested / JVM-shape stubs (documented jolt behavior)",
    :label "bean is the map",
    :category :host-model}
-  {:suite "untested / JVM-shape stubs (documented jolt behavior)",
-   :label "unsupported proxy throws",
-   :category :host-model}
   ;; jolt represents a record TYPE by its make-deftype-ctor closure — the same
   ;; value as ->Ctor — so class? is true for both, where the JVM distinguishes the
   ;; class (true) from the ->ctor fn (false). One value, one answer here.
