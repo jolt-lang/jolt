@@ -784,6 +784,10 @@
 ;; natives-array.ss (the byte-array <-> bytevector bridge).
 (load "host/chez/java/io-streams.ss")
 
+;; java.lang.ProcessBuilder / Process. After io-streams (make-in-stream /
+;; make-out-stream) and host-static-methods (all-env-pairs).
+(load "host/chez/java/process.ss")
+
 ;; clojure.lang.PersistentQueue: a functional queue + EMPTY static.
 ;; Chains seq/count/empty?/peek/pop/conj/sequential?/class/instance?/printer, so
 ;; load after natives-array (the dispatchers it extends).

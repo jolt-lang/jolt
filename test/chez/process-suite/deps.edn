@@ -1,0 +1,5 @@
+{:paths ["src"
+         "../../../vendor/process/test"
+         "../../../vendor/process/src"
+         "../../../vendor/fs/src"]
+ :aliases {:proc {:main-opts ["-m" "process-run"]}}}

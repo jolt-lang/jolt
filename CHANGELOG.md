@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`jolt.process` — sub-process spawning.** `jolt.process` is now the
+  [babashka.process](https://github.com/babashka/process) API. Jolt vendors
+  babashka.process over a new `java.lang.ProcessBuilder` / `java.lang.Process`
+  host shim (`host/chez/java/process.ss`) built on Chez `open-process-ports` for
+  stdin/stdout/stderr pipes plus the pid, and libc `waitpid` / `kill` (via FFI)
+  for exit codes, liveness and signals. `process`, `sh`, `shell`, the `$` macro,
+  `check`, `pipeline`, `destroy`/`alive?` and stream/file/inherit redirects all
+  work; `:dir`, `:env`/`:extra-env`, and stdin feeding are supported. `exec`
+  (GraalVM-only) is not re-exported. `jolt.process` is the curated public surface
+  (require `babashka.process` directly if you prefer).
+- **`clojure.java.shell`.** The standard `clojure.java.shell/sh` (and
+  `with-sh-dir` / `with-sh-env`) now run, over a new `Runtime.exec` host method
+  and the ProcessBuilder shim.
+- **Shim class identity is registry-derived.** The new `ProcessBuilder` /
+  `Process` / `ProcessBuilder$Redirect` shims register one tag→FQN row each in the
+  central `jhost-tag->fqn` registry, so `instance?` and `class` derive from the
+  class graph with no per-class arm — the same seam the java-value shims use.
+
 ## [0.4.3] - 2026-07-18
 
 Compiler architecture consolidation: the per-op fact tables, the IR schema, the

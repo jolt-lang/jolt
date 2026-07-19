@@ -10,3 +10,6 @@
 [submodule "vendor/fs"]
 	path = vendor/fs
 	url = https://github.com/babashka/fs.git
+[submodule "vendor/process"]
+	path = vendor/process
+	url = https://github.com/babashka/process

@@ -10,7 +10,7 @@ CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
-	@test -f vendor/irregex/irregex.scm -a -f vendor/fs/src/babashka/fs.cljc || { \
+	@test -f vendor/irregex/irregex.scm -a -f vendor/fs/src/babashka/fs.cljc -a -f vendor/process/src/babashka/process.cljc || { \
 	  echo "vendor submodules missing; run: git submodule update --init --recursive"; exit 1; }
 
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds

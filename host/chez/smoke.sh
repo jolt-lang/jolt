@@ -330,6 +330,17 @@ else
   fails=$((fails + 1))
 fi
 
+# jolt.process — the stdlib sub-process API against real programs (capture, pipes,
+# stdin, :dir/:env, exit codes, signals). The file self-checks and prints a marker.
+process_out="$($joltc run test/chez/process-test.clj 2>/dev/null)"
+if printf '%s' "$process_out" | grep -q 'PROCESS-TEST OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: jolt.process"
+  printf '%s\n' "$process_out" | grep FAIL | head -5 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # jolt.parser — the general parser-combinator core, running rm-hull/jasentaa's
 # own suite for the adopted pieces plus jolt's added combinators. Self-checks.
 parser_out="$($joltc run test/chez/parser-test.clj 2>/dev/null)"

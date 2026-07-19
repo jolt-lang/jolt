@@ -867,6 +867,16 @@
                              (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) ""
                                         (get-source-roots))
                              "))\n"))
+          ;; Pre-register every app namespace in ns-registry BEFORE any app form
+          ;; runs, so a boot-time (require 'x) of an AOT'd namespace no-ops (the
+          ;; loader's ns-registry arm) instead of hunting for absent source. Needed
+          ;; when a namespace requires a later one at load time — e.g.
+          ;; babashka.process conditionally requires babashka.process.pprint, which
+          ;; defines no vars of its own (only a defmethod) so ns-has-vars? can't
+          ;; vouch for it and its own (ns) form hasn't run yet.
+          (put-string out "\n;; === app namespace pre-registration ===\n")
+          (for-each (lambda (p) (put-string out (string-append "(intern-ns! " (ei-str-lit (car p)) ")\n")))
+                    ordered)
           (put-string out "\n;; === app ===\n")
           (for-each (lambda (s) (put-string out s) (put-string out "\n")) app-strs)
           ;; The launcher runs as Chez's scheme-start (so argv reaches -main —

@@ -29,7 +29,7 @@
 ;; Install roots — the directories that ship with Jolt (compiler + stdlib + vendored
 ;; deps). Shared by cli.ss, build-joltc.ss, and the bld-require-closure filter so the
 ;; literal list stays in one place.
-(define ldr-install-roots '("jolt-core" "stdlib" "vendor/fs/src"))
+(define ldr-install-roots '("jolt-core" "stdlib" "vendor/fs/src" "vendor/process/src"))
 
 ;; True when `f` is a file owned by the Jolt runtime (compiler + stdlib) — either
 ;; an embedded-resource key (string or bytevector value) or a path under one of

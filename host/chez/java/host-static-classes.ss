@@ -761,7 +761,11 @@
 (register-class-statics! "URLDecoder" (list (cons "decode" url-decode)))
 ;; Charset/forName yields the canonical name STRING (not an opaque object) so it
 ;; threads straight into (.getBytes s cs) / (String. bytes cs), which take a name.
-(register-class-statics! "Charset" (list (cons "forName" (lambda (nm) (jolt-str-render-one nm)))))
+;; defaultCharset is likewise the canonical name string ("UTF-8" — jolt's I/O is
+;; UTF-8 throughout), so it threads into the same name-taking APIs as forName.
+(register-class-statics! "Charset"
+  (list (cons "forName" (lambda (nm) (jolt-str-render-one nm)))
+        (cons "defaultCharset" (lambda () "UTF-8"))))
 
 ;; ---- Base64 (RFC 4648) ------------------------------------------------------
 (define b64-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
