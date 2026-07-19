@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-19
+
+Sub-process support: `jolt.process` (vendored babashka.process) runs over a new
+host `ProcessBuilder` / `Process` layer, with `clojure.java.shell` alongside it.
+Also a build-scanner fix so `joltc build` no longer chokes on `::alias/kw`
+keywords.
+
 ### Added
 
 - **`jolt.process` — sub-process spawning.** `jolt.process` is now the
@@ -26,6 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Process` / `ProcessBuilder$Redirect` shims register one tag→FQN row each in the
   central `jhost-tag->fqn` registry, so `instance?` and `class` derive from the
   class graph with no per-class arm — the same seam the java-value shims use.
+- **AOT namespace pre-registration.** A `jolt build` binary now registers every
+  namespace in its closure before any app form runs, so a load-time `(require 'x)`
+  of an AOT'd namespace no-ops instead of hunting for absent source — needed by a
+  namespace that conditionally requires a later, var-less one (babashka.process
+  requires babashka.process.pprint, which only carries a `defmethod`).
+
+### Fixed
+
+- **`joltc build` require scanner accepts `::alias/kw` keywords.** The build's
+  namespace scanner reads source before any namespace is loaded, so an
+  alias-resolved auto keyword can't resolve yet; it is now read leniently in a
+  scanner-scoped mode instead of failing the build with `Invalid token: ::alias/kw`.
+  (#416)
 
 ## [0.4.3] - 2026-07-18
 
