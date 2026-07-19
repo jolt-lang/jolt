@@ -65,6 +65,12 @@
 ;; its tagged elements through :readers/:default like the JVM.
 (define rdr-edn-mode (make-parameter #f))
 (define rdr-discard-cb (make-parameter #f))
+;; Scan mode: reading source BEFORE any namespace is loaded (the build's
+;; require scanner). An auto keyword whose alias isn't registered yet can't
+;; resolve — in scan mode keep the alias text as the keyword's ns instead of
+;; erroring; the scanner only extracts require clauses and discards every
+;; other form, so the placeholder value is never observed.
+(define rdr-scan-mode (make-parameter #f))
 
 (define (rdr-skip-ws s i end)
   (let loop ((i i))
@@ -795,7 +801,9 @@
               (let* ((cur (chez-current-ns))
                      (rns (if (string? ns)
                               (let ((a (chez-resolve-alias cur ns)))
-                                (if a a (rdr-invalid-token (string-append "::" tok))))
+                                (cond (a a)
+                                      ((rdr-scan-mode) ns)
+                                      (else (rdr-invalid-token (string-append "::" tok)))))
                               cur)))
                 (values (keyword rns name) j))
               (values (keyword ns name) j)))))))
