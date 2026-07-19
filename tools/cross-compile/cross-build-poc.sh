@@ -33,14 +33,18 @@ set -e
 CHEZ_SRC="${CHEZ_SRC:?set CHEZ_SRC to a ChezScheme checkout prepared per the header comment}"
 HOST_M="${HOST_M:-tarm64osx}"
 TARGET_M="${TARGET_M:-ta6osx}"
-ARCH_FLAG="${ARCH_FLAG:--arch x86_64}"
+# "-" (not ":-") so an explicit ARCH_FLAG="" survives — Linux cross targets
+# select the arch via CC (aarch64-linux-gnu-gcc), not an -arch flag.
+ARCH_FLAG="${ARCH_FLAG--arch x86_64}"
 CC_BIN="${CC:-cc}"
 
-# link libs for the TARGET OS (mirrors build.ss bld-link-libs); *osx = macOS,
-# *le = Linux machine types. Override with LINK_LIBS for anything else.
+# link libs for the TARGET OS; *osx = macOS, *le = Linux machine types.
+# The Linux set matches a cross kernel configured with --disable-curses
+# --disable-x11 (a cross sysroot has no ncurses/X11); it mirrors Chez's own
+# scheme-executable link. Override with LINK_LIBS for anything else.
 case "$TARGET_M" in
   *osx) DEFAULT_LIBS="-lncurses -liconv -lm -framework Foundation" ;;
-  *le)  DEFAULT_LIBS="-lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt" ;;
+  *le)  DEFAULT_LIBS="-lm -ldl -lrt -lpthread" ;;
   *)    DEFAULT_LIBS="" ;;
 esac
 LINK_LIBS="${LINK_LIBS:-$DEFAULT_LIBS}"

@@ -10,10 +10,11 @@ On an ARM64 Mac (`tarm64osx`, Chez 10.4.1), `jolt build` output was
 cross-compiled into an **x86_64 macOS** (`ta6osx`) executable and verified
 under Rosetta 2:
 
-| app | result |
-|---|---|
-| `hello/` (this dir — pure fns, loop/recur, reduce) | `Mach-O 64-bit executable x86_64`; output byte-identical to the native arm64 build |
-| `examples/hiccup-app` (real git dep, macros) | same — byte-identical HTML output |
+| host → target | app | result |
+|---|---|---|
+| tarm64osx → ta6osx | `hello/` (pure fns, loop/recur, reduce) | `Mach-O 64-bit executable x86_64`; output byte-identical to the native arm64 build (Rosetta 2) |
+| tarm64osx → ta6osx | `examples/hiccup-app` (real git dep, macros) | same — byte-identical HTML output |
+| ta6le → tarm64le | `hello/` (Arch Linux x86_64 host) | `ELF 64-bit LSB pie executable, ARM aarch64`; identical output, exit 0 under `qemu-aarch64-static` |
 
 Additionally verified on **physical Intel hardware**: the cross-built
 `hello-x86` was transferred (sha256-matched) to an Intel MacBook Pro
@@ -72,23 +73,28 @@ arch -x86_64 ./hello-x86       # runs under Rosetta; same output as ./hello-host
 ## Trying it from a Linux host
 
 The same flow works with Linux machine types (`ta6le` = x86_64, `tarm64le` =
-aarch64). On an x86_64 Linux box the natural POC is ta6le → tarm64le:
+aarch64) — **verified 2026-07-19 on Arch Linux** (packages:
+`aarch64-linux-gnu-gcc`, `qemu-user-static`):
 
 ```sh
 cd ~/dev/ChezScheme
 ./configure -m=ta6le && make
 make bootquick XM=tarm64le
-./configure --cross --force -m=tarm64le --toolprefix=aarch64-linux-gnu- CC_FOR_BUILD=cc
-make                                      # needs gcc-aarch64-linux-gnu + target ncurses/uuid dev libs
+# --disable-curses --disable-x11: a cross sysroot has no ncurses or X11
+# headers, and the expeditor otherwise needs both (same reason jolt's CI
+# builds Chez with X11 off).
+./configure --cross --force -m=tarm64le --toolprefix=aarch64-linux-gnu- \
+  --disable-curses --disable-x11 CC_FOR_BUILD=cc
+make
 
-HOST_M=ta6le TARGET_M=tarm64le ARCH_FLAG= CC=aarch64-linux-gnu-gcc \
+HOST_M=ta6le TARGET_M=tarm64le ARCH_FLAG="" CC=aarch64-linux-gnu-gcc \
   CHEZ_SRC=~/dev/ChezScheme tools/cross-compile/cross-build-poc.sh app.build app-arm64
-qemu-aarch64 ./app-arm64                  # or run on a real ARM box
+qemu-aarch64-static -L /usr/aarch64-linux-gnu ./app-arm64   # or a real ARM box
 ```
 
-The script picks Linux link libs automatically for `*le` targets (mirroring
-build.ss's `bld-link-libs`). A machine that only *runs* a cross-built binary
-needs nothing installed — no Chez, no jolt.
+The script picks the matching Linux link libs automatically for `*le`
+targets. A machine that only *runs* a cross-built binary needs nothing
+installed — no Chez, no jolt.
 
 ## What a real `jolt build --target <machine>` needs
 
