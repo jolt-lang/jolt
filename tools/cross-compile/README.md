@@ -15,6 +15,7 @@ under Rosetta 2:
 | tarm64osx → ta6osx | `hello/` (pure fns, loop/recur, reduce) | `Mach-O 64-bit executable x86_64`; output byte-identical to the native arm64 build (Rosetta 2) |
 | tarm64osx → ta6osx | `examples/hiccup-app` (real git dep, macros) | same — byte-identical HTML output |
 | ta6le → tarm64le | `hello/` (Arch Linux x86_64 host) | `ELF 64-bit LSB pie executable, ARM aarch64`; identical output, exit 0 under `qemu-aarch64-static` |
+| tarm64osx → ta6le | `hello/` (**cross-OS**: built on the arm64 Mac with `zig cc`) | `ELF 64-bit LSB executable, x86-64`; sha-matched transfer to a physical x86_64 Arch Linux machine, identical output, exit 0 — **native, no emulation** |
 
 Additionally verified on **physical Intel hardware**: the cross-built
 `hello-x86` was transferred (sha256-matched) to an Intel MacBook Pro
@@ -127,8 +128,45 @@ The POC hand-drives step 4; productizing it in build.ss is modest:
 
 Caveats: `:jolt/native` archives must be provided per target arch; app
 macros that inspect the build host at compile time would bake host facts
-(none of the stdlib does); untested here: Windows targets and cross-OS
-(mac→linux) link, which needs the zig/mingw toolchain from item 4.
+(none of the stdlib does); Windows (`ta6nt` via mingw-w64) remains the one
+untested target family — buildable from any host, but verification needs a
+Windows machine or wine.
+
+## Cross-OS: macOS → Linux with `zig cc` (verified)
+
+The macOS arm64 host built a `ta6le` (x86_64 Linux) binary that ran
+natively on a physical Arch Linux machine — no emulation. `zig cc` supplies
+the Linux libc/sysroot; three extra wrinkles beyond the same-OS flow:
+
+```sh
+cd ~/dev/ChezScheme
+printf '#!/bin/sh\nexec zig cc -target x86_64-linux-gnu -I<zlibdir> -I<lz4dir>/lib "$@"\n' > zig-cc-ta6le
+chmod +x zig-cc-ta6le
+bin/zuo tarm64osx bootquick ta6le          # target boots + xc-ta6le/s/xpatch
+
+# 1) In-tree zlib's configure sniffs the *host* (Darwin) and builds a broken
+#    Mach-O-flavored archive from ELF objects. Build zlib + lz4 out of tree
+#    with zig and archive with `zig ar` (macOS ar/ranlib silently produce an
+#    EMPTY archive from ELF objects — the empty-libz.a failure mode):
+(cp -r zlib /tmp/zl && cd /tmp/zl && CC=$PWD/../zig-cc-ta6le CHOST=x86_64-linux-gnu ./configure --static && make libz.a && zig ar rcs libz.a <the 15 obj files>)
+(cp -r lz4 /tmp/l4 && make -C /tmp/l4/lib liblz4.a CC=... AR="zig ar" BUILD_SHARED=no)
+
+# 2) Hand them to configure via ZLIB=/LZ4= (include dirs ride in the wrapper),
+#    with the same curses/X11 disables as any Linux cross kernel:
+./configure --cross --force -m=ta6le --disable-curses --disable-x11 \
+  CC="$PWD/zig-cc-ta6le" AR="zig ar" CC_FOR_BUILD=cc ZLIB=/tmp/zl/libz.a LZ4=/tmp/l4/lib/liblz4.a
+make
+# 3) Stage the archives where the POC script expects them:
+mkdir -p ta6le/lz4/lib ta6le/zlib && cp /tmp/l4/lib/liblz4.a ta6le/lz4/lib/ && cp /tmp/zl/libz.a ta6le/zlib/
+
+# then, as usual:
+HOST_M=tarm64osx TARGET_M=ta6le ARCH_FLAG="" CC=~/dev/ChezScheme/zig-cc-ta6le \
+  CHEZ_SRC=~/dev/ChezScheme tools/cross-compile/cross-build-poc.sh app.build app-linux
+```
+
+This also means CI could build **every Linux artifact from any runner** —
+and, with mingw-w64, plausibly the Windows one too — without per-target
+runner hardware.
 
 ## Why bother (beyond the issue)
 
