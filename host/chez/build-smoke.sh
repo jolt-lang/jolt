@@ -368,4 +368,34 @@ if [ "$got_fss" != "FS-APP a/b true true rw-------" ]; then
   echo "  FAIL: petite-only fs binary output mismatch — want 'FS-APP a/b true true rw-------', got \`$got_fss\`"; exit 1
 fi
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs + petite-only-fs)"
+# A declaration-only var and a no-root dynamic var must stay resolvable
+# (find-var / resolve / ns-interns) in an AOT binary. A no-init def now carries
+# source-position metadata, so it emits set-var-meta! then declare-var! —
+# declare-var! must mark the already-interned cell defined?, or introspection
+# tooling (spec instrument / nREPL) misses it. Its own tiny app: find-var bails
+# tree-shaking, so keep it off the shake fixtures above. Plain build (no shake).
+echo "build smoke: declaration-only var discoverability"
+decl_app="$(mktemp -d)/decl-app"
+mkdir -p "$decl_app/src/da"
+printf '{:paths ["src"]}\n' > "$decl_app/deps.edn"
+cat > "$decl_app/src/da/core.clj" <<'DECL_EOF'
+(ns da.core)
+(declare only-declared)
+(def ^:dynamic *cfg*)
+(defn -main [& _]
+  (println "declared:" (some? (find-var 'da.core/only-declared)))
+  (println "dynvar:" (some? (find-var 'da.core/*cfg*)))
+  (println "interned:" (contains? (ns-interns 'da.core) 'only-declared)))
+DECL_EOF
+decl_out="$(dirname "$out")/decl-bin"
+if ! JOLT_PWD="$decl_app" bin/joltc build -m da.core -o "$decl_out" >/dev/null 2>&1; then
+  echo "  FAIL: declaration-only-var app build exited non-zero"; exit 1
+fi
+got_decl="$(cd / && "$decl_out" 2>&1)"
+rm -rf "$(dirname "$decl_app")"
+if ! printf '%s' "$got_decl" | grep -q '^declared: true$' || ! printf '%s' "$got_decl" | grep -q '^dynvar: true$' || ! printf '%s' "$got_decl" | grep -q '^interned: true$'; then
+  echo "  FAIL: declaration-only / no-root var not discoverable in AOT (find-var/ns-interns)"
+  echo "--- got ----"; echo "$got_decl"; exit 1
+fi
+
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs + petite-only-fs + declare-only-var)"
