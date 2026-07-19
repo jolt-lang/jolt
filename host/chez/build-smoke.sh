@@ -368,6 +368,34 @@ if [ "$got_fss" != "FS-APP a/b true true rw-------" ]; then
   echo "  FAIL: petite-only fs binary output mismatch — want 'FS-APP a/b true true rw-------', got \`$got_fss\`"; exit 1
 fi
 
+# A built binary must have the vendored babashka.process (via jolt.process) and
+# be able to spawn a real sub-process. Guards the vendored-namespace baking.
+procapp="$root/test/chez/process-app"
+procout="$(dirname "$out")/process-app-bin"
+if ! JOLT_PWD="$procapp" bin/joltc build -m procapp.main -o "$procout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of a jolt.process / babashka.process app exited non-zero"; exit 1
+fi
+got_proc="$(cd / && "$procout" 2>&1 | tail -1)"
+if [ "$got_proc" != "PROC-APP hi 0 143" ]; then
+  echo "  FAIL: built binary missing vendored babashka.process — want 'PROC-APP hi 0 143', got \`$got_proc\`"; exit 1
+fi
+
+# The same process app tree-shaken: a compiler-dropped binary boots from petite
+# alone, so its libc calls through jolt-foreign-proc-safe (waitpid / kill under
+# jolt.process) must resolve as compiled foreign-procedures — an eval'd form would
+# silently return #f under the interpreter and the exit codes would be lost.
+procshake="$(dirname "$out")/process-app-shake-bin"
+if ! JOLT_PWD="$procapp" bin/joltc build -m procapp.main -o "$procshake" --tree-shake >/dev/null 2>&1; then
+  echo "  FAIL: jolt build --tree-shake of the jolt.process app exited non-zero"; exit 1
+fi
+if grep -q 'scheme.boot' "$procshake.build/compile.ss" 2>/dev/null; then
+  echo "  FAIL: tree-shaken process app still bundles scheme.boot (petite-only boot expected)"; exit 1
+fi
+got_procs="$(cd / && "$procshake" 2>&1 | tail -1)"
+if [ "$got_procs" != "PROC-APP hi 0 143" ]; then
+  echo "  FAIL: petite-only process binary output mismatch — want 'PROC-APP hi 0 143', got \`$got_procs\`"; exit 1
+fi
+
 # A declaration-only var and a no-root dynamic var must stay resolvable
 # (find-var / resolve / ns-interns) in an AOT binary. A no-init def now carries
 # source-position metadata, so it emits set-var-meta! then declare-var! —
@@ -398,4 +426,4 @@ if ! printf '%s' "$got_decl" | grep -q '^declared: true$' || ! printf '%s' "$got
   echo "--- got ----"; echo "$got_decl"; exit 1
 fi
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs + petite-only-fs + declare-only-var)"
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + vendored-fs + petite-only-fs + vendored-process + petite-only-process + declare-only-var)"

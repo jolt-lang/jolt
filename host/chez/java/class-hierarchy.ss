@@ -445,7 +445,12 @@
     ("string-reader" . "java.io.StringReader")
     ("pushback-reader" . "java.io.PushbackReader")
     ("char-writer" . "java.io.OutputStreamWriter")
-    ("char-reader" . "java.io.InputStreamReader")))
+    ("char-reader" . "java.io.InputStreamReader")
+    ;; subprocess shims (process.ss), backing vendored babashka.process
+    ("process-builder" . "java.lang.ProcessBuilder")
+    ("process" . "java.lang.Process")
+    ("process-redirect" . "java.lang.ProcessBuilder$Redirect")
+    ("process-handle" . "java.lang.ProcessHandle")))
 ;; FQN for a jhost tag, or #f if the tag names no modeled class (e.g. "class",
 ;; "in-stream", "jolt-comparator") — callers fall through on #f.
 (define (jhost-fqn tag) (hashtable-ref jhost-tag->fqn tag #f))
