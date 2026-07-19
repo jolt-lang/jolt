@@ -233,7 +233,11 @@
     (= coord 'org.clojure/clojurescript) nil
     (:mvn/version spec) (ensure-maven coord (:mvn/version spec))
     :else
-    (do (info "skipping unsupported coordinate " coord " " (pr-str spec)) nil)))
+    ;; a coordinate that is none of git / mvn / local / module — a typo or an
+    ;; unsupported spec. Silently dropping it hides a real problem (a namespace
+    ;; missing at runtime), so this stays an unconditional warn, unlike the
+    ;; expected-and-obsolete :jolt/module skip above.
+    (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)) nil)))
 
 (defn- has-clj-source?
   "Does the tree hold any jolt-loadable source (.clj/.cljc)? A Maven JAR that is

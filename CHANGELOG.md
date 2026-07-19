@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Progress/informational output is quiet by default; set `JOLT_DEBUG` to surface
+  it. `jolt.deps` no longer prints its fetching / using-cache / skipping /
+  added-natives lines on a routine run (a program pulling a native-declaring
+  library used to barf a `[jolt.deps] … not auto-loaded` line every time), and the
+  "static member registered twice" drift warning — which also fires when two
+  libraries legitimately shim the same class — is likewise gated. Genuine
+  problems (an unresolvable dependency, a failed extraction, a malformed
+  `deps.edn`) still print unconditionally. `JOLT_DEBUG` is the knob to re-enable
+  the diagnostics when debugging dependency resolution or static-shim drift.
+
 ### Fixed
 
 - Maven jar extraction re-extracts when the jar is newer than the last extraction
