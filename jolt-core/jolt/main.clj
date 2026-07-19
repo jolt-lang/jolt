@@ -267,15 +267,18 @@
   (let [{:keys [project-paths embed-dirs build] :as resolved}
         (deps/resolve-project (project-dir))]
     (apply-project! resolved)
-    (let [opts (loop [a more, entry nil, out nil, end-opts? false]
+    (let [opts (loop [a more, entry nil, out nil, target nil, tpack nil, end-opts? false]
                  (let [cur (first a)]
                    (cond
-                     (empty? a)                              {:entry entry :out out}
-                     (and (not end-opts?) (= "--" cur))      (recur (rest a) entry out true)
-                     (and (not end-opts?) (= "-m" cur))      (recur (drop 2 a) (second a) out false)
-                     (and (not end-opts?) (= "-o" cur))      (recur (drop 2 a) entry (second a) false)
-                     (and (not end-opts?) (str/starts-with? cur "-")) (recur (rest a) entry out false)
-                     :else                                   (recur (rest a) (or entry cur) out end-opts?))))
+                     (empty? a)                              {:entry entry :out out :target target :target-pack tpack}
+                     (and (not end-opts?) (= "--" cur))      (recur (rest a) entry out target tpack true)
+                     (and (not end-opts?) (= "-m" cur))      (recur (drop 2 a) (second a) out target tpack false)
+                     (and (not end-opts?) (= "-o" cur))      (recur (drop 2 a) entry (second a) target tpack false)
+                     ;; cross-compilation: --target <machine> [--target-pack <dir>]
+                     (and (not end-opts?) (= "--target" cur))      (recur (drop 2 a) entry out (second a) tpack false)
+                     (and (not end-opts?) (= "--target-pack" cur)) (recur (drop 2 a) entry out target (second a) false)
+                     (and (not end-opts?) (str/starts-with? cur "-")) (recur (rest a) entry out target tpack false)
+                     :else                                   (recur (rest a) (or entry cur) out target tpack end-opts?))))
           entry (:entry opts)
           ;; flags are only recognized before the end-of-options marker
           flag-args (take-while #(not= "--" %) more)
@@ -316,12 +319,21 @@
             tree-shake? (boolean (or (some #{"--tree-shake"} flag-args) (:tree-shake build)))
             ;; a shared library (callable from C/C++/Rust via jolt_library_init +
             ;; jolt_lookup) instead of an executable: --library.
-            library? (some #{"--library"} flag-args)]
+            library? (some #{"--library"} flag-args)
+            ;; cross-compilation (--target <machine>): the output binary is for a
+            ;; different Chez machine. Needs a prepared target pack (--target-pack
+            ;; DIR or $JOLT_TARGET_PACK) — see tools/cross-compile/README.md.
+            target (:target opts)
+            target-pack (or (:target-pack opts) (System/getenv "JOLT_TARGET_PACK"))]
+        (when (and target library?)
+          (throw (ex-info "cross build (--target) does not support --library yet" {})))
+        (when (and target (nil? target-pack))
+          (throw (ex-info "--target needs a target pack: --target-pack DIR (or $JOLT_TARGET_PACK)" {:target target})))
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
         (if library?
           (jolt.host/build-library entry out mode natives embed-dirs project-paths direct-link? tree-shake?)
-          (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake?))))))
+          (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack))))))
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the
@@ -374,7 +386,9 @@
   (println "  run -m NS [args]       resolve deps.edn, load NS, call its -main")
   (println "  run FILE [args]        load a Clojure file")
   (println "  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--tree-shake] [--dynamic]")
-  (println "                         compile a standalone binary")
+  (println "              [--target MACHINE --target-pack DIR]")
+  (println "                         compile a standalone binary (--target cross-compiles")
+  (println "                         for another Chez machine; see tools/cross-compile)")
   (println "  path                   print the resolved source roots")
   (println "  <task> [args]          run a deps.edn :tasks entry")
   (println "  help, --help, -h       print this message")

@@ -46,6 +46,18 @@
 (unless (or jb-release? (string=? jb-profile "debug"))
   (error 'build-joltc "profile must be \"release\" or \"debug\"" jb-profile))
 
+;; Cross-compilation: an optional 3rd arg is the target Chez machine, and the
+;; target pack comes from $JOLT_TARGET_PACK — cross-builds joltc itself for
+;; another platform (e.g. restoring the x86_64-macos release artifact from an
+;; arm64 runner). The bld-* helpers below key off these parameters (build.ss).
+(when (and (pair? jb-args) (pair? (cdr jb-args)) (pair? (cddr jb-args)))
+  (let ((tgt (caddr jb-args)) (pack (getenv "JOLT_TARGET_PACK")))
+    (when (and tgt (> (string-length tgt) 0))
+      (unless (and pack (> (string-length pack) 0))
+        (error 'build-joltc "cross build (target arg) needs $JOLT_TARGET_PACK — see tools/cross-compile/README.md"))
+      (bld-target tgt)
+      (bld-target-pack pack))))
+
 ;; Version baked into the binary's saved heap. Prefer $JOLT_VERSION (CI sets it to
 ;; the release tag); else derive it from git in this checkout; else "dev".
 (define jb-version
@@ -63,8 +75,8 @@
 (define jb-stub (string-append jb-build "/launcher"))
 (display "build-joltc: compiling launcher stub\n")
 (bld-system (string-append
-  "cc -O2 -I'" bld-csv-dir "' 'host/chez/stub/launcher.c' '"
-  bld-csv-dir "/libkernel.a' -o '" jb-stub "' " (bld-link-libs)))
+  (bld-cc) " " (bld-arch-flag) " -O2 -I'" (bld-csv-dir) "' 'host/chez/stub/launcher.c' '"
+  (bld-csv-dir) "/libkernel.a' -o '" jb-stub "' " (bld-link-libs)))
 
 ;; --- 1. emit flat.ss --------------------------------------------------------
 (define jb-flat-ss (string-append jb-build "/flat.ss"))
@@ -204,6 +216,8 @@
     (put-string p
       (string-append
         "(import (chezscheme))\n"
+        ;; cross: retarget compile-file / make-boot-file to the target machine.
+        (if (bld-cross?) (string-append "(load " (ei-str-lit (bld-xpatch)) ")\n") "")
         ;; level 2 not 3: 3 is unsafe mode (no fx/car type checks) and jolt error
         ;; paths rely on those raising — see bld-chez-param-forms.
         "(optimize-level " (if jb-release? "2" "0") ")\n"
@@ -213,8 +227,8 @@
         "(fasl-compressed " (jb-bool jb-release?) ")\n"
         "(compile-file " (ei-str-lit jb-flat-ss) " " (ei-str-lit jb-flat-so) ")\n"
         "(make-boot-file " (ei-str-lit jb-boot) " '()\n  "
-        (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
-        (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "
+        (ei-str-lit (string-append (bld-csv-dir) "/petite.boot")) "\n  "
+        (ei-str-lit (string-append (bld-csv-dir) "/scheme.boot")) "\n  "
         (ei-str-lit jb-flat-so) ")\n"))
     (close-port p))
   (bld-system (string-append bld-chez " --script '" cs "'")))
@@ -229,15 +243,15 @@
 
 (display "build-joltc: embedding boots + stub, linking\n")
 (jb-c-array jb-boot (string-append jb-build "/boot_data.h") "jolt_boot")
-(jb-c-array (string-append bld-csv-dir "/petite.boot") (string-append jb-build "/petite_data.h") "jolt_petite_boot")
-(jb-c-array (string-append bld-csv-dir "/scheme.boot") (string-append jb-build "/scheme_data.h") "jolt_scheme_boot")
+(jb-c-array (string-append (bld-csv-dir) "/petite.boot") (string-append jb-build "/petite_data.h") "jolt_petite_boot")
+(jb-c-array (string-append (bld-csv-dir) "/scheme.boot") (string-append jb-build "/scheme_data.h") "jolt_scheme_boot")
 (jb-c-array jb-stub (string-append jb-build "/stub_data.h") "jolt_stub")
 ;; Also bundle the Chez kernel (libkernel.a + scheme.h) and the launcher source,
 ;; so a `build` with :static native libs can re-link a custom stub with those
 ;; archives baked in — the appended-stub path can't add object code to a prebuilt
 ;; stub, so it relinks (build.ss bld-relink-stub). Needs the system cc at build.
-(jb-c-array (string-append bld-csv-dir "/scheme.h") (string-append jb-build "/schemeh_data.h") "jolt_scheme_h")
-(jb-c-array (string-append bld-csv-dir "/libkernel.a") (string-append jb-build "/libkernel_data.h") "jolt_libkernel_a")
+(jb-c-array (string-append (bld-csv-dir) "/scheme.h") (string-append jb-build "/schemeh_data.h") "jolt_scheme_h")
+(jb-c-array (string-append (bld-csv-dir) "/libkernel.a") (string-append jb-build "/libkernel_data.h") "jolt_libkernel_a")
 (jb-c-array "host/chez/stub/launcher.c" (string-append jb-build "/launcherc_data.h") "jolt_launcher_c")
 
 (define jb-main-c (string-append jb-build "/main.c"))
@@ -266,6 +280,6 @@
 (bld-system (string-append
   ;; the embedded jolt_* arrays must be foreign-entry-visible at runtime:
   ;; -rdynamic on ELF; on Windows an exe needs an export table (GetProcAddress).
-  "cc -O2 " (if bld-nt? "-Wl,--export-all-symbols " "-rdynamic ") "-I'" bld-csv-dir "' -I'" jb-build "' '" jb-main-c "' '"
-  bld-csv-dir "/libkernel.a' -o '" jb-out "' " (bld-link-libs)))
+  (bld-cc) " " (bld-arch-flag) " -O2 " (if (bld-tgt-nt?) "-Wl,--export-all-symbols " "-rdynamic ") "-I'" (bld-csv-dir) "' -I'" jb-build "' '" jb-main-c "' '"
+  (bld-csv-dir) "/libkernel.a' -o '" jb-out "' " (bld-link-libs)))
 (display (string-append "build-joltc: wrote " jb-out "\n"))
