@@ -21,6 +21,11 @@
 (defn- file-exists? [p] (jolt.host/file-exists? p))
 (defn- sh [cmd] (jolt.host/sh cmd))           ; exit code, inherits stdout/stderr
 (defn- warn [& xs] (binding [*out* *err*] (println (str "[jolt.deps] " (apply str xs)))))
+;; Progress / informational lines (fetching, using-cache, skipping, added-natives)
+;; print only when JOLT_DEBUG is set — otherwise a routine run (e.g. a ys-generated
+;; program pulling a native-declaring lib) barfs them on every invocation. Genuine
+;; warnings (an unresolvable dep, a malformed deps.edn) always print via `warn`.
+(defn- info [& xs] (when (jolt.host/getenv "JOLT_DEBUG") (apply warn xs)))
 
 (defn- read-edn [path]
   (when (file-exists? path)
@@ -71,7 +76,7 @@
       (if (file-exists? dir)
         dir
         (do
-          (warn "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
+          (info "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
           (sh (str "mkdir -p " (pr-str dir)))
           (when-not (zero? (sh (str "git clone --quiet " (pr-str url) " " (pr-str dir))))
             (throw (ex-info (str "git clone failed: " url) {:url url})))
@@ -117,11 +122,40 @@
 
 (defn- mvn-group [coord] (or (namespace coord) (name coord)))
 
+(defn- cache-fresh?
+  "Is the extraction at `dir` still valid for `jar`? The `.jolt-ok` marker is
+  written after a successful unzip; it is stale once the jar is rebuilt/refetched
+  (a SNAPSHOT, or the same coord re-installed into ~/.m2). A POSIX `test -nt`
+  re-extracts when the jar is newer than the marker. The legacy JOLT_MVNLIBS
+  layout keeps no jar, so its extraction is the only copy — trust it. A jar that
+  has since vanished (m2 pruned) also leaves the extraction as the last good copy."
+  [dir jar legacy]
+  (let [ok (str dir "/.jolt-ok")]
+    (and (file-exists? ok)
+         (or legacy
+             (not (file-exists? jar))
+             (not (zero? (sh (str "test " (pr-str jar) " -nt " (pr-str ok)))))))))
+
+(defn- extract-jar!
+  "Unzip `jar` into `dir` (overwriting), marking `.jolt-ok` only on success so a
+  failed/partial unzip is never trusted as a complete extraction. A stale
+  `.jolt-ok` from a prior extraction is cleared first, so a failed re-extract
+  isn't left looking valid. Returns dir on success, nil on failure (a non-fatal
+  skip). The jar may live inside `dir` (the legacy JOLT_MVNLIBS layout), so `dir`
+  is not wiped."
+  [jar dir]
+  (sh (str "mkdir -p " (pr-str dir)))
+  (sh (str "rm -f " (pr-str (str dir "/.jolt-ok"))))
+  (if (zero? (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir))))
+    (do (sh (str "touch " (pr-str (str dir "/.jolt-ok")))) dir)
+    (do (warn "failed to extract " jar) nil)))
+
 (defn- ensure-maven
   "Ensure coord@version's JAR is in the local Maven repository (reusing one the
   JVM toolchain already fetched; downloading from Clojars then Central when
-  absent) and extract its source beside it (once). Returns the extraction dir,
-  or nil if no repo has the artifact (a non-fatal skip)."
+  absent) and extract its source beside it. Re-extracts when the jar is newer
+  than the last extraction. Returns the extraction dir, or nil if no repo has the
+  artifact / extraction failed (a non-fatal skip)."
   [coord version]
   (let [group (mvn-group coord) artifact (name coord)
         vdir-rel (str (str/replace group "." "/") "/" artifact "/" version)
@@ -133,28 +167,24 @@
         jar (if legacy
               (str dir "/dep.jar")
               (str (m2-repo-dir) "/" vdir-rel "/" jar-name))]
-    (if (file-exists? (str dir "/.jolt-ok"))
+    (if (cache-fresh? dir jar legacy)
       dir
-      (do
-        (sh (str "mkdir -p " (pr-str dir)))
-        (if (and (not legacy) (file-exists? jar))
-          (do (warn "using " jar-name " from the local Maven repository")
-              (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
-              (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
-              dir)
-          (loop [repos mvn-repos]
-            (if (empty? repos)
-              (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
-              (if (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" vdir-rel "/" jar-name))
-                                  " -o " (pr-str jar))))
-                (do (warn "fetching " coord " " version)
-                    (sh (str "unzip -o -q " (pr-str jar) " -d " (pr-str dir)))
+      (if (and (not legacy) (file-exists? jar))
+        (do (info "using " jar-name " from the local Maven repository")
+            (extract-jar! jar dir))
+        (loop [repos mvn-repos]
+          (if (empty? repos)
+            (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
+            (if (do (sh (str "mkdir -p " (pr-str (if legacy dir (str (m2-repo-dir) "/" vdir-rel)))))
+                    (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" vdir-rel "/" jar-name))
+                                " -o " (pr-str jar)))))
+              (do (info "fetching " coord " " version)
+                  (let [d (extract-jar! jar dir)]
                     ;; legacy layout never keeps the jar; the m2 layout does —
                     ;; that IS the sharing.
                     (when legacy (sh (str "rm -f " (pr-str jar))))
-                    (sh (str "touch " (pr-str (str dir "/.jolt-ok"))))
-                    dir)
-                (recur (rest repos))))))))))
+                    d))
+              (recur (rest repos)))))))))
 
 (defn- pom-deps
   "Transitive deps of an extracted Maven dep, from its pom.xml — as a deps map so
@@ -192,7 +222,7 @@
     (:git/url spec)
     (throw (ex-info (str "git dep " coord " needs :git/sha") {:coord coord :spec spec}))
     (:jolt/module spec)
-    (do (warn "skipping janet dependency " coord " (:jolt/module is obsolete on Chez)") nil)
+    (do (info "skipping janet dependency " coord " (:jolt/module is obsolete on Chez)") nil)
     ;; jolt IS Clojure — a dependency on org.clojure/clojure is satisfied
     ;; intrinsically, so skip it silently rather than warning about the (unusable)
     ;; :mvn/version coordinate.
@@ -203,6 +233,10 @@
     (= coord 'org.clojure/clojurescript) nil
     (:mvn/version spec) (ensure-maven coord (:mvn/version spec))
     :else
+    ;; a coordinate that is none of git / mvn / local / module — a typo or an
+    ;; unsupported spec. Silently dropping it hides a real problem (a namespace
+    ;; missing at runtime), so this stays an unconditional warn, unlike the
+    ;; expected-and-obsolete :jolt/module skip above.
     (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)) nil)))
 
 (defn- has-clj-source?
@@ -362,6 +396,6 @@
      (when (seq added)
        (jolt.host/set-source-roots! (into current added)))
      (when (seq natives)
-       (warn "added deps declare :jolt/native libraries (not auto-loaded): "
+       (info "added deps declare :jolt/native libraries (not auto-loaded): "
              (pr-str (dedup-by native-key natives))))
      added)))

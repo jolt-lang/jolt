@@ -26,11 +26,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (previously the Murmur3 hasheq), so a jolt collection hashes equal to a library
   type computing the Java hashCode. `clojure.lang.APersistentMap/mapHash` is shimmed.
 
+### Changed
+
+- Progress/informational output is quiet by default; set `JOLT_DEBUG` to surface
+  it. `jolt.deps` no longer prints its fetching / using-cache / skipping /
+  added-natives lines on a routine run (a program pulling a native-declaring
+  library used to barf a `[jolt.deps] … not auto-loaded` line every time), and the
+  "static member registered twice" drift warning — which also fires when two
+  libraries legitimately shim the same class — is likewise gated. Genuine
+  problems (an unresolvable dependency, a failed extraction, a malformed
+  `deps.edn`) still print unconditionally. `JOLT_DEBUG` is the knob to re-enable
+  the diagnostics when debugging dependency resolution or static-shim drift.
+
 ### Fixed
 
 - A bare imported deftype/defrecord class name resolves to its class value, equal
   to `(type instance)` — `(= SomeType (type inst))` holds, and a flat
   `(:import a.b.Type)` binds the name.
+- Maven jar extraction re-extracts when the jar is newer than the last extraction
+  (`.jolt-ok` was trusted forever, so a rebuilt/refetched jar — a SNAPSHOT, or a
+  coord reinstalled into `~/.m2` — was never re-read), and the `.jolt-ok` marker
+  is written only after a successful `unzip`, so a failed/partial extraction is no
+  longer cached as complete.
 
 ## [0.4.6] - 2026-07-19
 
