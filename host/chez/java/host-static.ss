@@ -44,12 +44,15 @@
           (else (loop (- i 1))))))
 
 ;; A member re-registered with a DIFFERENT value across files is drift (two
-;; sources fighting over one static, last-wins silently deciding) — warn so it
-;; surfaces instead of shipping the wrong one (the Pattern/compile+quote bug).
-;; Registering the same member object twice (the FQN+short double-register below,
-;; or a value equal? to the prior one) is not a collision.
+;; sources fighting over one static, last-wins silently deciding). This is a
+;; diagnostic for the Pattern/compile+quote class of bug, but it ALSO fires when
+;; two libraries legitimately shim the same class (jolt-crypto + http-client both
+;; provide javax.crypto.Cipher/getInstance, etc.) — routine, not a bug. Gate it
+;; behind JOLT_DEBUG so a normal run stays quiet (issue #422); set JOLT_DEBUG to
+;; surface real drift. Registering the same member object twice (the FQN+short
+;; double-register below, or a value equal? to the prior one) is never a collision.
 (define (registry-collision! kind class member old new)
-  (when (and (not (eq? old new)) (not (equal? old new)))
+  (when (and (getenv "JOLT_DEBUG") (not (eq? old new)) (not (equal? old new)))
     (fprintf (current-error-port)
              "warning: ~a member ~a/~a registered twice with different values\n"
              kind class member)))
