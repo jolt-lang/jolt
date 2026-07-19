@@ -105,9 +105,15 @@
                           (if (> j i)
                               (loop j (if (rdr-eof? form)
                                           result
+                                          ;; Compile each form in the CURRENT ns, re-read
+                                          ;; per form (like load-jolt-file) — an (ns …) form
+                                          ;; switches it, so a later (refer …)/def and its
+                                          ;; use land in the same namespace. Hardcoding
+                                          ;; "user" lost mappings a runtime refer added to
+                                          ;; the switched-to ns (jolt#… stdin ns-switch bug).
                                           (jolt-compile-eval-form
                                             (maybe-quote-require-args form)
-                                            "user")))
+                                            (chez-current-ns))))
                               result))))))
       (jolt-pop-thread-bindings)
       (let ((s (jolt-final-str result)))
