@@ -86,14 +86,23 @@
             (map (lambda (p) (proc-sh-quote (string-append (car p) "=" (cdr p)))) pairs))
           " "))))
 
+;; The child's cwd: a JVM child inherits user.dir (the user's cwd), but jolt's OS
+;; cwd is the repo root its launcher cd'd to — the user's logical cwd is JOLT_PWD.
+;; So default the child to JOLT_PWD and resolve a relative :dir against it (like
+;; io.ss project-relative), matching ProcessBuilder.directory semantics.
+(define (proc-effective-dir dir)
+  (if dir
+      (project-relative dir)
+      (let ((pwd (getenv "JOLT_PWD"))) (and pwd (> (string-length pwd) 0) pwd))))
+
 (define (proc-build-shell-command st)
-  (let ((cmd     (proc-pb-cmd st))
-        (env-map (proc-pb-env st))
-        (dir     (proc-pb-dir st))
-        (rin     (proc-pb-redir-in st))
-        (rout    (proc-pb-redir-out st))
-        (rerr    (proc-pb-redir-err st))
-        (merge?  (proc-pb-merge-err? st)))
+  (let* ((cmd     (proc-pb-cmd st))
+         (env-map (proc-pb-env st))
+         (dir     (proc-effective-dir (proc-pb-dir st)))
+         (rin     (proc-pb-redir-in st))
+         (rout    (proc-pb-redir-out st))
+         (rerr    (proc-pb-redir-err st))
+         (merge?  (proc-pb-merge-err? st)))
     (string-append
       (if dir (string-append "cd " (proc-sh-quote dir) " && ") "")
       "exec "
@@ -256,8 +265,46 @@
 (define (proc-p-inherit-latches st) (vector-ref (jhost-state st) 9))
 (define (proc-process? x) (and (jhost? x) (string=? (jhost-tag x) "process")))
 
+;; ProcessBuilder.start resolves the program before spawning and throws
+;; IOException("…No such file or directory") when it can't be found; our shell
+;; would otherwise fail at exec (127) with a different message. Mirror it:
+;;   - absolute program: the file must exist
+;;   - slash-bearing relative program: resolves against the child cwd, like exec
+;;   - bare name: an entry of that name must be on PATH
+(define (proc-path-join a b)
+  (if (or (= (string-length a) 0) (char=? (string-ref a (- (string-length a) 1)) #\/))
+      (string-append a b)
+      (string-append a "/" b)))
+(define (proc-has-slash? s)
+  (let loop ((i 0)) (cond ((= i (string-length s)) #f)
+                          ((char=? (string-ref s i) #\/) #t)
+                          (else (loop (+ i 1))))))
+(define (proc-on-path? prog)
+  (let ((path (getenv "PATH")))
+    (and path
+         (let loop ((dirs (str-literal-split path ":")))
+           (cond ((null? dirs) #f)
+                 ((and (> (string-length (car dirs)) 0)
+                       (file-exists? (proc-path-join (car dirs) prog))) #t)
+                 (else (loop (cdr dirs))))))))
+(define (proc-program-resolvable? prog effective-dir)
+  (let ((prog (if (string? prog) prog (jolt-str-render-one prog))))
+    (cond
+      ((= (string-length prog) 0) #f)
+      ((char=? (string-ref prog 0) #\/) (file-exists? prog))
+      ((proc-has-slash? prog)
+       (file-exists? (proc-path-join (or effective-dir (getenv "JOLT_PWD") ".") prog)))
+      (else (proc-on-path? prog)))))
+
 (define (proc-pb-start self)
-  (let ((st (jhost-state self)))
+  (let* ((st (jhost-state self))
+         (cmd (proc-pb-cmd self)))
+    (when (and (pair? cmd)
+               (not (proc-program-resolvable? (car cmd) (proc-effective-dir (proc-pb-dir self)))))
+      (throw-jvm (quote java.io.IOException)
+        (string-append "Cannot run program \""
+                       (if (string? (car cmd)) (car cmd) (jolt-str-render-one (car cmd)))
+                       "\": error=2, No such file or directory")))
     (call-with-values
       (lambda () (open-process-ports (proc-build-shell-command self) (buffer-mode block) #f))
       (lambda (child-stdin child-stdout child-stderr pid)

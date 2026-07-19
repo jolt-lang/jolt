@@ -437,14 +437,17 @@
           ((string=? k "line.separator") "\n")
           ((string=? k "file.separator") "/")
           ((string=? k "path.separator") ":")
-          ((string=? k "user.dir") (or (getenv "PWD") "."))
+          ;; user.dir is the user's cwd (JVM: the process cwd). jolt's launcher
+          ;; cd's to the repo root and resets PWD, but preserves the user's cwd in
+          ;; JOLT_PWD — prefer it so user.dir and spawned-child cwds agree.
+          ((string=? k "user.dir") (or (getenv "JOLT_PWD") (getenv "PWD") "."))
           ((string=? k "user.home") (or (getenv "HOME") ""))
           ((string=? k "java.io.tmpdir") (or (getenv "TMPDIR") "/tmp"))
           ((pair? dflt) (car dflt))
           (else jolt-nil))))
 (define (sys-properties-map)
   (let ((base (jolt-hash-map "os.name" sys-os-name "line.separator" "\n" "file.separator" "/"
-                             "user.dir" (or (getenv "PWD") ".") "user.home" (or (getenv "HOME") "")
+                             "user.dir" (or (getenv "JOLT_PWD") (getenv "PWD") ".") "user.home" (or (getenv "HOME") "")
                              "java.io.tmpdir" (or (getenv "TMPDIR") "/tmp"))))
     (for-each
       (lambda (kv)

@@ -2,7 +2,8 @@
 ;; Run: bin/joltc run test/chez/process-test.clj (smoke.sh greps for "PROCESS-TEST OK").
 (ns process-test
   (:require [jolt.process :as p :refer [process sh check pipeline]]
-            [jolt.fs :as fs]))
+            [jolt.fs :as fs]
+            [clojure.string :as str]))
 
 (def failures (atom []))
 (defn check-eq [label got want]
@@ -60,6 +61,23 @@
   (p/destroy proc)
   (check-eq "sigterm exit" (:exit @proc) 143)
   (check-eq "dead after destroy" (p/alive? proc) false))
+
+;; a spawned child inherits the user's cwd (user.dir / JOLT_PWD), not jolt's OS cwd
+;; (the launcher cd's to the repo root but preserves the user's cwd in JOLT_PWD)
+(check-eq "child cwd = user.dir"
+          (str (fs/canonicalize (str/trim (:out (sh ["pwd"])))))
+          (str (fs/canonicalize (System/getProperty "user.dir"))))
+;; an explicit :dir sets the child's cwd (pwd echoes the logical cd path)
+(let [sub (fs/create-temp-dir {:prefix "jp-dir-"})]
+  (check-eq "dir set" (str/trim (:out (sh ["pwd"] {:dir (str sub)}))) (str sub))
+  (fs/delete-tree sub))
+
+;; ProcessBuilder.start throws (like the JVM) when the program can't be resolved,
+;; with a "No such file" message — not a shell "not found" after spawning
+(check-eq "missing program throws"
+          (try (sh ["definitely-no-such-program-xyz"]) :no-throw
+               (catch Exception e (if (re-find #"No such file" (str (ex-message e))) :nosuch :other)))
+          :nosuch)
 
 ;; class / instance? derive from the central registry
 (check-eq "pb instance?" (instance? java.lang.ProcessBuilder (java.lang.ProcessBuilder. ["true"])) true)
