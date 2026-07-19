@@ -2,7 +2,7 @@
 # `jolt build`'s flat.ss is machine-neutral, and step 4 (compile-file ->
 # make-boot-file -> cc link) retargets cleanly under Chez's xpatch.
 #
-# Runs the tools/cross-compile POC end to end on one runner:
+# Runs `jolt build --target` end to end on one runner:
 #   ta6le (x86_64 Linux) host  ->  tarm64le (aarch64 Linux) target,
 # verified under qemu with a byte-identical-output diff against the native
 # build. A change that bakes host state into the Scheme emission (an absolute
@@ -75,11 +75,18 @@ jobs:
           ./hello-host | tee native.out
           grep -q "fib(30) = 832040" native.out
 
-      - name: Cross build (tarm64le) + qemu verification
+      - name: Assemble target pack (tarm64le)
+        run: |
+          CHEZ_SRC="$HOME/chez" tools/cross-compile/make-pack.sh tarm64le /tmp/pack-tarm64le
+
+      - name: Cross build via `jolt build --target` + qemu verification
         run: |
           cd tools/cross-compile/hello
-          HOST_M=ta6le TARGET_M=tarm64le ARCH_FLAG="" CC=aarch64-linux-gnu-gcc \
-            CHEZ_SRC="$HOME/chez" ../cross-build-poc.sh hello-host.build hello-arm64
+          # the productized path: jolt build --target drives step 4 under the
+          # pack's xpatch; the arch is selected by the cross gcc (no arch flag).
+          JOLT_TARGET_CC=aarch64-linux-gnu-gcc \
+            ../../../bin/joltc build -m hello.core -o hello-arm64 \
+              --target tarm64le --target-pack /tmp/pack-tarm64le
           file hello-arm64 | grep -q "ARM aarch64"
           qemu-aarch64-static -L /usr/aarch64-linux-gnu ./hello-arm64 | tee cross.out
           # the load-bearing assertion: cross output is byte-identical to native

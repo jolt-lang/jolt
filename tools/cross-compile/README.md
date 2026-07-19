@@ -1,8 +1,41 @@
-# Cross-compilation POC (issue #375)
+# Cross-compilation (issue #375)
 
 Answer to [jolt-lang/jolt#375](https://github.com/jolt-lang/jolt/issues/375):
-**yes — cross-compilation works today**, with no changes to jolt itself.
-This directory holds the proof-of-concept that built and verified it.
+**yes — jolt cross-compiles.** It is productized as `jolt build --target
+<machine> --target-pack <dir>` (and joltc itself via build-joltc.ss's 3rd arg +
+`$JOLT_TARGET_PACK`). This directory holds the tooling and the proof-of-concept
+that verified the mechanism.
+
+## Using `jolt build --target`
+
+The one-time step is preparing a **target pack** — the target's Chez boots,
+kernel, `scheme.h`, the cross `xpatch`, and static lz4/zlib — from a ChezScheme
+cross checkout (the ~10-min setup under [Reproduction](#reproduction)).
+`make-pack.sh` assembles the checkout's scattered artifacts into one pack dir:
+
+```sh
+# after the ChezScheme cross setup below:
+CHEZ_SRC=~/dev/ChezScheme tools/cross-compile/make-pack.sh ta6osx /tmp/pack-ta6osx
+
+# then, for any app (macOS arm64 host -> x86_64 target):
+JOLT_TARGET_CC=cc JOLT_TARGET_ARCH_FLAG="-arch x86_64" \
+  bin/joltc build -m app.core -o app-x86 --target ta6osx --target-pack /tmp/pack-ta6osx
+file app-x86        # => Mach-O 64-bit executable x86_64
+```
+
+- `--target <machine>` is a Chez machine string (`ta6osx`, `tarm64le`, `ta6nt`, …).
+- `--target-pack <dir>` (or `$JOLT_TARGET_PACK`) is the assembled pack.
+- `$JOLT_TARGET_CC` / `$JOLT_TARGET_ARCH_FLAG` select the target C compiler and
+  arch flags (e.g. `aarch64-linux-gnu-gcc` with no arch flag for a Linux cross;
+  a `zig cc` wrapper for cross-OS). The pack's `link-libs` supplies the rest.
+
+`build.ss` keeps `flat.ss` machine-neutral and retargets only step 4
+(compile-file / make-boot-file / cc-link) under the pack's `xpatch`; the
+`cross-smoke` workflow pins that output is byte-identical to the native build.
+Not yet cross-supported: `:jolt/native` static archives (need per-target-arch
+archives) and `--library`.
+
+`cross-build-poc.sh` is the original hand-driven step 4, kept for reference.
 
 ## What was proven
 

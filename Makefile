@@ -74,8 +74,10 @@ staticnativesmoke:
 # and a launcher stub, so it runs AND compiles jolt apps with no Chez or cc on the
 # machine. Built on a dev/CI host that HAS Chez + cc. release = optimize-level 3,
 # no inspector info, compressed; debug = optimize-level 0 + inspector + debug info.
+# JOLTC_TARGET (optional) cross-compiles joltc for another Chez machine — it is
+# passed as build-joltc.ss's 3rd arg and needs $JOLT_TARGET_PACK (empty = native).
 joltc-release:
-	@$(CHEZ) --script host/chez/build-joltc.ss release target/release/joltc
+	@$(CHEZ) --script host/chez/build-joltc.ss release target/release/joltc $(JOLTC_TARGET)
 joltc-debug:
 	@$(CHEZ) --script host/chez/build-joltc.ss debug target/debug/joltc
 # Re-mint the seed first so the embedded compiler image is current, then both builds.

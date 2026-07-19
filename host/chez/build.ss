@@ -64,9 +64,34 @@
   (string-append "'" s "'"))
 
 ;; --- toolchain discovery ----------------------------------------------------
+;; bld-machine / bld-osx? / bld-nt? describe the HOST — the machine the build
+;; RUNS on (shell wrapping, cc discovery, loading a native archive into the build
+;; process). Where a decision is about the OUTPUT binary instead (link libs, the
+;; boots, the .exe/.dylib suffix, symbol export), use the target-aware predicates
+;; below so `jolt build --target <machine>` cross-compiles correctly.
 (define bld-machine (symbol->string (machine-type)))
 (define bld-osx? (bld-contains? bld-machine "osx"))
 (define bld-nt? (bld-contains? bld-machine "nt"))
+
+;; The target machine: #f = build for the host; a Chez machine string
+;; ("ta6osx", "tarm64le", "ta6nt", …) = cross-compile. Set by jolt build --target.
+(define bld-target (make-parameter #f))
+;; A prepared target pack: a directory holding the target's petite.boot,
+;; scheme.boot, libkernel.a and scheme.h (the csv layout), the cross xpatch, a
+;; `link-libs` file with the target link flags, and static lz4/zlib under lib/.
+;; Required when bld-target is set. Produced by the one-time ChezScheme cross
+;; setup — see tools/cross-compile/README.md.
+(define bld-target-pack (make-parameter #f))
+;; The effective target machine, and whether this is a cross build.
+(define (bld-eff-machine) (or (bld-target) bld-machine))
+(define (bld-cross?) (and (bld-target) (not (string=? (bld-target) bld-machine)) #t))
+(define (bld-tgt-osx?) (bld-contains? (bld-eff-machine) "osx"))
+(define (bld-tgt-nt?) (bld-contains? (bld-eff-machine) "nt"))
+;; The C compiler + arch flag for the OUTPUT binary. Cross overrides via env
+;; (JOLT_TARGET_CC, e.g. aarch64-linux-gnu-gcc or a zig-cc wrapper;
+;; JOLT_TARGET_ARCH_FLAG, e.g. "-arch x86_64" for a macOS x-arch link).
+(define (bld-cc) (if (bld-cross?) (or (getenv "JOLT_TARGET_CC") "cc") "cc"))
+(define (bld-arch-flag) (if (bld-cross?) (or (getenv "JOLT_TARGET_ARCH_FLAG") "") ""))
 
 ;; Platform-appropriate flag to export executable symbols so a statically-linked
 ;; native lib's symbols resolve via (load-shared-object #f). macOS keeps unstripped
@@ -121,30 +146,58 @@
           (substring s i n)
           (loop (- i 1))))))
 
-;; The csv<ver>/<machine> dir holding scheme.h, libkernel.a, *.boot. Derived from
-;; the chez executable's location; JOLT_CHEZ_CSV overrides.
-(define bld-csv-dir
+;; The HOST csv<ver>/<machine> dir holding scheme.h, libkernel.a, *.boot. Derived
+;; from the chez executable's location; JOLT_CHEZ_CSV overrides.
+(define bld-host-csv-dir
   (let ((env (getenv "JOLT_CHEZ_CSV")))
     (or (and env (> (string-length env) 0) env)
         (let* ((bindir (bld-sh-capture "dirname \"$(command -v chez || command -v scheme || command -v petite)\""))
                (cand (string-append bindir "/../lib/csv" bld-version "/" bld-machine)))
           cand))))
+;; The csv dir supplying the boots + kernel + scheme.h that get baked into the
+;; OUTPUT binary: the target pack when cross-compiling, else the host csv. (For a
+;; cross build the host chez still runs the compile, finding its own boots via its
+;; install; only make-boot-file / the kernel link read the target's, via the pack.)
+(define (bld-csv-dir) (if (bld-cross?) (bld-target-pack) bld-host-csv-dir))
+;; The cross xpatch that retargets compile-file / make-boot-file to the target.
+(define (bld-xpatch) (string-append (bld-target-pack) "/xpatch"))
 
 (define (bld-have-cc?)
   (> (string-length (bld-sh-capture "command -v cc")) 0))
 
 (define (bld-check-toolchain)
-  (for-each
-    (lambda (f)
-      (let ((p (string-append bld-csv-dir "/" f)))
-        (unless (file-exists? p)
-          (error 'jolt-build (string-append "Chez build file missing: " p
-                                             "\nSet JOLT_CHEZ_CSV to the csv<ver>/<machine> dir.")))))
-    '("scheme.h" "libkernel.a" "petite.boot" "scheme.boot")))
+  (let ((hint (if (bld-cross?)
+                  "\nProvide a target pack (--target-pack DIR) — see tools/cross-compile/README.md."
+                  "\nSet JOLT_CHEZ_CSV to the csv<ver>/<machine> dir.")))
+    (for-each
+      (lambda (f)
+        (let ((p (string-append (bld-csv-dir) "/" f)))
+          (unless (file-exists? p)
+            (error 'jolt-build (string-append "Chez build file missing: " p hint)))))
+      '("scheme.h" "libkernel.a" "petite.boot" "scheme.boot"))
+    ;; a cross pack additionally supplies the xpatch and the target link flags.
+    (when (bld-cross?)
+      (unless (bld-target-pack)
+        (error 'jolt-build "cross build (--target) needs a target pack (--target-pack DIR)"))
+      (for-each
+        (lambda (f)
+          (let ((p (string-append (bld-target-pack) "/" f)))
+            (unless (file-exists? p)
+              (error 'jolt-build (string-append "target pack file missing: " p hint)))))
+        '("xpatch" "link-libs")))))
 
-;; Link flags. macOS Homebrew layout for the kernel's lz4/zlib/ncurses deps.
+;; Link flags. macOS Homebrew layout for the kernel's lz4/zlib/ncurses deps. The
+;; host branches double as the target flags for a non-cross build (host = target).
 (define (bld-link-libs)
   (cond
+    ;; cross: the static lz4/zlib live in the pack (lib/), and the pack's
+    ;; `link-libs` file lists the remaining -l/-framework flags — which depend on
+    ;; how its kernel was configured (a cross kernel is often --disable-curses /
+    ;; --disable-x11). JOLT_TARGET_LINK_LIBS overrides the whole string.
+    ((bld-cross?)
+     (or (getenv "JOLT_TARGET_LINK_LIBS")
+         (string-append "-L" (bld-sh-quote (string-append (bld-target-pack) "/lib")) " "
+           (bld-sh-capture (string-append "cat " (bld-sh-quote (string-append (bld-target-pack) "/link-libs")))))))
     (bld-osx?
      (let ((lz4 (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
        (if (> (string-length lz4) 0)
@@ -667,14 +720,14 @@
   ;; Windows executables carry .exe; normalize here so the append-payload and
   ;; cc paths agree and the shell can run the result. A library keeps its own
   ;; suffix (.dll/.so/.dylib) — never rewrite it to .exe.
-  (let ((out-path (if (and bld-nt? (not library?) (not (bld-suffix? out-path ".exe")))
+  (let ((out-path (if (and (bld-tgt-nt?) (not library?) (not (bld-suffix? out-path ".exe")))
                       (string-append out-path ".exe")
                       out-path)))
   ;; The self-contained path (jolt-embedded-bytes "stub/launcher") needs no csv
   ;; kernel files, no Chez, no cc — only the legacy cc path does. A --library build
-  ;; ALWAYS takes the cc path (build-shared), so it needs the toolchain even from
-  ;; the self-contained joltc.
-  (when (or library? (not (jolt-embedded-bytes "stub/launcher"))) (bld-check-toolchain))
+  ;; ALWAYS takes the cc path (build-shared), and a cross build (--target) always
+  ;; takes build-with-cc, so both need the toolchain even from the self-contained joltc.
+  (when (or library? (bld-cross?) (not (jolt-embedded-bytes "stub/launcher"))) (bld-check-toolchain))
   (when (> (string-length (bld-native-link-flags natives)) 0)
     ;; :static natives are cc-linked into the binary, so a C compiler must be on
     ;; PATH — the self-contained joltc bundles the Chez kernel (libkernel.a +
@@ -943,6 +996,17 @@
         ;;    make-boot-file, then xxd the boot into a C array and cc-link against
         ;;    libkernel.a. Kept so `make buildsmoke` still exercises the cc path.
         (cond
+          ;; cross-compiling (--target) always takes the spawn/cc path: the
+          ;; self-contained in-process compile can't load a target xpatch, and the
+          ;; xpatch retargets make-boot-file for the whole spawned process.
+          ((bld-cross?)
+           (when library?
+             (error 'jolt-build "cross build (--target) does not support --library yet"))
+           (when (> (string-length (bld-native-link-flags natives)) 0)
+             (error 'jolt-build
+               "cross build (--target) does not support :jolt/native archives yet (they need per-target-arch archives)"))
+           (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c
+                          "" (and drop-compiler? (not (bld-tgt-nt?)))))
           (library?
            (build-shared entry-ns out-path mode builddir flat-ss flat-so boot boot-h
                          (bld-native-link-flags natives)))
@@ -1113,15 +1177,19 @@
       (put-string p
         (string-append
           "(import (chezscheme))\n"
+          ;; cross: the xpatch retargets compile-file / make-boot-file to the
+          ;; target machine (ChezScheme/BUILDING, "CROSS COMPILING SCHEME
+          ;; PROGRAMS"); the boots below come from the target pack.
+          (if (bld-cross?) (string-append "(load " (ei-str-lit (bld-xpatch)) ")\n") "")
           (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
           ;; petite-only boot when the compiler image was dropped (see
           ;; build-self-contained).
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
-          (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
+          (ei-str-lit (string-append (bld-csv-dir) "/petite.boot")) "\n  "
           (if petite-only?
               ""
-              (string-append (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "))
+              (string-append (ei-str-lit (string-append (bld-csv-dir) "/scheme.boot")) "\n  "))
           (ei-str-lit flat-so) ")\n"))
       (close-port p))
     (bld-system (string-append bld-chez " --script '" cs "'")))
@@ -1145,8 +1213,8 @@
   ;; a statically-linked native lib's symbols resolve via (load-shared-object #f)
   ;; at startup. macOS keeps unstripped executable symbols dlsym-visible already.
   (bld-system (string-append
-    "cc -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "")
-    "-I'" bld-csv-dir "' '" main-c "' '" bld-csv-dir "/libkernel.a' "
+    (bld-cc) " " (bld-arch-flag) " -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "")
+    "-I'" (bld-csv-dir) "' '" main-c "' '" (bld-csv-dir) "/libkernel.a' "
     "-o '" out-path "' " native-link " " (bld-link-libs)))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
@@ -1207,8 +1275,8 @@
           (bld-chez-param-forms mode)
           "(compile-file " (ei-str-lit flat-ss) " " (ei-str-lit flat-so) ")\n"
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
-          (ei-str-lit (string-append bld-csv-dir "/petite.boot")) "\n  "
-          (ei-str-lit (string-append bld-csv-dir "/scheme.boot")) "\n  "
+          (ei-str-lit (string-append (bld-csv-dir) "/petite.boot")) "\n  "
+          (ei-str-lit (string-append (bld-csv-dir) "/scheme.boot")) "\n  "
           (ei-str-lit flat-so) ")\n"))
       (close-port p))
     (bld-system (string-append bld-chez " --script '" cs "'")))
@@ -1227,16 +1295,24 @@
       (if bld-osx?
           (string-append "-dynamiclib -install_name '@rpath/" (bld-basename out-path) "' ")
           "-shared ")
-      "-I'" bld-csv-dir "' '" lc "' '" bld-csv-dir "/libkernel.a' "
+      "-I'" (bld-csv-dir) "' '" lc "' '" (bld-csv-dir) "/libkernel.a' "
       "-o '" out-path "' " native-link " " (bld-link-libs))))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
+;; optional trailing (target target-pack): a Chez machine string + a prepared
+;; target pack dir when cross-compiling (jolt build --target). Absent/nil = host.
+(define (bld-opt-str opt i)
+  (let loop ((o opt) (i i))
+    (cond ((or (null? o) (< i 0)) #f)
+          ((= i 0) (and (not (jolt-nil? (car o))) (jolt-str-render-one (car o))))
+          (else (loop (cdr o) (- i 1))))))
 (def-var! "jolt.host" "build-binary"
-  (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)
-    (build-binary (jolt-str-render-one entry)
-                  (jolt-str-render-one out)
-                  (jolt-str-render-one mode)
-                  natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?) #f)
+  (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake? . opt)
+    (parameterize ((bld-target (bld-opt-str opt 0)) (bld-target-pack (bld-opt-str opt 1)))
+      (build-binary (jolt-str-render-one entry)
+                    (jolt-str-render-one out)
+                    (jolt-str-render-one mode)
+                    natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?) #f))
     jolt-nil))
 (def-var! "jolt.host" "build-library"
   (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake?)

@@ -32,11 +32,16 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-linux
             shell: bash
-          # No x86_64-macos: GitHub is retiring the macos-13 Intel runner (jobs
-          # queue forever). Intel Macs build from source. macos-14 is arm64.
           - os: macos-14
             target: aarch64-macos
             shell: bash
+          # x86_64-macos is cross-built from the arm64 macos-14 runner (GitHub
+          # retired the Intel runners): `cross: ta6osx` gates the extra Chez-cross
+          # + pack steps below, and the binary is smoke-tested via Rosetta 2.
+          - os: macos-14
+            target: x86_64-macos
+            shell: bash
+            cross: ta6osx
           - os: windows-latest
             target: x86_64-windows
             shell: msys2 {0}
@@ -153,11 +158,47 @@ jobs:
       - name: Show Chez version
         run: chez --version
 
+      # --- x86_64-macos is cross-built on the arm64 runner (matrix.cross=ta6osx):
+      # build the target boots/xpatch + cross kernel, then assemble a target pack
+      # that `jolt build --target` / build-joltc.ss consume. ---
+      - name: Cache Chez cross (ta6osx)
+        if: matrix.cross
+        id: cache-chez-cross
+        uses: actions/cache@v4
+        with:
+          path: ~/chez-cross
+          key: chez-cross-v10.4.1-tarm64osx-${{ matrix.cross }}-v1
+
+      - name: Build ${{ matrix.cross }} boots/xpatch + cross kernel
+        if: matrix.cross && steps.cache-chez-cross.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v10.4.1 --recurse-submodules \
+            https://github.com/cisco/ChezScheme ~/chez-cross
+          cd ~/chez-cross
+          ./configure -m=tarm64osx && make -j"$(sysctl -n hw.ncpu)"
+          make bootquick XM=${{ matrix.cross }}
+          # minos: pin -mmacosx-version-min in the kernel AND the final link, or
+          # the binary won't load on Macs older than the runner's OS.
+          ./configure --cross --force -m=${{ matrix.cross }} \
+            CFLAGS="-arch x86_64 -mmacosx-version-min=11.0" CC_FOR_BUILD=cc
+          make -j"$(sysctl -n hw.ncpu)"
+
+      - name: Assemble target pack + set cross env
+        if: matrix.cross
+        run: |
+          CHEZ_SRC=~/chez-cross tools/cross-compile/make-pack.sh ${{ matrix.cross }} "$HOME/pack"
+          echo "JOLT_TARGET_PACK=$HOME/pack" >> "$GITHUB_ENV"
+          echo "JOLT_TARGET_ARCH_FLAG=-arch x86_64 -mmacosx-version-min=11.0" >> "$GITHUB_ENV"
+          # every smoke below runs the produced x86_64 binary via Rosetta 2.
+          echo "JOLT_RUN_PREFIX=arch -x86_64" >> "$GITHUB_ENV"
+
       # build-joltc compiles in a fresh Chez and cc-links; the checked-in seed is
       # the compiler image, so no selfhost re-mint (that byte-fixpoint is a
       # dev-machine check — see jolt-8479). `make joltc-release`, not `make joltc`.
+      # JOLTC_TARGET is empty for native rows and the target machine for the cross
+      # row (matrix.cross), which build-joltc.ss consumes with $JOLT_TARGET_PACK.
       - name: Build joltc (release)
-        run: make joltc-release
+        run: make joltc-release JOLTC_TARGET="${{ matrix.cross }}"
         env:
           # Bake the release tag into the binary (build-joltc falls back to
           # `git describe` when this is empty, e.g. a workflow_dispatch dry run).
@@ -175,7 +216,7 @@ jobs:
       # Sanity: the built binary runs (no Chez needed) and self-reports a value.
       - name: Smoke the binary
         run: |
-          out="$(./target/release/joltc -e '(reduce + (range 10))')"
+          out="$($JOLT_RUN_PREFIX ./target/release/joltc -e '(reduce + (range 10))')"
           test "$out" = "45" || { echo "joltc -e gave '$out', want 45"; exit 1; }
 
       # The binary is a self-contained COMPILER: it must `build` an app with no
@@ -190,8 +231,8 @@ jobs:
           printf '{:paths ["src"]}\n' > "$work/app/deps.edn"
           printf '(ns app.core)\n(defn -main [& _] (println "built:" (reduce + (range 10))))\n' \
             > "$work/app/src/app/core.clj"
-          ( cd "$work/app" && "$joltc" build -m app.core -o app )
-          out="$("$work/app/app")"
+          ( cd "$work/app" && $JOLT_RUN_PREFIX "$joltc" build -m app.core -o app )
+          out="$($JOLT_RUN_PREFIX "$work/app/app")"
           test "$out" = "built: 45" || { echo "self-contained build ran '$out', want 'built: 45'"; exit 1; }
 
       # A built binary must also run the DYNAMIC require path: a namespace not
@@ -208,8 +249,8 @@ jobs:
             > "$work/app/src/app/extra.clj"
           printf '(ns app.core)\n(defn -main [& _]\n  (println ((requiring-resolve (quote app.extra/greet)) "runtime")))\n' \
             > "$work/app/src/app/core.clj"
-          ( cd "$work/app" && "$joltc" build -m app.core -o app )
-          out="$(cd "$work/app" && ./app)"
+          ( cd "$work/app" && $JOLT_RUN_PREFIX "$joltc" build -m app.core -o app )
+          out="$(cd "$work/app" && $JOLT_RUN_PREFIX ./app)"
           test "$out" = "Hello, runtime!" || { echo "runtime require ran '$out', want 'Hello, runtime!'"; exit 1; }
 
       - name: Package
