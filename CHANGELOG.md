@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-19
+
+Sub-process working-directory fixes: a spawned child now runs in the user's cwd,
+and an unresolvable program fails like the JVM.
+
+### Fixed
+
+- **Spawned children inherit the user's cwd.** A child process ran in jolt's OS
+  cwd — the repo root its launcher `cd`s to — instead of the user's cwd. A JVM
+  child inherits `user.dir`; jolt preserves the user's cwd in `JOLT_PWD`, so a
+  child now defaults to `JOLT_PWD` and a relative `:dir` resolves against it (like
+  `ProcessBuilder.directory`). Before, `(sh ["ls"])` listed the jolt repo.
+- **`System/getProperty "user.dir"` is the user's cwd.** It returned `PWD` (the
+  repo root after the launcher's `cd`); it now prefers `JOLT_PWD`, so `user.dir`
+  and spawned-child cwds agree.
+- **Missing program throws like the JVM.** `ProcessBuilder.start` resolves the
+  program before spawning and throws `IOException("…No such file or directory")`
+  when it can't be found (absolute / slash-relative file must exist; a bare name
+  must be on `PATH`), instead of letting the shell fail at `exec`.
+
 ## [0.4.4] - 2026-07-19
 
 Sub-process support: `jolt.process` (vendored babashka.process) runs over a new
