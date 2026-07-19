@@ -15,6 +15,14 @@ under Rosetta 2:
 | `hello/` (this dir — pure fns, loop/recur, reduce) | `Mach-O 64-bit executable x86_64`; output byte-identical to the native arm64 build |
 | `examples/hiccup-app` (real git dep, macros) | same — byte-identical HTML output |
 
+Additionally verified on **physical Intel hardware**: the cross-built
+`hello-x86` was transferred (sha256-matched) to an Intel MacBook Pro
+(macOS 26.5.2, x86_64) and ran natively with identical output, exit 0.
+For binaries meant for other Macs, pass
+`ARCH_FLAG="-arch x86_64 -mmacosx-version-min=11.0"` (and build the target
+kernel with the same `-mmacosx-version-min` in `CFLAGS`) — clang otherwise
+stamps the build host's OS version as the binary's minimum.
+
 `otool -L` on the produced binaries shows only macOS system libraries
 (`libSystem`, `libncurses`, `libiconv`, `Foundation`) — lz4/zlib are linked
 statically, so the binary is as self-contained as a native `jolt build` one.
