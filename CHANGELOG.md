@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-07-19
+
+Library conformance (flatland/ordered; babashka.http-client via jolt-lang/http-client),
+a proxy-over-interface fix, Maven cache invalidation, and quieter default output.
+
 ### Added
 
 - **`pr`/`pr-str` honor a user `(defmethod print-method SomeType …)`** for a
