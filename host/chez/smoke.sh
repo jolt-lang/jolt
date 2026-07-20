@@ -98,6 +98,44 @@ check '(try (load-string "(+") (catch :default e (ex-message e)))' 'EOF while re
 check_loc '(throw (ex-info "boom" {}))' 'boom'
 check_loc '(do (+ 1 1) (/ 1 0))' '  at 1:'
 
+# An unresolved symbol offers the nearest in-scope names ("did you mean?").
+check_loc '(prinltn 1)' 'did you mean'
+check_loc '(prinltn 1)' 'println'
+# A symbol with no close match gets the bare message, no spurious suggestion.
+check_loc '(zzzptqx 1)' 'Unable to resolve symbol: zzzptqx'
+
+# JOLT_DIAG=edn emits one machine-readable EDN diagnostic line (valid EDN with
+# quoted strings) carrying the structured :type/:suggestions plus source position.
+diag_out="$(JOLT_DIAG=edn $joltc -e '(prinltn 1)' 2>&1 >/dev/null)"
+if printf '%s' "$diag_out" | grep -q ':type :unresolved-symbol' \
+   && printf '%s' "$diag_out" | grep -q ':suggestions \[' \
+   && printf '%s' "$diag_out" | grep -q '"println"' \
+   && printf '%s' "$diag_out" | grep -q ':line 1'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: JOLT_DIAG=edn structured diagnostic"
+  echo "    got \`$diag_out\`"
+  fails=$((fails + 1))
+fi
+
+# JOLT_CHECK surfaces the success-type checker as located warnings; off by
+# default it must stay silent.
+chk_on="$(JOLT_CHECK=1 $joltc -e '(first 42)' 2>&1 >/dev/null)"
+if printf '%s' "$chk_on" | grep -q 'warning:' && printf '%s' "$chk_on" | grep -q 'first'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: JOLT_CHECK success-type warning"
+  echo "    got \`$chk_on\`"
+  fails=$((fails + 1))
+fi
+chk_off="$($joltc -e '(first 42)' 2>&1 >/dev/null)"
+if printf '%s' "$chk_off" | grep -q 'warning:'; then
+  echo "  FAIL: success-type warning leaked with JOLT_CHECK unset"
+  fails=$((fails + 1))
+else
+  pass=$((pass + 1))
+fi
+
 # A missing dependency required in an ns form is blamed on the requiring file,
 # not the last form of a sibling dependency that loaded first: the loader
 # restores the source position after each nested load, and a throw keeps the

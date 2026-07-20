@@ -212,13 +212,66 @@
                          (if (pair? (cdr items)) (cddr items) '()))))
             (else (for-each (lambda (x) (ce-scan-requires! x ns)) items))))))))
 
+;; --- success-type lint (RFC 0006), opt-in via JOLT_CHECK --------------------
+;; A Carp-inspired surfacing of the existing success-type checker: with JOLT_CHECK
+;; set to a truthy value, every runtime-compiled top-level form is run through
+;; jolt.passes.types/check-form and any diagnostics are printed to stderr as
+;; located warnings (file:line:col: warning: …). Off by default: zero cost, no
+;; behavior change. A checker error is swallowed — linting must never break a
+;; compile. Only runtime-compiled code is linted; clojure.core and the prelude are
+;; baked into the seed at mint time, so they are never re-checked here.
+(define jolt-check-lint?
+  (let ((e (getenv "JOLT_CHECK")))
+    (and e (fx>? (string-length e) 0) (not (jolt-trace-env-off? e)))))
+(define jolt-check-form-fn #f)
+(define jolt-check-unit #f)
+(define (jolt-check-form node)
+  (unless jolt-check-form-fn
+    (set! jolt-check-form-fn (var-deref "jolt.passes.types" "check-form"))
+    (set! jolt-check-unit ((var-deref "jolt.passes.types" "new-unit"))))
+  ;; non-strict: only the always-safe core error domains, no user-fn signature
+  ;; probing (fewer false positives for a warning-level lint).
+  (jolt-check-form-fn jolt-check-unit node #f))
+
+;; "file:line:col" / "line:col" for a diagnostic's :pos map, the top-level form's
+;; position as a fallback, or #f when neither is known.
+(define (jolt-diag-loc-string pos)
+  (let ((p (if (pmap? pos) pos (jolt-current-source))))
+    (and (pmap? p)
+         (let ((line (jolt-get p hc-kw-line jolt-nil))
+               (col  (jolt-get p hc-kw-column jolt-nil))
+               (file (jolt-get p hc-kw-file jolt-nil)))
+           (string-append
+             (if (jolt-nil? file) "" (string-append (jolt-str-render-one file) ":"))
+             (if (jolt-nil? line) "?" (number->string line)) ":"
+             (if (jolt-nil? col) "?" (number->string col)))))))
+
+(define diag-kw-pos (keyword #f "pos"))
+(define diag-kw-msg (keyword #f "msg"))
+(define (jolt-lint-node! node)
+  (when jolt-check-lint?
+    (guard (_ (#t #f))
+      (let ((diags (jolt-check-form node))
+            (port (current-error-port)))
+        (let loop ((s (jolt-seq diags)))
+          (unless (jolt-nil? s)
+            (let* ((d (seq-first s))
+                   (loc (jolt-diag-loc-string (jolt-get d diag-kw-pos jolt-nil)))
+                   (msg (jolt-get d diag-kw-msg jolt-nil)))
+              (when loc (display loc port) (display ": " port))
+              (display "warning: " port)
+              (unless (jolt-nil? msg) (display (jolt-str-render-one msg) port))
+              (newline port))
+            (loop (jolt-seq (seq-more s)))))))))
+
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
 (define (jolt-analyze-emit-form form ns)
   (ce-scan-requires! form ns)
   (let* ((ctx (make-analyze-ctx ns))
-         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx form) ctx)))
-    (jolt-ce-emit ir)))
+         (node (jolt-ce-analyze ctx form)))
+    (jolt-lint-node! node)
+    (jolt-ce-emit (jolt-ce-run-passes node ctx))))
 
 ;; --- runtime defmacro -------------------------------------------------------
 ;; Shared with emit-image.ss (loaded after this). A defmacro lowers to a def of

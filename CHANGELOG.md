@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Better compile diagnostics, borrowing a few ideas from Carp: near-miss name
+suggestions, machine-readable error output, and an opt-in success-type lint.
+
+### Added
+
+- **"Did you mean?" suggestions for an unresolved symbol.** When a bare symbol
+  doesn't resolve at the top level, the compile error now lists the closest
+  in-scope names by edit distance, drawn from the current namespace's vars,
+  `clojure.core`'s publics, and the lexical locals. `(prinltn 1)` reports
+  `Unable to resolve symbol: prinltn in this context (did you mean print, printf,
+  println?)`. A symbol with no near match still gets the bare message.
+- **Machine-readable diagnostics (`JOLT_DIAG=edn`).** With `JOLT_DIAG=edn`, an
+  uncaught error is emitted as a single line of valid EDN to stderr instead of
+  the human report, so an editor or tool can read it back. The map carries the
+  human `:message` and the source `:line`/`:column`/`:file`; an unresolved-symbol
+  error also carries structured `:type`/`:symbol`/`:suggestions`/`:ns`. The
+  underlying analyzer error now attaches that data as ex-data on the thrown
+  `ex-info`, so it is available programmatically even in the default human mode.
+- **Opt-in success-type lint (`JOLT_CHECK`).** With `JOLT_CHECK` set to a truthy
+  value, each runtime-compiled top-level form is run through the existing
+  success-type checker (RFC 0006) and any findings print to stderr as located
+  warnings, e.g. `1:10: warning: \`+\` requires a number, but argument 2 is a
+  keyword`. Off by default (zero cost, no behavior change); a checker error never
+  breaks a compile. Only runtime-compiled code is linted — `clojure.core` and the
+  prelude are baked into the seed at build time and are not re-checked.
+
 ## [0.4.8] - 2026-07-20
 
 Dependency downloads no longer shell out to `curl` — jolt fetches Maven jars over

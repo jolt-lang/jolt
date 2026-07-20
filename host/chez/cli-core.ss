@@ -19,19 +19,64 @@
       (guard (_ (#t #f)) (flush-output-port (current-error-port)))
       (apply base args))))
 
+;; --- machine-readable diagnostics (JOLT_DIAG=edn) ---------------------------
+;; When JOLT_DIAG=edn, an uncaught error is emitted as a single-line EDN map to
+;; stderr instead of the human report, so editors/tooling get structured data.
+;; An analyzer diagnostic (e.g. unresolved symbol) attaches a :jolt/error map
+;; {:type :symbol :suggestions :ns}; those fields are lifted to the top of the
+;; diagnostic, alongside the human :message and the current form's :line/:column/
+;; :file. A plain error still yields {:message ... :line ... :column ...}.
+(define diag-kw-jolt-error (keyword "jolt" "error"))
+(define diag-kw-message (keyword #f "message"))
+(define diag-kw-line (keyword #f "line"))
+(define diag-kw-column (keyword #f "column"))
+(define diag-kw-file (keyword #f "file"))
+
+(define (jolt-diag-machine?)
+  (let ((e (getenv "JOLT_DIAG")))
+    (and e (string? e) (string-ci=? e "edn"))))
+
+;; Build the EDN diagnostic map for an unwrapped throw value.
+(define (jolt-diagnostic-map v)
+  (let* ((msg (cond ((jolt-ex-info-record? v)
+                     (jolt-str-render-one (jolt-ex-info-record-message v)))
+                    ((condition? v)
+                     (with-output-to-string (lambda () (display-condition v))))
+                    (else (jolt-pr-str v))))
+         (data (and (jolt-ex-info-record? v) (jolt-ex-info-record-data v)))
+         (err (and data (pmap? data) (jolt-get data diag-kw-jolt-error jolt-nil)))
+         (base (if (and err (pmap? err)) err (jolt-hash-map)))
+         (pos (jolt-current-source))
+         (m (jolt-assoc base diag-kw-message msg)))
+    (if (pmap? pos)
+        (let ((line (jolt-get pos diag-kw-line jolt-nil))
+              (col (jolt-get pos diag-kw-column jolt-nil))
+              (file (jolt-get pos diag-kw-file jolt-nil)))
+          (let* ((m (if (jolt-nil? line) m (jolt-assoc m diag-kw-line line)))
+                 (m (if (jolt-nil? col) m (jolt-assoc m diag-kw-column col)))
+                 (m (if (jolt-nil? file) m (jolt-assoc m diag-kw-file file))))
+            m))
+        m)))
+
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
 ;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
 ;; message/ex-data/cause + a mapped Clojure backtrace come from the shared
-;; renderer (source-registry.ss); this adds the top-level source location.
+;; renderer (source-registry.ss); this adds the top-level source location. Under
+;; JOLT_DIAG=edn the human report is replaced by one EDN diagnostic line.
 (define (jolt-report-uncaught raw)
   (let ((v (jolt-unwrap-throw raw))
         (port (current-error-port)))
-    (jolt-render-throwable v port)
-    ;; The top-level form that was evaluating when this propagated (file:line:col).
-    (let ((loc (jolt-current-source-string)))
-      (when loc (display "  at " port) (display loc port) (newline port)))
-    (let ((bt (jolt-backtrace-string v)))
-      (when bt (display "  trace:\n" port) (display bt port)))
+    (if (jolt-diag-machine?)
+        ;; jolt-pr-readable, not jolt-pr-str: strings must be quoted so the line
+        ;; is valid EDN a tool can read back.
+        (begin (display (jolt-pr-readable (jolt-diagnostic-map v)) port) (newline port))
+        (begin
+          (jolt-render-throwable v port)
+          ;; The top-level form that was evaluating when this propagated (file:line:col).
+          (let ((loc (jolt-current-source-string)))
+            (when loc (display "  at " port) (display loc port) (newline port)))
+          (let ((bt (jolt-backtrace-string v)))
+            (when bt (display "  trace:\n" port) (display bt port)))))
     (exit 1)))
 
 ;; POSIX end-of-options: drop the first standalone "--" in an argv list; any

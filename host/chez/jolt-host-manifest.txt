@@ -100,6 +100,7 @@ ref-get
 ref-put!
 register-class-supers!
 register-source!
+resolvable-names
 resolve-class-hint
 resolve-global
 run-interruptible

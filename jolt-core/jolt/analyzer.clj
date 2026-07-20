@@ -31,7 +31,7 @@
                                form-ns-value? form-ns-value-name
                                form-var-value? form-var-value-ns form-var-value-name
                                unchecked-math?
-                               form-macro? form-expand-1 resolve-global
+                               form-macro? form-expand-1 resolve-global resolvable-names
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                record-type? record-ctor-key deftype-ctor-class form-position late-bind?
                                resolve-class-hint host-class-name?]]))
@@ -676,6 +676,74 @@
              (= "clojure.core" (:ns r)) (= "instance?" (:name r)))
     (var-ref "clojure.core" "instance-check")))
 
+;; --- unresolved-symbol diagnostics ("did you mean?") ------------------------
+;; A Carp-inspired touch: when a bare symbol doesn't resolve, offer the closest
+;; in-scope names by Levenshtein distance instead of a bare "unable to resolve".
+
+;; Levenshtein edit distance over two strings, computed on char vectors (jolt's
+;; strings are codepoint-modeled, so index via vec, not nth-on-string). Only ever
+;; called on the error path, so the O(la*lb) DP is fine.
+(defn- edit-distance [sa sb]
+  (let [a (vec sa) b (vec sb) la (count a) lb (count b)]
+    (cond
+      (zero? la) lb
+      (zero? lb) la
+      :else
+      (loop [i 1 prev (vec (range (inc lb)))]
+        (if (> i la)
+          (peek prev)
+          (let [ca (nth a (dec i))
+                row (reduce
+                      (fn [cur j]
+                        (let [cost (if (= ca (nth b (dec j))) 0 1)]
+                          (conj cur (min (inc (peek cur))          ; insertion
+                                         (inc (nth prev j))        ; deletion
+                                         (+ cost (nth prev (dec j))))))) ; substitution
+                      [i]
+                      (range 1 (inc lb)))]
+            (recur (inc i) row)))))))
+
+;; Distance a candidate may be from the typed name to count as a "did you mean":
+;; scales with length so a 2-char name can't match everything, and a longer name
+;; tolerates a couple of typos.
+(defn- suggest-threshold [n]
+  (cond (<= n 3) 1 (<= n 6) 2 :else 3))
+
+;; Up to 3 candidate names closest to nm within the threshold, nearest first,
+;; ties broken alphabetically for a stable message.
+(defn- suggestions-for [nm candidates]
+  (let [thr (suggest-threshold (count nm))
+        scored (filter (fn [p] (<= (second p) thr))
+                       (map (fn [c] [c (edit-distance nm c)])
+                            (remove #(= % nm) (distinct candidates))))
+        ordered (sort (fn [a b]
+                        (if (= (second a) (second b))
+                          (compare (first a) (first b))
+                          (compare (second a) (second b))))
+                      scored)]
+    (mapv first (take 3 ordered))))
+
+;; The names an unresolved symbol is matched against: everything resolvable from
+;; the compile ns (its own interns + clojure.core's publics, via the host) plus
+;; the lexical locals in scope.
+(defn- candidate-pool [ctx env]
+  (concat (seq (resolvable-names ctx)) (seq (:locals env))))
+
+;; Throw the structured "unable to resolve symbol" diagnostic. The human message
+;; keeps the JVM wording (with any suggestions appended); the ex-data carries a
+;; machine-readable :jolt/error map the CLI reporter emits as EDN under
+;; JOLT_DIAG=edn, so editors/tools get the symbol, suggestions, and ns as data.
+(defn- resolve-error [ctx nm env]
+  (let [sugg (suggestions-for nm (candidate-pool ctx env))
+        base (str "Unable to resolve symbol: " nm " in this context")
+        msg (if (seq sugg)
+              (str base " (did you mean " (apply str (interpose ", " sugg)) "?)")
+              base)]
+    (throw (ex-info msg {:jolt/error {:type :unresolved-symbol
+                                      :symbol nm
+                                      :suggestions (vec sugg)
+                                      :ns (compile-ns ctx)}}))))
+
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
@@ -718,7 +786,7 @@
                         (:recur env)
                         (seq (:locals env)))
                   (var-ref (compile-ns ctx) nm)
-                  (uncompilable (str "Unable to resolve symbol: " nm " in this context"))))))))
+                  (resolve-error ctx nm env)))))))
 
 ;; The wrapping unchecked-* name a core arithmetic op rewrites to under
 ;; *unchecked-math*, or nil. n is the full item count (head + args); unary - is a
