@@ -197,6 +197,10 @@
   {:suite "insttime" :expr "(.getTotalSeconds (ZoneOffset/ofHours 5))" :expected "18000"}
   {:suite "insttime" :expr "(str java.time.ZoneOffset/UTC)" :expected "Z"}
   {:suite "insttime" :expr "(.getId (ZoneId/of \"UTC\"))" :expected "Z"}
+  {:suite "insttime" :expr "(.toEpochMilli (Instant/parse \"2020-01-01T00:00:00Z\"))" :expected "1577836800000"}
+  {:suite "insttime" :expr "(str (Duration/ofSeconds 90))" :expected "PT1M30S"}
+  {:suite "insttime" :expr "(.getMonths (Period/of 1 2 3))" :expected "2"}
+  {:suite "insttime" :expr "(str (Year/of 2024))" :expected "2024"}
   {:suite "insttime" :expr "(.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\")" :expected "2020-03-05"}
   {:suite "insttime" :expr "(boolean (re-matches #\"[A-Z][a-z]{2} \\d{1,2}, 2020 \\d{1,2}:\\d{2} [AP]M\" (.format (DateTimeFormatter/ofPattern \"MMM d, yyyy h:mm a\") #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
   {:suite "insttime" :expr "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\" (.format DateTimeFormatter/ISO_LOCAL_DATE_TIME #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
