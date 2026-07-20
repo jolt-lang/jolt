@@ -111,6 +111,30 @@ $ bin/joltc -e '(/ 1 2)'
 1/2
 ```
 
+## Diagnostics
+
+- **"Did you mean?"** — when a bare symbol doesn't resolve, the compile error lists
+  the closest in-scope names by edit distance (current-namespace vars,
+  `clojure.core` publics, and lexical locals):
+  ```
+  $ bin/joltc -e '(prinltn 1)'
+  Unable to resolve symbol: prinltn in this context (did you mean print, printf, println?)
+  ```
+- **`JOLT_DIAG=edn`** — emit an uncaught error as a single line of valid EDN to
+  stderr (with `:message` and source `:line`/`:column`/`:file`; an unresolved
+  symbol also carries `:type`/`:symbol`/`:suggestions`/`:ns`) so an editor or tool
+  can read it back. Default output is unchanged.
+  ```
+  $ JOLT_DIAG=edn bin/joltc -e '(prinltn 1)'
+  {:type :unresolved-symbol, :symbol "prinltn", :suggestions ["print" "printf" "println"], :ns "user", :message "...", :line 1, :column 2, :file "-e"}
+  ```
+- **`JOLT_CHECK`** — opt-in success-type lint (RFC 0006): each runtime-compiled form
+  is run through the checker and findings print as located warnings, e.g.
+  `1:10: warning: `+` requires a number, but argument 2 is a keyword`. Off by
+  default (zero cost); a checker error never breaks a compile.
+- **`JOLT_DEBUG`** — verbose dependency resolution (the fetching / using-cache /
+  skipping lines that are otherwise quiet) and the host static-shim drift warning.
+
 ## REPL and editor integration
 
 ```bash
