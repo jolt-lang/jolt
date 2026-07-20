@@ -347,6 +347,24 @@
            => (lambda (dtag) (jolt-hash-map hc-kw-kind hc-kw-class hc-kw-name dtag)))
           (else (jolt-hash-map hc-kw-kind hc-kw-unresolved hc-kw-name nm))))))
 
+;; Every unqualified var name resolvable from the compile ns — the current ns's
+;; own interns plus clojure.core's publics (referred into every namespace). The
+;; analyzer matches an unresolved symbol against this pool for a "did you mean"
+;; suggestion, so it runs only on the compile-error path (a full var-table scan is
+;; fine there). Returns a jolt list of name strings; duplicates are harmless (the
+;; analyzer dedupes).
+(define (hc-resolvable-names ctx)
+  (let ((cns (chez-actx-cns ctx))
+        (acc '()))
+    (vector-for-each
+      (lambda (c)
+        (when (var-cell-defined? c)
+          (let ((ns (var-cell-ns c)))
+            (when (or (string=? ns cns) (string=? ns "clojure.core"))
+              (set! acc (cons (var-cell-name c) acc))))))
+      (hashtable-values var-table))
+    (list->cseq acc)))
+
 (define (hc-intern! ctx ns-name nm) (declare-var! ns-name nm) jolt-nil)
 
 ;; --- syntax-quote lowering ---------------------------------------------------
@@ -553,6 +571,7 @@
   (def-var! "jolt.host" "form-macro?" hc-macro?)
   (def-var! "jolt.host" "form-expand-1" hc-expand-1)
   (def-var! "jolt.host" "resolve-global" hc-resolve-global)
+  (def-var! "jolt.host" "resolvable-names" hc-resolvable-names)
   (def-var! "jolt.host" "host-class-name?" hc-host-class-name?)
   (def-var! "jolt.host" "host-intern!" hc-intern!)
   (def-var! "jolt.host" "form-syntax-quote-lower" hc-syntax-quote-lower)
