@@ -7,7 +7,48 @@ Jolt reads Clojure source, analyzes it to a host-neutral IR, emits Scheme, and
 runs it on Chez. The compiler is self-hosted: it is written in Clojure
 (`jolt-core/`) and compiles itself. It ships a Clojure-compatible standard library.
 
+## Requirements
+
+The prebuilt binaries are self-contained (runtime, compiler, and stdlib in one
+executable) and need only the base system libraries:
+
+- **Linux x86_64**: glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, RHEL 9+).
+  The installer verifies the binary runs and reports the exact glibc mismatch
+  if not.
+- **macOS arm64**: macOS 14+.
+- Anything else (Intel Mac, musl/Alpine, older glibc): build from source.
+
+Building from source needs only [Chez Scheme](https://cisco.github.io/ChezScheme/)
+(the gate invokes it as `chez`) and a C compiler. The conformance gate
+additionally uses Clojure on the JVM as an oracle, but running jolt does not.
+
+### Dependency resolution
+
+Resolving a project's `deps.edn` uses a few standard tools, each needed only for
+the coordinate types you use — a dependency that can't be fetched is skipped, never
+fatal:
+
+- **Git deps** (`:git/url` + `:git/sha`) need `git` on `PATH`. `:git/url` may be
+  omitted when the lib name encodes a host, as in tools.deps — e.g.
+  `io.github.OWNER/REPO` clones from GitHub.
+- **Maven deps** (`:mvn/version`) are downloaded over HTTPS by jolt itself (no
+  `curl`), using the system **OpenSSL** (`libssl`/`libcrypto`) via FFI, and
+  extracted with `unzip`. A jar already in `~/.m2/repository` is reused with no
+  download.
+  - **macOS**: `brew install openssl@3` — jolt loads the Homebrew copy; the
+    protected system `/usr/lib` OpenSSL can't be loaded into a non-Apple binary.
+    `git`/`unzip` come with the Xcode command-line tools.
+  - **Linux**: the distro `libssl3`/`libcrypto3` (or `libssl`/`libcrypto`) packages,
+    plus `git` and `unzip`.
+  - **Windows**: [Git for Windows](https://git-scm.com/download/win) supplies `git`,
+    the OpenSSL DLLs (`libssl-3-x64.dll`/`libcrypto-3-x64.dll`), and `unzip`; run
+    `joltc` from a shell with those on `PATH`.
+
 ## Install
+
+**If you are using an Intel Mac, musl/Alpine, or an older glibc, the prebuilt
+binaries below are not supported. Build from source instead — see
+[Build](#build).**
 
 Grab the self-contained `joltc` binary (Linux/macOS/Windows) — it bundles the
 runtime, compiler, and standard library, so there is nothing else to install.
@@ -31,41 +72,6 @@ curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash
 
 Then `joltc -e '(+ 1 2)'`. To run from source instead (needs Chez), see
 [Build](#build).
-
-## Requirements
-
-The prebuilt binaries are self-contained (runtime, compiler, and stdlib in one
-executable) and need only the base system libraries:
-
-- **Linux x86_64**: glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, RHEL 9+).
-  The installer verifies the binary runs and reports the exact glibc mismatch
-  if not.
-- **macOS arm64**: macOS 14+.
-- Anything else (Intel Mac, musl/Alpine, older glibc): build from source.
-
-Building from source needs only [Chez Scheme](https://cisco.github.io/ChezScheme/)
-(the gate invokes it as `chez`) and a C compiler. The conformance gate
-additionally uses Clojure on the JVM as an oracle, but running jolt does not.
-
-### Dependency resolution
-
-Resolving a project's `deps.edn` uses a few standard tools, each needed only for
-the coordinate types you use — a dependency that can't be fetched is skipped, never
-fatal:
-
-- **Git deps** (`:git/url`) need `git` on `PATH`.
-- **Maven deps** (`:mvn/version`) are downloaded over HTTPS by jolt itself (no
-  `curl`), using the system **OpenSSL** (`libssl`/`libcrypto`) via FFI, and
-  extracted with `unzip`. A jar already in `~/.m2/repository` is reused with no
-  download.
-  - **macOS**: `brew install openssl@3` — jolt loads the Homebrew copy; the
-    protected system `/usr/lib` OpenSSL can't be loaded into a non-Apple binary.
-    `git`/`unzip` come with the Xcode command-line tools.
-  - **Linux**: the distro `libssl3`/`libcrypto3` (or `libssl`/`libcrypto`) packages,
-    plus `git` and `unzip`.
-  - **Windows**: [Git for Windows](https://git-scm.com/download/win) supplies `git`,
-    the OpenSSL DLLs (`libssl-3-x64.dll`/`libcrypto-3-x64.dll`), and `unzip`; run
-    `joltc` from a shell with those on `PATH`.
 
 ## Build
 

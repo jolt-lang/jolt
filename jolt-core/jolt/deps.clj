@@ -210,17 +210,66 @@
                            (re-matches #"[0-9A-Za-z.\-]+" v))]
             [(symbol g a) {:mvn/version v}]))))))
 
+;; --- git URL inference ------------------------------------------------------
+;; tools.deps lets a git coordinate omit :git/url when the lib name encodes a
+;; known host: `io.github.OWNER/REPO` resolves to https://github.com/OWNER/REPO.git,
+;; and similarly for GitLab, Bitbucket, and Sourcehut. jolt honors the same
+;; convention so a deps.edn copied from a tools.deps project resolves unchanged.
+;; See https://clojure.org/reference/deps_edn#deps_git.
+(def ^:private git-url-hosts
+  ;; [namespace-prefix  url-prefix  url-suffix] — the URL is
+  ;; url-prefix + OWNER + "/" + REPO + url-suffix, where OWNER is the coordinate
+  ;; namespace with its host prefix stripped and REPO is the coordinate name.
+  [["io.github."    "https://github.com/"    ".git"]
+   ["com.github."   "https://github.com/"    ".git"]
+   ["io.gitlab."    "https://gitlab.com/"    ".git"]
+   ["com.gitlab."   "https://gitlab.com/"    ".git"]
+   ["io.bitbucket."  "https://bitbucket.org/" ".git"]
+   ["org.bitbucket." "https://bitbucket.org/" ".git"]
+   ;; Sourcehut lib names carry the leading ~ in the owner, e.g. ht.sr.~owner/repo,
+   ;; so stripping "ht.sr." leaves "~owner" and no .git suffix is used.
+   ["ht.sr."        "https://git.sr.ht/"     ""]])
+
+(defn- infer-git-url
+  "The git clone URL a coordinate's lib name implies via the tools.deps host
+  convention (io.github.OWNER/REPO -> https://github.com/OWNER/REPO.git), or nil
+  when the namespace names no known host."
+  [coord]
+  (when-let [ns (namespace coord)]
+    (some (fn [[prefix url-prefix url-suffix]]
+            (when (str/starts-with? ns prefix)
+              (str url-prefix (subs ns (count prefix)) "/" (name coord) url-suffix)))
+          git-url-hosts)))
+
 ;; --- coordinate -> root dir -------------------------------------------------
+(defn- git-coord? [spec]
+  (or (:git/url spec) (:git/sha spec) (:git/tag spec)))
+
 (defn- coord-root
   "The on-disk root directory for one dependency coordinate, or nil to skip."
   [coord spec base-dir]
   (cond
     (:local/root spec) (abspath base-dir (:local/root spec))
-    (and (:git/url spec) (:git/sha spec))
-    (let [checkout (ensure-git coord (:git/url spec) (:git/sha spec))]
-      (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
-    (:git/url spec)
-    (throw (ex-info (str "git dep " coord " needs :git/sha") {:coord coord :spec spec}))
+    ;; a git coordinate: an explicit :git/url, else one inferred from the lib name
+    ;; (io.github.OWNER/REPO, …). The :git/sha is what gets checked out; a :git/tag
+    ;; without a sha isn't enough to pin a commit, so it's reported as incomplete.
+    (git-coord? spec)
+    (let [git-url (or (:git/url spec) (infer-git-url coord))]
+      (cond
+        (and git-url (:git/sha spec))
+        (let [checkout (ensure-git coord git-url (:git/sha spec))]
+          (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
+        (not git-url)
+        (throw (ex-info
+                 (str "git dep " coord " has no :git/url and none could be inferred "
+                      "from its lib name. Add :git/url, or name the coordinate after "
+                      "its host, e.g. io.github.OWNER/REPO for a GitHub repo.")
+                 {:coord coord :spec spec}))
+        :else
+        (throw (ex-info
+                 (str "git dep " coord " needs :git/sha (the full commit SHA to check "
+                      "out)" (when (:git/tag spec) " — a :git/tag alone doesn't pin a commit") ".")
+                 {:coord coord :spec spec}))))
     (:jolt/module spec)
     (do (info "skipping janet dependency " coord " (:jolt/module is obsolete on Chez)") nil)
     ;; jolt IS Clojure — a dependency on org.clojure/clojure is satisfied
@@ -236,8 +285,15 @@
     ;; a coordinate that is none of git / mvn / local / module — a typo or an
     ;; unsupported spec. Silently dropping it hides a real problem (a namespace
     ;; missing at runtime), so this stays an unconditional warn, unlike the
-    ;; expected-and-obsolete :jolt/module skip above.
-    (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)) nil)))
+    ;; expected-and-obsolete :jolt/module skip above. The message names the
+    ;; coordinate shapes jolt understands so the fix is obvious from the warning.
+    (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)
+              "\n  a dependency needs one of:"
+              "\n    {:mvn/version \"1.2.3\"}                              a Maven artifact"
+              "\n    {:git/url \"https://…\" :git/sha \"<full-sha>\"}       an explicit git repo"
+              "\n    {:git/sha \"<full-sha>\"} on io.github.OWNER/REPO     a git repo by host-prefixed name"
+              "\n    {:local/root \"../path\"}                             a directory on disk")
+        nil)))
 
 (defn- has-clj-source?
   "Does the tree hold any jolt-loadable source (.clj/.cljc)? A Maven JAR that is
@@ -372,8 +428,9 @@
     (add-deps '{:deps {org.clojure/data.json {:mvn/version \"2.5.0\"}}})
     (require '[clojure.data.json :as json])
 
-  Coordinates: :git/url + :git/sha, :local/root (resolved against JOLT_PWD),
-  and :mvn/version (JAR source fetched from Clojars, then Central). A top-level
+  Coordinates: :git/url + :git/sha (:git/url may be omitted when the lib name
+  names a host, e.g. io.github.OWNER/REPO), :local/root (resolved against
+  JOLT_PWD), and :mvn/version (JAR source fetched from Clojars, then Central). A top-level
   :mvn/local-repo in the map relocates the Maven repository for this call,
   like the deps.edn key. New roots
   are appended AFTER the current roots, so an added dep can never shadow a
