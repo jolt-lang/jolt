@@ -191,6 +191,60 @@
 ;; and writes; default false. Pre-seed the cell so a read before any write works.
 (vector-set! (mutable-static-cell "clojure.lang.RT" "checkSpecAsserts" #t) 0 #f)
 
+;; ---- autoload the java.time base on first use -------------------------------
+;; Core carries a portable base java.time API (jolt.time.base and the namespaces
+;; it requires) that must resolve with NO explicit require. stdlib Clojure loads
+;; lazily and only the Scheme runtime runs at boot, so the base is exposed by
+;; autoloading on first use: when interop resolves an unregistered class under the
+;; `java.time.` package, load the base once and retry the lookup. Date-free
+;; programs never trigger it, so they pay nothing (RFC 0008). The zone/locale
+;; layer (ZonedDateTime, OffsetDateTime, named-zone ZoneId ops) is NOT in the base
+;; — it lives in jolt-lang/time; after the base loads, an unresolved `java.time.`
+;; class means that library isn't loaded, which unknown-class-message names.
+;; A java.time class token arrives fully qualified (java.time.LocalDate) or as a
+;; short name (LocalDate) — jolt has no import map, so both reach here and both
+;; must trigger the autoload. Recognize the `java.time.` prefix plus the base +
+;; zone-layer short names. (A user class colliding with one of these common names
+;; would autoload the harmless base and then still resolve normally; the base only
+;; registers under the java.time names.)
+(define jt-short-names
+  '("Instant" "LocalDate" "LocalTime" "LocalDateTime" "Duration" "Period"
+    "Year" "YearMonth" "MonthDay" "Month" "DayOfWeek" "ChronoUnit" "ChronoField"
+    "ValueRange" "TemporalAdjusters" "DateTimeFormatter" "FormatStyle"
+    "ZoneOffset" "ZoneId" "ZonedDateTime" "OffsetDateTime" "OffsetTime" "Clock"))
+(define jt-base-autoload-done #f)
+(define (java-time-class? class)
+  (or (and (>= (string-length class) 10)
+           (string=? (substring class 0 10) "java.time."))
+      (and (member class jt-short-names) #t)))
+
+;; After the base autoloads, an unresolved java.time class is a zone/locale-layer
+;; class that lives in jolt-lang/time, not core (RFC 0008). The base classes now
+;; resolve, so the hint only fires for the classes that genuinely need the library
+;; (ZonedDateTime, OffsetDateTime, OffsetTime, Clock) — name the dependency rather
+;; than leaving a bare "Unknown class".
+(define jt-library-names
+  '("ZonedDateTime" "java.time.ZonedDateTime"
+    "OffsetDateTime" "java.time.OffsetDateTime"
+    "OffsetTime" "java.time.OffsetTime"
+    "Clock" "java.time.Clock"))
+(define (unknown-class-message class)
+  (if (member class jt-library-names)
+      (string-append class " is provided by the jolt-lang/time library, not core "
+                     "(RFC 0008). Add io.github.jolt-lang/time to your deps.edn.")
+      (string-append "Unknown class " class)))
+;; Load the core base once, on the first `java.time.` miss. The latch is set
+;; BEFORE the load so a self-referential static call while the base is loading
+;; cannot recurse into another autoload attempt (load-namespace marks a namespace
+;; loaded before evaluating its body). Returns #t only when it performed the load,
+;; so the caller retries the lookup exactly once.
+(define (jt-try-autoload! class)
+  (and (not jt-base-autoload-done)
+       (java-time-class? class)
+       (begin (set! jt-base-autoload-done #t)
+              (load-namespace "jolt.time.base")
+              #t)))
+
 ;; ---- emit entry points ------------------------------------------------------
 (define (host-static-ref class member)
   (let ((cell (mutable-static-cell class member #f)))
@@ -200,7 +254,10 @@
           (if h
               (let ((v (hashtable-ref h member #f)))
                 (if v v (throw-jvm (quote IllegalArgumentException) (string-append "No matching field or method: " class "/" member))))
-              (throw-jvm (quote IllegalArgumentException) (string-append "Unknown class " class)))))))
+              ;; class miss — autoload the java.time base and retry once, else throw
+              (if (jt-try-autoload! class)
+                  (host-static-ref class member)
+                  (throw-jvm (quote IllegalArgumentException) (unknown-class-message class))))))))
 
 (define (host-static-call class member . args)
   (apply (host-static-ref class member) args))
@@ -209,6 +266,9 @@
   (let ((ctor (lookup-class class-ctors-tbl class)))
     (cond
       (ctor (apply ctor args))
+      ;; a java.time. constructor may live in the not-yet-loaded base — autoload
+      ;; and retry once before falling through to the var / no-ctor paths.
+      ((jt-try-autoload! class) (apply host-new class args))
       ;; deftype/defrecord: the type name is bound as a VAR (the
       ;; make-deftype-ctor closure) in its defining ns, not a registered host class.
       ;; Resolve it in the current ns / clojure.core and invoke it — so (P. args)
