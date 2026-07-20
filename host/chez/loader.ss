@@ -415,10 +415,20 @@
 ;; On a miss: run the capture load (which also evals the ns into the running
 ;; image), then fasl the captured Scheme. A compile-file failure is non-fatal —
 ;; the ns is already loaded; we just skip caching this run and miss again next.
+;; mkdir -p without a subprocess. The built Windows joltc runs jolt-sh via
+;; cmd.exe, where `mkdir -p <forward/slash/path>` is invalid syntax, so the
+;; cache dir was never created and open-output-file failed. Native mkdir +
+;; path-parent recursion is portable (mirrors build.ss bld-mkdir-p).
+(define (aot-mkdir-p dir)
+  (unless (or (string=? dir "") (string=? dir "/") (string=? dir ".") (file-exists? dir))
+    (aot-mkdir-p (path-parent dir))
+    ;; tolerate the benign race (created concurrently); re-raise a real failure.
+    (guard (e (#t (unless (file-exists? dir) (raise e))))
+      (mkdir dir))))
 (define (aot-compile-and-cache name file src base)
   (let ((scm (string-append base ".scm"))
         (so  (string-append base ".so")))
-    (jolt-sh (string-append "mkdir -p " (sh-quote (path-parent base))))
+    (aot-mkdir-p (path-parent base))
     (let ((captured (aot-capture-load file src)))
       (when (and (string? captured) (fx>? (string-length captured) 0))
         (let ((out (open-output-file scm 'replace)))
