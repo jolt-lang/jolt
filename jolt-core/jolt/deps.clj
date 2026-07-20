@@ -12,7 +12,7 @@
   :mvn/local-repo in deps.edn relocates it like tools.deps, JOLT_LOCAL_REPO
   overrides from the environment) shared with the JVM toolchain in both
   directions. Maven jars are fetched by jolt itself over HTTPS (jolt.mvn-http);
-  git/unzip still shell out through jolt.host/sh. Nothing here touches the JVM."
+  git and unzip still shell out through jolt.host/sh (nothing here touches the JVM)."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [jolt.mvn-http :as http]))
