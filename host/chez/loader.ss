@@ -383,7 +383,14 @@
                      (char=? c #\-) (char=? c #\.) (char=? c #\_))
                  c #\_)))
          (string->list s))))
-;; length (hex) + content hash (equal-hash, hex). length is a cheap collision guard.
+;; length (hex) + content hash (equal-hash, 32-bit, hex). The length prefix is a
+;; cheap collision guard: two sources must share BOTH byte length AND the 32-bit
+;; hash to collide and falsely share a fasl — astronomically unlikely for distinct
+;; library sources. equal-hash is process-STABLE (not randomized), so the key is
+;; reproducible across runs (required for the cache to hit). A full content digest
+;; would need a bytevector hash jolt doesn't expose cheaply; this is the accepted
+;; tradeoff. (A collision would load wrong compiled code — the worst case — but
+;; the length guard + 32-bit hash put it far below other realistic failure rates.)
 (define (aot-cache-key src)
   (string-append (number->string (string-length src) 16) "-"
                  (number->string (equal-hash src) 16)))
@@ -424,6 +431,20 @@
             (compile-file scm so)))
         (unless (file-exists? so)
           (aot-info (string-append "no .so produced for " name)))))))
+;; A truncated/corrupt .so (a killed process left a partial write, or a concurrent
+;; joltc is mid-write) would make `load` throw. Fall back to recompile: delete the
+;; bad files so the miss path rebuilds them. Safe because a truncated fasl fails at
+;; its header before any top-level define runs, so the image carries no half-loaded
+;; state from the failed load. Non-fatal — a repeated failure just misses every run.
+(define (aot-safe-load-or-recompile name file src base)
+  (let ((so (string-append base ".so")))
+    (guard (e (else
+                (aot-info (string-append "corrupt cache for " name ", recompiling"))
+                (delete-file so #f)           ; best-effort; ignore if already gone
+                (let ((scm (string-append base ".scm")))
+                  (delete-file scm #f))
+                (aot-compile-and-cache name file src base)))
+      (load so))))
 ;; Dispatch for load-namespace*: cache hit (load .so) / miss (compile+cache) /
 ;; bypass (plain load). `file` is the resolved on-disk path. force? (:reload) and
 ;; ldr-reload-all? bypass entirely — live editing must win over a stale cache.
@@ -435,7 +456,8 @@
                                   (aot-cache-sanitize name) "-" (aot-cache-key src)))
              (so (string-append base ".so")))
         (if (file-exists? so)
-            (begin (aot-info (string-append "hit " name)) (load so))
+            (begin (aot-info (string-append "hit " name))
+                   (aot-safe-load-or-recompile name file src base))
             (begin (aot-info (string-append "miss " name))
                    (aot-compile-and-cache name file src base))))
       (load-jolt-file file)))

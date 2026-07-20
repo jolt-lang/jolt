@@ -177,6 +177,29 @@ else
   echo "FAIL: (i) install-owned clojure.set produced $n_i cache files (expected 0)"; fails=$((fails+1))
 fi
 
+# --- (j) corrupt cache file is recovered, not fatal --------------------------
+# A truncated/garbage .so (killed process, concurrent mid-write) must fall back
+# to recompile and still produce correct output — not crash the program. Populate
+# the cache with a good entry, then overwrite the .so with garbage and run.
+j="$tmp/j"; mkdir -p "$j/src/mylib"
+printf '(ns mylib.core)\n(defn answer [] 42)\n' > "$j/src/mylib/core.clj"
+jrun() {
+  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "
+    (require 'jolt.deps) (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$j\"}}})
+    (require 'mylib.core) (println (mylib.core/answer))" 2>/dev/null | tail -1
+}
+# cold: populate
+jrun >/dev/null 2>&1
+# corrupt every cached .so
+find "$cache" -name '*.so' -exec sh -c 'printf "GARBAGE-NOT-FASL" > "$1"' sh {} \;
+jout="$(jrun)"
+jso_after="$(count_cache_files)"
+if [ "$jout" = "42" ] && [ "$jso_after" -ge 1 ]; then
+  echo "PASS: (j) corrupt cache recovered, output=42, rebuilt .so"; pass=$((pass+1))
+else
+  echo "FAIL: (j) corrupt cache: output='$jout' .so-after=$jso_after (expected 42, >=1 rebuilt)"; fails=$((fails+1))
+fi
+
 # Phase 4 (cold-vs-warm speedup) lives in aot-cache-perf.sh — a timing
 # measurement doesn't belong in this deterministic correctness gate.
 

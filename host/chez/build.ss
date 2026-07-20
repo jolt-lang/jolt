@@ -245,25 +245,24 @@
     (image . "(load \"host/chez/seed/image.ss\")")
     (compile-eval . "(load \"host/chez/compile-eval.ss\")")))
 
-;; A single-line top-level `(load "PATH")` -> PATH, else #f.
-;; Bounded: each quote scan checks end-of-string; a missing quote raises
-;; a clear build error naming the offending line instead of blowing up with
-;; an opaque string-ref index-out-of-range.
+;; A single-line top-level `(load "PATH")` -> PATH, else #f. Only STRING-LITERAL
+;; loads count (a `(load so)` runtime form must not be mistaken for a manifest
+;; directive — it once tripped this into an error branch referencing an unbound
+;; `die`). Bounded: each quote scan checks end-of-string; a missing close quote
+;; yields #f (line not a recognized directive) rather than a crash.
 (define (bld-load-path line)
   (let ((s (let trim ((i 0) (n (string-length line)))
              (if (and (< i n) (memv (string-ref line i) '(#\space #\tab)))
                  (trim (+ i 1) n)
                  (if (< i n) (substring line i n) "")))))
-    (and (>= (string-length s) 7)
+    (and (>= (string-length s) 8)                 ; "(load \"" minimum
          (string=? (substring s 0 6) "(load ")
+         (char=? (string-ref s 6) #\")            ; only string-literal loads
          (let ((end (string-length s)))
-           (let* ((q1 (let scan ((i 6))
-                        (if (>= i end) (die 'build-app "unterminated load quote" (list line))
-                            (if (char=? (string-ref s i) #\") i (scan (+ i 1))))))
-                  (q2 (let scan ((i (+ q1 1)))
-                        (if (>= i end) (die 'build-app "unterminated second load quote" (list line))
-                            (if (char=? (string-ref s i) #\") i (scan (+ i 1)))))))
-             (substring s (+ q1 1) q2))))))
+           (let ((q2 (let scan ((i 7))
+                       (if (>= i end) #f
+                           (if (char=? (string-ref s i) #\") i (scan (+ i 1)))))))
+             (and q2 (substring s 7 q2)))))))
 
 ;; runtime source for PATH: from the binary's embedded store if present (a
 ;; self-contained joltc building an app, with no jolt checkout on disk), else read
