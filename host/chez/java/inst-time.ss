@@ -433,10 +433,11 @@
 (register-class-ctor! "java.util.Date" date-ctor)
 (register-class-ctor! "Timestamp" date-ctor)
 (register-class-ctor! "java.sql.Timestamp" date-ctor)
-;; Date/from(Instant) -> a java.util.Date at the instant's epoch-ms.
-(let ((date-statics (list (cons "from" (lambda (inst) (make-jinst (ms->exact (ms-of inst))))))))
-  (register-class-statics! "Date" date-statics)
-  (register-class-statics! "java.util.Date" date-statics))
+;; Date/from(Instant) is owned by the base java.time (stdlib/jolt/time/instant.clj):
+;; it takes a java.time.Instant, so the base — which defines Instant — is loaded
+;; whenever it is reachable, and it converts through (java.util.Date. ms) back to a
+;; jinst here. (A Scheme copy would need ms-of to understand the base Instant, which
+;; it deliberately does not; the base owns the whole java.time side.)
 ;; java.sql.Date: a distinct class from java.util.Date (a "sql-date" jhost over
 ;; epoch-ms) so a protocol extended to both routes a sql.Date to its own impl.
 ;; (Date. year-1900 month0 day) builds UTC midnight of that civil date; valueOf
