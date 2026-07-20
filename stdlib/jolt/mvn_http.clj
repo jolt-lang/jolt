@@ -82,7 +82,32 @@
 (ffi/defcfn c-send        "send"        [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-getaddrinfo "getaddrinfo" [:pointer :pointer :pointer :pointer] :int :blocking)
 (ffi/defcfn c-freeaddrinfo "freeaddrinfo" [:pointer] :void)
+(ffi/defcfn c-setsockopt  "setsockopt"  [:int :int :int :pointer :int] :int)
 (ffi/defcfn c-WSAStartup  "WSAStartup"  [:int :pointer] :int)     ; Windows Winsock init
+
+;; SO_RCVTIMEO/SO_SNDTIMEO bound every blocking socket call so a stalled or
+;; malicious repo can't wedge dependency resolution forever (a timed-out recv
+;; returns -1 -> recv-bytes throws -> fetch returns false). Levels/names differ by
+;; platform; the option value is a struct timeval (POSIX, 16 bytes LP64) or a
+;; DWORD of milliseconds (Windows).
+(def ^:private sol-socket   (if (or macos? windows?) 0xffff 1))
+(def ^:private so-rcvtimeo  (if (or macos? windows?) 0x1006 20))
+(def ^:private so-sndtimeo  (if (or macos? windows?) 0x1005 21))
+(def ^:private socket-timeout-ms 30000)
+
+(defn- set-timeouts! [fd ms]
+  (if windows?
+    (let [buf (ffi/alloc 4)]
+      (ffi/write buf :int 0 ms)
+      (c-setsockopt fd sol-socket so-rcvtimeo buf 4)
+      (c-setsockopt fd sol-socket so-sndtimeo buf 4)
+      (ffi/free buf))
+    (let [tv (ffi/alloc 16)]
+      (ffi/write tv :long 0 (quot ms 1000))
+      (ffi/write tv :long 8 (* (rem ms 1000) 1000))
+      (c-setsockopt fd sol-socket so-rcvtimeo tv 16)
+      (c-setsockopt fd sol-socket so-sndtimeo tv 16)
+      (ffi/free tv))))
 
 ;; struct addrinfo field offsets. Both macOS and Win64 place ai_addr at 32
 ;; (ai_canonname before it); Linux packs ai_addr at 24.
@@ -122,8 +147,9 @@
                       fd (c-socket fam sockt proto)]
                   (cond
                     (neg? fd) (recur (ffi/read ai :pointer O-ai-next))
-                    (zero? (c-connect fd addr addrlen)) fd
-                    :else (do (c-close fd) (recur (ffi/read ai :pointer O-ai-next)))))))
+                    (zero? (c-connect fd addr addrlen)) (do (set-timeouts! fd socket-timeout-ms) fd)
+                    :else (do (if windows? (c-closesocket fd) (c-close fd))
+                              (recur (ffi/read ai :pointer O-ai-next)))))))
             (finally (c-freeaddrinfo res)))))
       (finally (ffi/free node) (ffi/free service) (ffi/free respp) (ffi/free hints)))))
 
@@ -160,6 +186,8 @@
 (def ^:private BIO-PENDING 10)
 (def ^:private SET-TLSEXT-HOSTNAME 55)
 (def ^:private NAMETYPE-host-name 0)
+(def ^:private SET-MIN-PROTO-VERSION 123)
+(def ^:private TLS1_2-VERSION 0x0303)
 (def ^:private ssl-chunk 16384)
 
 (ffi/defcfn c-TLS-client-method "TLS_client_method" [] :pointer)
@@ -176,6 +204,7 @@
 (ffi/defcfn c-SSL-write          "SSL_write"          [:pointer :pointer :int] :int)
 (ffi/defcfn c-SSL-get-error      "SSL_get_error"      [:pointer :int] :int)
 (ffi/defcfn c-SSL-ctrl           "SSL_ctrl"           [:pointer :int :int64 :pointer] :int64)
+(ffi/defcfn c-SSL-CTX-ctrl       "SSL_CTX_ctrl"       [:pointer :int :int64 :pointer] :int64)
 (ffi/defcfn c-SSL-shutdown       "SSL_shutdown"       [:pointer] :int)
 (ffi/defcfn c-SSL-set1-host      "SSL_set1_host"      [:pointer :pointer] :int)
 (ffi/defcfn c-BIO-new            "BIO_new"            [:pointer] :pointer)
@@ -262,28 +291,47 @@
 (defn- tls-connect
   "Open a verified TLS client connection to host:port."
   [host port]
-  (let [ctx (c-SSL-CTX-new (c-TLS-client-method))]
-    (when (ffi/null? ctx) (throw (ex-info "SSL_CTX_new failed" {})))
-    (c-SSL-CTX-default-verify ctx)
-    (c-SSL-CTX-set-verify ctx VERIFY-PEER ffi/null)
-    (let [ssl (c-SSL-new ctx)
-          rbio (c-BIO-new (c-BIO-s-mem))
-          wbio (c-BIO-new (c-BIO-s-mem))
-          host-buf (cstr host)]
-      (c-SSL-set-bio ssl rbio wbio)
-      (c-SSL-set-connect ssl)
-      (c-SSL-ctrl ssl SET-TLSEXT-HOSTNAME NAMETYPE-host-name host-buf) ; SNI
-      (c-SSL-set1-host ssl host-buf)                                   ; hostname check
-      (ffi/free host-buf)
-      (let [sock (connect host port)
-            st {:sock sock :ssl ssl :ctx ctx :rbio rbio :wbio wbio}]
-        (try (handshake! st)
-             (catch :default e (tls-close st) (throw e)))
-        st))))
+  ;; Open the socket FIRST: connect throws on DNS/refused (the common failure),
+  ;; and doing it before any OpenSSL allocation means that path leaks nothing.
+  (let [sock (connect host port)
+        ctx  (c-SSL-CTX-new (c-TLS-client-method))]
+    (when (ffi/null? ctx)
+      (close-sock sock)
+      (throw (ex-info "SSL_CTX_new failed" {})))
+    (let [ssl  (c-SSL-new ctx)]
+      (when (ffi/null? ssl)
+        (c-SSL-CTX-free ctx) (close-sock sock)
+        (throw (ex-info "SSL_new failed" {})))
+      (let [rbio (c-BIO-new (c-BIO-s-mem))
+            wbio (c-BIO-new (c-BIO-s-mem))
+            st   {:sock sock :ssl ssl :ctx ctx :rbio rbio :wbio wbio}]
+        ;; Hand the BIOs to the SSL up front — SSL_free then owns and frees them,
+        ;; so tls-close in the catch below reclaims everything.
+        (c-SSL-set-bio ssl rbio wbio)
+        (try
+          (when (zero? (c-SSL-CTX-default-verify ctx))
+            (throw (ex-info "no CA trust store (SSL_CTX_set_default_verify_paths)" {})))
+          (c-SSL-CTX-set-verify ctx VERIFY-PEER ffi/null)
+          (c-SSL-CTX-ctrl ctx SET-MIN-PROTO-VERSION TLS1_2-VERSION ffi/null) ; TLS >= 1.2
+          (c-SSL-set-connect ssl)
+          (let [host-buf (cstr host)]
+            (try
+              (c-SSL-ctrl ssl SET-TLSEXT-HOSTNAME NAMETYPE-host-name host-buf) ; SNI
+              (when-not (= 1 (c-SSL-set1-host ssl host-buf))                   ; hostname check
+                (throw (ex-info "SSL_set1_host failed" {})))
+              (finally (ffi/free host-buf))))
+          (handshake! st)
+          st
+          (catch :default e (tls-close st) (throw e)))))))
 
 ;; --- HTTP/1.1 request/response ---
 (defn- jolt-version []
   (or (System/getProperty "jolt.version") "jolt"))
+
+;; A CR, LF, or NUL in a URL would let a crafted :mvn/version or a server
+;; redirect Location inject a second request line / header (request smuggling).
+(defn- ctl-free? [s]
+  (not-any? (fn [c] (or (= c \return) (= c \newline) (= c (char 0)))) s))
 
 (defn- parse-url
   "https://host[:port]/path[?query] -> {:host :port :path}. HTTPS only."
@@ -295,12 +343,13 @@
           slash (str/index-of after "/")
           authority (if slash (subs after 0 slash) after)
           path (if slash (subs after slash) "/")
-          colon (str/index-of authority ":")]
+          colon (str/index-of authority ":")
+          host (if colon (subs authority 0 colon) authority)]
+      (when-not (and (ctl-free? host) (ctl-free? path))
+        (throw (ex-info "jolt.mvn-http: control character in URL" {:url s})))
       (if colon
-        {:host (subs authority 0 colon)
-         :port (or (parse-long (subs authority (inc colon))) 443)
-         :path path}
-        {:host authority :port 443 :path path}))))
+        {:host host :port (or (parse-long (subs authority (inc colon))) 443) :path path}
+        {:host host :port 443 :path path}))))
 
 (defn- build-request [host port path]
   (let [host-hdr (if (= port 443) host (str host ":" port))]
@@ -382,35 +431,57 @@
                                [(str/trim (subs line 0 c)) (str/trim (subs line (inc c)))]))
                            (rest lines)))
           te (header-ci pairs "transfer-encoding")
-          body (if (and te (str/includes? (str/lower-case te) "chunked"))
-                 (dechunk body-ba) body-ba)]
-      {:status status :header-pairs pairs :body body})))
+          chunked? (and te (str/includes? (str/lower-case te) "chunked"))
+          body (if chunked? (dechunk body-ba) body-ba)
+          clen (when-let [c (header-ci pairs "content-length")] (parse-long (str/trim c)))]
+      {:status status :header-pairs pairs :body body
+       ;; a Content-Length only frames a non-chunked body; used to reject a
+       ;; truncated download (a mid-body TLS drop reads as a short clean EOF).
+       :content-length (when-not chunked? clen)})))
 
+;; Resolve a redirect Location against the current base, HTTPS only. A redirect
+;; to plain http:// is a downgrade and is refused outright (returns nil) rather
+;; than silently followed — defense in depth, independent of parse-url.
 (defn- resolve-location [base loc]
   (let [host-port (str (:host base)
                        (when-not (= (:port base) 443) (str ":" (:port base))))]
     (cond
+      (str/starts-with? loc "http://")  nil
       (str/starts-with? loc "//")       (str "https:" loc)
       (str/starts-with? loc "https://") loc
-      (str/starts-with? loc "http://")  loc
       (str/starts-with? loc "/")        (str "https://" host-port loc)
       :else                             (str "https://" host-port "/" loc))))
 
+;; Write via a temp file + atomic rename so a crash/partial write never leaves a
+;; corrupt jar at the final path (which deps.clj would then trust and never
+;; re-fetch).
 (defn- write-bytes-to-file [path ba]
-  (doto (java.io.FileOutputStream. path) (.write ba) (.close)))
+  (let [tmp (str path ".part")]
+    (doto (java.io.FileOutputStream. tmp) (.write ba) (.close))
+    (let [t (java.io.File. tmp) f (java.io.File. path)]
+      (.delete f)
+      (when-not (.renameTo t f)
+        (.delete t)
+        (throw (ex-info "rename of downloaded file failed" {:path path}))))))
 
 (def ^:private max-redirects 5)
+(def ^:private redirect-codes #{301 302 303 307 308})
 
 (defn- fetch-once [url out-path]
   (let [{:keys [host port path]} (parse-url url)
         st (tls-connect host port)]
     (try
       (tls-write st (.getBytes (build-request host port path) "UTF-8"))
-      (let [{:keys [status header-pairs body]} (parse-response (recv-all st))]
+      (let [{:keys [status header-pairs body content-length]} (parse-response (recv-all st))
+            loc (header-ci header-pairs "location")]
         (cond
-          (and (#{301 302 307 308} status) (header-ci header-pairs "location"))
-          {:redirect (resolve-location {:host host :port port}
-                                        (header-ci header-pairs "location"))}
+          (and (redirect-codes status) loc)
+          {:redirect (resolve-location {:host host :port port} loc)}
+          ;; a Content-Length that disagrees with the body we read means the
+          ;; transfer was cut short — treat it as a failure, don't write a
+          ;; truncated jar.
+          (and (<= 200 status 299) content-length (not= content-length (alength body)))
+          {:result false}
           (<= 200 status 299) (do (write-bytes-to-file out-path body) {:result true})
           :else {:result false}))
       (finally (tls-close st)))))
