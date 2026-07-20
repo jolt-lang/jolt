@@ -192,6 +192,23 @@
 (vector-set! (mutable-static-cell "clojure.lang.RT" "checkSpecAsserts" #t) 0 #f)
 
 ;; ---- emit entry points ------------------------------------------------------
+;; An unresolved java.time.* class (fully qualified, or a distinctive short name)
+;; almost always means the jolt-lang/time library isn't loaded: java.time lives
+;; there, not in core (RFC 0008). Name the dependency so the fix is obvious,
+;; rather than leaving a bare "Unknown class".
+(define jt-short-names
+  '("Instant" "LocalDate" "LocalTime" "LocalDateTime" "ZonedDateTime"
+    "OffsetDateTime" "OffsetTime" "ZoneId" "ZoneOffset" "Duration" "Period"
+    "YearMonth" "MonthDay" "DateTimeFormatter" "FormatStyle"))
+(define (java-time-class? class)
+  (or (and (>= (string-length class) 10) (string=? (substring class 0 10) "java.time."))
+      (and (member class jt-short-names) #t)))
+(define (unknown-class-message class)
+  (if (java-time-class? class)
+      (string-append class " requires the jolt-lang/time library — java.time is not in "
+                     "core (add io.github.jolt-lang/time to deps.edn)")
+      (string-append "Unknown class " class)))
+
 (define (host-static-ref class member)
   (let ((cell (mutable-static-cell class member #f)))
     (if cell
@@ -200,7 +217,7 @@
           (if h
               (let ((v (hashtable-ref h member #f)))
                 (if v v (throw-jvm (quote IllegalArgumentException) (string-append "No matching field or method: " class "/" member))))
-              (throw-jvm (quote IllegalArgumentException) (string-append "Unknown class " class)))))))
+              (throw-jvm (quote IllegalArgumentException) (unknown-class-message class)))))))
 
 (define (host-static-call class member . args)
   (apply (host-static-ref class member) args))

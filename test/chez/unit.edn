@@ -187,15 +187,11 @@
   {:suite "insttime" :expr "(.getTime #inst \"1970-01-01T00:00:00Z\")" :expected "0"}
   {:suite "insttime" :expr "(instance? java.util.Date #inst \"2020-01-01T00:00:00Z\")" :expected "true"}
   {:suite "insttime" :expr "(instance? java.sql.Timestamp #inst \"2020-01-01T00:00:00Z\")" :expected "false"}
-  {:suite "insttime" :expr "(.toEpochMilli (Instant/ofEpochMilli 1234))" :expected "1234"}
-  {:suite "insttime" :expr "(instance? java.time.Instant (Instant/ofEpochMilli 0))" :expected "true"}
-  {:suite "insttime" :expr "(> (.toEpochMilli (Instant/now)) 1500000000000)" :expected "true"}
-  {:suite "insttime" :expr "(instance? LocalDateTime (-> #inst \"2020-03-05T13:45:30Z\" (.toInstant) (.atZone (ZoneId/systemDefault)) (.toLocalDateTime)))" :expected "true"}
-  {:suite "insttime" :expr "(.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\")" :expected "2020-03-05"}
-  {:suite "insttime" :expr "(boolean (re-matches #\"[A-Z][a-z]{2} \\d{1,2}, 2020 \\d{1,2}:\\d{2} [AP]M\" (.format (DateTimeFormatter/ofPattern \"MMM d, yyyy h:mm a\") #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
-  {:suite "insttime" :expr "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\" (.format DateTimeFormatter/ISO_LOCAL_DATE_TIME #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
-  {:suite "insttime" :expr "(string? (.format (DateTimeFormatter/ofLocalizedDate FormatStyle/MEDIUM) #inst \"2020-03-05T13:45:30Z\"))" :expected "true"}
-  {:suite "insttime" :expr "(string? (.format (.withLocale (DateTimeFormatter/ofPattern \"yyyy\") (java.util.Locale. \"en\")) #inst \"2020-01-01T00:00:00Z\"))" :expected "true"}
+  ;; java.time.* is the jolt-lang/time library, not core (RFC 0008). Its
+  ;; conformance lives in that library's suite. Core keeps only the #inst /
+  ;; java.util.Date layer; the Date `.toInstant` bridge needs the library, so with
+  ;; none loaded it throws rather than returning a core-owned Instant.
+  {:suite "insttime" :expr "(.toInstant #inst \"2020-01-01T00:00:00Z\")" :expected :throws}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a/b\")))" :expected "/a/b"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a\" \"b\")))" :expected "/a/b"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getName (io/file \"/a/b/c.txt\")))" :expected "c.txt"}
