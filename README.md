@@ -47,6 +47,26 @@ Building from source needs only [Chez Scheme](https://cisco.github.io/ChezScheme
 (the gate invokes it as `chez`) and a C compiler. The conformance gate
 additionally uses Clojure on the JVM as an oracle, but running jolt does not.
 
+### Dependency resolution
+
+Resolving a project's `deps.edn` uses a few standard tools, each needed only for
+the coordinate types you use — a dependency that can't be fetched is skipped, never
+fatal:
+
+- **Git deps** (`:git/url`) need `git` on `PATH`.
+- **Maven deps** (`:mvn/version`) are downloaded over HTTPS by jolt itself (no
+  `curl`), using the system **OpenSSL** (`libssl`/`libcrypto`) via FFI, and
+  extracted with `unzip`. A jar already in `~/.m2/repository` is reused with no
+  download.
+  - **macOS**: `brew install openssl@3` — jolt loads the Homebrew copy; the
+    protected system `/usr/lib` OpenSSL can't be loaded into a non-Apple binary.
+    `git`/`unzip` come with the Xcode command-line tools.
+  - **Linux**: the distro `libssl3`/`libcrypto3` (or `libssl`/`libcrypto`) packages,
+    plus `git` and `unzip`.
+  - **Windows**: [Git for Windows](https://git-scm.com/download/win) supplies `git`,
+    the OpenSSL DLLs (`libssl-3-x64.dll`/`libcrypto-3-x64.dll`), and `unzip`; run
+    `joltc` from a shell with those on `PATH`.
+
 ## Build
 
 There is no build step. The bootstrap seed (`host/chez/seed/{prelude,image}.ss`)

@@ -11,10 +11,11 @@
   Maven jars live in the standard local repository (~/.m2/repository;
   :mvn/local-repo in deps.edn relocates it like tools.deps, JOLT_LOCAL_REPO
   overrides from the environment) shared with the JVM toolchain in both
-  directions. Resolution shells out to `git`/`curl`/`unzip` through
-  jolt.host/sh; nothing here touches the JVM."
+  directions. Maven jars are fetched by jolt itself over HTTPS (jolt.mvn-http);
+  git and unzip still shell out through jolt.host/sh (nothing here touches the JVM)."
   (:require [clojure.edn :as edn]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [jolt.mvn-http :as http]))
 
 ;; --- small host seams -------------------------------------------------------
 (defn- getenv [n] (jolt.host/getenv n))
@@ -176,8 +177,7 @@
           (if (empty? repos)
             (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
             (if (do (sh (str "mkdir -p " (pr-str (if legacy dir (str (m2-repo-dir) "/" vdir-rel)))))
-                    (zero? (sh (str "curl -fsSL " (pr-str (str (first repos) "/" vdir-rel "/" jar-name))
-                                " -o " (pr-str jar)))))
+                    (http/fetch (str (first repos) "/" vdir-rel "/" jar-name) jar))
               (do (info "fetching " coord " " version)
                   (let [d (extract-jar! jar dir)]
                     ;; legacy layout never keeps the jar; the m2 layout does —

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Maven dependencies download over HTTPS through jolt itself instead of shelling
+  out to `curl`. A new `jolt.mvn-http` does a minimal cert-verifying HTTPS GET
+  (a raw socket via `jolt.ffi`, TLS over the system OpenSSL with peer verification
+  + SNI + hostname check), so a dependency jar is never fetched over an
+  unauthenticated transport. It loads the real OpenSSL lazily — on macOS the
+  Homebrew `openssl@3` (the protected `/usr/lib` copy can't be loaded); on Linux
+  the distro `libssl`/`libcrypto`; on Windows the `libssl-3-x64.dll` DLLs via
+  Winsock (the Windows path is implemented but not yet validated on a Windows
+  host). A repo that can't be reached is skipped, non-fatal. `git` (git deps) and
+  `unzip` (jar extraction) are still shelled out; `curl` is gone.
+
 ## [0.4.7] - 2026-07-19
 
 Library conformance (flatland/ordered; babashka.http-client via jolt-lang/http-client),
