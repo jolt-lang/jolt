@@ -34,8 +34,8 @@ check_pom () {
 
 # Central: a pom is small and plaintext, ideal for a content check.
 check_pom "central" "https://repo1.maven.org/maven2/org/clojure/math.combinatorics/0.2.0/math.combinatorics-0.2.0.pom"
-# Clojars-hosted artifact.
-check_pom "clojars" "https://repo.clojars.org/org/clojure/math.combinatorics/0.2.0/math.combinatorics-0.2.0.pom"
+# Clojars-hosted artifact (math.combinatorics is Central-only; clj-http is on Clojars).
+check_pom "clojars" "https://repo.clojars.org/clj-http/clj-http/3.12.3/clj-http-3.12.3.pom"
 
 if [ "$fails" -ne 0 ]; then
   echo "https-fetch: FAILED — $fails check(s) failed"
