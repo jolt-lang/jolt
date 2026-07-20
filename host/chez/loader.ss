@@ -314,7 +314,13 @@
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))
 
 (define (load-jolt-file path)
-  (let* ((src (ldr-read-source path)) (end (string-length src))
+  (load-jolt-file* path (ldr-read-source path)))
+
+;; load-jolt-file* — the read/compile/eval loop over a PRE-READ source string.
+;; Split out so the AOT cache (below) reads source once for both keying and the
+;; capture load, instead of re-reading inside the loop.
+(define (load-jolt-file* path src)
+  (let* ((end (string-length src))
          ;; Restore the current-source position on NORMAL return only. Loading a
          ;; required file advances the position per form; without restoring it, a
          ;; later error in the requiring file (e.g. a second, missing require in
@@ -340,6 +346,99 @@
                                             (chez-current-ns)))
                   (loop j))))))))
     (jolt-current-source saved-source)))
+
+;; --- AOT / compile cache for required namespaces ----------------------------
+;; A disk-backed namespace is recompiled from source on EVERY run (load-jolt-file
+;; → analyze+emit+eval per form). This cache fasls the emitted Scheme on the first
+;; load of a namespace and `load`s the .so on subsequent loads, recovering most of
+;; that per-run compile cost. The cache FILENAME embeds a content hash of the
+;; source, so any edit (same path, different bytes) misses automatically — no
+;; mtime tracking needed. Gated by JOLT_AOT_CACHE; OFF for install-owned source
+;; (embedded in the binary) and bypassed on :reload / :reload-all (live editing).
+(define (aot-cache-dir)
+  (or (getenv "JOLT_CACHE_DIR")
+      (string-append (or (getenv "HOME") ".") "/.jolt/aot-cache")))
+;; Default ON — a built joltc benefits every run (ys-style startup pulling many
+;; library namespaces). JOLT_AOT_CACHE=0/false/no/off opts out. The dev bin/joltc
+;; script exports JOLT_AOT_CACHE=0, so source-mode dev (a volatile compiler whose
+;; "dev" version tag would NOT invalidate the cache across edits, and whose
+;; startup is already covered by the devboot cache) stays OFF by default.
+(define (aot-cache-enabled?)
+  (let ((e (getenv "JOLT_AOT_CACHE")))
+    (if (and (string? e) (fx>? (string-length e) 0))
+        (not (or (string=? e "0") (string-ci=? e "false")
+                 (string-ci=? e "no") (string-ci=? e "off")))
+        #t)))   ; unset/empty → default ON
+;; <dir>/<jolt-version>/v1 — the version isolates a different joltc build's output
+;; (the emitted Scheme is compiler-version-dependent).
+(define (aot-cache-subdir)
+  (string-append (aot-cache-dir) "/" (jolt-version-string) "/v1"))
+(define (aot-cache-sanitize s)
+  (list->string
+    (map (lambda (c)
+           (let ((n (char->integer c)))
+             (if (or (and (>= n 48) (<= n 57))    ; 0-9
+                     (and (>= n 65) (<= n 90))    ; A-Z
+                     (and (>= n 97) (<= n 122))   ; a-z
+                     (char=? c #\-) (char=? c #\.) (char=? c #\_))
+                 c #\_)))
+         (string->list s))))
+;; length (hex) + content hash (equal-hash, hex). length is a cheap collision guard.
+(define (aot-cache-key src)
+  (string-append (number->string (string-length src) 16) "-"
+                 (number->string (equal-hash src) 16)))
+(define (aot-info msg)
+  (when (getenv "JOLT_DEBUG")
+    (display (string-append "[jolt.aot] " msg "\n") (current-error-port))))
+;; Tee the per-form emitted Scheme (compile-eval.ss jolt-aot-capture) while running
+;; the normal load loop, so a cache miss reproduces the EXACT interleaved analyze
+;; →eval semantics (forward macro refs and same-file requires expand correctly).
+;; The captured Scheme, loaded in order, reproduces every top-level effect — the
+;; same property `jolt build` / the seed mint rely on.
+;; parameterize (not a bare set!) so a require fired by this ns's forms — which
+;; itself triggers a nested aot-capture-load — restores OUR capture port on
+;; return. A bare thread-parameter set would be clobbered by the nested capture
+;; and reset to #f, dropping this ns's forms AFTER the require (the require's
+;; target would cache, but the requiring ns's own defs would vanish from its .so).
+(define (aot-capture-load file src)
+  (let ((cap (open-output-string)))
+    (parameterize ((jolt-aot-capture cap))
+      (load-jolt-file* file src)
+      (get-output-string cap))))
+;; On a miss: run the capture load (which also evals the ns into the running
+;; image), then fasl the captured Scheme. A compile-file failure is non-fatal —
+;; the ns is already loaded; we just skip caching this run and miss again next.
+(define (aot-compile-and-cache name file src base)
+  (let ((scm (string-append base ".scm"))
+        (so  (string-append base ".so")))
+    (jolt-sh (string-append "mkdir -p " (sh-quote (path-parent base))))
+    (let ((captured (aot-capture-load file src)))
+      (when (and (string? captured) (fx>? (string-length captured) 0))
+        (let ((out (open-output-file scm 'replace)))
+          (put-string out captured) (close-output-port out))
+        (guard (e (else (aot-info (string-append "compile failed for " name)) #f))
+          ;; compile-file prints "compiling X with output to Y" per file to
+          ;; current-output-port by default — swallow it so a cache miss can't
+          ;; corrupt the running program's stdout.
+          (parameterize ((current-output-port (open-output-string)))
+            (compile-file scm so)))
+        (unless (file-exists? so)
+          (aot-info (string-append "no .so produced for " name)))))))
+;; Dispatch for load-namespace*: cache hit (load .so) / miss (compile+cache) /
+;; bypass (plain load). `file` is the resolved on-disk path. force? (:reload) and
+;; ldr-reload-all? bypass entirely — live editing must win over a stale cache.
+(define (aot-load-or-compile name file force?)
+  (if (and (aot-cache-enabled?) (not force?) (not (ldr-reload-all?))
+           (not (ldr-install-file? file)))
+      (let* ((src (ldr-read-source file))
+             (base (string-append (aot-cache-subdir) "/"
+                                  (aot-cache-sanitize name) "-" (aot-cache-key src)))
+             (so (string-append base ".so")))
+        (if (file-exists? so)
+            (begin (aot-info (string-append "hit " name)) (load so))
+            (begin (aot-info (string-append "miss " name))
+                   (aot-compile-and-cache name file src base))))
+      (load-jolt-file file)))
 
 ;; Mark a namespace as loaded in both the host hashtable and the *loaded-libs* ref.
 (define (ldr-mark-loaded! name)
@@ -397,9 +496,9 @@
                          (set-chez-ns! saved)          ; restore ns, then roll the mark back
                          (unless was-loaded? (ldr-unmark-loaded! name))
                          (raise e)))
-               (load-jolt-file file))
-             (set-chez-ns! saved)             ; restore the current ns (thread-local)
-             (ns-loaded-hook name file)))
+                (aot-load-or-compile name file force?))
+              (set-chez-ns! saved)             ; restore the current ns (thread-local)
+              (ns-loaded-hook name file)))
           ;; No source file but the namespace exists in memory (AOT'd into a built
           ;; binary): it's already defined — mark loaded and move on.
           ((ns-has-vars? name)
