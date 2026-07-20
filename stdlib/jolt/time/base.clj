@@ -13,4 +13,6 @@
             [jolt.time.amount]
             [jolt.time.year]
             [jolt.time.temporal]
-            [jolt.time.instant]))
+            [jolt.time.instant]
+            [jolt.time.zones]
+            [jolt.time.fmt]))

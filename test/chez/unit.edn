@@ -190,7 +190,13 @@
   {:suite "insttime" :expr "(.toEpochMilli (Instant/ofEpochMilli 1234))" :expected "1234"}
   {:suite "insttime" :expr "(instance? java.time.Instant (Instant/ofEpochMilli 0))" :expected "true"}
   {:suite "insttime" :expr "(> (.toEpochMilli (Instant/now)) 1500000000000)" :expected "true"}
-  {:suite "insttime" :expr "(instance? LocalDateTime (-> #inst \"2020-03-05T13:45:30Z\" (.toInstant) (.atZone (ZoneId/systemDefault)) (.toLocalDateTime)))" :expected "true"}
+  {:suite "insttime" :expr "(instance? java.time.LocalDateTime (LocalDateTime/parse \"2020-03-05T13:45:30\"))" :expected "true"}
+  {:suite "insttime" :expr "(str (.toInstant #inst \"2020-03-05T13:45:30Z\"))" :expected "2020-03-05T13:45:30Z"}
+  {:suite "insttime" :expr "(str (LocalDate/of 2020 3 5))" :expected "2020-03-05"}
+  {:suite "insttime" :expr "(.toMillis (Duration/between (Instant/ofEpochMilli 0) (Instant/ofEpochMilli 5000)))" :expected "5000"}
+  {:suite "insttime" :expr "(.getTotalSeconds (ZoneOffset/ofHours 5))" :expected "18000"}
+  {:suite "insttime" :expr "(str java.time.ZoneOffset/UTC)" :expected "Z"}
+  {:suite "insttime" :expr "(.getId (ZoneId/of \"UTC\"))" :expected "Z"}
   {:suite "insttime" :expr "(.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\")" :expected "2020-03-05"}
   {:suite "insttime" :expr "(boolean (re-matches #\"[A-Z][a-z]{2} \\d{1,2}, 2020 \\d{1,2}:\\d{2} [AP]M\" (.format (DateTimeFormatter/ofPattern \"MMM d, yyyy h:mm a\") #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
   {:suite "insttime" :expr "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\" (.format DateTimeFormatter/ISO_LOCAL_DATE_TIME #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}

@@ -1,4 +1,4 @@
-;; #inst values + a java.time formatting shim.
+;; #inst values + the java.util / java.text date layer.
 ;;
 ;; A #inst literal lowers (analyzer :inst node -> emit) to (jolt-inst-from-string
 ;; "…"); this file parses the RFC3339 string to epoch-ms and models the value as a
@@ -6,10 +6,14 @@
 ;; INSTANT (offset-normalized). The overlay inst?/inst-ms read (get x :jolt/type)/(get x :ms),
 ;; so jolt-get answers those off a jinst — the overlay fns then work unchanged.
 ;;
-;; The java.time surface (DateTimeFormatter/Instant/ZoneId/LocalDateTime/
-;; FormatStyle/Locale + the .format/.atZone/.toInstant/… methods) is
-;; registered through host-static.ss's class-statics / host-
-;; methods registries — so this loads LAST in rt.ss, after host-static.ss and io.ss.
+;; This file owns the always-available java.util / java.text layer: java.util.Date,
+;; java.sql.Date / Timestamp, Calendar, TimeZone, Locale, java.text.SimpleDateFormat,
+;; and the UTC/GMT format-ms / parse-ms pattern engine that backs them (and HTTP
+;; date headers). The java.time.* API is the jolt-lang/time base — portable Clojure
+;; under stdlib/jolt/time/, autoloaded on first use (host-static.ss, RFC 0008) — so
+;; it is NOT registered here; the one bridge is .toInstant, which routes a Date /
+;; #inst / FileTime to the base Instant through set-instant-ctor! + mk-instant.
+;; Loads LAST in rt.ss, after host-static.ss and io.ss.
 
 ;; --- civil <-> days since the Unix epoch (Howard Hinnant's algorithms) -------
 ;; No portable UTC mktime on Chez, so compute epoch days directly from y/m/d.
@@ -314,17 +318,11 @@
 ;; :jolt/inst tag (which print-method still dispatches on via __type-tag).
 (register-class-arm! jinst? (lambda (x) "java.util.Date"))
 
-;; java.time.Instant is nano-precise: two Instants are = when their epoch-nanos
-;; match (so an Instant and one shifted by a single nanosecond differ).
-(define (jt-instant-tag? x) (and (jhost? x) (string=? (jhost-tag x) "instant")))
-(register-eq-arm! (lambda (a b) (or (jt-instant-tag? a) (jt-instant-tag? b)))
-                  (lambda (a b) (and (jt-instant-tag? a) (jt-instant-tag? b)
-                                     (= (inst-nanos a) (inst-nanos b)))))
-(register-hash-arm! jt-instant-tag? (lambda (x) (jolt-hash (inst-nanos x))))
+;; java.time.Instant is the jolt-lang/time base (stdlib/jolt/time/instant.clj), an
+;; opaque tagged-table with its own equality/hash/compare — core needs no arm for it.
 
-;; ZonedDateTime / java.sql.Date shim values (mk-zoned/mk-sql-date jhosts) are
-;; equal when same kind + same epoch-ms.
-(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("zoned-dt" "sql-date")) #t))
+;; java.sql.Date shim values (mk-sql-date jhosts) are equal by kind + epoch-ms.
+(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("sql-date")) #t))
 (register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
                   (lambda (a b) (and (time-jhost? a) (time-jhost? b)
                                      (string=? (jhost-tag a) (jhost-tag b))
@@ -350,7 +348,7 @@
         ((jinst? val) (cond ((string=? tn "Date") #t)
                             ((string=? tn "Timestamp") #f)
                             (else 'pass)))
-        ((and (jhost? val) (string=? (jhost-tag val) "instant")) (if (string=? tn "Instant") #t 'pass))
+        ;; java.time.Instant is the base library's own type (instance? handled there).
         ;; java.sql.Date is a java.util.Date subclass (but not a Timestamp).
         ((and (jhost? val) (string=? (jhost-tag val) "sql-date"))
          (cond ((or (string=? tn "Date")) #t) ((string=? tn "Timestamp") #f) (else 'pass)))
@@ -359,125 +357,32 @@
 ;; inst-ms* is a seed native (the overlay inst-ms reads (get x :ms), now answered).
 (def-var! "clojure.core" "inst-ms*" (lambda (i) (jinst-ms i)))
 
-;; --- java.time shim values (jhost objects over host-static.ss registries) -----
-;; "local-date" stores an epoch-day (java-time.ss owns the type); ms-of projects it
-;; to UTC midnight so existing date math keeps working. "local-dt" stores epoch-day +
-;; nano-of-day; the others store epoch-ms.
+;; --- java.time bridge from the #inst / java.util layer -----------------------
+;; ms-of projects a core date value (a #inst, a Calendar, a java.sql.Date) to
+;; epoch-ms for the java.util / java.text layer. The java.time value types are the
+;; jolt-lang/time base (Clojure tagged-tables with their own arithmetic, autoloaded
+;; on first use) and do not pass through here.
 (define (ms-of d)
   (cond ((number? d) d)
         ((jinst? d) (jinst-ms d))
-        ((and (jhost? d) (string=? (jhost-tag d) "local-date"))
-         (* (vector-ref (jhost-state d) 0) 86400000))
-        ((and (jhost? d) (string=? (jhost-tag d) "local-date-time"))
-         (+ (* (vector-ref (jhost-state d) 0) 86400000)
-            (quotient (vector-ref (jhost-state d) 1) 1000000)))
-        ;; "instant" stores epoch-nanos; project to ms (floor) for ms-based callers.
-        ((and (jhost? d) (string=? (jhost-tag d) "instant"))
-         (inst-floor-div (vector-ref (jhost-state d) 0) 1000000))
-        ((and (jhost? d) (member (jhost-tag d) '("zoned-dt" "calendar" "sql-date")))
+        ((and (jhost? d) (member (jhost-tag d) '("calendar" "sql-date")))
          (vector-ref (jhost-state d) 0))
         (else (throw-jvm (quote IllegalArgumentException) (string-append "not a date value: " (jolt-final-str d))))))
-;; A java.time.Instant stores epoch-nanos (exact integer). mk-instant takes ms,
-;; for the many ms-based call sites; mk-instant-nanos is the nano-precise ctor and
-;; inst-nanos the nano accessor (java-time.ss owns the nano-aware arithmetic).
-(define (mk-instant-nanos n) (make-jhost "instant" (vector (exact (truncate n)))))
-(define (inst-nanos x) (vector-ref (jhost-state x) 0))
-;; The jolt-lang/time library owns java.time.Instant; when it is loaded it sets
-;; this hook so Date/Calendar/#-derived .toInstant yields ITS instant, not a second
-;; representation. Unset by default (java.time comes from java-time.ss in core).
-(define jt-instant-hook #f)
-(define (mk-instant ms)
-  (let ((nanos (* (ms->exact ms) 1000000)))
-    (if jt-instant-hook (jt-instant-hook nanos) (mk-instant-nanos nanos))))
-(def-var! "jolt.host" "set-instant-ctor!"
-  (lambda (f) (set! jt-instant-hook (lambda (nanos) (jolt-invoke f nanos))) jolt-nil))
-(define (mk-zoned ms) (make-jhost "zoned-dt" (vector ms)))
-;; LocalDateTime from epoch-ms (UTC): the java-time.ss "local-date-time" jhost,
-;; state [epoch-day nano-of-day].
-(define (mk-local ms)
-  (let* ((ems (exact (truncate ms)))
-         (ed (inst-floor-div ems 86400000))
-         (mod (inst-floor-mod ems 86400000)))
-    (make-jhost "local-date-time" (vector ed (* mod 1000000)))))
-;; local-date from epoch-ms: the epoch-day of the UTC day containing ms.
-(define (mk-local-date ms) (make-jhost "local-date" (vector (inst-floor-div (exact (truncate ms)) 86400000))))
-;; a formatter carries its pattern and a locale id (default "en"); the locale
-;; selects month/day names in the java-time.ss format engine.
-(define (mk-formatter pat . loc) (make-jhost "dt-formatter" (vector pat (if (null? loc) "en" (car loc)))))
-(define (fmt-pat f) (vector-ref (jhost-state f) 0))
-(define (fmt-locale f) (let ((s (jhost-state f))) (if (> (vector-length s) 1) (vector-ref s 1) "en")))
-(define (locale-id l) (if (and (jhost? l) (string=? (jhost-tag l) "locale")) (vector-ref (jhost-state l) 0) "en"))
-(define (now-ms) (now-millis))   ; exact ms (= JVM long); now-millis from host-static.ss
 ;; coerce a user-supplied ms (exact or flonum) to an exact integer for storage.
 (define (ms->exact ms) (exact (round ms)))
+(define (now-ms) (now-millis))   ; exact ms (= JVM long); now-millis from host-static.ss
 
-(register-host-methods! "instant"
-  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))
-        (cons "toEpochMilli" (lambda (self) (ms-of self)))
-        (cons "toString" (lambda (self) (inst-rfc3339 (make-jinst (ms-of self)))))))
-(register-host-methods! "zoned-dt"
-  (list (cons "toLocalDateTime" (lambda (self) (mk-local (ms-of self))))
-        (cons "toInstant" (lambda (self) (mk-instant (ms-of self))))))
-;; LocalDate.atZone(zone): the UTC layer treats it as a zoned value at midnight.
-;; (java-time.ss registers atStartOfDay and the rest of the local-date surface.)
-(register-host-methods! "local-date"
-  (list (cons "atZone" (lambda (self zone) (mk-zoned (ms-of self))))))
-(register-host-methods! "dt-formatter"
-  (list (cons "withLocale" (lambda (self locale) (mk-formatter (fmt-pat self) (locale-id locale))))
-        (cons "withZone" (lambda (self zone) (mk-formatter (fmt-pat self) (fmt-locale self))))
-        (cons "format" (lambda (self d) (format-ms (fmt-pat self) (ms-of d))))
-        ;; parse a string per the pattern -> an instant value; Instant/from / the
-        ;; LocalDateTime/parse static read its ms back out.
-        (cons "parse" (lambda (self s) (mk-instant (jinst-ms (parse-ms (fmt-pat self) (jolt-str-render-one s))))))))
-
-;; FormatStyle approximations (no locale DB on this host).
-(define style-patterns
-  '((date . ((short . "M/d/yy") (medium . "MMM d, yyyy") (long . "MMMM d, yyyy") (full . "EEEE, MMMM d, yyyy")))
-    (time . ((short . "h:mm a") (medium . "h:mm:ss a") (long . "h:mm:ss a") (full . "h:mm:ss a")))
-    (datetime . ((short . "M/d/yy, h:mm a") (medium . "MMM d, yyyy, h:mm:ss a")
-                 (long . "MMMM d, yyyy, h:mm:ss a") (full . "EEEE, MMMM d, yyyy, h:mm:ss a")))))
-(define (style-of fs) (vector-ref (jhost-state fs) 0))       ; a symbol: short/medium/long/full
-(define (style-fmt kind fs)
-  (mk-formatter (or (let ((row (assq kind style-patterns))) (and row (let ((e (assq (style-of fs) (cdr row)))) (and e (cdr e)))))
-                    "yyyy-MM-dd HH:mm:ss")))
-
-(register-class-statics! "FormatStyle"
-  (list (cons "SHORT" (make-jhost "format-style" (vector 'short)))
-        (cons "MEDIUM" (make-jhost "format-style" (vector 'medium)))
-        (cons "LONG" (make-jhost "format-style" (vector 'long)))
-        (cons "FULL" (make-jhost "format-style" (vector 'full)))))
-(register-class-statics! "DateTimeFormatter"
-  (list (cons "ofPattern" (lambda (p . _) (mk-formatter p)))
-        (cons "ISO_LOCAL_DATE" (mk-formatter "yyyy-MM-dd"))
-        (cons "ISO_LOCAL_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ss"))
-        ;; ISO_INSTANT always renders in UTC with a trailing Z (format-ms is UTC; X -> "Z").
-        (cons "ISO_INSTANT" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssX"))
-        ;; ISO_ZONED_DATE_TIME: the UTC layer renders/parses it like ISO_INSTANT.
-        (cons "ISO_ZONED_DATE_TIME" (mk-formatter "yyyy-MM-dd'T'HH:mm:ssX"))
-        (cons "ofLocalizedDate" (lambda (fs) (style-fmt 'date fs)))
-        (cons "ofLocalizedTime" (lambda (fs) (style-fmt 'time fs)))
-        (cons "ofLocalizedDateTime" (lambda (fs) (style-fmt 'datetime fs)))))
-(register-class-statics! "Instant"
-  (list (cons "ofEpochMilli" (lambda (ms) (mk-instant (ms->exact ms))))
-        (cons "now" (lambda () (mk-instant (now-ms))))
-        ;; Instant/parse an ISO-8601 instant ("…T…Z") -> an instant value.
-        (cons "parse" (lambda (s) (mk-instant (jinst-ms (jolt-inst-from-string
-                                                          (if (string? s) s (jolt-str-render-one s)))))))
-        ;; Instant/from a temporal accessor -> an instant at the same epoch-ms.
-        (cons "from" (lambda (t) (mk-instant (ms-of t))))))
-(register-class-statics! "ZoneId"
-  (list (cons "systemDefault" (lambda () (make-jhost "zone-id" (vector "system"))))
-        (cons "of" (lambda (id) (make-jhost "zone-id" (vector id))))))
-(register-class-statics! "LocalDateTime"
-  (list (cons "ofInstant" (lambda (inst zone) (mk-local (ms-of inst))))
-        (cons "now" (lambda () (mk-local (now-ms))))
-        ;; LocalDateTime/parse text, or text + a formatter (the UTC layer ignores
-        ;; the parsed offset) -> a local-dt at the parsed instant.
-        (cons "parse" (lambda (s . fmt)
-                        (let ((str (if (string? s) s (jolt-str-render-one s))))
-                          (mk-local (jinst-ms (if (null? fmt)
-                                                  (jolt-inst-from-string str)
-                                                  (parse-ms (fmt-pat (car fmt)) str)))))))))
+;; .toInstant on a java.util.Date / #inst / java.sql.Date / FileTime yields the
+;; base java.time.Instant — ONE representation. The base (stdlib/jolt/time/instant.clj)
+;; installs its epoch-nanos ctor through set-instant-ctor! when it loads; autoload
+;; the base the first time the bridge is used, so .toInstant works with no
+;; dependency (RFC 0008). mk-instant takes epoch-ms (its many ms-based call sites).
+(define jt-instant-hook #f)
+(def-var! "jolt.host" "set-instant-ctor!"
+  (lambda (f) (set! jt-instant-hook (lambda (nanos) (jolt-invoke f nanos))) jolt-nil))
+(define (mk-instant ms)
+  (unless jt-instant-hook (load-namespace "jolt.time.base"))
+  (jt-instant-hook (* (ms->exact ms) 1000000)))
 (let ((locale-ctor (lambda (id . _) (make-jhost "locale" (vector (if (string? id) id (jolt-str-render-one id)))))))
   (register-class-ctor! "Locale" locale-ctor)
   (register-class-ctor! "java.util.Locale" locale-ctor))
@@ -547,7 +452,7 @@
 (register-host-methods! "sql-date"
   (list (cons "getTime" (lambda (self) (ms-of self)))
         (cons "toInstant" (lambda (self) (mk-instant (ms-of self))))
-        (cons "toLocalDate" (lambda (self) (mk-local-date (ms-of self))))
+        (cons "toLocalDate" (lambda (self) (host-static-call "java.time.LocalDate" "ofEpochDay" (inst-floor-div (ms-of self) 86400000))))
         (cons "toString" (lambda (self) (inst-rfc3339 (make-jinst (ms-of self)))))))
 
 ;; java.util.Calendar: a mutable broken-down UTC time over an epoch-ms. setTime/
@@ -628,8 +533,6 @@
              ((string=? method-name "getSeconds") (list-ref (inst-fields (jinst-ms obj)) 5))
              ((string=? method-name "getDay") (list-ref (inst-fields (jinst-ms obj)) 7))
              ((string=? method-name "toInstant") (mk-instant (jinst-ms obj)))
-             ((string=? method-name "toLocalDate") (mk-local-date (jinst-ms obj)))
-             ((string=? method-name "toLocalDateTime") (mk-local (jinst-ms obj)))
              ((string=? method-name "toString") (inst-rfc3339 obj))
              ((string=? method-name "equals") (and (pair? (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                                                    (jinst? (car (seq->list rest-args)))
