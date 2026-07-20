@@ -36,6 +36,10 @@ fi
 
 # Version for --version / banners: git describe of this checkout, else "dev".
 export JOLT_VERSION="${JOLT_VERSION:-$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)}"
+# Dev source mode opts OUT of the per-namespace AOT cache: the compiler is
+# volatile here (a "dev" version tag wouldn't invalidate the cache across edits),
+# and devboot already covers startup. A built joltc binary defaults the cache ON.
+export JOLT_AOT_CACHE="${JOLT_AOT_CACHE:-0}"
 cd "$root" || exit 1
 
 # Dev boot cache: precompiled target/dev/flat.so loads the runtime ~10x faster

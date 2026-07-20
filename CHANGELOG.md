@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Per-namespace AOT/compile cache for required libraries: a disk-backed cache that
+fasls a required namespace's emitted Scheme on first load and loads the `.so` on
+subsequent runs, recovering most of the per-run recompile cost for library
+requires. Keyed by source content hash + jolt version, so any source edit or
+compiler change misses automatically. Default ON for a built `joltc`; the dev
+`bin/joltc` opts out (volatile dev compiler). Measured ~28% startup speedup on a
+4-library require (cold 2.81s → warm 2.03s).
+
+### Added
+
+- **Per-namespace compile cache.** When a disk-backed namespace is required, the
+  emitted Scheme is teed off the existing load path (preserving the interleaved
+  analyze→eval semantics — forward macro refs, `defrecord`/`defprotocol`, data
+  readers, and transitive requires all reproduce on cache hit) and fasled to
+  `~/.jolt/aot-cache/<jolt-version>/v1/<ns>-<content-hash>.so`. The cache filename
+  embeds a content hash of the source, so editing a namespace invalidates it
+  automatically (no mtime tracking). On the next run the `.so` is loaded directly
+  instead of recompiled.
+- **`JOLT_AOT_CACHE` env var** — `0`/`false`/`no`/`off` opt out. Default ON for a
+  built `joltc`; the dev `bin/joltc` script sets it to `0` (a volatile dev compiler
+  whose "dev" version tag wouldn't invalidate across edits, and whose startup is
+  already covered by the devboot cache).
+- **`JOLT_CACHE_DIR` env var** — override the cache root (default
+  `~/.jolt/aot-cache`). Useful for tests and CI isolation.
+- **Safety gates.** Install-owned namespaces (embedded in the binary) are never
+  cached; `:reload` / `:reload-all` bypass the cache so live editing always wins.
+- **`make aotcachesmoke`** (added to `ci`) — deterministic correctness gate:
+  miss/hit/invalidate, macro def-then-use, `defrecord`, data readers, transitive
+  require, `:reload` bypass, install-owned never cached.
+- **`make aotcacheperf`** — cold-vs-warm wall-clock measurement (needs Maven jars
+  locally; not in the default gate).
+
 ## [0.4.9] - 2026-07-20
 
 Better compile diagnostics, borrowing a few ideas from Carp: near-miss name
