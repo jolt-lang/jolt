@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-07-20
+
 Per-namespace AOT/compile cache for required libraries: a disk-backed cache that
 fasls a required namespace's emitted Scheme on first load and loads the `.so` on
 subsequent runs, recovering most of the per-run recompile cost for library
@@ -38,6 +40,12 @@ compiler change misses automatically. Default ON for a built `joltc`; the dev
   require, `:reload` bypass, install-owned never cached.
 - **`make aotcacheperf`** — cold-vs-warm wall-clock measurement (needs Maven jars
   locally; not in the default gate).
+- **Git deps can omit `:git/url`.** A git coordinate whose lib name encodes a
+  known host resolves its clone URL the way tools.deps does — `io.github.OWNER/REPO`
+  clones from GitHub, and likewise for `com.github.*`, `io.gitlab.*`/`com.gitlab.*`,
+  `io.bitbucket.*`/`org.bitbucket.*`, and `ht.sr.*` (Sourcehut). An explicit
+  `:git/url` still wins; a git coordinate with neither a URL nor an inferable host
+  now reports an actionable error naming the fix instead of being silently skipped.
 
 ## [0.4.9] - 2026-07-20
 
