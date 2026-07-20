@@ -9,27 +9,31 @@
   (:require [jolt.ffi :as ffi]
             [clojure.string :as str]))
 
-(def ^:private macos?
-  (str/includes? (str/lower-case (or (System/getProperty "os.name") "")) "mac"))
+(def ^:private os-name
+  (str/lower-case (or (System/getProperty "os.name") "")))
+(def ^:private macos? (str/includes? os-name "mac"))
+(def ^:private windows? (str/includes? os-name "windows"))
 
 ;; libcrypto loads first (libssl links it). On macOS the system /usr/lib
-;; libcrypto is a protected Apple image and aborts the process if dlopen'd,
-;; so the Homebrew paths come first and the bare name is only a last resort.
+;; libcrypto is a protected Apple image and *aborts the process* if dlopen'd
+;; (an uncatchable SIGABRT, not a Scheme error) — so only explicit real-OpenSSL
+;; paths are tried; the bare "libcrypto.dylib" name is deliberately NOT a
+;; candidate. If none of these exist, fetch fails gracefully.
 (def ^:private crypto-candidates
-  (if macos?
-    ["/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
-     "/opt/homebrew/lib/libcrypto.dylib"
-     "/usr/local/opt/openssl@3/lib/libcrypto.dylib"
-     "libcrypto.dylib"]
-    ["libcrypto.so.3" "libcrypto.so.1.1" "libcrypto.so"]))
+  (cond
+    macos?   ["/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
+              "/opt/homebrew/lib/libcrypto.dylib"
+              "/usr/local/opt/openssl@3/lib/libcrypto.dylib"]
+    windows? ["libcrypto-3-x64.dll" "libcrypto-3.dll" "libcrypto-1_1-x64.dll"]
+    :else    ["libcrypto.so.3" "libcrypto.so.1.1" "libcrypto.so"]))
 
 (def ^:private ssl-candidates
-  (if macos?
-    ["/opt/homebrew/opt/openssl@3/lib/libssl.dylib"
-     "/opt/homebrew/lib/libssl.dylib"
-     "/usr/local/opt/openssl@3/lib/libssl.dylib"
-     "libssl.dylib"]
-    ["libssl.so.3" "libssl.so.1.1" "libssl.so"]))
+  (cond
+    macos?   ["/opt/homebrew/opt/openssl@3/lib/libssl.dylib"
+              "/opt/homebrew/lib/libssl.dylib"
+              "/usr/local/opt/openssl@3/lib/libssl.dylib"]
+    windows? ["libssl-3-x64.dll" "libssl-3.dll" "libssl-1_1-x64.dll"]
+    :else    ["libssl.so.3" "libssl.so.1.1" "libssl.so"]))
 
 (def ^:private ssl-loaded? (volatile! false))
 
