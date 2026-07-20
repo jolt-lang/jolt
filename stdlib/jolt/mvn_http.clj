@@ -5,7 +5,9 @@
   OpenSSL. libcrypto then libssl lazy-load on first use (candidate lists,
   Homebrew first on macOS). fetch returns true on a 2xx, false on any failure,
   so jolt.deps falls through to the next repo. HTTPS only; the server
-  certificate is verified (default verify paths + VERIFY_PEER + hostname check)."
+  certificate is verified (default verify paths + VERIFY_PEER + hostname check).
+  macOS and Linux are validated; the Windows path (ws2_32 + WSAStartup +
+  closesocket) is implemented but not yet tested on a Windows host."
   (:require [jolt.ffi :as ffi]
             [clojure.string :as str]))
 
@@ -35,7 +37,7 @@
     windows? ["libssl-3-x64.dll" "libssl-3.dll" "libssl-1_1-x64.dll"]
     :else    ["libssl.so.3" "libssl.so.1.1" "libssl.so"]))
 
-(def ^:private ssl-loaded? (volatile! false))
+(def ^:private native-ready? (volatile! false))
 
 (defn- load-one [path]
   (try (ffi/load-library path) true (catch :default _ false)))
@@ -46,32 +48,49 @@
           (load-one (first cs)) true
           :else (recur (rest cs)))))
 
-(defn- ensure-ssl!
-  "Lazy-load libcrypto then libssl on first use. Returns true once both loaded;
-  a later fetch retries (a candidate may have appeared)."
+;; Windows sockets live in ws2_32.dll and need WSAStartup(2.2) once before any
+;; socket call; POSIX sockets are process symbols, so this is a no-op there.
+;; UNTESTED on Windows — no Windows machine was available to validate against.
+(defn- init-sockets! []
+  (if-not windows?
+    true
+    (when (or (load-one "ws2_32.dll") (load-one "ws2_32"))
+      (let [wsadata (ffi/alloc 512)]
+        (try (zero? (c-WSAStartup 0x0202 wsadata))
+             (finally (ffi/free wsadata)))))))
+
+(defn- ensure-native!
+  "Lazy-load the native transport on first use: (Windows) ws2_32 + WSAStartup,
+  then libcrypto then libssl. Returns true once ready; a later fetch retries."
   []
-  (or @ssl-loaded?
-      (when (and (try-candidates crypto-candidates)
+  (or @native-ready?
+      (when (and (init-sockets!)
+                 (try-candidates crypto-candidates)
                  (try-candidates ssl-candidates))
-        (vreset! ssl-loaded? true)
+        (vreset! native-ready? true)
         true)))
 
-;; --- BSD socket layer (process symbols resolve at load) ---
+;; --- BSD socket layer. On POSIX these are the process's own symbols (libc);
+;; on Windows they live in ws2_32.dll (loaded, with WSAStartup, by ensure-native!
+;; before the first call), which exports the same getaddrinfo/socket/connect/
+;; recv/send names plus closesocket. ---
 (ffi/defcfn c-socket      "socket"      [:int :int :int] :int)
 (ffi/defcfn c-connect     "connect"     [:int :pointer :int] :int :blocking)
 (ffi/defcfn c-close       "close"       [:int] :int)
+(ffi/defcfn c-closesocket "closesocket" [:int] :int)              ; Windows sockets
 (ffi/defcfn c-recv        "recv"        [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-send        "send"        [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-getaddrinfo "getaddrinfo" [:pointer :pointer :pointer :pointer] :int :blocking)
 (ffi/defcfn c-freeaddrinfo "freeaddrinfo" [:pointer] :void)
+(ffi/defcfn c-WSAStartup  "WSAStartup"  [:int :pointer] :int)     ; Windows Winsock init
 
-;; struct addrinfo field offsets (LP64). macOS swaps ai_canonname/ai_addr
-;; vs Linux, so ai_addr sits at 32 on macOS, 24 on Linux.
+;; struct addrinfo field offsets. Both macOS and Win64 place ai_addr at 32
+;; (ai_canonname before it); Linux packs ai_addr at 24.
 (def ^:private O-ai-family 4)
 (def ^:private O-ai-socktype 8)
 (def ^:private O-ai-protocol 12)
 (def ^:private O-ai-addrlen 16)
-(def ^:private O-ai-addr (if macos? 32 24))
+(def ^:private O-ai-addr (if (or macos? windows?) 32 24))
 (def ^:private O-ai-next 40)
 
 (defn- connect
@@ -132,7 +151,7 @@
                 (throw (ex-info "send failed" {}))))))
       (finally (ffi/free buf)))))
 
-(defn- close-sock [fd] (c-close fd) nil)
+(defn- close-sock [fd] (if windows? (c-closesocket fd) (c-close fd)) nil)
 
 ;; --- OpenSSL TLS client (memory-BIO) ---
 (def ^:private WANT-READ 2)
@@ -403,7 +422,7 @@
   cert, parse, non-2xx). A failed fetch never leaves a partial file."
   [url out-path]
   (try
-    (if-not (ensure-ssl!) false
+    (if-not (ensure-native!) false
             (loop [u url redirects 0]
               (let [r (fetch-once u out-path)]
                 (cond
