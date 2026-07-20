@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-20
+
+Dependency downloads no longer shell out to `curl` — jolt fetches Maven jars over
+its own cert-verifying HTTPS.
+
 ### Changed
 
 - Maven dependencies download over HTTPS through jolt itself instead of shelling
