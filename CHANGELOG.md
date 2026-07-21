@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-07-20
+
+A base java.time API in core that works with no dependency, as a single
+implementation rather than two (RFC 0008). Core previously registered a partial
+java.time surface in Scheme (Instant, LocalDateTime, ZoneId, DateTimeFormatter,
+FormatStyle) that was both incomplete — `Instant/now` worked, `LocalDate/now` did
+not — and a second copy of logic the jolt-lang/time library already implements in
+Clojure. The Scheme shim is gone; the boundary now sits at the java.time value
+types.
+
+### Added
+
+- **java.time value types in core, no dependency.** Instant, LocalDate /
+  LocalTime / LocalDateTime, Duration, Period, Year / YearMonth / MonthDay, and
+  the Month / DayOfWeek / ChronoUnit / ChronoField enums live in core under
+  `stdlib/jolt/time` as portable Clojure, aggregated by a core-owned
+  `jolt.time.base` that autoloads the first time interop resolves one of them. A
+  date-free program never triggers the load, so it pays nothing.
+
+### Changed
+
+- **Formatting and zones are the jolt-lang/time library, as the single
+  implementation.** DateTimeFormatter, FormatStyle, ZoneOffset, ZoneId,
+  ZonedDateTime / OffsetDateTime, localized formatting, and java.util.Locale are
+  the library — core carries no second copy. Referencing one of those without the
+  library now gives an error that names the dependency instead of a bare "Unknown
+  class", on both the static and constructor paths.
+- **`.toInstant` bridges through the base.** `inst-time.ss` keeps the
+  always-available java.util / java.text layer (Date, sql.Date/Timestamp,
+  Calendar, TimeZone, SimpleDateFormat) and the `#inst` literal; its `.toInstant`
+  routes a Date, `#inst`, or FileTime to the base Instant, autoloading the base so
+  the bridge needs no dependency. `now()` fixes on UTC in the base; the library
+  refines it to the system zone.
+
+### Removed
+
+- **The Scheme java.time shim.** The partial Instant/LocalDateTime/ZoneId/
+  DateTimeFormatter/FormatStyle surface previously implemented in Scheme is
+  removed in favor of the Clojure base.
+
 ## [0.4.10] - 2026-07-20
 
 Per-namespace AOT/compile cache for required libraries: a disk-backed cache that
