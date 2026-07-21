@@ -17,79 +17,81 @@
 ;; call routes through jolt-invoke. A `reduced` step stops the fold — reduce-seq
 ;; (seq.ss) already short-circuits on a jolt-reduced.
 ;; ============================================================================
-;; The map transducer's step fn supports multiple inputs ([result input & inputs]),
-;; so a multi-collection sequence/transduce — or medley's sequence-padded, which
-;; calls (f acc i1 i2 …) — applies f across all of them: (rf result (apply f inputs)).
+;; Each stage rf is a case-lambda with the exact transducer arities — []=init,
+;; [acc]=complete, [acc x]=step — instead of a variadic (lambda a (case (length a)
+;; …)). The variadic form allocated a rest-list and walked (length a) on EVERY
+;; element, then forwarded through general jolt-invoke; case-lambda dispatches on
+;; arity with no rest-list, and the step calls the downstream rf via jolt-invoke2
+;; and the mapping/predicate fn via jolt-invoke1 (fixed-arity fast paths). A
+;; `reduced` step stops the fold — reduce-seq (seq.ss) short-circuits on it.
+;; The map transducer additionally supports multiple inputs ([result input &
+;; inputs]) — a multi-collection sequence/transduce, or medley's sequence-padded
+;; calling (f acc i1 i2 …) — via a trailing variadic clause, so the single-input
+;; hot path stays allocation-free while (rf result (apply f inputs)) still works.
 (define (td-map f)
   (lambda (rf)
-    (lambda a
-      (case (length a)
-        ((0) (jolt-invoke rf))
-        ((1) (jolt-invoke rf (car a)))
-        (else (jolt-invoke rf (car a) (apply jolt-invoke f (cdr a))))))))
+    (case-lambda
+      (() (jolt-invoke rf))
+      ((acc) (jolt-invoke1 rf acc))
+      ((acc x) (jolt-invoke2 rf acc (jolt-invoke1 f x)))
+      ((acc . xs) (jolt-invoke2 rf acc (apply jolt-invoke f xs))))))
 (define (td-filter pred)
   (lambda (rf)
-    (lambda a
-      (case (length a)
-        ((0) (jolt-invoke rf))
-        ((1) (jolt-invoke rf (car a)))
-        (else (if (jolt-truthy? (jolt-invoke pred (cadr a)))
-                  (jolt-invoke rf (car a) (cadr a))
-                  (car a)))))))
-(define (td-remove pred) (td-filter (lambda (x) (jolt-not (jolt-invoke pred x)))))
+    (case-lambda
+      (() (jolt-invoke rf))
+      ((acc) (jolt-invoke1 rf acc))
+      ((acc x) (if (jolt-truthy? (jolt-invoke1 pred x))
+                   (jolt-invoke2 rf acc x)
+                   acc)))))
+(define (td-remove pred) (td-filter (lambda (x) (jolt-not (jolt-invoke1 pred x)))))
 (define (td-take n)
   (lambda (rf)
     (let ((left n))
-      (lambda a
-        (case (length a)
-          ((0) (jolt-invoke rf))
-          ((1) (jolt-invoke rf (car a)))
-          (else (if (<= left 0)
-                    (make-jolt-reduced (car a))
-                    (let ((r (jolt-invoke rf (car a) (cadr a))))
-                      (set! left (- left 1))
-                      (if (<= left 0) (ensure-reduced r) r)))))))))
+      (case-lambda
+        (() (jolt-invoke rf))
+        ((acc) (jolt-invoke1 rf acc))
+        ((acc x) (if (<= left 0)
+                     (make-jolt-reduced acc)
+                     (let ((r (jolt-invoke2 rf acc x)))
+                       (set! left (- left 1))
+                       (if (<= left 0) (ensure-reduced r) r))))))))
 (define (td-drop n)
   (lambda (rf)
     (let ((left n))
-      (lambda a
-        (case (length a)
-          ((0) (jolt-invoke rf))
-          ((1) (jolt-invoke rf (car a)))
-          (else (if (> left 0) (begin (set! left (- left 1)) (car a))
-                    (jolt-invoke rf (car a) (cadr a)))))))))
+      (case-lambda
+        (() (jolt-invoke rf))
+        ((acc) (jolt-invoke1 rf acc))
+        ((acc x) (if (> left 0) (begin (set! left (- left 1)) acc)
+                     (jolt-invoke2 rf acc x)))))))
 (define (td-take-while pred)
   (lambda (rf)
-    (lambda a
-      (case (length a)
-        ((0) (jolt-invoke rf))
-        ((1) (jolt-invoke rf (car a)))
-        (else (if (jolt-truthy? (jolt-invoke pred (cadr a)))
-                  (jolt-invoke rf (car a) (cadr a))
-                  (make-jolt-reduced (car a))))))))
+    (case-lambda
+      (() (jolt-invoke rf))
+      ((acc) (jolt-invoke1 rf acc))
+      ((acc x) (if (jolt-truthy? (jolt-invoke1 pred x))
+                   (jolt-invoke2 rf acc x)
+                   (make-jolt-reduced acc))))))
 (define (td-drop-while pred)
   (lambda (rf)
     (let ((dropping #t))
-      (lambda a
-        (case (length a)
-          ((0) (jolt-invoke rf))
-          ((1) (jolt-invoke rf (car a)))
-          (else (begin
-                  (when (and dropping (not (jolt-truthy? (jolt-invoke pred (cadr a)))))
-                    (set! dropping #f))
-                  (if dropping (car a) (jolt-invoke rf (car a) (cadr a))))))))))
+      (case-lambda
+        (() (jolt-invoke rf))
+        ((acc) (jolt-invoke1 rf acc))
+        ((acc x) (begin
+                   (when (and dropping (not (jolt-truthy? (jolt-invoke1 pred x))))
+                     (set! dropping #f))
+                   (if dropping acc (jolt-invoke2 rf acc x))))))))
 ;; (mapcat f) transducer: map f, then splice (cat) f's result into rf, honoring a
 ;; mid-splice `reduced`.
 (define (td-mapcat f)
   (lambda (rf)
-    (lambda a
-      (case (length a)
-        ((0) (jolt-invoke rf))
-        ((1) (jolt-invoke rf (car a)))
-        (else (let loop ((acc (car a))
-                         (xs (seq->list (jolt-seq (jolt-invoke f (cadr a))))))
-                (if (or (null? xs) (jolt-reduced? acc)) acc
-                    (loop (jolt-invoke rf acc (car xs)) (cdr xs)))))))))
+    (case-lambda
+      (() (jolt-invoke rf))
+      ((acc) (jolt-invoke1 rf acc))
+      ((acc x) (let loop ((acc acc)
+                          (xs (seq->list (jolt-seq (jolt-invoke1 f x)))))
+                 (if (or (null? xs) (jolt-reduced? acc)) acc
+                     (loop (jolt-invoke2 rf acc (car xs)) (cdr xs))))))))
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
 (define (into-xform to xform from)
