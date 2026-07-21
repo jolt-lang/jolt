@@ -41,7 +41,7 @@
      ;; and stays hash-ordered, like the JVM's TransientArrayMap/TransientHashMap.
      (let ((ht (make-hashtable key-hash jolt=2)) (ord (if (pmap-order coll) '() #f)) (cnt 0))
        ;; visit in iteration order so `ord` ends up reverse-insertion (persistent! reverses it back)
-       (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (when ord (set! ord (cons k ord))) (set! cnt (fx+ cnt 1)) acc) 0)
+       (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (when ord (set! ord (cons (cons k v) ord))) (set! cnt (fx+ cnt 1)) acc) 0)
        (make-jolt-transient 'map ht (fxmax tmap-min-cap cnt) #t ord)))
     ((pset? coll)
      (let ((ht (make-hashtable key-hash jolt=2)))
@@ -68,7 +68,7 @@
 (define (tmap-put! t k v)
   (let ((ht (jolt-transient-buf t)))
     (unless (or (not (jolt-transient-ord t)) (hashtable-contains? ht k))
-      (jolt-transient-ord-set! t (cons k (jolt-transient-ord t))))
+      (jolt-transient-ord-set! t (cons (cons k v) (jolt-transient-ord t))))
     (hashtable-set! ht k v)))
 (define (tmap-del! t k)
   (let ((ht (jolt-transient-buf t)))
@@ -121,7 +121,7 @@
               m)
             ;; array map: rebuild in insertion order
             (let ((m empty-pmap))
-              (for-each (lambda (k) (set! m (pmap-put-ordered m k (hashtable-ref ht k jolt-nil))))
+              (for-each (lambda (p) (set! m (pmap-put-ordered m (car p) (hashtable-ref ht (car p) jolt-nil))))
                         (reverse (jolt-transient-ord t)))
               m))))
     ((set)

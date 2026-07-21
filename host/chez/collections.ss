@@ -315,8 +315,9 @@
 ;; keyword-map case); mixed-key maps still cap at 8.
 (define array-map-limit 8)
 (define array-map-limit-kw 64)
-(define (all-keywords? ks)
-  (or (null? ks) (and (keyword? (car ks)) (all-keywords? (cdr ks)))))
+(define (all-keywords? ord)
+  ;; ord is a list of (key . value) pairs; keyword-ness keys off the pair's car
+  (or (null? ord) (and (keyword? (caar ord)) (all-keywords? (cdr ord)))))
 ;; Should a map of `cnt` entries with insertion order `ord` stay in array mode
 ;; when key `k` is added? Under 8 always; a keyword-only map (existing keys + the
 ;; new key all keywords) grows to 64; otherwise caps at 8.
@@ -326,8 +327,12 @@
         (all-kw (keyword? k))     ;; cached: existing keys are all keywords
         ((and (keyword? k) (all-keywords? ord)) #t)
         (else #f)))
-(define (append-key ord k) (cons k ord))  ; O(1) prepend — reversed order, reversed at iteration
-(define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (car o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
+;; The order list holds (key . value) pairs (glojure's PersistentArrayMap keeps
+;; k/v adjacent): folds scan it directly with no per-key HAMT lookup, and assoc
+;; replacing an existing key updates the value in place via order-replace.
+(define (append-key ord k v) (cons (cons k v) ord))  ; O(1) prepend — reversed order, reversed at iteration
+(define (order-replace ord k v) (if (not ord) ord (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (caar o) k) (cons (cons k v) (cdr o))) (else (cons (car o) (loop (cdr o))))))))
+(define (remove-key ord k) (let loop ((o ord)) (cond ((null? o) '()) ((jolt= (caar o) k) (cdr o)) (else (cons (car o) (loop (cdr o)))))))
 
 ;; growth rule (PersistentArrayMap.assoc): a new key appends to the order while in
 ;; array mode under the limit; otherwise the result is hash-ordered. Replacing an
@@ -337,7 +342,7 @@
          (cnt (pmap-cnt m)) (ord (pmap-order m)))
     (if (unbox added)
         (if (and ord (pmap-array-keep? cnt ord k (pmap-all-kw m)))
-            (let ((new-m (make-pmap r (fx+ cnt 1) (append-key ord k))))
+            (let ((new-m (make-pmap r (fx+ cnt 1) (append-key ord k v))))
               (pmap-all-kw-set! new-m
                 (and (pmap-all-kw m) (keyword? k)))
               new-m)
@@ -345,14 +350,14 @@
         (begin
           (when (and ord (not (pmap-all-kw m)))
             (pmap-all-kw-set! m (all-keywords? ord)))
-          (make-pmap r cnt ord)))))
+          (make-pmap r cnt (order-replace ord k v))))))
 ;; force-ordered / force-hash inserts for rebuilding a map whose final mode is
 ;; already decided (array-map ctor, transient persistent!).
 (define (pmap-put-ordered m k v)
   (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added)))
     (if (unbox added)
-        (make-pmap r (fx+ (pmap-cnt m) 1) (append-key (or (pmap-order m) '()) k))
-        (make-pmap r (pmap-cnt m) (pmap-order m)))))
+        (make-pmap r (fx+ (pmap-cnt m) 1) (append-key (or (pmap-order m) '()) k v))
+        (make-pmap r (pmap-cnt m) (order-replace (pmap-order m) k v)))))
 (define (pmap-put-hash m k v)
   (let* ((added (box #f)) (r (node-assoc (pmap-root m) 0 (key-hash k) k v added)))
     (make-pmap r (if (unbox added) (fx+ (pmap-cnt m) 1) (pmap-cnt m)) #f)))
@@ -371,22 +376,24 @@
 ;; in reverse insertion order; a hash-mode map visits HAMT order (its iteration
 ;; order is unspecified, so reverse-of-HAMT is equivalent and matches prior
 ;; behaviour). Use pmap-fold-fwd when building a value directly in iteration order.
-;; PERF: array-mode iteration does n pmap-get calls (one HAMT lookup per key).
-;; An O(n) scan over a paired [k v] order list would beat n HAMT get calls,
-;; especially for the keyword-only 64-entry maps used in defrecord ext maps.
+;; The order list carries (key . value) pairs, so the array-mode arms below scan
+;; it directly — no per-key HAMT lookup. This matters most for the keyword-only
+;; 64-entry maps used in defrecord ext maps.
 (define (pmap-fold m proc acc)
   (let ((ord (pmap-order m)))
     (if ord
-        ;; ord is reverse-insertion-order (newest first); fold-left + cons = insertion order
-        (fold-left (lambda (a k) (proc k (pmap-get m k jolt-nil) a)) acc ord)
+        ;; ord is reverse-insertion-order (newest first) (key . value) pairs;
+        ;; fold-left + cons = insertion order. Scanning the pairs directly avoids
+        ;; a HAMT lookup per key (the old (pmap-get m k) per element).
+        (fold-left (lambda (a p) (proc (car p) (cdr p) a)) acc ord)
         (node-fold (pmap-root m) proc acc))))
 ;; visit entries in iteration (insertion) order — for code that builds a new map /
 ;; ordered value directly rather than via cons-accumulation.
 (define (pmap-fold-fwd m proc acc)
   (let ((ord (pmap-order m)))
     (if ord
-        (let loop ((ks (reverse ord)) (a acc))
-          (if (null? ks) a (loop (cdr ks) (proc (car ks) (pmap-get m (car ks) jolt-nil) a))))
+        (let loop ((ps (reverse ord)) (a acc))
+          (if (null? ps) a (loop (cdr ps) (proc (caar ps) (cdar ps) a))))
         (node-fold (pmap-root m) proc acc))))
 ;; map LITERAL ctor ({...}): array map up to 8 entries (64 if keyword-only, per 1.13),
 ;; hash map beyond (RT.map).
