@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trivial `joltc prog.clj` drops from ~0.51s to ~0.12s. This is the base floor the
   per-namespace AOT cache (0.4.10) could not touch, since install-owned namespaces
   are never cached.
+- joltc startup drops a further ~15% (~130ms to ~110ms on an M-series machine).
+  The build subsystem (`build.ss` plus the `emit-image.ss`/`dce.ss` it inlines) and
+  the runtime `.ss` source embeds it reads are used only by `jolt build`, but they
+  ran their defines and registered their bytes at every startup. They are now baked
+  as source and loaded lazily on the first `jolt build`, so `run`, `-e`, and every
+  other command skip them. No behavior change to `jolt build`; the standalone binary
+  is also slightly smaller.
 
 A base java.time API in core that works with no dependency, as a single
 implementation rather than two (RFC 0008). Core previously registered a partial
