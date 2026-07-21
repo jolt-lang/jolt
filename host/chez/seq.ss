@@ -37,11 +37,11 @@
 ;; so their result is itself a chunked-seq (chained chunked transforms each batch
 ;; by 32, like the JVM). crest is #f for a plain vector-backed seq (whose "rest"
 ;; is the next 32-block of the SAME cvec) and for every non-chunked cell.
-(define-record-type cseq (fields head (mutable tail) (mutable forced?) list? cvec ci crest) (nongenerative chez-cseq-v4))
-(define (cseq-realized head tail) (make-cseq head tail #t #f #f 0 #f))   ; tail already a seq
-(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f #f 0 #f))
-(define (cseq-list head tail) (make-cseq head tail #t #t #f 0 #f))       ; a PersistentList node
-(define (cseq-vec head tail-thunk v i) (make-cseq head tail-thunk #f #f v i #f)) ; vector-backed
+(define-record-type cseq (fields head (mutable tail) (mutable forced?) list? cvec ci crest (mutable lock)) (nongenerative chez-cseq-v5))
+(define (cseq-realized head tail) (make-cseq head tail #t #f #f 0 #f #f))   ; tail already a seq
+(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f #f #f 0 #f #f))
+(define (cseq-list head tail) (make-cseq head tail #t #t #f 0 #f #f))       ; a PersistentList node
+(define (cseq-vec head tail-thunk v i) (make-cseq head tail-thunk #f #f v i #f #f)) ; vector-backed
 ;; A ChunkedCons cell over a standalone chunk pvec: head is chunk[i], walking
 ;; (seq-more) advances within the chunk and then continues into `rest`. `rest` is
 ;; the already-coerced after-chunk seq (cseq | jolt-nil | a jolt-lazyseq), held in
@@ -53,11 +53,27 @@
                           (if (fx<? i1 (pvec-count chunk))
                               (cseq-chunked chunk i1 rest)
                               (jolt-seq rest))))
-             #f #f chunk i rest))
+              #f #f chunk i rest #f))
 (define (seq-first s) (cseq-head s))
+;; guards lazy creation of a cell's tail mutex on the multi-threaded path (mirrors
+;; force-lazyseq's lock-init). A cseq cell is shared across threads once its owning
+;; lazyseq node is realized (every future/agent walking the same seq reads the SAME
+;; cell), so without serialization two threads can both see forced?#f, both run the
+;; tail thunk, and publish tail/forced? non-atomically — a third reader can then see
+;; forced?#t with tail still the thunk-procedure, leaking a closure out as a seq.
+;; Like force-lazyseq this stays lock-free until jolt-mt? flips (fork-thread shadow).
+(define cseq-lock-init (make-mutex))
+(define (cseq-ensure-lock! s)
+  (with-mutex cseq-lock-init
+    (or (cseq-lock s)
+        (let ((m (make-mutex))) (cseq-lock-set! s m) m))))
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
-  (if (cseq-forced? s) (cseq-tail s)
-      (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t)))
+  (cond
+    ((cseq-forced? s) (cseq-tail s))
+    ((not jolt-mt?) (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t))
+    (else (with-mutex (cseq-ensure-lock! s)     ; multi-threaded: double-checked
+            (if (cseq-forced? s) (cseq-tail s)
+                (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t))))))
 
 ;; The empty seq (Clojure's empty list ()), distinct from nil. The (unused) field
 ;; defeats Chez's interning of fieldless records, so an empty list carrying
