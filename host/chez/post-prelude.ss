@@ -183,15 +183,22 @@
 ;; java.util.Date, its java.sql subclasses, and java.time.Instant). The overlay's
 ;; tagged-:jolt/type read crashes on a sorted collection (get dispatches into the
 ;; comparator with an incomparable key) and misses the Instant shim.
-(let ((instant? (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "instant")))))
-  (def-var! "clojure.core" "inst?"
-    (lambda (x) (if (or (jinst? x) (instant? x)) #t #f)))
-  (let ((ov-inst-ms (var-deref "clojure.core" "inst-ms")))
-    (def-var! "clojure.core" "inst-ms"
-      (lambda (x)
-        (cond ((jinst? x) (jinst-ms x))
-              ((instant? x) (quotient (inst-nanos x) 1000000))
-              (else (jolt-invoke ov-inst-ms x)))))))
+;; A java.time.Instant is the base library's opaque value — a host tagged-table
+;; carrying :jolt.time/type = :jolt.time/instant and its epoch-nanos under :nanos
+;; (stdlib/jolt/time/instant.clj). Recognize it the same way host-table.ss spots a
+;; sorted map, so inst?/inst-ms cover an Instant without loading anything.
+(let ((kw-jt-type    (keyword "jolt.time" "type"))
+      (kw-jt-instant (keyword "jolt.time" "instant"))
+      (kw-nanos      (keyword #f "nanos")))
+  (let ((instant? (lambda (x) (and (htable? x) (jolt=2 (jolt-ref-get x kw-jt-type) kw-jt-instant)))))
+    (def-var! "clojure.core" "inst?"
+      (lambda (x) (if (or (jinst? x) (instant? x)) #t #f)))
+    (let ((ov-inst-ms (var-deref "clojure.core" "inst-ms")))
+      (def-var! "clojure.core" "inst-ms"
+        (lambda (x)
+          (cond ((jinst? x) (jinst-ms x))
+                ((instant? x) (quotient (exact (truncate (jolt-ref-get x kw-nanos))) 1000000))
+                (else (jolt-invoke ov-inst-ms x))))))))
 
 ;; A throwable is not a collection, function, or meta carrier on the JVM. The
 ;; ex-info record type is NOT a pmap, so pmap?/coll?/seqable?/ifn?/associative?

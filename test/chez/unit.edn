@@ -190,12 +190,18 @@
   {:suite "insttime" :expr "(.toEpochMilli (Instant/ofEpochMilli 1234))" :expected "1234"}
   {:suite "insttime" :expr "(instance? java.time.Instant (Instant/ofEpochMilli 0))" :expected "true"}
   {:suite "insttime" :expr "(> (.toEpochMilli (Instant/now)) 1500000000000)" :expected "true"}
-  {:suite "insttime" :expr "(instance? LocalDateTime (-> #inst \"2020-03-05T13:45:30Z\" (.toInstant) (.atZone (ZoneId/systemDefault)) (.toLocalDateTime)))" :expected "true"}
-  {:suite "insttime" :expr "(.format (DateTimeFormatter/ofPattern \"yyyy-MM-dd\") #inst \"2020-03-05T13:45:30Z\")" :expected "2020-03-05"}
-  {:suite "insttime" :expr "(boolean (re-matches #\"[A-Z][a-z]{2} \\d{1,2}, 2020 \\d{1,2}:\\d{2} [AP]M\" (.format (DateTimeFormatter/ofPattern \"MMM d, yyyy h:mm a\") #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
-  {:suite "insttime" :expr "(boolean (re-matches #\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\" (.format DateTimeFormatter/ISO_LOCAL_DATE_TIME #inst \"2020-03-05T13:45:30Z\")))" :expected "true"}
-  {:suite "insttime" :expr "(string? (.format (DateTimeFormatter/ofLocalizedDate FormatStyle/MEDIUM) #inst \"2020-03-05T13:45:30Z\"))" :expected "true"}
-  {:suite "insttime" :expr "(string? (.format (.withLocale (DateTimeFormatter/ofPattern \"yyyy\") (java.util.Locale. \"en\")) #inst \"2020-01-01T00:00:00Z\"))" :expected "true"}
+  {:suite "insttime" :expr "(instance? java.time.LocalDateTime (LocalDateTime/parse \"2020-03-05T13:45:30\"))" :expected "true"}
+  {:suite "insttime" :expr "(str (.toInstant #inst \"2020-03-05T13:45:30Z\"))" :expected "2020-03-05T13:45:30Z"}
+  {:suite "insttime" :expr "(str (LocalDate/of 2020 3 5))" :expected "2020-03-05"}
+  {:suite "insttime" :expr "(.toMillis (Duration/between (Instant/ofEpochMilli 0) (Instant/ofEpochMilli 5000)))" :expected "5000"}
+  {:suite "insttime" :expr "(.toEpochMilli (Instant/parse \"2020-01-01T00:00:00Z\"))" :expected "1577836800000"}
+  {:suite "insttime" :expr "(str (Duration/ofSeconds 90))" :expected "PT1M30S"}
+  {:suite "insttime" :expr "(.getMonths (Period/of 1 2 3))" :expected "2"}
+  {:suite "insttime" :expr "(str (Year/of 2024))" :expected "2024"}
+  ;; DateTimeFormatter, ZoneOffset/ZoneId and Locale are the jolt-lang/time library,
+  ;; not core (RFC 0008); with no dependency the error names the library.
+  {:suite "insttime" :expr "(try (java.time.format.DateTimeFormatter/ofPattern \"yyyy\") (catch Exception e (boolean (re-find #\"jolt-lang/time\" (ex-message e)))))" :expected "true"}
+  {:suite "insttime" :expr "(try (ZoneOffset/ofHours 5) (catch Exception e (boolean (re-find #\"jolt-lang/time\" (ex-message e)))))" :expected "true"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a/b\")))" :expected "/a/b"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a\" \"b\")))" :expected "/a/b"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getName (io/file \"/a/b/c.txt\")))" :expected "c.txt"}

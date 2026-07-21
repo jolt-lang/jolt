@@ -17,6 +17,14 @@
 ;; ns-has-vars? arm and the overlay fns are missing at analysis.
 (load "host/chez/loader.ss")
 (set-source-roots! ldr-install-roots)
+;; The base java.time API (stdlib/jolt/time) autoloads on first java.time.* use at
+;; runtime; here we load it once BEFORE the per-case snapshot below so its
+;; value-semantics arms (impl/install-seams!) and class registrations are part of
+;; the stable base world. Otherwise the first java.time case would install those
+;; arms after the snapshot, and zj-reset! — which prunes vars but can't unregister
+;; a Scheme-level arm — would leave them dangling and break later cases. (Cold
+;; autoload is covered per-process by the smoke gate.)
+(load-namespace "jolt.time.base")
 
 (define (slurp path)
   (call-with-input-file path
