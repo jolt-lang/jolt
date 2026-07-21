@@ -169,7 +169,7 @@
     ;; shared dispatch (cli-core.ss, inlined via the runtime manifest): the -e
     ;; arm, end-of-options, and uncaught reporting are the same code the script
     ;; driver runs — the launcher once carried a stale fork of the -e arm.
-    (jolt-cli-run args (lambda () (jolt-materialize-bundles!)))
+    (jolt-cli-run args (lambda () (jolt-materialize-bundles!) (jb-load-build-subsystem!)))
     (exit 0)))
 ")))
 
@@ -242,10 +242,42 @@
                                  (ei-str-lit jb-version) ")\n"))
   ;; full runtime + compiler image: keep the compiler (joltc evals at runtime).
   (bld-emit-runtime out #f #f)
-  (put-string out "\n;; === build driver (inlined for self-contained `jolt build`) ===\n")
-  (bld-inline-line "(load \"host/chez/build.ss\")" out 0)
-  (put-string out "\n;; === embedded runtime source (self-contained `build` reads these) ===\n")
+  ;; The build subsystem (build.ss + emit-image.ss + dce.ss, fully inlined) and the
+  ;; runtime .ss source embeds it reads are needed ONLY by `jolt build`. As eager
+  ;; top-level forms they cost ~45ms at EVERY startup (build.ss defines ~18ms, the
+  ;; .ss embed registration ~27ms) — dead weight for run / -e / every non-build
+  ;; command. Bake the subsystem as source and the embeds as a thunk, loaded lazily
+  ;; on the first `build` (prepare-build! in the launcher). Safe because no boot-path
+  ;; code references bld-*/ei-*/dce-*: the runtime eval path uses jolt-compile-eval-
+  ;; form, not the emit-image cross-compiler, and .clj namespace loads read the
+  ;; embedded-resources table directly (not via build.ss's bld-source-string).
+  (put-string out "\n;; === build subsystem (deferred: loaded on first `jolt build`) ===\n")
+  (let ((build-src (let ((sp (open-output-string)))
+                     (bld-inline-line "(load \"host/chez/build.ss\")" sp 0)
+                     (get-output-string sp))))
+    (put-string out (string-append "(define jb-build-subsystem-src " (ei-str-lit build-src) ")\n")))
+  ;; Register the .ss embeds inside a thunk: the string literals stay compiled into
+  ;; the heap but the utf8 allocation + hashtable insert only run when called.
+  (put-string out "(define (jb-register-build-embeds!)\n")
   (jb-emit-runtime-embeds out)
+  (put-string out "  (if #f #f))\n")
+  (put-string out "(define jb-build-subsystem-loaded #f)\n")
+  (put-string out
+    (string-append
+      "(define (jb-load-build-subsystem!)\n"
+      "  (unless jb-build-subsystem-loaded\n"
+      "    (set! jb-build-subsystem-loaded #t)\n"
+      ;; eval the inlined subsystem source form-by-form into the top-level env, so
+      ;; build.ss's defines (bld-*, ei-*, dce-*) and its def-var! of jolt.host/
+      ;; build-binary land exactly as an eager (load) would have. It has no (load)
+      ;; forms left — bld-inline-line already spliced emit-image.ss and dce.ss in.
+      "    (let ((p (open-input-string jb-build-subsystem-src)))\n"
+      "      (let loop ()\n"
+      "        (let ((form (read p)))\n"
+      "          (unless (eof-object? form)\n"
+      "            (eval form (interaction-environment))\n"
+      "            (loop)))))\n"
+      "    (jb-register-build-embeds!)))\n"))
   (put-string out "\n;; === embedded jolt-core + stdlib source ===\n")
   (jb-emit-source-embeds out)
   ;; AOT jolt.main + jolt.deps (and their on-demand Clojure closure) as emitted
