@@ -632,6 +632,43 @@
        (if (fx>=? (cdr vb) (pvec-count (car vb))) jolt-nil (vec->seq (car vb) (cdr vb)))))
     (else (jolt-next s))))
 
+;; na-chunk-map-first / na-chunk-filter-first: transform a chunked seq's current
+;; block straight out of the source pvec leaf into a fresh chunk pvec, without the
+;; intermediate copy na-chunk-first makes (map/filter used to na-chunk-first into a
+;; buffer and then re-read it element by element — one wasted pvec alloc + copy per
+;; stage per chunk, and for filter also a Scheme list + reverse + list->vector).
+;; Leaf resolution mirrors na-chunk-first exactly: one contiguous leaf when the
+;; block is 32-aligned, per-index reads for the rare window crossing a leaf.
+(define (na-chunk-map-first s g)
+  (let* ((vb (na-vblock s)) (pv (car vb)) (i (cseq-ci s)) (end (cdr vb))
+         (len (fx- end i)) (out (make-vector len))
+         (node (pv-chunk-for pv i)) (off (fxand i pv-mask)))
+    (if (fx<=? (fx+ off len) (vector-length node))
+        (let loop ((j 0))
+          (if (fx<? j len)
+              (begin (vector-set! out j (g (vector-ref node (fx+ off j)))) (loop (fx+ j 1)))
+              (make-pvec out)))
+        (let loop ((j 0))
+          (if (fx<? j len)
+              (begin (vector-set! out j (g (pvec-nth-d pv (fx+ i j) jolt-nil))) (loop (fx+ j 1)))
+              (make-pvec out))))))
+;; Returns the kept-elements chunk pvec, or #f when the whole block is rejected
+;; (so the caller recurses straight into chunk-rest, emitting no empty cell).
+(define (na-chunk-filter-first s tp keep)
+  (let* ((vb (na-vblock s)) (pv (car vb)) (i (cseq-ci s)) (end (cdr vb))
+         (len (fx- end i)) (out (make-vector len))
+         (node (pv-chunk-for pv i)) (off (fxand i pv-mask))
+         (aligned? (fx<=? (fx+ off len) (vector-length node))))
+    (let loop ((j 0) (w 0))
+      (if (fx<? j len)
+          (let ((x (if aligned? (vector-ref node (fx+ off j)) (pvec-nth-d pv (fx+ i j) jolt-nil))))
+            (if (eq? keep (tp x))
+                (begin (vector-set! out w x) (loop (fx+ j 1) (fx+ w 1)))
+                (loop (fx+ j 1) w)))
+          (cond ((fx=? w 0) #f)
+                ((fx=? w len) (make-pvec out))
+                (else (make-pvec (vec-copy-range out 0 w))))))))
+
 ;; ============================================================================
 ;; map / filter / reduce / into / remove + range / take / concat / apply
 ;; ============================================================================
@@ -653,12 +690,8 @@
     (cond
       ((jolt-nil? s) jolt-empty-list)
       ((na-chunked-seq? s)
-       (let* ((c (na-chunk-first s)) (n (pvec-count c)) (out (make-vector n)))
-         (let loop ((i 0))
-           (if (fx<? i n)
-               (begin (vector-set! out i (g (pvec-nth-d c i jolt-nil))) (loop (fx+ i 1)))
-               (cseq-chunked (make-pvec out) 0
-                             (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (na-chunk-rest s)))))))))))
+       (cseq-chunked (na-chunk-map-first s g) 0
+                     (jolt-make-lazy-seq (lambda () (jolt-seq (map-seq f (jolt-seq (na-chunk-rest s))))))))
       (else
        (cseq-lazy (g (seq-first s)) (lambda () (map-seq f (jolt-seq (seq-more s)))))))))
 (define (map-seq* f seqs)              ; multi-collection map; stops at the shortest
@@ -691,17 +724,14 @@
     (cond
       ((jolt-nil? s) jolt-empty-list)         ; empty result is () (see map-seq)
       ((na-chunked-seq? s)
-       (let* ((c (na-chunk-first s)) (n (pvec-count c)))
-         (let loop ((i 0) (acc '()))
-           (if (fx<? i n)
-               (let ((x (pvec-nth-d c i jolt-nil)))
-                 (loop (fx+ i 1) (if (eq? keep (tp x)) (cons x acc) acc)))
-               (let ((kept (reverse acc)))
-                 (if (null? kept)
-                     (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)
-                     (cseq-chunked (make-pvec (list->vector kept)) 0
-                                   (jolt-make-lazy-seq
-                                    (lambda () (jolt-seq (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)))))))))))
+       (let ((c (na-chunk-filter-first s tp keep)))
+         (if (not c)
+             (filter-seq pred (jolt-seq (na-chunk-rest s)) keep)
+             (cseq-chunked
+              c 0
+              (jolt-make-lazy-seq
+               (lambda ()
+                 (jolt-seq (filter-seq pred (jolt-seq (na-chunk-rest s)) keep))))))))
       (else
        (let walk ((s s))
          (cond ((jolt-nil? s) jolt-empty-list)
