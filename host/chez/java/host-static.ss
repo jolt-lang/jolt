@@ -192,44 +192,51 @@
 (vector-set! (mutable-static-cell "clojure.lang.RT" "checkSpecAsserts" #t) 0 #f)
 
 ;; ---- autoload the java.time base on first use -------------------------------
-;; Core carries a portable base java.time API (jolt.time.base and the namespaces
-;; it requires) that must resolve with NO explicit require. stdlib Clojure loads
-;; lazily and only the Scheme runtime runs at boot, so the base is exposed by
-;; autoloading on first use: when interop resolves an unregistered class under the
-;; `java.time.` package, load the base once and retry the lookup. Date-free
-;; programs never trigger it, so they pay nothing (RFC 0008). The zone/locale
-;; layer (ZonedDateTime, OffsetDateTime, named-zone ZoneId ops) is NOT in the base
-;; — it lives in jolt-lang/time; after the base loads, an unresolved `java.time.`
-;; class means that library isn't loaded, which unknown-class-message names.
-;; A java.time class token arrives fully qualified (java.time.LocalDate) or as a
-;; short name (LocalDate) — jolt has no import map, so both reach here and both
-;; must trigger the autoload. Recognize the `java.time.` prefix plus the base +
-;; zone-layer short names. (A user class colliding with one of these common names
-;; would autoload the harmless base and then still resolve normally; the base only
-;; registers under the java.time names.)
-(define jt-short-names
+;; Core carries the base java.time VALUE types (jolt.time.base and the namespaces
+;; it requires: Instant, LocalDate/LocalTime/LocalDateTime, Duration, Period,
+;; Year/YearMonth/MonthDay, and the Month/DayOfWeek/Chrono* enums) that must
+;; resolve with NO explicit require. stdlib Clojure loads lazily and only the
+;; Scheme runtime runs at boot, so the base is exposed by autoloading on first use:
+;; when interop resolves an unregistered class named by a base value type — or any
+;; `java.time.` class — load the base once and retry the lookup. Date-free programs
+;; never trigger it, so they pay nothing (RFC 0008).
+;;
+;; Everything that FORMATS or names a zone — DateTimeFormatter, FormatStyle,
+;; ZoneOffset, ZoneId, ZonedDateTime, OffsetDateTime, OffsetTime, Clock, and
+;; java.util.Locale — lives only in the jolt-lang/time library. Those are not in
+;; the base, so after the base loads (or immediately, for a bare library-only short
+;; name) the lookup still misses and unknown-class-message names the dependency.
+;;
+;; A class token arrives fully qualified (java.time.LocalDate) or as a short name
+;; (LocalDate) — jolt has no import map, so both reach here. jt-base-names are the
+;; base value-type short names that should autoload the base.
+(define jt-base-names
   '("Instant" "LocalDate" "LocalTime" "LocalDateTime" "Duration" "Period"
     "Year" "YearMonth" "MonthDay" "Month" "DayOfWeek" "ChronoUnit" "ChronoField"
-    "ValueRange" "TemporalAdjusters" "DateTimeFormatter" "FormatStyle"
-    "ZoneOffset" "ZoneId" "ZonedDateTime" "OffsetDateTime" "OffsetTime" "Clock"))
+    "ValueRange" "TemporalAdjusters"))
 (define jt-base-autoload-done #f)
+(define (java-time-prefixed? class)
+  (and (>= (string-length class) 10) (string=? (substring class 0 10) "java.time.")))
+;; Gate for autoloading the base: a base value-type name, or any java.time. class
+;; (a fully-qualified library class autoloads the base too, then falls through to
+;; the hint below — cheap, the base loads at most once).
 (define (java-time-class? class)
-  (or (and (>= (string-length class) 10)
-           (string=? (substring class 0 10) "java.time."))
-      (and (member class jt-short-names) #t)))
+  (or (java-time-prefixed? class) (and (member class jt-base-names) #t)))
 
-;; After the base autoloads, an unresolved java.time class is a zone/locale-layer
-;; class that lives in jolt-lang/time, not core (RFC 0008). The base classes now
-;; resolve, so the hint only fires for the classes that genuinely need the library
-;; (ZonedDateTime, OffsetDateTime, OffsetTime, Clock) — name the dependency rather
-;; than leaving a bare "Unknown class".
+;; Classes provided ONLY by jolt-lang/time (RFC 0008): all formatting and zones,
+;; plus java.util.Locale. An unresolved reference to one of these — or to any
+;; other unresolved java.time. class — names the dependency rather than leaving a
+;; bare "Unknown class".
 (define jt-library-names
-  '("ZonedDateTime" "java.time.ZonedDateTime"
+  '("DateTimeFormatter" "java.time.format.DateTimeFormatter"
+    "FormatStyle" "java.time.format.FormatStyle"
+    "ZoneOffset" "java.time.ZoneOffset" "ZoneId" "java.time.ZoneId"
+    "ZonedDateTime" "java.time.ZonedDateTime"
     "OffsetDateTime" "java.time.OffsetDateTime"
-    "OffsetTime" "java.time.OffsetTime"
-    "Clock" "java.time.Clock"))
+    "OffsetTime" "java.time.OffsetTime" "Clock" "java.time.Clock"
+    "Locale" "java.util.Locale"))
 (define (unknown-class-message class)
-  (if (member class jt-library-names)
+  (if (or (member class jt-library-names) (java-time-prefixed? class))
       (string-append class " is provided by the jolt-lang/time library, not core "
                      "(RFC 0008). Add io.github.jolt-lang/time to your deps.edn.")
       (string-append "Unknown class " class)))
@@ -278,7 +285,12 @@
                        (var-cell-lookup "clojure.core" class))))
          (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
              (apply (var-cell-root cell) args)
-             (throw-jvm (quote IllegalArgumentException) (string-append "No matching ctor found for class " class))))))))
+             ;; a java.time / Locale ctor that never resolved is the jolt-lang/time
+             ;; library, not core — name it; otherwise it's a genuine missing ctor.
+             (throw-jvm (quote IllegalArgumentException)
+               (if (or (member class jt-library-names) (java-time-prefixed? class))
+                   (unknown-class-message class)
+                   (string-append "No matching ctor found for class " class)))))))))
 
 ;; ---- coercion helpers -------------------------------------------------------
 ;; numeric tower: currentTimeMillis/nanoTime are exact longs (JVM).

@@ -746,19 +746,21 @@
 (load "host/chez/java/io.ss")
 (load "host/chez/java/nio-file.ss")             ; java.nio.file: Path / Paths / PathMatcher
 
-;; #inst values + java.time formatting: jinst (RFC3339 ms) +
-;; DateTimeFormatter/Instant/ZoneId/LocalDateTime/FormatStyle/Locale/Date. Loads
-;; LAST — it extends record-method-dispatch / jolt-get / jolt= / jolt-hash /
-;; jolt-pr-str / jolt-type / instance-check and uses host-static.ss's registries.
-;; libc time primitives (zone offset, locale names) exposed as jolt.host vars.
-;; The java.time.* implementation is the jolt-lang/time library (portable Clojure);
-;; these are the two things it can't express without libc.
+;; #inst values + the java.util/java.text date layer: jinst (RFC3339 ms), Date,
+;; sql.Date/Timestamp, Calendar, TimeZone, SimpleDateFormat. Loads LAST — it
+;; extends record-method-dispatch / jolt-get / jolt= / jolt-hash / jolt-pr-str /
+;; jolt-type / instance-check and uses host-static.ss's registries. libc time
+;; primitives (zone offset, locale names) exposed as jolt.host vars, used by the
+;; library's zone/localized layer.
 (load "host/chez/java/tz-primitives.ss")
 (load "host/chez/java/inst-time.ss")
 
-;; The full java.time.* surface is the jolt-lang/time library — portable Clojure
-;; over the __register-class-* seams and the tz-primitives above. Core keeps only
-;; the #inst / java.util.Date layer (inst-time.ss).
+;; java.time is split (RFC 0008): the base VALUE types (Instant, LocalDate/Time/
+;; DateTime, Duration, Period, Year/YearMonth, enums) are portable Clojure under
+;; stdlib/jolt/time/, autoloaded on first use by host-static.ss with no dependency.
+;; Everything that formats or names a zone (DateTimeFormatter, ZoneOffset/ZoneId,
+;; ZonedDateTime/OffsetDateTime, localized formatting, java.util.Locale) is the
+;; jolt-lang/time library — one implementation of each, not carried in core.
 
 ;; Chez-side data reader: read-string / __parse-next /
 ;; __read-tagged. Loads after inst-time.ss — __read-tagged reuses its #uuid/#inst

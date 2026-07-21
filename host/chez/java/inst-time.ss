@@ -7,7 +7,7 @@
 ;; so jolt-get answers those off a jinst — the overlay fns then work unchanged.
 ;;
 ;; This file owns the always-available java.util / java.text layer: java.util.Date,
-;; java.sql.Date / Timestamp, Calendar, TimeZone, Locale, java.text.SimpleDateFormat,
+;; java.sql.Date / Timestamp, Calendar, TimeZone, java.text.SimpleDateFormat,
 ;; and the UTC/GMT format-ms / parse-ms pattern engine that backs them (and HTTP
 ;; date headers). The java.time.* API is the jolt-lang/time base — portable Clojure
 ;; under stdlib/jolt/time/, autoloaded on first use (host-static.ss, RFC 0008) — so
@@ -383,35 +383,11 @@
 (define (mk-instant ms)
   (unless jt-instant-hook (load-namespace "jolt.time.base"))
   (jt-instant-hook (* (ms->exact ms) 1000000)))
-(let ((locale-ctor (lambda (id . _) (make-jhost "locale" (vector (if (string? id) id (jolt-str-render-one id)))))))
-  (register-class-ctor! "Locale" locale-ctor)
-  (register-class-ctor! "java.util.Locale" locale-ctor))
-(register-class-statics! "Locale"
-  (list (cons "getDefault" (lambda () (make-jhost "locale" (vector "default"))))
-        (cons "setDefault" (lambda (x) jolt-nil))
-        (cons "forLanguageTag" (lambda (tag) (make-jhost "locale" (vector (if (string? tag) tag (jolt-str-render-one tag))))))
-        (cons "ENGLISH" (make-jhost "locale" (vector "en")))
-        (cons "FRENCH" (make-jhost "locale" (vector "fr")))
-        (cons "GERMAN" (make-jhost "locale" (vector "de")))
-        (cons "ITALIAN" (make-jhost "locale" (vector "it")))
-        (cons "JAPANESE" (make-jhost "locale" (vector "ja")))
-        (cons "KOREAN" (make-jhost "locale" (vector "ko")))
-        (cons "CHINESE" (make-jhost "locale" (vector "zh")))
-        (cons "SIMPLIFIED_CHINESE" (make-jhost "locale" (vector "zh-CN")))
-        (cons "TRADITIONAL_CHINESE" (make-jhost "locale" (vector "zh-TW")))
-        (cons "FRANCE" (make-jhost "locale" (vector "fr-FR")))
-        (cons "GERMANY" (make-jhost "locale" (vector "de-DE")))
-        (cons "ITALY" (make-jhost "locale" (vector "it-IT")))
-        (cons "JAPAN" (make-jhost "locale" (vector "ja-JP")))
-        (cons "KOREA" (make-jhost "locale" (vector "ko-KR")))
-        (cons "CHINA" (make-jhost "locale" (vector "zh-CN")))
-        (cons "PRC" (make-jhost "locale" (vector "zh-CN")))
-        (cons "TAIWAN" (make-jhost "locale" (vector "zh-TW")))
-        (cons "UK" (make-jhost "locale" (vector "en-GB")))
-        (cons "US" (make-jhost "locale" (vector "en-US")))
-        (cons "CANADA" (make-jhost "locale" (vector "en-CA")))
-        (cons "CANADA_FRENCH" (make-jhost "locale" (vector "fr-CA")))
-        (cons "ROOT" (make-jhost "locale" (vector "")))))
+;; java.util.Locale is only meaningful for formatting, which is the jolt-lang/time
+;; library (DateTimeFormatter and localized names). The library owns the single
+;; Locale registration; core does not carry a second one (RFC 0008). Nothing in the
+;; core java.util/java.text layer takes a Locale — SimpleDateFormat holds a bare
+;; pattern — so referencing Locale with no dependency errors, naming the library.
 
 ;; java.util.Date / java.sql.Timestamp: #inst's classes. (Date.) = now, (Date. ms)
 ;; or (Date. another-date) -> a jinst (ms-of accepts a number / jinst / instant), so
