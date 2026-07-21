@@ -425,20 +425,33 @@
     ;; tolerate the benign race (created concurrently); re-raise a real failure.
     (guard (e (#t (unless (file-exists? dir) (raise e))))
       (mkdir dir))))
+;; Publish the cached .scm/.so atomically. Parallel joltc processes (e.g. the cts
+;; gate's workers) share one cache dir and can compile the SAME namespace at once;
+;; writing straight to base.so let a reader's (file-exists? so)+load see a fasl
+;; another process was mid-write, loading a truncated image that defined nothing
+;; ("No namespace: X found"). So each process compiles to a pid-unique temp and
+;; rename(2)s it into place — atomic within a filesystem, so the .so appears
+;; complete-or-not-at-all. The .so (the cache-hit signal) is published LAST.
 (define (aot-compile-and-cache name file src base)
-  (let ((scm (string-append base ".scm"))
-        (so  (string-append base ".so")))
+  (let* ((scm (string-append base ".scm"))
+         (so  (string-append base ".so"))
+         (pid (number->string (get-process-id)))
+         (tmp-scm (string-append base ".tmp" pid ".scm"))
+         (tmp-so  (string-append base ".tmp" pid ".so")))
     (aot-mkdir-p (path-parent base))
     (let ((captured (aot-capture-load file src)))
       (when (and (string? captured) (fx>? (string-length captured) 0))
-        (let ((out (open-output-file scm 'replace)))
-          (put-string out captured) (close-output-port out))
-        (guard (e (else (aot-info (string-append "compile failed for " name)) #f))
+        (guard (e (else (aot-info (string-append "compile failed for " name))
+                        (delete-file tmp-scm #f) (delete-file tmp-so #f) #f))
+          (let ((out (open-output-file tmp-scm 'replace)))
+            (put-string out captured) (close-output-port out))
           ;; compile-file prints "compiling X with output to Y" per file to
           ;; current-output-port by default — swallow it so a cache miss can't
           ;; corrupt the running program's stdout.
           (parameterize ((current-output-port (open-output-string)))
-            (compile-file scm so)))
+            (compile-file tmp-scm tmp-so))
+          (rename-file tmp-scm scm)
+          (rename-file tmp-so so))
         (unless (file-exists? so)
           (aot-info (string-append "no .so produced for " name)))))))
 ;; A truncated/corrupt .so (a killed process left a partial write, or a concurrent
