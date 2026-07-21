@@ -35,6 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unchanged because its `every?` component is a small slice of the total; the win
   shows up in code that leans on these predicates. `every?` lives in the kernel tier
   so it is expressed with `fn*`, and both functions are part of the minted seed.
+- Chunked `map` and `filter` allocate less per chunk. Both realized a chunk by
+  copying the source vector's 32-element trie leaf into an intermediate pvec and
+  then re-reading that copy to build the output, and `filter` additionally built a
+  Scheme list, reversed it, and converted it to a vector. They now read the source
+  leaf directly into the output chunk, skipping the intermediate copy (and, for
+  `filter`, the list round trip). The leaf resolution is identical to the previous
+  code, so chunk boundaries and the rare non-leaf-aligned window behave exactly as
+  before. On its own this is in the noise on `bench/seqs.clj` because the per-chunk
+  lazy-seq node cost dominated; stacked with the lazy-seq mutex change it accounts
+  for roughly another 4% (about 30ms) on that benchmark.
 
 ## [0.4.12] - 2026-07-21
 

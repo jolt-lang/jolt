@@ -1150,6 +1150,17 @@
   {:suite "r3-every-some" :expr "(some (fn [_] false) [1 2 3])" :expected ""}
   {:suite "r3-every-some" :expr "[(some pos? []) (some pos? nil) (every? pos? []) (every? pos? nil)]" :expected "[nil nil true true]"}
   {:suite "r3-every-some" :expr "[(not-any? even? [1 3 5]) (not-any? even? [1 2 3]) (not-every? even? [2 4 5]) (not-every? even? [2 4 6])]" :expected "[true false true false]"}
+  ;; chunked map/filter across 32-element chunk boundaries (guards reading the
+  ;; source leaf directly instead of via an intermediate copy): exact values,
+  ;; partial last chunk, an all-rejected chunk, vector sources, and laziness.
+  {:suite "r2-chunk" :expr "(reduce + (map inc (range 100)))" :expected "5050"}
+  {:suite "r2-chunk" :expr "(= (mapv (fn [x] (* x x)) (range 65)) (vec (map (fn [x] (* x x)) (range 65))))" :expected "true"}
+  {:suite "r2-chunk" :expr "[(count (map inc (range 32))) (count (map inc (range 33))) (last (map inc (range 33)))]" :expected "[32 33 33]"}
+  {:suite "r2-chunk" :expr "[(count (filter even? (range 70))) (last (filter even? (range 70)))]" :expected "[35 68]"}
+  {:suite "r2-chunk" :expr "(vec (take 3 (filter (fn [x] (> x 50)) (range 100))))" :expected "[51 52 53]"}
+  {:suite "r2-chunk" :expr "(seq (filter (fn [x] (> x 1000)) (range 100)))" :expected ""}
+  {:suite "r2-chunk" :expr "(reduce + (filter odd? (vec (range 64))))" :expected "1024"}
+  {:suite "r2-chunk" :expr "[(nth (map inc (range)) 40) (first (filter (fn [x] (> x 100)) (range)))]" :expected "[41 101]"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-map 1 :a 2 :b 3 :c 4 :d 5 :e) >= 2 <= 4)" :expected "([4 :d] [3 :c] [2 :b])"}
