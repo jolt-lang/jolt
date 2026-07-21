@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Closed the reader-side half of the lazy-realization race. The tail force
+  (`seq-more`) and lazy-node force (`force-lazyseq`) kept an unlocked fast-path
+  read of the realized flag and value as their first case, taken even in
+  multi-threaded programs. Because the writer stores the value and the flag with no
+  barrier between them, on a weak memory model like ARM64 a lock-free reader could
+  observe the flag set while the value was still the thunk, the same leaked-closure
+  crash the earlier writer-side fix described. Once a second thread exists, every
+  access now goes through the per-node and per-cell mutex, reads included, so the
+  reader synchronizes against the writer's release. Single-threaded programs keep
+  the fully lock-free fast path. Host-runtime change only; the minted seed is
+  unaffected.
+
 - Fixed a latent concurrency bug in lazy sequence realization. A `cseq` seq cell
   memoizes its tail under mutable `tail`/`forced?` fields with no synchronization,
   so once a lazy-seq node was realized its underlying cell chain was shared across

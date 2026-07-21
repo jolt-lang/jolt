@@ -1138,6 +1138,12 @@
   ;; concurrent realization across MANY chunked nodes still runs each element's
   ;; body exactly once (guards the multi-threaded locked path across chunk tails).
   {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (range 100))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "100"}
+  ;; reader-side: 16 futures each reduce+sum the SAME shared lazy map, forcing its
+  ;; cseq cells concurrently. A torn read (forced?/realized? seen set before the
+  ;; value store lands) would leak a thunk out as a seq and crash or give a wrong
+  ;; sum. Every future must observe the exact value (guards seq-more/force-lazyseq
+  ;; going through the per-cell mutex on reads once multi-threaded).
+  {:suite "r7-lazyseq" :expr "(let [s (map inc (range 200)) rs (doall (map deref (for [_ (range 16)] (future (reduce + s)))))] [(count rs) (every? (fn [x] (= x 20100)) rs)])" :expected "[16 true]"}
   ;; every?/some short-circuit and laziness (guards the reduce+reduced rewrites):
   ;; the pred runs exactly up to the decisive element, both terminate on infinite
   ;; seqs, some returns the pred's truthy value (not the element) and nil (not
