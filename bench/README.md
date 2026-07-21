@@ -20,10 +20,13 @@ absolute reference.
 | `binary-trees` | allocation / GC pressure (escaping short-lived records) | scalar-replace, escape analysis | CLBG |
 | `dispatch` | polymorphic (**megamorphic**) protocol dispatch | devirt, inline-cache | AWFY-style |
 | `mono-dispatch` | **monomorphic** protocol dispatch (devirt/inline-cache *can* fire) | devirt, inline-cache | AWFY-style |
-| `collections` | persistent map/vector churn (HAMT / 32-way tries) | persistent structures, transients | CLBG k-nucleotide-style |
+| `collections` | persistent map/vector churn (HAMT / 32-way tries) + map/filter/take/reduce over the built vector | persistent structures, transients | CLBG k-nucleotide-style |
 | `mandelbrot` | pure float compute (tight arith loops, no alloc/dispatch) | native arith, loop codegen | CLBG |
 | `fib` | recursion: function-call + integer-arith overhead | native arith, small-fn inlining | CLBG |
+| `tak` | deep three-way self-recursion (denser call overhead than `fib`) | native arith, small-fn inlining, self-call direct-link | Gabriel |
+| `loop-recur` | tight loop/recur iteration, no seq/collection alloc (single, nested, branchy) | native arith, loop codegen | AWFY-style |
 | `seqs` | **lazy-seq + HOF pipelines** (range/map/filter/reduce, every?, iterate/take, mapcat) | lazy-seq allocation, per-element call overhead | AWFY-style |
+| `transducers` | transducer pipelines (comp of map/filter/take via transduce/into/eduction) | reducing-fn composition, no lazy-seq cells | AWFY-style |
 
 What the ray tracer does **not** capture and these do: allocation as the
 bottleneck (~7% there), megamorphic *and* monomorphic dispatch (its dispatch is
