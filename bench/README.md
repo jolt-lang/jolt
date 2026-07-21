@@ -58,7 +58,7 @@ machine-specific, regenerate locally), ascending. **opt** = `--direct-link
 | `mono-dispatch` | ~3.7× | ~3.9× | monomorphic protocol dispatch |
 | `binary-trees` | ~7.4× | ~7.3× | escaping short-lived records (allocation/GC) |
 | `seqs` | ~8.0× | ~7.7× | lazy-seq + HOF pipelines (allocation + per-element calls) |
-| `loop-recur` | ~8.3× | ~8.3× | tight loop/recur with per-iteration `mod`/`bit-xor` |
+| `loop-recur` | ~8.3× | ~8.3× | tight loop/recur + per-iteration integer arith (`mod`, `quot`, `bit-xor`) |
 
 `opt` and `release` now track each other closely across the suite — the plain
 `jolt build` picks up most of the win. Earlier the release column trailed opt on
@@ -73,9 +73,12 @@ var-routed HOF call at each stage, none of which the optimizer's
 arithmetic/dispatch/alloc passes target. The recent lazy-seq work (single-thread
 lock elision, chunk fusion, transducer arities) brought this ratio down from
 ~10.9×, but it stays the dominant cost of script-style workloads (e.g.
-ys-compiled programs). `loop-recur` is the arithmetic-loop axis: the loop back-edge
-itself matches the JVM, but the body runs `mod` and `bit-xor` every iteration,
-which the JVM JIT inlines and jolt currently routes through core.
+ys-compiled programs). `loop-recur` is the arithmetic-loop axis: jolt matches the
+JVM on the pure counted-loop back-edge (see `fib`/`mandelbrot`), so the gap is the
+per-iteration integer arithmetic — a `mod` every step, plus `quot`/`even?`/`bit-xor`
+in the nested and Collatz arms. Those ops emit inline (they are hot-primitive
+lowered, not var-routed), so the residual is the arithmetic itself against what the
+JIT compiles to primitive long ops.
 
 - **Faster than the JVM (`tak` ~0.3×, `fib` ~0.6×)**: integer recursion and dense
   self-calls, where jolt direct-links the self-call and runs the arithmetic as
