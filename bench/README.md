@@ -23,6 +23,7 @@ absolute reference.
 | `collections` | persistent map/vector churn (HAMT / 32-way tries) | persistent structures, transients | CLBG k-nucleotide-style |
 | `mandelbrot` | pure float compute (tight arith loops, no alloc/dispatch) | native arith, loop codegen | CLBG |
 | `fib` | recursion: function-call + integer-arith overhead | native arith, small-fn inlining | CLBG |
+| `seqs` | **lazy-seq + HOF pipelines** (range/map/filter/reduce, every?, iterate/take, mapcat) | lazy-seq allocation, per-element call overhead | AWFY-style |
 
 What the ray tracer does **not** capture and these do: allocation as the
 bottleneck (~7% there), megamorphic *and* monomorphic dispatch (its dispatch is
@@ -51,6 +52,18 @@ plain `jolt build` (`MODE_A=1` adds this column):
 | `mandelbrot` | ~2.0× | ~6.5× | pure float compute (fl-unboxing needs `--opt`) |
 | `mono-dispatch` | ~2.6× | ~4.0× | monomorphic protocol dispatch |
 | `binary-trees` | ~7.0× | ~7.0× | escaping short-lived records (allocation/GC) |
+| `seqs` | ~10.9× | ~10.9× | lazy-seq + HOF pipelines (allocation + per-element calls) |
+
+`seqs` is the widest gap in the suite and the one idiomatic Clojure hits most:
+range/map/filter/reduce chains, short-circuiting `every?`, `iterate`/`take`, and
+`mapcat` all build lazy-seq cells and call a closure per element. jolt is at or
+ahead of the JVM on tight arithmetic loops (`fib`, `mandelbrot --opt`) but a lazy
+seq is a chain of allocated thunks with a var-routed HOF call at each stage, none
+of which the optimizer's arithmetic/dispatch/alloc passes target, so the ratio
+barely moves between `opt` and `release`. This axis dominates script-style
+workloads (e.g. ys-compiled programs) far more than the record/dispatch axes do.
+For reference this bench is ~2.7× babashka, versus jolt being *faster* than bb on
+the tight-loop `fib`/`mandelbrot` shapes.
 
 - **Parity (~1.1–1.3×, both modes)**: integer recursion and megamorphic
   protocol dispatch. A megamorphic site runs a per-site polymorphic inline
@@ -128,6 +141,30 @@ it's on demand.
 
 Needs Chez's kernel dev files (`libkernel.a` + `scheme.h`) and `cc` for the build,
 like `jolt build`; set `JOLT_CHEZ_CSV` to override the detected csv dir.
+
+## Startup / small-program latency
+
+`bench/run.sh` builds each benchmark to a binary and times the compute *inside*
+it, so it deliberately excludes `joltc`'s own startup. That fixed floor — boot the
+runtime + compiler image, then compile the program — is what dominates ys-style
+workloads: many short `joltc prog.clj` runs where the program itself runs for
+milliseconds. `bench/startup.sh` measures it, whole-process wall clock (best of N)
+for a built joltc against babashka on the same sources:
+
+```sh
+bench/startup.sh                          # default 7 reps
+REPS=15 bench/startup.sh                   # more reps
+JOLT_BIN=/path/to/joltc bench/startup.sh   # pick the binary
+```
+
+Three sizes: `version` (pure boot floor, no program), `trivial` (boot + compile +
+run a one-liner), `script` (a small lazy-seq pipeline). Use a BUILT joltc
+(`target/release/joltc` or an installed one), not the dev `bin/joltc` source
+launcher — the dev script boots from source and opts out of the AOT cache, so it
+is not representative. Indicative (M-series): ~130ms vs babashka ~20ms (~6.5×).
+The floor is runtime + compiler image instantiation that re-runs each boot (Chez
+has no heap snapshot); see the CLI-closure AOT work that removed the per-boot
+recompile of `jolt.main`.
 
 ## A/B against a change
 
