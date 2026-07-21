@@ -169,6 +169,27 @@ The floor is runtime + compiler image instantiation that re-runs each boot (Chez
 has no heap snapshot); see the CLI-closure AOT work that removed the per-boot
 recompile of `jolt.main`.
 
+`startup.sh` tells you the floor is there but not where it goes. `bench/startup-phases.sh`
+attributes a `joltc prog.clj` run to four phases so a change shows which one it moved:
+
+```sh
+bench/startup-phases.sh                              # 7 reps, 400 defns, 30M-iter loop
+REPS=15 bench/startup-phases.sh                      # more reps
+DEFNS=800 LOOP=60000000 bench/startup-phases.sh      # heavier compile / run
+JOLT_BIN=/path/to/joltc bench/startup-phases.sh      # pick the binary
+```
+
+`boot` is `joltc --version` (runtime + image load, `jolt.main` recompile).
+`dispatch` is the deps/project resolve + load-file setup a file run adds on top,
+measured against a `nil` file. `compile` is the delta of a compile-heavy,
+run-trivial program (many defns) over the `nil` file, and `run` is the delta of a
+run-heavy, compile-trivial program (one long loop). The phases are external
+subtractions, each isolating one cost by construction — honest approximations,
+not a strict partition, but directional: speed up the compiler and `compile`
+drops, speed up the runtime and `run` drops. Indicative (M-series): boot ~110ms,
+dispatch ~1ms, compile ~400ms for 400 defns, run ~120ms for a 30M-iter loop —
+compilation is the dominant per-program cost.
+
 ## A/B against a change
 
 To measure a pass, run the suite on `main`, then on the branch, back to back
