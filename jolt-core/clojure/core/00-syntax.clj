@@ -34,14 +34,14 @@
       (throw (str "pos? requires a number, got: " x)))))
 
 ;; Canonical every?: short-circuits on the first falsey result, so infinite
-;; seqs with an early counterexample terminate.
+;; seqs with an early counterexample terminate. Expressed over reduce+reduced so a
+;; chunked source (range, vector) drives reduce's tight index loop instead of a
+;; per-element seq/first/next walk; reduce steps a lazy seq one cell at a time and
+;; `reduced` stops it, preserving laziness and short-circuit. (fn* only here — this
+;; is kernel tier, above the fn/when/cond defmacros.)
 (def every?
   (fn* every? [pred coll]
-    (if (nil? (seq coll))
-      true
-      (if (pred (first coll))
-        (recur pred (next coll))
-        false))))
+    (reduce (fn* [_ x] (if (pred x) true (reduced false))) true coll)))
 
 ;; empty?/keys/vals live HERE (not 20-coll) because the expanders below call
 ;; them at expansion time, which first happens during the kernel-tier compile.
