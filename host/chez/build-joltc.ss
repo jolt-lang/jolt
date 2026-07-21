@@ -173,6 +173,66 @@
     (exit 0)))
 ")))
 
+;; --- AOT the CLI entry closure ----------------------------------------------
+;; jolt.main + jolt.deps and their on-demand Clojure require closure (clojure.string,
+;; clojure.edn, jolt.mvn-http, …) used to be baked as top-level (load-namespace …)
+;; forms. flat.so is a Chez boot file whose top-level forms re-execute at every
+;; Sbuild_heap (every process start), so those load-namespace calls re-analyzed and
+;; re-emitted the whole graph from Clojure source on EVERY invocation — ~380ms, about
+;; 70% of joltc's startup floor. Instead we emit their Scheme HERE, at build time,
+;; via the same emit-image path an app build uses, so at boot the vars are defined by
+;; running compiled Scheme (a few ms) exactly like the rest of the runtime image.
+;;
+;; The runtime + compiler image + clojure.core are already emitted above (bld-emit-
+;; runtime). We load jolt.main in THIS build process to populate the compiler's
+;; registries, capturing the on-demand load order via the loader's ns-loaded-hook —
+;; which fires only for namespaces NOT already in the image, i.e. exactly the CLI's
+;; on-demand closure. Each ns is emitted var-routed (prelude mode, direct-link OFF)
+;; so its runtime behavior is identical to the interpreted load it replaces. A form
+;; that fails to emit fails the build (bld-emit-ns is strict), same as an app build.
+;; jolt.deps's lazy in-fn (require 'clojure.data.json) is not on the load path here,
+;; so it stays load-on-demand at runtime — unchanged.
+(define (jb-emit-cli-ns out)
+  (let ((order '()))
+    (set-ns-loaded-hook! (lambda (name file) (set! order (cons (cons name file) order))))
+    (load-namespace "jolt.main")
+    (load-namespace "jolt.deps")
+    (set-ns-loaded-hook! (lambda (name file) #f))
+    (let ((ordered (reverse order)))   ; deps complete loading before requirers -> deps-first
+      (when (null? ordered)
+        (error 'build-joltc "no CLI namespace captured for jolt.main — is jolt-core on the source roots?"))
+      (dynamic-wind
+        (lambda ()
+          (ei-fresh-unit!)
+          ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
+          (set-optimize! #t)
+          (set-release! #t)
+          ((var-deref "jolt.backend-scheme" "set-var-cache!") #t))
+        (lambda ()
+          (for-each
+            (lambda (nf)
+              (let ((name (car nf)) (src (ldr-read-source (cdr nf))))
+                (put-string out (string-append "\n;; --- AOT " name " ---\n"))
+                (parameterize ((rdr-source-file (cdr nf)))
+                  (put-string out "(jolt-ns-load-vars-push!)\n")
+                  (for-each (lambda (s) (put-string out s) (put-string out "\n"))
+                            (bld-ns-prelude name src))
+                  (for-each (lambda (s) (put-string out s) (put-string out "\n"))
+                            (bld-emit-ns name src))
+                  (put-string out "(jolt-ns-load-vars-pop!)\n")
+                  ;; Record the ns as loaded so the runtime dispatch's
+                  ;; (load-namespace "jolt.main") in cli-core.ss is a no-op — the
+                  ;; defines above already installed every var. Without this the
+                  ;; loader sees an unmarked ns and recompiles it from source on the
+                  ;; first command that enters jolt.main/-main (run/build/version).
+                  (put-string out (string-append "(ldr-mark-loaded! " (ei-str-lit name) ")\n")))))
+            ordered))
+        (lambda ()
+          (set-optimize! #f)
+          (set-release! #f)
+          ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
+          (ei-clear-cached!))))))
+
 (display "build-joltc: emitting flat source\n")
 (let ((out (open-output-file jb-flat-ss 'replace)))
   ;; Bake the version FIRST: rt.ss's jolt-version-string probes this binding via
@@ -188,11 +248,12 @@
   (jb-emit-runtime-embeds out)
   (put-string out "\n;; === embedded jolt-core + stdlib source ===\n")
   (jb-emit-source-embeds out)
-  ;; Preload jolt.main + jolt.deps into the image so CLI dispatch (every
-  ;; run/build/path/repl command) skips the ~0.14s source-load.
-  (put-string out "\n;; === AOT jolt.main + jolt.deps ===\n")
-  (put-string out "(load-namespace \"jolt.main\")\n")
-  (put-string out "(load-namespace \"jolt.deps\")\n")
+  ;; AOT jolt.main + jolt.deps (and their on-demand Clojure closure) as emitted
+  ;; Scheme so CLI dispatch never recompiles them from source at startup. See
+  ;; jb-emit-cli-ns — this replaces the old (load-namespace …) calls that paid the
+  ;; ~380ms analyze/emit cost on EVERY process start.
+  (put-string out "\n;; === AOT jolt.main + jolt.deps (emitted Scheme) ===\n")
+  (jb-emit-cli-ns out)
   (put-string out "\n;; === joltc launcher ===\n")
   (jb-emit-launcher out)
   (close-port out))
