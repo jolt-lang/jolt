@@ -1138,6 +1138,18 @@
   ;; concurrent realization across MANY chunked nodes still runs each element's
   ;; body exactly once (guards the multi-threaded locked path across chunk tails).
   {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (range 100))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "100"}
+  ;; every?/some short-circuit and laziness (guards the reduce+reduced rewrites):
+  ;; the pred runs exactly up to the decisive element, both terminate on infinite
+  ;; seqs, some returns the pred's truthy value (not the element) and nil (not
+  ;; false) when nothing matches, and empty/nil colls give the vacuous answers.
+  {:suite "r3-every-some" :expr "(let [a (atom 0)] [(every? (fn [x] (swap! a inc) (< x 3)) (range 10)) @a])" :expected "[false 4]"}
+  {:suite "r3-every-some" :expr "(let [a (atom 0)] [(every? (fn [x] (swap! a inc) true) (range 5)) @a])" :expected "[true 5]"}
+  {:suite "r3-every-some" :expr "(every? pos? (range))" :expected "false"}
+  {:suite "r3-every-some" :expr "(let [a (atom 0)] [(some (fn [x] (swap! a inc) (when (even? x) (* x 100))) [1 3 4 5]) @a])" :expected "[400 3]"}
+  {:suite "r3-every-some" :expr "(some (fn [x] (when (> x 3) x)) (range))" :expected "4"}
+  {:suite "r3-every-some" :expr "(some (fn [_] false) [1 2 3])" :expected ""}
+  {:suite "r3-every-some" :expr "[(some pos? []) (some pos? nil) (every? pos? []) (every? pos? nil)]" :expected "[nil nil true true]"}
+  {:suite "r3-every-some" :expr "[(not-any? even? [1 3 5]) (not-any? even? [1 2 3]) (not-every? even? [2 4 5]) (not-every? even? [2 4 6])]" :expected "[true false true false]"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-map 1 :a 2 :b 3 :c 4 :d 5 :e) >= 2 <= 4)" :expected "([4 :d] [3 :c] [2 :b])"}

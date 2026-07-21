@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   happens-before so the spawned child sees the flag. The lazy-seq/HOF benchmark
   (`bench/seqs.clj`) drops about 26% (roughly 1200ms to 890ms on an M-series
   machine); tight-loop and persistent-collection benchmarks are unchanged.
+- `every?`, `some`, and the `not-every?`/`not-any?` derived from them are faster
+  over chunked collections. They walked a sequence cell by cell with
+  `seq`/`first`/`next`, which re-coerces to a seq and allocates a step cell per
+  element and threw away the tight index loop a chunked source like `range` or a
+  vector already supports. They are now expressed over `reduce` and `reduced`, so a
+  chunked source drives `reduce`'s index loop while a lazy seq is still stepped one
+  cell at a time, and `reduced` preserves the short-circuit and laziness (an
+  infinite seq with an early counterexample still terminates). A scan-heavy probe
+  (`every?` over many small ranges) drops about 30%. The `bench/seqs.clj` aggregate
+  is unchanged because its `every?` component is a small slice of the total; the win
+  shows up in code that leans on these predicates. `every?` lives in the kernel tier
+  so it is expressed with `fn*`, and both functions are part of the minted seed.
 
 ## [0.4.12] - 2026-07-21
 

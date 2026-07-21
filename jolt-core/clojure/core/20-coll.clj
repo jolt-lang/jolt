@@ -151,9 +151,11 @@
 (defn every-pred [& preds]
   (fn [& xs] (every? (fn [p] (every? p xs)) preds)))
 
+;; Expressed over reduce+reduced (like every?) so a chunked source drives reduce's
+;; index loop. Returns the first truthy (pred x), or nil; reduced short-circuits on
+;; the first match, keeping it lazy over infinite seqs.
 (defn some [pred coll]
-  (when-let [s (seq coll)]
-    (or (pred (first s)) (recur pred (next s)))))
+  (reduce (fn [_ x] (let [v (pred x)] (if v (reduced v) nil))) nil coll))
 
 ;; Reference arities: at least one predicate ((some-fn) is an arity error), and
 ;; the returned fn chains with or — a no-match result is the last predicate's
