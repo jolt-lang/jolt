@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before. On its own this is in the noise on `bench/seqs.clj` because the per-chunk
   lazy-seq node cost dominated; stacked with the lazy-seq mutex change it accounts
   for roughly another 4% (about 30ms) on that benchmark.
+- Transducers are faster and no longer slower than the equivalent lazy pipeline.
+  Each transducer stage's reducing fn was a variadic `(lambda a (case (length a)
+  …))`, so calling it with two arguments allocated a rest list and walked
+  `(length a)` on every element, then forwarded through the general variadic
+  invoke. Each stage is now a `case-lambda` with the exact transducer arities
+  (init, complete, step), so there is no rest list and no length check, and the
+  step calls the downstream reducing fn and the mapping/predicate fn through the
+  fixed-arity fast paths. The map transducer keeps a trailing variadic clause for
+  its multi-input arity, so the single-input hot path stays allocation-free. On a
+  2,000,000-element pipeline `transduce` drops about 23% and `into` with an xform
+  about 22%; a transducer pipeline is now faster than the lazy-seq equivalent, as
+  it should be, where before it was slower.
 
 ## [0.4.12] - 2026-07-21
 

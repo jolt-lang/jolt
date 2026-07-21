@@ -1161,6 +1161,16 @@
   {:suite "r2-chunk" :expr "(seq (filter (fn [x] (> x 1000)) (range 100)))" :expected ""}
   {:suite "r2-chunk" :expr "(reduce + (filter odd? (vec (range 64))))" :expected "1024"}
   {:suite "r2-chunk" :expr "[(nth (map inc (range)) 40) (first (filter (fn [x] (> x 100)) (range)))]" :expected "[41 101]"}
+  ;; transducer rf arities exercised directly (guards the case-lambda rewrite):
+  ;; 0-arg init, 1-arg completion, 2-arg step, the map transducer's multi-input
+  ;; arity, comp composition, and reduced short-circuit via take.
+  {:suite "r4-transducer" :expr "(((map inc) conj) [] 5)" :expected "[6]"}
+  {:suite "r4-transducer" :expr "(((map +) conj) [] 1 2 3)" :expected "[6]"}
+  {:suite "r4-transducer" :expr "(((comp (map inc) (filter even?)) conj))" :expected "[]"}
+  {:suite "r4-transducer" :expr "(transduce (map inc) conj [] [1 2 3])" :expected "[2 3 4]"}
+  {:suite "r4-transducer" :expr "(into [] (comp (map inc) (take 2)) (range 100))" :expected "[1 2]"}
+  {:suite "r4-transducer" :expr "(transduce (comp (filter odd?) (map (fn [x] (* x x)))) + 0 [1 2 3 4 5])" :expected "35"}
+  {:suite "r4-transducer" :expr "(transduce (take 3) + 0 (range))" :expected "3"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-map 1 :a 2 :b 3 :c 4 :d 5 :e) >= 2 <= 4)" :expected "([4 :d] [3 :c] [2 :b])"}
