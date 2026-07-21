@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.11] - 2026-07-20
+### Changed
+
+- joltc startup is about 4x faster. The CLI entry namespaces (`jolt.main`,
+  `jolt.deps`, and their on-demand Clojure closure) were baked into the binary as
+  `(load-namespace …)` boot forms, which re-analyzed and re-emitted them from
+  Clojure source on every process start because a Chez boot file re-runs its
+  top-level forms each `Sbuild_heap`. That was roughly 380ms, about 70% of the
+  startup floor, paid by every invocation. They are now emitted to Scheme at build
+  time via the same path an app build uses and marked loaded, so at boot the vars
+  are installed by running compiled code like the rest of the runtime image. A
+  trivial `joltc prog.clj` drops from ~0.51s to ~0.12s. This is the base floor the
+  per-namespace AOT cache (0.4.10) could not touch, since install-owned namespaces
+  are never cached.
 
 A base java.time API in core that works with no dependency, as a single
 implementation rather than two (RFC 0008). Core previously registered a partial
