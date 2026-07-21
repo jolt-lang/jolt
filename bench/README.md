@@ -43,56 +43,62 @@ control with record state), k-nucleotide proper.
 source — the jolt/JVM scorecard. jolt's optimizing passes fire only in a build;
 `joltc run -m` is unoptimized, so the harness always builds.
 
-Indicative ratios (M-series, single isolated run — numbers are machine-specific,
-regenerate locally), ascending. **opt** = `--direct-link --opt`; **release** = a
-plain `jolt build` (`MODE_A=1` adds this column):
+Indicative ratios (M-series, best of two isolated runs — numbers are
+machine-specific, regenerate locally), ascending. **opt** = `--direct-link
+--opt`; **release** = a plain `jolt build` (`MODE_A=1` adds this column):
 
 | benchmark | opt | release | axis |
 |---|---|---|---|
-| `fib` | ~1.1× | ~1.1× | call + integer arith |
-| `dispatch` | ~1.2× | ~1.3× | megamorphic protocol dispatch |
-| `collections` | ~2.0× | ~2.0× | persistent map/vector churn |
-| `mandelbrot` | ~2.0× | ~6.5× | pure float compute (fl-unboxing needs `--opt`) |
-| `mono-dispatch` | ~2.6× | ~4.0× | monomorphic protocol dispatch |
-| `binary-trees` | ~7.0× | ~7.0× | escaping short-lived records (allocation/GC) |
-| `seqs` | ~10.9× | ~10.9× | lazy-seq + HOF pipelines (allocation + per-element calls) |
+| `tak` | ~0.3× | ~0.3× | deep three-way self-recursion + integer arith (beats the JVM) |
+| `fib` | ~0.6× | ~0.6× | recursion: call + integer arith (beats the JVM) |
+| `collections` | ~1.1× | ~1.1× | persistent map/vector churn |
+| `dispatch` | ~1.9× | ~1.8× | megamorphic protocol dispatch |
+| `mandelbrot` | ~2.0× | ~2.0× | pure float compute |
+| `transducers` | ~3.3× | ~3.3× | transducer pipelines (comp of map/filter/take) |
+| `mono-dispatch` | ~3.7× | ~3.9× | monomorphic protocol dispatch |
+| `binary-trees` | ~7.4× | ~7.3× | escaping short-lived records (allocation/GC) |
+| `seqs` | ~8.0× | ~7.7× | lazy-seq + HOF pipelines (allocation + per-element calls) |
+| `loop-recur` | ~8.3× | ~8.3× | tight loop/recur with per-iteration `mod`/`bit-xor` |
 
-`seqs` is the widest gap in the suite and the one idiomatic Clojure hits most:
-range/map/filter/reduce chains, short-circuiting `every?`, `iterate`/`take`, and
-`mapcat` all build lazy-seq cells and call a closure per element. jolt is at or
-ahead of the JVM on tight arithmetic loops (`fib`, `mandelbrot --opt`) but a lazy
-seq is a chain of allocated thunks with a var-routed HOF call at each stage, none
-of which the optimizer's arithmetic/dispatch/alloc passes target, so the ratio
-barely moves between `opt` and `release`. This axis dominates script-style
-workloads (e.g. ys-compiled programs) far more than the record/dispatch axes do.
-For reference this bench is ~2.7× babashka, versus jolt being *faster* than bb on
-the tight-loop `fib`/`mandelbrot` shapes.
+`opt` and `release` now track each other closely across the suite — the plain
+`jolt build` picks up most of the win. Earlier the release column trailed opt on
+`mandelbrot` (~6.5×) and `mono-dispatch` (~4×); that gap has since closed, so the
+scorecard still tracks both modes but they now mostly agree.
 
-- **Parity (~1.1–1.3×, both modes)**: integer recursion and megamorphic
-  protocol dispatch. A megamorphic site runs a per-site polymorphic inline
-  cache (4-slot descriptor scan, unsafe `#3%` vector reads since the cache
-  shape is proven), so it no longer pays a registry lookup per call.
-- **`collections`** is ~2× since jolt adopted JVM-exact hashing: every map/set
-  key hashes with Clojure's Murmur3 `hasheq` (so `hash`, set/map iteration
-  order, and hash-dependent output match the JVM byte-for-byte). Keywords and
-  symbols cache their hash; the residual is Murmur3 on integer keys, which the
-  JVM JITs to a handful of instructions and jolt runs as (unsafe, proven) fx
-  ops — this benchmark's integer-keyed churn is the worst case.
-- **`mandelbrot`** is ~2× under `--opt` (fl-unboxing) and ~6.5× in a release
-  build — that release gap is the cost of not direct-linking, and is why the
-  scorecard tracks both modes.
-- **Dispatch & allocation (~2.6–7×)** are the remaining gaps, collapsed from
-  two orders of magnitude by the type-proving / inline-field / bare-read work
-  (`binary-trees` ~140×→~7×, `mono-dispatch` ~330×→~2.6×). `binary-trees`'
-  residual is generic reads over untyped nilable fields (field-type inference
-  territory); `mono-dispatch`'s is per-call cache bookkeeping. On a
-  *statically proven* monomorphic receiver — which whole-program inference now gives
-  for a record iterated out of a vector — devirt resolves the impl and a per-site
-  inline cache holds it (resolved once, not per call), and an impl whose
-  mixed-numeric (`:num`) field reads sit beside a proven double resolves a
-  flonum-specialized clone, so `mono-dispatch` is no longer worse than
-  megamorphic. `binary-trees` nodes escape into the tree, so scalar-replace
-  can't remove them — residual GC pressure.
+The two widest gaps are `loop-recur` and `seqs` (~8×), for different reasons.
+`seqs` is the allocation axis idiomatic Clojure hits most: range/map/filter/reduce
+chains, short-circuiting `every?`, `iterate`/`take`, and `mapcat` all build
+lazy-seq cells and call a closure per element — a chain of allocated thunks with a
+var-routed HOF call at each stage, none of which the optimizer's
+arithmetic/dispatch/alloc passes target. The recent lazy-seq work (single-thread
+lock elision, chunk fusion, transducer arities) brought this ratio down from
+~10.9×, but it stays the dominant cost of script-style workloads (e.g.
+ys-compiled programs). `loop-recur` is the arithmetic-loop axis: the loop back-edge
+itself matches the JVM, but the body runs `mod` and `bit-xor` every iteration,
+which the JVM JIT inlines and jolt currently routes through core.
+
+- **Faster than the JVM (`tak` ~0.3×, `fib` ~0.6×)**: integer recursion and dense
+  self-calls, where jolt direct-links the self-call and runs the arithmetic as
+  proven fixnum ops.
+- **`collections`** closed to ~1.1× with JVM-exact Murmur3 hashing (so `hash`,
+  set/map iteration order, and hash-dependent output match the JVM byte for byte)
+  and the array-map `(k . v)` fold, which drops the per-key HAMT lookup when
+  iterating. The residual is Murmur3 on integer keys, which the JVM JITs to a
+  handful of instructions and jolt runs as (unsafe, proven) fx ops.
+- **`dispatch` ~1.9×, `mandelbrot` ~2.0×**: a megamorphic `dispatch` site runs a
+  per-site polymorphic inline cache (4-slot descriptor scan, unsafe `#3%` vector
+  reads since the cache shape is proven), so it no longer pays a registry lookup
+  per call. `mandelbrot` is fl-unboxed float compute, now ~2× in both modes.
+- **Dispatch & allocation (`transducers`/`mono-dispatch` ~3.3–3.9×,
+  `binary-trees` ~7.4×)**: collapsed from two orders of magnitude by the
+  type-proving / inline-field / bare-read work (`binary-trees` ~140×→~7×,
+  `mono-dispatch` ~330×→~3.7×). On a *statically proven* monomorphic receiver —
+  which whole-program inference gives for a record iterated out of a vector —
+  devirt resolves the impl and a per-site inline cache holds it (resolved once,
+  not per call), and an impl whose mixed-numeric (`:num`) field reads sit beside a
+  proven double resolves a flonum-specialized clone. `binary-trees` nodes escape
+  into the tree, so scalar-replace can't remove them: residual GC pressure over
+  generic reads of untyped nilable fields.
 
 ## 64-bit integer arithmetic & generators (test.check)
 
@@ -164,7 +170,7 @@ Three sizes: `version` (pure boot floor, no program), `trivial` (boot + compile 
 run a one-liner), `script` (a small lazy-seq pipeline). Use a BUILT joltc
 (`target/release/joltc` or an installed one), not the dev `bin/joltc` source
 launcher — the dev script boots from source and opts out of the AOT cache, so it
-is not representative. Indicative (M-series): ~130ms vs babashka ~20ms (~6.5×).
+is not representative. Indicative (M-series): ~117ms vs babashka ~18ms (~6.5×).
 The floor is runtime + compiler image instantiation that re-runs each boot (Chez
 has no heap snapshot); see the CLI-closure AOT work that removed the per-boot
 recompile of `jolt.main`.
