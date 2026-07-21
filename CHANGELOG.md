@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-07-21
+
 ### Changed
 
 - Closed the reader-side half of the lazy-realization race. The tail force
@@ -82,6 +84,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2,000,000-element pipeline `transduce` drops about 23% and `into` with an xform
   about 22%; a transducer pipeline is now faster than the lazy-seq equivalent, as
   it should be, where before it was slower.
+- The `jolt build` subsystem no longer runs at every startup. Following #433,
+  `build.ss` (with the `emit-image.ss` and `dce.ss` it inlines) was still emitted
+  as eager top-level forms in the boot image, so its ~100 defines ran on every
+  process start, and the runtime `.ss` source it reads during a build was
+  registered into the resource table each start — about 20ms on every invocation,
+  none of it touched by `run`, `-e`, `repl`, `version`, or any non-build command.
+  The fully-inlined build subsystem is now baked as a source string and `eval`ed
+  into the top-level environment on the first `jolt build`, with the `.ss` embed
+  registration moved into a thunk fired at the same point. Non-build invocations
+  pay nothing.
+- Iterating a record's keyword map is about 1.8x faster. The persistent array
+  map's order list now carries `(key . value)` pairs instead of bare keys, so the
+  `pmap-fold` / `pmap-fold-fwd` iteration scans entries directly instead of doing
+  one HAMT lookup per key — the hot path for folding the 64-entry keyword maps
+  defrecord ext maps produce (a full `vals` fold drops from ~5.9us to ~3.2us). A
+  new `order-replace` updates a replaced key's value in place so `assoc` on an
+  existing key keeps both its position and value; no behavioral change.
 
 ## [0.4.12] - 2026-07-21
 
