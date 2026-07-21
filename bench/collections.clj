@@ -1,8 +1,9 @@
 ;; collections — PERSISTENT-COLLECTION churn. Builds and reads persistent maps
 ;; and vectors (32-way hash/array tries) under heavy assoc/update/conj/lookup, a
-;; word-count-style workload (cf. CLBG k-nucleotide). Exercises jolt's persistent
-;; data structures and (eventually) transients — an axis the ray tracer (fixed
-;; records, no collections in the hot loop) doesn't touch.
+;; word-count-style workload (cf. CLBG k-nucleotide), then consumes the built
+;; vector with a map/filter/take + reduce pipeline. Covers persistent map,
+;; reduce, and map/filter/take over materialized collections — an axis the ray
+;; tracer (fixed records, no collections in the hot loop) doesn't touch.
 ;;
 ;; Portable Clojure (jolt + JVM Clojure).
 ;;   bench/run.sh collections 200000
@@ -17,17 +18,29 @@
                (assoc m k (+ 1 (get m k 0)))))
       m)))
 
+;; reduce over a persistent map: sum the values by looking each key back up.
 (defn sum-vals [m]
   (reduce (fn [acc k] (+ acc (get m k))) 0 (keys m)))
 
-;; vector churn: conj many, then reduce
-(defn vec-sum [n]
-  (let [v (loop [i 0 v []] (if (< i n) (recur (inc i) (conj v (mod i 1000))) v))]
-    (reduce + 0 v)))
+;; vector churn: conj many into a persistent vector.
+(defn build-vec [n]
+  (loop [i 0 v []] (if (< i n) (recur (inc i) (conj v (mod i 1000))) v)))
+
+;; map/filter/take pipeline over the built vector, then reduce — the read-side
+;; consumption of a materialized persistent collection (distinct from `seqs`,
+;; whose source is an unbounded lazy range).
+(defn transform [v]
+  (reduce + 0
+          (take (quot (count v) 2)
+                (map (fn [x] (* x 3))
+                     (filter even? v)))))
 
 (defn run [n]
-  (let [m (freq-map n 4096)]
-    (+ (sum-vals m) (vec-sum (quot n 4)))))
+  (let [m (freq-map n 4096)
+        v (build-vec (quot n 4))]
+    (+ (sum-vals m)                                          ; persistent map + reduce
+       (reduce + 0 v)                                        ; vector reduce
+       (transform v))))                                      ; map/filter/take + reduce
 
 (defn -main [& args]
   (let [n (if (seq args) (Integer/parseInt (first args)) 200000)]
