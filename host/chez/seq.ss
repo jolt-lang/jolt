@@ -68,10 +68,15 @@
     (or (cseq-lock s)
         (let ((m (make-mutex))) (cseq-lock-set! s m) m))))
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
+  ;; Single-threaded: the fast forced? read is safe. Multi-threaded: it is NOT — the
+  ;; tail/forced? stores below are unordered, so a lock-free reader on ARM64 can see
+  ;; forced?#t with tail still the thunk-procedure. So once jolt-mt? flips, every
+  ;; access goes through the per-cell mutex, reads included (mirrors force-lazyseq).
   (cond
-    ((cseq-forced? s) (cseq-tail s))
-    ((not jolt-mt?) (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t))
-    (else (with-mutex (cseq-ensure-lock! s)     ; multi-threaded: double-checked
+    ((not jolt-mt?)
+     (if (cseq-forced? s) (cseq-tail s)
+         (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t)))
+    (else (with-mutex (cseq-ensure-lock! s)     ; multi-threaded: always lock
             (if (cseq-forced? s) (cseq-tail s)
                 (let ((t ((cseq-tail s)))) (cseq-tail-set! s t) (cseq-forced?-set! s #t) t))))))
 

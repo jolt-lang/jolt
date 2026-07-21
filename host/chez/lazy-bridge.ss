@@ -67,10 +67,15 @@
         (jolt-lazyseq-realized?-set! x #t)
         (jolt-lazyseq-thunk-set! x #f)
         r)))
+  ;; Single-threaded: no lock, and the fast realized? read is safe. Once a second
+  ;; thread exists, the fast read is NOT safe: run! stores val then realized? with
+  ;; no barrier between them, so on a weak memory model (ARM64) a lock-free reader
+  ;; can see realized?#t while val is still the thunk and leak a closure out as a
+  ;; seq. So on the multi-threaded path every access — reads included — goes through
+  ;; the per-node mutex, whose acquire/release order the writer and reader against.
   (cond
-    ((jolt-lazyseq-realized? x) (deliver))
-    ((not jolt-mt?) (run!))                       ; single-threaded: no lock/mutex
-    (else                                          ; multi-threaded: double-checked
+    ((not jolt-mt?) (if (jolt-lazyseq-realized? x) (deliver) (run!)))
+    (else                                          ; multi-threaded: always lock
      (with-mutex (jolt-lazyseq-ensure-lock! x)     ; locking on a lazily-made mutex
        (if (jolt-lazyseq-realized? x) (deliver) (run!))))))
 
