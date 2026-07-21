@@ -1240,4 +1240,15 @@
   {:suite "r6-analyzer-strictness" :expr "(try :ok (catch Throwable e :c) (finally 1))" :expected ":ok"}
   {:suite "r6-analyzer-strictness" :expr "(loop [x 3] (if (pos? x) (recur (dec x)) x))" :expected "0"}
   {:suite "r6-analyzer-strictness" :expr "((fn [a & b] (if (seq b) (recur a (rest b)) a)) 1 2 3)" :expected "1"}
+  {:suite "pmap-order" :expr "(str (keys {:a 1 :b 2 :c 3}))" :expected "(:a :b :c)"}
+  {:suite "pmap-order" :expr "(str (vals {:a 1 :b 2 :c 3}))" :expected "(1 2 3)"}
+  {:suite "pmap-order" :expr "(str (keys (assoc {:a 1 :b 2} :c 3)))" :expected "(:a :b :c)"}
+  {:suite "pmap-order" :expr "(get (assoc {:a 1} :a 9) :a)" :expected "9"}
+  {:suite "pmap-order" :expr "(str (vals (assoc {:a 1 :b 2} :a 9)))" :expected "(9 2)"}
+  {:suite "pmap-order" :expr "(str (keys (assoc {:a 1 :b 2 :c 3} :b 9)))" :expected "(:a :b :c)"}
+  {:suite "pmap-order" :expr "(get (array-map :a 1 :a 2) :a)" :expected "2"}
+  {:suite "pmap-order" :expr "(str (keys (array-map :a 1 :b 2 :a 9)))" :expected "(:a :b)"}
+  {:suite "pmap-order" :expr "(str (into {} [[:a 1] [:b 2] [:a 9]]))" :expected "{:a 9, :b 2}"}
+  {:suite "pmap-order" :expr "(get (into {} [[:a 1] [:a 9]]) :a)" :expected "9"}
+  {:suite "pmap-order" :expr "(str (keys (array-map :k0 0 :k1 1 :k2 2 :k3 3 :k4 4 :k5 5 :k6 6 :k7 7 :k8 8 :k9 9)))" :expected "(:k0 :k1 :k2 :k3 :k4 :k5 :k6 :k7 :k8 :k9)"}
 ]
