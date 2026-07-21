@@ -20,36 +20,65 @@
   (fields (mutable thunk) (mutable val) (mutable realized?) (mutable error?) (mutable lock))
   (nongenerative jolt-lazyseq-v2))
 
-(define (jolt-make-lazy-seq thunk) (make-jolt-lazyseq thunk jolt-nil #f #f (make-mutex)))
+;; Thread-safety for lazy realization is only needed once a second OS thread can
+;; touch a shared, not-yet-realized node. In single-threaded programs — all of ys
+;; and the overwhelming majority of code — a lazy node needs neither a per-node
+;; mutex (allocated eagerly) nor a lock on force. Because iterate/repeat/cycle and
+;; every map/filter chunk tail is a lazy node, paying a mutex alloc + acquire per
+;; node (per element for iterate) was the dominant cost of idiomatic seq pipelines.
+;;
+;; `jolt-mt?` starts #f and flips to #t the first time a real OS thread is spawned
+;; (fork-thread is shadowed below). This is race-free: a single thread is either
+;; forking or forcing, never both, so no node is being realized on the lock-free
+;; path at the instant the flag turns on; and fork-thread establishes happens-
+;; before, so the spawned child observes the flip. Once multi-threaded, force takes
+;; a per-node mutex created lazily under a shared init lock, restoring the original
+;; double-checked-locking behavior.
+(define jolt-mt? #f)
+(define (jolt-mark-mt!) (set! jolt-mt? #t))
+
+;; guards lazy creation of a node's mutex on the multi-threaded path
+(define jolt-lazyseq-lock-init (make-mutex))
+(define (jolt-lazyseq-ensure-lock! x)
+  (with-mutex jolt-lazyseq-lock-init
+    (or (jolt-lazyseq-lock x)
+        (let ((m (make-mutex))) (jolt-lazyseq-lock-set! x m) m))))
+
+(define (jolt-make-lazy-seq thunk) (make-jolt-lazyseq thunk jolt-nil #f #f #f))
 
 ;; force once and memoize. The thunk is (fn [] (coll->cells body)); coll->cells
 ;; already coerced the body to a seq (cseq | nil) via the live jolt-seq, so the
 ;; result needs no further coercion (a nested lazyseq was forced by coll->cells).
-;; The realize is guarded by a per-cell mutex: futures/agents/fork-thread share
-;; the heap, so without it two threads can run the thunk twice. A thrown failure
-;; is cached and re-raised on every later force, like the JVM (the body runs
-;; exactly once; a failed force rethrows). The captured Chez condition is re-raised
-;; verbatim, so a downstream catch unwraps the original jolt value. Double-checked
-;; locking: a thread that blocked on the mutex finds the cell already realized.
+;; A thrown failure is cached and re-raised on every later force, like the JVM (the
+;; body runs exactly once; a failed force rethrows). The captured Chez condition is
+;; re-raised verbatim, so a downstream catch unwraps the original jolt value.
 (define (force-lazyseq x)
   (define (deliver)
     (if (jolt-lazyseq-error? x) (raise (jolt-lazyseq-val x)) (jolt-lazyseq-val x)))
-  (if (jolt-lazyseq-realized? x)
-      (deliver)
-      (with-mutex (jolt-lazyseq-lock x)
-        (if (jolt-lazyseq-realized? x)
-            (deliver)
-            (guard (e (#t
-                       (jolt-lazyseq-val-set! x e)
-                       (jolt-lazyseq-error?-set! x #t)
-                       (jolt-lazyseq-realized?-set! x #t)
-                       (jolt-lazyseq-thunk-set! x #f)
-                       (raise e)))
-              (let ((r (jolt-invoke (jolt-lazyseq-thunk x))))
-                (jolt-lazyseq-val-set! x r)
-                (jolt-lazyseq-realized?-set! x #t)
-                (jolt-lazyseq-thunk-set! x #f)
-                r))))))
+  (define (run!)
+    (guard (e (#t
+               (jolt-lazyseq-val-set! x e)
+               (jolt-lazyseq-error?-set! x #t)
+               (jolt-lazyseq-realized?-set! x #t)
+               (jolt-lazyseq-thunk-set! x #f)
+               (raise e)))
+      (let ((r (jolt-invoke (jolt-lazyseq-thunk x))))
+        (jolt-lazyseq-val-set! x r)
+        (jolt-lazyseq-realized?-set! x #t)
+        (jolt-lazyseq-thunk-set! x #f)
+        r)))
+  (cond
+    ((jolt-lazyseq-realized? x) (deliver))
+    ((not jolt-mt?) (run!))                       ; single-threaded: no lock/mutex
+    (else                                          ; multi-threaded: double-checked
+     (with-mutex (jolt-lazyseq-ensure-lock! x)     ; locking on a lazily-made mutex
+       (if (jolt-lazyseq-realized? x) (deliver) (run!))))))
+
+;; Shadow fork-thread so any spawn (future/agent/core.async/process, all loaded
+;; after this file) flips jolt-mt? on. Captured in a prior define so the RHS sees
+;; the primitive, not the top-level binding being defined (Chez top-level letrec*).
+(define %ls-orig-fork-thread fork-thread)
+(define (fork-thread thunk) (jolt-mark-mt!) (%ls-orig-fork-thread thunk))
 
 ;; coll->cells: coerce the body result to the cell representation = a seq | nil.
 (define (jolt-coll->cells c) (jolt-seq c))

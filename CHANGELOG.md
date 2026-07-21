@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Lazy sequences are noticeably faster in single-threaded programs, which is the
+  common case. Every lazy-seq node used to allocate an OS mutex when it was created
+  and acquire it on first realization, so that concurrent futures or agents could
+  not run the body twice. But iterate, repeat, cycle, and every map/filter chunk
+  tail is a lazy node, so idiomatic pipelines paid a mutex allocation and lock per
+  node, and per element for iterate. A node now carries no mutex and realization
+  takes no lock until the process actually spawns a second thread. A global flag
+  flips the first time `fork-thread` runs (via future, agent, core.async, or a
+  subprocess), after which realization falls back to the original double-checked
+  locking on a mutex created lazily per node. This is race-free because a single
+  thread is either forking or forcing, never both, and `fork-thread` establishes
+  happens-before so the spawned child sees the flag. The lazy-seq/HOF benchmark
+  (`bench/seqs.clj`) drops about 26% (roughly 1200ms to 890ms on an M-series
+  machine); tight-loop and persistent-collection benchmarks are unchanged.
+
 ## [0.4.12] - 2026-07-21
 
 ### Changed

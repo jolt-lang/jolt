@@ -1130,6 +1130,14 @@
   {:suite "r8-reader" :expr "(try (read-string \"\\\"\\\\u041\\\"\") (catch clojure.lang.ExceptionInfo e :ex) (catch Throwable e :other))" :expected ":ex"}
   {:suite "r8-reader" :expr "[(int (read-string \"\\\\u0041\")) (count (read-string \"\\\"\\\\u0041\\\"\"))]" :expected "[65 1]"}
   {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) [1]))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "1"}
+  ;; single-threaded realization is memoized: the body/step runs exactly once no
+  ;; matter how many times the seq is walked (guards the lock-free fast path).
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (lazy-seq (do (swap! a inc) [42]))] [(first s) (first s) (nth s 0) @a])" :expected "[42 42 42 1]"}
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (map (fn [x] (swap! a inc) (* x x)) (range 5))] (doall s) (doall s) @a)" :expected "5"}
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (take 4 (iterate (fn [x] (swap! a inc) (inc x)) 0))] (doall s) (doall s) @a)" :expected "3"}
+  ;; concurrent realization across MANY chunked nodes still runs each element's
+  ;; body exactly once (guards the multi-threaded locked path across chunk tails).
+  {:suite "r7-lazyseq" :expr "(let [a (atom 0) s (map (fn [x] (swap! a inc) x) (range 100))] (doall (map deref (for [_ (range 8)] (future (doall s))))) @a)" :expected "100"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) >= 2 <= 4)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-set 1 2 3 4 5) > 1 < 5)" :expected "(4 3 2)"}
   {:suite "r7-rsubseq" :expr "(rsubseq (sorted-map 1 :a 2 :b 3 :c 4 :d 5 :e) >= 2 <= 4)" :expected "([4 :d] [3 :c] [2 :b])"}
