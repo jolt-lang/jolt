@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Fixed a latent concurrency bug in lazy sequence realization. A `cseq` seq cell
+  memoizes its tail under mutable `tail`/`forced?` fields with no synchronization,
+  so once a lazy-seq node was realized its underlying cell chain was shared across
+  threads (every future/agent walking the same seq reads the *same* cells) and two
+  threads could both force a cell's tail and publish the fields non-atomically — a
+  third reader could then observe `forced?` set with `tail` still the thunk,
+  leaking a closure out as a seq and crashing. The cell's tail force (`seq-more`)
+  is now guarded by a lazily-created per-cell mutex under the same `jolt-mt?` flag
+  the lazy-seq node uses, so it stays lock-free in single-threaded programs and
+  takes double-checked locking once a second thread is spawned. This was exposed
+  by the new concurrent-realization unit guard and is otherwise unchanged in
+  behavior; the minted seed is unaffected (host-runtime change only).
+
 - Lazy sequences are noticeably faster in single-threaded programs, which is the
   common case. Every lazy-seq node used to allocate an OS mutex when it was created
   and acquire it on first realization, so that concurrent futures or agents could

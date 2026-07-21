@@ -59,7 +59,7 @@
     ;; original mutated it, so (with-meta xs {:k xs}) built a self-referential
     ;; cycle that loops *print-meta* printing.
     ((cseq? x) (make-cseq (cseq-head x) (cseq-tail x) (cseq-forced? x)
-                          (cseq-list? x) (cseq-cvec x) (cseq-ci x) (cseq-crest x)))
+                          (cseq-list? x) (cseq-cvec x) (cseq-ci x) (cseq-crest x) (cseq-lock x)))
     ((jolt-lazyseq? x) (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x)
                                           (jolt-lazyseq-realized? x) (jolt-lazyseq-error? x)
                                           (make-mutex)))
