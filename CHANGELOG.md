@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-07-21
+
+### Fixed
+
+- A GUI app started from an nREPL session no longer aborts on macOS with "API
+  misuse: setting the main menu on a non-main thread." The nREPL server parks in
+  `park-until-interrupt` (for clean `^C` shutdown), which did not activate the
+  main-thread pump, so `jolt.host/call-on-main-thread` fell through and ran
+  `g_application_run` inline on the nREPL worker thread — GTK quartz aborted when
+  it set the main menu off the main thread. `park-until-interrupt` now doubles as
+  the pump: it drains queued jobs and runs each on the primordial thread, idling
+  via an interrupt-checked `sleep` poll so `^C` is still delivered and the shutdown
+  hooks still run.
+
+### Added
+
+- **`jolt.host/call-on-main-thread-async`** — a fire-and-forget hop onto the main
+  thread, so a GUI framework's `run` can schedule the boot and return immediately,
+  leaving the nREPL session live for reactive edits. The blocking
+  `call-on-main-thread` and the external `run-main-pump` pump API are unchanged.
+
 ## [0.4.13] - 2026-07-21
 
 ### Changed
