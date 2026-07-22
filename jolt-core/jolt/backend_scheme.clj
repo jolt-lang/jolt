@@ -836,6 +836,7 @@
       ;; (aget ^doubles a i): jolt.passes.numeric proved the array is a flvector, so
       ;; read it unboxed and typed :double (jolt-flaget = flvector-ref on the backing).
       (:fl-aget node) (order-args (fn [as] (str "(jolt-flaget " (str/join " " as) ")")))
+      (:fl-aset node) (order-args (fn [as] (str "(jolt-flaset " (str/join " " as) ")")))
       (:fl-op node) (order-args (fn [as] (str "(" (:fl-op node) " " (str/join " " as) ")")))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
