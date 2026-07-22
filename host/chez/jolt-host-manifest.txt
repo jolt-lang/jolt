@@ -14,6 +14,7 @@ block-sigint
 build-binary
 build-library
 call-on-main-thread
+call-on-main-thread-async
 callable-host?
 chez-number-literal
 class-ancestors
