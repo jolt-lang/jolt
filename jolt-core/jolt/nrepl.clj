@@ -321,7 +321,9 @@
   in use) is thrown to the caller rather than swallowed by the accept thread, then
   accepts connections on a background thread and returns immediately. Writes
   .nrepl-port. Does NOT block — the caller keeps the process alive (jolt.main
-  parks the main thread in jolt.host/run-main-pump).
+  parks the main thread in jolt.host/park-until-interrupt, which also runs the
+  main-thread pump, so main-thread-affine work an eval starts, such as a UI
+  toolkit's event loop, marshals onto the main thread via call-on-main-thread).
 
   Returns a zero-arg stop fn: it stops the accept loop, closes the listen socket
   (freeing the port), and removes .nrepl-port. Calling it more than once is a
