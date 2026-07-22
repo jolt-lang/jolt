@@ -885,23 +885,25 @@
 ;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread
 ;; that owns the GUI main loop. On macOS GTK quartz, g_application_run must run
 ;; on the process main thread or AppKit aborts (setMainMenu off-main → SIGABRT).
-;; Under `joltc nrepl` the accept loop is backgrounded in a future and the
-;; primordial thread enters jolt-run-main-pump; glimmer's run marshals its
-;; startup through jolt-call-on-main-thread.
+;; Under `joltc nrepl-server` the accept loop is backgrounded in a future and the
+;; primordial thread parks in jolt-park-until-interrupt, which doubles as the main
+;; pump (see below); glimmer's run marshals its startup through
+;; jolt-call-on-main-thread-async so the boot lands there and the eval returns.
 ;;
 ;; - With no pump running (`joltc -M:run` calls run directly on the main thread),
-;;   call-on-main-thread runs the thunk INLINE — unchanged behaviour.
+;;   call-on-main-thread(-async) runs the thunk INLINE — unchanged behaviour.
 ;; - A call from a thunk already executing on the pump runs inline too, so the
 ;;   pump can't deadlock on itself.
-;; - Otherwise the thunk is enqueued; the caller blocks until the pump runs it,
-;;   then receives the value, or the thrown condition is re-raised.
+;; - Otherwise the thunk is enqueued; call-on-main-thread blocks for the result,
+;;   call-on-main-thread-async returns right away (fire-and-forget).
 ;;
-;; stop-main-pump is the graceful-shutdown / external API: it tells the pump to
-;; drain whatever is queued and return. The pump-active flag is flipped to #f
-;; under jolt-main-queue-mu in the same critical section that decides to exit, and
-;; call-on-main-thread reads that flag and enqueues under the SAME mutex, so a job
-;; can never slip in after the pump has decided to leave — a call that loses the
-;; race simply runs inline instead of blocking forever on a pump that is gone.
+;; jolt-run-main-pump / stop-main-pump remain the external blocking-pump API (a
+;; pump that drains queued jobs and returns on stop). The nREPL server uses the
+;; interruptible park variant instead, since run-main-pump's bare condition-wait
+;; can't be broken by ^C. The pump-active flag is flipped under jolt-main-queue-mu
+;; in the same critical section that decides to exit, and call-on-main-thread reads
+;; that flag and enqueues under the SAME mutex, so a job can never slip in after
+;; the pump has left — a losing call runs inline instead of blocking on a dead pump.
 
 (define jolt-main-queue-mu (make-mutex))
 (define jolt-main-queue-cv (make-condition))
@@ -941,25 +943,92 @@
                   (jolt-main-job-val job)
                   (raise (jolt-main-job-val job))))))))
 
+;; Fire-and-forget variant: schedule `thunk` on the pump and return immediately,
+;; without waiting for it to finish. This is what glimmer's run wants under nREPL —
+;; boot g_application_run on the main thread (which then blocks for the GUI's whole
+;; lifetime) WITHOUT blocking the eval that called run, so the REPL session stays
+;; live for reactive edits. Errors in the thunk are the caller's problem to observe
+;; via the GUI; there is no waiter to re-raise into. With no pump active it runs
+;; inline (like -M:run, where run is already on the main thread). A reentrant call
+;; (already on the pump) also runs inline.
+(define (jolt-call-on-main-thread-async thunk)
+  (if (jolt-in-main-pump?)
+      (begin (jolt-invoke thunk) jolt-nil)
+      (let ((enq (with-mutex jolt-main-queue-mu
+                   (and (unbox jolt-main-pump-active)
+                        (let ((j (make-jolt-main-job thunk #f #f jolt-nil
+                                                     (make-mutex) (make-condition))))
+                          (set! jolt-main-queue (append jolt-main-queue (list j)))
+                          (condition-signal jolt-main-queue-cv)
+                          #t)))))
+        (unless enq (jolt-invoke thunk))
+        jolt-nil)))
+
 (define jolt-pump-kih
   (lambda ()
     (for-each (lambda (th) (guard (e (#t #f)) (th)))
               (reverse (unbox jolt-shutdown-hooks)))
     (exit 0)))
 
-;; Park the calling thread until a keyboard interrupt (^C), then run the shutdown
-;; hooks and exit. Unlike run-main-pump (whose tight recursive condition-wait
-;; loop elides Chez's interrupt poll points, so the handler never fires), this
-;; uses a single condition-wait — the form Chez reliably interrupts. The nREPL
-;; server parks here; SIGINT is unblocked in this thread first (it was masked by
-;; jolt-block-sigint so the accept loop inherited a blocked mask and couldn't
-;; absorb ^C in its foreign accept() call).
-(define jolt-park-mu (make-mutex))
-(define jolt-park-cv (make-condition))
+;; Park the calling thread until a keyboard interrupt (^C), running the shutdown
+;; hooks and exiting when it arrives — AND own the GUI main-thread pump while
+;; parked. The nREPL server parks the primordial thread here: it must both be
+;; interruptible for ^C and be the thread call-on-main-thread(-async) marshals
+;; onto, so a worker's glimmer run boots g_application_run on THIS (main) thread
+;; instead of inline off-main (a macOS AppKit setMainMenu abort).
+;;
+;; Interruptibility is subtle. A keyboard interrupt raised while a thread blocks
+;; in condition-wait is only *delivered* at the next Scheme safe point OUTSIDE the
+;; wait, and the ordinary dequeue primitives (with-mutex / null? / car) are NOT
+;; reliable interrupt-check points — only a real syscall is. run-main-pump idles
+;; in a bare condition-wait with no such safe point, so a pending ^C is never
+;; delivered (it also holds jolt-main-queue-mu across the wait — the "thread does
+;; not own mutex" hazard). This loop idles in (sleep …) instead: sleep is a
+;; syscall Chez interrupt-checks around, so a pending ^C fires jolt-pump-kih there
+;; (shutdown hooks -> exit) within one poll interval. jolt-park-poll-ms is short
+;; enough that GUI-boot latency after an nREPL eval is imperceptible.
+;;
+;; SIGINT is unblocked in this thread first (it was masked by jolt-block-sigint so
+;; the accept loop inherited a blocked mask and couldn't absorb ^C in its foreign
+;; accept() call). pump-active is set so call-on-main-thread(-async) enqueues onto
+;; us rather than running inline. While a job runs (glimmer's g_application_run
+;; blocks for the GUI's lifetime) the mutex is NOT held, so other threads keep
+;; enqueueing; ^C during that foreign call is uninterruptible, exactly as -M:run.
+(define jolt-park-poll-ms 50)
 (define (jolt-park-until-interrupt)
   (keyboard-interrupt-handler jolt-pump-kih)
   (jolt-set-sigint-blocked #f)
-  (with-mutex jolt-park-mu (condition-wait jolt-park-cv jolt-park-mu))
+  (with-mutex jolt-main-queue-mu (set-box! jolt-main-pump-active #t))
+  (dynamic-wind
+    (lambda () #f)
+    (lambda ()
+      (let loop ()
+        (let ((job (with-mutex jolt-main-queue-mu
+                     (and (not (null? jolt-main-queue))
+                          (let ((j (car jolt-main-queue)))
+                            (set! jolt-main-queue (cdr jolt-main-queue))
+                            j)))))
+          (if job
+              ;; run the job on THIS (main) thread — glimmer's g_application_run
+              ;; blocks here for the GUI's lifetime; the mutex is released so other
+              ;; threads keep enqueueing. jolt-in-main-pump? makes a reentrant
+              ;; call-on-main-thread run inline instead of self-deadlocking.
+              (let ((r (dynamic-wind
+                         (lambda () (jolt-in-main-pump? #t))
+                         (lambda ()
+                           (guard (e (#t (cons #f e)))
+                             (cons #t (jolt-invoke (jolt-main-job-thunk job)))))
+                         (lambda () (jolt-in-main-pump? #f)))))
+                (with-mutex (jolt-main-job-mu job)
+                  (jolt-main-job-ok?-set! job (car r))
+                  (jolt-main-job-val-set! job (cdr r))
+                  (jolt-main-job-done?-set! job #t)
+                  (condition-broadcast (jolt-main-job-cv job))))
+              ;; idle: sleep — an interrupt-checked syscall — so a pending ^C fires.
+              (sleep (ms->duration jolt-park-poll-ms)))
+          (loop))))
+    (lambda ()
+      (with-mutex jolt-main-queue-mu (set-box! jolt-main-pump-active #f))))
   jolt-nil)
 
 (define (jolt-run-main-pump)
@@ -1058,6 +1127,7 @@
   jolt-nil)
 
 (def-var! "jolt.host" "call-on-main-thread" jolt-call-on-main-thread)
+(def-var! "jolt.host" "call-on-main-thread-async" jolt-call-on-main-thread-async)
 (def-var! "jolt.host" "run-main-pump" jolt-run-main-pump)
 (def-var! "jolt.host" "stop-main-pump" jolt-stop-main-pump)
 (def-var! "jolt.host" "add-shutdown-hook" jolt-add-shutdown-hook)
