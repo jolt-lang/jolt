@@ -1,5 +1,6 @@
 ;; run-flarr.ss — (aget ^doubles a i) lowers to an unboxed flvector read
 ;; (jolt-flaget), typed :double, so surrounding arithmetic unboxes to fl+.
+;; Covers both ^doubles PARAMS and ^doubles LET bindings.
 (import (chezscheme))
 (load "host/chez/run-gate-harness.ss")
 (define analyze (var-deref "jolt.analyzer" "analyze"))
@@ -11,19 +12,16 @@
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (emit-num src) (emit (numeric-annotate (anode src))))
 (let ((e (emit-num "(def _ (fn [^doubles a ^long i] (aget a i)))")))
-  (gate-check "(1) aget ^doubles -> jolt-flaget" (gate-sub? e "jolt-flaget") #t)
+  (gate-check "(1) aget ^doubles param -> jolt-flaget" (gate-sub? e "jolt-flaget") #t)
   (gate-check "(1) ...not the generic jolt-nth" (gate-sub? e "jolt-nth") #f))
 (let ((e (emit-num "(def _ (fn [^doubles a ^long i] (+ (aget a i) (aget a i))))")))
-  (gate-check "(2) arithmetic over ^doubles reads unboxes to fl+" (gate-sub? e "fl+") #t)
+  (gate-check "(2) arithmetic over ^doubles param reads -> fl+" (gate-sub? e "fl+") #t)
   (gate-check "(2) ...reading via jolt-flaget" (gate-sub? e "jolt-flaget") #t))
 (let ((e (emit-num "(def _ (fn [a i] (aget a i)))")))
   (gate-check "(3) untyped aget stays native jolt-nth (not flaget)" (gate-sub? e "jolt-flaget") #f)
   (gate-check "(3) ...uses jolt-nth" (gate-sub? e "jolt-nth") #t))
-(gate-summary "flarr")
-
-;; --- let-binding ^doubles (not just params) -----------------------------------
 (let ((e (emit-num "(def _ (fn [m ^long i] (let [^doubles a (:pixels m)] (aget a i))))")))
-  (gate-check "(4) ^doubles let-binding aget -> jolt-flaget" (gate-sub? e "jolt-flaget") #t))
+  (gate-check "(4) ^doubles LET-binding aget -> jolt-flaget" (gate-sub? e "jolt-flaget") #t))
 (let ((e (emit-num "(def _ (fn [m ^long i] (let [^doubles a (:pixels m)] (+ (aget a i) (aget a i)))))")))
-  (gate-check "(4) ...arithmetic over it unboxes to fl+" (gate-sub? e "fl+") #t))
-(gate-summary "flarr-let")
+  (gate-check "(5) arithmetic over ^doubles let read -> fl+" (gate-sub? e "fl+") #t))
+(gate-summary "flarr")

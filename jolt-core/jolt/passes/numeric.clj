@@ -169,6 +169,10 @@
       ;; case-lambda + jolt-array?/flvector? checks).
       (and (= nm "aget") (= n 2) (= :doubles (nth (nth ars 0) 0)))
       [:double (assoc node1 :fl-aget true)]
+      ;; (aset ^doubles-array i v) -> unboxed flvector-set!; returns the stored value
+      ;; (:double), so an accumulator over the aset result types too.
+      (and (= nm "aset") (= n 3) (= :doubles (nth (nth ars 0) 0)))
+      [:double (assoc node1 :fl-aset true)]
       (nil? nm) [nil node1]
       :else
       (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (integer

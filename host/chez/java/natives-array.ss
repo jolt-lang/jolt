@@ -175,6 +175,11 @@
 ;; skipping jolt-nth's case-lambda + jolt-array?/flvector? dispatch. Emitted only
 ;; when jolt.passes.numeric proved the array is a ^doubles/^floats (flvector) param.
 (define (jolt-flaget a i) (flvector-ref (jolt-array-vec a) (exact (na-idx i))))
+;; unboxed write target for (aset ^doubles a i v): direct flvector-set!, returning
+;; the stored flonum (JVM aset returns the val).
+(define (jolt-flaset a i v)
+  (let ((fv (if (flonum? v) v (exact->inexact v))))
+    (flvector-set! (jolt-array-vec a) (exact (na-idx i)) fv) fv))
 
 ;; --- array identity: type / class / instance? recognize arrays ---------------
 ;; (type arr) / (class arr) -> the JVM array class name; (class …) delegates to
