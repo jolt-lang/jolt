@@ -111,6 +111,16 @@
 (defn- nhint-of [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag->nkind (get m :tag)))))
 
+;; A primitive ARRAY hint (^doubles / ^floats / ^longs / ^ints) on a param. Drives
+;; the unboxed flvector-ref/-set! fast path for aget/aset (jolt.passes.numeric):
+;; a double/float array reads back a proven :double. floats share the flvector kind.
+(defn- tag->akind [t]
+  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
+    (cond (= s "doubles") :doubles (= s "floats") :doubles
+          (= s "longs") :longs (= s "ints") :ints :else nil)))
+(defn- ahint-of [ctx sym]
+  (let [m (form-sym-meta sym)] (when m (tag->akind (get m :tag)))))
+
 ;; Push a numeric return hint (from ^double/^long on a defn's name) onto each arity
 ;; of its fn, so the back end coerces the body's value to that kind on return —
 ;; making the hint a contract a caller's arithmetic can trust.
@@ -134,7 +144,12 @@
       (let [bsym (nth bvec i)]
         (when-not (form-sym? bsym) (uncompilable "destructuring binding"))
         (let [nm (form-sym-name bsym)
-              init (analyze ctx (nth bvec (inc i)) env)]
+              init0 (analyze ctx (nth bvec (inc i)) env)
+              ;; a ^doubles/^floats/^longs/^ints let binding tags its init with the
+              ;; array kind so jolt.passes.numeric seeds the local for the unboxed
+              ;; flvector aget/aset path (mirrors the :ahints param route).
+              ak (ahint-of ctx bsym)
+              init (if ak (assoc init0 :akind ak) init0)]
           (recur (+ i 2) (add-hint (add-locals env [nm]) nm (hint-of ctx bsym))
                  (conj pairs [nm init]))))
       [pairs env])))
@@ -144,20 +159,22 @@
   ;; folds it with a plain reduce — no reduce-over-map in the kernel subset).
   ;; :phints is the parallel vector of [name ctor-key] for record param hints,
   ;; carrying the specific type for the inference to seed.
-  (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints []]
+  (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints [] ahints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p) (uncompilable "destructuring fn param"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
             (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
-            (recur (+ i 2) fixed (form-sym-name r) hints phints nhints))
-          (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p) nh (nhint-of ctx p)]
+            (recur (+ i 2) fixed (form-sym-name r) hints phints nhints ahints))
+          (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)
+                nh (nhint-of ctx p) ah (ahint-of ctx p)]
             (recur (inc i) (conj fixed nm) rest-name
                    (if h (conj hints [nm h]) hints)
                    (if ph (conj phints [nm ph]) phints)
-                   (if nh (conj nhints [nm nh]) nhints)))))
-      {:fixed fixed :rest rest-name :hints hints :phints phints :nhints nhints})))
+                   (if nh (conj nhints [nm nh]) nhints)
+                   (if ah (conj ahints [nm ah]) ahints)))))
+      {:fixed fixed :rest rest-name :hints hints :phints phints :nhints nhints :ahints ahints})))
 
 ;; Clojure lets a later param shadow an earlier same-named one (a macro expander
 ;; uses _ for both its &form and &env slots, so its param list is (_ _ …)); the
@@ -198,7 +215,10 @@
         ;; the param type; only when present so a hintless arity stays a struct.
         arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)
         ;; numeric param hints (name -> :long/:double) for jolt.passes.numeric.
-        arity (if (seq (:nhints pp)) (assoc arity :nhints (:nhints pp)) arity)]
+        arity (if (seq (:nhints pp)) (assoc arity :nhints (:nhints pp)) arity)
+        ;; array param hints (name -> :doubles/:longs/:ints) for jolt.passes.numeric:
+        ;; aget/aset over them lower to the unboxed flvector fast path.
+        arity (if (seq (:ahints pp)) (assoc arity :ahints (:ahints pp)) arity)]
     ;; :rest only when variadic — an absent :rest reads back nil, same as before,
     ;; but keeps a fixed arity a nil-free struct rather than a phm.
     (if rst (assoc arity :rest rst) arity)))

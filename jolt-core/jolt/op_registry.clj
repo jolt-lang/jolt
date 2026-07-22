@@ -104,6 +104,17 @@
    "empty?"      {:call "jolt-empty?"   :arity #(= % 1) :bool? true}
    "peek"        {:call "jolt-peek"    :arity #(= % 1)}
    "pop"         {:call "jolt-pop"     :arity #(= % 1)}
+   ;; Java arrays: the hot 1-dim forms lower to the native array-aware ops
+   ;; (aget->jolt-nth, alength->jolt-count) and a write helper (aset->jolt-aset3),
+   ;; skipping the clojure.core overlay's var-deref + reduce/seq alloc. Multi-dim
+   ;; (aget arity >=3 / aset arity >=4) falls back to that overlay (2D corpus test).
+   ;; :inline-only? — the :call proc is valid ONLY at the native arity, so it must
+   ;; NOT alias the op in value position / at other arities (jolt-nth's 3-arg form is
+   ;; nth-with-default, not multi-dim aget). Excluded from core-value-procs so those
+   ;; uses fall back to the clojure.core overlay var (the multi-dim walker).
+   "aget"    {:call "jolt-nth"    :arity #(= % 2) :inline-only? true}
+   "aset"    {:call "jolt-aset3"  :arity #(= % 3) :inline-only? true}
+   "alength" {:call "jolt-count"  :arity #(= % 1) :num-result? true}
    ;; seq
    "first"   {:call "jolt-first"   :arity #(= % 1)}
    "rest"    {:call "jolt-rest"    :arity #(= % 1)}
@@ -165,7 +176,8 @@
   (into {} (keep (fn [[op spec]] (when (:call spec) [op (:call spec)]))) op-registry))
 (def core-value-procs
   (into {} (keep (fn [[op spec]]
-                   (when (:call spec) [op (or (:value spec) (:call spec))]))
+                   (when (and (:call spec) (not (:inline-only? spec)))
+                     [op (or (:value spec) (:call spec))]))
                  op-registry)))
 ;; Native-op Scheme procedures that return a genuine Scheme boolean, so an :if
 ;; test built from them needs no jolt-truthy? wrapper. Covers every proc a :bool?

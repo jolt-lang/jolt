@@ -17,11 +17,44 @@
     (else "[Ljava.lang.Object;")))
 
 (define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (floor i)) i))
-(define (na-from-seq x kind) (make-jolt-array (list->vector (seq->list (jolt-seq x))) kind))
+
+;; A double/float jolt-array is backed by a Chez FLVECTOR (unboxed flonums); every
+;; other kind keeps a boxed Chez vector. These helpers let the collection
+;; dispatchers (count/seq/nth/ref-put!/aset/aclone) and java.util.Arrays work over
+;; either backing. Chez has flvector? / make-flvector / flvector-ref / -set! / -length.
+(define (na-fl-kind? k) (or (eq? k 'double) (eq? k 'float)))
+(define (ja-len v)     (if (flvector? v) (flvector-length v) (vector-length v)))
+(define (ja-ref v i)   (if (flvector? v) (flvector-ref v i) (vector-ref v i)))
+(define (ja-set! v i x)
+  (if (flvector? v)
+      (flvector-set! v i (if (flonum? x) x (exact->inexact x)))
+      (vector-set! v i x)))
+(define (ja->list v)
+  (if (flvector? v)
+      (let loop ((i (- (flvector-length v) 1)) (acc '()))
+        (if (< i 0) acc (loop (- i 1) (cons (flvector-ref v i) acc))))
+      (vector->list v)))
+(define (ja-copy v)
+  (if (flvector? v)
+      (let* ((n (flvector-length v)) (r (make-flvector n 0.0)))
+        (do ((i 0 (+ i 1))) ((= i n) r) (flvector-set! r i (flvector-ref v i))))
+      (vector-copy v)))
+(define (na-make-backing n kind init)
+  (if (na-fl-kind? kind)
+      (make-flvector (exact n) (if (flonum? init) init (exact->inexact init)))
+      (make-vector (exact n) init)))
+(define (na-list->backing lst kind)
+  (if (na-fl-kind? kind)
+      (let* ((n (length lst)) (fv (make-flvector n 0.0)))
+        (let loop ((i 0) (l lst))
+          (if (null? l) fv (begin (flvector-set! fv i (exact->inexact (car l))) (loop (+ i 1) (cdr l))))))
+      (list->vector lst)))
+
+(define (na-from-seq x kind) (make-jolt-array (na-list->backing (seq->list (jolt-seq x)) kind) kind))
 ;; (T-array size) | (T-array size init) | (T-array seq)
 (define (na-num-array a rest init kind)
   (if (number? a)
-      (make-jolt-array (make-vector (exact (na-idx a)) (if (pair? rest) (car rest) init)) kind)
+      (make-jolt-array (na-make-backing (na-idx a) kind (if (pair? rest) (car rest) init)) kind)
       (na-from-seq a kind)))
 
 ;; numeric tower: array element defaults / masked bytes / count are
@@ -66,11 +99,11 @@
 (define (na-to-array coll)          (na-from-seq coll 'object))
 (define (na-aclone arr)
   (if (jolt-array? arr)
-      (make-jolt-array (vector-copy (jolt-array-vec arr)) (jolt-array-kind arr))
+      (make-jolt-array (ja-copy (jolt-array-vec arr)) (jolt-array-kind arr))
       (na-from-seq arr 'object)))
 
 ;; --- typed aset (return the stored value) -----------------------------------
-(define (na-aset! arr i v) (vector-set! (jolt-array-vec arr) (exact (na-idx i)) v) v)
+(define (na-aset! arr i v) (ja-set! (jolt-array-vec arr) (exact (na-idx i)) v) v)
 (define (na-aset-int arr i v)     (na-aset! arr i v))
 (define (na-aset-long arr i v)    (na-aset! arr i v))
 (define (na-aset-short arr i v)   (na-aset! arr i v))
@@ -103,15 +136,15 @@
   (if (fx=? 0 (pvec-count chunk)) rest (cseq-chunked chunk 0 rest)))
 
 ;; --- extend the collection dispatchers to see a jolt-array ------------------
-(register-count-arm! jolt-array? (lambda (c) (vector-length (jolt-array-vec c))))
-(register-seq-arm! jolt-array? (lambda (c) (list->cseq (vector->list (jolt-array-vec c)))))
+(register-count-arm! jolt-array? (lambda (c) (ja-len (jolt-array-vec c))))
+(register-seq-arm! jolt-array? (lambda (c) (list->cseq (ja->list (jolt-array-vec c)))))
 (define %na-nth jolt-nth)
 (set! jolt-nth
   (case-lambda
-    ((c i)   (if (jolt-array? c) (vector-ref (jolt-array-vec c) (exact (na-idx i))) (%na-nth c i)))
+    ((c i)   (if (jolt-array? c) (ja-ref (jolt-array-vec c) (exact (na-idx i))) (%na-nth c i)))
     ((c i d) (if (jolt-array? c)
                  (let ((v (jolt-array-vec c)) (j (exact (na-idx i))))
-                   (if (and (>= j 0) (< j (vector-length v))) (vector-ref v j) d))
+                   (if (and (>= j 0) (< j (ja-len v))) (ja-ref v j) d))
                  (%na-nth c i d)))))
 (def-var! "jolt.host" "array-value?" (lambda (x) (if (jolt-array? x) #t jolt-nil)))
 ;; jolt-get on arrays stays as a set!-wrap rather than register-get-arm! because
@@ -132,9 +165,16 @@
 (define %na-ref-put! jolt-ref-put!)
 (set! jolt-ref-put!
   (lambda (t k v)
-    (if (jolt-array? t) (begin (vector-set! (jolt-array-vec t) (exact (na-idx k)) v) t)
+    (if (jolt-array? t) (begin (ja-set! (jolt-array-vec t) (exact (na-idx k)) v) t)
         (%na-ref-put! t k v))))
 (def-var! "jolt.host" "ref-put!" jolt-ref-put!)
+;; native-op target for the 1-dim (aset arr i v): write through the array-aware
+;; ref-put! and return the stored value (JVM aset returns the val, not the array).
+(define (jolt-aset3 a i v) (jolt-ref-put! a i v) v)
+;; unboxed read target for (aget ^doubles a i): direct flvector-ref on the backing,
+;; skipping jolt-nth's case-lambda + jolt-array?/flvector? dispatch. Emitted only
+;; when jolt.passes.numeric proved the array is a ^doubles/^floats (flvector) param.
+(define (jolt-flaget a i) (flvector-ref (jolt-array-vec a) (exact (na-idx i))))
 
 ;; --- array identity: type / class / instance? recognize arrays ---------------
 ;; (type arr) / (class arr) -> the JVM array class name; (class …) delegates to
