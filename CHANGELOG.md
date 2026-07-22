@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-07-22
+
+Two numeric fast paths for hot array and math code, both hint- and
+inference-driven.
+
+### Changed
+
+- **Primitive `double`/`float` arrays are unboxed.** A double/float `jolt-array`
+  is now backed by a Chez flvector (unboxed flonums) rather than a boxed vector;
+  the collection dispatchers (`count`/`seq`/`nth`/`ref-put!`/`aclone`) and
+  `java.util.Arrays` go through backing-agnostic helpers, so behavior is
+  unchanged. A `^doubles`/`^floats` array hint — on a param **or** a `let`-binding
+  — lets `(aget a i)` lower to a direct `flvector-ref` typed `:double` and
+  `(aset a i v)` to a direct `flvector-set!`, so a read/fill loop over a primitive
+  array stays unboxed on both ends and the surrounding arithmetic unboxes to
+  `fl+`/`fl*` instead of the generic `jolt-nth` + numeric-tower path.
+- **`java.lang.Math` over proven flonum operands lowers to the native op.** When
+  every operand is a `:double` (or an int literal coerced to one, with at least
+  one genuine double), a Math call emits the native Chez flonum op
+  (`flsqrt`/`flatan`/`flexpt`/…) typed `:double`, so it keeps flonum contagion in
+  the enclosing expression. Untyped args and all-integer forms like `(Math/abs 5)`
+  stay the generic host-static call.
+- **Hot 1-dim `aget`/`aset`/`alength` lower to the array-aware native ops**
+  (`jolt-nth`/`jolt-aset3`/`jolt-count`), skipping the clojure.core overlay's
+  var-deref + reduce/seq alloc. Multi-dim forms fall back to the overlay.
+
 ## [0.4.14] - 2026-07-21
 
 ### Fixed
