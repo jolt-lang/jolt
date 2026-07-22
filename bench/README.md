@@ -22,6 +22,8 @@ absolute reference.
 | `mono-dispatch` | **monomorphic** protocol dispatch (devirt/inline-cache *can* fire) | devirt, inline-cache | AWFY-style |
 | `collections` | persistent map/vector churn (HAMT / 32-way tries) + map/filter/take/reduce over the built vector | persistent structures, transients | CLBG k-nucleotide-style |
 | `mandelbrot` | pure float compute (tight arith loops, no alloc/dispatch) | native arith, loop codegen | CLBG |
+| `arrays` | primitive `double-array` throughput (unboxed `aget`/`aset`, no boxing/collections) | unboxed primitive-array codegen (flvector read/write) | CLBG-style |
+| `mathfns` | transcendental math (`java.lang.Math` sqrt/sin/cos/log/pow/atan2 over doubles) | native `Math` op lowering (`flsqrt`/`flsin`/… vs generic host-static dispatch) | CLBG-style |
 | `fib` | recursion: function-call + integer-arith overhead | native arith, small-fn inlining | CLBG |
 | `tak` | deep three-way self-recursion (denser call overhead than `fib`) | native arith, small-fn inlining, self-call direct-link | Gabriel |
 | `loop-recur` | tight loop/recur iteration, no seq/collection alloc (single, nested, branchy) | native arith, loop codegen | AWFY-style |
