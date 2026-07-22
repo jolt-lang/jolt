@@ -18,6 +18,19 @@
   closed builds alike."
   (:require [jolt.ir :refer [map-ir-children]]))
 
+;; java.lang.Math members that ALWAYS return a double on the JVM and have a native
+;; Chez flonum op. When every operand is a proven flonum, the Math call lowers to
+;; the flonum op (the back end reads :fl-op) instead of the generic string-keyed
+;; host-static dispatch — and, crucially, the result types :double so it doesn't
+;; break flonum contagion in the surrounding arithmetic. Chez flatan takes 1 or 2
+;; args (2-arg = atan2); fllog takes 1 or 2. abs/floor/ceil are double-in→double-out
+;; here because the branch only fires on a proven-double operand.
+(def ^:private math-fl-ops
+  {"sqrt" "flsqrt" "sin" "flsin" "cos" "flcos" "tan" "fltan"
+   "asin" "flasin" "acos" "flacos" "atan" "flatan" "atan2" "flatan"
+   "exp" "flexp" "log" "fllog" "floor" "flfloor" "ceil" "flceiling"
+   "pow" "flexpt" "abs" "flabs"})
+
 ;; --- operand classification -------------------------------------------------
 (defn- int-lit? [n]
   (and (= :const (get n :op))
@@ -111,7 +124,8 @@
 ;; shadows any same-named outer local to nil.
 (defn- arity-env [tenv a]
   (let [nh (into {} (get a :nhints))
-        pe (reduce (fn [e p] (assoc e p (get nh p))) tenv (get a :params))]
+        ah (into {} (get a :ahints))
+        pe (reduce (fn [e p] (assoc e p (or (get nh p) (get ah p)))) tenv (get a :params))]
     (if (get a :rest) (assoc pe (get a :rest) nil) pe)))
 
 (defn- an-invoke
@@ -124,6 +138,9 @@
   (let [fnode (get node :fn)
         nm (when (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)))
              (get fnode :name))
+        math-op (when (and (= :host-static (get fnode :op))
+                           (= "Math" (get fnode :class)))
+                  (get math-fl-ops (get fnode :member)))
         ars (mapv (fn [a] (an a tenv)) (get node :args))
         argnodes (mapv (fn [r] (nth r 1)) ars)
         node1 (assoc node :args argnodes)
@@ -137,6 +154,21 @@
       ;; kind, so an accumulator over the result types. The call itself isn't an
       ;; arithmetic op to lower — its body already coerces the return.
       (get fnode :num-ret) [(get fnode :num-ret) node1]
+      ;; java.lang.Math over proven flonum operands -> native Chez flonum op, result
+      ;; typed :double (so it doesn't de-opt the surrounding arithmetic). Requires at
+      ;; least one genuine :double operand (so (Math/abs 5) keeps its int result) and
+      ;; every other operand a :double or an integer literal (coerced to flonum).
+      (and math-op (pos? n)
+           (some (fn [r] (= :double (nth r 0))) ars)
+           (every? (fn [r] (or (= :double (nth r 0)) (int-lit? (nth r 1)))) ars))
+      (let [args' (mapv (fn [nd] (if (int-lit? nd) (assoc nd :val (double (get nd :val))) nd))
+                        argnodes)]
+        [:double (assoc node1 :args args' :fl-op math-op)])
+      ;; (aget ^doubles-array i) -> unboxed flvector-ref, result proven :double, so
+      ;; the surrounding arithmetic unboxes to fl*/fl+ (jolt-flaget skips jolt-nth's
+      ;; case-lambda + jolt-array?/flvector? checks).
+      (and (= nm "aget") (= n 2) (= :doubles (nth (nth ars 0) 0)))
+      [:double (assoc node1 :fl-aget true)]
       (nil? nm) [nil node1]
       :else
       (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (integer
@@ -201,8 +233,12 @@
       (= op :let)
       (let [res (reduce (fn [acc b]
                           (let [te (nth acc 0) binds (nth acc 1)
-                                ir (an (nth b 1) te)]
-                            [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
+                                ir (an (nth b 1) te)
+                                ;; a ^doubles/… let binding (analyzer tagged its init
+                                ;; :akind) seeds the array kind, overriding the init's
+                                ;; own numeric kind — so (aget it i) in the body unboxes.
+                                k (or (get (nth b 1) :akind) (nth ir 0))]
+                            [(assoc te (nth b 0) k) (conj binds [(nth b 0) (nth ir 1)])]))
                         [tenv []] (get node :bindings))
             br (an (get node :body) (nth res 0))]
         [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])

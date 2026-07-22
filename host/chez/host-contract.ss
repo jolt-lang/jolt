@@ -518,6 +518,7 @@
     "cons" "list" "reverse" "last" "map" "filter" "remove" "reduce" "into" "concat"
     "apply" "range" "take" "drop" "keys" "vals" "even?" "odd?" "pos?" "neg?"
     "zero?" "identity" "nil?" "some?" "ex-info"
+    "aget" "aset" "alength"
     "bit-and" "bit-or" "bit-xor" "bit-not"
     "bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"))
 

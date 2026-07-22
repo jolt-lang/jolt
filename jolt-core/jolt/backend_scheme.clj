@@ -829,6 +829,14 @@
                                 " " apply-args "))"))
                         (str "(let* ((" r " " (first as) "))"
                              " ((protocol-resolve " proto " " method " " r ") " apply-args "))")))))
+      ;; a java.lang.Math call jolt.passes.numeric proved is over flonum operands:
+      ;; emit the native Chez flonum op (flsqrt/flatan/…) instead of the generic
+      ;; string-keyed host-static-call, and (via its :double result kind) keep the
+      ;; surrounding arithmetic unboxed.
+      ;; (aget ^doubles a i): jolt.passes.numeric proved the array is a flvector, so
+      ;; read it unboxed and typed :double (jolt-flaget = flvector-ref on the backing).
+      (:fl-aget node) (order-args (fn [as] (str "(jolt-flaget " (str/join " " as) ")")))
+      (:fl-op node) (order-args (fn [as] (str "(" (:fl-op node) " " (str/join " " as) ")")))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)

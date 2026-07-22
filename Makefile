@@ -22,7 +22,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit mvnhttp smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke aotcachesmoke certify
+ci: submodules values corpus unit mvnhttp smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric mathfl flarr inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke aotcachesmoke certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -225,6 +225,18 @@ unitcontext:
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.
 numeric:
 	@$(CHEZ) --script test/chez/numeric-test.ss
+
+# java.lang.Math over proven flonum operands lowers to the native Chez flonum op
+# (flsqrt/flatan/…), result typed :double so flonum contagion holds; an untyped
+# arg or an all-integer Math/abs stays the generic string-keyed host-static-call.
+mathfl:
+	@$(CHEZ) --script host/chez/run-mathfl.ss
+
+# (aget ^doubles a i): a primitive-array param hint lowers aget to an unboxed
+# flvector-ref (jolt-flaget) typed :double, so surrounding arithmetic unboxes to
+# fl+; an untyped aget stays the native jolt-nth.
+flarr:
+	@$(CHEZ) --script host/chez/run-flarr.ss
 
 # IR inlining: a small single-arity defn is spliced at call sites (under optimize
 # + direct-link, closed-world guarantee), with ^double/^long entry/return
