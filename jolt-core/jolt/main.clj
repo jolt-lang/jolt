@@ -353,9 +353,10 @@
       ;; failure like the port already being in use surfaces here and exits rather
       ;; than being swallowed by a background thread. It then runs the accept loop
       ;; on a worker thread and returns a stop fn, leaving this thread free to own
-      ;; the GUI main loop: glimmer's run marshals its startup here via
-      ;; jolt.host/call-on-main-thread — on macOS GTK quartz, g_application_run
-      ;; must run on the main thread or AppKit aborts when it sets the main menu.
+      ;; the process main loop: main-thread-affine work an eval starts (e.g. a UI
+      ;; toolkit's event loop) marshals here via jolt.host/call-on-main-thread —
+      ;; on macOS a native UI event loop must run on the main thread or the
+      ;; process aborts (e.g. AppKit rejects setting the main menu off-main).
       ;; Block SIGINT in this (primordial) thread before starting the server so the
       ;; accept-loop future — and the conn-handler futures it spawns — inherit a
       ;; blocked SIGINT mask. Without this, ^C lands on the accept loop blocked in
