@@ -34,9 +34,16 @@ jobs:
           - name: manylinux_2_28
             image: quay.io/pypa/manylinux_2_28_x86_64
           # glibc 2.17 (CentOS 7 base, gcc 10, maintained image — no dead-repo
-          # bit-rot) — the practical floor candidate.
+          # bit-rot) — the practical floor candidate. Its dynamic build links
+          # libncurses.so.5 (el7 ABI), dead on modern distros.
           - name: manylinux2014
             image: quay.io/pypa/manylinux2014_x86_64
+          # same base, but lz4/z/ncurses/tinfo/uuid linked STATICALLY (the .so
+          # linker symlinks are removed so -l picks the .a): floor 2.17 AND no
+          # runtime deps beyond glibc — the "runs everywhere" candidate.
+          - name: manylinux2014-static
+            image: quay.io/pypa/manylinux2014_x86_64
+            static: 1
     steps:
       - uses: actions/checkout@v5
         with:
@@ -66,6 +73,7 @@ jobs:
             -w /src \
             -e JOLT_VERSION=glibc-probe \
             -e GLIBC_FLOOR_IMAGE='${{ matrix.image }}' \
+            -e STATIC_DEPS='${{ matrix.static }}' \
             '${{ matrix.image }}' sh ci/glibc-floor-build.sh
 
       - name: Upload binary + report
@@ -83,7 +91,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [ubuntu-20.04, manylinux_2_28, manylinux2014]
+        name: [ubuntu-20.04, manylinux_2_28, manylinux2014, manylinux2014-static]
     steps:
       - uses: actions/checkout@v5
 
