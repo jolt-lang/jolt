@@ -45,6 +45,29 @@
    :jvm "false"
    :jolt "true"
    :note "Numeric-category-blind value equality; a deep = property, not a cheap fix."}
+  ;; A ^long-typed or (now) literal-init loop var is a Chez 61-bit fixnum, so its
+  ;; fixed-width arithmetic raises at 2^60 where a JVM long raises/wraps at 2^63.
+  ;; jolt matches JVM loop semantics (a literal-init loop var is a primitive long and
+  ;; overflows rather than promoting to bignum) modulo this width difference.
+  {:category :numeric-model
+   :behavior "(loop [i 1152921504606846974 k 0] (if (= k 2) i (recur (inc i) (inc k))))"
+   :jvm "returns 1152921504606846976 (long arithmetic, overflow at 2^63)"
+   :jolt "raises (61-bit fixnum overflow at 2^60)"
+   :note "^long / literal-init loop vars are Chez 61-bit fixnums; overflow point is 2^60 vs the JVM long's 2^63."}
+  ;; Adjacent to but DISTINCT from the width divergence above. There a literal-init loop
+  ;; var IS :long and jolt raises at its 2^60 boundary. Here a bignum-literal operand
+  ;; (9223372036854775807 = Long/MAX_VALUE, past jolt's 2^60-1 fixnum ceiling) BLOCKS
+  ;; :long specialization, so the loop var stays generic and jolt computes the EXACT
+  ;; bignum sum — where the JVM keeps `i` a primitive long and the add overflows. This
+  ;; IS a corpus row (3754, "literal-init loop var + bignum-literal stays generic
+  ;; (exact)"), pinned jolt-side: it buckets as :jvm-error in certify (the :actual throws
+  ;; on the JVM), which is informational — not gated — so it lives in :documented, not
+  ;; in :entries (which certify would flag as stale).
+  {:category :numeric-model
+   :behavior "(loop [i 5] (+ i 9223372036854775807))"
+   :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"
+   :jolt "returns 9223372036854775812 (bignum-literal operand demotes the loop var to generic; exact result)"
+   :note "Corpus row 3754. The bignum literal (2^63-1) exceeds jolt's 2^60-1 fixnum max, so it blocks :long and jolt stays exact; the JVM keeps primitive-long arithmetic and throws."}
   ;; subvec copies its slice (O(n)) instead of sharing the source vector's tail (JVM O(1)).
   {:category :impl-detail
    :behavior "subvec allocates an O(n) copy"

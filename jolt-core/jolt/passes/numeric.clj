@@ -6,14 +6,18 @@
   kind (an integer literal is a wildcard, valid in either). The back end then emits
   Chez `fl*`/`fx*` ops instead of generic arithmetic.
 
-  Soundness: `:long` is seeded ONLY from an explicit `^long` hint — never a bare
-  integer literal — so un-hinted integer code keeps jolt's arbitrary-precision
-  numbers (no fixnum overflow surprise). `:double` is seeded from `^double` hints
-  and float literals; flonum arithmetic is always flonum, so this matches the
-  generic result. A `^long` hint is a promise the value is a fixnum: `fx+` raises
-  on overflow rather than promoting, exactly as a JVM primitive long is fixed-width.
-  A `:long` operand at a `:double`-specialized site is widened via `fixnum->flonum`
-  (== JVM long->double widening), so mixed long×double contagion is value-neutral.
+  Soundness: `:long` is seeded from an explicit `^long` hint, OR — matching JVM loop
+  semantics — from an integer-literal loop init that fits Chez's fixnum range, so a
+  literal-init loop var is a primitive long whose fx/jolt-l ops raise on overflow
+  rather than promoting to bignum (jolt previously promoted here, a divergence; this
+  closes it modulo the documented 61-bit vs 64-bit width). Integer code outside a
+  typed loop keeps jolt's arbitrary-precision numbers. `:double` is seeded from
+  `^double` hints and float literals; flonum arithmetic is always flonum, so this
+  matches the generic result. A `^long`/`fixnum-literal` seed is a promise the value
+  is a fixnum: `fx+` raises on overflow rather than promoting, exactly as a JVM
+  primitive long is fixed-width. A `:long` operand at a `:double`-specialized site is
+  widened via `fixnum->flonum` (== JVM long->double widening), so mixed long×double
+  contagion is value-neutral.
 
   Runs in every build and at `-e`/repl, but not the seed mint (which compiles with
   the passes off), so it stays out of the self-host fixpoint and benefits open and
@@ -114,13 +118,15 @@
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
 
-;; Loop-var kinds by bounded fixpoint. A var keeps its init kind (:double or :long)
+;; Loop-var kinds by bounded fixpoint. A var keeps its seed kind (:double or :long)
 ;; only if every recur arg in that slot is the same kind (under the current
 ;; assumption) — a monotone demotion that stops at a fixpoint, bounded by the var
-;; count. An integer-literal init has kind nil and stays generic, so a bignum loop
-;; keeps arbitrary precision (no :long from a bare literal). A typed loop var's
-;; init and recur args are all flonums/fixnums (a :long init flows from a coerced ^long
-;; value or an fx op), so no entry coercion is needed here,
+;; count. A :long seed now flows from an explicit ^long hint OR an integer-literal
+;; init that fits the fixnum range (JVM loop semantics: a literal-init loop var is a
+;; primitive long, so the fx/jolt-l ops raise on overflow rather than promoting — see
+;; the ns docstring). A literal past the fixnum range, or a recur arg that doesn't
+;; agree, demotes the slot back to generic (arbitrary precision). A typed loop var's
+;; init and recur args are all flonums/fixnums, so no entry coercion is needed here,
 ;; unlike a fn param.
 (defn- loop-kinds [names seed body tenv]
   (loop [cur seed iter 0]
@@ -155,9 +161,10 @@
         math-op (when (and (= :host-static (get fnode :op))
                            (= "Math" (get fnode :class)))
                   (get math-fl-ops (get fnode :member)))
+        fnode' (nth (an fnode tenv) 1)
         ars (mapv (fn [a] (an a tenv)) (get node :args))
         argnodes (mapv (fn [r] (nth r 1)) ars)
-        node1 (assoc node :args argnodes)
+        node1 (assoc node :fn fnode' :args argnodes)
         n (count ars)]
     (cond
       ;; a field read the structural inference proved is a flonum (a ^double record
@@ -283,10 +290,18 @@
       ;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
       (let [binds (get node :bindings)
             names (mapv (fn [b] (nth b 0)) binds)
-            ik (mapv (fn [b] (nth (an (nth b 1) tenv) 0)) binds)
-            ;; seed each var with its init kind only — :long flows from an explicit
-            ;; ^long hint (or an fx op), never a bare int literal, so an un-hinted
-            ;; integer loop keeps arbitrary precision.
+            ik (mapv (fn [b]
+                       (let [init (nth b 1) k (nth (an init tenv) 0)]
+                         ;; seed each var with its init kind, OR :long for an
+                         ;; integer-literal init that fits the fixnum range (JVM loop
+                         ;; semantics — a literal-init loop var is a primitive long, so
+                         ;; the fx/jolt-l ops raise on overflow rather than promoting).
+                         ;; The bounded fixpoint below demotes a slot whose recur arg
+                         ;; doesn't agree, and a literal past the range stays generic.
+                         (or k (when (and (int-lit? init) (fixnum-lit? (get init :val))) :long))))
+                     binds)
+            ;; drive the bounded fixpoint: each seed kind survives only if every
+            ;; recur arg in its slot agrees, else the slot demotes to generic.
             lk (loop-kinds names ik (get node :body) tenv)
             te (reduce (fn [t i] (assoc t (nth names i) (nth lk i))) tenv (range (count names)))]
         [nil (assoc node
