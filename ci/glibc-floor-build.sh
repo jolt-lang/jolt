@@ -33,20 +33,6 @@ else
   [ -n "${STATIC_DEPS:-}" ] && { "$pkg" install -y ncurses-static zlib-static || true; \
                                  "$pkg" install -y lz4-static libuuid-static || true; }
 fi
-
-# STATIC_DEPS=1: make -llz4/-lz/-lncurses/-ltinfo/-luuid resolve to the static
-# archives by removing the .so linker symlinks (only where a .a exists, so a
-# missing static package degrades to the shared lib instead of a link error).
-# The result should need nothing at runtime beyond glibc itself.
-if [ -n "${STATIC_DEPS:-}" ]; then
-  for lib in lz4 z ncurses tinfo uuid; do
-    for d in /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu; do
-      if [ -f "$d/lib$lib.a" ] && [ -e "$d/lib$lib.so" ]; then
-        rm -f "$d/lib$lib.so"; echo "static-deps: lib$lib -> $d/lib$lib.a"
-      fi
-    done
-  done
-fi
 gcc --version | head -1
 ldd --version | head -1
 
@@ -65,6 +51,23 @@ printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
 chmod +x /opt/chez/bin/chez
 export PATH="/opt/chez/bin:$PATH"
 chez --version
+
+# STATIC_DEPS=1: make -llz4/-lz/-lncurses/-ltinfo/-luuid resolve to the static
+# archives for the JOLTC link by removing the .so linker symlinks (only where a
+# .a exists, so a missing static package degrades to the shared lib instead of
+# a link error). Runs AFTER the Chez build — Chez's own scheme links -lncurses
+# without -ltinfo, which only resolves via the shared lib's transitive tinfo
+# dep; jolt's link line names both, so the static archives satisfy it. The
+# result should need nothing at runtime beyond glibc itself.
+if [ -n "${STATIC_DEPS:-}" ]; then
+  for lib in lz4 z ncurses tinfo uuid; do
+    for d in /usr/lib64 /usr/lib /usr/lib/x86_64-linux-gnu; do
+      if [ -f "$d/lib$lib.a" ] && [ -e "$d/lib$lib.so" ]; then
+        rm -f "$d/lib$lib.so"; echo "static-deps: lib$lib -> $d/lib$lib.a"
+      fi
+    done
+  done
+fi
 
 # --- joltc release build ------------------------------------------------------
 cd /src
