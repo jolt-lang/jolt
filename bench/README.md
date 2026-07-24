@@ -47,20 +47,25 @@ source — the jolt/JVM scorecard. jolt's optimizing passes fire only in a build
 
 Indicative ratios (M-series, best of two isolated runs — numbers are
 machine-specific, regenerate locally), ascending. **opt** = `--direct-link
---opt`; **release** = a plain `jolt build` (`MODE_A=1` adds this column):
+--opt`; **release** = a plain `jolt build` (`MODE_A=1` adds this column). The
+`opt ms` / `jvm ms` columns are raw per-bench means from one indicative run, to
+show absolute scale — they float run-to-run and won't line up exactly with the
+curated ratios:
 
-| benchmark | opt | release | axis |
-|---|---|---|---|
-| `tak` | ~0.3× | ~0.3× | deep three-way self-recursion + integer arith (beats the JVM) |
-| `fib` | ~0.6× | ~0.6× | recursion: call + integer arith (beats the JVM) |
-| `collections` | ~1.1× | ~1.1× | persistent map/vector churn |
-| `dispatch` | ~1.9× | ~1.8× | megamorphic protocol dispatch |
-| `mandelbrot` | ~2.0× | ~2.0× | pure float compute |
-| `transducers` | ~3.3× | ~3.3× | transducer pipelines (comp of map/filter/take) |
-| `mono-dispatch` | ~3.7× | ~3.9× | monomorphic protocol dispatch |
-| `binary-trees` | ~7.4× | ~7.3× | escaping short-lived records (allocation/GC) |
-| `seqs` | ~8.0× | ~7.7× | lazy-seq + HOF pipelines (allocation + per-element calls) |
-| `loop-recur` | ~8.3× | ~8.3× | tight loop/recur + per-iteration integer arith (`mod`, `quot`, `bit-xor`) |
+| benchmark | opt | release | opt ms | jvm ms | axis |
+|---|---|---|---|---|---|
+| `tak` | ~0.3× | ~0.3× | 6.7 | 19.8 | deep three-way self-recursion + integer arith (beats the JVM) |
+| `fib` | ~0.6× | ~0.6× | 7.3 | 6.9 | recursion: call + integer arith (beats the JVM) |
+| `collections` | ~1.1× | ~1.1× | 23.0 | 10.9 | persistent map/vector churn |
+| `dispatch` | ~1.9× | ~1.8× | 68.3 | 54.2 | megamorphic protocol dispatch |
+| `mandelbrot` | ~2.0× | ~2.0× | 28.3 | 13.8 | pure float compute |
+| `transducers` | ~3.3× | ~3.3× | 235.3 | 32.8 | transducer pipelines (comp of map/filter/take) |
+| `mono-dispatch` | ~3.7× | ~3.9× | 37.7 | 14.4 | monomorphic protocol dispatch |
+| `binary-trees` | ~7.4× | ~7.3× | 282.7 | 39.9 | escaping short-lived records (allocation/GC) |
+| `seqs` | ~8.0× | ~7.7× | 894.3 | 145.0 | lazy-seq + HOF pipelines (allocation + per-element calls) |
+| `loop-recur` | ~8.3× | ~8.3× | 113.7 | 18.1 | tight loop/recur + per-iteration integer arith (`mod`, `quot`, `bit-xor`) |
+| `arrays` | ~18.6× | ~18.6× | 675.0 | 36.3 | primitive `double-array` throughput (unboxed `aget`/`aset`) |
+| `mathfns` | ~22.7× | ~23.2× | 376.7 | 16.6 | transcendental math (`Math` sqrt/sin/cos/log/pow/atan2 over doubles) |
 
 `opt` and `release` now track each other closely across the suite — the plain
 `jolt build` picks up most of the win. Earlier the release column trailed opt on
