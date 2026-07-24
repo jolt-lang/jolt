@@ -18,7 +18,7 @@ if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends \
-    build-essential git ca-certificates file \
+    build-essential git ca-certificates file xxd \
     liblz4-dev zlib1g-dev libncurses-dev uuid-dev
 else
   pkg="$(command -v dnf || command -v yum)"
@@ -27,6 +27,8 @@ else
   # modern devtoolset gcc on PATH — only install one if none is present.
   "$pkg" install -y epel-release || true
   "$pkg" install -y make git file lz4-devel zlib-devel ncurses-devel libuuid-devel
+  # xxd (build-joltc embeds the boot as C bytes) ships in vim-common on el-family
+  command -v xxd >/dev/null 2>&1 || "$pkg" install -y vim-common
   command -v gcc >/dev/null 2>&1 || "$pkg" install -y gcc gcc-c++
 fi
 gcc --version | head -1
