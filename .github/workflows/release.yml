@@ -25,13 +25,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Oldest supported runner on purpose: the binary requires the glibc it
-          # was built against, so building on 22.04 (glibc 2.35) keeps the
-          # prebuilt runnable on Ubuntu 22.04+/Debian 12+/RHEL 9+. ubuntu-latest
-          # (24.04, glibc 2.39) shipped a binary older distros couldn't load.
-          - os: ubuntu-22.04
+          # The Linux binary is built inside a manylinux2014 container (glibc
+          # 2.17, gcc 10) with ncurses/tinfo/zlib linked statically, so the
+          # prebuilt runs on any glibc distro since ~2014 (CentOS 7+, Ubuntu
+          # 14.04+, Debian 8+, Amazon Linux 2+) — every >=2.33 symbol the old
+          # runner-built binary demanded was a build-host artifact, not a real
+          # API need (#452). Remaining dynamic deps: liblz4/libuuid + glibc.
+          - os: ubuntu-latest
             target: x86_64-linux
             shell: bash
+            container-build: quay.io/pypa/manylinux2014_x86_64
           - os: macos-14
             target: aarch64-macos
             shell: bash
@@ -53,42 +56,38 @@ jobs:
         with:
           submodules: recursive   # vendor/irregex, used by the Chez regex shim
 
-      # --- Linux: build Chez from source. The apt chezscheme ships petite+scheme
-      # only, with no kernel dev files (libkernel.a, scheme.h), which build-joltc
-      # needs to cc-link. Same setup as .github/workflows/tests.yml. ---
-      - name: Install build dependencies (Linux)
+      # --- Linux: the whole Chez + joltc build runs inside the old-glibc
+      # container (matrix.container-build) via ci/glibc-floor-build.sh — the
+      # same script the glibc-floor probe validated. docker run, not
+      # `container:`, because node-based actions can't run on a glibc-2.17
+      # image. The container writes target/release/joltc into the mounted
+      # workspace; every later step (smokes, package) runs on the host. ---
+      - name: Clone Chez Scheme source (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev libncurses-dev uuid-dev
+          git clone --depth 1 --branch v10.4.1 --recurse-submodules \
+            https://github.com/cisco/ChezScheme.git "$HOME/chez-src"
 
       - name: Cache Chez Scheme (Linux)
         if: runner.os == 'Linux'
         id: cache-chez
         uses: actions/cache@v4
         with:
-          path: /opt/chez
-          key: chez-${{ matrix.os }}-v10.4.1-x11off
+          path: ~/chez-opt
+          key: chez-manylinux2014-v10.4.1-static-v1
 
-      - name: Build Chez Scheme from source (Linux)
-        if: runner.os == 'Linux' && steps.cache-chez.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
-          cd /tmp/chez-src
-          ./configure --installprefix=/opt/chez --threads --disable-x11
-          make -j"$(nproc)"
-          sudo make install
-          sudo chown -R "$USER" /opt/chez
-
-      - name: Put chez on PATH (Linux)
+      - name: Build joltc in ${{ matrix.container-build }} (Linux)
         if: runner.os == 'Linux'
         run: |
-          # Installed as `scheme`; the build invokes `chez`. A wrapper that execs
-          # scheme keeps argv0 so Chez finds its boot files, and sits next to
-          # scheme so build.ss derives the csv dir (libkernel.a/scheme.h) from it.
-          printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
-          chmod +x /opt/chez/bin/chez
-          echo '/opt/chez/bin' >> "$GITHUB_PATH"
+          mkdir -p "$HOME/chez-opt"
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$HOME/chez-src":/chez-src:ro \
+            -v "$HOME/chez-opt":/opt/chez \
+            -w /src \
+            -e JOLT_VERSION="${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}" \
+            -e STATIC_DEPS=1 \
+            '${{ matrix.container-build }}' sh ci/glibc-floor-build.sh
 
       # --- macOS: Homebrew chezscheme ships `chez` plus the csv kernel dev files
       # (libkernel.a, scheme.h, *.boot), which is all build-joltc needs. ---
@@ -156,6 +155,7 @@ jobs:
           chmod +x "$bindir/cc"
 
       - name: Show Chez version
+        if: runner.os != 'Linux'
         run: chez --version
 
       # --- x86_64-macos is cross-built on the arm64 runner (matrix.cross=ta6osx):
@@ -198,6 +198,7 @@ jobs:
       # JOLTC_TARGET is empty for native rows and the target machine for the cross
       # row (matrix.cross), which build-joltc.ss consumes with $JOLT_TARGET_PACK.
       - name: Build joltc (release)
+        if: runner.os != 'Linux'
         run: make joltc-release JOLTC_TARGET="${{ matrix.cross }}"
         env:
           # Bake the release tag into the binary (build-joltc falls back to

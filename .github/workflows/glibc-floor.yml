@@ -14,10 +14,6 @@ name: glibc-floor
 # (checkout/cache) can't run inside glibc-2.17-era images.
 on:
   workflow_dispatch: {}
-  # temporary self-trigger while the probe lives on its own branch
-  # (workflow_dispatch only resolves on the default branch); drop on merge.
-  push:
-    branches: [ci/glibc-floor]
 
 jobs:
   build:
