@@ -20,7 +20,7 @@ export JOLT_CHEZ_CSV="$csv"
 # All three are overridable so a stage can be A/B'd against an exact commit pair
 # (ABA_BASE/ABA_TARGET) and include the runtime .ss files it touches (COMPILER_FILES).
 COMPILER_FILES="${COMPILER_FILES:-host/chez/seed/image.ss jolt-core/jolt/passes/types.clj}"
-BENCHES="fib:30 mandelbrot:200 collections:30000 mono-dispatch:2000 dispatch:2000 binary-trees:14"
+BENCHES="${BENCHES:-fib:30 mandelbrot:200 collections:30000 mono-dispatch:2000 dispatch:2000 binary-trees:14}"
 RUNS=5
 BASE="${ABA_BASE:-HEAD~1}"
 TARGET="${ABA_TARGET:-HEAD}"
