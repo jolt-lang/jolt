@@ -3743,6 +3743,12 @@
   {:suite "conformance / core misc" :label "definline instantiates the expansion template" :expected "9" :actual "(do (definline din-sq [x] `(* ~x ~x)) (din-sq 3))" :portability :common}
   {:suite "conformance / numeric pass" :label "= keeps exactness across a hinted double and an int literal" :expected "false" :actual "(do (defn f [^double x] (= x 0)) (f 0.0))" :portability :common}
   {:suite "conformance / numeric pass" :label "loop counter seeded only from a ^long hint, not a bare int literal" :expected "5000000000000000000" :actual "(loop [i 0] (if (< i 3) (recur (+ i 5000000000000000000)) i))" :portability :common}
+  {:suite "conformance / numeric pass" :label "mixed long*double contagion value-neutral: (* 3 1.5)" :expected "4.5" :actual "(* 3 1.5)" :portability :common}
+  {:suite "conformance / numeric pass" :label "mixed long+double contagion value-neutral: (+ 1 2.5)" :expected "3.5" :actual "(+ 1 2.5)" :portability :common}
+  {:suite "conformance / numeric pass" :label "mixed long<double contagion value-neutral: (< 1 1.5)" :expected "true" :actual "(< 1 1.5)" :portability :common}
+  {:suite "conformance / numeric pass" :label "hinted ^long x double lowers but stays value-neutral" :expected "4.5" :actual "((fn [^long i] (* i 1.5)) 3)" :portability :common}
+  {:suite "conformance / numeric pass" :label "hinted ^long + double lowers but stays value-neutral" :expected "3.5" :actual "((fn [^long i] (+ i 2.5)) 1)" :portability :common}
+  {:suite "conformance / numeric pass" :label "hinted ^long < double lowers but stays value-neutral" :expected "true" :actual "((fn [^long i] (< i 1.5)) 1)" :portability :common}
   {:suite "conformance / eval order" :label "call arg var read after a mutating sibling sees the mutation" :expected "[0 2]" :actual "(do (def eo-y 1) (defn eo-f [a b] [a b]) (eo-f (do (def eo-y 2) 0) eo-y))" :portability :common}
   {:suite "conformance / eval order" :label "vector literal var read after a mutating sibling sees the mutation" :expected "[0 2]" :actual "(do (def eo-x 1) [(do (def eo-x 2) 0) eo-x])" :portability :common}
   {:suite "interop / class model" :label "class of a sorted-map is PersistentTreeMap" :expected "true" :actual "(= clojure.lang.PersistentTreeMap (class (sorted-map :a 1)))" :portability :jvm}

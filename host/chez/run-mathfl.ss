@@ -45,4 +45,13 @@
 (let ((e (emit-num "(def _ (fn [] (Math/abs 5)))")))
   (gate-check "(6) (Math/abs 5) stays generic (no flabs)" (gate-sub? e "flabs") #f))
 
+;; (7) mixed contagion: a ^long operand beside a :double (literal) specializes to
+;; fl* via fixnum->flonum coercion, and the :double result flows into a lowered
+;; Math call (no host-static-call) — the mathfns bench kernel pattern (* i 1.0e-6).
+(let ((e (emit-num "(def _ (fn [^long i] (let [x (* i 1.0e-6)] (+ (Math/sqrt x) (Math/sin x)))))")))
+  (gate-check "(7) ^long x double contagion -> fl*" (gate-sub? e "(#3%fl*") #t)
+  (gate-check "(7) the :long operand is coerced via fixnum->flonum" (gate-sub? e "fixnum->flonum") #t)
+  (gate-check "(7) Math/sqrt over the :double result -> flsqrt" (gate-sub? e "flsqrt") #t)
+  (gate-check "(7) ...NOT the generic host-static-call" (gate-sub? e "host-static-call") #f))
+
 (gate-summary "mathfl")

@@ -12,6 +12,8 @@
   and float literals; flonum arithmetic is always flonum, so this matches the
   generic result. A `^long` hint is a promise the value is a fixnum: `fx+` raises
   on overflow rather than promoting, exactly as a JVM primitive long is fixed-width.
+  A `:long` operand at a `:double`-specialized site is widened via `fixnum->flonum`
+  (== JVM long->double widening), so mixed long×double contagion is value-neutral.
 
   Runs in every build and at `-e`/repl, but not the seed mint (which compiles with
   the passes off), so it stays out of the self-host fixpoint and benefits open and
@@ -38,6 +40,17 @@
 (defn- float-lit? [n]
   (and (= :const (get n :op))
        (let [v (get n :val)] (and (number? v) (float? v)))))
+
+;; Chez's signed 61-bit fixnum range on a 64-bit host is asymmetric: [-2^60, 2^60-1]
+;; (most-positive-fixnum = 2^60-1, most-negative-fixnum = -2^60). An integer literal
+;; within it is a real fixnum, so a literal-init loop var seeded :long needs no entry
+;; coercion (the literal IS a fixnum by this check). jolt targets Chez exclusively and
+;; the width is fixed (see host/chez/hasheq.ss), so the bound is a compile-time const.
+(def ^:private fixnum-max (dec (bit-shift-left 1 60)))
+;; -(inc fixnum-max) = -2^60 — the true minimum. (NB: (- fixnum-max (inc fixnum-max))
+;; is -1, which silently keeps every negative literal below -1 generic.)
+(def ^:private fixnum-min (- (inc fixnum-max)))
+(defn- fixnum-lit? [v] (and (integer? v) (<= fixnum-min v fixnum-max)))
 
 ;; A bigdec (1.5M) LITERAL operand — its node op, not a let-bound copy of one.
 (defn- bigdec-lit? [n] (= :bigdec (get n :op)))
@@ -105,9 +118,10 @@
 ;; only if every recur arg in that slot is the same kind (under the current
 ;; assumption) — a monotone demotion that stops at a fixpoint, bounded by the var
 ;; count. An integer-literal init has kind nil and stays generic, so a bignum loop
-;; keeps arbitrary precision (no :long from a bare literal). A typed loop var's init
-;; and recur args are all flonums/fixnums (a :long init flows from a coerced ^long
-;; value or an fx op), so no entry coercion is needed here, unlike a fn param.
+;; keeps arbitrary precision (no :long from a bare literal). A typed loop var's
+;; init and recur args are all flonums/fixnums (a :long init flows from a coerced ^long
+;; value or an fx op), so no entry coercion is needed here,
+;; unlike a fn param.
 (defn- loop-kinds [names seed body tenv]
   (loop [cur seed iter 0]
     (if (> iter (count names))
@@ -157,12 +171,17 @@
       ;; java.lang.Math over proven flonum operands -> native Chez flonum op, result
       ;; typed :double (so it doesn't de-opt the surrounding arithmetic). Requires at
       ;; least one genuine :double operand (so (Math/abs 5) keeps its int result) and
-      ;; every other operand a :double or an integer literal (coerced to flonum).
+      ;; every other operand a :double, a :long (widened to flonum — JVM widens a long
+      ;; arg to these double-returning overloads too), or an integer literal.
       (and math-op (pos? n)
            (some (fn [r] (= :double (nth r 0))) ars)
-           (every? (fn [r] (or (= :double (nth r 0)) (int-lit? (nth r 1)))) ars))
-      (let [args' (mapv (fn [nd] (if (int-lit? nd) (assoc nd :val (double (get nd :val))) nd))
-                        argnodes)]
+           (every? (fn [r] (let [k (nth r 0)]
+                             (or (= k :double) (= k :long) (int-lit? (nth r 1))))) ars))
+      (let [args' (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
+                                 (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
+                                       (= k :long) (assoc nd :fl-coerce true)
+                                       :else nd)))
+                        ars)]
         [:double (assoc node1 :args args' :fl-op math-op)])
       ;; (aget ^doubles-array i) -> unboxed flvector-ref, result proven :double, so
       ;; the surrounding arithmetic unboxes to fl*/fl+ (jolt-flaget skips jolt-nth's
@@ -175,52 +194,66 @@
       [:double (assoc node1 :fl-aset true)]
       (nil? nm) [nil node1]
       :else
-      (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (integer
-            ;; literal, usable in any), or :no (anything else — blocks specialization).
-            cls (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
-                                (cond (= k :double) :double
-                                      (= k :long) :long
-                                      (= k :bigdec) :bigdec
-                                      (int-lit? nd) :wild
-                                      :else :no)))
-                      ars)
-            ok? (fn [allowed need]
-                  (and (pos? n)
-                       (every? (fn [c] (or (= c :wild) (= c allowed))) cls)
-                       (some (fn [c] (= c need)) cls)))
+       (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (a
+             ;; fixnum-range integer literal, valid in any kind), :wild-big (a bignum
+             ;; integer literal — valid for :double/:bigdec, but NOT :long: the fx ops
+             ;; take only fixnums, so a bignum literal operand blocks :long), or :no.
+             cls (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
+                                 (cond (= k :double) :double
+                                       (= k :long) :long
+                                       (= k :bigdec) :bigdec
+                                       (int-lit? nd) (if (fixnum-lit? (get nd :val)) :wild :wild-big)
+                                       :else :no)))
+                       ars)
+            ;; :long needs every operand a fixnum-range literal (:wild) or a :long
+            ;; (the fx ops take only fixnums; a bignum literal would crash fx+).
+            long-ok? (and (pos? n)
+                          (some (fn [c] (= c :long)) cls)
+                          (every? (fn [c] (or (= c :wild) (= c :long))) cls))
+            ;; :bigdec tolerates any integer literal (:wild or :wild-big).
+            bd-ok? (and (pos? n)
+                        (some (fn [c] (= c :bigdec)) cls)
+                        (every? (fn [c] (or (= c :wild) (= c :wild-big) (= c :bigdec))) cls))
             ds (dbl-spec nm n)
             ls (lng-spec nm n)
             bs (bd-spec nm n)]
         (cond
-           ;; double specialization. Operands are :double, :wild (an integer literal
-           ;; coerced to flonum), or a bigdec LITERAL — double contagion: (+ 1.5M 2.0)
-           ;; => 3.5 Double, the bigdec contributing its double value. A let-bound
-           ;; bigdec (kind :bigdec, not a literal) can't be turned into a compile-time
-           ;; flonum, so it de-opts to the generic bigdec-aware op. min/max return the
-           ;; ORIGINAL operand and `=` is exactness-aware (0 != 0.0), so int/bigdec-
-           ;; literal contagion is blocked for those — every operand must be pure
-           ;; :double. fl< and friends compare numerically, so coercing stays sound.
+           ;; double specialization. Operands are :double, :long (a proven fixnum,
+           ;; widened to flonum — JVM long->double widening == fixnum->flonum, so this
+           ;; is value-neutral), :wild (an integer literal coerced to flonum), or a
+           ;; bigdec LITERAL — double contagion: (+ 1.5M 2.0) => 3.5 Double, the bigdec
+           ;; contributing its double value. A let-bound bigdec (kind :bigdec, not a
+           ;; literal) can't be turned into a compile-time flonum, so it de-opts to the
+           ;; generic bigdec-aware op. min/max return the ORIGINAL operand and `=` is
+           ;; exactness-aware (0 != 0.0), so int/bigdec-literal/:long contagion is
+           ;; blocked for those — every operand must be pure :double (a :long widened
+           ;; to flonum would also change exactness there). fl< and friends compare
+           ;; numerically, so coercing stays sound.
            (and ds (pos? n)
                 (some (fn [c] (= c :double)) cls)
-                (every? (fn [[c nd]] (or (= c :double) (= c :wild)
+                (every? (fn [[c nd]] (or (= c :double) (= c :long) (= c :wild) (= c :wild-big)
                                          (and (= c :bigdec) (bigdec-lit? nd))))
                         (map vector cls argnodes))
                 (or (not (contains? #{"min" "max" "="} nm))
                     (every? (fn [c] (= c :double)) cls)))
-          ;; coerce integer-literal and bigdec-literal operands to flonum so fl-ops
-          ;; only ever see flonums (an exact int or a jbigdec record would crash fl+).
-          (let [args' (mapv (fn [nd] (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
-                                           (bigdec-lit? nd) (bigdec-lit->flonum nd)
-                                           :else nd))
-                            argnodes)]
-            [(propagate ds) (assoc node1 :args args' :num-kind :double)])
-          (and ls (ok? :long :long))
-          [(propagate ls) (assoc node1 :num-kind :long)]
-          ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
-          ;; runtime). A flonum operand blocks this (double contagion) and falls
-          ;; through to the generic op.
-          (and bs (ok? :bigdec :bigdec))
-          [(propagate bs) (assoc node1 :num-kind :bigdec)]
+           ;; coerce integer-literal and bigdec-literal operands to a flonum const, and
+           ;; tag a :long operand so the back end wraps it in (fixnum->flonum ...) — so
+           ;; fl-ops only ever see flonums (an exact int, a fixnum, or a jbigdec record
+           ;; would crash fl+). The :long contract guarantees a fixnum, so the coercion
+           ;; is sound (the #3%fl per-site-unsafe proof obligation still holds).
+           (let [args' (mapv (fn [[c nd]] (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
+                                                (bigdec-lit? nd) (bigdec-lit->flonum nd)
+                                                (= c :long) (assoc nd :fl-coerce true)
+                                                :else nd))
+                             (map vector cls argnodes))]
+             [(propagate ds) (assoc node1 :args args' :num-kind :double)])
+           (and ls long-ok?)
+           [(propagate ls) (assoc node1 :num-kind :long)]
+           ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
+           ;; runtime). A flonum operand blocks this (double contagion) and falls
+           ;; through to the generic op.
+           (and bs bd-ok?)
+            [(propagate bs) (assoc node1 :num-kind :bigdec)]
           :else [nil node1])))))
 
 ;; Returns [kind node'] — kind is :double, :long, or nil.

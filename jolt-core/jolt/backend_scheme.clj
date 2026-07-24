@@ -314,9 +314,15 @@
 ;; way a stray true can't leak into, say, a call sitting in a vector literal.
 (def ^:private tail-transparent-ops #{:if :do :let :loop :invoke})
 (defn emit [node]
-  (if (and *tail?* (not (tail-transparent-ops (:op node))))
-    (binding [*tail?* false] (emit* node))
-    (emit* node)))
+  (let [s (if (and *tail?* (not (tail-transparent-ops (:op node))))
+            (binding [*tail?* false] (emit* node))
+            (emit* node))]
+    ;; a :long operand of a :double-specialized op is tagged :fl-coerce by
+    ;; jolt.passes.numeric so it widens to a flonum here (JVM long->double widening
+    ;; == fixnum->flonum); the :long contract guarantees a real fixnum.
+    (if (:fl-coerce node)
+      (str "(fixnum->flonum " s ")")
+      s)))
 
 ;; A Chez string literal. Every char outside printable ASCII becomes a
 ;; codepoint hex escape \x<cp>; ; the named escapes (\n \t \r \" \\) match what
@@ -666,12 +672,14 @@
 
 ;; Emit a :num-kind-tagged arithmetic call as a Chez flonum/fixnum op. inc/dec are
 ;; unary (fl +/- 1.0, fx1+/fx1-); the rest map through dbl-ops/lng-ops. Integer
-;; literal operands of a :double op were coerced to flonums by jolt.passes.numeric.
-;; A :double op is only emitted once the numeric pass has PROVEN every operand is a
-;; flonum (that proof gates the fl* specialization itself), so the flonum type check
-;; the safe fl ops run is redundant there — emit the per-site unsafe #3% variant.
-;; fx arithmetic stays on the safe ops: #3%fx+ also drops the overflow check, and
-;; jolt's ^long contract raises on 61-bit overflow rather than wrapping.
+;; literal operands and a :long var operand of a :double op were coerced to flonums
+;; by jolt.passes.numeric (the literal as a compile-time flonum const, the :long var
+;; via a :fl-coerce tag the emitter wraps in (fixnum->flonum ...)). A :double op is
+;; only emitted once the numeric pass has PROVEN every operand is a flonum (that
+;; proof gates the fl* specialization itself), so the flonum type check the safe fl
+;; ops run is redundant there — emit the per-site unsafe #3% variant. fx arithmetic
+;; stays on the safe ops: #3%fx+ also drops the overflow check, and jolt's ^long
+;; contract raises on 61-bit overflow rather than wrapping.
 (defn- emit-numeric [kind nm args order-args]
   (cond
     (and (= kind :double) (= nm "inc")) (str "(#3%fl+ " (first args) " 1.0)")
