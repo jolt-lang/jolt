@@ -24,4 +24,28 @@
   (gate-check "(4) ^doubles LET-binding aget -> jolt-flaget" (gate-sub? e "jolt-flaget") #t))
 (let ((e (emit-num "(def _ (fn [m ^long i] (let [^doubles a (:pixels m)] (+ (aget a i) (aget a i)))))")))
   (gate-check "(5) arithmetic over ^doubles let read -> fl+" (gate-sub? e "fl+") #t))
+
+;; --- runtime value semantics of jolt-flaget/jolt-flaset ---------------------------
+;; Pin both index paths: the fixnum fast path (the hot case — loop counters are
+;; :long) and the coercing slow path (flonum index floors via na-idx). Guards the
+;; fast-path change against behavior drift: aset returns the stored value (JVM
+;; contract), an int value stores as its double, and an out-of-range or negative
+;; index raises (flvector-ref's range check = the array bounds contract).
+(define (ev s) (jolt-compile-eval s "user"))
+(gate-check "(6) aget fixnum index reads the stored double"
+            (ev "(let [^doubles a (double-array 3)] (aset a 1 7.25) (aget a 1))") 7.25)
+(gate-check "(6) aset returns the stored value"
+            (ev "(let [^doubles a (double-array 3)] (aset a 1 7.25))") 7.25)
+(gate-check "(6) aset of an int value stores its double"
+            (ev "(let [^doubles a (double-array 3)] (aset a 0 4) (aget a 0))") 4.0)
+(gate-check "(6) aget flonum index 1.0 floors to slot 1"
+            (ev "(let [^doubles a (double-array 3)] (aset a 1 7.25) (aget a 1.0))") 7.25)
+(gate-check "(6) aget flonum index 1.5 floors to slot 1"
+            (ev "(let [^doubles a (double-array 3)] (aset a 1 7.25) (aget a 1.5))") 7.25)
+(gate-check "(6) aget out-of-range fixnum index raises (catchable)"
+            (jolt-truthy? (ev "(try (let [^doubles a (double-array 3)] (aget a 5) false) (catch Throwable e true))")) #t)
+(gate-check "(6) aget negative index raises (catchable)"
+            (jolt-truthy? (ev "(try (let [^doubles a (double-array 3)] (aget a -1) false) (catch Throwable e true))")) #t)
+(gate-check "(6) aset out-of-range index raises (catchable)"
+            (jolt-truthy? (ev "(try (let [^doubles a (double-array 3)] (aset a 9 1.0) false) (catch Throwable e true))")) #t)
 (gate-summary "flarr")
