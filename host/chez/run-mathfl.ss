@@ -45,4 +45,25 @@
 (let ((e (emit-num "(def _ (fn [] (Math/abs 5)))")))
   (gate-check "(6) (Math/abs 5) stays generic (no flabs)" (gate-sub? e "flabs") #f))
 
+;; (7) mixed contagion: a ^long operand beside a :double (literal) specializes to
+;; fl* via fixnum->flonum coercion, and the :double result flows into a lowered
+;; Math call (no host-static-call) — the mathfns bench kernel pattern (* i 1.0e-6).
+(let ((e (emit-num "(def _ (fn [^long i] (let [x (* i 1.0e-6)] (+ (Math/sqrt x) (Math/sin x)))))")))
+  (gate-check "(7) ^long x double contagion -> fl*" (gate-sub? e "(#3%fl*") #t)
+  (gate-check "(7) the :long operand is coerced via fixnum->flonum" (gate-sub? e "fixnum->flonum") #t)
+  (gate-check "(7) Math/sqrt over the :double result -> flsqrt" (gate-sub? e "flsqrt") #t)
+  (gate-check "(7) ...NOT the generic host-static-call" (gate-sub? e "host-static-call") #f))
+
+;; (8) the mathfns bench kernel: a LITERAL-INIT loop counter + contagion mul +
+;; Math calls all lower together. WP B seeds the literal-init counter :long so the
+;; (* i 1.0e-6) contagion (WP A) fires, x flows into a lowered Math/sqrt, and the
+;; double accumulator stays fl+ — no host-static-call anywhere.
+(let ((e (emit-num "(def _ (fn [^long n] (loop [i 1 acc 0.0] (if (<= i n) (let [x (* i 1.0e-6)] (recur (inc i) (+ acc (Math/sqrt x)))) acc))))")))
+  (gate-check "(8) kernel literal-init counter contagion -> fl*" (gate-sub? e "#3%fl*") #t)
+  (gate-check "(8) kernel counter coerced via fixnum->flonum" (gate-sub? e "fixnum->flonum") #t)
+  (gate-check "(8) kernel Math/sqrt -> flsqrt" (gate-sub? e "flsqrt") #t)
+  (gate-check "(8) kernel double accumulator -> fl+" (gate-sub? e "#3%fl+") #t)
+  (gate-check "(8) kernel literal-init counter -> jolt-l-inc" (gate-sub? e "jolt-l-inc") #t)
+  (gate-check "(8) kernel NO host-static-call" (gate-sub? e "host-static-call") #f))
+
 (gate-summary "mathfl")
