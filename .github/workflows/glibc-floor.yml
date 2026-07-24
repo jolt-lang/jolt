@@ -1,0 +1,125 @@
+name: glibc-floor
+
+# Issue #452: the released Linux binary demands GLIBC 2.35 because it is built
+# on ubuntu-22.04 — every >=2.33 symbol it needs is a build-host artifact (the
+# 2.34 libpthread/libdl merge, the 2.33 stat family, math symbol bumps), not a
+# real API requirement. This probe builds joltc inside progressively older
+# build images and smokes each result across a wide runtime matrix, to answer:
+#   1. the oldest environment that still builds Chez 10.4.1 + joltc,
+#   2. the glibc floor of each produced binary (readelf report),
+#   3. whether it runs OUT OF THE BOX (no packages installed) per distro.
+# The winner becomes the release.yml Linux build environment.
+#
+# Build images run via `docker run`, not `container:` — node-based actions
+# (checkout/cache) can't run inside glibc-2.17-era images.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: build in ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.31 — the issue reporter's Ubuntu 20.04.
+          - name: ubuntu-20.04
+            image: ubuntu:20.04
+          # glibc 2.28 (AlmaLinux 8, gcc 12) — covers RHEL/Rocky 8+, Debian 10+.
+          - name: manylinux_2_28
+            image: quay.io/pypa/manylinux_2_28_x86_64
+          # glibc 2.17 (CentOS 7 base, gcc 10, maintained image — no dead-repo
+          # bit-rot) — the practical floor candidate. Its dynamic build links
+          # libncurses.so.5 (el7 ABI), dead on modern distros.
+          - name: manylinux2014
+            image: quay.io/pypa/manylinux2014_x86_64
+          # same base, but lz4/z/ncurses/tinfo/uuid linked STATICALLY (the .so
+          # linker symlinks are removed so -l picks the .a): floor 2.17 AND no
+          # runtime deps beyond glibc — the "runs everywhere" candidate.
+          - name: manylinux2014-static
+            image: quay.io/pypa/manylinux2014_x86_64
+            static: 1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # Chez source on the HOST (with lz4/zlib submodules for the static
+      # fallback); mounted read-only into the build container.
+      - name: Clone Chez Scheme source
+        run: |
+          git clone --depth 1 --branch v10.4.1 --recurse-submodules \
+            https://github.com/cisco/ChezScheme.git "$HOME/chez-src"
+
+      - name: Cache Chez install
+        id: cache-chez
+        uses: actions/cache@v4
+        with:
+          path: ~/chez-opt
+          key: glibc-floor-chez-v10.4.1-${{ matrix.name }}-v1
+
+      - name: Build joltc in ${{ matrix.image }}
+        run: |
+          mkdir -p "$HOME/chez-opt"
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$HOME/chez-src":/chez-src:ro \
+            -v "$HOME/chez-opt":/opt/chez \
+            -w /src \
+            -e JOLT_VERSION=glibc-probe \
+            -e GLIBC_FLOOR_IMAGE='${{ matrix.image }}' \
+            -e STATIC_DEPS='${{ matrix.static }}' \
+            '${{ matrix.image }}' sh ci/glibc-floor-build.sh
+
+      - name: Upload binary + report
+        uses: actions/upload-artifact@v4
+        with:
+          name: joltc-${{ matrix.name }}
+          path: |
+            target/release/joltc
+            target/release/glibc-report.txt
+
+  smoke:
+    name: smoke ${{ matrix.name }} binary
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [ubuntu-20.04, manylinux_2_28, manylinux2014, manylinux2014-static]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: joltc-${{ matrix.name }}
+          path: probe
+
+      - name: Smoke across runtime images
+        run: |
+          chmod +x probe/joltc
+          {
+            echo "## binary built in ${{ matrix.name }}"
+            echo
+            echo '```'
+            cat probe/glibc-report.txt
+            echo '```'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          sh ci/glibc-floor-smoke.sh probe/joltc "$GITHUB_STEP_SUMMARY"
+
+      # The floor build must also still COMPILE apps (cc-link path) — run the
+      # self-contained build smoke on the oldest runtime that passes bare.
+      - name: Self-contained build smoke on ubuntu-20.04
+        run: |
+          docker run --rm -v "$PWD/probe":/probe:ro ubuntu:20.04 sh -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update >/dev/null && apt-get install -y -qq gcc liblz4-1 zlib1g libtinfo6 >/dev/null
+            mkdir -p /app/src/app && cd /app
+            printf "{:paths [\"src\"]}\n" > deps.edn
+            printf "(ns app.core)\n(defn -main [& _] (println \"built:\" (reduce + (range 10))))\n" > src/app/core.clj
+            /probe/joltc build -m app.core -o app
+            out="$(./app)"
+            [ "$out" = "built: 45" ] || { echo "self-contained build ran: $out"; exit 1; }
+            echo "self-contained build: PASS"'
