@@ -174,13 +174,20 @@ check ":local/root jar extracts and loads" "jar dep: from-jar" \
 # :git/tag + short :git/sha — the tag resolves to its commit and the short sha
 # is verified as a prefix of it. Uses a local repo so the gate stays offline.
 mkdir -p "$tmp/gitrepo/src/gitlib" "$tmp/gitproj/src"
+# The identity is set repo-locally rather than passed per command: `git tag -a`
+# needs a tagger too, and a CI runner has no global git config.
 ( cd "$tmp/gitrepo" \
   && git init -q . \
+  && git config user.email t@example.com \
+  && git config user.name t \
   && printf '{:paths ["src"]}\n' > deps.edn \
   && printf '(ns gitlib.core)\n(def version "tagged")\n' > src/gitlib/core.clj \
   && git add -A \
-  && git -c user.email=t@example.com -c user.name=t commit -qm v1 \
+  && git commit -qm v1 \
   && git tag -a v1.0 -m v1.0 ) >/dev/null 2>&1
+git -C "$tmp/gitrepo" rev-parse v1.0^{} >/dev/null 2>&1 || {
+  echo "  FAIL: fixture git repo has no v1.0 tag (git identity/config problem)" >&2
+  fail=$((fail+1)); }
 short="$(git -C "$tmp/gitrepo" rev-parse --short=7 HEAD)"
 cat > "$tmp/gitproj/src/gapp.clj" <<'EOF'
 (ns gapp (:require [gitlib.core :as g]))

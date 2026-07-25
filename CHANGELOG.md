@@ -52,6 +52,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for releases up to 0.4.15; the Homebrew formula switches to the new name
   automatically on the next release bump. The cross-compile variable
   `JOLTC_TARGET` is now `JOLT_CROSS_TARGET`.
+- **Linux release binaries run on much older systems** (#455, fixes #452). The
+  Linux build now happens inside manylinux2014 with ncurses/tinfo/zlib linked
+  statically, dropping the glibc requirement from 2.35 to 2.17 — so the
+  published binary runs on CentOS 7+, Ubuntu 14.04+, Debian 8+, and Amazon
+  Linux 2+ instead of demanding a 2023-or-newer distribution.
+- **Out-of-range `aget`/`aset` on a primitive array throws
+  `ArrayIndexOutOfBoundsException`** with the JVM's message (#458). It
+  previously surfaced as an untyped host condition that `(class e)` reported as
+  `:object` and that a `catch` of an unrelated exception class could swallow.
+
+### Performance
+
+- **Mixed `long`/`double` arithmetic no longer falls off the fast path** (#454).
+  An integer operand in an otherwise-flonum expression now coerces instead of
+  forcing generic dispatch, and integer-literal loop counters take JVM `long`
+  semantics. `mathfns` went from ~22.7× the JVM to ~1.5×, `loop-recur` from
+  ~8.3× to ~1.6×, `mandelbrot` to ~1.6×.
+- **Primitive `double` array access is roughly 3× faster** (#457, #461). The
+  index takes a fixnum-first path, and — where the pass has proven the array
+  and index types — the backend now emits the flvector read/write inline
+  instead of calling a wrapper whose flonum return had to be re-boxed on every
+  element. The `arrays` benchmark went from ~18.6× the JVM to ~6×.
+- **Generic `inc`/`dec` open-code their numeric fast path** (#458) rather than
+  calling through a procedure, matching how `+`/`-`/`*` already worked.
 
 ## [0.4.15] - 2026-07-22
 
