@@ -1,6 +1,11 @@
-;; run-flarr.ss — (aget ^doubles a i) lowers to an unboxed flvector read
-;; (jolt-flaget), typed :double, so surrounding arithmetic unboxes to fl+.
-;; Covers both ^doubles PARAMS and ^doubles LET bindings.
+;; run-flarr.ss — (aget ^doubles a i) reads the array's backing flvector unboxed
+;; and typed :double, so surrounding arithmetic unboxes to fl+. A PROVEN-:long (or
+;; fixnum-literal) index is emitted INLINE — (flvector-ref (jolt-array-vec a) i) —
+;; so the value stays unboxed across the procedure boundary; an unproven index
+;; keeps the (jolt-flaget a i) call, which owns the fixnum?/na-idx coercion. aset
+;; mirrors it: a proven index AND a :double value inline (flvector-set! ... v),
+;; returning the stored value (JVM contract); an int value keeps (jolt-flaset ...)
+;; (it owns exact->inexact). Covers both ^doubles PARAMS and ^doubles LET bindings.
 (import (chezscheme))
 (load "host/chez/run-gate-harness.ss")
 (define analyze (var-deref "jolt.analyzer" "analyze"))
@@ -12,18 +17,27 @@
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (emit-num src) (emit (numeric-annotate (anode src))))
 (let ((e (emit-num "(def _ (fn [^doubles a ^long i] (aget a i)))")))
-  (gate-check "(1) aget ^doubles param -> jolt-flaget" (gate-sub? e "jolt-flaget") #t)
+  (gate-check "(1) aget ^doubles,^long idx -> inline flvector-ref" (gate-sub? e "(flvector-ref (jolt-array-vec") #t)
+  (gate-check "(1) ...proven idx NOT the jolt-flaget call" (gate-sub? e "jolt-flaget") #f)
   (gate-check "(1) ...not the generic jolt-nth" (gate-sub? e "jolt-nth") #f))
 (let ((e (emit-num "(def _ (fn [^doubles a ^long i] (+ (aget a i) (aget a i))))")))
   (gate-check "(2) arithmetic over ^doubles param reads -> fl+" (gate-sub? e "fl+") #t)
-  (gate-check "(2) ...reading via jolt-flaget" (gate-sub? e "jolt-flaget") #t))
+  (gate-check "(2) ...reading via inline flvector-ref" (gate-sub? e "(flvector-ref (jolt-array-vec") #t))
 (let ((e (emit-num "(def _ (fn [a i] (aget a i)))")))
   (gate-check "(3) untyped aget stays native jolt-nth (not flaget)" (gate-sub? e "jolt-flaget") #f)
   (gate-check "(3) ...uses jolt-nth" (gate-sub? e "jolt-nth") #t))
+(let ((e (emit-num "(def _ (fn [^doubles a i] (aget a i)))")))
+  (gate-check "(3b) ^doubles aget, UNTYPED idx keeps jolt-flaget call" (gate-sub? e "jolt-flaget") #t)
+  (gate-check "(3b) ...untyped idx NOT inlined to flvector-ref" (gate-sub? e "(flvector-ref (jolt-array-vec") #f))
 (let ((e (emit-num "(def _ (fn [m ^long i] (let [^doubles a (:pixels m)] (aget a i))))")))
-  (gate-check "(4) ^doubles LET-binding aget -> jolt-flaget" (gate-sub? e "jolt-flaget") #t))
+  (gate-check "(4) ^doubles LET-binding aget,^long idx -> inline flvector-ref" (gate-sub? e "(flvector-ref (jolt-array-vec") #t))
 (let ((e (emit-num "(def _ (fn [m ^long i] (let [^doubles a (:pixels m)] (+ (aget a i) (aget a i)))))")))
   (gate-check "(5) arithmetic over ^doubles let read -> fl+" (gate-sub? e "fl+") #t))
+(let ((e (emit-num "(def _ (fn [^doubles a ^long i] (aset a i 7.25)))")))
+  (gate-check "(5a) aset ^doubles,^long idx,double val -> inline flvector-set!" (gate-sub? e "(flvector-set! (jolt-array-vec") #t)
+  (gate-check "(5a) ...NOT the jolt-flaset call" (gate-sub? e "jolt-flaset") #f))
+(let ((e (emit-num "(def _ (fn [^doubles a ^long i] (aset a i 4)))")))
+  (gate-check "(5b) aset ^doubles,int val keeps jolt-flaset (exact->inexact)" (gate-sub? e "jolt-flaset") #t))
 
 ;; --- runtime value semantics of jolt-flaget/jolt-flaset ---------------------------
 ;; Pin both index paths: the fixnum fast path (the hot case — loop counters are

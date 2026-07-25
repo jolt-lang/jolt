@@ -841,10 +841,31 @@
       ;; emit the native Chez flonum op (flsqrt/flatan/…) instead of the generic
       ;; string-keyed host-static-call, and (via its :double result kind) keep the
       ;; surrounding arithmetic unboxed.
-      ;; (aget ^doubles a i): jolt.passes.numeric proved the array is a flvector, so
-      ;; read it unboxed and typed :double (jolt-flaget = flvector-ref on the backing).
-      (:fl-aget node) (order-args (fn [as] (str "(jolt-flaget " (str/join " " as) ")")))
-      (:fl-aset node) (order-args (fn [as] (str "(jolt-flaset " (str/join " " as) ")")))
+      ;; (aget ^doubles a i): jolt.passes.numeric proved the array is a flvector. A
+      ;; proven-:long (or fixnum-literal) index (:fl-idx-long) reads the backing
+      ;; flvector INLINE — (flvector-ref (jolt-array-vec A) I) — so a call-position
+      ;; flonum stays unboxed through the surrounding fl+ chain instead of being boxed
+      ;; at a jolt-flaget procedure boundary. An unproven index keeps (jolt-flaget A I),
+      ;; which owns the fixnum?/na-idx coercion; the inline flvector-ref's own range
+      ;; check is the bounds contract on the hot path (a pre-check regresses ~11%).
+      (:fl-aget node)
+      (order-args
+       (fn [as]
+         (if (:fl-idx-long node)
+           (str "(flvector-ref (jolt-array-vec " (first as) ") " (second as) ")")
+           (str "(jolt-flaget " (str/join " " as) ")"))))
+      ;; (aset ^doubles a i v): proven index AND :double value (:fl-idx-long +
+      ;; :fl-val-double) store inline — (let ((v V)) (flvector-set! (jolt-array-vec A)
+      ;; I v) v) — and return the stored value (JVM contract; the let evaluates V once).
+      ;; Otherwise keep (jolt-flaset A I V), which owns exact->inexact for a non-double.
+      (:fl-aset node)
+      (order-args
+       (fn [as]
+         (if (and (:fl-idx-long node) (:fl-val-double node))
+           (let [v (fresh-label "_v$")]
+             (str "(let ((" v " " (nth as 2) ")) (flvector-set! (jolt-array-vec "
+                  (first as) ") " (second as) " " v ") " v ")"))
+           (str "(jolt-flaset " (str/join " " as) ")"))))
       (:fl-op node) (order-args (fn [as] (str "(" (:fl-op node) " " (str/join " " as) ")")))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.

@@ -190,15 +190,33 @@
                                        :else nd)))
                         ars)]
         [:double (assoc node1 :args args' :fl-op math-op)])
-      ;; (aget ^doubles-array i) -> unboxed flvector-ref, result proven :double, so
-      ;; the surrounding arithmetic unboxes to fl*/fl+ (jolt-flaget skips jolt-nth's
-      ;; case-lambda + jolt-array?/flvector? checks).
+      ;; (aget ^doubles-array i) -> unboxed flvector read, result proven :double, so
+      ;; the surrounding arithmetic unboxes to fl*/fl+. A PROVEN-:long (or fixnum-
+      ;; literal) index is tagged :fl-idx-long so the back end emits (flvector-ref
+      ;; (jolt-array-vec A) I) INLINE — keeping the value unboxed across the procedure
+      ;; boundary instead of boxing at the jolt-flaget call. An unproven index keeps
+      ;; (jolt-flaget A I), which owns the fixnum?/na-idx coercion.
       (and (= nm "aget") (= n 2) (= :doubles (nth (nth ars 0) 0)))
-      [:double (assoc node1 :fl-aget true)]
+      (let [ikind (nth (nth ars 1) 0) inode (nth (nth ars 1) 1)]
+        [:double (cond-> (assoc node1 :fl-aget true)
+                   (or (= ikind :long)
+                       (and (int-lit? inode) (fixnum-lit? (get inode :val))))
+                   (assoc :fl-idx-long true))])
       ;; (aset ^doubles-array i v) -> unboxed flvector-set!; returns the stored value
-      ;; (:double), so an accumulator over the aset result types too.
+      ;; (:double), so an accumulator over the aset result types too. A proven-:long
+      ;; (or fixnum-literal) index tags :fl-idx-long and a proven-:double value tags
+      ;; :fl-val-double; when BOTH hold the back end emits (flvector-set! ...) inline
+      ;; (returning the stored value — JVM contract). Otherwise it keeps (jolt-flaset
+      ;; ...), which owns exact->inexact for an int / non-double value.
       (and (= nm "aset") (= n 3) (= :doubles (nth (nth ars 0) 0)))
-      [:double (assoc node1 :fl-aset true)]
+      (let [ikind (nth (nth ars 1) 0) inode (nth (nth ars 1) 1)
+            vkind (nth (nth ars 2) 0)]
+        [:double (cond-> (assoc node1 :fl-aset true)
+                   (or (= ikind :long)
+                       (and (int-lit? inode) (fixnum-lit? (get inode :val))))
+                   (assoc :fl-idx-long true)
+                   (= vkind :double)
+                   (assoc :fl-val-double true))])
       (nil? nm) [nil node1]
       :else
        (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (a
