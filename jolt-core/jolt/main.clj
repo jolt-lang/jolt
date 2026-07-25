@@ -53,9 +53,18 @@
 ;; combines both alias sets like tools.deps.
 (def ^:private ^:dynamic *cli-aliases* [])
 
+;; An extra deps.edn map from a leading -Sdeps '<edn>' — merged last into the
+;; user+project chain by resolve-project, like tools.deps.
+(def ^:private ^:dynamic *cli-extra-edn* nil)
+
+;; -T tool mode: the project's own :paths/:deps are replaced (the tool alias
+;; supplies its own), like the clj CLI's tool basis.
+(def ^:private ^:dynamic *cli-tool?* false)
+
 (defn- resolve-current
   ([] (resolve-current []))
-  ([aliases] (deps/resolve-project (project-dir) (into *cli-aliases* aliases))))
+  ([aliases] (deps/resolve-project (project-dir) (into *cli-aliases* aliases)
+                                   *cli-extra-edn* {:tool? *cli-tool?*})))
 
 ;; Consume the first standalone "--" (POSIX end-of-options marker); everything
 ;; else — including any later "--" — is left as literal program data.
@@ -135,6 +144,69 @@
 (defn- cmd-path []
   (let [{:keys [roots]} (resolve-current)]
     (println (str/join ":" roots))))
+
+;; -X / -T exec: invoke a function with a map argument, tools.deps style.
+;; qualify-fn is taken directly from clojure.tools.deps.
+(defn- qualify-fn
+  "Compute function symbol based on fn, ns-aliases, and ns-default"
+  [fsym {:keys [ns-aliases ns-default] :as _x}]
+  (when (and fsym (not (symbol? fsym)))
+    (throw (ex-info (str "Expected function symbol: " fsym) {})))
+  (when fsym
+    (if (qualified-ident? fsym)
+      (let [nsym (get ns-aliases (symbol (namespace fsym)))]
+        (if nsym
+          (symbol (str nsym) (name fsym))
+          fsym))
+      (if ns-default
+        (symbol (str ns-default) (str fsym))
+        (throw (ex-info (str "Unqualified function can't be resolved: " fsym) {}))))))
+
+(defn- parse-exec-args
+  "Trailing -X args: k v pairs (edn-read; a vector k is an assoc-in path) and
+  an optional final map that merges over everything, like the clj CLI."
+  [base args]
+  (loop [m (or base {}) [k v & more :as a] (seq args)]
+    (cond
+      (nil? a) m
+      (nil? v) (let [x (clojure.core/read-string k)]
+                 (if (map? x)
+                   (merge m x)
+                   (throw (ex-info (str "Key is missing value: " k) {}))))
+      :else (let [kx (clojure.core/read-string k)
+                  vx (clojure.core/read-string v)]
+              (recur (assoc-in m (if (vector? kx) kx [kx]) vx) more)))))
+
+(defn- exec-fn-call
+  "Resolve and invoke an exec fn per the combined argmap: an explicit ns/fn
+  from the command line wins, else the aliases' :exec-fn; :exec-args merges
+  under the command-line k v overrides."
+  [argmap fsym-arg args]
+  (let [fsym (qualify-fn (or fsym-arg (:exec-fn argmap)) argmap)
+        _ (when-not fsym (throw (ex-info "No function to execute: supply ns/fn or an alias with :exec-fn" {})))
+        exec-args (parse-exec-args (:exec-args argmap) args)]
+    (require (symbol (namespace fsym)))
+    (if-let [v (resolve fsym)]
+      ((deref v) exec-args)
+      (throw (ex-info (str "Function not found: " fsym) {:fn fsym})))))
+
+;; -X:alias… [ns/fn] [k v …] — resolve with the aliases, invoke :exec-fn (or
+;; the given ns/fn) with :exec-args + overrides.
+(defn- cmd-X [arg more]
+  (let [aliases (parse-aliases arg)
+        {:keys [argmap] :as resolved} (resolve-current aliases)]
+    (apply-project! resolved)
+    (let [[fsym-arg args] (if (and (seq more) (str/includes? (first more) "/"))
+                            [(symbol (first more)) (rest more)]
+                            [nil more])]
+      (exec-fn-call argmap fsym-arg args))))
+
+;; -T:alias… [ns/fn] [k v …] — like -X but a TOOL execution: the project's own
+;; paths and deps are replaced (the tool's alias supplies its deps), matching
+;; the clj CLI's -T basis (:replace-paths ["."] :replace-deps {} defaults).
+(defn- cmd-T [arg more]
+  (binding [*cli-tool?* true]
+    (cmd-X arg more)))
 
 (defn- repl-form-complete?
   "True when `s` has balanced ()/[]/{}, no open string/char/regex, and at most
@@ -414,6 +486,9 @@
   (println "  -m NS [args]           shorthand for run -m")
   (println "  -M:alias [args]        run the alias's :main-opts")
   (println "  -A:alias [args]        add the alias's paths/deps, run the rest")
+  (println "  -X:alias [ns/fn] [k v …]  invoke :exec-fn (or ns/fn) with :exec-args")
+  (println "  -T:alias [ns/fn] [k v …]  like -X, with the project paths/deps replaced")
+  (println "  -Sdeps '<edn>' …       merge an extra deps.edn map, run the rest")
   (println)
   (println "The first standalone -- ends option parsing; everything after it is")
   (println "passed to the program as *command-line-args*."))
@@ -429,8 +504,17 @@
       (= cmd "repl")                     (repl)
       (= cmd "nrepl-server")             (nrepl more)
       (= cmd "path")                     (cmd-path)
+      ;; -Sdeps '<edn>' — an extra deps.edn map merged last into the chain,
+      ;; bound around the re-dispatch of the remaining argv.
+      (= cmd "-Sdeps")
+      (let [[edn-str & rest-args] more]
+        (when (nil? edn-str) (throw (ex-info "-Sdeps needs an edn map argument" {})))
+        (binding [*cli-extra-edn* (clojure.core/read-string edn-str)]
+          (apply -main rest-args)))
       (str/starts-with? cmd "-M")        (cmd-M cmd more)
       (str/starts-with? cmd "-A")        (cmd-A cmd more)
+      (str/starts-with? cmd "-X")        (cmd-X cmd more)
+      (str/starts-with? cmd "-T")        (cmd-T cmd more)
       (= cmd "-m")                       (cmd-run (cons "-m" more))
       (= cmd "build")                    (cmd-build more)
       ;; a bare FILE (or "-" for stdin) runs it, `run` optional — like bb; a

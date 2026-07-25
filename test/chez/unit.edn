@@ -872,8 +872,10 @@
   {:suite "git-url-inference" :label "ht.sr.~OWNER/REPO -> sourcehut, no .git suffix" :expected "https://git.sr.ht/~owner/repo" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url (symbol \"ht.sr.~owner\" \"repo\")))"}
   {:suite "git-url-inference" :label "unknown host namespace -> nil" :expected "" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'org.clojure/data.json))"}
   {:suite "git-url-inference" :label "non-namespaced coordinate -> nil" :expected "" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'lasertag))"}
-  {:suite "git-url-inference" :label "io.github.* with :mvn/version is a Maven dep, not git (git-coord? false)" :expected "false" :expr "(do (require 'jolt.deps) (boolean (@#'jolt.deps/git-coord? {:mvn/version \"1.0.0\"})))"}
-  {:suite "git-url-inference" :label ":git/sha alone marks a git coordinate" :expected "true" :expr "(do (require 'jolt.deps) (boolean (@#'jolt.deps/git-coord? {:git/sha \"abc\"})))"}
+  {:suite "git-url-inference" :label "io.github.* with :mvn/version is a Maven dep, not git" :expected ":mvn" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (jolt.deps.ext/coord-type {:mvn/version \"1.0.0\"}))"}
+  {:suite "git-url-inference" :label ":git/sha alone marks a git coordinate" :expected ":git" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (jolt.deps.ext/coord-type {:git/sha \"abc\"}))"}
+  {:suite "git-url-inference" :label ":local/root marks a local coordinate" :expected ":local" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (jolt.deps.ext/coord-type {:local/root \"../x\"}))"}
+  {:suite "git-url-inference" :label "a coordinate mixing two procurer keys is ambiguous" :expected "true" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (try (jolt.deps.ext/coord-type {:git/sha \"abc\" :mvn/version \"1.0.0\"}) false (catch Throwable e (boolean (re-find #\"ambiguous\" (ex-message e))))))"}
   ;; multimethod dispatch cache — behavior the cache (a perf optimization) must
   ;; preserve. Each "after" value can only stay correct if the cache invalidates
   ;; on defmethod / derive / underive / prefer-method / remove-method, so these

@@ -6,7 +6,7 @@
 
 CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
 
-.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint jolt jolt-release jolt-debug joltsmoke devboot devbootsmoke aotcachesmoke aotcacheperf submodules httpsfetch mvnhttp depssmoke
+.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint jolt jolt-release jolt-debug joltsmoke devboot devbootsmoke aotcachesmoke aotcacheperf submodules httpsfetch mvnhttp depssmoke depsunit
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -22,7 +22,7 @@ test: submodules selfhost ci
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit mvnhttp depssmoke smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric mathfl flarr inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke aotcachesmoke certify
+ci: submodules values corpus unit mvnhttp depssmoke depsunit smoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric mathfl flarr inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke aotcachesmoke certify
 	@echo "OK: CI gates passed"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
@@ -79,10 +79,17 @@ httpsfetch:
 mvnhttp:
 	@bin/jolt run test/mvn_http_test.clj
 
-# deps.edn alias semantics (tools.deps args-map keys) through the real CLI,
-# over local fixture projects in test/chez/deps-alias/. Offline.
+# deps.edn alias + CLI semantics (tools.deps args-map keys, -X/-T/-Sdeps, the
+# user deps.edn chain, jar/git coordinates) through the real CLI, over local
+# fixture projects in test/chez/deps-alias/. Offline.
 depssmoke:
 	@sh host/chez/deps-alias-smoke.sh
+
+# Dependency-expansion unit tests: exclusions, version selection, orphan
+# cutting, and the Maven version comparator, driven through a fake coordinate
+# type — the cases are ported from tools.deps' own test suite. Offline.
+depsunit:
+	@JOLT_NO_USER_DEPS=1 bin/jolt run test/deps_expand_test.clj
 
 # Build jolt as a self-contained native binary into target/<profile>/jolt. The
 # binary bundles the runtime, compiler, jolt-core + stdlib source, the Chez boots,

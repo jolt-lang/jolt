@@ -11,4 +11,15 @@
   :rp     {:replace-paths ["dev"]}
   :m1     {:main-opts ["-m" "appmain"]}
   :m2     {:main-opts ["-m" "appmain2"]}
-  :time   {:extra-deps {local/timefix {:local/root "../timefix"}}}}}
+  :time   {:extra-deps {local/timefix {:local/root "../timefix"}}}
+  ;; a dep directory with NO deps.edn defaults to its src path
+  :noedn  {:extra-deps {local/libnoedn {:local/root "../libnoedn"}}}
+  ;; -X / -T exec fixtures
+  :xbuild {:ns-default xtool
+           :exec-fn hello
+           :exec-args {:greeting "hi"}}
+  :xqual  {:ns-aliases {t xtool}
+           :exec-fn t/hello}
+  :xtool  {:replace-deps {local/tooldep {:local/root "../tooldep"}}
+           :ns-default tooltool
+           :exec-fn report}}}

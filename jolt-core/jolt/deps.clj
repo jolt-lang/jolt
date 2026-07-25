@@ -17,20 +17,34 @@
   directions. Maven jars are fetched by jolt itself over HTTPS (jolt.mvn-http);
   git and unzip still shell out through jolt.host/sh (nothing here touches the JVM)."
   (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.string :as str]
             [jolt.deps.edn :as dedn]
+            [jolt.deps.ext :as ext]
             [jolt.mvn-http :as http]))
 
 ;; --- small host seams -------------------------------------------------------
-(defn- getenv [n] (jolt.host/getenv n))
+;; An env var set to the empty string reads as UNSET — `FOO= cmd` is the usual
+;; way to clear a variable for one command, and treating "" as a value would
+;; turn that into "set to nothing".
+(defn- getenv [n] (let [v (jolt.host/getenv n)] (when-not (str/blank? v) v)))
 (defn- file-exists? [p] (jolt.host/file-exists? p))
 (defn- sh [cmd] (jolt.host/sh cmd))           ; exit code, inherits stdout/stderr
+(defn- sh-out
+  "Run a shell command, returning its trimmed stdout, or nil on a non-zero
+  exit. Captures through a temp file (jolt.host/sh inherits stdio)."
+  [cmd]
+  (let [tmp (str "/tmp/jolt-deps-" (System/currentTimeMillis) "-" (rand-int 100000) ".out")
+        code (sh (str cmd " > " (pr-str tmp) " 2>/dev/null"))
+        out (when (file-exists? tmp) (str/trim (slurp tmp)))]
+    (sh (str "rm -f " (pr-str tmp)))
+    (when (zero? code) out)))
 (defn- warn [& xs] (binding [*out* *err*] (println (str "[jolt.deps] " (apply str xs)))))
 ;; Progress / informational lines (fetching, using-cache, skipping, added-natives)
 ;; print only when JOLT_DEBUG is set — otherwise a routine run (e.g. a ys-generated
 ;; program pulling a native-declaring lib) barfs them on every invocation. Genuine
 ;; warnings (an unresolvable dep, a malformed deps.edn) always print via `warn`.
-(defn- info [& xs] (when (jolt.host/getenv "JOLT_DEBUG") (apply warn xs)))
+(defn- info [& xs] (when (getenv "JOLT_DEBUG") (apply warn xs)))
 
 (defn- read-edn [path]
   (when (file-exists? path)
@@ -70,6 +84,55 @@
     (let [base (or (getenv "GITLIBS") (str (or (getenv "HOME") ".") "/.gitlibs"))
           dir (str base "/libs/" (namespace lib) "/" (name lib) "/" sha)]
       (when (file-exists? dir) dir))))
+
+(defn- full-sha? [s] (and (string? s) (= 40 (count s)) (re-matches #"[0-9a-f]+" s)))
+
+(defn- resolve-git-tag
+  "Resolve a tag to its commit sha via git ls-remote, preferring the peeled
+  ^{} ref (an annotated tag's target commit). Cached under the gitlibs dir —
+  a tag+sha coordinate is reproducible via the sha, the tag resolution is only
+  consulted to verify/complete it, so a cached answer is fine."
+  [url tag]
+  (let [cache (str (gitlibs-dir) "/tags/" (sanitize url) "/" (sanitize tag))]
+    (if (file-exists? cache)
+      (str/trim (slurp cache))
+      (when-let [out (sh-out (str "git ls-remote " (pr-str url) " "
+                                  (pr-str (str "refs/tags/" tag)) " "
+                                  (pr-str (str "refs/tags/" tag "^{}"))))]
+        (let [lines (str/split-lines out)
+              parse (fn [suffix]
+                      (some (fn [l] (let [[sha ref] (str/split l #"\s+")]
+                                      (when (and ref (str/ends-with? ref suffix)) sha)))
+                            lines))
+              sha (or (parse "^{}") (parse (str "refs/tags/" tag)))]
+          (when sha
+            (sh (str "mkdir -p " (pr-str (str (gitlibs-dir) "/tags/" (sanitize url)))))
+            (spit cache sha)
+            sha))))))
+
+(defn- resolve-git-sha
+  "The full commit sha a git coordinate pins: a full :git/sha as-is; with a
+  :git/tag, a short (prefix) sha is completed from the tag's commit and a full
+  sha is verified against it — like tools.deps, a tag alone doesn't pin."
+  [coord url {:git/keys [sha tag] :as spec}]
+  (cond
+    (and sha (full-sha? sha) (not tag)) sha
+    (and tag sha)
+    (let [tag-sha (or (resolve-git-tag url tag)
+                      (throw (ex-info (str "git dep " coord ": tag " tag " not found in " url)
+                                      {:coord coord :spec spec})))]
+      (if (str/starts-with? tag-sha sha)
+        tag-sha
+        (throw (ex-info (str "git dep " coord ": :git/sha " sha " does not match tag "
+                             tag " (" tag-sha ")")
+                        {:coord coord :spec spec :tag-sha tag-sha}))))
+    (full-sha? sha) sha
+    :else
+    (throw (ex-info
+             (str "git dep " coord " needs :git/sha — the full commit sha, or a "
+                  "prefix of it alongside :git/tag"
+                  (when (and tag (not sha)) " (a :git/tag alone doesn't pin a commit)") ".")
+             {:coord coord :spec spec}))))
 
 (defn- ensure-git
   "Return a checkout dir for url@sha: an existing tools.gitlibs checkout for
@@ -122,8 +185,21 @@
   ([env-override cfg home]
    (or env-override cfg (str (or home ".") "/.m2/repository"))))
 
-(def ^:private mvn-repos
+(def ^:private default-mvn-repos
   ["https://repo.clojars.org" "https://repo1.maven.org/maven2"])
+
+(def ^:private ^:dynamic *mvn-repos*
+  "Repository base URLs consulted in order, bound by resolve-project from the
+  merged deps.edn's :mvn/repos ({\"name\" {:url \"…\"}}, the tools.deps key) —
+  defaults first, then custom repos sorted by name for a deterministic order."
+  default-mvn-repos)
+
+(defn- mvn-repo-urls [edn]
+  (into default-mvn-repos
+        (keep (fn [[_name m]] (let [u (:url m)]
+                                (when (and u (not-any? #(= % u) default-mvn-repos))
+                                  (str/replace u #"/+$" ""))))
+              (sort-by key (:mvn/repos edn)))))
 
 (defn- mvn-group [coord] (or (namespace coord) (name coord)))
 
@@ -177,9 +253,9 @@
       (if (and (not legacy) (file-exists? jar))
         (do (info "using " jar-name " from the local Maven repository")
             (extract-jar! jar dir))
-        (loop [repos mvn-repos]
+        (loop [repos *mvn-repos*]
           (if (empty? repos)
-            (do (warn "maven dep " coord " " version " not found (Clojars/Central)") nil)
+            (do (warn "maven dep " coord " " version " not found (tried " (str/join ", " *mvn-repos*) ")") nil)
             (if (do (sh (str "mkdir -p " (pr-str (if legacy dir (str (m2-repo-dir) "/" vdir-rel)))))
                     (http/fetch (str (first repos) "/" vdir-rel "/" jar-name) jar))
               (do (info "fetching " coord " " version)
@@ -190,12 +266,12 @@
                     d))
               (recur (rest repos)))))))))
 
-(defn- pom-deps
-  "Transitive deps of an extracted Maven dep, from its pom.xml — as a deps map so
-  the BFS walks them like any other. Skips test/provided/system scope, org.clojure/
-  clojure (intrinsic), and non-literal versions (ranges / ${properties})."
-  [root coord]
-  (let [pom (str root "/META-INF/maven/" (mvn-group coord) "/" (name coord) "/pom.xml")]
+(defn- pom-deps-from
+  "Transitive deps read from a pom.xml — as a deps map so the expansion walks
+  them like any other. Skips test/provided/system scope, org.clojure/clojure
+  (intrinsic), and non-literal versions (ranges / ${properties})."
+  [pom]
+  (do
     (when (file-exists? pom)
       (let [xml (slurp pom)
             grab (fn [tag block] (second (re-find (re-pattern (str "<" tag ">(.*?)</" tag ">")) block)))]
@@ -245,60 +321,6 @@
               (str url-prefix (subs ns (count prefix)) "/" (name coord) url-suffix)))
           git-url-hosts)))
 
-;; --- coordinate -> root dir -------------------------------------------------
-(defn- git-coord? [spec]
-  (or (:git/url spec) (:git/sha spec) (:git/tag spec)))
-
-(defn- coord-root
-  "The on-disk root directory for one dependency coordinate, or nil to skip."
-  [coord spec base-dir]
-  (cond
-    (:local/root spec) (abspath base-dir (:local/root spec))
-    ;; a git coordinate: an explicit :git/url, else one inferred from the lib name
-    ;; (io.github.OWNER/REPO, …). The :git/sha is what gets checked out; a :git/tag
-    ;; without a sha isn't enough to pin a commit, so it's reported as incomplete.
-    (git-coord? spec)
-    (let [git-url (or (:git/url spec) (infer-git-url coord))]
-      (cond
-        (and git-url (:git/sha spec))
-        (let [checkout (ensure-git coord git-url (:git/sha spec))]
-          (if-let [root (:deps/root spec)] (str checkout "/" root) checkout))
-        (not git-url)
-        (throw (ex-info
-                 (str "git dep " coord " has no :git/url and none could be inferred "
-                      "from its lib name. Add :git/url, or name the coordinate after "
-                      "its host, e.g. io.github.OWNER/REPO for a GitHub repo.")
-                 {:coord coord :spec spec}))
-        :else
-        (throw (ex-info
-                 (str "git dep " coord " needs :git/sha (the full commit SHA to check "
-                      "out)" (when (:git/tag spec) " — a :git/tag alone doesn't pin a commit") ".")
-                 {:coord coord :spec spec}))))
-    (:jolt/module spec)
-    (do (info "skipping janet dependency " coord " (:jolt/module is obsolete on Chez)") nil)
-    ;; jolt IS Clojure — a dependency on org.clojure/clojure is satisfied
-    ;; intrinsically, so skip it silently rather than warning about the (unusable)
-    ;; :mvn/version coordinate.
-    (= coord 'org.clojure/clojure) nil
-    ;; jolt has no ClojureScript compiler, so clojurescript (and the closure /
-    ;; rhino toolchain it drags in) is unusable dead weight — a cljc library
-    ;; declares it for its :cljs branch, which jolt never takes. Skip its subtree.
-    (= coord 'org.clojure/clojurescript) nil
-    (:mvn/version spec) (ensure-maven coord (:mvn/version spec))
-    :else
-    ;; a coordinate that is none of git / mvn / local / module — a typo or an
-    ;; unsupported spec. Silently dropping it hides a real problem (a namespace
-    ;; missing at runtime), so this stays an unconditional warn, unlike the
-    ;; expected-and-obsolete :jolt/module skip above. The message names the
-    ;; coordinate shapes jolt understands so the fix is obvious from the warning.
-    (do (warn "skipping unsupported coordinate " coord " " (pr-str spec)
-              "\n  a dependency needs one of:"
-              "\n    {:mvn/version \"1.2.3\"}                              a Maven artifact"
-              "\n    {:git/url \"https://…\" :git/sha \"<full-sha>\"}       an explicit git repo"
-              "\n    {:git/sha \"<full-sha>\"} on io.github.OWNER/REPO     a git repo by host-prefixed name"
-              "\n    {:local/root \"../path\"}                             a directory on disk")
-        nil)))
-
 (defn- has-clj-source?
   "Does the tree hold any jolt-loadable source (.clj/.cljc)? A Maven JAR that is
   pure-Java (closure-compiler) or ClojureScript-only (cljs.java-time) has none —
@@ -308,16 +330,388 @@
   (zero? (sh (str "find " (pr-str root)
                   " \\( -name '*.clj' -o -name '*.cljc' \\) -print -quit 2>/dev/null | grep -q ."))))
 
-(defn- dep-source-roots
-  "Source roots a resolved dep contributes. A Maven extraction's classpath root IS
-  its source root; a git/local dep uses its deps.edn :paths (default [\"src\"])."
-  [root maven?]
-  (if maven?
-    [root]
-    (let [edn (try (read-edn (str root "/deps.edn"))
-                   (catch :default e (warn (ex-message e)) nil))
-          paths (or (:paths edn) ["src"])]
-      (map #(abspath root %) paths))))
+;; --- coordinate skips + normalization ----------------------------------------
+;; jolt IS Clojure, so org.clojure/clojure is intrinsic; jolt has no
+;; ClojureScript compiler, so clojurescript (and the closure/rhino toolchain it
+;; drags in) is dead weight a cljc library declares only for its :cljs branch.
+(defn- intrinsic-dep? [lib]
+  (or (= lib 'org.clojure/clojure) (= lib 'org.clojure/clojurescript)))
+
+(defn- absolutize-local [spec base-dir]
+  (if (and (map? spec) (:local/root spec))
+    (update spec :local/root #(abspath base-dir %))
+    spec))
+
+(defn- filter-deps
+  "Normalize a raw child/top deps map into expansion entries: drop intrinsics
+  and obsolete :jolt/module coords, absolutize :local/root against the
+  declaring project's dir. A nil coordinate survives (an alias's :default-deps
+  may fill it during expansion)."
+  [deps base-dir]
+  (into []
+        (keep (fn [[lib spec]]
+                (cond
+                  (intrinsic-dep? lib) nil
+                  (:jolt/module spec)
+                  (do (info "skipping janet dependency " lib " (:jolt/module is obsolete on Chez)") nil)
+                  :else [lib (absolutize-local spec base-dir)])))
+        deps))
+
+(defn- known-coord? [coord]
+  (try (some? (ext/coord-type coord)) (catch :default _ false)))
+
+(defn- warn-unsupported [lib coord]
+  (warn "skipping unsupported coordinate " lib " " (pr-str coord)
+        "\n  a dependency needs one of:"
+        "\n    {:mvn/version \"1.2.3\"}                              a Maven artifact"
+        "\n    {:git/url \"https://…\" :git/sha \"<full-sha>\"}       an explicit git repo"
+        "\n    {:git/sha \"<full-sha>\"} on io.github.OWNER/REPO     a git repo by host-prefixed name"
+        "\n    {:git/tag \"v1.2\" :git/sha \"<short-sha>\"}           a git repo pinned by tag + sha prefix"
+        "\n    {:local/root \"../path\"}                             a directory (or jar) on disk"))
+
+;; --- coordinate extensions ----------------------------------------------------
+;; The :mvn / :git / :local coordinate types implement the jolt.deps.ext SPI
+;; over jolt's procurement (ensure-maven / ensure-git / local dirs). Procurement
+;; is memoized per resolution (*procure-memo*).
+
+(def ^:private ^:dynamic *procure-memo* nil)
+(defn- memoized [k f]
+  (if *procure-memo*
+    (if-let [e (find @*procure-memo* k)]
+      (val e)
+      (let [v (f)] (swap! *procure-memo* assoc k v) v))
+    (f)))
+
+(defn- manifest-info
+  "Manifest detection for a git/local directory root: its deps.edn, else a bare
+  source tree. A directory with no deps.edn contributes its default `src` path
+  and no transitive deps — a pom.xml is only consulted for an EXTRACTED artifact
+  (a Maven dep or a jar local root), where it is the only source of children."
+  [root]
+  (if (file-exists? (str root "/deps.edn"))
+    (let [edn (try (some-> (read-edn (str root "/deps.edn")) dedn/canonicalize)
+                   (catch :default e (warn (ex-message e)) nil))]
+      (when (and edn (:deps edn) (not (map? (:deps edn))))
+        (throw (ex-info (str "malformed :deps in " root "/deps.edn: expected a map")
+                        {:path root :given (class (:deps edn))})))
+      {:root root :manifest :deps-edn :edn edn})
+    {:root root :manifest :deps-edn :edn nil}))
+
+(defmethod ext/coord-type-keys :mvn [_] #{:mvn/version})
+(defmethod ext/coord-type-keys :git [_] #{:git/url :git/sha :git/tag})
+(defmethod ext/coord-type-keys :local [_] #{:local/root})
+
+(defmethod ext/dep-id :mvn [_ coord] (select-keys coord [:mvn/version]))
+(defmethod ext/dep-id :git [_ coord] (select-keys coord [:git/url :git/sha :git/tag]))
+(defmethod ext/dep-id :local [_ coord] (select-keys coord [:local/root]))
+
+(defn- mvn-info [lib coord]
+  (memoized [:info lib (ext/dep-id lib coord)]
+    (fn []
+      (let [root (ensure-maven lib (:mvn/version coord))]
+        (cond
+          (nil? root) {:root nil :manifest :none}
+          ;; a Maven dep with no jolt-loadable source contributes nothing and
+          ;; its transitive deps are cljs/JVM tooling — don't walk them.
+          (not (has-clj-source? root)) {:root nil :manifest :none}
+          :else {:root root :manifest :mvn
+                 :pom (str root "/META-INF/maven/" (mvn-group lib) "/" (name lib) "/pom.xml")})))))
+
+(defn- git-info [lib coord]
+  (memoized [:info lib (ext/dep-id lib coord)]
+    (fn []
+      (let [url (or (:git/url coord) (infer-git-url lib)
+                    (throw (ex-info
+                             (str "git dep " lib " has no :git/url and none could be inferred "
+                                  "from its lib name. Add :git/url, or name the coordinate after "
+                                  "its host, e.g. io.github.OWNER/REPO for a GitHub repo.")
+                             {:lib lib :coord coord})))
+            sha (resolve-git-sha lib url coord)
+            checkout (ensure-git lib url sha)
+            root (if-let [r (:deps/root coord)] (str checkout "/" r) checkout)]
+        (assoc (manifest-info root) :sha sha :url url :checkout checkout)))))
+
+(defn- jar-extraction-dir [jar]
+  (str (or (getenv "JOLT_JARLIBS")
+           (str (or (getenv "HOME") ".") "/.jolt/jarlibs"))
+       "/" (sanitize jar)))
+
+(defn- local-info [lib coord]
+  (memoized [:info lib (ext/dep-id lib coord)]
+    (fn []
+      (let [path (:local/root coord)]
+        (if (str/ends-with? path ".jar")
+          ;; a jar local root extracts into a cache keyed by the jar path (the
+          ;; jar's directory may not be writable) and is re-extracted when the
+          ;; jar is newer than the extraction, like a Maven jar.
+          (let [dir (jar-extraction-dir path)]
+            (if (or (cache-fresh? dir path false)
+                    (extract-jar! path dir))
+              (let [pom (sh-out (str "find " (pr-str dir) "/META-INF -name pom.xml -print -quit 2>/dev/null"))]
+                {:root dir :manifest :mvn :pom (when (and pom (not (str/blank? pom))) pom)})
+              {:root nil :manifest :none}))
+          (manifest-info path))))))
+
+(defmethod ext/coord-info :mvn [lib coord] (mvn-info lib coord))
+(defmethod ext/coord-info :git [lib coord] (git-info lib coord))
+(defmethod ext/coord-info :local [lib coord] (local-info lib coord))
+
+(defn- children-of [{:keys [root manifest edn pom]}]
+  (cond
+    (nil? root) []
+    (= manifest :deps-edn) (filter-deps (:deps edn) root)
+    (and (= manifest :mvn) pom (file-exists? pom)) (filter-deps (pom-deps-from pom) root)
+    :else []))
+
+(defmethod ext/coord-deps :mvn [lib coord] (children-of (mvn-info lib coord)))
+(defmethod ext/coord-deps :git [lib coord] (children-of (git-info lib coord)))
+(defmethod ext/coord-deps :local [lib coord] (children-of (local-info lib coord)))
+
+;; version comparison: Maven versions order by ComparableVersion semantics;
+;; git shas by commit ancestry when determinable from an existing clone. Any
+;; other pairing has no order — the expansion warns and keeps the already-
+;; selected coordinate (tools.deps throws instead; jolt prefers resolving with
+;; the first-seen version over failing the whole resolution).
+(defmethod ext/compare-versions [:mvn :mvn] [_ x y]
+  (ext/compare-mvn-versions (:mvn/version x) (:mvn/version y)))
+
+(defn- git-ancestor? [dir a b]
+  (zero? (sh (str "git -C " (pr-str dir) " merge-base --is-ancestor " a " " b " 2>/dev/null"))))
+
+(defmethod ext/compare-versions [:git :git] [lib x y]
+  (let [xi (git-info lib x) yi (git-info lib y)
+        xs (:sha xi) ys (:sha yi)]
+    (cond
+      (= xs ys) 0
+      :else
+      (let [in (fn [dir] (cond (git-ancestor? dir xs ys) -1
+                               (git-ancestor? dir ys xs) 1))]
+        (or (in (:checkout xi)) (in (:checkout yi))
+            (throw (ex-info (str "No known ancestor relationship between git versions for " lib)
+                            {:lib lib :x x :y y})))))))
+
+;; --- dependency expansion -----------------------------------------------------
+;; The tree expansion, exclusion handling, and version selection are taken
+;; directly from clojure.tools.deps (expand-deps and friends), run serially:
+;; a version map tracks every seen version of each lib and the selected one
+;; (top dep wins; else newest by compare-versions), exclusions scope by the
+;; dependency path, and orphaned children of deselected versions are cut.
+
+(defn- excluded?
+  [exclusions path lib]
+  (let [lib-name (first (str/split (name lib) #"\$"))
+        base-lib (symbol (namespace lib) lib-name)]
+    (loop [search path]
+      (when (seq search)
+        (if (get-in exclusions [search base-lib])
+          true
+          (recur (pop search)))))))
+
+(defn- update-excl
+  "Update exclusions and cut based on whether this is a new lib/version,
+  a new instance of an existing lib/version, or not including."
+  [lib use-coord coord-id use-path include reason exclusions cut]
+  (let [coord-excl (when-let [e (:exclusions use-coord)] (set e))]
+    (cond
+      ;; if adding new lib/version, include all non-excluded children
+      include
+      (if (nil? coord-excl)
+        {:exclusions' exclusions, :cut' cut, :child-pred (constantly true)}
+        {:exclusions' (assoc exclusions use-path coord-excl)
+         :cut' (assoc cut [lib coord-id] coord-excl)
+         :child-pred (fn [lib] (not (contains? coord-excl lib)))})
+
+      ;; if seeing same lib/ver again, narrow exclusions to intersection of prior and new,
+      ;; must reconsider previously included children as prev parent may get omitted
+      (= reason :same-version)
+      (let [exclusions' (if (seq coord-excl) (assoc exclusions use-path coord-excl) exclusions)
+            cut-coord (get cut [lib coord-id]) ;; previously cut from this lib, so were not enqueued
+            new-cut (set/intersection coord-excl cut-coord)
+            enq-only (set/difference cut-coord new-cut)]
+        {:exclusions' exclusions'
+         :cut' (assoc cut [lib coord-id] new-cut)
+         :child-pred (set enq-only)})
+
+      :else ;; otherwise, no change
+      {:exclusions' exclusions, :cut' cut})))
+
+(defn- add-version
+  "Add a new version of a lib to the version map"
+  [vmap lib coord path coord-id]
+  (-> (or vmap {})
+    (assoc-in [lib :versions coord-id] coord)
+    (update-in [lib :paths]
+      (fn [coord-paths]
+        (merge-with into {coord-id #{path}} coord-paths)))))
+
+(defn- select-version
+  "Mark a particular coord as selected in version map"
+  [vmap lib coord-id top?]
+  (update-in vmap [lib] merge (cond-> {:select coord-id}
+                                top? (assoc :top true))))
+
+(defn- selected-version [vmap lib] (get-in vmap [lib :select]))
+(defn- selected-coord [vmap lib] (get-in vmap [lib :versions (selected-version vmap lib)]))
+(defn- selected-paths [vmap lib] (get-in vmap [lib :paths (selected-version vmap lib)]))
+
+(defn- parent-missing?
+  "Is any part of the parent path missing from the selected lib/versions?
+  This can happen if a newer version was found, orphaning previously selected children."
+  [vmap parent-path]
+  (loop [path parent-path
+         more-paths nil]
+    (if (seq path)
+      (let [lib (last path)
+            check-path (vec (butlast path))
+            {:keys [paths select]} (get vmap lib)
+            paths-to-selected (get paths select)]
+        (if (contains? paths-to-selected check-path)
+          ;; add alternative paths to root that include the selected lib
+          (recur check-path (concat more-paths (remove #(= % check-path) paths-to-selected)))
+          (if (seq more-paths)
+            ;; consider alternative paths before considering lib to be omitted
+            (recur (first more-paths) (rest more-paths))
+            true)))
+      false)))
+
+(defn- deselect-orphans
+  "For the given paths, deselect any libs whose only selected version paths are in omitted-paths"
+  [vmap omitted-paths]
+  (reduce-kv
+    (fn [ret lib {:keys [select paths]}]
+      (let [lib-paths (get paths select)]
+        ;; if every selected path for this lib has omitted paths as prefixes, deselect
+        (if (every? (fn [p] (some #(= % (take (count %) p)) omitted-paths)) lib-paths)
+          (update-in ret [lib] dissoc :select)
+          ret)))
+    vmap
+    vmap))
+
+(defn- dominates?
+  "Is new-coord newer than old-coord? A pairing with no defined order (git vs
+  maven, unrelated git commits) warns and keeps the selected coordinate."
+  [lib new-coord old-coord]
+  (try (pos? (ext/compare-versions lib new-coord old-coord))
+       (catch :default e
+         (warn "version conflict for " lib ": keeping " (pr-str old-coord)
+               " over " (pr-str new-coord) " (" (ex-message e) ")")
+         false)))
+
+(defn- include-coord?
+  "This is the key decision-making function when considering a lib/coord node in
+  the traversal graph. It returns :include (whether to include this lib/coord), a
+  :reason why it was included or not, and an updated :vmap (may have new version added
+  and/or new selected version for a lib)"
+  [vmap lib coord coord-id path exclusions]
+  (cond
+    ;; lib is a top dep and this is it => select
+    (empty? path)
+    {:include true, :reason :new-top-dep,
+     :vmap (-> vmap
+             (add-version lib coord path coord-id)
+             (select-version lib coord-id true))}
+
+    ;; lib is excluded in this path => omit
+    (excluded? exclusions path lib)
+    {:include false, :reason :excluded, :vmap vmap}
+
+    ;; lib is a top dep and this isn't it => omit
+    (get-in vmap [lib :top])
+    {:include false, :reason :use-top, :vmap vmap}
+
+    ;; lib's parent path is not included => omit
+    (parent-missing? vmap path)
+    {:include false, :reason :parent-omitted, :vmap vmap}
+
+    ;; new lib or no selection => select
+    (not (selected-version vmap lib))
+    {:include true, :reason :new-dep,
+     :vmap (-> vmap
+             (add-version lib coord path coord-id)
+             (select-version lib coord-id false))}
+
+    ;; existing lib, same version => omit (but update vmap, may need to enqueue newly unexcluded children)
+    (= coord-id (selected-version vmap lib))
+    {:include false, :reason :same-version, :vmap (add-version vmap lib coord path coord-id)}
+
+    ;; existing lib, newer version => select
+    (dominates? lib coord (selected-coord vmap lib))
+    {:include true, :reason :newer-version,
+     :vmap (-> vmap
+             (add-version lib coord path coord-id)
+             (deselect-orphans (set (map #(conj % lib) (selected-paths vmap lib))))
+             (select-version lib coord-id false))}
+
+    ;; existing lib, older version => omit
+    :else
+    {:include false, :reason :older-version, :vmap vmap}))
+
+(defn- next-path
+  [pendq q]
+  (let [[fchild & rchildren] pendq]
+    (if fchild
+      {:path fchild, :pendq rchildren, :q' q}
+      (let [next-q (peek q)
+            q' (pop q)]
+        (if (map? next-q)
+          (let [{:keys [children ppath child-pred]} next-q]
+            (recur (->> children (filter (fn [[lib _coord]] (child-pred lib))) (map #(conj ppath %))) q'))
+          {:path next-q, :q' q'})))))
+
+(defn- children-node [lib use-coord use-path child-pred]
+  {:children (memoized [:deps lib (ext/dep-id lib use-coord)]
+                       (fn [] (vec (ext/coord-deps lib use-coord))))
+   :ppath use-path
+   :child-pred child-pred})
+
+(defn- expand-deps
+  "Dep tree expansion, returns the version map. `order` is an atom collecting
+  libs in first-inclusion order, so the final source roots keep a stable
+  breadth-first precedence."
+  [deps default-deps override-deps order]
+  (loop [pendq nil ;; a resolved child list to look at first
+         q (into clojure.lang.PersistentQueue/EMPTY (map vector deps)) ;; queue of nodes or child-lookups
+         version-map nil ;; track all seen versions of libs and which version is selected
+         exclusions nil ;; tracks exclusions marked in the tree
+         cut nil] ;; tracks cuts made of child nodes based on exclusions
+    (let [{:keys [path pendq q']} (next-path pendq q)]
+      (if path
+        (let [[lib coord] (peek path)
+              parents (pop path)
+              use-path (conj parents lib)
+              override-coord (get override-deps lib)
+              choose-coord (cond override-coord override-coord
+                                 coord coord
+                                 :else (get default-deps lib))]
+          (if (or (nil? choose-coord) (not (known-coord? choose-coord)))
+            (do (warn-unsupported lib choose-coord)
+                (recur pendq q' version-map exclusions cut))
+            (let [use-coord choose-coord
+                  coord-id (ext/dep-id lib use-coord)
+                  {:keys [include reason vmap]} (include-coord? version-map lib use-coord coord-id parents exclusions)
+                  _ (when include (swap! order conj lib))
+                  {:keys [exclusions' cut' child-pred]} (update-excl lib use-coord coord-id use-path include reason exclusions cut)
+                  new-q (if child-pred (conj q' (children-node lib use-coord use-path child-pred)) q')]
+              (recur pendq new-q vmap exclusions' cut'))))
+        version-map))))
+
+(defn- cut-orphans
+  "Remove any selected lib that does not have a selected parent path"
+  [version-map]
+  (reduce-kv
+    (fn [vmap lib {:keys [select]}]
+      (if (nil? select)
+        (dissoc vmap lib)
+        vmap))
+    version-map version-map))
+
+(defn- lib-paths
+  "Convert version map to lib map"
+  [version-map]
+  (reduce-kv
+    (fn [ret lib {:keys [select versions]}]
+      (assoc ret lib (get versions select)))
+    {} version-map))
 
 ;; --- reconciliation ---------------------------------------------------------
 ;; Dependencies are resolved as a TREE (resolve-deps' BFS, which visits each
@@ -343,11 +737,12 @@
       [:process (:name spec)]
       [:native (or (:name spec) (vec (sort (concat (cands :darwin) (cands :linux) (cands :win)))))])))
 
-(defn- resolve-deps
-  "Breadth-first walk of a deps map; returns {:roots [...] :natives [...]} — the
-  source-root directories and the collected :jolt/native declarations from every
-  dep's deps.edn (raw, in walk order; reconcile-project dedups them). `base-dir`
-  resolves :local/root and is replaced by a dep's own root as the walk descends.
+(defn resolve-deps
+  "Expand a deps map through the tools.deps expansion engine, then collect the
+  selected libraries' source roots and :jolt/native declarations in stable
+  first-inclusion order. Returns {:roots [...] :natives [...] :prep [...]
+  :libs {lib coord}} — :libs is the tools.deps lib map (selected coordinate
+  per library).
 
   `opts` carries the alias-combined coordinate maps applied at every node like
   tools.deps: :override-deps replaces a lib's coordinate wherever it appears
@@ -355,59 +750,73 @@
   the coordinate nil."
   ([deps base-dir] (resolve-deps deps base-dir nil))
   ([deps base-dir {:keys [override-deps default-deps]}]
-  ;; queue grows by appending children at the tail; an index cursor walks it so
-  ;; each dequeue is O(1) (was (subvec (vec queue) 1) per pop -> O(n^2)).
-  (loop [queue (mapv (fn [[c s]] [c s base-dir]) (seq deps))
-         i 0
-         seen #{}
-         roots []
-         natives []]
-    (if (>= i (count queue))
-      {:roots roots :natives natives}
-      (let [[coord spec0 bd] (nth queue i)
-            spec (or (get override-deps coord) spec0 (get default-deps coord))
-            i (inc i)]
-        (if (contains? seen coord)
-          (recur queue i seen roots natives)
-          (let [root (coord-root coord spec bd)]
-            (if (nil? root)
-              (recur queue i (conj seen coord) roots natives)
-              ;; a DEP repo's malformed deps.edn warns and contributes nothing;
-              ;; only the project's own deps.edn is a hard error (resolve-project).
-              ;; A Maven dep has no deps.edn — its children come from its pom.xml.
-              (let [maven? (boolean (:mvn/version spec))
-                    ;; a Maven dep with no jolt-loadable source contributes nothing
-                    ;; and its transitive deps are cljs/JVM tooling — don't walk them.
-                    usable? (or (not maven?) (has-clj-source? root))
-                    edn (when (and usable? (not maven?))
-                          (try (read-edn (str root "/deps.edn"))
-                               (catch :default e (warn (ex-message e)) nil)))
-                    deps (when usable? (if maven? (pom-deps root coord) (:deps edn)))
-                    _ (when (and edn deps (not (map? deps)))
-                        (throw (ex-info (str "malformed :deps in " root "/deps.edn: expected a map")
-                                        {:path root :given (class deps)})))
-                    child (mapv (fn [[c s]] [c s root]) (seq deps))]
-                (recur (into queue child)
-                       i
-                       (conj seen coord)
-                       (into roots (if usable? (dep-source-roots root maven?) []))
-                       (into natives (:jolt/native edn))))))))))))
+   (binding [*procure-memo* (or *procure-memo* (atom {}))]
+     (let [abs #(absolutize-local % base-dir)
+           top (filter-deps deps base-dir)
+           override-deps (some->> override-deps (map (fn [[l c]] [l (abs c)])) (into {}))
+           default-deps (some->> default-deps (map (fn [[l c]] [l (abs c)])) (into {}))
+           order (atom [])
+           vmap (cut-orphans (expand-deps top default-deps override-deps order))
+           libmap (lib-paths vmap)
+           infos (keep (fn [lib]
+                         (when-let [coord (get libmap lib)]
+                           (let [info (ext/coord-info lib coord)]
+                             (when (:root info) (assoc info :lib lib)))))
+                       (distinct @order))]
+       {:roots (vec (mapcat (fn [{:keys [root manifest edn]}]
+                              (if (= manifest :deps-edn)
+                                (map #(abspath root %) (or (:paths edn) ["src"]))
+                                [root]))
+                            infos))
+        :natives (vec (mapcat (fn [{:keys [edn]}] (:jolt/native edn)) infos))
+        ;; libs whose deps.edn declares :deps/prep-lib — jolt runs no prep
+        ;; steps, so their compiled/generated assets will be missing; the
+        ;; caller warns with the lib names.
+        :prep (vec (keep (fn [{:keys [lib edn]}] (when (:deps/prep-lib edn) lib)) infos))
+        :libs libmap}))))
 
 ;; --- public -----------------------------------------------------------------
+(defn- user-deps-path
+  "The user deps.edn location, per the same rules as clj: $CLJ_CONFIG, else
+  $XDG_CONFIG_HOME/clojure, else ~/.clojure."
+  []
+  (let [cfg (getenv "CLJ_CONFIG")
+        xdg (getenv "XDG_CONFIG_HOME")
+        home (getenv "HOME")]
+    (cond cfg (str cfg "/deps.edn")
+          xdg (str xdg "/clojure/deps.edn")
+          :else (str (or home ".") "/.clojure/deps.edn"))))
+
+(defn- read-deps-file
+  "Read + canonicalize a deps.edn file (simple lib symbols qualify with a
+  deprecation warning, like tools.deps); nil when absent."
+  [path]
+  (some-> (read-edn path) dedn/canonicalize))
+
 (defn resolve-project
   "Resolve `project-dir`'s deps.edn with the selected alias keywords. Returns
   {:roots [...] :main-opts [...] :tasks {...} :natives [...]}; :natives are the
   project's + deps' :jolt/native shared-library declarations.
 
-  Selected aliases combine into one args map with the tools.deps rules
-  (jolt.deps.edn/combine-aliases) and apply like tools.deps: :replace-deps
+  The deps.edn chain merges like tools.deps (jolt.deps.edn/merge-edns): the
+  user deps.edn ($CLJ_CONFIG / $XDG_CONFIG_HOME/clojure / ~/.clojure — skipped
+  under JOLT_NO_USER_DEPS), then the project deps.edn, then an optional extra
+  map (the CLI's -Sdeps). Aliases combine from the merged map with the
+  tools.deps rules (combine-aliases) and apply like tools.deps: :replace-deps
   (legacy :deps) replaces the project deps map, :extra-deps merges into it,
   :override-deps / :default-deps adjust coordinates at every node of the walk;
   :replace-paths (legacy :paths) replaces the project paths, :extra-paths
-  appends; :main-opts is last-wins across the selected aliases."
+  appends; :main-opts is last-wins across the selected aliases. Custom Maven
+  repositories come from the merged :mvn/repos."
   ([project-dir] (resolve-project project-dir []))
-  ([project-dir alias-kws]
-   (let [edn (read-edn (str project-dir "/deps.edn"))
+  ([project-dir alias-kws] (resolve-project project-dir alias-kws nil))
+  ([project-dir alias-kws extra-edn] (resolve-project project-dir alias-kws extra-edn nil))
+  ([project-dir alias-kws extra-edn {:keys [tool?]}]
+   (let [project-edn (read-deps-file (str project-dir "/deps.edn"))
+         user-edn (when-not (getenv "JOLT_NO_USER_DEPS")
+                    (try (read-deps-file (user-deps-path))
+                         (catch :default e (warn (ex-message e)) nil)))
+         edn (dedn/merge-edns [user-edn project-edn (some-> extra-edn dedn/canonicalize)])
          argmap (dedn/combine-aliases edn alias-kws)
          ;; an unknown alias is an error, matching tools.deps ("Specified
          ;; aliases are undeclared") — silently ignoring a typo'd alias runs
@@ -417,21 +826,33 @@
                (throw (ex-info (str "Specified aliases are undeclared: " (vec missing))
                                {:aliases (vec missing)}))))
          main-opts (:main-opts argmap)
+         ;; tool mode (-T): the project's own paths and deps are replaced —
+         ;; the tool's alias supplies its own (clj CLI tool-basis defaults
+         ;; :replace-paths ["."] :replace-deps {}).
          project-paths (concat (or (:replace-paths argmap) (:paths argmap)
-                                   (:paths edn) ["src"])
+                                   (if tool? ["."] (or (:paths edn) ["src"])))
                                (:extra-paths argmap))
          project-roots (map #(abspath project-dir %) project-paths)
-         all-deps (merge (or (:replace-deps argmap) (:deps argmap) (:deps edn))
+         all-deps (merge (or (:replace-deps argmap) (:deps argmap)
+                             (if tool? {} (:deps edn)))
                          (:extra-deps argmap))
-         {dep-roots :roots dep-natives :natives}
+         {dep-roots :roots dep-natives :natives prep-libs :prep}
          (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
-                                      (abspath project-dir r))]
+                                      (abspath project-dir r))
+                   *mvn-repos* (mvn-repo-urls edn)]
            (resolve-deps all-deps project-dir
                          {:override-deps (:override-deps argmap)
-                          :default-deps (:default-deps argmap)}))]
+                          :default-deps (:default-deps argmap)}))
+         _ (when (seq prep-libs)
+             (warn "deps declare :deps/prep-lib steps jolt does not run "
+                   "(their compiled/generated assets will be missing): "
+                   (str/join ", " prep-libs)))]
      ;; reconcile: the project's own roots/natives + every dep's, deduped once.
      {:roots (dedup-by identity (concat project-roots dep-roots))
       :main-opts main-opts
+      ;; the combined alias args map — the CLI's -X/-T read :exec-fn /
+      ;; :exec-args / :ns-default / :ns-aliases from it.
+      :argmap argmap
       ;; the project's own paths (relative to project-dir) and absolute resource
       ;; roots, plus its :jolt/build options — `jolt build` uses these to bundle
       ;; resources into / alongside a standalone binary.
@@ -469,7 +890,7 @@
   babashka call-shape compatibility; no options are currently honored."
   ([deps-map] (add-deps deps-map nil))
   ([{:keys [deps] :as m} _opts]
-   (let [base (or (jolt.host/getenv "JOLT_PWD") ".")
+   (let [base (or (getenv "JOLT_PWD") ".")
          {:keys [roots natives]}
          (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo m)]
                                       (abspath base r))]

@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dependency resolution matches tools.deps.** The expansion engine is now the
+  one from `clojure.tools.deps` — version map, exclusion tree, and orphan
+  cutting ported directly — so `:exclusions` are honored, a library pulled at
+  two versions resolves to the newest (a top-level coordinate still pins), and
+  children orphaned by that choice are dropped. Maven versions order by
+  ComparableVersion semantics without a JVM; git coordinates compare by commit
+  ancestry. New coordinate handling: `:local/root` may point at a `.jar` (it is
+  extracted and its pom supplies transitive deps), and `:git/tag` with a short
+  `:git/sha` resolves the tag to its commit and verifies the prefix. Custom
+  `:mvn/repos` are consulted after Clojars and Central.
+- **The deps.edn chain and the tools.deps CLI surface.** A user `deps.edn`
+  ($CLJ_CONFIG, else $XDG_CONFIG_HOME/clojure, else ~/.clojure) merges under
+  the project's; `-Sdeps '<edn>'` merges an extra map last; `JOLT_NO_USER_DEPS`
+  opts out of the user file. `-X:alias [ns/fn] [k v …]` invokes `:exec-fn` with
+  `:exec-args` (k v pairs and a trailing map merge over it, `:ns-default` /
+  `:ns-aliases` qualify the symbol), and `-T:alias` does the same with the
+  project's own paths and deps replaced by the tool's. Libraries declaring
+  `:deps/prep-lib` are named in a warning, since jolt runs no prep step.
 - **deps.edn aliases follow tools.deps semantics** (#453). Alias maps combine
   with the reference merge rules — lifted directly from
   `clojure.tools.deps.edn` into `jolt.deps.edn` — and the full args-map key set

@@ -1,5 +1,5 @@
 #!/bin/sh
-# deps-alias-smoke.sh — deps.edn alias semantics through the real CLI.
+# deps-alias-smoke.sh — deps.edn alias + CLI semantics through the real CLI.
 #
 # Fixture projects live in test/chez/deps-alias/: `app` selects aliases over two
 # local libs that define the same namespace at different "versions" (liba/libb),
@@ -7,8 +7,12 @@
 # Asserts the tools.deps alias args-map keys jolt supports — :extra-deps /
 # :extra-paths / :override-deps / :default-deps / :replace-deps / :replace-paths
 # / :main-opts — plus multi-alias combination rules, alias visibility in `path`,
-# -A composing with -M, an undeclared alias failing, and the java.time library
-# autoload from the source roots.
+# -A composing with -M, an undeclared alias failing, the java.time library
+# autoload from the source roots, and the tools.deps CLI surface: -X/-T exec,
+# -Sdeps, the user deps.edn chain, :local/root jars, and :git/tag + short sha.
+#
+# The expansion engine itself (exclusions, version selection, orphan cutting) is
+# unit-tested in test/deps_expand_test.clj — see `make depsunit`.
 #
 # JOLT_BIN overrides the binary under test (defaults to bin/jolt source mode).
 set -u
@@ -17,6 +21,11 @@ cd "$root"
 JOLT="${JOLT_BIN:-bin/jolt}"
 APP="$root/test/chez/deps-alias/app"
 pass=0; fail=0
+# Hermetic: never read the developer's real ~/.clojure/deps.edn (the chain test
+# below opts back in with an explicit CLJ_CONFIG).
+export JOLT_NO_USER_DEPS=1
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
 check() { # label expected actual
   if [ "$2" = "$3" ]; then
@@ -42,6 +51,10 @@ check "-A :extra-deps adds libc" "libc C" "$(run -A:dev run -m appc)"
 out="$(run run -m appc)"
 [ "$out" = "libc C" ] && check "no alias => libc absent" "absent" "present" \
                       || check "no alias => libc absent" "absent" "absent"
+
+# a dep directory with no deps.edn of its own contributes its default src path
+# (the programmatic add-deps path relies on this too)
+check "dep without a deps.edn defaults to src" "libnoedn NOEDN" "$(run -A:noedn run -m appnoedn)"
 
 # :override-deps replaces the coordinate wherever the lib appears
 check "-A :override-deps swaps liba for libb" "liba B" "$(run -A:vb run -m appver)"
@@ -97,6 +110,96 @@ out="$(runfull run -m appzone)"
 case "$out" in
   *jolt-lang/time*) check "library miss names the dependency" ok ok ;;
   *) check "library miss names the dependency" "message naming jolt-lang/time" "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# --- tools.deps CLI surface -------------------------------------------------
+
+# -Sdeps merges an extra deps.edn map last into the chain (deps and aliases)
+check "-Sdeps adds a dep" "libc C" \
+      "$(run -Sdeps '{:deps {local/libc {:local/root "../libc"}}}' run -m appc)"
+check "-Sdeps adds an alias" "libc C" \
+      "$(run -Sdeps '{:aliases {:inj {:extra-deps {local/libc {:local/root "../libc"}}}}}' -A:inj run -m appc)"
+
+# -X: :exec-fn / :exec-args from the alias, k v overrides, a trailing map, an
+# explicit ns/fn argument, and :ns-aliases qualification
+check "-X runs :exec-fn with :exec-args" 'exec: {:greeting "hi"}' "$(run -X:xbuild)"
+check "-X k v overrides merge over :exec-args" 'exec: {:greeting "yo", :n 3}' \
+      "$(run -X:xbuild :greeting '"yo"' :n 3)"
+check "-X trailing map merges" 'exec: {:greeting "hi", :z 9}' "$(run -X:xbuild '{:z 9}')"
+check "-X explicit ns/fn wins over :exec-fn" 'exec: {:greeting "hi", :a 1}' \
+      "$(run -X:xbuild xtool/hello :a 1)"
+check "-X :ns-aliases qualifies the fn" 'exec: {}' "$(run -X:xqual)"
+out="$(runfull -X:dev)"
+case "$out" in
+  *"No function to execute"*) check "-X without :exec-fn errors" ok ok ;;
+  *) check "-X without :exec-fn errors" "no-exec-fn error" "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# -T is -X with the project's own paths/deps replaced by the tool alias's
+check "-T replaces the project basis" "tool: project-src-on-roots? false" "$(run -T:xtool)"
+check "-X keeps the project basis" "tool: project-src-on-roots? true" "$(run -X:xtool)"
+
+# user deps.edn chain: CLJ_CONFIG points at a user config whose alias is merged
+# under the project's; JOLT_NO_USER_DEPS (exported above) opts out.
+mkdir -p "$tmp/userconf"
+sed "s|LIBC|$root/test/chez/deps-alias/libc|" \
+  > "$tmp/userconf/deps.edn" <<'EOF'
+{:aliases {:useralias {:extra-deps {local/libc {:local/root "LIBC"}}}}}
+EOF
+check "user deps.edn alias resolves" "libc C" \
+      "$(JOLT_PWD="$APP" JOLT_QUIET=1 CLJ_CONFIG="$tmp/userconf" JOLT_NO_USER_DEPS= "$JOLT" -A:useralias run -m appc 2>&1 | tail -1)"
+out="$(JOLT_PWD="$APP" JOLT_QUIET=1 CLJ_CONFIG="$tmp/userconf" "$JOLT" -A:useralias run -m appc 2>&1)"
+case "$out" in
+  *undeclared*) check "JOLT_NO_USER_DEPS opts out of the user chain" ok ok ;;
+  *) check "JOLT_NO_USER_DEPS opts out of the user chain" "undeclared-alias error" "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# :local/root pointing at a jar extracts it and uses the extraction as a root
+mkdir -p "$tmp/jarsrc/jarlib" "$tmp/jarproj/src"
+cat > "$tmp/jarsrc/jarlib/core.clj" <<'EOF'
+(ns jarlib.core)
+(def version "from-jar")
+EOF
+( cd "$tmp/jarsrc" && zip -q -r ../mylib.jar jarlib )
+cat > "$tmp/jarproj/deps.edn" <<'EOF'
+{:paths ["src"] :deps {local/jarred {:local/root "../mylib.jar"}}}
+EOF
+cat > "$tmp/jarproj/src/japp.clj" <<'EOF'
+(ns japp (:require [jarlib.core :as j]))
+(defn -main [& _] (println "jar dep:" j/version))
+EOF
+check ":local/root jar extracts and loads" "jar dep: from-jar" \
+      "$(JOLT_PWD="$tmp/jarproj" JOLT_QUIET=1 JOLT_JARLIBS="$tmp/jarlibs" "$JOLT" run -m japp 2>&1 | tail -1)"
+
+# :git/tag + short :git/sha — the tag resolves to its commit and the short sha
+# is verified as a prefix of it. Uses a local repo so the gate stays offline.
+mkdir -p "$tmp/gitrepo/src/gitlib" "$tmp/gitproj/src"
+( cd "$tmp/gitrepo" \
+  && git init -q . \
+  && printf '{:paths ["src"]}\n' > deps.edn \
+  && printf '(ns gitlib.core)\n(def version "tagged")\n' > src/gitlib/core.clj \
+  && git add -A \
+  && git -c user.email=t@example.com -c user.name=t commit -qm v1 \
+  && git tag -a v1.0 -m v1.0 ) >/dev/null 2>&1
+short="$(git -C "$tmp/gitrepo" rev-parse --short=7 HEAD)"
+cat > "$tmp/gitproj/src/gapp.clj" <<'EOF'
+(ns gapp (:require [gitlib.core :as g]))
+(defn -main [& _] (println "git dep:" g/version))
+EOF
+cat > "$tmp/gitproj/deps.edn" <<EOF
+{:paths ["src"]
+ :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :git/tag "v1.0" :git/sha "$short"}}}
+EOF
+check ":git/tag + short sha resolves" "git dep: tagged" \
+      "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs" "$JOLT" run -m gapp 2>&1 | tail -1)"
+cat > "$tmp/gitproj/deps.edn" <<EOF
+{:paths ["src"]
+ :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :git/tag "v1.0" :git/sha "deadbee"}}}
+EOF
+out="$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs2" "$JOLT" run -m gapp 2>&1)"
+case "$out" in
+  *"does not match tag"*) check "short sha not matching the tag errors" ok ok ;;
+  *) check "short sha not matching the tag errors" "sha/tag mismatch error" "$(printf '%s' "$out" | head -1)" ;;
 esac
 
 echo "deps-alias smoke: $pass passed, $fail failed"
