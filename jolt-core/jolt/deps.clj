@@ -1,7 +1,10 @@
 (ns jolt.deps
   "Resolve a deps.edn into an ordered list of source roots. A reduced
   tools.deps: :paths, :deps (`:git/url`+`:git/sha` / `:local/root` /
-  `:mvn/version`), :aliases (:extra-paths / :extra-deps / :main-opts), :tasks.
+  `:mvn/version`), :aliases, :tasks. Alias maps combine with the reference
+  tools.deps semantics (jolt.deps.edn, lifted from clojure.tools.deps.edn):
+  :extra-deps / :override-deps / :default-deps / :replace-deps (legacy :deps),
+  :extra-paths / :replace-paths (legacy :paths), :main-opts.
 
   The deps walk is breadth-first so a top-level coordinate registers before any
   transitive one (a top-level pin wins). Git deps reuse an existing
@@ -15,6 +18,7 @@
   git and unzip still shell out through jolt.host/sh (nothing here touches the JVM)."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
+            [jolt.deps.edn :as dedn]
             [jolt.mvn-http :as http]))
 
 ;; --- small host seams -------------------------------------------------------
@@ -343,8 +347,14 @@
   "Breadth-first walk of a deps map; returns {:roots [...] :natives [...]} — the
   source-root directories and the collected :jolt/native declarations from every
   dep's deps.edn (raw, in walk order; reconcile-project dedups them). `base-dir`
-  resolves :local/root and is replaced by a dep's own root as the walk descends."
-  [deps base-dir]
+  resolves :local/root and is replaced by a dep's own root as the walk descends.
+
+  `opts` carries the alias-combined coordinate maps applied at every node like
+  tools.deps: :override-deps replaces a lib's coordinate wherever it appears
+  (top-level or transitive); :default-deps supplies one where a dependent left
+  the coordinate nil."
+  ([deps base-dir] (resolve-deps deps base-dir nil))
+  ([deps base-dir {:keys [override-deps default-deps]}]
   ;; queue grows by appending children at the tail; an index cursor walks it so
   ;; each dequeue is O(1) (was (subvec (vec queue) 1) per pop -> O(n^2)).
   (loop [queue (mapv (fn [[c s]] [c s base-dir]) (seq deps))
@@ -354,7 +364,8 @@
          natives []]
     (if (>= i (count queue))
       {:roots roots :natives natives}
-      (let [[coord spec bd] (nth queue i)
+      (let [[coord spec0 bd] (nth queue i)
+            spec (or (get override-deps coord) spec0 (get default-deps coord))
             i (inc i)]
         (if (contains? seen coord)
           (recur queue i seen roots natives)
@@ -380,29 +391,44 @@
                        i
                        (conj seen coord)
                        (into roots (if usable? (dep-source-roots root maven?) []))
-                       (into natives (:jolt/native edn)))))))))))
+                       (into natives (:jolt/native edn))))))))))))
 
 ;; --- public -----------------------------------------------------------------
 (defn resolve-project
   "Resolve `project-dir`'s deps.edn with the selected alias keywords. Returns
-  {:roots [...] :main-opts [...] :tasks {...} :natives [...]}; :main-opts is the
-  last selected alias's, else nil; :natives are the project's + deps' :jolt/native
-  shared-library declarations."
+  {:roots [...] :main-opts [...] :tasks {...} :natives [...]}; :natives are the
+  project's + deps' :jolt/native shared-library declarations.
+
+  Selected aliases combine into one args map with the tools.deps rules
+  (jolt.deps.edn/combine-aliases) and apply like tools.deps: :replace-deps
+  (legacy :deps) replaces the project deps map, :extra-deps merges into it,
+  :override-deps / :default-deps adjust coordinates at every node of the walk;
+  :replace-paths (legacy :paths) replaces the project paths, :extra-paths
+  appends; :main-opts is last-wins across the selected aliases."
   ([project-dir] (resolve-project project-dir []))
   ([project-dir alias-kws]
    (let [edn (read-edn (str project-dir "/deps.edn"))
-         aliases (:aliases edn)
-         selected (keep #(get aliases %) alias-kws)
-         extra-paths (mapcat :extra-paths selected)
-         extra-deps (apply merge (map :extra-deps selected))
-         main-opts (some :main-opts (reverse selected))
-         project-paths (concat (or (:paths edn) ["src"]) extra-paths)
+         argmap (dedn/combine-aliases edn alias-kws)
+         ;; an unknown alias is an error, matching tools.deps ("Specified
+         ;; aliases are undeclared") — silently ignoring a typo'd alias runs
+         ;; the program without its deps and fails somewhere far away.
+         _ (let [missing (remove #(get-in edn [:aliases %]) alias-kws)]
+             (when (seq missing)
+               (throw (ex-info (str "Specified aliases are undeclared: " (vec missing))
+                               {:aliases (vec missing)}))))
+         main-opts (:main-opts argmap)
+         project-paths (concat (or (:replace-paths argmap) (:paths argmap)
+                                   (:paths edn) ["src"])
+                               (:extra-paths argmap))
          project-roots (map #(abspath project-dir %) project-paths)
-         all-deps (merge (:deps edn) extra-deps)
+         all-deps (merge (or (:replace-deps argmap) (:deps argmap) (:deps edn))
+                         (:extra-deps argmap))
          {dep-roots :roots dep-natives :natives}
          (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
                                       (abspath project-dir r))]
-           (resolve-deps all-deps project-dir))]
+           (resolve-deps all-deps project-dir
+                         {:override-deps (:override-deps argmap)
+                          :default-deps (:default-deps argmap)}))]
      ;; reconcile: the project's own roots/natives + every dep's, deduped once.
      {:roots (dedup-by identity (concat project-roots dep-roots))
       :main-opts main-opts

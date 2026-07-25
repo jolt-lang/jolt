@@ -245,12 +245,27 @@
 ;; cannot recurse into another autoload attempt (load-namespace marks a namespace
 ;; loaded before evaluating its body). Returns #t only when it performed the load,
 ;; so the caller retries the lookup exactly once.
+(define jt-library-autoload-done #f)
 (define (jt-try-autoload! class)
-  (and (not jt-base-autoload-done)
-       (java-time-class? class)
-       (begin (set! jt-base-autoload-done #t)
-              (load-namespace "jolt.time.base")
-              #t)))
+  (or (and (not jt-base-autoload-done)
+           (java-time-class? class)
+           (begin (set! jt-base-autoload-done #t)
+                  (load-namespace "jolt.time.base")
+                  #t))
+      ;; The formatting/zone half (ZoneId, ZonedDateTime, DateTimeFormatter,
+      ;; Locale, …) is the jolt-lang/time library. When it is on the source
+      ;; roots, requiring jolt.time installs its class shims — do that on the
+      ;; first miss of a library class, so a project that depends on the
+      ;; library can reference ZoneId (or require tick.core, whose
+      ;; cljc.java-time namespaces resolve these classes at load) without
+      ;; knowing the jolt.time install namespace. Off the roots, fall through
+      ;; to unknown-class-message, which names the dependency to add.
+      (and (not jt-library-autoload-done)
+           (or (member class jt-library-names) (java-time-prefixed? class))
+           (begin (set! jt-library-autoload-done #t)
+                  (and (find-ns-file "jolt.time")
+                       (begin (load-namespace "jolt.time")
+                              #t))))))
 
 ;; ---- emit entry points ------------------------------------------------------
 (define (host-static-ref class member)

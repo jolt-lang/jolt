@@ -1,0 +1,14 @@
+{:paths ["src"]
+ :deps {local/liba {:local/root "../liba"}}
+ :aliases
+ {:dev    {:extra-paths ["dev"]
+           :extra-deps {local/libc {:local/root "../libc"}}}
+  :dev2   {:extra-paths ["dev" "extra"]}
+  :vb     {:override-deps {local/liba {:local/root "../libb"}}}
+  :defd   {:default-deps {local/libc {:local/root "../libc"}}
+           :extra-deps {local/libc nil}}
+  :bare   {:replace-deps {local/libc {:local/root "../libc"}}}
+  :rp     {:replace-paths ["dev"]}
+  :m1     {:main-opts ["-m" "appmain"]}
+  :m2     {:main-opts ["-m" "appmain2"]}
+  :time   {:extra-deps {local/timefix {:local/root "../timefix"}}}}}

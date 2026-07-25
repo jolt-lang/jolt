@@ -46,6 +46,17 @@
   (jolt.host/set-source-roots! (vec (distinct (concat roots (jolt.host/source-roots)))))
   (load-natives! natives))
 
+;; Aliases selected by a leading -A:… — bound around the re-dispatch so every
+;; command that resolves the project (run/path/build/repl/nrepl/task, and a
+;; following -M's own aliases) resolves WITH them, not just the initial
+;; apply-project!. `jolt -A:jolt path` lists the alias roots; `-A:x -M:y`
+;; combines both alias sets like tools.deps.
+(def ^:private ^:dynamic *cli-aliases* [])
+
+(defn- resolve-current
+  ([] (resolve-current []))
+  ([aliases] (deps/resolve-project (project-dir) (into *cli-aliases* aliases))))
+
 ;; Consume the first standalone "--" (POSIX end-of-options marker); everything
 ;; else — including any later "--" — is left as literal program data.
 (defn- drop-end-of-options [args]
@@ -94,7 +105,7 @@
 
 ;; run [-m NS args… | FILE]  — FILE may be "-" (stdin)
 (defn- cmd-run [more]
-  (apply-project! (deps/resolve-project (project-dir)))
+  (apply-project! (resolve-current))
   (cond
     (= "-m" (first more)) (run-ns (second more) (drop 2 more))
     (seq more)            (do (push-thread-bindings
@@ -102,26 +113,27 @@
                               (load-file (file-arg (first more))) nil)
     :else (throw (ex-info "run needs -m NS or a FILE" {}))))
 
-;; -M:alias…  — resolve with the aliases, run their :main-opts
+;; -M:alias…  — resolve with the aliases (plus any bound by a leading -A),
+;; run their :main-opts
 (defn- cmd-M [arg more]
   (let [aliases (parse-aliases arg)
-        {:keys [main-opts] :as resolved} (deps/resolve-project (project-dir) aliases)]
+        {:keys [main-opts] :as resolved} (resolve-current aliases)]
     (apply-project! resolved)
     (if main-opts
       (apply-main-opts main-opts more)
       (throw (ex-info (str "alias(es) " (pr-str aliases) " have no :main-opts") {})))))
 
-;; -A:alias… — add the aliases' paths/deps, then run the remaining argv as a command.
-;; apply-project! concats with current source-roots, so the alias-added paths survive
-;; the cmd-run re-resolution — re-dispatching through -main is safe and avoids
-;; duplicating the dispatch table.
+;; -A:alias… — add the aliases' paths/deps, then run the remaining argv as a
+;; command with *cli-aliases* bound, so the command's own project resolution
+;; (run/path/build/repl/task, or a following -M's) includes them.
 (defn- cmd-A [arg more]
   (let [aliases (parse-aliases arg)]
-    (apply-project! (deps/resolve-project (project-dir) aliases))
-    (apply -main more)))
+    (binding [*cli-aliases* (into *cli-aliases* aliases)]
+      (apply-project! (resolve-current))
+      (apply -main more))))
 
 (defn- cmd-path []
-  (let [{:keys [roots]} (deps/resolve-project (project-dir))]
+  (let [{:keys [roots]} (resolve-current)]
     (println (str/join ":" roots))))
 
 (defn- repl-form-complete?
@@ -175,7 +187,7 @@
 (defn- repl []
   ;; resolve the project so deps (git libs) are on the roots and native libs are
   ;; loaded — same context a run gets, so (require '[some.lib]) works in the REPL.
-  (try (apply-project! (deps/resolve-project (project-dir)))
+  (try (apply-project! (resolve-current))
        (catch :default _ nil))
   ;; REPL-driven development: trace by default so an uncaught error in evaluated
   ;; code shows a tail-frame backtrace, no JOLT_TRACE needed (JOLT_TRACE=0 opts out).
@@ -210,7 +222,7 @@
 
 ;; A deps.edn :tasks entry: a string is a shell command; a map is {:main-opts …}.
 (defn- run-task [name more]
-  (let [{:keys [tasks] :as resolved} (deps/resolve-project (project-dir))
+  (let [{:keys [tasks] :as resolved} (resolve-current)
         task (get tasks (symbol name))]
     (cond
       (nil? task) (throw (ex-info (str "unknown command or task: " name " (see 'jolt help')") {:name name}))
@@ -265,7 +277,7 @@
 
 (defn- cmd-build [more]
   (let [{:keys [project-paths embed-dirs build] :as resolved}
-        (deps/resolve-project (project-dir))]
+        (resolve-current)]
     (apply-project! resolved)
     (let [opts (loop [a more, entry nil, out nil, target nil, tpack nil, end-opts? false]
                  (let [cur (first a)]
@@ -340,7 +352,7 @@
   ;; nREPL server so an editor can connect and (require '[some.lib]) live. A
   ;; library's middleware (deps.edn :nrepl/middleware) is composed over the
   ;; built-in handler — sessions / interruptible-eval / completion etc.
-  (let [resolved (deps/resolve-project (project-dir))]
+  (let [resolved (resolve-current)]
     (apply-project! resolved)
     (let [raw-port (first (filter #(not (str/starts-with? % "-")) more))
           parsed (some-> raw-port parse-long)

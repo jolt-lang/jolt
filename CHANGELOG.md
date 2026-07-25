@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **deps.edn aliases follow tools.deps semantics** (#453). Alias maps combine
+  with the reference merge rules — lifted directly from
+  `clojure.tools.deps.edn` into `jolt.deps.edn` — and the full args-map key set
+  applies: `:extra-deps`, `:override-deps`, `:default-deps`, `:replace-deps`
+  (legacy `:deps`), `:extra-paths`, `:replace-paths` (legacy `:paths`), and
+  last-wins `:main-opts`. A leading `-A:…` now carries its aliases into the
+  dispatched command, so `jolt -A:jolt path`, `-A:x -M:y`, and `-A:… build`
+  all resolve with them. An undeclared alias is an error, as in tools.deps.
+- **The jolt-lang/time library autoloads from the source roots.** Referencing a
+  `java.time` formatting/zone class (`ZoneId`, `ZonedDateTime`,
+  `DateTimeFormatter`, …) with the library on the deps loads its `jolt.time`
+  install namespace automatically — `(require '[tick.core :as t])` works
+  directly in a project that declares the dependency, e.g. via a `:jolt` alias.
+
 ### Changed
 
 - **The CLI is named `jolt` now, not `joltc`.** The dev launcher is `bin/jolt`,
