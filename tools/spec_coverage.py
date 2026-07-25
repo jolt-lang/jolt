@@ -3,7 +3,7 @@
 
 Cross-references three sources:
   1. tools/clojuredocs-export.json — the clojure.core var inventory (the surface)
-  2. jolt's interned clojure.core mappings (via bin/joltc)
+  2. jolt's interned clojure.core mappings (via bin/jolt)
   3. symbols exercised by the conformance corpus + unit cases
 
 Run from the repo root: python3 tools/spec_coverage.py
@@ -28,7 +28,7 @@ probe = '''(let [names (clojure.string/split-lines (slurp "/tmp/spec-surface-nam
       (when (contains? interned n) (println "I" n))
       (when (some? (resolve (symbol n))) (println "R" n)))))'''
 open('/tmp/spec-surface-names.txt','w').write('\n'.join(core))
-out = subprocess.run(['bin/joltc', '-e', probe], capture_output=True, text=True)
+out = subprocess.run(['bin/jolt', '-e', probe], capture_output=True, text=True)
 interned = {l[2:] for l in out.stdout.splitlines() if l.startswith('I ')}
 resolvable = {l[2:] for l in out.stdout.splitlines() if l.startswith('R ')}
 jolt = interned | resolvable

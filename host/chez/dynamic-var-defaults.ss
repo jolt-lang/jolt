@@ -6,7 +6,7 @@
 ;; from rt.ss after the value model + def-var!.
 
 ;; *jolt-version* — the jolt version string (baked release tag in a binary,
-;; `git describe` under bin/joltc, else "dev"). A plain constant var like
+;; `git describe` under bin/jolt, else "dev"). A plain constant var like
 ;; *clojure-version*; same value as (System/getProperty "jolt.version") and
 ;; jolt.host/jolt-version. Never nil, so it doubles as am-I-on-jolt detection
 ;; the way babashka.version does on bb.
@@ -81,7 +81,7 @@
 ;; *agent* — the agent whose action is currently running; the agent worker
 ;; binds it around each action (concurrency.ss), nil elsewhere like the JVM.
 (def-dynvar! "clojure.core" "*agent*" jolt-nil)
-;; *repl* — true inside an interactive session; joltc's repl and the nREPL
+;; *repl* — true inside an interactive session; jolt's repl and the nREPL
 ;; eval path bind it. False in a plain run, like clojure.main.
 (def-dynvar! "clojure.core" "*repl*" #f)
 ;; Compiler/loader flags with no separate machinery here — the defaults match

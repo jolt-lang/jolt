@@ -1,12 +1,12 @@
 # jolt — Clojure on Chez Scheme. Single substrate, no Janet.
 #
-# bin/joltc runs jolt directly off the checked-in seed (host/chez/seed/); there is no
+# bin/jolt runs jolt directly off the checked-in seed (host/chez/seed/); there is no
 # build step. `make test` is the full gate. `make remint` rebuilds the seed after a
 # source change.
 
 CHEZ ?= $(shell command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)
 
-.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint joltc joltc-release joltc-debug joltcsmoke devboot devbootsmoke aotcachesmoke aotcacheperf submodules httpsfetch mvnhttp
+.PHONY: test ci testbin values corpus unit smoke buildsmoke buildlibsmoke staticnativesmoke selfhost sci cts certify ffi transient infer wp devirt fieldread numwp fieldnum protoret pic narrow directlink unitcontext numeric inline inline-body dcerefs shakesmoke shakelocal manifestcheck remint jolt jolt-release jolt-debug joltsmoke devboot devbootsmoke aotcachesmoke aotcacheperf submodules httpsfetch mvnhttp
 
 # Every target needs the vendored submodules; fail with the fix, not a load error.
 submodules:
@@ -41,16 +41,16 @@ corpus:
 unit:
 	@$(CHEZ) --script host/chez/run-unit.ss
 
-# Real-CLI smoke over bin/joltc.
-# smoke and cts spawn a joltc process per case; a prebuilt binary boots ~10x
+# Real-CLI smoke over bin/jolt.
+# smoke and cts spawn a jolt process per case; a prebuilt binary boots ~10x
 # faster than script mode (0.14s vs 1.5s), so both build one first (12s,
-# always rebuilt so it can't go stale against edited sources). JOLT_BIN=bin/joltc
+# always rebuilt so it can't go stale against edited sources). JOLT_BIN=bin/jolt
 # forces script mode.
 testbin:
-	@$(CHEZ) --script host/chez/build-joltc.ss release target/release/joltc
+	@$(CHEZ) --script host/chez/build-jolt.ss release target/release/jolt
 
 smoke: testbin
-	@JOLT_BIN="$${JOLT_BIN:-target/release/joltc}" sh host/chez/smoke.sh
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/smoke.sh
 
 # The IR schema validator (JOLT_IR_VALIDATE) reports no problems on real code.
 irvalidate:
@@ -77,36 +77,36 @@ httpsfetch:
 # jolt.mvn-http pure-function tests (URL/redirect/header/body parsing). No
 # network, no OpenSSL — runs in the default gate.
 mvnhttp:
-	@bin/joltc run test/mvn_http_test.clj
+	@bin/jolt run test/mvn_http_test.clj
 
-# Build joltc as a self-contained native binary into target/<profile>/joltc. The
+# Build jolt as a self-contained native binary into target/<profile>/jolt. The
 # binary bundles the runtime, compiler, jolt-core + stdlib source, the Chez boots,
 # and a launcher stub, so it runs AND compiles jolt apps with no Chez or cc on the
 # machine. Built on a dev/CI host that HAS Chez + cc. release = optimize-level 3,
 # no inspector info, compressed; debug = optimize-level 0 + inspector + debug info.
-# JOLTC_TARGET (optional) cross-compiles joltc for another Chez machine — it is
-# passed as build-joltc.ss's 3rd arg and needs $JOLT_TARGET_PACK (empty = native).
-joltc-release:
-	@$(CHEZ) --script host/chez/build-joltc.ss release target/release/joltc $(JOLTC_TARGET)
-joltc-debug:
-	@$(CHEZ) --script host/chez/build-joltc.ss debug target/debug/joltc
+# JOLT_CROSS_TARGET (optional) cross-compiles jolt for another Chez machine — it is
+# passed as build-jolt.ss's 3rd arg and needs $JOLT_TARGET_PACK (empty = native).
+jolt-release:
+	@$(CHEZ) --script host/chez/build-jolt.ss release target/release/jolt $(JOLT_CROSS_TARGET)
+jolt-debug:
+	@$(CHEZ) --script host/chez/build-jolt.ss debug target/debug/jolt
 # Re-mint the seed first so the embedded compiler image is current, then both builds.
-joltc: selfhost joltc-release joltc-debug
-	@echo "OK: target/release/joltc and target/debug/joltc built"
+jolt: selfhost jolt-release jolt-debug
+	@echo "OK: target/release/jolt and target/debug/jolt built"
 
-# Self-build smoke: the distributed joltc compiles an app with Chez + cc removed.
-joltcsmoke:
-	@sh host/chez/joltc-selfbuild-smoke.sh
+# Self-build smoke: the distributed jolt compiles an app with Chez + cc removed.
+joltsmoke:
+	@sh host/chez/jolt-selfbuild-smoke.sh
 
-# SCI conformance: load borkdude/sci's source through joltc (floor-gated).
+# SCI conformance: load borkdude/sci's source through jolt (floor-gated).
 sci:
 	@$(CHEZ) --script host/chez/run-sci.ss
 
 # clojure-test-suite conformance: run the vendored jank-lang/clojure-test-suite
-# per-namespace under joltc, gated on the per-namespace baseline
+# per-namespace under jolt, gated on the per-namespace baseline
 # (test/chez/cts-known-failures.txt).
 cts: testbin
-	@JOLT_BIN="$${JOLT_BIN:-target/release/joltc}" bash host/chez/cts.sh
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" bash host/chez/cts.sh
 
 # FFI: bind native functions (typed foreign-procedure), memory, and that a
 # :blocking call is collect-safe (a parked thread doesn't pin the collector).
@@ -274,7 +274,7 @@ certify:
 remint:
 	@sh host/chez/remint.sh
 
-# Precompile the runtime to target/dev/flat.so so dev bin/joltc boots ~10x faster
+# Precompile the runtime to target/dev/flat.so so dev bin/jolt boots ~10x faster
 # (loads the .so instead of compiling ~50 .ss files from source every invocation).
 devboot: submodules
 	@$(CHEZ) --script host/chez/make-devboot.ss
@@ -284,7 +284,7 @@ devbootsmoke: devboot
 	@sh test/chez/devboot-smoke.sh
 
 # Smoke test: the per-namespace AOT/compile cache (miss/hit/invalidate, edge
-# cases, bypass semantics). Drives dev bin/joltc; no Maven jars required.
+# cases, bypass semantics). Drives dev bin/jolt; no Maven jars required.
 aotcachesmoke:
 	@sh test/chez/aot-cache-smoke.sh
 

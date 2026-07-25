@@ -30,7 +30,7 @@ out="$(mktemp -d)/app-bin"
 trap 'rm -rf "$(dirname "$out")"' EXIT
 
 echo "build smoke: compiling app.core -> $out"
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" >/dev/null 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out" >/dev/null 2>&1; then
   echo "  FAIL: jolt build exited non-zero"
   exit 1
 fi
@@ -70,7 +70,7 @@ fi
 # param seeded :double, so its * lowers to a flonum op. The same build with
 # JOLT_NO_WP_INFER=1 skips the fixpoint — the fl-op count must drop (area is the
 # delta). Same numeric result either way; this is the emit-level proof it ran.
-if ! JOLT_PWD="$app" JOLT_NO_WP_INFER=1 bin/joltc build -m app.core -o "$out.noop" >/dev/null 2>&1; then
+if ! JOLT_PWD="$app" JOLT_NO_WP_INFER=1 bin/jolt build -m app.core -o "$out.noop" >/dev/null 2>&1; then
   echo "  FAIL: JOLT_NO_WP_INFER build exited non-zero"; exit 1
 fi
 default_fl=$(grep -c '#3%fl' "$out.build/flat.ss" || true)
@@ -81,7 +81,7 @@ fi
 
 # --no-direct-link opts back out of the release default: the app->app call must
 # NOT lower to a jv$ binding (stays var-routed, dynamically linked).
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out.nodl" --no-direct-link >/dev/null 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out.nodl" --no-direct-link >/dev/null 2>&1; then
   echo "  FAIL: jolt build --no-direct-link exited non-zero"; exit 1
 fi
 if grep -q '(jv\$app.util\$shout' "$out.nodl.build/flat.ss"; then
@@ -103,7 +103,7 @@ echo "build smoke: portable-embed check"
 app_copy="$(mktemp -d)/app-copy"
 cp -R "$app" "$app_copy"
 pe_out="$(dirname "$out")/pe-bin"
-if ! JOLT_PWD="$app_copy" bin/joltc build -m app.core -o "$pe_out" >/dev/null 2>&1; then
+if ! JOLT_PWD="$app_copy" bin/jolt build -m app.core -o "$pe_out" >/dev/null 2>&1; then
   echo "  FAIL: portable-embed build exited non-zero"; exit 1
 fi
 rm -rf "$app_copy"
@@ -116,7 +116,7 @@ fi
 
 # Optimized mode (inference + flatten + scalar-replace) must produce the same
 # result — a sanity check that the passes don't miscompile this app.
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --opt >/dev/null 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out" --opt >/dev/null 2>&1; then
   echo "  FAIL: jolt build --opt exited non-zero"; exit 1
 fi
 got_opt="$(cd / && "$out" alpha bb ccc 2>&1)"
@@ -128,7 +128,7 @@ fi
 
 # Closed-world direct-linking (opt-in): same result, and the cross-namespace call
 # (app.core -> app.util/shout) must lower to a direct jv$ binding, not var-deref.
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --direct-link >/dev/null 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out" --direct-link >/dev/null 2>&1; then
   echo "  FAIL: jolt build --direct-link exited non-zero"; exit 1
 fi
 got_dl="$(cd / && "$out" alpha bb ccc 2>&1)"
@@ -160,7 +160,7 @@ done
 # the ArithmeticException fires, and -main prints THROW OK, not the folded 1.
 inline_throw_app="$root/test/chez/inline-throw-app"
 inline_throw_out="$(dirname "$out")/inline-throw-bin"
-if ! JOLT_PWD="$inline_throw_app" bin/joltc build -m app.core -o "$inline_throw_out" --opt --direct-link >/dev/null 2>&1; then
+if ! JOLT_PWD="$inline_throw_app" bin/jolt build -m app.core -o "$inline_throw_out" --opt --direct-link >/dev/null 2>&1; then
   echo "  FAIL: inline-throw --opt --direct-link build exited non-zero"; exit 1
 fi
 inline_throw_got="$(cd "$inline_throw_app" && "$inline_throw_out" 2>&1)"
@@ -173,7 +173,7 @@ fi
 # --opt build printed :b / :y instead of :a / :n.
 nil_fold_app="$root/test/chez/nil-fold-app"
 nil_fold_out="$(dirname "$out")/nil-fold-bin"
-if ! JOLT_PWD="$nil_fold_app" bin/joltc build -m app.core -o "$nil_fold_out" --opt >/dev/null 2>&1; then
+if ! JOLT_PWD="$nil_fold_app" bin/jolt build -m app.core -o "$nil_fold_out" --opt >/dev/null 2>&1; then
   echo "  FAIL: nil-fold --opt build exited non-zero"; exit 1
 fi
 nil_fold_got="$(cd "$nil_fold_app" && "$nil_fold_out" 2>&1)"
@@ -189,7 +189,7 @@ fi
 # straight through to prove field reads still devirtualize.
 loop_shadow_app="$root/test/chez/loop-shadow-app"
 loop_shadow_out="$(dirname "$out")/loop-shadow-bin"
-if ! JOLT_PWD="$loop_shadow_app" bin/joltc build -m app.core -o "$loop_shadow_out" --opt >/dev/null 2>&1; then
+if ! JOLT_PWD="$loop_shadow_app" bin/jolt build -m app.core -o "$loop_shadow_out" --opt >/dev/null 2>&1; then
   echo "  FAIL: loop-shadow --opt build exited non-zero"; exit 1
 fi
 loop_shadow_got="$(cd "$loop_shadow_app" && "$loop_shadow_out" 2>&1)"
@@ -203,7 +203,7 @@ fi
 # printed 3.0. They must preserve the int.
 min_max_app="$root/test/chez/min-max-app"
 min_max_out="$(dirname "$out")/min-max-bin"
-if ! JOLT_PWD="$min_max_app" bin/joltc build -m app.core -o "$min_max_out" --opt >/dev/null 2>&1; then
+if ! JOLT_PWD="$min_max_app" bin/jolt build -m app.core -o "$min_max_out" --opt >/dev/null 2>&1; then
   echo "  FAIL: min-max --opt build exited non-zero"; exit 1
 fi
 min_max_got="$(cd "$min_max_app" && "$min_max_out" 2>&1)"
@@ -214,7 +214,7 @@ fi
 
 # A built binary runs -main with *ns* = user, like clojure.main — so a runtime
 # resolve of an aliased symbol is nil (the alias lives in the entry ns, not user),
-# matching the JVM and interpreted joltc rather than the entry ns's alias table. A
+# matching the JVM and interpreted jolt rather than the entry ns's alias table. A
 # separate app: `resolve` defeats tree-shaking, so keep it out of the shake test's
 # app above.
 nsp="$(dirname "$out")/nsparity"
@@ -223,7 +223,7 @@ printf '{:paths ["src"]}\n' > "$nsp/deps.edn"
 printf '(ns nsp.lib)\n(defn thing [] 1)\n' > "$nsp/src/nsp/lib.clj"
 printf '(ns nsp.main (:require [nsp.lib :as l]))\n(defn -main [& _]\n  (println "ns:" (str *ns*))\n  (println "resolve:" (pr-str (resolve (quote l/thing))))\n  (println "ns-resolve:" (pr-str (ns-resolve (quote nsp.lib) (quote thing)))))\n' > "$nsp/src/nsp/main.clj"
 nspout="$(dirname "$out")/nsparity-bin"
-if ! JOLT_PWD="$nsp" bin/joltc build -m nsp.main -o "$nspout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$nsp" bin/jolt build -m nsp.main -o "$nspout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of the ns-parity app exited non-zero"; exit 1
 fi
 nsp_out="$(cd / && "$nspout" 2>&1)"
@@ -236,7 +236,7 @@ if ! printf '%s' "$nsp_out" | grep -q 'ns: user' \
 fi
 # Tree-shaking (opt-in): same result, and an unreachable def (the `twice` macro,
 # expanded at AOT and never called at runtime) is dropped.
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --tree-shake >/dev/null 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out" --tree-shake >/dev/null 2>&1; then
   echo "  FAIL: jolt build --tree-shake exited non-zero"; exit 1
 fi
 got_ts="$(cd / && "$out" alpha bb ccc 2>&1)"
@@ -264,7 +264,7 @@ fi
 # namespaces reachable only through the data-readers table.
 drapp="$root/test/chez/datareader-app"
 drout="$(dirname "$out")/dr-bin"
-if ! JOLT_PWD="$drapp" bin/joltc build -m drtest.main -o "$drout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$drapp" bin/jolt build -m drtest.main -o "$drout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a data-reader app exited non-zero"; exit 1
 fi
 got_dr="$(cd / && "$drout" 2>&1)"
@@ -284,7 +284,7 @@ mkdir -p "$nomain/src"
 printf '{:paths ["src"]}\n' > "$nomain/deps.edn"
 printf '(ns script)\n(println "no-main script ran")\n' > "$nomain/src/script.clj"
 nmout="$(dirname "$out")/nomain-bin"
-if ! JOLT_PWD="$nomain" bin/joltc build -m script -o "$nmout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$nomain" bin/jolt build -m script -o "$nmout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a no-main script exited non-zero"; exit 1
 fi
 got_nm="$(cd / && "$nmout" 2>&1)"; rc_nm=$?
@@ -297,7 +297,7 @@ fi
 # succeeds and the binary runs when -main never calls it; calling it fails with
 # a catchable error, not a kernel abort.
 olout="$(dirname "$out")/optional-lib-bin"
-if ! JOLT_PWD="$root/test/chez/optional-lib-app" bin/joltc build -m app.optional-lib -o "$olout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$root/test/chez/optional-lib-app" bin/jolt build -m app.optional-lib -o "$olout" >/dev/null 2>&1; then
   echo "  FAIL: build with a missing optional native lib exited non-zero"; exit 1
 fi
 got_ol="$(cd / && "$olout" 2>&1)"
@@ -305,7 +305,7 @@ if [ "$got_ol" != "optional lib app ran successfully" ]; then
   echo "  FAIL: optional-lib binary — got \`$got_ol\`"; exit 1
 fi
 ocout="$(dirname "$out")/optional-call-bin"
-if ! JOLT_PWD="$root/test/chez/optional-lib-call-app" bin/joltc build -m app.optional-lib-call -o "$ocout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$root/test/chez/optional-lib-call-app" bin/jolt build -m app.optional-lib-call -o "$ocout" >/dev/null 2>&1; then
   echo "  FAIL: build of optional-lib-call app exited non-zero"; exit 1
 fi
 got_oc="$(cd / && "$ocout" 2>&1 | tail -1)"
@@ -320,7 +320,7 @@ mkdir -p "$optproj/src"
 printf '{:paths ["src"] :jolt/build {:opt true}}\n' > "$optproj/deps.edn"
 printf '(ns app)\n(defn -main [& _] (println "opt project ran"))\n' > "$optproj/src/app.clj"
 opout="$(dirname "$out")/optproj-bin"
-modeline="$(JOLT_PWD="$optproj" bin/joltc build -m app -o "$opout" 2>&1 | grep 'compiling app (')"
+modeline="$(JOLT_PWD="$optproj" bin/jolt build -m app -o "$opout" 2>&1 | grep 'compiling app (')"
 case "$modeline" in
   *"(optimized mode"*) : ;;
   *) echo "  FAIL: deps.edn :jolt/build {:opt true} did not select optimized mode — got \`$modeline\`"; exit 1 ;;
@@ -331,7 +331,7 @@ esac
 # emitted into the binary, or a call to it crashes on an unbound var.
 ccapp="$root/test/chez/cljc-cond-app"
 ccout="$(dirname "$out")/cljc-cond-bin"
-if ! JOLT_PWD="$ccapp" bin/joltc build -m cljccond.main -o "$ccout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$ccapp" bin/jolt build -m cljccond.main -o "$ccout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a cljs-conditional app exited non-zero"; exit 1
 fi
 got_cc="$(cd / && "$ccout" 2>&1 | tail -1)"
@@ -344,7 +344,7 @@ fi
 # conditionals (directory?/cwd/which). Guards the vendored-namespace baking.
 fsapp="$root/test/chez/fs-app"
 fsout="$(dirname "$out")/fs-app-bin"
-if ! JOLT_PWD="$fsapp" bin/joltc build -m fsapp.main -o "$fsout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$fsapp" bin/jolt build -m fsapp.main -o "$fsout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a jolt.fs / babashka.fs app exited non-zero"; exit 1
 fi
 got_fs="$(cd / && "$fsout" 2>&1 | tail -1)"
@@ -357,7 +357,7 @@ fi
 # under jolt.fs) must resolve as compiled foreign-procedures — an eval'd form
 # would silently return #f under the interpreter and the output would change.
 fsshake="$(dirname "$out")/fs-app-shake-bin"
-if ! JOLT_PWD="$fsapp" bin/joltc build -m fsapp.main -o "$fsshake" --tree-shake >/dev/null 2>&1; then
+if ! JOLT_PWD="$fsapp" bin/jolt build -m fsapp.main -o "$fsshake" --tree-shake >/dev/null 2>&1; then
   echo "  FAIL: jolt build --tree-shake of the jolt.fs app exited non-zero"; exit 1
 fi
 if grep -q 'scheme.boot' "$fsshake.build/compile.ss" 2>/dev/null; then
@@ -372,7 +372,7 @@ fi
 # be able to spawn a real sub-process. Guards the vendored-namespace baking.
 procapp="$root/test/chez/process-app"
 procout="$(dirname "$out")/process-app-bin"
-if ! JOLT_PWD="$procapp" bin/joltc build -m procapp.main -o "$procout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$procapp" bin/jolt build -m procapp.main -o "$procout" >/dev/null 2>&1; then
   echo "  FAIL: jolt build of a jolt.process / babashka.process app exited non-zero"; exit 1
 fi
 got_proc="$(cd / && "$procout" 2>&1 | tail -1)"
@@ -385,7 +385,7 @@ fi
 # jolt.process) must resolve as compiled foreign-procedures — an eval'd form would
 # silently return #f under the interpreter and the exit codes would be lost.
 procshake="$(dirname "$out")/process-app-shake-bin"
-if ! JOLT_PWD="$procapp" bin/joltc build -m procapp.main -o "$procshake" --tree-shake >/dev/null 2>&1; then
+if ! JOLT_PWD="$procapp" bin/jolt build -m procapp.main -o "$procshake" --tree-shake >/dev/null 2>&1; then
   echo "  FAIL: jolt build --tree-shake of the jolt.process app exited non-zero"; exit 1
 fi
 if grep -q 'scheme.boot' "$procshake.build/compile.ss" 2>/dev/null; then
@@ -416,7 +416,7 @@ cat > "$decl_app/src/da/core.clj" <<'DECL_EOF'
   (println "interned:" (contains? (ns-interns 'da.core) 'only-declared)))
 DECL_EOF
 decl_out="$(dirname "$out")/decl-bin"
-if ! JOLT_PWD="$decl_app" bin/joltc build -m da.core -o "$decl_out" >/dev/null 2>&1; then
+if ! JOLT_PWD="$decl_app" bin/jolt build -m da.core -o "$decl_out" >/dev/null 2>&1; then
   echo "  FAIL: declaration-only-var app build exited non-zero"; exit 1
 fi
 got_decl="$(cd / && "$decl_out" 2>&1)"

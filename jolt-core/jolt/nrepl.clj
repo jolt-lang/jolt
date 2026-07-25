@@ -31,7 +31,7 @@
 ;; bindings below — defcfn resolves the C entry point when the def is evaluated
 ;; (at ns load), so the symbols must already be available. POSIX: the running
 ;; process's own libc symbols. Windows: the Winsock DLL (ws2_32), whose symbols
-;; are NOT in joltc.exe's export table even though it's linked in — without this
+;; are NOT in jolt.exe's export table even though it's linked in — without this
 ;; explicit load, (ffi/defcfn c-socket "socket" ...) fails at load with
 ;; "no entry for socket".
 (if windows?

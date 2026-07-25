@@ -2,7 +2,7 @@
 ;; data-reader fn whose var resolves must surface a throw (not silently degrade
 ;; to a runtime call). Writes its own scratch ns files under a temp dir, prepends
 ;; that dir to the source roots, then requires them.
-;; Run: bin/joltc run test/chez/loader-test.clj (smoke.sh greps for "LOADER OK").
+;; Run: bin/jolt run test/chez/loader-test.clj (smoke.sh greps for "LOADER OK").
 (ns loader-test
   (:require [jolt.fs :as fs]))
 

@@ -2,7 +2,7 @@
 # Run the jolt benchmark suite against JVM Clojure and print a jolt/JVM scorecard.
 #
 # jolt's optimizing passes (direct-linking, inlining, scalar-replace, whole-program
-# inference) fire only in an AOT BUILD — `joltc run -m` is unoptimized — so each
+# inference) fire only in an AOT BUILD — `jolt run -m` is unoptimized — so each
 # benchmark is compiled to an optimized standalone binary and timed. JVM Clojure
 # runs the same portable source for the absolute reference. Each benchmark prints
 # `runs: [...]` and `mean: N ms`; the table shows the means and the jolt/JVM ratio.
@@ -21,7 +21,7 @@
 set -e
 cd "$(dirname "$0")"
 root="$(cd .. && pwd)"
-joltc="$root/bin/joltc"
+jolt="$root/bin/jolt"
 export JOLT_PWD="$PWD"
 
 # Locate Chez's kernel dev files for the optimized build (as build-smoke.sh does).
@@ -50,7 +50,7 @@ BENCHES="fib:30 tak:24 loop-recur:20000 mandelbrot:200 arrays:40000 mathfns:1000
 
 run_one() {
   ns="${1%%:*}"; arg="${2:-${1##*:}}"
-  if ! "$joltc" build -m "$ns" -o "$bindir/$ns" --direct-link --opt >/dev/null 2>&1; then
+  if ! "$jolt" build -m "$ns" -o "$bindir/$ns" --direct-link --opt >/dev/null 2>&1; then
     printf '%-16s  jolt build FAILED\n' "$ns"; return
   fi
   jmean=$("$bindir/$ns" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
@@ -58,7 +58,7 @@ run_one() {
   # `jolt build` ships. Tracked so a release-mode win or regression is visible.
   rmean=""
   if [ -n "$MODE_A" ]; then
-    if "$joltc" build -m "$ns" -o "$bindir/$ns-rel" >/dev/null 2>&1; then
+    if "$jolt" build -m "$ns" -o "$bindir/$ns-rel" >/dev/null 2>&1; then
       rmean=$("$bindir/$ns-rel" "$arg" 2>/dev/null | awk '/^mean:/{print $2}')
     fi
   fi

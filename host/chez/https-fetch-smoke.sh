@@ -5,7 +5,7 @@
 # needs network + a working system OpenSSL. Run with: make httpsfetch
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
-JOLTC="${JOLTC:-bin/joltc}"
+JOLTC="${JOLTC:-bin/jolt}"
 
 fails=0
 

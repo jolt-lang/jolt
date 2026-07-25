@@ -1,7 +1,7 @@
 # babashka.process upstream suite runner
 
 Runs the vendored [babashka/process](https://github.com/babashka/process) test
-suite (`vendor/process/test`) against joltc, to measure conformance of the
+suite (`vendor/process/test`) against jolt, to measure conformance of the
 `java.lang.ProcessBuilder` / `Process` host shim and `jolt.process`.
 
 The reliable CI gate is `test/chez/process-test.clj` (wired into `smoke.sh`); this
@@ -20,7 +20,7 @@ The script stages what the suite needs and isolates babashka:
   resolve a bare name via `PATH`, so the script symlinks the fixtures into a temp
   project and puts the `on-path` dir on `PATH`.
 - **bb isolation.** Most other tests shell out to `babashka` itself (one can
-  hang). The script runs joltc under a minimal tool `PATH` (just `chez` +
+  hang). The script runs jolt under a minimal tool `PATH` (just `chez` +
   `/usr/bin:/bin`) that excludes the dir holding `bb`, so `find-bb` returns nil
   and those tests skip (`BABASHKA_TEST_ENV=jvm`).
 
@@ -38,5 +38,5 @@ error on the missing fixtures, and bb-gated tests run if `bb` is on `PATH`):
 
 ```
 JOLT_PWD="$PWD/test/chez/process-suite" BABASHKA_TEST_ENV=jvm \
-  bin/joltc -M:proc babashka.process-test
+  bin/jolt -M:proc babashka.process-test
 ```

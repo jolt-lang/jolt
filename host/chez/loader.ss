@@ -21,13 +21,13 @@
 ;; prologue/launcher, where *data-readers* and the reader namespaces are already
 ;; baked (bld-emit-data-readers + the app ns walk). Re-scanning would eagerly
 ;; reload each reader namespace via load-jolt-file/jolt-compile-eval-form, which a
-;; tree-shaken no-eval binary has dropped, crashing startup. joltc/build entry
+;; tree-shaken no-eval binary has dropped, crashing startup. jolt/build entry
 ;; points keep the scanning set-source-roots!.
 (define (set-source-roots!* roots) (set! source-roots roots))
 (define (get-source-roots) source-roots)
 
 ;; Install roots — the directories that ship with Jolt (compiler + stdlib + vendored
-;; deps). Shared by cli.ss, build-joltc.ss, and the bld-require-closure filter so the
+;; deps). Shared by cli.ss, build-jolt.ss, and the bld-require-closure filter so the
 ;; literal list stays in one place.
 (define ldr-install-roots '("jolt-core" "stdlib" "vendor/fs/src" "vendor/process/src"))
 
@@ -202,9 +202,9 @@
       (else (loop (cdr cs) (cons (car cs) seg) segs)))))
 
 ;; First existing <root>/rel.clj or <root>/rel.cljc on the search roots, else #f.
-;; A self-contained joltc binary embeds jolt-core + stdlib source keyed by their
+;; A self-contained jolt binary embeds jolt-core + stdlib source keyed by their
 ;; root-relative path ("clojure/string.clj"); those are checked first, so a
-;; `require` resolves with no source on disk. The dev bin/joltc has an empty
+;; `require` resolves with no source on disk. The dev bin/jolt has an empty
 ;; source store, so the two hashtable probes miss and it falls straight to disk.
 (define (resolve-on-roots rel)
   (let ((eclj (string-append rel ".clj")) (ecljc (string-append rel ".cljc")))
@@ -358,8 +358,8 @@
 (define (aot-cache-dir)
   (or (getenv "JOLT_CACHE_DIR")
       (string-append (or (getenv "HOME") ".") "/.jolt/aot-cache")))
-;; Default ON — a built joltc benefits every run (ys-style startup pulling many
-;; library namespaces). JOLT_AOT_CACHE=0/false/no/off opts out. The dev bin/joltc
+;; Default ON — a built jolt benefits every run (ys-style startup pulling many
+;; library namespaces). JOLT_AOT_CACHE=0/false/no/off opts out. The dev bin/jolt
 ;; script exports JOLT_AOT_CACHE=0, so source-mode dev (a volatile compiler whose
 ;; "dev" version tag would NOT invalidate the cache across edits, and whose
 ;; startup is already covered by the devboot cache) stays OFF by default.
@@ -369,7 +369,7 @@
         (not (or (string=? e "0") (string-ci=? e "false")
                  (string-ci=? e "no") (string-ci=? e "off")))
         #t)))   ; unset/empty → default ON
-;; <dir>/<jolt-version>/v1 — the version isolates a different joltc build's output
+;; <dir>/<jolt-version>/v1 — the version isolates a different jolt build's output
 ;; (the emitted Scheme is compiler-version-dependent).
 (define (aot-cache-subdir)
   (string-append (aot-cache-dir) "/" (jolt-version-string) "/v1"))
@@ -415,7 +415,7 @@
 ;; On a miss: run the capture load (which also evals the ns into the running
 ;; image), then fasl the captured Scheme. A compile-file failure is non-fatal —
 ;; the ns is already loaded; we just skip caching this run and miss again next.
-;; mkdir -p without a subprocess. The built Windows joltc runs jolt-sh via
+;; mkdir -p without a subprocess. The built Windows jolt runs jolt-sh via
 ;; cmd.exe, where `mkdir -p <forward/slash/path>` is invalid syntax, so the
 ;; cache dir was never created and open-output-file failed. Native mkdir +
 ;; path-parent recursion is portable (mirrors build.ss bld-mkdir-p).
@@ -425,7 +425,7 @@
     ;; tolerate the benign race (created concurrently); re-raise a real failure.
     (guard (e (#t (unless (file-exists? dir) (raise e))))
       (mkdir dir))))
-;; Publish the cached .scm/.so atomically. Parallel joltc processes (e.g. the cts
+;; Publish the cached .scm/.so atomically. Parallel jolt processes (e.g. the cts
 ;; gate's workers) share one cache dir and can compile the SAME namespace at once;
 ;; writing straight to base.so let a reader's (file-exists? so)+load see a fasl
 ;; another process was mid-write, loading a truncated image that defined nothing
@@ -455,7 +455,7 @@
         (unless (file-exists? so)
           (aot-info (string-append "no .so produced for " name)))))))
 ;; A truncated/corrupt .so (a killed process left a partial write, or a concurrent
-;; joltc is mid-write) would make `load` throw. Fall back to recompile: delete the
+;; jolt is mid-write) would make `load` throw. Fall back to recompile: delete the
 ;; bad files so the miss path rebuilds them. Safe because a truncated fasl fails at
 ;; its header before any top-level define runs, so the image carries no half-loaded
 ;; state from the failed load. Non-fatal — a repeated failure just misses every run.
@@ -713,5 +713,5 @@
 (def-var! "jolt.host" "getenv" (lambda (n) (let ((v (getenv n))) (if v v jolt-nil))))
 
 ;; jolt version string — one source (jolt-version-string, rt.ss): the baked
-;; release tag in a binary, $JOLT_VERSION under bin/joltc, else "dev".
+;; release tag in a binary, $JOLT_VERSION under bin/jolt, else "dev".
 (def-var! "jolt.host" "jolt-version" (lambda () (jolt-version-string)))

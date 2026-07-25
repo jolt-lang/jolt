@@ -1,10 +1,10 @@
 #!/bin/bash
 # babashka/process upstream suite runner (manual conformance harness, like cts.sh
 # — the CI gate is test/chez/process-test.clj). Runs the vendored
-# babashka.process-test against joltc with the program-resolution fixtures staged
+# babashka.process-test against jolt with the program-resolution fixtures staged
 # and bb isolated, so the portable (non-bb) tests run to a clean result.
 #
-# Two things the bare `bin/joltc -M:proc babashka.process-test` can't do on its own:
+# Two things the bare `bin/jolt -M:proc babashka.process-test` can't do on its own:
 #   1. The program-resolution tests copy test-resources/print-dirs.sh into
 #      target/test/{on-path,cwd,workdir} and resolve a bare name via PATH — so the
 #      fixtures must be present and the on-path dir must be on PATH.
@@ -17,7 +17,7 @@
 set -u
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 vend="$root/vendor/process"
-joltc="${JOLT_BIN:-$root/bin/joltc}"
+jolt="${JOLT_BIN:-$root/bin/jolt}"
 
 if [ ! -f "$vend/test-resources/print-dirs.sh" ]; then
   echo "process-suite: skipped (git submodule update --init vendor/process)"
@@ -34,7 +34,7 @@ if [ -z "$chez" ]; then echo "process-suite: no chez on PATH"; exit 1; fi
 work="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 
-# A minimal tool PATH: chez (for joltc) + the standard system dirs, but NOT the
+# A minimal tool PATH: chez (for jolt) + the standard system dirs, but NOT the
 # dir that holds bb (typically a homebrew/coursier dir) — so bb-dependent tests
 # skip rather than run/hang.
 toolbin="$work/bin"; mkdir -p "$toolbin"
@@ -56,7 +56,7 @@ onpath="$(cd "$proj/process/target/test/on-path" && pwd -P)"
 
 # perl for a portable timeout (the coreutils `timeout` may not be on the tool PATH).
 out="$(JOLT_PWD="$proj" BABASHKA_TEST_ENV=jvm PATH="$onpath:$toolbin:/usr/bin:/bin" \
-       perl -e 'alarm shift; exec @ARGV' 300 "$joltc" -M:proc babashka.process-test 2>&1)"
+       perl -e 'alarm shift; exec @ARGV' 300 "$jolt" -M:proc babashka.process-test 2>&1)"
 
 echo "$out" | grep -E 'PROC-RESULT|Ran '
 echo "$out" | grep -E 'FAIL:|ERROR:' | head -20

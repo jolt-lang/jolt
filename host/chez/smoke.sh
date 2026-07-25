@@ -1,18 +1,18 @@
 #!/bin/sh
-# CLI smoke: exercise the real joltc process end to end — core eval, runtime
+# CLI smoke: exercise the real jolt process end to end — core eval, runtime
 # eval/load-string, runtime defmacro, futures, and the numeric tower. The in-process
 # corpus/unit gates cover semantics in depth; this confirms the CLI entry itself.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 
-# JOLT_BIN overrides the joltc under test (make test points it at the freshly
-# built target/release/joltc — 10x faster boot than script mode; the explicit
+# JOLT_BIN overrides the jolt under test (make test points it at the freshly
+# built target/release/jolt — 10x faster boot than script mode; the explicit
 # script-mode case below keeps the source-load path covered).
-joltc="${JOLT_BIN:-bin/joltc}"
+jolt="${JOLT_BIN:-bin/jolt}"
 
 fails=0
 check() {
-  got="$($joltc -e "$1" 2>/dev/null | tail -1)"
+  got="$($jolt -e "$1" 2>/dev/null | tail -1)"
   if [ "$got" = "$2" ]; then
     pass=$((pass + 1))
   else
@@ -25,7 +25,7 @@ pass=0
 
 # An uncaught error reports the source location of the top-level form (stderr).
 check_loc() {
-  err="$($joltc -e "$1" 2>&1 >/dev/null)"
+  err="$($jolt -e "$1" 2>&1 >/dev/null)"
   if printf '%s' "$err" | grep -q "$2"; then
     pass=$((pass + 1))
   else
@@ -39,7 +39,7 @@ check_loc() {
 # survive TCO (the non-tail spine), even though the eval path registers no source
 # map — "print what is available". Asserts a substring appears under "  trace:".
 check_trace() {
-  err="$($joltc -e "$1" 2>&1 >/dev/null)"
+  err="$($jolt -e "$1" 2>&1 >/dev/null)"
   if printf '%s' "$err" | grep -q '  trace:' && printf '%s' "$err" | grep -q "$2"; then
     pass=$((pass + 1))
   else
@@ -53,7 +53,7 @@ check_trace() {
 # ERE) must match the "  trace:" block. Used to assert TCO-elided frames are
 # recovered and non-tail caller context survives a tail loop.
 check_trace_on() {
-  err="$(JOLT_TRACE=1 $joltc -e "$1" 2>&1 >/dev/null)"
+  err="$(JOLT_TRACE=1 $jolt -e "$1" 2>&1 >/dev/null)"
   ok=1
   printf '%s' "$err" | grep -q '  trace:' || ok=0
   shift
@@ -106,7 +106,7 @@ check_loc '(zzzptqx 1)' 'Unable to resolve symbol: zzzptqx'
 
 # JOLT_DIAG=edn emits one machine-readable EDN diagnostic line (valid EDN with
 # quoted strings) carrying the structured :type/:suggestions plus source position.
-diag_out="$(JOLT_DIAG=edn $joltc -e '(prinltn 1)' 2>&1 >/dev/null)"
+diag_out="$(JOLT_DIAG=edn $jolt -e '(prinltn 1)' 2>&1 >/dev/null)"
 if printf '%s' "$diag_out" | grep -q ':type :unresolved-symbol' \
    && printf '%s' "$diag_out" | grep -q ':suggestions \[' \
    && printf '%s' "$diag_out" | grep -q '"println"' \
@@ -120,7 +120,7 @@ fi
 
 # JOLT_CHECK surfaces the success-type checker as located warnings; off by
 # default it must stay silent.
-chk_on="$(JOLT_CHECK=1 $joltc -e '(first 42)' 2>&1 >/dev/null)"
+chk_on="$(JOLT_CHECK=1 $jolt -e '(first 42)' 2>&1 >/dev/null)"
 if printf '%s' "$chk_on" | grep -q 'warning:' && printf '%s' "$chk_on" | grep -q 'first'; then
   pass=$((pass + 1))
 else
@@ -128,7 +128,7 @@ else
   echo "    got \`$chk_on\`"
   fails=$((fails + 1))
 fi
-chk_off="$($joltc -e '(first 42)' 2>&1 >/dev/null)"
+chk_off="$($jolt -e '(first 42)' 2>&1 >/dev/null)"
 if printf '%s' "$chk_off" | grep -q 'warning:'; then
   echo "  FAIL: success-type warning leaked with JOLT_CHECK unset"
   fails=$((fails + 1))
@@ -167,7 +167,7 @@ check_trace_on '(defn g [n] (+ :x n)) (defn ^long f [n] (g n)) (f 3)' 'f' 'g'
 # (h2/u2), not frames from an earlier, already-returned form (h1/u1).
 check_trace_on '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' \
   'h2' 'u2'
-err_stale="$(JOLT_TRACE=1 $joltc -e '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' 2>&1 >/dev/null)"
+err_stale="$(JOLT_TRACE=1 $jolt -e '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' 2>&1 >/dev/null)"
 if printf '%s' "$err_stale" | grep -q 'h1'; then
   echo "  FAIL (trace-on): stale frame h1 from an earlier form leaked into the trace"
   fails=$((fails + 1))
@@ -180,7 +180,7 @@ tr_proj="$(mktemp -d)"
 mkdir -p "$tr_proj/src/tp"
 printf '{:paths ["src"] :aliases {:run {:main-opts ["-m" "tp.core"]}}}\n' > "$tr_proj/deps.edn"
 printf '(ns tp.core)\n(defn deep [x] (+ x 1))\n(defn mid [x] (inc (deep x)))\n(defn -main [& _] (mid :nan))\n' > "$tr_proj/src/tp/core.clj"
-tr_out="$(JOLT_TRACE=1 JOLT_PWD="$tr_proj" $joltc -M:run 2>&1)"
+tr_out="$(JOLT_TRACE=1 JOLT_PWD="$tr_proj" $jolt -M:run 2>&1)"
 if printf '%s' "$tr_out" | grep -Eq 'tp\.core/deep \(.*/tp/core\.clj:2\)'; then
   pass=$((pass + 1))
 else
@@ -198,20 +198,20 @@ cla_check() {
   if [ "$out" = "$2" ]; then pass=$((pass + 1))
   else echo "  FAIL: $1"; echo "    want \`$2\` got \`$out\`"; fails=$((fails + 1)); fi
 }
-cla_check "$joltc -e '(println *command-line-args*)' one two three" '(one two three)'
-cla_check "$joltc -e '(println *command-line-args*)' -- one two"      '(one two)'
-cla_check "$joltc -e '(println *command-line-args*)' -- -e"           '(-e)'
-cla_check "$joltc -e '(println *command-line-args*)' a -- b -- c"     '(a b -- c)'
-cla_check "$joltc -e '(println *command-line-args*)'"                 'nil'
+cla_check "$jolt -e '(println *command-line-args*)' one two three" '(one two three)'
+cla_check "$jolt -e '(println *command-line-args*)' -- one two"      '(one two)'
+cla_check "$jolt -e '(println *command-line-args*)' -- -e"           '(-e)'
+cla_check "$jolt -e '(println *command-line-args*)' a -- b -- c"     '(a b -- c)'
+cla_check "$jolt -e '(println *command-line-args*)'"                 'nil'
 # run FILE -- ... : the "--" is consumed, "-e" stays a program arg.
 rc_dir="$(mktemp -d)"; rc="$rc_dir/rc.clj"; printf '(prn *command-line-args*)\n' > "$rc"
-cla_check "$joltc run \"$rc\" -- -e x" '("-e" "x")'
+cla_check "$jolt run \"$rc\" -- -e x" '("-e" "x")'
 rm -rf "$rc_dir"
 # -m NS -- ... : same end-of-options rule for a namespace -main.
 mp="$(mktemp -d)"; mkdir -p "$mp/src"
 printf '{:paths ["src"]}\n' > "$mp/deps.edn"
 printf '(ns mcmd) (defn -main [& a] (prn *command-line-args*))\n' > "$mp/src/mcmd.clj"
-cla_check "JOLT_PWD=\"$mp\" $joltc -m mcmd -- a b" '("a" "b")'
+cla_check "JOLT_PWD=\"$mp\" $jolt -m mcmd -- a b" '("a" "b")'
 rm -rf "$mp"
 
 # stdin `-`: an (ns …) switch is honored for later forms, so a runtime refer
@@ -220,45 +220,45 @@ rm -rf "$mp"
 # "user" ns (broke `ys -T jolt prog.ys | jolt -`).
 ns_dir="$(mktemp -d)"; ns_prog="$ns_dir/p.clj"
 printf "(intern (create-ns 'aux) 'AAA 42)\n(ns main)\n(refer 'aux :only '[AAA])\n(println AAA)\n" > "$ns_prog"
-cla_check "$joltc - < \"$ns_prog\"" '42'
+cla_check "$jolt - < \"$ns_prog\"" '42'
 rm -rf "$ns_dir"
 
 # help prints usage (bare `help` and --help/-h are synonyms) and lists the
 # nREPL server as a bare command.
-help_out="$($joltc help 2>/dev/null)"
+help_out="$($jolt help 2>/dev/null)"
 if printf '%s' "$help_out" | grep -q 'nrepl-server'; then
   pass=$((pass + 1))
 else
   echo "  FAIL: help should list nrepl-server"
   fails=$((fails + 1))
 fi
-if [ "$($joltc --help 2>/dev/null)" = "$help_out" ]; then
+if [ "$($jolt --help 2>/dev/null)" = "$help_out" ]; then
   pass=$((pass + 1))
 else
   echo "  FAIL: --help should print the same usage as help"
   fails=$((fails + 1))
 fi
 # version / --version are synonyms and name the version.
-if $joltc version 2>/dev/null | grep -q '^jolt ' \
-   && [ "$($joltc version 2>/dev/null)" = "$($joltc --version 2>/dev/null)" ]; then
+if $jolt version 2>/dev/null | grep -q '^jolt ' \
+   && [ "$($jolt version 2>/dev/null)" = "$($jolt --version 2>/dev/null)" ]; then
   pass=$((pass + 1))
 else
   echo "  FAIL: version / --version"
   fails=$((fails + 1))
 fi
-# bare joltc starts a REPL (bb/clj parity): piped stdin evaluates and exits.
-repl_out="$(printf '(+ 1 2)\n' | $joltc 2>/dev/null)"
+# bare jolt starts a REPL (bb/clj parity): piped stdin evaluates and exits.
+repl_out="$(printf '(+ 1 2)\n' | $jolt 2>/dev/null)"
 if printf '%s' "$repl_out" | grep -q '3'; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: bare joltc should start a REPL (got \`$repl_out\`)"
+  echo "  FAIL: bare jolt should start a REPL (got \`$repl_out\`)"
   fails=$((fails + 1))
 fi
 
 # clojure.test extension points (assert-expr / do-report / report) need separate
 # top-level forms — assert-expr must register before `is` expands — so this is a
-# multi-form `joltc run`, not an -e one-liner. The file self-checks its tallies.
-ct_out="$($joltc run test/chez/clojure-test.clj 2>/dev/null)"
+# multi-form `jolt run`, not an -e one-liner. The file self-checks its tallies.
+ct_out="$($jolt run test/chez/clojure-test.clj 2>/dev/null)"
 if printf '%s' "$ct_out" | grep -q 'CLOJURE-TEST OK'; then
   pass=$((pass + 1))
 else
@@ -270,7 +270,7 @@ fi
 # clojure.pprint cl-format: a representative, JVM-certified subset of the upstream
 # test_cl_format suite (~A ~S ~D ~F ~$ ~% ~& ~C ~( ~) ~{ ~} ~[ ~] ~< ~> ~T ~* ~R).
 # The file tallies per-case pass/fail and emits a PPRINT OK / PPRINT FAIL sentinel.
-pp_out="$($joltc run test/chez/pprint-test.clj 2>/dev/null)"
+pp_out="$($jolt run test/chez/pprint-test.clj 2>/dev/null)"
 if printf '%s' "$pp_out" | grep -q 'PPRINT OK'; then
   pass=$((pass + 1))
 else
@@ -282,7 +282,7 @@ fi
 
 # A throwing go/thread body reports to stderr (the JVM's uncaught-exception
 # handler behavior) while the channel still just closes: <!! stays nil.
-thr_out="$($joltc -e "(do (require '[clojure.core.async :as a]) (pr (a/<!! (a/thread (/ 1 0)))))" 2>/tmp/jolt-smoke-thr-err)"
+thr_out="$($jolt -e "(do (require '[clojure.core.async :as a]) (pr (a/<!! (a/thread (/ 1 0)))))" 2>/tmp/jolt-smoke-thr-err)"
 if [ "$thr_out" = "nil" ] && grep -q "Exception in go/thread body" /tmp/jolt-smoke-thr-err; then
   pass=$((pass + 1))
 else
@@ -291,7 +291,7 @@ else
   fails=$((fails + 1))
 fi
 # Same for a raw Thread body.
-$joltc -e '(do (.start (Thread. (fn [] (throw (ex-info "boom" {}))))) (Thread/sleep 200))' 2>/tmp/jolt-smoke-thr2-err >/dev/null
+$jolt -e '(do (.start (Thread. (fn [] (throw (ex-info "boom" {}))))) (Thread/sleep 200))' 2>/tmp/jolt-smoke-thr2-err >/dev/null
 if grep -q "Exception in Thread body" /tmp/jolt-smoke-thr2-err; then
   pass=$((pass + 1))
 else
@@ -303,7 +303,7 @@ fi
 rp="$(mktemp -d)/rproj"; mkdir -p "$rp/src"
 printf '{:paths ["src"]}\n' > "$rp/deps.edn"
 printf '(ns app)\n(def broken "unterminated\n' > "$rp/src/app.clj"
-rerr="$(JOLT_PWD="$rp" $joltc run -m app 2>&1)"
+rerr="$(JOLT_PWD="$rp" $jolt run -m app 2>&1)"
 if printf '%s' "$rerr" | grep -q 'src/app.clj:'; then
   pass=$((pass + 1))
 else
@@ -316,7 +316,7 @@ fi
 # without :git/sha names the coordinate.
 bp="$(mktemp -d)/badproj"; mkdir -p "$bp/src"
 printf '{:paths ["src" :oops\n' > "$bp/deps.edn"
-berr="$(JOLT_PWD="$bp" $joltc run -m app 2>&1)"
+berr="$(JOLT_PWD="$bp" $jolt run -m app 2>&1)"
 if printf '%s' "$berr" | grep -q 'deps.edn'; then
   pass=$((pass + 1))
 else
@@ -326,7 +326,7 @@ fi
 gp="$(mktemp -d)/gitproj"; mkdir -p "$gp/src"
 printf '{:paths ["src"] :deps {some/dep {:git/url "https://example.com/x.git"}}}\n' > "$gp/deps.edn"
 printf '(ns app)\n(defn -main [& _] (println :ok))\n' > "$gp/src/app.clj"
-gerr="$(JOLT_PWD="$gp" $joltc run -m app 2>&1)"
+gerr="$(JOLT_PWD="$gp" $jolt run -m app 2>&1)"
 if printf '%s' "$gerr" | grep -q 'needs :git/sha'; then
   pass=$((pass + 1))
 else
@@ -337,7 +337,7 @@ fi
 
 # context-bound dynamic vars: *file*/*source-path* during a load,
 # *command-line-args*, *agent* inside an action, ns-map/ns-refers visibility.
-ctx_out="$($joltc run test/chez/ctxvars-test.clj a1 a2 2>/dev/null)"
+ctx_out="$($jolt run test/chez/ctxvars-test.clj a1 a2 2>/dev/null)"
 if printf '%s' "$ctx_out" | grep -q 'CTXVARS OK'; then
   pass=$((pass + 1))
 else
@@ -347,7 +347,7 @@ else
 fi
 
 # STM (refs) threaded tests: isolation, txn-leak, io! in future.
-stm_out="$($joltc run test/chez/stm-test.clj 2>/dev/null)"
+stm_out="$($jolt run test/chez/stm-test.clj 2>/dev/null)"
 if printf '%s' "$stm_out" | grep -q 'STM OK'; then
   pass=$((pass + 1))
 else
@@ -357,7 +357,7 @@ else
 fi
 
 # tap system + agent API: async delivery, error modes, held nested sends.
-ta_out="$($joltc run test/chez/tap-agents-test.clj 2>/dev/null)"
+ta_out="$($jolt run test/chez/tap-agents-test.clj 2>/dev/null)"
 if printf '%s' "$ta_out" | grep -q 'TAP-AGENTS OK'; then
   pass=$((pass + 1))
 else
@@ -368,7 +368,7 @@ fi
 
 # jolt.fs — the stdlib file-system API against a scratch temp dir (glob, copy-tree,
 # move, mtime round-trip, which). The file self-checks and prints one marker.
-fs_out="$($joltc run test/chez/fs-test.clj 2>/dev/null)"
+fs_out="$($jolt run test/chez/fs-test.clj 2>/dev/null)"
 if printf '%s' "$fs_out" | grep -q 'FS-TEST OK'; then
   pass=$((pass + 1))
 else
@@ -379,7 +379,7 @@ fi
 
 # jolt.process — the stdlib sub-process API against real programs (capture, pipes,
 # stdin, :dir/:env, exit codes, signals). The file self-checks and prints a marker.
-process_out="$($joltc run test/chez/process-test.clj 2>/dev/null)"
+process_out="$($jolt run test/chez/process-test.clj 2>/dev/null)"
 if printf '%s' "$process_out" | grep -q 'PROCESS-TEST OK'; then
   pass=$((pass + 1))
 else
@@ -390,7 +390,7 @@ fi
 
 # jolt.parser — the general parser-combinator core, running rm-hull/jasentaa's
 # own suite for the adopted pieces plus jolt's added combinators. Self-checks.
-parser_out="$($joltc run test/chez/parser-test.clj 2>/dev/null)"
+parser_out="$($jolt run test/chez/parser-test.clj 2>/dev/null)"
 if printf '%s' "$parser_out" | grep -q 'PARSER OK'; then
   pass=$((pass + 1))
 else
@@ -401,7 +401,7 @@ fi
 
 # jolt.infix — jolt's built-in infix math notation, running rm-hull/infix's own
 # suite (macros/grammar/core tests). The file self-checks and prints one marker.
-infix_out="$($joltc run test/chez/infix-test.clj 2>/dev/null)"
+infix_out="$($jolt run test/chez/infix-test.clj 2>/dev/null)"
 if printf '%s' "$infix_out" | grep -q 'INFIX OK'; then
   pass=$((pass + 1))
 else
@@ -414,7 +414,7 @@ fi
 # must have its result spliced in and COMPILED, like Clojure — #code [:x] becomes
 # (+ 40 2) and evaluates to 42, not the literal list. A project run so the source
 # root's data_readers.clj is picked up.
-dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" $joltc run -m drtest.main 2>/dev/null)"
+dr_out="$(JOLT_PWD="$root/test/chez/datareader-app" $jolt run -m drtest.main 2>/dev/null)"
 dr_want="42
 olleh!"
 if [ "$dr_out" = "$dr_want" ]; then
@@ -427,7 +427,7 @@ fi
 # A required namespace's own :as aliases must not leak into the requirer: fix.main
 # aliases clojure.string as ss and requires fix.lib (which aliases clojure.set as
 # ss); (ss/upper-case "hi") in main must stay clojure.string -> "HI #{1 2}".
-al_out="$(JOLT_PWD="$root/test/chez/alias-leak-app" $joltc run -m fix.main 2>/dev/null | tail -1)"
+al_out="$(JOLT_PWD="$root/test/chez/alias-leak-app" $jolt run -m fix.main 2>/dev/null | tail -1)"
 if [ "$al_out" = "HI #{1 2}" ]; then
   pass=$((pass + 1))
 else
@@ -439,7 +439,7 @@ fi
 # whose var resolves surfaces a throw (not silently degraded), the LIST-libspec
 # superset (use '(ns :only [x])), and the prefix-list form ((require '(pfx [c :as s]))).
 # The fixture writes its own scratch ns files under a temp dir and requires them.
-loader_out="$($joltc run test/chez/loader-test.clj 2>/dev/null)"
+loader_out="$($jolt run test/chez/loader-test.clj 2>/dev/null)"
 if printf '%s' "$loader_out" | grep -q 'LOADER OK'; then
   pass=$((pass + 1))
 else
@@ -449,9 +449,9 @@ else
 fi
 
 # Unit-checks the REPL read-until-complete predicate over balanced/unbalanced,
-# string, comment and regex-literal inputs. A multi-form `joltc run` so jolt.main
+# string, comment and regex-literal inputs. A multi-form `jolt run` so jolt.main
 # is loaded and its private var resolves; the file self-checks and prints a sentinel.
-rr_out="$($joltc run test/chez/repl-reader-test.clj 2>/dev/null)"
+rr_out="$($jolt run test/chez/repl-reader-test.clj 2>/dev/null)"
 if printf '%s' "$rr_out" | grep -q 'REPL-READER OK'; then
   pass=$((pass + 1))
 else
@@ -463,7 +463,7 @@ fi
 # REPL must exit on :repl/quit / :exit — a reliable exit that works in any
 # terminal, unlike ^D (which some terminals/editors don't deliver as EOF).
 # Pipe: an evaluable form, the quit keyword, then a sentinel that must NOT run.
-repl_out="$(printf '(+ 1000 23)\n:repl/quit\n(* 999 9)\n' | $joltc repl 2>/dev/null)"
+repl_out="$(printf '(+ 1000 23)\n:repl/quit\n(* 999 9)\n' | $jolt repl 2>/dev/null)"
 if printf '%s' "$repl_out" | grep -q '1023' && ! printf '%s' "$repl_out" | grep -q '8991'; then
   pass=$((pass + 1))
 else
@@ -472,7 +472,7 @@ else
   fails=$((fails + 1))
 fi
 
-repl_out="$(printf '(- 2024 1)\n:exit\n(* 999 9)\n' | $joltc repl 2>/dev/null)"
+repl_out="$(printf '(- 2024 1)\n:exit\n(* 999 9)\n' | $jolt repl 2>/dev/null)"
 if printf '%s' "$repl_out" | grep -q '2023' && ! printf '%s' "$repl_out" | grep -q '8991'; then
   pass=$((pass + 1))
 else
@@ -483,7 +483,7 @@ fi
 
 # A form split across lines is accumulated and evaluated once complete, with a
 # secondary continuation prompt before each continued line.
-repl_out="$(printf '(+ 1\n2)\n:exit\n' | $joltc repl 2>/dev/null)"
+repl_out="$(printf '(+ 1\n2)\n:exit\n' | $jolt repl 2>/dev/null)"
 if printf '%s' "$repl_out" | grep -q '3' && ! printf '%s' "$repl_out" | grep -q 'error'; then
   pass=$((pass + 1))
 else
@@ -494,7 +494,7 @@ fi
 
 # A single-line regex literal is complete on its own — the #" opens a regex whose
 # body (delimiters, quotes and all) must not be miscounted as unbalanced parens.
-repl_out="$(printf '(re-find #"(a)(b)" "ab")\n:exit\n' | $joltc repl 2>/dev/null)"
+repl_out="$(printf '(re-find #"(a)(b)" "ab")\n:exit\n' | $jolt repl 2>/dev/null)"
 if printf '%s' "$repl_out" | grep -q 'ab' && ! printf '%s' "$repl_out" | grep -q 'error'; then
   pass=$((pass + 1))
 else
@@ -506,7 +506,7 @@ fi
 # REPL-driven development traces by default: an error in an evaluated form shows a
 # tail-frame backtrace with no JOLT_TRACE set. rb tail-calls ra tail-calls +, all
 # TCO-elided from the continuation — only the history recovers them.
-repl_err="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | $joltc repl 2>&1)"
+repl_err="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | $jolt repl 2>&1)"
 if printf '%s' "$repl_err" | grep -q '  trace:' && printf '%s' "$repl_err" | grep -q 'rb'; then
   pass=$((pass + 1))
 else
@@ -515,7 +515,7 @@ else
   fails=$((fails + 1))
 fi
 # JOLT_TRACE=0 opts out — no trace in the REPL.
-repl_off="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | JOLT_TRACE=0 $joltc repl 2>&1)"
+repl_off="$(printf '(defn ra [x] (+ x 1))\n(defn rb [x] (ra x))\n(rb :nan)\n:exit\n' | JOLT_TRACE=0 $jolt repl 2>&1)"
 if printf '%s' "$repl_off" | grep -q '  trace:'; then
   echo "  FAIL: JOLT_TRACE=0 should suppress the REPL trace"
   fails=$((fails + 1))
@@ -532,7 +532,7 @@ printf '{:paths ["src"] :aliases {:dev {:extra-paths ["dev-src"]}}}\n' > "$ad/de
 printf '(ns app.core)\n' > "$ad/src/app/core.clj"
 printf '(ns app.devtool)\n(defn -main [& _] (println "adev-ok"))\n' > "$ad/dev-src/app/devtool.clj"
 # run -m via -A:dev
-ad_out="$(JOLT_PWD="$ad" $joltc -A:dev run -m app.devtool 2>/dev/null | tail -1)"
+ad_out="$(JOLT_PWD="$ad" $jolt -A:dev run -m app.devtool 2>/dev/null | tail -1)"
 if [ "$ad_out" = "adev-ok" ]; then
   pass=$((pass + 1))
 else
@@ -543,7 +543,7 @@ fi
 # semantics), so the script prints at load; it requires the alias-added ns to
 # prove the alias roots survived into the load.
 printf '(require (quote app.devtool))\n(app.devtool/-main)\n' > "$ad/run.clj"
-ad_out2="$(JOLT_PWD="$ad" $joltc -A:dev "$ad/run.clj" 2>/dev/null | tail -1)"
+ad_out2="$(JOLT_PWD="$ad" $jolt -A:dev "$ad/run.clj" 2>/dev/null | tail -1)"
 if [ "$ad_out2" = "adev-ok" ]; then
   pass=$((pass + 1))
 else
@@ -552,12 +552,12 @@ else
 fi
 rm -rf "$ad"
 
-# script-mode boot: bin/joltc (chez --script over the seed source) must still
+# script-mode boot: bin/jolt (chez --script over the seed source) must still
 # work even when the rest of the smoke runs against a prebuilt JOLT_BIN.
-if [ "$(bin/joltc -e '(+ 20 22)' 2>/dev/null | tail -1)" = "42" ]; then
+if [ "$(bin/jolt -e '(+ 20 22)' 2>/dev/null | tail -1)" = "42" ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: script-mode bin/joltc boot"
+  echo "  FAIL: script-mode bin/jolt boot"
   fails=$((fails + 1))
 fi
 

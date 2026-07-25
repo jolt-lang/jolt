@@ -33,7 +33,7 @@ case "$(uname -s)" in
 esac
 
 echo "build-lib smoke: compiling libadd.core -> $lib"
-build_out="$(JOLT_PWD="$app" bin/joltc build --library -m libadd.core -o "$lib" 2>&1)"
+build_out="$(JOLT_PWD="$app" bin/jolt build --library -m libadd.core -o "$lib" 2>&1)"
 if [ ! -f "$lib" ]; then
   # A shared object folds Chez's libkernel.a in, so that archive must be PIC. A
   # kernel built without -fPIC (the common default, incl. a stock source build)

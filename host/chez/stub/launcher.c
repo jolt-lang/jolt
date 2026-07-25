@@ -1,6 +1,6 @@
 /* launcher.c — the native stub for self-contained jolt binaries (jolt-eaj).
  *
- * A toolchain-free `jolt build` (and joltc itself) produces an executable by
+ * A toolchain-free `jolt build` (and jolt itself) produces an executable by
  * appending a Chez boot image to a copy of this prebuilt stub, framed as:
  *
  *     [stub bytes][boot bytes][boot-length : little-endian u64]["JOLTBOOT"]
@@ -12,8 +12,8 @@
  * external boot file, no Chez install, and no resident copy — a malloc'd
  * payload here stayed dirty for the life of the process (7-14 MB per app).
  *
- * Built once at joltc-build time against the Chez kernel (libkernel.a + scheme.h)
- * by host/chez/build-joltc.ss; the resulting binary is embedded into joltc and
+ * Built once at jolt-build time against the Chez kernel (libkernel.a + scheme.h)
+ * by host/chez/build-jolt.ss; the resulting binary is embedded into jolt and
  * copied per app build. Inherently per-platform (the boot targets the host
  * machine-type), like a native compiler.
  */

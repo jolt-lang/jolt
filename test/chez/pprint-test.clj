@@ -1,6 +1,6 @@
 ;; clojure.pprint acceptance gate — a representative subset of the upstream JVM
 ;; (test/clojure/test_clojure/pprint/test_cl_format.clj) and cljs pprint suites,
-;; adapted to run under joltc. Each case is [fmt args want]; cl-format nil returns
+;; adapted to run under jolt. Each case is [fmt args want]; cl-format nil returns
 ;; the formatted string. Cases are JVM-certified (lifted from the upstream suite)
 ;; unless tagged ;cljs. Runs in-process; prints per-case PASS/FAIL + a sentinel
 ;; line `PPRINT-RESULT pass N fail M` the gate greps.

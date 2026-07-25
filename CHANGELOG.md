@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The CLI is named `jolt` now, not `joltc`.** The dev launcher is `bin/jolt`,
+  the built binary is `target/<profile>/jolt` (`jolt.exe` on Windows), release
+  archives are `jolt-<version>-<target>.tar.gz` containing a `jolt` binary, and
+  the Makefile targets are `jolt` / `jolt-release` / `jolt-debug` / `joltsmoke`.
+  `bin/joltc` remains as a compatibility shim that execs `bin/jolt`. The
+  `install` script installs `jolt` and falls back to the `joltc`-named assets
+  for releases up to 0.4.15; the Homebrew formula switches to the new name
+  automatically on the next release bump. The cross-compile variable
+  `JOLTC_TARGET` is now `JOLT_CROSS_TARGET`.
+
 ## [0.4.15] - 2026-07-22
 
 Two numeric fast paths for hot array and math code, both hint- and

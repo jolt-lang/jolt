@@ -1,6 +1,6 @@
-;; Shared CLI dispatch for the two joltc entry points: the script-mode driver
+;; Shared CLI dispatch for the two jolt entry points: the script-mode driver
 ;; (cli.ss under `chez --script`) and the standalone binary's launcher
-;; (build-joltc.ss scheme-start). Both call jolt-cli-run so the -e handling,
+;; (build-jolt.ss scheme-start). Both call jolt-cli-run so the -e handling,
 ;; end-of-options rule, and uncaught-throw reporting cannot drift apart — the
 ;; binary once carried a stale copy of the -e arm.
 
@@ -88,7 +88,7 @@
       ((string=? (car in) "--") (append (reverse acc) (cdr in)))
       (else (loop (cdr in) (cons (car in) acc))))))
 
-;; Dispatch a joltc argv. prepare-build! runs before jolt.main dispatches a
+;; Dispatch a jolt argv. prepare-build! runs before jolt.main dispatches a
 ;; `build` — the script driver loads the build driver from the repo, the
 ;; standalone binary materializes its bundled boots/stub (build.ss itself is
 ;; already inlined there).

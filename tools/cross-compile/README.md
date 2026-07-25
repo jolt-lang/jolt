@@ -2,7 +2,7 @@
 
 Answer to [jolt-lang/jolt#375](https://github.com/jolt-lang/jolt/issues/375):
 **yes — jolt cross-compiles.** It is productized as `jolt build --target
-<machine> --target-pack <dir>` (and joltc itself via build-joltc.ss's 3rd arg +
+<machine> --target-pack <dir>` (and jolt itself via build-jolt.ss's 3rd arg +
 `$JOLT_TARGET_PACK`). This directory holds the tooling and the proof-of-concept
 that verified the mechanism.
 
@@ -19,7 +19,7 @@ CHEZ_SRC=~/dev/ChezScheme tools/cross-compile/make-pack.sh ta6osx /tmp/pack-ta6o
 
 # then, for any app (macOS arm64 host -> x86_64 target):
 JOLT_TARGET_CC=cc JOLT_TARGET_ARCH_FLAG="-arch x86_64" \
-  bin/joltc build -m app.core -o app-x86 --target ta6osx --target-pack /tmp/pack-ta6osx
+  bin/jolt build -m app.core -o app-x86 --target ta6osx --target-pack /tmp/pack-ta6osx
 file app-x86        # => Mach-O 64-bit executable x86_64
 ```
 
@@ -98,7 +98,7 @@ make                                      # target kernel
 
 # per app (~1 min)
 cd tools/cross-compile/hello
-../../../bin/joltc build -m hello.core -o hello-host        # normal host build
+../../../bin/jolt build -m hello.core -o hello-host        # normal host build
 CHEZ_SRC=~/dev/ChezScheme ../cross-build-poc.sh hello-host.build hello-x86
 file hello-x86                 # Mach-O 64-bit executable x86_64
 arch -x86_64 ./hello-x86       # runs under Rosetta; same output as ./hello-host
@@ -219,8 +219,8 @@ would restore that artifact by cross-building `ta6osx` on the existing
   release.yml matrix row that restores the dropped x86_64-macos artifact by
   cross-building on the arm64 runner (smoke via Rosetta, which GitHub's
   macos-14 runners ship). Deliberately a draft outside `.github/workflows/`:
-  it is blocked on cross-target support in `build-joltc.ss` (the artifact is
-  joltc itself, which embeds the target's boots/stub/kernel). Move it into
+  it is blocked on cross-target support in `build-jolt.ss` (the artifact is
+  jolt itself, which embeds the target's boots/stub/kernel). Move it into
   release.yml with the `--target` PR.
 
 ## Observed timings (M-series Mac)

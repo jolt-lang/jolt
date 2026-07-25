@@ -1,6 +1,6 @@
 #!/bin/bash
 # clojure-test-suite gate: run the vendored jank-lang/clojure-test-suite
-# (vendor/clojure-test-suite) against joltc, one process per test namespace (a
+# (vendor/clojure-test-suite) against jolt, one process per test namespace (a
 # hang or crash is contained), and compare per-namespace fail/error counts
 # against the checked-in baseline test/chez/cts-known-failures.txt.
 #
@@ -23,9 +23,9 @@ app="$root/test/chez/cts-app"
 cpus="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 jobs="${JOLT_CTS_JOBS:-$cpus}"
 tmo="${JOLT_CTS_TIMEOUT:-120}"
-# JOLT_BIN overrides the joltc under test (make test points it at the freshly
-# built target/release/joltc — 10x faster boot than script mode)
-joltc="${JOLT_BIN:-$root/bin/joltc}"
+# JOLT_BIN overrides the jolt under test (make test points it at the freshly
+# built target/release/jolt — 10x faster boot than script mode)
+jolt="${JOLT_BIN:-$root/bin/jolt}"
 
 if [ ! -d "$suite/clojure" ]; then
   echo "cts: skipped (git submodule update --init vendor/clojure-test-suite)"
@@ -48,7 +48,7 @@ awk -v j="$jobs" '{print > ("'"$work"'/chunk." (NR % j))}' "$work/nses"
 run_chunk() {
   chunk="$1"; out="$2"
   while IFS= read -r ns; do
-    res=$(JOLT_PWD="$app" perl -e "alarm $tmo; exec @ARGV" -- "$joltc" -M:cts "$ns" 2>&1 </dev/null)
+    res=$(JOLT_PWD="$app" perl -e "alarm $tmo; exec @ARGV" -- "$jolt" -M:cts "$ns" 2>&1 </dev/null)
     rc=$?
     line=$(echo "$res" | grep '^CTS-RESULT' | head -1)
     if [ -n "$line" ]; then

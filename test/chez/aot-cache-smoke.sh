@@ -3,7 +3,7 @@
 #
 # The cache fasls a required namespace's emitted Scheme on first load (miss)
 # and loads the .so on subsequent loads (hit), keyed by source content hash +
-# jolt version. This script drives the fast dev bin/joltc (devcache mode loads
+# jolt version. This script drives the fast dev bin/jolt (devcache mode loads
 # the same loader.ss, so the hook is exercised) with a temp cache dir.
 #
 # Phases (added incrementally):
@@ -19,7 +19,7 @@ fails=0
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 
-joltc="bin/joltc"
+jolt="bin/jolt"
 cache="$(mktemp -d)"
 tmp="$(mktemp -d)"
 mkdir -p "$tmp/src/mylib"
@@ -27,7 +27,7 @@ mkdir -p "$tmp/src/mylib"
 # A program that requires a disk-backed ns via add-deps (the real require path)
 # and prints a value computed in it. \$1 = the temp project dir.
 run_prog() {
-  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "
+  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps)
     (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$1\"}}})
     (require 'mylib.core)
@@ -78,8 +78,8 @@ fi
 case_cold_warm() {
   clabel="$1"; cproj="$2"; cexpr="$3"; cexp="$4"
   cmd="(require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$cproj\"}}}) $cexpr"
-  ccold="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "$cmd" 2>/dev/null | tail -1)"
-  cwarm="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "$cmd" 2>/dev/null | tail -1)"
+  ccold="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$cmd" 2>/dev/null | tail -1)"
+  cwarm="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$cmd" 2>/dev/null | tail -1)"
   if [ "$ccold" = "$cexp" ] && [ "$cwarm" = "$cexp" ]; then
     echo "PASS: ($clabel) cold='$ccold' warm='$cwarm'"; pass=$((pass+1))
   else
@@ -146,13 +146,13 @@ h="$tmp/h"; mkdir -p "$h/src/proj"
 printf '(ns proj.core)\n(defn answer [] 42)\n' > "$h/src/proj/core.clj"
 hcmd="(require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$h\"}}})"
 # cold: populate the cache with the v1 .so
-JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" >/dev/null 2>&1
+JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" >/dev/null 2>&1
 # warm (no reload): cache hit → still 42
-warm1="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" 2>/dev/null | tail -1)"
+warm1="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" 2>/dev/null | tail -1)"
 # edit, then :reload — must show the edit despite the stale v1 .so in the cache
 sleep 1
 printf '(ns proj.core)\n(defn answer [] 99)\n' > "$h/src/proj/core.clj"
-reload_out="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "$hcmd (require 'proj.core :reload) (println (proj.core/answer))" 2>/dev/null | tail -1)"
+reload_out="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core :reload) (println (proj.core/answer))" 2>/dev/null | tail -1)"
 if [ "$warm1" = "42" ] && [ "$reload_out" = "99" ]; then
   echo "PASS: (h) warm=$warm1, :reload-after-edit=$reload_out"; pass=$((pass+1))
 else
@@ -184,7 +184,7 @@ fi
 j="$tmp/j"; mkdir -p "$j/src/mylib"
 printf '(ns mylib.core)\n(defn answer [] 42)\n' > "$j/src/mylib/core.clj"
 jrun() {
-  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$joltc" -e "
+  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$j\"}}})
     (require 'mylib.core) (println (mylib.core/answer))" 2>/dev/null | tail -1
 }

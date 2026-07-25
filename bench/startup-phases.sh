@@ -1,14 +1,14 @@
 #!/bin/sh
-# Startup phase breakdown — where does joltc's startup floor go?
+# Startup phase breakdown — where does jolt's startup floor go?
 #
 # bench/startup.sh times the whole process (exec to exit) against babashka, but
-# it says nothing about which phase a change moved. This attributes a `joltc
+# it says nothing about which phase a change moved. This attributes a `jolt
 # prog.clj` invocation to four phases, so the floor-reduction work can see whether
 # a change lands on boot, on compilation, or on runtime:
 #
 #   boot     : runtime + compiler image load, then jolt.main recompiled from
 #              Clojure — the fixed cost before any user code. Measured by
-#              `joltc --version` (boots the image, prints, exits; no cmd-run).
+#              `jolt --version` (boots the image, prints, exits; no cmd-run).
 #   dispatch : deps/project resolution + load-file setup that every file run pays
 #              on top of boot. Measured by running a file that is just `nil`.
 #   compile  : compiling the user program's forms. Measured by a compile-heavy,
@@ -33,19 +33,19 @@
 #   bench/startup-phases.sh            # defaults: 7 reps, 400 defns, 30M-iter loop
 #   REPS=15 bench/startup-phases.sh    # more reps (best-of-N sheds scheduler noise)
 #   DEFNS=800 LOOP=60000000 bench/startup-phases.sh   # heavier compile / run
-#   JOLT_BIN=/path/to/joltc bench/startup-phases.sh
+#   JOLT_BIN=/path/to/jolt bench/startup-phases.sh
 #
-# joltc must be a BUILT binary (target/release/joltc or an installed joltc), not
-# the dev bin/joltc source launcher — the dev script opts out of the AOT cache and
+# jolt must be a BUILT binary (target/release/jolt or an installed jolt), not
+# the dev bin/jolt source launcher — the dev script opts out of the AOT cache and
 # boots from source, so it is not representative of what users run.
 set -e
 cd "$(dirname "$0")"
 root="$(cd .. && pwd)"
 
-joltc="${JOLT_BIN:-$root/target/release/joltc}"
-[ -x "$joltc" ] || joltc="$(command -v joltc || true)"
-if [ -z "$joltc" ] || [ ! -x "$joltc" ]; then
-  echo "error: no built joltc found. Build one (make joltc-release) or set JOLT_BIN." >&2
+jolt="${JOLT_BIN:-$root/target/release/jolt}"
+[ -x "$jolt" ] || jolt="$(command -v jolt || true)"
+if [ -z "$jolt" ] || [ ! -x "$jolt" ]; then
+  echo "error: no built jolt found. Build one (make jolt-release) or set JOLT_BIN." >&2
   exit 1
 fi
 
@@ -89,17 +89,17 @@ best_ms() {
 # non-negative delta a-b (clamp to 0 so subtraction noise never prints negative).
 delta() { d=$(($1 - $2)); if [ "$d" -lt 0 ]; then d=0; fi; echo "$d"; }
 
-version=$(best_ms "$joltc" --version)
-empty=$(best_ms "$joltc" "$work/empty.clj")
-cheavy=$(best_ms "$joltc" "$work/compile-heavy.clj")
-rheavy=$(best_ms "$joltc" "$work/run-heavy.clj")
+version=$(best_ms "$jolt" --version)
+empty=$(best_ms "$jolt" "$work/empty.clj")
+cheavy=$(best_ms "$jolt" "$work/compile-heavy.clj")
+rheavy=$(best_ms "$jolt" "$work/run-heavy.clj")
 
 boot="$version"
 dispatch=$(delta "$empty" "$version")
 compile=$(delta "$cheavy" "$empty")
 run=$(delta "$rheavy" "$empty")
 
-echo "startup phase breakdown — best of $REPS  ($(basename "$joltc"))"
+echo "startup phase breakdown — best of $REPS  ($(basename "$jolt"))"
 printf '  %-9s %5s ms   runtime + compiler image load, jolt.main recompile\n' "boot" "$boot"
 printf '  %-9s %5s ms   deps/project resolve + load-file setup\n' "dispatch" "$dispatch"
 printf '  %-9s %5s ms   compile %s defns\n' "compile" "$compile" "$DEFNS"

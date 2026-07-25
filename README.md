@@ -42,7 +42,7 @@ fatal:
     plus `git` and `unzip`.
   - **Windows**: [Git for Windows](https://git-scm.com/download/win) supplies `git`,
     the OpenSSL DLLs (`libssl-3-x64.dll`/`libcrypto-3-x64.dll`), and `unzip`; run
-    `joltc` from a shell with those on `PATH`.
+    `jolt` from a shell with those on `PATH`.
 
 ## Install
 
@@ -50,10 +50,10 @@ fatal:
 binaries below are not supported. Build from source instead — see
 [Build](#build).**
 
-Grab the self-contained `joltc` binary (Linux/macOS/Windows) — it bundles the
+Grab the self-contained `jolt` binary (Linux/macOS/Windows) — it bundles the
 runtime, compiler, and standard library, so there is nothing else to install.
 Download the binary archive for your platform from the
-[releases page](https://github.com/jolt-lang/jolt/releases) (`joltc-<ver>-<platform>.tar.gz`,
+[releases page](https://github.com/jolt-lang/jolt/releases) (`jolt-<ver>-<platform>.tar.gz`,
 or the `.zip` on Windows). The "Source code" archives GitHub attaches to every
 release are not binaries — see [Build](#build) before using one.
 
@@ -70,7 +70,7 @@ and `--version <v>` override that):
 curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash
 ```
 
-Then `joltc -e '(+ 1 2)'`. To run from source instead (needs Chez), see
+Then `jolt -e '(+ 1 2)'`. To run from source instead (needs Chez), see
 [Build](#build).
 
 ## Build
@@ -81,7 +81,7 @@ is checked in, so a fresh clone runs immediately:
 ```bash
 git clone --recurse-submodules https://github.com/jolt-lang/jolt.git
 cd jolt
-bin/joltc -e '(+ 1 2)'        # => 3
+bin/jolt -e '(+ 1 2)'        # => 3
 ```
 
 The `--recurse-submodules` matters: jolt vendors its regex engine and test
@@ -107,13 +107,13 @@ make remint                   # iterates host/chez/bootstrap.ss to a byte-fixpoi
 ## Run
 
 ```bash
-bin/joltc -e EXPR             # evaluate a Clojure expression and print the result
+bin/jolt -e EXPR             # evaluate a Clojure expression and print the result
 ```
 
 ```bash
-$ bin/joltc -e '(->> (range 10) (filter even?) (map (fn [x] (* x x))) (reduce +))'
+$ bin/jolt -e '(->> (range 10) (filter even?) (map (fn [x] (* x x))) (reduce +))'
 120
-$ bin/joltc -e '(/ 1 2)'
+$ bin/jolt -e '(/ 1 2)'
 1/2
 ```
 
@@ -123,7 +123,7 @@ $ bin/joltc -e '(/ 1 2)'
   the closest in-scope names by edit distance (current-namespace vars,
   `clojure.core` publics, and lexical locals):
   ```
-  $ bin/joltc -e '(prinltn 1)'
+  $ bin/jolt -e '(prinltn 1)'
   Unable to resolve symbol: prinltn in this context (did you mean print, printf, println?)
   ```
 - **`JOLT_DIAG=edn`** — emit an uncaught error as a single line of valid EDN to
@@ -131,7 +131,7 @@ $ bin/joltc -e '(/ 1 2)'
   symbol also carries `:type`/`:symbol`/`:suggestions`/`:ns`) so an editor or tool
   can read it back. Default output is unchanged.
   ```
-  $ JOLT_DIAG=edn bin/joltc -e '(prinltn 1)'
+  $ JOLT_DIAG=edn bin/jolt -e '(prinltn 1)'
   {:type :unresolved-symbol, :symbol "prinltn", :suggestions ["print" "printf" "println"], :ns "user", :message "...", :line 1, :column 2, :file "-e"}
   ```
 - **`JOLT_CHECK`** — opt-in success-type lint (RFC 0006): each runtime-compiled form
@@ -144,8 +144,8 @@ $ bin/joltc -e '(/ 1 2)'
 ## REPL and editor integration
 
 ```bash
-bin/joltc repl                  # a line REPL with the project's deps loaded
-bin/joltc nrepl-server [port]   # an nREPL server (default 7888) for editors
+bin/jolt repl                  # a line REPL with the project's deps loaded
+bin/jolt nrepl-server [port]   # an nREPL server (default 7888) for editors
 ```
 
 Both resolve the `deps.edn` in the current directory first, so the project's
@@ -169,13 +169,13 @@ in `deps.edn` under `:nrepl/middleware`.
 
 ## Compile a binary
 
-`bin/joltc build` ahead-of-time compiles a project into a single self-contained
+`bin/jolt build` ahead-of-time compiles a project into a single self-contained
 executable — the runtime, `clojure.core`, the standard library, the app, and its
 `deps.edn` dependencies are linked in, so the result needs no Chez install, no
 JVM, and no source on disk to run.
 
 ```bash
-bin/joltc build -m myapp.core -o myapp   # compile myapp.core's -main into ./myapp
+bin/jolt build -m myapp.core -o myapp   # compile myapp.core's -main into ./myapp
 ./myapp arg1 arg2                        # runs anywhere; args reach -main
 ```
 
@@ -192,8 +192,8 @@ no annotations needed), by JVM-style `^double`/`^long` hints, or by
 Two opt-in closed-world flags cut dispatch cost and binary size:
 
 ```bash
-bin/joltc build -m myapp.core --direct-link   # app->app calls bind directly (no var lookup)
-bin/joltc build -m myapp.core --tree-shake    # ship only code reachable from -main
+bin/jolt build -m myapp.core --direct-link   # app->app calls bind directly (no var lookup)
+bin/jolt build -m myapp.core --tree-shake    # ship only code reachable from -main
 ```
 
 `--tree-shake` walks the call graph across your app, its libraries, and
@@ -210,7 +210,7 @@ package ships only the runtime, so `build` won't link a binary there.
 
 ## Compile a library
 
-`bin/joltc build --library` compiles a project into a shared object
+`bin/jolt build --library` compiles a project into a shared object
 (`.so`/`.dylib`/`.dll`) that a C/C++/Rust host links or `dlopen`s and calls
 through a small C ABI. Like `build`, the whole runtime is embedded — the result
 is a *managed-runtime* library: it carries its own GC and must be entered
@@ -227,7 +227,7 @@ The Jolt side publishes entry points with `jolt.ffi/export!`:
 ```
 
 ```bash
-bin/joltc build --library -m libadd.core -o libadd   # => libadd.so / libadd.dylib
+bin/jolt build --library -m libadd.core -o libadd   # => libadd.so / libadd.dylib
 ```
 
 The C side calls `jolt_library_init` once, then resolves each entry by name with
@@ -250,21 +250,21 @@ see [Host Interop](https://jolt-lang.github.io/docs/host-interop.html) for the f
 The same `--opt`/`--dev`/`--direct-link`/`--tree-shake` flags apply, and the
 same Chez kernel development files + C compiler are required to link.
 
-## Standalone joltc binary
+## Standalone jolt binary
 
-`make` builds joltc itself into a single self-contained native binary — the
+`make` builds jolt itself into a single self-contained native binary — the
 runtime, compiler, `jolt-core`/`stdlib` source, and the Chez boots are baked in,
 so the result runs and `build`s jolt apps on a machine with neither Chez nor a C
 compiler. Build it on a host that *does* have both.
 
 ```bash
-make joltc-release             # => target/release/joltc (optimize-level 3, compressed)
-make joltc-debug               # => target/debug/joltc   (optimize-level 0, inspector + debug info)
-make joltc                     # re-mint the seed first, then both
+make jolt-release             # => target/release/jolt (optimize-level 3, compressed)
+make jolt-debug               # => target/debug/jolt   (optimize-level 0, inspector + debug info)
+make jolt                     # re-mint the seed first, then both
 ```
 
-`make joltc` re-mints the seed so the embedded compiler image is current before
-linking; use `joltc-release`/`joltc-debug` directly to skip that when the seed is
+`make jolt` re-mints the seed so the embedded compiler image is current before
+linking; use `jolt-release`/`jolt-debug` directly to skip that when the seed is
 already minted. Like `build`, both require Chez's kernel development files
 (`libkernel.a`, `scheme.h`) and a C compiler.
 
@@ -282,7 +282,7 @@ source roots by *when* they load:
   standard library (`clojure.string`/`set`/`walk`/`edn`/`pprint`/…) plus the
   `jolt.ffi` host library. Editing these needs no re-mint.
 
-`bin/joltc` loads the checked-in seed and the spine, then compiles and evaluates on
+`bin/jolt` loads the checked-in seed and the spine, then compiles and evaluates on
 Chez (read → analyze → IR → emit → eval). `host/chez/bootstrap.ss` rebuilds that
 seed from source on pure Chez; the build is a self-hosting fixpoint (a rebuild
 reproduces the checked-in seed byte-for-byte).
@@ -325,8 +325,8 @@ make test                     # the full gate
 make corpus                   # conformance corpus vs the JVM-sourced spec
 make unit                     # host-specific unit cases
 make selfhost                 # bootstrap fixpoint (rebuild == checked-in seed)
-make smoke                    # bin/joltc CLI smoke
-make sci                      # load borkdude/sci's source through joltc (compat stress)
+make smoke                    # bin/jolt CLI smoke
+make sci                      # load borkdude/sci's source through jolt (compat stress)
 make ffi                      # HTTP-server GC-safety + http-client temp paths
 make transient                # transient mutation + linear-time builds
 make certify                  # JVM oracle (skips if clojure is absent)

@@ -368,7 +368,7 @@
 
 ;; resolve, requiring the symbol's namespace first when it isn't loaded yet —
 ;; the dynamic-require pattern (tooling, plugin registries). The require and
-;; resolve are the runtime fns, so this works identically under joltc run and
+;; resolve are the runtime fns, so this works identically under jolt run and
 ;; in an AOT binary (which compiles the namespace from the source roots).
 (defn requiring-resolve [sym]
   (if (qualified-symbol? sym)

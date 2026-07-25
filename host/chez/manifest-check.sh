@@ -2,7 +2,7 @@
 # manifest-check.sh — pin the runtime load-manifest drift.
 #
 # build.ss's bld-runtime-manifest is the data source of truth for the runtime
-# load skeleton; build-joltc.ss already consumes it directly. Two consumers still
+# load skeleton; build-jolt.ss already consumes it directly. Two consumers still
 # hand-mirror it: cli.ss (the live runtime entry — literal (load ...) forms) and
 # bootstrap.ss (the seed rebuilder's reduced set). cli.ss can't iterate a data
 # manifest instead — loading the runtime through a for-each loop changes the

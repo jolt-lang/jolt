@@ -1,0 +1,75 @@
+#!/bin/sh
+# jolt — the pure-Chez jolt runtime. NO Janet.
+#
+# Compiles and evaluates jolt (Clojure) on Chez using the checked-in bootstrap
+# seed (host/chez/seed/). With only Chez installed it runs jolt end to end:
+#
+#   jolt -e "(+ 1 2)"             evaluate an expression
+#   jolt run -m app.core [args]   resolve deps.edn, run a namespace's -main
+#   jolt -M:alias [args]          run an alias's :main-opts
+#   jolt repl | path | <task>     REPL, print roots, or a deps.edn task
+#
+# The launcher cd's to the jolt repo root so the runtime's relative loads work;
+# the user's original cwd (the project dir, where deps.edn lives) is passed in
+# JOLT_PWD.
+root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+export JOLT_PWD="${JOLT_PWD:-$PWD}"
+
+# Identify the Chez Scheme executable
+while read -r CHEZ
+do
+    if [ `which ${CHEZ}` ]
+    then
+	break;
+    fi
+done <<EOF
+chez
+chezscheme
+EOF
+
+# If we failed to find one, whinge and exit.
+if [ ! `which ${CHEZ}` ]
+then
+    echo "No valid Chez Scheme executable found: please install Chez Scheme."
+    exit 1
+fi
+
+# Version for --version / banners: git describe of this checkout, else "dev".
+export JOLT_VERSION="${JOLT_VERSION:-$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)}"
+# Dev source mode opts OUT of the per-namespace AOT cache: the compiler is
+# volatile here (a "dev" version tag wouldn't invalidate the cache across edits),
+# and devboot already covers startup. A built jolt binary defaults the cache ON.
+export JOLT_AOT_CACHE="${JOLT_AOT_CACHE:-0}"
+cd "$root" || exit 1
+
+# Dev boot cache: precompiled target/dev/flat.so loads the runtime ~10x faster
+# than source mode. Check freshness against the input list emitted by make devboot.
+# The cache is not used for REPL (interactive stdin needed) or when the first
+# arg is "repl" (explicit REPL command).
+CACHE_SO="target/dev/flat.so"
+CACHE_INPUTS="target/dev/flat.inputs"
+use_cache=0
+if [ -f "$CACHE_SO" ] && [ -f "$CACHE_INPUTS" ] && [ $# -gt 0 ] && [ "$1" != "repl" ]; then
+  stale=0
+  while IFS= read -r f; do
+    if [ -n "$f" ] && [ "$CACHE_SO" -ot "$f" ]; then
+      stale=1
+      break
+    fi
+  done < "$CACHE_INPUTS"
+  if [ "$stale" = 0 ]; then
+    use_cache=1
+  fi
+fi
+
+# The devcache entry is a checked-in script sharing cli.ss's tail (cli-tail.ss)
+# — an inline heredoc here once drifted from cli.ss and broke project commands.
+if [ "$use_cache" = 1 ]; then
+  exec ${CHEZ} --script host/chez/cli-devcache.ss "$@"
+fi
+
+# Fallback: source mode. Hint for devs (only when interactive).
+if [ -t 1 ] && [ -z "${JOLT_QUIET:-}" ]; then
+  echo "jolt: source mode; run 'make devboot' to precompile" >&2
+fi
+exec ${CHEZ} --script host/chez/cli.ss "$@"

@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          submodules: recursive   # vendor/irregex etc. — bin/joltc refuses to run without them
+          submodules: recursive   # vendor/irregex etc. — bin/jolt refuses to run without them
 
       - name: Install build dependencies
         run: |
@@ -56,7 +56,7 @@ jobs:
             CC_FOR_BUILD=cc
           make -j"$(nproc)"
 
-      # bin/joltc wants a `chez` on PATH; the workarea scheme needs its boot
+      # bin/jolt wants a `chez` on PATH; the workarea scheme needs its boot
       # dir. jolt build's legacy cc path reads the kernel/boots via JOLT_CHEZ_CSV.
       - name: Wire up chez wrapper
         run: |
@@ -71,7 +71,7 @@ jobs:
       - name: Native baseline (ta6le)
         run: |
           cd tools/cross-compile/hello
-          ../../../bin/joltc build -m hello.core -o hello-host
+          ../../../bin/jolt build -m hello.core -o hello-host
           ./hello-host | tee native.out
           grep -q "fib(30) = 832040" native.out
 
@@ -85,7 +85,7 @@ jobs:
           # the productized path: jolt build --target drives step 4 under the
           # pack's xpatch; the arch is selected by the cross gcc (no arch flag).
           JOLT_TARGET_CC=aarch64-linux-gnu-gcc \
-            ../../../bin/joltc build -m hello.core -o hello-arm64 \
+            ../../../bin/jolt build -m hello.core -o hello-arm64 \
               --target tarm64le --target-pack /tmp/pack-tarm64le
           file hello-arm64 | grep -q "ARM aarch64"
           qemu-aarch64-static -L /usr/aarch64-linux-gnu ./hello-arm64 | tee cross.out

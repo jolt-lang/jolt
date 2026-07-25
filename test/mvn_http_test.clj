@@ -85,5 +85,5 @@
         (throw (ex-info "mvn-http-test failures" {:count (count @fails)})))
     (println "mvn-http-test: passed")))
 
-;; run on load so `joltc run test/mvn_http_test.clj` executes the checks.
+;; run on load so `jolt run test/mvn_http_test.clj` executes the checks.
 (-main)

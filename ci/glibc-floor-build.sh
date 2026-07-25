@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build joltc inside an old-glibc container to probe the lowest build
+# Build jolt inside an old-glibc container to probe the lowest build
 # environment that still produces a working binary (issue #452). Run by
 # .github/workflows/glibc-floor.yml as:
 #
@@ -7,7 +7,7 @@
 #     -w /src -e JOLT_VERSION=glibc-probe <image> sh ci/glibc-floor-build.sh
 #
 # The Chez source tree is cloned on the host and mounted at /chez-src. The
-# joltc link line (build.ss bld-link-libs) needs the shared dev libs:
+# jolt link line (build.ss bld-link-libs) needs the shared dev libs:
 # -llz4 -lz -lncurses -ltinfo -luuid — so their dev packages are installed
 # here. glibc symbol versions are stamped from THIS image's glibc, which is
 # the whole point of building in an old one.
@@ -27,7 +27,7 @@ else
   # modern devtoolset gcc on PATH — only install one if none is present.
   "$pkg" install -y epel-release || true
   "$pkg" install -y make git file lz4-devel zlib-devel ncurses-devel libuuid-devel
-  # xxd (build-joltc embeds the boot as C bytes) ships in vim-common on el-family
+  # xxd (build-jolt embeds the boot as C bytes) ships in vim-common on el-family
   command -v xxd >/dev/null 2>&1 || "$pkg" install -y vim-common
   command -v gcc >/dev/null 2>&1 || "$pkg" install -y gcc gcc-c++
   [ -n "${STATIC_DEPS:-}" ] && { "$pkg" install -y ncurses-static zlib-static || true; \
@@ -69,12 +69,12 @@ if [ -n "${STATIC_DEPS:-}" ]; then
   done
 fi
 
-# --- joltc release build ------------------------------------------------------
+# --- jolt release build ------------------------------------------------------
 cd /src
-make joltc-release
+make jolt-release
 
 # --- report + in-container smoke ---------------------------------------------
-b=target/release/joltc
+b=target/release/jolt
 {
   echo "build image: ${GLIBC_FLOOR_IMAGE:-unknown}"
   ldd --version | head -1

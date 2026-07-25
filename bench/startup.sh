@@ -1,32 +1,32 @@
 #!/bin/sh
 # Startup / small-program latency — the axis run.sh does NOT measure. run.sh
 # builds each benchmark to an optimized binary and times the compute inside it;
-# it says nothing about how long `joltc` itself takes to get from exec to first
+# it says nothing about how long `jolt` itself takes to get from exec to first
 # result. That fixed floor (runtime + compiler image boot, then compile the
-# program) is what dominates ys-style workloads: many short `joltc prog.clj`
+# program) is what dominates ys-style workloads: many short `jolt prog.clj`
 # invocations where the program runs for milliseconds.
 #
 # This times whole-process wall clock (best of N, to shed scheduler noise) for a
-# built joltc against babashka on the same sources, across three sizes:
+# built jolt against babashka on the same sources, across three sizes:
 #   - version : pure boot floor, no user program
 #   - trivial : boot + compile + run of a one-liner
 #   - script  : boot + compile + run of a small real program (a seq pipeline)
 #
 #   bench/startup.sh              # default 7 reps
 #   REPS=15 bench/startup.sh      # more reps
-#   JOLT_BIN=/path/to/joltc bench/startup.sh
+#   JOLT_BIN=/path/to/jolt bench/startup.sh
 #
-# joltc must be a BUILT binary (target/release/joltc or an installed joltc), not
-# the dev bin/joltc source launcher — the dev script opts out of the AOT cache and
+# jolt must be a BUILT binary (target/release/jolt or an installed jolt), not
+# the dev bin/jolt source launcher — the dev script opts out of the AOT cache and
 # boots from source, so it is not representative of what users run.
 set -e
 cd "$(dirname "$0")"
 root="$(cd .. && pwd)"
 
-joltc="${JOLT_BIN:-$root/target/release/joltc}"
-[ -x "$joltc" ] || joltc="$(command -v joltc || true)"
-if [ -z "$joltc" ] || [ ! -x "$joltc" ]; then
-  echo "error: no built joltc found. Build one (make joltc-release) or set JOLT_BIN." >&2
+jolt="${JOLT_BIN:-$root/target/release/jolt}"
+[ -x "$jolt" ] || jolt="$(command -v jolt || true)"
+if [ -z "$jolt" ] || [ ! -x "$jolt" ]; then
+  echo "error: no built jolt found. Build one (make jolt-release) or set JOLT_BIN." >&2
   exit 1
 fi
 have_bb=""; command -v bb >/dev/null 2>&1 && have_bb=1
@@ -62,7 +62,7 @@ best_ms() {
 row() {
   label="$1"; shift
   jbin="$1"; shift
-  jms=$(best_ms "$joltc" $jbin)
+  jms=$(best_ms "$jolt" $jbin)
   if [ -n "$have_bb" ]; then
     bms=$(best_ms bb "$@")
     ratio=$(awk "BEGIN{ if ($bms>0) printf \"%.1fx\", $jms/$bms; else printf \"-\" }")
@@ -72,7 +72,7 @@ row() {
   fi
 }
 
-echo "startup / small-program latency — best of $REPS  ($(basename "$joltc")${have_bb:+ vs bb})"
+echo "startup / small-program latency — best of $REPS  ($(basename "$jolt")${have_bb:+ vs bb})"
 row "version" "--version" "--version"
 row "trivial" "$work/trivial.clj" "$work/trivial.clj"
 row "script"  "$work/script.clj"  "$work/script.clj"

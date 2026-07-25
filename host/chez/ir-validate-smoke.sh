@@ -6,7 +6,7 @@
 # jolt-core/jolt/ir.clj against what the compiler actually builds.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
-JOLTC="${JOLTC:-bin/joltc}"
+JOLTC="${JOLTC:-bin/jolt}"
 
 # One program covering the op vocabulary: const/vector/map/set literals, if/do,
 # let/loop/recur, fn multi-arity + variadic, invoke, def/declare/defmacro,

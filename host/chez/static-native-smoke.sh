@@ -61,7 +61,7 @@ cat > "$app/deps.edn" <<EOF
  :jolt/native [{:name "greet" :static {:archive "$work/libgreet.a"}}]}
 EOF
 echo "static-native smoke: building (default: static link)"
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" >"$work/build.log" 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out" >"$work/build.log" 2>&1; then
   echo "  FAIL: jolt build (static) exited non-zero"; cat "$work/build.log"; exit 1
 fi
 [ -x "$out" ] || { echo "  FAIL: no executable produced"; exit 1; }
@@ -92,7 +92,7 @@ cat > "$app/deps.edn" <<EOF
                 $plat ["$work/libgreet.$soext"]}]}
 EOF
 echo "static-native smoke: building (--dynamic: runtime load)"
-if ! JOLT_PWD="$app" bin/joltc build -m app.core -o "$out" --dynamic >"$work/build.log" 2>&1; then
+if ! JOLT_PWD="$app" bin/jolt build -m app.core -o "$out" --dynamic >"$work/build.log" 2>&1; then
   echo "  FAIL: jolt build --dynamic exited non-zero"; cat "$work/build.log"; exit 1
 fi
 # --dynamic loads the shared object at runtime.

@@ -1,12 +1,12 @@
 name: release
 
-# Build the self-contained joltc binary for each platform and attach it to the
+# Build the self-contained jolt binary for each platform and attach it to the
 # GitHub Release when a v* tag is pushed. The binary bundles the runtime,
 # compiler, jolt-core + stdlib source, the Chez boots, and a launcher stub, so it
 # runs AND compiles jolt apps with no Chez or cc on the user's machine (jolt-eaj).
 #
 # No Apple notarization, mirroring dirge: macOS users who download the tarball
-# clear Gatekeeper quarantine once (`xattr -d com.apple.quarantine joltc`), or
+# clear Gatekeeper quarantine once (`xattr -d com.apple.quarantine jolt`), or
 # install via a Homebrew tap that de-quarantines on install.
 on:
   push:
@@ -56,11 +56,11 @@ jobs:
         with:
           submodules: recursive   # vendor/irregex, used by the Chez regex shim
 
-      # --- Linux: the whole Chez + joltc build runs inside the old-glibc
+      # --- Linux: the whole Chez + jolt build runs inside the old-glibc
       # container (matrix.container-build) via ci/glibc-floor-build.sh — the
       # same script the glibc-floor probe validated. docker run, not
       # `container:`, because node-based actions can't run on a glibc-2.17
-      # image. The container writes target/release/joltc into the mounted
+      # image. The container writes target/release/jolt into the mounted
       # workspace; every later step (smokes, package) runs on the host. ---
       - name: Clone Chez Scheme source (Linux)
         if: runner.os == 'Linux'
@@ -76,7 +76,7 @@ jobs:
           path: ~/chez-opt
           key: chez-manylinux2014-v10.4.1-static-v1
 
-      - name: Build joltc in ${{ matrix.container-build }} (Linux)
+      - name: Build jolt in ${{ matrix.container-build }} (Linux)
         if: runner.os == 'Linux'
         run: |
           mkdir -p "$HOME/chez-opt"
@@ -90,14 +90,14 @@ jobs:
             '${{ matrix.container-build }}' sh ci/glibc-floor-build.sh
 
       # --- macOS: Homebrew chezscheme ships `chez` plus the csv kernel dev files
-      # (libkernel.a, scheme.h, *.boot), which is all build-joltc needs. ---
+      # (libkernel.a, scheme.h, *.boot), which is all build-jolt needs. ---
       - name: Install Chez Scheme (macOS)
         if: runner.os == 'macOS'
         run: brew install chezscheme lz4
 
       # --- Windows: MSYS2/MinGW-w64 toolchain + Chez built from source (ta6nt).
       # The whole job runs in the msys2 shell so cc/xxd/paths behave; the
-      # produced joltc.exe is a plain Windows binary (no MSYS runtime dep). ---
+      # produced jolt.exe is a plain Windows binary (no MSYS runtime dep). ---
       - name: Set up MSYS2 (Windows)
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -160,7 +160,7 @@ jobs:
 
       # --- x86_64-macos is cross-built on the arm64 runner (matrix.cross=ta6osx):
       # build the target boots/xpatch + cross kernel, then assemble a target pack
-      # that `jolt build --target` / build-joltc.ss consume. ---
+      # that `jolt build --target` / build-jolt.ss consume. ---
       - name: Cache Chez cross (ta6osx)
         if: matrix.cross
         id: cache-chez-cross
@@ -192,16 +192,16 @@ jobs:
           # every smoke below runs the produced x86_64 binary via Rosetta 2.
           echo "JOLT_RUN_PREFIX=arch -x86_64" >> "$GITHUB_ENV"
 
-      # build-joltc compiles in a fresh Chez and cc-links; the checked-in seed is
+      # build-jolt compiles in a fresh Chez and cc-links; the checked-in seed is
       # the compiler image, so no selfhost re-mint (that byte-fixpoint is a
-      # dev-machine check — see jolt-8479). `make joltc-release`, not `make joltc`.
-      # JOLTC_TARGET is empty for native rows and the target machine for the cross
-      # row (matrix.cross), which build-joltc.ss consumes with $JOLT_TARGET_PACK.
-      - name: Build joltc (release)
+      # dev-machine check — see jolt-8479). `make jolt-release`, not `make jolt`.
+      # JOLT_CROSS_TARGET is empty for native rows and the target machine for the cross
+      # row (matrix.cross), which build-jolt.ss consumes with $JOLT_TARGET_PACK.
+      - name: Build jolt (release)
         if: runner.os != 'Linux'
-        run: make joltc-release JOLTC_TARGET="${{ matrix.cross }}"
+        run: make jolt-release JOLT_CROSS_TARGET="${{ matrix.cross }}"
         env:
-          # Bake the release tag into the binary (build-joltc falls back to
+          # Bake the release tag into the binary (build-jolt falls back to
           # `git describe` when this is empty, e.g. a workflow_dispatch dry run).
           JOLT_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
 
@@ -210,15 +210,15 @@ jobs:
         run: |
           set +e
           ls -la target/release/
-          ntldd target/release/joltc.exe 2>&1 | head -20
-          ./target/release/joltc.exe -e '(+ 1 2)'
+          ntldd target/release/jolt.exe 2>&1 | head -20
+          ./target/release/jolt.exe -e '(+ 1 2)'
           echo "exit=$?"
 
       # Sanity: the built binary runs (no Chez needed) and self-reports a value.
       - name: Smoke the binary
         run: |
-          out="$($JOLT_RUN_PREFIX ./target/release/joltc -e '(reduce + (range 10))')"
-          test "$out" = "45" || { echo "joltc -e gave '$out', want 45"; exit 1; }
+          out="$($JOLT_RUN_PREFIX ./target/release/jolt -e '(reduce + (range 10))')"
+          test "$out" = "45" || { echo "jolt -e gave '$out', want 45"; exit 1; }
 
       # The binary is a self-contained COMPILER: it must `build` an app with no
       # jolt source on disk. Run from an isolated dir (nothing but the tiny app)
@@ -226,13 +226,13 @@ jobs:
       # not on a user's machine.
       - name: Smoke a self-contained build
         run: |
-          joltc="$(pwd)/target/release/joltc"
+          jolt="$(pwd)/target/release/jolt"
           work="$(mktemp -d)"
           mkdir -p "$work/app/src/app"
           printf '{:paths ["src"]}\n' > "$work/app/deps.edn"
           printf '(ns app.core)\n(defn -main [& _] (println "built:" (reduce + (range 10))))\n' \
             > "$work/app/src/app/core.clj"
-          ( cd "$work/app" && $JOLT_RUN_PREFIX "$joltc" build -m app.core -o app )
+          ( cd "$work/app" && $JOLT_RUN_PREFIX "$jolt" build -m app.core -o app )
           out="$($JOLT_RUN_PREFIX "$work/app/app")"
           test "$out" = "built: 45" || { echo "self-contained build ran '$out', want 'built: 45'"; exit 1; }
 
@@ -242,7 +242,7 @@ jobs:
       # (issue #290: this died with "variable var-deref is not bound").
       - name: Smoke a runtime require in a built binary
         run: |
-          joltc="$(pwd)/target/release/joltc"
+          jolt="$(pwd)/target/release/jolt"
           work="$(mktemp -d)"
           mkdir -p "$work/app/src/app"
           printf '{:paths ["src"]}\n' > "$work/app/deps.edn"
@@ -250,21 +250,21 @@ jobs:
             > "$work/app/src/app/extra.clj"
           printf '(ns app.core)\n(defn -main [& _]\n  (println ((requiring-resolve (quote app.extra/greet)) "runtime")))\n' \
             > "$work/app/src/app/core.clj"
-          ( cd "$work/app" && $JOLT_RUN_PREFIX "$joltc" build -m app.core -o app )
+          ( cd "$work/app" && $JOLT_RUN_PREFIX "$jolt" build -m app.core -o app )
           out="$(cd "$work/app" && $JOLT_RUN_PREFIX ./app)"
           test "$out" = "Hello, runtime!" || { echo "runtime require ran '$out', want 'Hello, runtime!'"; exit 1; }
 
       - name: Package
         run: |
           ver="${GITHUB_REF_NAME}"
-          name="joltc-${ver}-${{ matrix.target }}"
+          name="jolt-${ver}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp README.md LICENSE "dist/${name}/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/joltc.exe "dist/${name}/joltc.exe"
+            cp target/release/jolt.exe "dist/${name}/jolt.exe"
             ( cd dist && zip -r "${name}.zip" "${name}" && sha256sum "${name}.zip" > "${name}.zip.sha256" )
           else
-            cp target/release/joltc "dist/${name}/joltc"
+            cp target/release/jolt "dist/${name}/jolt"
             tar -C dist -czf "dist/${name}.tar.gz" "${name}"
             ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
           fi
@@ -309,8 +309,8 @@ jobs:
           sha() { gh release download "$ver" --repo "${{ github.repository }}" -p "$1.sha256" -O - | awk '{print $1}'; }
           {
             echo "VER=$ver"
-            echo "MAC_SHA=$(sha "joltc-${ver}-aarch64-macos.tar.gz")"
-            echo "LIN_SHA=$(sha "joltc-${ver}-x86_64-linux.tar.gz")"
+            echo "MAC_SHA=$(sha "jolt-${ver}-aarch64-macos.tar.gz")"
+            echo "LIN_SHA=$(sha "jolt-${ver}-x86_64-linux.tar.gz")"
           } >> "$GITHUB_ENV"
 
       - name: Checkout tap
@@ -330,10 +330,14 @@ jobs:
           import re, sys
           path, base, ver, mac, lin = sys.argv[1:6]
           s = open(path).read()
+          # one-time transition off the pre-rename formula: rewrite every joltc
+          # token (bin.install, test stanza, old asset urls) to jolt. Idempotent —
+          # a formula already on the new name has no joltc tokens left.
+          s = s.replace('joltc', 'jolt')
           def bump(s, target, sha):
-              url = f'{base}/joltc-{ver}-{target}.tar.gz'
+              url = f'{base}/jolt-{ver}-{target}.tar.gz'
               s = re.sub(r'url "[^"]*' + re.escape(target) + r'\.tar\.gz"', f'url "{url}"', s)
-              s = re.sub(r'(joltc-' + re.escape(ver) + '-' + re.escape(target) + r'\.tar\.gz"\s*\n\s*sha256 ")[0-9a-f]{64}',
+              s = re.sub(r'(jolt-' + re.escape(ver) + '-' + re.escape(target) + r'\.tar\.gz"\s*\n\s*sha256 ")[0-9a-f]{64}',
                          r'\g<1>' + sha, s)
               return s
           s = bump(s, 'aarch64-macos', mac)

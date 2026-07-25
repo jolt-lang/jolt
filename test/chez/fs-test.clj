@@ -1,5 +1,5 @@
 ;; jolt.fs gate — exercises the public file-system API against a scratch temp dir.
-;; Run: bin/joltc run test/chez/fs-test.clj (smoke.sh greps for "FS-TEST OK").
+;; Run: bin/jolt run test/chez/fs-test.clj (smoke.sh greps for "FS-TEST OK").
 (ns fs-test
   (:require [jolt.fs :as fs]))
 

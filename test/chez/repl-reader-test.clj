@@ -1,6 +1,6 @@
 ;; Self-checking regression for the REPL's read-until-complete predicate
 ;; (jolt.main/repl-form-complete?), which decides whether a line buffer is a whole
-;; form or the REPL should keep reading continuation lines. Runs via `bin/joltc run`
+;; form or the REPL should keep reading continuation lines. Runs via `bin/jolt run`
 ;; (jolt.main is loaded, so the private var resolves); prints a sentinel the smoke
 ;; gate greps. The regex cases are the ones that regressed: a #"..." literal opens a
 ;; regex whose body — parens, quotes and all — must not be miscounted as delimiters.

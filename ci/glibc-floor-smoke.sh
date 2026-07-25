@@ -1,15 +1,15 @@
 #!/bin/sh
-# Smoke a built joltc across runtime containers, bare first (out-of-the-box)
+# Smoke a built jolt across runtime containers, bare first (out-of-the-box)
 # and, when bare fails, again after installing the runtime shared libs
 # (liblz4/zlib/libtinfo) — so the summary distinguishes "glibc too old, will
 # never run" from "runs once the usual libs are present" (container images are
 # more minimal than real installs: on desktop/server distros systemd drags in
 # liblz4 and bash drags in libtinfo, so 'with deps' approximates a real box).
-# Usage: ci/glibc-floor-smoke.sh <path-to-joltc> <summary-md-out>
+# Usage: ci/glibc-floor-smoke.sh <path-to-jolt> <summary-md-out>
 # Runs ON THE HOST; drives `docker run` per runtime image.
 set -eu
-joltc="$1"; summary="$2"
-dir="$(cd "$(dirname "$joltc")" && pwd)"
+jolt="$1"; summary="$2"
+dir="$(cd "$(dirname "$jolt")" && pwd)"
 
 DEB='export DEBIAN_FRONTEND=noninteractive; apt-get update >/dev/null 2>&1; apt-get install -y -qq liblz4-1 zlib1g libtinfo6 >/dev/null 2>&1'
 RPM='( dnf install -y -q lz4-libs ncurses-libs zlib || dnf install -y -q lz4-libs ncurses-libs zlib-ng-compat || yum install -y -q lz4 ncurses-libs zlib ) >/dev/null 2>&1'
@@ -34,7 +34,7 @@ echo "|---|---|---|---|" >> "$summary"
 
 run_smoke() { # $1=image $2=setup-cmd ("" for bare)
   docker run --rm -v "$dir":/probe:ro "$1" sh -c \
-    "${2:+$2; }out=\$(/probe/joltc -e '(reduce + (range 10))' 2>&1); if [ \"\$out\" = 45 ]; then echo SMOKE-PASS; else echo \"SMOKE-FAIL: \$(echo \"\$out\" | head -1)\"; fi" \
+    "${2:+$2; }out=\$(/probe/jolt -e '(reduce + (range 10))' 2>&1); if [ \"\$out\" = 45 ]; then echo SMOKE-PASS; else echo \"SMOKE-FAIL: \$(echo \"\$out\" | head -1)\"; fi" \
     2>&1 | grep '^SMOKE-' | tail -1
 }
 

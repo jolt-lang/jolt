@@ -213,7 +213,7 @@
   (let [{:keys [tasks] :as resolved} (deps/resolve-project (project-dir))
         task (get tasks (symbol name))]
     (cond
-      (nil? task) (throw (ex-info (str "unknown command or task: " name " (see 'joltc help')") {:name name}))
+      (nil? task) (throw (ex-info (str "unknown command or task: " name " (see 'jolt help')") {:name name}))
       (string? task) (jolt.host/sh task)
       (map? task) (do (apply-project! resolved) (apply-main-opts (:main-opts task) more))
       :else (throw (ex-info (str "bad task " name) {})))))
@@ -289,7 +289,7 @@
       (when (nil? entry)
         (throw (ex-info "build needs an entry: -m NS" {})))
       ;; Output paths resolve against the project dir (JOLT_PWD), not the CLI's
-      ;; cwd — bin/joltc cd's to the jolt repo, so a bare relative path would land
+      ;; cwd — bin/jolt cd's to the jolt repo, so a bare relative path would land
       ;; there. Default output is cargo-style under target/: --dev -> target/debug,
       ;; release/--opt -> target/release, the binary named after the project dir
       ;; (falling back to the entry's first segment). The <name>.build scratch dir
@@ -377,7 +377,7 @@
 
 (defn- usage []
   (println (str "jolt " (version)))
-  (println "usage: joltc [command] [args]")
+  (println "usage: jolt [command] [args]")
   (println)
   (println "With no command, starts a REPL.")
   (println)
@@ -409,7 +409,7 @@
 (defn -main [& args]
   (let [[cmd & more] args]
     (cond
-      ;; bare `joltc` starts a REPL, like bb/clj
+      ;; bare `jolt` starts a REPL, like bb/clj
       (nil? cmd)                         (repl)
       (#{"help" "--help" "-h"} cmd)      (usage)
       (#{"version" "--version" "-V"} cmd) (println (str "jolt " (version)))

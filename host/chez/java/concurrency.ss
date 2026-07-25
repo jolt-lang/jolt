@@ -889,12 +889,12 @@
 ;; main thread), so a library that runs such a loop cannot just start it on
 ;; whatever thread happened to call it.
 ;;
-;; Under `joltc nrepl-server` the accept loop is backgrounded in a future and the
+;; Under `jolt nrepl-server` the accept loop is backgrounded in a future and the
 ;; primordial thread parks in jolt-park-until-interrupt, which doubles as the main
 ;; pump (see below). A library that must run on the main thread marshals its work
 ;; through jolt-call-on-main-thread(-async) so it lands there.
 ;;
-;; - With no pump running (e.g. `joltc -M:run` calls straight through on the main
+;; - With no pump running (e.g. `jolt -M:run` calls straight through on the main
 ;;   thread), call-on-main-thread(-async) runs the thunk INLINE — unchanged.
 ;; - A call from a thunk already executing on the pump runs inline too, so the
 ;;   pump can't deadlock on itself.

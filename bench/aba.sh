@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 root="$PWD"
 benchdir="$root/bench"
-joltc="$root/bin/joltc"
+jolt="$root/bin/jolt"
 
 # Chez csv for the optimized build (nested <csv>/<machine> dir, e.g. csv10.4.1/tarm64osx)
 csv="$JOLT_CHEZ_CSV"
@@ -32,7 +32,7 @@ stash_compiler () { # $1 = ref
 time_bench () { # echoes "mean" value (ms) averaged over RUNS builds... no: one build, RUNS runs
   spec="$1"; ns="${spec%%:*}"; arg="${spec##*:}"
   bindir="$(mktemp -d)"
-  if ! ( cd "$benchdir" && export JOLT_PWD="$PWD" && "$joltc" build -m "$ns" -o "$bindir/$ns" --direct-link --opt ) >/tmp/aba_build.log 2>&1; then
+  if ! ( cd "$benchdir" && export JOLT_PWD="$PWD" && "$jolt" build -m "$ns" -o "$bindir/$ns" --direct-link --opt ) >/tmp/aba_build.log 2>&1; then
     echo "BUILD_FAIL"; rm -rf "$bindir"; cat /tmp/aba_build.log | tail -3; return
   fi
   sum=0; n=0

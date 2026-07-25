@@ -1,5 +1,5 @@
 ;; run-sci.ss — SCI conformance: load borkdude/sci's own source (vendor/sci) through
-;; joltc and require its forms to compile+eval. A real-world Clojure-compatibility
+;; jolt and require its forms to compile+eval. A real-world Clojure-compatibility
 ;; stress test. Floor-gated like the corpus: a regression below
 ;; the floor (or the count today, 211/218) fails. Raise the floor as host gaps close
 ;; (the tail is genuine gaps — set! on vars, some macro/def shapes).

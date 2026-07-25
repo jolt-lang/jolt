@@ -9,13 +9,13 @@ fails=0
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 
-joltc="bin/joltc"
+jolt="bin/jolt"
 
 # (a) cache used when fresh — JOLT_DEVCACHE prints a marker to stderr.
 echo "=== (a) devcache fresh: cache should be used ==="
 # Build the cache fresh.
 make devboot
-out="$(JOLT_DEVCACHE=1 $joltc -e "(+ 1 2)" 2>&1)" || true
+out="$(JOLT_DEVCACHE=1 $jolt -e "(+ 1 2)" 2>&1)" || true
 if echo "$out" | grep -q "devcache:"; then
   echo "  PASS: cache marker found in stderr"
   pass=$((pass + 1))
@@ -29,7 +29,7 @@ fi
 echo "=== (b) touching rt.ss invalidates cache ==="
 sleep 1  # ensure timestamp changes
 touch host/chez/rt.ss
-out="$(JOLT_DEVCACHE=1 $joltc -e "(+ 1 2)" 2>&1)" || true
+out="$(JOLT_DEVCACHE=1 $jolt -e "(+ 1 2)" 2>&1)" || true
 if echo "$out" | grep -q "devcache:"; then
   echo "  FAIL: cache was used after rt.ss touched"
   fails=$((fails + 1))
@@ -44,7 +44,7 @@ make devboot
 echo "=== (c) touching seed/prelude.ss invalidates cache ==="
 sleep 1
 touch host/chez/seed/prelude.ss
-out="$(JOLT_DEVCACHE=1 $joltc -e "(+ 1 2)" 2>&1)" || true
+out="$(JOLT_DEVCACHE=1 $jolt -e "(+ 1 2)" 2>&1)" || true
 if echo "$out" | grep -q "devcache:"; then
   echo "  FAIL: cache was used after seed touched"
   fails=$((fails + 1))
@@ -63,11 +63,11 @@ exprs='
 (defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)
 '
 # Run with cache.
-cached="$(JOLT_DEVCACHE=1 $joltc -e "$(echo "$exprs" | tr '\n' ' ')" 2>/dev/null | tail -1)" || true
+cached="$(JOLT_DEVCACHE=1 $jolt -e "$(echo "$exprs" | tr '\n' ' ')" 2>/dev/null | tail -1)" || true
 # Force source by touching a .ss file.
 sleep 1
 touch host/chez/rt.ss
-source_out="$(JOLT_DEVCACHE=1 $joltc -e "$(echo "$exprs" | tr '\n' ' ')" 2>/dev/null | tail -1)" || true
+source_out="$(JOLT_DEVCACHE=1 $jolt -e "$(echo "$exprs" | tr '\n' ' ')" 2>/dev/null | tail -1)" || true
 if [ "$cached" = "$source_out" ]; then
   echo "  PASS: cached and source output match"
   pass=$((pass + 1))
@@ -91,7 +91,7 @@ cat > "$projdir/src/app/core.clj" <<'CLJ'
 (defn -main [& args] (println "devboot-project-ok"))
 CLJ
 printf '{:paths ["src"]}' > "$projdir/deps.edn"
-build_out="$( (cd "$projdir" && JOLT_DEVCACHE=1 "$root/$joltc" build -m app.core -o "$projdir/app-bin") 2>&1 )" || true
+build_out="$( (cd "$projdir" && JOLT_DEVCACHE=1 "$root/$jolt" build -m app.core -o "$projdir/app-bin") 2>&1 )" || true
 if echo "$build_out" | grep -q "devcache:"; then
   binpath="$projdir/app-bin"
   run_out="$( [ -x "$binpath" ] && "$binpath" 2>&1 )" || true

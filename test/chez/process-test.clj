@@ -1,5 +1,5 @@
 ;; jolt.process gate — exercises the public sub-process API against real programs.
-;; Run: bin/joltc run test/chez/process-test.clj (smoke.sh greps for "PROCESS-TEST OK").
+;; Run: bin/jolt run test/chez/process-test.clj (smoke.sh greps for "PROCESS-TEST OK").
 (ns process-test
   (:require [jolt.process :as p :refer [process sh check pipeline]]
             [jolt.fs :as fs]

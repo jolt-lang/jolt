@@ -39,9 +39,9 @@ run_case() {
   app="$examples/$1"; ns="$2"; args="$3"
   [ -d "$app" ] || { echo "  - $1: skipped (not present)"; return; }
   b0="$tmp/$1-plain"; b1="$tmp/$1-shake"
-  if ! JOLT_PWD="$app" bin/joltc build -m "$ns" -o "$b0" >/dev/null 2>&1; then
+  if ! JOLT_PWD="$app" bin/jolt build -m "$ns" -o "$b0" >/dev/null 2>&1; then
     echo "  - $1: FAIL (default build)"; fail=1; return; fi
-  if ! JOLT_PWD="$app" bin/joltc build -m "$ns" -o "$b1" --tree-shake >/dev/null 2>&1; then
+  if ! JOLT_PWD="$app" bin/jolt build -m "$ns" -o "$b1" --tree-shake >/dev/null 2>&1; then
     echo "  - $1: FAIL (--tree-shake build)"; fail=1; return; fi
   o0="$(cd "$app" && "$b0" $args 2>&1)"
   o1="$(cd "$app" && "$b1" $args 2>&1)"
@@ -64,9 +64,9 @@ run_local_case() {
   [ -d "$app" ] || { echo "  - $1: skipped (not present)"; return; }
   b0="$tmp/$1-plain"; b1="$tmp/$1-shake"
   bdir="$tmp/$1-shake.build"
-  if ! JOLT_PWD="$app" bin/joltc build -m "$ns" -o "$b0" >/dev/null 2>&1; then
+  if ! JOLT_PWD="$app" bin/jolt build -m "$ns" -o "$b0" >/dev/null 2>&1; then
     echo "  - $1: FAIL (default build)"; fail=1; return; fi
-  if ! JOLT_PWD="$app" bin/joltc build -m "$ns" -o "$b1" --tree-shake 2>"$tmp/$1-shake-err"; then
+  if ! JOLT_PWD="$app" bin/jolt build -m "$ns" -o "$b1" --tree-shake 2>"$tmp/$1-shake-err"; then
     echo "  - $1: FAIL (--tree-shake build)"
     cat "$tmp/$1-shake-err" | head -5
     fail=1; return; fi

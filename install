@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Installs the latest (or a specific) version of joltc, the self-contained jolt
+# Installs the latest (or a specific) version of jolt, the self-contained jolt
 # binary. It bundles the runtime, compiler, jolt-core + stdlib, and the Chez
 # boots, so there is nothing else to install — no Chez, no cc, no JVM.
 
@@ -15,7 +15,7 @@ download_dir=""
 repo="jolt-lang/jolt"
 
 print_help() {
-    echo "Installs the latest (or a specific) version of joltc."
+    echo "Installs the latest (or a specific) version of jolt."
     echo "Installation directory defaults to ${default_install_dir}."
     echo
     echo "Usage:"
@@ -79,12 +79,12 @@ target="${arch}-${platform}"
 case "$target" in
     x86_64-linux|aarch64-macos) ;;
     x86_64-macos)
-       >&2 echo "No prebuilt joltc for Intel macOS (GitHub retired the Intel runner)."
+       >&2 echo "No prebuilt jolt for Intel macOS (GitHub retired the Intel runner)."
        >&2 echo "Build from source: https://github.com/${repo} (needs Chez Scheme + cc)."
        exit 1 ;;
-    *) >&2 echo "No prebuilt joltc for ${target}."
+    *) >&2 echo "No prebuilt jolt for ${target}."
        >&2 echo "Available: x86_64-linux, aarch64-macos."
-       >&2 echo "Build from source: https://github.com/${repo} (make joltc-release)."
+       >&2 echo "Build from source: https://github.com/${repo} (make jolt-release)."
        exit 1 ;;
 esac
 
@@ -102,8 +102,11 @@ if [[ -z "$version" ]]; then
 fi
 tag="v${version#v}"   # accept 0.1.0 or v0.1.0; the tag/asset carry the leading v
 
-filename="joltc-${tag}-${target}.tar.gz"
+filename="jolt-${tag}-${target}.tar.gz"
 download_url="https://github.com/${repo}/releases/download/${tag}/${filename}"
+# releases up to v0.4.15 shipped the binary and archives under the old name
+legacy_filename="joltc-${tag}-${target}.tar.gz"
+legacy_url="https://github.com/${repo}/releases/download/${tag}/${legacy_filename}"
 
 if has sha256sum; then
     sha256sum_cmd="sha256sum"
@@ -116,7 +119,12 @@ fi
 mkdir -p "$download_dir" && (
     cd "$download_dir"
     echo "Downloading ${download_url}"
-    fetch "$download_url" "$filename"
+    if ! fetch "$download_url" "$filename"; then
+        echo "Not found; trying the pre-rename asset ${legacy_filename}"
+        download_url="$legacy_url"
+        filename="$legacy_filename"
+        fetch "$download_url" "$filename"
+    fi
 
     # verify: an explicit --checksum wins; otherwise fetch the release's .sha256.
     if [[ -z "$checksum" ]]; then
@@ -138,43 +146,47 @@ mkdir -p "$download_dir" && (
     rm -f "$filename"
 )
 
-# the tarball unpacks to a directory holding the binary
-extracted="${download_dir}/joltc-${tag}-${target}/joltc"
+# the tarball unpacks to a directory holding the binary (pre-rename releases
+# used the joltc name for both)
+extracted="${download_dir}/jolt-${tag}-${target}/jolt"
 if [[ ! -f "$extracted" ]]; then
-    >&2 echo "Expected ${extracted} in the archive but it was not found."
+    extracted="${download_dir}/joltc-${tag}-${target}/joltc"
+fi
+if [[ ! -f "$extracted" ]]; then
+    >&2 echo "Expected the jolt binary in the archive but it was not found."
     exit 1
 fi
 
 mkdir -p "$install_dir"
-if [[ -f "$install_dir/joltc" ]]; then
-    echo "Moving existing $install_dir/joltc to $install_dir/joltc.old"
-    mv -f "$install_dir/joltc" "$install_dir/joltc.old"
+if [[ -f "$install_dir/jolt" ]]; then
+    echo "Moving existing $install_dir/jolt to $install_dir/jolt.old"
+    mv -f "$install_dir/jolt" "$install_dir/jolt.old"
 fi
-mv -f "$extracted" "$install_dir/joltc"
-chmod +x "$install_dir/joltc"
+mv -f "$extracted" "$install_dir/jolt"
+chmod +x "$install_dir/jolt"
 
 # verify the binary actually runs here — a glibc older than the build baseline
 # fails with an opaque loader error, so diagnose it explicitly.
-if ! run_err="$("$install_dir/joltc" --version 2>&1 >/dev/null)"; then
+if ! run_err="$("$install_dir/jolt" --version 2>&1 >/dev/null)"; then
     >&2 echo "The installed binary does not run on this system:"
     >&2 echo "  ${run_err}"
     if [[ "$run_err" == *GLIBC_* ]]; then
         need="$(printf '%s' "$run_err" | sed -nE "s/.*GLIBC_([0-9.]+).*/\1/p" | head -1)"
         have="$(ldd --version 2>/dev/null | sed -nE '1s/.* ([0-9.]+)$/\1/p')"
         >&2 echo ""
-        >&2 echo "The prebuilt joltc needs glibc ${need:-?} but this system has ${have:-?}."
+        >&2 echo "The prebuilt jolt needs glibc ${need:-?} but this system has ${have:-?}."
         >&2 echo "Either upgrade the OS, or build from source (needs Chez Scheme + cc):"
-        >&2 echo "  git clone --recurse-submodules https://github.com/${repo} && cd jolt && make joltc-release"
+        >&2 echo "  git clone --recurse-submodules https://github.com/${repo} && cd jolt && make jolt-release"
     fi
     exit 1
 fi
 
 # clear the macOS quarantine flag so Gatekeeper doesn't block the fresh download
 if [[ "$platform" == "macos" ]] && has xattr; then
-    xattr -d com.apple.quarantine "$install_dir/joltc" 2>/dev/null || true
+    xattr -d com.apple.quarantine "$install_dir/jolt" 2>/dev/null || true
 fi
 
-echo "Successfully installed joltc ${tag} to ${install_dir}/joltc"
+echo "Successfully installed jolt ${tag} to ${install_dir}/jolt"
 if ! echo ":$PATH:" | grep -q ":${install_dir}:"; then
     echo "Note: ${install_dir} is not on your PATH."
 fi

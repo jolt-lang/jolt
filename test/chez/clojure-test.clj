@@ -1,6 +1,6 @@
 ;; Self-checking regression for clojure.test: the assert-expr / do-report / report
 ;; extension points plus the built-in is/are/testing/thrown?/use-fixtures surface.
-;; Run via bin/joltc; prints a single sentinel line the smoke gate greps for.
+;; Run via bin/jolt; prints a single sentinel line the smoke gate greps for.
 (ns clojure-test-selfcheck
   (:require [clojure.test :as t :refer [deftest is are testing use-fixtures run-tests]]))
 

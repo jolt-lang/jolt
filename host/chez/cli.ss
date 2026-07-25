@@ -6,13 +6,13 @@
 ;; (loader.ss) turns `require` into real file loading off the source roots, so a
 ;; multi-file project with deps.edn dependencies runs end to end.
 ;;
-;; Run from the repo root (bin/joltc cd's there); the project dir is JOLT_PWD.
+;; Run from the repo root (bin/jolt cd's there); the project dir is JOLT_PWD.
 (import (chezscheme))
 
 ;; Fail early and actionably when the vendored submodules aren't checked out —
 ;; a plain `git clone` or GitHub's auto-generated "Source code" release archive
 ;; lacks them, and the raw failure ("load failed for vendor/irregex/irregex.scm")
-;; doesn't say how to fix it. (The self-contained joltc binary embeds these and
+;; doesn't say how to fix it. (The self-contained jolt binary embeds these and
 ;; never runs this file.)
 (unless (file-exists? "vendor/irregex/irregex.scm")
   (display "jolt: vendor submodules are missing (vendor/irregex).
@@ -46,7 +46,7 @@
 (load "host/chez/java/ffi.ss")          ; jolt.ffi (FFI: a library binds native code)
 
 ;; jolt-report-uncaught / drop-end-of-options / the -e arm live in cli-core.ss,
-;; shared with the standalone binary's launcher (build-joltc.ss). The entry
+;; shared with the standalone binary's launcher (build-jolt.ss). The entry
 ;; tail (source roots, trace init, jolt-cli-run) is shared with the devcache
 ;; entry (cli-devcache.ss) via cli-tail.ss.
 (load "host/chez/cli-tail.ss")

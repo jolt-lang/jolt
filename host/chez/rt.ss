@@ -48,8 +48,8 @@
 ;; (loader.ss), (System/getProperty "jolt.version"), and clojure.core/*jolt-version*
 ;; (dynamic-var-defaults.ss). A self-contained binary bakes the release tag by
 ;; emitting (define jolt-baked-version-early "…") at the TOP of flat.ss
-;; (build-joltc.ss) — early so every consumer that loads later sees it. A dev run
-;; has no baked define and falls back to $JOLT_VERSION (bin/joltc sets it from
+;; (build-jolt.ss) — early so every consumer that loads later sees it. A dev run
+;; has no baked define and falls back to $JOLT_VERSION (bin/jolt sets it from
 ;; `git describe`), then "dev".
 (define (jolt-version-string)
   (or (and (top-level-bound? 'jolt-baked-version-early)

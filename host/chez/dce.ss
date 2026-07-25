@@ -154,7 +154,7 @@
 ;; irrelevant).
 (define (dce-blob-records path)
   ;; bld-source-string (build.ss) reads the embedded copy when running from a
-  ;; self-contained joltc, else the file on disk — so tree-shake works with no
+  ;; self-contained jolt, else the file on disk — so tree-shake works with no
   ;; jolt checkout present. Forward ref: build.ss loads after this file.
   (call-with-port (open-input-string (bld-source-string path))
     (lambda (p)

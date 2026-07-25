@@ -2,7 +2,7 @@
 ;; adopted (collections/position/basic/combinators) and covers the combinators
 ;; jolt adds on top (eof, between, sep-by, optional-default, digit/letter/
 ;; alpha-num). Parse errors are a jolt ex-info (not java.text.ParseException).
-;; Self-checks and prints PARSER OK. Run: bin/joltc run test/chez/parser-test.clj
+;; Self-checks and prints PARSER OK. Run: bin/jolt run test/chez/parser-test.clj
 (ns parser-test
   (:require
    [jolt.parser.monad :as m]

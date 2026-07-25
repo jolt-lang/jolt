@@ -40,10 +40,10 @@ control with record state), k-nucleotide proper.
 
 ## Holistic scorecard
 
-`bench/run.sh` compiles each benchmark to an **optimized AOT binary** (`joltc build
+`bench/run.sh` compiles each benchmark to an **optimized AOT binary** (`jolt build
 --direct-link --opt`) and times it against JVM Clojure running the same portable
 source — the jolt/JVM scorecard. jolt's optimizing passes fire only in a build;
-`joltc run -m` is unoptimized, so the harness always builds.
+`jolt run -m` is unoptimized, so the harness always builds.
 
 Indicative ratios (M-series, one isolated run — numbers are machine-specific,
 regenerate locally), ascending. **opt** = `--direct-link --opt`; **release** =
@@ -111,7 +111,7 @@ The AOT suite above is float-compute / dispatch / allocation bound; none of it
 exercises **64-bit integer arithmetic**, which Chez can't hold in a fixnum
 (61-bit), so genuine 64-bit values are heap bignums. The SplitMix PRNG behind
 `clojure.test.check` is the worst case — every `rand-long` is ~8 bignum ops. These
-were measured in **run mode** (`joltc run`, where per-site var-cell caching is on;
+were measured in **run mode** (`jolt run`, where per-site var-cell caching is on;
 the AOT build keeps it off) against JVM Clojure on the same portable source. The
 first two rows are isolating microbenchmarks; the rest are real test.check
 generators.
@@ -159,21 +159,21 @@ like `jolt build`; set `JOLT_CHEZ_CSV` to override the detected csv dir.
 ## Startup / small-program latency
 
 `bench/run.sh` builds each benchmark to a binary and times the compute *inside*
-it, so it deliberately excludes `joltc`'s own startup. That fixed floor — boot the
+it, so it deliberately excludes `jolt`'s own startup. That fixed floor — boot the
 runtime + compiler image, then compile the program — is what dominates ys-style
-workloads: many short `joltc prog.clj` runs where the program itself runs for
+workloads: many short `jolt prog.clj` runs where the program itself runs for
 milliseconds. `bench/startup.sh` measures it, whole-process wall clock (best of N)
-for a built joltc against babashka on the same sources:
+for a built jolt against babashka on the same sources:
 
 ```sh
 bench/startup.sh                          # default 7 reps
 REPS=15 bench/startup.sh                   # more reps
-JOLT_BIN=/path/to/joltc bench/startup.sh   # pick the binary
+JOLT_BIN=/path/to/jolt bench/startup.sh   # pick the binary
 ```
 
 Three sizes: `version` (pure boot floor, no program), `trivial` (boot + compile +
-run a one-liner), `script` (a small lazy-seq pipeline). Use a BUILT joltc
-(`target/release/joltc` or an installed one), not the dev `bin/joltc` source
+run a one-liner), `script` (a small lazy-seq pipeline). Use a BUILT jolt
+(`target/release/jolt` or an installed one), not the dev `bin/jolt` source
 launcher — the dev script boots from source and opts out of the AOT cache, so it
 is not representative. Indicative (M-series): ~117ms vs babashka ~18ms (~6.5×).
 The floor is runtime + compiler image instantiation that re-runs each boot (Chez
@@ -181,16 +181,16 @@ has no heap snapshot); see the CLI-closure AOT work that removed the per-boot
 recompile of `jolt.main`.
 
 `startup.sh` tells you the floor is there but not where it goes. `bench/startup-phases.sh`
-attributes a `joltc prog.clj` run to four phases so a change shows which one it moved:
+attributes a `jolt prog.clj` run to four phases so a change shows which one it moved:
 
 ```sh
 bench/startup-phases.sh                              # 7 reps, 400 defns, 30M-iter loop
 REPS=15 bench/startup-phases.sh                      # more reps
 DEFNS=800 LOOP=60000000 bench/startup-phases.sh      # heavier compile / run
-JOLT_BIN=/path/to/joltc bench/startup-phases.sh      # pick the binary
+JOLT_BIN=/path/to/jolt bench/startup-phases.sh      # pick the binary
 ```
 
-`boot` is `joltc --version` (runtime + image load, `jolt.main` recompile).
+`boot` is `jolt --version` (runtime + image load, `jolt.main` recompile).
 `dispatch` is the deps/project resolve + load-file setup a file run adds on top,
 measured against a `nil` file. `compile` is the delta of a compile-heavy,
 run-trivial program (many defns) over the `nil` file, and `run` is the delta of a

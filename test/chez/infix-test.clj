@@ -3,7 +3,7 @@
 ;; tests). Self-checks and prints INFIX OK when all pass (smoke.sh greps for it).
 ;; Parse failures surface as a jolt ex-info rather than a host exception class,
 ;; so the error-path checks look for ExceptionInfo.
-;; Run: bin/joltc run test/chez/infix-test.clj
+;; Run: bin/jolt run test/chez/infix-test.clj
 (ns infix-test
   (:require
    [jolt.infix :refer [infix $= from-string]]

@@ -1,7 +1,7 @@
 ;; mandelbrot picture demo — renders a real image of the set to a PNG via
 ;; jolt.png (FFI), reusing mandelbrot/count-point as the kernel. jolt-only (the
 ;; benchmark in mandelbrot.clj stays portable for the JVM reference).
-;;   joltc run -m mandelbrot-png [path] [size]
+;;   jolt run -m mandelbrot-png [path] [size]
 (ns mandelbrot-png
   (:require [mandelbrot :as m]
             [jolt.png :as png]))

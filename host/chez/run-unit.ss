@@ -1,7 +1,7 @@
 ;; run-unit.ss — host-specific unit gate.
 ;;
 ;; Loads the checked-in seed + spine, reads test/chez/unit.edn, and for each case
-;; evaluates :expr (wrapped in (do ...), as `joltc -e` does) and compares its PRINTED
+;; evaluates :expr (wrapped in (do ...), as `jolt -e` does) and compares its PRINTED
 ;; value (jolt-final-str) to the literal :expected string. :expected :throws asserts
 ;; the case raises. These cover host-specific behavior (dot-forms, java statics, io,
 ;; reader, walk, …) that isn't in the JVM-portable corpus. Global state is reset
@@ -12,7 +12,7 @@
 
 (load "host/chez/run-gate-harness.ss")
 ;; The loader + install source roots, so a row's (require 'stdlib.ns) resolves the
-;; .clj overlay from source exactly like joltc — without this, a require of a ns
+;; .clj overlay from source exactly like jolt — without this, a require of a ns
 ;; whose NATIVE vars exist (e.g. clojure.core.async) silently no-ops via the
 ;; ns-has-vars? arm and the overlay fns are missing at analysis.
 (load "host/chez/loader.ss")

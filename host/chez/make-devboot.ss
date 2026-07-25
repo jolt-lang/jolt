@@ -2,7 +2,7 @@
 ;;
 ;;   chez --script host/chez/make-devboot.ss
 ;;
-;; Two-phase (same as build-joltc steps 1-2):
+;; Two-phase (same as build-jolt steps 1-2):
 ;;   1. emit flat.ss (runtime + compiler + embeds) + a compile helper into target/dev/
 ;;   2. run the helper in a FRESH Chez, so `error` and other shadowed primitives
 ;;      resolve to the kernel bindings before the runtime redefines them.
@@ -30,7 +30,7 @@
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
 
-;; --- collect inputs (same algorithm as build-joltc's jb-collect-load-paths) ---
+;; --- collect inputs (same algorithm as build-jolt's jb-collect-load-paths) ---
 (define (db-collect-load-paths)
   (let ((seen (make-hashtable string-hash string=?)) (order '()))
     (define (walk path)
@@ -102,11 +102,11 @@
     ldr-install-roots)
   (close-port out))
 
-;; --- 2. compile in a FRESH Chez (same approach as build-joltc step 2) ---------
+;; --- 2. compile in a FRESH Chez (same approach as build-jolt step 2) ---------
 ;; compile-file must run against a clean chezscheme env so `error` and other
 ;; primitives the runtime shadows bind to the kernel versions.
 (display "make-devboot: compiling flat.so (fresh Chez)\n")
-;; Compile to a temp path and rename into place: a concurrent bin/joltc (e.g.
+;; Compile to a temp path and rename into place: a concurrent bin/jolt (e.g.
 ;; parallel make ci gates) must never load a partially written image — a
 ;; truncated fasl can load a prefix of the runtime and fail on late defines.
 (define jb-flat-so-tmp (string-append jb-flat-so ".tmp"))

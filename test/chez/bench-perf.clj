@@ -1,5 +1,5 @@
 ;; bench-perf.clj — micro-benchmarks for the perf/audit-tail optimizations.
-;; Run: bin/joltc test/chez/bench-perf.clj
+;; Run: bin/jolt test/chez/bench-perf.clj
 
 (require '[clojure.string :as str])
 

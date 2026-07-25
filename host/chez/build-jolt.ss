@@ -1,13 +1,13 @@
-;; build-joltc.ss — build joltc itself as a self-contained native binary (jolt-eaj).
+;; build-jolt.ss — build jolt itself as a self-contained native binary (jolt-eaj).
 ;;
-;;   chez --script host/chez/build-joltc.ss <profile> <out-path>
-;;   profile: "release" | "debug"   out-path: e.g. target/release/joltc
+;;   chez --script host/chez/build-jolt.ss <profile> <out-path>
+;;   profile: "release" | "debug"   out-path: e.g. target/release/jolt
 ;;
 ;; Runs on a dev/CI machine that HAS Chez + cc. Produces a binary that needs
 ;; NEITHER: it bakes the full runtime + compiler image + all jolt-core/stdlib
 ;; source + the Chez petite/scheme boots + a prebuilt launcher stub into one
-;; cc-linked executable, so the resulting joltc can run AND `build` jolt apps on
-;; its own. joltc itself is cc-linked (not appended) so its signature stays clean
+;; cc-linked executable, so the resulting jolt can run AND `build` jolt apps on
+;; its own. jolt itself is cc-linked (not appended) so its signature stays clean
 ;; for Homebrew/codesign, like dirge's binaries; only the apps it later builds use
 ;; the appended-stub path (host/chez/build.ss build-self-contained).
 ;;
@@ -15,10 +15,10 @@
 ;;   0. cc-compile host/chez/stub/launcher.c against the Chez kernel.
 ;;   1. emit flat.ss = runtime + compiler image (cli.ss load order) + inlined
 ;;      build.ss + every jolt-core/stdlib file as a baked string literal + the
-;;      joltc launcher.
+;;      jolt launcher.
 ;;   2. in-process compile-file + make-boot-file (profile Chez settings), error
 ;;      restored around the call (the runtime shadows it; regex.ss/%chez-error).
-;;   3. xxd the joltc boot + petite/scheme boots + stub into C arrays, generate
+;;   3. xxd the jolt boot + petite/scheme boots + stub into C arrays, generate
 ;;      main.c, cc-link -> out-path. The launcher reads the petite/scheme/stub
 ;;      arrays via FFI on `build` (jolt-materialize-bundles!).
 
@@ -41,20 +41,20 @@
 (define jb-args (cdr (command-line)))
 (define jb-profile (if (pair? jb-args) (car jb-args) "release"))
 (define jb-out (if (and (pair? jb-args) (pair? (cdr jb-args))) (cadr jb-args)
-                   (string-append "target/" jb-profile "/joltc")))
+                   (string-append "target/" jb-profile "/jolt")))
 (define jb-release? (string=? jb-profile "release"))
 (unless (or jb-release? (string=? jb-profile "debug"))
-  (error 'build-joltc "profile must be \"release\" or \"debug\"" jb-profile))
+  (error 'build-jolt "profile must be \"release\" or \"debug\"" jb-profile))
 
 ;; Cross-compilation: an optional 3rd arg is the target Chez machine, and the
-;; target pack comes from $JOLT_TARGET_PACK — cross-builds joltc itself for
+;; target pack comes from $JOLT_TARGET_PACK — cross-builds jolt itself for
 ;; another platform (e.g. restoring the x86_64-macos release artifact from an
 ;; arm64 runner). The bld-* helpers below key off these parameters (build.ss).
 (when (and (pair? jb-args) (pair? (cdr jb-args)) (pair? (cddr jb-args)))
   (let ((tgt (caddr jb-args)) (pack (getenv "JOLT_TARGET_PACK")))
     (when (and tgt (> (string-length tgt) 0))
       (unless (and pack (> (string-length pack) 0))
-        (error 'build-joltc "cross build (target arg) needs $JOLT_TARGET_PACK — see tools/cross-compile/README.md"))
+        (error 'build-jolt "cross build (target arg) needs $JOLT_TARGET_PACK — see tools/cross-compile/README.md"))
       (bld-target tgt)
       (bld-target-pack pack))))
 
@@ -73,7 +73,7 @@
 
 ;; --- 0. compile the launcher stub -------------------------------------------
 (define jb-stub (string-append jb-build "/launcher"))
-(display "build-joltc: compiling launcher stub\n")
+(display "build-jolt: compiling launcher stub\n")
 (bld-system (string-append
   (bld-cc) " " (bld-arch-flag) " -O2 -I'" (bld-csv-dir) "' 'host/chez/stub/launcher.c' '"
   (bld-csv-dir) "/libkernel.a' -o '" jb-stub "' " (bld-link-libs)))
@@ -179,7 +179,7 @@
 ;; forms. flat.so is a Chez boot file whose top-level forms re-execute at every
 ;; Sbuild_heap (every process start), so those load-namespace calls re-analyzed and
 ;; re-emitted the whole graph from Clojure source on EVERY invocation — ~380ms, about
-;; 70% of joltc's startup floor. Instead we emit their Scheme HERE, at build time,
+;; 70% of jolt's startup floor. Instead we emit their Scheme HERE, at build time,
 ;; via the same emit-image path an app build uses, so at boot the vars are defined by
 ;; running compiled Scheme (a few ms) exactly like the rest of the runtime image.
 ;;
@@ -200,7 +200,7 @@
     (set-ns-loaded-hook! (lambda (name file) #f))
     (let ((ordered (reverse order)))   ; deps complete loading before requirers -> deps-first
       (when (null? ordered)
-        (error 'build-joltc "no CLI namespace captured for jolt.main — is jolt-core on the source roots?"))
+        (error 'build-jolt "no CLI namespace captured for jolt.main — is jolt-core on the source roots?"))
       (dynamic-wind
         (lambda ()
           (ei-fresh-unit!)
@@ -233,14 +233,14 @@
           ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
           (ei-clear-cached!))))))
 
-(display "build-joltc: emitting flat source\n")
+(display "build-jolt: emitting flat source\n")
 (let ((out (open-output-file jb-flat-ss 'replace)))
   ;; Bake the version FIRST: rt.ss's jolt-version-string probes this binding via
   ;; top-level-bound?, and load-time consumers (*jolt-version* in
   ;; dynamic-var-defaults.ss) read it while the runtime below loads.
   (put-string out (string-append ";; === baked version ===\n(define jolt-baked-version-early "
                                  (ei-str-lit jb-version) ")\n"))
-  ;; full runtime + compiler image: keep the compiler (joltc evals at runtime).
+  ;; full runtime + compiler image: keep the compiler (jolt evals at runtime).
   (bld-emit-runtime out #f #f)
   ;; The build subsystem (build.ss + emit-image.ss + dce.ss, fully inlined) and the
   ;; runtime .ss source embeds it reads are needed ONLY by `jolt build`. As eager
@@ -286,12 +286,12 @@
   ;; ~380ms analyze/emit cost on EVERY process start.
   (put-string out "\n;; === AOT jolt.main + jolt.deps (emitted Scheme) ===\n")
   (jb-emit-cli-ns out)
-  (put-string out "\n;; === joltc launcher ===\n")
+  (put-string out "\n;; === jolt launcher ===\n")
   (jb-emit-launcher out)
   (close-port out))
 
 ;; --- 2. compile + boot in a FRESH Chez (profile Chez settings) --------------
-;; joltc is a compiler/REPL: it evals jolt-compiled Scheme at runtime, which must
+;; jolt is a compiler/REPL: it evals jolt-compiled Scheme at runtime, which must
 ;; resolve the runtime's top-level procedures (var-deref, jolt-inc, …) through the
 ;; boot's interaction-environment. compile-file's top-level defines are visible
 ;; there only when compiled in the REAL interaction-environment, and `error` (and
@@ -299,11 +299,11 @@
 ;; kernel primitive only when compiled against a clean chezscheme env. A fresh
 ;; Chez process gives both at once — exactly the legacy build-with-cc pass. The
 ;; in-process compile in build.ss/build-self-contained is for the distributed
-;; joltc building (non-eval) apps, where no Chez is available.
+;; jolt building (non-eval) apps, where no Chez is available.
 (define jb-flat-so (string-append jb-build "/flat.so"))
-(define jb-boot (string-append jb-build "/joltc.boot"))
+(define jb-boot (string-append jb-build "/jolt.boot"))
 (define jb-bool (lambda (b) (if b "#t" "#f")))
-(display (string-append "build-joltc: compiling (" jb-profile " profile)\n"))
+(display (string-append "build-jolt: compiling (" jb-profile " profile)\n"))
 (let ((cs (string-append jb-build "/compile.ss")))
   (let ((p (open-output-file cs 'replace)))
     (put-string p
@@ -334,7 +334,7 @@
     "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/unsigned char " name "[]/; "
     "s/unsigned int [A-Za-z0-9_]+_len/unsigned int " name "_len/' '" h "'")))
 
-(display "build-joltc: embedding boots + stub, linking\n")
+(display "build-jolt: embedding boots + stub, linking\n")
 (jb-c-array jb-boot (string-append jb-build "/boot_data.h") "jolt_boot")
 (jb-c-array (string-append (bld-csv-dir) "/petite.boot") (string-append jb-build "/petite_data.h") "jolt_petite_boot")
 (jb-c-array (string-append (bld-csv-dir) "/scheme.boot") (string-append jb-build "/scheme_data.h") "jolt_scheme_boot")
@@ -375,4 +375,4 @@
   ;; -rdynamic on ELF; on Windows an exe needs an export table (GetProcAddress).
   (bld-cc) " " (bld-arch-flag) " -O2 " (if (bld-tgt-nt?) "-Wl,--export-all-symbols " "-rdynamic ") "-I'" (bld-csv-dir) "' -I'" jb-build "' '" jb-main-c "' '"
   (bld-csv-dir) "/libkernel.a' -o '" jb-out "' " (bld-link-libs)))
-(display (string-append "build-joltc: wrote " jb-out "\n"))
+(display (string-append "build-jolt: wrote " jb-out "\n"))

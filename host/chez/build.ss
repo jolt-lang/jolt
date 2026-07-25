@@ -109,7 +109,7 @@
 ;; On nt, spill the command to a script and run `sh <file>`. Chez has no getpid,
 ;; so per-process uniqueness comes from first-use millis + a counter (the same
 ;; scheme spit's temp files use) — concurrent builds sharing TEMP don't collide.
-;; The stamp resolves lazily: joltc bakes this file into a saved heap, and a
+;; The stamp resolves lazily: jolt bakes this file into a saved heap, and a
 ;; load-time stamp would freeze identical across every process run from it.
 ;; Delete the script on success; leave it on failure for debugging.
 (define bld-shell-stamp #f)
@@ -265,8 +265,8 @@
              (and q2 (substring s 7 q2)))))))
 
 ;; runtime source for PATH: from the binary's embedded store if present (a
-;; self-contained joltc building an app, with no jolt checkout on disk), else read
-;; from disk (running from a source checkout). build-joltc embeds every runtime
+;; self-contained jolt building an app, with no jolt checkout on disk), else read
+;; from disk (running from a source checkout). build-jolt embeds every runtime
 ;; .ss the manifest inlines, so `build` never touches the filesystem for them.
 (define (bld-source-string path)
   (let ((emb (hashtable-ref embedded-resources path #f)))
@@ -677,7 +677,7 @@
 ;; (stdlib/AOT/in-memory) are skipped — they resolve elsewhere.
 ;; IMPORTANT: namespaces whose resolved file is jolt-runtime-owned (embedded
 ;; resource or under ldr-install-roots) are also skipped — they are either
-;; preloaded at joltc boot or loaded via the hook flow, and emitting them into
+;; preloaded at jolt boot or loaded via the hook flow, and emitting them into
 ;; the app section would bloat the binary and break direct-link bindings.
 ;; Result: deps first, roots last.
 (define (bld-require-closure names)
@@ -696,7 +696,7 @@
     (reverse order)))
 
 ;; Bake the *data-readers* table into the binary so a runtime (read-string
-;; "#my/tag …") resolves its reader fn like it does under joltc run. Tag and
+;; "#my/tag …") resolves its reader fn like it does under jolt run. Tag and
 ;; reader are symbols; the reader path var-derefs the fn at use time.
 (define (bld-sym-lit s)
   (let ((ns (symbol-t-ns s)))
@@ -725,11 +725,11 @@
   ;; The self-contained path (jolt-embedded-bytes "stub/launcher") needs no csv
   ;; kernel files, no Chez, no cc — only the legacy cc path does. A --library build
   ;; ALWAYS takes the cc path (build-shared), and a cross build (--target) always
-  ;; takes build-with-cc, so both need the toolchain even from the self-contained joltc.
+  ;; takes build-with-cc, so both need the toolchain even from the self-contained jolt.
   (when (or library? (bld-cross?) (not (jolt-embedded-bytes "stub/launcher"))) (bld-check-toolchain))
   (when (> (string-length (bld-native-link-flags natives)) 0)
     ;; :static natives are cc-linked into the binary, so a C compiler must be on
-    ;; PATH — the self-contained joltc bundles the Chez kernel (libkernel.a +
+    ;; PATH — the self-contained jolt bundles the Chez kernel (libkernel.a +
     ;; scheme.h) and relinks a custom stub (see build-self-contained), but still
     ;; needs the system cc for that link. Fail early (before the app's foreign-
     ;; procedure forms eval below) with an actionable message.
@@ -979,7 +979,7 @@
                             ;; it to `user` before -main, matching clojure.main (*ns* is
                             ;; `user` when a `-m` -main runs, so a runtime resolve of an
                             ;; aliased symbol behaves the same as on the JVM / interpreted
-                            ;; joltc, not off the entry ns's alias table).
+                            ;; jolt, not off the entry ns's alias table).
                             "        (set-chez-ns! \"user\")\n"
                             "        (when (and maincell (var-cell-defined? maincell))\n"
                             "          (apply jolt-invoke (var-cell-root maincell) args))))\n"
@@ -987,11 +987,11 @@
           (close-port out))
         ;; 4. compile -> boot -> link. Two paths, chosen by whether this process
         ;; carries the bundled Chez boots + launcher stub:
-        ;;  - SELF-CONTAINED (the distributed joltc, jolt-eaj): compile-file +
-        ;;    make-boot-file run IN PROCESS (the compiler is resident — joltc is
+        ;;  - SELF-CONTAINED (the distributed jolt, jolt-eaj): compile-file +
+        ;;    make-boot-file run IN PROCESS (the compiler is resident — jolt is
         ;;    built from scheme.boot), then the boot is appended to a copy of the
         ;;    embedded stub. No external Chez, no cc.
-        ;;  - LEGACY (dev bin/joltc): spawn a fresh Chez for compile-file/
+        ;;  - LEGACY (dev bin/jolt): spawn a fresh Chez for compile-file/
         ;;    make-boot-file, then xxd the boot into a C array and cc-link against
         ;;    libkernel.a. Kept so `make buildsmoke` still exercises the cc path.
         (cond
@@ -1075,7 +1075,7 @@
       (close-port out))))
 
 ;; Per-mode Chez compile parameters for app binaries. Mirrors the pattern in
-;; build-joltc.ss (optimize-level 2, fasl-compressed #t for release/optimized).
+;; build-jolt.ss (optimize-level 2, fasl-compressed #t for release/optimized).
 ;; "release" keeps inspector + proc-source ON so Clojure backtraces (via
 ;; inspect/object walking the continuation) survive. "optimized" turns them OFF
 ;; for max speed. "dev" has no entry (Chez defaults: optimize-level 2, inspector
@@ -1134,7 +1134,7 @@
         (make-boot-file boot '() petite flat-so)
         (make-boot-file boot '() petite scheme flat-so))
     ;; The stub is the native launcher the boot is appended to. With no :static
-    ;; natives it's the prebuilt one bundled in joltc (no cc needed); with :static
+    ;; natives it's the prebuilt one bundled in jolt (no cc needed); with :static
     ;; natives it's re-linked here from the bundled kernel + launcher source so the
     ;; archives are baked in and their symbols resolve in the running binary.
     (if (> (string-length native-link) 0)
@@ -1150,9 +1150,9 @@
                  "  `xattr -d com.apple.quarantine " out-path "` on the target, or sign it.\n")))))
 
 ;; Re-link the launcher stub with the app's static native archives baked in, to
-;; OUT-PATH. The self-contained joltc bundles the Chez kernel (libkernel.a),
+;; OUT-PATH. The self-contained jolt bundles the Chez kernel (libkernel.a),
 ;; header, and launcher source; spill them and drive the system cc — the same link
-;; build-joltc.ss ran once at joltc-build time, plus the force-load archive flags
+;; build-jolt.ss ran once at jolt-build time, plus the force-load archive flags
 ;; (native-link) and, on Linux, -rdynamic so the baked-in symbols stay dlsym-
 ;; visible for (load-shared-object #f) + foreign-procedure at startup.
 (define (bld-relink-stub builddir native-link out-path)
@@ -1168,7 +1168,7 @@
       "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
       native-link " " (bld-link-libs)))))
 
-;; --- legacy cc link (dev bin/joltc): fresh Chez compile + xxd + cc ------------
+;; --- legacy cc link (dev bin/jolt): fresh Chez compile + xxd + cc ------------
 (define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link petite-only?)
   (display (string-append "jolt build: compiling " entry-ns " (" mode " mode)\n"))
   (let ((cs (string-append builddir "/compile.ss")))
@@ -1223,7 +1223,7 @@
 ;; (jolt_library_init / jolt_lookup / jolt_library_shutdown instead of main) and
 ;; a -shared/-dynamiclib link. Only the cc path supports libraries today — the
 ;; self-contained append-to-prebuilt-stub path would need a library stub variant
-;; baked into the distributed joltc (a follow-up).
+;; baked into the distributed jolt (a follow-up).
 ;; last path segment of p (after the final '/'), for a dylib's -install_name.
 (define (bld-basename p)
   (let loop ((i (fx- (string-length p) 1)))

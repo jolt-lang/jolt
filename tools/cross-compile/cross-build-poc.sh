@@ -25,7 +25,7 @@
 # release artifact jolt CI dropped when GitHub retired Intel runners.
 #
 # Usage:
-#   bin/joltc build -m app.core -o myapp        # host build; leaves myapp.build/
+#   bin/jolt build -m app.core -o myapp        # host build; leaves myapp.build/
 #   CHEZ_SRC=~/dev/ChezScheme tools/cross-compile/cross-build-poc.sh myapp.build myapp-x86
 #   file myapp-x86        # => Mach-O 64-bit executable x86_64
 set -e

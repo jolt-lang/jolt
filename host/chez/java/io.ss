@@ -30,7 +30,7 @@
 (define-record-type embedded-res (fields name content) (nongenerative jolt-embres-v1))
 
 ;; --- self-contained build artifacts (jolt-eaj) ------------------------------
-;; A toolchain-free `jolt build` (the distributed joltc) carries the Chez
+;; A toolchain-free `jolt build` (the distributed jolt) carries the Chez
 ;; petite/scheme boots and a prebuilt launcher stub baked into its own boot image.
 ;; They live in the same table as embedded-resources, but keyed under bytevector
 ;; values (register-embedded-bytes!) rather than strings; resolve-on-roots /

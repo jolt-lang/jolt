@@ -3,9 +3,9 @@ name: glibc-floor
 # Issue #452: the released Linux binary demands GLIBC 2.35 because it is built
 # on ubuntu-22.04 — every >=2.33 symbol it needs is a build-host artifact (the
 # 2.34 libpthread/libdl merge, the 2.33 stat family, math symbol bumps), not a
-# real API requirement. This probe builds joltc inside progressively older
+# real API requirement. This probe builds jolt inside progressively older
 # build images and smokes each result across a wide runtime matrix, to answer:
-#   1. the oldest environment that still builds Chez 10.4.1 + joltc,
+#   1. the oldest environment that still builds Chez 10.4.1 + jolt,
 #   2. the glibc floor of each produced binary (readelf report),
 #   3. whether it runs OUT OF THE BOX (no packages installed) per distro.
 # The winner becomes the release.yml Linux build environment.
@@ -59,7 +59,7 @@ jobs:
           path: ~/chez-opt
           key: glibc-floor-chez-v10.4.1-${{ matrix.name }}-v1
 
-      - name: Build joltc in ${{ matrix.image }}
+      - name: Build jolt in ${{ matrix.image }}
         run: |
           mkdir -p "$HOME/chez-opt"
           docker run --rm \
@@ -75,9 +75,9 @@ jobs:
       - name: Upload binary + report
         uses: actions/upload-artifact@v4
         with:
-          name: joltc-${{ matrix.name }}
+          name: jolt-${{ matrix.name }}
           path: |
-            target/release/joltc
+            target/release/jolt
             target/release/glibc-report.txt
 
   smoke:
@@ -93,12 +93,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: joltc-${{ matrix.name }}
+          name: jolt-${{ matrix.name }}
           path: probe
 
       - name: Smoke across runtime images
         run: |
-          chmod +x probe/joltc
+          chmod +x probe/jolt
           {
             echo "## binary built in ${{ matrix.name }}"
             echo
@@ -107,7 +107,7 @@ jobs:
             echo '```'
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          sh ci/glibc-floor-smoke.sh probe/joltc "$GITHUB_STEP_SUMMARY"
+          sh ci/glibc-floor-smoke.sh probe/jolt "$GITHUB_STEP_SUMMARY"
 
       # The floor build must also still COMPILE apps (cc-link path) — run the
       # self-contained build smoke on the oldest runtime that passes bare.
@@ -119,7 +119,7 @@ jobs:
             mkdir -p /app/src/app && cd /app
             printf "{:paths [\"src\"]}\n" > deps.edn
             printf "(ns app.core)\n(defn -main [& _] (println \"built:\" (reduce + (range 10))))\n" > src/app/core.clj
-            /probe/joltc build -m app.core -o app
+            /probe/jolt build -m app.core -o app
             out="$(./app)"
             [ "$out" = "built: 45" ] || { echo "self-contained build ran: $out"; exit 1; }
             echo "self-contained build: PASS"'

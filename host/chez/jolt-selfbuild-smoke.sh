@@ -1,12 +1,12 @@
 #!/bin/sh
-# joltc self-build smoke (jolt-eaj): build joltc as a self-contained binary, then
+# jolt self-build smoke (jolt-eaj): build jolt as a self-contained binary, then
 # use THAT binary to compile a jolt app with Chez and cc removed from the
 # environment — the whole point of the feature. The produced app must then run
 # and match the same expected output as build-smoke.sh.
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 
-# Preflight: building joltc itself needs the Chez kernel dev files (libkernel.a +
+# Preflight: building jolt itself needs the Chez kernel dev files (libkernel.a +
 # scheme.h) and a C compiler, same as build-smoke.sh. A distro chezscheme package
 # ships neither, so skip there (CI included).
 csv="$JOLT_CHEZ_CSV"
@@ -20,25 +20,25 @@ if [ -z "$csv" ]; then
   fi
 fi
 if ! command -v cc >/dev/null 2>&1 || [ -z "$csv" ] || [ ! -f "$csv/scheme.h" ] || [ ! -f "$csv/libkernel.a" ]; then
-  echo "joltc self-build smoke: skipped (Chez kernel dev files or C compiler not available)"
+  echo "jolt self-build smoke: skipped (Chez kernel dev files or C compiler not available)"
   exit 0
 fi
 export JOLT_CHEZ_CSV="$csv"
 
-# 1. Build joltc (debug profile — faster; the self-contained app-build mechanism
+# 1. Build jolt (debug profile — faster; the self-contained app-build mechanism
 # is identical to release, only Chez compile settings differ).
-joltc="$root/target/debug/joltc"
-echo "joltc self-build smoke: building $joltc"
-if ! "$chez_bin" --script host/chez/build-joltc.ss debug "$joltc" >/dev/null 2>&1; then
-  echo "  FAIL: build-joltc.ss exited non-zero"
+jolt="$root/target/debug/jolt"
+echo "jolt self-build smoke: building $jolt"
+if ! "$chez_bin" --script host/chez/build-jolt.ss debug "$jolt" >/dev/null 2>&1; then
+  echo "  FAIL: build-jolt.ss exited non-zero"
   exit 1
 fi
-[ -x "$joltc" ] || { echo "  FAIL: no joltc executable produced"; exit 1; }
+[ -x "$jolt" ] || { echo "  FAIL: no jolt executable produced"; exit 1; }
 
-# 2. The distributed joltc must run with no Chez install: a basic eval.
-got_e="$(env -i HOME="$HOME" "$joltc" -e '(reduce + (range 10))' 2>&1)"
+# 2. The distributed jolt must run with no Chez install: a basic eval.
+got_e="$(env -i HOME="$HOME" "$jolt" -e '(reduce + (range 10))' 2>&1)"
 if [ "$got_e" != "45" ]; then
-  echo "  FAIL: joltc -e under empty env gave '$got_e', want 45"
+  echo "  FAIL: jolt -e under empty env gave '$got_e', want 45"
   exit 1
 fi
 
@@ -46,24 +46,24 @@ fi
 # runtime (the launcher), NOT at heap-build where JOLT_TRACE is always unset — so
 # an uncaught error shows a tail-frame trace recovering the TCO-elided chain, and
 # exactly ONE trace block (the launcher must not double-print it).
-got_tr="$(env -i HOME="$HOME" JOLT_TRACE=1 "$joltc" -e '(defn a [x] (+ x 1)) (defn b [x] (a x)) (b :x)' 2>&1)"
+got_tr="$(env -i HOME="$HOME" JOLT_TRACE=1 "$jolt" -e '(defn a [x] (+ x 1)) (defn b [x] (a x)) (b :x)' 2>&1)"
 if ! printf '%s' "$got_tr" | grep -q '  trace:' || ! printf '%s' "$got_tr" | grep -q 'b'; then
-  echo "  FAIL: JOLT_TRACE=1 in the built joltc produced no tail-frame trace"
+  echo "  FAIL: JOLT_TRACE=1 in the built jolt produced no tail-frame trace"
   echo "--- got ---"; echo "$got_tr"; exit 1
 fi
 if [ "$(printf '%s' "$got_tr" | grep -c '  trace:')" != "1" ]; then
-  echo "  FAIL: built joltc double-printed the trace block"
+  echo "  FAIL: built jolt double-printed the trace block"
   echo "--- got ---"; echo "$got_tr"; exit 1
 fi
 
-# 3. Build an app through the distributed joltc with an EMPTY environment — no
+# 3. Build an app through the distributed jolt with an EMPTY environment — no
 # PATH at all, so no chez, no cc, no shell tools are reachable. This is the core
-# guarantee: joltc compiles apps entirely on its own.
+# guarantee: jolt compiles apps entirely on its own.
 app="$(mktemp -d)/build-app"
 cp -r "$root/test/chez/build-app" "$app"
 out="$app/app"
-echo "joltc self-build smoke: compiling app.core via the binary (no chez/cc on PATH)"
-if ! env -i HOME="$HOME" JOLT_PWD="$app" "$joltc" build -m app.core -o "$out" >/dev/null 2>&1; then
+echo "jolt self-build smoke: compiling app.core via the binary (no chez/cc on PATH)"
+if ! env -i HOME="$HOME" JOLT_PWD="$app" "$jolt" build -m app.core -o "$out" >/dev/null 2>&1; then
   echo "  FAIL: self-contained jolt build exited non-zero"
   rm -rf "$(dirname "$app")"
   exit 1
@@ -88,7 +88,7 @@ if [ "$got" != "$want" ]; then
   exit 1
 fi
 
-# 5. Static native linking through the distributed joltc: it bundles the Chez
+# 5. Static native linking through the distributed jolt: it bundles the Chez
 # kernel, so with the system cc (but still no external Chez) it re-links a stub
 # that bakes a :jolt/native :static archive into the app. The app then calls the
 # C function with the archive removed from disk. Uses the normal PATH so cc — and
@@ -107,16 +107,16 @@ cat > "$napp/deps.edn" <<EOF
  :jolt/native [{:name "greet" :static {:archive "$napp/libgreet.a"}}]}
 EOF
 nout="$napp/app"
-echo "joltc self-build smoke: static-linking a native lib via the binary (no external Chez)"
-if ! JOLT_PWD="$napp" "$joltc" build -m app.core -o "$nout" >/dev/null 2>&1; then
-  echo "  FAIL: static native build via distributed joltc exited non-zero"
+echo "jolt self-build smoke: static-linking a native lib via the binary (no external Chez)"
+if ! JOLT_PWD="$napp" "$jolt" build -m app.core -o "$nout" >/dev/null 2>&1; then
+  echo "  FAIL: static native build via distributed jolt exited non-zero"
   rm -rf "$(dirname "$napp")"; exit 1
 fi
 rm -f "$napp/libgreet.a" "$napp/greet.o"     # nothing to load at runtime
 got_n="$(cd / && "$nout" 2>&1)"
 rm -rf "$(dirname "$napp")"
 if [ "$got_n" != "answer: 42" ]; then
-  echo "  FAIL: static-linked app (via distributed joltc) output mismatch"
+  echo "  FAIL: static-linked app (via distributed jolt) output mismatch"
   echo "--- got ----"; echo "$got_n"; exit 1
 fi
-echo "joltc self-build smoke: passed (joltc runs + builds a working app with no external toolchain, incl. static native linking)"
+echo "jolt self-build smoke: passed (jolt runs + builds a working app with no external toolchain, incl. static native linking)"
