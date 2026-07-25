@@ -404,6 +404,15 @@
     ((_ a) (jolt-max a))
     ((_ a b) (jolt-max2 a b))
     ((_ a b c ...) (jolt-n-max (jolt-max2 a b) c ...))))
+;; inc/dec in call position: open-coded number fast path (generic + promotes past
+;; the fixnum boundary, keeps flonum/ratio contagion); anything else falls to the
+;; jolt-inc/jolt-dec procedures, whose top-level cells carry the bigdec arms.
+(define-syntax jolt-n-inc
+  (syntax-rules ()
+    ((_ ea) (let ((a ea)) (if (number? a) (+ a 1) (jolt-inc a))))))
+(define-syntax jolt-n-dec
+  (syntax-rules ()
+    ((_ ea) (let ((a ea)) (if (number? a) (- a 1) (jolt-dec a))))))
 
 ;; --- unchecked (Java long) arithmetic: wrap to signed 64 bits ----------------
 ;; Clojure's unchecked-* (and +/-/* under *unchecked-math*) are long ops that

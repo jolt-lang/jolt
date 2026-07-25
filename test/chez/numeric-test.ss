@@ -47,6 +47,23 @@
 (ok "long inc lowers to jolt-l-inc" (has? (emitf "u" "(fn* ([^long n] (inc n)))") "(jolt-l-inc"))
 (ok "double inc lowers to fl+ 1.0" (has? (emitf "u" "(fn* ([^double x] (inc x)))") "(#3%fl+"))
 (ok "long dec lowers to jolt-l-dec" (has? (emitf "u" "(fn* ([^long n] (dec n)))") "(jolt-l-dec"))
+;; GENERIC (unproven) inc/dec open-code the number fast path like jolt-n+ —
+;; not a jolt-inc procedure call. Value position keeps the (decorated) proc.
+(let ((e (emitf "u" "(fn* ([x] (inc x)))")))
+  (ok "generic inc open-codes via jolt-n-inc" (has? e "(jolt-n-inc"))
+  (ok "generic inc is not a jolt-inc call"    (not (has? e "(jolt-inc"))))
+(ok "generic dec open-codes via jolt-n-dec" (has? (emitf "u" "(fn* ([x] (dec x)))") "(jolt-n-dec"))
+(ok "value-position inc stays the jolt-inc proc" (has? (emitf "u" "(fn* ([xs] (map inc xs)))") "jolt-inc"))
+;; semantics through the open-coded path: bignum promotion (unhinted code keeps
+;; arbitrary precision), flonum contagion, and the bigdec fallback all hold.
+(ok "generic inc promotes past the fixnum boundary"
+    (jolt= ((ev "(fn* ([x] (inc x)))") 1152921504606846975) 1152921504606846976))
+(ok "generic dec promotes past the negative fixnum boundary"
+    (jolt= ((ev "(fn* ([x] (dec x)))") -1152921504606846976) -1152921504606846977))
+(ok "generic inc of a flonum stays flonum"
+    (jolt= ((ev "(fn* ([x] (inc x)))") 2.5) 3.5))
+(ok "generic inc of a bigdec routes to the decorated proc"
+    (let ((r ((ev "(fn* ([x] (inc x)))") (ev "1.5M")))) (and (jbigdec? r) (jolt= r (ev "2.5M")))))
 ;; unchecked-* WRAP to signed 64 bits (Java long), so they emit the wrapping
 ;; jolt-unc* helpers, not the raising fx ops.
 (ok "unchecked-add lowers to jolt-uncadd2" (has? (emitf "u" "(fn* ([^long n] (unchecked-add n 1)))") "(jolt-uncadd2"))

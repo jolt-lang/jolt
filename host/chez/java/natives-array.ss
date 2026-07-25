@@ -24,8 +24,23 @@
 ;; either backing. Chez has flvector? / make-flvector / flvector-ref / -set! / -length.
 (define (na-fl-kind? k) (or (eq? k 'double) (eq? k 'float)))
 (define (ja-len v)     (if (flvector? v) (flvector-length v) (vector-length v)))
-(define (ja-ref v i)   (if (flvector? v) (flvector-ref v i) (vector-ref v i)))
+;; An out-of-range index on the generic aget/aset path throws the typed JVM
+;; exception with the JVM message. The proven ^doubles fast path (jolt-flaget/
+;; jolt-flaset below) skips this pre-check — it relies on flvector-ref's own
+;; range check and its condition classifies at inspection time instead.
+(define (na-oob-throw i n)
+  (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
+                                   (format "Index ~a out of bounds for length ~a" i n))))
+(define (ja-check v i)
+  (unless (and (fixnum? i) (fx>=? i 0) (fx<? i (ja-len v)))
+    (if (jolt-nil? i)
+        (throw-jvm 'NullPointerException "array index is nil")
+        (na-oob-throw i (ja-len v)))))
+(define (ja-ref v i)
+  (ja-check v i)
+  (if (flvector? v) (flvector-ref v i) (vector-ref v i)))
 (define (ja-set! v i x)
+  (ja-check v i)
   (if (flvector? v)
       (flvector-set! v i (if (flonum? x) x (exact->inexact x)))
       (vector-set! v i x)))
@@ -112,7 +127,9 @@
 (define (na-aset-char arr i v)    (na-aset! arr i v))
 (define (na-aset-boolean arr i v) (na-aset! arr i v))
 (define (na-aset-byte arr i v)
-  (vector-set! (jolt-array-vec arr) (exact (na-idx i)) (na-byte-of v)) v)
+  (let ((bv (jolt-array-vec arr)) (j (exact (na-idx i))))
+    (ja-check bv j)
+    (vector-set! bv j (na-byte-of v)) v))
 
 ;; --- coercions (identity on arrays; byte/short are masked scalar casts) ------
 (define (na-bytes x) (if (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) x (na-byte-array x)))
@@ -186,6 +203,27 @@
 (define (jolt-flaset a i v)
   (let ((fv (if (flonum? v) v (exact->inexact v))))
     (flvector-set! (jolt-array-vec a) (if (fixnum? i) i (exact (na-idx i))) fv) fv))
+
+;; A range condition escaping jolt-flaget/jolt-flaset IS the array bounds error
+;; on the proven ^doubles path (a typed pre-check there costs ~1ns/access, ~11%
+;; on an array-walking loop; wrapping in guard costs ~30ns/call). Classify the
+;; raw Chez condition at inspection time instead: (class e) and instance? report
+;; java.lang.ArrayIndexOutOfBoundsException, so a typed catch dispatches
+;; precisely through the exception hierarchy and an unrelated class does not
+;; broad-match. flvector-ref/-set! appear nowhere else in the runtime (the
+;; generic ja-ref/ja-set! path pre-checks and throws typed before reaching
+;; them), so the condition's who field is a precise key.
+(define (na-flv-oob-condition? c)
+  (and (condition? c) (who-condition? c)
+       (memq (condition-who c) '(flvector-ref flvector-set!))))
+(register-class-arm! na-flv-oob-condition?
+  (lambda (c) "java.lang.ArrayIndexOutOfBoundsException"))
+(register-instance-check-arm!
+  (lambda (type-sym val)
+    (if (na-flv-oob-condition? val)
+        (exception-isa? "ArrayIndexOutOfBoundsException"
+                        (last-dot (if (string? type-sym) type-sym (symbol-t-name type-sym))))
+        'pass)))
 
 ;; --- array identity: type / class / instance? recognize arrays ---------------
 ;; (type arr) / (class arr) -> the JVM array class name; (class …) delegates to

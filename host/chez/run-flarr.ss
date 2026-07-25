@@ -48,4 +48,40 @@
             (jolt-truthy? (ev "(try (let [^doubles a (double-array 3)] (aget a -1) false) (catch Throwable e true))")) #t)
 (gate-check "(6) aset out-of-range index raises (catchable)"
             (jolt-truthy? (ev "(try (let [^doubles a (double-array 3)] (aset a 9 1.0) false) (catch Throwable e true))")) #t)
+
+;; --- OOB exception class (JVM: ArrayIndexOutOfBoundsException) --------------
+;; The proven ^doubles path relies on flvector-ref's own range check (a pre-check
+;; costs ~1ns/access); the escaping Chez condition classifies at inspection time
+;; as java.lang.ArrayIndexOutOfBoundsException. The generic path throws typed
+;; with the JVM message. Both dispatch precisely: the parent class catches, an
+;; unrelated exception class does not.
+(gate-check "(7) typed-path OOB class is AIOOBE"
+            (ev "(try (let [^doubles a (double-array 3)] (aget a 5)) (catch Throwable e (str (class e))))")
+            "class java.lang.ArrayIndexOutOfBoundsException")
+(gate-check "(7) typed-path OOB caught by (catch ArrayIndexOutOfBoundsException ...)"
+            (ev "(try (let [^doubles a (double-array 3)] (aget a 5) :no) (catch ArrayIndexOutOfBoundsException e :aioobe))")
+            (keyword #f "aioobe"))
+(gate-check "(7) typed-path OOB caught by parent IndexOutOfBoundsException"
+            (ev "(try (let [^doubles a (double-array 3)] (aset a 9 1.0) :no) (catch IndexOutOfBoundsException e :ioobe))")
+            (keyword #f "ioobe"))
+(gate-check "(7) typed-path OOB NOT caught by NullPointerException"
+            (ev "(try (try (let [^doubles a (double-array 3)] (aget a 5) :no) (catch NullPointerException e :npe)) (catch Throwable t :outer))")
+            (keyword #f "outer"))
+(gate-check "(8) generic-path OOB class is AIOOBE"
+            (ev "(try (aget (int-array 3) 5) (catch Throwable e (str (class e))))")
+            "class java.lang.ArrayIndexOutOfBoundsException")
+(gate-check "(8) generic-path OOB carries the JVM message"
+            (ev "(try (aget (int-array 3) 5) (catch ArrayIndexOutOfBoundsException e (ex-message e)))")
+            "Index 5 out of bounds for length 3")
+(gate-check "(8) generic-path negative index"
+            (ev "(try (aget (object-array 2) -1) (catch ArrayIndexOutOfBoundsException e (ex-message e)))")
+            "Index -1 out of bounds for length 2")
+(gate-check "(8) generic aset OOB throws AIOOBE"
+            (ev "(try (aset (long-array 2) 9 1) (catch ArrayIndexOutOfBoundsException e :aioobe))")
+            (keyword #f "aioobe"))
+(gate-check "(8) byte-array aset OOB throws AIOOBE"
+            (ev "(try (aset (byte-array 2) 5 (byte 1)) (catch ArrayIndexOutOfBoundsException e :aioobe))")
+            (keyword #f "aioobe"))
+(gate-check "(8) get on an array stays non-throwing OOB (returns default)"
+            (ev "(get (int-array 3) 99 :d)") (keyword #f "d"))
 (gate-summary "flarr")

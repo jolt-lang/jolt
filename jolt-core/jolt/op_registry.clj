@@ -65,9 +65,9 @@
           :fixed {2 "jolt=2"} :dbl "fl=?" :lng "jolt-l=" :pure? true :foldable? true}
    "=="  {:dbl "fl=?" :lng "jolt-l="}  ; numeric-only, not a native op
    "not=" {:pure? true}                ; not a native op; pure classifier only
-   "inc" {:call "jolt-inc" :arity #(= % 1)
+   "inc" {:call "jolt-n-inc" :value "jolt-inc" :arity #(= % 1)
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
-   "dec" {:call "jolt-dec" :arity #(= % 1)
+   "dec" {:call "jolt-n-dec" :value "jolt-dec" :arity #(= % 1)
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
    "not" {:call "jolt-not" :arity #(= % 1) :bool? true :pure? true}
    "min" {:call "jolt-n-min" :value "jolt-min"
