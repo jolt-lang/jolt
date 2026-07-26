@@ -951,14 +951,33 @@
             (else (concat2 (jolt-seq (car colls)) (lambda () (apply jolt-concat (cdr colls))))))))))
 
 ;; Lazily concatenate a (possibly infinite) SEQ of colls — what (apply concat ss)
-;; means, but without realizing ss. Pulls one coll at a time, concatenating it with
-;; a lazy tail, so mapcat / (apply concat …) over an infinite source stays lazy.
+;; means, but without realizing ss. Pulls one coll at a time, so mapcat /
+;; (apply concat …) over an infinite source stays lazy.
+;;
+;; Emits ONE cseq cell per ELEMENT and nothing per collection boundary. Routing
+;; through jolt-concat instead — (jolt-concat inner (make-lazy-seq …)) — cost a
+;; lazyseq node + closure for the tail, a second node + closure inside
+;; jolt-concat (plus its variadic rest-args list), and a third through
+;; `apply jolt-concat` when forced: ~3 nodes and ~5 closures per inner
+;; collection, which dominates when the inner colls are small (mapcat over
+;; 2-element lists is the common shape).
+;;
+;; An empty inner coll is skipped without emitting a cell, and the outer seq is
+;; advanced only at a boundary — so f runs once per inner collection, lazily,
+;; exactly as before.
 (define (lazy-concat-seq ss)
-  (let ((s (jolt-seq ss)))
+  (let outer ((s (jolt-seq ss)))
     (if (jolt-nil? s)
         jolt-empty-list
-        (jolt-concat (seq-first s)
-                     (jolt-make-lazy-seq (lambda () (lazy-concat-seq (seq-more s))))))))
+        (let inner ((cur (jolt-seq (seq-first s))))
+          (if (jolt-nil? cur)
+              (outer (jolt-seq (seq-more s)))          ; empty inner: skip, no cell
+              (cseq-lazy (seq-first cur)
+                         (lambda ()
+                           (let ((nx (jolt-seq (seq-more cur))))
+                             (if (jolt-nil? nx)
+                                 (outer (jolt-seq (seq-more s)))   ; boundary
+                                 (inner nx))))))))))
 
 ;; (apply f a b ... coll): spread the trailing seqable into the call. concat is
 ;; special-cased: it produces a LAZY result, so spreading an infinite tail through
