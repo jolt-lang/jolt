@@ -472,15 +472,20 @@
 
 (defn- infer-seq-hof
   "map/mapv/filter/... over a typed vector with a fn-literal: seed the fn's element
-  param; mapv/filterv produce a typed vector."
+  param; mapv/filterv produce a typed vector.
+
+  map/mapv/mapcat take one collection per fn parameter, so the rebuilt :args must
+  carry EVERY collection — a fixed [f coll] pair would drop the rest and emit a
+  call whose closure is then applied to too few elements. Only the first
+  collection seeds the element type; the remaining parameters stay :any."
   [node cn args tenv env]
-  (let [coll-r (infer (nth args 1) tenv env)
-        et (let [ct (ty coll-r)] (if (vec-type? ct) (velem ct) :any))
+  (let [coll-rs (mapv (fn [a] (infer a tenv env)) (rest args))
+        et (let [ct (ty (nth coll-rs 0))] (if (vec-type? ct) (velem ct) :any))
         fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv env)
         rt (cond (= cn "mapv") (mk-vec (ty fn-r))
                  (= cn "filterv") (mk-vec et)
                  :else :any)]
-    [rt (assoc node :args [(nd fn-r) (nd coll-r)])]))
+    [rt (assoc node :args (into [(nd fn-r)] (mapv (fn [r] (nd r)) coll-rs)))]))
 
 (defn- infer-conj-into
   "conj/into: track the element type of a vector being grown."
@@ -653,11 +658,16 @@
       (and (kw-callee? fnode) (>= n 1) (<= n 2))
       (infer-kw-lookup node fnode args n tenv env)
 
-      (and (get-callee? fnode)
-           (>= n 2) (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
+      ;; the arity bounds below keep an over-arity call off the fixed-shape
+      ;; helpers: each rebuilds :args from the operand positions it knows, so a
+      ;; call carrying more would come back truncated. The generic call path
+      ;; infers every argument and leaves the (already-invalid) arity alone for
+      ;; the runtime to report.
+      (and (get-callee? fnode) (>= n 2) (<= n 3)
+           (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
       (infer-get-lookup node args n tenv env)
 
-      (and (= cn "reduce") (>= n 2) (= :fn (get (nth args 0) :op)))
+      (and (= cn "reduce") (>= n 2) (<= n 3) (= :fn (get (nth args 0) :op)))
       (infer-reduce-hof node args n tenv env)
 
       (and cn (get hof-table cn) (>= n 2) (= :fn (get (nth args 0) :op)))

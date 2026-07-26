@@ -36,6 +36,10 @@
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 ;; number of success-type diagnostics check-form produces for src.
 (define (diags src strict?) (jolt-count (check-form U (anode src) strict?)))
+;; argument count of the :invoke node run-inference hands back — a pattern helper
+;; that rebuilds :args must reproduce every argument it was given.
+(define (inferred-argc src)
+  (jolt-count (jolt-get (run-inference U (anode src)) (keyword #f "args"))))
 
 ;; --- core error-domain checking (strict not required) -----------------------
 (gate-check "num-op on keyword"        (diags "(+ 1 :k)" #f) 1)
@@ -54,6 +58,25 @@
 (gate-check "mapv seeds element type"  (diags "(mapv (fn [x] (+ x 1)) [:a :b])" #f) 1)
 (gate-check "mapv ok element type"     (diags "(mapv (fn [x] (+ x 1)) [1 2])" #f) 0)
 (gate-check "reduce seeds element"     (diags "(reduce (fn [acc x] (+ acc x)) 0 [:a])" #f) 1)
+
+;; --- the HOF/lookup pattern helpers preserve every argument ------------------
+;; Each helper rebuilds :args from the operands it inferred. map/mapv/mapcat take
+;; one collection PER fn parameter, so a helper that rebuilds a fixed [f coll]
+;; pair silently drops the extra collections: the emitted (jolt-map f c1) then
+;; hands the 2-ary closure one element and Chez raises an arity error. These rows
+;; run the same walk `jolt build` does in release/--opt mode (the corpus and unit
+;; gates compile through the const-fold-only branch and never reach it).
+(gate-check "map keeps one coll"       (inferred-argc "(map (fn [x] x) [1 2])") 2)
+(gate-check "map keeps two colls"      (inferred-argc "(map (fn [x y] x) [1 2] [3 4])") 3)
+(gate-check "map keeps three colls"    (inferred-argc "(map (fn [x y z] x) [1] [2] [3])") 4)
+(gate-check "mapv keeps two colls"     (inferred-argc "(mapv (fn [x y] x) [1 2] [3 4])") 3)
+(gate-check "mapcat keeps two colls"   (inferred-argc "(mapcat (fn [x y] [x]) [1 2] [3 4])") 3)
+;; over-arity calls to the fixed-shape helpers fall through to the generic call
+;; path rather than being silently truncated to the shape the helper knows.
+(gate-check "reduce keeps init + coll" (inferred-argc "(reduce (fn [a x] a) 0 [1 2])") 3)
+(gate-check "over-arity reduce intact" (inferred-argc "(reduce (fn [a x] a) 0 [1 2] [3 4])") 4)
+(gate-check "get keeps default"        (inferred-argc "(get {:k 1} :k 0)") 3)
+(gate-check "over-arity get intact"    (inferred-argc "(get {:k 1} :k 0 :extra)") 4)
 
 ;; --- strict user-function domains (checking-box / diag-memo / user-sig) ------
 (gate-check "user wrong arg type"      (diags "(do (defn f [x] (+ x 1)) (f :k))" #t) 1)
