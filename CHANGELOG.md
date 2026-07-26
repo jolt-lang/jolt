@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file's top-level `(set! *unchecked-math* true)` works.** It threw "Can't
+  change/establish root binding"; the reference binds the var around every file
+  load, so the form is legal and its effect ends with the file. The loader bound
+  `*warn-on-reflection*` and `*assert*` but not this one, and the AOT path lost the
+  effect separately — an optimized build decides whether `+`/`-`/`*` lower to their
+  wrapping forms while it emits, which happens before the boot-time `set!` runs, so
+  the flag is now applied as emission walks past it. clojure/test.check sets the
+  flag at the top of `random.clj` and so could not be loaded at all.
+- **`^long` arithmetic covers all 64 bits.** `+`, `-`, `*`, `inc` and `dec` on
+  `^long` values raised once a value passed the Chez fixnum boundary at 2^60 —
+  `(- x 1)` on an ordinary long threw instead of computing. They now compute
+  generically and throw `ArithmeticException` at the 2^63 edge the hint actually
+  promises, matching the reference on both the value and the message. The other
+  long ops already did this; `+ - *` were left on the raw fixnum ops on the
+  assumption that `*unchecked-math*` rewrote them first, which only holds when the
+  flag is on.
+
 ## [0.5.1] - 2026-07-26
 
 Optimized builds type recursive walks over record trees, and a

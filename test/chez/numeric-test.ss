@@ -1,5 +1,5 @@
 ;; Hint-directed fast arithmetic (jolt.passes.numeric). A ^double/^long param hint
-;; (or a float literal) drives Chez fl*/fx* emission instead of generic arithmetic;
+;; (or a float literal) drives Chez fl* / long-op emission instead of generic arithmetic;
 ;; un-hinted integer code stays generic (arbitrary-precision preserved). The pass
 ;; runs in run-passes with optimization OFF, so this is the open-build path. Run:
 ;;   chez --script test/chez/numeric-test.ss
@@ -32,14 +32,14 @@
       (jolt-ce-emit (jolt-ce-run-passes (jolt-ce-analyze ctx f) ctx)))))
 (define (ev s) (jolt-compile-eval s "u"))
 
-;; --- emission: ^double -> fl-ops, ^long -> fx-ops ---
+;; --- emission: ^double -> fl-ops, ^long -> long-ops ---
 (let ((e (emitf "u" "(fn* ([^double a ^double b] (+ (* a a) (* b b))))")))
   (ok "double + lowers to fl+" (has? e "(#3%fl+"))
   (ok "double * lowers to fl*" (has? e "(#3%fl*"))
   (ok "double arith is NOT generic +" (not (has? e "(jolt-invoke"))))
 
-(ok "long + lowers to fx+"        (has? (emitf "u" "(fn* ([^long a ^long b] (+ a b)))") "(fx+"))
-(ok "long * lowers to fx*"        (has? (emitf "u" "(fn* ([^long a ^long b] (* a b)))") "(fx*"))
+(ok "long + lowers to jolt-l+"        (has? (emitf "u" "(fn* ([^long a ^long b] (+ a b)))") "(jolt-l+"))
+(ok "long * lowers to jolt-l*"        (has? (emitf "u" "(fn* ([^long a ^long b] (* a b)))") "(jolt-l*"))
 (ok "double < lowers to fl<?"     (has? (emitf "u" "(fn* ([^double x] (< x 1.0)))") "(#3%fl<?"))
 ;; ^long comparisons / inc / dec / quot use the jolt-l* fast-path-with-fallback
 ;; helpers so a full 64-bit operand (past the 61-bit fixnum range) is handled.
@@ -83,9 +83,9 @@
 (let ((e (emitf "u" "(fn* ([] (loop [acc 0.0 i 0] (if (< i 5) (recur (+ acc 1.5) (inc i)) acc))))")))
   (ok "loop double accumulator lowers (+ acc 1.5) to fl+" (has? e "(#3%fl+")))
 ;; a literal-init integer accumulator is now :long-typed (its init fits the fixnum
-;; range), so (* acc i) -> fx* — which raises on overflow rather than promoting.
+;; range), so (* acc i) -> jolt-l*, which throws on 64-bit overflow rather than promoting.
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 1] (if (< i 25) (recur (* acc i) (inc i)) acc))))")))
-  (ok "loop integer accumulator IS fx-specialized" (has? e "(fx*")))
+  (ok "loop integer accumulator IS long-specialized" (has? e "(jolt-l*")))
 ;; a literal-init increment counter is now :long-typed — JVM loop semantics: a
 ;; literal-init loop var is a primitive long (when the literal fits the fixnum
 ;; range), so (inc i) -> jolt-l-inc and the counter's compare -> jolt-l<.
@@ -104,19 +104,19 @@
   (ok "negative literal-init counter runtime: counts -5..0 to 0"
       (= 0 (jnum->exact (ev "(loop [i -5] (if (< i 0) (recur (inc i)) i))")))))
 ;; a literal-init multiplicative accumulator (and its counter) are now :long too:
-;; (* acc i) -> fx*, which RAISES on overflow rather than promoting to bignum.
+;; (* acc i) -> jolt-l*, which THROWS on 64-bit overflow rather than promoting to bignum.
 (let ((e (emitf "u" "(fn* ([] (loop [acc 1 i 0] (if (< i 100) (recur (* acc i) (inc i)) acc))))")))
   (ok "counter beside a * accumulator: counter IS long-typed" (has? e "(jolt-l-inc"))
-  (ok "the * accumulator IS fx-specialized" (has? e "(fx*")))
+  (ok "the * accumulator IS long-specialized" (has? e "(jolt-l*")))
 ;; an immediately-INVOKED ((fn* ([] (loop …)))) now specializes too: an-invoke descends
 ;; into its :fn child (the loop lives there), so the literal-init slots seed :long and
-;; (* acc i) -> fx*. This was the WP-B fixpoint gap — a 2-var accumulator loop wrapped in
+;; (* acc i) -> jolt-l*. This was the WP-B fixpoint gap — a 2-var accumulator loop wrapped in
 ;; a ((fn* …)) stayed generic while the bare/non-invoked form specialized.
 (let ((e (emitf "u" "((fn* ([] (loop [acc 1 i 1] (if (< i 100) (recur (* acc i) (inc i)) acc)))))")))
-  (ok "INVOKED 2-var accumulator: the * IS fx-specialized (acc1 i1, exact failing shape)" (has? e "(fx*"))
+  (ok "INVOKED 2-var accumulator: the * IS long-specialized (acc1 i1, exact failing shape)" (has? e "(jolt-l*"))
   (ok "INVOKED 2-var accumulator: the counter IS jolt-l-inc" (has? e "(jolt-l-inc")))
 (let ((e (emitf "u" "((fn* ([] (loop [acc 2 i 1] (if (< i 100) (recur (* acc i) (inc i)) acc)))))")))
-  (ok "INVOKED 2-var accumulator: the * IS fx-specialized (acc2 i1, the discriminating probe)" (has? e "(fx*")))
+  (ok "INVOKED 2-var accumulator: the * IS long-specialized (acc2 i1, the discriminating probe)" (has? e "(jolt-l*")))
 ;; a literal-init accumulator whose product leaves the fixnum range throws a CATCHABLE
 ;; ArithmeticException (JVM loop semantics: a primitive-long loop var overflows rather
 ;; than promoting to bignum). Asserted with a jolt-level try/catch INSIDE the evaluated
@@ -141,13 +141,20 @@
 ;; take only fixnums, so a bignum-literal operand blocks :long and arbitrary precision
 ;; is preserved ((+ 5 Long/MAX) is a bignum, exactly as (let [i 5] ...) gives).
 (let ((e (emitf "u" "(fn* ([] (loop [i 5] (+ i 9223372036854775807))))")))
-  (ok "loop var + bignum literal: the + is NOT fx-typed" (not (has? e "(fx+"))))
+  (ok "loop var + bignum literal: the + is NOT long-typed" (not (has? e "(jolt-l+"))))
 (ok "loop var + bignum literal stays exact (bignum)"
     (jolt-truthy? (ev "(< 9223372036854775807 ((fn* ([] (loop [i 5] (+ i 9223372036854775807))))))")))
-;; overflow near the fixnum max throws catchably (host-pinned: the JVM overflows a long
-;; at 2^63, not jolt's 2^60, so this is not a corpus row).
-(ok "literal-init counter overflow near fixnum max throws catchable ArithmeticException"
-    (eq? (ev "(try (loop [i 1152921504606846974 k 0] (if (= k 2) i (recur (inc i) (inc k)))) (catch ArithmeticException e :overflow))")
+;; A ^long counter overflows at 2^63, where the reference does — not at the 2^60
+;; Chez fixnum edge. Values between the two are ordinary longs and must compute:
+;; inc/dec bound their result the same way +/-/* do (jolt-l-checked).
+(ok "^long inc past the fixnum edge computes (not an overflow)"
+    (= 1152921504606846976
+       (jnum->exact (ev "((fn* ([^long i] (inc i))) 1152921504606846975)"))))
+(ok "^long inc past Long/MAX throws catchable ArithmeticException"
+    (eq? (ev "(try ((fn* ([^long i] (inc i))) 9223372036854775807) (catch ArithmeticException e :overflow))")
+         (keyword #f "overflow")))
+(ok "^long dec past Long/MIN throws catchable ArithmeticException"
+    (eq? (ev "(try ((fn* ([^long i] (dec i))) -9223372036854775808) (catch ArithmeticException e :overflow))")
          (keyword #f "overflow")))
 
 ;; a ^long-seeded loop accumulator IS fx-typed (the hint is a fixnum promise, and
@@ -158,9 +165,9 @@
 
 ;; --- soundness: un-hinted / integer-literal code stays generic ---
 (let ((e (emitf "u" "(fn* ([a b] (+ a b)))")))
-  (ok "un-hinted + stays generic (no fl/fx)" (and (not (has? e "(#3%fl+")) (not (has? e "(fx+")))))
+  (ok "un-hinted + stays generic (no fl/long)" (and (not (has? e "(#3%fl+")) (not (has? e "(jolt-l+")))))
 (let ((e (emitf "u" "(+ 1 2)")))
-  (ok "bare integer literals stay generic (arbitrary precision)" (not (has? e "(fx+"))))
+  (ok "bare integer literals stay generic (arbitrary precision)" (not (has? e "(jolt-l+"))))
 ;; a constant float op like (+ 1.0 2.0) is const-folded to 3.0 (no op at all); a
 ;; float-literal-bound local is double-typed and its body op isn't foldable (a
 ;; local operand), so numeric specializes it.
@@ -215,7 +222,7 @@
 ;; --- Part 1 (jolt-30q9): (double x)/(long x)/(int x)/(float x) casts ---
 ;; A non-shadowed clojure.core cast becomes a :coerce node carrying the checked
 ;; runtime helper, so it feeds the numeric lattice like a ^double/^long hint:
-;; (* (double x) 2.0) emits fl*, (+ (long x) 1) emits fx+.
+;; (* (double x) 2.0) emits fl*, (+ (long x) 1) emits jolt-l+.
 
 ;; (double x) in arithmetic yields fl-ops AND the checked helper.
 (let ((e (emitf "u" "(fn* ([x] (* (double x) 2.0)))")))
@@ -223,11 +230,11 @@
   (ok "(double x) lowers to jolt-double helper" (has? e "(jolt-double")))
 ;; (long x) in arithmetic yields fx-ops AND the checked helper.
 (let ((e (emitf "u" "(fn* ([x] (+ (long x) 1)))")))
-  (ok "(long x) operand lowers + to fx+" (has? e "(fx+"))
+  (ok "(long x) operand lowers + to jolt-l+" (has? e "(jolt-l+"))
   (ok "(long x) lowers to jolt-long-cast helper" (has? e "(jolt-long-cast")))
 ;; (int x) is long-kind (feeds fx) but routes to jolt-int-cast (JVM int range).
 (let ((e (emitf "u" "(fn* ([x] (+ (int x) 1)))")))
-  (ok "(int x) operand lowers + to fx+" (has? e "(fx+"))
+  (ok "(int x) operand lowers + to jolt-l+" (has? e "(jolt-l+"))
   (ok "(int x) lowers to jolt-int-cast helper" (has? e "(jolt-int-cast")))
 ;; (float x) is double-kind but routes to jolt-float (Float range check).
 (let ((e (emitf "u" "(fn* ([x] (* (float x) 2.0)))")))

@@ -70,7 +70,7 @@
 
 ;; RT.load parity for BUILT binaries. An AOT'd namespace's top-level forms
 ;; replay at boot outside the loader, so a vendored library's top-level
-;; (set! *warn-on-reflection* true) would hit the no-thread-binding throw.
+;; (set! *unchecked-math* true) would hit the no-thread-binding throw.
 ;; `jolt build` brackets each emitted namespace's forms with this pair,
 ;; mirroring ldr-with-file-vars (and the JVM's RT.load, which binds
 ;; WARN_ON_REFLECTION/UNCHECKED_MATH around compiled-class inits as well as
@@ -80,13 +80,12 @@
 (define (jolt-ns-load-vars-push!)
   (unless jolt-nsload-cells
     (set! jolt-nsload-cells
-      (let ((w (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
-            (a (var-cell-lookup "clojure.core" "*assert*")))
-        (if (and w a) (cons w a) 'missing))))
+      (let ((cells (map (lambda (nm) (var-cell-lookup "clojure.core" nm))
+                        '("*warn-on-reflection*" "*assert*" "*unchecked-math*"))))
+        (if (for-all values cells) cells 'missing))))
   (dyn-binding-stack
     (cons (if (pair? jolt-nsload-cells)
-              (list (cons (car jolt-nsload-cells) (var-cell-root (car jolt-nsload-cells)))
-                    (cons (cdr jolt-nsload-cells) (var-cell-root (cdr jolt-nsload-cells))))
+              (map (lambda (c) (cons c (var-cell-root c))) jolt-nsload-cells)
               '())
           (dyn-binding-stack)))
   jolt-nil)

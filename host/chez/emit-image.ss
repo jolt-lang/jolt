@@ -128,22 +128,48 @@
 ;; build applies the SAME form transforms as a plain build. The two forked once and
 ;; the record path dropped the hook, emitting a semantically different binary off the
 ;; same source (a #tag literal the plain path rewrites crashed uncompilable).
+;; A compiler-flag set! — (set! *unchecked-math* …) / (set! *warn-on-reflection* …)
+;; at a file's top level. These have to be EVALUATED as emission walks past them,
+;; not just emitted: the analyzer reads *unchecked-math* while lowering each later
+;; form (host-contract.ss hc-unchecked-math? decides whether +/-/* become their
+;; wrapping variants), so a form emitted before the set! runs would compile with
+;; the flag off. The reference compiler gets this for free because Compiler.compile
+;; evaluates top-level forms as it compiles them.
+(define (ei-flag-set-form? f)
+  (and (cseq? f) (cseq-list? f)
+       (let ((items (seq->list f)))
+         (and (= (length items) 3) (symbol-t? (car items))
+              (string=? (symbol-t-name (car items)) "set!")
+              (symbol-t? (cadr items))
+              (let ((n (symbol-t-name (cadr items))))
+                (or (string=? n "*unchecked-math*")
+                    (string=? n "*warn-on-reflection*")))))))
+
 (define (ei-for-each-form ns-name src proc)
   (set-chez-ns! ns-name)               ; ::kw resolves against this ns
   (let ((hook (ei-emit-form-hook)))
-    (let loop ((forms (ei-read-all src)))
-      (unless (null? forms)
-        (let ((f (if hook (hook (car forms)) (car forms))))
-          (ce-scan-requires! f ns-name)
-          (cond
-            ((ei-ns-form? f) (loop (cdr forms)))
-            ((ce-macro-form? f)
-             (let-values (((nm fn-form) (ce-defmacro->fn f)))
-               (proc ns-name 'macro nm fn-form))
-             (loop (cdr forms)))
-            (else
-             (proc ns-name 'form #f f)
-             (loop (cdr forms)))))))))
+    ;; The same thread binding the loader and a built binary use, so a flag set!
+    ;; is legal here and its effect ends with this namespace instead of bleeding
+    ;; into whichever one is emitted next.
+    (dynamic-wind
+      jolt-ns-load-vars-push!
+      (lambda ()
+        (let loop ((forms (ei-read-all src)))
+          (unless (null? forms)
+            (let ((f (if hook (hook (car forms)) (car forms))))
+              (ce-scan-requires! f ns-name)
+              (cond
+                ((ei-ns-form? f) (loop (cdr forms)))
+                ((ce-macro-form? f)
+                 (let-values (((nm fn-form) (ce-defmacro->fn f)))
+                   (proc ns-name 'macro nm fn-form))
+                 (loop (cdr forms)))
+                (else
+                 (when (ei-flag-set-form? f)
+                   (jolt-compile-eval-form f ns-name))
+                 (proc ns-name 'form #f f)
+                 (loop (cdr forms))))))))
+      jolt-ns-load-vars-pop!)))
 
 ;; Count of forms silently dropped during a guarded emit (a source form that
 ;; fails to compile is skipped so a partial overlay still boots). remint.sh reads

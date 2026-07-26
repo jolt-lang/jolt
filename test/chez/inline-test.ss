@@ -50,10 +50,10 @@
 ;; flonum 25.0 — matching the called fn, not an exact 25.
 (ok "inlined ^double with int args still returns a flonum" (flonum? (ev "((fn* ([] (dwork 3 4))))")))
 
-;; a ^long fn inlines with fixnum coercion + fx ops.
+;; a ^long fn inlines with long coercion + the checked long ops.
 (ev "(def ^long lsum (fn* ([^long a ^long b] (+ a b))))")
 (let ((e (emitf "u" "(fn* ([] (lsum 3 4)))")))
-  (ok "inlined ^long fn body uses fx+" (has? e "(fx+")))
+  (ok "inlined ^long fn body uses jolt-l+" (has? e "(jolt-l+")))
 (ok "inlined ^long call: 3+4 = 7 (fixnum)" (let ((r (ev "((fn* ([] (lsum 3 4))))"))) (and (fixnum? r) (= r 7))))
 
 ;; an accumulator over an inlined ^double call: the whole loop body fuses to fl-ops.

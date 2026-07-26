@@ -43,11 +43,11 @@
 
 (def op-registry
   ;; arithmetic
-  {"+"   {:call "jolt-n+"    :value "jolt-add"   :dbl "fl+"  :lng "fx+"        :bd "jbd-add"
+  {"+"   {:call "jolt-n+"    :value "jolt-add"   :dbl "fl+"  :lng "jolt-l+"    :bd "jbd-add"
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
-   "-"   {:call "jolt-n-"    :value "jolt-sub"   :dbl "fl-"  :lng "fx-"        :bd "jbd-sub"
+   "-"   {:call "jolt-n-"    :value "jolt-sub"   :dbl "fl-"  :lng "jolt-l-"    :bd "jbd-sub"
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
-   "*"   {:call "jolt-n*"    :value "jolt-mul"   :dbl "fl*"  :lng "fx*"        :bd "jbd-mul"
+   "*"   {:call "jolt-n*"    :value "jolt-mul"   :dbl "fl*"  :lng "jolt-l*"    :bd "jbd-mul"
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
    "/"   {:call "jolt-n-div" :value "jolt-div"   :dbl "fl/"                   :bd "jbd-div"
           :dbl-contagion? true :num-result? true :num-args? true :foldable? true}

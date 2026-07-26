@@ -348,10 +348,20 @@
       (lambda (nf)
         (set-chez-ns! (car nf))
         (let ((src (ldr-read-source (cdr nf))) (per-ns '()))
+          ;; This walk, not the emit walk, is where an --opt build's IR is
+          ;; produced, so a file's top-level (set! *unchecked-math* …) has to be
+          ;; in effect HERE for the analyzer to lower the following forms'
+          ;; arithmetic to its wrapping variants. Bracketed per namespace, like
+          ;; the loader does per file, so the flag doesn't leak into the next one.
+          (dynamic-wind
+            jolt-ns-load-vars-push!
+            (lambda ()
           (parameterize ((rdr-source-file (cdr nf)))
             (for-each
               (lambda (f)
                 (ce-scan-requires! f (car nf))
+                (when (ei-flag-set-form? f)
+                  (jolt-compile-eval-form f (car nf)))
                 ;; per-ns is consumed POSITIONALLY by the emit walk
                 ;; (ei-next-cached, one pop per form ei-for-each-form
                 ;; dispatches). The emit walk compiles MACRO forms too, and
@@ -377,7 +387,8 @@
                         (let ((n (jolt-ce-analyze (make-analyze-ctx (car nf)) f)))
                           (set! nodes (cons n nodes))
                           (set! per-ns (cons n per-ns)))))))
-              (ei-read-all src)))
+              (ei-read-all src))))
+            jolt-ns-load-vars-pop!)
           (set! ns-nodes (cons (cons (car nf) (reverse per-ns)) ns-nodes))))
       ordered)
     (jolt-wp-infer! (ei-unit) (apply jolt-vector (reverse nodes)))

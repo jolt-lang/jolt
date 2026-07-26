@@ -460,9 +460,32 @@
 ;; --- ^long ops that tolerate a full 64-bit value -----------------------------
 ;; A ^long is 64-bit but a Chez fixnum is only 61-bit, so the backend's fast fx
 ;; ops would raise on a value past 2^60 (e.g. a long from the PRNG / wrapping
-;; arithmetic). These take the fx fast path when the operands ARE fixnums and fall
-;; back to the generic op otherwise — so ^long comparisons / quot / min etc. on a
-;; full-width long stay correct. Macros (define-syntax) so the fast path inlines.
+;; arithmetic). Everything below keeps a ^long correct across its whole range, in
+;; one of two ways depending on the op. Macros (define-syntax) so the fast path
+;; inlines.
+;;
+;; Ops whose RESULT can leave the fixnum range even when the operands are inside it
+;; (+ - * inc dec) compute generically and bound the result here, throwing
+;; ArithmeticException past a true long exactly as the reference does. This is a
+;; macro rather than a procedure because it wraps every one of those ops, where a
+;; call would cost more than the arithmetic; inlined, the common case is a single
+;; fixnum? test, since every fixnum is a long and needs no bounds check.
+;; (Wrapping instead of throwing is what unchecked-math is for — see jolt-uncadd2.)
+(define l-long-min -9223372036854775808)
+(define l-long-max 9223372036854775807)
+(define (jolt-l-overflow) (throw-jvm 'ArithmeticException "long overflow"))
+(define-syntax jolt-l-checked
+  (syntax-rules ()
+    ((_ e) (let ((r e))
+             (if (fixnum? r)
+                 r
+                 (if (and (>= r l-long-min) (<= r l-long-max))
+                     r
+                     (jolt-l-overflow)))))))
+
+;; The rest — comparisons, quot/rem/mod, min/max — return a fixnum whenever both
+;; operands are fixnums, so testing the operands settles it: fx fast path when they
+;; are, generic op when they aren't.
 (define-syntax define-l-binop
   (syntax-rules ()
     ((_ name fxop genop)
@@ -480,8 +503,15 @@
 (define-l-binop jolt-l-quot fxquotient quotient)
 (define-l-binop jolt-l-rem  fxremainder remainder)
 (define-l-binop jolt-l-mod  fxmodulo modulo)
-(define-syntax jolt-l-inc (syntax-rules () ((_ a) (let ((x a)) (if (fixnum? x) (fx1+ x) (+ x 1))))))
-(define-syntax jolt-l-dec (syntax-rules () ((_ a) (let ((x a)) (if (fixnum? x) (fx1- x) (- x 1))))))
+(define-syntax jolt-l-inc (syntax-rules () ((_ a) (jolt-l-checked (+ a 1)))))
+(define-syntax jolt-l-dec (syntax-rules () ((_ a) (jolt-l-checked (- a 1)))))
+
+;; Chez dispatches fixnum-first inside +/-/*, so going generic here costs the
+;; dispatch, not boxing.
+(define-syntax jolt-l+ (syntax-rules () ((_ a b) (jolt-l-checked (+ a b)))))
+(define-syntax jolt-l- (syntax-rules () ((_ a b) (jolt-l-checked (- a b)))
+                                       ((_ a)   (jolt-l-checked (- a)))))
+(define-syntax jolt-l* (syntax-rules () ((_ a b) (jolt-l-checked (* a b)))))
 
 ;; ============================================================================
 ;; IFn dispatch — the dynamic "value as fn" fallback. A callee that the emitter

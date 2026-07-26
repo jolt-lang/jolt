@@ -354,6 +354,25 @@ if [ "$got_cc" != "CLJC-COND :before :after" ]; then
   echo "  FAIL: cljs-only conditional truncated emission — want 'CLJC-COND :before :after', got \`$got_cc\`"; exit 1
 fi
 
+# A file's top-level (set! *unchecked-math* true) must load and take effect, and
+# must not escape that file. Both the loader and the AOT'd binary bracket a
+# namespace's forms with a thread binding for the var (RT.load parity), so this
+# runs the app from source and as a built binary and expects the same answer.
+umapp="$root/test/chez/unchecked-math-app"
+umwant="UNCHECKED-MATH -9223372036854775808 9223372036854775808 false"
+got_um_src="$(cd "$umapp" && JOLT_PWD="$umapp" "$root/bin/jolt" run -m umapp.main 2>&1 | tail -1)"
+if [ "$got_um_src" != "$umwant" ]; then
+  echo "  FAIL: top-level (set! *unchecked-math* …) from source — want \`$umwant\`, got \`$got_um_src\`"; exit 1
+fi
+umout="$(dirname "$out")/unchecked-math-bin"
+if ! JOLT_PWD="$umapp" bin/jolt build -m umapp.main -o "$umout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of an unchecked-math app exited non-zero"; exit 1
+fi
+got_um_bin="$(cd / && "$umout" 2>&1 | tail -1)"
+if [ "$got_um_bin" != "$umwant" ]; then
+  echo "  FAIL: top-level (set! *unchecked-math* …) in a built binary — want \`$umwant\`, got \`$got_um_bin\`"; exit 1
+fi
+
 # A built binary must have the vendored babashka.fs (via jolt.fs) available and
 # runnable — including functions defined after babashka.fs's cljs-only reader
 # conditionals (directory?/cwd/which). Guards the vendored-namespace baking.

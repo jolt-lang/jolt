@@ -717,9 +717,9 @@
 ;; via a :fl-coerce tag the emitter wraps in (fixnum->flonum ...)). A :double op is
 ;; only emitted once the numeric pass has PROVEN every operand is a flonum (that
 ;; proof gates the fl* specialization itself), so the flonum type check the safe fl
-;; ops run is redundant there — emit the per-site unsafe #3% variant. fx arithmetic
-;; stays on the safe ops: #3%fx+ also drops the overflow check, and jolt's ^long
-;; contract raises on 61-bit overflow rather than wrapping.
+;; ops run is redundant there — emit the per-site unsafe #3% variant. There is no
+;; matching unsafe variant for ^long +/-/*: a ^long is 64-bit and a Chez fixnum is
+;; 61, so those map to the widening jolt-l+/-/* rather than any fx op.
 (defn- emit-numeric [kind nm args order-args]
   (cond
     (and (= kind :double) (= nm "inc")) (str "(#3%fl+ " (first args) " 1.0)")

@@ -283,20 +283,26 @@
 ;; skip the no-op form and continue to true end-of-string.
 ;; A file load binds *file* to the path and *source-path* to the bare file
 ;; name around its forms (the reference binds both in Compiler.load), so loaded
-;; code can read its own location. Cells resolve lazily — the vars' defaults
-;; load after this file.
+;; code can read its own location. It also rebinds the compiler-flag vars
+;; *warn-on-reflection*, *assert* and *unchecked-math* to their current roots, so
+;; a file's top-level (set! *unchecked-math* …) is legal and its effect ends with
+;; the file rather than leaking into the root. Cells resolve lazily — the vars'
+;; defaults load after this file.
 (define ldr-file-cell #f)
 (define ldr-spath-cell #f)
 (define ldr-warn-cell #f)
 (define ldr-assert-cell #f)
+(define ldr-unchecked-cell #f)
 (define ldr-allow-cells (make-hashtable string-hash string=?))
 (define (ldr-with-file-vars path thunk)
   (unless ldr-file-cell
     (set! ldr-file-cell (var-cell-lookup "clojure.core" "*file*"))
     (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*"))
     (set! ldr-warn-cell (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
-    (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*")))
-  (if (not (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell))
+    (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*"))
+    (set! ldr-unchecked-cell (var-cell-lookup "clojure.core" "*unchecked-math*")))
+  (if (not (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell
+                ldr-unchecked-cell))
       (thunk)
       (let ((name (let loop ((i (- (string-length path) 1)))
                     (cond ((< i 0) path)
@@ -308,7 +314,9 @@
             (let ((frame (list (cons ldr-file-cell path)
                                (cons ldr-spath-cell name)
                                (cons ldr-warn-cell (var-cell-root ldr-warn-cell))
-                               (cons ldr-assert-cell (var-cell-root ldr-assert-cell)))))
+                               (cons ldr-assert-cell (var-cell-root ldr-assert-cell))
+                               (cons ldr-unchecked-cell
+                                     (var-cell-root ldr-unchecked-cell)))))
               (dyn-binding-stack (cons frame (dyn-binding-stack)))))
           thunk
           (lambda () (dyn-binding-stack (cdr (dyn-binding-stack))))))))

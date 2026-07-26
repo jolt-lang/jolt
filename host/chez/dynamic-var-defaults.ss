@@ -19,7 +19,9 @@
                  (keyword #f "incremental") 0
                  (keyword #f "qualifier") jolt-nil))
 
-;; *unchecked-math* — jolt does no unchecked-math elision; the var reads false.
+;; *unchecked-math* — when truthy, the analyzer rewrites +/-/*/inc/dec to their
+;; wrapping 64-bit forms (host-contract.ss hc-unchecked-math?). Defaults false;
+;; a file load rebinds it so a top-level (set! *unchecked-math* …) is file-scoped.
 (def-dynvar! "clojure.core" "*unchecked-math*" #f)
 
 ;; *warn-on-reflection* — jolt has no reflection, so the var reads false; (set!
