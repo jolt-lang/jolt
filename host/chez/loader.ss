@@ -425,10 +425,69 @@
           (aot-source-fingerprint))))
   aot-fingerprint-memo)
 ;; <dir>/<jolt-version>-<runtime fingerprint>/v1 — the version names the release
-;; a fasl came from, the fingerprint pins the exact runtime that emitted it.
-(define (aot-cache-subdir)
+;; a fasl came from, the fingerprint pins the exact runtime that emitted it. One
+;; such GENERATION per runtime; rebuilding jolt starts a new one and strands the
+;; last, so the first consult in a process also collects the superseded ones.
+(define (aot-generation-dir)
   (string-append (aot-cache-dir) "/" (jolt-version-string)
-                 "-" (aot-runtime-fingerprint) "/v1"))
+                 "-" (aot-runtime-fingerprint)))
+;; Generations are kept by LAST USE, not by age: a marker file refreshed once per
+;; process is the only evidence a generation is still someone's, since a run that
+;; hits on everything never writes to it.
+(define aot-generations-kept 3)
+(define aot-prune-grace-seconds 60)
+(define (aot-used-marker gen) (string-append gen "/.used"))
+(define (aot-touch-used! gen)
+  (guard (e (else #f))
+    (let ((out (open-output-file (aot-used-marker gen) 'replace)))
+      (put-string out "jolt aot cache generation\n")
+      (close-port out))))
+(define (aot-file-seconds path)
+  (guard (e (else 0))
+    (let ((t (file-modification-time path))) (time-second t))))
+(define (aot-delete-tree path)
+  (guard (e (else #f))
+    (if (and (file-directory? path) (not (file-symbolic-link? path)))
+        (begin
+          (for-each (lambda (f) (aot-delete-tree (string-append path "/" f)))
+                    (directory-list path))
+          (delete-directory path))
+        (delete-file path #f))))
+;; Drop every generation that is neither the current one nor among the few most
+;; recently used. The grace period keeps a generation another live process may be
+;; midway through: worst case that process misses and recompiles (mkdir -p and the
+;; corrupt-fasl guard both recover), so this is a throughput risk, never a crash.
+(define (aot-prune-generations! current)
+  (guard (e (else #f))
+    (let* ((root (aot-cache-dir))
+           (now (aot-file-seconds (aot-used-marker current)))
+           (gens (filter (lambda (p)
+                           (and (not (string=? (cdr p) current))
+                                (file-directory? (cdr p))
+                                (fx>? (- now (car p)) aot-prune-grace-seconds)))
+                         (map (lambda (d)
+                                (let ((p (string-append root "/" d)))
+                                  (cons (aot-file-seconds (aot-used-marker p)) p)))
+                              (if (file-directory? root) (directory-list root) '()))))
+           ;; newest first; the current generation holds one of the kept slots
+           (ordered (sort (lambda (a b) (> (car a) (car b))) gens))
+           (doomed (if (fx>? (length ordered) (fx- aot-generations-kept 1))
+                       (list-tail ordered (fx- aot-generations-kept 1))
+                       '())))
+      (for-each (lambda (p)
+                  (aot-info (string-append "pruning superseded generation " (cdr p)))
+                  (aot-delete-tree (cdr p)))
+                doomed))))
+;; The generation is stamped and swept once per process, on the first consult.
+(define aot-generation-memo #f)
+(define (aot-cache-subdir)
+  (unless aot-generation-memo
+    (let ((gen (aot-generation-dir)))
+      (aot-mkdir-p gen)
+      (aot-touch-used! gen)
+      (aot-prune-generations! gen)
+      (set! aot-generation-memo (string-append gen "/v1"))))
+  aot-generation-memo)
 (define (aot-cache-sanitize s)
   (list->string
     (map (lambda (c)
@@ -453,6 +512,99 @@
 (define (aot-info msg)
   (when (getenv "JOLT_DEBUG")
     (display (string-append "[jolt.aot] " msg "\n") (current-error-port))))
+
+;; --- dependency closure ------------------------------------------------------
+;; A namespace's fasl bakes in what its dependencies contributed at compile time —
+;; macro expansions, inlined defs, record shapes — so its own source hash does not
+;; describe it. Editing a macro namespace left every consumer serving expansions of
+;; a definition that no longer existed. The key therefore folds in the key of each
+;; namespace this one required, which makes it transitive by construction: a change
+;; three namespaces down moves each key on the path.
+;;
+;; The requires are learned by RECORDING them during the compile that produced the
+;; fasl, not by re-parsing ns forms: the loader funnels every require/use through
+;; ldr-load+register, so the record covers a top-level (require …) and a :require
+;; clause alike. They are written beside the fasl, in a sidecar named by the
+;; namespace's own hash alone — the one key derivable before its deps are known.
+(define aot-dep-sink (make-thread-parameter #f))
+(define (aot-new-dep-sink) (vector '()))
+;; Called from ldr-load+register for every require target, whether or not the
+;; target was already loaded — a dedup'd require is still a dependency.
+(define (aot-record-dep! name)
+  (let ((sink (aot-dep-sink)))
+    (when (and (vector? sink) (not (member name (vector-ref sink 0))))
+      (vector-set! sink 0 (cons name (vector-ref sink 0))))))
+
+(define (aot-dep-sidecar base) (string-append base ".deps"))
+(define (aot-write-dep-list! path names)
+  (guard (e (else #f))
+    (let ((out (open-output-file path 'replace)))
+      (for-each (lambda (n) (put-string out n) (put-string out "\n")) names)
+      (close-port out))))
+(define (aot-read-dep-list path)
+  (if (file-exists? path)
+      (guard (e (else '()))
+        (filter (lambda (s) (fx>? (string-length s) 0))
+                (bld-string-lines-like (read-file-string path))))
+      '()))
+;; local line splitter — build.ss's is not loaded on the run path.
+(define (bld-string-lines-like s)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (start 0) (acc '()))
+      (cond ((fx>=? i n) (reverse (if (fx>? i start) (cons (substring s start i) acc) acc)))
+            ((char=? (string-ref s i) #\newline)
+             (loop (fx+ i 1) (fx+ i 1) (cons (substring s start i) acc)))
+            (else (loop (fx+ i 1) start acc))))))
+
+;; A namespace contributes to a key only if it is cacheable: install-owned source
+;; (stdlib, jolt-core) is part of the runtime and already covered by the runtime
+;; fingerprint, so it is skipped — which keeps the walk to project and library
+;; namespaces instead of the whole prelude.
+(define (aot-cacheable-file name)
+  (let ((f (find-ns-file name)))
+    (and f (not (ldr-install-file? f)) f)))
+(define aot-own-key-memo (make-hashtable string-hash string=?))
+(define (aot-own-key name)
+  (or (hashtable-ref aot-own-key-memo name #f)
+      (let ((f (aot-cacheable-file name)))
+        (and f (let ((k (aot-cache-key (ldr-read-source f))))
+                 (hashtable-set! aot-own-key-memo name k)
+                 k)))))
+(define (aot-base-for-own name own) (string-append (aot-cache-subdir) "/"
+                                                   (aot-cache-sanitize name) "-" own))
+;; Fold the dep keys into one integer. Sorted, so the digest doesn't depend on the
+;; order requires happened to be recorded in.
+(define aot-dep-digest-memo (make-hashtable string-hash string=?))
+(define aot-dep-inflight (make-hashtable string-hash string=?))
+(define (aot-ns-digest name)
+  ;; a namespace's whole contribution: its own hash folded with its deps'
+  (let ((own (aot-own-key name)))
+    (if (not own)
+        0
+        (aot-hash-mix (equal-hash own) (aot-dep-digest name own)))))
+(define (aot-dep-digest name own)
+  (or (hashtable-ref aot-dep-digest-memo name #f)
+      (if (hashtable-ref aot-dep-inflight name #f)
+          ;; a require cycle: stop at the namespace's own hash. Every namespace on
+          ;; the cycle still contributes it, so an edit anywhere still moves the key.
+          (equal-hash own)
+          (begin
+            (hashtable-set! aot-dep-inflight name #t)
+            (let* ((deps (sort string<? (aot-read-dep-list
+                                          (aot-dep-sidecar (aot-base-for-own name own)))))
+                   (d (fold-left (lambda (h dep) (aot-hash-mix h (aot-ns-digest dep))) 17 deps)))
+              (hashtable-delete! aot-dep-inflight name)
+              (hashtable-set! aot-dep-digest-memo name d)
+              d)))))
+;; The full cache base: own hash, then the dep digest. A namespace with no
+;; recorded deps (or none cacheable) folds to the digest of the empty list, so the
+;; suffix is constant for the whole leaf case rather than absent.
+(define (aot-base-full name own deps)
+  (string-append (aot-base-for-own name own) "-"
+                 (number->string
+                   (fold-left (lambda (h dep) (aot-hash-mix h (aot-ns-digest dep))) 17
+                              (sort string<? deps))
+                   16)))
 ;; Tee the per-form emitted Scheme (compile-eval.ss jolt-aot-capture) while running
 ;; the normal load loop, so a cache miss reproduces the EXACT interleaved analyze
 ;; →eval semantics (forward macro refs and same-file requires expand correctly).
@@ -488,41 +640,56 @@
 ;; ("No namespace: X found"). So each process compiles to a pid-unique temp and
 ;; rename(2)s it into place — atomic within a filesystem, so the .so appears
 ;; complete-or-not-at-all. The .so (the cache-hit signal) is published LAST.
-(define (aot-compile-and-cache name file src base)
-  (let* ((scm (string-append base ".scm"))
-         (so  (string-append base ".so"))
-         (pid (number->string (get-process-id)))
-         (tmp-scm (string-append base ".tmp" pid ".scm"))
-         (tmp-so  (string-append base ".tmp" pid ".so")))
-    (aot-mkdir-p (path-parent base))
-    (let ((captured (aot-capture-load file src)))
+;; The final base is only known AFTER the capture load: it folds in the deps, and
+;; the deps are what that load records. Writing under the pre-load base instead
+;; would strand the fasl — the next run computes the key WITH deps and misses it,
+;; paying a second compile for every namespace that requires anything.
+(define (aot-compile-and-cache name file src own)
+  (let ((sink (aot-new-dep-sink)))
+    (let ((captured (parameterize ((aot-dep-sink sink)) (aot-capture-load file src))))
+      (unless (and (string? captured) (fx>? (string-length captured) 0))
+        (aot-info (string-append "nothing captured for " name ", not caching")))
       (when (and (string? captured) (fx>? (string-length captured) 0))
-        (guard (e (else (aot-info (string-append "compile failed for " name))
-                        (delete-file tmp-scm #f) (delete-file tmp-so #f) #f))
-          (let ((out (open-output-file tmp-scm 'replace)))
-            (put-string out captured) (close-output-port out))
-          ;; compile-file prints "compiling X with output to Y" per file to
-          ;; current-output-port by default — swallow it so a cache miss can't
-          ;; corrupt the running program's stdout.
-          (parameterize ((current-output-port (open-output-string)))
-            (compile-file tmp-scm tmp-so))
-          (rename-file tmp-scm scm)
-          (rename-file tmp-so so))
-        (unless (file-exists? so)
-          (aot-info (string-append "no .so produced for " name)))))))
+        (let* ((deps (filter aot-cacheable-file (vector-ref sink 0)))
+               (base (aot-base-full name own deps))
+               (scm (string-append base ".scm"))
+               (so  (string-append base ".so"))
+               (pid (number->string (get-process-id)))
+               (tmp-scm (string-append base ".tmp" pid ".scm"))
+               (tmp-so  (string-append base ".tmp" pid ".so")))
+          (aot-mkdir-p (path-parent base))
+          ;; the sidecar is named by the own hash alone, so the next run can read
+          ;; it back before it is able to compute the full key.
+          (aot-write-dep-list! (aot-dep-sidecar (aot-base-for-own name own)) deps)
+          ;; this run already computed a digest for `name` from the OLD sidecar;
+          ;; drop it so a later require in the same process sees the new deps.
+          (hashtable-delete! aot-dep-digest-memo name)
+          (guard (e (else (aot-info (string-append "compile failed for " name))
+                          (delete-file tmp-scm #f) (delete-file tmp-so #f) #f))
+            (let ((out (open-output-file tmp-scm 'replace)))
+              (put-string out captured) (close-output-port out))
+            ;; compile-file prints "compiling X with output to Y" per file to
+            ;; current-output-port by default — swallow it so a cache miss can't
+            ;; corrupt the running program's stdout.
+            (parameterize ((current-output-port (open-output-string)))
+              (compile-file tmp-scm tmp-so))
+            (rename-file tmp-scm scm)
+            (rename-file tmp-so so))
+          (unless (file-exists? so)
+            (aot-info (string-append "no .so produced for " name))))))))
 ;; A truncated/corrupt .so (a killed process left a partial write, or a concurrent
 ;; jolt is mid-write) would make `load` throw. Fall back to recompile: delete the
 ;; bad files so the miss path rebuilds them. Safe because a truncated fasl fails at
 ;; its header before any top-level define runs, so the image carries no half-loaded
 ;; state from the failed load. Non-fatal — a repeated failure just misses every run.
-(define (aot-safe-load-or-recompile name file src base)
+(define (aot-safe-load-or-recompile name file src own base)
   (let ((so (string-append base ".so")))
     (guard (e (else
                 (aot-info (string-append "corrupt cache for " name ", recompiling"))
                 (delete-file so #f)           ; best-effort; ignore if already gone
                 (let ((scm (string-append base ".scm")))
                   (delete-file scm #f))
-                (aot-compile-and-cache name file src base)))
+                (aot-compile-and-cache name file src own)))
       (load so))))
 ;; Dispatch for load-namespace*: cache hit (load .so) / miss (compile+cache) /
 ;; bypass (plain load). `file` is the resolved on-disk path. force? (:reload) and
@@ -533,16 +700,23 @@
            ;; no fingerprint = we can't tell this runtime from another one, so
            ;; there is no key that would be safe to reuse.
            (aot-runtime-fingerprint))
+      ;; the deps this ns's own load records belong to IT, not to whoever is
+      ;; requiring it — bind a fresh sink so a nested load can't append to the
+      ;; enclosing one. A hit binds #f: the fasl it loads re-runs the requires,
+      ;; and those are already described by this namespace's own sidecar.
       (let* ((src (ldr-read-source file))
-             (base (string-append (aot-cache-subdir) "/"
-                                  (aot-cache-sanitize name) "-" (aot-cache-key src)))
+             (own (aot-cache-key src))
+             (base (aot-base-full name own
+                                  (aot-read-dep-list
+                                    (aot-dep-sidecar (aot-base-for-own name own)))))
              (so (string-append base ".so")))
         (if (file-exists? so)
             (begin (aot-info (string-append "hit " name))
-                   (aot-safe-load-or-recompile name file src base))
+                   (parameterize ((aot-dep-sink #f))
+                     (aot-safe-load-or-recompile name file src own base)))
             (begin (aot-info (string-append "miss " name))
-                   (aot-compile-and-cache name file src base))))
-      (load-jolt-file file)))
+                   (aot-compile-and-cache name file src own))))
+      (parameterize ((aot-dep-sink #f)) (load-jolt-file file))))
 
 ;; Mark a namespace as loaded in both the host hashtable and the *loaded-libs* ref.
 (define (ldr-mark-loaded! name)
@@ -674,6 +848,10 @@
           (let* ((parsed (parse-libspec s))
                  (target (and parsed (car parsed)))
                  (opt-names (if parsed (map car (cdr parsed)) '())))
+            ;; record BEFORE loading: a target already loaded is still a
+            ;; dependency of whoever is being compiled, and load-namespace*
+            ;; would dedup it away.
+            (when target (aot-record-dep! target))
             (when target (load-namespace* target force-named?))
             (chez-register-spec! (chez-current-ns) s)
             (when (and use? target

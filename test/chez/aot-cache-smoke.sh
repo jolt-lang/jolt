@@ -233,6 +233,77 @@ else
   echo "FAIL: (k) cache namespaces=$n_k (expected 2), source='$k_out_src' binary='$k_out_bin' (expected 42)"; fails=$((fails+1))
 fi
 
+# --- (l) editing a REQUIRED namespace invalidates its consumers ---------------
+# A namespace's fasl bakes in whatever its dependencies contributed at compile
+# time — macro expansions above all — so keying only on its own source leaves it
+# serving expansions from a macro definition that no longer exists. The consumer
+# is untouched here; only the macro namespace changes.
+l="$tmp/l"; mkdir -p "$l/src/dep"
+printf '(ns dep.macros)\n(defmacro tag [] "v1")\n' > "$l/src/dep/macros.clj"
+printf '(ns dep.core (:require [dep.macros :as m]))\n(defn answer [] (m/tag))\n' > "$l/src/dep/core.clj"
+lrun() {
+  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
+    (require 'jolt.deps) (jolt.deps/add-deps {:deps {'dep/dep {:local/root \"$l\"}}})
+    (require 'dep.core) (println (dep.core/answer))" 2>/dev/null | tail -1
+}
+l_cold="$(lrun)"
+sleep 1
+printf '(ns dep.macros)\n(defmacro tag [] "v2")\n' > "$l/src/dep/macros.clj"
+l_warm="$(lrun)"
+if [ "$l_cold" = "v1" ] && [ "$l_warm" = "v2" ]; then
+  echo "PASS: (l) macro-ns edit invalidated its consumer (v1 -> v2)"; pass=$((pass+1))
+else
+  echo "FAIL: (l) cold='$l_cold' (want v1) after-macro-edit='$l_warm' (want v2)"; fails=$((fails+1))
+fi
+
+# --- (m) invalidation reaches through a chain, not just direct requires -------
+# top -> mid -> low, with the macro at the bottom: top's key has to fold in the
+# whole transitive closure, since mid contributes low's expansion to it.
+m="$tmp/m"; mkdir -p "$m/src/chain"
+printf '(ns chain.low)\n(defmacro tag [] "v1")\n' > "$m/src/chain/low.clj"
+printf '(ns chain.mid (:require [chain.low :as l]))\n(defn mid-answer [] (l/tag))\n' > "$m/src/chain/mid.clj"
+printf '(ns chain.top (:require [chain.mid :as mid]))\n(defn answer [] (mid/mid-answer))\n' > "$m/src/chain/top.clj"
+mrun() {
+  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
+    (require 'jolt.deps) (jolt.deps/add-deps {:deps {'chain/chain {:local/root \"$m\"}}})
+    (require 'chain.top) (println (chain.top/answer))" 2>/dev/null | tail -1
+}
+m_cold="$(mrun)"
+sleep 1
+printf '(ns chain.low)\n(defmacro tag [] "v2")\n' > "$m/src/chain/low.clj"
+m_warm="$(mrun)"
+if [ "$m_cold" = "v1" ] && [ "$m_warm" = "v2" ]; then
+  echo "PASS: (m) transitive dep edit invalidated the chain (v1 -> v2)"; pass=$((pass+1))
+else
+  echo "FAIL: (m) cold='$m_cold' (want v1) after-transitive-edit='$m_warm' (want v2)"; fails=$((fails+1))
+fi
+
+# --- (n) superseded runtime generations are pruned ---------------------------
+# The cache namespace moves whenever the runtime does, so a dev loop that
+# rebuilds jolt leaves a full generation behind per build. Plant stale
+# generations with old markers and require the run to collect them, keeping the
+# few most recently used (the current one always among them).
+cache_n="$(mktemp -d)"
+i=1
+while [ "$i" -le 6 ]; do
+  mkdir -p "$cache_n/stale-gen-$i/v1"
+  : > "$cache_n/stale-gen-$i/.used"
+  touch -t "2020010100$(printf '%02d' "$i")" "$cache_n/stale-gen-$i/.used"
+  i=$((i+1))
+done
+n_before="$(find "$cache_n" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+out_n="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_n" JOLT_QUIET=1 "$jolt" -e "
+  (require 'jolt.deps) (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$k\"}}})
+  (require 'mylib.core) (println (mylib.core/answer))" 2>/dev/null | tail -1)"
+n_after="$(find "$cache_n" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+n_live="$(find "$cache_n" -name '*.so' | wc -l | tr -d ' ')"
+rm -rf "$cache_n"
+if [ "$n_before" = "6" ] && [ "$n_after" -le 3 ] && [ "$n_live" -ge 1 ] && [ "$out_n" = "42" ]; then
+  echo "PASS: (n) pruned $n_before generations to $n_after, current one live"; pass=$((pass+1))
+else
+  echo "FAIL: (n) generations $n_before -> $n_after (want <=3), live .so=$n_live, output='$out_n'"; fails=$((fails+1))
+fi
+
 # Phase 4 (cold-vs-warm speedup) lives in aot-cache-perf.sh — a timing
 # measurement doesn't belong in this deterministic correctness gate.
 
