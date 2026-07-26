@@ -57,6 +57,17 @@
   ;; build.ss inlined (for `jolt build` from the cache).
   (put-string out "\n;; === embedded build driver ===\n")
   (bld-inline-line "(load \"host/chez/build.ss\")" out 0)
+  ;; emit-image.ss (inlined by build.ss above) turns per-site var-cell caching OFF
+  ;; at load time, because the seed mint and `jolt build` must emit byte-identical
+  ;; output. Here that runs AFTER compile-eval.ss turned it on for runtime eval, so
+  ;; the setting baked into the image is the build one and every namespace compiled
+  ;; at runtime resolves each var by name on every access — around half speed on
+  ;; var-reference-heavy code. The built jolt escapes this by loading the build
+  ;; subsystem lazily; this image loads it eagerly, so restore the runtime setting
+  ;; after it. A later `jolt build` from the cache sets it back off for itself.
+  (put-string out "\n;; === restore runtime compile settings after the build driver ===\n")
+  (put-string out "(let ((scv (var-deref \"jolt.backend-scheme\" \"set-var-cache!\")))\n")
+  (put-string out "  (when (procedure? scv) (scv #t)))\n")
   ;; Runtime source embeds (bytevector values, 1B/char).
   (put-string out "\n;; === embedded runtime source ===\n")
   (for-each (lambda (path)
