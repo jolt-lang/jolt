@@ -690,8 +690,12 @@
       (let [t (get tenv (get node :name))]
         [(if t t :any)
          (cond
-           (struct-safe? t) (let [n (assoc node :hint :struct)]
-                              (if (type-shape t) (assoc n :shape (type-shape t)) n))
+           ;; mark-struct, not a hand-rolled :hint/:shape pair: it also carries
+           ;; :nilable, and :shape without :nilable is exactly the shape the back end
+           ;; reads as "proven non-nil, take the direct slot accessor". A lookup site
+           ;; re-marks its own subject, so this annotation is superseded there — but
+           ;; the two must not be able to drift.
+           (struct-safe? t) (mark-struct node t)
            :else node)])
       (= op :map)
       (let [pairs (get node :pairs)

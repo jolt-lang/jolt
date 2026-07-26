@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A protocol call on a record-or-nil receiver no longer devirtualizes.** In an
+  optimized closed-world build the inference took the devirtualization target
+  straight off the receiver's type without checking whether it could be nil, and
+  because such a site caches its first resolution, a receiver that was a record
+  on one call and `nil` on the next got the cached implementation instead of a
+  dispatch. With a record that has no fields that returned a wrong value where
+  Clojure raises `IllegalArgumentException`; with fields it surfaced as an
+  untyped host error. Only a receiver proven non-nil devirtualizes now — a
+  `some?`/`nil?` guard narrows one back, so the fast path is kept wherever it is
+  sound.
+
+### Changed
+
+- **Recursive walks over record trees are typed and read fields by slot.** The
+  whole-program pass could not follow a record through a nilable recursive
+  position, so a tree walker's parameter stayed untyped and every field read
+  went through the generic keyword lookup. Four things blocked it: a `defn`'s
+  self-recursive call resolves through the function's own name rather than its
+  var and so never picked up the function's inferred return type (which meant a
+  recursive constructor poisoned its own record's field types); the parameter
+  fixpoint had no priming phase, so a recursion whose argument is computed from
+  the parameter pinned it at the top type; joining two views of the same record
+  widened any field only one side carried; and a field read off a record-or-nil
+  discarded the field's type entirely. `binary-trees` runs 2.5× faster
+  (165ms→67ms, about 1.8× JVM Clojure). The first two apply to any
+  self-recursive `defn` in an optimized build.
+
 ## [0.5.0] - 2026-07-25
 
 The CLI is `jolt` now, not `joltc` — a rename worth a minor version even
