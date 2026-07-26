@@ -25,18 +25,32 @@ absolute reference.
 | `arrays` | primitive `double-array` throughput (unboxed `aget`/`aset`, no boxing/collections) | unboxed primitive-array codegen (flvector read/write) | CLBG-style |
 | `mathfns` | transcendental math (`java.lang.Math` sqrt/sin/cos/log/pow/atan2 over doubles) | native `Math` op lowering (`flsqrt`/`flsin`/… vs generic host-static dispatch) | CLBG-style |
 | `fib` | recursion: function-call + integer-arith overhead | native arith, small-fn inlining | CLBG |
-| `tak` | ~0.3× | ~0.3× | 6.7 | 19.6 | deep three-way self-recursion + integer arith (beats the JVM) |
-| `fib` | ~1.1× | ~1.0× | 7.3 | 6.8 | recursion: call + integer arith |
-| `dispatch` | ~1.2× | ~1.2× | 67.7 | 57.5 | megamorphic protocol dispatch |
-| `mathfns` | ~1.5× | ~1.5× | 24.3 | 16.4 | transcendental math (`Math` sqrt/sin/cos/log/pow/atan2 over doubles) |
-| `loop-recur` | ~1.6× | ~1.6× | 29.3 | 18.7 | tight loop/recur + per-iteration integer arith (`mod`, `quot`, `bit-xor`) |
-| `mandelbrot` | ~1.7× | ~1.7× | 23.0 | 13.8 | pure float compute |
-| `binary-trees` | ~1.8× | ~1.8× | 66.7 | 37.5 | escaping short-lived records (allocation/GC) |
-| `collections` | ~1.9× | ~1.9× | 20.7 | 11.1 | persistent map/vector churn |
-| `seqs` | ~2.6× | ~2.6× | 368.0 | 142.3 | lazy-seq + HOF pipelines (allocation + per-element calls) |
-| `mono-dispatch` | ~2.8× | ~2.8× | 38.0 | 13.8 | monomorphic protocol dispatch |
-| `transducers` | ~4.4× | ~4.2× | 132.0 | 30.2 | transducer pipelines (comp of map/filter/take) |
-| `arrays` | ~6.3× | ~6.3× | 224.7 | 35.7 | primitive `double-array` throughput (unboxed `aget`/`aset`) |
+| `tak` | deep three-way self-recursion + integer arith | direct-linked self-calls, proven fixnum arith | CLBG/AWFY |
+| `loop-recur` | tight `loop`/`recur` + per-iteration integer arith (`mod`, `quot`, `bit-xor`) | numeric pass (primitive long loop counters), loop codegen | CLBG-style |
+| `seqs` | lazy-seq + HOF pipelines (`map`/`filter`/`reduce`, `every?`, `iterate`/`take`, `mapcat`) | lazy-seq cell allocation, per-element call overhead | CLBG-style |
+| `transducers` | transducer pipelines (`comp` of `map`/`filter`/`take`) | transducer machinery, `reduce` fast paths | CLBG-style |
+
+## Scorecard
+
+**vs JVM** is jolt ÷ JVM Clojure on the same source — **lower is better, and
+under 1.0× means jolt is faster**. Two build modes: **opt** is
+`jolt build --direct-link --opt`, **release** is a plain `jolt build` (what a
+default build ships). Times are the mean of 3 runs after warmup, in ms.
+
+| Benchmark | vs JVM | vs JVM (release) | jolt (ms) | JVM (ms) | Axis |
+|---|---:|---:|---:|---:|---|
+| `tak` | **0.3×** | 0.4× | 6.7 | 19.7 | deep three-way self-recursion + integer arith (beats the JVM) |
+| `fib` | **1.0×** | 1.0× | 7.0 | 7.0 | recursion: call + integer arith |
+| `dispatch` | **1.1×** | 1.1× | 70.3 | 62.7 | megamorphic protocol dispatch |
+| `mathfns` | **1.5×** | 1.5× | 25.0 | 16.7 | transcendental math (`Math` sqrt/sin/cos/log/pow/atan2) |
+| `loop-recur` | **1.6×** | 1.6× | 30.7 | 19.2 | tight loop/recur + per-iteration integer arith |
+| `mandelbrot` | **1.6×** | 1.6× | 23.3 | 14.3 | pure float compute |
+| `collections` | **1.7×** | 1.7× | 22.7 | 13.1 | persistent map/vector churn |
+| `binary-trees` | **1.7×** | 1.7× | 68.3 | 40.7 | escaping short-lived records (allocation/GC) |
+| `seqs` | **2.6×** | 2.6× | 385.7 | 150.4 | lazy-seq + HOF pipelines |
+| `mono-dispatch` | **2.7×** | 2.7× | 38.3 | 14.3 | monomorphic protocol dispatch |
+| `transducers` | **4.2×** | 4.3× | 136.0 | 32.2 | transducer pipelines |
+| `arrays` | **6.3×** | 6.4× | 230.7 | 36.9 | primitive `double-array` throughput |
 
 `opt` and `release` track each other closely across the suite — the plain
 `jolt build` picks up most of the win.
@@ -49,7 +63,7 @@ over it lower to native flonum ops instead of generic host dispatch — `mathfns
 is a primitive long, so its `inc`/compare/`mod`/`quot` run as fixnum ops —
 `loop-recur` ~8.3×→~1.6×, and `mandelbrot`'s grid counters took it ~2.0×→~1.6×).
 `tak` beats the JVM outright (direct-linked self-calls + proven fixnum arith);
-`fib` sits at ~1.1–1.2×.
+`fib` is level with it.
 
 The remaining gaps are the allocation-bound axes, and after the 2026-07 rounds
 only `arrays` is still above ~5×. `seqs` (was ~10.9×), `binary-trees` (~140×)
@@ -79,12 +93,12 @@ work that a composed abstraction was repeating, and do it once.
   collection via variadic `jolt-concat`: ~3 lazy nodes and ~5 closures per
   boundary, which swamps the per-element work when inner colls are small
   (302ms → 122ms). Both now emit exactly one cell per element.
-- **`transducers` ~4.4×** (was ~7.0×): `eduction` was a plain lazy seq, so
+- **`transducers` ~4.2×** (was ~7.0×): `eduction` was a plain lazy seq, so
   reducing one allocated a cell per element instead of driving the transducer
   into the accumulator. It is now a real `Eduction` implementing `IReduceInit`,
   as on the JVM — 152ms→61ms, in line with `transduce`. The remainder is the
   per-element reducing-fn call chain, not the pipeline shape.
-- **`binary-trees` ~1.8×** (was ~7.2×): two rounds. Each node walk read a field
+- **`binary-trees` ~1.7×** (was ~7.2×): two rounds. Each node walk read a field
   through a keyword RE-INTERNED at every use site; keyword literals are now
   hoisted to a per-def constant (277ms→171ms). Then the read itself stopped
   being a generic `jolt-get`: typing the walker's parameter needs a record
@@ -98,9 +112,9 @@ work that a composed abstraction was repeating, and do it once.
   `(:left node)` now emits `jrec-field-at` at a static slot (165ms→67ms). What
   is left is allocation and GC — the nodes escape into the tree, so
   scalar-replace can't remove them.
-- **`mono-dispatch` ~2.8×**:
+- **`mono-dispatch` ~2.7×**:
   collapsed from two orders of magnitude by the type-proving / inline-field /
-  bare-read work (`binary-trees` ~140×→~1.8×, `mono-dispatch` ~330×→~2.8×). On a
+  bare-read work (`binary-trees` ~140×→~1.7×, `mono-dispatch` ~330×→~2.7×). On a
   statically proven monomorphic receiver, devirt resolves the impl and a
   per-site inline cache holds it. A NILABLE receiver deliberately does not
   devirtualize: the site caches its first resolution, so serving that impl to a
@@ -110,7 +124,7 @@ work that a composed abstraction was repeating, and do it once.
 - **`dispatch` ~1.1×**: a megamorphic site runs a per-site polymorphic inline
   cache (4-slot descriptor scan, `#3%` reads over the proven cache shape), so
   it no longer pays a registry lookup per call.
-- **`collections` ~1.9×**: JVM-exact Murmur3 hashing plus the array-map
+- **`collections` ~1.7×**: JVM-exact Murmur3 hashing plus the array-map
   `(k . v)` fold; the residual is Murmur3 on integer keys, which the JVM JITs
   to a handful of instructions.
 
@@ -119,29 +133,37 @@ work that a composed abstraction was repeating, and do it once.
 The AOT suite above is float-compute / dispatch / allocation bound; none of it
 exercises **64-bit integer arithmetic**, which Chez can't hold in a fixnum
 (61-bit), so genuine 64-bit values are heap bignums. The SplitMix PRNG behind
-`clojure.test.check` is the worst case — every `rand-long` is ~8 bignum ops. These
-were measured in **run mode** (`jolt run`, where per-site var-cell caching is on;
-the AOT build keeps it off) against JVM Clojure on the same portable source. The
-first two rows are isolating microbenchmarks; the rest are real test.check
-generators.
+`clojure.test.check` is the worst case — every `rand-long` is ~8 bignum ops.
 
-| workload | jolt | JVM | ratio | bound by |
-|---|---|---|---|---|
-| SplitMix `mix-64` (×100k) | 45ms | 14ms | ~3.2× | 64-bit integer arithmetic |
-| deftype alloc + protocol dispatch (×100k) | 41ms | 5ms | ~8× | open-world dispatch |
-| raw `split` + `rand-long` (×20k) | 74ms | 6ms | ~12× | bignum 64-bit + dispatch |
-| `gen/large-integer` (×2k) | 108ms | 23ms | ~4.7× | arithmetic + rose-tree machinery |
-| `(gen/vector gen/large-integer)` (×500) | 1289ms | 88ms | ~14.6× | element gen + gen machinery |
+`bench/testcheck.sh` runs these in **run mode** (`jolt run`, the normal require
+path a test suite reaches library code through), against JVM Clojure on the same
+source, with the same warmup-and-mean convention as the suite above. The first
+two rows isolate one cost each; the rest are real test.check entry points and
+carry both plus the rose-tree machinery.
+
+| Workload | ×N | vs JVM | jolt (ms) | JVM (ms) | Bound by |
+|---|---:|---:|---:|---:|---|
+| SplitMix `mix-64` | 100k | **8.7×** | 34.7 | 4.0 | 64-bit integer arithmetic |
+| deftype alloc + protocol dispatch | 100k | **3.9×** | 24.0 | 6.1 | open-world dispatch |
+| raw `split` + `rand-long` | 20k | **19.1×** | 70.7 | 3.7 | bignum 64-bit + dispatch |
+| `gen/large-integer` | 2k | **6.9×** | 60.0 | 8.7 | arithmetic + rose-tree machinery |
+| `(gen/vector gen/large-integer)` | 500 | **18.5×** | 695.3 | 37.5 | element gen + gen machinery |
 
 Two no-C codegen levers collapsed the **arithmetic** half: emitting `bit-and`/
 `bit-or`/`bit-xor`/`bit-not` as inlined Chez `bitwise-*` primitives (they had gone
 through a var-deref'd variadic overlay), and caching the resolved var cell per
-reference site (a name lookup was ~45ns/access). Together they took `mix-64` from
-~18× → ~3.2× JVM and the raw PRNG from ~30× → ~12×, and the generators ~1.6× each.
+reference site (a name lookup was ~45ns/access).
+
+These rows were re-measured with `bench/testcheck.sh` and are **not comparable to
+the numbers published before it existed** — that harness wasn't kept, and this one
+warms up before timing, which warms the JVM's JIT far more than a single-shot
+measurement did. jolt's own times improved (`mix-64` 45→35ms,
+`(gen/vector gen/large-integer)` 1289→695ms); the JVM's improved more, so the
+ratios read higher than they used to.
 
 The residual gap is **machinery, not arithmetic**: the open-world generator
-deftype/protocol dispatch + rose-tree allocation (~8–10×) can't be devirtualized
-without static types, and the raw 64-bit ops bottom out at the Chez bignum floor
+deftype/protocol dispatch + rose-tree allocation can't be devirtualized without
+static types, and the raw 64-bit ops bottom out at the Chez bignum floor
 (~20× a native long, substrate-inherent). A native SplitMix C/FFI shim would give
 the PRNG ~27× but is the only path that needs C.
 
@@ -153,6 +175,9 @@ bench/run.sh fib             # one benchmark, default size
 bench/run.sh fib 32          # one benchmark, custom size
 NO_JVM=1 bench/run.sh        # jolt only (skip the JVM reference)
 MODE_A=1 bench/run.sh        # also time each bench as a plain release build
+
+bench/testcheck.sh           # 64-bit arithmetic + test.check generators (run mode)
+NO_JVM=1 bench/testcheck.sh  # jolt only
 ```
 
 Two build modes matter: **optimized** (`--direct-link --opt`, the default
