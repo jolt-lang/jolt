@@ -53,17 +53,39 @@
 ;; tests (an unknown ns runs nothing).
 (def r1 (run-tests))
 (def r2 (run-tests 'no.such.test-ns))
+
+;; Cumulative counters, snapshotted BEFORE the deselection run below adds to them:
+;; 10 pass (= + vector? + 4 are rows + thrown? + thrown-with-msg? + near? + p/thrown?),
+;; 2 fail (= 1 2, near? 1.0 5.0), 0 error, 2 fixture runs.
+(def cum-ok (and (= (t/n-pass) 10) (= (t/n-fail) 2) (= (t/n-error) 0) (= @setups 2)))
+
+;; Deselection is by :test METADATA, not by what deftest registered: clojure.test
+;; finds tests by scanning vars for that key, so a runner filters by removing it
+;; (the Cognitect runner's -v/-i/-e do exactly this, then restore it). Running
+;; from the registry alone ignored the removal and ran everything.
+(def deselected
+  (do (alter-meta! #'expected-fail (fn [m] (-> m (assoc ::held (:test m)) (dissoc :test))))
+      (let [r (run-tests)]
+        (alter-meta! #'expected-fail (fn [m] (-> m (assoc :test (::held m)) (dissoc ::held))))
+        r)))
+;; only the passing test remains: 1 test, its 10 assertions, no failures
+(def deselect-ok (and (= 1 (:test deselected)) (= 10 (:pass deselected))
+                      (= 0 (:fail deselected))))
+;; restoring the metadata puts it back, failures and all
+(def restored (run-tests))
+(def restore-ok (and (= 2 (:test restored)) (= 2 (:fail restored))))
+
 (t/do-report {:type ::trial})
 (t/do-report {:type ::trial})
 
-;; 10 pass (= + vector? + 4 are rows + thrown? + thrown-with-msg? + near? + p/thrown?),
-;; 2 fail (= 1 2, near? 1.0 5.0), 0 error, 2 fixture runs, 2 custom reports
-(let [ok (and (= (t/n-pass) 10) (= (t/n-fail) 2) (= (t/n-error) 0)
-              (= 2 (:test r1)) (= 10 (:pass r1)) (= 2 (:fail r1))
+(let [ok (and (= 2 (:test r1)) (= 10 (:pass r1)) (= 2 (:fail r1))
               (= 0 (:test r2)) (= 0 (:pass r2))
-              (= @setups 2) (= @trials 2))]
+              cum-ok deselect-ok restore-ok
+              (= @trials 2))]
   (println (if ok
              "CLOJURE-TEST OK"
-             (str "CLOJURE-TEST FAIL pass=" (t/n-pass) " fail=" (t/n-fail)
-                  " error=" (t/n-error) " r1=" (pr-str r1) " r2=" (pr-str r2)
-                  " setups=" @setups " trials=" @trials))))
+             (str "CLOJURE-TEST FAIL r1=" (pr-str r1) " r2=" (pr-str r2)
+                  " cum-ok=" cum-ok " (pass=" (t/n-pass) " fail=" (t/n-fail)
+                  " error=" (t/n-error) " setups=" @setups ")"
+                  " deselected=" (pr-str deselected) " restored=" (pr-str restored)
+                  " trials=" @trials))))

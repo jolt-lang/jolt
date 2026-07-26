@@ -280,11 +280,23 @@
         (catch Throwable e
           (err! (str (:name t) " crashed: " (err-text e))))))))
 
+;; A registered test still counts only while its var carries :test metadata.
+;; clojure.test discovers tests by scanning vars for that key, so removing it is
+;; how tooling DESELECTS a test — the Cognitect test-runner's -v/-i/-e options
+;; dissoc :test from every var that doesn't match and restore it afterwards.
+;; Running straight from the registry ignored that, so those options silently
+;; selected nothing and every test ran. A var that no longer resolves is kept:
+;; the registry is the only record of it, and dropping it would lose a test.
+(defn- selected? [t]
+  (let [v (try (ns-resolve (:ns t) (:name t)) (catch Throwable _ nil))]
+    (or (nil? v) (some? (:test (meta v))))))
+
 ;; Run the registered tests grouped by namespace (registration order preserved
 ;; within each ns), each group wrapped in its ns's :once fixtures. ns-set nil
 ;; means all.
 (defn- run-selected [ns-set]
-  (let [ts (if ns-set (filter (fn [t] (contains? ns-set (:ns t))) @registry) @registry)]
+  (let [ts (filter selected?
+                   (if ns-set (filter (fn [t] (contains? ns-set (:ns t))) @registry) @registry))]
     (doseq [n (distinct (map :ns ts))]
       (wrap-fixtures (get @once-fixtures n [])
         (fn [] (doseq [t ts :when (= n (:ns t))] (run-one t))))))
