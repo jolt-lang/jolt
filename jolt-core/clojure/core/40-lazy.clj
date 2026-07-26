@@ -96,12 +96,15 @@
   ([n x] (take n (repeat x))))
 
 ;; --- iterate ---
-;; f is applied lazily, inside the tail thunk — (first (iterate f x)) is x with no
-;; call to f, matching clojure.lang.Iterate. Wrapping the whole body in lazy-seq
-;; instead would force (f x) the moment the head realizes (it is an eager argument
-;; to cons), realizing one step ahead.
-(defn iterate [f x]
-  (cons x (lazy-seq (iterate f (f x)))))
+;; NATIVE: host/chez/seq.ss jolt-iterate, registered in ns.ss. f is applied
+;; lazily, inside the tail thunk — (first (iterate f x)) is x with no call to f,
+;; matching clojure.lang.Iterate.
+;;
+;; The Clojure spelling was (cons x (lazy-seq (iterate f (f x)))): correct, but
+;; two records and two closures per element — lazy-seq allocates a closure plus a
+;; jolt-lazyseq node, then cons-over-lazyseq wraps that in a cseq cell plus
+;; another closure to keep the tail unforced. The native builds the cell directly
+;; (one of each), which is the same contract at ~4x less allocation.
 
 
 ;; --- partition-all --- (transducer + [n coll] + [n step coll])

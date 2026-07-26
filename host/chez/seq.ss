@@ -922,6 +922,18 @@
         (if (or (fx<=? n 0) (jolt-nil? s)) (if (jolt-nil? s) jolt-empty-list s)
             (loop (fx- n 1) (jolt-seq (seq-more s)))))))))
 
+;; (iterate f x) — x, (f x), (f (f x)), … as ONE lazy cell per element.
+;; The overlay spelling, (cons x (lazy-seq (iterate f (f x)))), costs two records
+;; and two closures per element: lazy-seq allocates a closure + a jolt-lazyseq
+;; node, then cons-over-lazyseq wraps THAT in a cseq cell + another closure to
+;; keep the tail unforced. Building the cell directly collapses both layers —
+;; head is x and f runs only when the tail is forced, which is the property the
+;; overlay spelling existed to protect ((first (iterate f x)) must not call f).
+;; Not chunked, matching clojure.lang.Iterate: chunking would realize up to 31
+;; elements ahead and break the laziness contract callers depend on.
+(define (jolt-iterate f x)
+  (cseq-lazy x (lambda () (jolt-iterate f (jolt-invoke1 f x)))))
+
 ;; lazily append seq a then the seqable produced by the thunk `brest` — the rest
 ;; is NOT forced until a is exhausted, so concat is fully lazy (Clojure semantics).
 ;; This matters for a self-referential lazy-cat (fib = (lazy-cat [0 1] (map + (rest

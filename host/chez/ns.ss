@@ -494,6 +494,7 @@
     (cons "map" jolt-map) (cons "filter" jolt-filter) (cons "remove" jolt-remove)
     (cons "reduce" jolt-reduce) (cons "into" jolt-into) (cons "concat" jolt-concat) (cons "apply" jolt-apply)
     (cons "range" jolt-range) (cons "take" jolt-take) (cons "drop" jolt-drop)
+    (cons "iterate" jolt-iterate)
     (cons "keys" jolt-keys) (cons "vals" jolt-vals)
     (cons "even?" jolt-even?) (cons "odd?" jolt-odd?) (cons "pos?" jolt-pos?) (cons "neg?" jolt-neg?)
     (cons "zero?" jolt-zero?) (cons "identity" jolt-identity)
