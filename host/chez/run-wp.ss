@@ -55,14 +55,20 @@
 (wp-infer! U (jolt-vector mt ct rn ev ec))
 (gate-check "escaped fn keeps no param seed" (jolt-truthy? (param-seeds-for U "user/check-tree")) #f)
 
-;; a self-recursive fn that recurses on a NILABLE field (an untagged record field
-;; is :any, so the child can be nil) must NOT be specialized — the recursion can
-;; pass nil, so typing the param as a non-nil record would be unsound.
+;; a self-recursive fn that recurses on a record-or-nil child field is seeded with a
+;; NILABLE record: its layout is proven (so reads bare-index) but it is never typed
+;; non-nil, because the recursion can pass nil. The nilable flag is what keeps the
+;; back end on the nil-safe read and off devirt — assert it is present, not just that
+;; a seed exists.
 (define ctr (anode "(def walk (fn [node] (let [l (:left node)] (if (nil? l) 1 (walk l)))))"))
 (define rnr (anode "(def run2 (fn [d] (walk (make-tree d))))"))
 (wp-infer! U (jolt-vector mt ctr rnr))
-(gate-check "self-recursive nilable param not specialized"
-       (jolt-truthy? (param-seeds-for U "user/walk")) #f)
+(define wseed (param-seeds-for U "user/walk"))
+(gate-check "self-recursive nilable param is seeded" (jolt-truthy? wseed) #t)
+(when (jolt-truthy? wseed)
+  (gate-check "recursive param carries the record layout" (gate-sub? (pr-str wseed) "user.Node") #t)
+  (gate-check "recursive param is typed NILABLE, never non-nil"
+              (gate-sub? (pr-str wseed) ":nilable true") #t))
 
 ;; a self-recursive fn that recurses passing the SAME record type (make-tree always
 ;; returns a Node) is still safe to specialize — the recursion preserves the type.

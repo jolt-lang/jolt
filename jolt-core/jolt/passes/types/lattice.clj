@@ -75,6 +75,17 @@
   [fa fb]
   (let [m1 (reduce (fn [m k] (assoc m k (join-t (get fa k :any) (get fb k :any)))) {} (keys fa))]
     (reduce (fn [m k] (if (get m k) m (assoc m k (join-t (get fa k :any) (get fb k :any))))) m1 (keys fb))))
+(defn merge-fields-same-record
+  "Per-field join of two views of the SAME record type. A key present on only one
+  side is a TRUNCATED VIEW, not a widened value — both sides describe the same
+  record, so the other side's type carries over unchanged (join-t's identity is nil,
+  which is what a missing key reads as). Merging such a key with :any instead is
+  what used to collapse a recursive walker's param: the deep view built from the
+  record's shape and the shallow view a field read projects would wipe each other's
+  fields to :any on every join, and the recursion fed that back into itself."
+  [fa fb]
+  (reduce (fn [m k] (assoc m k (join-t (get fa k) (get fb k))))
+          {} (distinct (concat (keys fa) (keys fb)))))
 (defn join-t [a b]
   (cond
     (= a b) a
@@ -96,7 +107,11 @@
     (or (= a :double) (= b :double))
       (join-t (if (= a :double) :num a) (if (= b :double) :num b))
     (and (struct-type? a) (struct-type? b))
-      (let [merged (mk-struct (merge-fields (sfields a) (sfields b)))
+      (let [same-rec? (and (get a :type) (= (get a :type) (get b :type))
+                           (= (get a :shape) (get b :shape)))
+            merged (mk-struct (if same-rec?
+                                (merge-fields-same-record (sfields a) (sfields b))
+                                (merge-fields (sfields a) (sfields b))))
             ;; joining two values of the SAME complete shape / record type preserves
             ;; it — the merged struct has the same key set. Different shapes/types
             ;; (or an incomplete side) drop it, as the layout is no longer proven.
@@ -142,10 +157,17 @@
 ;; raw-get-safe (a struct / record): a struct type. The field type of key
 ;; k, if known, else :any.
 (defn struct-safe? [t] (struct-type? t))
-;; a nilable struct yields :any for every field (the whole value might be nil, so a
-;; field read can be nil) — conservative + sound. A guard narrows it to non-nil first
-;; (strip-nilable), after which the real field types flow.
-(defn field-type [t k] (if (and (struct-type? t) (not (get t :nilable))) (get (sfields t) k :any) :any))
+;; A field read off a NILABLE struct may yield nil (the receiver itself might be
+;; nil), so the field's own type is joined with :nil. For a scalar field that widens
+;; to :any — nil is not a safe scalar; for a RECORD field it stays a nilable record,
+;; which is what lets a recursive walker over a record-or-nil child (a tree walk)
+;; keep proving its layout instead of falling off to :any. A guard narrows the
+;; receiver to non-nil first (strip-nilable), after which the real field types flow.
+(defn field-type [t k]
+  (if (struct-type? t)
+    (let [ft (get (sfields t) k :any)]
+      (if (get t :nilable) (join-t :nil ft) ft))
+    :any))
 (defn nilable? [t] (and (map? t) (get t :nilable) true))
 (defn strip-nilable [t] (if (and (map? t) (get t :nilable)) (dissoc t :nilable) t))
 ;; Shape (hidden class). A struct type for a RECORD carries its complete layout

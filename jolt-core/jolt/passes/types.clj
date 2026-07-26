@@ -233,6 +233,16 @@
                      (cond (contains? num-ret-fns nm) :num
                            (contains? vector-ret-fns nm) (mk-vec :any)
                            :else :any))
+      ;; `defn` names its fn, so a self-recursive call resolves through that name as
+      ;; a :local, not a :var — but it is the same fn, so it returns whatever the
+      ;; fixpoint has estimated for the enclosing def (the same rtenv entry the :var
+      ;; path reads, reached through the local binding). Without this every
+      ;; self-recursive defn reads :any at its own recursive sites: a recursive
+      ;; constructor like (defn make-tree [d] ... (->Node (make-tree ..) ..)) fed
+      ;; :any into its own ctor args, so the record's field types never resolved.
+      ;; A `def` + anonymous `fn` was unaffected, which is why this stayed hidden.
+      (and (= op :local) (get env :self-key) (= (get fnode :name) (get env :self-name)))
+      (let [r (get (get env :rtenv) (get env :self-key))] (if r r :any))
       :else :any)))
 
 ;; Predicate folding: a type predicate whose argument's type is
@@ -305,6 +315,19 @@
 ;; type-checks, so name the projections; the call-pattern code below is dense in them.
 (defn- ty [r] (nth r 0))
 (defn- nd [r] (nth r 1))
+
+;; Whether a self-recursive call's arg types are collected this pass. The param
+;; fixpoint runs one PRIMING pass with this false, so a fn's params are first typed
+;; from its EXTERNAL callers alone, then iterates with it true until stable.
+;;
+;; Without the priming pass a recursion that computes its argument from the param
+;; can never be typed: on pass 1 the param is still unknown (:any), so the arg is
+;; :any, and :any is absorbing — the join pins the param at :any forever, even though
+;; every real caller passes a record. That is the recursive-descent shape (a tree
+;; walker recurring on a child field). Priming is only a starting point, never a
+;; result: the loop still requires a pass WITH the back edges to reproduce the same
+;; ptypes before wp-infer! calls it converged, so what ships is a true fixpoint.
+(def ^:dynamic *collect-self-rec?* true)
 
 ;; Arg types for a self-recursive call. A same-position pass-through of the
 ;; enclosing param (arg i is the bare param i) contributes nil — the join identity —
@@ -527,18 +550,21 @@
       ;; a `defn` recurses through its own VAR, so a self-recursion is a var-call
       ;; here (not the :local case below). When the callee is the enclosing def,
       ;; drop same-position pass-through args so threading a param straight through
-      ;; the recursion doesn't poison it to :any.
-      (swap! (get env :calls) conj
-             [(var-key fnode)
-              (if (= (var-key fnode) (get env :self-key))
-                (self-rec-argtys args ares (get env :self-params))
-                (mapv (fn [r] (ty r)) ares))]))
+      ;; the recursion doesn't poison it to :any; the priming pass drops the whole
+      ;; back edge.
+      (let [self? (= (var-key fnode) (get env :self-key))]
+        (when (or *collect-self-rec?* (not self?))
+          (swap! (get env :calls) conj
+                 [(var-key fnode)
+                  (if self?
+                    (self-rec-argtys args ares (get env :self-params))
+                    (mapv (fn [r] (ty r)) ares))]))))
     ;; a named fn calling itself binds its name as a :local, so the recursion is
     ;; invisible to the var-call collection above — yet it constrains the fn's own
     ;; params. Collect it under the fn's var-key so the whole-program fixpoint joins
     ;; the recursive arg types (else a self-recursive param is typed from external
     ;; callers alone and may be specialized to a type the recursion violates).
-    (when (and (= :local (get fnode :op)) (get env :self-key)
+    (when (and *collect-self-rec?* (= :local (get fnode :op)) (get env :self-key)
                (= (get fnode :name) (get env :self-name)))
       (swap! (get env :calls) conj
              [(get env :self-key) (self-rec-argtys args ares (get env :self-params))]))
@@ -558,7 +584,15 @@
           (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
             (when usig (check-user-call k usig ats pos env))))))
        (let [pm (and iscall-var (get (get env :protocol-methods) (var-key fnode)))
-            rtype (when (and pm (pos? n)) (get (ty (nth ares 0)) :type))
+            ;; Only a PROVEN-NON-NIL receiver devirtualizes. devirt resolves the impl
+            ;; by the static tag and a direct-link site caches it, so a nilable receiver
+            ;; would apply the record's impl to nil — where the JVM raises
+            ;; IllegalArgumentException ("No implementation of method ... for class:
+            ;; nil"). A nilable receiver keeps the PIC, which resolves per receiver; a
+            ;; guard (some?/nil?) narrows it back to non-nil and devirt fires again.
+            rtype (when (and pm (pos? n))
+                    (let [rt0 (ty (nth ares 0))]
+                      (when-not (nilable? rt0) (get rt0 :type))))
             ;; Annotate EVERY recognized protocol call with :proto/:method so the back
             ;; end can build a per-site inline cache even at a megamorphic site (where
             ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
@@ -732,7 +766,7 @@
       (let [ares (mapv (fn [a] (infer a tenv env)) (get node :args))]
         ;; a fn-level recur (not inside a loop) rebinds the enclosing fn's params,
         ;; so its args constrain them like a self-call — collect under the fn key.
-        (when (and (not (get env :in-loop?)) (get env :self-key))
+        (when (and *collect-self-rec?* (not (get env :in-loop?)) (get env :self-key))
           (swap! (get env :calls) conj
                  [(get env :self-key) (self-rec-argtys (get node :args) ares (get env :self-params))]))
         [:any (assoc node :args (mapv (fn [r] (nd r)) ares))])
@@ -1221,17 +1255,16 @@
                   m (range (count argts))))))
     {} joins))
 
-;; inner param-type fixpoint, run with the lean field types held FIXED by the caller.
-;; returns [converged? ptypes]. The outer field-type loop in wp-infer! re-runs this
-;; until field types stabilize, so the param fixpoint converges on its own each round
-;; (folding field types into the SAME loop produced a ptypes<->rets 2-cycle).
-(defn- wp-param-fixpoint [unit nodes spec ks]
-  (loop [iter 0 ptypes (wp-empty-ptypes spec ks) rets {}]
+;; iterate ptypes/rets to a fixpoint with back-edge collection on or off. Returns
+;; [converged? ptypes rets] so the caller can chain one phase into the next.
+(defn- wp-iterate [unit nodes spec ks ptypes0 rets0 self-rec?]
+  (loop [iter 0 ptypes ptypes0 rets rets0]
     (set-rtenv! unit (reduce (fn [m k] (let [v (get rets k)] (if (some? v) (assoc m k v) m))) {} ks))
     (reset-escapes! unit)
     (reset! (:wp-field-joins unit) {})
     (reset! (:wp-field-demote unit) #{})
-    (let [pass (wp-pass unit nodes spec ks ptypes)
+    (let [pass (binding [*collect-self-rec?* self-rec?]
+                 (wp-pass unit nodes spec ks ptypes))
           escaped (set (collected-escapes unit))
           new-ptypes (reduce (fn [m k]
                                (if (contains? escaped k)
@@ -1240,8 +1273,32 @@
           new-rets (:rets pass)
           converged? (and (= new-ptypes ptypes) (= new-rets rets))]
       (if (or converged? (>= iter 16))
-        [converged? new-ptypes]
+        [converged? new-ptypes new-rets]
         (recur (inc iter) new-ptypes new-rets)))))
+
+;; inner param-type fixpoint, run with the lean field types held FIXED by the caller.
+;; returns [converged? ptypes]. The outer field-type loop in wp-infer! re-runs this
+;; until field types stabilize, so the param fixpoint converges on its own each round
+;; (folding field types into the SAME loop produced a ptypes<->rets 2-cycle).
+;;
+;; Two phases. PRIMING runs to a fixpoint with self-recursive back edges withheld,
+;; so every fn is typed from its EXTERNAL callers (and their return types, which need
+;; a round of their own to settle) alone. The MAIN phase then iterates the full
+;; constraint set from that estimate. Both phases are needed: withholding for a single
+;; pass isn't enough, because a callee's return type isn't known until the pass after
+;; the one that inferred it.
+;;
+;; Priming makes this an OPTIMISTIC fixpoint, and it is sound for the usual reason:
+;; a result is accepted only when the MAIN phase reproduces it, i.e. the recursive
+;; argument types computed UNDER the assumed param types are within them. External
+;; call sites are collected in both phases, so they anchor the induction over the call
+;; tree and every value actually reaching the param is covered. Without priming, a
+;; recursion whose argument is computed from the param (a tree walker recurring on a
+;; child field) reads :any on pass 1 and, :any being absorbing, is pinned there.
+(defn- wp-param-fixpoint [unit nodes spec ks]
+  (let [primed (wp-iterate unit nodes spec ks (wp-empty-ptypes spec ks) {} false)
+        main (wp-iterate unit nodes spec ks (nth primed 1) (nth primed 2) true)]
+    [(nth main 0) (nth main 1)]))
 
 (defn wp-infer!
   "Run the closed-world param-type fixpoint over the unit's analyzed top-level
@@ -1288,10 +1345,16 @@
                   _ (when sound? (collect-pm-rets! unit nodes))
                   ;; build both seed maps from the same converged ptypes: the
                   ;; structural one (struct/vec, drives reinfer-def's field-read/
-                  ;; devirt) excludes :double and nilable (a nilable param's reads are
-                  ;; generic anyway, and a fn recursing on a nilable field must not be
-                  ;; specialized — its param can't be soundly typed non-nil); the
-                  ;; numeric one keeps only :double.
+                  ;; devirt) excludes :double; the numeric one keeps only :double.
+                  ;; A NILABLE record param is kept, and carries its :nilable flag all
+                  ;; the way through: its layout is proven, so field reads bare-index
+                  ;; via the nil-safe jrec-field-at (no keyword hash, no generic
+                  ;; dispatch) while a nil receiver still falls back to jolt-get. This
+                  ;; is the recursive-descent shape — a walker fed both a proven record
+                  ;; and its own nilable child field joins to record-or-nil, which is
+                  ;; exactly what a tree walk looks like. Nothing downstream may treat
+                  ;; it as non-nil: the direct accessor, some?/nil? folding, and devirt
+                  ;; all gate on (not (nilable? t)).
                   pick (fn [keep?]
                          (reduce (fn [m k]
                                    (let [s (get spec k)
@@ -1301,7 +1364,7 @@
                                                     {} (map vector (:params s) (get seed-ptypes k)))]
                                      (if (seq pm) (assoc m k pm) m)))
                                  {} ks))]
-              (reset! (:wp-seeds unit) (pick (fn [t] (and (not= t :any) (not= t :double) (not (nilable? t))))))
+              (reset! (:wp-seeds unit) (pick (fn [t] (and (not= t :any) (not= t :double)))))
               (reset! (:wp-num-seeds unit) (pick (fn [t] (= t :double))))
               sound?)
             (recur (inc ft-iter) new-ftypes))))

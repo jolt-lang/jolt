@@ -182,6 +182,21 @@ if [ "$nil_fold_got" != "$nil_fold_want" ]; then
   echo "  FAIL: nil?/some? fold inverted — got \`$nil_fold_got\`, want \`$nil_fold_want\`"; exit 1
 fi
 
+# Only a proven-NON-NIL receiver may devirtualize. A devirt site resolves the impl
+# by the static type tag and caches it, so devirtualizing a record-or-nil receiver
+# served the cached impl to a later nil receiver: this printed 3 twice instead of
+# raising, where Clojure raises IllegalArgumentException the second time.
+nil_devirt_app="$root/test/chez/nil-devirt-app"
+nil_devirt_out="$(dirname "$out")/nil-devirt-bin"
+if ! JOLT_PWD="$nil_devirt_app" bin/jolt build -m app.core -o "$nil_devirt_out" --opt --direct-link >/dev/null 2>&1; then
+  echo "  FAIL: nil-devirt --opt --direct-link build exited non-zero"; exit 1
+fi
+nil_devirt_got="$(cd "$nil_devirt_app" && "$nil_devirt_out" 2>&1)"
+nil_devirt_want="$(printf '3\n:no-impl')"
+if [ "$nil_devirt_got" != "$nil_devirt_want" ]; then
+  echo "  FAIL: devirt on a nilable receiver — got \`$nil_devirt_got\`, want \`$nil_devirt_want\`"; exit 1
+fi
+
 # A loop var that shadows a record-typed outer local must shadow in the inference
 # tenv. The bug kept the outer type, so under --opt (:x p) devirtualized to a
 # record slot read that crashed on the vector [3 4]; the fix keeps the loop p :any

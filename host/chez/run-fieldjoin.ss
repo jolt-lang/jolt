@@ -88,6 +88,51 @@
 (gate-check "(b) unguarded nilable-field read stays nil-safe (no direct accessor)" (gate-sub? ou-e "jrec2-f1") #f)
 (gate-check "(b) unguarded nilable-field read uses nil-safe jrec-field-at" (gate-sub? ou-e "jrec-field-at") #t)
 
+;; === (e) a NILABLE record PARAM still bare-indexes its field reads =============
+;; The binary-trees shape: check-tree's `node` is fed both a proven Node (from a
+;; ctor-returning fn) and a nilable Node (its own recursion on a child field), so
+;; the join is nilable-Node. The seed must keep it — a nilable record param is a
+;; layout-proven receiver, so its reads take jrec-field-at (nil-safe, but no
+;; keyword hash + no generic dispatch) instead of jolt-get.
+(evals "(defrecord Nd [l r])")
+(set-record-shapes! U (chez-record-shapes-map))
+(define nddef (anode "(defrecord Nd [l r])"))
+(define mktree (anode "(def mktree (fn [d] (if (zero? d) (->Nd nil nil) (->Nd (mktree (dec d)) (mktree (dec d))))))"))
+(define chk    (anode "(def chk (fn [n] (let [l (:l n)] (if (nil? l) 1 (+ (chk l) (chk (:r n)))))))"))
+(define chkuse (anode "(def chkuse (fn [d] (chk (mktree d))))"))
+(wp-infer! U (jolt-vector nddef mktree chk chkuse))
+(define chk-e (emit (run-passes chk (make-analyze-ctx "user") U)))
+(gate-check "(e) nilable record param bare-indexes (jrec-field-at)" (gate-sub? chk-e "jrec-field-at") #t)
+(gate-check "(e) nilable record param drops generic jolt-get" (gate-sub? chk-e "jolt-get") #f)
+;; ...but stays NIL-SAFE: a nilable receiver must never take the direct accessor,
+;; which would read a slot off nil.
+(gate-check "(e) nilable record param keeps the nil-safe path (no jrec2-f0)" (gate-sub? chk-e "jrec2-f0") #f)
+
+;; === (f) a NILABLE record receiver must NOT devirtualize =======================
+;; devirt resolves the impl by the static tag and a direct-link site CACHES it, so a
+;; nilable receiver would apply the record's impl to nil — the JVM raises
+;; IllegalArgumentException ("No implementation of method ... for class: nil").
+;; Only a proven-non-nil receiver may devirt; a nilable one keeps the PIC, which
+;; resolves per receiver.
+(evals "(defprotocol Ar (asz [s]))")
+(evals "(defrecord Cell [k] Ar (asz [s] (:k s)))")
+(evals "(defrecord Slot [cell])")
+(set-record-shapes! U (chez-record-shapes-map))
+(set-protocol-methods! U (chez-protocol-methods-map))
+(define celldef (anode "(defrecord Cell [k] Ar (asz [s] (:k s)))"))
+(define slotdef (anode "(defrecord Slot [cell])"))
+(define mkslot  (anode "(def mkslot (fn [b] (if b (->Slot (->Cell 1)) (->Slot nil))))"))
+;; unguarded: c is nilable-Cell at the call -> PIC, not devirt
+(define usz  (anode "(def usz (fn [s] (asz (:cell s))))"))
+;; guarded: (some? c) narrows to non-nil Cell -> devirt is sound and must still fire
+(define gsz  (anode "(def gsz (fn [s] (let [c (:cell s)] (if (some? c) (asz c) 0))))"))
+(define szuse (anode "(def szuse (fn [b] (+ (usz (mkslot b)) (gsz (mkslot b)))))"))
+(wp-infer! U (jolt-vector celldef slotdef mkslot usz gsz szuse))
+(define usz-e (emit (run-passes usz (make-analyze-ctx "user") U)))
+(gate-check "(f) nilable receiver does not devirt" (gate-sub? usz-e "devirt-resolve") #f)
+(define gsz-e (emit (run-passes gsz (make-analyze-ctx "user") U)))
+(gate-check "(f) narrowed non-nil receiver still devirts" (gate-sub? gsz-e "devirt-resolve") #t)
+
 ;; === (c) conflicting join -> reads stay generic ================================
 ;; Box's :v: one ctor site passes a flonum, another a string -> join :any -> no unbox.
 (evals "(defrecord Box [v])")
