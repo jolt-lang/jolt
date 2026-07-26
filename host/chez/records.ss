@@ -484,6 +484,14 @@
                           ;; structural jrec=? (which sees the meta field) is wrong here.
                           ((and (jrec? a) (jrec-cl a "equals")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m a b)) #t #f)))
                           ((and (jrec? b) (jrec-cl b "equals")) => (lambda (m) (if (jolt-truthy? (jolt-invoke m b a)) #t #f)))
+                          ;; A deftype declaring clojure.lang.Sequential compares
+                          ;; ELEMENT-WISE against any other sequential, in either
+                          ;; direction. The JVM reaches the same answer through
+                          ;; APersistentVector/ASeq .equiv, which test `instanceof
+                          ;; Sequential` rather than a concrete collection type — so
+                          ;; (= (eduction (map inc) [1 2]) [2 3]) is true there.
+                          ((or (jrec-sequential-decl? a) (jrec-sequential-decl? b))
+                           (and (seq-eq-candidate? a) (seq-eq-candidate? b) (seq=? a b)))
                           ((and (jrec? a) (jrec? b)) (jrec=? a b))
                           (else #f))))
 ;; a deftype's declared hashCode governs its map/set hashing (paired with the
@@ -529,6 +537,24 @@
                 (cond ((null? ps) #f)
                       ((member (jch-last-segment (car ps)) jrec-coll-iface-names) #t)
                       (else (loop (cdr ps)))))))))
+;; Does this deftype DECLARE clojure.lang.Sequential? On the JVM that marker is
+;; what makes a value participate in sequential value equality — the collection
+;; side's .equiv tests `instanceof Sequential` and then compares element-wise —
+;; so it governs (= some-vector an-eduction) in both directions. Records are
+;; excluded: a defrecord is a map, not a sequential.
+(define (jrec-sequential-decl? x)
+  (and (jrec? x) (not (jrec-record? x))
+       (let ((ti (hashtable-ref type-registry (jrec-tag x) #f)))
+         (and ti
+              (let loop ((ps (vector->list (hashtable-keys ti))))
+                (cond ((null? ps) #f)
+                      ((string=? (jch-last-segment (car ps)) "Sequential") #t)
+                      (else (loop (cdr ps)))))))))
+;; Both sides must be seq-comparable for the element-wise path; anything else
+;; (a number, a map, a bare deftype) is simply not equal to a sequential.
+(define (seq-eq-candidate? x)
+  (or (jolt-sequential? x) (jolt-lazyseq? x) (jrec-sequential-decl? x)))
+
 (define (jrec-abstract-method-error x method)
   (jolt-throw (jolt-host-throwable "java.lang.AbstractMethodError"
     (string-append "Method " (jrec-tag x) "/" method "() is abstract"))))

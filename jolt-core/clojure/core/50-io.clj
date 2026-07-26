@@ -164,6 +164,14 @@
 
 (defmethod print-dup :default [o w] (print-method o w))
 
+;; An Eduction prints as the seq it yields — (2 3 4), not the deftype's fields.
+;; Registered against the type rather than derived from its interfaces because
+;; that is what the JVM does: a bare Sequential/Seqable deftype prints as
+;; #object[…] there, and only Eduction renders sequentially.
+;; (dispatch value is the __type-tag STRING for a deftype, not a symbol)
+(defmethod print-method "clojure.core.Eduction" [e w]
+  (print-method (apply list (seq e)) w))
+
 ;; Cold tagged-type renderings, migrated from the host renderer (the hot
 ;; types — numbers, strings, symbols, collections — stay native). Each is the
 ;; exact output the host branch produced.

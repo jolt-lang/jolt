@@ -4034,7 +4034,12 @@
   {:suite "reader-model / read-eval" :label "#= is inert data" :expected "false" :actual "(= 3 (read-string \"#=(+ 1 2)\"))" :portability :common}
   {:suite "reader-model / nested fn literals" :label "nested #() reads" :expected "true" :actual "(string? (str (read-string \"#(#(inc %))\")))" :portability :common}
   {:suite "permissive / ex-info nil map" :label "ex-info accepts nil data" :expected "\"m\"" :actual "(ex-message (ex-info \"m\" nil))" :portability :common}
-  {:suite "permissive / eduction count" :label "count works on eduction" :expected "3" :actual "(count (eduction (map inc) [1 2 3]))" :portability :common}
+  {:suite "transducers / into & eduction (overlay)" :label "count on an eduction throws (JVM parity)" :expected ":uoe" :actual "(try (count (eduction (map inc) [1 2 3])) :no-throw (catch UnsupportedOperationException _ :uoe))" :portability :common}
+  {:suite "transducers / into & eduction (overlay)" :label "count of an eduction's seq works" :expected "3" :actual "(count (seq (eduction (map inc) [1 2 3])))" :portability :common}
+  {:suite "transducers / into & eduction (overlay)" :label "eduction is not a seq and not a coll" :expected "[false true false]" :actual "(let [e (eduction (map inc) [1 2 3])] [(seq? e) (sequential? e) (coll? e)])" :portability :common}
+  {:suite "transducers / into & eduction (overlay)" :label "eduction prints as its seq" :expected "\"(2 3 4)\"" :actual "(pr-str (eduction (map inc) [1 2 3]))" :portability :common}
+  {:suite "transducers / into & eduction (overlay)" :label "eduction is = to a vector of its elements" :expected "true" :actual "(= (eduction (map inc) [1 2]) [2 3])" :portability :common}
+  {:suite "transducers / into & eduction (overlay)" :label "eduction is reducible and reusable" :expected "[9 9]" :actual "(let [e (eduction (map inc) [1 2 3])] [(reduce + 0 e) (reduce + 0 e)])" :portability :common}
   {:suite "permissive / keys on pair vector" :label "keys works on vector of pairs" :expected "[:a :b]" :actual "(vec (keys [[:a 1] [:b 2]]))" :portability :common}
   {:suite "permissive / empty MapEntry" :label "empty of a map entry" :expected "[]" :actual "(empty (first {:a 1}))" :portability :common}
   {:suite "exceptions / Optional.get empty" :label "Optional.get on an empty Optional throws NoSuchElementException" :expected "\"java.util.NoSuchElementException\"" :actual "(try (.get (java.util.Optional/empty)) (catch Throwable e (.getName (class e))))" :portability :jvm}
