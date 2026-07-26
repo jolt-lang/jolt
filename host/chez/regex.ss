@@ -186,8 +186,10 @@
 ;; nil; .groupCount is the pattern's capturing-group count.
 (define (jolt-matcher-matches m)
   (let ((mm (irregex-match (matcher-t-irx m) (matcher-t-str m))))
-    (matcher-t-last-set! m mm)
-    (if mm #t #f)))
+    ;; like .lookingAt, anchored at the region start rather than the find cursor,
+    ;; and a success moves the cursor past the match so a following .find resumes
+    ;; where the JVM's would instead of re-finding what was just matched.
+    (if mm (matcher-note-match! m mm) (begin (matcher-t-last-set! m #f) #f))))
 (define (jolt-matcher-group m . n)
   (let ((last (matcher-t-last m)))
     (if last
@@ -195,19 +197,26 @@
           (if s s jolt-nil))
         (jolt-throw (jolt-ex-info "No match available" (jolt-hash-map))))))
 (define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))
-;; .lookingAt: anchored at the START of the region, but the match need not reach
-;; the end — the middle ground between .matches (whole region) and .find (anywhere).
-;; irregex has no prefix-match entry point, so search from the origin and keep the
-;; result only when it begins there: the engine is leftmost-first, so if any match
-;; starts at the origin the search returns that one. Remembers it for .group, as
-;; the JVM does. (instaparse's regexp terminal is .lookingAt + .group.)
+;; .lookingAt: anchored at the region START, matching a PREFIX — the middle ground
+;; between .matches (the whole region) and .find (anywhere). It does NOT resume
+;; from the find cursor: on the JVM both .matches and .lookingAt anchor at the
+;; region's own start, a field only reset/region move, so a .lookingAt after a
+;; .find re-anchors at the beginning. jolt models no region, so that start is 0.
+;;
+;; irregex has no prefix-match entry point, so search from 0 and keep the result
+;; only when it begins there — the engine is leftmost-first, so if any match starts
+;; at 0 the search finds that one. On success the find cursor moves to the match
+;; end, so a following .find continues after it the way the JVM's does.
+;; (instaparse's regexp terminal is .lookingAt + .group.)
+(define (matcher-note-match! m mm)
+  (matcher-t-last-set! m mm)
+  (let ((ms (irregex-match-start-index mm 0)) (e (irregex-match-end-index mm 0)))
+    (matcher-t-pos-set! m (if (> e ms) e (+ e 1))))
+  #t)
 (define (jolt-matcher-looking-at m)
-  (let* ((str (matcher-t-str m))
-         (start (matcher-t-pos m))
-         (mm (and (<= start (string-length str))
-                  (irregex-search (matcher-t-irx m) str start))))
-    (if (and mm (= (irregex-match-start-index mm 0) start))
-        (begin (matcher-t-last-set! m mm) #t)
+  (let ((mm (irregex-search (matcher-t-irx m) (matcher-t-str m) 0)))
+    (if (and mm (= (irregex-match-start-index mm 0) 0))
+        (matcher-note-match! m mm)
         (begin (matcher-t-last-set! m #f) #f))))
 
 ;; All non-overlapping matches, left to right. Advance past each match end (or by

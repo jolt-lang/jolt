@@ -1,4 +1,7 @@
 [
+  {:suite "host-interop / Matcher anchoring" :label "lookingAt re-anchors at the region start after a find" :expected "[true true \"abb\"]" :actual "(let [m (re-matcher #\"ab+\" \"abbXabb\")] [(.find m) (.lookingAt m) (.group m)])" :portability :jvm}
+  {:suite "host-interop / Matcher anchoring" :label "lookingAt is a prefix match, find is not" :expected "[false true \"abb\"]" :actual "(let [m (re-matcher #\"ab+\" \"Xabb\")] [(.lookingAt m) (.find m) (.group m)])" :portability :jvm}
+  {:suite "host-interop / Matcher anchoring" :label "a matched region is consumed, so a following find sees nothing" :expected "[true \"abb\" false]" :actual "(let [m (re-matcher #\"ab+\" \"abb\")] [(.matches m) (.group m) (.find m)])" :portability :jvm}
   {:suite "host-interop / PersistentList-create" :label "a created list is list?" :expected "true" :actual "(list? (clojure.lang.PersistentList/create [1 2 3]))" :portability :jvm}
   {:suite "host-interop / PersistentList-create" :label "an empty created list is list?" :expected "true" :actual "(list? (clojure.lang.PersistentList/create []))" :portability :jvm}
   {:suite "host-interop / PersistentList-create" :label "created list agrees with a literal on list?/seq?/class" :expected "[true true true]" :actual "(let [c (clojure.lang.PersistentList/create [1 2 3])] [(= (list? c) (list? (quote (1 2 3)))) (seq? c) (= c (quote (1 2 3)))])" :portability :jvm}
