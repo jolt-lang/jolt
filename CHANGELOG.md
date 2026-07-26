@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-26
+
+Ten host-interop fixes, found by running a real library's test suite end to
+end. The Cognitect test-runner works against jolt now; before this it reported
+`Ran 0 tests` on any project.
+
+### Fixed
+
+- **A list built by `clojure.lang.PersistentList/create` answers `list?`.** It
+  reported class `PersistentList` and satisfied `instance?
+  clojure.lang.IPersistentList` but `list?` was false, because jolt marks the
+  head cell of a real list and that constructor built unmarked cells.
+  `clojure.tools.reader` reads every list through it and
+  `clojure.tools.namespace`'s `ns-decl?` asks `list?`, so namespace discovery
+  found nothing and the Cognitect test-runner ran no tests at all.
+- **`clojure.test` deselects a test by its `:test` metadata.** `clojure.test`
+  finds tests by scanning vars for that key, so tooling deselects one by
+  removing it — the test-runner's `-v`/`-i`/`-e` do exactly that and restore it
+  afterwards. `run-tests` ran straight from the registry `deftest` populates and
+  never re-read the metadata, so all three options silently selected everything.
+- **`.lookingAt` and `.matches` anchor at the region start.** Both anchor there
+  on the JVM, not at the cursor `.find` advances, so a `.lookingAt` after a
+  `.find` re-anchors at the beginning instead of resuming. A successful match
+  now also moves the cursor past itself, so a following `.find` continues after
+  it rather than re-finding what was just matched.
+- **`unchecked-add-int` and its family wrap at 32 bits.** They were aliased to
+  the long ops and wrapped at 64: `(unchecked-multiply-int 100000 100000)` gave
+  `10000000000` instead of `1410065408`. Any 32-bit hash mixing was silently
+  wrong.
+- **`(str x)` uses a deftype's declared `toString`.** It is `x.toString()` on the
+  JVM; jolt printed the field map instead. `pr-str` is unchanged, which is the
+  same split the JVM makes.
+- **The regex functions take a `CharSequence`, not only a `String`.** A library
+  matching over a window of a larger string passes its own implementation;
+  jolt now realizes one through the type's `toString`.
+- **`slurp` of a missing path throws `java.io.FileNotFoundException`.** It threw
+  a raw host condition, so a caller catching that class never saw it — a common
+  way to test whether an argument is a path or content.
+
+### Added
+
+- **`clojure.core.protocols`**, with the `CollReduce`, `InternalReduce`,
+  `IKVReduce`, `Datafiable` and `Navigable` protocols, for libraries that extend
+  them to their own types.
+- **`clojure.lang.LispReader$StringReader`**, which libraries instantiate to read
+  a string literal with Clojure's own escape rules; the literal is parsed by the
+  same code jolt's reader uses, so the escapes agree.
+- **`java.util.regex.Matcher.lookingAt`** and **`Pattern.flags`**.
+
 ## [0.5.3] - 2026-07-26
 
 Stack traces from `jolt run` name their frames the way an AOT build's do.
@@ -1673,7 +1722,8 @@ Clojure-compatible standard library.
 - **Distribution**: a self-contained `joltc` binary, a Homebrew tap, and an
   install script.
 
-[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/jolt-lang/jolt/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jolt-lang/jolt/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jolt-lang/jolt/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jolt-lang/jolt/compare/v0.5.0...v0.5.1
