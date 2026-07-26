@@ -151,6 +151,16 @@
 (defn set-trace-frames! [on] (reset! (:trace-frames? (cur)) (boolean on)))
 (defn- trace-frames? [] @(:trace-frames? (cur)))
 
+;; Source-map registration for a fn def: one hashtable insert at definition time,
+;; no per-call cost, so a backtrace can name a frame ns/name (file:line) instead of
+;; falling back to its bare Chez procedure name. On for runtime eval
+;; (compile-eval.ss) — a `jolt run` trace reads the same as an AOT build's. OFF for
+;; the seed mint (emit-image.ss): the record carries the def's absolute path, and
+;; baking this machine's paths into prelude.ss would break the byte-fixpoint
+;; everywhere else.
+(defn set-source-reg! [on] (reset! (:source-reg? (cur)) (boolean on)))
+(defn- source-reg? [] @(:source-reg? (cur)))
+
 ;; A direct-link Scheme binding name for a var. The fqn maps to a unique identifier
 ;; jv$<ns>$<name>; chars that break a Scheme identifier or the `$` separator are
 ;; escaped so distinct vars never collide.
@@ -1069,15 +1079,16 @@
        (returns-scheme-bool? (:body node) bools'))
      :else false)))
 
-;; In trace mode, a fn def also registers its source so the tail-frame history maps
-;; the recorded frame-name to "ns/name (file:line)" instead of a bare name. Keyed by
-;; the SAME munged name the entry push records (emit-fn's letrec self-binding = the
-;; fn's own name). Returns "" when off / not a positioned fn def, so trace-off output
-;; (seed mint, `jolt build`) is byte-identical. Direct-link builds already register
-;; via emit-def-cached; this covers the open-world eval path.
+;; A fn def registers its source so a backtrace maps the frame-name to
+;; "ns/name (file:line)" instead of a bare name — for the tail-frame history in
+;; trace mode, and for the live continuation on the ordinary eval path. Keyed by
+;; the SAME munged name the entry push records (emit-fn's letrec self-binding =
+;; the fn's own name). Returns "" when off / not a positioned fn def, so the seed
+;; mint's output stays byte-identical. Direct-link builds already register via
+;; emit-def-cached; this covers the open-world eval path.
 (defn- trace-source-reg [node]
   (let [init (:init node) pos (:pos node)]
-    (if (and (trace-frames?) (= :fn (:op init)) (:name init) pos)
+    (if (and (or (trace-frames?) (source-reg?)) (= :fn (:op init)) (:name init) pos)
       (str " (jolt-register-source! " (chez-str-lit (munge-name (:name init))) " "
            (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
            (if (:file pos) (chez-str-lit (:file pos)) "jolt-nil") " "
@@ -1241,7 +1252,12 @@
                    :else
                    (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                         (emit-with-cells #(emit (:init node))) ")"))]
-           (if (= reg "") d (str "(begin " d reg ")")))
+           ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
+           ;; registration must not be the value of the form — bind the def's
+           ;; result, register, and hand the var back.
+           (if (= reg "") d
+               (let [v (fresh-label "_dv$")]
+                 (str "(let ((" v " " d "))" reg " " v ")"))))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
 
 ;; ^:dynamic / ^:redef on a def opts it out of direct-linking: it stays redefinable,

@@ -49,6 +49,26 @@ check_trace() {
   fi
 }
 
+# A frame whose fn was loaded from a FILE must resolve to ns/name (file:line), not
+# a bare name — the runtime eval path registers each def's source, so a trace off
+# the live continuation reads the same as one from an AOT build. Every $2 (an ERE)
+# must match. Tracing stays OFF here: this is the default `jolt run` experience.
+check_trace_src() {
+  err="$($jolt -e "$1" 2>&1 >/dev/null)"
+  ok=1
+  printf '%s' "$err" | grep -q '  trace:' || ok=0
+  shift
+  for want in "$@"; do
+    printf '%s' "$err" | grep -Eq "$want" || ok=0
+  done
+  if [ "$ok" = 1 ]; then
+    pass=$((pass + 1))
+  else
+    echo "  FAIL (trace-src): want [$*] in trace, got \`$err\`"
+    fails=$((fails + 1))
+  fi
+}
+
 # JOLT_TRACE opts into the tail-frame history (the ring of rings): every $2 (an
 # ERE) must match the "  trace:" block. Used to assert TCO-elided frames are
 # recovered and non-tail caller context survives a tail loop.
@@ -149,6 +169,12 @@ check_loc '(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-di
 trace_prog='(defn deepest [x] (+ x 1)) (defn middle [x] (inc (deepest x))) (defn outer [x] (inc (middle x))) (outer :nan)'
 check_trace "$trace_prog" 'middle'
 check_trace "$trace_prog" 'outer'
+
+# The same spine, but loaded from a file: each frame must carry its namespace and
+# the def's file:line, with tracing off. A `jolt run` trace used to print bare
+# frame names because nothing registered a source map outside AOT/trace builds.
+trace_src_prog='(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/tracesrc.clj") "(ns tracesrc)\n(declare mx)\n(defn deepest [x] (+ x mx))\n(defn middle [x] (inc (deepest x)))\n(defn outer [x] (inc (middle x)))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote tracesrc)) (tracesrc/outer 1))'
+check_trace_src "$trace_src_prog" 'tracesrc/middle \(.*tracesrc\.clj:4\)' 'tracesrc/outer \(.*tracesrc\.clj:5\)'
 
 # JOLT_TRACE (tail-frame history / ring of rings). An all-tail chain is entirely
 # TCO-erased from the continuation, but the history recovers every frame — incl.

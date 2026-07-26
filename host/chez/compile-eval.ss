@@ -130,6 +130,14 @@
 ;; older seed during the first re-mint pass.
 (let ((scv (var-deref "jolt.backend-scheme" "set-var-cache!")))
   (when (procedure? scv) (scv #t)))
+;; Register each fn def's source, so an uncaught error's backtrace names frames
+;; "ns/name (file:line)" the way an AOT build's does instead of falling back to
+;; bare Chez procedure names. One hashtable insert per def at definition time, no
+;; per-call cost — unlike the tail-frame history (JOLT_TRACE), which pays a push
+;; per call and stays opt-in. emit-image.ss turns this back off for the seed mint,
+;; whose emitted prelude must not carry this machine's absolute paths.
+(let ((ssr (var-deref "jolt.backend-scheme" "set-source-reg!")))
+  (when (procedure? ssr) (ssr #t)))
 ;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
 ;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
 ;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so

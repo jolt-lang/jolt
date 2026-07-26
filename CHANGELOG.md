@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-26
+
+Stack traces from `jolt run` name their frames the way an AOT build's do.
+
+### Fixed
+
+- **A trace off the runtime path shows `ns/name (file:line)`, not a bare frame
+  name.** The renderer could already print the mapped form; nothing populated the
+  source map outside an AOT or `JOLT_TRACE` build, so an uncaught error under
+  `jolt run` listed bare Chez procedure names with no namespace and no location.
+  A fn def now registers its source on the runtime eval path too — one hashtable
+  insert per def at definition time, no per-call cost. The tail-frame history
+  that recovers TCO-erased frames still costs a push per call and stays opt-in
+  behind `JOLT_TRACE`. A frame whose short name is shared across namespaces
+  (every project's `-main` and jolt's own, say) keeps printing bare rather than
+  risk attributing it to the wrong source.
+- **A `def` evaluates to its var when a source registration follows it.** The
+  registration was spliced as the last form of a `begin`, so the `def` took its
+  `nil` as the form's value and `(pr-str (defn f [] 1))` gave `nil` instead of
+  `#'user/f`. Latent since the tail-frame history landed — it only reached code
+  compiled with `JOLT_TRACE` set, which the corpus gate never exercised.
+
 ## [0.5.2] - 2026-07-26
 
 Compiler-flag and `^long` arithmetic fixes that let clojure/test.check load,
@@ -1651,7 +1673,8 @@ Clojure-compatible standard library.
 - **Distribution**: a self-contained `joltc` binary, a Homebrew tap, and an
   install script.
 
-[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/jolt-lang/jolt/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jolt-lang/jolt/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jolt-lang/jolt/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jolt-lang/jolt/compare/v0.4.15...v0.5.0

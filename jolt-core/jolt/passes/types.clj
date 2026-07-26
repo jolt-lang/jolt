@@ -94,6 +94,7 @@
    :direct-link? (atom false)
    :var-cache? (atom false)
    :trace-frames? (atom false)
+   :source-reg? (atom false)
    :direct-link-defined (atom #{})
    :direct-link-fns (atom #{})
    ;; the back-end gensym label counter and the per-def cache-cell collector — emit

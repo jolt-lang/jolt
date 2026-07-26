@@ -56,6 +56,13 @@
 ;; byte-fixpoint, and a built app should carry no per-call trace overhead.
 (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
   (when (procedure? stf) (stf #f)))
+;; Source-map registration off here too (compile-eval.ss turned it on for runtime
+;; eval). A registration carries the def's absolute path, so minting core with it
+;; on would bake THIS machine's paths into prelude.ss and the seed would stop
+;; being a byte-fixpoint anywhere else. `jolt build` registers app namespaces
+;; through emit-def-cached, which is unaffected by this flag.
+(let ((ssr (var-deref "jolt.backend-scheme" "set-source-reg!")))
+  (when (procedure? ssr) (ssr #f)))
 ;; The per-compilation inference/pass context run-passes threads (jolt.passes.types/
 ;; new-unit) instead of module-global state. Created LAZILY: the first re-mint off an
 ;; older seed has no new-unit var yet, but the mint never optimizes so it never
