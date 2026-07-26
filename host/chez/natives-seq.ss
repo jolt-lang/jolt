@@ -239,11 +239,20 @@
 
 ;; clojure.core/unchecked-* — host-defined wrapping (Java long) arithmetic from
 ;; seq.ss. def-var!'d here because def-var! isn't bound when seq.ss loads.
-(let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
-  (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" jolt-unchecked-add)
-  (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" jolt-unchecked-sub)
-  (d! "unchecked-multiply" jolt-unchecked-mul)   (d! "unchecked-multiply-int" jolt-unchecked-mul)
-  (d! "unchecked-negate" jolt-uncneg)            (d! "unchecked-negate-int" jolt-uncneg)
-  (d! "unchecked-inc" jolt-uncinc)               (d! "unchecked-inc-int" jolt-uncinc)
-  (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" jolt-uncdec)
-  (d! "unchecked-divide-int" jolt-unchecked-div) (d! "unchecked-remainder-int" jolt-unchecked-rem))
+;; The -int variants are INT-width: they wrap at 32 bits, not 64. Aliasing them to
+;; the long ops let a value climb past 2^31 and then blow up at the next (int x) —
+;; instaparse's hash mixing (unchecked-multiply-int in a loop) is exactly that
+;; shape. jolt-unchecked-int does the wrap-and-sign-fold, so each -int op is its
+;; long counterpart folded back to 32 bits, which is what the JVM's int overflow is.
+(let ((d! (lambda (n v) (def-var! "clojure.core" n v)))
+      (as-int (lambda (f) (lambda args (jolt-unchecked-int (apply f args))))))
+  (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" (as-int jolt-unchecked-add))
+  (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" (as-int jolt-unchecked-sub))
+  (d! "unchecked-multiply" jolt-unchecked-mul)   (d! "unchecked-multiply-int" (as-int jolt-unchecked-mul))
+  (d! "unchecked-negate" jolt-uncneg)            (d! "unchecked-negate-int" (as-int jolt-uncneg))
+  (d! "unchecked-inc" jolt-uncinc)               (d! "unchecked-inc-int" (as-int jolt-uncinc))
+  (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" (as-int jolt-uncdec))
+  ;; quotient/remainder of two ints is already in range; the fold is a no-op except
+  ;; at Integer/MIN_VALUE / -1, where the JVM also wraps back to MIN_VALUE.
+  (d! "unchecked-divide-int" (as-int jolt-unchecked-div))
+  (d! "unchecked-remainder-int" (as-int jolt-unchecked-rem)))

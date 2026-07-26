@@ -53,10 +53,19 @@
 ;; "Infinity"…), but a COLLECTION renders as its readable form — nested strings
 ;; are QUOTED ((str ["x"]) => "[\"x\"]"), matching the JVM (a collection's
 ;; toString is readable). jolt-pr-readable resolves at call time.
+;; A host type whose own toString must win over the rendering below — set by
+;; records.ss for a deftype/record that declares one. Returns the string, or #f to
+;; fall through. Kept as one hook rather than a registry arm because the arms are
+;; only reached for values no branch here claims, and a record is claimed.
+(define str-tostring-hook #f)
+(define (set-str-tostring-hook! f) (set! str-tostring-hook f))
 (define (jolt-str-one v)
-  (if (or (pvec? v) (pmap? v) (pset? v) (cseq? v) (empty-list-t? v) (jolt-lazyseq? v))
-      (jolt-pr-readable v)
-      (jolt-str-render-one v)))
+  (let ((own (and str-tostring-hook (str-tostring-hook v))))
+    (cond
+      ((string? own) own)
+      ((or (pvec? v) (pmap? v) (pset? v) (cseq? v) (empty-list-t? v) (jolt-lazyseq? v))
+       (jolt-pr-readable v))
+      (else (jolt-str-render-one v)))))
 (define (jolt-str . xs)
   (cond
     ((null? xs) "")

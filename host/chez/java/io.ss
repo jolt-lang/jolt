@@ -366,9 +366,18 @@
       (if (or (jolt-nil? b) (and (number? b) (< b 0)))
           (u8-list->bytevector (reverse acc))
           (loop (cons (bitwise-and (jnum->exact b) #xff) acc))))))
+;; Reading a path that isn't there is java.io.FileNotFoundException on the JVM, and
+;; libraries branch on it: instaparse decides whether its argument is a grammar or
+;; a file by slurping and catching FNF. A raw Chez open-input-file condition is not
+;; catchable as that class, so the caller's fallback never runs.
+(define (slurp-path path)
+  (unless (file-exists? path)
+    (throw-jvm (quote java.io.FileNotFoundException)
+               (string-append path " (No such file or directory)")))
+  (read-file-string path))
 (define (jolt-slurp src . opts)
   (cond
-    ((jfile? src) (read-file-string (jfile-fs src)))
+    ((jfile? src) (slurp-path (jfile-fs src)))
     ((embedded-res? src)
      (let ((c (embedded-res-content src)))
        (if (bytevector? c) (utf8->string c) c)))
@@ -381,7 +390,7 @@
     ;; a byte input-stream shim (e.g. clj-http-lite's :as :stream body): drain it.
     ((and (htable? src) (jolt-truthy? (jolt-ref-get src (keyword "jolt" "input-stream"))))
      (decode-bytevector (drain-byte-stream src) (slurp-encoding opts)))
-    ((string? src) (read-file-string (project-relative src)))
+    ((string? src) (slurp-path (project-relative src)))
     (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-final-str src) "> as a Reader")))))
 
 (define (spit-append? opts)

@@ -113,9 +113,45 @@
 (define-record-type matcher-t
   (fields irx str (mutable pos) (mutable last))
   (nongenerative jolt-matcher-v1))
+;; The regex entry points take a CharSequence on the JVM, not just a String, and a
+;; library that wants to match over a WINDOW of a larger string passes its own
+;; implementation rather than copying — instaparse's Segment is a deftype with
+;; length/charAt/subSequence/toString. irregex works on Scheme strings, so realize
+;; one through the type's own toString. A value that is not a CharSequence is
+;; handed through untouched, so it still fails where it would have.
+(define (rx-charseq->string s)
+  (if (string? s)
+      s
+      (let ((tostr (and (jrec? s) (find-method-any-protocol (jrec-tag s) "toString"))))
+        (if tostr (record-method-dispatch s "toString" jolt-nil) s))))
 (define (jolt-re-matcher re s)
-  (make-matcher-t (regex-t-irx (jolt-re-pattern re)) s 0 #f))
+  (make-matcher-t (regex-t-irx (jolt-re-pattern re)) (rx-charseq->string s) 0 #f))
 (define (jolt-matcher? x) (matcher-t? x))
+
+;; java.util.regex.Pattern.flags(). jolt compiles a pattern from its source alone,
+;; so the flags it carries are the ones written inline at the front — (?i), (?is)
+;; and friends. Values are the Pattern constants, so a caller comparing against
+;; Pattern/CASE_INSENSITIVE sees what it expects. A flag set later in the pattern
+;; is scoped to that group on the JVM too, so it correctly doesn't count here.
+(define (rx-inline-flags src)
+  (let ((n (string-length src)))
+    (if (or (fx<? n 3)
+            (not (char=? (string-ref src 0) #\())
+            (not (char=? (string-ref src 1) #\?)))
+        0
+        (let loop ((i 2) (acc 0))
+          (if (fx>=? i n)
+              0                                  ; unterminated: not a flag group
+              (let ((c (string-ref src i)))
+                (case c
+                  ((#\)) acc)
+                  ((#\i) (loop (fx+ i 1) (fxlogor acc 2)))    ; CASE_INSENSITIVE
+                  ((#\x) (loop (fx+ i 1) (fxlogor acc 4)))    ; COMMENTS
+                  ((#\m) (loop (fx+ i 1) (fxlogor acc 8)))    ; MULTILINE
+                  ((#\s) (loop (fx+ i 1) (fxlogor acc 32)))   ; DOTALL
+                  ((#\u) (loop (fx+ i 1) (fxlogor acc 64)))   ; UNICODE_CASE
+                  ((#\d) (loop (fx+ i 1) (fxlogor acc 1)))    ; UNIX_LINES
+                  (else 0))))))))                ; (?:, (?=, a flag we don't model
 
 ;; re-find: stateless over (re s), or stateful over a matcher (advance + remember).
 (define jolt-re-find
@@ -159,6 +195,20 @@
           (if s s jolt-nil))
         (jolt-throw (jolt-ex-info "No match available" (jolt-hash-map))))))
 (define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))
+;; .lookingAt: anchored at the START of the region, but the match need not reach
+;; the end — the middle ground between .matches (whole region) and .find (anywhere).
+;; irregex has no prefix-match entry point, so search from the origin and keep the
+;; result only when it begins there: the engine is leftmost-first, so if any match
+;; starts at the origin the search returns that one. Remembers it for .group, as
+;; the JVM does. (instaparse's regexp terminal is .lookingAt + .group.)
+(define (jolt-matcher-looking-at m)
+  (let* ((str (matcher-t-str m))
+         (start (matcher-t-pos m))
+         (mm (and (<= start (string-length str))
+                  (irregex-search (matcher-t-irx m) str start))))
+    (if (and mm (= (irregex-match-start-index mm 0) start))
+        (begin (matcher-t-last-set! m mm) #t)
+        (begin (matcher-t-last-set! m #f) #f))))
 
 ;; All non-overlapping matches, left to right. Advance past each match end (or by
 ;; one on a zero-width match). nil when there are no matches (Clojure: seq-able as

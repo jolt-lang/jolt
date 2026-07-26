@@ -166,6 +166,11 @@ check_loc '(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-di
 # Runtime-eval'd fns aren't source-mapped, but their native frame names survive on
 # the non-tail spine; the trace must show them. deepest/+ are tail calls (erased);
 # middle and outer wait on a non-tail (inc …) so their frames are live at the throw.
+# clojure.core.protocols is the extension point libraries reach for when they
+# implement reduce/reduce-kv over their own types (instaparse :refer's IKVReduce),
+# so the namespace has to be loadable and its protocol vars resolvable.
+check '(do (require (quote clojure.core.protocols)) [(some? (resolve (quote clojure.core.protocols/coll-reduce))) (some? (resolve (quote clojure.core.protocols/kv-reduce))) (some? (resolve (quote clojure.core.protocols/datafy)))])' '[true true true]'
+
 trace_prog='(defn deepest [x] (+ x 1)) (defn middle [x] (inc (deepest x))) (defn outer [x] (inc (middle x))) (outer :nan)'
 check_trace "$trace_prog" 'middle'
 check_trace "$trace_prog" 'outer'

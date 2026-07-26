@@ -853,11 +853,17 @@
                ((or (string=? method-name "toString")) (regex-t-source obj))
                ;; (.matcher pattern s) -> a Matcher (matcher-t) for stepping matches.
                ((string=? method-name "matcher") (jolt-re-matcher obj (car rest)))
+               ;; .flags — the int Pattern was compiled with. jolt has no compile-time
+               ;; flag argument, so the only flags a pattern can carry are the inline
+               ;; ones it opens with; read those. Callers use it to decide whether a
+               ;; pattern is one they can handle (test.chuck's string-from-regex).
+               ((string=? method-name "flags") (rx-inline-flags (regex-t-source obj)))
                (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method-name " for java.util.regex.Pattern")))))
         ;; java.util.regex.Matcher: .matches (anchored whole-region), .find
         ;; (next match), .group [n], .groupCount.
         ((jolt-matcher? obj)
          (cond ((string=? method-name "matches") (jolt-matcher-matches obj))
+               ((string=? method-name "lookingAt") (jolt-matcher-looking-at obj))
                ((string=? method-name "find") (not (jolt-nil? (jolt-re-find obj))))
                ((string=? method-name "group") (apply jolt-matcher-group obj rest))
                ((string=? method-name "groupCount") (jolt-matcher-group-count obj))

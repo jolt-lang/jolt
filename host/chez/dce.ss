@@ -89,6 +89,9 @@
     "clojure.core/make-hierarchy" "clojure.core/read" "clojure.core/read-string"
     "clojure.core/read+string" "clojure.core/realized?" "clojure.core/reset!"
     "clojure.core/send"
+    ;; the LispReader$StringReader shim (host-static-methods.ss) pulls the literal
+    ;; off the reader it is handed, a line at a time, through the IReader method
+    "clojure.core/-read-line"
     ;; post-prelude taxonomy wrappers close over the overlay versions
     "clojure.core/ifn?" "clojure.core/seqable?" "clojure.core/inst-ms"
     ;; the fn print form wraps the overlay __print1

@@ -1,4 +1,7 @@
 [
+  {:suite "host-interop / PersistentList-create" :label "a created list is list?" :expected "true" :actual "(list? (clojure.lang.PersistentList/create [1 2 3]))" :portability :jvm}
+  {:suite "host-interop / PersistentList-create" :label "an empty created list is list?" :expected "true" :actual "(list? (clojure.lang.PersistentList/create []))" :portability :jvm}
+  {:suite "host-interop / PersistentList-create" :label "created list agrees with a literal on list?/seq?/class" :expected "[true true true]" :actual "(let [c (clojure.lang.PersistentList/create [1 2 3])] [(= (list? c) (list? (quote (1 2 3)))) (seq? c) (= c (quote (1 2 3)))])" :portability :jvm}
   {:suite "host-interop / reify ILookup" :label "(get reify k) / (:k reify) / (get reify k d) route to valAt" :expected "[1 1 :dflt]" :actual "(let [r (reify clojure.lang.ILookup (valAt [_ k] (get {:a 1} k)) (valAt [_ k d] (get {:a 1} k d)))] [(:a r) (get r :a) (get r :z :dflt)])" :portability :jvm}
   {:suite "regex / alternation submatch" :label "a non-participating alternation group is nil, not a stale capture" :expected "[\"2r11\" nil \"2\" \"11\"]" :actual "(re-matches #\"(?:([0-9])|([0-9])r([0-9]+))\" \"2r11\")" :portability :common}
   {:suite "regex / radix read" :label "tools.reader-style radix parse: winning branch's groups, not the losing one's" :expected "[12 255]" :actual "[(read-string \"2r1100\") (read-string \"16rFF\")]" :portability :common}

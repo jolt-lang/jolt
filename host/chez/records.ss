@@ -817,6 +817,19 @@
 (def-var! "jolt.host" "jrec-method?"
   (lambda (v name) (if (and (jrec? v) (find-method-any-protocol (jrec-tag v) name)) #t #f)))
 
+;; (str x) is x.toString() on the JVM, so a deftype/record that DECLARES toString
+;; renders through it. A defrecord's automatic map rendering is not a declared
+;; method, so only an explicit impl takes over; pr-str is untouched, which is also
+;; the JVM split (pr of a record shows its map whatever toString says).
+;; instaparse's Segment -- a CharSequence view over a string -- is one such type.
+;; Hooked here rather than through register-str-render!: a record is matched by an
+;; earlier collection arm and never reaches that registry.
+(set-str-tostring-hook!
+  (lambda (v)
+    (and (jrec? v)
+         (find-method-any-protocol (jrec-tag v) "toString")
+         (record-method-dispatch v "toString" jolt-nil))))
+
 ;; host type-tag candidates for a non-record value (extend-protocol on builtins).
 (define (value-host-tags obj)
   ;; numbers dispatch by actual type (a Double is NOT a Long): flonum -> Double,

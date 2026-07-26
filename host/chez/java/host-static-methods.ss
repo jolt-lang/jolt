@@ -172,9 +172,14 @@
 (register-class-statics! "clojure.lang.RT" (list (cons "map" rt-map)))
 
 ;; clojure.lang.PersistentList/create: a list (in order) from a seq; empty -> ().
+;; Build it the way clojure.core/list does — list->cseq alone yields plain seq
+;; cells, and jolt marks the HEAD cell to record that a chain IS a list, so an
+;; unmarked one answers `list?` false while still reporting class PersistentList.
+;; clojure.tools.reader reads every list through here, and a consumer that asks
+;; `list?` (clojure.tools.namespace's ns-decl?, say) would reject the result.
 (define (plist-create x)
   (let ((items (seq->list (jolt-seq x))))
-    (if (null? items) jolt-empty-list (list->cseq items))))
+    (if (null? items) jolt-empty-list (apply jolt-list items))))
 (register-class-statics! "PersistentList" (list (cons "create" plist-create)))
 (register-class-statics! "clojure.lang.PersistentList" (list (cons "create" plist-create)))
 
@@ -536,4 +541,44 @@
 ;; (Object.) — a fresh value with distinct identity (libraries use it as a lock
 ;; or a unique sentinel). Each call returns a new jhost so identical?/= separate.
 (register-class-ctor! "Object" (lambda _ (make-jhost "object" (vector))))
+
+;; ---- clojure.lang.LispReader$StringReader -----------------------------------
+;; The JVM reader's string-literal handler. It is package-private, but a library
+;; that wants Clojure's own escape rules without eval reaches for it anyway:
+;; instaparse (via test.chuck) instantiates one and applies it to read a grammar's
+;; quoted string. On the JVM it is constructed with no args and CALLED as a
+;; function — (reader initch) on Clojure <= 1.6, (reader initch opts pending) after
+;; — so the ctor here hands back a procedure with that convention rather than an
+;; object; nothing ever reads a field or calls a method on it.
+;;
+;; It consumes the literal's BODY, up to and including the closing quote, and
+;; returns the unescaped string. Characters come from the jolt reader the caller
+;; passes (with-in-str binds *in* to one). IReader hands out lines rather than
+;; chars, so the body is accumulated a line at a time until the terminating quote
+;; appears, then parsed by the same helper jolt's own reader uses — so \n, \uXXXX
+;; and the octal escapes all agree with the reader proper.
+;;
+;; Anything after the closing quote is consumed rather than pushed back: IReader
+;; has no push-back, and the callers build a reader per literal and drop it. A
+;; caller that shared one reader across reads would lose the remainder, so this is
+;; deliberately not registered as a general-purpose reader.
+(define (lrsr-terminated? s)
+  (let ((n (string-length s)))
+    (let loop ((i 0))
+      (cond ((fx>=? i n) #f)
+            ((char=? (string-ref s i) #\\) (loop (fx+ i 2)))
+            ((char=? (string-ref s i) #\") #t)
+            (else (loop (fx+ i 1)))))))
+(define (lrsr-read-literal rdr)
+  (let ((read-line-fn (var-deref "clojure.core" "-read-line")))
+    (let loop ((acc ""))
+      (if (lrsr-terminated? acc)
+          (let-values (((v _) (rdr-read-string-lit acc 0 (string-length acc)))) v)
+          (let ((line (jolt-invoke1 read-line-fn rdr)))
+            (if (jolt-nil? line)
+                (throw-jvm 'RuntimeException "EOF while reading string")
+                (loop (string-append acc line "\n"))))))))
+(for-each (lambda (nm)
+            (register-class-ctor! nm (lambda _ (lambda (rdr . _) (lrsr-read-literal rdr)))))
+          '("LispReader$StringReader" "clojure.lang.LispReader$StringReader"))
 
