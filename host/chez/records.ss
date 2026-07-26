@@ -1534,10 +1534,18 @@
               (seq->list (jolt-keys methods-map)))
     (make-jreify ht (map (lambda (p) (if (symbol-t? p) (symbol-t-name p) p)) protos))))
 
-;; satisfies?: does obj's type implement the protocol?
+;; satisfies?: does obj's type implement the protocol? proto must be a defprotocol
+;; value (a map with a :name); a host Class/interface or any non-protocol throws —
+;; matching the JVM, which also errors — with a message naming what was passed.
 (define (jolt-satisfies? proto obj)
   (let* ((pn (jolt-get proto (keyword #f "name") jolt-nil))
          (pn-str (if (symbol-t? pn) (symbol-t-name pn) pn)))
+    (unless (string? pn-str)
+      (throw-jvm (quote IllegalArgumentException)
+        (string-append "satisfies? expects a protocol, got: "
+          (cond ((jclass? proto) (jclass-name proto))
+                ((jolt-nil? proto) "nil")
+                (else (jolt-final-str proto))))))
     (cond
       ((jrec? obj) (type-satisfies? (jrec-tag obj) pn-str))
       ((jreify? obj)
