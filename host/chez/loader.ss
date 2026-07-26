@@ -377,10 +377,58 @@
         (not (or (string=? e "0") (string-ci=? e "false")
                  (string-ci=? e "no") (string-ci=? e "off")))
         #t)))   ; unset/empty → default ON
-;; <dir>/<jolt-version>/v1 — the version isolates a different jolt build's output
-;; (the emitted Scheme is compiler-version-dependent).
+;; A cached fasl is only valid for the runtime that emitted it, and the version
+;; string alone does not pin one: `git describe` reports the same "…-dirty" for
+;; every edit in a working tree, so successive builds out of one checkout all
+;; share a key and each happily loads the previous runtime's output. Mix in a
+;; fingerprint of the runtime itself. A binary bakes one over its whole emitted
+;; image (build-jolt.ss); running from a checkout there is none, so hash the
+;; runtime sources on disk instead. #f means we could not identify the runtime —
+;; the cache stays off rather than key on something that doesn't distinguish it.
+(define aot-runtime-source-dirs '("host/chez" "host/chez/java" "host/chez/seed"))
+(define (aot-ss-file? f)
+  (let ((n (string-length f)))
+    (and (> n 3) (string=? (substring f (- n 3) n) ".ss"))))
+;; 32-bit multiply-accumulate over each file's length and content hash, folded in
+;; sorted path order so the result is reproducible across runs and machines.
+(define (aot-hash-mix a b) (bitwise-and (+ (* a 1000003) b) #xFFFFFFFF))
+(define (aot-source-fingerprint)
+  (let loop ((dirs aot-runtime-source-dirs) (h 17) (n 0))
+    (if (null? dirs)
+        (and (fx>? n 0) (string-append (number->string n 16) "-" (number->string h 16)))
+        (let ((files (sort string<?
+                           (filter aot-ss-file?
+                                   (if (file-directory? (car dirs))
+                                       (directory-list (car dirs))
+                                       '())))))
+          (let inner ((fs files) (h h) (n n))
+            (if (null? fs)
+                (loop (cdr dirs) h n)
+                (let* ((p (string-append (car dirs) "/" (car fs)))
+                       ;; an unreadable file just doesn't contribute; a real
+                       ;; runtime change still moves some other file's hash.
+                       (s (guard (e (else #f)) (read-file-string p))))
+                  (if s
+                      (inner (cdr fs)
+                             (aot-hash-mix (aot-hash-mix h (string-length s)) (equal-hash s))
+                             (fx+ n 1))
+                      (inner (cdr fs) h n)))))))))
+;; Computed at most once per process, and only when the cache is consulted, so
+;; the source-tree walk never costs a run with the cache off (the default in the
+;; dev bin/jolt) or a binary, which reads its baked value.
+(define aot-fingerprint-memo 'unset)
+(define (aot-runtime-fingerprint)
+  (when (eq? aot-fingerprint-memo 'unset)
+    (set! aot-fingerprint-memo
+      (or (and (top-level-bound? 'jolt-baked-runtime-fingerprint)
+               (top-level-value 'jolt-baked-runtime-fingerprint))
+          (aot-source-fingerprint))))
+  aot-fingerprint-memo)
+;; <dir>/<jolt-version>-<runtime fingerprint>/v1 — the version names the release
+;; a fasl came from, the fingerprint pins the exact runtime that emitted it.
 (define (aot-cache-subdir)
-  (string-append (aot-cache-dir) "/" (jolt-version-string) "/v1"))
+  (string-append (aot-cache-dir) "/" (jolt-version-string)
+                 "-" (aot-runtime-fingerprint) "/v1"))
 (define (aot-cache-sanitize s)
   (list->string
     (map (lambda (c)
@@ -481,7 +529,10 @@
 ;; ldr-reload-all? bypass entirely — live editing must win over a stale cache.
 (define (aot-load-or-compile name file force?)
   (if (and (aot-cache-enabled?) (not force?) (not (ldr-reload-all?))
-           (not (ldr-install-file? file)))
+           (not (ldr-install-file? file))
+           ;; no fingerprint = we can't tell this runtime from another one, so
+           ;; there is no key that would be safe to reuse.
+           (aot-runtime-fingerprint))
       (let* ((src (ldr-read-source file))
              (base (string-append (aot-cache-subdir) "/"
                                   (aot-cache-sanitize name) "-" (aot-cache-key src)))

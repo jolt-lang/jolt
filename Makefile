@@ -296,8 +296,10 @@ devbootsmoke: devboot
 	@sh test/chez/devboot-smoke.sh
 
 # Smoke test: the per-namespace AOT/compile cache (miss/hit/invalidate, edge
-# cases, bypass semantics). Drives dev bin/jolt; no Maven jars required.
-aotcachesmoke:
+# cases, bypass semantics). Drives dev bin/jolt; no Maven jars required. The
+# built binary is a second, genuinely different runtime — case (k) needs it to
+# check that two runtimes sharing a version string still key separately.
+aotcachesmoke: testbin
 	@sh test/chez/aot-cache-smoke.sh
 
 # Perf measurement: cold (recompile) vs warm (cache hit) for a multi-library

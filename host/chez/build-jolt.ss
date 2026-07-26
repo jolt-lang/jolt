@@ -290,6 +290,23 @@
   (jb-emit-launcher out)
   (close-port out))
 
+;; --- 1b. bake the runtime fingerprint ----------------------------------------
+;; The AOT namespace cache (loader.ss) keys its fasls on the runtime that emitted
+;; them, not just the version string — two builds out of one working tree report
+;; the same `git describe` and would otherwise share a key. flat.ss IS this
+;; binary's runtime + compiler, so its content hash identifies it exactly.
+;; Appended rather than emitted inline for the obvious reason: the hash can't be
+;; part of what it hashes. Nothing reads it at load time (aot-cache-subdir asks
+;; for it on the first cached require), so the position doesn't matter.
+(let* ((src (read-file-string jb-flat-ss))
+       (fp (string-append (number->string (string-length src) 16) "-"
+                          (number->string (equal-hash src) 16)))
+       (out (open-output-file jb-flat-ss 'append)))
+  (put-string out (string-append
+                    "\n;; === runtime fingerprint (AOT cache key) ===\n"
+                    "(define jolt-baked-runtime-fingerprint " (ei-str-lit fp) ")\n"))
+  (close-port out))
+
 ;; --- 2. compile + boot in a FRESH Chez (profile Chez settings) --------------
 ;; jolt is a compiler/REPL: it evals jolt-compiled Scheme at runtime, which must
 ;; resolve the runtime's top-level procedures (var-deref, jolt-inc, …) through the

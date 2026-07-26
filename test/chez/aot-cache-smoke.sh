@@ -200,6 +200,39 @@ else
   echo "FAIL: (j) corrupt cache: output='$jout' .so-after=$jso_after (expected 42, >=1 rebuilt)"; fails=$((fails+1))
 fi
 
+# --- (k) two runtimes reporting one version don't share a cache namespace ----
+# The fasl a namespace compiles to is only valid for the runtime that emitted it,
+# and the version string does not pin one: `git describe` reports the same
+# "…-dirty" for every edit in a working tree, so a rebuilt jolt used to load its
+# predecessor's output. Drive the SAME namespace through two genuinely different
+# runtimes — the source tree and the built binary — with the version forced equal,
+# and require them to land in separate cache namespaces.
+k="$tmp/k"; mkdir -p "$k/src/mylib"
+printf '(ns mylib.core)\n(defn answer [] 42)\n' > "$k/src/mylib/core.clj"
+cache_k="$(mktemp -d)"
+kprog="(require 'jolt.deps)
+       (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$k\"}}})
+       (require 'mylib.core) (println (mylib.core/answer))"
+kbin="target/release/jolt"
+n_k="(skipped)"; k_out_src=""; k_out_bin=""
+if [ -n "$chez_bin" ] && [ -x "$kbin" ]; then
+  # the binary bakes its version, so read it back and hand it to the source run
+  kver="$("$kbin" --version 2>/dev/null | sed 's/^jolt //')"
+  k_out_src="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_k" JOLT_VERSION="$kver" JOLT_QUIET=1 \
+    "$chez_bin" --script host/chez/cli.ss -e "$kprog" 2>/dev/null | tail -1)"
+  k_out_bin="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_k" JOLT_QUIET=1 \
+    "$kbin" -e "$kprog" 2>/dev/null | tail -1)"
+  n_k="$(find "$cache_k" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+fi
+rm -rf "$cache_k"
+if [ "$n_k" = "(skipped)" ]; then
+  echo "SKIP: (k) needs chez + $kbin (make testbin)"
+elif [ "$n_k" = "2" ] && [ "$k_out_src" = "42" ] && [ "$k_out_bin" = "42" ]; then
+  echo "PASS: (k) source and binary runtimes keyed separately under one version"; pass=$((pass+1))
+else
+  echo "FAIL: (k) cache namespaces=$n_k (expected 2), source='$k_out_src' binary='$k_out_bin' (expected 42)"; fails=$((fails+1))
+fi
+
 # Phase 4 (cold-vs-warm speedup) lives in aot-cache-perf.sh — a timing
 # measurement doesn't belong in this deterministic correctness gate.
 

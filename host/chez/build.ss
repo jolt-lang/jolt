@@ -1075,7 +1075,11 @@
                     (string-append "(define " s " (eval '" s " (scheme-environment)))\n")))
                 (reverse names)))))
 
-;; prepend the prologue to the flat file in place.
+;; prepend the prologue to the flat file in place, then bake the runtime
+;; fingerprint the AOT namespace cache keys on (loader.ss). An app binary carries
+;; no version string, so without this every one of them would key its cached
+;; fasls under the same "dev" and load namespaces another binary's runtime had
+;; emitted. This file is the binary's runtime, so its content hash names it.
 (define (bld-prepend-prologue! flat-ss)
   (let ((prologue (bld-kernel-prologue flat-ss))
         (body (read-file-string flat-ss)))
@@ -1083,7 +1087,15 @@
       (put-string out ";; kernel-name cells pre-bound so early reads match the kernel primitives\n")
       (put-string out prologue)
       (put-string out body)
-      (close-port out))))
+      (close-port out)))
+  (let* ((src (read-file-string flat-ss))
+         (fp (string-append (number->string (string-length src) 16) "-"
+                            (number->string (equal-hash src) 16)))
+         (out (open-output-file flat-ss 'append)))
+    (put-string out (string-append
+                      "\n;; === runtime fingerprint (AOT cache key) ===\n"
+                      "(define jolt-baked-runtime-fingerprint " (ei-str-lit fp) ")\n"))
+    (close-port out)))
 
 ;; Per-mode Chez compile parameters for app binaries. Mirrors the pattern in
 ;; build-jolt.ss (optimize-level 2, fasl-compressed #t for release/optimized).
