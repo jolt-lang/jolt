@@ -100,6 +100,10 @@
    ;; scratch, per-unit so a build's labels are deterministic without a process-global.
    :gensym-counter (atom 0)
    :cache-cells (atom nil)
+   ;; per-def constant pool: {emitted-expr -> binding-name} for pure constant
+   ;; constructions (keyword literals) hoisted out of their use sites, so a def
+   ;; builds each distinct constant once instead of at every evaluation.
+   :const-pool (atom nil)
    ;; jolt.passes.inline scratch: the fixpoint dirty flag run-passes reads/resets and
    ;; the alpha-rename counter for inlined binders.
    :dirty (atom false)

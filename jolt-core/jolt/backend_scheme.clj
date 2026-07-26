@@ -193,14 +193,50 @@
 ;; then wrap the result in a let binding any cells its body registered so they
 ;; persist in the def's closure. Saves/restores the outer collector for nested
 ;; defs. Used by both the runtime def emit and the direct-link top-level emit.
+;; Hoist a PURE CONSTANT construction out of its use site: the site emits a bare
+;; variable read, and the def's wrapper binds it once. The pool is keyed by the
+;; emitted expression, so a constant appearing at ten sites in one def is built
+;; once and shared.
+;;
+;; Unlike the lazy cache cells above these bind EAGERLY — a constant has no
+;; resolution to defer, so there is nothing for an (or cell …) branch to save and
+;; a plain variable read is cheaper at every use.
+;;
+;; Only for constructions that are pure AND whose result is safe to share.
+;; Keyword literals qualify on both counts: `keyword` interns, so it already
+;; returns the same object for the same name and sharing changes nothing
+;; observable. Symbols deliberately do NOT route through here — jolt-symbol
+;; allocates a fresh symbol per call and symbols carry metadata, so sharing one
+;; across sites could let meta leak between them.
+;;
+;; Outside a def (no pool) the raw expression is returned unchanged.
+(defn- hoist-const [expr]
+  (let [pool @(:const-pool (cur))]
+    (if pool
+      (or (get @pool expr)
+          (let [nm (fresh-label "_kc$")]
+            (swap! pool assoc expr nm)
+            nm))
+      expr)))
+
 (defn- emit-with-cells [emit-thunk]
   (let [cells (atom [])
+        pool (atom {})
         prev @(:cache-cells (cur))
+        prev-pool @(:const-pool (cur))
         _ (reset! (:cache-cells (cur)) cells)
+        _ (reset! (:const-pool (cur)) pool)
         raw (emit-thunk)
-        _ (reset! (:cache-cells (cur)) prev)]
-    (if (seq @cells)
-      (str "(let (" (str/join " " (map (fn [c] (str "(" c " #f)")) @cells)) ") " raw ")")
+        _ (reset! (:cache-cells (cur)) prev)
+        _ (reset! (:const-pool (cur)) prev-pool)
+        ;; constants bind eagerly (value first); lazy cache cells start #f. Sorted
+        ;; by binding name so a build's output stays deterministic.
+        consts (map (fn [p] (str "(" (val p) " " (key p) ")"))
+                    (sort-by val @pool))
+        lazies (map (fn [c] (str "(" c " #f)")) @cells)
+        binds  (concat consts lazies)]
+    (if (seq binds)
+      (str "(let (" (str/join " " binds) ") " raw ")")
       raw)))
 
 ;; Scheme syntactic keywords. A jolt local with one of these names would, when
@@ -354,10 +390,14 @@
                   (not= v v) "+nan.0"
                   :else (jolt.host/chez-number-literal v))
     (string? v) (chez-str-lit v)
-    ;; keyword literal -> (keyword ns name)
-    (keyword? v) (if-let [kns (namespace v)]
-                   (str "(keyword " (chez-str-lit kns) " " (chez-str-lit (name v)) ")")
-                   (str "(keyword #f " (chez-str-lit (name v)) ")"))
+    ;; keyword literal -> (keyword ns name), hoisted to a per-def constant so the
+    ;; intern lookup runs once per def rather than at every use site — a keyword
+    ;; in a hot path ((:left node), a cond's :else, a map key) was re-interned on
+    ;; every evaluation, ~25% of the cost of a keyword-keyed lookup.
+    (keyword? v) (hoist-const
+                   (if-let [kns (namespace v)]
+                     (str "(keyword " (chez-str-lit kns) " " (chez-str-lit (name v)) ")")
+                     (str "(keyword #f " (chez-str-lit (name v)) ")")))
     ;; char literal -> (integer->char <codepoint>). Get the codepoint via the host
     ;; contract (form-char-code), NOT (get v :ch): on Chez (the self-hosted spine)
     ;; a char is a native char, so a struct-field read returns nil and would emit
@@ -1113,8 +1153,9 @@
     ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
-    :set-field (str "(jolt-set-field! " (emit (:obj node)) " (keyword #f "
-                    (chez-str-lit (:field node)) ") " (emit (:val node)) ")")
+    :set-field (str "(jolt-set-field! " (emit (:obj node)) " "
+                    (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))
+                    " " (emit (:val node)) ")")
     ;; a non-top-level defmacro -> def the expander fn + mark the var a macro at
     ;; runtime (the spine does the same for top-level forms).
     :defmacro (str "(begin (def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
