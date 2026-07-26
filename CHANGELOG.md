@@ -7,8 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-26
+
+Compiler-flag and `^long` arithmetic fixes that let clojure/test.check load,
+a dropped-argument bug in optimized builds of multi-collection `map`, and three
+correctness fixes in the per-namespace compile cache.
+
 ### Fixed
 
+- **`map`, `mapv` and `mapcat` over more than one collection work in an
+  optimized build.** The inference pass rebuilt such a call as the function plus
+  a single collection, so `(map f c1 c2)` compiled to `(map f c1)` and the
+  two-argument function was then applied to one element. The runtime compile
+  path does not run that pass, so the same source worked under `jolt run` and
+  failed only once built. Sibling patterns for `get` and `reduce` truncated an
+  over-arity call the same way instead of leaving it for the runtime to report.
+- **The compile cache distinguishes the runtime that filled it.** Cached
+  namespaces were keyed on the jolt version, which does not identify a build:
+  `git describe` reports the same `…-dirty` for every edit in a working tree, so
+  successive builds out of one checkout shared a key and each loaded the
+  previous runtime's compiled output. Application binaries carry no version at
+  all and so shared one key across unrelated programs. Each build now carries a
+  fingerprint of its own runtime, and a runtime that cannot be identified does
+  not use the cache.
+- **Editing a namespace invalidates the ones that depend on it.** A cached
+  namespace was keyed on its own source alone, but what it compiled to also
+  depends on what its dependencies contributed — macro expansions above all — so
+  editing a macro left every consumer running expansions of a definition that no
+  longer existed. The key now folds in the key of each namespace required, which
+  makes it transitive: a change three namespaces down invalidates the whole
+  path.
+- **The dev boot cache no longer halves the speed of the code it runs.** The
+  image `make devboot` builds loads the build subsystem eagerly, and that turns
+  per-site var-cell caching off so the seed mint and `jolt build` stay
+  byte-deterministic. Since the image saved that setting, every namespace
+  compiled at runtime under the cache resolved each var by name on every access
+  — about half speed on var-reference-heavy code, in a cache whose purpose is
+  faster iteration. It restores the runtime setting after loading the build
+  driver. Released binaries were never affected; they load that subsystem
+  lazily.
 - **A file's top-level `(set! *unchecked-math* true)` works.** It threw "Can't
   change/establish root binding"; the reference binds the var around every file
   load, so the form is legal and its effect ends with the file. The loader bound
@@ -25,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   long ops already did this; `+ - *` were left on the raw fixnum ops on the
   assumption that `*unchecked-math*` rewrote them first, which only holds when the
   flag is on.
+
+### Changed
+
+- **Superseded compile-cache generations are collected.** Keying on the runtime
+  means the cache moves whenever jolt is rebuilt, so a build loop would leave a
+  full generation behind each time. A run now keeps the three most recently used
+  and drops the rest. `JOLT_CACHE_DIR` still selects the location, and
+  `JOLT_AOT_CACHE=0` still opts out.
 
 ## [0.5.1] - 2026-07-26
 
@@ -1606,7 +1651,8 @@ Clojure-compatible standard library.
 - **Distribution**: a self-contained `joltc` binary, a Homebrew tap, and an
   install script.
 
-[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/jolt-lang/jolt/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/jolt-lang/jolt/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jolt-lang/jolt/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jolt-lang/jolt/compare/v0.4.15...v0.5.0
 [0.4.15]: https://github.com/jolt-lang/jolt/compare/v0.4.14...v0.4.15
