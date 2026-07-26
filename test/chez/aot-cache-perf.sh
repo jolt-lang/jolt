@@ -10,13 +10,17 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 jolt="bin/jolt"
 
-m2="$HOME/.m2/repository/org/clojure/data.json/2.4.0/data.json-2.4.0.jar"
+m2="$HOME/.m2/repository/org/clojure/data.csv/1.1.0/data.csv-1.1.0.jar"
 if [ ! -f "$m2" ]; then
   echo "SKIP: $m2 not present — this measurement needs the Maven jars locally."
   exit 0
 fi
 
-cmd='(require (quote jolt.deps)) (jolt.deps/add-deps (quote {:deps {org.clojure/data.json {:mvn/version "2.4.0"} org.clojure/data.csv {:mvn/version "1.1.0"} org.clojure/tools.cli {:mvn/version "1.0.219"} org.flatland/ordered {:mvn/version "1.15.11"}}})) (require (quote clojure.data.json)) (require (quote clojure.data.csv)) (require (quote clojure.tools.cli)) (require (quote flatland.ordered))'
+# flatland.ordered.map/.set, not flatland.ordered — the artifact has no namespace
+# by that name. clojure.data.json is deliberately absent: it reaches for
+# java.time.format.DateTimeFormatter, which lives in the jolt-lang/time library
+# rather than core (RFC 0008), so requiring it here would throw.
+cmd='(require (quote jolt.deps)) (jolt.deps/add-deps (quote {:deps {org.clojure/data.csv {:mvn/version "1.1.0"} org.clojure/tools.cli {:mvn/version "1.0.219"} org.flatland/ordered {:mvn/version "1.15.11"}}})) (require (quote clojure.data.csv)) (require (quote clojure.tools.cli)) (require (quote flatland.ordered.map)) (require (quote flatland.ordered.set)) (println :ok)'
 
 # one timed run against cache dir $1; prints the real seconds
 one_run() {
@@ -27,8 +31,22 @@ one_run() {
 }
 median() { echo "$1" | tr ' ' '\n' | grep -E '^[0-9]' | sort -n | sed -n '2p'; }
 
-# pre-warm maven extractions so COLD measures compile, not download/unzip
-pre="$(mktemp -d)"; JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$pre" JOLT_QUIET=1 "$jolt" -e "$cmd" >/dev/null 2>&1; rm -rf "$pre"
+# pre-warm maven extractions so COLD measures compile, not download/unzip — and
+# check the workload actually RUNS. Timing a command that throws half way through
+# compares two crashes and reports them as a speedup, which is how a broken
+# require sat here unnoticed: every namespace after it was never measured.
+pre="$(mktemp -d)"
+prelog="$(mktemp)"
+JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$pre" JOLT_QUIET=1 "$jolt" -e "$cmd" >"$prelog" 2>&1
+prestatus=$?
+rm -rf "$pre"
+if [ "$prestatus" -ne 0 ] || ! grep -q '^:ok$' "$prelog"; then
+  echo "ERROR: the measured workload does not run cleanly (exit $prestatus):"
+  sed 's/^/  /' "$prelog"
+  rm -f "$prelog"
+  exit 2
+fi
+rm -f "$prelog"
 
 # cold: median of 3 runs, each with a FRESH (empty) cache (so every run recompiles)
 cold=""
