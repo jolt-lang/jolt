@@ -180,6 +180,10 @@
 ;; recursion auto-restores them (no manual save/restore, no throw-leak).
 (def ^:dynamic *recur-target* nil)
 (def ^:dynamic *known-procs* #{})
+;; When set (in the :def emit path), fns are emitted with a qualified letrec
+;; binding (ns/name) so Chez reports a unique per-var frame name — no collisions
+;; across namespaces. Nested/anonymous fns ignore it (they never register).
+(def ^:dynamic *qualifying-ns* nil)
 ;; True while emitting a node in TAIL position. Only used, in trace mode, to mark a
 ;; tail call so the runtime routes its callee into the current history rib instead
 ;; of a new one (rt.ss). It never affects semantics — a wrong value only mislabels
@@ -653,6 +657,11 @@
         ;; a named fn binds its own name as a known-procedure local across ALL
         ;; arities, so self-calls emit directly rather than via jolt-invoke.
         self (when-let [nm (:name node)] (munge-name nm))
+        ;; When *qualifying-ns* is set (the :def runtime-eval path), bind the
+        ;; letrec under a qualified name (ns/name) so Chez reports a unique
+        ;; per-var frame name. Nested/anonymous fns ignore it (self is nil).
+        qname (when (and self *qualifying-ns*)
+                (str (munge-name *qualifying-ns*) "/" self))
         clauses (binding [*known-procs* (if self (conj *known-procs* self) *known-procs*)]
                   (mapv emit-arity-clause arities))
         ;; trace mode: record this frame on entry (before the body), so a frame
@@ -661,7 +670,7 @@
         ;; records once, not per iteration.
         clauses (if (and (trace-frames?) self)
                   (mapv (fn [c] [(nth c 0)
-                                 (str "(begin (jolt-trace-push! " (chez-str-lit self) ") "
+                                 (str "(begin (jolt-trace-push! " (chez-str-lit (or qname self)) ") "
                                       (nth c 1) ")")])
                         clauses)
                   clauses)
@@ -673,7 +682,16 @@
     ;; A named fn references itself by name — the analyzer binds that name as a
     ;; :local in the body. letrec makes the name visible to the lambda.
     (if-let [nm (:name node)]
-      (let [m (munge-name nm)] (str "(letrec ((" m " " lambda ")) " m ")"))
+      (let [m (munge-name nm)]
+        ;; The qualified binding is what Chez reports for the frame; the short alias
+        ;; is what the body's self-calls emit (*known-procs* is keyed on it). Both
+        ;; are letrec* bindings so the alias is in scope INSIDE the lambda — an
+        ;; alias bound by an enclosing `let` is not, and a self-recursive body then
+        ;; references an unbound name. letrec* also fixes the order: the alias is
+        ;; initialised right after the lambda exists and long before any call.
+        (if qname
+          (str "(letrec* ((" qname " " lambda ") (" m " " qname ")) " m ")")
+          (str "(letrec ((" m " " lambda ")) " m ")")))
       lambda)))
 
 ;; If fnode is a clojure.core (or host) ref to a native-op primitive, return the
@@ -1089,10 +1107,14 @@
 (defn- trace-source-reg [node]
   (let [init (:init node) pos (:pos node)]
     (if (and (or (trace-frames?) (source-reg?)) (= :fn (:op init)) (:name init) pos)
-      (str " (jolt-register-source! " (chez-str-lit (munge-name (:name init))) " "
-           (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-           (if (:file pos) (chez-str-lit (:file pos)) "jolt-nil") " "
-           (or (:line pos) 0) ")")
+      (let [nm (munge-name (:name init))
+            key (if *qualifying-ns*
+                  (str (munge-name *qualifying-ns*) "/" nm)
+                  nm)]
+        (str " (jolt-register-source! " (chez-str-lit key) " "
+             (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+             (if (:file pos) (chez-str-lit (:file pos)) "jolt-nil") " "
+             (or (:line pos) 0) ")"))
       "")))
 
 ;; A (register-inline-method type-name proto method fn) / register-method call whose
@@ -1235,29 +1257,34 @@
     :fn (emit-fn node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).
-    :def (let [reg (trace-source-reg node)
-               d (cond
-                   (:no-init node)
-                   (if (jmeta-nonempty? (:meta node))
-                     ;; set-var-meta! interns the same cell declare-var! returns, so
-                     ;; declare-var! runs LAST — a no-init def evaluates to its var,
-                     ;; like the JVM ((var? (def x)) is true), not set-var-meta!'s void.
-                     (str "(begin (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                          (emit-def-meta node) ")"
-                          " (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) "))")
-                     (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
-                   (jmeta-nonempty? (:meta node))
-                   (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                        (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
-                   :else
-                   (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                        (emit-with-cells #(emit (:init node))) ")"))]
-           ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
-           ;; registration must not be the value of the form — bind the def's
-           ;; result, register, and hand the var back.
-           (if (= reg "") d
-               (let [v (fresh-label "_dv$")]
-                 (str "(let ((" v " " d "))" reg " " v ")"))))
+    ;; Qualify only when this def will actually register a source map — that is the
+    ;; whole point of the unique name, and it ties qualification to the runtime-eval
+    ;; path. The seed mint and `jolt build` emit with source-reg off, so core keeps
+    ;; its short names and prelude.ss stays byte-identical across a re-mint.
+    :def (binding [*qualifying-ns* (when (source-reg?) (:ns node))]
+           (let [reg (trace-source-reg node)
+                 d (cond
+                     (:no-init node)
+                     (if (jmeta-nonempty? (:meta node))
+                       ;; set-var-meta! interns the same cell declare-var! returns, so
+                       ;; declare-var! runs LAST — a no-init def evaluates to its var,
+                       ;; like the JVM ((var? (def x)) is true), not set-var-meta!'s void.
+                       (str "(begin (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                            (emit-def-meta node) ")"
+                            " (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) "))")
+                       (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
+                     (jmeta-nonempty? (:meta node))
+                     (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                          (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
+                     :else
+                     (str "(def-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                          (emit-with-cells #(emit (:init node))) ")"))]
+             ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
+             ;; registration must not be the value of the form — bind the def's
+             ;; result, register, and hand the var back.
+             (if (= reg "") d
+                 (let [v (fresh-label "_dv$")]
+                   (str "(let ((" v " " d "))" reg " " v ")")))))
     (throw (ex-info (str "emit: op not yet ported / unhandled: " (pr-str (:op node))) {}))))
 
 ;; ^:dynamic / ^:redef on a def opts it out of direct-linking: it stays redefinable,

@@ -181,6 +181,32 @@ check_trace "$trace_prog" 'outer'
 trace_src_prog='(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/tracesrc.clj") "(ns tracesrc)\n(declare mx)\n(defn deepest [x] (+ x mx))\n(defn middle [x] (inc (deepest x)))\n(defn outer [x] (inc (middle x)))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote tracesrc)) (tracesrc/outer 1))'
 check_trace_src "$trace_src_prog" 'tracesrc/middle \(.*tracesrc\.clj:4\)' 'tracesrc/outer \(.*tracesrc\.clj:5\)'
 
+# Two namespaces defining the same short fn name used to key the source registry
+# to 'ambiguous, so the colliding frame printed a bare name instead of a location.
+# Every project hit this on -main, since jolt.main has one too. Each def now
+# registers under a per-var key, so collideb/middle resolves to its OWN file:line
+# and never to collidea/middle.
+collide_prog='(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/collidea.clj") "(ns collidea)\n(defn middle [x] (inc x))\n") (spit (str r "/collideb.clj") "(ns collideb)\n(defn deepest [x] (+ x :boom))\n(defn middle [x] (inc (deepest x)))\n(defn outer [x] (inc (middle x)))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote collidea)) (require (quote collideb)) (collideb/outer 1))'
+check_trace_src "$collide_prog" 'collideb/middle \(.*collideb\.clj:3\)' 'collideb/outer \(.*collideb\.clj:4\)'
+# The same collision with the tail-frame history on. (Whether the TCO-erased
+# `deepest` shows depends on ring-vs-continuation, which the ring tests below
+# cover; what matters here is that the colliding frame still resolves.)
+check_trace_on "$collide_prog" 'collideb/middle'
+
+# Ambiguity fallback. A per-var key removes the ordinary collision, but two
+# registrations under ONE key must still degrade to the bare frame name rather
+# than a guessed location. Both fns wrap their call in (inc ...) so the frames
+# survive TCO. The ns differs by host (user under bin/jolt, jolt.main under a
+# built binary), so match the frame SHAPE: a bare line with no " (file:line)".
+ambig_prog='(do (defn amb [x] (inc (+ x :boom))) (defn wrap [x] (inc (amb x))) (def k (str (ns-name *ns*) "/amb")) (jolt.host/register-source! k "ns1" "amb" "a.clj" 10) (jolt.host/register-source! k "ns2" "amb" "b.clj" 20) (inc (wrap 1)))'
+ambig_err="$($jolt -e "$ambig_prog" 2>&1 >/dev/null)"
+if printf '%s' "$ambig_err" | grep -Eq '^    [A-Za-z0-9._-]+/amb$' && ! printf '%s' "$ambig_err" | grep -q 'a[.]clj' && ! printf '%s' "$ambig_err" | grep -q 'b[.]clj'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL (trace ambiguity): want a bare <ns>/amb frame citing no file"
+  fails=$((fails + 1))
+fi
+
 # JOLT_TRACE (tail-frame history / ring of rings). An all-tail chain is entirely
 # TCO-erased from the continuation, but the history recovers every frame — incl.
 # `deepest`, the actual error site.
