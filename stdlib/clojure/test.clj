@@ -495,8 +495,13 @@
   (wrap-fixtures (get @each-fixtures (:ns t) [])
     (fn []
       ;; bind *testing-vars* the way test-var does, so a failure inside a
-      ;; registry-run test still names it in the "FAIL in (name)" header
-      (binding [*testing-vars* (conj *testing-vars* {:name (:name t) :ns (:ns t)})]
+      ;; registry-run test still names it in the "FAIL in (name)" header. It must
+      ;; be the real VAR: test.check's reporter reads this stack and treats the
+      ;; entries as vars, so a stand-in map fails as "cannot be cast to Named".
+      ;; A test whose var no longer resolves leaves the stack alone.
+      (binding [*testing-vars* (let [v (try (ns-resolve (:ns t) (:name t))
+                                            (catch Throwable _ nil))]
+                                 (if v (conj *testing-vars* v) *testing-vars*))]
         (try
           ((:fn t))
           (catch Throwable e

@@ -143,7 +143,7 @@
    :timeout 900
    ;; property-based: the assertion count moves with the generated cases
    :tolerance 40
-   :expect {:tests 123 :pass 230 :fail 15 :error 3}}
+   :expect {:tests 123 :pass 236 :fail 10 :error 2}}
 
   {:name "test.chuck"
    ;; resources/ holds the regex grammar its parser slurps through io/resource
@@ -163,7 +163,7 @@
    ;; exception-handling namespaces compare printed #error maps whose :trace is
    ;; empty because tail calls leave no frames to report. The load-fail is clj-time,
    ;; which needs joda-time.
-   :expect {:tests 39 :pass 98 :fail 22 :error 3 :load-fail 1}}
+   :expect {:tests 39 :pass 110 :fail 17 :error 2 :load-fail 1}}
 
   ;; ---------------------------------------------------------- data formats
   {:name "data.csv"
