@@ -4,6 +4,12 @@
 clojure.core-test.abs 1 0
 clojure.core-test.bigint 1 0
 clojure.core-test.byte 1 0
+# char: the suite's "4+ byte characters" case is host-dependent — it expects a
+# throw on the JVM but the character itself on jank and basilisp, which index
+# strings by code point as jolt does. jolt has no branch there so it takes
+# :default; (= (first "\u{10127}") (char 65895)) holds here exactly as the :lpy
+# branch asserts. See the :string-model entry in known-divergences.edn.
+clojure.core-test.char 1 0
 clojure.core-test.dec 1 0
 clojure.core-test.double-qmark 3 0
 clojure.core-test.eq 2 0
