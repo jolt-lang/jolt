@@ -299,9 +299,8 @@
                 borkdude/edamame {:mvn/version "1.5.37"}
                 fipp/fipp {:mvn/version "0.6.29"}
                 mvxcvi/arrangement {:mvn/version "2.1.0"}}
-   ;; java.time.LocalDate/MIN and friends are registered by jolt.time's
-   ;; install-seams!, and nothing in malli's own requires reaches it, so four
-   ;; namespaces load-failed on LocalDate/-MIN until it was preloaded.
+   ;; jolt.time installs the java.time.* class seams; malli's own requires do
+   ;; not reach it, so it is preloaded.
    :preload ["jolt.time"]
    :timeout 900
    ;; Keying protocol dispatch by defining namespace (jolt-ewmt) is what moved
@@ -310,8 +309,10 @@
    ;; Object and replaced the real -generator. Eight more namespaces load and the
    ;; suite went 28 tests / 121 assertions to the figures below. The remaining
    ;; load failures are fipp reaching Clojure's private #'clojure.core/mk-am
-   ;; through core.rrb-vector, and jsonista (Jackson) — both JVM-internal.
-   :expect {:tests 202 :pass 11847 :fail 135 :error 132 :load-fail 8}}
+   ;; through core.rrb-vector (7) and jsonista, i.e. Jackson (1) — both
+   ;; JVM-internal — plus four malli.experimental.time namespaces blocked on the
+   ;; (. Class FIELD) static-field dot form, which is a jolt gap.
+   :expect {:tests 202 :pass 11847 :fail 135 :error 132 :load-fail 12}}
 
   ;; ---------------------------------------------------------- web
   {:name "ring-codec"
