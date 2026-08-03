@@ -1117,6 +1117,13 @@
          ;; simple-name index; otherwise the local tag (a forward extend).
          (tag (cond (host host)
                     ((hashtable-ref chez-deftype-tag-set local #f) local)
+                    ;; a deftype named by its FULLY-QUALIFIED name — the tag
+                    ;; format itself, so it needs no ns prefix. schema does this:
+                    ;; (extend-protocol Completer schema.spec.variant.VariantSpec
+                    ;; …) from a third namespace. Without this the name is
+                    ;; prefixed with the EXTENDING ns and the impl is filed under
+                    ;; a tag no value carries.
+                    ((hashtable-ref chez-deftype-tag-set type-name #f) type-name)
                     ((hashtable-ref chez-simple-name-tag type-name #f))
                     (else local))))
     (register-protocol-method tag proto-name method-name fn)

@@ -185,6 +185,23 @@
 (register-class-statics! "APersistentMap" ap-map-statics)
 (register-class-statics! "clojure.lang.APersistentMap" ap-map-statics)
 
+;; clojure.lang.Murmur3 — the hash primitives clojure.core/hash is built on,
+;; called directly by libraries that hash a composite value by hand (malli's
+;; regex parser combines a function hashCode with a position and a register
+;; map). hasheq.ss already holds the port; this only names it for interop.
+;; hashOrdered/hashUnordered take any seqable, as the Java Iterable overloads do.
+(define murmur3-statics
+  (list (cons "hashInt" (lambda (n) (murmur3-hash-int (jolt->fx n))))
+        (cons "hashLong" (lambda (n) (murmur3-hash-long (jolt->fx n))))
+        (cons "hashUnencodedChars"
+              (lambda (s) (murmur3-hash-unencoded-chars (jolt-final-str s))))
+        (cons "hashOrdered" (lambda (xs) (hash-ordered (jolt-seq xs))))
+        (cons "hashUnordered" (lambda (xs) (hash-unordered (jolt-seq xs))))
+        (cons "mixCollHash"
+              (lambda (h n) (mix-coll-hash (jolt->fx h) (jolt->fx n))))))
+(register-class-statics! "Murmur3" murmur3-statics)
+(register-class-statics! "clojure.lang.Murmur3" murmur3-statics)
+
 ;; clojure.lang.RT/map: build a map from a [k v k v…] array/seq (RT.map). Small
 ;; maps keep insertion order (PersistentArrayMap). tools.reader builds map and
 ;; namespaced-map literals this way.

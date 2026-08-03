@@ -761,6 +761,10 @@
 (register-host-methods! "classloader"
   (list (cons "getResource" cl-get-resource)
         (cons "getResources" cl-get-resources)
+        ;; jolt has a single loader, so it has no parent — the same answer the
+        ;; JVM's bootstrap loader gives, which terminates the usual
+        ;; (take-while identity (iterate #(.getParent %) loader)) walk.
+        (cons "getParent" (lambda (self) jolt-nil))
         (cons "getResourceAsStream"
               (lambda (self name)
                 (let ((u (cl-get-resource self name)))
@@ -811,7 +815,11 @@
        (list (cons "hash" (lambda (x) (if (jolt-nil? x) 0 (record-method-dispatch x "hashCode" jolt-nil))))
              (cons "hasheq" (lambda (x) (jolt-hash x)))
              (cons "equiv" (lambda (a b) (if (jolt= a b) #t #f)))
-             (cons "identical" (lambda (a b) (if (eq? a b) #t #f))))))
+             (cons "identical" (lambda (a b) (if (eq? a b) #t #f)))
+             ;; the boost-style mixer Symbol/Keyword hash with, and that a
+             ;; library folding several hashes into one calls directly
+             (cons "hashCombine"
+                   (lambda (seed h) (hash-combine (jolt->fx seed) (jolt->fx h)))))))
   (register-class-statics! "Util" util-statics)
   (register-class-statics! "clojure.lang.Util" util-statics))
 ;; Thread/currentThread -> a fresh thread jhost wrapping THIS thread's interrupt

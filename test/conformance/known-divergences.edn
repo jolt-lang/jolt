@@ -100,6 +100,18 @@
   ;; (exact)"), pinned jolt-side: it buckets as :jvm-error in certify (the :actual throws
   ;; on the JVM), which is informational — not gated — so it lives in :documented, not
   ;; in :entries (which certify would flag as stale).
+  ;; OPEN BUG, not an accepted divergence — tracked as jolt-ewmt. jolt keys a
+  ;; protocol's method table by the protocol's SIMPLE name, so two protocols with
+  ;; the same name in different namespaces share one table and the later extend
+  ;; silently replaces the earlier one. The JVM keys by the protocol interface's
+  ;; fully-qualified name, so they stay distinct. Recorded here because it
+  ;; produces a WRONG VALUE rather than an error, which is the failure mode worth
+  ;; naming; the regression fixture is test/chez/proto-collision-app.
+  {:category :bug
+   :behavior "two namespaces each (defprotocol Greet ...) and (extend-protocol Greet Object ...)"
+   :jvm "each namespace's own impl runs — :from-A and :from-B"
+   :jolt "whichever loaded last wins for both — :from-B and :from-B"
+   :note "jolt-ewmt. Fix keys protocol impls by defining-ns + name; host interfaces (Object, java.util.Map, clojure.lang.Seqable) must stay bare."}
   {:category :numeric-model
    :behavior "(loop [i 5] (+ i 9223372036854775807))"
    :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"
