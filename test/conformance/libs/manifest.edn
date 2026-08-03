@@ -299,8 +299,19 @@
                 borkdude/edamame {:mvn/version "1.5.37"}
                 fipp/fipp {:mvn/version "0.6.29"}
                 mvxcvi/arrangement {:mvn/version "2.1.0"}}
+   ;; java.time.LocalDate/MIN and friends are registered by jolt.time's
+   ;; install-seams!, and nothing in malli's own requires reaches it, so four
+   ;; namespaces load-failed on LocalDate/-MIN until it was preloaded.
+   :preload ["jolt.time"]
    :timeout 900
-   :expect {:tests 28 :pass 121 :fail 4 :error 8 :load-fail 20}}
+   ;; Keying protocol dispatch by defining namespace (jolt-ewmt) is what moved
+   ;; this: malli.generator-ast evals a textually-renamed copy of
+   ;; malli.generator, so a SECOND protocol also named Generator was extended to
+   ;; Object and replaced the real -generator. Eight more namespaces load and the
+   ;; suite went 28 tests / 121 assertions to the figures below. The remaining
+   ;; load failures are fipp reaching Clojure's private #'clojure.core/mk-am
+   ;; through core.rrb-vector, and jsonista (Jackson) — both JVM-internal.
+   :expect {:tests 202 :pass 11847 :fail 135 :error 132 :load-fail 8}}
 
   ;; ---------------------------------------------------------- web
   {:name "ring-codec"
@@ -320,9 +331,15 @@
                 crypto-equality/crypto-equality {:mvn/version "1.0.1"}}
    ;; The two session/cookie suites are written against clj-time, which is Joda —
    ;; a JVM library with no jolt equivalent. The multipart suites need Apache
-   ;; commons-fileupload and commons-io; both are JVM-only too.
-   :note "clj-time (Joda) + commons-fileupload/commons-io are JVM-only"
-   :expect {:tests 152 :pass 408 :fail 15 :error 18 :load-fail 2}}
+   ;; commons-fileupload, JVM-only. commons-io (IOUtils/toByteArray in the
+   ;; byte-array store, FileUtils/writeStringToFile in the resource-response
+   ;; test) is supplied by the preloaded jolt.shim.commons-io shim. The
+   ;; resource tests still hit java.net.URLClassLoader and jar: URLs, JDK
+   ;; surface with no jolt equivalent.
+   :shims ["!test/conformance/libs/shims/ring-core"]
+   :preload ["jolt.shim.commons-io"]
+   :note "clj-time (Joda) + commons-fileupload are JVM-only; URLClassLoader/jar: URLs are jolt gaps"
+   :expect {:tests 152 :pass 411 :fail 15 :error 17 :load-fail 2}}
 
   {:name "ring-spec"
    :paths ["src" "test"]
