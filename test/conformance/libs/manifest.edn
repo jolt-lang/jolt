@@ -123,6 +123,17 @@
    :paths ["src" "resources" "test"]
    :deps ["@tools.reader/src/main/clojure" "@test.check/src/main/clojure"]
    :expect {:tests 163 :pass 3381 :fail 0 :error 0}}
+  ;; Upstream runs test-isolated/ as its own kaocha profile, and the isolation is
+  ;; the point: the test asserts a coercion works when rewrite-clj.zip is the ONLY
+  ;; namespace required, so requiring any other test namespace pulls in
+  ;; rewrite-clj.node and the assertion passes for the wrong reason. A separate
+  ;; entry is a separate process, which is exactly that isolation.
+  {:name "rewrite-clj-isolated"
+   :root "rewrite-clj"
+   :paths ["src" "resources" "test-isolated"]
+   :test-paths ["test-isolated"]
+   :deps ["@tools.reader/src/main/clojure"]
+   :expect {:tests 1 :pass 1 :fail 0 :error 0}}
 
   ;; ---------------------------------------------------------- spec + testing
   {:name "spec.alpha"
