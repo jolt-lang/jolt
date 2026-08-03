@@ -452,6 +452,34 @@
 (defn- intrinsic-dep? [lib]
   (or (= lib 'org.clojure/clojure) (= lib 'org.clojure/clojurescript)))
 
+(declare effective-pom-deps)
+
+;; ...but org.clojure/clojure being intrinsic does NOT make its DEPENDENCIES
+;; intrinsic. The artifact depends on spec.alpha and core.specs.alpha, neither of
+;; which is part of core on either host, so on the JVM a project that declares
+;; only Clojure still gets clojure.spec.alpha — and libraries lean on that,
+;; requiring spec without ever naming it (kaocha, and spec.alpha's own suite).
+;; Dropping the coordinate whole took its children with it and those libraries
+;; could not load. Substitute the children instead.
+(def ^:private clojure-spec-libs
+  '[org.clojure/spec.alpha org.clojure/core.specs.alpha])
+
+;; What Clojure 1.12 ships, for when the POM cannot be read (offline, or a
+;; hand-installed jar). Being a version behind is far better than the namespace
+;; being absent, which is a load failure rather than a resolution difference.
+(def ^:private clojure-spec-fallback
+  {'org.clojure/spec.alpha {:mvn/version "0.5.238"}
+   'org.clojure/core.specs.alpha {:mvn/version "0.4.74"}})
+
+(defn- clojure-spec-deps
+  "The spec coordinates the declared Clojure would bring in on the JVM, read off
+  that Clojure's own POM so the versions match what tools.deps would resolve."
+  [coord]
+  (or (when (:mvn/version coord)
+        (not-empty (select-keys (or (effective-pom-deps 'org.clojure/clojure coord true) {})
+                                clojure-spec-libs)))
+      clojure-spec-fallback))
+
 (defn- absolutize-local [spec base-dir]
   (if (and (map? spec) (:local/root spec))
     (update spec :local/root #(abspath base-dir %))
@@ -464,12 +492,16 @@
   may fill it during expansion)."
   [deps base-dir]
   (into []
-        (keep (fn [[lib spec]]
-                (cond
-                  (intrinsic-dep? lib) nil
-                  (:jolt/module spec)
-                  (do (info "skipping janet dependency " lib " (:jolt/module is obsolete on Chez)") nil)
-                  :else [lib (absolutize-local spec base-dir)])))
+        (mapcat (fn [[lib spec]]
+                  (cond
+                    ;; jolt IS Clojure, so the coordinate itself contributes
+                    ;; nothing — but its spec children are not part of core here
+                    ;; either, and on the JVM they come in with it.
+                    (= lib 'org.clojure/clojure) (seq (clojure-spec-deps spec))
+                    (intrinsic-dep? lib) nil
+                    (:jolt/module spec)
+                    (do (info "skipping janet dependency " lib " (:jolt/module is obsolete on Chez)") nil)
+                    :else [[lib (absolutize-local spec base-dir)]])))
         deps))
 
 (defn- known-coord? [coord]
@@ -509,8 +541,14 @@
   declared coordinate before jolt filters by scope, so a test-scoped dependency
   jolt drops anyway can be what makes a POM unmodellable. A nil sends the caller
   to whatever pom.xml the jar itself carries; the alternative, failing the whole
-  resolution over a dependency that may not even be reachable, is worse."
-  [lib coord]
+  resolution over a dependency that may not even be reachable, is worse.
+
+  quiet? suppresses the fallback warning, for a caller that has its own answer
+  for a missing POM and so is not degrading — the Clojure spec substitution
+  below reads this way and would otherwise warn on every offline resolution
+  about a jar jolt never loads."
+  ([lib coord] (effective-pom-deps lib coord false))
+  ([lib coord quiet?]
   (memoized
    [:effective-pom lib (ext/dep-id lib coord)]
    (fn []
@@ -519,10 +557,11 @@
                    :version (:mvn/version coord)}
            effective (try (grenadine.pom/effective-pom coords pom-text)
                           (catch :default e
-                            (warn "no effective POM for " lib " "
-                                  (:mvn/version coord) ": " (ex-message e)
-                                  "\n  falling back to the pom.xml in its jar;"
-                                  " transitive deps may be incomplete")
+                            (when-not quiet?
+                              (warn "no effective POM for " lib " "
+                                    (:mvn/version coord) ": " (ex-message e)
+                                    "\n  falling back to the pom.xml in its jar;"
+                                    " transitive deps may be incomplete"))
                             nil))]
        (when effective
          (into
@@ -541,7 +580,7 @@
                            (fn [{:keys [group artifact]}]
                              (symbol group artifact))
                            exclusions))))])))
-          (:deps effective)))))))
+          (:deps effective))))))))
 
 (defn- manifest-info
   "Manifest detection for a git/local directory root: its deps.edn, else a bare

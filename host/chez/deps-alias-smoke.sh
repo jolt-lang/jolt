@@ -288,6 +288,13 @@ check "java.time library autoloads from roots" "fixture-zone:UTC" "$(run -A:time
 # x), are written in this form and so could not read at all.
 check "the dot form of a static autoloads too" "fixture-zone:UTC" "$(run -A:time run -m appzonedot)"
 
+# ...and so does CONSTRUCTING a library class through an imported simple name.
+# host-new does attempt the autoload, but the java.time library's name list is
+# hand-maintained and had drifted from what the library actually registers:
+# DateTimeFormatterBuilder was missing, so the fully-qualified form autoloaded and
+# the imported simple name did not. malli's transform.cljc builds one that way.
+check "constructing a library class autoloads" "fixture-builder" "$(run -A:time run -m appzonector)"
+
 # off the roots the reference still names the dependency to add
 out="$(runfull run -m appzone)"
 case "$out" in
@@ -316,6 +323,21 @@ case "$out" in
   *"Add io.github.jolt-lang/time"*)
     check "broken provider is not reported as missing" "no add-the-dependency advice" "$(printf '%s' "$out" | head -1)" ;;
   *) check "broken provider is not reported as missing" ok ok ;;
+esac
+
+# org.clojure/clojure is intrinsic here — jolt IS Clojure — but on the JVM that
+# artifact depends on spec.alpha and core.specs.alpha, so a project declaring only
+# Clojure still gets clojure.spec.alpha. Libraries lean on that and require spec
+# without naming it (kaocha does, rewrite-clj's suite does). Dropping the
+# coordinate whole took its children with it. Needs the network for the two small
+# artifacts, so it is skipped when they cannot be fetched rather than failing.
+SPECPROJ="$root/test/chez/deps-alias/specproj"
+out="$(JOLT_PWD="$SPECPROJ" JOLT_QUIET=1 "$JOLT" run -m specapp 2>&1 | tail -1)"
+case "$out" in
+  "spec: true false") check "spec.alpha is transitive from org.clojure/clojure" ok ok ;;
+  *"Could not locate"*|*"could not"*|*"no such"*)
+    echo "  SKIP: spec.alpha transitivity (spec artifacts not fetchable offline)" >&2 ;;
+  *) check "spec.alpha is transitive from org.clojure/clojure" "spec: true false" "$out" ;;
 esac
 
 # --- tools.deps CLI surface -------------------------------------------------

@@ -253,8 +253,16 @@
 ;; plus java.util.Locale. An unresolved reference to one of these — or to any
 ;; other unresolved java.time. class — names the dependency rather than leaving a
 ;; bare "Unknown class".
+;; This list has to name EVERY class jolt-lang/time registers, in both the simple
+;; and the fully-qualified spelling. A fully-qualified miss also reaches the
+;; autoload through java-time-prefixed?, so a name missing here fails only for the
+;; IMPORTED SIMPLE form — which is how libraries actually write it, and why
+;; DateTimeFormatterBuilder being absent kept malli's transform.cljc from loading
+;; while (java.time.format.DateTimeFormatterBuilder.) worked. When the library
+;; grows a class, add it here.
 (define jt-library-names
   '("DateTimeFormatter" "java.time.format.DateTimeFormatter"
+    "DateTimeFormatterBuilder" "java.time.format.DateTimeFormatterBuilder"
     "FormatStyle" "java.time.format.FormatStyle"
     "ZoneOffset" "java.time.ZoneOffset" "ZoneId" "java.time.ZoneId"
     "ZonedDateTime" "java.time.ZonedDateTime"

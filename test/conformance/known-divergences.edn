@@ -265,17 +265,6 @@
    :jvm "the WHOLE shared backing array (slice is a view; .array ignores the offset)"
    :jolt "just the sliced bytes (slice copies)"
    :note "jolt's byte-buffer state is #(backing position limit) with no array offset, so a slice cannot express \"0-based view into a shared backing\". Read paths — hexdumps, decoders — are unaffected; a write through a slice does not propagate back. Tracked as jolt-93c9."}
-  ;; org.clojure/clojure's POM depends on org.clojure/spec.alpha and
-  ;; org.clojure/core.specs.alpha, so on the JVM any project that declares Clojure
-  ;; gets clojure.spec.alpha for free. jolt provides clojure.core natively and
-  ;; resolves no dependency for it, so nothing pulls spec in implicitly. Surfaced
-  ;; running rewrite-clj's own kaocha alias, which requires clojure.spec.alpha
-  ;; without naming it as a dependency.
-  {:category :host-model
-   :behavior "(require 'clojure.spec.alpha) in a project whose only dep is org.clojure/clojure"
-   :jvm "loads — spec.alpha and core.specs.alpha come in transitively through Clojure's POM"
-   :jolt "Could not locate clojure/spec/alpha — the dependency must be declared explicitly"
-   :note "jolt has no org.clojure/clojure artifact to hang transitive deps off; core IS the runtime. Adding org.clojure/spec.alpha to deps.edn resolves it from Maven and everything works. Whether jolt should synthesize the transitive edge is open."}
   ;; No classloaders. This is not a shim gap that could be filled — a classloader
   ;; is a JVM linkage concept, and jolt compiles ahead of time to native code with
   ;; no class-loading step to intercept. Surfaced running kaocha, whose dynapath

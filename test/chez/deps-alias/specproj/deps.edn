@@ -1,0 +1,6 @@
+;; A project whose ONLY dependency is Clojure itself. On the JVM that is enough
+;; to get clojure.spec.alpha, because the org.clojure/clojure artifact depends on
+;; org.clojure/spec.alpha and org.clojure/core.specs.alpha — so libraries require
+;; spec without ever naming it (kaocha does, rewrite-clj's suite does).
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}}}
