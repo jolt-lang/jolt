@@ -190,12 +190,14 @@
    ;; json-gen-test round-trips through stest/check, which generates via test.check
    :deps ["~time/src" "@spec.alpha/src/main/clojure" "@test.check/src/main/clojure"]
    :timeout 900
-   ;; The residue is one case in each of the two APIs: an astral character. jolt
-   ;; strings are codepoint-indexed, so .charAt hands data.json's escaper a value
-   ;; above 0xFFFF where the JVM hands it a surrogate — the escape comes out
-   ;; \u1f603 rather than the \ud83d\ude03 pair, and the unescaped path throws
-   ;; out of (char cp). :string-model, see known-divergences.edn.
-   :expect {:tests 244 :pass 320 :fail 2 :error 2}}
+   ;; The residue is one :escape-unicode true case in each of the two APIs, and
+   ;; it is the string model rather than a bug: jolt strings are codepoint-indexed,
+   ;; so .charAt hands data.json's escaper an astral character whole where the JVM
+   ;; hands it a surrogate half, and the escape comes out \u1f603 rather than the
+   ;; \ud83d\ude03 pair. Matching would mean UTF-16 count/nth/char. The
+   ;; :escape-unicode false path used to throw out of (char cp) and no longer does.
+   ;; :string-model, see known-divergences.edn.
+   :expect {:tests 244 :pass 322 :fail 2 :error 0}}
 
   {:name "data.zip"
    :paths ["src/main/clojure" "src/test/clojure"]
@@ -334,11 +336,12 @@
    ;; byte-array store, FileUtils/writeStringToFile in the resource-response
    ;; test) is supplied by the preloaded jolt.shim.commons-io shim. The
    ;; resource tests still hit java.net.URLClassLoader and jar: URLs, JDK
-   ;; surface with no jolt equivalent.
+   ;; surface with no jolt equivalent. The 8 failures that went away were
+   ;; java.io.File comparing by identity under = rather than by pathname.
    :shims ["!test/conformance/libs/shims/ring-core"]
    :preload ["jolt.shim.commons-io"]
    :note "clj-time (Joda) + commons-fileupload are JVM-only; URLClassLoader/jar: URLs are jolt gaps"
-   :expect {:tests 152 :pass 411 :fail 15 :error 17 :load-fail 2}}
+   :expect {:tests 152 :pass 419 :fail 7 :error 17 :load-fail 2}}
 
   {:name "ring-spec"
    :paths ["src" "test"]
