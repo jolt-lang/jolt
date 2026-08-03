@@ -64,7 +64,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   values wp ci
 
 # Only mark PHONY targets for names that have file system conflicts:
-.PHONY: build install test ci
+.PHONY: build install test ci gate-run-test gate-run-ci gate-status
 
 default:: build
 
@@ -93,17 +93,106 @@ install: build
 	install -d '$(PREFIX)/bin'
 	install -m 755 target/release/jolt '$(PREFIX)/bin/jolt'
 
+# --- the gate ---------------------------------------------------------------
+#
+# A gate is only worth anything if an INCOMPLETE run cannot be read as a pass.
+# Three things go wrong otherwise, and all three have happened:
+#
+#   1. make stops at the first failing target, so every target after it never
+#      runs. Re-running a hand-picked subset afterwards prints per-target
+#      success that looks exactly like the whole gate's.
+#   2. `make test | tail` reports tail's status, and the log then ENDS on some
+#      passing target's output — the failure scrolled past.
+#   3. `make -i` exits 0 even when targets failed.
+#
+# So: the gate runs as a sub-make, a verdict line is printed either way (the log
+# can never end on a passing target), the exit status is preserved, and a receipt
+# naming the covered tree is written ONLY on a complete pass. `make gate-status`
+# answers "is this working tree gated?" — which is not something to remember.
+
+CI-GATES := submodules values corpus unit grenadine mvnhttp depssmoke depsunit \
+  smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi \
+  transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
+  protoret pic narrow directlink unitcontext numeric oparity mathfl flarr \
+  inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke \
+  gatebootsmoke aotcachesmoke aotfingerprint compilepathsmoke makefilesmoke \
+  certify
+TEST-GATES := submodules selfhost ci
+
+GATE-RECEIPT := target/gate-receipt
+
+# Every tracked and every untracked-but-not-ignored file, so adding a source file
+# invalidates the receipt as surely as editing one does.
+GATE-FINGERPRINT = git ls-files -z -c -o --exclude-standard \
+  | xargs -0 cat 2>/dev/null \
+  | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } \
+  | cut -d' ' -f1
+
+# -i ignores failures outright; -k runs on past them and leaves a later target's
+# success as the last thing in the log. Both turn the gate into decoration. This
+# has to refuse at PARSE time: -i ignores the failure of a recipe line, including
+# a guard's own, so a guard inside the recipe is itself ignored and the gate runs.
+# make groups SHORT flags into the first word of MAKEFLAGS with no leading dash
+# ("ik"); long options stay separate words. Read the first word only when it is
+# that group, or --no-print-directory matches a search for "i".
+MAKE-SHORT-FLAGS := $(filter-out -%,$(firstword $(MAKEFLAGS)))
+ifneq (,$(filter test ci gate-run-test gate-run-ci,$(MAKECMDGOALS)))
+ifneq (,$(findstring i,$(MAKE-SHORT-FLAGS)))
+$(error make -i ignores failures, so the gate cannot fail — drop -i)
+endif
+ifneq (,$(findstring k,$(MAKE-SHORT-FLAGS)))
+$(error make -k runs past failures, so the log's last line is not the verdict — drop -k)
+endif
+endif
+
+# $(1) = gate name, $(2) = target list
+define run-gate
+@rm -f '$(GATE-RECEIPT)'
+@if $(MAKE) --no-print-directory gate-run-$(1); then \
+  mkdir -p target; \
+  { echo "gate: $(1)"; \
+    echo "tree: $$($(GATE-FINGERPRINT))"; \
+    echo "head: $$(git rev-parse HEAD 2>/dev/null || echo none)"; \
+    echo "targets: $(2)"; } > '$(GATE-RECEIPT)'; \
+  echo "OK: $(1) gate passed ($(words $(2)) targets)"; \
+else \
+  st=$$?; \
+  echo "FAILED: $(1) gate did not complete — targets after the failure never ran,"; \
+  echo "        so nothing here is evidence the rest of the gate passes."; \
+  exit $$st; \
+fi
+endef
+
 # Full gate (dev machine). Includes the self-host byte-fixpoint, which only holds
 # on the same Chez that minted the seed.
-test: submodules selfhost ci
-	@echo "OK: all gates passed"
+test:
+	$(call run-gate,test,$(TEST-GATES))
 
 # CI gate: behavior only. The checked-in seed is a minted artifact (like a
 # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
 # different Chez version may emit byte-different (gensym/order) output, so the
 # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
-ci: submodules values corpus unit grenadine mvnhttp depssmoke depsunit smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric oparity mathfl flarr inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke gatebootsmoke aotcachesmoke aotfingerprint compilepathsmoke makefilesmoke certify
-	@echo "OK: CI gates passed"
+ci:
+	$(call run-gate,ci,$(CI-GATES))
+
+# The prerequisite-only targets the wrappers drive. Not meant to be run directly:
+# they pass silently, which is the thing the wrappers exist to prevent.
+gate-run-test: $(TEST-GATES)
+gate-run-ci: $(CI-GATES)
+
+# Is THIS working tree covered by a complete gate run? A subset run leaves the
+# receipt absent (the wrapper clears it) and any edit since changes the tree hash.
+gate-status:
+	@if [ ! -f '$(GATE-RECEIPT)' ]; then \
+	  echo "NOT GATED: no receipt — run 'make test'"; exit 1; fi
+	@recorded=$$(sed -n 's/^tree: //p' '$(GATE-RECEIPT)'); \
+	 current=$$($(GATE-FINGERPRINT)); \
+	 if [ "$$recorded" != "$$current" ]; then \
+	   echo "NOT GATED: tree changed since the last full gate run"; \
+	   echo "  receipt: $$(sed -n 's/^gate: //p' '$(GATE-RECEIPT)') at $$(sed -n 's/^head: //p' '$(GATE-RECEIPT)')"; \
+	   exit 1; \
+	 fi; \
+	 echo "GATED: $$(sed -n 's/^gate: //p' '$(GATE-RECEIPT)') gate passed on this exact tree"
 
 # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
 selfhost:
