@@ -32,6 +32,12 @@
 ;; (test.chuck rebinds it around its property reports).
 (def ^:dynamic *testing-contexts* (list))
 
+;; The assertion's source position, stashed by the `is` macro from (meta &form).
+;; The reference computes :file/:line with a stack walk in do-report; jolt has no
+;; walk, so `is` reads the reader metadata (line/column always, :file when the
+;; form came from a required file) and do-report merges it into :fail/:error maps.
+(def ^:dynamic *report-pos* nil)
+
 ;; Where test reporting goes. A library that captures test output binds this and
 ;; wraps its printing in with-test-out — test.check's clojure-test integration
 ;; does exactly that — so everything this namespace prints goes through it too.
@@ -62,21 +68,6 @@
     (str/join " " (reverse *testing-contexts*))
     (str/join " " @ctx-stack)))
 
-(defn inc-pass! [] (swap! counters update :pass inc))
-(defn fail! [form]
-  (let [line (str (ctx-str) (when (or (seq *testing-contexts*) (seq @ctx-stack)) " ") "FAIL: " form)]
-    (swap! counters (fn [r] (-> r (update :fail inc) (update :fails conj line))))
-    (with-test-out (println line))))
-(defn err! [form]
-  (let [line (str (ctx-str) (when (or (seq *testing-contexts*) (seq @ctx-stack)) " ") "ERROR: " form)]
-    (swap! counters (fn [r] (-> r (update :error inc) (update :fails conj line))))
-    (with-test-out (println line))))
-
-(defn n-pass [] (:pass @counters))
-(defn n-fail [] (:fail @counters))
-(defn n-error [] (:error @counters))
-(defn failures [] (:fails @counters))
-
 ;; Message of a thrown value: ex-info's message, else a raw host condition's text
 ;; (ex-message is nil for those), else its printed form — so a crash is never
 ;; reported with a blank message.
@@ -84,6 +75,92 @@
   (or (ex-message e)
       (jolt.host/condition-message e)
       (str e)))
+
+(defn- report-value [v]
+  ;; A throwable renders through its own toString, like the reference's
+  ;; :error report — "clojure.lang.ExceptionInfo: boom {}", not the class token
+  ;; followed by the message. jolt cannot print the frames underneath it (tail
+  ;; calls leave none), which is the documented part of this divergence.
+  (if (instance? Throwable v)
+    (str v)
+    (pr-str v)))
+
+(defn- report-line [m]
+  (str (when (:message m) (str (:message m)
+                               (when (or (:form m) (contains? m :expected) (contains? m :actual)) " ")))
+       (when (:form m) (pr-str (:form m)))
+       (when (contains? m :expected) (str " expected: " (pr-str (:expected m))))
+       (when (contains? m :actual) (str " actual: " (report-value (:actual m))))))
+
+(defn testing-contexts-str
+  "Returns a string representation of the current test context, innermost last."
+  []
+  (str/join " " (reverse *testing-contexts*)))
+
+(defn source-file-name
+  "Base name of the file being compiled, or nil outside a file load. The
+  reference gets this off a stack frame; jolt reads *file*, which the loader
+  binds to the full path."
+  []
+  (when-let [v (resolve '*file*)]
+    (when-let [f (deref v)]
+      (when (string? f)
+        (let [i (str/last-index-of f "/")]
+          (if i (subs f (inc i)) f))))))
+
+(defn testing-vars-str
+  "Returns a string representation of the current test: the names in
+  *testing-vars* as a list, then the source file and line of the assertion."
+  [m]
+  (let [{:keys [file line]} m]
+    (str (reverse (map (fn [v] (or (:name (meta v)) (:name v))) *testing-vars*))
+         " (" file ":" line ")")))
+
+(def *initial-report-counters* {:test 0, :pass 0, :fail 0, :error 0})
+
+;; The reference's report methods bump *report-counters* and nothing else; jolt's
+;; also feed a process-wide atom that the harnesses read through n-pass/n-fail/
+;; failures. Keeping those separate is what stops a count landing twice: the
+;; report methods call bump-counters! (ref only) and then inc-pass!/fail!/err!
+;; (atom only).
+(defn- bump-counters! [k]
+  (when *report-counters*
+    (dosync (commute *report-counters* assoc k (inc (or (@*report-counters* k) 0))))))
+
+(defn inc-report-counter
+  "Bump a counter by key. With *report-counters* bound this moves that ref, as
+  the reference does; without one it moves jolt's process-wide tally, which is
+  what a caller outside a run is asking for."
+  [k]
+  (if *report-counters*
+    (bump-counters! k)
+    (swap! counters update k (fnil inc 0))))
+
+(defn inc-pass! [] (swap! counters update :pass inc))
+(defn fail! [m]
+  (let [line (str (ctx-str) (when (or (seq *testing-contexts*) (seq @ctx-stack)) " ") "FAIL: " (report-line m))]
+    (swap! counters (fn [r] (-> r (update :fail inc) (update :fails conj line))))
+    (with-test-out
+      (println "\nFAIL in" (testing-vars-str m))
+      (when (seq *testing-contexts*) (println (testing-contexts-str)))
+      (when-let [message (:message m)] (println message))
+      (println "expected:" (pr-str (:expected m)))
+      (println "  actual:" (pr-str (:actual m))))))
+(defn err! [m]
+  (let [line (str (ctx-str) (when (or (seq *testing-contexts*) (seq @ctx-stack)) " ") "ERROR: " (report-line m))]
+    (swap! counters (fn [r] (-> r (update :error inc) (update :fails conj line))))
+    (with-test-out
+      (println "\nERROR in" (testing-vars-str m))
+      (when (seq *testing-contexts*) (println (testing-contexts-str)))
+      (when-let [message (:message m)] (println message))
+      (println "expected:" (pr-str (:expected m)))
+      (println "  actual:" (report-value (:actual m))))))
+
+(defn n-pass [] (:pass @counters))
+(defn n-fail [] (:fail @counters))
+(defn n-error [] (:error @counters))
+(defn failures [] (:fails @counters))
+
 
 ;; clojure.test/report multimethod — present so suites that add reporting
 ;; methods (defmethod clojure.test/report :begin-test-var ...) load. The runner
@@ -102,21 +179,21 @@
 ;; A Throwable in :actual (an assertion that threw) renders as its class and
 ;; message rather than as printed data — pr-str of a condition says nothing
 ;; about what went wrong.
-(defn- report-value [v]
-  (if (instance? Throwable v)
-    (str (class v) ": " (err-text v))
-    (pr-str v)))
 
-(defn- report-line [m]
-  (str (when (:message m) (str (:message m)
-                               (when (or (:form m) (contains? m :expected) (contains? m :actual)) " ")))
-       (when (:form m) (pr-str (:form m)))
-       (when (contains? m :expected) (str " expected: " (pr-str (:expected m))))
-       (when (contains? m :actual) (str " actual: " (report-value (:actual m))))))
-(defmethod report :pass [_m] (inc-pass!))
-(defmethod report :fail [m] (fail! (report-line m)))
-(defmethod report :error [m] (err! (report-line m)))
-(defn do-report [m] (report m))
+(defmethod report :pass [_m] (bump-counters! :pass) (inc-pass!))
+(defmethod report :fail [m] (bump-counters! :fail) (fail! m))
+(defmethod report :error [m] (bump-counters! :error) (err! m))
+(defn do-report
+  "Add source position to a test result and call report. The reference walks
+  the stack for :file/:line; jolt's `is` macro stashes the assertion's position
+  (from (meta &form)) in *report-pos*, merged here for :fail/:error reports."
+  [m]
+  (let [m (if (or (:file m) (:line m))
+            m
+            (if (and (or (= :fail (:type m)) (= :error (:type m))) *report-pos*)
+              (merge *report-pos* m)
+              m))]
+    (report m)))
 
 ;; assert-expr is the macro-level extension point: `is` expands a form by calling
 ;; (assert-expr msg form), dispatched on the form's first symbol (or :default /
@@ -208,8 +285,8 @@
 (defn- thrown-form? [form sym]
   (and (seq? form) (symbol? (first form)) (= sym (name (first form)))))
 
-(defmacro is
-  ([form] `(is ~form nil))
+(defmacro is-impl
+  ([form] `(is-impl ~form nil))
   ([form msg]
    (cond
      ;; a library-registered custom assertion (the assert-expr extension point)
@@ -316,21 +393,29 @@
           (clojure.test/do-report {:type :error :message ~msg :form '~form
                                    :expected '~form :actual e#}))))))
 
+(defmacro is
+  "Test any expression, returning true if it does not throw or returns
+   logical true. Stashes the assertion's source position (from (meta &form))
+   so :fail/:error reports carry the reference's (file:line) header."
+  ([form] `(is ~form nil))
+  ([form msg]
+   ;; is-impl is a MACRO, so emit a CALL to it and let it expand in the normal
+   ;; pipeline — invoking it here (~(is-impl form msg)) would apply the macro as
+   ;; a function and its assert-expr dispatch would never run.
+   ;;
+   ;; The reader stamps :line/:column on the form; the file comes from *file*,
+   ;; reduced to its base name because that is what the reference prints and what
+   ;; tooling matches on (test.check asserts #"\(clojure_test_test\.cljc:\d+\)$").
+   (let [pos (assoc (select-keys (meta &form) [:line])
+                    :file (source-file-name))]
+     `(binding [clojure.test/*report-pos* ~pos]
+        (is-impl ~form ~msg)))))
+
 (defmacro testing [s & body]
   `(binding [clojure.test/*testing-contexts* (conj clojure.test/*testing-contexts* ~s)]
      ~@body))
 
-(defn testing-contexts-str
-  "Returns a string representation of the current test context, innermost last."
-  []
-  (str/join " " (reverse *testing-contexts*)))
 
-(defn testing-vars-str
-  "Returns a string representation of the current test: the names in
-  *testing-vars* as a list, then the source file and line of the assertion."
-  [m]
-  (str (reverse (map (fn [v] (:name (meta v))) *testing-vars*))
-       " (" (:file m) ":" (:line m) ")"))
 
 (defmacro deftest [name & body]
   (when *load-tests*
@@ -405,13 +490,19 @@
   (reduce compose-fixtures (fn [f] (f)) fixtures))
 
 (defn- run-one [t]
+  (bump-counters! :test)
   (swap! counters update :test inc)
   (wrap-fixtures (get @each-fixtures (:ns t) [])
     (fn []
-      (try
-        ((:fn t))
-        (catch Throwable e
-          (err! (str (:name t) " crashed: " (err-text e))))))))
+      ;; bind *testing-vars* the way test-var does, so a failure inside a
+      ;; registry-run test still names it in the "FAIL in (name)" header
+      (binding [*testing-vars* (conj *testing-vars* {:name (:name t) :ns (:ns t)})]
+        (try
+          ((:fn t))
+          (catch Throwable e
+            (err! {:type :error
+                   :message (str (:name t) " crashed")
+                   :expected nil :actual e})))))))
 
 ;; A registered test still counts only while its var carries :test metadata.
 ;; clojure.test discovers tests by scanning vars for that key, so removing it is
@@ -483,10 +574,6 @@
 
 ;; --- var-level API (clojure.test parity) -------------------------------------
 
-(def *initial-report-counters* {:test 0, :pass 0, :fail 0, :error 0})
-
-(defn inc-report-counter [k]
-  (swap! counters update k (fnil inc 0)))
 
 (defn test-var
   "Run the test attached to var v via its :test metadata, with *testing-vars*
@@ -494,11 +581,14 @@
   [v]
   (when-let [t (:test (meta v))]
     (binding [*testing-vars* (conj *testing-vars* v)]
+      (bump-counters! :test)
       (swap! counters update :test inc)
       (try
         (t)
         (catch Throwable e
-          (err! (str (:name (meta v)) " crashed: " (err-text e))))))))
+          (err! {:type :error
+                 :message (str (:name (meta v)) " crashed")
+                 :expected nil :actual e}))))))
 
 (defn test-vars
   "Run the vars' :test fns, each namespace group wrapped in its :once fixtures
