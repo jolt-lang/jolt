@@ -148,7 +148,9 @@ endif
 # $(1) = gate name, $(2) = target list
 define run-gate
 @rm -f '$(GATE-RECEIPT)'
-@if $(MAKE) --no-print-directory gate-run-$(1); then \
+# `+` marks the line recursive so the jobserver is handed down: without it the
+# sub-make runs -j1 and a parallel gate silently serializes.
++@if $(MAKE) --no-print-directory gate-run-$(1); then \
   mkdir -p target; \
   { echo "gate: $(1)"; \
     echo "tree: $$($(GATE-FINGERPRINT))"; \
