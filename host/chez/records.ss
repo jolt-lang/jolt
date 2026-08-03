@@ -1387,6 +1387,7 @@
 ;; (seq an-iterator) / (iterator-seq it): a jiterator wraps the remaining seq in
 ;; cur, so seq just yields it — clojure.test's (iterator-seq (.iterator coll)).
 (register-seq-arm! jiterator? jiterator-cur)
+
 ;; A Chez condition's message string (for Throwable .getMessage/.toString): the
 ;; &message text plus any &irritants, or display-condition output as a fallback.
 (define (condition->message-string c)
@@ -1680,6 +1681,37 @@
     (make-jreify ht (map (lambda (p) (if (symbol-t? p) (symbol-t-name p) p)) protos) delegate)))
 (define (make-reified methods-map . proto-names)
   (make-reified-delegating methods-map #f proto-names))
+;; A deftype or reify that DECLARES java.lang.Iterable or java.util.Iterator is
+;; seqable, as on the JVM: seq of an Iterable walks its iterator, and seq of an
+;; Iterator walks what it has left. ring's multipart middleware hands its item
+;; iterator to `sequence` wrapped in (reify Iterable (iterator [_] ...)), which
+;; used to fail "Don't know how to create ISeq from: ...$reify__0".
+;;
+;; The walk is LAZY, one element per forced cell: an iterator is a cursor over
+;; something being produced, and realizing it eagerly would both change when the
+;; producer runs and defeat any caller that stops early.
+;; Seqable wins over Iterable, as in RT.seqFrom: a type declaring both is seqed
+;; through its own seq method, not its iterator. Arms are consulted newest-first
+;; and these are registered last, so without the check they would shadow the
+;; coll-interface arm above for every deftype that declares both.
+(define (iface-prefers-seq? v)
+  (or (jrec-declares-coll-iface? v) (and (iface-method v "seq" #f) #t)))
+(define (iface-iterator-obj v)
+  (and (or (jrec? v) (jreify? v)) (not (iface-prefers-seq? v)) (iface-method v "iterator" #f)))
+(define (iface-iterator-cursor v)
+  (and (or (jrec? v) (jreify? v)) (not (iface-prefers-seq? v)) (iface-method v "hasNext" #f)))
+(define (iterator-cursor->seq it)
+  (jolt-make-lazy-seq
+   (lambda ()
+     (if (jolt-truthy? (record-method-dispatch it "hasNext" jolt-nil))
+         (let ((v (record-method-dispatch it "next" jolt-nil)))
+           (jolt-cons v (iterator-cursor->seq it)))
+         jolt-nil))))
+(register-seq-arm! iface-iterator-cursor
+                   (lambda (x) (jolt-seq (iterator-cursor->seq x))))
+(register-seq-arm! (lambda (x) (and (iface-iterator-obj x) (not (iface-iterator-cursor x))))
+                   (lambda (x) (jolt-seq (record-method-dispatch x "iterator" jolt-nil))))
+
 
 ;; satisfies?: does obj's type implement the protocol? proto must be a defprotocol
 ;; value (a map with a :name); a host Class/interface or any non-protocol throws —

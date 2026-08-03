@@ -347,22 +347,27 @@
    :paths ["ring-core/src" "ring-core-protocols/src" "ring-websocket-protocols/src"
            "ring-core/test"]
    :test-paths ["ring-core/test"]
-   :deps ["@ring-codec/src" "~time/src"]
+   :deps ["@ring-codec/src" "~time/src" "~multipart/src"]
    :local-deps ["~jolt-crypto"]
    :extra-deps {crypto-random/crypto-random {:mvn/version "1.2.1"}
                 crypto-equality/crypto-equality {:mvn/version "1.0.1"}}
    ;; The two session/cookie suites are written against clj-time, which is Joda —
-   ;; a JVM library with no jolt equivalent. The multipart suites need Apache
-   ;; commons-fileupload, JVM-only. commons-io (IOUtils/toByteArray in the
+   ;; a JVM library with no jolt equivalent. The multipart suites are served by
+   ;; jolt.shim.commons-fileupload, which registers the commons-fileupload2 class
+   ;; surface ring reaches for over jolt-lang/multipart's RFC 7578 parser — glue,
+   ;; not a parser, so ring's own code paths stay its own. Every multipart test
+   ;; passes. commons-io (IOUtils/toByteArray in the
    ;; byte-array store, FileUtils/writeStringToFile in the resource-response
    ;; test) is supplied by the preloaded jolt.shim.commons-io shim. The
    ;; resource tests still hit java.net.URLClassLoader and jar: URLs, JDK
    ;; surface with no jolt equivalent. The 8 failures that went away were
    ;; java.io.File comparing by identity under = rather than by pathname.
    :shims ["!test/conformance/libs/shims/ring-core"]
-   :preload ["jolt.shim.commons-io"]
+   ;; commons-fileupload before ring.middleware.multipart-params, which imports
+   ;; its classes at load.
+   :preload ["jolt.shim.commons-io" "jolt.shim.commons-fileupload"]
    :note "clj-time (Joda) + commons-fileupload are JVM-only; URLClassLoader/jar: URLs are jolt gaps"
-   :expect {:tests 152 :pass 419 :fail 7 :error 17 :load-fail 2}}
+   :expect {:tests 152 :pass 446 :fail 5 :error 5 :load-fail 2}}
 
   {:name "ring-spec"
    :paths ["src" "test"]

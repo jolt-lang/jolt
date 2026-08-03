@@ -124,6 +124,11 @@
   ;; compare response bodies that way. The two-arg ctor joins with exactly one
   ;; separator; a parent ending in "/" used to produce "a//c".
   {:suite "interop / File" :label "File equality by pathname, and one-separator join" :expected "[true false true 1 \"a/c\" \"a/c\" \"/c\" \"a/c\" \"a\"]" :actual "(let [a (java.io.File. \"a/b\") b (java.io.File. \"a/b\") c (java.io.File. \"a/c\")] [(= a b) (= a c) (= #{a} #{b}) (get {a 1} b) (.getPath (java.io.File. (java.io.File. \"a/\") \"c\")) (.getPath (java.io.File. \"a\" \"c\")) (.getPath (java.io.File. \"/\" \"c\")) (.getPath (java.io.File. \"a\" \"/c\")) (.getPath (java.io.File. \"a\" \"\"))])" :portability :jvm}
+  ;; A deftype or reify declaring java.lang.Iterable or java.util.Iterator is
+  ;; seqable, as on the JVM. ring's multipart middleware hands `sequence` an
+  ;; item iterator wrapped in (reify Iterable (iterator [_] ...)). Seqable wins
+  ;; over Iterable for a type declaring both, matching RT.seqFrom.
+  {:suite "interop / Iterable" :label "a reify Iterable or Iterator is seqable, and Seqable wins" :expected "[[1 2 3] [10 20 30] [11 21 31] [7 8]]" :actual "(let [src (atom [1 2 3]) it (reify java.util.Iterator (hasNext [_] (boolean (seq @src))) (next [_] (let [v (first @src)] (swap! src rest) v))) able (reify Iterable (iterator [_] (let [s (atom [10 20 30])] (reify java.util.Iterator (hasNext [_] (boolean (seq @s))) (next [_] (let [v (first @s)] (swap! s rest) v)))))) _ (deftype Both [xs] clojure.lang.Seqable (seq [_] (seq xs)) Iterable (iterator [_] (throw (ex-info \"iterator must not win\" {}))))] [(vec (iterator-seq it)) (vec (seq able)) (vec (sequence (map inc) able)) (vec (seq (->Both [7 8])))])" :portability :jvm}
   ;; java.lang.reflect.Array with a concrete component type is array allocation,
   ;; not reflection — malli's regex engine writes (Array/newInstance Object n)
   ;; where its own :bb and :cljs branches write (object-array n). Void/TYPE is
