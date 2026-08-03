@@ -308,11 +308,13 @@
    ;; malli.generator, so a SECOND protocol also named Generator was extended to
    ;; Object and replaced the real -generator. Eight more namespaces load and the
    ;; suite went 28 tests / 121 assertions to the figures below. The remaining
-   ;; load failures are fipp reaching Clojure's private #'clojure.core/mk-am
-   ;; through core.rrb-vector (7) and jsonista, i.e. Jackson (1) — both
-   ;; JVM-internal — plus four malli.experimental.time namespaces blocked on the
-   ;; (. Class FIELD) static-field dot form, which is a jolt gap.
-   :expect {:tests 202 :pass 11847 :fail 135 :error 132 :load-fail 12}}
+   ;; The 8 remaining load failures are both JVM-internal: fipp reaching Clojure's
+   ;; private #'clojure.core/mk-am through core.rrb-vector (7), and jsonista, i.e.
+   ;; Jackson (1). The four malli.experimental.time namespaces that used to sit
+   ;; alongside them are gone — they were blocked on the (. Class FIELD)
+   ;; static-field dot form, which is fixed. fail/error rose because those seven
+   ;; namespaces now RUN.
+   :expect {:tests 209 :pass 11934 :fail 148 :error 134 :load-fail 8}}
 
   ;; ---------------------------------------------------------- web
   {:name "ring-codec"
