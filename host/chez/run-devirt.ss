@@ -28,7 +28,7 @@
 ;; var name (c/sq) the emitted code resolves at eval time.
 (define (devirt-emit type recv)
   (let* ((ir (analyze (make-analyze-ctx "user") (jolt-ce-read (string-append "(area " recv ")"))))
-         (dv (jolt-assoc ir (kw "devirt-type") type (kw "devirt-proto") "Shape"
+         (dv (jolt-assoc ir (kw "devirt-type") type (kw "devirt-proto") "user/Shape"
                          (kw "devirt-method") "area")))
     (emit dv)))
 
@@ -66,7 +66,7 @@
        (dn (analyze (make-analyze-ctx "user") (jolt-ce-read "(def usearea (fn [x] (area x)))")))
        (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
        (inv (jolt-get ar0 (kw "body")))
-       (inv2 (jolt-assoc inv (kw "devirt-type") "user.Circle" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+       (inv2 (jolt-assoc inv (kw "devirt-type") "user.Circle" (kw "devirt-proto") "user/Shape" (kw "devirt-method") "area"))
        (dn2 (jolt-assoc dn (kw "init")
                         (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
                                     (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
@@ -90,7 +90,7 @@
        (dn (analyze (make-analyze-ctx "user") (jolt-ce-read "(def usearea2 (fn [x] (area x)))")))
        (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
        (inv (jolt-get ar0 (kw "body")))
-       (inv2 (jolt-assoc inv (kw "devirt-type") "user.Circle" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+       (inv2 (jolt-assoc inv (kw "devirt-type") "user.Circle" (kw "devirt-proto") "user/Shape" (kw "devirt-method") "area"))
        (dn2 (jolt-assoc dn (kw "init")
                         (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
                                     (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))

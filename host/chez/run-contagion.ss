@@ -80,21 +80,21 @@
 (evals "(defrecord Circle [r] Shape (area [s] (:r s)))")
 (evals "(def c (->Circle 7))")
 (define clone-fn (lambda (s) 'CLONE))
-(register-clone "user.Circle" "Shape" "area" clone-fn)
+(register-clone "user.Circle" "user/Shape" "area" clone-fn)
 (gate-check "(4) devirt-resolve-fl finds the clone"
-       (eq? (devirt-resolve-fl "user.Circle" "Shape" "area" (var-deref "user" "c")) clone-fn) #t)
+       (eq? (devirt-resolve-fl "user.Circle" "user/Shape" "area" (var-deref "user" "c")) clone-fn) #t)
 ;; Square.area has no clone -> devirt-resolve-fl falls back to devirt-resolve.
 (evals "(defrecord Square [w] Shape (area [s] (* (:w s) (:w s))))")
 (evals "(def sq (->Square 5))")
 (gate-check "(4) devirt-resolve-fl falls back when no clone (Square.area)"
-       (eq? (devirt-resolve-fl "user.Square" "Shape" "area" (var-deref "user" "sq"))
-            (devirt-resolve "user.Square" "Shape" "area" (var-deref "user" "sq"))) #t)
+       (eq? (devirt-resolve-fl "user.Square" "user/Shape" "area" (var-deref "user" "sq"))
+            (devirt-resolve "user.Square" "user/Shape" "area" (var-deref "user" "sq"))) #t)
 ;; a re-extend re-registers the impl -> register-protocol-method invalidates the clone
 ;; for exactly (Circle/Shape/area) -> devirt-resolve-fl falls back to the fresh impl.
 (evals "(extend-type Circle Shape (area [s] (:r s)))")
 (gate-check "(4) clone invalidated on re-register (epoch)"
-       (eq? (devirt-resolve-fl "user.Circle" "Shape" "area" (var-deref "user" "c"))
-            (devirt-resolve "user.Circle" "Shape" "area" (var-deref "user" "c"))) #t)
+       (eq? (devirt-resolve-fl "user.Circle" "user/Shape" "area" (var-deref "user" "c"))
+            (devirt-resolve "user.Circle" "user/Shape" "area" (var-deref "user" "c"))) #t)
 
 ;; === (5) backend emits a contagion clone for an eligible impl ==================
 ;; A :num field beside a proven :double operand -> the register-inline-method call
@@ -142,7 +142,7 @@
   (let* ((dn (anode "(def usem2 (fn [x] (m2 x)))"))
          (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
          (inv (jolt-get ar0 (kw "body")))
-         (inv2 (jolt-assoc inv (kw "devirt-type") type (kw "devirt-proto") "P2" (kw "devirt-method") "m2")))
+         (inv2 (jolt-assoc inv (kw "devirt-type") type (kw "devirt-proto") "user/P2" (kw "devirt-method") "m2")))
     (jolt-assoc dn (kw "init")
                 (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
                             (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))

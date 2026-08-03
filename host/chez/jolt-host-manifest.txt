@@ -111,6 +111,7 @@ monitor-enter
 monitor-exit
 mono-nanos
 park-until-interrupt
+protocol-key-of
 protocol-methods
 rational-type?
 read-all-stdin

@@ -46,7 +46,7 @@
   (let* ((dn  (analyze (make-analyze-ctx "user") (jolt-ce-read "(def usearea (fn [x] (area x)))")))
          (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
          (inv (jolt-get ar0 (kw "body")))
-         (inv2 (jolt-assoc inv (kw "proto") "Shape" (kw "method") "area"))
+         (inv2 (jolt-assoc inv (kw "proto") "user/Shape" (kw "method") "area"))
          (dn2 (jolt-assoc dn (kw "init")
                           (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
                                       (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
@@ -83,8 +83,8 @@
 (let* ((dn  (analyze (make-analyze-ctx "user") (jolt-ce-read "(def usearea2 (fn [x] (area x)))")))
        (ar0 (jolt-nth (jolt-get (jolt-get dn (kw "init")) (kw "arities")) 0))
        (inv (jolt-get ar0 (kw "body")))
-       (inv2 (jolt-assoc inv (kw "proto") "Shape" (kw "method") "area"
-                         (kw "devirt-type") "user.Circle" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+       (inv2 (jolt-assoc inv (kw "proto") "user/Shape" (kw "method") "area"
+                         (kw "devirt-type") "user.Circle" (kw "devirt-proto") "user/Shape" (kw "devirt-method") "area"))
        (dn2 (jolt-assoc dn (kw "init")
                         (jolt-assoc (jolt-get dn (kw "init")) (kw "arities")
                                     (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
@@ -102,9 +102,9 @@
 (let* ((cd (hashtable-ref chez-tag-desc "user.Circle" #f))
        (sd (hashtable-ref chez-tag-desc "user.Square" #f))
        (td (hashtable-ref chez-tag-desc "user.Triangle" #f)))
-  (gate-check "Circle desc ptable resolves" (not (not (find-protocol-method-desc cd "Shape" "area"))) #t)
-  (gate-check "Square desc ptable resolves" (not (not (find-protocol-method-desc sd "Shape" "area"))) #t)
-  (gate-check "Triangle desc ptable resolves" (not (not (find-protocol-method-desc td "Shape" "area"))) #t))
+  (gate-check "Circle desc ptable resolves" (not (not (find-protocol-method-desc cd "user/Shape" "area"))) #t)
+  (gate-check "Square desc ptable resolves" (not (not (find-protocol-method-desc sd "user/Shape" "area"))) #t)
+  (gate-check "Triangle desc ptable resolves" (not (not (find-protocol-method-desc td "user/Shape" "area"))) #t))
 
 ;; re-def Circle via defrecord to test old-desc invalidation. The old desc's
 ;; ptable must be set to #f so pre-redef instances fall back to the string
@@ -114,13 +114,13 @@
        (new-desc (hashtable-ref chez-tag-desc "user.Circle" #f)))
   (gate-check "old desc invalidated after redef"     (jrdesc-ptable old-desc) #f)
   (gate-check "find-protocol-method-desc misses on old desc"
-         (find-protocol-method-desc old-desc "Shape" "area") #f)
+         (find-protocol-method-desc old-desc "user/Shape" "area") #f)
   (gate-check "new desc ptable resolves after redef"
-         (not (not (find-protocol-method-desc new-desc "Shape" "area"))) #t)
+         (not (not (find-protocol-method-desc new-desc "user/Shape" "area"))) #t)
   ;; protocol-resolve on a pre-redef instance still works (falls back to string
   ;; registry when the desc's ptable is #f).
   (gate-check "protocol-resolve old instance after redef"
-         (not (not (protocol-resolve "Shape" "area" (var-deref "user" "c")))) #t))
+         (not (not (protocol-resolve "user/Shape" "area" (var-deref "user" "c")))) #t))
 
 ;; ---- contagion: a PIC (megamorphic) site never resolves a contagion clone ------
 ;; Contagion clones are gated to monomorphic devirt sites by construction — only the
@@ -141,7 +141,7 @@
          (ddn  (analyze (make-analyze-ctx "user") (jolt-ce-read "(def dvring (fn [x] (area x)))")))
          (ar0  (jolt-nth (jolt-get (jolt-get ddn (kw "init")) (kw "arities")) 0))
          (inv  (jolt-get ar0 (kw "body")))
-         (inv2 (jolt-assoc inv (kw "devirt-type") "user.Ring" (kw "devirt-proto") "Shape" (kw "devirt-method") "area"))
+         (inv2 (jolt-assoc inv (kw "devirt-type") "user.Ring" (kw "devirt-proto") "user/Shape" (kw "devirt-method") "area"))
          (ddn2 (jolt-assoc ddn (kw "init") (jolt-assoc (jolt-get ddn (kw "init")) (kw "arities")
                                                        (jolt-vector (jolt-assoc ar0 (kw "body") inv2))))))
     (wp-infer! U (jolt-vector ring-def ring-ctor))

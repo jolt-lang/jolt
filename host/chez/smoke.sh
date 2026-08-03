@@ -514,24 +514,21 @@ else
   fails=$((fails + 1))
 fi
 
-# Protocol identity across namespaces (bead jolt-ewmt, OPEN). Two namespaces each
-# define a protocol named Greet and extend it to Object. Reference Clojure keys a
-# protocol by its interface FQN, so each namespace keeps its own impl and this
-# prints "A=:from-A B=:from-B"; jolt keys by the SIMPLE name, so the second extend
-# replaces the first and both read :from-B. This asserts the CURRENT jolt output
-# on purpose, the same way certify gates known divergences: when jolt-ewmt is
-# fixed this check goes red, and the expectation below must be changed to the
-# reference line rather than the fix landing unnoticed.
+# Protocol identity across namespaces. Two namespaces each define a protocol named
+# Greet and extend it to Object; they are distinct interfaces, so each namespace
+# keeps its own impl, and a record in one namespace does not answer instance? for
+# a same-named protocol in the other. Keying by the SIMPLE name made the second
+# extend replace the first — a silent wrong answer rather than a crash, and it
+# needs two namespaces, so it is a fixture rather than a corpus row.
+pc_want="A=:from-A B=:from-B reified=:reified-A cross-instance=false own-instance=true satisfies=true"
 pc_jolt="$(cd "$(dirname "$jolt_bin")" && pwd)/$(basename "$jolt_bin")"
 pc_out="$(cd "$root/test/chez/proto-collision-app" && "$pc_jolt" -M -m app.core 2>/dev/null)"
-if [ "$pc_out" = "A=:from-B B=:from-B" ]; then
+if [ "$pc_out" = "$pc_want" ]; then
   pass=$((pass + 1))
-elif [ "$pc_out" = "A=:from-A B=:from-B" ]; then
-  echo "  FAIL: protocol collision (jolt-ewmt) now matches reference Clojure —"
-  echo "    update this expectation to 'A=:from-A B=:from-B' and close the bead"
-  fails=$((fails + 1))
 else
-  echo "  FAIL: protocol collision fixture: $pc_out"
+  echo "  FAIL: protocol identity fixture"
+  echo "    want: $pc_want"
+  echo "    got:  $pc_out"
   fails=$((fails + 1))
 fi
 

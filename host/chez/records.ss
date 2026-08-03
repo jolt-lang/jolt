@@ -757,8 +757,55 @@
 (def-var! "clojure.core" "map?" jolt-map?)
 (def-var! "clojure.core" "coll?" (lambda (x) (or (jrec-collection? x) (jolt-coll-pred? x))))
 
+;; ---- protocol identity ------------------------------------------------------
+;; A protocol's dispatch key is "<defining-ns>/<Name>". Two protocols named alike
+;; in different namespaces are distinct interfaces on the JVM, so they must not
+;; share a dispatch table — keying by the bare name let the later extend silently
+;; replace the earlier one. defprotocol bakes the key into the protocol value and
+;; into its method shims; the type definers read it back off the resolved var, so
+;; every side of a protocol's identity agrees on one string.
+;;
+;; A key naming a HOST interface (Object, java.util.Map, an :import-ed
+;; clojure.lang.ILookup) has no defining namespace and stays bare: that is the
+;; spelling value-host-tags reports.
+(define proto-kw-jtype (keyword #f "jolt/type"))
+(define proto-kw-protocol (keyword #f "jolt/protocol"))
+(define proto-kw-name (keyword #f "name"))
+(define (jolt-protocol-value? v)
+  (and (pmap? v) (eq? (jolt-get v proto-kw-jtype jolt-nil) proto-kw-protocol)))
+(define (protocol-value-key v)
+  (and (jolt-protocol-value? v)
+       (let ((n (jolt-get v proto-kw-name jolt-nil)))
+         (cond ((symbol-t? n) (symbol-t-name n))
+               ((string? n) n)
+               (else #f)))))
+(define (proto-str-index s ch)
+  (let ((n (string-length s)))
+    (let loop ((i 0)) (cond ((fx=? i n) #f) ((char=? (string-ref s i) ch) i) (else (loop (fx+ i 1)))))))
+;; The JVM interface a protocol key names: "ns/Name" -> "ns.Name" (dashes munged,
+;; as the JVM spells a namespace). A host interface name is already canonical.
+(define (proto-iface-name key)
+  (let ((i (proto-str-index key #\/)))
+    (jch-munge-segments
+     (if i
+         (string-append (substring key 0 i) "." (substring key (fx+ i 1) (string-length key)))
+         key))))
+(define (proto-key-qualified? key) (and (proto-str-index key #\/) #t))
+(define (dotted-name? s) (and (proto-str-index s #\.) #t))
+;; Does a protocol key answer an instance?/satisfies? query for CLASS-NAME? A
+;; qualified key must match in full — that is what keeps qb.core.Shape from
+;; matching a reify of qa.core/Shape. A name with no namespace on either side is
+;; matched by last segment: jolt has no import table to resolve a bare interface
+;; name against, so ILookup and clojure.lang.ILookup are the same question.
+(define (proto-class-match? key qname)
+  (let ((ki (proto-iface-name key))
+        (qi (proto-iface-name qname)))
+    (or (string=? ki qi)
+        (and (or (not (dotted-name? ki)) (not (dotted-name? qi)))
+             (string=? (jch-last-segment ki) (jch-last-segment qi))))))
+
 ;; ---- protocol registry ------------------------------------------------------
-;; type-tag -> (proto-name -> (method-name -> fn)) — the source of truth for the
+;; type-tag -> (proto-key -> (method-name -> fn)) — the source of truth for the
 ;; open world (extend-type/extend-protocol at any time, incl. mode A REPL).
 ;; register-protocol-method also mirrors the impl into the type's jrdesc ptable
 ;; (keyed by an interned proto-method identity) so protocol-resolve's record
@@ -834,6 +881,19 @@
 (define (type-satisfies? type-tag proto)
   (let ((ti (hashtable-ref type-registry type-tag #f)))
     (and ti (hashtable-ref ti proto #f) #t)))
+;; instance?'s question, which arrives as a CLASS name rather than a protocol key:
+;; (instance? clojure.lang.ILookup x), (instance? some.ns.SomeProtocol x). Exact
+;; first (a host-interface key is spelled the same), then match each of the type's
+;; protocol keys as an interface name.
+(define (type-implements-class? type-tag qname)
+  (let ((ti (hashtable-ref type-registry type-tag #f)))
+    (and ti
+         (or (and (hashtable-ref ti qname #f) #t)
+             (let* ((ks (hashtable-keys ti)) (n (vector-length ks)))
+               (let loop ((i 0))
+                 (and (fx< i n)
+                      (or (proto-class-match? (vector-ref ks i) qname)
+                          (loop (fx+ i 1))))))))))
 ;; True when a deftype/record instance DECLARES a method by this name (an inline
 ;; protocol impl), so clojure.core can prefer it over generic collection behavior
 ;; — e.g. (empty priority-map) must use the type's own empty, not return {}.
@@ -1157,24 +1217,22 @@
     (unless (hashtable-ref ti proto-name #f)
       (hashtable-set! ti proto-name (make-hashtable string-hash string=?))))
   ;; the protocol's interface joins the type's class ancestry, spelled like the
-  ;; JVM interface. A dotted name (clojure.lang.IPersistentMap, a java interface)
-  ;; is already canonical; a simple protocol name qualifies against the defining
-  ;; ns (assumed current — the macro passes only the simple name).
-  (let ((iface (if (let dotted ((i 0))
-                     (cond ((fx=? i (string-length proto-name)) #f)
-                           ((char=? (string-ref proto-name i) #\.) #t)
-                           (else (dotted (fx+ i 1)))))
-                   proto-name
-                   ;; a SIMPLE name: an imported JVM interface (IPersistentMap, from
-                   ;; (:import (clojure.lang IPersistentMap))) resolves to its
-                   ;; canonical FQN so the type inherits that interface's own
-                   ;; ancestry (IPersistentMap → Associative → IPersistentCollection);
-                   ;; an unknown simple name is a local protocol, qualified against
-                   ;; the defining ns.
-                   (let ((fqn (jch-fqn-of-simple proto-name)))
-                     (if (string=? fqn proto-name)
-                         (string-append (jch-munge-segments (chez-current-ns)) "." proto-name)
-                         fqn)))))
+  ;; JVM interface. A protocol key carries its defining ns, so "a.b/P" is the
+  ;; interface a.b.P wherever the implementing type lives. A dotted host name
+  ;; (clojure.lang.IPersistentMap, a java interface) is already canonical.
+  (let ((iface (cond
+                 ((proto-key-qualified? proto-name) (proto-iface-name proto-name))
+                 ((dotted-name? proto-name) proto-name)
+                 ;; a SIMPLE name: an imported JVM interface (IPersistentMap, from
+                 ;; (:import (clojure.lang IPersistentMap))) resolves to its
+                 ;; canonical FQN so the type inherits that interface's own
+                 ;; ancestry (IPersistentMap → Associative → IPersistentCollection);
+                 ;; anything else is qualified against the defining ns.
+                 (else
+                  (let ((fqn (jch-fqn-of-simple proto-name)))
+                    (if (string=? fqn proto-name)
+                        (string-append (jch-munge-segments (chez-current-ns)) "." proto-name)
+                        fqn))))))
     (jch-mark-interface! iface)
     (jch-register-supers! (string-append (chez-current-ns) "." type-name) (list iface)))
   jolt-nil)
@@ -1619,8 +1677,9 @@
     (cond
       ((jrec? obj) (type-satisfies? (jrec-tag obj) pn-str))
       ((jreify? obj)
-       (let ((short (last-dot pn-str)))
-         (and (memp (lambda (p) (string=? (last-dot p) short)) (jreify-protos obj)) #t)))
+       (and (memp (lambda (p) (or (string=? p pn-str) (proto-class-match? p pn-str)))
+                  (jreify-protos obj))
+            #t))
       (else (let loop ((tags (value-host-tags obj)))
               (cond ((null? tags) #f)
                     ((type-satisfies? (car tags) pn-str) #t)
@@ -1714,5 +1773,17 @@
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)
 (def-var! "jolt.host" "type-satisfies?" type-satisfies?)
+;; The dispatch key for the protocol SYM names — resolved the way any other
+;; reference resolves, through :refer and :as — or nil when the symbol names no
+;; protocol (a host class or interface, which keeps its bare name). deftype /
+;; defrecord / reify / extend-type call this at macroexpansion so an impl is
+;; filed under the protocol's own identity rather than the name it was spelled
+;; with at the use site.
+(def-var! "jolt.host" "protocol-key-of"
+  (lambda (sym)
+    (or (and (symbol-t? sym)
+             (let ((v (jolt-resolve sym)))
+               (and (var-cell? v) (protocol-value-key (var-cell-root v)))))
+        jolt-nil)))
 (def-var! "clojure.core" "make-reified" (lambda (mm . rest) (apply make-reified mm rest)))
 (def-var! "clojure.core" "record-method-dispatch" (lambda (obj m rest) (record-method-dispatch obj m rest)))

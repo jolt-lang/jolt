@@ -2,9 +2,12 @@
   (:require [pa.core :as a]
             [pb.core :as b]))
 
-;; Reference Clojure prints "A=:from-A B=:from-B": the two protocols are distinct
-;; interfaces, so each namespace's extend stands on its own. jolt keys a
-;; protocol's method table by the protocol's SIMPLE name, so pb.core's extend
-;; replaces pa.core's and both read :from-B — bead jolt-ewmt.
+;; A protocol's identity is its defining namespace plus its name, so pa.core/Greet
+;; and pb.core/Greet are distinct interfaces and each namespace's extend stands on
+;; its own. Reference Clojure prints exactly this line.
 (defn -main [& _]
-  (println (str "A=" (a/greet 1) " B=" (b/greet 1))))
+  (println (str "A=" (a/greet 1) " B=" (b/greet 1)
+                " reified=" (a/greet (a/reified))
+                " cross-instance=" (instance? pb.core.Greeter (a/reified))
+                " own-instance=" (instance? pa.core/Greet (a/reified))
+                " satisfies=" (satisfies? pa.core/Greet (a/reified)))))

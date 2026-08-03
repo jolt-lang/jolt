@@ -72,6 +72,16 @@
 (defn prefers [mm]
   (prefers-setup mm))
 
+;; A protocol's identity is its defining namespace plus its name: two protocols
+;; named alike in different namespaces are distinct interfaces on the JVM, so
+;; their impls must not share a dispatch table. protocol-key-of resolves the
+;; symbol through :refer and :as and answers the key the protocol was defined
+;; with; a symbol naming no protocol — a host class or interface (Object,
+;; java.util.Map, an :import-ed clojure.lang.ILookup) — keeps its bare name,
+;; which is how the tags a value reports are spelled.
+(defn- protocol-key [sym]
+  (or (jolt.host/protocol-key-of sym) (name sym)))
+
 ;; instance? stays a MACRO: jolt class names (and host-shim class names registered
 ;; via __register-class-ctor!) don't uniformly evaluate to values, so a bare
 ;; class-name symbol is passed QUOTED to the ctx-capturing checker. A LIST in type
@@ -83,14 +93,21 @@
 ;; instance-check (the fn this expands to), so instance? works as a value for a
 ;; class that evaluates to a Class (java.*/clojure.lang.*); only a bare deftype/
 ;; shim name passed as a value can't (no evaluable Class).
+;; A symbol naming a PROTOCOL passes its ns-qualified key instead of the bare
+;; name, so (instance? Shape x) asks about the Shape of THIS namespace — the JVM
+;; resolves the same symbol to one specific generated interface.
 (defmacro instance? [t x]
-  (if (or (seq? t) (contains? &env t)
-          (and (symbol? t)
-               (when-let [v (clojure.core/resolve t)]
-                 (and (clojure.core/bound? v)
-                      (jolt.host/class-object? (clojure.core/var-get v))))))
-    `(instance-check ~t ~x)
-    `(instance-check (quote ~t) ~x)))
+  (let [local? (or (seq? t) (contains? &env t))
+        pkey (when (and (symbol? t) (not local?)) (jolt.host/protocol-key-of t))]
+    (cond
+      local? `(instance-check ~t ~x)
+      pkey `(instance-check ~pkey ~x)
+      (and (symbol? t)
+           (when-let [v (clojure.core/resolve t)]
+             (and (clojure.core/bound? v)
+                  (jolt.host/class-object? (clojure.core/var-get v)))))
+      `(instance-check ~t ~x)
+      :else `(instance-check (quote ~t) ~x))))
 
 ;; Take x's monitor for the duration of body (futures/agents/threads share one
 ;; heap, so this is a real per-object lock), releasing on any exit.
@@ -505,11 +522,11 @@
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
        (def ~arrow ~tname)
        ~@(mapcat (fn [g]
-                   (let [proto (first g)
+                   (let [proto (protocol-key (first g))
                          names (distinct (map (fn [spec] (name (first spec))) (rest g)))]
-                     (cons `(register-inline-protocol! ~(name tname) ~(name proto))
+                     (cons `(register-inline-protocol! ~(name tname) ~proto)
                            (map (fn [nm]
-                                  `(register-inline-method ~(name tname) ~(name proto) ~nm
+                                  `(register-inline-method ~(name tname) ~proto ~nm
                                                            (fn ~@(get by-name nm))))
                                 names))))
                  groups)
@@ -530,19 +547,23 @@
                  :else s))
         methods (reduce (fn [m sig]
                           (assoc m (keyword (name (first sig))) {:name (name (first sig))}))
-                        {} sigs)]
+                        {} sigs)
+        ;; the protocol's identity: this namespace plus the name (see protocol-key).
+        ;; Baked here so the value, the dispatch shims and every later impl
+        ;; registration all key on one string.
+        pkey (str *ns* "/" (name pname))]
     `(do
-       (def ~pname (make-protocol ~(name pname) ~methods))
+       (def ~pname (make-protocol ~pkey ~methods))
        ;; register method var-keys for devirtualization; the inference
        ;; reads this (via infer-unit!) to resolve a protocol call on a known record
-       (register-protocol-methods! ~(name pname) [~@(map (fn [s] (name (first s))) sigs)])
+       (register-protocol-methods! ~pkey [~@(map (fn [s] (name (first s))) sigs)])
        ;; one fn clause per declared arity. The protocol/method NAMES pass as
        ;; strings so the body compiles as a plain invoke (not symbol-as-var). The
        ;; common 1/2/3-param arities call positional protocol-dispatchN, which
        ;; applies the impl directly — no rest-list cons; 4+ params fall back to the
        ;; variadic protocol-dispatch with a vector of the extra args.
        ~@(map (fn [sig]
-                (let [pn (name pname)
+                (let [pn pkey
                       mn (name (first sig))
                       arglists (filter vector? (rest sig))
                       clause (fn [argv]
@@ -632,7 +653,7 @@
                    forms
                    (let [x (first items)]
                      (if (symbol? x)
-                       (recur (rest items) (name x) forms)
+                       (recur (rest items) (protocol-key x) forms)
                        (recur (rest items) proto
                               (conj forms
                                     `(register-method ~tref ~proto ~(name (first x))
@@ -707,7 +728,7 @@
     (if (empty? items)
       `(make-reified
          ~(reduce (fn [m k] (assoc m k `(fn ~@(get methods k)))) {} order)
-         ~@(vec (map name protos)))
+         ~@(vec (map protocol-key protos)))
       (let [x (first items)]
         (if (symbol? x)
           (recur (rest items) (conj protos x) methods order)
@@ -771,11 +792,11 @@
                                (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))
                                (dissoc ~m ~@(map (fn [f] (keyword (name f))) fields)))))
        ~@(mapcat (fn [g]
-                   (let [proto (first g)
+                   (let [proto (protocol-key (first g))
                          names (distinct (map (fn [spec] (name (first spec))) (rest g)))]
-                     (cons `(register-inline-protocol! ~(name name-sym) ~(name proto))
+                     (cons `(register-inline-protocol! ~(name name-sym) ~proto)
                            (map (fn [nm]
-                                  `(register-inline-method ~(name name-sym) ~(name proto) ~nm
+                                  `(register-inline-method ~(name name-sym) ~proto ~nm
                                                            (fn ~@(get by-name nm))))
                                 names))))
                  groups))))
