@@ -122,7 +122,7 @@
   {:name "rewrite-clj"
    :paths ["src" "resources" "test"]
    :deps ["@tools.reader/src/main/clojure" "@test.check/src/main/clojure"]
-   :expect {:tests 162 :pass 3380 :fail 0 :error 0}}
+   :expect {:tests 163 :pass 3381 :fail 0 :error 0}}
 
   ;; ---------------------------------------------------------- spec + testing
   {:name "spec.alpha"
@@ -214,7 +214,7 @@
   ;; ---------------------------------------------------------- markup / text
   {:name "hiccup"
    :paths ["src" "test"]
-   :expect {:tests 64 :pass 385 :fail 1 :error 0}}
+   :expect {:tests 64 :pass 386 :fail 0 :error 0}}
 
   {:name "markdown-clj"
    :paths ["src/clj" "src/cljc" "test"]
@@ -261,9 +261,19 @@
   ;; ---------------------------------------------------------- data / config
   {:name "honeysql"
    :paths ["src" "test"]
+   ;; honey.sql-alphanumeric-test is a defspec over generated identifiers, so it
+   ;; needs test.check and test.chuck's generators the way honeysql's own
+   ;; deps.edn declares them; without those on the recipe the namespace is a
+   ;; load failure rather than a missing dependency anyone would notice.
    :deps ["~time/src" "@core.cache/src/main/clojure"
-          "@data.priority-map/src/main/clojure"]
-   :expect {:tests 175 :pass 832 :fail 0 :error 0}}
+          "@data.priority-map/src/main/clojure"
+          "@test.check/src/main/clojure" "@test.chuck/src" "@test.chuck/resources"]
+   ;; test.chuck's string-from-regex generator parses the pattern with instaparse,
+   ;; at the version test.chuck itself declares
+   :extra-deps {instaparse/instaparse {:mvn/version "1.4.10"}}
+   ;; that suite is a defspec, so its assertion count moves with the drawn cases
+   :tolerance 40
+   :expect {:tests 177 :pass 2842 :fail 0 :error 0}}
 
   {:name "config"
    :paths ["src" "test"]
@@ -307,7 +317,7 @@
    ;; a JVM library with no jolt equivalent. The multipart suites need Apache
    ;; commons-fileupload and commons-io; both are JVM-only too.
    :note "clj-time (Joda) + commons-fileupload/commons-io are JVM-only"
-   :expect {:tests 151 :pass 405 :fail 15 :error 18 :load-fail 2}}
+   :expect {:tests 152 :pass 408 :fail 15 :error 18 :load-fail 2}}
 
   {:name "ring-spec"
    :paths ["src" "test"]
@@ -381,7 +391,7 @@
   {:name "tick"
    :paths ["src" "test"]
    :deps ["~time/src" "@spec.alpha/src/main/clojure"]
-   :expect {:tests 41 :pass 620 :fail 0 :error 0 :load-fail 1}}
+   :expect {:tests 67 :pass 723 :fail 0 :error 0}}
 
   ;; ---------------------------------------------------------- skipped
   {:name "process"
