@@ -725,6 +725,19 @@
                            (= :class (:kind r)) (:name r)
                            (host-class-name? nm) nm)))]
     (cond
+      ;; (. Class -MEMBER) is an EXPLICIT static field read — the leading dash is
+      ;; the field spelling, so drop it and take the value without invoking.
+      (and class-target (form-sym? member)
+           (> (count (form-sym-name member)) 1)
+           (= "-" (subs (form-sym-name member) 0 1)))
+        (host-static class-target (subs (form-sym-name member) 1))
+      ;; (. Class MEMBER) with no arguments is ambiguous, as it is on the JVM: a
+      ;; static field if one exists, else a no-arg static method call. jolt keeps
+      ;; one registry for both, so the decision happens at runtime on what is
+      ;; registered. With arguments it is unambiguously a call.
+      (and class-target (form-sym? member) (empty? (drop 3 items)))
+        (invoke (var-ref "jolt.host" "static-member")
+                [(const class-target) (const (form-sym-name member))])
       (and class-target (form-sym? member))
         (invoke (host-static class-target (form-sym-name member))
                 (mapv #(analyze ctx % env) (drop 3 items)))

@@ -124,6 +124,13 @@
   ;; compare response bodies that way. The two-arg ctor joins with exactly one
   ;; separator; a parent ending in "/" used to produce "a//c".
   {:suite "interop / File" :label "File equality by pathname, and one-separator join" :expected "[true false true 1 \"a/c\" \"a/c\" \"/c\" \"a/c\" \"a\"]" :actual "(let [a (java.io.File. \"a/b\") b (java.io.File. \"a/b\") c (java.io.File. \"a/c\")] [(= a b) (= a c) (= #{a} #{b}) (get {a 1} b) (.getPath (java.io.File. (java.io.File. \"a/\") \"c\")) (.getPath (java.io.File. \"a\" \"c\")) (.getPath (java.io.File. \"/\" \"c\")) (.getPath (java.io.File. \"a\" \"/c\")) (.getPath (java.io.File. \"a\" \"\"))])" :portability :jvm}
+  ;; (. Class MEMBER) with no arguments is ambiguous on the JVM too — a static
+  ;; field if one exists, else a no-arg static method — and jolt decides at
+  ;; runtime on what its one registry holds. It used to apply the field VALUE as
+  ;; a zero-arg procedure and hand back nil; the (. Class -MEMBER) field spelling
+  ;; was rejected outright. Four malli namespaces load-failed on LocalDate/-MIN.
+  ;; The two call forms are here so the fix cannot regress them.
+  {:suite "interop / static members" :label "(. Class FIELD), (. Class -FIELD) and the call forms" :expected "[2147483647 2147483647 2147483647 \"42\" 7]" :actual "[(. java.lang.Integer MAX_VALUE) (. java.lang.Integer -MAX_VALUE) java.lang.Integer/MAX_VALUE (. java.lang.Long toString 42) (. java.lang.Long parseLong \"7\")]" :portability :jvm}
   ;; System.arraycopy behaves as if the source range were copied through a
   ;; temporary, so an overlapping copy within one array still reads pre-copy
   ;; values — a naive forward loop gives [1 1 1 1 1] for the second case.

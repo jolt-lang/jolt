@@ -392,6 +392,16 @@
 (define (host-static-call class member . args)
   (apply (host-static-ref class member) args))
 
+;; (. Class member) with no arguments is ambiguous on the JVM too: it reads a
+;; static FIELD when one exists and otherwise calls a no-arg static method. jolt
+;; keeps one registry for both, so the decision is by what is registered — a
+;; procedure is a method to call, anything else is a field value. Without this
+;; the dot form applied a field's value as a zero-arg procedure.
+(def-var! "jolt.host" "static-member"
+  (lambda (class member)
+    (let ((v (host-static-ref class member)))
+      (if (procedure? v) (v) v))))
+
 (define (host-new class . args)
   (let ((ctor (lookup-class class-ctors-tbl class)))
     (cond
