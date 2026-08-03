@@ -145,11 +145,11 @@ $(error make -k runs past failures, so the log's last line is not the verdict â€
 endif
 endif
 
-# $(1) = gate name, $(2) = target list
+# $(1) = gate name, $(2) = target list.
+# The `+` on the sub-make hands the jobserver down; without it the sub-make runs
+# -j1 and a parallel gate silently serializes.
 define run-gate
 @rm -f '$(GATE-RECEIPT)'
-# `+` marks the line recursive so the jobserver is handed down: without it the
-# sub-make runs -j1 and a parallel gate silently serializes.
 +@if $(MAKE) --no-print-directory gate-run-$(1); then \
   mkdir -p target; \
   { echo "gate: $(1)"; \
@@ -537,8 +537,10 @@ gatebootsmoke: gateboot devbootsmoke
 	@sh test/chez/gateboot-smoke.sh
 
 # Smoke test: the dev boot cache is used when fresh and invalidated correctly.
+# MAKEFLAGS cleared: the script re-invokes make itself, and inheriting the
+# jobserver it cannot claim only produces a warning.
 devbootsmoke: devboot
-	@sh test/chez/devboot-smoke.sh
+	@MAKEFLAGS= sh test/chez/devboot-smoke.sh
 
 # Smoke test: the per-namespace AOT/compile cache (miss/hit/invalidate, edge
 # cases, bypass semantics). Drives dev bin/jolt; no Maven jars required. The
