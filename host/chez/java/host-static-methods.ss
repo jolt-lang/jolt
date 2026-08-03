@@ -426,6 +426,13 @@
         (cons "toString" (lambda (x . r) (number->string (jnum->exact x))))))
 
 
+;; java.lang.Void has no values — it exists so a caller can NAME the void
+;; primitive type, which is the only thing TYPE is for here. sci's prim->class
+;; maps every primitive name to its class token and stops at the first one
+;; missing, so the whole of sci.core failed to load without it.
+(register-class-statics! "Void" (list (cons "TYPE" "void")))
+(register-class-statics! "java.lang.Void" (list (cons "TYPE" "void")))
+
 (register-class-statics! "Boolean"
   (list (cons "TYPE" "boolean")
         (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))

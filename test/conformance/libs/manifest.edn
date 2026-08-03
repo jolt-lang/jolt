@@ -199,6 +199,12 @@
    :paths ["src/main/clojure" "src/test/clojure"]
    :test-paths ["src/test/clojure"]
    ;; json-gen-test round-trips through stest/check, which generates via test.check
+   ;; The 72 ::sci-not-available errors are malli.sci dynaloading sci.core, which
+   ;; does not fully load here: sci reaches PRIVATE clojure.core internals by var
+   ;; (imap-cons, system-newline) and pulls further deps behind them. Putting
+   ;; jolt's vendored sci on the path does not change the count — it is a chain,
+   ;; not one gap, and it is what `make sci`'s own floor already tracks. So the
+   ;; :=> / function-schema surface stays unexercised here rather than pretending.
    :deps ["~time/src" "@spec.alpha/src/main/clojure" "@test.check/src/main/clojure"]
    :timeout 900
    ;; The residue is one :escape-unicode true case in each of the two APIs, and
@@ -319,11 +325,15 @@
    ;; suite went 28 tests / 121 assertions to the figures below. The remaining
    ;; The 8 remaining load failures are both JVM-internal: fipp reaching Clojure's
    ;; private #'clojure.core/mk-am through core.rrb-vector (7), and jsonista, i.e.
-   ;; Jackson (1). The four malli.experimental.time namespaces that used to sit
-   ;; alongside them are gone — they were blocked on the (. Class FIELD)
-   ;; static-field dot form, which is fixed. fail/error rose because those seven
-   ;; namespaces now RUN.
-   :expect {:tests 209 :pass 11934 :fail 148 :error 134 :load-fail 8}}
+   ;; Jackson (1).
+   ;;
+   ;; Of what runs: 72 errors are the sci chain above. 104 of the failures are
+   ;; parser-info-test alone, which round-trips values drawn by (mg/sample s
+   ;; {:seed 0}) — a fixed seed draws DIFFERENT values here than on the JVM, so
+   ;; the test runs over different data. :every parsing and registry references
+   ;; themselves agree with 1.12.5 exactly on literal inputs, checked directly.
+   ;; That is the same family as test.check's :tolerance, not a malli bug.
+   :expect {:tests 209 :pass 12059 :fail 149 :error 76 :load-fail 8}}
 
   ;; ---------------------------------------------------------- web
   {:name "ring-codec"

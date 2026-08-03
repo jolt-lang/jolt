@@ -124,6 +124,12 @@
   ;; compare response bodies that way. The two-arg ctor joins with exactly one
   ;; separator; a parent ending in "/" used to produce "a//c".
   {:suite "interop / File" :label "File equality by pathname, and one-separator join" :expected "[true false true 1 \"a/c\" \"a/c\" \"/c\" \"a/c\" \"a\"]" :actual "(let [a (java.io.File. \"a/b\") b (java.io.File. \"a/b\") c (java.io.File. \"a/c\")] [(= a b) (= a c) (= #{a} #{b}) (get {a 1} b) (.getPath (java.io.File. (java.io.File. \"a/\") \"c\")) (.getPath (java.io.File. \"a\" \"c\")) (.getPath (java.io.File. \"/\" \"c\")) (.getPath (java.io.File. \"a\" \"/c\")) (.getPath (java.io.File. \"a\" \"\"))])" :portability :jvm}
+  ;; java.lang.reflect.Array with a concrete component type is array allocation,
+  ;; not reflection — malli's regex engine writes (Array/newInstance Object n)
+  ;; where its own :bb and :cljs branches write (object-array n). Void/TYPE is
+  ;; the one primitive class token jolt was missing; sci maps every primitive
+  ;; name to its token and stopped at the first absent one.
+  {:suite "interop / reflect Array" :label "newInstance, getLength, get and set" :expected "[3 :x nil 3 \"void\"]" :actual "(let [a (java.lang.reflect.Array/newInstance Object 3)] (java.lang.reflect.Array/set a 0 :x) [(java.lang.reflect.Array/getLength a) (java.lang.reflect.Array/get a 0) (java.lang.reflect.Array/get a 1) (alength a) (str Void/TYPE)])" :portability :jvm}
   ;; A URL built with a URLStreamHandler reads through it, whatever its protocol:
   ;; openConnection is the handler's and openStream is that connection's
   ;; getInputStream, so slurp and io/reader both reach it. Selmer's
