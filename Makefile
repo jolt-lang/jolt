@@ -122,11 +122,18 @@ TEST-GATES := submodules selfhost ci
 GATE-RECEIPT := target/gate-receipt
 
 # Every tracked and every untracked-but-not-ignored file, so adding a source file
-# invalidates the receipt as surely as editing one does.
-GATE-FINGERPRINT = git ls-files -z -c -o --exclude-standard \
-  | xargs -0 cat 2>/dev/null \
-  | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } \
-  | cut -d' ' -f1
+# invalidates the receipt as surely as editing one does. Hash each file's NAME and
+# content, over a SORTED list: `git ls-files -c -o` groups untracked separately, so
+# concatenating in its order made the hash change when a file merely went from
+# untracked to tracked — committing, which changes nothing, read as "not gated".
+# The submodule paths list as directories, which the per-file hash cannot read;
+# their pinned SHAs come from submodule status instead, so a submodule bump
+# invalidates the receipt too.
+GATE-FINGERPRINT = { git ls-files -z -c -o --exclude-standard \
+    | LC_ALL=C sort -z | xargs -0 $(GATE-SHA) 2>/dev/null; \
+    git submodule status --recursive 2>/dev/null; } \
+  | $(GATE-SHA) | cut -d' ' -f1
+GATE-SHA = $$(command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo "shasum -a 256")
 
 # -i ignores failures outright; -k runs on past them and leaves a later target's
 # success as the last thing in the log. Both turn the gate into decoration. This
