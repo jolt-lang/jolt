@@ -227,9 +227,12 @@
    ;; Maven now, so the real one — snakeyaml, i.e. Java — is what gets loaded and
    ;; it dies on DumperOptions$FlowStyle. The same jolt-lang/yaml source goes on
    ;; ahead of it as a shim so clj_yaml.core resolves to the compatibility layer.
-   :shims ["~yaml/src"]
-   ;; the 2 errors are org.apache.commons.lang.StringEscapeUtils, a JVM jar
-   :expect {:tests 94 :pass 180 :fail 0 :error 2}}
+   :shims ["~yaml/src" "!test/conformance/libs/shims/markdown-clj"]
+   ;; the autourl tests unescape markdown's HTML output through
+   ;; org.apache.commons.lang.StringEscapeUtils, supplied by the preloaded
+   ;; jolt.shim.commons-lang shim. No residue.
+   :preload ["jolt.shim.commons-lang"]
+   :expect {:tests 94 :pass 182 :fail 0 :error 0}}
 
   {:name "Selmer"
    :paths ["src" "test" "resources"]
@@ -246,8 +249,10 @@
    ;; level and reads its `user` var, so it still has to compile — hence criterium.
    :shims ["!test/conformance/libs/shims/cheshire" "!test/conformance/libs/shims/criterium"]
    :exclude-nses ["selmer.benchmark"]
-   ;; The one remaining error is commons-lang StringEscapeUtils, a JVM jar with no
-   ;; portable equivalent. Nothing else fails.
+   ;; The one remaining error is the :custom-resource-path test, which hands
+   ;; render-file a URL-valued resource root ("https://example.com/…") that
+   ;; jolt cannot read from. StringEscapeUtils is not referenced anywhere in
+   ;; the suite, so no commons-lang shim is attached. Nothing else fails.
    ;;
    ;; The locale work behind this tally lives on three extension points core
    ;; declares and jolt-lang/time fills in: :date-names, :number-symbols and
