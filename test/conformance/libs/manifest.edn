@@ -177,14 +177,12 @@
    :deps ["@test.check/src/main/clojure" "@spec.alpha/src/main/clojure"]
    ;; The suite checks jolt's base64 against commons-codec's, which the
    ;; jolt.shim.commons-codec shim registers ahead of the library's sources.
-   ;; The 4 errors are System/arraycopy in the suite's copy-bytes helper — a
-   ;; java.lang.System host gap, filed separately, not a shim. The 2 failures
-   ;; are clojure.lang.IFn$O..O primitive-interface instance? checks, JVM
-   ;; function interfaces jolt has no model for.
+   ;; The 2 remaining failures are clojure.lang.IFn$O..O primitive-interface
+   ;; instance? checks — JVM function interfaces jolt has no model for.
    :shims ["!test/conformance/libs/shims/data.codec"]
    :preload ["jolt.shim.commons-codec"]
-   :note "System/arraycopy is a jolt host gap; IFn$O..O interfaces are JVM-only"
-   :expect {:tests 14 :pass 8 :fail 2 :error 4}}
+   :note "IFn$O..O primitive function interfaces are JVM-only"
+   :expect {:tests 14 :pass 12 :fail 2 :error 0}}
 
   {:name "data.json"
    :paths ["src/main/clojure" "src/test/clojure"]
