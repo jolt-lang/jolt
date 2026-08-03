@@ -130,6 +130,12 @@
   ;; the one primitive class token jolt was missing; sci maps every primitive
   ;; name to its token and stopped at the first absent one.
   {:suite "interop / reflect Array" :label "newInstance, getLength, get and set" :expected "[3 :x nil 3 \"void\"]" :actual "(let [a (java.lang.reflect.Array/newInstance Object 3)] (java.lang.reflect.Array/set a 0 :x) [(java.lang.reflect.Array/getLength a) (java.lang.reflect.Array/get a 0) (java.lang.reflect.Array/get a 1) (alength a) (str Void/TYPE)])" :portability :jvm}
+  ;; println flushes when *flush-on-newline*, and OutputStreamWriter.flush reaches
+  ;; the stream underneath — together, that is what makes text printed through a
+  ;; writer arrive rather than sit in its buffer. Neither is a value an
+  ;; expression can read directly, so this row is the contract: the first write
+  ;; lands, the second does not until the explicit flush.
+  {:suite "io / flush on newline" :label "println reaches the stream under a writer" :expected "[\"x\\n\" \"x\\n\" \"x\\ny\\n\"]" :actual "(let [b (java.io.ByteArrayOutputStream.) w (java.io.OutputStreamWriter. b) a (do (binding [*out* w] (println \"x\")) (.toString b)) c (do (binding [*out* w *flush-on-newline* false] (println \"y\")) (.toString b)) d (do (.flush w) (.toString b))] [a c d])" :portability :jvm}
   ;; A URL built with a URLStreamHandler reads through it, whatever its protocol:
   ;; openConnection is the handler's and openStream is that connection's
   ;; getInputStream, so slurp and io/reader both reach it. Selmer's

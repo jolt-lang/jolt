@@ -315,17 +315,6 @@
    :jvm "present — dynapath/pomegranate manipulate the runtime classpath through it"
    :jolt "absent; a reference raises \"Unable to resolve symbol: URLClassLoader\""
    :note "Substrate-inherent, like the reflection API. Affects kaocha (via dynapath), which blocks it as a test harness for rewrite-clj / malli / ordered / tick — each of those has another upstream runner that does work."}
-  ;; No pluggable URL protocol handlers. jolt's java.net.URL is a value shim over
-  ;; a spec string (plus jolt-lang/http-client's fuller one); the JVM's URL
-  ;; dispatches openConnection through a URLStreamHandler that a caller can
-  ;; supply, and a proxy over it can serve arbitrary bytes for any scheme.
-  ;; Surfaced in Selmer's custom-resource-path suite, which serves templates from
-  ;; a proxied https:// handler.
-  {:category :host-model
-   :behavior "(URL. spec handler) / a proxy over java.net.URLStreamHandler intercepting openConnection"
-   :jvm "the handler serves the connection, so any scheme can be backed by caller-supplied bytes"
-   :jolt "no handler dispatch; the URL is a spec string and the call raises MalformedURLException"
-   :note "Would need the JVM's protocol-handler machinery. Reading real http(s) URLs is jolt-lang/http-client's job; what is absent is the pluggable-handler seam, not URL fetching."}
   ;; No JMX / java.lang.management. Runtime's own memory API is present and maps
   ;; onto Chez's heap accounting (totalMemory/freeMemory/maxMemory/gc), which is
   ;; what most callers want; the MXBean layer above it is a JVM management
