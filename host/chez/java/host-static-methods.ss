@@ -312,7 +312,38 @@
         ;; decide whether to emit ANSI, and a nil means "not a tty".
         (cons "console" (lambda _ jolt-nil))
         (cons "lineSeparator" (lambda _ "\n"))
-        (cons "identityHashCode" (lambda (x) (->num (equal-hash x))))))
+        (cons "identityHashCode" (lambda (x) (->num (equal-hash x))))
+        ;; System.arraycopy(src, srcPos, dest, destPos, length). Specified to
+        ;; behave as if the source range were copied to a temporary first, so a
+        ;; copy that OVERLAPS within one array still reads pre-copy values —
+        ;; walking backwards when the ranges overlap forwards is what gives that
+        ;; without the temporary.
+        (cons "arraycopy" (lambda (src src-pos dst dst-pos len)
+                            (sys-arraycopy src src-pos dst dst-pos len)))))
+
+(define (sys-arraycopy src src-pos dst dst-pos len)
+  (when (or (jolt-nil? src) (jolt-nil? dst))
+    (throw-jvm 'NullPointerException "arraycopy source or destination is nil"))
+  (unless (and (jolt-array? src) (jolt-array? dst))
+    (throw-jvm 'ArrayStoreException "arraycopy operands must be arrays"))
+  ;; A copy between different element kinds is the JVM's ArrayStoreException;
+  ;; only reference arrays are allowed to differ, and jolt models those as one
+  ;; kind, so equal kinds is the whole rule here.
+  (unless (eq? (jolt-array-kind src) (jolt-array-kind dst))
+    (throw-jvm 'ArrayStoreException "arraycopy between arrays of different types"))
+  (let ((sp (na-idx src-pos)) (dp (na-idx dst-pos)) (n (na-idx len))
+        (slen (ja-len (jolt-array-vec src))) (dlen (ja-len (jolt-array-vec dst))))
+    (when (or (negative? sp) (negative? dp) (negative? n)
+              (> (+ sp n) slen) (> (+ dp n) dlen))
+      (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
+                                       "arraycopy: last source index out of bounds")))
+    (let ((sv (jolt-array-vec src)) (dv (jolt-array-vec dst)))
+      (if (and (eq? sv dv) (< sp dp))
+          (let loop ((i (- n 1)))
+            (when (>= i 0) (ja-set! dv (+ dp i) (ja-ref sv (+ sp i))) (loop (- i 1))))
+          (let loop ((i 0))
+            (when (< i n) (ja-set! dv (+ dp i) (ja-ref sv (+ sp i))) (loop (+ i 1))))))
+    jolt-nil))
 
 ;; java.lang.Long.bitCount: the population count of the value's 64-bit two's-
 ;; complement (mask to 64 bits so a negative long counts like the JVM, e.g.

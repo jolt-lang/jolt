@@ -119,6 +119,11 @@
   ;; for it, like the JVM; fn? stays false (reify does not implement Fn). Calling
   ;; one already worked — only the predicates read false, so malli's :ifn schema
   ;; rejected a value it should accept.
+  ;; System.arraycopy behaves as if the source range were copied through a
+  ;; temporary, so an overlapping copy within one array still reads pre-copy
+  ;; values — a naive forward loop gives [1 1 1 1 1] for the second case.
+  {:suite "interop / arrays" :label "System/arraycopy, including an overlapping copy" :expected "[[1 2 3 4] [1 1 2 3 4]]" :actual "(let [a (byte-array [1 2 3 4]) b (byte-array 4) c (int-array [1 2 3 4 5])] (System/arraycopy a 0 b 0 4) (System/arraycopy c 0 c 1 4) [(vec b) (vec c)])" :portability :jvm}
+  {:suite "interop / arrays" :label "System/arraycopy raises the JVM exception classes" :expected "[\"ArrayIndexOutOfBoundsException\" \"ArrayStoreException\" \"NullPointerException\"]" :actual "[(try (System/arraycopy (int-array 3) 0 (int-array 2) 0 3) (catch Exception e (.getSimpleName (class e)))) (try (System/arraycopy (int-array 3) 0 (byte-array 3) 0 3) (catch Exception e (.getSimpleName (class e)))) (try (System/arraycopy nil 0 (int-array 3) 0 1) (catch Exception e (.getSimpleName (class e))))]" :portability :jvm}
   {:suite "reify / IFn" :label "a reify declaring IFn is ifn? and an instance of it" :expected "[true false true \"Invoked!\"]" :actual "(let [r (reify clojure.lang.IFn (invoke [_] \"Invoked!\"))] [(ifn? r) (fn? r) (instance? clojure.lang.IFn r) (r)])" :portability :jvm}
   {:suite "reify / IDeref" :label "@ dispatches to the deref method" :expected "7" :actual "(deref (reify clojure.lang.IDeref (deref [_] 7)))" :portability :jvm}
   {:suite "deftype / mutable field" :label "set! is observed by a later read in the same method" :expected "9" :actual "(do (deftype B [^:unsynchronized-mutable v] clojure.lang.IDeref (deref [_] (set! v 9) v)) (deref (->B 0)))" :portability :jvm}

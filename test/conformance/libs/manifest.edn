@@ -175,12 +175,14 @@
    :paths ["src/main/clojure" "src/test/clojure"]
    :test-paths ["src/test/clojure"]
    :deps ["@test.check/src/main/clojure" "@spec.alpha/src/main/clojure"]
-   ;; The suite checks jolt's base64 against commons-codec's and against the
-   ;; clojure.lang.IFn$OLLOL primitive interfaces — neither exists here, so the
-   ;; comparison assertions cannot run. data.codec itself is exercised by the
-   ;; assertions that do not reach for them.
-   :note "commons-codec + IFn$O..O primitive interfaces are JVM-only"
-   :expect {:tests 14 :pass 1 :fail 2 :error 11}}
+   ;; The suite checks jolt's base64 against commons-codec's, which the
+   ;; jolt.shim.commons_codec shim registers ahead of the library's sources.
+   ;; The only residue is the two clojure.lang.IFn$O..O primitive-interface
+   ;; instance? checks — JVM function interfaces jolt has no model for.
+   :shims ["!test/conformance/libs/shims/data.codec"]
+   :preload ["jolt.shim.commons_codec"]
+   :note "IFn$O..O primitive function interfaces are JVM-only"
+   :expect {:tests 14 :pass 12 :fail 2 :error 0}}
 
   {:name "data.json"
    :paths ["src/main/clojure" "src/test/clojure"]
