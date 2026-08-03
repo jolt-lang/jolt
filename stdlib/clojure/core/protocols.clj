@@ -25,5 +25,19 @@
 (defprotocol Datafiable
   (datafy [o] "Return a representation of o as data (default identity)."))
 
+;; The defaults are what make the "default identity" in those docstrings true:
+;; without them every datafy/nav on an un-extended value is a dispatch miss
+;; rather than the identity clojure.datafy is written to expect.
+(extend-protocol Datafiable
+  nil
+  (datafy [_] nil)
+
+  Object
+  (datafy [x] x))
+
 (defprotocol Navigable
   (nav [coll k v] "Return v as it exists in coll, navigating if needed."))
+
+(extend-protocol Navigable
+  Object
+  (nav [_ _ x] x))

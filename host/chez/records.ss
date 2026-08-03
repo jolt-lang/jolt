@@ -943,6 +943,18 @@
         ;; a bare deftype is opaque — its declared interfaces dispatch via the
         ;; inline methods registered under its own tag (tried before these tags).
         ((jrec? obj) (list (jrec-tag obj) "Object"))
+        ;; a throwable reports its OWN class and that class's ancestry, so
+        ;; (extend-protocol P Throwable …) reaches an ex-info or a host-constructed
+        ;; RuntimeException. clojure.datafy extends Datafiable to Throwable exactly
+        ;; this way; without it the Object default won and datafy never reached
+        ;; Throwable->map.
+        ((jolt-ex-info-record? obj) (jch-tags (jolt-ex-info-record-class-name obj)))
+        ;; an atom is clojure.lang.Atom — an IRef, so a protocol extended to IRef
+        ;; or IDeref dispatches on one (clojure.datafy again).
+        ((jolt-atom? obj) (jch-tags "clojure.lang.Atom"))
+        ;; a namespace value is clojure.lang.Namespace — (class *ns*) already says
+        ;; so, and clojure.datafy extends Datafiable to it.
+        ((jns? obj) (jch-tags "clojure.lang.Namespace"))
         (else '("Object"))))
 
 

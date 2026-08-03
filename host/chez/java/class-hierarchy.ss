@@ -234,7 +234,9 @@
 (jch-register-supers! "clojure.lang.Keyword" '("clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable"))
 (jch-register-supers! "clojure.lang.Symbol" '("clojure.lang.IObj" "clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable"))
 (jch-register-supers! "clojure.lang.Var" '("clojure.lang.IDeref" "clojure.lang.IFn"))
-(jch-register-supers! "clojure.lang.Atom" '("clojure.lang.IDeref"))
+;; Atom extends ARef, and ARef implements IRef — so an atom IS an IRef, not just
+;; an IDeref. IRef itself extends IDeref, so IDeref still holds transitively.
+(jch-register-supers! "clojure.lang.Atom" '("clojure.lang.IRef"))
 (jch-register-supers! "clojure.lang.Ref" '("clojure.lang.IRef"))
 (jch-register-supers! "clojure.lang.IRef" '("clojure.lang.IDeref"))
 (jch-register-supers! "clojure.lang.Ratio" '("java.lang.Number" "java.lang.Comparable"))

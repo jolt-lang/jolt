@@ -500,6 +500,20 @@ else
   fails=$((fails + 1))
 fi
 
+# clojure.datafy: cannot be corpus rows (a qualified reference in the same form
+# as its require compiles before the require runs), and the arms only fire if the
+# value reports a class more specific than Object — which is what an atom, a
+# throwable and a namespace now do. The file runs unchanged on reference Clojure
+# and prints the same DATAFY OK there.
+df_out="$($jolt run test/chez/datafy-test.clj 2>/dev/null)"
+if printf '%s' "$df_out" | grep -q 'DATAFY OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: clojure.datafy"
+  printf '%s' "$df_out" | grep 'datafy FAIL' | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # Protocol identity across namespaces (bead jolt-ewmt, OPEN). Two namespaces each
 # define a protocol named Greet and extend it to Object. Reference Clojure keys a
 # protocol by its interface FQN, so each namespace keeps its own impl and this
