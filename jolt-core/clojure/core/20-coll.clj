@@ -53,7 +53,7 @@
 
 (defn pr [& xs] (__write (apply pr-str xs)) nil)
 
-(defn prn [& xs] (apply pr xs) (__write "\n") nil)
+(defn prn [& xs] (apply pr xs) (__write "\n") (when *flush-on-newline* (flush)) nil)
 
 ;; print renders each arg non-readably (strings/chars unquoted) like str — except
 ;; nil, which prints as "nil" (str yields ""). Only the top-level arg needs the
@@ -70,7 +70,10 @@
                out)))
   nil)
 
-(defn println [& xs] (apply print xs) (__write "\n") nil)
+;; *flush-on-newline* is true by default, as on the JVM: a line-terminated write
+;; reaches the writer under *out* rather than sitting in its buffer. That is what
+;; makes (println …) through an OutputStreamWriter arrive at the stream beneath it.
+(defn println [& xs] (apply print xs) (__write "\n") (when *flush-on-newline* (flush)) nil)
 
 ;; Transient accumulation (canonical JVM form): assoc! into a native-backed
 ;; scratch table per element, then persistent! bulk-builds the HAMT once —

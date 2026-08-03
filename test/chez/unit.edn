@@ -891,10 +891,6 @@
   ;; belonged and died in destructuring.
   {:suite "proxy over an interface" :expr "(let [p (proxy [java.io.InputStream] [] (read ([] 65) ([b off len] 7)))] [(.read p) (.read p (byte-array 4) 0 4)])" :expected "[65 7]"}
   {:suite "proxy over an interface" :expr "(let [p (proxy [java.io.InputStream] [] (read ([] 9)) (available ([] 3)))] [(.read p) (.available p)])" :expected "[9 3]"}
-  ;; proxy-super takes a method NAME, not an expression: a body calling a super
-  ;; method no var is named after (clojure.tools.logging's (proxy-super reset))
-  ;; has to COMPILE — there is no superclass here, so it throws only if it runs.
-  {:suite "proxy-super method name" :expr "(do (defn pxsup [] (proxy [java.io.ByteArrayOutputStream] [] (flush [] (proxy-super reset)))) (try (.flush (pxsup)) (catch Throwable t :threw)))" :expected ":threw"}
   {:suite "reify class" :expr "(str (class (reify java.lang.Runnable (run [_] nil))))" :expected "\"class clojure.lang.IObj$reify__0\""}
   {:suite "promise class" :expr "(str (class (promise)))" :expected "\"class clojure.core$promise$reify__0\""}
   {:suite "future class" :expr "(str (class (future 1)))" :expected "\"class clojure.core$future_call$reify__0\""}

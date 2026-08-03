@@ -680,14 +680,15 @@
 
 ;; extend is a real FUNCTION — defined above extend-type.
 ;; (proxy [ThreadLocal] [] (initialValue [] body)) is a per-thread store with a
-;; lazy initial value (test.check's no-seed PRNG uses one). Every other proxy
-;; desugars to reify over the same supers: jolt has no real superclass, so a proxy
-;; over an interface (clj-http-lite's trust-all HostnameVerifier, a servlet's
-;; HttpServlet, …) is exactly a reify of that interface's methods. A proxy method
-;; body takes the declared args with `this` implicit; reify takes `this` first, so
-;; prepend it. ctor-args are ignored (there is no super to construct), as the
-;; ThreadLocal case already ignores them. proxy-super / calling an inherited
-;; concrete method is still unsupported (no superclass exists).
+;; lazy initial value (test.check's no-seed PRNG uses one). Every other proxy goes
+;; to make-proxy, which EXTENDS BY DELEGATION when the first super names a class
+;; it can construct: it builds a real base instance from ctor-args, answers the
+;; methods declared here, and forwards the rest to that instance, so an inherited
+;; concrete method and proxy-super both work (java/proxy.ss). A super naming an
+;; interface has nothing to construct, and the proxy is then exactly a reify of
+;; that interface's methods, which is what it has always been. A proxy method body
+;; takes the declared args with `this` implicit; reify takes `this` first, so
+;; prepend it.
 ;; One reify spec per arity of a proxy method spec. proxy accepts BOTH shapes:
 ;;   (name [params*] body*)                          — one arity
 ;;   (name ([params*] body*) ([params*] body*) ...)  — several
@@ -707,8 +708,20 @@
            (let [s (name (first supers))] (or (= s "ThreadLocal") (= s "InheritableThreadLocal"))))
     (let [init (some (fn [m] (when (= "initialValue" (name (first m))) m)) methods)]
       `(jolt.host/make-thread-local (fn [] ~@(when init (nnext init)))))
-    `(reify ~@supers
-       ~@(apply concat (map proxy-arity-specs methods)))))
+    ;; group the flattened specs by method name, so several arities of one method
+    ;; become one multi-arity fn — the same shape reify builds.
+    (loop [specs (seq (apply concat (map proxy-arity-specs methods)))
+           clauses {} order []]
+      (if (empty? specs)
+        `(make-proxy
+           ~(reduce (fn [m k] (assoc m k `(fn ~@(get clauses k)))) {} order)
+           [~@ctor-args]
+           ~@(vec (map protocol-key supers)))
+        (let [spec (first specs)
+              k (keyword (name (first spec)))]
+          (recur (rest specs)
+                 (assoc clauses k (conj (get clauses k []) `(~(nth spec 1) ~@(drop 2 spec))))
+                 (if (contains? clauses k) order (conj order k))))))))
 ;; definterface is JVM-only; bind the name to a marker and return the name (not a
 ;; var), matching the JVM where definterface yields the interface Class.
 (defmacro definterface [name-sym & body]

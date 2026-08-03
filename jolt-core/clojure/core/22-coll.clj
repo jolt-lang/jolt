@@ -379,11 +379,11 @@
 ;; proxy-super is a MACRO on the JVM, and has to be one here too: its first
 ;; argument is a method NAME, not an expression, so analyzing it as one rejects
 ;; every proxy body whose super call names something no var matches —
-;; (proxy-super reset) in clojure.tools.logging's log-stream. A proxy desugars to
-;; a reify with no superclass, so there is nothing to call; the expansion throws
-;; if the body ever runs, exactly as the fn did.
+;; (proxy-super reset) in clojure.tools.logging's log-stream. `this` is in scope
+;; inside a proxy body, and the proxy carries its base instance, so this reaches
+;; the base's own implementation rather than the override now running.
 (defmacro proxy-super [meth & args]
-  '(throw "proxy-super: JVM proxies are not supported in Jolt"))
+  `(jolt.host/proxy-super-call ~'this ~(name meth) ~@args))
 (defn construct-proxy [c & args] (throw "construct-proxy: not supported in Jolt"))
 (defn get-proxy-class [& interfaces] (throw "get-proxy-class: not supported in Jolt"))
 

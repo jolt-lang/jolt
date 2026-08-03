@@ -411,7 +411,10 @@
    ;; slf4j code path. :preload because find-factory runs before any test does.
    :shims ["!test/conformance/libs/shims/slf4j"]
    :preload ["jolt.shim.slf4j"]
-   :expect {:tests 67 :pass 219 :fail 0 :error 4}}
+   ;; log-capture!/with-logs redirect the process streams through a PrintStream
+   ;; over a proxy of ByteArrayOutputStream, so the whole suite passing is the
+   ;; proxy-by-delegation path working end to end.
+   :expect {:tests 67 :pass 226 :fail 0 :error 0}}
 
   ;; ---------------------------------------------------------- time
   {:name "tick"

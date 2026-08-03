@@ -275,12 +275,25 @@
 ;; they are NOT affected by a (binding [*out* …]), matching the JVM. Ported code
 ;; writes to them directly ((.println System/out …)); they are the same
 ;; port-writers *out*/*err* root to, since jolt models a stream and a writer the
-;; same way. setOut/setErr are deliberately absent: redirecting the process
-;; streams needs the proxy-over-host-class support that is still missing, and a
-;; half-working setOut would silently drop output.
+;; same way.
+;;
+;; They live in the MUTABLE static cells rather than the plain statics table,
+;; because setOut/setErr replace them wholesale — clojure.tools.logging's
+;; log-capture! points them at a PrintStream over a proxy so every write becomes a
+;; log record. Both spellings get the cell, since a read resolves the class name as
+;; written.
 (register-class-statics! "System"
   (list (cons "out" (make-jhost "port-writer" (vector 'out)))
         (cons "err" (make-jhost "port-writer" (vector 'err)))))
+(define (sys-set-stream! member v)
+  (for-each (lambda (c) (vector-set! (mutable-static-cell c member #t) 0 v))
+            '("System" "java.lang.System"))
+  jolt-nil)
+(for-each (lambda (m) (sys-set-stream! m (make-jhost "port-writer" (vector (string->symbol m)))))
+          '("out" "err"))
+(register-class-statics! "System"
+  (list (cons "setOut" (lambda (v) (sys-set-stream! "out" v)))
+        (cons "setErr" (lambda (v) (sys-set-stream! "err" v)))))
 
 ;; PrintWriter — a thin wrapper over a target writer. write/append/print forward
 ;; the rendered text to the target. clojure.data.json's pretty printer builds

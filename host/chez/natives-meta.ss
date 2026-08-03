@@ -51,7 +51,7 @@
     ;; a reify shares its (read-only) method table + protos but gets a fresh
     ;; identity, so attaching meta leaves the original's meta untouched. Every
     ;; Clojure reify implements IObj.
-    ((jreify? x) (make-jreify (jreify-methods x) (jreify-protos x)))
+    ((jreify? x) (make-jreify (jreify-methods x) (jreify-protos x) (jreify-delegate x)))
     ;; () is a shared singleton — a fresh instance keeps meta off every other ().
     ((empty-list-t? x) (fresh-empty-list))
     ;; a list/seq node gets a fresh identity too (Clojure's PersistentList is

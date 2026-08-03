@@ -117,6 +117,29 @@
    :jvm "throws IllegalArgumentException — a JVM char is 16 bits"
    :jolt "returns that character; (int (first (str (char 128515)))) is 128515 again"
    :note "Deliberate superset of the JVM, following jolt's code-point string model."}
+  ;; proxy over a concrete class EXTENDS BY DELEGATION: jolt generates no classes,
+  ;; so the proxy holds a real base instance, answers what its body declares and
+  ;; forwards the rest. Two consequences, both inherent to delegation rather than
+  ;; to how it is written here.
+  ;;
+  ;; The base holds no reference back to the proxy, so a base method that calls an
+  ;; overridden method reaches the BASE's version where the JVM's virtual dispatch
+  ;; would re-enter the override. Overriding a method the base itself calls is the
+  ;; case this does not model; overriding a leaf method (the common one, and what
+  ;; clojure.tools.logging's log-stream does) behaves identically.
+  {:category :host-model
+   :behavior "a base method calling a method the proxy overrides"
+   :jvm "re-enters the override (virtual dispatch)"
+   :jolt "runs the base's own version"
+   :note "Delegation, not subclassing. Overriding a leaf method is unaffected."}
+  ;; A proxy method returns its body's value; the JVM coerces to the declared
+  ;; return type, so a void method yields nil there. jolt has no signatures — the
+  ;; same is already true of reify.
+  {:category :host-model
+   :behavior "(.flush (proxy [java.io.ByteArrayOutputStream] [] (flush [] :x)))"
+   :jvm "nil — flush() is declared void"
+   :jolt ":x — the body's value"
+   :note "No method signatures; reify has always behaved this way."}
   {:category :numeric-model
    :behavior "(loop [i 5] (+ i 9223372036854775807))"
    :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"

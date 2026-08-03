@@ -1474,8 +1474,17 @@
               (make-map-entry (car rest) (jolt-get obj (car rest) jolt-nil)) jolt-nil))
          (else jolt-nil)))   ; .empty of a record is nil on the JVM
       ((reified-methods obj)
-       => (lambda (rm) (let ((f (hashtable-ref rm method-name #f)))
-                         (if f (apply jolt-invoke f obj rest) (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name))))))
+       => (lambda (rm)
+            (let ((f (hashtable-ref rm method-name #f))
+                  (d (jreify-delegate obj)))
+              (cond
+                (f (apply jolt-invoke f obj rest))
+                ;; a proxy forwards what it does not override to the base
+                ;; instance, through the full dispatcher so the delegate gets
+                ;; whatever method resolution its own kind of value has.
+                ;; rest-args, not rest: the dispatcher takes a jolt seq
+                (d (record-method-dispatch d method-name rest-args))
+                (else (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name)))))))
       ;; java.lang.String interop: defined in natives-str.ss, loaded
       ;; after this file (free reference, resolved at call time).
       ((string? obj) (jolt-string-method method-name obj rest))
@@ -1649,22 +1658,28 @@
 
 ;; reify: instance-local method table. obj is a jreify carrying a method ht +
 ;; the protocol short-names it implements (for satisfies?/instance?).
-(define-record-type jreify (fields methods protos) (nongenerative chez-jreify-v1))
+;; A reify may carry a DELEGATE: an object that answers any method the reify's own
+;; table does not. clojure.core/proxy over a concrete class builds one that way —
+;; see java/proxy.ss. A plain reify has no delegate and a method miss still throws.
+(define-record-type jreify (fields methods protos delegate) (nongenerative chez-jreify-v2))
 (define (reified-methods obj) (and (jreify? obj) (jreify-methods obj)))
+(define (reify-delegate obj) (and (jreify? obj) (jreify-delegate obj)))
 ;; (get reify k) / (:k reify) routes to a reify's ILookup valAt — clojure.spec.alpha
 ;; reifies fspec/regex specs as clojure.lang.ILookup and reads (:args spec) off them.
 (register-get-arm! jreify?
   (lambda (coll k d)
     (let ((m (and (reified-methods coll) (hashtable-ref (reified-methods coll) "valAt" #f))))
       (if m (jolt-invoke m coll k d) d))))
-(define (make-reified methods-map . proto-names)
+(define (make-reified-delegating methods-map delegate proto-names)
   (let ((ht (make-hashtable string-hash string=?))
         (protos (if (and (pair? proto-names) (null? (cdr proto-names)) (jolt-coll-pred? (car proto-names)))
                     (seq->list (car proto-names)) proto-names)))
     (for-each (lambda (p) (hashtable-set! ht (if (keyword? p) (keyword-t-name p) p)
                                           (jolt-get methods-map p jolt-nil)))
               (seq->list (jolt-keys methods-map)))
-    (make-jreify ht (map (lambda (p) (if (symbol-t? p) (symbol-t-name p) p)) protos))))
+    (make-jreify ht (map (lambda (p) (if (symbol-t? p) (symbol-t-name p) p)) protos) delegate)))
+(define (make-reified methods-map . proto-names)
+  (make-reified-delegating methods-map #f proto-names))
 
 ;; satisfies?: does obj's type implement the protocol? proto must be a defprotocol
 ;; value (a map with a :name); a host Class/interface or any non-protocol throws —

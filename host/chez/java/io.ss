@@ -569,7 +569,24 @@
             (rename-file tmp p))))
     jolt-nil))
 
-(define (jolt-flush) (flush-output-port (current-output-port)) jolt-nil)
+;; (flush) is (.flush *out*) on the JVM. When *out* holds a real writer — a
+;; StringWriter, an OutputStreamWriter over a stream, a reify or proxy one — the
+;; flush has to reach THAT, mirroring how jolt-write routes a write (printing.ss).
+;; Flushing only the Chez port left a buffered writer unflushed, so text printed
+;; through an OutputStreamWriter never reached the stream underneath it.
+(define flush-out-cell #f)
+(define (jolt-flush)
+  (let ((w (begin (unless flush-out-cell
+                    (set! flush-out-cell (jolt-var "clojure.core" "*out*")))
+                  (var-cell-deref flush-out-cell))))
+    (if (and (or (iface-method w "flush" #f)
+                 (and (jhost? w)
+                      (not (and (string=? (jhost-tag w) "port-writer")
+                                (eq? (vector-ref (jhost-state w) 0) 'out)))))
+             w)
+        (record-method-dispatch w "flush" jolt-nil)
+        (flush-output-port (current-output-port))))
+  jolt-nil)
 
 ;; --- str / type / instance? integration ------------------------------------
 ;; str of a jfile is its path (Clojure's File.toString).

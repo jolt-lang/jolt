@@ -151,7 +151,14 @@
 ;; --- char output (Writer) ---------------------------------------------------
 (define (char-writer-port self) (vector-ref (jhost-state self) 0))
 (define (char-writer? x) (and (jhost? x) (string=? (jhost-tag x) "char-writer")))
-(define (make-char-writer port) (make-jhost "char-writer" (vector port)))
+;; state #(port downstream): downstream is the byte stream this writer wraps, when
+;; it wraps one. flush/close have to reach it — java.io.OutputStreamWriter.flush
+;; flushes its own encoder AND the stream underneath, which is what makes a
+;; PrintStream over a logging proxy emit on (println …), since println flushes.
+(define (make-char-writer port . down)
+  (make-jhost "char-writer" (vector port (and (pair? down) (car down)))))
+(define (char-writer-downstream self)
+  (let ((st (jhost-state self))) (and (> (vector-length st) 1) (vector-ref st 1))))
 (define (cw-text x) (if (number? x) (string (integer->char (jnum->exact x))) (jolt-str-render-one x)))
 (register-host-methods! "char-writer"
   (list
@@ -164,8 +171,17 @@
                    jolt-nil))
    (cons "append" (lambda (self x . rest) (put-string (char-writer-port self) (cw-text x)) self))
    (cons "newLine" (lambda (self) (put-char (char-writer-port self) #\newline) jolt-nil))
-   (cons "flush" (lambda (self) (flush-output-port (char-writer-port self)) jolt-nil))
-   (cons "close" (lambda (self) (close-port (char-writer-port self)) jolt-nil))
+   (cons "flush" (lambda (self)
+                   (flush-output-port (char-writer-port self))
+                   (let ((d (char-writer-downstream self)))
+                     (when d (record-method-dispatch d "flush" jolt-nil)))
+                   jolt-nil))
+   (cons "close" (lambda (self)
+                   (flush-output-port (char-writer-port self))
+                   (let ((d (char-writer-downstream self)))
+                     (when d (record-method-dispatch d "close" jolt-nil)))
+                   (close-port (char-writer-port self))
+                   jolt-nil))
    (cons "toString" (lambda (self) "#<Writer>"))))
 
 ;; --- constructors -----------------------------------------------------------
@@ -194,6 +210,62 @@
                            (let ((off (jnum->exact (car rest))) (len (jnum->exact (cadr rest))))
                              (let ((sub (make-bytevector len))) (bytevector-copy! bv off sub 0 len) sub))
                            bv))))))
+;; --- java.io.PrintStream ------------------------------------------------------
+;; A byte stream that renders values as text. state #(target autoflush): the target
+;; is anything answering write/flush — an out-stream, a port-writer, or a PROXY
+;; over one, which is what clojure.tools.logging's log-stream builds. Writes go
+;; through record-method-dispatch rather than a direct call so a proxy's override
+;; is the thing that runs.
+(define (ps-target self) (vector-ref (jhost-state self) 0))
+(define (ps-autoflush? self) (vector-ref (jhost-state self) 1))
+(define (print-stream? x) (and (jhost? x) (string=? (jhost-tag x) "print-stream")))
+(define (ps-emit self str)
+  (let ((t (ps-target self)))
+    ;; a port-writer is jolt's process stream and takes text; every other target
+    ;; is a byte stream, so encode.
+    (if (and (jhost? t) (string=? (jhost-tag t) "port-writer"))
+        (display str (port-writer-port t))
+        (record-method-dispatch t "write" (list->cseq (list (na-byte-array (string->utf8 str))))))
+    jolt-nil))
+(define (ps-flush! self)
+  (record-method-dispatch (ps-target self) "flush" jolt-nil)
+  jolt-nil)
+(define (ps-emit-line self str)
+  (ps-emit self str)
+  ;; autoFlush flushes on println, which is what makes a PrintStream over a
+  ;; logging proxy emit one record per line.
+  (when (ps-autoflush? self) (ps-flush! self))
+  jolt-nil)
+(register-host-methods! "print-stream"
+  (list
+   (cons "print" (lambda (self x) (ps-emit self (writer-piece x))))
+   (cons "println" (lambda (self . xs)
+                     (ps-emit-line self (if (null? xs) "\n" (string-append (writer-piece (car xs)) "\n")))))
+   (cons "printf" (lambda (self fmt . args)
+                    (ps-emit self (apply jolt-format (jolt-str-render-one fmt) args))))
+   (cons "format" (lambda (self fmt . args)
+                    (ps-emit self (apply jolt-format (jolt-str-render-one fmt) args)) self))
+   (cons "append" (lambda (self x . rest) (ps-emit self (append-text x rest)) self))
+   (cons "write" (lambda (self x . rest)
+                   (let ((t (ps-target self)))
+                     (record-method-dispatch t "write" (list->cseq (cons x rest))))
+                   ;; a written newline autoflushes too, as on the JVM
+                   (when (and (ps-autoflush? self) (number? x)
+                              (= (jnum->exact x) 10))
+                     (ps-flush! self))
+                   jolt-nil))
+   (cons "flush" (lambda (self) (ps-flush! self)))
+   (cons "close" (lambda (self) (ps-flush! self)
+                   (record-method-dispatch (ps-target self) "close" jolt-nil) jolt-nil))
+   (cons "checkError" (lambda (self) #f))
+   (cons "toString" (lambda (self) "#<PrintStream>"))))
+;; (PrintStream. out) / (PrintStream. out autoFlush). The charset arity is
+;; accepted and ignored: jolt renders UTF-8.
+(reg-ctor! '("PrintStream" "java.io.PrintStream")
+  (lambda (out . rest)
+    (make-jhost "print-stream"
+                (vector out (and (pair? rest) (jolt-truthy? (car rest)))))))
+
 (reg-ctor! '("ByteArrayOutputStream" "java.io.ByteArrayOutputStream")
   (lambda _
     (call-with-values open-bytevector-output-port
@@ -211,8 +283,24 @@
 ;; only as UTF-8 here).
 (reg-ctor! '("InputStreamReader" "java.io.InputStreamReader")
   (lambda (in . _) (make-char-reader (transcoded-port (in-stream-port in) utf8-tx))))
+;; A byte port that hands each encoded block to the stream's OWN write method,
+;; whatever kind of stream it is — a port-backed out-stream, a PrintStream, or a
+;; proxy over one. Dispatching rather than writing to the stream's port directly
+;; is what lets a proxy's override see the bytes; it also leaves the wrapped
+;; stream open, where transcoding its port would close it (R6RS transcoded-port
+;; takes ownership) and a later (.toString baos) would fail on a closed port.
+(define (out-stream-sink-port out)
+  (make-custom-binary-output-port
+   "stream-sink"
+   (lambda (bv start count)
+     (let ((chunk (make-bytevector count)))
+       (bytevector-copy! bv start chunk 0 count)
+       (record-method-dispatch out "write" (list->cseq (list (na-byte-array chunk)))))
+     count)
+   #f #f (lambda () #f)))
 (reg-ctor! '("OutputStreamWriter" "java.io.OutputStreamWriter")
-  (lambda (out . _) (make-char-writer (transcoded-port (out-stream-port out) utf8-tx))))
+  (lambda (out . _)
+    (make-char-writer (transcoded-port (out-stream-sink-port out) utf8-tx) out)))
 ;; Buffered* — Chez ports are buffered already; the wrapper is the wrapped stream.
 (for-each (lambda (n) (register-class-ctor! n (lambda (inner . _) inner)))
           '("BufferedReader" "java.io.BufferedReader"

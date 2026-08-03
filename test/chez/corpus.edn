@@ -124,6 +124,18 @@
   ;; compare response bodies that way. The two-arg ctor joins with exactly one
   ;; separator; a parent ending in "/" used to produce "a//c".
   {:suite "interop / File" :label "File equality by pathname, and one-separator join" :expected "[true false true 1 \"a/c\" \"a/c\" \"/c\" \"a/c\" \"a\"]" :actual "(let [a (java.io.File. \"a/b\") b (java.io.File. \"a/b\") c (java.io.File. \"a/c\")] [(= a b) (= a c) (= #{a} #{b}) (get {a 1} b) (.getPath (java.io.File. (java.io.File. \"a/\") \"c\")) (.getPath (java.io.File. \"a\" \"c\")) (.getPath (java.io.File. \"/\" \"c\")) (.getPath (java.io.File. \"a\" \"/c\")) (.getPath (java.io.File. \"a\" \"\"))])" :portability :jvm}
+  ;; proxy over a CONCRETE class extends by delegation: the proxy builds a real
+  ;; base instance, answers what it declares, forwards the rest, and proxy-super
+  ;; reaches the base's own implementation. It is an instance of the base and of
+  ;; the base's supertypes. clojure.tools.logging's log-stream needs all of it.
+  {:suite "interop / proxy" :label "delegates to the base instance, and proxy-super calls it" :expected "[\"hi\" \"\" true true]" :actual "(let [p (proxy [java.io.ByteArrayOutputStream] [] (flush [] (proxy-super flush) :ov))] (.write p (.getBytes \"hi\")) [(.toString p) (do (.reset p) (.toString p)) (instance? java.io.ByteArrayOutputStream p) (instance? java.io.OutputStream p)])" :portability :jvm}
+  ;; proxy-super takes a method NAME, not an expression, so a body calling a super
+  ;; method no var is named after has to COMPILE — clojure.tools.logging's
+  ;; (proxy-super reset). It now runs too, and reaches the base's own reset.
+  {:suite "interop / proxy" :label "proxy-super names a method, not a var" :expected "nil" :actual "(do (defn pxsup [] (proxy [java.io.ByteArrayOutputStream] [] (flush [] (proxy-super reset)))) (try (.flush (pxsup)) (catch Throwable t :threw)))" :portability :jvm}
+  ;; the whole log-stream shape: a PrintStream over a proxy whose flush override
+  ;; reads the accumulated text off the base, with System/setOut redirecting to it.
+  {:suite "interop / proxy" :label "PrintStream over a proxy, redirected through System/setOut" :expected "[\"a\" \"b\"]" :actual "(let [captured (atom []) ps (java.io.PrintStream. (proxy [java.io.ByteArrayOutputStream] [] (flush [] (let [this this] (proxy-super flush) (let [m (.trim (.toString this))] (proxy-super reset) (when (> (.length m) 0) (swap! captured conj m)))))) true) orig System/out] (System/setOut ps) (.println System/out \"a\") (.println System/out \"b\") (System/setOut orig) @captured)" :portability :jvm}
   ;; (. Class MEMBER) with no arguments is ambiguous on the JVM too — a static
   ;; field if one exists, else a no-arg static method — and jolt decides at
   ;; runtime on what its one registry holds. It used to apply the field VALUE as
