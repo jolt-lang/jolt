@@ -16,6 +16,8 @@
   ;; :main-opts may be an -e expression, not just -m
   :e1     {:main-opts ["-e" "(require 'appmain) (appmain/-main)"]}
   :time   {:extra-deps {local/timefix {:local/root "../timefix"}}}
+  ;; a jolt.time that is on the roots but does not compile
+  :timebroken {:extra-deps {local/timebroken {:local/root "../timebroken"}}}
   ;; a dep directory with NO deps.edn defaults to its src path
   :noedn  {:extra-deps {local/libnoedn {:local/root "../libnoedn"}}}
   ;; -X / -T exec fixtures

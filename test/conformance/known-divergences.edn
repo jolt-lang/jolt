@@ -264,7 +264,49 @@
    :behavior "(.array (.slice buf)) after (.position buf 1)"
    :jvm "the WHOLE shared backing array (slice is a view; .array ignores the offset)"
    :jolt "just the sliced bytes (slice copies)"
-   :note "jolt's byte-buffer state is #(backing position limit) with no array offset, so a slice cannot express \"0-based view into a shared backing\". Read paths — hexdumps, decoders — are unaffected; a write through a slice does not propagate back. Tracked as jolt-93c9."}]
+   :note "jolt's byte-buffer state is #(backing position limit) with no array offset, so a slice cannot express \"0-based view into a shared backing\". Read paths — hexdumps, decoders — are unaffected; a write through a slice does not propagate back. Tracked as jolt-93c9."}
+  ;; org.clojure/clojure's POM depends on org.clojure/spec.alpha and
+  ;; org.clojure/core.specs.alpha, so on the JVM any project that declares Clojure
+  ;; gets clojure.spec.alpha for free. jolt provides clojure.core natively and
+  ;; resolves no dependency for it, so nothing pulls spec in implicitly. Surfaced
+  ;; running rewrite-clj's own kaocha alias, which requires clojure.spec.alpha
+  ;; without naming it as a dependency.
+  {:category :host-model
+   :behavior "(require 'clojure.spec.alpha) in a project whose only dep is org.clojure/clojure"
+   :jvm "loads — spec.alpha and core.specs.alpha come in transitively through Clojure's POM"
+   :jolt "Could not locate clojure/spec/alpha — the dependency must be declared explicitly"
+   :note "jolt has no org.clojure/clojure artifact to hang transitive deps off; core IS the runtime. Adding org.clojure/spec.alpha to deps.edn resolves it from Maven and everything works. Whether jolt should synthesize the transitive edge is open."}
+  ;; No classloaders. This is not a shim gap that could be filled — a classloader
+  ;; is a JVM linkage concept, and jolt compiles ahead of time to native code with
+  ;; no class-loading step to intercept. Surfaced running kaocha, whose dynapath
+  ;; dependency reaches for java.net.URLClassLoader at load and so cannot run on
+  ;; jolt at all; libraries that use kaocha need their secondary test runner.
+  {:category :host-model
+   :behavior "java.net.URLClassLoader and the classloader API generally"
+   :jvm "present — dynapath/pomegranate manipulate the runtime classpath through it"
+   :jolt "absent; a reference raises \"Unable to resolve symbol: URLClassLoader\""
+   :note "Substrate-inherent, like the reflection API. Affects kaocha (via dynapath), which blocks it as a test harness for rewrite-clj / malli / ordered / tick — each of those has another upstream runner that does work."}
+  ;; No pluggable URL protocol handlers. jolt's java.net.URL is a value shim over
+  ;; a spec string (plus jolt-lang/http-client's fuller one); the JVM's URL
+  ;; dispatches openConnection through a URLStreamHandler that a caller can
+  ;; supply, and a proxy over it can serve arbitrary bytes for any scheme.
+  ;; Surfaced in Selmer's custom-resource-path suite, which serves templates from
+  ;; a proxied https:// handler.
+  {:category :host-model
+   :behavior "(URL. spec handler) / a proxy over java.net.URLStreamHandler intercepting openConnection"
+   :jvm "the handler serves the connection, so any scheme can be backed by caller-supplied bytes"
+   :jolt "no handler dispatch; the URL is a spec string and the call raises MalformedURLException"
+   :note "Would need the JVM's protocol-handler machinery. Reading real http(s) URLs is jolt-lang/http-client's job; what is absent is the pluggable-handler seam, not URL fetching."}
+  ;; No JMX / java.lang.management. Runtime's own memory API is present and maps
+  ;; onto Chez's heap accounting (totalMemory/freeMemory/maxMemory/gc), which is
+  ;; what most callers want; the MXBean layer above it is a JVM management
+  ;; subsystem with no counterpart here. Surfaced in criterium's benchmark
+  ;; warm-up, which reads getMemoryMXBean after settling the heap.
+  {:category :host-model
+   :behavior "java.lang.management.ManagementFactory/getMemoryMXBean and the MXBean API"
+   :jvm "returns a MemoryMXBean reporting heap/non-heap usage, GC counts, and more"
+   :jolt "absent; the call raises \"No matching method getMemoryMXBean\""
+   :note "Runtime.totalMemory/freeMemory/maxMemory ARE present over Chez's collector accounting. What is missing is JMX itself. Affects criterium's benchmark reporting, not its timing."}]
  :entries
  [;; SimpleDateFormat with no Locale answers for ROOT in jolt but the machine's
   ;; DEFAULT locale on the JVM ("March|Mar|Saturday|Sat" under en), so this row's

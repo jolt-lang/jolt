@@ -279,11 +279,43 @@ esac
 # jolt.time from the source roots (the :time alias adds the stand-in lib)
 check "java.time library autoloads from roots" "fixture-zone:UTC" "$(run -A:time run -m appzone)"
 
+# ...and the DOT form of the same static call autoloads too. jolt evaluates the
+# class name to a class token, so (. Class method args) arrives as a method call
+# on that token; anything Class itself does not answer is a static of the class it
+# names, and routing it that way is what picks up the autoload. Without it the
+# form threw "No matching method of for class" unless an earlier slash-form call
+# had already loaded the library — time-literals' data readers, (. LocalDate parse
+# x), are written in this form and so could not read at all.
+check "the dot form of a static autoloads too" "fixture-zone:UTC" "$(run -A:time run -m appzonedot)"
+
 # off the roots the reference still names the dependency to add
 out="$(runfull run -m appzone)"
 case "$out" in
   *jolt-lang/time*) check "library miss names the dependency" ok ok ;;
   *) check "library miss names the dependency" "message naming jolt-lang/time" "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# io/resource answers an ABSOLUTE file: URL for a file on a source root, like the
+# JVM classloader. The roots here are relative ("./src"), and "file:./src/x" is
+# not a valid absolute URL — Selmer stores the URL from (io/resource "templates/…")
+# and resolves template names against it, which threw MalformedURLException
+# "no protocol" off the relative form.
+check "io/resource answers an absolute file: URL" "absolute: true clean: true" \
+      "$(run run -m appres)"
+
+# A provider that IS on the roots but does not compile is not a missing
+# dependency. The autoload latch is one-shot, so after the load raises every
+# later miss falls back to the message — which must not send someone to edit a
+# deps.edn that already declares the library.
+out="$(run -A:timebroken run -m appzonebroken)"
+case "$out" in
+  *"failed to load"*) check "broken provider says it failed to load" ok ok ;;
+  *) check "broken provider says it failed to load" "message saying failed to load" "$(printf '%s' "$out" | head -1)" ;;
+esac
+case "$out" in
+  *"Add io.github.jolt-lang/time"*)
+    check "broken provider is not reported as missing" "no add-the-dependency advice" "$(printf '%s' "$out" | head -1)" ;;
+  *) check "broken provider is not reported as missing" ok ok ;;
 esac
 
 # --- tools.deps CLI surface -------------------------------------------------
@@ -408,6 +440,56 @@ cat > "$tmp/gitproj/deps.edn" <<EOF
 EOF
 check ":git/tag + short sha resolves" "git dep: tagged" \
       "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs" "$JOLT" run -m gapp 2>&1 | tail -1)"
+
+# An annotated tag carries two shas: the tag object's own, and the commit it
+# peels to. `git ls-remote` prints the tag object for refs/tags/X, so that is
+# what a deps.edn written from ls-remote output pins — cognitect-labs/test-runner
+# v0.5.0 is exactly this, and tools.deps accepts either. Rejecting the tag object
+# left an unmodified upstream library unable to resolve its own test runner.
+tagobj="$(git -C "$tmp/gitrepo" rev-parse --short=7 v1.0)"
+if [ "$tagobj" = "$short" ]; then
+  echo "  FAIL: fixture tag is not annotated (tag object sha == commit sha)" >&2
+  fail=$((fail+1))
+fi
+cat > "$tmp/gitproj/deps.edn" <<EOF
+{:paths ["src"]
+ :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :git/tag "v1.0" :git/sha "$tagobj"}}}
+EOF
+check ":git/tag + annotated tag object sha resolves" "git dep: tagged" \
+      "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs-tagobj" "$JOLT" run -m gapp 2>&1 | tail -1)"
+
+# The legacy tools.deps spellings, :sha and :tag, still appear in deps.edn files
+# in the wild — malli's spec-alpha2 dependency is written {:git/url … :sha …} —
+# and tools.deps accepts them alongside the namespaced keys. Rejecting them left
+# an unmodified upstream library unable to resolve its own test dependencies.
+legacy_sha="$(git -C "$tmp/gitrepo" rev-parse HEAD)"
+cat > "$tmp/gitproj/deps.edn" <<EOF
+{:paths ["src"]
+ :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :sha "$legacy_sha"}}}
+EOF
+check "the legacy :sha spelling resolves" "git dep: tagged" \
+      "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs-legacy" "$JOLT" run -m gapp 2>&1 | tail -1)"
+cat > "$tmp/gitproj/deps.edn" <<EOF
+{:paths ["src"]
+ :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :tag "v1.0" :sha "$short"}}}
+EOF
+check "the legacy :tag + :sha pair resolves" "git dep: tagged" \
+      "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs-legacy2" "$JOLT" run -m gapp 2>&1 | tail -1)"
+
+# and not off a stale tag cache: an older jolt recorded only the commit, so a
+# one-token cache file must be re-resolved rather than trusted — otherwise the
+# tag object is unknown and the tag-object coordinate is rejected again. Writes
+# its own deps.edn rather than inheriting the previous block's, so inserting a
+# case above cannot quietly turn this into a different test.
+cat > "$tmp/gitproj/deps.edn" <<EOF
+{:paths ["src"]
+ :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :git/tag "v1.0" :git/sha "$tagobj"}}}
+EOF
+stalesan="$(printf '%s' "file://$tmp/gitrepo" | sed 's/[^A-Za-z0-9.-]/_/g')"
+mkdir -p "$tmp/gitlibs-stale/tags/$stalesan"
+git -C "$tmp/gitrepo" rev-parse "v1.0^{}" > "$tmp/gitlibs-stale/tags/$stalesan/v1.0"
+check "a legacy one-token tag cache is re-resolved" "git dep: tagged" \
+      "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS="$tmp/gitlibs-stale" "$JOLT" run -m gapp 2>&1 | tail -1)"
 cat > "$tmp/gitproj/deps.edn" <<EOF
 {:paths ["src"]
  :deps {local/gitdep {:git/url "file://$tmp/gitrepo" :git/tag "v1.0" :git/sha "deadbee"}}}

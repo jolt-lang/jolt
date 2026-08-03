@@ -191,6 +191,15 @@
                         (foreign-set! 'unsigned-64 cells 24 outcap)
                         (and (not (= iconv-size-max
                                      (c-iconv-conv cd cells (+ cells 8) (+ cells 16) (+ cells 24))))
+                             ;; Then reset the descriptor to its initial state, which
+                             ;; POSIX spells as an iconv with a NULL input. A stateful
+                             ;; charset holds a mode, and its closing shift back to
+                             ;; ASCII is only emitted here — without it
+                             ;; (.getBytes "い" "ISO-2022-JP") stops after the
+                             ;; character and drops the trailing ESC ( B the JVM
+                             ;; writes. Stateless charsets write nothing.
+                             (begin (c-iconv-conv cd 0 0 (+ cells 16) (+ cells 24))
+                                    #t)
                              (let* ((n (- outcap (foreign-ref 'unsigned-64 cells 24)))
                                     (out (make-bytevector n)))
                                (do ((i 0 (+ i 1))) ((= i n) out)

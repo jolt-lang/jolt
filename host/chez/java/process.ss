@@ -566,6 +566,26 @@
           (lambda (self hook)
             (set-box! proc-shutdown-hooks (remq hook (unbox proc-shutdown-hooks))) #t))
         (cons "availableProcessors" (lambda (self) (->num (jolt-available-processors))))
+        ;; The memory trio, over Chez's own heap accounting: current-memory-bytes
+        ;; is what the collector has reserved from the OS (the JVM's totalMemory)
+        ;; and bytes-allocated is what is live inside it, so free is the
+        ;; difference. maxMemory is unbounded here — Chez grows the heap on demand
+        ;; with no configured ceiling — and Long/MAX_VALUE is what the JVM reports
+        ;; for exactly that case. criterium reads all four for its report, and
+        ;; without them a benchmark namespace crashes rather than running.
+        (cons "totalMemory" (lambda (self) (->num (current-memory-bytes))))
+        (cons "freeMemory"
+          (lambda (self) (->num (max 0 (- (current-memory-bytes) (bytes-allocated))))))
+        (cons "maxMemory" (lambda (self) (->num 9223372036854775807)))
+        ;; Runtime.gc routes to System/gc on the JVM, so it gets the same guarded
+        ;; hint semantics — Chez's collect refuses while multiple threads are live,
+        ;; and neither of these ever throws on the JVM.
+        (cons "gc" (lambda (self)
+                     (guard (e (#t #f)) (collect (collect-maximum-generation)))
+                     jolt-nil))
+        ;; No finalizers on this host, so running them is genuinely a no-op — which
+        ;; is also all the JVM promises (a hint, deprecated for removal since 18).
+        (cons "runFinalization" (lambda (self) jolt-nil))
         (cons "exec" (lambda (self . args) (proc-runtime-exec args)))))
 (register-class-statics! "java.lang.Runtime" (list (cons "getRuntime" (lambda () the-jolt-runtime))))
 

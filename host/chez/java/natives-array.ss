@@ -323,7 +323,8 @@
     ((or (bytevector? src) (string? src)
          (and (jolt-array? src) (eq? (jolt-array-kind src) 'byte)))
      (write-all! (na-byte-array src)))
-    ((and (jhost? src) (member (jhost-tag src) '("string-reader" "pushback-reader")))
+    ((and (jhost? src) (or (string=? (jhost-tag src) "string-reader")
+                           (pushback-reader-tag? (jhost-tag src))))
      (write-all! (na-byte-array (drain-reader src))))
     (else
      (let ((buf (na-byte-array 8192)))

@@ -459,6 +459,11 @@
     ("writer" . "java.io.StringWriter")
     ("string-reader" . "java.io.StringReader")
     ("pushback-reader" . "java.io.PushbackReader")
+    ;; the line-numbering subclass carries its own tag so a value reports the
+    ;; class it really is — tools.reader does (extend LineNumberingPushbackReader
+    ;; IndexingReader …), which only fires when get-line-number's dispatch sees
+    ;; that class and not the plain PushbackReader one.
+    ("line-numbering-pushback-reader" . "clojure.lang.LineNumberingPushbackReader")
     ("char-writer" . "java.io.OutputStreamWriter")
     ("char-reader" . "java.io.InputStreamReader")
     ("time-unit" . "java.util.concurrent.TimeUnit")
@@ -470,6 +475,16 @@
 ;; FQN for a jhost tag, or #f if the tag names no modeled class (e.g. "class",
 ;; "in-stream", "jolt-comparator") — callers fall through on #f.
 (define (jhost-fqn tag) (hashtable-ref jhost-tag->fqn tag #f))
+
+;; Is this tag one of the pushback readers? Two tags model the pair
+;; (java.io.PushbackReader and its line-numbering subclass), and everything that
+;; asks "is this a pushback reader" must ask HERE rather than compare the tag
+;; literally — a second tag that only some sites recognize is how a reader
+;; silently stops being closeable, slurpable or re-wrappable on one path while
+;; still working on another.
+(define (pushback-reader-tag? t)
+  (or (string=? t "pushback-reader")
+      (string=? t "line-numbering-pushback-reader")))
 ;; the protocol-dispatch / instance? tag list for a jhost value's tag, or #f.
 (define (jhost-value-tags tag)
   (let ((fqn (hashtable-ref jhost-tag->fqn tag #f)))

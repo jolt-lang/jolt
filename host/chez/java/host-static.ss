@@ -83,6 +83,17 @@
                  (hashtable-set! host-methods-tbl tag h) h))))
     (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
 
+;; Point a second tag at an existing tag's method table, sharing the table itself
+;; rather than copying it. A shim that differs from another ONLY in the class it
+;; reports — clojure.lang.LineNumberingPushbackReader over java.io.PushbackReader
+;; — needs its own tag so value-host-tags names the right class, but must not get
+;; its own copy of the methods: a later register-host-methods! on either tag would
+;; then reach only one of them, and the two would silently drift apart.
+(define (alias-host-methods! tag from)
+  (let ((h (or (hashtable-ref host-methods-tbl from #f)
+               (error 'alias-host-methods! "no methods registered for tag" from))))
+    (hashtable-set! host-methods-tbl tag h)))
+
 (define (lookup-class h-tbl name)
   (or (hashtable-ref h-tbl name #f)
       (hashtable-ref h-tbl (short-class-name name) #f)))
@@ -130,11 +141,26 @@
   (lambda (obj method-name rest-args)
     (cond
       ((jhost? obj)
-       (let ((mh (hashtable-ref host-methods-tbl (jhost-tag obj) #f)))
-         (let ((f (and mh (hashtable-ref mh method-name #f))))
-           (if f
-               (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
-               (throw-jvm (quote IllegalArgumentException) (string-append "No matching method " method-name " for " (jhost-tag obj)))))))
+       (let* ((mh (hashtable-ref host-methods-tbl (jhost-tag obj) #f))
+              (f (and mh (hashtable-ref mh method-name #f)))
+              (args (if (jolt-nil? rest-args) '() (seq->list rest-args))))
+         (cond
+           (f (apply f obj args))
+           ;; (. Foo bar args) where Foo names a class is a STATIC call — that is
+           ;; what the form means on the JVM. A dotted name resolves as a class at
+           ;; analysis time, but an IMPORTED simple name evaluates to a class
+           ;; token and arrives here as a method call on it, so anything Class
+           ;; itself does not answer is a static of the class the token names.
+           ;; Routing it through host-static-ref also picks up the on-demand class
+           ;; autoload, which the slash form (Foo/bar) always had and this form did
+           ;; not: (. LocalDate parse s) threw "No matching method parse for class"
+           ;; unless some earlier slash-form call happened to have loaded the
+           ;; provider. time-literals' data readers are written in exactly this
+           ;; form, so #time/date could not read at all.
+           ((string=? (jhost-tag obj) "class")
+            (apply (host-static-ref (jclass-name obj) method-name) args))
+           (else (throw-jvm (quote IllegalArgumentException)
+                            (string-append "No matching method " method-name " for " (jhost-tag obj)))))))
       ((number? obj) (apply number-method method-name obj (if (jolt-nil? rest-args) '() (seq->list rest-args))))
       (else 'pass))))
 
@@ -260,29 +286,51 @@
     (cond ((null? ps) #f)
           ((member class (vector-ref (car ps) 2)) (car ps))
           (else (loop (cdr ps))))))
+;; The latch holds #f (not attempted), 'ok, or 'failed — the install namespace was
+;; on the source roots and raised while loading. 'failed is what separates a
+;; dependency the caller forgot to declare from one that is declared and broken;
+;; see unknown-class-message.
 (define (lib-try-autoload! class)
   (let ((p (lib-provider-for class)))
     (and p
          (not (unbox (vector-ref p 3)))
-         (begin (set-box! (vector-ref p 3) #t)
+         (begin (set-box! (vector-ref p 3) 'ok)
                 (and (find-ns-file (vector-ref p 0))
-                     (begin (load-namespace (vector-ref p 0)) #t))))))
+                     (begin (guard (c (#t (set-box! (vector-ref p 3) 'failed)
+                                          (raise c)))
+                              (load-namespace (vector-ref p 0)))
+                            #t))))))
+
+;; A provider that is on the source roots but raised while loading leaves the
+;; class unregistered exactly like an undeclared dependency does — but the fix is
+;; the opposite one. Telling someone to add a dependency their deps.edn already
+;; declares sends them the wrong way, so say which case it is.
+(define (provider-load-failed-message class coordinate install-ns)
+  (string-append class " is provided by the " coordinate " library, which is on "
+                 "the source roots but failed to load — see the earlier error "
+                 "from " install-ns ". This is not a missing dependency."))
 
 (define (unknown-class-message class)
   (cond
     ((or (member class jt-library-names) (java-time-prefixed? class))
-     (string-append class " is provided by the jolt-lang/time library, not core "
-                    "(RFC 0008). Add io.github.jolt-lang/time to your deps.edn."))
+     (if (eq? jt-library-autoload-done 'failed)
+         (provider-load-failed-message class "jolt-lang/time" "jolt.time")
+         (string-append class " is provided by the jolt-lang/time library, not core "
+                        "(RFC 0008). Add io.github.jolt-lang/time to your deps.edn.")))
     ((lib-provider-for class)
      => (lambda (p)
-          (string-append class " is provided by the " (vector-ref p 1)
-                         " library, not core. Add it to your deps.edn.")))
+          (if (eq? (unbox (vector-ref p 3)) 'failed)
+              (provider-load-failed-message class (vector-ref p 1) (vector-ref p 0))
+              (string-append class " is provided by the " (vector-ref p 1)
+                             " library, not core. Add it to your deps.edn."))))
     (else (string-append "Unknown class " class))))
 ;; Load the core base once, on the first `java.time.` miss. The latch is set
 ;; BEFORE the load so a self-referential static call while the base is loading
 ;; cannot recurse into another autoload attempt (load-namespace marks a namespace
 ;; loaded before evaluating its body). Returns #t only when it performed the load,
 ;; so the caller retries the lookup exactly once.
+;; #f (not attempted), 'ok, or 'failed — the library was on the source roots and
+;; raised while loading, which unknown-class-message reports as its own case.
 (define jt-library-autoload-done #f)
 (define (jt-try-autoload! class)
   (or (and (not jt-base-autoload-done)
@@ -300,9 +348,11 @@
       ;; to unknown-class-message, which names the dependency to add.
       (and (not jt-library-autoload-done)
            (or (member class jt-library-names) (java-time-prefixed? class))
-           (begin (set! jt-library-autoload-done #t)
+           (begin (set! jt-library-autoload-done 'ok)
                   (and (find-ns-file "jolt.time")
-                       (begin (load-namespace "jolt.time")
+                       (begin (guard (c (#t (set! jt-library-autoload-done 'failed)
+                                            (raise c)))
+                                (load-namespace "jolt.time"))
                               #t))))))
 
 ;; ---- emit entry points ------------------------------------------------------

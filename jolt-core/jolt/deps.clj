@@ -96,15 +96,35 @@
 
 (defn- full-sha? [s] (and (string? s) (= 40 (count s)) (re-matches #"[0-9a-f]+" s)))
 
+(defn- git-coord
+  "A git coordinate with tools.deps' legacy spellings folded into the namespaced
+  keys. deps.edn files in the wild still write :sha and :tag — malli pins
+  spec-alpha2 as {:git/url … :sha …} — and tools.deps accepts both, so a
+  coordinate that resolves there has to resolve here. The namespaced key wins if
+  both are somehow present."
+  [coord]
+  (cond-> coord
+    (and (:sha coord) (not (:git/sha coord))) (assoc :git/sha (:sha coord))
+    (and (:tag coord) (not (:git/tag coord))) (assoc :git/tag (:tag coord))))
+
 (defn- resolve-git-tag
-  "Resolve a tag to its commit sha via git ls-remote, preferring the peeled
-  ^{} ref (an annotated tag's target commit). Cached under the gitlibs dir —
-  a tag+sha coordinate is reproducible via the sha, the tag resolution is only
-  consulted to verify/complete it, so a cached answer is fine."
+  "Resolve a tag via git ls-remote to [commit-sha tag-object-sha]. An annotated
+  tag carries both: the peeled ^{} ref is the commit it points at, the unpeeled
+  ref is the tag object itself. A deps.edn may pin EITHER — `git ls-remote`
+  prints the tag object for refs/tags/X, so that is what a coordinate written
+  from its output holds (cognitect-labs/test-runner v0.5.0 is one), and
+  tools.deps accepts both. tag-object-sha is nil for a lightweight tag, where
+  the two coincide. Cached under the gitlibs dir as one line of two tokens —
+  the commit, then the tag object or \"-\" when there is none. A one-token file
+  is what an older jolt wrote, which recorded only the commit; it is re-resolved
+  rather than trusted, so a coordinate pinning the tag object is not rejected
+  off a cache that predates knowing about it."
   [url tag]
   (let [cache (str (gitlibs-dir) "/tags/" (sanitize url) "/" (sanitize tag))]
-    (if (file-exists? cache)
-      (str/trim (slurp cache))
+    (if-let [cached (when (file-exists? cache)
+                      (let [[commit obj] (str/split (str/trim (slurp cache)) #"\s+")]
+                        (when obj [commit (when (not= obj "-") obj)])))]
+      cached
       (when-let [out (sh-out (str "git ls-remote " (pr-str url) " "
                                   (pr-str (str "refs/tags/" tag)) " "
                                   (pr-str (str "refs/tags/" tag "^{}"))))]
@@ -113,11 +133,14 @@
                       (some (fn [l] (let [[sha ref] (str/split l #"\s+")]
                                       (when (and ref (str/ends-with? ref suffix)) sha)))
                             lines))
-              sha (or (parse "^{}") (parse (str "refs/tags/" tag)))]
-          (when sha
+              peeled (parse "^{}")
+              obj (parse (str "refs/tags/" tag))
+              commit (or peeled obj)
+              obj (when (and peeled obj (not= peeled obj)) obj)]
+          (when commit
             (sh (str "mkdir -p " (pr-str (str (gitlibs-dir) "/tags/" (sanitize url)))))
-            (spit cache sha)
-            sha))))))
+            (spit cache (str commit " " (or obj "-")))
+            [commit obj]))))))
 
 (defn- resolve-git-sha
   "The full commit sha a git coordinate pins: a full :git/sha as-is; with a
@@ -127,14 +150,20 @@
   (cond
     (and sha (full-sha? sha) (not tag)) sha
     (and tag sha)
-    (let [tag-sha (or (resolve-git-tag url tag)
-                      (throw (ex-info (str "git dep " coord ": tag " tag " not found in " url)
-                                      {:coord coord :spec spec})))]
-      (if (str/starts-with? tag-sha sha)
+    (let [[tag-sha obj-sha]
+          (or (resolve-git-tag url tag)
+              (throw (ex-info (str "git dep " coord ": tag " tag " not found in " url)
+                              {:coord coord :spec spec})))]
+      ;; Either sha an annotated tag carries pins it, as in tools.deps. What gets
+      ;; checked out is always the commit.
+      (if (or (str/starts-with? tag-sha sha)
+              (and obj-sha (str/starts-with? obj-sha sha)))
         tag-sha
         (throw (ex-info (str "git dep " coord ": :git/sha " sha " does not match tag "
-                             tag " (" tag-sha ")")
-                        {:coord coord :spec spec :tag-sha tag-sha}))))
+                             tag " (" tag-sha
+                             (when obj-sha (str ", tag object " obj-sha)) ")")
+                        {:coord coord :spec spec :tag-sha tag-sha
+                         :tag-object-sha obj-sha}))))
     (full-sha? sha) sha
     :else
     (throw (ex-info
@@ -534,7 +563,7 @@
 (defmethod ext/coord-type-keys :local [_] #{:local/root})
 
 (defmethod ext/dep-id :mvn [_ coord] (select-keys coord [:mvn/version]))
-(defmethod ext/dep-id :git [_ coord] (select-keys coord [:git/url :git/sha :git/tag]))
+(defmethod ext/dep-id :git [_ coord] (select-keys (git-coord coord) [:git/url :git/sha :git/tag]))
 (defmethod ext/dep-id :local [_ coord] (select-keys coord [:local/root]))
 
 ;; What names a version in the dependency tree: the Maven version, the git tag
@@ -542,7 +571,8 @@
 ;; prints it), the directory for a local root.
 (defmethod ext/coord-summary :mvn [lib coord] (str lib " " (:mvn/version coord)))
 (defmethod ext/coord-summary :git [lib coord]
-  (let [sha (:git/sha coord)]
+  (let [coord (git-coord coord)
+        sha (:git/sha coord)]
     (str lib " " (or (:git/tag coord)
                      (when sha (subs sha 0 (min 7 (count sha))))))))
 (defmethod ext/coord-summary :local [lib coord] (str lib " " (:local/root coord)))
@@ -567,7 +597,8 @@
 (defn- git-info [lib coord]
   (memoized [:info lib (ext/dep-id lib coord)]
     (fn []
-      (let [url (or (:git/url coord) (infer-git-url lib)
+      (let [coord (git-coord coord)
+            url (or (:git/url coord) (infer-git-url lib)
                     (throw (ex-info
                              (str "git dep " lib " has no :git/url and none could be inferred "
                                   "from its lib name. Add :git/url, or name the coordinate after "

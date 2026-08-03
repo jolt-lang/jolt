@@ -446,14 +446,16 @@
           (loop (cons (integer->char (exact (truncate u))) acc))))))
 
 (define (reader-jhost? x)
-  (and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader"))))
+  (and (jhost? x)
+       (or (string=? (jhost-tag x) "string-reader")
+           (pushback-reader-tag? (jhost-tag x)))))
 
 ;; Refill a host reader so subsequent read/slurp see `s` (the unconsumed tail).
 (define (reader-refill! r s)
   (cond
     ((string=? (jhost-tag r) "string-reader")
      (vector-set! (jhost-state r) 0 s) (vector-set! (jhost-state r) 1 0))
-    ((string=? (jhost-tag r) "pushback-reader")
+    ((pushback-reader-tag? (jhost-tag r))
      (vector-set! (jhost-state r) 0 (host-new "StringReader" s))
      (vector-set! (jhost-state r) 1 '()))))
 ;; Read ONE form from a host reader (StringReader/PushbackReader): drain the
@@ -610,8 +612,9 @@
 (define (jolt-close x)
   (cond
     ((jolt-nil? x) jolt-nil)
-    ((and (jhost? x) (member (jhost-tag x) '("string-reader" "pushback-reader" "writer"
-                                             "file-writer" "port-writer" "print-writer")))
+    ((and (jhost? x) (or (pushback-reader-tag? (jhost-tag x))
+                         (member (jhost-tag x) '("string-reader" "writer"
+                                                 "file-writer" "port-writer" "print-writer"))))
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
     ;; a library's stream shim (tagged-table) closes via its registered .close
     ;; method (a no-op for in-memory streams); absent method -> no-op.
@@ -692,6 +695,23 @@
 ;; built binary), else nil — matching the JVM, which returns a java.net.URL. Both
 ;; branches answer the same URL surface. get-source-roots is the loader's accessor
 ;; (loader.ss), resolved at call time — the runtime CLI loads it.
+;; The file: URL for `nm` under source root `root`, ABSOLUTE as the JVM
+;; classloader's always is. Source roots are usually relative ("./stdlib"), and
+;; "file:./stdlib/x" is not a valid absolute URL — a consumer that resolves
+;; another name against it gets MalformedURLException "no protocol". (Selmer
+;; stores the URL from (io/resource "templates/…") and resolves template names
+;; against it, which is where this surfaced.) Absolutize against user.dir, the
+;; base every other filesystem touch uses, dropping a leading "./" so the path
+;; reads like the JVM's instead of carrying a "/./" segment.
+(define (resource-file-url root nm)
+  (let* ((rel (string-append root "/" nm))
+         (rel (if (and (>= (string-length rel) 2)
+                       (char=? (string-ref rel 0) #\.)
+                       (char=? (string-ref rel 1) #\/))
+                  (substring rel 2 (string-length rel))
+                  rel)))
+    (make-url (string-append "file:" (jfile-abs rel)))))
+
 (define (jolt-io-resource name)
   (let* ((nm (jolt-str-render-one name))
          (emb (hashtable-ref embedded-resources nm #f)))
@@ -699,7 +719,7 @@
         (let loop ((roots (get-source-roots)))
           (cond ((null? roots) jolt-nil)
                 ((file-exists? (string-append (car roots) "/" nm))
-                 (make-url (string-append "file:" (car roots) "/" nm)))
+                 (resource-file-url (car roots) nm))
                 (else (loop (cdr roots))))))))
 (def-var! "clojure.java.io" "resource" jolt-io-resource)
 ;; as-url honors a library-registered URL class (e.g. jolt-lang/http-client's full
@@ -726,7 +746,7 @@
     (let loop ((roots (get-source-roots)))
       (cond ((null? roots) jolt-nil)
             ((file-exists? (string-append (car roots) "/" nm))
-             (make-url (string-append "file:" (car roots) "/" nm)))
+             (resource-file-url (car roots) nm))
             (else (loop (cdr roots)))))))
 ;; getResources: every source root that holds the named resource, as file: URLs
 ;; (enumeration-seq just calls seq, so a list serves). ring's static-resource
@@ -736,7 +756,7 @@
     (let loop ((roots (get-source-roots)) (acc '()))
       (cond ((null? roots) (list->cseq (reverse acc)))
             ((file-exists? (string-append (car roots) "/" nm))
-             (loop (cdr roots) (cons (make-url (string-append "file:" (car roots) "/" nm)) acc)))
+             (loop (cdr roots) (cons (resource-file-url (car roots) nm) acc)))
             (else (loop (cdr roots) acc))))))
 (register-host-methods! "classloader"
   (list (cons "getResource" cl-get-resource)

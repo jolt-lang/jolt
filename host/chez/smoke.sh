@@ -166,6 +166,10 @@ check '(require [clojure.string :as s]) (s/upper-case "hello")' '"HELLO"'
 # backwards and an editor jumps to the wrong jolt/deps.clj.
 check '(require [clojure.java.io :as io] [clojure.string :as s])
        (s/includes? (slurp (io/resource "jolt/deps.clj")) "defn resolve-project")' 'true'
+# (The URL io/resource answers for a file on a source root must be ABSOLUTE; that
+# is asserted in deps-alias-smoke.sh, which has fixture projects with real roots.
+# Here jolt-core/stdlib are baked into the binary, so this takes the embedded-
+# resource branch instead and never builds a file: URL at all.)
 check '(eval (quote (+ 1 2)))' '3'
 check '(load-string "(def y 5) (* y y)")' '25'
 check '(defmacro add1 [x] (list (quote +) x 1)) (add1 10)' '11'
@@ -493,6 +497,21 @@ else
   echo "  FAIL: clojure.zip / clojure.data"
   echo "    $(printf '%s' "$zd_out" | grep ZIP-DATA-RESULT | tail -1)"
   printf '%s' "$zd_out" | grep 'zip-data FAIL' | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
+# clojure.stacktrace: the surface test runners print an errored test with (kaocha
+# calls print-cause-trace, clojure.test's reporter print-stack-trace). Loads on
+# require, so it cannot be a corpus row either. The frame list is empty on jolt —
+# tail calls leave nothing to report — but the throwable line, the ex-data and the
+# Caused by chain match reference Clojure exactly, and that is what is pinned.
+st_out="$($jolt run test/chez/stacktrace-test.clj 2>/dev/null)"
+if printf '%s' "$st_out" | grep -q 'STACKTRACE OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: clojure.stacktrace"
+  echo "    $(printf '%s' "$st_out" | grep STACKTRACE-RESULT | tail -1)"
+  printf '%s' "$st_out" | grep 'stacktrace FAIL' | sed 's/^/    /'
   fails=$((fails + 1))
 fi
 

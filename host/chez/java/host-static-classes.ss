@@ -680,7 +680,12 @@
 ;; \n and bump the line number. So a source read through it looks the same whether it
 ;; was written on Unix, Windows or a classic Mac — tools.reader's source logging
 ;; depends on that, and without it a \r leaks through as its own character.
-(define (make-lnpbr rdr . _) (make-jhost "pushback-reader" (vector rdr '() #t 0 0 #f)))
+;; Its own jhost tag, not "pushback-reader": the value has to report
+;; clojure.lang.LineNumberingPushbackReader for tools.reader's
+;; (extend LineNumberingPushbackReader IndexingReader …) to dispatch. The methods
+;; are shared with the plain reader below, so the two cannot drift.
+(define (make-lnpbr rdr . _)
+  (make-jhost "line-numbering-pushback-reader" (vector rdr '() #t 0 0 #f)))
 (register-class-ctor! "LineNumberingPushbackReader" make-lnpbr)
 (register-class-ctor! "clojure.lang.LineNumberingPushbackReader" make-lnpbr)
 (define (read-unit r)        ; read one code unit (flonum) from any reader, -1 at EOF
@@ -742,6 +747,9 @@
         ;; underlying LineNumberReader. A plain PushbackReader counts nothing.
         (cons "getLineNumber" (lambda (self) (->num (+ 1 (vector-ref (jhost-state self) 3)))))
         (cons "getColumnNumber" (lambda (self) (->num (vector-ref (jhost-state self) 4))))))
+;; The line-numbering subclass IS a PushbackReader — same methods, same table.
+;; Only the class it reports differs (see make-lnpbr).
+(alias-host-methods! "line-numbering-pushback-reader" "pushback-reader")
 
 ;; ---- StringTokenizer --------------------------------------------------------
 ;; state: a vector #(tokens-list pos)
@@ -1292,7 +1300,7 @@
                    ;; PushbackReader unless (instance? PushbackReader r), so this
                    ;; must hold for repeated reads from one reader to work.
                    ((string=? iface "PushbackReader")
-                    (and (jhost? val) (string=? (jhost-tag val) "pushback-reader")))
+                    (and (jhost? val) (pushback-reader-tag? (jhost-tag val))))
                    ((string=? iface "StringReader")
                     (and (jhost? val) (string=? (jhost-tag val) "string-reader")))
                    ((or (string=? iface "Reader") (string=? iface "BufferedReader"))

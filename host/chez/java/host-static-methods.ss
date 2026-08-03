@@ -280,6 +280,10 @@
                      ;; guarded no-op is the faithful behavior under live threads.
                      (guard (e (#t #f)) (collect (collect-maximum-generation)))
                      jolt-nil))
+        ;; No finalizers on this host, so running them is genuinely a no-op — which
+        ;; is also all the JVM promises (a hint, deprecated for removal since 18).
+        ;; criterium calls it alongside System/gc to settle the heap before timing.
+        (cons "runFinalization" (lambda _ jolt-nil))
         ;; wrapped in lambdas: the helpers are defined below, resolved at call time.
         (cons "getProperty" (lambda (k . d) (apply sys-get-property k d)))
         (cons "setProperty" (lambda (k v) (sys-set-property k v)))
@@ -436,6 +440,21 @@
         (cons "MAX_CODE_POINT" (->num #x10FFFF))
         (cons "MIN_SUPPLEMENTARY_CODE_POINT" (->num #x10000))
         (cons "charCount" (lambda (cp) (->num (if (>= (jnum->exact cp) #x10000) 2 1))))
+        ;; codePointAt(seq, index) — the codepoint at `index`. jolt strings are
+        ;; indexed by codepoint, so this is the code of the char sitting there,
+        ;; which is what the JVM answers for every character in the BMP. Above it
+        ;; the JVM's index counts UTF-16 units and an astral character occupies
+        ;; two; that is the :string-model divergence already recorded, not a
+        ;; difference in this method. The char[] overload is accepted too.
+        ;; yaml-parser (yamlstar) classifies each input character through this,
+        ;; and its own non-JVM branches spell it (int (nth input i)).
+        (cons "codePointAt"
+              (lambda (s i)
+                (let ((idx (jnum->exact i)))
+                  (->num (char->integer
+                          (if (jolt-array? s)
+                              (vector-ref (jolt-array-vec s) idx)
+                              (string-ref (jolt-str-render-one s) idx)))))))
         ;; Character.codePointOf(name) is deliberately absent: it is a lookup in the
         ;; Unicode character-name database, which this host does not carry, and a
         ;; partial ASCII-only table would answer wrongly rather than not at all.
