@@ -115,6 +115,11 @@
   {:suite "deftype / IPersistentStack" :label "peek/pop dispatch" :expected "[1 [2 3]]" :actual "(do (deftype Stk [v] clojure.lang.IPersistentStack (peek [_] (first v)) (pop [_] (->Stk (rest v)))) [(peek (->Stk [1 2 3])) (vec (.v (pop (->Stk [1 2 3]))))])" :portability :jvm}
   {:suite "deftype / equiv" :label "(= deftype other) uses equiv method" :expected "true" :actual "(do (deftype EqT [m] clojure.lang.IPersistentCollection (equiv [_ o] (= o m)) clojure.lang.Seqable (seq [_] (seq m))) (= (->EqT {:a 1}) {:a 1}))" :portability :jvm}
   {:suite "deftype / IDeref" :label "@ dispatches to the deref method" :expected "7" :actual "(do (deftype Box [v] clojure.lang.IDeref (deref [_] v)) (deref (->Box 7)))" :portability :jvm}
+  ;; A reify that DECLARES clojure.lang.IFn is callable and answers ifn?/instance?
+  ;; for it, like the JVM; fn? stays false (reify does not implement Fn). Calling
+  ;; one already worked — only the predicates read false, so malli's :ifn schema
+  ;; rejected a value it should accept.
+  {:suite "reify / IFn" :label "a reify declaring IFn is ifn? and an instance of it" :expected "[true false true \"Invoked!\"]" :actual "(let [r (reify clojure.lang.IFn (invoke [_] \"Invoked!\"))] [(ifn? r) (fn? r) (instance? clojure.lang.IFn r) (r)])" :portability :jvm}
   {:suite "reify / IDeref" :label "@ dispatches to the deref method" :expected "7" :actual "(deref (reify clojure.lang.IDeref (deref [_] 7)))" :portability :jvm}
   {:suite "deftype / mutable field" :label "set! is observed by a later read in the same method" :expected "9" :actual "(do (deftype B [^:unsynchronized-mutable v] clojure.lang.IDeref (deref [_] (set! v 9) v)) (deref (->B 0)))" :portability :jvm}
   {:suite "def / metadata evaluation" :label "a symbol metadata value evaluates to its var" :expected "true" :actual "(do (def ^{:af rest} mv 1) (fn? (:af (meta (var mv)))))" :portability :common}

@@ -894,11 +894,15 @@
                  (and (fx< i n)
                       (or (proto-class-match? (vector-ref ks i) qname)
                           (loop (fx+ i 1))))))))))
-;; True when a deftype/record instance DECLARES a method by this name (an inline
-;; protocol impl), so clojure.core can prefer it over generic collection behavior
-;; — e.g. (empty priority-map) must use the type's own empty, not return {}.
+;; True when a deftype/record/reify instance DECLARES a method by this name (an
+;; inline protocol impl), so clojure.core can prefer it over generic collection
+;; behavior — e.g. (empty priority-map) must use the type's own empty, not return
+;; {}, and (ifn? (reify IFn (invoke [_] …))) is true as on the JVM.
 (def-var! "jolt.host" "jrec-method?"
-  (lambda (v name) (if (and (jrec? v) (find-method-any-protocol (jrec-tag v) name)) #t #f)))
+  (lambda (v name)
+    (cond ((jrec? v) (if (find-method-any-protocol (jrec-tag v) name) #t #f))
+          ((reified-methods v) => (lambda (m) (if (hashtable-ref m name #f) #t #f)))
+          (else #f))))
 
 ;; (str x) is x.toString() on the JVM, so a deftype/record that DECLARES toString
 ;; renders through it. A defrecord's automatic map rendering is not a declared

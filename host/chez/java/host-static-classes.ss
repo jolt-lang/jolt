@@ -1293,9 +1293,13 @@
                    ((string=? iface "IRecord") (jrec-record? val))
                    ;; IFn — maps/sets/vectors are callable in jolt beyond the JVM
                    ;; class hierarchy, so jch-tags doesn't cover them for these types.
+                   ;; A no on these falls THROUGH rather than deciding: a deftype or
+                   ;; reify that declares clojure.lang.IFn is callable and answers
+                   ;; instance? through its own declared interfaces.
                    ((string=? iface "IFn")
                     (or (procedure? val) (keyword? val) (symbol-t? val)
-                        (pmap? val) (pset? val) (pvec? val)))
+                        (pmap? val) (pset? val) (pvec? val)
+                        'none))
                    ;; reader jhosts — data.json re-wraps a reader in a new
                    ;; PushbackReader unless (instance? PushbackReader r), so this
                    ;; must hold for repeated reads from one reader to work.
