@@ -33,8 +33,12 @@
       (if (>= i (count s))
         v
         (let [d (digit (int (nth s i)))]
+          ;; nil, not (reduced nil): reduced only means anything to reduce, and a
+          ;; Reduced is truthy, so the caller would take it for a code point. nil
+          ;; sends it down the leave-the-token-alone path, which is what
+          ;; commons-lang does with an entity it cannot parse.
           (if (or (nil? d) (>= d radix))
-            (reduced nil)
+            nil
             (recur (inc i) (+ (* v radix) d))))))))
 
 ;; Token is &…; inclusive. The body between the delimiters starts with the
