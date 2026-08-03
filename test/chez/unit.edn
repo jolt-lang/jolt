@@ -145,7 +145,6 @@
   {:suite "reader" :expr "(let [r (-> \"(+ 1 2) 99\" java.io.StringReader. java.io.PushbackReader.)] [(read r) (read r)])" :expected "[(+ 1 2) 99]"}
   {:suite "hostctor" :expr "(String/format \"%d-%s\" 5 \"x\")" :expected "\"5-x\""}
   {:suite "hostctor" :expr "[(.format (java.text.NumberFormat/getInstance) 1234567.5) (.format (java.text.NumberFormat/getIntegerInstance) 1234567)]" :expected "[\"1,234,567.5\" \"1,234,567\"]"}
-  {:suite "hostctor" :expr "[(.getProtocol (java.net.URL. \"file:/tmp/x\")) (.getFile (java.net.URL. \"http://h/p\")) (.getProtocol (java.net.URL. \"http://h/p\"))]" :expected "[\"file\" \"http://h/p\" \"http\"]"}
   {:suite "hostobj" :expr "(try (throw (ex-info \"x\" {})) (catch Throwable e [(.getNextException e) (vec (.getStackTrace e))]))" :expected "[nil []]"}
   {:suite "hostobj" :expr "[(some? (ClassLoader/getSystemClassLoader)) (some? (.getContextClassLoader (Thread/currentThread)))]" :expected "[true true]"}
   {:suite "reify" :expr "(do (defprotocol P (pm [_])) (defprotocol Q (qm [_])) (extend-protocol Q java.lang.Object (qm [_] :q-default)) (qm (reify P (pm [_] :p))))" :expected ":q-default"}

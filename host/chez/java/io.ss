@@ -262,14 +262,50 @@
           ((file-directory? p) (delete-directory p))
           (else (delete-file p) #t))))
 
-;; --- java.net.URL (a jhost "url", state #(spec)) ----------------------------
+;; --- java.net.URL (a jhost "url", state #(spec handler)) --------------------
 ;; A File.toURL value: .toString / .toExternalForm give the spec, .getPath /
 ;; .getFile strip the "file:" scheme.
-(define (make-url spec) (make-jhost "url" (vector spec)))
+;;
+;; handler is a java.net.URLStreamHandler when one was supplied, else #f. A URL
+;; built with one reads through it rather than off the filesystem: openConnection
+;; is the handler's, and openStream is that connection's getInputStream. That is
+;; how a caller serves templates from somewhere jolt has no protocol for —
+;; Selmer's :url-stream-handler option is exactly this.
+(define (make-url spec . h) (make-jhost "url" (vector spec (and (pair? h) (car h)))))
 (define (url-spec u) (vector-ref (jhost-state u) 0))
+(define (url-handler u)
+  (let ((st (jhost-state u)))
+    (and (> (vector-length st) 1)
+         (let ((h (vector-ref st 1))) (and (not (jolt-nil? h)) h)))))
+(define (url-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "url")))
 (define (url-strip-scheme spec)
   (if (and (>= (string-length spec) 5) (string=? (substring spec 0 5) "file:"))
       (substring spec 5 (string-length spec)) spec))
+;; The path component: the spec without its scheme, and without an authority when
+;; one is present. "https://example.com/a.html" -> "/a.html", "file:/a/b" -> "/a/b"
+;; (a file: URL keeps giving the filesystem path callers read it for).
+(define (url-path spec)
+  (let* ((i (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                    ((char=? (string-ref spec j) #\:) j)
+                                    (else (loop (+ j 1))))))
+         (rest (if i (substring spec (+ i 1) (string-length spec)) spec)))
+    (if (and (>= (string-length rest) 2) (string=? (substring rest 0 2) "//"))
+        (let loop ((j 2))
+          (cond ((>= j (string-length rest)) "")
+                ((char=? (string-ref rest j) #\/) (substring rest j (string-length rest)))
+                (else (loop (+ j 1)))))
+        rest)))
+(define (url-authority spec)
+  (let* ((i (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                    ((char=? (string-ref spec j) #\:) j)
+                                    (else (loop (+ j 1))))))
+         (rest (if i (substring spec (+ i 1) (string-length spec)) spec)))
+    (if (and (>= (string-length rest) 2) (string=? (substring rest 0 2) "//"))
+        (let loop ((j 2))
+          (cond ((>= j (string-length rest)) (substring rest 2 (string-length rest)))
+                ((char=? (string-ref rest j) #\/) (substring rest 2 j))
+                (else (loop (+ j 1)))))
+        "")))
 (define (url-protocol spec)
   (let ((i (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
                                    ((char=? (string-ref spec j) #\:) j) (else (loop (+ j 1)))))))
@@ -303,10 +339,50 @@
                             (not (char=? (string-ref rest 3) #\/)))
                        (substring rest 2 (string-length rest))
                        rest))))
-;; (java.net.URL. spec) — a basic file/http URL value (a library may register a
-;; richer URL shim, which overrides this).
-(register-class-ctor! "URL" (lambda (spec . _) (make-url (url-canonical (jolt-str-render-one spec)))))
-(register-class-ctor! "java.net.URL" (lambda (spec . _) (make-url (url-canonical (jolt-str-render-one spec)))))
+;; The constructors, told apart by argument TYPE the way the JVM's overloads are:
+;;   (URL. spec)
+;;   (URL. context spec)             context a URL or nil
+;;   (URL. context spec handler)
+;;   (URL. protocol host file)       three strings
+;; A relative spec resolves against the context's directory; an absolute one
+;; ignores the context, as on the JVM.
+(define (url-resolve-spec context spec)
+  (if (or (jolt-nil? context) (not context)
+          ;; absolute: it carries its own scheme
+          (let ((i (proto-colon-index spec))) (and i (> i 0))))
+      spec
+      (let* ((base (url-spec context))
+             (cut (let loop ((j (- (string-length base) 1)))
+                    (cond ((< j 0) #f)
+                          ((char=? (string-ref base j) #\/) j)
+                          (else (loop (- j 1)))))))
+        (string-append (if cut (substring base 0 (+ cut 1)) base) spec))))
+(define (proto-colon-index spec)
+  (let loop ((j 0))
+    (cond ((>= j (string-length spec)) #f)
+          ((char=? (string-ref spec j) #\:) j)
+          ;; a colon after a slash is part of the path, not a scheme
+          ((char=? (string-ref spec j) #\/) #f)
+          (else (loop (+ j 1))))))
+(define (jolt-make-url . args)
+  (cond
+    ((null? args) (throw-jvm (quote IllegalArgumentException) "URL: no arguments"))
+    ;; (URL. protocol host file) — first arg a string means the protocol form
+    ((and (= (length args) 3) (string? (car args)) (not (url-jhost? (car args))))
+     (let ((proto (jolt-str-render-one (car args)))
+           (host (jolt-str-render-one (cadr args)))
+           (file (jolt-str-render-one (caddr args))))
+       (make-url (url-canonical (string-append proto "://" host file)))))
+    ((= (length args) 1)
+     (make-url (url-canonical (jolt-str-render-one (car args)))))
+    ;; (URL. context spec [handler])
+    (else
+     (let* ((context (car args))
+            (spec (jolt-str-render-one (cadr args)))
+            (handler (and (>= (length args) 3) (caddr args))))
+       (make-url (url-canonical (url-resolve-spec context spec)) handler)))))
+(register-class-ctor! "URL" jolt-make-url)
+(register-class-ctor! "java.net.URL" jolt-make-url)
 ;; (str url) is the spec, like the JVM — without this it renders the opaque
 ;; #object[java.net.URL] form and any caller that builds a path from it gets that
 ;; string instead.
@@ -316,13 +392,29 @@
   (list (cons "toString"       (lambda (self) (url-spec self)))
         (cons "toExternalForm" (lambda (self) (url-spec self)))
         (cons "getProtocol"    (lambda (self) (url-protocol (url-spec self))))
-        (cons "getPath"        (lambda (self) (url-strip-scheme (url-spec self))))
-        (cons "getFile"        (lambda (self) (url-strip-scheme (url-spec self))))
-        (cons "getName"        (lambda (self) (path-last-segment (url-strip-scheme (url-spec self)))))
-        ;; openStream / io/input-stream: a file: URL reads its target from disk; a
-        ;; URL of any other protocol has no local backing and raises (the JVM would
-        ;; connect or read the jar), never empty content.
-        (cons "openStream"     (lambda (self) (host-new "StringReader" (url-content self))))))
+        (cons "getPath"        (lambda (self) (url-path (url-spec self))))
+        (cons "getFile"        (lambda (self) (url-path (url-spec self))))
+        (cons "getHost"        (lambda (self) (url-authority (url-spec self))))
+        (cons "getName"        (lambda (self) (path-last-segment (url-path (url-spec self)))))
+        ;; openStream / io/input-stream: a URL built with a stream handler reads
+        ;; through it; a file: URL reads its target from disk; a URL of any other
+        ;; protocol has no local backing and raises (the JVM would connect or read
+        ;; the jar), never empty content.
+        (cons "openConnection" (lambda (self . _) (url-open-connection self)))
+        (cons "openStream"     (lambda (self)
+                                 (let ((h (url-handler self)))
+                                   (if h
+                                       (record-method-dispatch (url-open-connection self)
+                                                               "getInputStream" jolt-nil)
+                                       (host-new "StringReader" (url-content self))))))))
+;; The handler's own openConnection. Without one there is nothing to connect
+;; through — say so rather than returning something that reads as empty.
+(define (url-open-connection u)
+  (let ((h (url-handler u)))
+    (if h
+        (record-method-dispatch h "openConnection" (jolt-list u))
+        (throw-jvm (quote java.io.IOException)
+                   (string-append "no protocol handler for: " (url-spec u))))))
 ;; (instance? java.net.URL x): the url jhost and an embedded-res (the jar: branch of
 ;; io/resource) both report java.net.URL. records-interop's case-string has no URL
 ;; arm, so answer it here where the two types live.
@@ -515,10 +607,22 @@
 ;; io/reader / io/input-stream / .openStream all reach a URL through here.
 (define (url-content u)
   (let ((spec (url-spec u)))
-    (if (string=? (url-protocol spec) "file")
-        (slurp-path (url-strip-scheme spec))
-        (throw-jvm (quote java.io.IOException)
-                   (string-append "protocol doesn't support input: " spec)))))
+    (cond
+      ;; a stream handler decides what this URL means, whatever its protocol
+      ((url-handler u)
+       (drain-any-stream (record-method-dispatch (url-open-connection u)
+                                                 "getInputStream" jolt-nil)))
+      ((string=? (url-protocol spec) "file") (slurp-path (url-strip-scheme spec)))
+      (else (throw-jvm (quote java.io.IOException)
+                       (string-append "protocol doesn't support input: " spec))))))
+;; Whatever the handler handed back: a byte stream, a reader, or a value that
+;; already renders as its content.
+(define (drain-any-stream s)
+  (cond ((reader-jhost? s) (drain-reader s))
+        ((and (jhost? s) (string=? (jhost-tag s) "in-stream"))
+         (utf8->string (na-bytearray->bv
+                        (record-method-dispatch s "readAllBytes" jolt-nil))))
+        (else (jolt-str-render-one s))))
 (define (jolt-slurp src . opts)
   (cond
     ((jfile? src) (slurp-path (jfile-fs src)))
@@ -666,8 +770,7 @@
     ((embedded-res? x)
      (let ((c (embedded-res-content x)))
        (host-new "StringReader" (if (bytevector? c) (utf8->string c) c))))
-    ((and (jhost? x) (string=? (jhost-tag x) "url"))
-     (host-new "StringReader" (read-file-string (url-strip-scheme (url-spec x)))))
+    ((url-jhost? x) (host-new "StringReader" (url-content x)))
     ((string? x) (host-new "StringReader" (read-file-string (project-relative x))))
     ((or (cseq? x) (empty-list-t? x) (pvec? x))
      (host-new "StringReader" (seq-source->string x)))

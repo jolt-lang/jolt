@@ -249,15 +249,13 @@
    ;; level and reads its `user` var, so it still has to compile — hence criterium.
    :shims ["!test/conformance/libs/shims/cheshire" "!test/conformance/libs/shims/criterium"]
    :exclude-nses ["selmer.benchmark"]
-   ;; The one remaining error is the :custom-resource-path test, which hands
-   ;; render-file a URL-valued resource root ("https://example.com/…") that
-   ;; jolt cannot read from. StringEscapeUtils is not referenced anywhere in
-   ;; the suite, so no commons-lang shim is attached. Nothing else fails.
+   ;; StringEscapeUtils is not referenced anywhere in the suite, so no commons-lang
+   ;; shim is attached.
    ;;
    ;; The locale work behind this tally lives on three extension points core
    ;; declares and jolt-lang/time fills in: :date-names, :number-symbols and
    ;; :currency-data. Running Selmer needs that library on :deps, which it has.
-   :expect {:tests 131 :pass 525 :fail 0 :error 1}}
+   :expect {:tests 131 :pass 526 :fail 0 :error 0}}
 
   {:name "html"
    :paths ["src" "test"]

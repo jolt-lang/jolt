@@ -124,6 +124,19 @@
   ;; compare response bodies that way. The two-arg ctor joins with exactly one
   ;; separator; a parent ending in "/" used to produce "a//c".
   {:suite "interop / File" :label "File equality by pathname, and one-separator join" :expected "[true false true 1 \"a/c\" \"a/c\" \"/c\" \"a/c\" \"a\"]" :actual "(let [a (java.io.File. \"a/b\") b (java.io.File. \"a/b\") c (java.io.File. \"a/c\")] [(= a b) (= a c) (= #{a} #{b}) (get {a 1} b) (.getPath (java.io.File. (java.io.File. \"a/\") \"c\")) (.getPath (java.io.File. \"a\" \"c\")) (.getPath (java.io.File. \"/\" \"c\")) (.getPath (java.io.File. \"a\" \"/c\")) (.getPath (java.io.File. \"a\" \"\"))])" :portability :jvm}
+  ;; A URL built with a URLStreamHandler reads through it, whatever its protocol:
+  ;; openConnection is the handler's and openStream is that connection's
+  ;; getInputStream, so slurp and io/reader both reach it. Selmer's
+  ;; :url-stream-handler option serves templates from a URL space jolt has no
+  ;; protocol for. getPath is the PATH component, not the spec minus its scheme.
+  {:suite "interop / URL" :label "a stream handler decides what a URL reads" :expected "[\"https://example.com/a.html\" \"content of https://example.com/a.html\" \"/a.html\"]" :actual "(let [h (proxy [java.net.URLStreamHandler] [] (openConnection [u] (proxy [java.net.URLConnection] [u] (getInputStream [] (java.io.ByteArrayInputStream. (.getBytes (str \"content of \" u))))))) u (java.net.URL. nil \"https://example.com/a.html\" h)] [(str u) (slurp u) (.getPath u)])" :portability :jvm}
+  ;; getFile of a URL with an authority is the path, not the whole spec — this
+  ;; row lived in unit.edn asserting "http://h/p", which was jolt's bug, not a
+  ;; divergence. The JVM says "/p".
+  {:suite "interop / URL" :label "protocol and file components" :expected "[\"file\" \"/p\" \"http\"]" :actual "[(.getProtocol (java.net.URL. \"file:/tmp/x\")) (.getFile (java.net.URL. \"http://h/p\")) (.getProtocol (java.net.URL. \"http://h/p\"))]" :portability :jvm}
+  ;; the constructor overloads, told apart by argument type, and the path/host
+  ;; split every non-file URL needs.
+  {:suite "interop / URL" :label "constructor overloads, path and host" :expected "[\"file:/tmp/x\" \"/tmp/x\" \"/a/b.txt\" \"h.com\" \"\" \"https://h.com/a.txt\" \"https://h.com/dir/y.html\" \"https://o.com/z\"]" :actual "[(str (java.net.URL. \"file:///tmp/x\")) (.getPath (java.net.URL. \"file:///tmp/x\")) (.getPath (java.net.URL. \"https://h.com/a/b.txt\")) (.getHost (java.net.URL. \"https://h.com/a/b.txt\")) (.getHost (java.net.URL. \"file:/tmp/x\")) (str (java.net.URL. \"https\" \"h.com\" \"/a.txt\")) (str (java.net.URL. (java.net.URL. \"https://h.com/dir/x.html\") \"y.html\")) (str (java.net.URL. (java.net.URL. \"https://h.com/dir/x.html\") \"https://o.com/z\"))]" :portability :jvm}
   ;; proxy over a CONCRETE class extends by delegation: the proxy builds a real
   ;; base instance, answers what it declares, forwards the rest, and proxy-super
   ;; reaches the base's own implementation. It is an instance of the base and of
