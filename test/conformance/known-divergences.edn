@@ -100,6 +100,23 @@
   ;; (exact)"), pinned jolt-side: it buckets as :jvm-error in certify (the :actual throws
   ;; on the JVM), which is informational — not gated — so it lives in :documented, not
   ;; in :entries (which certify would flag as stale).
+  ;; jolt's strings are indexed by Unicode CODE POINT where the JVM's are indexed
+  ;; by UTF-16 code unit, and (char n) follows the string model rather than the
+  ;; JVM's 16-bit char: it has to accept the whole scalar-value range or it could
+  ;; not rebuild a char that (first s) just handed out. A superset — every value
+  ;; the JVM accepts still works, and surrogates stay rejected because they are
+  ;; not scalar values.
+  ;;
+  ;; The visible consequence is in libraries that hand-encode \uXXXX per char:
+  ;; data.json's :escape-unicode writes \u1f603 for an astral character where the
+  ;; JVM writes the surrogate pair \ud83d\ude03. Matching that would mean adopting
+  ;; UTF-16 semantics for count/nth/char, which is the model choice jolt made the
+  ;; other way. The round trip is pinned in unit.edn ("char / code points").
+  {:category :string-model
+   :behavior "(char 128515), the code point (first \"<astral>\") yields"
+   :jvm "throws IllegalArgumentException — a JVM char is 16 bits"
+   :jolt "returns that character; (int (first (str (char 128515)))) is 128515 again"
+   :note "Deliberate superset of the JVM, following jolt's code-point string model."}
   {:category :numeric-model
    :behavior "(loop [i 5] (+ i 9223372036854775807))"
    :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"
@@ -369,7 +386,6 @@
    {:suite "string-model / codepoint strings", :label "seq counts codepoints", :category :string-model}
    {:suite "string-model / codepoint strings", :label "subs across astral boundary", :category :string-model}
    {:suite "string-model / codepoint strings", :label "charAt of an astral character is the codepoint", :category :string-model}
-   {:suite "string-model / codepoint strings", :label "char of it is out of range, as on the JVM", :category :string-model}
    {:suite "concurrency-model / compare-and-set!", :label "value equality where JVM uses identity", :category :concurrency-model}
    {:suite "reader-model / read-eval", :label "#= is inert data", :category :reader-model}
    {:suite "permissive / empty MapEntry", :label "empty of a map entry", :category :permissive}]}

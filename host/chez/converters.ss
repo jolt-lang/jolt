@@ -290,9 +290,21 @@
 (def-var! "clojure.core" "long" jolt-long-cast)
 (def-var! "clojure.core" "byte" jolt-byte-cast)
 (def-var! "clojure.core" "short" jolt-short-cast)
-;; char: pass a char through; a code point must be in [0, 0xFFFF] (charCast).
+;; char: pass a char through; a code point must be a Unicode SCALAR VALUE.
+;; jolt's strings are code-point indexed — (first "\x1f603;") hands back one char
+;; whose int is 128515 — so the cast has to accept the whole range or it cannot
+;; rebuild a char the string layer just produced. That is wider than the JVM's
+;; 16-bit char, which is the project's position when the two models differ: match
+;; where possible, otherwise be a superset. Surrogates are excluded because they
+;; are not scalar values (Chez's integer->char rejects them); they raise the same
+;; IllegalArgumentException as an out-of-range cast rather than a raw Chez error.
 (define (jolt-char x)
-  (if (char? x) x (integer->char (jolt-checked-cast "char" 0 65535 x))))
+  (if (char? x)
+      x
+      (let ((n (jolt-checked-cast "char" 0 #x10FFFF x)))
+        (if (and (>= n #xD800) (<= n #xDFFF))
+            (jolt-cast-range-throw "char" x)
+            (integer->char n)))))
 (def-var! "clojure.core" "char" jolt-char)
 ;; unchecked-long: truncate + wrap to 64 bits (RT.uncheckedLongCast — a float
 ;; infinity saturates, NaN is 0). unchecked-int wraps and sign-folds to 32.

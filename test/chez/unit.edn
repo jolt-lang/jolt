@@ -1589,4 +1589,9 @@
   ;; ExceptionInfo.toString appends the data map on the JVM too, so the trailing
   ;; {} is parity, not jolt leaking its own rendering.
   {:suite "throwable" :expr "(try (throw (ex-info \"boom\" {})) (catch Exception e (.toString e)))" :expected "\"clojure.lang.ExceptionInfo: boom {}\""}
+  ;; jolt strings are code-point indexed, so (char n) has to accept the whole
+  ;; scalar-value range or it cannot rebuild a char the string layer produced.
+  ;; Wider than the JVM's 16-bit char by design, hence a unit row not a corpus
+  ;; one. Surrogates are not scalar values and stay rejected.
+  {:suite "char / code points" :expr "[(int (char 65)) (int (char 128515)) (int (first (str (char 128515)))) (try (char 55296) (catch Exception e (ex-message e))) (try (char 1114112) (catch Exception e (ex-message e)))]" :expected "[65 128515 128515 \"Value out of range for char: 55296\" \"Value out of range for char: 1114112\"]"}
 ]

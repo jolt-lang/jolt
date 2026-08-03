@@ -119,6 +119,11 @@
   ;; for it, like the JVM; fn? stays false (reify does not implement Fn). Calling
   ;; one already worked — only the predicates read false, so malli's :ifn schema
   ;; rejected a value it should accept.
+  ;; java.io.File.equals compares the abstract pathname, so two Files built from
+  ;; one path are = and interchangeable as a map key — ring's resource tests
+  ;; compare response bodies that way. The two-arg ctor joins with exactly one
+  ;; separator; a parent ending in "/" used to produce "a//c".
+  {:suite "interop / File" :label "File equality by pathname, and one-separator join" :expected "[true false true 1 \"a/c\" \"a/c\" \"/c\" \"a/c\" \"a\"]" :actual "(let [a (java.io.File. \"a/b\") b (java.io.File. \"a/b\") c (java.io.File. \"a/c\")] [(= a b) (= a c) (= #{a} #{b}) (get {a 1} b) (.getPath (java.io.File. (java.io.File. \"a/\") \"c\")) (.getPath (java.io.File. \"a\" \"c\")) (.getPath (java.io.File. \"/\" \"c\")) (.getPath (java.io.File. \"a\" \"/c\")) (.getPath (java.io.File. \"a\" \"\"))])" :portability :jvm}
   ;; System.arraycopy behaves as if the source range were copied through a
   ;; temporary, so an overlapping copy within one array still reads pre-copy
   ;; values — a naive forward loop gives [1 1 1 1 1] for the second case.
@@ -3988,7 +3993,7 @@
   {:suite "iref / watches" :label "agent watches fire on state change" :expected "[0 1]" :actual "(let [ag (agent 0) p (promise)] (add-watch ag :w (fn [k r o n] (deliver p [o n]))) (send ag inc) (deref p 2000 :timeout))" :portability :common}
   {:suite "iref / meta" :label "alter-meta! works on atoms" :expected "{:x 1 :y 2}" :actual "(let [a (atom 1 :meta {:x 1})] (alter-meta! a assoc :y 2))" :portability :common}
   {:suite "casts / checked narrow" :label "doubles range-check themselves, then truncate" :expected "[1 1 3 1 \\a 0]" :actual "[(byte 1.1) (short 1.9) (int 3.7) (long 1.5) (char 97.5) (long ##NaN)]" :portability :common}
-  {:suite "casts / checked narrow" :label "out-of-range values throw IllegalArgumentException" :expected "[:iae :iae :iae :iae :iae :iae :iae]" :actual "[(try (byte 128) (catch IllegalArgumentException _ :iae)) (try (byte 127.000001) (catch IllegalArgumentException _ :iae)) (try (short 40000) (catch IllegalArgumentException _ :iae)) (try (int 2147483647.000001) (catch IllegalArgumentException _ :iae)) (try (char -1) (catch IllegalArgumentException _ :iae)) (try (char 65536) (catch IllegalArgumentException _ :iae)) (try (long 1e300) (catch IllegalArgumentException _ :iae))]" :portability :common}
+  {:suite "casts / checked narrow" :label "out-of-range values throw IllegalArgumentException" :expected "[:iae :iae :iae :iae :iae :iae :iae]" :actual "[(try (byte 128) (catch IllegalArgumentException _ :iae)) (try (byte 127.000001) (catch IllegalArgumentException _ :iae)) (try (short 40000) (catch IllegalArgumentException _ :iae)) (try (int 2147483647.000001) (catch IllegalArgumentException _ :iae)) (try (char -1) (catch IllegalArgumentException _ :iae)) (try (char 1114112) (catch IllegalArgumentException _ :iae)) (try (long 1e300) (catch IllegalArgumentException _ :iae))]" :portability :common}
   {:suite "casts / checked narrow" :label "the throw carries the JVM message" :expected "\"Value out of range for byte: 128\"" :actual "(try (byte 128) (catch IllegalArgumentException e (ex-message e)))" :portability :common}
   {:suite "casts / checked narrow" :label "ratios and bigdecs truncate; non-numbers are CCE" :expected "[1 5 :cce]" :actual "[(byte 3/2) (int 5.5M) (try (byte true) (catch ClassCastException _ :cce))]" :portability :common}
   {:suite "casts / checked narrow" :label "float range-checks against Float/MAX_VALUE" :expected "[:iae 1.5]" :actual "[(try (float 1e300) (catch IllegalArgumentException _ :iae)) (float 1.5)]" :portability :common}
@@ -4496,12 +4501,12 @@
   {:suite "string-model / codepoint strings" :label "seq counts codepoints" :expected "2" :actual "(count (seq \"😀x\"))" :portability :common}
   {:suite "string-model / codepoint strings" :label "subs across astral boundary" :expected "\"😀\"" :actual "(subs \"a😀b\" 1 2)" :portability :common}
   ;; .charAt yields the whole codepoint, so an astral character comes back as one
-  ;; char above 0xFFFF. (char that) then throws — correctly, and the same way the
-  ;; JVM's char does — where on the JVM .charAt would have handed back a surrogate
-  ;; that fits. Any escaper written as (char (int (.charAt s i))) hits this;
-  ;; data.json's does.
+  ;; char above 0xFFFF, where the JVM would have handed back a surrogate half.
+  ;; (char that) round-trips rather than throwing — jolt's char spans the Unicode
+  ;; scalar values because its strings are code-point indexed, which is a
+  ;; deliberate superset of the JVM's 16-bit char (see known-divergences). The
+  ;; round trip is pinned in unit.edn, not here, since the JVM throws.
   {:suite "string-model / codepoint strings" :label "charAt of an astral character is the codepoint" :expected "[128512 1]" :actual "[(int (.charAt \"😀\" 0)) (.length \"😀\")]" :portability :jvm}
-  {:suite "string-model / codepoint strings" :label "char of it is out of range, as on the JVM" :expected "\"IllegalArgumentException\"" :actual "(try (char (int (.charAt \"😀\" 0))) (catch Exception e (.getSimpleName (class e))))" :portability :jvm}
   {:suite "concurrency-model / compare-and-set!" :label "value equality where JVM uses identity" :expected "true" :actual "(compare-and-set! (atom [1]) [1] [2])" :portability :common}
   {:suite "reader-model / read-eval" :label "#= is inert data" :expected "false" :actual "(= 3 (read-string \"#=(+ 1 2)\"))" :portability :common}
   {:suite "reader-model / nested fn literals" :label "nested #() reads" :expected "true" :actual "(string? (str (read-string \"#(#(inc %))\")))" :portability :common}

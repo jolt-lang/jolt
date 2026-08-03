@@ -892,11 +892,29 @@
   (register-class-statics! "java.lang.Thread" statics))
 
 ;; --- java.io.File / java.util.UUID constructors -----------------------------
-;; (java.io.File. parent child) joins with "/"; (File. path) wraps the path.
+;; (java.io.File. parent child) joins with exactly ONE separator: File(parent,
+;; child) normalizes, so a parent that already ends in "/" does not produce a
+;; doubled slash (ring's resource middleware builds "assets/" + "index.html").
+;; A child that starts with a separator is joined the same way, and an empty
+;; child yields the parent's path alone -- all four checked against the JVM.
+(define (jolt-file-join parent child)
+  (let* ((p (file-path-of parent))
+         (c (file-path-of child))
+         (p (if (and (> (string-length p) 1)
+                     (char=? (string-ref p (- (string-length p) 1)) #\/))
+                (substring p 0 (- (string-length p) 1))
+                p))
+         (c (let strip ((i 0))
+              (cond ((= i (string-length c)) c)
+                    ((char=? (string-ref c i) #\/) (strip (+ i 1)))
+                    (else (substring c i (string-length c)))))))
+    (cond ((string=? c "") p)
+          ((string=? p "/") (string-append "/" c))
+          (else (string-append p "/" c)))))
 (register-class-ctor! "File"
   (lambda (a . rest)
     (if (pair? rest)
-        (jolt-make-file (string-append (file-path-of a) "/" (file-path-of (car rest))))
+        (jolt-make-file (jolt-file-join a (car rest)))
         (jolt-make-file a))))
 ;; File statics: the platform separators plus createTempFile / listRoots.
 (define temp-file-counter 0)
@@ -930,7 +948,7 @@
 (register-class-ctor! "java.io.File"
   (lambda (a . rest)
     (if (pair? rest)
-        (jolt-make-file (string-append (file-path-of a) "/" (file-path-of (car rest))))
+        (jolt-make-file (jolt-file-join a (car rest)))
         (jolt-make-file a))))
 ;; UUID: randomUUID / fromString statics + a (UUID. s) string ctor. Registering
 ;; under the FQN also registers the short name (shared member table).
@@ -1077,6 +1095,14 @@
         (cons "hashCode" (lambda (u) (string-hash (uri-field u 'string))))
         (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri")
                                           (string=? (uri-field u 'string) (uri-field o 'string)))))))
+;; (= f1 f2) is value equality by pathname, like java.io.File.equals — .equals
+;; and hash already agreed, so two Files built from the same path compared equal
+;; through the method and unequal through =, which is how ring's resource tests
+;; read (not (= #object[java.io.File "…/foo.html"] #object[java.io.File "…/foo.html"])).
+(register-eq-arm! (lambda (a b) (or (jfile? a) (jfile? b)))
+                  (lambda (a b) (and (jfile? a) (jfile? b)
+                                     (string=? (jfile-path a) (jfile-path b)))))
+
 ;; (= u1 u2) is value equality by string form (the .equals method above only
 ;; serves explicit (.equals …)); hash matches so a URI works as a map key / set
 ;; member (ring/hiccup compare (URI. "/") values).
