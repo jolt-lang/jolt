@@ -9,7 +9,7 @@
 ;; A shim rather than an edit: changing the suite to drop its oracle would
 ;; silently turn the recorded tally into a measure of our own source. The
 ;; library under test is unmodified.
-(ns jolt.shim.commons_codec)
+(ns jolt.shim.commons-codec)
 
 (def ^:private alphabet
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
@@ -63,18 +63,21 @@
     (loop [i 0 acc []]
       (if (>= i body)
         (byte-array (map unchecked-byte (drop-last pad acc)))
-        (let [c0 (aget input i)
-              c1 (aget input (inc i))
-              c2 (aget input (+ i 2))
-              c3 (aget input (+ i 3))
+        ;; Mask each byte to 0-255 (a stored byte is signed) and validate BEFORE
+        ;; the table lookup — dec-table is 128 wide, so an out-of-alphabet
+        ;; character would otherwise throw an index error instead of the
+        ;; IllegalArgumentException the JVM raises.
+        (let [c0 (bit-and (aget input i) 255)
+              c1 (bit-and (aget input (inc i)) 255)
+              c2 (bit-and (aget input (+ i 2)) 255)
+              c3 (bit-and (aget input (+ i 3)) 255)
+              _ (when-not (and (valid-char? c0) (valid-char? c1)
+                               (valid-char? c2) (valid-char? c3))
+                  (throw (IllegalArgumentException. "Invalid Base64 character")))
               v0 (aget dec-table c0)
               v1 (aget dec-table c1)
               v2 (aget dec-table c2)
               v3 (aget dec-table c3)]
-          (when (or (not (valid-char? c0)) (not (valid-char? c1))
-                    (and (not= 61 c2) (not (valid-char? c2)))
-                    (and (not= 61 c3) (not (valid-char? c3))))
-            (throw (IllegalArgumentException. "Invalid Base64 character")))
           (recur (+ i 4)
                  (conj acc
                        (bit-or (bit-shift-left v0 2) (bit-shift-right v1 4))
@@ -87,13 +90,3 @@
 (__register-class-statics! "org.apache.commons.codec.binary.Base64"
   {"encodeBase64" (fn [input] (encode* input))
    "decodeBase64" (fn [input] (decode* input))})
-
-;; The suite's copy-bytes helper copies a byte-array slice through
-;; System/arraycopy, which jolt does not register. It is test plumbing, not the
-;; oracle, so it goes in here too; registration merges into the existing System
-;; statics table rather than replacing it.
-(__register-class-statics! "java.lang.System"
-  {"arraycopy" (fn [src src-pos dst dst-pos len]
-                 (doseq [i (range len)]
-                   (aset dst (+ dst-pos i) (aget src (+ src-pos i))))
-                 nil)})
