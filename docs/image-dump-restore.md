@@ -99,10 +99,9 @@ variables, weak pairs, gensym identity, cyclic structure, shared structure
 - **eqv-, equal-, and string-hash hashtables** — they carry hash/equiv
   procedures. Only `eq` hashtables survive.
 
-**The escape hatch works**, though the cross-arch requirement (§3) means we end
-up not using it. `fasl-write` takes an `externals-pred`; every object it flags
-is written as a placeholder, and `fasl-read` takes a vector of replacements.
-Probed:
+**The escape hatch works.** `fasl-write` takes an `externals-pred`; every object
+it flags is written as a placeholder, and `fasl-read` takes a vector of
+replacements. Probed:
 
 - the predicate is consulted on sub-objects nested inside records and vectors,
   not just the root
@@ -111,6 +110,20 @@ Probed:
 - cycles through records still round-trip with externals in play
 - a wrong-length externals vector fails loudly:
   `incompatible fasl graph external vector length 0 (expected 1)`
+
+**Data-only fasl is architecture-independent.** Byte 12 of the stream is the
+machine type. It is `68` (`tarm64osx`) for a stream carrying code objects, and
+`0` — Chez's machine-independent marker — for one carrying only data. Verified
+`0` for records, externals, cyclic and shared structure, bignums, ratnums,
+`-0.0` and NaN. Since `fasl-write` rejects every procedure anyway, an image body
+can never contain code objects, so it is always a machine-type-0 stream.
+
+Bytes 8-10 are the fasl *version* and are fixed per Chez release. That is the
+real coupling: an image does not survive a Chez upgrade, though it does survive
+an architecture change.
+
+Caveat: this is read off the header field, not demonstrated by actually reading
+an arm64-written image on x86-64. R9 is the round that proves it.
 
 **Record type identity is the sharp edge.** Chez matched the `rtd` to the
 already-loaded one in every probe, so records restore into live types — but
@@ -216,27 +229,53 @@ detect co-captured mutable bindings and rebuild the sharing explicitly.
 
 ### Encoding
 
-A jolt-owned tagged binary format with an explicit object table (index-addressed),
-which is what gives us cycles and structural sharing. Not `fasl` — it is
-arch-tied and cannot carry code refs.
+**Chez `fasl` + `externals-pred`.** The image body is pure data by construction —
+code travels as a code-id *string* plus captured values, never as a code object —
+so it is always a machine-type-0 stream and architecture-independent (§2). We do
+not need a hand-rolled format to get cross-arch.
 
-Cross-arch obligations, all in the format rather than left to Chez: explicit
-little-endian byte order; IEEE-754 for flonums with negative zero and the NaN
-payload pinned; bignums as sign + magnitude bytes; ratnums as a numerator/
-denominator pair; records keyed by the jrec type's `ns/name`, not by a Chez rtd.
+What that buys, all verified in §2 rather than assumed: cycles, structural
+sharing with `eq?` preserved, records, and every numeric type including bignums,
+ratnums, `-0.0` and NaN. Reimplementing that machinery by hand would be a large
+test surface for no gain.
 
-Keying records by name is what makes the §2 generative-rtd hazard irrelevant on
-this path — nothing depends on Chez rtd identity. The `nongenerative` gap is
-still a latent bug for anything else that fasls jolt values, so it stays in the
-plan, just off the critical path.
+What we write ourselves is only the externals side: a parallel descriptor table,
+one entry per object Chez refuses, encoded as data and fasled alongside the body.
 
-Encoded object kinds:
+```
+image := header
+       , externals-descriptors   ; fasl, pure data
+       , body                    ; fasl, externals-pred flags every non-data leaf
+```
 
-- **value** — persistent collections, records, keywords, symbols, strings,
-  numbers, metadata
+Restore decodes the descriptors first, resolves each to a live object, and hands
+the resulting vector to `fasl-read`. A wrong-length vector already fails loudly,
+which gives us a free consistency check on the pairing.
+
+**This puts `nongenerative` on the critical path.** Records fasl by rtd, so the
+§2 silent-corruption result applies directly: any image-relevant record type
+without the clause produces, after a rebuild, a record whose own predicate
+returns `#f`. Every type in the §2 list has to be tagged before an image can be
+trusted. The upside is that the repo's existing UID convention (`chez-pmap-v4`)
+becomes the layout-version mechanism for free — changing a record's fields means
+bumping its UID, which converts a silent misread into a loud refusal.
+
+**The remaining coupling is the Chez fasl version** (bytes 8-10), not the
+architecture. An image does not survive a Chez upgrade. The header records the
+version and refuses on mismatch, because the alternative is an obscure
+`fasl-read` error at restore time.
+
+Object kinds. **value** — persistent collections, records, keywords, symbols,
+strings, numbers, metadata — needs no descriptor; it fasls natively. The
+`externals-pred` flags the rest, each getting a descriptor:
+
 - **fn-ref** — a procedure that is some var's root, or is in the direct-link
   registry → `"ns/name"`, resolved through the var table on restore
-- **closure** — `(code-id, free values)` per above
+- **closure** — `(code-id, free values)` per above; the free values are
+  themselves data and recurse through the same encoder
+- **non-`eq` hashtable** — `eqv`/`equal`/`string-hash` tables are rejected
+  because they carry their hash and equivalence procedures. Descriptor records
+  which kind plus the entries; restore rebuilds with the right constructor.
 - **host resource** — port, socket, process, thread → handler-supplied
   descriptor, re-acquired on restore
 - **anything else** — refuse, and report the path through the graph
@@ -261,10 +300,14 @@ usable; it reports "unserializable object" and it isn't.
 
 ### Header
 
-jolt version, image format version, source arch, target-independence flag, app
-build hash (reuse the FNV-1a content hash the AOT cache computes), and the
-ordered list of loaded namespaces. Restore refuses on a namespace or
-format-version mismatch unless `--force`; arch mismatch is expected and allowed.
+jolt version, image format version, **Chez fasl version**, source arch (recorded
+for diagnostics, not enforced), app build hash (reuse the FNV-1a content hash the
+AOT cache computes), and the ordered list of loaded namespaces.
+
+Restore refuses on a Chez-version, format-version, or namespace mismatch unless
+`--force`. Arch mismatch is expected and allowed — that is the point. Every
+refusal must name what differs; the failure this replaces is an opaque
+`fasl-read` error or, worse, the §2 silent stale-rtd read.
 
 Code-ids are content-addressed by fn identity, so a restore into a *different
 build* fails closed: an unknown code-id is an error, not a silent misbind. That
@@ -293,38 +336,46 @@ Note the manifest gate — new `jolt.host` `def-var!`s need a
 
 ## 4. Rounds (TDD, one PR each)
 
-- **R0 — probe harness.** Pin §2's Chez behavior as tests so an upgrade fails a
-  test rather than an image. Must settle the shared-mutable-capture question
-  before R3 is designed.
-- **R1 — unique fn-literal names.** Back end emits globally unique munged names.
+- **R0 — probe harness.** Pin §2's Chez behavior as tests — what fasls, what
+  doesn't, machine-type 0, the rtd table — so a Chez upgrade fails a test rather
+  than an image. Must settle the shared-mutable-capture question before R5.
+- **R1 — `nongenerative` sweep.** Tag every image-relevant record type in §2:
+  `pvec`, `jolt-atom`, `jolt-lazyseq`, `jolt-multifn`, `jolt-ex-info-record`,
+  `jolt-ref`, and the `jrec` substrate. Regression: write in process A,
+  recompile, read in B, assert predicates still hold. Runtime-only, no re-mint.
+  Now a prerequisite rather than a side quest — fasl keys records by rtd.
+- **R2 — unique fn-literal names.** Back end emits globally unique munged names.
   Regression: two same-short-named fn literals in different scopes get distinct
   code-ids; source-registry.ss stops marking them `'ambiguous`. Needs
   `make remint` — back-end changes silently no-op without it.
-- **R2 — reconstructors.** Emit + register `code-id → reconstructor` per fn
+- **R3 — reconstructors.** Emit + register `code-id → reconstructor` per fn
   literal. Test by reconstructing closures in-process, no serialization yet.
-- **R3 — walker + `scan`.** Classify every reachable object, report paths. No
+- **R4 — walker + `scan`.** Classify every reachable object, report paths. No
   writing.
-- **R4 — encoder/decoder, value core.** Round-trip identity: `=`, structural
-  sharing, cycles, metadata, record types, sorted/array maps. Cross-arch cases
-  (bignum, ratnum, -0.0, NaN) covered here.
-- **R5 — code refs and closures.** fn-refs via the var table; closures via
-  code-id + free values. Round-trip a var holding a fn, a multimethod, a
-  protocol impl, an atom with a watch, a closure over a mutable binding.
+- **R5 — externals encode/decode.** The descriptor table and its pairing with
+  the body: fn-refs via the var table, closures via code-id + free values,
+  non-`eq` hashtables, cycles that pass *through* an external. Round-trip a var
+  holding a fn, a multimethod, a protocol impl, an atom with a watch, a closure
+  over a mutable binding. Much smaller than a hand-rolled encoder — Chez covers
+  the value core, which R0 pins.
 - **R6 — root-set capture, end-to-end.** `dump!` / `restore!` on a nontrivial
   app; restore in a fresh process and assert behavior, not just structure.
 - **R7 — header + refusal.** Build identity, `--force`, and tests that a
-  mismatched image and an unknown code-id are *rejected* rather than silently
-  restored.
+  Chez-version mismatch, a namespace mismatch, and an unknown code-id are each
+  *rejected with a message naming the difference* rather than silently restored.
 - **R8 — handlers + hooks.** Registry, plus stdlib handlers for files, sockets,
   and child processes. Agent/thread quiescing.
-- **R9 — cross-arch proof.** Dump on arm64, restore on x86-64 in CI. This is the
-  round that actually validates the headline requirement; everything before it
-  is same-arch.
-- **R10 — CLI, nREPL, docs.** Including an explicit "state image, not process
-  image" section.
-- **Off critical path** — add `nongenerative` to the record types listed in §2.
-  Real latent bug, but the name-keyed encoding means images no longer depend on
-  it. Track separately.
+- **R9 — cross-arch proof.** Dump on arm64, restore on x86-64 in CI. §2 infers
+  portability from the machine-type byte; this is the round that demonstrates
+  it, and everything before it is same-arch. If it fails, the fallback is the
+  hand-rolled name-keyed format this design was reworked away from — so run a
+  throwaway cross-arch fasl read early rather than discovering it at R9.
+- **R10 — CLI, nREPL, docs.** `jolt run --restore`, the nREPL dump trigger, and
+  a docs section that states plainly this is a state image, not a process image,
+  plus the Chez-upgrade caveat.
+- **After merge** — add a page to the site repo at
+  `/Users/yogthos/src/jolt-lang/jolt-lang.github.io`, alongside the existing
+  library/feature pages.
 
 Perf gate: dumping must add no per-operation cost. Unique fn names and
 reconstructor registration are emit-time; verify `emit-diff` shows no change to
@@ -338,9 +389,9 @@ generated call sequences, and hold the standing 1.1x ceiling.
    work in the `optimized` profile, which turns it off. Either document that
    images require `release`, or have the back end record free-variable layout
    itself rather than reading it back from Chez. The latter is more work and
-   removes the dependency — worth deciding at R2.
+   removes the dependency — worth deciding at R3.
 3. **Reconstructor emission bloats binaries.** One extra top-level per fn
-   literal. Needs measuring at R2; may want to gate behind a build flag, though
+   literal. Needs measuring at R3; may want to gate behind a build flag, though
    that would make images a build-time opt-in.
 4. **Code-id stability across recompiles.** Content-addressing makes an
    unrelated edit invalidate unrelated code-ids only if the hash inputs are too
