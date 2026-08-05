@@ -89,10 +89,15 @@ gc-real-nanos
 getenv
 host-class-name?
 host-intern!
+image-add-after-restore-hook!
+image-add-before-dump-hook!
+image-dump-world!
 image-read
 image-register-handler!
+image-restore-world!
 image-runtime-version
 image-scan
+image-scan-world
 image-write!
 inference-enabled?
 inline-enabled?

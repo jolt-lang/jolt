@@ -338,6 +338,124 @@
       (image-reattach-meta! (vector-ref b 1))
       (vector-ref b 0))))
 
+;; --- whole-world image ----------------------------------------------------------
+;; The Smalltalk/Common Lisp shape: don't ask which variable to save, save the
+;; world. Walk the var table and write every var's root, so restoring brings the
+;; program's whole state back rather than one value the caller remembered to name.
+;;
+;; What makes this affordable on Chez is that CODE does not have to travel. A var
+;; whose root is a procedure is skipped outright: the restoring process is the
+;; same build, so it already has that function: `defn` bodies, protocol impls and
+;; multimethod tables are all present before the image is read. Only DATA moves.
+;; That is also why an image is pinned to its build — see the header check.
+;;
+;; Namespaces owned by the language are skipped by default. clojure.core holds
+;; mutable vars (*ns*, *warn-on-reflection*, printer state) that belong to the
+;; process being restored INTO, not to the image; carrying them over would make a
+;; restore quietly reconfigure the reader and printer.
+;; `user` is deliberately NOT skipped: at a REPL it is where the work lives, and
+;; an image that quietly dropped it would lose exactly what the user typed.
+(define image-system-ns-prefixes '("clojure." "jolt."))
+
+(define (image-system-ns? ns)
+  (or (string=? ns "clojure.core")
+      (let loop ((ps image-system-ns-prefixes))
+        (and (pair? ps)
+             (or (and (>= (string-length ns) (string-length (car ps)))
+                      (string=? (substring ns 0 (string-length (car ps))) (car ps)))
+                 (loop (cdr ps)))))))
+
+;; Hooks, the *save-hooks* / *init-hooks* pair. An application quiesces in
+;; before-dump (stop pools, park threads) and rebuilds whatever it could not
+;; carry in after-restore (reopen resources, re-derive computed cells).
+(define image-before-dump-hooks '())
+(define image-after-restore-hooks '())
+(define (jolt-image-add-before-dump-hook! f)
+  (set! image-before-dump-hooks (append image-before-dump-hooks (list f))) jolt-nil)
+(define (jolt-image-add-after-restore-hook! f)
+  (set! image-after-restore-hooks (append image-after-restore-hooks (list f))) jolt-nil)
+(define (image-run-hooks! hs) (for-each (lambda (f) (jolt-invoke f)) hs) jolt-nil)
+
+;; A var root a handler claimed, replaced by the handler's plain-data payload.
+;; Substituting HERE rather than through the fasl externals mechanism is what
+;; lets the payload be ordinary state: it rides in the body, so a function inside
+;; it becomes a fn-ref and a keyword inside it gets re-interned, exactly as if the
+;; application had stored that data directly. Routing it through a descriptor
+;; instead would put it in the one part of the file that cannot carry either.
+(define-record-type image-handled (fields payload) (nongenerative image-handled-v1))
+
+;; ns-list is a jolt seq of namespace-name strings, or nil for "every namespace
+;; that isn't the language's own".
+(define (image-world-vars ns-list)
+  (let ((want (if (jolt-nil? ns-list)
+                  #f
+                  (let loop ((s (jolt-seq ns-list)) (acc '()))
+                    (if (jolt-nil? s) acc
+                        (loop (jolt-next s) (cons (jolt-first s) acc))))))
+        (out '()))
+    (let-values (((ks vs) (hashtable-entries var-table)))
+      (let loop ((i 0))
+        (when (fx<? i (vector-length ks))
+          (let* ((cell (vector-ref vs i))
+                 (ns (var-cell-ns cell))
+                 (nm (var-cell-name cell))
+                 (root (var-cell-root cell)))
+            (when (and (if want (member ns want) (not (image-system-ns? ns)))
+                       ;; code is already in the restoring build; only data moves
+                       (not (procedure? root))
+                       (not (jolt-var-unbound? root)))
+              (let ((h (image-handler-for root)))
+                (set! out (cons (cons (string-append ns "/" nm)
+                                      (if h
+                                          (make-image-handled (jolt-invoke (cadr h) root))
+                                          root))
+                                out)))))
+          (loop (fx+ i 1)))))
+    out))
+
+(define (jolt-image-dump-world! path ns-list)
+  (image-run-hooks! image-before-dump-hooks)
+  (jolt-image-write! path (vector 'jolt-world (image-world-vars ns-list))))
+
+(define (jolt-image-scan-world ns-list)
+  (jolt-image-scan (vector 'jolt-world (image-world-vars ns-list))))
+
+(define (jolt-image-restore-world! path)
+  (let ((w (jolt-image-read path)))
+    (unless (and (vector? w) (fx=? (vector-length w) 2) (eq? (vector-ref w 0) 'jolt-world))
+      (jolt-throw (jolt-ex-info
+                    (string-append "image: " path
+                                   " is a value image, not a world image — read it with read-image")
+                    jolt-nil)))
+    (let ((n 0))
+      (for-each
+        (lambda (p)
+          (let* ((k (car p))
+                 (slash (let scan ((i 0))
+                          (cond ((fx>=? i (string-length k)) #f)
+                                ((char=? (string-ref k i) #\/) i)
+                                (else (scan (fx+ i 1))))))
+                 (ns (substring k 0 slash))
+                 (nm (substring k (fx+ slash 1) (string-length k))))
+            (let ((cell (jolt-var ns nm))
+                  (v (cdr p)))
+              ;; a handler claimed this var on the way out; hand the payload back
+              ;; to whichever registered handler accepts it
+              (var-cell-root-set! cell (if (image-handled? v)
+                                           (image-decode-external
+                                             (list 'handler (image-handled-payload v)))
+                                           v))
+              (var-cell-defined?-set! cell #t)
+              (set! n (fx+ n 1)))))
+        (vector-ref w 1))
+      (image-run-hooks! image-after-restore-hooks)
+      n)))
+
+(def-var! "jolt.host" "image-dump-world!" jolt-image-dump-world!)
+(def-var! "jolt.host" "image-restore-world!" jolt-image-restore-world!)
+(def-var! "jolt.host" "image-scan-world" jolt-image-scan-world)
+(def-var! "jolt.host" "image-add-before-dump-hook!" jolt-image-add-before-dump-hook!)
+(def-var! "jolt.host" "image-add-after-restore-hook!" jolt-image-add-after-restore-hook!)
 (def-var! "jolt.host" "image-write!" jolt-image-write!)
 (def-var! "jolt.host" "image-read" jolt-image-read)
 (def-var! "jolt.host" "image-scan" jolt-image-scan)

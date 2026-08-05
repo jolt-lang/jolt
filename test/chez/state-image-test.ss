@@ -196,6 +196,47 @@
     "true")
 
 
+;; --- whole-world image -----------------------------------------------------------
+;; The Smalltalk/CL shape: save the program, not one named value. Code is skipped
+;; (the restoring build already has it), so only data moves.
+(define world-tmp (string-append tmp ".world"))
+(ev "(ns imgtest.app)")
+(jolt-compile-eval "(def board {:tasks [{:id 1 :text \"a\"}] :filter :all})" "imgtest.app")
+(jolt-compile-eval "(def counter 41)" "imgtest.app")
+(jolt-compile-eval "(defn helper [x] (* 2 x))" "imgtest.app")
+
+(is "world scan is clean for data-only namespaces"
+    "(count (jolt.host/image-scan-world [\"imgtest.app\"]))" "0")
+(ev (string-append "(jolt.host/image-dump-world! \"" world-tmp "\" [\"imgtest.app\"])"))
+;; clobber the world
+(jolt-compile-eval "(def board {:tasks [] :filter :done})" "imgtest.app")
+(jolt-compile-eval "(def counter 0)" "imgtest.app")
+(is "world restore reports how many vars it rebound"
+    (string-append "(jolt.host/image-restore-world! \"" world-tmp "\")") "2")
+(is "data vars come back"
+    "(str (:filter imgtest.app/board) \" \" imgtest.app/counter)" ":all 41")
+(is "restored data keeps working keyword lookup"
+    "(count (:tasks imgtest.app/board))" "1")
+(is "code vars are untouched by a restore"
+    "(imgtest.app/helper 21)" "42")
+(is "a value image is refused by restore-world!"
+    (string-append "(do (jolt.host/image-write! \"" tmp "\" {:a 1})"
+                   " (try (jolt.host/image-restore-world! \"" tmp "\") :no-throw"
+                   " (catch Exception e (if (re-find #\"value image\" (ex-message e)) :named :other))))")
+    ":named")
+(is "a world image is refused by plain read"
+    (string-append "(let [w (jolt.host/image-read \"" world-tmp "\")] (vector? w))") "false")
+;; hooks fire in order around the operation
+(jolt-compile-eval "(def hooklog (atom []))" "user")
+(is "before-dump and after-restore hooks fire"
+    (string-append "(do (jolt.host/image-add-before-dump-hook! (fn [] (swap! user/hooklog conj :before)))"
+                   " (jolt.host/image-add-after-restore-hook! (fn [] (swap! user/hooklog conj :after)))"
+                   " (jolt.host/image-dump-world! \"" world-tmp "\" [\"imgtest.app\"])"
+                   " (jolt.host/image-restore-world! \"" world-tmp "\")"
+                   " (pr-str @user/hooklog))")
+    "[:before :after]")
+(when (file-exists? world-tmp) (delete-file world-tmp))
+
 (cleanup!)
 (when (file-exists? (string-append tmp ".txt")) (delete-file (string-append tmp ".txt")))
 
