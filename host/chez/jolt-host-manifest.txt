@@ -89,6 +89,11 @@ gc-real-nanos
 getenv
 host-class-name?
 host-intern!
+image-read
+image-register-handler!
+image-runtime-version
+image-scan
+image-write!
 inference-enabled?
 inline-enabled?
 inline-ir

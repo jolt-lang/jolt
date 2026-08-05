@@ -61,7 +61,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   jolt jolt-debug jolt-release joltsmoke libconformance mandelbrot-num mathfl mvnhttp \
   narrow numeric numwp oparity pic protoret printperf remint sci selfhost shakelocal \
   traceemit \
-  shakesmoke smoke staticnativesmoke test testbin transient unit unitcontext \
+  shakesmoke smoke staticnativesmoke stateimage test testbin transient unit unitcontext \
   values wp ci
 
 # Only mark PHONY targets for names that have file system conflicts:
@@ -113,7 +113,7 @@ install: build
 
 CI-GATES := submodules values corpus unit grenadine mvnhttp depssmoke depsunit \
   smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi \
-  transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
+  transient stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
   protoret pic narrow directlink unitcontext numeric oparity mathfl flarr \
   traceemit traceeval \
   inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke \
@@ -348,6 +348,11 @@ ffi:
 # Transients: mutable backing, snapshot on persistent!, and linear-time builds.
 transient:
 	@$(CHEZ) --script test/chez/transient-test.ss
+
+# State images: value-graph round-trip through jolt.image, plus the Chez fasl
+# behaviour the format assumes (machine-independence, what fasl refuses).
+stateimage:
+	@$(CHEZ) --script test/chez/state-image-test.ss
 
 # Inference / success-type checking: drive jolt.passes.types directly and assert
 # diagnostic counts + collected calls/escapes (the optimization pass the other

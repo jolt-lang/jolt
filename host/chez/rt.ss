@@ -1243,3 +1243,8 @@
 ;; Native stack traces: jv$ns$name -> source registry + continuation frame walk +
 ;; uncaught-throwable renderer. After the printers/equality it relies on.
 (load "host/chez/source-registry.ss")
+
+;; State images: dump the value graph to a file and read it back. Loads LAST —
+;; walks jolt collections, var cells and atoms, prints paths through the printers,
+;; and reads proc-name-tbl to write a fn as its var's name.
+(load "host/chez/state-image.ss")
