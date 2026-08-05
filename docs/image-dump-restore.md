@@ -99,9 +99,10 @@ variables, weak pairs, gensym identity, cyclic structure, shared structure
 - **eqv-, equal-, and string-hash hashtables** — they carry hash/equiv
   procedures. Only `eq` hashtables survive.
 
-**The escape hatch works and is the design's foundation.** `fasl-write` takes an
-`externals-pred`; every object it flags is written as a placeholder, and
-`fasl-read` takes a vector of replacements. Probed:
+**The escape hatch works**, though the cross-arch requirement (§3) means we end
+up not using it. `fasl-write` takes an `externals-pred`; every object it flags
+is written as a placeholder, and `fasl-read` takes a vector of replacements.
+Probed:
 
 - the predicate is consulted on sub-objects nested inside records and vectors,
   not just the root
@@ -134,52 +135,114 @@ This bites us today: a large share of the runtime's record types have no
 user-defined records (records.ss:69-77). `pmap`, `pset`, `hnode`, `hcoll`, and
 `var-cell` already carry one.
 
-**Closures are partially recoverable after all.** With
-`generate-inspector-information` on, `(inspect/object p)` yields the closure's
-free-variable *names* and *values*, and `((o 'code) 'source)` yields the source
-expression:
+**Closures carry a recoverable identity.** This is the result the whole design
+turns on. With `generate-inspector-information` on, `inspect/object` yields a
+closure's free-variable *names and values* in a stable order, and its code
+object yields a *name* — provided the lambda is bound rather than bare:
 
 ```
-(mk 5 "hi") => free vars ((msg . "hi") (n . 5)), source (lambda (x) (list (+ x n) msg))
+(lambda (x) (+ x n))                        name=#f          free=((n . 5))
+(letrec ((myfn (lambda (x) (+ x n)))) myfn) name="myfn"      free=((n . 7))
+(define (inner-fn x) (+ x n)) inner-fn      name="inner-fn"  free=((n . 9))
+case-lambda, letrec-bound                   name="ca"        free=((n . 3))
 ```
 
-With inspector info off, source and name go to `#f` (free-variable count
-survives). jolt's `release` profile sets `generate-inspector-information #t`
-(build.ss:1238) — it's what makes native backtraces work — and only the
-`optimized` profile turns it off (build.ss:1234). So the introspection path is
-available in default release builds. It is slow, it recovers *Scheme* source
-rather than jolt source, and it needs an `eval` on restore, so it belongs behind
-a flag, not on the default path.
+A `letrec` self-binding is exactly what jolt's `emit-fn` already emits (see the
+note in source-registry.ss). Verified to survive `compile-file` at
+`optimize-level 2` with `generate-inspector-information #t` — jolt's `release`
+profile (build.ss:1238); only `optimized` turns inspector info off
+(build.ss:1234):
+
+```
+compiled O2 +inspector -> name="cf-handler" nfree=2 free=((tag . "T") (n . 11))
+```
+
+**But the names collide.** Two fn literals in different scopes that share a
+short name both report it:
+
+```
+(a1 1) -> name="handler" free=((n . 1))
+(a2 2) -> name="handler" free=((n . 2))
+```
+
+This is the same ambiguity source-registry.ss already documents and defends
+against with its `'ambiguous` marker. Short names are not code identities. The
+back end has to emit *globally unique* fn-literal names before they can be.
 
 ## 3. Design
 
-Portable-dumper shape, cl-store constraints: dump the mutable state graph rooted
-at the var table, pair it with a build identity, and restore by starting the
-same binary, replaying the requires, and re-installing state.
+Decisions taken: cross-architecture restore, fail-with-path on unserializable
+objects, closures first-class from the start. Those three together rule out
+Chez `fasl` for the image body and push the design onto Gambit's model.
+
+### Closures are the architecture, not an add-on
+
+Gambit/Termite serializes procedures by addressing code with a stable global
+identifier instead of a raw pointer. jolt is a compiler, so it can do the same
+thing at its own seam — and the probe above says the runtime half already
+almost works.
+
+For each fn literal the back end emits:
+
+1. a **globally unique** munged name — the code-id — instead of today's short
+   name, and
+2. a **reconstructor**: a top-level procedure abstracted over that literal's
+   free-variable set, returning the closure. The analyzer already computes free
+   variables for closure conversion, so the set is known at emit time.
+3. a registration `code-id → reconstructor`, emitted once at definition time
+   like the existing `jolt-register-source!` — zero per-call cost.
+
+Then:
+
+- **dump** a closure → `inspect/object` gives `(code-id, ordered free values)`;
+  the values recurse through the normal encoder
+- **restore** → `(apply reconstructor decoded-free-values)`
+
+Nothing changes about how fns are represented at runtime. They stay raw Chez
+procedures, so the 1.1x regression ceiling is not in play — the cost is emit-time
+and dump-time only. The code-id is a string and the captured values are data, so
+this is architecture-independent by construction, which is exactly what the
+cross-arch decision requires.
+
+The unique-naming change is the prerequisite, and it pays a second dividend:
+source-registry.ss's `'ambiguous` fallback exists only because short names
+collide, so unique names also un-break native backtraces for the colliding case.
+
+Unresolved and needing a probe in R0: **shared mutable captures.** When two
+closures capture the same `set!`-mutated binding, Chez boxes it. The inspector
+surfaces a value; whether it surfaces the shared box such that both closures
+still share it after restore is unverified. If it doesn't, the encoder must
+detect co-captured mutable bindings and rebuild the sharing explicitly.
 
 ### Encoding
 
-Chez `fasl` + `externals-pred` for the image body. This buys cycles, structural
-sharing, and record identity for free, and leaves us responsible only for
-describing the leaves Chez refuses.
+A jolt-owned tagged binary format with an explicit object table (index-addressed),
+which is what gives us cycles and structural sharing. Not `fasl` — it is
+arch-tied and cannot carry code refs.
 
-The obvious objection is that it welds the format to a Chez version. It doesn't
-add a constraint: the generative-rtd result above already restricts an image to
-the exact build that wrote it, and a jolt binary embeds its own Chez boot. A
-build-independent EDN-ish encoding is a later phase, not the first one.
+Cross-arch obligations, all in the format rather than left to Chez: explicit
+little-endian byte order; IEEE-754 for flonums with negative zero and the NaN
+payload pinned; bignums as sign + magnitude bytes; ratnums as a numerator/
+denominator pair; records keyed by the jrec type's `ns/name`, not by a Chez rtd.
 
-Every external gets a descriptor:
+Keying records by name is what makes the §2 generative-rtd hazard irrelevant on
+this path — nothing depends on Chez rtd identity. The `nongenerative` gap is
+still a latent bug for anything else that fasls jolt values, so it stays in the
+plan, just off the critical path.
 
-- **named code** — a procedure that is some var's root, or is in the direct-link
-  registry → `(fn-ref "ns/name")`. Resolved through the var table on restore.
+Encoded object kinds:
+
+- **value** — persistent collections, records, keywords, symbols, strings,
+  numbers, metadata
+- **fn-ref** — a procedure that is some var's root, or is in the direct-link
+  registry → `"ns/name"`, resolved through the var table on restore
+- **closure** — `(code-id, free values)` per above
 - **host resource** — port, socket, process, thread → handler-supplied
-  descriptor, re-acquired on restore.
-- **reconstructible closure** (opt-in) — source sexp + named free values from
-  the inspector, re-`eval`'d on restore.
-- **anything else** — refuse, and report the path through the graph to it.
+  descriptor, re-acquired on restore
+- **anything else** — refuse, and report the path through the graph
 
-That last point is the usability make-or-break. SBCL and cl-store both fail
-without telling you *which* object, and it's miserable. `scan` reports
+Path reporting is the usability make-or-break. SBCL and cl-store both fail
+without saying *which* object and it is miserable. `scan` reports
 `#'myapp.core/state → :handlers → "GET /x" → #<procedure>` and the feature is
 usable; it reports "unserializable object" and it isn't.
 
@@ -189,7 +252,7 @@ usable; it reports "unserializable object" and it isn't.
 2. `ns-registry`, `ns-alias-table`, `ns-refer-table`, `ns-refer-all-table` and
    the exclude table (ns.ss:20-62)
 3. atoms, refs, agents reachable from those roots, plus their watches and
-   validators — which are procedures, so they go through the code-ref path
+   validators — procedures, so they take the fn-ref or closure path
 4. multimethod tables (multimethods.ss), protocol dispatch tables (records.ss),
    `*data-readers*`
 5. **not** dynamic per-thread bindings (dyn-binding.ss) — thread-local, and
@@ -198,10 +261,14 @@ usable; it reports "unserializable object" and it isn't.
 
 ### Header
 
-jolt version, Chez version, machine-type, app build hash (reuse the FNV-1a
-content hash the AOT cache already computes), and the ordered list of loaded
-namespaces. Restore refuses on any mismatch unless `--force`. Given the silent
-stale-rtd corruption above, this check is load-bearing, not hygiene.
+jolt version, image format version, source arch, target-independence flag, app
+build hash (reuse the FNV-1a content hash the AOT cache computes), and the
+ordered list of loaded namespaces. Restore refuses on a namespace or
+format-version mismatch unless `--force`; arch mismatch is expected and allowed.
+
+Code-ids are content-addressed by fn identity, so a restore into a *different
+build* fails closed: an unknown code-id is an error, not a silent misbind. That
+is the §2 stale-rtd lesson applied to code.
 
 ### API — `jolt.image`
 
@@ -217,51 +284,65 @@ stale-rtd corruption above, this check is load-bearing, not hygiene.
 (add-after-restore-hook! f) ; restart them
 ```
 
-Hooks are SBCL's `*save-hooks*` / `*init-hooks*` and exist for the same reason.
-CLI: `jolt run --restore img.jimg`, plus a dump trigger over nREPL.
+`:fail` is the default. Hooks are SBCL's `*save-hooks*` / `*init-hooks*` and
+exist for the same reason. CLI: `jolt run --restore img.jimg`, plus a dump
+trigger over nREPL.
 
 Note the manifest gate — new `jolt.host` `def-var!`s need a
 `jolt-host-manifest.txt` line, and `make manifestcheck` enforces it.
 
 ## 4. Rounds (TDD, one PR each)
 
-- **R0 — encoding spike.** Harness in `test/chez/` pinning the probe results
-  above against jolt's own value types, so a Chez upgrade that changes fasl
-  behavior fails a test rather than an image.
-- **R1 — rtd stability.** Add `nongenerative` to the image-relevant record
-  types listed in §2. Regression: write in process A, recompile, read in B, and
-  assert predicates still hold. Pure runtime change, no re-mint.
-- **R2 — walker + `scan`.** Classify every reachable object; no writing yet.
-  Tests: each jolt value type classifies correctly; every unserializable object
-  reports a readable path.
-- **R3 — encoder/decoder, value core.** Round-trip identity: `=`, structural
-  sharing, cycles, metadata, record types, sorted/array maps.
-- **R4 — code refs.** Build the procedure→fqn map from the var table plus the
-  direct-link registry. Round-trip a var holding a fn, a multimethod, a protocol
-  impl, an atom with a watch.
-- **R5 — root-set capture, end-to-end.** `dump!` / `restore!` on a nontrivial
+- **R0 — probe harness.** Pin §2's Chez behavior as tests so an upgrade fails a
+  test rather than an image. Must settle the shared-mutable-capture question
+  before R3 is designed.
+- **R1 — unique fn-literal names.** Back end emits globally unique munged names.
+  Regression: two same-short-named fn literals in different scopes get distinct
+  code-ids; source-registry.ss stops marking them `'ambiguous`. Needs
+  `make remint` — back-end changes silently no-op without it.
+- **R2 — reconstructors.** Emit + register `code-id → reconstructor` per fn
+  literal. Test by reconstructing closures in-process, no serialization yet.
+- **R3 — walker + `scan`.** Classify every reachable object, report paths. No
+  writing.
+- **R4 — encoder/decoder, value core.** Round-trip identity: `=`, structural
+  sharing, cycles, metadata, record types, sorted/array maps. Cross-arch cases
+  (bignum, ratnum, -0.0, NaN) covered here.
+- **R5 — code refs and closures.** fn-refs via the var table; closures via
+  code-id + free values. Round-trip a var holding a fn, a multimethod, a
+  protocol impl, an atom with a watch, a closure over a mutable binding.
+- **R6 — root-set capture, end-to-end.** `dump!` / `restore!` on a nontrivial
   app; restore in a fresh process and assert behavior, not just structure.
-- **R6 — header + refusal.** Build identity, `--force`, and a test that a
-  mismatched image is *rejected* rather than silently restored.
-- **R7 — handlers + hooks.** Registry, plus stdlib handlers for files, sockets,
+- **R7 — header + refusal.** Build identity, `--force`, and tests that a
+  mismatched image and an unknown code-id are *rejected* rather than silently
+  restored.
+- **R8 — handlers + hooks.** Registry, plus stdlib handlers for files, sockets,
   and child processes. Agent/thread quiescing.
-- **R8 — CLI, nREPL, docs.** Including an explicit "state image, not process
+- **R9 — cross-arch proof.** Dump on arm64, restore on x86-64 in CI. This is the
+  round that actually validates the headline requirement; everything before it
+  is same-arch.
+- **R10 — CLI, nREPL, docs.** Including an explicit "state image, not process
   image" section.
-- **R9 (optional) — closure reconstruction** via the inspector, behind a flag;
-  and `--portable` EDN encoding for cross-build restore.
+- **Off critical path** — add `nongenerative` to the record types listed in §2.
+  Real latent bug, but the name-keyed encoding means images no longer depend on
+  it. Track separately.
 
-Perf gate: dumping must add no per-operation cost. `emit-diff` should be
-byte-identical for builds that never call the API, and the standing 1.1x
-regression ceiling applies.
+Perf gate: dumping must add no per-operation cost. Unique fn names and
+reconstructor registration are emit-time; verify `emit-diff` shows no change to
+generated call sequences, and hold the standing 1.1x ceiling.
 
-## 5. Open questions
+## 5. Risks
 
-1. **Cross-build restore — required, or is same-build enough?** Same-build is
-   R0-R8 as scoped. Cross-build means a name-keyed portable encoding, versioned
-   record layouts, and a migration story. Materially bigger.
-2. **Scope of "different machine"** — same OS/arch, or also cross-arch? The
-   fasl route is arch-tied; cross-arch forces the portable encoding.
-3. **Default on unserializable** — `:fail` (safe, noisy) vs `:omit` (convenient,
-   silently lossy). Recommend `:fail`.
-4. **Is R9 wanted at all**, or do we tell users to store `[fn-name args]`
-   descriptors instead of closures, the way Clojure users already do?
+1. **Shared mutable captures** (§3). Unverified; R0 settles it. If the inspector
+   flattens boxes, the encoder needs explicit co-capture detection.
+2. **`generate-inspector-information` dependency.** Closure dumping does not
+   work in the `optimized` profile, which turns it off. Either document that
+   images require `release`, or have the back end record free-variable layout
+   itself rather than reading it back from Chez. The latter is more work and
+   removes the dependency — worth deciding at R2.
+3. **Reconstructor emission bloats binaries.** One extra top-level per fn
+   literal. Needs measuring at R2; may want to gate behind a build flag, though
+   that would make images a build-time opt-in.
+4. **Code-id stability across recompiles.** Content-addressing makes an
+   unrelated edit invalidate unrelated code-ids only if the hash inputs are too
+   broad. Getting the granularity right decides whether images survive a
+   no-op rebuild.
