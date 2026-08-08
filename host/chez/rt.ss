@@ -1276,6 +1276,14 @@
 ;; runtime (it depends on async.ss).
 (load "host/chez/java/fibers-async.ss")
 
+;; R7 state-machine go (sm.ss): the CPS'd go step + park ops for the cheap
+;; representation. After fibers-async.ss (reads jolt-fiber-sm-k, jolt-async-do-alts*,
+;; jolt-fiber-ensure-carrier!) and fibers.ss (jolt-fiber-pick! / enqueue!). The
+;; dispatcher jolt-go-sm-spawn and the sm-* park ops are registered as
+;; clojure.core.async vars at the END of sm.ss (cca-def! — async.ss loads before
+;; this block, so the var machinery is available).
+(load "host/chez/java/sm.ss")
+
 ;; BigDecimal: the jbigdec value type + bigdec/decimal?/class/equality/
 ;; printing. Loads LAST so its set!-wraps of jolt-class/jolt=2/the printers sit
 ;; outermost over every earlier extension.

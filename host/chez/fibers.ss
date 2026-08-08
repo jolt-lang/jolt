@@ -67,7 +67,12 @@
           (mutable error)
           (mutable next)
           (mutable slice)
-          carrier)
+          carrier
+          ;; R7: the state-machine resume continuation (sm.ss). For a state-
+          ;; machine go the fiber NEVER captures a continuation (k stays #f —
+          ;; the scheduler re-runs the thunk, the driver, on resume) and this
+          ;; field holds the closure to run next. #f for a continuation fiber.
+          (mutable sm-k))
   (nongenerative jolt-fiber-v1))
 
 ;; --- the per-fiber dynamic slice ---------------------------------------------
@@ -398,7 +403,7 @@
               (make-jolt-dslice (jolt-slice-stack-param)
                                 (jolt-slice-ns-param)
                                 #f)
-              c)))
+              c #f)))
       (jolt-fiber-enqueue! c f)
       f)))
 

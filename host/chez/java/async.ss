@@ -608,7 +608,13 @@
 ;; put specs. Returns a jolt vector [val port]. priority? is a boolean: #t
 ;; starts scanning at index 0 (declared order); #f picks a random start.
 ;; LOCK ORDER: channel mu → fmu → wmu. Never hold two channel mutexes at once.
-(define (jolt-async-do-alts ports priority?)
+;; The registration logic is shared with the R7 state-machine alts! (sm.ss):
+;; jolt-async-do-alts* takes the WAIT as a parameter — (lambda (h f unregister!)).
+;; For the thread/continuation-fiber paths the wait RETURNS the [val port]
+;; result (and unregisters); for the state machine it stores the resume in the
+;; fiber's sm-k and parks WITHOUT a continuation, never returning to this frame
+;; (its resume closure runs the unregister itself, then continues the body).
+(define (jolt-async-do-alts* ports priority? await-fn)
   (let* ((n (pvec-count ports))
          (start (if (jolt-truthy? priority?) 0 (jolt-random n)))
          (idx-of (lambda (k) (let ((m (fx+ start k))) (if (fx<? m n) m (fx- m n))))))
@@ -664,29 +670,10 @@
                                     (remp (lambda (x) (eq? x h))
                                           (async-chan-alt-takers ch)))))))
                         registered)))
-                   (finish (lambda (val port) (unregister!) (jolt-vector val port)))
-                   (await
-                    (lambda ()
-                      (if (and f jolt-fiber-alt-await-fn)
-                          ;; fiber waiter: park, never block the carrier (the
-                          ;; handler's channel mutexes are all released here)
-                          (let ((r (jolt-fiber-alt-await-fn h)))
-                            (unregister!)
-                            r)
-                          ;; thread waiter: condvar
-                          (begin
-                            (with-mutex (alt-handler-wmu h)
-                              (let ((mb (alt-handler-mailbox h)))
-                                (let wait-loop ()
-                                  (unless (vector-ref mb 0)
-                                    (condition-wait (alt-handler-wcv h) (alt-handler-wmu h))
-                                    (wait-loop)))))
-                            (unregister!)
-                            (let ((mb (alt-handler-mailbox h)))
-                              (jolt-vector (vector-ref mb 1) (vector-ref mb 2))))))))
+                   (finish (lambda (val port) (unregister!) (jolt-vector val port))))
               (let reg-loop ((j 0))
                 (if (fx=? j n)
-                    (await)
+                    (await-fn h f unregister!)
                     (let ((port (pvec-nth-d ports (idx-of j) jolt-nil)))
                       (if (pvec? port)
                           ;; put spec [ch val]
@@ -718,7 +705,7 @@
                                         (else 'lost))))))
                             (cond
                               ((eq? res 'registered) (reg-loop (fx+ j 1)))
-                              ((eq? res 'lost) (await))
+                              ((eq? res 'lost) (await-fn h f unregister!))
                               (else (finish (car res) (cdr res)))))
                           ;; take from bare channel
                           (let* ((ch port)
@@ -741,8 +728,29 @@
                                         (else 'lost))))))
                             (cond
                               ((eq? res 'registered) (reg-loop (fx+ j 1)))
-                              ((eq? res 'lost) (await))
+                              ((eq? res 'lost) (await-fn h f unregister!))
                               (else (finish (car res) (cdr res)))))))))))))))
+
+(define (jolt-async-do-alts ports priority?)
+  (jolt-async-do-alts* ports priority?
+    (lambda (h f unregister!)
+      (if (and f jolt-fiber-alt-await-fn)
+          ;; fiber waiter: park, never block the carrier (the handler's channel
+          ;; mutexes are all released here)
+          (let ((r (jolt-fiber-alt-await-fn h)))
+            (unregister!)
+            r)
+          ;; thread waiter: condvar
+          (begin
+            (with-mutex (alt-handler-wmu h)
+              (let ((mb (alt-handler-mailbox h)))
+                (let wait-loop ()
+                  (unless (vector-ref mb 0)
+                    (condition-wait (alt-handler-wcv h) (alt-handler-wmu h))
+                    (wait-loop)))))
+            (unregister!)
+            (let ((mb (alt-handler-mailbox h)))
+              (jolt-vector (vector-ref mb 1) (vector-ref mb 2))))))))
 
 ;; --- macros (expander fns over the reader forms) ----------------------------
 (define cca-go-spawn-sym (jolt-symbol "clojure.core.async" "go-spawn"))
