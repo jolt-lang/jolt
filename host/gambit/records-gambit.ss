@@ -1580,6 +1580,7 @@
             (not (hashtable-ref chez-deftype-tag-set type-name #f))
             (or (jch-known? base) (jch-known? type-name)))
        (jch-last-segment type-name))
+      ((dotted-name? type-name) type-name)
       (else #f))))
 
 (define extend-mark "__jolt_extend__")

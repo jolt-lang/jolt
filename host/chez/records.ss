@@ -1410,6 +1410,18 @@
             (not (hashtable-ref chez-deftype-tag-set type-name #f))
             (or (jch-known? base) (jch-known? type-name)))
        (jch-last-segment type-name))
+      ;; A dotted name the graph does not model and that names no deftype is still
+      ;; a CLASS name: one a library declared for its own values through
+      ;; __register-class! (whose tags-fn reports this exact string), or one jolt
+      ;; does not model. File it verbatim. Falling through localized it to the
+      ;; EXTENDING ns instead — filing the impl under "jdbc.impl.java.sql.Connection"
+      ;; for (extend-protocol IConnection java.sql.Connection …) — a tag no value
+      ;; can carry, so the extension silently never fired. That defeated the whole
+      ;; point of __register-class!, which exists to make such an extension
+      ;; dispatch. A deftype tag is dotted too, and verbatim is right for it as
+      ;; well: it is already the tag format, so a forward extend by fully-qualified
+      ;; name lands correctly instead of being prefixed twice.
+      ((dotted-name? type-name) type-name)
       (else #f))))
 ;; An extend/extend-type/extend-protocol registration marks the tag as an
 ;; extender of the protocol (recorded inside type-registry so the per-case prune
