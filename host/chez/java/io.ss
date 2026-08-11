@@ -771,10 +771,14 @@
     ;; method (a no-op for in-memory streams); absent method -> no-op.
     ((htable? x) (guard (e (#t jolt-nil)) (record-method-dispatch x "close" jolt-nil)) jolt-nil)
     ((jfile? x) jolt-nil)
-    ;; a deftype/defrecord that implements a `close` method (java.io.Closeable /
-    ;; AutoCloseable, e.g. tools.reader's reader types) closes through it — the
-    ;; same method (.close x) would dispatch to.
-    ((and (jrec? x) (jrec-cl x "close"))
+    ;; a deftype/defrecord/reify that implements a `close` method (java.io.Closeable
+    ;; / AutoCloseable, e.g. tools.reader's reader types, or clojure.jdbc's
+    ;; connection wrapper) closes through it — the same method (.close x) would
+    ;; dispatch to. Ask iface-method rather than jrec-cl: that is the shared
+    ;; deftype-or-reify lookup, and a reify is the other half of it, so one
+    ;; implementing Closeable used to fall through to the error below even though
+    ;; (.close x) on it worked.
+    ((iface-method x "close" #f)
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
     (else
      (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))

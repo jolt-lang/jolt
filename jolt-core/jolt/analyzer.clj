@@ -1135,6 +1135,18 @@
                (let [n (form-sym-name head)]
                  (and (> (count n) 1) (= "." (subs n 0 1)))))
             (analyze-host-call ctx (form-sym-name head) items env)
+          ;; (Class/MEMBER) with no arguments carries the same ambiguity that
+          ;; (. Class MEMBER) does, and Clojure reads it as a static field when one
+          ;; exists: (Math/PI), (Integer/MAX_VALUE) and (Locale/US) all evaluate to
+          ;; the field. Resolve it at runtime through the same seam the dot form
+          ;; uses, instead of invoking whatever the member holds, which failed
+          ;; outright when that was a value rather than a no-arg method. A var head
+          ;; is excluded so a zero-arg (some.ns/f) call is untouched.
+          (and (form-sym? head) (form-sym-ns head) (not shadowed)
+               (empty? (rest items))
+               (not= :var (:kind (resolve-global ctx head))))
+            (invoke (var-ref "jolt.host" "static-member")
+                    [(const (form-sym-ns head)) (const (form-sym-name head))])
           cast (let [node (coerce-node (:kind cast) (analyze ctx (second items) env)
                                        (:cast-fn cast))
                      p (form-position form)]
