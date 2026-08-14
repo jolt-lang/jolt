@@ -117,41 +117,27 @@
 (ok ":varargs with :blocking rejects"
     (rejects? "(jolt.ffi/__cfn \"recv\" [:int :varargs :int] :int :blocking)"))
 
-;; A :blocking binding stays __collect_safe when its symbol resolves through a
-;; REGISTERED native handle (the scoped-resolution path). The probe below
-;; registers a handle the way any library feature-probe does; on Linux dlsym
-;; through that handle also resolves libc symbols via the dependency chain, so
-;; the scoped branch — not the global fallback — builds the procedure. A read
-;; parked on an empty pipe must then leave the collector free: if the scoped
-;; branch drops the convention, the collect below waits on the parked reader
-;; forever (the v0.7.10 first-cold-run wedge, bisected to the scoped-FFI merge).
-(ev (string-append "(jolt.ffi/loaded? \""
-                   (case (sa-os-family) ((macos) "libz.dylib") ((windows) "zlib1.dll") (else "libz.so.1"))
-                   "\")"))
-(ev "(def cs-pipe (jolt.ffi/__cfn \"pipe\" [:pointer] :int))")
-(ev "(def cs-read (jolt.ffi/__cfn \"read\" [:int :pointer :size_t] :ssize_t :blocking))")
-(ev "(def cs-write (jolt.ffi/__cfn \"write\" [:int :pointer :size_t] :ssize_t))")
-(ev "(def cs-close (jolt.ffi/__cfn \"close\" [:int] :int))")
-(ok ":blocking through a registered handle stays collect-safe"
-    (jolt-truthy?
-      (ev "(let [fds (jolt.ffi/alloc 8)
-                 _ (cs-pipe fds)
-                 rfd (jolt.ffi/read fds :int 0)
-                 wfd (jolt.ffi/read fds :int 4)
-                 buf (jolt.ffi/alloc 8)
-                 reader (future (cs-read rfd buf 1))
-                 _ (Thread/sleep 300)
-                 gcp (promise)
-                 _ (future (System/gc) (System/gc) (deliver gcp :ok))
-                 r (loop [i 0]
-                     (cond (realized? gcp) :collected
-                           (>= i 50) :collector-stuck
-                           :else (do (Thread/sleep 100) (recur (inc i)))))]
-             (cs-write wfd buf 1)
-             @reader
-             (cs-close rfd) (cs-close wfd)
-             (jolt.ffi/free fds) (jolt.ffi/free buf)
-             (= r :collected))")))
+;; The EMITTED code for a :blocking binding carries __collect_safe on BOTH
+;; resolution branches — the global-name fallback AND the scoped dlsym-address
+;; branch. The scoped branch dropped it in v0.7.10: every :blocking socket call
+;; in a process with any registered native handle was built without the
+;; convention, and a GC while one blocked froze the whole VM (the first-cold-run
+;; fleet wedge, bisected to the scoped-FFI merge and cured by restoring the
+;; convention). Asserting the emission pins the regression deterministically —
+;; the behavioral shape needs a cold heap and real GC pressure to fire.
+(define (emitted-for s)
+  (jolt-analyze-emit-form (jolt-read-string s) "user"))
+(define (contains-str? hay needle)
+  (let ((hl (string-length hay)) (nl (string-length needle)))
+    (let loop ((i 0))
+      (cond ((> (+ i nl) hl) #f)
+            ((string=? (substring hay i (+ i nl)) needle) #t)
+            (else (loop (+ i 1)))))))
+(let ((e (emitted-for "(jolt.ffi/__cfn \"recv\" [:int :pointer :size_t :int] :ssize_t :blocking)")))
+  (ok ":blocking emits the collect-safe global fallback"
+      (contains-str? e "sa-foreign-procedure-blocking"))
+  (ok ":blocking emits the collect-safe scoped branch"
+      (contains-str? e "(foreign-procedure __collect_safe a")))
 
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
