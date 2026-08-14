@@ -353,7 +353,9 @@ jobs:
             apt: ''
           - repo: router
             apt: ''
-          - repo: glimmer             # GTK4 widget tree; the suite is headless
+          - repo: glimmer             # reactive core; the suite is headless
+            apt: libgtk-4-1
+          - repo: glimmer-gtk         # its GTK4 backend
             apt: libgtk-4-1
           - repo: glimmer-gl          # + GL geometry/matrix
             apt: libgtk-4-1 libgl1
@@ -483,6 +485,10 @@ jobs:
         with:
           repository: jolt-lang/glimmer
           path: glimmer
+      - uses: actions/checkout@v5
+        with:
+          repository: jolt-lang/glimmer-gtk
+          path: glimmer-gtk
       - uses: actions/checkout@v5
         with:
           repository: jolt-lang/glimmer-gl
