@@ -961,7 +961,8 @@
       ;; (__varargs_after n) is untested. defcfn's surface syntax is unchanged.
       (let [scoped (if vi "#f"
                      (str "(let ((a (jolt-ffi-dlsym-native " (chez-str-lit (:csym node)) "))) "
-                          "(and a (foreign-procedure a (" (str/join " " (map ffi-type->chez types)) ") "
+                          "(and a (foreign-procedure " (when (:blocking node) "__collect_safe ")
+                          "a (" (str/join " " (map ffi-type->chez types)) ") "
                           (ffi-type->chez (:rettype node)) ")))"))]
         (str "(let ((p #f)) (lambda (" (str/join " " params) ") "
              "((or p (begin (set! p (or " scoped " " fp ")) p)) " (str/join " " params) ")))")))))
