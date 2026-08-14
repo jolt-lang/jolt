@@ -232,6 +232,12 @@
    :jvm "throws: No reader function for tag foo/bar"
    :jolt "#foo/bar 5 (a tagged literal)"
    :note "The default data-reader tags rather than throwing, like #= reads as data. clojure.edn still throws on an unknown tag."}
+  ;; resolve of a class name jolt does not model answers nil, not a throw.
+  {:category :host-model
+   :behavior "(resolve 'java.lang.module.ModuleFinder)"
+   :jvm "throws ClassNotFoundException"
+   :jolt "nil"
+   :note "resolve answers the narrower \"does this class exist here\" for feature detection (compliment gates its JDK9 scanner on it); a class the host models resolves to the class. The bare symbol still evaluates through the syntactic class model."}
   ;; reader conditionals match :bb, ahead of :clj when the clause is listed first.
   {:category :reader-model
    :behavior "#?(:bb 1 :clj 2)"

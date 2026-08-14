@@ -2291,7 +2291,17 @@
            (and (or (string=? nm cn) (string=? nm (hsc-last-segment cn)))
                 root)))))
 (define (rsv-class-for-name nm)
-  (cond ((hc-fq-class-name? nm) (jolt-class-for nm))
+  ;; only classes the host actually MODELS answer — the class graph, a
+  ;; statics/ctor registration, or a deftype. The syntactic dotted-name shape
+  ;; is deliberately not enough: resolve is how tooling feature-detects a class
+  ;; (compliment gates its JDK9 module scanner on resolving
+  ;; java.lang.module.ModuleFinder), and a token for a class jolt cannot back
+  ;; sends such code down paths that then die on the missing pieces. A symbol
+  ;; in code keeps the syntactic model (hc-resolve-global); resolve answers
+  ;; the narrower "does this class exist here".
+  (cond ((and (hc-fq-class-name? nm)
+              (or (jch-known? nm) (host-class-registered? nm)))
+         (jolt-class-for nm))
         ((and (fx>? (string-length nm) 0) (char-upper-case? (string-ref nm 0)))
          (cond ((host-class-has-statics? nm) (jolt-class-for nm))
                ((chez-deftype-simple->tag nm) => jolt-class-for)

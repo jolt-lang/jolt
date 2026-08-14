@@ -372,6 +372,11 @@
   {:suite "ns" :expr "(nil? (resolve 'NoSuchClassXyz))" :expected "true"}
   {:suite "ns" :expr "(do (def rzc-alias String) (var? (resolve 'rzc-alias)))" :expected "true"}
   {:suite "ns" :expr "(do (deftype RzResT [a]) (class? (resolve 'RzResT)))" :expected "true"}
+  ;; resolve answers only for classes the host MODELS: tooling feature-detects
+  ;; by resolving a class name (compliment's JDK9 gate), so an unmodeled dotted
+  ;; name is nil here where the symbol itself still evaluates syntactically.
+  {:suite "ns" :expr "(nil? (resolve 'java.lang.module.ModuleFinder))" :expected "true"}
+  {:suite "ns" :expr "(nil? (ns-resolve *ns* 'no.such.ClassXyz))" :expected "true"}
   ;; reader conditionals match :bb (ahead of :clj, like babashka); clause order
   ;; still wins when :clj is listed first.
   {:suite "reader-features" :expr "#?(:bb :bb-branch :clj :clj-branch)" :expected ":bb-branch"}
