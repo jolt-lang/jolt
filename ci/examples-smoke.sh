@@ -21,8 +21,8 @@
 # Build-only, and why:
 #   http-client-app  -main hits real HTTPS endpoints — a release must not depend
 #                    on third-party uptime.
-#   fps-demo, glimmer-app, glimmer-gl-app, image-dump-example   GUI/GL; no
-#                    headless test task. (image-dump-example's save/load path is
+#   fps-demo, glimmer-app, glimmer-gl-app, glimmer-tui-example,
+#   image-dump-example   GUI/GL/TUI; no headless test task. (image-dump-example's save/load path is
 #                    covered by the jolt-side stateimage gate.)
 #   hiccup/malli/markdown-app, ray-tracer*  no test task at all.
 set -eu
@@ -54,6 +54,7 @@ ray-tracer-multi rt.render      -
 fps-demo         fps-demo.core  -
 glimmer-app      app.core       -
 glimmer-gl-app   gl-demo.core   -
+glimmer-tui-example tui-demo.core -
 image-dump-example app.core     -
 EOF
 
