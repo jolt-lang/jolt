@@ -151,6 +151,19 @@
 ;; coerce an integer-valued index to a Scheme fixnum before bounds math.
 (define (->idx i) (if (fixnum? i) i (if (flonum? i) (exact (floor i)) i)))
 (define (pvec-count p) (pvec-cnt p))
+;; jolt-nth's throwing pvec read as its own entry: the base definition's pvec
+;; arm and the fast path hoisted in front of the set! wrapper chain
+;; (natives-array.ss, the outermost link) share this ONE copy. The nil-index
+;; raise and ->idx coercion lived in jolt-nth ahead of type dispatch; a
+;; hoisted pvec case never reaches them, so both happen here, inlined — this
+;; is the hot read, every call frame in front of pv-leaf-for costs.
+(define (pvec-nth! p i)
+  (if (jolt-nil? i)
+      (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))
+      (let ((i (if (fixnum? i) i (if (flonum? i) (exact (floor i)) i))))
+        (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
+            (let-values (((chunk off) (pv-leaf-for p i))) (vector-ref chunk off))
+            (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))))
 (define (pvec-nth-d p i d)
   (let ((i (->idx i)))
     (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
@@ -1067,14 +1080,11 @@
     (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))))
 (define jolt-nth
   (case-lambda
-    ((coll i)
-     (jolt-nth-nil-idx! i)
-     (let ((i (->idx i)))
-       (cond ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
-      ((pvec? coll) (let ((cnt (pvec-count coll)))
-                              (if (and (fixnum? i) (fx>=? i 0) (fx<? i cnt))
-                                  (let-values (((chunk off) (pv-leaf-for coll i))) (vector-ref chunk off))
-                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))
+     ((coll i)
+      (jolt-nth-nil-idx! i)
+      (let ((i (->idx i)))
+        (cond ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
+       ((pvec? coll) (pvec-nth! coll i))
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))

@@ -89,6 +89,31 @@
            (best-of 3 #(dotimes [_ reps] (first ss2)))
            "first on a sorted set is materializing the tree instead of walking to its leftmost node (25-sorted.clj :first)")
 
+    ;; nth dispatch shape: RT.nth tests Indexed (jolt's pvec) FIRST and
+    ;; returns, so a vector nth must not pay for the extension-type probes the
+    ;; jolt-nth set! wrapper chain runs in front of the base pvec arm
+    ;; (jolt-array?, the al/sb shim, lazyseq, transient — four layers with the
+    ;; natives-array wrapper outermost). nth on a 5-element vector (the
+    ;; tree-node/tuple shape) must sit near count on the SAME vector: both are
+    ;; a type test plus a small read out of the same record, and count keeps
+    ;; its builtin pvec arm inline. The chain billed nth ~6.9x count here; the
+    ;; hoisted pvec case sits at ~3.2. Absolute ns flakes across machines; the
+    ;; ratio rides the machine's own speed.
+    (let [v (vec [10 20 30 40 50])
+          nth-reps 1000000
+          nth-t (best-of 5 #(dotimes [_ nth-reps] (nth v 2)))
+          cnt-t (best-of 5 #(dotimes [_ nth-reps] (count v)))
+          ratio (double (/ nth-t (max 1 cnt-t)))]
+      (when-not (and (= 30 (nth v 2)) (= 30 (nth v 2 :none)) (= :none (nth v 99 :none))
+                     (= 50 (nth v 4)) (nil? (nth nil 3)) (= :d (nth nil 3 :d)))
+        (println "FAIL complexity nth-dispatch: wrong values before timing")
+        (System/exit 1))
+      (println (format "complexity %-22s %4.2fx count (%4dms nth vs %4dms count, ceiling 5.0; hoisted ~3.2, wrapper chain ~6.9)"
+                       "nth-dispatch" ratio (quot nth-t 1000000) (quot cnt-t 1000000)))
+      (when (> ratio 5.0)
+        (println "FAIL complexity nth-dispatch: a vector nth is paying for the extension-type wrapper chain again (jolt-nth set! chain) — RT.nth tests Indexed first, keep the pvec case hoisted in the outermost wrapper")
+        (swap! failures inc)))
+
     (if (pos? @failures)
       (do (println (str "complexity: " @failures " section(s) failed"))
           (System/exit 1))

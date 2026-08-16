@@ -204,13 +204,25 @@
 (register-count-arm! jolt-array? (lambda (c) (ja-len (jolt-array-vec c))))
 (register-seq-arm! jolt-array? (lambda (c) (list->cseq (ja->list (jolt-array-vec c)))))
 (define %na-nth jolt-nth)
+;; RT.nth tests Indexed first and returns; this is the OUTERMOST jolt-nth
+;; wrapper (natives-array loads last of the set! chain), so a pvec receiver
+;; here would otherwise pay for the jolt-array?, al/sb shim, lazyseq and
+;; transient probes plus three chained calls before reaching the base pvec
+;; arm. pvec first; pvec-nth!/pvec-nth-d are the same shared reads the base
+;; definition's own pvec arms call, so semantics move nowhere. pvec is
+;; disjoint from every type the chain below intercepts (each is its own
+;; record type), so reordering cannot shadow them.
 (set! jolt-nth
   (case-lambda
-    ((c i)   (if (jolt-array? c) (ja-ref (jolt-array-vec c) (exact (na-idx i))) (%na-nth c i)))
-    ((c i d) (if (jolt-array? c)
-                 (let ((v (jolt-array-vec c)) (j (exact (na-idx i))))
-                   (if (and (>= j 0) (< j (ja-len v))) (ja-ref v j) d))
-                 (%na-nth c i d)))))
+    ((c i)   (if (pvec? c)
+                 (pvec-nth! c i)
+                 (if (jolt-array? c) (ja-ref (jolt-array-vec c) (exact (na-idx i))) (%na-nth c i))))
+    ((c i d) (if (pvec? c)
+                 (begin (jolt-nth-nil-idx! i) (pvec-nth-d c i d))
+                 (if (jolt-array? c)
+                     (let ((v (jolt-array-vec c)) (j (exact (na-idx i))))
+                       (if (and (>= j 0) (< j (ja-len v))) (ja-ref v j) d))
+                     (%na-nth c i d))))))
 (def-var! "jolt.host" "array-value?" (lambda (x) (if (jolt-array? x) #t jolt-nil)))
 ;; jolt-get on arrays stays as a set!-wrap rather than register-get-arm! because
 ;; the arm dispatch (collections.ss jolt-get-dispatch) already handles the common
