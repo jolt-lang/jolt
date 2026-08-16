@@ -4919,4 +4919,20 @@
   {:suite "chunk-builder API" :label "chunk-buffer + chunk-append + chunk seal in order" :expected "[4 0 9]" :actual "(let [b (chunk-buffer 4)] (dotimes [i 4] (chunk-append b (* i i))) (let [c (chunk b)] [(count c) (nth c 0) (nth c 3)]))" :portability :jvm}
   {:suite "chunk-builder API" :label "a partly filled buffer seals at its count, not its cap" :expected "[3 10 12]" :actual "(let [b (chunk-buffer 8)] (chunk-append b 10) (chunk-append b 11) (chunk-append b 12) (let [c (chunk b)] [(count c) (nth c 0) (nth c 2)]))" :portability :jvm}
   {:suite "chunk-builder API" :label "chunk-cons prepends the chunk; an empty chunk is just the rest" :expected "[[1 2 3] [3]]" :actual "(let [b (chunk-buffer 2)] (chunk-append b 1) (chunk-append b 2) [(vec (chunk-cons (chunk b) (list 3))) (vec (chunk-cons (chunk (chunk-buffer 4)) (list 3)))])" :portability :jvm}
+  ;; A transient map promotes to hash mode on the way up and never comes back:
+  ;; grow past the array-map limit, shrink below it again, and the result is
+  ;; still a hash map (JVM TransientArrayMap -> TransientHashMap is one-way).
+  {:suite "map / transient promotion" :label "promotion is one-way" :expected "\"clojure.lang.PersistentHashMap\"" :actual "(.getName (class (persistent! (reduce dissoc! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 20)) (range 17)))))" :portability :common}
+  {:suite "map / transient promotion" :label "contents survive the promotion" :expected "true" :actual "(= {17 17 18 18 19 19} (persistent! (reduce dissoc! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 20)) (range 17))))" :portability :common}
+  {:suite "map / transient promotion" :label "a transient of a large array map promotes on first write" :expected "\"clojure.lang.PersistentHashMap\"" :actual "(.getName (class (persistent! (assoc! (transient (apply array-map (interleave (range 100) (range 100)))) :new 1))))" :portability :common}
+  ;; The transient shares its source's nodes until it writes, and a claimed node
+  ;; still holds the source's (k . v) leaves, so overwriting a value must not
+  ;; reach back into the map the transient was built from.
+  {:suite "map / transient promotion" :label "writing through a transient leaves the source map alone" :expected "[500 :new]" :actual "(let [m (into {} (map (fn [i] [i i]) (range 1000))) t (transient m) _ (assoc! t 500 :new) p (persistent! t)] [(get m 500) (get p 500)])" :portability :common}
+  ;; set builds through a transient and hands an existing set straight back
+  ;; (PersistentHashSet.withMeta returns `this` on unchanged metadata).
+  {:suite "set / set fn" :label "an existing set is returned, not rebuilt" :expected "true" :actual "(let [s #{1 2 3}] (identical? s (set s)))" :portability :common}
+  {:suite "set / set fn" :label "metadata is stripped" :expected "nil" :actual "(meta (set (with-meta #{1 2} {:a 1})))" :portability :common}
+  {:suite "set / set fn" :label "contents from a seqable" :expected "#{1 2 3}" :actual "(set [1 2 2 3 1])" :portability :common}
+  {:suite "set / set fn" :label "nil is the empty set" :expected "#{}" :actual "(set nil)" :portability :common}
 ]

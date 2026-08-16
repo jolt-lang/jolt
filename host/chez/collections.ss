@@ -888,17 +888,22 @@
            (enode-remove! nd i)
            (enode-bm-set! nd (fxand bm (fxnot bit)))))))))
 
-;; Reads work over a mixed tree: the unclaimed part is still immutable hnodes.
+;; Reads work over a MIXED tree: the part the transient has written to is
+;; enodes, everything else is still the source map's hnodes. This is on the hot
+;; path for read-heavy transient code (group-by does one get per element), so
+;; the cases are ordered by frequency rather than by kind: a leaf is a pair and
+;; nothing else here is, so one `pair?` settles the common case, and an
+;; unclaimed subtree hands off to node-get, which carries no enode tests at all.
 (define (enode-get nd shift h k default)
   (if (enode? nd)
       (let ((bit (bitpos h shift)) (bm (enode-bm nd)))
         (if (fx=? 0 (fxand bm bit))
             default
             (let ((child (vector-ref (enode-arr nd) (arr-index bm bit))))
-              (cond ((or (enode? child) (hnode? child)) (enode-get child (fx+ shift 5) h k default))
+              (cond ((pair? child) (if (jolt= (car child) k) (cdr child) default))
+                    ((enode? child) (enode-get child (fx+ shift 5) h k default))
                     ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
-                    ((jolt= (car child) k) (cdr child))
-                    (else default)))))
+                    (else (node-get child (fx+ shift 5) h k default))))))
       (node-get nd shift h k default)))
 
 ;; Freeze an edited tree: every enode becomes an hnode whose array is trimmed to
