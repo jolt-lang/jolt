@@ -114,6 +114,27 @@
         (println "FAIL complexity nth-dispatch: a vector nth is paying for the extension-type wrapper chain again (jolt-nth set! chain) — RT.nth tests Indexed first, keep the pvec case hoisted in the outermost wrapper")
         (swap! failures inc)))
 
+    ;; persistent! costs what the transient WROTE, not what the map holds. A
+    ;; transient shares its source's nodes and claims only the ones a write
+    ;; descends through, so writing 10 entries into a transient of a 200k map
+    ;; freezes ~10 paths — the same work as writing 10 into a transient of a 50k
+    ;; one. The hashtable transient this replaced copied every entry in at
+    ;; transient() and folded every entry back through pmap-put-hash at
+    ;; persistent!, so both ends were linear in the map and this sat at ~4.0.
+    (let [m1 (into {} (map (fn [i] [i i]) (range n1)))
+          m2 (into {} (map (fn [i] [i i]) (range n2)))
+          touch (fn [m] (let [t (transient m)]
+                          (dotimes [i 10] (assoc! t (- -1 i) i))
+                          (count (persistent! t))))]
+      (when-not (and (= (+ n1 10) (touch m1)) (= (+ n2 10) (touch m2))
+                     (= (dec n1) (get m1 (dec n1))) (nil? (get m1 -1)))
+        (println "FAIL complexity transient-write-few: wrong values before timing")
+        (System/exit 1))
+      (judge "transient write-few"
+             (best-of 3 #(dotimes [_ 200] (touch m1)))
+             (best-of 3 #(dotimes [_ 200] (touch m2)))
+             "persistent! is rebuilding the whole map instead of freezing only the nodes the writes claimed (transients.ss jolt-persistent!, collections.ss enode-freeze)"))
+
     (if (pos? @failures)
       (do (println (str "complexity: " @failures " section(s) failed"))
           (System/exit 1))
