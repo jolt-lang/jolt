@@ -34,9 +34,54 @@
 (ok "lone key throws"        (guard (e (#t #t)) (ev "(persistent! (assoc! (transient {}) :a))") #f))
 (ok "use after persistent!"  (guard (e (#t #t)) (ev "(let [t (transient [])] (persistent! t) (conj! t 1))") #f))
 
+;; --- one-way promotion: a transient that grew past the array limit and shrank
+;; back comes down a HASH map (JVM TransientArrayMap promotes on the way up and
+;; never returns; jolt used to decide lazily from the final count).
+(is "promoted stays hash (type)"
+    "(type (persistent! (reduce dissoc! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 20)) (range 17))))"
+    "clojure.lang.PersistentHashMap")
+(is "promoted stays hash (contents)"
+    "(= {17 17 18 18 19 19} (persistent! (reduce dissoc! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 20)) (range 17))))"
+    "true")
+;; keyword-only maps keep array order through a transient to 64 (Clojure 1.13 rule)
+(is "9 kw keys stay array" "(keys (persistent! (reduce (fn [t k] (assoc! t k k)) (transient {}) (map keyword (map (fn [i] (str \"k\" i)) (range 9))))))" "(:k0 :k1 :k2 :k3 :k4 :k5 :k6 :k7 :k8)")
+(is "9 kw keys array type" "(type (persistent! (reduce (fn [t k] (assoc! t k k)) (transient {}) (map keyword (map (fn [i] (str \"k\" i)) (range 9))))))" "clojure.lang.PersistentArrayMap")
+
+;; --- the leaf-sharing trap at DEPTH: a source map big enough to be a real HAMT ---
+;; A claimed node's arr is a shallow copy, so the (cons k v) leaves still belong
+;; to the source; overwriting a value must cons a fresh pair, never mutate one.
+(is "source HAMT unchanged (1000)"
+    "(let [m (into {} (map (fn [i] [i i]) (range 1000))) t (transient m)] (assoc! t 500 :new) (persistent! t) (get m 500))"
+    "500")
+(is "overwritten key in source HAMT (1000)"
+    "(let [m (into {} (map (fn [i] [i i]) (range 1000))) t (transient m)] (assoc! t 500 :new) (get (persistent! t) 500))"
+    ":new")
+(is "source HAMT still equal (1000)"
+    "(let [m (into {} (map (fn [i] [i i]) (range 1000))) t (transient m)] (assoc! t 500 :new) (persistent! t) (= m (into {} (map (fn [i] [i i]) (range 1000)))))"
+    "true")
+
+;; --- hash collisions through the editable path -------------------------------
+;; "Aa" and "BB" share a hasheq, so they land in one collision bucket. The map
+;; must be in HASH mode for that bucket to exist at all — with only a handful of
+;; entries it stays an array map and the row proves nothing — so pad past the
+;; array limit first. Each row re-asserts the collision itself, so if the pair
+;; ever stops colliding these fail loudly instead of quietly going vacuous.
+(is "collision pair still collides" "(= (hash \"Aa\") (hash \"BB\"))" "true")
+(is "collision keys all retrievable"
+    "(let [m (persistent! (reduce (fn [t s] (assoc! t s s)) (transient {}) (concat (map (fn [i] (str \"k\" i)) (range 50)) [\"Aa\" \"BB\"])))] (and (= 52 (count m)) (= \"Aa\" (get m \"Aa\")) (= \"BB\" (get m \"BB\")) (= (hash \"Aa\") (hash \"BB\"))))"
+    "true")
+(is "persistent dissoc collapses bucket"
+    "(let [m (dissoc (persistent! (reduce (fn [t s] (assoc! t s s)) (transient {}) (concat (map (fn [i] (str \"k\" i)) (range 50)) [\"Aa\" \"BB\"]))) \"Aa\")] (and (= 51 (count m)) (= \"BB\" (get m \"BB\")) (nil? (get m \"Aa\"))))"
+    "true")
+(is "dissoc! collapses bucket"
+    "(let [t (reduce (fn [t s] (assoc! t s s)) (transient {}) (concat (map (fn [i] (str \"k\" i)) (range 50)) [\"Aa\" \"BB\"])) _ (dissoc! t \"Aa\") m (persistent! t)] (and (= 51 (count m)) (= \"BB\" (get m \"BB\")) (nil? (get m \"Aa\"))))"
+    "true")
+
 ;; --- linear, not quadratic: 200k builds finish near-instantly ---------------
 (is "big vector build"  "(count (persistent! (reduce conj! (transient []) (range 200000))))" "200000")
 (is "big map build"     "(count (persistent! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 200000))))" "200000")
+(is "big set build"     "(count (persistent! (reduce conj! (transient #{}) (range 200000))))" "200000")
+(is "big map see-through count" "(let [t (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 200000))] [(count t) (get t 199999) (contains? t 0)])" "[200000 199999 true]")
 
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

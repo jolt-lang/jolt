@@ -5,11 +5,14 @@
 ;;   vec : a growable Scheme vector (capacity) + a fill count `n`. conj!/pop! are
 ;;         O(1) amortized — the old copy-on-write rebuilt the whole vector per op,
 ;;         so building an N-vector was O(N^2).
-;;   map : a Chez hashtable keyed by key-hash / jolt= (value-equality, nil-safe —
-;;         a jolt-nil key stores fine here).
-;;   set : a Chez hashtable mapping each element to itself, so a lookup answers
-;;         with the stored element (which carries the metadata) and not the equal
-;;         key it was probed with — the JVM's ITransientMap-of-val->val.
+;;   map : an EDITABLE HAMT (collections.ss enode) sharing the source map's root
+;;         — a write claims each node on its path once and then mutates in
+;;         place, so persistent! only has to freeze the claimed spine. Small
+;;         insertion-ordered maps ride a Chez hashtable instead; see below.
+;;   set : the same editable HAMT, each element stored as both key and value, so
+;;         a lookup answers with the stored element (which carries the metadata)
+;;         and not the equal key it was probed with — the JVM's
+;;         ITransientMap-of-val->val.
 ;;   cow : fallback for anything else (e.g. a sorted coll) — copy-on-write over
 ;;         the persistent ops, preserving jolt's superset of Clojure's transients.
 ;;
@@ -18,17 +21,24 @@
 ;; this record, not a pvec), which group-by relies on. Loaded after collections.ss
 ;; (persistent ops + key-hash) and converters.ss.
 
-;; For a transient MAP, `n` holds the array-mode capacity (entries it can hold
-;; before promoting to hash order) and `ord` the reverse insertion-order key list;
-;; for a vector `n` is the element count. A transient array map promotes to hash
-;; at max(8, source-count) entries (TransientArrayMap, array sized max(16, len)),
-;; with no keyword exception — unlike the persistent assoc growth rule.
+;; A transient MAP has two modes, and `ord` says which: a list means ARRAY mode
+;; (small, insertion-ordered — `buf` is a hashtable and `ord` the reverse
+;; insertion-order pair list), #f means HASH mode (`buf` is an editable HAMT root
+;; and `n` the entry count). A transient SET is always hash mode, like
+;; PersistentHashSet. For a vector `n` is the element count.
+;;
+;; Array mode promotes to hash mode on the write that makes an array map
+;; impossible — the same pmap-array-keep? rule the persistent assoc path uses
+;; (under 8 always; a keyword-only map grows to 64) — and the promotion is
+;; ONE-WAY, like the JVM's TransientArrayMap -> TransientHashMap. Deciding
+;; lazily at persistent! from the final count instead let a transient that grew
+;; past the limit and shrank back come down an array map, where the JVM gives a
+;; hash map.
 (define-record-type jolt-transient
   (fields kind (mutable buf) (mutable n) (mutable active) (mutable ord))
   (nongenerative jolt-transient-v3))
 
 (define tvec-min-cap 8)
-(define tmap-min-cap 8)
 
 (define (jolt-transient-new coll)
   (cond
@@ -38,22 +48,22 @@
        (let loop ((i 0)) (when (fx<? i cnt) (vector-set! buf i (vector-ref v i)) (loop (fx+ i 1))))
        (make-jolt-transient 'vec buf cnt #t #f)))
     ((pmap? coll)
-     ;; the source's mode rides along: an array-mode map keeps `ord` (and comes
-     ;; back an array map from persistent!); a hash-mode map carries ord = #f
-     ;; and stays hash-ordered, like the JVM's TransientArrayMap/TransientHashMap.
-     (let ((ht (make-hashtable key-hash jolt=2)) (ord (if (pmap-order coll) '() #f)) (cnt 0))
-       ;; visit in iteration order so `ord` ends up reverse-insertion (persistent! reverses it back)
-       (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (when ord (set! ord (cons (cons k v) ord))) (set! cnt (fx+ cnt 1)) acc) 0)
-       (make-jolt-transient 'map ht (fxmax tmap-min-cap cnt) #t ord)))
-    ;; a set's buffer maps each element to ITSELF, so a lookup can answer with the
-    ;; element the set holds rather than the equal key it was probed with (JVM
-    ;; TransientHashSet is likewise an ITransientMap of val->val). Chez's
-    ;; hashtable-set! keeps the existing key and overwrites the value, which is
-    ;; exactly ATransientSet.conj's impl.assoc(val,val).
+     ;; The source's mode rides along. An array-mode map keeps `ord` and comes
+     ;; back an array map; a hash-mode map hands its ROOT straight over — nothing
+     ;; is copied here, the first write into a node claims it.
+     (if (pmap-order coll)
+         (let ((ht (make-hashtable key-hash jolt=2)) (ord '()))
+           ;; visit in iteration order so `ord` ends up reverse-insertion (persistent! reverses it back)
+           (pmap-fold-fwd coll (lambda (k v acc) (hashtable-set! ht k v) (set! ord (cons (cons k v) ord)) acc) 0)
+           (make-jolt-transient 'map ht (pmap-cnt coll) #t ord))
+         (make-jolt-transient 'map (pmap-root coll) (pmap-cnt coll) #t #f)))
+    ;; A set stores each element as both key and value, so a lookup answers with
+    ;; the element the set HOLDS rather than the equal key it was probed with
+    ;; (JVM TransientHashSet is likewise an ITransientMap of val->val), and
+    ;; conj! of an equal element keeps the stored key while overwriting the
+    ;; value — which is what enode-assoc!'s leaf replace does.
     ((pset? coll)
-     (let ((ht (make-hashtable key-hash jolt=2)))
-       (pset-fold coll (lambda (e acc) (hashtable-set! ht e (pset-get coll e e)) acc) 0)
-       (make-jolt-transient 'set ht 0 #t #f)))
+     (make-jolt-transient 'set (pmap-root (pset-m coll)) (pset-count coll) #t #f))
     ;; a deftype implementing clojure.lang.IEditableCollection.asTransient
     ;; (flatland's OrderedMap/OrderedSet) returns its OWN transient type, which
     ;; drives its declared ITransient* methods — not the copy-on-write wrapper.
@@ -71,17 +81,59 @@
                   (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
                                  " cannot be cast to class clojure.lang.IEditableCollection"))))))
 
-;; map put/delete that maintain the reverse insertion-order list in `ord`.
+;; --- hash mode: write straight into the editable HAMT ------------------------
+;; Claim the root on the way in; every node below is claimed as the write
+;; descends through it (enode-assoc!).
+(define (thash-put! t k v)
+  (let ((root (enode-claim (jolt-transient-buf t))) (added (box #f)))
+    (jolt-transient-buf-set! t root)
+    (enode-assoc! root 0 (key-hash k) k v added)
+    (when (unbox added) (jolt-transient-n-set! t (fx+ (jolt-transient-n t) 1)))))
+(define (thash-del! t k)
+  (let ((root (enode-claim (jolt-transient-buf t))) (removed (box #f)))
+    (jolt-transient-buf-set! t root)
+    (enode-dissoc! root 0 (key-hash k) k removed)
+    (when (unbox removed) (jolt-transient-n-set! t (fx- (jolt-transient-n t) 1)))))
+(define (thash-get t k d) (enode-get (jolt-transient-buf t) 0 (key-hash k) k d))
+
+;; --- array mode, and the one-way promotion out of it -------------------------
+;; Rebuild the editable root from `ord` (at most 64 entries), then continue in
+;; hash mode. Values come from the HASHTABLE, not from ord's cdrs: tmap-put!
+;; only appends to `ord` for a NEW key, so a replaced key's pair there still
+;; carries the old value and only its position is meaningful.
+(define (tmap-promote! t)
+  (let ((ht (jolt-transient-buf t)) (ord (jolt-transient-ord t))
+        (root (enode-empty)) (cnt 0) (added (box #f)))
+    (for-each (lambda (p)
+                (let ((k (car p)))
+                  (set-box! added #f)
+                  (enode-assoc! root 0 (key-hash k) k (hashtable-ref ht k jolt-nil) added)
+                  (when (unbox added) (set! cnt (fx+ cnt 1)))))
+              (reverse ord))
+    (jolt-transient-buf-set! t root)
+    (jolt-transient-ord-set! t #f)
+    (jolt-transient-n-set! t cnt)))
+
+;; map put/delete: hash mode goes straight to the HAMT; array mode maintains the
+;; reverse insertion-order list, promoting when a new key can no longer keep the
+;; map in array mode.
 (define (tmap-put! t k v)
-  (let ((ht (jolt-transient-buf t)))
-    (unless (or (not (jolt-transient-ord t)) (hashtable-contains? ht k))
-      (jolt-transient-ord-set! t (cons (cons k v) (jolt-transient-ord t))))
-    (hashtable-set! ht k v)))
+  (if (not (jolt-transient-ord t))
+      (thash-put! t k v)
+      (let ((ht (jolt-transient-buf t)) (ord (jolt-transient-ord t)))
+        (cond
+          ((hashtable-contains? ht k) (hashtable-set! ht k v))
+          ((pmap-array-keep? (hashtable-size ht) ord k #f)
+           (jolt-transient-ord-set! t (cons (cons k v) ord))
+           (hashtable-set! ht k v))
+          (else (tmap-promote! t) (thash-put! t k v))))))
 (define (tmap-del! t k)
-  (let ((ht (jolt-transient-buf t)))
-    (when (and (jolt-transient-ord t) (hashtable-contains? ht k))
-      (jolt-transient-ord-set! t (remove-key (jolt-transient-ord t) k)))
-    (hashtable-delete! ht k)))
+  (if (not (jolt-transient-ord t))
+      (thash-del! t k)
+      (let ((ht (jolt-transient-buf t)))
+        (when (hashtable-contains? ht k)
+          (jolt-transient-ord-set! t (remove-key (jolt-transient-ord t) k)))
+        (hashtable-delete! ht k))))
 
 (define (jolt-trans-check t who)
   (unless (jolt-transient? t) (throw-jvm (quote ClassCastException) (string-append who ": not a transient")))
@@ -115,30 +167,21 @@
                (if (fx<? i cnt) (begin (vector-set! out i (vector-ref buf i)) (loop (fx+ i 1)))
                    (make-pvec out)))))))
       ((map)
-       (let* ((ht (jolt-transient-buf t)) (cnt (hashtable-size ht)) (cap (jolt-transient-n t))
-              ;; Clojure 1.13: a keyword-only map stays an array map up to 64 entries,
-              ;; so a keyword map built through a transient (into {} …) keeps insertion
-              ;; order to 64, matching the literal/assoc paths.
-              (cap (if (and (jolt-transient-ord t) (all-keywords? (jolt-transient-ord t)))
-                       (fxmax array-map-limit-kw cap) cap)))
-         (if (or (not (jolt-transient-ord t)) (fx>? cnt cap))
-            ;; promoted past the array capacity: hash order
-            (let ((m empty-pmap-hash))
-              (vector-for-each (lambda (k) (set! m (pmap-put-hash m k (hashtable-ref ht k jolt-nil)))) (hashtable-keys ht))
-              m)
-            ;; array map: rebuild in insertion order
-            (let ((m empty-pmap))
-              (for-each (lambda (p) (set! m (pmap-put-ordered m (car p) (hashtable-ref ht (car p) jolt-nil))))
-                        (reverse (jolt-transient-ord t)))
-              m))))
-    ;; Rebuilt pair-wise, not through pset-conj: conj! of an element equal to one
-    ;; already in keeps the old key and overwrites the value, and that split has to
-    ;; survive into the persistent set the way the JVM's does — seq yields the first
-    ;; element, get the second (pset-fold-pairs).
+       (if (jolt-transient-ord t)
+           ;; still in array mode, so an array map is what it is — no threshold
+           ;; check here any more: promotion already happened at write time.
+           (let ((ht (jolt-transient-buf t)) (m empty-pmap))
+             (for-each (lambda (p) (set! m (pmap-put-ordered m (car p) (hashtable-ref ht (car p) jolt-nil))))
+                       (reverse (jolt-transient-ord t)))
+             m)
+           ;; hash mode: freeze the edited spine. No rehashing and no path
+           ;; copying — untouched subtrees stay shared with the source map.
+           (make-pmap (enode-freeze (jolt-transient-buf t)) (jolt-transient-n t) #f)))
+    ;; The element/lookup-value split survives because the tree already holds it:
+    ;; conj! of an element equal to one present keeps the stored key and
+    ;; overwrites the value, so seq yields the first element and get the second.
     ((set)
-     (let ((ht (jolt-transient-buf t)) (m empty-pmap-hash))
-       (vector-for-each (lambda (e) (set! m (pmap-put-hash m e (hashtable-ref ht e e)))) (hashtable-keys ht))
-       (make-pset m)))
+     (make-pset (make-pmap (enode-freeze (jolt-transient-buf t)) (jolt-transient-n t) #f)))
     (else (jolt-transient-buf t))))))
 
 ;; --- in-place mutation -------------------------------------------------------
@@ -182,7 +225,7 @@
         (jolt-trans-check t "conj!")
         (case (jolt-transient-kind t)
           ((vec) (for-each (lambda (x) (tvec-conj1! t x)) xs))
-          ((set) (for-each (lambda (x) (hashtable-set! (jolt-transient-buf t) x x)) xs))
+          ((set) (for-each (lambda (x) (thash-put! t x x)) xs))
           ((map) (for-each (lambda (x) (tmap-conj-entry! t x)) xs))
           (else (jolt-transient-buf-set! t (apply jolt-conj (jolt-transient-buf t) xs))))
         t))))))
@@ -221,7 +264,7 @@
     (else
   (jolt-trans-check t "disj!")
   (case (jolt-transient-kind t)
-    ((set) (for-each (lambda (x) (hashtable-delete! (jolt-transient-buf t) x)) xs))
+    ((set) (for-each (lambda (x) (thash-del! t x)) xs))
     (else (jolt-transient-buf-set! t (apply jolt-disj (jolt-transient-buf t) xs))))
   t)))
 (define (jolt-pop! t)
@@ -263,27 +306,32 @@
 (define %prev-jolt-get jolt-get)
 (define %prev-jolt-count jolt-count)
 (define %prev-jolt-contains? jolt-contains?)
+(define t-absent (list 'transient-absent))   ; unique missing-key sentinel
 (define (tvec-in-bounds? t i) (and (fixnum? i) (fx>=? i 0) (fx<? i (jolt-transient-n t))))
 (define (t-get t k d)
   (jolt-trans-check t "get")
   (case (jolt-transient-kind t)
     ((vec) (let ((i (->idx k))) (if (tvec-in-bounds? t i) (vector-ref (jolt-transient-buf t) i) d)))
-    ((map) (hashtable-ref (jolt-transient-buf t) k d))
-    ;; the buffer's value IS the stored element (jolt-transient-new), so this hands
-    ;; back what the set holds rather than the equal key it was probed with
-    ((set) (hashtable-ref (jolt-transient-buf t) k d))
+    ((map) (if (jolt-transient-ord t) (hashtable-ref (jolt-transient-buf t) k d) (thash-get t k d)))
+    ;; the stored VALUE is the element the set holds, so this hands that back
+    ;; rather than the equal key it was probed with
+    ((set) (thash-get t k d))
     (else (%prev-jolt-get (jolt-transient-buf t) k d))))
 (define (t-count t)
   (jolt-trans-check t "count")
   (case (jolt-transient-kind t)
     ((vec) (jolt-transient-n t))
-    ((map set) (hashtable-size (jolt-transient-buf t)))
+    ((map) (if (jolt-transient-ord t) (hashtable-size (jolt-transient-buf t)) (jolt-transient-n t)))
+    ((set) (jolt-transient-n t))
     (else (%prev-jolt-count (jolt-transient-buf t)))))
 (define (t-contains? t k)
   (jolt-trans-check t "contains?")
   (case (jolt-transient-kind t)
     ((vec) (tvec-in-bounds? t (->idx k)))
-    ((map set) (hashtable-contains? (jolt-transient-buf t) k))
+    ((map) (if (jolt-transient-ord t)
+               (hashtable-contains? (jolt-transient-buf t) k)
+               (not (eq? t-absent (thash-get t k t-absent)))))
+    ((set) (not (eq? t-absent (thash-get t k t-absent))))
     (else (%prev-jolt-contains? (jolt-transient-buf t) k))))
 
 ;; Redefine the native get/count/contains?/nth (captured first) so the existing
