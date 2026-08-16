@@ -47,11 +47,35 @@
 ;; the already-coerced after-chunk seq (cseq | jolt-nil | a jolt-lazyseq), held in
 ;; crest for chunk-rest/chunk-next and forced lazily by the tail thunk at the chunk
 ;; boundary so a chunked map over an infinite chunked source stays productive.
+;; A standalone chunk holds at most 32 elements, so a pvec built from one keeps
+;; every element in its TAIL vector (tailoff 0) and never in the trie. Resolve
+;; that vector ONCE per chunk and read elements out of it directly: pvec-nth-d
+;; re-derives the leaf on every call — bounds checks, an index coercion, a
+;; tailoff computation and a multiple-value return — which measures 13.1ns
+;; against a raw vector-ref's 1.9ns (Chez 10.4.1, 32-element chunk). It runs once
+;; per element of every chunked map/filter result, so it was most of what the
+;; chunked path cost over the per-element path it was supposed to beat.
+;;
+;; The cell's fields are unchanged (chunk/i/rest), so chunk-first / chunk-rest /
+;; chunked-seq? see exactly what they saw before. A chunk whose elements are not
+;; tail-resident — which the callers here never build, but the shape does not
+;; forbid — keeps the general path.
 (define (cseq-chunked chunk i rest)
+  (if (fx=? (pv-tailoff-of chunk) 0)
+      (cseq-chunked/tail chunk (pvec-tail chunk) (pvec-count chunk) i rest)
+      (cseq-chunked/gen chunk i rest)))
+(define (cseq-chunked/tail chunk tv n i rest)
+  (make-cseq (vector-ref tv i)
+             (lambda () (let ((i1 (fx+ i 1)))
+                          (if (fx<? i1 n)
+                              (cseq-chunked/tail chunk tv n i1 rest)
+                              (jolt-seq rest))))
+             #f #f chunk i rest #f))
+(define (cseq-chunked/gen chunk i rest)
   (make-cseq (pvec-nth-d chunk i jolt-nil)
              (lambda () (let ((i1 (fx+ i 1)))
                           (if (fx<? i1 (pvec-count chunk))
-                              (cseq-chunked chunk i1 rest)
+                              (cseq-chunked/gen chunk i1 rest)
                               (jolt-seq rest))))
               #f #f chunk i rest #f))
 (define (seq-first s) (cseq-head s))
@@ -140,9 +164,29 @@
   (if (and (pair? xs) (null? (cdr xs)) (lazy-rest? (car xs)))
       (lazy-rest-seq (car xs))
       (list->cseq xs)))
-(define (vec->seq v i)                 ; chunked index seq over a persistent vector
-  (if (fx>=? i (pvec-count v)) jolt-nil
-      (cseq-vec (pvec-nth-d v i jolt-nil) (lambda () (vec->seq v (fx+ i 1))) v i)))
+;; chunked index seq over a persistent vector. Walking one element at a time
+;; through pvec-nth-d re-descends the trie per element (a full descent once the
+;; vector outgrows its tail); the leaf holding index i also holds the next 31, so
+;; resolve it once and index it directly until the block is exhausted, then
+;; resolve the next. Same cells and same fields as before — cvec/ci still carry
+;; the backing vector and absolute index, so chunk-first/chunk-rest/reduce are
+;; unaffected — only the element read changes.
+(define (vec->seq v i)
+  (let ((n (pvec-count v)))
+    (if (fx>=? i n)
+        jolt-nil
+        (let-values (((leaf off) (pv-leaf-for v i)))
+          (vec->seq/leaf v n leaf off i)))))
+;; leaf: the block holding element i, off: i's offset within it. Advancing stays
+;; in this leaf while the offset is in range, so the descent is paid once per 32.
+(define (vec->seq/leaf v n leaf off i)
+  (cseq-vec (vector-ref leaf off)
+            (lambda ()
+              (let ((i1 (fx+ i 1)) (off1 (fx+ off 1)))
+                (cond ((fx>=? i1 n) jolt-nil)
+                      ((fx<? off1 (vector-length leaf)) (vec->seq/leaf v n leaf off1 i1))
+                      (else (vec->seq v i1)))))
+            v i))
 (define (str->seq s i)
   (if (fx>=? i (string-length s)) jolt-nil
       (cseq-lazy (string-ref s i) (lambda () (str->seq s (fx+ i 1))))))
