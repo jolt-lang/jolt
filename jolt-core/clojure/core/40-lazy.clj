@@ -26,6 +26,12 @@
 
 
 ;; --- keep ---
+;; The chunked branch is the reference's, verbatim in shape: realize the whole
+;; chunk, pack what survives into a fresh (possibly smaller) chunk, and
+;; chunk-cons it onto a lazy continuation over chunk-rest. Without it these three
+;; walked a chunked source one element at a time while their siblings map/filter/
+;; remove consumed it 32 at a time — measured as a realization-count divergence
+;; too: (first (f g a-100-vector)) realized 1 here against the reference's 32.
 (defn keep
   ([f]
    (fn [rf]
@@ -36,10 +42,19 @@
   ([f coll]
    (lazy-seq
     (when-let [s (seq coll)]
-      (let [x (f (first s))]
-        (if (nil? x)
-          (keep f (rest s))
-          (cons x (keep f (rest s)))))))))
+      (if (chunked-seq? s)
+        (let [c (chunk-first s)
+              size (count c)
+              b (chunk-buffer size)]
+          (dotimes [i size]
+            (let [x (f (nth c i))]
+              (when-not (nil? x)
+                (chunk-append b x))))
+          (chunk-cons (chunk b) (keep f (chunk-rest s))))
+        (let [x (f (first s))]
+          (if (nil? x)
+            (keep f (rest s))
+            (cons x (keep f (rest s))))))))))
 
 ;; --- keep-indexed ---
 (defn keep-indexed
@@ -55,10 +70,19 @@
    (letfn [(keepi [idx coll]
              (lazy-seq
                (when-let [s (seq coll)]
-                 (let [x (f idx (first s))]
-                   (if (nil? x)
-                     (keepi (inc idx) (rest s))
-                     (cons x (keepi (inc idx) (rest s))))))))]
+                 (if (chunked-seq? s)
+                   (let [c (chunk-first s)
+                         size (count c)
+                         b (chunk-buffer size)]
+                     (dotimes [i size]
+                       (let [x (f (+ idx i) (nth c i))]
+                         (when-not (nil? x)
+                           (chunk-append b x))))
+                     (chunk-cons (chunk b) (keepi (+ idx size) (chunk-rest s))))
+                   (let [x (f idx (first s))]
+                     (if (nil? x)
+                       (keepi (inc idx) (rest s))
+                       (cons x (keepi (inc idx) (rest s)))))))))]
      (keepi 0 coll))))
 
 ;; --- map-indexed ---
@@ -72,7 +96,14 @@
    (letfn [(mapi [idx coll]
              (lazy-seq
                (when-let [s (seq coll)]
-                 (cons (f idx (first s)) (mapi (inc idx) (rest s))))))]
+                 (if (chunked-seq? s)
+                   (let [c (chunk-first s)
+                         size (count c)
+                         b (chunk-buffer size)]
+                     (dotimes [i size]
+                       (chunk-append b (f (+ idx i) (nth c i))))
+                     (chunk-cons (chunk b) (mapi (+ idx size) (chunk-rest s))))
+                   (cons (f idx (first s)) (mapi (inc idx) (rest s)))))))]
      (mapi 0 coll))))
 
 ;; --- cycle ---
