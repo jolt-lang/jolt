@@ -89,30 +89,33 @@
            (best-of 3 #(dotimes [_ reps] (first ss2)))
            "first on a sorted set is materializing the tree instead of walking to its leftmost node (25-sorted.clj :first)")
 
-    ;; nth dispatch shape: RT.nth tests Indexed (jolt's pvec) FIRST and
-    ;; returns, so a vector nth must not pay for the extension-type probes the
-    ;; jolt-nth set! wrapper chain runs in front of the base pvec arm
-    ;; (jolt-array?, the al/sb shim, lazyseq, transient — four layers with the
-    ;; natives-array wrapper outermost). nth on a 5-element vector (the
-    ;; tree-node/tuple shape) must sit near count on the SAME vector: both are
-    ;; a type test plus a small read out of the same record, and count keeps
-    ;; its builtin pvec arm inline. The chain billed nth ~6.9x count here; the
-    ;; hoisted pvec case sits at ~3.2. Absolute ns flakes across machines; the
-    ;; ratio rides the machine's own speed.
-    (let [v (vec [10 20 30 40 50])
-          nth-reps 1000000
-          nth-t (best-of 5 #(dotimes [_ nth-reps] (nth v 2)))
-          cnt-t (best-of 5 #(dotimes [_ nth-reps] (count v)))
-          ratio (double (/ nth-t (max 1 cnt-t)))]
+    ;; nth's values, but deliberately NOT its cost.
+    ;;
+    ;; RT.nth tests Indexed first and returns, so a vector nth must not pay for
+    ;; the extension-type probes the jolt-nth wrapper chain runs in front of the
+    ;; pvec arm. That is a real property and it is worth watching — but it is a
+    ;; CONSTANT factor, not a complexity shape, so the only in-process way to
+    ;; state it is to calibrate nth against some other operation, and this file
+    ;; used to bill it against count on the same vector.
+    ;;
+    ;; That gate flaked, and the numbers say it cannot be repaired by moving the
+    ;; ceiling. On one commit, two CI runners measured 2.79x and 5.14x against a
+    ;; 5.0 ceiling. Scaled by the same machines, the wrapper-chain regression it
+    ;; exists to catch lands around 6x on the fast runner and 11x on the slow
+    ;; one — so the broken and fixed ranges OVERLAP, and any ceiling is either
+    ;; flaky on slow runners or vacuous on fast ones. A gate that cannot
+    ;; separate the two states is worse than none: it spends CI failures without
+    ;; buying information.
+    ;;
+    ;; The measurement lives in bench/nth_access.clj instead, where a number
+    ;; that moves is read by a person. Reference figures, one machine, forced
+    ;; rebuilds both arms: small vector 34.34ns with the chain, 15.95 hoisted;
+    ;; with a default 27.22 against 9.68.
+    (let [v (vec [10 20 30 40 50])]
       (when-not (and (= 30 (nth v 2)) (= 30 (nth v 2 :none)) (= :none (nth v 99 :none))
                      (= 50 (nth v 4)) (nil? (nth nil 3)) (= :d (nth nil 3 :d)))
-        (println "FAIL complexity nth-dispatch: wrong values before timing")
-        (System/exit 1))
-      (println (format "complexity %-22s %4.2fx count (%4dms nth vs %4dms count, ceiling 5.0; hoisted ~3.2, wrapper chain ~6.9)"
-                       "nth-dispatch" ratio (quot nth-t 1000000) (quot cnt-t 1000000)))
-      (when (> ratio 5.0)
-        (println "FAIL complexity nth-dispatch: a vector nth is paying for the extension-type wrapper chain again (jolt-nth set! chain) — RT.nth tests Indexed first, keep the pvec case hoisted in the outermost wrapper")
-        (swap! failures inc)))
+        (println "FAIL complexity nth-dispatch: wrong nth values")
+        (System/exit 1)))
 
     ;; persistent! costs what the transient WROTE, not what the map holds. A
     ;; transient shares its source's nodes and claims only the ones a write
