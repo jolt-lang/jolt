@@ -90,16 +90,28 @@
                                           (make-mutex)))
     (else x)))                          ; procedure
 
+;; Obj.withMeta returns `this` when the metadata is unchanged, and the JVM
+;; compares it by IDENTITY, not by =: (with-meta v (meta v)) is v, and so is
+;; (with-meta v nil) for a v with no metadata, but (with-meta v {:a 1}) on a v
+;; whose meta is an equal-but-distinct {:a 1} still allocates. Without the
+;; shortcut every (with-meta coll nil) was a fresh value, which is what made
+;; clojure.core/set's (with-meta coll nil) fast path unusable here.
+;;
+;; The test is per-arm rather than a leading clause: a non-IObj value also has
+;; nil metadata, so a leading (eq? (jolt-meta x) m) would return 5 from
+;; (with-meta 5 nil) instead of throwing.
 (define (jolt-with-meta x m)
   (cond
-    ((symbol-t? x) (make-symbol-t (symbol-t-ns x) (symbol-t-name x) m))
+    ((symbol-t? x) (if (eq? (jolt-meta x) m) x (make-symbol-t (symbol-t-ns x) (symbol-t-name x) m)))
     ;; a deftype with an explicit clojure.lang.IObj withMeta carries meta in a
     ;; field; dispatch to it (see jolt-meta) so the meta survives reconstruction.
     ((and (jrec? x) (jrec-cl x "withMeta")) => (lambda (meth) (jolt-invoke meth x m)))
     ((or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x) (jrec? x) (jreify? x) (procedure? x))
-     (let ((c (meta-copy x)))
-       (if (jolt-nil? m) (meta-table-del! c) (meta-table-set! c m))
-       c))
+     (if (eq? (jolt-meta x) m)
+         x
+         (let ((c (meta-copy x)))
+           (if (jolt-nil? m) (meta-table-del! c) (meta-table-set! c m))
+           c)))
     (else (throw-jvm (quote ClassCastException) (string-append (jolt-final-str x) " cannot be cast to clojure.lang.IObj")))))
 
 (def-var! "clojure.core" "meta" jolt-meta)

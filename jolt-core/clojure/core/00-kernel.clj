@@ -68,14 +68,13 @@
 ;; can live here — compiling this tier never calls set, and by the time those
 ;; callers run the tier is bound.
 ;;
-;; An existing set is handed back rather than rebuilt: PersistentHashSet.withMeta
-;; returns `this` when the metadata is unchanged, so on the JVM (set s) on a
-;; meta-less set is the set itself. jolt's with-meta always makes a fresh value
-;; (a separate divergence), hence the explicit nil-meta arm rather than a plain
-;; (with-meta coll nil) — without it this was a full O(n) rebuild, 136ms against
-;; the reference's 0ms over 200k.
+;; An existing set is handed back rather than rebuilt: with-meta returns the
+;; value itself when the metadata is unchanged, so (set s) on a meta-less set is
+;; s. The corpus row "an existing set is returned, not rebuilt" gates that — if
+;; with-meta ever starts allocating unconditionally again, this silently becomes
+;; a full O(n) rebuild (136ms against 0ms over 200k) and that row is what says so.
 (defn set [coll]
   (cond
     (nil? coll) #{}
-    (set? coll) (if (nil? (meta coll)) coll (with-meta coll nil))
+    (set? coll) (with-meta coll nil)
     :else (persistent! (reduce conj! (transient #{}) coll))))

@@ -4935,4 +4935,12 @@
   {:suite "set / set fn" :label "metadata is stripped" :expected "nil" :actual "(meta (set (with-meta #{1 2} {:a 1})))" :portability :common}
   {:suite "set / set fn" :label "contents from a seqable" :expected "#{1 2 3}" :actual "(set [1 2 2 3 1])" :portability :common}
   {:suite "set / set fn" :label "nil is the empty set" :expected "#{}" :actual "(set nil)" :portability :common}
+  ;; Obj.withMeta returns the value itself when the metadata is unchanged, and it
+  ;; compares by IDENTITY, not by =. clojure.core/set's fast path relies on this.
+  {:suite "meta / with-meta identity" :label "nil meta onto a value with none" :expected "true" :actual "(let [v [1]] (identical? v (with-meta v nil)))" :portability :common}
+  {:suite "meta / with-meta identity" :label "the same metadata object" :expected "true" :actual "(let [m {:a 1} v (with-meta [1] m)] (identical? v (with-meta v m)))" :portability :common}
+  {:suite "meta / with-meta identity" :label "equal but distinct metadata still allocates" :expected "false" :actual "(let [v (with-meta [1] {:a 1})] (identical? v (with-meta v {:a 1})))" :portability :common}
+  {:suite "meta / with-meta identity" :label "stripping real metadata allocates" :expected "[false nil]" :actual "(let [v (with-meta [1] {:a 1})] [(identical? v (with-meta v nil)) (meta (with-meta v nil))])" :portability :common}
+  {:suite "meta / with-meta identity" :label "symbols, sets and lists too" :expected "[true true true]" :actual "[(let [s (quote foo)] (identical? s (with-meta s nil))) (let [s #{1 2}] (identical? s (with-meta s nil))) (let [l (list 1 2)] (identical? l (with-meta l nil)))]" :portability :common}
+  {:suite "meta / with-meta identity" :label "a non-IObj still throws" :expected ":cce" :actual "(try (with-meta 5 nil) :no-throw (catch ClassCastException e :cce))" :portability :common}
 ]
