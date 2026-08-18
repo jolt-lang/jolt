@@ -763,9 +763,18 @@
   {:suite "walk" :expr "(list? '(1 2))" :expected "true"}
   {:suite "walk" :expr "(list? '())" :expected "true"}
   {:suite "walk" :expr "(list? (list))" :expected "true"}
+  ;; RT.cons: onto nil it builds a PersistentList, onto anything else a Cons — and
+  ;; a Cons is not an IPersistentList, so only the nil case is list?
   {:suite "walk" :expr "(list? (cons 1 nil))" :expected "true"}
-  {:suite "walk" :expr "(list? (cons 1 [2]))" :expected "true"}
-  {:suite "walk" :expr "(list? (cons 1 '(2)))" :expected "true"}
+  {:suite "walk" :expr "(list? (cons 1 [2]))" :expected "false"}
+  {:suite "walk" :expr "(list? (cons 1 '(2)))" :expected "false"}
+  {:suite "walk" :expr "(list? (cons 1 (seq [2])))" :expected "false"}
+  {:suite "walk" :expr "(list? (cons 1 ()))" :expected "false"}
+  {:suite "walk" :expr "(counted? (cons 1 nil))" :expected "true"}
+  {:suite "walk" :expr "(counted? (cons 1 '(2)))" :expected "false"}
+  ;; the tail is handed back untouched, so it keeps being the list it was
+  {:suite "walk" :expr "(list? (rest (cons 1 '(2))))" :expected "true"}
+  {:suite "walk" :expr "(seq? (cons 1 [2]))" :expected "true"}
   {:suite "walk" :expr "(list? (conj (list 1) 0))" :expected "true"}
   {:suite "walk" :expr "(list? (conj '() 1))" :expected "true"}
   {:suite "walk" :expr "(list? (reverse [1 2]))" :expected "true"}

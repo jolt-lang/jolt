@@ -93,7 +93,7 @@
 ;; Is `f` an (ns ...) form? (Its only role in the image is alias registration; we
 ;; never emit it — the def-var!s carry explicit ns names.)
 (define (ei-ns-form? f)
-  (and (cseq? f) (cseq-list? f)
+  (and (cseq? f)
        (let ((items (seq->list f)))
          (and (pair? items) (symbol-t? (car items))
               (string=? (symbol-t-name (car items)) "ns")))))
@@ -225,7 +225,7 @@
 ;; the flag off. The reference compiler gets this for free because Compiler.compile
 ;; evaluates top-level forms as it compiles them.
 (define (ei-flag-set-form? f)
-  (and (cseq? f) (cseq-list? f)
+  (and (cseq? f)
        (let ((items (seq->list f)))
          (and (= (length items) 3) (symbol-t? (car items))
               (string=? (symbol-t-name (car items)) "set!")

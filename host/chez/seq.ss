@@ -377,7 +377,36 @@
 ;; itself a PersistentList on the JVM, so (rest '(1 2)) is a PersistentList and
 ;; (list? (rest '(1 2))) is true there; marking only the head made both answers
 ;; wrong, and made the tail of a list uncounted when the JVM counts it in O(1).
-(define (jolt-cons x coll) (cseq-list x (jolt-seq coll)))
+;;
+;; cons has RT.cons's two outcomes: onto nil a PersistentList, onto anything else a
+;; Cons. A Cons is an ASeq but NOT an IPersistentList, so it is not list?, not
+;; counted?, and not a stack — (peek (cons 1 '(2))) is a ClassCastException there,
+;; which falls out of this for free because peek/pop already require a list cell.
+;;
+;; The split is on the ARGUMENT being nil, NOT on its seq being empty: RT.cons tests
+;; (coll == null), so (cons 1 []) is a Cons whose tail is nil while (cons 1 nil) is a
+;; one-element PersistentList. Testing (jolt-seq coll) for emptiness instead would
+;; quietly turn every cons-onto-empty into a list.
+;;
+;; NOTE what this means for the rest of the runtime: a cons-built form is no longer
+;; list?, and ~20 places that recognize a form — the eval path, the build driver's
+;; ns/require scanners, the image emitter — used to spell that recognition
+;; (and (cseq? f) (cseq-list? f)). The reference compiler tests ISeq, not
+;; list-ness, because a macro that assembles its expansion with cons produces a form
+;; whose head symbol is identical and only whose provenance differs; requiring a list
+;; would have made every such expansion invisible. natives-reader.ss already hit that
+;; exact bug with macroexpand-1. Those sites now test cseq? alone, which is both the
+;; ISeq question and precisely what they answered for a cons before this change.
+;; Both cells are built straight through make-cseq rather than via cseq-list /
+;; cseq-realized, since cons is a primitive hot enough to notice. That does not buy
+;; the whole cost back: knowing WHICH cell to build needs a nil test the single-shape
+;; version did not, and a cons measures 25.8 -> 27.4 ns over 200k against the branch
+;; before this one (folding the constructor call away recovered 0.4 of the 2.0).
+;; The remainder is the test itself and is the price of the distinction.
+(define (jolt-cons x coll)
+  (if (jolt-nil? coll)
+      (make-cseq x jolt-nil #t sk-list #f 0 #f #f)
+      (make-cseq x (jolt-seq coll) #t sk-cons #f 0 #f #f)))
 ;; Scheme list -> a jolt PersistentList. For (list …) and quoted list literals
 ;; (the emitter lowers '(a b) to (jolt-list a b)).
 (define (jolt-list . xs)

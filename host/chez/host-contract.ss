@@ -249,7 +249,7 @@
 ;; recursion through analyze re-expands inner macros, so each level's top form
 ;; picks up the position the same way (as the reference compiler does).
 (define (hc-propagate-pos src dst)
-  (if (and (cseq? dst) (cseq-list? dst))
+  (if (cseq? dst)
       (let ((sp (hc-form-position src))
             (dm (jolt-meta dst)))
         (if (and (pmap? sp)

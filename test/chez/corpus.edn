@@ -3440,12 +3440,42 @@
   {:suite "seq-type-model / specialized seq classes" :label "a vector seq is not an IPersistentList" :expected "false" :actual "(instance? clojure.lang.IPersistentList (seq [1 2]))" :portability :jvm}
   {:suite "seq-type-model / specialized seq classes" :label "a vector seq is an IChunkedSeq" :expected "true" :actual "(instance? clojure.lang.IChunkedSeq (seq [1 2]))" :portability :jvm}
   {:suite "seq-type-model / specialized seq classes" :label "chunked-seq? agrees with IChunkedSeq" :expected "true" :actual "(= (chunked-seq? (seq [1 2])) (instance? clojure.lang.IChunkedSeq (seq [1 2])))" :portability :jvm}
-  ;; --- seq-type-model divergences that REMAIN: these three producers are still
-  ;; modelled as a plain list or lazy seq rather than reifying their own class, so
-  ;; (class …) differs from the JVM (values + laziness are correct). cons wants
-  ;; clojure.lang.Cons, repeat clojure.lang.Repeat, cycle clojure.lang.Cycle, and
-  ;; (drop 1 a-vector) is a PersistentVector$ChunkedSeq there. jolt-aei7.
-  {:suite "seq-type-model / remaining class collapse" :label "cons over a vector" :expected "clojure.lang.PersistentList" :actual "(class (cons 1 [2 3]))" :portability :common}
+  ;; --- cons: RT.cons's two outcomes ---------------------------------------------
+  ;; Onto nil it builds a PersistentList; onto ANYTHING else — a list, a vector, a
+  ;; seq, (), a string, a map — it builds a Cons, which is an ASeq but NOT an
+  ;; IPersistentList, so it is not list?, not counted?, and not a stack.
+  {:suite "seq-type-model / cons" :label "cons onto nil is a PersistentList" :expected "clojure.lang.PersistentList" :actual "(class (cons 1 nil))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a list" :expected "clojure.lang.Cons" :actual "(class (cons 1 (list 2)))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a vector" :expected "clojure.lang.Cons" :actual "(class (cons 1 [2 3]))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a seq" :expected "clojure.lang.Cons" :actual "(class (cons 1 (seq [2])))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto the empty list" :expected "clojure.lang.Cons" :actual "(class (cons 1 ()))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a string" :expected "clojure.lang.Cons" :actual "(class (cons 1 \"ab\"))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a map" :expected "clojure.lang.Cons" :actual "(class (cons 1 {:a 1}))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a lazy seq" :expected "clojure.lang.Cons" :actual "(class (cons 1 (map inc [1])))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto a cons" :expected "clojure.lang.Cons" :actual "(class (cons 1 (cons 2 nil)))" :portability :common}
+  ;; The split is on the ARGUMENT being nil, not on its seq being empty: RT.cons
+  ;; tests (coll == null), so an EMPTY collection still yields a Cons whose tail is
+  ;; nil. Testing emptiness instead would make these three PersistentLists.
+  {:suite "seq-type-model / cons" :label "cons onto an empty vector is still a Cons" :expected "clojure.lang.Cons" :actual "(class (cons 1 []))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto an empty list is still a Cons" :expected "clojure.lang.Cons" :actual "(class (cons 1 (list)))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto an empty string is still a Cons" :expected "clojure.lang.Cons" :actual "(class (cons 1 \"\"))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto empty is not list?" :expected "false" :actual "(list? (cons 1 []))" :portability :common}
+  {:suite "seq-type-model / cons" :label "cons onto empty counts its one element" :expected "1" :actual "(count (cons 1 []))" :portability :common}
+  {:suite "seq-type-model / cons" :label "only the nil case is list?" :expected "[true false false]" :actual "[(list? (cons 1 nil)) (list? (cons 1 (list 2))) (list? (cons 1 [2]))]" :portability :common}
+  {:suite "seq-type-model / cons" :label "only the nil case is counted?" :expected "[true false]" :actual "[(counted? (cons 1 nil)) (counted? (cons 1 (list 2)))]" :portability :common}
+  {:suite "seq-type-model / cons" :label "a Cons is not a stack" :expected "false" :actual "(instance? clojure.lang.IPersistentStack (cons 1 (list 2)))" :portability :jvm}
+  {:suite "seq-type-model / cons" :label "a Cons is an ASeq" :expected "true" :actual "(instance? clojure.lang.ASeq (cons 1 (list 2)))" :portability :jvm}
+  {:suite "seq-type-model / cons" :label "peek on a Cons is a cast error" :expected ":cce" :actual "(try (peek (cons 1 (list 2))) (catch ClassCastException _ :cce))" :portability :jvm}
+  {:suite "seq-type-model / cons" :label "pop on a Cons is a cast error" :expected ":cce" :actual "(try (pop (cons 1 (list 2))) (catch ClassCastException _ :cce))" :portability :jvm}
+  {:suite "seq-type-model / cons" :label "the tail is handed back untouched" :expected "clojure.lang.PersistentList" :actual "(class (rest (cons 1 (list 2))))" :portability :common}
+  {:suite "seq-type-model / cons" :label "conj onto a list is still a PersistentList" :expected "clojure.lang.PersistentList" :actual "(class (conj (list 1) 0))" :portability :common}
+  {:suite "seq-type-model / cons" :label "count walks an uncounted Cons" :expected "6" :actual "(count (cons 1 (range 5)))" :portability :common}
+  {:suite "seq-type-model / cons" :label "a Cons is sequential-= to a list and a vector" :expected "[true true]" :actual "[(= (cons 1 [2]) (list 1 2)) (= (cons 1 [2]) [1 2])]" :portability :common}
+  ;; --- seq-type-model divergences that REMAIN: these producers are still modelled
+  ;; as a lazy seq rather than reifying their own class, so (class …) differs from
+  ;; the JVM (values + laziness are correct). repeat wants clojure.lang.Repeat,
+  ;; cycle clojure.lang.Cycle, and (drop 1 a-vector) is a
+  ;; PersistentVector$ChunkedSeq there. jolt-aei7.
   {:suite "seq-type-model / remaining class collapse" :label "repeat" :expected "clojure.lang.LazySeq" :actual "(class (repeat 3 :x))" :portability :common}
   {:suite "seq-type-model / remaining class collapse" :label "cycle" :expected "clojure.lang.LazySeq" :actual "(class (cycle [1 2]))" :portability :common}
   {:suite "seq-type-model / remaining class collapse" :label "drop over a vector" :expected "clojure.lang.LazySeq" :actual "(class (drop 1 [1 2 3]))" :portability :common}
