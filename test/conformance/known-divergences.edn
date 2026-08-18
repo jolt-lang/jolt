@@ -544,11 +544,10 @@
    :label "chunk round-trip",
    :category :host-model}
   ;; A seq now reports the concrete clojure.lang class of whatever produced it
-  ;; (vector seq, string seq, keys, vals, rseq, sort, range, iterate, the map/set
-  ;; seq views), so those rows certify. These four producers are still modelled as a
-  ;; plain list or lazy seq and keep their own class: cons wants clojure.lang.Cons,
-  ;; repeat Repeat, cycle Cycle, and (drop 1 a-vector) is a ChunkedSeq on the JVM.
-  {:suite "seq-type-model / remaining class collapse", :label "cons over a vector", :category :seq-type-model}
+  ;; (cons, vector seq, string seq, keys, vals, rseq, sort, range, iterate, the
+  ;; map/set seq views), so those rows certify. These three producers are still
+  ;; modelled as a lazy seq and keep its class: repeat wants clojure.lang.Repeat,
+  ;; cycle Cycle, and (drop 1 a-vector) is a ChunkedSeq on the JVM.
   {:suite "seq-type-model / remaining class collapse", :label "repeat", :category :seq-type-model}
   {:suite "seq-type-model / remaining class collapse", :label "cycle", :category :seq-type-model}
   {:suite "seq-type-model / remaining class collapse", :label "drop over a vector", :category :seq-type-model}

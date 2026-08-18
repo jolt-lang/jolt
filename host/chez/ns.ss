@@ -513,7 +513,7 @@
 ;; where the macro splices them into a (refer ...) call and the quotes evaluate.
 ;; Unwrapping one quote layer makes both spellings mean the same exclusion.
 (define (rc-unquote x)
-  (if (and (cseq? x) (cseq-list? x))
+  (if (cseq? x)
       (let ((items (seq->list x)))
         (if (and (pair? items) (symbol-t? (car items))
                  (string=? (symbol-t-name (car items)) "quote") (pair? (cdr items)))

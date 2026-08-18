@@ -506,7 +506,7 @@
 ;; real ns, but the build strips the (ns …) form that would register it.
 (define (bld-scan-spec! ns-name spec emit!)
   (let ((items (cond ((pvec? spec) (seq->list spec))
-                     ((and (cseq? spec) (cseq-list? spec)) (seq->list spec))
+                     ((cseq? spec) (seq->list spec))
                      (else '()))))
     (when (and (pair? items) (symbol-t? (car items)))
       (let ((target (symbol-t-name (car items))))
@@ -530,7 +530,7 @@
                      ((and (keyword? v) (string=? (keyword-t-name v) "all"))
                       (emit! (string-append "(chez-register-refer-all! " (ei-str-lit ns-name)
                                             " " (ei-str-lit target) ")")))
-                     ((or (pvec? v) (and (cseq? v) (cseq-list? v)))
+                     ((or (pvec? v) (cseq? v))
                       (for-each (lambda (n)
                                   (when (symbol-t? n)
                                     (emit! (string-append "(chez-register-refer! " (ei-str-lit ns-name)
@@ -548,7 +548,7 @@
     (when nsf
       (for-each
         (lambda (clause)
-          (when (and (cseq? clause) (cseq-list? clause))
+          (when (cseq? clause)
             (let ((citems (seq->list clause)))
               (when (and (pair? citems) (keyword? (car citems))
                          (let ((kn (keyword-t-name (car citems))))
@@ -819,7 +819,7 @@
   (let ((src (ldr-read-source file)) (reqs '()))
     (for-each
       (lambda (form)
-        (when (and (cseq? form) (cseq-list? form))
+        (when (cseq? form)
           (let* ((items (seq->list form))
                  (h (and (pair? items) (car items)))
                  (hn (and (symbol-t? h) (symbol-t-name h))))
@@ -828,7 +828,7 @@
               ((and hn (string=? hn "ns"))
                (for-each
                  (lambda (clause)
-                   (when (and (cseq? clause) (cseq-list? clause))
+                   (when (cseq? clause)
                      (let ((cl (seq->list clause)))
                        (when (and (pair? cl) (keyword? (car cl))
                                   (let ((kn (keyword-t-name (car cl))))
@@ -902,7 +902,7 @@
                (if (and ns (not (jolt-nil? ns)))
                    (add! ns)
                    (add! (symbol-t-name x)))))
-            ((and (cseq? x) (cseq-list? x)) (for-each walk (seq->list x)))
+            ((cseq? x) (for-each walk (seq->list x)))
             ((pvec? x) (for-each walk (seq->list x)))
             ((pmap? x) (pmap-fold x (lambda (k v a) (walk k) (walk v) #f) #f))))
     (parameterize ((rdr-scan-mode #t) (rdr-source-file file))

@@ -238,7 +238,7 @@
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
 (define (ce-unwrap-meta x)
-  (if (and (cseq? x) (cseq-list? x))
+  (if (cseq? x)
       (let ((items (seq->list x)))
         (if (and (pair? items) (symbol-t? (car items))
                  (string=? (symbol-t-name (car items)) "with-meta") (pair? (cdr items)))
@@ -247,7 +247,7 @@
 
 ;; (quote X) -> X, else x — unwraps a quoted require spec.
 (define (ce-unquote x)
-  (if (and (cseq? x) (cseq-list? x))
+  (if (cseq? x)
       (let ((items (seq->list x)))
         (if (and (pair? items) (symbol-t? (car items))
                  (string=? (symbol-t-name (car items)) "quote") (pair? (cdr items)))
@@ -261,7 +261,7 @@
   (and (pair? cl) (keyword? (car cl))
        (let ((kn (keyword-t-name (car cl)))) (or (string=? kn "require") (string=? kn "use")))))
 (define (ce-scan-requires! form ns)
-  (when (and (cseq? form) (cseq-list? form))
+  (when (cseq? form)
     (let ((items (seq->list form)))
       (when (pair? items)
         (let* ((h (car items)) (hn (and (symbol-t? h) (symbol-t-name h))))
@@ -282,7 +282,7 @@
                                 (symbol-t-name (ce-unwrap-meta (cadr items)))
                                 ns)))
                (for-each (lambda (clause)
-                           (when (and (cseq? clause) (cseq-list? clause))
+                           (when (cseq? clause)
                              (let ((cl (seq->list clause)))
                                (when (ce-clause-require? cl)
                                  (for-each (lambda (spec) (chez-register-spec! ns-name spec)) (cdr cl))))))
@@ -356,7 +356,7 @@
 
 ;; Is `f` a (defmacro ...) / (definline ...) form?
 (define (ce-macro-form? f)
-  (and (cseq? f) (cseq-list? f)
+  (and (cseq? f)
        (let ((items (seq->list f)))
          (and (pair? items) (symbol-t? (car items))
               (let ((h (symbol-t-name (car items))))
@@ -383,7 +383,7 @@
 
 ;; A bare top-level (do ...) form — head is the unqualified `do` symbol.
 (define (ce-top-do? form)
-  (and (cseq? form) (cseq-list? form)
+  (and (cseq? form)
        (let ((h (seq-first form)))
          (and (symbol-t? h) (jolt-nil? (hc-sym-ns h))
               (string=? (symbol-t-name h) "do")))))
@@ -404,7 +404,7 @@
       (cond
         ((> n 100) #f)                    ; runaway expansion; leave it to the analyzer
         ((ce-top-do? f) f)
-        ((and (cseq? f) (cseq-list? f)
+        ((and (cseq? f)
               (let ((h (seq-first f)))
                 (and (symbol-t? h)
                      (not (hc-special? (symbol-t-name h)))
