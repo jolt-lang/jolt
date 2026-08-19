@@ -189,6 +189,7 @@
     ;; JOLT_TRACE at RUNTIME (the env is unset at heap-build), before any app ns
     ;; compiles, so a `-M:run` traces the app's own code.
     (jolt-trace-init-from-env!)
+    (jolt-rt-infer-init-from-env!)
     (jolt-stdlib-fasls-attach! '" (jb-stdlib-index-str) ")
     ;; shared dispatch (cli-core.ss, inlined via the runtime manifest): the -e
     ;; arm, end-of-options, and uncaught reporting are the same code the script

@@ -341,6 +341,34 @@
               (newline port))
             (loop (jolt-seq (seq-more s)))))))))
 
+;; JOLT_RT_INFER opt-in: run the collection-type inference pass (the release
+;; build's inference-without-inline branch, documented redefinition-safe in
+;; jolt.passes/run-passes) on the runtime compile spine too.
+;;
+;; The invariant that branch carries: set-record-shapes! writes the unit run-passes
+;; is HANDED, while the back end's direct-ctor emit reads @current-unit-box — they
+;; must be the same object or the emit reads stale shapes. The spine satisfies it
+;; the way build/emit-image do, with ONE unit shared across every form: it passes
+;; the box's own resident unit (backend `current-unit`, the lazily-installed unit
+;; that already carries this spine's prelude-mode), so the published unit and the
+;; passed unit cannot diverge. Namespaces load (and so compile) in parallel, and
+;; the inference scratch on a shared unit is not written for concurrent readers —
+;; the mutex serializes run-passes->emit while the flag is on. Dev mode (flag off)
+;; keeps today's unserialized per-form path.
+(define jolt-rt-infer? #f)
+(define jolt-rt-infer-mu (make-mutex))
+(define jolt-ce-current-unit #f)
+;; Read at RUNTIME init (cli-tail.ss / the built launcher), not load time: a
+;; built jolt runs top-level forms at heap-build time, where the env is unset.
+(define (jolt-rt-infer-init-from-env!)
+  (let ((e (getenv "JOLT_RT_INFER")))
+    (when (and (string? e)
+               (not (string=? e ""))
+               (not (jolt-trace-env-off? e)))
+      (set! jolt-ce-current-unit ((var-deref "jolt.backend-scheme" "current-unit")))
+      (set-release! #t)                 ; hc-inference-enabled? consults this
+      (set! jolt-rt-infer? #t))))
+
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against.
 (define (jolt-analyze-emit-form form ns)
@@ -348,7 +376,10 @@
   (let* ((ctx (make-analyze-ctx ns))
          (node (jolt-ce-analyze ctx form)))
     (jolt-lint-node! node)
-    (jolt-ce-emit (jolt-ce-run-passes node ctx))))
+    (if jolt-rt-infer?
+        (jolt-with-mutex jolt-rt-infer-mu
+          (jolt-ce-emit (jolt-ce-run-passes node ctx jolt-ce-current-unit)))
+        (jolt-ce-emit (jolt-ce-run-passes node ctx)))))
 
 ;; --- runtime defmacro -------------------------------------------------------
 ;; Shared with emit-image.ss (loaded after this). A defmacro lowers to a def of

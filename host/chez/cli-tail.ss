@@ -11,6 +11,8 @@
 
 ;; JOLT_TRACE opt-in, at runtime (before any app ns compiles) so the app is traced.
 (jolt-trace-init-from-env!)
+;; JOLT_RT_INFER opt-in, same timing: inference must be on before any app ns compiles.
+(jolt-rt-infer-init-from-env!)
 
 (jolt-cli-run cli-args
   ;; `build` AOT-compiles an app to a standalone binary — load the build driver
