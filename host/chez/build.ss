@@ -134,9 +134,16 @@
       cmd))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
+;; $JOLT_CHEZ — the interpreter this script is itself running under — is
+;; authoritative when set, for the same reason as bld-host-csv-dir above: a
+;; fresh `command -v` PATH search can silently name a different Chez than the
+;; one actually selected to run the build.
 (define bld-chez
-  (let ((p (bld-sh-capture "command -v chez || command -v scheme || command -v petite")))
-    (if (> (string-length p) 0) p "chez")))
+  (let ((env (getenv "JOLT_CHEZ")))
+    (if (and env (> (string-length env) 0))
+        env
+        (let ((p (bld-sh-capture "command -v chez || command -v scheme || command -v petite")))
+          (if (> (string-length p) 0) p "chez")))))
 
 ;; Chez version off (scheme-version) "Chez Scheme Version X.Y.Z" — last token.
 (define bld-version
@@ -148,10 +155,24 @@
 
 ;; The HOST csv<ver>/<machine> dir holding scheme.h, libkernel.a, *.boot. Derived
 ;; from the chez executable's location; JOLT_CHEZ_CSV overrides.
+;;
+;; The executable's location comes from $JOLT_CHEZ (the same interpreter this
+;; script is running under — bin/jolt exports it) when set, rather than a fresh
+;; `command -v chez/scheme/petite` PATH search: that search re-derives an
+;; independent answer, which silently disagrees with the running interpreter
+;; whenever the one actually selected (make's local .cache/local provision, or
+;; any JOLT_CHEZ override) isn't also the one PATH would resolve — producing a
+;; mismatched dir (e.g. a PATH-resolved 9.x scheme paired with bld-version read
+;; off the running 10.x interpreter) that then fails bld-check-toolchain. The
+;; PATH search remains the fallback for a chez invoked directly, with no
+;; JOLT_CHEZ in its environment at all.
 (define bld-host-csv-dir
   (let ((env (getenv "JOLT_CHEZ_CSV")))
     (or (and env (> (string-length env) 0) env)
-        (let* ((bindir (bld-sh-capture "dirname \"$(command -v chez || command -v scheme || command -v petite)\""))
+        (let* ((chez (getenv "JOLT_CHEZ"))
+               (bindir (if (and chez (> (string-length chez) 0))
+                           (path-parent chez)
+                           (bld-sh-capture "dirname \"$(command -v chez || command -v scheme || command -v petite)\"")))
                (cand (string-append bindir "/../lib/csv" bld-version "/" bld-machine)))
           cand))))
 ;; The csv dir supplying the boots + kernel + scheme.h that get baked into the

@@ -47,6 +47,11 @@ if [ -z "${JOLT_CHEZ:-}" ]; then
   fi
 fi
 CHEZ="$JOLT_CHEZ"
+# Resolved to a path and exported: build.ss's toolchain-dir lookup reads
+# JOLT_CHEZ from its own environment to find the csv dir next to the running
+# interpreter, rather than re-deriving it from a `command -v` PATH search that
+# can silently disagree with the interpreter actually selected above.
+export JOLT_CHEZ="$(command -v "$CHEZ" 2>/dev/null || echo "$CHEZ")"
 
 # Version for --version / banners: git describe of this checkout, else "dev".
 export JOLT_VERSION="${JOLT_VERSION:-$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)}"
