@@ -26,7 +26,8 @@ set -e
 cd "$(dirname "$0")/../.."
 root="$PWD"
 
-CHEZ_BIN="${CHEZ:-$(command -v chez || command -v scheme || true)}"
+# JOLT_CHEZ wins (see host/chez/selfcheck.sh).
+CHEZ_BIN="${JOLT_CHEZ:-${CHEZ:-$(command -v chez || command -v scheme || true)}}"
 [ -n "$CHEZ_BIN" ] || { echo "chez not found on PATH (set CHEZ)" >&2; exit 1; }
 HARNESS="$root/bench/dyn-binding/bench-dyn.ss"
 
