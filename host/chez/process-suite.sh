@@ -24,7 +24,9 @@ if [ ! -f "$vend/test-resources/print-dirs.sh" ]; then
   exit 0
 fi
 
-chez="$(command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)"
+# JOLT_CHEZ wins (see host/chez/selfcheck.sh) so the toolbin symlinked below for
+# the jolt subprocess is the same Chez this run was actually invoked with.
+chez="${JOLT_CHEZ:-$(command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)}"
 if [ -z "$chez" ]; then echo "process-suite: no chez on PATH"; exit 1; fi
 
 # Canonicalize the temp dir: on macOS mktemp returns /var/… (a symlink to

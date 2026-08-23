@@ -215,7 +215,10 @@ fi
 # (i) install-owned namespaces (stdlib/jolt-core — embedded in the binary) are
 # NEVER cached. Run in SOURCE mode (chez --script cli.ss) so clojure.set actually
 # loads on demand (the devcache preloads it); ldr-install-file? must bypass it.
-chez_bin="$(command -v chez || command -v scheme || command -v chezscheme)"
+# JOLT_CHEZ wins (see host/chez/selfcheck.sh) — otherwise this runs (i) under
+# whatever Chez happens to be on PATH, independent of the one the rest of this
+# gate actually built with.
+chez_bin="${JOLT_CHEZ:-$(command -v chez || command -v scheme || command -v chezscheme)}"
 n_i="(not cached)"
 if [ -n "$chez_bin" ]; then
   cache_i="$(mktemp -d)"
