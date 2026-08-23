@@ -6,7 +6,9 @@
 set -e
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
-CHEZ="${CHEZ:-$(command -v chez || command -v chezscheme || command -v scheme)}"
+# JOLT_CHEZ wins (see host/chez/selfcheck.sh) — re-minting the seed under the
+# wrong Chez is exactly the mistake this script exists to avoid.
+CHEZ="${JOLT_CHEZ:-${CHEZ:-$(command -v chez || command -v chezscheme || command -v scheme)}}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

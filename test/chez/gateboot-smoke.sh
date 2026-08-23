@@ -11,7 +11,9 @@
 set -u
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
-CHEZ="${CHEZ:-$(command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)}"
+# JOLT_CHEZ wins (see host/chez/selfcheck.sh) — the Makefile only ever exports
+# JOLT_CHEZ, not CHEZ, so this must check it first or silently re-search PATH.
+CHEZ="${JOLT_CHEZ:-${CHEZ:-$(command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null)}}"
 pass=0; fail=0
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 

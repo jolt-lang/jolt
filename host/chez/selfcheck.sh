@@ -5,7 +5,11 @@
 set -e
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
-CHEZ="${CHEZ:-$(command -v chez || command -v chezscheme || command -v scheme)}"
+# JOLT_CHEZ wins (the Makefile exports it, never CHEZ, so a bare ${CHEZ:-...}
+# fallback here would silently re-search PATH instead of using the Chez make
+# actually selected — the seed self-host check would then run under whichever
+# Chez happens to be on PATH).
+CHEZ="${JOLT_CHEZ:-${CHEZ:-$(command -v chez || command -v chezscheme || command -v scheme)}}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 "$CHEZ" --script host/chez/bootstrap.ss \
