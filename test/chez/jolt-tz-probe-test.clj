@@ -64,6 +64,26 @@
         (check-eq "localtime is not silently gmtime" (= local utc) false)))
     (finally (ffi/free b))))
 
+;; The probe is memoized per (zone, epoch), so the gate has to prove the memo
+;; distinguishes both parts of that key rather than answering the first offset it
+;; ever computed. A same-zone DST pair is the sharp case: identical zone string,
+;; different instants, genuinely different offsets.
+(check-eq "memo: same zone, southern summer" (jolt.host/tz-offset-seconds "Australia/Sydney" 1768478400) 39600)
+(check-eq "memo: same zone, southern winter" (jolt.host/tz-offset-seconds "Australia/Sydney" 1784203200) 36000)
+(check-eq "memo: re-asking summer still answers summer"
+          (jolt.host/tz-offset-seconds "Australia/Sydney" 1768478400) 39600)
+(check-eq "memo: same instant, different zone" (jolt.host/tz-offset-seconds "Europe/Paris" 1768478400) 3600)
+
+;; A cached 0 must read as a hit, not as "nothing cached": UTC's offset IS 0, and
+;; only #f is false in Scheme, so a memo written with `or` has to keep answering
+;; from the table rather than re-probing (or, worse, returning nil).
+(check-eq "memo: a zero offset caches" (jolt.host/tz-offset-seconds "UTC" 1768478400) 0)
+(check-eq "memo: a zero offset stays cached" (jolt.host/tz-offset-seconds "UTC" 1768478400) 0)
+
+;; Memo hits must not skip the TZ restore, which they cannot — they never touch
+;; TZ at all — but the whole point of the file is that this stays true.
+(check-eq "TZ is still unset after the memo checks" (c-getenv "TZ") nil)
+
 (if (empty? @failures)
   (println "JOLT-TZ-PROBE-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

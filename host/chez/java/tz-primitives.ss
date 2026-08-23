@@ -59,21 +59,66 @@
       (tzp-unsetenv "TZ"))
   (tzp-tzset))
 
+(define (tzp-offset-probe zone epoch)   ; caller holds tzp-mutex
+  (let ((saved (tzp-getenv "TZ")))
+    (dynamic-wind
+      (lambda ()
+        (tzp-setenv "TZ" zone 1)
+        (tzp-tzset))
+      (lambda ()
+        (let ((tp (sa-foreign-alloc 8)))
+          (sa-foreign-set! 'long tp 0 epoch)
+          (let ((tm (tzp-localtime tp)))
+            (sa-foreign-free tp)
+            (and tm (not (eq? tm 0)) (sa-foreign-ref 'long tm 40)))))
+      (lambda () (tzp-restore-tz! saved)))))
+
+;; Memo over that probe. The offset of a zone at an instant is a pure function of
+;; the two, and the probe is expensive for a reason the restore above introduced:
+;; leaving TZ clobbered meant libc had already loaded that zone, so the NEXT
+;; call's tzset had nothing to re-read. Restoring TZ — which it must — means every
+;; call now performs two real zone loads instead of none. Measured on
+;; darwin-arm64, one probe call in a repeated same-zone loop:
+;;
+;;   leaving TZ clobbered   ~0.9-1.6 us
+;;   restoring TZ           ~1.1-2.4 ms      (~1000x, four runs)
+;;
+;; A tzset that re-reads is what costs: with TZ unchanged it is ~240ns, and even
+;; a fixed-offset TZ string with no tzfile to read is ~215us on this platform.
+;;
+;; This does not make a first lookup cheaper; it stops repeated ones paying again.
+;; That covers the common shape: jolt-lang/time's resolve-zone asks every named
+;; zone for its offset at epoch 0, so id -> offset resolution hit libc every time
+;; a ZoneId was built. A query about a LIVE instant still pays, since its epoch
+;; differs on every call — answering those from memory needs the zone's
+;; transition table (i.e. reading tzfiles directly), which is a bigger change
+;; than this one.
+;;
+;; Bounded and cleared wholesale on overflow rather than evicted one at a time:
+;; live-instant queries would otherwise grow it for the process's lifetime, and
+;; an LRU is not worth the code here. Inside the mutex because Chez hashtables
+;; are not thread-safe; the probe is called with it already held.
+;;
+;; A tzdata change mid-process is not picked up for an already-answered
+;; (zone, instant). The JVM caches zone rules per process too, and a running
+;; process seeing a tzdata upgrade is not a case worth the invalidation
+;; machinery.
+(define tzp-offset-memo-cap 1024)
+(define tzp-offset-memo (make-hashtable equal-hash equal?))
+
 (define (tzp-offset-raw zone epoch)
   (and tzp-tz-symbols?
        (jolt-with-mutex tzp-mutex
-         (let ((saved (tzp-getenv "TZ")))
-           (dynamic-wind
-             (lambda ()
-               (tzp-setenv "TZ" zone 1)
-               (tzp-tzset))
-             (lambda ()
-               (let ((tp (sa-foreign-alloc 8)))
-                 (sa-foreign-set! 'long tp 0 epoch)
-                 (let ((tm (tzp-localtime tp)))
-                   (sa-foreign-free tp)
-                   (and tm (not (eq? tm 0)) (sa-foreign-ref 'long tm 40)))))
-             (lambda () (tzp-restore-tz! saved)))))))
+         (let* ((key (cons zone epoch))
+                (hit (hashtable-ref tzp-offset-memo key #f)))
+           ;; `or` is safe: a real offset of 0 (UTC) is not #f in Scheme.
+           (or hit
+               (let ((off (tzp-offset-probe zone epoch)))
+                 (when off
+                   (when (> (hashtable-size tzp-offset-memo) tzp-offset-memo-cap)
+                     (hashtable-clear! tzp-offset-memo))
+                   (hashtable-set! tzp-offset-memo key off))
+                 off))))))
 
 ;; Capability probe: trust libc only if it returns known-correct offsets for known
 ;; zones/instants. Rejects Windows (garbage tm_gmtoff) and missing tzdata.
