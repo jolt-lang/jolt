@@ -1044,7 +1044,12 @@ fi
 # and the capability check at boot ends on "UTC", so an unrestored write left
 # every jolt process answering UTC from localtime() while the machine was
 # somewhere else. Self-checks, one marker; same capture rules as the gates above.
-tzprobe_out="$($jolt run test/chez/jolt-tz-probe-test.clj 2>&1)"
+# TZ is scrubbed for this one: the gate's first check is that the BOOT probe left
+# no TZ behind, and an inherited TZ (a container's ENV TZ=UTC, an exporting shell)
+# is indistinguishable from that leak from inside the process — the test skips the
+# check rather than fail on it, so unsetting here is what keeps it covered. The
+# subshell is the command substitution's own, so nothing below sees the unset.
+tzprobe_out="$(unset TZ; $jolt run test/chez/jolt-tz-probe-test.clj 2>&1)"
 if printf '%s' "$tzprobe_out" | grep -q 'JOLT-TZ-PROBE-TEST OK'; then
   pass=$((pass + 1))
 else
@@ -1054,6 +1059,25 @@ else
   elif [ -n "$tzprobe_out" ]; then
     echo "    (no verdict; last check reached was:)"
     printf '%s\n' "$tzprobe_out" | tail -3 | sed 's/^/    /'
+  fi
+  fails=$((fails + 1))
+fi
+
+# The same file's OTHER libc probe: LC_TIME is process global just like TZ, and
+# both the boot capability check and locale-name itself write it. An unrestored
+# write left every jolt process in en_US.UTF-8 and moved to "C" on the first
+# format call. Also gates that a locale the OS lacks reads as nil rather than
+# borrowing a name from whichever locale was current.
+localeprobe_out="$($jolt run test/chez/jolt-locale-probe-test.clj 2>&1)"
+if printf '%s' "$localeprobe_out" | grep -q 'JOLT-LOCALE-PROBE-TEST OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: jolt.host locale probe"
+  if printf '%s\n' "$localeprobe_out" | grep -q '^FAIL'; then
+    printf '%s\n' "$localeprobe_out" | grep '^FAIL' | head -5 | sed 's/^/    /'
+  elif [ -n "$localeprobe_out" ]; then
+    echo "    (no verdict; last check reached was:)"
+    printf '%s\n' "$localeprobe_out" | tail -3 | sed 's/^/    /'
   fi
   fails=$((fails + 1))
 fi

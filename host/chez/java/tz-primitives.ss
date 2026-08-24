@@ -16,7 +16,13 @@
 
 ;; Guard-wrapped FFI via jolt-foreign-proc-safe (deferred symbol lookup so a
 ;; missing entry doesn't abort boot). nil on failure -> graceful fallback.
-(define tzp-setlocale (jolt-foreign-proc-safe "setlocale" '(int string) 'void*))
+;; setlocale's result is read as `string`, not void*: it is a locale NAME, and the
+;; two things this file does with it both need it as one. NULL (the failure answer,
+;; and what an uninstalled locale returns) then arrives as #f rather than the
+;; address 0 — which is TRUTHY in Scheme, so a void* result made every failure read
+;; as success. And `string` COPIES out of libc's static buffer, which the next
+;; setlocale call is free to overwrite, so a saved name survives its own restore.
+(define tzp-setlocale (jolt-foreign-proc-safe "setlocale" '(int string) 'string))
 (define tzp-strftime  (jolt-foreign-proc-safe "strftime"  '(u8* size_t string void*) 'size_t))
 (define tzp-setenv    (jolt-foreign-proc-safe "setenv"    '(string string int) 'int))
 (define tzp-unsetenv  (jolt-foreign-proc-safe "unsetenv"  '(string) 'int))
@@ -24,10 +30,33 @@
 (define tzp-tzset     (jolt-foreign-proc-safe "tzset"     '() 'void))
 (define tzp-localtime (jolt-foreign-proc-safe "localtime" '(void*) 'void*))
 
+;; LC_TIME is process-global, exactly like TZ below, so every probe that writes it
+;; puts it back. setlocale(cat, NULL) queries without setting, which is how the
+;; previous value is read; a #f query answer means libc would not tell us, and
+;; there is nothing safe to restore to, so that case leaves the category alone
+;; rather than guessing at "C".
+(define (tzp-locale-restore! saved)
+  (when saved (tzp-setlocale tzp-LC_TIME saved)))
+
+;; Capability probe: has libc a real en_US locale to name months from?
+;;
+;; It RESTORES LC_TIME, for the same reason tzp-offset-probe restores TZ. This runs
+;; at boot, unconditionally, so leaving it set left every jolt process in
+;; en_US.UTF-8 — a C program starts in "C" — and any later strftime, localtime or
+;; nl_langinfo, jolt's own or a user's through jolt.ffi, silently answered from a
+;; locale nobody selected. An embedder that had chosen its own locale before
+;; calling into jolt lost it.
+;;
+;; dynamic-wind, not straight-line code, so the throw the guard is here to catch
+;; cannot leave the category clobbered on its way out.
 (define tzp-locale-available?
   (and tzp-setlocale tzp-strftime
        (guard (e (#t #f))
-         (let ((r (tzp-setlocale tzp-LC_TIME "en_US.UTF-8"))) (and r (not (eq? r 0)))))))
+         (let ((saved (tzp-setlocale tzp-LC_TIME #f)))
+           (dynamic-wind
+             (lambda () #f)
+             (lambda () (and (tzp-setlocale tzp-LC_TIME "en_US.UTF-8") #t))
+             (lambda () (tzp-locale-restore! saved)))))))
 
 ;; FFI symbols present? (setenv/getenv/unsetenv are POSIX-only, so this is #f on
 ;; Windows). getenv and unsetenv are required here too: tzp-offset-raw needs both
@@ -149,28 +178,48 @@
 
 ;; strftime-based locale name (libc only; nil when unavailable so the library uses
 ;; its own English fallback). fmt is a strftime spec: "%B"/"%b"/"%A"/"%a".
+;;
+;; The requested locale has to be REQUESTED, not assumed: setlocale answers NULL
+;; for one the OS does not have installed, which is the common case (most images
+;; carry only C and en_US). Read as void* that NULL was the address 0 and so
+;; truthy, and strftime then ran under whatever locale happened to be in effect
+;; and its answer was returned as if it were the requested one's — English on a
+;; stock box, or genuinely the wrong language wherever some other locale was
+;; current. nil is what the caller wants: jolt.time.fmt's `or` falls through to
+;; its own bundled tables, which are right everywhere.
+;;
+;; LC_TIME is restored to the name that was in effect, not to "C". Restoring to a
+;; constant is its own clobber — it just happens to be a tidy-looking one — and
+;; this ran on any locale-aware format call, so the previous value did not survive
+;; the first one.
 (define (tzp-locale-name locale tm-mon tm-wday fmt)
   (and tzp-locale-available?
        (let ((libc-loc (tzp-locale->libc locale))
              (buf (make-bytevector 128))
              (tm (sa-foreign-alloc 56)))
-         (sa-foreign-set! 'integer-32 tm 0 0) (sa-foreign-set! 'integer-32 tm 4 0)
-         (sa-foreign-set! 'integer-32 tm 8 0) (sa-foreign-set! 'integer-32 tm 12 1)
-         (sa-foreign-set! 'integer-32 tm 16 tm-mon) (sa-foreign-set! 'integer-32 tm 20 70)
-         (sa-foreign-set! 'integer-32 tm 24 tm-wday) (sa-foreign-set! 'integer-32 tm 28 0)
-         (sa-foreign-set! 'integer-32 tm 32 -1)
-         (let ((result (jolt-with-mutex tzp-mutex
-                         (let ((saved (tzp-setlocale tzp-LC_TIME libc-loc)))
-                           (if saved
-                               (let ((n (tzp-strftime buf 128 fmt tm)))
-                                 (tzp-setlocale tzp-LC_TIME "C")
-                                 (and (> n 0) n))
-                               #f)))))
-           (sa-foreign-free tm)
-           (and result
-                (let ((bv (make-bytevector result)))
-                  (bytevector-copy! buf 0 bv 0 result)
-                  (utf8->string bv)))))))
+         ;; tm is freed on the way out however the body leaves, throw included.
+         (dynamic-wind
+           (lambda () #f)
+           (lambda ()
+             (sa-foreign-set! 'integer-32 tm 0 0) (sa-foreign-set! 'integer-32 tm 4 0)
+             (sa-foreign-set! 'integer-32 tm 8 0) (sa-foreign-set! 'integer-32 tm 12 1)
+             (sa-foreign-set! 'integer-32 tm 16 tm-mon) (sa-foreign-set! 'integer-32 tm 20 70)
+             (sa-foreign-set! 'integer-32 tm 24 tm-wday) (sa-foreign-set! 'integer-32 tm 28 0)
+             (sa-foreign-set! 'integer-32 tm 32 -1)
+             (let ((result (jolt-with-mutex tzp-mutex
+                             (let ((saved (tzp-setlocale tzp-LC_TIME #f)))
+                               (dynamic-wind
+                                 (lambda () #f)
+                                 (lambda ()
+                                   (and (tzp-setlocale tzp-LC_TIME libc-loc)
+                                        (let ((n (tzp-strftime buf 128 fmt tm)))
+                                          (and (> n 0) n))))
+                                 (lambda () (tzp-locale-restore! saved)))))))
+               (and result
+                    (let ((bv (make-bytevector result)))
+                      (bytevector-copy! buf 0 bv 0 result)
+                      (utf8->string bv)))))
+           (lambda () (sa-foreign-free tm))))))
 
 ;; Clojure-facing seam. tz-offset returns nil (jolt-nil) when libc is unusable.
 (define (tzp->jolt x) (if x x jolt-nil))
