@@ -133,6 +133,20 @@
           (string-append "sh " qf " && rm -f " qf)))
       cmd))
 
+;; The directory holding an executable named the way the shell would find it. A
+;; BARE command name — JOLT_CHEZ=scheme, which runs perfectly well since PATH is
+;; what locates it — has no directory part to take, and path-parent answers "" for
+;; it where dirname answers ".": unhandled, the csv candidate built from it became
+;; an absolute "/../lib/csv<ver>" off the filesystem root. PATH is the only thing
+;; that knows where such a name lives, so ask it.
+(define (bld-exe-dir exe)
+  (let ((parent (path-parent exe)))
+    (if (string=? parent "")
+        (let ((p (bld-sh-capture
+                  (string-append "dirname \"$(command -v " (bld-sh-quote exe) ")\""))))
+          (if (> (string-length p) 0) p "."))
+        parent)))
+
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
 ;; $JOLT_CHEZ — the interpreter this script is itself running under — is
 ;; authoritative when set, for the same reason as bld-host-csv-dir above: a
@@ -171,7 +185,7 @@
     (or (and env (> (string-length env) 0) env)
         (let* ((chez (getenv "JOLT_CHEZ"))
                (bindir (if (and chez (> (string-length chez) 0))
-                           (path-parent chez)
+                           (bld-exe-dir chez)
                            (bld-sh-capture "dirname \"$(command -v chez || command -v scheme || command -v petite)\"")))
                (cand (string-append bindir "/../lib/csv" bld-version "/" bld-machine)))
           cand))))
