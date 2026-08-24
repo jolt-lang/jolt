@@ -188,7 +188,26 @@
 ;; foreign-callable is called BY C, so the roles swap: its :string arguments
 ;; convert c->jolt and its :string result converts jolt->c. Position-relative
 ;; names ("arg"/"ret") read backwards on one of the two.
-(define (jolt-ffi-string->c x) (if (jolt-nil? x) #f x))
+;;
+;; jolt->c validates rather than passing the odd value through, because `string`
+;; is the ONE foreign type that takes a non-string quietly. Chez rejects #t, an
+;; integer, a symbol and a bytevector in a `string` position, and rejects #f in
+;; every other position — argument, result and foreign-set! alike. So #f in a
+;; `string` position is the single hole in the boundary's type checking, and what
+;; falls through it lands on precisely the value C reads as "absent": a `when`
+;; that did not fire, a predicate result, a `boolean` of a missing key, silently
+;; becomes NULL. jolt.ffi has no :bool type, so no false ever belongs here — nil
+;; is how NULL is spelled. Naming the whole non-string set in one jolt-level error
+;; also beats Chez's "invalid foreign-procedure argument #[...]" for the rest.
+;;
+;; c->jolt needs no such check: its input comes from Chez, which hands back a
+;; string or #f and nothing else.
+(define (jolt-ffi-string->c x)
+  (cond ((string? x) x)                 ; the common path, one test
+        ((jolt-nil? x) #f)              ; nil IS NULL, in both directions
+        (else (throw-jvm 'IllegalArgumentException
+                         (string-append "jolt.ffi: :string got " (jolt-pr-str x)
+                                        " — NULL is spelled nil")))))
 (define (jolt-ffi-c->string x) (if x x jolt-nil))
 
 ;; --- foreign memory ----------------------------------------------------------

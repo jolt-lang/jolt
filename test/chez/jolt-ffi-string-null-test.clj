@@ -7,6 +7,7 @@
 (ns jolt-ffi-string-null-test)
 
 (require '[jolt.ffi :as ffi])
+(require '[clojure.string :as str])
 
 (def failures (atom []))
 
@@ -47,6 +48,37 @@
 ;; --- nil is only special for :string -----------------------------------------
 ;; :pointer keeps taking ffi/null as the integer 0; nothing here changes that.
 (check-eq "ffi/null is still 0" (ffi/null? ffi/null) true)
+
+;; --- and nil is the ONLY spelling of NULL ------------------------------------
+;; `string` is the one foreign type Chez takes a non-string on: it rejects #t, an
+;; integer, a symbol and a bytevector there, and rejects #f in every other
+;; position, but accepts #f in a `string` position as NULL. So false was the
+;; single value that could cross this boundary silently, and it landed on exactly
+;; the value C reads as "absent" — a `when` that did not fire, a predicate
+;; result. There is no :bool foreign type for it to have legitimately come from.
+;; Asserted on the MESSAGE, not merely on "something threw": the other non-strings
+;; did already throw before this, but as a raw Chez condition — class :object,
+;; reading "invalid foreign-procedure argument #[keyword-v1 #f \"kw\" 1158308175]"
+;; — so a bare threw? check would pass either way and prove nothing about them.
+(defn- rejected? [f]
+  (let [m (try (f) nil (catch Throwable t (str (.getMessage t))))]
+    (and (some? m) (str/includes? m "jolt.ffi: :string got"))))
+
+(check-eq "false as a :string argument is rejected, not sent as NULL"
+          (rejected? #(c-setlocale 0 false)) true)
+(check-eq "false's rejection is an IllegalArgumentException"
+          (try (c-setlocale 0 false) false
+               (catch IllegalArgumentException _ true))
+          true)
+(check-eq "true as a :string argument is rejected in jolt's own words"
+          (rejected? #(c-setlocale 0 true)) true)
+(check-eq "a non-string :string argument is rejected in jolt's own words"
+          (rejected? #(c-setlocale 0 42)) true)
+
+;; The rejection must not have cost the two values that ARE legal, which is the
+;; property a validating conversion is most likely to break.
+(check-eq "nil still reaches C as NULL after the check" (string? (c-setlocale 0 nil)) true)
+(check-eq "a string still marshals after the check" (string? (c-setlocale 0 "C")) true)
 
 (if (empty? @failures)
   (println "JOLT-FFI-STRING-NULL-TEST OK")

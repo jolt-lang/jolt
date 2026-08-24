@@ -188,6 +188,16 @@
         (equal? "hi!" returned))))
 (ev "(jolt.ffi/free-callable cb-str)")
 
+;; A callback RETURNING false must be rejected the same way an argument is. This
+;; is the direction where the old pass-through was most misleading: the callback
+;; hands C a null char*, C acts on "absent", and nothing in jolt ever said so.
+;; nil is how a callback declines to answer.
+(ev "(def cb-false (jolt.ffi/__ccallable (fn [_] false) [:string] :string))")
+(let ((call-cb (foreign-procedure (jnum->exact (var-deref "user" "cb-false")) (string) string)))
+  (ok "a callback returning false from :string raises instead of answering NULL"
+      (guard (e (#t #t)) (call-cb "x") #f)))
+(ev "(jolt.ffi/free-callable cb-false)")
+
 ;; The conversions are emitted ONLY where the signature says :string, so every
 ;; other binding and callable is emitted byte-identically to before they
 ;; existed — that is what keeps this off the hot path of the FFI's scalar and

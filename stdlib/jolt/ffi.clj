@@ -26,6 +26,14 @@
   translation with the directions swapped, since C is the caller there: a null
   char* C passes in arrives as nil, and returning nil hands C a null char*.
 
+  nil is the only spelling of NULL a :string position accepts. false is
+  rejected rather than sent, though Chez's own `string` type would take it as
+  NULL: there is no :bool foreign type for a boolean to have come from, so one
+  arriving here is a mistake — a `when` that did not fire, a predicate result —
+  and silently sending it would land on the one value C reads as \"absent\".
+  Every other non-string is rejected too, which the other foreign types already
+  did on their own.
+
   A struct passed or returned by value uses the same literal descriptor as
   layout, wrapped in [:by-value descriptor]. An argument value is a non-null
   caller-owned pointer to the struct bytes. An aggregate-returning callable takes
