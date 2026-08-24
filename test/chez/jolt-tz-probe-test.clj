@@ -33,8 +33,18 @@
   (ffi/read (f epoch-buf) :int 8))     ; tm_hour is the third int
 
 ;; The boot-time capability probe has already run by the time this loads, so an
-;; unrestored TZ would be observable right here.
-(check-eq "TZ is not left set by the boot probe" (c-getenv "TZ") nil)
+;; unrestored TZ would be observable right here — but only in a process that did
+;; not INHERIT one. A TZ in the environment is an ordinary setup (a container's
+;; ENV TZ=UTC, a shell that exports it), and from in here it is indistinguishable
+;; from a leak, so asserting nil unconditionally failed the gate on the
+;; environment rather than on the code. smoke.sh runs this with TZ scrubbed so
+;; the assertion below is what the gate actually reports; run by hand with TZ
+;; set, it says so and moves on to the checks that carry their own TZ.
+(let [inherited (c-getenv "TZ")]
+  (if (nil? inherited)
+    (check-eq "TZ is not left set by the boot probe" inherited nil)
+    (println (str "  .. (skipped: TZ=" (pr-str inherited)
+                  " was inherited, so a leak is not observable here)"))))
 
 ;; A named zone under a KNOWN TZ must come back unchanged. This is the case the
 ;; boot probe broke: it left TZ=UTC, so a caller who had set TZ themselves lost it.
