@@ -60,9 +60,17 @@
 ;; did already throw before this, but as a raw Chez condition — class :object,
 ;; reading "invalid foreign-procedure argument #[keyword-v1 #f \"kw\" 1158308175]"
 ;; — so a bare threw? check would pass either way and prove nothing about them.
+(defn- threw-message [f]
+  (try (f) nil (catch Throwable t (str (.getMessage t)))))
+
 (defn- rejected? [f]
-  (let [m (try (f) nil (catch Throwable t (str (.getMessage t))))]
+  (let [m (threw-message f)]
     (and (some? m) (str/includes? m "jolt.ffi: :string got"))))
+
+;; "<what> must be a string, got nil" — the naming positions further down.
+(defn- rejected-name? [f]
+  (let [m (threw-message f)]
+    (and (some? m) (str/includes? m "must be a string, got nil"))))
 
 (check-eq "false as a :string argument is rejected, not sent as NULL"
           (rejected? #(c-setlocale 0 false)) true)
@@ -79,6 +87,21 @@
 ;; property a validating conversion is most likely to break.
 (check-eq "nil still reaches C as NULL after the check" (string? (c-setlocale 0 nil)) true)
 (check-eq "a string still marshals after the check" (string? (c-setlocale 0 "C")) true)
+
+;; --- where NULL is NOT available, nil is an error ----------------------------
+;; The positions above can say "absent" — NULL is exactly that. The ones below
+;; cannot: they use the string to NAME something. nil reached the `str` coercion
+;; there, which renders it "", so an absent name became an empty one and the
+;; boundary acted on it — a foreign type called "", a dlopen of "".
+(check-eq "a nil foreign type is rejected, not read as the type named \"\""
+          (rejected-name? #(ffi/sizeof nil)) true)
+(check-eq "a real foreign type still resolves" (pos? (ffi/sizeof :int32)) true)
+(check-eq "a nil library name is rejected, not dlopen'd as \"\""
+          (rejected-name? #(ffi/loaded? nil)) true)
+;; load-library keeps its documented nil: no name means "the process's own
+;; symbols are already resolvable", which is an answer, not an absent name.
+(check-eq "(load-library nil) is still the documented no-op"
+          (nil? (ffi/load-library nil)) true)
 
 (if (empty? @failures)
   (println "JOLT-FFI-STRING-NULL-TEST OK")

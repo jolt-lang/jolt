@@ -84,6 +84,18 @@
     (check-eq "the source string is shorter than its encoding" (count s) 6)
     (check-eq "read-bytes decodes the octets back" (ffi/read-bytes buf 8) s))
 
+  ;; nil is not something to encode. It used to reach the `str` coercion, which
+  ;; renders it "", so an absent value wrote 0 octets and answered 0 — the same
+  ;; answer as writing "" on purpose. Unlike a :string argument or string->ptr,
+  ;; there is no NULL to mean it with here: the destination is the caller's own
+  ;; buffer, so absence has nowhere to go and is a caller error.
+  (check-eq "write-bytes rejects nil rather than writing nothing"
+            (try (ffi/write-bytes buf nil) :no-throw
+                 (catch IllegalArgumentException _ :rejected))
+            :rejected)
+  (check-eq "write-bytes still takes the str coercion for a non-nil value"
+            (ffi/write-bytes buf 42) 2)
+
   ;; bytes that are not valid UTF-8 come back through read-array unharmed
   ;; (read-bytes would have to substitute; read-array must not)
   (let [invalid (byte-array [-128 -61 40 0 -1])]

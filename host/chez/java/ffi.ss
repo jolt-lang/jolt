@@ -11,6 +11,24 @@
 ;; representation `void*` arguments and results use, so pointers flow between
 ;; foreign-fn calls and these helpers transparently.
 
+;; --- a jolt value used AS a string -------------------------------------------
+;; jolt-str-render-one is the `str` coercion, and it renders nil as "". That is
+;; right for str and it is right where the boundary copies a VALUE — string->ptr
+;; and with-c-string document exactly that. It is wrong wherever the string names
+;; something, because an absent name silently became an empty one: dlopen(""), a
+;; foreign type called "", a zero-byte write that reports 0 octets written and is
+;; indistinguishable from writing "".
+;;
+;; nil has no representation in any of those positions. Where it DOES have one it
+;; is already used — NULL, in a :string argument and in string->ptr — so the split
+;; is between "absence means NULL here" and "absence means nothing here", and this
+;; is the second. Every other value keeps the coercion, so 42 still names "42".
+(define (ffi-str-arg what x)
+  (if (jolt-nil? x)
+      (throw-jvm 'IllegalArgumentException
+                 (string-append "jolt.ffi: " what " must be a string, got nil"))
+      (jolt-str-render-one x)))
+
 ;; --- loading shared objects --------------------------------------------------
 ;; (jolt.ffi/load-library name) loads a .so/.dylib by name (resolved by the OS
 ;; loader against the standard search paths). A library typically calls this once
@@ -64,7 +82,7 @@
 ;; followed by use). The old form side-effected the GLOBAL namespace to answer
 ;; a yes/no question.
 (define (ffi-loaded? name)
-  (if (jolt-ffi-load-native (jolt-str-render-one name)) #t #f))
+  (if (jolt-ffi-load-native (ffi-str-arg "loaded? name" name)) #t #f))
 
 ;; --- scoped native libraries: dlopen RTLD_LOCAL + per-handle dlsym ----------
 ;; A :jolt/native library's symbols must NEVER depend on the process-global
@@ -149,7 +167,7 @@
 ;; width expose the same stored bits; wire byte order remains an explicit codec
 ;; or htons/ntohs concern.
 (define (ffi-type->chez kw)
-  (let ((n (if (keyword-t? kw) (keyword-t-name kw) (jolt-str-render-one kw))))
+  (let ((n (if (keyword-t? kw) (keyword-t-name kw) (ffi-str-arg "foreign type" kw))))
     (cond
       ((string=? n "int") 'int)
       ((string=? n "uint") 'unsigned-int)
@@ -239,7 +257,7 @@
     (guard (e (#t (list->string (map integer->char (bytevector->u8-list bv))))) (utf8->string bv))))
 ;; write a string's UTF-8 bytes into ptr (no NUL terminator); return the count.
 (define (ffi-write-bytes ptr s)
-  (let* ((bv (string->utf8 (jolt-str-render-one s))) (n (bytevector-length bv)) (p (jnum->exact ptr)))
+  (let* ((bv (string->utf8 (ffi-str-arg "write-bytes value" s))) (n (bytevector-length bv)) (p (jnum->exact ptr)))
     (sa-foreign-bytes-set! p bv n)
     n))
 (def-var! "jolt.ffi" "read-bytes" ffi-read-bytes)

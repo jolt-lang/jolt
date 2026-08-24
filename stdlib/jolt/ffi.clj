@@ -57,6 +57,13 @@
   since with-c-string copies a VALUE. NULL is safe to free, so the scoped
   helpers need no special case for it.
 
+  Where NULL is not available to mean it, a nil is rejected instead of rendered
+  as \"\": a nil foreign type (read/write/sizeof), a nil name to loaded?, and a
+  nil value to write-bytes, whose destination is the caller's own buffer so
+  there is no pointer that could carry absence. (load-library nil) keeps its
+  documented meaning — no name at all, the process's own symbols — which is an
+  answer rather than a missing one.
+
       (let [buf (ffi/alloc 65536)
             frame (byte-array total)]
         (loop [off 0]
