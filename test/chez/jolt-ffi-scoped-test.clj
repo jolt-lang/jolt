@@ -34,6 +34,47 @@
                     (ffi/ptr->string
                      (ffi/read p :pointer (* index (ffi/sizeof :pointer)))))
                   (range 3)))))
+;; nil round-trips as NULL through the string->ptr / ptr->string pair. Before
+;; this nil went through the `str` coercion, which renders it "", so an ABSENT
+;; string was indistinguishable from a present empty one after a round trip.
+;; "" must keep its own answer, which is the half that proves the two are apart.
+(check "string->ptr of nil is NULL"
+       (ffi/null? (ffi/string->ptr nil)))
+(check "nil round-trips through the pair"
+       (nil? (ffi/ptr->string (ffi/string->ptr nil))))
+(check "\"\" is still not nil after a round trip"
+       (= "" (let [p (ffi/string->ptr "")]
+               (try (ffi/ptr->string p) (finally (ffi/free p))))))
+(check "a non-nil value still takes the str coercion"
+       (= "42" (let [p (ffi/string->ptr 42)]
+                 (try (ffi/ptr->string p) (finally (ffi/free p))))))
+;; Freeing the NULL must be a no-op rather than a fault, since the scoped helpers
+;; below free every member unconditionally.
+(check "freeing the NULL from string->ptr is safe"
+       (nil? (ffi/free (ffi/string->ptr nil))))
+
+(check "with-c-string binds NULL for nil"
+       (ffi/with-c-string [p nil] (ffi/null? p)))
+(check "with-c-string of nil still frees cleanly"
+       (= 1 (let [real-free ffi/free frees (atom 0)]
+              (with-redefs [ffi/free (fn [p] (swap! frees inc) (real-free p))]
+                (ffi/with-c-string [p nil] :ok))
+              @frees)))
+;; An argv/envp-shaped array: a nil member is a NULL entry, the strings around it
+;; are untouched, and all three are freed.
+(check "with-c-string-array makes a nil member a NULL entry"
+       (= ["alpha" nil ""]
+          (ffi/with-c-string-array [p 3] ["alpha" nil ""]
+            (mapv (fn [index]
+                    (ffi/ptr->string
+                     (ffi/read p :pointer (* index (ffi/sizeof :pointer)))))
+                  (range 3)))))
+(check "with-c-string-array frees a NULL member like any other"
+       (= 4 (let [real-free ffi/free frees (atom 0)]
+              (with-redefs [ffi/free (fn [p] (swap! frees inc) (real-free p))]
+                (ffi/with-c-string-array [p 3] ["alpha" nil ""] :ok))
+              @frees)))
+
 (check "with-c-string-array evaluates values once"
        (= 1 (let [calls (atom 0)]
               (ffi/with-c-string-array [p 1]

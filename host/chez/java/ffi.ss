@@ -317,14 +317,32 @@
                 (loop (+ i 1) (cons b acc))))))))
 ;; Copy a jolt string's UTF-8 bytes into a freshly alloc'd NUL-terminated buffer;
 ;; the caller frees it. Returns the pointer.
+;;
+;; nil answers NULL, allocating nothing, so it round-trips against ptr->string
+;; above — which has always read NULL back as nil. Before this the pair lost the
+;; distinction in one direction: nil went through jolt-str-render-one, which
+;; renders it "", so it came back as "" and an absent string was indistinguishable
+;; from a present empty one. "" itself still allocates its one NUL byte and still
+;; reads back as "", which is what keeps the two answers apart.
+;;
+;; Every value that is not nil keeps going through jolt-str-render-one, the `str`
+;; coercion: with-c-string documents "Copy VALUE", not "copy a string", and
+;; with-c-string-array maps over arbitrary values. Only nil is special, for the
+;; same reason it is special in a :string position — it is what jolt spells
+;; absence with, and NULL is what C spells it with.
+;;
+;; NULL is safe for both callers to free: free(NULL) is a defined no-op, and
+;; ffi/free reaches it through Chez's foreign-free, which accepts 0.
 (define (ffi-string->ptr s)
-  (let* ((bv (string->utf8 (jolt-str-render-one s))) (n (bytevector-length bv))
-         (p (sa-foreign-alloc (+ n 1))))
-    ;; free on a mid-copy throw — the caller only ever sees a whole buffer
-    (guard (e (#t (guard (_ (#t #f)) (sa-foreign-free p)) (raise e)))
-      (do ((i 0 (+ i 1))) ((= i n)) (sa-foreign-set! 'unsigned-8 p i (bytevector-u8-ref bv i)))
-      (sa-foreign-set! 'unsigned-8 p n 0)
-      p)))
+  (if (jolt-nil? s)
+      ffi-null
+      (let* ((bv (string->utf8 (jolt-str-render-one s))) (n (bytevector-length bv))
+             (p (sa-foreign-alloc (+ n 1))))
+        ;; free on a mid-copy throw — the caller only ever sees a whole buffer
+        (guard (e (#t (guard (_ (#t #f)) (sa-foreign-free p)) (raise e)))
+          (do ((i 0 (+ i 1))) ((= i n)) (sa-foreign-set! 'unsigned-8 p i (bytevector-u8-ref bv i)))
+          (sa-foreign-set! 'unsigned-8 p n 0)
+          p))))
 
 ;; --- callbacks: receive calls FROM C ----------------------------------------
 ;; jolt.ffi/foreign-callable lowers to (jolt-ffi-register-callable! (foreign-callable …)).
