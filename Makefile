@@ -124,7 +124,7 @@ install: build
 # answers "is this working tree gated?" — which is not something to remember.
 
 CI-GATES := submodules values corpus unit grenadine mvnhttp readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling depssmoke depscpcache depsunit \
-  smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci scifunctional cts ffi ffidupsym continuations stdlibfasl \
+  smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci scifunctional cts ffi ffidupsym continuations protocoldefaults stdlibfasl \
   transient rrbprop rrbscaling stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq \
   protoret pic narrow directlink unitcontext numeric oparity mathfl flarr \
@@ -365,6 +365,14 @@ buildlibsmoke: testbin
 # default), and --dynamic keeps the runtime load-shared-object path.
 staticnativesmoke: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/static-native-smoke.sh
+
+# Protocol default method bodies (issue #740): a defprotocol clause may carry a
+# body, and a type that extends the protocol but omits that method resolves to
+# it. The rows that matter are the SCOPE ones — a default must not reach a value
+# that never extended the protocol, or it is an Object-wide extension in
+# disguise, which is the thing the feature exists to avoid.
+protocoldefaults:
+	@bin/jolt run test/chez/protocol-defaults-test.clj
 
 # Duplicate native symbol detection (issue #731): a declared :jolt/native that
 # carries its own static copy of another's code — raygui linked against

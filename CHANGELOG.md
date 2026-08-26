@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Protocol methods can carry a default body (#740).** A `defprotocol` clause
+  may be written the way `fn` writes a clause — a list whose head is the
+  argument vector — and the body becomes the method's default:
+
+  ```clojure
+  (defprotocol Greeter
+    (greet [this])
+    (greet-loudly ([this] (str (greet this) "!"))))
+  ```
+
+  A type that extends the protocol and omits `greet-loudly` resolves to that
+  body; an inline implementation still wins. Per-arity, so one arity can have a
+  default and another not, and `(extend-type T P)` with no methods at all is a
+  type implementing `P` entirely through its defaults.
+
+  SCOPED TO THE PROTOCOL, which is the point. The community answer to this has
+  always been "extend the protocol to `Object`", and that works but is global —
+  it answers for every value in the system. A default here reaches only a type
+  that already extends the protocol: a value that never did still raises `No
+  method`, and `satisfies?` is unchanged. Java 8 shipped interface default
+  methods for the same evolution problem, with the same scoping.
+
+  A jolt superset, and additive: a clause with no body means exactly what it
+  meant before, every existing protocol has no bodies, and a list in that
+  position previously had no meaning at all (the arity scan filtered for
+  vectors and dropped anything else silently).
+
 - **`jolt.continuations`: one-shot escape continuations (#736).** `call-cc` and
   `letcc` expose the capability jolt's runtime already runs on — the fiber
   park/resume switch, the throw site a backtrace is walked from — to jolt

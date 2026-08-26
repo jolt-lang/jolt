@@ -514,13 +514,92 @@
 ;; type tag at call time, so this table is read only by `jolt build` inference.
 ;; Called by defprotocol-emitted code in the protocol's ns.
 (define (register-protocol-methods! proto-name method-names)
-  (let ((ns (chez-current-ns)))
-    (for-each (lambda (mn)
-                (let ((m (if (symbol-t? mn) (symbol-t-name mn) mn)))
-                  (jolt-with-mutex rec-tbl-mu
-                    (hashtable-set! chez-protocol-methods-tbl
-                                    (string-append ns "/" m) (cons proto-name m)))))
-              (seq->list method-names)))
+  (let ((ns (chez-current-ns))
+        (names (map (lambda (mn) (if (symbol-t? mn) (symbol-t-name mn) mn))
+                    (seq->list method-names))))
+    (for-each (lambda (m)
+                (jolt-with-mutex rec-tbl-mu
+                  (hashtable-set! chez-protocol-methods-tbl
+                                  (string-append ns "/" m) (cons proto-name m))))
+              names)
+    ;; The protocol's own method names, by protocol. Only a reify needs this: it
+    ;; carries one flat method table with no protocol tagging, so "does this
+    ;; reify implement P" can only be asked as "does its table hold any of P's
+    ;; method names" (protocol defaults, issue #740). Replaced wholesale on a
+    ;; re-def, like the defaults table.
+    (jolt-with-mutex rec-tbl-mu
+      (hashtable-set! chez-protocol-method-names-tbl proto-name names)))
+  jolt-nil)
+
+(define chez-protocol-method-names-tbl (make-hashtable string-hash string=?))
+
+(define (reify-implements-protocol? rm proto-name)
+  (let ((names (hashtable-ref chez-protocol-method-names-tbl proto-name '())))
+    (let loop ((ns names))
+      (cond ((null? ns) #f)
+            ((hashtable-ref rm (car ns) #f) #t)
+            (else (loop (cdr ns)))))))
+
+;; --- protocol default methods (issue #740) -----------------------------------
+;; A defprotocol clause may carry a body — (m ([this] ...)) — and a type that
+;; EXTENDS the protocol but omits that method resolves to it. Java 8's interface
+;; default-method semantics, and the reason this is not just "extend to Object":
+;; an Object extension is global, so it answers for every value in the system
+;; whether or not that value has anything to do with the protocol. A default
+;; here is reachable only through a type that already opted into the protocol.
+;;
+;; Keyed proto-key -> (method -> fn). Written once per defprotocol, read only on
+;; the resolve MISS path, so the hit path is untouched — a call that finds a real
+;; impl never looks here.
+(define chez-protocol-defaults-tbl (make-hashtable string-hash string=?))
+
+;; Called by defprotocol-emitted code. A re-def REPLACES the whole method table
+;; for that protocol rather than merging: a redefinition that drops a default
+;; must not leave the old one answering, the same way a redefined protocol's
+;; methods do not accumulate.
+(define (register-protocol-defaults! proto-name defaults)
+  (let ((h (make-hashtable string-hash string=?)))
+    (let loop ((ps (seq->list defaults)))
+      (unless (null? ps)
+        (let* ((pr (car ps))
+               (mn (jolt-nth pr 0 jolt-nil))
+               (f  (jolt-nth pr 1 jolt-nil)))
+          (hashtable-set! h (if (symbol-t? mn) (symbol-t-name mn) mn) f))
+        (loop (cdr ps))))
+    (jolt-with-mutex rec-tbl-mu
+      (hashtable-set! chez-protocol-defaults-tbl proto-name h)))
+  jolt-nil)
+
+(define (find-protocol-default proto method)
+  (let ((h (hashtable-ref chez-protocol-defaults-tbl proto #f)))
+    (and h (hashtable-ref h method #f))))
+
+;; Does TYPE-TAG extend PROTO at all — i.e. is there a per-protocol table for it?
+;; This is the whole scope rule: a default is offered only to a type that already
+;; said it implements this protocol.
+(define (type-extends-protocol? type-tag proto)
+  (let ((ti (hashtable-ref type-registry type-tag #f)))
+    (and ti (hashtable-ref ti proto #f) #t)))
+
+;; Record that TYPE-TAG extends PROTO while providing NO methods of its own —
+;; every method it uses comes from the protocol's defaults. (extend-type X P)
+;; with no method specs, which is `class X implements I {}` where all of I's
+;; methods have default bodies. Without this the type has no entry under PROTO,
+;; type-extends-protocol? answers #f, and the defaults it meant to inherit are
+;; refused. Creates the empty per-protocol table and nothing else, so a later
+;; register-protocol-method for the same pair fills it in the usual way.
+(define (register-protocol-extension! type-name proto)
+  (let ((tag (extend-target-tag type-name)))
+    (jolt-with-mutex rec-tbl-mu
+      (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
+      (let ((ti (or (hashtable-ref type-registry tag #f)
+                    (let ((h (make-hashtable string-hash string=?)))
+                      (hashtable-set! type-registry tag h) h))))
+        (unless (hashtable-ref ti proto #f)
+          (hashtable-set! ti proto (make-hashtable string-hash string=?)))))
+    ;; and it IS an extender, so extenders/extends?/satisfies? agree with the
+    ;; defaults it inherits.
+    (mark-extend! tag proto))
   jolt-nil)
 
 ;; register-method: extend-type/extend register an impl. Host type names keep a
@@ -619,23 +698,31 @@
     (let ((ti (hashtable-ref type-registry tag #f)))
       (when ti (let ((pi (hashtable-ref ti proto-name #f)))
                  (when pi (hashtable-set! pi extend-mark #t)))))))
+;; The registry tag an extend-type/extend TYPE NAME files under. Shared by
+;; register-method and register-protocol-extension! so a type that extends a
+;; protocol with no methods files under the SAME tag as one that extends it with
+;; methods — otherwise the empty extension registers under a name no value
+;; carries and its defaults are never found.
+(define (extend-target-tag type-name)
+  (let ((host (canonical-host-tag type-name))
+        (local (string-append (chez-current-ns) "." type-name)))
+    ;; a host class -> its canonical tag; a deftype defined in THIS ns -> the
+    ;; local tag; an :import-ed deftype from another ns -> its real tag via the
+    ;; simple-name index; otherwise the local tag (a forward extend).
+    (cond (host host)
+          ((hashtable-ref chez-deftype-tag-set local #f) local)
+          ;; a deftype named by its FULLY-QUALIFIED name — the tag
+          ;; format itself, so it needs no ns prefix. schema does this:
+          ;; (extend-protocol Completer schema.spec.variant.VariantSpec
+          ;; …) from a third namespace. Without this the name is
+          ;; prefixed with the EXTENDING ns and the impl is filed under
+          ;; a tag no value carries.
+          ((hashtable-ref chez-deftype-tag-set type-name #f) type-name)
+          ((hashtable-ref chez-simple-name-tag type-name #f))
+          (else local))))
+
 (define (register-method type-name proto-name method-name fn)
-  (let* ((host (canonical-host-tag type-name))
-         (local (string-append (chez-current-ns) "." type-name))
-         ;; a host class -> its canonical tag; a deftype defined in THIS ns -> the
-         ;; local tag; an :import-ed deftype from another ns -> its real tag via the
-         ;; simple-name index; otherwise the local tag (a forward extend).
-         (tag (cond (host host)
-                    ((hashtable-ref chez-deftype-tag-set local #f) local)
-                    ;; a deftype named by its FULLY-QUALIFIED name — the tag
-                    ;; format itself, so it needs no ns prefix. schema does this:
-                    ;; (extend-protocol Completer schema.spec.variant.VariantSpec
-                    ;; …) from a third namespace. Without this the name is
-                    ;; prefixed with the EXTENDING ns and the impl is filed under
-                    ;; a tag no value carries.
-                    ((hashtable-ref chez-deftype-tag-set type-name #f) type-name)
-                    ((hashtable-ref chez-simple-name-tag type-name #f))
-                    (else local))))
+  (let ((tag (extend-target-tag type-name)))
     (register-protocol-method tag proto-name method-name fn)
     (mark-extend! tag proto-name)
     jolt-nil))
@@ -684,12 +771,27 @@
 ;; reads the per-type descriptor once and tries its eq?-keyed ptable (the interned
 ;; proto-method identity, current-epoch) before walking the nested string tables —
 ;; one field read + one eq?-ref instead of two field reads + three string hashes.
+;; A protocol default, but ONLY for a receiver whose type already extends this
+;; protocol (issue #740). Called from each miss arm below, immediately before it
+;; would raise — so a call that resolves normally never reaches it, and a value
+;; that never extended the protocol still gets the same error it always got.
+;; That extender check is what separates this from an Object-wide extension.
+(define (protocol-default-for proto-name method-name obj)
+  (and (let loop ((tags (value-host-tags obj)))
+         (cond ((null? tags) #f)
+               ((type-extends-protocol? (car tags) proto-name) #t)
+               (else (loop (cdr tags)))))
+       (find-protocol-default proto-name method-name)))
+
 (define (protocol-resolve proto-name method-name obj)
   (cond
     ((and (jrec? obj)
           (let* ((desc (jrec-desc obj))
                  (f (find-protocol-method-desc desc proto-name method-name)))
-            (or f (find-protocol-method (jrdesc-tag desc) proto-name method-name)))))
+            (or f (find-protocol-method (jrdesc-tag desc) proto-name method-name)
+                ;; A record that extends this protocol and omits this method.
+                (and (type-extends-protocol? (jrdesc-tag desc) proto-name)
+                     (find-protocol-default proto-name method-name))))))
     ((reified-methods obj)
      => (lambda (rm)
           (or (hashtable-ref rm method-name #f)
@@ -697,12 +799,23 @@
               ;; extended impls over the reify's host tags (e.g. an Object/default
               ;; extension). malli reifies some protocols and leans on the default.
               (let loop ((tags (value-host-tags obj)))
-                (cond ((null? tags) (throw-jvm (quote IllegalArgumentException) (string-append "No reified method " method-name)))
+                (cond ((null? tags)
+                       ;; A reify names its protocols in the form, not in a per-
+                       ;; protocol table, so "does this reify extend P" is asked of
+                       ;; the method table: it implements SOME method of P. A reify
+                       ;; that mentions P at all implements at least one of its
+                       ;; methods, and one that mentions none cannot reach here for
+                       ;; P's method name in the first place.
+                       (or (and (reify-implements-protocol? rm proto-name)
+                                (find-protocol-default proto-name method-name))
+                           (throw-jvm (quote IllegalArgumentException) (string-append "No reified method " method-name))))
                       ((find-protocol-method (car tags) proto-name method-name))
                       (else (loop (cdr tags))))))))
     (else
      (let loop ((tags (value-host-tags obj)))
-       (cond ((null? tags) (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " in " proto-name)))
+       (cond ((null? tags)
+              (or (protocol-default-for proto-name method-name obj)
+                  (throw-jvm (quote IllegalArgumentException) (string-append "No method " method-name " in " proto-name))))
              ((find-protocol-method (car tags) proto-name method-name))
              (else (loop (cdr tags))))))))
 ;; Fixed-arity entry points the protocol-method shims call: no rest-list, no seq

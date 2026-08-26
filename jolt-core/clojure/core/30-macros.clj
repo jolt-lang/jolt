@@ -564,7 +564,34 @@
         ;; the protocol's identity: this namespace plus the name (see protocol-key).
         ;; Baked here so the value, the dispatch shims and every later impl
         ;; registration all key on one string.
-        pkey (str *ns* "/" (name pname))]
+        pkey (str *ns* "/" (name pname))
+        ;; DEFAULT BODIES (issue #740). A clause element is a bare vector (a
+        ;; signature, exactly as before) or a LIST whose head is a vector — a
+        ;; signature plus a body, spelled the way fn spells its clauses. The two
+        ;; cannot be confused with each other or with the docstring a clause may
+        ;; already carry, and a list in that position had no meaning before: the
+        ;; arglist scan below filters for vectors, so anything else was silently
+        ;; dropped. That is what makes this additive.
+        default-clauses (fn [sig]
+                          (filter (fn [x] (and (seq? x) (vector? (first x))))
+                                  (rest sig)))
+        ;; The default fn for one method: one clause per defaulted arity, plus a
+        ;; variadic arm so an arity WITHOUT a default reports the protocol's own
+        ;; error instead of a bare arity mismatch from the host.
+        default-fn (fn [sig]
+                     (let [cs (default-clauses sig)
+                           mn (name (first sig))]
+                       (when (seq cs)
+                         `(fn* ~@(map (fn [c] (cons (first c) (rest c))) cs)
+                               ([this# & more#]
+                                (throw (ex-info (str "No method " ~mn " in " ~pkey
+                                                     " for arity " (inc (count more#))
+                                                     " (the protocol default covers other arities)")
+                                                {:protocol ~pkey :method ~mn})))))))
+        defaults (reduce (fn [m sig]
+                           (let [f (default-fn sig)]
+                             (if f (assoc m (name (first sig)) f) m)))
+                         {} sigs)]
     `(do
        (def ~pname (make-protocol ~pkey ~methods))
        ;; register method var-keys for devirtualization; the inference
@@ -578,7 +605,25 @@
        ~@(map (fn [sig]
                 (let [pn pkey
                       mn (name (first sig))
-                      arglists (filter vector? (rest sig))
+                      ;; A DECLARED arity is a bare vector or the vector heading
+                      ;; a defaulted clause — a defaulted arity is still an
+                      ;; arity, and the shim needs a dispatch clause for it or
+                      ;; the call arrives as a plain arity error before dispatch
+                      ;; ever runs. Deduped by parameter count, keeping the
+                      ;; first, so writing both [this n] and ([this n] …) for one
+                      ;; arity declares it once instead of emitting two fn*
+                      ;; clauses of the same length.
+                      arglists (let [vs (reduce (fn [acc x]
+                                                  (cond
+                                                    (vector? x) (conj acc x)
+                                                    (and (seq? x) (vector? (first x))) (conj acc (first x))
+                                                    :else acc))
+                                                [] (rest sig))]
+                                 (reduce (fn [acc v]
+                                           (if (some (fn [k] (= (count k) (count v))) acc)
+                                             acc
+                                             (conj acc v)))
+                                         [] vs))
                       clause (fn [argv]
                                (let [ps (mapv (fn [_] (fresh-sym)) argv)
                                      n (count ps)
@@ -592,7 +637,14 @@
                     `(def ~(first sig) (fn* ~@(map clause arglists)))
                     `(def ~(first sig)
                        (fn* [this# & rest#] (protocol-dispatch ~pn ~mn this# rest#))))))
-              sigs))))
+              sigs)
+       ;; LAST, after the method defs. A default body is ordinary code that may
+       ;; call its own protocol's other methods — greet-loudly's default calling
+       ;; greet is the motivating shape — and those methods are the defs above.
+       ;; Registering earlier compiled the default bodies against names that did
+       ;; not exist yet, which jolt reports as an unresolved symbol rather than
+       ;; leaving to fail at run time.
+       (register-protocol-defaults! ~pkey ~defaults))))
 
 ;; Member threading: (.. x f g) => (. (. x f) g); a parenthesized member
 ;; carries args. Canonical Clojure shape, single-arity defmacro.
@@ -644,6 +696,9 @@
         (let [proto (first s)
               mmap (second s)
               pname (name (get proto :name))]
+          ;; the extension itself, so an empty method map still marks the type as
+          ;; an extender and its protocol defaults apply
+          (register-protocol-extension! tname pname)
           (doseq [[k f] mmap]
             (register-method tname pname (name k) f)))
         (recur (nnext s))))))
@@ -666,7 +721,13 @@
                    forms
                    (let [x (first items)]
                      (if (symbol? x)
-                       (recur (rest items) (protocol-key x) forms)
+                       ;; A protocol symbol also RECORDS the extension, before
+                       ;; any of its methods. (extend-type X P) with no specs at
+                       ;; all is a type that implements P entirely through the
+                       ;; protocol's default bodies, and it has to register as an
+                       ;; extender or those defaults are refused.
+                       (recur (rest items) (protocol-key x)
+                              (conj forms `(register-protocol-extension! ~tref ~(protocol-key x))))
                        (recur (rest items) proto
                               (conj forms
                                     `(register-method ~tref ~proto ~(name (first x))

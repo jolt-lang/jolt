@@ -216,6 +216,11 @@ divergences:
   separators: edn's grammar has none, and a config that read only here would
   fail in every other edn reader. Additive — nothing that reads on the JVM
   changes meaning.
+- **Protocol methods can carry a default body.** An fn-style `defprotocol`
+  clause — `(greet-loudly ([this] (str (greet this) "!")))` — supplies a default
+  any extender omitting that method resolves to. Java 8 default methods, scoped
+  to the protocol: a non-extender still raises, so it is not an `Object`
+  extension in disguise. Inline impls win.
 - **Clojure is a terminal dependency.** jolt *is* Clojure, so
   `org.clojure/clojure` in a `deps.edn` contributes neither an artifact nor
   children. On the JVM that artifact pulls in `org.clojure/spec.alpha`, so a
