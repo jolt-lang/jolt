@@ -430,6 +430,7 @@
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (let [f (java.io.File/createTempFile \"joltres\" \".txt\")] (spit f \"hello\") (let [u (java.net.URL. (str \"file:\" (.getAbsolutePath f))) r (and (= \"hello\" (slurp u)) (= \"hello\" (slurp (.openStream u))) (= \"hello\" (slurp (io/reader u))) (= \"hello\" (slurp (io/input-stream u))) (= (.getAbsolutePath f) (str (io/file u))))] (.delete f) r)))" :expected "true"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/x\"))))" :expected "\"/tmp/x\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getAbsolutePath (io/file \"/a/b\")))" :expected "\"/a/b\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.string :as str])) (let [f (java.io.File/createTempFile \"jolt-absolute-stream\" \".bin\") native (.getAbsolutePath f) slash (if (= \"Windows\" (System/getProperty \"os.name\")) (str/replace native \"\\\\\" \"/\") native)] (try (with-open [o (java.io.FileOutputStream. slash)] (.write o (byte-array [90]))) (with-open [i (java.io.FileInputStream. native)] (and (.isAbsolute (java.io.File. native)) (.isAbsolute (java.io.File. slash)) (= 90 (.read i)))) (finally (.delete f)))))" :expected "true"}
   {:suite "ioreader" :expr "(slurp (StringReader. \"a=1\"))" :expected "\"a=1\""}
   {:suite "ioreader" :expr "(slurp (StringReader. \"b\") :encoding \"UTF-8\")" :expected "\"b\""}
   {:suite "ioreader" :expr "(with-open [r (StringReader. \"a\")] (.read r))" :expected "97"}

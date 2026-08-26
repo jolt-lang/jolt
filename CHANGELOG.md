@@ -543,6 +543,21 @@ call. Memoizing the probe by `(zone, instant)` undoes it: a repeated
 
 ### Fixed
 
+- **Maven dependencies resolve into absolute Windows cache paths.** Filesystem
+  shims now preserve drive, root-relative, UNC, and device paths instead of
+  prefixing them with Jolt's launch directory, and accept both `/` and `\` as
+  Windows separators. The native HTTPS transport also discovers the OpenSSL 3
+  DLLs bundled with standard Git for Windows installs while keeping
+  `JOLT_OPENSSL_LIBDIR` as the explicit override. Fresh Windows installs can
+  therefore download Maven and Clojars dependencies without relocating the
+  cache or manually extending `PATH`.
+
+- **Dependency roots preserve absolute Windows paths.** `:local/root` and cache
+  paths with drive, UNC, device, or root-relative spellings are no longer
+  prefixed with Jolt's launch directory, and both `/` and `\` are accepted as
+  Windows separators. Ambiguous drive-relative paths such as `C:project` now
+  fail with a targeted error that asks for a drive-absolute path.
+
 - **`jolt.ffi` `:string` carries NULL in both directions.** Chez's `string`
   foreign type already spells NULL as `#f`, but jolt's own nil is a separate
   sentinel, so the boundary leaked Scheme: passing `nil` to a `:string`

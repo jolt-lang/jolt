@@ -14,7 +14,12 @@ fails=0
 check_pom () {
   label="$1"; url="$2"; tmp="${TMPDIR:-/tmp}/jolt-http-$$"
   rm -f "$tmp"
-  got="$($JOLTC -e "(require '[jolt.mvn-http]) (if (jolt.mvn-http/fetch \"$url\" \"$tmp\") :ok :fail)" 2>&1 | tail -1)"
+  got="$(JOLT_HTTPS_FETCH_URL="$url" JOLT_HTTPS_FETCH_TMP="$tmp" \
+    $JOLTC -e '(require (quote [jolt.mvn-http]))
+                (if (jolt.mvn-http/fetch
+                     (System/getenv "JOLT_HTTPS_FETCH_URL")
+                     (System/getenv "JOLT_HTTPS_FETCH_TMP"))
+                  :ok :fail)' 2>&1 | tail -1)"
   if [ "$got" != ":ok" ]; then
     echo "https-fetch: FAIL $label — fetch returned $got"
     fails=$((fails + 1)); rm -f "$tmp"; return

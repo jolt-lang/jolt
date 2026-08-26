@@ -7,8 +7,8 @@
   macOS / bare sonames elsewhere). fetch returns true on a 2xx, false on any failure,
   so jolt.deps falls through to the next repo. HTTPS only; the server
   certificate is verified (default verify paths + VERIFY_PEER + hostname check).
-  macOS and Linux are validated; the Windows path (ws2_32 + WSAStartup +
-  closesocket) is implemented but not yet tested on a Windows host."
+  On Windows the transport uses ws2_32 + WSAStartup + closesocket and also
+  discovers the OpenSSL DLLs bundled with a standard Git for Windows install."
   (:require [jolt.ffi :as ffi]
             [clojure.string :as str]))
 
@@ -55,10 +55,28 @@
 ;; the built-in paths (Nix, MacPorts, Guix, a nonstandard Homebrew prefix).
 ;; The macOS hazard above does not apply to it: the entries are absolute
 ;; paths into the named directory, never the bare Apple-shadowed sonames.
-(defn- lib-candidates [libdir names fallbacks]
-  (if (and libdir (not (str/blank? libdir)))
-    (into (mapv #(str libdir "/" %) names) fallbacks)
-    fallbacks))
+(defn- windows-openssl-libdirs-for [program-files program-w6432 local-app-data]
+  (->> [[program-files "Git/mingw64/bin"]
+        [program-w6432 "Git/mingw64/bin"]
+        [local-app-data "Programs/Git/mingw64/bin"]]
+       (keep (fn [[root suffix]]
+               (when (and root (not (str/blank? root)))
+                 (str root "/" suffix))))
+       distinct
+       vec))
+
+(defn- runtime-openssl-libdirs [explicit]
+  (cond-> (if (and explicit (not (str/blank? explicit))) [explicit] [])
+    windows? (into (windows-openssl-libdirs-for
+                    (System/getenv "ProgramFiles")
+                    (System/getenv "ProgramW6432")
+                    (System/getenv "LOCALAPPDATA")))))
+
+(defn- lib-candidates [libdirs names fallbacks]
+  (into (vec (mapcat (fn [libdir]
+                       (map #(str libdir "/" %) names))
+                     libdirs))
+        fallbacks))
 
 (def ^:private native-ready? (volatile! false))
 
@@ -73,7 +91,6 @@
 
 ;; Windows sockets live in ws2_32.dll and need WSAStartup(2.2) once before any
 ;; socket call; POSIX sockets are process symbols, so this is a no-op there.
-;; UNTESTED on Windows — no Windows machine was available to validate against.
 (ffi/defcfn c-WSAStartup "WSAStartup" [:int :pointer] :int)       ; Windows Winsock init
 
 (defn- init-sockets! []
@@ -91,10 +108,11 @@
   Returns true once ready; a later fetch retries."
   []
   (or @native-ready?
-      (let [libdir (System/getenv "JOLT_OPENSSL_LIBDIR")]
+      (let [libdirs (runtime-openssl-libdirs
+                     (System/getenv "JOLT_OPENSSL_LIBDIR"))]
         (when (and (init-sockets!)
-                   (try-candidates (lib-candidates libdir crypto-names crypto-candidates))
-                   (try-candidates (lib-candidates libdir ssl-names ssl-candidates)))
+                   (try-candidates (lib-candidates libdirs crypto-names crypto-candidates))
+                   (try-candidates (lib-candidates libdirs ssl-names ssl-candidates)))
           (vreset! native-ready? true)
           true))))
 

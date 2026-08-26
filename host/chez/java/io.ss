@@ -201,8 +201,45 @@
 ;; the launcher cd'd to the jolt repo root — matching the JVM, where io/file is
 ;; cwd-relative. (io/resource builds jfiles from the source roots directly, so it
 ;; isn't routed through here.)
+(define (native-path-separator? c)
+  (or (char=? c #\/) (and (eq? (sa-os-family) 'windows) (char=? c #\\))))
+
+(define (ascii-alpha-char? c)
+  (or (and (char>=? c #\A) (char<=? c #\Z))
+      (and (char>=? c #\a) (char<=? c #\z))))
+
+;; Windows has three rooted spellings that must never be prefixed with
+;; user.dir: a drive path (C:/x or C:\x), a root-relative path (/x or \x), and
+;; a UNC/device path (//server/share or \\?\C:\x). A drive-relative path such as
+;; C:x is not absolute, but the OS owns its per-drive resolution; prefixing it
+;; with another drive's user.dir changes its meaning, so preserve it too.
+(define (native-path-rooted? p)
+  (let ((n (string-length p)))
+    (and (> n 0)
+         (if (eq? (sa-os-family) 'windows)
+             (or (native-path-separator? (string-ref p 0))
+                 (and (>= n 2)
+                      (ascii-alpha-char? (string-ref p 0))
+                      (char=? (string-ref p 1) #\:)))
+             (char=? (string-ref p 0) #\/)))))
+
+;; java.io.File.isAbsolute is stricter than rooted path preservation on
+;; Windows: C:x and a single leading separator still depend on drive state.
+(define (native-path-absolute? p)
+  (let ((n (string-length p)))
+    (and (> n 0)
+         (if (eq? (sa-os-family) 'windows)
+             (or (and (>= n 3)
+                      (ascii-alpha-char? (string-ref p 0))
+                      (char=? (string-ref p 1) #\:)
+                      (native-path-separator? (string-ref p 2)))
+                 (and (>= n 2)
+                      (native-path-separator? (string-ref p 0))
+                      (native-path-separator? (string-ref p 1))))
+             (char=? (string-ref p 0) #\/)))))
+
 (define (project-relative p)
-  (if (or (= (string-length p) 0) (char=? (string-ref p 0) #\/))
+  (if (or (= (string-length p) 0) (native-path-rooted? p))
       p
       (let ((base (jolt-user-dir)))
         ;; "." adds nothing the OS won't do itself when it resolves a relative
@@ -573,7 +610,7 @@
       ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
-      ((string=? name "isAbsolute")     (list (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) #t #f)))
+      ((string=? name "isAbsolute")     (list (if (native-path-absolute? p) #t #f)))
       ;; listFiles builds each child from the path AS GIVEN (new File(this, name)
       ;; on the JVM), so a File made from a relative path lists relative children.
       ((string=? name "listFiles")      (list (list->cseq (map make-jfile (jolt-list-dir p)))))
