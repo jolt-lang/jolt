@@ -13,8 +13,28 @@
 ;; natives-meta.ss / records.ss / printing.ss (jolt-type / instance-check /
 ;; jolt-str-render-one, which it extends).
 
-(define-record-type jfile (fields path) (nongenerative jolt-jfile-v1))
+(define-record-type (jfile %make-jfile jfile?) (fields path) (nongenerative jolt-jfile-v1))
 (define (jolt-file? x) (jfile? x))
+
+;; java.io.FileSystem#normalize (Unix), which every JVM File constructor runs
+;; its path through: a run of separators collapses to one, and one trailing
+;; separator drops — except on the root "/" alone. "." and ".." are NOT
+;; resolved, and a relative path stays relative. Routing it through the record
+;; constructor makes "a File's path is always normalized" an invariant here
+;; too: no creation site below can store a verbatim path, same as the JVM.
+(define (jolt-normalize-path p)
+  (let ((n (string-length p)))
+    (let ((buf (make-string n)))
+      (let collapse ((i 0) (j 0))
+        (if (= i n)
+            (let ((j (if (and (> j 1) (char=? (string-ref buf (- j 1)) #\/)) (- j 1) j)))
+              (if (= j n) p (substring buf 0 j)))
+            (let ((c (string-ref p i)))
+              (if (and (char=? c #\/) (> j 0) (char=? (string-ref buf (- j 1)) #\/))
+                  (collapse (+ i 1) j)
+                  (begin (string-set! buf j c) (collapse (+ i 1) (+ j 1))))))))))
+
+(define (make-jfile p) (%make-jfile (jolt-normalize-path p)))
 
 ;; path string of any value: a jfile -> its path, else its str rendering.
 (define (file-path-of x) (if (jfile? x) (jfile-path x) (jolt-str-render-one x)))
@@ -209,17 +229,19 @@
         ;; path — leave it alone rather than prefixing "./".
         (if (string=? base ".") p (string-append base "/" p)))))
 
-;; (io/file path) / (io/file parent child) — join children with "/". The File
-;; keeps the path AS GIVEN (like the JVM: new File("rel").getPath() is "rel");
-;; a relative path resolves against JOLT_PWD only when the filesystem is touched
-;; (jfile-fs / slurp / spit / the stream constructors).
+;; (io/file path) / (io/file parent child) — join children with "/". Like the
+;; JVM, the stored path is normalized (duplicate separators collapse, a
+;; trailing one drops — the record constructor does it) but NOT made absolute:
+;; new File("rel").getPath() is "rel", and a relative path resolves against
+;; JOLT_PWD only when the filesystem is touched (jfile-fs / slurp / spit /
+;; the stream constructors).
 (define (jolt-make-file path . rest)
   (let loop ((p (file-path-of path)) (cs rest))
     (if (null? cs)
         ;; (io/file url) strips the scheme — File of url.toURI on the JVM; only a
         ;; file: url names a path. url-file-coercion is defined below; call-time ref.
         (if (and (null? rest) (jhost? path) (string=? (jhost-tag path) "url")) (url-file-coercion path) (make-jfile p))
-        (loop (string-append p "/" (file-path-of (car cs))) (cdr cs)))))
+        (loop (jolt-file-join p (car cs)) (cdr cs)))))
 ;; the on-disk path of a value: a relative path resolves against JOLT_PWD.
 (define (jfile-fs f) (project-relative (file-path-of f)))
 
@@ -235,8 +257,9 @@
 ;; Resolving the base to an absolute path first made every child absolute, so a
 ;; caller that relativized the results against the directory it passed in (a
 ;; classpath scanner turning files into namespace names) got ../../-prefixed
-;; garbage. A trailing slash is dropped the way the File constructor normalizes
-;; it away.
+;; garbage. A trailing separator is trimmed inline so children join with
+;; exactly one separator (the File constructor would normalize it away too —
+;; but this also takes raw strings, which are stored as given).
 (define (jolt-list-dir path)
   (let* ((given (file-path-of path))
          (p (project-relative given))
@@ -1107,7 +1130,26 @@
     (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as a Writer.")))))
 
 ;; --- clojure.java.io ns -----------------------------------------------------
-(def-var! "clojure.java.io" "file" jolt-make-file)
+;; io/file is Clojure's, not the bare ctor: the single-arg form is as-file
+;; (jolt-make-file keeps the url coercion here); every multi-arg step is
+;; (File. (as-file parent) (as-relative-path child)), so a child must be
+;; RELATIVE — IllegalArgumentException, exactly the JVM message — rather than
+;; quietly joined the way (File. "/a/b" "/c") does. Checked against Clojure
+;; 1.12 io.clj.
+(define (jolt-as-relative-path x)
+  (let ((p (jfile-path (make-jfile (file-path-of x)))))
+    (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
+        (throw-jvm 'IllegalArgumentException (string-append p " is not a relative path"))
+        p)))
+(def-var! "clojure.java.io" "as-relative-path" jolt-as-relative-path)
+(define (jolt-io-file a . rest)
+  (if (null? rest)
+      (jolt-make-file a)
+      (let loop ((f (jolt-make-file (jolt-file-join a (jolt-as-relative-path (car rest)))))
+                 (more (cdr rest)))
+        (if (null? more) f
+            (loop (jolt-make-file (jolt-file-join f (jolt-as-relative-path (car more)))) (cdr more))))))
+(def-var! "clojure.java.io" "file" jolt-io-file)
 ;; io/as-file of a file: URL yields the file it points at (JVM: new
 ;; File(url.toURI())); a URL with any other protocol has no filesystem path —
 ;; IllegalArgumentException, as the JVM's File(URI) throws.
@@ -1426,29 +1468,28 @@
   (register-class-statics! "java.lang.Thread" statics))
 
 ;; --- java.io.File / java.util.UUID constructors -----------------------------
-;; (java.io.File. parent child) joins with exactly ONE separator: File(parent,
-;; child) normalizes, so a parent that already ends in "/" does not produce a
-;; doubled slash (ring's resource middleware builds "assets/" + "index.html").
-;; A child that starts with a separator is joined the same way, and an empty
-;; child yields the parent's path alone -- all four checked against the JVM.
+;; (java.io.File. parent child) is resolve(normalize(parent), normalize(child))
+;; — UnixFileSystem.resolve: an empty child yields the parent alone; a child
+;; that starts with a separator is appended with its slash as the join seam
+;; (File("/a/b" "/c") is "/a/b/c"); the root parent takes the child without a
+;; second separator; otherwise exactly one separator between them (ring's
+;; resource middleware builds "assets/" + "index.html"). All cases checked
+;; against the JVM.
 (define (jolt-file-join parent child)
-  (let* ((p (file-path-of parent))
-         (c (file-path-of child))
-         (p (if (and (> (string-length p) 1)
-                     (char=? (string-ref p (- (string-length p) 1)) #\/))
-                (substring p 0 (- (string-length p) 1))
-                p))
-         (c (let strip ((i 0))
-              (cond ((= i (string-length c)) c)
-                    ((char=? (string-ref c i) #\/) (strip (+ i 1)))
-                    (else (substring c i (string-length c)))))))
+  (let* ((p (jolt-normalize-path (file-path-of parent)))
+         (c (jolt-normalize-path (file-path-of child))))
     (cond ((string=? c "") p)
-          ((string=? p "/") (string-append "/" c))
+          ((char=? (string-ref c 0) #\/)
+           (if (string=? p "/") c (string-append p c)))
+          ((string=? p "/") (string-append p c))
           (else (string-append p "/" c)))))
+;; File(parent, child) stores resolve()'s output as-is — a separator-only
+;; child ("//") yields "/parent/" — so build the record directly from the join
+;; instead of re-normalizing it through jolt-make-file.
 (register-class-ctor! "File"
   (lambda (a . rest)
     (if (pair? rest)
-        (jolt-make-file (jolt-file-join a (car rest)))
+        (%make-jfile (jolt-file-join a (car rest)))
         (jolt-make-file a))))
 ;; File statics: the platform separators plus createTempFile / listRoots.
 (define temp-file-counter 0)
@@ -1467,8 +1508,10 @@
               (set! temp-file-counter (+ temp-file-counter 1))
               temp-file-counter)))
     (let loop ((n n))
-      (let ((p (string-append d "/" (jolt-str-render-one prefix)
-                              (number->string (now-millis)) "-" (number->string n) sfx)))
+      (let ((p (jolt-file-join d (string-append (jolt-str-render-one prefix)
+                              (number->string (now-millis)) "-" (number->string n) sfx))))
+        ;; the JVM builds new File(dir, name), so the join normalizes — $TMPDIR
+        ;; ends in a separator on macOS and must not yield a doubled one
         (if (file-exists? p) (loop (+ n 1))
             (begin (close-port (open-output-file p 'truncate)) (make-jfile p))))))))
 (let ((statics (list (cons "separator" "/")
@@ -1482,7 +1525,7 @@
 (register-class-ctor! "java.io.File"
   (lambda (a . rest)
     (if (pair? rest)
-        (jolt-make-file (jolt-file-join a (car rest)))
+        (%make-jfile (jolt-file-join a (car rest)))
         (jolt-make-file a))))
 ;; java.nio.charset.StandardCharsets: the constants ARE the charset names —
 ;; every jolt charset seam (.getBytes, String ctors, InputStreamReader) takes

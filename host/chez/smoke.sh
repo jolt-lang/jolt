@@ -998,6 +998,19 @@ else
   fails=$((fails + 1))
 fi
 
+# java.io.File / clojure.java.io/file path normalization — the JVM constructor
+# collapses duplicate separators and drops one trailing one; io/file adds
+# Clojure's as-relative-path contract on the multi-arg forms (#793). Self-checks,
+# one marker.
+norm_out="$($jolt run test/chez/file-normalize-test.clj 2>&1)"
+if printf '%s' "$norm_out" | grep -q 'FILE-NORMALIZE OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: File path normalization"
+  printf '%s\n' "$norm_out" | tail -8 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # java.net autoloads jolt.socket, in a FRESH process with no require: a program
 # reaching for InetAddress or NetworkInterface should not have to know which
 # namespace installs them, any more than it does on the JVM. Each of these is a

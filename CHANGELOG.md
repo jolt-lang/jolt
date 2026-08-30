@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+`java.io.File` normalizes its path the way the JVM constructor does: runs of
+separators collapse and one trailing separator drops (the root `/` alone keeps
+its), while `.` and `..` are still left alone (#793). The normalization lives
+in the jfile record constructor, so every File creation site — including
+`getParentFile`, `listFiles` children, `io/as-file`, and `File/createTempFile`,
+whose temp paths no longer carry a doubled separator when `$TMPDIR` ends in `/`
+— answers normalized paths. The two-arg constructor now implements
+`UnixFileSystem.resolve` over normalized inputs, and `clojure.java.io/file`'s
+multi-arg forms gained Clojure's `as-relative-path` contract (registered as
+`io/as-relative-path` too): an absolute child throws
+IllegalArgumentException (`… is not a relative path`) instead of quietly
+joining, matching the JVM. `io/make-parents` follows `io/file` semantics for
+the same reason.
+
 The build keeps one toolchain end to end now. When make provisions the pinned
 Chez + xPack GCC, the standalone-binary link runs through that same provisioned
 GCC — `JOLT_CC`, honored by `build.ss`'s `bld-cc` — instead of a bare `cc`,

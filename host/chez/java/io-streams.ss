@@ -867,7 +867,9 @@
             ((char=? (string-ref p i) #\/) (mkdirs! (substring p 0 i)))
             (else (loop (- i 1)))))))
 (define (apply-make-file-path args)
-  (jfile-path (apply jolt-make-file args)))
+  ;; the JVM's make-parents is (.mkdirs (as-file (apply file f more))) — io/file
+  ;; semantics, not the bare ctor, so an absolute child throws here too
+  (jfile-path (apply jolt-io-file args)))
 (def-var! "clojure.java.io" "make-parents" jio-make-parents)
 
 ;; io/delete-file: delete the file; raise unless :silently truthy.
