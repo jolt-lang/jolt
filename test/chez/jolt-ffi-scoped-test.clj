@@ -11,10 +11,10 @@
 (def layout (ffi/layout [:struct [[:value :int32] [:tag :uint8]]]))
 
 (check "with-alloc returns body value"
-       (= :answer (ffi/with-alloc [p 8] (ffi/write p :uint64 0 42) :answer)))
+       (= :answer (ffi/with-alloc [p 8] (ffi/write p :uint64 42) :answer)))
 (check "with-out sizes a scalar"
        (= -32768 (ffi/with-out [p :int16]
-                    (ffi/write p :int16 0 -32768)
+                    (ffi/write p :int16 -32768)
                     (ffi/read p :int16))))
 (check "with-layout sizes a layout"
        (= [123 250]

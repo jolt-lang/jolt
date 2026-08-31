@@ -43,7 +43,7 @@
 (ok "mem int roundtrip"
     (= 4242 (jnum->exact
               (ev "(let [p (jolt.ffi/alloc (jolt.ffi/sizeof :int))]
-                     (jolt.ffi/write p :int 0 4242)
+                     (jolt.ffi/write p :int 4242 0)
                      (let [v (jolt.ffi/read p :int)] (jolt.ffi/free p) v))"))))
 (ok "sizeof :pointer is a word" (let ((n (jnum->exact (ev "(jolt.ffi/sizeof :pointer)")))) (or (= n 8) (= n 4))))
 
@@ -85,7 +85,7 @@
     (jolt-truthy?
       (ev "(let [n 5 w (jolt.ffi/sizeof :int) p (jolt.ffi/alloc (* n w))]
              (doseq [[i v] (map vector (range n) [3 1 4 1 5])]
-               (jolt.ffi/write p :int (* i w) v))
+               (jolt.ffi/write p :int v (* i w)))
              (c-qsort p n w cmp)
              (let [out (mapv (fn [i] (jolt.ffi/read p :int (* i w))) (range n))]
                (jolt.ffi/free p)
@@ -131,6 +131,24 @@
     (rejects? "(jolt.ffi/__cfn \"fcntl\" [:int :int :varargs] :int)"))
 (ok ":varargs with :blocking rejects"
     (rejects? "(jolt.ffi/__cfn \"recv\" [:int :varargs :int] :int :blocking)"))
+
+;; :& is babashka.ffi's spelling of the same marker, so a signature written for
+;; either FFI declares the same variadic call — and every rule above holds under
+;; it, since it IS the same code path.
+(ev "(def c-fcntl-amp (jolt.ffi/__cfn \"fcntl\" [:int :int :& :int] :int))")
+(ok ":& is the same marker as :varargs"
+    (jolt-truthy?
+      (ev "(let [fd (c-socket 2 1 0)] (c-fcntl-amp fd f-setfl o-nonblock) (let [after (c-fcntl fd f-getfl 0)] (c-close fd) (pos? (bit-and after o-nonblock))))")))
+(ok ":& first rejects"
+    (rejects? "(jolt.ffi/__cfn \"fcntl\" [:& :int] :int)"))
+(ok ":& with :blocking rejects"
+    (rejects? "(jolt.ffi/__cfn \"recv\" [:int :& :int] :int :blocking)"))
+;; The bare marker is babashka.ffi's per-call tail inference, which a compiled
+;; foreign-procedure cannot have — the tail is part of the binding. The MESSAGE
+;; it rejects with is checked from the jolt side, in jolt-ffi-arena-test.clj,
+;; where ex-message can read it.
+(ok ":& last rejects — no per-call tail inference"
+    (rejects? "(jolt.ffi/__cfn \"open\" [:string :int :&] :int)"))
 
 ;; The EMITTED code for a :blocking binding carries __collect_safe on BOTH
 ;; resolution branches — the global-name fallback AND the scoped dlsym-address

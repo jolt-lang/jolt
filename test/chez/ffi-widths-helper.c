@@ -1,5 +1,7 @@
 /* Exact-width native argument, result, and callback witnesses for jolt.ffi. */
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef _WIN32
 #define JOLT_WIDTHS_EXPORT __declspec(dllexport)
@@ -39,4 +41,19 @@ JOLT_WIDTHS_EXPORT int64_t jolt_w_call_i32(jolt_w_i32_callback callback) {
 }
 JOLT_WIDTHS_EXPORT uint64_t jolt_w_call_u32(jolt_w_u32_callback callback) {
   return callback(UINT32_MAX);
+}
+
+/* :bool is a ONE-BYTE C boolean, so these are declared with stdbool's `bool`
+   (C99 _Bool) and not with int. A binding that used an int-sized carrier passes
+   the argument case by luck and fails the RETURN case, where the three bytes
+   above the result are whatever the callee left there. */
+JOLT_WIDTHS_EXPORT size_t jolt_w_sizeof_bool(void) { return sizeof(bool); }
+JOLT_WIDTHS_EXPORT int64_t jolt_w_widen_bool(bool value) { return value ? 42 : -42; }
+JOLT_WIDTHS_EXPORT bool jolt_w_return_bool_true(void) { return true; }
+JOLT_WIDTHS_EXPORT bool jolt_w_return_bool_false(void) { return false; }
+
+typedef bool (*jolt_w_bool_callback)(bool);
+/* 10 * f(true) + f(false), so one number reports both directions. */
+JOLT_WIDTHS_EXPORT int64_t jolt_w_call_bool(jolt_w_bool_callback callback) {
+  return (callback(true) ? 10 : 0) + (callback(false) ? 1 : 0);
 }

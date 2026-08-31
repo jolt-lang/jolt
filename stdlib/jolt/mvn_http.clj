@@ -125,13 +125,13 @@
 (defn- set-timeouts! [fd ms]
   (if windows?
     (let [buf (ffi/alloc 4)]
-      (ffi/write buf :int 0 ms)
+      (ffi/write buf :int ms)
       (c-setsockopt fd sol-socket so-rcvtimeo buf 4)
       (c-setsockopt fd sol-socket so-sndtimeo buf 4)
       (ffi/free buf))
     (let [tv (ffi/alloc 16)]
-      (ffi/write tv :long 0 (quot ms 1000))
-      (ffi/write tv :long 8 (* (rem ms 1000) 1000))
+      (ffi/write tv :long (quot ms 1000))
+      (ffi/write tv :long (* (rem ms 1000) 1000) 8)
       (c-setsockopt fd sol-socket so-rcvtimeo tv 16)
       (c-setsockopt fd sol-socket so-sndtimeo tv 16)
       (ffi/free tv))))
@@ -152,10 +152,10 @@
         service (ffi/string->ptr (str port))
         respp (ffi/alloc (ffi/sizeof :pointer))
         hints (ffi/alloc 48)]
-    (dotimes [i 48] (ffi/write hints :uint8 i 0))
     ;; SOCK_STREAM in ai_socktype, else getaddrinfo also returns UDP entries
-    ;; and connect() on a datagram socket spuriously "succeeds".
-    (ffi/write hints :int O-ai-socktype 1)
+    ;; and connect() on a datagram socket spuriously "succeeds". Every other
+    ;; field of the hints must be 0, which ffi/alloc already made them.
+    (ffi/write hints :int 1 O-ai-socktype)
     (try
       (let [rc (c-getaddrinfo node service hints respp)]
         (when-not (zero? rc)

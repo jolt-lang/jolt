@@ -1205,7 +1205,12 @@
    "int64" "integer-64" "uint64" "unsigned-64" "size_t" "size_t" "ssize_t" "ssize_t"
    "iptr" "iptr" "uptr" "uptr" "double" "double" "float" "float"
    "pointer" "void*" "void*" "void*" "string" "string" "void" "void"
-   "uint8" "unsigned-8" "u8" "unsigned-8" "byte" "unsigned-8" "char" "char"})
+   "uint8" "unsigned-8" "u8" "unsigned-8" "byte" "unsigned-8" "char" "char"
+   ;; :bool is a ONE-BYTE C boolean (C99 _Bool / stdbool.h), so it travels as
+   ;; unsigned-8 and the value is converted at the boundary — Chez's own
+   ;; `boolean` foreign type is int-sized, which is the wrong width for _Bool
+   ;; and would read three bytes of whatever sat next to it on a return.
+   "bool" "unsigned-8"})
 (defn- ffi-type->chez [t]
   (or (ffi-types t) (throw (ex-info (str "jolt.ffi: unknown foreign type :" t) {}))))
 
@@ -1306,8 +1311,8 @@
                (:fields type)))
          "))")
     (= :array (:ffi-kind type))
-    (str "(jolt-vector (keyword #f \"array\") " (:count type) " "
-         (emit-layout-descriptor (:type type)) ")")
+    (str "(jolt-vector (keyword #f \"array\") "
+         (emit-layout-descriptor (:type type)) " " (:count type) ")")
     :else
     (throw (ex-info "jolt.ffi: invalid analyzed layout type" {:type type}))))
 
@@ -1390,22 +1395,37 @@
   ;; arguments travel where the callee's va_list reads them — Apple arm64
   ;; passes variadic args on the stack, and a fixed-arity binding silently
   ;; corrupts them (fcntl, ioctl, open). C requires a named parameter before
-  ;; the ellipsis, and a trailing marker would declare nothing variadic, so
-  ;; both malformed shapes are rejected. Only supported on the non-blocking
-  ;; path: __collect_safe cannot combine with a varargs convention.
+  ;; the ellipsis, so a leading marker is rejected. Only supported on the
+  ;; non-blocking path: __collect_safe cannot combine with a varargs convention.
+  ;;
+  ;; :& is babashka.ffi's spelling of the same marker and means the same thing
+  ;; here, so a signature written for either FFI declares the same call. The one
+  ;; half of that convention jolt does not have is the BARE marker — babashka's
+  ;; [:string :int :&], where each call infers its own tail from the values —
+  ;; because a foreign-procedure's types are fixed when it is compiled, and there
+  ;; is nothing to compile a new one from at the call. That shape is rejected by
+  ;; name rather than through "unknown foreign type", see below.
   (let [at (:argtypes node)
-        vi (first (keep-indexed (fn [i type] (when (= type "varargs") i)) at))
+        varargs-marker? (fn [type] (or (= type "varargs") (= type "&")))
+        vi (first (keep-indexed (fn [i type] (when (varargs-marker? type) i)) at))
+        marker (when vi (str ":" (nth at vi)))
         ret-aggregate? (ffi-by-value? (:rettype node))]
     (when (and vi (zero? vi))
-      (throw (ex-info "jolt.ffi: :varargs needs at least one fixed argtype before it"
+      (throw (ex-info (str "jolt.ffi: " marker " needs at least one fixed argtype before it")
                       {:argtypes at})))
     (when (and vi (= vi (dec (count at))))
-      (throw (ex-info "jolt.ffi: :varargs marks the boundary — the variadic argtypes follow it"
+      (throw (ex-info (str "jolt.ffi: " marker
+                           " marks the boundary — declare the variadic argtypes after it."
+                           " jolt has no per-call tail inference (babashka.ffi's bare :&):"
+                           " a foreign-procedure's types are fixed when it is compiled, so the"
+                           " tail a binding passes is part of the binding. Bind one signature"
+                           " per tail shape.")
                       {:argtypes at})))
     (when (and vi (:blocking node))
-      (throw (ex-info "jolt.ffi: :varargs cannot combine with :blocking" {:argtypes at})))
+      (throw (ex-info (str "jolt.ffi: " marker " cannot combine with :blocking")
+                      {:argtypes at})))
     (when (and vi ret-aggregate?)
-      (throw (ex-info "jolt.ffi: aggregate returns cannot combine with :varargs"
+      (throw (ex-info (str "jolt.ffi: aggregate returns cannot combine with " marker)
                       {:argtypes at})))
     (when (and vi (some ffi-by-value? (subvec at (inc vi))))
       (throw (ex-info "jolt.ffi: aggregate variadic arguments are not supported"
@@ -1456,6 +1476,11 @@
 
                     (= "string" (nth types i))
                     (str "(jolt-ffi-string->c " param ")")
+
+                    ;; :bool is one byte on the wire; jolt truthiness decides it,
+                    ;; so nil and false send 0 and everything else sends 1.
+                    (= "bool" (nth types i))
+                    (str "(jolt-ffi-bool->c " param ")")
 
                     :else param))
                 (range n) params)
@@ -1508,13 +1533,15 @@
                  (str "(call-with-values (lambda () " call ")"
                       " (lambda (result native-error)"
                       " (jolt-vector "
-                      (if (= "string" (:rettype node))
-                        "(jolt-ffi-c->string result)"
-                        "result")
+                      (cond
+                        (= "string" (:rettype node)) "(jolt-ffi-c->string result)"
+                        (= "bool" (:rettype node)) "(jolt-ffi-c->bool result)"
+                        :else "result")
                       " native-error)))")
 
                  ret-aggregate? (str "(begin " call " " return-param ")")
                  (= "string" (:rettype node)) (str "(jolt-ffi-c->string " call ")")
+                 (= "bool" (:rettype node)) (str "(jolt-ffi-c->bool " call ")")
                  :else call)
           binding (str "(let ((p #f)) (lambda (" (str/join " " wrapper-params) ") " body "))")]
       (if (or (seq aggregates) ret-aggregate?)
@@ -1552,9 +1579,10 @@
 (defn- emit-ffi-callable [node]
   (let [argtypes (:argtypes node)
         rettype (:rettype node)
-        string-position? (or (= "string" rettype) (some #(= "string" %) argtypes))
+        converted? #{"string" "bool"}
+        converted-position? (or (converted? rettype) (some converted? argtypes))
         target
-        (if-not string-position?
+        (if-not converted-position?
           (emit (:fn node))
           ;; The fn is bound to a fresh name rather than inlined into the lambda
           ;; body so it is evaluated once, at callable-construction time, not on
@@ -1562,12 +1590,18 @@
           (let [fname (fresh-label "jolt_ffi_cb")
                 params (mapv (fn [i] (str "a" i)) (range (count argtypes)))
                 args (mapv (fn [param type]
-                             (if (= "string" type) (str "(jolt-ffi-c->string " param ")") param))
+                             (cond
+                               (= "string" type) (str "(jolt-ffi-c->string " param ")")
+                               (= "bool" type) (str "(jolt-ffi-c->bool " param ")")
+                               :else param))
                            params argtypes)
                 invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]
             (str "(let ((" fname " " (emit (:fn node)) ")) "
                  "(lambda (" (str/join " " params) ") "
-                 (if (= "string" rettype) (str "(jolt-ffi-string->c " invoke ")") invoke)
+                 (cond
+                   (= "string" rettype) (str "(jolt-ffi-string->c " invoke ")")
+                   (= "bool" rettype) (str "(jolt-ffi-bool->c " invoke ")")
+                   :else invoke)
                  "))")))]
     (str "(jolt-ffi-register-callable! ("
          (if (:collect-safe node) "sa-foreign-callable-collect-safe " "sa-foreign-callable ")

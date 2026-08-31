@@ -10,10 +10,10 @@
   (ffi/layout [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]))
 (def packet-layout
   (ffi/layout [:struct [[:tag :uint8]
-                        [:params [:array 4 :uint32]]
-                        [:dates [:array 2 [:struct [[:year :int32]
+                        [:params [:array :uint32 4]]
+                        [:dates [:array [:struct [[:year :int32]
                                                     [:month :uint8]
-                                                    [:day :uint8]]]]]]]))
+                                                    [:day :uint8]]] 2]]]]))
 
 ;; The public macros require literal signature data, so keep the descriptor
 ;; inline rather than referring to date-layout in these declarations. Define
@@ -36,20 +36,20 @@
 (def packet-score
   (ffi/foreign-fn "jolt_agg_packet_score"
                   [[:by-value [:struct [[:tag :uint8]
-                                        [:params [:array 4 :uint32]]
-                                        [:dates [:array 2 [:struct [[:year :int32]
+                                        [:params [:array :uint32 4]]
+                                        [:dates [:array [:struct [[:year :int32]
                                                                     [:month :uint8]
-                                                                    [:day :uint8]]]]]]]]]
+                                                                    [:day :uint8]]] 2]]]]]]
                   :int64))
 (def make-packet
   (ffi/foreign-fn "jolt_agg_make_packet"
                   [:uint8 :uint32
                    [:by-value [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]]]
                   [:by-value [:struct [[:tag :uint8]
-                                       [:params [:array 4 :uint32]]
-                                       [:dates [:array 2 [:struct [[:year :int32]
+                                       [:params [:array :uint32 4]]
+                                       [:dates [:array [:struct [[:year :int32]
                                                                    [:month :uint8]
-                                                                   [:day :uint8]]]]]]]]))
+                                                                   [:day :uint8]]] 2]]]]]))
 
 (ffi/load-library helper)
 

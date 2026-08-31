@@ -20,7 +20,7 @@
 (ev "(def flat (jolt.ffi/__layout [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]))")
 (ev "(def padded (jolt.ffi/__layout [:struct [[:tag :uint8] [:value :double] [:tail :uint16]]]))")
 (ev "(def nested (jolt.ffi/__layout [:struct [[:tag :uint8] [:date [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]] [:tail :uint16]]]))")
-(ev "(def arrays (jolt.ffi/__layout [:struct [[:tag :uint8] [:params [:array 4 :float]] [:name [:array 5 :char]] [:dates [:array 2 [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]]] [:matrix [:array 2 [:array 3 :uint16]]] [:tail :uint16]]]))")
+(ev "(def arrays (jolt.ffi/__layout [:struct [[:tag :uint8] [:params [:array :float 4]] [:name [:array :char 5]] [:dates [:array [:struct [[:year :int32] [:month :uint8] [:day :uint8]]] 2]] [:matrix [:array [:array :uint16 3] 2]] [:tail :uint16]]]))")
 
 (for-each
  (lambda (row) (ok (car row) (= (c (cadr row)) (n (caddr row)))))
@@ -55,22 +55,22 @@
     (jolt-truthy?
      (ev "(let [p (jolt.ffi/alloc (:size nested))]
             (try
-              (jolt.ffi/write p :int32 (layout-offset nested [:date :year]) -2147483648)
-              (jolt.ffi/write p :uint16 (layout-offset nested [:tail]) 65535)
+              (jolt.ffi/write p :int32 -2147483648 (layout-offset nested [:date :year]))
+              (jolt.ffi/write p :uint16 65535 (layout-offset nested [:tail]))
               (= [-2147483648 65535]
                  [(jolt.ffi/read p :int32 (layout-offset nested [:date :year]))
                   (jolt.ffi/read p :uint16 (layout-offset nested [:tail]))])
               (finally (jolt.ffi/free p))))")))
 (ok "array descriptor retained as data"
     (jolt-truthy?
-     (ev "(= (:descriptor arrays) [:struct [[:tag :uint8] [:params [:array 4 :float]] [:name [:array 5 :char]] [:dates [:array 2 [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]]] [:matrix [:array 2 [:array 3 :uint16]]] [:tail :uint16]]])")))
+     (ev "(= (:descriptor arrays) [:struct [[:tag :uint8] [:params [:array :float 4]] [:name [:array :char 5]] [:dates [:array [:struct [[:year :int32] [:month :uint8] [:day :uint8]]] 2]] [:matrix [:array [:array :uint16 3] 2]] [:tail :uint16]]])")))
 (ok "array element memory roundtrip"
     (jolt-truthy?
      (ev "(let [p (jolt.ffi/alloc (:size arrays))]
             (try
-              (jolt.ffi/write p :float (layout-offset arrays [:params 3]) 3.5)
-              (jolt.ffi/write p :int32 (layout-offset arrays [:dates 1 :year]) -123456789)
-              (jolt.ffi/write p :uint16 (layout-offset arrays [:matrix 1 2]) 65535)
+              (jolt.ffi/write p :float 3.5 (layout-offset arrays [:params 3]))
+              (jolt.ffi/write p :int32 -123456789 (layout-offset arrays [:dates 1 :year]))
+              (jolt.ffi/write p :uint16 65535 (layout-offset arrays [:matrix 1 2]))
               (= [3.5 -123456789 65535]
                  [(jolt.ffi/read p :float (layout-offset arrays [:params 3]))
                   (jolt.ffi/read p :int32 (layout-offset arrays [:dates 1 :year]))
@@ -85,13 +85,13 @@
 ;; which is why each row is guarded: an unrenamed head must report FAIL here,
 ;; not abort the gate before the remaining rows run.
 (define (evb source) (guard (e (#t #f)) (jolt-truthy? (ev source))))
-(ev "(def unshadowed (jolt.ffi/__layout [:struct [[:tag :uint8] [:value :double] [:items [:array 3 :uint16]]]]))")
+(ev "(def unshadowed (jolt.ffi/__layout [:struct [[:tag :uint8] [:value :double] [:items [:array :uint16 3]]]]))")
 (for-each
  (lambda (name)
    (ok (string-append "a local named " name " does not shadow the layout lowering")
        (evb (string-append
              "(let [" name " (fn [& _] :shadowed)]
-                (let [l (jolt.ffi/__layout [:struct [[:tag :uint8] [:value :double] [:items [:array 3 :uint16]]]])]
+                (let [l (jolt.ffi/__layout [:struct [[:tag :uint8] [:value :double] [:items [:array :uint16 3]]]])]
                   (= [(:size unshadowed) (:alignment unshadowed)
                       (get (:jolt.ffi/offsets unshadowed) [:value])
                       (get (:jolt.ffi/array-strides unshadowed) [:items])]
@@ -109,11 +109,16 @@
    ("symbol field rejects" . "(jolt.ffi/__layout [:struct [[x :int]]])")
    ("void rejects" . "(jolt.ffi/__layout [:struct [[:x :void]]])")
    ("string rejects" . "(jolt.ffi/__layout [:struct [[:x :string]]])")
-   ("zero array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array 0 :int]]]])")
-   ("negative array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array -1 :int]]]])")
-   ("fractional array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array 1.5 :int]]]])")
+   ("zero array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array :int 0]]]])")
+   ("negative array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array :int -1]]]])")
+   ("fractional array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array :int 1.5]]]])")
    ("malformed array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array 4]]]])")
-   ("array void rejects" . "(jolt.ffi/__layout [:struct [[:x [:array 4 :void]]]])")
+   ;; The descriptor is [:array element-type count], babashka.ffi's order. The
+   ;; transposed spelling has to REJECT rather than quietly mean something else:
+   ;; a count in the element position is not a type, and a type in the count
+   ;; position is not a positive integer.
+   ("transposed array rejects" . "(jolt.ffi/__layout [:struct [[:x [:array 4 :int]]]])")
+   ("array void rejects" . "(jolt.ffi/__layout [:struct [[:x [:array :void 4]]]])")
    ("nonliteral rejects" . "(let [d [:struct [[:x :int]]]] (jolt.ffi/__layout d))")))
 
 (printf "~a/~a passed~n" (- total fails) total)

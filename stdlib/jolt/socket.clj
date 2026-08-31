@@ -94,16 +94,17 @@
 (defn- make-sockaddr [ip port]
   ;; sockaddr_in (16 bytes): header(2) + sin_port(2, network order) +
   ;; sin_addr(4) + padding(8). BSD's header is sin_len + one-byte sin_family;
-  ;; Linux's is a 16-bit little-endian sin_family.
+  ;; Linux's is a 16-bit little-endian sin_family. ffi/alloc zeroes the block,
+  ;; so every byte this does not set is already 0 — which is what the padding
+  ;; and the unset half of the header have to be.
   (let [sa (ffi/alloc 16)]
-    (dotimes [i 16] (ffi/write sa :uint8 i 0))
     (if macos?
-      (do (ffi/write sa :uint8 0 16)          ;; sin_len
-          (ffi/write sa :uint8 1 AF-INET))
-      (ffi/write sa :uint8 0 AF-INET))
-    (ffi/write sa :uint8 2 (bit-and (bit-shift-right port 8) 0xff))
-    (ffi/write sa :uint8 3 (bit-and port 0xff))
-    (ffi/write sa :uint 4 ip)
+      (do (ffi/write sa :uint8 16)          ;; sin_len
+          (ffi/write sa :uint8 AF-INET 1))
+      (ffi/write sa :uint8 AF-INET))
+    (ffi/write sa :uint8 (bit-and (bit-shift-right port 8) 0xff) 2)
+    (ffi/write sa :uint8 (bit-and port 0xff) 3)
+    (ffi/write sa :uint ip 4)
     sa))
 
 (defn- make-sockaddr-in [host port]
@@ -117,14 +118,14 @@
 (defn- local-port [fd]
   (let [sa (ffi/alloc 16) lenp (ffi/alloc 4)]
     (try
-      (ffi/write lenp :int 0 16)
+      (ffi/write lenp :int 16)
       (if (neg? (c-getsockname fd sa lenp)) 0 (sa-port sa))
       (finally (ffi/free sa) (ffi/free lenp)))))
 
 (defn- set-opt-1! [fd opt]
   (let [p (ffi/alloc 4)]
     (try
-      (ffi/write p :int 0 1)
+      (ffi/write p :int 1)
       (c-setsockopt fd sol-socket opt p 4)
       (finally (ffi/free p)))))
 
@@ -341,7 +342,7 @@
   (let [fd (jolt.host/ref-get self :fd)
         out (ffi/alloc 4)]
     (try
-      (ffi/write out :int 0 0)
+      (ffi/write out :int 0)
       ;; a failed ioctl reads as "nothing there", the way a failed recv reads as
       ;; EOF — errno is not reachable to say more
       (if (neg? (c-ioctl fd fionread out)) 0 (max 0 (ffi/read out :int 0)))
@@ -392,7 +393,7 @@
      ([self b]
       (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc 1)]
         (try
-          (ffi/write buf :uint8 0 (bit-and (int b) 0xff))
+          (ffi/write buf :uint8 (bit-and (int b) 0xff))
           (send-fully! fd buf 1)
           (finally (ffi/free buf)))))
      ([self bytes off len]
@@ -400,7 +401,7 @@
         (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc len)]
           (try
             (dotimes [i len]
-              (ffi/write buf :uint8 i (bit-and (aget bytes (+ off i)) 0xff)))
+              (ffi/write buf :uint8 (bit-and (aget bytes (+ off i)) 0xff) i))
             (send-fully! fd buf len)
             (finally (ffi/free buf)))))))
    "flush" (fn [self] nil)
@@ -441,7 +442,7 @@
        (throw (java.io.IOException. "ServerSocket closed")))
      (let [sa (ffi/alloc 16) lenp (ffi/alloc 4)]
        (try
-         (ffi/write lenp :int 0 16)
+         (ffi/write lenp :int 16)
          (let [cfd (io-call #(c-accept (jolt.host/ref-get self :fd) sa lenp)
                             (jolt.host/ref-get self :fd) :read)]
            (when (neg? cfd) (throw (java.io.IOException. "accept() failed")))
@@ -524,7 +525,7 @@
   []
   (let [pp (ffi/alloc (ffi/sizeof :pointer))]
     (try
-      (ffi/write pp :pointer 0 ffi/null)
+      (ffi/write pp :pointer ffi/null)
       (when (neg? (c-getifaddrs pp))
         (throw (java.io.IOException. "getifaddrs() failed")))
       (let [head (ffi/read pp :pointer)]
@@ -545,7 +546,7 @@
 (defn- local-hostname []
   (let [n 256 buf (ffi/alloc n)]
     (try
-      (ffi/write buf :uint8 0 0)
+      (ffi/write buf :uint8 0)
       (if (neg? (c-gethostname buf n)) "localhost" (ffi/ptr->string buf))
       (finally (ffi/free buf)))))
 
@@ -558,7 +559,7 @@
         n 1025
         buf (ffi/alloc n)]
     (try
-      (ffi/write buf :uint8 0 0)
+      (ffi/write buf :uint8 0)
       (when (zero? (c-getnameinfo sa 16 buf n ffi/null 0 0))
         (let [nm (ffi/ptr->string buf)]
           (when-not (or (str/blank? nm) (= nm address)) nm)))

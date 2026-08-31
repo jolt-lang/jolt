@@ -226,7 +226,7 @@ make unit                     # host-specific unit cases
 make selfhost                 # bootstrap fixpoint (rebuild == checked-in seed)
 make smoke                    # bin/jolt CLI smoke
 make sci                      # load borkdude/sci's source through jolt (compat stress)
-make ffi                      # HTTP-server GC-safety + http-client temp paths
+make ffi                      # the foreign-function interface, against C witnesses
 make transient                # transient mutation + linear-time builds
 make certify                  # JVM oracle (skips if clojure is absent)
 make libconformance           # replay the downstream library suites vs recorded tallies

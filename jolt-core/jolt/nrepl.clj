@@ -91,14 +91,14 @@
         (finally (ffi/free wsadata))))))
 
 (defn- make-sockaddr [port]
+  ;; ffi/alloc zeroes the block, so the padding and the bytes below are already 0.
   (let [sa (ffi/alloc 16)]
-    (dotimes [i 16] (ffi/write sa :uint8 i 0))
     (if macos?
-      (do (ffi/write sa :uint8 0 16) (ffi/write sa :uint8 1 AF-INET))
-      (ffi/write sa :uint8 0 AF-INET))
-    (ffi/write sa :uint8 2 (bit-and (bit-shift-right port 8) 0xff))
-    (ffi/write sa :uint8 3 (bit-and port 0xff))
-    (ffi/write sa :uint8 4 127) (ffi/write sa :uint8 7 1)   ; 127.0.0.1
+      (do (ffi/write sa :uint8 16) (ffi/write sa :uint8 AF-INET 1))
+      (ffi/write sa :uint8 AF-INET))
+    (ffi/write sa :uint8 (bit-and (bit-shift-right port 8) 0xff) 2)
+    (ffi/write sa :uint8 (bit-and port 0xff) 3)
+    (ffi/write sa :uint8 127 4) (ffi/write sa :uint8 1 7)   ; 127.0.0.1
     sa))
 
 (defn- close-on-exec!
@@ -126,7 +126,7 @@
   ;; fcntl below, and Windows on neither.
   (let [fd (c-socket AF-INET (bit-or SOCK-STREAM sock-cloexec) 0)]
     (when (neg? fd) (throw (ex-info "socket() failed" {})))
-    (let [opt (ffi/alloc 4)] (ffi/write opt :int 0 1) (c-setsockopt fd sol-socket so-reuse opt 4) (ffi/free opt))
+    (let [opt (ffi/alloc 4)] (ffi/write opt :int 1) (c-setsockopt fd sol-socket so-reuse opt 4) (ffi/free opt))
     (let [sa (make-sockaddr port)]
       (when (neg? (c-bind fd sa 16)) (c-close fd) (ffi/free sa) (throw (ex-info (str "bind() failed on port " port) {})))
       (ffi/free sa))
