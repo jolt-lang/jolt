@@ -53,29 +53,169 @@
     ;; select this platform's entry. (It was documented but never implemented:
     ;; the map rendered to a string and dlopen'd garbage; surfaced auditing the
     ;; scoped-resolution change.) A map with no entry for this platform raises,
-    ;; naming the platform, rather than silently loading nothing.
+    ;; naming the platform, rather than silently loading nothing. :mac is
+    ;; babashka.ffi's spelling of :darwin and selects the same entry.
     ((jolt-map? (car args))
-     (let* ((key (case (sa-os-family)
-                   ((macos) "darwin") ((windows) "windows") (else "linux")))
-            (name (jolt-get-dispatch (car args) (keyword #f key) jolt-nil)))
+     (let* ((spec (car args))
+            (family (sa-os-family))
+            (key (case family ((macos) "darwin") ((windows) "windows") (else "linux")))
+            (name (jolt-get-dispatch spec (keyword #f key) jolt-nil))
+            (name (if (and (jolt-nil? name) (eq? family 'macos))
+                      (jolt-get-dispatch spec (keyword #f "mac") jolt-nil)
+                      name)))
        (when (jolt-nil? name)
          (jolt-throw (jolt-ex-info
                        (string-append "jolt.ffi/load-library: no :" key
                                       " entry in the per-OS spec")
-                       (car args))))
-       (ffi-load-native-or-throw (jolt-str-render-one name))
-       jolt-nil))
-    (else (ffi-load-native-or-throw (jolt-str-render-one (car args))) jolt-nil)))
+                       spec)))
+       (ffi-library-map (ffi-load-candidates (ffi-candidate-list name)))))
+    (else (ffi-library-map (ffi-load-candidates (ffi-candidate-list (car args)))))))
 
-;; A named load that fails must RAISE: callers probe candidate lists with
+;; A candidate spec is one name or an ORDERED list of them. babashka.ffi takes a
+;; vector of candidates in every position a name goes (including inside the
+;; per-OS map), because the same library is spelled differently across distros —
+;; libcrypto.so.3 here, libcrypto.so.1.1 there. A single name stays a single
+;; name; anything seqable becomes the list to try in order.
+(define (ffi-candidate-list name)
+  (if (or (pvec? name) (jolt-seq? name) (jolt-lazyseq? name))
+      (map (lambda (c) (ffi-str-arg "library candidate" c)) (seq->list (jolt-seq name)))
+      (list (jolt-str-render-one name))))
+
+;; Try each candidate in order; answer the one that loaded.
+;;
+;; A load that finds NOTHING must raise: callers probe candidate lists with
 ;; try/catch around load-library (jolt.mvn-http), and the pre-scoped-loader
 ;; implementation raised through sa-load-shared-object. Silently returning nil
-;; turned every fallback list into "first candidate wins, loaded or not".
-(define (ffi-load-native-or-throw path)
-  (unless (jolt-ffi-load-native path)
-    (jolt-throw (jolt-ex-info
-                  (string-append "jolt.ffi/load-library: cannot load " path)
-                  (jolt-hash-map (jolt-keyword "path") path)))))
+;; turned every fallback list into "first candidate wins, loaded or not". The
+;; error names every candidate tried, since "cannot load libcrypto.so.3" alone
+;; hides the three other spellings that were also attempted.
+(define (ffi-load-candidates cands)
+  (let loop ((cs cands))
+    (cond
+      ((null? cs)
+       (jolt-throw (jolt-ex-info
+                     (string-append "jolt.ffi/load-library: cannot load "
+                                    (if (null? (cdr cands)) "" "any of ")
+                                    (ffi-join-candidates cands))
+                     (jolt-hash-map (jolt-keyword "candidates")
+                                    (make-pvec (list->vector cands))))))
+      ((jolt-ffi-load-native (car cs)) (car cs))
+      (else (loop (cdr cs))))))
+
+;; Name the candidates that were tried, capped: a Linux soname glob can turn up
+;; dozens of paths and an error that lists all of them is unreadable.
+(define (ffi-join-candidates cands)
+  (let ((total (length cands)))
+    (let loop ((cs cands) (i 0) (acc ""))
+      (cond
+        ((or (null? cs) (= i 6))
+         (if (null? cs)
+             acc
+             (string-append acc ", … (" (number->string total) " candidates)")))
+        ((string=? acc "") (loop (cdr cs) (+ i 1) (car cs)))
+        (else (loop (cdr cs) (+ i 1) (string-append acc ", " (car cs))))))))
+
+;; The library value load-library answers: {:path "<the candidate that loaded>"}.
+;; babashka.ffi returns the same shape, and the :path is the only part a caller
+;; can act on — which of the candidates this machine actually has.
+(define (ffi-library-map path)
+  (jolt-hash-map (jolt-keyword "path") path))
+
+;; (load-system-library "z") -> libz.dylib, libz.so, or z.dll, whichever this
+;; platform spells it. Answers the same library map as load-library.
+;;
+;; Linux needs the extra half: a distro that ships only the RUNTIME package has
+;; libz.so.1 and no libz.so at all — the unversioned name is a -dev symlink —
+;; so when the plain soname does not load, glob lib<n>.so.* across the loader's
+;; search directories and try the newest version first. Guessing a fixed set of
+;; version numbers instead would miss libz.so.1.2.13 and every soname above the
+;; guess, so this reads the directories rather than inventing names.
+(define (ffi-so-search-dirs)
+  ;; LD_LIBRARY_PATH first (it wins for the loader too), then the standard
+  ;; prefixes, then Debian/Ubuntu multiarch subdirectories, discovered by
+  ;; listing rather than by naming a triple this build cannot know.
+  (let* ((env (or (guard (e (#t #f)) (getenv "LD_LIBRARY_PATH")) ""))
+         (from-env (if (string=? env "") '() (ffi-split-colons env)))
+         (roots '("/usr/local/lib" "/usr/lib" "/lib" "/usr/lib64" "/lib64"))
+         (multi (apply append
+                       (map (lambda (root)
+                              (map (lambda (d) (string-append root "/" d))
+                                   (filter (lambda (d) (ffi-multiarch-dir? d))
+                                           (ffi-dir-entries root))))
+                            '("/usr/lib" "/lib")))))
+    (append from-env roots multi)))
+
+(define (ffi-split-colons str)
+  (let loop ((cs (string->list str)) (cur '()) (acc '()))
+    (cond
+      ((null? cs)
+       (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+      ((char=? (car cs) #\:)
+       (loop (cdr cs) '() (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+      (else (loop (cdr cs) (cons (car cs) cur) acc)))))
+
+(define (ffi-dir-entries dir)
+  (guard (e (#t '()))
+    (map (lambda (e) (if (pair? e) (car e) e)) (directory-list dir))))
+
+(define (ffi-multiarch-dir? name)
+  (let ((n (string-length name)))
+    (and (> n 6)
+         (let loop ((i 0))                       ; contains "-linux-"
+           (cond ((> (+ i 7) n) #f)
+                 ((string=? (substring name i (+ i 7)) "-linux-") #t)
+                 (else (loop (+ i 1))))))))
+
+(define (ffi-starts-with? str prefix)
+  (and (>= (string-length str) (string-length prefix))
+       (string=? (substring str 0 (string-length prefix)) prefix)))
+
+;; The dot-separated integers after "lib<n>.so.", as a list — the sort key. A
+;; non-numeric component sorts below every number, so libz.so.1 beats
+;; libz.so.1.2.13-suffix only on the components that actually parse.
+(define (ffi-soname-version name base)
+  (map (lambda (part) (or (string->number part) -1))
+       (ffi-split-dots (substring name (+ 1 (string-length base)) (string-length name)))))
+
+(define (ffi-split-dots str)
+  (let loop ((cs (string->list str)) (cur '()) (acc '()))
+    (cond
+      ((null? cs)
+       (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+      ((char=? (car cs) #\.)
+       (loop (cdr cs) '() (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+      (else (loop (cdr cs) (cons (car cs) cur) acc)))))
+
+(define (ffi-version>? a b)
+  (cond ((and (null? a) (null? b)) #f)
+        ((null? a) #f)
+        ((null? b) #t)
+        ((> (car a) (car b)) #t)
+        ((< (car a) (car b)) #f)
+        (else (ffi-version>? (cdr a) (cdr b)))))
+
+(define (ffi-versioned-sonames base)
+  (let ((prefix (string-append base ".")))
+    (apply append
+           (map (lambda (dir)
+                  (let ((hits (filter (lambda (e) (ffi-starts-with? e prefix))
+                                      (ffi-dir-entries dir))))
+                    (map (lambda (e) (string-append dir "/" e))
+                         (list-sort (lambda (x y)
+                                      (ffi-version>? (ffi-soname-version x base)
+                                                     (ffi-soname-version y base)))
+                                    hits))))
+                (ffi-so-search-dirs)))))
+
+(define (ffi-load-system-library name)
+  (let ((n (ffi-str-arg "load-system-library name" name)))
+    (ffi-library-map
+     (ffi-load-candidates
+      (case (sa-os-family)
+        ((macos)   (list (string-append "lib" n ".dylib") (string-append n ".dylib")))
+        ((windows) (list (string-append n ".dll") (string-append "lib" n ".dll")))
+        (else      (let ((base (string-append "lib" n ".so")))
+                     (cons base (ffi-versioned-sonames base)))))))))
 
 ;; Loadable without mutating resolution state: probe with a LOCAL dlopen through
 ;; the scoped loader (registering the handle — a probe that succeeds will be
@@ -290,7 +430,16 @@
       ((string=? n "void") 'void)
       ((or (string=? n "uint8") (string=? n "u8") (string=? n "byte")) 'unsigned-8)
       ((string=? n "char") 'char)
+      ;; :bool answers a jolt-side marker rather than a Chez type. It is a
+      ;; ONE-BYTE C boolean (C99 _Bool), so its WIDTH is unsigned-8 — but its
+      ;; value is converted at the boundary, and a caller that saw only the
+      ;; width would store 1 and read back 1 instead of true. Chez's own
+      ;; `boolean` foreign type is int-sized and would be the wrong width.
+      ((string=? n "bool") 'jolt-bool)
       (else (error #f (string-append "jolt.ffi: unknown foreign type :" n))))))
+;; The Chez type that carries a jolt foreign type's BITS — what sizeof and the
+;; raw block moves want, with :bool's marker resolved to its one byte.
+(define (ffi-chez-width ct) (if (eq? ct 'jolt-bool) 'unsigned-8 ct))
 
 ;; --- :string <-> NULL ---------------------------------------------------------
 ;; Chez's `string` foreign type already carries NULL in both directions, spelled
@@ -331,15 +480,62 @@
 ;; alloc returns a pointer (integer address). The caller frees it. read/write take
 ;; a type keyword and an optional byte offset.
 (define (ffi-alloc nbytes) (sa-foreign-alloc (jnum->exact nbytes)))
+;; ZEROED allocation, in one block move. An arena hands out zeroed memory (as
+;; babashka.ffi/alloc does), because a struct a caller only partly fills is the
+;; ordinary case and malloc's leftovers in the rest of it are a C-visible bug
+;; that reproduces only under load. A fresh bytevector is already zero, so the
+;; fill is one sa-foreign-bytes-set!, not a per-byte loop.
+(define (ffi-calloc nbytes)
+  (let* ((n (jnum->exact nbytes)) (p (sa-foreign-alloc n)))
+    (when (> n 0) (sa-foreign-bytes-set! p (make-bytevector n 0) n))
+    p))
 (define (ffi-free ptr) (sa-foreign-free (jnum->exact ptr)) jolt-nil)
-(define (ffi-read ptr ty . off)
-  (sa-foreign-ref (ffi-type->chez ty) (jnum->exact ptr) (if (pair? off) (jnum->exact (car off)) 0)))
-(define (ffi-write ptr ty off val)
-  (sa-foreign-set! (ffi-type->chez ty) (jnum->exact ptr) (jnum->exact off) val) jolt-nil)
+;; --- :bool <-> a one-byte C boolean -----------------------------------------
+;; Named for the direction of the CONVERSION, like the :string pair above, and
+;; used from the same three places: the emitted foreign-procedure, the emitted
+;; foreign-callable, and these accessors. jolt TRUTHINESS decides the byte, so
+;; nil and false send 0 and every other value sends 1 — a C predicate reads back
+;; as true/false rather than as the truthy number 0.
+(define (jolt-ffi-bool->c v) (if (or (jolt-nil? v) (eq? v #f)) 0 1))
+(define (jolt-ffi-c->bool raw) (not (eqv? (jnum->exact raw) 0)))
+;; read/write take the type, then the OFFSET LAST — the babashka.ffi order, so
+;; (write p t v) and (write p t v offset) are one binding in both APIs. The jolt
+;; wrapper in stdlib/jolt/ffi.clj supplies the offset and resolves a layout or a
+;; place before it gets here; these two see a scalar type keyword and nothing
+;; else.
+(define ffi-read
+  (case-lambda
+    ((ptr ty) (ffi-read* ptr ty 0))
+    ((ptr ty off) (ffi-read* ptr ty off))))
+(define (ffi-read* ptr ty off)
+  (let ((ct (ffi-type->chez ty)))
+    (if (eq? ct 'jolt-bool)
+        (jolt-ffi-c->bool (sa-foreign-ref 'unsigned-8 (jnum->exact ptr) (jnum->exact off)))
+        (sa-foreign-ref ct (jnum->exact ptr) (jnum->exact off)))))
+(define ffi-write
+  (case-lambda
+    ((ptr ty val) (ffi-write* ptr ty val 0))
+    ((ptr ty val off) (ffi-write* ptr ty val off))))
+(define (ffi-write* ptr ty val off)
+  (let ((ct (ffi-type->chez ty)))
+    (if (eq? ct 'jolt-bool)
+        (sa-foreign-set! 'unsigned-8 (jnum->exact ptr) (jnum->exact off) (jolt-ffi-bool->c val))
+        (sa-foreign-set! ct (jnum->exact ptr) (jnum->exact off) val)))
+  jolt-nil)
 ;; sizeof a foreign type (for laying out structs / arrays).
-(define (ffi-sizeof ty) (sa-foreign-sizeof (ffi-type->chez ty)))
+(define (ffi-sizeof ty) (sa-foreign-sizeof (ffi-chez-width (ffi-type->chez ty))))
 (define (ffi-null? ptr) (and (number? ptr) (= (jnum->exact ptr) 0)))
 (define ffi-null 0)
+
+;; (copy src dst n) -> nil. The block travels through ONE bytevector, so this is
+;; memmove rather than memcpy: overlapping regions copy correctly in either
+;; direction, which is what a caller shifting bytes inside a buffer needs.
+(define (ffi-copy src dst n)
+  (let* ((n (jnum->exact n)) (bv (make-bytevector n)))
+    (when (> n 0)
+      (sa-foreign-bytes-ref! (jnum->exact src) bv n)
+      (sa-foreign-bytes-set! (jnum->exact dst) bv n))
+    jolt-nil))
 
 ;; --- buffer I/O (known length) ----------------------------------------------
 ;; Every one of these moves the block in ONE sa-foreign-bytes-ref!/-set! call
@@ -421,17 +617,39 @@
 (def-var! "jolt.ffi" "read-array" ffi-read-array)
 (def-var! "jolt.ffi" "read-into!" ffi-read-into!)
 (def-var! "jolt.ffi" "write-array" ffi-write-array)
+;; …and under the reserved names, for the same reason as __read/__write below:
+;; stdlib/jolt/ffi.clj defines read-array and write-array over these to add the
+;; typed forms, so it needs a name for the primitive its own definition has not
+;; taken.
+(def-var! "jolt.ffi" "__read-array" ffi-read-array)
+(def-var! "jolt.ffi" "__write-array" ffi-write-array)
 
 ;; --- string / bytevector marshaling ------------------------------------------
 ;; A C string result already comes back as a jolt string (the `string` foreign
 ;; type). For a `void*` that points at a NUL-terminated C string, read it here.
-(define (ffi-ptr->string ptr)
+;;
+;; A LIMIT bounds the scan: without one this walks to the first NUL wherever it
+;; is, which on a buffer that has none reads past the allocation and can stop
+;; the process. With one, a missing NUL inside `limit` bytes raises instead —
+;; the caller knows how big the buffer is, so it can say so.
+(define ffi-ptr->string
+  (case-lambda
+    ((ptr) (ffi-ptr->string* ptr #f))
+    ((ptr limit)
+     (ffi-ptr->string* ptr (if (jolt-nil? limit) #f (jnum->exact limit))))))
+(define (ffi-ptr->string* ptr limit)
   (if (ffi-null? ptr) jolt-nil
       (let ((p (jnum->exact ptr)))
         (let loop ((i 0) (acc '()))
-          (let ((b (sa-foreign-ref 'unsigned-8 p i)))
-            (if (= b 0) (utf8->string (u8-list->bytevector (reverse acc)))
-                (loop (+ i 1) (cons b acc))))))))
+          (cond
+            ((and limit (>= i limit))
+             (jolt-throw (jolt-ex-info
+                           "jolt.ffi/ptr->string: no NUL byte within the limit"
+                           (jolt-hash-map (jolt-keyword "limit") limit))))
+            (else
+             (let ((b (sa-foreign-ref 'unsigned-8 p i)))
+               (if (= b 0) (utf8->string (u8-list->bytevector (reverse acc)))
+                   (loop (+ i 1) (cons b acc))))))))))
 ;; Copy a jolt string's UTF-8 bytes into a freshly alloc'd NUL-terminated buffer;
 ;; the caller frees it. Returns the pointer.
 ;;
@@ -453,13 +671,24 @@
 (define (ffi-string->ptr s)
   (if (jolt-nil? s)
       ffi-null
-      (let* ((bv (string->utf8 (jolt-str-render-one s))) (n (bytevector-length bv))
+      ;; ONE block move plus the terminator. This used to be a per-byte
+      ;; sa-foreign-set! loop, ~30ns a byte across the boundary — the cost this
+      ;; file's buffer-I/O section exists to avoid, on the one path that had
+      ;; kept it.
+      (let* ((bv (string->utf8 (jolt-str-render-one s)))
+             (n (bytevector-length bv))
              (p (sa-foreign-alloc (+ n 1))))
         ;; free on a mid-copy throw — the caller only ever sees a whole buffer
         (guard (e (#t (guard (_ (#t #f)) (sa-foreign-free p)) (raise e)))
-          (do ((i 0 (+ i 1))) ((= i n)) (sa-foreign-set! 'unsigned-8 p i (bytevector-u8-ref bv i)))
+          (when (> n 0) (sa-foreign-bytes-set! p bv n))
           (sa-foreign-set! 'unsigned-8 p n 0)
           p))))
+
+;; The UTF-8 byte length of a value rendered as a string — what string->ptr just
+;; allocated, so an arena can record the block's size without scanning for the
+;; NUL again.
+(define (ffi-utf8-length s)
+  (if (jolt-nil? s) 0 (bytevector-length (string->utf8 (jolt-str-render-one s)))))
 
 ;; --- callbacks: receive calls FROM C ----------------------------------------
 ;; jolt.ffi/foreign-callable lowers to (jolt-ffi-register-callable! (foreign-callable …)).
@@ -538,6 +767,51 @@
           ((jolt-ffi-load-native (car cs)) #t)
           (else (loop (cdr cs)))))))
 
+;; --- find-symbol ------------------------------------------------------------
+;; The address of `sym`, or nil when nothing defines it. Searches the declared
+;; natives first (declaration order, per-handle dlsym — the same resolution a
+;; defcfn gets) and then the process's own symbols, so the answer matches where
+;; a binding of that name would actually land.
+(define (ffi-find-symbol sym)
+  (let* ((n (ffi-str-arg "symbol" sym))
+         (a (jolt-ffi-dlsym-native n)))
+    (cond
+      (a a)
+      ((guard (e (#t #f)) (sa-foreign-entry? n)) (sa-foreign-entry-address n))
+      (else jolt-nil))))
+
+;; --- automatic arenas: release when the collector reclaims the arena --------
+;; jolt.ffi/auto-arena hands back an arena nobody closes; its memory is released
+;; once the arena itself is unreachable. A guardian is how that is observable:
+;; register the arena's state cell, and the collector hands the cell BACK here
+;; after it becomes garbage, still readable, with the addresses to free in it.
+;;
+;; The collector does not call us — so the pending cells are drained at the FFI
+;; points that mean a program is still allocating (creating an arena, allocating
+;; in an automatic one). An automatic arena is therefore released promptly in
+;; the code that keeps using arenas and, in code that stops, not until the
+;; process ends — which is the same memory the process was going to return
+;; anyway. jolt.ffi/drain-auto-arenas! forces a drain for a caller that wants one
+;; at a specific point.
+;;
+;; Guardians are global mutable state and a drain both reads and mutates one, so
+;; every access takes this mutex: an automatic arena can become garbage on any
+;; thread, and two threads draining at once corrupts the guardian's own list.
+(define ffi-auto-mu (make-mutex))
+(define ffi-auto-guardian (make-guardian))
+(define (jolt-ffi-auto-guard! token)
+  (jolt-with-mutex ffi-auto-mu (ffi-auto-guardian token))
+  token)
+;; Every state cell the collector has reclaimed since the last drain, as a jolt
+;; vector. Resurrected by the guardian, so reading each one is safe.
+(define (jolt-ffi-auto-reclaimed)
+  (make-pvec
+   (list->vector
+    (jolt-with-mutex ffi-auto-mu
+      (let loop ((acc '()))
+        (let ((t (ffi-auto-guardian)))
+          (if t (loop (cons t acc)) acc)))))))
+
 ;; --- expose under jolt.ffi ---------------------------------------------------
 (def-var! "jolt.ffi" "free-callable" ffi-free-callable)
 (def-var! "jolt.ffi" "register-export" jolt-ffi-register-export!)
@@ -546,12 +820,31 @@
 (def-var! "jolt.ffi" "load-native" jolt-ffi-load-native)
 (def-var! "jolt.ffi" "defining-libraries" jolt-ffi-defining-libraries)
 (def-var! "jolt.ffi" "dlsym-native" jolt-ffi-dlsym-native)
+(def-var! "jolt.ffi" "load-system-library" ffi-load-system-library)
+(def-var! "jolt.ffi" "find-symbol" ffi-find-symbol)
 (def-var! "jolt.ffi" "alloc" ffi-alloc)
 (def-var! "jolt.ffi" "free" ffi-free)
 (def-var! "jolt.ffi" "read" ffi-read)
 (def-var! "jolt.ffi" "write" ffi-write)
+(def-var! "jolt.ffi" "copy" ffi-copy)
 (def-var! "jolt.ffi" "sizeof" ffi-sizeof)
+;; The scalar primitives under reserved names. stdlib/jolt/ffi.clj DEFINES
+;; jolt.ffi/alloc, read, write and sizeof over these — the public four take a
+;; layout, a place, or an arena, and resolve down to one of these — so the
+;; wrapper needs a name for the primitive that its own definition has not taken.
+;; A host-level gate (test/chez/ffi-*.ss loads this file alone) keeps using the
+;; public names, which is why both are registered.
+(def-var! "jolt.ffi" "__alloc" ffi-alloc)
+(def-var! "jolt.ffi" "__calloc" ffi-calloc)
+(def-var! "jolt.ffi" "__read" ffi-read)
+(def-var! "jolt.ffi" "__write" ffi-write)
+(def-var! "jolt.ffi" "__sizeof" ffi-sizeof)
+(def-var! "jolt.ffi" "__copy" ffi-copy)
+(def-var! "jolt.ffi" "__auto-guard!" jolt-ffi-auto-guard!)
+(def-var! "jolt.ffi" "__auto-reclaimed" jolt-ffi-auto-reclaimed)
 (def-var! "jolt.ffi" "null?" (lambda (p) (if (ffi-null? p) #t #f)))
 (def-var! "jolt.ffi" "null" ffi-null)
 (def-var! "jolt.ffi" "ptr->string" ffi-ptr->string)
 (def-var! "jolt.ffi" "string->ptr" ffi-string->ptr)
+(def-var! "jolt.ffi" "__string->ptr" ffi-string->ptr)
+(def-var! "jolt.ffi" "__utf8-length" ffi-utf8-length)

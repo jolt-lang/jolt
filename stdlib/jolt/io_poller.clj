@@ -97,7 +97,7 @@
 (defn so-error [fd]
   (let [v (ffi/alloc 4) lenp (ffi/alloc 4)]
     (try
-      (ffi/write lenp :int 0 4)
+      (ffi/write lenp :int 4)
       (if (neg? (c-getsockopt fd SOL-SOCKET SO-ERROR v lenp)) -1 (ffi/read v :int 0))
       (finally (ffi/free v) (ffi/free lenp)))))
 
@@ -186,18 +186,18 @@
 
 (defn- kevent-put! [buf i fd filt flags]
   (let [o (* i KEVENT-SIZE)]
-    (ffi/write buf :uptr o fd)
-    (ffi/write buf :int (+ o 8) (bit-or (bit-and filt 0xffff) (bit-shift-left flags 16)))
-    (ffi/write buf :uint (+ o 12) 0)
-    (ffi/write buf :int64 (+ o 16) 0)
-    (ffi/write buf :uptr (+ o 24) 0)))
+    (ffi/write buf :uptr fd o)
+    (ffi/write buf :int (bit-or (bit-and filt 0xffff) (bit-shift-left flags 16)) (+ o 8))
+    (ffi/write buf :uint 0 (+ o 12))
+    (ffi/write buf :int64 0 (+ o 16))
+    (ffi/write buf :uptr 0 (+ o 24))))
 
 (defn- ep-ctl! [ep op fd filt]
   (let [ev (ffi/alloc EPOLL-EVENT-SIZE)]
     (try
-      (ffi/write ev :uint 0 (if (= filt :read) EPOLLIN EPOLLOUT))
-      (ffi/write ev :uint EPOLL-DATA-OFFSET fd)        ; epoll_data_t.fd — u64 low half
-      (ffi/write ev :uint (+ EPOLL-DATA-OFFSET 4) 0)
+      (ffi/write ev :uint (if (= filt :read) EPOLLIN EPOLLOUT))
+      (ffi/write ev :uint fd EPOLL-DATA-OFFSET)        ; epoll_data_t.fd — u64 low half
+      (ffi/write ev :uint 0 (+ EPOLL-DATA-OFFSET 4))
       (c-epoll-ctl ep op fd ev)
       (finally (ffi/free ev)))))
 
@@ -208,10 +208,10 @@
 (defn- ep-ctl-mask! [ep op fd filts]
   (let [ev (ffi/alloc EPOLL-EVENT-SIZE)]
     (try
-      (ffi/write ev :uint 0 (reduce (fn [m f] (bit-or m (if (= f :read) EPOLLIN EPOLLOUT)))
-                                    0 filts))
-      (ffi/write ev :uint EPOLL-DATA-OFFSET fd)
-      (ffi/write ev :uint (+ EPOLL-DATA-OFFSET 4) 0)
+      (ffi/write ev :uint (reduce (fn [m f] (bit-or m (if (= f :read) EPOLLIN EPOLLOUT)))
+                                    0 filts) 0)
+      (ffi/write ev :uint fd EPOLL-DATA-OFFSET)
+      (ffi/write ev :uint 0 (+ EPOLL-DATA-OFFSET 4))
       (c-epoll-ctl ep op fd ev)
       (finally (ffi/free ev)))))
 
@@ -261,7 +261,7 @@
   (let [w (second (:pipe @state))]
     (when w
       (let [b (ffi/alloc 1)]
-        (try (ffi/write b :uint8 0 1)
+        (try (ffi/write b :uint8 1)
              (c-write w b 1)
              (finally (ffi/free b)))))))
 
@@ -567,9 +567,9 @@
         (finally (ffi/free ch) (ffi/free ev) (c-close kq))))
     (let [ep (c-epoll-create1 0) ev (ffi/alloc EPOLL-EVENT-SIZE)]
       (try
-        (ffi/write ev :uint 0 (if (= filt :read) EPOLLIN EPOLLOUT))
-        (ffi/write ev :uint EPOLL-DATA-OFFSET fd)
-        (ffi/write ev :uint (+ EPOLL-DATA-OFFSET 4) 0)
+        (ffi/write ev :uint (if (= filt :read) EPOLLIN EPOLLOUT))
+        (ffi/write ev :uint fd EPOLL-DATA-OFFSET)
+        (ffi/write ev :uint 0 (+ EPOLL-DATA-OFFSET 4))
         (c-epoll-ctl ep EPOLL-ADD fd ev)
         (loop []
           (when (neg? (c-epoll-wait ep ev 1 -1)) (recur)))

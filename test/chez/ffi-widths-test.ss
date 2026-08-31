@@ -28,11 +28,11 @@
        (= (cdr entry)
           (jnum->exact
            (ev (string-append "(jolt.ffi/sizeof :" (car entry) ")"))))))
- '(("int8" . 1) ("i8" . 1) ("uint8" . 1)
+ '(("int8" . 1) ("i8" . 1) ("uint8" . 1) ("bool" . 1)
    ("int16" . 2) ("short" . 2) ("uint16" . 2) ("ushort" . 2)
    ("int32" . 4) ("uint32" . 4)))
 
-(ev "(def width-rw (fn [ty v] (let [p (jolt.ffi/alloc (jolt.ffi/sizeof ty))] (try (jolt.ffi/write p ty 0 v) (jolt.ffi/read p ty) (finally (jolt.ffi/free p))))))")
+(ev "(def width-rw (fn [ty v] (let [p (jolt.ffi/alloc (jolt.ffi/sizeof ty))] (try (jolt.ffi/write p ty v 0) (jolt.ffi/read p ty) (finally (jolt.ffi/free p))))))")
 (for-each
  (lambda (entry)
    (ok (car entry) (= (cadr entry) (jnum->exact (ev (caddr entry))))))
@@ -53,17 +53,38 @@
  (lambda (entry)
    (ok (car entry) (= (cadr entry) (jnum->exact (ev (caddr entry))))))
  '(("int8 -1 as uint8" 255
-    "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :int8 0 -1) (jolt.ffi/read p :uint8) (finally (jolt.ffi/free p))))")
+    "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :int8 -1 0) (jolt.ffi/read p :uint8) (finally (jolt.ffi/free p))))")
    ("i8 -1 as byte" 255
-    "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :i8 0 -1) (jolt.ffi/read p :byte) (finally (jolt.ffi/free p))))")
+    "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :i8 -1 0) (jolt.ffi/read p :byte) (finally (jolt.ffi/free p))))")
    ("int16 -1 as uint16" 65535
-    "(let [p (jolt.ffi/alloc 2)] (try (jolt.ffi/write p :int16 0 -1) (jolt.ffi/read p :uint16) (finally (jolt.ffi/free p))))")
+    "(let [p (jolt.ffi/alloc 2)] (try (jolt.ffi/write p :int16 -1 0) (jolt.ffi/read p :uint16) (finally (jolt.ffi/free p))))")
    ("short -1 as ushort" 65535
-    "(let [p (jolt.ffi/alloc 2)] (try (jolt.ffi/write p :short 0 -1) (jolt.ffi/read p :ushort) (finally (jolt.ffi/free p))))")
+    "(let [p (jolt.ffi/alloc 2)] (try (jolt.ffi/write p :short -1 0) (jolt.ffi/read p :ushort) (finally (jolt.ffi/free p))))")
    ("uint16 max as int16" -1
-    "(let [p (jolt.ffi/alloc 2)] (try (jolt.ffi/write p :uint16 0 65535) (jolt.ffi/read p :int16) (finally (jolt.ffi/free p))))")
+    "(let [p (jolt.ffi/alloc 2)] (try (jolt.ffi/write p :uint16 65535 0) (jolt.ffi/read p :int16) (finally (jolt.ffi/free p))))")
    ("int32 -1 as uint32" 4294967295
-    "(let [p (jolt.ffi/alloc 4)] (try (jolt.ffi/write p :int32 0 -1) (jolt.ffi/read p :uint32) (finally (jolt.ffi/free p))))")))
+    "(let [p (jolt.ffi/alloc 4)] (try (jolt.ffi/write p :int32 -1 0) (jolt.ffi/read p :uint32) (finally (jolt.ffi/free p))))")))
+
+;; :bool is the one type whose VALUE, not just width, converts at the boundary:
+;; one byte on the wire, true/false in jolt, and jolt truthiness on the way out —
+;; so nil and false store 0 and everything else stores 1. Without the conversion
+;; a C predicate would answer the truthy number 0.
+(for-each
+ (lambda (entry)
+   (ok (car entry) (equal? (cadr entry) (ev (caddr entry)))))
+ '(("bool true round-trips" #t "(width-rw :bool true)")
+   ("bool false round-trips" #f "(width-rw :bool false)")
+   ("bool nil stores false" #f "(width-rw :bool nil)")
+   ("bool truthy value stores true" #t "(width-rw :bool 0)")))
+(for-each
+ (lambda (entry)
+   (ok (car entry) (= (cadr entry) (jnum->exact (ev (caddr entry))))))
+ '(("bool true is the byte 1" 1
+    "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :bool true 0) (jolt.ffi/read p :uint8) (finally (jolt.ffi/free p))))")
+   ("bool false is the byte 0" 0
+    "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :bool false 0) (jolt.ffi/read p :uint8) (finally (jolt.ffi/free p))))")))
+(ok "a nonzero byte reads as bool true"
+    (eq? #t (ev "(let [p (jolt.ffi/alloc 1)] (try (jolt.ffi/write p :uint8 200 0) (jolt.ffi/read p :bool) (finally (jolt.ffi/free p))))")))
 
 (ok "unknown runtime type rejects"
     (raises? (lambda () (ev "(jolt.ffi/sizeof :not-a-type)"))))
@@ -85,7 +106,22 @@
    "(def r-i16 (jolt.ffi/__cfn \"jolt_w_return_i16\" [] :int16))"
    "(def r-u16 (jolt.ffi/__cfn \"jolt_w_return_u16\" [] :uint16))"
    "(def r-i32 (jolt.ffi/__cfn \"jolt_w_return_i32\" [] :int32))"
-   "(def r-u32 (jolt.ffi/__cfn \"jolt_w_return_u32\" [] :uint32))"))
+   "(def r-u32 (jolt.ffi/__cfn \"jolt_w_return_u32\" [] :uint32))"
+   "(def w-bool (jolt.ffi/__cfn \"jolt_w_widen_bool\" [:bool] :int64))"
+   "(def sizeof-bool (jolt.ffi/__cfn \"jolt_w_sizeof_bool\" [] :size_t))"
+   "(def r-bool-true (jolt.ffi/__cfn \"jolt_w_return_bool_true\" [] :bool))"
+   "(def r-bool-false (jolt.ffi/__cfn \"jolt_w_return_bool_false\" [] :bool))"))
+
+;; C agrees that :bool is one byte wide, and the value converts in both
+;; directions across a real _Bool signature.
+(ok "C sizeof(bool) matches :bool"
+    (= (jnum->exact (ev "(sizeof-bool)")) (jnum->exact (ev "(jolt.ffi/sizeof :bool)"))))
+(ok "bool arguments reach C as the boolean they name"
+    (equal? '(42 -42 -42 42)
+            (map (lambda (source) (jnum->exact (ev source)))
+                 '("(w-bool true)" "(w-bool false)" "(w-bool nil)" "(w-bool :yes)"))))
+(ok "bool results come back as true and false"
+    (equal? '(#t #f) (list (ev "(r-bool-true)") (ev "(r-bool-false)"))))
 
 (ok "exact native arguments preserve boundaries"
     (equal? '(-128 -32768 65535 -2147483648 4294967295)
@@ -102,7 +138,7 @@
     (for-all
      (lambda (entry)
        (equal? (cdr entry) (jolt-invoke1 compiler-type->chez (car entry))))
-     '(("int8" . "integer-8") ("i8" . "integer-8")
+     '(("int8" . "integer-8") ("i8" . "integer-8") ("bool" . "unsigned-8")
        ("int16" . "integer-16") ("short" . "integer-16")
        ("uint16" . "unsigned-16") ("ushort" . "unsigned-16")
        ("int32" . "integer-32") ("uint32" . "unsigned-32"))))
@@ -143,7 +179,14 @@
    "(def call-i16 (jolt.ffi/__cfn \"jolt_w_call_i16\" [:pointer] :int64))"
    "(def call-u16 (jolt.ffi/__cfn \"jolt_w_call_u16\" [:pointer] :uint64))"
    "(def call-i32 (jolt.ffi/__cfn \"jolt_w_call_i32\" [:pointer] :int64))"
-   "(def call-u32 (jolt.ffi/__cfn \"jolt_w_call_u32\" [:pointer] :uint64))"))
+   "(def call-u32 (jolt.ffi/__cfn \"jolt_w_call_u32\" [:pointer] :uint64))"
+   ;; The callback is the inverse direction: C passes the byte in and reads the
+   ;; byte back out, so `not` here answers 0 for C's true and 1 for its false.
+   "(def cb-bool (jolt.ffi/__ccallable (fn [x] (not x)) [:bool] :bool))"
+   "(def call-bool (jolt.ffi/__cfn \"jolt_w_call_bool\" [:pointer] :int64))"))
+(ok "C-invoked bool callbacks convert both directions"
+    (= 1 (jnum->exact (ev "(call-bool cb-bool)"))))
+(ev "(jolt.ffi/free-callable cb-bool)")
 (ok "C-invoked exact-width callbacks preserve boundaries"
     (equal? '(-128 -32768 65535 -2147483648 4294967295)
             (map (lambda (source) (jnum->exact (ev source)))

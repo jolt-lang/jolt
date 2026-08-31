@@ -18,7 +18,7 @@
 (define date "[:by-value [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]]")
 (define nested "[:by-value [:struct [[:tag :uint8] [:date [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]] [:tail :uint16]]]]")
 (define large "[:by-value [:struct [[:a :uint64] [:b :uint64] [:c :uint64]]]]")
-(define packet "[:by-value [:struct [[:tag :uint8] [:params [:array 4 :uint32]] [:dates [:array 2 [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]]]]]]")
+(define packet "[:by-value [:struct [[:tag :uint8] [:params [:array :uint32 4]] [:dates [:array [:struct [[:year :int32] [:month :uint8] [:day :uint8]]] 2]]]]]")
 
 (ev (string-append "(def c-date-score (jolt.ffi/__cfn \"jolt_agg_date_score\" [" date "] :int64))"))
 (ev (string-append "(def c-date-blocking (jolt.ffi/__cfn \"jolt_agg_date_score\" [" date "] :int64 :blocking))"))
@@ -36,11 +36,11 @@
 (ev "(def date-layout (jolt.ffi/__layout [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]))")
 (ev "(def nested-layout (jolt.ffi/__layout [:struct [[:tag :uint8] [:date [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]] [:tail :uint16]]]))")
 (ev "(def large-layout (jolt.ffi/__layout [:struct [[:a :uint64] [:b :uint64] [:c :uint64]]]))")
-(ev "(def packet-layout (jolt.ffi/__layout [:struct [[:tag :uint8] [:params [:array 4 :uint32]] [:dates [:array 2 [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]]]]]))")
+(ev "(def packet-layout (jolt.ffi/__layout [:struct [[:tag :uint8] [:params [:array :uint32 4]] [:dates [:array [:struct [[:year :int32] [:month :uint8] [:day :uint8]]] 2]]]]))")
 (ev "(defn layout-offset [layout path] (loop [parts path compact [] delta 0] (if (empty? parts) (+ delta (get (:jolt.ffi/offsets layout) compact)) (let [part (first parts)] (if (integer? part) (recur (rest parts) (conj compact :jolt.ffi/index) (+ delta (* part (get (:jolt.ffi/array-strides layout) compact)))) (recur (rest parts) (conj compact part) delta))))))")
-(ev "(defn put-date [p year month day] (jolt.ffi/write p :int32 (layout-offset date-layout [:year]) year) (jolt.ffi/write p :uint8 (layout-offset date-layout [:month]) month) (jolt.ffi/write p :uint8 (layout-offset date-layout [:day]) day) p)")
-(ev "(defn put-large [p a b c] (jolt.ffi/write p :uint64 (layout-offset large-layout [:a]) a) (jolt.ffi/write p :uint64 (layout-offset large-layout [:b]) b) (jolt.ffi/write p :uint64 (layout-offset large-layout [:c]) c) p)")
-(ev "(defn put-packet [p tag base year month day] (jolt.ffi/write p :uint8 (layout-offset packet-layout [:tag]) tag) (doseq [i (range 4)] (jolt.ffi/write p :uint32 (layout-offset packet-layout [:params i]) (+ base i))) (put-date (+ p (layout-offset packet-layout [:dates 0])) year month day) (put-date (+ p (layout-offset packet-layout [:dates 1])) (inc year) (inc month) (inc day)) p)")
+(ev "(defn put-date [p year month day] (jolt.ffi/write p :int32 year (layout-offset date-layout [:year])) (jolt.ffi/write p :uint8 month (layout-offset date-layout [:month])) (jolt.ffi/write p :uint8 day (layout-offset date-layout [:day])) p)")
+(ev "(defn put-large [p a b c] (jolt.ffi/write p :uint64 a (layout-offset large-layout [:a])) (jolt.ffi/write p :uint64 b (layout-offset large-layout [:b])) (jolt.ffi/write p :uint64 c (layout-offset large-layout [:c])) p)")
+(ev "(defn put-packet [p tag base year month day] (jolt.ffi/write p :uint8 tag (layout-offset packet-layout [:tag])) (doseq [i (range 4)] (jolt.ffi/write p :uint32 (+ base i) (layout-offset packet-layout [:params i]))) (put-date (+ p (layout-offset packet-layout [:dates 0])) year month day) (put-date (+ p (layout-offset packet-layout [:dates 1])) (inc year) (inc month) (inc day)) p)")
 
 (ok "flat argument"
     (= 20260723 (jnum->exact (ev "(let [p (jolt.ffi/alloc (:size date-layout))] (try (put-date p 2026 7 23) (c-date-score p) (finally (jolt.ffi/free p))))"))))
@@ -49,7 +49,7 @@
 (ok "multiple aggregate arguments"
     (= 40461237 (jnum->exact (ev "(let [a (jolt.ffi/alloc (:size date-layout)) b (jolt.ffi/alloc (:size date-layout))] (try (put-date a 2026 7 23) (put-date b 2020 5 6) (c-two-dates a b 8) (finally (jolt.ffi/free a) (jolt.ffi/free b))))"))))
 (ok "nested argument"
-    (= 20261531 (jnum->exact (ev "(let [p (jolt.ffi/alloc (:size nested-layout))] (try (jolt.ffi/write p :uint8 (layout-offset nested-layout [:tag]) 3) (put-date (+ p (layout-offset nested-layout [:date])) 2026 7 23) (jolt.ffi/write p :uint16 (layout-offset nested-layout [:tail]) 805) (c-nested-score p) (finally (jolt.ffi/free p))))"))))
+    (= 20261531 (jnum->exact (ev "(let [p (jolt.ffi/alloc (:size nested-layout))] (try (jolt.ffi/write p :uint8 3 (layout-offset nested-layout [:tag])) (put-date (+ p (layout-offset nested-layout [:date])) 2026 7 23) (jolt.ffi/write p :uint16 805 (layout-offset nested-layout [:tail])) (c-nested-score p) (finally (jolt.ffi/free p))))"))))
 (ok "large argument"
     (= 321 (jnum->exact (ev "(let [p (jolt.ffi/alloc (:size large-layout))] (try (put-large p 1 2 3) (c-large-score p) (finally (jolt.ffi/free p))))"))))
 (ok "fixed-array aggregate argument"

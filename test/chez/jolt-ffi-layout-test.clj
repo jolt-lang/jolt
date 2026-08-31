@@ -39,19 +39,19 @@
                        [:tail :uint16]]]))
 (def arrays-layout
   (ffi/layout [:struct [[:tag :uint8]
-                        [:params [:array 4 :float]]
-                        [:name [:array 5 :char]]
-                        [:dates [:array 2 [:struct [[:year :int32]
+                        [:params [:array :float 4]]
+                        [:name [:array :char 5]]
+                        [:dates [:array [:struct [[:year :int32]
                                                     [:month :uint8]
-                                                    [:day :uint8]]]]]
-                        [:matrix [:array 2 [:array 3 :uint16]]]
+                                                    [:day :uint8]]] 2]]
+                        [:matrix [:array [:array :uint16 3] 2]]
                         [:tail :uint16]]]))
 (def huge-array-layout
   (ffi/layout [:struct [[:prefix :uint8]
-                        [:payload [:array 1000000 :uint8]]
+                        [:payload [:array :uint8 1000000]]
                         [:suffix :uint8]]]))
 (def huge-matrix-layout
-  (ffi/layout [:struct [[:matrix [:array 1000 [:array 1000 :uint8]]]]]))
+  (ffi/layout [:struct [[:matrix [:array [:array :uint8 1000] 1000]]]]))
 
 (check "flat size" (= (flat-size) (ffi/layout-size date-layout)))
 (check "flat alignment" (= (flat-align) (ffi/layout-alignment date-layout)))

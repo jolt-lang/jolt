@@ -923,7 +923,7 @@
 ;; Literal, data-only layout descriptors. Keep the analyzer representation free
 ;; of reader objects so it survives self-hosting and can be embedded in the IR.
 (def ^:private ffi-layout-scalars
-  #{"int" "uint" "int8" "i8" "uint8" "u8" "byte" "char"
+  #{"int" "uint" "int8" "i8" "uint8" "u8" "byte" "char" "bool"
     "int16" "short" "uint16" "ushort" "int32" "uint32"
     "long" "ulong" "int64" "uint64" "size_t" "ssize_t" "iptr" "uptr"
     "double" "float" "pointer" "void*"})
@@ -979,15 +979,15 @@
 (defn- analyze-ffi-layout-array [form]
   (let [parts (vec (form-vec-items form))]
     (when-not (= 3 (count parts))
-      (throw (str "jolt.ffi array descriptor must be [:array positive-count element-type], got "
+      (throw (str "jolt.ffi array descriptor must be [:array element-type positive-count], got "
                   (pr-str form))))
-    (let [count (nth parts 1)]
+    (let [count (nth parts 2)]
       (when-not (and (integer? count) (pos? count))
         (throw (str "jolt.ffi array count must be a positive integer literal, got "
                     (pr-str count))))
       {:ffi-kind :array
        :count count
-       :type (analyze-ffi-layout-type (nth parts 2))})))
+       :type (analyze-ffi-layout-type (nth parts 1))})))
 
 (defn- analyze-ffi-layout-type [form]
   (cond

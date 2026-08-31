@@ -18,6 +18,129 @@ links everything. Older, broken, or absent Chez falls back to the pinned
 provision. `JOLT_SYSTEM_CHEZ=` (empty) forces provisioning; an explicit `CHEZ=`
 stays authoritative.
 
+`jolt.ffi` gained arenas and is now compatible with `babashka.ffi` name for name
+(#799). **Two breaking changes come with that**, both detailed under Changed
+below: `ffi/write` takes the value *before* the offset, `(write p t v [offset])`,
+which no runtime check can distinguish from the old order; and a fixed array in a
+layout is now `[:array element-type count]`, which does raise at compile time
+when transposed.
+
+### Added
+
+- **`jolt.ffi` arenas: a group of allocations with one lifetime (#799).** Every
+  foreign allocation used to be released one pointer at a time — `ffi/free` per
+  block, `free-callable` per callback, a `try`/`finally` per scope — so a
+  function holding half a dozen of them spent more lines releasing memory than
+  using it, and the failure for getting it wrong is a leak or a fault rather
+  than an error. An arena owns a group instead, and closing it releases the
+  whole group:
+
+  ```clojure
+  (with-open [a (ffi/confined-arena)]
+    (let [buf  (ffi/alloc a 4096)
+          name (ffi/string->ptr a "config.toml")
+          on-ev (ffi/callback a handle-event [:pointer :int] :void)]
+      ...))                              ; all three released here
+  ```
+
+  Four kinds, differing in who may use them and who closes them:
+  `confined-arena` for one thread (using it from another raises, rather than
+  two threads racing on one block list), `shared-arena` for any thread,
+  `global-arena` for the process, and `auto-arena` for memory released when the
+  collector reclaims the arena — the one a callback that C may invoke from a
+  thread jolt never started needs, since no scope can be its lifetime.
+  `with-open` closes an arena, `with-arena` is the confined arena with its
+  constructor spelled in, and `close-arena`, `arena?`, `arena-open?` and
+  `drain-auto-arenas!` are the rest of the vocabulary.
+
+  `alloc`, `string->ptr`, `clone`, `reinterpret` and `callback` all take an
+  arena in the same first position; `(alloc n)` with no arena is still the
+  caller-owned form, and the `with-alloc`/`with-out`/`with-layout`/
+  `with-c-string` helpers are unchanged.
+
+- **`jolt.ffi` is now name-for-name and semantics-for-semantics compatible with
+  `babashka.ffi`.** The two FFIs had the same job, the same type vocabulary and
+  largely the same shape, and disagreed in exactly the places that make a shim
+  in either direction hand-written rather than a namespace alias. New here,
+  matching babashka.ffi: `cfn`, `alignof`, `place`, `copy`, `clone`, `size`,
+  `address`, `segment`, `slice`, `reinterpret`, `pointer?`, `find-symbol`,
+  `load-system-library`, `callback`, `arena?`; a `:bool` type; docstrings, an
+  attribute map and the wrapper form on `defcfn`; a byte limit on
+  `ptr->string`; the typed `read-array`/`write-array` forms; `read` and `write`
+  over a whole layout, which decode a struct as a map and an array as a vector;
+  a `load-library` that takes an ordered list of candidates, accepts `:mac`
+  beside `:darwin`, and answers a `{:path ...}` library map naming the candidate
+  that loaded.
+
+- **`:&` declares a variadic C function**, as it does in babashka.ffi.
+  `:varargs` is jolt's older spelling of the same marker and still works; the
+  two are one code path, so every rule already gated for `:varargs` holds under
+  `:&`:
+
+  ```clojure
+  (ffi/defcfn c-fcntl "fcntl" [:int :int :& :int] :int)
+  ```
+
+  What jolt does *not* have is babashka.ffi's **bare** `:&` —
+  `[:string :int :&]`, where each call infers its own tail from the values it is
+  given. A `foreign-procedure`'s types are fixed when it is compiled, and a call
+  has nothing to compile a new one from, so the tail belongs to the binding: bind
+  one signature per tail shape. A bare marker raises saying exactly that, rather
+  than falling through to `unknown foreign type :&` — which is what a babashka
+  signature pasted in would otherwise have hit.
+
+  Where the two still differ, the substrate is why, and the namespace docstring
+  lists them: a jolt pointer is a raw address rather than a sized segment, so
+  `read`/`write` do not bounds-check and `size` answers what jolt was *told* (by
+  an arena allocation, `segment` or `reinterpret`) and 0 otherwise; `cfn` and
+  `callback` are macros, because Chez's `foreign-procedure` needs its types at
+  compile time; layouts have no `:union`; and the library-scoped 4-argument
+  `cfn` raises rather than quietly searching every loaded library, since a
+  declared `:jolt/native` already resolves its own symbols through its own
+  handle.
+
+- **`:bool`, a one-byte C boolean.** `_Bool` is one byte and jolt had no type
+  for it, so a `bool` parameter or result had to be bound as `:uint8` and
+  converted by hand — and a C predicate then answered the truthy number `0`.
+  `:bool` reads as `true`/`false` and writes on jolt truthiness, so `nil` and
+  `false` send 0 and every other value sends 1. It travels as `unsigned-8`
+  rather than through Chez's own int-sized `boolean` type, which is the wrong
+  width for `_Bool` and reads three bytes of whatever the callee left above the
+  result. Covered against a real `stdbool.h` witness in both directions,
+  including a C-invoked callback.
+
+### Changed
+
+- **BREAKING: `ffi/write` takes the value before the offset.** `(write p t v)`
+  and `(write p t v offset)`, which is `babashka.ffi`'s order; it was
+  `(write p t offset v)`. The two spellings cannot be told apart at runtime —
+  an offset and a value are both integers — so this is a silent behaviour change
+  for out-of-tree code, and the fix is mechanical: move the last argument of a
+  four-argument `write` into third place, and drop it when it is `0`. `read` is
+  unchanged, `write-field` is unchanged, and a three-argument `write` is new
+  rather than changed. Every call site in this repository was rewritten.
+
+- **BREAKING: a fixed array in a layout is `[:array element-type count]`.**
+  babashka.ffi's order; it was `[:array count element-type]`. Unlike `write`,
+  this one cannot pass silently — a count in the element position is not a type
+  and a type in the count position is not a positive integer, so the transposed
+  spelling raises at compile time, naming the descriptor.
+
+- **`ffi/alloc` answers ZEROED memory.** Both forms, arena and caller-owned. A
+  struct a caller only partly fills is the ordinary case, and malloc's leftovers
+  in the rest of it are a C-visible bug that reproduces only under load — the
+  three hand-written zero loops this replaced in `jolt.socket`, `jolt.nrepl` and
+  `jolt.mvn-http` are what the guarantee is worth. The fill is one block move,
+  not a per-byte loop.
+
+### Performance
+
+- **`ffi/string->ptr` copies the string in one block move.** It was a per-byte
+  `foreign-set!` loop — about 30ns a byte across the boundary, the cost the
+  buffer-I/O helpers in the same file exist to avoid, on the one path that had
+  kept it. The NUL terminator rides along in the same move, since a fresh
+  bytevector one byte longer is already zero there.
+
 ### Fixed
 
 - **`getPosixFilePermissions` and `getOwner` refused to run on hosts whose
