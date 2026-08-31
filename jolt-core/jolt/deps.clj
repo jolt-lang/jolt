@@ -1,7 +1,9 @@
 (ns jolt.deps
   "Resolve a deps.edn into an ordered list of source roots. A reduced
   tools.deps: :paths, :deps (`:git/url`+`:git/sha` / `:local/root` /
-  `:mvn/version`), :aliases, :tasks. Alias maps combine with the reference
+  `:mvn/version`), :aliases, :tasks. jolt's own keys are :jolt/native (shared
+  libraries to load), :jolt/build, :nrepl/middleware, and :jolt/min-version —
+  the oldest jolt the project or library works on, refused rather than run. Alias maps combine with the reference
   tools.deps semantics (jolt.deps.edn, lifted from clojure.tools.deps.edn):
   :extra-deps / :override-deps / :default-deps / :replace-deps (legacy :deps),
   :extra-paths / :replace-paths (legacy :paths), :main-opts.
@@ -910,7 +912,7 @@
 (defn resolve-deps
   "Expand a deps map through the tools.deps expansion engine, then collect the
   selected libraries' source roots and :jolt/native declarations in stable
-  first-inclusion order. Returns {:roots [...] :natives [...] :prep [...]
+  first-inclusion order. Returns {:roots [...] :natives [...] :min-versions [...] :prep [...]
   :libs {lib coord}} — :libs is the tools.deps lib map (selected coordinate
   per library).
 
@@ -956,6 +958,13 @@
                                 [root]))
                             infos))
         :natives (vec (mapcat (fn [{:keys [edn]}] (:jolt/native edn)) infos))
+        ;; Each dep's declared jolt floor, as [lib version] — checked by
+        ;; resolve-project against the running runtime. A LIBRARY is the common
+        ;; declarer: it knows which jolt its FFI bindings or host shims need, and
+        ;; the app that pulls it in does not.
+        :min-versions (vec (keep (fn [{:keys [lib edn]}]
+                                   (when-let [v (:jolt/min-version edn)] [lib v]))
+                                 infos))
         ;; libs whose deps.edn declares :deps/prep-lib — jolt runs no prep
         ;; steps, so their compiled/generated assets will be missing; the
         ;; caller warns with the lib names.
@@ -985,6 +994,84 @@
 ;; touches the network. On a hit every cached path is checked to still exist on
 ;; disk — a pruned gitlib checkout or a deleted jar/extraction is a miss, not an
 ;; error. A corrupt or unreadable cache file is a miss too, never an error.
+
+;; --- :jolt/min-version ------------------------------------------------------
+;; A project or a library declares the oldest jolt it works on, and a runtime
+;; below that refuses to load it rather than run it. Not every breaking change is
+;; visible at the call site — ffi/write's argument order moved, and the old and
+;; new spellings are both integers, so an older runtime writes to the wrong place
+;; and reports nothing — and a declared floor turns that into a message.
+;;
+;; Honoured by the jolt that READS the key, so it protects from this release
+;; onward and not before: an older jolt ignores it, as it ignores every key it
+;; does not know. That is the reason to add it now rather than at the next break.
+(defn- version-parts
+  "The leading numeric components of a version string, as a vector of longs.
+  Tolerates a `v` prefix and reads each component's numeric PREFIX, stopping at
+  the first component that has none — so \"v0.7.29-24-gabc\" is [0 7 29], the git
+  describe suffix riding along on the last component, and \"0.8\" is [0 8]. A
+  string with no numeric components at all (a source build's \"dev\") is []."
+  [v]
+  (let [v (str v)
+        v (if (and (pos? (count v)) (= "v" (subs v 0 1))) (subs v 1) v)]
+    (loop [parts (str/split v #"\.") acc []]
+      (if (empty? parts)
+        acc
+        (let [digits (re-find #"^[0-9]+" (first parts))]
+          (if digits
+            (recur (rest parts) (conj acc (parse-long digits)))
+            acc))))))
+
+(defn- version<
+  "True when version a orders before version b on their numeric components, a
+  missing component reading as 0 ([0 8] and [0 8 0] are the same version)."
+  [a b]
+  (let [x (version-parts a) y (version-parts b)
+        n (max (count x) (count y))
+        at (fn [v i] (or (get v i) 0))]
+    (loop [i 0]
+      (cond
+        (= i n) false
+        (< (at x i) (at y i)) true
+        (> (at x i) (at y i)) false
+        :else (recur (inc i))))))
+
+;; The decision, pure and separate from the throw: a source build fails no floor,
+;; so this is the only way the refusal is testable at all.
+(defn- min-version-failure
+  "nil when every declared floor is met, else [message ex-data] for the HIGHEST
+  unmet one — one message naming the newest thing needed, not one per dependency.
+  `declared` is a seq of [who version], `who` being a lib symbol or nil for the
+  project itself."
+  [running declared]
+  ;; A runtime naming no version — a source build answers "dev" — is never
+  ;; refused: it reads as 0.0.0, the oldest possible, while in practice it is the
+  ;; newest. The floor protects a released runtime, and those always name one.
+  (when (seq (version-parts running))
+    (let [unmet (filter (fn [[_ v]] (version< running v)) declared)]
+      (when (seq unmet)
+        ;; max-key would compare version VECTORS as numbers and throw the moment
+        ;; two floors were unmet — and never compare at all with one, so the
+        ;; crash hid behind every single-dependency project.
+        (let [[who wanted] (reduce (fn [a b] (if (version< (second a) (second b)) b a))
+                                   unmet)]
+          [(str "this project needs jolt " wanted " or newer, and this is "
+                running
+                (when who (str " (required by " who ")"))
+                ". Upgrade jolt, or set JOLT_SKIP_MIN_VERSION=1 to run anyway.")
+           {:jolt/running running
+            :jolt/required wanted
+            :jolt/required-by who
+            :jolt/unmet (vec unmet)}])))))
+
+(defn- check-min-versions!
+  "Refuse to run when the project, or any dependency, declares a jolt floor the
+  running runtime is below. JOLT_SKIP_MIN_VERSION runs anyway, for a runtime
+  whose version string understates what it actually carries."
+  [declared]
+  (when-not (getenv "JOLT_SKIP_MIN_VERSION")
+    (when-let [[msg data] (min-version-failure (jolt.host/jolt-version) declared)]
+      (throw (ex-info msg data)))))
 
 (defn- cpcache-enabled?
   "Same posture as the AOT namespace cache: ON by default, OFF under
@@ -1284,6 +1371,12 @@
   {:roots [...] :main-opts [...] :tasks {...} :natives [...]}; :natives are the
   project's + deps' :jolt/native shared-library declarations.
 
+  :jolt/min-version, declared by the project or by any dependency, is the oldest
+  jolt that entry works on; a runtime below it raises here rather than running
+  code written for a newer API. A library is the natural declarer — it knows
+  which jolt its FFI bindings or host shims need. JOLT_SKIP_MIN_VERSION=1
+  overrides, for a dev build off main (which reads as its last tag).
+
   A bb.edn beside (or instead of) the deps.edn contributes its :tasks always,
   and its :paths/:deps when the :tasks? option is set — see the comment above.
 
@@ -1357,7 +1450,8 @@
           ;; and an alias's :main-opts / :exec-fn and the project's :tasks come
           ;; from there. tools.deps' --skip-cp draws the line in the same place:
           ;; the merged edn and argmap, without calc-basis.
-          {dep-roots :roots dep-natives :natives prep-libs :prep dep-trace :trace}
+          {dep-roots :roots dep-natives :natives prep-libs :prep dep-trace :trace
+           dep-min-versions :min-versions}
           (when-not cp
             (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
                                          (abspath project-dir r))
@@ -1366,6 +1460,14 @@
                                    {:override-deps (:override-deps argmap)
                                     :default-deps (:default-deps argmap)
                                     :trace? trace?})))
+         ;; The floor is checked AFTER resolution, so a dep's own declaration is
+         ;; in hand — a library is the natural declarer, since it knows which
+         ;; jolt its bindings need and the app pulling it in does not. The
+         ;; project's own declaration is checked here too, and is what an app
+         ;; uses to pin the runtime it was written against.
+         _ (check-min-versions!
+            (concat (when-let [v (:jolt/min-version edn)] [[nil v]])
+                    dep-min-versions))
          _ (when (seq prep-libs)
              (warn "deps declare :deps/prep-lib steps jolt does not run "
                    "(their compiled/generated assets will be missing): "

@@ -72,6 +72,31 @@ when transposed.
   beside `:darwin`, and answers a `{:path ...}` library map naming the candidate
   that loaded.
 
+- **`:jolt/min-version` in `deps.edn`.** A project, or a library, declares the
+  oldest jolt it works on, and a runtime below that refuses to load it rather
+  than run it:
+
+  ```clojure
+  {:paths ["src"]
+   :jolt/min-version "0.8.0"}
+  ```
+
+  Not every breaking change is visible at the call site. `ffi/write`'s argument
+  order moved in this release, and the old and new spellings are both integers,
+  so an older runtime writes to the wrong place and reports nothing — the exact
+  failure a declared floor turns into a message. A **library** is the natural
+  declarer: it knows which jolt its FFI bindings or host shims need, and the app
+  pulling it in does not. An unmet floor names what is needed, what is running,
+  and which dependency asked; several unmet floors report the newest one.
+
+  The key is honoured by the jolt that reads it, so it protects from this release
+  onward and not before — an older jolt ignores it, as it ignores every key it
+  does not know. That is the reason it arrives now rather than at the next break.
+  A runtime that names no version (a source build answers `dev`) is never
+  refused, since it reads as the oldest possible while in practice being the
+  newest; `JOLT_SKIP_MIN_VERSION=1` runs anyway for a released runtime whose
+  version string understates what it carries.
+
 - **`:&` declares a variadic C function**, as it does in babashka.ffi.
   `:varargs` is jolt's older spelling of the same marker and still works; the
   two are one code path, so every rule already gated for `:varargs` holds under
