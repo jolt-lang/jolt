@@ -1544,6 +1544,34 @@
   {:suite "jolt-version" :label "property and host fn match the var" :expected "true" :expr "(= *jolt-version* (System/getProperty \"jolt.version\") (jolt.host/jolt-version))"}
   {:suite "add-deps" :label "inline :local/root dep becomes requirable" :expected ":pong" :expr "(do (require 'jolt.deps) (let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-adddep-unit\")] (jolt.host/sh (str \"rm -rf \" d)) (jolt.host/sh (str \"mkdir -p \" d \"/src/adddep\")) (spit (str d \"/deps.edn\") \"{}\") (spit (str d \"/src/adddep/core.clj\") \"(ns adddep.core) (defn ping [] :pong)\") (jolt.deps/add-deps {:deps {'adddep/adddep {:local/root d}}}) (require 'adddep.core) ((resolve 'adddep.core/ping))))"}
   {:suite "add-deps" :label "added roots append after existing roots" :expected "true" :expr "(do (require 'jolt.deps) (let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-adddep-unit\") before (vec (jolt.host/source-roots)) _ (jolt.deps/add-deps {:deps {'adddep/adddep {:local/root d}}}) after (vec (jolt.host/source-roots))] (= before (vec (take (count before) after)))))"}
+  ;; :jolt/min-version — the runtime floor a project or library declares. The
+  ;; comparison reads the LEADING NUMERIC components only, because the version
+  ;; string is a git describe: "v0.7.29-24-gabc" is 0.7.29 plus commits, and the
+  ;; commit count says nothing about which APIs are present. Component-wise, not
+  ;; lexicographic — 0.10.0 is newer than 0.8.0, which a string compare gets
+  ;; backwards, and that is the whole class of bug this comparison exists to avoid.
+  {:suite "min-version" :label "version-parts reads the numeric prefix of a git describe" :expected "true" :expr "(do (require 'jolt.deps) (let [p @#'jolt.deps/version-parts] (and (= [0 7 29] (p \"v0.7.29-24-g5ac1f4a0\")) (= [0 7 29] (p \"0.7.29\")) (= [0 8] (p \"0.8\")) (= [1 0 0] (p \"v1.0.0\")) (= [0 7 29] (p \"v0.7.29-dirty\")))))"}
+  {:suite "min-version" :label "version< compares components, not strings" :expected "true" :expr "(do (require 'jolt.deps) (let [lt @#'jolt.deps/version<] (and (lt \"0.7.29\" \"0.8.0\") (not (lt \"0.8.0\" \"0.7.29\")) (not (lt \"0.10.0\" \"0.8.0\")) (lt \"0.8.0\" \"0.10.0\") (not (lt \"0.8.0\" \"0.8\")) (not (lt \"0.8\" \"0.8.0\")) (not (lt \"v0.8.1-3-gabc\" \"0.8.0\")))))"}
+  {:suite "min-version" :label "a dev build reads as its last tag, so a floor above it is unmet" :expected "true" :expr "(do (require 'jolt.deps) (@#'jolt.deps/version< \"v0.7.29-24-g5ac1f4a0\" \"0.8.0\"))"}
+  ;; Pure, so the assertion does not need a runtime that actually fails the
+  ;; floor — under a source build nothing does, which is the case this gate runs
+  ;; in and the reason the decision is separated from the throw.
+  {:suite "min-version" :label "an unmet floor answers a message naming both versions" :expected "true" :expr "(do (require 'jolt.deps) (let [f (@#'jolt.deps/min-version-failure \"v0.7.29\" [[nil \"0.8.0\"]])] (and (some? f) (clojure.string/includes? (first f) \"0.8.0\") (clojure.string/includes? (first f) \"v0.7.29\") (clojure.string/includes? (first f) \"JOLT_SKIP_MIN_VERSION\") (= \"0.8.0\" (:jolt/required (second f))))))"}
+  {:suite "min-version" :label "a met floor answers nil" :expected "true" :expr "(do (require 'jolt.deps) (nil? (@#'jolt.deps/min-version-failure \"v0.8.0\" [[nil \"0.8.0\"] [(quote a/b) \"0.7.0\"]])))"}
+  ;; A library is the natural declarer, so an unmet dep floor has to name the dep.
+  {:suite "min-version" :label "an unmet dependency floor names the dependency" :expected "true" :expr "(do (require 'jolt.deps) (let [f (@#'jolt.deps/min-version-failure \"v0.7.29\" [[(quote minver/lib) \"98.0.0\"]])] (and (clojure.string/includes? (first f) \"98.0.0\") (clojure.string/includes? (first f) \"minver/lib\") (= (quote minver/lib) (:jolt/required-by (second f))))))"}
+  ;; Several unmet floors report ONE message, for the newest thing needed.
+  {:suite "min-version" :label "the highest unmet floor is the one reported" :expected "true" :expr "(do (require 'jolt.deps) (= \"0.10.0\" (:jolt/required (second (@#'jolt.deps/min-version-failure \"v0.7.0\" [[(quote a/a) \"0.8.0\"] [(quote b/b) \"0.10.0\"] [(quote c/c) \"0.9.0\"]])))))"}
+  {:suite "min-version" :label "a met project floor resolves" :expected "true" :expr "(do (require 'jolt.deps) (let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-minver-unit2\")] (jolt.host/sh (str \"rm -rf \" d)) (jolt.host/sh (str \"mkdir -p \" d \"/src\")) (spit (str d \"/deps.edn\") \"{:paths [\\\"src\\\"] :jolt/min-version \\\"0.0.1\\\"}\") (vector? (:roots (jolt.deps/resolve-project d)))))"}
+  ;; A LIBRARY is the natural declarer — it knows which jolt its FFI bindings
+  ;; need, and the app pulling it in does not. So a dep's floor has to be read
+  ;; and reported with the dep named.
+  ;; A source build answers "dev", which has no numeric components. Compared as
+  ;; 0.0.0 it is the OLDEST possible runtime and every floor refused it — so a
+  ;; contributor running from a clone could not run any project that declared
+  ;; one. An unnamed version is never refused.
+  {:suite "min-version" :label "a runtime that names no version is never refused" :expected "true" :expr "(do (require 'jolt.deps) (and (= [] (@#'jolt.deps/version-parts \"dev\")) (@#'jolt.deps/version< \"dev\" \"0.0.1\")))"}
+  {:suite "min-version" :label "JOLT_SKIP_MIN_VERSION is not consulted per-call but per-process" :expected "true" :expr "(do (require 'jolt.deps) (fn? @#'jolt.deps/check-min-versions!))"}
   {:suite "m2-repo" :label ":mvn/local-repo, JOLT_MAVEN_REPOSITORY, GRENADINE_MAVEN_REPOSITORY, HOME/.m2 precedence" :expected "true" :expr "(do (require 'jolt.deps) (let [m2 @#'jolt.deps/m2-repo-dir] (and (= \"/cfg\" (m2 \"/cfg\" \"/j\" \"/g\" \"/h\" \".\")) (= \"/j\" (m2 nil \"/j\" \"/g\" \"/h\" \".\")) (= \"/g\" (m2 nil nil \"/g\" \"/h\" \".\")) (= \"/h/.m2/repository\" (m2 nil nil nil \"/h\" \".\")))))"}
   {:suite "gitlibs-cache" :label "JOLT_GITLIBS_DIR, GRENADINE_GITLIBS_DIR, GITLIBS, HOME precedence" :expected "true" :expr "(do (require 'jolt.deps) (let [cache @#'jolt.deps/gitlibs-dir] (and (= \"/j\" (cache \"/j\" \"/g\" \"/t\" \"/h\")) (= \"/g/jolt\" (cache nil \"/g\" \"/t\" \"/h\")) (= \"/t/jolt\" (cache nil nil \"/t\" \"/h\")) (= \"/h/.jolt/gitlibs\" (cache nil nil nil \"/h\")))))"}
   {:suite "gitlibs-cache" :label "require-deps host exposes the effective Jolt Gitlibs directory" :expected "true" :expr "(do (require 'jolt.deps) (= (@#'jolt.deps/gitlibs-dir) ((:gitlibs-dir (@#'jolt.deps/required-host)))))"}
