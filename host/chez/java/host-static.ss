@@ -351,24 +351,6 @@
              "Socket" "java.net.Socket"
              "ServerSocket" "java.net.ServerSocket"
              "InetSocketAddress" "java.net.InetSocketAddress")
-           (box #f))
-   ;; clojure.jdbc resolves the java.sql constants as its namespaces COMPILE, so a
-   ;; program that requires jdbc.core reaches for ResultSet before anything of
-   ;; jolt-lang/db has loaded. db.jdbc-shim is what registers them, and naming it
-   ;; here is what lets `(:require [jdbc.core :as jdbc])` compile on its own — the
-   ;; published library, unmodified, exactly as on the JVM.
-   ;;
-   ;; The install namespace is db.jdbc-shim and NOT db.jdbc: db.jdbc extends
-   ;; IConnection and has to load AFTER clojure.jdbc's own extensions to win, so
-   ;; autoloading it from a miss raised mid-compile would invert the order it
-   ;; depends on. The shim only registers statics and has no clojure.jdbc
-   ;; namespace among its requires, so it cannot recurse into the compile that
-   ;; triggered it.
-   (vector "db.jdbc-shim" "io.github.jolt-lang/db"
-           '("ResultSet" "java.sql.ResultSet"
-             "Connection" "java.sql.Connection"
-             "Statement" "java.sql.Statement"
-             "DriverManager" "java.sql.DriverManager")
            (box #f))))
 (define (lib-provider-for class)
   (let loop ((ps lib-class-providers))
