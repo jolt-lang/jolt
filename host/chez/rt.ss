@@ -1678,6 +1678,14 @@
 ;; a lookup resolves against is the final one.
 (load "host/chez/java/class-extensions.ss")
 
+;; Arm the jhost shortcut in the .method dispatcher, now that every built-in arm
+;; has registered. It captures the arm count below the jhost tier as its baseline
+;; and stands down whenever that changes, so this has to run after the LAST
+;; built-in registration and before any library one — which is here: the seam that
+;; lets a library add an arm (class-extensions.ss, and jolt.host/extend-class!
+;; through it) is loaded above and registers nothing until it is called.
+(install-jhost-fast-arm! jhost-table-fast-arm)
+
 ;; Native stack traces: jv$ns$name -> source registry + continuation frame walk +
 ;; uncaught-throwable renderer. After the printers/equality it relies on.
 (load "host/chez/source-registry.ss")

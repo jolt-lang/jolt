@@ -1561,9 +1561,11 @@
         (cons "cancel" (lambda (self . _) #f))))
 ;; executor-service state: #(shutdown? queue-box queue-mutex task-cond
 ;; live-workers advisory-queue-capacity core-workers max-workers keep-alive-ms
-;; idle-workers queue-depth term-cond) — the capacity is #f except for a
-;; ThreadPoolExecutor built with an ArrayBlockingQueue; .getQueue's view subtracts
-;; the live depth from it.
+;; idle-workers queue-depth term-cond worker-interrupt-boxes) — the capacity is #f
+;; except for a ThreadPoolExecutor built with an ArrayBlockingQueue; .getQueue's
+;; view subtracts the live depth from it. The last slot is one interrupt flag per
+;; live worker, which is what lets shutdownNow reach a task that is already
+;; running (see executor-shutdown-now!).
 ;;
 ;; TWO CONDITIONS, one mutex. task-cond carries "a task is queued, or the pool is
 ;; shutting down" to the WORKERS, which are threads; term-cond carries "shut down
@@ -1620,7 +1622,7 @@
 (define (make-executor* core-n max-n keep-alive-ms cap)
   (let ((self (make-jhost "executor-service"
                           (vector #f (box (cons '() '())) (make-mutex) (make-condition) 0
-                                  cap core-n max-n keep-alive-ms 0 0 (make-condition)))))
+                                  cap core-n max-n keep-alive-ms 0 0 (make-condition) '()))))
     (let ((st (jhost-state self)))
       ;; The core workers, eagerly. Above core, a worker appears when a task
       ;; arrives with nobody idle to take it, and not before: a cached pool that
@@ -1656,14 +1658,25 @@
 ;; never run is a failure the caller has to see (the JVM's own answer to a thread
 ;; it cannot create is to reject the task, not to queue it silently).
 (define (executor-spawn-worker! st)
-  (guard (e (#t (let ((none-left? (jolt-with-mutex (vector-ref st 2)
-                                    (vector-set! st 4 (fx- (vector-ref st 4) 1))
-                                    (jolt-cv-wake! (vector-ref st 11))
-                                    (fx=? 0 (vector-ref st 4)))))
-                  (when none-left? (raise e)))))
-    (fork-thread (lambda ()
-      (*txn* #f)      ; worker must not inherit the creating thread's txn
-      (executor-worker-loop st)))))
+  ;; The worker's interrupt flag, made and REGISTERED here rather than by the
+  ;; thread itself: a shutdownNow landing between the claim and the new thread's
+  ;; first instruction has to find this worker, and a flag the worker allocates on
+  ;; arrival is not there to be found. It is the same box the worker adopts as its
+  ;; own, so a task's (Thread/currentThread) .isInterrupted and the pool's shutdown
+  ;; are ONE flag — the shape future-call and Thread.start already use.
+  (let ((ibox (box #f)))
+    (jolt-with-mutex (vector-ref st 2)
+      (vector-set! st 12 (cons ibox (vector-ref st 12))))
+    (guard (e (#t (let ((none-left? (jolt-with-mutex (vector-ref st 2)
+                                      (vector-set! st 12 (remq ibox (vector-ref st 12)))
+                                      (vector-set! st 4 (fx- (vector-ref st 4) 1))
+                                      (jolt-cv-wake! (vector-ref st 11))
+                                      (fx=? 0 (vector-ref st 4)))))
+                    (when none-left? (raise e)))))
+      (fork-thread (lambda ()
+        (*txn* #f)      ; worker must not inherit the creating thread's txn
+        (adopt-interrupt-box! ibox)
+        (executor-worker-loop st ibox))))))
 
 ;; Dequeue, with the mutex held. Callers test queue-depth first.
 (define (executor-dequeue! st)
@@ -1699,7 +1712,8 @@
 ;; decrementing under one hold makes the two orders the only two: an enqueue
 ;; before it sees this worker idle and waiting (and needs no new one, because the
 ;; wake sends it back to the queue), one after sees the count without it.
-(define (executor-worker-exit! st)
+(define (executor-worker-exit! st ibox)
+  (vector-set! st 12 (remq ibox (vector-ref st 12)))
   (vector-set! st 4 (fx- (vector-ref st 4) 1))
   ;; Announced on term-cond only, and only to a waiter that can care: what
   ;; awaitTermination waits for is live 0 with the pool shut down, so a keep-alive
@@ -1716,14 +1730,19 @@
 ;; woke every idle worker for one task resumes the losers waiting for what is LEFT
 ;; of their keep-alive rather than restarting it — the same reason Thread.join and
 ;; the waits above carry deadlines rather than durations.
-(define (executor-take-job! st)
+(define (executor-take-job! st ibox)
   (let poll ((deadline #f))
-    (cond ((fx>? (vector-ref st 10) 0) (executor-dequeue! st))
-          ((vector-ref st 0) (executor-worker-exit! st))   ; shutdown + drained
+    (cond ((fx>? (vector-ref st 10) 0)
+           ;; Taking a task CLEARS the flag, unless the pool is stopping: an
+           ;; interrupt aimed at the last task is not for this one, and the JVM's
+           ;; runWorker clears it at the same point and for the same reason.
+           (set-box! ibox #f)
+           (executor-dequeue! st))
+          ((vector-ref st 0) (executor-worker-exit! st ibox))   ; shutdown + drained
           ((and (vector-ref st 8) (fx>? (vector-ref st 4) (vector-ref st 6)))
            (let ((dl (or deadline (+ (now-millis) (vector-ref st 8)))))
              (if (>= (now-millis) dl)
-                 (executor-worker-exit! st)                ; idle past keep-alive
+                 (executor-worker-exit! st ibox)               ; idle past keep-alive
                  (begin (executor-idle-wait! st (jolt-millis->time dl))
                         (poll dl)))))
           (else (executor-idle-wait! st #f) (poll deadline)))))
@@ -1737,13 +1756,13 @@
 ;; worker for free, because a live count below max with a task waiting is exactly
 ;; what the growth rule starts one on (the JVM replaces an abruptly-dead worker
 ;; too, for the same reason).
-(define (executor-worker-loop st)
-  (guard (e (#t (jolt-with-mutex (vector-ref st 2) (executor-worker-exit! st))
+(define (executor-worker-loop st ibox)
+  (guard (e (#t (jolt-with-mutex (vector-ref st 2) (executor-worker-exit! st ibox))
                 (guard (_ (#t #f))
                   (display "Exception in executor worker:\n" (current-error-port))
                   (jolt-report-throwable e (current-error-port)))))
     (let loop ()
-      (let ((job (jolt-with-mutex (vector-ref st 2) (executor-take-job! st))))
+      (let ((job (jolt-with-mutex (vector-ref st 2) (executor-take-job! st ibox))))
         (when job (job) (loop))))))
 
 ;; shutdown: stop accepting, let what is queued drain.
@@ -1767,11 +1786,24 @@
 ;; returned rather than discarded: the returned procedures are callable, and calling
 ;; one runs that task on the caller's thread, the same recovery .run gives there.
 ;;
-;; What jolt CANNOT do is the other half of shutdownNow, interrupting the tasks
-;; already running: the workers do not carry an interrupt flag for a shutdown to
-;; set, so a task in Thread/sleep or a blocking read keeps going. The JVM
-;; interrupts those threads. Tracked; a worker would have to adopt an interrupt box
-;; the way Thread.start does.
+;; The other half of shutdownNow is INTERRUPTING the tasks already running, and it
+;; does that too: every live worker carries an interrupt flag (executor-spawn-worker!
+;; above), so a task parked in Thread/sleep, a channel op, a blocking queue or a
+;; Future.get is thrown out of it with InterruptedException, exactly as the JVM
+;; throws one there. The flag first and the poke second, which is the order every
+;; interrupt in this runtime uses: the flag is what a woken waiter reads, and a wake
+;; that arrives before it is set says nothing.
+;;
+;; A task in a computation the runtime cannot see — a tight loop, a blocking FFI
+;; call — still runs to the end. The JVM's interrupt is no different: it unblocks
+;; the waits it knows about and sets a flag for everything else to notice.
+(define (executor-interrupt-workers! st)
+  (let ((boxes (jolt-with-mutex (vector-ref st 2) (vector-ref st 12))))
+    (for-each (lambda (b) (set-box! b #t)) boxes)
+    ;; poked OUTSIDE the queue mutex: waking a wait takes the waiter's own mutex,
+    ;; and a task blocked on something that wants this pool's mutex would deadlock
+    ;; against a poke that held it.
+    (for-each jolt-interrupt-wake-waits! boxes)))
 (define (executor-drain-queue! st)
   (let* ((q (unbox (vector-ref st 1)))
          (jobs (append (car q) (reverse (cdr q)))))
@@ -1786,6 +1818,7 @@
                      (jolt-cv-wake! (vector-ref st 3))
                      (jolt-cv-wake! (vector-ref st 11))
                      jobs))))
+    (executor-interrupt-workers! st)
     (apply jolt-vector dropped)))
 
 ;; The wait awaitTermination and close share. DEADLINE #f waits for as long as it
@@ -1817,6 +1850,38 @@
   (jolt-throw (jolt-host-throwable
                "java.util.concurrent.RejectedExecutionException"
                "task rejected from executor: it is shut down")))
+;; GROWING ON A HANDOFF THAT FAILED, which is the JVM's rule and not the one a
+;; queue-depth test gives you on its own.
+;;
+;; A cached pool grows there when offering the task to a SynchronousQueue fails,
+;; and it fails only when no worker is at the handoff point to take it. jolt has an
+;; asynchronous queue, so the same test written directly — is the depth above the
+;; idle count — answers yes in a case the JVM's never sees: a worker that is
+;; running, or is queued behind the producer on this very mutex, is a worker about
+;; to take the task, and it counts as idle in neither. A producer in a tight loop
+;; wins that mutex race most of the time, so the depth outruns the idle count for
+;; reasons that have nothing to do with the pool being short of workers, and the
+;; pool grows threads which then contend for the same mutex and slow the workers
+;; down further — the feedback the wake fix removed one source of, arriving by
+;; another road.
+;;
+;; Measured, once the dispatch shortcut made the producer 2.4x faster and made it
+;; worse: 200k no-op tasks peaked at 25-37 workers and cost 10.6us each, against 7
+;; workers and 8.9us before the producer sped up. A single-worker pool ran the same
+;; tasks at 1.8us. The pool was paying for threads that were in its way.
+;;
+;; So the decision is made the way the JVM makes it: OFFER FIRST. When the depth
+;; test says grow, the enqueue drops the mutex, yields the CPU to whoever wants it,
+;; and asks again. A worker that was one mutex acquisition away from this task now
+;; has it, and there is nothing to grow for; a pool whose workers are all blocked
+;; still has the task sitting there, and grows. The yield costs a syscall on the
+;; path that was about to fork a thread for ~80us, and nothing at all on the path
+;; that was not.
+(define (executor-grow? st)
+  (jolt-with-mutex (vector-ref st 2)
+    (and (not (vector-ref st 0))
+         (fx>? (vector-ref st 10) (vector-ref st 9))
+         (executor-claim-worker! st))))
 (define (executor-enqueue! self job)
   (let* ((st (jhost-state self))
          (action (jolt-with-mutex (vector-ref st 2)
@@ -1833,16 +1898,24 @@
                       ;; miss.
                       (when (fx>? (vector-ref st 9) 0)
                         (jolt-cv-signal-one! (vector-ref st 3)))
-                      ;; Grow if this task has no idle worker waiting to take it.
-                      (if (and (fx>? (vector-ref st 10) (vector-ref st 9))
-                               (executor-claim-worker! st))
-                          'spawn
+                      ;; No idle worker waiting to take this task — which is a
+                      ;; reason to grow only if it is still true once the workers
+                      ;; have had their turn at the mutex, and only if there is
+                      ;; room to grow at all. A pool at its maximum (every fixed
+                      ;; pool, always) must not pay the yield to be told what its
+                      ;; own size already says: that check costs a fixed pool
+                      ;; nothing and it was costing it 0.9us a task without it.
+                      (if (and (fx<? (vector-ref st 4) (vector-ref st 7))
+                               (fx>? (vector-ref st 10) (vector-ref st 9)))
+                          'offer
                           #f))))))
-    ;; Both of these happen with the mutex RELEASED: a fork takes ~80us and the
-    ;; queue cannot be shut for that long, and a throw has no business unwinding
-    ;; through a lock region it does not need to hold.
+    ;; All of these happen with the mutex RELEASED: a fork takes ~80us and the
+    ;; queue cannot be shut for that long, a yield holding it would hand the CPU on
+    ;; while keeping the workers out, and a throw has no business unwinding through
+    ;; a lock region it does not need to hold.
     (case action
-      ((spawn) (executor-spawn-worker! st))
+      ((offer) (thread-yield!)
+               (when (executor-grow? st) (executor-spawn-worker! st)))
       ((reject) (executor-reject-task! st))
       (else (void)))))
 (let ((single (lambda _ (make-executor 1)))

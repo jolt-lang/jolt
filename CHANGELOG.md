@@ -149,6 +149,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A cached pool grows on a handoff that failed, not on a queue that is deep.**
+  The JVM's rule is that a cached pool starts a thread when offering the task to a
+  `SynchronousQueue` fails, and it fails only when no worker is at the handoff point
+  to take it. jolt has an asynchronous queue, so the same test written directly — is
+  the depth above the idle count — says yes in a case the JVM's never sees: a worker
+  that is *running*, or that is queued behind the producer on the very mutex the
+  producer holds, is a worker about to take the task, and counts as idle in neither.
+  A producer in a tight loop wins that mutex race most of the time, so the pool grew
+  threads which then contended for the same mutex and slowed the workers down
+  further.
+
+  Making the dispatcher above 2.4x faster made this visible by making the producer
+  faster: the same 200k no-op burst went from 7 workers to 25-37 and from 8.9µs a
+  task to 10.6µs, while one worker ran the identical tasks at 1.8µs. The pool was
+  paying for threads that were in its way.
+
+  The decision is now made the way the JVM makes it — **offer first**. When the
+  depth test says grow, the enqueue drops the mutex, yields, and asks again: a worker
+  that was one acquisition away from the task now has it and there is nothing to grow
+  for, while a pool whose workers are all blocked still has the task sitting there
+  and grows. The yield is paid only on the path that was about to fork a thread for
+  ~80µs, and a pool at its maximum (every fixed pool, always) skips the whole thing.
+
+  | 200k tasks through `.execute` | before | after | JVM |
+  |---|---|---|---|
+  | single-thread pool | 4.3 µs | **1.7 µs** | 9.1 µs |
+  | fixed pool of 4 | 7.3 µs | **5.8 µs** | 2.8 µs |
+  | four producers, one cached pool | 11.0 µs | **9.5 µs** | 2.2 µs |
+  | submit + get round trip | 15.8 µs | **9.8 µs** | 7.2 µs |
+  | cached pool | 8.9 µs (7 threads) | 9.0 µs (11-13) | 5.2 µs (8) |
+
+  The 64-blocking-task row still reaches exactly 64 workers, which is the property
+  this rule exists to keep: growth answers a pool that cannot make progress, and
+  declines a pool that is merely busy.
+
+- **A `.method` call on a host object stops walking the whole dispatch chain
+  first.** The `.method` dispatcher resolves a call by trying an ordered list of
+  arms, and the arm that answers for a host shim — a queue, a stream, a socket, an
+  executor, a `Path`, anything with a `jhost` method table — is the LAST one. So
+  every interop call on one of those was resolved by calling nine arms above it and
+  being told "not mine" nine times, before the two hashtable lookups that had the
+  answer all along.
+
+  That is 316ns of the 492ns a call took, measured on a shim method whose whole
+  body is one `vector-ref`, and every host object in the runtime paid it:
+
+  | | before | after |
+  |---|---|---|
+  | `.size` on an `ArrayBlockingQueue` (dispatch and nothing else) | 492 ns | **198 ns** |
+  | `.peek` (dispatch + the queue's mutex) | 603 ns | 287 ns |
+  | `.offer`+`.poll` | 1852 ns | 935 ns |
+  | `.put`+`.take` | 2011 ns | 1204 ns |
+
+  A shortcut ahead of the chain answers exactly what the bottom arm would have
+  answered for a table HIT, and 'pass for everything else, so the chain still
+  decides every other case in the same order it did. It is armed once every
+  built-in arm has registered and **stands down by itself** if that ever changes:
+  the baseline is the number of arms below the jhost tier at arming time, so a user
+  override (`jolt.host/extend-class!`) or any arm a library adds below that tier
+  puts every call back on the full chain — which is the only way an arm written to
+  intercept a host object keeps intercepting it. `.getClass` (the universal arm
+  owns it) and `java.nio.file.Path` (the one tag whose methods live in an arm
+  above rather than in a table, and which says so out loud now) are excluded.
+
+  This is why an `ArrayBlockingQueue` looked 22x slower than the JVM's: the queue
+  was not the problem, the road to it was.
+
 - **An executor enqueue wakes one worker, not all of them (#819).** The pool's
   workers and its `awaitTermination` waited on ONE condition, so every enqueue
   broadcast to every waiter: with 130 idle workers, one task woke all 130, and
@@ -257,9 +324,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rest" ran the rest: a caller shutting a pool down hard because its work had
     become irrelevant got every queued task executed anyway, and an empty list
     claiming nothing had been pending. The returned procedures are callable, so a
-    caller can still run one itself, as `.run` lets them on the JVM. What jolt still
-    cannot do is the other half — interrupting the tasks already RUNNING, which
-    needs the workers to carry an interrupt flag a shutdown can set.
+    caller can still run one itself, as `.run` lets them on the JVM.
+  - **`shutdownNow` also interrupts the tasks already running.** Every worker now
+    carries an interrupt flag — the same box its `(Thread/currentThread)` hands out,
+    so the two spellings are one flag — and `shutdownNow` sets them all and pokes
+    the waits, so a task parked in `Thread/sleep`, a channel op, a blocking queue or
+    a `Future.get` is thrown out with `InterruptedException` exactly where the JVM
+    throws one. Plain `shutdown` still interrupts nothing, and a worker's flag is
+    cleared before it takes its next task, so an interrupt aimed at one task cannot
+    land on the next (both checked against reference Clojure). A task in a
+    computation the runtime cannot see — a tight loop, a blocking FFI call — still
+    runs to the end; the JVM's interrupt is no different.
   - **`close` blocks until the pool has terminated**, as the JVM's has since 19.
     It used to return the moment the flag was set, so the one spelling of shutdown
     that promises the work is finished when it returns was the one that did not

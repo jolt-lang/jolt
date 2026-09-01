@@ -331,7 +331,13 @@
 ;; string/keyword/symbol/Object-method surface). A host shim / library registers
 ;; an arm with register-method-arm! instead of set!-wrapping the dispatcher.
 (define method-dispatch-arms '())   ; list of (priority . arm), ascending priority
+;; How many arms sit BELOW the jhost tier. The fast path at the bottom of this
+;; file is only sound while that number is the one it was installed against — see
+;; install-jhost-fast-arm!.
+(define method-arms-below-host-type 0)
 (define (register-method-arm! priority arm)
+  (when (< priority arm-priority-host-type)
+    (set! method-arms-below-host-type (fx+ method-arms-below-host-type 1)))
   (set! method-dispatch-arms
     (let ins ((as method-dispatch-arms))
       (cond ((null? as) (list (cons priority arm)))
@@ -356,12 +362,45 @@
 (define arm-priority-nio-path 42)     ; java.nio.file.Path methods (above jfile)
 (define arm-priority-htable 43)       ; tagged htable method registry
 (define arm-priority-host-type 44)    ; jhost/number/string per-type dispatch
+;; THE JHOST SHORTCUT. A .method call on a host shim — a queue, a stream, a socket,
+;; an executor, a Path — is resolved by the arm at the BOTTOM of the chain, so it
+;; used to be found by calling every arm above it first and being told 'pass nine
+;; times. That cost 316ns of the 492ns an interop call took, measured on a shim
+;; method whose whole body is one vector-ref, and it is paid by every host object
+;; in the runtime: an ArrayBlockingQueue put+take pair went from 2011ns to 974ns
+;; with it removed.
+;;
+;; The shortcut answers only what the bottom arm would have answered identically —
+;; a receiver that is a jhost, a method its own tag's table defines, and nothing
+;; above claiming it — so the chain still decides everything else, in order.
+;; jolt-nil-safe: it returns 'pass for a miss, never #f, because #f is a legal
+;; RESULT and a miss that read as one would run the method twice.
+;;
+;; INSTALLED, not compiled in, and self-disabling. It lives in java/host-static.ss
+;; (which owns the tables) and is armed once every built-in arm has registered;
+;; the baseline is the number of arms below the jhost tier at that moment, and the
+;; shortcut steps aside the moment that number changes. So a user override
+;; (jolt.host/extend-class!, priority 1, registered lazily) or any arm a library
+;; adds below the tier puts every call back on the full chain, which is the only
+;; way an arm that was written to intercept a jhost keeps intercepting it.
+(define jhost-fast-arm #f)
+(define jhost-fast-arm-baseline -1)
+(define (install-jhost-fast-arm! f)
+  (set! jhost-fast-arm f)
+  (set! jhost-fast-arm-baseline method-arms-below-host-type))
+
 (define (record-method-dispatch obj method-name rest-args)
-  (let loop ((as method-dispatch-arms))
-    (if (null? as)
-        (record-method-dispatch-base obj method-name rest-args)
-        (let ((r ((cdar as) obj method-name rest-args)))
-          (if (eq? r 'pass) (loop (cdr as)) r)))))
+  (let ((r (if (and jhost-fast-arm
+                    (fx=? method-arms-below-host-type jhost-fast-arm-baseline))
+               (jhost-fast-arm obj method-name rest-args)
+               'pass)))
+    (if (eq? r 'pass)
+        (let loop ((as method-dispatch-arms))
+          (if (null? as)
+              (record-method-dispatch-base obj method-name rest-args)
+              (let ((r ((cdar as) obj method-name rest-args)))
+                (if (eq? r 'pass) (loop (cdr as)) r))))
+        r)))
 
 ;; Strings are the most common interop receiver in library code (honeysql's
 ;; format path alone is .charAt/.length/.indexOf/.toString per entity), and the
