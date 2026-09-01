@@ -160,6 +160,35 @@
        (list->cseq (if asc keep (reverse keep)))))
     (else (dispatch-miss obj method rest))))
 
+;; Tags an arm ABOVE the jhost tier claims for itself. Only java.nio.file's Path is
+;; one today (nio-path? is a jhost with that tag, and its arm sits at 42), and it
+;; has no method table of its own, so the shortcut below would already miss it —
+;; this says so out loud instead, because the day someone gives that tag a table is
+;; the day a silent shortcut would take the arm's methods away from it.
+(define jhost-early-arm-tags (make-hashtable string-hash string=?))
+(define (register-early-arm-tag! tag) (hashtable-set! jhost-early-arm-tags tag #t))
+
+;; The shortcut record-method-dispatch arms itself with (records-dispatch.ss, where
+;; the conditions it is sound under are written out). It answers exactly what the
+;; arm below answers for a table HIT and nothing else: a miss, a tag some arm above
+;; claims, or .getClass — which the universal getclass arm owns, and which one
+;; table (java.lang.Class's own) also defines — all say 'pass and take the chain.
+;; The two guards are tested AFTER the table hit, not before it: a miss has to walk
+;; the chain either way, and the tags an arm above claims have no table at all, so
+;; ordering it this way keeps the common call down to the two lookups the arm below
+;; would have done anyway.
+(define (jhost-table-fast-arm obj method-name rest-args)
+  (if (jhost? obj)
+      (let* ((tag (jhost-tag obj))
+             (mh (hashtable-ref host-methods-tbl tag #f))
+             (f (and mh (hashtable-ref mh method-name #f))))
+        (if (and f
+                 (not (string=? method-name "getClass"))
+                 (not (hashtable-ref jhost-early-arm-tags tag #f)))
+            (apply f obj (if (jolt-nil? rest-args) '() (seq->list rest-args)))
+            'pass))
+      'pass))
+
 (register-method-arm! arm-priority-host-type
   (lambda (obj method-name rest-args)
     (cond

@@ -149,6 +149,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A `.method` call on a host object stops walking the whole dispatch chain
+  first.** The `.method` dispatcher resolves a call by trying an ordered list of
+  arms, and the arm that answers for a host shim — a queue, a stream, a socket, an
+  executor, a `Path`, anything with a `jhost` method table — is the LAST one. So
+  every interop call on one of those was resolved by calling nine arms above it and
+  being told "not mine" nine times, before the two hashtable lookups that had the
+  answer all along.
+
+  That is 316ns of the 492ns a call took, measured on a shim method whose whole
+  body is one `vector-ref`, and every host object in the runtime paid it:
+
+  | | before | after |
+  |---|---|---|
+  | `.size` on an `ArrayBlockingQueue` (dispatch and nothing else) | 492 ns | **198 ns** |
+  | `.peek` (dispatch + the queue's mutex) | 603 ns | 287 ns |
+  | `.offer`+`.poll` | 1852 ns | 935 ns |
+  | `.put`+`.take` | 2011 ns | 1204 ns |
+
+  A shortcut ahead of the chain answers exactly what the bottom arm would have
+  answered for a table HIT, and 'pass for everything else, so the chain still
+  decides every other case in the same order it did. It is armed once every
+  built-in arm has registered and **stands down by itself** if that ever changes:
+  the baseline is the number of arms below the jhost tier at arming time, so a user
+  override (`jolt.host/extend-class!`) or any arm a library adds below that tier
+  puts every call back on the full chain — which is the only way an arm written to
+  intercept a host object keeps intercepting it. `.getClass` (the universal arm
+  owns it) and `java.nio.file.Path` (the one tag whose methods live in an arm
+  above rather than in a table, and which says so out loud now) are excluded.
+
+  This is why an `ArrayBlockingQueue` looked 22x slower than the JVM's: the queue
+  was not the problem, the road to it was.
+
 - **An executor enqueue wakes one worker, not all of them (#819).** The pool's
   workers and its `awaitTermination` waited on ONE condition, so every enqueue
   broadcast to every waiter: with 130 idle workers, one task woke all 130, and

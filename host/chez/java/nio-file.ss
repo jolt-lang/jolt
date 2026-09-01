@@ -237,6 +237,9 @@
   (register-class-statics! "java.nio.file.FileSystems" fs-statics))
 
 ;; nio-path method dispatch (priority above the jfile arm).
+;; A Path is a jhost, so it is the one tag whose methods live above the jhost tier
+;; rather than in a method table. Declared, so the jhost shortcut leaves it alone.
+(register-early-arm-tag! "nio-path")
 (register-method-arm! arm-priority-nio-path
   (lambda (obj method-name rest-args)
     (if (nio-path? obj)
