@@ -149,6 +149,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A cached pool grows on a handoff that failed, not on a queue that is deep.**
+  The JVM's rule is that a cached pool starts a thread when offering the task to a
+  `SynchronousQueue` fails, and it fails only when no worker is at the handoff point
+  to take it. jolt has an asynchronous queue, so the same test written directly — is
+  the depth above the idle count — says yes in a case the JVM's never sees: a worker
+  that is *running*, or that is queued behind the producer on the very mutex the
+  producer holds, is a worker about to take the task, and counts as idle in neither.
+  A producer in a tight loop wins that mutex race most of the time, so the pool grew
+  threads which then contended for the same mutex and slowed the workers down
+  further.
+
+  Making the dispatcher above 2.4x faster made this visible by making the producer
+  faster: the same 200k no-op burst went from 7 workers to 25-37 and from 8.9µs a
+  task to 10.6µs, while one worker ran the identical tasks at 1.8µs. The pool was
+  paying for threads that were in its way.
+
+  The decision is now made the way the JVM makes it — **offer first**. When the
+  depth test says grow, the enqueue drops the mutex, yields, and asks again: a worker
+  that was one acquisition away from the task now has it and there is nothing to grow
+  for, while a pool whose workers are all blocked still has the task sitting there
+  and grows. The yield is paid only on the path that was about to fork a thread for
+  ~80µs, and a pool at its maximum (every fixed pool, always) skips the whole thing.
+
+  | 200k tasks through `.execute` | before | after | JVM |
+  |---|---|---|---|
+  | single-thread pool | 4.3 µs | **1.7 µs** | 9.1 µs |
+  | fixed pool of 4 | 7.3 µs | **5.8 µs** | 2.8 µs |
+  | four producers, one cached pool | 11.0 µs | **9.5 µs** | 2.2 µs |
+  | submit + get round trip | 15.8 µs | **9.8 µs** | 7.2 µs |
+  | cached pool | 8.9 µs (7 threads) | 9.0 µs (11-13) | 5.2 µs (8) |
+
+  The 64-blocking-task row still reaches exactly 64 workers, which is the property
+  this rule exists to keep: growth answers a pool that cannot make progress, and
+  declines a pool that is merely busy.
+
 - **A `.method` call on a host object stops walking the whole dispatch chain
   first.** The `.method` dispatcher resolves a call by trying an ordered list of
   arms, and the arm that answers for a host shim — a queue, a stream, a socket, an

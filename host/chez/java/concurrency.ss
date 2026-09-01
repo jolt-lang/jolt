@@ -1850,6 +1850,38 @@
   (jolt-throw (jolt-host-throwable
                "java.util.concurrent.RejectedExecutionException"
                "task rejected from executor: it is shut down")))
+;; GROWING ON A HANDOFF THAT FAILED, which is the JVM's rule and not the one a
+;; queue-depth test gives you on its own.
+;;
+;; A cached pool grows there when offering the task to a SynchronousQueue fails,
+;; and it fails only when no worker is at the handoff point to take it. jolt has an
+;; asynchronous queue, so the same test written directly — is the depth above the
+;; idle count — answers yes in a case the JVM's never sees: a worker that is
+;; running, or is queued behind the producer on this very mutex, is a worker about
+;; to take the task, and it counts as idle in neither. A producer in a tight loop
+;; wins that mutex race most of the time, so the depth outruns the idle count for
+;; reasons that have nothing to do with the pool being short of workers, and the
+;; pool grows threads which then contend for the same mutex and slow the workers
+;; down further — the feedback the wake fix removed one source of, arriving by
+;; another road.
+;;
+;; Measured, once the dispatch shortcut made the producer 2.4x faster and made it
+;; worse: 200k no-op tasks peaked at 25-37 workers and cost 10.6us each, against 7
+;; workers and 8.9us before the producer sped up. A single-worker pool ran the same
+;; tasks at 1.8us. The pool was paying for threads that were in its way.
+;;
+;; So the decision is made the way the JVM makes it: OFFER FIRST. When the depth
+;; test says grow, the enqueue drops the mutex, yields the CPU to whoever wants it,
+;; and asks again. A worker that was one mutex acquisition away from this task now
+;; has it, and there is nothing to grow for; a pool whose workers are all blocked
+;; still has the task sitting there, and grows. The yield costs a syscall on the
+;; path that was about to fork a thread for ~80us, and nothing at all on the path
+;; that was not.
+(define (executor-grow? st)
+  (jolt-with-mutex (vector-ref st 2)
+    (and (not (vector-ref st 0))
+         (fx>? (vector-ref st 10) (vector-ref st 9))
+         (executor-claim-worker! st))))
 (define (executor-enqueue! self job)
   (let* ((st (jhost-state self))
          (action (jolt-with-mutex (vector-ref st 2)
@@ -1866,16 +1898,24 @@
                       ;; miss.
                       (when (fx>? (vector-ref st 9) 0)
                         (jolt-cv-signal-one! (vector-ref st 3)))
-                      ;; Grow if this task has no idle worker waiting to take it.
-                      (if (and (fx>? (vector-ref st 10) (vector-ref st 9))
-                               (executor-claim-worker! st))
-                          'spawn
+                      ;; No idle worker waiting to take this task — which is a
+                      ;; reason to grow only if it is still true once the workers
+                      ;; have had their turn at the mutex, and only if there is
+                      ;; room to grow at all. A pool at its maximum (every fixed
+                      ;; pool, always) must not pay the yield to be told what its
+                      ;; own size already says: that check costs a fixed pool
+                      ;; nothing and it was costing it 0.9us a task without it.
+                      (if (and (fx<? (vector-ref st 4) (vector-ref st 7))
+                               (fx>? (vector-ref st 10) (vector-ref st 9)))
+                          'offer
                           #f))))))
-    ;; Both of these happen with the mutex RELEASED: a fork takes ~80us and the
-    ;; queue cannot be shut for that long, and a throw has no business unwinding
-    ;; through a lock region it does not need to hold.
+    ;; All of these happen with the mutex RELEASED: a fork takes ~80us and the
+    ;; queue cannot be shut for that long, a yield holding it would hand the CPU on
+    ;; while keeping the workers out, and a throw has no business unwinding through
+    ;; a lock region it does not need to hold.
     (case action
-      ((spawn) (executor-spawn-worker! st))
+      ((offer) (thread-yield!)
+               (when (executor-grow? st) (executor-spawn-worker! st)))
       ((reject) (executor-reject-task! st))
       (else (void)))))
 (let ((single (lambda _ (make-executor 1)))
