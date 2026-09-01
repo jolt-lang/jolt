@@ -909,12 +909,23 @@
       [:process (:name spec)]
       [:native (or (:name spec) (vec (sort (concat (cands :darwin) (cands :linux) (cands :win)))))])))
 
+(defn- provides-entries
+  "A deps.edn :jolt/provides map as provider-table rows: [install-ns lib class ...].
+  lib is the declaring dependency's coordinate, or nil for the project's own."
+  [edn lib]
+  ;; Both names are stringified here: the coordinate is a symbol in deps.edn and
+  ;; the runtime string-appends it into the "declared but failed to load"
+  ;; message. nil stays nil — it means jolt's own, which has no coordinate.
+  (map (fn [[install-ns classes]]
+         (into [(str install-ns) (when lib (str lib))] (map str classes)))
+       (:jolt/provides edn)))
+
 (defn resolve-deps
   "Expand a deps map through the tools.deps expansion engine, then collect the
-  selected libraries' source roots and :jolt/native declarations in stable
-  first-inclusion order. Returns {:roots [...] :natives [...] :min-versions [...] :prep [...]
-  :libs {lib coord}} — :libs is the tools.deps lib map (selected coordinate
-  per library).
+  selected libraries' source roots, :jolt/native and :jolt/provides declarations
+  in stable first-inclusion order. Returns {:roots [...] :natives [...]
+  :min-versions [...] :provides [...] :prep [...] :libs {lib coord}} — :libs is
+  the tools.deps lib map (selected coordinate per library).
 
   `opts` carries the alias-combined coordinate maps applied at every node like
   tools.deps: :override-deps replaces a lib's coordinate wherever it appears
@@ -965,6 +976,11 @@
         :min-versions (vec (keep (fn [{:keys [lib edn]}]
                                    (when-let [v (:jolt/min-version edn)] [lib v]))
                                  infos))
+        ;; Host classes each dep declares it provides (RFC 0014), as
+        ;; [install-ns lib class-name …]. A library knows which java.* classes
+        ;; its shim installs; the runtime must not, or core ends up naming
+        ;; specific libraries to decide what to autoload on a class miss.
+        :provides (vec (mapcat (fn [{:keys [lib edn]}] (provides-entries edn lib)) infos))
         ;; libs whose deps.edn declares :deps/prep-lib — jolt runs no prep
         ;; steps, so their compiled/generated assets will be missing; the
         ;; caller warns with the lib names.
@@ -1063,6 +1079,36 @@
             :jolt/required wanted
             :jolt/required-by who
             :jolt/unmet (vec unmet)}])))))
+
+(defn- host-class-providers
+  "Reconcile the :jolt/provides declarations (RFC 0014) into the provider table
+  the runtime autoloads from, as [install-ns lib class-name ...].
+
+  Two dependencies claiming the same host class is refused rather than resolved.
+  Whichever won would decide what `java.sql.Connection` MEANS for the whole
+  program, and the loser's shim would be half-installed — registered for the
+  classes nobody else claimed and silently absent for the rest. That is the
+  shape of bug this table exists to stop being possible, so it is an error at
+  resolve time, where both claimants can be named.
+
+  Entries are [install-ns lib class ...]; lib is nil for the project's own."
+  [entries]
+  (let [claims (reduce (fn [acc [install-ns lib & classes]]
+                         (reduce (fn [a c] (update a c (fnil conj #{}) [install-ns lib]))
+                                 acc classes))
+                       {} entries)
+        conflicts (filter (fn [[_ owners]] (< 1 (count (set (map first owners)))))
+                          claims)]
+    (when (seq conflicts)
+      (let [[c owners] (first (sort-by key conflicts))
+            who (fn [[install-ns lib]] (str (or lib "this project") " (" install-ns ")"))]
+        (throw (ex-info
+                (str "two dependencies both claim to provide the host class " c
+                     ": " (str/join " and " (sort (map who owners)))
+                     ". A host class can have one provider; drop one of them.")
+                {:jolt/class c
+                 :jolt/claimed-by (vec (sort (map who owners)))}))))
+    (vec (distinct entries))))
 
 (defn- check-min-versions!
   "Refuse to run when the project, or any dependency, declares a jolt floor the
@@ -1450,7 +1496,8 @@
           ;; and an alias's :main-opts / :exec-fn and the project's :tasks come
           ;; from there. tools.deps' --skip-cp draws the line in the same place:
           ;; the merged edn and argmap, without calc-basis.
-          {dep-roots :roots dep-natives :natives prep-libs :prep dep-trace :trace
+          {dep-roots :roots dep-natives :natives dep-provides :provides
+           prep-libs :prep dep-trace :trace
            dep-min-versions :min-versions}
           (when-not cp
             (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
@@ -1492,6 +1539,9 @@
       ;; (When bb.edn IS the project config the second merge is a no-op.)
       :tasks (not-empty (merge (:tasks edn) (:tasks bb-edn)))
       :natives (dedup-by native-key (concat (:jolt/native edn) dep-natives))
+      ;; declared host-class providers (RFC 0014), the project's own first: a
+      ;; project may supply a class itself rather than take a library's.
+      :provides (host-class-providers (concat (provides-entries edn nil) dep-provides))
       ;; the expansion trace, when it was asked for (-Stree renders it)
       :trace dep-trace
       ;; nREPL middleware a library contributes (jolt.nrepl composes them over its

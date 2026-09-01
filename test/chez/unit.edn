@@ -369,10 +369,15 @@
   {:suite "insttime" :expr "(str (Duration/ofSeconds 90))" :expected "\"PT1M30S\""}
   {:suite "insttime" :expr "(.getMonths (Period/of 1 2 3))" :expected "2"}
   {:suite "insttime" :expr "(str (Year/of 2024))" :expected "\"2024\""}
-  ;; DateTimeFormatter, ZoneOffset/ZoneId and Locale are the jolt-lang/time library,
-  ;; not core (RFC 0008); with no dependency the error names the library.
-  {:suite "insttime" :expr "(try (java.time.format.DateTimeFormatter/ofPattern \"yyyy\") (catch Exception e (boolean (re-find #\"jolt-lang/time\" (ex-message e)))))" :expected "true"}
-  {:suite "insttime" :expr "(try (ZoneOffset/ofHours 5) (catch Exception e (boolean (re-find #\"jolt-lang/time\" (ex-message e)))))" :expected "true"}
+  ;; DateTimeFormatter, ZoneOffset/ZoneId and Locale are not core (RFC 0008): a
+  ;; provider declares them with :jolt/provides (RFC 0014). With nothing providing
+  ;; one, the error says a JDK class has no implementation — and deliberately does
+  ;; NOT name a library. Which library supplies java.time is not the runtime's to
+  ;; say, and a caller may write the shim themselves.
+  {:suite "insttime" :expr "(try (java.time.format.DateTimeFormatter/ofPattern \"yyyy\") (catch Exception e (boolean (re-find #\"No dependency provides\" (ex-message e)))))" :expected "true"}
+  {:suite "insttime" :expr "(try (ZoneOffset/ofHours 5) (catch Exception e (boolean (re-find #\"No dependency provides\" (ex-message e)))))" :expected "true"}
+  ;; ...and it must not regress into naming one.
+  {:suite "insttime" :expr "(try (ZoneOffset/ofHours 5) (catch Exception e (boolean (re-find #\"jolt-lang\" (ex-message e)))))" :expected "false"}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a/b\")))" :expected "\"/a/b\""}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (str (io/file \"/a\" \"b\")))" :expected "\"/a/b\""}
   {:suite "io" :expr "(do (require (quote [clojure.java.io :as io])) (.getName (io/file \"/a/b/c.txt\")))" :expected "\"c.txt\""}

@@ -174,6 +174,7 @@ ref-get
 ref-put!
 refine-extension!
 regex-compiled?
+register-class-provider!
 register-class-supers!
 register-extension!
 register-extension-point!

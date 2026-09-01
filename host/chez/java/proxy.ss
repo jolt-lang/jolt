@@ -23,7 +23,7 @@
   (and (string? class)
        (or (and (lookup-class class-ctors-tbl class) #t)
            ;; the constructor may live in a provider that has not loaded yet
-           (and (or (jt-try-autoload! class) (lib-try-autoload! class))
+           (and (lib-try-autoload! class)
                 (and (lookup-class class-ctors-tbl class) #t)))))
 
 (define (proxy-name->string p)

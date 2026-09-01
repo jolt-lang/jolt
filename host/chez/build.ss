@@ -1098,24 +1098,25 @@
         (map rdr-form->data (ei-read-all src))))
     (reverse reqs)))
 
-;; Host classes a file's forms reference that a LIBRARY provides (jolt-lang/time,
-;; jolt-crypto, …). At runtime a class-miss autoloads the provider's install
-;; namespace off the source roots (host-static.ss jt-try-autoload! /
-;; lib-try-autoload!); a built binary has no source roots, so the scan must pull
-;; the provider into flat.ss instead — otherwise the binary throws the RFC 0008
-;; "add io.github.jolt-lang/time" error for a dependency the project did declare.
-;; Mirrors the runtime predicates: a jt-library class (or java.time.*) ->
-;; "jolt.time"; anything else consults lib-class-providers. A provider is pulled
-;; only when its source is actually on the roots (find-ns-file) — off the roots
-;; the runtime's unknown-class message is the contract and the build must keep
-;; succeeding exactly as before.
+;; Host classes a file's forms reference that a PROVIDER installs (RFC 0014). At
+;; runtime a class-miss autoloads the provider's install namespace off the source
+;; roots (host-static.ss lib-try-autoload!); a built binary has no source roots,
+;; so the scan must pull the provider into flat.ss instead — otherwise the binary
+;; throws the "add it to your deps.edn" error for a dependency the project did
+;; declare.
+;;
+;; This asks lib-provider-for, the same table the runtime resolves against,
+;; rather than restating its rules. The previous version mirrored the runtime
+;; predicates by hand and had to be kept in step with them.
+;;
+;; A provider is pulled only when its source is actually on the roots
+;; (find-ns-file) — off the roots the runtime's unknown-class message is the
+;; contract and the build must keep succeeding exactly as before.
 (define (bld-ns-class-providers file)
   (let ((src (ldr-read-source file))
         (cands '()))
     (define (add! class)
-      (let ((cand (cond ((or (member class jt-library-names) (java-time-prefixed? class))
-                         "jolt.time")
-                        ((lib-provider-for class) => (lambda (p) (vector-ref p 0)))
+      (let ((cand (cond ((lib-provider-for class) => (lambda (p) (vector-ref p 0)))
                         (else #f))))
         (when (and cand (not (member cand cands)))
           (set! cands (cons cand cands)))))

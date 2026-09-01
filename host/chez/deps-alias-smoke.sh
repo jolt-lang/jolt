@@ -295,11 +295,20 @@ check "the dot form of a static autoloads too" "fixture-zone:UTC" "$(run -A:time
 # the imported simple name did not. malli's transform.cljc builds one that way.
 check "constructing a library class autoloads" "fixture-builder" "$(run -A:time run -m appzonector)"
 
-# off the roots the reference still names the dependency to add
+# Off the roots the reference reports that nothing provides the class — and
+# deliberately does NOT name a library (RFC 0014). Which library supplies
+# java.time is not the runtime's to say, and a caller may write the shim
+# themselves; naming one would put the removed coupling back as a string.
 out="$(runfull run -m appzone)"
 case "$out" in
-  *jolt-lang/time*) check "library miss names the dependency" ok ok ;;
-  *) check "library miss names the dependency" "message naming jolt-lang/time" "$(printf '%s' "$out" | head -1)" ;;
+  *"No dependency provides"*) check "library miss reports no provider" ok ok ;;
+  *) check "library miss reports no provider" "message saying no dependency provides it" "$(printf '%s' "$out" | head -1)" ;;
+esac
+# The first line only: the traceback below it carries absolute paths, and this
+# checkout lives under a directory called jolt-lang.
+case "$(printf '%s' "$out" | head -1)" in
+  *jolt-lang/*) check "library miss names no library" "no library named" "$(printf '%s' "$out" | head -1)" ;;
+  *) check "library miss names no library" ok ok ;;
 esac
 
 # io/resource answers an ABSOLUTE file: URL for a file on a source root, like the
@@ -319,9 +328,13 @@ case "$out" in
   *"failed to load"*) check "broken provider says it failed to load" ok ok ;;
   *) check "broken provider says it failed to load" "message saying failed to load" "$(printf '%s' "$out" | head -1)" ;;
 esac
+# The two cases must not read alike: "declared but broken" is fixed by repairing
+# the library, "nothing provides it" by supplying one. Asserting the absence of
+# the no-provider wording is what keeps them apart now that neither names a
+# coordinate.
 case "$out" in
-  *"Add io.github.jolt-lang/time"*)
-    check "broken provider is not reported as missing" "no add-the-dependency advice" "$(printf '%s' "$out" | head -1)" ;;
+  *"No dependency provides"*)
+    check "broken provider is not reported as missing" "no missing-provider wording" "$(printf '%s' "$out" | head -1)" ;;
   *) check "broken provider is not reported as missing" ok ok ;;
 esac
 

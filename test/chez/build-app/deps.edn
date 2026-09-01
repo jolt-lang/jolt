@@ -1,5 +1,16 @@
 {:paths ["src" "src-provider" "resources"]
 
+ ;; Host-class providers on this project's OWN paths (RFC 0014): a project may
+ ;; supply a class itself rather than take a library's, and declares it the same
+ ;; way. The build scan resolves a class reference through this table to decide
+ ;; which install namespace to pull into flat.ss — a built binary has no source
+ ;; roots for the runtime autoload.
+ ;;
+ ;; jolt.crypto is the negative control: declared and on the roots, but its
+ ;; classes are referenced nowhere, so the scan must leave it out.
+ :jolt/provides {jolt.time   ["java.time.ZonedDateTime"]
+                 jolt.crypto ["java.security.MessageDigest"]}
+
  ;; exercise the build's native-lib loading: a :process spec loads the running
  ;; binary's own symbols (libc) at startup — no external file, always succeeds.
  :jolt/native [{:name "libc" :process true}]

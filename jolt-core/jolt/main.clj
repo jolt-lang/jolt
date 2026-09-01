@@ -75,12 +75,24 @@
                   (binding [*out* *err*]
                     (println (str "warning: " msg " (a task may build it)")))))))))))))
 
+;; Install the :jolt/provides declarations a resolved project collected (RFC 0014).
+;; An entry is [install-ns lib class ...]; lib is nil for the project's own.
+(defn- register-class-providers! [provides]
+  (doseq [[install-ns lib & classes] provides]
+    (jolt.host/register-class-provider! install-ns lib (vec classes))))
+
 ;; Apply a resolved project's roots on top of the current (jolt-core) roots so app
-;; namespaces resolve while jolt.* stays loadable, then load its native deps.
+;; namespaces resolve while jolt.* stays loadable, then register its declared host
+;; class providers and load its native deps.
 (defn- apply-project!
   ([resolved] (apply-project! resolved true))
-  ([{:keys [roots natives project-dir]} strict?]
+  ([{:keys [roots natives provides project-dir]} strict?]
    (jolt.host/set-source-roots! (vec (distinct (concat roots (jolt.host/source-roots)))))
+   ;; Providers go in BEFORE anything of the project compiles (RFC 0014): the
+   ;; table has to be complete before the first class reference can miss, which
+   ;; is the whole reason the mapping is declared rather than registered by the
+   ;; provider as it loads.
+   (register-class-providers! provides)
    ;; project-dir is absent from a cpcache entry written by an older jolt; JOLT_PWD
    ;; is where the user invoked us, which is the same directory in the common case.
    (load-natives! natives strict? (or project-dir (jolt.host/getenv "JOLT_PWD")))))

@@ -269,89 +269,111 @@
 (vector-set! (mutable-static-cell "clojure.lang.RT" "checkSpecAsserts" #t) 0 #f)
 
 ;; ---- autoload the java.time base on first use -------------------------------
-;; Core carries the base java.time VALUE types (jolt.time.base and the namespaces
-;; it requires: Instant, LocalDate/LocalTime/LocalDateTime, Duration, Period,
-;; Year/YearMonth/MonthDay, and the Month/DayOfWeek/Chrono* enums) that must
-;; resolve with NO explicit require. stdlib Clojure loads lazily and only the
-;; Scheme runtime runs at boot, so the base is exposed by autoloading on first use:
-;; when interop resolves an unregistered class named by a base value type — or any
-;; `java.time.` class — load the base once and retry the lookup. Date-free programs
-;; never trigger it, so they pay nothing (RFC 0008).
+;; ---- host-class providers (RFC 0014) ----------------------------------------
+;; A JVM library reaches for MessageDigest/getInstance or java.sql.ResultSet
+;; without requiring an install namespace first, because on the JVM the class is
+;; simply there. Jolt has no such class, so something has to load the namespace
+;; that installs it — on the FIRST reference, before anything of the provider has
+;; loaded. That ordering is why a provider cannot just register itself as it
+;; loads: nothing has loaded it yet.
 ;;
-;; Everything that FORMATS or names a zone — DateTimeFormatter, FormatStyle,
-;; ZoneOffset, ZoneId, ZonedDateTime, OffsetDateTime, OffsetTime, Clock, and
-;; java.util.Locale — lives only in the jolt-lang/time library. Those are not in
-;; the base, so after the base loads (or immediately, for a bare library-only short
-;; name) the lookup still misses and unknown-class-message names the dependency.
+;; So the mapping class -> provider arrives as DATA, ahead of the load. A library
+;; declares it in its own deps.edn and jolt.deps collects it through the walk it
+;; already does for :jolt/native:
 ;;
-;; A class token arrives fully qualified (java.time.LocalDate) or as a short name
-;; (LocalDate) — jolt has no import map, so both reach here. jt-base-names are the
-;; base value-type short names that should autoload the base.
-(define jt-base-names
-  '("Instant" "LocalDate" "LocalTime" "LocalDateTime" "Duration" "Period"
-    "Year" "YearMonth" "MonthDay" "Month" "DayOfWeek" "ChronoUnit" "ChronoField"
-    "ValueRange" "TemporalAdjusters"))
-(define jt-base-autoload-done #f)
-(define (java-time-prefixed? class)
-  (and (>= (string-length class) 10) (string=? (substring class 0 10) "java.time.")))
-;; Gate for autoloading the base: a base value-type name, or any java.time. class
-;; (a fully-qualified library class autoloads the base too, then falls through to
-;; the hint below — cheap, the base loads at most once).
-(define (java-time-class? class)
-  (or (java-time-prefixed? class) (and (member class jt-base-names) #t)))
+;;     :jolt/provides {jolt.crypto ["java.security.MessageDigest" ...]}
+;;
+;; The runtime keeps no list of libraries. What it keeps below is jolt's OWN
+;; stdlib — core declaring the classes core implements, which is a different
+;; thing from core knowing what jolt-lang/db is. Everything else is registered
+;; through register-class-provider! from the resolved dependency graph.
+;;
+;; Each entry is #(install-ns coordinate (class-name ...) done-latch); coordinate
+;; is #f for jolt's own stdlib, which needs no dependency to be added.
+(define (class-simple-name c)
+  (let loop ((i (- (string-length c) 1)))
+    (cond ((< i 0) c)
+          ((char=? (string-ref c i) #\.) (substring c (+ i 1) (string-length c)))
+          (else (loop (- i 1))))))
+;; A class is claimed under BOTH spellings: a token arrives fully qualified
+;; (java.time.LocalDate) or simple (LocalDate) — jolt has no import map, so both
+;; reach here. Deriving the simple form is what removes the hand-sync failure the
+;; old hardcoded table kept hitting: it listed both spellings by hand, and a name
+;; present only as the qualified one failed for the IMPORTED SIMPLE form, which is
+;; how libraries actually write it.
+(define (class-spellings classes)
+  (let loop ((cs classes) (acc '()))
+    (if (null? cs)
+        (reverse acc)
+        (let* ((c (car cs)) (simple (class-simple-name c)))
+          (loop (cdr cs)
+                (if (string=? simple c) (cons c acc) (cons simple (cons c acc))))))))
 
-;; Classes provided ONLY by jolt-lang/time (RFC 0008): all formatting and zones,
-;; plus java.util.Locale. An unresolved reference to one of these — or to any
-;; other unresolved java.time. class — names the dependency rather than leaving a
-;; bare "Unknown class".
-;; This list has to name EVERY class jolt-lang/time registers, in both the simple
-;; and the fully-qualified spelling. A fully-qualified miss also reaches the
-;; autoload through java-time-prefixed?, so a name missing here fails only for the
-;; IMPORTED SIMPLE form — which is how libraries actually write it, and why
-;; DateTimeFormatterBuilder being absent kept malli's transform.cljc from loading
-;; while (java.time.format.DateTimeFormatterBuilder.) worked. When the library
-;; grows a class, add it here.
-(define jt-library-names
-  '("DateTimeFormatter" "java.time.format.DateTimeFormatter"
-    "DateTimeFormatterBuilder" "java.time.format.DateTimeFormatterBuilder"
-    "FormatStyle" "java.time.format.FormatStyle"
-    "ZoneOffset" "java.time.ZoneOffset" "ZoneId" "java.time.ZoneId"
-    "ZonedDateTime" "java.time.ZonedDateTime"
-    "OffsetDateTime" "java.time.OffsetDateTime"
-    "OffsetTime" "java.time.OffsetTime" "Clock" "java.time.Clock"
-    "Locale" "java.util.Locale"))
-;; Other first-party libraries that install host classes the JVM has built in.
-;; Same courtesy java.time gets: on the first miss of one of these names, require
-;; the library's install namespace when it is on the source roots, so an
-;; unmodified JVM library that reaches for the class just works once the
-;; dependency is declared — Selmer's {{ x|hash:"md5" }} filter calls
-;; MessageDigest/getInstance, and no JVM library requires an install namespace
-;; first. Off the roots, the message names the dependency to add.
-;; Each entry is #(install-ns coordinate (class-name …) done-latch).
-(define lib-class-providers
+;; Core's own stdlib. jolt.time.base is the base java.time VALUE types (RFC 0008)
+;; that must resolve with no explicit require; jolt.socket is java.net over POSIX
+;; sockets. Both ship with jolt, so neither names a coordinate: there is no
+;; dependency for a caller to add, and the autoload always finds them.
+;;
+;; Everything that FORMATS or names a zone — DateTimeFormatter, ZoneId,
+;; ZonedDateTime, Locale, ... — is the jolt-lang/time LIBRARY and is declared by
+;; that library, not here.
+(define core-class-providers
   (list
-   (vector "jolt.crypto" "io.github.jolt-lang/jolt-crypto"
-           ;; SecureRandom is NOT here: the runtime implements it natively over the
-           ;; OS CSPRNG, so it needs no dependency — it is a JDK class on the JVM
-           ;; and reaching for one should not make a program declare a library.
-           '("MessageDigest" "java.security.MessageDigest"
-             "Mac" "javax.crypto.Mac"
-             "Cipher" "javax.crypto.Cipher"
-             "SecretKeySpec" "javax.crypto.spec.SecretKeySpec"
-             "IvParameterSpec" "javax.crypto.spec.IvParameterSpec")
+   (vector "jolt.time.base" #f
+           (class-spellings
+            '("java.time.Instant" "java.time.LocalDate" "java.time.LocalTime"
+              "java.time.LocalDateTime" "java.time.Duration" "java.time.Period"
+              "java.time.Year" "java.time.YearMonth" "java.time.MonthDay"
+              "java.time.Month" "java.time.DayOfWeek"
+              "java.time.temporal.ChronoUnit" "java.time.temporal.ChronoField"
+              "java.time.temporal.ValueRange" "java.time.temporal.TemporalAdjusters"))
            (box #f))
-   ;; java.net lives in jolt's own stdlib rather than the runtime, since it is
-   ;; POSIX sockets over jolt.ffi. No coordinate to declare, so the autoload
-   ;; always finds it — a program reaching for InetAddress or NetworkInterface
-   ;; should no more have to require jolt.socket than it does on the JVM.
-   (vector "jolt.socket" "jolt.socket"
-           '("InetAddress" "java.net.InetAddress"
-             "Inet4Address" "java.net.Inet4Address"
-             "NetworkInterface" "java.net.NetworkInterface"
-             "Socket" "java.net.Socket"
-             "ServerSocket" "java.net.ServerSocket"
-             "InetSocketAddress" "java.net.InetSocketAddress")
+   (vector "jolt.socket" #f
+           (class-spellings
+            '("java.net.InetAddress" "java.net.Inet4Address"
+              "java.net.NetworkInterface" "java.net.Socket"
+              "java.net.ServerSocket" "java.net.InetSocketAddress"))
            (box #f))))
+(define lib-class-providers core-class-providers)
+
+;; Declared providers from the dependency graph, installed at startup by
+;; jolt.deps. A claim on a class the runtime already IMPLEMENTS is refused: a
+;; dependency does not get to redefine what String means, and the same posture is
+;; why extend-class! will not replace a built-in.
+;;
+;; "Implements" is the statics/ctor tables, not the class hierarchy. The
+;; hierarchy knows names it does not implement — java.time.ZoneId is in it so
+;; isa?/instance? answer correctly, while the implementation is jolt-lang/time's
+;; to install. Checking the hierarchy rejected every provider for the classes it
+;; exists to provide.
+(define (register-class-provider! install-ns coordinate classes)
+  (let* ((cs (class-spellings classes))
+         (taken (filter (lambda (c) (or (hashtable-ref class-statics-tbl c #f)
+                                        (hashtable-ref class-ctors-tbl c #f)))
+                        cs)))
+    (if (pair? taken)
+        (jolt-throw
+         (jolt-host-throwable
+          "java.lang.IllegalArgumentException"
+          (string-append install-ns " claims host " (if (null? (cdr taken)) "class " "classes ")
+                         (fold-left (lambda (a c) (if (string=? a "") c (string-append a ", " c)))
+                                    "" taken)
+                         ", which the runtime already provides.")))
+        (set! lib-class-providers
+              (append lib-class-providers
+                      (list (vector install-ns coordinate cs (box #f))))))))
+
+;; The Clojure-facing seam. jolt.deps calls this once per declared provider after
+;; it resolves the dependency graph, before any user code compiles — which is the
+;; ordering the whole mechanism depends on: the table has to be complete before
+;; the first class reference can miss.
+(def-var! "jolt.host" "register-class-provider!"
+  (lambda (install-ns coordinate classes)
+    (register-class-provider! install-ns
+                              (if (jolt-nil? coordinate) #f coordinate)
+                              (seq->list classes))
+    jolt-nil))
+
 (define (lib-provider-for class)
   (let loop ((ps lib-class-providers))
     (cond ((null? ps) #f)
@@ -381,50 +403,39 @@
                  "the source roots but failed to load — see the earlier error "
                  "from " install-ns ". This is not a missing dependency."))
 
+;; A JDK-shaped name jolt has no implementation for. The message does NOT name a
+;; library: which one supplies java.sql or java.time is not the runtime's to say,
+;; and a caller is free to write the shim themselves — declaring it through
+;; :jolt/provides is the whole point. Naming a specific library here would put
+;; back, as a string, the coupling RFC 0014 removed.
+(define (jdk-class-name? class)
+  (or (and (>= (string-length class) 5) (string=? (substring class 0 5) "java."))
+      (and (>= (string-length class) 6) (string=? (substring class 0 6) "javax."))
+      ;; A SIMPLE name carries no package to test — a token arrives as ZoneOffset
+      ;; as often as java.time.ZoneOffset. The hierarchy answers it: reaching this
+      ;; message means the class has no implementation, so a name the hierarchy
+      ;; models is one jolt describes but nothing supplies. jch-known? matches the
+      ;; last segment, which is exactly the simple-name case.
+      (jch-known? class)))
+
 (define (unknown-class-message class)
   (cond
-    ((or (member class jt-library-names) (java-time-prefixed? class))
-     (if (eq? jt-library-autoload-done 'failed)
-         (provider-load-failed-message class "jolt-lang/time" "jolt.time")
-         (string-append class " is provided by the jolt-lang/time library, not core "
-                        "(RFC 0008). Add io.github.jolt-lang/time to your deps.edn.")))
-    ((lib-provider-for class)
-     => (lambda (p)
-          (if (eq? (unbox (vector-ref p 3)) 'failed)
-              (provider-load-failed-message class (vector-ref p 1) (vector-ref p 0))
-              (string-append class " is provided by the " (vector-ref p 1)
-                             " library, not core. Add it to your deps.edn."))))
+    ;; A provider CLAIMS this class and is on the source roots, but raised while
+    ;; loading. Naming it is not a catalogue — it is the dependency the caller
+    ;; declared themselves, read back from their own deps.edn — and the fix is the
+    ;; opposite of adding something, so the two cases must not read alike.
+    ((and (lib-provider-for class)
+          (eq? (unbox (vector-ref (lib-provider-for class) 3)) 'failed))
+     => (lambda (_)
+          (let ((p (lib-provider-for class)))
+            (provider-load-failed-message class (or (vector-ref p 1) "declared")
+                                          (vector-ref p 0)))))
+    ((jdk-class-name? class)
+     (string-append "No dependency provides " class
+                    " — a concrete implementation of the JDK classes must be "
+                    "provided. A library supplies one by declaring :jolt/provides "
+                    "in its deps.edn (RFC 0014)."))
     (else (string-append "Unknown class " class))))
-;; Load the core base once, on the first `java.time.` miss. The latch is set
-;; BEFORE the load so a self-referential static call while the base is loading
-;; cannot recurse into another autoload attempt (load-namespace marks a namespace
-;; loaded before evaluating its body). Returns #t only when it performed the load,
-;; so the caller retries the lookup exactly once.
-;; #f (not attempted), 'ok, or 'failed — the library was on the source roots and
-;; raised while loading, which unknown-class-message reports as its own case.
-(define jt-library-autoload-done #f)
-(define (jt-try-autoload! class)
-  (or (and (not jt-base-autoload-done)
-           (java-time-class? class)
-           (begin (set! jt-base-autoload-done #t)
-                  (load-namespace "jolt.time.base")
-                  #t))
-      ;; The formatting/zone half (ZoneId, ZonedDateTime, DateTimeFormatter,
-      ;; Locale, …) is the jolt-lang/time library. When it is on the source
-      ;; roots, requiring jolt.time installs its class shims — do that on the
-      ;; first miss of a library class, so a project that depends on the
-      ;; library can reference ZoneId (or require tick.core, whose
-      ;; cljc.java-time namespaces resolve these classes at load) without
-      ;; knowing the jolt.time install namespace. Off the roots, fall through
-      ;; to unknown-class-message, which names the dependency to add.
-      (and (not jt-library-autoload-done)
-           (or (member class jt-library-names) (java-time-prefixed? class))
-           (begin (set! jt-library-autoload-done 'ok)
-                  (and (find-ns-file "jolt.time")
-                       (begin (guard (c (#t (set! jt-library-autoload-done 'failed)
-                                            (raise c)))
-                                (load-namespace "jolt.time"))
-                              #t))))))
 
 ;; ---- emit entry points ------------------------------------------------------
 ;; A qualified reference whose namespace segment names a live namespace — directly
@@ -469,7 +480,7 @@
                     v))
               ;; class miss — autoload a provider (the java.time base, or a
               ;; first-party library that installs the class) and retry once
-              (if (or (jt-try-autoload! class) (lib-try-autoload! class))
+              (if (lib-try-autoload! class)
                   (host-static-ref class member)
                   (or (and (jch-known? class) (class-instance-fallback class member))
                       (throw-jvm (quote IllegalArgumentException) (static-miss-message class member)))))))))
@@ -502,7 +513,7 @@
       ;; the constructor may live in a not-yet-loaded provider (the java.time base,
       ;; or a first-party library) — autoload and retry once before falling through
       ;; to the var / no-ctor paths.
-      ((or (jt-try-autoload! class) (lib-try-autoload! class)) (apply host-new class args))
+      ((lib-try-autoload! class) (apply host-new class args))
       ;; deftype/defrecord: the type name is bound as a VAR (the
       ;; make-deftype-ctor closure) in its defining ns, not a registered host class.
       ;; Resolve it in the current ns / clojure.core and invoke it — so (P. args)
@@ -512,10 +523,11 @@
                        (var-cell-lookup "clojure.core" class))))
          (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
              (apply (var-cell-root cell) args)
-             ;; a java.time / Locale ctor that never resolved is the jolt-lang/time
-             ;; library, not core — name it; otherwise it's a genuine missing ctor.
+             ;; a ctor for a class some provider CLAIMS, that never resolved,
+             ;; is that provider's absence — name it; otherwise it is a genuine
+             ;; missing ctor on a class jolt does have.
              (throw-jvm (quote IllegalArgumentException)
-               (if (or (member class jt-library-names) (java-time-prefixed? class))
+               (if (lib-provider-for class)
                    (unknown-class-message class)
                    (string-append "No matching ctor found for class " class)))))))))
 

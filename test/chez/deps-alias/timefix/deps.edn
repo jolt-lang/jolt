@@ -1,1 +1,7 @@
-{:paths ["src"]}
+{:paths ["src"]
+
+ ;; Stands in for jolt-lang/time's own declaration (RFC 0014): the classes this
+ ;; install namespace registers. Without it nothing autoloads, because the
+ ;; runtime no longer carries a list of libraries — which is the point.
+ :jolt/provides {jolt.time ["java.time.ZoneId"
+                            "java.time.format.DateTimeFormatterBuilder"]}}
