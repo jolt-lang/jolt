@@ -2231,7 +2231,12 @@
 
 (define method-dispatch-arms '())
 
+(define method-arms-below-host-type 0)
+
 (define (register-method-arm! priority arm)
+  (when (< priority arm-priority-host-type)
+    (set! method-arms-below-host-type
+      (fx+ method-arms-below-host-type 1)))
   (set! method-dispatch-arms
     (let ins ((as method-dispatch-arms))
       (cond
@@ -2259,12 +2264,28 @@
 
 (define arm-priority-host-type 44)
 
+(define jhost-fast-arm #f)
+
+(define jhost-fast-arm-baseline -1)
+
+(define (install-jhost-fast-arm! f)
+  (set! jhost-fast-arm f)
+  (set! jhost-fast-arm-baseline method-arms-below-host-type))
+
 (define (record-method-dispatch obj method-name rest-args)
-  (let loop ((as method-dispatch-arms))
-    (if (null? as)
-        (record-method-dispatch-base obj method-name rest-args)
-        (let ((r ((cdar as) obj method-name rest-args)))
-          (if (eq? r 'pass) (loop (cdr as)) r)))))
+  (let ((r (if (and jhost-fast-arm
+                    (fx=?
+                      method-arms-below-host-type
+                      jhost-fast-arm-baseline))
+               (jhost-fast-arm obj method-name rest-args)
+               'pass)))
+    (if (eq? r 'pass)
+        (let loop ((as method-dispatch-arms))
+          (if (null? as)
+              (record-method-dispatch-base obj method-name rest-args)
+              (let ((r ((cdar as) obj method-name rest-args)))
+                (if (eq? r 'pass) (loop (cdr as)) r))))
+        r)))
 
 (register-method-arm!
   arm-priority-string
