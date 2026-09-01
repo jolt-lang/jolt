@@ -1259,6 +1259,18 @@
   ;; close BLOCKS until the work is done, which is what makes it usable as the
   ;; closing half of with-open
   {:suite "executor-shutdown" :expr "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) done (atom nil)] (.execute ex (fn [] (Thread/sleep 300) (reset! done :ran))) (.close ex) [@done (.isTerminated ex)])" :expected "[:ran true]"}
+  ;; shutdownNow INTERRUPTS the tasks already running: a task parked in
+  ;; Thread/sleep (or a channel op, or a blocking queue) is thrown out of it with
+  ;; InterruptedException, which is what makes the method a hard stop rather than a
+  ;; polite one. Reference Clojure answers exactly this.
+  {:suite "executor-shutdown" :expr "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) started (promise) out (promise)] (.execute ex (fn [] (deliver started true) (deliver out (try (Thread/sleep 30000) :slept (catch InterruptedException e :interrupted))))) (deref started 5000 :timeout) (Thread/sleep 100) (.shutdownNow ex) [(deref out 5000 :timeout) (.awaitTermination ex 10 java.util.concurrent.TimeUnit/SECONDS)])" :expected "[:interrupted true]"}
+  ;; and plain shutdown does NOT — a running task is left to finish
+  {:suite "executor-shutdown" :expr "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) started (promise) out (promise)] (.execute ex (fn [] (deliver started true) (deliver out (try (Thread/sleep 400) :slept (catch InterruptedException e :interrupted))))) (deref started 5000 :timeout) (.shutdown ex) [(deref out 5000 :timeout) (.awaitTermination ex 10 java.util.concurrent.TimeUnit/SECONDS)])" :expected "[:slept true]"}
+  ;; the interrupt reaches a submitted task's Future as the cause, like any throw
+  {:suite "executor-shutdown" :expr "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) started (promise) f (.submit ex (fn [] (deliver started true) (Thread/sleep 30000) :slept))] (deref started 5000 :timeout) (Thread/sleep 100) (.shutdownNow ex) (try (.get f 5000 java.util.concurrent.TimeUnit/MILLISECONDS) :no-throw (catch java.util.concurrent.ExecutionException e (.getSimpleName (class (ex-cause e))))))" :expected "\"InterruptedException\""}
+  ;; and a worker's flag does not leak from one task to the next: a task that
+  ;; interrupts itself does not hand the interrupt to whoever runs there next
+  {:suite "executor-shutdown" :expr "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1)] (.get (.submit ex (fn [] (.interrupt (Thread/currentThread)) :self))) (let [r (.get (.submit ex (fn [] (Thread/interrupted))))] (.shutdownNow ex) r))" :expected "false"}
   ;; shutdownNow DROPS what is queued and hands it back, instead of answering an
   ;; empty list and running it all anyway. The first task is known to be running
   ;; before the five are queued, so the count is not a race.

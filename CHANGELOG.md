@@ -257,9 +257,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rest" ran the rest: a caller shutting a pool down hard because its work had
     become irrelevant got every queued task executed anyway, and an empty list
     claiming nothing had been pending. The returned procedures are callable, so a
-    caller can still run one itself, as `.run` lets them on the JVM. What jolt still
-    cannot do is the other half — interrupting the tasks already RUNNING, which
-    needs the workers to carry an interrupt flag a shutdown can set.
+    caller can still run one itself, as `.run` lets them on the JVM.
+  - **`shutdownNow` also interrupts the tasks already running.** Every worker now
+    carries an interrupt flag — the same box its `(Thread/currentThread)` hands out,
+    so the two spellings are one flag — and `shutdownNow` sets them all and pokes
+    the waits, so a task parked in `Thread/sleep`, a channel op, a blocking queue or
+    a `Future.get` is thrown out with `InterruptedException` exactly where the JVM
+    throws one. Plain `shutdown` still interrupts nothing, and a worker's flag is
+    cleared before it takes its next task, so an interrupt aimed at one task cannot
+    land on the next (both checked against reference Clojure). A task in a
+    computation the runtime cannot see — a tight loop, a blocking FFI call — still
+    runs to the end; the JVM's interrupt is no different.
   - **`close` blocks until the pool has terminated**, as the JVM's has since 19.
     It used to return the moment the flag was set, so the one spelling of shutdown
     that promises the work is finished when it returns was the one that did not
