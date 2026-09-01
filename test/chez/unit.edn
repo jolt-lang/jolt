@@ -1102,6 +1102,14 @@
   {:suite "class-extensions" :expr "(do (jolt.host/extend-class! \"java.io.File\" {:methods {\"shout\" (fn [self] (.toUpperCase (.getPath self)))}}) (.shout (java.io.File. \"a/b\")))" :expected "\"A/B\""}
   ;; the default tier only fills gaps — it cannot take a method the shim answers
   {:suite "class-extensions" :expr "(do (jolt.host/extend-class! \"java.io.File\" {:methods {\"getPath\" (fn [self] \"hijacked\")}}) (.getPath (java.io.File. \"a/b\")))" :expected "\"a/b\""}
+  ;; A HOST SHIM's method table is answered by a shortcut ahead of the arm chain
+  ;; (records-dispatch.ss), and that shortcut has to stand down the moment an
+  ;; override arm exists — or an :override would silently stop overriding the whole
+  ;; jhost surface. Registering one here disarms it for the rest of this process,
+  ;; which is the point: the row after this one still reads a table method, through
+  ;; the full chain. remainingCapacity, because nothing else in this file calls it.
+  {:suite "class-extensions" :expr "(let [q (java.util.concurrent.ArrayBlockingQueue. 4)] (.put q 1) (let [before (.remainingCapacity q)] (jolt.host/extend-class! \"java.util.concurrent.ArrayBlockingQueue\" {:methods {\"remainingCapacity\" (fn [_] :overridden)} :override true}) [before (.remainingCapacity q)]))" :expected "[3 :overridden]"}
+  {:suite "class-extensions" :expr "(let [q (java.util.concurrent.ArrayBlockingQueue. 4)] (.put q :a) (.put q :b) [(.size q) (.take q) (.peek q)])" :expected "[2 :a :b]"}
   ;; …and :override does, for every caller in the process
   {:suite "class-extensions" :expr "(do (jolt.host/extend-class! \"java.io.File\" {:methods {\"getPath\" (fn [self] \"overridden\")} :override true}) (.getPath (java.io.File. \"a/b\")))" :expected "\"overridden\""}
   ;; a registration on a SUPERCLASS answers for a subclass receiver (class graph)
