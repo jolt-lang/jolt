@@ -449,8 +449,9 @@
 ;; The corpus is measured on this JDK or newer: java.util.SequencedCollection and
 ;; its List/Deque methods (JDK 21) have rows. An older oracle would report them
 ;; as NEW divergences, which is not a fact about jolt — refuse to judge instead.
-;; CI keeps its JAVA_HOME on the JDK it installs for this; the `clojure` launcher
-;; runs whichever java JAVA_HOME names, not the newest one on the machine.
+;; CI points JAVA_CMD at the JDK it installs for this: the `clojure` launcher
+;; runs JAVA_CMD first, then the java on PATH, and JAVA_HOME only when there is
+;; none — not the newest JDK on the machine.
 (def oracle-jdk-floor 21)
 
 (defn check-oracle-jdk! []
@@ -458,7 +459,7 @@
     (when (< feature oracle-jdk-floor)
       (println (format "certify: the oracle is JDK %s (%s), but the corpus is measured on JDK %d or newer."
                        (System/getProperty "java.runtime.version") (System/getProperty "java.home") oracle-jdk-floor))
-      (println "        Point JAVA_HOME at a newer JDK; the clojure launcher runs $JAVA_HOME/bin/java.")
+      (println "        Set JAVA_CMD to a newer JDK's java (the clojure launcher's first choice), or put one first on PATH.")
       (System/exit 2))))
 
 (defn -main [& _]
