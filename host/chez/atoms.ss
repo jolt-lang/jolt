@@ -79,7 +79,8 @@
   (cond
     ((jolt-atom? x) (jolt-atom-val x))
     ((jolt-reduced? x) (jolt-reduced-val x))
-    (else (throw-jvm (quote ClassCastException) (string-append "deref: unsupported reference type " (jolt-final-str x))))))
+    ;; the reference's last resort is a Future cast: nil is a NullPointerException
+    (else (jolt-cast-throw x "java.util.concurrent.Future"))))
 
 ;; CAS the val from `old` to `nv` by identity (eq?), atomically. Returns #t on
 ;; success. The compute step (f) runs outside this, so we re-check under the lock.

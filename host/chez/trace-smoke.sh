@@ -97,7 +97,7 @@ expect_no_match() {
 
 echo "trace smoke: an uncaught tail-call throw names fn, file and exact line"
 out="$(run_app app.tail)"
-expect_match "uncaught throw reports the message" "$out" 'Unhandled exception: Divide by zero'
+expect_match "uncaught throw reports the message" "$out" 'Unhandled exception (ArithmeticException): Divide by zero'
 # The erroring fn is a tail call from a tail call: the whole point of the case.
 # EXACT lines, not the line each fn was DEFINED on: boom opens on line 3 and
 # divides on line 4; -main opens on line 6 and calls boom on line 8. A frame that
@@ -315,7 +315,7 @@ expect_match "twolevel: frames in stack order" "$flat_tl" 'thrower .*twolevel/ho
 
 echo "trace smoke: JOLT_TRACE=0 opts out"
 out_off="$(run_app app.tail JOLT_TRACE=0)"
-expect_match "still reports the message" "$out_off" 'Unhandled exception: Divide by zero'
+expect_match "still reports the message" "$out_off" 'Unhandled exception (ArithmeticException): Divide by zero'
 expect_no_match "no history frames when opted out" "$out_off" 'app\.tail/boom'
 
 # Whether tracing is on changes the code the emitter produces — the entry prologue
@@ -372,6 +372,39 @@ cat > "$work/src/app/pst.clj" <<'EOF'
   (println "DONE"))
 EOF
 
+# A fault the host itself raised — string-append handed nil — is a typed
+# throwable by the time a catch binds it (java/host-faults.ss): printStackTrace
+# prints its class and message, and the frames that led to it, off the
+# continuation Chez attached to the raw condition. Uncaught, the report names
+# the class the same way.
+cat > "$work/src/app/fault.clj" <<'EOF'
+(ns app.fault)
+
+(defn faulty [s]
+  (.concat s nil))
+
+(defn fouter [s]
+  (faulty s))
+
+(defn -main [& args]
+  (let [w (java.io.StringWriter.)]
+    (try (fouter "a") (catch Exception e (.printStackTrace e w)))
+    (when (re-find #"^java\.lang\.NullPointerException: string-append: nil is not a string" (str w))
+      (println "FAULT-HEADER-OK"))
+    (when (re-find #"app\.fault/faulty" (str w))
+      (println "FAULT-FRAME-OK")))
+  (when (seq args) (fouter "b"))
+  (println "FAULT-DONE"))
+EOF
+echo "trace smoke: a host fault a catch binds is a typed throwable with a trace"
+fault="$(run_app app.fault)"
+expect_match "host fault: printStackTrace names class and message" "$fault" 'FAULT-HEADER-OK'
+expect_match "host fault: printStackTrace reaches the faulting fn" "$fault" 'FAULT-FRAME-OK'
+expect_match "host fault: -main completes" "$fault" 'FAULT-DONE'
+fault_u="$( cd "$work" && "$joltabs" -m app.fault again 2>&1 )"
+expect_match "host fault uncaught: the report names the class" "$fault_u" 'Unhandled exception (NullPointerException): string-append: nil is not a string'
+expect_match "host fault uncaught: the trace reaches the faulting fn" "$fault_u" 'app\.fault/faulty'
+
 echo "trace smoke: .printStackTrace works on every throwable a catch binds"
 pst="$(run_app app.pst)"
 expect_match "arithmetic error prints class and message" "$pst" 'java\.lang\.ArithmeticException: Divide by zero'
@@ -416,7 +449,7 @@ expect_match "built: and its caller at the call site" "$out_rd" 'app\.tailredef/
 echo "trace smoke: JOLT_TRACE=0 at build time opts the binary out"
 ( cd "$work" && env JOLT_TRACE=0 "$joltabs" build -m app.tail -o tailbin0 >/dev/null 2>&1 )
 out_bt0="$("$work/tailbin0" 2>&1)"
-expect_match "untraced build: still reports the message" "$out_bt0" 'Unhandled exception: Divide by zero'
+expect_match "untraced build: still reports the message" "$out_bt0" 'Unhandled exception (ArithmeticException): Divide by zero'
 expect_no_match "untraced build: no baked trace frames" "$out_bt0" 'app\.tail/boom (.*:4)'
 
 if [ "$fails" -gt 0 ]; then

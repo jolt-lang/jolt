@@ -878,14 +878,20 @@
                (else (loop (+ i 1)))))
        (let ((d (list->string (map (lambda (c) (if (char=? c #\_) #\- c)) (string->list nm)))))
          (and (forname-known? d) d))))
-(register-class-statics! "Class"
-  (list (cons "forName"
-              (lambda (nm . _)
-                (cond
-                  ((and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[)) nm)
-                  ((forname-known? nm) (make-class-obj nm))
-                  ((forname-demunged nm) => make-class-obj)
-                  (else (jolt-throw (jolt-host-throwable "java.lang.ClassNotFoundException" nm))))))))
+(define (class-for-name nm . _)
+  (cond
+    ((and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[)) nm)
+    ((forname-known? nm) (make-class-obj nm))
+    ((forname-demunged nm) => make-class-obj)
+    (else (jolt-throw (jolt-host-throwable "java.lang.ClassNotFoundException" nm)))))
+(register-class-statics! "Class" (list (cons "forName" class-for-name)))
+;; clojure.lang.RT's own class lookups (the analyzer's resolve path): the same
+;; answer as Class/forName. Non-loading is a distinction without a difference
+;; here — nothing is initialized on lookup.
+(register-class-statics! "RT"
+  (list (cons "classForName" class-for-name) (cons "classForNameNonLoading" class-for-name)))
+(register-class-statics! "clojure.lang.RT"
+  (list (cons "classForName" class-for-name) (cons "classForNameNonLoading" class-for-name)))
 
 ;; ---- System helpers (defined before use above via top-level order) ----------
 ;; os.name reflects the actual platform (Chez's machine-type names it): a *osx

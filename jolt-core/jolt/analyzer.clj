@@ -889,6 +889,14 @@
             (= :sb (:hint target)))
     :sb))
 
+;; The list form's source position on a node, when the reader recorded one —
+;; the same stamp an :invoke carries. A host call in tail position stores it as
+;; its trace site (backend sited host call), and it is what a report names when
+;; the host raises from inside the call.
+(defn- stamp-pos [node form]
+  (let [p (form-position form)]
+    (if p (assoc node :pos p) node)))
+
 (defn- analyze-host-call [ctx hname items env]
   (when (< (count items) 2)
     (throw (str "Malformed member expression, expecting (.method target ...): " hname)))
@@ -1472,7 +1480,7 @@
                   p (form-position form)]
               (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
           (and hname (not shadowed) (method-head? hname))
-            (analyze-host-call ctx hname items env)
+            (stamp-pos (analyze-host-call ctx hname items env) form)
           ;; (Class. args*) — trailing-dot constructor sugar.
           (and hname (not shadowed) (ctor-head? hname))
             (analyze-ctor ctx (subs hname 0 (dec (count hname))) (rest items) env)
@@ -1482,10 +1490,10 @@
             (analyze-ctor ctx (form-sym-name (nth items 1)) (drop 2 items) env)
           ;; (. target member arg*) — the `.` special form.
           (and (= hname ".") (not shadowed))
-            (analyze-dot ctx items env)
+            (stamp-pos (analyze-dot ctx items env) form)
           ;; (.-field target) — field-access head.
           (and hname (not shadowed) (field-head? hname))
-            (analyze-field ctx hname items env)
+            (stamp-pos (analyze-field ctx hname items env) form)
           (and hname (not shadowed) (form-special? hname))
             (uncompilable (str "special form " hname))
           ;; (ns/Name. args*) — a QUALIFIED trailing-dot constructor (a cross-ns or
@@ -1503,7 +1511,7 @@
           (and (form-sym? head) (form-sym-ns head)
                (let [n (form-sym-name head)]
                  (and (> (count n) 1) (= "." (subs n 0 1)))))
-            (analyze-host-call ctx (form-sym-name head) items env)
+            (stamp-pos (analyze-host-call ctx (form-sym-name head) items env) form)
           ;; (Class/MEMBER) with no arguments carries the same ambiguity that
           ;; (. Class MEMBER) does, and Clojure reads it as a static field when one
           ;; exists: (Math/PI), (Integer/MAX_VALUE) and (Locale/US) all evaluate to

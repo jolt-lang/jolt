@@ -24,6 +24,13 @@
 (define (al-head self) (vector-ref (jhost-state self) 2))
 (define (al-head! self h) (vector-set! (jhost-state self) 2 h))
 (define (al-ref self i) (vector-ref (al-vec self) (fx+ (al-head self) i)))
+;; get/set past the end is an IndexOutOfBoundsException, never the buffer's
+;; spare slot.
+(define (al-check-index! self i)
+  (unless (and (fixnum? i) (fx>=? i 0) (fx<? i (al-cnt self)))
+    (throw-jvm 'IndexOutOfBoundsException
+               (string-append "Index " (number->string i) " out of bounds for length "
+                              (number->string (al-cnt self))))))
 (define (al-set! self i x) (vector-set! (al-vec self) (fx+ (al-head self) i) x))
 (define (make-arraylist xs)               ; xs: a Scheme list of initial elements
   (let* ((n (length xs)) (cap (fxmax al-min-cap n)) (v (make-vector cap jolt-nil)))
@@ -98,9 +105,9 @@
                        (let loop ((xs (seq->list (jolt-seq coll))) (k i))
                          (if (null? xs) (pair? (seq->list (jolt-seq coll)))
                              (begin (al-insert-at! self k (car xs)) (loop (cdr xs) (fx+ k 1))))))))
-    (cons "get" (lambda (self i) (al-ref self (jnum->exact i))))
+    (cons "get" (lambda (self i) (let ((idx (jnum->exact i))) (al-check-index! self idx) (al-ref self idx))))
     (cons "set" (lambda (self i x)
-                  (let* ((idx (jnum->exact i)) (old (al-ref self idx)))
+                  (let* ((idx (jnum->exact i)) (_ (al-check-index! self idx)) (old (al-ref self idx)))
                     (al-set! self idx x) old)))
     (cons "size" (lambda (self) (->num (al-cnt self))))
     (cons "isEmpty" (lambda (self) (fx=? 0 (al-cnt self))))
@@ -2772,9 +2779,16 @@
                    jolt-nil
                    (rsv-through (jolt-resolve env sym) sym (chez-current-ns))))))
 (def-var! "clojure.core" "ns-resolve"
-  (lambda (ns-desig sym)
-    (rsv-through (jolt-ns-resolve ns-desig sym) sym
-                 (jns-name (jolt-the-ns ns-desig)))))
+  (case-lambda
+    ((ns-desig sym)
+     (rsv-through (jolt-ns-resolve ns-desig sym) sym
+                  (jns-name (jolt-the-ns ns-desig))))
+    ;; the &env arity, as on resolve: a local named sym answers nil
+    ((ns-desig env sym)
+     (if (and (pmap? env) (pmap-contains? env sym))
+         jolt-nil
+         (rsv-through (jolt-ns-resolve ns-desig sym) sym
+                      (jns-name (jolt-the-ns ns-desig)))))))
 
 ;; --- ns-imports reports the namespace's own class mappings --------------------
 ;; A JVM namespace maps class names as well as vars: the java.lang auto-imports

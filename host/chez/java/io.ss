@@ -1034,6 +1034,12 @@
   ;; target truncated. The non-append write goes to a temp file in the same
   ;; directory and renames over the target, so a mid-write failure (disk full)
   ;; never destroys the original. Append keeps writing in place.
+  ;; Only a path, a File or a host stream names a target; anything else is the
+  ;; coercion error io/writer raises. nil used to render as "" and write a temp
+  ;; file into the working directory before failing to rename it.
+  (unless (or (string? path) (jfile? path) (jhost? path))
+    (throw-jvm (quote IllegalArgumentException)
+               (string-append "Cannot open <" (jolt-pr-str path) "> as a Writer.")))
   (let* ((p (project-relative (file-path-of path)))
          (text (jolt-str-render-one content)))
     (if (spit-append? opts)

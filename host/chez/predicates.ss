@@ -56,13 +56,13 @@
     ((keyword? x) (keyword-t-name x))
     ((symbol-t? x) (symbol-t-name x))
     ((string? x) x)
-    (else (throw-jvm (quote ClassCastException) (string-append (jolt-final-str x) " cannot be cast to clojure.lang.Named")))))
+    (else (jolt-cast-throw x "clojure.lang.Named"))))
 
 ;; (namespace x): keyword/symbol ns string, or nil when unqualified.
 (define (jolt-namespace x)
   (let ((ns (cond ((keyword? x) (keyword-t-ns x))
                   ((symbol-t? x) (symbol-t-ns x))
-                  (else (throw-jvm (quote ClassCastException) (string-append (jolt-final-str x) " cannot be cast to clojure.lang.Named"))))))
+                  (else (jolt-cast-throw x "clojure.lang.Named")))))
     (if (or (jolt-nil? ns) (not ns) (eq? ns '())) jolt-nil ns)))
 
 (def-var! "clojure.core" "nil?" jolt-nil?-fn)

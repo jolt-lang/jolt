@@ -336,8 +336,14 @@
 (defn thread-bound? [& vars]
   (every? (fn [v] (__thread-bound? v)) vars))
 
-(defn key [e] (if (map-entry? e) (nth e 0) (throw (ex-info "key requires a map entry" {}))))
-(defn val [e] (if (map-entry? e) (nth e 1) (throw (ex-info "val requires a map entry" {}))))
+;; key/val of a non-entry: the reference casts to Map$Entry, so nil is a
+;; NullPointerException and anything else a ClassCastException.
+(defn- entry-cast-throw [e]
+  (throw (if (nil? e)
+           (NullPointerException. "")
+           (ClassCastException. (str "class " (.getName (class e)) " cannot be cast to class java.util.Map$Entry")))))
+(defn key [e] (if (map-entry? e) (nth e 0) (entry-cast-throw e)))
+(defn val [e] (if (map-entry? e) (nth e 1) (entry-cast-throw e)))
 
 ;; --- Ad-hoc hierarchies (stage 3) — Clojure's canonical pure-map port. -----
 ;; A hierarchy is {:parents {tag #{parents}} :ancestors {tag #{all}}

@@ -95,8 +95,10 @@
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
 (define (into-xform to xform from)
+  ;; conj onto a nil accumulator starts a list, as (conj nil x) does — into nil
+  ;; is (reduce conj nil from) on the JVM, and an empty source leaves nil.
   (let* ((conj-rf (lambda a (if (fx=? (length a) 1) (car a)   ; completion = identity
-                               (jolt-conj1 (car a) (cadr a)))))
+                               (jolt-conj1 (if (jolt-nil? (car a)) jolt-empty-list (car a)) (cadr a)))))
          (xrf (jolt-invoke xform conj-rf))
          ;; into-fold, not reduce-seq: an IReduce(Init) source drives its own
          ;; reduce here too (seq.ss).
@@ -318,7 +320,7 @@
     ;; data.priority-map — drives rseq through its own method.
     ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
      => (lambda (f) (jolt-invoke f coll)))
-    (else (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map))))))
+    (else (jolt-cast-throw coll "clojure.lang.Reversible"))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
 
 ;; clojure.core/unchecked-* — host-defined wrapping (Java long) arithmetic from

@@ -147,8 +147,9 @@
 ;; the class NAME of x (string), or nil for nil. (class x) wraps it in a Class
 ;; value (make-class-obj, host-static-classes.ss) so it renders like a JVM Class
 ;; while staying = its name string.
-;; The condition? class-arm was removed as dead — all throws now use typed jolt
-;; throwables, so a raw Chez condition never reaches the class-name chain.
+;; No condition? class-arm: a raw Chez condition never reaches the class-name
+;; chain, because every one a catch binds has become a typed throwable at the
+;; boundary (jolt-unwrap-throw, java/host-faults.ss).
 ;; A fn def'd into a var reports a JVM-style class name "ns$munged-name" (the
 ;; forward CHAR_MAP), so clojure.spec.alpha's fn-sym (which splits on $ and
 ;; demunges) recovers the predicate's symbol. Anonymous / unregistered fns stay

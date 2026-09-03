@@ -266,7 +266,7 @@
 (defn- sm-assoc-many [sm kvs]
   (let [n (count kvs)]
     (when (odd? n)
-      (throw (ex-info "sorted-map assoc expects an even number of key/values" {:count n})))
+      (throw (IllegalArgumentException. (str "No value supplied for key: " (nth kvs (dec n))))))
     (loop [m sm i 0]
       (if (< i n)
         (recur (sm-assoc-1 m (nth kvs i) (nth kvs (inc i))) (+ i 2))

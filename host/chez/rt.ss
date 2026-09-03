@@ -581,6 +581,12 @@
 ;; the condition itself, which is what jolt-unwrap-throw hands the reporter for
 ;; a non-&jolt-throw raise. jolt throws skip this (they captured already, with
 ;; the RIGHT identity — overwriting would orphan their k).
+;; The condition the stash below describes. A fault a `guard` catches never
+;; reaches this handler (the guard's own is nearer), so the catch boundary
+;; snapshots the site itself when it converts the condition (java/
+;; host-faults.ss) — unless this handler already did, which is what the
+;; identity says.
+(define jolt-fault-captured (make-thread-parameter #f))
 (define (jolt-capture-fault! c)
   (unless (jolt-throw-condition? c)
     ;; NO call/cc here: Chez already attaches &continuation to a serious
@@ -588,10 +594,28 @@
     ;; would heap-freeze a whole stack for every INTERNALLY-CAUGHT host
     ;; condition, which a hot raise path cannot afford. Only the site pair is
     ;; stashed; an O(1) read.
-    (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
-                        (and (pair? s) s)))))
+    (jolt-fault-captured c)
+    (jolt-throw-sitep (jolt-live-site))))
+;; The site pair the vreg holds now, or #f.
+(define (jolt-live-site)
+  (let ((s (virtual-register jolt-vreg-site)))
+    (and (pair? s) s)))
+;; The value a raise carries, as jolt code sees it. A &jolt-throw condition
+;; unwraps to the value it wraps. A raw Chez condition — a fault the host itself
+;; raised, such as a primitive handed nil — becomes a typed jolt throwable, so a
+;; catch binds something with a class, a message and the Throwable surface, and
+;; a catch clause dispatches on that class like on any other. The conversion is
+;; the java layer's (java/host-faults.ss installs it); until that file loads a
+;; condition passes through as itself.
+(define jolt-fault->throwable (lambda (c) c))
 (define (jolt-unwrap-throw x)
-  (if (jolt-throw-condition? x) (jolt-throw-condition-value x) x))
+  (cond ((jolt-throw-condition? x) (jolt-throw-condition-value x))
+        ((condition? x) (jolt-fault->throwable x))
+        (else x)))
+;; The raw condition a converted fault came from, or #f: the reporter reads the
+;; continuation Chez attached to it (source-registry.ss). Installed with the
+;; conversion.
+(define jolt-fault-condition-of (lambda (v) #f))
 ;; ex-info builds a jolt-ex-info-record (NOT a pmap — pmap?/coll?/seqable?/ifn?
 ;; /associative?/counted? are naturally false). Arity 2 (msg data) or 3 (msg data cause).
 ;; No :jolt/class field on plain ex-info — class defaults to clojure.lang.ExceptionInfo
@@ -1490,6 +1514,7 @@
 (load "host/chez/protocols.ss")
 (load "host/chez/records-dispatch.ss")
 (load "host/chez/java/records-interop.ss")   ; exception hierarchy + instance-check taxonomy
+(load "host/chez/java/host-faults.ss")       ; a raw host fault caught = a typed throwable
 
 ;; metadata: meta / with-meta over an identity-keyed
 ;; side-table. After records.ss (jrec) + the collection ctors it copies.
