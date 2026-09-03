@@ -27,7 +27,7 @@
   ;; these cannot be corpus rows.
   {:suite "reflect-member-model" :expr "(let [ns (set (map (fn [m] (.getName m)) (.getMethods String)))] [(contains? ns \"format\") (contains? ns \"substring\")])" :expected "[true false]"}
   {:suite "reflect-member-model" :expr "(java.lang.reflect.Modifier/isStatic (.getModifiers (.getMethod String \"format\" nil)))" :expected "true"}
-  {:suite "reflect-member-model" :expr "(count (.getDeclaredFields String))" :expected "0"}
+  {:suite "reflect-member-model" :expr "(mapv (fn [f] (.getName f)) (.getDeclaredFields String))" :expected "[\"CASE_INSENSITIVE_ORDER\"]"}
   ;; a registered static is a Field, and reading it reflectively gives the value
   ;; the static reference gives
   {:suite "reflect-member-model" :expr "(.get (.getField Long \"MAX_VALUE\") nil)" :expected "9223372036854775807"}
@@ -2153,7 +2153,7 @@
   ;; satisfies? on a host interface (a Class, not a defprotocol) must throw — the
   ;; JVM errors too — but with a non-empty message naming the offending value.
   ;; Not JVM-certifiable (the JVM's own message differs), so a unit row.
-  {:suite "satisfies" :expr "(do (deftype S [x] CharSequence (toString [_] \"x\")) (try (satisfies? CharSequence (S. 1)) (catch Throwable e (let [m (ex-message e)] [(boolean (and (string? m) (seq m))) (boolean (and m (.contains m \"CharSequence\")))]))))" :expected "[true true]"}
+  {:suite "satisfies" :expr "(do (deftype S [x] CharSequence (toString [_] \"x\")) [(satisfies? CharSequence (S. 1)) (satisfies? CharSequence 1) (try (satisfies? 42 1) (catch IllegalArgumentException e (boolean (.contains (ex-message e) \"42\"))))])" :expected "[true false true]"}
   ;; The `-e` / REPL result printer is READABLE, like Clojure's REPL, which prints
   ;; with pr: a nested string keeps its quotes and a char its \\c syntax, so the
   ;; printed result reads back as the value it names. str/print/println are
@@ -2416,4 +2416,6 @@
   ;; Class/forName answers for every class resolve does — interfaces included — and
   ;; only for a fully qualified name, as on the JVM.
   {:suite "class-lattice" :expr "[(.getName (Class/forName \"clojure.lang.IDeref\")) (.getName (Class/forName \"clojure.lang.IAtom\")) (try (Class/forName \"IDeref\") :found (catch ClassNotFoundException _ :not-found)) (try (Class/forName \"String\") :found (catch ClassNotFoundException _ :not-found))]" :expected "[\"clojure.lang.IDeref\" \"clojure.lang.IAtom\" :not-found :not-found]"}
+  {:suite "host faults" :expr "(try (.concat \"a\" nil) (catch Throwable t (ex-message t)))" :expected "\"string-append: nil is not a string\""}
+  {:suite "host faults" :expr "(try (subs \"abc\" 5) (catch Throwable t [(.getName (class t)) (ex-message t)]))" :expected "[\"java.lang.StringIndexOutOfBoundsException\" \"substring: 5 and 3 are not valid start/end indices for \\\"abc\\\"\"]"}
 ]

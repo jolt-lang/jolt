@@ -741,8 +741,10 @@
     (else (error 'register-num-arm!
                  "unknown numeric extension point (an op is its jolt- var minus the prefix)"
                  op))))
-(define (jolt-num-check1 x)   ; (+ x)/(* x) return x but still type-check it
-  (if (or (number? x) (jolt-num-slow? x)) x (jolt-num-cast-throw x)))
+;; (+ x)/(* x) return x but still type-check it. nil passes: the reference casts
+;; the lone operand to Number, and null passes any cast.
+(define (jolt-num-check1 x)
+  (if (or (number? x) (jolt-nil? x) (jolt-num-slow? x)) x (jolt-num-cast-throw x)))
 (define (jolt-add . xs)
   (cond ((null? xs) 0)
         ((null? (cdr xs)) (jolt-num-check1 (car xs)))
@@ -1439,6 +1441,10 @@
     ((or (pvec? to) (pmap? to) (pset? to))
      (meta-carry to
        (jolt-persistent! (into-fold (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) from))))
+    ;; into nil is (reduce conj nil from): the first conj onto nil starts a
+    ;; list, and an empty source leaves nil, as on the JVM.
+    ((jolt-nil? to)
+     (into-fold (lambda (acc x) (jolt-conj1 (if (jolt-nil? acc) jolt-empty-list acc) x)) jolt-nil from))
     (else
      (meta-carry to
        (into-fold (lambda (acc x) (jolt-conj1 acc x)) to from)))))

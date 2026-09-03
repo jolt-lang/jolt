@@ -85,7 +85,7 @@
    ;; assert thread identity or timing and flap between fail and pass run to run,
    ;; hence the tolerance.
    :tolerance 2
-   :expect {:tests 31 :pass 210 :fail 8 :error 0}}
+   :expect {:tests 31 :pass 211 :fail 7 :error 0}}
 
   {:name "core.cache"
    :paths ["src/main/clojure" "src/test/clojure"]
@@ -459,7 +459,7 @@
    ;; its classes at load.
    :preload ["jolt.shim.commons-io" "jolt.shim.commons-fileupload"]
    :note "clj-time (Joda) + commons-fileupload are JVM-only; URLClassLoader/jar: URLs are jolt gaps"
-   :expect {:tests 152 :pass 450 :fail 1 :error 5 :load-fail 2}}
+   :expect {:tests 152 :pass 451 :fail 0 :error 5 :load-fail 2}}
 
   {:name "ring-spec"
    :paths ["src" "test"]

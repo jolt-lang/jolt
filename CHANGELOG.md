@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The class rows typed.clojure's annotation corpus names.** `java.lang.ref.Reference`
+  (abstract, over the `SoftReference` / `WeakReference` shims, which now report
+  their own classes instead of `:object`, plus `ReferenceQueue` and
+  `.refersTo`), `java.util.RandomAccess` (on `APersistentVector` and
+  `ArrayList`), `java.util.Comparator` (on `AFunction`, so a fn is one and
+  answers `.compare`), `clojure.lang.MultiFn` (an `AFn`), the whole transient
+  lattice (`ITransientCollection` … `ITransientSet`, `ATransientMap` /
+  `ATransientSet`, and the four concrete transient classes, so `bases`, `isa?`
+  and `instance?` on a transient answer the JVM's ancestry instead of
+  `AFunction`'s), and `java.util.SequencedCollection` (JDK 21) between
+  `Collection` and `List` / `Deque`, with `getFirst` / `getLast` / `reversed`
+  on vectors, lists and seqs and `getFirst` / `getLast` / `addFirst` / `addLast`
+  / `removeFirst` / `removeLast` on `ArrayList`. `typed.ann.clojure.base` and
+  `typed.ann.clojure` load; `override-classes` stopped at
+  `java.lang.ref.Reference` before.
+- **`String/CASE_INSENSITIVE_ORDER`.** String's one public static field: a
+  `Comparator` of `String$CaseInsensitiveComparator` that compares like
+  `compareToIgnoreCase` (a char difference, length last), usable by `sort`,
+  `sort-by`, `sorted-set-by` and `.compare`, and findable by `.getField`.
 - **`Character/getType` and the general-category constants.** The Unicode
   general category of a char or int codepoint as the JVM's constant, with
   `Character/UNASSIGNED` through `Character/FINAL_QUOTE_PUNCTUATION` (all 30;
@@ -28,6 +47,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A host fault a catch binds is a typed throwable.** A primitive handed the
+  wrong value — `(.concat "a" nil)`, `(subs "abc" 5)`, `(clojure.string/trim
+  nil)` — raised a raw Chez condition, and a catch bound it as it was:
+  `(class e)` answered `:object`, `ex-message` nil, `(instance? Exception e)`
+  false, `pr-str` printed `#object[:object]`, and every `RuntimeException`
+  clause matched it, so `(catch ArithmeticException e …)` caught a nil
+  argument. A raw condition becomes a typed throwable at the catch boundary
+  now, classified by what Chez reported: a nil argument is a
+  `NullPointerException`, a wrong-typed one a `ClassCastException`, a bad
+  index an `IndexOutOfBoundsException` (`StringIndexOutOfBoundsException`
+  from a string primitive), a wrong argument count an `ArityException`,
+  division by zero an `ArithmeticException`, an i/o failure an `IOException`,
+  anything else a `RuntimeException`. Catch clauses dispatch on that class, a
+  rethrow keeps the same object, a future's `.getCause` is it,
+  `.printStackTrace` prints the frames that led to the fault, and the message
+  names the primitive with the offending value printed as a jolt value:
+  `string-append: nil is not a string`, not `#[jolt-nil-v1] is not a string`.
+  typed.clojure's `check-form*` rethrows such a fault and reported
+  `#object[:object]`.
+- **A `.method` call in tail position is a trace site.** `(defn f [s] (.concat
+  s nil))` erased `f` from the trace: the tail call dropped its frame and,
+  unlike a fn call, the interop call stored no site pair, so the report and
+  `.printStackTrace` began at the caller. The host call carries its form's
+  line now and stores the site the way a tail fn call does; a fault caught by a
+  `catch` snapshots the site at the catch boundary too, since the guard's own
+  handler is nearer than the uncaught-path capture.
+- **The uncaught report names the class.** `Unhandled exception
+  (NullPointerException): …` for a typed throwable. An `ExceptionInfo` and a
+  bare `Exception` keep the message-only line, as the reference's report does.
+- **Throws whose class the JVM answers differently.** `(name nil)`,
+  `(namespace nil)`, `(deref nil)`, `(var-get nil)` and `(key nil)` are
+  `NullPointerException`s (were `ClassCastException` or `ExceptionInfo`);
+  `(key 1)`, `(val 1)` and `(rseq 1)` are `ClassCastException`s (were
+  `ExceptionInfo`); `(sorted-map 1)` is an `IllegalArgumentException` "No
+  value supplied for key: 1"; `(nth "abc" 5)` is a
+  `StringIndexOutOfBoundsException`; `(.get an-array-list 3)` past the end is
+  an `IndexOutOfBoundsException` (it answered nil); `(into {} [[1]])` is an
+  `IllegalArgumentException` "Vector arg to map conj must be a pair" (it
+  answered `{1 nil}`, though `conj` already refused the pair); `(spit nil "x")`
+  is an `IllegalArgumentException` "Cannot open <nil> as a Writer." (it wrote
+  a temp file into the working directory, then failed to rename it); and
+  `(+ nil)` / `(* nil)` are nil, as the reference's single-operand cast makes
+  them (were `NullPointerException`).
+- **`(into nil coll)` is a list.** `into` folded through `conj` on the nil
+  target directly instead of starting a list the way `(conj nil x)` does, and
+  died inside the host (`string-append: nil is not a string`) for any
+  non-empty source, in both the plain and the transducer arity; `(into nil
+  [1 2])` is `(2 1)` and `(into nil [])` nil, as on the JVM. typed.clojure's
+  pass scheduler does `(into affects (filter passes after))` with `affects`
+  nil, which is where `(t/cf (inc 1))` stopped.
+- **A record class constructs from its fields plus `__meta` and `__extmap`.**
+  `(R. f1 … fn meta ext)` is the JVM record class's second constructor, and
+  what a macro building records without the positional factory emits
+  (typed.clojure's `create-expr` expands to `new` with all of them); jolt's
+  constructor took exactly the fields and raised an `ArityException`. The
+  extra two attach the metadata and carry the map as extension fields.
+- **`(ns-resolve ns env sym)`.** The three-argument form, which answers nil for
+  a symbol the local environment binds, was missing (`resolve` had its env
+  arity); typed.clojure's analyzer resolves through it with `&env`.
+- **A record's `__meta` and `__extmap` read as fields.** The JVM record class
+  has both as public fields, and typed.clojure's `update-expr` reads
+  `(.-__extmap e)` to carry an expression's extra keys; jolt raised "No
+  matching field found". `__extmap` is the map of extension keys (nil when
+  there are none), `__meta` the metadata.
+- **`satisfies?` on a class or interface answers `instance?`.** jolt takes
+  `:bb` reader branches, and code written for babashka asks `(satisfies?
+  clojure.lang.IObj x)` where its JVM branch asks `instance?` (typed.clojure's
+  `obj?`); it raised "satisfies? expects a protocol". The JVM raises on the
+  class form and babashka answers false for everything; jolt answers the
+  question the code means.
+- **`clojure.lang.RT/classForName` and `classForNameNonLoading`.** The same
+  answer as `Class/forName`, including `ClassNotFoundException`; typed.clojure's
+  analyzer resolves class symbols through the RT statics.
+- **`bases` answers Class objects.** It handed back name strings where `supers`
+  handed back classes, so `(.getName (first (bases c)))` failed on every class
+  (typed.clojure builds its RClass ancestry exactly that way). Superclass first,
+  as on the JVM, with `Object` leading a class whose row names no concrete
+  super.
+- **`Class.getModifiers` on a nested class.** Every nested class jolt models is
+  a static nested class on the JVM, so the STATIC bit is set for a `$` name the
+  graph knows; the four transient classes and `PersistentArrayMap$Seq`,
+  `PersistentHashMap$NodeSeq` and `PersistentList$EmptyList` are
+  package-private, `String$CaseInsensitiveComparator` private, and
+  `Thread$State` an enum — all probed. `(.getModifiers (class (transient #{})))`
+  is 24, `java.util.Map$Entry` 1545, as on the JVM (1 and 1537 before).
+- **`(str an-interface-class)` says `interface`.** `java.util.List` rendered as
+  `class java.util.List`.
+- **A persistent collection refuses the `java.util` mutators with
+  `UnsupportedOperationException`.** `.add`, `.set`, `.remove`, `.clear`,
+  `.sort` and the rest on a vector, list, seq or set raised an
+  `IllegalArgumentException` "no matching method", which a
+  `(catch UnsupportedOperationException …)` never saw.
+- **A named fn carries the same ancestry as an anonymous one.** Its protocol
+  dispatch tags were a hand-copied list with no `Comparator`, `Runnable` or
+  `Callable`, so `(instance? java.util.Comparator inc)` was false while the
+  same question on `(fn [a b] 0)` was true; the list derives from the class
+  graph now.
 - **A native iOS build no longer reports itself as Linux.** #796 fixed the
   portable-bytecode half of `sa-os-family` — a `pb` tag names no OS, so the
   `else` branch called every bytecode build Linux, and it probes the filesystem

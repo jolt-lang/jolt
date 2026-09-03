@@ -1492,7 +1492,10 @@
         ;; keep it first so a destructure pays one call, not the walk below.
         ((pvec? coll) (pvec-nth! coll i))
               ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
-                                  (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))
+                                  (jolt-throw (jolt-host-throwable "java.lang.StringIndexOutOfBoundsException"
+                                                                   (string-append "Index " (number->string i)
+                                                                                  " out of bounds for length "
+                                                                                  (number->string (string-length coll)))))))
               ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))
               ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i)))
               ;; RT.nth reads a CharSequence by charAt once Indexed has missed —

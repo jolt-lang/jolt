@@ -148,6 +148,20 @@
     ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))
     (else #f)))
 
+;; The record class's own two public fields on the JVM, boxed, or #f: __extmap
+;; is the extension keys (nil when there are none, as a dissoc back to the
+;; declared fields leaves it), __meta the metadata. Read by code that rebuilds
+;; a record without the positional factory (typed.clojure's update-expr), as
+;; (.-__extmap e) or the reflector's (. e __extmap), which tries a method first
+;; and then the field.
+(define (jrec-class-field obj mname)
+  (and (jrec-record? obj)
+       (cond ((string=? mname "__extmap")
+              (let ((ext (jrec-ext obj)))
+                (list (if (or (jolt-nil? ext) (fx=? 0 (jolt-count ext))) jolt-nil ext))))
+             ((string=? mname "__meta") (list (jolt-meta obj)))
+             (else #f))))
+
 (register-method-arm! arm-priority-dotform
   (lambda (obj method-name rest-args)
     (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
@@ -173,10 +187,15 @@
         (field?
          (let ((kw (keyword #f mname)))
            (cond
-             ((jrec? obj) (if (jrec-field-index obj kw) (jrec-lookup obj kw jolt-nil) 'pass))
+             ((jrec? obj)
+              (cond ((jrec-field-index obj kw) (jrec-lookup obj kw jolt-nil))
+                    ((jrec-class-field obj mname) => car)
+                    (else 'pass)))
              ((and (jolt-map? obj) (jolt-truthy? (jolt-contains? obj kw)))
               (jolt-get obj kw jolt-nil))
              (else 'pass))))
+        ;; (. rec __extmap) with no args: no method by that name, then the field
+        ((and (null? rest) (jrec? obj) (jrec-class-field obj mname)) => car)
         ;; clojure.lang.MultiFn .dispatchFn / .getMethod — clojure.spec.alpha's
         ;; multi-spec walks a multimethod through these.
         ((jolt-multifn? obj)
@@ -192,6 +211,10 @@
         ;; (.applyTo f args): apply a fn to a seq of args (clojure.spec instrument).
         ((and (procedure? obj) (string=? mname "applyTo"))
          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+        ;; (.compare f a b): a fn is a java.util.Comparator — AFunction.compare
+        ;; invokes it — so code holding a fn as a Comparator calls it this way.
+        ((and (procedure? obj) (string=? mname "compare") (pair? rest) (pair? (cdr rest)))
+         (jolt-invoke obj (car rest) (cadr rest)))
         ;; a transient (ITransientCollection/Set/Map): .contains / .valAt / .count —
         ;; test.check's distinct-collection gen uses (.contains transient-set k).
         ((jolt-transient? obj)

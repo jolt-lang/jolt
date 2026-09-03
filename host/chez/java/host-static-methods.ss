@@ -659,10 +659,36 @@
          (v (jolt-get-dispatch data (keyword #f name) jolt-nil)))
     (if (jolt-nil? v) dflt v)))
 
+;; String.CASE_INSENSITIVE_ORDER: String's one public static field, a Comparator
+;; of String's own (private, nested) class — class-hierarchy.ss maps the tag.
+;; compare is String.compareToIgnoreCase, character for character: each pair is
+;; folded to upper case, then to lower case when that still differs, and the
+;; first pair that differs answers the DIFFERENCE of the folded chars (not a
+;; sign); equal prefixes answer the length difference. So "a" vs "B" is -1, "Z"
+;; vs "a" is 25 and "É" vs "é" is 0.
+(define (string-ci-compare a b)
+  (let ((la (string-length a)) (lb (string-length b)))
+    (let loop ((i 0))
+      (cond ((or (fx=? i la) (fx=? i lb)) (fx- la lb))
+            (else
+             (let ((ca (string-ref a i)) (cb (string-ref b i)))
+               (if (char=? ca cb)
+                   (loop (fx+ i 1))
+                   (let ((ua (char-upcase ca)) (ub (char-upcase cb)))
+                     (if (char=? ua ub)
+                         (loop (fx+ i 1))
+                         (let ((da (char-downcase ua)) (db (char-downcase ub)))
+                           (if (char=? da db)
+                               (loop (fx+ i 1))
+                               (fx- (char->integer da) (char->integer db)))))))))))))
+(register-host-methods! "string-ci-comparator"
+  (list (cons "compare" (lambda (self a b) (string-ci-compare a b)))))
+(define string-ci-comparator (make-jhost "string-ci-comparator" #f))
 (register-class-statics! "String"
   ;; String.valueOf(char[]) is the chars as a string, not the array's own rendering —
   ;; it answered "#object[[C]" where (String. ca) already gave "hi".
-  (list (cons "valueOf" (lambda (x . _)
+  (list (cons "CASE_INSENSITIVE_ORDER" string-ci-comparator)
+        (cons "valueOf" (lambda (x . _)
                           (cond ((jolt-nil? x) "null")
                                 ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))
                                  (list->string (vector->list (jolt-array-vec x))))
@@ -852,14 +878,20 @@
                (else (loop (+ i 1)))))
        (let ((d (list->string (map (lambda (c) (if (char=? c #\_) #\- c)) (string->list nm)))))
          (and (forname-known? d) d))))
-(register-class-statics! "Class"
-  (list (cons "forName"
-              (lambda (nm . _)
-                (cond
-                  ((and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[)) nm)
-                  ((forname-known? nm) (make-class-obj nm))
-                  ((forname-demunged nm) => make-class-obj)
-                  (else (jolt-throw (jolt-host-throwable "java.lang.ClassNotFoundException" nm))))))))
+(define (class-for-name nm . _)
+  (cond
+    ((and (> (string-length nm) 0) (char=? (string-ref nm 0) #\[)) nm)
+    ((forname-known? nm) (make-class-obj nm))
+    ((forname-demunged nm) => make-class-obj)
+    (else (jolt-throw (jolt-host-throwable "java.lang.ClassNotFoundException" nm)))))
+(register-class-statics! "Class" (list (cons "forName" class-for-name)))
+;; clojure.lang.RT's own class lookups (the analyzer's resolve path): the same
+;; answer as Class/forName. Non-loading is a distinction without a difference
+;; here — nothing is initialized on lookup.
+(register-class-statics! "RT"
+  (list (cons "classForName" class-for-name) (cons "classForNameNonLoading" class-for-name)))
+(register-class-statics! "clojure.lang.RT"
+  (list (cons "classForName" class-for-name) (cons "classForNameNonLoading" class-for-name)))
 
 ;; ---- System helpers (defined before use above via top-level order) ----------
 ;; os.name reflects the actual platform (Chez's machine-type names it): a *osx

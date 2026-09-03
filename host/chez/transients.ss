@@ -216,7 +216,10 @@
 (define (tmap-conj-entry! t x)
   (cond
     ((jolt-nil? x) #t)
-    ((pvec? x) (tmap-put! t (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil)))
+    ;; a vector is one entry, so it must be a pair — the persistent conj's rule
+    ((pvec? x) (if (fx=? 2 (pvec-count x))
+                   (tmap-put! t (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil))
+                   (throw-jvm 'IllegalArgumentException "Vector arg to map conj must be a pair")))
     ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
     (else (throw-jvm (quote IllegalArgumentException) "conj!: a transient map takes a map entry or a map"))))
 

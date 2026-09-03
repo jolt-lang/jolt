@@ -106,6 +106,15 @@
                  (hashtable-set! host-methods-tbl tag h) h))))
     (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
 
+;; The comparator seam (natives-seq.ss jolt-comparator-fn) asks whether a value
+;; is a shim object whose tag registers a `compare` method — a Comparator held
+;; by the host (String/CASE_INSENSITIVE_ORDER) rather than by a deftype/reify.
+(set! jhost-compare-method?
+  (lambda (x)
+    (and (jhost? x)
+         (let ((h (hashtable-ref host-methods-tbl (jhost-tag x) #f)))
+           (and h (hashtable-ref h "compare" #f) #t)))))
+
 ;; Point a second tag at an existing tag's method table, sharing the table itself
 ;; rather than copying it. A shim that differs from another ONLY in the class it
 ;; reports — clojure.lang.LineNumberingPushbackReader over java.io.PushbackReader

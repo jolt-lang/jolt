@@ -15,11 +15,12 @@
 (define (exception-isa? cls wanted)
   (jch-isa? (jch-fqn-of-simple cls) wanted))
 
-;; A raw Chez condition (an arity or non-seqable error Chez itself raised) carries
-;; no jolt exception class. All operation sites now throw typed jolt throwables
-;; (ArityException, IllegalArgumentException, ClassCastException, etc.) BEFORE
-;; Chez can raise a raw condition. Any raw condition that still escapes is a
-;; runtime error — classify it as RuntimeException.
+;; A raw Chez condition (an arity or type error Chez itself raised) carries no
+;; jolt exception class. Operation sites throw typed jolt throwables
+;; (ArityException, IllegalArgumentException, ClassCastException, etc.) before
+;; Chez can raise; one that still escapes is classified into a typed throwable
+;; at the catch boundary (host-faults.ss), so nothing below ever sees a bare
+;; condition as a throwable.
 ;; instance-check: (type-sym val) — type/protocol membership. Host shims loaded
 ;; later (io, inst-time, natives-array, natives-queue, host-static-classes)
 ;; register an arm with register-instance-check-arm! instead of set!-wrapping
@@ -208,13 +209,14 @@
     (else #f)))
 
 ;; Broad-catch fallback for catch-clause dispatch (analyze-try desugars
-;; (catch C e …) to (or (instance? C e) (__catch-broad? "C" e))). A jolt host
-;; condition or a raw raised value carries no jolt exception class, so instance?
-;; can't place it; a Clojure (catch C e) over such a value matches when C is
-;; RuntimeException (or a subclass) / Exception / Throwable — most host runtime
-;; errors are RuntimeExceptions. Typed throwables (ex-info records, (SomeException. …))
-;; are recognized by instance? as Throwable, so untyped? is false and they dispatch
-;; precisely through the instance? arm instead.
+;; (catch C e …) to (or (instance? C e) (__catch-broad? "C" e))). A raised value
+;; that is no throwable at all (a throw of a keyword or a string) carries no
+;; exception class, so instance? can't place it; a Clojure (catch C e) over such
+;; a value matches when C is RuntimeException (or a subclass) / Exception /
+;; Throwable. Typed throwables (ex-info records, (SomeException. …), and every
+;; host fault by the time a catch binds it — host-faults.ss) are recognized by
+;; instance? as Throwable, so untyped? is false and they dispatch precisely
+;; through the instance? arm instead.
 (define throwable-type-sym (jolt-symbol #f "Throwable"))
 (define (simple-class-name nm)
   (let loop ((i (- (string-length nm) 1)))

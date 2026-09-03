@@ -446,7 +446,24 @@
                      (- (count arg-test-cases) (count arg-bad)) (count arg-test-cases)))
     (System/exit (if (or (seq bad) (seq arg-bad)) 1 0))))
 
+;; The corpus is measured on this JDK or newer: java.util.SequencedCollection and
+;; its List/Deque methods (JDK 21) have rows. An older oracle would report them
+;; as NEW divergences, which is not a fact about jolt — refuse to judge instead.
+;; CI points JAVA_CMD at the JDK it installs for this: the `clojure` launcher
+;; runs JAVA_CMD first, then the java on PATH, and JAVA_HOME only when there is
+;; none — not the newest JDK on the machine.
+(def oracle-jdk-floor 21)
+
+(defn check-oracle-jdk! []
+  (let [feature (.feature (Runtime/version))]
+    (when (< feature oracle-jdk-floor)
+      (println (format "certify: the oracle is JDK %s (%s), but the corpus is measured on JDK %d or newer."
+                       (System/getProperty "java.runtime.version") (System/getProperty "java.home") oracle-jdk-floor))
+      (println "        Set JAVA_CMD to a newer JDK's java (the clojure launcher's first choice), or put one first on PATH.")
+      (System/exit 2))))
+
 (defn -main [& _]
+  (check-oracle-jdk!)
   (when (some #{"--self-test"} *command-line-args*) (self-test))
   (when (some #{"--record-documented"} *command-line-args*) (record-documented))
   (let [;; forced here, not left lazy: these evaluate programs, and a gate should
@@ -458,7 +475,8 @@
         by (group-by :bucket results)
         n (count results)
         cnt #(count (get by % []))]
-    (println (format "Certifying %d corpus rows against JVM Clojure %s\n" n (clojure-version)))
+    (println (format "Certifying %d corpus rows against JVM Clojure %s on JDK %s\n" n (clojure-version)
+                     (System/getProperty "java.runtime.version")))
     (println (format "  certified        %5d  (jolt expected == JVM)" (cnt :certified)))
     (println (format "  certified-throws %5d  (:throws, JVM also throws)" (cnt :certified-throws)))
     (println (format "  uncertifiable    %5d  (JVM lacks the vocabulary — jolt-only fn/class/lib)" (cnt :uncertifiable)))

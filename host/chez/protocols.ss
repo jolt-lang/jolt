@@ -353,14 +353,17 @@
         ((and (procedure? obj) (deftype-ctor-tag obj))
          '("Class" "java.lang.Class" "Object"))
         ;; a named fn reports its own JVM-style class "ns$munged-name" (the same
-        ;; (class the-fn) yields) ahead of the generic IFn tags, so a protocol
-        ;; extended to a SPECIFIC fn's class dispatches on it — schema keys its
-        ;; primitive schemas by (class @(resolve 'double)) and friends.
+        ;; (class the-fn) yields) ahead of AFunction's ancestry from the class
+        ;; graph, so a protocol extended to a SPECIFIC fn's class dispatches on
+        ;; it — schema keys its primitive schemas by (class @(resolve 'double))
+        ;; and friends. The ancestry is the same list an anonymous fn reports
+        ;; below; a hand-copied list here had no Comparator, Runnable or
+        ;; Callable, so (instance? java.util.Comparator inc) was false while
+        ;; (instance? java.util.Comparator (fn [a b] 0)) was true.
         ((and (procedure? obj) (hashtable-ref proc-name-tbl obj #f))
          => (lambda (p)
-              (list (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
-                    "AFunction" "clojure.lang.AFunction" "AFn" "clojure.lang.AFn"
-                    "IFn" "clojure.lang.IFn" "Fn" "clojure.lang.Fn" "Object")))
+              (cons (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
+                    (jch-tags "clojure.lang.AFunction"))))
         ;; a value-layer shim value (java.time.*, URI, ByteBuffer, java.io reader/
         ;; writer, ArrayList/HashMap, …) reports its class's whole ancestry from the
         ;; single jhost-tag->fqn registry (class-hierarchy.ss). So (extend-protocol
@@ -444,6 +447,14 @@
         (else '("Object"))))
 
 
+;; assoc every entry of a map onto a record — the __extmap of the record
+;; class's full constructor, carried as extension fields.
+(define (jrec-assoc-entries r ext)
+  (let loop ((s (jolt-seq ext)) (r r))
+    (if (jolt-nil? s) r
+        (let ((e (seq-first s)))
+          (loop (jolt-seq (seq-more s)) (jolt-assoc r (jolt-nth e 0) (jolt-nth e 1)))))))
+
 ;; ---- the native that handles the analyzer/overlay call ----------------------
 ;; make-deftype-ctor: (name-sym field-kws field-tags field-muts) -> ctor closure.
 ;; The tag is baked at definition time in the type's ns (chez-current-ns).
@@ -473,21 +484,35 @@
          ;; the ctor var's name, baked at definition (the JVM ArityException
          ;; names the positional ctor: "… passed to: ns/->Name").
          (ctor-name (string-append (chez-current-ns) "/->" (symbol-t-name name-sym)))
+           (build (lambda (args)
+                    (let ((v (make-vector nf jolt-nil)))
+                      (let loop ((as args) (i 0))
+                        (if (or (null? as) (fx=? i nf)) (make-jrec desc v jolt-nil)
+                            (let ((a (car as)))
+                             (vector-set! v i
+                                          (if (and (fx< i ndbl) (vector-ref dbl-flags i)
+                                                   (number? a) (not (flonum? a)))
+                                              (exact->inexact a) a))
+                             (loop (cdr as) (+ i 1))))))))
            (ctor (lambda args
-                   ;; validate arg count — must match declared field count exactly
-                   (when (not (= (length args) nf))
-                     (throw-jvm (quote ArityException)
-                       (string-append "Wrong number of args (" (number->string (length args))
-                                      ") passed to: " ctor-name)))
-                   (let ((v (make-vector nf jolt-nil)))
-                     (let loop ((as args) (i 0))
-                       (if (null? as) (make-jrec desc v jolt-nil)
-                           (let ((a (car as)))
-                            (vector-set! v i
-                                         (if (and (fx< i ndbl) (vector-ref dbl-flags i)
-                                                  (number? a) (not (flonum? a)))
-                                             (exact->inexact a) a))
-                            (loop (cdr as) (+ i 1)))))))))
+                   (let ((n (length args)))
+                     (cond
+                       ((= n nf) (build args))
+                       ;; A record class has a second constructor on the JVM:
+                       ;; the fields, then __meta and __extmap. (R. f1 .. fn m
+                       ;; ext) is what a macro building records without the
+                       ;; positional factory emits (typed.clojure's create-expr
+                       ;; expands to `new` with all eight).
+                       ((and (= n (+ nf 2)) (hashtable-ref chez-record-type-tbl tag #f))
+                        (let* ((r (build args))
+                               (m (list-ref args nf))
+                               (ext (list-ref args (+ nf 1)))
+                               (r (if (jolt-nil? ext) r (jrec-assoc-entries r ext))))
+                          (if (jolt-nil? m) r (jolt-with-meta r m))))
+                       (else
+                        (throw-jvm (quote ArityException)
+                          (string-append "Wrong number of args (" (number->string n)
+                                         ") passed to: " ctor-name))))))))
     ;; Register the ctor under its fully-qualified tag ("ns.Name") — a bare
     ;; (Name. …) in the DEFINING ns is qualified to this by the analyzer, so a
     ;; deftype whose simple name collides with a built-in host class (tools.reader's

@@ -64,6 +64,10 @@
     (cond
       ((and (pair? tc) (eq? (car tc) v)) (cdr tc))
       ((and (condition? v) (continuation-condition? v)) (condition-continuation v))
+      ;; a host fault the catch boundary turned into a throwable: the raise-time
+      ;; continuation is on the condition it came from (java/host-faults.ss)
+      ((jolt-fault-condition-of v)
+       => (lambda (c) (and (continuation-condition? c) (condition-continuation c))))
       (else #f))))
 
 ;; A frame inspector's procedure name as a string, or #f for a non-frame / unnamed.
@@ -786,7 +790,15 @@
   (let ((v (jolt-unwrap-throw raw)))
     (if (jolt-ex-info-record? v)
         (begin
-          (display "Unhandled exception: " port)
+          ;; The class is the headline when it says something: shown for a
+          ;; typed throwable (a host fault, an ArithmeticException), omitted for
+          ;; an ExceptionInfo — its message and ex-data carry the report — and
+          ;; for a bare java.lang.Exception, as the reference does.
+          (display "Unhandled exception" port)
+          (let ((cn (jolt-ex-info-record-class-name v)))
+            (unless (member cn '("clojure.lang.ExceptionInfo" "java.lang.Exception"))
+              (display " (" port) (display (last-dot cn) port) (display ")" port)))
+          (display ": " port)
           (display (jolt-str-render-one (jolt-ex-info-record-message v)) port)
           (newline port)
           (let ((data (jolt-ex-info-record-data v)))

@@ -342,24 +342,11 @@
 
 ;; A range condition escaping jolt-flaget/jolt-flaset IS the array bounds error
 ;; on the proven ^doubles path (a typed pre-check there costs ~1ns/access, ~11%
-;; on an array-walking loop; wrapping in guard costs ~30ns/call). Classify the
-;; raw Chez condition at inspection time instead: (class e) and instance? report
-;; java.lang.ArrayIndexOutOfBoundsException, so a typed catch dispatches
-;; precisely through the exception hierarchy and an unrelated class does not
-;; broad-match. flvector-ref/-set! appear nowhere else in the runtime (the
-;; generic ja-ref/ja-set! path pre-checks and throws typed before reaching
-;; them), so the condition's who field is a precise key.
-(define (na-flv-oob-condition? c)
-  (and (condition? c) (who-condition? c)
-       (memq (condition-who c) '(flvector-ref flvector-set!))))
-(register-class-arm! na-flv-oob-condition?
-  (lambda (c) "java.lang.ArrayIndexOutOfBoundsException"))
-(register-instance-check-arm!
-  (lambda (type-sym val)
-    (if (na-flv-oob-condition? val)
-        (exception-isa? "ArrayIndexOutOfBoundsException"
-                        (last-dot (if (string? type-sym) type-sym (symbol-t-name type-sym))))
-        'pass)))
+;; on an array-walking loop; wrapping in guard costs ~30ns/call). The catch
+;; boundary turns that raw condition into a
+;; java.lang.ArrayIndexOutOfBoundsException by its who field (host-faults.ss
+;; array-index-whos), so a typed catch dispatches precisely through the
+;; exception hierarchy and an unrelated class does not match.
 
 ;; --- array identity: type / class / instance? recognize arrays ---------------
 ;; (type arr) / (class arr) -> the JVM array class name; (class …) delegates to

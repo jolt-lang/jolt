@@ -1085,4 +1085,10 @@
    {:suite "reader / radix N suffix", :label "2r1010N reads as integer 10", :category :reader-model}
    {:suite "reader-model / nested fn literals", :label "nested #() reads", :category :reader-model}
    {:suite "numbers / unsigned string conversions", :label "past 64 bits it is a signed magnitude, not a wrap", :category :integer-box-model}
-   {:suite "conformance / numeric pass", :label "literal-init loop var + bignum-literal stays generic (exact)", :category :numeric-model}]}
+   {:suite "conformance / numeric pass", :label "literal-init loop var + bignum-literal stays generic (exact)", :category :numeric-model}
+
+   ;; jolt takes :bb reader branches, and babashka code asks (satisfies? Class x)
+   ;; where its JVM branch asks instance?; jolt answers instance? there. The JVM
+   ;; raises on the class form (satisfies? wants a protocol map), so certify
+   ;; buckets the row :jvm-raises.
+   {:suite "protocols / satisfies?", :label "satisfies? on a class or interface answers instance?", :category :host-model}]}

@@ -95,8 +95,10 @@
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
 (define (into-xform to xform from)
+  ;; conj onto a nil accumulator starts a list, as (conj nil x) does — into nil
+  ;; is (reduce conj nil from) on the JVM, and an empty source leaves nil.
   (let* ((conj-rf (lambda a (if (fx=? (length a) 1) (car a)   ; completion = identity
-                               (jolt-conj1 (car a) (cadr a)))))
+                               (jolt-conj1 (if (jolt-nil? (car a)) jolt-empty-list (car a)) (cadr a)))))
          (xrf (jolt-invoke xform conj-rf))
          ;; into-fold, not reduce-seq: an IReduce(Init) source drives its own
          ;; reduce here too (seq.ss).
@@ -207,8 +209,13 @@
 ;; sorted-map-by / sorted-set-by cannot drift apart on which values they accept.
 ;; iface-method + record-method-dispatch live in records.ss (loaded later);
 ;; resolved at call time.
+;; A host-shim Comparator object (String/CASE_INSENSITIVE_ORDER) keeps its
+;; `compare` in the jhost method table, not the deftype/reify one. The java host
+;; layer (host-static.ss, loaded later) set!s this to look there; the Gambit
+;; boot, which has no jhost, keeps the #f default.
+(define jhost-compare-method? (lambda (x) #f))
 (define (jolt-comparator-fn cmp)
-  (if (iface-method cmp "compare" #f)
+  (if (or (iface-method cmp "compare" #f) (jhost-compare-method? cmp))
       (lambda (a b) (record-method-dispatch cmp "compare" (jolt-list a b)))
       (lambda (a b) (jolt-invoke cmp a b))))
 (def-var! "clojure.core" "__comparator-fn" jolt-comparator-fn)
@@ -313,7 +320,7 @@
     ;; data.priority-map — drives rseq through its own method.
     ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
      => (lambda (f) (jolt-invoke f coll)))
-    (else (jolt-throw (jolt-ex-info "rseq requires a vector or sorted collection" (jolt-hash-map))))))
+    (else (jolt-cast-throw coll "clojure.lang.Reversible"))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
 
 ;; clojure.core/unchecked-* — host-defined wrapping (Java long) arithmetic from

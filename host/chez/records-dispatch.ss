@@ -17,26 +17,84 @@
 ;; cur, so seq just yields it — clojure.test's (iterator-seq (.iterator coll)).
 (register-seq-arm! jiterator? jiterator-cur)
 
-;; A Chez condition's message string (for Throwable .getMessage/.toString): the
-;; &message text plus any &irritants, or display-condition output as a fallback.
+;; A Chez condition's message: "who: text", where text is the &message template
+;; with each ~s / ~a directive filled by the matching irritant printed as a jolt
+;; value — "string-append: nil is not a string", not "#[jolt-nil-v1] is not a
+;; string". This is Throwable .getMessage on a raw condition, jolt.host/
+;; condition-message, and the message of the throwable a fault becomes at the
+;; catch boundary (java/host-faults.ss). A template with any other directive
+;; (open-input-file's "failed for ~a: ~(~a~)") is left to Chez's format, its
+;; irritants appended when format rejects it; a message with no directive gets
+;; its irritants appended. A condition with no message at all renders through
+;; display-condition.
 (define (condition->message-string c)
   (if (message-condition? c)
       (let* ((m (condition-message c))
              (irr (if (irritants-condition? c) (condition-irritants c) '()))
-             (append-irr (lambda ()
-                           (let loop ((xs irr) (acc m))
-                             (if (null? xs) acc
-                                 (loop (cdr xs) (string-append acc " " (jolt-pr-str (car xs)))))))))
-        ;; some Chez conditions (open-input-file etc.) carry a format-template
-        ;; message ("failed for ~a: ~(~a~)") whose irritants fill the directives;
-        ;; format it in. Fall back to appending the irritants if that fails.
-        (if (and (string? m) (let scan ((i 0))
-                               (cond ((>= i (string-length m)) #f)
-                                     ((char=? (string-ref m i) #\~) #t)
-                                     (else (scan (+ i 1))))))
-            (guard (e (#t (append-irr))) (apply format m irr))
-            (append-irr)))
+             (irr (if (list? irr) irr '()))
+             (who (and (who-condition? c) (condition-who c)))
+             (text (if (string? m)
+                       (condition-template-fill m irr)
+                       (with-output-to-string (lambda () (display m))))))
+        (cond ((symbol? who) (string-append (symbol->string who) ": " text))
+              ((string? who) (string-append who ": " text))
+              (else text)))
       (with-output-to-string (lambda () (display-condition c)))))
+;; The directive at position i of template m: (next-index . kind) — kind is
+;; #\s / #\a for a plain (or ~:s) print directive, #\~ for a literal tilde, #f
+;; for anything else. i indexes the ~ itself.
+(define (condition-directive m i)
+  (let* ((n (string-length m))
+         (j (if (and (fx<? (fx+ i 1) n) (char=? (string-ref m (fx+ i 1)) #\:)) (fx+ i 2) (fx+ i 1)))
+         (d (and (fx<? j n) (char-downcase (string-ref m j)))))
+    (cond ((memv d '(#\s #\a)) (cons (fx+ j 1) d))
+          ((eqv? d #\~) (cons (fx+ j 1) #\~))
+          (else (cons (fx+ j 1) #f)))))
+(define (condition-append-irritants s irr)
+  (let loop ((xs irr) (acc s))
+    (if (null? xs) acc
+        (loop (cdr xs) (string-append acc " " (condition-irritant-string (car xs) #t))))))
+(define (condition-template-fill m irr)
+  (let ((n (string-length m)))
+    (let scan ((i 0) (simple? #t))
+      (cond
+        ((fx>=? i n)
+         (if simple?
+             (condition-fill-simple m irr)
+             (guard (e (#t (condition-append-irritants m irr)))
+               (apply format m irr))))
+        ((char=? (string-ref m i) #\~)
+         (let ((d (condition-directive m i)))
+           (scan (car d) (and simple? (cdr d) #t))))
+        (else (scan (fx+ i 1) simple?))))))
+;; An irritant as text: ~s prints it readably (a string keeps its quotes), ~a
+;; displays it. A host value jolt's printer has no class for (a Chez flvector
+;; behind a ^doubles array) would print as #object[:object]; Chez's own writer
+;; names it instead.
+(define (condition-irritant-string x readable?)
+  (let ((s (if readable? (jolt-pr-readable x) (jolt-str-render-one x))))
+    (if (string=? s "#object[:object]")
+        (with-output-to-string (lambda () (write x)))
+        s)))
+;; Every directive is ~s / ~a: substitute in order and append any left over.
+(define (condition-fill-simple m irr)
+  (let ((n (string-length m)))
+    (let loop ((i 0) (start 0) (irr irr) (acc '()))
+      (cond
+        ((fx>=? i n)
+         (condition-append-irritants
+           (apply string-append (reverse (cons (substring m start n) acc)))
+           irr))
+        ((char=? (string-ref m i) #\~)
+         (let* ((d (condition-directive m i))
+                (next (car d)) (kind (cdr d))
+                (acc (cons (substring m start i) acc)))
+           (cond ((eqv? kind #\~) (loop next next irr (cons "~" acc)))
+                 ((null? irr) (loop next next irr acc))
+                 (else (loop next next (cdr irr)
+                             (cons (condition-irritant-string (car irr) (not (eqv? kind #\a)))
+                                   acc))))))
+        (else (loop (fx+ i 1) start irr acc))))))
 ;; expose a Chez condition's message to Clojure (ex-message returns nil for raw
 ;; host conditions): the nREPL eval handler surfaces it instead of an opaque
 ;; "#<compound condition>".
@@ -47,6 +105,23 @@
 ;; the table has no such method so the caller can fall through.
 (define rd-class-method-hook #f)
 (define (set-rd-class-method-hook! f) (set! rd-class-method-hook f))
+
+;; jolt's own immutable collections that are a java.util.List / Set on the JVM:
+;; the receivers of the SequencedCollection accessors and the mutator refusal in
+;; the base below. A map is not here — its `.name` reads stay the documented
+;; map-as-object superset — and neither is a deftype.
+(define (rd-persistent-coll? obj)
+  (or (pvec? obj) (pset? obj) (cseq? obj) (empty-list-t? obj) (jolt-lazyseq? obj)))
+(define (rd-coll-last obj)
+  (if (pvec? obj)
+      (jolt-nth obj (fx- (jolt-count obj) 1))
+      (let loop ((s (jolt-seq obj)))
+        (let ((n (jolt-seq (seq-more s))))
+          (if (jolt-nil? n) (seq-first s) (loop n))))))
+(define rd-java-util-mutator-names
+  '("add" "addAll" "addFirst" "addLast" "clear" "remove" "removeAll" "removeFirst"
+    "removeLast" "removeIf" "replaceAll" "retainAll" "set" "sort"))
+(define (rd-java-util-mutator? m) (and (member m rd-java-util-mutator-names) #t))
 
 (define (record-method-dispatch-base obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
@@ -231,6 +306,27 @@
              ((string=? method-name "compareTo")
               (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
              (else (dispatch-miss obj method-name rest))))
+      ;; java.util.SequencedCollection (JDK 21) over jolt's own persistent
+      ;; collections — vector / list / seq / set are java.util.List or Set on the
+      ;; JVM and carry these. getFirst / getLast raise NoSuchElementException on
+      ;; an empty one; reversed() is a reverse-order VIEW there, and for an
+      ;; immutable collection a copy is that view.
+      ((and (string=? method-name "getFirst") (rd-persistent-coll? obj))
+       (let ((s (jolt-seq obj)))
+         (if (jolt-nil? s) (throw-jvm 'NoSuchElementException "") (seq-first s))))
+      ((and (string=? method-name "getLast") (rd-persistent-coll? obj))
+       (if (jolt-nil? (jolt-seq obj)) (throw-jvm 'NoSuchElementException "") (rd-coll-last obj)))
+      ((and (string=? method-name "reversed") (rd-persistent-coll? obj))
+       (let ((items (reverse (seq->list (jolt-seq obj)))))
+         (if (pvec? obj) (apply jolt-vector items) (list->cseq items))))
+      ;; The java.util.Collection / List / Set mutators: an immutable collection
+      ;; refuses every one with UnsupportedOperationException, as on the JVM. It
+      ;; used to fall to dispatch-miss — an IllegalArgumentException "no matching
+      ;; method" that a (catch UnsupportedOperationException …) does not see. A
+      ;; deftype is not a persistent collection here: its own methods answered
+      ;; above, and an interface method it does not declare stays its own miss.
+      ((and (rd-java-util-mutator? method-name) (rd-persistent-coll? obj))
+       (throw-jvm 'UnsupportedOperationException ""))
       ;; java.util.List .indexOf / .lastIndexOf over any seqable (vector / list /
       ;; seq) — -1 when absent, like the JVM (medley/index-of reads this).
       ((or (string=? method-name "indexOf") (string=? method-name "lastIndexOf"))
@@ -454,10 +550,18 @@
                    (lambda (x) (jolt-seq (record-method-dispatch x "iterator" jolt-nil))))
 
 
-;; satisfies?: does obj's type implement the protocol? proto must be a defprotocol
-;; value (a map with a :name); a host Class/interface or any non-protocol throws —
-;; matching the JVM, which also errors — with a message naming what was passed.
+;; satisfies?: does obj's type implement the protocol? proto is a defprotocol
+;; value (a map with a :name). A host Class or interface answers instance?: jolt
+;; takes :bb reader branches, and code written for babashka asks
+;; (satisfies? clojure.lang.IObj x) where its JVM branch asks instance? — the
+;; JVM raises on the class form, babashka answers false for everything, jolt
+;; answers the question the code means. Any other non-protocol throws, with a
+;; message naming what was passed.
 (define (jolt-satisfies? proto obj)
+  (if (jclass? proto)
+      (if (instance-check proto obj) #t #f)
+      (jolt-satisfies-protocol? proto obj)))
+(define (jolt-satisfies-protocol? proto obj)
   (let* ((pn (jolt-get proto (keyword #f "name") jolt-nil))
          (pn-str (if (symbol-t? pn) (symbol-t-name pn) pn)))
     (unless (string? pn-str)
