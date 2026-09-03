@@ -62,12 +62,15 @@ jobs:
             https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
           head -1 linux-install.sh | grep -q '^#!' || { echo "installer download corrupt"; cat linux-install.sh | head -5; exit 1; }
           sudo bash linux-install.sh
-          # The runner image's JAVA_HOME is an older Temurin; the clojure launcher
-          # runs $JAVA_HOME/bin/java, so point it at the JDK just installed (the
-          # corpus is measured on JDK 21+, certify.clj refuses an older oracle).
+          # The runner image puts an older Temurin's java first on PATH, and the
+          # clojure launcher runs that (JAVA_HOME is only its fallback when no
+          # java is on PATH). JAVA_CMD is the launcher's first choice: point it
+          # at the JDK just installed (the corpus is measured on JDK 21+, and
+          # certify.clj refuses an older oracle).
+          echo "JAVA_CMD=/usr/lib/jvm/default-java/bin/java" >> "$GITHUB_ENV"
           echo "JAVA_HOME=/usr/lib/jvm/default-java" >> "$GITHUB_ENV"
           clojure --version
-          JAVA_HOME=/usr/lib/jvm/default-java clojure -M -e '(println "oracle JDK" (System/getProperty "java.runtime.version"))'
+          JAVA_CMD=/usr/lib/jvm/default-java/bin/java clojure -M -e '(println "oracle JDK" (System/getProperty "java.runtime.version"))'
 
       - name: Gate
         # `make test` = the self-host byte-fixpoint (the rebuilt seed must equal
