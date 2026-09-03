@@ -144,6 +144,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Callable`, so `(instance? java.util.Comparator inc)` was false while the
   same question on `(fn [a b] 0)` was true; the list derives from the class
   graph now.
+- **A native iOS build no longer reports itself as Linux.** #796 fixed the
+  portable-bytecode half of `sa-os-family` — a `pb` tag names no OS, so the
+  `else` branch called every bytecode build Linux, and it probes the filesystem
+  now. The native half still fell through: Chez's four iOS tags (`a6ios`,
+  `arm64ios`, `ta6ios` and `tarm64ios`, the last documented in `BUILDING` as
+  the iOS cross-target) contain none of `osx`, `macos`, `nt` or `pb`, so all
+  four reached that same `else` and called a Darwin system Linux. iOS is Darwin
+  and `ios` joins the macOS branch, which is the whole fix: that one function is
+  where the host asks what OS this is, so the wrong answer was `SIGCHLD` 17
+  instead of 20, `EAGAIN` 11 instead of 35, `O_NONBLOCK`, `LC_TIME`, the
+  `struct stat` offsets, the chmod and entropy fallbacks and the link libraries,
+  all at once — and, as in #796, `jolt.nrepl` handing Darwin's `socket()` the
+  Linux `SOCK_CLOEXEC`, which cannot bind. `jolt build --target tarm64ios
+  --library` also linked the output with ELF's `-shared` rather than
+  `-dynamiclib -install_name`, because the build's target-side Darwin predicate
+  matched only `osx`; it takes both spellings now. Android needs no such branch
+  and gets none: it has no Chez tag of its own, cross-builds as `tarm64le`, and
+  Bionic is Linux for every constant these select — its divergence is the link
+  libraries, which no tag can express (`tarm64le` is glibc arm64 Linux too) and
+  the target pack owns. The gate pins the iOS and `tarm64le` rows through
+  `sa-os-family-for-tag`, from hosts that are neither.
 - **A child process no longer inherits `JOLT_PWD`.** `bin/jolt` exports the
   user's directory in `JOLT_PWD` before changing into its checkout, and a
   spawned child's environment was seeded from the parent's, so a child jolt

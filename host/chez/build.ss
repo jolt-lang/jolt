@@ -85,7 +85,13 @@
 ;; The effective target machine, and whether this is a cross build.
 (define (bld-eff-machine) (or (bld-target) bld-machine))
 (define (bld-cross?) (and (bld-target) (not (string=? (bld-target) bld-machine)) #t))
-(define (bld-tgt-osx?) (bld-contains? (bld-eff-machine) "osx"))
+;; A Darwin target says "osx" OR "ios": Chez's four iOS tags (a6ios, arm64ios,
+;; ta6ios, tarm64ios) name Darwin without saying "osx" — the same vocabulary
+;; sa-os-family-for-tag matches on. Without "ios" here, `jolt build --target
+;; tarm64ios --library` links the output with ELF's -shared instead of
+;; -dynamiclib -install_name, which cannot produce a loadable Darwin dylib.
+(define (bld-tgt-osx?) (or (bld-contains? (bld-eff-machine) "osx")
+                           (bld-contains? (bld-eff-machine) "ios")))
 (define (bld-tgt-nt?) (bld-contains? (bld-eff-machine) "nt"))
 ;; An env override, treating an EMPTY value as absent. A Makefile that exports a
 ;; variable it did not manage to compute exports "" rather than nothing, and ""
