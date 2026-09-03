@@ -112,22 +112,32 @@
     (cons "toArray" (lambda (self . _) (apply jolt-vector (al->list self))))
     (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al->list self)))))
     (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al->list self)))))))
-(register-host-methods! "arraylist" arraylist-methods)
+;; java.util.SequencedCollection (JDK 21): List and Deque both have it, so the
+;; first/last accessors and mutators sit on the shared ArrayList table and
+;; LinkedList / ArrayDeque inherit them. On an empty list the accessors raise
+;; NoSuchElementException, as on the JVM. reversed() — a live reverse-order VIEW
+;; of a mutable list — is not modeled: a copy would silently detach from the
+;; list it claims to view.
+(define (al-first self)
+  (if (fx=? 0 (al-cnt self)) (throw-jvm 'NoSuchElementException "") (al-ref self 0)))
+(define (al-last self)
+  (if (fx=? 0 (al-cnt self)) (throw-jvm 'NoSuchElementException "") (al-ref self (fx- (al-cnt self) 1))))
+(define sequenced-list-methods
+  (list
+    (cons "addFirst" (lambda (self x) (al-insert-at! self 0 x) jolt-nil))
+    (cons "addLast" (lambda (self x) (al-push! self x) jolt-nil))
+    (cons "removeFirst" (lambda (self) (let ((o (al-first self))) (al-remove-at! self 0) o)))
+    (cons "removeLast" (lambda (self) (let ((o (al-last self))) (al-remove-at! self (fx- (al-cnt self) 1)) o)))
+    (cons "getFirst" al-first) (cons "getLast" al-last)))
+(register-host-methods! "arraylist" (append arraylist-methods sequenced-list-methods))
 
 ;; java.util.LinkedList: the ArrayList backing plus the Deque surface
-;; (addFirst/addLast/removeFirst/removeLast/getFirst/getLast/peek/push/pop).
+;; (offer/peek/poll/push/pop over the sequenced methods above).
 ;; tools.reader holds pending splice forms in one and (seq)s / .remove(0)s it.
-(define (al-first self) (al-ref self 0))
-(define (al-last self) (al-ref self (fx- (al-cnt self) 1)))
 (define linkedlist-methods
-  (append arraylist-methods
+  (append arraylist-methods sequenced-list-methods
     (list
-      (cons "addFirst" (lambda (self x) (al-insert-at! self 0 x) jolt-nil))
-      (cons "addLast" (lambda (self x) (al-push! self x) jolt-nil))
       (cons "offer" (lambda (self x) (al-push! self x) #t))
-      (cons "removeFirst" (lambda (self) (let ((o (al-first self))) (al-remove-at! self 0) o)))
-      (cons "removeLast" (lambda (self) (let ((o (al-last self))) (al-remove-at! self (fx- (al-cnt self) 1)) o)))
-      (cons "getFirst" al-first) (cons "getLast" al-last)
       (cons "peek" (lambda (self) (if (fx=? 0 (al-cnt self)) jolt-nil (al-first self))))
       (cons "poll" (lambda (self) (if (fx=? 0 (al-cnt self)) jolt-nil (let ((o (al-first self))) (al-remove-at! self 0) o))))
       (cons "push" (lambda (self x) (al-insert-at! self 0 x) jolt-nil))
@@ -961,22 +971,35 @@
     (let ((l (vector-ref st 1)))
       (if (null? l) jolt-nil (begin (vector-set! st 1 (cdr l)) (car l))))))
 (define (a-ref-queue? x) (and (jhost? x) (string=? (jhost-tag x) "ref-queue")))
-(define (make-reference v rest)
+;; Each reference class has its own tag (class-hierarchy.ss maps the tag to the
+;; class), sharing one method table: the two differ only in the class they
+;; report, and a WeakReference used to report as a SoftReference.
+(define (make-reference tag v rest)
   (let* ((rq (if (pair? rest) (car rest) jolt-nil))
-         (ref (make-jhost "weak-ref" (vector (weak-cons v #f) rq #f))))
+         (ref (make-jhost tag (vector (weak-cons v #f) rq #f))))
     (when (a-ref-queue? rq) ((rq-guardian-of rq) v ref))   ; fire on the referent's collection
     ref))
-(for-each (lambda (nm) (register-class-ctor! nm (lambda (v . rest) (make-reference v rest))))
-          '("SoftReference" "java.lang.ref.SoftReference" "WeakReference" "java.lang.ref.WeakReference"))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (v . rest) (make-reference "soft-ref" v rest))))
+          '("SoftReference" "java.lang.ref.SoftReference"))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda (v . rest) (make-reference "weak-ref" v rest))))
+          '("WeakReference" "java.lang.ref.WeakReference"))
+;; the referent, or nil once cleared — by the program or by the collector
+(define (reference-referent self)
+  (let ((r (car (vector-ref (jhost-state self) 0))))
+    (if (bwp-object? r) jolt-nil r)))
 (register-host-methods! "weak-ref"
-  (list (cons "get" (lambda (self) (let ((r (car (vector-ref (jhost-state self) 0))))
-                                     (if (bwp-object? r) jolt-nil r))))
+  (list (cons "get" reference-referent)
         (cons "clear" (lambda (self) (set-car! (vector-ref (jhost-state self) 0) jolt-nil) jolt-nil))
+        ;; Reference.refersTo(obj): identity against the referent, so a cleared
+        ;; reference refers to null — the JDK 16 spelling of "is it still x"
+        ;; that avoids strengthening the referent the way get() does.
+        (cons "refersTo" (lambda (self x) (eq? (reference-referent self) x)))
         (cons "isEnqueued" (lambda (self) (vector-ref (jhost-state self) 2)))
         (cons "enqueue" (lambda (self)
           (let* ((st (jhost-state self)) (rq (vector-ref st 1)))
             (if (vector-ref st 2) #f
                 (begin (vector-set! st 2 #t) (when (a-ref-queue? rq) (rq-add! rq self)) #t)))))))
+(alias-host-methods! "soft-ref" "weak-ref")
 (for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-jhost "ref-queue" (vector (make-guardian) '() '())))))
           '("ReferenceQueue" "java.lang.ref.ReferenceQueue"))
 (register-host-methods! "ref-queue"
@@ -1817,7 +1840,10 @@
                   (lambda (a b) (let ((ka (class-key a)) (kb (class-key b)))
                                   (and ka kb (string=? ka kb) #t))))
 (register-hash-arm! jclass? (lambda (x) (jolt-hash (jclass-name x))))
-(register-str-render! jclass? (lambda (x) (string-append "class " (jclass-name x))))
+;; Class.toString says which kind it is: "interface java.util.List", "class java.lang.String".
+(register-str-render! jclass?
+  (lambda (x) (string-append (if (jch-interface? (jclass-name x)) "interface " "class ")
+                             (jclass-name x))))
 (register-pr-arm! jclass? (lambda (x) (jclass-name x)))
 ;; print/println of a Class prints the bare name (getName), like pr — the JVM's
 ;; print-method for Class ignores *print-readably*. Only str is "class <name>".
@@ -2333,20 +2359,29 @@
           (let ((as (jch-ancestors-rooted name)))
             (if (null? as) jolt-nil (list->cseq (map jolt-class-for as))))
           jolt-nil))))
-(def-var! "jolt.host" "class-bases"
-  (lambda (x)
-    (let ((name (class-key x)))
-      (if name
-          (let* ((ds (jch-direct-supers name))
-                 ;; a concrete class's bases include its superclass — Object when
-                 ;; nothing more specific is modeled (interfaces have none).
-                 (ds (if (or (string=? name "java.lang.Object")
-                             (jch-interface? name)
-                             (member "java.lang.Object" ds))
-                         ds
-                         (append ds '("java.lang.Object")))))
-            (if (null? ds) jolt-nil (list->cseq (map jolt-class-for ds))))
-          jolt-nil))))
+;; The direct bases of a class as Class objects, superclass first the way the
+;; JVM's `bases` orders them: a concrete class whose row names no concrete super
+;; extends Object, so Object leads its list (interfaces have no superclass and
+;; Object itself none at all). This is clojure.core/bases too — it answered name
+;; STRINGS where supers answered Class objects, so (.getName (first (bases c)))
+;; failed on every class, and typed.clojure's RClass ancestry (Class->symbol
+;; over (bases cls)) with it.
+(define (jolt-class-bases x)
+  (let ((name (class-key x)))
+    (if name
+        (let* ((ds (jch-direct-supers name))
+               ;; jch-superclass is "java.lang.Object" exactly for a known
+               ;; concrete class with no modeled concrete super; #f for Object,
+               ;; an interface, or a name the graph does not model (a fn class
+               ;; keeps its AFunction row and nothing else, as on the JVM).
+               (ds (if (and (equal? (jch-superclass name) "java.lang.Object")
+                            (not (member "java.lang.Object" ds)))
+                       (cons "java.lang.Object" ds)
+                       ds)))
+          (if (null? ds) jolt-nil (list->cseq (map jolt-class-for ds))))
+        jolt-nil)))
+(def-var! "jolt.host" "class-bases" jolt-class-bases)
+(def-var! "clojure.core" "bases" jolt-class-bases)
 ;; is X a class value — a jclass, a deftype ctor, or a name string the host
 ;; graph models?
 (def-var! "jolt.host" "class-value?"
@@ -2456,7 +2491,13 @@
 (register-class-arm! (lambda (x) (jolt-multifn? x)) (lambda (x) "clojure.lang.MultiFn"))
 ;; exact-own-class fallback: (instance? C x) is true when C names x's own class —
 ;; covers checks against a captured (class y) value (transient classes, MultiFn)
-;; that no interface arm models. Widening only.
+;; that no interface arm models. Widening only. The class's ANCESTRY needs no
+;; arm of its own: the interface arm above reads value-host-tags, which derives
+;; from the class graph for every value whose class arm names a modeled class,
+;; so a multimethod is an AFn and a transient is Counted the moment the graph
+;; says so. (An ancestry walk here, ahead of the base, was measured at 1.26x on
+;; an (instance? IPersistentMap a-vector) miss — the value's class name is the
+;; expensive part, and this arm already pays it once.)
 (register-instance-check-arm!
   (lambda (type-sym val)
     (if (symbol-t? type-sym)

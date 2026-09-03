@@ -1500,14 +1500,12 @@
      '("Class" "java.lang.Class" "Object"))
     ((and (procedure? obj) (hashtable-ref proc-name-tbl obj #f)) =>
      (lambda (p)
-       (list
+       (cons
          (string-append
            (class-munge-name (car p))
            "$"
            (class-munge-name (cdr p)))
-         "AFunction" "clojure.lang.AFunction" "AFn"
-         "clojure.lang.AFn" "IFn" "clojure.lang.IFn" "Fn"
-         "clojure.lang.Fn" "Object")))
+         (jch-tags "clojure.lang.AFunction"))))
     ((and (jhost? obj) (jhost-value-tags (jhost-tag obj))) =>
      (lambda (tags) tags))
     ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'byte))
@@ -1959,6 +1957,28 @@
 (define (set-rd-class-method-hook! f)
   (set! rd-class-method-hook f))
 
+(define (rd-persistent-coll? obj)
+  (or (pvec? obj)
+      (pset? obj)
+      (cseq? obj)
+      (empty-list-t? obj)
+      (jolt-lazyseq? obj)))
+
+(define (rd-coll-last obj)
+  (if (pvec? obj)
+      (jolt-nth obj (fx- (jolt-count obj) 1))
+      (let loop ((s (jolt-seq obj)))
+        (let ((n (jolt-seq (seq-more s))))
+          (if (jolt-nil? n) (seq-first s) (loop n))))))
+
+(define rd-java-util-mutator-names
+  '("add" "addAll" "addFirst" "addLast" "clear" "remove" "removeAll"
+     "removeFirst" "removeLast" "removeIf" "replaceAll"
+     "retainAll" "set" "sort"))
+
+(define (rd-java-util-mutator? m)
+  (and (member m rd-java-util-mutator-names) #t))
+
 (define (record-method-dispatch-base obj method-name
          rest-args)
   (let ((rest (if (jolt-nil? rest-args)
@@ -2160,6 +2180,26 @@
           (let ((o (car rest)))
             (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
          (else (dispatch-miss obj method-name rest))))
+      ((and (string=? method-name "getFirst")
+            (rd-persistent-coll? obj))
+       (let ((s (jolt-seq obj)))
+         (if (jolt-nil? s)
+             (throw-jvm 'NoSuchElementException "")
+             (seq-first s))))
+      ((and (string=? method-name "getLast")
+            (rd-persistent-coll? obj))
+       (if (jolt-nil? (jolt-seq obj))
+           (throw-jvm 'NoSuchElementException "")
+           (rd-coll-last obj)))
+      ((and (string=? method-name "reversed")
+            (rd-persistent-coll? obj))
+       (let ((items (reverse (seq->list (jolt-seq obj)))))
+         (if (pvec? obj)
+             (apply jolt-vector items)
+             (list->cseq items))))
+      ((and (rd-java-util-mutator? method-name)
+            (rd-persistent-coll? obj))
+       (throw-jvm 'UnsupportedOperationException ""))
       ((or (string=? method-name "indexOf")
            (string=? method-name "lastIndexOf"))
        (let ((target (car rest))

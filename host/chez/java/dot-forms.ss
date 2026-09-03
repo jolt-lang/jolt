@@ -192,6 +192,10 @@
         ;; (.applyTo f args): apply a fn to a seq of args (clojure.spec instrument).
         ((and (procedure? obj) (string=? mname "applyTo"))
          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+        ;; (.compare f a b): a fn is a java.util.Comparator — AFunction.compare
+        ;; invokes it — so code holding a fn as a Comparator calls it this way.
+        ((and (procedure? obj) (string=? mname "compare") (pair? rest) (pair? (cdr rest)))
+         (jolt-invoke obj (car rest) (cadr rest)))
         ;; a transient (ITransientCollection/Set/Map): .contains / .valAt / .count —
         ;; test.check's distinct-collection gen uses (.contains transient-set k).
         ((jolt-transient? obj)

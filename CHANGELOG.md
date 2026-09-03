@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The class rows typed.clojure's annotation corpus names.** `java.lang.ref.Reference`
+  (abstract, over the `SoftReference` / `WeakReference` shims, which now report
+  their own classes instead of `:object`, plus `ReferenceQueue` and
+  `.refersTo`), `java.util.RandomAccess` (on `APersistentVector` and
+  `ArrayList`), `java.util.Comparator` (on `AFunction`, so a fn is one and
+  answers `.compare`), `clojure.lang.MultiFn` (an `AFn`), the whole transient
+  lattice (`ITransientCollection` … `ITransientSet`, `ATransientMap` /
+  `ATransientSet`, and the four concrete transient classes, so `bases`, `isa?`
+  and `instance?` on a transient answer the JVM's ancestry instead of
+  `AFunction`'s), and `java.util.SequencedCollection` (JDK 21) between
+  `Collection` and `List` / `Deque`, with `getFirst` / `getLast` / `reversed`
+  on vectors, lists and seqs and `getFirst` / `getLast` / `addFirst` / `addLast`
+  / `removeFirst` / `removeLast` on `ArrayList`. `typed.ann.clojure.base` and
+  `typed.ann.clojure` load; `override-classes` stopped at
+  `java.lang.ref.Reference` before.
+- **`String/CASE_INSENSITIVE_ORDER`.** String's one public static field: a
+  `Comparator` of `String$CaseInsensitiveComparator` that compares like
+  `compareToIgnoreCase` (a char difference, length last), usable by `sort`,
+  `sort-by`, `sorted-set-by` and `.compare`, and findable by `.getField`.
 - **`Character/getType` and the general-category constants.** The Unicode
   general category of a char or int codepoint as the JVM's constant, with
   `Character/UNASSIGNED` through `Character/FINAL_QUOTE_PUNCTUATION` (all 30;
@@ -28,6 +47,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bases` answers Class objects.** It handed back name strings where `supers`
+  handed back classes, so `(.getName (first (bases c)))` failed on every class
+  (typed.clojure builds its RClass ancestry exactly that way). Superclass first,
+  as on the JVM, with `Object` leading a class whose row names no concrete
+  super.
+- **`Class.getModifiers` on a nested class.** Every nested class jolt models is
+  a static nested class on the JVM, so the STATIC bit is set for a `$` name the
+  graph knows; the four transient classes and `PersistentArrayMap$Seq`,
+  `PersistentHashMap$NodeSeq` and `PersistentList$EmptyList` are
+  package-private, `String$CaseInsensitiveComparator` private, and
+  `Thread$State` an enum — all probed. `(.getModifiers (class (transient #{})))`
+  is 24, `java.util.Map$Entry` 1545, as on the JVM (1 and 1537 before).
+- **`(str an-interface-class)` says `interface`.** `java.util.List` rendered as
+  `class java.util.List`.
+- **A persistent collection refuses the `java.util` mutators with
+  `UnsupportedOperationException`.** `.add`, `.set`, `.remove`, `.clear`,
+  `.sort` and the rest on a vector, list, seq or set raised an
+  `IllegalArgumentException` "no matching method", which a
+  `(catch UnsupportedOperationException …)` never saw.
+- **A named fn carries the same ancestry as an anonymous one.** Its protocol
+  dispatch tags were a hand-copied list with no `Comparator`, `Runnable` or
+  `Callable`, so `(instance? java.util.Comparator inc)` was false while the
+  same question on `(fn [a b] 0)` was true; the list derives from the class
+  graph now.
 - **A child process no longer inherits `JOLT_PWD`.** `bin/jolt` exports the
   user's directory in `JOLT_PWD` before changing into its checkout, and a
   spawned child's environment was seeded from the parent's, so a child jolt

@@ -353,14 +353,17 @@
         ((and (procedure? obj) (deftype-ctor-tag obj))
          '("Class" "java.lang.Class" "Object"))
         ;; a named fn reports its own JVM-style class "ns$munged-name" (the same
-        ;; (class the-fn) yields) ahead of the generic IFn tags, so a protocol
-        ;; extended to a SPECIFIC fn's class dispatches on it — schema keys its
-        ;; primitive schemas by (class @(resolve 'double)) and friends.
+        ;; (class the-fn) yields) ahead of AFunction's ancestry from the class
+        ;; graph, so a protocol extended to a SPECIFIC fn's class dispatches on
+        ;; it — schema keys its primitive schemas by (class @(resolve 'double))
+        ;; and friends. The ancestry is the same list an anonymous fn reports
+        ;; below; a hand-copied list here had no Comparator, Runnable or
+        ;; Callable, so (instance? java.util.Comparator inc) was false while
+        ;; (instance? java.util.Comparator (fn [a b] 0)) was true.
         ((and (procedure? obj) (hashtable-ref proc-name-tbl obj #f))
          => (lambda (p)
-              (list (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
-                    "AFunction" "clojure.lang.AFunction" "AFn" "clojure.lang.AFn"
-                    "IFn" "clojure.lang.IFn" "Fn" "clojure.lang.Fn" "Object")))
+              (cons (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
+                    (jch-tags "clojure.lang.AFunction"))))
         ;; a value-layer shim value (java.time.*, URI, ByteBuffer, java.io reader/
         ;; writer, ArrayList/HashMap, …) reports its class's whole ancestry from the
         ;; single jhost-tag->fqn registry (class-hierarchy.ss). So (extend-protocol

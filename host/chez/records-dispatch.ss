@@ -48,6 +48,23 @@
 (define rd-class-method-hook #f)
 (define (set-rd-class-method-hook! f) (set! rd-class-method-hook f))
 
+;; jolt's own immutable collections that are a java.util.List / Set on the JVM:
+;; the receivers of the SequencedCollection accessors and the mutator refusal in
+;; the base below. A map is not here — its `.name` reads stay the documented
+;; map-as-object superset — and neither is a deftype.
+(define (rd-persistent-coll? obj)
+  (or (pvec? obj) (pset? obj) (cseq? obj) (empty-list-t? obj) (jolt-lazyseq? obj)))
+(define (rd-coll-last obj)
+  (if (pvec? obj)
+      (jolt-nth obj (fx- (jolt-count obj) 1))
+      (let loop ((s (jolt-seq obj)))
+        (let ((n (jolt-seq (seq-more s))))
+          (if (jolt-nil? n) (seq-first s) (loop n))))))
+(define rd-java-util-mutator-names
+  '("add" "addAll" "addFirst" "addLast" "clear" "remove" "removeAll" "removeFirst"
+    "removeLast" "removeIf" "replaceAll" "retainAll" "set" "sort"))
+(define (rd-java-util-mutator? m) (and (member m rd-java-util-mutator-names) #t))
+
 (define (record-method-dispatch-base obj method-name rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (cond
@@ -231,6 +248,27 @@
              ((string=? method-name "compareTo")
               (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
              (else (dispatch-miss obj method-name rest))))
+      ;; java.util.SequencedCollection (JDK 21) over jolt's own persistent
+      ;; collections — vector / list / seq / set are java.util.List or Set on the
+      ;; JVM and carry these. getFirst / getLast raise NoSuchElementException on
+      ;; an empty one; reversed() is a reverse-order VIEW there, and for an
+      ;; immutable collection a copy is that view.
+      ((and (string=? method-name "getFirst") (rd-persistent-coll? obj))
+       (let ((s (jolt-seq obj)))
+         (if (jolt-nil? s) (throw-jvm 'NoSuchElementException "") (seq-first s))))
+      ((and (string=? method-name "getLast") (rd-persistent-coll? obj))
+       (if (jolt-nil? (jolt-seq obj)) (throw-jvm 'NoSuchElementException "") (rd-coll-last obj)))
+      ((and (string=? method-name "reversed") (rd-persistent-coll? obj))
+       (let ((items (reverse (seq->list (jolt-seq obj)))))
+         (if (pvec? obj) (apply jolt-vector items) (list->cseq items))))
+      ;; The java.util.Collection / List / Set mutators: an immutable collection
+      ;; refuses every one with UnsupportedOperationException, as on the JVM. It
+      ;; used to fall to dispatch-miss — an IllegalArgumentException "no matching
+      ;; method" that a (catch UnsupportedOperationException …) does not see. A
+      ;; deftype is not a persistent collection here: its own methods answered
+      ;; above, and an interface method it does not declare stays its own miss.
+      ((and (rd-java-util-mutator? method-name) (rd-persistent-coll? obj))
+       (throw-jvm 'UnsupportedOperationException ""))
       ;; java.util.List .indexOf / .lastIndexOf over any seqable (vector / list /
       ;; seq) — -1 when absent, like the JVM (medley/index-of reads this).
       ((or (string=? method-name "indexOf") (string=? method-name "lastIndexOf"))

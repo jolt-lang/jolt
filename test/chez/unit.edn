@@ -27,7 +27,7 @@
   ;; these cannot be corpus rows.
   {:suite "reflect-member-model" :expr "(let [ns (set (map (fn [m] (.getName m)) (.getMethods String)))] [(contains? ns \"format\") (contains? ns \"substring\")])" :expected "[true false]"}
   {:suite "reflect-member-model" :expr "(java.lang.reflect.Modifier/isStatic (.getModifiers (.getMethod String \"format\" nil)))" :expected "true"}
-  {:suite "reflect-member-model" :expr "(count (.getDeclaredFields String))" :expected "0"}
+  {:suite "reflect-member-model" :expr "(mapv (fn [f] (.getName f)) (.getDeclaredFields String))" :expected "[\"CASE_INSENSITIVE_ORDER\"]"}
   ;; a registered static is a Field, and reading it reflectively gives the value
   ;; the static reference gives
   {:suite "reflect-member-model" :expr "(.get (.getField Long \"MAX_VALUE\") nil)" :expected "9223372036854775807"}

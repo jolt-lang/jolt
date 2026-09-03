@@ -265,8 +265,14 @@
 (define jch-interface-set (make-hashtable string-hash string=?))
 ;; written at deftype / defprotocol time from whatever thread defines, so the
 ;; write is serialized; the read stays unlocked (strong general table)
+;; Object is the one name that can never be an interface, and a deftype's
+;; `Object` method block (toString / equals / hashCode) files it here like any
+;; declared interface — after which .getSuperclass rendered "interface
+;; java.lang.Object" and Object's modifiers grew INTERFACE|ABSTRACT. The guard
+;; is here, at the one write, not at each reader.
 (define (jch-mark-interface! name)
-  (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-interface-set name #t)))
+  (unless (or (string=? name "java.lang.Object") (string=? name "Object"))
+    (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-interface-set name #t))))
 (define (jch-interface? name) (hashtable-ref jch-interface-set name #f))
 (for-each jch-mark-interface!
           '("clojure.lang.Seqable" "clojure.lang.Sequential" "clojure.lang.Sorted"
@@ -295,20 +301,30 @@
             ;; Derived by probing the reference JVM for every java.* name this
             ;; graph models, not by eye.
             "java.util.Queue" "java.util.Deque" "java.util.Map$Entry"
-            "java.nio.file.Path" "java.nio.file.PathMatcher" "java.nio.file.Watchable"))
+            "java.nio.file.Path" "java.nio.file.PathMatcher" "java.nio.file.Watchable"
+            ;; the typed.clojure rows (probed the same way)
+            "java.util.RandomAccess" "java.util.Comparator" "java.util.SequencedCollection"
+            "clojure.lang.ITransientCollection" "clojure.lang.ITransientAssociative"
+            "clojure.lang.ITransientAssociative2" "clojure.lang.ITransientMap"
+            "clojure.lang.ITransientVector" "clojure.lang.ITransientSet"))
 
 ;; ---- class modifiers ---------------------------------------------------------
 ;; Class.getModifiers is a JVM bitmask; jolt derives it from the graph rather than
-;; from bytecode it does not have. PUBLIC is always set (jolt models no
-;; package-private class), INTERFACE implies ABSTRACT the way javac emits it, and
-;; FINAL / ABSTRACT / ENUM come from the marks below.
+;; from bytecode it does not have. Visibility is PUBLIC unless the class is in the
+;; visibility table below (package-private contributes nothing, private its own
+;; bit); a nested class — a $ in a modeled name — is STATIC, since every nested
+;; class the graph models is a static nested class on the JVM and jolt models no
+;; inner (instance-bound) one; INTERFACE implies ABSTRACT the way javac emits it;
+;; and FINAL / ABSTRACT / ENUM come from the marks below.
 ;;
-;; The three lists were derived by probing the reference JVM for every java.*
-;; class this graph models (Class/getModifiers on each), so they say what the JVM
-;; says rather than what looked right. A class jolt does not model reports PUBLIC
-;; alone — an honest "I know it is a class and nothing more", not a claim of
-;; non-finality.
+;; The lists were derived by probing the reference JVM for every java.* class and
+;; every nested class this graph models (Class/getModifiers on each), so they say
+;; what the JVM says rather than what looked right. A class jolt does not model
+;; reports PUBLIC alone — an honest "I know it is a class and nothing more", not
+;; a claim of non-finality.
 (define jch-mod-public    1)
+(define jch-mod-private   2)
+(define jch-mod-static    8)
 (define jch-mod-final     16)
 (define jch-mod-interface 512)
 (define jch-mod-abstract  1024)
@@ -316,12 +332,18 @@
 (define jch-final-set (make-hashtable string-hash string=?))
 (define jch-abstract-set (make-hashtable string-hash string=?))
 (define jch-enum-set (make-hashtable string-hash string=?))
+;; name -> the visibility bits that REPLACE public for that class
+(define jch-visibility-tbl (make-hashtable string-hash string=?))
 (define (jch-mark-final! name)
   (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-final-set name #t)))
 (define (jch-mark-abstract! name)
   (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-abstract-set name #t)))
 (define (jch-mark-enum! name)
   (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-enum-set name #t)))
+(define (jch-mark-package-private! name)
+  (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-visibility-tbl name 0)))
+(define (jch-mark-private! name)
+  (jolt-with-mutex jch-cache-mutex (hashtable-set! jch-visibility-tbl name jch-mod-private)))
 (define (jch-final? name) (and (hashtable-ref jch-final-set name #f) #t))
 (define (jch-abstract? name)
   (or (jch-interface? name) (and (hashtable-ref jch-abstract-set name #f) #t)))
@@ -330,7 +352,8 @@
 ;; (.getModifiers String) and (.getModifiers java.lang.String) agree.
 (define (jch-modifiers name)
   (let ((n (if (jch-known? name) (jch-fqn-of-simple name) name)))
-    (+ jch-mod-public
+    (+ (hashtable-ref jch-visibility-tbl n jch-mod-public)
+       (if (and (str-has-dollar? n) (jch-known-exact? n)) jch-mod-static 0)
        (if (jch-final? n) jch-mod-final 0)
        (if (jch-interface? n) jch-mod-interface 0)
        (if (jch-abstract? n) jch-mod-abstract 0)
@@ -351,20 +374,42 @@
             "java.util.Locale" "java.util.regex.Pattern" "java.util.UUID"
             ;; clojure.lang's final classes, from their declarations
             "clojure.lang.ChunkBuffer" "clojure.lang.Volatile" "clojure.lang.Reduced"
+            ;; the nested classes, probed: the four transient classes, the two
+            ;; final seq classes, and the Thread.State enum
+            "clojure.lang.PersistentHashMap$TransientHashMap"
+            "clojure.lang.PersistentArrayMap$TransientArrayMap"
+            "clojure.lang.PersistentHashSet$TransientHashSet"
+            "clojure.lang.PersistentVector$TransientVector"
+            "clojure.lang.PersistentVector$ChunkedSeq" "clojure.lang.PersistentHashMap$NodeSeq"
+            "java.lang.Thread$State"
             ))
 (for-each jch-mark-abstract!
           '(
-            "clojure.lang.AMapEntry"
+            "clojure.lang.AMapEntry" "clojure.lang.ATransientMap" "clojure.lang.ATransientSet"
             "java.io.InputStream" "java.io.OutputStream" "java.io.Reader"
             "java.io.Writer" "java.lang.Number" "java.lang.VirtualMachineError"
+            "java.lang.ProcessBuilder$Redirect" "java.lang.ref.Reference"
             "java.nio.ByteBuffer" "java.nio.charset.Charset" "java.nio.file.FileSystem"
             "java.time.Clock" "java.time.ZoneId" "java.util.TimeZone"
             ))
 (for-each jch-mark-enum!
           '(
             "java.time.DayOfWeek" "java.time.Month" "java.time.temporal.ChronoField"
-            "java.time.temporal.ChronoUnit"
+            "java.time.temporal.ChronoUnit" "java.lang.Thread$State"
             ))
+;; the package-private classes the graph models (all nested; probed): the four
+;; transient classes and three of clojure.lang's seq classes
+(for-each jch-mark-package-private!
+          '(
+            "clojure.lang.PersistentHashMap$TransientHashMap"
+            "clojure.lang.PersistentArrayMap$TransientArrayMap"
+            "clojure.lang.PersistentHashSet$TransientHashSet"
+            "clojure.lang.PersistentVector$TransientVector"
+            "clojure.lang.PersistentArrayMap$Seq" "clojure.lang.PersistentHashMap$NodeSeq"
+            "clojure.lang.PersistentList$EmptyList"
+            ))
+(for-each jch-mark-private!
+          '("java.lang.String$CaseInsensitiveComparator"))
 
 ;; ---- seed the built-in graph: direct supers only, faithful to the JVM ---------
 ;; core clojure.lang interfaces
@@ -388,13 +433,28 @@
 (jch-register-supers! "clojure.lang.IFn" '("java.lang.Runnable" "java.util.concurrent.Callable"))
 ;; Fn is a marker interface (no supers).
 (jch-register-supers! "clojure.lang.AFn" '("clojure.lang.IFn"))
-(jch-register-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.Fn"))
-;; java.util collection interfaces
-(jch-register-supers! "java.util.List" '("java.util.Collection"))
+;; AFunction implements java.util.Comparator on the JVM — every fn sorts — so
+;; (instance? java.util.Comparator f) and (.compare f a b) hold. Fn stays ahead
+;; of it so an extension on Fn / IFn keeps outranking one on Comparator in the
+;; dispatch order. The JVM's other two direct interfaces, IObj and Serializable,
+;; are NOT here: IObj puts every fn under IMeta for protocol dispatch, a
+;; fleet-wide change that needs the library gate first (jolt-tnt7).
+(jch-register-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.Fn" "java.util.Comparator"))
+;; java.util collection interfaces. JDK 21 put SequencedCollection between
+;; Collection and List / Deque, and the reference oracle runs on it, so List's
+;; ONE direct super is SequencedCollection and Collection arrives transitively.
+;; The shape matters, not just the closure: typed.clojure validates an
+;; annotation's :replace keys against a class's DIRECT bases. RandomAccess and
+;; Comparator are marker-style interfaces with no supers of their own; the rows
+;; below graft them onto the classes the JVM declares them on.
+(jch-register-supers! "java.util.SequencedCollection" '("java.util.Collection"))
+(jch-register-supers! "java.util.List" '("java.util.SequencedCollection"))
 (jch-register-supers! "java.util.Set" '("java.util.Collection"))
 (jch-register-supers! "java.util.Collection" '("java.lang.Iterable"))
+(jch-register-supers! "java.util.RandomAccess" '())
+(jch-register-supers! "java.util.Comparator" '())
 ;; concrete collection classes
-(jch-register-supers! "clojure.lang.APersistentVector" '("clojure.lang.IPersistentVector" "java.util.List"))
+(jch-register-supers! "clojure.lang.APersistentVector" '("clojure.lang.IPersistentVector" "java.util.List" "java.util.RandomAccess"))
 (jch-register-supers! "clojure.lang.PersistentVector" '("clojure.lang.APersistentVector" "clojure.lang.IObj"
                                                         "java.util.List" "java.lang.Comparable"))
 ;; subvec's view class (issue #629): an APersistentVector, so every vector
@@ -636,9 +696,9 @@
 (jch-register-supers! "clojure.lang.Namespace" '())
 (jch-register-supers! "java.util.regex.Pattern" '())
 (jch-register-supers! "java.net.URI" '())
-(jch-register-supers! "java.util.ArrayList" '("java.util.List"))
+(jch-register-supers! "java.util.ArrayList" '("java.util.List" "java.util.RandomAccess"))
 (jch-register-supers! "java.util.Queue" '("java.util.Collection"))
-(jch-register-supers! "java.util.Deque" '("java.util.Queue"))
+(jch-register-supers! "java.util.Deque" '("java.util.Queue" "java.util.SequencedCollection"))
 (jch-register-supers! "java.util.LinkedList" '("java.util.List" "java.util.Deque"))
 (jch-register-supers! "java.util.ArrayDeque" '("java.util.Deque"))
 (jch-register-supers! "java.util.HashMap" '("java.util.Map"))
@@ -647,6 +707,42 @@
 (jch-register-supers! "java.util.Hashtable" '("java.util.Map"))
 (jch-register-supers! "java.util.Properties" '("java.util.Hashtable"))
 (jch-register-supers! "java.util.HashSet" '("java.util.Set"))
+
+;; ---- the rows typed.clojure's annotation corpus names ------------------------
+;; typed.ann.clojure.base's override-classes resolves every class it annotates
+;; through ns-resolve and throws "Could not resolve class" on a miss; its checker
+;; then validates each :replace key against the class's DIRECT bases. Direct
+;; supers here are the JVM's (probed), for both reasons.
+;; java.lang.ref: the abstract Reference over the two reference classes the shim
+;; already backs (host-static-classes.ss), and the queue they enqueue on.
+(jch-register-supers! "java.lang.ref.Reference" '())
+(jch-register-supers! "java.lang.ref.SoftReference" '("java.lang.ref.Reference"))
+(jch-register-supers! "java.lang.ref.WeakReference" '("java.lang.ref.Reference"))
+(jch-register-supers! "java.lang.ref.ReferenceQueue" '())
+;; String.CASE_INSENSITIVE_ORDER's own class: String's private nested comparator
+(jch-register-supers! "java.lang.String$CaseInsensitiveComparator"
+                      '("java.util.Comparator" "java.io.Serializable"))
+;; a defmulti value: MultiFn extends AFn, so it is an IFn and not a Fn
+(jch-register-supers! "clojure.lang.MultiFn" '("clojure.lang.AFn"))
+;; the transient lattice: the interfaces, the two abstract bases, and the four
+;; concrete (package-private) classes the transient class arm reports. They used
+;; to fall to the fn rule below — a $ in an unregistered name — so
+;; (bases (class (transient #{}))) answered clojure.lang.AFunction.
+(jch-register-supers! "clojure.lang.ITransientCollection" '())
+(jch-register-supers! "clojure.lang.ITransientAssociative" '("clojure.lang.ITransientCollection" "clojure.lang.ILookup"))
+(jch-register-supers! "clojure.lang.ITransientAssociative2" '("clojure.lang.ITransientAssociative"))
+(jch-register-supers! "clojure.lang.ITransientMap" '("clojure.lang.ITransientAssociative" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.ITransientVector" '("clojure.lang.ITransientAssociative" "clojure.lang.Indexed"))
+(jch-register-supers! "clojure.lang.ITransientSet" '("clojure.lang.ITransientCollection" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.ATransientMap"
+                      '("clojure.lang.AFn" "clojure.lang.ITransientMap" "clojure.lang.ITransientAssociative2"))
+(jch-register-supers! "clojure.lang.ATransientSet" '("clojure.lang.AFn" "clojure.lang.ITransientSet"))
+(jch-register-supers! "clojure.lang.PersistentHashMap$TransientHashMap" '("clojure.lang.ATransientMap"))
+(jch-register-supers! "clojure.lang.PersistentArrayMap$TransientArrayMap" '("clojure.lang.ATransientMap"))
+(jch-register-supers! "clojure.lang.PersistentHashSet$TransientHashSet" '("clojure.lang.ATransientSet"))
+(jch-register-supers! "clojure.lang.PersistentVector$TransientVector"
+                      '("clojure.lang.AFn" "clojure.lang.ITransientVector"
+                        "clojure.lang.ITransientAssociative2" "clojure.lang.Counted"))
 ;; --- the java.lang auto-imports ---------------------------------------------
 ;; clojure.core maps 96 class names into every namespace, so on the JVM every one
 ;; of them resolves, always. 38 had no row here, which meant no class token, which
@@ -690,6 +786,9 @@
 (jch-register-supers! "java.lang.Package" '())
 (jch-register-supers! "java.lang.Process" '())
 (jch-register-supers! "java.lang.ProcessBuilder" '())
+;; the redirect shim's class had a tag row but no graph row, so it was not a
+;; known class: no token, no nested-static modifier bit
+(jch-register-supers! "java.lang.ProcessBuilder$Redirect" '())
 (jch-register-supers! "java.lang.Runtime" '())
 (jch-register-supers! "java.lang.RuntimePermission" '())
 (jch-register-supers! "java.lang.SecurityManager" '())
@@ -897,7 +996,16 @@
     ("reflect-method" . "java.lang.reflect.Method")
     ("reflect-field" . "java.lang.reflect.Field")
     ("static-field" . "java.lang.reflect.Field")
-    ("class-ctor" . "java.lang.reflect.Constructor")))
+    ("class-ctor" . "java.lang.reflect.Constructor")
+    ;; java.lang.ref (host-static-classes.ss): the two reference classes carry
+    ;; their own tags — one shared tag reported a WeakReference as a
+    ;; SoftReference — and the queue both enqueue on. Before these rows every
+    ;; one reported (class x) => :object.
+    ("soft-ref" . "java.lang.ref.SoftReference")
+    ("weak-ref" . "java.lang.ref.WeakReference")
+    ("ref-queue" . "java.lang.ref.ReferenceQueue")
+    ;; String.CASE_INSENSITIVE_ORDER (host-static-methods.ss)
+    ("string-ci-comparator" . "java.lang.String$CaseInsensitiveComparator")))
 ;; FQN for a jhost tag, or #f if the tag names no modeled class (e.g. "class",
 ;; "in-stream", "jolt-comparator") — callers fall through on #f.
 (define (jhost-fqn tag) (hashtable-ref jhost-tag->fqn tag #f))
@@ -998,4 +1106,7 @@
                        (else (jolt-class-name c)))))
        (let ((supers (jch-direct-supers name)))
          (if (null? supers) jolt-nil (list->cseq supers)))))))
+;; The Chez host re-defs `bases` over this with Class objects (host-static-classes.ss,
+;; which owns the class-token interner and loads after us); this name-string form
+;; is what the Gambit boot, which excludes that file, keeps.
 (def-var! "clojure.core" "bases" jolt-bases)
